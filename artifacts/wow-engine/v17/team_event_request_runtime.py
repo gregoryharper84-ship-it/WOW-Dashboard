@@ -3,7 +3,9 @@
 The ingress contract is sport-agnostic, but model support is capability-specific.
 Only a sport with a certified backend adapter may score. Unsupported sports fail
 closed as MODEL_UNAVAILABLE; market prices or generic reasoning are never used as
-a substitute. No route in this module can execute a wager.
+a substitute. MLB fitted-model evidence must also traverse the LLP probability-
+claim / event-decision governance bridge before any numeric probability can leave
+this v17 boundary. No route in this module can execute a wager.
 """
 from __future__ import annotations
 
@@ -18,6 +20,26 @@ from v17.host_routing import LLP_TEAM_BETTING_ENGINE, resolve_host_route
 CAN_EXECUTE = False
 
 TeamDecisionIntent = Literal["WINNER", "FAVORITE", "UNDERDOG", "UPSET", "BEST_SIDE"]
+
+# Numeric model fields exposed by the existing MLB event bridge. Until the LLP
+# event-ledger bridge proves its post-model + final gates, none of these may be
+# surfaced by the v17 TEAM_EVENT boundary even if the underlying v16 bridge is
+# separately ratified for its own contract.
+_MLB_NUMERIC_MODEL_FIELDS = {
+    "raw_home_probability",
+    "raw_away_probability",
+    "independent_home_probability",
+    "independent_away_probability",
+    "calibrated_home_probability",
+    "calibrated_away_probability",
+    "calibrated_home_lower_bound",
+    "calibrated_home_upper_bound",
+    "calibrated_away_lower_bound",
+    "calibrated_away_upper_bound",
+    "projected_runs_home",
+    "projected_runs_away",
+    "tie_after_9_probability",
+}
 
 
 class TeamEventRequest(BaseModel):
@@ -161,6 +183,153 @@ def _mlb_request(req: TeamEventRequest, event_api: Any) -> Any:
     )
 
 
+def _without_numeric_model_fields(payload: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in payload.items() if key not in _MLB_NUMERIC_MODEL_FIELDS}
+
+
+def _llp_governance_hold(
+    req: TeamEventRequest,
+    route: Any,
+    model_result: dict[str, Any],
+    *,
+    governance_detail: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    safe_model = _without_numeric_model_fields(model_result)
+    blockers = [
+        "LLP_PROBABILITY_CLAIM_AUDIT_NOT_PROVEN",
+        "LLP_EVENT_DECISION_GOVERNOR_NOT_PROVEN",
+        "V17_EVENT_LEDGER_LINK_NOT_PROVEN",
+    ]
+    if governance_detail and governance_detail.get("blockers"):
+        blockers.extend(str(value) for value in governance_detail.get("blockers") or [])
+    return {
+        **safe_model,
+        "code": "LLP_EVENT_GOVERNANCE_NOT_PROVEN",
+        "upstream_model_code": model_result.get("code"),
+        "requester_host_identity": route.requester_host_identity,
+        "controlling_engine_identity": LLP_TEAM_BETTING_ENGINE,
+        "candidate_family": route.candidate_family,
+        "llp_governance": governance_detail or {"status": "NOT_PROVEN"},
+        "llp_probability_audit_result": "NOT_PROVEN",
+        "llp_event_decision": "NOT_PROVEN",
+        "event_mutex_status": "NOT_PROVEN",
+        "terminal_label": "MODEL_QUALIFIED_HOLD",
+        "terminal_ceiling": "MODEL_QUALIFIED_HOLD",
+        "blockers": sorted(set(blockers)),
+        "probability_fields_withheld": True,
+        "probability_publishable": False,
+        "rank_eligible": False,
+        "host_terminal_authority": False,
+        "global_terminal_authority": "V17_TERMINAL_REDUCER",
+        "can_execute": False,
+    }
+
+
+def _run_mlb_llp_governance(
+    req: TeamEventRequest,
+    route: Any,
+    model_result: dict[str, Any],
+    *,
+    event_api: Any,
+) -> dict[str, Any]:
+    """Require a server-owned bridge into the existing LLP event-ledger gates.
+
+    The existing database already owns wow_run_event_postmodel_gates and
+    wow_run_event_final_gates. The v17 boundary may publish only when a dedicated
+    bridge binds this exact fitted-model score snapshot to wow_event_predictions
+    and returns direct proof that those gates ran. Missing RPC, missing ledger
+    linkage, or an incomplete response produces a strict hold with numeric model
+    fields removed.
+    """
+    score_snapshot_id = model_result.get("score_snapshot_id")
+    if not score_snapshot_id:
+        return _llp_governance_hold(req, route, model_result)
+
+    get_client = getattr(event_api, "get_client", None)
+    if not callable(get_client):
+        return _llp_governance_hold(
+            req,
+            route,
+            model_result,
+            governance_detail={"status": "UNAVAILABLE", "blockers": ["EVENT_LEDGER_CLIENT_UNAVAILABLE"]},
+        )
+
+    try:
+        rpc_result = get_client().rpc(
+            "wow_v17_mlb_team_event_governance_bridge",
+            {
+                "p_score_snapshot_id": str(score_snapshot_id),
+                "p_research_run_id": req.research_run_id,
+                "p_event_key": req.event_key,
+                "p_requested_timezone": req.requested_timezone,
+                "p_candidate_family": req.candidate_family,
+                "p_decision_intent": req.decision_intent,
+            },
+        ).execute()
+        governance = rpc_result.data
+    except Exception as exc:
+        return _llp_governance_hold(
+            req,
+            route,
+            model_result,
+            governance_detail={
+                "status": "UNAVAILABLE",
+                "blockers": ["V17_EVENT_GOVERNANCE_BRIDGE_UNAVAILABLE"],
+                "error_type": type(exc).__name__,
+            },
+        )
+
+    if not isinstance(governance, dict):
+        return _llp_governance_hold(
+            req,
+            route,
+            model_result,
+            governance_detail={"status": "INVALID", "blockers": ["V17_EVENT_GOVERNANCE_BRIDGE_INVALID_RESPONSE"]},
+        )
+
+    required_pass = (
+        governance.get("status") == "PASS"
+        and governance.get("probability_audit_result") == "PASS_PROBABILITY_AUDIT"
+        and governance.get("event_mutex_status") == "PASS"
+        and governance.get("postmodel_gates_status") == "PASS"
+        and governance.get("final_gates_status") == "PASS"
+        and governance.get("global_terminal_reducer") == "V17_TERMINAL_REDUCER"
+        and governance.get("can_execute") is False
+    )
+    if not required_pass:
+        return _llp_governance_hold(req, route, model_result, governance_detail=governance)
+
+    final_label = str(governance.get("terminal_label") or "MODEL_QUALIFIED_HOLD")
+    publishable = bool(
+        model_result.get("probability_publishable") is True
+        and governance.get("probability_publishable") is True
+        and final_label == "FINAL_APPROVED"
+    )
+    if not publishable:
+        held = _llp_governance_hold(req, route, model_result, governance_detail=governance)
+        held["terminal_label"] = final_label
+        held["terminal_ceiling"] = final_label
+        return held
+
+    return {
+        **model_result,
+        "requester_host_identity": route.requester_host_identity,
+        "controlling_engine_identity": LLP_TEAM_BETTING_ENGINE,
+        "candidate_family": route.candidate_family,
+        "llp_governance": governance,
+        "llp_probability_audit_result": governance["probability_audit_result"],
+        "llp_event_decision": governance.get("event_decision"),
+        "event_mutex_status": governance["event_mutex_status"],
+        "terminal_label": final_label,
+        "terminal_ceiling": final_label,
+        "probability_publishable": True,
+        "rank_eligible": bool(governance.get("rank_eligible")),
+        "host_terminal_authority": False,
+        "global_terminal_authority": "V17_TERMINAL_REDUCER",
+        "can_execute": False,
+    }
+
+
 def score_team_event_request(req: TeamEventRequest, *, event_api: Any) -> dict[str, Any]:
     try:
         route = resolve_host_route(req.requester_host_identity, req.candidate_family)
@@ -219,15 +388,7 @@ def score_team_event_request(req: TeamEventRequest, *, event_api: Any) -> dict[s
                     req,
                 ),
             )
-        return {
-            **result,
-            "requester_host_identity": route.requester_host_identity,
-            "controlling_engine_identity": LLP_TEAM_BETTING_ENGINE,
-            "candidate_family": route.candidate_family,
-            "host_terminal_authority": False,
-            "global_terminal_authority": "V17_TERMINAL_REDUCER",
-            "can_execute": False,
-        }
+        return _run_mlb_llp_governance(req, route, result, event_api=event_api)
 
     # The universal contract exists for all team/event sports, but no sport may
     # be promoted without an actually registered fitted model and adapter.
