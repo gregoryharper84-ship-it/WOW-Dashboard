@@ -64,7 +64,7 @@ else:
 ### Test command
 
 ```bash
-curl -X POST https://YOUR-REPLIT-URL/final-lock \
+curl -X POST https://YOUR-legacy platform-URL/final-lock \
   -H "Content-Type: application/json" \
   -H "X-API-Key: YOUR_KEY" \
   -d '{

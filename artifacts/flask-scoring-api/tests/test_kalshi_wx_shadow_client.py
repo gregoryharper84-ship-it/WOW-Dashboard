@@ -233,7 +233,7 @@ class TestS5CredentialPresenceDoesNotActivate(unittest.TestCase):
     def test_S5_api_keys_present_but_flag_off_stays_disabled(self):
         """
         Even when ANTHROPIC_API_KEY and AI_INTEGRATIONS_ANTHROPIC_API_KEY are
-        set in the environment (as they are in this Replit environment), the
+        set in the environment (as they are in this legacy_platform environment), the
         flag=False gate fires first and returns SHADOW_AGENT_DISABLED without
         any network activity.
 

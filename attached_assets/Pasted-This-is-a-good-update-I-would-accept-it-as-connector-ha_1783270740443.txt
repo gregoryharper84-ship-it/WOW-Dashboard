@@ -11,7 +11,7 @@ DRY_RUN_ONLY: TRUE
 
 What matters most:
 
-* Replit did **not** rebuild working connectors unnecessarily.
+* legacy platform did **not** rebuild working connectors unnecessarily.
 * They identified the real gap: missing formal health/source-contract endpoints.
 * Both new endpoints are read-only.
 * Both return the correct audit fields.
@@ -19,7 +19,7 @@ What matters most:
 * `dry_run_only=true` and `can_execute=false` remain enforced.
 * Open-Meteo and balldontlie were correctly deferred instead of rushed.
 
-Tell Replit:
+Tell legacy platform:
 
 ```text
 Accepted.

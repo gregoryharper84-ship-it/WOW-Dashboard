@@ -6,7 +6,7 @@ Purpose: define the exact handoff between screenshot ingestion (Claude Vision), 
 
 Two valid patterns. Recommend running both:
 
-- **Backend-orchestrated (for automation):** Replit's Python backend calls the Claude API at two defined points — vision extraction and gap-fill reasoning — and owns the rest of the pipeline. This is what should run when props are pulled programmatically (cron, dashboard refresh, batch scoring).
+- **Backend-orchestrated (for automation):** legacy platform's Python backend calls the Claude API at two defined points — vision extraction and gap-fill reasoning — and owns the rest of the pipeline. This is what should run when props are pulled programmatically (cron, dashboard refresh, batch scoring).
 - **Claude-orchestrated (for interactive review):** this chat session, using the wow-* skills already built. Claude drives the sequence directly when Greg pastes a screenshot or asks "score this slip." This is what's happening today.
 
 Both should call the *same* underlying pipeline logic so results never diverge. The contract below is written from the backend-orchestrated angle since that's the missing piece; the chat/skills layer already approximates it manually.
@@ -172,7 +172,7 @@ Hard rule: Claude reports what it finds or says unavailable — it does not esti
 | NBA/WNBA counting stats | Poisson: `P(X≥line) = 1-CDF(floor(line), λ=season_avg)` | Claude computes until codified |
 | Binary/game props | Logistic from no-vig probability + L5/L10 delta | Claude computes until codified |
 
-Confirmed against the live codebase by Replit — build order and formulas match.
+Confirmed against the live codebase by legacy platform — build order and formulas match.
 
 **Output contract — raw and calibrated probability are separate fields,
 never collapsed into one.** Earlier versions of this spec had a single
@@ -235,7 +235,7 @@ Added when the review/explainer role moved from human-in-the-loop (this
 chat) to fully autonomous. Runs automatically after Step G for every
 scored slip, no human step in between. Sits alongside `resolve_gaps`,
 `estimate_hit_probability`, and `generate_explanation` as a fourth
-function in `claude_gap_fill.py` (or a new module — Replit's call).
+function in `claude_gap_fill.py` (or a new module — legacy platform's call).
 
 ### Purpose
 
@@ -288,7 +288,7 @@ never reinstate a killed leg, remove a flag, or raise a confidence tier.
 **Every result — confirmed or downgraded — gets written to a persistent
 audit log**, not just the downgrades. With no live human catching drift
 in real time, this log is what makes retrospective calibration possible.
-Recommend Replit expose it as a table or endpoint Greg can pull for a
+Recommend legacy platform expose it as a table or endpoint Greg can pull for a
 periodic batch postmortem (`wow-postmortem-auto`, `wow-clv-grader`) —
 that periodic check-in is the one place a human pass still adds value
 under full autonomy, and it's low-cost since it's batch, not per-slip.
@@ -637,7 +637,7 @@ by invoking that skill, it needs the same same-player check added at
 the code level — otherwise a slip with both a Points leg and a Fantasy
 Score leg on the same player will pass through the automated pipeline
 without the flag firing, and only get caught if someone happens to run
-a manual correlation review. Worth confirming with Replit whether
+a manual correlation review. Worth confirming with legacy platform whether
 `correlation_risk` is computed in code or delegated to Claude, and
 wiring Rule 5 into whichever one actually runs automatically.
 

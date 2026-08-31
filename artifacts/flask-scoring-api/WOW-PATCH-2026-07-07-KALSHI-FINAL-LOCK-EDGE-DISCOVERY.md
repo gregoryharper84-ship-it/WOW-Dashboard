@@ -4,7 +4,7 @@
 `WOW-PATCH-2026-07-07-KALSHI-FINAL-LOCK-EDGE-DISCOVERY`
 
 ## Author / date
-User (spec + governance rule) + Replit agent — 2026-07-07
+User (spec + governance rule) + legacy platform agent — 2026-07-07
 
 ## Status
 `SHIPPED`

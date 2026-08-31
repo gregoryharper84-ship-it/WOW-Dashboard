@@ -2,10 +2,10 @@ Claude alignment received.
 
 Proceed with Step 3, but add this preflight check before implementation:
 
-1. Verify which spec file/path Replit is using.
+1. Verify which spec file/path legacy platform is using.
     * Claude says its project file still reads v15.3.0.
     * ChatGPT-side uploaded master says WOW v16 Clean Core is active and supersedes v15.3.0 effective 2026-06-04.
-    * Treat LLP_GROUND_TRUTH.md + Replit code as implementation ground truth.
+    * Treat LLP_GROUND_TRUTH.md + legacy platform code as implementation ground truth.
     * Do not let a stale Claude project file override the live v16 rules.
 2. Step 3 remains greenlit:
     * Build odds-snapshot background cron.

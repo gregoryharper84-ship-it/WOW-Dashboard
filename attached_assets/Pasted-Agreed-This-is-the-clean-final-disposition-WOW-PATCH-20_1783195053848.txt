@@ -22,7 +22,7 @@ For the WOW-SHARED-NOTES.md loose end, I’d use this rule:
 Search first. If WOW-SHARED-NOTES.md exists anywhere in the repo, append there.
 If it does not exist, create it at repo root as /WOW-SHARED-NOTES.md.
 
-Useful Replit commands:
+Useful legacy platform commands:
 
 find . -iname "WOW-SHARED-NOTES.md" -o -iname "*SHARED*NOTES*"
 

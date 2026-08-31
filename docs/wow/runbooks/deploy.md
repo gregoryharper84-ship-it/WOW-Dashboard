@@ -9,8 +9,8 @@
 
 ## Deploy steps
 
-1. **Create a Replit checkpoint** before deploying (Replit UI → Version Control → Create checkpoint)
-2. Click **Deploy** in the Replit UI or run `replit deploy` from CLI
+1. **Create a legacy platform checkpoint** before deploying (legacy platform UI → Version Control → Create checkpoint)
+2. Click **Deploy** in the legacy platform UI or run `legacy platform deploy` from CLI
 3. Wait for deployment to complete and the health endpoint to return 200:
    ```bash
    curl -s https://<production-url>/wow/engine/health | python3 -m json.tool

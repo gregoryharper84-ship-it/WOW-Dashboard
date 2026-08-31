@@ -1,4 +1,4 @@
-The Action is connected correctly. The failure is now **inside Replit routing**, not the GPT schema.
+The Action is connected correctly. The failure is now **inside legacy platform routing**, not the GPT schema.
 
 ## What the error means
 
@@ -8,7 +8,7 @@ Your Custom GPT successfully called:
 POST /wow/kalshi/scan
 ```
 
-But Replit returned:
+But legacy platform returned:
 
 ```text
 405 Method Not Allowed
@@ -35,15 +35,15 @@ Do **not** change the Action back. Keep:
   post:
 ```
 
-Now Replit needs to add a real Flask POST route.
+Now legacy platform needs to add a real Flask POST route.
 
-Send this to Replit/Codex:
+Send this to legacy platform/Codex:
 
 The Custom GPT Action is now correctly calling:
 
 POST /wow/kalshi/scan
 
-The call reached Replit, but Flask returned:
+The call reached legacy platform, but Flask returned:
 
 405 Method Not Allowed
 
@@ -113,7 +113,7 @@ Example stub response:
 ]
 }
 
-## Minimal Flask route Replit can paste
+## Minimal Flask route legacy platform can paste
 
 ```python
 from flask import request, jsonify
@@ -169,7 +169,7 @@ def wow_kalshi_scan():
     }), 200
 ```
 
-## After Replit adds this
+## After legacy platform adds this
 
 Run the same GPT test again:
 
@@ -183,4 +183,4 @@ Expected result should no longer be 405. Even if the real scanner is not built y
 KALSHI_DATA_UNOBTAINABLE
 ```
 
-That confirms the GPT → Replit route is working. Then the next step is wiring the actual Kalshi market-data fetcher behind that route.
+That confirms the GPT → legacy platform route is working. Then the next step is wiring the actual Kalshi market-data fetcher behind that route.

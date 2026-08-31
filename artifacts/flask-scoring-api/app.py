@@ -61,9 +61,9 @@ def _ensure_anthropic() -> bool:
 def _anthropic_client_kwargs(**extra) -> tuple:
     """Return (kwargs_dict, error_msg) for constructing an Anthropic client.
 
-    Prefers Replit AI Integrations proxy (AI_INTEGRATIONS_ANTHROPIC_API_KEY +
+    Prefers legacy_platform AI Integrations proxy (AI_INTEGRATIONS_ANTHROPIC_API_KEY +
     AI_INTEGRATIONS_ANTHROPIC_BASE_URL) so the integration key is sent to
-    Replit's proxy rather than api.anthropic.com (which would 401 immediately
+    legacy_platform's proxy rather than api.anthropic.com (which would 401 immediately
     because the integration key is only valid against the proxy).
 
     Falls back to a user-supplied ANTHROPIC_API_KEY for direct access.
@@ -94,7 +94,7 @@ def _anthropic_client_kwargs(**extra) -> tuple:
         except Exception:
             _host = "(unparseable)"
         print(
-            f"ANTHROPIC_CLIENT_MODE replit_proxy"
+            f"ANTHROPIC_CLIENT_MODE legacy_platform_proxy"
             f"  base_host={_host}"
             f"  key_len={len(ai_key)}"
             f"  base_len={len(ai_base)}",
@@ -122,8 +122,8 @@ def _anthropic_client_kwargs(**extra) -> tuple:
             flush=True,
         )
         return None, (
-            "No Anthropic credentials — set ANTHROPIC_API_KEY in Replit Secrets "
-            "or enable the Replit Anthropic AI Integration"
+            "No Anthropic credentials — set ANTHROPIC_API_KEY in legacy_platform Secrets "
+            "or enable the legacy_platform Anthropic AI Integration"
         )
 
     kwargs.update(extra)
@@ -420,7 +420,7 @@ _log_lock = threading.Lock()
 # ---------------------------------------------------------------------------
 
 def get_public_url() -> str:
-    domains = os.environ.get("REPLIT_DOMAINS", "")
+    domains = os.environ.get("legacy_platform_DOMAINS", "")
     first = domains.split(",")[0].strip() if domains else ""
     return f"https://{first}" if first else "http://localhost:8000"
 
@@ -1821,7 +1821,7 @@ def wow_daily_run():
     WOW-PATCH-2026-08-19-DAILY-CANONICAL-v1.0 (Task #277)
 
     This is the authoritative Custom GPT entry point for daily discovery and
-    scoring.  Replit owns the full orchestration pipeline; the caller submits
+    scoring.  legacy_platform owns the full orchestration pipeline; the caller submits
     only high-level intent.
 
     Accepted JSON params
@@ -4134,7 +4134,7 @@ Example:
     except _anthropic.AuthenticationError:
         return jsonify({
             "ok": False,
-            "error": "Invalid ANTHROPIC_API_KEY — check the value in Replit Secrets",
+            "error": "Invalid ANTHROPIC_API_KEY — check the value in legacy_platform Secrets",
         }), 401
     except _anthropic.RateLimitError:
         return jsonify({"ok": False, "error": "Anthropic rate limit — retry shortly"}), 429
@@ -5115,7 +5115,7 @@ def claude_proxy():
     if not api_key:
         return jsonify({
             "ok": False,
-            "error": "ANTHROPIC_API_KEY secret is not set — add it in Replit Secrets",
+            "error": "ANTHROPIC_API_KEY secret is not set — add it in legacy_platform Secrets",
         }), 500
 
     body = request.get_json(silent=True)
@@ -5943,7 +5943,7 @@ def fbref_stats():
 # Strategy: GET /fbref-stats/fixtures serves from `soccer_fixtures_cache`
 # when fresh rows exist for the requested date. POST /fbref-stats/fixtures/refresh
 # crawls a date range from api-football and upserts; designed to be hit by an
-# external scheduler (e.g. Replit Scheduled Deployment) on a daily cadence.
+# external scheduler (e.g. legacy_platform Scheduled Deployment) on a daily cadence.
 
 _FIXTURES_SCHEMA_LOCK = threading.Lock()
 _FIXTURES_SCHEMA_READY = False
@@ -6272,7 +6272,7 @@ def fbref_stats_fixtures_refresh():
     """
     Pre-populate soccer_fixtures_cache for a date range (default: today
     through +2 days, covering timezone edges). Designed for an external
-    daily scheduler (e.g. Replit Scheduled Deployment).
+    daily scheduler (e.g. legacy_platform Scheduled Deployment).
 
     JSON body: { "start_date": "YYYY-MM-DD", "end_date": "YYYY-MM-DD" }
     Defaults: start_date = today UTC, end_date = today + 2 days.
@@ -9032,7 +9032,7 @@ def _l10_bbref(first: str, last: str, sport: str, prop: str,
               "complete": False, "rows": 0, "gap": ""}
 
     if not _ensure_bs4():
-        result["gap"] = "beautifulsoup4/pandas not installed in Replit env"
+        result["gap"] = "beautifulsoup4/pandas not installed in legacy_platform env"
         return result
 
     pid = _build_bbref_pid(first, last, sport)
@@ -13573,13 +13573,13 @@ def wow_analyze():
         return jsonify({"ok": False,
                         "error": "anthropic package not installed on server"}), 503
 
-    # Prefer Replit AI Integrations proxy; fall back to direct ANTHROPIC_API_KEY
+    # Prefer legacy_platform AI Integrations proxy; fall back to direct ANTHROPIC_API_KEY
     _ai_base = os.environ.get("AI_INTEGRATIONS_ANTHROPIC_BASE_URL", "").strip()
     _ai_key  = os.environ.get("AI_INTEGRATIONS_ANTHROPIC_API_KEY",  "").strip()
     _direct  = os.environ.get("ANTHROPIC_API_KEY", "").strip()
 
     if _ai_base and _ai_key:
-        # Replit-managed proxy — billed to Replit credits
+        # legacy_platform-managed proxy — billed to legacy_platform credits
         _client_kwargs = {"api_key": _ai_key, "base_url": _ai_base}
         _model         = "claude-sonnet-4-6"
     elif _direct:
@@ -13588,7 +13588,7 @@ def wow_analyze():
         _model         = "claude-sonnet-4-6"
     else:
         return jsonify({"ok": False,
-                        "error": "No Anthropic credentials — set ANTHROPIC_API_KEY or enable Replit AI Integration"}), 503
+                        "error": "No Anthropic credentials — set ANTHROPIC_API_KEY or enable legacy_platform AI Integration"}), 503
 
     body = request.get_json(silent=True) or {}
     prompt_text   = (body.get("prompt")       or "").strip()
@@ -22221,7 +22221,7 @@ def wow_governance_status():
     Returns the canonical WOW governance state: active patch IDs, governance
     hash, engine code version, and loaded_at timestamp.
 
-    GPT and Replit both call this endpoint before every scoring session to
+    GPT and legacy_platform both call this endpoint before every scoring session to
     obtain the governance_hash for handshake verification.
 
     No API key required — read-only, no PII, no scoring logic.
@@ -35305,7 +35305,7 @@ Example:
 
 # ── Odds API Gateway ─────────────────────────────────────────────────────────
 # Three authenticated endpoints that proxy The Odds API so keys never leave
-# Replit Secrets.  The GPT Action sends X-WOW-Action-Key; the backend injects
+# legacy_platform Secrets.  The GPT Action sends X-WOW-Action-Key; the backend injects
 # the correct api key before forwarding.
 # Routing policy (from attached architecture doc):
 #   Free key  → event discovery, sports list, low-cost calls
@@ -36280,8 +36280,8 @@ def _call_claude_slip_vision(
     if ant_err:
         return {}, (
             f"{ant_err}. "
-            "To fix: add ANTHROPIC_API_KEY in Replit → Settings → Secrets, "
-            "or enable the Replit Anthropic AI Integration in the Integrations tab."
+            "To fix: add ANTHROPIC_API_KEY in legacy_platform → Settings → Secrets, "
+            "or enable the legacy_platform Anthropic AI Integration in the Integrations tab."
         )
 
     try:
@@ -36307,7 +36307,7 @@ def _call_claude_slip_vision(
     except _anthropic.AuthenticationError:
         return {}, (
             "ANTHROPIC_API_KEY is invalid or expired — verify it in "
-            "Replit → Settings → Secrets."
+            "legacy_platform → Settings → Secrets."
         )
     except _anthropic.RateLimitError:
         return {}, "Anthropic rate limit reached — retry in a moment."
@@ -37200,7 +37200,7 @@ def wow_backtest_modes():
 #   • All endpoints are behind SCORING_API_KEY — no anonymous access.
 #
 # Security note: GPT Action endpoints are authenticated via SCORING_API_KEY.
-# The key is stored as a Replit Secret and is never embedded in the schema
+# The key is stored as a legacy_platform Secret and is never embedded in the schema
 # file.  The OpenAPI schema documents the ApiKeyAuth scheme; callers must
 # supply the key in the ChatGPT Action configuration.
 

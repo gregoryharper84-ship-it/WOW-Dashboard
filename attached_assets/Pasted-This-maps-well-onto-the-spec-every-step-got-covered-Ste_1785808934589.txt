@@ -4,11 +4,11 @@ This maps well onto the spec — every step got covered:
 - Steps A–E (extraction → normalize → gap-fill → enrich → gates) → Task #77's `/analyze-and-score`, in the right order, with the right composite fields per leg.
 - Step F (probability) → Task #78. NBA/WNBA got a real coded Poisson formula (scipy), which is actually ahead of the original spec — that was "Claude computes until codified," and it sounds like it's already codified. Good outcome, faster than expected.
 
-Two things worth confirming with Replit before calling this settled:
+Two things worth confirming with legacy platform before calling this settled:
 
 1. **MLB formula consistency.** The original codebase had `gate_engine/mlb/hit_probability_model.py` with the real formula (`1-(1-p_per_PA)^projected_PA`), unwired. The new `gate_engine/hit_probability.py` says MLB binary props use "Bernoulli hit rate" — worth checking whether that's the same formula wired in under a new name, or a simpler standalone calculation that bypasses the more sophisticated one (platoon/park/handedness adjustments). If it's the latter, you've got two MLB probability paths now and only one should win.
 
-2. **Prompt alignment in `claude_gap_fill.py`.** Its three functions (`resolve_gaps`, `estimate_hit_probability`, `generate_explanation`) are doing exactly the jobs I wrote into the three skills — but those are two separate instruction sets now: whatever system prompt Replit embedded in that file, and my skills here. Worth having Replit confirm their prompts encode the same hard rules — never fabricate a stat, never auto-resolve an ambiguous player without a second confirming signal, always report source/sample_basis, defer to coded formulas rather than recompute. If useful, I can hand you the exact rule text from each skill to paste into their prompt so both paths behave identically.
+2. **Prompt alignment in `claude_gap_fill.py`.** Its three functions (`resolve_gaps`, `estimate_hit_probability`, `generate_explanation`) are doing exactly the jobs I wrote into the three skills — but those are two separate instruction sets now: whatever system prompt legacy platform embedded in that file, and my skills here. Worth having legacy platform confirm their prompts encode the same hard rules — never fabricate a stat, never auto-resolve an ambiguous player without a second confirming signal, always report source/sample_basis, defer to coded formulas rather than recompute. If useful, I can hand you the exact rule text from each skill to paste into their prompt so both paths behave identically.
 
 On the follow-ups: #79 is the blocker — nothing calls this endpoint yet without it, so that's the one to prioritize. #80 (NFL/NHL) and #81 (ledger) are correctly sequenced after, not before.
 

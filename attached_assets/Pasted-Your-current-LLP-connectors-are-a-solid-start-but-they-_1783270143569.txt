@@ -7,7 +7,7 @@ therundown.io
 api.the-odds-api.com
 site.api.espn.com
 api.balldontlie.io
-create-app-gregoryharper84.replit.app
+create-app-gregoryharper84.legacy platform.app
 ```
 
 ## What each connector should be used for
@@ -18,7 +18,7 @@ create-app-gregoryharper84.replit.app
 | `api.the-odds-api.com`                  | Primary sportsbook consensus / no-vig / market contradiction | Keep — this is one of the most important LLP connectors |
 | `site.api.espn.com`                     | Schedule, scoreboard, team/player context, fallback status   | Keep, but do not treat as market consensus              |
 | `api.balldontlie.io`                    | Backup stats feed                                            | Keep, but use as fallback/corroboration                 |
-| `create-app-gregoryharper84.replit.app` | Your custom WOW/LLP backend                                  | Core connector                                          |
+| `create-app-gregoryharper84.legacy platform.app` | Your custom WOW/LLP backend                                  | Core connector                                          |
 
 The Odds API free starter plan is useful because it provides 500 credits/month and covers sports/bookmakers/markets, making it the best immediate free connector for no-vig comparison and line-value checks. ([The Odds API][1])
 
@@ -162,10 +162,10 @@ Weather:
 - api.open-meteo.com
 
 Custom engine:
-- create-app-gregoryharper84.replit.app
+- create-app-gregoryharper84.legacy platform.app
 ```
 
-## What to tell Replit
+## What to tell legacy platform
 
 ```text
 Current LLP connectors reviewed:
@@ -175,7 +175,7 @@ Existing:
 - api.the-odds-api.com
 - site.api.espn.com
 - api.balldontlie.io
-- create-app-gregoryharper84.replit.app
+- create-app-gregoryharper84.legacy platform.app
 
 Add these read-only connectors next:
 

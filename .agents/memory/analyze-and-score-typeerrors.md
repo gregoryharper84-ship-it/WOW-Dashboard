@@ -25,5 +25,5 @@ After calling `_normalize_legs(...)`, immediately convert results to mutable dic
 ## E2E result after fixes
 - Synthetic PrizePicks PNG (390×844, 5 NBA legs) → HTTP 200, `props_extracted=5`
 - All 5 legs: `SLATE_PURGE:NO_SLATE_DATE` — expected (synthetic image has no game time)
-- Claude extracted player names correctly via Replit proxy (Anthropic)
+- Claude extracted player names correctly via legacy platform proxy (Anthropic)
 - `can_execute: false` unconditional on all legs ✓

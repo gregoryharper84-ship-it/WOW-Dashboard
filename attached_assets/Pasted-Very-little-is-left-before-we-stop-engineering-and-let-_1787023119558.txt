@@ -12,7 +12,7 @@ I would finish these in this order:
 
 3. **#268 — APPROVE and treat as required before benchmark readiness.** `ready=true` should count only genuinely verified outcomes. An unverified fallback should never help satisfy the 20-row validation milestone. That protects the experiment itself from contaminated labels.
 
-4. **#269 — APPROVE, but it is convenience rather than model work.** Adding read-only validation endpoints to the GPT action schema is useful because I can then inspect `n_logged`, `n_settled`, verification state, and benchmark readiness without asking Replit to investigate each time. Keep them strictly read-only.
+4. **#269 — APPROVE, but it is convenience rather than model work.** Adding read-only validation endpoints to the GPT action schema is useful because I can then inspect `n_logged`, `n_settled`, verification state, and benchmark readiness without asking legacy platform to investigate each time. Keep them strictly read-only.
 
 5. **Then stop building.** Once the production proof passes, the next milestone is simply:
    `20 verified settled predictions`.
@@ -59,7 +59,7 @@ WOW loses to simple baselines
 → investigate whether the lane is worth modeling at all
 ```
 
-And there is **one governance rule I would lock now without additional Replit development**:
+And there is **one governance rule I would lock now without additional legacy platform development**:
 
 ```text
 CONTROLLING PROBABILITY MODEL UNAVAILABLE
@@ -75,6 +75,6 @@ No L10 fallback, no conversational intuition, no qualitative substitute.
 
 **Useful:** #269.
 
-**After that:** **freeze again.** No Lean Core build, new specialist, new Gatekeeper patch, feature engineering, or Replit agent work until the validation data tells us what deserves to survive.
+**After that:** **freeze again.** No Lean Core build, new specialist, new Gatekeeper patch, feature engineering, or legacy platform agent work until the validation data tells us what deserves to survive.
 
 The next major deliverable should not be another commit. It should be the **first real WOW-vs-baseline validation report.**

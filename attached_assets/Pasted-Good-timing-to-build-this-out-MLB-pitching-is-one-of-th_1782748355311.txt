@@ -38,7 +38,7 @@ FanGraphs            K/9, BB/9, FIP, xFIP, SIERA,        ✅ Partial — leaderb
                                                            but season/game logs = free
 
 Baseball Reference   Game logs, IP, K, BB per start,      ✅ Yes — BBRef pattern 
-(baseball-reference) season and recent splits               already in Replit stack
+(baseball-reference) season and recent splits               already in legacy platform stack
                      all_games[-10:] = L10 log             via pd.read_html + StringIO
 
 MLB Stats API        Live lineup, starter confirmation,    ✅ Yes — official free API
@@ -47,7 +47,7 @@ MLB Stats API        Live lineup, starter confirmation,    ✅ Yes — official 
 
 PyBaseball           Python library wrapping Savant +      ✅ Yes — pip install
 (github)             FanGraphs + BBRef; returns             already used in some
-                     DataFrames directly                    Replit implementations
+                     DataFrames directly                    legacy platform implementations
 
 Stathead (BBRef)     Advanced splits, platoon, TTTO        ❌ Paywalled
 
@@ -70,9 +70,9 @@ Pitcher List         K prop analysis, leash grades         ✅ Free content, not
 
 ## WHAT EACH PLATFORM CAN DO
 
-### REPLIT — Data Fetching and Calculation Engine
+### legacy platform — Data Fetching and Calculation Engine
 
-Replit is where the heavy lifting goes. What it can own:
+legacy platform is where the heavy lifting goes. What it can own:
 
 **1. PyBaseball integration**
 ```python
@@ -114,7 +114,7 @@ https://statsapi.mlb.com/api/v1/game/{gamePk}/linescore
 ```
 Starter name, confirmed lineup, live pitch count all available.
 
-**New endpoints Replit should add:**
+**New endpoints legacy platform should add:**
 
 ```python
 def _get_pitcher_savant(mlbam_id, days_back=30):
@@ -177,7 +177,7 @@ Return:
 
 **2. Opponent lineup K% — ChatGPT with web search**
 
-ChatGPT with web search enabled can pull current FanGraphs team K% splits faster than a scraper. Useful for same-day manual runs before Replit endpoints are built.
+ChatGPT with web search enabled can pull current FanGraphs team K% splits faster than a scraper. Useful for same-day manual runs before legacy platform endpoints are built.
 
 **3. Prompt: Platoon split check**
 ```
@@ -195,7 +195,7 @@ Claude's role stays analytical QA, but with sharper pitching data coming in, Cla
 
 **1. Efficiency gap auto-flag**
 
-When Replit returns pitcher data, Claude enforces:
+When legacy platform returns pitcher data, Claude enforces:
 ```
 If efficiency_gap > 0.15:
   → FLAG: LINE_ABOVE_RECENT_EFFICIENCY
@@ -261,13 +261,13 @@ Route to ChatGPT for patch origination + spec language.
 ## RECOMMENDED BUILD SEQUENCE
 
 ```
-PHASE 1 — Replit (immediate, no new auth needed)
+PHASE 1 — legacy platform (immediate, no new auth needed)
   □ Add _get_pitcher_bbref_log() using existing BBRef pattern
   □ Add _calculate_efficiency_gap() function
   □ Add leash_score() from recent IP + manager tag
   □ Wire into /wow/mlb/pitcher endpoint
 
-PHASE 2 — Replit (PyBaseball + Savant)
+PHASE 2 — legacy platform (PyBaseball + Savant)
   □ pip install pybaseball
   □ Add _get_pitcher_savant() for whiff%, K%, velocity
   □ Add _get_opponent_k_rate() from FanGraphs team page scrape
@@ -289,4 +289,4 @@ PHASE 5 — Dashboard
     as visible fields on every pitcher prop card
 ```
 
-The highest-ROI immediate move is Phase 1 — the BBRef log efficiency gap and leash score calculation. Both are derivable from data Replit already fetches, just need the calculation functions added. That alone would have caught the Abbott LESS 5 situation before it hit the slip.
+The highest-ROI immediate move is Phase 1 — the BBRef log efficiency gap and leash score calculation. Both are derivable from data legacy platform already fetches, just need the calculation functions added. That alone would have caught the Abbott LESS 5 situation before it hit the slip.

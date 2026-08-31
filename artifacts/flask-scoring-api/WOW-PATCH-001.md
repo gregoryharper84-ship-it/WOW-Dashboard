@@ -4,7 +4,7 @@
 `WOW-PATCH-001`
 
 ## Author / date
-External Claude planning thread + Replit agent conflict-check · 2026-06-30
+External Claude planning thread + legacy platform agent conflict-check · 2026-06-30
 
 ## Status
 `SHIPPED`
@@ -263,7 +263,7 @@ LLP_GROUND_TRUTH.md changes required:
 
 ---
 
-## Build order (for Replit)
+## Build order (for legacy platform)
 
 1. Add `_KALSHI_WEATHER_STATIONS` dict to `app.py` (read-only, no side effects)
 2. Add NWS CLI fetcher `_fetch_nws_cli(city)` — returns observed_high, status, revision_risk

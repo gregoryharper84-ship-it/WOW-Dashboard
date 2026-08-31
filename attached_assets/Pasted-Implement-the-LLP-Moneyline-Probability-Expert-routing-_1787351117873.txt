@@ -1,4 +1,4 @@
-Implement the LLP Moneyline Probability Expert routing policy centrally in Replit.
+Implement the LLP Moneyline Probability Expert routing policy centrally in legacy platform.
 
 Authority and routing:
 - wow.llp-moneyline-probability-expert is a shadow-only specialist that creates outright win-probability objects for a single team-market event.

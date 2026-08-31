@@ -1082,7 +1082,7 @@ class TestV11CanonicalCeilingResolver(unittest.TestCase):
 
 
 class TestV11HostAbstraction(unittest.TestCase):
-    """Req 1 — host abstraction; engine must not depend on Replit app lookup."""
+    """Req 1 — host abstraction; engine must not depend on legacy_platform app lookup."""
 
     def test_nested_custom_gpt_required_is_false(self):
         self.assertIs(fmcg.NESTED_CUSTOM_GPT_REQUIRED, False)

@@ -26,7 +26,7 @@ info:
   version: "1.0.0"
 
 servers:
-  - url: https://create-app-gregoryharper84.replit.app
+  - url: https://create-app-gregoryharper84.legacy_platform.app
 
 paths:
 
@@ -2395,13 +2395,13 @@ paths:
       operationId: runWowDailyCanonical
       x-openai-isConsequential: false
       summary: >
-        Canonical WOW Daily orchestration — submit high-level intent, Replit owns
+        Canonical WOW Daily orchestration — submit high-level intent, legacy_platform owns
         the full discovery-to-reconciliation pipeline.
       description: >
         WOW-PATCH-2026-08-19-DAILY-CANONICAL-v1.0
 
         Single authoritative daily run endpoint. The caller supplies the
-        intended date, IANA timezone, and retry-safe idempotency key; Replit
+        intended date, IANA timezone, and retry-safe idempotency key; legacy_platform
         generates the immutable run_id and owns:
           - Source union across all readable providers (Odds API + TheRundown)
           - Canonical selection identity assignment (stable, deterministic IDs)

@@ -4,14 +4,14 @@ description: Which external data sources work vs fail for /wow/mlb/pitcher, and 
 ---
 
 ## Rule
-BBRef (`baseball-reference.com`) and FanGraphs are both blocked from Replit's server IPs. Use MLB Stats API + Statcast proxies instead.
+BBRef (`baseball-reference.com`) and FanGraphs are both blocked from legacy platform's server IPs. Use MLB Stats API + Statcast proxies instead.
 
 **Why:** BBRef returns fetch-failed (connection refused / 403). FanGraphs returns 403 for both the HTML leaderboard and via `pybaseball.team_batting()` (it calls `leaders-legacy.aspx`). Verified June 2026.
 
 ## How to apply
 
 ### Leash score (innings pitched per start)
-- Primary: `_l10_bbref` — only works locally, fails on Replit.
+- Primary: `_l10_bbref` — only works locally, fails on legacy platform.
 - Fallback: `_leash_score_from_statcast(first, last)` — groups `statcast_pitcher` by `game_date`, uses `max(inning)` per game as IP proxy, feeds `_leash_score()`.
 - In the endpoint: `if bbref_log: leash = _leash_score(bbref_log) else: leash = _leash_score_from_statcast(first, last)`.
 

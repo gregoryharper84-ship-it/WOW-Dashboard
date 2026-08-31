@@ -1,11 +1,11 @@
 ---
 name: Vite deploy build vs PORT/BASE_PATH
-description: Why Replit scaffold vite.config.ts files break the deploy build, and the serve-time guard fix.
+description: Why legacy platform scaffold vite.config.ts files break the deploy build, and the serve-time guard fix.
 ---
 
 # Vite scaffold configs must not throw at build time
 
-The Replit vite scaffold (`artifacts/*/vite.config.ts`) reads `PORT` and
+The legacy platform vite scaffold (`artifacts/*/vite.config.ts`) reads `PORT` and
 `BASE_PATH` at config-load time and `throw`s if either is missing. These vars are
 provided by the **workflow** (dev serve) and are NOT present during the
 deployment build, which runs `pnpm run build` → `pnpm -r run build` → `vite build`

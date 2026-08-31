@@ -10,7 +10,7 @@ Kalshi up today ≠ live trading, order placement, or can_execute=true.
 
 Kalshi’s docs support this path: public market-data endpoints can be accessed without authentication at `https://external-api.kalshi.com/trade-api/v2`, including markets and orderbook data. ([API Documentation][1]) The orderbook returns YES bids and NO bids only, so executable asks must be derived from the opposite side rather than using midpoint. ([API Documentation][2]) Markets also carry binary YES/NO structure, volume, prices, and settlement rules, so settlement metadata has to be captured before any LLP label trust. ([API Documentation][3])
 
-## Send this to Replit now
+## Send this to legacy platform now
 
 ```text id="dx4pgd"
 Proceed with Kalshi now. No hold.
@@ -171,7 +171,7 @@ But the safety line stays:
 No live trading. No order placement. can_execute=false.
 ```
 
-If Replit finds real MLB/WNBA winner markets today, then we can label it:
+If legacy platform finds real MLB/WNBA winner markets today, then we can label it:
 
 ```text id="spqpap"
 CONNECTED_READONLY / DRY_RUN_READY

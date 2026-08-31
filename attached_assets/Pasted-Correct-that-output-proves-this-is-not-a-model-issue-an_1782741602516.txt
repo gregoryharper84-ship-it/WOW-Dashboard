@@ -35,7 +35,7 @@ One of these is happening:
 6. INPUT_EMPTY / scan_complete branches still return old v3 response builders.
 ```
 
-## Tell Replit to verify this exact checklist
+## Tell legacy platform to verify this exact checklist
 
 ```text
 Live endpoint is still returning:

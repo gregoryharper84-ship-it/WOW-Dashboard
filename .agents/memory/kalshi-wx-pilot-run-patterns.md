@@ -34,7 +34,7 @@ At INPUT_PRICE=0.000001, OUTPUT_PRICE=0.000005, MAX_OUTPUT_TOKENS=1024:
 - Unusual_regime is the cheapest (~$0.002661/call)
 
 ## SHADOW_RESEARCH_API_ENABLED: pass inline, never persist
-Pass as inline subprocess env (`SHADOW_RESEARCH_API_ENABLED=true python script.py`). Never set it via Replit env var system. After subprocess exits, it is naturally gone — no cleanup step needed. KALSHI_WX_SHADOW_AGENT_ENABLED must remain false during pilot runs (live-route capture, not pilot execution).
+Pass as inline subprocess env (`SHADOW_RESEARCH_API_ENABLED=true python script.py`). Never set it via legacy platform env var system. After subprocess exits, it is naturally gone — no cleanup step needed. KALSHI_WX_SHADOW_AGENT_ENABLED must remain false during pilot runs (live-route capture, not pilot execution).
 
 ## All 25 snapshots got PROVISIONAL calibration except finalized observations
 Snapshots with `forecast_horizon_hours=0.0` (same-day, already-finalized) got `scoring_mode=binary_final_cli` and sometimes `CALIBRATED`. Snapshots with horizon > 0 got `scoring_mode=gaussian_forecast` and `PROVISIONAL`. This is expected signal from the agents.

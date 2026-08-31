@@ -1,12 +1,12 @@
-Straight answer: you can't actually pipe this chat into Replit — Cowork sessions aren't a callable endpoint, they're built for a human in the loop. What you can pipe in, fully autonomously, is the Claude API directly — which is exactly what Replit already did for gap-fill, probability estimation, and explanation generation in claude_gap_fill.py.
+Straight answer: you can't actually pipe this chat into legacy platform — Cowork sessions aren't a callable endpoint, they're built for a human in the loop. What you can pipe in, fully autonomously, is the Claude API directly — which is exactly what legacy platform already did for gap-fill, probability estimation, and explanation generation in claude_gap_fill.py.
 
-So making the review/explainer role autonomous means the same pattern: Replit adds a fourth function alongside resolve_gaps / estimate_hit_probability / generate_explanation — something like run_expert_review() — that calls the Claude API with a system prompt built from the same rules in wow-gate-enforcer, wow-correlation-guard, and wow-leg-explainer. It runs after the pipeline scores a slip, re-checks the gate trace and probability for internal consistency, flags correlation risk across legs, and either confirms the verdict or kicks back a warning — no human relay required.
+So making the review/explainer role autonomous means the same pattern: legacy platform adds a fourth function alongside resolve_gaps / estimate_hit_probability / generate_explanation — something like run_expert_review() — that calls the Claude API with a system prompt built from the same rules in wow-gate-enforcer, wow-correlation-guard, and wow-leg-explainer. It runs after the pipeline scores a slip, re-checks the gate trace and probability for internal consistency, flags correlation risk across legs, and either confirms the verdict or kicks back a warning — no human relay required.
 
 The tradeoff is real, though: fully autonomous means it loses the judgment calls I'd make talking it through with you live — catching something ambiguous, asking a clarifying question, going deeper on a specific leg. A hybrid is usually the better setup: autonomous review runs on every slip and only escalates to this chat when it's uncertain, flags something high-risk, or a leg's confidence and gate trace don't line up.
 
 Two ways I can help move on this:
 
-Draft the run_expert_review() system prompt now — same treatment as the gap-fill prompt alignment, condensing the three skills into one review pass Replit can wire in directly.
+Draft the run_expert_review() system prompt now — same treatment as the gap-fill prompt alignment, condensing the three skills into one review pass legacy platform can wire in directly.
 Or, if you want the hybrid version, I'd draft that prompt plus the specific escalation triggers (what counts as "uncertain enough to surface to Greg").
 
 Want the fully autonomous version, or the hybrid with escalation?
@@ -16,6 +16,6 @@ Fully autonomous
 Edited a file, read a file
 Edited a file, read a file
 
-Added Step H — the ready-to-paste run_expert_review() spec plus system prompt, matching the pattern Replit already used for _GAP_FILL_PROMPT. The key design decision: it's downgrade-only. Since nothing catches this pass's mistakes live under full autonomy, it can only make a verdict stricter — kill a leg, add a correlation flag, tag an overconfident explanation — never loosen one. It also logs every result, not just downgrades, because that log is your only real safety net now; recommend having Replit expose it so you can run a periodic batch postmortem, which is the one place a human check still adds value without breaking "fully autonomous."
+Added Step H — the ready-to-paste run_expert_review() spec plus system prompt, matching the pattern legacy platform already used for _GAP_FILL_PROMPT. The key design decision: it's downgrade-only. Since nothing catches this pass's mistakes live under full autonomy, it can only make a verdict stricter — kill a leg, add a correlation flag, tag an overconfident explanation — never loosen one. It also logs every result, not just downgrades, because that log is your only real safety net now; recommend having legacy platform expose it so you can run a periodic batch postmortem, which is the one place a human check still adds value without breaking "fully autonomous."
 
-Hand this straight to Replit — it's a drop-in fourth function next to resolve_gaps / estimate_hit_probability / generate_explanation.
+Hand this straight to legacy platform — it's a drop-in fourth function next to resolve_gaps / estimate_hit_probability / generate_explanation.

@@ -369,7 +369,7 @@ recent_win_streak cannot increase stake
 
 ---
 
-# 5. Replit implementation prompt
+# 5. legacy platform implementation prompt
 
 ```text
 Implement WOW-PATCH-2026-07-10-CROSS-PLATFORM-COMBO-AND-SETTLEMENT-GOVERNANCE.

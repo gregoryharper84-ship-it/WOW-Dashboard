@@ -8,12 +8,12 @@ REVISION:          v1 — draft for ChatGPT review
 BASE SPEC:         WOW v16 Clean Core / Framework v2.2.0
 
 PATCH TYPE:        [X] Analytical rule (affects pick approval logic)
-                   [X] Dashboard code (new backend service replacing Replit)
+                   [X] Dashboard code (new backend service replacing legacy platform)
                    [X] Spec amendment (host_type registry extension)
                    [ ] Memory update
                    [ ] Skill update
 
-ORIGIN:            [X] Proactive model improvement — Replit backend gone;
+ORIGIN:            [X] Proactive model improvement — legacy platform backend gone;
                        Luzardo/Boyd postmortem (this session) diagnosed the
                        exact missing machinery: failure-path matrix,
                        calibration ledger, exact two-way no-vig, payout
@@ -23,7 +23,7 @@ ORIGIN:            [X] Proactive model improvement — Replit backend gone;
 PROBLEM STATEMENT
 ─────────────────────────────────────────────────
 Per the Luzardo/Boyd postmortem, WOW's probability path requires four
-components that Replit used to provide and nothing currently replaces:
+components that legacy platform used to provide and nothing currently replaces:
 
 1. A failure-path matrix producing P(prop) = Σ P(regime) × P(prop|regime),
    not a normal-outing assumption.
@@ -58,7 +58,7 @@ AFFECTED SECTION:  WOW-MASTER-SPEC.md Section 8 (Layered Architecture) —
 CURRENT RULE:
 Section 8.5 (Layer 4 Synthesis) and the existing calibration-ledger rules
 assume a backend exists that produces these fields. No rule currently
-specifies HOW to produce them without Replit.
+specifies HOW to produce them without legacy platform.
 
 NEW RULE (REQUIREMENTS SPEC — methodology fields marked [DECISION
 REQUIRED] are placeholders, not implemented logic):
@@ -154,7 +154,7 @@ regardless of confidence-lane strength.
 8B.5 Host Registry Amendment [DECISION REQUIRED]
 
 Proposed addition to host_type enumeration:
-    host_type = PROJECT_CHAT | WOW_CUSTOM_GPT | REPLIT_BACKEND |
+    host_type = PROJECT_CHAT | WOW_CUSTOM_GPT | legacy platform_BACKEND |
                 FREE_HOST_BACKEND
 
 FREE_HOST_BACKEND candidate implementation (pending ChatGPT/Greg decision,
@@ -171,7 +171,7 @@ not yet built):
               regime modeling), results pushed to Supabase. Cannot be
               positioned as something ChatGPT invokes automatically.
 
-    replit_is_model_layer = false  (already established) →
+    legacy platform_is_model_layer = false  (already established) →
     free_host_is_model_layer = true only once 8B.1–8B.4 are implemented
     and this patch is fully ratified; until then,
     governed_probability_capability = UNAVAILABLE per Section 8A.1, and
@@ -209,7 +209,7 @@ lanes with no governed capability.
 
 DASHBOARD IMPACT:  [X] Yes — new backend service, host TBD (8B.5)
 IF DASHBOARD: FUNCTION TO MODIFY:
-New service — not a modification of existing Replit code (Replit is gone).
+New service — not a modification of existing legacy platform code (legacy platform is gone).
 Claude (chat or Claude Code) implements once 8B methodology is ratified.
 
 CODE CHANGE:

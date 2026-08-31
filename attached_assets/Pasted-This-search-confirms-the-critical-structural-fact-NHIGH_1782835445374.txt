@@ -16,16 +16,16 @@ Chicago  → KXHIGHCHI → Chicago Midway         → KMDW
 Austin   → KXHIGHAUS → Austin Bergstrom       → KAUS
 ```
 
-**This audit caught two real errors before they could ship.** My first pass at pattern-matching NWS CLI codes returned `PBI` (West Palm Beach) as a false positive for Miami and `BUR` (Burbank) as a false positive for LA. Both were wrong — Miami uses Miami International specifically, LA uses LAX specifically, not the airports a generic search would suggest. I rejected both before writing them into the table and went back to the actual live Kalshi contract text instead. This is exactly the failure mode this whole audit step exists to prevent — if Replit had been asked to "verify from contract text" during implementation rather than before it, there's a real chance one of these wrong codes gets hardcoded and silently breaks settlement accuracy months later.
+**This audit caught two real errors before they could ship.** My first pass at pattern-matching NWS CLI codes returned `PBI` (West Palm Beach) as a false positive for Miami and `BUR` (Burbank) as a false positive for LA. Both were wrong — Miami uses Miami International specifically, LA uses LAX specifically, not the airports a generic search would suggest. I rejected both before writing them into the table and went back to the actual live Kalshi contract text instead. This is exactly the failure mode this whole audit step exists to prevent — if legacy platform had been asked to "verify from contract text" during implementation rather than before it, there's a real chance one of these wrong codes gets hardcoded and silently breaks settlement accuracy months later.
 
 **One genuine surprise worth your attention:** Chicago settles on **Midway (KMDW), not O'Hare (KORD)**. If your existing weather data pipeline anywhere in WOW currently defaults to O'Hare for Chicago (a very common assumption), that's a real calibration gap to close before this lane goes live — independently confirmed via a second source's station table, not just Kalshi's own wording.
 
 **Austin is confirmed live and active**, despite one third-party tracking bot's series list omitting it — that omission was that bot's incompleteness, not evidence Austin isn't tradeable.
 
-**What's still open before Replit builds anything**, per the conflict-check section in the file:
+**What's still open before legacy platform builds anything**, per the conflict-check section in the file:
 
-1. Confirm with Replit there's no existing weather lane in `LLP_GROUND_TRUTH.md` this would duplicate
+1. Confirm with legacy platform there's no existing weather lane in `LLP_GROUND_TRUTH.md` this would duplicate
 2. Express proxy route pattern must follow the exact same explicit-route convention as `/api/wow/kalshi/scan` — given everything that's happened in this build, this is the single highest-risk item
 3. Deploy/publish verification step must be built in from day one, not bolted on after the third 502
 
-This is ready to go through the formal `WOW-PATCH-TEMPLATE.md` process next — problem statement, exact delta, test case — before it becomes a Replit build order.
+This is ready to go through the formal `WOW-PATCH-TEMPLATE.md` process next — problem statement, exact delta, test case — before it becomes a legacy platform build order.

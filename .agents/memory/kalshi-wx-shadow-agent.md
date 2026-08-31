@@ -45,7 +45,7 @@ Test T4 uses `ast.parse` + `ast.walk` to assert this at the AST level: every
 ## Client construction
 `_build_client()` checks in order:
 1. `AI_INTEGRATIONS_ANTHROPIC_API_KEY` + `AI_INTEGRATIONS_ANTHROPIC_BASE_URL`
-   (Replit AI integrations proxy — preferred in this environment)
+   (legacy platform AI integrations proxy — preferred in this environment)
 2. `ANTHROPIC_API_KEY` (direct key)
 
 Both keys are present in the environment. Returns `None` if neither is set;

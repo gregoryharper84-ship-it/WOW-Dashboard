@@ -3,12 +3,12 @@ Correct posture: do not mark this deployed/approved yet.
 This should be classified as:
 
 WOW-PATCH-2026-07-04-PREGATE-AUTO-ENRICHMENT
-STATUS: IMPLEMENTED BY REPLIT / LIVE-VERIFIED BY REPLIT / NOT YET CHATGPT-APPROVED
+STATUS: IMPLEMENTED BY legacy platform / LIVE-VERIFIED BY legacy platform / NOT YET CHATGPT-APPROVED
 Current label: v16 TEST CANDIDATE
 Playable impact: NONE
 Approval impact: BLOCKED pending diff review
 
-The Replit summary sounds promising, but it is still self-reported implementation evidence, not an auditable PR review.
+The legacy platform summary sounds promising, but it is still self-reported implementation evidence, not an auditable PR review.
 
 My review verdict
 
@@ -27,7 +27,7 @@ But per WOW v16 Clean Core, this cannot become active until the actual code pass
 
 Required before approval
 
-Ask Replit/Claude for these exact artifacts:
+Ask legacy platform/Claude for these exact artifacts:
 
 1. New auto-enrichment module file
 2. New test file with all 11 tests
@@ -127,7 +127,7 @@ Bottom line
 
 This patch is probably useful and likely worth approving after code review, but right now it stays:
 
-Implemented: yes, per Replit report
+Implemented: yes, per legacy platform report
 Tested: self-reported
 Live verified: self-reported
 ChatGPT approved: no

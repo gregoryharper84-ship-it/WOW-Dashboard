@@ -208,9 +208,9 @@ That solves:
 
 This diagnosis is also important: the adapter apparently exists; authentication is missing. 
 
-So this does **not** require another Replit engineering project.
+So this does **not** require another legacy platform engineering project.
 
-Provision the Kalshi read credentials directly in Replit Secrets—**do not paste the private key into this chat**—then run the inventory health check.
+Provision the Kalshi read credentials directly in legacy platform Secrets—**do not paste the private key into this chat**—then run the inventory health check.
 
 Expected healthy states are:
 

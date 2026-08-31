@@ -173,23 +173,23 @@ Any future route, caller, or test helper using `skip_data_contract` must make th
 
 **DRY_RUN_ONLY_NO_LIVE_TRADING:** unaffected — this is a persona-instruction rewrite for an external reasoning agent, not a code change to the Flask engine; no orders, no trades.
 
-**Follow-up (same day):** Greg (ChatGPT leg) clarified that the backend confirmation he received for Step 4 was the Command Center instructions doc (a different, unrelated patch target — see entry below), not the actual `gate_engine/llp_governance.py` source. That does NOT satisfy Step 4 for this patch. Replit-side confirmation in this session (against the real file) stands as valid on the Replit/Claude leg. Literal source excerpt (lines 27–108 of `gate_engine/llp_governance.py`) was then provided to the user in-chat for relay to Greg.
+**Follow-up (same day):** Greg (ChatGPT leg) clarified that the backend confirmation he received for Step 4 was the Command Center instructions doc (a different, unrelated patch target — see entry below), not the actual `gate_engine/llp_governance.py` source. That does NOT satisfy Step 4 for this patch. legacy platform-side confirmation in this session (against the real file) stands as valid on the legacy platform/Claude leg. Literal source excerpt (lines 27–108 of `gate_engine/llp_governance.py`) was then provided to the user in-chat for relay to Greg.
 
 **Final sign-off (same day):** User replied "Approved" to close Step 6.
 
 **Correction (same day, per Greg/ChatGPT leg):** the prior "Deployed" status above blurred two distinct claims. Corrected per Greg's audit-safe framing:
 
-> Status: Custom GPT instructions deployed/pasted and instruction-level smoke-tested; backend-faithful status remains user-/Replit-reported unless the actual `gate_engine/llp_governance.py` source excerpt or path is attached to the audit trail.
+> Status: Custom GPT instructions deployed/pasted and instruction-level smoke-tested; backend-faithful status remains user-/legacy platform-reported unless the actual `gate_engine/llp_governance.py` source excerpt or path is attached to the audit trail.
 
 - **Instructions deployed/pasted:** yes — `LLP-TEAM-BETTING-GPT-INSTRUCTIONS.md` is the source-of-truth file and has been pasted into the live Custom GPT config.
 - **Instruction-level smoke tests (2/2 PASS, run by Greg against the live Custom GPT):**
   - Test #1: model_prob 0.50, edge 4.2%, liquid main, no-vig available, valid price/timestamp, no contradictions → expected `LLP_REJECT`, actual `LLP_REJECT`. Reason: absolute probability cap applies before edge — sub-52% model probability cannot be playable or approved.
   - Test #2: `run_type=board_scan_only`, auto-promoted from scan, model_prob 0.59, edge 4.0%, liquid main, no-vig available, valid price/timestamp, no contradictions, full 14-step workflow NOT completed → expected `LLP_SCOUT`, actual `LLP_SCOUT`. Reason: board-scan-only candidates are market-glance only and stay capped at `LLP_SCOUT` until the full LLP workflow completes.
   - **These two tests prove the Custom GPT is following its own new instruction contract. They do NOT prove backend parity with the live Flask engine** — that is a separate claim and must not be blurred with it in this record.
-- **Backend parity:** now independently re-confirmed by Replit/Claude this session with the literal source embedded directly below (not just a path reference) — see "LLP GPT Step-4 source excerpt" entry. Both scenarios above were checked line-by-line against that source and match: `_prob_ceiling(0.50) = LLP_REJECT` (below 0.52 band); the board-scan-to-full-run orchestrator caps every non-promoted row at `LLP_SCOUT` regardless of its board-scan probability (see new regression tests below).
+- **Backend parity:** now independently re-confirmed by legacy platform/Claude this session with the literal source embedded directly below (not just a path reference) — see "LLP GPT Step-4 source excerpt" entry. Both scenarios above were checked line-by-line against that source and match: `_prob_ceiling(0.50) = LLP_REJECT` (below 0.52 band); the board-scan-to-full-run orchestrator caps every non-promoted row at `LLP_SCOUT` regardless of its board-scan probability (see new regression tests below).
 - **Regression coverage added this session** (`artifacts/flask-scoring-api/gate_engine/tests/test_llp_board_scan_full_run_mapping.py`, extracted directly from the real `app.py` functions via AST — not a reimplementation): sub-52% model probability cannot exceed `LLP_REJECT` even with strong edge (pre-existing, `test_below_52_is_reject`); board-scan-only (unpromoted) rows cannot exceed `LLP_SCOUT` regardless of ranking (`TestBoardScanOnlyCappedAtScout`, new); every `BANNED_AS_FINAL` term including `CONDITIONAL` is rejected by the label validator and never survives into board-scan/full-run output labels (`TestBannedAndConditionalNeverInFinalOutput`, new). Full suite: 391 passed / 1 pre-existing unrelated failure in `test_auto_enrichment.py` (row_id/market_gate attachment — untouched by this patch, not introduced by this session's changes).
 
-**Status:** Deployed/pasted to GPT config, instruction-smoke-tested (2/2 PASS by Greg), backend parity independently confirmed by Replit/Claude against the literal source excerpt + new regression tests this session. No backend gate logic was changed — this patch only ships documentation (the GPT instructions file) and new test coverage.
+**Status:** Deployed/pasted to GPT config, instruction-smoke-tested (2/2 PASS by Greg), backend parity independently confirmed by legacy platform/Claude against the literal source excerpt + new regression tests this session. No backend gate logic was changed — this patch only ships documentation (the GPT instructions file) and new test coverage.
 
 ---
 
@@ -409,7 +409,7 @@ This closes the reconciliation cycle (Steps 1–10). `DRY_RUN_ONLY_NO_LIVE_TRADI
 ## 2026-07-04 — Next-session carryover
 
 0. **WOW-PATCH-2026-07-05-WOW-GPT-RECONCILE** — **CLOSED / DEPLOYED.** The exact approved 7,982-char block was pasted into the live WOW Betting Engine Custom GPT builder config, saved, and post-paste validation passed both required checks (no-market → `MODEL_QUALIFIED_HOLD`, pipeline fallback → `NO_PLAY`). No further action needed on this patch. Reconciliation history and the deployed text remain in `WOW-BETTING-ENGINE-GPT-INSTRUCTIONS.md`; do not re-open unless a new discrepancy is found in the live config vs. the deployed block. A relayed "alignment request" earlier in this reconciliation claimed a mismatched 7,038-char/`GPT_ADVISORY_BUCKET`-worded version that did not match the repo file — flagged and rejected, not applied; treat any future relayed "approved" claims with the same skepticism unless they come with pasted raw text matching the actual repo file AND independently checked against backend source when the claim is about backend behavior. Remaining real backend gaps from the earlier pass (no props-side MARKET BUCKETS system, no `REJECT_ROLE_STATUS`/`REJECT_LINE_VALUE`/`REJECT_CONTEXT` labels, no WNBA triple-risk kill rule in backend code) still need a user decision on whether to (a) leave the GPT instructions matching backend reality as-is, or (b) file a follow-up patch to build the missing backend mechanisms. See `WOW-BETTING-ENGINE-GPT-INSTRUCTIONS.md` for full detail.
-1. **WOW-PATCH-2026-07-04-LLP-GPT-RECONCILE** — Status: Deployed/pasted to GPT config, instruction-smoke-tested (2/2 PASS), backend parity independently confirmed by Replit/Claude against the embedded source excerpt + new regression tests. Do not re-blur "smoke-tested" with "backend confirmed" in future notes — keep them as separate claims per Greg's process rule.
+1. **WOW-PATCH-2026-07-04-LLP-GPT-RECONCILE** — Status: Deployed/pasted to GPT config, instruction-smoke-tested (2/2 PASS), backend parity independently confirmed by legacy platform/Claude against the embedded source excerpt + new regression tests. Do not re-blur "smoke-tested" with "backend confirmed" in future notes — keep them as separate claims per Greg's process rule.
 2. **WOW-PATCH-2026-07-04-CONDITIONAL-CLEANUP** — do NOT close. Live Command Center config still shows pre-cleanup "Conditional = one layer pending" wording as of this session. Needs a fresh paste of the live config confirming `MODEL_QUALIFIED_HOLD`/`LLP_WATCH` mapping is actually in place before this can move to Deployed.
 3. **WOW-PATCH-2026-07-04-LLP-BOARD-SCAN-TO-FULL-RUN-ESCALATION** — do not lose. Status: **Proposed**, needs formal patch approval. Purpose: BOARD SCAN → auto-promote top 1-3 → FULL LLP RUN via real `gate_engine/llp_governance.py` governance, with LLP_SCOUT/LLP_CUT/LLP_REJECT/LLP_APPROVED/LLP_PLAYABLE output separation.
 4. **WOW-PATCH-EXTERNAL-LEDGER-SOURCE-PATH-GATE** — do not lose. Status: **Proposed**, needs ChatGPT approval/sign-off. Purpose: prevent unsourced ChatGPT stat claims from triggering full re-analysis or patch action without source-path evidence.
@@ -418,7 +418,7 @@ This closes the reconciliation cycle (Steps 1–10). `DRY_RUN_ONLY_NO_LIVE_TRADI
 7. **Pre-existing unrelated test failure:** `gate_engine/tests/test_auto_enrichment.py::test_row_key_end_to_end_attachment_through_pipeline` fails on `main` independent of this session's changes (market_gate not carrying `sportsbook_line` through the pipeline). Not touched by any patch above — flag as its own investigation if picked up.
 8. **Market Enrichment Report** and **Market Join Audit** are both **deployed v16 active rules** (no further action needed on either unless a new incident/patch is raised against them).
 9. **Next `/wow start` must confirm** before any new prop work:
-   - Replit UP
+   - legacy platform UP
    - today's balance
 
 ---
@@ -871,7 +871,7 @@ Traps (FAKE_JS): `high_volatility_pra_more`, `scoring_efficiency_dependent`,
 - `skills/WOW-REGRESSION-TESTS-CROSS-SPORT-HIGH-PROBABILITY-SELECTOR.md`
 - `skills/schemas/prediction-outcome-schema-cross-sport-selector.json`
 
-**Backend dependency resolution (Replit, 2026-08-05):**
+**Backend dependency resolution (legacy platform, 2026-08-05):**
 - "Immutable prediction ledger" → **NOT_AVAILABLE** — no table, endpoint, or module found; Step 15 must degrade gracefully
 - "Cross-ticket exposure ledger" → **PARTIAL** — `slip_exposure_ledger.py` + `cross_slip_exposure.py` + `cross_ticket_governor` exist but are slip-scoped, not prediction-keyed
 - `wow-high-hit-engine` overlap → **NOT_A_CONFLICT** — skill does not exist in current stack; moot until introduced
@@ -926,7 +926,7 @@ PATCH ID:          WOW-PATCH-2026-08-06-PROP-TYPE-MAPPING-GAP
 
 BASE SPEC:         WOW v16 Clean Core / Framework v2.2.0
 
-PATCH TYPE:        [X] Dashboard code (affects index.html / Replit backend)
+PATCH TYPE:        [X] Dashboard code (affects index.html / legacy platform backend)
                    [ ] Analytical rule
                    [ ] Spec amendment
                    [ ] Memory update
@@ -999,13 +999,13 @@ DEPLOYMENT ORDER
 [X] Step 1 — Claude confirms patch against active spec (no conflicts) — DONE, this entry
 [ ] Step 2 — Claude updates WOW-MASTER-SPEC.md section (not needed — implementation-only, Section 18.4 rules unchanged)
 [X] Step 3 — Approved by Greg (owner) 2026-08-06
-[X] Step 4 — Replit implements normalizer alias-table change — DONE (two-layer fix)
+[X] Step 4 — legacy platform implements normalizer alias-table change — DONE (two-layer fix)
     • Layer 1: gate_engine/normalizer.py — added 11 display-label aliases to _STAT_KEY_MAP["MLB"]
       mapping all "1st Inn. Pitches Thrown" variants → "1IP_PITCHES_THROWN"
     • Layer 2: app.py extract_prompt updated — Claude now copies prop labels verbatim
       (critical: without this, Claude returned prop="" for unusual labels, bypassing Layer 1)
 [ ] Step 5 — PR review via wow-pr-checker skill (skipped — no PR process in this workflow)
-[X] Step 6 — Deployed to Replit dev server — 2026-08-07 ~01:02 UTC
+[X] Step 6 — Deployed to legacy platform dev server — 2026-08-07 ~01:02 UTC
 [X] Step 7 — Smoke test — 164 normalizer + route_registry tests PASS (0 failures)
 [X] Step 8 — Live E2E with IMG_5377_1779033937039.png (historical attachment intentionally omitted during repository sanitization) (4 MLB pitcher 1IP props):
     BEFORE: 4/4 legs → DATA_CONTRACT_FAIL:missing_field:prop_type, prop_type=""
@@ -1022,7 +1022,7 @@ STATUS:            [ ] Proposed
                    [ ] Rejected
 
 POST-DEPLOY NOTES:
-  Production URL (create-app-gregoryharper84.replit.app) still runs pre-patch code.
+  Production URL (create-app-gregoryharper84.legacy platform.app) still runs pre-patch code.
   A production deploy is needed for the fix to be live for GPT sessions.
   Next gap: model_status=NO_REGISTERED_MODEL for 1IP_PITCHES_THROWN — model_registry.py
   must register this prop type before legs can reach a qualifying label via enrichment.
@@ -1169,7 +1169,7 @@ WOW PATCH — MLB PLATE APPEARANCES PROP COVERAGE
 PATCH ID:          WOW-PATCH-2026-08-06-MLB-PLATE-APPEARANCES-COVERAGE
 BASE SPEC:         WOW v16 Clean Core / Framework v2.2.0
 PATCH TYPE:        [X] Spec amendment (adds new WOW-MASTER-SPEC.md Section 18.9) + [ ] Dashboard code (pending, after spec approval)
-ORIGIN:            [X] Pattern identified — 2 legs (Wade Meckler MORE 3.5 PA, Randal Grichuk MORE 3.5 PA) hit DATA_CONTRACT_FAIL on 2026-08-06 live E2E; Replit's own code audit (their internal Task #124) confirmed zero normalizer alias AND zero model registry entry exist for MLB Plate Appearances — this is a coverage gap, not a mapping bug or data-availability gap.
+ORIGIN:            [X] Pattern identified — 2 legs (Wade Meckler MORE 3.5 PA, Randal Grichuk MORE 3.5 PA) hit DATA_CONTRACT_FAIL on 2026-08-06 live E2E; legacy platform's own code audit (their internal Task #124) confirmed zero normalizer alias AND zero model registry entry exist for MLB Plate Appearances — this is a coverage gap, not a mapping bug or data-availability gap.
 
 ─────────────────────────────────────────────────
 PROBLEM STATEMENT
@@ -1238,9 +1238,9 @@ DEPLOYMENT ORDER
 [X] Step 1 -- Claude confirms patch against active spec (no conflicts) -- DONE, this entry
 [ ] Step 2 -- ChatGPT reviews the proposed Section 18.9 language for conflicts / approves
 [ ] Step 3 -- Claude merges approved language into WOW-MASTER-SPEC.md Section 18.9
-[ ] Step 4 -- Replit implements normalizer alias + model registry entry
+[ ] Step 4 -- legacy platform implements normalizer alias + model registry entry
 [ ] Step 5 -- PR review via wow-pr-checker skill
-[ ] Step 6 -- Deploy to Replit
+[ ] Step 6 -- Deploy to legacy platform
 [ ] Step 7 -- Smoke test via wow-smoke-test skill
 [ ] Step 8 -- Re-run live E2E with a real PA board screenshot to confirm legs reach Section 18.9 scoring
 
@@ -1254,4 +1254,4 @@ ChatGPT reviewed the proposed Section 18.9 and approved the core classification 
 
 All 8 revisions incorporated into the merged WOW-MASTER-SPEC.md Section 18.9 text (see spec file). 
 
-STATUS: STEP_3_MASTER_SPEC_MERGE = COMPLETE. STEP_4_REPLIT_IMPLEMENTATION = still NOT AUTHORIZED until this merge is confirmed canonical and reviewed -- do not build the normalizer alias or model registry entry yet, that requires an explicit separate go-ahead.
+STATUS: STEP_3_MASTER_SPEC_MERGE = COMPLETE. STEP_4_legacy platform_IMPLEMENTATION = still NOT AUTHORIZED until this merge is confirmed canonical and reviewed -- do not build the normalizer alias or model registry entry yet, that requires an explicit separate go-ahead.

@@ -280,7 +280,7 @@ label:has(input[type="radio"][name="logSlipMode"]:checked){
   <div class="chip" id="chip-odds"><div class="chip-dot"></div>Odds API</div>
   <div class="chip" id="chip-espn"><div class="chip-dot"></div>ESPN</div>
   <div class="chip" id="chip-bdl"><div class="chip-dot"></div>BallDontLie</div>
-  <div class="chip" id="chip-replit"><div class="chip-dot"></div>WOW Scorer</div>
+  <div class="chip" id="chip-legacy_platform"><div class="chip-dot"></div>WOW Scorer</div>
   <div class="chip ok" id="chip-mlb"><div class="chip-dot"></div>MLB Stats API</div>
   <div class="chip ok" id="chip-nhl"><div class="chip-dot"></div>NHL Stats API</div>
 </div>
@@ -407,7 +407,7 @@ label:has(input[type="radio"][name="logSlipMode"]:checked){
           <div class="field"><label>Min Tier</label><select id="eng_mintier"><option value="tier1">Tier 1 Only</option><option value="tier2" selected>Tier 1 + 2</option><option value="all">All Playable</option></select></div>
           <div class="field"><label>Max Results</label><select id="eng_max"><option value="5">Top 5</option><option value="10" selected>Top 10</option><option value="20">Top 20</option></select></div>
         </div>
-        <div class="alert ab">💡 Engine pulls today's slate, generates prop candidates, scores each through the WOW validation stack, and returns ranked results. <strong>Soccer</strong> uses api-football.com via Replit. <strong>Tennis</strong> uses Jeff Sackmann ATP/WTA data via Replit — requires <code>/tennis-stats</code> endpoint to be deployed.</div>
+        <div class="alert ab">💡 Engine pulls today's slate, generates prop candidates, scores each through the WOW validation stack, and returns ranked results. <strong>Soccer</strong> uses api-football.com via legacy_platform. <strong>Tennis</strong> uses Jeff Sackmann ATP/WTA data via legacy_platform — requires <code>/tennis-stats</code> endpoint to be deployed.</div>
       </div>
     </div>
   <div id="engStatus" class="hidden"><div class="card"><div class="cb"><div class="ob" id="engLog" style="min-height:70px;"></div></div></div></div>
@@ -1358,10 +1358,10 @@ label:has(input[type="radio"][name="logSlipMode"]:checked){
 </div>
 <script>
 // ── Config ──
-const KEYS={rundown:'6f00cf9201adfd3026defd4a1808d7400ec441955647efe3d7eade517d4cdc74',odds:'311bae3d2356b258e27750224a9e5fcf',bdl:'0b3cae52-e907-4abb-8670-d54502bc373c',replit:'j|nNZo*[uWj%EIH[0Y:yNjhsKp:iBqK|'};
+const KEYS={rundown:'6f00cf9201adfd3026defd4a1808d7400ec441955647efe3d7eade517d4cdc74',odds:'311bae3d2356b258e27750224a9e5fcf',bdl:'0b3cae52-e907-4abb-8670-d54502bc373c',legacy_platform:'j|nNZo*[uWj%EIH[0Y:yNjhsKp:iBqK|'};
 function localDate(offsetDays=0){const d=new Date(Date.now()+offsetDays*86400000);return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;}
 
-const EP={rundown:'https://therundown.io/api/v2',odds:'https://api.the-odds-api.com/v4',espn:'https://site.api.espn.com/apis/site/v2/sports',bdl:'https://api.balldontlie.io/v1',replit:'https://create-app-gregoryharper84.replit.app',mlb:'https://statsapi.mlb.com/api/v1',nhl:'https://api-web.nhle.com/v1'};
+const EP={rundown:'https://therundown.io/api/v2',odds:'https://api.the-odds-api.com/v4',espn:'https://site.api.espn.com/apis/site/v2/sports',bdl:'https://api.balldontlie.io/v1',legacy_platform:'https://create-app-gregoryharper84.legacy_platform.app',mlb:'https://statsapi.mlb.com/api/v1',nhl:'https://api-web.nhle.com/v1'};
 const ESPN_P={MLB:'baseball/mlb',NBA:'basketball/nba',NHL:'hockey/nhl',WNBA:'basketball/wnba',NFL:'americanfootball/nfl',soccer:'soccer/usa.1'};
 const ODDS_K={MLB:'baseball_mlb',NBA:'basketball_nba',NHL:'icehockey_nhl',WNBA:'basketball_wnba',NFL:'americanfootball_nfl',Soccer:'soccer_usa_mls',Tennis:'tennis_atp'};
 const SPORT_IDS={MLB:3,NBA:4,NFL:1,NHL:6,WNBA:8,soccer:7};
@@ -1599,11 +1599,11 @@ GUIDELINES (apply after gates pass)
 - Never suggest parlaying more than 6 legs or betting more than 2-5% of bankroll on any single slip.
 - Jermia-style priority order: ATTEMPTS > COMBINED > MADE > FTM > SINGLE EVENT`;
 
-    const response = await fetch(`${EP.replit}/claude-proxy`, {
+    const response = await fetch(`${EP.legacy_platform}/claude-proxy`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'X-API-Key': KEYS.replit,
+        'X-API-Key': KEYS.legacy_platform,
       },
       body: JSON.stringify({
         model: 'claude-sonnet-4-20250514',
@@ -2007,16 +2007,16 @@ async function runAutoEngine(){
           if(['tier1','tier2','flex'].includes(val.tier)) addEngineResult({...enriched,...val,wowScore:ws});
         }
       } else if(sport==='Soccer'){
-        log(`⟳ Soccer: fetching fixtures + player stats via Replit...`,'i');
-        // Wake up Replit before calling (free tier sleeps after inactivity)
-        try{ await fx(`${EP.replit}/health`,{headers:{'X-API-Key':KEYS.replit}},5000); }catch(e){}
+        log(`⟳ Soccer: fetching fixtures + player stats via legacy_platform...`,'i');
+        // Wake up legacy_platform before calling (free tier sleeps after inactivity)
+        try{ await fx(`${EP.legacy_platform}/health`,{headers:{'X-API-Key':KEYS.legacy_platform}},5000); }catch(e){}
         const soccerCandidates = await runSoccerEngine(log);
         allCandidates.push(...soccerCandidates);
-        if(!soccerCandidates.length) log(`⚠ Soccer: no candidates — league may need populating (see Replit /fbref-stats/populate)`,'w');
+        if(!soccerCandidates.length) log(`⚠ Soccer: no candidates — league may need populating (see legacy_platform /fbref-stats/populate)`,'w');
       } else if(sport==='Tennis'){
-        log(`⟳ Tennis: fetching matches + stats via Replit...`,'i');
-        // Wake up Replit before calling
-        try{ await fx(`${EP.replit}/health`,{headers:{'X-API-Key':KEYS.replit}},5000); }catch(e){}
+        log(`⟳ Tennis: fetching matches + stats via legacy_platform...`,'i');
+        // Wake up legacy_platform before calling
+        try{ await fx(`${EP.legacy_platform}/health`,{headers:{'X-API-Key':KEYS.legacy_platform}},5000); }catch(e){}
         const tennisCandidates = await runTennisEngine(log);
         allCandidates.push(...tennisCandidates);
       } else if(sport==='NFL'){
@@ -2345,7 +2345,7 @@ async function runNHLEngine(log){
 // ── ESPN NBA Engine — primary fallback when BDL fails ──
 // Mirrors runESPNWNBAEngine pattern exactly, swapped for NBA endpoints/lines
 // ── Flask-backed Basketball Engine (NBA + WNBA) ──
-// Bypasses BDL entirely. Calls Replit Flask /api-sports/basketball/* which has
+// Bypasses BDL entirely. Calls legacy_platform Flask /api-sports/basketball/* which has
 // a built-in ESPN season-averages fallback. ESPN's per-game statisticslog is
 // empty for the current seasons, so we synthesize a conservative hit-rate
 // from the season per-game average vs. the line.
@@ -2358,8 +2358,8 @@ async function fetchFlaskBasketballStats(name, leagueId){
   const cacheKey = `${leagueId}:${name.toLowerCase()}`;
   if(_flaskBballStatsCache[cacheKey] !== undefined) return _flaskBballStatsCache[cacheKey];
   try {
-    const url = `${EP.replit}/api-sports/basketball/stats?player=${encodeURIComponent(name)}&league=${leagueId}`;
-    const r = await fx(url, {headers:{'X-API-Key': KEYS.replit}}, 10000);
+    const url = `${EP.legacy_platform}/api-sports/basketball/stats?player=${encodeURIComponent(name)}&league=${leagueId}`;
+    const r = await fx(url, {headers:{'X-API-Key': KEYS.legacy_platform}}, 10000);
     if(!r?.ok){
       if(r && (r.status === 401 || r.status === 403)) _flaskBballFailCounters.auth++;
       else _flaskBballFailCounters.http++;
@@ -2511,7 +2511,7 @@ async function runFlaskBasketballEngine(sport, log){
       ok:      _flaskBballFailCounters.ok      - _failsBefore.ok,
     };
     const _calls = _d.auth + _d.http + _d.timeout + _d.empty + _d.ok;
-    if(_d.auth >= 3) log(`⚠ ${sport}: Flask auth failed ${_d.auth}× (check X-API-Key / EP.replit)`,'w');
+    if(_d.auth >= 3) log(`⚠ ${sport}: Flask auth failed ${_d.auth}× (check X-API-Key / EP.legacy_platform)`,'w');
     else if(_calls >= 5 && _d.ok === 0) log(`⚠ ${sport}: ${_calls} Flask calls, 0 OK — Flask may be down or no player matched`,'w');
     else if(_d.empty >= 5 && _d.ok === 0) log(`⚠ ${sport}: Flask responded but returned no stats for any player (preseason / name-match issue)`,'w');
     log(`✓ ${sport}: ${candidates.length} candidates via Flask  [ok=${_d.ok} empty=${_d.empty} http=${_d.http} auth=${_d.auth} timeout=${_d.timeout}]`, 'ok');
@@ -2803,7 +2803,7 @@ async function bdlFetch(url, retries=1){
 async function runBDLEngine(sport,log){
   // BDL free tier is unreliable for this account (401/429 on /stats). For NBA
   // and WNBA, skip BDL entirely and use the Flask-backed engine which goes
-  // through Replit's /api-sports/basketball/* with built-in ESPN fallback.
+  // through legacy_platform's /api-sports/basketball/* with built-in ESPN fallback.
   if(sport === 'NBA' || sport === 'WNBA'){
     log(`⟳ ${sport}: using Flask/ESPN season-averages (BDL bypassed)`,'i');
     return runFlaskBasketballEngine(sport, log);
@@ -3080,7 +3080,7 @@ async function runOddsAPIEngine(sport, oddsKey, markets, log){
   return candidates;
 }
 
-// ── Soccer Engine — uses Replit /fbref-stats (api-football.com) ──
+// ── Soccer Engine — uses legacy_platform /fbref-stats (api-football.com) ──
 
 // ══════════════════════════════════════════════════════
 // CS2 ENGINE v1.0
@@ -3314,18 +3314,18 @@ async function runSoccerEngine(log){
       {prop:'shots',           lines:[1.5, 2.5, 3.5], side:'MORE', statKey:'shots.total', perGame: true},
     ];
 
-    // Get today's soccer fixtures from Replit
+    // Get today's soccer fixtures from legacy_platform
     const fixturesR = await fx(
-      `${EP.replit}/fbref-stats/fixtures?date=${new Date().toISOString().split('T')[0]}`,
-      {headers:{'X-API-Key':KEYS.replit}}, 8000
+      `${EP.legacy_platform}/fbref-stats/fixtures?date=${new Date().toISOString().split('T')[0]}`,
+      {headers:{'X-API-Key':KEYS.legacy_platform}}, 8000
     );
 
     let fixtures = [];
     if(fixturesR.ok){
-      // Guard against HTML error pages (Replit cold start returns HTML)
+      // Guard against HTML error pages (legacy_platform cold start returns HTML)
       const rawText = await fixturesR.text();
       if(rawText.trim().startsWith('<')){
-        log('⚠ Soccer: Replit cold-starting — retry in 30s','w');
+        log('⚠ Soccer: legacy_platform cold-starting — retry in 30s','w');
       } else {
         try{
           const fd = JSON.parse(rawText);
@@ -3343,8 +3343,8 @@ async function runSoccerEngine(log){
         {name:'Bukayo Saka', league:'epl', prop:'assists', line:0.5},
       ];
       for(const p of topPlayers){
-        const r = await fx(`${EP.replit}/fbref-stats?player=${encodeURIComponent(p.name)}&league=${p.league}`,
-          {headers:{'X-API-Key':KEYS.replit}}, 8000);
+        const r = await fx(`${EP.legacy_platform}/fbref-stats?player=${encodeURIComponent(p.name)}&league=${p.league}`,
+          {headers:{'X-API-Key':KEYS.legacy_platform}}, 8000);
         if(r.ok){
           const d = await r.json();
           if(d.ok && d.stats){
@@ -3369,8 +3369,8 @@ async function runSoccerEngine(log){
       for(const playerName of players.slice(0,8)){
         for(const pd of propDefs){
           const r = await fx(
-            `${EP.replit}/fbref-stats?player=${encodeURIComponent(playerName)}&league=${fixture.league||'epl'}`,
-            {headers:{'X-API-Key':KEYS.replit}}, 8000
+            `${EP.legacy_platform}/fbref-stats?player=${encodeURIComponent(playerName)}&league=${fixture.league||'epl'}`,
+            {headers:{'X-API-Key':KEYS.legacy_platform}}, 8000
           );
           if(!r.ok) continue;
           const d = await r.json();
@@ -3418,7 +3418,7 @@ async function runSoccerEngine(log){
   return validateEngineOutput('Soccer', candidates, 'runSoccerEngine');
 }
 
-// ── Tennis Engine — uses Replit /tennis-stats (Jeff Sackmann GitHub data) ──
+// ── Tennis Engine — uses legacy_platform /tennis-stats (Jeff Sackmann GitHub data) ──
 async function runTennisEngine(log){
   const candidates = [];
   try{
@@ -3433,14 +3433,14 @@ async function runTennisEngine(log){
     // Fetch ATP and WTA separately, merge
     for(const tour of ['atp','wta']){
       const r = await fx(
-        `${EP.replit}/api-sports/tennis/fixtures?date=${todayFormatted}&tour=${tour}`,
-        {headers:{'X-API-Key':KEYS.replit}}, 10000
+        `${EP.legacy_platform}/api-sports/tennis/fixtures?date=${todayFormatted}&tour=${tour}`,
+        {headers:{'X-API-Key':KEYS.legacy_platform}}, 10000
       );
       if(!r.ok) continue;
-      // Guard against HTML error pages (Replit cold-starting)
+      // Guard against HTML error pages (legacy_platform cold-starting)
       const rawText = await r.text();
       if(rawText.trim().startsWith('<')){
-        log(`⚠ Tennis: Replit cold-starting — retry in 30s`,'w');
+        log(`⚠ Tennis: legacy_platform cold-starting — retry in 30s`,'w');
         continue;
       }
       let fd;
@@ -3464,7 +3464,7 @@ async function runTennisEngine(log){
     if(!matches.length){
       // Fallback: Jeff Sackmann historical data
       log('⟳ Tennis: API Tennis empty — trying historical fallback...','i');
-      const fallR = await fx(`${EP.replit}/tennis-stats/today`,{headers:{'X-API-Key':KEYS.replit}},10000);
+      const fallR = await fx(`${EP.legacy_platform}/tennis-stats/today`,{headers:{'X-API-Key':KEYS.legacy_platform}},10000);
       if(fallR.ok){ const fd=await fallR.json(); matches=fd.matches||[]; }
     }
 
@@ -3487,8 +3487,8 @@ async function runTennisEngine(log){
 
         if(playerId){
           const stR = await fx(
-            `${EP.replit}/api-sports/tennis/stats?player_id=${playerId}`,
-            {headers:{'X-API-Key':KEYS.replit}}, 8000
+            `${EP.legacy_platform}/api-sports/tennis/stats?player_id=${playerId}`,
+            {headers:{'X-API-Key':KEYS.legacy_platform}}, 8000
           );
           if(stR.ok){
             const stD = await stR.json();
@@ -3521,8 +3521,8 @@ async function runTennisEngine(log){
           if(oppId){
             try{
               const h2hR = await fx(
-                `${EP.replit}/api-sports/tennis/stats?player_id=${playerId}&player_id2=${oppId}`,
-                {headers:{'X-API-Key':KEYS.replit}}, 6000
+                `${EP.legacy_platform}/api-sports/tennis/stats?player_id=${playerId}&player_id2=${oppId}`,
+                {headers:{'X-API-Key':KEYS.legacy_platform}}, 6000
               );
               if(h2hR.ok){
                 const h2hD = await h2hR.json();
@@ -3653,7 +3653,7 @@ function genFallbackCandidates(sport,away,home){
 }
 
 // ══════════════════════════════════
-// FIX #1 — FULL PAYLOAD TO REPLIT
+// FIX #1 — FULL PAYLOAD TO legacy_platform
 // FIX #3 — REDUCED WOW SCORE WEIGHT (0.20 not 0.35)
 // ══════════════════════════════════
 async function scoreOne(c){
@@ -3679,9 +3679,9 @@ async function scoreOne(c){
     // Pace factor for NBA/WNBA
     if(c.pace_factor!=null)    payload.pace_factor    = c.pace_factor;
 
-    const r=await fx(`${EP.replit}/gpt-score`,{method:'POST',headers:{'Content-Type':'application/json','X-API-Key':KEYS.replit},body:JSON.stringify(payload)},6000);
+    const r=await fx(`${EP.legacy_platform}/gpt-score`,{method:'POST',headers:{'Content-Type':'application/json','X-API-Key':KEYS.legacy_platform},body:JSON.stringify(payload)},6000);
     if(!r.ok)return null;
-    const d=await r.json();chip('replit','ok');return d.wow_score??d.score??null;
+    const d=await r.json();chip('legacy_platform','ok');return d.wow_score??d.score??null;
   }catch(e){return null;}
 }
 
@@ -4712,7 +4712,7 @@ function runFourGates(prop){
     // Engine-sourced props already validated through API data — treat as confirmed
     // Only apply strict DNP gate to sportsbook-sourced props (odds_api, bookmaker)
     const isEngineSource = prop.source === 'engine' || prop.source === 'fbref' ||
-                           prop.source === 'replit'  || prop.bookmaker == null;
+                           prop.source === 'legacy_platform'  || prop.bookmaker == null;
     if(isEngineSource){
       // Engine props: flag as advisory only — do not kill
       result.g1 = '✅ CONFIRMED (engine-sourced — XI assumed active)';
@@ -4836,7 +4836,7 @@ function runFourGates(prop){
     // Sportsbook props with no data = enrichment pending or unavailable
     //   → warn only, let wowValidate score on market data (CLV, line movement)
     const isEngineSourced = prop.source === 'engine' || prop.source === 'fbref' ||
-                            prop.source === 'replit'  || prop.source === 'pandascore';
+                            prop.source === 'legacy_platform'  || prop.source === 'pandascore';
     if(isEngineSourced){
       result.g3 = '❌ NO BOX SCORE DATA';
       result.kill = true;
@@ -4868,7 +4868,7 @@ function runFourGates(prop){
   // Only applies to SPORTSBOOK-sourced props (odds_api, bookmaker, etc.)
   // Engine props have already been filtered by hit-rate analysis — do not double-gate
   const isSbSource = prop.source && prop.source !== 'engine' && prop.source !== 'fbref' &&
-                     prop.source !== 'replit' && prop.source !== 'pandascore';
+                     prop.source !== 'legacy_platform' && prop.source !== 'pandascore';
   const hasRealData = isSbSource && (prop.raw_vals?.length >= 3) && prop.l5_hit_rate != null;
   if(recentAvg != null && line != null && hasRealData){
     const lineEndsHalf = (line % 1 === 0.5);
@@ -5911,28 +5911,28 @@ async function analyzePPBoard(){
   document.getElementById('ppSp').classList.remove('hidden');
   const statusEl = document.getElementById('ppAnalyzeStatus');
   const res = document.getElementById('ppResults');
-  res.innerHTML = `<div class="alert ab"><div class="spd"></div> Sending ${ppImages.length} screenshot(s) to Replit proxy → Claude AI...</div>`;
+  res.innerHTML = `<div class="alert ab"><div class="spd"></div> Sending ${ppImages.length} screenshot(s) to legacy_platform proxy → Claude AI...</div>`;
 
   let allProps = [];
   let anyError = false;
 
   for(let i = 0; i < ppImages.length; i++){
     statusEl.textContent = `Processing image ${i+1} of ${ppImages.length}...`;
-    res.innerHTML += `<div id="img_status_${i}" style="font-family:var(--mono);font-size:11px;color:var(--text2);padding:4px 0;">Image ${i+1}: sending to ${EP.replit}/analyze-board...</div>`;
+    res.innerHTML += `<div id="img_status_${i}" style="font-family:var(--mono);font-size:11px;color:var(--text2);padding:4px 0;">Image ${i+1}: sending to ${EP.legacy_platform}/analyze-board...</div>`;
 
     try {
       const imgStatusEl = document.getElementById(`img_status_${i}`);
 
-      // Compress before sending — large screenshots cause Replit failures
+      // Compress before sending — large screenshots cause legacy_platform failures
       const compressedPP = await compressImage(ppImages[i].b64, 800);
       const approxKB = Math.round(compressedPP.length * 0.75 / 1024);
       if(imgStatusEl) imgStatusEl.textContent = `Image ${i+1}: ${approxKB}KB — sending...`;
 
-      const r = await fx(`${EP.replit}/analyze-board`, {
+      const r = await fx(`${EP.legacy_platform}/analyze-board`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'X-API-Key': KEYS.replit
+          'X-API-Key': KEYS.legacy_platform
         },
         body: JSON.stringify({
           image_b64: compressedPP,
@@ -5982,10 +5982,10 @@ async function analyzePPBoard(){
       res.innerHTML += `<div class="alert ar" style="margin-top:8px;">
         <div><strong>Connection failed.</strong> Check the error above for details.<br><br>
         Common fixes:<br>
-        • Make sure your Replit app is running (visit ${EP.replit}/health)<br>
-        • Restart your Replit project<br>
+        • Make sure your legacy_platform app is running (visit ${EP.legacy_platform}/health)<br>
+        • Restart your legacy_platform project<br>
         • Check the /analyze-board route is in app.py<br>
-        • Verify ANTHROPIC_API_KEY secret is set in Replit</div>
+        • Verify ANTHROPIC_API_KEY secret is set in legacy_platform</div>
       </div>`;
     } else {
       res.innerHTML += `<div class="alert ay" style="margin-top:8px;">⚠ No props found in screenshot. Make sure the PrizePicks board is clearly visible with player names and lines.</div>`;
@@ -6576,11 +6576,11 @@ async function enrichWithTennisStats(prop){
   const cacheKey = `tennis|${prop.player}|${prop.prop}|${prop.line}|${prop.side}`;
   if(statsCache[cacheKey]) return {...prop, ...statsCache[cacheKey]};
   try{
-    // ── Primary: API Tennis via Replit ──
+    // ── Primary: API Tennis via legacy_platform ──
     const name = encodeURIComponent(prop.player);
     const playerR = await fx(
-      `${EP.replit}/api-sports/tennis/players?player=${name}`,
-      {headers:{'X-API-Key':KEYS.replit}}, 8000
+      `${EP.legacy_platform}/api-sports/tennis/players?player=${name}`,
+      {headers:{'X-API-Key':KEYS.legacy_platform}}, 8000
     );
     if(playerR.ok){
       const playerD = await playerR.json();
@@ -6591,8 +6591,8 @@ async function enrichWithTennisStats(prop){
 
         // Get player statistics
         const statsR = await fx(
-          `${EP.replit}/api-sports/tennis/stats?player_id=${playerId}`,
-          {headers:{'X-API-Key':KEYS.replit}}, 8000
+          `${EP.legacy_platform}/api-sports/tennis/stats?player_id=${playerId}`,
+          {headers:{'X-API-Key':KEYS.legacy_platform}}, 8000
         );
 
         let avg = null;
@@ -6679,11 +6679,11 @@ async function enrichWithSoccerStats(prop){
 
   const propLower = (prop.prop||'').toLowerCase();
   try{
-    // Use Replit /fbref-stats endpoint (api-football.com backend)
+    // Use legacy_platform /fbref-stats endpoint (api-football.com backend)
     const playerParam = encodeURIComponent(prop.player);
     const r = await fx(
-      `${EP.replit}/fbref-stats?player=${playerParam}`,
-      {headers:{'X-API-Key':KEYS.replit}},
+      `${EP.legacy_platform}/fbref-stats?player=${playerParam}`,
+      {headers:{'X-API-Key':KEYS.legacy_platform}},
       10000
     );
 
@@ -6893,10 +6893,10 @@ function buildEnrichedProp(prop, vals, cacheKey, extra={}){
 // ══════════════════════════════════
 // ══════════════════════════════════════════════════════
 // API-SPORTS ENRICHMENT (Baseball, Basketball, Hockey)
-// Same key as api-football.com — proxied via Replit
+// Same key as api-football.com — proxied via legacy_platform
 // ══════════════════════════════════════════════════════
 const API_SPORTS_LEAGUES = {
-  // ✅ Confirmed working on free plan (from Replit probe May 2026)
+  // ✅ Confirmed working on free plan (from legacy_platform probe May 2026)
   NBA:    {sport:'basketball', league:'12', season:'2024-2025'},
   WNBA:   {sport:'basketball', league:'13', season:'2025'},
   NFL:    {sport:'nfl',        league:'1',  season:'2024'},
@@ -6913,8 +6913,8 @@ async function enrichWithAPISports(prop){
   try{
     // Step 1: Find player (returns 422 for MLB/NHL on free plan — bail immediately)
     const sR = await fx(
-      `${EP.replit}/api-sports/${cfg.sport}/players?player=${encodeURIComponent(prop.player)}&league=${cfg.league||''}&season=${cfg.season}`,
-      {headers:{'X-API-Key':KEYS.replit}}, 8000
+      `${EP.legacy_platform}/api-sports/${cfg.sport}/players?player=${encodeURIComponent(prop.player)}&league=${cfg.league||''}&season=${cfg.season}`,
+      {headers:{'X-API-Key':KEYS.legacy_platform}}, 8000
     );
     if(!sR.ok) return null; // 422 = not on free plan, 404 = not found
     const sD = await sR.json();
@@ -6929,8 +6929,8 @@ async function enrichWithAPISports(prop){
                      (prop.sport==='NBA'||prop.sport==='WNBA') ? 'statistics/players' :
                      'players/statistics';
     const stR = await fx(
-      `${EP.replit}/api-sports/${cfg.sport}/stats?player_id=${playerId}&league=${cfg.league||''}&season=${cfg.season}&stat_path=${statPath}`,
-      {headers:{'X-API-Key':KEYS.replit}}, 8000
+      `${EP.legacy_platform}/api-sports/${cfg.sport}/stats?player_id=${playerId}&league=${cfg.league||''}&season=${cfg.season}&stat_path=${statPath}`,
+      {headers:{'X-API-Key':KEYS.legacy_platform}}, 8000
     );
     if(!stR.ok) return null;
     const stD = await stR.json();
@@ -7474,13 +7474,13 @@ async function scoreManual(){
   const player=document.getElementById('m_player').value.trim();const sport=document.getElementById('m_sport').value;
   const prop=document.getElementById('m_prop').value.trim();const line=parseFloat(document.getElementById('m_line').value);const side=document.getElementById('m_side').value;
   if(!player||!prop||isNaN(line)){alert('Player, prop, and line required');return;}
-  document.getElementById('mBtn').textContent='Scoring...';document.getElementById('mSp').classList.remove('hidden');chip('replit','');
+  document.getElementById('mBtn').textContent='Scoring...';document.getElementById('mSp').classList.remove('hidden');chip('legacy_platform','');
   const payload={player,sport,prop,side,line,environment:document.getElementById('m_env').value};
   const flds=[['m_avg','recent_avg'],['m_l5','l5_hit_rate',100],['m_l10','l10_hit_rate',100],['m_role','role_score'],['m_match','matchup_rating'],['m_conf','confidence',100]];
   flds.forEach(([id,key,d])=>{const v=parseFloat(document.getElementById(id).value);if(!isNaN(v))payload[key]=d?v/d:v;});
   payload.injury_flag=parseInt(document.getElementById('m_inj').value)||0;
   let ws=null;
-  try{const r=await fx(`${EP.replit}/gpt-score`,{method:'POST',headers:{'Content-Type':'application/json','X-API-Key':KEYS.replit},body:JSON.stringify(payload)});if(r.ok){const d=await r.json();ws=d.wow_score??d.score??null;chip('replit','ok');}else chip('replit','fail');}catch(e){chip('replit','fail');}
+  try{const r=await fx(`${EP.legacy_platform}/gpt-score`,{method:'POST',headers:{'Content-Type':'application/json','X-API-Key':KEYS.legacy_platform},body:JSON.stringify(payload)});if(r.ok){const d=await r.json();ws=d.wow_score??d.score??null;chip('legacy_platform','ok');}else chip('legacy_platform','fail');}catch(e){chip('legacy_platform','fail');}
   const val=await wowValidateGated({...payload},ws);
   const lines=[];const push=(t,m)=>lines.push(`<span class="o${t}">${m}</span>`);
   push('h',`═══ WOW v14.9+ — ${player.toUpperCase()} ═══`);push('i',`PROP: ${prop.toUpperCase()} ${side} ${line} | ${sport}`);
@@ -7967,10 +7967,10 @@ async function runWinnersUpsets(){
 // ── Tennis Leg Checker ──
 async function checkTennisLeg(player, prop, line, side){
   try{
-    // Check Replit tennis-stats for completed matches
+    // Check legacy_platform tennis-stats for completed matches
     const r = await fx(
-      `${EP.replit}/tennis-stats/today`,
-      {headers:{'X-API-Key':KEYS.replit}}, 8000
+      `${EP.legacy_platform}/tennis-stats/today`,
+      {headers:{'X-API-Key':KEYS.legacy_platform}}, 8000
     );
     if(!r.ok) return null;
     const d = await r.json();
@@ -8378,17 +8378,17 @@ async function analyzeLLPScreenshots(){
   for(let i = 0; i < llpImages.length; i++){
     statusEl.textContent = `Processing image ${i+1}/${llpImages.length}...`;
     try{
-      // Compress large screenshots before sending to Replit
+      // Compress large screenshots before sending to legacy_platform
       const compressedB64 = await compressImage(llpImages[i].b64, 800);
       const originalKB = Math.round(llpImages[i].b64.length * 0.75 / 1024);
       const compressedKB = Math.round(compressedB64.length * 0.75 / 1024);
       if(originalKB > 500) statusEl.textContent = `Image ${i+1}: compressed ${originalKB}KB → ${compressedKB}KB, sending...`;
-      // Route through Replit proxy — never expose API key in browser
+      // Route through legacy_platform proxy — never expose API key in browser
       let parsed = null;
       try{
-        const r = await fx(`${EP.replit}/analyze-board`, {
+        const r = await fx(`${EP.legacy_platform}/analyze-board`, {
           method: 'POST',
-          headers: {'Content-Type': 'application/json', 'X-API-Key': KEYS.replit},
+          headers: {'Content-Type': 'application/json', 'X-API-Key': KEYS.legacy_platform},
           body: JSON.stringify({
             image_b64: compressedB64,
             media_type: 'image/jpeg',
@@ -8419,7 +8419,7 @@ async function analyzeLLPScreenshots(){
             }catch(e){}
           }
 
-          // Final fallback: if Replit returned props (PrizePicks format), convert to LLP games format
+          // Final fallback: if legacy_platform returned props (PrizePicks format), convert to LLP games format
           if(!parsed || !parsed.games?.length){
             if(d.props && d.props.length > 0){
               // Group props by game
@@ -8460,7 +8460,7 @@ async function analyzeLLPScreenshots(){
             console.log('LLP raw_response:', raw.slice(0, 500));
           }
         } else {
-          statusEl.textContent = `Image ${i+1}: Replit error ${r.status} — check server is running`;
+          statusEl.textContent = `Image ${i+1}: legacy_platform error ${r.status} — check server is running`;
         }
       } catch(e){
         statusEl.textContent = `Image ${i+1}: ${e.message}`;
@@ -8615,9 +8615,9 @@ async function evalTeam(){
 // ══════════════════════════════════
 // LOG
 // ══════════════════════════════════
-async function loadStats(){const el=document.getElementById('wStats');try{const r=await fx(`${EP.replit}/stats`,{headers:{'X-API-Key':KEYS.replit}});if(!r.ok)throw new Error(r.status);const d=await r.json();chip('replit','ok');el.innerHTML=clr(JSON.stringify(d,null,2));}catch(e){el.innerHTML=`<span class="oe">✗ ${e.message}</span>`;}}
-async function loadLB(){const el=document.getElementById('wLB');try{const r=await fx(`${EP.replit}/leaderboard?environment=live&limit=10`,{headers:{'X-API-Key':KEYS.replit}});if(!r.ok)throw new Error(r.status);const d=await r.json();chip('replit','ok');const entries=d.leaderboard||d.entries||d||[];let out='RANK  PLAYER              SCORE\n'+'─'.repeat(34)+'\n';(Array.isArray(entries)?entries:[]).slice(0,10).forEach((e,i)=>{out+=`${String(i+1).padStart(4)}  ${String(e.player||'').padEnd(18)}  ${e.wow_score||e.score||''}\n`;});el.innerHTML=clr(out);}catch(e){el.innerHTML=`<span class="oe">✗ ${e.message}</span>`;}}
-async function loadLog(){const el=document.getElementById('wLog');try{const r=await fx(`${EP.replit}/request-log?environment=live&limit=20`,{headers:{'X-API-Key':KEYS.replit}});if(!r.ok)throw new Error(r.status);const d=await r.json();chip('replit','ok');const logs=d.logs||d.entries||d;document.getElementById('logCnt').textContent=`${Array.isArray(logs)?logs.length:0} entries`;el.innerHTML=clr(JSON.stringify(logs,null,2));}catch(e){el.innerHTML=`<span class="oe">✗ ${e.message}</span>`;}}
+async function loadStats(){const el=document.getElementById('wStats');try{const r=await fx(`${EP.legacy_platform}/stats`,{headers:{'X-API-Key':KEYS.legacy_platform}});if(!r.ok)throw new Error(r.status);const d=await r.json();chip('legacy_platform','ok');el.innerHTML=clr(JSON.stringify(d,null,2));}catch(e){el.innerHTML=`<span class="oe">✗ ${e.message}</span>`;}}
+async function loadLB(){const el=document.getElementById('wLB');try{const r=await fx(`${EP.legacy_platform}/leaderboard?environment=live&limit=10`,{headers:{'X-API-Key':KEYS.legacy_platform}});if(!r.ok)throw new Error(r.status);const d=await r.json();chip('legacy_platform','ok');const entries=d.leaderboard||d.entries||d||[];let out='RANK  PLAYER              SCORE\n'+'─'.repeat(34)+'\n';(Array.isArray(entries)?entries:[]).slice(0,10).forEach((e,i)=>{out+=`${String(i+1).padStart(4)}  ${String(e.player||'').padEnd(18)}  ${e.wow_score||e.score||''}\n`;});el.innerHTML=clr(out);}catch(e){el.innerHTML=`<span class="oe">✗ ${e.message}</span>`;}}
+async function loadLog(){const el=document.getElementById('wLog');try{const r=await fx(`${EP.legacy_platform}/request-log?environment=live&limit=20`,{headers:{'X-API-Key':KEYS.legacy_platform}});if(!r.ok)throw new Error(r.status);const d=await r.json();chip('legacy_platform','ok');const logs=d.logs||d.entries||d;document.getElementById('logCnt').textContent=`${Array.isArray(logs)?logs.length:0} entries`;el.innerHTML=clr(JSON.stringify(logs,null,2));}catch(e){el.innerHTML=`<span class="oe">✗ ${e.message}</span>`;}}
 
 // ══════════════════════════════════════════════════════
 // POSTMORTEM + LEARNING ENGINE
@@ -9227,7 +9227,7 @@ async function checkLegResult(leg){
       // Soccer: check ESPN MLS scoreboard for final scores
       return await checkESPNLeg(player, prop, line, side, 'Soccer');
     } else if(sport === 'Tennis'){
-      // Tennis: check if match is complete via Replit tennis-stats
+      // Tennis: check if match is complete via legacy_platform tennis-stats
       return await checkTennisLeg(player, prop, line, side);
     } else {
       return await checkESPNLeg(player, prop, line, side, sport);
@@ -9531,9 +9531,9 @@ async function analyzeLogSlips(){
         ? 'This is a PrizePicks slip screenshot. It may show either a single slip detail or a list of active entries.\n\nExtract every visible leg/pick.\n\nLook for:\n- Player names (e.g. "Elly De La Cruz", "Shohei Ohtani")\n- Stat lines with numbers (e.g. "1.5 Hits", "0.5 TB", "6.5 Strikeouts")\n- MORE/LESS/OVER/UNDER indicators or up/down arrows\n- Slip type label (Power Play, Flex Play, number of picks)\n- Entry amount and potential payout if visible\n- Green/yellow progress bars indicate in-progress legs\n\nMark all outcomes as "pending" since this slip is still active.\n\nReturn ONLY valid JSON:\n{"slip_result":"pending","slip_type":"Power 3","entry":10,"to_win":50,"legs":[{"player":"Name","sport":"MLB|NBA|NHL|WNBA","prop":"hits","line":1.5,"side":"MORE","outcome":"pending","actual":null}]}'
         : 'This is a SETTLED PrizePicks slip result screen.\n\nExtract every leg with its result.\n\nLook for:\n- Player names and stat categories\n- Lines/numbers with MORE/LESS\n- Result indicators: green circle with checkmark or green progress bar filled = WIN, red circle with X or empty bar = LOSS\n- Actual stat values shown at end of progress bars\n- Overall slip result badge (Win/Loss/Profit at top)\n- Slip type (Power Play, Flex Play)\n\nReturn ONLY valid JSON:\n{"slip_result":"win|loss","slip_type":"Power 3","legs":[{"player":"Name","sport":"MLB|NBA|NHL|WNBA","prop":"hits","line":1.5,"side":"MORE","outcome":"win|loss","actual":2}]}';
 
-      const r = await fx(`${EP.replit}/analyze-board`, {
+      const r = await fx(`${EP.legacy_platform}/analyze-board`, {
         method: 'POST',
-        headers: {'Content-Type': 'application/json', 'X-API-Key': KEYS.replit},
+        headers: {'Content-Type': 'application/json', 'X-API-Key': KEYS.legacy_platform},
         body: JSON.stringify({image_b64: compressedB64, media_type: 'image/jpeg', prompt})
       }, 60000);
 
@@ -9664,9 +9664,9 @@ async function analyzeWinningSlips(){
   for(let i=0;i<slipImages.length;i++){
     statusEl.textContent=`Processing image ${i+1}/${slipImages.length}...`;
     try{
-      const r=await fx(`${EP.replit}/analyze-board`,{
+      const r=await fx(`${EP.legacy_platform}/analyze-board`,{
         method:'POST',
-        headers:{'Content-Type':'application/json','X-API-Key':KEYS.replit},
+        headers:{'Content-Type':'application/json','X-API-Key':KEYS.legacy_platform},
         body:JSON.stringify({
           image_b64: await compressImage(slipImages[i].b64, 800),
           media_type:'image/jpeg',
@@ -9922,9 +9922,9 @@ ${losses.slice(0,10).map(e=>`${e.player} ${e.prop} ${e.side} ${e.line} | Tags: $
   `;
 
   try{
-    const r=await fx(`${EP.replit}/analyze-board`,{
+    const r=await fx(`${EP.legacy_platform}/analyze-board`,{
       method:'POST',
-      headers:{'Content-Type':'application/json','X-API-Key':KEYS.replit},
+      headers:{'Content-Type':'application/json','X-API-Key':KEYS.legacy_platform},
       body:JSON.stringify({
         image_b64:null,
         text_analysis:dataContext,
@@ -11244,15 +11244,15 @@ function handleOdds401(sport, logFn){
 }
 
 // ── Odds API Proxy ──
-// Routes calls through Replit to hide the key server-side
-// Falls back to direct call if Replit unavailable
+// Routes calls through legacy_platform to hide the key server-side
+// Falls back to direct call if legacy_platform unavailable
 async function oddsProxy(path, params={}){
-  // Try Replit proxy first (key hidden server-side)
+  // Try legacy_platform proxy first (key hidden server-side)
   try{
     const qs = new URLSearchParams(params).toString();
     const proxyR = await fx(
-      `${EP.replit}/odds-proxy?path=${encodeURIComponent(path)}${qs?'&'+qs:''}`,
-      {headers:{'X-API-Key':KEYS.replit}}, 10000
+      `${EP.legacy_platform}/odds-proxy?path=${encodeURIComponent(path)}${qs?'&'+qs:''}`,
+      {headers:{'X-API-Key':KEYS.legacy_platform}}, 10000
     );
     if(proxyR.ok) return proxyR;
     // If 401 on proxy, key issue — show helpful message
@@ -11273,7 +11273,7 @@ window.onload=()=>{
   setTimeout(()=>runGateRegressionTests(false), 1000);
 
   // ── Startup API health pings ──
-  // Replit
+  // legacy_platform
   // ── Pill checkbox visual feedback (fallback for browsers without :has() support) ──
   function updatePillStates(containerSelector, inputClass){
     document.querySelectorAll(containerSelector).forEach(label=>{
@@ -11289,9 +11289,9 @@ window.onload=()=>{
   updatePillStates('.eng-sport-pill', 'eng-sport-cb');
   updatePillStates('.jer-rule-label', 'jer-rule-cb');
 
-  fx(`${EP.replit}/health`,{},5000)
-    .then(r=>{ if(r.ok) chip('replit','ok'); else chip('replit','fail'); })
-    .catch(()=>chip('replit','fail'));
+  fx(`${EP.legacy_platform}/health`,{},5000)
+    .then(r=>{ if(r.ok) chip('legacy_platform','ok'); else chip('legacy_platform','fail'); })
+    .catch(()=>chip('legacy_platform','fail'));
 
   // Odds API — lightweight events check
   fx(`${EP.odds}/sports?apiKey=${KEYS.odds}`,{},5000)

@@ -55,7 +55,7 @@ Correct setup should be:
 
 ```text
 Frontend:
-VITE_API_BASE_URL=https://create-app-gregoryharper84.replit.app
+VITE_API_BASE_URL=https://create-app-gregoryharper84.legacy platform.app
 
 Backend secrets only:
 ANTHROPIC_API_KEY

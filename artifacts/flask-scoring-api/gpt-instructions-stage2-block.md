@@ -7,7 +7,7 @@
 > and **before** any output-formatting instructions.
 >
 > Do NOT modify the enforcement block. Do NOT try to re-implement any of
-> these rules inside the GPT — Replit enforces them mechanically and its
+> these rules inside the GPT — legacy platform enforces them mechanically and its
 > response is authoritative.
 
 ---
@@ -122,18 +122,18 @@ No additional schema file is needed — it is part of the gate-engine schema.
 Custom GPT
   ↓ calls getWowEngineHealth → getWowGovernanceStatus → getWowStage2Health
   ↓ calls runWowGateEngineV2 with governance_hash
-Replit / Flask
+legacy platform / Flask
   ↓ enforces: event_key, mutex, schema validation, rank_eligible,
               staleness check, session ledger, calibration write
 Postgres
   ↓ stores: source snapshots, decisions, settlements, calibration rows
 Settlement worker (background, 300 s interval)
   ↓ grades OPEN rows → writes brier_score, log_loss, calibration_bucket
-Replit response
+legacy platform response
   ↓ returns authoritative labels, blockers, calibration metadata
 Custom GPT
   ↓ presents result without overriding or softening it
 ```
 
-Source of truth: **Replit**. The Custom GPT mirrors governance in its Instructions
+Source of truth: **legacy platform**. The Custom GPT mirrors governance in its Instructions
 and routes correctly — it does not enforce anything independently.

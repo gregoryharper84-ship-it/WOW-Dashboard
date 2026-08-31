@@ -1,9 +1,9 @@
-Yes — this patch is the right fix. I’d tighten it in four places before sending to Replit/Claude:
+Yes — this patch is the right fix. I’d tighten it in four places before sending to legacy platform/Claude:
 
 1. Mark Spec amendment = X because it changes Section 29.2 output requirements.
 2. Define Validation Queue as a display bucket, not a new model label.
 3. Add confidence debt as a machine-readable field.
-4. Add acceptance tests so Replit cannot ship only a UI change without backend enforcement.
+4. Add acceptance tests so legacy platform cannot ship only a UI change without backend enforcement.
 
 Here’s the cleaned continuation / final version to paste in.
 
@@ -293,7 +293,7 @@ Allowed phrasing:
 * not playable yet
 
 ─────────────────────────────────────────────────
-DASHBOARD / REPLIT REQUIREMENTS
+DASHBOARD / legacy platform REQUIREMENTS
 ─────────────────────────────────────────────────
 
 Add UI sections:
@@ -380,4 +380,4 @@ WOW shows blockers.
 WOW shows upgrade paths.
 WOW only approves rows with zero confidence debt.
 
-Main thing: don’t let Replit implement this as just a pretty “watch list.” The backend must calculate confidence_debt, and the renderer must only display what the backend says.
+Main thing: don’t let legacy platform implement this as just a pretty “watch list.” The backend must calculate confidence_debt, and the renderer must only display what the backend says.

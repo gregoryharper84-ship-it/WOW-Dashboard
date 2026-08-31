@@ -4,7 +4,7 @@ Approve with amendments.
 
 The patch direction is correct: read-only Kalshi sports/winner-market bridge, no execution, no order placement, `can_execute=false`, and no CONNECTED status until `/api/wow/kalshi/health` returns sports `INVENTORY_READY` and a real winner-market ticker maps cleanly with a fresh Grade A/B orderbook.
 
-Required amendments before Replit build:
+Required amendments before legacy platform build:
 
 1. Edge calculation must use executable-side Kalshi price, not midpoint.
 
@@ -38,7 +38,7 @@ Required amendments before Replit build:
    * bridge response shows `can_execute=false`,
    * regression tests pass.
 
-6. Replit scope today:
+6. legacy platform scope today:
 
    * Steps 1–5 only.
    * Build adapter, mapper, normalizer, health check, and stub endpoint.

@@ -93,7 +93,7 @@ Verified by live Python import in the most recent verification session (2026-08-
 2. `BLOCKED + SHADOW_PASS` is not a contradiction. Blocked payload with `ceiling=KALSHI_WATCH` and `advisory_only=True` correctly passes the closed-schema validator.
 3. No live Kalshi market outcome comparison performed. Pilot ran against a frozen 25-snapshot cohort.
 4. Calibration status is `PROVISIONAL` throughout — no live research client execution, no `CALIBRATED` labels produced.
-5. External data sources (BBRef, FanGraphs) blocked from Replit container. NWS primary used for all weather sourcing.
+5. External data sources (BBRef, FanGraphs) blocked from legacy platform container. NWS primary used for all weather sourcing.
 6. Step 14B model column was `NULL` for all 130 rows until Step 14D backfill. Backfill confirmed: 130 rows updated, 0 remaining `NULL`.
 
 ---

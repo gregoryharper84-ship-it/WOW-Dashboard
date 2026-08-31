@@ -131,7 +131,7 @@ contracts:
     notes: >
       research_only status: lane_status=RESEARCH_ONLY_FORWARD_TEST declared in skill
       governance block. Forward-test gate: 20-unique-player-game minimum. Output is
-      research-grade only; ceiling is MODEL_QUALIFIED_HOLD via Replit engine. Skill:
+      research-grade only; ceiling is MODEL_QUALIFIED_HOLD via legacy_platform engine. Skill:
       wow.wnba-composite-prop-expert. Promotion to ACTIVE is FORBIDDEN without a
       formal governance patch.
 
@@ -332,7 +332,7 @@ contracts:
     can_execute: false
     notes: >
       Required for all WNBA rows. Maximum standalone ceiling: MODEL_QUALIFIED_HOLD.
-      All ceiling upgrades require Replit engine evidence. Skill:
+      All ceiling upgrades require legacy_platform engine evidence. Skill:
       wow.wnba-opportunity-scenario-and-exposure-governor:v1.
 
   - canonical_contract_id: "WOW-GOVERNED-RED-TEAM-REVIEWER-SKILL"

@@ -4,7 +4,7 @@ WOW Full Model Contract Gatekeeper v1.1
 WOW-FMCG-v1.1 · Patch #25 · Precedence 105 · ENGINE v16.5
 
 Hardening patch applied over v1.0:
-  1. Host abstraction: no dependency on a Replit app named "WOW Betting Engine"
+  1. Host abstraction: no dependency on a legacy_platform app named "WOW Betting Engine"
      or any nested Custom-GPT invocation.  NESTED_CUSTOM_GPT_REQUIRED = False.
   2. Bidirectional MORE/LESS enforcement: PROP markets must carry evidence
      that both sides were evaluated before qualification.
@@ -53,8 +53,8 @@ ENGINE_VERSION: str      = "v16.5"
 CAN_EXECUTE: bool        = False
 DRY_RUN_ONLY: bool       = True
 
-# Host abstraction — Replit is a capability-specific service, not the engine host.
-# The scoring engine is NOT dependent on locating a Replit app or nested GPT.
+# Host abstraction — legacy_platform is a capability-specific service, not the engine host.
+# The scoring engine is NOT dependent on locating a legacy_platform app or nested GPT.
 NESTED_CUSTOM_GPT_REQUIRED: bool = False
 
 # Cross-sport high-probability selector is PROPOSED only — not wired into scoring.

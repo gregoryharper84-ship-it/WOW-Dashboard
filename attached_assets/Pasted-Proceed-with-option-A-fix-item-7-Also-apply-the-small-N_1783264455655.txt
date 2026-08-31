@@ -2,7 +2,7 @@ Proceed with **option A: fix item 7**. Also apply the small **N-T → N/T** corr
 
 Do **not** proceed with the unified `SOURCE_CONFLICT` wording. We already have backend evidence that there are two different paths, so the prompt should reflect that.
 
-Send Replit this:
+Send legacy platform this:
 
 Proceed with a targeted cleanup only.
 

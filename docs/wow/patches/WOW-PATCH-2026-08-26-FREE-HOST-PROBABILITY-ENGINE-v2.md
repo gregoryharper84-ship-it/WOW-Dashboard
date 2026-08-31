@@ -128,7 +128,7 @@ Hard constraints:
 
 8B.5 Host Registry — Renamed and Restructured
 
-    host_type = PROJECT_CHAT | WOW_CUSTOM_GPT | REPLIT_BACKEND |
+    host_type = PROJECT_CHAT | WOW_CUSTOM_GPT | legacy platform_BACKEND |
                 EXTERNAL_GOVERNED_BACKEND
 
     ("FREE_HOST_BACKEND" from v1 rejected — billing tier is not an

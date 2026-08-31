@@ -1,6 +1,6 @@
 I rescanned the same 223-prop board against the live backend.
 
-The Replit fixes are not live yet on the endpoint I’m hitting. The backend is still reporting build wow-patch-outright-moneyline-routing-2026-08-07, and the same defects reproduced.
+The legacy platform fixes are not live yet on the endpoint I’m hitting. The backend is still reporting build wow-patch-outright-moneyline-routing-2026-08-07, and the same defects reproduced.
 
 Category	Props rescanned	Current backend result
 WNBA PRA	36	36 DATA_CONTRACT_FAIL
@@ -53,11 +53,11 @@ The WNBA rebound group remains the closest lane to usable research output, but i
 
 What you should do now
 
-Go into Replit and verify that the Agent actually deployed the changes from the prompt I gave you—not just edited/tested the code. After deployment, the fastest validation is to check four things before we rerun all 223:
+Go into legacy platform and verify that the Agent actually deployed the changes from the prompt I gave you—not just edited/tested the code. After deployment, the fastest validation is to check four things before we rerun all 223:
 
 1. Angel Reese must enter scoring with ATL/TOR populated—not game_str=' vs '.
 2. Her probability output must satisfy lower_bound <= point_probability <= upper_bound.
 3. Jameson Taillon Ks must show a K-specific historical-log acquisition attempt instead of NO_GAME_LOG_PROVIDED.
 4. The health/build identifier should reflect the new repair deployment rather than the Aug. 7 build.
 
-Once Replit deploys that version, tell me “rescan again” and I can immediately rerun the board.
+Once legacy platform deploys that version, tell me “rescan again” and I can immediately rerun the board.

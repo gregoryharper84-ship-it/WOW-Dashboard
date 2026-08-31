@@ -2,7 +2,7 @@
 
 ## Code rollback vs. database rollback
 
-**These are independent operations.** A Replit checkpoint restores code. It does NOT restore the production database. Assess which rollback is needed before acting.
+**These are independent operations.** A legacy platform checkpoint restores code. It does NOT restore the production database. Assess which rollback is needed before acting.
 
 | Symptom | Code rollback? | DB rollback? |
 |---------|---------------|--------------|
@@ -14,9 +14,9 @@
 
 ---
 
-## Code rollback (Replit checkpoint)
+## Code rollback (legacy platform checkpoint)
 
-1. Open Replit → Version Control → Checkpoints
+1. Open legacy platform → Version Control → Checkpoints
 2. Identify the last known-good checkpoint (taken before the bad deploy)
 3. Click **Restore** — this restores code AND restarts the service
 4. Verify health endpoint returns 200:

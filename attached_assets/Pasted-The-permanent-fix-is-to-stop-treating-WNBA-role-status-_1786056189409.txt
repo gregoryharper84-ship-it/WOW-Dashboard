@@ -337,7 +337,7 @@ Then reserve `DATA_CONTRACT_FAIL` for a summary field:
 
 That will prevent future debugging sessions where every problem looks identical.
 
-## Give Replit this implementation request
+## Give legacy platform this implementation request
 
 ```text
 Permanently repair the WNBA evidence contract.

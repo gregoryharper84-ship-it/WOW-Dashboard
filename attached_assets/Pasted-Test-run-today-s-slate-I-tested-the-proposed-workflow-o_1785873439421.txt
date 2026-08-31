@@ -82,4 +82,4 @@ Pitch-level CSV rows retrieved: NO
 Exact Skubal L5/L10 generated: NO
 Blocker: DIRECT_SAVANT_CSV_FETCH_NOT_AVAILABLE
 
-The most practical production implementation is to add the Savant CSV request to the Replit backend. Replit can then fetch the pitch rows, aggregate inning one by game_pk, and submit the completed ledger directly to WOW. The 1IP lane remains TEST_ONLY and can_execute=false.
+The most practical production implementation is to add the Savant CSV request to the legacy platform backend. legacy platform can then fetch the pitch rows, aggregate inning one by game_pk, and submit the completed ledger directly to WOW. The 1IP lane remains TEST_ONLY and can_execute=false.

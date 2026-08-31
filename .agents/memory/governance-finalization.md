@@ -76,11 +76,11 @@ manifest = {
 }
 ```
 
-**Why:** `can_execute=False` is a governance invariant — it means the engine classifies but human approval (WOW/LLP operator) is always required before any stake is placed. The hash is the authoritative sync point between GPT side and Replit side.
+**Why:** `can_execute=False` is a governance invariant — it means the engine classifies but human approval (WOW/LLP operator) is always required before any stake is placed. The hash is the authoritative sync point between GPT side and legacy platform side.
 
 ## How to activate
 
-1. Both sides (GPT config + Replit engine) must carry the same `governance_hash`.
+1. Both sides (GPT config + legacy platform engine) must carry the same `governance_hash`.
 2. Restart both sides.
 3. Perform one dry-run scoring request — verify returned `governance_hash` matches byte-for-byte.
 4. Only then change `patch_status` from `PATCH_IMPLEMENTED_NOT_ACTIVATED` to `ACTIVE`.

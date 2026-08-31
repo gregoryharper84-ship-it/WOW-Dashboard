@@ -74,7 +74,7 @@ Failure tags:
 - candidate-promoted-too-early
 ```
 
-Fast Replit/Claude command:
+Fast legacy platform/Claude command:
 
 ```text
 Patch LLP Team Betting Engine with LLP PRO DATA INGESTION PATCH.

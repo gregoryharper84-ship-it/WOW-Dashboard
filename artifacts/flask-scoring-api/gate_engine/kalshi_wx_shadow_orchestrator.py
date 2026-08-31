@@ -85,7 +85,7 @@ def _build_sdk_client() -> Optional[Any]:
 
     Resolution order:
       1. AI_INTEGRATIONS_ANTHROPIC_API_KEY + AI_INTEGRATIONS_ANTHROPIC_BASE_URL
-         (Replit AI integrations proxy — preferred)
+         (legacy_platform AI integrations proxy — preferred)
       2. ANTHROPIC_API_KEY (direct key)
     """
     try:

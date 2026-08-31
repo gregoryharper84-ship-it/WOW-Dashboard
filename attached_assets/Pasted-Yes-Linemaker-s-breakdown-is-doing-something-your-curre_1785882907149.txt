@@ -541,7 +541,7 @@ market_news_absorption_score
 
 ## Recommended new backend modules
 
-I would add these named components to Replit:
+I would add these named components to legacy platform:
 
 ```text
 wow.roster-delta-engine
@@ -560,7 +560,7 @@ wow.market-news-absorption-auditor
 wow.moneyline-probability-bridge
 ```
 
-## Minimum Replit enrichment contract
+## Minimum legacy platform enrichment contract
 
 A moneyline row should accept something like:
 

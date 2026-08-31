@@ -1,6 +1,6 @@
 Got it — that changes the connector priority.
 
-Since the current focus is **WNBA + MLB**, do **not** spread effort across every sport right now. Tell Replit to prioritize connectors that directly improve those two lanes.
+Since the current focus is **WNBA + MLB**, do **not** spread effort across every sport right now. Tell legacy platform to prioritize connectors that directly improve those two lanes.
 
 ## Updated connector priority
 
@@ -13,7 +13,7 @@ Since the current focus is **WNBA + MLB**, do **not** spread effort across every
 6. Other sports later
 ```
 
-## What to tell Replit
+## What to tell legacy platform
 
 ```text
 Current engine focus is WNBA and MLB.

@@ -4,7 +4,7 @@ I audited the pasted WOW Daily report against the current web evidence, the acti
 
 The biggest finding is **not about the picks. It is about the backend state.**
 
-The pasted report says the production backend was healthy and that the remaining problem was merely getting the completed Daily result back across the Replit-Agent boundary. 
+The pasted report says the production backend was healthy and that the remaining problem was merely getting the completed Daily result back across the legacy platform-Agent boundary. 
 
 That is **not correct**.
 
@@ -13,7 +13,7 @@ My new read-only inspection of the actual `Create App` production run found:
 | Production field            | Verified state                         |
 | --------------------------- | -------------------------------------- |
 | Run ID                      | `5a22d927-d20f-4367-93d6-924119d8a364` |
-| Session ID                  | `replit-agent-20260819222144`          |
+| Session ID                  | `legacy platform-agent-20260819222144`          |
 | Run status                  | **`IN_PROGRESS`**                      |
 | Stage                       | **`SCORING`**                          |
 | Progress                    | `Evaluating canonical board`           |
@@ -43,7 +43,7 @@ That is materially different from “the result exists but ChatGPT can't retriev
 
 The manifest is already at `SCORING`, yet it has `rows_discovered=0`, an empty `rows` array and empty `scanned_sports`. That is suspicious.
 
-It suggests one of two things: either the lifecycle manager advances to `SCORING` before canonical-board rows/counters are persisted, or the canonical-board evaluator is stuck while the manifest has already been advanced. I cannot prove which from the observable data, but **this is now the engineering area to investigate**. It is not an Odds API outage, Stage 2 outage, governance outage, or Replit deployment outage.
+It suggests one of two things: either the lifecycle manager advances to `SCORING` before canonical-board rows/counters are persisted, or the canonical-board evaluator is stuck while the manifest has already been advanced. I cannot prove which from the observable data, but **this is now the engineering area to investigate**. It is not an Odds API outage, Stage 2 outage, governance outage, or legacy platform deployment outage.
 
 This fits the host-abstraction contract: backend capability trouble should be isolated to its gate rather than declaring the entire WOW model unavailable.  And V2.2 requires exact row lifecycle/reconciliation rather than allowing a scoring stage to silently produce no rows. 
 

@@ -1,7 +1,7 @@
 # WOW Patch Template
 
 **How to use:**
-Copy this file, fill in every section, then share it with the Replit agent (or any
+Copy this file, fill in every section, then share it with the legacy platform agent (or any
 planning thread) _before_ any code is written. A patch that cannot answer all five
 sections clearly is not ready to build.
 

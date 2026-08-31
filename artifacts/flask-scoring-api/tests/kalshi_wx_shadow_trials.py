@@ -8,7 +8,7 @@ shadow module is imported, because kalshi_wx_shadow_agent.py evaluates the flag
 at module-level.  This file sets it on the first executable line.
 
 Runs 25 snapshot-controlled Kalshi Weather shadow research trials using real
-Anthropic API calls via the Replit AI integrations proxy.  Calls
+Anthropic API calls via the legacy_platform AI integrations proxy.  Calls
 run_shadow_orchestrator() directly with frozen build_test_snapshot() instances.
 Does NOT go through the HTTP route.  Does NOT make new weather fetches.
 

@@ -7,7 +7,7 @@ terminal_cap = KALSHI_DATA_GATE_FAILED / HOLD
 can_execute = false
 ```
 
-This is **not a model result** and not a Kalshi inventory result. It means the Custom GPT action successfully attempted the route, but your Replit endpoint did **not** return a clean 200 JSON health response.
+This is **not a model result** and not a Kalshi inventory result. It means the Custom GPT action successfully attempted the route, but your legacy platform endpoint did **not** return a clean 200 JSON health response.
 
 ## What this means
 
@@ -16,7 +16,7 @@ Your schema likely saved correctly. This is now a **runtime/backend route issue*
 The route in the schema is:
 
 ```text
-GET https://create-app-gregoryharper84.replit.app/api/wow/kalshi/health
+GET https://create-app-gregoryharper84.legacy platform.app/api/wow/kalshi/health
 ```
 
 That endpoint must always return JSON like:
@@ -44,12 +44,12 @@ Or, on failure, it should still return HTTP **200** with:
 
 The key fix: **health should never throw a 500/502/404/HTML error to the GPT Action.** It should degrade to `signal: "FAILED"` in JSON.
 
-## Replit test
+## legacy platform test
 
-Run this in Replit Shell:
+Run this in legacy platform Shell:
 
 ```bash
-curl -i https://create-app-gregoryharper84.replit.app/api/wow/kalshi/health
+curl -i https://create-app-gregoryharper84.legacy platform.app/api/wow/kalshi/health
 ```
 
 Then classify:
@@ -59,12 +59,12 @@ Then classify:
 404 = route not mounted
 401/403 = auth mismatch
 500 = backend exception
-502/503 = Flask/Replit service not reachable
+502/503 = Flask/legacy platform service not reachable
 HTML response = wrong route or app fallback page
-timeout = Replit cold start or route hanging
+timeout = legacy platform cold start or route hanging
 ```
 
-## Backend patch to send Claude/Replit
+## Backend patch to send Claude/legacy platform
 
 Use this:
 
@@ -88,7 +88,7 @@ Requirements:
 
 ## Express route example
 
-If your Replit app uses Express as the GPT-safe proxy, add/repair this:
+If your legacy platform app uses Express as the GPT-safe proxy, add/repair this:
 
 ```js
 app.get("/api/wow/kalshi/health", async (req, res) => {

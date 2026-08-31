@@ -206,7 +206,7 @@ _NOT_IMPLEMENTED_BY_CATEGORY: "dict[str, list[tuple[str, str]]]" = {
 _POLICY_SKIPPED_BY_CATEGORY: "dict[str, list[tuple[str, str]]]" = {
     "box_score_log": [
         ("basketball_reference",
-         "Skipped: robots.txt / ToS policy — not callable from Replit host."),
+         "Skipped: robots.txt / ToS policy — not callable from legacy_platform host."),
     ],
 }
 

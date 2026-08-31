@@ -1,6 +1,6 @@
 ---
 name: Production gunicorn PATH fix
-description: Bare `gunicorn` silently fails in Replit deployment container; use python -m gunicorn.
+description: Bare `gunicorn` silently fails in legacy platform deployment container; use python -m gunicorn.
 ---
 
 # Production gunicorn PATH fix
@@ -9,12 +9,12 @@ description: Bare `gunicorn` silently fails in Replit deployment container; use 
 Always use `python -m gunicorn` in `artifact.toml` production run commands, not bare `gunicorn`.
 
 ## Why
-In the Replit deployment container (separate from the dev container), the `gunicorn` binary is not on PATH or resolves to an incompatible version after `pip install`. The result is silent failure: `pre_start.py` prints success, then `gunicorn` exits with no output, no port bind, no error message in logs. The deployment orchestrator never detects port 25643, so the proxy never routes to Flask, and all public requests time out.
+In the legacy platform deployment container (separate from the dev container), the `gunicorn` binary is not on PATH or resolves to an incompatible version after `pip install`. The result is silent failure: `pre_start.py` prints success, then `gunicorn` exits with no output, no port bind, no error message in logs. The deployment orchestrator never detects port 25643, so the proxy never routes to Flask, and all public requests time out.
 
 `python -m gunicorn` bypasses PATH entirely — it invokes gunicorn as a Python module using the same interpreter that already has the packages installed.
 
 ## How to apply
-In `artifacts/flask-scoring-api/.replit-artifact/artifact.toml`:
+In `artifacts/flask-scoring-api/.legacy platform-artifact/artifact.toml`:
 ```toml
 [services.production.run]
 args = [

@@ -119,7 +119,7 @@ That makes the advisory bucket act like an enforced gate. If backend doesn’t h
 
 ⸻
 
-Tell Claude/Replit this
+Tell Claude/legacy platform this
 
 Hold staging. The 7,589-character trim is under the limit, but the final block is not approved.
 It reintroduced these blockers:

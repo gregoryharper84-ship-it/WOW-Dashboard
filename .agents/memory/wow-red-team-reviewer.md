@@ -46,7 +46,7 @@ TERMINAL_LABEL_AUTHORITY = False
 
 `SkillResult.__post_init__` sets `can_execute=False` via `object.__setattr__` — cannot be overridden.  
 `confidence = 0.0` always — no aggregate confidence score is emitted.  
-`FINAL_AUTHORITY: CHATGPT_ONLY` — Replit must never self-approve.
+`FINAL_AUTHORITY: CHATGPT_ONLY` — legacy platform must never self-approve.
 
 ## Key design decisions
 

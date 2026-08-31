@@ -3,7 +3,7 @@ info:
   title: WOW Kalshi Read-Only Proxy
   description: >
     Read-only proxy for Kalshi market data. This Custom GPT Action calls the
-    Replit backend as a proxy — the backend holds RSA credentials and signs
+    legacy_platform backend as a proxy — the backend holds RSA credentials and signs
     Kalshi API requests. The GPT never receives or stores any credentials.
 
     ALL endpoints are read-only and dry-run only:
@@ -27,13 +27,13 @@ info:
   version: "1.0.0"
 
 # ── Server ────────────────────────────────────────────────────────────────────
-# Replace the URL below with your live Replit HTTPS domain.
-# The deployed domain is available in the REPLIT_DOMAINS environment variable
+# Replace the URL below with your live legacy_platform HTTPS domain.
+# The deployed domain is available in the legacy_platform_DOMAINS environment variable
 # (comma-separated list; use the first entry).
-# Example: https://create-app-gregoryharper84.replit.app
+# Example: https://create-app-gregoryharper84.legacy_platform.app
 servers:
-  - url: https://create-app-gregoryharper84.replit.app
-    description: Replit production (WOW Flask scoring API)
+  - url: https://create-app-gregoryharper84.legacy_platform.app
+    description: legacy_platform production (WOW Flask scoring API)
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 paths:

@@ -1,7 +1,7 @@
 To ensure it is always checked, add it as a mandatory LLP/Kalshi preflight gate in both places:
 
 1. ChatGPT Custom GPT / skill instructions — so the analysis never skips it.
-2. Replit engine logic — so the system mechanically blocks upgrades when it is missing.
+2. legacy platform engine logic — so the system mechanically blocks upgrades when it is missing.
 
 Your current LLP skill already requires MLB starter confirmation before qualification and separates probability ranking from price/edge. wow-llp-moneyline-probability-expert-SKILL.md Your exact-line/no-vig auditor already owns price, payout, push, no-vig, and edge sanitation. WOW-Exact-Line-Payout-Push-No-Vig-Edge-Auditor.md Your Kalshi recovery patch already requires live price, market-open, orderbook, fee, and lower-bound edge checks before anything can upgrade. WOW-PATCH-2026-07-21-KALSHI-RECOVERY-AND-COMBO-GOVERNANCE.md
 
@@ -95,7 +95,7 @@ FAIL_MARKET → NO_VIG_BELOW_BREAKEVEN
 FAIL_BOTH → KALSHI_REJECT_NO_EDGE
 DATA_UNOBTAINABLE → KALSHI_DATA_UNOBTAINABLE
 
-Replit enforcement logic
+legacy platform enforcement logic
 
 Add this as a required pre-upgrade function:
 
@@ -178,4 +178,4 @@ Use this in the Custom GPT:
 
 Before ranking or upgrading any MLB Kalshi winner candidate, run the LLP MLB Winner Preflight Gate. Confirm starter, lineup or acceptable projected lineup status, event status, weather/postponement risk, sportsbook no-vig probability, Kalshi breakeven probability, and calibrated model lower bound. If starter, lineup, weather, no-vig, or model-breakeven evidence is missing or fails, cap the candidate at WATCH or reject it. Do not allow a high-probability winner label to become market-qualified without exact price, fee, orderbook freshness, settlement, and no-vig edge audit. can_execute=false.
 
-My recommendation: make this PATCH-LEVEL REQUIRED and Replit-enforced. Prompt rules help, but the Replit gate is what prevents the model from accidentally skipping it when the slate gets busy.
+My recommendation: make this PATCH-LEVEL REQUIRED and legacy platform-enforced. Prompt rules help, but the legacy platform gate is what prevents the model from accidentally skipping it when the slate gets busy.

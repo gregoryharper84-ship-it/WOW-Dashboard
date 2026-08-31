@@ -22,7 +22,7 @@ from gate_engine import runtime_provenance as rp
 from gate_engine.runtime_provenance import (
     BACKEND_NOT_VERIFIED, PRODUCTION_BACKEND_VERIFIED,
     FALLBACK_CEILING, FALLBACK_RUN, PREFERRED_PRODUCTION_RUN,
-    PREFERRED_HOST, PROJECT_CHAT, REPLIT_BACKEND,
+    PREFERRED_HOST, PROJECT_CHAT, legacy_platform_BACKEND,
     build_runtime_provenance, enforce_no_upgrade,
     is_provenance_blocker, provenance_blocker,
 )
@@ -35,14 +35,14 @@ from gate_engine.tests.test_full_model_gatekeeper import _base_row
 
 
 def _verified_evidence() -> dict:
-    return {"status": "VERIFIED", "verification_source": "REPLIT_PRODUCTION_ACTION"}
+    return {"status": "VERIFIED", "verification_source": "legacy_platform_PRODUCTION_ACTION"}
 
 
 def _server_evidence() -> dict:
     return {
         "odds_gateway":  _verified_evidence(),
         "engine_health": {"status": "VERIFIED",
-                          "verification_source": "REPLIT_PRODUCTION_SERVICE"},
+                          "verification_source": "legacy_platform_PRODUCTION_SERVICE"},
     }
 
 
@@ -132,7 +132,7 @@ class TestP03_PartialCapabilityFailure(unittest.TestCase):
         self.assertEqual(prov["backend_verification_status"], BACKEND_NOT_VERIFIED)
         self.assertEqual(prov["model_run_status"], "BACKEND_CAPABILITY_INCOMPLETE")
         self.assertEqual(prov["fallback_reason"],
-                         "REQUIRED_REPLIT_CAPABILITIES_UNVERIFIED")
+                         "REQUIRED_legacy_platform_CAPABILITIES_UNVERIFIED")
         self.assertEqual(prov["lowest_ceiling"], FALLBACK_CEILING)
 
     def test_non_production_source_is_not_verified(self):
@@ -255,7 +255,7 @@ class TestP05_FailClosedAgainstSelfAssertion(unittest.TestCase):
 
     def test_source_alias_key_is_rejected(self):
         ev = {"odds_gateway": {"status": "VERIFIED",
-                               "source": "REPLIT_PRODUCTION_ACTION"}}
+                               "source": "legacy_platform_PRODUCTION_ACTION"}}
         prov = build_runtime_provenance(
             {"required_capabilities": ["odds_gateway"]},
             capability_evidence=ev,
@@ -277,7 +277,7 @@ class TestP06_UnconditionalInvariants(unittest.TestCase):
         ):
             prov = build_runtime_provenance(ctx)
             self.assertIs(prov["nested_custom_gpt_required"], False)
-            self.assertIs(prov["replit_is_model_layer"], False)
+            self.assertIs(prov["legacy_platform_is_model_layer"], False)
             self.assertIs(prov["can_execute"], False)
             self.assertIs(prov["dry_run_only"], True)
             self.assertEqual(
@@ -484,7 +484,7 @@ class TestP11_ServerAuthoritativeRouteProvenance(unittest.TestCase):
         # A holder of the general SCORING_API_KEY authenticates, but is NOT
         # the designated Custom-GPT Action — must be fallback, never verified.
         prov = self._build(principal="SCORING_API", ctx={})
-        self.assertEqual(prov["actual_host"], REPLIT_BACKEND)
+        self.assertEqual(prov["actual_host"], legacy_platform_BACKEND)
         self.assertFalse(prov["production_probability_verified"])
         self.assertIn("NON_ACTION_CREDENTIAL", prov["fallback_reason"] or "")
         self.assertIsNotNone(provenance_blocker(prov))
@@ -493,7 +493,7 @@ class TestP11_ServerAuthoritativeRouteProvenance(unittest.TestCase):
         prov = self._build(principal="GPT_ACTION", ctx={})
         self.assertEqual(prov["actual_host"], PREFERRED_HOST)
         prov2 = self._build(principal="gpt_action", ctx={})  # exact match only
-        self.assertEqual(prov2["actual_host"], REPLIT_BACKEND)
+        self.assertEqual(prov2["actual_host"], legacy_platform_BACKEND)
 
     def test_ungoverned_route_fails_closed(self):
         prov = self._build(route="some_unregistered_route", ctx={})

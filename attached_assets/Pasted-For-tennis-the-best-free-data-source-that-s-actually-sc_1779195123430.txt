@@ -9,7 +9,7 @@ It contains:
 - H2H records by surface
 - All in clean CSV format, publicly accessible
 
-The issue is my server can't reach GitHub directly either — but **your Replit can**. Here's what I'd add to `app.py`:
+The issue is my server can't reach GitHub directly either — but **your legacy platform can**. Here's what I'd add to `app.py`:
 
 ```python
 import requests, csv, io
@@ -58,4 +58,4 @@ Then in the dashboard, `enrichWithTennisStats` calls `/tennis-stats?player=Sinne
 - `score` — sets played to calculate average total games
 - `w_svpt` / `l_svpt` — serve points to model hold rate
 
-Want me to add the Replit endpoint code and update `enrichWithTennisStats` in the dashboard to call it?
+Want me to add the legacy platform endpoint code and update `enrichWithTennisStats` in the dashboard to call it?

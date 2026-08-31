@@ -1,10 +1,10 @@
 Test it in four layers: automated tests, live healthy-state checks, controlled outage/fallback tests, and one real external ChatGPT run. The controlled outage test is the most important because that recreates the failure that started this.
 
-Send the following directly to Replit.
+Send the following directly to legacy platform.
 
 ⸻
 
-Copy/paste this into Replit
+Copy/paste this into legacy platform
 
 Run a complete acceptance test for WOW-PATCH-2026-07-16-GOVERNANCE-RESILIENCE-AND-DEGRADED-RUN-RECOVERY / patch precedence 80.
 
@@ -329,7 +329,7 @@ If another generic ClientResponseError appears without status, stage, and normal
 
 Final external test
 
-After Replit completes its internal acceptance report, run one real WOW request from ChatGPT while everything is healthy. The response should record:
+After legacy platform completes its internal acceptance report, run one real WOW request from ChatGPT while everything is healthy. The response should record:
 
 * live governance verification
 * current hash and engine version
@@ -338,4 +338,4 @@ After Replit completes its internal acceptance report, run one real WOW request 
 * evidence-specific holds rather than infrastructure-wide holds
 * can_execute=false
 
-Then have Replit briefly simulate the approved degraded state and run the same request again. ChatGPT should report GOVERNANCE_CACHED_DEGRADED_RUN, continue research, and block final labels. That confirms the repair works across the actual ChatGPT-to-Replit boundary—not only inside Replit’s test client.
+Then have legacy platform briefly simulate the approved degraded state and run the same request again. ChatGPT should report GOVERNANCE_CACHED_DEGRADED_RUN, continue research, and block final labels. That confirms the repair works across the actual ChatGPT-to-legacy platform boundary—not only inside legacy platform’s test client.

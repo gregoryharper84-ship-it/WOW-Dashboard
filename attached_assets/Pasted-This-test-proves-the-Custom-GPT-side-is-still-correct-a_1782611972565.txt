@@ -1,4 +1,4 @@
-This test proves the **Custom GPT side is still correct** and the **deployed Replit app is not actually serving `POST /wow/kalshi/scan` yet**.
+This test proves the **Custom GPT side is still correct** and the **deployed legacy platform app is not actually serving `POST /wow/kalshi/scan` yet**.
 
 The key line is:
 
@@ -15,24 +15,24 @@ So the Action is sending the right request. The backend is still returning:
 
 That usually means one of these:
 
-1. The route exists in Replit as **GET only**, not POST.
-2. The POST route was added in the Replit workspace but **not redeployed** to the live `.replit.app` deployment.
+1. The route exists in legacy platform as **GET only**, not POST.
+2. The POST route was added in the legacy platform workspace but **not redeployed** to the live `.legacy platform.app` deployment.
 3. There are two Flask apps/blueprints, and the route was added to the wrong one.
 4. A trailing slash mismatch exists, such as `/wow/kalshi/scan/` vs `/wow/kalshi/scan`.
 
-The most likely issue is **deployment mismatch**: Replit says live scan works locally or in the workspace, but your Custom GPT is hitting the deployed URL:
+The most likely issue is **deployment mismatch**: legacy platform says live scan works locally or in the workspace, but your Custom GPT is hitting the deployed URL:
 
 ```text
-https://create-app-gregoryharper84.replit.app
+https://create-app-gregoryharper84.legacy platform.app
 ```
 
-So Replit needs to confirm the deployed production app has the POST route.
+So legacy platform needs to confirm the deployed production app has the POST route.
 
-Send this to Replit/Codex:
+Send this to legacy platform/Codex:
 
 The Custom GPT Action is correctly calling:
 
-POST [https://create-app-gregoryharper84.replit.app/wow/kalshi/scan](https://create-app-gregoryharper84.replit.app/wow/kalshi/scan)
+POST [https://create-app-gregoryharper84.legacy platform.app/wow/kalshi/scan](https://create-app-gregoryharper84.legacy platform.app/wow/kalshi/scan)
 
 But the deployed app still returns:
 
@@ -52,13 +52,13 @@ Required checks:
 
 4. Test against the deployed URL with curl:
 
-curl -i -X POST [https://create-app-gregoryharper84.replit.app/wow/kalshi/scan](https://create-app-gregoryharper84.replit.app/wow/kalshi/scan) 
+curl -i -X POST [https://create-app-gregoryharper84.legacy platform.app/wow/kalshi/scan](https://create-app-gregoryharper84.legacy platform.app/wow/kalshi/scan) 
 -H "Content-Type: application/json" 
 -d '{"category":"sports","sport":"MLB","date":"2026-06-27","mode":"scan_only","min_adjusted_edge":0.04,"max_markets":50}'
 
 Expected result must be HTTP 200, not 405.
 
-5. If the route works locally but not at the .replit.app URL, redeploy the Replit app.
+5. If the route works locally but not at the .legacy platform.app URL, redeploy the legacy platform app.
 
 6. Return a clean WOW Kalshi response even if no model probabilities are supplied:
    markets_scanned > 0
@@ -95,7 +95,7 @@ So after the 405 is fixed, the next schema/backend upgrade is to add:
 But first priority is simple:
 
 ```text
-Custom GPT → deployed Replit POST route → HTTP 200
+Custom GPT → deployed legacy platform POST route → HTTP 200
 ```
 
-Right now, the GPT is wired. The live Replit deployment is the blocker.
+Right now, the GPT is wired. The live legacy platform deployment is the blocker.

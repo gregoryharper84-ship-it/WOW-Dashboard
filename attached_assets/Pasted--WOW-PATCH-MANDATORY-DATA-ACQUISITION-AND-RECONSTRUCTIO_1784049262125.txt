@@ -230,7 +230,7 @@ Such a row must be labeled:
 
 ### 9. Internal Tool Failure Rule
 
-If an internal engine, Replit route, API, or connected tool fails:
+If an internal engine, legacy platform route, API, or connected tool fails:
 
 * record `FAILED`;
 * continue through the remaining acquisition ladder;

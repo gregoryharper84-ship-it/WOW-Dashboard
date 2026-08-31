@@ -107,7 +107,7 @@ when the original card violated a now-active structure rule.
 
 This follows the patch requirement that a loss cannot be called variance until all entry-time gates are documented.
 
-## Recommended final Replit follow-up
+## Recommended final legacy platform follow-up
 
 > The end-to-end implementation is accepted. Make three telemetry hardening updates:
 >

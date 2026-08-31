@@ -2,7 +2,7 @@ This is close, but there is **one major architectural issue left**:
 
 The production endpoint still generates portfolios with the **old `generatePortfolio` engine**. The new `buildPortfolio` engine is only being used for readiness and validation. That means the hardened logic is not yet the actual source of the returned tickets.
 
-Send Replit this final instruction:
+Send legacy platform this final instruction:
 
 The hardening work looks good, but one release-blocking issue remains.
 

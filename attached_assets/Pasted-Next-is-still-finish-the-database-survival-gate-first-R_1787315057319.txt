@@ -2,7 +2,7 @@ Next is still **finish the database survival gate first**. Run 2 has already com
 
 Do this in order:
 
-1. **Run the reconciled `public`-schema dump in Replit Shell** using the exact block from the prior message.
+1. **Run the reconciled `public`-schema dump in legacy platform Shell** using the exact block from the prior message.
 2. Confirm:
 
    ```text
@@ -18,16 +18,16 @@ Do this in order:
    shasum -a 256 ~/Downloads/WOW-production-public-<timestamp>.dump
    ```
 
-   It must exactly match the Replit-side SHA.
+   It must exactly match the legacy platform-side SHA.
 4. Make a **second off-platform copy**.
-5. Delete the production dump files from the Replit workspace only after both copies are verified, then confirm the workspace Git state is clean/unaffected.
+5. Delete the production dump files from the legacy platform workspace only after both copies are verified, then confirm the workspace Git state is clean/unaffected.
 
 Send me this block:
 
 ```text
 filename =
 size_bytes =
-sha256_replit =
+sha256_legacy platform =
 sha256_downloaded =
 sha_match =
 toc_count =
@@ -44,7 +44,7 @@ Once that passes, we close the immediate database-loss emergency and move to the
 
 ```text
 P1 — SECRET / PROVIDER RECOVERABILITY
-Confirm every required credential can be regenerated or recovered outside Replit.
+Confirm every required credential can be regenerated or recovered outside legacy platform.
 Names only in our records; never secret values.
 
 P2 — RUN 2 CLASSIFICATION

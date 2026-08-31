@@ -188,7 +188,7 @@ These are acceptable holds:
 
 Those can remain **HOLD**, but they should be explicitly labeled.
 
-## What I would send back to Replit/Claude
+## What I would send back to legacy platform/Claude
 
 ```text
 Engine gap audit from July 6 run:

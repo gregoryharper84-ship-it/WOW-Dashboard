@@ -137,4 +137,4 @@ Add these fields to /wow/l10/gate3 response:
 Final implementation note:
 This patch recalibrates candidate discovery, not bet approval. It should produce more useful WATCH_ELEVATED and DATA_BUILD_PRIORITY rows without increasing FINAL_APPROVED rows unless full L10, market verification, payout EV, slip structure, and final-lock checks all pass.
 
-That version is clean. It preserves the fix Replit wanted, accepts Claude’s QA flags, and prevents the dangerous interpretation that **55% L5 suddenly means playable**.
+That version is clean. It preserves the fix legacy platform wanted, accepts Claude’s QA flags, and prevents the dangerous interpretation that **55% L5 suddenly means playable**.

@@ -12,7 +12,7 @@ Before writing blind, let me check if there's any dashboard code in the project 
 
 The ESPN fallback is intentionally limited — it keeps the Teams tab showing real games instead of a blank board, but it fires `assertHasLines()` which logs a warning and skips the no-vig/edge/tier scoring for that sport. You'll see game matchups rendered but no bet recommendations, which is the correct behavior when lines aren't available.
 
-**Three places to edit in Replit:**
+**Three places to edit in legacy platform:**
 
 1. **Drop the entire `fetch-team-events-patch.js` block** into your `<script>` tag above `runLLPBoard` and the WU loop — replace both `TRD_SPORT_IDS` and `LLP_TRD_SPORT_IDS` declarations with the unified one at the top of the file.
 

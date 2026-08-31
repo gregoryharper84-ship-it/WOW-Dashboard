@@ -17,7 +17,7 @@ Custom GPT Action is not sending the correct X-API-Key header
 Go to the **existing Action** for:
 
 ```text
-create-app-gregoryharper84.replit.app
+create-app-gregoryharper84.legacy platform.app
 ```
 
 Then check:
@@ -32,7 +32,7 @@ Set it exactly like this:
 Authentication Type: API Key
 Auth Type: Custom
 Header Name: X-API-Key
-API Key: <your Replit/WOW API key>
+API Key: <your legacy platform/WOW API key>
 ```
 
 Then click:
@@ -55,7 +55,7 @@ That is why the request now fails before any rows come back.
 Run this outside GPT with the exact same key you put in the Action auth field:
 
 ```bash
-curl -i -X POST https://create-app-gregoryharper84.replit.app/wow/kalshi/scan \
+curl -i -X POST https://create-app-gregoryharper84.legacy platform.app/wow/kalshi/scan \
   -H "Content-Type: application/json" \
   -H "X-API-Key: YOUR_REAL_KEY" \
   -d '{"category":"sports","sport":"MLB","date":"2026-06-27","mode":"scan_only","min_adjusted_edge":0.04,"max_markets":15,"include_raw_markets":true,"include_combo_markets":false,"market_type":"single_game"}'
@@ -69,9 +69,9 @@ HTTP 200
 
 If curl works but GPT fails, the GPT Action auth is wrong.
 
-If curl also fails, the key in Replit Secrets and the key you are using do not match.
+If curl also fails, the key in legacy platform Secrets and the key you are using do not match.
 
-## Ask Replit to confirm this
+## Ask legacy platform to confirm this
 
 ```text
 Please confirm which environment secret the require_api_key decorator checks for /wow/kalshi/scan.

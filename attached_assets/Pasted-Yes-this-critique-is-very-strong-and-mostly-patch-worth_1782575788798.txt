@@ -9,7 +9,7 @@ Sharp vs retail market weighting	Adopt, but directional	Very needed. PP/DFS shou
 Settlement loopback/calibration ingestion	Adopt fully	This is one of the biggest missing operational pieces.
 House rules matrix	Adopt fully	Especially important for DNP, partial play, injury returners, and platform-specific grading.
 Liquidity/latency gate	Adopt with sport/platform differences	More critical for sportsbooks, but still useful for PP final lock because lines/payouts move.
-Same-game correlation question	Needs Replit/external matrix	The LLM should classify correlation, not pretend to calculate exact joint probability natively.
+Same-game correlation question	Needs legacy platform/external matrix	The LLM should classify correlation, not pretend to calculate exact joint probability natively.
 
 1. Sharp vs retail weighting is correct, but needs a side-aware rule
 
@@ -143,7 +143,7 @@ I would use low liquidity more for sportsbook/LLP. For PrizePicks, the bigger is
 
 To answer the question at the end:
 
-Right now, I would not trust the engine to calculate same-game joint probabilities natively inside the prompt. That should be handled by an external matrix or Replit module.
+Right now, I would not trust the engine to calculate same-game joint probabilities natively inside the prompt. That should be handled by an external matrix or legacy platform module.
 
 The LLM can classify correlation:
 
@@ -219,7 +219,7 @@ Prevent false approval caused by retail consensus, stale calibration, platform s
 - Labels: REJECT_EXECUTION_STALE, REJECT_PAYOUT_CHANGED, REJECT_LOW_LIQUIDITY, REJECT_LINE_MOVED_AGAINST_SIDE.
 5. Correlation EV Gate
 - LLM may classify correlation but may not invent exact joint probability.
-- External Replit/matrix module should calculate adjusted slip probability.
+- External legacy platform/matrix module should calculate adjusted slip probability.
 - Direct overlap, same-player component overlap, and unresolved same-game correlation block Power Play approval.
 - Flex slip EV must use hit-combination math, not independent full-sweep math only.
 

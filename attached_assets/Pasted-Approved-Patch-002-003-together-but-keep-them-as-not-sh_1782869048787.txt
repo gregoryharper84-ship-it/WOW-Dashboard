@@ -1,6 +1,6 @@
-Approved. Patch **002 + 003 together**, but keep them as **not shipped** until Replit returns tests and deploy verification.
+Approved. Patch **002 + 003 together**, but keep them as **not shipped** until legacy platform returns tests and deploy verification.
 
-Send Replit this:
+Send legacy platform this:
 
 ```text id="8q0yg2"
 Implement all queued WOW v16 Kalshi NHIGH Weather patches together.

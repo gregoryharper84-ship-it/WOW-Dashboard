@@ -47,7 +47,7 @@ So the no-play answer is right, but the terminal reason is still slightly mislea
 
 ## Small next patch
 
-Tell Replit this:
+Tell legacy platform this:
 
 ```text id="pkdc1m"
 Final cleanup for Kalshi scan labels/classification:

@@ -4,7 +4,7 @@
 `WOW-PATCH-2026-07-06-CROSS-MARKET-REJECT-PROOF-AND-DEGRADED-RUN-GATE`
 
 ## Author / date
-User (spec) + Replit agent — 2026-07-06
+User (spec) + legacy platform agent — 2026-07-06
 
 ## Status
 `SHIPPED` (scoped — see "Deferred" below)

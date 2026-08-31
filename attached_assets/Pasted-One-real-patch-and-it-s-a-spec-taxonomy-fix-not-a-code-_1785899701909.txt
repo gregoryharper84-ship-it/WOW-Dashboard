@@ -8,4 +8,4 @@ Two ways I can take this further — want me to:Major finding — `mlb_direction
 
 Fixed with a Rule 0 that routes missing/non-numeric survival data to `REJECT_DATA_QUALITY` instead. 13 new regression tests (module had zero before), patch applies clean, `can_execute` untouched throughout.
 
-Three files: the patch, a plain-English notes doc, and the formal WOW-PATCH-TEMPLATE doc (labeled `v16 test candidate`, ready for Replit Agent — not yet activated, that's your call). It doesn't tell you whether Jones's specific miss was variance or this exact gap — that still needs the ledger row.
+Three files: the patch, a plain-English notes doc, and the formal WOW-PATCH-TEMPLATE doc (labeled `v16 test candidate`, ready for legacy platform Agent — not yet activated, that's your call). It doesn't tell you whether Jones's specific miss was variance or this exact gap — that still needs the ledger row.

@@ -7,7 +7,7 @@ This pins the *actual shipped reality* so all three agents share one source of
 truth. **The code is the source of truth; this doc is a snapshot of it.**
 
 _Snapshot of: `artifacts/flask-scoring-api/app.py` (~11,600 lines). Production:
-`create-app-gregoryharper84.replit.app`._
+`create-app-gregoryharper84.legacy platform.app`._
 
 **Active spec: WOW v16 Clean Core** (effective 2026-06-04, supersedes v15.3.0).
 If a planning thread's project file still reads v15.3.0 (e.g. a stale Claude

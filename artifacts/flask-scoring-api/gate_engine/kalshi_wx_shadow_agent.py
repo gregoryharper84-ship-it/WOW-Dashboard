@@ -160,7 +160,7 @@ def _build_client() -> Optional[Any]:
 
     Resolution order:
       1. AI_INTEGRATIONS_ANTHROPIC_API_KEY + AI_INTEGRATIONS_ANTHROPIC_BASE_URL
-         (Replit AI integrations proxy — preferred in this environment)
+         (legacy_platform AI integrations proxy — preferred in this environment)
       2. ANTHROPIC_API_KEY (direct API key)
     """
     if not _SDK_AVAILABLE:

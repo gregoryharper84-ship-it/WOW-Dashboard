@@ -21,9 +21,9 @@ DESIGN INVARIANTS:
     • Requires explicit shell invocation.
 
 AUTHENTICATION:
-    Reads REPLIT_TOKEN from environment (set it as a Replit Secret before
+    Reads legacy_platform_TOKEN from environment (set it as a legacy_platform Secret before
     running).  The Bridge expects this value in the X-Authority-Token header.
-    REPLIT_TOKEN is the actor credential the Bridge uses to identify evidence
+    legacy_platform_TOKEN is the actor credential the Bridge uses to identify evidence
     submitted by/about this WOW app.
 """
 from __future__ import annotations
@@ -38,8 +38,8 @@ import urllib.error
 from datetime import datetime, timezone
 
 # ── Constants ──────────────────────────────────────────────────────────────────
-BRIDGE_URL     = "https://governance-bridge.replit.app/api/evidence"
-TOKEN_ENV_VAR  = "REPLIT_TOKEN"
+BRIDGE_URL     = "https://governance-bridge.legacy_platform.app/api/evidence"
+TOKEN_ENV_VAR  = "legacy_platform_TOKEN"
 WOW_APP_ID     = "wow-scoring-api"
 TIMEOUT_S      = 20
 
@@ -142,7 +142,7 @@ def build_evidence_payload() -> dict:
     """
     return {
         "app_id":        WOW_APP_ID,
-        "app_url":       "https://flask-scoring-api.replit.app",
+        "app_url":       "https://flask-scoring-api.legacy_platform.app",
         "evidence_type": "governance_audit",
         "submitted_at":  datetime.now(timezone.utc).isoformat(),
         "submission_note": (
@@ -199,7 +199,7 @@ def submit_evidence(dry_run: bool = False) -> int:
     if not token:
         print(
             f"\nERROR: {TOKEN_ENV_VAR} is not set in the environment.\n"
-            f"Add it as a Replit Secret, then re-run this script without --dry-run.",
+            f"Add it as a legacy_platform Secret, then re-run this script without --dry-run.",
             file=sys.stderr,
         )
         return 1

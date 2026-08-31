@@ -13,7 +13,7 @@ can_execute = false
 
 I would **not** call this true `DATA_UNOBTAINABLE` yet, because the failure is happening before the API layer returns a Kalshi payload. It is an **action/proxy/runtime failure**, not evidence that Kalshi inventory is empty or unavailable.
 
-Your schema is pointed at the Replit server and already declares the Kalshi health, scan, debug, station, and weather routes. The uploaded schema has the server set to `https://create-app-gregoryharper84.replit.app` and includes `/api/wow/kalshi/health`, `/api/wow/kalshi/scan`, `/api/wow/kalshi/debug-raw`, `/api/wow/kalshi/weather/stations`, and `/api/wow/kalshi/weather/evaluate`.  So the next fix is almost certainly **Replit backend routing**, not the Custom GPT schema.
+Your schema is pointed at the legacy platform server and already declares the Kalshi health, scan, debug, station, and weather routes. The uploaded schema has the server set to `https://create-app-gregoryharper84.legacy platform.app` and includes `/api/wow/kalshi/health`, `/api/wow/kalshi/scan`, `/api/wow/kalshi/debug-raw`, `/api/wow/kalshi/weather/stations`, and `/api/wow/kalshi/weather/evaluate`.  So the next fix is almost certainly **legacy platform backend routing**, not the Custom GPT schema.
 
 ## What the repeated ClientResponseError means
 
@@ -28,22 +28,22 @@ scanKalshiMarkets = FAILED
 the common failure point is likely one of these:
 
 ```text
-1. Replit app not returning HTTP 200 for /api/wow/kalshi/*
+1. legacy platform app not returning HTTP 200 for /api/wow/kalshi/*
 2. Route exists in schema but not mounted in backend
 3. Backend returns HTML instead of JSON
 4. Backend requires auth but Custom GPT action is not sending it
 5. Express proxy cannot reach Flask/internal service
-6. Replit cold start / timeout
+6. legacy platform cold start / timeout
 7. Upstream exception is escaping as 500/502 instead of JSON
 ```
 
-## Immediate Replit-side test
+## Immediate legacy platform-side test
 
-Run these from **Replit Shell**, not from the Custom GPT:
+Run these from **legacy platform Shell**, not from the Custom GPT:
 
 ```bash
-curl -i https://create-app-gregoryharper84.replit.app/api/wow/kalshi/health
-curl -i "https://create-app-gregoryharper84.replit.app/api/wow/kalshi/debug-raw?limit=25"
+curl -i https://create-app-gregoryharper84.legacy platform.app/api/wow/kalshi/health
+curl -i "https://create-app-gregoryharper84.legacy platform.app/api/wow/kalshi/debug-raw?limit=25"
 ```
 
 You need to see:
@@ -55,7 +55,7 @@ content-type: application/json
 
 Anything else is the problem.
 
-## Patch to send Replit/Claude
+## Patch to send legacy platform/Claude
 
 ```text
 PATCH: WOW-KALSHI-ACTION-LAYER-HEALTH-FAILSAFE
@@ -98,7 +98,7 @@ Minimum health response:
 
 ## Express failsafe wrapper
 
-Have Replit add this **before any catch-all frontend route**:
+Have legacy platform add this **before any catch-all frontend route**:
 
 ```js
 app.get("/api/wow/kalshi/health", async (req, res) => {
@@ -132,9 +132,9 @@ Once that route works, wire the real Kalshi/Flask probe behind it. The first goa
 ## Validation order after patch
 
 ```text
-1. Replit curl health
+1. legacy platform curl health
 2. Custom GPT getKalshiHealth
-3. Replit curl debug-raw
+3. legacy platform curl debug-raw
 4. Custom GPT getKalshiRawInventoryDebug
 5. Custom GPT scanKalshiMarkets
 ```

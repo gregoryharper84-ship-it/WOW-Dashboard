@@ -1,12 +1,12 @@
 This happened because the WOW Betting Engine’s governance control plane became a single point of failure for the entire analysis workflow.
 
-The immediate error was a Replit/API communication failure. The deeper problem is architectural: WOW currently treats “I could not confirm governance” almost the same as “the analysis itself is invalid.” That is why one `ClientResponseError` forced the entire run down to research/hold status even though the uploaded PrizePicks board could still be extracted and researched.
+The immediate error was a legacy platform/API communication failure. The deeper problem is architectural: WOW currently treats “I could not confirm governance” almost the same as “the analysis itself is invalid.” That is why one `ClientResponseError` forced the entire run down to research/hold status even though the uploaded PrizePicks board could still be extracted and researched.
 
 ## Executive diagnosis
 
 There were likely three separate events:
 
-1. ChatGPT attempted to call the Replit governance or scan endpoint.
+1. ChatGPT attempted to call the legacy platform governance or scan endpoint.
 2. The client received an unusable HTTP response—or no valid response at all—and surfaced the generic `ClientResponseError`.
 3. WOW’s fail-closed rule correctly blocked `FINAL_APPROVED` and money labels because it could not verify the current master specification, active patches, governance hash, and engine version.
 
@@ -24,7 +24,7 @@ It should not be described simply as a generic `RUN_INVALID` without preserving 
 
 `ClientResponseError` is a client-side wrapper around an unsuccessful HTTP exchange. It does not identify the root cause by itself.
 
-It can be produced when Replit returns:
+It can be produced when legacy platform returns:
 
 * `404` — wrong or obsolete route
 * `405` — wrong HTTP method
@@ -33,7 +33,7 @@ It can be produced when Replit returns:
 * `422` — request body/schema failure
 * `429` — rate limiting
 * `500` — unhandled server exception
-* `502/503/504` — sleeping, restarting, overloaded, or unavailable Replit worker
+* `502/503/504` — sleeping, restarting, overloaded, or unavailable legacy platform worker
 * HTML instead of JSON
 * A truncated or malformed JSON response
 * A redirect the client did not handle correctly
@@ -47,7 +47,7 @@ Because the output only said `ClientResponseError`, the error handler discarded 
 * HTTP method
 * timeout duration
 * attempt number
-* Replit request ID
+* legacy platform request ID
 * whether the governance call or the board scan failed
 * whether the failure occurred before or after governance verification
 
@@ -59,7 +59,7 @@ Based on the earlier July 15 incident, this is the most plausible sequence:
 
 ```mermaid
 flowchart TD
-    A["ChatGPT starts WOW run"] --> B["Call Replit governance/scan"]
+    A["ChatGPT starts WOW run"] --> B["Call legacy platform governance/scan"]
     B --> C{"Valid response?"}
     C -- "No" --> D["ClientResponseError"]
     D --> E["Governance hash not verified"]
@@ -104,7 +104,7 @@ Before emitting `FINAL_APPROVED`, the engine is expected to confirm at least:
 * required result contract
 * `can_execute=false`
 
-If the endpoint is unavailable, ChatGPT cannot prove that it is applying the same rules as Replit. A prop might appear statistically strong but violate a newly activated patch—for example:
+If the endpoint is unavailable, ChatGPT cannot prove that it is applying the same rules as legacy platform. A prop might appear statistically strong but violate a newly activated patch—for example:
 
 * opportunity-distribution requirements
 * component/composite mutex
@@ -137,19 +137,19 @@ The fragility developed later as WOW accumulated increasingly strict governance 
 
 ### 1. Governance verification became mandatory
 
-This was sensible. External agents needed to confirm they were using the same specification and patches as Replit.
+This was sensible. External agents needed to confirm they were using the same specification and patches as legacy platform.
 
 ### 2. The live endpoint became the only source of truth
 
 Instead of keeping a signed or versioned last-known-good governance snapshot, every run depended on a successful live request.
 
-### 3. Replit worker availability became equivalent to model validity
+### 3. legacy platform worker availability became equivalent to model validity
 
 If the worker slept, restarted, crashed, or timed out, the client lost the ability to confirm governance—even though governance itself may not have changed.
 
 ### 4. Hash changes created external-agent drift
 
-When a new patch changed the governance hash, Replit advanced to a new version while ChatGPT/custom GPT instructions could still contain the previous hash. The system then had two potential blockers:
+When a new patch changed the governance hash, legacy platform advanced to a new version while ChatGPT/custom GPT instructions could still contain the previous hash. The system then had two potential blockers:
 
 * endpoint unavailable
 * endpoint available but hash mismatched
@@ -222,7 +222,7 @@ A governed failure report should include:
 
 ### It did not provide a recovery path
 
-The user was left with holds but no indication whether the run should be retried in 30 seconds, whether Replit needed restarting, or whether the GPT configuration needed updating.
+The user was left with holds but no indication whether the run should be retried in 30 seconds, whether legacy platform needed restarting, or whether the GPT configuration needed updating.
 
 ---
 
@@ -324,7 +324,7 @@ Use stage-specific degradation:
 
 ### 7. Add deployment readiness checks
 
-Replit should not report itself ready merely because the web server responds. Readiness should require:
+legacy platform should not report itself ready merely because the web server responds. Readiness should require:
 
 * governance registry loaded
 * worker alive
@@ -373,7 +373,7 @@ Core rules:
 
 ## Required regression tests
 
-At minimum, Replit should add tests for:
+At minimum, legacy platform should add tests for:
 
 * Governance returns 200 and scan succeeds.
 * Governance times out twice and succeeds on the third attempt.
@@ -394,14 +394,14 @@ At minimum, Replit should add tests for:
 
 This happened because WOW’s safety architecture was stronger than its availability architecture.
 
-The model correctly refused to issue final labels without verified governance. But the platform was designed so that a temporary Replit transport failure could remove the entire approval ceiling, and its error handling did not preserve enough information to diagnose the actual failure.
+The model correctly refused to issue final labels without verified governance. But the platform was designed so that a temporary legacy platform transport failure could remove the entire approval ceiling, and its error handling did not preserve enough information to diagnose the actual failure.
 
 So the correct conclusion is:
 
 * This was not caused by the June 6 analytical patch.
 * It was not evidence that the sports model itself stopped working.
-* It was probably a Replit worker, routing, timeout, schema, or deployment response failure.
+* It was probably a legacy platform worker, routing, timeout, schema, or deployment response failure.
 * The generic `ClientResponseError` is insufficient to identify which one.
 * The fail-closed downgrade was correct.
 * The recurring single-point-of-failure and vague error reporting are not acceptable.
-* Replit needs an operational resilience patch, structured errors, endpoint separation, run-pinned governance, and a controlled degraded-research mode.
+* legacy platform needs an operational resilience patch, structured errors, endpoint separation, run-pinned governance, and a controlled degraded-research mode.

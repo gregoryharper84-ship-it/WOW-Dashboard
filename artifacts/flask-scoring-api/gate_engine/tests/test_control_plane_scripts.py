@@ -846,7 +846,7 @@ class TestWowVerifyPatch(_ScriptBase):
         When GPT_ACTION_SECRET is set (live check enabled) and the endpoint
         returns HTTP 000 (connection refused), verify-patch must exit non-zero.
 
-        This test targets a non-listening port (port 1 via REPLIT_APP_URL) to
+        This test targets a non-listening port (port 1 via legacy_platform_APP_URL) to
         guarantee connection refusal without relying on the dev server running.
         Behavior: live check enabled + HTTP 000 → hard failure, not a warning.
 
@@ -861,7 +861,7 @@ class TestWowVerifyPatch(_ScriptBase):
                 # Enable the live check by providing a secret
                 "GPT_ACTION_SECRET": "fake-secret-for-live-check-test",
                 # Point at a port where nothing is listening → guaranteed 000
-                "REPLIT_APP_URL": "http://localhost:1",
+                "legacy_platform_APP_URL": "http://localhost:1",
             },
         )
         self.assertNotEqual(

@@ -4,7 +4,7 @@ info:
   version: "0.1.0-stub"
   description: >
     STUB SCHEMA — these endpoints describe custom backend services that do not
-    yet exist anywhere (not on the Replit app, not on any vendor's platform).
+    yet exist anywhere (not on the legacy_platform app, not on any vendor's platform).
 
     Four planned services:
       1. identity-resolution  — cross-book player name / ID normalization
@@ -15,7 +15,7 @@ info:
     All four are labeled NOT_YET_DEPLOYED.
 
     Decision to make later: whether each service is built on the existing
-    Replit app (adding paths to app.py) or as a separate deployment.
+    legacy_platform app (adding paths to app.py) or as a separate deployment.
     That decision changes the server URL and auth type in this schema — but
     NOT the operation shapes below, which are defined by the WOW data model.
 
@@ -26,14 +26,14 @@ info:
 
 # ── Server ────────────────────────────────────────────────────────────────────
 # Replace this URL when the service is deployed.
-# If built on the existing Replit app, use the WOW backend URL and remove
+# If built on the existing legacy_platform app, use the WOW backend URL and remove
 # the ApiKeyAuth securityScheme in favor of the existing X-API-Key pattern.
 servers:
   - url: https://NOT_YET_DEPLOYED.example
     description: >
       Placeholder — replace with actual service URL when deployed.
-      Options: (a) https://create-app-gregoryharper84.replit.app/wow/custom
-               (b) separate Replit deployment
+      Options: (a) https://create-app-gregoryharper84.legacy_platform.app/wow/custom
+               (b) separate legacy_platform deployment
                (c) other managed hosting
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
@@ -220,10 +220,10 @@ paths:
   # Queryable calibration and settlement ledger.
   # Purpose: surface scored prop records, outcomes, and Brier scores
   #          across sessions for long-run calibration analysis.
-  # NOTE: The Postgres calibration tables exist on the WOW Replit app already
+  # NOTE: The Postgres calibration tables exist on the WOW legacy_platform app already
   # (wow_weather_scout_log, wow_calibration_ledger, wow_portfolio_*).
   # This service is a query API on top of those tables — it may be built
-  # directly on the existing Replit app rather than a separate service.
+  # directly on the existing legacy_platform app rather than a separate service.
   # ──────────────────────────────────────────────────────────────────────────
 
   /calibration/records:
@@ -454,7 +454,7 @@ components:
           type: string
           description: >
             Human-readable description of what needs to be built and what
-            decision is pending (Replit app vs. separate deployment).
+            decision is pending (legacy_platform app vs. separate deployment).
         data:
           type: object
           nullable: true
@@ -469,6 +469,6 @@ components:
       description: >
         Placeholder API key scheme.  The exact auth mechanism (apiKey vs.
         Bearer / OAuth) may change depending on whether this service is
-        built on the existing Replit app (X-API-Key matching SCORING_API_KEY)
+        built on the existing legacy_platform app (X-API-Key matching SCORING_API_KEY)
         or as a separate deployment.
         Update auth type here when the deployment decision is made.

@@ -12,7 +12,7 @@ This reviewer is advisory and downgrade-only. It is never a terminal-label,
 production, deployment, capital, exception, or execution authority.
 
 FINAL_AUTHORITY: CHATGPT_ONLY.
-Replit must never self-approve based on this review.
+legacy_platform must never self-approve based on this review.
 
 DESIGN PRINCIPLES:
   1. Formulate falsification hypotheses BEFORE evaluating claims.
@@ -276,7 +276,7 @@ def _dim03_scope_integrity(packet: dict) -> tuple[dict, list[dict]]:
     diff_files = _diff_files(packet)
 
     _SENSITIVE_INFRA = [
-        "artifact.toml", "gunicorn_conf.py", ".replit",
+        "artifact.toml", "gunicorn_conf.py", ".legacy_platform",
         "requirements.txt", "pyproject.toml",
     ]
     touched_infra = [f for f in diff_files
@@ -349,15 +349,15 @@ def _dim04_authority_integrity(packet: dict) -> tuple[dict, list[dict]]:
     # Check for self-approval language in work_item_id or prior_review_history
     prh_text = str(packet.get("prior_review_history", "")).lower()
     wid_text  = str(packet.get("work_item_id", "")).lower()
-    _SELF_APPROVAL = ["self-approved", "self_approved", "replit approved",
-                      "auto-approved", "approved by replit"]
+    _SELF_APPROVAL = ["self-approved", "self_approved", "legacy_platform approved",
+                      "auto-approved", "approved by legacy_platform"]
     sa_hits = [p for p in _SELF_APPROVAL
                if p in prh_text or p in wid_text]
     if sa_hits:
         findings.append(_f(
             "F-04-003", "DIM-04", "governance_defect", "P0",
             f"Self-approval language detected: {sa_hits}. "
-            f"FINAL_AUTHORITY is CHATGPT_ONLY. Replit must not self-approve.",
+            f"FINAL_AUTHORITY is CHATGPT_ONLY. legacy_platform must not self-approve.",
             evidence=f"Self-approval patterns: {sa_hits}",
             hypothesis="H6: Self-approval claim violates FINAL_AUTHORITY=CHATGPT_ONLY.",
         ))
@@ -1271,7 +1271,7 @@ class RedTeamReviewerAdapter(BaseSkillAdapter):
     _AUTHORITY_STATEMENT = (
         "FINAL_AUTHORITY: CHATGPT_ONLY. "
         "This reviewer is advisory and downgrade-only. "
-        "Replit must never self-approve based on this review. "
+        "legacy_platform must never self-approve based on this review. "
         "A READY_FOR_CHATGPT_RULING recommendation is an invitation for "
         "external review, not an approval."
     )

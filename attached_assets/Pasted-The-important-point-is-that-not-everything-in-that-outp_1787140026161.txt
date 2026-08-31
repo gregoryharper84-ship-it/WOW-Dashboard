@@ -393,7 +393,7 @@ But **do not artificially tighten the bounds before collecting evidence.**
 
 # I would make this one engineering project, not seven new patches
 
-This is important given the amount you've already spent on Replit.
+This is important given the amount you've already spent on legacy platform.
 
 Call it something like:
 

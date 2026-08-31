@@ -1,4 +1,4 @@
-The best setup is not one app. For your WOW final-lock needs, the best tool is a custom “PrizePicks Final Lock” Replit/Google Sheets dashboard fed by a few data sources.
+The best setup is not one app. For your WOW final-lock needs, the best tool is a custom “PrizePicks Final Lock” legacy platform/Google Sheets dashboard fed by a few data sources.
 
 Best stack for your exact need:
 
@@ -9,7 +9,7 @@ Injury/status check	Official WNBA injury report + RotoWire	WNBA’s official inj
 Projection/trend check	Props.Cash + RotoWire + StatMuse/Fox/ESPN logs	Props.Cash supports WNBA, stats, visuals, sportsbook/DFS Pick’Em comparisons, hit rates, matchup grades, and line value tools.  
 Slip EV / payout-adjusted approval	Custom WOW EV calculator	This part should be yours. Apps can show trends/odds, but they will not enforce your WOW rules: payout multiplier, leg probability, correlation, Goblin/Demon tax, Flex dilution, and final approval lock.
 
-My recommendation: build the final-lock tool in Replit.
+My recommendation: build the final-lock tool in legacy platform.
 
 Call it:
 
@@ -52,4 +52,4 @@ For Flex slips, you need a separate payout table and should calculate all hit co
 Important: I would not rely on direct PrizePicks scraping unless it is through a compliant licensed feed. PrizePicks terms prohibit using robots/spiders/automatic means to access, monitor, or copy site/app material.  
 
 Bottom line:
-Use OpticOdds if you want the closest paid all-in-one feed. Use The Odds API + Props.Cash + WNBA/RotoWire + a Replit EV dashboard if you want the best practical WOW setup. The missing piece is not research anymore — it is a machine-enforced final-lock EV gate.
+Use OpticOdds if you want the closest paid all-in-one feed. Use The Odds API + Props.Cash + WNBA/RotoWire + a legacy platform EV dashboard if you want the best practical WOW setup. The missing piece is not research anymore — it is a machine-enforced final-lock EV gate.

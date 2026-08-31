@@ -56,7 +56,7 @@ sportsbook no-vig consensus
 LLP model edge
 post-friction edge ≥2.5%
 
-Send Replit this
+Send legacy platform this
 
 Accepted.
 Log `WOW-PATCH-2026-07-05-KALSHI-WNBA-MLB-ML-EDGE-RULE` as:
@@ -87,7 +87,7 @@ Run a current-day WNBA/MLB live-board dry-run report that lists every touched Ka
 
 Next best step
 
-Now ask Replit for a live-board dry-run endpoint/report:
+Now ask legacy platform for a live-board dry-run endpoint/report:
 
 GET /wow/kalshi/sports/live-board?leagues=MLB,WNBA
 

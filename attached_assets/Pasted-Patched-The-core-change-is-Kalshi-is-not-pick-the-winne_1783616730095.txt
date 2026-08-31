@@ -143,9 +143,9 @@ can_execute = False
 execution_mode = "LIMIT_ONLY_DRY_RUN"
 ```
 
-## Replit instructions
+## legacy platform instructions
 
-Send this to Replit:
+Send this to legacy platform:
 
 Implement WOW-PATCH-2026-07-09-KALSHI-CONTRACT-EXECUTION-OVERLAY in the LLP Kalshi sports lane.
 

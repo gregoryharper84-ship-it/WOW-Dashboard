@@ -1,6 +1,6 @@
 **Yes — I approve moving this into production, but only as a measurement/observability deployment.** This is exactly the kind of production change that earns its keep because it generates evidence rather than adding prediction complexity.
 
-The boundary should be strict: **production prediction behavior must remain unchanged.** No new Gatekeeper stages, no altered prop probabilities, no additional rejection criteria, no new model approvals, and no new Replit enrichment loops. The logger observes what WOW already predicts; outcome ingestion later attaches results; the validation harness evaluates them.
+The boundary should be strict: **production prediction behavior must remain unchanged.** No new Gatekeeper stages, no altered prop probabilities, no additional rejection criteria, no new model approvals, and no new legacy platform enrichment loops. The logger observes what WOW already predicts; outcome ingestion later attaches results; the validation harness evaluates them.
 
 I would approve the four items with these conditions:
 

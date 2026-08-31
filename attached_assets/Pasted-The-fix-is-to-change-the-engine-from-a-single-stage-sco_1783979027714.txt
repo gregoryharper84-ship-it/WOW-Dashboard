@@ -170,7 +170,7 @@ missing price
 missing line
 board unavailable
 
-8. Required Replit patch
+8. Required legacy platform patch
 
 The orchestrator should accept something like:
 

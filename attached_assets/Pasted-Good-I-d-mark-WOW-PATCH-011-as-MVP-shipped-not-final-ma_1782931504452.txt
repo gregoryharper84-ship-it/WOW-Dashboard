@@ -3,7 +3,7 @@ Good. I’d mark **WOW-PATCH-011 as MVP shipped**, not “final mature ingestion
 But I’d preserve two QA caveats:
 
 1. **ESPN fallback is acceptable for MVP, but it should be labeled as fallback**, not the final authoritative WNBA source layer.
-2. **“6 tables created on first hit” is okay for Replit MVP, but production should move to explicit migrations** so schema drift does not sneak in.
+2. **“6 tables created on first hit” is okay for legacy platform MVP, but production should move to explicit migrations** so schema drift does not sneak in.
 
 Also, this line needs clarification:
 
@@ -38,7 +38,7 @@ Accepted:
 QA caveats to preserve:
 
 1. ESPN site/v2 fallback is acceptable for MVP, but source should be labeled clearly as ESPN_FALLBACK_MVP, not treated as final official-source maturity.
-2. Table creation on first hit is acceptable for Replit MVP, but production should eventually move to explicit schema migrations.
+2. Table creation on first hit is acceptable for legacy platform MVP, but production should eventually move to explicit schema migrations.
 3. Confirm source_is_stale and has_missing_fields are row-specific flags, not default true on every row. If every row is stale/missing, data_confidence must remain PARTIAL_STALE or DATA_CONTRACT_INCOMPLETE until PATCH-010 resolves contract-level requirements.
 
 Next patch:

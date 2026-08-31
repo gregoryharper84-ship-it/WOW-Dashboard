@@ -1,4 +1,4 @@
-Yes — this reconciliation is now the cleaner and safer baseline. I would adopt it **with three small adjustments** before handing anything back to Replit.
+Yes — this reconciliation is now the cleaner and safer baseline. I would adopt it **with three small adjustments** before handing anything back to legacy platform.
 
 First, the 1IP repair should be treated as a **validation-unblocking defect fix**, not as reopening general development. That means the only authorized code change right now should be narrowly scoped to getting real 1IP rows through:
 

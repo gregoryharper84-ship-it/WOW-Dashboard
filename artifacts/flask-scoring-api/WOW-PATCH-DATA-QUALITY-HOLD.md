@@ -4,7 +4,7 @@
 `WOW-PATCH-DATA-QUALITY-HOLD`
 
 ## Author / date
-User (ruling approved) + Replit agent — 2026-07-05 / 2026-07-06
+User (ruling approved) + legacy platform agent — 2026-07-05 / 2026-07-06
 
 ## Status
 `SHIPPED`

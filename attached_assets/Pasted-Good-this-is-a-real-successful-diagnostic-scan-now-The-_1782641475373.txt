@@ -17,7 +17,7 @@ So the Kalshi lane is live. The remaining issues are now **data-shaping and pric
 
 | Layer                               | Status                |
 | ----------------------------------- | --------------------- |
-| GPT → Replit                        | ✅ Working             |
+| GPT → legacy platform                        | ✅ Working             |
 | Auth                                | ✅ Working             |
 | Kalshi public market fetch          | ✅ Working             |
 | Filter diagnostics                  | ✅ Working             |
@@ -45,7 +45,7 @@ YES price: not returned
 NO price: not returned
 ```
 
-That means Replit is probably returning fields from `GET /markets`, but not enriching them with order-book or price snapshot fields.
+That means legacy platform is probably returning fields from `GET /markets`, but not enriching them with order-book or price snapshot fields.
 
 For WOW Kalshi scoring, this is required:
 
@@ -70,7 +70,7 @@ adjusted_edge
 max_playable_price
 ```
 
-## Next Replit patch
+## Next legacy platform patch
 
 Send this:
 
@@ -137,7 +137,7 @@ final labels: KALSHI_REJECT_UNCALIBRATED or KALSHI_DATA_UNOBTAINABLE if prices m
 
 ## Then test pricing
 
-After Replit adds price enrichment, rerun the same prompt. We need to see something like:
+After legacy platform adds price enrichment, rerun the same prompt. We need to see something like:
 
 ```text
 YES price: 0.54

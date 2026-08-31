@@ -9,9 +9,9 @@ DRY_RUN_ONLY: TRUE
 can_execute: false
 ```
 
-The important win is that Replit followed the narrowed focus correctly: **WNBA + MLB first**, Kalshi settlement hardening held unless real Kalshi sports winner inventory appears.
+The important win is that legacy platform followed the narrowed focus correctly: **WNBA + MLB first**, Kalshi settlement hardening held unless real Kalshi sports winner inventory appears.
 
-## Tell Replit
+## Tell legacy platform
 
 ```text id="1eb5o7"
 Accepted.

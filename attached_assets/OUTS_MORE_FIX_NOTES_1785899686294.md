@@ -49,4 +49,4 @@ instead of silently promoted.
 - `task_outs_more_missing_data.patch` — the diff (firewall fix + new
   test file).
 - `WOW-PATCH-2026-08-04-OUTS-MORE-MISSING-SURVIVAL-DATA.md` — the formal
-  patch doc, `v16 test candidate` label, ready for Replit Agent.
+  patch doc, `v16 test candidate` label, ready for legacy platform Agent.

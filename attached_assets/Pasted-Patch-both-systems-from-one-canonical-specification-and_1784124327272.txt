@@ -1,22 +1,22 @@
-Patch both systems from one canonical specification and require a version handshake. Do not maintain separate “similar” instructions in the GPT and Replit—that is how governance drift develops.
+Patch both systems from one canonical specification and require a version handshake. Do not maintain separate “similar” instructions in the GPT and legacy platform—that is how governance drift develops.
 
 ## Correct architecture
 
 ```mermaid
 flowchart TD
     A["Canonical patch registry"] --> B["WOW GPT instructions"]
-    A --> C["Replit gate engine"]
+    A --> C["legacy platform gate engine"]
     B --> D["Governance handshake"]
     C --> D
     D -->|Match| E["Run prop model"]
     D -->|Mismatch| F["RUN_INVALID_GOVERNANCE_MISMATCH"]
 ```
 
-The GPT handles research and orchestration. Replit must enforce the gates in code. Neither side can override the other.
+The GPT handles research and orchestration. legacy platform must enforce the gates in code. Neither side can override the other.
 
 # 1. Canonical patch
 
-Add this verbatim to the WOW master patch registry and Replit:
+Add this verbatim to the WOW master patch registry and legacy platform:
 
 ```md
 # WOW-PATCH-2026-07-15-PROP-CALIBRATION-EXPOSURE-AND-SLIP-GOVERNANCE
@@ -42,7 +42,7 @@ Every run must include:
 - research_run_id
 - as_of
 
-GPT and Replit must compare governance_hash before scoring.
+GPT and legacy platform must compare governance_hash before scoring.
 
 Mismatch returns:
 
@@ -244,7 +244,7 @@ No downstream probability, promo, multiplier or user request may erase an upstre
 can_execute=false
 ```
 
-# 2. Send this implementation request to Replit
+# 2. Send this implementation request to legacy platform
 
 ```text
 Implement WOW-PATCH-2026-07-15-PROP-CALIBRATION-EXPOSURE-AND-SLIP-GOVERNANCE as an enforced backend patch, not UI copy.
@@ -320,9 +320,9 @@ REQUIRED WORK
 Do not mark complete until all tests below pass.
 ```
 
-# 3. Mandatory Replit regression tests
+# 3. Mandatory legacy platform regression tests
 
-Tell Replit to add these named fixtures:
+Tell legacy platform to add these named fixtures:
 
 | Test                                                   | Expected                                                        |
 | ------------------------------------------------------ | --------------------------------------------------------------- |
@@ -337,7 +337,7 @@ Tell Replit to add these named fixtures:
 | Polymarket-only 72% probability                        | Confidence capped at Medium                                     |
 | Five-pick same-game Power                              | `REJECT_BAD_STRUCTURE`                                          |
 | Bonus entry repeats cash-entry distribution            | Duplicate model exposure blocked                                |
-| GPT/Replit governance hashes differ                    | HTTP 409; no scoring                                            |
+| GPT/legacy platform governance hashes differ                    | HTTP 409; no scoring                                            |
 | Hashes match and all gates pass                        | Normal scoring continues                                        |
 
 Use yesterday’s six entries as permanent regression fixtures.
@@ -348,22 +348,22 @@ Because your engine instructions must stay below 8,000 characters, add only this
 
 ```text
 SYNC
-Before every run call Replit governance status. Require matching master_spec_version, active_patch_ids, and governance_hash. Mismatch stops as RUN_INVALID_GOVERNANCE_MISMATCH. Apply WOW-PATCH-2026-07-15-PROP-CALIBRATION-EXPOSURE-AND-SLIP-GOVERNANCE: settlement-aware market delta; sportsbook-over-prediction-market precedence; component/composite mutex; one opportunity state per player; team opportunity reconciliation; session-wide duplicate blocking; promo/demon non-upgrade; calibrated HIGH lower bound >=65%; and freeze caps of 1–2 Core, 3 Flex, max 2 same-event, no 4–6 Power. Lowest ceiling wins; can_execute=false.
+Before every run call legacy platform governance status. Require matching master_spec_version, active_patch_ids, and governance_hash. Mismatch stops as RUN_INVALID_GOVERNANCE_MISMATCH. Apply WOW-PATCH-2026-07-15-PROP-CALIBRATION-EXPOSURE-AND-SLIP-GOVERNANCE: settlement-aware market delta; sportsbook-over-prediction-market precedence; component/composite mutex; one opportunity state per player; team opportunity reconciliation; session-wide duplicate blocking; promo/demon non-upgrade; calibrated HIGH lower bound >=65%; and freeze caps of 1–2 Core, 3 Flex, max 2 same-event, no 4–6 Power. Lowest ceiling wins; can_execute=false.
 ```
 
-# 5. Custom GPT/Replit handshake
+# 5. Custom GPT/legacy platform handshake
 
 The workflow should be:
 
 1. GPT calls `getGovernanceStatus`.
 2. GPT verifies the patch ID and hash.
 3. GPT sends the board, research evidence, session exposure and expected hash.
-4. Replit independently applies every gate.
-5. Replit returns its applied patch list and hash.
+4. legacy platform independently applies every gate.
+5. legacy platform returns its applied patch list and hash.
 6. GPT compares the returned hash again.
 7. Any difference stops the run.
 
-Do not allow the GPT to manufacture a final approval locally if Replit returns a lower ceiling.
+Do not allow the GPT to manufacture a final approval locally if legacy platform returns a lower ceiling.
 
 ## Definition of done
 
@@ -376,4 +376,4 @@ The systems are aligned only when:
 * The five-pick Power is blocked before submission.
 * Every result shows `can_execute=false`.
 
-That gives you one ruleset, two independent checks, and a fail-closed response whenever the engine and Replit drift apart.
+That gives you one ruleset, two independent checks, and a fail-closed response whenever the engine and legacy platform drift apart.

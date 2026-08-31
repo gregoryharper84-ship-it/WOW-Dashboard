@@ -99,7 +99,7 @@ For Items 7–8, do not block Phase 1 on bbref/FanGraphs 403. Build the source a
 Start directly on Phase 1 now.
 ```
 
-The most important part is this: **do not let them start with WNBA/MLB ledgers first**. Those are important, but they are blocked by Replit source access. The immediate value comes from:
+The most important part is this: **do not let them start with WNBA/MLB ledgers first**. Those are important, but they are blocked by legacy platform source access. The immediate value comes from:
 
 **DEGRADED_ENGINE_RUN + PP threshold conversion + mutex best-pick selection.**
 

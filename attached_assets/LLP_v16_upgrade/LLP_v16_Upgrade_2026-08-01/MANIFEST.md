@@ -5,7 +5,7 @@
 ```text
 WOW v16 Clean Core
 Build date: 2026-08-01
-Status: READY_FOR_REPLIT_INTEGRATION_AND_CUSTOM_GPT_UPLOAD
+Status: READY_FOR_legacy platform_INTEGRATION_AND_CUSTOM_GPT_UPLOAD
 can_execute=false
 DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS
 ```
@@ -39,7 +39,7 @@ DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS
 9. `LLP-REGRESSION-TESTS-2026-08-01.md`
    - 24 regression tests based on observed Linemaker Lite/Pro failure modes.
 
-## Recommended Replit Hooks
+## Recommended legacy platform Hooks
 
 ```text
 pipeline stage 0: full_slate_discovery

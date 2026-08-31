@@ -16,7 +16,7 @@ Mapping requirements
   enrichment (failure_path.py itself is NOT modified — inputs are written
   into the enrichment dict it consumes).
 - Any field not obtainable from current providers (BBRef blocked from the
-  Replit host, FanGraphs 403) is explicitly listed in missing_fields, never
+  legacy_platform host, FanGraphs 403) is explicitly listed in missing_fields, never
   silently omitted.
 - stat_key routing: strikeouts → "strikeouts", outs → "pitcher_outs".
   Exact-match guard first — never a substring test — per the

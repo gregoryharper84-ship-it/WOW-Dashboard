@@ -1,6 +1,6 @@
 # WOW Authoritative Contract Documents
 
-This directory holds the authoritative WOW skill and contract documents. These are the binding authority for all patch decisions. The `wow-replit-patch-governor` skill references these documents in the `binding_authority` field of every build-packet contract.
+This directory holds the authoritative WOW skill and contract documents. These are the binding authority for all patch decisions. The `wow-legacy platform-patch-governor` skill references these documents in the `binding_authority` field of every build-packet contract.
 
 **Registry file:** `registry.yaml` — the single source of truth for all contract metadata, SHA-256 hashes, declared statuses, and project authority statuses.
 
@@ -74,7 +74,7 @@ Three items require resolution before they can be treated as confirmed:
 | WOW-SLIP-PROBABILITY-OPTIMIZER-SKILL-V3-DIRECT | slip | PROBABILITY_ONLY | PROBABILITY_ONLY |
 | WOW-SLIP-PROBABILITY-OPTIMIZER-V3-SKILL-ALT | slip | PROBABILITY_ONLY | PROBABILITY_ONLY |
 | WOW-MLB-FIRST-INNING-PITCH-COUNT-EXPERT-SKILL-V3 | mlb | TEST_ONLY | TEST_ONLY |
-| WOW-REPLIT-HANDOFF-2026-08-01-POSTMORTEM | mlb_wnba_slip | ACTIVE | ACTIVE |
+| WOW-legacy platform-HANDOFF-2026-08-01-POSTMORTEM | mlb_wnba_slip | ACTIVE | ACTIVE |
 | WOW-PATCH-2026-08-04-OUTS-MORE | mlb | ACTIVE | ACTIVE |
 | WOW-PATCH-CROSS-SPORT-HIGH-PROBABILITY-SELECTOR | cross_sport | PROPOSED | UNRESOLVED_AUTHORITY |
 | WOW-CROSS-SPORT-HIGH-PROBABILITY-SELECTOR-SKILL | cross_sport | PROPOSED | UNRESOLVED_AUTHORITY |

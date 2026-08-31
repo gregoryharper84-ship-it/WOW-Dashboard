@@ -4,10 +4,10 @@ WOW Runtime Provenance & Routing Governance v1.1
 WOW-PATCH-2026-08-19-RUNTIME-PROVENANCE
 
 Host abstraction preserved (WOW v16 Clean Core):
-  * WOW_CUSTOM_GPT, PROJECT_CHAT, and REPLIT_BACKEND are valid host
+  * WOW_CUSTOM_GPT, PROJECT_CHAT, and legacy_platform_BACKEND are valid host
     abstractions. A host name is not, by itself, a fallback reason.
-  * Replit is only the capability backend — never the model layer.
-  * nested_custom_gpt_required = False, replit_is_model_layer = False.
+  * legacy_platform is only the capability backend — never the model layer.
+  * nested_custom_gpt_required = False, legacy_platform_is_model_layer = False.
 
 This module is deliberately observational + downgrade-only.  It does NOT
 compute probabilities, does NOT assign or invent terminal labels beyond the
@@ -16,7 +16,7 @@ pass/fail logic.  It answers exactly one question, fail-closed:
 
     "Was this run executed through a governed, authenticated production path
     with all REQUIRED_FOR_CURRENT_RUN capabilities verified through configured
-    Replit production services/Actions?"
+    legacy_platform production services/Actions?"
 
 v1.1 hardening (post code-review):
   1. ATTESTATION: every record built here carries an HMAC attestation over
@@ -50,19 +50,19 @@ EXECUTION_RULE: str = "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS"
 
 # Host abstraction invariants (preserved from FMCG v1.1)
 NESTED_CUSTOM_GPT_REQUIRED: bool = False
-REPLIT_IS_MODEL_LAYER: bool = False
+legacy_platform_IS_MODEL_LAYER: bool = False
 
 # Hosts. WOW_BETTING_ENGINE remains accepted as a legacy spelling, but no
 # server route is forced to emit it as the current canonical host abstraction.
 WOW_CUSTOM_GPT: str = "WOW_CUSTOM_GPT"
 PROJECT_CHAT: str = "PROJECT_CHAT"
-REPLIT_BACKEND: str = "REPLIT_BACKEND"
+legacy_platform_BACKEND: str = "legacy_platform_BACKEND"
 _LEGACY_WOW_BETTING_ENGINE: str = "WOW_BETTING_ENGINE"
 PREFERRED_HOST: str = WOW_CUSTOM_GPT
 _GOVERNED_HOSTS: frozenset[str] = frozenset({
     PREFERRED_HOST,
     PROJECT_CHAT,
-    REPLIT_BACKEND,
+    legacy_platform_BACKEND,
 })
 
 # Backend verification statuses
@@ -78,10 +78,10 @@ BACKEND_CAPABILITY_INCOMPLETE: str = "BACKEND_CAPABILITY_INCOMPLETE"
 # existing FMCG label — no new terminal-label taxonomy is introduced.
 FALLBACK_CEILING: str = "MODEL_QUALIFIED_HOLD"
 
-# Evidence sources accepted as "configured Replit production services/Actions".
+# Evidence sources accepted as "configured legacy_platform production services/Actions".
 _PRODUCTION_CAPABILITY_SOURCES: frozenset[str] = frozenset({
-    "REPLIT_PRODUCTION_SERVICE",
-    "REPLIT_PRODUCTION_ACTION",
+    "legacy_platform_PRODUCTION_SERVICE",
+    "legacy_platform_PRODUCTION_ACTION",
 })
 
 # Probability origins that must never be presented as production-verified.
@@ -155,7 +155,7 @@ def _normalise_host(value: Any, *, default: str = PREFERRED_HOST) -> str:
 
 def _capability_verified(evidence: Any) -> bool:
     """
-    Only structured evidence stamped by a configured Replit production
+    Only structured evidence stamped by a configured legacy_platform production
     service/Action counts as verified.  Strict shape: `status` == VERIFIED
     and `verification_source` (exact key — no aliases) in the accepted set.
     Anything else — booleans, bare strings, self-asserted flags — fails closed.
@@ -235,7 +235,7 @@ def build_runtime_provenance(
 
     # PROJECT_CHAT is a supported abstraction, but direct chat context alone
     # is not a server-attested Action execution path.
-    on_governed_path = actual_host in {PREFERRED_HOST, REPLIT_BACKEND} and preferred_available
+    on_governed_path = actual_host in {PREFERRED_HOST, legacy_platform_BACKEND} and preferred_available
     production_probability_verified = bool(
         on_governed_path and authenticated_action and not unavailable
         and not local_probability and not attestation_unavailable
@@ -256,7 +256,7 @@ def build_runtime_provenance(
         elif not authenticated_action:
             fallback_reason = "AUTHENTICATED_ACTION_REQUIRED"
         elif unavailable:
-            fallback_reason = "REQUIRED_REPLIT_CAPABILITIES_UNVERIFIED"
+            fallback_reason = "REQUIRED_legacy_platform_CAPABILITIES_UNVERIFIED"
         elif local_probability:
             fallback_reason = "LOCAL_SPECIALIST_PROBABILITY_NOT_PRODUCTION_VERIFIED"
         elif attestation_unavailable:
@@ -266,7 +266,7 @@ def build_runtime_provenance(
 
     # ── Execution path / statuses / ceiling ─────────────────────────────────
     if production_probability_verified:
-        execution_path = f"{actual_host}->REPLIT_PRODUCTION_SERVICES_ACTIONS"
+        execution_path = f"{actual_host}->legacy_platform_PRODUCTION_SERVICES_ACTIONS"
         model_run_status = PREFERRED_PRODUCTION_RUN
         backend_verification_status = PRODUCTION_BACKEND_VERIFIED
         lowest_ceiling = ctx.get("lowest_ceiling")  # passthrough; no upgrade implied
@@ -276,7 +276,7 @@ def build_runtime_provenance(
         backend_verification_status = BACKEND_NOT_VERIFIED
         lowest_ceiling = FALLBACK_CEILING
     else:
-        execution_path = f"{actual_host}->REPLIT_CAPABILITY_VERIFICATION_INCOMPLETE"
+        execution_path = f"{actual_host}->legacy_platform_CAPABILITY_VERIFICATION_INCOMPLETE"
         model_run_status = BACKEND_CAPABILITY_INCOMPLETE
         backend_verification_status = BACKEND_NOT_VERIFIED
         lowest_ceiling = FALLBACK_CEILING
@@ -303,7 +303,7 @@ def build_runtime_provenance(
         "authenticated_action": authenticated_action,
         # Host abstraction + governance invariants (unconditional)
         "nested_custom_gpt_required": NESTED_CUSTOM_GPT_REQUIRED,
-        "replit_is_model_layer": REPLIT_IS_MODEL_LAYER,
+        "legacy_platform_is_model_layer": legacy_platform_IS_MODEL_LAYER,
         "can_execute": CAN_EXECUTE,
         "dry_run_only": DRY_RUN_ONLY,
         "execution_rule": EXECUTION_RULE,
@@ -339,7 +339,7 @@ _DOWNGRADE_ONLY_CONTEXT_KEYS: frozenset[str] = frozenset({
 
 
 # The only credential principal authorized to attest a Custom GPT Action
-# request. General API-key callers are valid REPLIT_BACKEND callers but remain
+# request. General API-key callers are valid legacy_platform_BACKEND callers but remain
 # unverified unless this server-owned action principal is present.
 PREFERRED_ACTION_PRINCIPAL: str = "GPT_ACTION"
 
@@ -401,8 +401,8 @@ def build_route_provenance(
             ctx["requested_host"] = WOW_CUSTOM_GPT
             ctx["actual_host"] = WOW_CUSTOM_GPT
     elif action_principal:
-        ctx["requested_host"] = REPLIT_BACKEND
-        ctx["actual_host"] = REPLIT_BACKEND
+        ctx["requested_host"] = legacy_platform_BACKEND
+        ctx["actual_host"] = legacy_platform_BACKEND
         ctx.setdefault(
             "fallback_reason",
             f"NON_ACTION_CREDENTIAL:{str(action_principal)[:40]}",

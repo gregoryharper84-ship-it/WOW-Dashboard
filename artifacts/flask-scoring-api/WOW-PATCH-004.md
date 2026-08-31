@@ -4,7 +4,7 @@
 `WOW-PATCH-004`
 
 ## Author / date
-User + Replit agent — 2026-07-01
+User + legacy platform agent — 2026-07-01
 
 ## Status
 `DRAFT`

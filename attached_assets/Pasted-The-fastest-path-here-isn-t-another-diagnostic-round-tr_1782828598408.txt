@@ -1,6 +1,6 @@
-The fastest path here isn't another diagnostic round-trip — it's letting Replit answer the actual question directly against the live API instead of you relaying speculation back and forth.
+The fastest path here isn't another diagnostic round-trip — it's letting legacy platform answer the actual question directly against the live API instead of you relaying speculation back and forth.
 
-**Send Replit this single, terminal instruction:**
+**Send legacy platform this single, terminal instruction:**
 
 ```
 Stop iterating on category=weather specifically. The category param 

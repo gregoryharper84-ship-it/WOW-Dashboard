@@ -1,7 +1,7 @@
 IMPLEMENT NOW in Build mode. The prior Gatekeeper V2 job never wrote files because the workspace was in Plan mode. Do not create another plan and do not merely verify WOW-FMCG-v1.0. Apply the prepared V2/v1.1 hardening patch to live code, then test it.
 
 Strict scope and acceptance requirements:
-1. Host abstraction: Full Model execution must not depend on locating a Replit app named "WOW Betting Engine" or invoking a nested Custom GPT. Replit remains only a capability-specific service.
+1. Host abstraction: Full Model execution must not depend on locating a legacy platform app named "WOW Betting Engine" or invoking a nested Custom GPT. legacy platform remains only a capability-specific service.
 2. Add mandatory bidirectional MORE/LESS analysis enforcement.
 3. Enforce calibration-health precheck separately from candidate dynamic calibration.
 4. Require source timestamp/freshness grading.

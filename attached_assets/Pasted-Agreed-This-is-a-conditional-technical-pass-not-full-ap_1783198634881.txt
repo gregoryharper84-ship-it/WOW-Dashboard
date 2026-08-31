@@ -10,7 +10,7 @@ FULL APPROVAL: BLOCKED pending row_id determinism + service interface confirmati
 
 The two blockers you identified are the right ones. The important one is row-key desync because it can silently make the whole patch useless while still passing tests.
 
-Required next ask to Replit/Claude
+Required next ask to legacy platform/Claude
 
 For WOW-PATCH-2026-07-04-PREGATE-AUTO-ENRICHMENT, the diff has passed conditional review, but two approval blockers remain before this can move from v16 TEST CANDIDATE to active rule.
 

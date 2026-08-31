@@ -23,7 +23,7 @@ different auth header (`X-API-Key`/`SCORING_API_KEY`) than the test file
 expects (`X-WOW-Action-Key`/`GPT_ACTION_SECRET`).
 
 **Conclusion: GitHub `main` is stale relative to what's actually deployed on
-Replit.** A diff built against it would not apply — the context lines
+legacy platform.** A diff built against it would not apply — the context lines
 wouldn't match your real file. Rather than guess and hand you something that
 fails `git apply`, here's the exact code to drop into the *real* app.py,
 built strictly from the contract `test_odds_quota_tracking.py` already
@@ -139,7 +139,7 @@ counter.
 - `py_compile` clean on both `pg_odds_quota.py` and the patched
   `gunicorn_conf.py`.
 
-## What I could NOT verify (needs Replit Agent / a real run)
+## What I could NOT verify (needs legacy platform Agent / a real run)
 
 - The exact current `_odds_quota_update` / `_odds_quota_snapshot` code in the
   live app.py (GitHub main is stale — see above).

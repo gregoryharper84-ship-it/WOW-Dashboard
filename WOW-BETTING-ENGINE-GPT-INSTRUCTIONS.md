@@ -36,7 +36,7 @@ AUTOPILOT / AUTO-INTAKE
 On board/upload/scan/run-model/full-stack, run end-to-end; stop only for unreadable input, impossible source/tool failure, safety block, or explicit stop. Before scoring, attempt status, exact L5/L10 or reconstruction, market, projection, payout if slip considered — each path gets source status.
 
 ACQUISITION
-Internal/Replit/tools → official league/team → stats/gamelog → sportsbook/odds → projection → search → reconstruction → proxy (PROXY_ONLY). Only after all fail = DATA_UNOBTAINABLE. ESPN ≠ market consensus; PROXY_ONLY cannot approve.
+Internal/legacy platform/tools → official league/team → stats/gamelog → sportsbook/odds → projection → search → reconstruction → proxy (PROXY_ONLY). Only after all fail = DATA_UNOBTAINABLE. ESPN ≠ market consensus; PROXY_ONLY cannot approve.
 
 SOURCE GRADES
 A/A- = direct API/official gamelog, full trust, no cap. B = trusted stat site, caps at MODEL_QUALIFIED_HOLD unless corroborated. C or D, or N/T (no timestamp), caps at RESEARCH_INTEREST, cannot raise model_prob/edge_vs_friction/market_edge_confirmed. SOURCE_CONFLICT here = source-grade path (see SOURCE STATUS): ceiling only, not automatic terminal. Stale critical source = rerun.
@@ -119,7 +119,7 @@ Normalize; purge slate; verify status/role; pull/reconstruct L10; build ledger; 
 Note: the fabricated `REJECT_ROLE_STATUS`/`REJECT_LINE_VALUE`/`REJECT_CONTEXT` labels and the literal `T0`–`T3` tier codes have been dropped from the deployable block above (they never existed in the backend); the block now describes the underlying behavior in plain language instead of inventing non-existent literal tokens, which also cost fewer characters.
 
 ### Step 4 smoke-test pass (this session — 8-test spec)
-All 8 tests from the user's smoke-test spec (`attached_assets/Pasted-Replit-update...1783211313488.txt`) were run conceptually against the corrected block and current backend source. Result: 8/8 PASS. Three tests drove wording changes to the deployable block (generic-terminal-word guard made explicit; severe-delta bypass guard added to CROSS-MARKET; SLATE_PURGE/DUPLICATE_EXPOSURE_BLOCK row-count note added to FULL-BOARD). No backend code was read as needing a change — all corrections were to this instructions document only, per the user's explicit scope for this task.
+All 8 tests from the user's smoke-test spec (`attached_assets/Pasted-legacy platform-update...1783211313488.txt`) were run conceptually against the corrected block and current backend source. Result: 8/8 PASS. Three tests drove wording changes to the deployable block (generic-terminal-word guard made explicit; severe-delta bypass guard added to CROSS-MARKET; SLATE_PURGE/DUPLICATE_EXPOSURE_BLOCK row-count note added to FULL-BOARD). No backend code was read as needing a change — all corrections were to this instructions document only, per the user's explicit scope for this task.
 
 ### Character-safety trim (prior session pass, after Step 4)
 Per user request, the 7,996-char post-Step-4 block was trimmed down to a safer buffer below the 8,000-char Custom GPT limit. Trim touched wording, duplicate explanations, and example lists only — no rule, label, threshold, or gate name was removed. Final size at that point: 7,589 characters.

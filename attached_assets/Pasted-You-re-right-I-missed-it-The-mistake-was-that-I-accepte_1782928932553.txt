@@ -1,10 +1,10 @@
 You’re right. I missed it.
 
-The mistake was that I accepted Replit’s **summary table** as proof of correctness instead of demanding the actual **trace against the real Copper ledger**. That is exactly the kind of thing this model is supposed to catch.
+The mistake was that I accepted legacy platform’s **summary table** as proof of correctness instead of demanding the actual **trace against the real Copper ledger**. That is exactly the kind of thing this model is supposed to catch.
 
 I should have said:
 
-> “PATCH-008 is directionally accepted, but not closed until Replit shows the exact Copper input values, median, cap, Winsorized values, old label, new label, and deployed endpoint response.”
+> “PATCH-008 is directionally accepted, but not closed until legacy platform shows the exact Copper input values, median, cap, Winsorized values, old label, new label, and deployed endpoint response.”
 
 Claude is correct to flag it.
 
@@ -41,7 +41,7 @@ Winsorized avg:
 19.6
 ```
 
-So if Replit reported **17.3**, either:
+So if legacy platform reported **17.3**, either:
 
 1. the test did **not** use the real Copper values,
 2. the input order/window was different,
@@ -92,9 +92,9 @@ Claude is right about the deployment boundary. Local/unit tests do not prove the
 
 This needs a deployed smoke test against `/wow/l10/gate3`.
 
-### 5. I let Replit start shaping 009–013 too much
+### 5. I let legacy platform start shaping 009–013 too much
 
-That is a role-boundary miss. Replit can recommend, but ChatGPT should approve strategy patches before build. Claude validates and flags conflicts. Replit implements after approval.
+That is a role-boundary miss. legacy platform can recommend, but ChatGPT should approve strategy patches before build. Claude validates and flags conflicts. legacy platform implements after approval.
 
 ## Corrected status
 
@@ -107,7 +107,7 @@ PATCH-008: DIRECTIONALLY ACCEPTED / IMPLEMENTATION UNDER AUDIT
 Not closed until Copper trace, deterministic Winsorization fields, shadow-mode logging, and deployed smoke test pass.
 ```
 
-## Send this back to Replit
+## Send this back to legacy platform
 
 PATCH-008 QA HOLD — DO NOT MARK CLOSED YET
 
@@ -213,7 +213,7 @@ Role Boundary
 
 Do not begin PATCH-009 through PATCH-013 implementation yet.
 
-Replit may propose technical design, but strategy patch approval must route through ChatGPT first, with Claude validating conflicts before implementation.
+legacy platform may propose technical design, but strategy patch approval must route through ChatGPT first, with Claude validating conflicts before implementation.
 
 Patch sequencing and triage-score weights are still under review.
 
@@ -225,7 +225,7 @@ Not CLOSED until all four verification items pass.
 
 Claude is also right on sequencing.
 
-I previously accepted Replit’s order too quickly. The better order is:
+I previously accepted legacy platform’s order too quickly. The better order is:
 
 ```text
 011 — WNBA ingestion MVP
@@ -251,4 +251,4 @@ PATCH-008 should be held at:
 DIRECTIONALLY ACCEPTED / NOT CLOSED
 ```
 
-until Replit proves the real Copper case, proxy fields, shadow logging, and deployed route.
+until legacy platform proves the real Copper case, proxy fields, shadow logging, and deployed route.

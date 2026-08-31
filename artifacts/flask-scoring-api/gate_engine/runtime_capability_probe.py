@@ -21,7 +21,7 @@ import os
 import time
 from typing import Any, Callable
 
-_SERVICE = "REPLIT_PRODUCTION_SERVICE"
+_SERVICE = "legacy_platform_PRODUCTION_SERVICE"
 
 _PROBE_TIMEOUT_SECONDS = 4
 _SUCCESS_CACHE_TTL_SECONDS = 120

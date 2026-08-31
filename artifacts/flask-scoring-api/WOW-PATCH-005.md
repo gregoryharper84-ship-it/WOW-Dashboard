@@ -4,7 +4,7 @@
 `WOW-PATCH-005`
 
 ## Author / date
-User + Replit agent — 2026-07-01
+User + legacy platform agent — 2026-07-01
 
 ## Status
 `DRAFT`
@@ -105,7 +105,7 @@ _Leave blank until status = SHIPPED._
 
 ## Pre-build checklist
 
-Before handing to Replit for implementation:
+Before handing to legacy platform for implementation:
 - [ ] Confirm MLB Stats API `vsPlayer` group returns per-handedness splits at endpoint above
 - [ ] Verify `pitcher_id` is already resolved by existing MLB data pipeline (check `_fetch_pitcher_game_log`)
 - [ ] Confirm `opp_team_id` is available in the existing request context

@@ -1,4 +1,4 @@
-You’re right. I should have consolidated the remaining work earlier. Send Replit this once:
+You’re right. I should have consolidated the remaining work earlier. Send legacy platform this once:
 
 ```text
 FINAL ONE-PASS WOW PATCH — implement, test, deploy, and return only a compact summary.
@@ -114,4 +114,4 @@ CAN_EXECUTE: false
 FAILURES: <one compact line or NONE>
 ```
 
-That is the final consolidated request. If it returns `PASS` with matching commit hashes, no further Replit iteration is necessary.
+That is the final consolidated request. If it returns `PASS` with matching commit hashes, no further legacy platform iteration is necessary.

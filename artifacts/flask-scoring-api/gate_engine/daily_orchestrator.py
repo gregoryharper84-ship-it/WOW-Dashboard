@@ -4,7 +4,7 @@ gate_engine/daily_orchestrator.py — Canonical WOW Daily Orchestration
 WOW-PATCH-2026-08-19-DAILY-CANONICAL-v1.0 (Task #277)
 
 Implements the single authoritative daily discovery-and-scoring orchestration
-that the Custom GPT submits high-level intent to.  Replit owns:
+that the Custom GPT submits high-level intent to.  legacy_platform owns:
   - Discovery (source union across all readable providers)
   - Canonical identity assignment (stable selection + market-version IDs)
   - Full-board preservation (no pre-score truncation)

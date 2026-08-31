@@ -4,7 +4,7 @@
 `WOW-PATCH-007`
 
 ## Author / date
-User + Replit agent — 2026-07-01
+User + legacy platform agent — 2026-07-01
 
 ## Status
 `DRAFT`
@@ -129,7 +129,7 @@ _Leave blank until status = SHIPPED._
 
 ## Pre-build checklist
 
-Before handing to Replit for implementation:
+Before handing to legacy platform for implementation:
 - [ ] Query odds_snapshot: `SELECT MAX(snapshot_time) - MIN(snapshot_time) AS window FROM odds_snapshot WHERE event_id = <recent_event>` — confirm closing snapshot exists within 4h of game start
 - [ ] Confirm `entry_odds_american` is stored in `llp_postmortem` (check current schema)
 - [ ] Confirm `event_id` linkage between `llp_postmortem` and `odds_snapshot`

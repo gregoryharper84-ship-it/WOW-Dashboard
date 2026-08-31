@@ -5,7 +5,7 @@ Two remaining issues:
 1. An in-memory session-ledger cache is unsafe if Flask runs multiple workers or restarts. Duplicate exposure could disappear or differ by worker. Store the ledger in a shared persistent backend—Redis or the project database—with a TTL keyed by `session_id`.
 2. Restarting the worker and “updating memory” does not prove the deployed service matches the tested code. We still need the deployment manifest and live black-box smoke test.
 
-Send Replit this:
+Send legacy platform this:
 
 ```text
 Complete activation verification.

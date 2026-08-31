@@ -3,7 +3,7 @@ Here's what I found after digging into both issues:
 **ESPN `getEspnScoreboard` — ResponseTooLargeError**
 I tested the live endpoint directly (`site.api.espn.com/.../mlb/scoreboard?dates=20260725`, scoped to a single day) and the raw response is still ~307,000 characters. That's well past what a Custom GPT Action can return in one call, which is almost certainly why it's failing even when scoped by date. Scoping by date alone won't fix it — the payload is bloated by full boxscore/odds/broadcast/leader data embedded per game.
 
-The real fix has to happen server-side (in Replit, per your own postmortem's recommendation): add a thin proxy endpoint that calls ESPN, strips the response down to just the fields the engine actually needs (event id, teams, start time, status, probable pitchers), and returns that trimmed JSON as the Action's response. That will comfortably clear the size limit. I can't edit that Replit code myself since I don't have access to your project, but I can spec out the exact trimmed field list if useful.
+The real fix has to happen server-side (in legacy platform, per your own postmortem's recommendation): add a thin proxy endpoint that calls ESPN, strips the response down to just the fields the engine actually needs (event id, teams, start time, status, probable pitchers), and returns that trimmed JSON as the Action's response. That will comfortably clear the size limit. I can't edit that legacy platform code myself since I don't have access to your project, but I can spec out the exact trimmed field list if useful.
 
 **theoddsapi.getEvents — DEACTIVATED_KEY**
 This is on your account with The Odds API — reactivating/renewing it requires you to log in and handle billing yourself; I can't do that for you.

@@ -1,4 +1,4 @@
-This is not a Custom GPT schema failure anymore. The live Replit endpoint is unhealthy.
+This is not a Custom GPT schema failure anymore. The live legacy platform endpoint is unhealthy.
 
 I tested the two routes directly:
 
@@ -14,18 +14,18 @@ The current problem is one of these:
 1. The Flask worker is down or stalled.
 2. `/wow/engine/health` is blocking on an internal dependency.
 3. The newly added route is registered in a process that is not serving the deployed URL.
-4. Replit’s deployment proxy reaches the app, but the app never finishes the response.
+4. legacy platform’s deployment proxy reaches the app, but the app never finishes the response.
 5. `/wow/governance/status` is returning an empty response instead of the structured snapshot.
 6. The worker was restarted in the development workspace but the public deployment was not redeployed/restarted.
 
 This is not caused by the governance hash or the `X-API-Key`. An authentication failure should return a prompt `401` or `403`, not hang for 15 seconds.
 
-## Send this to Replit
+## Send this to legacy platform
 
 ```text
 LIVE ENDPOINT FAILURE — INVESTIGATE DEPLOYED PROCESS
 
-The Custom GPT schema now validates, but the live Replit endpoints are
+The Custom GPT schema now validates, but the live legacy platform endpoints are
 not returning valid responses.
 
 Independent direct results:
@@ -42,21 +42,21 @@ This is now a deployed-backend failure, not a Custom GPT schema error.
 Perform the following:
 
 1. Confirm the exact public deployment handling:
-   https://create-app-gregoryharper84.replit.app
+   https://create-app-gregoryharper84.legacy platform.app
 
 2. Confirm which process and deployment serves that domain. Do not test
-   only localhost or the Replit development preview.
+   only localhost or the legacy platform development preview.
 
 3. Check the live Flask worker, deployment logs, exceptions, route table,
    process PID, uptime, port binding, and deployment revision.
 
-4. Test from outside the Replit process with:
+4. Test from outside the legacy platform process with:
 
    curl -i --max-time 10 \
-   https://create-app-gregoryharper84.replit.app/wow/engine/health
+   https://create-app-gregoryharper84.legacy platform.app/wow/engine/health
 
    curl -i --max-time 10 \
-   https://create-app-gregoryharper84.replit.app/wow/governance/status
+   https://create-app-gregoryharper84.legacy platform.app/wow/governance/status
 
 5. Both endpoints must return complete JSON within two seconds.
 
@@ -133,4 +133,4 @@ The schema successfully parsed and attempted `getWowEngineHealth`. That means:
 * ChatGPT tried the correct route.
 * Schema validation is no longer the immediate blocker.
 
-The backend now needs to return valid JSON reliably. Once Replit confirms both public endpoints respond within two seconds, test `getWowEngineHealth` again in the Custom GPT.
+The backend now needs to return valid JSON reliably. Once legacy platform confirms both public endpoints respond within two seconds, test `getWowEngineHealth` again in the Custom GPT.

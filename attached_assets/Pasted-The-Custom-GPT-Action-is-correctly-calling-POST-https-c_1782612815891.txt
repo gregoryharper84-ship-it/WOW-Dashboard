@@ -1,6 +1,6 @@
 The Custom GPT Action is correctly calling:
 
-POST https://create-app-gregoryharper84.replit.app/wow/kalshi/scan
+POST https://create-app-gregoryharper84.legacy platform.app/wow/kalshi/scan
 
 But the deployed app still returns:
 
@@ -8,7 +8,7 @@ But the deployed app still returns:
 
 This is not a GPT schema problem. The deployed Flask route is not accepting POST.
 
-Please fix the production Replit deployment.
+Please fix the production legacy platform deployment.
 
 Required implementation:
 
@@ -66,10 +66,10 @@ return jsonify({
 }), 200
 ```
 
-Also run this against the deployed URL, not only the local Replit dev server:
+Also run this against the deployed URL, not only the local legacy platform dev server:
 
 ```bash
-curl -i -X OPTIONS https://create-app-gregoryharper84.replit.app/wow/kalshi/scan
+curl -i -X OPTIONS https://create-app-gregoryharper84.legacy platform.app/wow/kalshi/scan
 ```
 
 The `Allow` header must include `POST`.
@@ -77,11 +77,11 @@ The `Allow` header must include `POST`.
 Then run:
 
 ```bash
-curl -i -X POST https://create-app-gregoryharper84.replit.app/wow/kalshi/scan \
+curl -i -X POST https://create-app-gregoryharper84.legacy platform.app/wow/kalshi/scan \
   -H "Content-Type: application/json" \
   -d '{"category":"sports","sport":"MLB","date":"2026-06-27","mode":"scan_only","min_adjusted_edge":0.04,"max_markets":50}'
 ```
 
 Expected: HTTP 200.
 
-If this works locally but not on `create-app-gregoryharper84.replit.app`, redeploy the Replit app.
+If this works locally but not on `create-app-gregoryharper84.legacy platform.app`, redeploy the legacy platform app.

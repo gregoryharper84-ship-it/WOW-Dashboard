@@ -128,7 +128,7 @@ This prevents `LLP_PLAYABLE` from becoming a backdoor full-stake bet.
 
 ---
 
-## Send this back to Claude/Replit
+## Send this back to Claude/legacy platform
 
 ChatGPT reviewed the five SKILL.md files. Overall status: approved pending two required corrections and three small tighten-ups.
 
@@ -219,4 +219,4 @@ LLP_PLAYABLE cannot become a backdoor full-stake bet.
 
 After these edits, the skills are approved for golden test suite execution.
 
-After Claude/Replit patches those, next step is the **10-case golden test suite**. The skills are close; I would not add more features until those two CLV corrections are fixed.
+After Claude/legacy platform patches those, next step is the **10-case golden test suite**. The skills are close; I would not add more features until those two CLV corrections are fixed.

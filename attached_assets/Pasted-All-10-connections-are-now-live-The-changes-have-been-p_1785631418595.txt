@@ -7,7 +7,7 @@ Here's the final rundown of what's live on WOW Kalshi Engine now:
 2. NWS weather + climate reports (9 ops) — gridpoint/hourly forecasts, station observations, alerts, official daily climate reports
 3. NOAA/NCEI daily summaries (2 ops) — historical station data
 
-**Routed through your Replit proxy:**
+**Routed through your legacy platform proxy:**
 4. Kalshi orderbooks — added as a `kalshiOrderbooks` NOT_YET_DEPLOYED placeholder route on your existing proxy action, since that's where the RSA signing logic already lives
 
 **Vendor stubs (need your API keys when you sign up — schema is ready, just drop in credentials):**
@@ -20,4 +20,4 @@ Here's the final rundown of what's live on WOW Kalshi Engine now:
 9. Probability Model (weather bracket, game winner, player prop endpoints)
 10. Calibration Database (record predictions/outcomes, get metrics)
 
-A few caveats worth remembering: I substituted SportsDataIO for Sportradar since Sportradar's site was blocked for me to research — you may want to verify that's your preferred vendor. The PrizePicks and odds-feed schemas are best-effort shapes since I couldn't get into OpticOdds' gated reference docs, so double-check those against the real vendor docs once you pick one. And the four NOT_YET_DEPLOYED stubs are schema-only placeholders — they won't do anything until you actually build that backend (on Replit or elsewhere).
+A few caveats worth remembering: I substituted SportsDataIO for Sportradar since Sportradar's site was blocked for me to research — you may want to verify that's your preferred vendor. The PrizePicks and odds-feed schemas are best-effort shapes since I couldn't get into OpticOdds' gated reference docs, so double-check those against the real vendor docs once you pick one. And the four NOT_YET_DEPLOYED stubs are schema-only placeholders — they won't do anything until you actually build that backend (on legacy platform or elsewhere).

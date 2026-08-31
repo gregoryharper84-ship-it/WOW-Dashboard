@@ -11,7 +11,7 @@ My role is to:
 * audit the outputs
 * identify weak spots
 * patch the model after losses
-* create clean prompts/instructions for Claude, Replit, and the dashboard
+* create clean prompts/instructions for Claude, legacy platform, and the dashboard
 * make sure the system stays disciplined instead of turning into “pick chasing”
 
 The current model philosophy is: **screenshots or boards define what is available, but the full model determines what is playable**. That means the board is just the menu; the engine still has to research status, L5/L10, role, matchup, market sanity, and failure paths before anything gets approved. 
@@ -123,7 +123,7 @@ Claude is mainly helping you implement the model inside your actual app/codebase
 
 Claude’s role is usually:
 
-* editing Replit code
+* editing legacy platform code
 * updating app.py or frontend logic
 * wiring response fields
 * creating arrays like approved, rejected, watchlist, market_verified, model_qualified
@@ -136,9 +136,9 @@ Claude is not the master decision authority. Claude is more like the **engineer/
 
 The risk with Claude is that it may implement what you ask but not always understand the full betting model context unless you give it the latest master instructions. That is why alignment testing matters.
 
-## 7. Replit = the backend engine / API layer
+## 7. legacy platform = the backend engine / API layer
 
-Replit is where the model becomes executable.
+legacy platform is where the model becomes executable.
 
 It can host:
 
@@ -152,7 +152,7 @@ It can host:
 * integrations with odds/stat APIs
 * dashboard data feeds
 
-Replit should be the place where the system actually runs repeatable workflows like:
+legacy platform should be the place where the system actually runs repeatable workflows like:
 
 * board intake
 * daily scan
@@ -164,7 +164,7 @@ Replit should be the place where the system actually runs repeatable workflows l
 
 But the rule is important:
 
-> Replit/WOW score supports the decision. It does not approve the bet by itself.
+> legacy platform/WOW score supports the decision. It does not approve the bet by itself.
 
 Your master model says Random Forest/WOW score is support only, and missing L5/L10, market gap, projection, role, or official status blocks Final Approval. 
 
@@ -205,7 +205,7 @@ PrizePicks / BetUS / Market Board
         ↓
 Board Intake Agent
         ↓
-Replit Backend / API Scan
+legacy platform Backend / API Scan
         ↓
 Stats + Odds + Status + Market Data
         ↓
@@ -234,7 +234,7 @@ Updated Model Rules
 | **OddsLinker**              | Arbitrage, stale lines, mispriced props, market discrepancies |
 | **PrizeProfits**            | PrizePicks prop pools and slip construction                   |
 | **Claude**                  | Code implementation and refactoring                           |
-| **Replit**                  | Backend APIs, scans, scoring, JSON outputs                    |
+| **legacy platform**                  | Backend APIs, scans, scoring, JSON outputs                    |
 | **WOW Dashboard**           | Visual display and decision cockpit                           |
 
 ## The biggest alignment rule
@@ -255,7 +255,7 @@ Everything should obey the same approval ladder:
 No component should skip ahead.
 
 Claude should not code a shortcut.
-Replit should not return “approved” from a score alone.
+legacy platform should not return “approved” from a score alone.
 The dashboard should not show a pick as green without proof.
 LLP should not bet a team just because it is likely to win.
 PrizeProfits should not build slips before the approved pool exists.
@@ -267,7 +267,7 @@ When aligned correctly, this becomes one cohesive machine:
 
 **ChatGPT designs the rules.**
 **Claude implements the rules.**
-**Replit runs the rules.**
+**legacy platform runs the rules.**
 **WOW Engine validates the bets.**
 **LLP finds team-side edges.**
 **OddsLinker finds market inefficiencies.**

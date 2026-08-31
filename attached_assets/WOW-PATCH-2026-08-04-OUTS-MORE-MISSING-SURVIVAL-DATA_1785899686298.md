@@ -10,8 +10,8 @@ label=v16 test candidate
 ```
 
 This is a proposal, not an active rule. It has not been applied to the live
-Replit deployment — code, tests, and verification below are ready to hand
-to Replit Agent, but activation is a decision for the human operator per
+legacy platform deployment — code, tests, and verification below are ready to hand
+to legacy platform Agent, but activation is a decision for the human operator per
 project governance (Claude is not decision authority).
 
 ## Purpose

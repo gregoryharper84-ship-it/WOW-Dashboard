@@ -37,7 +37,7 @@ type LLPGameContext = {
   };
 };
 
-This is the object your Replit endpoint should build before it calls LLP.
+This is the object your legacy platform endpoint should build before it calls LLP.
 
 ⸻
 
@@ -238,7 +238,7 @@ Only LLP can approve bets.
 
 ⸻
 
-Step 7 — Update the Replit LLP endpoint
+Step 7 — Update the legacy platform LLP endpoint
 
 Before:
 
@@ -256,7 +256,7 @@ const sideRows = enrichedGames.flatMap(game => [
 const batches = chunkByGame(sideRows);
 for (const batch of batches) {
   await runLLPConnectedModel({
-    source: "replit_verified_context",
+    source: "legacy platform_verified_context",
     model: "llp_engine",
     board_type: "team_betting",
     date: today,

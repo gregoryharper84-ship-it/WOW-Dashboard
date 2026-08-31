@@ -13,7 +13,7 @@ Step 4 — PATCH-014 Orchestrator / Unified Model Run
 The key advice: **013A must come before 012.**
 Do not build the triage score until role-state context exists, or the score will rank bad all-games L10 signals too highly.
 
-Send this to Replit:
+Send this to legacy platform:
 
 FULL PATCH BUNDLE DIRECTIVE — WOW v16 CLEAN CORE
 

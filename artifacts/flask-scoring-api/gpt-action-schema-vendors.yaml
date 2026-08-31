@@ -11,13 +11,13 @@ info:
       - PrizePicks board (public player-prop board, no key required)
       - Additional odds feed (supplemental line source)
 
-    All calls are PROXIED through the WOW Replit backend so API keys never
-    leave the server.  The GPT sends X-API-Key (WOW action key) to the Replit
+    All calls are PROXIED through the WOW legacy_platform backend so API keys never
+    leave the server.  The GPT sends X-API-Key (WOW action key) to the legacy_platform
     proxy; the proxy forwards requests to the vendor with the vendor's key.
 
     To activate any vendor:
       1. Obtain the vendor API key.
-      2. Set the key as a Replit secret (e.g. SPORTRADAR_API_KEY).
+      2. Set the key as a legacy_platform secret (e.g. SPORTRADAR_API_KEY).
       3. No schema changes required — only credential entry.
 
     Status flags in every response:
@@ -27,8 +27,8 @@ info:
 
 # ── Server ────────────────────────────────────────────────────────────────────
 servers:
-  - url: https://create-app-gregoryharper84.replit.app
-    description: WOW Replit backend proxy (all vendor calls route through here)
+  - url: https://create-app-gregoryharper84.legacy_platform.app
+    description: WOW legacy_platform backend proxy (all vendor calls route through here)
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 paths:
@@ -47,7 +47,7 @@ paths:
         and player stat lines for a completed or in-progress game.
 
         STUB: Returns vendor_status=STUB_NO_CREDENTIAL until SPORTRADAR_API_KEY
-        is set on the Replit server.  Schema shape is final.
+        is set on the legacy_platform server.  Schema shape is final.
       security:
         - ApiKeyAuth: []
       parameters:
@@ -177,7 +177,7 @@ paths:
         participating sportsbooks.
 
         STUB: Returns vendor_status=STUB_NO_CREDENTIAL until SDIO_API_KEY
-        is set on the Replit server.  Schema shape is final.
+        is set on the legacy_platform server.  Schema shape is final.
       security:
         - ApiKeyAuth: []
       parameters:
@@ -447,5 +447,5 @@ components:
       name: X-API-Key
       description: >
         WOW action key (SCORING_API_KEY).  This authenticates the GPT to the
-        Replit proxy — the proxy handles all vendor credentials internally.
+        legacy_platform proxy — the proxy handles all vendor credentials internally.
         Set X-API-Key in the GPT Action authentication settings.

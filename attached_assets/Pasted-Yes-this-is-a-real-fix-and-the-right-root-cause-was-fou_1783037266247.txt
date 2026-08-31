@@ -28,7 +28,7 @@ Those are single-event binary props, not normal projection props. A strong L10 h
 
 One thing I would still harden
 
-Tell Replit to add a post-scan invariant, not just classifier logic.
+Tell legacy platform to add a post-scan invariant, not just classifier logic.
 
 At the end of run_scan(), before output/rendering, add a final safety check:
 
@@ -85,7 +85,7 @@ Future patch: low-line volatility tax for 1.5 / 2.5 by market type
 
 Add this final regression test
 
-Tell Replit to add this if they have not:
+Tell legacy platform to add this if they have not:
 
 Input:
 sport = MLB

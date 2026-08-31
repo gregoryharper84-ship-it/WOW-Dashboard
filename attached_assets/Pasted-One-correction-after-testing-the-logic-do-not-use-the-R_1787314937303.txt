@@ -1,8 +1,8 @@
-One correction after testing the logic: **do not use the Replit Agent-rendered copy I just sent.** Its response mangled several shell redirections and regex characters in transit. No commands were executed and no files were modified.
+One correction after testing the logic: **do not use the legacy platform Agent-rendered copy I just sent.** Its response mangled several shell redirections and regex characters in transit. No commands were executed and no files were modified.
 
 Also, the proposed `$(NF-1)` TOC parser is actually less safe when the owner field is absent: it would return `public` instead of the table name. For these WOW identifiers, the original positional parse is safer because the table name remains field 6 whether or not an owner follows it.
 
-Use this exact block **directly in Replit Shell**:
+Use this exact block **directly in legacy platform Shell**:
 
 ```bash
 set -euo pipefail
@@ -116,7 +116,7 @@ Report:
 ```text
 filename =
 size_bytes =
-sha256_replit =
+sha256_legacy platform =
 sha256_downloaded =
 sha_match =
 toc_count =

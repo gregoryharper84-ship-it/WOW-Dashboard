@@ -50,6 +50,6 @@ STAGE_B_AUTOMATICALLY_STARTS=false
 
 With those two additions, **click Build in background**.
 
-Then we let Replit build both engines completely offline. When it finishes, we audit Stage A against the allowed-file boundary and full-repo regression before authorizing a single production wiring change in Stage B.
+Then we let legacy platform build both engines completely offline. When it finishes, we audit Stage A against the allowed-file boundary and full-repo regression before authorizing a single production wiring change in Stage B.
 
 That gets us speed without giving the task any opportunity to quietly repair production while it is supposed to be building the machinery offline.

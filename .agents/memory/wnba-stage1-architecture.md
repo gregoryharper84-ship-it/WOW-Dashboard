@@ -93,7 +93,7 @@ Spec says cross-slip applies to all sports (max_alternate_lines_same_distributio
 - REJECT_CROSS_SLIP_CONCENTRATION blocker tag now reads `alternate_line_same_direction` (was `alternate_line_or_same_distribution`)
 
 ## ODDS API key resolution (fixed July 31)
-`services/odds_api.py` `_get()` now resolves: `ODDS_API_PAID_KEY` → `ODDS_API_FREE_KEY` → `ODDS_API_KEY` (legacy). Was reading only `ODDS_API_KEY` which is absent in Replit secrets → always "invalid ODDS_API_KEY". Module-level `ODDS_API_KEY` constant kept for back-compat only.
+`services/odds_api.py` `_get()` now resolves: `ODDS_API_PAID_KEY` → `ODDS_API_FREE_KEY` → `ODDS_API_KEY` (legacy). Was reading only `ODDS_API_KEY` which is absent in legacy platform secrets → always "invalid ODDS_API_KEY". Module-level `ODDS_API_KEY` constant kept for back-compat only.
 
 ## WNBA enrichment key split (applied Aug 3 — permanent)
 `opportunity_engine.py` and `l5_l10_ledger.py` both previously read `enrichment["game_log"]` but needed incompatible formats:

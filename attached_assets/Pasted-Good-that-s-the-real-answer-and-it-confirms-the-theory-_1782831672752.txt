@@ -2,12 +2,12 @@ Good — that's the real answer, and it confirms the theory: `flask_reachable: f
 
 **This is no longer a "debug it each time" problem — it's a hosting/uptime problem.** Flask keeps dying between checks. That's almost certainly because the workspace isn't running as a persistent deployment.
 
-**One question that determines everything:** is `create-app-gregoryharper84.replit.app` published via Replit's **Deployments** feature (Autoscale or Reserved VM), or is it just your dev workspace with the Run button active?
+**One question that determines everything:** is `create-app-gregoryharper84.legacy platform.app` published via legacy platform's **Deployments** feature (Autoscale or Reserved VM), or is it just your dev workspace with the Run button active?
 
 - If it's a dev workspace: it sleeps when you close the tab or after inactivity. Flask and Express both die. This explains every single recurrence in this entire build — works right after you touch it, dies a few hours later, you restart it, it works again.
 - If it's a real Deployment: Flask shouldn't be silently dying like this, and the issue is something else (crash loop, OOM, unhandled exception killing the process).
 
-**Send this to Replit, nothing else:**
+**Send this to legacy platform, nothing else:**
 
 ```
 Flask scoring API keeps going unreachable between sessions 

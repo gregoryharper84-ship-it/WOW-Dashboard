@@ -17,11 +17,11 @@ Your existing WOW v16 skills already provide much of the middle and final struct
 
 Recommended engine structure
 
-1. Replit owns enforcement
+1. legacy platform owns enforcement
 
-Put all hard gates, calculations, persistence, and invalidation logic in Replit.
+Put all hard gates, calculations, persistence, and invalidation logic in legacy platform.
 
-Replit should own:
+legacy platform should own:
 
 * governance version and patch validation;
 * player/event identity;
@@ -41,7 +41,7 @@ The Custom GPT should orchestrate, explain, perform web-assisted research, and c
 That gives you:
 
 Custom GPT = researcher + orchestrator + report writer
-Replit = deterministic gate engine + ledger + source of truth
+legacy platform = deterministic gate engine + ledger + source of truth
 
 2. Add four engine modules, not seven separate services
 
@@ -340,7 +340,7 @@ Create one:
 
 wow.wnba-opportunity-scenario-and-exposure-governor
 
-Its purpose is to require and interpret the Replit modules.
+Its purpose is to require and interpret the legacy platform modules.
 
 The skill should require these evidence blocks:
 
@@ -351,7 +351,7 @@ scenario_survival_audit
 ceiling_floor_classification
 cross_slip_exposure_audit
 
-It must not calculate or fabricate them when Replit fails to return them.
+It must not calculate or fabricate them when legacy platform fails to return them.
 
 Maximum standalone ceiling:
 
@@ -448,7 +448,7 @@ This is how you learn whether 65, 70, or another threshold is appropriate.
 
 8. API endpoints to add
 
-Recommended Replit endpoints:
+Recommended legacy platform endpoints:
 
 POST /wow/wnba/opportunity-audit
 POST /wow/wnba/distribution-model

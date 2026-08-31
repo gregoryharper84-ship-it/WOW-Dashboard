@@ -1,9 +1,9 @@
 Yes, that’s okay — **but I would not fully remove healthCheck unless it keeps blocking you**.
 
-What Replit is saying makes sense:
+What legacy platform is saying makes sense:
 
 ```txt
-/health works from browser/Replit = backend is fine
+/health works from browser/legacy platform = backend is fine
 /health gets 403 from ChatGPT when API key header is attached = auth/proxy/schema behavior issue
 ```
 
@@ -17,10 +17,10 @@ GPT Actions are configured through an OpenAPI schema and auth settings, so what 
 
 ## Best move
 
-Tell Replit this:
+Tell legacy platform this:
 
 ```txt
-Yes, remove healthCheck from the Custom GPT schema only. Keep /health in the Replit backend for browser/manual testing, but do not expose it as a GPT Action.
+Yes, remove healthCheck from the Custom GPT schema only. Keep /health in the legacy platform backend for browser/manual testing, but do not expose it as a GPT Action.
 
 The Custom GPT schema should only expose protected endpoints that require X-API-Key, especially:
 
@@ -67,7 +67,7 @@ Call scoreProp with this exact payload and show raw response:
 
 ## Important correction
 
-If Replit says “remove healthCheck from the schema,” that means:
+If legacy platform says “remove healthCheck from the schema,” that means:
 
 ```txt
 Remove /health from the GPT Action schema
@@ -79,7 +79,7 @@ Not:
 Delete /health from your backend
 ```
 
-Keep `/health` in Replit. It’s useful for manual debugging in the browser.
+Keep `/health` in legacy platform. It’s useful for manual debugging in the browser.
 
 ## Final verdict
 

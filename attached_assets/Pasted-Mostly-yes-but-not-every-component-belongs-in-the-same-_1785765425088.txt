@@ -109,7 +109,7 @@ The gate engine does not necessarily need to contain every model internally. It 
 
 ## Practical answer for your current setup
 
-Your Replit custom engine should become the authoritative home for:
+Your legacy platform custom engine should become the authoritative home for:
 
 1. **Policy enforcement**
 2. **Workflow orchestration**

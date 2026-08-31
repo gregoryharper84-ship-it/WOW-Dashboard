@@ -130,7 +130,7 @@ only if a future patch activates the immutable prediction ledger.
 DASHBOARD IMPACT:  No — analytical/skill-layer only at this stage.
 
 ─────────────────────────────────────────────────
-REPLIT BACKEND DEPENDENCY RESOLUTION (2026-08-05)
+legacy platform BACKEND DEPENDENCY RESOLUTION (2026-08-05)
 ─────────────────────────────────────────────────
 "Immutable prediction ledger":
   STATUS: NOT_AVAILABLE — Step 15 degrades to PREDICTION_WRITE_UNAVAILABLE

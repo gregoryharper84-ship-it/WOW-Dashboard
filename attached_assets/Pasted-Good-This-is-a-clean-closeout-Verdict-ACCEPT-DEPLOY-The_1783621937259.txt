@@ -28,7 +28,7 @@ can_execute=false
 WOW-PATCH-2026-07-09-KALSHI-CONTRACT-EXECUTION-OVERLAY
 Implementation status: ACCEPTED
 
-Replit confirmed:
+legacy platform confirmed:
 - Canonical label renamed to LLP_PLAYABLE_LIMIT_ONLY_DRY_RUN.
 - Bare LLP_PLAYABLE_LIMIT_ONLY is forbidden as final output.
 - normalize_label() maps legacy/bare label to canonical dry-run label.
@@ -41,7 +41,7 @@ Deployment verdict:
 DEPLOY.
 ```
 
-## One thing to tell Replit next
+## One thing to tell legacy platform next
 
 Now that label drift is fixed, the next required addition is **ledger tracking for no-fill vs hypothetical-fill**. This prevents the model from counting a correct prediction as a “win” if the limit price never would have filled.
 

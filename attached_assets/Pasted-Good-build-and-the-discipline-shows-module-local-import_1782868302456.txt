@@ -14,7 +14,7 @@ I need to confirm the live table matches exactly what's in the verification doc 
 - What was the actual Kalshi market price for the ≥85 bracket at evaluation time? `edge: 0.65` only means something next to a real yes_ask — if the bracket was already trading near $0.99 because the day's high was obviously going to clear 85°F (which it sounds like it did, being June), a 65-point "edge" against an already-correctly-priced market is a calculation bug, not a real opportunity.
 - Mutual exclusivity check — does the full bracket set for Chicago today actually sum to ~1.0 across all 6 brackets, or did this test only evaluate the one bracket in isolation? An edge that large on one bracket without checking the full distribution is a red flag for a normalization bug.
 
-**Send this exact diagnostic request to Replit before treating PLAYABLE as real:**
+**Send this exact diagnostic request to legacy platform before treating PLAYABLE as real:**
 
 ```
 The Chicago weather/evaluate test returned edge: 0.65 on the ≥85°F bracket, 

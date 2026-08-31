@@ -15,7 +15,7 @@ This is no longer a schema-validation problem. It is one of these:
 1. /api/wow/kalshi/health is not mounted
 2. Route is behind auth and GPT is not sending SCORING_API_KEY
 3. Backend is returning 401/403/404/500 instead of JSON
-4. Replit proxy is returning HTML or redirect
+4. legacy platform proxy is returning HTML or redirect
 5. Express cannot reach Flask/internal Kalshi service
 ```
 
@@ -23,10 +23,10 @@ This is no longer a schema-validation problem. It is one of these:
 
 Do **not** keep testing scan yet. First make health return JSON.
 
-Run this from Replit Shell or your local terminal:
+Run this from legacy platform Shell or your local terminal:
 
 ```bash
-curl -i https://create-app-gregoryharper84.replit.app/api/wow/kalshi/health
+curl -i https://create-app-gregoryharper84.legacy platform.app/api/wow/kalshi/health
 ```
 
 ### If it returns `401` or `403`
@@ -104,7 +104,7 @@ app.get("/api/wow/kalshi/health", async (req, res) => {
 });
 ```
 
-## Send this to Replit/Claude
+## Send this to legacy platform/Claude
 
 ```text
 PATCH: KALSHI_HEALTH_MUST_RETURN_JSON

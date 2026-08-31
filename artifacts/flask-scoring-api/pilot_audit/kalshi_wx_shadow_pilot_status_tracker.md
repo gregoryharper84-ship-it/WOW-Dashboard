@@ -26,7 +26,7 @@ These are class-level constants in `gate_engine/kalshi_wx_shadow_client.py` (lin
 | `SHADOW_RESEARCH_API_ENABLED` | `(not set)` in environment — resolves to `False` |
 | `KALSHI_WX_SHADOW_AGENT_ENABLED` | `false` |
 
-`SHADOW_RESEARCH_API_ENABLED` was passed only as inline subprocess env during the pilot runner shell invocations and was never persisted to Replit env vars. Naturally absent after subprocess exit.
+`SHADOW_RESEARCH_API_ENABLED` was passed only as inline subprocess env during the pilot runner shell invocations and was never persisted to legacy platform env vars. Naturally absent after subprocess exit.
 
 ---
 
@@ -52,7 +52,7 @@ All 130 rows have `model='claude-haiku-4-5-20251001'`, `model IS NULL = 0` (Step
 
 4. **PROVISIONAL calibration throughout.** Without live research client execution, calibration status on all outputs is `PROVISIONAL`. No `CALIBRATED` labels were produced.
 
-5. **External data sources partially unavailable.** BBRef and similar external hosts are blocked from the Replit container. NWS primary was used for all weather sourcing.
+5. **External data sources partially unavailable.** BBRef and similar external hosts are blocked from the legacy platform container. NWS primary was used for all weather sourcing.
 
 6. **Step 14B model column was NULL until Step 14D backfill.** The backfill was executed once after Step 14D and confirmed: 130 rows updated, 0 remaining NULL.
 

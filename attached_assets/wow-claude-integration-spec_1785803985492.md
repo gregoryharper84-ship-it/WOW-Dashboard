@@ -6,7 +6,7 @@ Purpose: define the exact handoff between screenshot ingestion (Claude Vision), 
 
 Two valid patterns. Recommend running both:
 
-- **Backend-orchestrated (for automation):** Replit's Python backend calls the Claude API at two defined points — vision extraction and gap-fill reasoning — and owns the rest of the pipeline. This is what should run when props are pulled programmatically (cron, dashboard refresh, batch scoring).
+- **Backend-orchestrated (for automation):** legacy platform's Python backend calls the Claude API at two defined points — vision extraction and gap-fill reasoning — and owns the rest of the pipeline. This is what should run when props are pulled programmatically (cron, dashboard refresh, batch scoring).
 - **Claude-orchestrated (for interactive review):** this chat session, using the wow-* skills already built. Claude drives the sequence directly when Greg pastes a screenshot or asks "score this slip." This is what's happening today.
 
 Both should call the *same* underlying pipeline logic so results never diverge. The contract below is written from the backend-orchestrated angle since that's the missing piece; the chat/skills layer already approximates it manually.
@@ -172,7 +172,7 @@ Hard rule: Claude reports what it finds or says unavailable — it does not esti
 | NBA/WNBA counting stats | Poisson: `P(X≥line) = 1-CDF(floor(line), λ=season_avg)` | Claude computes until codified |
 | Binary/game props | Logistic from no-vig probability + L5/L10 delta | Claude computes until codified |
 
-Confirmed against the live codebase by Replit — build order and formulas match.
+Confirmed against the live codebase by legacy platform — build order and formulas match.
 
 ```json
 {

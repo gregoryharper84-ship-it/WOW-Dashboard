@@ -1,4 +1,4 @@
-Yes — the **WOW Betting Engine** still needs a few alignment checks/patches so it stays fully synced with **Replit, Claude, and the WOW Dashboard**.
+Yes — the **WOW Betting Engine** still needs a few alignment checks/patches so it stays fully synced with **legacy platform, Claude, and the WOW Dashboard**.
 
 Right now, based on what’s been built:
 
@@ -6,32 +6,32 @@ Right now, based on what’s been built:
 LLP Team Betting Engine = mostly aligned
 PrizePicks / WOW prop pipeline = connected, but needs final alignment checks
 Claude = connected for props, not yet fully for LLP team betting
-WOW Dashboard = needs to read/display the same new fields from Replit
+WOW Dashboard = needs to read/display the same new fields from legacy platform
 ```
 
 # What is needed for WOW Betting Engine alignment
 
-## 1. Make Replit the official execution source
+## 1. Make legacy platform the official execution source
 
-The WOW Betting Engine should stop treating its own text response as the final source of truth when the Replit action is available.
+The WOW Betting Engine should stop treating its own text response as the final source of truth when the legacy platform action is available.
 
 Update WOW GPT instructions to say:
 
 ```text
-When the Replit connected-model action is available, use it as the execution source of truth.
+When the legacy platform connected-model action is available, use it as the execution source of truth.
 
 For PrizePicks/player props:
 - Send board props to /run-connected-model.
-- Use WOW output, Claude audit status, final_decision_source, final_approved_pool, approved_pool, conditional_pool, watch_pool, and reject_pool from Replit.
-- Do not override Replit’s final labels manually.
-- If Claude fails, clearly label outputs as unaudited and use the fallback labels from Replit.
+- Use WOW output, Claude audit status, final_decision_source, final_approved_pool, approved_pool, conditional_pool, watch_pool, and reject_pool from legacy platform.
+- Do not override legacy platform’s final labels manually.
+- If Claude fails, clearly label outputs as unaudited and use the fallback labels from legacy platform.
 
 For LLP/team betting:
-- Use llp_badge and final_decision_source from Replit.
+- Use llp_badge and final_decision_source from legacy platform.
 - Only ANCHOR and BET are actionable.
 ```
 
-This keeps ChatGPT from inventing a different decision than Replit.
+This keeps ChatGPT from inventing a different decision than legacy platform.
 
 ---
 
@@ -61,13 +61,13 @@ Interpretation:
 | `final_decision_source: wow_only_fallback` | WOW-only, unaudited            |
 | `Model Qualified - Unaudited`              | Play is not fully cleared      |
 
-WOW should not call something “Final Approved” if Replit marks it unaudited.
+WOW should not call something “Final Approved” if legacy platform marks it unaudited.
 
 ---
 
 ## 3. Update WOW Dashboard to display the same fields
 
-The dashboard needs to show what Replit now returns. Otherwise the GPT and dashboard may look different.
+The dashboard needs to show what legacy platform now returns. Otherwise the GPT and dashboard may look different.
 
 Dashboard should display:
 
@@ -180,7 +180,7 @@ This is not always required for the Action to work, but it helps ChatGPT reason 
 Use this in the WOW Betting Engine after publishing:
 
 ```text
-Run a WOW alignment test using the Replit action.
+Run a WOW alignment test using the legacy platform action.
 
 Do not generate picks outside the API response.
 
@@ -202,9 +202,9 @@ Do not build slips unless the API returns approved slip-eligible plays.
 
 ---
 
-# What to ask Replit to check next
+# What to ask legacy platform to check next
 
-Send Replit this:
+Send legacy platform this:
 
 ```text
 Please run an end-to-end WOW Betting Engine alignment check.
@@ -246,11 +246,11 @@ Also add a visible badge on the dashboard:
 
 | Component              |                                    Status | Needed                           |
 | ---------------------- | ----------------------------------------: | -------------------------------- |
-| Replit prop pipeline   |                            Mostly aligned | Test final fields after publish  |
+| legacy platform prop pipeline   |                            Mostly aligned | Test final fields after publish  |
 | Claude for props       | Aligned, but depends on Anthropic credits | Add credits or use fallback      |
-| Replit LLP pipeline    |                          Strongly aligned | Optional Claude audit layer next |
+| legacy platform LLP pipeline    |                          Strongly aligned | Optional Claude audit layer next |
 | WOW Dashboard          |                        Needs verification | Must display new fields/badges   |
-| WOW Betting Engine GPT |                  Needs instruction update | Must obey Replit final labels    |
+| WOW Betting Engine GPT |                  Needs instruction update | Must obey legacy platform final labels    |
 | LLP Team Betting GPT   |                            Mostly aligned | Must obey `llp_badge`            |
 
 # Bottom line
@@ -258,11 +258,11 @@ Also add a visible badge on the dashboard:
 The main thing needed now is **not another model patch**. It is an **alignment/display patch**:
 
 ```text
-WOW GPT must treat Replit as source of truth.
+WOW GPT must treat legacy platform as source of truth.
 Claude audit status must be visible.
-WOW Dashboard must read the same Replit fields.
+WOW Dashboard must read the same legacy platform fields.
 Unaudited fallback must be clearly labeled.
-Final Approved cannot appear unless Replit actually returns it.
+Final Approved cannot appear unless legacy platform actually returns it.
 ```
 
-Once those are done, the WOW Betting Engine, Replit, Claude, and WOW Dashboard will all be aligned.
+Once those are done, the WOW Betting Engine, legacy platform, Claude, and WOW Dashboard will all be aligned.

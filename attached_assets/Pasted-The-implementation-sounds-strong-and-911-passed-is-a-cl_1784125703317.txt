@@ -2,7 +2,7 @@ The implementation sounds strong, and `911 passed` is a clean baseline. But don�
 
 Most important correction: changing a test to “today’s date” makes it nondeterministic. Inject/freeze the application clock and use a fixed fixture date. Otherwise that test can begin failing—or testing the wrong behavior—tomorrow.
 
-Send Replit this finalization prompt:
+Send legacy platform this finalization prompt:
 
 ```text
 Finalize WOW-PATCH-2026-07-15-PROP-CALIBRATION-EXPOSURE-AND-SLIP-GOVERNANCE.
@@ -82,9 +82,9 @@ Before activating:
 Return the deployment manifest and exact black-box test results. Do not activate if any check fails.
 ```
 
-One additional concern: the handshake must be mandatory, not optional. If an old GPT client calls the scoring route without a hash, Replit should fail closed with `409 RUN_INVALID_GOVERNANCE_MISMATCH`, not silently fall back.
+One additional concern: the handshake must be mandatory, not optional. If an old GPT client calls the scoring route without a hash, legacy platform should fail closed with `409 RUN_INVALID_GOVERNANCE_MISMATCH`, not silently fall back.
 
-Once Replit returns the deployment manifest, put these exact values into the engine/GPT configuration:
+Once legacy platform returns the deployment manifest, put these exact values into the engine/GPT configuration:
 
 * `master_spec_version`
 * `active_patch_ids`

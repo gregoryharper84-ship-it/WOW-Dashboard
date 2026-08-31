@@ -1,4 +1,4 @@
-This is a **strong implementation report**, and the architecture matches the patch intent. Based on what Replit reported, the important enforcement points are now in place:
+This is a **strong implementation report**, and the architecture matches the patch intent. Based on what legacy platform reported, the important enforcement points are now in place:
 
 * PATCH-014 through PATCH-020 are implemented.
 * Card size is capped at three.
@@ -22,9 +22,9 @@ PRODUCTION_CONFIDENCE=CONDITIONAL
 
 The remaining concern is not the design. It is proving that the **live request path actually uses the patched finalizer**, rather than only proving the helper functions and dedicated test endpoint work.
 
-## What Replit should verify next
+## What legacy platform should verify next
 
-Ask Replit to run these end-to-end tests through the same endpoint your normal WOW model calls:
+Ask legacy platform to run these end-to-end tests through the same endpoint your normal WOW model calls:
 
 ### 1. Four-pick Power rejection
 
@@ -134,9 +134,9 @@ cm_daily_exposure
 cm_settled...
 ```
 
-Have Replit provide the complete migration list, including every new table and column. That matters because a passing endpoint can still hide missing persistence fields.
+Have legacy platform provide the complete migration list, including every new table and column. That matters because a passing endpoint can still hide missing persistence fields.
 
-Send Replit this final instruction:
+Send legacy platform this final instruction:
 
 > Run end-to-end tests through the actual production model/slip endpoint, not only `/wow/slip/regression-tests`. Provide the raw JSON for: four-pick Power rejection, five-pick Flex shrink, 1IP quarantine, duplicate exposure across two requests, weakest-leg removal, fragile-card rejection, and a settled $5 Flex returning $2.50. Also provide the full schema migration list and prove that a removed leg cannot reappear in the final serializer.
 

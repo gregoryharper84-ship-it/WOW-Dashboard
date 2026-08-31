@@ -17,8 +17,8 @@
 # 1. Check health
 curl -s https://<production-url>/wow/engine/health | python3 -m json.tool
 
-# 2. Check deployment logs (Replit)
-# Replit UI → Deployments → Logs
+# 2. Check deployment logs (legacy platform)
+# legacy platform UI → Deployments → Logs
 
 # 3. Check gunicorn workers
 # Look for: WORKER TIMEOUT, ImportError, port bind failure

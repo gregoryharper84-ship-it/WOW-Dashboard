@@ -2,7 +2,7 @@ Here’s the easy step-by-step fix.
 
 ## Step 1: Open your API project
 
-Open the Replit/API project that contains:
+Open the legacy platform/API project that contains:
 
 ```text
 /random-forest-score
@@ -122,7 +122,7 @@ Replace `"your-secret-key"` with your actual key, or load it from your environme
 Run this from your terminal:
 
 ```bash
-curl -X POST "https://YOUR-REPLIT-URL/random-forest-score" \
+curl -X POST "https://YOUR-legacy platform-URL/random-forest-score" \
   -H "Content-Type: application/json" \
   -H "X-API-Key: YOUR_API_KEY" \
   -d '{
@@ -146,7 +146,7 @@ curl -X POST "https://YOUR-REPLIT-URL/random-forest-score" \
 Replace:
 
 ```text
-YOUR-REPLIT-URL
+YOUR-legacy platform-URL
 YOUR_API_KEY
 ```
 
@@ -181,7 +181,7 @@ That confirms your API is accepting the full payload.
 After the API works, open the GPT Action/tool setup and refresh the OpenAPI schema from:
 
 ```text
-https://YOUR-REPLIT-URL/openapi.json
+https://YOUR-legacy platform-URL/openapi.json
 ```
 
 Until you refresh the schema, ChatGPT may still only see:

@@ -4,7 +4,7 @@ prizepicks_mac_pusher.py  —  PrizePicks → WOW Scoring API pusher (Mac)
 ===========================================================================
 
 DataDome (PrizePicks' bot protection) ties cookies to the originating IP.
-Requests from Replit's server are blocked even with a valid cookie.
+Requests from legacy_platform's server are blocked even with a valid cookie.
 This script runs on YOUR Mac (same IP that issued the cookie), fetches
 projections locally, then POSTs them to the WOW scoring API for storage.
 
@@ -17,7 +17,7 @@ Usage:
   python3 prizepicks_mac_pusher.py --league MLB --stat "Pitcher Strikeouts"
 
   # Set your API URL and key via env vars (or edit CONFIG below)
-  WOW_API_URL=https://your-app.replit.app WOW_API_KEY=your_key python3 prizepicks_mac_pusher.py
+  WOW_API_URL=https://your-app.legacy_platform.app WOW_API_KEY=your_key python3 prizepicks_mac_pusher.py
 
   # Dry run — fetch locally but don't push to API
   python3 prizepicks_mac_pusher.py --dry-run
@@ -49,7 +49,7 @@ except ImportError:
 # ===========================================================================
 # CONFIG — edit these or set as environment variables
 # ===========================================================================
-API_URL     = os.environ.get("WOW_API_URL", "https://create-app-gregoryharper84.replit.app")
+API_URL     = os.environ.get("WOW_API_URL", "https://create-app-gregoryharper84.legacy_platform.app")
 API_KEY     = os.environ.get("WOW_API_KEY", "")
 PP_BASE_URL = "https://api.prizepicks.com"
 TIMEOUT     = 25

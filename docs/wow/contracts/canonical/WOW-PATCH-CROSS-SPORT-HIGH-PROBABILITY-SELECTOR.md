@@ -79,12 +79,12 @@ as it does today. No candidate becomes playable on this skill's output
 alone.
 
 DASHBOARD IMPACT:  [ ] Yes
-                   [X] No — analytical/skill-layer only, no Replit code
+                   [X] No — analytical/skill-layer only, no legacy platform code
                        change required for the skill itself to exist.
                        (NOTE: several fields referenced — e.g.
                        "immutable prediction ledger healthy",
                        "cross-ticket exposure ledger healthy" — assume
-                       Replit-side ledgers that may not currently exist.
+                       legacy platform-side ledgers that may not currently exist.
                        If they don't exist, this skill should report
                        those checks as NOT_AVAILABLE rather than silently
                        passing them. This needs confirmation before
@@ -127,7 +127,7 @@ CONFLICTS WITH:    Possible functional overlap with wow-high-hit-engine
                    ranking portion of it? NOT YET RESOLVED — do not
                    deprecate wow-high-hit-engine as part of this patch.
 
-DEPENDS ON:        References ledgers not confirmed to exist on Replit
+DEPENDS ON:        References ledgers not confirmed to exist on legacy platform
                    ("immutable prediction ledger", "cross-ticket
                    exposure ledger"). Activation checklist below must
                    confirm these exist or the skill must be shipped
@@ -146,9 +146,9 @@ DEPLOYMENT ORDER
 [ ] Step 3 — ChatGPT reviews for conflicts, resolves relationship to
     wow-high-hit-engine, confirms ledger dependencies are real or stubs
     the health checks accordingly
-[ ] Step 4 — PR review via wow-pr-checker skill (if any Replit-side
+[ ] Step 4 — PR review via wow-pr-checker skill (if any legacy platform-side
     ledger work is triggered by Step 3)
-[ ] Step 5 — Deploy to Replit (only if Step 3 surfaces dashboard work)
+[ ] Step 5 — Deploy to legacy platform (only if Step 3 surfaces dashboard work)
 [ ] Step 6 — Smoke test via wow-smoke-test skill (if applicable)
 [ ] Step 7 — Log to WOW-SHARED-NOTES.md patch queue
 

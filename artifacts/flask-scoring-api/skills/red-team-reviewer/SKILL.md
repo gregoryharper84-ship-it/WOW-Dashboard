@@ -18,7 +18,7 @@ TERMINAL_LABEL_AUTHORITY = False
 This reviewer is **advisory and downgrade-only**. It is never a terminal-label, production, deployment, capital, exception, or execution authority.
 
 **FINAL_AUTHORITY: CHATGPT_ONLY.**  
-Replit must never self-approve based on this review. The reviewer produces a `READY_FOR_CHATGPT_RULING` recommendation when the packet is complete and no P0/P1 findings are present — that is not an approval. ChatGPT makes the final ruling.
+legacy platform must never self-approve based on this review. The reviewer produces a `READY_FOR_CHATGPT_RULING` recommendation when the packet is complete and no P0/P1 findings are present — that is not an approval. ChatGPT makes the final ruling.
 
 ---
 

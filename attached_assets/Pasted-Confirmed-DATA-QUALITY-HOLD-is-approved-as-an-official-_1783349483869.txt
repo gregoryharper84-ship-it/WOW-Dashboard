@@ -13,7 +13,7 @@ Default parent label: WATCH
 Meaning: Prop has enough data to score or scout, but not enough verified support for slip construction.
 ```
 
-## Required correction to the Replit code
+## Required correction to the legacy platform code
 
 The current code returns this:
 

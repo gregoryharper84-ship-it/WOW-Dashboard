@@ -274,7 +274,7 @@ def _l10_bbref(first: str, last: str, sport: str, prop: str,
               "complete": False, "rows": 0, "gap": ""}
 
     if not _BS4_AVAILABLE:
-        result["gap"] = "beautifulsoup4/pandas not installed in Replit env"
+        result["gap"] = "beautifulsoup4/pandas not installed in legacy_platform env"
         return result
 
     pid = _build_bbref_pid(first, last, sport)

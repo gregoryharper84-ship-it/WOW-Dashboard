@@ -60,7 +60,7 @@ Response envelope cleanup: NOT DEPLOYED or not wired to this public route
 Schema/backend field names: MISMATCH
 ```
 
-## Send Replit this exact cleanup
+## Send legacy platform this exact cleanup
 
 ```text id="cfjqzv"
 PATCH-001 station endpoint envelope/field normalization:
@@ -164,7 +164,7 @@ No Kalshi scan change.
 
 After deploy, verify:
 
-curl -i https://create-app-gregoryharper84.replit.app/api/wow/kalshi/weather/stations
+curl -i https://create-app-gregoryharper84.legacy platform.app/api/wow/kalshi/weather/stations
 
 Expected:
 HTTP 200
@@ -180,7 +180,7 @@ stations.LA.nws_station_code=KLAX
 
 ## Immediate schema safety patch
 
-Until Replit normalizes the backend, keep the schema tolerant by adding the current live aliases to `KalshiWeatherStation`:
+Until legacy platform normalizes the backend, keep the schema tolerant by adding the current live aliases to `KalshiWeatherStation`:
 
 ```yaml id="mdkjoo"
     KalshiWeatherStation:

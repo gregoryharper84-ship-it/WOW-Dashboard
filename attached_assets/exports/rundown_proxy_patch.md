@@ -53,8 +53,8 @@ const r = await fx(url, { headers: { 'X-TheRundown-Key': KEYS.rundown } }, 10000
 
 ### AFTER
 ```js
-const url = `${EP.replit}/rundown/events/${trdId}/${dateStr}`;
-const r = await fx(url, { headers: { 'X-API-Key': KEYS.replit } }, 12000);
+const url = `${EP.legacy platform}/rundown/events/${trdId}/${dateStr}`;
+const r = await fx(url, { headers: { 'X-API-Key': KEYS.legacy platform } }, 12000);
 ```
 
 And in the response parsing, the proxy wraps events under `data.events` (already what the existing code expects), so the `raw = data.events || data.data || []` line still works unchanged.
@@ -67,10 +67,10 @@ This removes `KEYS.rundown` from client-side JS entirely. You can delete the `KE
 
 ```bash
 # Directory (should return 30+ sports)
-curl -s "$REPLIT_DEV_DOMAIN/rundown/sports" -H "X-API-Key: $SCORING_API_KEY" | jq .count
+curl -s "$legacy platform_DEV_DOMAIN/rundown/sports" -H "X-API-Key: $SCORING_API_KEY" | jq .count
 
 # WNBA events today (should return 401 with clean "plan limit" JSON until upgrade)
-curl -s "$REPLIT_DEV_DOMAIN/rundown/events/8/2026-05-24" -H "X-API-Key: $SCORING_API_KEY"
+curl -s "$legacy platform_DEV_DOMAIN/rundown/events/8/2026-05-24" -H "X-API-Key: $SCORING_API_KEY"
 ```
 
 ## Once the plan is upgraded

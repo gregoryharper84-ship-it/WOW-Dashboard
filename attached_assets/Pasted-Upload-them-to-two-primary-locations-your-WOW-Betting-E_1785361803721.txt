@@ -1,4 +1,4 @@
-Upload them to **two primary locations**: your **WOW Betting Engine Custom GPT** and your **Replit WOW Betting Engine project**.
+Upload them to **two primary locations**: your **WOW Betting Engine Custom GPT** and your **legacy platform WOW Betting Engine project**.
 
 ## 1. WOW Betting Engine Custom GPT
 
@@ -26,17 +26,17 @@ These should become active alongside your existing WOW v16 skills.
 
 ### Do not upload these to GPT Knowledge
 
-Do not upload the full ZIP, Python code, SQL migration, test files, JSON schemas, or OpenAPI file to the Custom GPT. Those are implementation assets for Replit, not reasoning instructions.
+Do not upload the full ZIP, Python code, SQL migration, test files, JSON schemas, or OpenAPI file to the Custom GPT. Those are implementation assets for legacy platform, not reasoning instructions.
 
-## 2. Replit WOW Betting Engine project
+## 2. legacy platform WOW Betting Engine project
 
 Download:
 
 [Complete implementation ZIP](sandbox:/mnt/data/WOW_v16_Control_Plane_Calibration_Pack_2026-07-29.zip)
 
-Upload that ZIP into the **root of your existing WOW Betting Engine Replit project**. Then extract it while preserving the folder structure.
+Upload that ZIP into the **root of your existing WOW Betting Engine legacy platform project**. Then extract it while preserving the folder structure.
 
-Your Replit project should receive:
+Your legacy platform project should receive:
 
 ```text
 wow_core/
@@ -50,11 +50,11 @@ requirements-dev.txt
 
 The `source_skills/` directory can remain as implementation reference documentation.
 
-After uploading, paste this into the Replit Agent:
+After uploading, paste this into the legacy platform Agent:
 
-[REPLIT_IMPLEMENTATION_PROMPT.md](sandbox:/mnt/data/WOW_v16_Control_Plane_Calibration_Pack_2026-07-29/REPLIT_IMPLEMENTATION_PROMPT.md)
+[legacy platform_IMPLEMENTATION_PROMPT.md](sandbox:/mnt/data/WOW_v16_Control_Plane_Calibration_Pack_2026-07-29/legacy platform_IMPLEMENTATION_PROMPT.md)
 
-Tell Replit Agent to integrate the package into the **existing application**, not create a separate application.
+Tell legacy platform Agent to integrate the package into the **existing application**, not create a separate application.
 
 You can delete or ignore these generated cache folders:
 
@@ -83,13 +83,13 @@ These are useful for maintaining installation status across project conversation
 | Control Plane skill          | Custom GPT Knowledge               |
 | Calibration Ledger skill     | Custom GPT Knowledge               |
 | Control Plane patch          | Custom GPT Knowledge               |
-| Complete ZIP                 | Replit project root                |
-| Replit implementation prompt | Paste into Replit Agent            |
-| README                       | ChatGPT Project and Replit         |
-| Implementation checklist     | ChatGPT Project and Replit         |
-| Python, SQL, schemas, tests  | Replit only                        |
+| Complete ZIP                 | legacy platform project root                |
+| legacy platform implementation prompt | Paste into legacy platform Agent            |
+| README                       | ChatGPT Project and legacy platform         |
+| Implementation checklist     | ChatGPT Project and legacy platform         |
+| Python, SQL, schemas, tests  | legacy platform only                        |
 
-Start with the **three Custom GPT uploads**, save/update the GPT, and then install the full ZIP in Replit.
+Start with the **three Custom GPT uploads**, save/update the GPT, and then install the full ZIP in legacy platform.
 
 [1]: https://help.openai.com/en/articles/8554397-creating-a-gpt%3F.xls?utm_source=chatgpt.com "Creating and editing GPTs | OpenAI Help Center"
 [2]: https://help.openai.com/en/articles/10169521-projects-in-chatgpt?_bhlid=2ccb406afcc658dd9746ce6a0d4da08e997e9f91&utm_source=chatgpt.com "Projects in ChatGPT | OpenAI Help Center"

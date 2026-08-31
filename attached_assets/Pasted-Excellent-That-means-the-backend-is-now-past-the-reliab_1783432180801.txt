@@ -2,7 +2,7 @@ Excellent. That means the backend is now past the **reliability layer** mileston
 
 The next move is **not more features**. It is the **production readiness gate**: confirm taxonomy, provider wiring, and one end-to-end real-board run.
 
-Send Replit this:
+Send legacy platform this:
 
 Great. Now run the final WOW v16 production-readiness verification.
 

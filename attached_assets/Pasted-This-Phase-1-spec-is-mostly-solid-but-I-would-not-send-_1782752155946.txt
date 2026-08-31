@@ -1,4 +1,4 @@
-This Phase 1 spec is mostly solid, but I would **not send it exactly as written**. I’d make 5 small fixes so ChatGPT/Replit doesn’t implement a broken or misleading helper.
+This Phase 1 spec is mostly solid, but I would **not send it exactly as written**. I’d make 5 small fixes so ChatGPT/legacy platform doesn’t implement a broken or misleading helper.
 
 ### Fix before sending
 

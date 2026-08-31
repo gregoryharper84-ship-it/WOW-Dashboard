@@ -76,7 +76,7 @@ Repeated legs remain separate in the financial ledger but count once in model ca
 
 Upload the six primary Markdown artifacts to the **WOW Betting Engine Custom GPT knowledge files**.
 
-The Replit engine should implement the persistent and enforceable portions listed in the installation guide:
+The legacy platform engine should implement the persistent and enforceable portions listed in the installation guide:
 
 ```text
 WNBA_COMPOSITE_FORWARD_TEST
@@ -89,4 +89,4 @@ directional_pitcher_ledger
 WNBA_unique_player_game_ledger
 ```
 
-I created the patch-ready artifacts but did not directly modify the Replit deployment because no Replit connector is available in this chat. All lanes remain research-only with `can_execute=false`.
+I created the patch-ready artifacts but did not directly modify the legacy platform deployment because no legacy platform connector is available in this chat. All lanes remain research-only with `can_execute=false`.

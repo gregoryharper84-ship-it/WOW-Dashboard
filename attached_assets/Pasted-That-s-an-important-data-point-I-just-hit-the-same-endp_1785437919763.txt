@@ -1,16 +1,16 @@
 That's an important data point: I just hit the same endpoint from here and got a clean response — `{"ok":true,"service":"wow-engine","status":"alive"}`. So the backend itself is up right now, not down.
 
-That tells you something specific: the failure wasn't "server unreachable," it was three consecutive `ClientResponseError`s from the GPT's own Actions connector — which points at the connector/request layer, not Replit. A few things that produce exactly this pattern:
+That tells you something specific: the failure wasn't "server unreachable," it was three consecutive `ClientResponseError`s from the GPT's own Actions connector — which points at the connector/request layer, not legacy platform. A few things that produce exactly this pattern:
 
 **Likely causes, in rough order of probability:**
 1. **OpenAI Actions outbound call failing separately from the actual server** — this happens when the Action schema's response validation is strict and the endpoint returned something (even briefly, mid-restart) that didn't match the expected schema, or returned a non-200 for a split second across all three attempts.
-2. **Rate limiting / concurrent request collision** — if all three retries fired back-to-back with no real backoff, and something upstream (a proxy, or Replit's own request queue during a redeploy) briefly 429'd or reset the connection, ClientResponseError is the generic bucket for that.
+2. **Rate limiting / concurrent request collision** — if all three retries fired back-to-back with no real backoff, and something upstream (a proxy, or legacy platform's own request queue during a redeploy) briefly 429'd or reset the connection, ClientResponseError is the generic bucket for that.
 3. **A brief actual redeploy/restart window** — if you or ChatGPT pushed a change around 1:53pm CT, the three calls may have landed inside the few seconds the process was actually cycling, and by the time I checked just now it had already come back.
 4. **Retry timing too tight** — the 10s-wait/retry-once logic only helps if the three original calls were genuinely spaced out. If the GPT fired three calls in rapid succession without a real wait between them, that's not the retry pattern you specified — it's just three simultaneous failures against the same short outage window.
 
 **What I'd check next, in order:**
-- Replit deployment logs around 1:53pm CT — look for a restart/crash event or a 5xx in that exact window.
+- legacy platform deployment logs around 1:53pm CT — look for a restart/crash event or a 5xx in that exact window.
 - Whether the GPT is actually waiting the full 10s between retries, or firing them back-to-back (the instruction says "wait 10s and retry once" — worth confirming in the transcript that a real delay occurred).
 - Whether this is reproducible right now — worth having ChatGPT (or you, manually) hit the endpoint again this instant, since I'm getting a clean 200 as of this message.
 
-Given the engine is live now, want me to help you retry the same 179-prop run, or do you want to dig into the Replit logs for that window first to confirm root cause before rerunning?
+Given the engine is live now, want me to help you retry the same 179-prop run, or do you want to dig into the legacy platform logs for that window first to confirm root cause before rerunning?

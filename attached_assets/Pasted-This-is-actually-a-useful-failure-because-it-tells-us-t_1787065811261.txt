@@ -53,7 +53,7 @@ We're not adding:
 
 We're repairing the **existing controlling model path so the experiment can run**.
 
-I would give Replit a very narrow mandate:
+I would give legacy platform a very narrow mandate:
 
 ```text
 FIX ONLY THE PRODUCTION 1IP CONTROLLING-MODEL ROUTE.
@@ -106,7 +106,7 @@ prediction logger
 
 That is consistent with the controlling 1IP specification. 
 
-### I would require Replit to identify the `AttributeError`, not route around it
+### I would require legacy platform to identify the `AttributeError`, not route around it
 
 This part matters.
 

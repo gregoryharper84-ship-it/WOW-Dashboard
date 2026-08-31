@@ -217,8 +217,8 @@ section "Live endpoint smoke (optional)"
 # ---------------------------------------------------------------------------
 
 if command -v curl &>/dev/null && [ -n "${GPT_ACTION_SECRET:-}" ]; then
-    # Try production URL first (REPLIT_APP_URL), fall back to localhost dev server.
-    _LIVE_URL="${REPLIT_APP_URL:-http://localhost:25643}"
+    # Try configured production URL first, fall back to localhost dev server.
+    _LIVE_URL="${WOW_PRODUCTION_URL:-http://localhost:25643}"
     HEALTH=$(curl -s -o /dev/null -w "%{http_code}" \
              -H "X-API-Key: $GPT_ACTION_SECRET" \
              "${_LIVE_URL}/wow/engine/health" 2>/dev/null || echo "000")

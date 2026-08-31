@@ -1,6 +1,6 @@
 Yes. Here’s the practical connection plan for each API, in the order I would wire them into WOW.
 
-## Step 0 — Add environment variables in Replit
+## Step 0 — Add environment variables in legacy platform
 
 Keep these **server-side only**. Do not put them in `VITE_*`, frontend config, or the Custom GPT schema.
 
@@ -35,7 +35,7 @@ hourly forecast
 WEATHER_SCOUT / WEATHER_MODEL_READY inputs
 ```
 
-### Replit build instruction
+### legacy platform build instruction
 
 Add a helper like:
 
@@ -106,7 +106,7 @@ CHI → KMDW → Chicago Midway
 AUS → KAUS → Austin Bergstrom
 ```
 
-### Replit build instruction
+### legacy platform build instruction
 
 Create a helper that fetches the CLI product for the verified `issuedby` code.
 
@@ -177,7 +177,7 @@ city-specific bias
 
 ### Get the free token
 
-Go to NOAA/NCEI’s CDO token request page, submit your email, and paste the token into Replit as:
+Go to NOAA/NCEI’s CDO token request page, submit your email, and paste the token into legacy platform as:
 
 ```bash
 NOAA_CDO_TOKEN="your_token"
@@ -185,7 +185,7 @@ NOAA_CDO_TOKEN="your_token"
 
 NOAA/NCEI says registering by email returns a token that allows access to RESTful CDO web services. ([NCDC][3])
 
-### Replit build instruction
+### legacy platform build instruction
 
 ```python
 def ncei_cdo_get(endpoint: str, params: dict) -> dict:
@@ -218,7 +218,7 @@ curl -s "https://www.ncei.noaa.gov/cdo-web/api/v2/datasets" \
 
 ### Next calibration endpoint
 
-Ask Replit to add:
+Ask legacy platform to add:
 
 ```text
 GET /api/wow/kalshi/weather/calibration?city=CHI&days=365
@@ -381,7 +381,7 @@ Do not block PATCH-002 on this.
 
 NOMADS’ GRIB filter lets you download subsets of GRIB2 datasets and generate URL queries for automated retrieval; the docs warn scripts with loops should wait 10 seconds between fetches to avoid excessive request behavior. ([NOMADS][5])
 
-### Replit rule
+### legacy platform rule
 
 ```text
 Add as SCOUT connector only.
@@ -405,7 +405,7 @@ Use only as **backup/proxy sanity check**, not settlement source.
 
 Open-Meteo says it provides free forecast and historical weather APIs with no API key, simple JSON HTTP GET, and no authentication for non-commercial use. ([Open Meteo][6])
 
-### Replit build instruction
+### legacy platform build instruction
 
 ```python
 def open_meteo_forecast(lat: float, lon: float) -> dict:
@@ -435,7 +435,7 @@ Never FINAL source for Kalshi NHIGH
 
 ---
 
-## Final Replit instruction
+## Final legacy platform instruction
 
 Send this as one build order:
 
@@ -489,10 +489,10 @@ After deploy, return:
 
 ## Your action items
 
-1. Add `NWS_USER_AGENT` in Replit secrets.
+1. Add `NWS_USER_AGENT` in legacy platform secrets.
 2. Request the free NOAA/NCEI CDO token and add `NOAA_CDO_TOKEN`.
-3. Confirm Replit keeps Kalshi orderbook reads server-side.
-4. Tell Replit to add `/api/wow/kalshi/weather/source-health`.
+3. Confirm legacy platform keeps Kalshi orderbook reads server-side.
+4. Tell legacy platform to add `/api/wow/kalshi/weather/source-health`.
 5. After deploy, run source-health before running weather evaluate.
 
 [1]: https://www.weather.gov/documentation/services-web-api "API Web Service"

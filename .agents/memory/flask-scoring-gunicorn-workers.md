@@ -7,7 +7,7 @@ description: Prod runs 2 gunicorn workers, so any in-process background thread r
 
 `artifacts/flask-scoring-api` runs in **dev** as a single `python app.py`
 process, but in **prod** via gunicorn with `--workers 2` (see
-`.replit-artifact/artifact.toml`). Anything started at import time — daemon
+`.legacy platform-artifact/artifact.toml`). Anything started at import time — daemon
 threads, pollers, cron loops — therefore runs **once per worker** in prod (2×),
 each on its own DB connection.
 

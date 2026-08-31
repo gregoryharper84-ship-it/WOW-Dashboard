@@ -171,7 +171,7 @@ That comparison is mathematically false and should be regression-tested.
 
 I also saw a possible identity-contamination issue in the Nola K enrichment: the submitted event was **PHI @ SEA**, but one enrichment field reported the opponent as **Miami Marlins**. That may be the opponent from his most recent game leaking into a field intended for the current matchup, so that needs inspection before using opponent adjustments.
 
-### What needs changing in Replit
+### What needs changing in legacy platform
 
 The remaining fix is now fairly surgical:
 

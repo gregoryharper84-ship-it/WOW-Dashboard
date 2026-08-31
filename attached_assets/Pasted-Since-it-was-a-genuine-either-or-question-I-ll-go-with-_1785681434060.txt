@@ -147,7 +147,7 @@ DEPLOYMENT ORDER
 [ ] Step 2 — Claude merges into LLP workflow spec + Section 32 tags (if approved)
 [ ] Step 3 — Dashboard code (deferred — analytical only for now)
 [ ] Step 4 — PR review via wow-pr-checker
-[ ] Step 5 — Deploy to Replit
+[ ] Step 5 — Deploy to legacy platform
 [ ] Step 6 — Smoke test
 [ ] Step 7 — Log to WOW-SHARED-NOTES.md patch queue
 

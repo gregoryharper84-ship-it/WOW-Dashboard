@@ -1,6 +1,6 @@
-Yes — **a little needs to be wired up if you want this enforced automatically in Replit.** If it only lives in ChatGPT/Claude memory, it helps research, but it will not reliably block bad soccer props.
+Yes — **a little needs to be wired up if you want this enforced automatically in legacy platform.** If it only lives in ChatGPT/Claude memory, it helps research, but it will not reliably block bad soccer props.
 
-### What Replit needs to wire
+### What legacy platform needs to wire
 
 **1. Add soccer source tiers**
 Create a soccer-specific source stack:
@@ -12,7 +12,7 @@ Create a soccer-specific source stack:
 * **API layer:** API-Football, if you want automation
 
 **2. Add a confirmed-XI gate**
-For soccer **overs**, especially player props, Replit should check:
+For soccer **overs**, especially player props, legacy platform should check:
 
 ```text
 if soccer_prop.side == MORE and confirmed_XI_not_available:
@@ -66,7 +66,7 @@ shots on target
 goalkeeper saves in extreme mismatch spots
 ```
 
-For high-variance props, Replit should require stronger proof before approval.
+For high-variance props, legacy platform should require stronger proof before approval.
 
 **5. Add league-strength adjustment**
 This does not need to be perfect at first. Just add a multiplier placeholder:
@@ -80,7 +80,7 @@ MLS / Eredivisie / Saudi / lower leagues: 0.85–0.95
 The key is not the exact number yet — it is preventing raw stat translation across leagues.
 
 **6. Add referee context for cards/fouls**
-For cards/fouls, Replit should require:
+For cards/fouls, legacy platform should require:
 
 ```text
 referee cards per match
@@ -96,7 +96,7 @@ If ref data is missing, downgrade instead of approving.
 
 You do **not** need to build a full soccer engine immediately. This can be added as a **source-stack + gate patch** inside WOW v16.
 
-I would tell Replit:
+I would tell legacy platform:
 
 ```text
 Implement Soccer Props Source Stack + Process Patch as a WOW v16 module.
@@ -121,4 +121,4 @@ Add:
    - soccer-official-lineup-confirmed
 ```
 
-Bottom line: **yes, wire the gates and tags.** The data sources can stay partly manual/research-assisted for now, but Replit should enforce the approval caps so soccer props do not get treated like NBA/WNBA/MLB props.
+Bottom line: **yes, wire the gates and tags.** The data sources can stay partly manual/research-assisted for now, but legacy platform should enforce the approval caps so soccer props do not get treated like NBA/WNBA/MLB props.

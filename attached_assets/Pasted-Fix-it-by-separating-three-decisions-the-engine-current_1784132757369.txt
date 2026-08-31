@@ -4,9 +4,9 @@ Fix it by separating three decisions the engine currently mixes together:
 2. **Market/line verification**
 3. **Slip EV and money qualification**
 
-Add the following patch to Replit.
+Add the following patch to legacy platform.
 
-## Paste this into Replit
+## Paste this into legacy platform
 
 ```text
 Implement:
@@ -78,7 +78,7 @@ Required fields:
 - remote_governance_status
 - governance_degradation_reason
 
-If local master, patch registry, and schema are valid but the Replit governance-status endpoint is unavailable:
+If local master, patch registry, and schema are valid but the legacy platform governance-status endpoint is unavailable:
 
 remote_governance_status: UNAVAILABLE
 governance_status: GOVERNANCE_ATTESTATION_DEGRADED

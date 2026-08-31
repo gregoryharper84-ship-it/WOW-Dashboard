@@ -4,7 +4,7 @@
 
 This repository implements WOW v16 Clean Core.
 
-The historical Replit rescue/migration workflow is no longer the active engineering phase. The sanitized clean-origin reconstruction is the canonical source-control path used to establish GitHub `main`.
+The historical legacy platform rescue/migration workflow is no longer the active engineering phase. The sanitized clean-origin reconstruction is the canonical source-control path used to establish GitHub `main`.
 
 Current state:
 
@@ -16,14 +16,14 @@ ACTIVE_ENGINEERING_PHASE = V16_CLOSEOUT
 CANONICAL_SOURCE_CONTROL = GitHub main
 PRODUCTION_WEB_RUNTIME = Render wow-governed-probability-engine
 PERSISTENCE_AUTHORITY = Supabase governed schema
-REPLIT_RUNTIME_AUTHORITY = false
+legacy platform_RUNTIME_AUTHORITY = false
 ```
 
 Preserved migration evidence remains historical rollback material and must not be rewritten or deleted merely to simplify history:
 
 ```text
 preserved_checkpoint = e0ffb040cd7376ade1b7f1861ab99b13de37a72c
-preserved_rescue_branch = rescue/replit-emergency-20260820-1221
+preserved_rescue_branch = rescue/legacy platform-emergency-20260820-1221
 main_must_descend_from_preserved_checkpoint = false
 history_rewrite_required = false
 force_push_required = false
@@ -41,7 +41,7 @@ If instructions conflict, use this precedence:
 4. this engineering contract
 5. implementation notes, migration history, READMEs, and older patch documents
 
-Historical A.1/A.2 text, legacy Replit runtime assumptions, and older Full Model summaries are evidence only and must not override current project governance.
+Historical A.1/A.2 text, legacy legacy platform runtime assumptions, and older Full Model summaries are evidence only and must not override current project governance.
 
 ---
 
@@ -235,7 +235,7 @@ artifacts/flask-scoring-api
 
 is legacy/reference regression material unless a current approved patch explicitly invokes it.
 
-Replit Agent/editor is development-only and is not a normal runtime gate. Its availability or unavailability does not make the WOW model unavailable.
+legacy platform Agent/editor is development-only and is not a normal runtime gate. Its availability or unavailability does not make the WOW model unavailable.
 
 A standalone odds proxy or external market-data service may provide evidence, but it is not a controlling probability specialist.
 

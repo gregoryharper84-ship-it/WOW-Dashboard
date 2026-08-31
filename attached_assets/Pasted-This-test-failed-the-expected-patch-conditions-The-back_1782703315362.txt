@@ -72,7 +72,7 @@ with reason:
 Missing contract price/orderbook
 ```
 
-## Send this exact fix/check to Replit
+## Send this exact fix/check to legacy platform
 
 ```text id="alt9gf"
 Live scan still fails expected Kalshi combo/gate patch.

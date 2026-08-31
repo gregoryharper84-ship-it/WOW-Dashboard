@@ -8,7 +8,7 @@ Never import nba_api at the module level in app.py. Always use _nba_ensure() laz
 
 **Why:** The nba_api import (stats.nba.com client + pandas) takes ~10.7 seconds.
 Flask/gunicorn runs all module-level code before accepting connections.
-Replit deployment healthchecks fire continuously during restarts.
+legacy platform deployment healthchecks fire continuously during restarts.
 Any caller (LLP governance sync, monitoring) hitting the server during the
 ~13s boot window gets a 500, which is indistinguishable from a real error.
 

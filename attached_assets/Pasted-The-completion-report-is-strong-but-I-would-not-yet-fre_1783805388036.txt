@@ -1,4 +1,4 @@
-The completion report is strong, but I would not yet freeze it as fully canonical until Replit resolves one important registry issue.
+The completion report is strong, but I would not yet freeze it as fully canonical until legacy platform resolves one important registry issue.
 
 Main issue: skill IDs do not match the uploaded registry
 
@@ -29,7 +29,7 @@ The contract requires each result to preserve the registered skill_id, version, 
 
 Required correction
 
-Send Replit this:
+Send legacy platform this:
 
 The WOW v16 Skills Pack implementation is functionally complete, but one canonicalization pass is required before final freeze.
 
@@ -104,4 +104,4 @@ After the ID reconciliation tests pass and Flask restarts cleanly, the Skills Pa
 
 SHIPPED — WOW v16 SKILLS ORCHESTRATION LAYER
 
-The v16.1A stake-confidence patch should remain a separate follow-up, as Replit correctly stated.
+The v16.1A stake-confidence patch should remain a separate follow-up, as legacy platform correctly stated.

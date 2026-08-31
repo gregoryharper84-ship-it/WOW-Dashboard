@@ -1,4 +1,4 @@
-This is the correct architecture, but I would classify it as **delivered—not yet independently trusted**. The actual `replit.md`, governor, and scripts were not included here, so their implementation cannot yet be accepted from the summary alone.
+This is the correct architecture, but I would classify it as **delivered—not yet independently trusted**. The actual `legacy platform.md`, governor, and scripts were not included here, so their implementation cannot yet be accepted from the summary alone.
 
 The required order is:
 

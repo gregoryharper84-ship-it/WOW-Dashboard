@@ -70,7 +70,7 @@ No Market Verified props.
 
 That is not “no results.” That is a valid scan with a qualified pool.
 
-## What to fix in Replit
+## What to fix in legacy platform
 
 Add a separate field so the frontend/GPT has a clean playable section:
 
@@ -125,7 +125,7 @@ You want actual prop objects like:
 
 If that returns only counts, your summary endpoint needs to return compact item details.
 
-## Best Replit patch
+## Best legacy platform patch
 
 ```text
 Update /scan-results/summary so it always returns compact item details for:

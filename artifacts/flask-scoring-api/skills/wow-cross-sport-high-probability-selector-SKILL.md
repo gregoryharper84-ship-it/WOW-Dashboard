@@ -103,7 +103,7 @@ Never force a requested leg count. If no candidate qualifies across all lanes, r
 ## Source Order
 
 ```text
-1. Replit backend (live endpoints)
+1. legacy platform backend (live endpoints)
 2. Official league, event, team, and player sources
 3. Connected APIs
 4. Sportsbook / exchange APIs

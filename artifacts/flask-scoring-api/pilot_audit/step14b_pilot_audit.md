@@ -103,7 +103,7 @@ API endpoint confirms correct routing: `POST http://localhost:1106/modelfarm/ant
 | SHADOW_RESEARCH_API_ENABLED | NOT_SET | inline env (subprocess only) | **NOT_SET** |
 | KALSHI_WX_SHADOW_AGENT_ENABLED | false | false (inherited) | **false** |
 
-SHADOW_RESEARCH_API_ENABLED was passed as inline subprocess env only — never persisted to Replit env vars. Naturally absent after subprocess exit. Confirmed: `python -c "import os; print(os.environ.get('SHADOW_RESEARCH_API_ENABLED','NOT_SET'))"` → `NOT_SET`.
+SHADOW_RESEARCH_API_ENABLED was passed as inline subprocess env only — never persisted to legacy platform env vars. Naturally absent after subprocess exit. Confirmed: `python -c "import os; print(os.environ.get('SHADOW_RESEARCH_API_ENABLED','NOT_SET'))"` → `NOT_SET`.
 
 ---
 

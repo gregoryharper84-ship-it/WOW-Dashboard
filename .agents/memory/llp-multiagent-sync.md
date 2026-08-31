@@ -6,9 +6,9 @@ description: How the WOW/LLP betting backend owner coordinates three AI agents, 
 # LLP multi-agent coordination
 
 The owner of the WOW/LLP scoring backend (`artifacts/flask-scoring-api/app.py`,
-~11k+ lines) drives development across **three agents**: this Replit Claude
+~11k+ lines) drives development across **three agents**: this legacy platform Claude
 (builds the actual code), an external ChatGPT thread, and an external Claude
-thread. Only the Replit agent can see the code; the other two plan from memory.
+thread. Only the legacy platform agent can see the code; the other two plan from memory.
 
 **Why this matters:** instructions arriving from the user are frequently
 *verification checklists or session plans for work that is already shipped*,

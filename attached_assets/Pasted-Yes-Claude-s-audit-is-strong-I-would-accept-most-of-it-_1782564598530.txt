@@ -219,7 +219,7 @@ So I would not make this a top-3 patch anymore. Keep it as a housekeeping rule:
 
 This is the biggest thing Claude did not say strongly enough.
 
-WOW has lots of “must” language, but unless Replit/Codex enforces it with schema validation, the model can still output a pick with missing fields.
+WOW has lots of “must” language, but unless legacy platform/Codex enforces it with schema validation, the model can still output a pick with missing fields.
 
 Create a required JSON schema for every prop:
 
@@ -337,11 +337,11 @@ As of June 2026, I would split the stack like this:
 | ChatGPT / Deep Research                                    | research synthesis, patch design, source review, final reasoning |
 | Claude                                                     | adversarial audit, failure-path review, prompt/spec critique     |
 | Codex                                                      | code changes, schema enforcement, tests, dashboard patches       |
-| Replit                                                     | hosted app, scheduled runs, database, UI, prop intake pipeline   |
+| legacy platform                                                     | hosted app, scheduled runs, database, UI, prop intake pipeline   |
 | Odds API / OpticOdds / SportsDataIO / Sportradar / OddsJam | odds, line movement, market consensus                            |
 | MLflow / Evidently / sklearn                               | calibration, drift, monitoring, probability reliability          |
 
-OpenAI describes Codex as a coding agent that can write, review, and ship code, and the Codex app supports multiple agents, skills, and automations. ([OpenAI Help Center][7]) Replit Agent is positioned for building and deploying apps from natural language, and Replit automations support scheduled or event-driven deployments once the app is deployed. ([Replit Docs][8]) Claude Code can be used in GitHub workflows and has hooks that let you intercept agent behavior around tool calls or session events, which fits audit automation. ([Claude][9])
+OpenAI describes Codex as a coding agent that can write, review, and ship code, and the Codex app supports multiple agents, skills, and automations. ([OpenAI Help Center][7]) legacy platform Agent is positioned for building and deploying apps from natural language, and legacy platform automations support scheduled or event-driven deployments once the app is deployed. ([legacy platform Docs][8]) Claude Code can be used in GitHub workflows and has hooks that let you intercept agent behavior around tool calls or session events, which fits audit automation. ([Claude][9])
 
 ## Updated patch priority
 
@@ -377,7 +377,7 @@ Core rules:
 7. Every slip must run directional exposure tags.
 8. Any missing market/no-vig/payout/role/freshness field forces HOLD or REJECT.
 9. “MODEL_QUALIFIED” and “SLIP_PLAYABLE” become separate statuses.
-10. Dashboard/Replit must enforce these as hard validation rules, not analyst suggestions.
+10. Dashboard/legacy platform must enforce these as hard validation rules, not analyst suggestions.
 
 ## Bottom line
 
@@ -394,5 +394,5 @@ Your engine already has many of the right ideas. The failure mode now is that a 
 [5]: https://baseballsavant.mlb.com/csv-docs?utm_source=chatgpt.com "Statcast Search CSV Documentation | baseballsavant.com"
 [6]: https://developer.sportradar.com/basketball/docs/wnba-ig-api-basics?utm_source=chatgpt.com "WNBA API Basics"
 [7]: https://help.openai.com/en/articles/11369540-using-codex-with-your-chatgpt-plan?utm_source=chatgpt.com "Using Codex with your ChatGPT plan"
-[8]: https://docs.replit.com/references/agent/overview?utm_source=chatgpt.com "Replit Agent"
+[8]: https://docs.legacy platform.com/references/agent/overview?utm_source=chatgpt.com "legacy platform Agent"
 [9]: https://code.claude.com/docs/en/github-actions?utm_source=chatgpt.com "Claude Code GitHub Actions"

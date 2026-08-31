@@ -206,7 +206,7 @@ class TestGitDiffAllowlist(unittest.TestCase):
         ".local/tasks/",
         "attached_assets/",
         ".agents/memory/",
-        "replit.md",
+        "legacy_platform.md",
         # Full artifact-path duplicates (workspace-relative git paths)
         "artifacts/flask-scoring-api/gate_engine/prob_ledger_enforcer.py",
         "artifacts/flask-scoring-api/gate_engine/outlier_recompute.py",

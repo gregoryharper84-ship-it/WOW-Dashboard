@@ -604,17 +604,17 @@ Existing terminal ceilings remain controlling until promotion tests pass.
 
 That is the safest way to introduce a major probability-semantic change without destabilizing the rest of WOW.
 
-Where does it need to go first? Replit?
+Where does it need to go first? legacy platform?
 
-Yes — Replit first.
+Yes — legacy platform first.
 
-Your Replit backend is the live authority for governance, probability outputs, terminal labels, active patches, and the scoring pipeline. If we modify the GPT knowledge files first, the GPT could start describing a four-pillar system that the actual engine does not yet implement. That creates exactly the kind of model/runtime mismatch WOW is designed to prevent.
+Your legacy platform backend is the live authority for governance, probability outputs, terminal labels, active patches, and the scoring pipeline. If we modify the GPT knowledge files first, the GPT could start describing a four-pillar system that the actual engine does not yet implement. That creates exactly the kind of model/runtime mismatch WOW is designed to prevent.
 
 The installation order I recommend is:
 
-Replit — create the umbrella patch first. Add WOW-PATCH-2026-08-08-FOUR-PILLAR-PROBABILITY-UNCERTAINTY-PAYOUT-STRUCTURE, initially SHADOW_MODE, can_execute=false. This defines the doctrine, schemas, migration rules, allowed uncertainty modes, and old-vs-new comparison requirements.
-Replit — implement the Uncertainty Engine. Add the authoritative objects and calculations for p_structural, p_scenario, p_calibrated, posterior samples, p_true, p_lb, p_ub, epistemic width, risk families, dependence groups, and POSTERIOR / FALLBACK_HAIRCUT / BLOCKED.
-Replit — wire it into the gate pipeline. The sequence should become roughly:
+legacy platform — create the umbrella patch first. Add WOW-PATCH-2026-08-08-FOUR-PILLAR-PROBABILITY-UNCERTAINTY-PAYOUT-STRUCTURE, initially SHADOW_MODE, can_execute=false. This defines the doctrine, schemas, migration rules, allowed uncertainty modes, and old-vs-new comparison requirements.
+legacy platform — implement the Uncertainty Engine. Add the authoritative objects and calculations for p_structural, p_scenario, p_calibrated, posterior samples, p_true, p_lb, p_ub, epistemic width, risk families, dependence groups, and POSTERIOR / FALLBACK_HAIRCUT / BLOCKED.
+legacy platform — wire it into the gate pipeline. The sequence should become roughly:
 identity
 → slate/status
 → specialist sports model
@@ -630,7 +630,7 @@ The crucial rule is:
 
 PAYOUT MAY READ p_true / p_lb
 PAYOUT MAY NOT MODIFY p_true / p_lb
-Replit — extend the immutable ledger. Save both old and new probability outputs during shadow mode:
+legacy platform — extend the immutable ledger. Save both old and new probability outputs during shadow mode:
 legacy_probability
 legacy_lower_bound
 
@@ -647,13 +647,13 @@ risk_snapshot
 
 This is what lets us verify that the new architecture actually improves calibration rather than merely sounding better.
 
-Replit — update specialist models. Start with MLB pitcher props, because the current failure-path model already uses regime mixtures and is closest to the new architecture. Then WNBA. Then MLB 1IP, where the existing fixed -0.02-style haircuts need to be migrated or explicitly isolated as fallback behavior.
-Replit — update payout/structure modules. Add required_probability, probability_margin, WOW Value Index, conservative value, Power joint probability, Flex hit-count distribution, correlation penalties, etc. Again, these are downstream of probability.
+legacy platform — update specialist models. Start with MLB pitcher props, because the current failure-path model already uses regime mixtures and is closest to the new architecture. Then WNBA. Then MLB 1IP, where the existing fixed -0.02-style haircuts need to be migrated or explicitly isolated as fallback behavior.
+legacy platform — update payout/structure modules. Add required_probability, probability_margin, WOW Value Index, conservative value, Power joint probability, Flex hit-count distribution, correlation penalties, etc. Again, these are downstream of probability.
 Only then update the GPT/skill files. Once the backend can actually return these fields, update the control-plane skill, probability optimizer, calibration ledger documentation, exact-line/payout auditor, universal adapter, MLB specialist docs, WNBA docs, and 1IP docs so the GPT's instructions match the implementation.
 
 So the clean hierarchy is:
 
-REPLIT BACKEND
+legacy platform BACKEND
      ↓
 GOVERNANCE / PATCH REGISTRY
      ↓
@@ -667,6 +667,6 @@ TEST / SHADOW VALIDATION
      ↓
 GPT SKILLS / KNOWLEDGE FILES
 
-Do not start by patching the Custom GPT instructions. Replit should learn the architecture first; afterward the GPT becomes the interface/orchestrator for capabilities the backend actually has.
+Do not start by patching the Custom GPT instructions. legacy platform should learn the architecture first; afterward the GPT becomes the interface/orchestrator for capabilities the backend actually has.
 
-The very first artifact I would create is the Replit patch specification for WOW-PATCH-2026-08-08-FOUR-PILLAR-PROBABILITY-UNCERTAINTY-PAYOUT-STRUCTURE, with status SHADOW_MODE. After that, implement the probability_uncertainty_engine module and wire its outputs into the pipeline.
+The very first artifact I would create is the legacy platform patch specification for WOW-PATCH-2026-08-08-FOUR-PILLAR-PROBABILITY-UNCERTAINTY-PAYOUT-STRUCTURE, with status SHADOW_MODE. After that, implement the probability_uncertainty_engine module and wire its outputs into the pipeline.

@@ -14,7 +14,7 @@ Do not send a local filesystem path such as:
 /mnt/data/rendered-board.png
 ```
 
-The Replit server cannot access another runtime’s local path. Make `/analyze-and-score` accept multipart uploads, Base64, or a remotely accessible URL.
+The legacy platform server cannot access another runtime’s local path. Make `/analyze-and-score` accept multipart uploads, Base64, or a remotely accessible URL.
 
 ### Flask implementation
 
@@ -609,7 +609,7 @@ Your current run should return:
 
 It should **not** use ordinary `NO_PLAY` as the sole terminal label, because that falsely implies every row completed the model gates.
 
-## Paste this into Replit
+## Paste this into legacy platform
 
 ```text
 Permanently repair the WOW request pipeline without weakening any WOW v16

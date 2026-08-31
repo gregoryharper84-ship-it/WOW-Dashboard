@@ -10,7 +10,7 @@ The action now works end to end:
 * Fail-closed behavior correctly produced `DATA_CONTRACT_FAIL` and an empty final card.
 * `can_execute=false` remained enforced. 
 
-But the response confirms **two Replit runtime defects remain**.
+But the response confirms **two legacy platform runtime defects remain**.
 
 ### 1. `invocation_audit` is still absent
 
@@ -30,9 +30,9 @@ duplicate_groups
 required_runtime_evidence_complete
 ```
 
-Changing the OpenAPI schema only tells ChatGPT how to interpret a field. It cannot cause Replit to generate a field that the endpoint does not return.
+Changing the OpenAPI schema only tells ChatGPT how to interpret a field. It cannot cause legacy platform to generate a field that the endpoint does not return.
 
-Therefore, this is now conclusively a **Replit response-serializer issue**, not an OpenAI Action issue.
+Therefore, this is now conclusively a **legacy platform response-serializer issue**, not an OpenAI Action issue.
 
 ### 2. `response_mode: slim` is not actually slim
 
@@ -56,7 +56,7 @@ pp_threshold_ledger
 
 For one row, that is manageable. For 179 rows, it will likely recreate the original response-size failure. 
 
-## Send this exact patch request to Replit
+## Send this exact patch request to legacy platform
 
 ```text
 PATCH REQUEST — /gate-engine/run RESPONSE CONTRACT
@@ -204,4 +204,4 @@ For this diagnostic row, a valid fail-closed result should look approximately li
 }
 ```
 
-Do not modify the GPT Action schema or API-key settings again. Those layers are now working. The next change belongs exclusively in the Replit `/gate-engine/run` response assembly and slim serializer.
+Do not modify the GPT Action schema or API-key settings again. Those layers are now working. The next change belongs exclusively in the legacy platform `/gate-engine/run` response assembly and slim serializer.

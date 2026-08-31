@@ -17,7 +17,7 @@ That creates three bad behaviors:
    Canada’s ledger had 3 clean hits in L5, a 6.8 average against 6.0, and a 13.3% positive gap, but it also had stale-data and role-change flags. The right answer is not “kill”; it is “good signal, stale role context, rebuild required.” 
 
 3. **It lacks a canonical backend brain.**
-   Claude, ChatGPT, and Replit are still interpreting rules in text. That creates drift. You already saw this with outlier deletion, hit-rate floors, and proportional gap logic.
+   Claude, ChatGPT, and legacy platform are still interpreting rules in text. That creates drift. You already saw this with outlier deletion, hit-rate floors, and proportional gap logic.
 
 ## The model should evolve from “gate engine” to “edge intelligence system”
 
@@ -39,7 +39,7 @@ Right now, too much is happening inside one gate stack. That is why it feels str
 
 This is the biggest unlock.
 
-Replit should stop relying on LLMs to reconstruct stats from articles. The backend needs scheduled jobs that pull:
+legacy platform should stop relying on LLMs to reconstruct stats from articles. The backend needs scheduled jobs that pull:
 
 | Sport             | Required data                                                                                                   |
 | ----------------- | --------------------------------------------------------------------------------------------------------------- |
@@ -164,7 +164,7 @@ Then output:
 
 That solves your “hundreds of props” problem. The model should not manually deep-dive hundreds. It should **rank which 20 deserve deep work**, then which 5 deserve final-lock checks.
 
-## What I would send back to Replit/Claude
+## What I would send back to legacy platform/Claude
 
 WOW-PATCH-2026-07-01-EDGE-INTELLIGENCE-DATA-FIRST-UPGRADE
 

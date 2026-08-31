@@ -2,7 +2,7 @@ That’s the right progression. The pipeline has moved from **Action/schema fail
 
 One small correction/clarification: Kalshi’s current docs list `https://external-api.kalshi.com/trade-api/v2` as the recommended production external API host for public market data, while also listing `https://api.elections.kalshi.com/trade-api/v2` as a supported production host. Their docs specifically note that despite the `elections` subdomain, it can access all Kalshi markets, not only elections. ([Kalshi API Documentation][1])
 
-So your current setup using `api.elections.kalshi.com` is acceptable if it is returning live sports markets, but I would still set this as the preferred default in Replit:
+So your current setup using `api.elections.kalshi.com` is acceptable if it is returning live sports markets, but I would still set this as the preferred default in legacy platform:
 
 ```text id="mfgimy"
 KALSHI_BASE_URL=https://external-api.kalshi.com/trade-api/v2
@@ -18,7 +18,7 @@ https://api.elections.kalshi.com/trade-api/v2
 
 ```text id="1jt3dt"
 GPT Action → working
-Replit route → working
+legacy platform route → working
 Kalshi public market scan → working
 Credentials required for public scan → no
 Live trading → disabled
@@ -65,7 +65,7 @@ candidates: []
 
 That means the engine is behaving safely instead of forcing action.
 
-## Next Replit addition
+## Next legacy platform addition
 
 Now add support for a `model_probabilities` map in the scan request.
 
@@ -85,7 +85,7 @@ Example request:
 }
 ```
 
-Then Replit should do:
+Then legacy platform should do:
 
 ```text id="1g6c6x"
 for each contract:
@@ -99,7 +99,7 @@ for each contract:
 
 ## Next GPT test after that
 
-Once Replit accepts `model_probabilities`, test with one fake/manual probability:
+Once legacy platform accepts `model_probabilities`, test with one fake/manual probability:
 
 ```text id="ccg53h"
 Scan Kalshi sports markets through WOW using scan_only mode. For any returned MLB contract involving [TEAM], use a temporary model probability of 0.61 for YES only as a test input. Do not approve unless adjusted edge clears the Kalshi gate.

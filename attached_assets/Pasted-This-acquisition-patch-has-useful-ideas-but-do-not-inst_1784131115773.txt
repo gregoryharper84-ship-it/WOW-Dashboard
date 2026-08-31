@@ -60,7 +60,7 @@ It should extend:
 WOW-PATCH-2026-07-15-LLP-PRICE-CALIBRATION-EXPOSURE-AND-EXECUTION-GOVERNANCE
 ```
 
-### One-pass Replit instruction
+### One-pass legacy platform instruction
 
 ```text
 Merge the useful acquisition-resilience features from the proposed

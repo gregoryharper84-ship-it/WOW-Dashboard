@@ -9,7 +9,7 @@ import time
 # the dead window.  Worker 1 runs a daemon thread that pings /wow/engine/health
 # every 10 minutes so the idle timer never reaches 15 minutes.
 #
-# Only active when REPLIT_DEPLOYMENT=1 (production). Dev workers are unaffected.
+# Only active when legacy_platform_DEPLOYMENT=1 (production). Dev workers are unaffected.
 
 _KEEPALIVE_INTERVAL_S = 600   # 10 minutes  (< 15-min autoscale threshold)
 _KEEPALIVE_INITIAL_DELAY_S = 90  # let gunicorn fully stabilise before first ping
@@ -279,7 +279,7 @@ def post_fork(server, worker):
     # fires while a GPT session might need the server.  Only one worker runs
     # the ping; worker.age==1 is the first worker forked by the master.
     try:
-        prod_url = os.environ.get("REPLIT_APP_URL", "").rstrip("/")
+        prod_url = os.environ.get("legacy_platform_APP_URL", "").rstrip("/")
         if prod_url and worker.age == 1:
             threading.Thread(
                 target=_keepalive_loop,
@@ -294,7 +294,7 @@ def post_fork(server, worker):
         elif not prod_url:
             server.log.info(
                 f"[post_fork] worker {worker.pid}: keep-alive skipped "
-                f"(REPLIT_APP_URL not set — dev environment)"
+                f"(legacy_platform_APP_URL not set — dev environment)"
             )
     except Exception as exc:
         server.log.warning(f"[post_fork] keep-alive start failed (non-fatal): {exc}")
@@ -304,7 +304,7 @@ def post_fork(server, worker):
     # model state, or scoring decisions.  Fail-open; any error is logged and
     # the loop continues.
     try:
-        _ingest_prod_url = os.environ.get("REPLIT_APP_URL", "").rstrip("/")
+        _ingest_prod_url = os.environ.get("legacy_platform_APP_URL", "").rstrip("/")
         if _ingest_prod_url and worker.age == 1:
             threading.Thread(
                 target=_daily_ingest_loop,

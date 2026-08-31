@@ -29,7 +29,7 @@ execution_rule
 
 Your current Action schema expects those fields in the weather station response, but they’re not coming back from the backend yet. That is not a blocker for station verification because `ok: true` and `count: 5` came back, but it should be patched for deploy discipline. 
 
-Send Replit this small cleanup:
+Send legacy platform this small cleanup:
 
 ```text
 PATCH-001 station endpoint cleanup:

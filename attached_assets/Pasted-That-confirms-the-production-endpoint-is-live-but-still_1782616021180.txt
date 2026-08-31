@@ -30,7 +30,7 @@ So this is **not a WOW approval issue** anymore. It is one of these:
 
 ## Next required fix
 
-Tell Replit this:
+Tell legacy platform this:
 
 ```text
 The production /wow/kalshi/scan endpoint still returns the old minimal zero-row response:
@@ -71,7 +71,7 @@ Do not return a minimal empty response.
 
 ## Add this version stamp
 
-Have Replit add:
+Have legacy platform add:
 
 ```json
 "kalshi_scan_version": "2026-06-27-filter-diagnostics-v3",
@@ -85,7 +85,7 @@ That field must appear even when zero markets are returned.
 Before using `sport=MLB`, test the least restrictive version:
 
 ```bash
-curl -s -X POST "https://create-app-gregoryharper84.replit.app/wow/kalshi/scan" \
+curl -s -X POST "https://create-app-gregoryharper84.legacy platform.app/wow/kalshi/scan" \
   -H "Content-Type: application/json" \
   -H "X-API-Key: $WOW_API_KEY" \
   -d '{

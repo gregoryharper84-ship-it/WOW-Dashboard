@@ -16,7 +16,7 @@ Mandatory regression fixtures from the spec table plus supporting tests.
 | Polymarket-only 72%                     | confidence capped at MARKET_VERIFIED_HOLD |
 | 5-pick same-game Power                  | REJECT_BAD_STRUCTURE                |
 | Bonus entry repeats cash-entry distrib  | DUPLICATE_EXPOSURE_BLOCK (model exposure) |
-| GPT/Replit governance hashes differ     | HTTP 409 / RUN_INVALID_GOVERNANCE_MISMATCH |
+| GPT/legacy_platform governance hashes differ     | HTTP 409 / RUN_INVALID_GOVERNANCE_MISMATCH |
 | Hashes match, all gates pass            | normal scoring continues            |
 """
 from __future__ import annotations
@@ -634,7 +634,7 @@ class TestGovernanceHandshake:
         assert result["mismatches"] == []
 
     def test_wrong_hash_returns_mismatch(self):
-        """GPT/Replit governance hashes differ → RUN_INVALID_GOVERNANCE_MISMATCH."""
+        """GPT/legacy_platform governance hashes differ → RUN_INVALID_GOVERNANCE_MISMATCH."""
         result = validate_handshake(expected_hash="deadbeef" * 8)
         assert result["valid"] is False
         assert result["code"] == "RUN_INVALID_GOVERNANCE_MISMATCH"

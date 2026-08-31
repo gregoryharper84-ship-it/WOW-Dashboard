@@ -8,15 +8,15 @@ Removing Claude should **not trigger a rebuild of that foundation**. The proof r
 
 1. **Freeze B0–B3C.** Mark them closed. No more design reviews, no more canaries, no more repeated proof unless a later change actually touches those contracts. The only B3C carry-forward I would fix now is the known recursive-governance hardening around `place_bet` / `settlement`; that was explicitly identified as a separate non-blocking item. 
 
-2. **Do not rewrite `ClaudeRoleRunner` right now.** Treat it as a historical/optional provider implementation. ChatGPT becomes the orchestration/model host; Replit remains the deterministic capability/backend layer. That is already consistent with the active Full Model host-abstraction contract: the Project can run the model locally, while Replit is only required for capabilities actually hosted there.  This alone avoids a potentially large provider-neutral/OpenAI-SDK detour.
+2. **Do not rewrite `ClaudeRoleRunner` right now.** Treat it as a historical/optional provider implementation. ChatGPT becomes the orchestration/model host; legacy platform remains the deterministic capability/backend layer. That is already consistent with the active Full Model host-abstraction contract: the Project can run the model locally, while legacy platform is only required for capabilities actually hosted there.  This alone avoids a potentially large provider-neutral/OpenAI-SDK detour.
 
 3. **Close B4 by evidence, not rebuilding it.** Based on our existing project record, the WNBA/NBA adapter work was already reported built and conversationally approved; what remained was machine-auditable closure evidence. So the job becomes: persist commit/SHA, exact regression command, timestamps, test artifact, representative fixtures, and closure marker. Do not rebuild working B4 code just to prove it again.
 
 4. **Immediately advance through B5 → B6 → B7 using one adapter template.** B5 is MLB props, B6 Tennis, B7 generic moneyline/other sports. No new orchestration architecture in any of them. Each adapter only maps its lane into the already-frozen UAC contract. The MLB requirements are already quite explicit: strikeouts need unconditional failure-path probability, outs must correctly convert baseball innings notation, and 1IP must route exclusively through the dedicated event-tree rather than a generic model. 
 
-5. **Collapse verification into one gate per increment.** Replit implements → targeted tests → full relevant regression → persist raw evidence → ChatGPT rules PASS/HOLD. We eliminate the former cycle of Replit → Claude inspection → ChatGPT inspection → revised Replit question → second inspection. One authority, one acceptance pass.
+5. **Collapse verification into one gate per increment.** legacy platform implements → targeted tests → full relevant regression → persist raw evidence → ChatGPT rules PASS/HOLD. We eliminate the former cycle of legacy platform → Claude inspection → ChatGPT inspection → revised legacy platform question → second inspection. One authority, one acceptance pass.
 
-6. **Do not stop after every successful packet.** Replit should have a standing instruction: after a packet passes all acceptance tests, commit it and immediately start the next dependency-unblocked packet. Stop only for a genuine blocker, failed regression, governance conflict, schema incompatibility, or destructive migration concern. Do not stop for ordinary architectural questions that the frozen contract already answers.
+6. **Do not stop after every successful packet.** legacy platform should have a standing instruction: after a packet passes all acceptance tests, commit it and immediately start the next dependency-unblocked packet. Stop only for a genuine blocker, failed regression, governance conflict, schema incompatibility, or destructive migration concern. Do not stop for ordinary architectural questions that the frozen contract already answers.
 
 7. **Finish B8/B9 as consolidated phases.** B8 should be one controlled multi-lane shadow validation rather than a bespoke pilot for every sport. B9 is then the production-readiness ruling. Production/user-output authority and execution stay false unless separately governed; we are accelerating construction, **not loosening the safety gates**.
 
@@ -57,7 +57,7 @@ PRODUCTION-READINESS RULING
 UAC V1 COMPLETE
 ```
 
-### The instruction I would give Replit now
+### The instruction I would give legacy platform now
 
 ```text
 UAC_FAST_TRACK_MODE=ACTIVE
@@ -67,7 +67,7 @@ WOW-PATCH-2026-08-09-UNIVERSAL-AGENT-CORE-V1
 
 Authority:
 ChatGPT owns architecture, scope, acceptance, and sequencing.
-Replit owns implementation, tests, persisted evidence, and deployment preparation.
+legacy platform owns implementation, tests, persisted evidence, and deployment preparation.
 
 Do not request approval between ordinary dependency-unblocked increments.
 
@@ -199,7 +199,7 @@ FINAL REPORT AFTER EACH PHASE
 
 ### One further change that will speed this up significantly
 
-**Do not put the Bayesian/model-risk package into Replit yet.**
+**Do not put the Bayesian/model-risk package into legacy platform yet.**
 
 We have the right ordering now:
 
@@ -221,10 +221,10 @@ The wider Command Center architecture already contemplated this sort of staged a
 
 ### How I can make this even faster from here
 
-This specific session does **not currently expose a Replit workspace connector**, so I can't directly type changes into the Replit filesystem from this chat. I checked the available integrations and there isn't a Replit plugin exposed here.
+This specific session does **not currently expose a legacy platform workspace connector**, so I can't directly type changes into the legacy platform filesystem from this chat. I checked the available integrations and there isn't a legacy platform plugin exposed here.
 
-However, **GitHub is connected**. If the WOW Replit codebase is mirrored to a GitHub repository, give me the repo identifier/URL once and I can work much closer to the code path here—inspect diffs, address failures, prepare changes, and drive PR-level implementation rather than continuously translating instructions between ChatGPT and Replit.
+However, **GitHub is connected**. If the WOW legacy platform codebase is mirrored to a GitHub repository, give me the repo identifier/URL once and I can work much closer to the code path here—inspect diffs, address failures, prepare changes, and drive PR-level implementation rather than continuously translating instructions between ChatGPT and legacy platform.
 
-Until then, I would send the directive above to the existing WOW Replit app and **keep the conveyor moving B4 → B5 → B6 → B7 without another architecture stop.**
+Until then, I would send the directive above to the existing WOW legacy platform app and **keep the conveyor moving B4 → B5 → B6 → B7 without another architecture stop.**
 
 The key change is: **we are done designing UAC. Now we close lanes.**

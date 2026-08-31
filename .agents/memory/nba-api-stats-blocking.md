@@ -1,6 +1,6 @@
 ---
 name: stats.nba.com blocking + nba_api parameter names
-description: stats.nba.com is unreachable (consistent 20s+ timeout) from this Replit host; also documents the correct nba_api LeagueDashTeamStats kwarg name.
+description: stats.nba.com is unreachable (consistent 20s+ timeout) from this legacy platform host; also documents the correct nba_api LeagueDashTeamStats kwarg name.
 ---
 
 `nba_api`'s `LeagueDashTeamStats` (and likely other stats.nba.com-backed endpoints) consistently time out from this host — confirmed with both a 10s and a 20s explicit timeout, same result both times, via two independent test paths (the app's own health route and a standalone script).

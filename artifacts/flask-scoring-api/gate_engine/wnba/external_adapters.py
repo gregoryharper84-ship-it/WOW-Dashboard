@@ -236,7 +236,7 @@ def _espn_search_wnba_athlete(
       REQUEST_FAILED    — other non-200 status or unexpected exception
       PARSE_FAILED      — HTTP 200 but response body cannot be parsed
     """
-    import requests as _req  # local import per Replit pattern
+    import requests as _req  # local import per legacy_platform pattern
 
     url    = _ESPN_SEARCH_URL
     # v2 search: type=player is the key filter; no sport/league query param needed —
@@ -982,7 +982,7 @@ def fetch_market_comparison(
     Audit fields added: credential_source_name, credential_resolver_used=True.
     The actual credential value is NEVER logged or stored.
     """
-    from services.odds_api import resolve_odds_api_key_with_source  # lazy import (Replit pattern)
+    from services.odds_api import resolve_odds_api_key_with_source  # lazy import (legacy_platform pattern)
 
     provider     = "odds_api_player_props"
     retrieved_at = _now_utc()

@@ -87,7 +87,7 @@ KXMVESPORTSMULTIGAMEEXTENDED → combo by default
 KXMVECROSSCATEGORY → cross_category/combo by default
 ```
 
-## Send this to Replit
+## Send this to legacy platform
 
 ```text
 Patch /wow/kalshi/scan before model_probabilities testing.
@@ -143,7 +143,7 @@ best_yes_bid populated or best_yes_ask populated
 spread populated
 ```
 
-## Next test after Replit patch
+## Next test after legacy platform patch
 
 Run:
 

@@ -4,7 +4,7 @@
 `WOW-PATCH-006`
 
 ## Author / date
-User + Replit agent — 2026-07-01
+User + legacy platform agent — 2026-07-01
 
 ## Status
 `DRAFT`
@@ -104,7 +104,7 @@ _Leave blank until status = SHIPPED._
 
 ## Pre-build checklist
 
-Before handing to Replit for implementation:
+Before handing to legacy platform for implementation:
 - [ ] Query `odds_snapshot` table: `SELECT event_id, COUNT(*), MIN(snapshot_time) FROM odds_snapshot GROUP BY event_id HAVING COUNT(*) > 1 LIMIT 10` — confirm multi-snapshot events exist
 - [ ] Verify snapshot cron retention policy — does it keep the opening line?
 - [ ] Confirm spread field name in snapshot table (`spread_home`? `line`? `point_spread`?)

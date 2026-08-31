@@ -10,13 +10,13 @@ The proxy's `fallback_hint: true` field is the key handshake. When TheRundown re
 
 ---
 
-**Three things to do in Replit**
+**Three things to do in legacy platform**
 
 **1. Replace the fetch block** — same find-and-replace as v1, just use this file instead.
 
 **2. Remove `KEYS.rundown`** from the browser `KEYS` object. It's fully server-side now. Leaving it in is harmless but misleading.
 
-**3. Confirm `EP.flask` points to your Replit server URL** — the same one your existing Flask routes use. If the variable is named differently (e.g. `EP.replit` or `EP.api`), swap the reference in line 75 of the file.
+**3. Confirm `EP.flask` points to your legacy platform server URL** — the same one your existing Flask routes use. If the variable is named differently (e.g. `EP.legacy platform` or `EP.api`), swap the reference in line 75 of the file.
 
 ---
 

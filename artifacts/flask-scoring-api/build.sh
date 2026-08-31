@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Runtime-neutral paths: resolve from this script and the checked-out Git tree.
-# Do not assume Replit, GitHub Actions, or any provider-specific workspace root.
+# Do not assume legacy_platform, GitHub Actions, or any provider-specific workspace root.
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(git -C "$APP_DIR" rev-parse --show-toplevel)"
 export APP_DIR REPO_ROOT

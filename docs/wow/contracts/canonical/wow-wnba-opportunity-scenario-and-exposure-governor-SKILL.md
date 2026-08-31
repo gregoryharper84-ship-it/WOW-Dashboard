@@ -7,16 +7,16 @@
 `sport=WNBA` — any WNBA row in the scoring request.
 
 ## Purpose
-This skill governs the orchestration and interpretation of three Replit-enforced
+This skill governs the orchestration and interpretation of three legacy platform-enforced
 engine modules for WNBA props. It does NOT calculate, fabricate, or estimate
 any value — all scoring, stability scores, and exposure checks are computed
-by Replit and returned in the API response.
+by legacy platform and returned in the API response.
 
 ## Maximum standalone ceiling
 `MODEL_QUALIFIED_HOLD`
 
 The GPT may not upgrade a WNBA row above MODEL_QUALIFIED_HOLD based on
-its own research or judgment. All ceiling upgrades require Replit engine
+its own research or judgment. All ceiling upgrades require legacy platform engine
 evidence.
 
 ## Required evidence blocks
@@ -82,13 +82,13 @@ Each game_log entry: `{"MIN": 32, "PTS": 18, "REB": 4, "AST": 3, "FGA": 12}`
 
 ## Failure protocol
 
-If Replit returns an opportunity_audit gate_passed=false, you MUST:
+If legacy platform returns an opportunity_audit gate_passed=false, you MUST:
 1. Record the gate_label and blockers in your session log
 2. Return NO_PLAY for that prop
 3. NOT attempt to override the gate with your own analysis
 
-If Replit returns ROLE_UNKNOWN, you MAY research teammate availability
-but you MUST resubmit to Replit for re-evaluation with updated dependency data.
+If legacy platform returns ROLE_UNKNOWN, you MAY research teammate availability
+but you MUST resubmit to legacy platform for re-evaluation with updated dependency data.
 You may NOT directly upgrade the ceiling yourself.
 
 ## can_execute

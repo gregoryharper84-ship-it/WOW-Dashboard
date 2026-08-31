@@ -21,7 +21,7 @@ NWS CLI product codes returned `issuedby=PBI` (West Palm Beach) as a false
 positive for "Miami" and `issuedby=BUR` (Burbank) as a false positive for
 "Los Angeles." Neither is correct. Both were rejected before being written
 into the table. This is exactly the failure mode the Task 1 audit exists to
-catch — do not let Replit "infer" station codes from generic city-weather
+catch — do not let legacy platform "infer" station codes from generic city-weather
 searches during implementation.
 
 ---
@@ -198,11 +198,11 @@ insider_trading_prohibition:   Persons employed by Source Agencies (NWS/NOAA
 
 ---
 
-## Patch-Template Conflict Check (per Replit's required process)
+## Patch-Template Conflict Check (per legacy platform's required process)
 
 ```
 1. Conflict against LLP_GROUND_TRUTH.md:
-   PENDING — Replit/ChatGPT to confirm no existing weather lane exists
+   PENDING — legacy platform/ChatGPT to confirm no existing weather lane exists
    that this would duplicate.
 
 2. Conflict against existing KALSHI_* labels:
@@ -235,10 +235,10 @@ insider_trading_prohibition:   Persons employed by Source Agencies (NWS/NOAA
 
 All 5 stations are verified from live, current Kalshi contract rule text
 (not inferred, not pattern-matched from generic sources). `hardcode_allowed`
-is TRUE for all 5. This table is safe to hand to Replit as the seed data
+is TRUE for all 5. This table is safe to hand to legacy platform as the seed data
 for the `kalshi_weather_stations` mapping table specified in the original
 build request.
 
 Next step: run this through the formal `WOW-PATCH-TEMPLATE.md` process
-(problem statement, exact delta, conflict check, test case) before Replit
+(problem statement, exact delta, conflict check, test case) before legacy platform
 implementation begins, per the role split already established.

@@ -6,7 +6,7 @@ Confirmed. The scan result proves:
 **Gate precedence:** failing
 **Model-probability testing:** blocked until patched
 
-I can’t transmit a message to Replit from this chat because there is no bug-report/deploy endpoint available here. This is the exact report to paste/send:
+I can’t transmit a message to legacy platform from this chat because there is no bug-report/deploy endpoint available here. This is the exact report to paste/send:
 
 ```text
 Live Kalshi scan still fails the single-game filter.

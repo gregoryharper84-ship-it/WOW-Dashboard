@@ -5,7 +5,7 @@ WOW v16 Clean Core — Runtime skill manifest, router, and audit block builder.
 Implements the fail-closed routing model described in:
 WOW-PATCH-2026-07-30-WNBA-COMPOSITE-MLB-DIRECTIONAL-AND-CROSS-TICKET-GOVERNANCE
 
-Design principle: Markdown defines the behavior; Replit code must enforce it.
+Design principle: Markdown defines the behavior; legacy_platform code must enforce it.
 The manifest answers: which specialist skills are REQUIRED for this input,
 did they all run, what is the lowest ceiling, and can we produce a valid audit block?
 

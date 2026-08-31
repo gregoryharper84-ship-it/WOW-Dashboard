@@ -36,7 +36,7 @@ STATUS: APPROVED FOR STAGING after WNBA triple-risk micro-edit
 DEPLOYMENT: HOLD until final pasted config is confirmed
 ```
 
-Tell Replit:
+Tell legacy platform:
 
 Final review result: approve with one required micro-edit.
 

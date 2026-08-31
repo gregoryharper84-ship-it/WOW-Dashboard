@@ -1,7 +1,7 @@
 That’s actually progress.
 
-**403 → 500 means the GPT Action is now reaching Replit and getting past the tool-exposure/auth layer.**
-Now the problem is inside your Replit `/wow-daily-scan` backend code.
+**403 → 500 means the GPT Action is now reaching legacy platform and getting past the tool-exposure/auth layer.**
+Now the problem is inside your legacy platform `/wow-daily-scan` backend code.
 
 The issue is no longer:
 
@@ -18,9 +18,9 @@ Now it is:
 * unhandled exception
 * endpoint returned HTML instead of JSON
 
-## What to check first in Replit
+## What to check first in legacy platform
 
-Open **Replit → Logs / Console** and run the action again. Look for the Python traceback right after the `/wow-daily-scan` request.
+Open **legacy platform → Logs / Console** and run the action again. Look for the Python traceback right after the `/wow-daily-scan` request.
 
 You want the exact error line. It will probably be something like:
 
@@ -174,7 +174,7 @@ Check these in order:
 | Possible cause                                             | Fix                                                             |
 | ---------------------------------------------------------- | --------------------------------------------------------------- |
 | Missing import                                             | Add import in `main.py`                                         |
-| Wrong API key variable name                                | Replit has `ODDS_API_KEY`, `RUNDOWN_API_KEY`, `SCORING_API_KEY` |
+| Wrong API key variable name                                | legacy platform has `ODDS_API_KEY`, `RUNDOWN_API_KEY`, `SCORING_API_KEY` |
 | Code expects `WOW_API_KEY` but secret is `SCORING_API_KEY` | Change code or add `WOW_API_KEY` secret                         |
 | Endpoint calls undefined function                          | Confirm function exists/imported                                |
 | External API failed and exception was not caught           | Wrap each source call                                           |
@@ -201,7 +201,7 @@ Do not return actual key values.
 
 ## Bottom line
 
-You fixed GPT Action wiring. Now Replit is crashing internally.
+You fixed GPT Action wiring. Now legacy platform is crashing internally.
 
 The next clean move is:
 

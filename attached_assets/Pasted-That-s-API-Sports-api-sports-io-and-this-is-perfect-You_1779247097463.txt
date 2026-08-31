@@ -9,7 +9,7 @@ That's **API-Sports** (api-sports.io) — and this is perfect. You already have 
 
 All under **one API key**, same base URL pattern, 0% used across all of them. This is the backup player stats source we need.
 
-Let me check what's already on Replit and wire up the new sports:Replit blocks my server IP (only works from browser). But I have everything I need from the PDF and existing code. Here's the plan:
+Let me check what's already on legacy platform and wire up the new sports:legacy platform blocks my server IP (only works from browser). But I have everything I need from the PDF and existing code. Here's the plan:
 
 **API-Sports base URL:** `https://v3.football.api-sports.io` for football — other sports follow the same pattern:
 - Baseball: `https://v1.baseball.api-sports.io`
@@ -19,9 +19,9 @@ Let me check what's already on Replit and wire up the new sports:Replit blocks m
 
 All use the same key header: `x-apisports-key: YOUR_KEY`
 
-I need your API-Sports key to wire this up. It's the same key already used for the soccer (`/fbref-stats`) endpoint on Replit. Let me find it:The API-Sports key lives on Replit's server side (not exposed in the dashboard — good security). The dashboard calls Replit which calls API-Sports. So I need to add new Replit endpoints for each sport, then call them from the dashboard.
+I need your API-Sports key to wire this up. It's the same key already used for the soccer (`/fbref-stats`) endpoint on legacy platform. Let me find it:The API-Sports key lives on legacy platform's server side (not exposed in the dashboard — good security). The dashboard calls legacy platform which calls API-Sports. So I need to add new legacy platform endpoints for each sport, then call them from the dashboard.
 
-Here's what needs to happen on **Replit** (you'll need to add these routes), and I'll wire up the dashboard calls simultaneously:Now wire the dashboard to use these as enrichment fallbacks:Now I can see `enrichProp`. I'll insert the API-Sports enrichment functions just before it and wire them as fallbacks inside the switch:Upload the dashboard to GitHub. Then **add the Replit routes** — here's exactly what to paste into your Replit `server.js`:
+Here's what needs to happen on **legacy platform** (you'll need to add these routes), and I'll wire up the dashboard calls simultaneously:Now wire the dashboard to use these as enrichment fallbacks:Now I can see `enrichProp`. I'll insert the API-Sports enrichment functions just before it and wire them as fallbacks inside the switch:Upload the dashboard to GitHub. Then **add the legacy platform routes** — here's exactly what to paste into your legacy platform `server.js`:
 
 ```js
 // API-Sports multi-sport (Baseball, Basketball, Hockey)
@@ -77,7 +77,7 @@ Once those routes are live, here's what changes end-to-end:
 | NBA | BallDontLie (game logs) | API-Sports Basketball |
 | WNBA | BallDontLie | API-Sports Basketball |
 | NHL | NHL Official API | API-Sports Hockey |
-| Soccer | Replit /fbref-stats | Already API-Sports Football |
-| Tennis | Replit /tennis-stats | — |
+| Soccer | legacy platform /fbref-stats | Already API-Sports Football |
+| Tennis | legacy platform /tennis-stats | — |
 
 If the primary returns no stats (player not found, season mismatch, API down), `enrichWithAPISports` fires automatically. No more `insufficient-sample-size` errors for any sport.

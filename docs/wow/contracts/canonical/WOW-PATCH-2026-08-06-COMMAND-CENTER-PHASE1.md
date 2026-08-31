@@ -3,7 +3,7 @@
 **Patch ID:** WOW-CC-PHASE1-2026-08-06
 **Date:** 2026-08-06
 **Status:** IMPLEMENTED — 61/61 regression tests passing
-**Author:** Replit Agent (Build Mode)
+**Author:** legacy platform Agent (Build Mode)
 **Approval required before activation:** ChatGPT Step 3 review
 
 ---

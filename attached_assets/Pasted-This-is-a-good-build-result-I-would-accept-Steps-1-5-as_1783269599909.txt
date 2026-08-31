@@ -19,7 +19,7 @@ Key reason:
 
 So the adapter exists, the endpoint works, and the edge math path works in stub mode, but the Kalshi sports lane is **not live-connected** until real sports winner inventory exists.
 
-## Tell Claude/Replit this
+## Tell Claude/legacy platform this
 
 Confirmed. Treat this as accepted for Steps 1–5.
 
@@ -96,7 +96,7 @@ Verify no execution path, verify dry-run enforcement, verify health behavior, ve
 
 ## What you should ask for next
 
-Ask Replit for one concise verification report:
+Ask legacy platform for one concise verification report:
 
 ```text
 Please provide the source-review checklist for the LLP-Kalshi bridge:

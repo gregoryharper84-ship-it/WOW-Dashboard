@@ -50,7 +50,7 @@ Each ADR follows the format:
 
 **Status:** Accepted
 
-**Context:** Bare `gunicorn` command silently fails in the Replit deployment container — no output, no port bind, no error. The PATH in the deployment container does not include the gunicorn entry point.
+**Context:** Bare `gunicorn` command silently fails in the legacy platform deployment container — no output, no port bind, no error. The PATH in the deployment container does not include the gunicorn entry point.
 
 **Decision:** All production run commands use `python -m gunicorn`. Dev server uses `flask run` or `python app.py`.
 

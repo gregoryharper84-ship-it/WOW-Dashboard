@@ -6,16 +6,16 @@ description: Autoscale kills the production server after 15 min idle; a self-pin
 # Autoscale cold-start keep-alive
 
 ## The problem
-Replit autoscale issues SIGTERM after ~15 minutes of no incoming traffic. The flask-scoring-api cold-start takes ~14 seconds (gunicorn --preload with 2 workers). Any GPT session that starts during that 14-second window receives ClientResponseError on every endpoint, triggering WOW's fail-closed NO_PLAY.
+legacy platform autoscale issues SIGTERM after ~15 minutes of no incoming traffic. The flask-scoring-api cold-start takes ~14 seconds (gunicorn --preload with 2 workers). Any GPT session that starts during that 14-second window receives ClientResponseError on every endpoint, triggering WOW's fail-closed NO_PLAY.
 
 ## The fix
 `artifacts/flask-scoring-api/gunicorn_conf.py` — `post_fork` hook, worker.age==1 only:
 - Spawns a daemon thread (`autoscale-keepalive`) after a 90-second initial delay
-- Pings `$REPLIT_APP_URL/wow/engine/health` every 600 seconds (10 min < 15-min threshold)
+- Pings `$legacy platform_APP_URL/wow/engine/health` every 600 seconds (10 min < 15-min threshold)
 - Uses stdlib `urllib.request` — no extra deps
-- Skipped silently when `REPLIT_APP_URL` is unset (dev environment)
+- Skipped silently when `legacy platform_APP_URL` is unset (dev environment)
 
-`REPLIT_APP_URL` is set as a shared env var = `https://create-app-gregoryharper84.replit.app`
+`legacy platform_APP_URL` is set as a shared env var = `https://create-app-gregoryharper84.legacy platform.app`
 
 **Why:**
 The autoscale idle timer resets on every incoming HTTP request. A self-ping every 10 minutes ensures the timer never reaches 15 minutes while the server is running. If the server is killed anyway (e.g. redeploy), the next cold-start is still ~14 seconds — GPT retry logic with a 20-second delay is the complementary defense for that edge case.

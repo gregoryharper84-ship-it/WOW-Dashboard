@@ -59,7 +59,7 @@ Requirements:
 - independent audit PASS
 ```
 
-There’s one point where I would be stricter than Replit’s current audit: it suggested a single classifier choke point may cover all qualifying labels. **That must be proven, not assumed.** The same audit identified qualifying-label writes in moneyline, WNBA, preflight, confidence, and pipeline paths. Before Stage B passes, we need a call-path test demonstrating that none can bypass the new probability contract.
+There’s one point where I would be stricter than legacy platform’s current audit: it suggested a single classifier choke point may cover all qualifying labels. **That must be proven, not assumed.** The same audit identified qualifying-label writes in moneyline, WNBA, preflight, confidence, and pipeline paths. Before Stage B passes, we need a call-path test demonstrating that none can bypass the new probability contract.
 
 So the state is:
 

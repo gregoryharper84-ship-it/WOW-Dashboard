@@ -381,7 +381,7 @@ Promotional settlements: excluded from model win count
 
 ⸻
 
-Acceptance tests Replit should add
+Acceptance tests legacy platform should add
 
 At minimum:
 

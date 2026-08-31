@@ -4,14 +4,14 @@ Two things to note before the formatted note:
 
 **1. The Command Center text you just pasted is still the pre-cleanup version** — it shows `Conditional = one layer pending` in the LABEL TAXONOMY block, not the `MODEL_QUALIFIED_HOLD` version I applied earlier in this thread. That's consistent with your own instruction just now ("do not close CONDITIONAL-CLEANUP until the live Command Center config is verified with Conditional removed") — so I'm treating this as further evidence the live config hasn't been updated yet, not as a regression on my end.
 
-**2. No Replit connector is available to me** — I can't send this directly. Here's the corrected note, ready to paste wherever you relay it:
+**2. No legacy platform connector is available to me** — I can't send this directly. Here's the corrected note, ready to paste wherever you relay it:
 
 ---
 
-**Replit update for WOW v16 / LLP:**
+**legacy platform update for WOW v16 / LLP:**
 
 **WOW-PATCH-2026-07-04-LLP-GPT-RECONCILE**
-Status: Custom GPT instructions deployed/pasted and instruction-level smoke-tested; backend-faithful status remains user-/Replit-reported unless the actual `gate_engine/llp_governance.py` source excerpt or path is attached to the audit trail.
+Status: Custom GPT instructions deployed/pasted and instruction-level smoke-tested; backend-faithful status remains user-/legacy platform-reported unless the actual `gate_engine/llp_governance.py` source excerpt or path is attached to the audit trail.
 
 Clarification: LLP Custom GPT instructions are deployed/pasted and passed two instruction-level smoke tests. Backend parity is pending source-path confirmation unless already verified externally against `gate_engine/llp_governance.py` and the `_llp_*` pipeline source.
 

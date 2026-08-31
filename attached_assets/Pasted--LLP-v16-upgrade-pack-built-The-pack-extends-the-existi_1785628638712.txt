@@ -49,7 +49,7 @@ The pack extends the existing LLP Moneyline Probability Expert’s separate favo
    * Kalshi inventory and Recovery Mode controls
    * No forced output when nothing survives
 
-6. **Manifest with recommended Replit pipeline hooks**
+6. **Manifest with recommended legacy platform pipeline hooks**
 
 ### Individual files
 
@@ -64,4 +64,4 @@ The pack extends the existing LLP Moneyline Probability Expert’s separate favo
 * [Regression tests](sandbox:/mnt/data/LLP_v16_Upgrade_2026-08-01/LLP-REGRESSION-TESTS-2026-08-01.md)
 * [Manifest](sandbox:/mnt/data/LLP_v16_Upgrade_2026-08-01/MANIFEST.md)
 
-This is built and ready for upload/integration, but it has **not yet been deployed into your Replit runtime**. `can_execute=false` and `DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS` remain enforced.
+This is built and ready for upload/integration, but it has **not yet been deployed into your legacy platform runtime**. `can_execute=false` and `DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS` remain enforced.

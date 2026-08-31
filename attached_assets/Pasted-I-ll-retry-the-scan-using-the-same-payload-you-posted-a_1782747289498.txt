@@ -3,13 +3,13 @@ I’ll retry the scan using the same payload you posted and keep the result limi
 [debug] Calling HTTP endpoint
 [debug] Response received
 [debug] Failed Outbound Call
-Stopped talking to create-app-gregoryharper84.replit.app
+Stopped talking to create-app-gregoryharper84.legacy platform.app
 
 The endpoint now responds differently: the GPT proxy reached it, but the raw response was too large for the tool to return. I’m checking whether the compact scan metadata can still be retrieved without approving anything.
 
 [debug] Calling HTTP endpoint
 [debug] Response received
-Talked to create-app-gregoryharper84.replit.app
+Talked to create-app-gregoryharper84.legacy platform.app
 Thought for 50s
 
 The exact include_raw_markets=true call reached the scan path but the tool response was too large to return. I reran the same filters in compact mode to recover the scan metadata. No markets passed the single_game filter, so there are no returned rows to approve.

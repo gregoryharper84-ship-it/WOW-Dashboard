@@ -54,7 +54,7 @@ or old endpoint names like:
 
 ```txt
 /gpt-score
-your-repl-name.replit.app
+your-repl-name.legacy platform.app
 ```
 
 Delete that Action or replace its schema.
@@ -62,7 +62,7 @@ Delete that Action or replace its schema.
 You only want the Action using:
 
 ```txt
-https://create-app-gregoryharper84.replit.app
+https://create-app-gregoryharper84.legacy platform.app
 ```
 
 and:
@@ -133,7 +133,7 @@ Call scoreProp with this exact payload and show the raw response:
 ## Correct debug should show
 
 ```txt
-domain: create-app-gregoryharper84.replit.app
+domain: create-app-gregoryharper84.legacy platform.app
 path: /random-forest-score
 operation: scoreProp
 params: includes features

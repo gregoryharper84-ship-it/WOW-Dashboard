@@ -16,7 +16,7 @@ if __name__ == "__main__":
 
 👉 This is **NOT your API**
 
-That’s why Replit says:
+That’s why legacy platform says:
 
 > “Nothing to publish”
 
@@ -108,7 +108,7 @@ Now click:
 
 ## 🔥 What this fixes
 
-Now Replit sees:
+Now legacy platform sees:
 
 * ✅ Running server
 * ✅ Active endpoints
@@ -118,7 +118,7 @@ Now Replit sees:
 
 ## 🧠 Why this happened
 
-Replit AI built:
+legacy platform AI built:
 
 * your API logic in memory
 * but didn’t overwrite `main.py`
@@ -135,7 +135,7 @@ So you had:
 You’ll have:
 
 ```text
-https://your-app.replit.app
+https://your-app.legacy platform.app
 ```
 
 Working endpoints:
