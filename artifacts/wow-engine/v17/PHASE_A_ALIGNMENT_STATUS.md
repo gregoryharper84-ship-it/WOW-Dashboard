@@ -58,7 +58,7 @@ CAN_EXECUTE = FALSE
 ```text
 B01 WOW live Custom GPT editor configuration has not been directly re-attested.
 B02 LLP live Custom GPT editor requires post-contract re-attestation.
-B03 api_v17_candidate has not yet completed CI + shadow service acceptance.
+B03 Candidate CI and separate shadow-service acceptance are pending.
 B04 LLP direct-vendor Actions must be reclassified/proven EVIDENCE_ONLY or removed;
     prior auth gaps must not be assumed fixed.
 B05 Independent review of the implementation branch is still required before merge.
