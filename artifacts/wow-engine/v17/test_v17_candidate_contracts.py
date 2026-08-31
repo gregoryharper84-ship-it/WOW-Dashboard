@@ -1,0 +1,56 @@
+from pathlib import Path
+
+import api_v17_candidate
+
+
+HERE = Path(__file__).parent
+WOW_SCHEMA = HERE / "openapi.wow-betting-engine.v17.yaml"
+LLP_SCHEMA = HERE / "openapi.llp-team-engine.v17.yaml"
+
+
+def _operations(text: str) -> set[str]:
+    return {
+        line.split(":", 1)[1].strip()
+        for line in text.splitlines()
+        if line.strip().startswith("operationId:")
+    }
+
+
+def test_candidate_app_exposes_team_event_and_host_contract_without_replacing_v16_routes():
+    paths = {getattr(route, "path", None) for route in api_v17_candidate.app.router.routes}
+    assert "/score-team-event" in paths
+    assert "/v17/host-contract" in paths
+    assert "/score-prop" in paths
+    assert "/governance" in paths
+
+
+def test_both_candidate_action_schemas_use_same_exact_render_origin():
+    expected = "https://wow-governed-probability-engine.onrender.com"
+    assert expected in WOW_SCHEMA.read_text()
+    assert expected in LLP_SCHEMA.read_text()
+    assert "REPLACE_WITH_RENDER_SERVICE_HOST" not in WOW_SCHEMA.read_text()
+    assert "REPLACE_WITH_RENDER_SERVICE_HOST" not in LLP_SCHEMA.read_text()
+
+
+def test_wow_action_has_prop_and_team_event_delegation():
+    text = WOW_SCHEMA.read_text()
+    ops = _operations(text)
+    assert "scoreWowV17Prop" in ops
+    assert "scoreWowV17PickRequest" in ops
+    assert "scoreWowV17TeamEventFromWowHost" in ops
+    assert "WOW_BETTING_ENGINE" in text
+    assert "LLP_TEAM_BETTING_ENGINE" in text
+
+
+def test_llp_action_has_team_event_but_no_prop_scoring_operation():
+    text = LLP_SCHEMA.read_text()
+    ops = _operations(text)
+    assert "scoreLlpV17TeamEvent" in ops
+    assert not any("Prop" in op for op in ops)
+    assert "/score-prop" not in text
+    assert "LLP_TEAM_BETTING_ENGINE" in text
+
+
+def test_both_action_contracts_preserve_no_execution_language():
+    assert "can_execute is always false" in WOW_SCHEMA.read_text()
+    assert "can_execute is always false" in LLP_SCHEMA.read_text()
