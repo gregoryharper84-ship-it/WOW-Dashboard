@@ -43,8 +43,7 @@ CANONICAL_LLP_ACTION_SCHEMA = PREPARED_CANDIDATE
   same bearer auth family
   LLP schema contains no prop-scoring route
   WOW schema delegates team/event requests to LLP controlling engine
-  both schemas are explicitly CANDIDATE ONLY and cannot be installed before
-  the approved target backend serves the v17 candidate routes
+  both schemas are CANDIDATE ONLY until the approved target backend serves them
 
 CUSTOM_GPT_EDITOR_ATTESTATION_PACKETS = PREPARED
   WOW_BETTING_ENGINE_EDITOR_ATTESTATION.md
@@ -65,20 +64,19 @@ B04 LLP direct-vendor Actions must be reclassified/proven EVIDENCE_ONLY or remov
 B05 Independent review of the implementation branch is still required before merge.
 ```
 
-## Explicitly not blocked by unsupported sports
+## Unsupported sports behavior
 
-The generic team/event ingress being cross-sport does not mean every sport has a fitted team/event model. Each unsupported sport correctly terminates its lane as `MODEL_UNAVAILABLE` until a certified sport adapter/model is registered. This is expected fail-closed behavior, not permission for market-implied or qualitative fallback.
+A cross-sport ingress does not imply a fitted model exists for every sport. Unsupported team/event sports must terminate as `MODEL_UNAVAILABLE` until a certified adapter/model is registered. No market-implied or qualitative fallback is permitted.
 
-## Next certification sequence
+## Certification sequence
 
 ```text
 1. Candidate CI
-2. Candidate Render shadow deployment (separate from production)
-3. Route/health/host-contract acceptance on candidate service
+2. Separate Render candidate shadow deployment
+3. Candidate route/health/host-contract acceptance
 4. Independent code review
 5. WOW Custom GPT editor attestation
 6. LLP Custom GPT editor attestation + vendor Action cleanup proof
-7. Update attestation records to PASS only from direct evidence
-8. Merge Phase-A contract/implementation if review passes
-9. Keep v17 cutover false until final shared acceptance and migration approval
+7. Merge Phase-A only after review passes
+8. Keep V17_CUTOVER_ALLOWED=false until final migration approval
 ```
