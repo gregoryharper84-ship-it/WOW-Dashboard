@@ -27,6 +27,94 @@ class _FakeEventApi:
         }
 
 
+class _RpcResult:
+    def __init__(self, data):
+        self.data = data
+
+
+class _RpcCall:
+    def __init__(self, data):
+        self._data = data
+
+    def execute(self):
+        return _RpcResult(self._data)
+
+
+class _GovernanceClient:
+    def __init__(self, payload):
+        self.payload = payload
+        self.last_rpc = None
+        self.last_params = None
+
+    def rpc(self, name, params):
+        self.last_rpc = name
+        self.last_params = params
+        return _RpcCall(self.payload)
+
+
+class _GovernedEventApi:
+    ScoreEventRequest = _FakeScoreEventRequest
+    client = _GovernanceClient(
+        {
+            "status": "PASS",
+            "probability_audit_result": "PASS_PROBABILITY_AUDIT",
+            "event_decision": "SELECTED",
+            "event_mutex_status": "PASS",
+            "postmodel_gates_status": "PASS",
+            "final_gates_status": "PASS",
+            "terminal_label": "FINAL_APPROVED",
+            "probability_publishable": True,
+            "rank_eligible": True,
+            "global_terminal_reducer": "V17_TERMINAL_REDUCER",
+            "can_execute": False,
+        }
+    )
+
+    @staticmethod
+    def score_event(req):
+        return {
+            "ok": True,
+            "code": "GOVERNED_PROBABILITY_PUBLISHED",
+            "official_event_id": req.official_event_id,
+            "score_snapshot_id": "00000000-0000-0000-0000-000000000099",
+            "raw_home_probability": 0.61,
+            "raw_away_probability": 0.39,
+            "calibrated_home_probability": 0.60,
+            "calibrated_away_probability": 0.40,
+            "calibrated_home_lower_bound": 0.56,
+            "calibrated_home_upper_bound": 0.64,
+            "calibrated_away_lower_bound": 0.36,
+            "calibrated_away_upper_bound": 0.44,
+            "probability_fields_withheld": False,
+            "probability_publishable": True,
+            "can_execute": False,
+        }
+
+    @classmethod
+    def get_client(cls):
+        return cls.client
+
+
+class _PublishedWithoutGovernanceEventApi:
+    ScoreEventRequest = _FakeScoreEventRequest
+
+    @staticmethod
+    def score_event(req):
+        return {
+            "ok": True,
+            "code": "GOVERNED_PROBABILITY_PUBLISHED",
+            "official_event_id": req.official_event_id,
+            "score_snapshot_id": "00000000-0000-0000-0000-000000000099",
+            "raw_home_probability": 0.61,
+            "raw_away_probability": 0.39,
+            "calibrated_home_probability": 0.60,
+            "calibrated_away_probability": 0.40,
+            "probability_fields_withheld": False,
+            "probability_publishable": True,
+            "can_execute": False,
+        }
+
+
 def _future() -> str:
     return (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
 
@@ -117,12 +205,40 @@ def test_mlb_missing_sport_specific_evidence_is_acquisition_incomplete():
     assert detail["can_execute"] is False
 
 
-def test_valid_mlb_delegates_to_existing_governed_event_adapter():
+def test_valid_mlb_fitted_model_is_held_until_llp_governance_is_proven():
     result = score_team_event_request(_base(), event_api=_FakeEventApi)
-    assert result["code"] == "REAL_FITTED_MODEL_PATH_PROVEN"
+    assert result["code"] == "LLP_EVENT_GOVERNANCE_NOT_PROVEN"
+    assert result["upstream_model_code"] == "REAL_FITTED_MODEL_PATH_PROVEN"
     assert result["probability_fields_withheld"] is True
+    assert result["probability_publishable"] is False
+    assert result["terminal_label"] == "MODEL_QUALIFIED_HOLD"
+    assert "LLP_PROBABILITY_CLAIM_AUDIT_NOT_PROVEN" in result["blockers"]
+    assert "LLP_EVENT_DECISION_GOVERNOR_NOT_PROVEN" in result["blockers"]
     assert result["controlling_engine_identity"] == LLP_TEAM_BETTING_ENGINE
     assert result["global_terminal_authority"] == "V17_TERMINAL_REDUCER"
+
+
+def test_numeric_mlb_result_is_stripped_when_llp_bridge_is_unavailable():
+    result = score_team_event_request(_base(), event_api=_PublishedWithoutGovernanceEventApi)
+    assert result["code"] == "LLP_EVENT_GOVERNANCE_NOT_PROVEN"
+    assert result["probability_publishable"] is False
+    assert result["probability_fields_withheld"] is True
+    assert "raw_home_probability" not in result
+    assert "calibrated_home_probability" not in result
+    assert result["terminal_ceiling"] == "MODEL_QUALIFIED_HOLD"
+
+
+def test_numeric_mlb_result_can_publish_only_after_explicit_llp_bridge_pass():
+    result = score_team_event_request(_base(), event_api=_GovernedEventApi)
+    assert _GovernedEventApi.client.last_rpc == "wow_v17_mlb_team_event_governance_bridge"
+    assert result["code"] == "GOVERNED_PROBABILITY_PUBLISHED"
+    assert result["probability_publishable"] is True
+    assert result["calibrated_home_probability"] == 0.60
+    assert result["llp_probability_audit_result"] == "PASS_PROBABILITY_AUDIT"
+    assert result["event_mutex_status"] == "PASS"
+    assert result["terminal_label"] == "FINAL_APPROVED"
+    assert result["global_terminal_authority"] == "V17_TERMINAL_REDUCER"
+    assert result["can_execute"] is False
 
 
 def test_unknown_requester_host_fails_closed():
