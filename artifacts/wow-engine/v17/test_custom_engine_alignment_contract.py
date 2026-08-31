@@ -84,6 +84,8 @@ def test_v17_candidate_has_generic_team_event_ingress_but_no_fake_cross_sport_mo
     assert candidate["unsupported_team_event_sports"] == "FAIL_CLOSED_MODEL_UNAVAILABLE"
     assert candidate["host_local_terminal_labels"] == "AUDIT_ONLY"
     assert candidate["canonical_host_identity_enforcement"] == "IMPLEMENTED_CANDIDATE"
+    assert candidate["recommendation_ledger_routes"] == "MOUNTED_CANDIDATE"
+    assert candidate["candidate_app_isolated_from_v16_app"] is True
 
 
 def test_editor_attestation_is_required_for_both_hosts_before_cutover():
