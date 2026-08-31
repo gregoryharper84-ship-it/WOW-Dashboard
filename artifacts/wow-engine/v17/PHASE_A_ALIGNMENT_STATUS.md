@@ -29,11 +29,13 @@ GENERIC_TEAM_EVENT_INGRESS = IMPLEMENTED_CANDIDATE
 V17_CANDIDATE_APP_ISOLATION = IMPLEMENTED
   api_v17_candidate:app is distinct from api_ncaaf_acceptance:app
   importing candidate code does not add v17 routes to the accepted v16 app
+  accepted v16 startup/shutdown hooks are preserved
 
 RECOMMENDATION_LEDGER_ROUTE_PARITY = IMPLEMENTED_CANDIDATE
   /record-recommendations
   /settle-recommendations
   mounted from existing audited ledger implementation
+  candidate served routes now match candidate Action responsibilities
 
 CANONICAL_WOW_ACTION_SCHEMA = PREPARED_CANDIDATE
 CANONICAL_LLP_ACTION_SCHEMA = PREPARED_CANDIDATE
@@ -41,6 +43,10 @@ CANONICAL_LLP_ACTION_SCHEMA = PREPARED_CANDIDATE
   same bearer auth family
   LLP schema contains no prop-scoring route
   WOW schema delegates team/event requests to LLP controlling engine
+
+CUSTOM_GPT_EDITOR_ATTESTATION_PACKETS = PREPARED
+  WOW_BETTING_ENGINE_EDITOR_ATTESTATION.md
+  LLP_TEAM_BETTING_ENGINE_EDITOR_ATTESTATION.md
 
 LEGACY_REPLIT_PRIMARY_ROUTING_ALLOWED = FALSE
 CAN_EXECUTE = FALSE
