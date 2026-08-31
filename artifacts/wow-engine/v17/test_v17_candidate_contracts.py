@@ -40,10 +40,14 @@ def test_candidate_app_preserves_v16_routes_and_lifecycle_hooks():
 
 def test_both_candidate_action_schemas_use_same_exact_render_origin():
     expected = "https://wow-governed-probability-engine.onrender.com"
-    assert expected in WOW_SCHEMA.read_text()
-    assert expected in LLP_SCHEMA.read_text()
-    assert "REPLACE_WITH_RENDER_SERVICE_HOST" not in WOW_SCHEMA.read_text()
-    assert "REPLACE_WITH_RENDER_SERVICE_HOST" not in LLP_SCHEMA.read_text()
+    wow = WOW_SCHEMA.read_text()
+    llp = LLP_SCHEMA.read_text()
+    assert expected in wow
+    assert expected in llp
+    assert "REPLACE_WITH_RENDER_SERVICE_HOST" not in wow
+    assert "REPLACE_WITH_RENDER_SERVICE_HOST" not in llp
+    assert "CANDIDATE ONLY" in wow
+    assert "CANDIDATE ONLY" in llp
 
 
 def test_wow_action_has_prop_and_team_event_delegation():
