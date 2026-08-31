@@ -27,10 +27,13 @@ def test_candidate_app_is_distinct_and_does_not_mutate_v16_route_table():
     assert "/v17/host-contract" in v17_paths
 
 
-def test_candidate_app_preserves_accepted_v16_governed_routes():
+def test_candidate_app_preserves_v16_routes_and_mounts_shared_v17_ledger_contracts():
     paths = {getattr(route, "path", None) for route in api_v17_candidate.app.router.routes}
     assert "/score-prop" in paths
+    assert "/score-pick-request" in paths
     assert "/governance" in paths
+    assert "/record-recommendations" in paths
+    assert "/settle-recommendations" in paths
 
 
 def test_both_candidate_action_schemas_use_same_exact_render_origin():
@@ -47,6 +50,8 @@ def test_wow_action_has_prop_and_team_event_delegation():
     assert "scoreWowV17Prop" in ops
     assert "scoreWowV17PickRequest" in ops
     assert "scoreWowV17TeamEventFromWowHost" in ops
+    assert "recordWowV17Recommendations" in ops
+    assert "settleWowV17Recommendations" in ops
     assert "WOW_BETTING_ENGINE" in text
     assert "LLP_TEAM_BETTING_ENGINE" in text
 
@@ -55,6 +60,8 @@ def test_llp_action_has_team_event_but_no_prop_scoring_operation():
     text = LLP_SCHEMA.read_text()
     ops = _operations(text)
     assert "scoreLlpV17TeamEvent" in ops
+    assert "recordLlpV17Recommendations" in ops
+    assert "settleLlpV17Recommendations" in ops
     assert not any("Prop" in op for op in ops)
     assert "/score-prop" not in text
     assert "LLP_TEAM_BETTING_ENGINE" in text
