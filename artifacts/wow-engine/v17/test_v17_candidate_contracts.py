@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import api_ncaaf_acceptance
 import api_v17_candidate
 
 
@@ -16,10 +17,18 @@ def _operations(text: str) -> set[str]:
     }
 
 
-def test_candidate_app_exposes_team_event_and_host_contract_without_replacing_v16_routes():
+def test_candidate_app_is_distinct_and_does_not_mutate_v16_route_table():
+    assert api_v17_candidate.app is not api_ncaaf_acceptance.app
+    v16_paths = {getattr(route, "path", None) for route in api_ncaaf_acceptance.app.router.routes}
+    v17_paths = {getattr(route, "path", None) for route in api_v17_candidate.app.router.routes}
+    assert "/score-team-event" not in v16_paths
+    assert "/v17/host-contract" not in v16_paths
+    assert "/score-team-event" in v17_paths
+    assert "/v17/host-contract" in v17_paths
+
+
+def test_candidate_app_preserves_accepted_v16_governed_routes():
     paths = {getattr(route, "path", None) for route in api_v17_candidate.app.router.routes}
-    assert "/score-team-event" in paths
-    assert "/v17/host-contract" in paths
     assert "/score-prop" in paths
     assert "/governance" in paths
 
