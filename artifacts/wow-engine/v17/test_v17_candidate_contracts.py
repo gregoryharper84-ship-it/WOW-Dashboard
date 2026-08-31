@@ -27,13 +27,15 @@ def test_candidate_app_is_distinct_and_does_not_mutate_v16_route_table():
     assert "/v17/host-contract" in v17_paths
 
 
-def test_candidate_app_preserves_v16_routes_and_mounts_shared_v17_ledger_contracts():
+def test_candidate_app_preserves_v16_routes_and_lifecycle_hooks():
     paths = {getattr(route, "path", None) for route in api_v17_candidate.app.router.routes}
     assert "/score-prop" in paths
     assert "/score-pick-request" in paths
     assert "/governance" in paths
     assert "/record-recommendations" in paths
     assert "/settle-recommendations" in paths
+    assert list(api_v17_candidate.app.router.on_startup) == list(api_ncaaf_acceptance.app.router.on_startup)
+    assert list(api_v17_candidate.app.router.on_shutdown) == list(api_ncaaf_acceptance.app.router.on_shutdown)
 
 
 def test_both_candidate_action_schemas_use_same_exact_render_origin():
