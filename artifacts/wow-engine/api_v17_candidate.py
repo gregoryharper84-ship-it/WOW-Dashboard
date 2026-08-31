@@ -2,9 +2,8 @@
 
 This module is intentionally NOT the production Render entrypoint during Phase A.
 It composes the accepted v16 governed routes into a distinct FastAPI app, then
-adds only candidate v17 host/team-event contracts for shadow/acceptance testing.
-Importing this module must not mutate the accepted v16 app. No live wager
-execution is possible.
+adds only candidate v17 contracts for shadow/acceptance testing. Importing this
+module must not mutate the accepted v16 app. No live wager execution is possible.
 """
 from __future__ import annotations
 
@@ -14,6 +13,7 @@ from pathlib import Path
 from fastapi import FastAPI
 
 import api_ncaaf_acceptance as v16
+from recommendation_ledger_api import install_recommendation_ledger_routes
 from v17.team_event_request_runtime import install_team_event_routes
 
 app = FastAPI(
@@ -30,6 +30,15 @@ install_team_event_routes(
     app,
     event_api=v16.base.market_api.prod.event_api,
     auth_dependency=v16._auth,
+)
+
+# v16 already contains the audited ledger implementation, but the accepted
+# production wrapper does not mount these routes. Mount them explicitly here so
+# the candidate served contract matches both v17 Custom-GPT Action schemas.
+install_recommendation_ledger_routes(
+    app,
+    auth_dependency=v16._auth,
+    get_client_fn=v16._db_client,
 )
 
 
