@@ -1,0 +1,30 @@
+name: Retired Platform Guard
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  no-retired-platform-residue:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Reject retired platform residue
+        shell: bash
+        run: |
+          needle="$(printf 'rep%s' 'lit')"
+          path_matches="$(git ls-files | grep -i "$needle" || true)"
+          content_matches="$(git grep -n -i -I "$needle" -- . || true)"
+          if [ -n "$path_matches" ] || [ -n "$content_matches" ]; then
+            echo 'Retired platform residue detected:'
+            printf '%s\n%s\n' "$path_matches" "$content_matches"
+            exit 1
+          fi
+          echo 'RETIRED_PLATFORM_GUARD=PASS'
