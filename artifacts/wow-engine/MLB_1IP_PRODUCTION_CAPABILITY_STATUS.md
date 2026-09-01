@@ -5,11 +5,11 @@ Branch: `chatgpt/v17-1ip-production-capability-20260901`
 
 ## Review status
 
-`HOLD_WITH_FINDINGS`
+`IMPLEMENTATION_COMPLETE_MACHINE_VERIFIED — INDEPENDENT_REVIEW_REQUIRED`
 
-The first production-capability pass was adversarially reviewed before any production mutation. Three material gaps were found: validation could self-promote an artifact from caller-supplied probability vectors; the final-refresh job did not perform the actual rerun and reset its retry counter; and live 1IP acquisition was implemented as a sidecar adapter but is not yet wired into the canonical `/score-pick-request` 1IP ingress.
+The first production-capability pass was adversarially reviewed before any production mutation. Three material gaps were found: validation could self-promote an artifact from caller-supplied probability vectors; the final-refresh job did not perform the actual rerun/retry lifecycle; and live 1IP acquisition was implemented as a sidecar adapter rather than the canonical `/score-pick-request` 1IP ingress.
 
-The first two findings are remediated on this branch. The third remains a merge blocker.
+All three implementation findings are now remediated. Production activation remains blocked until a distinct reviewer context independently reviews the current head and returns an approval verdict.
 
 ## Implemented
 
@@ -21,36 +21,52 @@ The first two findings are remediated on this branch. The third remains a merge 
   - prior-start first-inning batters-faced distribution,
   - prior-start first-inning pitches-per-batter distribution.
 - Historical first-inning play-by-play dataset builder.
+  - Only the first pitcher encountered in each first-inning half is admitted as the starter/opener row.
+  - Mid-inning relief-pitcher events are explicitly excluded and audited in the manifest.
 - Artifact candidate builder with minimum training requirements.
-- Validation lineage now binds candidate checksum/version, training dataset/code, scoring code, temporal split, source snapshot hashes, targets, and predicted probabilities.
-- Passing empirical validation advances only to `SHADOW`; it does not promote or activate the artifact.
-- Promotion requires a distinct independent reviewer context, explicit `APPROVE_FOR_PROMOTION`, and a review-evidence hash. Promotion still produces only a persistence-ready payload; it does not write Supabase.
+- Validation lineage binds candidate checksum/version, training dataset/code, scoring code, temporal split, source snapshot hashes, targets, and predicted probabilities.
+- Passing empirical validation advances only to `SHADOW`; validation cannot promote or activate an artifact.
+- Promotion requires a distinct independent reviewer context, explicit `APPROVE_FOR_PROMOTION`, and a review-evidence hash. Promotion produces only a persistence-ready payload; it does not write Supabase.
 - Pregame final-refresh state machine.
-- Refresh queue now carries line/direction/money-lane information required for deterministic rerun.
+- Refresh queue carries line/direction/money-lane information required for deterministic rerun.
 - Final-refresh job increments attempts, schedules the next check while lineup is TBD, and performs the actual 1IP specialist rerun when the official lineup confirms.
 - Refresh/runtime acquisition errors remain refresh-layer diagnostics and are not relabeled `MODEL_UNAVAILABLE`.
+- Canonical `/score-pick-request` 1IP ingress now:
+  1. preserves specialist/capability/certified-artifact preflight before acquisition;
+  2. automatically hydrates official 1IP evidence when caller evidence is absent and the artifact gate is READY;
+  3. runs the mandatory Scout -> Research barrier before specialist scoring;
+  4. invokes the controlling 1IP specialist;
+  5. attempts deterministic refresh-queue persistence for provisional lineups;
+  6. preserves a completed sporting probability if refresh-queue persistence is unavailable.
 - Repository SQL remains unapplied.
-- Safety tests were updated to pin no-self-promotion and confirmed-lineup rerun behavior.
+- Temporary one-shot source-patching script/workflow used to make the large canonical file edit were removed after verification.
 
-## Remaining merge blocker
+## Machine verification
 
-### Canonical ingress wiring
+GitHub Actions run `33546120718` on the PR merge ref completed the substantive test steps successfully:
 
-The production `/score-pick-request` route still reaches its dedicated 1IP branch only after specialist/capability/certified-artifact preflight, and that dedicated branch still requires caller-supplied `RawPropEvidence.lineup_evidence`. The new `mlb_1ip_live_acquisition.py` is not yet invoked there.
+- Focused MLB 1IP tests: **12 passed, 0 failed**.
+- Full `artifacts/wow-engine` regression suite: **643 passed, 3 skipped, 0 failed**.
+- Only existing deprecation/future warnings were emitted; no test failures occurred.
 
-Required completion before merge:
+The tested merge ref bound head `6fd310b5860f5b835fb00575bcab9a62ec93a484` to base `8c745a72ea9724d77440d54108dd2446e3c7b880`.
 
-1. When the exact MLB 1IP route has a certified artifact and caller evidence is absent, invoke the official 1IP hydrator inside the canonical 1IP branch.
-2. Preserve the mandatory Scout -> Research barrier before specialist scoring.
-3. Preserve artifact preflight: no certified artifact still returns genuine `MODEL_UNAVAILABLE` before expensive acquisition.
-4. Persist/return a deterministic refresh-queue payload for provisional lineups so the scheduler can discover the row.
-5. Add regression coverage proving no-evidence 1IP uses automatic hydration when the artifact gate is READY.
+Subsequent commits remove temporary patch tooling and update this status document only. The final PR head should receive one more CI pass before reviewer approval is accepted.
 
-Until this is complete, the three pieces exist but do not form a production end-to-end path.
+## Independent-review gate
 
-## Machine-verification state
+A fresh reviewer context must inspect the actual current diff rather than relying on this status file. At minimum, independently verify:
 
-The PR head currently has no attached GitHub status checks/workflow results. Do not claim the full regression suite is green for this branch until tests actually execute.
+1. absent certified 1IP artifact still terminates as genuine `MODEL_UNAVAILABLE` before expensive auto-acquisition;
+2. a READY artifact plus absent caller evidence enters the official MLB 1IP hydrator;
+3. acquisition/runtime failure is never relabeled model unavailability;
+4. mandatory Scout -> Research precedes controlling-specialist scoring;
+5. projected/TBD lineup can produce only a non-publishable `MODEL_QUALIFIED_HOLD` and is queued for final refresh;
+6. official lineup refresh reruns the specialist and stale starter purges row-locally;
+7. validation cannot self-promote and artifact promotion requires distinct implementer/reviewer contexts;
+8. training data excludes first-inning relievers after a mid-inning pitching change;
+9. `can_execute=false` and `V17_CUTOVER_ALLOWED=false` remain invariant;
+10. no production Supabase/Render mutation is contained in this implementation PR.
 
 ## Not yet performed
 
@@ -62,19 +78,17 @@ The PR head currently has no attached GitHub status checks/workflow results. Do 
 
 ## Production activation order
 
-1. Complete canonical ingress wiring.
-2. Run focused + full repository machine tests.
-3. Perform independent review in a distinct reviewer context.
-4. Build immutable historical 1IP dataset and candidate artifact.
-5. Run temporal holdout scoring through the exact candidate scorer and bind lineage.
-6. If empirical gates pass, independently review the validation packet.
-7. Only after review approval, produce/persist a promoted artifact through the governed write process.
-8. Apply the refresh-queue migration.
-9. Merge the reviewed intended commit to `main`.
-10. Deliberately redeploy Render because `autoDeploy=no`.
-11. Confirm deployed SHA parity and stable `/health`.
-12. Create/enable the Render final-refresh cron.
-13. Run probability-only, market-lane, and failure-path smoke tests.
+1. Obtain independent review of the final current head.
+2. Build immutable historical 1IP dataset and candidate artifact.
+3. Run temporal holdout scoring through the exact candidate scorer and bind lineage.
+4. Independently review the validation packet.
+5. Only if empirical gates and review pass, persist a promoted artifact through the governed write process.
+6. Apply the refresh-queue migration.
+7. Merge the reviewed intended commit to `main`.
+8. Deliberately redeploy Render because `autoDeploy=no`.
+9. Confirm deployed SHA parity and stable `/health`.
+10. Create/enable the Render final-refresh cron.
+11. Run probability-only, market-lane, and failure-path smoke tests.
 
 ## Invariants
 
