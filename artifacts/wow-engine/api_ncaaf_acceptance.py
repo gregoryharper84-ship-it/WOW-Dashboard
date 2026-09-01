@@ -24,6 +24,7 @@ from ncaaf_closing_capture import run_from_environment
 from ncaaf_raw_availability_runtime import install_raw_availability_routes
 from ncaaf_training_materializer import materialize_training_games
 from pick_request_runtime import install_pick_request_routes
+from team_event_request_runtime import install_team_event_request_routes
 from prop_live_model_acceptance import run_prop_model_live_self_acceptance
 
 app = base.app
@@ -106,6 +107,12 @@ def _db_client():
 
 install_raw_availability_routes(app, auth_dependency=_auth, db_client_fn=_db_client)
 install_pick_request_routes(app, market_api=base.market_api, auth_dependency=_auth)
+install_team_event_request_routes(
+    app,
+    auth_dependency=_auth,
+    db_client_fn=_db_client,
+    event_api=base.market_api.prod.event_api,
+)
 install_live_probability_routes(app, auth_dependency=_auth, db_client_fn=_db_client)
 
 
