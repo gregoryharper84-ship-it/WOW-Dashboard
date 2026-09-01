@@ -32,7 +32,10 @@ MAX_ECE = 0.06
 PROVIDER_IDENTITY = "WOW_PROP_FITTED_MODEL_V1"
 SPORT = "MLB"
 STAT_TYPE = "1ST_INNING_PITCHES_THROWN"
-FEATURE_SCHEMA_VERSION = "MLB_1IP_FEATURES_V1"
+# The production prop registry currently resolves exact stat routes through the
+# shared PROP_FEATURES_V1 schema key. 1IP-specific semantics remain pinned by
+# feature_transform_version rather than inventing an unreachable schema key.
+FEATURE_SCHEMA_VERSION = "PROP_FEATURES_V1"
 SPECIALIST_VERSION = "wow.mlb-first-inning-pitch-count-expert@1"
 
 
@@ -181,6 +184,7 @@ def main() -> None:
         "validation_rows": len(validation_rows),
         "validation_metrics": metrics,
         "lifecycle_state": candidate["lifecycle_state"],
+        "feature_schema_version": FEATURE_SCHEMA_VERSION,
         "probability_publishable": False,
         "can_execute": False,
     }, sort_keys=True))
