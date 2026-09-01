@@ -48,7 +48,6 @@ def _half_key(about: dict[str, Any]) -> str:
     raw = str(about.get("halfInning") or "").strip().upper()
     if raw in {"TOP", "BOTTOM"}:
         return raw
-    # MLB payloads also expose isTopInning; retain a deterministic fallback.
     if about.get("isTopInning") is True:
         return "TOP"
     if about.get("isTopInning") is False:
@@ -93,14 +92,21 @@ def game_training_rows(game_pk: int, *, http_get: Callable[..., Any] = httpx.get
         bucket["bf"] += 1
         bucket["pitches"] += pitches
 
-    rows = [
-        TrainingRow(bf=v["bf"], pitches=v["pitches"])
-        for v in by_half.values()
+    rows_detail = [
+        {
+            "half": half,
+            "pitcher_id": int(v["pitcher_id"]),
+            "bf": int(v["bf"]),
+            "pitches": int(v["pitches"]),
+        }
+        for half, v in by_half.items()
         if v["bf"] >= 3 and v["pitches"] >= 9
     ]
+    rows = [TrainingRow(bf=v["bf"], pitches=v["pitches"]) for v in rows_detail]
     manifest = {
         "game_pk": game_pk,
         "rows": len(rows),
+        "rows_detail": rows_detail,
         "source_sha256": _sha(payload),
         "captured_at": datetime.now(timezone.utc).isoformat(),
         "selection_rule": "FIRST_PITCHER_ENCOUNTERED_PER_FIRST_INNING_HALF",
