@@ -4,9 +4,12 @@ import pytest
 
 from mlb_1ip_empirical_pmf import fit_empirical_pmf
 from mlb_1ip_empirical_promotion import (
+    FEATURE_SCHEMA_VERSION,
+    REGISTRY_COLUMNS,
     SUPPORTED_LINES,
     build_empirical_promotion_payload,
     build_empirical_shadow_candidate,
+    registry_row_from_promoted,
 )
 
 
@@ -58,14 +61,16 @@ def _promote(shadow=None, **overrides):
     return build_empirical_promotion_payload(shadow, **kwargs)
 
 
-def test_shadow_candidate_is_lineage_bound_and_nonpublishable():
+def test_shadow_candidate_is_lineage_bound_registry_aligned_and_nonpublishable():
     shadow = _shadow()
     assert shadow["lifecycle_state"] == "SHADOW"
     assert shadow["promoted"] is False
     assert shadow["active"] is False
     assert shadow["probability_publishable"] is False
     assert shadow["can_execute"] is False
+    assert shadow["feature_schema_version"] == FEATURE_SCHEMA_VERSION == "PROP_FEATURES_V1"
     assert shadow["supported_lines"] == list(SUPPORTED_LINES)
+    assert shadow["validation_metrics"]["validated_lines"] == list(SUPPORTED_LINES)
     assert len(shadow["validation_lineage"]["validation_lineage_hash"]) == 64
 
 
@@ -134,3 +139,19 @@ def test_approved_promotion_payload_still_cannot_publish_or_execute():
     assert promoted["probability_publishable"] is False
     assert promoted["can_execute"] is False
     assert promoted["certification_id"].startswith("PROP-CERT-MLB-1IP-EMP-")
+
+
+def test_registry_row_uses_only_existing_contract_and_embeds_review_lineage():
+    row = registry_row_from_promoted(_promote())
+    assert set(row) == set(REGISTRY_COLUMNS)
+    assert row["feature_schema_version"] == "PROP_FEATURES_V1"
+    assert row["validation_metrics"]["validated_lines"] == list(SUPPORTED_LINES)
+    assert row["validation_metrics"]["validation_lineage"]["split_hash"] == "d" * 64
+    assert row["validation_metrics"]["review_evidence"]["verdict"] == "APPROVE_FOR_PROMOTION"
+    assert row["probability_publishable"] is False
+    assert row["can_execute"] is False
+
+
+def test_registry_row_refuses_unreviewed_shadow():
+    with pytest.raises(ValueError, match="MLB_1IP_REGISTRY_ROW_CERTIFICATION_REQUIRED"):
+        registry_row_from_promoted(_shadow())
