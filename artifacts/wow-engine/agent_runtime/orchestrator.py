@@ -27,8 +27,20 @@ class Orchestrator:
         required: bool = True,
     ) -> dict[str, Any]:
         spec = worker_spec(worker_id)
+        # The job key must identify the *stage*, not only its payload. Adjacent
+        # workers can legitimately receive identical candidate payloads (for
+        # example a lane Scout followed by slate identity). Without worker/run/
+        # candidate identity in this hash, the second stage can collapse into
+        # the first job under wow_agent_jobs.idempotency_key and silently stop
+        # continuation. Keep the payload hash deterministic while namespacing it
+        # to the exact durable job boundary.
         job_input_hash = canonical_hash({
-            "evidence_snapshot_id": evidence_snapshot_id, "payload": payload, "worker_version": spec.worker_version,
+            "run_id": run_id,
+            "candidate_id": candidate_id,
+            "worker_id": worker_id,
+            "worker_version": spec.worker_version,
+            "evidence_snapshot_id": evidence_snapshot_id,
+            "payload": payload,
         })
         job, created = repository.enqueue_job(
             self.client, run_id=run_id, candidate_id=candidate_id, worker_id=worker_id,

@@ -1,9 +1,8 @@
-"""Run and job state machines (WOW-AGENT-RUNTIME-V1 packet section 5).
+"""Run and job state machines for the governed WOW Agent Runtime.
 
-Only the orchestrator may transition run state. Workers transition their own
-job state but cannot mark a run complete — that split is enforced by which
-module calls which function here, not by anything in this file alone;
-agent_runtime_api.py is the only caller of transition_run().
+Only the orchestrator/coordinator may transition run state. The Scout stage is
+contained inside ROUTING; every candidate that survives Scout + identity must
+then enter the explicit mandatory RESEARCH states before evidence hydration.
 """
 from __future__ import annotations
 
@@ -11,38 +10,29 @@ from dataclasses import dataclass
 
 
 class IllegalTransitionError(ValueError):
-    """Raised when a state transition is not in the allowed map. Fail closed:
-    callers must not coerce this into a silent no-op or a best-guess state."""
+    """Raised when a state transition is not in the allowed map."""
 
 
 RUN_STATES = frozenset({
     "CREATED", "VALIDATING_REQUEST", "DISCOVERY_QUEUED", "DISCOVERY_RUNNING",
-    "ROUTING", "EVIDENCE_QUEUED", "EVIDENCE_RUNNING", "MODELING_QUEUED",
+    "ROUTING", "RESEARCH_QUEUED", "RESEARCH_RUNNING",
+    "EVIDENCE_QUEUED", "EVIDENCE_RUNNING", "MODELING_QUEUED",
     "MODELING_RUNNING", "AUDIT_QUEUED", "AUDIT_RUNNING", "FINAL_REFRESH",
     "RECONCILING", "COMPLETED", "COMPLETED_WITH_BLOCKERS", "FAILED", "CANCELED",
 })
 
 RUN_TERMINAL_STATES = frozenset({"COMPLETED", "COMPLETED_WITH_BLOCKERS", "FAILED", "CANCELED"})
 
-# Linear happy path plus the escape hatches every stage needs: FAILED and
-# CANCELED are reachable from any non-terminal state (an infrastructure
-# failure or an administrative cancel can happen at any stage), and
-# RECONCILING is where COMPLETED vs COMPLETED_WITH_BLOCKERS is decided.
-#
-# The direct-to-RECONCILING edges (ROUTING, EVIDENCE_RUNNING, MODELING_RUNNING,
-# AUDIT_RUNNING) and VALIDATING_REQUEST -> ROUTING exist for the case where a
-# stage produces zero downstream work — e.g. discovery finds no candidates, or
-# discovery is disabled and the caller supplied no candidate_inputs either.
-# Without them a run with nothing to do could never reach a terminal state
-# without an illegal-transition error. Adopted from PR #33
-# (feature/wow-agent-runtime-v1) during the convergence pass, which built the
-# real coordinator that first needed this and found the gap.
 _RUN_TRANSITIONS: dict[str, frozenset[str]] = {
     "CREATED": frozenset({"VALIDATING_REQUEST", "FAILED", "CANCELED"}),
     "VALIDATING_REQUEST": frozenset({"DISCOVERY_QUEUED", "ROUTING", "FAILED", "CANCELED"}),
     "DISCOVERY_QUEUED": frozenset({"DISCOVERY_RUNNING", "FAILED", "CANCELED"}),
     "DISCOVERY_RUNNING": frozenset({"ROUTING", "FAILED", "CANCELED"}),
-    "ROUTING": frozenset({"EVIDENCE_QUEUED", "RECONCILING", "FAILED", "CANCELED"}),
+    # No ROUTING -> EVIDENCE_QUEUED edge. This is the machine-enforced barrier:
+    # Scout/identity survivors must complete the mandatory research team first.
+    "ROUTING": frozenset({"RESEARCH_QUEUED", "RECONCILING", "FAILED", "CANCELED"}),
+    "RESEARCH_QUEUED": frozenset({"RESEARCH_RUNNING", "FAILED", "CANCELED"}),
+    "RESEARCH_RUNNING": frozenset({"EVIDENCE_QUEUED", "RECONCILING", "FAILED", "CANCELED"}),
     "EVIDENCE_QUEUED": frozenset({"EVIDENCE_RUNNING", "FAILED", "CANCELED"}),
     "EVIDENCE_RUNNING": frozenset({"MODELING_QUEUED", "RECONCILING", "FAILED", "CANCELED"}),
     "MODELING_QUEUED": frozenset({"MODELING_RUNNING", "FAILED", "CANCELED"}),
@@ -92,16 +82,13 @@ def check_run_transition(current: str, next_state: str) -> TransitionCheck:
         raise IllegalTransitionError(f"Unknown run state {current!r}")
     if next_state not in RUN_STATES:
         raise IllegalTransitionError(f"Unknown run state {next_state!r}")
-    allowed = next_state in _RUN_TRANSITIONS[current]
-    return TransitionCheck(allowed=allowed, current=current, next=next_state)
+    return TransitionCheck(allowed=next_state in _RUN_TRANSITIONS[current], current=current, next=next_state)
 
 
 def assert_run_transition(current: str, next_state: str) -> None:
     result = check_run_transition(current, next_state)
     if not result.allowed:
-        raise IllegalTransitionError(
-            f"Run cannot transition {current!r} -> {next_state!r}"
-        )
+        raise IllegalTransitionError(f"Run cannot transition {current!r} -> {next_state!r}")
 
 
 def check_job_transition(current: str, next_state: str) -> TransitionCheck:
@@ -109,13 +96,10 @@ def check_job_transition(current: str, next_state: str) -> TransitionCheck:
         raise IllegalTransitionError(f"Unknown job state {current!r}")
     if next_state not in JOB_STATES:
         raise IllegalTransitionError(f"Unknown job state {next_state!r}")
-    allowed = next_state in _JOB_TRANSITIONS[current]
-    return TransitionCheck(allowed=allowed, current=current, next=next_state)
+    return TransitionCheck(allowed=next_state in _JOB_TRANSITIONS[current], current=current, next=next_state)
 
 
 def assert_job_transition(current: str, next_state: str) -> None:
     result = check_job_transition(current, next_state)
     if not result.allowed:
-        raise IllegalTransitionError(
-            f"Job cannot transition {current!r} -> {next_state!r}"
-        )
+        raise IllegalTransitionError(f"Job cannot transition {current!r} -> {next_state!r}")

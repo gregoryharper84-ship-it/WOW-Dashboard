@@ -36,16 +36,14 @@ create table if not exists public.wow_agent_runs (
     rows_held integer not null default 0,
     rows_rejected integer not null default 0,
     reconciliation_status text not null default 'NOT_EVALUATED',
-    -- The full validated request body, for audit/replay. Adopted from PR #33
-    -- (feature/wow-agent-runtime-v1) during the convergence pass — Phase 1
-    -- didn't persist this.
     request_payload jsonb not null default '{}'::jsonb,
     created_at timestamptz not null default now(),
     updated_at timestamptz not null default now(),
     completed_at timestamptz,
     constraint wow_agent_runs_status check (status in (
         'CREATED','VALIDATING_REQUEST','DISCOVERY_QUEUED','DISCOVERY_RUNNING',
-        'ROUTING','EVIDENCE_QUEUED','EVIDENCE_RUNNING','MODELING_QUEUED',
+        'ROUTING','RESEARCH_QUEUED','RESEARCH_RUNNING',
+        'EVIDENCE_QUEUED','EVIDENCE_RUNNING','MODELING_QUEUED',
         'MODELING_RUNNING','AUDIT_QUEUED','AUDIT_RUNNING','FINAL_REFRESH',
         'RECONCILING','COMPLETED','COMPLETED_WITH_BLOCKERS','FAILED','CANCELED'
     )),
@@ -83,17 +81,8 @@ create table if not exists public.wow_agent_run_candidates (
     side text,
     settlement_operator text,
     controlling_worker_id text,
-    -- Evidence already lives in wow_prop_evidence_snapshots (props) or
-    -- wow_event_evidence/wow_event_source_snapshots (events) — no new evidence
-    -- table. evidence_snapshot_kind discriminates which existing table
-    -- evidence_snapshot_id points into; enforced at the application layer,
-    -- since a single FK can't target either table conditionally.
     evidence_snapshot_id uuid,
     evidence_snapshot_kind text,
-    -- Inter-stage scratch data (evidence payload before sealing, capability
-    -- lookup result, calibration inputs, etc.) that the coordinator reads back
-    -- when queuing the next stage's job. Adopted from PR #33 during the
-    -- convergence pass — Phase 1 had no coordinator yet and so no need for it.
     candidate_payload jsonb not null default '{}'::jsonb,
     terminal_label text,
     terminal_ceiling text,
@@ -115,11 +104,6 @@ create index if not exists wow_agent_run_candidates_terminal_idx
     on public.wow_agent_run_candidates (run_id, terminal_label);
 
 -- ── Worker (task-execution) registry ───────────────────────────────────────
--- Distinct from wow_specialist_registry (routing: which specialist governs a
--- sport/market pair) and wow_runtime_capabilities (lane-level AVAILABLE/
--- UNAVAILABLE). This registry describes queue-task execution contracts:
--- timeout/retry policy, authority ceiling, and whether a worker may originate
--- a controlling probability (FITTED_MODEL) or only validate/transform/research.
 
 create table if not exists public.wow_agent_worker_registry (
     worker_id text not null,
@@ -143,27 +127,42 @@ create table if not exists public.wow_agent_worker_registry (
     )),
     constraint wow_agent_worker_registry_timeout_positive check (timeout_seconds > 0),
     constraint wow_agent_worker_registry_retries_nonneg check (max_retries >= 0),
-    -- Only a FITTED_MODEL implementation may originate a controlling
-    -- probability distribution (packet section 6); enforced again in code.
     constraint wow_agent_worker_registry_config_object check (jsonb_typeof(configuration) = 'object')
 );
 
 alter table public.wow_agent_worker_registry enable row level security;
 
--- Seed the ten canonical WOW Agent Runtime V1 workers (packet section 6),
--- mirroring agent_runtime/registry.py's WORKERS dict exactly — the two must
--- match, or /health/ready fails closed (repository.registry_matches()).
--- Adopted from PR #33's migration.sql seed during the convergence pass.
+-- Canonical WOW v16 worker graph. Scout and Research workers are evidence-only;
+-- wow.controlling-model is the only FITTED_MODEL probability-originating worker.
 insert into public.wow_agent_worker_registry
     (worker_id, worker_version, contract_version, implementation_type, authority_ceiling,
      required_predecessors, timeout_seconds, max_retries, artifact_required, configuration, enabled)
 values
     ('wow.parallel-discovery-router', '1.0.0', 'wow.agent-output.v1', 'RESEARCH_AGENT', 'RESEARCH_INTEREST',
      '{}', 30, 2, false, '{}'::jsonb, true),
+    ('wow.global-scout-coordinator', '1.0.0', 'wow.agent-output.v1', 'RESEARCH_AGENT', 'RESEARCH_INTEREST',
+     '{wow.parallel-discovery-router}', 30, 2, false, '{"prediction_authority":false}'::jsonb, true),
+    ('wow.prop-scout-router', '1.0.0', 'wow.agent-output.v1', 'RESEARCH_AGENT', 'RESEARCH_INTEREST',
+     '{wow.global-scout-coordinator}', 30, 2, false, '{"prediction_authority":false}'::jsonb, true),
+    ('wow.ml-event-scout-router', '1.0.0', 'wow.agent-output.v1', 'RESEARCH_AGENT', 'RESEARCH_INTEREST',
+     '{wow.global-scout-coordinator}', 30, 2, false, '{"prediction_authority":false}'::jsonb, true),
     ('wow.slate-integrity-expert', '1.0.0', 'wow.agent-output.v1', 'DETERMINISTIC', 'IDENTITY_VERIFIED',
-     '{wow.parallel-discovery-router}', 20, 1, false, '{}'::jsonb, true),
+     '{wow.global-scout-coordinator}', 20, 1, false, '{}'::jsonb, true),
+    ('wow.source-provenance-researcher', '1.0.0', 'wow.agent-output.v1', 'RESEARCH_AGENT', 'RESEARCH_INTEREST',
+     '{wow.slate-integrity-expert}', 30, 2, false, '{"prediction_authority":false}'::jsonb, true),
+    ('wow.participant-status-researcher', '1.0.0', 'wow.agent-output.v1', 'RESEARCH_AGENT', 'RESEARCH_INTEREST',
+     '{wow.slate-integrity-expert}', 30, 2, false, '{"prediction_authority":false}'::jsonb, true),
+    ('wow.history-comparables-researcher', '1.0.0', 'wow.agent-output.v1', 'RESEARCH_AGENT', 'RESEARCH_INTEREST',
+     '{wow.slate-integrity-expert}', 45, 2, false, '{"prediction_authority":false}'::jsonb, true),
+    ('wow.matchup-context-researcher', '1.0.0', 'wow.agent-output.v1', 'RESEARCH_AGENT', 'RESEARCH_INTEREST',
+     '{wow.slate-integrity-expert}', 30, 2, false, '{"prediction_authority":false}'::jsonb, true),
+    ('wow.market-settlement-researcher', '1.0.0', 'wow.agent-output.v1', 'RESEARCH_AGENT', 'RESEARCH_INTEREST',
+     '{wow.slate-integrity-expert}', 30, 2, false, '{"prediction_authority":false}'::jsonb, true),
+    ('wow.research-evidence-reconciler', '1.0.0', 'wow.agent-output.v1', 'DETERMINISTIC', 'RESEARCH_INTEREST',
+     '{wow.source-provenance-researcher,wow.participant-status-researcher,wow.history-comparables-researcher,wow.matchup-context-researcher,wow.market-settlement-researcher}',
+     20, 1, false, '{"prediction_authority":false}'::jsonb, true),
     ('wow.evidence-hydration', '1.0.0', 'wow.agent-output.v1', 'DETERMINISTIC', 'EVIDENCE_VERIFIED',
-     '{wow.slate-integrity-expert}', 45, 2, false, '{}'::jsonb, true),
+     '{wow.research-evidence-reconciler}', 45, 2, false, '{}'::jsonb, true),
     ('wow.controlling-model', '1.0.0', 'wow.agent-output.v1', 'FITTED_MODEL', 'MODEL_QUALIFIED_HOLD',
      '{wow.evidence-hydration}', 60, 1, true, '{}'::jsonb, true),
     ('wow.failure-path-framework', '1.0.0', 'wow.agent-output.v1', 'DETERMINISTIC', 'MODEL_QUALIFIED_HOLD',
@@ -186,7 +185,33 @@ set contract_version = excluded.contract_version,
     timeout_seconds = excluded.timeout_seconds,
     max_retries = excluded.max_retries,
     artifact_required = excluded.artifact_required,
+    configuration = excluded.configuration,
     enabled = excluded.enabled;
+
+update public.wow_agent_worker_registry
+set enabled = false
+where enabled = true
+  and (worker_id, worker_version) not in (
+    ('wow.parallel-discovery-router','1.0.0'),
+    ('wow.global-scout-coordinator','1.0.0'),
+    ('wow.prop-scout-router','1.0.0'),
+    ('wow.ml-event-scout-router','1.0.0'),
+    ('wow.slate-integrity-expert','1.0.0'),
+    ('wow.source-provenance-researcher','1.0.0'),
+    ('wow.participant-status-researcher','1.0.0'),
+    ('wow.history-comparables-researcher','1.0.0'),
+    ('wow.matchup-context-researcher','1.0.0'),
+    ('wow.market-settlement-researcher','1.0.0'),
+    ('wow.research-evidence-reconciler','1.0.0'),
+    ('wow.evidence-hydration','1.0.0'),
+    ('wow.controlling-model','1.0.0'),
+    ('wow.failure-path-framework','1.0.0'),
+    ('wow.dynamic-calibration-expert','1.0.0'),
+    ('wow.exact-line-market-auditor','1.0.0'),
+    ('wow.structure-exposure-governor','1.0.0'),
+    ('wow.final-refresh-governor','1.0.0'),
+    ('wow.terminal-ceiling-reducer','1.0.0')
+  );
 
 -- ── Job / queue state ───────────────────────────────────────────────────────
 
@@ -255,12 +280,6 @@ create index if not exists wow_agent_job_outputs_lookup_idx
     on public.wow_agent_job_outputs (run_id, candidate_id, worker_id);
 
 -- ── Terminal decisions ──────────────────────────────────────────────────────
--- A separate, append-only, immutable ledger — not just the terminal_label/
--- terminal_ceiling columns embedded on wow_agent_run_candidates above, which
--- a later UPDATE could in principle overwrite. Adopted from PR #33 during the
--- convergence pass: it matches how wow_predictions/wow_event_predictions are
--- already immutable ledgers elsewhere in this schema, which the embedded-
--- column-only design in Phase 1 was not as clearly consistent with.
 
 create table if not exists public.wow_agent_terminal_decisions (
     decision_id uuid primary key default gen_random_uuid(),
@@ -305,27 +324,7 @@ alter table public.wow_agent_audit_events enable row level security;
 create index if not exists wow_agent_audit_events_run_idx
     on public.wow_agent_audit_events (run_id, created_at);
 
--- Compare-and-set job transitions (packet section 5) that touch only
--- wow_agent_jobs or wow_agent_runs are performed directly from
--- agent_runtime/repository.py via PostgREST: an UPDATE ... WHERE id = :id
--- AND status = :expected, with the updated row(s) selected back. Exactly one
--- row in the response means the transition was ours; zero means a
--- duplicate/racing worker already moved it past the expected state. See
--- CasTransitionResult in agent_runtime/repository.py.
-
 -- ── Atomic job completion ────────────────────────────────────────────────────
--- Recording a job output and transitioning the job to a terminal status is
--- two writes across two tables — a single PostgREST call can't make that
--- atomic. Adopted from PR #33's job_store.py::complete() (there written
--- against a raw psycopg connection) during the convergence pass, as a single
--- Postgres function instead: it closes the same crash-between-writes gap
--- without adding a second database-access pattern (psycopg + SUPABASE_DB_URL)
--- alongside the PostgREST client every other module in this service uses.
---
--- Returns true if this call actually completed the job; false if the job was
--- already terminal (duplicate delivery — a no-op, not an error). Locks the
--- job row for the duration of the check so two concurrent deliveries of the
--- same terminal output can't both believe they were first.
 
 create or replace function public.wow_agent_complete_job(
     p_job_id uuid,
@@ -378,9 +377,6 @@ begin
 
     get diagnostics v_inserted_count = row_count;
     if v_inserted_count = 0 then
-        -- Another call already inserted the output between our lock and now
-        -- (shouldn't happen given the row lock above, but fail closed rather
-        -- than silently double-transition).
         return false;
     end if;
 

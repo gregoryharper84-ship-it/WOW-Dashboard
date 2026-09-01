@@ -16,7 +16,8 @@ from agent_runtime.state_machine import (
 def test_run_happy_path_is_fully_walkable():
     path = [
         "CREATED", "VALIDATING_REQUEST", "DISCOVERY_QUEUED", "DISCOVERY_RUNNING",
-        "ROUTING", "EVIDENCE_QUEUED", "EVIDENCE_RUNNING", "MODELING_QUEUED",
+        "ROUTING", "RESEARCH_QUEUED", "RESEARCH_RUNNING",
+        "EVIDENCE_QUEUED", "EVIDENCE_RUNNING", "MODELING_QUEUED",
         "MODELING_RUNNING", "AUDIT_QUEUED", "AUDIT_RUNNING", "FINAL_REFRESH",
         "RECONCILING", "COMPLETED",
     ]
@@ -33,6 +34,11 @@ def test_run_cancel_and_fail_reachable_from_every_nonterminal_state():
 def test_run_cannot_skip_stages():
     with pytest.raises(IllegalTransitionError):
         assert_run_transition("CREATED", "COMPLETED")
+
+
+def test_research_barrier_cannot_be_bypassed():
+    with pytest.raises(IllegalTransitionError):
+        assert_run_transition("ROUTING", "EVIDENCE_QUEUED")
 
 
 def test_run_terminal_states_have_no_outbound_transitions():
