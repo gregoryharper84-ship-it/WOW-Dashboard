@@ -10,6 +10,7 @@ from mlb_1ip_artifact_pipeline import (
 )
 from mlb_1ip_final_refresh import refresh_queue_row
 from mlb_1ip_final_refresh_job import _rerun
+from mlb_1ip_training_dataset import game_training_rows
 
 
 def _lineage_kwargs():
@@ -66,6 +67,62 @@ def test_promotion_requires_independent_review_context():
     assert promoted["active"] is True
     assert promoted["probability_publishable"] is False
     assert promoted["can_execute"] is False
+
+
+def test_training_dataset_excludes_first_inning_reliever():
+    def fake_get(url, params=None, timeout=None):
+        class Response:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {
+                    "allPlays": [
+                        {
+                            "about": {"inning": 1, "halfInning": "top"},
+                            "matchup": {"pitcher": {"id": 10}},
+                            "playEvents": [{"isPitch": True}] * 4,
+                        },
+                        {
+                            "about": {"inning": 1, "halfInning": "top"},
+                            "matchup": {"pitcher": {"id": 10}},
+                            "playEvents": [{"isPitch": True}] * 5,
+                        },
+                        {
+                            "about": {"inning": 1, "halfInning": "top"},
+                            "matchup": {"pitcher": {"id": 10}},
+                            "playEvents": [{"isPitch": True}] * 4,
+                        },
+                        {
+                            "about": {"inning": 1, "halfInning": "top"},
+                            "matchup": {"pitcher": {"id": 99}},
+                            "playEvents": [{"isPitch": True}] * 6,
+                        },
+                        {
+                            "about": {"inning": 1, "halfInning": "bottom"},
+                            "matchup": {"pitcher": {"id": 20}},
+                            "playEvents": [{"isPitch": True}] * 4,
+                        },
+                        {
+                            "about": {"inning": 1, "halfInning": "bottom"},
+                            "matchup": {"pitcher": {"id": 20}},
+                            "playEvents": [{"isPitch": True}] * 4,
+                        },
+                        {
+                            "about": {"inning": 1, "halfInning": "bottom"},
+                            "matchup": {"pitcher": {"id": 20}},
+                            "playEvents": [{"isPitch": True}] * 4,
+                        },
+                    ]
+                }
+
+        return Response()
+
+    rows, manifest = game_training_rows(123, http_get=fake_get)
+    assert sorted((r.bf, r.pitches) for r in rows) == [(3, 12), (3, 13)]
+    assert manifest["selection_rule"] == "FIRST_PITCHER_ENCOUNTERED_PER_FIRST_INNING_HALF"
+    assert manifest["relief_pitch_events_excluded"] == 6
+    assert 99 not in manifest["opener_pitcher_ids"]
 
 
 def test_refresh_waits_until_official_lineup():
