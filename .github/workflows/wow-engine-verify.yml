@@ -229,6 +229,7 @@ jobs:
           validate_spec(pick_action)
           expected_pick_operations = {
               "/score-pick-request": "scoreWowPickRequest",
+              "/score-team-event-request": "scoreWowTeamEventRequest",
               "/record-recommendations": "recordWowRecommendations",
               "/settle-recommendations": "settleWowRecommendations",
           }
@@ -236,6 +237,6 @@ jobs:
           for path, operation_id in expected_pick_operations.items():
               assert pick_action["paths"][path]["post"]["operationId"] == operation_id
               assert pick_action["paths"][path]["post"]["security"] == [{"actionBearer": []}]
-          assert "REPLACE_WITH_RENDER_SERVICE_HOST" in pick_action["servers"][0]["url"]
+          assert pick_action["servers"][0]["url"] == "https://wow-governed-probability-engine.onrender.com"
           print("release contracts valid")
           PY
