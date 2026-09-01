@@ -1,12 +1,7 @@
 """The durable Celery task: claim -> execute -> complete -> coordinate.
-Ported from PR #33 (feature/wow-agent-runtime-v1) during the convergence
-pass, adapted to this module's repository (ledger.get_client() instead of a
-raw psycopg connection) and the atomic wow_agent_complete_job RPC for
-output-plus-status-transition.
 
-_run_durable_body is the testable core (explicit client argument); the
-Celery task wraps it with ledger.get_client() and the retry/soft-timeout
-mechanics that need access to the Celery task instance (self.retry(...)).
+Scout + Research enforcement is activated here so every durable governed run
+uses the mandatory pre-specialist barrier. Execution remains permanently off.
 """
 from __future__ import annotations
 
@@ -17,16 +12,12 @@ from billiard.exceptions import SoftTimeLimitExceeded
 from agent_runtime import repository
 from agent_runtime.queue import celery_app
 from agent_runtime.registry import worker_spec
-from agent_runtime.runner import TRANSIENT_CODES, _terminal_output, execute_envelope
+from agent_runtime.runner_scout_research import TRANSIENT_CODES, _terminal_output, execute_envelope
 from agent_runtime.schemas import WorkerJobEnvelope
 from agent_runtime.state_machine import JOB_TERMINAL_STATES
 
 
 def run_durable_body(client: Any, envelope: dict) -> tuple[dict, Exception | None]:
-    """Claim, execute, and complete one job. Returns (payload, retry_exc) —
-    retry_exc is set when the caller (the Celery task) should call
-    self.retry(...); this function itself never raises for the retry path so
-    it stays a plain, testable function."""
     try:
         env = WorkerJobEnvelope.model_validate(envelope)
     except Exception as exc:
@@ -45,17 +36,13 @@ def run_durable_body(client: Any, envelope: dict) -> tuple[dict, Exception | Non
             return {"status": "BLOCKED", "error_code": "JOB_NOT_FOUND", "job_id": env.job_id, "can_execute": False}, None
         if row["status"] in JOB_TERMINAL_STATES:
             return {"status": "DUPLICATE_DELIVERY_IGNORED", "job_id": env.job_id, "terminal_status": row["status"], "can_execute": False}, None
-        # Not ours to claim right now (another worker holds a fresh lease) —
-        # signal the caller to retry shortly rather than drop the delivery.
         return {}, RuntimeError("JOB_NOT_CLAIMABLE_YET")
 
-    from agent_runtime.coordinator import Coordinator
+    from agent_runtime.coordinator_scout_research import Coordinator
     coordinator = Coordinator(client)
     try:
         coordinator.on_job_started(env.worker_id, env.run_id)
     except Exception:
-        # Starting-state races are expected when sibling candidate jobs begin.
-        # The CAS in repository.transition_run remains authoritative.
         pass
 
     try:
