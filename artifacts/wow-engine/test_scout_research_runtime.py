@@ -110,8 +110,10 @@ def test_global_scout_is_non_predictive():
 
 def test_reconciler_fails_closed_without_evidence():
     reports = [{"research_status": "PARTIAL"} for _ in RESEARCH_WORKERS]
+    assert len(reports) == 5
     out = execute_envelope(_env(RESEARCH_RECONCILER, {
         "research_reports": reports,
+        "team_jobs_ok": True,
         "evidence_present": False,
         "event_start_present": True,
     }))
@@ -156,14 +158,12 @@ def test_coordinator_routes_both_lanes_through_scout_then_research_then_evidence
     monkeypatch.setattr(repository, "list_run_candidates", lambda _client, _run_id: [candidate])
     monkeypatch.setattr(repository, "get_candidate", lambda _client, _cid: candidate)
 
-    # 1. Discovery must queue Global Scout, not identity/evidence/model directly.
     coord._after_discovery(
         SimpleNamespace(run_id=candidate["run_id"], payload={"rows": [payload], "discovery_enabled": False}),
         {"status": "SUCCEEDED", "output": {"candidates": [payload]}},
     )
     assert [item["worker_id"] for item in queued] == ["wow.global-scout-coordinator"]
 
-    # 2. Successful Global Scout must route to the lane-specific Scout.
     queued.clear()
     coord._all_worker_terminal = lambda *_args, **_kwargs: True
     monkeypatch.setattr(repository, "list_jobs", lambda _client, _run_id, worker_id=None: (
@@ -174,8 +174,6 @@ def test_coordinator_routes_both_lanes_through_scout_then_research_then_evidence
     coord._after_global_scout(SimpleNamespace(run_id=candidate["run_id"]), {"status": "SUCCEEDED"})
     assert [item["worker_id"] for item in queued] == [expected_scout]
 
-    # 3. Identity success must queue all five researchers and must not queue
-    # evidence hydration yet.
     queued.clear()
     monkeypatch.setattr(repository, "list_jobs", lambda _client, _run_id, worker_id=None: (
         [{"candidate_id": candidate["candidate_id"], "worker_id": "wow.slate-integrity-expert", "status": "SUCCEEDED"}]
@@ -186,7 +184,6 @@ def test_coordinator_routes_both_lanes_through_scout_then_research_then_evidence
     assert "wow.evidence-hydration" not in {item["worker_id"] for item in queued}
     assert ("ROUTING", "RESEARCH_QUEUED") in transitions
 
-    # 4. Only after the reconciler succeeds can evidence hydration be queued.
     queued.clear()
     monkeypatch.setattr(repository, "list_jobs", lambda _client, _run_id, worker_id=None: (
         [{"candidate_id": candidate["candidate_id"], "worker_id": RESEARCH_RECONCILER, "status": "SUCCEEDED"}]
