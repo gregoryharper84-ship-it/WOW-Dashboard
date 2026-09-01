@@ -20,11 +20,12 @@ The implementer context must not approve its own work.
 3. `MLB_1IP_CONDITIONAL_TOTAL_PITCH_PMF_V1` is a compact empirical BF-conditional total-pitches PMF and contains no caller-controlled probability inputs.
 4. Exact MORE/LESS/push probability mass sums to one and is deterministic for a fixed artifact and line.
 5. The artifact remains `probability_publishable=false`, `can_execute=false`, inactive and unpromoted before independent approval.
-6. Supported lines are pinned to the empirically validated grid `11.5, 13.5, 15.5, 17.5, 19.5, 21.5`; unsupported tails may not be silently extrapolated.
-7. `mlb_1ip_empirical_promotion.py` is packet construction only: it verifies artifact checksum, immutable lineage, split hash, exact validation metrics, supported lines, distinct reviewer context, approval verdict, and a 64-character review-evidence hash before it can produce a `PROSPECTIVE_CERTIFIED` payload.
-8. The promotion payload still hard-sets `probability_publishable=false` and `can_execute=false`; no function in the bundle writes Supabase, deploys Render, creates a production scheduler, or changes V17 activation state.
-9. Tests explicitly reject self-review, missing/non-approval review evidence, tampered artifact checksum, line-support mismatch, and checksum/split/Brier/ECE mismatches.
-10. Confirm the simpler aggregate empirical model is justified by the disjoint temporal validation and that adding the pitcher-shrunk layer is not warranted by the measured holdout results.
+6. The registry contract uses the production resolver's exact `PROP_FEATURES_V1` feature-schema key. Promotion serialization is restricted to the existing generic fitted-artifact registry columns; review evidence and temporal lineage live inside `validation_metrics` JSONB rather than inventing unreviewed columns.
+7. Supported lines are pinned to the empirically validated grid `11.5, 13.5, 15.5, 17.5, 19.5, 21.5`. The specialist now requires that exact certified grid from registry metadata and fails closed when it is missing; a line such as `16.5` is rejected even though it falls between the certified minimum and maximum.
+8. `mlb_1ip_empirical_promotion.py` is packet construction only: it verifies artifact checksum, immutable lineage, split hash, exact validation metrics, exact supported lines, distinct reviewer context, approval verdict, and a 64-character review-evidence hash before it can produce a `PROSPECTIVE_CERTIFIED` payload.
+9. The promotion payload still hard-sets `probability_publishable=false` and `can_execute=false`; no function in the bundle writes Supabase, deploys Render, creates a production scheduler, or changes V17 activation state.
+10. Tests explicitly reject self-review, missing/non-approval review evidence, tampered artifact checksum, line-support mismatch, registry feature-schema drift, missing certified line metadata, and checksum/split/Brier/ECE mismatches.
+11. Confirm the simpler aggregate empirical model is justified by the disjoint temporal validation and that adding the pitcher-shrunk layer is not warranted by the measured holdout results.
 
 ## Temporal shadow evidence
 
@@ -38,12 +39,12 @@ All three passed the current absolute numerical gates on the expanded holdout, b
 
 ## Latest machine verification
 
-At commit `860cf876355d2d80461591a4a542e71ccfd8a95f`, GitHub Actions run `33570320155` completed successfully:
+At executable/test commit `b056706e85d75ad0fccf24d9655079cb955db845`, GitHub Actions run `33571025989` completed successfully:
 
-- focused MLB 1IP governance/runtime suite: **38 passed**
-- full WOW engine regression: **660 passed, 3 skipped, 0 failed**
+- focused MLB 1IP governance/runtime suite: **42 passed, 0 failed**
+- full WOW engine regression: **664 passed, 3 skipped, 0 failed**
 
-Warnings were deprecation/future warnings only and did not fail the suite.
+This verifies the late registry-parity and exact-line-support hardening as well as the production-capability, ingress, final-refresh and HTTP orchestration fixtures. Warnings were deprecation/future warnings only and did not fail the suite.
 
 ## Promotion remains blocked
 
