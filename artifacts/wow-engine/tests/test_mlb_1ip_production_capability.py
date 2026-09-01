@@ -14,6 +14,9 @@ from mlb_1ip_final_refresh_job import _rerun
 from mlb_1ip_training_dataset import game_training_rows
 
 
+VALIDATED_LINES = [11.5, 13.5, 15.5, 17.5, 19.5, 21.5]
+
+
 def _lineage_kwargs():
     return {
         "scoring_code_sha": "b" * 40,
@@ -43,6 +46,7 @@ def _empirical_artifact():
         "supported_line_min": 11.5,
         "supported_line_max": 21.5,
         "feature_schema_version": "PROP_FEATURES_V1",
+        "validation_metrics": {"validated_lines": VALIDATED_LINES},
         "probability_publishable": False,
         "can_execute": False,
     }
@@ -166,6 +170,7 @@ def test_confirmed_refresh_executes_same_empirical_artifact_specialist():
     assert result["model_family"] == "MLB_1IP_CONDITIONAL_TOTAL_PITCH_PMF_V1"
     assert result["model_artifact_version"] == "MLB_1IP_TEST_ARTIFACT_V1"
     assert result["calibration_method"] == "MLB_1IP_EMPIRICAL_TEMPORAL_CAL_V1"
+    assert result["certified_supported_lines"] == VALIDATED_LINES
     assert result["calibrated_probability_lower_bound"] <= result["calibrated_probability"]
     assert result["terminal_label"] == "MODEL_QUALIFIED_HOLD"
     assert result["final_refresh_required"] is False
