@@ -27,6 +27,7 @@ from api import app, get_client
 from agent_runtime import idempotency, repository, schemas
 from agent_runtime.orchestrator import Orchestrator
 from agent_runtime.state_machine import RUN_TERMINAL_STATES
+from ml_research_readiness import get_ml_research_readiness
 
 GOVERNANCE_VERSION = "WOW-AGENT-RUNTIME-V1-PHASE1"
 
@@ -88,6 +89,34 @@ def health_ready() -> dict[str, Any]:
     if not ready:
         raise HTTPException(status_code=503, detail=body)
     return body
+
+
+@app.get("/ml-research-readiness")
+def ml_research_readiness() -> dict[str, Any]:
+    """Return the six-sport v16 ML research/model-readiness registry.
+
+    This is a transparency/read-only endpoint. It is deliberately outside
+    terminal reduction and cannot publish a probability or authorize action.
+    """
+    return get_ml_research_readiness()
+
+
+@app.get("/ml-research-readiness/{sport}")
+def ml_research_readiness_for_sport(sport: str) -> dict[str, Any]:
+    """Return one supported ML readiness profile, or 404 for unsupported."""
+    try:
+        return get_ml_research_readiness(sport)
+    except KeyError:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": "ML_RESEARCH_READINESS_SPORT_UNSUPPORTED",
+                "sport": sport,
+                "readiness_is_terminal_gate": False,
+                "probability_publishable_from_readiness": False,
+                "can_execute": False,
+            },
+        )
 
 
 @app.post("/wow/runs", status_code=202)
