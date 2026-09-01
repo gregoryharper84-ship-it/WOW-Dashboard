@@ -46,6 +46,23 @@ def test_registry_contains_exactly_six_supported_ml_sports():
     assert tuple(sports) == ("MLB", "NFL", "NBA", "WNBA", "TENNIS", "NCAAF")
 
 
+def test_mlb_baseline_reflects_prospectively_certified_v16_event_model():
+    mlb = get_ml_research_readiness("MLB")
+
+    assert mlb["research_readiness"] == "STRONG"
+    assert mlb["model_capability"] == "AVAILABLE"
+    assert mlb["components"]["fitted_event_model"] == "READY"
+    assert mlb["components"]["event_calibrator"] == "READY"
+    assert mlb["components"]["calibrated_lower_bound"] == "READY"
+    assert mlb["capability_evidence"]["provider_identity"] == "WOW_MLB_EVENT_FITTED_MODEL_V1"
+    assert mlb["capability_evidence"]["model_artifact_version"] == "MLB_V16_V2D_CONTEXT_SHARED_SIM_R1"
+    assert mlb["capability_evidence"]["lifecycle_state"] == "PROSPECTIVE_CERTIFIED"
+    assert mlb["capability_evidence"]["calibration_health_requirement"] == "PASS"
+    assert mlb["capability_evidence"]["minimum_simulations"] == 50000
+    assert mlb["blockers"] == []
+    assert mlb["main_research_gap"] == "NONE_AT_MODEL_RESEARCH_LAYER"
+
+
 def test_nfl_and_nba_are_explicit_and_fail_closed_on_missing_models():
     nfl = get_ml_research_readiness("nfl")
     nba = get_ml_research_readiness("NBA")
@@ -63,19 +80,29 @@ def test_nfl_and_nba_are_explicit_and_fail_closed_on_missing_models():
     assert "adjusted net rating" in nba["research_requirements"]
 
 
-def test_readiness_is_non_terminal_non_executable_and_non_publishable():
+def test_readiness_is_baseline_non_terminal_non_executable_and_non_publishable():
     payload = get_ml_research_readiness()
     assert payload["runtime"] == "WOW_v16_CLEAN_CORE"
+    assert payload["status_basis"] == "CODEBASE_CAPABILITY_BASELINE"
+    assert payload["requires_event_specific_refresh"] is True
     assert payload["readiness_is_terminal_gate"] is False
     assert payload["probability_publishable_from_readiness"] is False
     assert payload["terminal_ceiling_effect"] == "NONE"
     assert payload["can_execute"] is False
 
     for row in payload["sports"]:
+        assert row["status_basis"] == "CODEBASE_CAPABILITY_BASELINE"
+        assert row["requires_event_specific_refresh"] is True
         assert row["readiness_is_terminal_gate"] is False
         assert row["probability_publishable_from_readiness"] is False
         assert row["terminal_ceiling_effect"] == "NONE"
         assert row["can_execute"] is False
+
+
+def test_ncaaf_profile_points_to_existing_dynamic_readiness_source():
+    ncaaf = get_ml_research_readiness("NCAAF")
+    assert ncaaf["live_readiness_source"] == "/internal/ncaaf/readiness"
+    assert ncaaf["requires_event_specific_refresh"] is True
 
 
 def test_readiness_never_contains_model_probability_or_terminal_output():
@@ -89,6 +116,8 @@ def test_public_readiness_endpoint_returns_all_six_sports():
     assert response.status_code == 200
     payload = response.json()
     assert [row["sport"] for row in payload["sports"]] == list(SUPPORTED_ML_READINESS_SPORTS)
+    assert payload["status_basis"] == "CODEBASE_CAPABILITY_BASELINE"
+    assert payload["requires_event_specific_refresh"] is True
     assert payload["readiness_is_terminal_gate"] is False
     assert payload["can_execute"] is False
 
