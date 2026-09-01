@@ -6,6 +6,7 @@ line patches. Remove it after the generated source commit is verified.
 """
 from pathlib import Path
 
+# Trigger marker: 2026-09-01 canonical-ingress pass.
 path = Path(__file__).resolve().parents[1] / "pick_request_runtime.py"
 text = path.read_text()
 
