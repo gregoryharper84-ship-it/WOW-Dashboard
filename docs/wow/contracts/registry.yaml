@@ -924,3 +924,33 @@ contracts:
       authority was already EMERGENCY_ACTIVE; this document formalizes it.
       Combined with WOW-PATCH-2026-07-10-COMBO-SETTLEMENT for combo-market
       settlement mechanics.
+
+  - canonical_contract_id: "WOW-PATCH-2026-09-01-MLB-1IP-FULL-MODEL-GOVERNED"
+    source_filename: null
+    canonical_path: "docs/wow/contracts/canonical/WOW-PATCH-2026-09-01-MLB-1IP-FULL-MODEL-GOVERNED.md"
+    sha256: "00743b98dd4751c0cb625c01e4abd98fd71ce0deb50ea95bf8ec9102de31285b"
+    version: "v1"
+    declared_status: "ACTIVE"
+    project_authority_status: "ACTIVE"
+    lane: "GOVERNANCE"
+    precedence: 105
+    supersedes: []
+    effective_date: "2026-09-01"
+    can_execute: false
+    notes: >
+      Project-governance decision promoting MLB 1ST_INNING_PITCHES_THROWN from
+      TEST_ONLY lane orchestration to FULL_MODEL_GOVERNED gate-chain treatment,
+      following a live-run finding that pending official-lineup confirmation
+      was incorrectly collapsing to MODEL_UNAVAILABLE instead of attempting
+      projected-lineup reconstruction. Does not edit or supersede the
+      immutable WOW-MLB-FIRST-INNING-PITCH-COUNT-EXPERT-SKILL-V3 (which
+      remains declared_status=TEST_ONLY exactly as authored, per this
+      registry's own promotion rules) -- same layering pattern as
+      WOW-PATCH-2026-08-01-1IP-EFFICIENCY-GAP-ENFORCE and
+      WOW-PATCH-2026-08-01-PITCH-COUNT-DIRECTIONAL-ASYMMETRY. Does not
+      certify a fitted-model artifact and does not change can_execute=false.
+      wow_prop_certified_model_artifact still returns
+      PROP_CERTIFIED_MODEL_ARTIFACT_NOT_FOUND for (MLB,
+      1ST_INNING_PITCHES_THROWN) until a real artifact is certified through
+      the existing, unmodified promotion process. Implementation:
+      artifacts/wow-engine/mlb_1ip_specialist.py.
