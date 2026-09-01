@@ -5,6 +5,9 @@ from mlb_1ip_artifact_pipeline import TrainingRow
 from mlb_1ip_empirical_pmf import fit_empirical_pmf
 
 
+VALIDATED_LINES = [11.5, 13.5, 15.5, 17.5, 19.5, 21.5]
+
+
 class _Decision:
     terminal_label = "MODEL_QUALIFIED_HOLD"
     pick_rejected = False
@@ -54,6 +57,7 @@ def _artifact():
         "supported_line_min": 11.5,
         "supported_line_max": 21.5,
         "feature_schema_version": "PROP_FEATURES_V1",
+        "validation_metrics": {"validated_lines": VALIDATED_LINES},
         "probability_publishable": False,
         "can_execute": False,
     }
