@@ -23,6 +23,21 @@ from mlb_1ip_specialist import (
 )
 
 CAN_EXECUTE = False
+EXPECTED_FEATURE_SCHEMA_VERSION = "PROP_FEATURES_V1"
+
+
+def _certified_lines(artifact_record: dict[str, Any]) -> tuple[float, ...]:
+    metrics = artifact_record.get("validation_metrics") or {}
+    raw = metrics.get("validated_lines")
+    if not isinstance(raw, list) or not raw:
+        raise ValueError("MLB_1IP_CERTIFIED_LINE_SUPPORT_MISSING")
+    try:
+        lines = tuple(float(v) for v in raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("MLB_1IP_CERTIFIED_LINE_SUPPORT_INVALID") from exc
+    if len(set(lines)) != len(lines):
+        raise ValueError("MLB_1IP_CERTIFIED_LINE_SUPPORT_INVALID")
+    return lines
 
 
 def score_mlb_1ip_empirical(
@@ -41,10 +56,12 @@ def score_mlb_1ip_empirical(
         raise ValueError("MLB_1IP_CERTIFIED_ARTIFACT_FAMILY_INVALID")
     if artifact_record.get("code") != "PROP_CERTIFIED_MODEL_ARTIFACT_READY":
         raise ValueError("MLB_1IP_CERTIFIED_ARTIFACT_NOT_READY")
+    if artifact_record.get("feature_schema_version") != EXPECTED_FEATURE_SCHEMA_VERSION:
+        raise ValueError("MLB_1IP_CERTIFIED_ARTIFACT_FEATURE_SCHEMA_INVALID")
 
-    line_min = float(artifact_record.get("supported_line_min"))
-    line_max = float(artifact_record.get("supported_line_max"))
-    if not line_min <= float(line_value) <= line_max:
+    supported_lines = _certified_lines(artifact_record)
+    requested_line = float(line_value)
+    if requested_line not in supported_lines:
         return {
             "controlling_specialist": CONTROLLING_SPECIALIST,
             "model_family": MODEL_FAMILY,
@@ -52,8 +69,9 @@ def score_mlb_1ip_empirical(
             "terminal_label": "REJECT_OOD",
             "code": "MLB_1IP_LINE_OUTSIDE_CERTIFIED_SUPPORT",
             "blockers": ["LINE_OUTSIDE_CERTIFIED_SUPPORT"],
-            "supported_line_min": line_min,
-            "supported_line_max": line_max,
+            "supported_lines": list(supported_lines),
+            "supported_line_min": min(supported_lines),
+            "supported_line_max": max(supported_lines),
             "final_refresh_required": False,
             "probability_publishable": False,
             "can_execute": False,
@@ -80,7 +98,7 @@ def score_mlb_1ip_empirical(
 
     scored = score_empirical_pmf(
         artifact_record.get("artifact_payload") or {},
-        line_value=float(line_value),
+        line_value=requested_line,
         side=side,
     )
     blockers = list(reasons)
@@ -103,6 +121,7 @@ def score_mlb_1ip_empirical(
         "calibrated_probability_lower_bound": scored["lower_bound"],
         "calibrated_probability_upper_bound": scored["upper_bound"],
         "calibration_method": CALIBRATOR_VERSION,
+        "certified_supported_lines": list(supported_lines),
         "terminal_label": "MODEL_QUALIFIED_HOLD",
         "terminal_ceiling": "MODEL_QUALIFIED_HOLD",
         "final_refresh_required": state != "OFFICIAL_CONFIRMED",
