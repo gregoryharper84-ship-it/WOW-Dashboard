@@ -32,6 +32,7 @@ jobs:
           pip install -r requirements.txt
       - name: Build temporal shadow packet
         env:
+          PYTHONPATH: .
           MLB_1IP_RESEARCH_OUT: /tmp/mlb-1ip-shadow
         run: python scripts/build_mlb_1ip_shadow_packet.py
       - name: Upload immutable research packet
