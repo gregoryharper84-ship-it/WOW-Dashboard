@@ -18,13 +18,15 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
+from mlb_1ip_empirical_specialist import score_mlb_1ip_empirical
 from mlb_1ip_live_acquisition import PROVIDER as MLB_1IP_PROVIDER
 from mlb_1ip_live_acquisition import hydrate_mlb_1ip_evidence
-from mlb_1ip_specialist import score_mlb_1ip, starter_changed
+from mlb_1ip_specialist import starter_changed
 from prop_auto_hydration import PropAutoHydrationError
 
 CAN_EXECUTE = False
 REFRESH_DELAY_SECONDS = 300
+MLB_1IP_STAT_TYPE = "1ST_INNING_PITCHES_THROWN"
 
 
 def _acquisition_failure(
@@ -49,8 +51,6 @@ def _acquisition_failure(
         detail["terminal_label"] = "REJECT_DATA_QUALITY"
         status = "REJECTED"
     else:
-        # Provider/connectivity failures are infrastructure/evidence failures,
-        # not proof that the certified probability model is unavailable.
         detail["terminal_label"] = "RESEARCH_INTEREST"
         status = "HELD"
 
@@ -114,6 +114,54 @@ def _queue_provisional_refresh(
             "next_refresh_at": payload["next_refresh_at"],
             "can_execute": False,
         }
+
+
+def _resolve_empirical_artifact(
+    *,
+    market_api: Any,
+    row_key: str,
+    terminal: Callable[..., dict[str, Any]],
+    acquisition: dict[str, Any],
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """Re-resolve the exact artifact immediately before scoring.
+
+    The outer pick runtime already performs this preflight. Re-resolution here
+    closes a time-of-check/time-of-use gap and provides the exact payload to the
+    controlling specialist. Registry transport failure is an infrastructure
+    HOLD, while a genuinely absent certified artifact remains MODEL_UNAVAILABLE.
+    """
+    route = market_api._prop_route_artifact("MLB", MLB_1IP_STAT_TYPE)
+    if route.get("ok") is True and route.get("code") == "PROP_CERTIFIED_MODEL_ARTIFACT_READY":
+        return route, None
+
+    code = str(route.get("code") or "PROP_MODEL_REGISTRY_INVALID_RESPONSE")
+    if code in {"PROP_MODEL_REGISTRY_UNAVAILABLE", "PROP_MODEL_REGISTRY_INVALID_RESPONSE"}:
+        return None, terminal(
+            row_key,
+            "HELD",
+            code,
+            detail={
+                "terminal_label": "RESEARCH_INTEREST",
+                "specialist_invoked": False,
+                "stage": "CERTIFIED_ARTIFACT_RECHECK",
+            },
+            acquisition=acquisition,
+        )
+
+    return None, terminal(
+        row_key,
+        "HELD",
+        "MODEL_UNAVAILABLE",
+        detail={
+            "terminal_label": "MODEL_UNAVAILABLE",
+            "blocker_code": code,
+            "sport": "MLB",
+            "stat_type": MLB_1IP_STAT_TYPE,
+            "specialist_invoked": False,
+            "stage": "CERTIFIED_ARTIFACT_RECHECK",
+        },
+        acquisition=acquisition,
+    )
 
 
 def score_mlb_1ip_ingress(
@@ -229,20 +277,43 @@ def score_mlb_1ip_ingress(
             acquisition=acquisition,
         )
 
+    artifact, artifact_failure = _resolve_empirical_artifact(
+        market_api=market_api,
+        row_key=row_key,
+        terminal=terminal,
+        acquisition=acquisition,
+    )
+    if artifact_failure is not None:
+        return artifact_failure
+    assert artifact is not None
+
     money_lane_status = str(row.money_lane_status or "").strip().upper()
     market_evidence_present = money_lane_status not in {"", "PAYOUT_UNRESOLVED"}
 
-    result = score_mlb_1ip(
-        starter_status=lineup_evidence.get("starter_status", ""),
-        official_lineup_status=lineup_evidence.get("official_lineup_status", ""),
-        projected_top_four=lineup_evidence.get("projected_top_four"),
-        pitcher_bf_distribution=lineup_evidence.get("pitcher_bf_distribution") or {},
-        baseline_pitches_per_batter=lineup_evidence.get("baseline_pitches_per_batter") or {},
-        line_value=row.line,
-        side=row.direction,
-        failure_path_prior=lineup_evidence.get("failure_path_prior"),
-        market_evidence_present=market_evidence_present,
-    )
+    try:
+        result = score_mlb_1ip_empirical(
+            artifact_record=artifact,
+            starter_status=lineup_evidence.get("starter_status", ""),
+            official_lineup_status=lineup_evidence.get("official_lineup_status", ""),
+            projected_top_four=lineup_evidence.get("projected_top_four"),
+            line_value=row.line,
+            side=row.direction,
+            failure_path_prior=lineup_evidence.get("failure_path_prior"),
+            market_evidence_present=market_evidence_present,
+        )
+    except Exception as exc:
+        return terminal(
+            row_key,
+            "HELD",
+            "MODEL_OUTPUT_INVALID",
+            detail={
+                "terminal_label": "MODEL_UNAVAILABLE",
+                "error_type": type(exc).__name__,
+                "specialist_invoked": True,
+                "stage": "MLB_1IP_EMPIRICAL_SPECIALIST",
+            },
+            acquisition=acquisition,
+        )
     result["scout_research_barrier"] = barrier_detail
 
     if not result["model_evaluated"]:
@@ -253,7 +324,7 @@ def score_mlb_1ip_ingress(
             detail={
                 "terminal_label": result["terminal_label"],
                 "blockers": result["blockers"],
-                "lineup_evidence_state": result["lineup_evidence_state"],
+                "lineup_evidence_state": result.get("lineup_evidence_state"),
                 "scout_research_barrier": barrier_detail,
                 "specialist_invoked": False,
             },
@@ -270,8 +341,6 @@ def score_mlb_1ip_ingress(
             market_api=market_api,
         )
         if refresh_queue["status"] != "QUEUED":
-            # Scheduler persistence is a downstream operational blocker only;
-            # preserve the completed sporting probability already calculated.
             result["blockers"] = list(result.get("blockers") or []) + [
                 "FINAL_REFRESH_QUEUE_PERSISTENCE_UNAVAILABLE"
             ]
