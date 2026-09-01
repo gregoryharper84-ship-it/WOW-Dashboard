@@ -1,20 +1,21 @@
 """WOW v16 ML research-readiness registry.
 
-This module is intentionally *non-terminal*.  It reports whether the current
+This module is intentionally *non-terminal*. It reports whether the current
 research/model infrastructure for an outright-winner lane is structured enough
-to support governed probability work.  It never scores an event, publishes a
+to support governed probability work. It never scores an event, publishes a
 probability, changes a terminal ceiling, or authorizes execution.
 
 The distinction is deliberate:
 
 * research_readiness describes the maturity of the structured research packet;
 * model_capability describes whether a fitted, governed event model is actually
-  available;
+  available at the codebase/capability-baseline layer;
 * neither field is a substitute for event-specific Full Model gates.
 
-A sport may therefore have STRONG research readiness while its model capability
-is still MODEL_UNAVAILABLE.  Missing fitted artifacts/calibration remain
-fail-closed in the controlling score path.
+Every response is therefore marked as a CODEBASE_CAPABILITY_BASELINE and
+requires event-specific refresh. A baseline AVAILABLE model may still fail
+closed for a particular event when live status, evidence, calibration, identity,
+or another mandatory gate is missing.
 """
 from __future__ import annotations
 
@@ -42,7 +43,7 @@ _ML_RESEARCH_READINESS: Final[dict[str, dict]] = {
     "MLB": {
         "sport": "MLB",
         "research_readiness": "STRONG",
-        "model_capability": "MODEL_UNAVAILABLE",
+        "model_capability": "AVAILABLE",
         "priority": "REFERENCE_IMPLEMENTATION",
         "components": {
             "exact_event_identity_contract": "READY",
@@ -50,9 +51,18 @@ _ML_RESEARCH_READINESS: Final[dict[str, dict]] = {
             "weather_and_venue_context": "READY",
             "matchup_research_framework": "READY",
             "failure_path_framework": "READY",
-            "fitted_event_model": "UNAVAILABLE",
-            "event_calibrator": "UNAVAILABLE",
-            "calibrated_lower_bound": "UNAVAILABLE",
+            "fitted_event_model": "READY",
+            "event_calibrator": "READY",
+            "calibrated_lower_bound": "READY",
+        },
+        "capability_evidence": {
+            "provider_identity": "WOW_MLB_EVENT_FITTED_MODEL_V1",
+            "model_artifact_version": "MLB_V16_V2D_CONTEXT_SHARED_SIM_R1",
+            "feature_schema_version": "MLB_V2D_CONTEXT_V1",
+            "lifecycle_state": "PROSPECTIVE_CERTIFIED",
+            "certification_id": "V16-PROSPECTIVE-20260831-MLB-EVENT-R1",
+            "calibration_health_requirement": "PASS",
+            "minimum_simulations": 50000,
         },
         "research_requirements": [
             "starting pitchers and lineup status",
@@ -69,11 +79,8 @@ _ML_RESEARCH_READINESS: Final[dict[str, dict]] = {
             "weather/park run-environment change",
             "extra-inning tail risk",
         ],
-        "blockers": [
-            "MLB_FITTED_MODEL_ARTIFACT_UNAVAILABLE",
-            "MLB_EVENT_CALIBRATOR_UNAVAILABLE",
-        ],
-        "main_research_gap": "FITTED_MLB_EVENT_MODEL_AND_EVENT_CALIBRATOR",
+        "blockers": [],
+        "main_research_gap": "NONE_AT_MODEL_RESEARCH_LAYER",
     },
     "NFL": {
         "sport": "NFL",
@@ -233,6 +240,7 @@ _ML_RESEARCH_READINESS: Final[dict[str, dict]] = {
         "research_readiness": "INCOMPLETE",
         "model_capability": "MODEL_UNAVAILABLE",
         "priority": "P3",
+        "live_readiness_source": "/internal/ncaaf/readiness",
         "components": {
             "exact_event_identity_contract": "PARTIAL",
             "roster_qb_status_context": "INCOMPLETE",
@@ -276,6 +284,8 @@ def _decorate(profile: dict) -> dict:
         {
             "runtime": "WOW_v16_CLEAN_CORE",
             "market_family": "OUTRIGHT_WINNER",
+            "status_basis": "CODEBASE_CAPABILITY_BASELINE",
+            "requires_event_specific_refresh": True,
             "readiness_is_terminal_gate": False,
             "probability_publishable_from_readiness": False,
             "terminal_ceiling_effect": "NONE",
@@ -288,7 +298,7 @@ def _decorate(profile: dict) -> dict:
 def get_ml_research_readiness(sport: Optional[str] = None) -> dict:
     """Return one sport profile or the full six-sport readiness registry.
 
-    Raises KeyError for unsupported sports.  The API layer maps that to 404.
+    Raises KeyError for unsupported sports. The API layer maps that to 404.
     """
     if sport is not None:
         key = sport.strip().upper()
@@ -299,6 +309,8 @@ def get_ml_research_readiness(sport: Optional[str] = None) -> dict:
     return {
         "runtime": "WOW_v16_CLEAN_CORE",
         "market_family": "OUTRIGHT_WINNER",
+        "status_basis": "CODEBASE_CAPABILITY_BASELINE",
+        "requires_event_specific_refresh": True,
         "readiness_is_terminal_gate": False,
         "probability_publishable_from_readiness": False,
         "terminal_ceiling_effect": "NONE",
