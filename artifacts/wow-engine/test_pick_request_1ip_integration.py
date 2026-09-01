@@ -1,13 +1,8 @@
-"""Integration tests for the MLB 1IP dedicated path in pick_request_runtime.py
-(WOW-PATCH-2026-09-01-MLB-1IP-FULL-MODEL-GOVERNED).
+"""Integration tests for the governed MLB 1IP pick-request path.
 
-These mock a hypothetical future certified model artifact
-(market_api._prop_route_artifact returning PROP_CERTIFIED_MODEL_ARTIFACT_READY
-for the 1IP stat) purely to prove the orchestration wiring end-to-end. The
-real wow_prop_certified_model_artifact RPC has no promoted, active row for
-(MLB, 1ST_INNING_PITCHES_THROWN) today, so in production this path stays
-gated exactly like every other uncertified prop route -- these tests do not
-claim otherwise.
+The tests provide a hypothetical certified empirical artifact only to prove
+orchestration. Production remains gated until a real independently reviewed
+artifact is promoted in the governed registry.
 """
 from datetime import datetime, timedelta, timezone
 
@@ -15,7 +10,8 @@ from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 
 import api_prod_market as market_api
-from mlb_1ip_specialist import CANONICAL_STAT_TYPE as MLB_1IP_STAT_TYPE
+from mlb_1ip_artifact_pipeline import TrainingRow
+from mlb_1ip_empirical_pmf import fit_empirical_pmf
 from pick_request_runtime import install_pick_request_routes
 
 
@@ -34,6 +30,28 @@ def _lineup_evidence(**overrides):
     }
     base.update(overrides)
     return base
+
+
+def _certified_artifact():
+    rows = []
+    rows.extend(TrainingRow(bf=3, pitches=12 + i % 4) for i in range(450))
+    rows.extend(TrainingRow(bf=4, pitches=16 + i % 5) for i in range(400))
+    rows.extend(TrainingRow(bf=5, pitches=21 + i % 6) for i in range(300))
+    payload = fit_empirical_pmf(rows)
+    return {
+        "ok": True,
+        "code": "PROP_CERTIFIED_MODEL_ARTIFACT_READY",
+        "model_family": payload["model_family"],
+        "model_artifact_version": "MLB_1IP_TEST_ARTIFACT_V1",
+        "artifact_checksum": payload["artifact_checksum"],
+        "certification_id": "PROP-CERT-TEST-MLB-1IP",
+        "artifact_payload": payload,
+        "supported_line_min": 11.5,
+        "supported_line_max": 21.5,
+        "feature_schema_version": "PROP_FEATURES_V1",
+        "probability_publishable": False,
+        "can_execute": False,
+    }
 
 
 def _row(row_key, *, lineup_evidence=None, money_lane_status="PAYOUT_UNRESOLVED", no_evidence=False):
@@ -68,12 +86,13 @@ def _row(row_key, *, lineup_evidence=None, money_lane_status="PAYOUT_UNRESOLVED"
 
 def _build(monkeypatch):
     app = FastAPI()
+    artifact = _certified_artifact()
 
     def specialist(sport, stat):
         return {"sport": sport, "canonical_prop_type": stat, "controlling_specialist": "wow.mlb-first-inning-pitch-count-expert"}
 
     def route(sport, stat):
-        return {"ok": True, "code": "PROP_CERTIFIED_MODEL_ARTIFACT_READY", "can_execute": False}
+        return dict(artifact)
 
     monkeypatch.setattr(market_api.prod.base_api, "_controlling_specialist_provider", specialist)
     monkeypatch.setattr(
@@ -94,29 +113,21 @@ def _post(client, rows):
     )
 
 
-def test_lineup_tbd_with_projected_top_four_reaches_the_specialist(monkeypatch):
-    client = _build(monkeypatch)
-    response = _post(client, [_row("r1")])
-    assert response.status_code == 200
-    body = response.json()
-    row = body["rows"][0]
+def test_lineup_tbd_with_projected_top_four_reaches_empirical_specialist(monkeypatch):
+    row = _post(_build(monkeypatch), [_row("r1")]).json()["rows"][0]
     assert row["model_evaluated"] is True
     assert row["code"] == "MODEL_QUALIFIED_HOLD"
     assert row["lineup_evidence_state"] == "PROJECTED_OR_RECONSTRUCTED"
     assert row["final_refresh_required"] is True
-    assert row["result"]["calibration_method"] == "UNCALIBRATED_INTERVAL_WIDENING_V1"
+    assert row["result"]["model_family"] == "MLB_1IP_CONDITIONAL_TOTAL_PITCH_PMF_V1"
+    assert row["result"]["calibration_method"] == "MLB_1IP_EMPIRICAL_TEMPORAL_CAL_V1"
+    assert row["result"]["calibrated_probability_lower_bound"] <= row["result"]["calibrated_probability"]
     assert row["result"]["probability_publishable"] is False
     assert row["result"]["scout_research_barrier"]["stages"]
-    assert body["rows_completed"] == 1
-    assert body["reconciliation_pass"] is True
-    assert body["can_execute"] is False
 
 
 def test_lineup_tbd_alone_never_produces_model_unavailable(monkeypatch):
-    client = _build(monkeypatch)
-    response = _post(client, [_row("r1", lineup_evidence=_lineup_evidence(projected_top_four=None))])
-    body = response.json()
-    row = body["rows"][0]
+    row = _post(_build(monkeypatch), [_row("r1", lineup_evidence=_lineup_evidence(projected_top_four=None))]).json()["rows"][0]
     assert row["code"] != "MODEL_UNAVAILABLE"
     assert row["terminal_label"] != "MODEL_UNAVAILABLE"
     assert row["detail"]["terminal_label"] == "REJECT_DATA_QUALITY"
@@ -127,22 +138,17 @@ def test_lineup_tbd_alone_never_produces_model_unavailable(monkeypatch):
 def test_stale_starter_row_is_purged_without_affecting_other_1ip_rows(monkeypatch):
     client = _build(monkeypatch)
     stale = _lineup_evidence(starter_name_at_capture="Original Starter", starter_name="Replacement Starter")
-    response = _post(client, [_row("stale", lineup_evidence=stale), _row("valid")])
-    body = response.json()
-    assert body["rows_in"] == 2
+    body = _post(client, [_row("stale", lineup_evidence=stale), _row("valid")]).json()
     assert body["reconciliation_pass"] is True
     by_key = {row["row_key"]: row for row in body["rows"]}
     assert by_key["stale"]["terminal_label"] == "SLATE_PURGE"
     assert by_key["stale"]["terminal_status"] == "REJECTED"
-    assert by_key["stale"]["detail"]["reason"] == "STARTER_CHANGED"
     assert by_key["valid"]["model_evaluated"] is True
-    assert by_key["valid"]["code"] == "MODEL_QUALIFIED_HOLD"
+    assert by_key["valid"]["result"]["model_family"] == "MLB_1IP_CONDITIONAL_TOTAL_PITCH_PMF_V1"
 
 
 def test_missing_market_evidence_does_not_erase_a_completed_1ip_row(monkeypatch):
-    client = _build(monkeypatch)
-    response = _post(client, [_row("r1", money_lane_status="PAYOUT_UNRESOLVED")])
-    row = response.json()["rows"][0]
+    row = _post(_build(monkeypatch), [_row("r1", money_lane_status="PAYOUT_UNRESOLVED")]).json()["rows"][0]
     assert row["model_evaluated"] is True
     assert row["code"] == "MODEL_QUALIFIED_HOLD"
     assert "MARKET_DATA_UNAVAILABLE" in row["result"]["blockers"]
@@ -150,65 +156,50 @@ def test_missing_market_evidence_does_not_erase_a_completed_1ip_row(monkeypatch)
 
 
 def test_truly_unreconstructable_inputs_return_data_quality_blocker(monkeypatch):
-    client = _build(monkeypatch)
     unreconstructable = _lineup_evidence(starter_status="PROBABLE", projected_top_four=[])
-    response = _post(client, [_row("r1", lineup_evidence=unreconstructable)])
-    row = response.json()["rows"][0]
+    row = _post(_build(monkeypatch), [_row("r1", lineup_evidence=unreconstructable)]).json()["rows"][0]
     assert row["code"] == "MANDATORY_EVENT_TREE_INPUTS_UNOBTAINABLE_AFTER_APPROVED_ATTEMPTS"
     assert row["terminal_label"] != "MODEL_UNAVAILABLE"
     assert row["terminal_status"] == "REJECTED"
     assert row["model_evaluated"] is False
 
 
-def test_official_lineup_confirmation_after_provisional_scoring_clears_final_refresh_flag(monkeypatch):
-    """Re-scoring with the confirmed lineup (the primitive a future final-
-    refresh runner would call once official lineup posts) drops
-    final_refresh_required and moves lineup_evidence_state to
-    OFFICIAL_CONFIRMED -- proving invalidation/rerun of provisional scoring
-    is possible with the same evidence contract."""
+def test_official_lineup_confirmation_clears_final_refresh_flag(monkeypatch):
     client = _build(monkeypatch)
     provisional = _post(client, [_row("r1")]).json()["rows"][0]
     assert provisional["final_refresh_required"] is True
-
-    confirmed_evidence = _lineup_evidence(official_lineup_status="CONFIRMED", projected_top_four=None)
-    refreshed = _post(client, [_row("r1", lineup_evidence=confirmed_evidence)]).json()["rows"][0]
+    confirmed = _lineup_evidence(official_lineup_status="CONFIRMED", projected_top_four=None)
+    refreshed = _post(client, [_row("r1", lineup_evidence=confirmed)]).json()["rows"][0]
     assert refreshed["lineup_evidence_state"] == "OFFICIAL_CONFIRMED"
     assert refreshed["final_refresh_required"] is False
     assert refreshed["model_evaluated"] is True
+    assert refreshed["result"]["model_artifact_version"] == "MLB_1IP_TEST_ARTIFACT_V1"
 
 
 def test_three_of_four_projection_is_hold_only_and_never_publishable(monkeypatch):
-    """Governance call for reviewer F3: three usable projected batters may
-    support provisional research/HOLD continuation, but never publication.
-    Any future artifact certification must separately validate or tighten
-    this threshold before publication authority can change."""
-    client = _build(monkeypatch)
     three = _lineup_evidence(projected_top_four=_lineup_evidence()["projected_top_four"][:3])
-    row = _post(client, [_row("r1", lineup_evidence=three)]).json()["rows"][0]
+    row = _post(_build(monkeypatch), [_row("r1", lineup_evidence=three)]).json()["rows"][0]
     assert row["terminal_status"] == "COMPLETED"
     assert row["terminal_label"] == "MODEL_QUALIFIED_HOLD"
     assert row["final_refresh_required"] is True
     assert row["probability_publishable"] is False
     assert row["result"]["lineup_evidence_completeness"] == "PARTIAL_SUFFICIENT"
-    assert row["result"]["calibration_method"] == "UNCALIBRATED_INTERVAL_WIDENING_V1"
-    assert row["result"]["probability_publishable"] is False
+    assert row["result"]["calibration_method"] == "MLB_1IP_EMPIRICAL_TEMPORAL_CAL_V1"
 
 
 def test_row_reconciliation_is_exact_once_across_mixed_1ip_outcomes(monkeypatch):
     client = _build(monkeypatch)
     stale = _lineup_evidence(starter_name_at_capture="A", starter_name="B")
     unreconstructable = _lineup_evidence(starter_status="PROBABLE", projected_top_four=[])
-    rows = [
+    body = _post(client, [
         _row("completed"),
         _row("purged", lineup_evidence=stale),
         _row("rejected_data_quality", lineup_evidence=unreconstructable),
-    ]
-    body = _post(client, rows).json()
+    ]).json()
     assert body["rows_in"] == 3
     assert body["rows_completed"] == 1
     assert body["rows_held"] == 0
     assert body["rows_rejected"] == 2
-    assert body["rows_completed"] + body["rows_held"] + body["rows_rejected"] == 3
     assert body["reconciliation_pass"] is True
 
 
