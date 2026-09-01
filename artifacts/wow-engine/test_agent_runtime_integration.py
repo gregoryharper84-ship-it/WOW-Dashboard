@@ -102,7 +102,7 @@ def test_health_ready_fails_closed_when_database_unreachable(monkeypatch):
 
 
 def test_health_ready_fails_closed_when_registry_mismatched(monkeypatch):
-    fake = FakeSupabaseClient()  # registry table left empty on purpose
+    fake = FakeSupabaseClient()
     monkeypatch.setattr(agent_runtime_api, "get_client", lambda: fake)
     monkeypatch.setenv("REDIS_URL", "redis://fake-for-test/0")
     monkeypatch.setattr("redis.Redis.from_url", lambda *a, **k: type("P", (), {"ping": lambda self: True})())
@@ -131,21 +131,11 @@ def test_create_run_requires_idempotency_key_header(monkeypatch):
 
 def test_create_run_happy_path_returns_202_and_pollable_run_id(monkeypatch):
     fake = FakeSupabaseClient()
-    # POST /wow/runs starts real orchestration, whose Celery task fetches its
-    # own client via ledger.get_client() (correct in production — same real
-    # Supabase project either way) rather than reusing the route handler's —
-    # both must resolve to the same fake instance here, or the eager task
-    # sees an empty/unconfigured client and the request 503s.
     monkeypatch.setattr(agent_runtime_api, "get_client", lambda: fake)
     monkeypatch.setattr("ledger.get_client", lambda: fake)
     response = client.post("/wow/runs", json=_RUN_PAYLOAD, headers={"Idempotency-Key": "run-happy-1"})
     assert response.status_code == 202
     body = response.json()
-    # With discovery disabled and no candidates, eager-mode orchestration
-    # (conftest.py) runs the whole pipeline synchronously within this
-    # request and the run reconciles to COMPLETED before the response comes
-    # back — a real async deployment would typically still show CREATED or
-    # an early in-progress state here instead.
     assert body["status"] == "COMPLETED"
     assert body["terminal"] is True
     assert body["reused"] is False
@@ -213,7 +203,9 @@ _RUN_WALK = [
     ("VALIDATING_REQUEST", "DISCOVERY_QUEUED", "DISCOVERY"),
     ("DISCOVERY_QUEUED", "DISCOVERY_RUNNING", "DISCOVERY"),
     ("DISCOVERY_RUNNING", "ROUTING", "ROUTING"),
-    ("ROUTING", "EVIDENCE_QUEUED", "EVIDENCE"),
+    ("ROUTING", "RESEARCH_QUEUED", "RESEARCH"),
+    ("RESEARCH_QUEUED", "RESEARCH_RUNNING", "RESEARCH"),
+    ("RESEARCH_RUNNING", "EVIDENCE_QUEUED", "EVIDENCE"),
     ("EVIDENCE_QUEUED", "EVIDENCE_RUNNING", "EVIDENCE"),
     ("EVIDENCE_RUNNING", "MODELING_QUEUED", "MODELING"),
     ("MODELING_QUEUED", "MODELING_RUNNING", "MODELING"),
@@ -260,7 +252,6 @@ def test_synchronous_fake_worker_fixture_completes_with_balanced_reconciliation(
             input_hash=idempotency.input_hash({"canonical_key": canonical_key}),
         )
 
-        # ---- fake in-process worker ----
         claim = repository.try_transition_job(fake, job["job_id"], expected_status="QUEUED", next_status="RUNNING")
         assert claim.applied is True
         repository.record_job_output(
@@ -272,7 +263,6 @@ def test_synchronous_fake_worker_fixture_completes_with_balanced_reconciliation(
             fake, job["job_id"], expected_status="RUNNING", next_status=job_terminal_status, ceiling=ceiling,
         )
         assert finish.applied is True
-        # A second, duplicate delivery of the same finish must not apply twice.
         duplicate_finish = repository.try_transition_job(
             fake, job["job_id"], expected_status="RUNNING", next_status=job_terminal_status, ceiling=ceiling,
         )
