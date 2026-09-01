@@ -6,6 +6,14 @@ closed as MODEL_UNAVAILABLE; market prices or generic reasoning are never used a
 a substitute. MLB fitted-model evidence must also traverse the LLP probability-
 claim / event-decision governance bridge before any numeric probability can leave
 this v17 boundary. No route in this module can execute a wager.
+
+Every candidate that reaches a controlling specialist first clears the same
+mandatory Scout -> Research evidence barrier the durable Agent Runtime pipeline
+enforces (agent_runtime/coordinator_scout_research.py), driven synchronously
+in-process instead of through the Celery/job-row queue -- see
+_run_mandatory_scout_research. Scout/Research stay evidence-acquisition only:
+agent_runtime.runner_scout_research.execute_envelope independently rejects any
+worker output that tries to smuggle a probability, bound, or terminal label.
 """
 from __future__ import annotations
 
@@ -15,6 +23,11 @@ from typing import Any, Literal
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
+from agent_runtime.idempotency import input_hash as _compute_input_hash
+from agent_runtime.registry import worker_spec
+from agent_runtime.runner_scout_research import execute_envelope
+from agent_runtime.schemas import WorkerJobEnvelope
+from agent_runtime.scout_research import RESEARCH_RECONCILER, RESEARCH_WORKERS, scout_lane
 from v17.host_routing import LLP_TEAM_BETTING_ENGINE, resolve_host_route
 
 CAN_EXECUTE = False
@@ -330,6 +343,98 @@ def _run_mlb_llp_governance(
     }
 
 
+def _scout_research_envelope(run_id: str, candidate_id: str, worker_id: str, payload: dict[str, Any]) -> WorkerJobEnvelope:
+    spec = worker_spec(worker_id)
+    return WorkerJobEnvelope(
+        run_id=run_id,
+        job_id=f"{run_id}:{worker_id}",
+        candidate_id=candidate_id,
+        worker_id=worker_id,
+        worker_version=spec.worker_version,
+        as_of=datetime.now(timezone.utc).isoformat(),
+        input_hash=_compute_input_hash(payload),
+        payload=payload,
+    )
+
+
+def _scout_research_barrier_blocked(req: TeamEventRequest, stage: str, blockers: list[str]) -> HTTPException:
+    return HTTPException(
+        status_code=409,
+        detail=_augment_detail(
+            {
+                "code": "SCOUT_RESEARCH_BARRIER_BLOCKED",
+                "stage": stage,
+                "blockers": list(blockers),
+                "probability_publishable": False,
+            },
+            req,
+        ),
+    )
+
+
+def _run_mandatory_scout_research(req: TeamEventRequest) -> dict[str, Any]:
+    """Run the mandatory Scout -> Research evidence barrier synchronously.
+
+    Reuses agent_runtime.runner_scout_research.execute_envelope -- the exact
+    in-process, non-predictive worker handlers the durable Agent Runtime
+    coordinator dispatches through Celery for full-slate/prop runs -- for a
+    single ad-hoc team-event candidate instead of a queued job row. This is
+    the same barrier, driven synchronously; it is not a second implementation
+    of Scout/Research. A BLOCKED stage raises immediately and the controlling
+    specialist (event_api.score_event) is never called.
+    """
+    run_id = f"v17-sync-{req.research_run_id}"
+    candidate_id = req.event_key
+    candidate: dict[str, Any] = {
+        "sport": req.sport.strip().upper(),
+        "league": req.league,
+        "official_event_id": req.official_event_id,
+        "market_family": req.market_family,
+        "event_start_utc": req.event_start_time_utc,
+        "evidence": dict(req.sport_specific_evidence or {}),
+    }
+    stages: list[dict[str, Any]] = []
+
+    def _run(worker_id: str, payload: dict[str, Any]):
+        env = _scout_research_envelope(run_id, candidate_id, worker_id, payload)
+        out = execute_envelope(env)
+        stages.append({"worker_id": worker_id, "status": out.status, "blockers": list(out.blockers)})
+        return out
+
+    scout_out = _run("wow.global-scout-coordinator", {"candidate": candidate, "scout_mode": "FOCUSED"})
+    if scout_out.status != "SUCCEEDED":
+        raise _scout_research_barrier_blocked(req, "wow.global-scout-coordinator", scout_out.blockers)
+
+    lane = scout_lane(candidate)
+    lane_worker = "wow.prop-scout-router" if lane == "PROP" else "wow.ml-event-scout-router"
+    lane_out = _run(lane_worker, {"candidate": candidate})
+    if lane_out.status != "SUCCEEDED":
+        raise _scout_research_barrier_blocked(req, lane_worker, lane_out.blockers)
+
+    reports: list[dict[str, Any]] = []
+    team_jobs_ok = True
+    for worker_id in RESEARCH_WORKERS:
+        out = _run(worker_id, {"candidate": candidate, "evidence": candidate.get("evidence")})
+        team_jobs_ok = team_jobs_ok and out.status == "SUCCEEDED"
+        reports.append(
+            out.output if out.status == "SUCCEEDED" else {"research_status": "DATA_UNOBTAINABLE", "worker_id": worker_id}
+        )
+
+    reconciler_out = _run(
+        RESEARCH_RECONCILER,
+        {
+            "research_reports": reports,
+            "team_jobs_ok": team_jobs_ok,
+            "evidence_present": isinstance(candidate.get("evidence"), dict),
+            "event_start_present": bool(candidate.get("event_start_utc")),
+        },
+    )
+    if reconciler_out.status != "SUCCEEDED":
+        raise _scout_research_barrier_blocked(req, RESEARCH_RECONCILER, reconciler_out.blockers)
+
+    return {"status": "SUCCEEDED", "stages": stages}
+
+
 def score_team_event_request(req: TeamEventRequest, *, event_api: Any) -> dict[str, Any]:
     try:
         route = resolve_host_route(req.requester_host_identity, req.candidate_family)
@@ -368,6 +473,11 @@ def score_team_event_request(req: TeamEventRequest, *, event_api: Any) -> dict[s
             ),
         )
 
+    # Mandatory Scout -> Research evidence barrier, ahead of any controlling
+    # specialist dispatch. Raises (fail closed) without ever reaching a
+    # specialist if a stage does not succeed.
+    scout_research_barrier = _run_mandatory_scout_research(req)
+
     sport = req.sport.strip().upper()
     if sport == "MLB":
         try:
@@ -388,7 +498,9 @@ def score_team_event_request(req: TeamEventRequest, *, event_api: Any) -> dict[s
                     req,
                 ),
             )
-        return _run_mlb_llp_governance(req, route, result, event_api=event_api)
+        governed = _run_mlb_llp_governance(req, route, result, event_api=event_api)
+        governed["scout_research_barrier"] = scout_research_barrier
+        return governed
 
     # The universal contract exists for all team/event sports, but no sport may
     # be promoted without an actually registered fitted model and adapter.

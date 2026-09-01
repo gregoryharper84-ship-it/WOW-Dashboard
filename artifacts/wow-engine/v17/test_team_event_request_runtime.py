@@ -3,7 +3,9 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from fastapi import HTTPException
 
+from agent_runtime.scout_research import RESEARCH_RECONCILER, RESEARCH_WORKERS
 from v17.host_routing import LLP_TEAM_BETTING_ENGINE, WOW_BETTING_ENGINE
+from v17 import team_event_request_runtime as team_event_module
 from v17.team_event_request_runtime import TeamEventRequest, score_team_event_request
 
 
@@ -266,3 +268,92 @@ def test_past_event_fails_closed():
         score_team_event_request(req, event_api=_FakeEventApi)
     assert exc_info.value.status_code == 422
     assert "EVENT_NOT_PREGAME_OR_TIMESTAMP_INVALID" in exc_info.value.detail["errors"]
+
+
+def test_mandatory_scout_research_barrier_runs_before_specialist_and_is_reported():
+    result = score_team_event_request(_base(), event_api=_FakeEventApi)
+    barrier = result["scout_research_barrier"]
+    assert barrier["status"] == "SUCCEEDED"
+    worker_ids = [stage["worker_id"] for stage in barrier["stages"]]
+    assert worker_ids == [
+        "wow.global-scout-coordinator",
+        "wow.ml-event-scout-router",
+        *RESEARCH_WORKERS,
+        RESEARCH_RECONCILER,
+    ]
+    assert all(stage["status"] == "SUCCEEDED" for stage in barrier["stages"])
+    assert all(stage["blockers"] == [] for stage in barrier["stages"])
+
+
+def test_mandatory_scout_research_barrier_blocks_specialist_when_a_stage_fails(monkeypatch):
+    calls: list[str] = []
+    real_execute_envelope = team_event_module.execute_envelope
+
+    def _fail_reconciler(env):
+        out = real_execute_envelope(env)
+        if env.worker_id == RESEARCH_RECONCILER:
+            return out.model_copy(update={"status": "BLOCKED", "blockers": ["RESEARCH_TEAM_INCOMPLETE"]})
+        return out
+
+    monkeypatch.setattr(team_event_module, "execute_envelope", _fail_reconciler)
+
+    class _SpyEventApi:
+        ScoreEventRequest = _FakeScoreEventRequest
+
+        @staticmethod
+        def score_event(req):
+            calls.append("score_event")
+            return _FakeEventApi.score_event(req)
+
+    with pytest.raises(HTTPException) as exc_info:
+        score_team_event_request(_base(), event_api=_SpyEventApi)
+
+    assert exc_info.value.status_code == 409
+    detail = exc_info.value.detail
+    assert detail["code"] == "SCOUT_RESEARCH_BARRIER_BLOCKED"
+    assert detail["stage"] == RESEARCH_RECONCILER
+    assert "RESEARCH_TEAM_INCOMPLETE" in detail["blockers"]
+    assert detail["probability_publishable"] is False
+    assert calls == [], "controlling specialist must never be reached when the barrier blocks"
+
+
+def test_mandatory_scout_research_barrier_blocks_specialist_when_global_scout_fails(monkeypatch):
+    calls: list[str] = []
+    real_execute_envelope = team_event_module.execute_envelope
+
+    def _fail_global_scout(env):
+        if env.worker_id == "wow.global-scout-coordinator":
+            out = real_execute_envelope(env)
+            return out.model_copy(update={"status": "BLOCKED", "blockers": ["SCOUT_CANDIDATE_MISSING"]})
+        return real_execute_envelope(env)
+
+    monkeypatch.setattr(team_event_module, "execute_envelope", _fail_global_scout)
+
+    class _SpyEventApi:
+        ScoreEventRequest = _FakeScoreEventRequest
+
+        @staticmethod
+        def score_event(req):
+            calls.append("score_event")
+            return _FakeEventApi.score_event(req)
+
+    with pytest.raises(HTTPException) as exc_info:
+        score_team_event_request(_base(), event_api=_SpyEventApi)
+
+    assert exc_info.value.status_code == 409
+    detail = exc_info.value.detail
+    assert detail["code"] == "SCOUT_RESEARCH_BARRIER_BLOCKED"
+    assert detail["stage"] == "wow.global-scout-coordinator"
+    assert calls == [], "controlling specialist must never be reached when scout blocks"
+
+
+def test_scout_research_workers_cannot_smuggle_predictive_authority_into_the_barrier():
+    """Defense-in-depth: even if a candidate payload carried a forbidden
+    authority key, execute_envelope's own validate_non_predictive_output
+    check inside the real Scout/Research handlers blocks it -- the v17
+    ingress does not add or need a second check for this."""
+    from agent_runtime.scout_research import FORBIDDEN_AUTHORITY_KEYS
+
+    assert "model_probability" in FORBIDDEN_AUTHORITY_KEYS
+    assert "terminal_label" in FORBIDDEN_AUTHORITY_KEYS
+    assert "calibrated_probability_lower_bound" in FORBIDDEN_AUTHORITY_KEYS

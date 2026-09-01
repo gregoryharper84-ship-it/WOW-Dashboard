@@ -72,6 +72,72 @@ OPEN_02_V17_BRIDGE_FUNCTIONS_LIVE_BUT_UNMIGRATED
 Nothing above changes any gate, probability, or ceiling. Both are flagged for
 independent review per the Phase-A certification sequence, not decided here.
 
+## A1/A2 remediation — 2026-09-01
+
+Per explicit governance instruction, both open findings above were resolved
+(not merely flagged) on this branch, and are pending independent review
+rather than self-certified as final.
+
+```text
+A1_SCOUT_RESEARCH_BARRIER = ENFORCED
+  v17/team_event_request_runtime.py now runs
+    request -> Scout -> Research -> controlling sport specialist
+  ahead of any event_api.score_event call. Implemented by driving
+  agent_runtime.runner_scout_research.execute_envelope synchronously,
+  in-process, for a single ad-hoc candidate -- the exact same pure worker
+  handlers the durable Agent Runtime coordinator dispatches through Celery
+  for full-slate/prop runs. No second Scout/Research implementation was
+  created. Scout/Research remain evidence-acquisition only: authority
+  leakage is independently rejected inside execute_envelope itself
+  (validate_non_predictive_output), not by anything added here. A BLOCKED
+  stage raises SCOUT_RESEARCH_BARRIER_BLOCKED (409) before the specialist is
+  ever called; proven by test_mandatory_scout_research_barrier_blocks_specialist_when_a_stage_fails
+  and the global-scout equivalent (both assert score_event was never
+  invoked). Unsupported sports still fail closed to MODEL_UNAVAILABLE; the
+  barrier runs ahead of the sport dispatch so future specialists inherit it
+  without additional wiring.
+
+A2_EVENT_GATE_FUNCTIONS_MIGRATION = CAPTURED
+  artifacts/wow-engine/migrations/20260901_event_terminal_gate_functions_capture.sql
+  records the exact live source (via pg_get_functiondef against the
+  "wow-engine-validation" Supabase project, iczfhsmjrrafhvcpmqhr) of
+  wow_run_event_postmodel_gates, wow_run_event_final_gates, and the seven
+  functions they call (wow_audit_event_probability_card,
+  wow_assess_event_calibration_health, wow_apply_event_decision_governor,
+  wow_evaluate_event_rank_eligibility, wow_reduce_event_terminal_label,
+  wow_run_event_final_refresh, wow_mark_event_publishable), plus the
+  anon/authenticated execute revokes already in effect live. Verified by
+  applying the migration inside a BEGIN/ROLLBACK transaction against that
+  project: it executed with no errors and was then rolled back, so
+  production/live behavior is unchanged and nothing was actually applied.
+  Confirmed no other repository migration defines these names (no
+  conflict). NOT resolved, and out of scope for this pass: the four
+  underlying tables these functions read/write (wow_event_predictions,
+  wow_calibrators, wow_event_evidence, wow_event_scoring_evidence) also
+  predate every migration file in this repository -- the same
+  DATABASE_SCHEMA_BOOTSTRAP_GAP category, called out again as a remaining
+  blocker below rather than backfilled from introspection.
+```
+
+Updated blocker matrix (supersedes the B01-B05 list above only where noted):
+
+```text
+B01 WOW live Custom GPT editor configuration -- still not re-attested.
+B02 LLP live Custom GPT editor -- still requires post-contract re-attestation.
+B03 Candidate CI and shadow-service acceptance -- still pending.
+B04 LLP direct-vendor Actions reclassification -- still open.
+B05 Independent implementation review -- still required, now covering this
+    A1/A2 remediation in addition to the original Phase-A candidate.
+B06 (NEW) wow_event_predictions / wow_calibrators / wow_event_evidence /
+    wow_event_scoring_evidence table DDL is still live-only, not captured
+    as a migration. A2 captured the function layer only.
+```
+
+```text
+V17_CUTOVER_ALLOWED = false
+CAN_EXECUTE = false
+```
+
 ## Resolved in this Phase-A branch
 
 ```text
