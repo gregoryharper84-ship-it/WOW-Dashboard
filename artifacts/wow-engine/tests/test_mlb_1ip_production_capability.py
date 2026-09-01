@@ -21,6 +21,10 @@ def _lineage_kwargs():
     }
 
 
+def _passing_validation_fixture():
+    return [0, 1] * 125, [0.01, 0.99] * 125
+
+
 def test_artifact_refuses_small_training_sample():
     with pytest.raises(ValueError, match="MLB_1IP_TRAINING_ROWS_INSUFFICIENT"):
         fit_candidate([TrainingRow(bf=3, pitches=12)] * 999, training_code_sha="a" * 40)
@@ -28,8 +32,7 @@ def test_artifact_refuses_small_training_sample():
 
 def test_validation_cannot_self_promote_artifact():
     candidate = fit_candidate([TrainingRow(bf=3, pitches=12)] * 1000, training_code_sha="a" * 40)
-    y = [0, 1] * 125
-    p = [0.49, 0.51] * 125
+    y, p = _passing_validation_fixture()
     validated = validate_candidate(candidate, y, p, **_lineage_kwargs())
 
     assert validated["validation_metrics"]["gates_passed"] is True
@@ -44,7 +47,8 @@ def test_validation_cannot_self_promote_artifact():
 
 def test_promotion_requires_independent_review_context():
     candidate = fit_candidate([TrainingRow(bf=3, pitches=12)] * 1000, training_code_sha="a" * 40)
-    validated = validate_candidate(candidate, [0, 1] * 125, [0.49, 0.51] * 125, **_lineage_kwargs())
+    y, p = _passing_validation_fixture()
+    validated = validate_candidate(candidate, y, p, **_lineage_kwargs())
 
     with pytest.raises(ValueError, match="MLB_1IP_INDEPENDENT_REVIEW_REQUIRED"):
         promote_validated_candidate(
