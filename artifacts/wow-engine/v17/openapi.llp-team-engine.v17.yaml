@@ -1,0 +1,109 @@
+openapi: 3.1.0
+info:
+  title: LLP Team Betting Engine v17 Candidate Action
+  version: 17.0.0-phase-a
+  description: >-
+    CANDIDATE ONLY — do not install as a live Custom GPT Action until the v17
+    candidate entrypoint is deployed and editor attestation passes. LLP Team
+    Betting Engine owns team/game/event winner, favorite, underdog and upset
+    intelligence. It has no player-prop scoring operation. Shared market,
+    portfolio and global terminal authority remain in the WOW governed core.
+    can_execute is always false.
+servers:
+  - url: https://wow-governed-probability-engine.onrender.com
+paths:
+  /health:
+    get:
+      operationId: getLlpV17BackendHealth
+      x-openai-isConsequential: false
+      responses:
+        '200': {description: Backend health state}
+  /governance:
+    get:
+      operationId: getLlpV17Governance
+      x-openai-isConsequential: false
+      responses:
+        '200': {description: Governed capability state}
+  /v17/host-contract:
+    get:
+      operationId: getLlpV17HostContract
+      x-openai-isConsequential: false
+      responses:
+        '200': {description: Canonical v17 host/lane alignment contract}
+  /score-team-event:
+    post:
+      operationId: scoreLlpV17TeamEvent
+      x-openai-isConsequential: false
+      description: >-
+        Canonical team/event scoring ingress. The request identity is fixed to
+        LLP_TEAM_BETTING_ENGINE. A sport without an actually registered fitted
+        team/event model and adapter fails closed as MODEL_UNAVAILABLE. Market
+        implied probability and generic reasoning may not substitute.
+      security: [{actionBearer: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/LlpTeamEventRequest'}
+      responses:
+        '200': {description: Governed team/event result or held model proof}
+        '401': {description: Authentication failed}
+        '409': {description: Controlling model/capability unavailable}
+        '422': {description: Event/evidence/host contract invalid}
+  /record-recommendations:
+    post:
+      operationId: recordLlpV17Recommendations
+      x-openai-isConsequential: false
+      security: [{actionBearer: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {type: object, additionalProperties: true}
+      responses:
+        '200': {description: Terminal recommendation records persisted}
+        '503': {description: Write-before-display not proven}
+  /settle-recommendations:
+    post:
+      operationId: settleLlpV17Recommendations
+      x-openai-isConsequential: false
+      security: [{actionBearer: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {type: object, additionalProperties: true}
+      responses:
+        '200': {description: Recommendation outcomes reconciled}
+components:
+  securitySchemes:
+    actionBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: WOW_ACTION_API_KEY
+  schemas:
+    LlpTeamEventRequest:
+      type: object
+      additionalProperties: false
+      required: [requester_host_identity, research_run_id, requested_slate_date, requested_timezone, event_key, official_event_id, event_start_time_utc, sport, league, settlement_basis, home_team, away_team, source_snapshot_id]
+      properties:
+        requester_host_identity: {type: string, const: LLP_TEAM_BETTING_ENGINE}
+        research_run_id: {type: string}
+        requested_slate_date: {type: string, format: date}
+        requested_timezone: {type: string}
+        scan_stage: {type: string, enum: [PREGAME], default: PREGAME}
+        candidate_family: {type: string, enum: [TEAM_EVENT, OUTRIGHT_WINNER, MONEYLINE, FAVORITE, UNDERDOG, UPSET, MATCH_WINNER, FIGHT_WINNER], default: TEAM_EVENT}
+        decision_intent: {type: string, enum: [WINNER, FAVORITE, UNDERDOG, UPSET, BEST_SIDE], default: WINNER}
+        event_key: {type: string}
+        official_event_id: {type: string}
+        event_start_time_utc: {type: string, format: date-time}
+        sport: {type: string}
+        league: {type: string}
+        market_family: {type: string, enum: [OUTRIGHT_WINNER], default: OUTRIGHT_WINNER}
+        settlement_basis: {type: string}
+        home_team: {type: string}
+        away_team: {type: string}
+        source_snapshot_id: {type: string}
+        latest_material_update_timestamp: {type: [string, 'null'], format: date-time}
+        market_prior: {type: [object, 'null'], additionalProperties: true}
+        sport_specific_evidence: {type: object, additionalProperties: true}

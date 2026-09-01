@@ -1,0 +1,268 @@
+from datetime import datetime, timedelta, timezone
+
+import pytest
+from fastapi import HTTPException
+
+from v17.host_routing import LLP_TEAM_BETTING_ENGINE, WOW_BETTING_ENGINE
+from v17.team_event_request_runtime import TeamEventRequest, score_team_event_request
+
+
+class _FakeScoreEventRequest:
+    def __init__(self, **kwargs):
+        self.__dict__.update(kwargs)
+
+
+class _FakeEventApi:
+    ScoreEventRequest = _FakeScoreEventRequest
+
+    @staticmethod
+    def score_event(req):
+        return {
+            "ok": True,
+            "code": "REAL_FITTED_MODEL_PATH_PROVEN",
+            "official_event_id": req.official_event_id,
+            "probability_fields_withheld": True,
+            "probability_publishable": False,
+            "can_execute": False,
+        }
+
+
+class _RpcResult:
+    def __init__(self, data):
+        self.data = data
+
+
+class _RpcCall:
+    def __init__(self, data):
+        self._data = data
+
+    def execute(self):
+        return _RpcResult(self._data)
+
+
+class _GovernanceClient:
+    def __init__(self, payload):
+        self.payload = payload
+        self.last_rpc = None
+        self.last_params = None
+
+    def rpc(self, name, params):
+        self.last_rpc = name
+        self.last_params = params
+        return _RpcCall(self.payload)
+
+
+class _GovernedEventApi:
+    ScoreEventRequest = _FakeScoreEventRequest
+    client = _GovernanceClient(
+        {
+            "status": "PASS",
+            "probability_audit_result": "PASS_PROBABILITY_AUDIT",
+            "event_decision": "SELECTED",
+            "event_mutex_status": "PASS",
+            "postmodel_gates_status": "PASS",
+            "final_gates_status": "PASS",
+            "terminal_label": "FINAL_APPROVED",
+            "probability_publishable": True,
+            "rank_eligible": True,
+            "global_terminal_reducer": "V17_TERMINAL_REDUCER",
+            "can_execute": False,
+        }
+    )
+
+    @staticmethod
+    def score_event(req):
+        return {
+            "ok": True,
+            "code": "GOVERNED_PROBABILITY_PUBLISHED",
+            "official_event_id": req.official_event_id,
+            "score_snapshot_id": "00000000-0000-0000-0000-000000000099",
+            "raw_home_probability": 0.61,
+            "raw_away_probability": 0.39,
+            "calibrated_home_probability": 0.60,
+            "calibrated_away_probability": 0.40,
+            "calibrated_home_lower_bound": 0.56,
+            "calibrated_home_upper_bound": 0.64,
+            "calibrated_away_lower_bound": 0.36,
+            "calibrated_away_upper_bound": 0.44,
+            "probability_fields_withheld": False,
+            "probability_publishable": True,
+            "can_execute": False,
+        }
+
+    @classmethod
+    def get_client(cls):
+        return cls.client
+
+
+class _PublishedWithoutGovernanceEventApi:
+    ScoreEventRequest = _FakeScoreEventRequest
+
+    @staticmethod
+    def score_event(req):
+        return {
+            "ok": True,
+            "code": "GOVERNED_PROBABILITY_PUBLISHED",
+            "official_event_id": req.official_event_id,
+            "score_snapshot_id": "00000000-0000-0000-0000-000000000099",
+            "raw_home_probability": 0.61,
+            "raw_away_probability": 0.39,
+            "calibrated_home_probability": 0.60,
+            "calibrated_away_probability": 0.40,
+            "probability_fields_withheld": False,
+            "probability_publishable": True,
+            "can_execute": False,
+        }
+
+
+def _future() -> str:
+    return (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
+
+
+def _base(**overrides):
+    payload = {
+        "requester_host_identity": WOW_BETTING_ENGINE,
+        "research_run_id": "rr-v17-team-event-test",
+        "requested_slate_date": (datetime.now(timezone.utc) + timedelta(days=1)).date().isoformat(),
+        "requested_timezone": "America/Chicago",
+        "scan_stage": "PREGAME",
+        "candidate_family": "TEAM_EVENT",
+        "decision_intent": "BEST_SIDE",
+        "event_key": "MLB:test-1",
+        "official_event_id": "test-1",
+        "event_start_time_utc": _future(),
+        "sport": "MLB",
+        "league": "MLB",
+        "market_family": "OUTRIGHT_WINNER",
+        "settlement_basis": "FULL_GAME_INCLUDING_EXTRA_INNINGS",
+        "home_team": "Home Team",
+        "away_team": "Away Team",
+        "source_snapshot_id": "00000000-0000-0000-0000-000000000001",
+        "sport_specific_evidence": {
+            "venue": "Test Park",
+            "home_starting_pitcher": "Home Starter",
+            "away_starting_pitcher": "Away Starter",
+            "home_starter_status": "PROBABLE",
+            "away_starter_status": "PROBABLE",
+            "home_lineup_status": "PROJECTED",
+            "away_lineup_status": "PROJECTED",
+        },
+    }
+    payload.update(overrides)
+    return TeamEventRequest(**payload)
+
+
+def test_wow_requester_team_event_is_controlled_by_llp():
+    result = score_team_event_request(_base(), event_api=_FakeEventApi)
+    assert result["requester_host_identity"] == WOW_BETTING_ENGINE
+    assert result["controlling_engine_identity"] == LLP_TEAM_BETTING_ENGINE
+    assert result["host_terminal_authority"] is False
+    assert result["can_execute"] is False
+
+
+def test_llp_requester_team_event_is_controlled_by_llp():
+    result = score_team_event_request(
+        _base(requester_host_identity=LLP_TEAM_BETTING_ENGINE), event_api=_FakeEventApi
+    )
+    assert result["requester_host_identity"] == LLP_TEAM_BETTING_ENGINE
+    assert result["controlling_engine_identity"] == LLP_TEAM_BETTING_ENGINE
+
+
+def test_unsupported_sport_fails_closed_without_probability():
+    req = _base(
+        sport="NFL",
+        league="NFL",
+        event_key="NFL:test-2",
+        official_event_id="test-2",
+        settlement_basis="FULL_GAME_OUTRIGHT",
+        sport_specific_evidence={},
+    )
+    with pytest.raises(HTTPException) as exc_info:
+        score_team_event_request(req, event_api=_FakeEventApi)
+    assert exc_info.value.status_code == 409
+    detail = exc_info.value.detail
+    assert detail["code"] == "MODEL_UNAVAILABLE"
+    assert detail["controlling_engine_identity"] == LLP_TEAM_BETTING_ENGINE
+    assert detail["probability_publishable"] is False
+    assert detail["market_probability_substitution_allowed"] is False
+    assert detail["generic_reasoning_substitution_allowed"] is False
+    assert detail["can_execute"] is False
+    assert not any(
+        key in detail
+        for key in ("raw_probability", "calibrated_probability", "calibrated_lower_bound")
+    )
+
+
+def test_mlb_missing_sport_specific_evidence_is_acquisition_incomplete():
+    req = _base(sport_specific_evidence={})
+    with pytest.raises(HTTPException) as exc_info:
+        score_team_event_request(req, event_api=_FakeEventApi)
+    assert exc_info.value.status_code == 422
+    detail = exc_info.value.detail
+    assert detail["code"] == "RUN_INVALID_ACQUISITION_INCOMPLETE"
+    assert detail["controlling_engine_identity"] == LLP_TEAM_BETTING_ENGINE
+    assert detail["probability_publishable"] is False
+    assert detail["can_execute"] is False
+
+
+def test_valid_mlb_fitted_model_is_held_until_llp_governance_is_proven():
+    result = score_team_event_request(_base(), event_api=_FakeEventApi)
+    assert result["code"] == "LLP_EVENT_GOVERNANCE_NOT_PROVEN"
+    assert result["upstream_model_code"] == "REAL_FITTED_MODEL_PATH_PROVEN"
+    assert result["probability_fields_withheld"] is True
+    assert result["probability_publishable"] is False
+    assert result["terminal_label"] == "MODEL_QUALIFIED_HOLD"
+    assert "LLP_PROBABILITY_CLAIM_AUDIT_NOT_PROVEN" in result["blockers"]
+    assert "LLP_EVENT_DECISION_GOVERNOR_NOT_PROVEN" in result["blockers"]
+    assert result["controlling_engine_identity"] == LLP_TEAM_BETTING_ENGINE
+    assert result["global_terminal_authority"] == "V17_TERMINAL_REDUCER"
+
+
+def test_numeric_mlb_result_is_stripped_when_llp_bridge_is_unavailable():
+    result = score_team_event_request(_base(), event_api=_PublishedWithoutGovernanceEventApi)
+    assert result["code"] == "LLP_EVENT_GOVERNANCE_NOT_PROVEN"
+    assert result["probability_publishable"] is False
+    assert result["probability_fields_withheld"] is True
+    assert "raw_home_probability" not in result
+    assert "calibrated_home_probability" not in result
+    assert result["terminal_ceiling"] == "MODEL_QUALIFIED_HOLD"
+
+
+def test_numeric_mlb_result_can_publish_only_after_explicit_llp_bridge_pass():
+    result = score_team_event_request(_base(), event_api=_GovernedEventApi)
+    assert _GovernedEventApi.client.last_rpc == "wow_v17_mlb_team_event_governance_bridge"
+    assert result["code"] == "GOVERNED_PROBABILITY_PUBLISHED"
+    assert result["probability_publishable"] is True
+    assert result["calibrated_home_probability"] == 0.60
+    assert result["llp_probability_audit_result"] == "PASS_PROBABILITY_AUDIT"
+    assert result["event_mutex_status"] == "PASS"
+    assert result["terminal_label"] == "FINAL_APPROVED"
+    assert result["global_terminal_authority"] == "V17_TERMINAL_REDUCER"
+    assert result["can_execute"] is False
+
+
+def test_unknown_requester_host_fails_closed():
+    req = _base(requester_host_identity="RANDOM_GPT")
+    with pytest.raises(HTTPException) as exc_info:
+        score_team_event_request(req, event_api=_FakeEventApi)
+    assert exc_info.value.status_code == 422
+    assert exc_info.value.detail["code"] == "UNAUTHORIZED_WOW_REQUESTER_HOST"
+    assert exc_info.value.detail["can_execute"] is False
+
+
+def test_same_team_event_identity_fails_closed():
+    req = _base(home_team="Same Team", away_team="Same Team")
+    with pytest.raises(HTTPException) as exc_info:
+        score_team_event_request(req, event_api=_FakeEventApi)
+    assert exc_info.value.status_code == 422
+    assert "EVENT_PARTICIPANTS_NOT_MUTUALLY_EXCLUSIVE" in exc_info.value.detail["errors"]
+
+
+def test_past_event_fails_closed():
+    req = _base(
+        event_start_time_utc=(datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
+    )
+    with pytest.raises(HTTPException) as exc_info:
+        score_team_event_request(req, event_api=_FakeEventApi)
+    assert exc_info.value.status_code == 422
+    assert "EVENT_NOT_PREGAME_OR_TIMESTAMP_INVALID" in exc_info.value.detail["errors"]
