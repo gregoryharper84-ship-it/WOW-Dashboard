@@ -93,8 +93,6 @@ def _run_specialized_scout(env: WorkerEnvelope, expected_lane: str) -> WorkerOut
 def _run_researcher(env: WorkerEnvelope) -> WorkerOutput:
     role = ROLE_BY_WORKER[env.worker_id]
     summary = evidence_summary(env.payload.get("evidence"), role)
-    # A researcher reports missing evidence; it does not create a stricter gate.
-    # Existing identifiability rules remain authoritative in evidence-hydration.
     return _succeeded(env, "RESEARCH_INTEREST", summary)
 
 
@@ -102,6 +100,13 @@ def _run_reconciler(env: WorkerEnvelope) -> WorkerOutput:
     reports = env.payload.get("research_reports")
     if not isinstance(reports, list) or len(reports) < len(RESEARCH_WORKERS):
         return _blocked(env, "RESEARCH_TEAM_INCOMPLETE")
+    if env.payload.get("team_jobs_ok") is not True:
+        return _blocked(env, "RESEARCH_TEAM_INCOMPLETE", output={
+            "research_status": "DATA_UNOBTAINABLE",
+            "research_roles_completed": len(reports),
+            "prediction_authority": False,
+            "can_execute": False,
+        })
     evidence_present = env.payload.get("evidence_present") is True
     event_start_present = env.payload.get("event_start_present") is True
     statuses = [str((report or {}).get("research_status") or "DATA_UNOBTAINABLE") for report in reports]
