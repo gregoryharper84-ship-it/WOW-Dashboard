@@ -20,20 +20,31 @@ The implementer context must not approve its own work.
 3. `MLB_1IP_CONDITIONAL_TOTAL_PITCH_PMF_V1` is a compact empirical BF-conditional total-pitches PMF and contains no caller-controlled probability inputs.
 4. Exact MORE/LESS/push probability mass sums to one and is deterministic for a fixed artifact and line.
 5. The artifact remains `probability_publishable=false`, `can_execute=false`, inactive and unpromoted before independent approval.
-6. Supported lines are limited to the empirically validated line range represented by the candidate packet; unsupported tails must not be silently extrapolated.
-7. No Supabase write, active artifact promotion, Render deployment, or V17 cutover is included in this research branch.
-8. Confirm the simpler aggregate empirical model is justified by the disjoint temporal validation and that adding the pitcher-shrunk layer is not warranted by the measured holdout results.
+6. Supported lines are pinned to the empirically validated grid `11.5, 13.5, 15.5, 17.5, 19.5, 21.5`; unsupported tails may not be silently extrapolated.
+7. `mlb_1ip_empirical_promotion.py` is packet construction only: it verifies artifact checksum, immutable lineage, split hash, exact validation metrics, supported lines, distinct reviewer context, approval verdict, and a 64-character review-evidence hash before it can produce a `PROSPECTIVE_CERTIFIED` payload.
+8. The promotion payload still hard-sets `probability_publishable=false` and `can_execute=false`; no function in the bundle writes Supabase, deploys Render, creates a production scheduler, or changes V17 activation state.
+9. Tests explicitly reject self-review, missing/non-approval review evidence, tampered artifact checksum, line-support mismatch, and checksum/split/Brier/ECE mismatches.
+10. Confirm the simpler aggregate empirical model is justified by the disjoint temporal validation and that adding the pitcher-shrunk layer is not warranted by the measured holdout results.
 
-## Shadow evidence already observed
+## Temporal shadow evidence
 
-On the 2025 temporal holdout:
+Expanded official-source shadow run used 1,332 training rows from the 2024 sample and 1,323 untouched 2025 validation rows. On that temporal holdout:
 
-- current Gaussian event tree: Brier 0.2121846441; ECE 0.0524241875
-- pitcher-shrunk empirical: Brier 0.2095614407; ECE 0.0301755027
-- aggregate empirical conditional-total-pitches PMF: Brier 0.2067737412; ECE 0.0147573878
+- current Gaussian event tree: Brier `0.21218464411186702`; ECE `0.05242418745275859`
+- pitcher-shrunk empirical: Brier `0.20956144071149074`; ECE `0.030175502684320784`
+- aggregate empirical conditional-total-pitches PMF: Brier `0.20677374121890155`; ECE `0.014757387773260975`
 
-All three passed the current numerical gates on the expanded 1,323-row holdout, but the aggregate empirical PMF was best on both Brier and ECE. This packet therefore advances only the simpler aggregate empirical model for formal candidate construction.
+All three passed the current absolute numerical gates on the expanded holdout, but the aggregate empirical PMF was best on both Brier and ECE. This packet therefore advances only the simpler aggregate empirical model.
+
+## Latest machine verification
+
+At commit `860cf876355d2d80461591a4a542e71ccfd8a95f`, GitHub Actions run `33570320155` completed successfully:
+
+- focused MLB 1IP governance/runtime suite: **38 passed**
+- full WOW engine regression: **660 passed, 3 skipped, 0 failed**
+
+Warnings were deprecation/future warnings only and did not fail the suite.
 
 ## Promotion remains blocked
 
-Even if machine tests and candidate validation are green, promotion remains blocked until a distinct reviewer submits `APPROVE_FOR_PROMOTION` with reproducible review evidence. `can_execute=false` remains invariant.
+Machine validation is not reviewer approval. Promotion remains blocked until a distinct reviewer submits `APPROVE_FOR_PROMOTION` with reproducible review evidence. Even after such approval, persistence/deployment remains a separate governed action. `probability_publishable=false` and `can_execute=false` remain invariants.
