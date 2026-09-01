@@ -517,6 +517,7 @@ def _score_mlb_1ip_row(
         reduce_terminal=reduce_prop_terminal,
     )
 
+
 def install_pick_request_routes(
     app: Any,
     *,
