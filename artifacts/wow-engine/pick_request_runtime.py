@@ -32,6 +32,7 @@ from agent_runtime.schemas import WorkerJobEnvelope
 from agent_runtime.scout_research import RESEARCH_RECONCILER, RESEARCH_WORKERS, scout_lane
 from mlb_1ip_specialist import CANONICAL_STAT_TYPE as MLB_1IP_STAT_TYPE
 from mlb_1ip_specialist import score_mlb_1ip, starter_changed
+from mlb_1ip_ingress_runtime import score_mlb_1ip_ingress
 from prop_auto_hydration import PropAutoHydrationError, auto_hydrate_prop_evidence
 from qualification_policy_v2 import classify_prop_probability
 from prop_terminal_reducer_v2 import EVENT_BLOCKERS, TRUE_MODEL_REJECTION_LABELS, reduce_prop_terminal
@@ -491,135 +492,30 @@ def _run_mandatory_scout_research(
     return True, {"stages": stages}
 
 
-def _score_mlb_1ip_row(row: "PickRequestRow", row_key: str) -> dict[str, Any]:
-    """MLB 1IP dedicated path (WOW-PATCH-2026-09-01-MLB-1IP-FULL-MODEL-GOVERNED).
+def _score_mlb_1ip_row(
+    row: "PickRequestRow",
+    row_key: str,
+    *,
+    market_api: Any,
+    request_id: Optional[str],
+) -> dict[str, Any]:
+    """Canonical MLB 1IP path after specialist/capability/artifact preflight.
 
-    Runs the mandatory Scout/Research barrier, classifies lineup evidence
-    into the three-state contract, purges row-locally on a stale starter,
-    and otherwise defers to mlb_1ip_specialist.score_mlb_1ip for the
-    event-tree computation. Never reached for any other stat type.
+    Acquisition, mandatory Scout -> Research, controlling-specialist scoring,
+    and provisional final-refresh queuing are delegated to the dedicated 1IP
+    ingress helper. The preflight remains in score_pick_request so a genuinely
+    missing certified artifact still terminates as MODEL_UNAVAILABLE before
+    expensive acquisition begins.
     """
-    route_blocked_acquisition = {
-        "mode": "NOT_ATTEMPTED_ROUTE_BLOCKED",
-        "status": "NOT_ATTEMPTED",
-        "can_execute": False,
-    }
-    if row.evidence is None or not isinstance(row.evidence.lineup_evidence, dict):
-        return _terminal(
-            row_key,
-            "HELD",
-            "PROP_AUTO_HYDRATION_UNSUPPORTED_ROUTE",
-            detail={
-                "message": "1IP has no automatic hydrator; caller must supply RawPropEvidence.lineup_evidence",
-                "specialist_invoked": False,
-            },
-            acquisition=route_blocked_acquisition,
-        )
-
-    lineup_evidence = row.evidence.lineup_evidence
-    acquisition = {
-        "mode": "CALLER_SUPPLIED_RAW_EVIDENCE",
-        "status": "PASS",
-        "source_type": row.source_type,
-        "platform": row.platform,
-        "can_execute": False,
-    }
-
-    if starter_changed(
-        lineup_evidence.get("starter_name_at_capture"),
-        lineup_evidence.get("starter_name"),
-    ):
-        return _terminal(
-            row_key,
-            "REJECTED",
-            "SLATE_PURGE",
-            detail={
-                "terminal_label": "SLATE_PURGE",
-                "reason": "STARTER_CHANGED",
-                "specialist_invoked": False,
-            },
-            acquisition=acquisition,
-        )
-
-    run_id = f"pick-request-1ip-{row_key}"
-    candidate = {
-        "sport": "MLB",
-        "market_family": "PLAYER_PROP",
-        "official_event_id": row.event_id,
-        "event_start_utc": row.event_start_time,
-        "evidence": {
-            "lineup_evidence": lineup_evidence,
-            "role_status": row.evidence.role_status,
-        },
-    }
-    ok, barrier_detail = _run_mandatory_scout_research(row_key=row_key, run_id=run_id, candidate=candidate)
-    if not ok:
-        return _terminal(
-            row_key,
-            "HELD",
-            "SCOUT_RESEARCH_BARRIER_BLOCKED",
-            detail={
-                "stage": barrier_detail["stage"],
-                "blocker": barrier_detail["blockers"][0] if barrier_detail["blockers"] else "SCOUT_RESEARCH_BARRIER_BLOCKED",
-                "scout_research_barrier": barrier_detail,
-                "specialist_invoked": False,
-            },
-            acquisition=acquisition,
-        )
-
-    money_lane_status = str(row.money_lane_status or "").strip().upper()
-    market_evidence_present = money_lane_status not in {"", "PAYOUT_UNRESOLVED"}
-
-    result = score_mlb_1ip(
-        starter_status=lineup_evidence.get("starter_status", ""),
-        official_lineup_status=lineup_evidence.get("official_lineup_status", ""),
-        projected_top_four=lineup_evidence.get("projected_top_four"),
-        pitcher_bf_distribution=lineup_evidence.get("pitcher_bf_distribution") or {},
-        baseline_pitches_per_batter=lineup_evidence.get("baseline_pitches_per_batter") or {},
-        line_value=row.line,
-        side=row.direction,
-        failure_path_prior=lineup_evidence.get("failure_path_prior"),
-        market_evidence_present=market_evidence_present,
+    return score_mlb_1ip_ingress(
+        row=row,
+        row_key=row_key,
+        market_api=market_api,
+        request_id=request_id,
+        run_research=_run_mandatory_scout_research,
+        terminal=_terminal,
+        reduce_terminal=reduce_prop_terminal,
     )
-    result["scout_research_barrier"] = barrier_detail
-
-    if not result["model_evaluated"]:
-        return _terminal(
-            row_key,
-            "REJECTED",
-            result["code"],
-            detail={
-                "terminal_label": result["terminal_label"],
-                "blockers": result["blockers"],
-                "lineup_evidence_state": result["lineup_evidence_state"],
-                "scout_research_barrier": barrier_detail,
-                "specialist_invoked": False,
-            },
-            acquisition=acquisition,
-        )
-
-    decision = reduce_prop_terminal(
-        proposed_label=result["terminal_label"],
-        blockers=result["blockers"],
-        model_evaluated=True,
-    )
-    return {
-        "row_key": row_key,
-        "terminal_status": "REJECTED" if decision.pick_rejected else "COMPLETED",
-        "code": decision.terminal_label,
-        "terminal_label": decision.terminal_label,
-        "lineup_evidence_state": result["lineup_evidence_state"],
-        "final_refresh_required": result["final_refresh_required"],
-        "model_evaluated": True,
-        "pick_rejected": decision.pick_rejected,
-        "verdict_class": decision.verdict_class,
-        "infrastructure_blocked": decision.infrastructure_blocked,
-        "acquisition": acquisition,
-        "result": result,
-        "probability_publishable": False,
-        "can_execute": False,
-    }
-
 
 def install_pick_request_routes(
     app: Any,
@@ -725,7 +621,7 @@ def install_pick_request_routes(
                 continue
 
             if canonical_stat == MLB_1IP_STAT_TYPE:
-                outcomes.append(_score_mlb_1ip_row(row, row_key))
+                outcomes.append(_score_mlb_1ip_row(row, row_key, market_api=market_api, request_id=batch.request_id))
                 continue
 
             acquisition: dict[str, Any]
