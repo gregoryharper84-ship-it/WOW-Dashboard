@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from collections import Counter
 from typing import Any, Iterable
 
@@ -37,6 +38,16 @@ def _bf_bucket(bf: int) -> str:
     if int(bf) == 4:
         return "4"
     return "5_PLUS"
+
+
+def _wilson_interval(count: int, n: int, *, z: float = 1.96) -> tuple[float, float]:
+    if n <= 0:
+        return 0.0, 1.0
+    p = count / n
+    denom = 1.0 + z * z / n
+    center = (p + z * z / (2.0 * n)) / denom
+    half = z * math.sqrt((p * (1.0 - p) / n) + (z * z / (4.0 * n * n))) / denom
+    return max(0.0, center - half), min(1.0, center + half)
 
 
 def fit_empirical_pmf(rows: Iterable[Any]) -> dict[str, Any]:
@@ -100,6 +111,8 @@ def score_empirical_pmf(
 
     p_more = p_less = p_push = 0.0
     conditional_more: dict[str, float] = {}
+    total_more = total_less = total_push = 0
+    support_n = 0
     for bucket in ("3", "4", "5_PLUS"):
         bucket_counts = counts[bucket]
         total = sum(int(v) for v in bucket_counts.values())
@@ -120,11 +133,20 @@ def score_empirical_pmf(
         p_more += weight * more / total
         p_less += weight * less / total
         p_push += weight * push / total
+        total_more += more
+        total_less += less
+        total_push += push
+        support_n += total
+
+    if support_n != int(artifact.get("training_rows") or 0):
+        raise ValueError("MLB_1IP_ARTIFACT_SUPPORT_COUNT_MISMATCH")
 
     side_norm = str(side or "").strip().upper()
     if side_norm not in {"MORE", "LESS"}:
         raise ValueError("MLB_1IP_DIRECTION_INVALID")
+    selected_count = total_more if side_norm == "MORE" else total_less
     selected = p_more if side_norm == "MORE" else p_less
+    lower_bound, upper_bound = _wilson_interval(selected_count, support_n)
     return {
         "model_family": MODEL_FAMILY,
         "calibrator_version": CALIBRATOR_VERSION,
@@ -133,6 +155,10 @@ def score_empirical_pmf(
         "P_LESS": p_less,
         "prob_push": p_push,
         "selected_probability": selected,
+        "selected_support_n": support_n,
+        "selected_support_count": selected_count,
+        "lower_bound": lower_bound,
+        "upper_bound": upper_bound,
         "conditional_more_by_bf_bucket": conditional_more,
         "probability_publishable": False,
         "can_execute": False,
