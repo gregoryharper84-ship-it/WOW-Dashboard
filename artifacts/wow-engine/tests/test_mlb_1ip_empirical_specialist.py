@@ -5,6 +5,9 @@ from mlb_1ip_empirical_pmf import fit_empirical_pmf
 from mlb_1ip_empirical_specialist import score_mlb_1ip_empirical
 
 
+VALIDATED_LINES = [11.5, 13.5, 15.5, 17.5, 19.5, 21.5]
+
+
 def _artifact():
     rows = []
     rows.extend(TrainingRow(bf=3, pitches=12 + i % 4) for i in range(450))
@@ -22,6 +25,7 @@ def _artifact():
         "supported_line_min": 11.5,
         "supported_line_max": 21.5,
         "feature_schema_version": "PROP_FEATURES_V1",
+        "validation_metrics": {"validated_lines": VALIDATED_LINES},
         "probability_publishable": False,
         "can_execute": False,
     }
@@ -50,6 +54,7 @@ def test_official_lineup_empirical_specialist_returns_probability_package():
     assert result["calibrated_probability_lower_bound"] <= result["calibrated_probability"]
     assert result["calibrated_probability_upper_bound"] >= result["calibrated_probability"]
     assert result["calibration_method"] == "MLB_1IP_EMPIRICAL_TEMPORAL_CAL_V1"
+    assert result["certified_supported_lines"] == VALIDATED_LINES
     assert result["final_refresh_required"] is False
     assert result["probability_publishable"] is False
     assert result["can_execute"] is False
@@ -71,26 +76,57 @@ def test_projected_lineup_empirical_specialist_stays_hold_and_requires_refresh()
     assert result["probability_publishable"] is False
 
 
-def test_empirical_specialist_blocks_unsupported_line_without_probability():
+def test_empirical_specialist_blocks_line_outside_validated_grid_without_probability():
+    # 16.5 is inside the old min/max range but was not in the certified shadow
+    # line grid. It must fail closed rather than silently interpolate authority.
     result = score_mlb_1ip_empirical(
         artifact_record=_artifact(),
         starter_status="CONFIRMED",
         official_lineup_status="CONFIRMED",
         projected_top_four=[],
-        line_value=25.5,
+        line_value=16.5,
         side="MORE",
     )
     assert result["model_evaluated"] is False
     assert result["terminal_label"] == "REJECT_OOD"
     assert result["code"] == "MLB_1IP_LINE_OUTSIDE_CERTIFIED_SUPPORT"
+    assert result["supported_lines"] == VALIDATED_LINES
     assert "raw_probability" not in result
     assert result["probability_publishable"] is False
+
+
+def test_empirical_specialist_fails_closed_if_registry_omits_validated_lines():
+    artifact = _artifact()
+    artifact["validation_metrics"] = {}
+    with pytest.raises(ValueError, match="MLB_1IP_CERTIFIED_LINE_SUPPORT_MISSING"):
+        score_mlb_1ip_empirical(
+            artifact_record=artifact,
+            starter_status="CONFIRMED",
+            official_lineup_status="CONFIRMED",
+            projected_top_four=[],
+            line_value=15.5,
+            side="MORE",
+        )
 
 
 def test_empirical_specialist_rejects_wrong_artifact_family():
     artifact = _artifact()
     artifact["model_family"] = "WRONG"
     with pytest.raises(ValueError, match="MLB_1IP_CERTIFIED_ARTIFACT_FAMILY_INVALID"):
+        score_mlb_1ip_empirical(
+            artifact_record=artifact,
+            starter_status="CONFIRMED",
+            official_lineup_status="CONFIRMED",
+            projected_top_four=[],
+            line_value=15.5,
+            side="MORE",
+        )
+
+
+def test_empirical_specialist_rejects_registry_feature_schema_drift():
+    artifact = _artifact()
+    artifact["feature_schema_version"] = "MLB_1IP_FEATURES_V1"
+    with pytest.raises(ValueError, match="MLB_1IP_CERTIFIED_ARTIFACT_FEATURE_SCHEMA_INVALID"):
         score_mlb_1ip_empirical(
             artifact_record=artifact,
             starter_status="CONFIRMED",
