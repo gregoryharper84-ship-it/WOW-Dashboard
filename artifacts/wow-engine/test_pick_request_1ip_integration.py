@@ -104,6 +104,8 @@ def test_lineup_tbd_with_projected_top_four_reaches_the_specialist(monkeypatch):
     assert row["code"] == "MODEL_QUALIFIED_HOLD"
     assert row["lineup_evidence_state"] == "PROJECTED_OR_RECONSTRUCTED"
     assert row["final_refresh_required"] is True
+    assert row["result"]["calibration_method"] == "UNCALIBRATED_INTERVAL_WIDENING_V1"
+    assert row["result"]["probability_publishable"] is False
     assert row["result"]["scout_research_barrier"]["stages"]
     assert body["rows_completed"] == 1
     assert body["reconciliation_pass"] is True
@@ -118,6 +120,7 @@ def test_lineup_tbd_alone_never_produces_model_unavailable(monkeypatch):
     assert row["code"] != "MODEL_UNAVAILABLE"
     assert row["terminal_label"] != "MODEL_UNAVAILABLE"
     assert row["detail"]["terminal_label"] == "REJECT_DATA_QUALITY"
+    assert row["terminal_status"] == "REJECTED"
     assert row["model_evaluated"] is False
 
 
@@ -130,6 +133,7 @@ def test_stale_starter_row_is_purged_without_affecting_other_1ip_rows(monkeypatc
     assert body["reconciliation_pass"] is True
     by_key = {row["row_key"]: row for row in body["rows"]}
     assert by_key["stale"]["terminal_label"] == "SLATE_PURGE"
+    assert by_key["stale"]["terminal_status"] == "REJECTED"
     assert by_key["stale"]["detail"]["reason"] == "STARTER_CHANGED"
     assert by_key["valid"]["model_evaluated"] is True
     assert by_key["valid"]["code"] == "MODEL_QUALIFIED_HOLD"
@@ -152,6 +156,7 @@ def test_truly_unreconstructable_inputs_return_data_quality_blocker(monkeypatch)
     row = response.json()["rows"][0]
     assert row["code"] == "MANDATORY_EVENT_TREE_INPUTS_UNOBTAINABLE_AFTER_APPROVED_ATTEMPTS"
     assert row["terminal_label"] != "MODEL_UNAVAILABLE"
+    assert row["terminal_status"] == "REJECTED"
     assert row["model_evaluated"] is False
 
 
@@ -172,6 +177,23 @@ def test_official_lineup_confirmation_after_provisional_scoring_clears_final_ref
     assert refreshed["model_evaluated"] is True
 
 
+def test_three_of_four_projection_is_hold_only_and_never_publishable(monkeypatch):
+    """Governance call for reviewer F3: three usable projected batters may
+    support provisional research/HOLD continuation, but never publication.
+    Any future artifact certification must separately validate or tighten
+    this threshold before publication authority can change."""
+    client = _build(monkeypatch)
+    three = _lineup_evidence(projected_top_four=_lineup_evidence()["projected_top_four"][:3])
+    row = _post(client, [_row("r1", lineup_evidence=three)]).json()["rows"][0]
+    assert row["terminal_status"] == "COMPLETED"
+    assert row["terminal_label"] == "MODEL_QUALIFIED_HOLD"
+    assert row["final_refresh_required"] is True
+    assert row["probability_publishable"] is False
+    assert row["result"]["lineup_evidence_completeness"] == "PARTIAL_SUFFICIENT"
+    assert row["result"]["calibration_method"] == "UNCALIBRATED_INTERVAL_WIDENING_V1"
+    assert row["result"]["probability_publishable"] is False
+
+
 def test_row_reconciliation_is_exact_once_across_mixed_1ip_outcomes(monkeypatch):
     client = _build(monkeypatch)
     stale = _lineup_evidence(starter_name_at_capture="A", starter_name="B")
@@ -183,6 +205,9 @@ def test_row_reconciliation_is_exact_once_across_mixed_1ip_outcomes(monkeypatch)
     ]
     body = _post(client, rows).json()
     assert body["rows_in"] == 3
+    assert body["rows_completed"] == 1
+    assert body["rows_held"] == 0
+    assert body["rows_rejected"] == 2
     assert body["rows_completed"] + body["rows_held"] + body["rows_rejected"] == 3
     assert body["reconciliation_pass"] is True
 
