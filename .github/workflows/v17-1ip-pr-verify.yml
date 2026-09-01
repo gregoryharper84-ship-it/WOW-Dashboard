@@ -32,7 +32,26 @@ jobs:
           pip install -r requirements.txt
           pip install PyYAML openapi-spec-validator PyJWT
       - name: Focused MLB 1IP tests
+        shell: bash
         run: |
-          python -m pytest -q tests/test_mlb_1ip_production_capability.py tests/test_mlb_1ip_specialist.py tests/test_pick_request_1ip_integration.py
+          set -o pipefail
+          python -m pytest -q tests/test_mlb_1ip_production_capability.py tests/test_mlb_1ip_specialist.py tests/test_pick_request_1ip_integration.py | tee /tmp/v17-1ip-focused.log
+      - name: Upload focused test log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v17-1ip-focused-test-log
+          path: /tmp/v17-1ip-focused.log
+          if-no-files-found: warn
       - name: Full WOW engine regression suite
-        run: python -m pytest -q
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m pytest -q | tee /tmp/v17-1ip-full.log
+      - name: Upload full test log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v17-1ip-full-test-log
+          path: /tmp/v17-1ip-full.log
+          if-no-files-found: warn
