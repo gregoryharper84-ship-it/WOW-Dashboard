@@ -15,11 +15,13 @@ def test_pick_request_action_exposes_governed_scoring_and_traceability_boundarie
     paths = schema["paths"]
     assert set(paths) == {
         "/score-pick-request",
+        "/score-team-event-request",
         "/record-recommendations",
         "/settle-recommendations",
     }
     expected_operations = {
         "/score-pick-request": "scoreWowPickRequest",
+        "/score-team-event-request": "scoreWowTeamEventRequest",
         "/record-recommendations": "recordWowRecommendations",
         "/settle-recommendations": "settleWowRecommendations",
     }
