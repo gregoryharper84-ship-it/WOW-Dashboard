@@ -275,7 +275,7 @@ def test_bad_row_cannot_erase_good_sibling_and_reconciliation_is_exact(monkeypat
     assert by_key["good"]["portfolio_governance"]["duplicate_thesis_count"] == 1
 
 
-def test_duplicate_thesis_exposure_is_computed_across_rows_without_altering_probability(monkeypatch):
+def test_duplicate_thesis_is_detected_and_blocks_portfolio_qualification_without_altering_probability(monkeypatch):
     client, persisted, routed, scored = _build(monkeypatch)
     row_a = _row("a")
     row_b = _row("b")
@@ -295,13 +295,91 @@ def test_duplicate_thesis_exposure_is_computed_across_rows_without_altering_prob
     assert gov_a["duplicate_thesis_count"] == 2
     assert gov_b["duplicate_thesis_count"] == 2
     assert gov_a["can_execute"] is False
+    # The second occurrence of an identical thesis is machine-flagged and
+    # blocks downstream portfolio/slip qualification for that row.
+    assert gov_b["duplicate_thesis_flagged"] is True
+    assert "DUPLICATE_THESIS_COMMON_HINGE" in gov_b["blockers"]
+    assert by_key["b"]["downstream_portfolio_evaluation_allowed"] is False
 
-    # Duplicate-thesis exposure is informational on this row-scoring endpoint:
-    # it must never change a row's terminal outcome or sporting probability.
+    # Portfolio/slip qualification is a separate objective lane: it must
+    # never change a row's own terminal outcome or sporting probability.
     for key in ("a", "b"):
         assert by_key[key]["terminal_status"] == "COMPLETED"
         assert by_key[key]["probability_publishable"] is True
         assert by_key[key]["result"]["prediction"]["calibrated_probability"] == 0.63
+
+
+def test_same_event_correlated_legs_are_not_treated_as_independent(monkeypatch):
+    client, persisted, routed, scored = _build(monkeypatch)
+    row_a = _row("a")
+    row_b = _row("b", stat_type="BBs")  # different prop on the same event -> not duplicate thesis
+    row_b["event_id"] = row_a["event_id"]
+    row_b["direction"] = "LESS"  # also not a directional-exposure case
+
+    response = client.post("/score-pick-request", json={"rows": [row_a, row_b]})
+    assert response.status_code == 200
+    body = response.json()
+    by_key = {row["row_key"]: row for row in body["rows"]}
+
+    gov_a = by_key["a"]["portfolio_governance"]
+    gov_b = by_key["b"]["portfolio_governance"]
+    assert gov_a["same_event_dependent"] is True
+    assert gov_b["same_event_dependent"] is True
+    assert gov_a["duplicate_thesis_flagged"] is False
+    assert gov_a["directional_exposure"] is False
+    assert "DEPENDENCE_UNQUANTIFIED_SAME_EVENT" in gov_a["blockers"]
+    assert by_key["a"]["downstream_portfolio_evaluation_allowed"] is False
+    assert by_key["b"]["downstream_portfolio_evaluation_allowed"] is False
+    # No joint probability was fabricated -- each row's own model output is untouched.
+    assert by_key["a"]["result"]["prediction"]["calibrated_probability"] == 0.63
+    assert by_key["b"]["result"]["prediction"]["calibrated_probability"] == 0.63
+
+
+def test_directional_and_session_exposure_are_enforced_separately_from_dependency(monkeypatch):
+    client, persisted, routed, scored = _build(monkeypatch)
+    row_a = _row("a")
+    row_b = _row("b", stat_type="BBs")  # different prop, same event, same direction
+    row_b["event_id"] = row_a["event_id"]
+
+    response = client.post("/score-pick-request", json={"rows": [row_a, row_b]})
+    body = response.json()
+    by_key = {row["row_key"]: row for row in body["rows"]}
+    gov_a = by_key["a"]["portfolio_governance"]
+
+    assert gov_a["directional_exposure"] is True
+    assert gov_a["session_event_leg_count"] == 2
+    assert "SESSION_DIRECTIONAL_EXPOSURE" in gov_a["blockers"]
+    # Both stages fire independently for the same pair, but as distinct blockers.
+    assert "DEPENDENCE_UNQUANTIFIED_SAME_EVENT" in gov_a["blockers"]
+
+
+def test_unrelated_single_row_batch_is_unaffected_by_portfolio_governance(monkeypatch):
+    client, persisted, routed, scored = _build(monkeypatch)
+    response = client.post("/score-pick-request", json={"rows": [_row("solo")]})
+    body = response.json()
+    row = body["rows"][0]
+    assert row["downstream_portfolio_evaluation_allowed"] is True
+    assert row["portfolio_governance"]["blockers"] == []
+    assert row["portfolio_governance"]["same_event_dependent"] is False
+    assert row["portfolio_governance"]["directional_exposure"] is False
+
+
+def test_exposure_blocker_survives_to_the_final_response_and_can_execute_stays_false(monkeypatch):
+    client, persisted, routed, scored = _build(monkeypatch)
+    row_a = _row("a")
+    row_b = _row("b")
+    row_b["event_id"] = row_a["event_id"]
+    response = client.post("/score-pick-request", json={"rows": [row_a, row_b]})
+    body = response.json()
+    assert body["can_execute"] is False
+    by_key = {row["row_key"]: row for row in body["rows"]}
+    for key in ("a", "b"):
+        # Nothing downstream of portfolio governance re-runs or overwrites it
+        # in this endpoint -- the blocker present here is what a caller sees.
+        assert "portfolio_governance" in by_key[key]
+        assert by_key[key]["can_execute"] is False
+        assert by_key[key]["portfolio_governance"]["can_execute"] is False
+
 
 def test_missing_evidence_auto_hydrates_freezes_and_scores(monkeypatch):
     client, persisted, routed, scored = _build(monkeypatch)

@@ -36,6 +36,7 @@ from mlb_1ip_ingress_runtime import score_mlb_1ip_ingress
 from prop_auto_hydration import PropAutoHydrationError, auto_hydrate_prop_evidence
 from qualification_policy_v2 import classify_prop_probability
 from prop_terminal_reducer_v2 import EVENT_BLOCKERS, TRUE_MODEL_REJECTION_LABELS, reduce_prop_terminal
+from v17.portfolio_exposure_gate import evaluate_portfolio_qualification
 from v17.slip_portfolio_optimizer import optimize_portfolio, thesis_identity
 
 
@@ -404,12 +405,14 @@ def _portfolio_leg(
     canonical_stat: str,
     scored: dict[str, Any],
 ) -> dict[str, Any]:
-    """Build one leg record for cross-row duplicate-thesis exposure scoring.
+    """Build one leg record for the portfolio governance stages (dependency/
+    correlation structure, session/directional exposure, duplicate thesis).
 
     Only identity fields and existing (already-computed) quality signals are
     read here -- this never computes or mutates a sporting probability, it
-    only lets slip_portfolio_optimizer.optimize_portfolio recognize when two
-    completed rows in the same request share the same underlying thesis.
+    only lets v17.slip_portfolio_optimizer and v17.portfolio_exposure_gate
+    recognize when two completed rows in the same request share the same
+    underlying thesis, the same event, or the same directional lean.
     """
     prediction = scored.get("prediction") if isinstance(scored.get("prediction"), dict) else scored
     return {
@@ -427,34 +430,62 @@ def _portfolio_leg(
     }
 
 
-def _duplicate_thesis_exposure(
+def _apply_portfolio_governance(
     request_id: Optional[str],
     scored_legs: list[tuple[dict[str, Any], dict[str, Any]]],
 ) -> None:
-    """Compute real cross-row duplicate-thesis exposure for this batch and
-    attach it to each completed row's outcome.
+    """Run the DEPENDENCY_CORRELATION_STRUCTURE and
+    SESSION_DIRECTIONAL_DUPLICATE_THESIS_EXPOSURE gates (per the V17 shared
+    gate order) across this batch and attach one unified, machine-enforced
+    portfolio_governance decision to each completed row's outcome.
 
-    This is genuinely computed (v17.slip_portfolio_optimizer.optimize_portfolio),
-    not a caller-attested boolean, and it is informational only: it never
-    changes a row's terminal_status, probability_publishable, or rank_eligible.
-    Slip-level removal/replacement is a separate downstream construction
-    decision outside this row-scoring endpoint's scope.
+    All of this is genuinely computed -- v17.slip_portfolio_optimizer for
+    duplicate-thesis, v17.portfolio_exposure_gate for same-event dependency
+    and session/directional exposure -- never a caller-attested boolean, and
+    never a fabricated joint probability. A row's own terminal_status,
+    terminal_label, probability_publishable, calibrated_probability, and
+    rank_eligible are read nowhere in this function and are never touched:
+    portfolio/slip qualification is a separate objective lane from model
+    probability (see qualification_policy_v2.downstream_money_evaluation_allowed
+    for the same existing objective-separation pattern). What IS enforced is
+    downstream_portfolio_evaluation_allowed -- a caller must not combine two
+    rows into the same slip/card when either carries
+    downstream_portfolio_evaluation_allowed=False.
     """
     if not scored_legs:
         return
-    card = {"card_id": request_id or "score-pick-request-batch", "legs": [leg for leg, _ in scored_legs]}
-    result = optimize_portfolio([card])
-    removed_ids = {entry["removed_row_id"] for entry in result.removals}
-    replaced_ids = {entry["removed_row_id"] for entry in result.replacements}
+    legs = [leg for leg, _ in scored_legs]
+    card = {"card_id": request_id or "score-pick-request-batch", "legs": list(legs)}
+    optimizer_result = optimize_portfolio([card])
+    # A thesis appearing more than once in this batch is flagged regardless of
+    # whether the optimizer could also remove/replace it -- removal requires
+    # room to shrink below optimize_portfolio's minimum card size and/or a
+    # stronger independent alternative, neither of which this row-scoring
+    # endpoint supplies. Detection must not depend on those preconditions.
+    duplicate_thesis_flagged = {
+        str(leg["row_id"]): optimizer_result.duplicate_counts.get(thesis_identity(leg), 1) > 1 for leg in legs
+    }
+
+    qualification = evaluate_portfolio_qualification(legs, duplicate_thesis_flagged=duplicate_thesis_flagged)
+
     for leg, outcome in scored_legs:
+        row_id = str(leg["row_id"])
         identity = thesis_identity(leg)
+        decision = qualification[row_id]
         outcome["portfolio_governance"] = {
             "thesis_identity": identity,
-            "duplicate_thesis_count": result.duplicate_counts.get(identity, 1),
-            "duplicate_thesis_flagged": leg["row_id"] in removed_ids or leg["row_id"] in replaced_ids,
+            "duplicate_thesis_count": optimizer_result.duplicate_counts.get(identity, 1),
+            "duplicate_thesis_flagged": decision["duplicate_thesis_flagged"],
+            "same_event_dependent": decision["same_event_dependent"],
+            "co_dependent_row_ids": decision["co_dependent_row_ids"],
+            "session_event_leg_count": decision["session_event_leg_count"],
+            "directional_exposure": decision["directional_exposure"],
+            "portfolio_qualification": decision["portfolio_qualification"],
+            "blockers": decision["blockers"],
             "sporting_probability_mutated": False,
             "can_execute": False,
         }
+        outcome["downstream_portfolio_evaluation_allowed"] = decision["downstream_portfolio_evaluation_allowed"]
 
 
 def _telemetry(outcomes: list[dict[str, Any]]) -> dict[str, int]:
@@ -893,7 +924,7 @@ def install_pick_request_routes(
             if completed_outcome["terminal_status"] == "COMPLETED":
                 scored_legs.append((_portfolio_leg(row_key, row, canonical_stat, scored), completed_outcome))
 
-        _duplicate_thesis_exposure(batch.request_id, scored_legs)
+        _apply_portfolio_governance(batch.request_id, scored_legs)
 
         completed = sum(
             1 for outcome in outcomes if outcome["terminal_status"] == "COMPLETED"
