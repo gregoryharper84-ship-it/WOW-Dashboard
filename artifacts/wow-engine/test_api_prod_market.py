@@ -265,3 +265,57 @@ def test_missing_exact_route_artifact_blocks_before_model_invocation(monkeypatch
     assert body["probability_publishable"] is False
     assert body["can_execute"] is False
     assert called["score"] is False
+
+
+def test_model_features_passes_through_opponent_context_verbatim():
+    evidence = {
+        "game_log": [1, 2],
+        "box_score_log": [{"outs": 3}],
+        "role_status": {"status": "ACTIVE"},
+        "role_timestamp": "2026-08-29T00:00:00+00:00",
+        "opportunity_ledger": {"status": "PASS"},
+        "source_timestamps": {"caller": "2026-08-29T00:00:00+00:00"},
+        "evidence_version": "PROP_EVIDENCE_V1",
+        "rate_provenance": "TEST",
+        "captured_at": "2026-08-29T00:00:00+00:00",
+        "opponent_context": {"k_rate_per_pa": 0.15},
+    }
+    features = api_prod_market._model_features(evidence)
+    assert features["opponent_context"] == {"k_rate_per_pa": 0.15}
+
+
+def test_model_features_opponent_context_defaults_to_none_when_absent():
+    features = api_prod_market._model_features({"game_log": [], "box_score_log": []})
+    assert features["opponent_context"] is None
+
+
+def test_discrete_model_evidence_surfaces_failure_path_evidence():
+    distribution = SimpleNamespace(
+        coverage=CoverageDecision(in_distribution=True, ood_score=0.1, coverage_failures=()),
+        failure_path_evidence={"tags": ["STRIKEOUT_RATE_SUPPRESSION"], "opponent_factor": 0.8},
+    )
+    result = SimpleNamespace(
+        row=SimpleNamespace(model_family="MLB_PITCHER_SO_FAILURE_PATH_NB_V1", probability_publishable=True),
+        inference=SimpleNamespace(
+            artifact=SimpleNamespace(training_rows=4489),
+            distribution=distribution,
+        ),
+    )
+    evidence = api_prod_market._discrete_model_evidence(result)
+    assert evidence["failure_path_evidence"] == {"tags": ["STRIKEOUT_RATE_SUPPRESSION"], "opponent_factor": 0.8}
+    assert evidence["can_execute"] is False
+
+
+def test_discrete_model_evidence_defaults_failure_path_evidence_to_empty():
+    distribution = SimpleNamespace(
+        coverage=CoverageDecision(in_distribution=True, ood_score=0.1, coverage_failures=()),
+    )
+    result = SimpleNamespace(
+        row=SimpleNamespace(model_family="WNBA_PROP_POISSON_LOGGLM_V1", probability_publishable=True),
+        inference=SimpleNamespace(
+            artifact=SimpleNamespace(training_rows=1000),
+            distribution=distribution,
+        ),
+    )
+    evidence = api_prod_market._discrete_model_evidence(result)
+    assert evidence["failure_path_evidence"] == {}

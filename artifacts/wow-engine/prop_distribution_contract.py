@@ -14,7 +14,7 @@ Security/governance invariants:
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from hashlib import sha256
 from math import isfinite
@@ -166,6 +166,13 @@ class RawDiscreteDistribution:
     distribution_type: str = "DISCRETE_PMF"
     publication_status: str = "NOT_EVALUATED"
     can_execute: bool = False
+    # Optional, additive audit trail an adapter may attach to explain how its
+    # PMF was derived (e.g. which typed failure-path evidence materially
+    # shifted the distribution's mean, and by what factor). Advisory/
+    # explanatory only -- this dict can never carry a probability, bound, or
+    # terminal label; __post_init__ enforces that. Default empty for every
+    # adapter that has nothing to report, so existing callers are unaffected.
+    failure_path_evidence: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.distribution_type != "DISCRETE_PMF":
@@ -176,6 +183,21 @@ class RawDiscreteDistribution:
             raise PropDistributionContractError(
                 "PROVIDER_PUBLICATION_AUTHORITY_PROHIBITED",
                 "raw provider output cannot publish or execute",
+            )
+        if not isinstance(self.failure_path_evidence, Mapping):
+            raise PropDistributionContractError(
+                "FAILURE_PATH_EVIDENCE_INVALID", "failure_path_evidence must be a mapping"
+            )
+        forbidden_evidence_keys = {
+            "probability", "calibrated_probability", "calibrated_probability_lower_bound",
+            "calibrated_probability_upper_bound", "lower_bound", "upper_bound",
+            "terminal_label", "can_execute", "probability_publishable",
+        }
+        leaked = forbidden_evidence_keys.intersection(k.lower() for k in self.failure_path_evidence)
+        if leaked:
+            raise PropDistributionContractError(
+                "FAILURE_PATH_EVIDENCE_AUTHORITY_PROHIBITED",
+                f"failure_path_evidence cannot carry governed-output keys: {sorted(leaked)}",
             )
         if not self.support:
             raise PropDistributionContractError("PROP_PMF_EMPTY", "PMF support cannot be empty")

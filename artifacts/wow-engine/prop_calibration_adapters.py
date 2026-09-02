@@ -37,7 +37,7 @@ from prop_discrete_engine import (
 )
 from prop_distribution_contract import LineProbabilities
 from prop_fitted_provider import CertifiedInference
-from prop_model_adapters import nb_pmf, shrink
+from prop_model_adapters import nb_pmf, opponent_k_factor, shrink
 
 MLB_PITCHER_SO_CALIBRATOR_VERSION = "MLB_PITCHER_SO_CAL_V1"
 BOUNDS_METHOD_VERSION = "PRECALIBRATION_SHRINKAGE_EVIDENCE_BOOTSTRAP_V1"
@@ -47,6 +47,7 @@ def _mlb_pitcher_so_resample_fn(inference: CertifiedInference, direction_more: b
     payload = inference.artifact.artifact_payload
     fitted = payload["fitted_constants"]
     league_so_per_out = float(fitted["league_so_per_out"])
+    league_k_per_pa = float(fitted["league_k_per_pa"])
     league_shortened_rate = float(fitted["league_shortened_rate"])
     outs_normal_scale = float(fitted["outs_normal_scale"])
     outs_short_scale = float(fitted["outs_short_scale"])
@@ -55,11 +56,19 @@ def _mlb_pitcher_so_resample_fn(inference: CertifiedInference, direction_more: b
     shrinkage_k_regime = float(payload["shrinkage_k_regime"])
     shortened_outs_threshold = float(payload["shortened_outs_threshold"])
     max_support_k = int(payload["max_support_k"])
+    opponent_factor_clip = tuple(float(v) for v in payload["opponent_factor_clip"])
 
     game_log = [float(v) for v in features["game_log"]]
     outs = [float(entry["outs"]) for entry in features["box_score_log"]]
     n = len(game_log)
     lam = n_eff / (n_eff + SHRINKAGE_K)
+    # Fixed for the whole bootstrap, not resampled per replicate: opponent
+    # evidence describes tonight's matchup, not this pitcher's own prior-start
+    # history, so every replicate must be suppressed/extended by the exact
+    # same factor as the point estimate (see prop_model_adapters.opponent_k_factor).
+    opp_factor, _clipped, _opp_k_per_pa = opponent_k_factor(
+        features.get("opponent_context"), league_k_per_pa, opponent_factor_clip
+    )
 
     def resample_fn(rng: np.random.Generator, count: int) -> np.ndarray:
         results = np.empty(count, dtype=float)
@@ -76,8 +85,8 @@ def _mlb_pitcher_so_resample_fn(inference: CertifiedInference, direction_more: b
 
             rate = shrink(prior_so_per_out, league_so_per_out, n, shrinkage_k_rate)
             p_short = shrink(prior_shortened_rate, league_shortened_rate, n, shrinkage_k_regime)
-            mu_normal = rate * outs_normal_scale
-            mu_short = rate * outs_short_scale
+            mu_normal = rate * outs_normal_scale * opp_factor
+            mu_short = rate * outs_short_scale * opp_factor
             pmf_normal = nb_pmf(mu_normal, dispersion_r, max_support_k)
             pmf_short = nb_pmf(mu_short, dispersion_r, max_support_k)
             mixed = {

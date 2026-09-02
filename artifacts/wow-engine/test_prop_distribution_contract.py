@@ -162,3 +162,51 @@ def test_role_failure_paths_change_unconditional_distribution():
 def test_bundle_fingerprint_changes_when_any_bound_component_changes():
     baseline = _bundle().bundle_fingerprint
     assert baseline != _bundle(calibrator_version="WNBA_ASSISTS_CAL_V1.0.1").bundle_fingerprint
+
+
+# --- failure_path_evidence (postmortem patch WOW-PATCH-2026-09-02) ----------
+
+
+def test_failure_path_evidence_defaults_to_empty_mapping():
+    dist = _distribution()
+    assert dist.failure_path_evidence == {}
+
+
+def test_failure_path_evidence_accepts_an_explanatory_mapping():
+    dist = RawDiscreteDistribution(
+        **{
+            **_distribution().__dict__,
+            "failure_path_evidence": {"tags": ["STRIKEOUT_RATE_SUPPRESSION"], "opponent_factor": 0.8},
+        }
+    )
+    assert dist.failure_path_evidence["tags"] == ["STRIKEOUT_RATE_SUPPRESSION"]
+
+
+def test_failure_path_evidence_rejects_non_mapping():
+    with pytest.raises(PropDistributionContractError) as exc:
+        RawDiscreteDistribution(
+            **{**_distribution().__dict__, "failure_path_evidence": ["not", "a", "mapping"]}
+        )
+    assert exc.value.code == "FAILURE_PATH_EVIDENCE_INVALID"
+
+
+@pytest.mark.parametrize(
+    "forbidden_key",
+    [
+        "probability",
+        "calibrated_probability",
+        "calibrated_probability_lower_bound",
+        "calibrated_probability_upper_bound",
+        "lower_bound",
+        "upper_bound",
+        "terminal_label",
+        "can_execute",
+        "probability_publishable",
+    ],
+)
+def test_failure_path_evidence_rejects_governed_output_keys(forbidden_key):
+    with pytest.raises(PropDistributionContractError) as exc:
+        RawDiscreteDistribution(
+            **{**_distribution().__dict__, "failure_path_evidence": {forbidden_key: 0.9}}
+        )
+    assert exc.value.code == "FAILURE_PATH_EVIDENCE_AUTHORITY_PROHIBITED"
