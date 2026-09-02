@@ -104,7 +104,7 @@ paths:
         required: true
         content:
           application/json:
-            schema: {type: object, additionalProperties: true}
+            schema: {$ref: '#/components/schemas/RecommendationBatch'}
       responses:
         '200': {description: Linked recommendation settlement recorded}
         '409': {description: Settlement timing or integrity blocked}
