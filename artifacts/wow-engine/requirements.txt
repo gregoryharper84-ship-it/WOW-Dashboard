@@ -11,3 +11,6 @@ openapi-spec-validator>=0.7  # required by test_score_event_governance.py::test_
 celery>=5.4,<6  # WOW Agent Runtime V1 durable worker (agent_runtime/queue.py)
 redis>=5.0,<7  # Celery broker/backend and /health/ready queue check
 psycopg[binary]>=3.2,<4  # WOW Agent Runtime V1 real Postgres+Redis+Celery integration test only
+sentry-sdk[fastapi]>=2.0,<3  # optional production telemetry; inert without SENTRY_DSN
+pandas>=2.2,<3
+pandera>=0.20,<1  # typed external-source dataframe validation

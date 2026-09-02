@@ -29,7 +29,9 @@ from prop_live_model_acceptance import run_prop_model_live_self_acceptance
 from recommendation_ledger_api import install_recommendation_ledger_routes
 from team_event_request_runtime import install_team_event_request_routes
 from v17.team_event_request_runtime import install_team_event_routes as install_v17_team_event_routes
+from v17_observability import initialize_observability
 
+OBSERVABILITY = initialize_observability()
 app = base.app
 _auth = Depends(base.market_api.prod._require_action_api_key)
 _logger = logging.getLogger("wow.ncaaf.readiness")
