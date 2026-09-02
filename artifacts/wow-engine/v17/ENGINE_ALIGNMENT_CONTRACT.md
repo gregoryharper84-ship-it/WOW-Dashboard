@@ -1,4 +1,10 @@
-# WOW v17 Phase A — Custom Engine Alignment Contract
+# WOW V17 Phase A — Historical Custom Engine Alignment Contract
+
+> **SUPERSEDED / HISTORICAL:** This Phase-A candidate record is preserved for
+> audit history. V17 is now the only active generation. Current authority is
+> `../V17_PRODUCTION_STATUS.md`, `PHASE_A_ALIGNMENT_STATUS.md`, and
+> `../../../docs/wow/GENERATION_STATUS.md`. Statements below that production
+> remains V16 describe the pre-cutover state and are no longer current.
 
 Status: `PHASE_A_BINDING_CANDIDATE`
 

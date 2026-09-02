@@ -63,4 +63,10 @@ This is a repository-governance blocker only. It is not a model/runtime capabili
 
 ## Custom GPT editor synchronization
 
-Backend deployment does not edit the live Custom GPT editors. The canonical editor-sync instructions are in `V17_CUSTOM_GPT_EDITOR_SYNC.md`. Until those editor actions are completed externally, classify that product-configuration item as `LIVE_EDITOR_SYNC_EXTERNAL`; do not misstate it as a backend deployment failure.
+Backend deployment does not edit the live Custom GPT editors. The canonical
+editor-sync sources are `WOW_V17_CUSTOM_GPT_INSTRUCTIONS.txt`,
+`LLP_V17_CUSTOM_GPT_INSTRUCTIONS.txt`, and the two V17 Action schemas under
+`v17/`; the editor attestation checklists are also under `v17/`. Until those
+editor actions are completed externally, classify that product-configuration
+item as `LIVE_EDITOR_SYNC_EXTERNAL`; do not misstate it as a backend deployment
+failure.

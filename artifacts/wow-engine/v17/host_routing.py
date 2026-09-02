@@ -1,4 +1,4 @@
-"""WOW v17 candidate host/lane routing contract.
+"""WOW V17 active-generation host/lane routing contract.
 
 Pure deterministic routing only. This module never scores probabilities, never
 sets the global terminal label, and can never execute a wager.
