@@ -271,6 +271,37 @@ def test_bad_row_cannot_erase_good_sibling_and_reconciliation_is_exact(monkeypat
     assert by_key["bad"]["verdict_class"] == "ACQUISITION_BLOCKED"
     assert body["pick_rejected_count"] == 0
     assert body["infrastructure_blocked_count"] >= 1
+    # Distinct event_ids (the default) are not a common hinge.
+    assert by_key["good"]["portfolio_governance"]["duplicate_thesis_count"] == 1
+
+
+def test_duplicate_thesis_exposure_is_computed_across_rows_without_altering_probability(monkeypatch):
+    client, persisted, routed, scored = _build(monkeypatch)
+    row_a = _row("a")
+    row_b = _row("b")
+    row_b["event_id"] = row_a["event_id"]  # same event/player/stat/direction -> same thesis
+    response = client.post(
+        "/score-pick-request",
+        json={"rows": [row_a, row_b]},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["rows_completed"] == 2
+    by_key = {row["row_key"]: row for row in body["rows"]}
+
+    gov_a = by_key["a"]["portfolio_governance"]
+    gov_b = by_key["b"]["portfolio_governance"]
+    assert gov_a["thesis_identity"] == gov_b["thesis_identity"]
+    assert gov_a["duplicate_thesis_count"] == 2
+    assert gov_b["duplicate_thesis_count"] == 2
+    assert gov_a["can_execute"] is False
+
+    # Duplicate-thesis exposure is informational on this row-scoring endpoint:
+    # it must never change a row's terminal outcome or sporting probability.
+    for key in ("a", "b"):
+        assert by_key[key]["terminal_status"] == "COMPLETED"
+        assert by_key[key]["probability_publishable"] is True
+        assert by_key[key]["result"]["prediction"]["calibrated_probability"] == 0.63
 
 def test_missing_evidence_auto_hydrates_freezes_and_scores(monkeypatch):
     client, persisted, routed, scored = _build(monkeypatch)
