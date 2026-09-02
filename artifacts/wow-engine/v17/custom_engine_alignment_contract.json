@@ -40,12 +40,13 @@
     "v17_activation_flag": "WOW_V17_ACTIVE=1",
     "backward_compatible_v16_routes_preserved": true
   },
-  "current_v16_action_contracts": {
-    "governed_probability": {"version": "1.2.1", "operations": ["getWowProbabilityHealth", "getWowProbabilityGovernance", "scoreWowProp", "scoreWowEvent", "settleWowProp"], "compatibility_status": "PRESERVED_DURING_V17_CUTOVER"},
-    "pick_request": {"version": "1.2.1", "operations": ["scoreWowPickRequest", "recordWowRecommendations", "settleWowRecommendations"], "compatibility_status": "PRESERVED_DURING_V17_CUTOVER"}
+  "legacy_v16_compatibility_contracts": {
+    "generation_status": "LEGACY_SUPERSEDED",
+    "governed_probability": {"version": "1.2.1", "operations": ["getWowProbabilityHealth", "getWowProbabilityGovernance", "scoreWowProp", "scoreWowEvent", "settleWowProp"], "compatibility_status": "PRESERVED_BY_ACTIVE_V17"},
+    "pick_request": {"version": "1.2.1", "operations": ["scoreWowPickRequest", "recordWowRecommendations", "settleWowRecommendations"], "compatibility_status": "PRESERVED_BY_ACTIVE_V17"}
   },
-  "v17_candidate_implementation": {
-    "candidate_entrypoint": "api_v17_candidate:app",
+  "v17_active_implementation": {
+    "shadow_harness_entrypoint": "api_v17_candidate:app",
     "production_entrypoint_changed": true,
     "production_activation_mode": "ADDITIVE_ROUTES_ON_ACCEPTED_ENTRYPOINT",
     "host_routing_module": "v17/host_routing.py",

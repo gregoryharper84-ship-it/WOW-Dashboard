@@ -34,9 +34,9 @@ install_team_event_routes(
     auth_dependency=v16._auth,
 )
 
-# v16 already contains the audited ledger implementation, but the accepted
-# production wrapper does not mount these routes. Mount them explicitly here so
-# the candidate served contract matches both v17 Custom-GPT Action schemas.
+# The legacy V16 compatibility layer contains the audited ledger implementation,
+# but the accepted production wrapper does not mount these routes. Mount them
+# explicitly here so this shadow harness matches both active V17 Action schemas.
 install_recommendation_ledger_routes(
     app,
     auth_dependency=v16._auth,
@@ -56,7 +56,7 @@ def get_v17_host_contract():
         "shared_core": payload["shared_core"],
         "team_event_contract": payload["team_event_contract"],
         "prop_contract": payload["prop_contract"],
-        "v17_candidate_implementation": payload["v17_candidate_implementation"],
+        "v17_active_implementation": payload["v17_active_implementation"],
         "editor_attestation": payload["editor_attestation"],
         "resolved_phase_a_findings": payload["resolved_phase_a_findings"],
         "phase_a_blockers": payload["phase_a_blockers"],

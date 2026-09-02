@@ -1,10 +1,14 @@
-# WOW v17 — Production Backend Cutover Status
+# WOW V17 — Active Production Backend Status
 
 As of: 2026-09-01
 
 Status: `OWNER_AUTHORIZED_BACKEND_CUTOVER`
 
-This file supersedes the original Phase-A candidate status. The accepted V17 architecture has been converged into the current governed backend and is being activated additively on the existing production entrypoint. Existing V16-compatible routes remain available during the cutover. Wager execution remains permanently disabled.
+This file supersedes the original Phase-A candidate status. The accepted V17
+architecture is the only active generation and is mounted additively on the
+existing production entrypoint. Existing V16-compatible routes are legacy
+compatibility surfaces preserved by V17, not a second active generation. Wager
+execution remains permanently disabled.
 
 ## Invariants
 

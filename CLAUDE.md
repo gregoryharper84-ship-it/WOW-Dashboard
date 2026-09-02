@@ -1,8 +1,11 @@
 # WOW Dashboard — Engineering Contract
 
-## 0. Current authority and phase — 2026-08-30
+## 0. Current authority and phase — 2026-09-02
 
-This repository implements WOW v16 Clean Core.
+This repository implements the active WOW V17 governed generation. V17 was
+promoted in place on the existing WOW project, repository, Render/Supabase
+stack, and Custom GPT identities. V16 is preserved as a legacy/superseded
+generation for audit, rollback, provenance, and regression compatibility only.
 
 The historical Replit rescue/migration workflow is no longer the active engineering phase. The sanitized clean-origin reconstruction is the canonical source-control path used to establish GitHub `main`.
 
@@ -11,8 +14,11 @@ Current state:
 ```text
 MIGRATION_A1 = COMPLETE
 MIGRATION_A2 = SUPERSEDED_CLOSED_BY_SANITIZED_RECONSTRUCTION
-MIGRATION_A3 = RECONCILED_INTO_V16_CLOSEOUT
-ACTIVE_ENGINEERING_PHASE = V16_CLOSEOUT
+MIGRATION_A3 = RECONCILED_INTO_LEGACY_V16_HISTORY
+ACTIVE_ENGINEERING_PHASE = V17_ACTIVE_OPERATIONS
+CURRENT_GENERATION = V17
+LEGACY_GENERATION = V16
+V16_AUTHORITY_STATUS = LEGACY_SUPERSEDED
 CANONICAL_SOURCE_CONTROL = GitHub main
 PRODUCTION_WEB_RUNTIME = Render wow-governed-probability-engine
 PERSISTENCE_AUTHORITY = Supabase governed schema
@@ -35,11 +41,12 @@ A failed ancestry test between that historical checkpoint and modern `main` is n
 
 If instructions conflict, use this precedence:
 
-1. active WOW v16 Clean Core project governance
+1. active WOW V17 project governance and V17 terminal reducer
 2. active approved WOW patches
 3. active controlling sport/market specialist contract
 4. this engineering contract
-5. implementation notes, migration history, READMEs, and older patch documents
+5. V16 compatibility contracts that V17 explicitly preserves
+6. implementation notes, migration history, READMEs, and older patch documents
 
 Historical A.1/A.2 text, legacy Replit runtime assumptions, and older Full Model summaries are evidence only and must not override current project governance.
 
@@ -96,7 +103,10 @@ Unavailable specialist/model output must not be replaced with raw L5/L10, trends
 
 ## 3. Active Full Model engineering invariants
 
-Implementations must preserve the active WOW v16 Clean Core workflow and its native terminal semantics.
+Implementations must preserve the active WOW V17 governed workflow and its
+native terminal semantics. V16-compatible routes may remain available as
+explicit compatibility surfaces, but must not be described as the active
+generation or used to override V17 authority.
 
 Required properties include:
 
@@ -258,9 +268,11 @@ Security hardening must reduce privileges; it must never broaden public/anon/aut
 
 ---
 
-## 9. V16 closeout priorities
+## 9. V17 active-generation priorities
 
-The active closeout work is authorized to repair implementation/infrastructure blockers while preserving all model/governance gates.
+Active V17 work is authorized to repair implementation/infrastructure blockers
+while preserving all model/governance gates. V16-only cleanup is historical
+maintenance unless an active V17 compatibility dependency requires it.
 
 Priority order:
 

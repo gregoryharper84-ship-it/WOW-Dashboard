@@ -119,7 +119,13 @@ For each schema installed in the GPT editor:
 4. never enter the Supabase service-role key,
 5. preserve all returned fail-closed statuses and blockers.
 
-Installing or editing a Custom GPT Action is a ChatGPT product configuration step; backend deployment does not silently modify the GPT editor configuration. Use `V17_CUSTOM_GPT_EDITOR_SYNC.md` as the canonical live-editor handoff. Until completed externally, report `LIVE_EDITOR_SYNC_EXTERNAL` rather than misclassifying editor drift as a backend/model failure.
+Installing or editing a Custom GPT Action is a ChatGPT product configuration
+step; backend deployment does not silently modify the GPT editor configuration.
+Use `WOW_V17_CUSTOM_GPT_INSTRUCTIONS.txt`,
+`LLP_V17_CUSTOM_GPT_INSTRUCTIONS.txt`, the V17 Action schemas, and the editor
+attestation checklists under `v17/` as the canonical live-editor handoff.
+Until completed externally, report `LIVE_EDITOR_SYNC_EXTERNAL` rather than
+misclassifying editor drift as a backend/model failure.
 
 ## 5. Live acceptance boundary
 

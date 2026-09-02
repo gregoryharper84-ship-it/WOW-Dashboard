@@ -1,10 +1,20 @@
 # WOW Authoritative Contract Documents
 
-This directory holds the authoritative WOW skill and contract documents. These are the binding authority for all patch decisions. The `wow-replit-patch-governor` skill references these documents in the `binding_authority` field of every build-packet contract.
+This directory holds integrity-preserved WOW skill and contract documents. Many
+records originated under V16 and are now legacy/superseded generation artifacts.
+They remain binding only where active V17 governance explicitly imports or
+preserves the contract. Lifecycle authority comes from
+`../GENERATION_STATUS.md`; an `ACTIVE` source declaration in a historical V16
+record does not make V16 the current project generation.
 
 **Registry file:** `registry.yaml` — the single source of truth for all contract metadata, SHA-256 hashes, declared statuses, and project authority statuses.
 
 **Canonical copies:** `canonical/` — immutable copies of all WOW skill and patch documents, preserved from their source ZIPs and attached_assets files. Never edit files in `canonical/` — they are integrity anchors for SHA-256 verification.
+
+**Generation rule:** V17 is the only active generation. V16-named canonical
+copies are retained unchanged for hashes, provenance, rollback, and regression
+compatibility and are classified `LEGACY` / `SUPERSEDED` at the generation
+level.
 
 ---
 

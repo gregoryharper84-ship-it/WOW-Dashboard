@@ -1,4 +1,4 @@
-"""Cross-sport TEAM_EVENT ingress for the WOW v17 candidate architecture.
+"""Cross-sport TEAM_EVENT ingress for the active WOW V17 architecture.
 
 The ingress contract is sport-agnostic, but model support is capability-specific.
 Only a sport with a certified backend adapter may score. Unsupported sports fail
@@ -524,7 +524,7 @@ def score_team_event_request(req: TeamEventRequest, *, event_api: Any) -> dict[s
 
 
 def install_team_event_routes(app: FastAPI, *, event_api: Any, auth_dependency: Any) -> None:
-    """Install the v17 candidate universal team/event ingress on an app."""
+    """Install the active V17 universal team/event ingress on an app."""
 
     @app.post(
         "/score-team-event",

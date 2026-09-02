@@ -76,16 +76,23 @@ def test_legacy_replit_cannot_be_primary_v17_route():
     assert c["backward_compatible_v16_routes_preserved"] is True
 
 
-def test_v17_backend_cutover_uses_existing_governed_team_event_adapter_without_fake_models():
-    candidate = _contract()["v17_candidate_implementation"]
-    assert candidate["production_entrypoint_changed"] is True
-    assert candidate["production_activation_mode"] == "ADDITIVE_ROUTES_ON_ACCEPTED_ENTRYPOINT"
-    assert candidate["team_event_generic_contract"] == "PRODUCTION_ACTIVE_WHEN_FLAG_ENABLED"
-    assert candidate["team_event_mlb_adapter"] == "REUSES_EXISTING_GOVERNED_MLB_EVENT_PATH"
-    assert candidate["unsupported_team_event_sports"] == "FAIL_CLOSED_MODEL_UNAVAILABLE"
-    assert candidate["host_local_terminal_labels"] == "AUDIT_ONLY"
-    assert candidate["canonical_host_identity_enforcement"] == "ACTIVE"
-    assert candidate["recommendation_ledger_routes"] == "PRODUCTION_ACTIVE"
+def test_v17_active_backend_uses_existing_governed_team_event_adapter_without_fake_models():
+    active = _contract()["v17_active_implementation"]
+    assert active["production_entrypoint_changed"] is True
+    assert active["production_activation_mode"] == "ADDITIVE_ROUTES_ON_ACCEPTED_ENTRYPOINT"
+    assert active["team_event_generic_contract"] == "PRODUCTION_ACTIVE_WHEN_FLAG_ENABLED"
+    assert active["team_event_mlb_adapter"] == "REUSES_EXISTING_GOVERNED_MLB_EVENT_PATH"
+    assert active["unsupported_team_event_sports"] == "FAIL_CLOSED_MODEL_UNAVAILABLE"
+    assert active["host_local_terminal_labels"] == "AUDIT_ONLY"
+    assert active["canonical_host_identity_enforcement"] == "ACTIVE"
+    assert active["recommendation_ledger_routes"] == "PRODUCTION_ACTIVE"
+
+
+def test_v16_is_legacy_compatibility_not_current_generation():
+    legacy = _contract()["legacy_v16_compatibility_contracts"]
+    assert legacy["generation_status"] == "LEGACY_SUPERSEDED"
+    assert legacy["governed_probability"]["compatibility_status"] == "PRESERVED_BY_ACTIVE_V17"
+    assert legacy["pick_request"]["compatibility_status"] == "PRESERVED_BY_ACTIVE_V17"
 
 
 def test_editor_source_contract_is_ready_but_live_editor_sync_is_not_falsely_attested():

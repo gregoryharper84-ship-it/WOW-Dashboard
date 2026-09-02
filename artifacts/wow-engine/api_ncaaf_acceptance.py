@@ -152,7 +152,7 @@ if V17_ACTIVE:
             "team_event_contract": payload["team_event_contract"],
             "prop_contract": payload["prop_contract"],
             "backend_contract": payload["backend_contract"],
-            "v17_candidate_implementation": payload["v17_candidate_implementation"],
+            "v17_active_implementation": payload["v17_active_implementation"],
             "can_execute": False,
         }
 
