@@ -35,13 +35,14 @@ After the complete extraction pass:
 
 ## Governed review
 1. Validate exact identity against current event/player/team context.
-2. Refresh current injury/lineup/role/status and other material evidence.
+2. Invoke `WOW_V17_RESEARCH_MARKET_CONTEXT_SKILL.md` for material candidates. Refresh injuries/lineups/roles/rosters, relevant history and matchup context, rest/travel, venue/weather when relevant, plus current external exact/adjacent market evidence with source/as-of provenance.
 3. Call the governed backend route for each supported candidate.
-4. Never treat screenshot odds or payout as model probability.
-5. Exact screenshot line controls the requested market identity. Adjacent external lines are context only.
-6. Preserve typed fail-closed responses; do not substitute generic research for a missing fitted model.
-7. Rank only official model-supported rows by calibrated lower bound where required.
-8. Keep screenshot-origin results visibly separate from autonomous-discovery results unless the user asks for one combined pool.
+4. Never treat screenshot odds, payout, sportsbook implied probability, external consensus, or recent hit rate as model probability.
+5. The screenshot's exact displayed line controls requested market identity. External `EXACT_LINE` evidence may support no-vig/economics; `ADJACENT_LINE` is context only; `NO_MARKET` is valid and must not erase completed sporting probability.
+6. Where refreshed evidence maps to a certified fitted model input, ensure it reaches governed hydration. Otherwise keep it evidence-only; do not manually invent a probability adjustment.
+7. Preserve typed fail-closed responses; do not substitute generic research for a missing fitted model.
+8. Rank only official model-supported rows by calibrated lower bound where required.
+9. Keep screenshot-origin results visibly separate from autonomous-discovery results unless the user asks for one combined pool.
 
 ## Output
 First report extraction coverage, e.g. `Extracted 47/47 readable rows across 5 market families` and name the market families so omitted categories are obvious.
@@ -52,11 +53,12 @@ Then present:
 - `Best Screenshot Underdogs/Upsets`
 - `Unsupported / Held / Extraction-Uncertain` diagnostics when useful
 
-For official rows show the same governed probability fields as the V17 daily skill plus source screenshot/page and extraction confidence.
+For official rows show the same governed probability fields as the V17 daily skill plus source screenshot/page, extraction confidence, market-evidence type, material current-context findings, and evidence as-of/provenance when material.
 
 ## Safety
 - No probability fabrication.
 - No silent market-family omission.
 - No retroactive line substitution.
+- No look-ahead leakage.
 - No wager placement.
 - `can_execute=false` always.
