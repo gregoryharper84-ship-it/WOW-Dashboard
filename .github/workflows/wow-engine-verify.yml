@@ -3,10 +3,6 @@ name: wow-engine-verify
 on:
   pull_request:
     branches: [main]
-    paths:
-      - "artifacts/wow-engine/**"
-      - "render.yaml"
-      - ".github/workflows/wow-engine-verify.yml"
   workflow_dispatch:
 
 permissions:
