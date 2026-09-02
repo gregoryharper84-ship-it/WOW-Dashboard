@@ -25,6 +25,14 @@ from typing import Any, Literal, Optional
 from fastapi import Header, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
+from agent_runtime.idempotency import input_hash as _compute_input_hash
+from agent_runtime.registry import worker_spec
+from agent_runtime.runner_scout_research import execute_envelope
+from agent_runtime.schemas import WorkerJobEnvelope
+from agent_runtime.scout_research import RESEARCH_RECONCILER, RESEARCH_WORKERS, scout_lane
+from mlb_1ip_specialist import CANONICAL_STAT_TYPE as MLB_1IP_STAT_TYPE
+from mlb_1ip_specialist import score_mlb_1ip, starter_changed
+from mlb_1ip_ingress_runtime import score_mlb_1ip_ingress
 from prop_auto_hydration import PropAutoHydrationError, auto_hydrate_prop_evidence
 from qualification_policy_v2 import classify_prop_probability
 from prop_terminal_reducer_v2 import EVENT_BLOCKERS, TRUE_MODEL_REJECTION_LABELS, reduce_prop_terminal
@@ -38,6 +46,12 @@ PROP_STAT_ALIASES: dict[tuple[str, str], str] = {
     ("MLB", "STRIKEOUTS"): "PITCHER_STRIKEOUTS",
     ("MLB", "PITCHER_K"): "PITCHER_STRIKEOUTS",
     ("MLB", "PITCHER_KS"): "PITCHER_STRIKEOUTS",
+    ("MLB", "1IP"): MLB_1IP_STAT_TYPE,
+    ("MLB", "1ST_INNING_PITCHES"): MLB_1IP_STAT_TYPE,
+    ("MLB", "1ST_INNING_PITCH_COUNT"): MLB_1IP_STAT_TYPE,
+    ("MLB", "FIRST_INNING_PITCHES"): MLB_1IP_STAT_TYPE,
+    ("MLB", "FIRST_INNING_PITCH_COUNT"): MLB_1IP_STAT_TYPE,
+    ("MLB", "FIRST_INNING_PITCHES_THROWN"): MLB_1IP_STAT_TYPE,
 }
 
 PickSourceType = Literal[
@@ -61,6 +75,11 @@ class RawPropEvidence(BaseModel):
     source_timestamps: dict[str, str]
     evidence_version: str = "PROP_EVIDENCE_V1"
     rate_provenance: str
+    # MLB 1IP-only (WOW-PATCH-2026-09-01-MLB-1IP-FULL-MODEL-GOVERNED). Carries
+    # starter/lineup state and event-tree inputs; see
+    # mlb_1ip_specialist.score_mlb_1ip for the required shape. Left None for
+    # every other stat type.
+    lineup_evidence: Optional[dict[str, Any]] = None
 
 
 class PickRequestRow(BaseModel):
@@ -403,6 +422,102 @@ def _telemetry(outcomes: list[dict[str, Any]]) -> dict[str, int]:
     }
 
 
+def _scout_research_envelope(run_id: str, candidate_id: str, worker_id: str, payload: dict[str, Any]) -> WorkerJobEnvelope:
+    spec = worker_spec(worker_id)
+    return WorkerJobEnvelope(
+        run_id=run_id,
+        job_id=f"{run_id}:{worker_id}",
+        candidate_id=candidate_id,
+        worker_id=worker_id,
+        worker_version=spec.worker_version,
+        as_of=datetime.now(timezone.utc).isoformat(),
+        input_hash=_compute_input_hash(payload),
+        payload=payload,
+    )
+
+
+def _run_mandatory_scout_research(
+    *, row_key: str, run_id: str, candidate: dict[str, Any]
+) -> tuple[bool, dict[str, Any]]:
+    """Mandatory Scout -> Research evidence barrier ahead of the 1IP
+    specialist, driven synchronously in-process against the exact worker
+    handlers the durable Agent Runtime coordinator dispatches through Celery
+    for full-slate/prop runs (agent_runtime.runner_scout_research). Reused
+    from the same primitive as the v17 team-event convergence work -- this
+    is not a second Scout/Research implementation.
+
+    Returns (ok, detail). detail["stages"] always lists what ran; when
+    ok is False, detail also carries "stage" and "blockers" for the caller
+    to report as a fail-closed outcome.
+    """
+    stages: list[dict[str, Any]] = []
+
+    def _run(worker_id: str, payload: dict[str, Any]):
+        env = _scout_research_envelope(run_id, row_key, worker_id, payload)
+        out = execute_envelope(env)
+        stages.append({"worker_id": worker_id, "status": out.status, "blockers": list(out.blockers)})
+        return out
+
+    scout_out = _run("wow.global-scout-coordinator", {"candidate": candidate, "scout_mode": "FOCUSED"})
+    if scout_out.status != "SUCCEEDED":
+        return False, {"stage": "wow.global-scout-coordinator", "blockers": scout_out.blockers, "stages": stages}
+
+    lane = scout_lane(candidate)
+    lane_worker = "wow.prop-scout-router" if lane == "PROP" else "wow.ml-event-scout-router"
+    lane_out = _run(lane_worker, {"candidate": candidate})
+    if lane_out.status != "SUCCEEDED":
+        return False, {"stage": lane_worker, "blockers": lane_out.blockers, "stages": stages}
+
+    reports: list[dict[str, Any]] = []
+    team_jobs_ok = True
+    for worker_id in RESEARCH_WORKERS:
+        out = _run(worker_id, {"candidate": candidate, "evidence": candidate.get("evidence")})
+        team_jobs_ok = team_jobs_ok and out.status == "SUCCEEDED"
+        reports.append(
+            out.output if out.status == "SUCCEEDED" else {"research_status": "DATA_UNOBTAINABLE", "worker_id": worker_id}
+        )
+
+    reconciler_out = _run(
+        RESEARCH_RECONCILER,
+        {
+            "research_reports": reports,
+            "team_jobs_ok": team_jobs_ok,
+            "evidence_present": isinstance(candidate.get("evidence"), dict),
+            "event_start_present": bool(candidate.get("event_start_utc")),
+        },
+    )
+    if reconciler_out.status != "SUCCEEDED":
+        return False, {"stage": RESEARCH_RECONCILER, "blockers": reconciler_out.blockers, "stages": stages}
+
+    return True, {"stages": stages}
+
+
+def _score_mlb_1ip_row(
+    row: "PickRequestRow",
+    row_key: str,
+    *,
+    market_api: Any,
+    request_id: Optional[str],
+) -> dict[str, Any]:
+    """Canonical MLB 1IP path after specialist/capability/artifact preflight.
+
+    Acquisition, mandatory Scout -> Research, controlling-specialist scoring,
+    and provisional final-refresh queuing are delegated to the dedicated 1IP
+    ingress helper. The preflight remains in score_pick_request so a genuinely
+    missing certified artifact still terminates as MODEL_UNAVAILABLE before
+    expensive acquisition begins.
+    """
+    return score_mlb_1ip_ingress(
+        row=row,
+        row_key=row_key,
+        market_api=market_api,
+        request_id=request_id,
+        run_research=_run_mandatory_scout_research,
+        terminal=_terminal,
+        reduce_terminal=reduce_prop_terminal,
+    )
+
+
 def install_pick_request_routes(
     app: Any,
     *,
@@ -504,6 +619,10 @@ def install_pick_request_routes(
                         acquisition=route_blocked_acquisition,
                     )
                 )
+                continue
+
+            if canonical_stat == MLB_1IP_STAT_TYPE:
+                outcomes.append(_score_mlb_1ip_row(row, row_key, market_api=market_api, request_id=batch.request_id))
                 continue
 
             acquisition: dict[str, Any]

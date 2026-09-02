@@ -92,3 +92,27 @@ def test_rejection_without_model_run_fails_closed_to_model_unavailable():
     assert result.terminal_label == "MODEL_UNAVAILABLE"
     assert result.pick_rejected is False
     assert "REJECTION_WITHOUT_MODEL_EVALUATION" in result.blockers
+
+
+def test_stale_starter_slate_purge_remains_row_rejection_not_model_unavailable():
+    result = reduce_prop_terminal(
+        proposed_label="SLATE_PURGE",
+        blockers=["SLATE_PURGE"],
+        model_evaluated=False,
+    )
+    assert result.terminal_label == "SLATE_PURGE"
+    assert result.verdict_class == "ROW_INVALIDATED"
+    assert result.pick_rejected is True
+    assert result.infrastructure_blocked is False
+
+
+def test_exhausted_1ip_data_quality_remains_row_rejection_not_model_unavailable():
+    result = reduce_prop_terminal(
+        proposed_label="REJECT_DATA_QUALITY",
+        blockers=["REJECT_DATA_QUALITY"],
+        model_evaluated=False,
+    )
+    assert result.terminal_label == "REJECT_DATA_QUALITY"
+    assert result.verdict_class == "DATA_QUALITY_REJECTED"
+    assert result.pick_rejected is True
+    assert result.infrastructure_blocked is False

@@ -1,0 +1,57 @@
+name: v17-1ip-pr-verify
+
+on:
+  pull_request:
+    branches:
+      - claude/v17-phase-a-sync-70ry0p
+    paths:
+      - "artifacts/wow-engine/**"
+      - ".github/workflows/v17-1ip-pr-verify.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: artifacts/wow-engine
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: artifacts/wow-engine/requirements.txt
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install PyYAML openapi-spec-validator PyJWT
+      - name: Focused MLB 1IP tests
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m pytest -q tests/test_mlb_1ip_production_capability.py tests/test_mlb_1ip_ingress_runtime.py | tee /tmp/v17-1ip-focused.log
+      - name: Upload focused test log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v17-1ip-focused-test-log
+          path: /tmp/v17-1ip-focused.log
+          if-no-files-found: warn
+      - name: Full WOW engine regression suite
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m pytest -q | tee /tmp/v17-1ip-full.log
+      - name: Upload full test log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v17-1ip-full-test-log
+          path: /tmp/v17-1ip-full.log
+          if-no-files-found: warn

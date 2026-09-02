@@ -81,6 +81,14 @@ TRUE_MODEL_REJECTION_LABELS = {
     "REJECT_CALIBRATED_LOWER_BOUND",
 }
 
+# Row-level invalidations/rejections that intentionally occur before a fitted
+# model evaluation. They are not capability failures and must not collapse to
+# MODEL_UNAVAILABLE merely because model_evaluated=False.
+PREMODEL_ROW_REJECTION_LABELS = {
+    "SLATE_PURGE",
+    "REJECT_DATA_QUALITY",
+}
+
 
 def _normalized(blockers: Iterable[str]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(str(b).strip().upper() for b in blockers if str(b).strip()))
@@ -101,8 +109,11 @@ def reduce_prop_terminal(
       2. specialist/model capability missing -> MODEL_UNAVAILABLE
       3. mandatory evidence/hydration missing before model evaluation ->
          MODEL_UNAVAILABLE with ACQUISITION_BLOCKED verdict metadata
-      4. a genuine model rejection survives downstream market/money blockers
-      5. market/money identity failures preserve a completed model-supported
+      4. explicit row-local premodel invalidations (for example stale-starter
+         SLATE_PURGE or exhausted REJECT_DATA_QUALITY) remain rejected rows
+         rather than being relabeled MODEL_UNAVAILABLE
+      5. a genuine model rejection survives downstream market/money blockers
+      6. market/money identity failures preserve a completed model-supported
          terminal label and mark only the market lane blocked.
     """
     bs = _normalized(blockers)
@@ -136,6 +147,18 @@ def reduce_prop_terminal(
             model_evaluated=False,
             pick_rejected=False,
             infrastructure_blocked=True,
+            blockers=bs,
+        )
+
+    if label in PREMODEL_ROW_REJECTION_LABELS:
+        return PropTerminalDecision(
+            terminal_label=label,
+            verdict_class=(
+                "ROW_INVALIDATED" if label == "SLATE_PURGE" else "DATA_QUALITY_REJECTED"
+            ),
+            model_evaluated=False,
+            pick_rejected=True,
+            infrastructure_blocked=False,
             blockers=bs,
         )
 
