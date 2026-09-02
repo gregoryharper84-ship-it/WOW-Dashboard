@@ -27,10 +27,14 @@ async def run_refresh_loop(
 ) -> None:
     """Run governed MLB 1IP refresh passes until the task is cancelled."""
     interval = max(60, int(interval_seconds))
+    logger.warning(
+        "WOW_MLB_1IP_FINAL_REFRESH status=STARTED interval_seconds=%s probability_publishable=false can_execute=false",
+        interval,
+    )
     while True:
         try:
             result = await asyncio.to_thread(run_once, client=db_client_fn())
-            logger.info(
+            logger.warning(
                 "WOW_MLB_1IP_FINAL_REFRESH status=PASS seen=%s waiting=%s rerun_completed=%s purged=%s expired=%s failed=%s probability_publishable=false can_execute=false",
                 result.get("seen", 0),
                 result.get("waiting", 0),
