@@ -53,12 +53,16 @@ def test_no_superior_replacement_shrinks_card_instead_of_using_filler():
     manaea_b = _leg("manaea-b", player="Sean Manaea", prob=0.58)
     strong_a = _leg("strong-a", player="A", prob=0.67, game="game-2")
     strong_b = _leg("strong-b", player="B", prob=0.66, game="game-3")
+    # Card B's companion legs are deliberately independent; this fixture is
+    # testing only the Manaea common hinge rather than three duplicated theses.
+    strong_c = _leg("strong-c", player="C", prob=0.68, game="game-4")
+    strong_d = _leg("strong-d", player="D", prob=0.65, game="game-5")
     weak_filler = _leg("filler", player="Filler", prob=0.54, game="game-9")
 
     result = optimize_portfolio(
         [
             {"card_id": "card-a", "legs": [manaea_a, strong_a, strong_b]},
-            {"card_id": "card-b", "legs": [manaea_b, strong_a.copy(), strong_b.copy()]},
+            {"card_id": "card-b", "legs": [manaea_b, strong_c, strong_d]},
         ],
         alternatives=[weak_filler],
     )
