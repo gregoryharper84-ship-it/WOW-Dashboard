@@ -18,6 +18,7 @@ from fastapi import Depends, Header, HTTPException
 import api_prod_market_acceptance as base
 import calibration_publication_api as lane_patch
 from live_probability_runtime import install_live_probability_routes
+from mlb_1ip_refresh_scheduler import run_refresh_loop as run_mlb_1ip_refresh_loop
 from ncaaf_cfbd_client import CFBDClient, CFBDUnavailable
 from ncaaf_cfbd_hydrator import hydrate_cfbd_season, persist_source_snapshots
 from ncaaf_closing_capture import run_from_environment
@@ -30,6 +31,7 @@ from prop_live_model_acceptance import run_prop_model_live_self_acceptance
 app = base.app
 _auth = Depends(base.market_api.prod._require_action_api_key)
 _logger = logging.getLogger("wow.ncaaf.readiness")
+_mlb_1ip_refresh_logger = logging.getLogger("wow.mlb.1ip.final_refresh")
 _background_tasks: set[asyncio.Task] = set()
 _original_market_score_prop = base.market_api.score_prop
 
@@ -241,6 +243,26 @@ async def schedule_prop_model_live_self_acceptance():
         return
     task = asyncio.create_task(
         run_prop_model_live_self_acceptance(base.market_api, _logger)
+    )
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+
+
+@app.on_event("startup")
+async def schedule_mlb_1ip_final_refresh():
+    """Run final-refresh passes in-process when explicitly enabled."""
+    if os.getenv("WOW_MLB_1IP_FINAL_REFRESH_ENABLED", "0") != "1":
+        return
+    try:
+        interval_seconds = int(os.getenv("WOW_MLB_1IP_FINAL_REFRESH_INTERVAL_SECONDS", "300"))
+    except ValueError:
+        interval_seconds = 300
+    task = asyncio.create_task(
+        run_mlb_1ip_refresh_loop(
+            db_client_fn=_db_client,
+            logger=_mlb_1ip_refresh_logger,
+            interval_seconds=interval_seconds,
+        )
     )
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)
