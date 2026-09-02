@@ -94,6 +94,30 @@ def test_rejection_without_model_run_fails_closed_to_model_unavailable():
     assert "REJECTION_WITHOUT_MODEL_EVALUATION" in result.blockers
 
 
+def test_certified_line_ood_is_model_contract_rejection_before_probability_scoring():
+    result = reduce_prop_terminal(
+        proposed_label="REJECT_OOD",
+        blockers=["MLB_1IP_LINE_OUTSIDE_CERTIFIED_SUPPORT"],
+        model_evaluated=False,
+    )
+    assert result.terminal_label == "REJECT_OOD"
+    assert result.verdict_class == "MODEL_CONTRACT_REJECTED"
+    assert result.model_evaluated is False
+    assert result.pick_rejected is True
+    assert result.infrastructure_blocked is False
+
+
+def test_generic_ood_without_model_run_still_fails_closed():
+    result = reduce_prop_terminal(
+        proposed_label="REJECT_OOD",
+        blockers=["SOME_OTHER_OOD_REASON"],
+        model_evaluated=False,
+    )
+    assert result.terminal_label == "MODEL_UNAVAILABLE"
+    assert result.verdict_class == "CAPABILITY_BLOCKED"
+    assert result.pick_rejected is False
+
+
 def test_stale_starter_slate_purge_remains_row_rejection_not_model_unavailable():
     result = reduce_prop_terminal(
         proposed_label="SLATE_PURGE",
