@@ -27,6 +27,7 @@ paths = {getattr(r, "path", "") for r in api.app.router.routes}
 print(json.dumps({
     "active": api.V17_ACTIVE,
     "team": "/score-team-event" in paths,
+    "daily": "/v17/daily-snapshot-run" in paths,
     "host": "/v17/host-contract" in paths,
     "record": "/record-recommendations" in paths,
     "can_execute": False,
@@ -46,6 +47,7 @@ print(json.dumps({
     assert payload == {
         "active": True,
         "team": True,
+        "daily": True,
         "host": True,
         "record": True,
         "can_execute": False,
@@ -57,7 +59,7 @@ def test_v17_disabled_preserves_compatibility_surface_without_new_host_route():
 import json
 import api_ncaaf_acceptance as api
 paths = {getattr(r, "path", "") for r in api.app.router.routes}
-print(json.dumps({"active": api.V17_ACTIVE, "team": "/score-team-event" in paths, "host": "/v17/host-contract" in paths}))
+print(json.dumps({"active": api.V17_ACTIVE, "team": "/score-team-event" in paths, "daily": "/v17/daily-snapshot-run" in paths, "host": "/v17/host-contract" in paths}))
 '''
     env = dict(os.environ)
     env["WOW_V17_ACTIVE"] = "0"
@@ -70,4 +72,4 @@ print(json.dumps({"active": api.V17_ACTIVE, "team": "/score-team-event" in paths
         check=True,
     )
     payload = json.loads(result.stdout.strip().splitlines()[-1])
-    assert payload == {"active": False, "team": False, "host": False}
+    assert payload == {"active": False, "team": False, "daily": False, "host": False}

@@ -49,6 +49,25 @@ paths:
         '401': {description: Authentication failed}
         '409': {description: Governed lane/model capability held}
         '422': {description: Candidate/evidence/model publication contract failed}
+  /v17/daily-snapshot-run:
+    post:
+      operationId: runWowV17DailySnapshot
+      x-openai-isConsequential: false
+      description: >-
+        Canonical bounded Daily runner. The backend selects only governed,
+        still-pregame snapshots, scores capped prop and moneyline rows through
+        existing V17 ingress, and always returns one terminal receipt. Call
+        this first for a V17 Daily request; never schedule row-by-row web
+        discovery before it.
+      security: [{actionBearer: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/DailySnapshotRequest'}
+      responses:
+        '200': {description: Terminal bounded Daily receipt, including held rows}
+        '401': {description: Authentication failed}
   /score-pick-request:
     post:
       operationId: scoreWowV17PickRequest
@@ -131,6 +150,19 @@ components:
         source_snapshot_id: {type: string}
         seed: {type: integer, default: 0}
         evidence: {type: [object, 'null'], additionalProperties: true}
+    DailySnapshotRequest:
+      type: object
+      additionalProperties: false
+      required: [requested_slate_date, requested_timezone]
+      properties:
+        requested_slate_date: {type: string, format: date}
+        requested_timezone: {type: string}
+        lanes:
+          type: array
+          items: {type: string, enum: [PROPS, MONEYLINE]}
+          default: [PROPS, MONEYLINE]
+        max_props: {type: integer, minimum: 0, maximum: 12, default: 6}
+        max_team_events: {type: integer, minimum: 0, maximum: 12, default: 6}
     PickRequestBatch:
       type: object
       additionalProperties: false
