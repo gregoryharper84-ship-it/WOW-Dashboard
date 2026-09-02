@@ -1,9 +1,10 @@
 """Supabase-backed MLB 1IP final-refresh job.
 
 Intended for a Render cron only after merge/review. It refreshes official MLB
-evidence, performs the same 1IP specialist rerun when the official lineup is
-confirmed, and persists queue state. Provider/runtime failures remain refresh
-failures and are never relabeled MODEL_UNAVAILABLE. can_execute remains false.
+evidence, reruns the same certified empirical 1IP specialist when the official
+lineup is confirmed, and persists queue state. Provider/runtime failures remain
+refresh failures and are never relabeled MODEL_UNAVAILABLE. can_execute remains
+false.
 """
 from __future__ import annotations
 
@@ -13,21 +14,45 @@ from typing import Any, Callable
 
 from supabase import create_client
 
+from mlb_1ip_empirical_specialist import score_mlb_1ip_empirical
 from mlb_1ip_final_refresh import refresh_queue_row
-from mlb_1ip_specialist import score_mlb_1ip
 
 CAN_EXECUTE = False
 REFRESH_DELAY_SECONDS = 300
+STAT_TYPE = "1ST_INNING_PITCHES_THROWN"
+FEATURE_SCHEMA_VERSION = "PROP_FEATURES_V1"
 
 
-def _rerun(row: dict[str, Any], evidence: dict[str, Any]) -> dict[str, Any]:
+def _resolve_artifact(client: Any) -> dict[str, Any]:
+    """Resolve the exact certified 1IP artifact through the governed RPC."""
+    response = client.rpc(
+        "wow_prop_certified_model_artifact",
+        {
+            "p_sport": "MLB",
+            "p_stat_type": STAT_TYPE,
+            "p_feature_schema_version": FEATURE_SCHEMA_VERSION,
+        },
+    ).execute()
+    payload = response.data
+    if not isinstance(payload, dict):
+        raise RuntimeError("PROP_MODEL_REGISTRY_INVALID_RESPONSE")
+    if payload.get("ok") is not True or payload.get("code") != "PROP_CERTIFIED_MODEL_ARTIFACT_READY":
+        raise RuntimeError(str(payload.get("code") or "PROP_CERTIFIED_MODEL_ARTIFACT_NOT_FOUND"))
+    return payload
+
+
+def _rerun(
+    row: dict[str, Any],
+    evidence: dict[str, Any],
+    artifact_record: dict[str, Any],
+) -> dict[str, Any]:
+    """Pure rerun helper: caller supplies the already-resolved artifact."""
     money_lane_status = str(row.get("money_lane_status") or "PAYOUT_UNRESOLVED").upper()
-    return score_mlb_1ip(
+    return score_mlb_1ip_empirical(
+        artifact_record=artifact_record,
         starter_status=evidence.get("starter_status", ""),
         official_lineup_status=evidence.get("official_lineup_status", ""),
         projected_top_four=evidence.get("projected_top_four"),
-        pitcher_bf_distribution=evidence.get("pitcher_bf_distribution") or {},
-        baseline_pitches_per_batter=evidence.get("baseline_pitches_per_batter") or {},
         line_value=float(row["line"]),
         side=str(row["direction"]),
         failure_path_prior=evidence.get("failure_path_prior"),
@@ -54,6 +79,18 @@ def run_once(*, client: Any | None = None, now: datetime | None = None, hydrator
     rows = list(response.data or [])
     counters = {"seen": len(rows), "waiting": 0, "rerun_completed": 0, "purged": 0, "expired": 0, "failed": 0}
 
+    # Resolve once per batch so every row in the refresh pass is scored by the
+    # same immutable certified artifact. A registry failure is a refresh-layer
+    # failure, not evidence that an already-computed sporting probability was
+    # invalid or that unrelated lanes are unavailable.
+    artifact_record: dict[str, Any] | None = None
+    artifact_error: str | None = None
+    if rows:
+        try:
+            artifact_record = _resolve_artifact(client)
+        except Exception as exc:
+            artifact_error = f"REFRESH_ARTIFACT_RESOLUTION_ERROR:{type(exc).__name__}:{exc}"
+
     for row in rows:
         queue_id = row.get("queue_id")
         attempts = int(row.get("refresh_attempts") or 0) + 1
@@ -79,18 +116,26 @@ def run_once(*, client: Any | None = None, now: datetime | None = None, hydrator
                 })
                 counters["waiting"] += 1
             elif status == "READY_TO_RERUN":
-                evidence = result["refreshed_lineup_evidence"]
-                rerun = _rerun(row, evidence)
-                base_update.update({
-                    "status": "RERUN_COMPLETED",
-                    "next_refresh_at": None,
-                    "refreshed_evidence": evidence,
-                    "rerun_result": rerun,
-                    "rerun_completed_at": ts.isoformat(),
-                    "terminal_label": rerun.get("terminal_label"),
-                    "last_error_code": None,
-                })
-                counters["rerun_completed"] += 1
+                if artifact_record is None:
+                    base_update.update({
+                        "status": "FAILED",
+                        "next_refresh_at": None,
+                        "last_error_code": artifact_error or "REFRESH_ARTIFACT_RESOLUTION_ERROR",
+                    })
+                    counters["failed"] += 1
+                else:
+                    evidence = result["refreshed_lineup_evidence"]
+                    rerun = _rerun(row, evidence, artifact_record)
+                    base_update.update({
+                        "status": "RERUN_COMPLETED",
+                        "next_refresh_at": None,
+                        "refreshed_evidence": evidence,
+                        "rerun_result": rerun,
+                        "rerun_completed_at": ts.isoformat(),
+                        "terminal_label": rerun.get("terminal_label"),
+                        "last_error_code": None,
+                    })
+                    counters["rerun_completed"] += 1
             elif status == "SLATE_PURGE":
                 base_update.update({
                     "status": status,
@@ -110,8 +155,6 @@ def run_once(*, client: Any | None = None, now: datetime | None = None, hydrator
                 base_update.update({"status": "FAILED", "next_refresh_at": None, "last_error_code": status})
                 counters["failed"] += 1
         except Exception as exc:
-            # Infrastructure/acquisition failures are not probability-model
-            # availability claims. Keep the diagnostic at the refresh layer.
             base_update.update({
                 "status": "FAILED",
                 "next_refresh_at": None,

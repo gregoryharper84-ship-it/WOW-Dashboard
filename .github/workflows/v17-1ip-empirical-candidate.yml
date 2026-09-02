@@ -1,0 +1,46 @@
+name: v17-1ip-empirical-candidate
+
+on:
+  push:
+    branches:
+      - chatgpt/v17-1ip-artifact-research-20260901
+    paths:
+      - "artifacts/wow-engine/mlb_1ip_empirical_pmf.py"
+      - "artifacts/wow-engine/mlb_1ip_training_dataset.py"
+      - "artifacts/wow-engine/scripts/build_mlb_1ip_empirical_candidate_packet.py"
+      - ".github/workflows/v17-1ip-empirical-candidate.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-candidate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: artifacts/wow-engine
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: artifacts/wow-engine/requirements.txt
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Build lineage-bound SHADOW candidate
+        env:
+          PYTHONPATH: .
+          MLB_1IP_RESEARCH_OUT: /tmp/mlb-1ip-empirical-candidate
+        run: python scripts/build_mlb_1ip_empirical_candidate_packet.py
+      - name: Upload immutable candidate packet
+        uses: actions/upload-artifact@v4
+        with:
+          name: mlb-1ip-empirical-candidate-${{ github.sha }}
+          path: /tmp/mlb-1ip-empirical-candidate
+          if-no-files-found: error
+          retention-days: 30

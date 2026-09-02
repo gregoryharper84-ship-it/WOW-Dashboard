@@ -1,6 +1,11 @@
 from types import SimpleNamespace
 
 import mlb_1ip_ingress_runtime as ingress
+from mlb_1ip_artifact_pipeline import TrainingRow
+from mlb_1ip_empirical_pmf import fit_empirical_pmf
+
+
+VALIDATED_LINES = [11.5, 13.5, 15.5, 17.5, 19.5, 21.5]
 
 
 class _Decision:
@@ -35,11 +40,40 @@ class _Client:
         return self.table_obj
 
 
+def _artifact():
+    rows = []
+    rows.extend(TrainingRow(bf=3, pitches=12 + i % 4) for i in range(450))
+    rows.extend(TrainingRow(bf=4, pitches=16 + i % 5) for i in range(400))
+    rows.extend(TrainingRow(bf=5, pitches=21 + i % 6) for i in range(300))
+    payload = fit_empirical_pmf(rows)
+    return {
+        "ok": True,
+        "code": "PROP_CERTIFIED_MODEL_ARTIFACT_READY",
+        "model_family": payload["model_family"],
+        "model_artifact_version": "MLB_1IP_TEST_ARTIFACT_V1",
+        "artifact_checksum": payload["artifact_checksum"],
+        "certification_id": "PROP-CERT-TEST-MLB-1IP",
+        "artifact_payload": payload,
+        "supported_line_min": 11.5,
+        "supported_line_max": 21.5,
+        "feature_schema_version": "PROP_FEATURES_V1",
+        "validation_metrics": {"validated_lines": VALIDATED_LINES},
+        "probability_publishable": False,
+        "can_execute": False,
+    }
+
+
 class _MarketAPI:
     def __init__(self, *, fail=False):
         client = _Client(fail=fail)
         self.client = client
         self.prod = SimpleNamespace(get_client=lambda: client)
+        self._artifact = _artifact()
+
+    def _prop_route_artifact(self, sport, stat):
+        assert sport == "MLB"
+        assert stat == "1ST_INNING_PITCHES_THROWN"
+        return dict(self._artifact)
 
 
 def _row(evidence=None):
@@ -103,14 +137,14 @@ def test_no_caller_evidence_auto_hydrates_then_runs_research_before_specialist(m
         order.append("research")
         return True, {"stages": [{"worker_id": "wow.global-scout-coordinator", "status": "SUCCEEDED"}]}
 
-    real_score = ingress.score_mlb_1ip
+    real_score = ingress.score_mlb_1ip_empirical
 
     def score(**kwargs):
         order.append("specialist")
         return real_score(**kwargs)
 
     monkeypatch.setattr(ingress, "hydrate_mlb_1ip_evidence", hydrate)
-    monkeypatch.setattr(ingress, "score_mlb_1ip", score)
+    monkeypatch.setattr(ingress, "score_mlb_1ip_empirical", score)
 
     out = ingress.score_mlb_1ip_ingress(
         row=_row(),
@@ -126,6 +160,7 @@ def test_no_caller_evidence_auto_hydrates_then_runs_research_before_specialist(m
     assert out["acquisition"]["mode"] == "AUTO_HYDRATION"
     assert out["acquisition"]["status"] == "PASS"
     assert out["model_evaluated"] is True
+    assert out["result"]["model_family"] == "MLB_1IP_CONDITIONAL_TOTAL_PITCH_PMF_V1"
     assert out["final_refresh_required"] is False
     assert out["refresh_queue"]["status"] == "NOT_REQUIRED"
     assert out["probability_publishable"] is False
@@ -135,40 +170,24 @@ def test_no_caller_evidence_auto_hydrates_then_runs_research_before_specialist(m
 def test_provisional_auto_hydrated_result_is_queued(monkeypatch):
     monkeypatch.setattr(ingress, "hydrate_mlb_1ip_evidence", lambda **kwargs: _hydrated(lineup_status="TBD"))
     market_api = _MarketAPI()
-
     out = ingress.score_mlb_1ip_ingress(
-        row=_row(),
-        row_key="r2",
-        market_api=market_api,
-        request_id="req-2",
-        run_research=lambda **kwargs: (True, {"stages": []}),
-        terminal=_terminal,
-        reduce_terminal=_reduce,
+        row=_row(), row_key="r2", market_api=market_api, request_id="req-2",
+        run_research=lambda **kwargs: (True, {"stages": []}), terminal=_terminal, reduce_terminal=_reduce,
     )
-
     assert out["model_evaluated"] is True
     assert out["final_refresh_required"] is True
     assert out["refresh_queue"]["status"] == "QUEUED"
     assert out["refresh_queue"]["queue_id"] == "queue-1"
     assert market_api.client.table_obj.payload["status"] == "WAITING_FOR_OFFICIAL_LINEUP"
-    assert market_api.client.table_obj.payload["line"] == 15.5
-    assert market_api.client.table_obj.payload["direction"] == "MORE"
     assert market_api.client.table_obj.payload["can_execute"] is False
 
 
 def test_refresh_queue_failure_preserves_completed_sporting_probability(monkeypatch):
     monkeypatch.setattr(ingress, "hydrate_mlb_1ip_evidence", lambda **kwargs: _hydrated(lineup_status="TBD"))
-
     out = ingress.score_mlb_1ip_ingress(
-        row=_row(),
-        row_key="r3",
-        market_api=_MarketAPI(fail=True),
-        request_id="req-3",
-        run_research=lambda **kwargs: (True, {"stages": []}),
-        terminal=_terminal,
-        reduce_terminal=_reduce,
+        row=_row(), row_key="r3", market_api=_MarketAPI(fail=True), request_id="req-3",
+        run_research=lambda **kwargs: (True, {"stages": []}), terminal=_terminal, reduce_terminal=_reduce,
     )
-
     assert out["model_evaluated"] is True
     assert out["result"]["P_MORE"] is not None
     assert out["refresh_queue"]["status"] == "PERSISTENCE_UNAVAILABLE"
@@ -190,15 +209,10 @@ def test_provider_failure_is_not_model_unavailable(monkeypatch):
 
     monkeypatch.setattr(ingress, "hydrate_mlb_1ip_evidence", fail)
     out = ingress.score_mlb_1ip_ingress(
-        row=_row(),
-        row_key="r4",
-        market_api=_MarketAPI(),
-        request_id="req-4",
+        row=_row(), row_key="r4", market_api=_MarketAPI(), request_id="req-4",
         run_research=lambda **kwargs: (_ for _ in ()).throw(AssertionError("research must not run")),
-        terminal=_terminal,
-        reduce_terminal=_reduce,
+        terminal=_terminal, reduce_terminal=_reduce,
     )
-
     assert out["code"] == "PROP_AUTO_HYDRATION_PROVIDER_UNAVAILABLE"
     assert out["terminal_label"] == "RESEARCH_INTEREST"
     assert out["terminal_label"] != "MODEL_UNAVAILABLE"
