@@ -61,8 +61,8 @@ When asked for governance/health/version, distinguish:
 - LIVE_GPT_EDITOR_SYNC: product configuration is complete only after the live editor has saved and verified these instructions/actions.
 Do not collapse these independent states into MODEL_UNAVAILABLE or V17_NOT_READY.
 
-ACTION ORIGIN
-https://wow-governed-probability-engine.onrender.com
-Preferred prop schema: openapi.pick-request-action.yaml
-Core governed schema: openapi.custom-gpt.template.yaml
+ACTION INSTALLATION
+Canonical WOW V17 schema: v17/openapi.wow-betting-engine.v17.yaml
+Action origin: https://wow-governed-probability-engine.onrender.com
 Authentication: API key / Bearer using WOW_ACTION_API_KEY only.
+Do not substitute the older generic Action templates for final V17 editor synchronization.
