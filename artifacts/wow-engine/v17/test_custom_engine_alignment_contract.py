@@ -46,6 +46,16 @@ def test_only_shared_reducer_has_global_terminal_authority():
     assert c["team_event_contract"]["may_override_shared_blocker"] is False
 
 
+def test_wolfram_is_arithmetic_audit_not_probability_authority():
+    c = _contract()
+    shared = c["shared_core"]
+    backend = c["backend_contract"]
+    assert shared["wolfram_arithmetic_audit_is_not_a_probability_model"] is True
+    assert shared["wolfram_failure_blocks_only_affected_arithmetic_claims"] is True
+    assert backend["wolfram_arithmetic_audit_flag"] == "WOW_WOLFRAM_ARITHMETIC_AUDIT_ENABLED=1"
+    assert backend["wolfram_app_id_server_side_only"] is True
+
+
 def test_team_event_lane_requires_event_mutex_and_specialist():
     c = _contract()["team_event_contract"]
     assert c["host"] == "LLP_TEAM_BETTING_ENGINE"
