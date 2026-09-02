@@ -73,3 +73,30 @@ print(json.dumps({"active": api.V17_ACTIVE, "team": "/score-team-event" in paths
     )
     payload = json.loads(result.stdout.strip().splitlines()[-1])
     assert payload == {"active": False, "team": False, "daily": False, "host": False}
+
+
+def test_legacy_prospective_pythonpath_cannot_replace_production_governance():
+    """The retired prospective shim must never win module resolution again."""
+    code = r'''
+import json
+import api_ncaaf_acceptance as api
+
+governance = next(route for route in api.app.router.routes if getattr(route, "path", None) == "/governance")
+print(json.dumps({
+    "entrypoint": api.__file__,
+    "governance_module": governance.endpoint.__module__,
+}))
+'''
+    env = dict(os.environ)
+    env["PYTHONPATH"] = "prospective_entrypoint:."
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    payload = json.loads(result.stdout.strip().splitlines()[-1])
+    assert payload["entrypoint"].endswith("/api_ncaaf_acceptance.py")
+    assert payload["governance_module"] != "mlb_event_prospective_runtime"
