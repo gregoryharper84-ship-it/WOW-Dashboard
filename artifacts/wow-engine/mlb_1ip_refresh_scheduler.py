@@ -11,9 +11,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from typing import Any, Callable
 
 from mlb_1ip_final_refresh_job import run_once
+from mlb_1ip_live_self_acceptance import run_live_self_acceptance
 
 CAN_EXECUTE = False
 DEFAULT_INTERVAL_SECONDS = 300
@@ -31,6 +33,8 @@ async def run_refresh_loop(
         "WOW_MLB_1IP_FINAL_REFRESH status=STARTED interval_seconds=%s probability_publishable=false can_execute=false",
         interval,
     )
+    if os.getenv("WOW_MLB_1IP_LIVE_SELF_ACCEPTANCE", "0") == "1":
+        await run_live_self_acceptance(logger)
     while True:
         try:
             result = await asyncio.to_thread(run_once, client=db_client_fn())
