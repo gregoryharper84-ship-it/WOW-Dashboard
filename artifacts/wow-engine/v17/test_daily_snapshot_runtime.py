@@ -91,6 +91,45 @@ def test_moneyline_normal_return_that_is_still_a_hold_is_not_completed(monkeypat
     }
 
 
+def test_props_research_only_normal_return_is_not_completed(monkeypatch):
+    # score_prop is not always symmetric: the lane-separation variant
+    # (score_prop_lane_separated -> _raw_specialist_research,
+    # calibration_publication_api.py:292-297) returns normally -- no
+    # exception -- while explicitly marking the result unpublishable:
+    # probability_publishable=False, governed_publishable=False,
+    # research_only=True. This is the exact shape returned whenever
+    # WOW_CALIBRATION_PUBLICATION_LANE_SEPARATION=1 and publication is
+    # blocked but raw specialist research is still permitted. A normal
+    # return must not be treated as COMPLETED just because it didn't raise;
+    # only probability_publishable is True may mark it COMPLETED.
+    class ResearchOnlyMarket(Market):
+        @staticmethod
+        def score_prop(*_):
+            return {
+                "ok": True,
+                "probability_publishable": False,
+                "governed_publishable": False,
+                "research_only": True,
+                "research_model_output": {"raw_specialist_probability": 0.55},
+            }
+
+    monkeypatch.setattr(
+        "v17.daily_snapshot_runtime.score_team_event_request",
+        lambda *_args, **_kwargs: {"code": "FINAL_APPROVED", "terminal_label": "FINAL_APPROVED", "probability_publishable": True, "can_execute": False},
+    )
+    result = run_daily_snapshot(
+        DailySnapshotRequest(requested_slate_date="2026-09-02", requested_timezone="America/Chicago", lanes=["PROPS"]),
+        db=DB(), market_api=ResearchOnlyMarket(), event_api=Event(),
+    )
+    row = result["rows"][0]
+    assert row["row_status"] == "HELD"
+    assert all(outcome["status"] == "HELD" for outcome in row["result"]["outcomes"])
+    assert result["reconciliation"] == {
+        "rows_in": 1, "rows_completed": 0, "rows_held": 1,
+        "rows_rejected": 0, "rows_unclassified": 0, "balanced": True,
+    }
+
+
 def test_reconciliation_counts_mixed_completed_and_held_outcomes():
     from v17.daily_snapshot_runtime import _reconcile
 

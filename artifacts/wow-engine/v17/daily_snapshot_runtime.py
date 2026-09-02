@@ -171,7 +171,21 @@ def run_daily_snapshot(
                         market_api.ScorePropRequest(**{**identity, "direction": direction}),
                         "WOW_BETTING_ENGINE",
                     )
-                    outcomes.append({"direction": direction, "status": "COMPLETED", "payload": scored})
+                    # Not every score_prop implementation is symmetric (raise
+                    # on every non-publishable state, return normally only
+                    # when publishable). The lane-separation variant
+                    # (score_prop_lane_separated -> _raw_specialist_research,
+                    # calibration_publication_api.py:292-297 /
+                    # api_lane_separated.py) returns normally with
+                    # probability_publishable=False, governed_publishable=
+                    # False, research_only=True whenever publication is
+                    # blocked but raw specialist research is still
+                    # permitted. A normal return must therefore be
+                    # classified the same way as an exception: COMPLETED
+                    # only when the payload itself claims
+                    # probability_publishable is True.
+                    status = "COMPLETED" if scored.get("probability_publishable") is True else "HELD"
+                    outcomes.append({"direction": direction, "status": status, "payload": scored})
                 except HTTPException as exc:
                     outcomes.append({"direction": direction, "status": "HELD", "payload": _detail(exc)})
                 except Exception as exc:
