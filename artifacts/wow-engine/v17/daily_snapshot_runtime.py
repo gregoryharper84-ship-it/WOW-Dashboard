@@ -16,6 +16,7 @@ from zoneinfo import ZoneInfo
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
+from v17.prop_forward_cohort_route import install_prop_forward_cohort_route
 from v17.team_event_request_runtime import TeamEventRequest, score_team_event_request
 
 
@@ -248,6 +249,13 @@ def run_daily_snapshot(
 
 
 def install_daily_snapshot_route(app: FastAPI, *, auth_dependency: Any, db_client_fn: Any, market_api: Any, event_api: Any) -> None:
+    install_prop_forward_cohort_route(
+        app,
+        auth_dependency=auth_dependency,
+        db_client_fn=db_client_fn,
+        market_api=market_api,
+    )
+
     if any(getattr(route, "path", None) == "/v17/daily-snapshot-run" for route in app.router.routes):
         return
 
