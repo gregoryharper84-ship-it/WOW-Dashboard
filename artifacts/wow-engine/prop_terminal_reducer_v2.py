@@ -81,6 +81,15 @@ TRUE_MODEL_REJECTION_LABELS = {
     "REJECT_CALIBRATED_LOWER_BOUND",
 }
 
+# Model-contract OOD can be established before a numeric probability is scored.
+# This is deliberately narrow: only an exact certified-support rejection may
+# survive with model_evaluated=False. Other REJECT_OOD uses still require an
+# evaluated fitted model and fail closed otherwise.
+PREMODEL_MODEL_CONTRACT_REJECTION_BLOCKERS = {
+    "MLB_1IP_LINE_OUTSIDE_CERTIFIED_SUPPORT",
+    "LINE_OUTSIDE_CERTIFIED_SUPPORT",
+}
+
 # Row-level invalidations/rejections that intentionally occur before a fitted
 # model evaluation. They are not capability failures and must not collapse to
 # MODEL_UNAVAILABLE merely because model_evaluated=False.
@@ -112,8 +121,10 @@ def reduce_prop_terminal(
       4. explicit row-local premodel invalidations (for example stale-starter
          SLATE_PURGE or exhausted REJECT_DATA_QUALITY) remain rejected rows
          rather than being relabeled MODEL_UNAVAILABLE
-      5. a genuine model rejection survives downstream market/money blockers
-      6. market/money identity failures preserve a completed model-supported
+      5. exact certified-support OOD is a model-contract rejection even when no
+         numeric probability is produced
+      6. a genuine model rejection survives downstream market/money blockers
+      7. market/money identity failures preserve a completed model-supported
          terminal label and mark only the market lane blocked.
     """
     bs = _normalized(blockers)
@@ -162,6 +173,20 @@ def reduce_prop_terminal(
             blockers=bs,
         )
 
+    if (
+        label == "REJECT_OOD"
+        and not model_evaluated
+        and bset & PREMODEL_MODEL_CONTRACT_REJECTION_BLOCKERS
+    ):
+        return PropTerminalDecision(
+            terminal_label="REJECT_OOD",
+            verdict_class="MODEL_CONTRACT_REJECTED",
+            model_evaluated=False,
+            pick_rejected=True,
+            infrastructure_blocked=False,
+            blockers=bs,
+        )
+
     if label in TRUE_MODEL_REJECTION_LABELS:
         if not model_evaluated:
             return PropTerminalDecision(
@@ -192,7 +217,7 @@ def reduce_prop_terminal(
         )
 
     return PropTerminalDecision(
-        terminal_label=label,
+        terminal_label=label if model_evaluated else "MODEL_UNAVAILABLE" if label in TRUE_MODEL_REJECTION_LABELS else label,
         verdict_class="MODEL_SUPPORTED" if model_evaluated else "UNEVALUATED",
         model_evaluated=model_evaluated,
         pick_rejected=False,
