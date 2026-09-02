@@ -18,6 +18,9 @@ from agent_runtime.evidence import seal_evidence
 from agent_runtime.gates import mix_failure_regimes, validate_calibrated, final_refresh
 from agent_runtime.reducer import RequiredJobResult, reduce_candidate
 from agent_runtime.model_bridge import score_mlb_event_bridge, HELD_CODE, PUBLISHED_CODE
+from wolfram_arithmetic_auditor import PASS as WOLFRAM_PASS
+from wolfram_arithmetic_auditor import audit_claims as audit_wolfram_claims
+from wolfram_arithmetic_auditor import audit_enabled as wolfram_audit_enabled
 
 TRANSIENT_CODES = {"TRANSPORT_429", "TRANSPORT_5XX", "DATABASE_TEMPORARY", "QUEUE_TEMPORARY"}
 
@@ -176,7 +179,27 @@ def _run_market(env: WorkerEnvelope) -> WorkerOutput:
     blockers = [code for code, ok in checks.items() if not ok]
     if blockers:
         return _blocked(env, *blockers, output={"market_gate": "HOLD", "blocks_model_probability": False})
-    return _succeeded(env, "MARKET_VERIFIED_HOLD", {"market_gate": "PASS", "blocks_model_probability": False})
+    arithmetic_audit = audit_wolfram_claims(
+        env.payload.get("arithmetic_claims") or [],
+        required=wolfram_audit_enabled(),
+    )
+    verdict = str(arithmetic_audit.get("verdict") or "WOLFRAM_OUTPUT_INVALID")
+    if wolfram_audit_enabled() and verdict != WOLFRAM_PASS:
+        # This is a downstream objective hold, not a controlling-model failure.
+        # Keep the job successful at the model-qualified ceiling and carry the
+        # typed money-lane failure in the immutable worker output.
+        return _succeeded(env, "MODEL_QUALIFIED_HOLD", {
+            "market_gate": "HOLD",
+            "money_lane_status": verdict,
+            "wolfram_arithmetic_audit": arithmetic_audit,
+            "blocks_model_probability": False,
+        })
+    return _succeeded(env, "MARKET_VERIFIED_HOLD", {
+        "market_gate": "PASS",
+        "money_lane_status": "ARITHMETIC_VERIFIED" if verdict == WOLFRAM_PASS else "NOT_EVALUATED",
+        "wolfram_arithmetic_audit": arithmetic_audit,
+        "blocks_model_probability": False,
+    })
 
 
 def _run_structure(env: WorkerEnvelope) -> WorkerOutput:
