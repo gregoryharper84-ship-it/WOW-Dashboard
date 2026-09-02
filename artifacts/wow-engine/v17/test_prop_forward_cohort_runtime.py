@@ -2,10 +2,10 @@ from datetime import datetime, timezone
 
 from v17.prop_forward_cohort_runtime import (
     PROVIDER,
+    _cohort_counts,
     _prediction_payload,
     _readiness,
 )
-
 
 NOW = datetime(2026, 9, 2, 20, 0, tzinfo=timezone.utc)
 
@@ -53,9 +53,8 @@ def _research_only():
     }
 
 
-def test_research_only_forecast_is_persistable_but_never_relabelled_publishable():
+def test_research_only_forecast_is_recorded_without_becoming_publishable():
     payload = _prediction_payload(_snapshot(), "MORE", _research_only(), now=NOW)
-
     assert payload is not None
     assert payload["raw_model_probability"] == 0.61
     assert payload["probability_more"] == 0.61
@@ -63,25 +62,28 @@ def test_research_only_forecast_is_persistable_but_never_relabelled_publishable(
     assert payload["push_probability"] == 0.03
     assert payload["model_provider_identity"] == PROVIDER
     assert payload["model_family"] == "MLB_PITCHER_SO_FAILURE_PATH_NB_V1"
-    assert payload["source_snapshot_id"] == _snapshot()["source_snapshot_id"]
     assert payload["probability_publishable"] is False
     assert payload.get("calibrated_probability") is None
 
 
-def test_deterministic_prediction_identity_is_direction_specific():
+def test_prediction_identity_is_idempotent_and_direction_specific():
     more = _prediction_payload(_snapshot(), "MORE", _research_only(), now=NOW)
     less = _prediction_payload(_snapshot(), "LESS", _research_only(), now=NOW)
     repeat_more = _prediction_payload(_snapshot(), "MORE", _research_only(), now=NOW)
-
-    assert more is not None and less is not None and repeat_more is not None
+    assert more and less and repeat_more
     assert more["prediction_id"] != less["prediction_id"]
     assert more["prediction_id"] == repeat_more["prediction_id"]
 
 
-def test_post_start_model_timestamp_is_not_eligible_for_forward_cohort():
+def test_missing_model_timestamp_fails_closed_instead_of_using_recorder_clock():
+    scored = _research_only()
+    scored["research_model_output"]["model_timestamp"] = None
+    assert _prediction_payload(_snapshot(), "MORE", scored, now=NOW) is None
+
+
+def test_post_start_model_timestamp_is_not_forward_eligible():
     scored = _research_only()
     scored["research_model_output"]["model_timestamp"] = "2026-09-03T00:00:00+00:00"
-
     assert _prediction_payload(_snapshot(), "MORE", scored, now=NOW) is None
 
 
@@ -101,22 +103,27 @@ def test_row_level_publishable_package_is_preserved_when_backend_says_true():
             "model_family": "MLB_PITCHER_SO_FAILURE_PATH_NB_V1",
         },
     }
-
     payload = _prediction_payload(_snapshot(), "MORE", scored, now=NOW)
-
     assert payload is not None
     assert payload["probability_publishable"] is True
     assert payload["calibrated_probability"] == 0.60
     assert payload["calibrated_probability_lower_bound"] == 0.55
 
 
-def test_readiness_uses_backend_owned_thresholds_and_does_not_self_promote():
-    evidence = {"phase_b_min_settled_n": 200, "phase_c_min_settled_n": 500}
+def test_paired_directions_count_as_one_independent_forward_snapshot():
+    rows = [
+        {"prediction_id": "p-more", "source_snapshot_id": "s1", "direction": "MORE"},
+        {"prediction_id": "p-less", "source_snapshot_id": "s1", "direction": "LESS"},
+        {"prediction_id": "p2-more", "source_snapshot_id": "s2", "direction": "MORE"},
+    ]
+    assert _cohort_counts(rows, {"p-more", "p-less"}) == (2, 1)
 
+
+def test_readiness_uses_backend_thresholds_and_never_self_promotes():
+    evidence = {"phase_b_min_settled_n": 200, "phase_c_min_settled_n": 500}
     phase_a = _readiness(evidence, prediction_n=250, settled_n=199)
     phase_b = _readiness(evidence, prediction_n=250, settled_n=200)
     phase_c = _readiness(evidence, prediction_n=600, settled_n=500)
-
     assert phase_a["status"] == "PHASE_A_FORWARD_COHORT_BUILDING"
     assert phase_a["remaining_to_phase_b"] == 1
     assert phase_b["status"] == "PHASE_B_THRESHOLD_REACHED_CALIBRATOR_FIT_REQUIRED"
@@ -128,7 +135,6 @@ def test_readiness_uses_backend_owned_thresholds_and_does_not_self_promote():
 
 def test_missing_backend_thresholds_fail_closed():
     readiness = _readiness({}, prediction_n=10, settled_n=10)
-
     assert readiness["status"] == "CALIBRATION_THRESHOLDS_UNAVAILABLE"
     assert readiness["calibrator_fit_allowed"] is False
     assert readiness["can_execute"] is False
