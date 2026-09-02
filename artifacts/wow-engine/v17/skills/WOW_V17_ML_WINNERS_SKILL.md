@@ -13,14 +13,16 @@ Find the strongest governed team/event winner probabilities across all supported
 ## Workflow
 1. Discover today's eligible team/event slate across supported sports.
 2. Resolve exact event identity, participants, scheduled time, and current status.
-3. Hydrate sport-specific material context: starters/lineups/rosters, injuries/status, rest/travel, venue/weather where applicable, matchup inputs, and other required model features.
+3. Invoke `WOW_V17_RESEARCH_MARKET_CONTEXT_SKILL.md` for material candidates to refresh starters/lineups/rosters, injuries/status/team changes, recent + longer-run historical context, matchup inputs, rest/travel, venue/weather where applicable, and current exact/adjacent market evidence with source/as-of provenance.
 4. Route each event to exactly one certified sport-specific controlling team/event model through LLP_TEAM_BETTING_ENGINE.
-5. Require the route's complete mutually exclusive outcome space and valid governed probability package.
-6. Preserve sporting probability even when downstream market price is missing if the backend contract preserves it. Missing odds may block value/edge work, not erase a completed event probability.
-7. Never use sportsbook implied probability, consensus projection, ranking, record, or narrative as a replacement for the governed team/event model.
-8. Run favorite failure-path and underdog/upset evaluation required by the team/event contract.
-9. Rank official winner candidates by calibrated lower bound, then calibrated probability as a tie-breaker unless a stricter route-specific rule controls.
-10. Keep unsupported sports/events fail-closed with exact typed status.
+5. Where refreshed evidence is a certified fitted input, ensure it reaches the governed model path. Otherwise keep it evidence-only; do not invent a numeric adjustment.
+6. Require the route's complete mutually exclusive outcome space and valid governed probability package.
+7. Preserve sporting probability even when downstream market price is missing if the backend contract preserves it. Missing odds may block value/edge work, not erase a completed event probability.
+8. Never use sportsbook implied probability, market consensus, external projection, ranking, record, or narrative as a replacement for the governed team/event model.
+9. Run favorite failure-path and underdog/upset evaluation required by the team/event contract.
+10. Classify market context as `EXACT_LINE`, `ADJACENT_LINE`, or `NO_MARKET`; when exact-line pricing exists, report no-vig/market disagreement and opener/current movement without redefining model probability.
+11. Rank official winner candidates by calibrated lower bound, then calibrated probability as a tie-breaker unless a stricter route-specific rule controls.
+12. Keep unsupported sports/events fail-closed with exact typed status.
 
 ## Required output
 ### Best ML Winners
@@ -37,7 +39,8 @@ For each official row show:
 - controlling specialist/model
 - primary supporting factors
 - material risks/failure paths
-- market availability/context if known
+- market-evidence type and exact-line/no-vig or movement context when available
+- evidence as-of/provenance summary when material
 
 ### Best Underdogs/Upsets
 Use a separate table. A market underdog is not automatically a model upset pick. Include only sides whose governed sporting probability supports the upset thesis.
@@ -46,5 +49,6 @@ Use a separate table. A market underdog is not automatically a model upset pick.
 - Only rows with the required certified model output belong in official leaderboards.
 - `MODEL_UNAVAILABLE`, model completion/scorer failures, invalid outputs, or identity failures remain diagnostic and unranked.
 - One side or no pick per governed event decision.
+- Research/market context never substitutes for the fitted model.
 - Never fabricate a probability because the user asked for a minimum number of picks.
 - `can_execute=false` always.
