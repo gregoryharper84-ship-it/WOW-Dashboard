@@ -2,8 +2,9 @@
 
 P0 begins with the one currently certified fitted prop route: MLB pitcher
 strikeouts. The provider acquires official MLB player identity, regular-season
-pitching game logs, and probable-pitcher schedule context, then returns the raw
-PROP_EVIDENCE_V1 fields expected by the canonical pick-request runtime.
+pitching game logs, probable-pitcher schedule context, and -- when the official
+batting order is available -- opponent hitter strikeout evidence against the
+starter's throwing hand.
 
 This module does not persist evidence, calculate probability, or authorize any
 execution. The canonical pick-request runtime validates, fingerprints, freezes,
@@ -25,6 +26,9 @@ AUTO_HYDRATION_EVIDENCE_VERSION = "PROP_EVIDENCE_V1"
 HTTP_TIMEOUT_SECONDS = 8.0
 HTTP_ATTEMPTS = 2
 MIN_STARTS = 10
+MIN_LINEUP_HITTERS_FOR_OPP_CONTEXT = 6
+MIN_LINEUP_SPLIT_PA = 100
+MIN_HITTER_SPLIT_PA = 10
 
 
 class PropAutoHydrationError(RuntimeError):
@@ -212,7 +216,9 @@ def _schedule_context(
         "official_game_date": game.get("gameDate"),
         "side": side.upper(),
         "team": team.get("abbreviation") or team.get("name") or "UNKNOWN",
+        "team_id": _int(team.get("id")),
         "opponent": opponent.get("abbreviation") or opponent.get("name") or "UNKNOWN",
+        "opponent_team_id": _int(opponent.get("id")),
         "venue": venue.get("name") or "UNKNOWN",
         "schedule_status": status.get("detailedState") or status.get("abstractGameState") or "UNKNOWN",
         "starter_status": "STARTER_PROBABLE_OFFICIAL_SCHEDULE",
@@ -265,6 +271,7 @@ def _game_log(
                     "opponent": opponent.get("abbreviation") or opponent.get("name") or "UNKNOWN",
                     "ip": str(ip),
                     "outs": _outs_from_ip(ip),
+                    "bf": _int(stat.get("battersFaced")),
                     "so": strikeouts,
                     "bb": _int(stat.get("baseOnBalls")),
                     "er": _int(stat.get("earnedRuns")),
@@ -281,6 +288,146 @@ def _game_log(
             detail={"starts_found": len(recent), "required": MIN_STARTS},
         )
     return [float(row["so"]) for row in recent], recent
+
+
+def _pitcher_throwing_hand(player_id: int, *, http_get: Callable[..., Any]) -> str | None:
+    payload = _request_json(
+        f"{MLB_STATS_API_BASE}/people/{player_id}",
+        params={},
+        http_get=http_get,
+    )
+    people = payload.get("people") if isinstance(payload.get("people"), list) else []
+    if not people or not isinstance(people[0], dict):
+        return None
+    hand = people[0].get("pitchHand") if isinstance(people[0].get("pitchHand"), dict) else {}
+    code = str(hand.get("code") or "").upper().strip()
+    return code if code in {"L", "R"} else None
+
+
+def _official_opponent_lineup(
+    game_pk: int,
+    *,
+    pitcher_side: str,
+    http_get: Callable[..., Any],
+) -> list[int]:
+    payload = _request_json(
+        f"{MLB_STATS_API_BASE}/game/{game_pk}/boxscore",
+        params={},
+        http_get=http_get,
+    )
+    teams = payload.get("teams") if isinstance(payload.get("teams"), dict) else {}
+    opponent_side = "away" if pitcher_side.upper() == "HOME" else "home"
+    team = teams.get(opponent_side) if isinstance(teams.get(opponent_side), dict) else {}
+    batting_order = team.get("battingOrder") if isinstance(team.get("battingOrder"), list) else []
+    ids = [_int(player_id) for player_id in batting_order if _int(player_id) > 0]
+    return ids[:9] if len(ids) >= 9 else []
+
+
+def _hitter_hand_split_k_counts(
+    player_id: int,
+    *,
+    season: int,
+    pitcher_hand: str,
+    http_get: Callable[..., Any],
+) -> tuple[int, int] | None:
+    # MLB StatsAPI situation codes are from the hitter's perspective: vr =
+    # versus right-handed pitching, vl = versus left-handed pitching.
+    sit_code = "vr" if pitcher_hand == "R" else "vl"
+    payload = _request_json(
+        f"{MLB_STATS_API_BASE}/people/{player_id}/stats",
+        params={
+            "stats": "season",
+            "group": "hitting",
+            "season": str(season),
+            "gameType": "R",
+            "sitCodes": sit_code,
+        },
+        http_get=http_get,
+    )
+    blocks = payload.get("stats") if isinstance(payload.get("stats"), list) else []
+    for block in blocks:
+        if not isinstance(block, dict):
+            continue
+        splits = block.get("splits") if isinstance(block.get("splits"), list) else []
+        for split in splits:
+            if not isinstance(split, dict):
+                continue
+            stat = split.get("stat") if isinstance(split.get("stat"), dict) else {}
+            pa = _int(stat.get("plateAppearances"))
+            so = _int(stat.get("strikeOuts"), default=-1)
+            if pa >= MIN_HITTER_SPLIT_PA and so >= 0:
+                return so, pa
+    return None
+
+
+def _hydrate_opponent_context(
+    *,
+    pitcher_id: int,
+    schedule: dict[str, Any],
+    season: int,
+    box_score_log: list[dict[str, Any]],
+    http_get: Callable[..., Any],
+) -> tuple[dict[str, Any] | None, str]:
+    """Hydrate optional opponent evidence without making it a hard dependency.
+
+    The fitted model is explicitly neutral when opponent_context is absent.
+    Therefore any failure in this additive official-source path returns None
+    rather than converting a previously scorable row into infrastructure/model
+    unavailability. No fallback rate is invented.
+    """
+    try:
+        pitcher_hand = _pitcher_throwing_hand(pitcher_id, http_get=http_get)
+        game_pk = _int(schedule.get("official_game_pk"))
+        if pitcher_hand not in {"L", "R"} or game_pk <= 0:
+            return None, "NEUTRAL_PITCHER_HAND_OR_GAME_UNRESOLVED"
+        lineup_ids = _official_opponent_lineup(
+            game_pk,
+            pitcher_side=str(schedule.get("side") or ""),
+            http_get=http_get,
+        )
+        if len(lineup_ids) < 9:
+            return None, "NEUTRAL_OFFICIAL_LINEUP_NOT_CONFIRMED"
+
+        total_so = 0
+        total_pa = 0
+        hitter_n = 0
+        for hitter_id in lineup_ids:
+            try:
+                counts = _hitter_hand_split_k_counts(
+                    hitter_id,
+                    season=season,
+                    pitcher_hand=pitcher_hand,
+                    http_get=http_get,
+                )
+            except Exception:
+                counts = None
+            if counts is None:
+                continue
+            so, pa = counts
+            total_so += so
+            total_pa += pa
+            hitter_n += 1
+
+        if hitter_n < MIN_LINEUP_HITTERS_FOR_OPP_CONTEXT or total_pa < MIN_LINEUP_SPLIT_PA:
+            return None, "NEUTRAL_LINEUP_HAND_SPLIT_SAMPLE_INSUFFICIENT"
+
+        bfs = [float(row.get("bf")) for row in box_score_log if _int(row.get("bf")) > 0]
+        expected_bf = (sum(bfs) / len(bfs)) if bfs else None
+        context: dict[str, Any] = {
+            "k_rate_per_pa": total_so / total_pa,
+            "pitcher_hand": pitcher_hand,
+            "lineup_status": "CONFIRMED",
+            "lineup_player_ids": lineup_ids,
+            "lineup_hitter_split_n": hitter_n,
+            "split_plate_appearances": total_pa,
+            "source": "MLB_STATS_API_OFFICIAL_LINEUP_HAND_SPLITS_V1",
+            "rate_provenance": "official battingOrder; hitter season hitting split vs starter hand",
+        }
+        if expected_bf is not None:
+            context["expected_batters_faced"] = expected_bf
+        return context, "CONFIRMED_LINEUP_HAND_SPLIT"
+    except Exception:
+        return None, "NEUTRAL_OPTIONAL_OPPONENT_CONTEXT_UNAVAILABLE"
 
 
 def auto_hydrate_prop_evidence(
@@ -326,6 +473,13 @@ def auto_hydrate_prop_evidence(
         event_start=event_start,
         http_get=http_get,
     )
+    opponent_context, opponent_context_status = _hydrate_opponent_context(
+        pitcher_id=player_id,
+        schedule=schedule,
+        season=event_start.year,
+        box_score_log=box_score_log,
+        http_get=http_get,
+    )
 
     timestamp = captured_at.isoformat()
     source_timestamps = {
@@ -333,10 +487,13 @@ def auto_hydrate_prop_evidence(
         "MLB_STATS_API_PITCHING_GAME_LOG": timestamp,
         "MLB_STATS_API_SCHEDULE_PROBABLE_PITCHER": timestamp,
     }
+    if opponent_context is not None:
+        source_timestamps["MLB_STATS_API_OPPONENT_LINEUP"] = timestamp
+        source_timestamps["MLB_STATS_API_HITTER_HAND_SPLITS"] = timestamp
     if source_capture_timestamp:
         source_timestamps[f"INPUT_CAPTURE_{str(source_label).strip().upper()}"] = source_capture_timestamp
 
-    return {
+    payload: dict[str, Any] = {
         "captured_at": timestamp,
         "game_log": game_log,
         "box_score_log": box_score_log,
@@ -359,9 +516,12 @@ def auto_hydrate_prop_evidence(
             "box_score_alignment": "1:1",
             "regular_season_prior_starts": len(box_score_log),
             "starter_confirmation": "OFFICIAL_PROBABLE_PITCHER",
-            "model_opponent_context": "NEUTRAL_UNTIL_LINEUP_HYDRATED",
+            "model_opponent_context": opponent_context_status,
         },
         "source_timestamps": source_timestamps,
         "evidence_version": AUTO_HYDRATION_EVIDENCE_VERSION,
         "rate_provenance": "MLB StatsAPI official pitching gameLog; outs derived from inningsPitched",
     }
+    if opponent_context is not None:
+        payload["opponent_context"] = opponent_context
+    return payload
