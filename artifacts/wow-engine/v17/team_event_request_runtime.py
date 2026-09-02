@@ -54,6 +54,29 @@ _MLB_NUMERIC_MODEL_FIELDS = {
     "tie_after_9_probability",
 }
 
+# Sport-family aliases that mean "MLB" specifically. "Baseball" is a sport
+# family, not a league -- other professional baseball leagues (NPB, KBO, ...)
+# must never be silently scored by the MLB-fitted adapter, so an alias only
+# canonicalizes to MLB when the caller's league is absent or already MLB.
+_MLB_SPORT_ALIASES = frozenset({"MLB", "BASEBALL", "BASEBALL_MLB"})
+
+
+def normalize_team_event_sport(sport: str, league: str | None) -> str:
+    """Canonicalize sport naming for team-event adapter dispatch only.
+
+    This never widens which sports are supported -- MLB remains the only
+    registered team-event adapter. It only prevents a caller-supplied sport
+    family name ("baseball") from producing a false MODEL_UNAVAILABLE for a
+    sport this backend actually has a certified adapter for, while still
+    failing closed (as the caller's own unrecognized sport string) for any
+    other baseball league so it is never scored by the wrong league's model.
+    """
+    normalized_sport = str(sport or "").strip().upper()
+    normalized_league = str(league or "").strip().upper()
+    if normalized_sport in _MLB_SPORT_ALIASES and normalized_league in {"", "MLB"}:
+        return "MLB"
+    return normalized_sport
+
 
 class TeamEventRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -478,7 +501,7 @@ def score_team_event_request(req: TeamEventRequest, *, event_api: Any) -> dict[s
     # specialist if a stage does not succeed.
     scout_research_barrier = _run_mandatory_scout_research(req)
 
-    sport = req.sport.strip().upper()
+    sport = normalize_team_event_sport(req.sport, req.league)
     if sport == "MLB":
         try:
             result = event_api.score_event(_mlb_request(req, event_api))

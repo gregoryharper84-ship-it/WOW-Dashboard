@@ -195,6 +195,53 @@ def test_unsupported_sport_fails_closed_without_probability():
     )
 
 
+def test_baseball_sport_family_alias_with_mlb_league_reaches_the_mlb_adapter():
+    # A caller sending sport="baseball", league="MLB" was previously
+    # uppercased to "BASEBALL" and never matched the "MLB" dispatch check,
+    # producing a false MODEL_UNAVAILABLE even though the MLB adapter is
+    # registered and otherwise fully able to score the row.
+    result = score_team_event_request(_base(sport="baseball", league="MLB"), event_api=_FakeEventApi)
+    assert result["code"] == "LLP_EVENT_GOVERNANCE_NOT_PROVEN"
+    assert result["upstream_model_code"] == "REAL_FITTED_MODEL_PATH_PROVEN"
+    assert result["can_execute"] is False
+
+
+def test_baseball_mlb_sport_alias_reaches_the_mlb_adapter():
+    result = score_team_event_request(_base(sport="baseball_mlb", league="MLB"), event_api=_FakeEventApi)
+    assert result["code"] == "LLP_EVENT_GOVERNANCE_NOT_PROVEN"
+
+
+def test_baseball_alias_with_a_different_baseball_league_still_fails_closed():
+    # "baseball" is a sport family, not a league. A non-MLB baseball league
+    # (NPB, KBO, ...) must never be silently scored by the MLB-fitted
+    # adapter -- it should fail closed exactly like any other unsupported
+    # sport, not be misrouted to the wrong league's model.
+    req = _base(
+        sport="baseball",
+        league="NPB",
+        event_key="NPB:test-3",
+        official_event_id="test-3",
+        settlement_basis="FULL_GAME_OUTRIGHT",
+        sport_specific_evidence={},
+    )
+    with pytest.raises(HTTPException) as exc_info:
+        score_team_event_request(req, event_api=_FakeEventApi)
+    assert exc_info.value.status_code == 409
+    detail = exc_info.value.detail
+    assert detail["code"] == "MODEL_UNAVAILABLE"
+    assert detail["sport"] == "BASEBALL"
+    assert detail["can_execute"] is False
+
+
+def test_normalize_team_event_sport_unit_cases():
+    normalize = team_event_module.normalize_team_event_sport
+    assert normalize("baseball", "MLB") == "MLB"
+    assert normalize("BASEBALL_MLB", "mlb") == "MLB"
+    assert normalize("mlb", "MLB") == "MLB"
+    assert normalize("baseball", "NPB") == "BASEBALL"
+    assert normalize("NFL", "NFL") == "NFL"
+
+
 def test_mlb_missing_sport_specific_evidence_is_acquisition_incomplete():
     req = _base(sport_specific_evidence={})
     with pytest.raises(HTTPException) as exc_info:
