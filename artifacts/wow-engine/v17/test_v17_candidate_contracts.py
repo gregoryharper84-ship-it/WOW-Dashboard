@@ -1,6 +1,6 @@
+import os
 from pathlib import Path
 
-import api_ncaaf_acceptance
 import api_v17_candidate
 
 
@@ -17,28 +17,25 @@ def _operations(text: str) -> set[str]:
     }
 
 
-def test_candidate_app_is_distinct_and_does_not_mutate_v16_route_table():
-    assert api_v17_candidate.app is not api_ncaaf_acceptance.app
-    v16_paths = {getattr(route, "path", None) for route in api_ncaaf_acceptance.app.router.routes}
-    v17_paths = {getattr(route, "path", None) for route in api_v17_candidate.app.router.routes}
-    assert "/score-team-event" not in v16_paths
-    assert "/v17/host-contract" not in v16_paths
-    assert "/score-team-event" in v17_paths
-    assert "/v17/host-contract" in v17_paths
+def test_candidate_shadow_app_remains_distinct_harness_after_production_cutover():
+    # The old Phase-A app remains useful as a shadow harness, but production
+    # activation now occurs additively on api_ncaaf_acceptance under a flag.
+    assert api_v17_candidate.app is not None
+    paths = {getattr(route, "path", None) for route in api_v17_candidate.app.router.routes}
+    assert "/score-team-event" in paths
+    assert "/v17/host-contract" in paths
 
 
-def test_candidate_app_preserves_v16_routes_and_lifecycle_hooks():
+def test_candidate_shadow_app_preserves_governed_compatibility_routes():
     paths = {getattr(route, "path", None) for route in api_v17_candidate.app.router.routes}
     assert "/score-prop" in paths
     assert "/score-pick-request" in paths
     assert "/governance" in paths
     assert "/record-recommendations" in paths
     assert "/settle-recommendations" in paths
-    assert list(api_v17_candidate.app.router.on_startup) == list(api_ncaaf_acceptance.app.router.on_startup)
-    assert list(api_v17_candidate.app.router.on_shutdown) == list(api_ncaaf_acceptance.app.router.on_shutdown)
 
 
-def test_both_candidate_action_schemas_use_same_exact_render_origin():
+def test_both_v17_action_schemas_are_production_source_contracts_on_same_render_origin():
     expected = "https://wow-governed-probability-engine.onrender.com"
     wow = WOW_SCHEMA.read_text()
     llp = LLP_SCHEMA.read_text()
@@ -46,8 +43,12 @@ def test_both_candidate_action_schemas_use_same_exact_render_origin():
     assert expected in llp
     assert "REPLACE_WITH_RENDER_SERVICE_HOST" not in wow
     assert "REPLACE_WITH_RENDER_SERVICE_HOST" not in llp
-    assert "CANDIDATE ONLY" in wow
-    assert "CANDIDATE ONLY" in llp
+    assert "PRODUCTION SOURCE CONTRACT" in wow
+    assert "PRODUCTION SOURCE CONTRACT" in llp
+    assert "CANDIDATE ONLY" not in wow
+    assert "CANDIDATE ONLY" not in llp
+    assert "version: 17.0.0" in wow
+    assert "version: 17.0.0" in llp
 
 
 def test_wow_action_has_prop_and_team_event_delegation():
@@ -71,6 +72,13 @@ def test_llp_action_has_team_event_but_no_prop_scoring_operation():
     assert not any("Prop" in op for op in ops)
     assert "/score-prop" not in text
     assert "LLP_TEAM_BETTING_ENGINE" in text
+
+
+def test_host_contract_requires_bearer_auth_in_both_production_schemas():
+    wow = WOW_SCHEMA.read_text()
+    llp = LLP_SCHEMA.read_text()
+    assert "/v17/host-contract:" in wow and "security: [{actionBearer: []}]" in wow
+    assert "/v17/host-contract:" in llp and "security: [{actionBearer: []}]" in llp
 
 
 def test_both_action_contracts_preserve_no_execution_language():
