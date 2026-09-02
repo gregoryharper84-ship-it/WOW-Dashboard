@@ -180,3 +180,51 @@ def test_real_trained_artifact_more_and_less_derive_from_same_pmf():
 def test_real_trained_artifact_reports_model_beats_baseline_out_of_sample():
     trained = _real_trained_payload()
     assert trained["validation_metrics"]["model_mean_nll"] < trained["validation_metrics"]["baseline_mean_nll"]
+
+
+def test_real_artifact_manaea_regime_contradiction_lowers_calibrated_bound():
+    """Postmortem patch WOW-PATCH-2026-09-02 (issues #116/#119): the
+    2026-09-01 miss published a MORE-strikeouts probability against a
+    contact-oriented, low-chase opponent lineup without that evidence ever
+    reaching the model. This is a synthetic fixture built from the real
+    fitted constants -- no hindsight game result or outcome label is used as
+    input -- proving the contradiction now numerically lowers the published
+    calibrated lower bound end to end, through the exact production
+    pipeline (resolve artifact -> adapter -> derive_line_probabilities ->
+    calibration), not merely as an advisory note.
+    """
+    trained = _real_trained_payload()
+    client = FakeClient(_rpc_payload(trained))
+    line, seed = 5.5, 11
+
+    neutral = score_discrete_prop_end_to_end(
+        client=client, request=_request(), event_start_time="2026-08-29T23:00:00+00:00",
+        player="Illustrative Starter", line=line, direction="MORE",
+        source_snapshot_id="44444444-4444-4444-8444-444444444444",
+        features=_illustrative_features(), seed=seed,
+    )
+    manaea_regime_opponent = {
+        "k_rate_per_pa": 0.15,
+        "contact_rate_per_pa": 0.85,
+        "chase_rate": 0.18,
+        "expected_batters_faced": 27.0,
+    }
+    contradicted = score_discrete_prop_end_to_end(
+        client=client, request=_request(), event_start_time="2026-08-29T23:00:00+00:00",
+        player="Illustrative Starter", line=line, direction="MORE",
+        source_snapshot_id="44444444-4444-4444-8444-444444444444",
+        features={**_illustrative_features(), "opponent_context": manaea_regime_opponent},
+        seed=seed,
+    )
+
+    assert contradicted.row.calibrated_probability < neutral.row.calibrated_probability
+    assert contradicted.row.calibrated_probability_lower_bound < neutral.row.calibrated_probability_lower_bound
+    assert contradicted.row.probability_publishable in (True, False)
+    assert contradicted.inference.distribution.can_execute is False
+
+    ev = contradicted.inference.distribution.failure_path_evidence
+    assert "STRIKEOUT_RATE_SUPPRESSION" in ev["tags"]
+    assert "OPPONENT_CONTACT_EXTENSION" in ev["tags"]
+    # A generous expected workload must not neutralize the suppression.
+    assert ev["opponent_expected_batters_faced"] == pytest.approx(27.0)
+    assert ev["mu_normal_after_opponent_factor"] < ev["mu_normal_before_opponent_factor"]

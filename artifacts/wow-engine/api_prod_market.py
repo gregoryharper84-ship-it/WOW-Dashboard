@@ -390,7 +390,8 @@ def _model_features(evidence: dict[str, Any]) -> dict[str, Any]:
 def _discrete_model_evidence(result: Any) -> dict[str, Any]:
     row = result.row
     artifact = result.inference.artifact
-    coverage = result.inference.distribution.coverage
+    distribution = result.inference.distribution
+    coverage = distribution.coverage
     return {
         "provider_identity": getattr(row, "model_provider_identity", None),
         "model_family": getattr(row, "model_family", None),
@@ -422,6 +423,10 @@ def _discrete_model_evidence(result: Any) -> dict[str, Any]:
         "calibrated_probability_upper_bound": getattr(row, "calibrated_probability_upper_bound", None),
         "model_timestamp": getattr(row, "model_timestamp", None),
         "probability_publishable": bool(getattr(row, "probability_publishable", False)),
+        # Advisory/explanatory only -- see RawDiscreteDistribution.
+        # failure_path_evidence. Empty for adapters that report nothing
+        # (the default); never a probability, bound, or terminal label.
+        "failure_path_evidence": dict(getattr(distribution, "failure_path_evidence", {}) or {}),
         "can_execute": False,
     }
 

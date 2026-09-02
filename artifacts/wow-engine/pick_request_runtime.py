@@ -80,6 +80,13 @@ class RawPropEvidence(BaseModel):
     # mlb_1ip_specialist.score_mlb_1ip for the required shape. Left None for
     # every other stat type.
     lineup_evidence: Optional[dict[str, Any]] = None
+    # Optional, additive opponent-lineup evidence (postmortem patch
+    # WOW-PATCH-2026-09-02, issues #116/#119). Passed through unchanged to
+    # the model adapter's feature contract (see prop_model_adapters.py's
+    # mlb_pitcher_so_failure_path_nb_v1_adapter docstring). Caller-supplied
+    # here, but never a probability, bound, or terminal label -- ordinary
+    # evidence input like game_log/box_score_log, not a governed output.
+    opponent_context: Optional[dict[str, Any]] = None
 
 
 class PickRequestRow(BaseModel):
@@ -229,6 +236,13 @@ def _snapshot_payload(
         "blockers": [],
         "can_execute": False,
     }
+    # Only present when a caller actually supplies it: the persisted table
+    # column (migrations/20260902_prop_evidence_opponent_context.sql) may not
+    # yet be live everywhere this runs, and omitting an unused key keeps
+    # every existing caller's fingerprint/upsert payload byte-identical to
+    # before this field existed.
+    if row.evidence.opponent_context is not None:
+        fingerprint_input["opponent_context"] = row.evidence.opponent_context
     canonical = json.dumps(
         fingerprint_input,
         sort_keys=True,
@@ -258,6 +272,9 @@ def _snapshot_payload(
         "evidence_version": str(row.evidence.evidence_version).strip(),
         "can_execute": False,
     }
+    # Same opt-in guard as fingerprint_input above -- see comment there.
+    if row.evidence.opponent_context is not None:
+        persisted["opponent_context"] = row.evidence.opponent_context
     return snapshot_id, fingerprint, persisted
 
 

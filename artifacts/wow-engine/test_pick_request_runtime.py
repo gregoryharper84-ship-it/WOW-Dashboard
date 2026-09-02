@@ -37,10 +37,10 @@ class _Client:
         return _Table(self.sink)
 
 
-def _evidence(*, l10=True):
+def _evidence(*, l10=True, opponent_context=None):
     now = datetime.now(timezone.utc)
     n = 10 if l10 else 5
-    return {
+    evidence = {
         "captured_at": now.isoformat(),
         "game_log": list(range(1, n + 1)),
         "box_score_log": [{"minutes": 30 + i, "stat": i, "outs": 15 + i} for i in range(n)],
@@ -54,9 +54,12 @@ def _evidence(*, l10=True):
         "evidence_version": "PROP_EVIDENCE_V1",
         "rate_provenance": "OFFICIAL_BOX_SCORE_L10_V1",
     }
+    if opponent_context is not None:
+        evidence["opponent_context"] = opponent_context
+    return evidence
 
 
-def _row(row_key, *, sport="MLB", stat_type="Ks", l10=True, include_evidence=True):
+def _row(row_key, *, sport="MLB", stat_type="Ks", l10=True, include_evidence=True, opponent_context=None):
     row = {
         "row_key": row_key,
         "event_id": f"{sport}:TEST:{row_key}",
@@ -69,7 +72,7 @@ def _row(row_key, *, sport="MLB", stat_type="Ks", l10=True, include_evidence=Tru
         "source_type": "NORMALIZED",
     }
     if include_evidence:
-        row["evidence"] = _evidence(l10=l10)
+        row["evidence"] = _evidence(l10=l10, opponent_context=opponent_context)
     return row
 
 
@@ -161,6 +164,33 @@ def test_k_alias_freezes_snapshot_and_reaches_certified_pitcher_route(monkeypatc
     assert persisted[0]["source_snapshot_id"] == body["rows"][0]["source_snapshot_id"]
     assert persisted[0]["can_execute"] is False
     assert scored[0][0].stat_type == "PITCHER_STRIKEOUTS"
+
+
+def test_opponent_context_absent_leaves_persisted_snapshot_payload_unchanged(monkeypatch):
+    """Postmortem patch WOW-PATCH-2026-09-02: opponent_context is an opt-in
+    field. Until migrations/20260902_prop_evidence_opponent_context.sql is
+    applied live, an upsert payload carrying an unknown column would fail
+    closed for every caller -- so a caller that never supplies it must get a
+    byte-identical persisted payload to before this field existed."""
+    client, persisted, _routed, _scored = _build(monkeypatch)
+    response = client.post(
+        "/score-pick-request",
+        headers={"X-WOW-Model-Identity": "WOW_BETTING_ENGINE"},
+        json={"rows": [_row("no-opponent-context")]},
+    )
+    assert response.status_code == 200
+    assert "opponent_context" not in persisted[0]
+
+
+def test_opponent_context_supplied_is_persisted_when_caller_opts_in(monkeypatch):
+    client, persisted, _routed, _scored = _build(monkeypatch)
+    response = client.post(
+        "/score-pick-request",
+        headers={"X-WOW-Model-Identity": "WOW_BETTING_ENGINE"},
+        json={"rows": [_row("with-opponent-context", opponent_context={"k_rate_per_pa": 0.15})]},
+    )
+    assert response.status_code == 200
+    assert persisted[0]["opponent_context"] == {"k_rate_per_pa": 0.15}
 
 
 def test_unsupported_row_is_held_without_route_hydration_model_or_snapshot(monkeypatch):

@@ -4,11 +4,17 @@ import math
 
 import pytest
 
-from prop_distribution_contract import PropDistributionContractError, PropInferenceRequest
+from prop_distribution_contract import (
+    PropDistributionContractError,
+    PropInferenceRequest,
+    derive_line_probabilities,
+)
 from prop_fitted_provider import ResolvedArtifact
 from prop_distribution_contract import CertifiedBundle
 from prop_model_adapters import (
     MLB_PITCHER_SO_MODEL_FAMILY,
+    TAG_OPPONENT_CONTACT_EXTENSION,
+    TAG_STRIKEOUT_RATE_SUPPRESSION,
     mlb_pitcher_so_failure_path_nb_v1_adapter,
     nb_pmf,
     shrink,
@@ -190,3 +196,174 @@ def test_shrink_falls_back_to_league_when_no_pitcher_value():
 def test_shrink_approaches_pitcher_value_with_large_n():
     result = shrink(0.5, 0.31, 100000, 8.0)
     assert result == pytest.approx(0.5, abs=1e-3)
+
+
+# --- Postmortem patch WOW-PATCH-2026-09-02 (issues #116/#119): typed
+# opponent strikeout-suppression / contact-extension evidence. ---------------
+
+
+def test_normal_matchup_no_opponent_context_is_unaffected_and_untagged():
+    """No opponent evidence at all must behave exactly as before this patch:
+    neutral opp_factor, no tags, empty extra evidence fields."""
+    dist = mlb_pitcher_so_failure_path_nb_v1_adapter(_artifact(), _request(), _features())
+    ev = dist.failure_path_evidence
+    assert ev["tags"] == []
+    assert ev["opponent_factor"] == pytest.approx(1.0)
+    assert ev["opponent_factor_clipped"] is False
+    assert ev["opponent_factor_source"] == "NEUTRAL_NO_OPPONENT_EVIDENCE"
+    assert ev["mu_normal_after_opponent_factor"] == pytest.approx(ev["mu_normal_before_opponent_factor"])
+
+
+def test_low_k_contact_opponent_lowers_probability_and_tags_suppression():
+    """A materially low opponent K-rate must lower the mean/low-tail mass and
+    be named via TAG_STRIKEOUT_RATE_SUPPRESSION -- not left as an unlabeled
+    number, per issue #116 requirement (C)/(D)."""
+    baseline = mlb_pitcher_so_failure_path_nb_v1_adapter(_artifact(), _request(), _features())
+    suppressed = mlb_pitcher_so_failure_path_nb_v1_adapter(
+        _artifact(), _request(), _features(opponent_context={"k_rate_per_pa": 0.15})
+    )
+    assert suppressed.expected_value < baseline.expected_value
+    ev = suppressed.failure_path_evidence
+    assert TAG_STRIKEOUT_RATE_SUPPRESSION in ev["tags"]
+    assert ev["opponent_factor"] < 1.0
+    # Low tail (few strikeouts) must gain mass, not lose it, under suppression.
+    low_tail = lambda dist: sum(p for k, p in dist.support.items() if k <= 2)
+    assert low_tail(suppressed) > low_tail(baseline)
+
+
+def test_workload_adequate_but_suppressed_manaea_regime_fixture():
+    """Synthetic fixture modeled on the 2026-09-01 postmortem failure mode
+    (a contact-oriented, low-chase opponent facing an otherwise
+    normal-workload starter) -- no real game result or hindsight label is
+    used as input. A generous expected workload must NOT neutralize the
+    opponent K-suppression: expected_batters_faced has no fitted
+    coefficient and is evidence-only (see module docstring), so it must
+    leave mu, and the suppression tag, unchanged from the no-workload case.
+    """
+    request, artifact = _request(), _artifact()
+    manaea_opponent = {
+        "k_rate_per_pa": 0.15,
+        "contact_rate_per_pa": 0.85,
+        "chase_rate": 0.18,
+        "expected_batters_faced": 27.0,  # a full, healthy-workload start
+    }
+    with_workload = mlb_pitcher_so_failure_path_nb_v1_adapter(
+        artifact, request, _features(opponent_context=manaea_opponent)
+    )
+    without_workload_field = mlb_pitcher_so_failure_path_nb_v1_adapter(
+        artifact, request,
+        _features(opponent_context={k: v for k, v in manaea_opponent.items() if k != "expected_batters_faced"}),
+    )
+    baseline = mlb_pitcher_so_failure_path_nb_v1_adapter(artifact, request, _features())
+
+    assert with_workload.expected_value == pytest.approx(without_workload_field.expected_value)
+    assert with_workload.expected_value < baseline.expected_value
+    ev = with_workload.failure_path_evidence
+    assert TAG_STRIKEOUT_RATE_SUPPRESSION in ev["tags"]
+    assert TAG_OPPONENT_CONTACT_EXTENSION in ev["tags"]
+    assert ev["opponent_expected_batters_faced"] == pytest.approx(27.0)
+
+
+def test_low_promo_line_does_not_override_suppression():
+    """A distant/adjacent low market line must not erase the suppression's
+    effect on the underlying distribution -- MORE probability must stay
+    lower than baseline at every line checked, not just near the model's
+    own mean (issue #116 requirement C)."""
+    baseline = mlb_pitcher_so_failure_path_nb_v1_adapter(_artifact(), _request(), _features())
+    suppressed = mlb_pitcher_so_failure_path_nb_v1_adapter(
+        _artifact(), _request(), _features(opponent_context={"k_rate_per_pa": 0.15})
+    )
+    for line in (1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 8.5):
+        base_probs = derive_line_probabilities(baseline, line)
+        sup_probs = derive_line_probabilities(suppressed, line)
+        assert sup_probs.probability_more <= base_probs.probability_more
+
+
+def test_no_duplicate_suppression_penalty_single_multiplication_point():
+    """opp_factor must apply exactly once, to both regimes, and contact/
+    chase-only evidence (no fitted coefficient) must never itself move mu --
+    otherwise the same opponent evidence would penalize probability in two
+    places (double-counting), which issue #119 explicitly prohibits."""
+    dist = mlb_pitcher_so_failure_path_nb_v1_adapter(
+        _artifact(), _request(), _features(opponent_context={"k_rate_per_pa": 0.15})
+    )
+    ev = dist.failure_path_evidence
+    assert ev["mu_normal_after_opponent_factor"] == pytest.approx(
+        ev["mu_normal_before_opponent_factor"] * ev["opponent_factor"]
+    )
+    assert ev["mu_short_after_opponent_factor"] == pytest.approx(
+        ev["mu_short_before_opponent_factor"] * ev["opponent_factor"]
+    )
+
+    baseline = mlb_pitcher_so_failure_path_nb_v1_adapter(_artifact(), _request(), _features())
+    contact_only = mlb_pitcher_so_failure_path_nb_v1_adapter(
+        _artifact(), _request(),
+        _features(opponent_context={"contact_rate_per_pa": 0.90, "chase_rate": 0.10}),
+    )
+    # Contact/chase evidence alone (no k_rate_per_pa) must be labeled but
+    # never numerically penalize -- it has no fitted coefficient.
+    assert contact_only.expected_value == pytest.approx(baseline.expected_value)
+    assert TAG_OPPONENT_CONTACT_EXTENSION in contact_only.failure_path_evidence["tags"]
+    assert TAG_STRIKEOUT_RATE_SUPPRESSION not in contact_only.failure_path_evidence["tags"]
+
+
+def test_opposite_side_less_is_coherent_under_suppression():
+    """Fewer expected strikeouts must raise LESS probability by exactly the
+    same reduction that lowers MORE probability -- both sides read one
+    shared, non-contradictory PMF (issue #119 two-sided consistency)."""
+    baseline = mlb_pitcher_so_failure_path_nb_v1_adapter(_artifact(), _request(), _features())
+    suppressed = mlb_pitcher_so_failure_path_nb_v1_adapter(
+        _artifact(), _request(), _features(opponent_context={"k_rate_per_pa": 0.15})
+    )
+    line = 5.5
+    base_probs = derive_line_probabilities(baseline, line)
+    sup_probs = derive_line_probabilities(suppressed, line)
+    assert sup_probs.probability_less > base_probs.probability_less
+    assert sup_probs.probability_more < base_probs.probability_more
+    assert sup_probs.probability_more + sup_probs.probability_less + sup_probs.push_probability == pytest.approx(1.0)
+
+
+def test_opponent_factor_clip_is_recorded_when_clipped():
+    dist = mlb_pitcher_so_failure_path_nb_v1_adapter(
+        _artifact(), _request(), _features(opponent_context={"k_rate_per_pa": 0.01})
+    )
+    ev = dist.failure_path_evidence
+    assert ev["opponent_factor_clipped"] is True
+    assert ev["opponent_factor"] == pytest.approx(0.75)  # artifact's opponent_factor_clip floor
+
+
+def test_failure_path_evidence_schema_has_required_keys():
+    dist = mlb_pitcher_so_failure_path_nb_v1_adapter(
+        _artifact(), _request(), _features(opponent_context={"k_rate_per_pa": 0.15})
+    )
+    required = {
+        "tags", "opp_k_rate_per_pa", "league_k_rate_per_pa", "opponent_factor",
+        "opponent_factor_clipped", "opponent_factor_source",
+        "opponent_contact_rate_per_pa", "opponent_chase_rate",
+        "opponent_expected_batters_faced", "mu_normal_before_opponent_factor",
+        "mu_normal_after_opponent_factor", "mu_short_before_opponent_factor",
+        "mu_short_after_opponent_factor", "prior_so_per_out",
+        "prior_shortened_rate", "shortened_outing_probability", "n_prior_starts",
+    }
+    assert required.issubset(dist.failure_path_evidence.keys())
+
+
+def test_can_execute_and_publication_status_unchanged_with_failure_path_evidence():
+    dist = mlb_pitcher_so_failure_path_nb_v1_adapter(
+        _artifact(), _request(), _features(opponent_context={"k_rate_per_pa": 0.15})
+    )
+    assert dist.can_execute is False
+    assert dist.publication_status == "NOT_EVALUATED"
+    assert sum(dist.support.values()) == pytest.approx(1.0, abs=1e-9)
+
+
+def test_non_finite_opponent_fields_are_ignored_not_fabricated():
+    dist = mlb_pitcher_so_failure_path_nb_v1_adapter(
+        _artifact(), _request(),
+        _features(opponent_context={"k_rate_per_pa": float("nan"), "contact_rate_per_pa": float("inf")}),
+    )
+    ev = dist.failure_path_evidence
+    assert ev["opp_k_rate_per_pa"] is None
+    assert ev["opponent_contact_rate_per_pa"] is None
+    assert ev["opponent_factor"] == pytest.approx(1.0)
+    assert ev["opponent_factor_source"] == "NEUTRAL_NO_OPPONENT_EVIDENCE"
