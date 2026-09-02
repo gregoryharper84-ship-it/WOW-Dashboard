@@ -33,14 +33,57 @@ def _detail(exc: HTTPException) -> dict[str, Any]:
     return dict(exc.detail) if isinstance(exc.detail, dict) else {"code": "HTTP_EXCEPTION", "message": str(exc.detail)}
 
 
-def _terminal_row(lane: str, identity: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+def _terminal_row(lane: str, identity: dict[str, Any], payload: dict[str, Any], row_status: str) -> dict[str, Any]:
     return {
         "lane": lane,
         "identity": identity,
         "result": payload,
         "terminal": True,
+        "row_status": row_status,
         "probability_publishable": bool(payload.get("probability_publishable", False)),
         "can_execute": False,
+    }
+
+
+# Row-status classification is deliberately narrow and reuses only what the
+# scoring calls in this file already tell us -- it does not infer new
+# semantics from a terminal_label/code taxonomy that isn't already
+# unambiguous on this path. PROPS outcomes are already tagged COMPLETED/HELD
+# by the score_prop call sites below; no REJECTED path is currently reachable
+# from either lane (score_prop and score_team_event_request never raise a
+# hard model-rejection here, only capability/acquisition/contract holds), so
+# rows_rejected is honestly 0 until a real rejection path exists on this
+# route -- it is never fabricated to look non-zero.
+def _props_row_status(outcomes: list[dict[str, Any]]) -> str:
+    statuses = {outcome.get("status") for outcome in outcomes}
+    if "COMPLETED" in statuses:
+        return "COMPLETED"
+    if "HELD" in statuses:
+        return "HELD"
+    return "UNCLASSIFIED"
+
+
+def _reconcile(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    completed = held = rejected = unclassified = 0
+    for row in rows:
+        status = row.get("row_status")
+        if status == "COMPLETED":
+            completed += 1
+        elif status == "HELD":
+            held += 1
+        elif status == "REJECTED":
+            rejected += 1
+        else:
+            unclassified += 1
+    rows_in = len(rows)
+    balanced = unclassified == 0 and (completed + held + rejected == rows_in)
+    return {
+        "rows_in": rows_in,
+        "rows_completed": completed,
+        "rows_held": held,
+        "rows_rejected": rejected,
+        "rows_unclassified": unclassified,
+        "balanced": balanced,
     }
 
 
@@ -128,12 +171,30 @@ def run_daily_snapshot(
                         market_api.ScorePropRequest(**{**identity, "direction": direction}),
                         "WOW_BETTING_ENGINE",
                     )
-                    outcomes.append({"direction": direction, "status": "COMPLETED", "payload": scored})
+                    # Not every score_prop implementation is symmetric (raise
+                    # on every non-publishable state, return normally only
+                    # when publishable). The lane-separation variant
+                    # (score_prop_lane_separated -> _raw_specialist_research,
+                    # calibration_publication_api.py:292-297 /
+                    # api_lane_separated.py) returns normally with
+                    # probability_publishable=False, governed_publishable=
+                    # False, research_only=True whenever publication is
+                    # blocked but raw specialist research is still
+                    # permitted. A normal return must therefore be
+                    # classified the same way as an exception: COMPLETED
+                    # only when the payload itself claims
+                    # probability_publishable is True.
+                    status = "COMPLETED" if scored.get("probability_publishable") is True else "HELD"
+                    outcomes.append({"direction": direction, "status": status, "payload": scored})
                 except HTTPException as exc:
                     outcomes.append({"direction": direction, "status": "HELD", "payload": _detail(exc)})
                 except Exception as exc:
                     outcomes.append({"direction": direction, "status": "HELD", "payload": {"code": "PROP_SCORER_EXCEPTION", "error_type": type(exc).__name__, "probability_publishable": False, "can_execute": False}})
-            rows.append(_terminal_row("PROPS", identity, {"outcomes": outcomes, "probability_publishable": any(bool(x["payload"].get("probability_publishable")) for x in outcomes), "can_execute": False}))
+            rows.append(_terminal_row(
+                "PROPS", identity,
+                {"outcomes": outcomes, "probability_publishable": any(bool(x["payload"].get("probability_publishable")) for x in outcomes), "can_execute": False},
+                _props_row_status(outcomes),
+            ))
 
     if "MONEYLINE" in requested_lanes:
         try:
@@ -159,7 +220,20 @@ def run_daily_snapshot(
                 result = _detail(exc)
             except Exception as exc:
                 result = {"code": "TEAM_EVENT_SCORER_EXCEPTION", "error_type": type(exc).__name__, "probability_publishable": False, "can_execute": False}
-            rows.append(_terminal_row("MONEYLINE", identity, result))
+            # Unlike PROPS' score_prop (which only ever returns normally when
+            # genuinely publishable, and raises for every held/blocked state),
+            # score_team_event_request's success path can itself return
+            # normally -- no exception -- while still representing a hold: the
+            # LLP governance bridge (_run_mlb_llp_governance) returns a
+            # MODEL_QUALIFIED_HOLD/probability_publishable=False package via
+            # _llp_governance_hold whenever the bridge isn't proven, which is
+            # every result today. Exception-vs-no-exception is therefore not a
+            # valid completed/held signal for this lane. probability_publishable
+            # is: it is explicitly set on every reachable return from this
+            # function, exception or not (verified against every raise site
+            # and every _run_mlb_llp_governance/_llp_governance_hold branch).
+            row_status = "COMPLETED" if result.get("probability_publishable") is True else "HELD"
+            rows.append(_terminal_row("MONEYLINE", identity, result, row_status))
 
     if not rows and not blockers:
         blockers.append("NO_CANONICAL_PREGAME_SNAPSHOTS")
@@ -168,7 +242,7 @@ def run_daily_snapshot(
         "run_status": "COMPLETED" if not blockers else "COMPLETED_WITH_ACQUISITION_BLOCKERS",
         "requested_slate_date": req.requested_slate_date, "requested_timezone": req.requested_timezone,
         "requested_lanes": sorted(requested_lanes), "rows": rows,
-        "reconciliation": {"rows_in": len(rows), "rows_completed": len(rows), "rows_held": 0, "rows_rejected": 0, "balanced": True},
+        "reconciliation": _reconcile(rows),
         "blockers": blockers, "can_execute": False,
     }
 
