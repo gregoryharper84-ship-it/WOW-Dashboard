@@ -1,5 +1,19 @@
 # MLB 1IP Production Capability Status
 
+> **Superseded (2026-09-02).** The "Not yet performed" section below
+> (no certified artifact inserted, no migration applied,
+> `V17_CUTOVER_ALLOWED=false`, no production redeploy) is stale.
+> Independently verified against the live `wow-engine-validation` Supabase
+> project on 2026-09-02: a `PROSPECTIVE_CERTIFIED` artifact row now exists
+> for `(MLB, 1ST_INNING_PITCHES_THROWN)` (see
+> `MLB_1IP_FULL_MODEL_GOVERNED_STATUS.md`'s superseding note for the exact
+> row), and `artifacts/wow-engine/v17/PHASE_A_ALIGNMENT_STATUS.md` records
+> production Render live with `V17_CUTOVER_ALLOWED=true`. This note
+> verifies only the live artifact/cutover state -- whether the
+> "Independent-review gate" section's ten review items below were actually
+> completed before that promotion is not attested here. This file's body
+> below is left unedited as a record of status on the date it was written.
+
 Date: 2026-09-01
 Branch: `chatgpt/v17-1ip-production-capability-20260901`
 

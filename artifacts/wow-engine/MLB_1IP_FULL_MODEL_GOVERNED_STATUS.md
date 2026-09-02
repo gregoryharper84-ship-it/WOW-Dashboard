@@ -1,5 +1,25 @@
 # MLB 1IP — FULL_MODEL_GOVERNED implementation status
 
+> **Superseded (2026-09-02).** The "What this does NOT implement" section
+> below claims no certified 1IP artifact exists and that
+> `V17_CUTOVER_ALLOWED=false`. Both are now stale. Independently verified
+> against the live `wow-engine-validation` Supabase project on 2026-09-02:
+> a `PROSPECTIVE_CERTIFIED` row now exists in
+> `public.wow_prop_fitted_model_artifacts` for
+> `(MLB, 1ST_INNING_PITCHES_THROWN)`
+> (`model_family=MLB_1IP_CONDITIONAL_TOTAL_PITCH_PMF_V1`,
+> `certification_id=PROP-CERT-MLB-1IP-OWNER-140ac2732116d5de`, created
+> 2026-09-02). A live acquisition layer and final-refresh scheduler have
+> since been built (`mlb_1ip_live_acquisition.py`,
+> `mlb_1ip_refresh_scheduler.py`, `mlb_1ip_final_refresh.py`,
+> `mlb_1ip_final_refresh_job.py`), addressing this file's
+> `NO_LIVE_ACQUISITION_LAYER` and `NO_PROPS_FINAL_REFRESH_RUNNER` sections
+> too. `artifacts/wow-engine/v17/PHASE_A_ALIGNMENT_STATUS.md` records
+> `V17_CUTOVER_ALLOWED=true` with production Render live. This file's body
+> below is left unedited as a record of implementation status on the date
+> it was written; treat `PHASE_A_ALIGNMENT_STATUS.md` and
+> `MLB_1IP_PRODUCTION_CAPABILITY_STATUS.md` as current.
+
 As of: 2026-09-01
 
 Governance: `docs/wow/contracts/canonical/WOW-PATCH-2026-09-01-MLB-1IP-FULL-MODEL-GOVERNED.md`
