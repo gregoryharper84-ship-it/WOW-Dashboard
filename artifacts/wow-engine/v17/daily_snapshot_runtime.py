@@ -33,14 +33,57 @@ def _detail(exc: HTTPException) -> dict[str, Any]:
     return dict(exc.detail) if isinstance(exc.detail, dict) else {"code": "HTTP_EXCEPTION", "message": str(exc.detail)}
 
 
-def _terminal_row(lane: str, identity: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+def _terminal_row(lane: str, identity: dict[str, Any], payload: dict[str, Any], row_status: str) -> dict[str, Any]:
     return {
         "lane": lane,
         "identity": identity,
         "result": payload,
         "terminal": True,
+        "row_status": row_status,
         "probability_publishable": bool(payload.get("probability_publishable", False)),
         "can_execute": False,
+    }
+
+
+# Row-status classification is deliberately narrow and reuses only what the
+# scoring calls in this file already tell us -- it does not infer new
+# semantics from a terminal_label/code taxonomy that isn't already
+# unambiguous on this path. PROPS outcomes are already tagged COMPLETED/HELD
+# by the score_prop call sites below; no REJECTED path is currently reachable
+# from either lane (score_prop and score_team_event_request never raise a
+# hard model-rejection here, only capability/acquisition/contract holds), so
+# rows_rejected is honestly 0 until a real rejection path exists on this
+# route -- it is never fabricated to look non-zero.
+def _props_row_status(outcomes: list[dict[str, Any]]) -> str:
+    statuses = {outcome.get("status") for outcome in outcomes}
+    if "COMPLETED" in statuses:
+        return "COMPLETED"
+    if "HELD" in statuses:
+        return "HELD"
+    return "UNCLASSIFIED"
+
+
+def _reconcile(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    completed = held = rejected = unclassified = 0
+    for row in rows:
+        status = row.get("row_status")
+        if status == "COMPLETED":
+            completed += 1
+        elif status == "HELD":
+            held += 1
+        elif status == "REJECTED":
+            rejected += 1
+        else:
+            unclassified += 1
+    rows_in = len(rows)
+    balanced = unclassified == 0 and (completed + held + rejected == rows_in)
+    return {
+        "rows_in": rows_in,
+        "rows_completed": completed,
+        "rows_held": held,
+        "rows_rejected": rejected,
+        "rows_unclassified": unclassified,
+        "balanced": balanced,
     }
 
 
@@ -133,7 +176,11 @@ def run_daily_snapshot(
                     outcomes.append({"direction": direction, "status": "HELD", "payload": _detail(exc)})
                 except Exception as exc:
                     outcomes.append({"direction": direction, "status": "HELD", "payload": {"code": "PROP_SCORER_EXCEPTION", "error_type": type(exc).__name__, "probability_publishable": False, "can_execute": False}})
-            rows.append(_terminal_row("PROPS", identity, {"outcomes": outcomes, "probability_publishable": any(bool(x["payload"].get("probability_publishable")) for x in outcomes), "can_execute": False}))
+            rows.append(_terminal_row(
+                "PROPS", identity,
+                {"outcomes": outcomes, "probability_publishable": any(bool(x["payload"].get("probability_publishable")) for x in outcomes), "can_execute": False},
+                _props_row_status(outcomes),
+            ))
 
     if "MONEYLINE" in requested_lanes:
         try:
@@ -153,13 +200,16 @@ def run_daily_snapshot(
                 source_snapshot_id=str(event["snapshot_id"]), latest_material_update_timestamp=event.get("snapshot_timestamp"),
                 sport_specific_evidence={"venue": event.get("venue_name"), "home_starting_pitcher": event.get("home_probable_pitcher"), "away_starting_pitcher": event.get("away_probable_pitcher"), "home_starter_status": "PROBABLE", "away_starter_status": "PROBABLE", "home_lineup_status": "PROJECTED", "away_lineup_status": "PROJECTED"},
             )
+            row_status = "COMPLETED"
             try:
                 result = score_team_event_request(request, event_api=event_api)
             except HTTPException as exc:
                 result = _detail(exc)
+                row_status = "HELD"
             except Exception as exc:
                 result = {"code": "TEAM_EVENT_SCORER_EXCEPTION", "error_type": type(exc).__name__, "probability_publishable": False, "can_execute": False}
-            rows.append(_terminal_row("MONEYLINE", identity, result))
+                row_status = "HELD"
+            rows.append(_terminal_row("MONEYLINE", identity, result, row_status))
 
     if not rows and not blockers:
         blockers.append("NO_CANONICAL_PREGAME_SNAPSHOTS")
@@ -168,7 +218,7 @@ def run_daily_snapshot(
         "run_status": "COMPLETED" if not blockers else "COMPLETED_WITH_ACQUISITION_BLOCKERS",
         "requested_slate_date": req.requested_slate_date, "requested_timezone": req.requested_timezone,
         "requested_lanes": sorted(requested_lanes), "rows": rows,
-        "reconciliation": {"rows_in": len(rows), "rows_completed": len(rows), "rows_held": 0, "rows_rejected": 0, "balanced": True},
+        "reconciliation": _reconcile(rows),
         "blockers": blockers, "can_execute": False,
     }
 
