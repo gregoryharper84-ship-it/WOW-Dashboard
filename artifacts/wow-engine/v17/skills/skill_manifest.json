@@ -9,7 +9,14 @@
       "skill_id": "WOW_V17_DAILY_PICKS",
       "file": "WOW_V17_DAILY_PICKS_SKILL_PACK.md",
       "triggers": ["Run V17 Daily Picks", "best picks today", "Full model"],
-      "composes": ["WOW_V17_BEST_PROPS", "WOW_V17_ML_WINNERS", "WOW_V17_SCREENSHOT_REVIEW", "WOW_V17_PICK_CORE"]
+      "composes": ["WOW_V17_RESEARCH_MARKET_CONTEXT", "WOW_V17_BEST_PROPS", "WOW_V17_ML_WINNERS", "WOW_V17_SCREENSHOT_REVIEW", "WOW_V17_PICK_CORE"]
+    },
+    {
+      "skill_id": "WOW_V17_RESEARCH_MARKET_CONTEXT",
+      "file": "WOW_V17_RESEARCH_MARKET_CONTEXT_SKILL.md",
+      "owner": "V17_SHARED_RESEARCH_MARKET_CONTEXT",
+      "probability_authority": false,
+      "triggers": ["Run V17 Research Context", "research context", "market context"]
     },
     {
       "skill_id": "WOW_V17_BEST_PROPS",
@@ -40,6 +47,9 @@
     "governed_probability_only": true,
     "rank_by_calibrated_lower_bound_when_required": true,
     "extract_all_visible_rows_before_screenshot_filtering": true,
+    "research_never_substitutes_for_fitted_model": true,
+    "material_evidence_requires_temporal_provenance": true,
+    "exact_adjacent_no_market_evidence_remains_typed": true,
     "market_probability_is_not_model_probability": true,
     "portfolio_governance_must_not_mutate_leg_probability": true,
     "fail_closed_on_unsupported_routes": true,

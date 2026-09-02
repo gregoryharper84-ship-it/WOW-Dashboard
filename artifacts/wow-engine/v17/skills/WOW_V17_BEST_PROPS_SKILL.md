@@ -13,14 +13,15 @@ Find the strongest governed player/scalar props available today across all suppo
 ## Workflow
 1. Discover the current slate and candidate prop markets across supported sports.
 2. Build a broad candidate pool before ranking. Include every supported prop family the available board/data exposes.
-3. Hydrate current identity/status/evidence: event identity, player identity, lineup/role/injury/status, workload/opportunity, relevant recent and longer-run samples, opponent context, venue/weather where applicable, and current market context.
+3. Invoke `WOW_V17_RESEARCH_MARKET_CONTEXT_SKILL.md` for material candidates to refresh event/player identity, lineup/role/injury/status, workload/opportunity, relevant recent + longer-run samples, opponent/matchup context, venue/weather/rest/travel where applicable, and current market context with source/as-of provenance.
 4. Route each candidate to exactly one certified controlling prop specialist through WOW.
-5. Require the route's valid numeric probability package. Where required, require calibrated probability and calibrated lower bound.
-6. Preserve typed failures exactly. Do not replace an unavailable/failed fitted route with web projections, sportsbook odds, recent hit rate, or narrative probability.
-7. Apply exact-vs-adjacent-line discipline. Adjacent sportsbook lines may inform context but are not exact-line no-vig authority.
-8. Rank official supported candidates by calibrated lower bound, then calibrated probability as a tie-breaker unless a stricter route-specific contract controls.
-9. Deep-research the highest-ranked rows for material contradictions. Where a certified model has a fitted input for the contradiction, ensure it reaches the numeric package; otherwise report it as evidence/risk without inventing a second penalty.
-10. Return the best plays, not a quota.
+5. Where refreshed evidence is a certified fitted input, ensure it reaches the governed hydration/scoring path. Otherwise keep it evidence-only; never invent a second numeric penalty.
+6. Require the route's valid numeric probability package. Where required, require calibrated probability and calibrated lower bound.
+7. Preserve typed failures exactly. Do not replace an unavailable/failed fitted route with web projections, sportsbook odds, recent hit rate, or narrative probability.
+8. Apply exact-vs-adjacent-line discipline. `EXACT_LINE` may support exact-line no-vig/economics; `ADJACENT_LINE` is context only; `NO_MARKET` means no suitable current comparable market.
+9. Rank official supported candidates by calibrated lower bound, then calibrated probability as a tie-breaker unless a stricter route-specific contract controls.
+10. Deep-review the highest-ranked rows for material contradictions and market disagreement without mutating the fitted probability unless the certified model actually consumes that input.
+11. Return the best plays, not a quota.
 
 ## Required output
 For each official pick show:
@@ -36,12 +37,15 @@ For each official pick show:
 - terminal/model status
 - controlling specialist
 - market-evidence type: `EXACT_LINE`, `ADJACENT_LINE`, or `NO_MARKET`
+- exact-line market/no-vig or movement context when available
 - strongest supporting evidence
 - material contradiction/risk
+- evidence as-of/provenance summary when material
 
 ## Publication rules
 - Official leaderboard: only governed fitted-model-supported rows with the numeric package required by that route.
 - Research-interest rows may be shown separately but never blended into the official ranking.
 - Unsupported exact lines, unsupported sports/stats, identity failures, or scorer failures remain fail-closed.
+- Research/market evidence never substitutes for the fitted model.
 - Never manufacture a probability to fill the board.
 - `can_execute=false` always.
