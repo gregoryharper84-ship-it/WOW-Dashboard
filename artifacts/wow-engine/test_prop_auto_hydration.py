@@ -99,7 +99,10 @@ def test_supported_mlb_pitcher_strikeout_route_hydrates_exact_l10():
     assert evidence["opportunity_ledger"]["regular_season_prior_starts"] == 10
     assert evidence["evidence_version"] == "PROP_EVIDENCE_V1"
     assert "INPUT_CAPTURE_SCREENSHOT:PRIZEPICKS" in evidence["source_timestamps"]
-    assert len(calls) == 3
+    # The first three calls are the required baseline acquisition contract.
+    # Optional opponent-context hydration may make additional official-source
+    # calls, but any failure there must remain neutral/backward-compatible.
+    assert len(calls) >= 3
     assert calls[0][0].endswith("/people/search")
     assert calls[1][0].endswith("/schedule")
     assert calls[2][0].endswith("/people/123/stats")
