@@ -39,6 +39,11 @@ from prop_settlement_registry import (
 )
 from qualification_policy_v2 import classify_prop_probability
 from prop_terminal_reducer_v2 import reduce_prop_terminal
+from wolfram_arithmetic_auditor import PASS as WOLFRAM_PASS
+from wolfram_arithmetic_auditor import LEDGER_WRITE_UNPROVEN as WOLFRAM_LEDGER_WRITE_UNPROVEN
+from wolfram_arithmetic_auditor import audit_claims as audit_wolfram_claims
+from wolfram_arithmetic_auditor import audit_enabled as wolfram_audit_enabled
+from wolfram_arithmetic_auditor import persist_audit as persist_wolfram_audit
 
 import prop_calibration_adapters
 import prop_model_adapters
@@ -221,6 +226,178 @@ def _money_lane(row: Any) -> dict[str, Any]:
         "blocks_model_probability": False,
         "can_execute": False,
     }
+
+
+def _american_implied_probability(odds: float) -> float:
+    value = float(odds)
+    if value == 0:
+        raise ValueError("american odds must be non-zero")
+    return 100.0 / (value + 100.0) if value > 0 else abs(value) / (abs(value) + 100.0)
+
+
+def _wolfram_arithmetic_claims(
+    row: Any,
+    *,
+    direction: str,
+    market_audit: Any,
+    settlement_lane: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Build only server-owned arithmetic expressions from governed outputs."""
+    claims: list[dict[str, Any]] = []
+    probabilities = [
+        getattr(row, "probability_more", None),
+        getattr(row, "probability_less", None),
+        getattr(row, "push_probability", None),
+    ]
+    if all(value is not None for value in probabilities):
+        claims.append({
+            "claim_id": "model-probability-normalization",
+            "template_id": "PROBABILITY_TOTAL",
+            "inputs": {"probabilities": probabilities},
+            "reported_result": 1.0,
+        })
+
+    side_a = getattr(market_audit, "side_a", None)
+    side_b = getattr(market_audit, "side_b", None)
+    if side_a is not None and side_b is not None:
+        raw_a = _american_implied_probability(side_a.american_odds)
+        raw_b = _american_implied_probability(side_b.american_odds)
+        claims.extend((
+            {
+                "claim_id": "market-side-a-implied-probability",
+                "template_id": "AMERICAN_ODDS_IMPLIED_PROBABILITY",
+                "inputs": {"american_odds": side_a.american_odds},
+                "reported_result": raw_a,
+            },
+            {
+                "claim_id": "market-side-b-implied-probability",
+                "template_id": "AMERICAN_ODDS_IMPLIED_PROBABILITY",
+                "inputs": {"american_odds": side_b.american_odds},
+                "reported_result": raw_b,
+            },
+            {
+                "claim_id": "market-hold",
+                "template_id": "MARKET_HOLD",
+                "inputs": {"q_a": raw_a, "q_b": raw_b},
+                "reported_result": raw_a + raw_b - 1.0,
+            },
+        ))
+        target = str(direction or "").upper()
+        selected_is_a = str(side_a.side or "").upper() == target
+        selected, opposing = (raw_a, raw_b) if selected_is_a else (raw_b, raw_a)
+        market_prior = getattr(row, "market_prior_probability", None)
+        if market_prior is not None:
+            claims.append({
+                "claim_id": "two-way-no-vig",
+                "template_id": "TWO_WAY_NO_VIG",
+                "inputs": {"q_selected": selected, "q_opposing": opposing},
+                "reported_result": market_prior,
+            })
+
+    settlement_probabilities = [
+        settlement_lane.get("p_win"),
+        settlement_lane.get("p_loss"),
+        settlement_lane.get("p_push"),
+        settlement_lane.get("p_void"),
+    ]
+    if settlement_lane.get("status") == "PASS" and all(value is not None for value in settlement_probabilities):
+        claims.append({
+            "claim_id": "settlement-probability-normalization",
+            "template_id": "PROBABILITY_TOTAL",
+            "inputs": {"probabilities": settlement_probabilities},
+            "reported_result": 1.0,
+        })
+        conditional = settlement_lane.get("conditional_win_probability")
+        if conditional is not None:
+            claims.append({
+                "claim_id": "conditional-graded-win-probability",
+                "template_id": "TWO_WAY_NO_VIG",
+                "inputs": {
+                    "q_selected": settlement_lane["p_win"],
+                    "q_opposing": settlement_lane["p_loss"],
+                },
+                "reported_result": conditional,
+            })
+
+    profit_multiple = settlement_lane.get("profit_multiple")
+    if settlement_lane.get("expected_profit_per_unit_staked") is not None and profit_multiple is not None:
+        claims.append({
+            "claim_id": "fixed-odds-expected-profit",
+            "template_id": "FIXED_ODDS_EXPECTED_PROFIT",
+            "inputs": {
+                "p_win": settlement_lane["p_win"],
+                "p_loss": settlement_lane["p_loss"],
+                "profit_multiple": profit_multiple,
+            },
+            "reported_result": settlement_lane["expected_profit_per_unit_staked"],
+        })
+    if settlement_lane.get("break_even_unconditional") is not None and profit_multiple is not None:
+        claims.append({
+            "claim_id": "fixed-odds-break-even-unconditional",
+            "template_id": "FIXED_ODDS_BREAK_EVEN_UNCONDITIONAL",
+            "inputs": {
+                "refundable_probability": (settlement_lane.get("p_push") or 0.0) + (settlement_lane.get("p_void") or 0.0),
+                "profit_multiple": profit_multiple,
+            },
+            "reported_result": settlement_lane["break_even_unconditional"],
+        })
+    return claims
+
+
+def _apply_wolfram_arithmetic_gate(
+    *,
+    row: Any,
+    direction: str,
+    market_audit: Any,
+    market_lane: dict[str, Any],
+    settlement_lane: dict[str, Any],
+    money_lane: dict[str, Any],
+    prediction_id: str,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
+    required = wolfram_audit_enabled()
+    claims = _wolfram_arithmetic_claims(
+        row,
+        direction=direction,
+        market_audit=market_audit,
+        settlement_lane=settlement_lane,
+    )
+    audit = audit_wolfram_claims(claims, required=required)
+    verdict = str(audit.get("verdict") or "WOLFRAM_OUTPUT_INVALID")
+    audit = dict(audit)
+    if required:
+        try:
+            stored = persist_wolfram_audit(
+                prod.get_client(),
+                prediction_id=prediction_id,
+                audit=audit,
+            )
+            audit["ledger_write"] = "PASS"
+            audit["arithmetic_audit_id"] = stored["arithmetic_audit_id"]
+            audit["audit_payload_hash"] = stored["audit_payload_hash"]
+        except Exception:
+            audit["provider_verdict"] = verdict
+            audit["verdict"] = WOLFRAM_LEDGER_WRITE_UNPROVEN
+            audit["ledger_write"] = "UNPROVEN"
+            verdict = WOLFRAM_LEDGER_WRITE_UNPROVEN
+    else:
+        audit["ledger_write"] = "NOT_REQUIRED"
+
+    market_lane = dict(market_lane)
+    settlement_lane = dict(settlement_lane)
+    money_lane = dict(money_lane)
+    for lane in (market_lane, settlement_lane, money_lane):
+        lane["wolfram_arithmetic_audit"] = verdict
+        lane["arithmetic_verified"] = verdict == WOLFRAM_PASS
+
+    if required and verdict != WOLFRAM_PASS:
+        if market_lane.get("status") == "PASS":
+            market_lane["status"] = "HOLD"
+            market_lane["candidate_audit_blocker"] = verdict
+        money_lane["status"] = "HOLD"
+        money_lane["money_lane_status"] = verdict
+        money_lane["arithmetic_audit_blocker"] = verdict
+        settlement_lane["arithmetic_audit_blocker"] = verdict
+    return market_lane, settlement_lane, money_lane, audit
 
 
 def _probability_qualification(row: Any, market_lane: dict[str, Any], money_lane: dict[str, Any], settlement_lane: dict[str, Any]) -> dict[str, Any]:
@@ -679,6 +856,15 @@ def score_prop(
     market_lane = _market_lane_with_audit(result.row, market_audit)
     settlement_lane = _settlement_lane(result.row, req, settlement_rule, settlement_resolution, market_audit.side_a, market_audit.side_b)
     money_lane = _effective_money_lane(result.row, settlement_lane)
+    market_lane, settlement_lane, money_lane, arithmetic_audit = _apply_wolfram_arithmetic_gate(
+        row=result.row,
+        direction=req.direction,
+        market_audit=market_audit,
+        market_lane=market_lane,
+        settlement_lane=settlement_lane,
+        money_lane=money_lane,
+        prediction_id=str(persisted["prediction_id"]),
+    )
     probability_qualification = _probability_qualification(result.row, market_lane, money_lane, settlement_lane)
     return {
         "ok": True,
@@ -705,6 +891,7 @@ def score_prop(
             "MARKET": market_lane,
             "SETTLEMENT": settlement_lane,
             "MONEY": money_lane,
+            "ARITHMETIC_AUDIT": arithmetic_audit,
         },
         "backend_traversal": {
             "requester_model": model_identity,
@@ -714,6 +901,8 @@ def score_prop(
             "controlling_specialist": "PASS",
             "exact_route_artifact": "PASS",
             "governed_model": "PASS",
+            "wolfram_arithmetic_audit": arithmetic_audit.get("verdict"),
+            "wolfram_audit_ledger_write": arithmetic_audit.get("ledger_write"),
             "prediction_ledger_write": "PASS",
         },
         "route_preflight": {
