@@ -83,6 +83,27 @@ def test_controlling_model_does_not_accept_envelope_probability_substitute():
     assert "raw_model_probability" not in out.output or out.output.get("probability_publishable") is False
 
 
+def test_controlling_model_available_capability_missing_ids_is_inputs_insufficient():
+    # Capability is registered/AVAILABLE, but the specific artifact/calibrator
+    # ids needed to invoke it are missing — distinct from MODEL_UNAVAILABLE
+    # (no capability at all) and from an invocation exception.
+    out = execute_envelope(_env("wow.controlling-model", {
+        "sport": "WNBA", "market_family": "PLAYER_PROP", "period": "FULL_GAME",
+        "capability": {"status": "AVAILABLE"},
+    }))
+    assert out.status == "BLOCKED"
+    assert out.blockers == ["MODEL_INPUTS_INSUFFICIENT"]
+    assert out.output.get("probability_publishable") is False
+
+
+def test_controlling_model_no_capability_record_is_model_unavailable():
+    out = execute_envelope(_env("wow.controlling-model", {
+        "sport": "WNBA", "market_family": "PLAYER_PROP", "period": "FULL_GAME",
+    }))
+    assert out.status == "BLOCKED"
+    assert out.blockers == ["MODEL_UNAVAILABLE"]
+
+
 def test_failure_path_worker_builds_unconditional_distribution():
     out = execute_envelope(_env("wow.failure-path-framework", {
         "components": [

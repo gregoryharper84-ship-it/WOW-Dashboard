@@ -218,3 +218,23 @@ def test_provider_failure_is_not_model_unavailable(monkeypatch):
     assert out["terminal_label"] != "MODEL_UNAVAILABLE"
     assert out["acquisition"]["status"] == "FAILED"
     assert out["can_execute"] is False
+
+
+def test_specialist_invocation_exception_is_model_scorer_failed(monkeypatch):
+    monkeypatch.setattr(ingress, "hydrate_mlb_1ip_evidence", lambda **kwargs: _hydrated(lineup_status="CONFIRMED"))
+
+    def broken_specialist(**kwargs):
+        raise TimeoutError("empirical specialist timed out")
+
+    monkeypatch.setattr(ingress, "score_mlb_1ip_empirical", broken_specialist)
+
+    out = ingress.score_mlb_1ip_ingress(
+        row=_row(), row_key="r5", market_api=_MarketAPI(), request_id="req-5",
+        run_research=lambda **kwargs: (True, {"stages": []}), terminal=_terminal, reduce_terminal=_reduce,
+    )
+    assert out["code"] == "MODEL_SCORER_FAILED"
+    assert out["terminal_label"] == "MODEL_UNAVAILABLE"
+    assert out["detail"]["specialist_invoked"] is True
+    assert out["detail"]["error_type"] == "TimeoutError"
+    assert out["probability_publishable"] is False
+    assert out["can_execute"] is False

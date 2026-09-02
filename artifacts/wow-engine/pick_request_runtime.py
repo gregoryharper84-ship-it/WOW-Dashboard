@@ -36,6 +36,7 @@ from mlb_1ip_ingress_runtime import score_mlb_1ip_ingress
 from prop_auto_hydration import PropAutoHydrationError, auto_hydrate_prop_evidence
 from qualification_policy_v2 import classify_prop_probability
 from prop_terminal_reducer_v2 import EVENT_BLOCKERS, TRUE_MODEL_REJECTION_LABELS, reduce_prop_terminal
+from v17.slip_portfolio_optimizer import optimize_portfolio, thesis_identity
 
 
 PROP_STAT_ALIASES: dict[tuple[str, str], str] = {
@@ -397,6 +398,65 @@ def _completed_scored_outcome(
     }
 
 
+def _portfolio_leg(
+    row_key: str,
+    row: "PickRequestRow",
+    canonical_stat: str,
+    scored: dict[str, Any],
+) -> dict[str, Any]:
+    """Build one leg record for cross-row duplicate-thesis exposure scoring.
+
+    Only identity fields and existing (already-computed) quality signals are
+    read here -- this never computes or mutates a sporting probability, it
+    only lets slip_portfolio_optimizer.optimize_portfolio recognize when two
+    completed rows in the same request share the same underlying thesis.
+    """
+    prediction = scored.get("prediction") if isinstance(scored.get("prediction"), dict) else scored
+    return {
+        "row_id": row_key,
+        "event_id": getattr(row, "event_id", None),
+        "player": getattr(row, "player", None),
+        "prop_type": canonical_stat,
+        "direction": getattr(row, "direction", None),
+        "line": getattr(row, "line", None),
+        "model_probability": prediction.get("raw_model_probability") if isinstance(prediction, dict) else None,
+        "calibrated_probability": prediction.get("calibrated_probability") if isinstance(prediction, dict) else None,
+        "calibrated_lower_bound": (
+            prediction.get("calibrated_probability_lower_bound") if isinstance(prediction, dict) else None
+        ),
+    }
+
+
+def _duplicate_thesis_exposure(
+    request_id: Optional[str],
+    scored_legs: list[tuple[dict[str, Any], dict[str, Any]]],
+) -> None:
+    """Compute real cross-row duplicate-thesis exposure for this batch and
+    attach it to each completed row's outcome.
+
+    This is genuinely computed (v17.slip_portfolio_optimizer.optimize_portfolio),
+    not a caller-attested boolean, and it is informational only: it never
+    changes a row's terminal_status, probability_publishable, or rank_eligible.
+    Slip-level removal/replacement is a separate downstream construction
+    decision outside this row-scoring endpoint's scope.
+    """
+    if not scored_legs:
+        return
+    card = {"card_id": request_id or "score-pick-request-batch", "legs": [leg for leg, _ in scored_legs]}
+    result = optimize_portfolio([card])
+    removed_ids = {entry["removed_row_id"] for entry in result.removals}
+    replaced_ids = {entry["removed_row_id"] for entry in result.replacements}
+    for leg, outcome in scored_legs:
+        identity = thesis_identity(leg)
+        outcome["portfolio_governance"] = {
+            "thesis_identity": identity,
+            "duplicate_thesis_count": result.duplicate_counts.get(identity, 1),
+            "duplicate_thesis_flagged": leg["row_id"] in removed_ids or leg["row_id"] in replaced_ids,
+            "sporting_probability_mutated": False,
+            "can_execute": False,
+        }
+
+
 def _telemetry(outcomes: list[dict[str, Any]]) -> dict[str, int]:
     auto_attempted = 0
     auto_succeeded = 0
@@ -558,6 +618,7 @@ def install_pick_request_routes(
         ),
     ):
         outcomes: list[dict[str, Any]] = []
+        scored_legs: list[tuple[dict[str, Any], dict[str, Any]]] = []
 
         for index, original_row in enumerate(batch.rows):
             row = original_row
@@ -639,7 +700,12 @@ def install_pick_request_routes(
                 continue
 
             if canonical_stat == MLB_1IP_STAT_TYPE:
-                outcomes.append(_score_mlb_1ip_row(row, row_key, market_api=market_api, request_id=batch.request_id))
+                mlb_1ip_outcome = _score_mlb_1ip_row(row, row_key, market_api=market_api, request_id=batch.request_id)
+                outcomes.append(mlb_1ip_outcome)
+                if mlb_1ip_outcome["terminal_status"] == "COMPLETED":
+                    scored_legs.append(
+                        (_portfolio_leg(row_key, row, canonical_stat, mlb_1ip_outcome.get("result") or {}), mlb_1ip_outcome)
+                    )
                 continue
 
             acquisition: dict[str, Any]
@@ -816,15 +882,18 @@ def install_pick_request_routes(
                 )
                 continue
 
-            outcomes.append(
-                _completed_scored_outcome(
-                    row_key=row_key,
-                    scored=scored,
-                    snapshot_id=snapshot_id,
-                    fingerprint=fingerprint,
-                    acquisition=acquisition,
-                )
+            completed_outcome = _completed_scored_outcome(
+                row_key=row_key,
+                scored=scored,
+                snapshot_id=snapshot_id,
+                fingerprint=fingerprint,
+                acquisition=acquisition,
             )
+            outcomes.append(completed_outcome)
+            if completed_outcome["terminal_status"] == "COMPLETED":
+                scored_legs.append((_portfolio_leg(row_key, row, canonical_stat, scored), completed_outcome))
+
+        _duplicate_thesis_exposure(batch.request_id, scored_legs)
 
         completed = sum(
             1 for outcome in outcomes if outcome["terminal_status"] == "COMPLETED"

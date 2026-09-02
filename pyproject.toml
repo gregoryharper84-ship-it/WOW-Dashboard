@@ -9,3 +9,9 @@ dependencies = [
     "gunicorn>=26.0.0",
     "psycopg2-binary>=2.9.12",
 ]
+
+[tool.pytest.ini_options]
+# deployment_gate_tests.py uses the plural "_tests.py" suffix, which pytest's
+# default python_files pattern ("test_*.py", "*_test.py") does not match — it
+# was being silently skipped by every "pytest -q" run, including CI's.
+python_files = ["test_*.py", "*_test.py", "*_tests.py"]
