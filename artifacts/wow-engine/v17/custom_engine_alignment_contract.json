@@ -61,8 +61,21 @@
     "action_schemas": {"WOW_BETTING_ENGINE": "v17/openapi.wow-betting-engine.v17.yaml", "LLP_TEAM_BETTING_ENGINE": "v17/openapi.llp-team-engine.v17.yaml"}
   },
   "editor_attestation": {
-    "WOW_BETTING_ENGINE": {"required": true, "status": "SOURCE_CONTRACT_READY_LIVE_EDITOR_SYNC_EXTERNAL", "blocker": "LIVE_CUSTOM_GPT_EDITOR_CONFIGURATION_NOT_WRITABLE_FROM_CURRENT_TOOLSET"},
-    "LLP_TEAM_BETTING_ENGINE": {"required": true, "status": "SOURCE_CONTRACT_READY_LIVE_EDITOR_SYNC_EXTERNAL", "blocker": "LIVE_CUSTOM_GPT_EDITOR_CONFIGURATION_NOT_WRITABLE_FROM_CURRENT_TOOLSET"}
+    "WOW_BETTING_ENGINE": {
+      "required": true,
+      "status": "LIVE_EDITOR_SYNC_VERIFIED",
+      "instructions_blob_sha": "202157522b96921d973e7a9dbc1d373f95249eb7",
+      "action_schema": "v17/openapi.wow-betting-engine.v17.yaml",
+      "action_schema_changed": false,
+      "bearer_auth_changed": false,
+      "verified_after_reload": true,
+      "live": true
+    },
+    "LLP_TEAM_BETTING_ENGINE": {
+      "required": true,
+      "status": "LIVE_EDITOR_SYNC_VERIFIED",
+      "note": "Previously verified V17 editor sync remains authoritative; no LLP instruction change was required for the WOW skill-router refresh."
+    }
   },
   "resolved_phase_a_findings": [
     "R01_RENDER_DEPLOY_SHA_PARITY",
@@ -74,10 +87,9 @@
     "R07_ADDITIVE_PRODUCTION_ACTIVATION_WITH_ATOMIC_FLAG_ROLLBACK",
     "R08_SCOUT_RESEARCH_BARRIER_ENFORCED",
     "R09_EVENT_GATE_FUNCTION_MIGRATION_CAPTURED",
-    "R10_OWNER_AUTHORIZED_V17_BACKEND_CUTOVER"
+    "R10_OWNER_AUTHORIZED_V17_BACKEND_CUTOVER",
+    "R11_MAIN_BRANCH_MACHINE_PROTECTION_VERIFIED",
+    "R12_LIVE_CUSTOM_GPT_EDITOR_SYNC_VERIFIED"
   ],
-  "remaining_external_sync": [
-    "WOW_CUSTOM_GPT_LIVE_EDITOR_INSTALL_V17_SCHEMA_AND_INSTRUCTIONS",
-    "LLP_CUSTOM_GPT_LIVE_EDITOR_INSTALL_V17_SCHEMA_AND_INSTRUCTIONS"
-  ]
+  "remaining_external_sync": []
 }

@@ -2,25 +2,26 @@
 
 Updated: 2026-09-02
 
-Backend/runtime deployment does **not** modify the live Custom GPT editors. Repository skill files are canonical workflow contracts, but the live WOW GPT must also contain the compact skill router in its Instructions field for shorthand commands to persist across chats.
+Status: **LIVE_EDITOR_SYNC_VERIFIED**
 
-## Current synchronization task
+Backend/runtime deployment does **not** modify the live Custom GPT editors. Repository skill files are canonical workflow contracts, and the live WOW GPT must contain the compact skill router in its Instructions field for shorthand commands to persist across chats.
 
-This update changes the WOW instruction layer only. **No Action schema or Render redeploy is required.**
+## Verified live WOW editor state
 
-In the live `WOW_BETTING_ENGINE` editor:
-1. replace the Instructions field with the complete contents of `artifacts/wow-engine/WOW_V17_CUSTOM_GPT_INSTRUCTIONS.txt`;
-2. keep the existing production V17 Action schema `artifacts/wow-engine/v17/openapi.wow-betting-engine.v17.yaml` unchanged;
-3. keep API-key/Bearer authentication using the existing production `WOW_ACTION_API_KEY` credential;
-4. save the GPT.
+The `WOW_BETTING_ENGINE` editor refresh is complete and was verified after reload:
 
-Do not paste or expose the credential value, and never install a Supabase service-role key in the editor.
+- Instructions match the current canonical `artifacts/wow-engine/WOW_V17_CUSTOM_GPT_INSTRUCTIONS.txt` content.
+- Canonical Git blob SHA: `202157522b96921d973e7a9dbc1d373f95249eb7`.
+- The existing production V17 Action schema `artifacts/wow-engine/v17/openapi.wow-betting-engine.v17.yaml` remained unchanged.
+- API-key/Bearer authentication using the existing production `WOW_ACTION_API_KEY` remained unchanged.
+- The GPT saved successfully and remained `Live`.
+- No Render redeploy was required for this instruction-layer refresh.
 
-The LLP editor does not require an instruction change solely for this skill-router update. Team/event requests still route from WOW to the existing governed `LLP_TEAM_BETTING_ENGINE` contract.
+The LLP editor required no change solely for this WOW skill-router update. Its previously verified V17 team/event contract remains authoritative.
 
 ## Persistent skill router
 
-After synchronization, the live WOW GPT must recognize these commands as controlling shorthand:
+The live WOW GPT now recognizes these controlling shorthand commands:
 - `Run V17 Daily Picks` -> `WOW_V17_DAILY_PICKS`
 - `Run V17 Best Props` -> `WOW_V17_BEST_PROPS`
 - screenshot/PDF/image/pasted-board review -> `WOW_V17_SCREENSHOT_REVIEW`
@@ -42,7 +43,7 @@ These rules are controlling:
 - missing market evidence may block economics/value analysis but must not erase completed sporting probability where the backend preserves it;
 - no manual double-penalty may be added after the certified model has already consumed the same evidence.
 
-## V17 invariants that must survive editor sync
+## V17 invariants preserved
 - `custom_gpt_identity=WOW_BETTING_ENGINE`
 - WOW owns player/prop/scalar intelligence; LLP owns team/event winners/favorites/underdogs/upsets
 - exactly one controlling specialist per row/event
@@ -54,14 +55,15 @@ These rules are controlling:
 - `can_execute=false`
 - no live wager/order execution
 
-## Non-destructive editor verification
-After saving, verify in the live WOW GPT:
+## Ongoing verification
+
+After future instruction changes, re-verify:
 1. `Governance/health check` reports V17 active, `V17_TERMINAL_REDUCER`, and `can_execute=false`.
 2. `Run V17 Daily Picks` is interpreted as the master daily workflow rather than a generic chat response.
 3. `Run V17 Best Props` routes to WOW prop discovery and does not collapse to one market family.
 4. `Run V17 ML Winners` routes team/event probability through LLP.
 5. A screenshot-review request first commits to extracting every visible row before filtering.
-6. Research/market context is refreshed before final ranking, but unsupported model routes remain fail closed rather than receiving a market-derived probability.
+6. Research/market context is refreshed before final ranking, while unsupported model routes remain fail closed rather than receiving a market-derived probability.
 7. `Build the V17 Core` preserves individual leg probabilities and applies existing portfolio governance.
 
 Do not manufacture a production recommendation merely to test synchronization; governance/host-contract and deliberately unsupported routes are sufficient for safety acceptance.
@@ -71,4 +73,4 @@ Keep these independent:
 - `BACKEND_RUNTIME`: V17 active/live when backend confirms it
 - `MODEL_CAPABILITY`: route-specific certified support or governed fail-closed state
 - `REPOSITORY_GOVERNANCE`: protected-main/CI governance state
-- `LIVE_GPT_EDITOR_SYNC`: this router update is complete only after the live WOW editor saves and verifies the revised instructions
+- `LIVE_GPT_EDITOR_SYNC`: **LIVE_EDITOR_SYNC_VERIFIED**

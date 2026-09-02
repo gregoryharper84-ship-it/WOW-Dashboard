@@ -95,15 +95,22 @@ def test_v16_is_legacy_compatibility_not_current_generation():
     assert legacy["pick_request"]["compatibility_status"] == "PRESERVED_BY_ACTIVE_V17"
 
 
-def test_editor_source_contract_is_ready_but_live_editor_sync_is_not_falsely_attested():
+def test_live_editor_sync_is_verified_without_changing_execution_authority():
     c = _contract()
     attest = c["editor_attestation"]
-    assert attest["WOW_BETTING_ENGINE"]["required"] is True
-    assert attest["LLP_TEAM_BETTING_ENGINE"]["required"] is True
-    assert attest["WOW_BETTING_ENGINE"]["status"] == "SOURCE_CONTRACT_READY_LIVE_EDITOR_SYNC_EXTERNAL"
-    assert attest["LLP_TEAM_BETTING_ENGINE"]["status"] == "SOURCE_CONTRACT_READY_LIVE_EDITOR_SYNC_EXTERNAL"
+    wow = attest["WOW_BETTING_ENGINE"]
+    llp = attest["LLP_TEAM_BETTING_ENGINE"]
+
+    assert wow["required"] is True
+    assert llp["required"] is True
+    assert wow["status"] == "LIVE_EDITOR_SYNC_VERIFIED"
+    assert llp["status"] == "LIVE_EDITOR_SYNC_VERIFIED"
+    assert wow["instructions_blob_sha"] == "202157522b96921d973e7a9dbc1d373f95249eb7"
+    assert wow["action_schema"] == "v17/openapi.wow-betting-engine.v17.yaml"
+    assert wow["action_schema_changed"] is False
+    assert wow["bearer_auth_changed"] is False
+    assert wow["verified_after_reload"] is True
+    assert wow["live"] is True
+    assert c["remaining_external_sync"] == []
     assert c["activation"]["v17_cutover_allowed"] is True
-    assert set(c["remaining_external_sync"]) == {
-        "WOW_CUSTOM_GPT_LIVE_EDITOR_INSTALL_V17_SCHEMA_AND_INSTRUCTIONS",
-        "LLP_CUSTOM_GPT_LIVE_EDITOR_INSTALL_V17_SCHEMA_AND_INSTRUCTIONS",
-    }
+    assert c["activation"]["can_execute"] is False
