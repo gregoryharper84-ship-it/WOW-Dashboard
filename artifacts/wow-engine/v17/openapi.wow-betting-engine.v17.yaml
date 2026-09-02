@@ -39,11 +39,6 @@ paths:
         WOW player-prop lane only. The X-WOW-Model-Identity header is fixed to
         WOW_BETTING_ENGINE. Never use this route for team/event winners.
       security: [{actionBearer: []}]
-      parameters:
-        - name: X-WOW-Model-Identity
-          in: header
-          required: true
-          schema: {type: string, enum: [WOW_BETTING_ENGINE]}
       requestBody:
         required: true
         content:
@@ -81,13 +76,7 @@ paths:
         required: true
         content:
           application/json:
-            schema:
-              allOf:
-                - {$ref: '#/components/schemas/TeamEventRequest'}
-                - type: object
-                  properties:
-                    requester_host_identity: {type: string, enum: [WOW_BETTING_ENGINE]}
-                  required: [requester_host_identity]
+            schema: {$ref: '#/components/schemas/TeamEventRequest'}
       responses:
         '200': {description: Governed LLP-controlled team/event result}
         '401': {description: Authentication failed}
@@ -102,7 +91,7 @@ paths:
         required: true
         content:
           application/json:
-            schema: {type: object, additionalProperties: true}
+            schema: {$ref: '#/components/schemas/RecommendationBatch'}
       responses:
         '200': {description: Terminal recommendation records persisted}
         '503': {description: Write-before-display not proven}
@@ -128,9 +117,58 @@ components:
     ScorePropRequest:
       type: object
       additionalProperties: true
+      required: [event_id, event_start_time, sport, stat_type, line, direction, source_snapshot_id]
+      properties:
+        requester_host_identity: {type: string, enum: [WOW_BETTING_ENGINE], default: WOW_BETTING_ENGINE}
+        event_id: {type: string}
+        event_start_time: {type: string, format: date-time}
+        sport: {type: string}
+        league: {type: [string, 'null']}
+        player: {type: [string, 'null']}
+        stat_type: {type: string}
+        line: {type: number}
+        direction: {type: string, enum: [MORE, LESS]}
+        source_snapshot_id: {type: string}
+        seed: {type: integer, default: 0}
+        evidence: {type: [object, 'null'], additionalProperties: true}
     PickRequestBatch:
       type: object
+      additionalProperties: false
+      required: [rows]
+      properties:
+        request_id: {type: [string, 'null']}
+        rows:
+          type: array
+          minItems: 1
+          maxItems: 50
+          items: {$ref: '#/components/schemas/PickRequestRow'}
+    PickRequestRow:
+      type: object
       additionalProperties: true
+      required: [event_id, event_start_time, sport, player, stat_type, line, direction]
+      properties:
+        row_key: {type: [string, 'null']}
+        event_id: {type: string}
+        event_start_time: {type: string, format: date-time}
+        sport: {type: string}
+        league: {type: [string, 'null']}
+        player: {type: string}
+        opponent: {type: [string, 'null']}
+        stat_type: {type: string}
+        line: {type: number}
+        direction: {type: string, enum: [MORE, LESS]}
+        source_snapshot_id: {type: [string, 'null']}
+        source_type: {type: [string, 'null']}
+        platform: {type: [string, 'null']}
+        evidence: {type: [object, 'null'], additionalProperties: true}
+    RecommendationBatch:
+      type: object
+      additionalProperties: true
+      required: [records]
+      properties:
+        records:
+          type: array
+          items: {type: object, additionalProperties: true}
     TeamEventRequest:
       type: object
       additionalProperties: false
