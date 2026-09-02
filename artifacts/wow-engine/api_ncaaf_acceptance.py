@@ -26,6 +26,7 @@ from ncaaf_raw_availability_runtime import install_raw_availability_routes
 from ncaaf_training_materializer import materialize_training_games
 from pick_request_runtime import install_pick_request_routes
 from prop_live_model_acceptance import run_prop_model_live_self_acceptance
+from v17_synthetic_self_acceptance import run_v17_synthetic_self_acceptance
 from recommendation_ledger_api import install_recommendation_ledger_routes
 from team_event_request_runtime import install_team_event_request_routes
 from v17.team_event_request_runtime import install_team_event_routes as install_v17_team_event_routes
@@ -293,6 +294,23 @@ async def schedule_prop_model_live_self_acceptance():
     task = asyncio.create_task(
         run_prop_model_live_self_acceptance(base.market_api, _logger)
     )
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+
+
+@app.on_event("startup")
+async def schedule_v17_synthetic_self_acceptance():
+    """Optionally prove the deployed HTTP boundary fails closed (no certified
+    model, no fabricated probability, can_execute=false) for an unsupported
+    sport, without requiring any external caller to reach this service."""
+    if os.getenv("WOW_V17_SYNTHETIC_ACCEPTANCE", "0") != "1":
+        return
+
+    async def _run_after_startup():
+        await asyncio.sleep(5.0)
+        await run_v17_synthetic_self_acceptance(_v17_logger)
+
+    task = asyncio.create_task(_run_after_startup())
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)
 
