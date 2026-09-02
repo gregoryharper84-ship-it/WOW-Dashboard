@@ -22,6 +22,7 @@ import httpx
 from fastapi import Depends, FastAPI, HTTPException
 
 import api as base_api
+from wolfram_arithmetic_auditor import readiness as wolfram_arithmetic_readiness
 
 ScoreEventRequest = base_api.ScoreEventRequest
 _require_action_api_key = base_api._require_action_api_key
@@ -266,6 +267,7 @@ def governance():
             "can_execute": False,
             "deployment_gates": "GATE_LEDGER_UNREACHABLE",
             "calibration_health": calibration_health,
+            "arithmetic_audit": wolfram_arithmetic_readiness(),
         }
 
     return {
@@ -284,6 +286,7 @@ def governance():
         "can_execute": False,
         "deployment_gates": gate_state.get("deployment_gates", []),
         "calibration_health": calibration_health,
+        "arithmetic_audit": wolfram_arithmetic_readiness(),
     }
 
 
