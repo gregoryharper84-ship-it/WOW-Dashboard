@@ -302,10 +302,14 @@ def score_mlb_1ip_ingress(
             market_evidence_present=market_evidence_present,
         )
     except Exception as exc:
+        # The controlling specialist was invoked but raised (timeout, exception,
+        # or otherwise failed to produce a scored package) — this is an
+        # invocation-level failure, distinct from MODEL_OUTPUT_INVALID which is
+        # reserved for a specialist that returns but with a malformed value.
         return terminal(
             row_key,
             "HELD",
-            "MODEL_OUTPUT_INVALID",
+            "MODEL_SCORER_FAILED",
             detail={
                 "terminal_label": "MODEL_UNAVAILABLE",
                 "error_type": type(exc).__name__,

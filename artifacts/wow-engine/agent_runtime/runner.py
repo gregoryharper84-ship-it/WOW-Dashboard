@@ -121,8 +121,13 @@ def _run_controlling_model(env: WorkerEnvelope) -> WorkerOutput:
         return _blocked(env, *blockers, output=bridged)
 
     cap = env.payload.get("capability")
-    if not isinstance(cap, dict) or cap.get("status") != "AVAILABLE" or not cap.get("artifact_id") or not cap.get("calibrator_id"):
+    if not isinstance(cap, dict) or cap.get("status") != "AVAILABLE":
         return _blocked(env, "MODEL_UNAVAILABLE", output={"probability_publishable": False})
+    if not cap.get("artifact_id") or not cap.get("calibrator_id"):
+        # A capability is registered/available, but the specific inputs required
+        # to invoke it (artifact_id/calibrator_id) are missing — distinct from a
+        # genuinely unavailable capability, and from an invocation exception.
+        return _blocked(env, "MODEL_INPUTS_INSUFFICIENT", output={"probability_publishable": False})
     # No qualitative, market, L5/L10, or caller-provided probability fallback.
     return _blocked(env, "CONTROLLING_MODEL_PROVIDER_NOT_WIRED", output={
         "probability_publishable": False, "artifact_id": cap.get("artifact_id"), "calibrator_id": cap.get("calibrator_id"),

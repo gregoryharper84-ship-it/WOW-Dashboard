@@ -293,7 +293,11 @@ def test_gate_07_missing_payout_blocks_money_lane_only():
     )
     row = determine_publishability(row)
     assert "money_lane_status != RESOLVED (payout unresolved)" in row.blockers
-    assert "_MONEY_LANE_UNRESOLVED" in row.probability_ceiling
+    # Money lane and the model/confidence ceiling are separate objectives (see
+    # gate_07b immediately below, same inputs but RESOLVED): an unresolved
+    # money lane is recorded only in `blockers`, and must not alter the native
+    # model ceiling label itself.
+    assert row.probability_ceiling == "MODEL_QUALIFIED_HOLD"
     assert row.probability_publishable is True
     assert row.calibrated_probability == 0.7
 
@@ -624,7 +628,11 @@ def test_gate_10_luzardo_smoke_test_reproduces_blocked_diagnosis():
     assert row.calibrated_probability is None
     assert row.market_prior_probability is None
     assert row.reference_market_price == -1500
-    assert row.probability_ceiling == "RESEARCH_INTEREST"
+    # determine_publishability delegates to qualification_policy_v2, which
+    # fails closed to MODEL_UNAVAILABLE whenever a calibrated probability or
+    # lower bound is absent (see classify_prop_probability) — stricter than,
+    # and superseding, this test's older RESEARCH_INTEREST expectation.
+    assert row.probability_ceiling == "MODEL_UNAVAILABLE"
 
 
 # --- Gate 11: real end-to-end positive path [NEW, per review] -----------
@@ -678,7 +686,13 @@ def test_gate_11_end_to_end_positive_path_produces_publishable_probability():
     assert row.calibration_status == "PRECALIBRATION_SHRINKAGE"
     assert row.market_prior_weight == 0.0
     assert row.market_prior_probability is not None
-    assert "PROHIBITED_PRECALIBRATION" in row.probability_ceiling
+    # `calibration_status` (asserted above) is the field that records the
+    # precalibration-shrinkage state; `probability_ceiling` only ever carries
+    # a native WOW terminal label (see qualification_policy_v2). With this
+    # synthetic draw's lower bound (~0.45) below the 0.50 RESEARCH_INTEREST
+    # floor, NO_LOW_PROBABILITY is the correct current ceiling — the older
+    # "PROHIBITED_PRECALIBRATION" ceiling name no longer exists.
+    assert row.probability_ceiling == "NO_LOW_PROBABILITY"
     # Phase A has no persisted-calibrator identity or Phase B/C bounds
     # method to report -- these must stay None, not leak stale values.
     assert row.calibration_version is None
@@ -915,6 +929,20 @@ client = TestClient(api.app)
 TEST_WOW_ACTION_API_KEY = "gate-test-wow-action-api-key"
 os.environ["WOW_ACTION_API_KEY"] = TEST_WOW_ACTION_API_KEY
 AUTH_HEADERS = {"Authorization": f"Bearer {TEST_WOW_ACTION_API_KEY}"}
+
+
+@pytest.fixture(autouse=True)
+def _wow_action_api_key_for_this_module(monkeypatch):
+    """`api.py` reads WOW_ACTION_API_KEY from os.environ on every request
+    (fail-closed, not cached at import). Several sibling test modules set
+    this same process-wide env var at their own import time without
+    restoring it, and pytest imports every test module during collection
+    before any test runs — so by the time this module's tests execute, the
+    env var may hold a different file's key. Re-pin it for every test in
+    this module so AUTH_HEADERS (baked in at import time above) always
+    matches what the live route checks, regardless of module import order.
+    """
+    monkeypatch.setenv("WOW_ACTION_API_KEY", TEST_WOW_ACTION_API_KEY)
 
 
 def test_gate_11h_score_prop_endpoint_409s_while_capability_unavailable():
