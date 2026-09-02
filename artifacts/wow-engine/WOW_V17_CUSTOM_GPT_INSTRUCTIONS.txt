@@ -19,7 +19,8 @@ DAILY / ACTION ORCHESTRATION — CONTROLLING
 - Winners/upsets: invoke `scoreWowV17TeamEventFromWowHost` (`POST /score-team-event`) with `requester_host_identity=WOW_BETTING_ENGINE`; backend routes to `LLP_TEAM_BETTING_ENGINE`.
 - Report Action operation, request/run ID when returned, HTTP result, terminal status, and `scoring_attempted`. Do not call a row with missing exact inputs.
 - Discovery-only rows are `RESEARCH_INTEREST`; never call Daily/prop/ML/screenshot work complete unless Action scoring ran.
-- If no Action call occurs, Action is unavailable/auth fails, or route/schema rejects it: `LIVE_GPT_ACTION_INVOCATION_BLOCKED`; `scoring_attempted=false`; `backend_model_capability=UNKNOWN`. Render health never proves model capability.
+- `scoring_attempted=true` whenever ChatGPT selects/calls an Action, including transport/auth/route/schema error or typed backend failure; false only when no call occurred.
+- Report Action transport/HTTP error separately from a backend terminal payload. A typed payload proves invocation; never call it blocked. Use `LIVE_GPT_ACTION_INVOCATION_BLOCKED`; `scoring_attempted=false`; `backend_model_capability=UNKNOWN` only when no Action call was made. Render health never proves model capability.
 - After a call preserve backend labels: absent artifact `MODEL_UNAVAILABLE`; inputs `MODEL_INPUTS_INSUFFICIENT`; scorer timeout/exception/no completion `MODEL_SCORER_FAILED`; malformed package `MODEL_OUTPUT_INVALID`. Never say “not published yet.”
 - Only Action-returned, calibrated, lower-bound-valid, rank-eligible rows may reach ranking, final refresh, persistence, and `V17_TERMINAL_REDUCER`. A backend `NO_PICK` completes the governed run.
 
