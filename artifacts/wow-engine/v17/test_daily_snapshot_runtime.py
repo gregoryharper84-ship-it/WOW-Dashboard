@@ -39,20 +39,54 @@ class Event: pass
 
 
 def test_daily_snapshot_returns_one_terminal_receipt_per_selected_row(monkeypatch):
-    monkeypatch.setattr("v17.daily_snapshot_runtime.score_team_event_request", lambda *_args, **_kwargs: {"code": "MODEL_UNAVAILABLE", "probability_publishable": False, "can_execute": False})
+    monkeypatch.setattr(
+        "v17.daily_snapshot_runtime.score_team_event_request",
+        lambda *_args, **_kwargs: {"code": "FINAL_APPROVED", "terminal_label": "FINAL_APPROVED", "probability_publishable": True, "can_execute": False},
+    )
     result = run_daily_snapshot(DailySnapshotRequest(requested_slate_date="2026-09-02", requested_timezone="America/Chicago"), db=DB(), market_api=Market(), event_api=Event())
     assert result["terminal"] is True
     assert result["run_status"] == "COMPLETED"
     assert len(result["rows"]) == 2
     assert all(row["terminal"] is True and row["can_execute"] is False for row in result["rows"])
     # The PROPS row's score_prop always raises -> HELD; the mocked MONEYLINE
-    # row returns normally (no exception) -> COMPLETED. Reconciliation must
-    # reflect these real per-row outcomes, not a hardcoded "all completed".
+    # row returns normally with probability_publishable=True -> COMPLETED.
+    # Reconciliation must reflect these real per-row outcomes, not a
+    # hardcoded "all completed".
     by_lane = {row["lane"]: row for row in result["rows"]}
     assert by_lane["PROPS"]["row_status"] == "HELD"
     assert by_lane["MONEYLINE"]["row_status"] == "COMPLETED"
     assert result["reconciliation"] == {
         "rows_in": 2, "rows_completed": 1, "rows_held": 1,
+        "rows_rejected": 0, "rows_unclassified": 0, "balanced": True,
+    }
+
+
+def test_moneyline_normal_return_that_is_still_a_hold_is_not_completed(monkeypatch):
+    # score_team_event_request's success path can itself return normally (no
+    # exception) while representing a hold: _run_mlb_llp_governance's
+    # _llp_governance_hold branch returns MODEL_QUALIFIED_HOLD /
+    # probability_publishable=False without raising -- this is the exact
+    # shape the live LLP bridge returns today, since the bridge is not yet
+    # proven. Exception-vs-no-exception must not be used as the completed/
+    # held signal for this lane; probability_publishable must be.
+    monkeypatch.setattr(
+        "v17.daily_snapshot_runtime.score_team_event_request",
+        lambda *_args, **_kwargs: {
+            "code": "LLP_EVENT_GOVERNANCE_NOT_PROVEN",
+            "terminal_label": "MODEL_QUALIFIED_HOLD",
+            "probability_publishable": False,
+            "rank_eligible": False,
+            "can_execute": False,
+        },
+    )
+    result = run_daily_snapshot(
+        DailySnapshotRequest(requested_slate_date="2026-09-02", requested_timezone="America/Chicago", lanes=["MONEYLINE"]),
+        db=DB(), market_api=Market(), event_api=Event(),
+    )
+    row = result["rows"][0]
+    assert row["row_status"] == "HELD"
+    assert result["reconciliation"] == {
+        "rows_in": 1, "rows_completed": 0, "rows_held": 1,
         "rows_rejected": 0, "rows_unclassified": 0, "balanced": True,
     }
 

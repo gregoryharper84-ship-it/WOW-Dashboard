@@ -200,15 +200,25 @@ def run_daily_snapshot(
                 source_snapshot_id=str(event["snapshot_id"]), latest_material_update_timestamp=event.get("snapshot_timestamp"),
                 sport_specific_evidence={"venue": event.get("venue_name"), "home_starting_pitcher": event.get("home_probable_pitcher"), "away_starting_pitcher": event.get("away_probable_pitcher"), "home_starter_status": "PROBABLE", "away_starter_status": "PROBABLE", "home_lineup_status": "PROJECTED", "away_lineup_status": "PROJECTED"},
             )
-            row_status = "COMPLETED"
             try:
                 result = score_team_event_request(request, event_api=event_api)
             except HTTPException as exc:
                 result = _detail(exc)
-                row_status = "HELD"
             except Exception as exc:
                 result = {"code": "TEAM_EVENT_SCORER_EXCEPTION", "error_type": type(exc).__name__, "probability_publishable": False, "can_execute": False}
-                row_status = "HELD"
+            # Unlike PROPS' score_prop (which only ever returns normally when
+            # genuinely publishable, and raises for every held/blocked state),
+            # score_team_event_request's success path can itself return
+            # normally -- no exception -- while still representing a hold: the
+            # LLP governance bridge (_run_mlb_llp_governance) returns a
+            # MODEL_QUALIFIED_HOLD/probability_publishable=False package via
+            # _llp_governance_hold whenever the bridge isn't proven, which is
+            # every result today. Exception-vs-no-exception is therefore not a
+            # valid completed/held signal for this lane. probability_publishable
+            # is: it is explicitly set on every reachable return from this
+            # function, exception or not (verified against every raise site
+            # and every _run_mlb_llp_governance/_llp_governance_hold branch).
+            row_status = "COMPLETED" if result.get("probability_publishable") is True else "HELD"
             rows.append(_terminal_row("MONEYLINE", identity, result, row_status))
 
     if not rows and not blockers:
