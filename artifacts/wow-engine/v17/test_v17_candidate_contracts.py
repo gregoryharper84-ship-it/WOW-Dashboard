@@ -57,6 +57,7 @@ def test_wow_action_has_prop_and_team_event_delegation():
     assert "scoreWowV17Prop" in ops
     assert "scoreWowV17PickRequest" in ops
     assert "scoreWowV17TeamEventFromWowHost" in ops
+    assert "runWowV17DailySnapshot" in ops
     assert "recordWowV17Recommendations" in ops
     assert "settleWowV17Recommendations" in ops
     assert "WOW_BETTING_ENGINE" in text
