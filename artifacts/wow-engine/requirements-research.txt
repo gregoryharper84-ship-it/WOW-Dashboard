@@ -1,0 +1,11 @@
+# Research-only analytical stack.
+#
+# This file is intentionally NOT installed by the Render production build.
+# These tools may analyze or train candidate artifacts, but cannot publish a
+# probability, promote an artifact, alter a terminal label, or execute a wager.
+-r requirements.txt
+
+duckdb>=1.1,<2
+mlflow>=3,<4
+evidently>=0.7,<1
+optuna>=4,<5

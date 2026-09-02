@@ -46,6 +46,12 @@ services:
         value: "false"
       - key: WOW_DRY_RUN_ONLY
         value: "true"
+      - key: SENTRY_DSN
+        sync: false
+      - key: SENTRY_TRACES_SAMPLE_RATE
+        value: "0.05"
+      - key: WOW_ENVIRONMENT
+        value: "production"
       - key: REDIS_URL
         fromService:
           name: wow-jobs
@@ -73,6 +79,12 @@ services:
         value: "false"
       - key: WOW_DRY_RUN_ONLY
         value: "true"
+      - key: SENTRY_DSN
+        sync: false
+      - key: SENTRY_TRACES_SAMPLE_RATE
+        value: "0.05"
+      - key: WOW_ENVIRONMENT
+        value: "production"
       - key: REDIS_URL
         fromService:
           name: wow-jobs
