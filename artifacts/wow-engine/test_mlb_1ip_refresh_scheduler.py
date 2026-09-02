@@ -6,8 +6,7 @@ import pytest
 import mlb_1ip_refresh_scheduler as scheduler
 
 
-@pytest.mark.asyncio
-async def test_refresh_loop_runs_governed_pass_and_preserves_nonexecution(monkeypatch, caplog):
+def test_refresh_loop_runs_governed_pass_and_preserves_nonexecution(monkeypatch, caplog):
     calls = []
 
     def fake_run_once(*, client):
@@ -21,17 +20,19 @@ async def test_refresh_loop_runs_governed_pass_and_preserves_nonexecution(monkey
     monkeypatch.setattr(scheduler.asyncio, "sleep", stop_after_first_sleep)
     logger = logging.getLogger("test.mlb.1ip.refresh")
 
-    with caplog.at_level(logging.INFO):
+    async def exercise():
         with pytest.raises(asyncio.CancelledError):
             await scheduler.run_refresh_loop(db_client_fn=lambda: "db-client", logger=logger, interval_seconds=300)
+
+    with caplog.at_level(logging.INFO):
+        asyncio.run(exercise())
 
     assert calls == ["db-client"]
     assert "probability_publishable=false can_execute=false" in caplog.text
     assert scheduler.CAN_EXECUTE is False
 
 
-@pytest.mark.asyncio
-async def test_refresh_loop_failure_is_nonfatal_until_cancel(monkeypatch, caplog):
+def test_refresh_loop_failure_is_nonfatal_until_cancel(monkeypatch, caplog):
     calls = {"n": 0}
 
     def fake_run_once(*, client):
@@ -45,9 +46,12 @@ async def test_refresh_loop_failure_is_nonfatal_until_cancel(monkeypatch, caplog
     monkeypatch.setattr(scheduler.asyncio, "sleep", stop_after_failure)
     logger = logging.getLogger("test.mlb.1ip.refresh.failure")
 
-    with caplog.at_level(logging.ERROR):
+    async def exercise():
         with pytest.raises(asyncio.CancelledError):
             await scheduler.run_refresh_loop(db_client_fn=lambda: "db-client", logger=logger)
+
+    with caplog.at_level(logging.ERROR):
+        asyncio.run(exercise())
 
     assert calls["n"] == 1
     assert "status=FAILED" in caplog.text
