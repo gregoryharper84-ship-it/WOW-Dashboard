@@ -30,6 +30,7 @@ from v17_synthetic_self_acceptance import run_v17_synthetic_self_acceptance
 from recommendation_ledger_api import install_recommendation_ledger_routes
 from team_event_request_runtime import install_team_event_request_routes
 from v17.team_event_request_runtime import install_team_event_routes as install_v17_team_event_routes
+from v17.daily_snapshot_runtime import install_daily_snapshot_route
 from v17_observability import initialize_observability
 
 OBSERVABILITY = initialize_observability()
@@ -141,6 +142,13 @@ if V17_ACTIVE:
             auth_dependency=_auth,
             get_client_fn=_db_client,
         )
+    install_daily_snapshot_route(
+        app,
+        auth_dependency=_auth,
+        db_client_fn=_db_client,
+        market_api=base.market_api,
+        event_api=base.market_api.prod.event_api,
+    )
 
     @app.get("/v17/host-contract", dependencies=[_auth], operation_id="getWowV17HostContract")
     def get_v17_host_contract():
