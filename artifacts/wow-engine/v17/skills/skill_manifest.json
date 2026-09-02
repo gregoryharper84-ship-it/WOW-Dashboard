@@ -1,0 +1,48 @@
+{
+  "schema_version": "WOW_V17_SKILL_MANIFEST_V1",
+  "status": "SOURCE_READY",
+  "runtime_generation": "V17_ACTIVE",
+  "can_execute": false,
+  "terminal_authority": "V17_TERMINAL_REDUCER",
+  "skills": [
+    {
+      "skill_id": "WOW_V17_DAILY_PICKS",
+      "file": "WOW_V17_DAILY_PICKS_SKILL_PACK.md",
+      "triggers": ["Run V17 Daily Picks", "best picks today", "Full model"],
+      "composes": ["WOW_V17_BEST_PROPS", "WOW_V17_ML_WINNERS", "WOW_V17_SCREENSHOT_REVIEW", "WOW_V17_PICK_CORE"]
+    },
+    {
+      "skill_id": "WOW_V17_BEST_PROPS",
+      "file": "WOW_V17_BEST_PROPS_SKILL.md",
+      "owner": "WOW_BETTING_ENGINE",
+      "triggers": ["Run V17 Best Props", "best props today", "full model props"]
+    },
+    {
+      "skill_id": "WOW_V17_SCREENSHOT_REVIEW",
+      "file": "WOW_V17_SCREENSHOT_REVIEW_SKILL.md",
+      "owners": ["WOW_BETTING_ENGINE", "LLP_TEAM_BETTING_ENGINE"],
+      "triggers": ["Review these screenshots with V17", "extract and review", "full model screenshots"]
+    },
+    {
+      "skill_id": "WOW_V17_ML_WINNERS",
+      "file": "WOW_V17_ML_WINNERS_SKILL.md",
+      "owner": "LLP_TEAM_BETTING_ENGINE",
+      "triggers": ["Run V17 ML Winners", "best ML winners today", "winners and upsets"]
+    },
+    {
+      "skill_id": "WOW_V17_PICK_CORE",
+      "file": "WOW_V17_PICK_CORE_SKILL.md",
+      "owner": "V17_SHARED_CORE",
+      "triggers": ["Build the V17 Core", "best 3-5 picks", "build slips"]
+    }
+  ],
+  "invariants": {
+    "governed_probability_only": true,
+    "rank_by_calibrated_lower_bound_when_required": true,
+    "extract_all_visible_rows_before_screenshot_filtering": true,
+    "market_probability_is_not_model_probability": true,
+    "portfolio_governance_must_not_mutate_leg_probability": true,
+    "fail_closed_on_unsupported_routes": true,
+    "never_force_pick_quota": true
+  }
+}
