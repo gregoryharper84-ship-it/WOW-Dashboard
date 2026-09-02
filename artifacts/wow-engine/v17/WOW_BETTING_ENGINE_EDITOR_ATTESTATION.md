@@ -1,8 +1,8 @@
-# WOW Betting Engine — v17 Custom GPT Editor Attestation
+# WOW Betting Engine — v17 Custom GPT Editor Sync Packet
 
-Status: `BLOCKED_WITH_EXACT_EXTERNAL_REQUIREMENT`
+Status: `SOURCE_CONTRACT_READY_LIVE_EDITOR_SYNC_EXTERNAL`
 
-This packet defines the exact live-editor state required before the WOW Betting Engine may be certified for v17 cutover. Completing this document is an attestation step; it does not itself activate v17.
+The V17 governed backend may be active independently of the live Custom GPT editor distribution state. This packet defines the exact live-editor state required to synchronize WOW Betting Engine with the already-prepared V17 production source contract. It does not grant execution authority and must not be used to falsely attest an editor change that has not actually been saved.
 
 ## Required identity
 
@@ -19,24 +19,13 @@ global_terminal_authority = false
 
 WOW Betting Engine may originate team/event requests, but the backend must resolve their controlling engine to `LLP_TEAM_BETTING_ENGINE`.
 
-## Required Action configuration after candidate entrypoint certification
-
-Canonical schema:
+## Production Action source contract
 
 ```text
-artifacts/wow-engine/v17/openapi.wow-betting-engine.v17.yaml
-```
-
-Canonical server origin:
-
-```text
-https://wow-governed-probability-engine.onrender.com
-```
-
-Authentication:
-
-```text
-Bearer/API key using WOW_ACTION_API_KEY
+schema = artifacts/wow-engine/v17/openapi.wow-betting-engine.v17.yaml
+server = https://wow-governed-probability-engine.onrender.com
+auth = Bearer/API key using WOW_ACTION_API_KEY
+schema_status = PRODUCTION_SOURCE_CONTRACT
 ```
 
 Required responsibilities:
@@ -54,7 +43,7 @@ host-contract inspection
 
 ## Prohibited live-editor state
 
-A PASS attestation must prove all of the following are absent as primary decision/scoring paths:
+A completed sync must prove all of the following are absent as primary decision/scoring paths:
 
 ```text
 Replit-hosted WOW scoring as primary backend
@@ -70,10 +59,10 @@ Evidence/data vendor tools may exist only as evidence sources if provenance/fres
 
 ## Instruction requirements
 
-The live instructions must preserve these behaviors:
+The live instructions must preserve:
 
 ```text
-Full Model triggers route through the full mandatory gate sequence.
+Full Model triggers route through the mandatory governed sequence.
 WOW Daily uses probability-first Pass A then money/slip Pass B.
 PLAYER_PROP/PLAYER_SCALAR are owned by WOW_BETTING_ENGINE.
 TEAM_EVENT/OUTRIGHT_WINNER/MONEYLINE/UPSET are controlled by LLP_TEAM_BETTING_ENGINE.
@@ -110,12 +99,12 @@ legacy_primary_replit_route_present:
 can_execute:
 ```
 
-## PASS criteria
+## Editor-sync PASS criteria
 
 ```text
 custom_gpt_identity = WOW_BETTING_ENGINE
 action_server_origin = https://wow-governed-probability-engine.onrender.com
-canonical v17 WOW Action schema installed after backend candidate certification
+canonical v17 WOW Action schema installed
 auth configured without exposing credential
 legacy_primary_replit_route_present = false
 prop ownership = WOW_BETTING_ENGINE
@@ -125,9 +114,10 @@ can_execute = false
 all trigger/governance requirements aligned
 ```
 
-Until every item is evidenced:
+Until the editor itself is inspected and saved:
 
 ```text
-WOW_CUSTOM_GPT_EDITOR_ATTESTATION = BLOCKED_WITH_EXACT_EXTERNAL_REQUIREMENT
-V17_CUTOVER_ALLOWED = false
+WOW_CUSTOM_GPT_EDITOR_SYNC = EXTERNAL_SYNC_REQUIRED
+V17_BACKEND_CUTOVER_ALLOWED = true
+can_execute = false
 ```
