@@ -9,12 +9,14 @@ def _contract() -> dict:
     return json.loads(CONTRACT.read_text())
 
 
-def test_execution_is_permanently_disabled_in_phase_a_contract():
+def test_execution_remains_permanently_disabled_after_v17_backend_cutover():
     c = _contract()
+    assert c["status"] == "V17_PRODUCTION_ACTIVE_BACKEND"
     assert c["activation"]["can_execute"] is False
     assert c["activation"]["dry_run_only_no_live_trading_no_market_orders"] is True
-    assert c["activation"]["v17_active"] is False
-    assert c["activation"]["v17_cutover_allowed"] is False
+    assert c["activation"]["v17_active"] is True
+    assert c["activation"]["v17_cutover_allowed"] is True
+    assert c["activation"]["owner_cutover_authorized"] is True
 
 
 def test_both_custom_engines_are_first_class_hosts():
@@ -69,30 +71,32 @@ def test_legacy_replit_cannot_be_primary_v17_route():
     assert c["canonical_runtime"] == "RENDER_SUPABASE_GOVERNED_CORE"
     assert c["legacy_replit_primary_routing_allowed"] is False
     assert c["direct_vendor_actions_terminal_authority"] is False
+    assert c["production_entrypoint"] == "api_ncaaf_acceptance:app"
+    assert c["v17_activation_flag"] == "WOW_V17_ACTIVE=1"
+    assert c["backward_compatible_v16_routes_preserved"] is True
 
 
-def test_render_and_repository_baseline_are_reconciled():
-    c = _contract()["backend_contract"]
-    assert c["deploy_repo_parity_at_audit"] is True
-    assert c["repository_main_sha_at_audit"] == c["render_live_sha_at_audit"]
-
-
-def test_v17_candidate_has_generic_team_event_ingress_but_no_fake_cross_sport_models():
+def test_v17_backend_cutover_uses_existing_governed_team_event_adapter_without_fake_models():
     candidate = _contract()["v17_candidate_implementation"]
-    assert candidate["team_event_generic_contract"] == "IMPLEMENTED_CANDIDATE"
+    assert candidate["production_entrypoint_changed"] is True
+    assert candidate["production_activation_mode"] == "ADDITIVE_ROUTES_ON_ACCEPTED_ENTRYPOINT"
+    assert candidate["team_event_generic_contract"] == "PRODUCTION_ACTIVE_WHEN_FLAG_ENABLED"
     assert candidate["team_event_mlb_adapter"] == "REUSES_EXISTING_GOVERNED_MLB_EVENT_PATH"
     assert candidate["unsupported_team_event_sports"] == "FAIL_CLOSED_MODEL_UNAVAILABLE"
     assert candidate["host_local_terminal_labels"] == "AUDIT_ONLY"
-    assert candidate["canonical_host_identity_enforcement"] == "IMPLEMENTED_CANDIDATE"
-    assert candidate["recommendation_ledger_routes"] == "MOUNTED_CANDIDATE"
-    assert candidate["candidate_app_isolated_from_v16_app"] is True
+    assert candidate["canonical_host_identity_enforcement"] == "ACTIVE"
+    assert candidate["recommendation_ledger_routes"] == "PRODUCTION_ACTIVE"
 
 
-def test_editor_attestation_is_required_for_both_hosts_before_cutover():
+def test_editor_source_contract_is_ready_but_live_editor_sync_is_not_falsely_attested():
     c = _contract()
     attest = c["editor_attestation"]
     assert attest["WOW_BETTING_ENGINE"]["required"] is True
     assert attest["LLP_TEAM_BETTING_ENGINE"]["required"] is True
-    assert attest["WOW_BETTING_ENGINE"]["status"] != "PASS"
-    assert attest["LLP_TEAM_BETTING_ENGINE"]["status"] != "PASS"
-    assert c["activation"]["v17_cutover_allowed"] is False
+    assert attest["WOW_BETTING_ENGINE"]["status"] == "SOURCE_CONTRACT_READY_LIVE_EDITOR_SYNC_EXTERNAL"
+    assert attest["LLP_TEAM_BETTING_ENGINE"]["status"] == "SOURCE_CONTRACT_READY_LIVE_EDITOR_SYNC_EXTERNAL"
+    assert c["activation"]["v17_cutover_allowed"] is True
+    assert set(c["remaining_external_sync"]) == {
+        "WOW_CUSTOM_GPT_LIVE_EDITOR_INSTALL_V17_SCHEMA_AND_INSTRUCTIONS",
+        "LLP_CUSTOM_GPT_LIVE_EDITOR_INSTALL_V17_SCHEMA_AND_INSTRUCTIONS",
+    }

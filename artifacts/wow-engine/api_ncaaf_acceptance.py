@@ -1,16 +1,16 @@
-"""NCAAF research wrapper around the governed production API.
+"""Production governed WOW API with NCAAF maintenance and v17 host routing.
 
-Adds authenticated, non-executable NCAAF maintenance boundaries for closing-line
-capture, readiness inspection, historical read-only source hydration, and raw
-reviewed official-conference availability ingestion. The final production
-entrypoint can enable calibration/publication lane separation without mutating
-lower-layer test/runtime contracts.
+The accepted production entrypoint preserves all v16-compatible routes while
+optionally mounting the v17 host/team-event contract on the same governed
+Render/Supabase core. V17 activation never authorizes wager execution.
 """
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
+from pathlib import Path
 from typing import Optional
 
 from fastapi import Depends, Header, HTTPException
@@ -25,15 +25,19 @@ from ncaaf_closing_capture import run_from_environment
 from ncaaf_raw_availability_runtime import install_raw_availability_routes
 from ncaaf_training_materializer import materialize_training_games
 from pick_request_runtime import install_pick_request_routes
-from team_event_request_runtime import install_team_event_request_routes
 from prop_live_model_acceptance import run_prop_model_live_self_acceptance
+from recommendation_ledger_api import install_recommendation_ledger_routes
+from team_event_request_runtime import install_team_event_request_routes
+from v17.team_event_request_runtime import install_team_event_routes as install_v17_team_event_routes
 
 app = base.app
 _auth = Depends(base.market_api.prod._require_action_api_key)
 _logger = logging.getLogger("wow.ncaaf.readiness")
+_v17_logger = logging.getLogger("wow.v17.activation")
 _mlb_1ip_refresh_logger = logging.getLogger("wow.mlb.1ip.final_refresh")
 _background_tasks: set[asyncio.Task] = set()
 _original_market_score_prop = base.market_api.score_prop
+V17_ACTIVE = os.getenv("WOW_V17_ACTIVE", "0") == "1"
 
 # This mutation is intentionally production-gated. The lower api_prod_market app
 # is a shared FastAPI object imported by several contract tests. Unconditionally
@@ -116,6 +120,41 @@ install_team_event_request_routes(
     event_api=base.market_api.prod.event_api,
 )
 install_live_probability_routes(app, auth_dependency=_auth, db_client_fn=_db_client)
+
+# V17 is an additive compatibility cutover on the accepted production app: old
+# governed operations remain available while the new host-aware route and ledger
+# operations become authoritative for v17 Action schemas. This keeps rollback to
+# WOW_V17_ACTIVE=0 atomic and does not duplicate scoring authority.
+if V17_ACTIVE:
+    if not any(getattr(route, "path", None) == "/score-team-event" for route in app.router.routes):
+        install_v17_team_event_routes(
+            app,
+            event_api=base.market_api.prod.event_api,
+            auth_dependency=_auth,
+        )
+    if not any(getattr(route, "path", None) == "/record-recommendations" for route in app.router.routes):
+        install_recommendation_ledger_routes(
+            app,
+            auth_dependency=_auth,
+            get_client_fn=_db_client,
+        )
+
+    @app.get("/v17/host-contract", dependencies=[_auth], operation_id="getWowV17HostContract")
+    def get_v17_host_contract():
+        contract_path = Path(__file__).with_name("v17") / "custom_engine_alignment_contract.json"
+        payload = json.loads(contract_path.read_text())
+        return {
+            "schema_version": payload["schema_version"],
+            "status": payload["status"],
+            "activation": payload["activation"],
+            "hosts": payload["hosts"],
+            "shared_core": payload["shared_core"],
+            "team_event_contract": payload["team_event_contract"],
+            "prop_contract": payload["prop_contract"],
+            "backend_contract": payload["backend_contract"],
+            "v17_candidate_implementation": payload["v17_candidate_implementation"],
+            "can_execute": False,
+        }
 
 
 def _safe_count(table: str) -> int | None:
@@ -234,6 +273,14 @@ async def log_ncaaf_startup_readiness():
             "WOW_NCAAF_READINESS assessment=UNAVAILABLE error_type=%s probability_publishable=false can_execute=false",
             type(exc).__name__,
         )
+
+
+@app.on_event("startup")
+async def log_v17_activation():
+    _v17_logger.warning(
+        "WOW_V17_RUNTIME status=%s global_terminal_authority=V17_TERMINAL_REDUCER can_execute=false",
+        "ACTIVE" if V17_ACTIVE else "INACTIVE",
+    )
 
 
 @app.on_event("startup")

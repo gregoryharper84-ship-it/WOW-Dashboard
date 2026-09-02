@@ -34,6 +34,8 @@ services:
         value: "1"
       - key: WOW_CALIBRATION_PUBLICATION_LANE_SEPARATION
         value: "1"
+      - key: WOW_V17_ACTIVE
+        value: "1"
       - key: WOW_NCAAF_MARKET_FEED_URL
         sync: false
       - key: WOW_NCAAF_MARKET_FEED_TOKEN

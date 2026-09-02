@@ -1,8 +1,8 @@
-# LLP Team Betting Engine — v17 Custom GPT Editor Attestation
+# LLP Team Betting Engine — v17 Custom GPT Editor Sync Packet
 
-Status: `PARTIAL_REATTESTATION_REQUIRED`
+Status: `SOURCE_CONTRACT_READY_LIVE_EDITOR_SYNC_EXTERNAL`
 
-This packet defines the exact live-editor state required before LLP Team Betting Engine may be certified for v17 cutover. It does not activate v17.
+The V17 governed backend may be active independently of live Custom GPT editor distribution. This packet defines the exact live-editor state required to synchronize LLP Team Betting Engine with the production V17 source contract. It does not grant execution authority and must not be treated as proof that the live editor was changed unless the editor itself was inspected and saved.
 
 ## Required identity
 
@@ -18,24 +18,13 @@ global_terminal_authority = false
 
 The LLP Probability Claim Auditor and Event Decision Governor remain controlling team/event audit components, but they do not override shared-core blockers or the global terminal reducer.
 
-## Required Action configuration after candidate entrypoint certification
-
-Canonical schema:
+## Production Action source contract
 
 ```text
-artifacts/wow-engine/v17/openapi.llp-team-engine.v17.yaml
-```
-
-Canonical server origin:
-
-```text
-https://wow-governed-probability-engine.onrender.com
-```
-
-Authentication:
-
-```text
-Bearer/API key using WOW_ACTION_API_KEY
+schema = artifacts/wow-engine/v17/openapi.llp-team-engine.v17.yaml
+server = https://wow-governed-probability-engine.onrender.com
+auth = Bearer/API key using WOW_ACTION_API_KEY
+schema_status = PRODUCTION_SOURCE_CONTRACT
 ```
 
 Required responsibilities:
@@ -51,11 +40,11 @@ recommendation settlement
 host-contract inspection
 ```
 
-The canonical LLP v17 Action must contain **no player-prop scoring operation**.
+The canonical LLP V17 Action contains **no player-prop scoring operation**.
 
 ## Legacy/direct-vendor cleanup
 
-The previous editor audit identified direct-vendor authentication gaps and a legacy Replit scoring route. Before PASS, inspect every current Action and classify it:
+Every live Action should be classified as:
 
 ```text
 CANONICAL_GOVERNED_CORE
@@ -65,10 +54,10 @@ REMOVE_OR_DISABLE
 
 Rules:
 
-- Any Replit scoring/governance Action must be removed or disabled as a primary v17 route.
+- Any Replit scoring/governance Action must be removed or disabled as a primary V17 route.
 - Direct vendor Actions may remain only as `EVIDENCE_ONLY` if authentication works and every payload used by the model is captured with provenance and freshness.
 - Direct vendor Actions may not set probability authority, model status, terminal label, money approval, portfolio approval, or bypass the shared governed core.
-- If vendor authentication cannot be proven, the Action is not required for the v17 core and should not block unrelated governed lanes; it must not be represented as available evidence.
+- If vendor authentication cannot be proven, it must not be represented as available evidence.
 
 ## Instruction requirements
 
@@ -119,12 +108,12 @@ direct_vendor_actions:
 can_execute:
 ```
 
-## PASS criteria
+## Editor-sync PASS criteria
 
 ```text
 custom_gpt_identity = LLP_TEAM_BETTING_ENGINE
 action_server_origin = https://wow-governed-probability-engine.onrender.com
-canonical v17 LLP Action schema installed after backend candidate certification
+canonical v17 LLP Action schema installed
 auth configured without exposing credential
 legacy_primary_replit_route_present = false
 no player-prop scoring operation in LLP canonical Action
@@ -136,9 +125,10 @@ can_execute = false
 all probability/event-governor requirements aligned
 ```
 
-Until every item is evidenced:
+Until the editor itself is inspected and saved:
 
 ```text
-LLP_CUSTOM_GPT_EDITOR_ATTESTATION = PARTIAL
-V17_CUTOVER_ALLOWED = false
+LLP_CUSTOM_GPT_EDITOR_SYNC = EXTERNAL_SYNC_REQUIRED
+V17_BACKEND_CUTOVER_ALLOWED = true
+can_execute = false
 ```
