@@ -42,6 +42,12 @@ services:
         sync: false
       - key: CFBD_API_KEY
         sync: false
+      - key: WOLFRAM_ALPHA_APP_ID
+        sync: false
+      - key: WOW_WOLFRAM_ARITHMETIC_AUDIT_ENABLED
+        value: "1"
+      - key: WOW_WOLFRAM_TIMEOUT_SECONDS
+        value: "5"
       - key: WOW_CAN_EXECUTE
         value: "false"
       - key: WOW_DRY_RUN_ONLY
@@ -75,6 +81,12 @@ services:
         sync: false
       - key: SUPABASE_SERVICE_KEY
         sync: false
+      - key: WOLFRAM_ALPHA_APP_ID
+        sync: false
+      - key: WOW_WOLFRAM_ARITHMETIC_AUDIT_ENABLED
+        value: "1"
+      - key: WOW_WOLFRAM_TIMEOUT_SECONDS
+        value: "5"
       - key: WOW_CAN_EXECUTE
         value: "false"
       - key: WOW_DRY_RUN_ONLY
