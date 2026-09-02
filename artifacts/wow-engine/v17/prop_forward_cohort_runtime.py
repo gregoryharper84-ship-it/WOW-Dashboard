@@ -1,12 +1,10 @@
 """Server-owned forward prop calibration cohort capture for WOW V17.
 
-This module does not fit, certify, or promote a calibrator.  It reuses the
-canonical prop evidence snapshots and the existing fitted specialist scorer to
-persist immutable pregame forecasts into ``wow_predictions`` so the existing
-governed settlement loop can grade them after the event.  Calibration phase
-thresholds remain backend-owned in ``wow_runtime_capabilities``; reaching a
-threshold is reported as readiness for a certified fitter, never as permission
-to invent or activate one.
+This runtime reuses canonical prop evidence and the existing fitted scorer to
+record immutable pregame forecasts in ``wow_predictions``.  It does not fit,
+certify, promote, or fabricate a calibrator.  The existing governed settlement
+loop remains the sole grader.  Calibration thresholds are read from backend-
+owned PROP_PROBABILITY capability evidence.
 
 WOW-PATCH-2026-09-02-V17-PROP-FORWARD-COHORT
 can_execute=false unconditionally.
@@ -15,11 +13,10 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Any
-from uuid import uuid5, NAMESPACE_URL
+from uuid import NAMESPACE_URL, uuid5
 
-from fastapi import FastAPI, HTTPException
+from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field
-
 
 SPORT = "MLB"
 STAT_TYPE = "PITCHER_STRIKEOUTS"
@@ -30,7 +27,6 @@ DIRECTIONS = ("MORE", "LESS")
 
 class PropForwardCohortRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-
     max_snapshots: int = Field(default=50, ge=1, le=200)
 
 
@@ -42,11 +38,6 @@ def _aware(value: Any) -> datetime | None:
     if parsed.utcoffset() is None:
         return None
     return parsed.astimezone(timezone.utc)
-
-
-def _is_future(value: Any, *, now: datetime) -> bool:
-    parsed = _aware(value)
-    return parsed is not None and parsed > now
 
 
 def _snapshot_key(snapshot_id: Any, direction: str) -> tuple[str, str]:
@@ -65,20 +56,16 @@ def _eligible_snapshots(db: Any, limit: int, *, now: datetime) -> list[dict[str,
         .eq("hydration_status", "PASS")
         .order("event_start_time")
         .limit(limit * 3)
-        .execute()
-        .data
-        or []
+        .execute().data or []
     )
     selected: list[dict[str, Any]] = []
     for raw in rows:
         row = dict(raw)
-        if row.get("blockers"):
-            continue
         captured = _aware(row.get("captured_at"))
         event_start = _aware(row.get("event_start_time"))
-        if captured is None or event_start is None:
+        if row.get("blockers") or not row.get("source_snapshot_id"):
             continue
-        if captured >= event_start or event_start <= now:
+        if captured is None or event_start is None or captured >= event_start or event_start <= now:
             continue
         selected.append(row)
         if len(selected) >= limit:
@@ -93,9 +80,7 @@ def _existing_forward_keys(db: Any) -> set[tuple[str, str]]:
         .eq("sport", SPORT)
         .eq("stat_type", STAT_TYPE)
         .eq("model_provider_identity", PROVIDER)
-        .execute()
-        .data
-        or []
+        .execute().data or []
     )
     return {
         _snapshot_key(row.get("source_snapshot_id"), row.get("direction"))
@@ -108,16 +93,14 @@ def _extract_model_output(scored: dict[str, Any], direction: str) -> dict[str, A
     prediction = scored.get("prediction")
     if isinstance(prediction, dict):
         return dict(prediction)
-
     research = scored.get("research_model_output")
     if not isinstance(research, dict):
         return None
-    direction = direction.upper()
-    raw_selected = research.get("raw_specialist_probability")
-    if raw_selected is None:
-        raw_selected = research.get("raw_probability_more" if direction == "MORE" else "raw_probability_less")
+    selected = research.get("raw_specialist_probability")
+    if selected is None:
+        selected = research.get("raw_probability_more" if direction.upper() == "MORE" else "raw_probability_less")
     return {
-        "raw_model_probability": raw_selected,
+        "raw_model_probability": selected,
         "probability_more": research.get("raw_probability_more"),
         "probability_less": research.get("raw_probability_less"),
         "push_probability": research.get("push_probability"),
@@ -150,55 +133,20 @@ def _prediction_payload(
     output = _extract_model_output(scored, direction)
     if output is None or output.get("raw_model_probability") is None:
         return None
-
-    model_timestamp = _aware(output.get("model_timestamp")) or now
+    # Temporal provenance is mandatory. Never substitute recorder wall-clock
+    # time for a scorer that failed to state when the probability was knowable.
+    model_timestamp = _aware(output.get("model_timestamp"))
     event_start = _aware(snapshot.get("event_start_time"))
     captured_at = _aware(snapshot.get("captured_at"))
-    if event_start is None or captured_at is None:
+    if model_timestamp is None or event_start is None or captured_at is None:
         return None
-    # Forward-cohort integrity: a forecast that became knowable at/after first
-    # pitch is never made eligible by this persistence layer.
-    if model_timestamp >= event_start or captured_at >= event_start:
+    if model_timestamp >= event_start or captured_at >= event_start or now >= event_start:
         return None
 
     provider = output.get("model_provider_identity") or PROVIDER
     if provider != PROVIDER:
         return None
 
-    allowed_optional = (
-        "raw_model_probability",
-        "independent_model_probability",
-        "effective_sample_size",
-        "calibration_status",
-        "calibration_method",
-        "calibration_version",
-        "calibration_training_n",
-        "calibration_parent_cohort",
-        "calibration_fit_start",
-        "calibration_fit_end",
-        "bounds_method_version",
-        "calibrated_probability",
-        "calibrated_probability_lower_bound",
-        "calibrated_probability_upper_bound",
-        "probability_ceiling",
-        "model_provider_identity",
-        "model_family",
-        "model_artifact_version",
-        "model_artifact_checksum",
-        "model_bundle_fingerprint",
-        "model_artifact_lifecycle_state",
-        "feature_schema_version",
-        "feature_transform_version",
-        "feature_snapshot_hash",
-        "training_dataset_hash",
-        "training_code_sha",
-        "specialist_version",
-        "certification_id",
-        "distribution_type",
-        "probability_more",
-        "probability_less",
-        "push_probability",
-    )
     payload: dict[str, Any] = {
         "prediction_id": _prediction_id(str(snapshot["source_snapshot_id"]), direction),
         "event_id": snapshot["event_id"],
@@ -215,22 +163,32 @@ def _prediction_payload(
         "source_snapshot_id": snapshot["source_snapshot_id"],
         "locked_at": now.isoformat(),
         "blockers": list(scored.get("blockers") or []),
+        "model_provider_identity": provider,
     }
-    for key in allowed_optional:
-        value = output.get(key)
-        if value is not None:
-            payload[key] = value
-    # Persistence is a recorder, never a publisher.  A research-only return
-    # must remain non-publishable even though its raw probability is useful for
-    # forward calibration after settlement.
+    for key in (
+        "raw_model_probability", "independent_model_probability", "effective_sample_size",
+        "calibration_status", "calibration_method", "calibration_version",
+        "calibration_training_n", "calibration_parent_cohort", "calibration_fit_start",
+        "calibration_fit_end", "bounds_method_version", "calibrated_probability",
+        "calibrated_probability_lower_bound", "calibrated_probability_upper_bound",
+        "probability_ceiling", "model_family", "model_artifact_version",
+        "model_artifact_checksum", "model_bundle_fingerprint",
+        "model_artifact_lifecycle_state", "feature_schema_version",
+        "feature_transform_version", "feature_snapshot_hash", "training_dataset_hash",
+        "training_code_sha", "specialist_version", "certification_id",
+        "distribution_type", "probability_more", "probability_less", "push_probability",
+    ):
+        if output.get(key) is not None:
+            payload[key] = output[key]
     if scored.get("research_only") is True:
         payload["probability_publishable"] = False
     return payload
 
 
 def _persist_prediction(db: Any, payload: dict[str, Any]) -> None:
-    # Deterministic prediction_id + ignore_duplicates makes retries idempotent.
-    db.table("wow_predictions").upsert(payload, on_conflict="prediction_id", ignore_duplicates=True).execute()
+    db.table("wow_predictions").upsert(
+        payload, on_conflict="prediction_id", ignore_duplicates=True
+    ).execute()
 
 
 def _forward_predictions(db: Any) -> list[dict[str, Any]]:
@@ -240,9 +198,7 @@ def _forward_predictions(db: Any) -> list[dict[str, Any]]:
         .eq("sport", SPORT)
         .eq("stat_type", STAT_TYPE)
         .eq("model_provider_identity", PROVIDER)
-        .execute()
-        .data
-        or []
+        .execute().data or []
     )
     eligible: list[dict[str, Any]] = []
     for raw in rows:
@@ -264,9 +220,7 @@ def _settled_prediction_ids(db: Any, prediction_ids: list[str]) -> set[str]:
         db.table("wow_outcomes")
         .select("prediction_id,actual_stat,settlement_timestamp,void")
         .in_("prediction_id", prediction_ids)
-        .execute()
-        .data
-        or []
+        .execute().data or []
     )
     return {
         str(row["prediction_id"])
@@ -278,27 +232,23 @@ def _settled_prediction_ids(db: Any, prediction_ids: list[str]) -> set[str]:
     }
 
 
-def _capability_evidence(db: Any) -> tuple[dict[str, Any], Any]:
+def _capability_evidence(db: Any) -> tuple[dict[str, Any], bool]:
     result = (
         db.table("wow_runtime_capabilities")
         .select("capability_key,evidence")
         .eq("capability_key", CAPABILITY_KEY)
-        .limit(1)
-        .execute()
+        .limit(1).execute()
     )
     row = (result.data or [None])[0]
     if not isinstance(row, dict):
-        return {}, None
-    evidence = dict(row.get("evidence") or {})
-    return evidence, row
+        return {}, False
+    return dict(row.get("evidence") or {}), True
 
 
 def _readiness(evidence: dict[str, Any], prediction_n: int, settled_n: int) -> dict[str, Any]:
-    phase_b = evidence.get("phase_b_min_settled_n")
-    phase_c = evidence.get("phase_c_min_settled_n")
     try:
-        phase_b_n = int(phase_b)
-        phase_c_n = int(phase_c)
+        phase_b_n = int(evidence.get("phase_b_min_settled_n"))
+        phase_c_n = int(evidence.get("phase_c_min_settled_n"))
     except (TypeError, ValueError):
         return {
             "status": "CALIBRATION_THRESHOLDS_UNAVAILABLE",
@@ -315,12 +265,11 @@ def _readiness(evidence: dict[str, Any], prediction_n: int, settled_n: int) -> d
             "calibrator_fit_allowed": False,
             "can_execute": False,
         }
+    status = "PHASE_A_FORWARD_COHORT_BUILDING"
     if settled_n >= phase_c_n:
         status = "PHASE_C_THRESHOLD_REACHED_CALIBRATOR_FIT_REQUIRED"
     elif settled_n >= phase_b_n:
         status = "PHASE_B_THRESHOLD_REACHED_CALIBRATOR_FIT_REQUIRED"
-    else:
-        status = "PHASE_A_FORWARD_COHORT_BUILDING"
     return {
         "status": status,
         "forward_prediction_n": prediction_n,
@@ -329,22 +278,43 @@ def _readiness(evidence: dict[str, Any], prediction_n: int, settled_n: int) -> d
         "phase_c_min_settled_n": phase_c_n,
         "remaining_to_phase_b": max(0, phase_b_n - settled_n),
         "remaining_to_phase_c": max(0, phase_c_n - settled_n),
-        # This runtime intentionally does not contain a calibrator fitter.
         "calibrator_fit_allowed": False,
         "can_execute": False,
     }
+
+
+def _cohort_counts(predictions: list[dict[str, Any]], settled_ids: set[str]) -> tuple[int, int]:
+    """Count independent source snapshots, not paired directional rows.
+
+    MORE/LESS forecasts from the same immutable line share one realized pitcher
+    outcome. Counting both toward the 200/500 readiness thresholds would double
+    effective sample size without adding an independent event.
+    """
+    prediction_sources = {
+        str(row["source_snapshot_id"])
+        for row in predictions
+        if row.get("source_snapshot_id")
+    }
+    settled_sources = {
+        str(row["source_snapshot_id"])
+        for row in predictions
+        if row.get("source_snapshot_id") and str(row.get("prediction_id")) in settled_ids
+    }
+    return len(prediction_sources), len(settled_sources)
 
 
 def _reconcile_capability(db: Any) -> dict[str, Any]:
     predictions = _forward_predictions(db)
     ids = [str(row["prediction_id"]) for row in predictions]
     settled = _settled_prediction_ids(db, ids)
-    evidence, capability_row = _capability_evidence(db)
-    readiness = _readiness(evidence, len(predictions), len(settled))
-    if capability_row is not None:
+    prediction_n, settled_n = _cohort_counts(predictions, settled)
+    evidence, exists = _capability_evidence(db)
+    readiness = _readiness(evidence, prediction_n, settled_n)
+    if exists:
         updated = dict(evidence)
-        updated["forward_prediction_n"] = len(predictions)
-        updated["forward_settled_n"] = len(settled)
+        updated["forward_prediction_n"] = prediction_n
+        updated["forward_settled_n"] = settled_n
+        updated["forward_cohort_counting_basis"] = "UNIQUE_SOURCE_SNAPSHOT"
         updated["forward_cohort_readiness"] = readiness
         db.table("wow_runtime_capabilities").update({"evidence": updated}).eq(
             "capability_key", CAPABILITY_KEY
@@ -385,8 +355,7 @@ def run_prop_forward_cohort(
             }
             try:
                 scored = market_api.score_prop(
-                    market_api.ScorePropRequest(**identity),
-                    "WOW_BETTING_ENGINE",
+                    market_api.ScorePropRequest(**identity), "WOW_BETTING_ENGINE"
                 )
             except HTTPException as exc:
                 detail = exc.detail if isinstance(exc.detail, dict) else {"message": str(exc.detail)}
@@ -403,7 +372,6 @@ def run_prop_forward_cohort(
                     "probability_publishable": False, "can_execute": False,
                 })
                 continue
-
             payload = _prediction_payload(snapshot, direction, scored, now=now)
             if payload is None:
                 outcomes.append({
@@ -424,34 +392,16 @@ def run_prop_forward_cohort(
             })
 
     readiness = _reconcile_capability(db)
-    captured = sum(1 for row in outcomes if row["status"] == "CAPTURED_FORWARD")
     return {
         "terminal": True,
         "run_status": "COMPLETED",
         "snapshots_considered": len(snapshots),
         "directions_considered": len(snapshots) * len(DIRECTIONS),
-        "captured_forward_predictions": captured,
+        "captured_forward_predictions": sum(
+            1 for row in outcomes if row["status"] == "CAPTURED_FORWARD"
+        ),
         "rows": outcomes,
         "calibration_readiness": readiness,
         "calibrator_fit_performed": False,
         "can_execute": False,
     }
-
-
-def install_prop_forward_cohort_route(
-    app: FastAPI,
-    *,
-    auth_dependency: Any,
-    db_client_fn: Any,
-    market_api: Any,
-) -> None:
-    if any(getattr(route, "path", None) == "/v17/prop-forward-cohort-run" for route in app.router.routes):
-        return
-
-    @app.post(
-        "/v17/prop-forward-cohort-run",
-        dependencies=[auth_dependency],
-        operation_id="runWowV17PropForwardCohort",
-    )
-    def prop_forward_cohort_run(req: PropForwardCohortRequest):
-        return run_prop_forward_cohort(req, db=db_client_fn(), market_api=market_api)
