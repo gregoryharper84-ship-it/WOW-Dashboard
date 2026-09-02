@@ -16,7 +16,7 @@ from zoneinfo import ZoneInfo
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
-from v17.prop_forward_cohort_runtime import install_prop_forward_cohort_route
+from v17.prop_forward_cohort_route import install_prop_forward_cohort_route
 from v17.team_event_request_runtime import TeamEventRequest, score_team_event_request
 
 
