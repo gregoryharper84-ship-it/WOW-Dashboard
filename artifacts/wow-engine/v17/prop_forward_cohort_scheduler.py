@@ -14,6 +14,14 @@ from typing import Any, Callable
 from v17.prop_forward_cohort_runtime import PropForwardCohortRequest, run_prop_forward_cohort
 
 
+def _run_once(*, db_client_fn: Callable[[], Any], market_api: Any, max_snapshots: int) -> dict[str, Any]:
+    return run_prop_forward_cohort(
+        PropForwardCohortRequest(max_snapshots=max_snapshots),
+        db=db_client_fn(),
+        market_api=market_api,
+    )
+
+
 async def run_prop_forward_cohort_loop(
     *,
     db_client_fn: Callable[[], Any],
@@ -25,8 +33,9 @@ async def run_prop_forward_cohort_loop(
 ) -> None:
     """Continuously capture governed pregame forecasts for calibration.
 
-    One failed pass never promotes a model or terminates the production API.
-    Cancellation is propagated so application shutdown remains clean.
+    Each synchronous DB/model pass runs in a worker thread so cohort collection
+    cannot block the FastAPI event loop. One failed pass never promotes a model
+    or terminates the production API. Cancellation is propagated cleanly.
     """
     interval_seconds = max(60, int(interval_seconds))
     max_snapshots = max(1, min(int(max_snapshots), 200))
@@ -37,10 +46,11 @@ async def run_prop_forward_cohort_loop(
 
     while True:
         try:
-            result = run_prop_forward_cohort(
-                PropForwardCohortRequest(max_snapshots=max_snapshots),
-                db=db_client_fn(),
+            result = await asyncio.to_thread(
+                _run_once,
+                db_client_fn=db_client_fn,
                 market_api=market_api,
+                max_snapshots=max_snapshots,
             )
             readiness = result.get("calibration_readiness") or {}
             logger.warning(
