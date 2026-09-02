@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 
 from agent_runtime.runner import execute_envelope
 from agent_runtime.schemas import WorkerJobEnvelope
+import agent_runtime.runner as runner
 
 
 def _env(worker_id: str, payload: dict, *, candidate_id: str | None = "c1", evidence_snapshot_id: str | None = None) -> WorkerJobEnvelope:
@@ -121,6 +122,34 @@ def test_market_worker_preserves_model_market_objective_separation():
     held = execute_envelope(_env("wow.exact-line-market-auditor", {"exact_identity_match": True}))
     assert held.status == "BLOCKED"
     assert held.output["blocks_model_probability"] is False  # a market hold never erases the model's own probability
+
+
+def test_market_worker_scopes_wolfram_failure_to_money_lane(monkeypatch):
+    monkeypatch.setattr(runner, "wolfram_audit_enabled", lambda: True)
+    monkeypatch.setattr(
+        runner,
+        "audit_wolfram_claims",
+        lambda _claims, required: {
+            "verdict": "WOLFRAM_CALCULATION_MISMATCH",
+            "audit_required": required,
+            "receipts": [],
+            "blocks_model_probability": False,
+            "can_execute": False,
+        },
+    )
+    out = execute_envelope(_env("wow.exact-line-market-auditor", {
+        "exact_identity_match": True,
+        "settlement_match": True,
+        "two_way_no_vig_resolved": True,
+        "price_fresh": True,
+        "arithmetic_claims": [{"template_id": "PROBABILITY_TOTAL"}],
+    }))
+    assert out.status == "SUCCEEDED"
+    assert out.ceiling == "MODEL_QUALIFIED_HOLD"
+    assert out.blockers == []
+    assert out.output["market_gate"] == "HOLD"
+    assert out.output["money_lane_status"] == "WOLFRAM_CALCULATION_MISMATCH"
+    assert out.output["blocks_model_probability"] is False
 
 
 def test_final_refresh_rejects_started_event():
