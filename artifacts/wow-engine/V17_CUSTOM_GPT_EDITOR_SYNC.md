@@ -2,124 +2,119 @@
 
 Updated: 2026-09-02
 
-Backend/runtime deployment does **not** modify the live Custom GPT editor. This document is the canonical product-configuration handoff for synchronizing the two live GPTs with the already-live V17 backend.
+Backend/runtime deployment does **not** modify the live Custom GPT editors. This is the canonical product-configuration handoff for synchronizing the live WOW and LLP editors with the already-live V17 backend.
 
-Until the live editor actions below are completed and verified, report product configuration as:
+Until both editors are saved and verified, report product configuration as `LIVE_EDITOR_SYNC_EXTERNAL`. Do not report editor drift as a backend/model outage.
 
-`LIVE_EDITOR_SYNC_EXTERNAL`
+## Canonical production Action schemas
 
-Do not report this as a backend/model outage.
+Install the V17 source contracts, not the older generic templates:
 
-## 1. WOW_BETTING_ENGINE Custom GPT
+- WOW editor: `artifacts/wow-engine/v17/openapi.wow-betting-engine.v17.yaml`
+- LLP editor: `artifacts/wow-engine/v17/openapi.llp-team-engine.v17.yaml`
 
-Role:
-- authoritative top-level WOW host
-- owns player/prop/scalar requests
-- routes team/event probability requests to LLP_TEAM_BETTING_ENGINE capability
-- final user-facing publisher after governed backend results
-
-Required instruction semantics:
-
-- `custom_gpt_identity=WOW_BETTING_ENGINE`
-- `primary_host=WOW_CUSTOM_GPT`
-- `nested_custom_gpt_required=false`
-- `LLP=TEAM_EVENT_PROBABILITY_CAPABILITY`
-- `can_execute=false`
-- `DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS=true`
-- V17 active backend; do not claim V17 is merely proposed/candidate.
-- Scout -> Research is mandatory evidence acquisition/reconciliation before a controlling specialist when the backend contract requires it.
-- Exactly one controlling specialist owns each row/event.
-- Player/prop/scalar requests remain WOW-owned.
-- Team/event winners, favorites, underdogs, upsets, and probability-only team requests route to LLP_TEAM_BETTING_ENGINE.
-- Shared core remains authoritative for calibration, market economics, exposure/portfolio, final refresh, immutable ledger/reconciliation, and terminal reduction.
-- `V17_TERMINAL_REDUCER` is the sole global terminal authority.
-- Never convert external projections, sportsbook implied probability, raw recent hit rate, or generic reasoning into governed model probability.
-- `MODEL_UNAVAILABLE` means the required controlling model capability/completion did not produce a valid governed numeric probability package; missing downstream market data must not erase a completed sporting probability where the contract permits the sporting lane to survive.
-- Adjacent sportsbook lines are contextual evidence only and may not be represented as exact-line no-vig evidence for a different board threshold.
-- Duplicate-thesis exposure is a portfolio/slip-construction concern; it must not mutate the fitted sporting probability.
-- MLB pitcher-K opponent suppression may alter the fitted probability through certified `opponent_context`; do not apply a second narrative/manual suppression penalty on top of the backend probability package.
-- Preserve exact immutable pregame line + direction provenance when grading predictions; do not retroactively convert a discussed alternative line/direction into a model win.
-
-Preferred prop Action:
-
-`openapi.pick-request-action.yaml`
-
-Use this for screenshot/PDF/pasted-board/autonomous-discovery prop workflows because it supports the governed `/score-pick-request` boundary and certified backend evidence hydration.
-
-Core Action:
-
-`openapi.custom-gpt.template.yaml`
-
-Use this for health/governance, direct single-row governed prop scoring, event scoring, and settlement operations as defined by the schema.
-
-Authentication:
-
-- API key type: Bearer
-- credential: production `WOW_ACTION_API_KEY`
-- never install or expose `SUPABASE_SERVICE_KEY` in the GPT editor
-
-Render origin:
+Both schemas already point at:
 
 `https://wow-governed-probability-engine.onrender.com`
 
-When installing either schema, replace only the schema placeholder host with the exact HTTPS origin above. Do not hand-edit operation semantics, required fields, response blockers, or `can_execute` fields.
+Do not replace these schemas with `openapi.custom-gpt.template.yaml` or `openapi.pick-request-action.yaml` for final V17 editor synchronization. Those remain useful backend/general contracts, but the `v17/` schemas are the production host-specific editor contracts.
 
-## 2. LLP_TEAM_BETTING_ENGINE Custom GPT / capability
+Authentication for both editors:
 
-Role:
-- controlled team/event probability capability inside WOW architecture
-- owns team/event sporting probability for winners/favorites/underdogs/upsets
-- not a competing top-level terminal authority
-- not authorized to execute wagers
+- API key type: Bearer
+- credential: production `WOW_ACTION_API_KEY`
+- never install, paste, expose, or log `SUPABASE_SERVICE_KEY`
 
-Required instruction semantics:
+Do not hand-edit operation semantics, required host identities, response blockers, or `can_execute` fields in the V17 schemas.
 
-- Team/event probability lane must use the governed sport-specific event model.
-- Rank official team/event probability leaderboards by calibrated lower bound when that is the governed lane contract.
-- Do not use sportsbook odds, external projection rankings, recent form, or narrative as a substitute for the controlling fitted model.
-- Missing market price may block a market/value lane but must not erase a completed sporting team/event probability.
-- A selected/invoked controlling model that times out, throws, or returns no valid numeric package is a scorer/completion failure, not `MODEL_UNAVAILABLE` merely because no result was returned. Preserve the typed runtime failure taxonomy implemented by the backend.
-- LLP may publish its probability package to WOW/shared core but does not own final global terminal reduction.
-- `V17_TERMINAL_REDUCER` remains global terminal authority.
-- `can_execute=false` and dry-run-only remain permanent unless a separately governed architecture explicitly changes them.
+## WOW_BETTING_ENGINE editor
 
-## 3. Action installation verification
+Install instructions from:
 
-After saving editor changes, perform non-destructive verification from each GPT:
+`artifacts/wow-engine/WOW_V17_CUSTOM_GPT_INSTRUCTIONS.txt`
 
-1. Ask for governance/health/status and confirm V17 is reported active, not candidate/proposed.
+Required semantics include:
+
+- `custom_gpt_identity=WOW_BETTING_ENGINE`
+- authoritative top-level WOW host
+- owns player/prop/scalar intelligence
+- team/event winners, favorites, underdogs, upsets, and probability-only team requests route through the backend to `LLP_TEAM_BETTING_ENGINE` as controlling engine
+- exactly one controlling specialist per row/event
+- Scout -> Research is evidence/reconciliation only and never substitutes for the fitted specialist
+- shared core owns calibration, market economics, portfolio/exposure, final refresh, immutable write/reconciliation, and terminal reduction
+- `V17_TERMINAL_REDUCER` is the sole global terminal authority
+- `can_execute=false`
+- no live wager/order execution
+
+The WOW V17 Action schema exposes the host-specific V17 route surface, including health/governance, `/v17/host-contract`, prop scoring, canonical pick-request scoring, and WOW-originated team/event ingress whose backend controlling engine must resolve to LLP.
+
+## LLP_TEAM_BETTING_ENGINE editor
+
+Install instructions from:
+
+`artifacts/wow-engine/LLP_V17_CUSTOM_GPT_INSTRUCTIONS.txt`
+
+Required semantics include:
+
+- controlled team/event sporting-probability capability inside WOW
+- owns winners/favorites/underdogs/upsets/team-event probability
+- has no player-prop scoring authority
+- uses the exact governed sport/event fitted model and calibration contract
+- official probability ranking uses calibrated lower bound where required by the active lane
+- missing market price may block market/value analysis but must not erase a completed sporting probability
+- model invocation/scorer/output failures retain the backend typed failure taxonomy and must not be rewritten into fabricated probabilities
+- LLP does not own global terminal reduction
+- `V17_TERMINAL_REDUCER` is global terminal authority
+- `can_execute=false`
+
+The LLP V17 schema intentionally contains no player-prop scoring operation.
+
+## Postmortem semantics that must survive editor sync
+
+- MLB pitcher-K `opponent_context` may alter the fitted sporting distribution through the certified opponent factor; do not apply a second manual/narrative suppression penalty after backend scoring.
+- Adjacent sportsbook lines are context only and cannot satisfy exact-line no-vig authority for a different board threshold.
+- Duplicate-thesis exposure is a portfolio/card-construction risk only; it must not mutate model probability, calibrated probability, or calibrated lower bound.
+- Immutable pregame line + direction provenance controls grading. Do not retroactively count a materially different discussed line/direction as a governed prediction win.
+- Unsupported fitted-model routes stay fail closed. External projections, sportsbook implied probabilities, hit rates, or generic reasoning may not be relabeled as governed model output.
+
+## Non-destructive editor verification
+
+After saving each editor:
+
+1. Ask for governance/health/status and confirm V17 is reported active rather than proposed/candidate.
 2. Confirm `can_execute=false`.
-3. Confirm the GPT can reach the governed backend health/action surface using the configured bearer secret.
-4. For a team/event probability request, confirm WOW routes to LLP capability rather than a prop specialist.
-5. For a prop request, confirm WOW retains ownership and uses the pick-request/scoring boundary.
-6. Confirm an unsupported fitted-model route returns a governed fail-closed result instead of fabricated probability.
-7. Confirm missing market evidence does not erase a completed sporting probability where the backend returns one.
-8. Confirm no Action/editor contains a Supabase service-role credential.
+3. Call the authenticated `/v17/host-contract` operation from the installed Action and confirm the expected host/lane identity.
+4. From WOW, verify a team/event request resolves LLP as controlling engine and a prop request remains WOW-owned.
+5. From LLP, verify no player-prop scoring Action is exposed.
+6. Verify an unsupported fitted-model route returns a governed fail-closed result rather than fabricated probability.
+7. Verify missing market evidence does not erase an already-completed sporting probability where the backend contract preserves it.
+8. Confirm neither editor contains a Supabase service-role credential.
 
-Do not manufacture a production prediction solely to validate the editor if no legitimate pregame candidate exists. Health/governance and safe unsupported-route checks are sufficient for basic editor connectivity.
+Do not manufacture a production betting recommendation merely to test editor connectivity. Health/governance/host-contract and safe fail-closed checks are sufficient for basic synchronization acceptance.
 
-## 4. Version/status language
+## Status language
 
-For governance, health, status, or version questions, the editor instructions should identify the current system as V17 active and distinguish four independent states:
+Keep these independent:
 
-- `BACKEND_RUNTIME`: active/live
-- `MODEL_CAPABILITY`: route-specific; certified or fail-closed per exact sport/stat
-- `REPOSITORY_GOVERNANCE`: branch-protection certification tracked separately (issue #88 until closed)
-- `LIVE_GPT_EDITOR_SYNC`: complete only after the editor changes in this document are saved and verified
+- `BACKEND_RUNTIME`: V17 active/live when backend confirms it
+- `MODEL_CAPABILITY`: exact route-specific certified support or governed fail-closed state
+- `REPOSITORY_GOVERNANCE`: branch-protection certification tracked separately by issue #88 until effective protection is verified
+- `LIVE_GPT_EDITOR_SYNC`: complete only after both live editors have saved and verified the V17 schema + instructions
 
-Do not collapse these states into one generic `MODEL_UNAVAILABLE` or `V17_NOT_READY` result.
+Do not collapse repository/editor status into `MODEL_UNAVAILABLE` or `V17_NOT_READY`.
 
-## 5. Completion evidence
+## Completion evidence
 
-When live editor synchronization is completed, record:
+For each editor record:
 
-- editor/GPT name
-- date/time
-- installed schema filename(s)
+- GPT/editor name
+- synchronization date/time
+- exact V17 schema filename
 - Render origin
-- authentication type (Bearer; never record secret value)
-- governance/health verification result
-- routing verification result
+- Bearer authentication configured (never record the secret value)
+- governance/health result
+- `/v17/host-contract` result
+- routing/ownership verification
 - `can_execute=false` verification
 
-Then change product-configuration status from `LIVE_EDITOR_SYNC_EXTERNAL` to `LIVE_EDITOR_SYNC_VERIFIED` in the current status record or release note. Backend source code does not need another redeploy solely because the editor configuration was synchronized.
+After both editors pass, change product-configuration status from `LIVE_EDITOR_SYNC_EXTERNAL` to `LIVE_EDITOR_SYNC_VERIFIED`. No backend redeploy is required solely because editor configuration was synchronized.
