@@ -211,6 +211,149 @@ def test_complete_model_exact_two_way_market_passes_market_lane(monkeypatch):
     assert captured["market_side_b"].event_id == payload["event_id"]
 
 
+def test_wolfram_failure_holds_economics_without_erasing_model_probability(monkeypatch):
+    def fake_score(**_kwargs):
+        return _result(market_available=True, market_quality="EXACT_TWO_WAY_NO_VIG")
+
+    _install_common(monkeypatch, fake_score)
+    monkeypatch.setattr(api_prod_market, "wolfram_audit_enabled", lambda: True)
+    monkeypatch.setattr(
+        api_prod_market,
+        "persist_wolfram_audit",
+        lambda _client, prediction_id, audit: {
+            "arithmetic_audit_id": str(uuid.uuid4()),
+            "prediction_id": prediction_id,
+            "audit_payload_hash": "a" * 64,
+        },
+    )
+    monkeypatch.setattr(
+        api_prod_market,
+        "audit_wolfram_claims",
+        lambda _claims, required: {
+            "verdict": "WOLFRAM_AUDIT_UNAVAILABLE",
+            "provider": "WOLFRAM_ALPHA",
+            "audit_required": required,
+            "receipts": [],
+            "blocks_model_probability": False,
+            "can_execute": False,
+        },
+    )
+    payload = _request_payload()
+    now = datetime.now(timezone.utc).isoformat()
+    common = {
+        "line": 10.5,
+        "settlement_basis": "FULL_GAME_PLAYER_STAT",
+        "retrieved_at": now,
+        "participant": "Test Player",
+        "stat": "REB",
+        "period": "FULL_GAME",
+        "event_id": payload["event_id"],
+    }
+    payload["market_side_a"] = {**common, "side": "MORE", "american_odds": -135}
+    payload["market_side_b"] = {**common, "side": "LESS", "american_odds": 105}
+
+    response = client.post("/score-prop", json=payload, headers=AUTH)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["probability_publishable"] is True
+    assert body["objective_lanes"]["MODEL"]["status"] == "PASS"
+    assert body["objective_lanes"]["MARKET"]["status"] == "HOLD"
+    assert body["objective_lanes"]["MONEY"]["status"] == "HOLD"
+    assert body["objective_lanes"]["MONEY"]["money_lane_status"] == "WOLFRAM_AUDIT_UNAVAILABLE"
+    assert body["objective_lanes"]["ARITHMETIC_AUDIT"]["verdict"] == "WOLFRAM_AUDIT_UNAVAILABLE"
+    assert body["objective_lanes"]["ARITHMETIC_AUDIT"]["blocks_model_probability"] is False
+    assert body["backend_traversal"]["wolfram_arithmetic_audit"] == "WOLFRAM_AUDIT_UNAVAILABLE"
+    assert body["backend_traversal"]["wolfram_audit_ledger_write"] == "PASS"
+    assert body["can_execute"] is False
+
+
+def test_wolfram_pass_allows_existing_market_lane_semantics(monkeypatch):
+    row = _row(market_available=True, market_quality="EXACT_TWO_WAY_NO_VIG")
+    market_lane = {"status": "PASS", "blocks_model_probability": False}
+    settlement_lane = {"status": "HOLD", "blocks_model_probability": False}
+    money_lane = {"status": "HOLD", "money_lane_status": "PAYOUT_UNRESOLVED", "blocks_model_probability": False}
+    market_audit = SimpleNamespace(side_a=None, side_b=None)
+    monkeypatch.setattr(api_prod_market, "wolfram_audit_enabled", lambda: True)
+    monkeypatch.setattr(api_prod_market.prod, "get_client", lambda: object())
+    monkeypatch.setattr(
+        api_prod_market,
+        "persist_wolfram_audit",
+        lambda _client, prediction_id, audit: {
+            "arithmetic_audit_id": str(uuid.uuid4()),
+            "prediction_id": prediction_id,
+            "audit_payload_hash": "b" * 64,
+        },
+    )
+    monkeypatch.setattr(
+        api_prod_market,
+        "audit_wolfram_claims",
+        lambda claims, required: {
+            "verdict": "PASS",
+            "provider": "WOLFRAM_ALPHA",
+            "audit_required": required,
+            "receipts": [{"claim_id": claim["claim_id"], "verdict": "PASS"} for claim in claims],
+            "blocks_model_probability": False,
+            "can_execute": False,
+        },
+    )
+
+    market, settlement, money, audit = api_prod_market._apply_wolfram_arithmetic_gate(
+        row=row,
+        direction="MORE",
+        market_audit=market_audit,
+        market_lane=market_lane,
+        settlement_lane=settlement_lane,
+        money_lane=money_lane,
+        prediction_id=str(uuid.uuid4()),
+    )
+
+    assert audit["verdict"] == "PASS"
+    assert market["status"] == "PASS"
+    assert market["arithmetic_verified"] is True
+    assert settlement["status"] == "HOLD"
+    assert money["status"] == "HOLD"
+
+
+def test_wolfram_ledger_failure_holds_economics_but_preserves_provider_verdict(monkeypatch):
+    row = _row(market_available=True, market_quality="EXACT_TWO_WAY_NO_VIG")
+    monkeypatch.setattr(api_prod_market, "wolfram_audit_enabled", lambda: True)
+    monkeypatch.setattr(
+        api_prod_market,
+        "audit_wolfram_claims",
+        lambda _claims, required: {
+            "verdict": "PASS",
+            "provider": "WOLFRAM_ALPHA",
+            "audit_required": required,
+            "receipts": [],
+            "blocks_model_probability": False,
+            "can_execute": False,
+        },
+    )
+    monkeypatch.setattr(
+        api_prod_market,
+        "persist_wolfram_audit",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("database unavailable")),
+    )
+
+    market, _settlement, money, audit = api_prod_market._apply_wolfram_arithmetic_gate(
+        row=row,
+        direction="MORE",
+        market_audit=SimpleNamespace(side_a=None, side_b=None),
+        market_lane={"status": "PASS", "blocks_model_probability": False},
+        settlement_lane={"status": "PASS", "blocks_model_probability": False},
+        money_lane={"status": "PASS", "money_lane_status": "RESOLVED", "blocks_model_probability": False},
+        prediction_id=str(uuid.uuid4()),
+    )
+
+    assert audit["verdict"] == "WOLFRAM_AUDIT_LEDGER_WRITE_UNPROVEN"
+    assert audit["provider_verdict"] == "PASS"
+    assert audit["ledger_write"] == "UNPROVEN"
+    assert market["status"] == "HOLD"
+    assert money["status"] == "HOLD"
+    assert audit["blocks_model_probability"] is False
+
+
 def test_runtime_has_no_legacy_fitted_params_fallback(monkeypatch):
     def blocked_score(**_kwargs):
         from prop_discrete_engine import PropCalibrationUnavailable

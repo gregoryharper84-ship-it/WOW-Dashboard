@@ -21,6 +21,8 @@
     "probability_domain_strict": true,
     "point_estimate_is_not_lower_bound": true,
     "market_probability_is_not_model_probability": true,
+    "wolfram_arithmetic_audit_is_not_a_probability_model": true,
+    "wolfram_failure_blocks_only_affected_arithmetic_claims": true,
     "failure_paths_change_unconditional_probability": true,
     "calibration_health_separate_from_dynamic_calibration": true,
     "immutable_pregame_write_required_when_applicable": true,
@@ -38,6 +40,8 @@
     "current_render_service_id": "srv-da7sa9gu01pc73brt80g",
     "production_entrypoint": "api_ncaaf_acceptance:app",
     "v17_activation_flag": "WOW_V17_ACTIVE=1",
+    "wolfram_arithmetic_audit_flag": "WOW_WOLFRAM_ARITHMETIC_AUDIT_ENABLED=1",
+    "wolfram_app_id_server_side_only": true,
     "backward_compatible_v16_routes_preserved": true
   },
   "legacy_v16_compatibility_contracts": {

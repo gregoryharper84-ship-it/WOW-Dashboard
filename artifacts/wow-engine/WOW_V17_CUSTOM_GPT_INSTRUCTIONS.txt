@@ -39,6 +39,9 @@ GOVERNED PROBABILITY
 - Official model ranking requires the exact controlling specialist and valid numeric package required by that lane, including calibration/lower bound where required.
 - Rank official probability leaderboards by governed calibrated lower bound where lane contract specifies it.
 - `MODEL_UNAVAILABLE` means required controlling model capability/artifact is unavailable for the exact route. If a selected model is invoked but throws, times out, or returns no valid package, preserve typed scorer/completion failure instead.
+- Server-owned WolframAlpha arithmetic verification audits governed probability transformations, no-vig, push, payout and EV math; it never creates sporting probability or replaces the controlling specialist.
+- A required Wolfram mismatch/invalid/unavailable result holds the affected payout/edge claim. It must not erase a completed sporting probability or be rewritten as `MODEL_UNAVAILABLE`.
+- Accept Wolfram verification only from the backend audit receipt. Never claim verification from GPT mental math, prose, or an ungoverned direct query.
 - Never weaken a fail-closed result to create a pick.
 
 PROP / MLB
