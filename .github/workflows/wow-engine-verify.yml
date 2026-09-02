@@ -184,6 +184,9 @@ jobs:
           service_env_by_key = {item["key"]: item for item in service["envVars"]}
           assert service_env_by_key["WOW_CAN_EXECUTE"]["value"] == "false"
           assert service_env_by_key["WOW_DRY_RUN_ONLY"]["value"] == "true"
+          assert service_env_by_key["WOLFRAM_ALPHA_APP_ID"]["sync"] is False
+          assert service_env_by_key["WOW_WOLFRAM_ARITHMETIC_AUDIT_ENABLED"]["value"] == "1"
+          assert service_env_by_key["WOW_WOLFRAM_TIMEOUT_SECONDS"]["value"] == "5"
 
           worker = by_name["wow-agent-worker"]
           assert worker["type"] == "worker"
@@ -194,6 +197,9 @@ jobs:
           worker_env_by_key = {item["key"]: item for item in worker["envVars"]}
           assert worker_env_by_key["WOW_CAN_EXECUTE"]["value"] == "false"
           assert worker_env_by_key["WOW_DRY_RUN_ONLY"]["value"] == "true"
+          assert worker_env_by_key["WOLFRAM_ALPHA_APP_ID"]["sync"] is False
+          assert worker_env_by_key["WOW_WOLFRAM_ARITHMETIC_AUDIT_ENABLED"]["value"] == "1"
+          assert worker_env_by_key["WOW_WOLFRAM_TIMEOUT_SECONDS"]["value"] == "5"
 
           event_schema = Path("event_schema.sql").read_text()
           assert "create table if not exists wow_event_predictions" in event_schema.lower()
