@@ -45,13 +45,7 @@ paths:
         required: true
         content:
           application/json:
-            schema:
-              allOf:
-                - {$ref: '#/components/schemas/LlpTeamEventRequest'}
-                - type: object
-                  properties:
-                    requester_host_identity: {type: string, enum: [LLP_TEAM_BETTING_ENGINE]}
-                  required: [requester_host_identity]
+            schema: {$ref: '#/components/schemas/LlpTeamEventRequest'}
       responses:
         '200': {description: Governed team/event result or held model proof}
         '401': {description: Authentication failed}
@@ -66,7 +60,7 @@ paths:
         required: true
         content:
           application/json:
-            schema: {type: object, additionalProperties: true}
+            schema: {$ref: '#/components/schemas/RecommendationBatch'}
       responses:
         '200': {description: Terminal recommendation records persisted}
         '503': {description: Write-before-display not proven}
@@ -89,6 +83,14 @@ components:
       type: http
       scheme: bearer
   schemas:
+    RecommendationBatch:
+      type: object
+      additionalProperties: true
+      required: [records]
+      properties:
+        records:
+          type: array
+          items: {type: object, additionalProperties: true}
     LlpTeamEventRequest:
       type: object
       additionalProperties: false
