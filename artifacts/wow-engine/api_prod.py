@@ -22,6 +22,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException
 
 import api as base_api
 import api_g11 as event_api
+from wolfram_arithmetic_auditor import readiness as wolfram_arithmetic_readiness
 
 ScorePropRequest = base_api.ScorePropRequest
 _require_action_api_key = base_api._require_action_api_key
@@ -246,6 +247,7 @@ def governance():
             "WOW_BETTING_ENGINE_PLAYER_PROPS": "/score-prop via api_prod_market",
             "prop_required_path": "WOW_BETTING_ENGINE->RENDER->SUPABASE_EVIDENCE->CONTROLLING_SPECIALIST->WOW_PROP_FITTED_MODEL_V1->CALIBRATION->WOW_PREDICTIONS",
         },
+        "arithmetic_audit": wolfram_arithmetic_readiness(),
     }
 
 
