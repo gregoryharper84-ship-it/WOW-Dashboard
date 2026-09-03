@@ -29,7 +29,11 @@ from prop_live_model_acceptance import run_prop_model_live_self_acceptance
 from v17_synthetic_self_acceptance import run_v17_synthetic_self_acceptance
 from recommendation_ledger_api import install_recommendation_ledger_routes
 from team_event_request_runtime import install_team_event_request_routes
-from v17.team_event_request_runtime import install_team_event_routes as install_v17_team_event_routes
+from v17.team_event_probability_preservation import (
+    install_team_event_routes as install_v17_team_event_routes,
+    score_team_event_request as score_v17_team_event_request,
+)
+import v17.daily_snapshot_runtime as v17_daily_snapshot_runtime
 from v17.daily_snapshot_runtime import install_daily_snapshot_route
 from v17_observability import initialize_observability
 
@@ -142,6 +146,10 @@ if V17_ACTIVE:
             auth_dependency=_auth,
             get_client_fn=_db_client,
         )
+    # Daily imported the base scorer for deterministic lower-layer tests. Bind
+    # only the active production V17 Daily module to the scoped repaired scorer;
+    # this does not mutate the base team-event runtime or weaken any gate.
+    v17_daily_snapshot_runtime.score_team_event_request = score_v17_team_event_request
     install_daily_snapshot_route(
         app,
         auth_dependency=_auth,
