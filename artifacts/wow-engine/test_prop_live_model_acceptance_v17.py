@@ -32,7 +32,7 @@ def _base_governed_body():
     }
 
 
-def test_accepts_full_sporting_probability_under_official_publication_hold():
+def _hold_body():
     body = _base_governed_body()
     body.update(
         {
@@ -44,40 +44,35 @@ def test_accepts_full_sporting_probability_under_official_publication_hold():
             "official_publication_blockers": ["FORWARD_SHADOW_NOT_COMPLETED"],
         }
     )
+    return body
+
+
+def test_accepts_full_sporting_probability_under_official_publication_hold():
+    passed, _, prediction_id, mode = _is_model_path_pass(_response(_hold_body()))
+    assert passed is True
+    assert prediction_id is None
+    assert mode == "SPORTING_PROBABILITY_COMPLETE_PUBLICATION_HOLD"
+
+
+def test_accepts_hold_without_prediction_ledger_id():
+    body = _hold_body()
+    body["prediction"] = {}
     passed, _, prediction_id, mode = _is_model_path_pass(_response(body))
     assert passed is True
-    assert prediction_id == "pred-1"
+    assert prediction_id is None
     assert mode == "SPORTING_PROBABILITY_COMPLETE_PUBLICATION_HOLD"
 
 
 def test_hold_contract_fails_closed_without_completed_sporting_probability_marker():
-    body = _base_governed_body()
-    body.update(
-        {
-            "sporting_probability_publishable": True,
-            "governed_publishable": False,
-            "official_final_publishable": False,
-            "final_approved": False,
-            "official_publication_blockers": ["FORWARD_SHADOW_NOT_COMPLETED"],
-        }
-    )
+    body = _hold_body()
+    body.pop("governed_sporting_probability_completed")
     passed, _, _, mode = _is_model_path_pass(_response(body))
     assert passed is False
     assert mode == "UNRECOGNIZED_200"
 
 
 def test_can_execute_true_never_passes_acceptance():
-    body = _base_governed_body()
-    body.update(
-        {
-            "governed_sporting_probability_completed": True,
-            "sporting_probability_publishable": True,
-            "governed_publishable": False,
-            "official_final_publishable": False,
-            "final_approved": False,
-            "official_publication_blockers": ["FORWARD_SHADOW_NOT_COMPLETED"],
-            "can_execute": True,
-        }
-    )
+    body = _hold_body()
+    body["can_execute"] = True
     passed, _, _, _ = _is_model_path_pass(_response(body))
     assert passed is False
