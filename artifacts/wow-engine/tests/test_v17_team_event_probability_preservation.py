@@ -63,12 +63,13 @@ def test_governance_hold_does_not_manufacture_probability_when_scorer_has_none()
     assert out["can_execute"] is False
 
 
-def test_evidence_handoff_replays_same_governance_once(monkeypatch):
-    calls = []
+def test_shared_environment_and_evidence_handoff_replay_same_governance_once(monkeypatch):
+    governance_calls = []
+    rpc_calls = []
 
     def fake_governance(req, route, model_result, envelope=None, *, event_api):
-        calls.append("governance")
-        if len(calls) == 1:
+        governance_calls.append("governance")
+        if len(governance_calls) == 1:
             return {
                 "probability_publishable": False,
                 "rank_eligible": False,
@@ -86,26 +87,40 @@ def test_evidence_handoff_replays_same_governance_once(monkeypatch):
             "can_execute": False,
         }
 
-    class RpcResult:
-        data = {
-            "status": "PASS",
-            "evidence_rows_hydrated": 10,
-            "scoring_evidence_row_count": 10,
-            "complete_scoring_evidence_snapshot": True,
-            "can_execute": False,
-        }
+    class Result:
+        def __init__(self, data):
+            self.data = data
+
+    class RpcCall:
+        def __init__(self, data):
+            self._data = data
+
+        def execute(self):
+            return Result(self._data)
 
     class Client:
         def rpc(self, name, payload):
-            assert name == "wow_v17_hydrate_mlb_event_governance_evidence"
+            rpc_calls.append(name)
             assert payload["p_event_prediction_id"] == "event-pred-1"
             assert payload["p_score_snapshot_id"] == "score-1"
+            if name == "wow_v17_hydrate_shared_environmental_evidence":
+                return RpcCall({
+                    "status": "PASS",
+                    "environmental_evidence_produced": True,
+                    "weather": {"condition": "Clear", "temp": "73", "wind": "7 mph"},
+                    "probability_adjustment_applied": False,
+                    "can_execute": False,
+                })
+            assert name == "wow_v17_hydrate_mlb_event_governance_evidence"
             assert payload["p_evidence"]["weather_status"] == "CLEAR"
             assert payload["p_decision_intent"] == "BEST_SIDE"
-            return self
-
-        def execute(self):
-            return RpcResult()
+            return RpcCall({
+                "status": "PASS",
+                "evidence_rows_hydrated": 10,
+                "scoring_evidence_row_count": 10,
+                "complete_scoring_evidence_snapshot": True,
+                "can_execute": False,
+            })
 
     monkeypatch.setattr(repair, "_original_run_mlb_llp_governance", fake_governance)
     event_api = SimpleNamespace(get_client=lambda: Client())
@@ -117,8 +132,14 @@ def test_evidence_handoff_replays_same_governance_once(monkeypatch):
         event_api=event_api,
     )
 
-    assert calls == ["governance", "governance"]
+    assert governance_calls == ["governance", "governance"]
+    assert rpc_calls == [
+        "wow_v17_hydrate_shared_environmental_evidence",
+        "wow_v17_hydrate_mlb_event_governance_evidence",
+    ]
     assert out["governance_replayed_after_evidence_handoff"] is True
+    assert out["shared_environmental_evidence"]["environmental_evidence_produced"] is True
+    assert out["shared_environmental_evidence"]["probability_adjustment_applied"] is False
     assert out["evidence_handoff_repair"]["complete_scoring_evidence_snapshot"] is True
     assert out["probability_publishable"] is False
     assert out["rank_eligible"] is False
