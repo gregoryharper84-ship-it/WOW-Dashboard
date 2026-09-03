@@ -5,7 +5,7 @@ import v17.team_event_probability_preservation as repair
 
 
 def _req(**evidence):
-    return SimpleNamespace(sport_specific_evidence=evidence)
+    return SimpleNamespace(sport_specific_evidence=evidence, decision_intent="BEST_SIDE")
 
 
 def _route():
@@ -101,6 +101,7 @@ def test_evidence_handoff_replays_same_governance_once(monkeypatch):
             assert payload["p_event_prediction_id"] == "event-pred-1"
             assert payload["p_score_snapshot_id"] == "score-1"
             assert payload["p_evidence"]["weather_status"] == "CLEAR"
+            assert payload["p_decision_intent"] == "BEST_SIDE"
             return self
 
         def execute(self):
