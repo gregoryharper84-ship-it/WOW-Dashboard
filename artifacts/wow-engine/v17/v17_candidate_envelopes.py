@@ -142,6 +142,23 @@ class V17TeamEventCandidateEnvelope:
 
 
 @dataclass(frozen=True)
+class V17FailurePath:
+    """Failure path evidence classification per patch section 7."""
+    path_type: str
+    classification: Literal["modeled_path", "evidence_only_path", "unavailable_path"]
+    probability_if_modeled: Optional[float] = None
+    evidence_summary: Optional[str] = None
+
+    def validate(self) -> tuple[bool, str]:
+        """Validate that synthetic probabilities are not fabricated."""
+        if self.classification == "evidence_only_path" and self.probability_if_modeled is not None:
+            return False, "evidence_only_path cannot have synthetic probability"
+        if self.classification == "unavailable_path" and self.probability_if_modeled is not None:
+            return False, "unavailable_path cannot have probability"
+        return True, ""
+
+
+@dataclass(frozen=True)
 class V17GovernedProbabilityPackage:
     """Immutable package for sport-model probability with complete governance.
 
@@ -184,6 +201,27 @@ class V17GovernedProbabilityPackage:
     model_disagreement_if_available: Optional[float] = None
     uncertainty_method: Optional[str] = None
 
+    favorite_primary_win_path: Optional[str] = None
+    favorite_primary_failure_path: Optional[str] = None
+    favorite_failure_path_probability_if_modeled: Optional[float] = None
+    largest_favorite_loss_path: Optional[str] = None
+    underdog_upset_path: Optional[str] = None
+
+    def validate_failure_paths(self) -> tuple[bool, list[str]]:
+        """Validate failure path evidence per patch section 7.
+
+        Fitted model may produce failure paths. If not produced by model,
+        paths are descriptive evidence only and synthetic probabilities
+        are forbidden.
+        """
+        errors = []
+
+        if self.favorite_failure_path_probability_if_modeled is not None:
+            if not (0.0 <= self.favorite_failure_path_probability_if_modeled <= 1.0):
+                errors.append("failure_path_probability_outside_valid_domain")
+
+        return len(errors) == 0, errors
+
     def validate_calibration(self) -> tuple[bool, list[str]]:
         """Validate complete calibration provenance."""
         errors = []
@@ -224,3 +262,18 @@ class V17GovernedProbabilityPackage:
                     errors.append(f"{name}_outside_valid_domain_{value}")
 
         return len(errors) == 0, errors
+
+    def validate_complete_package(self) -> tuple[bool, list[str]]:
+        """Run all validations on the governed probability package."""
+        all_errors = []
+
+        ok, errors = self.validate_calibration()
+        all_errors.extend(errors)
+
+        ok, errors = self.validate_probability_domain()
+        all_errors.extend(errors)
+
+        ok, errors = self.validate_failure_paths()
+        all_errors.extend(errors)
+
+        return len(all_errors) == 0, all_errors

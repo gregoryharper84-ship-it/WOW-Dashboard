@@ -1,7 +1,8 @@
-"""Tests for V17 candidate envelopes (patch section 2-5)."""
+"""Tests for V17 candidate envelopes (patch section 2-7)."""
 from v17.v17_candidate_envelopes import (
     V17TeamEventCandidateEnvelope,
     V17GovernedProbabilityPackage,
+    V17FailurePath,
     DataUnavailable,
 )
 
@@ -269,3 +270,76 @@ def test_governed_probability_package_domain_invalid():
     ok, errors = package.validate_probability_domain()
     assert ok is False
     assert len(errors) > 0
+
+
+def test_failure_path_classification_modeled():
+    """Test failure path classified as modeled with probability."""
+    path = V17FailurePath(
+        path_type="primary_failure",
+        classification="modeled_path",
+        probability_if_modeled=0.15,
+        evidence_summary="Model predicts loss scenarios",
+    )
+    ok, msg = path.validate()
+    assert ok is True
+
+
+def test_failure_path_classification_evidence_only():
+    """Test failure path classified as evidence-only without synthetic probability."""
+    path = V17FailurePath(
+        path_type="primary_failure",
+        classification="evidence_only_path",
+        probability_if_modeled=None,
+        evidence_summary="Qualitative loss risk assessment",
+    )
+    ok, msg = path.validate()
+    assert ok is True
+
+
+def test_failure_path_synthetic_probability_forbidden():
+    """Test that evidence_only paths cannot have synthetic probabilities (patch section 7)."""
+    path = V17FailurePath(
+        path_type="primary_failure",
+        classification="evidence_only_path",
+        probability_if_modeled=0.2,
+        evidence_summary="Should not have probability",
+    )
+    ok, msg = path.validate()
+    assert ok is False
+    assert "evidence_only_path" in msg or "synthetic" in msg.lower()
+
+
+def test_governed_probability_package_complete_validation():
+    """Test complete package validation runs all checks."""
+    package = V17GovernedProbabilityPackage(
+        research_run_id="test-run",
+        event_key="MLB:12345",
+        official_event_id="12345",
+        participant="HOME",
+        opponent="AWAY",
+        market_role="MONEYLINE",
+        outcome_space="MONEYLINE",
+        raw_model_probability=0.55,
+        independent_model_probability=0.55,
+        market_prior_probability=0.54,
+        market_prior_weight=0.1,
+        calibrated_probability=0.52,
+        calibrated_probability_lower_bound=0.50,
+        calibrated_probability_upper_bound=0.54,
+        calibration_method="ISOTONIC_REGRESSION",
+        calibration_version="1.0",
+        calibration_sample_scope="SEASON_2026_MLB",
+        calibration_health_status="PASS",
+        model_version="FITTED_V3",
+        model_timestamp="2026-09-03T18:00:00Z",
+        latest_material_update_timestamp="2026-09-03T19:00:00Z",
+        model_valid_after_latest_material_update=True,
+        source_snapshot_id="src-123",
+        source_snapshot_timestamp="2026-09-03T19:00:00Z",
+        favorite_primary_failure_path="upset_loss",
+        favorite_failure_path_probability_if_modeled=0.15,
+    )
+
+    ok, errors = package.validate_complete_package()
+    assert ok is True
+    assert len(errors) == 0

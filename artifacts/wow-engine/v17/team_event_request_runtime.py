@@ -622,13 +622,18 @@ def _build_governed_probability_package(
             model_component_weights_if_available=model_result.get("model_component_weights"),
             model_disagreement_if_available=model_result.get("model_disagreement"),
             uncertainty_method=model_result.get("uncertainty_method"),
+            favorite_primary_win_path=model_result.get("favorite_primary_win_path"),
+            favorite_primary_failure_path=model_result.get("favorite_primary_failure_path"),
+            favorite_failure_path_probability_if_modeled=model_result.get("favorite_failure_path_probability_if_modeled"),
+            largest_favorite_loss_path=model_result.get("largest_favorite_loss_path"),
+            underdog_upset_path=model_result.get("underdog_upset_path"),
         )
 
         ok, calib_errors = package.validate_calibration()
         if not ok:
             return None
 
-        ok, domain_errors = package.validate_probability_domain()
+        ok, all_errors = package.validate_complete_package()
         if not ok:
             return None
 
