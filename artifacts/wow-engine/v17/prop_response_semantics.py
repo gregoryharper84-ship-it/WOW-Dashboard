@@ -167,8 +167,6 @@ def install_prop_response_semantics() -> bool:
     changed = False
 
     if market is not None and not getattr(market, "_wow_v17_probability_architecture_installed", False):
-        # One fitted distribution, both mathematically coherent raw sides, both
-        # calibrated by the same certified adapter. Only the requested side is persisted.
         original_score_engine = getattr(market, "score_discrete_prop_end_to_end", None)
         if callable(original_score_engine):
             def score_engine(*args: Any, **kwargs: Any):
@@ -179,13 +177,7 @@ def install_prop_response_semantics() -> bool:
                 lp = result.line_probabilities
                 more_cal = engine._calibrate(result.inference, float(lp.probability_more), lp, features, seed)
                 less_cal = engine._calibrate(result.inference, float(lp.probability_less), lp, features, seed)
-                return SimpleNamespace(
-                    row=result.row,
-                    inference=result.inference,
-                    line_probabilities=result.line_probabilities,
-                    calibration=result.calibration,
-                    directional_calibrations={"MORE": more_cal, "LESS": less_cal},
-                )
+                return SimpleNamespace(row=result.row, inference=result.inference, line_probabilities=result.line_probabilities, calibration=result.calibration, directional_calibrations={"MORE": more_cal, "LESS": less_cal})
             market.score_discrete_prop_end_to_end = score_engine
 
         market._probability_qualification = _qualification_payload
@@ -209,17 +201,16 @@ def install_prop_response_semantics() -> bool:
         market._wow_v17_probability_architecture_installed = True
         changed = True
 
-    # Publication maturity cannot suppress an otherwise valid Phase-A governed
-    # sporting probability. The full scorer runs; final/value/card publication
-    # remains separately held by its own objective lanes.
     if lane_patch is not None and market is not None and not getattr(lane_patch, "_wow_v17_full_probability_under_publication_hold", False):
         def full_probability_under_publication_hold(market_api: Any, req: Any, *, model_identity: str, lane: dict[str, Any], preflight: dict[str, Any], blockers: list[str]) -> dict[str, Any]:
             scored = dict(market_api.score_prop(req, model_identity))
             scored["governed_sporting_probability_completed"] = True
+            scored["sporting_probability_publishable"] = True
             scored["official_publication_capability"] = preflight.get("governed_publication_capability") or "PHASE_A_HELD"
             scored["official_publication_blockers"] = list(blockers)
             scored["probability_publishable"] = True
-            scored["governed_publishable"] = True
+            scored["governed_publishable"] = False
+            scored["official_final_publishable"] = False
             scored["final_approved"] = False
             scored["can_execute"] = False
             return scored
