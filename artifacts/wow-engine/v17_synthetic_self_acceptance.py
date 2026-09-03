@@ -1,20 +1,16 @@
-"""Authenticated one-shot production self-acceptance for the V17 synthetic
-fail-closed acceptance scenarios (unsupported sport, no certified model).
+"""Authenticated one-shot production self-acceptance for V17.
 
-The runner exercises the deployed /score-pick-request and
-/score-team-event-request HTTP boundaries using the service's own
-WOW_ACTION_API_KEY, read only from process environment. It never leaves the
-running Render instance's own network boundary, so it works even when an
-external caller cannot reach the deployed URL directly.
+The runner verifies both synthetic fail-closed contracts and, when a real future
+MLB shadow event exists with fitted probability but lineup still pending, the
+projected-lineup sporting-probability contract through the deployed authenticated
+/score-team-event HTTP boundary.
 
-This proves the live, deployed HTTP surface -- not just local test code --
-correctly fails closed for a sport with no certified model: no probability is
-fabricated, rank_eligible/probability_publishable stay false, and
-can_execute stays false throughout. It is acceptance/observability only. It
-cannot execute a wager and does not change model publication authority.
+Acceptance never places or approves a wager.  It does not expose the Action key
+or log sporting probability values.  can_execute remains false.
 """
 from __future__ import annotations
 
+import math
 import os
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -29,44 +25,108 @@ UNSUPPORTED_SPORT = "TABLE_TENNIS"
 def _prop_payload(*, event_start: str) -> dict[str, Any]:
     return {
         "request_id": "V17-SYNTHETIC-SELF-ACCEPTANCE-PROP",
-        "rows": [
-            {
-                "row_key": "TEST-PROP-001",
-                "event_id": "TEST-PROP-001",
-                "event_start_time": event_start,
-                "sport": UNSUPPORTED_SPORT,
-                "player": "Test Player",
-                "stat_type": "ACES",
-                "line": 2.5,
-                "direction": "MORE",
-                "source_type": "NORMALIZED",
-            }
-        ],
+        "rows": [{
+            "row_key": "TEST-PROP-001", "event_id": "TEST-PROP-001",
+            "event_start_time": event_start, "sport": UNSUPPORTED_SPORT,
+            "player": "Test Player", "stat_type": "ACES", "line": 2.5,
+            "direction": "MORE", "source_type": "NORMALIZED",
+        }],
     }
 
 
 def _team_event_payload(*, event_date: str) -> dict[str, Any]:
     return {
-        "rows": [
-            {
-                "research_run_id": "TEST-EVENT-001-RUN",
-                "objective_lane": "OUTRIGHT_WIN_PROBABILITY",
-                "sport": UNSUPPORTED_SPORT,
-                "league": "TEST_LEAGUE",
-                "event_key": f"{UNSUPPORTED_SPORT}:TEST-EVENT-001",
-                "event_state": "PREGAME",
-                "event_date": event_date,
-                "timezone": "UTC",
-                "price_required_for_objective": False,
-            }
-        ],
+        "rows": [{
+            "research_run_id": "TEST-EVENT-001-RUN",
+            "objective_lane": "OUTRIGHT_WIN_PROBABILITY",
+            "sport": UNSUPPORTED_SPORT, "league": "TEST_LEAGUE",
+            "event_key": f"{UNSUPPORTED_SPORT}:TEST-EVENT-001",
+            "event_state": "PREGAME", "event_date": event_date,
+            "timezone": "UTC", "price_required_for_objective": False,
+        }],
     }
 
 
+def _real_projected_mlb_candidate(now: datetime) -> dict[str, Any] | None:
+    """Select one real fitted, still-pregame MLB event whose lineup is pending."""
+    try:
+        import api_prod_market_acceptance as production
+        rows = (
+            production.market_api.prod.get_client()
+            .table("wow_mlb_forward_shadow_events")
+            .select(
+                "official_event_id,official_date,event_start_time,home_team,away_team,"
+                "snapshot_id,snapshot_timestamp,lineup_status,feature_hydration_status,model_score_status"
+            )
+            .gt("event_start_time", now.isoformat())
+            .eq("feature_hydration_status", "PASS")
+            .eq("model_score_status", "SHADOW_SCORED_LINEUP_PENDING")
+            .order("event_start_time")
+            .limit(1)
+            .execute().data or []
+        )
+    except Exception:
+        return None
+    if not rows:
+        return None
+    row = dict(rows[0])
+    if str(row.get("lineup_status") or "").upper() == "CONFIRMED":
+        return None
+    return row
+
+
+def _projected_team_event_payload(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "requester_host_identity": "WOW_BETTING_ENGINE",
+        "research_run_id": "V17-PROJECTED-LINEUP-SELF-ACCEPTANCE",
+        "requested_slate_date": str(row["official_date"]),
+        "requested_timezone": "UTC",
+        "candidate_family": "OUTRIGHT_WINNER",
+        "decision_intent": "BEST_SIDE",
+        "event_key": f"MLB:{row['official_event_id']}",
+        "official_event_id": str(row["official_event_id"]),
+        "event_start_time_utc": str(row["event_start_time"]),
+        "sport": "MLB",
+        "league": "MLB",
+        "market_family": "OUTRIGHT_WINNER",
+        "settlement_basis": "FULL_GAME_INCLUDING_EXTRA_INNINGS",
+        "home_team": str(row["home_team"]),
+        "away_team": str(row["away_team"]),
+        "source_snapshot_id": str(row["snapshot_id"]),
+        "latest_material_update_timestamp": str(row["snapshot_timestamp"]),
+        "sport_specific_evidence": {},
+    }
+
+
+def _finite_probability(payload: dict[str, Any], name: str) -> bool:
+    try:
+        value = float(payload[name])
+    except (KeyError, TypeError, ValueError):
+        return False
+    return math.isfinite(value) and 0.0 <= value <= 1.0
+
+
+def _projected_acceptance_ok(payload: dict[str, Any]) -> bool:
+    numeric_ok = all(_finite_probability(payload, name) for name in (
+        "calibrated_home_probability", "calibrated_away_probability",
+        "calibrated_home_lower_bound", "calibrated_away_lower_bound",
+    ))
+    return bool(
+        payload.get("code") == "LINEUP_PROJECTED_PROBABILITY_AVAILABLE"
+        and payload.get("lineup_state") in {"PROJECTED_HIGH_CONFIDENCE", "PROJECTED_MEDIUM_CONFIDENCE"}
+        and numeric_ok
+        and payload.get("sporting_probability_publishable") is True
+        and payload.get("probability_publishable") is True
+        and payload.get("rank_eligible") is False
+        and payload.get("terminal_label") == "MODEL_QUALIFIED_HOLD"
+        and payload.get("final_refresh_required") is True
+        and "LINEUP_CONFIRMATION_PENDING" in (payload.get("blockers") or [])
+        and payload.get("can_execute") is False
+    )
+
+
 async def run_v17_synthetic_self_acceptance(logger, *, now: datetime | None = None) -> dict[str, Any]:
-    """Run both real authenticated HTTP acceptance scenarios against the
-    deployed service and confirm both fail closed with no fabricated
-    probability."""
+    """Exercise the live authenticated V17 HTTP surface."""
     api_key = os.getenv("WOW_ACTION_API_KEY", "").strip()
     base_url = os.getenv("RENDER_EXTERNAL_URL", DEFAULT_SERVICE_URL).strip().rstrip("/") or DEFAULT_SERVICE_URL
     if not api_key:
@@ -78,25 +138,22 @@ async def run_v17_synthetic_self_acceptance(logger, *, now: datetime | None = No
     event_start = (now + timedelta(days=1)).isoformat()
     event_date = (now + timedelta(days=1)).date().isoformat()
     headers = {"Authorization": f"Bearer {api_key}"}
+    projected_candidate = _real_projected_mlb_candidate(now)
 
     try:
         async with httpx.AsyncClient(timeout=60.0) as client:
-            prop_response = await client.post(
-                f"{base_url}/score-pick-request",
-                headers=headers,
-                json=_prop_payload(event_start=event_start),
-            )
-            team_event_response = await client.post(
-                f"{base_url}/score-team-event-request",
-                headers=headers,
-                json=_team_event_payload(event_date=event_date),
-            )
+            prop_response = await client.post(f"{base_url}/score-pick-request", headers=headers, json=_prop_payload(event_start=event_start))
+            team_event_response = await client.post(f"{base_url}/score-team-event-request", headers=headers, json=_team_event_payload(event_date=event_date))
+            projected_response = None
+            if projected_candidate is not None:
+                projected_response = await client.post(
+                    f"{base_url}/score-team-event",
+                    headers=headers,
+                    json=_projected_team_event_payload(projected_candidate),
+                )
     except Exception as exc:
         result = {"status": "FAILED", "code": "HTTP_ACCEPTANCE_REQUEST_FAILED", "error_type": type(exc).__name__, "can_execute": False}
-        logger.error(
-            "WOW_V17_SYNTHETIC_SELF_ACCEPTANCE status=FAILED code=HTTP_ACCEPTANCE_REQUEST_FAILED error_type=%s can_execute=false",
-            type(exc).__name__,
-        )
+        logger.error("WOW_V17_SYNTHETIC_SELF_ACCEPTANCE status=FAILED code=HTTP_ACCEPTANCE_REQUEST_FAILED error_type=%s can_execute=false", type(exc).__name__)
         return result
 
     prop_payload = prop_response.json() if prop_response.status_code == 200 else {}
@@ -110,38 +167,54 @@ async def run_v17_synthetic_self_acceptance(logger, *, now: datetime | None = No
         and prop_row.get("can_execute") is False
     )
 
-    team_event_payload = team_event_response.json() if team_event_response.status_code == 200 else {}
-    team_event_rows = team_event_payload.get("rows") or []
-    team_event_row = team_event_rows[0] if team_event_rows and isinstance(team_event_rows[0], dict) else {}
-    team_event_ok = bool(
+    team_payload = team_event_response.json() if team_event_response.status_code == 200 else {}
+    team_rows = team_payload.get("rows") or []
+    team_row = team_rows[0] if team_rows and isinstance(team_rows[0], dict) else {}
+    team_ok = bool(
         team_event_response.status_code == 200
-        and team_event_row.get("terminal_status") == "HELD"
-        and str(team_event_row.get("code") or "").upper() == "MODEL_UNAVAILABLE"
-        and team_event_row.get("probability_publishable") is False
-        and team_event_row.get("can_execute") is False
+        and team_row.get("terminal_status") == "HELD"
+        and str(team_row.get("code") or "").upper() == "MODEL_UNAVAILABLE"
+        and team_row.get("probability_publishable") is False
+        and team_row.get("can_execute") is False
     )
 
-    status = "PASS" if prop_ok and team_event_ok else "FAIL"
+    projected_status = "NO_ELIGIBLE_PREGAME_EVENT"
+    projected_ok: bool | None = None
+    projected_http_status: int | None = None
+    projected_event_id: str | None = None
+    projected_code: str | None = None
+    if projected_candidate is not None and projected_response is not None:
+        projected_event_id = str(projected_candidate.get("official_event_id"))
+        projected_http_status = projected_response.status_code
+        projected_payload = projected_response.json() if projected_response.status_code == 200 else {}
+        projected_code = str(projected_payload.get("code") or "") or None
+        projected_ok = bool(projected_response.status_code == 200 and _projected_acceptance_ok(projected_payload))
+        projected_status = "PASS" if projected_ok else "FAIL"
+
+    required_ok = prop_ok and team_ok and (projected_ok is not False)
+    status = "PASS" if required_ok else "FAIL"
     result = {
         "status": status,
         "prop_http_status": prop_response.status_code,
         "prop_ok": prop_ok,
         "prop_terminal_label": prop_row.get("terminal_label") or prop_row.get("code"),
         "team_event_http_status": team_event_response.status_code,
-        "team_event_ok": team_event_ok,
-        "team_event_code": team_event_row.get("code"),
+        "team_event_ok": team_ok,
+        "team_event_code": team_row.get("code"),
+        "projected_lineup_status": projected_status,
+        "projected_lineup_http_status": projected_http_status,
+        "projected_lineup_ok": projected_ok,
+        "projected_lineup_event_id": projected_event_id,
+        "projected_lineup_code": projected_code,
         "can_execute": False,
     }
     log = logger.warning if status == "PASS" else logger.error
     log(
         "WOW_V17_SYNTHETIC_SELF_ACCEPTANCE status=%s prop_http_status=%s prop_ok=%s prop_terminal_label=%s "
-        "team_event_http_status=%s team_event_ok=%s team_event_code=%s can_execute=false",
-        status,
-        prop_response.status_code,
-        prop_ok,
-        prop_row.get("terminal_label") or prop_row.get("code"),
-        team_event_response.status_code,
-        team_event_ok,
-        team_event_row.get("code"),
+        "team_event_http_status=%s team_event_ok=%s team_event_code=%s projected_lineup_status=%s "
+        "projected_lineup_http_status=%s projected_lineup_ok=%s projected_lineup_event_id=%s projected_lineup_code=%s can_execute=false",
+        status, prop_response.status_code, prop_ok, prop_row.get("terminal_label") or prop_row.get("code"),
+        team_event_response.status_code, team_ok, team_row.get("code"), projected_status,
+        projected_http_status, projected_ok, projected_event_id, projected_code,
     )
     return result
