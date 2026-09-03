@@ -53,7 +53,7 @@ def resolve_mlb_team_event_evidence(req: Any, *, event_api: Any) -> dict[str, An
             get_client()
             .table("wow_mlb_forward_shadow_events")
             .select(
-                "official_event_id,event_start_time,home_team,away_team,venue_name,"
+                "official_event_id,event_start_time,event_status,home_team,away_team,venue_name,"
                 "home_probable_pitcher,away_probable_pitcher,snapshot_id,"
                 "snapshot_timestamp,feature_hydration_status"
             )
@@ -126,6 +126,7 @@ def resolve_mlb_team_event_evidence(req: Any, *, event_api: Any) -> dict[str, An
 
     canonical = {
         "venue": row["venue_name"],
+        "official_event_status": row.get("event_status"),
         "home_starting_pitcher": row["home_probable_pitcher"],
         "away_starting_pitcher": row["away_probable_pitcher"],
         "home_starter_status": "PROBABLE",
@@ -138,7 +139,7 @@ def resolve_mlb_team_event_evidence(req: Any, *, event_api: Any) -> dict[str, An
     contradictions = []
     for key, value in canonical.items():
         supplied = caller.get(key)
-        if supplied not in (None, "") and not _same_text(supplied, value):
+        if value not in (None, "") and supplied not in (None, "") and not _same_text(supplied, value):
             contradictions.append(key)
     if contradictions:
         return {

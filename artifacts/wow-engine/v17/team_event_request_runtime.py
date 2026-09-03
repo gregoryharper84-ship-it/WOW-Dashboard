@@ -27,6 +27,7 @@ from agent_runtime.schemas import WorkerJobEnvelope
 from agent_runtime.scout_research import RESEARCH_RECONCILER, RESEARCH_WORKERS, scout_lane
 from v17.host_routing import LLP_TEAM_BETTING_ENGINE, resolve_host_route
 from v17.mlb_team_event_hydration import resolve_mlb_team_event_evidence
+from v17.v17_candidate_envelopes import V17TeamEventCandidateEnvelope, V17GovernedProbabilityPackage, DataUnavailable
 
 CAN_EXECUTE = False
 
@@ -99,6 +100,20 @@ def _aware_future(value: str) -> bool:
     except (TypeError, ValueError):
         return False
     return parsed.utcoffset() is not None and parsed.astimezone(timezone.utc) > datetime.now(timezone.utc)
+
+
+def _model_after_latest_update(model_timestamp: Any, latest_update: Any) -> bool:
+    """Compare aware instants; never rely on ISO string ordering."""
+    if latest_update in (None, ""):
+        return True
+    try:
+        model_at = datetime.fromisoformat(str(model_timestamp).replace("Z", "+00:00"))
+        update_at = datetime.fromisoformat(str(latest_update).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return False
+    if model_at.utcoffset() is None or update_at.utcoffset() is None:
+        return False
+    return model_at.astimezone(timezone.utc) >= update_at.astimezone(timezone.utc)
 
 
 def _base_errors(req: TeamEventRequest) -> list[str]:
@@ -199,8 +214,16 @@ def _mlb_request(req: TeamEventRequest, event_api: Any) -> Any:
         away_lineup_status=evidence["away_lineup_status"],
         latest_material_update_timestamp=req.latest_material_update_timestamp,
         source_snapshot_id=req.source_snapshot_id,
-        market_prior=req.market_prior,
+        market_prior=_model_market_prior(req.market_prior),
     )
+
+
+def _model_market_prior(prior: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Forward only the fitted scorer's declared EventMarketPrior fields."""
+    if not prior:
+        return None
+    allowed = ("home_probability", "away_probability", "timestamp", "quality", "source")
+    return {key: prior.get(key) for key in allowed if prior.get(key) is not None}
 
 
 def _without_numeric_model_fields(payload: dict[str, Any]) -> dict[str, Any]:
@@ -231,14 +254,133 @@ def _llp_governance_hold(req: TeamEventRequest, route: Any, model_result: dict[s
         "rank_eligible": False,
         "host_terminal_authority": False,
         "global_terminal_authority": "V17_TERMINAL_REDUCER",
+        "terminal_reducer_input": {
+            "status": (governance_detail or {}).get("status", "NOT_PROVEN"),
+            "terminal_output": "MODEL_QUALIFIED_HOLD",
+            "global_terminal_reducer": (governance_detail or {}).get(
+                "global_terminal_reducer", "V17_TERMINAL_REDUCER"
+            ),
+        },
         "can_execute": False,
     }
 
 
-def _run_mlb_llp_governance(req: TeamEventRequest, route: Any, model_result: dict[str, Any], *, event_api: Any) -> dict[str, Any]:
-    score_snapshot_id = model_result.get("score_snapshot_id")
+def _validate_identity_lock(envelope: V17TeamEventCandidateEnvelope) -> list[str]:
+    """Validate identity lock requirements per patch section 3."""
+    blockers = []
+
+    if not envelope.official_event_id:
+        blockers.append("OFFICIAL_EVENT_ID_MISSING")
+    if not envelope.official_event_id_source:
+        blockers.append("OFFICIAL_EVENT_ID_PROVENANCE_MISSING")
+    if not envelope.event_start_time_utc:
+        blockers.append("EVENT_START_TIME_MISSING")
+    if not envelope.home_team:
+        blockers.append("HOME_TEAM_MISSING")
+    if not envelope.away_team:
+        blockers.append("AWAY_TEAM_MISSING")
+    if not envelope.settlement_market:
+        blockers.append("SETTLEMENT_MARKET_MISSING")
+
+    return blockers
+
+
+def _run_mlb_llp_governance(
+    req: TeamEventRequest,
+    route: Any,
+    model_result: dict[str, Any],
+    envelope: V17TeamEventCandidateEnvelope | None = None,
+    *,
+    event_api: Any,
+) -> dict[str, Any]:
+    # Prospective specialist output names the immutable fitted baseline
+    # base_score_snapshot_id; ratified bridge output names the same ledger key
+    # score_snapshot_id. Both are governed references, not synthetic IDs.
+    score_snapshot_id = model_result.get("score_snapshot_id") or model_result.get("base_score_snapshot_id")
     if not score_snapshot_id:
         return _llp_governance_hold(req, route, model_result)
+
+    if envelope:
+        identity_blockers = _validate_identity_lock(envelope)
+        if identity_blockers:
+            return {
+                **_without_numeric_model_fields(model_result),
+                "code": "MODEL_OUTPUT_INVALID",
+                "terminal_status": "MODEL_OUTPUT_INVALID",
+                "blockers": identity_blockers,
+                "failure_class": "IDENTITY_LOCK_FAIL",
+                "rank_eligible": False,
+                "probability_publishable": False,
+                "host_terminal_authority": False,
+                "global_terminal_authority": "V17_TERMINAL_REDUCER",
+                "can_execute": False,
+            }
+
+        numeric_fields_present = sorted(_MLB_NUMERIC_MODEL_FIELDS.intersection(model_result))
+        probability_fields_withheld = model_result.get("probability_fields_withheld") is True
+        if probability_fields_withheld and numeric_fields_present:
+            return {
+                **_without_numeric_model_fields(model_result),
+                "code": "MODEL_OUTPUT_INVALID",
+                "terminal_status": "MODEL_OUTPUT_INVALID",
+                "blockers": [f"WITHHELD_PROBABILITY_FIELD_LEAK:{field}" for field in numeric_fields_present],
+                "failure_class": "TRANSLATION_FAILURE",
+                "rank_eligible": False,
+                "probability_publishable": False,
+                "host_terminal_authority": False,
+                "global_terminal_authority": "V17_TERMINAL_REDUCER",
+                "terminal_reducer_input": {
+                    "status": "MODEL_OUTPUT_INVALID",
+                    "terminal_output": "MODEL_QUALIFIED_HOLD",
+                    "global_terminal_reducer": "V17_TERMINAL_REDUCER",
+                },
+                "can_execute": False,
+            }
+
+        # A held bridge response intentionally withholds numeric fields. Its
+        # immutable score_snapshot_id is the non-lossy handoff to the LLP RPC,
+        # which reads the governed ledger directly. Only an exposed numeric
+        # package is translated and validated in-process.
+        if not probability_fields_withheld:
+            package = _build_governed_probability_package(envelope, model_result)
+            if package is None:
+                ok, calib_errors = False, []
+                if model_result.get("calibration_health_status") == "PASS":
+                    ok, calib_errors = _validate_model_output_lossless(model_result)
+                return {
+                    **_without_numeric_model_fields(model_result),
+                    "code": "MODEL_OUTPUT_INVALID",
+                    "terminal_status": "MODEL_OUTPUT_INVALID",
+                    "blockers": (calib_errors or ["MODEL_OUTPUT_PACKAGE_CONSTRUCTION_FAILED"]),
+                    "failure_class": "TRANSLATION_FAILURE",
+                    "rank_eligible": False,
+                    "probability_publishable": False,
+                    "host_terminal_authority": False,
+                    "global_terminal_authority": "V17_TERMINAL_REDUCER",
+                    "terminal_reducer_input": {
+                        "status": "MODEL_OUTPUT_INVALID",
+                        "terminal_output": "MODEL_QUALIFIED_HOLD",
+                        "global_terminal_reducer": "V17_TERMINAL_REDUCER",
+                    },
+                    "can_execute": False,
+                }
+
+    if envelope:
+        ok, market_errors = envelope.validate_market_context()
+        if not ok and envelope.market_status in ("EXACT_LINE", "ADJACENT_LINE"):
+            return {
+                **_without_numeric_model_fields(model_result),
+                "code": "MODEL_OUTPUT_INVALID",
+                "terminal_status": "MODEL_OUTPUT_INVALID",
+                "blockers": market_errors or ["MARKET_CONTEXT_INCOMPLETE"],
+                "failure_class": "MARKET_HANDOFF_FAIL",
+                "rank_eligible": False,
+                "probability_publishable": False,
+                "host_terminal_authority": False,
+                "global_terminal_authority": "V17_TERMINAL_REDUCER",
+                "can_execute": False,
+            }
+
     get_client = getattr(event_api, "get_client", None)
     if not callable(get_client):
         return _llp_governance_hold(req, route, model_result, governance_detail={"status": "UNAVAILABLE", "blockers": ["EVENT_LEDGER_CLIENT_UNAVAILABLE"]})
@@ -266,14 +408,43 @@ def _run_mlb_llp_governance(req: TeamEventRequest, route: Any, model_result: dic
         and governance.get("can_execute") is False
     )
     if not required_pass:
-        return _llp_governance_hold(req, route, model_result, governance_detail=governance)
-    final_label = str(governance.get("terminal_label") or "MODEL_QUALIFIED_HOLD")
-    publishable = bool(model_result.get("probability_publishable") is True and governance.get("probability_publishable") is True and final_label == "FINAL_APPROVED")
-    if not publishable:
         held = _llp_governance_hold(req, route, model_result, governance_detail=governance)
+        final_label = str(governance.get("terminal_label") or "MODEL_QUALIFIED_HOLD")
         held["terminal_label"] = final_label
         held["terminal_ceiling"] = final_label
+        held["terminal_reducer_input"] = {
+            "status": governance.get("status"),
+            "probability_audit": governance.get("probability_audit_result"),
+            "event_mutex": governance.get("event_mutex_status"),
+            "postmodel_gates": governance.get("postmodel_gates_status"),
+            "final_gates": governance.get("final_gates_status"),
+            "global_terminal_reducer": governance.get("global_terminal_reducer"),
+        }
         return held
+
+    final_label = str(governance.get("terminal_label") or "MODEL_QUALIFIED_HOLD")
+    publishable = bool(
+        model_result.get("probability_publishable") is True
+        and governance.get("probability_publishable") is True
+        and governance.get("rank_eligible") is True
+        and final_label == "FINAL_APPROVED"
+    )
+    if not publishable:
+        held = _llp_governance_hold(req, route, model_result, governance_detail=governance)
+        held_label = "MODEL_QUALIFIED_HOLD" if final_label == "FINAL_APPROVED" else final_label
+        held["terminal_label"] = held_label
+        held["terminal_ceiling"] = held_label
+        held["blockers"] = sorted(set([
+            *held.get("blockers", []),
+            "MODEL_OR_RANK_PUBLICATION_NOT_PROVEN",
+        ]))
+        held["terminal_reducer_input"] = {
+            "status": "PASS",
+            "terminal_output": held_label,
+            "global_terminal_reducer": "V17_TERMINAL_REDUCER",
+        }
+        return held
+
     return {
         **model_result,
         "requester_host_identity": route.requester_host_identity,
@@ -285,6 +456,10 @@ def _run_mlb_llp_governance(req: TeamEventRequest, route: Any, model_result: dic
         "event_mutex_status": governance["event_mutex_status"],
         "terminal_label": final_label,
         "terminal_ceiling": final_label,
+        "terminal_reducer_input": {
+            "status": "PASS",
+            "terminal_output": final_label,
+        },
         "probability_publishable": True,
         "rank_eligible": bool(governance.get("rank_eligible")),
         "host_terminal_authority": False,
@@ -337,6 +512,263 @@ def _run_mandatory_scout_research(req: TeamEventRequest) -> dict[str, Any]:
     return {"status": "SUCCEEDED", "stages": stages}
 
 
+def _build_team_event_envelope(
+    req: TeamEventRequest,
+    hydration_data: dict[str, Any] | None = None,
+    market_data: dict[str, Any] | None = None,
+) -> V17TeamEventCandidateEnvelope:
+    """Build immutable canonical envelope for team event candidate (patch section 2).
+
+    Every field required by the contract must be present here with explicit provenance.
+    Missing data is marked with DataUnavailable, never NOT_CALLED after hydration.
+    """
+    hydration_data = hydration_data or {}
+    market_data = market_data or _market_handoff(req)
+    evidence = req.sport_specific_evidence or {}
+
+    event_date_local = hydration_data.get("event_date_local", "")
+    if not event_date_local:
+        try:
+            dt = datetime.fromisoformat(req.event_start_time_utc.replace("Z", "+00:00"))
+            event_date_local = dt.date().isoformat()
+        except (TypeError, ValueError):
+            event_date_local = ""
+
+    def _maybe_unavailable(value: Any, source_key: str) -> str | DataUnavailable:
+        if value:
+            return str(value)
+        return DataUnavailable(status="DATA_UNOBTAINABLE", source_attempted=[source_key])
+
+    venue = evidence.get("venue") or DataUnavailable(
+        status="DATA_UNOBTAINABLE",
+        source_attempted=["sport_specific_evidence"],
+    )
+
+    official_event_status = _maybe_unavailable(evidence.get("official_event_status"), "sport_specific_evidence")
+
+    home_starter = evidence.get("home_starting_pitcher")
+    home_starter_status = _maybe_unavailable(evidence.get("home_starter_status"), "sport_specific_evidence")
+
+    away_starter = evidence.get("away_starting_pitcher")
+    away_starter_status = _maybe_unavailable(evidence.get("away_starter_status"), "sport_specific_evidence")
+
+    home_lineup_status = _maybe_unavailable(evidence.get("home_lineup_status"), "sport_specific_evidence")
+    away_lineup_status = _maybe_unavailable(evidence.get("away_lineup_status"), "sport_specific_evidence")
+
+    injury_status = _maybe_unavailable(evidence.get("injury_status"), "sport_specific_evidence")
+    weather_status = _maybe_unavailable(evidence.get("weather_status"), "market_weather_service")
+    bullpen_status = _maybe_unavailable(evidence.get("bullpen_status"), "sport_specific_evidence")
+    settlement_rule = _maybe_unavailable(
+        evidence.get("settlement_rule") or req.settlement_basis,
+        "team_event_request",
+    )
+
+    market_role_status = _maybe_unavailable(market_data.get("market_role_status"), "market_data")
+
+    market_status = str(market_data.get("status", "DATA_UNOBTAINABLE"))
+
+    timestamp_now = datetime.now(timezone.utc).isoformat()
+    source_snapshot_timestamp = req.latest_material_update_timestamp or timestamp_now
+
+    envelope = V17TeamEventCandidateEnvelope(
+        research_run_id=req.research_run_id,
+        requested_slate_date=req.requested_slate_date,
+        requested_timezone=req.requested_timezone,
+        event_key=req.event_key,
+        official_event_id=req.official_event_id,
+        official_event_id_source="CANONICAL_MLB_LEDGER",
+        event_start_time_utc=req.event_start_time_utc,
+        event_date_local=event_date_local,
+        sport=req.sport,
+        league=req.league,
+        home_team=req.home_team,
+        away_team=req.away_team,
+        venue=venue,
+        official_event_status=official_event_status,
+        official_event_status_source="CANONICAL_MLB_LEDGER",
+        settlement_market=req.market_family,
+        settlement_basis=req.settlement_basis,
+        settlement_rule=settlement_rule,
+        settlement_source="TEAM_EVENT_REQUEST_CONTRACT",
+        home_starter=home_starter,
+        home_starter_status=home_starter_status,
+        home_starter_source="CANONICAL_MLB_LEDGER",
+        away_starter=away_starter,
+        away_starter_status=away_starter_status,
+        away_starter_source="CANONICAL_MLB_LEDGER",
+        home_lineup_status=home_lineup_status,
+        home_lineup_source="CANONICAL_MLB_LEDGER",
+        away_lineup_status=away_lineup_status,
+        away_lineup_source="CANONICAL_MLB_LEDGER",
+        injury_status=injury_status,
+        injury_source="CANONICAL_MLB_LEDGER",
+        weather_status=weather_status,
+        weather_source="MARKET_WEATHER_SERVICE",
+        bullpen_status=bullpen_status,
+        bullpen_source="CANONICAL_MLB_LEDGER",
+        market_snapshot_id=market_data.get("snapshot_id"),
+        market_snapshot_timestamp=market_data.get("timestamp"),
+        market_source=market_data.get("source"),
+        market_status=market_status,
+        book_count=market_data.get("book_count"),
+        market_role=market_data.get("market_role"),
+        market_role_status=market_role_status,
+        consensus_probability_no_vig=market_data.get("no_vig_probability"),
+        market_prior_probability=market_data.get("prior_probability"),
+        source_snapshot_id=req.source_snapshot_id,
+        source_snapshot_timestamp=source_snapshot_timestamp,
+        latest_material_update_timestamp=req.latest_material_update_timestamp,
+        evidence_as_of=source_snapshot_timestamp,
+    )
+    return envelope
+
+
+def _market_handoff(req: TeamEventRequest) -> dict[str, Any]:
+    """Translate caller market context without inventing a market observation."""
+    prior = dict(req.market_prior or {})
+    if not prior:
+        return {
+            "status": "NO_MARKET",
+            "market_role": "OUTRIGHT_WINNER",
+            "market_role_status": "NOT_SUPPLIED",
+        }
+
+    home = prior.get("home_probability")
+    away = prior.get("away_probability")
+    timestamp = prior.get("timestamp")
+    source = prior.get("source")
+    snapshot_id = prior.get("snapshot_id")
+    complete = all(value not in (None, "") for value in (home, away, timestamp, source, snapshot_id))
+    return {
+        "status": "EXACT_LINE" if complete else "DATA_UNOBTAINABLE",
+        "snapshot_id": snapshot_id,
+        "timestamp": timestamp,
+        "source": source,
+        "book_count": prior.get("book_count"),
+        "market_role": "OUTRIGHT_WINNER",
+        "market_role_status": "ACTIVE" if complete else "INCOMPLETE",
+        "no_vig_probability": home,
+        "prior_probability": home,
+    }
+
+
+def _validate_model_output_lossless(model_result: dict[str, Any]) -> tuple[bool, list[str]]:
+    """Validate non-lossy forwarding: present upstream fields must not become null/NOT_CALLED (patch section 4)."""
+    errors = []
+    critical_fields = {
+        "raw_home_probability",
+        "raw_away_probability",
+        "calibrated_home_probability",
+        "calibrated_away_probability",
+        "calibrated_home_lower_bound",
+        "calibrated_home_upper_bound",
+        "calibrated_away_lower_bound",
+        "calibrated_away_upper_bound",
+        "calibration_method",
+        "calibration_version",
+        "calibration_health_status",
+        "model_version",
+        "model_timestamp",
+    }
+
+    for field in critical_fields:
+        value = model_result.get(field)
+        if value in (None, "NOT_CALLED", "MISSING", "UNKNOWN", ""):
+            errors.append(f"MODEL_OUTPUT_FIELD_INVALID:{field}={value}")
+
+    if not model_result.get("calibration_sample_scope") and not (
+        isinstance(model_result.get("calibration_training_n"), int)
+        and model_result["calibration_training_n"] > 0
+    ):
+        errors.append("MODEL_OUTPUT_FIELD_INVALID:calibration_sample_scope_or_training_n")
+
+    try:
+        raw_total = float(model_result["raw_home_probability"]) + float(model_result["raw_away_probability"])
+        calibrated_total = float(model_result["calibrated_home_probability"]) + float(model_result["calibrated_away_probability"])
+        if abs(raw_total - 1.0) > 1e-6:
+            errors.append("MODEL_OUTPUT_INVALID:raw_probability_pair_not_normalized")
+        if abs(calibrated_total - 1.0) > 1e-6:
+            errors.append("MODEL_OUTPUT_INVALID:calibrated_probability_pair_not_normalized")
+    except (KeyError, TypeError, ValueError):
+        pass
+
+    return len(errors) == 0, errors
+
+
+def _build_governed_probability_package(
+    envelope: V17TeamEventCandidateEnvelope,
+    model_result: dict[str, Any],
+) -> V17GovernedProbabilityPackage | None:
+    """Build immutable governed probability package from model output (patch section 4).
+
+    Sport-model output must traverse losslessly. All fields the model produced
+    must be forwarded or explicitly translated with typed error record.
+    Returns None if validation fails; caller must treat as MODEL_OUTPUT_INVALID.
+    """
+    ok, errors = _validate_model_output_lossless(model_result)
+    if not ok:
+        return None
+
+    try:
+        package = V17GovernedProbabilityPackage(
+            research_run_id=envelope.research_run_id,
+            event_key=envelope.event_key,
+            official_event_id=envelope.official_event_id,
+            participant=envelope.home_team,
+            opponent=envelope.away_team,
+            market_role=envelope.market_role,
+            outcome_space=str(model_result.get("outcome_space", "MONEYLINE")),
+            raw_model_probability=float(model_result.get("raw_home_probability")),
+            independent_model_probability=float(
+                model_result.get("independent_home_probability", model_result.get("raw_home_probability"))
+            ),
+            market_prior_probability=envelope.market_prior_probability,
+            market_prior_weight=float(model_result.get("market_prior_weight", 0.0)),
+            calibrated_probability=float(model_result.get("calibrated_home_probability")),
+            calibrated_probability_lower_bound=float(model_result.get("calibrated_home_lower_bound")),
+            calibrated_probability_upper_bound=float(model_result.get("calibrated_home_upper_bound")),
+            calibration_method=str(model_result.get("calibration_method")),
+            calibration_version=str(model_result.get("calibration_version")),
+            calibration_sample_scope=str(model_result.get("calibration_sample_scope") or ""),
+            calibration_health_status=str(model_result.get("calibration_health_status")),
+            model_version=str(model_result.get("model_version")),
+            model_timestamp=str(model_result.get("model_timestamp")),
+            latest_material_update_timestamp=envelope.latest_material_update_timestamp,
+            model_valid_after_latest_material_update=_model_after_latest_update(
+                model_result.get("model_timestamp"),
+                envelope.latest_material_update_timestamp,
+            ),
+            source_snapshot_id=envelope.source_snapshot_id,
+            source_snapshot_timestamp=envelope.source_snapshot_timestamp,
+            simulation_count_if_applicable=model_result.get("simulation_count"),
+            model_component_weights_if_available=model_result.get("model_component_weights"),
+            model_disagreement_if_available=model_result.get("model_disagreement"),
+            uncertainty_method=model_result.get("uncertainty_method"),
+            calibration_training_n=model_result.get("calibration_training_n"),
+            model_output_snapshot=model_result,
+            favorite_primary_win_path=model_result.get("favorite_primary_win_path"),
+            favorite_primary_failure_path=model_result.get("favorite_failure_paths_json"),
+            favorite_failure_path_probability_if_modeled=model_result.get(
+                "favorite_failure_path_probability_if_modeled",
+                model_result.get("favorite_failure_path_probability"),
+            ),
+            largest_favorite_loss_path=model_result.get("largest_favorite_loss_path"),
+            underdog_upset_path=model_result.get("underdog_upset_path_json", model_result.get("underdog_upset_path")),
+        )
+
+        ok, calib_errors = package.validate_calibration()
+        if not ok:
+            return None
+
+        ok, all_errors = package.validate_complete_package()
+        if not ok:
+            return None
+
+        return package
+    except (TypeError, ValueError):
+        return None
+
+
 def score_team_event_request(req: TeamEventRequest, *, event_api: Any, canonical_hydration_required: bool = False) -> dict[str, Any]:
     try:
         route = resolve_host_route(req.requester_host_identity, req.candidate_family)
@@ -361,8 +793,32 @@ def score_team_event_request(req: TeamEventRequest, *, event_api: Any, canonical
             raise HTTPException(status_code=exc.status_code, detail=_augment_detail(exc.detail, effective_req)) from exc
         if not isinstance(result, dict):
             raise HTTPException(status_code=503, detail=_augment_detail({"code": "TEAM_EVENT_BACKEND_INVALID_RESPONSE", "probability_publishable": False}, effective_req))
-        governed = _run_mlb_llp_governance(effective_req, route, result, event_api=event_api)
+
+        envelope = _build_team_event_envelope(effective_req)
+        governed = _run_mlb_llp_governance(effective_req, route, result, envelope=envelope, event_api=event_api)
         governed["scout_research_barrier"] = scout_research_barrier
+        governed["candidate_envelope"] = {
+            "research_run_id": envelope.research_run_id,
+            "event_key": envelope.event_key,
+            "official_event_id": envelope.official_event_id,
+            "official_event_id_source": envelope.official_event_id_source,
+            "event_start_time_utc": envelope.event_start_time_utc,
+            "sport": envelope.sport,
+            "league": envelope.league,
+            "home_team": envelope.home_team,
+            "away_team": envelope.away_team,
+            "settlement_market": envelope.settlement_market,
+            "settlement_basis": envelope.settlement_basis,
+            "settlement_source": envelope.settlement_source,
+            "market_status": envelope.market_status,
+            "market_snapshot_id": envelope.market_snapshot_id,
+            "market_snapshot_timestamp": envelope.market_snapshot_timestamp,
+            "market_source": envelope.market_source,
+            "source_snapshot_id": envelope.source_snapshot_id,
+            "source_snapshot_timestamp": envelope.source_snapshot_timestamp,
+            "latest_material_update_timestamp": envelope.latest_material_update_timestamp,
+            "evidence_as_of": envelope.evidence_as_of,
+        }
         if canonical_hydration_required:
             governed["canonical_acquisition"] = {"status": "PASS", "source_snapshot_id": effective_req.source_snapshot_id, "latest_material_update_timestamp": effective_req.latest_material_update_timestamp, "can_execute": False}
         return governed

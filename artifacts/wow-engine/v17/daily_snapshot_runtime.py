@@ -35,13 +35,17 @@ def _detail(exc: HTTPException) -> dict[str, Any]:
 
 
 def _terminal_row(lane: str, identity: dict[str, Any], payload: dict[str, Any], row_status: str) -> dict[str, Any]:
+    publishable = bool(
+        payload.get("probability_publishable") is True
+        and payload.get("rank_eligible") is True
+    )
     return {
         "lane": lane,
         "identity": identity,
         "result": payload,
         "terminal": True,
         "row_status": row_status,
-        "probability_publishable": bool(payload.get("probability_publishable", False)),
+        "probability_publishable": publishable,
         "can_execute": False,
     }
 
@@ -61,7 +65,9 @@ def _props_row_status(outcomes: list[dict[str, Any]]) -> str:
         return "COMPLETED"
     if "HELD" in statuses:
         return "HELD"
-    return "UNCLASSIFIED"
+    # Every selected row must terminate once. Unknown scorer states fail closed
+    # as HELD rather than escaping reconciliation as an unclassified row.
+    return "HELD"
 
 
 def _reconcile(rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -85,6 +91,41 @@ def _reconcile(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "rows_rejected": rejected,
         "rows_unclassified": unclassified,
         "balanced": balanced,
+    }
+
+
+def _lane_reconciliation(rows: list[dict[str, Any]], lane: str, blockers: list[str] | None = None) -> dict[str, Any]:
+    """Return lane-level reconciliation counts and reason for zero rows (patch section 9)."""
+    blockers = blockers or []
+    lane_rows = [row for row in rows if row.get("lane") == lane]
+    completed = sum(1 for row in lane_rows if row.get("row_status") == "COMPLETED")
+    held = sum(1 for row in lane_rows if row.get("row_status") == "HELD")
+    rejected = sum(1 for row in lane_rows if row.get("row_status") == "REJECTED")
+    discovered = len(lane_rows)
+    canonicalized = discovered
+    scored = discovered
+
+    zero_row_reason = None
+    if discovered == 0:
+        expected_failure_prefix = {
+            "PROPS": "PROP_SNAPSHOT_QUERY_FAILED",
+            "MONEYLINE": "TEAM_EVENT_SNAPSHOT_QUERY_FAILED",
+        }[lane]
+        if expected_failure_prefix in " ".join(blockers):
+            zero_row_reason = "DISCOVERY_DATA_UNOBTAINABLE"
+        elif lane == "PROPS":
+            zero_row_reason = "NO_CANONICAL_CANDIDATES"
+        elif lane == "MONEYLINE":
+            zero_row_reason = "NO_CANONICAL_CANDIDATES"
+
+    return {
+        "discovered_count": discovered,
+        "canonicalized_count": canonicalized,
+        "scored_count": scored,
+        "completed_count": completed,
+        "held_count": held,
+        "rejected_count": rejected,
+        "zero_row_reason": zero_row_reason,
     }
 
 
@@ -185,7 +226,10 @@ def run_daily_snapshot(
                     # classified the same way as an exception: COMPLETED
                     # only when the payload itself claims
                     # probability_publishable is True.
-                    status = "COMPLETED" if scored.get("probability_publishable") is True else "HELD"
+                    status = "COMPLETED" if (
+                        scored.get("probability_publishable") is True
+                        and scored.get("rank_eligible") is True
+                    ) else "HELD"
                     outcomes.append({"direction": direction, "status": status, "payload": scored})
                 except HTTPException as exc:
                     outcomes.append({"direction": direction, "status": "HELD", "payload": _detail(exc)})
@@ -193,7 +237,20 @@ def run_daily_snapshot(
                     outcomes.append({"direction": direction, "status": "HELD", "payload": {"code": "PROP_SCORER_EXCEPTION", "error_type": type(exc).__name__, "probability_publishable": False, "can_execute": False}})
             rows.append(_terminal_row(
                 "PROPS", identity,
-                {"outcomes": outcomes, "probability_publishable": any(bool(x["payload"].get("probability_publishable")) for x in outcomes), "can_execute": False},
+                {
+                    "outcomes": outcomes,
+                    "probability_publishable": any(
+                        x["payload"].get("probability_publishable") is True
+                        and x["payload"].get("rank_eligible") is True
+                        for x in outcomes
+                    ),
+                    "rank_eligible": any(
+                        x["payload"].get("probability_publishable") is True
+                        and x["payload"].get("rank_eligible") is True
+                        for x in outcomes
+                    ),
+                    "can_execute": False,
+                },
                 _props_row_status(outcomes),
             ))
 
@@ -216,7 +273,11 @@ def run_daily_snapshot(
                 sport_specific_evidence={"venue": event.get("venue_name"), "home_starting_pitcher": event.get("home_probable_pitcher"), "away_starting_pitcher": event.get("away_probable_pitcher"), "home_starter_status": "PROBABLE", "away_starter_status": "PROBABLE", "home_lineup_status": "PROJECTED", "away_lineup_status": "PROJECTED"},
             )
             try:
-                result = score_team_event_request(request, event_api=event_api)
+                result = score_team_event_request(
+                    request,
+                    event_api=event_api,
+                    canonical_hydration_required=True,
+                )
             except HTTPException as exc:
                 result = _detail(exc)
             except Exception as exc:
@@ -233,17 +294,26 @@ def run_daily_snapshot(
             # is: it is explicitly set on every reachable return from this
             # function, exception or not (verified against every raise site
             # and every _run_mlb_llp_governance/_llp_governance_hold branch).
-            row_status = "COMPLETED" if result.get("probability_publishable") is True else "HELD"
+            row_status = "COMPLETED" if (
+                result.get("probability_publishable") is True
+                and result.get("rank_eligible") is True
+            ) else "HELD"
             rows.append(_terminal_row("MONEYLINE", identity, result, row_status))
 
     if not rows and not blockers:
         blockers.append("NO_CANONICAL_PREGAME_SNAPSHOTS")
+
+    lane_reconciliation = {}
+    for lane in requested_lanes:
+        lane_reconciliation[lane] = _lane_reconciliation(rows, lane, blockers)
+
     return {
         "run_id": run_id, "terminal": True,
         "run_status": "COMPLETED" if not blockers else "COMPLETED_WITH_ACQUISITION_BLOCKERS",
         "requested_slate_date": req.requested_slate_date, "requested_timezone": req.requested_timezone,
         "requested_lanes": sorted(requested_lanes), "rows": rows,
         "reconciliation": _reconcile(rows),
+        "lane_reconciliation": lane_reconciliation,
         "blockers": blockers, "can_execute": False,
     }
 

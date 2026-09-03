@@ -48,7 +48,7 @@ class Event: pass
 def test_daily_snapshot_returns_one_terminal_receipt_per_selected_row(monkeypatch):
     monkeypatch.setattr(
         "v17.daily_snapshot_runtime.score_team_event_request",
-        lambda *_args, **_kwargs: {"code": "FINAL_APPROVED", "terminal_label": "FINAL_APPROVED", "probability_publishable": True, "can_execute": False},
+        lambda *_args, **_kwargs: {"code": "FINAL_APPROVED", "terminal_label": "FINAL_APPROVED", "probability_publishable": True, "rank_eligible": True, "can_execute": False},
     )
     result = run_daily_snapshot(DailySnapshotRequest(requested_slate_date=SLATE_DATE, requested_timezone="America/Chicago"), db=DB(), market_api=Market(), event_api=Event())
     assert result["terminal"] is True
@@ -122,7 +122,7 @@ def test_props_research_only_normal_return_is_not_completed(monkeypatch):
 
     monkeypatch.setattr(
         "v17.daily_snapshot_runtime.score_team_event_request",
-        lambda *_args, **_kwargs: {"code": "FINAL_APPROVED", "terminal_label": "FINAL_APPROVED", "probability_publishable": True, "can_execute": False},
+        lambda *_args, **_kwargs: {"code": "FINAL_APPROVED", "terminal_label": "FINAL_APPROVED", "probability_publishable": True, "rank_eligible": True, "can_execute": False},
     )
     result = run_daily_snapshot(
         DailySnapshotRequest(requested_slate_date=SLATE_DATE, requested_timezone="America/Chicago", lanes=["PROPS"]),
@@ -189,6 +189,36 @@ def test_props_row_status_held_when_all_directions_held():
     assert _props_row_status(outcomes) == "HELD"
 
 
+def test_props_unknown_or_empty_outcomes_fail_closed_as_held():
+    from v17.daily_snapshot_runtime import _props_row_status
+
+    assert _props_row_status([]) == "HELD"
+
+
+def test_props_publishable_flag_without_rank_eligibility_is_held():
+    class NonRankMarket(Market):
+        @staticmethod
+        def score_prop(*_):
+            return {
+                "probability_publishable": True,
+                "rank_eligible": False,
+                "can_execute": False,
+            }
+
+    result = run_daily_snapshot(
+        DailySnapshotRequest(
+            requested_slate_date=SLATE_DATE,
+            requested_timezone="America/Chicago",
+            lanes=["PROPS"],
+        ),
+        db=DB(), market_api=NonRankMarket(), event_api=Event(),
+    )
+    row = result["rows"][0]
+    assert row["row_status"] == "HELD"
+    assert row["probability_publishable"] is False
+    assert result["reconciliation"]["rows_unclassified"] == 0
+
+
 def test_moneyline_row_held_on_exception_not_silently_completed(monkeypatch):
     monkeypatch.setattr(
         "v17.daily_snapshot_runtime.score_team_event_request",
@@ -211,3 +241,69 @@ def test_daily_snapshot_invalid_date_is_terminal_and_non_executable():
     assert result["terminal"] is True
     assert result["run_status"] == "RUN_INVALID_REQUEST"
     assert result["can_execute"] is False
+
+
+def test_daily_uses_server_owned_canonical_hydration_for_moneyline(monkeypatch):
+    seen = {}
+
+    def _score(*_args, **kwargs):
+        seen.update(kwargs)
+        return {
+            "code": "FINAL_APPROVED",
+            "probability_publishable": True,
+            "rank_eligible": True,
+            "can_execute": False,
+        }
+
+    monkeypatch.setattr("v17.daily_snapshot_runtime.score_team_event_request", _score)
+    result = run_daily_snapshot(
+        DailySnapshotRequest(
+            requested_slate_date=SLATE_DATE,
+            requested_timezone="America/Chicago",
+            lanes=["MONEYLINE"],
+        ),
+        db=DB(), market_api=Market(), event_api=Event(),
+    )
+    assert seen["canonical_hydration_required"] is True
+    assert result["rows"][0]["probability_publishable"] is True
+
+
+def test_daily_never_publishes_a_non_rank_eligible_row(monkeypatch):
+    monkeypatch.setattr(
+        "v17.daily_snapshot_runtime.score_team_event_request",
+        lambda *_args, **_kwargs: {
+            "code": "FINAL_APPROVED",
+            "probability_publishable": True,
+            "rank_eligible": False,
+            "can_execute": False,
+        },
+    )
+    result = run_daily_snapshot(
+        DailySnapshotRequest(
+            requested_slate_date=SLATE_DATE,
+            requested_timezone="America/Chicago",
+            lanes=["MONEYLINE"],
+        ),
+        db=DB(), market_api=Market(), event_api=Event(),
+    )
+    row = result["rows"][0]
+    assert row["row_status"] == "HELD"
+    assert row["probability_publishable"] is False
+
+
+def test_zero_row_query_failures_are_typed_as_data_unobtainable():
+    class BrokenQuery(Query):
+        def execute(self):
+            raise ConnectionError("test query failure")
+
+    class BrokenDB:
+        def table(self, _name):
+            return BrokenQuery([])
+
+    result = run_daily_snapshot(
+        DailySnapshotRequest(requested_slate_date=SLATE_DATE, requested_timezone="America/Chicago"),
+        db=BrokenDB(), market_api=Market(), event_api=Event(),
+    )
+    assert result["lane_reconciliation"]["PROPS"]["zero_row_reason"] == "DISCOVERY_DATA_UNOBTAINABLE"
+    assert result["lane_reconciliation"]["MONEYLINE"]["zero_row_reason"] == "DISCOVERY_DATA_UNOBTAINABLE"
+    assert result["reconciliation"]["rows_unclassified"] == 0
