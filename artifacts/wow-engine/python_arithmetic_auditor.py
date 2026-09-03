@@ -28,8 +28,8 @@ CURRENCY_TOLERANCE = Decimal("0.01")
 
 
 def audit_enabled() -> bool:
-    """Local verification is enabled unless explicitly disabled."""
-    return os.getenv("WOW_PYTHON_ARITHMETIC_AUDIT_ENABLED", "1") != "0"
+    """Legacy market-boundary audit is opt-in; no external provider is required."""
+    return os.getenv("WOW_PYTHON_ARITHMETIC_AUDIT_ENABLED", "0") == "1"
 
 
 def readiness() -> dict[str, Any]:
