@@ -110,11 +110,12 @@ def test_row_level_publishable_package_is_preserved_when_backend_says_true():
     assert payload["calibrated_probability_lower_bound"] == 0.55
 
 
-def test_paired_directions_count_as_one_independent_forward_snapshot():
+def test_paired_directions_count_as_one_independent_forward_thesis():
+    common = {"player": "Test Pitcher", "stat_type": "PITCHER_STRIKEOUTS", "line": 5.5}
     rows = [
-        {"prediction_id": "p-more", "source_snapshot_id": "s1", "direction": "MORE"},
-        {"prediction_id": "p-less", "source_snapshot_id": "s1", "direction": "LESS"},
-        {"prediction_id": "p2-more", "source_snapshot_id": "s2", "direction": "MORE"},
+        {"prediction_id": "p-more", "source_snapshot_id": "s1", "direction": "MORE", "event_id": "MLB:1", **common},
+        {"prediction_id": "p-less", "source_snapshot_id": "s1", "direction": "LESS", "event_id": "MLB:1", **common},
+        {"prediction_id": "p2-more", "source_snapshot_id": "s2", "direction": "MORE", "event_id": "MLB:2", **common},
     ]
     assert _cohort_counts(rows, {"p-more", "p-less"}) == (2, 1)
 
