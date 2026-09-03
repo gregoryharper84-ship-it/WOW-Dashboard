@@ -10,14 +10,14 @@ def test_missing_artifact_is_capability_blocked_not_pick_rejected():
 def test_missing_evidence_is_input_insufficient_not_model_unavailable():
     result = reduce_prop_terminal(proposed_label="NO_LOW_PROBABILITY", blockers=["PROP_EVIDENCE_SNAPSHOT_NOT_FOUND"], model_evaluated=False)
     assert result.terminal_label == "MODEL_INPUTS_INSUFFICIENT"
-    assert result.verdict_class == "INPUTS_INSUFFICIENT"
+    assert result.verdict_class == "ACQUISITION_BLOCKED"
     assert result.pick_rejected is False
 
 
 def test_player_identity_ambiguity_is_input_insufficient():
     result = reduce_prop_terminal(proposed_label="MODEL_UNAVAILABLE", blockers=["PROP_PLAYER_IDENTITY_UNRESOLVED"], model_evaluated=False)
     assert result.terminal_label == "MODEL_INPUTS_INSUFFICIENT"
-    assert result.verdict_class == "INPUTS_INSUFFICIENT"
+    assert result.verdict_class == "ACQUISITION_BLOCKED"
 
 
 def test_recent_starts_shortfall_is_input_insufficient():
