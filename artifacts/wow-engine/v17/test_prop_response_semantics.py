@@ -17,20 +17,43 @@ def _cal(p, lb, ub):
 
 
 def test_both_directions_receive_explicit_model_assessments():
-    more = _direction_assessment("MORE", 0.61, _cal(0.5923, 0.5861, 0.6500), True)
-    less = _direction_assessment("LESS", 0.39, _cal(0.4077, 0.3500, 0.4139), True)
+    more = _direction_assessment("MORE", 0.64, _cal(0.6123, 0.5661, 0.6500), True)
+    less = _direction_assessment("LESS", 0.36, _cal(0.3877, 0.3500, 0.4339), True)
     assert more["model_qualified"] is True
-    assert more["confidence_tier"] == "QUALIFIED"
+    assert more["confidence_tier"] == "STANDARD"
     assert more["probability_rank_eligible"] is True
     assert less["model_qualified"] is False
     assert more["value_qualification_status"] == "PENDING_EXACT_PRICE"
     assert more["card_qualification_status"] == "NOT_EVALUATED"
 
 
-def test_model_qualification_survives_missing_market_and_payout():
+def test_research_probability_survives_missing_market_but_is_not_ranked():
     row = SimpleNamespace(
         calibrated_probability=0.5923,
         calibrated_probability_lower_bound=0.5861,
+        calibrated_probability_upper_bound=0.6500,
+        calibration_status="PRECALIBRATION_SHRINKAGE",
+        data_gaps=[],
+        probability_publishable=True,
+    )
+    payload = _qualification_payload(
+        row,
+        {"status": "HOLD"},
+        {"status": "HOLD"},
+        {"status": "HOLD"},
+    )
+    assert payload["model_qualified"] is False
+    assert payload["model_qualification_status"] == "MODEL_NOT_QUALIFIED"
+    assert payload["probability_rank_eligible"] is False
+    assert payload["value_qualification_status"] == "NOT_ELIGIBLE_MODEL_NOT_QUALIFIED"
+    assert payload["card_qualification_status"] == "NOT_EVALUATED"
+    assert payload["terminal_label"] == "RESEARCH_INTEREST"
+
+
+def test_model_qualification_survives_missing_market_and_payout():
+    row = SimpleNamespace(
+        calibrated_probability=0.6223,
+        calibrated_probability_lower_bound=0.5661,
         calibrated_probability_upper_bound=0.6500,
         calibration_status="PRECALIBRATION_SHRINKAGE",
         data_gaps=[],
@@ -46,7 +69,6 @@ def test_model_qualification_survives_missing_market_and_payout():
     assert payload["model_qualification_status"] == "MODEL_QUALIFIED"
     assert payload["probability_rank_eligible"] is True
     assert payload["value_qualification_status"] == "PENDING_EXACT_PRICE"
-    assert payload["card_qualification_status"] == "NOT_EVALUATED"
     assert payload["terminal_label"] == "MODEL_QUALIFIED_HOLD"
 
 
