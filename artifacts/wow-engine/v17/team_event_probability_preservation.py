@@ -1,14 +1,18 @@
 """V17 MLB team/event handoff + probability-preservation repair.
 
-Repairs two coupled orchestration defects without relaxing governance:
+Repairs coupled orchestration defects without relaxing governance:
 1. A completed fitted MLB sporting probability must not be erased merely because
    downstream LLP publication/ranking governance is held.
 2. The score->LLP bridge must materialize the canonical evidence/source-attempt/
-   scoring-evidence rows consumed by the existing event gates before a final
-   governance decision is trusted.
+   scoring-evidence rows consumed by the event gates before a final decision.
+3. Probability-only winner/BEST_SIDE intent is passed explicitly so sporting
+   probability publication can remain separate from downstream market/value work.
+4. Weather/environment evidence is acquired through the shared V17 environmental
+   provider and written to the same canonical evidence ledger used by LLP.
 
-No probability is manufactured, no gate is bypassed, rank/publication remain
-fail-closed, and wager execution remains impossible.
+Market-relative FAVORITE/UNDERDOG/UPSET requests remain on the existing market
+consensus path. No probability is manufactured, no gate is bypassed, and wager
+execution remains impossible.
 """
 from __future__ import annotations
 
@@ -22,6 +26,7 @@ from v17 import team_event_request_runtime as _base
 _original_hold = _base._llp_governance_hold
 _original_run_mlb_llp_governance = _base._run_mlb_llp_governance
 _repair_lock = RLock()
+_PROBABILITY_ONLY_INTENTS = {"WINNER", "BEST_SIDE"}
 
 
 def _preserve_completed_probability_hold(
@@ -86,11 +91,16 @@ def _run_mlb_llp_governance_with_evidence_handoff(
     *,
     event_api: Any,
 ) -> dict[str, Any]:
-    """Run governance, repair missing ledger handoff, then replay once."""
+    """Run governance, hydrate shared + canonical evidence/model metadata, replay once."""
     first = _original_run_mlb_llp_governance(
         req, route, model_result, envelope=envelope, event_api=event_api
     )
     if first.get("probability_publishable") is True:
+        return first
+
+    decision_intent = str(getattr(req, "decision_intent", "BEST_SIDE")).upper()
+    if decision_intent not in _PROBABILITY_ONLY_INTENTS:
+        # Market-relative requests must remain on the legacy consensus path.
         return first
 
     governance = first.get("llp_governance")
@@ -106,19 +116,42 @@ def _run_mlb_llp_governance_with_evidence_handoff(
     if not event_prediction_id or not score_snapshot_id or not callable(get_client):
         return first
 
+    client = get_client()
+    environmental: dict[str, Any] | None = None
+    try:
+        environmental_result = client.rpc(
+            "wow_v17_hydrate_shared_environmental_evidence",
+            {
+                "p_event_prediction_id": str(event_prediction_id),
+                "p_score_snapshot_id": str(score_snapshot_id),
+            },
+        ).execute()
+        if isinstance(environmental_result.data, dict):
+            environmental = environmental_result.data
+    except Exception as exc:
+        environmental = {
+            "status": "UNAVAILABLE",
+            "code": "SHARED_ENVIRONMENTAL_EVIDENCE_PROVIDER_UNAVAILABLE",
+            "error_type": type(exc).__name__,
+            "probability_publishable": False,
+            "can_execute": False,
+        }
+
     evidence = dict(getattr(req, "sport_specific_evidence", None) or {})
     try:
-        hydration_result = get_client().rpc(
+        hydration_result = client.rpc(
             "wow_v17_hydrate_mlb_event_governance_evidence",
             {
                 "p_event_prediction_id": str(event_prediction_id),
                 "p_score_snapshot_id": str(score_snapshot_id),
                 "p_evidence": evidence,
+                "p_decision_intent": decision_intent,
             },
         ).execute()
         hydration = hydration_result.data
     except Exception as exc:
         out = dict(first)
+        out["shared_environmental_evidence"] = environmental
         out["evidence_handoff_repair"] = {
             "status": "UNAVAILABLE",
             "error_type": type(exc).__name__,
@@ -132,6 +165,7 @@ def _run_mlb_llp_governance_with_evidence_handoff(
 
     if not isinstance(hydration, dict) or hydration.get("status") != "PASS":
         out = dict(first)
+        out["shared_environmental_evidence"] = environmental
         out["evidence_handoff_repair"] = hydration if isinstance(hydration, dict) else {
             "status": "INVALID_RESPONSE",
             "can_execute": False,
@@ -145,6 +179,7 @@ def _run_mlb_llp_governance_with_evidence_handoff(
     second = _original_run_mlb_llp_governance(
         req, route, model_result, envelope=envelope, event_api=event_api
     )
+    second["shared_environmental_evidence"] = environmental
     second["evidence_handoff_repair"] = hydration
     second["governance_replayed_after_evidence_handoff"] = True
     second["can_execute"] = False
@@ -157,13 +192,7 @@ def score_team_event_request(
     event_api: Any,
     canonical_hydration_required: bool = False,
 ) -> dict[str, Any]:
-    """Execute the base V17 scorer with repair helpers scoped to this call.
-
-    The lock prevents concurrent callers from observing a transient helper swap.
-    Legacy callers of the base module keep their historical behavior; active V17
-    routes use this explicit wrapper. This avoids an import-time global monkey
-    patch while keeping the repair narrowly scoped.
-    """
+    """Execute the base V17 scorer with repair helpers scoped to this call."""
     with _repair_lock:
         previous_hold = _base._llp_governance_hold
         previous_governance = _base._run_mlb_llp_governance
