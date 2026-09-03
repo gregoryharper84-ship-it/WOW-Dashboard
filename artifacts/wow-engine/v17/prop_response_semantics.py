@@ -2,8 +2,8 @@
 
 Probability coverage is broad; recommendation qualification is selective; value
 qualification is exact-price dependent; card qualification is portfolio dependent.
-This adapter is installed only when the V17 package is composed into the runtime.
-It never changes a fitted distribution, invents a probability, or authorizes execution.
+The adapter is installed only by the explicitly active V17 runtime. It never changes
+a fitted distribution, invents a probability, or authorizes execution.
 """
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ def _valid_calibrated_package(outcome: dict[str, Any]) -> bool:
     p = _finite_probability(prediction.get("calibrated_probability"))
     lb = _finite_probability(prediction.get("calibrated_probability_lower_bound"))
     ub = _finite_probability(prediction.get("calibrated_probability_upper_bound"))
-    return bool(p is not None and lb is not None and ub is not None and lb <= p <= ub)
+    return bool(p is not None and lb is not None and lb <= p and (ub is None or p <= ub))
 
 
 def _scoring_attempted(outcome: dict[str, Any]) -> bool:
@@ -65,7 +65,15 @@ def _dimensioned_reconciliation(outcomes: list[dict[str, Any]]) -> dict[str, Any
         "model_output_failures": sum(1 for row in outcomes if str(row.get("terminal_label") or "").upper() == "MODEL_OUTPUT_INVALID"),
         "low_probability_terminals": terminal_counts.get("NO_LOW_PROBABILITY", 0),
         "research_interest_terminals": terminal_counts.get("RESEARCH_INTEREST", 0),
-        "market_or_money_blocked_completed_rows": sum(1 for row in outcomes if row.get("model_evaluated") is True and (str(row.get("verdict_class") or "").upper() == "MARKET_BLOCKED" or row.get("value_qualification_status") in {"PENDING_EXACT_PRICE", "PENDING_PAYOUT"})),
+        "market_or_money_blocked_completed_rows": sum(
+            1
+            for row in outcomes
+            if row.get("model_evaluated") is True
+            and (
+                str(row.get("verdict_class") or "").upper() == "MARKET_BLOCKED"
+                or row.get("value_qualification_status") in {"PENDING_EXACT_PRICE", "PENDING_PAYOUT"}
+            )
+        ),
         "final_approved_rows": terminal_counts.get("FINAL_APPROVED", 0),
         "terminal_counts": terminal_counts,
         "dimensions_are_orthogonal_not_a_funnel": True,
@@ -73,7 +81,12 @@ def _dimensioned_reconciliation(outcomes: list[dict[str, Any]]) -> dict[str, Any
     }
 
 
-def _qualification_payload(row: Any, market_lane: dict[str, Any], money_lane: dict[str, Any], settlement_lane: dict[str, Any]) -> dict[str, Any]:
+def _qualification_payload(
+    row: Any,
+    market_lane: dict[str, Any],
+    money_lane: dict[str, Any],
+    settlement_lane: dict[str, Any],
+) -> dict[str, Any]:
     qualification = classify_prop_probability(
         calibrated_probability=getattr(row, "calibrated_probability", None),
         calibrated_lower_bound=getattr(row, "calibrated_probability_lower_bound", None),
@@ -94,7 +107,11 @@ def _qualification_payload(row: Any, market_lane: dict[str, Any], money_lane: di
         downstream_blockers.append("PAYOUT_UNRESOLVED")
     if not settlement_pass:
         downstream_blockers.append("SETTLEMENT_RULE_UNRESOLVED")
-    terminal = reduce_prop_terminal(proposed_label=qualification.terminal_label, blockers=downstream_blockers, model_evaluated=True)
+    terminal = reduce_prop_terminal(
+        proposed_label=qualification.terminal_label,
+        blockers=downstream_blockers,
+        model_evaluated=True,
+    )
 
     if not qualification.model_qualified:
         value_status = "NOT_ELIGIBLE_MODEL_NOT_QUALIFIED"
@@ -161,10 +178,18 @@ def _direction_assessment(direction: str, raw: float, calibration: Any, probabil
 
 
 def install_prop_response_semantics() -> bool:
+    """Compose V17 response semantics into already-loaded production modules.
+
+    The original market scorer is captured before any outer lane-separation wrapper
+    can replace ``market.score_prop``. Publication-hold scoring therefore calls the
+    captured scorer directly and cannot recurse through the outer /score-prop gate.
+    """
     market = sys.modules.get("api_prod_market")
     pick = sys.modules.get("pick_request_runtime")
     lane_patch = sys.modules.get("calibration_publication_api")
     changed = False
+
+    original_market_score_prop = getattr(market, "score_prop", None) if market is not None else None
 
     if market is not None and not getattr(market, "_wow_v17_probability_architecture_installed", False):
         original_score_engine = getattr(market, "score_discrete_prop_end_to_end", None)
@@ -172,12 +197,19 @@ def install_prop_response_semantics() -> bool:
             def score_engine(*args: Any, **kwargs: Any):
                 result = original_score_engine(*args, **kwargs)
                 import prop_discrete_engine as engine
+
                 features = kwargs.get("features") or {}
                 seed = int(kwargs.get("seed", 0))
                 lp = result.line_probabilities
                 more_cal = engine._calibrate(result.inference, float(lp.probability_more), lp, features, seed)
                 less_cal = engine._calibrate(result.inference, float(lp.probability_less), lp, features, seed)
-                return SimpleNamespace(row=result.row, inference=result.inference, line_probabilities=result.line_probabilities, calibration=result.calibration, directional_calibrations={"MORE": more_cal, "LESS": less_cal})
+                return SimpleNamespace(
+                    row=result.row,
+                    inference=result.inference,
+                    line_probabilities=result.line_probabilities,
+                    calibration=result.calibration,
+                    directional_calibrations={"MORE": more_cal, "LESS": less_cal},
+                )
             market.score_discrete_prop_end_to_end = score_engine
 
         market._probability_qualification = _qualification_payload
@@ -190,8 +222,18 @@ def install_prop_response_semantics() -> bool:
                 lp = result.line_probabilities
                 if "MORE" in calibrations and "LESS" in calibrations:
                     payload["directional_probability_assessments"] = {
-                        "MORE": _direction_assessment("MORE", float(lp.probability_more), calibrations["MORE"], bool(getattr(result.row, "probability_publishable", False))),
-                        "LESS": _direction_assessment("LESS", float(lp.probability_less), calibrations["LESS"], bool(getattr(result.row, "probability_publishable", False))),
+                        "MORE": _direction_assessment(
+                            "MORE",
+                            float(lp.probability_more),
+                            calibrations["MORE"],
+                            bool(getattr(result.row, "probability_publishable", False)),
+                        ),
+                        "LESS": _direction_assessment(
+                            "LESS",
+                            float(lp.probability_less),
+                            calibrations["LESS"],
+                            bool(getattr(result.row, "probability_publishable", False)),
+                        ),
                     }
                     payload["push_probability"] = float(lp.push_probability)
                     payload["directional_assessments_share_one_fitted_distribution"] = True
@@ -201,9 +243,27 @@ def install_prop_response_semantics() -> bool:
         market._wow_v17_probability_architecture_installed = True
         changed = True
 
-    if lane_patch is not None and market is not None and not getattr(lane_patch, "_wow_v17_full_probability_under_publication_hold", False):
-        def full_probability_under_publication_hold(market_api: Any, req: Any, *, model_identity: str, lane: dict[str, Any], preflight: dict[str, Any], blockers: list[str]) -> dict[str, Any]:
-            scored = dict(market_api.score_prop(req, model_identity))
+    if (
+        lane_patch is not None
+        and market is not None
+        and callable(original_market_score_prop)
+        and not getattr(lane_patch, "_wow_v17_full_probability_under_publication_hold", False)
+    ):
+        captured_market_score_prop = original_market_score_prop
+
+        def full_probability_under_publication_hold(
+            market_api: Any,
+            req: Any,
+            *,
+            model_identity: str,
+            lane: dict[str, Any],
+            preflight: dict[str, Any],
+            blockers: list[str],
+        ) -> dict[str, Any]:
+            # Deliberately call the scorer captured before outer lane separation.
+            # Calling market_api.score_prop here would recurse after the production
+            # entrypoint replaces that attribute with score_prop_lane_separated.
+            scored = dict(captured_market_score_prop(req, model_identity))
             scored["governed_sporting_probability_completed"] = True
             scored["sporting_probability_publishable"] = True
             scored["official_publication_capability"] = preflight.get("governed_publication_capability") or "PHASE_A_HELD"
@@ -214,6 +274,7 @@ def install_prop_response_semantics() -> bool:
             scored["final_approved"] = False
             scored["can_execute"] = False
             return scored
+
         lane_patch._raw_specialist_research = full_probability_under_publication_hold
         lane_patch._wow_v17_full_probability_under_publication_hold = True
         changed = True
@@ -227,7 +288,11 @@ def install_prop_response_semantics() -> bool:
                 outcome = dict(original_completed(*args, **kwargs))
                 result = outcome.get("result") if isinstance(outcome.get("result"), dict) else {}
                 qualification = result.get("probability_qualification") if isinstance(result.get("probability_qualification"), dict) else {}
-                rank = _rank_value({"terminal_label": outcome.get("terminal_label"), "probability_rank_eligible": qualification.get("probability_rank_eligible"), "rank_eligible": qualification.get("rank_eligible", outcome.get("rank_eligible"))})
+                rank = _rank_value({
+                    "terminal_label": outcome.get("terminal_label"),
+                    "probability_rank_eligible": qualification.get("probability_rank_eligible"),
+                    "rank_eligible": qualification.get("rank_eligible", outcome.get("rank_eligible")),
+                })
                 outcome["rank_eligible"] = rank
                 outcome["probability_rank_eligible"] = rank
                 outcome["model_qualified"] = bool(qualification.get("model_qualified"))
