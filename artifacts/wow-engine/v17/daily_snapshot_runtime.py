@@ -88,8 +88,9 @@ def _reconcile(rows: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def _lane_reconciliation(rows: list[dict[str, Any]], lane: str) -> dict[str, Any]:
-    """Return lane-level reconciliation counts and reason for zero rows."""
+def _lane_reconciliation(rows: list[dict[str, Any]], lane: str, blockers: list[str] | None = None) -> dict[str, Any]:
+    """Return lane-level reconciliation counts and reason for zero rows (patch section 9)."""
+    blockers = blockers or []
     lane_rows = [row for row in rows if row.get("lane") == lane]
     completed = sum(1 for row in lane_rows if row.get("row_status") == "COMPLETED")
     held = sum(1 for row in lane_rows if row.get("row_status") == "HELD")
@@ -100,10 +101,12 @@ def _lane_reconciliation(rows: list[dict[str, Any]], lane: str) -> dict[str, Any
 
     zero_row_reason = None
     if discovered == 0:
-        if lane == "PROPS":
-            zero_row_reason = "NO_CANONICAL_PREGAME_SNAPSHOTS"
+        if f"{lane}_SNAPSHOT_QUERY_FAILED" in " ".join(blockers):
+            zero_row_reason = "DISCOVERY_DATA_UNOBTAINABLE"
+        elif lane == "PROPS":
+            zero_row_reason = "NO_CANONICAL_CANDIDATES"
         elif lane == "MONEYLINE":
-            zero_row_reason = "NO_CANONICAL_PREGAME_SNAPSHOTS"
+            zero_row_reason = "NO_CANONICAL_CANDIDATES"
 
     return {
         "discovered_count": discovered,
@@ -269,7 +272,7 @@ def run_daily_snapshot(
 
     lane_reconciliation = {}
     for lane in requested_lanes:
-        lane_reconciliation[lane] = _lane_reconciliation(rows, lane)
+        lane_reconciliation[lane] = _lane_reconciliation(rows, lane, blockers)
 
     return {
         "run_id": run_id, "terminal": True,

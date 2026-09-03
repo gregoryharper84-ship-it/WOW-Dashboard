@@ -268,14 +268,55 @@ def _run_mlb_llp_governance(
     if not score_snapshot_id:
         return _llp_governance_hold(req, route, model_result)
 
-    identity_blockers = []
     if envelope:
         identity_blockers = _validate_identity_lock(envelope)
-    if identity_blockers:
-        return _llp_governance_hold(req, route, model_result, governance_detail={
-            "status": "BLOCKED_BY_IDENTITY_LOCK",
-            "blockers": identity_blockers,
-        })
+        if identity_blockers:
+            return {
+                **_without_numeric_model_fields(model_result),
+                "code": "MODEL_OUTPUT_INVALID",
+                "terminal_status": "MODEL_OUTPUT_INVALID",
+                "blockers": identity_blockers,
+                "failure_class": "IDENTITY_LOCK_FAIL",
+                "rank_eligible": False,
+                "probability_publishable": False,
+                "host_terminal_authority": False,
+                "global_terminal_authority": "V17_TERMINAL_REDUCER",
+                "can_execute": False,
+            }
+
+        package = _build_governed_probability_package(envelope, model_result)
+        if package is None:
+            ok, calib_errors = False, []
+            if model_result.get("calibration_health_status") == "PASS":
+                ok, calib_errors = _validate_model_output_lossless(model_result)
+            return {
+                **_without_numeric_model_fields(model_result),
+                "code": "MODEL_OUTPUT_INVALID",
+                "terminal_status": "MODEL_OUTPUT_INVALID",
+                "blockers": (calib_errors or ["MODEL_OUTPUT_PACKAGE_CONSTRUCTION_FAILED"]),
+                "failure_class": "TRANSLATION_FAILURE",
+                "rank_eligible": False,
+                "probability_publishable": False,
+                "host_terminal_authority": False,
+                "global_terminal_authority": "V17_TERMINAL_REDUCER",
+                "can_execute": False,
+            }
+
+    if envelope:
+        ok, market_errors = envelope.validate_market_context()
+        if not ok and envelope.market_status in ("EXACT_LINE", "ADJACENT_LINE"):
+            return {
+                **_without_numeric_model_fields(model_result),
+                "code": "MODEL_OUTPUT_INVALID",
+                "terminal_status": "MODEL_OUTPUT_INVALID",
+                "blockers": market_errors or ["MARKET_CONTEXT_INCOMPLETE"],
+                "failure_class": "MARKET_HANDOFF_FAIL",
+                "rank_eligible": False,
+                "probability_publishable": False,
+                "host_terminal_authority": False,
+                "global_terminal_authority": "V17_TERMINAL_REDUCER",
+                "can_execute": False,
+            }
 
     get_client = getattr(event_api, "get_client", None)
     if not callable(get_client):
@@ -304,14 +345,32 @@ def _run_mlb_llp_governance(
         and governance.get("can_execute") is False
     )
     if not required_pass:
-        return _llp_governance_hold(req, route, model_result, governance_detail=governance)
+        held = _llp_governance_hold(req, route, model_result, governance_detail=governance)
+        final_label = str(governance.get("terminal_label") or "MODEL_QUALIFIED_HOLD")
+        held["terminal_label"] = final_label
+        held["terminal_ceiling"] = final_label
+        held["terminal_reducer_input"] = {
+            "status": governance.get("status"),
+            "probability_audit": governance.get("probability_audit_result"),
+            "event_mutex": governance.get("event_mutex_status"),
+            "postmodel_gates": governance.get("postmodel_gates_status"),
+            "final_gates": governance.get("final_gates_status"),
+            "global_terminal_reducer": governance.get("global_terminal_reducer"),
+        }
+        return held
+
     final_label = str(governance.get("terminal_label") or "MODEL_QUALIFIED_HOLD")
     publishable = bool(model_result.get("probability_publishable") is True and governance.get("probability_publishable") is True and final_label == "FINAL_APPROVED")
     if not publishable:
         held = _llp_governance_hold(req, route, model_result, governance_detail=governance)
         held["terminal_label"] = final_label
         held["terminal_ceiling"] = final_label
+        held["terminal_reducer_input"] = {
+            "status": "PASS",
+            "terminal_output": final_label,
+        }
         return held
+
     return {
         **model_result,
         "requester_host_identity": route.requester_host_identity,
@@ -323,6 +382,10 @@ def _run_mlb_llp_governance(
         "event_mutex_status": governance["event_mutex_status"],
         "terminal_label": final_label,
         "terminal_ceiling": final_label,
+        "terminal_reducer_input": {
+            "status": "PASS",
+            "terminal_output": final_label,
+        },
         "probability_publishable": True,
         "rank_eligible": bool(governance.get("rank_eligible")),
         "host_terminal_authority": False,
@@ -377,11 +440,17 @@ def _run_mandatory_scout_research(req: TeamEventRequest) -> dict[str, Any]:
 
 def _build_team_event_envelope(
     req: TeamEventRequest,
-    hydration_data: dict[str, Any],
+    hydration_data: dict[str, Any] | None = None,
     market_data: dict[str, Any] | None = None,
 ) -> V17TeamEventCandidateEnvelope:
-    """Build immutable canonical envelope for team event candidate."""
+    """Build immutable canonical envelope for team event candidate (patch section 2).
+
+    Every field required by the contract must be present here with explicit provenance.
+    Missing data is marked with DataUnavailable, never NOT_CALLED after hydration.
+    """
+    hydration_data = hydration_data or {}
     market_data = market_data or {}
+    evidence = req.sport_specific_evidence or {}
 
     event_date_local = hydration_data.get("event_date_local", "")
     if not event_date_local:
@@ -391,62 +460,38 @@ def _build_team_event_envelope(
         except (TypeError, ValueError):
             event_date_local = ""
 
-    venue = req.sport_specific_evidence.get("venue") or DataUnavailable(
+    def _maybe_unavailable(value: Any, source_key: str) -> str | DataUnavailable:
+        if value:
+            return str(value)
+        return DataUnavailable(status="DATA_UNOBTAINABLE", source_attempted=[source_key])
+
+    venue = evidence.get("venue") or DataUnavailable(
         status="DATA_UNOBTAINABLE",
         source_attempted=["sport_specific_evidence"],
     )
 
-    official_event_status = req.sport_specific_evidence.get("official_event_status") or DataUnavailable(
-        status="DATA_UNOBTAINABLE",
-        source_attempted=["sport_specific_evidence"],
-    )
+    official_event_status = _maybe_unavailable(evidence.get("official_event_status"), "sport_specific_evidence")
 
-    home_starter = req.sport_specific_evidence.get("home_starting_pitcher")
-    home_starter_status = req.sport_specific_evidence.get("home_starter_status") or DataUnavailable(
-        status="DATA_UNOBTAINABLE",
-        source_attempted=["sport_specific_evidence"],
-    )
+    home_starter = evidence.get("home_starting_pitcher")
+    home_starter_status = _maybe_unavailable(evidence.get("home_starter_status"), "sport_specific_evidence")
 
-    away_starter = req.sport_specific_evidence.get("away_starting_pitcher")
-    away_starter_status = req.sport_specific_evidence.get("away_starter_status") or DataUnavailable(
-        status="DATA_UNOBTAINABLE",
-        source_attempted=["sport_specific_evidence"],
-    )
+    away_starter = evidence.get("away_starting_pitcher")
+    away_starter_status = _maybe_unavailable(evidence.get("away_starter_status"), "sport_specific_evidence")
 
-    home_lineup_status = req.sport_specific_evidence.get("home_lineup_status") or DataUnavailable(
-        status="DATA_UNOBTAINABLE",
-        source_attempted=["sport_specific_evidence"],
-    )
+    home_lineup_status = _maybe_unavailable(evidence.get("home_lineup_status"), "sport_specific_evidence")
+    away_lineup_status = _maybe_unavailable(evidence.get("away_lineup_status"), "sport_specific_evidence")
 
-    away_lineup_status = req.sport_specific_evidence.get("away_lineup_status") or DataUnavailable(
-        status="DATA_UNOBTAINABLE",
-        source_attempted=["sport_specific_evidence"],
-    )
+    injury_status = _maybe_unavailable(evidence.get("injury_status"), "sport_specific_evidence")
+    weather_status = _maybe_unavailable(evidence.get("weather_status"), "market_weather_service")
+    bullpen_status = _maybe_unavailable(evidence.get("bullpen_status"), "sport_specific_evidence")
+    settlement_rule = _maybe_unavailable(evidence.get("settlement_rule"), "sport_specific_evidence")
 
-    injury_status = req.sport_specific_evidence.get("injury_status") or DataUnavailable(
-        status="DATA_UNOBTAINABLE",
-        source_attempted=["sport_specific_evidence"],
-    )
+    market_role_status = _maybe_unavailable(market_data.get("market_role_status"), "market_data")
 
-    weather_status = req.sport_specific_evidence.get("weather_status") or DataUnavailable(
-        status="DATA_UNOBTAINABLE",
-        source_attempted=["sport_specific_evidence"],
-    )
+    market_status = str(market_data.get("status", "DATA_UNOBTAINABLE"))
 
-    bullpen_status = req.sport_specific_evidence.get("bullpen_status") or DataUnavailable(
-        status="DATA_UNOBTAINABLE",
-        source_attempted=["sport_specific_evidence"],
-    )
-
-    settlement_rule = req.sport_specific_evidence.get("settlement_rule") or DataUnavailable(
-        status="DATA_UNOBTAINABLE",
-        source_attempted=["sport_specific_evidence"],
-    )
-
-    market_role_status = market_data.get("market_role_status") or DataUnavailable(
-        status="DATA_UNOBTAINABLE",
-        source_attempted=["market_data"],
-    )
+    timestamp_now = datetime.now(timezone.utc).isoformat()
+    source_snapshot_timestamp = req.latest_material_update_timestamp or timestamp_now
 
     envelope = V17TeamEventCandidateEnvelope(
         research_run_id=req.research_run_id,
@@ -487,59 +532,109 @@ def _build_team_event_envelope(
         market_snapshot_id=market_data.get("snapshot_id"),
         market_snapshot_timestamp=market_data.get("timestamp"),
         market_source=market_data.get("source"),
-        market_status=market_data.get("status", "DATA_UNOBTAINABLE"),
+        market_status=market_status,
         book_count=market_data.get("book_count"),
         market_role=market_data.get("market_role"),
         market_role_status=market_role_status,
         consensus_probability_no_vig=market_data.get("no_vig_probability"),
-        market_prior_probability=market_data.get("prior_probability"),
+        market_prior_probability=market_data.get("prior_probability") or req.market_prior.get("probability") if req.market_prior else None,
         source_snapshot_id=req.source_snapshot_id,
-        source_snapshot_timestamp=req.latest_material_update_timestamp or datetime.now(timezone.utc).isoformat(),
+        source_snapshot_timestamp=source_snapshot_timestamp,
         latest_material_update_timestamp=req.latest_material_update_timestamp,
-        evidence_as_of=req.latest_material_update_timestamp or datetime.now(timezone.utc).isoformat(),
+        evidence_as_of=source_snapshot_timestamp,
     )
     return envelope
+
+
+def _validate_model_output_lossless(model_result: dict[str, Any]) -> tuple[bool, list[str]]:
+    """Validate non-lossy forwarding: present upstream fields must not become null/NOT_CALLED (patch section 4)."""
+    errors = []
+    critical_fields = {
+        "raw_model_probability",
+        "independent_model_probability",
+        "calibrated_probability",
+        "calibrated_probability_lower_bound",
+        "calibrated_probability_upper_bound",
+        "calibration_method",
+        "calibration_version",
+        "calibration_sample_scope",
+        "calibration_health_status",
+        "model_version",
+        "model_timestamp",
+    }
+
+    for field in critical_fields:
+        value = model_result.get(field)
+        if value in (None, "NOT_CALLED", "MISSING", "UNKNOWN", ""):
+            errors.append(f"MODEL_OUTPUT_FIELD_INVALID:{field}={value}")
+
+    return len(errors) == 0, errors
 
 
 def _build_governed_probability_package(
     envelope: V17TeamEventCandidateEnvelope,
     model_result: dict[str, Any],
-) -> V17GovernedProbabilityPackage:
-    """Build immutable governed probability package from model output and envelope."""
-    participant = model_result.get("participant", "UNKNOWN")
-    opponent = model_result.get("opponent", "UNKNOWN")
+) -> V17GovernedProbabilityPackage | None:
+    """Build immutable governed probability package from model output (patch section 4).
 
-    package = V17GovernedProbabilityPackage(
-        research_run_id=envelope.research_run_id,
-        event_key=envelope.event_key,
-        official_event_id=envelope.official_event_id,
-        participant=participant,
-        opponent=opponent,
-        market_role=envelope.market_role,
-        outcome_space=model_result.get("outcome_space", "MONEYLINE"),
-        raw_model_probability=float(model_result.get("raw_model_probability", 0.5)),
-        independent_model_probability=float(model_result.get("independent_model_probability", 0.5)),
-        market_prior_probability=envelope.market_prior_probability,
-        market_prior_weight=float(model_result.get("market_prior_weight", 0.0)),
-        calibrated_probability=float(model_result.get("calibrated_probability", 0.5)),
-        calibrated_probability_lower_bound=float(model_result.get("calibrated_probability_lower_bound", 0.4)),
-        calibrated_probability_upper_bound=float(model_result.get("calibrated_probability_upper_bound", 0.6)),
-        calibration_method=str(model_result.get("calibration_method", "UNKNOWN")),
-        calibration_version=str(model_result.get("calibration_version", "UNKNOWN")),
-        calibration_sample_scope=str(model_result.get("calibration_sample_scope", "UNKNOWN")),
-        calibration_health_status=str(model_result.get("calibration_health_status", "UNKNOWN")),
-        model_version=str(model_result.get("model_version", "UNKNOWN")),
-        model_timestamp=str(model_result.get("model_timestamp", "")),
-        latest_material_update_timestamp=envelope.latest_material_update_timestamp,
-        model_valid_after_latest_material_update=model_result.get("model_timestamp", "") >= (envelope.latest_material_update_timestamp or ""),
-        source_snapshot_id=envelope.source_snapshot_id,
-        source_snapshot_timestamp=envelope.source_snapshot_timestamp,
-        simulation_count_if_applicable=model_result.get("simulation_count"),
-        model_component_weights_if_available=model_result.get("model_component_weights"),
-        model_disagreement_if_available=model_result.get("model_disagreement"),
-        uncertainty_method=model_result.get("uncertainty_method"),
-    )
-    return package
+    Sport-model output must traverse losslessly. All fields the model produced
+    must be forwarded or explicitly translated with typed error record.
+    Returns None if validation fails; caller must treat as MODEL_OUTPUT_INVALID.
+    """
+    ok, errors = _validate_model_output_lossless(model_result)
+    if not ok:
+        return None
+
+    participant = str(model_result.get("participant", "UNKNOWN")).strip()
+    opponent = str(model_result.get("opponent", "UNKNOWN")).strip()
+    if not participant or participant == "UNKNOWN":
+        return None
+    if not opponent or opponent == "UNKNOWN":
+        return None
+
+    try:
+        package = V17GovernedProbabilityPackage(
+            research_run_id=envelope.research_run_id,
+            event_key=envelope.event_key,
+            official_event_id=envelope.official_event_id,
+            participant=participant,
+            opponent=opponent,
+            market_role=envelope.market_role,
+            outcome_space=str(model_result.get("outcome_space", "MONEYLINE")),
+            raw_model_probability=float(model_result.get("raw_model_probability")),
+            independent_model_probability=float(model_result.get("independent_model_probability")),
+            market_prior_probability=envelope.market_prior_probability,
+            market_prior_weight=float(model_result.get("market_prior_weight", 0.0)),
+            calibrated_probability=float(model_result.get("calibrated_probability")),
+            calibrated_probability_lower_bound=float(model_result.get("calibrated_probability_lower_bound")),
+            calibrated_probability_upper_bound=float(model_result.get("calibrated_probability_upper_bound")),
+            calibration_method=str(model_result.get("calibration_method")),
+            calibration_version=str(model_result.get("calibration_version")),
+            calibration_sample_scope=str(model_result.get("calibration_sample_scope")),
+            calibration_health_status=str(model_result.get("calibration_health_status")),
+            model_version=str(model_result.get("model_version")),
+            model_timestamp=str(model_result.get("model_timestamp")),
+            latest_material_update_timestamp=envelope.latest_material_update_timestamp,
+            model_valid_after_latest_material_update=str(model_result.get("model_timestamp", "")) >= (envelope.latest_material_update_timestamp or ""),
+            source_snapshot_id=envelope.source_snapshot_id,
+            source_snapshot_timestamp=envelope.source_snapshot_timestamp,
+            simulation_count_if_applicable=model_result.get("simulation_count"),
+            model_component_weights_if_available=model_result.get("model_component_weights"),
+            model_disagreement_if_available=model_result.get("model_disagreement"),
+            uncertainty_method=model_result.get("uncertainty_method"),
+        )
+
+        ok, calib_errors = package.validate_calibration()
+        if not ok:
+            return None
+
+        ok, domain_errors = package.validate_probability_domain()
+        if not ok:
+            return None
+
+        return package
+    except (TypeError, ValueError):
+        return None
 
 
 def score_team_event_request(req: TeamEventRequest, *, event_api: Any, canonical_hydration_required: bool = False) -> dict[str, Any]:
