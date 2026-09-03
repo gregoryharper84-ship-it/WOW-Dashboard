@@ -17,6 +17,7 @@ predicates and typed response codes. can_execute remains false.
 """
 from __future__ import annotations
 
+import asyncio
 import math
 import os
 from datetime import datetime, timedelta, timezone
@@ -27,6 +28,8 @@ import httpx
 DEFAULT_SERVICE_URL = "https://wow-governed-probability-engine.onrender.com"
 CAN_EXECUTE = False
 UNSUPPORTED_SPORT = "TABLE_TENNIS"
+_TRANSIENT_GATEWAY_STATUSES = {502, 503, 504}
+_TRANSIENT_RETRY_DELAYS_SECONDS = (0.5, 1.0, 2.0)
 
 
 def _prop_payload(*, event_start: str) -> dict[str, Any]:
@@ -149,6 +152,33 @@ def _typed_response_code(response: httpx.Response, payload: dict[str, Any]) -> s
     return None
 
 
+async def _post_with_transient_gateway_retry(
+    client: httpx.AsyncClient,
+    url: str,
+    *,
+    headers: dict[str, str],
+    json: dict[str, Any],
+) -> tuple[httpx.Response, int]:
+    """Retry only rolling-deploy gateway responses; never retry model semantics.
+
+    Render can briefly route startup self-acceptance to the draining predecessor
+    instance during a rolling handoff. 502/503/504 are therefore retried with a
+    short bounded backoff. Any application response, including 4xx/5xx model
+    contract failures outside this transport set, is returned immediately.
+    """
+    attempts = 0
+    response: httpx.Response | None = None
+    for delay in (0.0, *_TRANSIENT_RETRY_DELAYS_SECONDS):
+        if delay:
+            await asyncio.sleep(delay)
+        attempts += 1
+        response = await client.post(url, headers=headers, json=json)
+        if response.status_code not in _TRANSIENT_GATEWAY_STATUSES:
+            return response, attempts
+    assert response is not None
+    return response, attempts
+
+
 async def run_v17_synthetic_self_acceptance(logger, *, now: datetime | None = None) -> dict[str, Any]:
     """Exercise the live authenticated V17 HTTP surface."""
     api_key = os.getenv("WOW_ACTION_API_KEY", "").strip()
@@ -164,13 +194,25 @@ async def run_v17_synthetic_self_acceptance(logger, *, now: datetime | None = No
     headers = {"Authorization": f"Bearer {api_key}"}
     projected_candidate = _real_projected_mlb_candidate(now)
 
+    prop_attempts = team_event_attempts = projected_attempts = 0
     try:
         async with httpx.AsyncClient(timeout=60.0) as client:
-            prop_response = await client.post(f"{base_url}/score-pick-request", headers=headers, json=_prop_payload(event_start=event_start))
-            team_event_response = await client.post(f"{base_url}/score-team-event-request", headers=headers, json=_team_event_payload(event_date=event_date))
+            prop_response, prop_attempts = await _post_with_transient_gateway_retry(
+                client,
+                f"{base_url}/score-pick-request",
+                headers=headers,
+                json=_prop_payload(event_start=event_start),
+            )
+            team_event_response, team_event_attempts = await _post_with_transient_gateway_retry(
+                client,
+                f"{base_url}/score-team-event-request",
+                headers=headers,
+                json=_team_event_payload(event_date=event_date),
+            )
             projected_response = None
             if projected_candidate is not None:
-                projected_response = await client.post(
+                projected_response, projected_attempts = await _post_with_transient_gateway_retry(
+                    client,
                     f"{base_url}/score-team-event",
                     headers=headers,
                     json=_projected_team_event_payload(projected_candidate),
@@ -237,26 +279,29 @@ async def run_v17_synthetic_self_acceptance(logger, *, now: datetime | None = No
         "prop_ok": prop_ok,
         "prop_terminal_label": prop_row.get("terminal_label") or prop_row.get("code"),
         "prop_error_code": prop_error_code,
+        "prop_attempts": prop_attempts,
         "team_event_http_status": team_event_response.status_code,
         "team_event_ok": team_ok,
         "team_event_code": team_row.get("code"),
+        "team_event_attempts": team_event_attempts,
         "projected_lineup_status": projected_status,
         "projected_lineup_http_status": projected_http_status,
         "projected_lineup_ok": projected_ok,
         "projected_lineup_event_id": projected_event_id,
         "projected_lineup_code": projected_code,
         "projected_lineup_failed_checks": projected_failures,
+        "projected_lineup_attempts": projected_attempts,
         "can_execute": False,
     }
     log = logger.warning if status == "PASS" else logger.error
     log(
-        "WOW_V17_SYNTHETIC_SELF_ACCEPTANCE status=%s prop_http_status=%s prop_ok=%s prop_terminal_label=%s prop_error_code=%s "
-        "team_event_http_status=%s team_event_ok=%s team_event_code=%s projected_lineup_status=%s "
+        "WOW_V17_SYNTHETIC_SELF_ACCEPTANCE status=%s prop_http_status=%s prop_ok=%s prop_terminal_label=%s prop_error_code=%s prop_attempts=%s "
+        "team_event_http_status=%s team_event_ok=%s team_event_code=%s team_event_attempts=%s projected_lineup_status=%s "
         "projected_lineup_http_status=%s projected_lineup_ok=%s projected_lineup_event_id=%s projected_lineup_code=%s "
-        "projected_lineup_failed_checks=%s can_execute=false",
-        status, prop_response.status_code, prop_ok, prop_row.get("terminal_label") or prop_row.get("code"), prop_error_code,
-        team_event_response.status_code, team_ok, team_row.get("code"), projected_status,
+        "projected_lineup_failed_checks=%s projected_lineup_attempts=%s can_execute=false",
+        status, prop_response.status_code, prop_ok, prop_row.get("terminal_label") or prop_row.get("code"), prop_error_code, prop_attempts,
+        team_event_response.status_code, team_ok, team_row.get("code"), team_event_attempts, projected_status,
         projected_http_status, projected_ok, projected_event_id, projected_code,
-        ",".join(projected_failures) if projected_failures else "NONE",
+        ",".join(projected_failures) if projected_failures else "NONE", projected_attempts,
     )
     return result
