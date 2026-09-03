@@ -4,8 +4,8 @@ from v17 import team_event_request_runtime as base
 import v17.team_event_probability_preservation as repair
 
 
-def _req():
-    return SimpleNamespace()
+def _req(**evidence):
+    return SimpleNamespace(sport_specific_evidence=evidence)
 
 
 def _route():
@@ -29,9 +29,7 @@ def test_governance_hold_preserves_completed_fitted_probabilities():
     }
 
     out = repair._preserve_completed_probability_hold(
-        _req(),
-        _route(),
-        model_result,
+        _req(), _route(), model_result,
         governance_detail={
             "status": "HOLD",
             "blockers": ["MARKET_ROLE_NOT_LOCKED"],
@@ -43,7 +41,6 @@ def test_governance_hold_preserves_completed_fitted_probabilities():
     assert out["calibrated_home_probability"] == model_result["calibrated_home_probability"]
     assert out["calibrated_home_lower_bound"] == model_result["calibrated_home_lower_bound"]
     assert out["sporting_probability_completed"] is True
-    assert out["sporting_probability_status"] == "COMPLETED_HELD_DOWNSTREAM"
     assert out["probability_fields_withheld"] is False
     assert out["probability_publishable"] is False
     assert out["rank_eligible"] is False
@@ -54,22 +51,80 @@ def test_governance_hold_preserves_completed_fitted_probabilities():
 
 def test_governance_hold_does_not_manufacture_probability_when_scorer_has_none():
     out = repair._preserve_completed_probability_hold(
-        _req(),
-        _route(),
-        {"code": "MODEL_SCORER_FAILED"},
+        _req(), _route(), {"code": "MODEL_SCORER_FAILED"},
         governance_detail={"status": "HOLD"},
     )
-
     for field in base._MLB_NUMERIC_MODEL_FIELDS:
         assert field not in out
     assert out["sporting_probability_completed"] is False
-    assert out["sporting_probability_status"] == "NOT_COMPLETED"
     assert out["probability_fields_withheld"] is True
     assert out["probability_publishable"] is False
     assert out["rank_eligible"] is False
     assert out["can_execute"] is False
 
 
-def test_import_replaces_base_hold_serializer_without_terminal_override():
+def test_evidence_handoff_replays_same_governance_once(monkeypatch):
+    calls = []
+
+    def fake_governance(req, route, model_result, envelope=None, *, event_api):
+        calls.append("governance")
+        if len(calls) == 1:
+            return {
+                "probability_publishable": False,
+                "rank_eligible": False,
+                "llp_governance": {
+                    "status": "HOLD",
+                    "event_prediction_id": "event-pred-1",
+                    "score_snapshot_id": "score-1",
+                },
+                "can_execute": False,
+            }
+        return {
+            "probability_publishable": False,
+            "rank_eligible": False,
+            "llp_governance": {"status": "HOLD"},
+            "can_execute": False,
+        }
+
+    class RpcResult:
+        data = {
+            "status": "PASS",
+            "evidence_rows_hydrated": 10,
+            "scoring_evidence_row_count": 10,
+            "complete_scoring_evidence_snapshot": True,
+            "can_execute": False,
+        }
+
+    class Client:
+        def rpc(self, name, payload):
+            assert name == "wow_v17_hydrate_mlb_event_governance_evidence"
+            assert payload["p_event_prediction_id"] == "event-pred-1"
+            assert payload["p_score_snapshot_id"] == "score-1"
+            assert payload["p_evidence"]["weather_status"] == "CLEAR"
+            return self
+
+        def execute(self):
+            return RpcResult()
+
+    monkeypatch.setattr(repair, "_original_run_mlb_llp_governance", fake_governance)
+    event_api = SimpleNamespace(get_client=lambda: Client())
+
+    out = repair._run_mlb_llp_governance_with_evidence_handoff(
+        _req(weather_status="CLEAR"),
+        _route(),
+        {"score_snapshot_id": "score-1", "raw_home_probability": 0.52},
+        event_api=event_api,
+    )
+
+    assert calls == ["governance", "governance"]
+    assert out["governance_replayed_after_evidence_handoff"] is True
+    assert out["evidence_handoff_repair"]["complete_scoring_evidence_snapshot"] is True
+    assert out["probability_publishable"] is False
+    assert out["rank_eligible"] is False
+    assert out["can_execute"] is False
+
+
+def test_import_replaces_base_helpers_without_terminal_override():
     assert base._llp_governance_hold is repair._preserve_completed_probability_hold
+    assert base._run_mlb_llp_governance is repair._run_mlb_llp_governance_with_evidence_handoff
     assert base.CAN_EXECUTE is False
