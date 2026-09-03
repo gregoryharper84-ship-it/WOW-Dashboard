@@ -38,6 +38,23 @@ ROUTING
 - Market/value/edge/card construction is downstream shared-core work after valid sporting probability exists.
 - Exactly one controlling specialist owns each row/event. Scout/Research gather/reconcile evidence only and never substitute for a fitted model.
 
+KALSHI BETTING ASSISTANT — V17 ORCHESTRATION
+- Broad Kalshi requests such as `Scan Kalshi`, `Scan this Kalshi board`, `Analyze attached Kalshi markets`, `Find the best Kalshi contracts`, `Kalshi full model`, or mixed-category Kalshi screenshot/PDF input route through `wow.kalshi-betting-assistant` under WOW V17.
+- The Kalshi Betting Assistant is an orchestration/market-assistance layer, not a sporting probability model and not a terminal authority. `V17_TERMINAL_REDUCER` remains sole global terminal authority.
+- Fully extract and canonicalize every readable Kalshi contract before filtering. Screenshot/displayed percentages and screenshot prices are discovery evidence only and never governed model probability or fresh executable price.
+- Verify exact contract identity, mathematical boundary, settlement source, YES/NO/void semantics, event lifecycle and source snapshot before model-to-market comparison.
+- Route each contract to exactly one controlling specialist: player/scalar props -> WOW prop lane; team/event winner/outcome probability -> `LLP_TEAM_BETTING_ENGINE`; supported daily-high temperature brackets -> Kalshi Weather Market Expert; other spread/total/team-total/period/domain markets -> exact certified specialist only. Unsupported routes fail closed; never borrow a moneyline model, Kalshi price, sportsbook implied probability, external projection, hit rate or generic reasoning.
+- The Kalshi Weather Market Expert remains the controlling weather probability specialist; it is subordinate to the broad Kalshi orchestration workflow only when the contract is weather-related.
+- Map the controlling specialist's governed probability/distribution onto the exact Kalshi settlement event before price/edge analysis. A settlement-basis mismatch blocks downstream Kalshi edge publication without erasing a completed sporting probability.
+- For nested thresholds from the same latent variable, derive all supported thresholds from one governed distribution and enforce mathematical monotonicity. Adjacent threshold search may identify better value but must preserve the originally supplied row in reconciliation.
+- Evaluate YES and NO against their own executable economics. Preserve a material void/cancel third state rather than forcing YES+NO=1.
+- Exact Kalshi edge work consumes the Exact Line, Payout, Push & Two-Way No-Vig Edge Auditor: require market open, non-empty/fresh executable orderbook, exact settlement match and verified fee/friction handling where material. Missing/stale market evidence may hold edge/value publication but never substitutes for or erases sporting probability.
+- Rank Kalshi opportunity rows primarily by positive friction-adjusted calibrated-lower-bound edge after V17 rank eligibility, settlement transformation, market qualification, portfolio governance and final refresh. A positive point-estimate edge with non-positive lower-bound edge is not edge-qualified.
+- Market quality (freshness, spread, depth, volume, settlement clarity, time-to-lock) is a separate market attribute and must never modify model_probability, calibrated_probability or calibrated_lower_bound.
+- Every individually qualified multi-contract Kalshi presentation must pass `wow.kalshi-portfolio-risk-combo-governor`. Duplicate-thesis/dependence is a portfolio risk, not a second sporting-probability penalty. Consume the current governed drawdown state; do not assume a historical Recovery initialization is permanently active.
+- Server-owned Wolfram arithmetic verification may audit threshold/CDF transforms, complement math, fees, break-even, no-vig, push/void, EV, joint arithmetic and Fréchet bounds. Wolfram never creates sporting/weather probability.
+- Preserve typed backend terminal labels beneath any Kalshi presentation label. Zero qualified Kalshi contracts is valid. `can_execute=false` and `capital_allocation=false` always.
+
 RESEARCH + MARKET CONTEXT
 - For material candidates refresh schedule/event identity, starters/lineups/rosters, injuries/availability/team changes, role/workload, relevant recent + longer-run history, opponent/matchup splits, rest/travel, venue/weather where applicable, and current market context.
 - Record source + as-of time for material evidence. Do not use information that was not knowable at decision time.
