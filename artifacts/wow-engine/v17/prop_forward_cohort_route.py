@@ -9,6 +9,7 @@ from typing import Any
 from fastapi import FastAPI
 
 import v17.prop_forward_cohort_thesis_dedupe  # installs statistical-independence guard
+from v17.phase_a_row_publication import install_phase_a_row_publication
 from v17.prop_forward_cohort_market_adapter import ForwardCohortMarketAdapter
 from v17.prop_forward_cohort_runtime import PropForwardCohortRequest, run_prop_forward_cohort
 from v17.prop_forward_cohort_scheduler import run_prop_forward_cohort_loop
@@ -70,6 +71,15 @@ def install_prop_forward_cohort_route(
     db_client_fn: Any,
     market_api: Any,
 ) -> None:
+    # V17 activation first restores the certified Phase-A row-scoring path.
+    # The original scorer still owns calibration/bounds/publication; this merely
+    # prevents the aggregate preflight hold from suppressing a valid row attempt.
+    install_phase_a_row_publication(
+        app,
+        auth_dependency=auth_dependency,
+        market_api=market_api,
+    )
+
     cohort_market_api = ForwardCohortMarketAdapter(market_api)
     _install_scheduler(app, db_client_fn=db_client_fn, market_api=cohort_market_api)
 
