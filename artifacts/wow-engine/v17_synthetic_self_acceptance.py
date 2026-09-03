@@ -5,6 +5,12 @@ MLB shadow event exists with fitted probability but lineup still pending, the
 projected-lineup sporting-probability contract through the deployed authenticated
 /score-team-event HTTP boundary.
 
+Projected sporting probability and global terminal disposition are orthogonal:
+a valid projected probability may remain visible while V17_TERMINAL_REDUCER
+applies a stronger downstream hold/purge. Acceptance therefore proves probability
+preservation, rank exclusion, and terminal authority without overriding the
+reducer's label.
+
 Acceptance never places or approves a wager. It does not expose the Action key or
 log sporting probability values. Diagnostic output names only failed contract
 predicates and typed response codes. can_execute remains false.
@@ -81,7 +87,7 @@ def _projected_team_event_payload(row: dict[str, Any]) -> dict[str, Any]:
         "requester_host_identity": "WOW_BETTING_ENGINE",
         "research_run_id": "V17-PROJECTED-LINEUP-SELF-ACCEPTANCE",
         "requested_slate_date": str(row["official_date"]),
-        "requested_timezone": "UTC",
+        "requested_timezone": "America/Chicago",
         "candidate_family": "OUTRIGHT_WINNER",
         "decision_intent": "BEST_SIDE",
         "event_key": f"MLB:{row['official_event_id']}",
@@ -108,6 +114,7 @@ def _finite_probability(payload: dict[str, Any], name: str) -> bool:
 
 
 def _projected_acceptance_failures(payload: dict[str, Any]) -> list[str]:
+    terminal_label = str(payload.get("terminal_label") or "").strip().upper()
     checks = {
         "code": payload.get("code") == "LINEUP_PROJECTED_PROBABILITY_AVAILABLE",
         "lineup_state": payload.get("lineup_state") in {"PROJECTED_HIGH_CONFIDENCE", "PROJECTED_MEDIUM_CONFIDENCE"},
@@ -118,7 +125,8 @@ def _projected_acceptance_failures(payload: dict[str, Any]) -> list[str]:
         "sporting_probability_publishable": payload.get("sporting_probability_publishable") is True,
         "probability_publishable": payload.get("probability_publishable") is True,
         "rank_eligible": payload.get("rank_eligible") is False,
-        "terminal_label": payload.get("terminal_label") == "MODEL_QUALIFIED_HOLD",
+        "terminal_fail_closed": bool(terminal_label) and terminal_label != "FINAL_APPROVED",
+        "global_terminal_authority": payload.get("global_terminal_authority") == "V17_TERMINAL_REDUCER",
         "final_refresh_required": payload.get("final_refresh_required") is True,
         "lineup_confirmation_blocker": "LINEUP_CONFIRMATION_PENDING" in (payload.get("blockers") or []),
         "can_execute": payload.get("can_execute") is False,

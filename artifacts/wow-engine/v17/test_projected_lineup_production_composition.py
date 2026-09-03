@@ -29,10 +29,14 @@ def _model():
     }
 
 
-def test_active_probability_preservation_wrapper_composes_projected_lineup_semantics():
-    result = _preserve_completed_probability_hold(
+def _projected_payload():
+    return _preserve_completed_probability_hold(
         _req(), _route(), _model(), governance_detail={"status": "HOLD", "blockers": ["LINEUP_NOT_CONFIRMED"]}
     )
+
+
+def test_active_probability_preservation_wrapper_composes_projected_lineup_semantics():
+    result = _projected_payload()
     assert result["code"] == "LINEUP_PROJECTED_PROBABILITY_AVAILABLE"
     assert result["sporting_probability_publishable"] is True
     assert result["probability_publishable"] is True
@@ -53,10 +57,26 @@ def test_confirmed_hold_uses_normal_downstream_probability_preservation():
     assert result["rank_eligible"] is False
 
 
-def test_production_acceptance_contract_requires_numeric_probability_and_hold():
-    payload = _preserve_completed_probability_hold(
-        _req(), _route(), _model(), governance_detail={"status": "HOLD", "blockers": ["LINEUP_NOT_CONFIRMED"]}
-    )
+def test_production_acceptance_allows_stronger_fail_closed_terminal_from_global_reducer():
+    payload = _projected_payload()
     assert _projected_acceptance_ok(payload) is True
+
+    payload["terminal_label"] = "SLATE_PURGE"
+    payload["terminal_ceiling"] = "SLATE_PURGE"
+    assert _projected_acceptance_ok(payload) is True
+
+
+def test_production_acceptance_rejects_rank_or_final_approval_before_lineup_refresh():
+    payload = _projected_payload()
     payload["rank_eligible"] = True
+    assert _projected_acceptance_ok(payload) is False
+
+    payload = _projected_payload()
+    payload["terminal_label"] = "FINAL_APPROVED"
+    assert _projected_acceptance_ok(payload) is False
+
+
+def test_production_acceptance_requires_v17_terminal_reducer_authority():
+    payload = _projected_payload()
+    payload["global_terminal_authority"] = "OTHER_REDUCER"
     assert _projected_acceptance_ok(payload) is False
