@@ -124,7 +124,7 @@ def test_evidence_handoff_replays_same_governance_once(monkeypatch):
     assert out["can_execute"] is False
 
 
-def test_import_replaces_base_helpers_without_terminal_override():
-    assert base._llp_governance_hold is repair._preserve_completed_probability_hold
-    assert base._run_mlb_llp_governance is repair._run_mlb_llp_governance_with_evidence_handoff
+def test_import_does_not_mutate_base_helpers_or_terminal_override():
+    assert base._llp_governance_hold is repair._original_hold
+    assert base._run_mlb_llp_governance is repair._original_run_mlb_llp_governance
     assert base.CAN_EXECUTE is False
