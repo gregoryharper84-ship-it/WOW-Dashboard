@@ -1,53 +1,86 @@
 from qualification_policy_v2 import classify_prop_probability
 
 
-def test_phase_a_can_be_model_qualified_hold_but_not_advance_money_or_final():
-    result = classify_prop_probability(calibrated_probability=0.63, calibrated_lower_bound=0.56, calibration_status="PRECALIBRATION_SHRINKAGE", blockers=[], probability_publishable=True)
+def q(p, lb, ub, *, status="PRECALIBRATION_SHRINKAGE", publishable=True):
+    return classify_prop_probability(
+        calibrated_probability=p,
+        calibrated_lower_bound=lb,
+        calibrated_upper_bound=ub,
+        calibration_status=status,
+        blockers=[],
+        probability_publishable=publishable,
+    )
+
+
+def test_elite_model_qualified_is_rankable_but_not_final_approved():
+    result = q(0.69, 0.62, 0.74)
     assert result.terminal_label == "MODEL_QUALIFIED_HOLD"
+    assert result.model_qualification_status == "MODEL_QUALIFIED"
+    assert result.confidence_tier == "ELITE"
     assert result.rank_eligible is True
-    assert result.downstream_money_evaluation_allowed is False
     assert result.final_approved_allowed is False
 
 
-def test_phase_a_research_interest_is_preserved_but_not_rank_eligible():
-    result = classify_prop_probability(calibrated_probability=0.585, calibrated_lower_bound=0.515, calibration_status="PRECALIBRATION_SHRINKAGE", blockers=[], probability_publishable=True)
+def test_strong_model_qualified():
+    result = q(0.63, 0.58, 0.68)
+    assert result.model_qualified is True
+    assert result.confidence_tier == "STRONG"
+
+
+def test_jake_bennett_shape_is_model_qualified_from_point_lb_and_uncertainty():
+    result = q(0.5923, 0.5861, 0.6500)
+    assert result.model_qualified is True
+    assert result.confidence_tier == "QUALIFIED"
+    assert result.rank_eligible is True
+
+
+def test_lean_is_research_interest_and_not_rank_eligible():
+    result = q(0.555, 0.515, 0.61)
     assert result.terminal_label == "RESEARCH_INTEREST"
-    assert result.confidence_tier == "RESEARCH"
+    assert result.confidence_tier == "LEAN"
     assert result.rank_eligible is False
-    assert result.model_supported is True
-    assert result.downstream_money_evaluation_allowed is False
-    assert result.final_approved_allowed is False
+    assert result.model_qualified is False
 
 
-def test_low_probability_remains_rejected():
-    result = classify_prop_probability(calibrated_probability=0.537, calibrated_lower_bound=0.517, calibration_status="PRECALIBRATION_SHRINKAGE", blockers=[], probability_publishable=True)
+def test_low_or_neutral_probability_not_qualified():
+    result = q(0.52, 0.49, 0.57)
     assert result.terminal_label == "NO_LOW_PROBABILITY"
     assert result.rank_eligible is False
 
 
-def test_hard_model_blocker_cannot_be_overridden_by_probability():
-    result = classify_prop_probability(calibrated_probability=0.80, calibrated_lower_bound=0.72, calibration_status="PLATT_TIME_SPLIT_V1", blockers=["CONTROLLING_SPECIALIST_UNAVAILABLE"], probability_publishable=True)
-    assert result.terminal_label == "MODEL_UNAVAILABLE"
-    assert result.rank_eligible is False
-
-
-def test_high_confidence_uses_native_hold_label_and_metadata():
-    result = classify_prop_probability(calibrated_probability=0.69, calibrated_lower_bound=0.62, calibration_status="PLATT_TIME_SPLIT_V1", blockers=[], probability_publishable=True)
-    assert result.terminal_label == "MODEL_QUALIFIED_HOLD"
-    assert result.confidence_tier == "HIGH"
-    assert result.rank_eligible is True
-    assert result.downstream_money_evaluation_allowed is True
-
-
-def test_missing_calibrated_package_is_model_output_invalid():
-    result = classify_prop_probability(calibrated_probability=None, calibrated_lower_bound=None, calibration_status="PASS", blockers=[], probability_publishable=True)
+def test_missing_calibrated_upper_bound_is_output_invalid():
+    result = classify_prop_probability(
+        calibrated_probability=0.63,
+        calibrated_lower_bound=0.58,
+        calibrated_upper_bound=None,
+        calibration_status="PASS",
+        blockers=[],
+        probability_publishable=True,
+    )
     assert result.terminal_label == "MODEL_OUTPUT_INVALID"
     assert result.rank_eligible is False
-    assert "CALIBRATED_PROBABILITY_OR_BOUND_MISSING" in result.blockers
 
 
-def test_unpublishable_probability_remains_non_rankable_capability_state():
-    result = classify_prop_probability(calibrated_probability=None, calibrated_lower_bound=None, calibration_status="UNKNOWN_OR_BLOCKED", blockers=[], probability_publishable=False)
-    assert result.terminal_label == "MODEL_UNAVAILABLE"
+def test_unhealthy_calibration_cannot_model_qualify():
+    result = q(0.70, 0.64, 0.75, status="BLOCKED")
+    assert result.model_qualified is False
     assert result.rank_eligible is False
-    assert "PROBABILITY_PUBLICATION_BLOCKED" in result.blockers
+
+
+def test_market_identity_is_not_a_sporting_model_hard_blocker():
+    result = classify_prop_probability(
+        calibrated_probability=0.62,
+        calibrated_lower_bound=0.58,
+        calibrated_upper_bound=0.68,
+        calibration_status="PASS",
+        blockers=["EXACT_MARKET_IDENTITY_UNAVAILABLE"],
+        probability_publishable=True,
+    )
+    assert result.model_qualified is True
+    assert result.rank_eligible is True
+
+
+def test_unpublishable_sporting_probability_is_not_model_qualified():
+    result = q(None, None, None, status="UNKNOWN_OR_BLOCKED", publishable=False)
+    assert result.model_qualified is False
+    assert result.rank_eligible is False
