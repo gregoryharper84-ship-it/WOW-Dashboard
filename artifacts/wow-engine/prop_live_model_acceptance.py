@@ -1,18 +1,12 @@
 """Optional live self-acceptance for the real fitted player-prop path.
 
-The probe supports both governed publication and the calibration/publication-
-blocked research-only lane. A publication lock must not be misreported as model
-unavailability when the certified specialist can still run. In research-only
-mode the probe requires raw specialist output, null calibrated claims, no
-publishable prediction claim, MODEL_QUALIFIED_HOLD-or-lower ceiling, and
-can_execute=false.
+The probe recognizes three governed outcomes:
+1. normal governed sporting-probability publication;
+2. V17 sporting probability completed while official/final publication is held;
+3. the legacy raw-specialist research-only publication-lock shape.
 
-When WOW_PROP_MODEL_SELF_ACCEPTANCE_PICK_JSON is configured, the probe first
-uses the real authenticated /score-pick-request boundary. That path performs
-certified route preflight, official automatic evidence hydration, immutable
-snapshot persistence, and the exact /score-prop call. The bootstrap is intended
-for one-shot production acceptance using a real still-pregame candidate; it does
-not create or imply wager execution.
+A downstream publication lock must never be misreported as fitted-model
+unavailability. No acceptance mode authorizes execution.
 """
 from __future__ import annotations
 
@@ -53,7 +47,7 @@ def _valid_probability(value: Any) -> bool:
     return math.isfinite(p) and 0.0 < p < 1.0
 
 
-def _is_governed_model_path_pass(body: dict[str, Any]) -> tuple[bool, str | None]:
+def _governed_model_components(body: dict[str, Any]) -> tuple[bool, str | None]:
     prediction = body.get("prediction") if isinstance(body.get("prediction"), dict) else {}
     model = body.get("model_evidence") if isinstance(body.get("model_evidence"), dict) else {}
     lanes = body.get("objective_lanes") if isinstance(body.get("objective_lanes"), dict) else {}
@@ -65,6 +59,8 @@ def _is_governed_model_path_pass(body: dict[str, Any]) -> tuple[bool, str | None
         and model.get("provider_identity") == "WOW_PROP_FITTED_MODEL_V1"
         and model.get("model_family") == "MLB_PITCHER_SO_FAILURE_PATH_NB_V1"
         and model.get("calibration_status") == "PRECALIBRATION_SHRINKAGE"
+        and _valid_probability(model.get("calibrated_probability"))
+        and _valid_probability(model.get("calibrated_probability_lower_bound"))
         and model.get("probability_publishable") is True
         and model.get("can_execute") is False
         and model_lane.get("status") == "PASS"
@@ -75,7 +71,33 @@ def _is_governed_model_path_pass(body: dict[str, Any]) -> tuple[bool, str | None
     return ok, str(prediction_id) if prediction_id else None
 
 
+def _is_governed_model_path_pass(body: dict[str, Any]) -> tuple[bool, str | None]:
+    common, prediction_id = _governed_model_components(body)
+    return (
+        common
+        and body.get("probability_publishable") is True
+        and body.get("governed_publishable") is not False
+    ), prediction_id
+
+
+def _is_sporting_probability_hold_pass(body: dict[str, Any]) -> tuple[bool, str | None]:
+    """Validate the V17 full sporting-probability package under official hold."""
+    common, prediction_id = _governed_model_components(body)
+    return (
+        common
+        and body.get("governed_sporting_probability_completed") is True
+        and body.get("sporting_probability_publishable") is True
+        and body.get("probability_publishable") is True
+        and body.get("governed_publishable") is False
+        and body.get("official_final_publishable") is False
+        and body.get("final_approved") is False
+        and isinstance(body.get("official_publication_blockers"), list)
+        and body.get("can_execute") is False
+    ), prediction_id
+
+
 def _is_research_only_model_path_pass(body: dict[str, Any]) -> bool:
+    """Backward-compatible acceptance for the old raw-only publication hold."""
     research = body.get("research_model_output") if isinstance(body.get("research_model_output"), dict) else {}
     lanes = body.get("objective_lanes") if isinstance(body.get("objective_lanes"), dict) else {}
     model_lane = lanes.get("MODEL") if isinstance(lanes.get("MODEL"), dict) else {}
@@ -117,9 +139,15 @@ def _is_model_path_pass(response: httpx.Response) -> tuple[bool, str, str | None
     code = str(body.get("code") or ("PROP_MODEL_PATH_PASS" if body.get("ok") is True else "MISSING_CODE"))
     if response.status_code != 200:
         return False, code, None, "FAIL"
+
+    hold_ok, prediction_id = _is_sporting_probability_hold_pass(body)
+    if hold_ok:
+        return True, code, prediction_id, "SPORTING_PROBABILITY_COMPLETE_PUBLICATION_HOLD"
+
     governed_ok, prediction_id = _is_governed_model_path_pass(body)
     if governed_ok:
         return True, code, prediction_id, "GOVERNED_PUBLISHABLE"
+
     if _is_research_only_model_path_pass(body):
         return True, code, None, "RESEARCH_ONLY_PUBLICATION_LOCK"
     return False, code, prediction_id, "UNRECOGNIZED_200"
@@ -165,10 +193,7 @@ def _bootstrap_pick_payload(raw: str) -> dict[str, Any]:
         "opponent": value.get("opponent"),
         "money_lane_status": "PAYOUT_UNRESOLVED",
     }
-    return {
-        "request_id": "wow-prop-live-e2e-acceptance",
-        "rows": [row],
-    }
+    return {"request_id": "wow-prop-live-e2e-acceptance", "rows": [row]}
 
 
 def _is_bootstrap_pick_pass(response: httpx.Response) -> tuple[bool, str, str | None, str]:
@@ -199,10 +224,16 @@ def _is_bootstrap_pick_pass(response: httpx.Response) -> tuple[bool, str, str | 
     )
     if not common:
         return False, code, str(snapshot_id) if snapshot_id else None, "CONTRACT_FAIL"
-    if row.get("code") == "MODEL_QUALIFIED_HOLD" and _is_research_only_model_path_pass(result):
+
+    hold_ok, prediction_id = _is_sporting_probability_hold_pass(result)
+    if hold_ok:
+        return True, code, str(snapshot_id), "SPORTING_PROBABILITY_COMPLETE_PUBLICATION_HOLD"
+
+    if _is_research_only_model_path_pass(result):
         return True, code, str(snapshot_id), "RESEARCH_ONLY_PUBLICATION_LOCK"
+
     governed_ok, prediction_id = _is_governed_model_path_pass(result)
-    if row.get("code") == "MODEL_QUALIFIED" and governed_ok:
+    if governed_ok:
         return True, code, str(snapshot_id), "GOVERNED_PUBLISHABLE"
     return False, code, str(snapshot_id) if snapshot_id else prediction_id, "MODEL_RESULT_FAIL"
 
@@ -238,11 +269,10 @@ async def _bootstrap_fresh_snapshot(key: str, port: str, raw: str, log: logging.
             passed, last_code, last_snapshot, last_mode = _is_bootstrap_pick_pass(response)
             if passed:
                 log.warning(
-                    "WOW_PROP_MODEL_SELF_ACCEPTANCE result=PASS status=200 mode=AUTO_HYDRATED_E2E_%s snapshot_id=%s acquisition=PASS snapshot=FROZEN specialist_invoked=true governed_publishable=%s terminal=%s can_execute=false",
+                    "WOW_PROP_MODEL_SELF_ACCEPTANCE result=PASS status=200 mode=AUTO_HYDRATED_E2E_%s snapshot_id=%s acquisition=PASS snapshot=FROZEN specialist_invoked=true governed_publishable=%s can_execute=false",
                     last_mode,
                     last_snapshot,
                     str(last_mode == "GOVERNED_PUBLISHABLE").lower(),
-                    "MODEL_QUALIFIED" if last_mode == "GOVERNED_PUBLISHABLE" else "MODEL_QUALIFIED_HOLD",
                 )
                 return last_snapshot
         except Exception as exc:
@@ -348,17 +378,12 @@ async def run_prop_model_live_self_acceptance(market_api: Any, logger: logging.L
                 last_status = response.status_code
                 passed, last_code, prediction_id, last_mode = _is_model_path_pass(response)
                 if passed:
-                    if last_mode == "RESEARCH_ONLY_PUBLICATION_LOCK":
-                        log.warning(
-                            "WOW_PROP_MODEL_SELF_ACCEPTANCE result=PASS status=200 mode=RESEARCH_ONLY_PUBLICATION_LOCK snapshot_id=%s provider=WOW_PROP_FITTED_MODEL_V1 model_family=MLB_PITCHER_SO_FAILURE_PATH_NB_V1 specialist_invoked=true calibration=UNKNOWN_OR_BLOCKED governed_publishable=false immutable_prediction=NOT_ATTEMPTED_PUBLICATION_LOCK terminal_ceiling=MODEL_QUALIFIED_HOLD can_execute=false",
-                            snapshot_id,
-                        )
-                    else:
-                        log.warning(
-                            "WOW_PROP_MODEL_SELF_ACCEPTANCE result=PASS status=200 mode=GOVERNED_PUBLISHABLE snapshot_id=%s prediction_id=%s provider=WOW_PROP_FITTED_MODEL_V1 model_family=MLB_PITCHER_SO_FAILURE_PATH_NB_V1 calibration=PRECALIBRATION_SHRINKAGE immutable_prediction=PASS probability_publishable=true money_lane=HOLD can_execute=false",
-                            snapshot_id,
-                            prediction_id,
-                        )
+                    log.warning(
+                        "WOW_PROP_MODEL_SELF_ACCEPTANCE result=PASS status=200 mode=%s snapshot_id=%s prediction_id=%s can_execute=false",
+                        last_mode,
+                        snapshot_id,
+                        prediction_id,
+                    )
                     return
             except Exception as exc:
                 last_code = type(exc).__name__
