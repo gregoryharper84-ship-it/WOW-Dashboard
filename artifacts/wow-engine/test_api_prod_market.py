@@ -211,7 +211,7 @@ def test_complete_model_exact_two_way_market_passes_market_lane(monkeypatch):
     assert captured["market_side_b"].event_id == payload["event_id"]
 
 
-def test_wolfram_failure_holds_economics_without_erasing_model_probability(monkeypatch):
+def test_python_verification_conflict_holds_economics_without_erasing_model_probability(monkeypatch):
     def fake_score(**_kwargs):
         return _result(market_available=True, market_quality="EXACT_TWO_WAY_NO_VIG")
 
@@ -230,8 +230,8 @@ def test_wolfram_failure_holds_economics_without_erasing_model_probability(monke
         api_prod_market,
         "audit_wolfram_claims",
         lambda _claims, required: {
-            "verdict": "WOLFRAM_AUDIT_UNAVAILABLE",
-            "provider": "WOLFRAM_ALPHA",
+            "verdict": "COMPUTATION_VERIFICATION_CONFLICT",
+            "provider": "PYTHON_PRIMARY",
             "audit_required": required,
             "receipts": [],
             "blocks_model_probability": False,
@@ -260,15 +260,16 @@ def test_wolfram_failure_holds_economics_without_erasing_model_probability(monke
     assert body["objective_lanes"]["MODEL"]["status"] == "PASS"
     assert body["objective_lanes"]["MARKET"]["status"] == "HOLD"
     assert body["objective_lanes"]["MONEY"]["status"] == "HOLD"
-    assert body["objective_lanes"]["MONEY"]["money_lane_status"] == "WOLFRAM_AUDIT_UNAVAILABLE"
-    assert body["objective_lanes"]["ARITHMETIC_AUDIT"]["verdict"] == "WOLFRAM_AUDIT_UNAVAILABLE"
+    assert body["objective_lanes"]["MONEY"]["money_lane_status"] == "COMPUTATION_VERIFICATION_CONFLICT"
+    assert body["objective_lanes"]["ARITHMETIC_AUDIT"]["verdict"] == "COMPUTATION_VERIFICATION_CONFLICT"
+    assert body["objective_lanes"]["ARITHMETIC_AUDIT"]["provider"] == "PYTHON_PRIMARY"
     assert body["objective_lanes"]["ARITHMETIC_AUDIT"]["blocks_model_probability"] is False
-    assert body["backend_traversal"]["wolfram_arithmetic_audit"] == "WOLFRAM_AUDIT_UNAVAILABLE"
+    assert body["backend_traversal"]["wolfram_arithmetic_audit"] == "COMPUTATION_VERIFICATION_CONFLICT"
     assert body["backend_traversal"]["wolfram_audit_ledger_write"] == "PASS"
     assert body["can_execute"] is False
 
 
-def test_wolfram_pass_allows_existing_market_lane_semantics(monkeypatch):
+def test_python_pass_allows_existing_market_lane_semantics(monkeypatch):
     row = _row(market_available=True, market_quality="EXACT_TWO_WAY_NO_VIG")
     market_lane = {"status": "PASS", "blocks_model_probability": False}
     settlement_lane = {"status": "HOLD", "blocks_model_probability": False}
@@ -290,7 +291,7 @@ def test_wolfram_pass_allows_existing_market_lane_semantics(monkeypatch):
         "audit_wolfram_claims",
         lambda claims, required: {
             "verdict": "PASS",
-            "provider": "WOLFRAM_ALPHA",
+            "provider": "PYTHON_PRIMARY",
             "audit_required": required,
             "receipts": [{"claim_id": claim["claim_id"], "verdict": "PASS"} for claim in claims],
             "blocks_model_probability": False,
@@ -315,7 +316,7 @@ def test_wolfram_pass_allows_existing_market_lane_semantics(monkeypatch):
     assert money["status"] == "HOLD"
 
 
-def test_wolfram_ledger_failure_holds_economics_but_preserves_provider_verdict(monkeypatch):
+def test_python_ledger_failure_holds_economics_but_preserves_provider_verdict(monkeypatch):
     row = _row(market_available=True, market_quality="EXACT_TWO_WAY_NO_VIG")
     monkeypatch.setattr(api_prod_market, "wolfram_audit_enabled", lambda: True)
     monkeypatch.setattr(
@@ -323,7 +324,7 @@ def test_wolfram_ledger_failure_holds_economics_but_preserves_provider_verdict(m
         "audit_wolfram_claims",
         lambda _claims, required: {
             "verdict": "PASS",
-            "provider": "WOLFRAM_ALPHA",
+            "provider": "PYTHON_PRIMARY",
             "audit_required": required,
             "receipts": [],
             "blocks_model_probability": False,
@@ -346,7 +347,7 @@ def test_wolfram_ledger_failure_holds_economics_but_preserves_provider_verdict(m
         prediction_id=str(uuid.uuid4()),
     )
 
-    assert audit["verdict"] == "WOLFRAM_AUDIT_LEDGER_WRITE_UNPROVEN"
+    assert audit["verdict"] == "PYTHON_ARITHMETIC_AUDIT_LEDGER_WRITE_UNPROVEN"
     assert audit["provider_verdict"] == "PASS"
     assert audit["ledger_write"] == "UNPROVEN"
     assert market["status"] == "HOLD"
