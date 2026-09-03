@@ -8,6 +8,7 @@ from typing import Any
 
 from fastapi import FastAPI
 
+from v17.prop_forward_cohort_market_adapter import ForwardCohortMarketAdapter
 from v17.prop_forward_cohort_runtime import PropForwardCohortRequest, run_prop_forward_cohort
 from v17.prop_forward_cohort_scheduler import run_prop_forward_cohort_loop
 
@@ -70,7 +71,8 @@ def install_prop_forward_cohort_route(
     db_client_fn: Any,
     market_api: Any,
 ) -> None:
-    _install_scheduler(app, db_client_fn=db_client_fn, market_api=market_api)
+    cohort_market_api = ForwardCohortMarketAdapter(market_api)
+    _install_scheduler(app, db_client_fn=db_client_fn, market_api=cohort_market_api)
 
     if any(getattr(route, "path", None) == "/v17/prop-forward-cohort-run" for route in app.router.routes):
         return
@@ -81,4 +83,4 @@ def install_prop_forward_cohort_route(
         operation_id="runWowV17PropForwardCohort",
     )
     def prop_forward_cohort_run(req: PropForwardCohortRequest):
-        return run_prop_forward_cohort(req, db=db_client_fn(), market_api=market_api)
+        return run_prop_forward_cohort(req, db=db_client_fn(), market_api=cohort_market_api)
