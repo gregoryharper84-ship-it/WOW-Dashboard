@@ -228,7 +228,8 @@ def test_governance_reports_lane_split(monkeypatch):
     assert body["database_provider"] == "SUPABASE"
     assert body["lane_capabilities"]["PROP_PROBABILITY"]["status"] == "UNAVAILABLE"
     assert body["routing_contract"]["LLP_TEAM_BETTING_MODEL"].startswith("/score-event")
-    assert body["arithmetic_audit"]["provider"] == "WOLFRAM_ALPHA"
+    assert body["arithmetic_audit"]["provider"] == "PYTHON_PRIMARY"
+    assert body["arithmetic_audit"]["external_transport_required"] is False
     assert body["arithmetic_audit"]["blocks_model_probability"] is False
     assert body["can_execute"] is False
 
