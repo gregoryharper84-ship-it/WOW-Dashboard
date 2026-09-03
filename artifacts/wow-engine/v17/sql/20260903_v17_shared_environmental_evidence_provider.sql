@@ -78,7 +78,7 @@ begin
       attempt_order,attempted_at,attempt_status,source_ref,can_execute
     ) values (
       gen_random_uuid(),p_event_prediction_id,'WEATHER_STATUS',v_source,
-      1,v_now,'FAILED',v_url,false
+      1,v_now,'ERROR',v_url,false
     );
     return jsonb_build_object(
       'status','HOLD','code','ENVIRONMENT_SOURCE_HTTP_ERROR',
@@ -109,7 +109,7 @@ begin
       attempt_order,attempted_at,attempt_status,source_ref,can_execute
     ) values (
       gen_random_uuid(),p_event_prediction_id,'WEATHER_STATUS',v_source,
-      1,v_now,'FAILED',v_url,false
+      1,v_now,'UNAVAILABLE',v_url,false
     );
     return jsonb_build_object(
       'status','HOLD','code','OFFICIAL_WEATHER_UNAVAILABLE',
