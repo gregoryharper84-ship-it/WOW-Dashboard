@@ -9,6 +9,8 @@ Repairs coupled orchestration defects without relaxing governance:
    probability publication can remain separate from downstream market/value work.
 4. Weather/environment evidence is acquired through the shared V17 environmental
    provider and written to the same canonical evidence ledger used by LLP.
+5. A valid projected-lineup fitted package remains a sporting probability while
+   rank/final publication is held for confirmation refresh.
 
 Market-relative FAVORITE/UNDERDOG/UPSET requests remain on the existing market
 consensus path. No probability is manufactured, no gate is bypassed, and wager
@@ -22,6 +24,7 @@ from typing import Any
 from fastapi import FastAPI
 
 from v17 import team_event_request_runtime as _base
+from v17.projected_lineup_scenario_modeling import projected_probability_hold
 
 _original_hold = _base._llp_governance_hold
 _original_run_mlb_llp_governance = _base._run_mlb_llp_governance
@@ -37,6 +40,21 @@ def _preserve_completed_probability_hold(
     governance_detail: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Return a fail-closed LLP hold without destroying completed model output."""
+    projected = projected_probability_hold(req, model_result, governance_detail)
+    if projected is not None:
+        projected.update({
+            "requester_host_identity": route.requester_host_identity,
+            "controlling_engine_identity": _base.LLP_TEAM_BETTING_ENGINE,
+            "candidate_family": route.candidate_family,
+            "sporting_probability_completed": True,
+            "sporting_probability_status": "COMPLETED_HELD_LINEUP_CONFIRMATION",
+            "probability_fields_withheld": False,
+            "host_terminal_authority": False,
+            "global_terminal_authority": "V17_TERMINAL_REDUCER",
+            "can_execute": False,
+        })
+        return projected
+
     safe_model = dict(model_result)
     numeric_fields_present = sorted(_base._MLB_NUMERIC_MODEL_FIELDS.intersection(model_result))
     sporting_probability_completed = bool(numeric_fields_present)
@@ -100,7 +118,6 @@ def _run_mlb_llp_governance_with_evidence_handoff(
 
     decision_intent = str(getattr(req, "decision_intent", "BEST_SIDE")).upper()
     if decision_intent not in _PROBABILITY_ONLY_INTENTS:
-        # Market-relative requests must remain on the legacy consensus path.
         return first
 
     governance = first.get("llp_governance")
