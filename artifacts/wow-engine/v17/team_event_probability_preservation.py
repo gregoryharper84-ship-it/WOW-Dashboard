@@ -1,14 +1,15 @@
 """V17 MLB team/event handoff + probability-preservation repair.
 
-Repairs two coupled orchestration defects without relaxing governance:
+Repairs coupled orchestration defects without relaxing governance:
 1. A completed fitted MLB sporting probability must not be erased merely because
    downstream LLP publication/ranking governance is held.
 2. The score->LLP bridge must materialize the canonical evidence/source-attempt/
-   scoring-evidence rows consumed by the existing event gates before a final
-   governance decision is trusted.
+   scoring-evidence rows consumed by the event gates before a final decision.
+3. Probability-only winner/BEST_SIDE intent is passed explicitly so sporting
+   probability publication can remain separate from downstream market/value work.
 
-No probability is manufactured, no gate is bypassed, rank/publication remain
-fail-closed, and wager execution remains impossible.
+No probability is manufactured, no gate is bypassed, and wager execution remains
+impossible.
 """
 from __future__ import annotations
 
@@ -86,7 +87,7 @@ def _run_mlb_llp_governance_with_evidence_handoff(
     *,
     event_api: Any,
 ) -> dict[str, Any]:
-    """Run governance, repair missing ledger handoff, then replay once."""
+    """Run governance, hydrate canonical evidence/model metadata, then replay once."""
     first = _original_run_mlb_llp_governance(
         req, route, model_result, envelope=envelope, event_api=event_api
     )
@@ -114,6 +115,7 @@ def _run_mlb_llp_governance_with_evidence_handoff(
                 "p_event_prediction_id": str(event_prediction_id),
                 "p_score_snapshot_id": str(score_snapshot_id),
                 "p_evidence": evidence,
+                "p_decision_intent": str(getattr(req, "decision_intent", "BEST_SIDE")),
             },
         ).execute()
         hydration = hydration_result.data
@@ -157,13 +159,7 @@ def score_team_event_request(
     event_api: Any,
     canonical_hydration_required: bool = False,
 ) -> dict[str, Any]:
-    """Execute the base V17 scorer with repair helpers scoped to this call.
-
-    The lock prevents concurrent callers from observing a transient helper swap.
-    Legacy callers of the base module keep their historical behavior; active V17
-    routes use this explicit wrapper. This avoids an import-time global monkey
-    patch while keeping the repair narrowly scoped.
-    """
+    """Execute the base V17 scorer with repair helpers scoped to this call."""
     with _repair_lock:
         previous_hold = _base._llp_governance_hold
         previous_governance = _base._run_mlb_llp_governance
