@@ -29,15 +29,12 @@ from agent_runtime.runner_scout_research import execute_envelope
 from agent_runtime.schemas import WorkerJobEnvelope
 from agent_runtime.scout_research import RESEARCH_RECONCILER, RESEARCH_WORKERS, scout_lane
 from v17.host_routing import LLP_TEAM_BETTING_ENGINE, resolve_host_route
+from v17.mlb_team_event_hydration import resolve_mlb_team_event_evidence
 
 CAN_EXECUTE = False
 
 TeamDecisionIntent = Literal["WINNER", "FAVORITE", "UNDERDOG", "UPSET", "BEST_SIDE"]
 
-# Numeric model fields exposed by the existing MLB event bridge. Until the LLP
-# event-ledger bridge proves its post-model + final gates, none of these may be
-# surfaced by the v17 TEAM_EVENT boundary even if the underlying v16 bridge is
-# separately ratified for its own contract.
 _MLB_NUMERIC_MODEL_FIELDS = {
     "raw_home_probability",
     "raw_away_probability",
@@ -54,23 +51,11 @@ _MLB_NUMERIC_MODEL_FIELDS = {
     "tie_after_9_probability",
 }
 
-# Sport-family aliases that mean "MLB" specifically. "Baseball" is a sport
-# family, not a league -- other professional baseball leagues (NPB, KBO, ...)
-# must never be silently scored by the MLB-fitted adapter, so an alias only
-# canonicalizes to MLB when the caller's league is absent or already MLB.
 _MLB_SPORT_ALIASES = frozenset({"MLB", "BASEBALL", "BASEBALL_MLB"})
 
 
 def normalize_team_event_sport(sport: str, league: str | None) -> str:
-    """Canonicalize sport naming for team-event adapter dispatch only.
-
-    This never widens which sports are supported -- MLB remains the only
-    registered team-event adapter. It only prevents a caller-supplied sport
-    family name ("baseball") from producing a false MODEL_UNAVAILABLE for a
-    sport this backend actually has a certified adapter for, while still
-    failing closed (as the caller's own unrecognized sport string) for any
-    other baseball league so it is never scored by the wrong league's model.
-    """
+    """Canonicalize sport naming for team-event adapter dispatch only."""
     normalized_sport = str(sport or "").strip().upper()
     normalized_league = str(league or "").strip().upper()
     if normalized_sport in _MLB_SPORT_ALIASES and normalized_league in {"", "MLB"}:
@@ -167,31 +152,28 @@ def _augment_detail(detail: Any, req: TeamEventRequest) -> dict[str, Any]:
 
 
 def _mlb_request(req: TeamEventRequest, event_api: Any) -> Any:
-    evidence = req.sport_specific_evidence or {}
-    required = (
-        "venue",
-        "home_starting_pitcher",
-        "away_starting_pitcher",
-        "home_starter_status",
-        "away_starter_status",
-        "home_lineup_status",
-        "away_lineup_status",
-    )
-    missing = [key for key in required if not str(evidence.get(key) or "").strip()]
-    if missing:
-        raise HTTPException(
-            status_code=422,
-            detail=_augment_detail(
-                {
-                    "code": "RUN_INVALID_ACQUISITION_INCOMPLETE",
-                    "failure_class": "RUN_INVALID_ACQUISITION_INCOMPLETE",
-                    "missing_fields": missing,
-                    "probability_publishable": False,
-                },
-                req,
+    resolution = resolve_mlb_team_event_evidence(req, event_api=event_api)
+    if resolution.get("ok") is not True:
+        code = str(resolution.get("code") or "MLB_TEAM_EVENT_CANONICAL_EVIDENCE_UNAVAILABLE")
+        missing = list(resolution.get("missing_fields") or [])
+        detail = {
+            "code": code,
+            "failure_class": (
+                "RUN_INVALID_ACQUISITION_INCOMPLETE"
+                if missing
+                else "RUN_INVALID_DATA_CONTRACT"
             ),
-        )
+            "missing_fields": missing,
+            "identity_mismatches": list(resolution.get("identity_mismatches") or []),
+            "error_type": resolution.get("error_type"),
+            "canonical_acquisition_attempted": True,
+            "market_probability_substitution_allowed": False,
+            "generic_reasoning_substitution_allowed": False,
+            "probability_publishable": False,
+        }
+        raise HTTPException(status_code=422, detail=_augment_detail(detail, req))
 
+    evidence = dict(resolution["evidence"])
     return event_api.ScoreEventRequest(
         research_run_id=req.research_run_id,
         requested_slate_date=req.requested_slate_date,
@@ -213,8 +195,8 @@ def _mlb_request(req: TeamEventRequest, event_api: Any) -> Any:
         away_starter_status=evidence["away_starter_status"],
         home_lineup_status=evidence["home_lineup_status"],
         away_lineup_status=evidence["away_lineup_status"],
-        latest_material_update_timestamp=req.latest_material_update_timestamp,
-        source_snapshot_id=req.source_snapshot_id,
+        latest_material_update_timestamp=resolution["canonical_snapshot_timestamp"],
+        source_snapshot_id=resolution["canonical_source_snapshot_id"],
         market_prior=req.market_prior,
     )
 
@@ -268,15 +250,6 @@ def _run_mlb_llp_governance(
     *,
     event_api: Any,
 ) -> dict[str, Any]:
-    """Require a server-owned bridge into the existing LLP event-ledger gates.
-
-    The existing database already owns wow_run_event_postmodel_gates and
-    wow_run_event_final_gates. The v17 boundary may publish only when a dedicated
-    bridge binds this exact fitted-model score snapshot to wow_event_predictions
-    and returns direct proof that those gates ran. Missing RPC, missing ledger
-    linkage, or an incomplete response produces a strict hold with numeric model
-    fields removed.
-    """
     score_snapshot_id = model_result.get("score_snapshot_id")
     if not score_snapshot_id:
         return _llp_governance_hold(req, route, model_result)
@@ -396,16 +369,6 @@ def _scout_research_barrier_blocked(req: TeamEventRequest, stage: str, blockers:
 
 
 def _run_mandatory_scout_research(req: TeamEventRequest) -> dict[str, Any]:
-    """Run the mandatory Scout -> Research evidence barrier synchronously.
-
-    Reuses agent_runtime.runner_scout_research.execute_envelope -- the exact
-    in-process, non-predictive worker handlers the durable Agent Runtime
-    coordinator dispatches through Celery for full-slate/prop runs -- for a
-    single ad-hoc team-event candidate instead of a queued job row. This is
-    the same barrier, driven synchronously; it is not a second implementation
-    of Scout/Research. A BLOCKED stage raises immediately and the controlling
-    specialist (event_api.score_event) is never called.
-    """
     run_id = f"v17-sync-{req.research_run_id}"
     candidate_id = req.event_key
     candidate: dict[str, Any] = {
@@ -496,9 +459,6 @@ def score_team_event_request(req: TeamEventRequest, *, event_api: Any) -> dict[s
             ),
         )
 
-    # Mandatory Scout -> Research evidence barrier, ahead of any controlling
-    # specialist dispatch. Raises (fail closed) without ever reaching a
-    # specialist if a stage does not succeed.
     scout_research_barrier = _run_mandatory_scout_research(req)
 
     sport = normalize_team_event_sport(req.sport, req.league)
@@ -525,8 +485,6 @@ def score_team_event_request(req: TeamEventRequest, *, event_api: Any) -> dict[s
         governed["scout_research_barrier"] = scout_research_barrier
         return governed
 
-    # The universal contract exists for all team/event sports, but no sport may
-    # be promoted without an actually registered fitted model and adapter.
     raise HTTPException(
         status_code=409,
         detail=_augment_detail(
