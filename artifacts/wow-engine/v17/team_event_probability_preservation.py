@@ -10,8 +10,9 @@ Repairs coupled orchestration defects without relaxing governance:
 4. Weather/environment evidence is acquired through the shared V17 environmental
    provider and written to the same canonical evidence ledger used by LLP.
 
-No probability is manufactured, no gate is bypassed, and wager execution remains
-impossible.
+Market-relative FAVORITE/UNDERDOG/UPSET requests remain on the existing market
+consensus path. No probability is manufactured, no gate is bypassed, and wager
+execution remains impossible.
 """
 from __future__ import annotations
 
@@ -25,6 +26,7 @@ from v17 import team_event_request_runtime as _base
 _original_hold = _base._llp_governance_hold
 _original_run_mlb_llp_governance = _base._run_mlb_llp_governance
 _repair_lock = RLock()
+_PROBABILITY_ONLY_INTENTS = {"WINNER", "BEST_SIDE"}
 
 
 def _preserve_completed_probability_hold(
@@ -96,6 +98,11 @@ def _run_mlb_llp_governance_with_evidence_handoff(
     if first.get("probability_publishable") is True:
         return first
 
+    decision_intent = str(getattr(req, "decision_intent", "BEST_SIDE")).upper()
+    if decision_intent not in _PROBABILITY_ONLY_INTENTS:
+        # Market-relative requests must remain on the legacy consensus path.
+        return first
+
     governance = first.get("llp_governance")
     if not isinstance(governance, dict):
         return first
@@ -138,7 +145,7 @@ def _run_mlb_llp_governance_with_evidence_handoff(
                 "p_event_prediction_id": str(event_prediction_id),
                 "p_score_snapshot_id": str(score_snapshot_id),
                 "p_evidence": evidence,
-                "p_decision_intent": str(getattr(req, "decision_intent", "BEST_SIDE")),
+                "p_decision_intent": decision_intent,
             },
         ).execute()
         hydration = hydration_result.data
