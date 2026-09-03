@@ -12,11 +12,16 @@ fail-closed, and wager execution remains impossible.
 """
 from __future__ import annotations
 
+from threading import RLock
 from typing import Any
+
+from fastapi import FastAPI
 
 from v17 import team_event_request_runtime as _base
 
+_original_hold = _base._llp_governance_hold
 _original_run_mlb_llp_governance = _base._run_mlb_llp_governance
+_repair_lock = RLock()
 
 
 def _preserve_completed_probability_hold(
@@ -81,14 +86,7 @@ def _run_mlb_llp_governance_with_evidence_handoff(
     *,
     event_api: Any,
 ) -> dict[str, Any]:
-    """Run governance, repair missing ledger handoff, then replay once.
-
-    The first bridge call creates/locates the immutable event_prediction row. If
-    it is held, the helper RPC copies only canonical evidence already present on
-    the request/score ledger into the event evidence ledgers. The exact same
-    governance bridge is then replayed. Missing optional evidence remains missing
-    and continues to fail closed.
-    """
+    """Run governance, repair missing ledger handoff, then replay once."""
     first = _original_run_mlb_llp_governance(
         req, route, model_result, envelope=envelope, event_api=event_api
     )
@@ -153,15 +151,48 @@ def _run_mlb_llp_governance_with_evidence_handoff(
     return second
 
 
-# Patch module globals so existing references to score_team_event_request still
-# resolve these repaired helpers at runtime.
-_base._llp_governance_hold = _preserve_completed_probability_hold
-_base._run_mlb_llp_governance = _run_mlb_llp_governance_with_evidence_handoff
+def score_team_event_request(
+    req: Any,
+    *,
+    event_api: Any,
+    canonical_hydration_required: bool = False,
+) -> dict[str, Any]:
+    """Execute the base V17 scorer with repair helpers scoped to this call.
+
+    The lock prevents concurrent callers from observing a transient helper swap.
+    Legacy callers of the base module keep their historical behavior; active V17
+    routes use this explicit wrapper. This avoids an import-time global monkey
+    patch while keeping the repair narrowly scoped.
+    """
+    with _repair_lock:
+        previous_hold = _base._llp_governance_hold
+        previous_governance = _base._run_mlb_llp_governance
+        _base._llp_governance_hold = _preserve_completed_probability_hold
+        _base._run_mlb_llp_governance = _run_mlb_llp_governance_with_evidence_handoff
+        try:
+            return _base.score_team_event_request(
+                req,
+                event_api=event_api,
+                canonical_hydration_required=canonical_hydration_required,
+            )
+        finally:
+            _base._llp_governance_hold = previous_hold
+            _base._run_mlb_llp_governance = previous_governance
+
+
+def install_team_event_routes(app: FastAPI, *, event_api: Any, auth_dependency: Any) -> None:
+    """Install the active V17 team/event route through the scoped repair wrapper."""
+    @app.post("/score-team-event", dependencies=[auth_dependency], operation_id="scoreWowTeamEvent")
+    def score_team_event(req: _base.TeamEventRequest):
+        return score_team_event_request(
+            req,
+            event_api=event_api,
+            canonical_hydration_required=True,
+        )
+
 
 TeamEventRequest = _base.TeamEventRequest
 TeamEventCapabilityResponse = _base.TeamEventCapabilityResponse
-score_team_event_request = _base.score_team_event_request
-install_team_event_routes = _base.install_team_event_routes
 normalize_team_event_sport = _base.normalize_team_event_sport
 
 __all__ = [
