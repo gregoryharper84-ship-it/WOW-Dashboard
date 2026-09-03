@@ -1,8 +1,9 @@
-"""Canonical prop terminal reducer for WOW v16 Clean Core.
+"""Canonical V17 prop terminal reducer.
 
-Infrastructure/capability failures are not pick rejections. This reducer keeps
-those states explicit through verdict_class/blocker metadata while emitting only
-native WOW terminal labels.
+MODEL_UNAVAILABLE is reserved for an absent controlling fitted capability/artifact.
+Input/evidence deficiencies, scorer failures, and malformed model packages retain
+separate typed terminals.  This reducer never promotes a research row or mutates
+sporting probability.
 """
 from __future__ import annotations
 
@@ -34,7 +35,7 @@ MODEL_CAPABILITY_BLOCKERS = {
     "PROP_CALIBRATOR_ADAPTER_UNAVAILABLE",
 }
 
-EVIDENCE_BLOCKERS = {
+INPUT_BLOCKERS = {
     "EVIDENCE_INCOMPLETE",
     "PROP_EVIDENCE_SNAPSHOT_NOT_FOUND",
     "ROLE_STATUS_UNAVAILABLE",
@@ -50,10 +51,25 @@ EVIDENCE_BLOCKERS = {
     "PROP_AUTO_HYDRATION_INTERNAL_ERROR",
     "PROP_EVIDENCE_PERSISTENCE_UNAVAILABLE",
     "PROP_PLAYER_IDENTITY_UNRESOLVED",
+    "PROP_IDENTITY_UNRESOLVED",
     "PROP_EVENT_IDENTITY_CONFLICT",
     "MLB_RECENT_STARTS_INSUFFICIENT",
     "MLB_STARTER_STATUS_UNRESOLVED",
     "STALE_EVIDENCE",
+}
+
+SCORER_FAILURE_BLOCKERS = {
+    "MODEL_SCORER_FAILED",
+    "ROW_SCORING_FAILED",
+    "ROW_SCORING_UNAVAILABLE",
+    "PROP_SCORER_EXCEPTION",
+}
+
+OUTPUT_INVALID_BLOCKERS = {
+    "MODEL_OUTPUT_INVALID",
+    "CALIBRATED_PROBABILITY_OR_BOUND_MISSING",
+    "PROBABILITY_INVALID",
+    "REJECTION_WITHOUT_MODEL_EVALUATION",
 }
 
 MARKET_BLOCKERS = {
@@ -81,146 +97,79 @@ TRUE_MODEL_REJECTION_LABELS = {
     "REJECT_CALIBRATED_LOWER_BOUND",
 }
 
-# Model-contract OOD can be established before a numeric probability is scored.
-# This is deliberately narrow: only an exact certified-support rejection may
-# survive with model_evaluated=False. Other REJECT_OOD uses still require an
-# evaluated fitted model and fail closed otherwise.
 PREMODEL_MODEL_CONTRACT_REJECTION_BLOCKERS = {
     "MLB_1IP_LINE_OUTSIDE_CERTIFIED_SUPPORT",
     "LINE_OUTSIDE_CERTIFIED_SUPPORT",
 }
 
-# Row-level invalidations/rejections that intentionally occur before a fitted
-# model evaluation. They are not capability failures and must not collapse to
-# MODEL_UNAVAILABLE merely because model_evaluated=False.
-PREMODEL_ROW_REJECTION_LABELS = {
-    "SLATE_PURGE",
-    "REJECT_DATA_QUALITY",
-}
+PREMODEL_ROW_REJECTION_LABELS = {"SLATE_PURGE", "REJECT_DATA_QUALITY"}
 
 
 def _normalized(blockers: Iterable[str]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(str(b).strip().upper() for b in blockers if str(b).strip()))
 
 
-def reduce_prop_terminal(
-    *,
-    proposed_label: str,
-    blockers: Iterable[str] = (),
-    model_evaluated: bool,
-) -> PropTerminalDecision:
-    """Reduce one prop row to an honest native WOW terminal state.
-
-    Precedence is fail-closed and objective-separated:
-      1. an explicit event-state invalidation terminates the pregame row as
-         NO_PLAY; it is not a pick rejection and cannot be disguised as an
-         acquisition hold simply because evidence was also incomplete
-      2. specialist/model capability missing -> MODEL_UNAVAILABLE
-      3. mandatory evidence/hydration missing before model evaluation ->
-         MODEL_UNAVAILABLE with ACQUISITION_BLOCKED verdict metadata
-      4. explicit row-local premodel invalidations (for example stale-starter
-         SLATE_PURGE or exhausted REJECT_DATA_QUALITY) remain rejected rows
-         rather than being relabeled MODEL_UNAVAILABLE
-      5. exact certified-support OOD is a model-contract rejection even when no
-         numeric probability is produced
-      6. a genuine model rejection survives downstream market/money blockers
-      7. market/money identity failures preserve a completed model-supported
-         terminal label and mark only the market lane blocked.
-    """
+def reduce_prop_terminal(*, proposed_label: str, blockers: Iterable[str] = (), model_evaluated: bool) -> PropTerminalDecision:
+    """Reduce one prop row to the V17 terminal that matches the failing layer."""
     bs = _normalized(blockers)
     bset = set(bs)
     label = str(proposed_label or "").strip().upper() or "MODEL_UNAVAILABLE"
 
     if bset & EVENT_BLOCKERS:
-        return PropTerminalDecision(
-            terminal_label="NO_PLAY",
-            verdict_class="EVENT_INVALIDATED",
-            model_evaluated=model_evaluated,
-            pick_rejected=False,
-            infrastructure_blocked=False,
-            blockers=bs,
-        )
+        return PropTerminalDecision("NO_PLAY", "EVENT_INVALIDATED", model_evaluated, False, False, bs)
 
     if bset & MODEL_CAPABILITY_BLOCKERS:
-        return PropTerminalDecision(
-            terminal_label="MODEL_UNAVAILABLE",
-            verdict_class="CAPABILITY_BLOCKED",
-            model_evaluated=False,
-            pick_rejected=False,
-            infrastructure_blocked=True,
-            blockers=bs,
-        )
+        return PropTerminalDecision("MODEL_UNAVAILABLE", "CAPABILITY_BLOCKED", False, False, True, bs)
 
-    if bset & EVIDENCE_BLOCKERS and not model_evaluated:
-        return PropTerminalDecision(
-            terminal_label="MODEL_UNAVAILABLE",
-            verdict_class="ACQUISITION_BLOCKED",
-            model_evaluated=False,
-            pick_rejected=False,
-            infrastructure_blocked=True,
-            blockers=bs,
-        )
+    if (bset & SCORER_FAILURE_BLOCKERS) or label == "MODEL_SCORER_FAILED":
+        return PropTerminalDecision("MODEL_SCORER_FAILED", "SCORER_FAILED", False, False, True, bs)
+
+    if (bset & OUTPUT_INVALID_BLOCKERS) or label == "MODEL_OUTPUT_INVALID":
+        return PropTerminalDecision("MODEL_OUTPUT_INVALID", "MODEL_OUTPUT_INVALID", model_evaluated, False, True, bs)
+
+    if bset & INPUT_BLOCKERS and not model_evaluated:
+        return PropTerminalDecision("MODEL_INPUTS_INSUFFICIENT", "INPUTS_INSUFFICIENT", False, False, True, bs)
 
     if label in PREMODEL_ROW_REJECTION_LABELS:
         return PropTerminalDecision(
-            terminal_label=label,
-            verdict_class=(
-                "ROW_INVALIDATED" if label == "SLATE_PURGE" else "DATA_QUALITY_REJECTED"
-            ),
-            model_evaluated=False,
-            pick_rejected=True,
-            infrastructure_blocked=False,
-            blockers=bs,
+            label,
+            "ROW_INVALIDATED" if label == "SLATE_PURGE" else "DATA_QUALITY_REJECTED",
+            False,
+            True,
+            False,
+            bs,
         )
 
-    if (
-        label == "REJECT_OOD"
-        and not model_evaluated
-        and bset & PREMODEL_MODEL_CONTRACT_REJECTION_BLOCKERS
-    ):
-        return PropTerminalDecision(
-            terminal_label="REJECT_OOD",
-            verdict_class="MODEL_CONTRACT_REJECTED",
-            model_evaluated=False,
-            pick_rejected=True,
-            infrastructure_blocked=False,
-            blockers=bs,
-        )
+    if label == "REJECT_OOD" and not model_evaluated and bset & PREMODEL_MODEL_CONTRACT_REJECTION_BLOCKERS:
+        return PropTerminalDecision("REJECT_OOD", "MODEL_CONTRACT_REJECTED", False, True, False, bs)
 
     if label in TRUE_MODEL_REJECTION_LABELS:
         if not model_evaluated:
             return PropTerminalDecision(
-                terminal_label="MODEL_UNAVAILABLE",
-                verdict_class="CAPABILITY_BLOCKED",
-                model_evaluated=False,
-                pick_rejected=False,
-                infrastructure_blocked=True,
-                blockers=bs + ("REJECTION_WITHOUT_MODEL_EVALUATION",),
+                "MODEL_OUTPUT_INVALID",
+                "MODEL_OUTPUT_INVALID",
+                False,
+                False,
+                True,
+                bs + ("REJECTION_WITHOUT_MODEL_EVALUATION",),
             )
-        return PropTerminalDecision(
-            terminal_label=label,
-            verdict_class="MODEL_REJECTED",
-            model_evaluated=True,
-            pick_rejected=True,
-            infrastructure_blocked=bool(bset & MARKET_BLOCKERS),
-            blockers=bs,
-        )
+        return PropTerminalDecision(label, "MODEL_REJECTED", True, True, bool(bset & MARKET_BLOCKERS), bs)
 
     if bset & MARKET_BLOCKERS:
         return PropTerminalDecision(
-            terminal_label=label if model_evaluated else "MODEL_UNAVAILABLE",
-            verdict_class="MARKET_BLOCKED",
-            model_evaluated=model_evaluated,
-            pick_rejected=False,
-            infrastructure_blocked=True,
-            blockers=bs,
+            label if model_evaluated else "MODEL_INPUTS_INSUFFICIENT",
+            "MARKET_BLOCKED",
+            model_evaluated,
+            False,
+            True,
+            bs,
         )
 
     return PropTerminalDecision(
-        terminal_label=label if model_evaluated else "MODEL_UNAVAILABLE" if label in TRUE_MODEL_REJECTION_LABELS else label,
-        verdict_class="MODEL_SUPPORTED" if model_evaluated else "UNEVALUATED",
-        model_evaluated=model_evaluated,
-        pick_rejected=False,
-        infrastructure_blocked=False,
-        blockers=bs,
+        label,
+        "MODEL_SUPPORTED" if model_evaluated else "UNEVALUATED",
+        model_evaluated,
+        False,
+        False,
+        bs,
     )
