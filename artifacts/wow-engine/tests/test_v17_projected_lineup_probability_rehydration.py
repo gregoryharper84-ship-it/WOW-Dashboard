@@ -55,6 +55,8 @@ def score(**updates):
         "shadow_event_id": "shadow-1",
         "model_timestamp": "2026-09-03T02:42:58+00:00",
         "model_version": "MLB_V2C_SHARED_NB_2024_R1",
+        "calibration_id": "0756545d-4ef5-47b7-950a-53567f0bf9fe",
+        "calibration_method": "LOGIT_INTERCEPT_POOLED_2022_2024",
         "raw_home_probability": 0.49,
         "raw_away_probability": 0.51,
         "calibrated_home_probability": 0.516,
@@ -90,16 +92,20 @@ def event_api(row):
     return SimpleNamespace(get_client=lambda: Client(row))
 
 
-def test_eligible_held_receipt_rehydrates_exact_immutable_score():
+def test_eligible_held_receipt_rehydrates_exact_immutable_score_and_calibration_provenance():
     result = rehydrate_projected_probability(receipt(), req(), event_api=event_api(score()))
     assert result["raw_home_probability"] == pytest.approx(0.49)
     assert result["raw_away_probability"] == pytest.approx(0.51)
     assert result["calibrated_home_probability"] == pytest.approx(0.516)
     assert result["calibrated_home_lower_bound"] == pytest.approx(0.365)
+    assert result["calibration_method"] == "LOGIT_INTERCEPT_POOLED_2022_2024"
+    assert result["calibration_version"] == "0756545d-4ef5-47b7-950a-53567f0bf9fe"
+    assert result["calibration_sample_scope"].startswith("IMMUTABLE_FORWARD_SCORE_SNAPSHOT:")
     assert result["probability_fields_withheld"] is False
     assert result["sporting_probability_completed"] is True
     repair = result["projected_lineup_score_rehydration"]
     assert repair["score_snapshot_id"] == "score-1"
+    assert repair["calibration_id"] == result["calibration_version"]
     assert repair["probabilities_recomputed"] is False
     assert repair["calibration_recomputed"] is False
     assert result["can_execute"] is False
@@ -116,6 +122,12 @@ def test_rehydrated_package_enters_projected_probability_hold_not_rank_publicati
     assert projected["final_refresh_required"] is True
     assert "LINEUP_CONFIRMATION_PENDING" in projected["blockers"]
     assert projected["can_execute"] is False
+
+
+def test_missing_calibration_identity_prevents_rehydration():
+    original = receipt()
+    result = rehydrate_projected_probability(original, req(), event_api=event_api(score(calibration_id=None)))
+    assert result == original
 
 
 def test_unratified_receipt_remains_held_and_numeric_fields_absent():
