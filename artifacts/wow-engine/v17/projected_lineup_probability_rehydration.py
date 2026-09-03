@@ -71,7 +71,7 @@ def _load_score(payload: dict[str, Any], req: Any, *, event_api: Any) -> dict[st
         rows = (
             get_client().table("wow_mlb_forward_score_snapshots")
             .select(
-                "score_snapshot_id,shadow_event_id,model_timestamp,model_version,"
+                "score_snapshot_id,shadow_event_id,model_timestamp,model_version,calibration_id,calibration_method,"
                 "raw_home_probability,raw_away_probability,calibrated_home_probability,"
                 "calibrated_away_probability,home_lower_bound,home_upper_bound,away_lower_bound,"
                 "away_upper_bound,home_bound_status,away_bound_status,tie_after_9_probability,"
@@ -99,6 +99,10 @@ def _load_score(payload: dict[str, Any], req: Any, *, event_api: Any) -> dict[st
     if score.get("away_bound_status") not in {"PASS", "PASS_RESEARCH_BOUND"}:
         return None
     if score.get("can_execute") is not False:
+        return None
+    if not str(score.get("calibration_id") or "").strip():
+        return None
+    if not str(score.get("calibration_method") or "").strip():
         return None
 
     numerics: dict[str, float] = {}
@@ -133,9 +137,14 @@ def rehydrate_projected_probability(payload: dict[str, Any], req: Any, *, event_
     out = dict(payload)
     for field in _NUMERIC_MAPPING:
         out[field] = score[field]
+    calibration_id = str(score["calibration_id"])
+    calibration_method = str(score["calibration_method"])
     out.update({
         "model_version": score.get("model_version") or payload.get("model_version"),
         "model_timestamp": score.get("model_timestamp") or payload.get("model_timestamp"),
+        "calibration_method": calibration_method,
+        "calibration_version": calibration_id,
+        "calibration_sample_scope": f"IMMUTABLE_FORWARD_SCORE_SNAPSHOT:{calibration_id}",
         "probability_fields_withheld": False,
         "sporting_probability_completed": True,
         "sporting_probability_status": "COMPLETED_IMMUTABLE_SCORE_REHYDRATED",
@@ -143,6 +152,8 @@ def rehydrate_projected_probability(payload: dict[str, Any], req: Any, *, event_
             "status": "PASS",
             "source": "wow_mlb_forward_score_snapshots",
             "score_snapshot_id": str(score["score_snapshot_id"]),
+            "calibration_id": calibration_id,
+            "calibration_method": calibration_method,
             "probabilities_recomputed": False,
             "calibration_recomputed": False,
             "can_execute": False,
