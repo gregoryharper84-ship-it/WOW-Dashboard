@@ -4,8 +4,8 @@ from v17 import team_event_request_runtime as base
 import v17.team_event_probability_preservation as repair
 
 
-def _req(**evidence):
-    return SimpleNamespace(sport_specific_evidence=evidence, decision_intent="BEST_SIDE")
+def _req(decision_intent="BEST_SIDE", **evidence):
+    return SimpleNamespace(sport_specific_evidence=evidence, decision_intent=decision_intent)
 
 
 def _route():
@@ -58,6 +58,41 @@ def test_governance_hold_does_not_manufacture_probability_when_scorer_has_none()
         assert field not in out
     assert out["sporting_probability_completed"] is False
     assert out["probability_fields_withheld"] is True
+    assert out["probability_publishable"] is False
+    assert out["rank_eligible"] is False
+    assert out["can_execute"] is False
+
+
+def test_market_relative_intent_does_not_use_probability_only_hydration(monkeypatch):
+    rpc_calls = []
+
+    def fake_governance(req, route, model_result, envelope=None, *, event_api):
+        return {
+            "probability_publishable": False,
+            "rank_eligible": False,
+            "llp_governance": {
+                "status": "HOLD",
+                "event_prediction_id": "event-pred-1",
+                "score_snapshot_id": "score-1",
+            },
+            "can_execute": False,
+        }
+
+    class Client:
+        def rpc(self, name, payload):
+            rpc_calls.append(name)
+            raise AssertionError("market-relative intent must not use probability-only hydration")
+
+    monkeypatch.setattr(repair, "_original_run_mlb_llp_governance", fake_governance)
+    event_api = SimpleNamespace(get_client=lambda: Client())
+    out = repair._run_mlb_llp_governance_with_evidence_handoff(
+        _req(decision_intent="UPSET"),
+        _route(),
+        {"score_snapshot_id": "score-1", "raw_home_probability": 0.52},
+        event_api=event_api,
+    )
+
+    assert rpc_calls == []
     assert out["probability_publishable"] is False
     assert out["rank_eligible"] is False
     assert out["can_execute"] is False
