@@ -8,6 +8,7 @@ from typing import Any
 
 from fastapi import FastAPI
 
+import v17.prop_forward_cohort_thesis_dedupe  # installs statistical-independence guard
 from v17.prop_forward_cohort_market_adapter import ForwardCohortMarketAdapter
 from v17.prop_forward_cohort_runtime import PropForwardCohortRequest, run_prop_forward_cohort
 from v17.prop_forward_cohort_scheduler import run_prop_forward_cohort_loop
@@ -54,8 +55,6 @@ def _install_scheduler(app: FastAPI, *, db_client_fn: Any, market_api: Any) -> N
                 initial_delay_seconds=initial_delay_seconds,
             )
         )
-        # Keep a strong application-owned reference so the task cannot be
-        # garbage-collected while the service is running.
         tasks = getattr(app.state, "wow_prop_forward_cohort_tasks", None)
         if tasks is None:
             tasks = set()
