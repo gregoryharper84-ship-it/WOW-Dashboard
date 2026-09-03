@@ -10,39 +10,32 @@ with source and timestamp. NOT_CALLED is forbidden once canonical hydration comp
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field, asdict
-from datetime import datetime
-from typing import Any, Literal, Optional
-from functools import wraps
+from dataclasses import dataclass, field
+from types import MappingProxyType
+from typing import Any, Literal, Mapping, Optional
 
 
-def _freeze(cls):
-    """Decorator to make a dataclass frozen and hashable."""
-    original_init = cls.__init__
-
-    @wraps(original_init)
-    def frozen_init(self, *args, **kwargs):
-        object.__setattr__(self, '__initialized__', False)
-        original_init(self, *args, **kwargs)
-        object.__setattr__(self, '__initialized__', True)
-
-    def __setattr__(self, name, value):
-        if hasattr(self, '__initialized__') and self.__initialized__:
-            raise RuntimeError(f"Cannot modify frozen envelope: {name}")
-        object.__setattr__(self, name, value)
-
-    cls.__init__ = frozen_init
-    cls.__setattr__ = __setattr__
-    return cls
+def _deep_freeze(value: Any) -> Any:
+    """Recursively freeze nested containers carried by immutable envelopes."""
+    if isinstance(value, Mapping):
+        return MappingProxyType({str(key): _deep_freeze(item) for key, item in value.items()})
+    if isinstance(value, (list, tuple)):
+        return tuple(_deep_freeze(item) for item in value)
+    if isinstance(value, (set, frozenset)):
+        return frozenset(_deep_freeze(item) for item in value)
+    return value
 
 
 @dataclass(frozen=True)
 class DataUnavailable:
     """Explicit marker for unavailable evidence with provenance."""
     status: Literal["DATA_UNOBTAINABLE", "SOURCE_CONFLICT", "FAILED"]
-    source_attempted: list[str] = field(default_factory=list)
+    source_attempted: tuple[str, ...] | list[str] = field(default_factory=tuple)
     as_of: Optional[str] = None
     error_type: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "source_attempted", tuple(self.source_attempted))
 
 
 @dataclass(frozen=True)
@@ -197,15 +190,27 @@ class V17GovernedProbabilityPackage:
     source_snapshot_timestamp: str
 
     simulation_count_if_applicable: Optional[int] = None
-    model_component_weights_if_available: Optional[dict[str, Any]] = None
+    model_component_weights_if_available: Optional[Mapping[str, Any]] = None
     model_disagreement_if_available: Optional[float] = None
     uncertainty_method: Optional[str] = None
+    calibration_training_n: Optional[int] = None
+    model_output_snapshot: Optional[Mapping[str, Any]] = None
 
     favorite_primary_win_path: Optional[str] = None
     favorite_primary_failure_path: Optional[str] = None
     favorite_failure_path_probability_if_modeled: Optional[float] = None
     largest_favorite_loss_path: Optional[str] = None
-    underdog_upset_path: Optional[str] = None
+    underdog_upset_path: Optional[Any] = None
+
+    def __post_init__(self) -> None:
+        if self.model_component_weights_if_available is not None:
+            object.__setattr__(
+                self,
+                "model_component_weights_if_available",
+                _deep_freeze(self.model_component_weights_if_available),
+            )
+        if self.model_output_snapshot is not None:
+            object.__setattr__(self, "model_output_snapshot", _deep_freeze(self.model_output_snapshot))
 
     def validate_failure_paths(self) -> tuple[bool, list[str]]:
         """Validate failure path evidence per patch section 7.
@@ -230,8 +235,10 @@ class V17GovernedProbabilityPackage:
                 errors.append("calibration_method_missing_after_health_pass")
             if not self.calibration_version:
                 errors.append("calibration_version_missing_after_health_pass")
-            if not self.calibration_sample_scope:
-                errors.append("calibration_sample_scope_missing_after_health_pass")
+            if not self.calibration_sample_scope and not (
+                isinstance(self.calibration_training_n, int) and self.calibration_training_n > 0
+            ):
+                errors.append("calibration_sample_scope_or_training_n_missing_after_health_pass")
             if self.calibrated_probability is None:
                 errors.append("calibrated_probability_missing_after_health_pass")
             if self.calibrated_probability_lower_bound is None:
@@ -252,6 +259,13 @@ class V17GovernedProbabilityPackage:
             if value is not None:
                 if not (0.0 < value < 1.0):
                     errors.append(f"{name}_outside_valid_domain_{value}")
+
+        if not (
+            self.calibrated_probability_lower_bound
+            <= self.calibrated_probability
+            <= self.calibrated_probability_upper_bound
+        ):
+            errors.append("calibrated_probability_outside_bounds")
 
         for name, value in (
             ("calibrated_lower_bound", self.calibrated_probability_lower_bound),
@@ -275,5 +289,8 @@ class V17GovernedProbabilityPackage:
 
         ok, errors = self.validate_failure_paths()
         all_errors.extend(errors)
+
+        if not self.model_valid_after_latest_material_update:
+            all_errors.append("model_invalidated_by_latest_material_update")
 
         return len(all_errors) == 0, all_errors

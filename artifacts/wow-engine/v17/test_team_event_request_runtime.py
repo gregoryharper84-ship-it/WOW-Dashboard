@@ -81,12 +81,20 @@ class _GovernedEventApi:
             "score_snapshot_id": "00000000-0000-0000-0000-000000000099",
             "raw_home_probability": 0.61,
             "raw_away_probability": 0.39,
+            "independent_home_probability": 0.61,
+            "independent_away_probability": 0.39,
             "calibrated_home_probability": 0.60,
             "calibrated_away_probability": 0.40,
             "calibrated_home_lower_bound": 0.56,
             "calibrated_home_upper_bound": 0.64,
             "calibrated_away_lower_bound": 0.36,
             "calibrated_away_upper_bound": 0.44,
+            "calibration_method": "PLATT_TIME_SPLIT_V1",
+            "calibration_version": "mlb-cal-v1",
+            "calibration_training_n": 500,
+            "calibration_health_status": "PASS",
+            "model_version": "MLB_EVENT_TEST_V1",
+            "model_timestamp": datetime.now(timezone.utc).isoformat(),
             "probability_fields_withheld": False,
             "probability_publishable": True,
             "can_execute": False,
@@ -109,8 +117,20 @@ class _PublishedWithoutGovernanceEventApi:
             "score_snapshot_id": "00000000-0000-0000-0000-000000000099",
             "raw_home_probability": 0.61,
             "raw_away_probability": 0.39,
+            "independent_home_probability": 0.61,
+            "independent_away_probability": 0.39,
             "calibrated_home_probability": 0.60,
             "calibrated_away_probability": 0.40,
+            "calibrated_home_lower_bound": 0.56,
+            "calibrated_home_upper_bound": 0.64,
+            "calibrated_away_lower_bound": 0.36,
+            "calibrated_away_upper_bound": 0.44,
+            "calibration_method": "PLATT_TIME_SPLIT_V1",
+            "calibration_version": "mlb-cal-v1",
+            "calibration_training_n": 500,
+            "calibration_health_status": "PASS",
+            "model_version": "MLB_EVENT_TEST_V1",
+            "model_timestamp": datetime.now(timezone.utc).isoformat(),
             "probability_fields_withheld": False,
             "probability_publishable": True,
             "can_execute": False,
@@ -287,6 +307,144 @@ def test_numeric_mlb_result_can_publish_only_after_explicit_llp_bridge_pass():
     assert result["event_mutex_status"] == "PASS"
     assert result["terminal_label"] == "FINAL_APPROVED"
     assert result["global_terminal_authority"] == "V17_TERMINAL_REDUCER"
+    assert result["can_execute"] is False
+
+
+def test_rank_ineligible_governance_cannot_publish_even_when_other_gates_pass():
+    original = _GovernedEventApi.client
+    _GovernedEventApi.client = _GovernanceClient({**original.payload, "rank_eligible": False})
+    try:
+        result = score_team_event_request(_base(), event_api=_GovernedEventApi)
+    finally:
+        _GovernedEventApi.client = original
+    assert result["probability_publishable"] is False
+    assert result["rank_eligible"] is False
+    assert result["terminal_label"] == "MODEL_QUALIFIED_HOLD"
+    assert result["code"] == "LLP_EVENT_GOVERNANCE_NOT_PROVEN"
+
+
+def test_early_governance_hold_always_contains_terminal_reducer_receipt():
+    result = score_team_event_request(_base(), event_api=_FakeEventApi)
+    receipt = result["terminal_reducer_input"]
+    assert receipt["terminal_output"] == "MODEL_QUALIFIED_HOLD"
+    assert receipt["global_terminal_reducer"] == "V17_TERMINAL_REDUCER"
+
+
+def test_intentionally_withheld_model_result_reaches_llp_by_snapshot_reference():
+    class HeldApi(_GovernedEventApi):
+        client = _GovernanceClient({
+            **_GovernedEventApi.client.payload,
+            "probability_publishable": False,
+            "rank_eligible": False,
+            "terminal_label": "MODEL_QUALIFIED_HOLD",
+        })
+
+        @staticmethod
+        def score_event(req):
+            return {
+                "ok": True,
+                "code": "REAL_FITTED_MODEL_PATH_PROVEN",
+                "official_event_id": req.official_event_id,
+                "score_snapshot_id": "00000000-0000-0000-0000-000000000099",
+                "probability_fields_withheld": True,
+                "probability_publishable": False,
+                "can_execute": False,
+            }
+
+    result = score_team_event_request(_base(), event_api=HeldApi)
+    assert HeldApi.client.last_rpc == "wow_v17_mlb_team_event_governance_bridge"
+    assert result["code"] == "LLP_EVENT_GOVERNANCE_NOT_PROVEN"
+    assert result["probability_publishable"] is False
+    assert result["terminal_reducer_input"]["global_terminal_reducer"] == "V17_TERMINAL_REDUCER"
+
+
+def test_prospective_base_score_snapshot_reaches_llp_bridge():
+    class ProspectiveApi(_GovernedEventApi):
+        client = _GovernanceClient({**_GovernedEventApi.client.payload, "probability_publishable": False, "terminal_label": "MODEL_QUALIFIED_HOLD", "rank_eligible": False})
+
+        @staticmethod
+        def score_event(req):
+            payload = _GovernedEventApi.score_event(req)
+            payload["base_score_snapshot_id"] = payload.pop("score_snapshot_id")
+            payload["probability_publishable"] = False
+            payload["rank_eligible"] = False
+            return payload
+
+    result = score_team_event_request(_base(), event_api=ProspectiveApi)
+    assert ProspectiveApi.client.last_rpc == "wow_v17_mlb_team_event_governance_bridge"
+    assert result["probability_publishable"] is False
+    assert result["terminal_reducer_input"]["global_terminal_reducer"] == "V17_TERMINAL_REDUCER"
+
+
+def test_market_handoff_is_explicit_and_model_prior_drops_envelope_only_fields():
+    captured = {}
+
+    class MarketApi(_FakeEventApi):
+        @staticmethod
+        def score_event(req):
+            captured.update(req.market_prior)
+            return _FakeEventApi.score_event(req)
+
+    req = _base(market_prior={
+        "home_probability": 0.55,
+        "away_probability": 0.45,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "quality": "EXACT_TWO_WAY_NO_VIG",
+        "source": "TEST_BOOKS",
+        "snapshot_id": "market-snapshot-1",
+        "book_count": 4,
+    })
+    result = score_team_event_request(req, event_api=MarketApi)
+    assert set(captured) == {"home_probability", "away_probability", "timestamp", "quality", "source"}
+    assert result["candidate_envelope"]["market_status"] == "EXACT_LINE"
+    assert "NOT_CALLED" not in str(result["candidate_envelope"])
+
+
+def test_canonical_hydration_model_translation_and_llp_bridge_integrate_end_to_end():
+    req = _base()
+    snapshot_at = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
+    canonical_row = {
+        "official_event_id": req.official_event_id,
+        "event_start_time": req.event_start_time_utc,
+        "event_status": "Scheduled",
+        "home_team": req.home_team,
+        "away_team": req.away_team,
+        "venue_name": "Test Park",
+        "home_probable_pitcher": "Home Starter",
+        "away_probable_pitcher": "Away Starter",
+        "snapshot_id": "00000000-0000-0000-0000-000000000010",
+        "snapshot_timestamp": snapshot_at,
+        "feature_hydration_status": "PASS",
+    }
+
+    class Result:
+        def __init__(self, data): self.data = data
+
+    class Query:
+        def select(self, *_a, **_k): return self
+        def eq(self, *_a, **_k): return self
+        def order(self, *_a, **_k): return self
+        def limit(self, *_a, **_k): return self
+        def execute(self): return Result([canonical_row])
+
+    class Client(_GovernanceClient):
+        def table(self, _name): return Query()
+
+    class IntegratedApi(_GovernedEventApi):
+        client = Client(_GovernedEventApi.client.payload)
+
+    result = score_team_event_request(
+        req,
+        event_api=IntegratedApi,
+        canonical_hydration_required=True,
+    )
+    assert IntegratedApi.client.last_rpc == "wow_v17_mlb_team_event_governance_bridge"
+    assert result["probability_publishable"] is True
+    assert result["rank_eligible"] is True
+    assert result["candidate_envelope"]["official_event_id"] == req.official_event_id
+    assert result["candidate_envelope"]["source_snapshot_id"] == canonical_row["snapshot_id"]
+    assert result["canonical_acquisition"]["status"] == "PASS"
+    assert result["terminal_reducer_input"]["terminal_output"] == "FINAL_APPROVED"
     assert result["can_execute"] is False
 
 

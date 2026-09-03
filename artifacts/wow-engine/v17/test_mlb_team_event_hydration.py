@@ -46,6 +46,7 @@ def _row(**updates):
     base = dict(
         official_event_id="823983",
         event_start_time="2099-09-03T01:38:00Z",
+        event_status="Scheduled",
         home_team="Los Angeles Angels",
         away_team="New York Yankees",
         venue_name="Angel Stadium",
@@ -65,6 +66,7 @@ def test_823983_shape_hydrates_all_required_event_fields_from_canonical_snapshot
     assert result["code"] == "MLB_TEAM_EVENT_CANONICAL_EVIDENCE_READY"
     assert result["evidence"] == {
         "venue": "Angel Stadium",
+        "official_event_status": "Scheduled",
         "home_starting_pitcher": "Reid Detmers",
         "away_starting_pitcher": "Cam Schlittler",
         "home_starter_status": "PROBABLE",

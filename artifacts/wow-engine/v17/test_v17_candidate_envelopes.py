@@ -1,4 +1,5 @@
 """Tests for V17 candidate envelopes (patch section 2-7)."""
+import pytest
 from v17.v17_candidate_envelopes import (
     V17TeamEventCandidateEnvelope,
     V17GovernedProbabilityPackage,
@@ -17,6 +18,7 @@ def test_data_unavailable_with_source():
     assert unavailable.status == "DATA_UNOBTAINABLE"
     assert "mlb_api" in unavailable.source_attempted
     assert unavailable.error_type == "ConnectionError"
+    assert unavailable.source_attempted == ("mlb_api", "fallback_source")
 
 
 def test_team_event_envelope_identity_validation():
@@ -338,8 +340,14 @@ def test_governed_probability_package_complete_validation():
         source_snapshot_timestamp="2026-09-03T19:00:00Z",
         favorite_primary_failure_path="upset_loss",
         favorite_failure_path_probability_if_modeled=0.15,
+        model_component_weights_if_available={"shared_sim": {"weight": 1.0}},
+        model_output_snapshot={"raw_away_probability": 0.45, "paths": ["bullpen"]},
     )
 
     ok, errors = package.validate_complete_package()
     assert ok is True
     assert len(errors) == 0
+    with pytest.raises(TypeError):
+        package.model_output_snapshot["raw_away_probability"] = 0.99
+    with pytest.raises(TypeError):
+        package.model_component_weights_if_available["shared_sim"]["weight"] = 0.5
