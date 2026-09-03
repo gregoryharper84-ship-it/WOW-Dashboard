@@ -1,11 +1,9 @@
-"""Tiered probability qualification policy for WOW v16 Clean Core.
+"""Tiered V17 prop probability qualification policy.
 
-This policy separates model-backed research qualification from the much stricter
-money/final approval gates. It does not weaken evidence, specialist, identity,
-freshness, calibration-health, probability-validity, market, or execution gates.
-
-Only native WOW terminal labels are emitted. Higher confidence is carried as
-metadata, not invented as a new terminal label.
+Research qualification is intentionally separate from official ranking.
+RESEARCH_INTEREST may preserve a valid model-backed probability package, but it
+is never rank-eligible.  Only MODEL_QUALIFIED_HOLD can be rank-eligible here,
+and this function still cannot emit FINAL_APPROVED.
 """
 from __future__ import annotations
 
@@ -53,28 +51,6 @@ def classify_prop_probability(
     blockers: Iterable[str] = (),
     probability_publishable: bool,
 ) -> PropQualificationDecision:
-    """Classify only a completed governed candidate-level probability lane.
-
-    A higher-level deployment-wide publication blocker (for example an incomplete
-    forward-shadow cohort) is owned by the separate calibration/publication lane
-    wrapper and must not be rewritten here as proof that the controlling
-    specialist is unavailable.
-
-    Thresholds are terminal-label/ranking gates, not wager approval gates:
-
-    RESEARCH_INTEREST
-      calibrated p >= 0.57 and lower bound > 0.50
-
-    MODEL_QUALIFIED_HOLD
-      calibrated p >= 0.60 and lower bound >= 0.55
-
-    A stronger p >= 0.65 / lower bound >= 0.60 result remains the same native
-    MODEL_QUALIFIED_HOLD terminal label and receives confidence_tier=HIGH.
-
-    PRECALIBRATION_SHRINKAGE may reach RESEARCH_INTEREST or
-    MODEL_QUALIFIED_HOLD, but it may not advance into the money/final approval
-    gates. This function can never itself emit FINAL_APPROVED.
-    """
     blocker_tuple = _normalized(blockers)
     if _has_hard_blocker(blocker_tuple):
         return PropQualificationDecision(
@@ -100,7 +76,7 @@ def classify_prop_probability(
 
     if calibrated_probability is None or calibrated_lower_bound is None:
         return PropQualificationDecision(
-            terminal_label="MODEL_UNAVAILABLE",
+            terminal_label="MODEL_OUTPUT_INVALID",
             confidence_tier="BLOCKED",
             rank_eligible=False,
             model_supported=False,
@@ -116,7 +92,7 @@ def classify_prop_probability(
         p = lb = float("nan")
     if not (0.0 < p < 1.0 and 0.0 < lb < 1.0 and lb <= p):
         return PropQualificationDecision(
-            terminal_label="MODEL_UNAVAILABLE",
+            terminal_label="MODEL_OUTPUT_INVALID",
             confidence_tier="BLOCKED",
             rank_eligible=False,
             model_supported=False,
@@ -136,7 +112,7 @@ def classify_prop_probability(
     elif p >= 0.57 and lb > 0.50:
         label = "RESEARCH_INTEREST"
         confidence_tier = "RESEARCH"
-        rank_eligible = True
+        rank_eligible = False
     else:
         label = "NO_LOW_PROBABILITY"
         confidence_tier = "BELOW_THRESHOLD"
