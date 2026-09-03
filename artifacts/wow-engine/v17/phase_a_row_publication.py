@@ -1,10 +1,10 @@
 """V17 bridge that restores certified Phase-A row scoring without promoting Phase B/C.
 
-The accepted production wrapper owns a global publication preflight.  During
+The accepted production wrapper owns a global publication preflight. During
 Phase A that global state can be MODEL_QUALIFIED_HOLD even though the certified
 row scorer is capable of producing conservative empirical-Bayes shrinkage with
-real bootstrap bounds.  This bridge permits the original governed row scorer to
-run only for that exact typed Phase-A state.  It never sets publication flags,
+real bootstrap bounds. This bridge permits the original governed row scorer to
+run only for that exact typed Phase-A state. It never sets publication flags,
 never manufactures bounds, never changes 200/500 readiness thresholds, and
 never grants MONEY_QUALIFIED / FINAL_APPROVED authority.
 
@@ -57,13 +57,19 @@ def install_phase_a_row_publication(
     if getattr(market_api, "_wow_v17_phase_a_row_publication_installed", False):
         return True
 
+    # Some isolated contract tests intentionally supply a skeletal market API
+    # that has no scoring callable. That is not a production scorer and must
+    # never be mutated or guessed into one. Fail closed and leave the existing
+    # caller/test boundary untouched.
+    fallback = getattr(market_api, "score_prop", None)
+    if not callable(fallback):
+        return False
+
     accepted = sys.modules.get("api_ncaaf_acceptance")
     original = getattr(accepted, "_original_market_score_prop", None) if accepted is not None else None
     if not callable(original):
-        # Fail closed.  The bridge must never guess at or synthesize a scorer.
+        # Fail closed. The bridge must never guess at or synthesize a scorer.
         return False
-
-    fallback = market_api.score_prop
 
     def score_prop_phase_a(
         req: Any,
@@ -80,7 +86,7 @@ def install_phase_a_row_publication(
     market_api._wow_v17_phase_a_row_publication_installed = True
 
     # Keep HTTP Action traffic and in-process Pick Request / Daily traffic on
-    # the same function.  No alternate scoring authority is introduced.
+    # the same function. No alternate scoring authority is introduced.
     app.router.routes[:] = [
         route
         for route in app.router.routes
