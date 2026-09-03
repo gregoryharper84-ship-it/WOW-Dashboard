@@ -50,6 +50,23 @@ ROUTING
 - Market/value/edge/card construction is downstream shared-core work after valid sporting probability exists.
 - Exactly one controlling specialist owns each row/event. Scout/Research gather/reconcile evidence only and never substitute for a fitted model.
 
+UNIVERSAL CERTIFIED NUMERICAL ENGINE — ALL SPORTS PROPS + ML — CONTROLLING
+- `V17_CERTIFIED_NUMERICAL_ENGINE` is the shared sport-agnostic numerical execution contract for every supported player/scalar prop and every supported team/event ML route. It is computation infrastructure, not a competing sporting model and not a terminal publisher.
+- Coverage is universal by contract: MLB, NBA, WNBA, NFL, NHL, soccer, tennis, golf, combat sports and additional sports/stat markets may use the same engine envelope when an exact controlling specialist/certified route exists. Never hard-code V17 to a closed sport list; new sports register through specialist adapters without changing terminal semantics.
+- Exactly one controlling specialist selects the certified statistical family and owns the sporting assumptions. Python executes that specialist's certified method; Python must not select a generic model merely because a stat appears countable or continuous.
+- Supported numerical families may include logistic regression, Bradley-Terry, Elo-derived transforms, score/event simulation, Poisson, negative-binomial, binomial, normal/truncated-normal, lognormal, gamma, zero-inflated count, empirical-residual, mixture, event-tree and Monte Carlo methods. Availability of a family does not certify it for a particular sport/stat.
+- Prop routes must model the full outcome distribution where the specialist contract supports it; a baseline projection, recent hit rate or average alone is never the probability model.
+- Team/event ML routes remain owned by `LLP_TEAM_BETTING_ENGINE` or its exact controlling sport specialist; generic net-rating/logistic/Elo math is only a model component when certified by that lane.
+- Primary computation role is `PYTHON_PRIMARY`. Independent verification role is `PYTHON_INDEPENDENT_VERIFY` using a separately implemented analytical, enumerative, numerical or convergence check where technically applicable. Re-running the identical function twice is not independent verification.
+- Numerical metadata should preserve candidate identity, sport, market/stat, controlling specialist, model/version, model family, feature-vector version, computation method/version, simulation count, random seed when used, convergence status, distribution diagnostics and sensitivity summary.
+- Numerical output alone is never governed probability. Governed probability requires the controlling specialist, certified inputs, certified numerical method, required verification, dynamic calibration/bounds and `V17_TERMINAL_REDUCER` governance.
+- Verification mismatch beyond certified tolerance is `COMPUTATION_VERIFICATION_CONFLICT`. Required-verification execution failure is `COMPUTATION_VERIFICATION_FAILED`. Neither may be rewritten as `MODEL_UNAVAILABLE` unless the actual controlling fitted model/artifact is absent.
+- Do not use or require Wolfram/WolframAlpha in the V17 governed computation path. Wolfram availability, transport or plugin health has no bearing on model readiness.
+- Simulation count is specialist/convergence governed; never impose a universal 10,000-trial rule. Preserve stricter lane requirements such as 25,000/50,000+ simulations when certified.
+- Missing market/price evidence never erases a completed sporting probability. `model_qualified`/`rank_eligible` are downstream recommendation/ranking attributes, not prerequisites for displaying a valid completed sporting probability.
+- For every submitted supported candidate, target either a numeric sporting probability package or the exact typed reason the controlling model could not complete. Never substitute implied probability or generic Python math for a missing governed result.
+- Scenario/sensitivity analysis is diagnostic only. It may show how minutes, usage, workload, starter/lineup status, opponent context, pace, venue/weather or team-strength assumptions move probability, but it must not overwrite the immutable governed base-case package unless the controlling specialist is legitimately rerun with a newly frozen input package.
+
 KALSHI BETTING ASSISTANT — V17 ORCHESTRATION
 - Broad Kalshi requests such as `Scan Kalshi`, `Scan this Kalshi board`, `Analyze attached Kalshi markets`, `Find the best Kalshi contracts`, `Kalshi full model`, or mixed-category Kalshi screenshot/PDF input route through `wow.kalshi-betting-assistant` under WOW V17.
 - The Kalshi Betting Assistant is an orchestration/market-assistance layer, not a sporting probability model and not a terminal authority. `V17_TERMINAL_REDUCER` remains sole global terminal authority.
@@ -70,7 +87,7 @@ GOVERNED PROBABILITY
 - Official model ranking requires the exact controlling specialist and valid numeric package required by that lane, including calibration/lower bound where required.
 - Rank official probability leaderboards by governed calibrated lower bound where lane contract specifies it.
 - `MODEL_UNAVAILABLE` means required controlling model capability/artifact is unavailable for the exact route. If a selected model is invoked but throws, times out, or returns no valid package, preserve typed scorer/completion failure instead.
-- Server-owned WolframAlpha arithmetic verification audits transformations and economics only; it never creates sporting probability.
+- Python-based arithmetic, simulation and verification are governed computation services only; they never create sporting probability without the controlling specialist and calibration contract.
 - Never weaken a fail-closed result to create a pick.
 
 PROP / MLB
