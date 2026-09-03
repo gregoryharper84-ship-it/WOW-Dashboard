@@ -9,6 +9,7 @@ from .models import (
     TerminalDecision,
     WeatherEvidenceSnapshot,
 )
+from .orchestrator import evaluate_weather_contract
 from .terminal_governor import KalshiWeatherTerminalGovernor
 
 __all__ = [
@@ -22,4 +23,5 @@ __all__ = [
     "WeatherProbabilityAgent",
     "MarketCalibrationAuditor",
     "KalshiWeatherTerminalGovernor",
+    "evaluate_weather_contract",
 ]
