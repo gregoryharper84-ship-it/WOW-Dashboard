@@ -14,7 +14,10 @@ from fastapi import FastAPI
 
 import api_ncaaf_acceptance as v16
 from recommendation_ledger_api import install_recommendation_ledger_routes
-from v17.team_event_request_runtime import install_team_event_routes
+# Import through the V17 preservation shim so downstream LLP governance holds
+# cannot erase a completed fitted sporting probability. The shim preserves all
+# rank/publication/terminal gates and can_execute=false.
+from v17.team_event_probability_preservation import install_team_event_routes
 
 app = FastAPI(
     title="WOW v17 Candidate Governed Core",
