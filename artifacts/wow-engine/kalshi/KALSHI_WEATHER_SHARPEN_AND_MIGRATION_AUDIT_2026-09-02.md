@@ -8,6 +8,13 @@ can_execute=false
 capital_allocation=false
 DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS=true
 
+## Authoritative contracts
+
+Functional skill contract: `KALSHI_WEATHER_MARKET_EXPERT_V2.md`
+Zero-cost source contract: `KALSHI_WEATHER_FREE_PUBLIC_DATA_STACK_2026-09-02.md`
+
+The V2 skill preserves the user-supplied Kalshi Weather Market Expert behavior: lane routing, mandatory contract parse, settlement identity gate, forecast-as-of discipline, lane-specific probability modeling, threshold-distance analysis, independent P(YES)/P(NO), model-disagreement handling, Wolfram math verification, market edge, settlement-risk separation, live updates, coherence rules, calibration ledger, confidence/status framework, ranking rules, required output, fail-closed behavior, and efficiency rules.
+
 ## Executive decision
 
 Do not lift-and-shift the orphaned Replit runtime. Preserve the strong weather-market contracts, remove legacy/runtime coupling and non-numeric reasoning layers, update settlement-source assumptions, sharpen the probability model, and rebuild the lane as a separate governed Kalshi service on infrastructure controlled by WOW.
@@ -23,7 +30,7 @@ The weather lane remains separate from the sports WOW V17 host. The Kalshi Weath
 5. Intraday elimination/truncation logic: final daily maximum cannot fall below the official maximum already observed.
 6. Live executable-price requirement. Screenshot/displayed percentages are context only.
 7. Price freshness, open-market, non-empty-orderbook, fee and settlement audits.
-8. Sporting/weather probability remains independent of market-implied probability.
+8. Weather probability remains independent of market-implied probability.
 9. Settlement auditor and immutable pre-settlement prediction record.
 10. Kalshi Portfolio Risk & Combo Governor after individual-market qualification.
 11. Duplicate-thesis, same-city/date and shared-weather-system concentration controls.
@@ -42,9 +49,7 @@ The weather lane remains separate from the sports WOW V17 host. The Kalshi Weath
 8. Any use of midpoint/displayed chance as executable entry price.
 9. Any assumption that a single NWS 24-hour max field is sufficient for max-so-far reconstruction.
 
-## ADD
-
-### Data / provenance
+## ADD — Data / provenance
 
 1. Contract-specific settlement-source resolver with versioned rule snapshot.
 2. Source-role typing: SETTLEMENT_AUTHORITY, OFFICIAL_OBSERVATION, PRIMARY_FORECAST, SECONDARY_FORECAST, MARKET_PRICE, CONTEXT_ONLY.
@@ -57,9 +62,7 @@ The weather lane remains separate from the sports WOW V17 host. The Kalshi Weath
 9. Evidence timestamp, retrieval timestamp, effective/valid time and source revision ID on every input.
 10. Forecast-revision ledger: preserve successive forecast snapshots instead of overwriting.
 
-Approved zero-cost source roles and access assumptions are controlled by `KALSHI_WEATHER_FREE_PUBLIC_DATA_STACK_2026-09-02.md` and must be revalidated before production deployment.
-
-### Probability model
+## ADD — Probability model
 
 1. Station-specific bias correction by season/month and forecast lead time.
 2. Station- and lead-time-specific forecast error distributions.
@@ -72,7 +75,7 @@ Approved zero-cost source roles and access assumptions are controlled by `KALSHI
 9. Temporal feature provenance to prevent post-outcome or later-revision leakage.
 10. Hypothesis-change ledger for every model change with rationale, affected feature, expected direction, untouched holdout and before/after calibration.
 
-### Runtime / persistence
+## ADD — Runtime / persistence
 
 1. Dedicated `WOW_KALSHI_ENGINE` Render service.
 2. Supabase tables for contract rules, source snapshots, weather predictions, calibration state, price snapshots, recommendation records and outcomes.
@@ -99,80 +102,49 @@ Approved zero-cost source roles and access assumptions are controlled by `KALSHI
 11. Current Xweather free-tier and licensing terms before enabling the optional adapter.
 12. Recovery-mode status from immutable Kalshi history; do not carry an old emergency mode forward blindly, and do not clear it without evidence.
 
-## Current-source corrections discovered during this audit
-
-- Kalshi states that each market's rules define the verification source; the engine must therefore resolve settlement authority per contract.
-- Current Kalshi weather documentation distinguishes daily temperature markets from hourly temperature markets and names different authoritative settlement sources depending on the contract.
-- Kalshi and The Weather Company announced a 2026 partnership under which The Weather Company can provide authoritative observation data for weather-market settlement. This makes the old universal-NWS settlement assumption unsafe.
-- NWS API documentation warns that observations can be delayed and that some 24-hour max/min fields have known limitations, so official observation-series reconstruction is required for intraday state.
-- NWS API data is open and free for general use subject to reasonable rate limiting.
-- Open-Meteo currently exposes 30+ models, historical forecasts and archived model runs without API-key signup on its free non-commercial endpoint; its usage/licensing terms must be checked at deployment time.
-- NOAA/NCEI CDO is free with an API token and provides official historical climate/station data suitable for calibration and reconciliation.
-- Xweather currently offers a meaningful free monthly API tier and is optional corroboration, not a hard dependency.
-- Kalshi's API exposes public market/orderbook data. Evaluation should use executable bid/ask, not midpoint or displayed probability.
-
 ## Model hierarchy
 
 Primary production target:
 
-`contract rules -> source resolver -> official observations + forecast package -> Open-Meteo model disagreement -> NOAA/NCEI station calibration -> optional Xweather corroboration -> fitted station/horizon weather distribution -> calibrated bracket probabilities + bounds`
+`contract rules -> settlement-source resolver -> official observations -> NWS forecast package -> Open-Meteo multi-model/disagreement -> NOAA/NCEI station calibration -> optional Xweather corroboration -> station/horizon conditional distribution -> calibrated P(YES)/P(NO) + bounds`
 
 Fallback benchmark:
 
 `NWS forecast high -> Gaussian(mu, sigma=3.5F) -> continuity-corrected bracket probabilities`
 
-Fallback results may be research/watch output only unless separately certified. Market price must never be substituted for the sporting/weather model probability.
-
-## Proposed workflow
-
-`WOW_KALSHI_ENGINE`
-`-> contract identity + rule snapshot`
-`-> settlement-source resolver`
-`-> NWS/official observations + provenance freeze`
-`-> Open-Meteo multi-model/ensemble package`
-`-> NOAA/NCEI calibration context`
-`-> optional Xweather corroboration`
-`-> exact station/coordinate audit`
-`-> fitted weather distribution`
-`-> calibration + uncertainty bounds`
-`-> probability-claim audit`
-`-> live Kalshi market/orderbook acquisition`
-`-> price/fee/edge audit`
-`-> individual weather decision`
-`-> portfolio risk & combo governor`
-`-> immutable prediction/recommendation record`
-`-> terminal reducer`
+Fallback results may be research/watch output only unless separately certified. Market price must never be substituted for the weather model probability.
 
 ## Acceptance gates
 
 1. Wrong or unresolved settlement source fails closed.
 2. Wrong station/coordinate fails closed.
-3. A screenshot/displayed chance cannot become model probability or fresh executable price.
-4. Full bracket probabilities normalize within tolerance.
+3. Screenshot/displayed chance cannot become model probability or fresh executable price.
+4. Complete bucket probabilities normalize within tolerance; nested thresholds are monotonic.
 5. Intraday impossible brackets receive zero conditional probability before normalization.
-6. A model probability must be produced without reference to Kalshi price.
+6. Model probability is produced independently of Kalshi price.
 7. Calibration package includes point probability and uncertainty bounds.
-8. Stale/empty/closed orderbook blocks edge publication but does not erase a completed weather probability.
+8. Stale/empty/closed orderbook blocks edge publication but does not erase completed weather probability.
 9. Same city/date multi-bracket structures trigger duplicate/concentration governance.
 10. Shared weather-system combinations never default to independence.
 11. Settlement grading uses the exact source named in the frozen contract rule snapshot.
-12. Postmortem cannot use later data to change the immutable pre-settlement prediction.
+12. Historical/postmortem evaluation cannot use later data to change decision-time probability.
 13. Open-Meteo/Xweather disagreement can widen uncertainty but cannot override settlement evidence by majority vote.
 14. Xweather outage cannot make the core weather model unavailable.
-15. can_execute=false in every terminal state.
-16. No GPT Action exposes order placement, cancellation or modification.
+15. Wolfram verifies math only and cannot create probability.
+16. can_execute=false in every terminal state.
+17. No GPT Action exposes order placement, cancellation or modification.
 
 ## Migration phases
 
 ### Phase 0 — Recover and freeze
 - Preserve existing skills, patches and known route contracts as historical inputs.
-- Inventory any recoverable old Kalshi backend code in GitHub.
-- Freeze the new contract in this document before porting runtime behavior.
+- Adopt `KALSHI_WEATHER_MARKET_EXPERT_V2.md` as the implementation contract.
+- Inventory recoverable old Kalshi backend code in GitHub.
 
-### Phase 1 — Weather core v2
+### Phase 1 — Weather core V2
 - Implement contract/source resolver.
-- Implement NWS + Weather Company/settlement adapters.
-- Implement Open-Meteo forecast/historical-forecast/archive adapters.
+- Implement NWS + contract-named settlement adapters.
+- Implement Open-Meteo forecast/historical/archive adapters.
 - Implement NOAA/NCEI historical/calibration adapter.
 - Implement optional Xweather corroboration adapter.
 - Implement observation-series reconstruction.
@@ -198,17 +170,12 @@ Fallback results may be research/watch output only unless separately certified. 
 - Save/verify in a fresh Custom GPT session.
 - Run end-to-end screenshot, daily-high and hourly-temperature acceptance tests.
 
-## Weather data/plugin decision
-
-The zero-cost backend core is NWS + Open-Meteo + NOAA/NCEI. Xweather/Vaisala is approved as optional free-tier corroboration. Commercial weather plugins/providers are not required for launch and should only be added later if forward calibration demonstrates incremental value.
-
-Custom-GPT weather plugins may assist research/diagnostics, but plugin output is not settlement authority or a governed probability by itself. Backend direct adapters remain the reproducible production path.
-
 ## Terminal migration status
 
 KALSHI_WEATHER_LEGACY_SPEC=RECOVERED
 KALSHI_WEATHER_LEGACY_RUNTIME=ORPHANED_REPLIT
-KALSHI_WEATHER_SHARPEN_AUDIT=COMPLETE_V2_ZERO_COST_STACK
+KALSHI_WEATHER_SKILL_V2=AUTHORITATIVE_MIGRATION_CONTRACT
+KALSHI_WEATHER_SHARPEN_AUDIT=COMPLETE_V3_SKILL_ALIGNED
 KALSHI_WEATHER_NEW_RUNTIME=NOT_YET_IMPLEMENTED
 KALSHI_WEATHER_MODEL_V2=DESIGN_APPROVED_FOR_IMPLEMENTATION
 KALSHI_WEATHER_ZERO_COST_DATA_STACK=APPROVED
