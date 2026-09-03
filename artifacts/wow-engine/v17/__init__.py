@@ -1,8 +1,8 @@
 """WOW V17 active-generation modules.
 
 Importing the package in shared lower-layer tests must not mutate runtime routing.
-The response-semantics adapter is composed only in an explicitly active V17
-runtime. The adapter is idempotent and cannot authorize execution.
+Response-semantics adapters are composed only in an explicitly active V17 runtime.
+Adapters are idempotent and cannot authorize execution.
 """
 from __future__ import annotations
 
@@ -14,8 +14,11 @@ def compose_active_runtime() -> bool:
     if os.getenv("WOW_V17_ACTIVE", "0") != "1":
         return False
     from v17.prop_response_semantics import install_prop_response_semantics
+    from v17.projected_lineup_scenario_modeling import install_projected_lineup_semantics
 
-    return install_prop_response_semantics()
+    prop_ok = install_prop_response_semantics()
+    lineup_ok = install_projected_lineup_semantics()
+    return bool(prop_ok and lineup_ok)
 
 
 # Production activation is environment-governed. Shared imports with V17 disabled
