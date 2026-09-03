@@ -5,8 +5,9 @@ MLB shadow event exists with fitted probability but lineup still pending, the
 projected-lineup sporting-probability contract through the deployed authenticated
 /score-team-event HTTP boundary.
 
-Acceptance never places or approves a wager.  It does not expose the Action key
-or log sporting probability values.  can_execute remains false.
+Acceptance never places or approves a wager. It does not expose the Action key or
+log sporting probability values. Diagnostic output names only failed contract
+predicates and typed response codes. can_execute remains false.
 """
 from __future__ import annotations
 
@@ -106,23 +107,38 @@ def _finite_probability(payload: dict[str, Any], name: str) -> bool:
     return math.isfinite(value) and 0.0 <= value <= 1.0
 
 
+def _projected_acceptance_failures(payload: dict[str, Any]) -> list[str]:
+    checks = {
+        "code": payload.get("code") == "LINEUP_PROJECTED_PROBABILITY_AVAILABLE",
+        "lineup_state": payload.get("lineup_state") in {"PROJECTED_HIGH_CONFIDENCE", "PROJECTED_MEDIUM_CONFIDENCE"},
+        "calibrated_home_probability": _finite_probability(payload, "calibrated_home_probability"),
+        "calibrated_away_probability": _finite_probability(payload, "calibrated_away_probability"),
+        "calibrated_home_lower_bound": _finite_probability(payload, "calibrated_home_lower_bound"),
+        "calibrated_away_lower_bound": _finite_probability(payload, "calibrated_away_lower_bound"),
+        "sporting_probability_publishable": payload.get("sporting_probability_publishable") is True,
+        "probability_publishable": payload.get("probability_publishable") is True,
+        "rank_eligible": payload.get("rank_eligible") is False,
+        "terminal_label": payload.get("terminal_label") == "MODEL_QUALIFIED_HOLD",
+        "final_refresh_required": payload.get("final_refresh_required") is True,
+        "lineup_confirmation_blocker": "LINEUP_CONFIRMATION_PENDING" in (payload.get("blockers") or []),
+        "can_execute": payload.get("can_execute") is False,
+    }
+    return [name for name, ok in checks.items() if not ok]
+
+
 def _projected_acceptance_ok(payload: dict[str, Any]) -> bool:
-    numeric_ok = all(_finite_probability(payload, name) for name in (
-        "calibrated_home_probability", "calibrated_away_probability",
-        "calibrated_home_lower_bound", "calibrated_away_lower_bound",
-    ))
-    return bool(
-        payload.get("code") == "LINEUP_PROJECTED_PROBABILITY_AVAILABLE"
-        and payload.get("lineup_state") in {"PROJECTED_HIGH_CONFIDENCE", "PROJECTED_MEDIUM_CONFIDENCE"}
-        and numeric_ok
-        and payload.get("sporting_probability_publishable") is True
-        and payload.get("probability_publishable") is True
-        and payload.get("rank_eligible") is False
-        and payload.get("terminal_label") == "MODEL_QUALIFIED_HOLD"
-        and payload.get("final_refresh_required") is True
-        and "LINEUP_CONFIRMATION_PENDING" in (payload.get("blockers") or [])
-        and payload.get("can_execute") is False
-    )
+    return not _projected_acceptance_failures(payload)
+
+
+def _typed_response_code(response: httpx.Response, payload: dict[str, Any]) -> str | None:
+    if isinstance(payload, dict):
+        direct = payload.get("code")
+        if direct:
+            return str(direct)
+        detail = payload.get("detail")
+        if isinstance(detail, dict) and detail.get("code"):
+            return str(detail.get("code"))
+    return None
 
 
 async def run_v17_synthetic_self_acceptance(logger, *, now: datetime | None = None) -> dict[str, Any]:
@@ -156,9 +172,14 @@ async def run_v17_synthetic_self_acceptance(logger, *, now: datetime | None = No
         logger.error("WOW_V17_SYNTHETIC_SELF_ACCEPTANCE status=FAILED code=HTTP_ACCEPTANCE_REQUEST_FAILED error_type=%s can_execute=false", type(exc).__name__)
         return result
 
-    prop_payload = prop_response.json() if prop_response.status_code == 200 else {}
+    try:
+        raw_prop_payload = prop_response.json()
+    except ValueError:
+        raw_prop_payload = {}
+    prop_payload = raw_prop_payload if prop_response.status_code == 200 and isinstance(raw_prop_payload, dict) else {}
     prop_rows = {str(r.get("row_key")): r for r in (prop_payload.get("rows") or []) if isinstance(r, dict)}
     prop_row = prop_rows.get("TEST-PROP-001") or {}
+    prop_error_code = _typed_response_code(prop_response, raw_prop_payload if isinstance(raw_prop_payload, dict) else {})
     prop_ok = bool(
         prop_response.status_code == 200
         and prop_row.get("terminal_status") == "HELD"
@@ -167,7 +188,11 @@ async def run_v17_synthetic_self_acceptance(logger, *, now: datetime | None = No
         and prop_row.get("can_execute") is False
     )
 
-    team_payload = team_event_response.json() if team_event_response.status_code == 200 else {}
+    try:
+        raw_team_payload = team_event_response.json()
+    except ValueError:
+        raw_team_payload = {}
+    team_payload = raw_team_payload if team_event_response.status_code == 200 and isinstance(raw_team_payload, dict) else {}
     team_rows = team_payload.get("rows") or []
     team_row = team_rows[0] if team_rows and isinstance(team_rows[0], dict) else {}
     team_ok = bool(
@@ -183,12 +208,17 @@ async def run_v17_synthetic_self_acceptance(logger, *, now: datetime | None = No
     projected_http_status: int | None = None
     projected_event_id: str | None = None
     projected_code: str | None = None
+    projected_failures: list[str] = []
     if projected_candidate is not None and projected_response is not None:
         projected_event_id = str(projected_candidate.get("official_event_id"))
         projected_http_status = projected_response.status_code
-        projected_payload = projected_response.json() if projected_response.status_code == 200 else {}
+        try:
+            projected_payload = projected_response.json() if projected_response.status_code == 200 else {}
+        except ValueError:
+            projected_payload = {}
         projected_code = str(projected_payload.get("code") or "") or None
-        projected_ok = bool(projected_response.status_code == 200 and _projected_acceptance_ok(projected_payload))
+        projected_failures = _projected_acceptance_failures(projected_payload) if projected_response.status_code == 200 else ["http_status"]
+        projected_ok = bool(projected_response.status_code == 200 and not projected_failures)
         projected_status = "PASS" if projected_ok else "FAIL"
 
     required_ok = prop_ok and team_ok and (projected_ok is not False)
@@ -198,6 +228,7 @@ async def run_v17_synthetic_self_acceptance(logger, *, now: datetime | None = No
         "prop_http_status": prop_response.status_code,
         "prop_ok": prop_ok,
         "prop_terminal_label": prop_row.get("terminal_label") or prop_row.get("code"),
+        "prop_error_code": prop_error_code,
         "team_event_http_status": team_event_response.status_code,
         "team_event_ok": team_ok,
         "team_event_code": team_row.get("code"),
@@ -206,15 +237,18 @@ async def run_v17_synthetic_self_acceptance(logger, *, now: datetime | None = No
         "projected_lineup_ok": projected_ok,
         "projected_lineup_event_id": projected_event_id,
         "projected_lineup_code": projected_code,
+        "projected_lineup_failed_checks": projected_failures,
         "can_execute": False,
     }
     log = logger.warning if status == "PASS" else logger.error
     log(
-        "WOW_V17_SYNTHETIC_SELF_ACCEPTANCE status=%s prop_http_status=%s prop_ok=%s prop_terminal_label=%s "
+        "WOW_V17_SYNTHETIC_SELF_ACCEPTANCE status=%s prop_http_status=%s prop_ok=%s prop_terminal_label=%s prop_error_code=%s "
         "team_event_http_status=%s team_event_ok=%s team_event_code=%s projected_lineup_status=%s "
-        "projected_lineup_http_status=%s projected_lineup_ok=%s projected_lineup_event_id=%s projected_lineup_code=%s can_execute=false",
-        status, prop_response.status_code, prop_ok, prop_row.get("terminal_label") or prop_row.get("code"),
+        "projected_lineup_http_status=%s projected_lineup_ok=%s projected_lineup_event_id=%s projected_lineup_code=%s "
+        "projected_lineup_failed_checks=%s can_execute=false",
+        status, prop_response.status_code, prop_ok, prop_row.get("terminal_label") or prop_row.get("code"), prop_error_code,
         team_event_response.status_code, team_ok, team_row.get("code"), projected_status,
         projected_http_status, projected_ok, projected_event_id, projected_code,
+        ",".join(projected_failures) if projected_failures else "NONE",
     )
     return result
