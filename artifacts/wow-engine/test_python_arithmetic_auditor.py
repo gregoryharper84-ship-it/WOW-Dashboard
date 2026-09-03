@@ -8,7 +8,17 @@ def test_python_arithmetic_auditor_requires_no_external_transport(monkeypatch):
     monkeypatch.delenv("WOW_PYTHON_ARITHMETIC_AUDIT_ENABLED", raising=False)
     state = auditor.readiness()
     assert state["provider"] == "PYTHON_PRIMARY"
+    assert state["status"] == "DISABLED"
+    assert state["external_transport_required"] is False
+    assert state["can_execute"] is False
+
+
+def test_python_arithmetic_auditor_can_be_explicitly_enabled_without_external_provider(monkeypatch):
+    monkeypatch.setenv("WOW_PYTHON_ARITHMETIC_AUDIT_ENABLED", "1")
+    state = auditor.readiness()
+    assert state["provider"] == "PYTHON_PRIMARY"
     assert state["status"] == "READY"
+    assert state["configured"] is True
     assert state["external_transport_required"] is False
     assert state["can_execute"] is False
 
