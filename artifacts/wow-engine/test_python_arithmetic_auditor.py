@@ -1,3 +1,4 @@
+# CI resync marker: validate the Python-only verifier against the latest V17 main.
 from decimal import Decimal
 
 import python_arithmetic_auditor as auditor
