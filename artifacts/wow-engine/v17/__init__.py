@@ -1,13 +1,14 @@
 """WOW V17 active-generation modules.
 
 Importing the package in shared lower-layer tests must not mutate runtime routing.
-Response-semantics adapters are composed only in an explicitly active V17 runtime.
-Numerical computation is exposed through a side-effect-free registry; controlling
-specialists remain responsible for registering certified sport/stat adapters.
+Response-semantics and numerical-certification adapters are composed only in an
+explicitly active V17 runtime. The numerical bridge never chooses a sporting
+model or changes a specialist probability; it certifies completed native output.
 """
 from __future__ import annotations
 
 import os
+import sys
 
 
 def get_certified_numerical_registry():
@@ -18,18 +19,31 @@ def get_certified_numerical_registry():
 
 
 def compose_active_runtime() -> bool:
-    """Install V17 response semantics only for the explicitly active runtime."""
+    """Install V17 semantics and numerical certification for active production."""
     if os.getenv("WOW_V17_ACTIVE", "0") != "1":
         return False
     from v17.prop_response_semantics import install_prop_response_semantics
     from v17.projected_lineup_scenario_modeling import install_projected_lineup_semantics
+    from v17.numerical_engine_production_bridge import install_production_bridges
+    from v17 import team_event_request_runtime as team_runtime
 
-    # Import/initialize the registry without auto-registering generic models. Exact
-    # sport/stat specialists own registration and remain the sole model authority.
     get_certified_numerical_registry()
     prop_ok = install_prop_response_semantics()
     lineup_ok = install_projected_lineup_semantics()
-    return bool(prop_ok and lineup_ok)
+
+    # api_ncaaf_acceptance loads api_prod_market before importing V17. Install the
+    # bridge only when that governed production module is already present; shared
+    # lower-layer imports remain side-effect free.
+    market_api = sys.modules.get("api_prod_market")
+    numerical_ok = False
+    if market_api is not None:
+        numerical_ok = install_production_bridges(
+            market_api=market_api,
+            team_event_module=team_runtime,
+        )
+
+    # Idempotent installers may correctly report no new mutation on a repeat call.
+    return bool(prop_ok or lineup_ok or numerical_ok or getattr(market_api, "_v17_certified_numerical_bridge_installed", False))
 
 
 # Production activation is environment-governed. Shared imports with V17 disabled
