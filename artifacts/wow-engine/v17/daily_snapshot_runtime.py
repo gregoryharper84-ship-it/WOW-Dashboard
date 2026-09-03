@@ -88,6 +88,34 @@ def _reconcile(rows: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _lane_reconciliation(rows: list[dict[str, Any]], lane: str) -> dict[str, Any]:
+    """Return lane-level reconciliation counts and reason for zero rows."""
+    lane_rows = [row for row in rows if row.get("lane") == lane]
+    completed = sum(1 for row in lane_rows if row.get("row_status") == "COMPLETED")
+    held = sum(1 for row in lane_rows if row.get("row_status") == "HELD")
+    rejected = sum(1 for row in lane_rows if row.get("row_status") == "REJECTED")
+    discovered = len(lane_rows)
+    canonicalized = discovered
+    scored = discovered
+
+    zero_row_reason = None
+    if discovered == 0:
+        if lane == "PROPS":
+            zero_row_reason = "NO_CANONICAL_PREGAME_SNAPSHOTS"
+        elif lane == "MONEYLINE":
+            zero_row_reason = "NO_CANONICAL_PREGAME_SNAPSHOTS"
+
+    return {
+        "discovered_count": discovered,
+        "canonicalized_count": canonicalized,
+        "scored_count": scored,
+        "completed_count": completed,
+        "held_count": held,
+        "rejected_count": rejected,
+        "zero_row_reason": zero_row_reason,
+    }
+
+
 def _future(value: Any) -> bool:
     try:
         parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
@@ -238,12 +266,18 @@ def run_daily_snapshot(
 
     if not rows and not blockers:
         blockers.append("NO_CANONICAL_PREGAME_SNAPSHOTS")
+
+    lane_reconciliation = {}
+    for lane in requested_lanes:
+        lane_reconciliation[lane] = _lane_reconciliation(rows, lane)
+
     return {
         "run_id": run_id, "terminal": True,
         "run_status": "COMPLETED" if not blockers else "COMPLETED_WITH_ACQUISITION_BLOCKERS",
         "requested_slate_date": req.requested_slate_date, "requested_timezone": req.requested_timezone,
         "requested_lanes": sorted(requested_lanes), "rows": rows,
         "reconciliation": _reconcile(rows),
+        "lane_reconciliation": lane_reconciliation,
         "blockers": blockers, "can_execute": False,
     }
 

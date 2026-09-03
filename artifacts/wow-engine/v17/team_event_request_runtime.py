@@ -27,6 +27,7 @@ from agent_runtime.schemas import WorkerJobEnvelope
 from agent_runtime.scout_research import RESEARCH_RECONCILER, RESEARCH_WORKERS, scout_lane
 from v17.host_routing import LLP_TEAM_BETTING_ENGINE, resolve_host_route
 from v17.mlb_team_event_hydration import resolve_mlb_team_event_evidence
+from v17.v17_candidate_envelopes import V17TeamEventCandidateEnvelope, V17GovernedProbabilityPackage, DataUnavailable
 
 CAN_EXECUTE = False
 
@@ -235,10 +236,47 @@ def _llp_governance_hold(req: TeamEventRequest, route: Any, model_result: dict[s
     }
 
 
-def _run_mlb_llp_governance(req: TeamEventRequest, route: Any, model_result: dict[str, Any], *, event_api: Any) -> dict[str, Any]:
+def _validate_identity_lock(envelope: V17TeamEventCandidateEnvelope) -> list[str]:
+    """Validate identity lock requirements per patch section 3."""
+    blockers = []
+
+    if not envelope.official_event_id:
+        blockers.append("OFFICIAL_EVENT_ID_MISSING")
+    if not envelope.official_event_id_source:
+        blockers.append("OFFICIAL_EVENT_ID_PROVENANCE_MISSING")
+    if not envelope.event_start_time_utc:
+        blockers.append("EVENT_START_TIME_MISSING")
+    if not envelope.home_team:
+        blockers.append("HOME_TEAM_MISSING")
+    if not envelope.away_team:
+        blockers.append("AWAY_TEAM_MISSING")
+    if not envelope.settlement_market:
+        blockers.append("SETTLEMENT_MARKET_MISSING")
+
+    return blockers
+
+
+def _run_mlb_llp_governance(
+    req: TeamEventRequest,
+    route: Any,
+    model_result: dict[str, Any],
+    envelope: V17TeamEventCandidateEnvelope | None = None,
+    *,
+    event_api: Any,
+) -> dict[str, Any]:
     score_snapshot_id = model_result.get("score_snapshot_id")
     if not score_snapshot_id:
         return _llp_governance_hold(req, route, model_result)
+
+    identity_blockers = []
+    if envelope:
+        identity_blockers = _validate_identity_lock(envelope)
+    if identity_blockers:
+        return _llp_governance_hold(req, route, model_result, governance_detail={
+            "status": "BLOCKED_BY_IDENTITY_LOCK",
+            "blockers": identity_blockers,
+        })
+
     get_client = getattr(event_api, "get_client", None)
     if not callable(get_client):
         return _llp_governance_hold(req, route, model_result, governance_detail={"status": "UNAVAILABLE", "blockers": ["EVENT_LEDGER_CLIENT_UNAVAILABLE"]})
@@ -337,6 +375,173 @@ def _run_mandatory_scout_research(req: TeamEventRequest) -> dict[str, Any]:
     return {"status": "SUCCEEDED", "stages": stages}
 
 
+def _build_team_event_envelope(
+    req: TeamEventRequest,
+    hydration_data: dict[str, Any],
+    market_data: dict[str, Any] | None = None,
+) -> V17TeamEventCandidateEnvelope:
+    """Build immutable canonical envelope for team event candidate."""
+    market_data = market_data or {}
+
+    event_date_local = hydration_data.get("event_date_local", "")
+    if not event_date_local:
+        try:
+            dt = datetime.fromisoformat(req.event_start_time_utc.replace("Z", "+00:00"))
+            event_date_local = dt.date().isoformat()
+        except (TypeError, ValueError):
+            event_date_local = ""
+
+    venue = req.sport_specific_evidence.get("venue") or DataUnavailable(
+        status="DATA_UNOBTAINABLE",
+        source_attempted=["sport_specific_evidence"],
+    )
+
+    official_event_status = req.sport_specific_evidence.get("official_event_status") or DataUnavailable(
+        status="DATA_UNOBTAINABLE",
+        source_attempted=["sport_specific_evidence"],
+    )
+
+    home_starter = req.sport_specific_evidence.get("home_starting_pitcher")
+    home_starter_status = req.sport_specific_evidence.get("home_starter_status") or DataUnavailable(
+        status="DATA_UNOBTAINABLE",
+        source_attempted=["sport_specific_evidence"],
+    )
+
+    away_starter = req.sport_specific_evidence.get("away_starting_pitcher")
+    away_starter_status = req.sport_specific_evidence.get("away_starter_status") or DataUnavailable(
+        status="DATA_UNOBTAINABLE",
+        source_attempted=["sport_specific_evidence"],
+    )
+
+    home_lineup_status = req.sport_specific_evidence.get("home_lineup_status") or DataUnavailable(
+        status="DATA_UNOBTAINABLE",
+        source_attempted=["sport_specific_evidence"],
+    )
+
+    away_lineup_status = req.sport_specific_evidence.get("away_lineup_status") or DataUnavailable(
+        status="DATA_UNOBTAINABLE",
+        source_attempted=["sport_specific_evidence"],
+    )
+
+    injury_status = req.sport_specific_evidence.get("injury_status") or DataUnavailable(
+        status="DATA_UNOBTAINABLE",
+        source_attempted=["sport_specific_evidence"],
+    )
+
+    weather_status = req.sport_specific_evidence.get("weather_status") or DataUnavailable(
+        status="DATA_UNOBTAINABLE",
+        source_attempted=["sport_specific_evidence"],
+    )
+
+    bullpen_status = req.sport_specific_evidence.get("bullpen_status") or DataUnavailable(
+        status="DATA_UNOBTAINABLE",
+        source_attempted=["sport_specific_evidence"],
+    )
+
+    settlement_rule = req.sport_specific_evidence.get("settlement_rule") or DataUnavailable(
+        status="DATA_UNOBTAINABLE",
+        source_attempted=["sport_specific_evidence"],
+    )
+
+    market_role_status = market_data.get("market_role_status") or DataUnavailable(
+        status="DATA_UNOBTAINABLE",
+        source_attempted=["market_data"],
+    )
+
+    envelope = V17TeamEventCandidateEnvelope(
+        research_run_id=req.research_run_id,
+        requested_slate_date=req.requested_slate_date,
+        requested_timezone=req.requested_timezone,
+        event_key=req.event_key,
+        official_event_id=req.official_event_id,
+        official_event_id_source="CANONICAL_MLB_LEDGER",
+        event_start_time_utc=req.event_start_time_utc,
+        event_date_local=event_date_local,
+        sport=req.sport,
+        league=req.league,
+        home_team=req.home_team,
+        away_team=req.away_team,
+        venue=venue,
+        official_event_status=official_event_status,
+        official_event_status_source="CANONICAL_MLB_LEDGER",
+        settlement_market=req.market_family,
+        settlement_basis=req.settlement_basis,
+        settlement_rule=settlement_rule,
+        settlement_source="CANONICAL_MLB_LEDGER",
+        home_starter=home_starter,
+        home_starter_status=home_starter_status,
+        home_starter_source="CANONICAL_MLB_LEDGER",
+        away_starter=away_starter,
+        away_starter_status=away_starter_status,
+        away_starter_source="CANONICAL_MLB_LEDGER",
+        home_lineup_status=home_lineup_status,
+        home_lineup_source="CANONICAL_MLB_LEDGER",
+        away_lineup_status=away_lineup_status,
+        away_lineup_source="CANONICAL_MLB_LEDGER",
+        injury_status=injury_status,
+        injury_source="CANONICAL_MLB_LEDGER",
+        weather_status=weather_status,
+        weather_source="MARKET_WEATHER_SERVICE",
+        bullpen_status=bullpen_status,
+        bullpen_source="CANONICAL_MLB_LEDGER",
+        market_snapshot_id=market_data.get("snapshot_id"),
+        market_snapshot_timestamp=market_data.get("timestamp"),
+        market_source=market_data.get("source"),
+        market_status=market_data.get("status", "DATA_UNOBTAINABLE"),
+        book_count=market_data.get("book_count"),
+        market_role=market_data.get("market_role"),
+        market_role_status=market_role_status,
+        consensus_probability_no_vig=market_data.get("no_vig_probability"),
+        market_prior_probability=market_data.get("prior_probability"),
+        source_snapshot_id=req.source_snapshot_id,
+        source_snapshot_timestamp=req.latest_material_update_timestamp or datetime.now(timezone.utc).isoformat(),
+        latest_material_update_timestamp=req.latest_material_update_timestamp,
+        evidence_as_of=req.latest_material_update_timestamp or datetime.now(timezone.utc).isoformat(),
+    )
+    return envelope
+
+
+def _build_governed_probability_package(
+    envelope: V17TeamEventCandidateEnvelope,
+    model_result: dict[str, Any],
+) -> V17GovernedProbabilityPackage:
+    """Build immutable governed probability package from model output and envelope."""
+    participant = model_result.get("participant", "UNKNOWN")
+    opponent = model_result.get("opponent", "UNKNOWN")
+
+    package = V17GovernedProbabilityPackage(
+        research_run_id=envelope.research_run_id,
+        event_key=envelope.event_key,
+        official_event_id=envelope.official_event_id,
+        participant=participant,
+        opponent=opponent,
+        market_role=envelope.market_role,
+        outcome_space=model_result.get("outcome_space", "MONEYLINE"),
+        raw_model_probability=float(model_result.get("raw_model_probability", 0.5)),
+        independent_model_probability=float(model_result.get("independent_model_probability", 0.5)),
+        market_prior_probability=envelope.market_prior_probability,
+        market_prior_weight=float(model_result.get("market_prior_weight", 0.0)),
+        calibrated_probability=float(model_result.get("calibrated_probability", 0.5)),
+        calibrated_probability_lower_bound=float(model_result.get("calibrated_probability_lower_bound", 0.4)),
+        calibrated_probability_upper_bound=float(model_result.get("calibrated_probability_upper_bound", 0.6)),
+        calibration_method=str(model_result.get("calibration_method", "UNKNOWN")),
+        calibration_version=str(model_result.get("calibration_version", "UNKNOWN")),
+        calibration_sample_scope=str(model_result.get("calibration_sample_scope", "UNKNOWN")),
+        calibration_health_status=str(model_result.get("calibration_health_status", "UNKNOWN")),
+        model_version=str(model_result.get("model_version", "UNKNOWN")),
+        model_timestamp=str(model_result.get("model_timestamp", "")),
+        latest_material_update_timestamp=envelope.latest_material_update_timestamp,
+        model_valid_after_latest_material_update=model_result.get("model_timestamp", "") >= (envelope.latest_material_update_timestamp or ""),
+        source_snapshot_id=envelope.source_snapshot_id,
+        source_snapshot_timestamp=envelope.source_snapshot_timestamp,
+        simulation_count_if_applicable=model_result.get("simulation_count"),
+        model_component_weights_if_available=model_result.get("model_component_weights"),
+        model_disagreement_if_available=model_result.get("model_disagreement"),
+        uncertainty_method=model_result.get("uncertainty_method"),
+    )
+    return package
+
+
 def score_team_event_request(req: TeamEventRequest, *, event_api: Any, canonical_hydration_required: bool = False) -> dict[str, Any]:
     try:
         route = resolve_host_route(req.requester_host_identity, req.candidate_family)
@@ -361,8 +566,23 @@ def score_team_event_request(req: TeamEventRequest, *, event_api: Any, canonical
             raise HTTPException(status_code=exc.status_code, detail=_augment_detail(exc.detail, effective_req)) from exc
         if not isinstance(result, dict):
             raise HTTPException(status_code=503, detail=_augment_detail({"code": "TEAM_EVENT_BACKEND_INVALID_RESPONSE", "probability_publishable": False}, effective_req))
-        governed = _run_mlb_llp_governance(effective_req, route, result, event_api=event_api)
+
+        envelope = _build_team_event_envelope(effective_req, {}, {})
+        governed = _run_mlb_llp_governance(effective_req, route, result, envelope=envelope, event_api=event_api)
         governed["scout_research_barrier"] = scout_research_barrier
+        governed["candidate_envelope"] = {
+            "research_run_id": envelope.research_run_id,
+            "event_key": envelope.event_key,
+            "official_event_id": envelope.official_event_id,
+            "official_event_id_source": envelope.official_event_id_source,
+            "event_start_time_utc": envelope.event_start_time_utc,
+            "sport": envelope.sport,
+            "league": envelope.league,
+            "home_team": envelope.home_team,
+            "away_team": envelope.away_team,
+            "settlement_market": envelope.settlement_market,
+            "market_status": envelope.market_status,
+        }
         if canonical_hydration_required:
             governed["canonical_acquisition"] = {"status": "PASS", "source_snapshot_id": effective_req.source_snapshot_id, "latest_material_update_timestamp": effective_req.latest_material_update_timestamp, "can_execute": False}
         return governed
