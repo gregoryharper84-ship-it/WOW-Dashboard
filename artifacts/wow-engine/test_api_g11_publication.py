@@ -158,7 +158,8 @@ def test_governance_surfaces_all_independent_publication_latches(monkeypatch):
     assert body["ratification_status"] == "NOT_RATIFIED"
     assert body["production_feature_ready"] is False
     assert body["probability_publishable"] is False
-    assert body["arithmetic_audit"]["provider"] == "WOLFRAM_ALPHA"
+    assert body["arithmetic_audit"]["provider"] == "PYTHON_PRIMARY"
+    assert body["arithmetic_audit"]["external_transport_required"] is False
     assert body["arithmetic_audit"]["blocks_model_probability"] is False
     assert body["can_execute"] is False
 
@@ -174,5 +175,6 @@ def test_governance_surfaces_arithmetic_readiness_when_gate_ledger_is_unreachabl
     assert response.status_code == 200
     body = response.json()
     assert body["deployment_contract_status"] == "UNAVAILABLE"
-    assert body["arithmetic_audit"]["provider"] == "WOLFRAM_ALPHA"
+    assert body["arithmetic_audit"]["provider"] == "PYTHON_PRIMARY"
+    assert body["arithmetic_audit"]["external_transport_required"] is False
     assert body["arithmetic_audit"]["can_execute"] is False
