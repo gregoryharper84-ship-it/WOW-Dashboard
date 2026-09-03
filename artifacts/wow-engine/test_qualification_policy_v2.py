@@ -12,47 +12,54 @@ def q(p, lb, ub, *, status="PRECALIBRATION_SHRINKAGE", publishable=True):
     )
 
 
-def test_elite_model_qualified_is_rankable_but_not_final_approved():
+def test_high_model_qualified_is_rankable_but_not_final_approved():
     result = q(0.69, 0.62, 0.74)
     assert result.terminal_label == "MODEL_QUALIFIED_HOLD"
     assert result.model_qualification_status == "MODEL_QUALIFIED"
-    assert result.confidence_tier == "ELITE"
+    assert result.confidence_tier == "HIGH"
     assert result.rank_eligible is True
     assert result.final_approved_allowed is False
 
 
-def test_strong_model_qualified():
+def test_standard_model_qualified_preserves_existing_governed_threshold():
     result = q(0.63, 0.58, 0.68)
     assert result.model_qualified is True
-    assert result.confidence_tier == "STRONG"
+    assert result.confidence_tier == "STANDARD"
 
 
-def test_jake_bennett_shape_is_model_qualified_from_point_lb_and_uncertainty():
+def test_sub_60_probability_is_research_only_even_with_strong_lower_bound():
     result = q(0.5923, 0.5861, 0.6500)
-    assert result.model_qualified is True
-    assert result.confidence_tier == "QUALIFIED"
-    assert result.rank_eligible is True
-
-
-def test_lean_is_research_interest_and_not_rank_eligible():
-    result = q(0.555, 0.515, 0.61)
+    assert result.model_qualified is False
+    assert result.confidence_tier == "RESEARCH"
     assert result.terminal_label == "RESEARCH_INTEREST"
-    assert result.confidence_tier == "LEAN"
+    assert result.rank_eligible is False
+
+
+def test_research_interest_is_never_rank_eligible():
+    result = q(0.575, 0.515, 0.61)
+    assert result.terminal_label == "RESEARCH_INTEREST"
+    assert result.confidence_tier == "RESEARCH"
     assert result.rank_eligible is False
     assert result.model_qualified is False
 
 
-def test_low_or_neutral_probability_not_qualified():
+def test_low_probability_not_qualified():
     result = q(0.52, 0.49, 0.57)
     assert result.terminal_label == "NO_LOW_PROBABILITY"
     assert result.rank_eligible is False
 
 
-def test_missing_calibrated_upper_bound_is_output_invalid():
+def test_upper_bound_is_advisory_not_a_new_qualification_cutoff():
+    result = q(0.62, 0.56, 0.90)
+    assert result.model_qualified is True
+    assert result.uncertainty_width is not None
+
+
+def test_malformed_upper_bound_is_output_invalid():
     result = classify_prop_probability(
         calibrated_probability=0.63,
         calibrated_lower_bound=0.58,
-        calibrated_upper_bound=None,
+        calibrated_upper_bound=0.50,
         calibration_status="PASS",
         blockers=[],
         probability_publishable=True,
