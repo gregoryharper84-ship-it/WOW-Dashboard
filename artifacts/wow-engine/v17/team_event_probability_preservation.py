@@ -1,20 +1,22 @@
-"""V17 team/event probability preservation shim.
+"""V17 MLB team/event handoff + probability-preservation repair.
 
-This module repairs one narrow host-orchestration defect: a completed fitted MLB
-sporting probability must not be erased merely because downstream LLP
-publication/ranking governance is held.  It does not relax any governance gate,
-does not make held rows rank eligible, and never enables execution.
+Repairs two coupled orchestration defects without relaxing governance:
+1. A completed fitted MLB sporting probability must not be erased merely because
+   downstream LLP publication/ranking governance is held.
+2. The score->LLP bridge must materialize the canonical evidence/source-attempt/
+   scoring-evidence rows consumed by the existing event gates before a final
+   governance decision is trusted.
 
-The active team-event runtime is patched at import time so every existing caller
-(including callers that imported ``score_team_event_request`` earlier) continues
-to execute the same scorer and terminal-governance path while using the repaired
-hold serializer.
+No probability is manufactured, no gate is bypassed, rank/publication remain
+fail-closed, and wager execution remains impossible.
 """
 from __future__ import annotations
 
 from typing import Any
 
 from v17 import team_event_request_runtime as _base
+
+_original_run_mlb_llp_governance = _base._run_mlb_llp_governance
 
 
 def _preserve_completed_probability_hold(
@@ -24,12 +26,7 @@ def _preserve_completed_probability_hold(
     *,
     governance_detail: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Return a fail-closed LLP hold without destroying completed model output.
-
-    Numeric fields are preserved only when the fitted scorer actually returned
-    them.  No probability is synthesized, inferred from market data, or promoted
-    to rank/publication eligibility here.
-    """
+    """Return a fail-closed LLP hold without destroying completed model output."""
     safe_model = dict(model_result)
     numeric_fields_present = sorted(_base._MLB_NUMERIC_MODEL_FIELDS.intersection(model_result))
     sporting_probability_completed = bool(numeric_fields_present)
@@ -56,8 +53,6 @@ def _preserve_completed_probability_hold(
         "terminal_label": "MODEL_QUALIFIED_HOLD",
         "terminal_ceiling": "MODEL_QUALIFIED_HOLD",
         "blockers": sorted(set(blockers)),
-        # A completed fitted probability remains visible as sporting evidence,
-        # while official publication/ranking stays fail-closed.
         "sporting_probability_completed": sporting_probability_completed,
         "sporting_probability_status": (
             "COMPLETED_HELD_DOWNSTREAM" if sporting_probability_completed else "NOT_COMPLETED"
@@ -78,10 +73,90 @@ def _preserve_completed_probability_hold(
     }
 
 
-# Patch the producing module global, not merely a re-exported function. Existing
-# score_team_event_request references therefore pick up the repaired serializer
-# when _run_mlb_llp_governance resolves _llp_governance_hold at runtime.
+def _run_mlb_llp_governance_with_evidence_handoff(
+    req: Any,
+    route: Any,
+    model_result: dict[str, Any],
+    envelope: Any | None = None,
+    *,
+    event_api: Any,
+) -> dict[str, Any]:
+    """Run governance, repair missing ledger handoff, then replay once.
+
+    The first bridge call creates/locates the immutable event_prediction row. If
+    it is held, the helper RPC copies only canonical evidence already present on
+    the request/score ledger into the event evidence ledgers. The exact same
+    governance bridge is then replayed. Missing optional evidence remains missing
+    and continues to fail closed.
+    """
+    first = _original_run_mlb_llp_governance(
+        req, route, model_result, envelope=envelope, event_api=event_api
+    )
+    if first.get("probability_publishable") is True:
+        return first
+
+    governance = first.get("llp_governance")
+    if not isinstance(governance, dict):
+        return first
+    event_prediction_id = governance.get("event_prediction_id")
+    score_snapshot_id = (
+        governance.get("score_snapshot_id")
+        or model_result.get("score_snapshot_id")
+        or model_result.get("base_score_snapshot_id")
+    )
+    get_client = getattr(event_api, "get_client", None)
+    if not event_prediction_id or not score_snapshot_id or not callable(get_client):
+        return first
+
+    evidence = dict(getattr(req, "sport_specific_evidence", None) or {})
+    try:
+        hydration_result = get_client().rpc(
+            "wow_v17_hydrate_mlb_event_governance_evidence",
+            {
+                "p_event_prediction_id": str(event_prediction_id),
+                "p_score_snapshot_id": str(score_snapshot_id),
+                "p_evidence": evidence,
+            },
+        ).execute()
+        hydration = hydration_result.data
+    except Exception as exc:
+        out = dict(first)
+        out["evidence_handoff_repair"] = {
+            "status": "UNAVAILABLE",
+            "error_type": type(exc).__name__,
+            "can_execute": False,
+        }
+        out["blockers"] = sorted(set([
+            *(out.get("blockers") or []),
+            "V17_EVENT_EVIDENCE_HANDOFF_REPAIR_UNAVAILABLE",
+        ]))
+        return out
+
+    if not isinstance(hydration, dict) or hydration.get("status") != "PASS":
+        out = dict(first)
+        out["evidence_handoff_repair"] = hydration if isinstance(hydration, dict) else {
+            "status": "INVALID_RESPONSE",
+            "can_execute": False,
+        }
+        out["blockers"] = sorted(set([
+            *(out.get("blockers") or []),
+            "V17_EVENT_EVIDENCE_HANDOFF_REPAIR_NOT_PASS",
+        ]))
+        return out
+
+    second = _original_run_mlb_llp_governance(
+        req, route, model_result, envelope=envelope, event_api=event_api
+    )
+    second["evidence_handoff_repair"] = hydration
+    second["governance_replayed_after_evidence_handoff"] = True
+    second["can_execute"] = False
+    return second
+
+
+# Patch module globals so existing references to score_team_event_request still
+# resolve these repaired helpers at runtime.
 _base._llp_governance_hold = _preserve_completed_probability_hold
+_base._run_mlb_llp_governance = _run_mlb_llp_governance_with_evidence_handoff
 
 TeamEventRequest = _base.TeamEventRequest
 TeamEventCapabilityResponse = _base.TeamEventCapabilityResponse
