@@ -63,8 +63,9 @@ def test_accepts_hold_without_prediction_ledger_id():
     assert mode == "SPORTING_PROBABILITY_COMPLETE_PUBLICATION_HOLD"
 
 
-def test_hold_contract_fails_closed_without_completed_sporting_probability_marker():
+def test_nonpersisted_hold_fails_closed_without_completed_sporting_probability_marker():
     body = _hold_body()
+    body["prediction"] = {}
     body.pop("governed_sporting_probability_completed")
     passed, _, _, mode = _is_model_path_pass(_response(body))
     assert passed is False
