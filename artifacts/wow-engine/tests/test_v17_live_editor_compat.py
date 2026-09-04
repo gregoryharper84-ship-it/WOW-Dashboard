@@ -20,8 +20,10 @@ def test_live_gpt_instructions_fit_editor_limit_and_preserve_controls():
     assert "can_execute=false" in text
     assert "V17_TERMINAL_REDUCER" in text
     assert "Never place, route, modify, approve, or cancel a wager/order" in text
-    assert "JSON null, never text" in text
-    assert "role_status must be a JSON object" in text
+    assert "JSON number 0..1 or null only, never labels/text" in text
+    assert "role_status object" in text
+    assert "market_evidence is a sibling of evidence_families, never nested" in text
+    assert "Unknown is not zero" in text
     assert KNOWLEDGE.exists()
 
 
