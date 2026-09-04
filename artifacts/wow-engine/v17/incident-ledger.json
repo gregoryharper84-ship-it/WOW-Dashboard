@@ -1,0 +1,12 @@
+{
+  "schema_version": "1.0",
+  "runtime_generation": "V17_ACTIVE",
+  "description": "Canonical linkage ledger between WOW V17 postmortems and engineering fixes.",
+  "id_conventions": {
+    "postmortem": "PM-YYYY-MM-DD-NNN",
+    "engineering_fix": "FIX-YYYY-MM-DD-NNN"
+  },
+  "terminal_authority": "V17_TERMINAL_REDUCER",
+  "can_execute": false,
+  "records": []
+}
