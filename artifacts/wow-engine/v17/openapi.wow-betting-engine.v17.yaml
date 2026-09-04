@@ -31,6 +31,19 @@ paths:
       responses:
         '200': {description: Canonical v17 host/lane alignment contract}
         '401': {description: Authentication failed}
+  /v17/detailed-evidence-contract:
+    get:
+      operationId: getWowV17DetailedEvidenceContract
+      x-openai-isConsequential: false
+      description: >-
+        Reports the active V17 detailed-evidence boundary. Research evidence may
+        supply typed model/regime/calibration candidates, but only the exact
+        controlling specialist adapter grants numerical authority. Market
+        evidence is never forwarded as sporting-model evidence.
+      security: [{actionBearer: []}]
+      responses:
+        '200': {description: Active detailed-evidence governance contract}
+        '401': {description: Authentication failed}
   /score-prop:
     post:
       operationId: scoreWowV17Prop
@@ -72,6 +85,11 @@ paths:
     post:
       operationId: scoreWowV17PickRequest
       x-openai-isConsequential: false
+      description: >-
+        Canonical prop batch bridge. When caller-owned raw evidence is supplied,
+        it may include detailed_evidence using the governed V17 evidence envelope.
+        The envelope is frozen into snapshot identity and never substitutes for
+        the fitted specialist model.
       security: [{actionBearer: []}]
       requestBody:
         required: true
@@ -81,7 +99,7 @@ paths:
       responses:
         '200': {description: Row-isolated governed prop batch result}
         '401': {description: Authentication failed}
-        '422': {description: Batch contract invalid}
+        '422': {description: Batch or detailed-evidence contract invalid}
   /score-team-event:
     post:
       operationId: scoreWowV17TeamEventFromWowHost
@@ -89,7 +107,9 @@ paths:
       description: >-
         Team/event ingress requested by WOW_BETTING_ENGINE. Backend must resolve
         controlling_engine_identity=LLP_TEAM_BETTING_ENGINE. Unsupported sport
-        adapters fail closed as MODEL_UNAVAILABLE.
+        adapters fail closed as MODEL_UNAVAILABLE. Optional rich research is
+        namespaced under sport_specific_evidence.v17_detailed_evidence; canonical
+        server-owned event/lineup/starter evidence remains authoritative.
       security: [{actionBearer: []}]
       requestBody:
         required: true
@@ -233,6 +253,52 @@ components:
         rate_provenance: {type: string}
         lineup_evidence: {type: [object, 'null'], additionalProperties: true}
         opponent_context: {type: [object, 'null'], additionalProperties: true}
+        detailed_evidence:
+          oneOf:
+            - {$ref: '#/components/schemas/DetailedEvidenceEnvelope'}
+            - {type: 'null'}
+    DetailedEvidenceEnvelope:
+      type: object
+      additionalProperties: true
+      required: [candidate_id, sport, event_id, as_of, evidence_families, market_evidence]
+      description: >-
+        Rich pregame evidence packet. This is evidence, not a probability package.
+        Every material item must carry source and as_of provenance and be typed as
+        MODEL_INPUT, REGIME_INPUT, CALIBRATION_INPUT, MARKET_EVIDENCE, or
+        EVIDENCE_ONLY. MARKET_EVIDENCE and EVIDENCE_ONLY are never forwarded as
+        sporting-model numerical feature candidates.
+      properties:
+        candidate_id: {type: string}
+        sport: {type: string}
+        event_id: {type: string}
+        as_of: {type: string, format: date-time}
+        controlling_specialist: {type: [string, 'null']}
+        evidence_families:
+          type: object
+          additionalProperties: true
+          description: >-
+            Must include recent_form, head_to_head, player_performance,
+            lineup_availability_depth, tactical_style, match_context_stakes,
+            environment, officiating, schedule_fatigue_travel, and
+            advanced_statistics families. Each family records status, sample
+            window/size, quality/certainty, and typed items with source/as_of.
+        market_evidence:
+          type: object
+          additionalProperties: true
+          description: >-
+            Separate downstream market context with market_state EXACT_LINE,
+            ADJACENT_LINE, or NO_MARKET. Implied/no-vig probabilities here are
+            never governed sporting probabilities.
+        source_conflicts:
+          type: array
+          items: {type: string}
+        lineup_certainty: {type: [number, 'null'], minimum: 0, maximum: 1}
+        role_certainty: {type: [number, 'null'], minimum: 0, maximum: 1}
+        starter_certainty: {type: [number, 'null'], minimum: 0, maximum: 1}
+        evidence_quality: {type: [number, 'null'], minimum: 0, maximum: 1}
+        notes:
+          type: array
+          items: {type: string}
     RecommendationBatch:
       type: object
       additionalProperties: true
@@ -284,4 +350,11 @@ components:
         source_snapshot_id: {type: string}
         latest_material_update_timestamp: {type: [string, 'null'], format: date-time}
         market_prior: {type: [object, 'null'], additionalProperties: true}
-        sport_specific_evidence: {type: object, additionalProperties: true}
+        sport_specific_evidence:
+          type: object
+          additionalProperties: true
+          description: >-
+            Sport-specific evidence. For V17 rich research use the
+            v17_detailed_evidence key containing a DetailedEvidenceEnvelope.
+            Server-owned canonical identity, starters, lineups, venue, and
+            lifecycle evidence remain authoritative and cannot be overwritten.
