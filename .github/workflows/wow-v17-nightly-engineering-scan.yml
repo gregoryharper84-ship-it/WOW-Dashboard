@@ -41,6 +41,9 @@ jobs:
       - name: Run governed probability backend regression suite
         run: python -m pytest -q
 
+      - name: Validate postmortem and engineering-fix ledger
+        run: python v17/nightly_incident_records.py validate
+
       - name: Validate V17 and Action contracts
         run: |
           python - <<'PY'
@@ -115,10 +118,14 @@ jobs:
             echo "- UTC: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
             echo "- Commit: $GITHUB_SHA"
             echo "- Workflow run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            echo "- Incident ledger: artifacts/wow-engine/v17/incident-ledger.json"
+            echo "- Postmortems: artifacts/wow-engine/v17/postmortems/"
+            echo "- Engineering fixes: artifacts/wow-engine/v17/engineering-fixes/"
             echo "- can_execute: false"
             echo
             echo "This workflow is the deterministic detector/acceptance layer."
             echo "Autonomous diagnosis and bounded repair are governed by .agents/skills/wow-nightly-engineering-autopilot/SKILL.md."
+            echo "Any reproducible defect entering repair must receive a PM record before code changes and a linked FIX record before implementation."
           } | tee "$RUNNER_TEMP/wow-nightly-summary.md"
 
       - name: Upload nightly evidence
