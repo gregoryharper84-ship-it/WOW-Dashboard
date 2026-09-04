@@ -14,21 +14,23 @@
       "title": "Render checksPass CI trigger drift",
       "severity": "P1",
       "domain": "deployment / CI",
-      "state": "FIX_IN_PROGRESS",
+      "state": "VERIFIED_CLOSED",
       "postmortem_path": "v17/postmortems/PM-2026-09-04-001__render-checkspass-ci-trigger-drift.md",
       "engineering_fix_ids": [
         "FIX-2026-09-04-001"
       ],
       "created_utc": "2026-09-04T07:49:42Z",
-      "updated_utc": "2026-09-04T07:49:42Z",
+      "updated_utc": "2026-09-04T08:01:56Z",
       "engineering_fixes": {
         "FIX-2026-09-04-001": {
           "title": "Align Render checksPass with main CI",
           "risk": "R1",
-          "state": "FIX_IN_PROGRESS",
+          "state": "VERIFIED_CLOSED",
           "path": "v17/engineering-fixes/FIX-2026-09-04-001__align-render-checkspass-with-main-ci.md",
           "created_utc": "2026-09-04T07:49:42Z",
-          "updated_utc": "2026-09-04T07:49:42Z"
+          "updated_utc": "2026-09-04T08:01:56Z",
+          "merge_commit": "12e2b823c3115e05c3631fe0c611b2d47fb4f40e",
+          "production_deploy": "dep-dad7knqjnfac73e9jfv0"
         }
       }
     }
