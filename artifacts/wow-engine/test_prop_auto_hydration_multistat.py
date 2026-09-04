@@ -49,6 +49,10 @@ def _get(event_start):
                     },
                 })
             return _Response({'stats': [{'splits': splits}]})
+        if url.endswith('/people/123'):
+            return _Response({'people': [{'pitchHand': {'code': 'R'}}]})
+        if url.endswith('/game/999/boxscore'):
+            return _Response({'teams': {'away': {'battingOrder': []}, 'home': {'battingOrder': []}}})
         raise AssertionError(url)
     return fake_get
 
@@ -78,11 +82,17 @@ def test_certified_mlb_pitcher_stats_share_official_prior_start_hydration(stat_t
     assert len(evidence['game_log']) == 10
     assert evidence['game_log'][0] == expected_first
     assert evidence['box_score_log'][0]['outs'] == 18
-    assert evidence['box_score_log'][0]['pitches'] == 90
-    assert evidence['box_score_log'][0]['strikes'] == 60
-    assert evidence['opportunity_ledger']['target_stat_type'] == stat_type
     assert evidence['role_status']['role'] == 'STARTING_PITCHER'
-    assert evidence['rate_provenance'].endswith(f'{stat_type}:OFFICIAL_PRIOR_STARTS')
+    if stat_type == 'PITCHER_STRIKEOUTS':
+        # The existing certified K evidence shape remains unchanged.
+        assert 'pitches' not in evidence['box_score_log'][0]
+        assert evidence['opportunity_ledger']['game_log_stat'] == 'pitcher strikeouts'
+    else:
+        assert evidence['box_score_log'][0]['pitches'] == 90
+        assert evidence['box_score_log'][0]['strikes'] == 60
+        assert evidence['opportunity_ledger']['target_stat_type'] == stat_type
+        assert f'target={stat_type}' in evidence['rate_provenance']
+        assert 'no target values estimated' in evidence['rate_provenance']
 
 
 def test_pitch_composition_does_not_invent_missing_pitch_counts():
