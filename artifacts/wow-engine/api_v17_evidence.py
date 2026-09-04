@@ -1,12 +1,12 @@
 """Production V17 evidence-aware wrapper over api_ncaaf_acceptance.
 
-This wrapper is intentionally additive and reversible.  It preserves every
+This wrapper is intentionally additive and reversible. It preserves every
 existing governed scorer and terminal rule, but extends the canonical prop
 batch boundary and MLB team/event hydration boundary with the V17 detailed
 research envelope.
 
 Important governance properties:
-- old callers remain byte-for-byte compatible when no detailed evidence is sent;
+- old callers remain compatible when no detailed evidence is sent;
 - detailed research changes a prop snapshot fingerprint, so materially different
   evidence cannot silently reuse the same immutable evidence identity;
 - market evidence is validated/stored but is never forwarded as a sporting-model
@@ -19,14 +19,13 @@ Important governance properties:
 """
 from __future__ import annotations
 
-import json
 import uuid
 from contextvars import ContextVar
 from hashlib import sha256
 from typing import Any, Optional
 
 from fastapi import Header, HTTPException
-from pydantic import ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 import api_ncaaf_acceptance as production
 import api_prod_market as prop_market_api
@@ -42,10 +41,6 @@ from v17.detailed_evidence_runtime import (
 
 app = production.app
 
-
-# ---------------------------------------------------------------------------
-# Prop feature-router extension
-# ---------------------------------------------------------------------------
 _original_model_features = prop_market_api._model_features
 
 
@@ -53,10 +48,6 @@ def _model_features_with_detailed_evidence(evidence: dict[str, Any]) -> dict[str
     features = dict(_original_model_features(evidence))
     detailed = evidence.get("detailed_evidence")
     if isinstance(detailed, dict):
-        # This only exposes typed candidates to the adapter.  Nothing in this
-        # wrapper applies a coefficient, haircut, probability, or terminal
-        # decision.  Adapters that do not explicitly consume the key remain
-        # numerically unchanged.
         features["detailed_evidence"] = detailed
         features["detailed_feature_candidates"] = compile_feature_candidates(detailed)
     return features
@@ -64,14 +55,8 @@ def _model_features_with_detailed_evidence(evidence: dict[str, Any]) -> dict[str
 
 prop_market_api._model_features = _model_features_with_detailed_evidence
 
-
-# ---------------------------------------------------------------------------
-# Prop snapshot extension
-# ---------------------------------------------------------------------------
-# Context is request-local even under concurrent FastAPI workers.
 _detailed_by_row_key: ContextVar[dict[str, DetailedEvidenceEnvelope]] = ContextVar(
-    "wow_v17_detailed_evidence_by_row_key",
-    default={},
+    "wow_v17_detailed_evidence_by_row_key", default={}
 )
 _original_snapshot_payload = pick_runtime._snapshot_payload
 
@@ -91,7 +76,6 @@ def _snapshot_payload_with_detailed_evidence(row: Any, normalized: dict[str, Any
     combined_snapshot_id = str(
         uuid.uuid5(uuid.NAMESPACE_URL, f"wow-prop-evidence:{combined_fingerprint}")
     )
-
     enriched = dict(persisted)
     enriched["source_snapshot_id"] = combined_snapshot_id
     enriched["detailed_evidence"] = detail_payload
@@ -112,7 +96,7 @@ class DetailedPickRequestRow(pick_runtime.PickRequestRow):
     evidence: DetailedRawPropEvidence | None = None
 
 
-class DetailedPickRequestBatch(pick_runtime.BaseModel):
+class DetailedPickRequestBatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
     request_id: Optional[str] = None
     rows: list[DetailedPickRequestRow] = Field(min_length=1, max_length=50)
@@ -143,8 +127,7 @@ def _replace_pick_request_route() -> None:
     def score_pick_request_with_detailed_evidence(
         batch: DetailedPickRequestBatch,
         x_wow_model_identity: Optional[str] = Header(
-            default=None,
-            alias="X-WOW-Model-Identity",
+            default=None, alias="X-WOW-Model-Identity"
         ),
     ):
         base_rows: list[pick_runtime.PickRequestRow] = []
@@ -152,8 +135,6 @@ def _replace_pick_request_route() -> None:
         detail_summaries: dict[str, dict[str, Any]] = {}
 
         for index, input_row in enumerate(batch.rows):
-            # Give every row an explicit stable row key so the request-local
-            # evidence map cannot become ambiguous inside _snapshot_payload.
             row_key = input_row.row_key or f"row-{index + 1}"
             row_payload = input_row.model_dump(mode="python")
             row_payload["row_key"] = row_key
@@ -197,15 +178,11 @@ def _replace_pick_request_route() -> None:
                     },
                 ) from exc
 
-        base_batch = pick_runtime.PickRequestBatch(
-            request_id=batch.request_id,
-            rows=base_rows,
-        )
+        base_batch = pick_runtime.PickRequestBatch(request_id=batch.request_id, rows=base_rows)
         token = _detailed_by_row_key.set(detail_map)
         try:
             result = original_endpoint(
-                base_batch,
-                x_wow_model_identity=x_wow_model_identity,
+                base_batch, x_wow_model_identity=x_wow_model_identity
             )
         finally:
             _detailed_by_row_key.reset(token)
@@ -220,9 +197,7 @@ def _replace_pick_request_route() -> None:
                     outcome["detailed_evidence"] = {
                         **summary,
                         "snapshot_status": (
-                            "FROZEN"
-                            if outcome.get("source_snapshot_id")
-                            else "VALIDATED_NOT_FROZEN"
+                            "FROZEN" if outcome.get("source_snapshot_id") else "VALIDATED_NOT_FROZEN"
                         ),
                         "numerical_authority": "CONTROLLING_SPECIALIST_ADAPTER_ONLY",
                         "market_evidence_forwarded_to_model": False,
@@ -240,10 +215,6 @@ def _replace_pick_request_route() -> None:
 
 _replace_pick_request_route()
 
-
-# ---------------------------------------------------------------------------
-# Team/event canonical hydration extension
-# ---------------------------------------------------------------------------
 _original_team_event_canonicalizer = team_event_runtime._canonicalize_public_mlb_request
 
 
@@ -276,9 +247,6 @@ def _canonicalize_public_mlb_request_with_detailed_evidence(req: Any, event_api:
         ) from exc
 
     merged = dict(canonical.sport_specific_evidence or {})
-    # The canonical fields above remain authoritative.  The namespaced research
-    # envelope is additive only and is available to the downstream evidence
-    # handoff/governance layer without overwriting venue/starters/lineups.
     merged["v17_detailed_evidence"] = detailed.model_dump(mode="json", exclude_none=True)
     merged["v17_detailed_feature_candidates"] = compile_feature_candidates(detailed)
     merged["v17_detailed_evidence_summary"] = evidence_summary(detailed)
