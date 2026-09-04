@@ -136,6 +136,34 @@ At minimum, the run should attempt to verify these V17 contracts without manufac
 
 If real pregame inputs are not safely available, use deterministic fixtures or contract tests rather than inventing live sporting data.
 
+## Mandatory incident-record lifecycle
+
+Postmortems and engineering fixes are separate first-class artifacts and must remain linked through `artifacts/wow-engine/v17/incident-ledger.json`.
+
+For every reproducible defect that enters diagnosis beyond simple observation:
+
+1. create a postmortem before changing code using `python artifacts/wow-engine/v17/nightly_incident_records.py create-postmortem ...`;
+2. record impact, evidence, deterministic reproduction or explicit evidence-only status, root cause confidence, severity, domain, and V17 governance classification;
+3. if remediation is warranted, create a linked engineering fix using `create-fix` before implementation;
+4. place implementation, allowed-file boundary, regression test, validation gates, deployment reference, rollback reference, and production verification in the FIX record rather than the PM record;
+5. keep both records and the ledger in the same repair branch/PR as the code change whenever possible;
+6. run `python artifacts/wow-engine/v17/nightly_incident_records.py validate` before publication;
+7. never mark the PM or FIX closed until fresh production verification passes.
+
+A PM may exist without a FIX when the issue is observational, unreproduced, accepted risk, or R3 diagnose-only. A FIX must never exist without a linked PM.
+
+Required lifecycle states are:
+
+- `OPEN`
+- `DIAGNOSED`
+- `FIX_IN_PROGRESS`
+- `HUMAN_REVIEW_REQUIRED`
+- `DEPLOYED_PENDING_VERIFY`
+- `VERIFIED_CLOSED`
+- `ROLLBACK_REQUIRED`
+
+Do not use `VERIFIED_CLOSED` as a substitute for actually verifying production.
+
 ## Output contract
 
 Every nightly run must produce one compact engineering report with:
@@ -147,6 +175,8 @@ main_commit:
 production_deploy:
 findings:
   - id:
+    postmortem_id:
+    engineering_fix_id:
     severity:
     domain:
     evidence:
@@ -155,6 +185,8 @@ findings:
     action_taken:
 patches:
   - change_id:
+    postmortem_id:
+    engineering_fix_id:
     branch:
     commit:
     pr:
@@ -181,6 +213,6 @@ Do not report `REPAIRED_AND_VERIFIED` unless the production verification gate ac
 
 - `wow-replit-patch-governor` controls the patch mechanics and bounded-change workflow.
 - V17 domain/model skills control sporting probability semantics.
-- This nightly skill controls detection, triage, risk classification, repair eligibility, autonomous publication, rollback, and nightly reporting.
+- This nightly skill controls detection, triage, risk classification, repair eligibility, autonomous publication, rollback, nightly reporting, and PM↔FIX lifecycle enforcement.
 
 No part of this skill may override a stricter V17 governance rule.
