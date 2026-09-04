@@ -1,0 +1,9 @@
+{
+  "train_log_loss": 2.8382553781002087,
+  "test_log_loss": 2.846681733987913,
+  "test_mae_outs": 2.9713790847928596,
+  "naive_baseline_test_log_loss": 2.9038607370052434,
+  "log_loss_improvement_vs_naive": 0.057179003017330476,
+  "test_rows_n": 1968,
+  "train_rows_n": 4858
+}

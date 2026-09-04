@@ -1,0 +1,11 @@
+{
+  "train_log_loss": 1.788823263031545,
+  "test_log_loss": 1.7955831397306041,
+  "test_mae_pa": 0.8823947279827825,
+  "naive_baseline_test_log_loss": 1.8550488663516274,
+  "slot_alignment_only_test_log_loss": 1.8309810070613783,
+  "log_loss_improvement_vs_naive": 0.05946572662102323,
+  "log_loss_improvement_vs_slot_only": 0.03539786733077421,
+  "test_rows_n": 20801,
+  "train_rows_n": 50746
+}
