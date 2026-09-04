@@ -1,0 +1,47 @@
+name: v17-detailed-evidence-diagnostic
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pytest-diagnostic:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: artifacts/wow-engine
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: artifacts/wow-engine/requirements.txt
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install PyYAML openapi-spec-validator PyJWT
+      - name: Run full backend pytest and retain report
+        id: pytest
+        continue-on-error: true
+        run: |
+          python -m pytest -q --junitxml=pytest-results.xml 2>&1 | tee pytest-output.txt
+          exit ${PIPESTATUS[0]}
+      - name: Upload pytest diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v17-detailed-evidence-pytest-diagnostics
+          path: |
+            artifacts/wow-engine/pytest-results.xml
+            artifacts/wow-engine/pytest-output.txt
+          if-no-files-found: error
+      - name: Preserve failure result
+        if: steps.pytest.outcome == 'failure'
+        run: exit 1
