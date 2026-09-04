@@ -176,23 +176,63 @@ components:
           items: {$ref: '#/components/schemas/PickRequestRow'}
     PickRequestRow:
       type: object
-      additionalProperties: true
+      additionalProperties: false
       required: [event_id, event_start_time, sport, player, stat_type, line, direction]
       properties:
         row_key: {type: [string, 'null']}
         event_id: {type: string}
         event_start_time: {type: string, format: date-time}
         sport: {type: string}
-        league: {type: [string, 'null']}
         player: {type: string}
-        opponent: {type: [string, 'null']}
         stat_type: {type: string}
         line: {type: number}
         direction: {type: string, enum: [MORE, LESS]}
-        source_snapshot_id: {type: [string, 'null']}
-        source_type: {type: [string, 'null']}
+        evidence:
+          oneOf:
+            - {$ref: '#/components/schemas/RawPropEvidence'}
+            - {type: 'null'}
+        source_type:
+          type: string
+          enum: [SCREENSHOT, PDF, AUTONOMOUS_DISCOVERY, PASTED_BOARD, NORMALIZED]
+          default: NORMALIZED
         platform: {type: [string, 'null']}
-        evidence: {type: [object, 'null'], additionalProperties: true}
+        league: {type: [string, 'null']}
+        opponent: {type: [string, 'null']}
+        source_capture_timestamp: {type: [string, 'null'], format: date-time}
+        seed: {type: integer, default: 0}
+        money_lane_status: {type: string, default: PAYOUT_UNRESOLVED}
+        market_side_a: {type: [object, 'null'], additionalProperties: true}
+        market_side_b: {type: [object, 'null'], additionalProperties: true}
+    RawPropEvidence:
+      type: object
+      additionalProperties: false
+      required:
+        - captured_at
+        - game_log
+        - box_score_log
+        - role_status
+        - role_timestamp
+        - opportunity_ledger
+        - source_timestamps
+        - rate_provenance
+      properties:
+        captured_at: {type: string, format: date-time}
+        game_log:
+          type: array
+          items: {type: number}
+        box_score_log:
+          type: array
+          items: {type: object, additionalProperties: true}
+        role_status: {type: object, additionalProperties: true}
+        role_timestamp: {type: string, format: date-time}
+        opportunity_ledger: {type: object, additionalProperties: true}
+        source_timestamps:
+          type: object
+          additionalProperties: {type: string, format: date-time}
+        evidence_version: {type: string, default: PROP_EVIDENCE_V1}
+        rate_provenance: {type: string}
+        lineup_evidence: {type: [object, 'null'], additionalProperties: true}
+        opponent_context: {type: [object, 'null'], additionalProperties: true}
     RecommendationBatch:
       type: object
       additionalProperties: true
