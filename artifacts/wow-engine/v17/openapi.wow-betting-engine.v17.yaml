@@ -4,10 +4,8 @@ info:
   version: 17.0.0
   description: >-
     PRODUCTION SOURCE CONTRACT. WOW Betting Engine owns player/prop/scalar
-    intelligence. Team/event requests may originate here but are routed by the
-    backend to LLP_TEAM_BETTING_ENGINE as controlling engine. Install this schema
-    in the live WOW Custom GPT editor when editor access is available. This API is
-    analytical only and can_execute is always false.
+    intelligence. Team/event requests route to LLP_TEAM_BETTING_ENGINE.
+    Analytical only; can_execute is always false.
 servers:
   - url: https://wow-governed-probability-engine.onrender.com
 paths:
@@ -36,10 +34,9 @@ paths:
       operationId: getWowV17DetailedEvidenceContract
       x-openai-isConsequential: false
       description: >-
-        Reports the active V17 detailed-evidence boundary. Research evidence may
-        supply typed model/regime/calibration candidates, but only the exact
-        controlling specialist adapter grants numerical authority. Market
-        evidence is never forwarded as sporting-model evidence.
+        Reports the V17 detailed-evidence boundary. Only the exact controlling
+        specialist adapter grants numerical authority; market evidence remains
+        separate from sporting-model inputs.
       security: [{actionBearer: []}]
       responses:
         '200': {description: Active detailed-evidence governance contract}
@@ -49,8 +46,7 @@ paths:
       operationId: scoreWowV17Prop
       x-openai-isConsequential: false
       description: >-
-        WOW player-prop lane only. The X-WOW-Model-Identity header is fixed to
-        WOW_BETTING_ENGINE. Never use this route for team/event winners.
+        WOW player-prop lane only. Never use this route for team/event winners.
       security: [{actionBearer: []}]
       requestBody:
         required: true
@@ -67,11 +63,8 @@ paths:
       operationId: runWowV17DailySnapshot
       x-openai-isConsequential: false
       description: >-
-        Canonical bounded Daily runner. The backend selects only governed,
-        still-pregame snapshots, scores capped prop and moneyline rows through
-        existing V17 ingress, and always returns one terminal receipt. Call
-        this first for a V17 Daily request; never schedule row-by-row web
-        discovery before it.
+        Canonical bounded Daily runner. Selects still-pregame governed snapshots,
+        scores capped prop and moneyline rows, and returns one terminal receipt.
       security: [{actionBearer: []}]
       requestBody:
         required: true
@@ -86,9 +79,8 @@ paths:
       operationId: scoreWowV17PickRequest
       x-openai-isConsequential: false
       description: >-
-        Canonical prop batch bridge. When caller-owned raw evidence is supplied,
-        it may include detailed_evidence using the governed V17 evidence envelope.
-        The envelope is frozen into snapshot identity and never substitutes for
+        Canonical prop batch bridge. Caller evidence may include detailed_evidence;
+        the envelope is frozen into snapshot identity and never substitutes for
         the fitted specialist model.
       security: [{actionBearer: []}]
       requestBody:
@@ -105,11 +97,10 @@ paths:
       operationId: scoreWowV17TeamEventFromWowHost
       x-openai-isConsequential: false
       description: >-
-        Team/event ingress requested by WOW_BETTING_ENGINE. Backend must resolve
-        controlling_engine_identity=LLP_TEAM_BETTING_ENGINE. Unsupported sport
-        adapters fail closed as MODEL_UNAVAILABLE. Optional rich research is
-        namespaced under sport_specific_evidence.v17_detailed_evidence; canonical
-        server-owned event/lineup/starter evidence remains authoritative.
+        Team/event ingress from WOW_BETTING_ENGINE. Backend resolves
+        LLP_TEAM_BETTING_ENGINE as controller. Unsupported sport adapters fail
+        closed. Rich research may use v17_detailed_evidence; server identity,
+        starters, lineups and venue remain authoritative.
       security: [{actionBearer: []}]
       requestBody:
         required: true
@@ -262,11 +253,9 @@ components:
       additionalProperties: true
       required: [candidate_id, sport, event_id, as_of, evidence_families, market_evidence]
       description: >-
-        Rich pregame evidence packet. This is evidence, not a probability package.
-        Every material item must carry source and as_of provenance and be typed as
-        MODEL_INPUT, REGIME_INPUT, CALIBRATION_INPUT, MARKET_EVIDENCE, or
-        EVIDENCE_ONLY. MARKET_EVIDENCE and EVIDENCE_ONLY are never forwarded as
-        sporting-model numerical feature candidates.
+        Rich pregame evidence packet; not a probability package. Material items
+        carry provenance and one typed feature status. MARKET_EVIDENCE and
+        EVIDENCE_ONLY never become sporting-model numerical features.
       properties:
         candidate_id: {type: string}
         sport: {type: string}
@@ -277,18 +266,14 @@ components:
           type: object
           additionalProperties: true
           description: >-
-            Must include recent_form, head_to_head, player_performance,
-            lineup_availability_depth, tactical_style, match_context_stakes,
-            environment, officiating, schedule_fatigue_travel, and
-            advanced_statistics families. Each family records status, sample
-            window/size, quality/certainty, and typed items with source/as_of.
+            Includes the governed evidence families with status, sample window,
+            quality/certainty, typed items, source and as_of provenance.
         market_evidence:
           type: object
           additionalProperties: true
           description: >-
-            Separate downstream market context with market_state EXACT_LINE,
-            ADJACENT_LINE, or NO_MARKET. Implied/no-vig probabilities here are
-            never governed sporting probabilities.
+            Separate downstream market context using EXACT_LINE, ADJACENT_LINE,
+            or NO_MARKET. Implied/no-vig values are not sporting probabilities.
         source_conflicts:
           type: array
           items: {type: string}
@@ -354,7 +339,6 @@ components:
           type: object
           additionalProperties: true
           description: >-
-            Sport-specific evidence. For V17 rich research use the
-            v17_detailed_evidence key containing a DetailedEvidenceEnvelope.
-            Server-owned canonical identity, starters, lineups, venue, and
-            lifecycle evidence remain authoritative and cannot be overwritten.
+            Sport-specific evidence. Rich V17 research uses v17_detailed_evidence.
+            Server-owned identity, starters, lineups, venue and lifecycle remain
+            authoritative and cannot be overwritten.
