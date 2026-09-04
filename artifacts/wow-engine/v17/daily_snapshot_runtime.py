@@ -17,7 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from v17.daily_prop_acquisition import acquire_daily_prop_snapshots
 from v17.prop_forward_cohort_route import install_prop_forward_cohort_route
-from v17.team_event_request_runtime import TeamEventRequest, score_team_event_request
+from v17.team_event_probability_preservation import TeamEventRequest, score_team_event_request
 
 
 class DailySnapshotRequest(BaseModel):
