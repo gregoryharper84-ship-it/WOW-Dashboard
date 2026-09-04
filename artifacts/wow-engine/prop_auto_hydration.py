@@ -1,18 +1,12 @@
 """Automatic raw-evidence acquisition for certified MLB pitcher prop routes.
 
-The producing layer owns official MLB identity, starter/event resolution, prior
-start history, and target-specific evidence construction.  It never computes a
-probability and never authorizes execution.
+The certified pitcher-strikeout route retains its existing official MLB
+opponent-context behavior byte-for-byte at the evidence-contract level. New
+workload routes are additive and reuse only the authoritative identity,
+starter/event, and prior-start producing layers.
 
-Supported governed fitted routes:
-- PITCHER_STRIKEOUTS
-- PITCHING_OUTS
-- STRIKES_THROWN
-- BALLS_THROWN
-
-For each route the same official prior-start rows are frozen, while game_log is
-target-specific.  Pitch-composition routes require official per-start pitches
-and strikes; missing composition fails closed rather than being estimated.
+Supported routes: PITCHER_STRIKEOUTS, PITCHING_OUTS, STRIKES_THROWN,
+BALLS_THROWN. This module never computes probability or authorizes execution.
 """
 from __future__ import annotations
 
@@ -29,12 +23,10 @@ AUTO_HYDRATION_EVIDENCE_VERSION = "PROP_EVIDENCE_V1"
 HTTP_TIMEOUT_SECONDS = 8.0
 HTTP_ATTEMPTS = 2
 MIN_STARTS = 10
-SUPPORTED_STATS = {
-    "PITCHER_STRIKEOUTS",
-    "PITCHING_OUTS",
-    "STRIKES_THROWN",
-    "BALLS_THROWN",
-}
+MIN_LINEUP_HITTERS_FOR_OPP_CONTEXT = 6
+MIN_LINEUP_SPLIT_PA = 100
+MIN_HITTER_SPLIT_PA = 10
+SUPPORTED_STATS = {"PITCHER_STRIKEOUTS", "PITCHING_OUTS", "STRIKES_THROWN", "BALLS_THROWN"}
 
 
 class PropAutoHydrationError(RuntimeError):
@@ -48,15 +40,9 @@ def _aware(value: str) -> datetime:
     try:
         parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
     except (TypeError, ValueError) as exc:
-        raise PropAutoHydrationError(
-            "PROP_EVENT_START_INVALID",
-            "event_start_time must be timezone-aware ISO 8601",
-        ) from exc
+        raise PropAutoHydrationError("PROP_EVENT_START_INVALID", "event_start_time must be timezone-aware ISO 8601") from exc
     if parsed.utcoffset() is None:
-        raise PropAutoHydrationError(
-            "PROP_EVENT_START_INVALID",
-            "event_start_time must include a timezone",
-        )
+        raise PropAutoHydrationError("PROP_EVENT_START_INVALID", "event_start_time must include a timezone")
     return parsed.astimezone(timezone.utc)
 
 
@@ -77,22 +63,13 @@ def _outs_from_ip(value: Any) -> int:
     text = str(value or "").strip()
     if not text:
         raise PropAutoHydrationError("MLB_GAME_LOG_INVALID", "inningsPitched missing")
-    if "." not in text:
-        whole, frac = text, "0"
-    else:
-        whole, frac = text.split(".", 1)
+    whole, frac = (text.split(".", 1) + ["0"])[:2] if "." in text else (text, "0")
     if frac not in {"0", "1", "2"}:
-        raise PropAutoHydrationError(
-            "MLB_GAME_LOG_INVALID",
-            f"invalid inningsPitched fraction: {text}",
-        )
+        raise PropAutoHydrationError("MLB_GAME_LOG_INVALID", f"invalid inningsPitched fraction: {text}")
     try:
         return int(whole) * 3 + int(frac)
     except ValueError as exc:
-        raise PropAutoHydrationError(
-            "MLB_GAME_LOG_INVALID",
-            f"invalid inningsPitched: {text}",
-        ) from exc
+        raise PropAutoHydrationError("MLB_GAME_LOG_INVALID", f"invalid inningsPitched: {text}") from exc
 
 
 def _request_json(url: str, *, params: dict[str, Any], http_get: Callable[..., Any]) -> dict[str, Any]:
@@ -123,10 +100,7 @@ def _resolve_player_id(player: str, *, http_get: Callable[..., Any]) -> tuple[in
         http_get=http_get,
     )
     people = payload.get("people") if isinstance(payload.get("people"), list) else []
-    exact = [
-        p for p in people
-        if isinstance(p, dict) and _name_key(p.get("fullName")) == _name_key(player)
-    ]
+    exact = [p for p in people if isinstance(p, dict) and _name_key(p.get("fullName")) == _name_key(player)]
     if len(exact) != 1:
         raise PropAutoHydrationError(
             "PROP_PLAYER_IDENTITY_UNRESOLVED",
@@ -139,12 +113,7 @@ def _resolve_player_id(player: str, *, http_get: Callable[..., Any]) -> tuple[in
     return player_id, str(exact[0].get("fullName") or player)
 
 
-def _schedule_context(
-    player_id: int,
-    *,
-    event_start: datetime,
-    http_get: Callable[..., Any],
-) -> dict[str, Any]:
+def _schedule_context(player_id: int, *, event_start: datetime, http_get: Callable[..., Any]) -> dict[str, Any]:
     payload = _request_json(
         f"{MLB_STATS_API_BASE}/schedule",
         params={
@@ -156,8 +125,7 @@ def _schedule_context(
         http_get=http_get,
     )
     candidates: list[tuple[float, dict[str, Any], str]] = []
-    dates = payload.get("dates") if isinstance(payload.get("dates"), list) else []
-    for block in dates:
+    for block in payload.get("dates") or []:
         games = block.get("games") if isinstance(block, dict) and isinstance(block.get("games"), list) else []
         for game in games:
             if not isinstance(game, dict):
@@ -182,11 +150,7 @@ def _schedule_context(
     candidates.sort(key=lambda item: item[0])
     delta, game, side = candidates[0]
     if delta > 12 * 60 * 60:
-        raise PropAutoHydrationError(
-            "PROP_EVENT_IDENTITY_CONFLICT",
-            "official probable-pitcher game was too far from the requested event start",
-            detail={"start_delta_seconds": delta},
-        )
+        raise PropAutoHydrationError("PROP_EVENT_IDENTITY_CONFLICT", "official probable-pitcher game was too far from the requested event start", detail={"start_delta_seconds": delta})
     teams = game.get("teams") if isinstance(game.get("teams"), dict) else {}
     other = "away" if side == "home" else "home"
     team_node = teams.get(side) if isinstance(teams.get(side), dict) else {}
@@ -196,38 +160,25 @@ def _schedule_context(
     venue = game.get("venue") if isinstance(game.get("venue"), dict) else {}
     status = game.get("status") if isinstance(game.get("status"), dict) else {}
     return {
-        "official_game_pk": game.get("gamePk"),
-        "official_game_date": game.get("gameDate"),
-        "side": side.upper(),
-        "team": team.get("abbreviation") or team.get("name") or "UNKNOWN",
-        "team_id": _int(team.get("id")),
-        "opponent": opponent.get("abbreviation") or opponent.get("name") or "UNKNOWN",
-        "opponent_team_id": _int(opponent.get("id")),
-        "venue": venue.get("name") or "UNKNOWN",
+        "official_game_pk": game.get("gamePk"), "official_game_date": game.get("gameDate"),
+        "side": side.upper(), "team": team.get("abbreviation") or team.get("name") or "UNKNOWN",
+        "team_id": _int(team.get("id")), "opponent": opponent.get("abbreviation") or opponent.get("name") or "UNKNOWN",
+        "opponent_team_id": _int(opponent.get("id")), "venue": venue.get("name") or "UNKNOWN",
         "schedule_status": status.get("detailedState") or status.get("abstractGameState") or "UNKNOWN",
         "starter_status": "STARTER_PROBABLE_OFFICIAL_SCHEDULE",
     }
 
 
-def _prior_start_rows(
-    player_id: int,
-    *,
-    season: int,
-    event_start: datetime,
-    stat_type: str,
-    http_get: Callable[..., Any],
-) -> tuple[list[float], list[dict[str, Any]]]:
+def _prior_start_rows(player_id: int, *, season: int, event_start: datetime, stat_type: str, http_get: Callable[..., Any]) -> tuple[list[float], list[dict[str, Any]]]:
     payload = _request_json(
         f"{MLB_STATS_API_BASE}/people/{player_id}/stats",
         params={"stats": "gameLog", "group": "pitching", "season": str(season), "gameType": "R"},
         http_get=http_get,
     )
-    blocks = payload.get("stats") if isinstance(payload.get("stats"), list) else []
     splits: list[Any] = []
-    for block in blocks:
+    for block in payload.get("stats") or []:
         if isinstance(block, dict) and isinstance(block.get("splits"), list):
             splits.extend(block["splits"])
-
     parsed: list[tuple[str, dict[str, Any], float]] = []
     for split in splits:
         if not isinstance(split, dict):
@@ -263,21 +214,15 @@ def _prior_start_rows(
             continue
         opponent = split.get("opponent") if isinstance(split.get("opponent"), dict) else {}
         row = {
-            "date": date_value,
-            "opponent": opponent.get("abbreviation") or opponent.get("name") or "UNKNOWN",
-            "ip": str(stat.get("inningsPitched")),
-            "outs": outs,
-            "bf": _int(stat.get("battersFaced")),
-            "so": max(strikeouts, 0),
-            "bb": _int(stat.get("baseOnBalls")),
-            "er": _int(stat.get("earnedRuns")),
+            "date": date_value, "opponent": opponent.get("abbreviation") or opponent.get("name") or "UNKNOWN",
+            "ip": str(stat.get("inningsPitched")), "outs": outs, "bf": _int(stat.get("battersFaced")),
+            "so": max(strikeouts, 0), "bb": _int(stat.get("baseOnBalls")), "er": _int(stat.get("earnedRuns")),
         }
         if pitches >= 0:
             row["pitches"] = pitches
         if strikes >= 0:
             row["strikes"] = strikes
         parsed.append((date_value, row, target))
-
     parsed.sort(key=lambda item: item[0], reverse=True)
     recent = parsed[:MIN_STARTS]
     if len(recent) < MIN_STARTS:
@@ -290,77 +235,191 @@ def _prior_start_rows(
     return [target for _, _, target in recent], [row for _, row, _ in recent]
 
 
-def auto_hydrate_prop_evidence(
-    *,
-    sport: str,
-    player: str,
-    stat_type: str,
-    event_start_time: str,
-    http_get: Callable[..., Any] = httpx.get,
-    now: datetime | None = None,
-    source_capture_timestamp: str | None = None,
-    source_label: str | None = None,
-) -> dict[str, Any]:
-    sport_key = str(sport or "").strip().upper()
-    stat_key = str(stat_type or "").strip().upper()
-    if sport_key != "MLB" or stat_key not in SUPPORTED_STATS:
-        raise PropAutoHydrationError(
-            "PROP_AUTO_HYDRATION_UNSUPPORTED_ROUTE",
-            "no certified server-owned auto-hydration provider exists for this route",
-            detail={"sport": sport_key, "stat_type": stat_key},
-        )
+def _pitcher_throwing_hand(player_id: int, *, http_get: Callable[..., Any]) -> str | None:
+    payload = _request_json(f"{MLB_STATS_API_BASE}/people/{player_id}", params={}, http_get=http_get)
+    people = payload.get("people") if isinstance(payload.get("people"), list) else []
+    if not people or not isinstance(people[0], dict):
+        return None
+    hand = people[0].get("pitchHand") if isinstance(people[0].get("pitchHand"), dict) else {}
+    code = str(hand.get("code") or "").upper().strip()
+    return code if code in {"L", "R"} else None
 
-    now_utc = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
-    event_start = _aware(event_start_time)
-    if event_start <= now_utc:
-        raise PropAutoHydrationError("EVENT_ALREADY_STARTED", "automatic evidence acquisition is pregame-only")
 
-    captured = _aware(source_capture_timestamp) if source_capture_timestamp else now_utc
-    if captured > now_utc:
-        raise PropAutoHydrationError("CAPTURE_TIMESTAMP_IN_FUTURE", "source capture timestamp is in the future")
-    if captured >= event_start:
-        raise PropAutoHydrationError("CAPTURE_NOT_PREGAME", "source capture timestamp is not pregame")
+def _official_opponent_lineup(game_pk: int, *, pitcher_side: str, http_get: Callable[..., Any]) -> list[int]:
+    payload = _request_json(f"{MLB_STATS_API_BASE}/game/{game_pk}/boxscore", params={}, http_get=http_get)
+    teams = payload.get("teams") if isinstance(payload.get("teams"), dict) else {}
+    opponent_side = "away" if pitcher_side.upper() == "HOME" else "home"
+    team = teams.get(opponent_side) if isinstance(teams.get(opponent_side), dict) else {}
+    batting_order = team.get("battingOrder") if isinstance(team.get("battingOrder"), list) else []
+    ids = [_int(pid) for pid in batting_order if _int(pid) > 0]
+    return ids[:9] if len(ids) >= 9 else []
 
-    player_id, official_name = _resolve_player_id(player, http_get=http_get)
-    schedule = _schedule_context(player_id, event_start=event_start, http_get=http_get)
-    game_log, box_score_log = _prior_start_rows(
-        player_id,
-        season=event_start.year,
-        event_start=event_start,
-        stat_type=stat_key,
+
+def _hitter_hand_split_k_counts(player_id: int, *, season: int, pitcher_hand: str, http_get: Callable[..., Any]) -> tuple[int, int] | None:
+    sit_code = "vr" if pitcher_hand == "R" else "vl"
+    payload = _request_json(
+        f"{MLB_STATS_API_BASE}/people/{player_id}/stats",
+        params={"stats": "season", "group": "hitting", "season": str(season), "gameType": "R", "sitCodes": sit_code},
         http_get=http_get,
     )
+    for block in payload.get("stats") or []:
+        if not isinstance(block, dict):
+            continue
+        for split in block.get("splits") or []:
+            stat = split.get("stat") if isinstance(split, dict) and isinstance(split.get("stat"), dict) else {}
+            pa = _int(stat.get("plateAppearances"))
+            so = _int(stat.get("strikeOuts"), default=-1)
+            if pa >= MIN_HITTER_SPLIT_PA and so >= 0:
+                return so, pa
+    return None
 
-    source_name = (source_label or "AUTO_HYDRATION").strip() or "AUTO_HYDRATION"
+
+def _hydrate_opponent_context(*, pitcher_id: int, schedule: dict[str, Any], season: int, box_score_log: list[dict[str, Any]], http_get: Callable[..., Any]) -> tuple[dict[str, Any] | None, str]:
+    try:
+        pitcher_hand = _pitcher_throwing_hand(pitcher_id, http_get=http_get)
+        game_pk = _int(schedule.get("official_game_pk"))
+        if pitcher_hand not in {"L", "R"} or game_pk <= 0:
+            return None, "NEUTRAL_PITCHER_HAND_OR_GAME_UNRESOLVED"
+        lineup_ids = _official_opponent_lineup(game_pk, pitcher_side=str(schedule.get("side") or ""), http_get=http_get)
+        if len(lineup_ids) < 9:
+            return None, "NEUTRAL_OFFICIAL_LINEUP_NOT_CONFIRMED"
+        total_so = total_pa = hitter_n = 0
+        for hitter_id in lineup_ids:
+            try:
+                counts = _hitter_hand_split_k_counts(hitter_id, season=season, pitcher_hand=pitcher_hand, http_get=http_get)
+            except Exception:
+                counts = None
+            if counts is None:
+                continue
+            so, pa = counts
+            total_so += so; total_pa += pa; hitter_n += 1
+        if hitter_n < MIN_LINEUP_HITTERS_FOR_OPP_CONTEXT or total_pa < MIN_LINEUP_SPLIT_PA:
+            return None, "NEUTRAL_LINEUP_HAND_SPLIT_SAMPLE_INSUFFICIENT"
+        bfs = [float(row.get("bf")) for row in box_score_log if _int(row.get("bf")) > 0]
+        context: dict[str, Any] = {
+            "k_rate_per_pa": total_so / total_pa, "pitcher_hand": pitcher_hand,
+            "lineup_status": "CONFIRMED", "lineup_player_ids": lineup_ids,
+            "lineup_hitter_split_n": hitter_n, "split_plate_appearances": total_pa,
+            "source": "MLB_STATS_API_OFFICIAL_LINEUP_HAND_SPLITS_V1",
+            "rate_provenance": "official battingOrder; hitter season hitting split vs starter hand",
+        }
+        if bfs:
+            context["expected_batters_faced"] = sum(bfs) / len(bfs)
+        return context, "CONFIRMED_LINEUP_HAND_SPLIT"
+    except Exception:
+        return None, "NEUTRAL_OPTIONAL_OPPONENT_CONTEXT_UNAVAILABLE"
+
+
+def _hydrate_k_legacy(*, player: str, event_start_time: str, http_get: Callable[..., Any], now: Optional[datetime], source_capture_timestamp: Optional[str], source_label: str) -> dict[str, Any]:
+    captured_at = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    event_start = _aware(event_start_time)
+    if event_start <= captured_at:
+        raise PropAutoHydrationError("EVENT_ALREADY_STARTED", "pregame evidence cannot be hydrated after event start")
+    player_id, _official_name = _resolve_player_id(player, http_get=http_get)
+    schedule = _schedule_context(player_id, event_start=event_start, http_get=http_get)
+    game_log, box_score_log = _prior_start_rows(player_id, season=event_start.year, event_start=event_start, stat_type="PITCHER_STRIKEOUTS", http_get=http_get)
+    opponent_context, opponent_context_status = _hydrate_opponent_context(
+        pitcher_id=player_id, schedule=schedule, season=event_start.year, box_score_log=box_score_log, http_get=http_get,
+    )
+    timestamp = captured_at.isoformat()
     source_timestamps = {
-        "MLB_STATS_API_OFFICIAL": captured.isoformat(),
-        f"INPUT_CAPTURE_{source_name}": captured.isoformat(),
+        "MLB_STATS_API_PLAYER_SEARCH": timestamp,
+        "MLB_STATS_API_PITCHING_GAME_LOG": timestamp,
+        "MLB_STATS_API_SCHEDULE_PROBABLE_PITCHER": timestamp,
     }
-    role_status = {
-        "status": "CONFIRMED_PROBABLE_STARTER",
-        "role": "STARTING_PITCHER",
-        "player_id": player_id,
-        "player": official_name,
-        **schedule,
-    }
-    opportunity_ledger = {
-        "status": "READY",
-        "gate_label": "READY",
-        "regular_season_prior_starts": len(game_log),
-        "required_prior_starts": MIN_STARTS,
-        "target_stat_type": stat_key,
-        "official_game_pk": schedule.get("official_game_pk"),
-        "starter_status": schedule.get("starter_status"),
-    }
-    return {
-        "captured_at": captured.isoformat(),
+    if opponent_context is not None:
+        source_timestamps["MLB_STATS_API_OPPONENT_LINEUP"] = timestamp
+        source_timestamps["MLB_STATS_API_HITTER_HAND_SPLITS"] = timestamp
+    if source_capture_timestamp:
+        source_timestamps[f"INPUT_CAPTURE_{str(source_label).strip().upper()}"] = source_capture_timestamp
+    payload: dict[str, Any] = {
+        "captured_at": timestamp,
         "game_log": game_log,
         "box_score_log": box_score_log,
-        "role_status": role_status,
-        "role_timestamp": captured.isoformat(),
-        "opportunity_ledger": opportunity_ledger,
+        "role_status": {
+            "status": schedule["starter_status"], "role": "STARTING_PITCHER",
+            "confirmation_strength": "OFFICIAL_PROBABLE_PITCHER", "team": schedule["team"],
+            "opponent": schedule["opponent"], "venue": schedule["venue"],
+            "official_game_pk": schedule["official_game_pk"], "official_game_date": schedule["official_game_date"],
+            "schedule_status": schedule["schedule_status"], "source": "MLB StatsAPI official schedule/probablePitcher",
+        },
+        "role_timestamp": timestamp,
+        "opportunity_ledger": {
+            "status": "READY", "game_log_stat": "pitcher strikeouts", "box_score_alignment": "1:1",
+            "regular_season_prior_starts": len(box_score_log), "starter_confirmation": "OFFICIAL_PROBABLE_PITCHER",
+            "model_opponent_context": opponent_context_status,
+        },
         "source_timestamps": source_timestamps,
         "evidence_version": AUTO_HYDRATION_EVIDENCE_VERSION,
-        "rate_provenance": f"{AUTO_HYDRATION_PROVIDER}:{stat_key}:OFFICIAL_PRIOR_STARTS",
-        "opponent_context": None,
+        "rate_provenance": "MLB StatsAPI official pitching gameLog; outs derived from inningsPitched",
+    }
+    if opponent_context is not None:
+        payload["opponent_context"] = opponent_context
+    return payload
+
+
+def auto_hydrate_prop_evidence(
+    *, sport: str, player: str, stat_type: str, event_start_time: str,
+    http_get: Callable[..., Any] = httpx.get, now: Optional[datetime] = None,
+    source_capture_timestamp: Optional[str] = None, source_label: str = "NORMALIZED_PICK_REQUEST",
+) -> dict[str, Any]:
+    normalized_sport = str(sport or "").strip().upper()
+    normalized_stat = str(stat_type or "").strip().upper()
+    if normalized_sport != "MLB" or normalized_stat not in SUPPORTED_STATS:
+        raise PropAutoHydrationError(
+            "PROP_AUTO_HYDRATION_UNSUPPORTED_ROUTE",
+            "automatic evidence hydration is not certified for this sport/stat route",
+            detail={"sport": normalized_sport, "stat_type": normalized_stat},
+        )
+    normalized_player = " ".join(str(player or "").strip().split())
+    if not normalized_player:
+        raise PropAutoHydrationError("PROP_PLAYER_IDENTITY_REQUIRED", "player is required for prop hydration")
+    if normalized_stat == "PITCHER_STRIKEOUTS":
+        return _hydrate_k_legacy(
+            player=normalized_player, event_start_time=event_start_time, http_get=http_get, now=now,
+            source_capture_timestamp=source_capture_timestamp, source_label=source_label,
+        )
+
+    captured_at = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    event_start = _aware(event_start_time)
+    if event_start <= captured_at:
+        raise PropAutoHydrationError("EVENT_ALREADY_STARTED", "pregame evidence cannot be hydrated after event start")
+    player_id, _official_name = _resolve_player_id(normalized_player, http_get=http_get)
+    schedule = _schedule_context(player_id, event_start=event_start, http_get=http_get)
+    game_log, box_score_log = _prior_start_rows(
+        player_id, season=event_start.year, event_start=event_start, stat_type=normalized_stat, http_get=http_get,
+    )
+    timestamp = captured_at.isoformat()
+    source_timestamps = {
+        "MLB_STATS_API_PLAYER_SEARCH": timestamp,
+        "MLB_STATS_API_PITCHING_GAME_LOG": timestamp,
+        "MLB_STATS_API_SCHEDULE_PROBABLE_PITCHER": timestamp,
+    }
+    if source_capture_timestamp:
+        source_timestamps[f"INPUT_CAPTURE_{str(source_label).strip().upper()}"] = source_capture_timestamp
+    stat_label = {
+        "PITCHING_OUTS": "pitching outs",
+        "STRIKES_THROWN": "strikes thrown",
+        "BALLS_THROWN": "balls thrown",
+    }[normalized_stat]
+    return {
+        "captured_at": timestamp,
+        "game_log": game_log,
+        "box_score_log": box_score_log,
+        "role_status": {
+            "status": schedule["starter_status"], "role": "STARTING_PITCHER",
+            "confirmation_strength": "OFFICIAL_PROBABLE_PITCHER", "team": schedule["team"],
+            "opponent": schedule["opponent"], "venue": schedule["venue"],
+            "official_game_pk": schedule["official_game_pk"], "official_game_date": schedule["official_game_date"],
+            "schedule_status": schedule["schedule_status"], "source": "MLB StatsAPI official schedule/probablePitcher",
+        },
+        "role_timestamp": timestamp,
+        "opportunity_ledger": {
+            "status": "READY", "game_log_stat": stat_label, "box_score_alignment": "1:1",
+            "regular_season_prior_starts": len(box_score_log), "starter_confirmation": "OFFICIAL_PROBABLE_PITCHER",
+            "target_stat_type": normalized_stat,
+        },
+        "source_timestamps": source_timestamps,
+        "evidence_version": AUTO_HYDRATION_EVIDENCE_VERSION,
+        "rate_provenance": f"MLB StatsAPI official pitching gameLog; target={normalized_stat}; no target values estimated",
     }
