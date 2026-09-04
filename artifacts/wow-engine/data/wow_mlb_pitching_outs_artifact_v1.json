@@ -1,0 +1,38 @@
+{
+  "model_family": "MLB_PITCHER_OUTS_WORKLOAD_NB_V1",
+  "artifact_format": "PROP_NB_MIXTURE_V1",
+  "training_rows": 4858,
+  "artifact_payload": {
+    "league_mean_out_normal": 17.576696713118896,
+    "league_mean_out_short": 11.330984852209685,
+    "league_shortened_rate": 0.270216083760303,
+    "dispersion_r": 258217775.65182647,
+    "shortened_outs_threshold": 15,
+    "shrinkage_k_rate": 8.0,
+    "shrinkage_k_regime": 8.0,
+    "min_prior_starts": 1,
+    "max_support_k": 27
+  },
+  "validation_metrics": {
+    "train_log_loss": 2.8382553781002087,
+    "test_log_loss": 2.846681733987913,
+    "test_mae_outs": 2.9713790847928596,
+    "naive_baseline_test_log_loss": 2.9038607370052434,
+    "log_loss_improvement_vs_naive": 0.057179003017330476,
+    "test_rows_n": 1968,
+    "train_rows_n": 4858
+  },
+  "model_artifact_version": "MLB_PITCHER_OUTS_WORKLOAD_NB_V1_2026_09_04",
+  "calibrator_version": "MLB_PITCHER_OUTS_CAL_V1",
+  "feature_transform_version": "MLB_PITCHER_OUTS_TRANSFORM_V1",
+  "specialist_version": "wow.mlb-pitcher-outs-workload-expert@1",
+  "feature_schema_version": "PROP_FEATURES_V1",
+  "training_dataset_hash": "d9de123ccb29e3420b2ce712a32c296c5fc19a82e93f5046d00204235f20296a",
+  "training_code_sha": "cdf115fa536e8768f18bc5c4cf190279b7452ad6409c6593b7ab43f19904cff2",
+  "lifecycle_state": "PROSPECTIVE_CERTIFIED",
+  "supported_sport": "MLB",
+  "supported_stat_type": "PITCHING_OUTS",
+  "supported_line_min": 3.5,
+  "supported_line_max": 24.5,
+  "note": "PROSPECTIVE_CERTIFIED is the model's self-reported readiness state only. This artifact has NOT been registered in wow_prop_fitted_model_artifacts and cannot serve production traffic until a governance ratification step (Greg, per active ChatGPT-out-of-credit substitution) reviews these validation_metrics and explicitly promotes it."
+}

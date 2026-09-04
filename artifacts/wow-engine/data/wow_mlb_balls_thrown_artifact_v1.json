@@ -1,0 +1,38 @@
+{
+  "model_family": "MLB_PITCHER_BALLS_THROWN_WORKLOAD_NB_V1",
+  "artifact_format": "PROP_NB_MIXTURE_V1",
+  "training_rows": 4858,
+  "artifact_payload": {
+    "league_mean_normal": 31.368477762740515,
+    "league_mean_short": 29.340386557886557,
+    "league_shortened_rate": 0.270216083760303,
+    "dispersion_r": 80.27759184461226,
+    "shortened_outs_threshold": 15,
+    "shrinkage_k_rate": 8.0,
+    "shrinkage_k_regime": 8.0,
+    "min_prior_starts": 1,
+    "max_support_k": 60
+  },
+  "validation_metrics": {
+    "train_log_loss": 3.370742526821519,
+    "test_log_loss": 3.503805677012408,
+    "test_mae": 5.795870472561091,
+    "naive_baseline_test_log_loss": 3.6669303077050577,
+    "log_loss_improvement_vs_naive": 0.16312463069264949,
+    "test_rows_n": 1968,
+    "train_rows_n": 4858
+  },
+  "model_artifact_version": "MLB_PITCHER_BALLS_THROWN_WORKLOAD_NB_V1_2026_09_04",
+  "calibrator_version": "MLB_PITCHER_BALLS_THROWN_CAL_V1",
+  "feature_transform_version": "MLB_PITCHER_BALLS_THROWN_TRANSFORM_V1",
+  "specialist_version": "wow.mlb-pitcher-pitch-composition-expert@1",
+  "feature_schema_version": "PROP_FEATURES_V1",
+  "training_dataset_hash": "d9de123ccb29e3420b2ce712a32c296c5fc19a82e93f5046d00204235f20296a",
+  "training_code_sha": "97d4b7516d40638063568472e9bcae7d6432ba5bb5e1d4e1b5eb6bbce30fa5b1",
+  "lifecycle_state": "PROSPECTIVE_CERTIFIED",
+  "supported_sport": "MLB",
+  "supported_stat_type": "BALLS_THROWN",
+  "supported_line_min": 10.5,
+  "supported_line_max": 55.5,
+  "note": "PROSPECTIVE_CERTIFIED is the model's self-reported readiness state only. This artifact has NOT been registered in wow_prop_fitted_model_artifacts and cannot serve production traffic until a governance ratification step (Greg, per active ChatGPT-out-of-credit substitution) reviews these validation_metrics and explicitly promotes it."
+}

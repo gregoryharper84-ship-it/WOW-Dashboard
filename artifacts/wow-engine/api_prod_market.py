@@ -47,12 +47,18 @@ from wolfram_arithmetic_auditor import persist_audit as persist_wolfram_audit
 
 import prop_calibration_adapters
 import prop_model_adapters
+import prop_model_adapters_pitching_outs
+import prop_model_adapters_pitch_composition
+import prop_model_adapters_plate_appearances
 
 # Production adapter registration is code-controlled: these are the only
 # WOW_PROP_FITTED_MODEL_V1 model-family/calibrator adapters this process
 # will ever serve, and registering them is a required startup side effect,
 # not test-only wiring (see each module's own tests for isolated coverage).
 prop_model_adapters.register()
+prop_model_adapters_pitching_outs.register()
+prop_model_adapters_pitch_composition.register()
+prop_model_adapters_plate_appearances.register()
 prop_calibration_adapters.register()
 
 
