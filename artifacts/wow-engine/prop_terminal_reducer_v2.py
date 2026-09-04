@@ -35,8 +35,8 @@ INPUT_BLOCKERS = {
     "RUN_INVALID_ACQUISITION_INCOMPLETE", "PROP_AUTO_HYDRATION_UNSUPPORTED_ROUTE",
     "PROP_AUTO_HYDRATION_PROVIDER_UNAVAILABLE", "PROP_AUTO_HYDRATION_INTERNAL_ERROR",
     "PROP_EVIDENCE_PERSISTENCE_UNAVAILABLE", "PROP_PLAYER_IDENTITY_UNRESOLVED", "PROP_IDENTITY_UNRESOLVED",
-    "PROP_EVENT_IDENTITY_CONFLICT", "MLB_RECENT_STARTS_INSUFFICIENT", "MLB_STARTER_STATUS_UNRESOLVED",
-    "STALE_EVIDENCE",
+    "PROP_EVENT_IDENTITY_CONFLICT", "MLB_RECENT_STARTS_INSUFFICIENT", "MLB_PITCH_COMPOSITION_INSUFFICIENT",
+    "MLB_STARTER_STATUS_UNRESOLVED", "STALE_EVIDENCE",
 }
 
 SCORER_FAILURE_BLOCKERS = {"MODEL_SCORER_FAILED", "ROW_SCORING_FAILED", "ROW_SCORING_UNAVAILABLE", "PROP_SCORER_EXCEPTION"}
@@ -66,9 +66,6 @@ def reduce_prop_terminal(*, proposed_label: str, blockers: Iterable[str] = (), m
     if (bset & OUTPUT_INVALID_BLOCKERS) or label == "MODEL_OUTPUT_INVALID":
         return PropTerminalDecision("MODEL_OUTPUT_INVALID", "MODEL_OUTPUT_INVALID", model_evaluated, False, True, bs)
     if bset & INPUT_BLOCKERS and not model_evaluated:
-        # Keep ACQUISITION_BLOCKED as the orthogonal verdict class for backward
-        # compatibility, while the terminal label correctly identifies the
-        # failure as input insufficiency rather than missing model capability.
         return PropTerminalDecision("MODEL_INPUTS_INSUFFICIENT", "ACQUISITION_BLOCKED", False, False, True, bs)
     if label in PREMODEL_ROW_REJECTION_LABELS:
         return PropTerminalDecision(label, "ROW_INVALIDATED" if label == "SLATE_PURGE" else "DATA_QUALITY_REJECTED", False, True, False, bs)

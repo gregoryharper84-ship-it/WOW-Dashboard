@@ -19,6 +19,8 @@ import unicodedata
 
 import httpx
 
+from prop_auto_hydration_workload import WORKLOAD_STATS, hydrate_mlb_workload_evidence
+
 
 MLB_STATS_API_BASE = "https://statsapi.mlb.com/api/v1"
 AUTO_HYDRATION_PROVIDER = "MLB_STATS_API_OFFICIAL_V1"
@@ -444,6 +446,25 @@ def auto_hydrate_prop_evidence(
     """Return raw auditable evidence for one supported exact prop route."""
     normalized_sport = str(sport or "").strip().upper()
     normalized_stat = str(stat_type or "").strip().upper()
+    if normalized_sport == "MLB" and normalized_stat in WORKLOAD_STATS:
+        return hydrate_mlb_workload_evidence(
+            player=player,
+            stat_type=normalized_stat,
+            event_start_time=event_start_time,
+            resolve_player_id=_resolve_player_id,
+            schedule_context=_schedule_context,
+            request_json=_request_json,
+            outs_from_ip=_outs_from_ip,
+            int_value=_int,
+            error_type=PropAutoHydrationError,
+            mlb_stats_api_base=MLB_STATS_API_BASE,
+            evidence_version=AUTO_HYDRATION_EVIDENCE_VERSION,
+            min_starts=MIN_STARTS,
+            http_get=http_get,
+            now=now,
+            source_capture_timestamp=source_capture_timestamp,
+            source_label=source_label,
+        )
     if normalized_sport != "MLB" or normalized_stat != "PITCHER_STRIKEOUTS":
         raise PropAutoHydrationError(
             "PROP_AUTO_HYDRATION_UNSUPPORTED_ROUTE",
