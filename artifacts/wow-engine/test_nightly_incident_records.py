@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import sys
 from pathlib import Path
 
 MODULE_PATH = Path(__file__).parent / "v17" / "nightly_incident_records.py"
 spec = importlib.util.spec_from_file_location("nightly_incident_records", MODULE_PATH)
 assert spec and spec.loader
 nir = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = nir
 spec.loader.exec_module(nir)
 
 
