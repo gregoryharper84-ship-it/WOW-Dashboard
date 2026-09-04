@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wow.local/v17/contracts/detailed-evidence-envelope.v17.schema.json",
+  "title": "WOW V17 Detailed Evidence Envelope",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["candidate_id", "sport", "event_id", "as_of", "evidence_families", "market_evidence"],
+  "properties": {
+    "candidate_id": {"type": "string", "minLength": 1},
+    "sport": {"type": "string", "minLength": 1},
+    "event_id": {"type": "string", "minLength": 1},
+    "as_of": {"type": "string", "format": "date-time"},
+    "controlling_specialist": {"type": ["string", "null"]},
+    "evidence_families": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "recent_form",
+        "head_to_head",
+        "player_performance",
+        "lineup_availability_depth",
+        "tactical_style",
+        "match_context_stakes",
+        "environment",
+        "officiating",
+        "schedule_fatigue_travel",
+        "advanced_statistics"
+      ],
+      "properties": {
+        "recent_form": {"$ref": "#/$defs/evidenceFamily"},
+        "head_to_head": {"$ref": "#/$defs/evidenceFamily"},
+        "player_performance": {"$ref": "#/$defs/evidenceFamily"},
+        "lineup_availability_depth": {"$ref": "#/$defs/evidenceFamily"},
+        "tactical_style": {"$ref": "#/$defs/evidenceFamily"},
+        "match_context_stakes": {"$ref": "#/$defs/evidenceFamily"},
+        "environment": {"$ref": "#/$defs/evidenceFamily"},
+        "officiating": {"$ref": "#/$defs/evidenceFamily"},
+        "schedule_fatigue_travel": {"$ref": "#/$defs/evidenceFamily"},
+        "advanced_statistics": {"$ref": "#/$defs/evidenceFamily"}
+      }
+    },
+    "market_evidence": {
+      "type": "object",
+      "description": "Downstream market evidence. Must remain separate from sporting probability evidence.",
+      "additionalProperties": true,
+      "required": ["market_state"],
+      "properties": {
+        "market_state": {"enum": ["EXACT_LINE", "ADJACENT_LINE", "NO_MARKET"]},
+        "platform": {"type": ["string", "null"]},
+        "market": {"type": ["string", "null"]},
+        "side": {"type": ["string", "null"]},
+        "line": {"type": ["number", "string", "null"]},
+        "price": {"type": ["number", "string", "null"]},
+        "source": {"type": ["string", "null"]},
+        "as_of": {"type": ["string", "null"], "format": "date-time"},
+        "implied_probability": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+        "no_vig_probability": {"type": ["number", "null"], "minimum": 0, "maximum": 1}
+      }
+    },
+    "source_conflicts": {
+      "type": "array",
+      "items": {"type": "string"},
+      "default": []
+    },
+    "lineup_certainty": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+    "role_certainty": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+    "starter_certainty": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+    "evidence_quality": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+    "notes": {"type": "array", "items": {"type": "string"}, "default": []}
+  },
+  "$defs": {
+    "evidenceFamily": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["status", "items"],
+      "properties": {
+        "status": {"enum": ["AVAILABLE", "PARTIAL", "UNAVAILABLE", "NOT_APPLICABLE"]},
+        "sample_window": {"type": ["string", "null"]},
+        "sample_size": {"type": ["integer", "null"], "minimum": 0},
+        "data_quality": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+        "certainty": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+        "items": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/evidenceItem"}
+        }
+      }
+    },
+    "evidenceItem": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["name", "feature_status", "source", "as_of"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "value": {},
+        "feature_status": {
+          "enum": ["MODEL_INPUT", "REGIME_INPUT", "CALIBRATION_INPUT", "MARKET_EVIDENCE", "EVIDENCE_ONLY"]
+        },
+        "source": {"type": "string", "minLength": 1},
+        "source_type": {"type": ["string", "null"]},
+        "as_of": {"type": "string", "format": "date-time"},
+        "sample_size": {"type": ["integer", "null"], "minimum": 0},
+        "data_quality": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+        "certainty": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+        "transform_version": {"type": ["string", "null"]}
+      }
+    }
+  }
+}

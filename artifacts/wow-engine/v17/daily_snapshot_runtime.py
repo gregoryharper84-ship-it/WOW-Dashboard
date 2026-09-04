@@ -16,6 +16,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
 from v17.daily_prop_acquisition import acquire_daily_prop_snapshots
+from v17.detailed_evidence_install import install_v17_detailed_evidence
 from v17.prop_forward_cohort_route import install_prop_forward_cohort_route
 from v17.team_event_request_runtime import TeamEventRequest, score_team_event_request
 
@@ -159,6 +160,7 @@ def run_daily_snapshot(req: DailySnapshotRequest, *, db: Any, market_api: Any, e
 
 
 def install_daily_snapshot_route(app: FastAPI, *, auth_dependency: Any, db_client_fn: Any, market_api: Any, event_api: Any) -> None:
+    install_v17_detailed_evidence(app, auth_dependency=auth_dependency, market_api=market_api)
     install_prop_forward_cohort_route(app, auth_dependency=auth_dependency, db_client_fn=db_client_fn, market_api=market_api)
     if any(getattr(route, "path", None) == "/v17/daily-snapshot-run" for route in app.router.routes): return
     @app.post("/v17/daily-snapshot-run", dependencies=[auth_dependency], operation_id="runWowV17DailySnapshot")

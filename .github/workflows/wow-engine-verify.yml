@@ -51,15 +51,6 @@ jobs:
           PGRST_DB_ANON_ROLE: anon
           PGRST_JWT_SECRET: wow-agent-runtime-ci-only-jwt-secret-not-a-real-secret-32-bytes
         ports:
-          # Exposed on 8001, not 3000: bare PostgREST serves tables at its
-          # root path, but the pinned supabase-py client hardcodes every
-          # request under <SUPABASE_URL>/rest/v1/... (the Supabase
-          # Cloud/Kong convention -- see supabase._sync.client.Client:
-          # self.rest_url = self.supabase_url.joinpath("rest", "v1")).
-          # A tiny local reverse proxy below listens on 3000, strips the
-          # /rest/v1 prefix, and forwards here, so SUPABASE_URL can stay
-          # http://localhost:3000 exactly as production sets it against a
-          # real Supabase project (which serves /rest/v1 itself).
           - 8001:3000
     steps:
       - name: Checkout
@@ -97,8 +88,6 @@ jobs:
           export SUPABASE_SERVICE_KEY
 
           python - <<'PY' > "$RUNNER_TEMP/rest-v1-proxy.log" 2>&1 &
-          # Bare PostgREST has no /rest/v1 prefix; supabase-py always requests
-          # one. Strip it and forward to the real postgrest container port.
           import http.server
           import urllib.request
           import urllib.error
