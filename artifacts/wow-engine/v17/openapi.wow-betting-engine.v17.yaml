@@ -257,25 +257,16 @@ components:
         carry provenance and one typed feature status. MARKET_EVIDENCE and
         EVIDENCE_ONLY never become sporting-model numerical features.
       properties:
-        candidate_id: {type: string}
-        sport: {type: string}
-        event_id: {type: string}
+        candidate_id: {type: string, minLength: 1, maxLength: 256}
+        sport: {type: string, minLength: 1, maxLength: 64}
+        event_id: {type: string, minLength: 1, maxLength: 256}
         as_of: {type: string, format: date-time}
-        controlling_specialist: {type: [string, 'null']}
-        evidence_families:
-          type: object
-          additionalProperties: true
-          description: >-
-            Includes the governed evidence families with status, sample window,
-            quality/certainty, typed items, source and as_of provenance.
-        market_evidence:
-          type: object
-          additionalProperties: true
-          description: >-
-            Separate downstream market context using EXACT_LINE, ADJACENT_LINE,
-            or NO_MARKET. Implied/no-vig values are not sporting probabilities.
+        controlling_specialist: {type: [string, 'null'], maxLength: 256}
+        evidence_families: {$ref: '#/components/schemas/DetailedEvidenceFamilies'}
+        market_evidence: {$ref: '#/components/schemas/DetailedMarketEvidence'}
         source_conflicts:
           type: array
+          maxItems: 128
           items: {type: string}
         lineup_certainty: {type: [number, 'null'], minimum: 0, maximum: 1}
         role_certainty: {type: [number, 'null'], minimum: 0, maximum: 1}
@@ -283,7 +274,84 @@ components:
         evidence_quality: {type: [number, 'null'], minimum: 0, maximum: 1}
         notes:
           type: array
+          maxItems: 128
           items: {type: string}
+    DetailedEvidenceFamilies:
+      type: object
+      additionalProperties: false
+      required:
+        - recent_form
+        - head_to_head
+        - player_performance
+        - lineup_availability_depth
+        - tactical_style
+        - match_context_stakes
+        - environment
+        - officiating
+        - schedule_fatigue_travel
+        - advanced_statistics
+      properties:
+        recent_form: {$ref: '#/components/schemas/DetailedEvidenceFamily'}
+        head_to_head: {$ref: '#/components/schemas/DetailedEvidenceFamily'}
+        player_performance: {$ref: '#/components/schemas/DetailedEvidenceFamily'}
+        lineup_availability_depth: {$ref: '#/components/schemas/DetailedEvidenceFamily'}
+        tactical_style: {$ref: '#/components/schemas/DetailedEvidenceFamily'}
+        match_context_stakes: {$ref: '#/components/schemas/DetailedEvidenceFamily'}
+        environment: {$ref: '#/components/schemas/DetailedEvidenceFamily'}
+        officiating: {$ref: '#/components/schemas/DetailedEvidenceFamily'}
+        schedule_fatigue_travel: {$ref: '#/components/schemas/DetailedEvidenceFamily'}
+        advanced_statistics: {$ref: '#/components/schemas/DetailedEvidenceFamily'}
+    DetailedEvidenceFamily:
+      type: object
+      additionalProperties: true
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [AVAILABLE, PARTIAL, UNAVAILABLE, NOT_APPLICABLE]
+        sample_window: {type: [string, 'null'], maxLength: 160}
+        sample_size: {type: [integer, 'null'], minimum: 0}
+        data_quality: {type: [number, 'null'], minimum: 0, maximum: 1}
+        certainty: {type: [number, 'null'], minimum: 0, maximum: 1}
+        items:
+          type: array
+          maxItems: 256
+          default: []
+          items: {$ref: '#/components/schemas/DetailedEvidenceItem'}
+    DetailedEvidenceItem:
+      type: object
+      additionalProperties: true
+      required: [name, feature_status, source, as_of]
+      properties:
+        name: {type: string, minLength: 1, maxLength: 160}
+        value: {}
+        feature_status:
+          type: string
+          enum: [MODEL_INPUT, REGIME_INPUT, CALIBRATION_INPUT, MARKET_EVIDENCE, EVIDENCE_ONLY]
+        source: {type: string, minLength: 1, maxLength: 512}
+        source_type: {type: [string, 'null'], maxLength: 96}
+        as_of: {type: string, format: date-time}
+        sample_size: {type: [integer, 'null'], minimum: 0}
+        data_quality: {type: [number, 'null'], minimum: 0, maximum: 1}
+        certainty: {type: [number, 'null'], minimum: 0, maximum: 1}
+        transform_version: {type: [string, 'null'], maxLength: 128}
+    DetailedMarketEvidence:
+      type: object
+      additionalProperties: true
+      required: [market_state]
+      properties:
+        market_state:
+          type: string
+          enum: [EXACT_LINE, ADJACENT_LINE, NO_MARKET]
+        platform: {type: [string, 'null']}
+        market: {type: [string, 'null']}
+        side: {type: [string, 'null']}
+        line: {type: [number, string, 'null']}
+        price: {type: [number, string, 'null']}
+        source: {type: [string, 'null']}
+        as_of: {type: [string, 'null'], format: date-time}
+        implied_probability: {type: [number, 'null'], minimum: 0, maximum: 1}
+        no_vig_probability: {type: [number, 'null'], minimum: 0, maximum: 1}
     RecommendationBatch:
       type: object
       additionalProperties: true
