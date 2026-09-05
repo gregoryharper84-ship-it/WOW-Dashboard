@@ -138,12 +138,18 @@ def _governed_package(scorer: Mapping[str, Any] | None) -> dict[str, Any]:
 
 
 def _valid_rank_package(package: Mapping[str, Any]) -> bool:
+    model_probability = _prob(package.get("model_probability"))
+    unconditional = _prob(package.get("unconditional_probability"))
+    if model_probability is None and unconditional is None:
+        return False
     calibrated = _prob(package.get("calibrated_probability"))
     lower = _prob(package.get("calibrated_lower_bound"))
     upper = _prob(package.get("calibrated_upper_bound"))
     if calibrated is None or lower is None or lower > calibrated:
         return False
     if upper is not None and calibrated > upper:
+        return False
+    if package.get("probability_publishable") is not True:
         return False
     if package.get("rank_eligible") is not True:
         return False
@@ -220,13 +226,15 @@ def admit_full_model_candidate(candidate: Mapping[str, Any], *, readiness: Mappi
         blockers.append(trust_state)
     if route_supported is False:
         blockers.append("ROUTE_CAPABILITY_UNAVAILABLE")
-    if readiness.get("probability_publishable") is False:
+    readiness_publication_blocked = readiness.get("probability_publishable") is False
+    if readiness_publication_blocked:
         blockers.append("PROBABILITY_PUBLICATION_BLOCKED")
 
     eligible_for_scoring = bool(candidate_id) and lane in SUPPORTED_LANES and bool(specialist) and trust_state not in TEST_ONLY_STATES and route_supported is not False
     package = _governed_package(scorer_result)
     scorer_failure = _typed_failure(scorer_result)
     typed_failure = scorer_failure or readiness_failure
+    blockers.extend(_blockers(scorer_result))
 
     if not scorer_result:
         blockers.append("LIVE_GPT_ACTION_INVOCATION_BLOCKED")
@@ -237,12 +245,18 @@ def admit_full_model_candidate(candidate: Mapping[str, Any], *, readiness: Mappi
     sporting_preserved = _sporting_probability_preserved(package)
     valid_rank_package = _valid_rank_package(package)
     if package and not valid_rank_package:
+        if _prob(package.get("model_probability")) is None and _prob(package.get("unconditional_probability")) is None:
+            blockers.append("MODEL_PROBABILITY_UNAVAILABLE")
+        if package.get("calibrated_probability") is None:
+            blockers.append("CALIBRATED_PROBABILITY_UNAVAILABLE")
         if package.get("calibrated_lower_bound") is None:
             blockers.append("CALIBRATED_LOWER_BOUND_UNAVAILABLE")
+        if package.get("probability_publishable") is not True:
+            blockers.append("PROBABILITY_PUBLICATION_BLOCKED")
         if package.get("rank_eligible") is not True:
             blockers.append("RANK_ELIGIBILITY_BLOCKED")
 
-    admitted = eligible_for_scoring and scorer_failure is None and valid_rank_package
+    admitted = eligible_for_scoring and not readiness_publication_blocked and scorer_failure is None and valid_rank_package
     terminal = str(package.get("terminal_label") or "").strip()
     if admitted:
         terminal = terminal or "MODEL_QUALIFIED_HOLD"
