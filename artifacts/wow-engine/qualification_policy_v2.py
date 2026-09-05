@@ -9,11 +9,12 @@ Qualification thresholds intentionally preserve the previously governed WOW poli
 - HIGH confidence metadata: p >= 0.65 and lower bound >= 0.60
 - RESEARCH_INTEREST: p >= 0.57 and lower bound > 0.50, never rank eligible
 
-Phase-A PRECALIBRATION_SHRINKAGE is a valid sporting-probability package but is
-not evidence of proven calibration. It may be published for prospective learning,
-but it is never rank eligible, model qualified, or eligible for downstream money
-evaluation. This mirrors calibration.py's ratified Phase-A prohibition on
-MONEY_QUALIFIED / FINAL_APPROVED while preserving the completed probability.
+Phase-A PRECALIBRATION_SHRINKAGE may produce a completed sporting-probability
+package and retain its native probability terminal. It is not evidence of proven
+calibration, so downstream money/value evaluation is prohibited even when the
+sporting model clears the normal model-qualification thresholds. This mirrors
+calibration.py's ratified MONEY_QUALIFIED / FINAL_APPROVED prohibition without
+erasing or relabeling the model result.
 
 No new uncertainty-width cutoff is introduced without a separately certified policy
 artifact. can_execute remains false.
@@ -237,26 +238,6 @@ def classify_prop_probability(
     if width is not None:
         reasons.append(f"INTERVAL_WIDTH_ADVISORY={width:.6f}")
 
-    # Ratified Phase-A ceiling: PRECALIBRATION_SHRINKAGE is a completed,
-    # publishable sporting probability used to build the prospective settled
-    # calibration cohort, but it is not proven calibration and therefore can
-    # never become rank/money qualified. Preserve the probability rather than
-    # rewriting it as MODEL_UNAVAILABLE.
-    if calibration_health == PRECALIBRATION_STATUS:
-        reasons.append("PRECALIBRATION_CEILING=RESEARCH_ONLY_NO_MONEY_QUALIFICATION")
-        return _decision(
-            terminal_label="RESEARCH_INTEREST",
-            confidence_tier="PRECALIBRATION",
-            rank_eligible=False,
-            model_supported=True,
-            model_qualified=False,
-            model_qualification_status="MODEL_NOT_QUALIFIED",
-            uncertainty_width=width,
-            downstream_money_evaluation_allowed=False,
-            blockers=blocker_tuple,
-            reasons=tuple(reasons),
-        )
-
     if p >= 0.65 and lb >= 0.60:
         tier = "HIGH"
         terminal = "MODEL_QUALIFIED_HOLD"
@@ -274,6 +255,11 @@ def classify_prop_probability(
         terminal = "NO_LOW_PROBABILITY"
         qualified = False
 
+    money_allowed = qualified
+    if calibration_health == PRECALIBRATION_STATUS:
+        money_allowed = False
+        reasons.append("PRECALIBRATION_CEILING=NO_MONEY_QUALIFICATION")
+
     return _decision(
         terminal_label=terminal,
         confidence_tier=tier,
@@ -282,7 +268,7 @@ def classify_prop_probability(
         model_qualified=qualified,
         model_qualification_status="MODEL_QUALIFIED" if qualified else "MODEL_NOT_QUALIFIED",
         uncertainty_width=width,
-        downstream_money_evaluation_allowed=qualified,
+        downstream_money_evaluation_allowed=money_allowed,
         blockers=blocker_tuple,
         reasons=tuple(reasons),
     )
