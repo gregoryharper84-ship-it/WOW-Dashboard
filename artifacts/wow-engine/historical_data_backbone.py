@@ -313,9 +313,16 @@ class SourceManifestEntry:
 
     @property
     def production_training_eligible(self) -> bool:
+        """Whether the provider may be used for production training in principle."""
         return (
             self.evidence_domain is EvidenceDomain.SPORTING
             and self.rights_state is SourceRightsState.V17_APPROVED
+        )
+
+    def production_training_ready(self, *, credential_configured: bool = False) -> bool:
+        """Whether rights/domain are approved and any required credential exists."""
+        return self.production_training_eligible and (
+            not self.credential_required or credential_configured
         )
 
 
@@ -325,6 +332,11 @@ def load_source_manifest(path: str | Path) -> tuple[SourceManifestEntry, ...]:
         raise HistoricalDataContractError(
             "HISTORICAL_SOURCE_MANIFEST_VERSION_INVALID",
             "expected WOW_HISTORICAL_SOURCE_MANIFEST_V1",
+        )
+    if raw.get("can_execute") is not False:
+        raise HistoricalDataContractError(
+            "HISTORICAL_SOURCE_MANIFEST_EXECUTION_FORBIDDEN",
+            "historical source manifest must preserve can_execute=false",
         )
     entries: list[SourceManifestEntry] = []
     for item in raw.get("sources", []):
