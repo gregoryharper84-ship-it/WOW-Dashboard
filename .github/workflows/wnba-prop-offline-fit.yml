@@ -6,11 +6,13 @@ on:
       - chatgpt/p1-wnba-prop-offline-fit
       - feat/v17-wnba-certification-replay-20260905
     paths:
-      - 'artifacts/wow-engine/scripts/acquire_wnba_training_snapshot.py'
+      - 'artifacts/wow-engine/scripts/train_wnba_props_frozen.py'
+      - 'artifacts/wow-engine/scripts/probe_wnba_2026_training_join_frozen.py'
       - 'artifacts/wow-engine/scripts/train_wnba_props.py'
       - 'artifacts/wow-engine/scripts/train_wnba_props_offset.py'
       - 'artifacts/wow-engine/scripts/probe_wnba_2026_training_join.py'
       - 'artifacts/wow-engine/scripts/audit_wnba_prop_certification_replay.py'
+      - 'artifacts/wow-engine/wnba_training_source.py'
       - 'artifacts/wow-engine/wnba_prop_training_contract.py'
       - 'artifacts/wow-engine/wnba_prop_model_adapter.py'
       - 'artifacts/wow-engine/wnba_prop_calibration_adapter.py'
@@ -21,6 +23,7 @@ on:
       - 'artifacts/wow-engine/prop_model_adapters.py'
       - 'artifacts/wow-engine/prop_calibration_adapters.py'
       - 'artifacts/wow-engine/requirements.txt'
+      - 'artifacts/wow-engine/test_wnba_training_source.py'
       - 'artifacts/wow-engine/test_wnba_prop_trainer.py'
       - 'artifacts/wow-engine/test_wnba_prop_offset_trainer.py'
       - 'artifacts/wow-engine/test_wnba_prop_model_adapter.py'
@@ -36,7 +39,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   fit:
@@ -49,8 +52,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -59,48 +60,13 @@ jobs:
           cache: pip
           cache-dependency-path: artifacts/wow-engine/requirements.txt
 
-      - name: Acquire exact upstream WNBA snapshot for WOW freeze
-        run: PYTHONPATH=. python scripts/acquire_wnba_training_snapshot.py
-
-      - name: Persist exact source bundle to feature-branch Git history
-        if: github.ref_name == 'feat/v17-wnba-certification-replay-20260905'
-        run: |
-          SRC=data/wnba-source-freeze/wnba-2026-20260904
-          DST=data/source_snapshots/wnba/wnba-2026-20260904
-          if [ -f "$DST/player_game_logs_2026.csv.gz" ] && \
-             [ -f "$DST/player_boxscores_2026.csv.gz" ] && \
-             [ -f "$DST/wnba_schedule_2026.csv.gz" ]; then
-            echo 'WOW-owned WNBA source snapshot already committed; no write required.'
-            exit 0
-          fi
-          mkdir -p "$DST"
-          gzip -n -9 -c "$SRC/player_game_logs_2026.csv" > "$DST/player_game_logs_2026.csv.gz"
-          gzip -n -9 -c "$SRC/player_boxscores_2026.csv" > "$DST/player_boxscores_2026.csv.gz"
-          gzip -n -9 -c "$SRC/wnba_schedule_2026.csv" > "$DST/wnba_schedule_2026.csv.gz"
-          cp "$SRC/snapshot_manifest.json" "$DST/snapshot_manifest.json"
-          cat > "$DST/ATTRIBUTION.txt" <<'EOF'
-          SportsDataverse / wehoop WNBA data
-          Source repository: https://github.com/sportsdataverse/wehoop-wnba-stats-data
-          License: CC BY 4.0
-          License text: https://github.com/sportsdataverse/wehoop-wnba-stats-data/blob/main/LICENSE.md
-          This snapshot preserves source attribution and exact SHA-256 provenance for WOW V17 model-development evidence.
-          EOF
-          git config user.name 'WOW V17 CI'
-          git config user.email 'wow-v17-ci@users.noreply.github.com'
-          git add "$DST"
-          if git diff --cached --quiet; then
-            echo 'No source-freeze changes to commit.'
-          else
-            git commit -m 'V17: freeze immutable WNBA 2026 training evidence bundle'
-            git push origin "HEAD:${GITHUB_REF_NAME}"
-          fi
-
       - name: Install dependencies
         run: python -m pip install -r requirements.txt
 
-      - name: Run WNBA trainer, calibration, hydration, replay, and runtime-parity tests
+      - name: Verify immutable WNBA source and existing runtime boundaries
         run: >-
           pytest -q
+          test_wnba_training_source.py
           test_wnba_prop_training_contract.py
           test_wnba_prop_training_readiness.py
           test_wnba_stats_client.py
@@ -113,25 +79,17 @@ jobs:
           test_wnba_prop_real_artifact_e2e.py
           test_wnba_prop_certification_replay.py
 
-      - name: Prove pinned historical role and event-time joins
-        run: python scripts/probe_wnba_2026_training_join.py > data/wnba_prop_training_readiness_2026.json
+      - name: Prove frozen historical role and event-time joins
+        run: PYTHONPATH=. python scripts/probe_wnba_2026_training_join_frozen.py > data/wnba_prop_training_readiness_2026.json
 
-      - name: Replay chronological WNBA prop fit without overwriting checked candidates
+      - name: Fit new immutable-source WNBA candidate lineage
         env:
-          WNBA_ARTIFACT_OUT_DIR: data/wnba-replay
+          WNBA_ARTIFACT_OUT_DIR: data/wnba-frozen-candidate
         run: |
-          mkdir -p data/wnba-replay
-          PYTHONPATH=. python scripts/train_wnba_props_offset.py
+          mkdir -p data/wnba-frozen-candidate
+          PYTHONPATH=. python scripts/train_wnba_props_frozen.py
 
-      - name: Audit deterministic replay and source-rights provenance
-        run: >-
-          PYTHONPATH=. python scripts/audit_wnba_prop_certification_replay.py
-          --checked data/wow_wnba_prop_artifacts_v1.json
-          --replay data/wnba-replay/wow_wnba_prop_artifacts_v1.json
-          --manifest historical_source_manifest_v1.json
-          --report data/wnba_prop_certification_replay_v1.json
-
-      - name: Upload governed fit, source-freeze candidate, and replay evidence
+      - name: Upload governed immutable-source candidate evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -139,10 +97,8 @@ jobs:
           if-no-files-found: error
           retention-days: 14
           path: |
-            artifacts/wow-engine/data/wnba-source-freeze/
+            artifacts/wow-engine/data/source_snapshots/wnba/wnba-2026-20260904/snapshot_manifest.json
+            artifacts/wow-engine/data/source_snapshots/wnba/wnba-2026-20260904/ATTRIBUTION.txt
             artifacts/wow-engine/data/wnba_prop_training_readiness_2026.json
-            artifacts/wow-engine/data/wow_wnba_prop_artifacts_v1.json
-            artifacts/wow-engine/data/wow_wnba_prop_training_report_v1.json
-            artifacts/wow-engine/data/wnba-replay/wow_wnba_prop_artifacts_v1.json
-            artifacts/wow-engine/data/wnba-replay/wow_wnba_prop_training_report_v1.json
-            artifacts/wow-engine/data/wnba_prop_certification_replay_v1.json
+            artifacts/wow-engine/data/wnba-frozen-candidate/wow_wnba_prop_artifacts_v1.json
+            artifacts/wow-engine/data/wnba-frozen-candidate/wow_wnba_prop_training_report_v1.json
