@@ -58,6 +58,29 @@
           "production_deploy": "dep-dadsq7h5efls739ekm2g"
         }
       }
+    },
+    {
+      "postmortem_id": "PM-2026-09-05-002",
+      "title": "Team-event shadow publication leak",
+      "severity": "P1",
+      "domain": "team-event publication / ranking governance",
+      "state": "FIX_IN_PROGRESS",
+      "postmortem_path": "artifacts/wow-engine/v17/postmortems/PM-2026-09-05-002__team-event-shadow-publication-leak.md",
+      "engineering_fix_ids": [
+        "FIX-2026-09-05-002"
+      ],
+      "created_utc": "2026-09-05T08:07:00Z",
+      "updated_utc": "2026-09-05T08:07:00Z",
+      "engineering_fixes": {
+        "FIX-2026-09-05-002": {
+          "title": "Official team-event publication guard",
+          "risk": "R1",
+          "state": "FIX_IN_PROGRESS",
+          "path": "artifacts/wow-engine/v17/engineering-fixes/FIX-2026-09-05-002__official-team-event-publication-guard.md",
+          "created_utc": "2026-09-05T08:07:00Z",
+          "updated_utc": "2026-09-05T08:07:00Z"
+        }
+      }
     }
   ]
 }
