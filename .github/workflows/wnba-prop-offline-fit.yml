@@ -24,6 +24,7 @@ on:
       - 'artifacts/wow-engine/prop_calibration_adapters.py'
       - 'artifacts/wow-engine/requirements.txt'
       - 'artifacts/wow-engine/test_wnba_training_source.py'
+      - 'artifacts/wow-engine/test_wnba_frozen_numeric_canonicalization.py'
       - 'artifacts/wow-engine/test_wnba_prop_trainer.py'
       - 'artifacts/wow-engine/test_wnba_prop_offset_trainer.py'
       - 'artifacts/wow-engine/test_wnba_prop_model_adapter.py'
@@ -67,6 +68,7 @@ jobs:
         run: >-
           pytest -q
           test_wnba_training_source.py
+          test_wnba_frozen_numeric_canonicalization.py
           test_wnba_prop_training_contract.py
           test_wnba_prop_training_readiness.py
           test_wnba_stats_client.py
