@@ -21,7 +21,7 @@ def governed_result() -> dict:
             "event_mutex_status": "PASS",
             "postmodel_gates_status": "PASS",
             "final_gates_status": "PASS",
-            "final_candidate_label": "FINAL_APPROVED",
+            "terminal_label": "FINAL_APPROVED",
         },
     }
 
