@@ -1,16 +1,16 @@
 """V17 Full Model card-admission/capability preflight.
 
-This module is deliberately upstream of slip/card portfolio optimization.  It
+This module is deliberately upstream of slip/card portfolio optimization. It
 prevents discovery research, sportsbook probabilities, third-party projections,
 or stale manually reconstructed probabilities from being admitted to a governed
 Full Model card.
 
 Only a controlling backend scorer may populate the governed probability package.
-Capability/readiness failures stay typed and fail closed.  Missing downstream
+Capability/readiness failures stay typed and fail closed. Missing downstream
 market evidence may hold the market/value objective without erasing a completed
 sporting probability.
 
-This module never emits FINAL_APPROVED and never authorizes execution.  The
+This module never emits FINAL_APPROVED and never authorizes execution. The
 V17_TERMINAL_REDUCER remains the sole global terminal authority.
 """
 from __future__ import annotations
@@ -55,7 +55,7 @@ REJECTING_TERMINALS = {
     "DUPLICATE_EXPOSURE_BLOCK",
 }
 
-# These keys may exist on discovery/research candidates.  They are intentionally
+# These keys may exist on discovery/research candidates. They are intentionally
 # ignored when constructing a governed probability package.
 EXTERNAL_RESEARCH_KEYS = {
     "external_probability",
@@ -206,6 +206,14 @@ def _governed_package(scorer: Mapping[str, Any] | None) -> dict[str, Any]:
 
 
 def _valid_rank_package(package: Mapping[str, Any]) -> bool:
+    # A calibrated number without a backend-owned sporting probability is not a
+    # governed package. This specifically blocks externally supplied/manual
+    # probabilities from entering through a partially populated scorer object.
+    model_probability = _prob(package.get("model_probability"))
+    unconditional = _prob(package.get("unconditional_probability"))
+    if model_probability is None and unconditional is None:
+        return False
+
     calibrated = _prob(package.get("calibrated_probability"))
     lower = _prob(package.get("calibrated_lower_bound"))
     upper = _prob(package.get("calibrated_upper_bound"))
@@ -214,6 +222,8 @@ def _valid_rank_package(package: Mapping[str, Any]) -> bool:
     if lower > calibrated:
         return False
     if upper is not None and calibrated > upper:
+        return False
+    if package.get("probability_publishable") is not True:
         return False
     if package.get("rank_eligible") is not True:
         return False
@@ -307,7 +317,8 @@ def admit_full_model_candidate(
         blockers.append(trust_state)
     if route_supported is False:
         blockers.append("ROUTE_CAPABILITY_UNAVAILABLE")
-    if readiness.get("probability_publishable") is False:
+    readiness_publication_blocked = readiness.get("probability_publishable") is False
+    if readiness_publication_blocked:
         blockers.append("PROBABILITY_PUBLICATION_BLOCKED")
 
     eligible_for_scoring = (
@@ -321,6 +332,7 @@ def admit_full_model_candidate(
     package = _governed_package(scorer_result)
     scorer_failure = _typed_failure(scorer_result)
     typed_failure = scorer_failure or readiness_failure
+    blockers.extend(_blockers(scorer_result))
 
     if not scorer_result:
         blockers.append("LIVE_GPT_ACTION_INVOCATION_BLOCKED")
@@ -328,21 +340,32 @@ def admit_full_model_candidate(
     elif scorer_failure:
         blockers.append(scorer_failure)
 
-    # Calibration/rank lifecycle is backend-owned.  A completed sporting
+    # Calibration/rank lifecycle is backend-owned. A completed sporting
     # probability remains visible even when rank/card admission is held.
     sporting_preserved = _sporting_probability_preserved(package)
     valid_rank_package = _valid_rank_package(package)
     if package and not valid_rank_package:
+        if _prob(package.get("model_probability")) is None and _prob(package.get("unconditional_probability")) is None:
+            blockers.append("MODEL_PROBABILITY_UNAVAILABLE")
+        if package.get("calibrated_probability") is None:
+            blockers.append("CALIBRATED_PROBABILITY_UNAVAILABLE")
         if package.get("calibrated_lower_bound") is None:
             blockers.append("CALIBRATED_LOWER_BOUND_UNAVAILABLE")
+        if package.get("probability_publishable") is not True:
+            blockers.append("PROBABILITY_PUBLICATION_BLOCKED")
         if package.get("rank_eligible") is not True:
             blockers.append("RANK_ELIGIBILITY_BLOCKED")
 
-    admitted = eligible_for_scoring and scorer_failure is None and valid_rank_package
+    admitted = (
+        eligible_for_scoring
+        and not readiness_publication_blocked
+        and scorer_failure is None
+        and valid_rank_package
+    )
 
     terminal = str(package.get("terminal_label") or "").strip()
     if admitted:
-        # This is an admission state, not a V17 terminal publication.  The
+        # This is an admission state, not a V17 terminal publication. The
         # terminal reducer remains authoritative downstream.
         terminal = terminal or "MODEL_QUALIFIED_HOLD"
     elif scorer_failure:
