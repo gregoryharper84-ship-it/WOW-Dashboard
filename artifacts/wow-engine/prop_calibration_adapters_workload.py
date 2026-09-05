@@ -13,6 +13,7 @@ historical sampling uncertainty. No market probability enters this module.
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 from typing import Any, Callable, Mapping
 
 import numpy as np
@@ -42,6 +43,19 @@ BOUNDS_METHOD_VERSION = "PRECALIBRATION_SHRINKAGE_EVIDENCE_BOOTSTRAP_V1"
 ModelAdapter = Callable[[ResolvedArtifact, Any, Mapping[str, Any]], Any]
 
 
+@dataclass(frozen=True)
+class _BootstrapRequestIdentity:
+    """Only the request field consumed by these four fitted adapters.
+
+    The request identity cannot alter their PMF math; it is included solely in
+    the adapter's feature-snapshot audit hash. Reusing the certified point
+    inference's feature hash binds each bootstrap realization to that inference
+    without fabricating an event/player/market identity.
+    """
+
+    evidence_snapshot_id: str
+
+
 def _selected_side_probability(
     *,
     raw_probability: float,
@@ -67,12 +81,12 @@ def _aligned_history(features: Mapping[str, Any]) -> tuple[list[Any], list[Any]]
     if not isinstance(game_log, list) or not isinstance(box_score_log, list):
         raise PropCalibrationUnavailable(
             "PROP_CALIBRATION_EVIDENCE_MISSING",
-            "workload calibration requires aligned game_log and box_score_log histories",
+            "calibration requires aligned game_log and box_score_log histories",
         )
     if not game_log or len(game_log) != len(box_score_log):
         raise PropCalibrationUnavailable(
             "PROP_CALIBRATION_EVIDENCE_MISALIGNED",
-            "workload calibration requires non-empty 1:1 game_log/box_score_log histories",
+            "calibration requires non-empty 1:1 game_log/box_score_log histories",
         )
     return game_log, box_score_log
 
@@ -85,11 +99,13 @@ def _bootstrap_adapter(
     seed: int,
     *,
     model_adapter: ModelAdapter,
-    history_mode: str,
 ) -> PropCalibrationOutput:
     game_log, box_score_log = _aligned_history(features)
     n_eff = float(len(game_log))
     lam = n_eff / (n_eff + SHRINKAGE_K)
+    bootstrap_request = _BootstrapRequestIdentity(
+        evidence_snapshot_id=inference.distribution.feature_snapshot_hash
+    )
 
     def resample_fn(rng: np.random.Generator, count: int) -> np.ndarray:
         values = np.empty(count, dtype=float)
@@ -97,28 +113,21 @@ def _bootstrap_adapter(
         for i in range(count):
             indices = rng.integers(0, n, size=n)
             sampled_features = dict(features)
-
-            if history_mode == "ALIGNED":
-                sampled_features["game_log"] = [game_log[j] for j in indices]
-                sampled_features["box_score_log"] = [box_score_log[j] for j in indices]
-            elif history_mode == "GAME_LOG_ONLY":
-                sampled_features["game_log"] = [game_log[j] for j in indices]
-                # PA's fitted model uses the PA history plus current lineup
-                # context. Keep box_score_log available for audit identity but
-                # do not let its contents drive the fitted distribution.
-                sampled_features["box_score_log"] = [box_score_log[j] for j in indices]
-            else:  # code-controlled invariant, never caller-selected
-                raise RuntimeError(f"unsupported calibration history mode: {history_mode}")
+            # The persisted evidence contract declares these histories 1:1.
+            # Resample aligned rows together so no synthetic mismatch is made.
+            sampled_features["game_log"] = [game_log[j] for j in indices]
+            sampled_features["box_score_log"] = [box_score_log[j] for j in indices]
 
             distribution = model_adapter(
                 inference.artifact,
-                inference_request := getattr(inference, "request", None),
-                sampled_features,
-            ) if getattr(inference, "request", None) is not None else model_adapter(
-                inference.artifact,
-                _request_from_distribution_context(inference),
+                bootstrap_request,
                 sampled_features,
             )
+            if not distribution.coverage.in_distribution:
+                raise PropCalibrationUnavailable(
+                    "PROP_CALIBRATION_BOOTSTRAP_OOD",
+                    "A resampled realization left the certified model coverage envelope.",
+                )
             resampled_line = derive_line_probabilities(distribution, line_probs.line)
             p_side = _selected_side_probability(
                 raw_probability=raw_probability,
@@ -154,33 +163,6 @@ def _bootstrap_adapter(
     )
 
 
-def _request_from_distribution_context(inference: CertifiedInference):
-    """Calibration must re-run the exact fitted adapter with stable identity.
-
-    CertifiedInference intentionally carries only the resolved artifact and raw
-    distribution. Adapter math uses request identity only to bind the feature
-    snapshot hash, not to change the PMF. A minimal immutable request with the
-    already-certified bundle identity is therefore constructed solely for
-    bootstrap hash provenance; no caller-controlled model field is introduced.
-    """
-    from prop_distribution_contract import PropInferenceRequest
-
-    artifact = inference.artifact
-    bundle = artifact.bundle
-    return PropInferenceRequest(
-        event_id="CALIBRATION_BOOTSTRAP",
-        player_id="CALIBRATION_BOOTSTRAP",
-        sport=bundle.supported_sport,
-        league_season="CALIBRATION_BOOTSTRAP",
-        stat_type=bundle.supported_stat_type,
-        evidence_snapshot_id=inference.distribution.feature_snapshot_hash,
-        market_identity_id="CALIBRATION_BOOTSTRAP",
-        as_of_timestamp=inference.distribution.inference_timestamp,
-        request_id="CALIBRATION_BOOTSTRAP",
-        feature_schema_version=bundle.feature_schema_version,
-    )
-
-
 def mlb_pitcher_outs_precalibration_adapter(
     inference: CertifiedInference,
     raw_probability: float,
@@ -195,7 +177,6 @@ def mlb_pitcher_outs_precalibration_adapter(
         features,
         seed,
         model_adapter=mlb_pitcher_outs_workload_nb_v1_adapter,
-        history_mode="ALIGNED",
     )
 
 
@@ -213,7 +194,6 @@ def mlb_pitcher_strikes_thrown_precalibration_adapter(
         features,
         seed,
         model_adapter=mlb_pitcher_strikes_thrown_workload_nb_v1_adapter,
-        history_mode="ALIGNED",
     )
 
 
@@ -231,7 +211,6 @@ def mlb_pitcher_balls_thrown_precalibration_adapter(
         features,
         seed,
         model_adapter=mlb_pitcher_balls_thrown_workload_nb_v1_adapter,
-        history_mode="ALIGNED",
     )
 
 
@@ -249,7 +228,6 @@ def mlb_batter_pa_precalibration_adapter(
         features,
         seed,
         model_adapter=mlb_batter_plate_appearances_nb_v1_adapter,
-        history_mode="GAME_LOG_ONLY",
     )
 
 
