@@ -1,16 +1,17 @@
 # FIX-2026-09-05-001 — Repair nightly ledger path metadata
 
-- status: FIX_IN_PROGRESS
+- status: VERIFIED_CLOSED
 - linked_postmortem: PM-2026-09-05-001
 - risk: R0
 - created_utc: 2026-09-05T07:57:00Z
+- closed_utc: 2026-09-05T08:06:25Z
 - runtime_generation: V17_ACTIVE
 - terminal_authority: V17_TERMINAL_REDUCER
 - can_execute: false
 
 ## Root Cause Being Repaired
 
-The initial incident ledger entries store `postmortem_path` and engineering-fix `path` relative to `artifacts/wow-engine`, but `nightly_incident_records.py` resolves stored paths relative to repository root. The mismatch makes ledger validation fail deterministically.
+The initial incident ledger entries stored `postmortem_path` and engineering-fix `path` relative to `artifacts/wow-engine`, but `nightly_incident_records.py` resolves stored paths relative to repository root. The mismatch made ledger validation fail deterministically.
 
 ## Allowed Files
 
@@ -25,35 +26,37 @@ All probability/model/calibration code, terminal reducer/label code, Action/Open
 
 ## API / Schema / Runtime Effects
 
-None. No route, API contract, database schema, model output, terminal label, governance precedence, or runtime behavior changes.
+None. No route, API contract, database schema, model output, terminal label, governance precedence, or runtime behavior changed.
 
 ## Implementation
 
-Correct the stale legacy ledger paths to repository-root-relative paths and add this PM/FIX pair using the same canonical path convention. Add a deterministic test that calls the ledger validator against the checked-in repository state.
+Corrected the stale legacy ledger paths to repository-root-relative paths and added the linked PM/FIX pair using the same canonical path convention. Added a deterministic test that calls the ledger validator against the checked-in repository state and verifies every PM/FIX path exists.
 
 ## Regression Test
 
-`artifacts/wow-engine/v17/test_nightly_incident_records.py` must prove `validate()` succeeds and the incident ledger retains `V17_ACTIVE`, `V17_TERMINAL_REDUCER`, and `can_execute=false`.
+`artifacts/wow-engine/v17/test_nightly_incident_records.py` validates the checked-in ledger and locks `V17_ACTIVE`, `V17_TERMINAL_REDUCER`, and `can_execute=false`.
 
 ## Validation Gates
 
-- original deterministic validator failure is removed
-- targeted incident-record test passes
-- full governed probability backend regression suite passes through protected CI
-- nightly ledger validation passes
-- required Action/V17 contract validation remains green
-- can_execute=false and dry-run invariants remain unchanged
-- diff contains only allowed files
-- protected GitHub checks are green
+- original deterministic validator failure removed: PASS
+- targeted incident-record regression: PASS through governed backend CI
+- full governed probability backend regression suite: PASS
+- durable Agent Runtime integration: PASS
+- Render/event schema/Custom GPT Action contract validation: PASS
+- required-three regression: PASS
+- additional required regression: PASS
+- can_execute=false and governance invariants unchanged: PASS
+- diff boundary limited to four allowed files: PASS
+- protected GitHub checks: PASS
 
 ## Deployment
 
-No runtime deployment is required for the functional repair. Because the repository is Render auto-deployed after checks pass, a merge may produce a no-op application redeploy; production must still be checked for health and unchanged safety invariants.
+PR #214 merged as `f61b37d87e4a3e8f317de2d0d103ff4c17433e4d`. Render checks-pass auto-deploy created `dep-dadsq7h5efls739ekm2g` for that exact commit and the deployment reached LIVE.
 
 ## Production Verification
 
-Pending fresh post-merge evidence.
+Fresh Render evidence after deployment reported `WOW_V17_RUNTIME status=ACTIVE`, `global_terminal_authority=V17_TERMINAL_REDUCER`, and `can_execute=false`. `/health` returned 200. Canonical `/score-pick-request`, `/score-team-event-request`, and `/score-team-event` acceptance requests returned 200. `WOW_MLB_1IP_FINAL_REFRESH status=PASS`. `WOW_V17_SYNTHETIC_SELF_ACCEPTANCE status=PASS` with one attempt for prop, team-event, and projected-lineup paths. No new error-level production logs were observed.
 
 ## Rollback
 
-Revert the single patch merge if protected CI or production verification exposes a regression.
+Deterministic rollback remains `git revert f61b37d87e4a3e8f317de2d0d103ff4c17433e4d` if a later regression is attributed to this bounded metadata/test repair. No rollback was required.
