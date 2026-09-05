@@ -180,4 +180,4 @@ def test_plate_appearances_calibration_fails_closed_without_current_lineup_conte
             features,
             1704,
         )
-    assert getattr(exc.value, "code", None) == "PROP_CALIBRATION_BOOTSTRAP_FAILED"
+    assert getattr(exc.value, "code", None) == "PROP_CALIBRATION_EVIDENCE_MISSING"
