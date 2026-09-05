@@ -1,6 +1,6 @@
 # FIX-2026-09-05-002 — Repair nightly OpenAPI description serialization
 
-- status: IN_PROGRESS
+- status: FIX_IN_PROGRESS
 - linked_postmortem: PM-2026-09-05-002
 - risk: R1
 - created_utc: 2026-09-05T09:59:00Z
