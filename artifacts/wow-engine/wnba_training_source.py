@@ -16,6 +16,7 @@ from typing import Any
 BUNDLE_ID = "wnba-2026-20260904"
 PROVIDER = "SPORTSDATAVERSE_WNBA_STATS"
 LICENSE_ID = "CC-BY-4.0"
+SNAPSHOT_MANIFEST_ID = f"data/source_snapshots/wnba/{BUNDLE_ID}/snapshot_manifest.json"
 SOURCE_DIR = Path(__file__).resolve().parent / "data" / "source_snapshots" / "wnba" / BUNDLE_ID
 
 EXPECTED_SHA256 = {
@@ -111,7 +112,7 @@ def source_metadata(source_dir: Path = SOURCE_DIR) -> dict[str, Any]:
         "license_id": LICENSE_ID,
         "license_url": doc.get("license_url"),
         "attribution_required": True,
-        "snapshot_manifest_path": str(source_dir / "snapshot_manifest.json"),
+        "snapshot_manifest_path": SNAPSHOT_MANIFEST_ID,
         "asset_sha256": dict(EXPECTED_SHA256),
         "grants_model_capability": False,
         "probability_publishable": False,
