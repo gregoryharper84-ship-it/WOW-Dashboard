@@ -116,7 +116,7 @@ def evaluate_team_event_official_publication(payload: dict[str, Any]) -> dict[st
             "event_mutex_status": "PASS",
             "postmodel_gates_status": "PASS",
             "final_gates_status": "PASS",
-            "final_candidate_label": FINAL_APPROVED,
+            "terminal_label": FINAL_APPROVED,
         }
         for field, expected in required.items():
             if governance.get(field) != expected:
