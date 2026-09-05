@@ -4,14 +4,18 @@ on:
   push:
     branches:
       - chatgpt/p1-wnba-prop-offline-fit
+      - feat/v17-wnba-certification-replay-20260905
     paths:
       - 'artifacts/wow-engine/scripts/train_wnba_props.py'
       - 'artifacts/wow-engine/scripts/train_wnba_props_offset.py'
       - 'artifacts/wow-engine/scripts/probe_wnba_2026_training_join.py'
+      - 'artifacts/wow-engine/scripts/audit_wnba_prop_certification_replay.py'
       - 'artifacts/wow-engine/wnba_prop_training_contract.py'
       - 'artifacts/wow-engine/wnba_prop_model_adapter.py'
       - 'artifacts/wow-engine/wnba_prop_calibration_adapter.py'
       - 'artifacts/wow-engine/wnba_prop_auto_hydration.py'
+      - 'artifacts/wow-engine/wnba_prop_certification_replay.py'
+      - 'artifacts/wow-engine/historical_source_manifest_v1.json'
       - 'artifacts/wow-engine/prop_auto_hydration_router.py'
       - 'artifacts/wow-engine/prop_model_adapters.py'
       - 'artifacts/wow-engine/prop_calibration_adapters.py'
@@ -24,6 +28,7 @@ on:
       - 'artifacts/wow-engine/test_wnba_runtime_registration.py'
       - 'artifacts/wow-engine/test_wnba_prop_training_readiness.py'
       - 'artifacts/wow-engine/test_wnba_prop_real_artifact_e2e.py'
+      - 'artifacts/wow-engine/test_wnba_prop_certification_replay.py'
       - 'artifacts/wow-engine/data/wow_wnba_prop_artifacts_v1.json'
       - '.github/workflows/wnba-prop-offline-fit.yml'
   workflow_dispatch:
@@ -53,7 +58,7 @@ jobs:
       - name: Install dependencies
         run: python -m pip install -r requirements.txt
 
-      - name: Run WNBA trainer, calibration, hydration, and runtime-parity tests
+      - name: Run WNBA trainer, calibration, hydration, replay, and runtime-parity tests
         run: >-
           pytest -q
           test_wnba_prop_training_contract.py
@@ -66,14 +71,27 @@ jobs:
           test_wnba_prop_auto_hydration.py
           test_wnba_runtime_registration.py
           test_wnba_prop_real_artifact_e2e.py
+          test_wnba_prop_certification_replay.py
 
       - name: Prove pinned historical role and event-time joins
         run: python scripts/probe_wnba_2026_training_join.py > data/wnba_prop_training_readiness_2026.json
 
-      - name: Fit chronological WNBA prop artifacts
-        run: PYTHONPATH=. python scripts/train_wnba_props_offset.py
+      - name: Replay chronological WNBA prop fit without overwriting checked candidates
+        env:
+          WNBA_ARTIFACT_OUT_DIR: data/wnba-replay
+        run: |
+          mkdir -p data/wnba-replay
+          PYTHONPATH=. python scripts/train_wnba_props_offset.py
 
-      - name: Upload governed fit evidence
+      - name: Audit deterministic replay and source-rights provenance
+        run: >-
+          PYTHONPATH=. python scripts/audit_wnba_prop_certification_replay.py
+          --checked data/wow_wnba_prop_artifacts_v1.json
+          --replay data/wnba-replay/wow_wnba_prop_artifacts_v1.json
+          --manifest historical_source_manifest_v1.json
+          --report data/wnba_prop_certification_replay_v1.json
+
+      - name: Upload governed fit and replay evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -84,3 +102,6 @@ jobs:
             artifacts/wow-engine/data/wnba_prop_training_readiness_2026.json
             artifacts/wow-engine/data/wow_wnba_prop_artifacts_v1.json
             artifacts/wow-engine/data/wow_wnba_prop_training_report_v1.json
+            artifacts/wow-engine/data/wnba-replay/wow_wnba_prop_artifacts_v1.json
+            artifacts/wow-engine/data/wnba-replay/wow_wnba_prop_training_report_v1.json
+            artifacts/wow-engine/data/wnba_prop_certification_replay_v1.json
