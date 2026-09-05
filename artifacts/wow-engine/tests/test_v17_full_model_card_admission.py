@@ -164,6 +164,7 @@ def test_scorer_failure_is_preserved_and_not_rewritten_as_model_unavailable():
     assert decision.typed_failure == "MODEL_SCORER_FAILED"
     assert decision.terminal_label == "MODEL_SCORER_FAILED"
     assert decision.terminal_label != "MODEL_UNAVAILABLE"
+    assert "SCORER_TIMEOUT" in decision.blockers
 
 
 def test_prop_forward_cohort_rank_hold_does_not_let_external_hit_rate_into_card():
@@ -185,6 +186,7 @@ def test_prop_forward_cohort_rank_hold_does_not_let_external_hit_rate_into_card(
         calibrated_upper_bound=None,
         rank_eligible=False,
         model_qualified=False,
+        probability_publishable=False,
         terminal_label="MODEL_QUALIFIED_HOLD",
     )
 
@@ -195,6 +197,53 @@ def test_prop_forward_cohort_rank_hold_does_not_let_external_hit_rate_into_card(
     assert decision.governed_probability_package["model_probability"] == pytest.approx(0.72)
     assert decision.governed_probability_package["model_probability"] != pytest.approx(0.80)
     assert "CALIBRATED_LOWER_BOUND_UNAVAILABLE" in decision.blockers
+    assert "PROBABILITY_PUBLICATION_BLOCKED" in decision.blockers
+
+
+def test_probability_publishable_false_blocks_admission_but_preserves_sporting_probability():
+    row = _candidate("publish-held", sport="MLB")
+    scorer = _scored(
+        probability_publishable=False,
+        rank_eligible=True,
+        calibrated_probability=0.71,
+        calibrated_lower_bound=0.66,
+    )
+
+    decision = admit_full_model_candidate(row, readiness=_ready(), scorer_result=scorer)
+
+    assert decision.sporting_probability_preserved is True
+    assert decision.admitted_to_probability_card is False
+    assert "PROBABILITY_PUBLICATION_BLOCKED" in decision.blockers
+
+
+def test_calibrated_only_payload_without_sporting_probability_is_rejected():
+    row = _candidate("calibrated-only", sport="MLB")
+    scorer = _scored(
+        model_probability=None,
+        unconditional_probability=None,
+        calibrated_probability=0.72,
+        calibrated_lower_bound=0.67,
+        calibrated_upper_bound=0.76,
+        probability_publishable=True,
+        rank_eligible=True,
+    )
+
+    decision = admit_full_model_candidate(row, readiness=_ready(), scorer_result=scorer)
+
+    assert decision.admitted_to_probability_card is False
+    assert "MODEL_PROBABILITY_UNAVAILABLE" in decision.blockers
+
+
+def test_readiness_publication_hold_blocks_even_if_row_payload_claims_rank_eligible():
+    row = _candidate("readiness-held", sport="MLB")
+    readiness = _ready(probability_publishable=False, blockers=["CALIBRATION_HEALTH_HOLD"])
+
+    decision = admit_full_model_candidate(row, readiness=readiness, scorer_result=_scored())
+
+    assert decision.sporting_probability_preserved is True
+    assert decision.admitted_to_probability_card is False
+    assert "CALIBRATION_HEALTH_HOLD" in decision.blockers
+    assert "PROBABILITY_PUBLICATION_BLOCKED" in decision.blockers
 
 
 def test_batch_reconciles_every_candidate_exactly_once():
