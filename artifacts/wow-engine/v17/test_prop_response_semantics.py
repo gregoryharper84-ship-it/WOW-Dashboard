@@ -23,7 +23,8 @@ def test_both_directions_receive_explicit_model_assessments():
     assert more["confidence_tier"] == "STANDARD"
     assert more["probability_rank_eligible"] is True
     assert less["model_qualified"] is False
-    assert more["value_qualification_status"] == "PENDING_EXACT_PRICE"
+    assert more["value_qualification_status"] == "NOT_ELIGIBLE_PRECALIBRATION"
+    assert more["downstream_money_evaluation_allowed"] is False
     assert more["card_qualification_status"] == "NOT_EVALUATED"
 
 
@@ -68,7 +69,8 @@ def test_model_qualification_survives_missing_market_and_payout():
     assert payload["model_qualified"] is True
     assert payload["model_qualification_status"] == "MODEL_QUALIFIED"
     assert payload["probability_rank_eligible"] is True
-    assert payload["value_qualification_status"] == "PENDING_EXACT_PRICE"
+    assert payload["value_qualification_status"] == "NOT_ELIGIBLE_PRECALIBRATION"
+    assert payload["downstream_money_evaluation_allowed"] is False
     assert payload["terminal_label"] == "MODEL_QUALIFIED_HOLD"
 
 

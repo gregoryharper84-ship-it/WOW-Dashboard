@@ -9,6 +9,13 @@ Qualification thresholds intentionally preserve the previously governed WOW poli
 - HIGH confidence metadata: p >= 0.65 and lower bound >= 0.60
 - RESEARCH_INTEREST: p >= 0.57 and lower bound > 0.50, never rank eligible
 
+Phase-A PRECALIBRATION_SHRINKAGE may produce a completed sporting-probability
+package and retain its native probability terminal. It is not evidence of proven
+calibration, so downstream money/value evaluation is prohibited even when the
+sporting model clears the normal model-qualification thresholds. This mirrors
+calibration.py's ratified MONEY_QUALIFIED / FINAL_APPROVED prohibition without
+erasing or relabeling the model result.
+
 No new uncertainty-width cutoff is introduced without a separately certified policy
 artifact. can_execute remains false.
 """
@@ -20,6 +27,7 @@ from typing import Iterable
 
 
 QUALIFICATION_POLICY_VERSION = "PROP_MODEL_QUALIFICATION_V17_CERTIFIED_THRESHOLDS"
+PRECALIBRATION_STATUS = "PRECALIBRATION_SHRINKAGE"
 
 
 @dataclass(frozen=True)
@@ -247,6 +255,11 @@ def classify_prop_probability(
         terminal = "NO_LOW_PROBABILITY"
         qualified = False
 
+    money_allowed = qualified
+    if calibration_health == PRECALIBRATION_STATUS:
+        money_allowed = False
+        reasons.append("PRECALIBRATION_CEILING=NO_MONEY_QUALIFICATION")
+
     return _decision(
         terminal_label=terminal,
         confidence_tier=tier,
@@ -255,7 +268,7 @@ def classify_prop_probability(
         model_qualified=qualified,
         model_qualification_status="MODEL_QUALIFIED" if qualified else "MODEL_NOT_QUALIFIED",
         uncertainty_width=width,
-        downstream_money_evaluation_allowed=qualified,
+        downstream_money_evaluation_allowed=money_allowed,
         blockers=blocker_tuple,
         reasons=tuple(reasons),
     )

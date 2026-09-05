@@ -1,7 +1,7 @@
 from qualification_policy_v2 import classify_prop_probability
 
 
-def q(p, lb, ub, *, status="PRECALIBRATION_SHRINKAGE", publishable=True):
+def q(p, lb, ub, *, status="PLATT_TIME_SPLIT_V1", publishable=True):
     return classify_prop_probability(
         calibrated_probability=p,
         calibrated_lower_bound=lb,
@@ -25,6 +25,27 @@ def test_standard_model_qualified_preserves_existing_governed_threshold():
     result = q(0.63, 0.58, 0.68)
     assert result.model_qualified is True
     assert result.confidence_tier == "STANDARD"
+
+
+def test_phase_a_preserves_model_qualification_but_blocks_downstream_money():
+    result = q(0.69, 0.62, 0.74, status="PRECALIBRATION_SHRINKAGE")
+    assert result.terminal_label == "MODEL_QUALIFIED_HOLD"
+    assert result.confidence_tier == "HIGH"
+    assert result.model_supported is True
+    assert result.model_qualified is True
+    assert result.rank_eligible is True
+    assert result.downstream_money_evaluation_allowed is False
+    assert result.final_approved_allowed is False
+    assert "PRECALIBRATION_CEILING=NO_MONEY_QUALIFICATION" in result.qualification_reasons
+
+
+def test_phase_a_preserves_low_probability_rejection_and_blocks_money():
+    result = q(0.52, 0.49, 0.57, status="PRECALIBRATION_SHRINKAGE")
+    assert result.terminal_label == "NO_LOW_PROBABILITY"
+    assert result.model_supported is True
+    assert result.model_qualified is False
+    assert result.rank_eligible is False
+    assert result.downstream_money_evaluation_allowed is False
 
 
 def test_sub_60_probability_is_research_only_even_with_strong_lower_bound():
@@ -79,7 +100,7 @@ def test_market_identity_is_not_a_sporting_model_hard_blocker():
         calibrated_probability=0.62,
         calibrated_lower_bound=0.58,
         calibrated_upper_bound=0.68,
-        calibration_status="PASS",
+        calibration_status="PLATT_TIME_SPLIT_V1",
         blockers=["EXACT_MARKET_IDENTITY_UNAVAILABLE"],
         probability_publishable=True,
     )
