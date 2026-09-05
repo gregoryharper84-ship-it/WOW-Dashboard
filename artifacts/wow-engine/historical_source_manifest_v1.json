@@ -1,0 +1,149 @@
+{
+  "schema_version": "WOW_HISTORICAL_SOURCE_MANIFEST_V1",
+  "can_execute": false,
+  "sources": [
+    {
+      "sport": "MLB",
+      "provider": "MLB_STATS_API",
+      "evidence_domain": "SPORTING",
+      "rights_state": "V17_APPROVED",
+      "credential_required": false,
+      "coverage_start": null,
+      "coverage_end": null,
+      "grants_model_capability": false,
+      "notes": "Reuse existing official MLB identity, schedule, game-log, and box-score acquisition. Source availability alone never grants a fitted model route."
+    },
+    {
+      "sport": "MLB",
+      "provider": "BASEBALL_SAVANT_STATCAST",
+      "evidence_domain": "SPORTING",
+      "rights_state": "V17_APPROVED",
+      "credential_required": false,
+      "coverage_start": "2017",
+      "coverage_end": null,
+      "grants_model_capability": false,
+      "notes": "Ratified pitch-level source for native Statcast release_speed. Earlier PITCHf/x-era values must remain provenance-distinct if later admitted."
+    },
+    {
+      "sport": "WNBA",
+      "provider": "WNBA_EXISTING_STATS_DERIVED",
+      "evidence_domain": "SPORTING",
+      "rights_state": "VALIDATION_ONLY",
+      "credential_required": false,
+      "coverage_start": null,
+      "coverage_end": null,
+      "grants_model_capability": false,
+      "notes": "Reuse the existing WNBA offline training/readiness contract for schema and validation. Production training rights/source must be separately ratified."
+    },
+    {
+      "sport": "WNBA",
+      "provider": "SPORTRADAR_WNBA",
+      "evidence_domain": "SPORTING",
+      "rights_state": "CONTRACT_REQUIRED",
+      "credential_required": true,
+      "coverage_start": "2015",
+      "coverage_end": null,
+      "grants_model_capability": false,
+      "notes": "Preferred licensed production historical corpus candidate for WNBA player-game outcomes and role/opportunity context."
+    },
+    {
+      "sport": "NCAAF",
+      "provider": "CFBD",
+      "evidence_domain": "SPORTING",
+      "rights_state": "V17_APPROVED",
+      "credential_required": true,
+      "coverage_start": null,
+      "coverage_end": null,
+      "grants_model_capability": false,
+      "notes": "Reuse issue #50 acquisition client, source staging, hashes, event identity, and leakage guards. Production remains blocked until CFBD_API_KEY is configured and evidence readiness passes."
+    },
+    {
+      "sport": "NFL",
+      "provider": "NFLVERSE",
+      "evidence_domain": "SPORTING",
+      "rights_state": "LICENSE_REVIEW_REQUIRED",
+      "credential_required": false,
+      "coverage_start": "1999",
+      "coverage_end": null,
+      "grants_model_capability": false,
+      "notes": "Preferred low-cost historical corpus candidate. Complete V17 production-use/licensing review before marking approved."
+    },
+    {
+      "sport": "NFL",
+      "provider": "SPORTRADAR_NFL",
+      "evidence_domain": "SPORTING",
+      "rights_state": "CONTRACT_REQUIRED",
+      "credential_required": true,
+      "coverage_start": "2000",
+      "coverage_end": null,
+      "grants_model_capability": false,
+      "notes": "Licensed fallback for NFL historical outcomes and play/event detail."
+    },
+    {
+      "sport": "NBA",
+      "provider": "SPORTRADAR_NBA",
+      "evidence_domain": "SPORTING",
+      "rights_state": "CONTRACT_REQUIRED",
+      "credential_required": true,
+      "coverage_start": "2013",
+      "coverage_end": null,
+      "grants_model_capability": false,
+      "notes": "Candidate production source after WNBA basketball architecture is validated."
+    },
+    {
+      "sport": "NHL",
+      "provider": "NHL_PUBLIC_API",
+      "evidence_domain": "SPORTING",
+      "rights_state": "LICENSE_REVIEW_REQUIRED",
+      "credential_required": false,
+      "coverage_start": null,
+      "coverage_end": null,
+      "grants_model_capability": false,
+      "notes": "Candidate low-cost box-score/play-by-play/game-log source; complete production-use review before approval."
+    },
+    {
+      "sport": "NHL",
+      "provider": "SPORTRADAR_NHL",
+      "evidence_domain": "SPORTING",
+      "rights_state": "CONTRACT_REQUIRED",
+      "credential_required": true,
+      "coverage_start": "2013",
+      "coverage_end": null,
+      "grants_model_capability": false,
+      "notes": "Licensed NHL historical fallback."
+    },
+    {
+      "sport": "TENNIS",
+      "provider": "SPORTRADAR_TENNIS",
+      "evidence_domain": "SPORTING",
+      "rights_state": "CONTRACT_REQUIRED",
+      "credential_required": true,
+      "coverage_start": null,
+      "coverage_end": null,
+      "grants_model_capability": false,
+      "notes": "Preferred licensed production source for match results and detailed statistics."
+    },
+    {
+      "sport": "TENNIS",
+      "provider": "SACKMANN_TENNIS",
+      "evidence_domain": "SPORTING",
+      "rights_state": "RESEARCH_ONLY",
+      "credential_required": false,
+      "coverage_start": null,
+      "coverage_end": null,
+      "grants_model_capability": false,
+      "notes": "Research/prototyping only unless production rights are separately obtained and ratified."
+    },
+    {
+      "sport": "MULTISPORT",
+      "provider": "SPORTSDATAIO_VAULT",
+      "evidence_domain": "MARKET",
+      "rights_state": "CONTRACT_REQUIRED",
+      "credential_required": true,
+      "coverage_start": null,
+      "coverage_end": null,
+      "grants_model_capability": false,
+      "notes": "Historical lines/props/market evidence only. Keep separate from sporting probability training and never relabel market evidence as governed model probability."
+    }
+  ]
+}
