@@ -26,14 +26,18 @@
     },
     {
       "sport": "WNBA",
-      "provider": "WNBA_EXISTING_STATS_DERIVED",
+      "provider": "SPORTSDATAVERSE_WNBA_STATS",
       "evidence_domain": "SPORTING",
-      "rights_state": "VALIDATION_ONLY",
+      "rights_state": "V17_APPROVED",
       "credential_required": false,
       "coverage_start": null,
       "coverage_end": null,
       "grants_model_capability": false,
-      "notes": "Reuse the existing WNBA offline training/readiness contract for schema and validation. Production training rights/source must be separately ratified."
+      "license_id": "CC-BY-4.0",
+      "license_url": "https://github.com/sportsdataverse/wehoop-wnba-stats-data/blob/main/LICENSE.md",
+      "source_repository": "sportsdataverse/wehoop-wnba-stats-data",
+      "attribution_required": true,
+      "notes": "Production-training source for the pinned SportsDataverse WNBA Stats player-game corpus. Repository data/code/documentation are CC BY 4.0; preserve attribution and pinned source hashes. Approval grants source use only, never model capability."
     },
     {
       "sport": "WNBA",
