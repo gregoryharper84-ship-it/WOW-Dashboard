@@ -1,15 +1,19 @@
 #!/usr/bin/env python3
-"""Fit new WNBA candidate artifacts from the WOW-owned immutable source bundle.
+"""Fit reproducible WNBA candidate artifacts from the WOW-owned source bundle.
 
 This preserves the existing audited offset-Poisson fitting implementation while
-changing only the evidence boundary and candidate lineage. It does not register,
-promote, activate, publish, or execute any model.
+changing only the evidence boundary, candidate lineage, and deterministic
+serialization boundary. It does not register, promote, activate, publish, or
+execute any model.
 """
 from __future__ import annotations
 
+import hashlib
 import json
+import math
 import os
 import sys
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +24,34 @@ from wnba_training_source import EXPECTED_SHA256, load_player_game_logs, source_
 ARTIFACT_DATE = "2026_09_05"
 CERTIFICATION_DATE = "2026-09-05"
 SOURCE_ID = "WOW_GIT_FROZEN_SPORTSDATAVERSE_WNBA_2026_20260904"
+CANONICAL_FLOAT_DECIMALS = 12
+
+
+def _canonicalize_numbers(value: Any) -> Any:
+    """Return a JSON-compatible value with deterministic finite float precision."""
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise RuntimeError("WNBA_NONFINITE_FLOAT_CANNOT_BE_CANONICALIZED")
+        rounded = round(value, CANONICAL_FLOAT_DECIMALS)
+        return 0.0 if rounded == 0.0 else rounded
+    if isinstance(value, dict):
+        return {key: _canonicalize_numbers(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_canonicalize_numbers(item) for item in value]
+    return value
+
+
+def canonicalize_artifact(artifact: dict[str, Any]) -> dict[str, Any]:
+    """Canonicalize fitted numerics and recompute checksum from canonical payload."""
+    out = _canonicalize_numbers(deepcopy(artifact))
+    payload = out.get("artifact_payload")
+    if not isinstance(payload, dict):
+        raise RuntimeError("WNBA_ARTIFACT_PAYLOAD_MISSING_FOR_CANONICALIZATION")
+    out["artifact_checksum"] = hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    out["numeric_canonicalization_decimals"] = CANONICAL_FLOAT_DECIMALS
+    return out
 
 
 def main() -> int:
@@ -49,6 +81,7 @@ def main() -> int:
         "source_license_id": snapshot_meta["license_id"],
         "source_sha256": base.PLAYER_LOG_SHA256,
         "training_code_sha": os.environ.get("GITHUB_SHA", "UNRESOLVED_TRAINING_CODE_SHA"),
+        "numeric_canonicalization_decimals": CANONICAL_FLOAT_DECIMALS,
         "routes": {},
         "artifact_registration_status": "NOT_ATTEMPTED",
         "runtime_model_status": "MODEL_UNAVAILABLE",
@@ -60,13 +93,15 @@ def main() -> int:
     for route, (_, aliases) in base.STAT_ROUTES.items():
         games, source_meta = base._extract_games(payload, aliases)
         source_meta = {**source_meta, "source_snapshot": snapshot_meta}
-        artifact, metrics = offset.fit_one(route, games, source_meta)
+        artifact, _metrics = offset.fit_one(route, games, source_meta)
         stat_short = base.STAT_ROUTES[route][0]
         artifact["certification_id"] = f"WNBA-{stat_short}-OFFLINE-{CERTIFICATION_DATE}"
         artifact["source_snapshot_bundle_id"] = snapshot_meta["bundle_id"]
         artifact["source_provider"] = snapshot_meta["provider"]
         artifact["source_license_id"] = snapshot_meta["license_id"]
         artifact["source_attribution_required"] = True
+        artifact = canonicalize_artifact(artifact)
+        metrics = artifact["validation_metrics"]
         artifacts.append(artifact)
         report["routes"][route] = metrics
         all_pass = all_pass and metrics["validation_status"] == "PASS"
