@@ -1,0 +1,56 @@
+name: Phase A Ceiling Integration Fix
+
+on:
+  push:
+    branches:
+      - fix/v17-phase-a-qualification-ceiling-20260905
+    paths:
+      - '.github/workflows/phase-a-ceiling-integration-fix.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Apply narrow response/test integration patch
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          p = Path('artifacts/wow-engine/v17/prop_response_semantics.py')
+          s = p.read_text()
+          old = '''    if not qualification.model_qualified:\n        value_status = "NOT_ELIGIBLE_MODEL_NOT_QUALIFIED"\n    elif not market_pass:\n        value_status = "PENDING_EXACT_PRICE"\n    elif not settlement_pass or not money_pass:\n        value_status = "PENDING_PAYOUT"\n    else:\n        value_status = "READY_FOR_VALUE_EVALUATION"\n'''
+          new = '''    if not qualification.model_qualified:\n        value_status = "NOT_ELIGIBLE_MODEL_NOT_QUALIFIED"\n    elif not qualification.downstream_money_evaluation_allowed:\n        value_status = "NOT_ELIGIBLE_PRECALIBRATION"\n    elif not market_pass:\n        value_status = "PENDING_EXACT_PRICE"\n    elif not settlement_pass or not money_pass:\n        value_status = "PENDING_PAYOUT"\n    else:\n        value_status = "READY_FOR_VALUE_EVALUATION"\n'''
+          assert old in s
+          s = s.replace(old, new, 1)
+          s = s.replace('''        "downstream_money_evaluation_allowed": qualification.model_qualified,\n''', '''        "downstream_money_evaluation_allowed": qualification.downstream_money_evaluation_allowed,\n''', 1)
+          old2 = '''        "value_qualification_status": "PENDING_EXACT_PRICE" if qualification.model_qualified else "NOT_ELIGIBLE_MODEL_NOT_QUALIFIED",\n        "card_qualification_status": "NOT_EVALUATED",\n        "can_execute": False,\n'''
+          new2 = '''        "value_qualification_status": (\n            "NOT_ELIGIBLE_MODEL_NOT_QUALIFIED"\n            if not qualification.model_qualified\n            else "NOT_ELIGIBLE_PRECALIBRATION"\n            if not qualification.downstream_money_evaluation_allowed\n            else "PENDING_EXACT_PRICE"\n        ),\n        "downstream_money_evaluation_allowed": qualification.downstream_money_evaluation_allowed,\n        "card_qualification_status": "NOT_EVALUATED",\n        "can_execute": False,\n'''
+          assert old2 in s
+          p.write_text(s.replace(old2, new2, 1))
+
+          p = Path('artifacts/wow-engine/test_qualification_policy_v2.py')
+          s = p.read_text()
+          start = s.index('def test_phase_a_precalibration_probability_is_research_only_even_above_high_threshold():')
+          end = s.index('def test_sub_60_probability_is_research_only_even_with_strong_lower_bound():')
+          replacement = '''def test_phase_a_preserves_model_qualification_but_blocks_downstream_money():\n    result = q(0.69, 0.62, 0.74, status="PRECALIBRATION_SHRINKAGE")\n    assert result.terminal_label == "MODEL_QUALIFIED_HOLD"\n    assert result.confidence_tier == "HIGH"\n    assert result.model_supported is True\n    assert result.model_qualified is True\n    assert result.rank_eligible is True\n    assert result.downstream_money_evaluation_allowed is False\n    assert result.final_approved_allowed is False\n    assert "PRECALIBRATION_CEILING=NO_MONEY_QUALIFICATION" in result.qualification_reasons\n\n\ndef test_phase_a_preserves_low_probability_rejection_and_blocks_money():\n    result = q(0.52, 0.49, 0.57, status="PRECALIBRATION_SHRINKAGE")\n    assert result.terminal_label == "NO_LOW_PROBABILITY"\n    assert result.model_supported is True\n    assert result.model_qualified is False\n    assert result.rank_eligible is False\n    assert result.downstream_money_evaluation_allowed is False\n\n\n'''
+          p.write_text(s[:start] + replacement + s[end:])
+
+          p = Path('artifacts/wow-engine/v17/test_prop_response_semantics.py')
+          s = p.read_text()
+          s = s.replace('''    assert more["value_qualification_status"] == "PENDING_EXACT_PRICE"\n''', '''    assert more["value_qualification_status"] == "NOT_ELIGIBLE_PRECALIBRATION"\n    assert more["downstream_money_evaluation_allowed"] is False\n''', 1)
+          s = s.replace('''    assert payload["value_qualification_status"] == "PENDING_EXACT_PRICE"\n    assert payload["terminal_label"] == "MODEL_QUALIFIED_HOLD"\n''', '''    assert payload["value_qualification_status"] == "NOT_ELIGIBLE_PRECALIBRATION"\n    assert payload["downstream_money_evaluation_allowed"] is False\n    assert payload["terminal_label"] == "MODEL_QUALIFIED_HOLD"\n''', 1)
+          p.write_text(s)
+          PY
+      - name: Commit integration repair
+        run: |
+          git config user.name 'WOW V17 CI'
+          git config user.email 'wow-v17-ci@users.noreply.github.com'
+          git add artifacts/wow-engine/v17/prop_response_semantics.py artifacts/wow-engine/test_qualification_policy_v2.py artifacts/wow-engine/v17/test_prop_response_semantics.py
+          git commit -m 'V17: enforce Phase-A ceiling at money-value boundary'
+          git push origin "HEAD:${GITHUB_REF_NAME}"
