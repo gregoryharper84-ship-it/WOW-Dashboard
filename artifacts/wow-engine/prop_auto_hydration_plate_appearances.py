@@ -1,11 +1,12 @@
 """Official MLB evidence hydrator for batter plate-appearance props.
 
 Builds auditable pregame evidence for PLATE_APPEARANCES from MLB StatsAPI.
-Historical PA values are never padded or estimated. Current batting slot is
-used only when the official batting order is present; otherwise hydration still
-succeeds with an explicit lineup-unconfirmed state so the fitted-model coverage
-gate can hold publication without misclassifying the row as an acquisition
-failure.
+Historical PA values are never padded or estimated and are admitted only from
+games where the player appears in that game's official starting batting order,
+matching the fitted model's starter-only training population. Current batting
+slot is used only when the target game's official batting order is present;
+otherwise hydration still succeeds with an explicit lineup-unconfirmed state so
+the fitted-model coverage gate can hold publication without guessing a slot.
 """
 from __future__ import annotations
 
@@ -143,6 +144,20 @@ def _target_game(
     }
 
 
+def _boxscore_batting_order(
+    *,
+    game_pk: int,
+    request_json: Callable[..., dict[str, Any]],
+    http_get: Callable[..., Any],
+    mlb_stats_api_base: str,
+) -> dict[str, Any]:
+    return request_json(
+        f"{mlb_stats_api_base}/game/{game_pk}/boxscore",
+        params={},
+        http_get=http_get,
+    )
+
+
 def _official_batting_slot(
     player_id: int,
     *,
@@ -155,14 +170,12 @@ def _official_batting_slot(
 ) -> int | None:
     if game_pk <= 0:
         return None
-    try:
-        payload = request_json(
-            f"{mlb_stats_api_base}/game/{game_pk}/boxscore",
-            params={},
-            http_get=http_get,
-        )
-    except Exception:
-        return None
+    payload = _boxscore_batting_order(
+        game_pk=game_pk,
+        request_json=request_json,
+        http_get=http_get,
+        mlb_stats_api_base=mlb_stats_api_base,
+    )
     teams = payload.get("teams") if isinstance(payload.get("teams"), dict) else {}
     node = teams.get(side.lower()) if isinstance(teams.get(side.lower()), dict) else {}
     batting_order = node.get("battingOrder") if isinstance(node.get("battingOrder"), list) else []
@@ -171,6 +184,36 @@ def _official_batting_slot(
         return ids.index(player_id) + 1
     except ValueError:
         return None
+
+
+def _official_historical_start(
+    player_id: int,
+    *,
+    game_pk: int,
+    request_json: Callable[..., dict[str, Any]],
+    http_get: Callable[..., Any],
+    mlb_stats_api_base: str,
+    int_value: Callable[..., int],
+) -> tuple[int, int] | None:
+    """Return (batting_slot, team_alignment) only for an official starter."""
+    if game_pk <= 0:
+        return None
+    payload = _boxscore_batting_order(
+        game_pk=game_pk,
+        request_json=request_json,
+        http_get=http_get,
+        mlb_stats_api_base=mlb_stats_api_base,
+    )
+    teams = payload.get("teams") if isinstance(payload.get("teams"), dict) else {}
+    for side, alignment in (("away", 0), ("home", 1)):
+        node = teams.get(side) if isinstance(teams.get(side), dict) else {}
+        batting_order = node.get("battingOrder") if isinstance(node.get("battingOrder"), list) else []
+        ids = [int_value(value) for value in batting_order]
+        try:
+            return ids.index(player_id) + 1, alignment
+        except ValueError:
+            continue
+    return None
 
 
 def _recent_pa_history(
@@ -183,7 +226,10 @@ def _recent_pa_history(
     int_value: Callable[..., int],
     min_games: int,
 ) -> tuple[list[float], list[dict[str, Any]], list[int]]:
-    parsed: list[tuple[str, int, dict[str, Any], float]] = []
+    # First collect official game-log candidates, then validate starter status in
+    # reverse chronology. This avoids treating pinch-hit/bench PA as though they
+    # belonged to the starter-only population used during training.
+    candidates: list[tuple[str, int, int, dict[str, Any], float]] = []
     seasons_queried: list[int] = []
     for season in range(event_start.year, max(event_start.year - 3, 1900), -1):
         seasons_queried.append(season)
@@ -216,6 +262,12 @@ def _recent_pa_history(
                 pa = int_value(stat.get("plateAppearances"), default=-1)
                 if pa < 0:
                     continue
+                game = split.get("game") if isinstance(split.get("game"), dict) else {}
+                game_pk = int_value(game.get("gamePk"))
+                if game_pk <= 0:
+                    # Cannot certify starter membership without immutable game
+                    # identity; skip rather than infer from PA count.
+                    continue
                 opponent = split.get("opponent") if isinstance(split.get("opponent"), dict) else {}
                 row = {
                     "date": date_value,
@@ -226,17 +278,35 @@ def _recent_pa_history(
                     "h": int_value(stat.get("hits")),
                     "bb": int_value(stat.get("baseOnBalls")),
                     "so": int_value(stat.get("strikeOuts")),
+                    "official_game_pk": game_pk,
                 }
                 game_number = int_value(split.get("gameNumber"))
-                parsed.append((date_value, game_number, row, float(pa)))
-        if len(parsed) >= min_games:
+                candidates.append((date_value, game_number, game_pk, row, float(pa)))
+
+    candidates.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
+    recent: list[tuple[dict[str, Any], float]] = []
+    for _date, _game_number, game_pk, row, target in candidates:
+        starter = _official_historical_start(
+            player_id,
+            game_pk=game_pk,
+            request_json=request_json,
+            http_get=http_get,
+            mlb_stats_api_base=mlb_stats_api_base,
+            int_value=int_value,
+        )
+        if starter is None:
+            continue
+        batting_slot, team_alignment = starter
+        row = dict(row)
+        row["batting_slot"] = batting_slot
+        row["team_alignment"] = team_alignment
+        recent.append((row, target))
+        if len(recent) >= min_games:
             break
 
-    parsed.sort(key=lambda item: (item[0], item[1]), reverse=True)
-    recent = parsed[:min_games]
     return (
-        [target for _, _, _, target in recent],
-        [row for _, _, row, _ in recent],
+        [target for _, target in recent],
+        [row for row, _ in recent],
         seasons_queried,
     )
 
@@ -313,11 +383,12 @@ def hydrate_mlb_plate_appearance_evidence(
     if len(game_log) < min_games:
         raise error_type(
             "MLB_RECENT_GAMES_INSUFFICIENT",
-            "fewer than ten official regular-season games with plate-appearance evidence were available across the supported history window",
+            "fewer than ten official regular-season starter games with plate-appearance evidence were available across the supported history window",
             detail={
                 "games_found": len(game_log),
                 "required": min_games,
                 "stat_type": PA_STAT,
+                "history_population": "OFFICIAL_STARTING_BATTING_ORDER_ONLY",
                 "seasons_queried": seasons_queried,
             },
         )
@@ -328,6 +399,7 @@ def hydrate_mlb_plate_appearance_evidence(
     source_timestamps = {
         "MLB_STATS_API_PLAYER_IDENTITY": timestamp,
         "MLB_STATS_API_HITTING_GAME_LOG": timestamp,
+        "MLB_STATS_API_HISTORICAL_BATTING_ORDERS": timestamp,
         "MLB_STATS_API_TEAM_SCHEDULE": timestamp,
     }
     if lineup_confirmed:
@@ -361,6 +433,7 @@ def hydrate_mlb_plate_appearance_evidence(
             "game_log_stat": "plate appearances",
             "box_score_alignment": "1:1",
             "regular_season_prior_games": len(box_score_log),
+            "history_population": "OFFICIAL_STARTING_BATTING_ORDER_ONLY",
             "target_stat_type": PA_STAT,
             "batting_slot": batting_slot,
             "team_alignment": schedule["team_alignment"],
@@ -368,9 +441,9 @@ def hydrate_mlb_plate_appearance_evidence(
             "lineup_confirmation": "OFFICIAL_BATTING_ORDER" if lineup_confirmed else "UNCONFIRMED_HOLD_AT_MODEL_COVERAGE",
             "history_seasons_queried": seasons_queried,
             "history_seasons_used": selected_seasons,
-            "history_selection": "MOST_RECENT_OFFICIAL_GAMES_NO_IMPUTATION",
+            "history_selection": "MOST_RECENT_OFFICIAL_STARTS_NO_IMPUTATION",
         },
         "source_timestamps": source_timestamps,
         "evidence_version": evidence_version,
-        "rate_provenance": "MLB StatsAPI official hitting gameLog; target=PLATE_APPEARANCES; current batting slot only from official battingOrder; no PA or lineup values imputed",
+        "rate_provenance": "MLB StatsAPI official hitting gameLog plus historical official battingOrder; target=PLATE_APPEARANCES; starter-only history matching fitted training population; current batting slot only from official battingOrder; no PA or lineup values imputed",
     }
