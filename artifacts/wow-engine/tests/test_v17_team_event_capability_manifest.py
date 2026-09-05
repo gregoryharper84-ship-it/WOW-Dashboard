@@ -20,10 +20,13 @@ def test_soccer_and_mls_are_not_silently_promoted_to_generic_model():
         assert result.can_execute is False
 
 
-def test_active_team_event_runtime_remains_fail_closed_for_non_mlb_until_adapter_registered():
+def test_active_team_event_runtime_remains_fail_closed_for_unregistered_sports():
     source = (Path(__file__).parents[1] / "v17" / "team_event_request_runtime.py").read_text()
-    assert 'if sport != "MLB"' in source
-    assert 'status="MODEL_UNAVAILABLE"' in source
+    assert 'if sport == "MLB"' in source
+    assert '"code": "MODEL_UNAVAILABLE"' in source
+    assert '"backend_route_status": "SPORT_SPECIFIC_TEAM_EVENT_ADAPTER_NOT_REGISTERED"' in source
+    assert '"market_probability_substitution_allowed": False' in source
+    assert '"generic_reasoning_substitution_allowed": False' in source
 
 
 def test_llp_instructions_do_not_claim_universal_certified_sport_coverage():
