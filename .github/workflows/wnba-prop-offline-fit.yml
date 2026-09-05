@@ -82,14 +82,22 @@ jobs:
       - name: Prove frozen historical role and event-time joins
         run: PYTHONPATH=. python scripts/probe_wnba_2026_training_join_frozen.py > data/wnba_prop_training_readiness_2026.json
 
-      - name: Fit new immutable-source WNBA candidate lineage
+      - name: Replay immutable-source WNBA candidates
         env:
-          WNBA_ARTIFACT_OUT_DIR: data/wnba-frozen-candidate
+          WNBA_ARTIFACT_OUT_DIR: data/wnba-replay
         run: |
-          mkdir -p data/wnba-frozen-candidate
+          mkdir -p data/wnba-replay
           PYTHONPATH=. python scripts/train_wnba_props_frozen.py
 
-      - name: Upload governed immutable-source candidate evidence
+      - name: Audit deterministic replay and source-rights provenance
+        run: >-
+          PYTHONPATH=. python scripts/audit_wnba_prop_certification_replay.py
+          --checked data/wow_wnba_prop_artifacts_v1.json
+          --replay data/wnba-replay/wow_wnba_prop_artifacts_v1.json
+          --manifest historical_source_manifest_v1.json
+          --report data/wnba_prop_certification_replay_v1.json
+
+      - name: Upload governed replay evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -100,5 +108,6 @@ jobs:
             artifacts/wow-engine/data/source_snapshots/wnba/wnba-2026-20260904/snapshot_manifest.json
             artifacts/wow-engine/data/source_snapshots/wnba/wnba-2026-20260904/ATTRIBUTION.txt
             artifacts/wow-engine/data/wnba_prop_training_readiness_2026.json
-            artifacts/wow-engine/data/wnba-frozen-candidate/wow_wnba_prop_artifacts_v1.json
-            artifacts/wow-engine/data/wnba-frozen-candidate/wow_wnba_prop_training_report_v1.json
+            artifacts/wow-engine/data/wnba-replay/wow_wnba_prop_artifacts_v1.json
+            artifacts/wow-engine/data/wnba-replay/wow_wnba_prop_training_report_v1.json
+            artifacts/wow-engine/data/wnba_prop_certification_replay_v1.json
