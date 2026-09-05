@@ -119,7 +119,7 @@ def score_mlb_1ip_empirical(
 
     calibration_status = _artifact_calibration_status(artifact_record)
     official_confirmed = state == "OFFICIAL_CONFIRMED"
-    probability_publishable = official_confirmed
+    probability_publishable = False
     qualification = None
     if official_confirmed:
         qualification = classify_prop_probability(
@@ -133,6 +133,9 @@ def score_mlb_1ip_empirical(
             input_complete=True,
         )
         terminal_label = qualification.terminal_label
+        # A confirmed lineup is necessary but not sufficient: unhealthy
+        # calibration/model support must still fail closed.
+        probability_publishable = bool(qualification.model_supported)
     else:
         # Projected/provisional lineups retain the pre-existing hold. Their
         # numeric package is an internal provisional result until final refresh.
