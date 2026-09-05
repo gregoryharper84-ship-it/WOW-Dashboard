@@ -44,7 +44,15 @@ def _install_production(monkeypatch, rows):
     monkeypatch.setitem(sys.modules, "api_prod_market_acceptance", production)
 
 
-def _row(event_id, snapshot_ts, *, lineup_status, score_status, start="2026-09-06T00:05:00+00:00"):
+def _row(
+    event_id,
+    snapshot_ts,
+    *,
+    lineup_status,
+    score_status,
+    hydration_status="PASS",
+    start="2026-09-06T00:05:00+00:00",
+):
     return {
         "official_event_id": event_id,
         "official_date": "2026-09-05",
@@ -54,7 +62,7 @@ def _row(event_id, snapshot_ts, *, lineup_status, score_status, start="2026-09-0
         "snapshot_id": f"snapshot-{event_id}-{snapshot_ts}",
         "snapshot_timestamp": snapshot_ts,
         "lineup_status": lineup_status,
-        "feature_hydration_status": "PASS",
+        "feature_hydration_status": hydration_status,
         "model_score_status": score_status,
     }
 
@@ -63,6 +71,24 @@ def test_stale_projected_snapshot_is_ignored_when_same_event_has_newer_confirmed
     rows = [
         _row("824797", "2026-09-04T00:08:08+00:00", lineup_status="PROJECTED", score_status="SHADOW_SCORED_LINEUP_PENDING"),
         _row("824797", "2026-09-04T05:47:09+00:00", lineup_status="CONFIRMED", score_status="SHADOW_SCORED_PREGAME"),
+    ]
+    _install_production(monkeypatch, rows)
+
+    candidate = acceptance._real_projected_mlb_candidate(datetime(2026, 9, 4, 22, 45, tzinfo=timezone.utc))
+
+    assert candidate is None
+
+
+def test_stale_pass_snapshot_is_ignored_when_newer_event_snapshot_is_held(monkeypatch):
+    rows = [
+        _row("824798", "2026-09-04T00:08:08+00:00", lineup_status="PROJECTED", score_status="SHADOW_SCORED_LINEUP_PENDING"),
+        _row(
+            "824798",
+            "2026-09-04T05:47:09+00:00",
+            lineup_status="PROJECTED",
+            score_status="MODEL_INPUTS_INSUFFICIENT",
+            hydration_status="HOLD",
+        ),
     ]
     _install_production(monkeypatch, rows)
 
