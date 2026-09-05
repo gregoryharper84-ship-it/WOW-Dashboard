@@ -1,0 +1,5 @@
+SportsDataverse / wehoop WNBA data
+Source repository: https://github.com/sportsdataverse/wehoop-wnba-stats-data
+License: CC BY 4.0
+License text: https://github.com/sportsdataverse/wehoop-wnba-stats-data/blob/main/LICENSE.md
+This snapshot preserves source attribution and exact SHA-256 provenance for WOW V17 model-development evidence.

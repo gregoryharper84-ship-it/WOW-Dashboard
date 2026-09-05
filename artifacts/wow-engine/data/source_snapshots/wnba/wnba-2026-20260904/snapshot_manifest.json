@@ -1,0 +1,56 @@
+{
+  "acquired_at": "2026-09-05T05:32:29.207130+00:00",
+  "assets": [
+    {
+      "asset_created_at": "2026-09-04T17:29:09Z",
+      "asset_id": 544667346,
+      "name": "player_game_logs_2026.csv",
+      "release_id": 320946352,
+      "release_immutable": false,
+      "release_tag": "wnba_stats_player_game_logs",
+      "role": "PLAYER_GAME_CHRONOLOGY_AND_OUTCOMES",
+      "sha256": "e1d2ecfd3051953fe56ba0d6de59e2d300576337cd9f1a58157e8f43a9371098",
+      "source_sha256": "e1d2ecfd3051953fe56ba0d6de59e2d300576337cd9f1a58157e8f43a9371098",
+      "source_size_bytes": 782779,
+      "url": "https://github.com/sportsdataverse/sportsdataverse-data/releases/download/wnba_stats_player_game_logs/player_game_logs_2026.csv"
+    },
+    {
+      "asset_created_at": "2026-09-04T17:28:58Z",
+      "asset_id": 544667191,
+      "name": "player_boxscores_2026.csv",
+      "release_id": 97828473,
+      "release_immutable": false,
+      "release_tag": "wnba_stats_player_boxscores",
+      "role": "PLAYER_ROLE_AND_STARTER_EVIDENCE",
+      "sha256": "7984ab407933093f7462ce63d081cba5549f5ff5b6cca123d64f07803a682f66",
+      "source_sha256": "7984ab407933093f7462ce63d081cba5549f5ff5b6cca123d64f07803a682f66",
+      "source_size_bytes": 1128076,
+      "url": "https://github.com/sportsdataverse/sportsdataverse-data/releases/download/wnba_stats_player_boxscores/player_boxscores_2026.csv"
+    },
+    {
+      "asset_created_at": "2026-09-04T11:40:28Z",
+      "asset_id": 544252913,
+      "name": "wnba_schedule_2026.csv",
+      "release_id": 97421041,
+      "release_immutable": false,
+      "release_tag": "espn_wnba_schedules",
+      "role": "EXACT_HISTORICAL_EVENT_START_TIME",
+      "sha256": "e5553a01ef64b24ac88dd4283144aa29f7cf9facf61a40f1aba8ec04b037b244",
+      "source_sha256": "e5553a01ef64b24ac88dd4283144aa29f7cf9facf61a40f1aba8ec04b037b244",
+      "source_size_bytes": 2245644,
+      "url": "https://github.com/sportsdataverse/sportsdataverse-data/releases/download/espn_wnba_schedules/wnba_schedule_2026.csv"
+    }
+  ],
+  "attribution_required": true,
+  "bundle_id": "wnba-2026-20260904",
+  "can_execute": false,
+  "evidence_domain": "SPORTING",
+  "grants_model_capability": false,
+  "license_id": "CC-BY-4.0",
+  "license_url": "https://github.com/sportsdataverse/wehoop-wnba-stats-data/blob/main/LICENSE.md",
+  "probability_publishable": false,
+  "provider": "SPORTSDATAVERSE_WNBA_STATS",
+  "purpose": "WOW-owned immutable freeze candidate; no model capability granted",
+  "schema_version": "WOW_WNBA_SOURCE_SNAPSHOT_V1",
+  "sport": "WNBA"
+}
