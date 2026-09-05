@@ -62,8 +62,9 @@ def _real_projected_mlb_candidate(now: datetime) -> dict[str, Any] | None:
 
     Forward-shadow storage is append-only and may contain multiple snapshots for
     one event. Candidate selection therefore reduces to the newest snapshot per
-    official event before applying projected-lineup eligibility. A stale pending
-    snapshot can never override a newer confirmed/pregame snapshot.
+    official event before applying any hydration, score-state, or lineup
+    eligibility. A stale projected/PASS snapshot can never override a newer held,
+    failed, or confirmed snapshot.
     """
     try:
         import api_prod_market_acceptance as production
@@ -75,9 +76,8 @@ def _real_projected_mlb_candidate(now: datetime) -> dict[str, Any] | None:
                 "snapshot_id,snapshot_timestamp,lineup_status,feature_hydration_status,model_score_status"
             )
             .gt("event_start_time", now.isoformat())
-            .eq("feature_hydration_status", "PASS")
             .order("event_start_time")
-            .limit(100)
+            .limit(500)
             .execute().data or []
         )
     except Exception:
@@ -108,8 +108,11 @@ def _real_projected_mlb_candidate(now: datetime) -> dict[str, Any] | None:
 
     eligible: list[dict[str, Any]] = []
     for row in latest_by_event.values():
+        hydration_status = str(row.get("feature_hydration_status") or "").strip().upper()
         lineup_status = str(row.get("lineup_status") or "").strip().upper()
         model_score_status = str(row.get("model_score_status") or "").strip().upper()
+        if hydration_status != "PASS":
+            continue
         if lineup_status in {"CONFIRMED", "OFFICIAL", "FINAL"}:
             continue
         if model_score_status != "SHADOW_SCORED_LINEUP_PENDING":
