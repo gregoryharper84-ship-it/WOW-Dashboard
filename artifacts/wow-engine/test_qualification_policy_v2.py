@@ -27,21 +27,21 @@ def test_standard_model_qualified_preserves_existing_governed_threshold():
     assert result.confidence_tier == "STANDARD"
 
 
-def test_phase_a_precalibration_probability_is_research_only_even_above_high_threshold():
+def test_phase_a_preserves_model_qualification_but_blocks_downstream_money():
     result = q(0.69, 0.62, 0.74, status="PRECALIBRATION_SHRINKAGE")
-    assert result.terminal_label == "RESEARCH_INTEREST"
-    assert result.confidence_tier == "PRECALIBRATION"
+    assert result.terminal_label == "MODEL_QUALIFIED_HOLD"
+    assert result.confidence_tier == "HIGH"
     assert result.model_supported is True
-    assert result.model_qualified is False
-    assert result.rank_eligible is False
+    assert result.model_qualified is True
+    assert result.rank_eligible is True
     assert result.downstream_money_evaluation_allowed is False
     assert result.final_approved_allowed is False
-    assert "PRECALIBRATION_CEILING=RESEARCH_ONLY_NO_MONEY_QUALIFICATION" in result.qualification_reasons
+    assert "PRECALIBRATION_CEILING=NO_MONEY_QUALIFICATION" in result.qualification_reasons
 
 
-def test_phase_a_precalibration_preserves_completed_low_probability_package_without_rank_eligibility():
+def test_phase_a_preserves_low_probability_rejection_and_blocks_money():
     result = q(0.52, 0.49, 0.57, status="PRECALIBRATION_SHRINKAGE")
-    assert result.terminal_label == "RESEARCH_INTEREST"
+    assert result.terminal_label == "NO_LOW_PROBABILITY"
     assert result.model_supported is True
     assert result.model_qualified is False
     assert result.rank_eligible is False

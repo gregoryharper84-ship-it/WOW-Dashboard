@@ -115,6 +115,8 @@ def _qualification_payload(
 
     if not qualification.model_qualified:
         value_status = "NOT_ELIGIBLE_MODEL_NOT_QUALIFIED"
+    elif not qualification.downstream_money_evaluation_allowed:
+        value_status = "NOT_ELIGIBLE_PRECALIBRATION"
     elif not market_pass:
         value_status = "PENDING_EXACT_PRICE"
     elif not settlement_pass or not money_pass:
@@ -139,7 +141,7 @@ def _qualification_payload(
         "infrastructure_blocked": terminal.infrastructure_blocked,
         "value_qualification_status": value_status,
         "card_qualification_status": "NOT_EVALUATED",
-        "downstream_money_evaluation_allowed": qualification.model_qualified,
+        "downstream_money_evaluation_allowed": qualification.downstream_money_evaluation_allowed,
         "final_approved_allowed": False,
         "blockers": list(terminal.blockers),
         "can_execute": False,
@@ -171,7 +173,14 @@ def _direction_assessment(direction: str, raw: float, calibration: Any, probabil
         "qualification_policy_version": qualification.qualification_policy_version,
         "uncertainty_width": qualification.uncertainty_width,
         "qualification_reasons": list(qualification.qualification_reasons),
-        "value_qualification_status": "PENDING_EXACT_PRICE" if qualification.model_qualified else "NOT_ELIGIBLE_MODEL_NOT_QUALIFIED",
+        "value_qualification_status": (
+            "NOT_ELIGIBLE_MODEL_NOT_QUALIFIED"
+            if not qualification.model_qualified
+            else "NOT_ELIGIBLE_PRECALIBRATION"
+            if not qualification.downstream_money_evaluation_allowed
+            else "PENDING_EXACT_PRICE"
+        ),
+        "downstream_money_evaluation_allowed": qualification.downstream_money_evaluation_allowed,
         "card_qualification_status": "NOT_EVALUATED",
         "can_execute": False,
     }
