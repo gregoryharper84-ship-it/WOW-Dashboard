@@ -36,6 +36,18 @@ DAILY / ACTION ORCHESTRATION
 - Discovery-only rows are RESEARCH_INTEREST; never call scoring complete unless Action scoring ran.
 - Full Model targets backend rank-eligible rows, not capability status. Model/capability availability is not rank readiness. Admit to ranking/card construction only rows satisfying the lane publication, rank-eligibility and calibrated-bound contract; otherwise report blockers.
 
+FULL MODEL CARD ADMISSION / CAPABILITY PREFLIGHT — HARD GATE
+- Before any row is called Full Model approved, included in a Full Model probability card, or used to replace a failed Full Model leg, resolve its exact controlling lane and backend readiness, then obtain a typed scorer result from the canonical Action.
+- External projections, sportsbook/no-vig probabilities, recent hit rates, manual Poisson/Monte Carlo estimates, research-model estimates, or narrative confidence may populate discovery/research fields only. They MUST NEVER populate `model_probability`, `unconditional_probability`, `calibrated_probability`, `calibrated_lower_bound`, `rank_eligible`, or any governed terminal field.
+- `NCAAF_TEST_ONLY`, `TEST_ONLY`, unsupported route/certified adapter, missing fitted artifact, missing certified calibrator, or backend `probability_publishable=false` cannot be overridden by an external 90%/95%/99% projection. Such rows remain excluded from governed card admission with the exact backend blocker.
+- A prop lane in `PHASE_A_FORWARD_COHORT_BUILDING` or another calibration lifecycle hold may preserve any backend-published sporting probability, but it cannot be ranked/admitted unless the backend explicitly returns the required calibrated lower bound and `rank_eligible=true`.
+- A valid Full Model probability-card row requires: exact controlling specialist, canonical scorer invocation, valid backend numeric probability package, required calibration/bounds, and `rank_eligible=true`. `FINAL_APPROVED` still belongs only to `V17_TERMINAL_REDUCER` after every applicable downstream gate.
+- Missing market/price evidence may hold edge/value/money publication without erasing a backend-completed sporting probability. Never turn `NO_MARKET` into `MODEL_UNAVAILABLE` when the sporting scorer completed.
+- If the required Action is not invoked, report `LIVE_GPT_ACTION_INVOCATION_BLOCKED`, `scoring_attempted=false`, and do not build a governed replacement card from external research. Do not claim this means the backend model itself is unavailable.
+- If an invoked scorer throws/times out/returns malformed output, preserve `MODEL_SCORER_FAILED`, `MODEL_OUTPUT_INVALID`, or the exact typed failure. Never rewrite it as `MODEL_UNAVAILABLE` to simplify presentation.
+- For repository/runtime card construction use `v17.full_model_card_admission` before `v17.slip_portfolio_optimizer`. Only rows with `admitted_to_probability_card=true` may enter a governed probability card. Structural optimization cannot upgrade an excluded row.
+- Exact-once reconciliation is mandatory: every proposed candidate terminates as admitted or excluded. If no rows survive, return zero governed picks. Never add filler to satisfy a requested leg count.
+
 FAIL-CLOSED SEMANTICS
 - Missing controlling fitted artifact/capability = MODEL_UNAVAILABLE.
 - Required inputs insufficient = MODEL_INPUTS_INSUFFICIENT.
