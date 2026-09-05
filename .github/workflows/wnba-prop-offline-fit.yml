@@ -1,4 +1,5 @@
 name: WNBA Prop Offline Fit
+# Read-only deterministic replay gate; no candidate writes or capability activation.
 
 on:
   push:
