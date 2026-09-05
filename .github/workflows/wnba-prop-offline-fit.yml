@@ -6,6 +6,7 @@ on:
       - chatgpt/p1-wnba-prop-offline-fit
       - feat/v17-wnba-certification-replay-20260905
     paths:
+      - 'artifacts/wow-engine/scripts/acquire_wnba_training_snapshot.py'
       - 'artifacts/wow-engine/scripts/train_wnba_props.py'
       - 'artifacts/wow-engine/scripts/train_wnba_props_offset.py'
       - 'artifacts/wow-engine/scripts/probe_wnba_2026_training_join.py'
@@ -55,6 +56,9 @@ jobs:
           cache: pip
           cache-dependency-path: artifacts/wow-engine/requirements.txt
 
+      - name: Acquire exact upstream WNBA snapshot for WOW freeze
+        run: PYTHONPATH=. python scripts/acquire_wnba_training_snapshot.py
+
       - name: Install dependencies
         run: python -m pip install -r requirements.txt
 
@@ -91,7 +95,7 @@ jobs:
           --manifest historical_source_manifest_v1.json
           --report data/wnba_prop_certification_replay_v1.json
 
-      - name: Upload governed fit and replay evidence
+      - name: Upload governed fit, source-freeze candidate, and replay evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -99,6 +103,7 @@ jobs:
           if-no-files-found: error
           retention-days: 14
           path: |
+            artifacts/wow-engine/data/wnba-source-freeze/
             artifacts/wow-engine/data/wnba_prop_training_readiness_2026.json
             artifacts/wow-engine/data/wow_wnba_prop_artifacts_v1.json
             artifacts/wow-engine/data/wow_wnba_prop_training_report_v1.json
