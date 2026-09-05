@@ -18,6 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from v17.daily_prop_acquisition import acquire_daily_prop_snapshots
 from v17.detailed_evidence_install import install_v17_detailed_evidence
 from v17.prop_forward_cohort_route import install_prop_forward_cohort_route
+from v17.team_event_official_publication_guard import evaluate_team_event_official_publication
 from v17.team_event_request_runtime import TeamEventRequest, score_team_event_request
 
 
@@ -103,6 +104,24 @@ def _team_rows(db: Any, requested_date: str, limit: int) -> list[dict[str, Any]]
     return [dict(row) for row in rows if _future(row.get("event_start_time"))]
 
 
+def _guard_moneyline_result(result: dict[str, Any]) -> tuple[dict[str, Any], str]:
+    """Apply the official-publication boundary without erasing sporting output."""
+    guard = evaluate_team_event_official_publication(result)
+    guarded = {
+        **result,
+        "official_publication_guard": guard,
+        "prepublication_claim": {
+            "probability_publishable": result.get("probability_publishable"),
+            "rank_eligible": result.get("rank_eligible"),
+        },
+    }
+    if guard["official_publication_allowed"] is not True:
+        guarded["probability_publishable"] = False
+        guarded["rank_eligible"] = False
+        return guarded, "HELD"
+    return guarded, "COMPLETED"
+
+
 def run_daily_snapshot(req: DailySnapshotRequest, *, db: Any, market_api: Any, event_api: Any) -> dict[str, Any]:
     try: date.fromisoformat(req.requested_slate_date)
     except ValueError:
@@ -151,7 +170,7 @@ def run_daily_snapshot(req: DailySnapshotRequest, *, db: Any, market_api: Any, e
             try: result = score_team_event_request(request, event_api=event_api, canonical_hydration_required=True)
             except HTTPException as exc: result = _detail(exc)
             except Exception as exc: result = {"code": "TEAM_EVENT_SCORER_EXCEPTION", "error_type": type(exc).__name__, "probability_publishable": False, "can_execute": False}
-            row_status = "COMPLETED" if result.get("probability_publishable") is True and result.get("rank_eligible") is True else "HELD"
+            result, row_status = _guard_moneyline_result(result)
             rows.append(_terminal_row("MONEYLINE", identity, result, row_status))
 
     if not rows and not blockers: blockers.append("NO_CANONICAL_PREGAME_SNAPSHOTS")
