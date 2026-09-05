@@ -24,7 +24,7 @@ Add `v17/team_event_official_publication_guard.py` as a pure fail-closed materia
 - LLP probability audit is `PASS_PROBABILITY_AUDIT`
 - event mutex is `PASS`
 - a valid calibrated probability plus calibrated lower bound is present
-- nested LLP governance confirms publication/rank eligibility, reducer authority, no execution, audit PASS, event mutex PASS, post-model gates PASS, final gates PASS, and final candidate label `FINAL_APPROVED`
+- nested LLP governance confirms publication/rank eligibility, reducer authority, no execution, audit PASS, event mutex PASS, post-model gates PASS, final gates PASS, and terminal label `FINAL_APPROVED`
 - no explicit shadow/research-only artifact marker is present
 
 If the guard holds a row, Daily preserves the original scored payload and numeric probability fields for diagnosis, records the prepublication boolean claim, forces official `probability_publishable=false` and `rank_eligible=false`, and materializes the row as `HELD`.
