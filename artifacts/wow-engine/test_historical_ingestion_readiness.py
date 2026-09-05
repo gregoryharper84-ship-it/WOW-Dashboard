@@ -19,7 +19,6 @@ from historical_ingestion_readiness import (
     HISTORICAL_SOURCE_LICENSE_REVIEW_REQUIRED,
     HISTORICAL_SOURCE_RESEARCH_ONLY,
     HISTORICAL_SOURCE_UNREGISTERED,
-    HISTORICAL_SOURCE_VALIDATION_ONLY,
     MARKET_EVIDENCE_NOT_ALLOWED_IN_SPORTING_MODEL,
     READY_FOR_OFFLINE_TRAINING,
     default_manifest_path,
@@ -68,9 +67,28 @@ def test_research_only_provider_is_blocked_before_technical_readiness() -> None:
     assert result.status_code == HISTORICAL_SOURCE_RESEARCH_ONLY
 
 
-def test_validation_only_provider_is_blocked() -> None:
+def test_retired_wnba_derived_alias_is_unregistered() -> None:
+    """The vague validation-only alias was replaced by an explicit governed source."""
     result = _evaluate("WNBA", "WNBA_EXISTING_STATS_DERIVED")
-    assert result.status_code == HISTORICAL_SOURCE_VALIDATION_ONLY
+    assert result.status_code == HISTORICAL_SOURCE_UNREGISTERED
+    assert result.production_training_ready is False
+    assert result.grants_model_capability is False
+    assert result.can_execute is False
+
+
+def test_governed_sportsdataverse_wnba_source_is_ready_for_offline_training_only() -> None:
+    result = _evaluate(
+        "WNBA",
+        "SPORTSDATAVERSE_WNBA_STATS",
+        credential_configured=False,
+        adapter_available=True,
+        corpus_row_count=4000,
+    )
+    assert result.status_code == READY_FOR_OFFLINE_TRAINING
+    assert result.production_training_ready is True
+    assert result.blocker_code is None
+    assert result.grants_model_capability is False
+    assert result.can_execute is False
 
 
 def test_contract_required_is_not_bypassed_by_hypothetical_key() -> None:
