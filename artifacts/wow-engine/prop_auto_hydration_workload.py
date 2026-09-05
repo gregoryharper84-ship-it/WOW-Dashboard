@@ -1,8 +1,7 @@
-"""Additive official MLB evidence hydrator for certified pitcher workload props.
+"""Official MLB evidence hydrator for certified pitcher workload props.
 
-This module is intentionally separate from the established pitcher-strikeout
-hydrator so the certified K path remains unchanged. It builds only auditable
-raw evidence for PITCHING_OUTS, STRIKES_THROWN, and BALLS_THROWN.
+Builds auditable raw evidence for PITCHING_OUTS, STRIKES_THROWN, and
+BALLS_THROWN. Missing history is never padded or estimated.
 """
 from __future__ import annotations
 
@@ -10,6 +9,8 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 
 import httpx
+
+from prop_hydration_resilience import fetch_cross_season_pitching_splits
 
 WORKLOAD_STATS = {"PITCHING_OUTS", "STRIKES_THROWN", "BALLS_THROWN"}
 
@@ -55,25 +56,24 @@ def hydrate_mlb_workload_evidence(
     if event_start <= captured_at:
         raise error_type("EVENT_ALREADY_STARTED", "pregame evidence cannot be hydrated after event start")
 
-    player_id, _official_name = resolve_player_id(normalized_player, http_get=http_get)
+    try:
+        player_id, _official_name = resolve_player_id(normalized_player, event_start=event_start, http_get=http_get)
+    except TypeError:
+        # Backward-compatible test seam for injected legacy resolver fixtures.
+        player_id, _official_name = resolve_player_id(normalized_player, http_get=http_get)
     schedule = schedule_context(player_id, event_start=event_start, http_get=http_get)
-    payload = request_json(
-        f"{mlb_stats_api_base}/people/{player_id}/stats",
-        params={"stats": "gameLog", "group": "pitching", "season": str(event_start.year), "gameType": "R"},
+
+    season_splits, seasons_queried = fetch_cross_season_pitching_splits(
+        player_id,
+        event_start=event_start,
+        request_json=request_json,
         http_get=http_get,
+        mlb_stats_api_base=mlb_stats_api_base,
     )
-    splits: list[Any] = []
-    blocks = payload.get("stats")
-    if isinstance(blocks, list):
-        for block in blocks:
-            if isinstance(block, dict) and isinstance(block.get("splits"), list):
-                splits.extend(block["splits"])
 
     parsed: list[tuple[str, dict[str, Any], float]] = []
-    for split in splits:
-        if not isinstance(split, dict):
-            continue
-        stat = split.get("stat")
+    for season, split in season_splits:
+        stat = split.get("stat") if isinstance(split, dict) else None
         if not isinstance(stat, dict) or int_value(stat.get("gamesStarted")) < 1:
             continue
         date_value = str(split.get("date") or "")
@@ -103,6 +103,7 @@ def hydrate_mlb_workload_evidence(
         opponent = split.get("opponent") if isinstance(split.get("opponent"), dict) else {}
         row: dict[str, Any] = {
             "date": date_value,
+            "season": season,
             "opponent": opponent.get("abbreviation") or opponent.get("name") or "UNKNOWN",
             "ip": str(ip),
             "outs": outs,
@@ -123,18 +124,26 @@ def hydrate_mlb_workload_evidence(
         code = "MLB_PITCH_COMPOSITION_INSUFFICIENT" if stat_key in {"STRIKES_THROWN", "BALLS_THROWN"} else "MLB_RECENT_STARTS_INSUFFICIENT"
         raise error_type(
             code,
-            "fewer than ten official regular-season starts with required target evidence were available before the event",
-            detail={"starts_found": len(recent), "required": min_starts, "stat_type": stat_key},
+            "fewer than ten official regular-season starts with required target evidence were available across the supported history window",
+            detail={
+                "starts_found": len(recent),
+                "required": min_starts,
+                "stat_type": stat_key,
+                "seasons_queried": seasons_queried,
+            },
         )
 
     game_log = [target for _, _, target in recent]
     box_score_log = [row for _, row, _ in recent]
+    selected_seasons = sorted({int(row["season"]) for row in box_score_log}, reverse=True)
     timestamp = captured_at.isoformat()
     source_timestamps = {
-        "MLB_STATS_API_PLAYER_SEARCH": timestamp,
+        "MLB_STATS_API_PLAYER_IDENTITY": timestamp,
         "MLB_STATS_API_PITCHING_GAME_LOG": timestamp,
         "MLB_STATS_API_SCHEDULE_PROBABLE_PITCHER": timestamp,
     }
+    if len(selected_seasons) > 1:
+        source_timestamps["MLB_STATS_API_CROSS_SEASON_HISTORY"] = timestamp
     if source_capture_timestamp:
         source_timestamps[f"INPUT_CAPTURE_{str(source_label).strip().upper()}"] = source_capture_timestamp
 
@@ -167,8 +176,11 @@ def hydrate_mlb_workload_evidence(
             "regular_season_prior_starts": len(box_score_log),
             "starter_confirmation": "OFFICIAL_PROBABLE_PITCHER",
             "target_stat_type": stat_key,
+            "history_seasons_queried": seasons_queried,
+            "history_seasons_used": selected_seasons,
+            "history_selection": "MOST_RECENT_OFFICIAL_STARTS_NO_IMPUTATION",
         },
         "source_timestamps": source_timestamps,
         "evidence_version": evidence_version,
-        "rate_provenance": f"MLB StatsAPI official pitching gameLog; target={stat_key}; no target values estimated",
+        "rate_provenance": f"MLB StatsAPI official pitching gameLog; target={stat_key}; bounded cross-season L10 by recency; no target values estimated",
     }
