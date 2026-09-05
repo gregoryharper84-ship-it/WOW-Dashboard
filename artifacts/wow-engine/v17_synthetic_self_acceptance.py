@@ -58,7 +58,14 @@ def _team_event_payload(*, event_date: str) -> dict[str, Any]:
 
 
 def _real_projected_mlb_candidate(now: datetime) -> dict[str, Any] | None:
-    """Select one real fitted, still-pregame MLB event whose lineup is pending."""
+    """Select a current fitted future MLB event whose latest lineup is pending.
+
+    Forward-shadow storage is append-only and may contain multiple snapshots for
+    one event. Candidate selection therefore reduces to the newest snapshot per
+    official event before applying any hydration, score-state, or lineup
+    eligibility. A stale projected/PASS snapshot can never override a newer held,
+    failed, or confirmed snapshot.
+    """
     try:
         import api_prod_market_acceptance as production
         rows = (
@@ -69,20 +76,63 @@ def _real_projected_mlb_candidate(now: datetime) -> dict[str, Any] | None:
                 "snapshot_id,snapshot_timestamp,lineup_status,feature_hydration_status,model_score_status"
             )
             .gt("event_start_time", now.isoformat())
-            .eq("feature_hydration_status", "PASS")
-            .eq("model_score_status", "SHADOW_SCORED_LINEUP_PENDING")
             .order("event_start_time")
-            .limit(1)
+            .limit(500)
             .execute().data or []
         )
     except Exception:
         return None
     if not rows:
         return None
-    row = dict(rows[0])
-    if str(row.get("lineup_status") or "").upper() == "CONFIRMED":
+
+    latest_by_event: dict[str, dict[str, Any]] = {}
+    latest_timestamp: dict[str, datetime] = {}
+    for raw in rows:
+        if not isinstance(raw, dict):
+            continue
+        event_id = str(raw.get("official_event_id") or "").strip()
+        if not event_id:
+            continue
+        try:
+            snapshot_time = datetime.fromisoformat(
+                str(raw.get("snapshot_timestamp") or "").replace("Z", "+00:00")
+            )
+            if snapshot_time.utcoffset() is None:
+                snapshot_time = snapshot_time.replace(tzinfo=timezone.utc)
+            snapshot_time = snapshot_time.astimezone(timezone.utc)
+        except (TypeError, ValueError):
+            continue
+        if event_id not in latest_timestamp or snapshot_time > latest_timestamp[event_id]:
+            latest_by_event[event_id] = dict(raw)
+            latest_timestamp[event_id] = snapshot_time
+
+    eligible: list[dict[str, Any]] = []
+    for row in latest_by_event.values():
+        hydration_status = str(row.get("feature_hydration_status") or "").strip().upper()
+        lineup_status = str(row.get("lineup_status") or "").strip().upper()
+        model_score_status = str(row.get("model_score_status") or "").strip().upper()
+        if hydration_status != "PASS":
+            continue
+        if lineup_status in {"CONFIRMED", "OFFICIAL", "FINAL"}:
+            continue
+        if model_score_status != "SHADOW_SCORED_LINEUP_PENDING":
+            continue
+        eligible.append(row)
+
+    if not eligible:
         return None
-    return row
+
+    def _event_start_key(row: dict[str, Any]) -> datetime:
+        try:
+            value = datetime.fromisoformat(str(row.get("event_start_time") or "").replace("Z", "+00:00"))
+            if value.utcoffset() is None:
+                value = value.replace(tzinfo=timezone.utc)
+            return value.astimezone(timezone.utc)
+        except (TypeError, ValueError):
+            return datetime.max.replace(tzinfo=timezone.utc)
+
+    eligible.sort(key=_event_start_key)
+    return dict(eligible[0])
 
 
 def _projected_team_event_payload(row: dict[str, Any]) -> dict[str, Any]:
