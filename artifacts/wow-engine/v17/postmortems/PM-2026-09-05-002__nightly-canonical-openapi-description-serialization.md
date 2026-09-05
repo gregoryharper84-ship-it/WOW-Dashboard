@@ -1,6 +1,6 @@
 # PM-2026-09-05-002 — Nightly canonical OpenAPI description serialization
 
-- status: REPAIR_IN_PROGRESS
+- status: FIX_IN_PROGRESS
 - severity: P1
 - domain: CI / Action contract validation
 - created_utc: 2026-09-05T09:58:00Z
