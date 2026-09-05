@@ -1,0 +1,56 @@
+{
+  "schema_version": "WOW_NFLVERSE_DATASET_POLICY_V1",
+  "provider": "NFLVERSE",
+  "can_execute": false,
+  "attribution": "Data from nflverse, licensed under applicable Creative Commons terms; preserve source/version metadata and indicate transformations.",
+  "datasets": [
+    {
+      "dataset": "player_stats",
+      "status": "ALLOWED_CORE",
+      "evidence_domain": "SPORTING",
+      "license": "CC-BY-4.0",
+      "production_training_allowed": true,
+      "purpose": "settled player-game passing/rushing/receiving outcomes"
+    },
+    {
+      "dataset": "schedules",
+      "status": "ALLOWED_CORE",
+      "evidence_domain": "SPORTING",
+      "license": "CC-BY-4.0",
+      "production_training_allowed": true,
+      "purpose": "canonical game identity and kickoff timestamps"
+    },
+    {
+      "dataset": "players",
+      "status": "ALLOWED_CORE",
+      "evidence_domain": "SPORTING",
+      "license": "CC-BY-4.0",
+      "production_training_allowed": true,
+      "purpose": "GSIS player identity mapping"
+    },
+    {
+      "dataset": "play_by_play",
+      "status": "ALLOWED_OPTIONAL",
+      "evidence_domain": "SPORTING",
+      "license": "CC-BY-4.0",
+      "production_training_allowed": true,
+      "purpose": "lagged/team/opponent feature construction after point-in-time validation"
+    },
+    {
+      "dataset": "participation",
+      "status": "EXCLUDED_INITIAL",
+      "evidence_domain": "SPORTING",
+      "license": "CC-BY-SA-4.0_FROM_2023_FTN",
+      "production_training_allowed": false,
+      "purpose": "excluded from initial governed corpus pending separate share-alike/attribution review"
+    },
+    {
+      "dataset": "ftn_charting",
+      "status": "EXCLUDED_INITIAL",
+      "evidence_domain": "SPORTING",
+      "license": "CC-BY-SA-4.0",
+      "production_training_allowed": false,
+      "purpose": "excluded from initial governed corpus pending separate share-alike/attribution review"
+    }
+  ]
+}
