@@ -21,8 +21,9 @@ Find the strongest governed team/event winner probabilities across all supported
 8. Never use sportsbook implied probability, market consensus, external projection, ranking, record, or narrative as a replacement for the governed team/event model.
 9. Run favorite failure-path and underdog/upset evaluation required by the team/event contract.
 10. Classify market context as `EXACT_LINE`, `ADJACENT_LINE`, or `NO_MARKET`; when exact-line pricing exists, report no-vig/market disagreement and opener/current movement without redefining model probability.
-11. Rank official winner candidates by calibrated lower bound, then calibrated probability as a tie-breaker unless a stricter route-specific rule controls.
-12. Keep unsupported sports/events fail-closed with exact typed status.
+11. Before any official ranking or card admission, apply the fail-closed semantics of `v17/team_event_official_publication_guard.py`. A completed sporting probability may still be displayed diagnostically when preserved by governance, but it may not become an official ranked pick unless the publication guard passes.
+12. Rank official winner candidates by governed calibrated lower bound, then calibrated probability as a tie-breaker unless a stricter route-specific rule controls.
+13. Keep unsupported sports/events fail-closed with exact typed status.
 
 ## Required output
 ### Best ML Winners
@@ -45,10 +46,23 @@ For each official row show:
 ### Best Underdogs/Upsets
 Use a separate table. A market underdog is not automatically a model upset pick. Include only sides whose governed sporting probability supports the upset thesis.
 
+### Research / held probabilities
+A sporting probability preserved by the backend while publication or ranking is blocked may be shown in a separate diagnostic section when useful. Label it clearly as research/held/unranked. Do not assign it an official rank, call it the best pick, or admit it to an official card.
+
 ## Publication rules
 - Only rows with the required certified model output belong in official leaderboards.
-- `MODEL_UNAVAILABLE`, model completion/scorer failures, invalid outputs, or identity failures remain diagnostic and unranked.
+- `probability_publishable=true` and `rank_eligible=true` are mandatory for official leaderboard/card admission. Either flag false is a hard official-publication block even when numeric probabilities exist.
+- The row must carry V17 terminal-reducer authority/receipt. Host prose, Scout, Research, shadow tables, or a specialist alone cannot create official ranking eligibility.
+- Never rank directly from `wow_mlb_forward_shadow_events`, `wow_mlb_forward_score_snapshots`, a `SHADOW_SCORED_*` status, or a `PASS_RESEARCH_BOUND`. Those artifacts are research evidence only unless a later governed route produces a separately certified publishable row.
+- A calibrated point estimate must not be relabeled as its own lower bound. Official MLB ranking requires a certified bounds method and a genuine lower bound below the calibrated point estimate, with a valid upper bound above it.
+- Official MLB ranking requires the confirmed lineup to be numerically bound into the current model package. Require a confirmed lineup context, a lineup identity fingerprint, and a model-input fingerprint/hash. Merely removing a lineup blocker without recomputing/binding the numeric model is insufficient.
+- Official MLB favorite ranking requires an explicit numeric favorite failure-path package, including multiple quantified loss regimes, largest loss path, failure-path probability, and regime-model provenance. Narrative risks alone are insufficient.
+- `MODEL_UNAVAILABLE`, model completion/scorer failures, invalid outputs, identity failures, or publication-guard failures remain diagnostic and unranked.
 - One side or no pick per governed event decision.
 - Research/market context never substitutes for the fitted model.
 - Never fabricate a probability because the user asked for a minimum number of picks.
+- Never backfill a postgame governed prediction to repair a missing pregame publication record.
 - `can_execute=false` always.
+
+## Regression incident — 2026-09-04 Athletics @ Mariners
+A forward-shadow Seattle probability existed pregame but was marked `probability_publishable=false`. The game result does not establish model failure; Seattle losing was a plausible outcome under the research probability. The process failure was allowing a nonpublishable research row to be described conversationally as a strongest/#1 selection. This regression is fixed at the publication boundary: research probabilities may remain visible for diagnosis but can never become official ranks or official card selections without the complete governed publication package.
