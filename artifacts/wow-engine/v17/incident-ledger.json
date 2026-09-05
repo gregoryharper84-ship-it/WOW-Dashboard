@@ -58,6 +58,31 @@
           "production_deploy": "dep-dadsq7h5efls739ekm2g"
         }
       }
+    },
+    {
+      "postmortem_id": "PM-2026-09-05-002",
+      "title": "Nightly canonical OpenAPI description serialization",
+      "severity": "P1",
+      "domain": "CI / Action contract validation",
+      "state": "FIX_IN_PROGRESS",
+      "postmortem_path": "artifacts/wow-engine/v17/postmortems/PM-2026-09-05-002__nightly-canonical-openapi-description-serialization.md",
+      "engineering_fix_ids": [
+        "FIX-2026-09-05-002"
+      ],
+      "created_utc": "2026-09-05T09:58:00Z",
+      "updated_utc": "2026-09-05T10:03:00Z",
+      "engineering_fixes": {
+        "FIX-2026-09-05-002": {
+          "title": "Repair nightly OpenAPI description serialization",
+          "risk": "R1",
+          "state": "FIX_IN_PROGRESS",
+          "path": "artifacts/wow-engine/v17/engineering-fixes/FIX-2026-09-05-002__repair-nightly-openapi-description-serialization.md",
+          "created_utc": "2026-09-05T09:59:00Z",
+          "updated_utc": "2026-09-05T10:03:00Z",
+          "merge_commit": null,
+          "production_deploy": null
+        }
+      }
     }
   ]
 }
