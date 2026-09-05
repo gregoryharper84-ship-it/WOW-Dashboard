@@ -42,12 +42,32 @@ def _certified_lines(artifact_record: dict[str, Any]) -> tuple[float, ...]:
 
 
 def _artifact_calibration_status(artifact_record: dict[str, Any]) -> str:
-    """Derive calibration health only from the governed artifact record."""
+    """Derive calibration health from the governed registry contract.
+
+    Newer artifacts persist an explicit calibration status or `gates_passed`.
+    Earlier certified MLB 1IP artifacts predate those fields, but the registry
+    emits `PROP_CERTIFIED_MODEL_ARTIFACT_READY` only after promotion/certification.
+    For that compatibility case, require both a certification id and the exact
+    validated-line evidence before treating the artifact as calibration-ready.
+    """
     metrics = artifact_record.get("validation_metrics") or {}
     explicit = metrics.get("calibration_status") or artifact_record.get("calibration_status")
     if explicit:
         return str(explicit).strip().upper()
-    return "PASS" if metrics.get("gates_passed") is True else "BLOCKED"
+
+    gates_passed = metrics.get("gates_passed")
+    if gates_passed is True:
+        return "PASS"
+    if gates_passed is False:
+        return "BLOCKED"
+
+    certified_ready = (
+        artifact_record.get("code") == "PROP_CERTIFIED_MODEL_ARTIFACT_READY"
+        and bool(str(artifact_record.get("certification_id") or "").strip())
+        and isinstance(metrics.get("validated_lines"), list)
+        and bool(metrics.get("validated_lines"))
+    )
+    return "PASS" if certified_ready else "BLOCKED"
 
 
 def score_mlb_1ip_empirical(
