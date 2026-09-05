@@ -21,6 +21,7 @@ from mlb_1ip_specialist import (
     CONTROLLING_SPECIALIST,
     classify_lineup_evidence,
 )
+from qualification_policy_v2 import classify_prop_probability
 
 CAN_EXECUTE = False
 EXPECTED_FEATURE_SCHEMA_VERSION = "PROP_FEATURES_V1"
@@ -38,6 +39,15 @@ def _certified_lines(artifact_record: dict[str, Any]) -> tuple[float, ...]:
     if len(set(lines)) != len(lines):
         raise ValueError("MLB_1IP_CERTIFIED_LINE_SUPPORT_INVALID")
     return lines
+
+
+def _artifact_calibration_status(artifact_record: dict[str, Any]) -> str:
+    """Derive calibration health only from the governed artifact record."""
+    metrics = artifact_record.get("validation_metrics") or {}
+    explicit = metrics.get("calibration_status") or artifact_record.get("calibration_status")
+    if explicit:
+        return str(explicit).strip().upper()
+    return "PASS" if metrics.get("gates_passed") is True else "BLOCKED"
 
 
 def score_mlb_1ip_empirical(
@@ -107,6 +117,27 @@ def score_mlb_1ip_empirical(
     if not market_evidence_present:
         blockers.append("MARKET_DATA_UNAVAILABLE")
 
+    calibration_status = _artifact_calibration_status(artifact_record)
+    official_confirmed = state == "OFFICIAL_CONFIRMED"
+    probability_publishable = official_confirmed
+    qualification = None
+    if official_confirmed:
+        qualification = classify_prop_probability(
+            calibrated_probability=scored["selected_probability"],
+            calibrated_lower_bound=scored["lower_bound"],
+            calibrated_upper_bound=scored["upper_bound"],
+            calibration_status=calibration_status,
+            blockers=blockers,
+            probability_publishable=True,
+            model_quality_status="PASS",
+            input_complete=True,
+        )
+        terminal_label = qualification.terminal_label
+    else:
+        # Projected/provisional lineups retain the pre-existing hold. Their
+        # numeric package is an internal provisional result until final refresh.
+        terminal_label = "MODEL_QUALIFIED_HOLD"
+
     return {
         **scored,
         "controlling_specialist": CONTROLLING_SPECIALIST,
@@ -121,11 +152,30 @@ def score_mlb_1ip_empirical(
         "calibrated_probability_lower_bound": scored["lower_bound"],
         "calibrated_probability_upper_bound": scored["upper_bound"],
         "calibration_method": CALIBRATOR_VERSION,
+        "calibration_status": calibration_status,
         "certified_supported_lines": list(supported_lines),
-        "terminal_label": "MODEL_QUALIFIED_HOLD",
-        "terminal_ceiling": "MODEL_QUALIFIED_HOLD",
-        "final_refresh_required": state != "OFFICIAL_CONFIRMED",
+        "terminal_label": terminal_label,
+        "terminal_ceiling": terminal_label,
+        "final_refresh_required": not official_confirmed,
         "blockers": blockers,
-        "probability_publishable": False,
+        "probability_publishable": probability_publishable,
+        "model_supported": bool(qualification.model_supported) if qualification is not None else True,
+        "model_qualified": bool(qualification.model_qualified) if qualification is not None else False,
+        "model_qualification_status": (
+            qualification.model_qualification_status if qualification is not None else "PENDING_FINAL_REFRESH"
+        ),
+        "confidence_tier": qualification.confidence_tier if qualification is not None else "PROVISIONAL",
+        "rank_eligible": bool(qualification.rank_eligible) if qualification is not None else False,
+        "probability_rank_eligible": bool(qualification.rank_eligible) if qualification is not None else False,
+        "qualification_policy_version": (
+            qualification.qualification_policy_version if qualification is not None else None
+        ),
+        "qualification_reasons": (
+            list(qualification.qualification_reasons) if qualification is not None else ["OFFICIAL_LINEUP_REFRESH_REQUIRED"]
+        ),
+        "downstream_money_evaluation_allowed": (
+            bool(qualification.downstream_money_evaluation_allowed) if qualification is not None else False
+        ),
+        "final_approved_allowed": False,
         "can_execute": False,
     }
