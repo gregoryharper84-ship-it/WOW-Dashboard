@@ -31,11 +31,12 @@ on:
       - 'artifacts/wow-engine/test_wnba_prop_real_artifact_e2e.py'
       - 'artifacts/wow-engine/test_wnba_prop_certification_replay.py'
       - 'artifacts/wow-engine/data/wow_wnba_prop_artifacts_v1.json'
+      - 'artifacts/wow-engine/data/source_snapshots/wnba/**'
       - '.github/workflows/wnba-prop-offline-fit.yml'
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   fit:
@@ -48,6 +49,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -58,6 +61,39 @@ jobs:
 
       - name: Acquire exact upstream WNBA snapshot for WOW freeze
         run: PYTHONPATH=. python scripts/acquire_wnba_training_snapshot.py
+
+      - name: Persist exact source bundle to feature-branch Git history
+        if: github.ref_name == 'feat/v17-wnba-certification-replay-20260905'
+        run: |
+          SRC=data/wnba-source-freeze/wnba-2026-20260904
+          DST=data/source_snapshots/wnba/wnba-2026-20260904
+          if [ -f "$DST/player_game_logs_2026.csv.gz" ] && \
+             [ -f "$DST/player_boxscores_2026.csv.gz" ] && \
+             [ -f "$DST/wnba_schedule_2026.csv.gz" ]; then
+            echo 'WOW-owned WNBA source snapshot already committed; no write required.'
+            exit 0
+          fi
+          mkdir -p "$DST"
+          gzip -n -9 -c "$SRC/player_game_logs_2026.csv" > "$DST/player_game_logs_2026.csv.gz"
+          gzip -n -9 -c "$SRC/player_boxscores_2026.csv" > "$DST/player_boxscores_2026.csv.gz"
+          gzip -n -9 -c "$SRC/wnba_schedule_2026.csv" > "$DST/wnba_schedule_2026.csv.gz"
+          cp "$SRC/snapshot_manifest.json" "$DST/snapshot_manifest.json"
+          cat > "$DST/ATTRIBUTION.txt" <<'EOF'
+          SportsDataverse / wehoop WNBA data
+          Source repository: https://github.com/sportsdataverse/wehoop-wnba-stats-data
+          License: CC BY 4.0
+          License text: https://github.com/sportsdataverse/wehoop-wnba-stats-data/blob/main/LICENSE.md
+          This snapshot preserves source attribution and exact SHA-256 provenance for WOW V17 model-development evidence.
+          EOF
+          git config user.name 'WOW V17 CI'
+          git config user.email 'wow-v17-ci@users.noreply.github.com'
+          git add "$DST"
+          if git diff --cached --quiet; then
+            echo 'No source-freeze changes to commit.'
+          else
+            git commit -m 'V17: freeze immutable WNBA 2026 training evidence bundle'
+            git push origin "HEAD:${GITHUB_REF_NAME}"
+          fi
 
       - name: Install dependencies
         run: python -m pip install -r requirements.txt
