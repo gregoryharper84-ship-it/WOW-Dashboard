@@ -72,7 +72,7 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/DailySnapshotRequest'}
       responses:
-        '200': {description: Terminal bounded Daily receipt, including held rows}
+        '200': {description: "Terminal bounded Daily receipt, including held rows"}
         '401': {description: Authentication failed}
   /score-pick-request:
     post:
