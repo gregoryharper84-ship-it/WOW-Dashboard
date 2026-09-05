@@ -39,21 +39,23 @@
       "title": "Nightly incident ledger path drift",
       "severity": "P1",
       "domain": "CI / observability",
-      "state": "FIX_IN_PROGRESS",
+      "state": "VERIFIED_CLOSED",
       "postmortem_path": "artifacts/wow-engine/v17/postmortems/PM-2026-09-05-001__nightly-incident-ledger-path-drift.md",
       "engineering_fix_ids": [
         "FIX-2026-09-05-001"
       ],
       "created_utc": "2026-09-05T07:56:00Z",
-      "updated_utc": "2026-09-05T07:57:00Z",
+      "updated_utc": "2026-09-05T08:06:25Z",
       "engineering_fixes": {
         "FIX-2026-09-05-001": {
           "title": "Repair nightly ledger path metadata",
           "risk": "R0",
-          "state": "FIX_IN_PROGRESS",
+          "state": "VERIFIED_CLOSED",
           "path": "artifacts/wow-engine/v17/engineering-fixes/FIX-2026-09-05-001__repair-nightly-ledger-path-metadata.md",
           "created_utc": "2026-09-05T07:57:00Z",
-          "updated_utc": "2026-09-05T07:57:00Z"
+          "updated_utc": "2026-09-05T08:06:25Z",
+          "merge_commit": "f61b37d87e4a3e8f317de2d0d103ff4c17433e4d",
+          "production_deploy": "dep-dadsq7h5efls739ekm2g"
         }
       }
     }
