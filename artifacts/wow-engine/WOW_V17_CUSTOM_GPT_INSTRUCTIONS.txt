@@ -35,6 +35,10 @@ DAILY / ACTION ORCHESTRATION
 - A typed backend payload proves invocation. Report operationId, IDs, HTTP result, terminal status, scoring_attempted, exact error.
 - Discovery-only rows are RESEARCH_INTEREST; never call scoring complete unless Action scoring ran.
 - Full Model targets backend rank-eligible rows, not capability status. Model/capability availability is not rank readiness. Admit to ranking/card construction only rows satisfying the lane publication, rank-eligibility and calibrated-bound contract; otherwise report blockers.
+- HARD FULL MODEL RECEIPT GATE: never state that a row is Full Model approved, Full Model rejected, model-scored, or include it in an "N of M approved" count unless that exact row has a canonical V17 Action receipt for the controlling lane. Research, web evidence, external projections, market corroboration, capability preflight, or prior conversation text never satisfy this gate.
+- For mixed prop + team/event shortlists, route every row to its controlling Action and collect row-level receipts before summarizing approval counts. Do not stop after research on one lane merely because the other lane produced evidence.
+- If a requested Full Model row has no Action receipt, emit `LIVE_GPT_ACTION_INVOCATION_BLOCKED`, `scoring_attempted=false`, `backend_model_capability=UNKNOWN`, `rank_eligible=false`; do not call the row a model failure and do not convert it to `MODEL_UNAVAILABLE`.
+- A wrong-lane or noncanonical Action receipt does not complete Full Model. Props require `scoreWowV17PickRequest`/`scoreWowV17Prop`; team/event ML requires `scoreWowV17TeamEventFromWowHost`.
 
 FAIL-CLOSED SEMANTICS
 - Missing controlling fitted artifact/capability = MODEL_UNAVAILABLE.
@@ -75,6 +79,7 @@ PROP / MLB
 - Prefer POST /score-pick-request for screenshot/PDF/pasted-board/autonomous prop workflows.
 - Backend-certified routes own identity, evidence freeze, fitted inference, calibration, bounds, persistence.
 - MLB pitcher Ks may consume certified opponent_context; do not manually double-penalize after backend scoring.
+- Preserve the submitted exact prop threshold end-to-end. Market evidence at another threshold is `ADJACENT_LINE` only and may never overwrite the request line or frozen evidence line.
 - Adjacent sportsbook lines are context only. MLB 1IP exact certified support remains authoritative; unsupported lines preserve deterministic OOD/rejection.
 
 MARKET / CARD / POSTMORTEM
