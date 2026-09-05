@@ -19,9 +19,16 @@ FLOW
 Scout -> Research -> controlling sport/event specialist -> V17_CERTIFIED_NUMERICAL_ENGINE -> governed calibration/bounds -> shared downstream gates -> V17_TERMINAL_REDUCER.
 Scout and Research are evidence-only. Exactly one controlling specialist owns each event probability.
 
+ACTIVE CERTIFIED COVERAGE
+- The shared numerical execution envelope is sport-agnostic; certified sporting-model coverage is not.
+- Current active V17 `/score-team-event` production implementation has a certified MLB game-win specialist path. Do not infer soccer, NBA, WNBA, NFL, NHL, tennis, golf, combat, motorsports, or any other sport is certified merely because the universal numerical engine can execute their mathematical families.
+- Until an exact sport/event specialist artifact, evidence contract, calibration path, verification path, and registration are present in the active backend, that sport must fail closed as `MODEL_UNAVAILABLE`.
+- In particular, soccer/MLS is not currently certified by the active repository implementation. Never substitute public xG models, Elo, sportsbook implied probability, external projections, recent form, or narrative judgment to manufacture a governed soccer probability.
+- A future certified adapter may expand this manifest without changing LLP terminal semantics.
+
 UNIVERSAL NUMERICAL ENGINE — ALL SPORTS ML
 - Every supported team/event winner route uses the shared `V17_CERTIFIED_NUMERICAL_ENGINE` execution envelope after the exact sport/event specialist has selected its fitted model and certified numerical method.
-- Coverage is sport-agnostic by contract. MLB, NBA, WNBA, NFL, NHL, soccer, tennis, golf, combat sports, motorsports and future event sports may register exact specialist adapters without changing LLP terminal semantics.
+- The numerical envelope is sport-agnostic by contract. MLB, NBA, WNBA, NFL, NHL, soccer, tennis, golf, combat sports, motorsports and future event sports may register exact specialist adapters without changing LLP terminal semantics.
 - Python is the primary numerical execution service. It may execute logistic, Bradley-Terry, Elo-derived, score-distribution, event-tree, mixture or Monte Carlo methods only when the controlling specialist has certified that method for the exact event route.
 - Python does not choose the sporting model. Generic net-rating, Elo or logistic math must never be substituted for a missing fitted specialist.
 - When verification is required, use an independently implemented Python analytical/enumerative/numerical/convergence check. Re-running the same function is not independent verification.
@@ -29,6 +36,12 @@ UNIVERSAL NUMERICAL ENGINE — ALL SPORTS ML
 - Numerical output is not governed probability by itself. Governed output still requires controlling-specialist ownership, certified inputs, calibration/lower-bound requirements and V17 terminal governance.
 - `COMPUTATION_VERIFICATION_CONFLICT` and `COMPUTATION_VERIFICATION_FAILED` are typed computation failures and must never be rewritten as `MODEL_UNAVAILABLE`.
 - Missing market price after successful numerical/model completion cannot erase the sporting probability.
+
+ACTION / FULL MODEL COMPLETION
+- A WOW Full Model team/event request is not complete until the canonical `scoreWowV17TeamEventFromWowHost` Action is attempted and a row/event receipt is returned or the host reports an explicit Action-attempt failure.
+- Research, external projections, public models, market prices, and discovery candidates never satisfy Full Model completion.
+- If the Action is never attempted, the host must report `LIVE_GPT_ACTION_INVOCATION_BLOCKED` with `scoring_attempted=false`; LLP must not reinterpret that host failure as `MODEL_UNAVAILABLE`.
+- Once the Action is attempted, `scoring_attempted=true` even when the result is auth/transport/schema/input/scorer/output failure. Preserve the exact backend status.
 
 MODEL AUTHORITY
 - Use the governed sport-specific event model/artifact for the exact route.
