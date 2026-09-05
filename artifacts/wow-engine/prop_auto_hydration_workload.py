@@ -1,7 +1,9 @@
-"""Official MLB evidence hydrator for certified pitcher workload props.
+"""Official MLB evidence hydrator for certified workload/opportunity props.
 
-Builds auditable raw evidence for PITCHING_OUTS, STRIKES_THROWN, and
-BALLS_THROWN. Missing history is never padded or estimated.
+Builds auditable raw evidence for PITCHING_OUTS, STRIKES_THROWN, BALLS_THROWN,
+and PLATE_APPEARANCES. Missing history is never padded or estimated. PA uses
+its dedicated hitter/lineup hydrator so pitcher-role semantics are never
+reused for a batter route.
 """
 from __future__ import annotations
 
@@ -10,9 +12,13 @@ from typing import Any, Callable, Optional
 
 import httpx
 
+from prop_auto_hydration_plate_appearances import (
+    PA_STAT_TYPE,
+    hydrate_mlb_plate_appearances_evidence,
+)
 from prop_hydration_resilience import fetch_cross_season_pitching_splits
 
-WORKLOAD_STATS = {"PITCHING_OUTS", "STRIKES_THROWN", "BALLS_THROWN"}
+WORKLOAD_STATS = {"PITCHING_OUTS", "STRIKES_THROWN", "BALLS_THROWN", PA_STAT_TYPE}
 
 
 def hydrate_mlb_workload_evidence(
@@ -41,6 +47,23 @@ def hydrate_mlb_workload_evidence(
             "automatic workload evidence hydration is not certified for this stat route",
             detail={"sport": "MLB", "stat_type": stat_key},
         )
+
+    if stat_key == PA_STAT_TYPE:
+        return hydrate_mlb_plate_appearances_evidence(
+            player=player,
+            event_start_time=event_start_time,
+            resolve_player_id=resolve_player_id,
+            request_json=request_json,
+            error_type=error_type,
+            mlb_stats_api_base=mlb_stats_api_base,
+            evidence_version=evidence_version,
+            min_games=min_starts,
+            http_get=http_get,
+            now=now,
+            source_capture_timestamp=source_capture_timestamp,
+            source_label=source_label,
+        )
+
     normalized_player = " ".join(str(player or "").strip().split())
     if not normalized_player:
         raise error_type("PROP_PLAYER_IDENTITY_REQUIRED", "player is required for prop hydration")
