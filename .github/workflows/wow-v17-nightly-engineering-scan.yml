@@ -4,6 +4,15 @@ on:
   schedule:
     - cron: "0 8 * * *"
   workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/wow-v17-nightly-engineering-scan.yml"
+      - "artifacts/wow-engine/v17/nightly_incident_records.py"
+      - "artifacts/wow-engine/v17/incident-ledger.json"
+      - "artifacts/wow-engine/v17/postmortems/**"
+      - "artifacts/wow-engine/v17/engineering-fixes/**"
 
 permissions:
   contents: read
