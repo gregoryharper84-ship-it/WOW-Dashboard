@@ -1,26 +1,23 @@
 """Automatic raw-evidence acquisition for certified prop routes.
 
-P0 begins with the one currently certified fitted prop route: MLB pitcher
-strikeouts. The provider acquires official MLB player identity, regular-season
-pitching game logs, probable-pitcher schedule context, and -- when the official
-batting order is available -- opponent hitter strikeout evidence against the
-starter's throwing hand.
-
-This module does not persist evidence, calculate probability, or authorize any
-execution. The canonical pick-request runtime validates, fingerprints, freezes,
-and persists the returned evidence before delegating to /score-prop.
+Acquires official MLB player identity, regular-season pitching game logs,
+probable-pitcher schedule context, and optional opponent context. Evidence gaps
+fail closed; no history is padded, guessed, or converted into model probability.
 """
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Optional
 import time
-import unicodedata
 
 import httpx
 
 from prop_auto_hydration_workload import WORKLOAD_STATS, hydrate_mlb_workload_evidence
-
+from prop_hydration_resilience import (
+    fetch_cross_season_pitching_splits,
+    normalized_name,
+    resolve_official_mlb_player,
+)
 
 MLB_STATS_API_BASE = "https://statsapi.mlb.com/api/v1"
 AUTO_HYDRATION_PROVIDER = "MLB_STATS_API_OFFICIAL_V1"
@@ -57,9 +54,7 @@ def _aware(value: str) -> datetime:
 
 
 def _name_key(value: Any) -> str:
-    text = unicodedata.normalize("NFKD", str(value or ""))
-    ascii_text = "".join(ch for ch in text if not unicodedata.combining(ch))
-    return " ".join(ascii_text.casefold().strip().split())
+    return normalized_name(value)
 
 
 def _int(value: Any, *, default: int = 0) -> int:
@@ -121,34 +116,21 @@ def _request_json(
     )
 
 
-def _resolve_player_id(player: str, *, http_get: Callable[..., Any]) -> tuple[int, str]:
-    payload = _request_json(
-        f"{MLB_STATS_API_BASE}/people/search",
-        params={"names": player, "active": "true", "sportIds": "1"},
+def _resolve_player_id(
+    player: str,
+    *,
+    http_get: Callable[..., Any],
+    event_start: Optional[datetime] = None,
+) -> tuple[int, str]:
+    player_id, official_name, _provenance = resolve_official_mlb_player(
+        player,
+        event_start=event_start,
+        request_json=_request_json,
         http_get=http_get,
+        mlb_stats_api_base=MLB_STATS_API_BASE,
+        error_type=PropAutoHydrationError,
     )
-    people = payload.get("people")
-    if not isinstance(people, list):
-        people = []
-    exact = [
-        person
-        for person in people
-        if isinstance(person, dict)
-        and _name_key(person.get("fullName")) == _name_key(player)
-    ]
-    if len(exact) != 1:
-        raise PropAutoHydrationError(
-            "PROP_PLAYER_IDENTITY_UNRESOLVED",
-            "official MLB player search did not produce one exact active match",
-            detail={"player": player, "exact_match_count": len(exact)},
-        )
-    player_id = _int(exact[0].get("id"))
-    if player_id <= 0:
-        raise PropAutoHydrationError(
-            "PROP_PLAYER_IDENTITY_UNRESOLVED",
-            "official MLB player ID was missing",
-        )
-    return player_id, str(exact[0].get("fullName") or player)
+    return player_id, official_name
 
 
 def _schedule_context(
@@ -234,23 +216,17 @@ def _game_log(
     event_start: datetime,
     http_get: Callable[..., Any],
 ) -> tuple[list[float], list[dict[str, Any]]]:
-    payload = _request_json(
-        f"{MLB_STATS_API_BASE}/people/{player_id}/stats",
-        params={"stats": "gameLog", "group": "pitching", "season": str(season), "gameType": "R"},
+    season_splits, seasons_queried = fetch_cross_season_pitching_splits(
+        player_id,
+        event_start=event_start,
+        request_json=_request_json,
         http_get=http_get,
+        mlb_stats_api_base=MLB_STATS_API_BASE,
     )
-    blocks = payload.get("stats")
-    splits: list[Any] = []
-    if isinstance(blocks, list):
-        for block in blocks:
-            if isinstance(block, dict) and isinstance(block.get("splits"), list):
-                splits.extend(block["splits"])
 
     parsed: list[tuple[str, dict[str, Any]]] = []
-    for split in splits:
-        if not isinstance(split, dict):
-            continue
-        stat = split.get("stat")
+    for split_season, split in season_splits:
+        stat = split.get("stat") if isinstance(split, dict) else None
         if not isinstance(stat, dict) or _int(stat.get("gamesStarted")) < 1:
             continue
         date_value = str(split.get("date") or "")
@@ -270,6 +246,7 @@ def _game_log(
                 date_value,
                 {
                     "date": date_value,
+                    "season": split_season,
                     "opponent": opponent.get("abbreviation") or opponent.get("name") or "UNKNOWN",
                     "ip": str(ip),
                     "outs": _outs_from_ip(ip),
@@ -286,8 +263,12 @@ def _game_log(
     if len(recent) < MIN_STARTS:
         raise PropAutoHydrationError(
             "MLB_RECENT_STARTS_INSUFFICIENT",
-            "fewer than ten official regular-season starts were available before the event",
-            detail={"starts_found": len(recent), "required": MIN_STARTS},
+            "fewer than ten official regular-season starts were available across the supported history window",
+            detail={
+                "starts_found": len(recent),
+                "required": MIN_STARTS,
+                "seasons_queried": seasons_queried,
+            },
         )
     return [float(row["so"]) for row in recent], recent
 
@@ -332,8 +313,6 @@ def _hitter_hand_split_k_counts(
     pitcher_hand: str,
     http_get: Callable[..., Any],
 ) -> tuple[int, int] | None:
-    # MLB StatsAPI situation codes are from the hitter's perspective: vr =
-    # versus right-handed pitching, vl = versus left-handed pitching.
     sit_code = "vr" if pitcher_hand == "R" else "vl"
     payload = _request_json(
         f"{MLB_STATS_API_BASE}/people/{player_id}/stats",
@@ -370,13 +349,6 @@ def _hydrate_opponent_context(
     box_score_log: list[dict[str, Any]],
     http_get: Callable[..., Any],
 ) -> tuple[dict[str, Any] | None, str]:
-    """Hydrate optional opponent evidence without making it a hard dependency.
-
-    The fitted model is explicitly neutral when opponent_context is absent.
-    Therefore any failure in this additive official-source path returns None
-    rather than converting a previously scorable row into infrastructure/model
-    unavailability. No fallback rate is invented.
-    """
     try:
         pitcher_hand = _pitcher_throwing_hand(pitcher_id, http_get=http_get)
         game_pk = _int(schedule.get("official_game_pk"))
@@ -486,7 +458,11 @@ def auto_hydrate_prop_evidence(
             "pregame evidence cannot be hydrated after event start",
         )
 
-    player_id, official_name = _resolve_player_id(normalized_player, http_get=http_get)
+    player_id, official_name = _resolve_player_id(
+        normalized_player,
+        event_start=event_start,
+        http_get=http_get,
+    )
     schedule = _schedule_context(player_id, event_start=event_start, http_get=http_get)
     game_log, box_score_log = _game_log(
         player_id,
@@ -503,11 +479,14 @@ def auto_hydrate_prop_evidence(
     )
 
     timestamp = captured_at.isoformat()
+    selected_seasons = sorted({int(row.get("season", event_start.year)) for row in box_score_log}, reverse=True)
     source_timestamps = {
-        "MLB_STATS_API_PLAYER_SEARCH": timestamp,
+        "MLB_STATS_API_PLAYER_IDENTITY": timestamp,
         "MLB_STATS_API_PITCHING_GAME_LOG": timestamp,
         "MLB_STATS_API_SCHEDULE_PROBABLE_PITCHER": timestamp,
     }
+    if len(selected_seasons) > 1:
+        source_timestamps["MLB_STATS_API_CROSS_SEASON_HISTORY"] = timestamp
     if opponent_context is not None:
         source_timestamps["MLB_STATS_API_OPPONENT_LINEUP"] = timestamp
         source_timestamps["MLB_STATS_API_HITTER_HAND_SPLITS"] = timestamp
@@ -538,10 +517,12 @@ def auto_hydrate_prop_evidence(
             "regular_season_prior_starts": len(box_score_log),
             "starter_confirmation": "OFFICIAL_PROBABLE_PITCHER",
             "model_opponent_context": opponent_context_status,
+            "history_seasons_used": selected_seasons,
+            "history_selection": "MOST_RECENT_OFFICIAL_STARTS_NO_IMPUTATION",
         },
         "source_timestamps": source_timestamps,
         "evidence_version": AUTO_HYDRATION_EVIDENCE_VERSION,
-        "rate_provenance": "MLB StatsAPI official pitching gameLog; outs derived from inningsPitched",
+        "rate_provenance": "MLB StatsAPI official pitching gameLog; bounded cross-season L10 by recency; outs derived from inningsPitched; no history imputed",
     }
     if opponent_context is not None:
         payload["opponent_context"] = opponent_context
