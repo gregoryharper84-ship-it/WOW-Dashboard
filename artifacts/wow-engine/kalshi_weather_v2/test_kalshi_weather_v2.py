@@ -79,7 +79,10 @@ def market(**overrides):
         market_open=True,
         orderbook_nonempty=True,
         executable_price_verified=True,
-        fee_known=False,
+        fee_known=True,
+        friction_model_verified=True,
+        yes_effective_break_even=0.36,
+        no_effective_break_even=0.68,
     )
     base.update(overrides)
     return MarketSnapshot(**base)
@@ -149,6 +152,18 @@ def test_market_auditor_holds_stale_unverified_market_without_erasing_probabilit
     assert "ORDERBOOK_EMPTY" in result.blockers
 
 
+def test_market_auditor_holds_edge_when_fees_or_friction_unresolved():
+    package = WeatherProbabilityCore().build(contract=contract(), evidence=evidence(), calibration=calibration())
+    result = MarketCalibrationAuditor().evaluate(
+        package,
+        market(fee_known=False, friction_model_verified=False, yes_effective_break_even=None, no_effective_break_even=None),
+    )
+    assert result.ok is False
+    assert "FEE_SCHEDULE_UNRESOLVED" in result.blockers
+    assert "FRICTION_MODEL_UNVERIFIED" in result.blockers
+    assert result.payload["raw_edge_yes"] is not None
+
+
 def test_governor_settlement_failure_has_highest_precedence():
     package = WeatherProbabilityCore().build(contract=contract(), evidence=evidence(), calibration=calibration())
     decision = evaluate_weather_contract(
@@ -185,7 +200,7 @@ def test_governor_qualifies_only_positive_uncertainty_adjusted_edge():
     )
     decision = evaluate_weather_contract(
         contract=contract(), evidence=evidence(), probability=package,
-        market=market(yes_price=0.50, no_price=0.55),
+        market=market(yes_price=0.50, no_price=0.55, yes_effective_break_even=0.51, no_effective_break_even=0.56),
     )
     assert decision.status == "QUALIFIED_EDGE"
     assert decision.rank_eligible is True
@@ -193,7 +208,7 @@ def test_governor_qualifies_only_positive_uncertainty_adjusted_edge():
     assert decision.payload["best_uncertainty_adjusted_edge"] > 0
 
 
-def test_governor_no_edge_when_conservative_price_exceeds_model_bound():
+def test_governor_no_edge_when_conservative_break_even_exceeds_model_bound():
     package = ProbabilityPackage(
         p_yes=0.55, p_no=0.45, central_estimate=91.0,
         lower_bound_yes=0.50, upper_bound_yes=0.60,
@@ -204,7 +219,7 @@ def test_governor_no_edge_when_conservative_price_exceeds_model_bound():
     )
     decision = evaluate_weather_contract(
         contract=contract(), evidence=evidence(), probability=package,
-        market=market(yes_price=0.56, no_price=0.46),
+        market=market(yes_price=0.56, no_price=0.46, yes_effective_break_even=0.57, no_effective_break_even=0.47),
     )
     assert decision.status == "NO_EDGE"
     assert decision.rank_eligible is False
