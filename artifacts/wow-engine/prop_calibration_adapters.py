@@ -4,23 +4,15 @@ Registered by immutable ``calibrator_version`` (resolved from the certified
 artifact bundle -- never caller-selected) with
 ``prop_discrete_engine.register_prop_calibration_adapter``.
 
-wow_predictions / wow_outcomes currently hold zero settled rows for any prop
-model family (verified against the wow-engine-validation Supabase project).
-There is therefore no forward cohort yet to fit calibration.phase_b_platt or
-phase_c_fit_isotonic against, so the only honest calibration_status any real
-inference can carry right now is Phase A -- ``PRECALIBRATION_SHRINKAGE``.
-That is a recognized, publishable status (see ledger.py's
-_RECOGNIZED_CALIBRATION_STATUSES / determine_publishability), just one that
-is never MONEY_QUALIFIED or FINAL_APPROVED (calibration.py Section 8B.4).
+Phase B/C remain gated on a sufficiently large verified settled forward cohort.
+Until a family reaches those thresholds and a fitted calibrator is promoted,
+the honest publication state is Phase A -- ``PRECALIBRATION_SHRINKAGE``.
+Phase A is MODEL-publishable but never MONEY_QUALIFIED or FINAL_APPROVED.
 
-Phase A's bootstrap bounds require a real resample_fn, not a fabricated
-symmetric interval (see MissingResamplerError). This adapter's resample_fn
-bootstraps the *same* evidence the model adapter used (this candidate's own
-game_log/box_score_log), refits the shrunk rate/regime mixture per
-realization, derives the same selected-side probability, and applies the
-same 0.5 + lambda*(p-0.5) shrinkage transform (same lambda as the point
-estimate) so the resulting bounds are percentiles of the same published
-quantity, not a mismatched one.
+Phase A bootstrap bounds require a real resample_fn, not a fabricated symmetric
+interval.  Every adapter registered here or by the companion MLB workload
+module resamples the same candidate evidence used by its fitted model and
+recomputes the same model quantity before applying the Phase-A shrinkage.
 """
 from __future__ import annotations
 
@@ -65,7 +57,7 @@ def _mlb_pitcher_so_resample_fn(inference: CertifiedInference, direction_more: b
     # Fixed for the whole bootstrap, not resampled per replicate: opponent
     # evidence describes tonight's matchup, not this pitcher's own prior-start
     # history, so every replicate must be suppressed/extended by the exact
-    # same factor as the point estimate (see prop_model_adapters.opponent_k_factor).
+    # same factor as the point estimate.
     opp_factor, _clipped, _opp_k_per_pa = opponent_k_factor(
         features.get("opponent_context"), league_k_per_pa, opponent_factor_clip
     )
@@ -147,5 +139,9 @@ def mlb_pitcher_so_precalibration_shrinkage_adapter(
 def register() -> None:
     """Production registration seam -- called once at process startup."""
     register_prop_calibration_adapter(MLB_PITCHER_SO_CALIBRATOR_VERSION, mlb_pitcher_so_precalibration_shrinkage_adapter)
+
+    from prop_calibration_adapters_mlb_workload import register as register_mlb_workload_calibrators
+    register_mlb_workload_calibrators()
+
     from wnba_prop_calibration_adapter import CALIBRATOR_VERSION as WNBA_CALIBRATOR_VERSION, wnba_precalibration_bootstrap_adapter
     register_prop_calibration_adapter(WNBA_CALIBRATOR_VERSION, wnba_precalibration_bootstrap_adapter)

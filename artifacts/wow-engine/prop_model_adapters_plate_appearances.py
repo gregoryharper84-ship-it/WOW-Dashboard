@@ -5,28 +5,19 @@ Trained by scripts/train_mlb_plate_appearances.py against real
 Retrosheet-derived rows in Supabase table wow_mlb_retrosplits_rows. See that
 script's docstring for full data provenance and modeling design.
 
-STATUS: NOT YET REGISTERED IN PRODUCTION -- same two preconditions as the
-other V17-remediation adapters built this week: (1) governance ratification
-+ promotion to wow_prop_fitted_model_artifacts, (2) evidence hydration for
-PLATE_APPEARANCES in wow_prop_evidence_snapshots (zero rows as of
-2026-09-04).
+Production evidence semantics match training:
+- prior_pa_log: this batter's strictly prior official game PA history,
+- batting_slot: current confirmed batting-order position, 1..9,
+- team_alignment: current game side, 1=HOME and 0=AWAY.
 
-Unlike the pitcher workload adapters, this one does NOT consume
-box_score_log -- batting_slot and team_alignment are known pregame from a
-confirmed/projected lineup, not something to mix over probabilistically.
-Required evidence shape:
-    features = {
-        "prior_pa_log": [<int PA>, <int PA>, ...],   # this player's own
-                                                        # prior-game PA history,
-                                                        # any slot/alignment,
-                                                        # chronological order
-        "batting_slot": <int 1-9>,                    # confirmed/projected
-                                                        # for THIS game
-        "team_alignment": <int 0 or 1>,                # 0/1, THIS game
-    }
-A missing or unconfirmed batting_slot (bench risk, lineup not yet posted) is
-a genuine coverage failure here, not a value to guess -- see
-COVERAGE_FAILURE_LINEUP_UNCONFIRMED below.
+The canonical frozen evidence schema already carries generic ``game_log`` and
+``opportunity_ledger`` fields.  PA hydration stores the prior-PA series in
+``game_log`` and the current lineup context in ``opportunity_ledger``.  This
+adapter normalizes those frozen values into the model's training feature names
+before inference; it never reads those values from caller model metadata.
+
+A missing/unconfirmed batting slot is a genuine coverage failure, not a value
+to guess.
 """
 from __future__ import annotations
 
@@ -66,6 +57,44 @@ def _parse_prior_pa_log(value: Any) -> list[int]:
     return parsed
 
 
+def _normalize_pa_features(features: Mapping[str, Any]) -> tuple[Any, Any, Any]:
+    """Resolve training features from the immutable generic evidence envelope.
+
+    Direct top-level feature keys remain supported for deterministic unit/E2E
+    fixtures. Production hydration uses game_log + opportunity_ledger.  When
+    the incoming mapping is a mutable dict, populate the normalized names so
+    the subsequent calibration adapter receives the exact same frozen values
+    after fitted inference.
+    """
+    opportunity = features.get("opportunity_ledger")
+    if not isinstance(opportunity, Mapping):
+        opportunity = {}
+
+    prior = features.get("prior_pa_log")
+    if prior is None:
+        prior = opportunity.get("prior_pa_log")
+    if prior is None:
+        prior = features.get("game_log")
+
+    batting_slot = features.get("batting_slot")
+    if batting_slot is None:
+        batting_slot = opportunity.get("batting_slot")
+
+    team_alignment = features.get("team_alignment")
+    if team_alignment is None:
+        team_alignment = opportunity.get("team_alignment")
+
+    if isinstance(features, dict):
+        if prior is not None:
+            features.setdefault("prior_pa_log", prior)
+        if batting_slot is not None:
+            features.setdefault("batting_slot", batting_slot)
+        if team_alignment is not None:
+            features.setdefault("team_alignment", team_alignment)
+
+    return prior, batting_slot, team_alignment
+
+
 def mlb_batter_plate_appearances_nb_v1_adapter(
     artifact: ResolvedArtifact,
     request: PropInferenceRequest,
@@ -83,13 +112,14 @@ def mlb_batter_plate_appearances_nb_v1_adapter(
             "PROP_MODEL_ARTIFACT_PAYLOAD_INVALID",
             "MLB_BATTER_PLATE_APPEARANCES_NB_V1 artifact_payload is missing required fitted constants",
         ) from exc
-    # keys were serialized as "{slot}_{alignment}" strings for JSON-safety
-    league_mean_pa_by_cell = {tuple(int(x) for x in k.split("_")): float(v) for k, v in league_mean_pa_by_cell_raw.items()}
+    league_mean_pa_by_cell = {
+        tuple(int(x) for x in k.split("_")): float(v)
+        for k, v in league_mean_pa_by_cell_raw.items()
+    }
 
     coverage_failures: list[str] = []
+    prior_raw, batting_slot, team_alignment = _normalize_pa_features(features)
 
-    batting_slot = features.get("batting_slot")
-    team_alignment = features.get("team_alignment")
     if not isinstance(batting_slot, int) or not (1 <= batting_slot <= 9) or isinstance(batting_slot, bool):
         coverage_failures.append(COVERAGE_FAILURE_LINEUP_UNCONFIRMED)
         batting_slot = None
@@ -97,13 +127,12 @@ def mlb_batter_plate_appearances_nb_v1_adapter(
         coverage_failures.append(COVERAGE_FAILURE_LINEUP_UNCONFIRMED)
         team_alignment = None
 
-    prior_pa_log = _parse_prior_pa_log(features.get("prior_pa_log", []))
+    prior_pa_log = _parse_prior_pa_log(prior_raw if prior_raw is not None else [])
     n_prior = len(prior_pa_log)
     if n_prior < 1:
         coverage_failures.append(COVERAGE_FAILURE_ZERO_PRIOR)
 
     prior_mean_pa = (sum(prior_pa_log) / n_prior) if n_prior > 0 else float("nan")
-
     ood_score = 1.0 / (1.0 + n_prior)
 
     if batting_slot is not None and team_alignment is not None:
@@ -155,7 +184,9 @@ def mlb_batter_plate_appearances_nb_v1_adapter(
         training_code_sha=artifact.bundle.training_code_sha,
         training_dataset_hash=artifact.bundle.training_dataset_hash,
         feature_schema_version=artifact.bundle.feature_schema_version,
-        feature_transform_sha=sha256(str(payload.get("feature_transform_version", "")).encode("utf-8")).hexdigest(),
+        feature_transform_sha=sha256(
+            str(payload.get("feature_transform_version", "")).encode("utf-8")
+        ).hexdigest(),
         feature_snapshot_hash=feature_snapshot_hash,
         artifact_checksum=artifact.bundle.artifact_checksum,
         inference_timestamp=datetime.now(timezone.utc).isoformat(),
@@ -164,6 +195,8 @@ def mlb_batter_plate_appearances_nb_v1_adapter(
 
 
 def register() -> None:
-    """Production registration seam -- DO NOT call from startup until the
-    artifact is governance-promoted (see module docstring)."""
-    register_model_family_adapter(MLB_BATTER_PA_MODEL_FAMILY, mlb_batter_plate_appearances_nb_v1_adapter)
+    """Production registration seam for the governance-promoted PA artifact."""
+    register_model_family_adapter(
+        MLB_BATTER_PA_MODEL_FAMILY,
+        mlb_batter_plate_appearances_nb_v1_adapter,
+    )
