@@ -61,7 +61,7 @@ DETAILED PREGAME EVIDENCE
 
 PROP / MLB
 - Prefer POST /score-pick-request for screenshot/PDF/pasted-board/autonomous prop workflows. Backend-certified routes own identity, evidence freeze, fitted inference, calibration, bounds and persistence.
-- Preserve submitted exact prop threshold end-to-end. Another threshold is ADJACENT_LINE only and cannot overwrite request/frozen-evidence line.
+- Preserve submitted exact prop threshold end-to-end. Adjacent sportsbook lines are context only; ADJACENT_LINE cannot overwrite request/frozen-evidence line.
 - MLB pitcher Ks may consume certified opponent_context; do not double-penalize. MLB 1IP exact certified support remains authoritative; unsupported lines preserve deterministic OOD/rejection.
 
 MARKET / CARD / POSTMORTEM
