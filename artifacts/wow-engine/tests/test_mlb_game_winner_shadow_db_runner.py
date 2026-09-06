@@ -6,6 +6,7 @@ import pytest
 
 from v17.mlb_game_winner_shadow_db_runner import (
     _automatic_boundaries,
+    _extract_historical_outcomes,
     _require_shadow_flags,
     _rows_by,
     _iso_datetime,
@@ -27,6 +28,15 @@ def _evidence(day: int) -> EvidenceRow:
     )
 
 
+def _outcome_row(game_key: str, home_win):
+    return {
+        "game_key": game_key,
+        "home_win": home_win,
+        "research_only": True,
+        "can_execute": False,
+    }
+
+
 def test_iso_datetime_normalizes_zulu_to_utc():
     value = _iso_datetime("2026-09-06T18:10:00Z")
     assert value.tzinfo == timezone.utc
@@ -44,6 +54,28 @@ def test_shadow_flags_require_research_only_when_present():
         _require_shadow_flags({"research_only": False, "can_execute": False}, source="x")
     # Grades do not carry research_only in the live schema.
     _require_shadow_flags({"can_execute": False}, source="grade")
+
+
+def test_historical_null_home_win_is_absent_not_false():
+    rows = [
+        _outcome_row("ALS202407160", None),
+        _outcome_row("ALS202407160", True),
+        _outcome_row("GAME2", None),
+        _outcome_row("GAME2", False),
+    ]
+    assert _extract_historical_outcomes(rows) == {
+        "ALS202407160": True,
+        "GAME2": False,
+    }
+
+
+def test_duplicate_non_null_historical_outcome_remains_conflict():
+    rows = [
+        _outcome_row("GAME1", True),
+        _outcome_row("GAME1", True),
+    ]
+    with pytest.raises(EvaluationEvidenceError, match="duplicate_historical_home_win=GAME1"):
+        _extract_historical_outcomes(rows)
 
 
 def test_rows_by_rejects_duplicate_immutable_identity():

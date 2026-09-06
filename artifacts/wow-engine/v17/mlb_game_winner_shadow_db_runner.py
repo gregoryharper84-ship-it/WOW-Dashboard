@@ -93,6 +93,30 @@ def _require_shadow_flags(row: Mapping[str, Any], *, source: str) -> None:
         raise EvaluationEvidenceError(f"GOVERNANCE_RESEARCH_FLAG_INVALID: source={source}")
 
 
+def _extract_historical_outcomes(outcome_rows: Sequence[Mapping[str, Any]]) -> dict[str, bool]:
+    """Return one explicit home outcome per game, preserving SQL NULL semantics.
+
+    The source is a team-row table: exactly one team row per game carries the
+    game-level ``home_win`` value and the paired team row stores NULL. NULL is
+    absence of the game-level label, not False. Multiple non-null labels remain
+    a hard evidence conflict even if they happen to agree.
+    """
+    outcomes: dict[str, bool] = {}
+    for row in outcome_rows:
+        _require_shadow_flags(row, source=HISTORICAL_OUTCOME_TABLE)
+        raw_value = row.get("home_win")
+        if raw_value is None:
+            continue
+        key = str(row["game_key"])
+        value = bool(raw_value)
+        if key in outcomes:
+            if outcomes[key] != value:
+                raise EvaluationEvidenceError(f"MODEL_INPUTS_CONFLICT: historical_home_win={key}")
+            raise EvaluationEvidenceError(f"MODEL_INPUTS_CONFLICT: duplicate_historical_home_win={key}")
+        outcomes[key] = value
+    return outcomes
+
+
 def load_retrospective_rows(db: Any) -> list[EvidenceRow]:
     feature_rows = _paginate(
         db,
@@ -105,14 +129,7 @@ def load_retrospective_rows(db: Any) -> list[EvidenceRow]:
         "game_key,game_date,home_win,research_only,can_execute",
     )
 
-    outcomes: dict[str, bool] = {}
-    for row in outcome_rows:
-        _require_shadow_flags(row, source=HISTORICAL_OUTCOME_TABLE)
-        key = str(row["game_key"])
-        value = bool(row["home_win"])
-        if key in outcomes and outcomes[key] != value:
-            raise EvaluationEvidenceError(f"MODEL_INPUTS_CONFLICT: historical_home_win={key}")
-        outcomes[key] = value
+    outcomes = _extract_historical_outcomes(outcome_rows)
 
     paired: dict[str, dict[str, Mapping[str, Any]]] = {}
     for row in feature_rows:
@@ -364,6 +381,7 @@ __all__ = [
     "HISTORICAL_FEATURE_TABLE",
     "HISTORICAL_OUTCOME_TABLE",
     "REPORT_SCHEMA_VERSION",
+    "_extract_historical_outcomes",
     "load_forward_rows",
     "load_retrospective_rows",
     "log_shadow_evaluation",
