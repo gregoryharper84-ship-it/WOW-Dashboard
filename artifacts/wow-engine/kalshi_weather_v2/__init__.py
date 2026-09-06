@@ -10,6 +10,8 @@ from .models import (
     WeatherEvidenceSnapshot,
 )
 from .orchestrator import evaluate_weather_contract
+from .probability_core import CalibrationProfile, WeatherProbabilityCore
+from .source_adapters import NoaaNceiAdapter, NwsAdapter, OpenMeteoAdapter, ProviderSnapshot, XweatherAdapter
 from .terminal_governor import KalshiWeatherTerminalGovernor
 
 __all__ = [
@@ -23,5 +25,12 @@ __all__ = [
     "WeatherProbabilityAgent",
     "MarketCalibrationAuditor",
     "KalshiWeatherTerminalGovernor",
+    "CalibrationProfile",
+    "WeatherProbabilityCore",
+    "ProviderSnapshot",
+    "NwsAdapter",
+    "OpenMeteoAdapter",
+    "NoaaNceiAdapter",
+    "XweatherAdapter",
     "evaluate_weather_contract",
 ]
