@@ -131,7 +131,10 @@ def evaluate_portfolio_qualification(
         if exp.get("directional_exposure"):
             blockers.append("SESSION_DIRECTIONAL_EXPOSURE")
         if exp.get("exact_duplicate_thesis"):
-            blockers.append("EXACT_THESIS_DUPLICATE_SESSION_EXPOSURE")
+            blockers.extend([
+                "EXACT_THESIS_DUPLICATE_SESSION_EXPOSURE",
+                "DUPLICATE_THESIS_COMMON_HINGE",
+            ])
         elif exp.get("directional_thesis_family_exposure") or externally_flagged:
             blockers.append("DUPLICATE_THESIS_COMMON_HINGE")
         if exp.get("component_composite_overlap"):
