@@ -43,6 +43,17 @@ When screenshots are provided and the user also wants the best slate-wide plays:
 5. present screenshot-origin and autonomous-discovery origin separately;
 6. build the final core from the combined governed pool.
 
+### Mode D — CASH_PROFITABILITY
+Use when the user asks for cash singles, a profitability plan, paid Game Winners, return/ROI optimization, or which governed candidates should actually enter a monetary workflow.
+
+1. Produce the normal governed probability leaderboards first. Do not alter the sporting probabilities.
+2. For every PrizePicks Game Winner candidate considered for cash use, retrieve the exact current gross multiplier and timestamp plus an exact fresh two-way/no-vig reference market.
+3. Run `v17.game_winner_cash_single_gate.evaluate_game_winner_cash_single`.
+4. Include only `cash_single_eligible=true` Game Winner rows in the cash/profitability pool.
+5. A cash rejection does not remove the row from `Best ML Winners`; show the probability result separately when useful.
+6. Run normal structure/exposure governance, final refresh, immutable pregame write, and V17 terminal reduction before publication.
+7. Never substitute a lower-quality Game Winner merely to preserve a requested number of cash singles.
+
 ## Universal V17 rules
 - WOW_BETTING_ENGINE owns player/scalar/prop rows.
 - LLP_TEAM_BETTING_ENGINE owns team/event winner, favorite, underdog, upset, match-winner, and fight-winner rows.
@@ -54,6 +65,8 @@ When screenshots are provided and the user also wants the best slate-wide plays:
 - Missing market price may block value/economics analysis but must not erase completed sporting probability when the backend contract preserves it.
 - Keep `EXACT_LINE`, `ADJACENT_LINE`, and `NO_MARKET` separate.
 - Material research evidence must carry source/as-of provenance and must not use future information unavailable at decision time.
+- Probability-card admission is not cash/profitability admission.
+- For PrizePicks Game Winner cash use, `cash_single_eligible=true` is mandatory. `rank_eligible=true` alone is insufficient.
 - `can_execute=false` always. Never place or approve a wager.
 
 ## Standard final response
@@ -71,8 +84,11 @@ For each official row show team/competitor, opponent, calibrated probability, ca
 ### Best Underdogs/Upsets
 Keep separate from favorites/winners. Do not call a market underdog an upset pick unless the governed sporting probability supports that side.
 
+### Cash-Qualified Game Winners
+Show this section only in `CASH_PROFITABILITY` mode. For each row include exact PrizePicks multiplier, platform break-even probability, exact market no-vig probability, calibrated lower bound, lower-bound platform edge, active safety buffer, lower-bound edge after buffer, freshness, cash gate status, and terminal ceiling. Do not include rows with `cash_single_eligible=false` as cash opportunities.
+
 ### V17 Core
 Return the strongest 3–5 independent plays, or fewer when fewer genuinely qualify. Never add filler to hit a quota.
 
 ## Diagnostic appendix
-Unsupported or incomplete candidates may be summarized separately with exact typed statuses such as `MODEL_UNAVAILABLE`, `MODEL_INPUTS_INSUFFICIENT`, `MODEL_SCORER_FAILED`, `MODEL_OUTPUT_INVALID`, OOD/rejection, or acquisition blockers. They must never be mixed into the official ranked leaderboard.
+Unsupported or incomplete candidates may be summarized separately with exact typed statuses such as `MODEL_UNAVAILABLE`, `MODEL_INPUTS_INSUFFICIENT`, `MODEL_SCORER_FAILED`, `MODEL_OUTPUT_INVALID`, OOD/rejection, acquisition blockers, `REJECT_NO_EDGE`, or unresolved cash-promotion evidence. They must never be mixed into the official qualified cash pool.
