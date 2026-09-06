@@ -1,20 +1,22 @@
-"""Chronological/OOS evaluation harness for the V17 MLB Game Winner shadow challenger.
+"""Chronological/OOS evaluation for the V17 MLB Game Winner shadow challenger.
 
-This module evaluates sporting probabilities only.  It never changes Game Winner
-admission, NO_PICK thresholds, cash/value gates, portfolio rules, serving state,
-or the terminal reducer.  Promotion remains a separate governed action.
+The evaluator is research/shadow only.  It does not change Game Winner admission,
+NO_PICK thresholds, cash/value gates, portfolio rules, serving state, or the V17
+terminal reducer.
 
-The evaluator deliberately distinguishes two evidence classes:
+The historical/forward bridge is intentionally built from the exact 38-column
+side-feature contract shared by:
+- wow_mlb_v2a_run_features_2024 / 2025, and
+- wow_mlb_forward_feature_snapshots.
 
-* RETROSPECTIVE_PRE_GAME_FEATURE_CONTRACT: historical rows built only from
-  information available before each game, but without immutable timestamped
-  forward provenance.  These rows may train/calibrate and provide diagnostics.
-* TIMESTAMPED_PREGAME: frozen forward rows whose feature/prediction timestamp is
-  earlier than event start and whose outcome timestamp is at/after event start.
-  Only this class can satisfy the pristine forward-shadow evidence requirement.
+That matters because the older 36-column V2A *game* vector used different rolling
+availability semantics (for example capped team/starter history counts).  Mapping
+uncapped 2026 forward side snapshots into that older contract creates severe OOD
+feature drift.  This module therefore pairs HOME/AWAY side rows under the shared
+run-feature schema and derives a new, explicit home-relative game vector.
 
-No sportsbook price, no-vig probability, PrizePicks payout/multiplier, CLV, or
-postgame field is accepted as a sporting-model feature.
+No sportsbook, no-vig, payout, CLV, or postgame field may enter the sporting
+feature vector.  Promotion is evidence-only here and is never automatic.
 """
 from __future__ import annotations
 
@@ -38,90 +40,99 @@ TIMESTAMPED_PREGAME_PROVENANCE = "TIMESTAMPED_PREGAME"
 SERVING_MODE = "SHADOW_ONLY"
 AUTOMATIC_PROMOTION = False
 CAN_EXECUTE = False
+PAIRED_RUN_GAME_FEATURE_SCHEMA_VERSION = "MLB_GAME_WIN_PAIRED_RUN_FEATURES_V1"
 
-# Exact 36-feature historical V2A game-vector contract already present in the
-# validation database.  This is intentionally separate from the richer MSD tail
-# contract; missing MSD tail history is not silently invented or back-filled
-# from market information.
-HISTORICAL_V2A_FEATURES = (
-    "runs_pg_diff",
-    "hits_pg_diff",
-    "hr_pg_diff",
-    "bb_pg_diff",
-    "so_pg_diff",
-    "tb_pg_diff",
-    "runs_allowed_pg_diff",
-    "run_diff_pg_diff",
-    "errors_pg_diff",
-    "sb_pg_diff",
-    "cs_pg_diff",
-    "win_rate_diff",
-    "bp_era_diff",
-    "bp_k_rate_diff",
-    "bp_bb_rate_diff",
-    "bp_hr_rate_diff",
-    "bp_pitches_3d_diff",
-    "bp_outs_3d_diff",
-    "bp_apps_3d_diff",
-    "starter_prior_starts_diff",
-    "starter_era_diff",
-    "starter_k_rate_diff",
-    "starter_bb_rate_diff",
-    "starter_h_rate_diff",
-    "starter_hr_rate_diff",
-    "starter_outs_per_start_diff",
-    "starter_tbf_per_start_diff",
-    "starter_pitches_per_start_diff",
-    "starter_strike_rate_diff",
-    "starter_days_rest_diff",
-    "starter_pitches_last3_diff",
+RUN_SIDE_FEATURES = (
+    "is_home",
+    "off_runs_pg",
+    "off_hits_pg",
+    "off_hr_pg",
+    "off_bb_pg",
+    "off_so_pg",
+    "off_tb_pg",
+    "off_run_diff_pg",
+    "off_win_rate",
+    "off_sb_pg",
+    "off_cs_pg",
+    "off_days_rest",
+    "opp_runs_allowed_pg",
+    "opp_errors_pg",
+    "opp_win_rate",
+    "opp_bp_era",
+    "opp_bp_k_rate",
+    "opp_bp_bb_rate",
+    "opp_bp_hr_rate",
+    "opp_bp_pitches_3d",
+    "opp_bp_outs_3d",
+    "opp_bp_apps_3d",
+    "opp_starter_prior_starts",
+    "opp_starter_era",
+    "opp_starter_k_rate",
+    "opp_starter_bb_rate",
+    "opp_starter_h_rate",
+    "opp_starter_hr_rate",
+    "opp_starter_outs_per_start",
+    "opp_starter_tbf_per_start",
+    "opp_starter_pitches_per_start",
+    "opp_starter_strike_rate",
+    "opp_starter_days_rest",
+    "opp_starter_pitches_last3",
     "park_total_runs_prior",
     "park_prior_games",
-    "team_rest_diff",
-    "starter_min_prior_starts",
-    "team_min_prior_games",
+    "opp_days_rest",
+    "min_team_prior_games",
 )
 
-# Forward side snapshots are stored from the scoring-team perspective.  Offense
-# fields therefore subtract home-away directly, while opponent/starter/bullpen
-# fields reverse sides so the historical game-vector semantics remain
-# home-minus-away.
-_FORWARD_OFFENSE_MAP = {
-    "runs_pg_diff": "off_runs_pg",
-    "hits_pg_diff": "off_hits_pg",
-    "hr_pg_diff": "off_hr_pg",
-    "bb_pg_diff": "off_bb_pg",
-    "so_pg_diff": "off_so_pg",
-    "tb_pg_diff": "off_tb_pg",
-    "run_diff_pg_diff": "off_run_diff_pg",
-    "sb_pg_diff": "off_sb_pg",
-    "cs_pg_diff": "off_cs_pg",
-    "win_rate_diff": "off_win_rate",
-    "team_rest_diff": "off_days_rest",
-}
-_FORWARD_REVERSED_OPPONENT_MAP = {
-    "runs_allowed_pg_diff": "opp_runs_allowed_pg",
-    "errors_pg_diff": "opp_errors_pg",
-    "bp_era_diff": "opp_bp_era",
-    "bp_k_rate_diff": "opp_bp_k_rate",
-    "bp_bb_rate_diff": "opp_bp_bb_rate",
-    "bp_hr_rate_diff": "opp_bp_hr_rate",
-    "bp_pitches_3d_diff": "opp_bp_pitches_3d",
-    "bp_outs_3d_diff": "opp_bp_outs_3d",
-    "bp_apps_3d_diff": "opp_bp_apps_3d",
-    "starter_prior_starts_diff": "opp_starter_prior_starts",
-    "starter_era_diff": "opp_starter_era",
-    "starter_k_rate_diff": "opp_starter_k_rate",
-    "starter_bb_rate_diff": "opp_starter_bb_rate",
-    "starter_h_rate_diff": "opp_starter_h_rate",
-    "starter_hr_rate_diff": "opp_starter_hr_rate",
-    "starter_outs_per_start_diff": "opp_starter_outs_per_start",
-    "starter_tbf_per_start_diff": "opp_starter_tbf_per_start",
-    "starter_pitches_per_start_diff": "opp_starter_pitches_per_start",
-    "starter_strike_rate_diff": "opp_starter_strike_rate",
-    "starter_days_rest_diff": "opp_starter_days_rest",
-    "starter_pitches_last3_diff": "opp_starter_pitches_last3",
-}
+# These are scoring-team features on each side row, so HOME-AWAY is direct.
+_DIRECT_SIDE_FEATURES = (
+    "off_runs_pg",
+    "off_hits_pg",
+    "off_hr_pg",
+    "off_bb_pg",
+    "off_so_pg",
+    "off_tb_pg",
+    "off_run_diff_pg",
+    "off_win_rate",
+    "off_sb_pg",
+    "off_cs_pg",
+    "off_days_rest",
+)
+
+# These describe the opponent of the scoring team.  The AWAY scoring row holds
+# HOME pitching/defense state, so the subtraction is reversed to preserve
+# HOME-entity minus AWAY-entity semantics.
+_REVERSED_OPPONENT_FEATURES = (
+    "opp_runs_allowed_pg",
+    "opp_errors_pg",
+    "opp_bp_era",
+    "opp_bp_k_rate",
+    "opp_bp_bb_rate",
+    "opp_bp_hr_rate",
+    "opp_bp_pitches_3d",
+    "opp_bp_outs_3d",
+    "opp_bp_apps_3d",
+    "opp_starter_prior_starts",
+    "opp_starter_era",
+    "opp_starter_k_rate",
+    "opp_starter_bb_rate",
+    "opp_starter_h_rate",
+    "opp_starter_hr_rate",
+    "opp_starter_outs_per_start",
+    "opp_starter_tbf_per_start",
+    "opp_starter_pitches_per_start",
+    "opp_starter_strike_rate",
+    "opp_starter_days_rest",
+    "opp_starter_pitches_last3",
+)
+
+# opp_win_rate and opp_days_rest are exact mirrors of off_win_rate/off_days_rest
+# in a correctly paired game and are intentionally omitted to avoid duplicate
+# columns.  is_home is also omitted because it is constant after pairing.
+PAIRED_RUN_GAME_FEATURES = tuple(
+    [f"{name}_home_minus_away" for name in _DIRECT_SIDE_FEATURES]
+    + [f"{name}_home_entity_minus_away_entity" for name in _REVERSED_OPPONENT_FEATURES]
+    + ["park_total_runs_prior", "park_prior_games", "min_team_prior_games"]
+)
 
 
 @dataclass(frozen=True)
@@ -163,102 +174,72 @@ def _vector_mapping(feature_names: Sequence[str], feature_vector: Sequence[Any])
     audit_feature_names(feature_names)
     if len(feature_names) != len(feature_vector):
         raise EvaluationEvidenceError("MODEL_INPUTS_INSUFFICIENT: feature_vector_length_mismatch")
-    return {
+    mapping = {
         str(name): _finite(value, field=str(name))
         for name, value in zip(feature_names, feature_vector)
     }
-
-
-def materialize_historical_game_features(
-    feature_names: Sequence[str], feature_vector: Sequence[Any]
-) -> dict[str, float]:
-    """Materialize the exact pre-existing 36-feature historical game contract."""
-    source = _vector_mapping(feature_names, feature_vector)
-    missing = [name for name in HISTORICAL_V2A_FEATURES if name not in source]
+    missing = [name for name in RUN_SIDE_FEATURES if name not in mapping]
     if missing:
         raise EvaluationEvidenceError(
-            "MODEL_INPUTS_INSUFFICIENT: historical_features_missing=" + ",".join(missing)
+            "MODEL_INPUTS_INSUFFICIENT: run_side_features_missing=" + ",".join(missing)
         )
-    return {name: source[name] for name in HISTORICAL_V2A_FEATURES}
+    return mapping
 
 
 def _shared_context(home: Mapping[str, float], away: Mapping[str, float], name: str) -> float:
-    h = home.get(name)
-    a = away.get(name)
-    if h is None and a is None:
-        raise EvaluationEvidenceError(f"MODEL_INPUTS_INSUFFICIENT: forward_feature_missing={name}")
-    if h is None:
-        return float(a)
-    if a is None:
-        return float(h)
-    # These are venue-level features and should be identical on both side rows.
-    # A disagreement is evidence corruption, not a reason to average silently.
-    if abs(float(h) - float(a)) > 1e-9:
+    h = home[name]
+    a = away[name]
+    if abs(h - a) > 1e-9:
         raise EvaluationEvidenceError(f"MODEL_INPUTS_CONFLICT: shared_context_mismatch={name}")
-    return float(h)
+    return h
 
 
-def materialize_forward_game_features(
+def materialize_paired_run_game_features(
     home_feature_names: Sequence[str],
     home_feature_vector: Sequence[Any],
     away_feature_names: Sequence[str],
     away_feature_vector: Sequence[Any],
 ) -> dict[str, float]:
-    """Convert two frozen side snapshots to the historical home-minus-away vector.
-
-    This function does not synthesize the richer MSD tail features.  It preserves
-    exact semantics for the historical/forward overlap so challenger evidence can
-    be accumulated without pretending unsupported tail measurements exist.
-    """
+    """Pair exact historical/forward side vectors into one home-relative row."""
     home = _vector_mapping(home_feature_names, home_feature_vector)
     away = _vector_mapping(away_feature_names, away_feature_vector)
+
+    # Side identity is part of the source contract and must agree with the pair.
+    if not home["is_home"] >= 0.5 or not away["is_home"] < 0.5:
+        raise EvaluationEvidenceError("MODEL_INPUTS_CONFLICT: home_away_side_identity_mismatch")
+
     result: dict[str, float] = {}
-
-    for output_name, source_name in _FORWARD_OFFENSE_MAP.items():
-        if source_name not in home or source_name not in away:
-            raise EvaluationEvidenceError(
-                f"MODEL_INPUTS_INSUFFICIENT: forward_feature_missing={source_name}"
-            )
-        result[output_name] = home[source_name] - away[source_name]
-
-    # Each scoring-side row contains opponent pitching/defense state.  The away
-    # scoring row therefore contains the HOME starter/bullpen/defense state.
-    for output_name, source_name in _FORWARD_REVERSED_OPPONENT_MAP.items():
-        if source_name not in home or source_name not in away:
-            raise EvaluationEvidenceError(
-                f"MODEL_INPUTS_INSUFFICIENT: forward_feature_missing={source_name}"
-            )
-        result[output_name] = away[source_name] - home[source_name]
+    for name in _DIRECT_SIDE_FEATURES:
+        result[f"{name}_home_minus_away"] = home[name] - away[name]
+    for name in _REVERSED_OPPONENT_FEATURES:
+        result[f"{name}_home_entity_minus_away_entity"] = away[name] - home[name]
 
     result["park_total_runs_prior"] = _shared_context(home, away, "park_total_runs_prior")
     result["park_prior_games"] = _shared_context(home, away, "park_prior_games")
+    result["min_team_prior_games"] = _shared_context(home, away, "min_team_prior_games")
 
-    starter_key = "opp_starter_prior_starts"
-    if starter_key not in home or starter_key not in away:
-        raise EvaluationEvidenceError(
-            f"MODEL_INPUTS_INSUFFICIENT: forward_feature_missing={starter_key}"
-        )
-    result["starter_min_prior_starts"] = min(home[starter_key], away[starter_key])
+    if tuple(result) != PAIRED_RUN_GAME_FEATURES:
+        raise EvaluationEvidenceError("MODEL_OUTPUT_INVALID: paired_feature_order_mismatch")
+    audit_feature_names(tuple(result))
+    return result
 
-    team_key = "min_team_prior_games"
-    if team_key not in home or team_key not in away:
-        raise EvaluationEvidenceError(
-            f"MODEL_INPUTS_INSUFFICIENT: forward_feature_missing={team_key}"
-        )
-    result["team_min_prior_games"] = min(home[team_key], away[team_key])
 
-    missing = [name for name in HISTORICAL_V2A_FEATURES if name not in result]
-    if missing:
-        raise EvaluationEvidenceError(
-            "MODEL_INPUTS_INSUFFICIENT: materialized_features_missing=" + ",".join(missing)
-        )
-    return {name: result[name] for name in HISTORICAL_V2A_FEATURES}
+# Clear aliases: both historical run rows and frozen forward rows use the exact
+# same source schema; only the provenance wrapper differs.
+materialize_historical_run_pair = materialize_paired_run_game_features
+materialize_forward_run_pair = materialize_paired_run_game_features
 
 
 def validate_evidence_row(row: EvidenceRow) -> None:
     if not row.event_id:
         raise EvaluationEvidenceError("MODEL_INPUTS_INSUFFICIENT: missing_event_id")
     audit_feature_names(tuple(row.feature_row.keys()))
+    missing = [name for name in PAIRED_RUN_GAME_FEATURES if name not in row.feature_row]
+    if missing:
+        raise EvaluationEvidenceError(
+            "MODEL_INPUTS_INSUFFICIENT: paired_game_features_missing=" + ",".join(missing)
+        )
+
     if row.provenance_status == TIMESTAMPED_PREGAME_PROVENANCE:
         if row.feature_timestamp is None or row.outcome_timestamp is None:
             raise EvaluationEvidenceError("TEMPORAL_PROVENANCE_INSUFFICIENT: timestamps_required")
@@ -283,7 +264,7 @@ def chronological_split(
     train_end: datetime,
     calibration_end: datetime,
 ) -> ChronologicalSplit:
-    """Create a strict chronological train/calibration/holdout partition."""
+    """Create strict chronological train/calibration/holdout partitions."""
     if not train_end < calibration_end:
         raise EvaluationEvidenceError("MODEL_INPUTS_INSUFFICIENT: invalid_chronological_boundaries")
     if not rows:
@@ -298,9 +279,7 @@ def chronological_split(
         seen.add(row.event_id)
 
     train = tuple(row for row in ordered if row.event_start_time <= train_end)
-    calibration = tuple(
-        row for row in ordered if train_end < row.event_start_time <= calibration_end
-    )
+    calibration = tuple(row for row in ordered if train_end < row.event_start_time <= calibration_end)
     holdout = tuple(row for row in ordered if row.event_start_time > calibration_end)
     if not train or not calibration or not holdout:
         raise EvaluationEvidenceError("INSUFFICIENT_OOS_EVIDENCE: empty_chronological_partition")
@@ -333,36 +312,34 @@ def _assert_minimum_evidence(
 def evaluate_retrospective_challenger(
     split: ChronologicalSplit,
     *,
-    feature_names: Sequence[str] = HISTORICAL_V2A_FEATURES,
     min_train: int = 1000,
     min_calibration: int = 250,
     min_holdout: int = 250,
     bootstrap_models: int = 48,
     seed: int = 1706,
 ) -> dict[str, Any]:
-    """Fit/calibrate chronologically and evaluate the untouched holdout.
-
-    The returned promotion field is evidence state only.  It cannot promote the
-    challenger, change serving mode, or alter any pick/cash gate.
-    """
+    """Fit/calibrate chronologically and evaluate only the untouched holdout."""
     _assert_minimum_evidence(
         split,
         min_train=min_train,
         min_calibration=min_calibration,
         min_holdout=min_holdout,
     )
-    names = tuple(feature_names)
-    audit_feature_names(names)
 
     artifact = fit_shadow_challenger(
         [row.feature_row for row in split.train],
         [row.home_win for row in split.train],
         [row.feature_row for row in split.calibration],
         [row.home_win for row in split.calibration],
-        feature_names=names,
+        feature_names=PAIRED_RUN_GAME_FEATURES,
         bootstrap_models=bootstrap_models,
         seed=seed,
     )
+    # The base fitter permits research feature sets.  Make the evidence schema
+    # explicit on the research artifact rather than falsely claiming the richer
+    # default tail schema.
+    artifact.feature_schema_version = PAIRED_RUN_GAME_FEATURE_SCHEMA_VERSION
+
     predictions = predict_shadow(artifact, [row.feature_row for row in split.holdout])
     challenger_p = [prediction.home_probability_calibrated for prediction in predictions]
     y = [row.home_win for row in split.holdout]
@@ -378,6 +355,7 @@ def evaluate_retrospective_challenger(
         )
 
     return {
+        "feature_schema_version": PAIRED_RUN_GAME_FEATURE_SCHEMA_VERSION,
         "training_n": len(split.train),
         "calibration_n": len(split.calibration),
         "holdout_n": len(split.holdout),
@@ -408,6 +386,7 @@ def evaluate_forward_shadow(
         raise EvaluationEvidenceError(
             f"INSUFFICIENT_OOS_EVIDENCE: forward={len(rows)}/{int(min_forward)}"
         )
+
     event_ids: set[str] = set()
     for row in rows:
         validate_evidence_row(row)
@@ -430,11 +409,10 @@ def evaluate_forward_shadow(
     metrics_pass = bool(comparison["calibration_first_metrics_pass"])
     return {
         **comparison,
+        "feature_schema_version": PAIRED_RUN_GAME_FEATURE_SCHEMA_VERSION,
         "forward_n": len(rows),
         "pristine_forward_evidence_status": "FORWARD_OOS_COMPLETE",
-        "promotion_evidence_status": (
-            "SHADOW_REVIEW_REQUIRED" if metrics_pass else "SHADOW_CONTINUE"
-        ),
+        "promotion_evidence_status": "SHADOW_REVIEW_REQUIRED" if metrics_pass else "SHADOW_CONTINUE",
         "serving_mode": SERVING_MODE,
         "automatic_promotion": AUTOMATIC_PROMOTION,
         "admission_policy_mutated": False,
@@ -450,14 +428,17 @@ __all__ = [
     "ChronologicalSplit",
     "EvaluationEvidenceError",
     "EvidenceRow",
-    "HISTORICAL_V2A_FEATURES",
+    "PAIRED_RUN_GAME_FEATURES",
+    "PAIRED_RUN_GAME_FEATURE_SCHEMA_VERSION",
     "RETROSPECTIVE_PROVENANCE",
+    "RUN_SIDE_FEATURES",
     "SERVING_MODE",
     "TIMESTAMPED_PREGAME_PROVENANCE",
     "chronological_split",
     "evaluate_forward_shadow",
     "evaluate_retrospective_challenger",
-    "materialize_forward_game_features",
-    "materialize_historical_game_features",
+    "materialize_forward_run_pair",
+    "materialize_historical_run_pair",
+    "materialize_paired_run_game_features",
     "validate_evidence_row",
 ]
