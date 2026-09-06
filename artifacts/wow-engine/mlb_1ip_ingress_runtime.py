@@ -29,6 +29,28 @@ REFRESH_DELAY_SECONDS = 300
 MLB_1IP_STAT_TYPE = "1ST_INNING_PITCHES_THROWN"
 
 
+def _market_evidence_snapshot(row: Any) -> dict[str, Any]:
+    """Preserve caller market context inside the existing JSONB queue payload."""
+    return {
+        "money_lane_status": str(getattr(row, "money_lane_status", None) or "PAYOUT_UNRESOLVED"),
+        "market_side_a": getattr(row, "market_side_a", None),
+        "market_side_b": getattr(row, "market_side_b", None),
+    }
+
+
+def _market_evidence_present(row: Any) -> bool:
+    status = str(getattr(row, "money_lane_status", None) or "").strip().upper()
+    if status not in {"", "PAYOUT_UNRESOLVED"}:
+        return True
+    return any(
+        isinstance(side, dict) and bool(side)
+        for side in (
+            getattr(row, "market_side_a", None),
+            getattr(row, "market_side_b", None),
+        )
+    )
+
+
 def _acquisition_failure(
     *,
     row_key: str,
@@ -66,6 +88,10 @@ def _queue_provisional_refresh(
     market_api: Any,
 ) -> dict[str, Any]:
     now = datetime.now(timezone.utc)
+    provisional_evidence = {
+        **lineup_evidence,
+        "_market_evidence": _market_evidence_snapshot(row),
+    }
     payload = {
         "row_key": row_key,
         "request_id": request_id,
@@ -84,7 +110,7 @@ def _queue_provisional_refresh(
         "last_refresh_at": None,
         "next_refresh_at": (now + timedelta(seconds=REFRESH_DELAY_SECONDS)).isoformat(),
         "refresh_attempts": 0,
-        "provisional_evidence": lineup_evidence,
+        "provisional_evidence": provisional_evidence,
         "refreshed_evidence": None,
         "rerun_result": None,
         "rerun_completed_at": None,
@@ -287,8 +313,7 @@ def score_mlb_1ip_ingress(
         return artifact_failure
     assert artifact is not None
 
-    money_lane_status = str(row.money_lane_status or "").strip().upper()
-    market_evidence_present = money_lane_status not in {"", "PAYOUT_UNRESOLVED"}
+    market_evidence_present = _market_evidence_present(row)
 
     try:
         result = score_mlb_1ip_empirical(
@@ -354,6 +379,22 @@ def score_mlb_1ip_ingress(
         blockers=result["blockers"],
         model_evaluated=True,
     )
+    probability_rank_eligible = bool(
+        result.get("probability_rank_eligible", result.get("rank_eligible", False))
+    )
+    if result.get("final_refresh_required") is True:
+        value_qualification_status = "PENDING_FINAL_REFRESH"
+    elif not result.get("model_qualified"):
+        value_qualification_status = "NOT_ELIGIBLE_MODEL_NOT_QUALIFIED"
+    elif not result.get("downstream_money_evaluation_allowed"):
+        value_qualification_status = "NOT_ELIGIBLE_PRECALIBRATION"
+    elif not market_evidence_present:
+        value_qualification_status = "PENDING_EXACT_PRICE"
+    elif str(row.money_lane_status or "").strip().upper() in {"", "PAYOUT_UNRESOLVED"}:
+        value_qualification_status = "PENDING_PAYOUT"
+    else:
+        value_qualification_status = "READY_FOR_VALUE_EVALUATION"
+
     return {
         "row_key": row_key,
         "terminal_status": "REJECTED" if decision.pick_rejected else "COMPLETED",
@@ -363,11 +404,16 @@ def score_mlb_1ip_ingress(
         "final_refresh_required": result["final_refresh_required"],
         "refresh_queue": refresh_queue,
         "model_evaluated": True,
+        "model_supported": bool(result.get("model_supported", True)),
+        "model_qualified": bool(result.get("model_qualified", False)),
+        "rank_eligible": probability_rank_eligible,
+        "probability_rank_eligible": probability_rank_eligible,
+        "value_qualification_status": value_qualification_status,
         "pick_rejected": decision.pick_rejected,
         "verdict_class": decision.verdict_class,
         "infrastructure_blocked": decision.infrastructure_blocked,
         "acquisition": acquisition,
         "result": result,
-        "probability_publishable": False,
+        "probability_publishable": bool(result.get("probability_publishable", False)),
         "can_execute": False,
     }

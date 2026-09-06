@@ -86,6 +86,8 @@ def _row(evidence=None):
         source_type="NORMALIZED",
         platform=None,
         money_lane_status="PAYOUT_UNRESOLVED",
+        market_side_a=None,
+        market_side_b=None,
         evidence=evidence,
     )
 
@@ -163,7 +165,9 @@ def test_no_caller_evidence_auto_hydrates_then_runs_research_before_specialist(m
     assert out["result"]["model_family"] == "MLB_1IP_CONDITIONAL_TOTAL_PITCH_PMF_V1"
     assert out["final_refresh_required"] is False
     assert out["refresh_queue"]["status"] == "NOT_REQUIRED"
-    assert out["probability_publishable"] is False
+    assert out["probability_publishable"] is True
+    assert out["value_qualification_status"] == "PENDING_EXACT_PRICE"
+    assert "MARKET_DATA_UNAVAILABLE" in out["result"]["blockers"]
     assert out["can_execute"] is False
 
 

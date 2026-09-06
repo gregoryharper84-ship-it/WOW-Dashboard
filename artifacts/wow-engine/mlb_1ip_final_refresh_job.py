@@ -41,13 +41,33 @@ def _resolve_artifact(client: Any) -> dict[str, Any]:
     return payload
 
 
+def _market_evidence_present(row: dict[str, Any]) -> bool:
+    """Recover market evidence captured at initial ingress without a schema change."""
+    status = str(row.get("money_lane_status") or "").strip().upper()
+    if status not in {"", "PAYOUT_UNRESOLVED"}:
+        return True
+
+    provisional = row.get("provisional_evidence")
+    if not isinstance(provisional, dict):
+        return False
+    market = provisional.get("_market_evidence")
+    if not isinstance(market, dict):
+        return False
+    nested_status = str(market.get("money_lane_status") or "").strip().upper()
+    if nested_status not in {"", "PAYOUT_UNRESOLVED"}:
+        return True
+    return any(
+        isinstance(side, dict) and bool(side)
+        for side in (market.get("market_side_a"), market.get("market_side_b"))
+    )
+
+
 def _rerun(
     row: dict[str, Any],
     evidence: dict[str, Any],
     artifact_record: dict[str, Any],
 ) -> dict[str, Any]:
     """Pure rerun helper: caller supplies the already-resolved artifact."""
-    money_lane_status = str(row.get("money_lane_status") or "PAYOUT_UNRESOLVED").upper()
     return score_mlb_1ip_empirical(
         artifact_record=artifact_record,
         starter_status=evidence.get("starter_status", ""),
@@ -56,7 +76,7 @@ def _rerun(
         line_value=float(row["line"]),
         side=str(row["direction"]),
         failure_path_prior=evidence.get("failure_path_prior"),
-        market_evidence_present=money_lane_status not in {"", "PAYOUT_UNRESOLVED"},
+        market_evidence_present=_market_evidence_present(row),
     )
 
 
@@ -133,6 +153,7 @@ def run_once(*, client: Any | None = None, now: datetime | None = None, hydrator
                         "rerun_result": rerun,
                         "rerun_completed_at": ts.isoformat(),
                         "terminal_label": rerun.get("terminal_label"),
+                        "probability_publishable": bool(rerun.get("probability_publishable", False)),
                         "last_error_code": None,
                     })
                     counters["rerun_completed"] += 1

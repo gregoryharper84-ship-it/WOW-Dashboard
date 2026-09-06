@@ -170,9 +170,14 @@ def test_confirmed_refresh_executes_same_empirical_artifact_specialist():
     assert result["model_family"] == "MLB_1IP_CONDITIONAL_TOTAL_PITCH_PMF_V1"
     assert result["model_artifact_version"] == "MLB_1IP_TEST_ARTIFACT_V1"
     assert result["calibration_method"] == "MLB_1IP_EMPIRICAL_TEMPORAL_CAL_V1"
+    assert result["calibration_status"] == "PASS"
     assert result["certified_supported_lines"] == VALIDATED_LINES
     assert result["calibrated_probability_lower_bound"] <= result["calibrated_probability"]
     assert result["terminal_label"] == "MODEL_QUALIFIED_HOLD"
     assert result["final_refresh_required"] is False
-    assert result["probability_publishable"] is False
+    # V17 separates the governed sporting probability from the downstream
+    # payout/value lane. An unresolved payout cannot erase a completed,
+    # confirmed, certified sporting probability.
+    assert result["probability_publishable"] is True
+    assert "MARKET_DATA_UNAVAILABLE" in result["blockers"]
     assert result["can_execute"] is False

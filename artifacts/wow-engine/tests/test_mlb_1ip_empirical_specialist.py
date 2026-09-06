@@ -54,9 +54,12 @@ def test_official_lineup_empirical_specialist_returns_probability_package():
     assert result["calibrated_probability_lower_bound"] <= result["calibrated_probability"]
     assert result["calibrated_probability_upper_bound"] >= result["calibrated_probability"]
     assert result["calibration_method"] == "MLB_1IP_EMPIRICAL_TEMPORAL_CAL_V1"
+    assert result["calibration_status"] == "PASS"
     assert result["certified_supported_lines"] == VALIDATED_LINES
     assert result["final_refresh_required"] is False
-    assert result["probability_publishable"] is False
+    # Confirmed, certified 1IP sporting probabilities are publishable under V17;
+    # market/value qualification remains a separate downstream concern.
+    assert result["probability_publishable"] is True
     assert result["can_execute"] is False
 
 
