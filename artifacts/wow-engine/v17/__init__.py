@@ -16,6 +16,12 @@ def get_certified_numerical_registry():
     return DEFAULT_NUMERICAL_REGISTRY
 
 
+def evaluate_game_winner_cash_single(*args, **kwargs):
+    """Lazy public entrypoint for the downstream PrizePicks Game Winner cash gate."""
+    from v17.game_winner_cash_single_gate import evaluate_game_winner_cash_single as _evaluate
+    return _evaluate(*args, **kwargs)
+
+
 def compose_active_runtime() -> bool:
     if os.getenv("WOW_V17_ACTIVE", "0") != "1":
         return False
@@ -44,4 +50,8 @@ def compose_active_runtime() -> bool:
 compose_active_runtime()
 
 
-__all__ = ["compose_active_runtime", "get_certified_numerical_registry"]
+__all__ = [
+    "compose_active_runtime",
+    "evaluate_game_winner_cash_single",
+    "get_certified_numerical_registry",
+]

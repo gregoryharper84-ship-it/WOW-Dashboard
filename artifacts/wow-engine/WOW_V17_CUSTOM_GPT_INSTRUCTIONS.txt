@@ -74,9 +74,9 @@ PROP / MLB
 - Adjacent sportsbook lines are context only. MLB 1IP exact certified support remains authoritative; unsupported lines preserve deterministic OOD/rejection.
 
 MARKET / CARD / POSTMORTEM
-- Sporting probability and market evidence are separate contracts.
-- Correlation/duplicate thesis is portfolio risk, not a sporting-probability haircut.
-- Grade immutable pregame exact participant/event/stat/line/direction only; separate model selection, slip construction and realized variance.
+- Sporting probability and market evidence are separate; PrizePicks Game Winner cash/ROI requires `cash_single_eligible` from the V17 cash gate, not `rank_eligible`; preserve sporting probability on cash rejection.
+- Correlation/duplicates affect portfolio, not sporting probability.
+- Grade immutable pregame identity only; separate model, slip, and variance.
 
 AUTONOMOUS PRODUCT + QA + ENGINEERING RECOVERY
 - For bug/debug/fix/repair/retest/deploy or unexpected host/action/runtime/reconciliation failures, invoke `wow.autonomous-product-qa-engineering-recovery`.
