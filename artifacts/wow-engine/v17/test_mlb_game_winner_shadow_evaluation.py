@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 
 import numpy as np
 
+from v17.mlb_game_winner_shadow_challenger import ShadowChallengerError
 from v17.mlb_game_winner_shadow_evaluation import (
     AUTOMATIC_PROMOTION,
     CAN_EXECUTE,
@@ -82,18 +83,18 @@ class GameWinnerShadowEvaluationTests(unittest.TestCase):
             off_runs_pg=5.2,
             off_hits_pg=9.0,
             off_days_rest=2.0,
-            opp_runs_allowed_pg=4.1,  # away team state
-            opp_bp_era=4.5,           # away bullpen
-            opp_starter_era=4.2,      # away starter
+            opp_runs_allowed_pg=4.1,
+            opp_bp_era=4.5,
+            opp_starter_era=4.2,
         )
         away = side_vector(
             is_home=False,
             off_runs_pg=4.4,
             off_hits_pg=7.5,
             off_days_rest=1.0,
-            opp_runs_allowed_pg=3.7,  # home team state
-            opp_bp_era=3.6,           # home bullpen
-            opp_starter_era=3.3,      # home starter
+            opp_runs_allowed_pg=3.7,
+            opp_bp_era=3.6,
+            opp_starter_era=3.3,
         )
         row = materialize_paired_run_game_features(RUN_SIDE_FEATURES, home, RUN_SIDE_FEATURES, away)
         self.assertEqual(tuple(row), PAIRED_RUN_GAME_FEATURES)
@@ -127,7 +128,7 @@ class GameWinnerShadowEvaluationTests(unittest.TestCase):
         names = list(RUN_SIDE_FEATURES) + ["sportsbook_implied_probability"]
         home = side_vector(is_home=True) + [0.55]
         away = side_vector(is_home=False) + [0.45]
-        with self.assertRaisesRegex(EvaluationEvidenceError, "GOVERNANCE_MARKET_LEAKAGE"):
+        with self.assertRaisesRegex(ShadowChallengerError, "GOVERNANCE_MARKET_LEAKAGE"):
             materialize_paired_run_game_features(names, home, names, away)
 
     def test_timestamped_forward_row_rejects_postgame_feature_capture(self):
