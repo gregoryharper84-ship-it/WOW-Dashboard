@@ -37,14 +37,28 @@ class ContractSettlementAgent:
             if not isinstance(value, str) or not value.strip():
                 blockers.append(f"CONTRACT_FIELD_MISSING:{field_name}")
 
-        if contract.lane in {"DAILY_HIGH_TEMPERATURE", "DAILY_LOW_TEMPERATURE", "HOURLY_TEMPERATURE"}:
+        location_type = (contract.settlement_location_type or "").strip().upper()
+        if location_type == "STATION":
             if not contract.settlement_station_id or not contract.settlement_station_name:
                 blockers.append("SETTLEMENT_STATION_UNRESOLVED")
+        elif location_type == "COORDINATE":
+            if contract.settlement_latitude is None or contract.settlement_longitude is None:
+                blockers.append("SETTLEMENT_COORDINATE_UNRESOLVED")
+            else:
+                if not (-90.0 <= float(contract.settlement_latitude) <= 90.0):
+                    blockers.append("SETTLEMENT_LATITUDE_INVALID")
+                if not (-180.0 <= float(contract.settlement_longitude) <= 180.0):
+                    blockers.append("SETTLEMENT_LONGITUDE_INVALID")
+        else:
+            blockers.append("SETTLEMENT_LOCATION_TYPE_UNSUPPORTED")
 
         if not evidence.settlement_source_verified:
             blockers.append("SETTLEMENT_SOURCE_NOT_VERIFIED")
+        # Historical field name retained for compatibility; in V2 this flag
+        # means the exact settlement location identity (station or coordinate)
+        # has been independently verified against the frozen contract rules.
         if not evidence.station_identity_verified:
-            blockers.append("SETTLEMENT_STATION_NOT_VERIFIED")
+            blockers.append("SETTLEMENT_LOCATION_NOT_VERIFIED")
 
         if blockers:
             return AgentResult(
@@ -63,7 +77,10 @@ class ContractSettlementAgent:
                 "ticker": contract.ticker,
                 "lane": contract.lane,
                 "settlement_source": contract.settlement_source,
+                "settlement_location_type": location_type,
                 "settlement_station_id": contract.settlement_station_id,
+                "settlement_latitude": contract.settlement_latitude,
+                "settlement_longitude": contract.settlement_longitude,
                 "rule_snapshot_id": contract.rule_snapshot_id,
             },
         )
