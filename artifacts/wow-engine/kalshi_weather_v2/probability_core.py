@@ -47,23 +47,17 @@ class WeatherProbabilityCore:
             return self._missing("CALIBRATION_SIGMA_INVALID")
 
         mu = float(evidence.central_estimate) - float(calibration.bias_f)
-        p_yes = self._event_probability(contract, mu, calibration.sigma_f)
-        p_low = self._event_probability(contract, mu, calibration.upper_sigma_f)
-        p_high = self._event_probability(contract, mu, calibration.lower_sigma_f)
-        lower = min(p_low, p_high, p_yes)
-        upper = max(p_low, p_high, p_yes)
+        observed_floor = (
+            float(evidence.observed_extreme_so_far)
+            if contract.lane == "DAILY_HIGH_TEMPERATURE" and evidence.observed_extreme_so_far is not None
+            else None
+        )
 
-        # Same-day maximum contracts cannot settle below an already-observed
-        # official maximum. Apply only when the evidence represents a maximum.
-        if (
-            contract.lane == "DAILY_HIGH_TEMPERATURE"
-            and evidence.observed_extreme_so_far is not None
-            and contract.threshold_upper is not None
-            and evidence.observed_extreme_so_far > contract.threshold_upper
-        ):
-            p_yes = 0.0
-            lower = 0.0
-            upper = 0.0
+        p_yes = self._event_probability(contract, mu, calibration.sigma_f, observed_floor)
+        p_a = self._event_probability(contract, mu, calibration.upper_sigma_f, observed_floor)
+        p_b = self._event_probability(contract, mu, calibration.lower_sigma_f, observed_floor)
+        lower = min(p_a, p_b, p_yes)
+        upper = max(p_a, p_b, p_yes)
 
         p_yes = min(1.0, max(0.0, p_yes))
         lower = min(p_yes, max(0.0, lower))
@@ -85,25 +79,56 @@ class WeatherProbabilityCore:
         )
 
     @staticmethod
-    def _event_probability(contract: ContractSnapshot, mu: float, sigma: float) -> float:
-        # Integer-temperature contracts use continuity correction. If live
-        # rules specify another rounding convention, the contract parser must
-        # encode equivalent numeric bounds before invoking this core.
+    def _event_probability(
+        contract: ContractSnapshot,
+        mu: float,
+        sigma: float,
+        observed_floor: float | None = None,
+    ) -> float:
+        """Probability of the exact settlement interval with continuity correction.
+
+        For same-day daily-high markets, condition on the official maximum
+        already observed so far. This implements intraday truncation rather
+        than merely zeroing impossible brackets.
+        """
         lower = contract.threshold_lower
         upper = contract.threshold_upper
 
         if lower is None:
             assert upper is not None
-            boundary = upper + (0.5 if contract.upper_inclusive else -0.5)
-            return _normal_cdf(boundary, mu, sigma)
-        if upper is None:
-            boundary = lower - (0.5 if contract.lower_inclusive else -0.5)
-            return 1.0 - _normal_cdf(boundary, mu, sigma)
+            lo_boundary = float("-inf")
+            hi_boundary = upper + (0.5 if contract.upper_inclusive else -0.5)
+        elif upper is None:
+            lo_boundary = lower - (0.5 if contract.lower_inclusive else -0.5)
+            hi_boundary = float("inf")
+        else:
+            lo_boundary = lower - (0.5 if contract.lower_inclusive else -0.5)
+            hi_boundary = upper + (0.5 if contract.upper_inclusive else -0.5)
+            if hi_boundary < lo_boundary:
+                raise ValueError("upper threshold is below lower threshold")
 
-        lo = lower - (0.5 if contract.lower_inclusive else -0.5)
-        hi = upper + (0.5 if contract.upper_inclusive else -0.5)
-        if hi < lo:
-            raise ValueError("upper threshold is below lower threshold")
+        if observed_floor is None:
+            return WeatherProbabilityCore._interval_probability(lo_boundary, hi_boundary, mu, sigma)
+
+        floor_boundary = observed_floor - 0.5
+        conditioned_lo = max(lo_boundary, floor_boundary)
+        if hi_boundary < conditioned_lo:
+            return 0.0
+
+        denominator = 1.0 - _normal_cdf(floor_boundary, mu, sigma)
+        if denominator <= 1e-12:
+            # Distribution says the observed state was effectively impossible;
+            # do not invent a stable conditional probability.
+            return 0.0
+        numerator = WeatherProbabilityCore._interval_probability(conditioned_lo, hi_boundary, mu, sigma)
+        return numerator / denominator
+
+    @staticmethod
+    def _interval_probability(lo: float, hi: float, mu: float, sigma: float) -> float:
+        if lo == float("-inf"):
+            return _normal_cdf(hi, mu, sigma)
+        if hi == float("inf"):
+            return 1.0 - _normal_cdf(lo, mu, sigma)
         return _normal_cdf(hi, mu, sigma) - _normal_cdf(lo, mu, sigma)
 
     @staticmethod
