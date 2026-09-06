@@ -1,18 +1,15 @@
 """Optional live self-acceptance for the real fitted player-prop path.
 
-The probe supports both governed publication and the calibration/publication-
-blocked research-only lane. A publication lock must not be misreported as model
-unavailability when the certified specialist can still run. In research-only
-mode the probe requires raw specialist output, null calibrated claims, no
-publishable prediction claim, MODEL_QUALIFIED_HOLD-or-lower ceiling, and
-can_execute=false.
+The probe supports governed publication, the legacy calibration/publication-
+blocked research-only lane, and the V17 full sporting-probability package that
+can survive a downstream official-publication hold. A publication lock must not
+be misreported as model unavailability when the certified specialist can run.
+No acceptance mode authorizes execution.
 
 When WOW_PROP_MODEL_SELF_ACCEPTANCE_PICK_JSON is configured, the probe first
 uses the real authenticated /score-pick-request boundary. That path performs
 certified route preflight, official automatic evidence hydration, immutable
-snapshot persistence, and the exact /score-prop call. The bootstrap is intended
-for one-shot production acceptance using a real still-pregame candidate; it does
-not create or imply wager execution.
+snapshot persistence when permitted, and the exact /score-prop call.
 """
 from __future__ import annotations
 
@@ -54,6 +51,7 @@ def _valid_probability(value: Any) -> bool:
 
 
 def _is_governed_model_path_pass(body: dict[str, Any]) -> tuple[bool, str | None]:
+    """Preserve the pre-V17-hold governed-publication acceptance contract."""
     prediction = body.get("prediction") if isinstance(body.get("prediction"), dict) else {}
     model = body.get("model_evidence") if isinstance(body.get("model_evidence"), dict) else {}
     lanes = body.get("objective_lanes") if isinstance(body.get("objective_lanes"), dict) else {}
@@ -73,6 +71,40 @@ def _is_governed_model_path_pass(body: dict[str, Any]) -> tuple[bool, str | None
         and body.get("can_execute") is False
     )
     return ok, str(prediction_id) if prediction_id else None
+
+
+def _is_sporting_probability_hold_pass(body: dict[str, Any]) -> bool:
+    """Recognize a completed fitted probability while final publication is held.
+
+    Unlike the normal governed-publication path, this contract deliberately does
+    not require a persisted prediction_id: the downstream publication lock can
+    legitimately prevent the official prediction-ledger write while preserving
+    the completed calibrated sporting probability for assistance/review.
+    """
+    model = body.get("model_evidence") if isinstance(body.get("model_evidence"), dict) else {}
+    lanes = body.get("objective_lanes") if isinstance(body.get("objective_lanes"), dict) else {}
+    model_lane = lanes.get("MODEL") if isinstance(lanes.get("MODEL"), dict) else {}
+    return (
+        body.get("ok") is True
+        and body.get("governed_sporting_probability_completed") is True
+        and body.get("sporting_probability_publishable") is True
+        and body.get("probability_publishable") is True
+        and body.get("governed_publishable") is False
+        and body.get("official_final_publishable") is False
+        and body.get("final_approved") is False
+        and isinstance(body.get("official_publication_blockers"), list)
+        and model.get("provider_identity") == "WOW_PROP_FITTED_MODEL_V1"
+        and model.get("model_family") == "MLB_PITCHER_SO_FAILURE_PATH_NB_V1"
+        and model.get("calibration_status") == "PRECALIBRATION_SHRINKAGE"
+        and _valid_probability(model.get("calibrated_probability"))
+        and _valid_probability(model.get("calibrated_probability_lower_bound"))
+        and model.get("probability_publishable") is True
+        and model.get("can_execute") is False
+        and model_lane.get("status") == "PASS"
+        and model_lane.get("probability_publishable") is True
+        and model_lane.get("can_execute") is False
+        and body.get("can_execute") is False
+    )
 
 
 def _is_research_only_model_path_pass(body: dict[str, Any]) -> bool:
@@ -117,6 +149,8 @@ def _is_model_path_pass(response: httpx.Response) -> tuple[bool, str, str | None
     code = str(body.get("code") or ("PROP_MODEL_PATH_PASS" if body.get("ok") is True else "MISSING_CODE"))
     if response.status_code != 200:
         return False, code, None, "FAIL"
+    if _is_sporting_probability_hold_pass(body):
+        return True, code, None, "SPORTING_PROBABILITY_COMPLETE_PUBLICATION_HOLD"
     governed_ok, prediction_id = _is_governed_model_path_pass(body)
     if governed_ok:
         return True, code, prediction_id, "GOVERNED_PUBLISHABLE"
@@ -199,6 +233,8 @@ def _is_bootstrap_pick_pass(response: httpx.Response) -> tuple[bool, str, str | 
     )
     if not common:
         return False, code, str(snapshot_id) if snapshot_id else None, "CONTRACT_FAIL"
+    if row.get("code") == "MODEL_QUALIFIED_HOLD" and _is_sporting_probability_hold_pass(result):
+        return True, code, str(snapshot_id), "SPORTING_PROBABILITY_COMPLETE_PUBLICATION_HOLD"
     if row.get("code") == "MODEL_QUALIFIED_HOLD" and _is_research_only_model_path_pass(result):
         return True, code, str(snapshot_id), "RESEARCH_ONLY_PUBLICATION_LOCK"
     governed_ok, prediction_id = _is_governed_model_path_pass(result)
@@ -351,6 +387,11 @@ async def run_prop_model_live_self_acceptance(market_api: Any, logger: logging.L
                     if last_mode == "RESEARCH_ONLY_PUBLICATION_LOCK":
                         log.warning(
                             "WOW_PROP_MODEL_SELF_ACCEPTANCE result=PASS status=200 mode=RESEARCH_ONLY_PUBLICATION_LOCK snapshot_id=%s provider=WOW_PROP_FITTED_MODEL_V1 model_family=MLB_PITCHER_SO_FAILURE_PATH_NB_V1 specialist_invoked=true calibration=UNKNOWN_OR_BLOCKED governed_publishable=false immutable_prediction=NOT_ATTEMPTED_PUBLICATION_LOCK terminal_ceiling=MODEL_QUALIFIED_HOLD can_execute=false",
+                            snapshot_id,
+                        )
+                    elif last_mode == "SPORTING_PROBABILITY_COMPLETE_PUBLICATION_HOLD":
+                        log.warning(
+                            "WOW_PROP_MODEL_SELF_ACCEPTANCE result=PASS status=200 mode=SPORTING_PROBABILITY_COMPLETE_PUBLICATION_HOLD snapshot_id=%s provider=WOW_PROP_FITTED_MODEL_V1 model_family=MLB_PITCHER_SO_FAILURE_PATH_NB_V1 calibration=PRECALIBRATION_SHRINKAGE sporting_probability_publishable=true governed_publishable=false final_approved=false can_execute=false",
                             snapshot_id,
                         )
                     else:
