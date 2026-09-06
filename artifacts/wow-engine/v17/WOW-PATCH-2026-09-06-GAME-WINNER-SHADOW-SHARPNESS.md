@@ -107,4 +107,6 @@ The added tests prove:
 
 This patch does not modify `game_winner_cash_single_gate.py` and does not alter the merged P0 probability/cash separation.
 
+The branch was synchronized to the current protected `main` before final verification.
+
 It also does not claim backend production deployment or LIVE_GPT_EDITOR_SYNC.
