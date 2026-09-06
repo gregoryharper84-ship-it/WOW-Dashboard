@@ -54,9 +54,6 @@ class ContractSettlementAgent:
 
         if not evidence.settlement_source_verified:
             blockers.append("SETTLEMENT_SOURCE_NOT_VERIFIED")
-        # Historical field name retained for compatibility; in V2 this flag
-        # means the exact settlement location identity (station or coordinate)
-        # has been independently verified against the frozen contract rules.
         if not evidence.station_identity_verified:
             blockers.append("SETTLEMENT_LOCATION_NOT_VERIFIED")
 
@@ -160,7 +157,7 @@ class WeatherProbabilityAgent:
 
 
 class MarketCalibrationAuditor:
-    """Audits executable price, edge arithmetic and publication math; never creates weather probability."""
+    """Audits executable price and verified friction-adjusted economics only."""
 
     name = "KALSHI_MARKET_CALIBRATION_AUDITOR"
 
@@ -170,7 +167,6 @@ class MarketCalibrationAuditor:
 
         if probability.p_yes is None or probability.p_no is None:
             blockers.append("MODEL_PROBABILITY_REQUIRED_BEFORE_MARKET_AUDIT")
-
         if not market.market_open:
             blockers.append("MARKET_NOT_OPEN")
         if not market.orderbook_nonempty:
@@ -183,45 +179,68 @@ class MarketCalibrationAuditor:
         for field_name, value in (("yes_price", market.yes_price), ("no_price", market.no_price)):
             if value is not None and not (0.0 <= value <= 1.0):
                 blockers.append(f"MARKET_PRICE_OUT_OF_RANGE:{field_name}")
-
         if market.yes_price is None and market.no_price is None:
             blockers.append("NO_EXECUTABLE_PRICE")
+
+        # A raw executable price is sufficient to discuss market state, but
+        # official edge qualification requires the exact verified break-even
+        # after applicable fees/frictions. Do not silently assume fees are 0.
+        if not market.fee_known:
+            blockers.append("FEE_SCHEDULE_UNRESOLVED")
+        if not market.friction_model_verified:
+            blockers.append("FRICTION_MODEL_UNVERIFIED")
+
+        for field_name, value in (
+            ("yes_effective_break_even", market.yes_effective_break_even),
+            ("no_effective_break_even", market.no_effective_break_even),
+        ):
+            if value is not None and not (0.0 <= value <= 1.0):
+                blockers.append(f"BREAK_EVEN_OUT_OF_RANGE:{field_name}")
+
+        if market.yes_price is not None and market.yes_effective_break_even is None:
+            blockers.append("YES_EFFECTIVE_BREAK_EVEN_MISSING")
+        if market.no_price is not None and market.no_effective_break_even is None:
+            blockers.append("NO_EFFECTIVE_BREAK_EVEN_MISSING")
 
         payload: dict[str, float | bool | None] = {
             "yes_price": market.yes_price,
             "no_price": market.no_price,
             "fee_known": market.fee_known,
+            "friction_model_verified": market.friction_model_verified,
+            "yes_effective_break_even": market.yes_effective_break_even,
+            "no_effective_break_even": market.no_effective_break_even,
         }
 
         if probability.p_yes is not None and market.yes_price is not None:
             raw_edge_yes = probability.p_yes - market.yes_price
-            conservative_edge_yes = (
-                probability.lower_bound_yes - market.yes_price
-                if probability.lower_bound_yes is not None
-                else None
-            )
             payload["raw_edge_yes"] = raw_edge_yes
-            payload["uncertainty_adjusted_edge_yes"] = conservative_edge_yes
             payload["pre_fee_ev_yes_per_share"] = raw_edge_yes
-
+            if market.yes_price > 0:
+                payload["pre_fee_ev_yes_per_1_risked"] = raw_edge_yes / market.yes_price
         if probability.p_no is not None and market.no_price is not None:
-            payload["raw_edge_no"] = probability.p_no - market.no_price
-            upper_yes = probability.upper_bound_yes
-            conservative_no = (1.0 - upper_yes) if upper_yes is not None else None
-            payload["uncertainty_adjusted_edge_no"] = (
-                conservative_no - market.no_price if conservative_no is not None else None
-            )
-            payload["pre_fee_ev_no_per_share"] = probability.p_no - market.no_price
+            raw_edge_no = probability.p_no - market.no_price
+            payload["raw_edge_no"] = raw_edge_no
+            payload["pre_fee_ev_no_per_share"] = raw_edge_no
+            if market.no_price > 0:
+                payload["pre_fee_ev_no_per_1_risked"] = raw_edge_no / market.no_price
 
-        if not market.fee_known:
-            warnings.append("FEES_UNKNOWN_PRE_FEE_EV_ONLY")
+        if probability.p_yes is not None and market.yes_effective_break_even is not None:
+            payload["friction_adjusted_raw_edge_yes"] = probability.p_yes - market.yes_effective_break_even
+            if probability.lower_bound_yes is not None:
+                payload["uncertainty_adjusted_edge_yes"] = probability.lower_bound_yes - market.yes_effective_break_even
+
+        if probability.p_no is not None and market.no_effective_break_even is not None:
+            payload["friction_adjusted_raw_edge_no"] = probability.p_no - market.no_effective_break_even
+            if probability.upper_bound_yes is not None:
+                conservative_no = 1.0 - probability.upper_bound_yes
+                payload["uncertainty_adjusted_edge_no"] = conservative_no - market.no_effective_break_even
 
         if blockers:
             return AgentResult(
                 agent=self.name,
                 ok=False,
                 code="MARKET_AUDIT_HELD",
-                blockers=tuple(blockers),
+                blockers=tuple(dict.fromkeys(blockers)),
                 warnings=tuple(warnings),
                 payload=payload,
             )
