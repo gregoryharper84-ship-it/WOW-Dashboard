@@ -38,6 +38,9 @@ class ContractSnapshot:
     threshold_upper: float | None = None
     lower_inclusive: bool = True
     upper_inclusive: bool = True
+    settlement_location_type: str = "STATION"
+    settlement_latitude: float | None = None
+    settlement_longitude: float | None = None
 
 
 @dataclass(frozen=True)
