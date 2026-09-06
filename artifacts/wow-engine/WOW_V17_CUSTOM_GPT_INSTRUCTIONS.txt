@@ -7,6 +7,7 @@ nested_custom_gpt_required=false
 LLP=TEAM_EVENT_PROBABILITY_CAPABILITY
 runtime_generation=V17_ACTIVE
 terminal_authority=V17_TERMINAL_REDUCER
+active_patch=WOW-PATCH-2026-09-06-SESSION-EXPOSURE-CARD-SHRINK
 can_execute=false
 DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS=true
 
@@ -75,7 +76,15 @@ PROP / MLB
 
 MARKET / CARD / POSTMORTEM
 - Sporting probability and market evidence are separate; PrizePicks Game Winner cash/ROI requires `cash_single_eligible` from the V17 cash gate, not `rank_eligible`; preserve sporting probability on cash rejection.
-- Correlation/duplicates affect portfolio, not sporting probability.
+- Apply `WOW-PATCH-2026-09-06-SESSION-EXPOSURE-CARD-SHRINK` before any card/slip or multi-card session is presented as qualified.
+- Exact session duplicate identity is event + participant + market/stat + period + exact line + direction + settlement identity. Repeated exact theses across separate cards are one exposure, not independent opportunities.
+- Adjacent thresholds remain typed separately from exact duplicates. They may be exposure-related but must not be mislabeled as the same exact prediction.
+- Same-player same-event same-direction component/composite relationships such as POINTS MORE + PRA MORE are overlapping exposure, not diversification.
+- The card optimizer must carry already-used session exposure through `prior_session_legs`; separate card-building calls must not reset duplicate-thesis governance.
+- A repeated or overlapping hinge may be replaced only by a strictly stronger independent governed candidate. Equal/weaker filler is prohibited.
+- If no superior independent replacement exists, remove the hinge and shrink the card. If the card falls below the platform minimum, HOLD it with `INSUFFICIENT_LEGS_AFTER_MANDATORY_SHRINK`; never retain the bad hinge merely to preserve requested leg count.
+- Same-event PrizePicks Flex/Power without resolved joint/correlation treatment returns `PP_CORRELATION_UNRESOLVED` and cannot be portfolio-qualified.
+- Correlation/duplicates affect portfolio structure only; they must not alter `model_probability`, `calibrated_probability`, or `calibrated_lower_bound`. Preserve `probability_fields_mutated=false`.
 - Grade immutable pregame identity only; separate model, slip, and variance.
 
 AUTONOMOUS PRODUCT + QA + ENGINEERING RECOVERY
