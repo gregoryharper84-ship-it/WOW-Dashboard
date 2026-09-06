@@ -82,7 +82,10 @@ def market(**overrides):
         market_open=True,
         orderbook_nonempty=True,
         executable_price_verified=True,
-        fee_known=False,
+        fee_known=True,
+        friction_model_verified=True,
+        yes_effective_break_even=0.51,
+        no_effective_break_even=0.53,
     )
     values.update(overrides)
     return MarketSnapshot(**values)
@@ -114,7 +117,7 @@ def test_happy_path_produces_qualified_edge_without_inventing_strong_threshold()
     assert decision.probability_publishable is True
     assert decision.edge_publishable is True
     assert decision.payload["best_side"] == "YES"
-    assert round(decision.payload["best_uncertainty_adjusted_edge"], 6) == 0.07
+    assert round(decision.payload["best_uncertainty_adjusted_edge"], 6) == 0.06
     assert decision.can_execute is False
 
 
@@ -143,8 +146,27 @@ def test_stale_or_unverified_market_holds_edge_but_preserves_weather_probability
     assert decision.rank_eligible is False
 
 
+def test_unresolved_fees_hold_edge_but_preserve_weather_probability():
+    _, _, market_result, decision = run_all(m=market(
+        fee_known=False,
+        friction_model_verified=False,
+        yes_effective_break_even=None,
+        no_effective_break_even=None,
+    ))
+    assert market_result.ok is False
+    assert "FEE_SCHEDULE_UNRESOLVED" in market_result.blockers
+    assert decision.status == "WATCH"
+    assert decision.probability_publishable is True
+    assert decision.edge_publishable is False
+
+
 def test_no_positive_conservative_edge_is_no_edge():
-    _, _, _, decision = run_all(m=market(yes_price=0.60, no_price=0.45))
+    _, _, _, decision = run_all(m=market(
+        yes_price=0.60,
+        no_price=0.45,
+        yes_effective_break_even=0.61,
+        no_effective_break_even=0.46,
+    ))
     assert decision.status == "NO_EDGE"
     assert decision.rank_eligible is False
     assert decision.edge_publishable is True
