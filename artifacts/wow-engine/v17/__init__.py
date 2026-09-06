@@ -1,9 +1,8 @@
 """WOW V17 active-generation modules.
 
 Importing the package in shared lower-layer tests must not mutate runtime routing.
-Response semantics, immutable projected-score handoff, and numerical certification
-are composed only in an explicitly active V17 runtime. None may choose a sporting
-model, alter a fitted probability, or authorize execution.
+Response semantics, immutable projected-score handoff, numerical certification,
+and portfolio construction remain subordinate to V17 terminal governance.
 """
 from __future__ import annotations
 
@@ -20,6 +19,12 @@ def evaluate_game_winner_cash_single(*args, **kwargs):
     """Lazy public entrypoint for the downstream PrizePicks Game Winner cash gate."""
     from v17.game_winner_cash_single_gate import evaluate_game_winner_cash_single as _evaluate
     return _evaluate(*args, **kwargs)
+
+
+def optimize_slip_portfolio(*args, **kwargs):
+    """Lazy public entrypoint for Stage 17-19 card/session exposure governance."""
+    from v17.slip_portfolio_optimizer import optimize_portfolio as _optimize
+    return _optimize(*args, **kwargs)
 
 
 def compose_active_runtime() -> bool:
@@ -54,4 +59,5 @@ __all__ = [
     "compose_active_runtime",
     "evaluate_game_winner_cash_single",
     "get_certified_numerical_registry",
+    "optimize_slip_portfolio",
 ]
