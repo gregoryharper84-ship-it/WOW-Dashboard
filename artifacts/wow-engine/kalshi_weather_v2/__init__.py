@@ -1,6 +1,7 @@
 """Governed Kalshi Weather V2 specialist agents and terminal reducer."""
 
 from .agents import ContractSettlementAgent, MarketCalibrationAuditor, WeatherProbabilityAgent
+from .contract_resolver import ContractResolutionError, resolve_weather_contract
 from .models import (
     AgentResult,
     ContractSnapshot,
@@ -25,6 +26,8 @@ __all__ = [
     "WeatherProbabilityAgent",
     "MarketCalibrationAuditor",
     "KalshiWeatherTerminalGovernor",
+    "ContractResolutionError",
+    "resolve_weather_contract",
     "CalibrationProfile",
     "WeatherProbabilityCore",
     "ProviderSnapshot",
