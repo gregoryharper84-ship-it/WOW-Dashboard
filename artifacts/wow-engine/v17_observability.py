@@ -10,6 +10,17 @@ from typing import Any
 
 
 def initialize_observability() -> dict[str, Any]:
+    # The research evaluation is off by default and independent of telemetry.
+    # It is scheduled here because this initializer runs once in the accepted
+    # production entrypoint before serving starts. Any research-runner defect is
+    # isolated from API startup and can never alter probability publication.
+    try:
+        from v17.mlb_game_winner_shadow_one_shot import schedule_if_enabled
+
+        schedule_if_enabled()
+    except Exception:
+        pass
+
     dsn = os.getenv("SENTRY_DSN", "").strip()
     if not dsn:
         return {
