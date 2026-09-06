@@ -34,6 +34,10 @@ class ContractSnapshot:
     trace_measurement_rules: str
     market_close_time: str
     rule_snapshot_id: str
+    threshold_lower: float | None = None
+    threshold_upper: float | None = None
+    lower_inclusive: bool = True
+    upper_inclusive: bool = True
 
 
 @dataclass(frozen=True)
