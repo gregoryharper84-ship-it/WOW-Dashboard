@@ -10,7 +10,9 @@ import pytest
 from nfl_event_data_p1 import (
     DATASET_INJURIES,
     DATASET_PBP,
+    DATASET_PARTICIPATION,
     DATASET_SCHEDULES,
+    DATASET_SNAP_COUNTS,
     DATASET_WEEKLY_ROSTERS,
     SourceAsset,
     SourceHostRejected,
@@ -47,11 +49,13 @@ def _mock_client(content: bytes, *, etag: str = '"test-etag"') -> httpx.Client:
 def test_source_bundle_uses_canonical_nflverse_csv_endpoints():
     assets = source_bundle([2024, 2025])
     assert assets[0] == schedules_asset()
-    assert len(assets) == 7
+    assert len(assets) == 11
     urls = {asset.dataset_name: asset.source_url for asset in season_assets(2025)}
     assert urls[DATASET_PBP].endswith("/pbp/play_by_play_2025.csv")
     assert urls[DATASET_WEEKLY_ROSTERS].endswith("/weekly_rosters/roster_weekly_2025.csv")
     assert urls[DATASET_INJURIES].endswith("/injuries/injuries_2025.csv")
+    assert urls[DATASET_PARTICIPATION].endswith("/participation/participation_2025.csv")
+    assert urls[DATASET_SNAP_COUNTS].endswith("/snap_counts/snap_counts_2025.csv")
     assert schedules_asset().source_url.endswith("/nflverse/nfldata/master/data/games.csv")
 
 

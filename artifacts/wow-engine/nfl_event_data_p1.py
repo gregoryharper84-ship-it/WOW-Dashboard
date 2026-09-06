@@ -34,11 +34,15 @@ DATASET_SCHEDULES = "SCHEDULES"
 DATASET_PBP = "PLAY_BY_PLAY"
 DATASET_WEEKLY_ROSTERS = "WEEKLY_ROSTERS"
 DATASET_INJURIES = "INJURIES"
+DATASET_PARTICIPATION = "PARTICIPATION"
+DATASET_SNAP_COUNTS = "SNAP_COUNTS"
 DATASETS = frozenset({
     DATASET_SCHEDULES,
     DATASET_PBP,
     DATASET_WEEKLY_ROSTERS,
     DATASET_INJURIES,
+    DATASET_PARTICIPATION,
+    DATASET_SNAP_COUNTS,
 })
 
 # Minimal columns only. Downstream feature builders are responsible for stricter
@@ -60,6 +64,8 @@ REQUIRED_COLUMNS: dict[str, frozenset[str]] = {
         "season", "season_type", "team", "week", "gsis_id", "position",
         "report_status", "practice_status", "date_modified",
     }),
+    DATASET_PARTICIPATION: frozenset({"game_id", "play_id", "nflverse_game_id"}),
+    DATASET_SNAP_COUNTS: frozenset({"game_id", "player", "position", "team"}),
 }
 
 
@@ -142,6 +148,18 @@ def season_assets(season: int) -> tuple[SourceAsset, ...]:
             DATASET_INJURIES,
             f"{base}/injuries/injuries_{season}.csv",
             f"injuries_{season}.csv",
+            season,
+        ),
+        SourceAsset(
+            DATASET_PARTICIPATION,
+            f"{base}/participation/participation_{season}.csv",
+            f"participation_{season}.csv",
+            season,
+        ),
+        SourceAsset(
+            DATASET_SNAP_COUNTS,
+            f"{base}/snap_counts/snap_counts_{season}.csv",
+            f"snap_counts_{season}.csv",
             season,
         ),
     )
