@@ -87,6 +87,9 @@ class MarketSnapshot:
     executable_price_verified: bool
     fee_known: bool = False
     fee_per_share: float | None = None
+    friction_model_verified: bool = False
+    yes_effective_break_even: float | None = None
+    no_effective_break_even: float | None = None
 
 
 @dataclass(frozen=True)
