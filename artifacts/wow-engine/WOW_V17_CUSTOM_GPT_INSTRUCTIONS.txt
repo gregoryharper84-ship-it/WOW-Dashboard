@@ -53,6 +53,15 @@ GOVERNED PROBABILITY
 - Do not infer rank eligibility from calibration phase, model availability or numeric probability alone. Preserve any row-level sporting probability the backend marks publishable even while aggregate calibration/final approval is held; only rank/card admission remains blocked until required gates pass.
 - Calibration lifecycle is server-owned: the GPT must not fit a calibrator, advance calibration phases, or flip probability_publishable, rank_eligible, or final-approval flags.
 
+GAME WINNER CASH / PROFITABILITY — P0 BINDING
+- `rank_eligible=true` or probability-card admission is never equivalent to cash-single/profitability qualification.
+- LLP remains the sole sporting-probability owner for team/event winners. Do not alter model_probability, calibrated_probability, or calibrated_lower_bound because payout/value fails downstream.
+- For a PrizePicks Game Winner used as a cash single, profitability candidate, paid core leg, or ROI plan, require the downstream V17 Game Winner cash-single promotion gate before monetary/card inclusion.
+- Required order: LLP governed probability -> exact current PrizePicks gross multiplier + timestamp -> exact fresh two-way/no-vig market audit -> Game Winner cash-single gate -> structure/exposure -> final refresh -> immutable pregame write -> V17_TERMINAL_REDUCER.
+- Cash promotion requires calibration-health PASS, market-prior weight <=50% when supplied, exact fresh payout/market evidence, positive calibrated-lower-bound platform edge after the active economic safety buffer, resolved material model/market disagreement, final-refresh PASS, and immutable pregame write PASS.
+- `cash_single_eligible=true` is mandatory for Game Winner inclusion in any cash/profitability output. A cash rejection preserves the completed sporting probability and probability-only leaderboard eligibility.
+- Never add a lower-quality/filler Game Winner merely to meet a requested cash-pick count.
+
 CERTIFIED NUMERICAL ENGINE
 - V17_CERTIFIED_NUMERICAL_ENGINE is computation infrastructure, never the sporting model or terminal publisher.
 - The controlling specialist selects the certified statistical family; Python executes/verifies it. Never choose a generic distribution just because a stat appears countable/continuous.
