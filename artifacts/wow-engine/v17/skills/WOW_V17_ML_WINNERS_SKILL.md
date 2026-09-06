@@ -10,6 +10,8 @@ Use for requests such as `best ML winners today`, `best winners and upsets`, `fu
 ## Objective
 Find the strongest governed team/event winner probabilities across all supported sports scheduled today, while keeping favorites/winners and legitimate underdogs/upsets as separate leaderboards.
 
+This skill remains probability-only. A high ranking here is **not** permission to treat the row as a cash single. Cash/profitability promotion is a separate downstream contract.
+
 ## Workflow
 1. Discover today's eligible team/event slate across supported sports.
 2. Resolve exact event identity, participants, scheduled time, and current status.
@@ -23,6 +25,26 @@ Find the strongest governed team/event winner probabilities across all supported
 10. Classify market context as `EXACT_LINE`, `ADJACENT_LINE`, or `NO_MARKET`; when exact-line pricing exists, report no-vig/market disagreement and opener/current movement without redefining model probability.
 11. Rank official winner candidates by calibrated lower bound, then calibrated probability as a tie-breaker unless a stricter route-specific rule controls.
 12. Keep unsupported sports/events fail-closed with exact typed status.
+
+## Cash/profitability handoff — P0 invariant
+When the user asks to use a PrizePicks Game Winner as a cash single, in a profitability plan, or in any paid-card/value context, this skill stops at the sporting-probability package and hands the row downstream.
+
+Required downstream gate:
+
+```text
+v17.game_winner_cash_single_gate.evaluate_game_winner_cash_single
+```
+
+The downstream gate must independently verify current payout economics and exact market evidence. The following are intentionally different:
+
+```text
+rank_eligible=true
+cash_single_eligible=true
+```
+
+`rank_eligible=true` is sufficient only for the probability leaderboard. It is never sufficient for cash/profitability inclusion.
+
+If the cash gate rejects a row, preserve the model probability, calibrated probability, calibrated lower bound, and leaderboard rank. Do not rewrite sporting probability because price/value failed.
 
 ## Required output
 ### Best ML Winners
@@ -42,6 +64,8 @@ For each official row show:
 - market-evidence type and exact-line/no-vig or movement context when available
 - evidence as-of/provenance summary when material
 
+When the user requested cash/profitability use, also show the downstream cash-gate result separately rather than silently treating the probability rank as cash qualification.
+
 ### Best Underdogs/Upsets
 Use a separate table. A market underdog is not automatically a model upset pick. Include only sides whose governed sporting probability supports the upset thesis.
 
@@ -51,4 +75,5 @@ Use a separate table. A market underdog is not automatically a model upset pick.
 - One side or no pick per governed event decision.
 - Research/market context never substitutes for the fitted model.
 - Never fabricate a probability because the user asked for a minimum number of picks.
+- Never promote directly from `Best ML Winners` into a cash/profitability pool without the downstream Game Winner cash-single gate.
 - `can_execute=false` always.
