@@ -50,8 +50,12 @@ Risk levels:
 
 - **R0 — no-code/observability:** stale test fixture, logging, comments, diagnostics, typo, dead non-governing config. May auto-fix.
 - **R1 — bounded implementation:** deterministic bug with a narrow fix, no probability math, no terminal precedence, no schema migration, no auth/secret change, no branch-protection change. May auto-fix and publish after all gates pass.
-- **R2 — governed behavior:** probability model logic, calibration, terminal semantics, evidence precedence, identity rules, exact-line support, persistence semantics, Action request/response contracts, or cross-lane routing. May auto-diagnose and create a tested PR, but do not merge/deploy automatically unless a separately approved patch explicitly authorizes that exact change.
-- **R3 — infrastructure/security/data-destructive:** secrets/auth, database destructive migration, RLS weakening, branch protection, external credentials, irreversible data correction, live execution capability. Diagnose only; never autonomously modify or deploy.
+- **R2 — governed behavior:** probability-model implementation, calibration implementation, terminal semantics, evidence precedence, identity rules, exact-line support, persistence semantics, Action request/response contracts, or cross-lane routing. R2 is split into two classes:
+  - **R2-restorative:** a deterministic defect where the intended behavior is already unambiguously defined by an existing authoritative V17 contract, test, schema, or accepted production invariant, and the patch only restores conformance without introducing a new formula, threshold, precedence rule, label meaning, schema meaning, or product policy. A high-confidence R2-restorative defect may be autonomously repaired, merged, and deployed under the stricter gates in section 7.
+  - **R2-policy-changing:** any change that creates or changes authoritative probability math, calibration formulas/thresholds, terminal precedence/meaning, evidence precedence policy, identity policy, exact-line support policy, persistence meaning, Action contract meaning, or cross-lane routing policy. Diagnose fully and create a tested PR/report, but do not merge/deploy automatically unless a separately approved patch explicitly authorizes that exact policy change.
+- **R3 — infrastructure/security/data-destructive:** secrets/auth, destructive database migration, RLS weakening, branch protection, external credentials, irreversible data correction, or live execution capability. Diagnose only; never autonomously modify or deploy.
+
+When uncertain whether an R2 change is restorative or policy-changing, classify it as R2-policy-changing and require human review.
 
 ### 3. Reproduce before repair
 
@@ -68,7 +72,18 @@ Narrative suspicion alone is not sufficient.
 
 ### 4. Build the patch contract
 
-For every repair, instantiate the mandatory build packet from `wow-replit-patch-governor` before editing. Set `publish_authorized=true` only for R0/R1 changes that satisfy this skill's autonomous-publish policy.
+For every repair, instantiate the mandatory build packet from `wow-replit-patch-governor` before editing. Set `publish_authorized=true` only for R0, R1, or R2-restorative changes that satisfy this skill's autonomous-publish policy.
+
+For every R2-restorative patch, the build packet must additionally name the exact pre-existing binding authority being restored and state explicitly:
+
+- `new_probability_math: false`
+- `new_calibration_threshold: false`
+- `terminal_precedence_changed: false`
+- `contract_meaning_changed: false`
+- `auth_or_secret_change: false`
+- `schema_migration: none`
+
+If any of those statements cannot be truthfully asserted, the patch is not R2-restorative.
 
 ### 5. Repair minimally
 
@@ -77,6 +92,7 @@ For every repair, instantiate the mandatory build packet from `wow-replit-patch-
 - Do not refactor unrelated code.
 - Do not broaden model support merely to eliminate a failure.
 - Preserve typed failure semantics.
+- For R2-restorative repairs, prefer restoring implementation to the binding contract rather than modifying the contract to match current implementation.
 
 ### 6. Validation gates
 
@@ -89,23 +105,35 @@ A repair is not complete until all applicable gates pass:
 5. `can_execute=false` and dry-run invariants remain asserted;
 6. diff boundary contains only allowed files;
 7. no new high-severity logs/errors are introduced;
-8. branch-protection-required checks are green.
+8. branch-protection-required checks are green;
+9. for R2-restorative repairs, a contract-conformance test demonstrates that the patch restores pre-existing authoritative behavior rather than creating new behavior.
 
 ### 7. Autonomous merge/deploy policy
 
 Autonomous publication is allowed only when **all** are true:
 
-- risk is R0 or R1;
+- risk is R0, R1, or R2-restorative;
 - root-cause confidence is high;
 - a deterministic regression test covers the defect;
 - all required checks pass;
-- no protected/governance/model-math/schema/auth files are changed;
+- no R3 surface is changed, including auth/secrets, RLS, branch protection, external credentials, destructive migrations, or live-execution capability;
 - no database migration is required;
 - no secret or environment-variable value is changed;
 - deployment is reversible by reverting the single patch commit;
-- production verification can be performed immediately afterward.
+- production verification can be performed immediately afterward;
+- `can_execute=false`, dry-run-only, terminal reducer authority, fail-closed behavior, and required branch protections remain intact.
 
-If any condition is false, leave a tested PR and report `HUMAN_REVIEW_REQUIRED`.
+Additional requirements for **R2-restorative** autonomous publication:
+
+- the binding authority predates the defect and is cited in the patch contract;
+- the repair does not introduce or tune probability formulas, calibration formulas/thresholds, terminal precedence, terminal-label meaning, evidence-precedence policy, identity policy, persistence meaning, or cross-lane routing policy;
+- an Action/OpenAPI change is allowed only when it restores an already-authoritative canonical request/response contract and does not change contract meaning;
+- model/scoring implementation files may be touched only to restore behavior already required by the binding authority; model capability must not be broadened beyond that authority;
+- the patch must include a deterministic before/after conformance test;
+- the PR description must state `R2_RESTORATIVE_AUTONOMY=true` and identify the binding authority;
+- if required checks, review policy, or branch protection block merge, do not bypass them; leave the PR open and report `HUMAN_REVIEW_REQUIRED`.
+
+Autonomous publication is **not** allowed for R2-policy-changing or any R3 change. If eligibility is ambiguous, leave a tested PR and report `HUMAN_REVIEW_REQUIRED`.
 
 ### 8. Production verification
 
@@ -118,7 +146,7 @@ After any autonomous publish/deploy:
 - confirm no new P0/P1 errors appear in the verification window;
 - record deployment ID, commit SHA, UTC verification time, and evidence.
 
-If production verification fails, immediately revert or roll back the autonomous R0/R1 patch when a safe deterministic rollback path exists. Otherwise stop and report `ROLLBACK_REQUIRED`.
+If production verification fails, immediately revert or roll back the autonomous R0/R1/R2-restorative patch when a safe deterministic rollback path exists. Otherwise stop and report `ROLLBACK_REQUIRED`.
 
 ## Nightly acceptance probes
 
