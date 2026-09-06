@@ -7,9 +7,13 @@ on:
       - "artifacts/wow-engine/v17/mlb_game_winner_shadow_one_shot.py"
       - "artifacts/wow-engine/v17/mlb_game_winner_shadow_evaluation.py"
       - "artifacts/wow-engine/v17/mlb_game_winner_shadow_challenger.py"
+      - "artifacts/wow-engine/v17/test_mlb_game_winner_shadow_challenger.py"
+      - "artifacts/wow-engine/v17/test_mlb_game_winner_shadow_evaluation.py"
       - "artifacts/wow-engine/v17_observability.py"
       - "artifacts/wow-engine/scripts/run_mlb_game_winner_shadow_evaluation.py"
       - "artifacts/wow-engine/tests/test_mlb_game_winner_shadow_db_runner.py"
+      - "artifacts/wow-engine/tests/test_mlb_game_winner_shadow_one_shot.py"
+      - "artifacts/wow-engine/tests/test_v17_observability_shadow_schedule.py"
       - ".github/workflows/v17-game-winner-shadow-evaluation.yml"
   workflow_dispatch:
 
@@ -39,9 +43,11 @@ jobs:
           PYTHONPATH: .
         run: |
           python -m pytest -q \
-            tests/test_mlb_game_winner_shadow_challenger.py \
-            tests/test_mlb_game_winner_shadow_evaluation.py \
-            tests/test_mlb_game_winner_shadow_db_runner.py
+            v17/test_mlb_game_winner_shadow_challenger.py \
+            v17/test_mlb_game_winner_shadow_evaluation.py \
+            tests/test_mlb_game_winner_shadow_db_runner.py \
+            tests/test_mlb_game_winner_shadow_one_shot.py \
+            tests/test_v17_observability_shadow_schedule.py
       - name: Prove no serving/promotion mutation in runner sources
         run: |
           python - <<'PY'
