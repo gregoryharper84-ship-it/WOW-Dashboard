@@ -9,45 +9,37 @@ from v17.mlb_game_winner_shadow_evaluation import (
     CAN_EXECUTE,
     EvaluationEvidenceError,
     EvidenceRow,
-    HISTORICAL_V2A_FEATURES,
+    PAIRED_RUN_GAME_FEATURES,
+    PAIRED_RUN_GAME_FEATURE_SCHEMA_VERSION,
     RETROSPECTIVE_PROVENANCE,
+    RUN_SIDE_FEATURES,
     SERVING_MODE,
     TIMESTAMPED_PREGAME_PROVENANCE,
     chronological_split,
     evaluate_forward_shadow,
     evaluate_retrospective_challenger,
-    materialize_forward_game_features,
-    materialize_historical_game_features,
+    materialize_paired_run_game_features,
     validate_evidence_row,
 )
 
 
-FORWARD_NAMES = (
-    "is_home", "min_team_prior_games", "off_bb_pg", "off_cs_pg",
-    "off_days_rest", "off_hits_pg", "off_hr_pg", "off_run_diff_pg",
-    "off_runs_pg", "off_sb_pg", "off_so_pg", "off_tb_pg", "off_win_rate",
-    "opp_bp_apps_3d", "opp_bp_bb_rate", "opp_bp_era", "opp_bp_hr_rate",
-    "opp_bp_k_rate", "opp_bp_outs_3d", "opp_bp_pitches_3d", "opp_days_rest",
-    "opp_errors_pg", "opp_runs_allowed_pg", "opp_starter_bb_rate",
-    "opp_starter_days_rest", "opp_starter_era", "opp_starter_h_rate",
-    "opp_starter_hr_rate", "opp_starter_k_rate", "opp_starter_outs_per_start",
-    "opp_starter_pitches_last3", "opp_starter_pitches_per_start",
-    "opp_starter_prior_starts", "opp_starter_strike_rate",
-    "opp_starter_tbf_per_start", "opp_win_rate", "park_prior_games",
-    "park_total_runs_prior",
-)
-
-
-def forward_vector(**overrides):
-    values = {name: 1.0 for name in FORWARD_NAMES}
-    values.update({"park_prior_games": 40.0, "park_total_runs_prior": 8.7})
+def side_vector(*, is_home, **overrides):
+    values = {name: 1.0 for name in RUN_SIDE_FEATURES}
+    values.update(
+        {
+            "is_home": 1.0 if is_home else 0.0,
+            "park_prior_games": 65.0,
+            "park_total_runs_prior": 9.1,
+            "min_team_prior_games": 134.0,
+        }
+    )
     values.update(overrides)
-    return [values[name] for name in FORWARD_NAMES]
+    return [values[name] for name in RUN_SIDE_FEATURES]
 
 
-def historical_row(seed):
+def paired_feature_row(seed):
     rng = np.random.default_rng(seed)
-    return {name: float(rng.normal()) for name in HISTORICAL_V2A_FEATURES}
+    return {name: float(rng.normal()) for name in PAIRED_RUN_GAME_FEATURES}
 
 
 def evidence_rows(n=120, seed=23):
@@ -55,12 +47,12 @@ def evidence_rows(n=120, seed=23):
     start = datetime(2024, 4, 1, 18, 0, tzinfo=timezone.utc)
     rows = []
     for i in range(n):
-        features = historical_row(seed + i)
+        features = paired_feature_row(seed + i)
         signal = (
-            0.35 * features["run_diff_pg_diff"]
-            - 0.28 * features["starter_era_diff"]
-            - 0.18 * features["bp_era_diff"]
-            + 0.20 * features["win_rate_diff"]
+            0.36 * features["off_run_diff_pg_home_minus_away"]
+            - 0.27 * features["opp_starter_era_home_entity_minus_away_entity"]
+            - 0.18 * features["opp_bp_era_home_entity_minus_away_entity"]
+            + 0.21 * features["off_win_rate_home_minus_away"]
         )
         p = 1.0 / (1.0 + math.exp(-signal))
         home_win = bool(rng.random() < p)
@@ -79,71 +71,71 @@ def evidence_rows(n=120, seed=23):
 
 
 class GameWinnerShadowEvaluationTests(unittest.TestCase):
-    def test_historical_vector_contract_is_exact(self):
-        values = [float(i) for i in range(len(HISTORICAL_V2A_FEATURES))]
-        row = materialize_historical_game_features(HISTORICAL_V2A_FEATURES, values)
-        self.assertEqual(tuple(row), HISTORICAL_V2A_FEATURES)
-        self.assertEqual(row[HISTORICAL_V2A_FEATURES[-1]], values[-1])
+    def test_paired_contract_uses_exact_shared_historical_forward_source_schema(self):
+        self.assertEqual(len(RUN_SIDE_FEATURES), 38)
+        self.assertEqual(PAIRED_RUN_GAME_FEATURE_SCHEMA_VERSION, "MLB_GAME_WIN_PAIRED_RUN_FEATURES_V1")
+        self.assertNotIn("is_home", PAIRED_RUN_GAME_FEATURES)
 
-    def test_market_or_postgame_features_are_rejected(self):
-        with self.assertRaisesRegex(EvaluationEvidenceError, "GOVERNANCE_MARKET_LEAKAGE"):
-            materialize_historical_game_features(
-                list(HISTORICAL_V2A_FEATURES) + ["sportsbook_implied_probability"],
-                [0.0] * (len(HISTORICAL_V2A_FEATURES) + 1),
-            )
-        row = EvidenceRow(
-            event_id="x",
-            event_start_time=datetime(2026, 9, 6, 18, tzinfo=timezone.utc),
-            feature_row={"actual_outcome": 1.0},
-            home_win=True,
-            provenance_status=RETROSPECTIVE_PROVENANCE,
-        )
-        with self.assertRaisesRegex(EvaluationEvidenceError, "GOVERNANCE_POSTGAME_LEAKAGE"):
-            validate_evidence_row(row)
-
-    def test_forward_side_materialization_preserves_home_minus_away_semantics(self):
-        home = forward_vector(
+    def test_pair_materialization_preserves_home_relative_semantics(self):
+        home = side_vector(
+            is_home=True,
             off_runs_pg=5.2,
             off_hits_pg=9.0,
             off_days_rest=2.0,
-            opp_runs_allowed_pg=4.1,  # away team's runs allowed
+            opp_runs_allowed_pg=4.1,  # away team state
             opp_bp_era=4.5,           # away bullpen
             opp_starter_era=4.2,      # away starter
-            opp_starter_prior_starts=8.0,
-            min_team_prior_games=18.0,
         )
-        away = forward_vector(
+        away = side_vector(
+            is_home=False,
             off_runs_pg=4.4,
             off_hits_pg=7.5,
             off_days_rest=1.0,
-            opp_runs_allowed_pg=3.7,  # home team's runs allowed
+            opp_runs_allowed_pg=3.7,  # home team state
             opp_bp_era=3.6,           # home bullpen
             opp_starter_era=3.3,      # home starter
-            opp_starter_prior_starts=12.0,
-            min_team_prior_games=20.0,
         )
-        row = materialize_forward_game_features(FORWARD_NAMES, home, FORWARD_NAMES, away)
-        self.assertAlmostEqual(row["runs_pg_diff"], 0.8)
-        self.assertAlmostEqual(row["hits_pg_diff"], 1.5)
-        self.assertAlmostEqual(row["team_rest_diff"], 1.0)
-        self.assertAlmostEqual(row["runs_allowed_pg_diff"], -0.4)
-        self.assertAlmostEqual(row["bp_era_diff"], -0.9)
-        self.assertAlmostEqual(row["starter_era_diff"], -0.9)
-        self.assertEqual(row["starter_min_prior_starts"], 8.0)
-        self.assertEqual(row["team_min_prior_games"], 18.0)
+        row = materialize_paired_run_game_features(RUN_SIDE_FEATURES, home, RUN_SIDE_FEATURES, away)
+        self.assertEqual(tuple(row), PAIRED_RUN_GAME_FEATURES)
+        self.assertAlmostEqual(row["off_runs_pg_home_minus_away"], 0.8)
+        self.assertAlmostEqual(row["off_hits_pg_home_minus_away"], 1.5)
+        self.assertAlmostEqual(row["off_days_rest_home_minus_away"], 1.0)
+        self.assertAlmostEqual(row["opp_runs_allowed_pg_home_entity_minus_away_entity"], -0.4)
+        self.assertAlmostEqual(row["opp_bp_era_home_entity_minus_away_entity"], -0.9)
+        self.assertAlmostEqual(row["opp_starter_era_home_entity_minus_away_entity"], -0.9)
 
-    def test_shared_park_context_conflict_fails_closed_for_evidence(self):
-        home = forward_vector(park_total_runs_prior=8.7)
-        away = forward_vector(park_total_runs_prior=9.1)
+    def test_current_source_semantics_are_not_silently_capped_to_old_v2a_game_vector(self):
+        home = side_vector(is_home=True, min_team_prior_games=134.0, park_prior_games=65.0)
+        away = side_vector(is_home=False, min_team_prior_games=134.0, park_prior_games=65.0)
+        row = materialize_paired_run_game_features(RUN_SIDE_FEATURES, home, RUN_SIDE_FEATURES, away)
+        self.assertEqual(row["min_team_prior_games"], 134.0)
+        self.assertEqual(row["park_prior_games"], 65.0)
+
+    def test_side_identity_mismatch_fails_closed(self):
+        home = side_vector(is_home=False)
+        away = side_vector(is_home=False)
+        with self.assertRaisesRegex(EvaluationEvidenceError, "home_away_side_identity_mismatch"):
+            materialize_paired_run_game_features(RUN_SIDE_FEATURES, home, RUN_SIDE_FEATURES, away)
+
+    def test_shared_context_conflict_fails_closed_for_evidence(self):
+        home = side_vector(is_home=True, park_total_runs_prior=8.7)
+        away = side_vector(is_home=False, park_total_runs_prior=9.1)
         with self.assertRaisesRegex(EvaluationEvidenceError, "MODEL_INPUTS_CONFLICT"):
-            materialize_forward_game_features(FORWARD_NAMES, home, FORWARD_NAMES, away)
+            materialize_paired_run_game_features(RUN_SIDE_FEATURES, home, RUN_SIDE_FEATURES, away)
+
+    def test_market_source_feature_is_rejected(self):
+        names = list(RUN_SIDE_FEATURES) + ["sportsbook_implied_probability"]
+        home = side_vector(is_home=True) + [0.55]
+        away = side_vector(is_home=False) + [0.45]
+        with self.assertRaisesRegex(EvaluationEvidenceError, "GOVERNANCE_MARKET_LEAKAGE"):
+            materialize_paired_run_game_features(names, home, names, away)
 
     def test_timestamped_forward_row_rejects_postgame_feature_capture(self):
         event_start = datetime(2026, 9, 6, 18, tzinfo=timezone.utc)
         row = EvidenceRow(
             event_id="late",
             event_start_time=event_start,
-            feature_row=historical_row(7),
+            feature_row=paired_feature_row(7),
             home_win=True,
             provenance_status=TIMESTAMPED_PREGAME_PROVENANCE,
             feature_timestamp=event_start + timedelta(seconds=1),
@@ -180,6 +172,7 @@ class GameWinnerShadowEvaluationTests(unittest.TestCase):
         )
         self.assertEqual(report["retrospective_evidence_status"], "RETROSPECTIVE_OOS_COMPLETE")
         self.assertEqual(report["pristine_forward_evidence_status"], "FORWARD_CHALLENGER_SCORES_REQUIRED")
+        self.assertEqual(report["feature_schema_version"], PAIRED_RUN_GAME_FEATURE_SCHEMA_VERSION)
         self.assertEqual(report["serving_mode"], "SHADOW_ONLY")
         self.assertFalse(report["automatic_promotion"])
         self.assertFalse(report["admission_policy_mutated"])
@@ -212,7 +205,7 @@ class GameWinnerShadowEvaluationTests(unittest.TestCase):
                 EvidenceRow(
                     event_id=f"forward-{i}",
                     event_start_time=event_start,
-                    feature_row=historical_row(300 + i),
+                    feature_row=paired_feature_row(300 + i),
                     home_win=y,
                     provenance_status=TIMESTAMPED_PREGAME_PROVENANCE,
                     feature_timestamp=event_start - timedelta(hours=1),
