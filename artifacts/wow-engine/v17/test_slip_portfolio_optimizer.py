@@ -1,105 +1,131 @@
-from v17.slip_portfolio_optimizer import optimize_portfolio, thesis_identity
+from v17.slip_portfolio_optimizer import (
+    canonical_thesis_identity,
+    component_composite_overlap,
+    optimize_portfolio,
+    thesis_identity,
+)
 
 
-def _leg(row_id: str, *, player: str, prob: float, game: str = "game-1", stat: str = "STRIKEOUTS", direction: str = "MORE", line: float = 2.5):
+def _leg(
+    row_id: str,
+    *,
+    player: str,
+    prob: float,
+    game: str = "game-1",
+    stat: str = "STRIKEOUTS",
+    direction: str = "MORE",
+    line: float = 2.5,
+    period: str = "FULL_GAME",
+):
     return {
         "row_id": row_id,
         "event_id": game,
         "player": player,
         "prop_type": stat,
+        "period": period,
         "direction": direction,
         "line": line,
+        "platform": "PrizePicks",
         "model_probability": prob + 0.01,
         "calibrated_probability": prob,
         "calibrated_lower_bound": prob - 0.02,
     }
 
 
-def test_normalized_thesis_uses_line_family_not_exact_threshold():
+def test_exact_identity_distinguishes_threshold_while_family_identity_groups_it():
     a = _leg("a", player="Sean Manaea", prob=0.60, line=2.5)
     b = _leg("b", player="Sean Manaea", prob=0.60, line=4.5)
+    assert canonical_thesis_identity(a) != canonical_thesis_identity(b)
     assert thesis_identity(a) == thesis_identity(b)
 
 
-def test_borderline_common_hinge_is_replaced_on_second_card_when_stronger_independent_option_exists():
-    manaea_flex = _leg("manaea-flex", player="Sean Manaea", prob=0.58)
-    manaea_power = _leg("manaea-power", player="Sean Manaea", prob=0.58)
-    luzardo = _leg("luzardo", player="Jesus Luzardo", prob=0.69, game="game-2")
-    gauff = _leg("gauff", player="Coco Gauff", prob=0.68, game="tennis-1", stat="TOTAL_GAMES")
-    cole = _leg("cole", player="Gerrit Cole", prob=0.64, game="game-3")
-    grayson = _leg("grayson", player="Grayson Rodriguez", prob=0.66, game="game-4", stat="1IP_PITCHES")
-    alternative = _leg("alt", player="Independent Pitcher", prob=0.63, game="game-5")
-
+def test_gage_jump_exact_duplicate_across_cards_is_removed_without_probability_haircut():
+    a = _leg("gage-a", player="Gage Jump", prob=0.68, game="ath-kc", stat="1IP_PITCHES", line=16.5, period="1IP")
+    b = _leg("gage-b", player="Gage Jump", prob=0.68, game="ath-kc", stat="1IP_PITCHES", line=16.5, period="1IP")
     cards = [
-        {"card_id": "flex", "structure": "FLEX", "legs": [manaea_flex, luzardo, gauff, grayson]},
-        {"card_id": "power", "structure": "POWER", "legs": [manaea_power, cole, luzardo.copy()]},
+        {"card_id": "bonus-flex", "structure": "FLEX", "legs": [a, _leg("x", player="X", prob=0.71, game="x")]},
+        {"card_id": "six-flex", "structure": "FLEX", "legs": [b, _leg("y", player="Y", prob=0.70, game="y")]},
     ]
-    # Make the copied Luzardo row a distinct independent direction/market thesis
-    # so this fixture isolates Manaea as the duplicated hinge.
-    cards[1]["legs"][2]["direction"] = "LESS"
-
-    result = optimize_portfolio(cards, alternatives=[alternative])
-    assert result.can_execute is False
+    result = optimize_portfolio(cards)
+    assert result.exact_duplicate_counts[canonical_thesis_identity(a)] == 2
+    assert [r["removed_row_id"] for r in result.removals] == ["gage-b"]
     assert result.probability_fields_mutated is False
-    assert len(result.replacements) == 1
-    assert result.replacements[0]["removed_row_id"] == "manaea-power"
-    power_ids = [leg["row_id"] for leg in result.cards[1]["legs"]]
-    assert "manaea-power" not in power_ids
-    assert "alt" in power_ids
+    assert result.cards[1]["portfolio_governance"]["portfolio_qualified"] is False
+    assert "INSUFFICIENT_LEGS_AFTER_MANDATORY_SHRINK" in result.cards[1]["portfolio_governance"]["blockers"]
 
 
-def test_no_superior_replacement_shrinks_card_instead_of_using_filler():
-    manaea_a = _leg("manaea-a", player="Sean Manaea", prob=0.58)
-    manaea_b = _leg("manaea-b", player="Sean Manaea", prob=0.58)
-    strong_a = _leg("strong-a", player="A", prob=0.67, game="game-2")
-    strong_b = _leg("strong-b", player="B", prob=0.66, game="game-3")
-    # Card B's companion legs are deliberately independent; this fixture is
-    # testing only the Manaea common hinge rather than three duplicated theses.
-    strong_c = _leg("strong-c", player="C", prob=0.68, game="game-4")
-    strong_d = _leg("strong-d", player="D", prob=0.65, game="game-5")
-    weak_filler = _leg("filler", player="Filler", prob=0.54, game="game-9")
+def test_gerrit_cole_exact_duplicate_regression_fixture():
+    a = _leg("cole-a", player="Gerrit Cole", prob=0.67, game="nyy-bal", stat="1IP_PITCHES", direction="LESS", line=15.5, period="1IP")
+    b = _leg("cole-b", player="Gerrit Cole", prob=0.67, game="nyy-bal", stat="1IP_PITCHES", direction="LESS", line=15.5, period="1IP")
+    result = optimize_portfolio([
+        {"card_id": "a", "legs": [a, _leg("x", player="X", prob=0.70, game="x"), _leg("z", player="Z", prob=0.69, game="z")]},
+        {"card_id": "b", "legs": [b, _leg("y", player="Y", prob=0.70, game="y"), _leg("q", player="Q", prob=0.69, game="q")]},
+    ])
+    assert any(r["removed_row_id"] == "cole-b" for r in result.removals)
+    assert result.probability_fields_mutated is False
 
+
+def test_caitlin_clark_points_more_and_pra_more_are_component_composite_overlap():
+    points = _leg("clark-pts", player="Caitlin Clark", prob=0.66, game="ind-dal", stat="POINTS", direction="MORE", line=17.5)
+    pra = _leg("clark-pra", player="Caitlin Clark", prob=0.65, game="ind-dal", stat="PRA", direction="MORE", line=29.5)
+    assert component_composite_overlap(points, pra) is True
+    result = optimize_portfolio([
+        {"card_id": "four", "legs": [points, _leg("x", player="X", prob=0.70, game="x")]},
+        {"card_id": "six", "legs": [pra, _leg("y", player="Y", prob=0.70, game="y"), _leg("z", player="Z", prob=0.69, game="z")]},
+    ])
+    assert ("clark-pts", "clark-pra") in result.component_overlap_pairs
+    assert any(r["removed_row_id"] == "clark-pra" for r in result.removals)
+    assert result.probability_fields_mutated is False
+
+
+def test_superior_independent_replacement_beats_common_hinge_and_filler_is_rejected():
+    first = _leg("first", player="Sean Manaea", prob=0.58)
+    second = _leg("second", player="Sean Manaea", prob=0.58)
+    superior = _leg("superior", player="Independent", prob=0.64, game="other")
+    filler = _leg("filler", player="Filler", prob=0.54, game="other-2")
     result = optimize_portfolio(
         [
-            {"card_id": "card-a", "legs": [manaea_a, strong_a, strong_b]},
-            {"card_id": "card-b", "legs": [manaea_b, strong_c, strong_d]},
+            {"card_id": "one", "legs": [first, _leg("a", player="A", prob=0.70, game="a")]},
+            {"card_id": "two", "legs": [second, _leg("b", player="B", prob=0.69, game="b")]},
         ],
-        alternatives=[weak_filler],
+        alternatives=[filler, superior],
     )
-    assert result.replacements == []
-    assert len(result.removals) == 1
-    assert result.removals[0]["removed_row_id"] == "manaea-b"
-    assert len(result.cards[1]["legs"]) == 2
-    assert result.cards[1]["portfolio_governance"]["card_shrunk"] is True
+    assert result.replacements[0]["replacement_row_id"] == "superior"
+    assert "filler" not in [leg["row_id"] for leg in result.cards[1]["legs"]]
 
 
-def test_duplicate_exposure_changes_structural_score_not_probability_fields():
+def test_no_superior_replacement_always_shrinks_even_below_requested_minimum():
     first = _leg("first", player="Sean Manaea", prob=0.60)
     second = _leg("second", player="Sean Manaea", prob=0.60)
-    mate1 = _leg("mate1", player="A", prob=0.70, game="game-2")
-    mate2 = _leg("mate2", player="B", prob=0.69, game="game-3")
-    cards = [
-        {"card_id": "one", "legs": [first, mate1]},
-        {"card_id": "two", "legs": [second, mate2]},
-    ]
-    result = optimize_portfolio(cards, min_card_legs=2)
-    # Cannot shrink a two-leg card below minimum, so the duplicate remains but is
-    # explicitly marked unresolved and structurally penalized.
-    surviving = result.cards[1]["legs"][0]
-    assert surviving["model_probability"] == second["model_probability"]
-    assert surviving["calibrated_probability"] == second["calibrated_probability"]
-    assert surviving["calibrated_lower_bound"] == second["calibrated_lower_bound"]
-    assert surviving["portfolio_governance"]["duplicate_thesis_penalty"] > 0
-    assert surviving["portfolio_governance"]["duplicate_thesis_unresolved"] is True
-    assert result.probability_fields_mutated is False
-    assert result.can_execute is False
-
-
-def test_separate_cards_are_counted_as_one_portfolio_exposure():
-    a = _leg("a", player="Sean Manaea", prob=0.60)
-    b = _leg("b", player="Sean Manaea", prob=0.60)
     result = optimize_portfolio([
-        {"card_id": "flex", "legs": [a, _leg("x", player="X", prob=0.7, game="x")]},
-        {"card_id": "power", "legs": [b, _leg("y", player="Y", prob=0.7, game="y")]},
+        {"card_id": "one", "legs": [first, _leg("a", player="A", prob=0.70, game="a")]},
+        {"card_id": "two", "legs": [second, _leg("b", player="B", prob=0.70, game="b")]},
     ])
-    assert result.duplicate_counts[thesis_identity(a)] == 2
+    assert len(result.cards[1]["legs"]) == 1
+    assert result.cards[1]["portfolio_governance"]["card_shrunk"] is True
+    assert result.cards[1]["portfolio_governance"]["portfolio_qualified"] is False
+
+
+def test_flex_same_event_without_joint_model_is_held_not_assumed_independent():
+    a = _leg("a", player="Player A", prob=0.70, game="same-event", stat="POINTS")
+    b = _leg("b", player="Player B", prob=0.69, game="same-event", stat="REBOUNDS")
+    result = optimize_portfolio([{"card_id": "flex", "structure": "FLEX", "legs": [a, b]}])
+    governance = result.cards[0]["portfolio_governance"]
+    assert governance["portfolio_qualified"] is False
+    assert "PP_CORRELATION_UNRESOLVED" in governance["blockers"]
+
+    resolved = optimize_portfolio([
+        {"card_id": "flex", "structure": "FLEX", "joint_probability_status": "PASS", "legs": [a, b]}
+    ])
+    assert resolved.cards[0]["portfolio_governance"]["portfolio_qualified"] is True
+
+
+def test_prior_session_ledger_blocks_reusing_exact_thesis_on_later_card():
+    prior = _leg("prior", player="Gage Jump", prob=0.68, game="ath-kc", stat="1IP_PITCHES", line=16.5, period="1IP")
+    later = _leg("later", player="Gage Jump", prob=0.68, game="ath-kc", stat="1IP_PITCHES", line=16.5, period="1IP")
+    result = optimize_portfolio(
+        [{"card_id": "later-card", "legs": [later, _leg("x", player="X", prob=0.70, game="x")]}],
+        prior_session_legs=[prior],
+    )
+    assert any(r["removed_row_id"] == "later" for r in result.removals)
+    assert result.probability_fields_mutated is False
