@@ -15,6 +15,7 @@ from prop_model_adapters_plate_appearances import (
 PLAYER_ID = 99
 TEAM_ID = 123
 GAME_PK = 456
+HISTORICAL_GAME_PKS = {1000 + day for day in range(1, 11)}
 EVENT_START = "2026-09-05T18:00:00+00:00"
 NOW = datetime(2026, 9, 5, 12, 0, tzinfo=timezone.utc)
 
@@ -38,6 +39,7 @@ def _game_log_payload():
             {
                 "date": f"2026-08-{day:02d}",
                 "gameNumber": 1,
+                "game": {"gamePk": 1000 + day},
                 "opponent": {"abbreviation": "OPP"},
                 "stat": {
                     "plateAppearances": 4 + (day % 2),
@@ -83,6 +85,14 @@ def _request_json(*, lineup=True):
                     "home": {"battingOrder": []},
                 }
             }
+        for historical_game_pk in HISTORICAL_GAME_PKS:
+            if url.endswith(f"/game/{historical_game_pk}/boxscore"):
+                return {
+                    "teams": {
+                        "away": {"battingOrder": [11, 12, PLAYER_ID, 14, 15, 16, 17, 18, 19]},
+                        "home": {"battingOrder": []},
+                    }
+                }
         if url.endswith(f"/people/{PLAYER_ID}/stats"):
             return _game_log_payload()
         raise AssertionError(f"unexpected URL: {url}")
