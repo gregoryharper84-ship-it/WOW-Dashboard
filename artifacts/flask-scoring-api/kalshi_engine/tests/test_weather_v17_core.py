@@ -21,7 +21,7 @@ def payload():
         "station_error_profiles": [{"station_id": "KDFW", "model_name": "NWS", "mean_error": .5, "rmse": 1.7, "sample_size": 80}],
         "regimes": [{"name": "CLEAR_MIXING", "probability": .75, "delta_f": .5}, {"name": "CONVECTIVE_OUTFLOW_RISK", "probability": .25, "delta_f": -2.0, "extra_sigma_f": .8}],
         "contract": {"kind": "BRACKET", "lower_f": 94, "upper_f": 95, "side": "YES"},
-        "calibration": {"method": "AFFINE", "sample_size": 120, "slope": .98, "intercept": .01, "lower_bound": .35, "upper_bound": .75},
+        "calibration": {"method": "AFFINE", "sample_size": 120, "slope": .98, "intercept": .01, "lower_bound": 0.0, "upper_bound": 1.0},
         "scored_at": "2026-09-06T18:00:00Z",
     }
 
