@@ -65,6 +65,7 @@ def test_v17_weather_gate_uses_model_pmf_not_yes_price_sum():
         "calibration_status": "CALIBRATED",
         "calibrated_lower_bound": .60,
         "final_high_pmf": {"93": .2, "94": .3, "95": .5},
+        "can_execute": False,
     }
     out = weather_gate.check(c)
     assert out["passed"] is True
@@ -79,6 +80,7 @@ def test_v17_weather_gate_rejects_bad_model_pmf_even_if_market_prices_look_norma
         "calibration_status": "CALIBRATED",
         "calibrated_lower_bound": .60,
         "final_high_pmf": {"93": .2, "94": .3},
+        "can_execute": False,
     }
     out = weather_gate.check(c)
     assert out["passed"] is False
