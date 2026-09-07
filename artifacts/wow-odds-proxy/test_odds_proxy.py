@@ -5,6 +5,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import api
+from github_actions_oidc import GitHubOIDCValidationError
 
 
 class FakeResponse:
@@ -38,7 +39,8 @@ def test_health_never_returns_secret(configured):
     assert response.status_code == 200
     body = response.json()
     assert body["vendor_key_configured"] is True
-    assert body["caller_auth_configured"] is True
+    assert body["caller_bearer_auth_configured"] is True
+    assert body["github_multiscout_oidc_enabled"] is True
     assert body["can_execute"] is False
     assert "vendor-secret-test" not in response.text
     assert "caller-secret-test" not in response.text
@@ -47,11 +49,31 @@ def test_health_never_returns_secret(configured):
 def test_protected_route_requires_caller_bearer(monkeypatch):
     monkeypatch.setenv("ODDS_API_KEY", "vendor-secret-test")
     monkeypatch.setenv("WOW_ODDS_PROXY_ACTION_KEY", "caller-secret-test")
+    monkeypatch.setattr(api, "verify_github_actions_oidc", lambda token: (_ for _ in ()).throw(GitHubOIDCValidationError("bad")))
     client = TestClient(api.app)
     missing = client.get("/odds-api/v4/sports/baseball_mlb/events")
     wrong = client.get("/odds-api/v4/sports/baseball_mlb/events", headers={"Authorization": "Bearer wrong"})
     assert missing.status_code == 401
     assert wrong.status_code == 401
+
+
+def test_exact_github_oidc_is_valid_read_only_fallback(monkeypatch):
+    monkeypatch.setenv("ODDS_API_KEY", "vendor-secret-test")
+    monkeypatch.setattr(api, "verify_github_actions_oidc", lambda token: {"repository": "gregoryharper84-ship-it/WOW-Dashboard"})
+    monkeypatch.setattr(api, "_http_get", lambda url, params: FakeResponse(200, [{"key": "baseball_mlb", "active": True}]))
+    client = TestClient(api.app)
+    response = client.get("/odds-api/v4/sports", headers={"Authorization": "Bearer oidc-token"})
+    assert response.status_code == 200
+    assert response.json()[0]["key"] == "baseball_mlb"
+
+
+def test_invalid_oidc_cannot_bypass_bearer_auth(monkeypatch):
+    monkeypatch.setenv("ODDS_API_KEY", "vendor-secret-test")
+    monkeypatch.setattr(api, "verify_github_actions_oidc", lambda token: (_ for _ in ()).throw(GitHubOIDCValidationError("bad")))
+    client = TestClient(api.app)
+    response = client.get("/odds-api/v4/sports", headers={"Authorization": "Bearer invalid-oidc"})
+    assert response.status_code == 401
+    assert response.json()["detail"]["code"] == "ODDS_PROXY_AUTH_INVALID"
 
 
 def test_sports_inventory_is_read_only_and_server_keyed(monkeypatch, configured):
