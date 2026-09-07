@@ -46,11 +46,15 @@ def test_registry_rejects_series_station_mismatch():
         resolve_station("CHI", "KXHIGHMIA")
 
 
-def test_legacy_weather_gate_is_explicitly_not_governed_probability():
-    out = weather_gate.check(_market_candidate())
-    assert out["passed"] is True
+def test_legacy_weather_gate_fails_closed_without_v17_probability_package():
+    c = _market_candidate()
+    c["calibrated_prob_lower_bound"] = .70  # legacy heuristic must never qualify publication
+    out = weather_gate.check(c)
+    assert out["passed"] is False
+    assert out["failure_category"] == "V17_PROBABILITY_PACKAGE_REQUIRED"
     assert out["probability_governance_status"] == "LEGACY_RESEARCH_ONLY"
     assert out["governed_probability_eligible"] is False
+    assert out["weather_v17_probability_completed"] is False
 
 
 def test_v17_weather_gate_uses_model_pmf_not_yes_price_sum():
