@@ -8,7 +8,9 @@ on:
     paths:
       - ".github/workflows/wow-v17-nightly-multiscout.yml"
       - "artifacts/wow-engine/v17/nightly_multiscout.py"
+      - "artifacts/wow-engine/v17/nightly_multiscout_delivery.py"
       - "artifacts/wow-engine/test_v17_nightly_multiscout.py"
+      - "artifacts/wow-engine/test_v17_nightly_multiscout_delivery.py"
       - "artifacts/wow-odds-proxy/**"
 
 permissions:
@@ -35,7 +37,7 @@ jobs:
       - name: Install engine dependencies
         run: pip install -r requirements.txt
       - name: Run Multi-Scout regression tests
-        run: python -m pytest -q test_v17_nightly_multiscout.py
+        run: python -m pytest -q test_v17_nightly_multiscout.py test_v17_nightly_multiscout_delivery.py
       - name: Verify odds proxy extension
         working-directory: artifacts/wow-odds-proxy
         run: |
@@ -95,9 +97,25 @@ jobs:
           else:
               print(f"nightly discovery blocked: {data.get('reason_code')}")
           PY
+      - name: Stamp recoverable Scout run identity and manifest
+        id: delivery
+        if: always()
+        shell: bash
+        run: |
+          test -f "$RUNNER_TEMP/wow-multiscout/model-handoff.json"
+          run_id="wow-scout-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          artifact_name="wow-v17-multiscout-${run_id}"
+          python v17/nightly_multiscout_delivery.py \
+            --input "$RUNNER_TEMP/wow-multiscout/model-handoff.json" \
+            --output-dir "$RUNNER_TEMP/wow-multiscout" \
+            --run-id "$run_id"
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+          echo "artifact_name=$artifact_name" >> "$GITHUB_OUTPUT"
       - name: Write human-readable Scout summary
         if: always()
         shell: bash
+        env:
+          SCOUT_RUN_ID: ${{ steps.delivery.outputs.run_id }}
         run: |
           python - <<'PY'
           import json, os
@@ -112,15 +130,23 @@ jobs:
           h = data.get("model_handoff", {})
           sports = sorted({r.get("sport") for r in data.get("coverage", []) if r.get("scope") == "sport" and r.get("status") == "SCANNED"})
           books = data.get("sportsbook_coverage", {}).get("bookmakers_seen", [])
+          delivery = data.get("delivery", {})
+          recon = data.get("reconciliation", {})
           lines = [
               "# WOW V17 Nightly Multi-Scout",
               "",
+              f"- Run ID: `{data.get('run_id')}`",
+              f"- Research run ID: `{data.get('research_run_id')}`",
               f"- Status: `{data.get('status')}`",
               f"- Generated: `{data.get('generated_at')}`",
+              f"- GitHub run: {delivery.get('github_run_url') or 'unavailable'}",
+              f"- Recoverable artifact: `{delivery.get('artifact_name')}`",
+              f"- Retention: **{delivery.get('retention_days', 90)} days**",
               f"- Sports scanned: **{len(sports)}**",
               f"- Sportsbooks/bookmakers observed: **{len(books)}**",
               f"- Team/event handoff candidates: **{len(h.get('team_event_candidates', []))}**",
               f"- Prop evidence rows for handoff: **{len(h.get('prop_candidates', []))}**",
+              f"- Reconciled candidate rows: **{recon.get('candidate_rows_total', 0)}**",
               "- NBA required: yes",
               "- NCAAMB required: yes",
               "- WNBA required: yes",
@@ -129,6 +155,7 @@ jobs:
               "- Market/alternate-line Scout: enabled",
               "- Contrarian/Red-Team Scout: enabled",
               "- Parallel Discovery Router handoff: required",
+              "- Scout ceiling: RESEARCH_INTEREST",
               "- can_execute: false",
               "",
               "## Sports",
@@ -139,16 +166,20 @@ jobs:
           ]
           out.write_text("\n".join(lines) + "\n")
           PY
+          cat "$RUNNER_TEMP/wow-multiscout/summary.md" >> "$GITHUB_STEP_SUMMARY"
       - name: Upload governed model-handoff artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: wow-v17-nightly-multiscout-model-handoff
+          name: ${{ steps.delivery.outputs.artifact_name }}
           path: |
             ${{ runner.temp }}/wow-multiscout/model-handoff.json
+            ${{ runner.temp }}/wow-multiscout/model-handoff-${{ steps.delivery.outputs.run_id }}.json
+            ${{ runner.temp }}/wow-multiscout/run-manifest.json
+            ${{ runner.temp }}/wow-multiscout/latest-pointer.json
             ${{ runner.temp }}/wow-multiscout/summary.md
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 90
       - name: Fail nightly run if source acquisition was blocked
         if: steps.scout.outputs.runner_exit_code != '0'
         run: exit 1
