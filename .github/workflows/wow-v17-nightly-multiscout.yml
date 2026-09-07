@@ -110,6 +110,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: pip
+          cache-dependency-path: artifacts/wow-engine/requirements.txt
+      - name: Install live Scout runtime dependencies
+        run: pip install -r requirements.txt
       - name: Assert fail-closed execution governance and OIDC context
         shell: bash
         run: |
