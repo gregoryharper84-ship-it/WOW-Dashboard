@@ -15,6 +15,8 @@ from typing import Any, Callable, Optional
 from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from v17.postmortem_engine import install_postmortem_routes
+
 _NAMESPACE = uuid.UUID("3f750180-e938-4cb0-af6f-2a58e32facb5")
 _ALLOWED_RESULTS = {"WIN", "LOSS", "PUSH", "VOID"}
 
@@ -174,9 +176,7 @@ def install_recommendation_ledger_routes(
                     "source_type": batch.source_type,
                     "source_conversation_ref": batch.source_conversation_ref,
                     "capture_timing": "PREGAME",
-                    "calibration_eligible": bool(
-                        row.probability_publishable and row.governed_prediction_id
-                    ),
+                    "calibration_eligible": bool(row.probability_publishable and row.governed_prediction_id),
                     "can_execute": False,
                 }
             )
@@ -186,8 +186,6 @@ def install_recommendation_ledger_routes(
             result = get_client_fn().table("wow_recommendation_records").insert(payloads).execute()
             persisted = result.data or []
         except Exception as exc:
-            # A deterministic duplicate is a successful retry only when every
-            # expected immutable row already exists.
             ids = [item["recommendation_record_id"] for item in payloads]
             try:
                 existing = (
@@ -257,18 +255,9 @@ def install_recommendation_ledger_routes(
             existing_by_id[row.recommendation_record_id]["capture_timing"] != "PREGAME"
             for row in batch.rows
         )
-        attribution_status = (
-            "RETROSPECTIVE_UNVERIFIED" if retrospective else "MATCHED_PREGAME_RECORD"
-        )
+        attribution_status = "RETROSPECTIVE_UNVERIFIED" if retrospective else "MATCHED_PREGAME_RECORD"
         for row in batch.rows:
-            payload = row.model_dump(
-                exclude={
-                    "entry_cost",
-                    "payout",
-                    "profit_loss",
-                    "displayed_roi",
-                }
-            )
+            payload = row.model_dump(exclude={"entry_cost", "payout", "profit_loss", "displayed_roi"})
             payload["excluded_from_calibration"] = retrospective
             payload["attribution_status"] = attribution_status
             payload["can_execute"] = False
@@ -300,21 +289,25 @@ def install_recommendation_ledger_routes(
         except Exception as exc:
             raise HTTPException(
                 status_code=503,
-                detail={
-                    "code": "RECOMMENDATION_SETTLEMENT_WRITE_FAILED",
-                    "can_execute": False,
-                },
+                detail={"code": "RECOMMENDATION_SETTLEMENT_WRITE_FAILED", "can_execute": False},
             ) from exc
         if not isinstance(persisted, dict) or persisted.get("reconciliation_pass") is not True:
             raise HTTPException(
                 status_code=503,
-                detail={
-                    "code": "RECOMMENDATION_SETTLEMENT_WRITE_UNPROVEN",
-                    "can_execute": False,
-                },
+                detail={"code": "RECOMMENDATION_SETTLEMENT_WRITE_UNPROVEN", "can_execute": False},
             )
         return {
             "code": "RECOMMENDATION_SETTLEMENT_WRITE_PASS",
             **persisted,
             "can_execute": False,
         }
+
+    # The same authenticated cross-sport ledger layer owns retrospective
+    # traceability.  Installing here makes the V17 postmortem endpoints part of
+    # the existing api_prod_market production app without changing its start
+    # command or any sporting-model route.
+    install_postmortem_routes(
+        app=app,
+        auth_dependency=auth_dependency,
+        get_client_fn=get_client_fn,
+    )
