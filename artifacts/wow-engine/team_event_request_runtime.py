@@ -7,6 +7,8 @@ from typing import Any, Literal, Optional
 from fastapi import Header, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
+from github_actions_oidc import scout_route_auth_dependency
+
 ObjectiveLane = Literal["OUTRIGHT_WIN_PROBABILITY", "UPSET_PROBABILITY", "MARKET_EDGE"]
 
 
@@ -109,7 +111,7 @@ def install_team_event_request_routes(app: Any, *, auth_dependency: Any, db_clie
     if any(getattr(r, "path", None) == "/score-team-event-request" for r in app.router.routes):
         return
 
-    @app.post("/score-team-event-request", dependencies=[auth_dependency],
+    @app.post("/score-team-event-request", dependencies=[scout_route_auth_dependency(auth_dependency)],
               operation_id="scoreWowTeamEventRequest")
     def score_team_event_request(
         batch: TeamEventRequestBatch,
