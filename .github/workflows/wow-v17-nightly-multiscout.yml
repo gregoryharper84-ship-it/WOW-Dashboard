@@ -9,8 +9,13 @@ on:
       - ".github/workflows/wow-v17-nightly-multiscout.yml"
       - "artifacts/wow-engine/v17/nightly_multiscout.py"
       - "artifacts/wow-engine/v17/nightly_multiscout_delivery.py"
+      - "artifacts/wow-engine/v17/multiscout_auto_advance.py"
+      - "artifacts/wow-engine/agent_runtime/coordinator_v17.py"
+      - "artifacts/wow-engine/agent_runtime/durable_runner.py"
       - "artifacts/wow-engine/test_v17_nightly_multiscout.py"
       - "artifacts/wow-engine/test_v17_nightly_multiscout_delivery.py"
+      - "artifacts/wow-engine/test_v17_multiscout_auto_advance.py"
+      - "artifacts/wow-engine/test_agent_runtime_v17_model_failures.py"
       - "artifacts/wow-odds-proxy/**"
 
 permissions:
@@ -36,8 +41,13 @@ jobs:
           cache-dependency-path: artifacts/wow-engine/requirements.txt
       - name: Install engine dependencies
         run: pip install -r requirements.txt
-      - name: Run Multi-Scout regression tests
-        run: python -m pytest -q test_v17_nightly_multiscout.py test_v17_nightly_multiscout_delivery.py
+      - name: Run Multi-Scout and typed-failure regression tests
+        run: >-
+          python -m pytest -q
+          test_v17_nightly_multiscout.py
+          test_v17_nightly_multiscout_delivery.py
+          test_v17_multiscout_auto_advance.py
+          test_agent_runtime_v17_model_failures.py
       - name: Verify odds proxy extension
         working-directory: artifacts/wow-odds-proxy
         run: |
@@ -45,7 +55,7 @@ jobs:
           pytest -q
 
   nightly-discovery:
-    name: Nightly all-sport sportsbook discovery and model handoff
+    name: Nightly all-sport discovery and governed specialist handoff
     if: github.event_name != 'pull_request'
     needs: verify
     runs-on: ubuntu-latest
@@ -56,6 +66,9 @@ jobs:
     env:
       WOW_ODDS_PROXY_URL: https://wow-odds-proxy.onrender.com
       WOW_ODDS_PROXY_ACTION_KEY: ${{ secrets.WOW_ODDS_PROXY_ACTION_KEY }}
+      WOW_ACTION_ORIGIN: https://wow-governed-probability-engine.onrender.com
+      WOW_ACTION_API_KEY: ${{ secrets.WOW_ACTION_API_KEY }}
+      WOW_USER_TIMEZONE: America/Chicago
       WOW_SCOUT_REGIONS: us,us2,uk,eu,au
       WOW_SCOUT_HORIZON_HOURS: "36"
       WOW_SCOUT_REQUEST_DELAY_MS: "75"
@@ -111,6 +124,38 @@ jobs:
             --run-id "$run_id"
           echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
           echo "artifact_name=$artifact_name" >> "$GITHUB_OUTPUT"
+      - name: Auto-advance Scout candidates into governed specialist routes
+        id: advance
+        if: steps.scout.outputs.runner_exit_code == '0'
+        shell: bash
+        run: |
+          set +e
+          python v17/multiscout_auto_advance.py \
+            --input "$RUNNER_TEMP/wow-multiscout/model-handoff.json" \
+            --output "$RUNNER_TEMP/wow-multiscout/auto-advance-receipt.json"
+          rc=$?
+          set -e
+          echo "runner_exit_code=$rc" >> "$GITHUB_OUTPUT"
+          test -f "$RUNNER_TEMP/wow-multiscout/auto-advance-receipt.json"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          root = Path(os.environ["RUNNER_TEMP"]) / "wow-multiscout"
+          handoff = json.loads((root / "model-handoff.json").read_text())
+          receipt = json.loads((root / "auto-advance-receipt.json").read_text())
+          assert receipt.get("can_execute") is False
+          assert receipt.get("source_run_id") == handoff.get("run_id")
+          assert receipt.get("research_run_id") == handoff.get("research_run_id")
+          status = str(receipt.get("status") or "")
+          assert status in {
+              "AUTO_ADVANCE_COMPLETE",
+              "AUTO_ADVANCE_COMPLETE_WITH_BLOCKERS",
+              "BLOCKED_BACKEND_HANDOFF",
+              "BLOCKED_RECONCILIATION",
+              "BLOCKED_INVALID_SCOUT_HANDOFF",
+          }
+          print(f"governed auto-advance status={status} code={receipt.get('code')}")
+          PY
       - name: Write human-readable Scout summary
         if: always()
         shell: bash
@@ -122,40 +167,48 @@ jobs:
           from pathlib import Path
           root = Path(os.environ["RUNNER_TEMP"]) / "wow-multiscout"
           source = root / "model-handoff.json"
+          receipt_path = root / "auto-advance-receipt.json"
           out = root / "summary.md"
           if not source.exists():
               out.write_text("# WOW V17 Nightly Multi-Scout\n\nNo handoff artifact was produced.\n")
               raise SystemExit(0)
           data = json.loads(source.read_text())
+          receipt = json.loads(receipt_path.read_text()) if receipt_path.exists() else {}
           h = data.get("model_handoff", {})
           sports = sorted({r.get("sport") for r in data.get("coverage", []) if r.get("scope") == "sport" and r.get("status") == "SCANNED"})
           books = data.get("sportsbook_coverage", {}).get("bookmakers_seen", [])
           delivery = data.get("delivery", {})
           recon = data.get("reconciliation", {})
+          advance_recon = receipt.get("reconciliation", {})
+          mapping = receipt.get("mapping", {})
           lines = [
               "# WOW V17 Nightly Multi-Scout",
               "",
               f"- Run ID: `{data.get('run_id')}`",
               f"- Research run ID: `{data.get('research_run_id')}`",
-              f"- Status: `{data.get('status')}`",
+              f"- Scout status: `{data.get('status')}`",
+              f"- Governed auto-advance status: `{receipt.get('status') or 'NOT_RUN'}`",
+              f"- Governed auto-advance code: `{receipt.get('code') or 'NOT_RUN'}`",
               f"- Generated: `{data.get('generated_at')}`",
               f"- GitHub run: {delivery.get('github_run_url') or 'unavailable'}",
               f"- Recoverable artifact: `{delivery.get('artifact_name')}`",
               f"- Retention: **{delivery.get('retention_days', 90)} days**",
               f"- Sports scanned: **{len(sports)}**",
               f"- Sportsbooks/bookmakers observed: **{len(books)}**",
-              f"- Team/event handoff candidates: **{len(h.get('team_event_candidates', []))}**",
-              f"- Prop evidence rows for handoff: **{len(h.get('prop_candidates', []))}**",
-              f"- Reconciled candidate rows: **{recon.get('candidate_rows_total', 0)}**",
-              "- NBA required: yes",
-              "- NCAAMB required: yes",
-              "- WNBA required: yes",
-              "- Upset evaluation handoff: LLP only after governed probability",
-              "- Game-script enumeration: enabled",
-              "- Market/alternate-line Scout: enabled",
-              "- Contrarian/Red-Team Scout: enabled",
-              "- Parallel Discovery Router handoff: required",
-              "- Scout ceiling: RESEARCH_INTEREST",
+              f"- Team/event Scout candidates: **{len(h.get('team_event_candidates', []))}**",
+              f"- Prop Scout evidence rows: **{len(h.get('prop_candidates', []))}**",
+              f"- Reconciled Scout candidate rows: **{recon.get('candidate_rows_total', 0)}**",
+              f"- Mapped prop rows sent to governed prop lane: **{mapping.get('mapped_prop_rows', 0)}**",
+              f"- Duplicate prop observations collapsed: **{mapping.get('duplicate_prop_rows', 0)}**",
+              f"- Prop mapping rejects: **{len(mapping.get('rejected_prop_rows', []))}**",
+              f"- Team/event objective rows sent to LLP lane: **{mapping.get('downstream_team_objective_rows', 0)}**",
+              f"- Team/event mapping rejects: **{len(mapping.get('rejected_team_event_rows', []))}**",
+              f"- Downstream completed rows: **{advance_recon.get('completed_downstream_rows', 0)}**",
+              f"- Downstream governed holds/rejects: **{advance_recon.get('blocked_downstream_rows', 0)}**",
+              f"- Downstream reconciliation pass: **{advance_recon.get('response_reconciliation_pass', False)}**",
+              "- Upset probability authority: LLP only",
+              "- Scout/market probability authority: none",
+              "- V17 Terminal Reducer remains terminal authority",
               "- can_execute: false",
               "",
               "## Sports",
@@ -167,7 +220,7 @@ jobs:
           out.write_text("\n".join(lines) + "\n")
           PY
           cat "$RUNNER_TEMP/wow-multiscout/summary.md" >> "$GITHUB_STEP_SUMMARY"
-      - name: Upload governed model-handoff artifact
+      - name: Upload governed Scout and downstream receipt artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -177,9 +230,13 @@ jobs:
             ${{ runner.temp }}/wow-multiscout/model-handoff-${{ steps.delivery.outputs.run_id }}.json
             ${{ runner.temp }}/wow-multiscout/run-manifest.json
             ${{ runner.temp }}/wow-multiscout/latest-pointer.json
+            ${{ runner.temp }}/wow-multiscout/auto-advance-receipt.json
             ${{ runner.temp }}/wow-multiscout/summary.md
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 90
       - name: Fail nightly run if source acquisition was blocked
         if: steps.scout.outputs.runner_exit_code != '0'
+        run: exit 1
+      - name: Fail nightly run if governed auto-advance infrastructure was blocked
+        if: steps.scout.outputs.runner_exit_code == '0' && steps.advance.outputs.runner_exit_code != '0'
         run: exit 1

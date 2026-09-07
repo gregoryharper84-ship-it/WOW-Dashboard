@@ -38,7 +38,7 @@ def run_durable_body(client: Any, envelope: dict) -> tuple[dict, Exception | Non
             return {"status": "DUPLICATE_DELIVERY_IGNORED", "job_id": env.job_id, "terminal_status": row["status"], "can_execute": False}, None
         return {}, RuntimeError("JOB_NOT_CLAIMABLE_YET")
 
-    from agent_runtime.coordinator_scout_research import Coordinator
+    from agent_runtime.coordinator_v17 import Coordinator
     coordinator = Coordinator(client)
     try:
         coordinator.on_job_started(env.worker_id, env.run_id)
