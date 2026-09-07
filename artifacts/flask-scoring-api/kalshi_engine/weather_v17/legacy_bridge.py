@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from .adapter import package_to_legacy_candidate
 from .core import score_weather_contract
 from .registry import REGISTRY_VERSION, validate_station
 from .snapshots import freeze_forecast_snapshot, freeze_observation_snapshot
@@ -99,3 +100,26 @@ def score_from_legacy_evaluate(
     result["legacy_bridge_used"] = True
     result["legacy_heuristic_lower_bound_consumed"] = False
     return result
+
+
+def category_scan_candidate_from_legacy_evaluate(
+    legacy: dict[str, Any],
+    contract: dict[str, Any],
+    **kwargs: Any,
+) -> dict[str, Any]:
+    """Return a fail-closed V17 category-scan candidate from legacy weather evidence.
+
+    This is the route-integration handoff for the monolithic category-scan path.
+    It intentionally overwrites legacy probability aliases (including the old
+    WEATHER_MODEL_READY heuristic lower bound) with values from the V17 package.
+    With no certified calibration evidence, the adapter therefore publishes no
+    calibrated lower bound and keeps the row at WEATHER_WATCH. Kalshi price,
+    fee, liquidity, and edge fields may remain on the candidate as downstream
+    market evidence, but they are never inputs to the weather probability score.
+    """
+    package = score_from_legacy_evaluate(legacy, contract, **kwargs)
+    candidate = package_to_legacy_candidate(package, legacy)
+    candidate["legacy_heuristic_lower_bound_consumed"] = False
+    candidate["can_execute"] = False
+    candidate["DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS"] = True
+    return candidate
