@@ -27,7 +27,8 @@ def _v17_governance(candidate: dict[str, Any]) -> dict[str, Any]:
     pmf = package.get("final_high_pmf") or {}
     pmf_sum = sum(float(v) for v in pmf.values()) if pmf else None
     normalized = completed and pmf_sum is not None and abs(pmf_sum - 1.0) <= 1e-6
-    eligible = completed and calibrated and lower is not None and normalized
+    execution_disabled = package.get("can_execute") is False
+    eligible = completed and calibrated and lower is not None and normalized and execution_disabled
     return {
         "package_present": bool(package),
         "completed": completed,
@@ -35,6 +36,7 @@ def _v17_governance(candidate: dict[str, Any]) -> dict[str, Any]:
         "lower_bound_present": lower is not None,
         "pmf_sum": pmf_sum,
         "pmf_normalized": normalized,
+        "execution_disabled": execution_disabled,
         "governed_probability_eligible": eligible,
         "probability_governance_status": "V17_GOVERNED" if eligible else ("V17_RESEARCH_ONLY" if package else "LEGACY_RESEARCH_ONLY"),
     }
@@ -86,17 +88,25 @@ def check(candidate: dict[str, Any]) -> dict[str, Any]:
 
     if not candidate.get("nws_gridpoint_available", False):
         return _fail(5, "NWS_GRIDPOINT_UNAVAILABLE", "NWS gridpoint unavailable")
-    _pass_gate(5, "nws_gridpoint_available=True")
+    _pass_gate(5, "NWS_gridpoint_available=True")
 
     if not candidate.get("bracket_coverage_complete", False):
         return _fail(6, "BRACKET_COVERAGE_INCOMPLETE", "temperature bracket coverage incomplete")
     _pass_gate(6, "bracket_coverage_complete=True")
 
-    # Gate 7 — V17 model normalization. Never derive this from exchange prices.
+    # Gate 7 — V17 model governance. Never derive any of these conditions from exchange prices.
     if gov["package_present"]:
+        if not gov["completed"]:
+            return _fail(7, "V17_PROBABILITY_NOT_COMPLETED", "V17 weather probability package is present but not completed")
         if not gov["pmf_normalized"]:
             return _fail(7, "MODEL_PMF_NORMALIZATION_FAIL", f"weather model PMF sum={gov['pmf_sum']}")
-        _pass_gate(7, f"V17 weather PMF normalized: sum={gov['pmf_sum']:.6f}")
+        if not gov["calibrated"]:
+            return _fail(7, "V17_CALIBRATION_REQUIRED", "V17 weather package has no genuine calibrated status; research-only probability cannot publish")
+        if not gov["lower_bound_present"]:
+            return _fail(7, "V17_CALIBRATED_LOWER_BOUND_REQUIRED", "V17 weather package has no calibrated lower bound evidence")
+        if not gov["execution_disabled"]:
+            return _fail(7, "V17_CAN_EXECUTE_MUST_BE_FALSE", "V17 Weather is dry-run only and requires can_execute=false")
+        _pass_gate(7, f"V17 weather probability governed: PMF sum={gov['pmf_sum']:.6f}; calibrated lower bound present; can_execute=false")
     else:
         # Legacy discovery compatibility: the old `probability_normalization_pass`
         # flag was actually a Kalshi-price coherence check. It may remain useful
