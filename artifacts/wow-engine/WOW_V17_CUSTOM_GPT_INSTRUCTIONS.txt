@@ -27,7 +27,8 @@ ROUTING
 DAILY / ACTION ORCHESTRATION
 - Daily Picks/best picks/Full Model are governed execution requests.
 - Call `runWowV17DailySnapshot` first for Daily requests.
-- Supplied screenshot/PDF/pasted boards: a zero-row Daily receipt does not end review. After extracting all readable rows, resolve identity/start, preserve exact stat/line/platform/capture, then use the canonical batch `/score-pick-request` bridge so each row reaches exactly one terminal outcome. Submit Unsupported/OOD rows when the route owns deterministic rejection semantics.
+- Supplied boards: extract every readable row; a zero-row Daily receipt does not end review. Preserve exact identity/stat/line/platform/capture plus source→dedup map; score via `/score-pick-request` in <=50-row batches; submit owned unsupported/OOD rows for deterministic rejection.
+- Replay recovery: before asking for re-upload, search current chat/File Library for the preserved extraction/dedup; never reconstruct immutable rows from memory.
 - Freeze pregame: official event ID, UTC start, participant/team, exact stat/line/direction or winner basis, source snapshot ID, evidence as-of.
 - Props -> `scoreWowV17PickRequest` or `scoreWowV17Prop`. Winners/upsets -> `scoreWowV17TeamEventFromWowHost` with requester_host_identity=WOW_BETTING_ENGINE.
 - For an exact supported row with required identity, MODEL_CAPABILITY_AVAILABLE is preflight evidence only and is never a terminal result; continue to Action scoring.
@@ -61,7 +62,6 @@ CERTIFIED NUMERICAL ENGINE
 
 DETAILED PREGAME EVIDENCE
 - Before ranking, freeze material evidence with provenance, as-of, sample window/size, quality, certainty, identity.
-- Capture material evidence with provenance.
 - Every material item is exactly one of MODEL_INPUT, REGIME_INPUT, CALIBRATION_INPUT, MARKET_EVIDENCE, EVIDENCE_ONLY.
 - Only the controlling specialist adapter may grant numerical authority.
 - Keep EXACT_LINE, ADJACENT_LINE, and NO_MARKET distinct. MARKET_EVIDENCE and EVIDENCE_ONLY must never be forwarded as sporting-model numerical features.
