@@ -79,6 +79,63 @@ def test_scout_wrapper_keeps_legacy_proxy_key_path(monkeypatch):
     assert scout_oidc.scout.proxy_get is original
 
 
+def test_auto_advance_refreshes_oidc_on_401_and_retries_only_failed_request(monkeypatch):
+    posts = []
+    minted = []
+
+    def fake_post(origin, path, token, payload, timeout=120):
+        posts.append((origin, path, token, payload, timeout))
+        if token == "expired-oidc":
+            return {"ok": False, "http_status": 401, "body": {"detail": "Unauthorized"}, "can_execute": False}
+        return {"ok": True, "http_status": 200, "body": {"rows": []}, "can_execute": False}
+
+    def fake_mint(force=True):
+        minted.append(force)
+        return "renewed-oidc"
+
+    monkeypatch.setattr(advance_oidc, "_post_json", fake_post)
+    monkeypatch.setattr(advance_oidc, "mint_github_actions_oidc", fake_mint)
+    post = advance_oidc._refreshing_oidc_post("expired-oidc")
+    receipt = post("https://engine.example", "/score-pick-request", "ignored", {"rows": []})
+
+    assert receipt["ok"] is True
+    assert [entry[2] for entry in posts] == ["expired-oidc", "renewed-oidc"]
+    assert minted == [True]
+
+    posts.clear()
+    receipt = post("https://engine.example", "/score-pick-request", "ignored", {"rows": []})
+    assert receipt["ok"] is True
+    assert [entry[2] for entry in posts] == ["renewed-oidc"]
+    assert minted == [True]
+
+
+def test_auto_advance_oidc_refresh_failure_stays_fail_closed(monkeypatch):
+    monkeypatch.setattr(
+        advance_oidc,
+        "_post_json",
+        lambda *args, **kwargs: {
+            "ok": False,
+            "http_status": 401,
+            "body": {"detail": "Unauthorized"},
+            "can_execute": False,
+        },
+    )
+
+    def fail_mint(force=True):
+        raise client.GitHubOIDCMintError("GITHUB_OIDC_MINT_FAILED")
+
+    monkeypatch.setattr(advance_oidc, "mint_github_actions_oidc", fail_mint)
+    receipt = advance_oidc._refreshing_oidc_post("expired")(
+        "https://engine.example", "/score-pick-request", "ignored", {"rows": []}
+    )
+    assert receipt == {
+        "ok": False,
+        "http_status": 401,
+        "body": {"code": "GITHUB_OIDC_MINT_FAILED"},
+        "can_execute": False,
+    }
+
+
 def test_auto_advance_oidc_wrapper_uses_minted_token(monkeypatch, tmp_path):
     handoff = {
         "run_id": "run-1",
@@ -95,8 +152,8 @@ def test_auto_advance_oidc_wrapper_uses_minted_token(monkeypatch, tmp_path):
     monkeypatch.setattr(advance_oidc, "mint_github_actions_oidc", lambda force=True: "fresh-oidc")
     seen = []
 
-    def fake_execute(payload, *, token, origin):
-        seen.append((token, origin, payload["run_id"]))
+    def fake_execute(payload, *, token, origin, post_fn=None):
+        seen.append((token, origin, payload["run_id"], post_fn))
         return {
             "status": "AUTO_ADVANCE_COMPLETE",
             "code": "AUTO_ADVANCE_RECONCILED",
@@ -109,7 +166,39 @@ def test_auto_advance_oidc_wrapper_uses_minted_token(monkeypatch, tmp_path):
     monkeypatch.setattr("sys.argv", ["prog", "--input", str(source), "--output", str(output)])
     assert advance_oidc.main() == 0
     assert seen[0][0] == "fresh-oidc"
+    assert callable(seen[0][3])
     assert json.loads(output.read_text())["can_execute"] is False
+
+
+def test_auto_advance_static_action_key_keeps_existing_nonrefreshing_path(monkeypatch, tmp_path):
+    handoff = {
+        "run_id": "run-static",
+        "research_run_id": "run-static",
+        "status": "DISCOVERY_COMPLETE",
+        "model_handoff_ready": True,
+        "governance": {"can_execute": False},
+        "model_handoff": {"prop_candidates": [], "team_event_candidates": []},
+    }
+    source = tmp_path / "handoff.json"
+    output = tmp_path / "receipt.json"
+    source.write_text(json.dumps(handoff))
+    monkeypatch.setenv("WOW_ACTION_API_KEY", "static-action-key")
+    seen = []
+
+    def fake_execute(payload, *, token, origin):
+        seen.append((token, origin, payload["run_id"]))
+        return {
+            "status": "AUTO_ADVANCE_COMPLETE",
+            "code": "AUTO_ADVANCE_RECONCILED",
+            "source_run_id": "run-static",
+            "research_run_id": "run-static",
+            "can_execute": False,
+        }
+
+    monkeypatch.setattr(advance_oidc, "execute_auto_advance", fake_execute)
+    monkeypatch.setattr("sys.argv", ["prog", "--input", str(source), "--output", str(output)])
+    assert advance_oidc.main() == 0
+    assert seen == [("static-action-key", advance_oidc.ACTION_ORIGIN, "run-static")]
 
 
 def test_postmerge_workflow_direct_script_invocations_import_v17_package():
