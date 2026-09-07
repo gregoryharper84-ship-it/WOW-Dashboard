@@ -19,7 +19,7 @@ Ranking of survivors (hard gates already passed):
   2. calibration_strength descending    (higher calibration history score first)
   3. model_uncertainty ascending        (lower uncertainty first)
   4. price_age_minutes ascending        (freshest orderbook first)
-  5. calibrated_prob_lower_bound desc   (stronger probability signal first)
+  5. governed calibrated lower bound desc (V17 package for Weather; legacy field for non-Weather)
   6. settlement_clarity_grade score desc (A=5 > B=4 > C=3 > D=2 > F=1)
   7. spread_cents ascending             (lowest friction first)
   8. exposure_overlap ascending         (no existing exposure first: False < True)
@@ -39,6 +39,21 @@ _MAX_PER_EVENT     = 1
 _NARROW_BRACKET_MAX_SPAN = 1.0
 
 _GRADE_RANK = {"A": 5, "B": 4, "C": 3, "D": 2, "F": 1}
+
+
+def _governed_prob_lower_bound(candidate: dict[str, Any]) -> float | None:
+    """Return the probability lower bound from the authoritative lane contract.
+
+    Weather V17 must rank from its probability package. The legacy top-level
+    `calibrated_prob_lower_bound` may still exist for compatibility/research,
+    but it is not authoritative for Weather and must not affect ranking.
+    """
+    if candidate.get("category") == "weather":
+        package = candidate.get("weather_v17_probability_package") or {}
+        value = package.get("calibrated_lower_bound")
+    else:
+        value = candidate.get("calibrated_prob_lower_bound")
+    return float(value) if value is not None else None
 
 
 def check_single(candidate: dict[str, Any], day_pool: list[dict[str, Any]]) -> dict[str, Any]:
@@ -127,7 +142,8 @@ def run(candidates: list[dict[str, Any]]) -> dict[str, Any]:
                    calibration_strength       float | None   (0–1, higher = better)
                    model_uncertainty          float | None   (0–1, lower = better)
                    price_age_minutes          float | None
-                   calibrated_prob_lower_bound float | None
+                   calibrated lower bound     Weather: weather_v17_probability_package.calibrated_lower_bound
+                                                Non-Weather: calibrated_prob_lower_bound
                    settlement_clarity_grade   str | None     (A/B/C/D/F)
                    spread_cents               float | None
                    exposure_overlap           bool
@@ -159,7 +175,7 @@ def run(candidates: list[dict[str, Any]]) -> dict[str, Any]:
             -(c.get("calibration_strength")  or 0.0),            # 2. calibration desc
              (c.get("model_uncertainty")     or 1.0),             # 3. uncertainty asc
              (c.get("price_age_minutes")     or 9999.0),          # 4. freshness asc
-            -(c.get("calibrated_prob_lower_bound") or 0.0),       # 5. prob desc
+            -(_governed_prob_lower_bound(c) or 0.0),              # 5. governed prob desc
             -_GRADE_RANK.get(c.get("settlement_clarity_grade") or "F", 0),  # 6. grade desc
              (c.get("spread_cents") or 9999.0),                   # 7. spread asc
              int(c.get("exposure_overlap") or False),             # 8. no overlap first
@@ -177,7 +193,7 @@ def run(candidates: list[dict[str, Any]]) -> dict[str, Any]:
             "calibration_strength":       c.get("calibration_strength"),
             "model_uncertainty":          c.get("model_uncertainty"),
             "price_age_minutes":          c.get("price_age_minutes"),
-            "calibrated_prob_lower_bound": c.get("calibrated_prob_lower_bound"),
+            "calibrated_prob_lower_bound": _governed_prob_lower_bound(c),
             "settlement_clarity_grade":   c.get("settlement_clarity_grade"),
             "spread_cents":               c.get("spread_cents"),
             "exposure_overlap":           c.get("exposure_overlap"),
