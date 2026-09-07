@@ -1,7 +1,9 @@
-"""Official MLB evidence hydrator for certified pitcher workload props.
+"""Official MLB evidence hydrator for certified workload/PA props.
 
-Builds auditable raw evidence for PITCHING_OUTS, STRIKES_THROWN, and
-BALLS_THROWN. Missing history is never padded or estimated.
+Builds auditable raw evidence for PITCHING_OUTS, STRIKES_THROWN,
+BALLS_THROWN, and PLATE_APPEARANCES. Missing history is never padded or
+estimated. Plate appearances delegate to the batter-specific official-MLB
+hydrator while retaining this module's route-dispatch compatibility contract.
 """
 from __future__ import annotations
 
@@ -10,9 +12,10 @@ from typing import Any, Callable, Optional
 
 import httpx
 
+from prop_auto_hydration_plate_appearances import hydrate_mlb_plate_appearance_evidence
 from prop_hydration_resilience import fetch_cross_season_pitching_splits
 
-WORKLOAD_STATS = {"PITCHING_OUTS", "STRIKES_THROWN", "BALLS_THROWN"}
+WORKLOAD_STATS = {"PITCHING_OUTS", "STRIKES_THROWN", "BALLS_THROWN", "PLATE_APPEARANCES"}
 
 
 def hydrate_mlb_workload_evidence(
@@ -41,6 +44,24 @@ def hydrate_mlb_workload_evidence(
             "automatic workload evidence hydration is not certified for this stat route",
             detail={"sport": "MLB", "stat_type": stat_key},
         )
+
+    if stat_key == "PLATE_APPEARANCES":
+        return hydrate_mlb_plate_appearance_evidence(
+            player=player,
+            event_start_time=event_start_time,
+            resolve_player_id=resolve_player_id,
+            request_json=request_json,
+            int_value=int_value,
+            error_type=error_type,
+            mlb_stats_api_base=mlb_stats_api_base,
+            evidence_version=evidence_version,
+            min_games=min_starts,
+            http_get=http_get,
+            now=now,
+            source_capture_timestamp=source_capture_timestamp,
+            source_label=source_label,
+        )
+
     normalized_player = " ".join(str(player or "").strip().split())
     if not normalized_player:
         raise error_type("PROP_PLAYER_IDENTITY_REQUIRED", "player is required for prop hydration")
@@ -59,7 +80,6 @@ def hydrate_mlb_workload_evidence(
     try:
         player_id, _official_name = resolve_player_id(normalized_player, event_start=event_start, http_get=http_get)
     except TypeError:
-        # Backward-compatible test seam for injected legacy resolver fixtures.
         player_id, _official_name = resolve_player_id(normalized_player, http_get=http_get)
     schedule = schedule_context(player_id, event_start=event_start, http_get=http_get)
 
