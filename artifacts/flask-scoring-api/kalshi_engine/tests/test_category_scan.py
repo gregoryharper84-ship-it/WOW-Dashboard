@@ -41,8 +41,18 @@ def _weather_candidate(overrides: dict | None = None) -> dict:
         "settlement_station_verified":True,
         "nws_gridpoint_available":    True,
         "bracket_coverage_complete":  True,
+        # Legacy market-coherence flag retained as compatibility evidence only.
         "probability_normalization_pass": True,
         "brackets":                   [{"yes_price": 0.55}, {"yes_price": 0.45}],
+        # Synthetic test-only V17 probability package. Exchange prices above
+        # are deliberately separate from model PMF/calibration evidence.
+        "weather_v17_probability_package": {
+            "probability_status": "COMPLETED",
+            "calibration_status": "CALIBRATED",
+            "calibrated_lower_bound": 0.72,
+            "final_high_pmf": {"72": 0.30, "73": 0.70},
+            "can_execute": False,
+        },
         "market_open":                True,
         "orderbook_nonempty":         True,
         "price_age_minutes":          3.0,
@@ -447,6 +457,24 @@ def test_weather_gate_full_pass():
     assert result["failure_gate"] is None
     assert len(result["gate_verdicts"]) == 12
     assert all(v["passed"] for v in result["gate_verdicts"])
+    assert result["probability_governance_status"] == "V17_GOVERNED"
+    assert result["governed_probability_eligible"] is True
+
+
+def test_legacy_weather_price_sum_cannot_satisfy_v17_probability_gate():
+    cand = _weather_candidate()
+    cand.pop("weather_v17_probability_package")
+    cand.pop("probability_normalization_pass")
+    cand["brackets"] = [{"yes_price": 0.55}, {"yes_price": 0.45}]
+    cand["calibrated_prob_lower_bound"] = 0.70
+
+    result = weather_check(cand)
+
+    assert result["passed"] is False
+    assert result["failure_gate"] == 7
+    assert result["failure_category"] == "V17_PROBABILITY_PACKAGE_REQUIRED"
+    assert result["probability_governance_status"] == "LEGACY_RESEARCH_ONLY"
+    assert result["governed_probability_eligible"] is False
 
 
 # ─────────────────────────────────────────────────────────────────────────────
