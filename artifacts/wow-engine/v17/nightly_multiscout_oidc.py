@@ -9,7 +9,17 @@ from __future__ import annotations
 
 import os
 import sys
+from pathlib import Path
 from typing import Any
+
+# The post-merge GitHub workflow executes this wrapper directly from the
+# artifacts/wow-engine working directory (``python v17/nightly_multiscout_oidc.py``).
+# In that mode Python puts only ``.../wow-engine/v17`` on sys.path, so the
+# package-level ``from v17 ...`` import below would fail before any governed
+# acquisition logic could run. Add only the package parent for direct-script
+# compatibility; module/import execution is unchanged.
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from v17 import nightly_multiscout as scout
 from v17.github_actions_oidc_client import GitHubOIDCMintError, mint_github_actions_oidc
