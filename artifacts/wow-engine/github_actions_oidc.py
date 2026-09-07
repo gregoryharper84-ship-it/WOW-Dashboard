@@ -7,11 +7,13 @@ repository, workflow, main ref, and a small set of non-PR production events.
 """
 from __future__ import annotations
 
+import inspect
 import os
 import secrets
 from typing import Any
 
 import jwt
+from fastapi import Depends, Header, HTTPException
 from jwt import PyJWKClient
 
 ISSUER = "https://token.actions.githubusercontent.com"
@@ -68,13 +70,7 @@ def verify_github_actions_oidc(token: str, *, jwk_client: PyJWKClient | None = N
 
 
 def authorize_action_key_or_multiscout_oidc(authorization: str | None) -> str:
-    """Authorize the two internal Scout downstream request routes.
-
-    The ordinary Custom GPT path remains WOW_ACTION_API_KEY.  Only when that
-    exact bearer does not match do we attempt the strict GitHub OIDC policy.
-    The return value is an audit-only auth mechanism label; no credential is
-    ever returned or logged.
-    """
+    """Authorize an existing WOW Action bearer or the exact Scout OIDC token."""
     if not authorization or not authorization.startswith("Bearer "):
         raise GitHubOIDCValidationError("SCOUT_ROUTE_AUTH_REQUIRED")
     supplied = authorization[len("Bearer ") :]
@@ -85,10 +81,49 @@ def authorize_action_key_or_multiscout_oidc(authorization: str | None) -> str:
     return "GITHUB_ACTIONS_OIDC"
 
 
+def scout_route_auth_dependency(existing_auth_dependency: Any) -> Any:
+    """Return a FastAPI dependency preserving the caller's existing auth seam.
+
+    Production supplies Depends(_require_action_api_key). Lower-layer tests may
+    supply a permissive dependency. We try that exact dependency first; only a
+    rejected production-style auth attempt falls through to the strict OIDC
+    verifier. This keeps existing test/staging injection behavior intact.
+    """
+    existing_fn = getattr(existing_auth_dependency, "dependency", None)
+    if existing_fn is None and callable(existing_auth_dependency):
+        existing_fn = existing_auth_dependency
+
+    def _combined(authorization: str | None = Header(default=None)) -> None:
+        prior_error: HTTPException | None = None
+        if callable(existing_fn):
+            try:
+                params = inspect.signature(existing_fn).parameters
+                if "authorization" in params:
+                    existing_fn(authorization)
+                else:
+                    existing_fn()
+                return
+            except HTTPException as exc:
+                prior_error = exc
+        try:
+            authorize_action_key_or_multiscout_oidc(authorization)
+            return
+        except GitHubOIDCValidationError as exc:
+            if prior_error is not None:
+                raise prior_error
+            raise HTTPException(
+                status_code=401,
+                detail={"code": "SCOUT_ROUTE_AUTH_INVALID", "can_execute": False},
+            ) from exc
+
+    return Depends(_combined)
+
+
 __all__ = [
     "AUDIENCE",
     "GitHubOIDCValidationError",
     "authorize_action_key_or_multiscout_oidc",
+    "scout_route_auth_dependency",
     "validate_github_actions_claims",
     "verify_github_actions_oidc",
 ]
