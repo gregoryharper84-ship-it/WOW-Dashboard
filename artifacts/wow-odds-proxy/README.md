@@ -6,11 +6,16 @@ Read-only credential proxy for The Odds API v4.
 
 Custom GPT Actions cannot safely inject The Odds API's required `apiKey` query
 parameter as a hidden secret. This service keeps the upstream vendor credential
-on Render and exposes only three allowlisted GET capabilities:
+on Render and exposes only four allowlisted GET capabilities:
 
+- active/available sport inventory
 - current events for one sport key
 - available market keys for one event
 - exact odds for selected markets on one event
+
+The sport-inventory route exists so autonomous V17 discovery can enumerate the
+current feed instead of hard-coding leagues and silently missing NBA, NCAAB,
+tennis, soccer, or other active sports.
 
 There is no generic URL proxy and no write method. This is acquisition-only and
 never places, routes, modifies, cancels, or approves a wager. `can_execute=false`.
@@ -21,7 +26,8 @@ Configure these in Render. Never put their values in GitHub, GPT Instructions,
 Knowledge, chat, logs, URLs, or screenshots.
 
 - `ODDS_API_KEY` — The Odds API vendor key. Server-side only.
-- `WOW_ODDS_PROXY_ACTION_KEY` — separate Bearer secret used by the GPT Action.
+- `WOW_ODDS_PROXY_ACTION_KEY` — separate Bearer secret used by the GPT Action
+  and authorized nightly Scout acquisition clients.
 
 The two values must be different.
 
@@ -60,24 +66,29 @@ API Key value: WOW_ODDS_PROXY_ACTION_KEY
 
 Do **not** enter `ODDS_API_KEY` into the GPT editor.
 
-Keep the existing direct `api.the-odds-api.com` Action until all proxy Preview
-smoke tests pass. Then remove only the direct Odds Action.
+## V17 Nightly Multi-Scout
+
+`artifacts/wow-engine/v17/nightly_multiscout.py` consumes this proxy read-only.
+It requests the dynamic active-sport inventory and then enumerates events,
+market inventory, and every bookmaker exposed by the configured public feed in
+the requested regions. Bookmaker coverage is explicitly reported; the system
+must not claim coverage for a sportsbook the upstream feed does not expose.
+
+Sportsbook odds are evidence only. They never become governed WOW/LLP model
+probability.
 
 ## Acceptance tests
 
-1. `GET /odds-api/health` returns `status=ok`, `read_only=true`,
-   `can_execute=false`.
+1. `GET /odds-api/health` returns `status=ok`, `read_only=true`, `can_execute=false`.
 2. Protected routes reject missing/wrong Bearer auth.
-3. With valid proxy auth but no vendor key, protected routes return fail-closed
-   `ODDS_API_KEY_UNCONFIGURED`.
-4. `getOddsProxyEvents` returns current event identity without exposing the
-   upstream key.
-5. `getOddsProxyEventMarkets` returns bookmaker market inventory.
-6. `getOddsProxyEventOdds` returns exact event odds and passes through only
-   quota headers (`x-requests-remaining`, `x-requests-used`, `x-requests-last`).
-7. Unknown query fields are discarded rather than forwarded.
-8. No POST/PUT/PATCH/DELETE route exists.
-9. OpenAPI exposes no vendor-key parameter.
+3. With valid proxy auth but no vendor key, protected routes return fail-closed `ODDS_API_KEY_UNCONFIGURED`.
+4. `GET /odds-api/v4/sports` returns active/available sport inventory without exposing the upstream key.
+5. `getOddsProxyEvents` returns current event identity without exposing the upstream key.
+6. `getOddsProxyEventMarkets` returns bookmaker market inventory.
+7. `getOddsProxyEventOdds` returns exact event odds and passes through only quota headers (`x-requests-remaining`, `x-requests-used`, `x-requests-last`).
+8. Unknown query fields are discarded rather than forwarded.
+9. No POST/PUT/PATCH/DELETE route exists.
+10. OpenAPI exposes no vendor-key parameter.
 
 ## Local test
 
