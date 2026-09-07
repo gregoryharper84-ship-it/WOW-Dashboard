@@ -2,31 +2,16 @@
 MLB_BATTER_PLATE_APPEARANCES_NB_V1 (MLB batter plate appearances).
 
 Trained by scripts/train_mlb_plate_appearances.py against real
-Retrosheet-derived rows in Supabase table wow_mlb_retrosplits_rows. See that
-script's docstring for full data provenance and modeling design.
+Retrosheet-derived rows in Supabase table wow_mlb_retrosplits_rows. The
+production evidence bridge uses the generic governed prop envelope:
+``game_log`` carries prior-game PA values and ``opportunity_ledger`` carries
+current batting slot/team alignment. The adapter also accepts the original
+explicit ``prior_pa_log``/``batting_slot``/``team_alignment`` keys for
+backward-compatible tests and direct invocation.
 
-STATUS: NOT YET REGISTERED IN PRODUCTION -- same two preconditions as the
-other V17-remediation adapters built this week: (1) governance ratification
-+ promotion to wow_prop_fitted_model_artifacts, (2) evidence hydration for
-PLATE_APPEARANCES in wow_prop_evidence_snapshots (zero rows as of
-2026-09-04).
-
-Unlike the pitcher workload adapters, this one does NOT consume
-box_score_log -- batting_slot and team_alignment are known pregame from a
-confirmed/projected lineup, not something to mix over probabilistically.
-Required evidence shape:
-    features = {
-        "prior_pa_log": [<int PA>, <int PA>, ...],   # this player's own
-                                                        # prior-game PA history,
-                                                        # any slot/alignment,
-                                                        # chronological order
-        "batting_slot": <int 1-9>,                    # confirmed/projected
-                                                        # for THIS game
-        "team_alignment": <int 0 or 1>,                # 0/1, THIS game
-    }
-A missing or unconfirmed batting_slot (bench risk, lineup not yet posted) is
-a genuine coverage failure here, not a value to guess -- see
-COVERAGE_FAILURE_LINEUP_UNCONFIRMED below.
+A missing official batting slot is a genuine coverage failure, not a value to
+guess. Hydration may therefore succeed before lineups are posted while this
+adapter holds publication via BATTING_SLOT_UNCONFIRMED.
 """
 from __future__ import annotations
 
@@ -60,10 +45,32 @@ def _parse_prior_pa_log(value: Any) -> list[int]:
     for v in value:
         if isinstance(v, bool) or not isinstance(v, (int, float)) or v < 0:
             raise PropDistributionContractError(
-                "PROP_PRIOR_PA_LOG_VALUE_INVALID", "each prior_pa_log entry must be a non-negative number"
+                "PROP_PRIOR_PA_LOG_VALUE_INVALID",
+                "each prior_pa_log entry must be a non-negative number",
             )
         parsed.append(int(v))
     return parsed
+
+
+def _governed_pa_features(features: Mapping[str, Any]) -> tuple[Any, Any, Any]:
+    """Resolve PA-specific inputs from either direct or generic evidence keys."""
+    opportunity = features.get("opportunity_ledger")
+    if not isinstance(opportunity, Mapping):
+        opportunity = {}
+
+    prior_pa_log = features.get("prior_pa_log")
+    if prior_pa_log is None:
+        prior_pa_log = features.get("game_log", [])
+
+    batting_slot = features.get("batting_slot")
+    if batting_slot is None:
+        batting_slot = opportunity.get("batting_slot")
+
+    team_alignment = features.get("team_alignment")
+    if team_alignment is None:
+        team_alignment = opportunity.get("team_alignment")
+
+    return prior_pa_log, batting_slot, team_alignment
 
 
 def mlb_batter_plate_appearances_nb_v1_adapter(
@@ -83,35 +90,47 @@ def mlb_batter_plate_appearances_nb_v1_adapter(
             "PROP_MODEL_ARTIFACT_PAYLOAD_INVALID",
             "MLB_BATTER_PLATE_APPEARANCES_NB_V1 artifact_payload is missing required fitted constants",
         ) from exc
-    # keys were serialized as "{slot}_{alignment}" strings for JSON-safety
-    league_mean_pa_by_cell = {tuple(int(x) for x in k.split("_")): float(v) for k, v in league_mean_pa_by_cell_raw.items()}
+
+    league_mean_pa_by_cell = {
+        tuple(int(x) for x in k.split("_")): float(v)
+        for k, v in league_mean_pa_by_cell_raw.items()
+    }
 
     coverage_failures: list[str] = []
+    raw_prior_pa_log, batting_slot, team_alignment = _governed_pa_features(features)
 
-    batting_slot = features.get("batting_slot")
-    team_alignment = features.get("team_alignment")
-    if not isinstance(batting_slot, int) or not (1 <= batting_slot <= 9) or isinstance(batting_slot, bool):
+    if (
+        not isinstance(batting_slot, int)
+        or isinstance(batting_slot, bool)
+        or not (1 <= batting_slot <= 9)
+    ):
         coverage_failures.append(COVERAGE_FAILURE_LINEUP_UNCONFIRMED)
         batting_slot = None
-    if not isinstance(team_alignment, int) or team_alignment not in (0, 1) or isinstance(team_alignment, bool):
+    if (
+        not isinstance(team_alignment, int)
+        or isinstance(team_alignment, bool)
+        or team_alignment not in (0, 1)
+    ):
         coverage_failures.append(COVERAGE_FAILURE_LINEUP_UNCONFIRMED)
         team_alignment = None
 
-    prior_pa_log = _parse_prior_pa_log(features.get("prior_pa_log", []))
+    prior_pa_log = _parse_prior_pa_log(raw_prior_pa_log)
     n_prior = len(prior_pa_log)
     if n_prior < 1:
         coverage_failures.append(COVERAGE_FAILURE_ZERO_PRIOR)
 
     prior_mean_pa = (sum(prior_pa_log) / n_prior) if n_prior > 0 else float("nan")
-
     ood_score = 1.0 / (1.0 + n_prior)
 
     if batting_slot is not None and team_alignment is not None:
-        cell_mean = league_mean_pa_by_cell.get((batting_slot, team_alignment), league_mean_pa_overall)
+        cell_mean = league_mean_pa_by_cell.get(
+            (batting_slot, team_alignment), league_mean_pa_overall
+        )
     else:
         cell_mean = league_mean_pa_overall
 
-    mu = shrink(prior_mean_pa, cell_mean, n_prior, shrinkage_k_rate)
+    shrink_input = prior_mean_pa if math.isfinite(prior_mean_pa) else cell_mean
+    mu = shrink(shrink_input, cell_mean, n_prior, shrinkage_k_rate)
     support = nb_pmf(mu, dispersion_r, max_support_k)
 
     failure_path_tags: list[str] = []
@@ -126,14 +145,14 @@ def mlb_batter_plate_appearances_nb_v1_adapter(
         "team_alignment": team_alignment,
         "league_cell_mean_pa": cell_mean,
         "mu": mu,
+        "input_contract": "GENERIC_GOVERNED_PROP_EVIDENCE_V1",
         "v1_scope_note": "no opposing-starter-length, bullpen, or game-script features in this artifact version",
     }
 
-    in_distribution = not coverage_failures
     coverage = CoverageDecision(
-        in_distribution=in_distribution,
+        in_distribution=not coverage_failures,
         ood_score=min(max(ood_score, 0.0), 1.0),
-        coverage_failures=tuple(coverage_failures),
+        coverage_failures=tuple(dict.fromkeys(coverage_failures)),
     )
 
     feature_snapshot_hash = sha256(
@@ -155,7 +174,9 @@ def mlb_batter_plate_appearances_nb_v1_adapter(
         training_code_sha=artifact.bundle.training_code_sha,
         training_dataset_hash=artifact.bundle.training_dataset_hash,
         feature_schema_version=artifact.bundle.feature_schema_version,
-        feature_transform_sha=sha256(str(payload.get("feature_transform_version", "")).encode("utf-8")).hexdigest(),
+        feature_transform_sha=sha256(
+            str(payload.get("feature_transform_version", "")).encode("utf-8")
+        ).hexdigest(),
         feature_snapshot_hash=feature_snapshot_hash,
         artifact_checksum=artifact.bundle.artifact_checksum,
         inference_timestamp=datetime.now(timezone.utc).isoformat(),
@@ -164,6 +185,8 @@ def mlb_batter_plate_appearances_nb_v1_adapter(
 
 
 def register() -> None:
-    """Production registration seam -- DO NOT call from startup until the
-    artifact is governance-promoted (see module docstring)."""
-    register_model_family_adapter(MLB_BATTER_PA_MODEL_FAMILY, mlb_batter_plate_appearances_nb_v1_adapter)
+    """Register the governance-promoted PA model-family adapter at startup."""
+    register_model_family_adapter(
+        MLB_BATTER_PA_MODEL_FAMILY,
+        mlb_batter_plate_appearances_nb_v1_adapter,
+    )

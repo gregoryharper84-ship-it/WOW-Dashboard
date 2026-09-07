@@ -14,13 +14,10 @@ _RECOGNIZED_CALIBRATION_STATUSES / determine_publishability), just one that
 is never MONEY_QUALIFIED or FINAL_APPROVED (calibration.py Section 8B.4).
 
 Phase A's bootstrap bounds require a real resample_fn, not a fabricated
-symmetric interval (see MissingResamplerError). This adapter's resample_fn
-bootstraps the *same* evidence the model adapter used (this candidate's own
-game_log/box_score_log), refits the shrunk rate/regime mixture per
-realization, derives the same selected-side probability, and applies the
-same 0.5 + lambda*(p-0.5) shrinkage transform (same lambda as the point
-estimate) so the resulting bounds are percentiles of the same published
-quantity, not a mismatched one.
+symmetric interval (see MissingResamplerError). Each registered adapter
+bootstraps the same governed evidence used by its fitted-model family and
+applies the same 0.5 + lambda*(p-0.5) shrinkage transform as its point
+estimate. No market probability enters calibration.
 """
 from __future__ import annotations
 
@@ -146,6 +143,24 @@ def mlb_pitcher_so_precalibration_shrinkage_adapter(
 
 def register() -> None:
     """Production registration seam -- called once at process startup."""
-    register_prop_calibration_adapter(MLB_PITCHER_SO_CALIBRATOR_VERSION, mlb_pitcher_so_precalibration_shrinkage_adapter)
-    from wnba_prop_calibration_adapter import CALIBRATOR_VERSION as WNBA_CALIBRATOR_VERSION, wnba_precalibration_bootstrap_adapter
-    register_prop_calibration_adapter(WNBA_CALIBRATOR_VERSION, wnba_precalibration_bootstrap_adapter)
+    register_prop_calibration_adapter(
+        MLB_PITCHER_SO_CALIBRATOR_VERSION,
+        mlb_pitcher_so_precalibration_shrinkage_adapter,
+    )
+
+    # These versions are immutable values from already-promoted MLB artifacts.
+    # Their adapters resample the same evidence and rerun the same fitted-model
+    # family, so calibration cannot substitute a generic/manual probability.
+    from prop_calibration_adapters_workload import register as register_mlb_workload_calibrators
+
+    register_mlb_workload_calibrators()
+
+    from wnba_prop_calibration_adapter import (
+        CALIBRATOR_VERSION as WNBA_CALIBRATOR_VERSION,
+        wnba_precalibration_bootstrap_adapter,
+    )
+
+    register_prop_calibration_adapter(
+        WNBA_CALIBRATOR_VERSION,
+        wnba_precalibration_bootstrap_adapter,
+    )
