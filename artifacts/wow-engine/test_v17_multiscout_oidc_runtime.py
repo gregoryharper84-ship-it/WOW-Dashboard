@@ -135,3 +135,15 @@ def test_postmerge_workflow_direct_script_invocations_import_v17_package():
         )
         assert result.returncode == 0, result.stderr
         assert "ModuleNotFoundError" not in result.stderr
+
+
+def test_postmerge_workflow_installs_runtime_dependencies_before_live_scout():
+    """The live job uses a fresh runner and must install PyJWT/FastAPI/etc itself."""
+    engine_dir = Path(__file__).resolve().parent
+    workflow = engine_dir.parents[1] / ".github" / "workflows" / "wow-v17-nightly-multiscout.yml"
+    text = workflow.read_text(encoding="utf-8")
+    live_job = text.split("  nightly-discovery:\n", 1)[1]
+    install_at = live_job.index("- name: Install live Scout runtime dependencies")
+    run_at = live_job.index("- name: Run V17 Nightly Multi-Scout")
+    assert "pip install -r requirements.txt" in live_job[install_at:run_at]
+    assert install_at < run_at
