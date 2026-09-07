@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 
@@ -108,3 +110,28 @@ def test_auto_advance_oidc_wrapper_uses_minted_token(monkeypatch, tmp_path):
     assert advance_oidc.main() == 0
     assert seen[0][0] == "fresh-oidc"
     assert json.loads(output.read_text())["can_execute"] is False
+
+
+def test_postmerge_workflow_direct_script_invocations_import_v17_package():
+    """Regress the exact script form used by the GitHub post-merge workflow.
+
+    ``--help`` exits before any network/OIDC acquisition while still proving
+    each direct-file wrapper can import its package dependencies from the
+    artifacts/wow-engine working directory.
+    """
+    engine_dir = Path(__file__).resolve().parent
+    scripts = (
+        engine_dir / "v17" / "nightly_multiscout_oidc.py",
+        engine_dir / "v17" / "multiscout_auto_advance_oidc.py",
+    )
+    for script in scripts:
+        result = subprocess.run(
+            [sys.executable, str(script), "--help"],
+            cwd=engine_dir,
+            text=True,
+            capture_output=True,
+            timeout=15,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        assert "ModuleNotFoundError" not in result.stderr

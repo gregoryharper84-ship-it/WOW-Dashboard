@@ -11,7 +11,16 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 from pathlib import Path
+
+# The governed post-merge workflow executes this file directly from
+# artifacts/wow-engine. Preserve that invocation contract by adding only the
+# package parent when Python has not established a package context. Without
+# this bootstrap, direct execution fails before the canonical V17 handoff with
+# ``ModuleNotFoundError: No module named 'v17'``.
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from v17.github_actions_oidc_client import GitHubOIDCMintError, mint_github_actions_oidc
 from v17.multiscout_auto_advance import ACTION_ORIGIN, execute_auto_advance
