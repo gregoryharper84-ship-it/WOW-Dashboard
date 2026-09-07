@@ -14,6 +14,7 @@ from typing import Any, Optional
 
 from fastapi import HTTPException
 
+from github_actions_oidc import scout_route_auth_dependency
 import pick_request_runtime_core as _core
 from pick_request_runtime_core import *  # noqa: F401,F403
 
@@ -143,7 +144,7 @@ def install_pick_request_routes(
     return _core.install_pick_request_routes(
         app,
         market_api=_ScoringReceiptMarketApi(market_api),
-        auth_dependency=auth_dependency,
+        auth_dependency=scout_route_auth_dependency(auth_dependency),
     )
 
 

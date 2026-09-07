@@ -3,8 +3,10 @@
 Security properties:
 - The vendor ``ODDS_API_KEY`` is read only from the server environment and is
   never accepted from a caller, returned in a response, or written to logs.
-- Callers authenticate separately with ``WOW_ODDS_PROXY_ACTION_KEY`` via a
-  Bearer header.
+- Ordinary callers authenticate with ``WOW_ODDS_PROXY_ACTION_KEY`` via Bearer.
+  The exact protected-main WOW Multi-Scout GitHub workflow may alternatively
+  authenticate with a short-lived GitHub OIDC token whose issuer, audience,
+  repository IDs, workflow ref, branch ref, event, and runner are verified.
 - Only explicitly defined GET capabilities are proxied: active sports, events,
   event markets, and event odds. There is no generic URL/path proxy and no
   write method.
@@ -23,7 +25,9 @@ import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, Path, Query
 from fastapi.responses import JSONResponse
 
-app = FastAPI(title="WOW Odds API Credential Proxy", version="1.1.0")
+from github_actions_oidc import GitHubOIDCValidationError, verify_github_actions_oidc
+
+app = FastAPI(title="WOW Odds API Credential Proxy", version="1.2.0")
 
 ODDS_API_BASE = "https://api.the-odds-api.com/v4"
 UPSTREAM_TIMEOUT_SECONDS = 12.0
@@ -43,14 +47,22 @@ def _csv_query():
 
 
 def _require_proxy_action_key(authorization: Optional[str] = Header(default=None)) -> None:
-    configured = os.environ.get("WOW_ODDS_PROXY_ACTION_KEY")
-    if not configured:
-        raise HTTPException(status_code=503, detail={"code": "ODDS_PROXY_AUTH_UNCONFIGURED", "can_execute": False})
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail={"code": "ODDS_PROXY_AUTH_REQUIRED", "can_execute": False})
+
     supplied = authorization[len("Bearer ") :]
-    if not secrets.compare_digest(supplied, configured):
-        raise HTTPException(status_code=401, detail={"code": "ODDS_PROXY_AUTH_INVALID", "can_execute": False})
+    configured = os.environ.get("WOW_ODDS_PROXY_ACTION_KEY")
+    if configured and secrets.compare_digest(supplied, configured):
+        return
+
+    try:
+        verify_github_actions_oidc(supplied)
+        return
+    except GitHubOIDCValidationError as exc:
+        raise HTTPException(
+            status_code=401,
+            detail={"code": "ODDS_PROXY_AUTH_INVALID", "can_execute": False},
+        ) from exc
 
 
 def _vendor_key() -> str:
@@ -130,7 +142,9 @@ def health():
         "status": "ok", "service": "WOW_ODDS_API_CREDENTIAL_PROXY", "compute_provider": "RENDER",
         "vendor": "THE_ODDS_API_V4", "read_only": True,
         "vendor_key_configured": bool(os.environ.get("ODDS_API_KEY")),
-        "caller_auth_configured": bool(os.environ.get("WOW_ODDS_PROXY_ACTION_KEY")), "can_execute": False,
+        "caller_bearer_auth_configured": bool(os.environ.get("WOW_ODDS_PROXY_ACTION_KEY")),
+        "github_multiscout_oidc_enabled": True,
+        "can_execute": False,
     }
 
 

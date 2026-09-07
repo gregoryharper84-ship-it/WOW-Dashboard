@@ -9,23 +9,40 @@ on:
       - main
     paths:
       - ".github/workflows/wow-v17-nightly-multiscout.yml"
+      - "artifacts/wow-engine/requirements.txt"
+      - "artifacts/wow-engine/github_actions_oidc.py"
       - "artifacts/wow-engine/v17/nightly_multiscout.py"
+      - "artifacts/wow-engine/v17/nightly_multiscout_oidc.py"
+      - "artifacts/wow-engine/v17/github_actions_oidc_client.py"
       - "artifacts/wow-engine/v17/nightly_multiscout_delivery.py"
       - "artifacts/wow-engine/v17/multiscout_auto_advance.py"
+      - "artifacts/wow-engine/v17/multiscout_auto_advance_oidc.py"
+      - "artifacts/wow-engine/pick_request_runtime.py"
+      - "artifacts/wow-engine/team_event_request_runtime.py"
       - "artifacts/wow-engine/agent_runtime/coordinator_v17.py"
       - "artifacts/wow-engine/agent_runtime/durable_runner.py"
+      - "artifacts/wow-odds-proxy/**"
   pull_request:
     paths:
       - ".github/workflows/wow-v17-nightly-multiscout.yml"
+      - "artifacts/wow-engine/requirements.txt"
+      - "artifacts/wow-engine/github_actions_oidc.py"
       - "artifacts/wow-engine/v17/nightly_multiscout.py"
+      - "artifacts/wow-engine/v17/nightly_multiscout_oidc.py"
+      - "artifacts/wow-engine/v17/github_actions_oidc_client.py"
       - "artifacts/wow-engine/v17/nightly_multiscout_delivery.py"
       - "artifacts/wow-engine/v17/multiscout_auto_advance.py"
+      - "artifacts/wow-engine/v17/multiscout_auto_advance_oidc.py"
+      - "artifacts/wow-engine/pick_request_runtime.py"
+      - "artifacts/wow-engine/team_event_request_runtime.py"
       - "artifacts/wow-engine/agent_runtime/coordinator_v17.py"
       - "artifacts/wow-engine/agent_runtime/durable_runner.py"
       - "artifacts/wow-engine/test_v17_nightly_multiscout.py"
       - "artifacts/wow-engine/test_v17_nightly_multiscout_delivery.py"
       - "artifacts/wow-engine/test_v17_multiscout_auto_advance.py"
       - "artifacts/wow-engine/test_agent_runtime_v17_model_failures.py"
+      - "artifacts/wow-engine/test_v17_github_oidc.py"
+      - "artifacts/wow-engine/test_v17_multiscout_oidc_runtime.py"
       - "artifacts/wow-odds-proxy/**"
 
 permissions:
@@ -51,13 +68,15 @@ jobs:
           cache-dependency-path: artifacts/wow-engine/requirements.txt
       - name: Install engine dependencies
         run: pip install -r requirements.txt
-      - name: Run Multi-Scout and typed-failure regression tests
+      - name: Run Multi-Scout, OIDC, and typed-failure regression tests
         run: >-
           python -m pytest -q
           test_v17_nightly_multiscout.py
           test_v17_nightly_multiscout_delivery.py
           test_v17_multiscout_auto_advance.py
           test_agent_runtime_v17_model_failures.py
+          test_v17_github_oidc.py
+          test_v17_multiscout_oidc_runtime.py
       - name: Verify odds proxy extension
         working-directory: artifacts/wow-odds-proxy
         run: |
@@ -70,14 +89,15 @@ jobs:
     needs: verify
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    permissions:
+      contents: read
+      id-token: write
     defaults:
       run:
         working-directory: artifacts/wow-engine
     env:
       WOW_ODDS_PROXY_URL: https://wow-odds-proxy.onrender.com
-      WOW_ODDS_PROXY_ACTION_KEY: ${{ secrets.WOW_ODDS_PROXY_ACTION_KEY }}
       WOW_ACTION_ORIGIN: https://wow-governed-probability-engine.onrender.com
-      WOW_ACTION_API_KEY: ${{ secrets.WOW_ACTION_API_KEY }}
       WOW_USER_TIMEZONE: America/Chicago
       WOW_SCOUT_REGIONS: us,us2,uk,eu,au
       WOW_SCOUT_HORIZON_HOURS: "36"
@@ -90,18 +110,20 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Assert fail-closed execution governance
+      - name: Assert fail-closed execution governance and OIDC context
         shell: bash
         run: |
           test "$WOW_CAN_EXECUTE" = "false"
           test "$WOW_DRY_RUN_ONLY" = "true"
+          test -n "$ACTIONS_ID_TOKEN_REQUEST_URL"
+          test -n "$ACTIONS_ID_TOKEN_REQUEST_TOKEN"
       - name: Run V17 Nightly Multi-Scout
         id: scout
         shell: bash
         run: |
           mkdir -p "$RUNNER_TEMP/wow-multiscout"
           set +e
-          python v17/nightly_multiscout.py --output "$RUNNER_TEMP/wow-multiscout/model-handoff.json"
+          python v17/nightly_multiscout_oidc.py --output "$RUNNER_TEMP/wow-multiscout/model-handoff.json"
           rc=$?
           set -e
           echo "runner_exit_code=$rc" >> "$GITHUB_OUTPUT"
@@ -140,7 +162,7 @@ jobs:
         shell: bash
         run: |
           set +e
-          python v17/multiscout_auto_advance.py \
+          python v17/multiscout_auto_advance_oidc.py \
             --input "$RUNNER_TEMP/wow-multiscout/model-handoff.json" \
             --output "$RUNNER_TEMP/wow-multiscout/auto-advance-receipt.json"
           rc=$?

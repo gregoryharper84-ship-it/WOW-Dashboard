@@ -112,9 +112,9 @@ class FetchResult:
 
 
 def proxy_get(path: str, params: dict[str, Any] | None = None) -> FetchResult:
-    token = os.environ.get("WOW_ODDS_PROXY_ACTION_KEY")
+    token = os.environ.get("WOW_ODDS_PROXY_ACTION_KEY") or os.environ.get("WOW_GITHUB_OIDC_TOKEN")
     if not token:
-        return FetchResult(False, code="WOW_ODDS_PROXY_ACTION_KEY_UNCONFIGURED")
+        return FetchResult(False, code="WOW_SCOUT_SOURCE_AUTH_UNCONFIGURED")
     query = urlencode({k: v for k, v in (params or {}).items() if v is not None})
     url = f"{PROXY_URL}{path}" + (f"?{query}" if query else "")
     req = Request(url, headers={"Authorization": f"Bearer {token}", "Accept": "application/json"})
