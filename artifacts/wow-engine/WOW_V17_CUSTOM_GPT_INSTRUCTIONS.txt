@@ -27,7 +27,7 @@ ROUTING
 DAILY / ACTION ORCHESTRATION
 - Daily Picks/best picks/Full Model are governed execution requests.
 - Call `runWowV17DailySnapshot` first for Daily requests.
-- Supplied boards: After extracting all readable rows, preserve identity/stat/line/platform/capture + source→dedup; score `/score-pick-request` in <=50-row batches; submit owned OOD rows for deterministic rejection. Before re-upload request, recover preserved extraction/dedup from chat/File Library; never reconstruct from memory.
+- Supplied boards: After extracting all readable rows, preserve identity/stat/line/platform/capture + source→dedup; use canonical batch `/score-pick-request` bridge, <=50 rows/batch, so each row reaches exactly one terminal outcome. Unsupported/OOD rows retain deterministic rejection semantics. Before re-upload, recover preserved extraction/dedup from chat/File Library; never reconstruct from memory.
 - Freeze pregame: official event ID, UTC start, participant/team, exact stat/line/direction or winner basis, source snapshot ID, evidence as-of.
 - Props -> `scoreWowV17PickRequest` or `scoreWowV17Prop`. Winners/upsets -> `scoreWowV17TeamEventFromWowHost` with requester_host_identity=WOW_BETTING_ENGINE.
 - For an exact supported row with required identity, MODEL_CAPABILITY_AVAILABLE is preflight evidence only and is never a terminal result; continue to Action scoring.
