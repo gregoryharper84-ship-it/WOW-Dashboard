@@ -30,25 +30,29 @@ def build_v17_payload_from_legacy_evaluate(
     forecast_high = legacy.get("forecast_high")
     forecasts = []
     if forecast_high is not None:
-        forecasts.append(freeze_forecast_snapshot({
+        forecast_row = {
             "station_id": station_id,
             "source_family": str(legacy.get("weather_data_source_tier") or "OFFICIAL_GRIDPOINT").upper(),
             "model_name": str(legacy.get("forecast_source") or "LEGACY_EVALUATE_FORECAST"),
             "forecast_high_f": float(forecast_high),
             "forecast_horizon_hours": legacy.get("forecast_horizon_hours"),
-            "retrieved_at": legacy.get("forecast_timestamp") or scored_at,
             "source_quality": 1.0 if str(legacy.get("weather_data_source_tier") or "").lower().startswith("nws") else .75,
-        }))
+        }
+        forecast_ts = legacy.get("forecast_timestamp") or scored_at
+        if forecast_ts:
+            forecast_row["retrieved_at"] = forecast_ts
+        forecasts.append(freeze_forecast_snapshot(forecast_row))
 
     observations = []
     observed_high = legacy.get("observed_high")
-    if observed_high is not None:
+    observation_ts = legacy.get("cli_issuance_time") or scored_at
+    if observed_high is not None and observation_ts:
         # Existing evaluate output may represent an official CLI max. Preserve it
-        # as evidence and as the hard support floor; do not infer an unreported
-        # current temperature or observation path.
+        # as evidence and as the hard support floor; never invent a timestamp or
+        # infer an unreported current temperature path.
         observations.append(freeze_observation_snapshot({
             "station_id": station_id,
-            "observed_at": legacy.get("cli_issuance_time") or scored_at or "1970-01-01T00:00:00Z",
+            "observed_at": observation_ts,
             "temperature_f": float(observed_high),
             "maximum_observed_so_far_f": float(observed_high),
             "source": legacy.get("cli_source_url") or "NWS_CLI",
