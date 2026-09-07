@@ -65,7 +65,7 @@ DETAILED PREGAME EVIDENCE
 - Every material item is exactly one of MODEL_INPUT, REGIME_INPUT, CALIBRATION_INPUT, MARKET_EVIDENCE, EVIDENCE_ONLY.
 - Only the controlling specialist adapter may grant numerical authority.
 - Keep EXACT_LINE, ADJACENT_LINE, and NO_MARKET distinct. MARKET_EVIDENCE and EVIDENCE_ONLY must never be forwarded as sporting-model numerical features.
-- Unknown numeric evidence -> JSON null; unknown is not zero.
+- Certainty/quality: JSON number 0..1 or null only, never labels/text; role_status object; market_evidence is a sibling of evidence_families, never nested. Unknown is not zero.
 - Return up to three qualified predictions per analyzed event, never force three or add filler.
 - Risk/bankroll is downstream only, requires valid governed probability + fresh exact price, and preserves can_execute=false.
 - Prematch is default. Live analysis requires a separately certified live route.
