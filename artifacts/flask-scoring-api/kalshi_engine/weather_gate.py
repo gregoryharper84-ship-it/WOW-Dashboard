@@ -5,9 +5,10 @@ V17 rule: weather-model probability and Kalshi market evidence are separate
 contracts. A model PMF may prove probability normalization; exchange YES prices
 may only prove market/bracket coherence and can never create model probability.
 
-Legacy candidates without a V17 probability package remain visible through the
-existing research path so this patch does not make discovery stricter. They are
-explicitly marked LEGACY_RESEARCH_ONLY and are not governed-probability eligible.
+Legacy candidates without a V17 probability package may remain visible as
+research evidence, but they must fail closed at the governed weather gate. This
+prevents any legacy heuristic probability/lower-bound field from promoting a
+weather candidate before the V17 package is actually wired.
 """
 from __future__ import annotations
 
@@ -98,8 +99,8 @@ def check(candidate: dict[str, Any]) -> dict[str, Any]:
         _pass_gate(7, f"V17 weather PMF normalized: sum={gov['pmf_sum']:.6f}")
     else:
         # Legacy discovery compatibility: the old `probability_normalization_pass`
-        # flag was actually a Kalshi-price coherence check. Preserve the research
-        # path without treating it as governed model evidence.
+        # flag was actually a Kalshi-price coherence check. It may remain useful
+        # as research evidence, but it cannot satisfy the V17 probability gate.
         market_coherence = candidate.get("market_bracket_coherence_pass")
         if market_coherence is None:
             legacy_flag = candidate.get("probability_normalization_pass")
@@ -111,7 +112,11 @@ def check(candidate: dict[str, Any]) -> dict[str, Any]:
                 market_coherence = abs(yes_sum - 1.0) <= 0.05
         if not market_coherence:
             return _fail(7, "MARKET_BRACKET_COHERENCE_FAIL", "Kalshi bracket prices are not coherent; this is market evidence, not model probability.")
-        _pass_gate(7, "legacy market bracket coherence passed; probability_governance_status=LEGACY_RESEARCH_ONLY")
+        return _fail(
+            7,
+            "V17_PROBABILITY_PACKAGE_REQUIRED",
+            "Legacy weather discovery has market-coherence evidence but no V17 weather probability package; governed publication is blocked.",
+        )
 
     if not candidate.get("market_open", False):
         return _fail(8, "MARKET_NOT_OPEN", "market is not open")
