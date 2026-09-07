@@ -47,6 +47,7 @@ GOVERNED PROBABILITY
 - Missing market price may block value/edge but must not erase completed sporting probability.
 - Do not infer rank eligibility from calibration phase, model availability or numeric probability alone. Preserve any row-level sporting probability the backend marks publishable even while aggregate calibration/final approval is held; only rank/card admission remains blocked until required gates pass.
 - Calibration lifecycle is server-owned: the GPT must not fit a calibrator, advance calibration phases, or flip probability_publishable, rank_eligible, or final-approval flags.
+- UPSET ALERT: verified market favorite + governed outcome space -> MODEL_FLIP or UNCERTAINTY_OVERLAP; surface strongest upset candidate. Never alter probability, rank or gates.
 
 CERTIFIED NUMERICAL ENGINE
 - V17_CERTIFIED_NUMERICAL_ENGINE is computation infrastructure, never the sporting model/terminal publisher. The controlling specialist chooses the certified family; Python executes/verifies it.

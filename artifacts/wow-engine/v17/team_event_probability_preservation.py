@@ -11,10 +11,14 @@ Repairs coupled orchestration defects without relaxing governance:
    provider and written to the same canonical evidence ledger used by LLP.
 5. A valid projected-lineup fitted package remains a sporting probability while
    rank/final publication is held for confirmation refresh.
+6. A verified market favorite may be annotated with the cross-sport upset-alert
+   interpretation layer after a complete calibrated sporting package exists.
 
 Market-relative FAVORITE/UNDERDOG/UPSET requests remain on the existing market
-consensus path. No probability is manufactured, no gate is bypassed, and wager
-execution remains impossible.
+consensus path. The upset alert uses market context only to identify which outcome
+is the market favorite; market probability magnitude never changes sporting
+probability or alert severity. No probability is manufactured, no gate is
+bypassed, and wager execution remains impossible.
 """
 from __future__ import annotations
 
@@ -25,11 +29,20 @@ from fastapi import FastAPI
 
 from v17 import team_event_request_runtime as _base
 from v17.projected_lineup_scenario_modeling import projected_probability_hold
+from v17.team_event_upset_alert import evaluate_favorite_upset_alert
 
 _original_hold = _base._llp_governance_hold
 _original_run_mlb_llp_governance = _base._run_mlb_llp_governance
 _repair_lock = RLock()
 _PROBABILITY_ONLY_INTENTS = {"WINNER", "BEST_SIDE"}
+_UPSET_ALERT_NUMERIC_FIELDS = (
+    "calibrated_home_probability",
+    "calibrated_home_lower_bound",
+    "calibrated_home_upper_bound",
+    "calibrated_away_probability",
+    "calibrated_away_lower_bound",
+    "calibrated_away_upper_bound",
+)
 
 
 def _preserve_completed_probability_hold(
@@ -203,6 +216,106 @@ def _run_mlb_llp_governance_with_evidence_handoff(
     return second
 
 
+def _market_favorite_identity(req: Any) -> tuple[str | None, bool, str]:
+    """Resolve favorite identity from a verified exact market snapshot only."""
+    market = _base._market_handoff(req)
+    if market.get("status") != "EXACT_LINE" or market.get("market_role_status") != "ACTIVE":
+        return None, False, "MARKET_FAVORITE_CLASSIFICATION_UNVERIFIED"
+    prior = dict(getattr(req, "market_prior", None) or {})
+    try:
+        home = float(prior["home_probability"])
+        away = float(prior["away_probability"])
+    except (KeyError, TypeError, ValueError):
+        return None, False, "MARKET_FAVORITE_CLASSIFICATION_UNVERIFIED"
+    if not (0.0 <= home <= 1.0 and 0.0 <= away <= 1.0):
+        return None, False, "MARKET_FAVORITE_CLASSIFICATION_INVALID"
+    if home == away:
+        return None, False, "MARKET_FAVORITE_TIE_UNRESOLVED"
+    return (req.home_team if home > away else req.away_team), True, "MARKET_FAVORITE_VERIFIED"
+
+
+def _unavailable_upset_alert(result: dict[str, Any], reason: str) -> dict[str, Any]:
+    out = dict(result)
+    payload = {
+        "status": "UPSET_ALERT_UNAVAILABLE",
+        "alert": False,
+        "severity": "UNAVAILABLE",
+        "sport": str(out.get("sport") or "MLB").upper(),
+        "market_favorite": None,
+        "upset_candidate": None,
+        "reason_codes": [reason],
+        "market_role_only": True,
+        "probability_mutated": False,
+        "admission_mutated": False,
+        "cash_gate_mutated": False,
+        "automatic_pick_promotion": False,
+        "can_execute": False,
+    }
+    out["upset_alert"] = payload
+    out["upset_alert_status"] = payload["status"]
+    out["upset_alert_severity"] = payload["severity"]
+    out["upset_alert_candidate"] = None
+    return out
+
+
+def _attach_upset_alert(req: Any, result: dict[str, Any]) -> dict[str, Any]:
+    """Attach an informational favorite-vulnerability flag without changing scoring."""
+    out = dict(result)
+    market_favorite, favorite_verified, market_reason = _market_favorite_identity(req)
+    if not favorite_verified or market_favorite is None:
+        return _unavailable_upset_alert(out, market_reason)
+
+    if out.get("probability_fields_withheld") is True:
+        return _unavailable_upset_alert(out, "GOVERNED_COMPLETE_OUTCOME_SPACE_WITHHELD")
+    if out.get("calibration_health_status") != "PASS":
+        return _unavailable_upset_alert(out, "GOVERNED_CALIBRATION_NOT_PASS")
+    if any(out.get(field) is None for field in _UPSET_ALERT_NUMERIC_FIELDS):
+        return _unavailable_upset_alert(out, "GOVERNED_COMPLETE_OUTCOME_SPACE_UNAVAILABLE")
+
+    try:
+        alert = evaluate_favorite_upset_alert(
+            sport=str(getattr(req, "sport", "MLB") or "MLB"),
+            market_favorite=market_favorite,
+            market_favorite_verified=True,
+            governed_outcomes=(
+                {
+                    "label": req.home_team,
+                    "calibrated_probability": out["calibrated_home_probability"],
+                    "calibrated_lower_bound": out["calibrated_home_lower_bound"],
+                    "calibrated_upper_bound": out["calibrated_home_upper_bound"],
+                },
+                {
+                    "label": req.away_team,
+                    "calibrated_probability": out["calibrated_away_probability"],
+                    "calibrated_lower_bound": out["calibrated_away_lower_bound"],
+                    "calibrated_upper_bound": out["calibrated_away_upper_bound"],
+                },
+            ),
+            favorite_failure_path_probability_if_modeled=out.get(
+                "favorite_failure_path_probability_if_modeled",
+                out.get("favorite_failure_path_probability"),
+            ),
+            largest_favorite_loss_path=out.get("largest_favorite_loss_path"),
+            underdog_upset_path=out.get("underdog_upset_path_json", out.get("underdog_upset_path")),
+        )
+    except (KeyError, TypeError, ValueError):
+        return _unavailable_upset_alert(out, "GOVERNED_UPSET_ALERT_PACKAGE_INVALID")
+
+    payload = alert.to_dict()
+    out["upset_alert"] = payload
+    out["upset_alert_status"] = alert.status
+    out["upset_alert_severity"] = alert.severity
+    out["market_favorite"] = alert.market_favorite
+    out["market_favorite_model_probability"] = alert.favorite_probability
+    out["market_favorite_lower_bound"] = alert.favorite_lower_bound
+    out["upset_alert_candidate"] = alert.upset_candidate
+    out["upset_candidate_model_probability"] = alert.upset_candidate_probability
+    out["upset_candidate_lower_bound"] = alert.upset_candidate_lower_bound
+    out["upset_alert_probability_gap"] = alert.probability_gap
+    out["can_execute"] = False
+    return out
+
+
 def score_team_event_request(
     req: Any,
     *,
@@ -216,11 +329,12 @@ def score_team_event_request(
         _base._llp_governance_hold = _preserve_completed_probability_hold
         _base._run_mlb_llp_governance = _run_mlb_llp_governance_with_evidence_handoff
         try:
-            return _base.score_team_event_request(
+            result = _base.score_team_event_request(
                 req,
                 event_api=event_api,
                 canonical_hydration_required=canonical_hydration_required,
             )
+            return _attach_upset_alert(req, result)
         finally:
             _base._llp_governance_hold = previous_hold
             _base._run_mlb_llp_governance = previous_governance
