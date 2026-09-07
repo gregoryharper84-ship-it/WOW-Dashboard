@@ -9,6 +9,12 @@ from typing import Any
 
 
 def package_to_legacy_candidate(package: dict[str, Any], candidate: dict[str, Any] | None = None) -> dict[str, Any]:
+    # V17 Weather is analytical-only. A stale/malformed package must never cross
+    # the compatibility boundary with execution enabled, and a legacy candidate
+    # carrying can_execute=true must be overwritten rather than preserved.
+    if package.get("can_execute") is not False:
+        raise ValueError("WEATHER_V17_EXECUTION_GUARD_VIOLATION")
+
     out = dict(candidate or {})
     pmf = package.get("final_high_pmf") or {}
     pmf_sum = sum(float(v) for v in pmf.values()) if pmf else 0.0
@@ -31,6 +37,8 @@ def package_to_legacy_candidate(package: dict[str, Any], candidate: dict[str, An
         "weather_probability_status": package.get("probability_status"),
         "weather_model_status": package.get("model_status"),
         "weather_model_blockers": package.get("blockers") or [],
+        "can_execute": False,
+        "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS": True,
     })
     return out
 
