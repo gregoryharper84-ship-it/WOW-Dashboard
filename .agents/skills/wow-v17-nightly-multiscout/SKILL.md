@@ -75,6 +75,14 @@ Then add sport-specific regimes (for example basketball pace/foul/three-point sc
 
 The atomic scenario families are composable; the controlling fitted model determines which features are numerically supported. Scout game scripts are evidence/hypotheses only and must never apply an extra manual probability penalty or bonus after a certified model has consumed the same factor.
 
+## Nightly sequencing
+
+The scheduled engineering workflow runs first at `08:00 UTC`.
+
+The Multi-Scout workflow runs at `10:00 UTC`, exactly two hours later. This ordering is intentional: overnight engineering diagnostics and any critical governed repair have a chance to complete before the Scout team builds the next discovery package.
+
+The Scout workflow must remain separate from the engineering workflow. A discovery/source-acquisition failure must not be relabeled as an engineering failure, and an engineering repair must not silently bypass V17 verification before the Scout consumes it.
+
 ## Nightly handoff
 
 The scheduled workflow `.github/workflows/wow-v17-nightly-multiscout.yml` runs `artifacts/wow-engine/v17/nightly_multiscout.py` and uploads:
