@@ -7,6 +7,8 @@ repository, workflow, main ref, and a small set of non-PR production events.
 """
 from __future__ import annotations
 
+import os
+import secrets
 from typing import Any
 
 import jwt
@@ -65,9 +67,28 @@ def verify_github_actions_oidc(token: str, *, jwk_client: PyJWKClient | None = N
     return validate_github_actions_claims(claims)
 
 
+def authorize_action_key_or_multiscout_oidc(authorization: str | None) -> str:
+    """Authorize the two internal Scout downstream request routes.
+
+    The ordinary Custom GPT path remains WOW_ACTION_API_KEY.  Only when that
+    exact bearer does not match do we attempt the strict GitHub OIDC policy.
+    The return value is an audit-only auth mechanism label; no credential is
+    ever returned or logged.
+    """
+    if not authorization or not authorization.startswith("Bearer "):
+        raise GitHubOIDCValidationError("SCOUT_ROUTE_AUTH_REQUIRED")
+    supplied = authorization[len("Bearer ") :]
+    configured = os.environ.get("WOW_ACTION_API_KEY")
+    if configured and secrets.compare_digest(supplied, configured):
+        return "WOW_ACTION_API_KEY"
+    verify_github_actions_oidc(supplied)
+    return "GITHUB_ACTIONS_OIDC"
+
+
 __all__ = [
     "AUDIENCE",
     "GitHubOIDCValidationError",
+    "authorize_action_key_or_multiscout_oidc",
     "validate_github_actions_claims",
     "verify_github_actions_oidc",
 ]
