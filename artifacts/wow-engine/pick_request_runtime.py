@@ -1,12 +1,17 @@
 """V17 receipt-semantics facade for the governed prop request runtime.
 
-The producing implementation is preserved byte-for-byte in
-``pick_request_runtime_core``. This facade adds only row-receipt semantics:
-pre-scorer construction failures remain ``scoring_attempted=false``; once the
-fitted scorer is called, success and failure receipts are
-``scoring_attempted=true``; unexpected scorer exceptions are typed
-``MODEL_SCORER_FAILED``. No model, evidence, line, calibration, ranking, or
-terminal-reducer behavior is changed here.
+The producing implementation is preserved in ``pick_request_runtime_core``.
+This facade adds only receipt/error-boundary semantics:
+- pre-scorer construction failures remain ``scoring_attempted=false``;
+- once the fitted scorer is called, success/failure receipts are
+  ``scoring_attempted=true``;
+- unexpected scorer exceptions are typed ``MODEL_SCORER_FAILED``; and
+- downstream portfolio-governance exceptions fail closed without erasing an
+  already-completed sporting probability receipt.
+
+No model, evidence, line, calibration, ranking, or terminal-reducer behavior is
+changed here. Portfolio/card governance remains a downstream objective and can
+never mutate sporting probability. ``can_execute=false`` remains binding.
 """
 from __future__ import annotations
 
@@ -22,6 +27,7 @@ from pick_request_runtime_core import *  # noqa: F401,F403
 _ORIGINAL_TERMINAL = _core._terminal
 _ORIGINAL_COMPLETED_SCORED_OUTCOME = _core._completed_scored_outcome
 _ORIGINAL_AUTO_HYDRATE_PROP_EVIDENCE = _core.auto_hydrate_prop_evidence
+_ORIGINAL_APPLY_PORTFOLIO_GOVERNANCE = _core._apply_portfolio_governance
 
 # Preserve the source-level exact-line contract used by V17 certification:
 # frozen snapshot contains `"line": float(row.line)` and the score request
@@ -92,10 +98,47 @@ def _completed_scored_outcome(**kwargs: Any) -> dict[str, Any]:
     return out
 
 
+def _apply_portfolio_governance(
+    request_id: Optional[str],
+    scored_legs: list[tuple[dict[str, Any], dict[str, Any]]],
+) -> None:
+    """Fail closed downstream without destroying a sporting-model receipt.
+
+    ``/score-pick-request`` deliberately computes sporting probability before
+    portfolio/card governance. If that downstream structural layer throws, an
+    HTTP 5xx from the route would erase the canonical row receipt that already
+    exists and make the Action client surface only an opaque transport error.
+
+    Preserve each completed row exactly as scored, block downstream portfolio
+    use, and attach a sanitized typed diagnostic. This does not convert the
+    downstream exception into MODEL_UNAVAILABLE or MODEL_SCORER_FAILED, and it
+    never changes raw/calibrated probability, lower bound, rank eligibility, or
+    the sporting terminal status.
+    """
+    try:
+        _ORIGINAL_APPLY_PORTFOLIO_GOVERNANCE(request_id, scored_legs)
+        return
+    except Exception as exc:
+        error_type = type(exc).__name__
+
+    for _leg, outcome in scored_legs:
+        outcome["portfolio_governance"] = {
+            "status": "BLOCKED",
+            "code": "PORTFOLIO_GOVERNANCE_UNAVAILABLE",
+            "error_type": error_type,
+            "blockers": ["PORTFOLIO_GOVERNANCE_UNAVAILABLE"],
+            "receipt_preserved": True,
+            "sporting_probability_mutated": False,
+            "can_execute": False,
+        }
+        outcome["downstream_portfolio_evaluation_allowed"] = False
+
+
 # The core resolves these helpers as module globals at request time, so install
 # the receipt-aware versions once without altering the sporting model path.
 _core._terminal = _terminal
 _core._completed_scored_outcome = _completed_scored_outcome
+_core._apply_portfolio_governance = _apply_portfolio_governance
 
 
 class _ScoringReceiptMarketApi:
