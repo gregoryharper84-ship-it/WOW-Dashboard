@@ -7,8 +7,13 @@ governance.
 """
 from __future__ import annotations
 
+import asyncio
+import logging
 import os
 import sys
+
+_RUNTIME_TASKS: set[asyncio.Task] = set()
+_MLB_BRIDGE_ACCEPTANCE_LOGGER = logging.getLogger("wow.v17.mlb.event_bridge.acceptance")
 
 
 def get_certified_numerical_registry():
@@ -69,6 +74,23 @@ def _defer_mlb_event_bridge_install(*, market_api, team_runtime) -> bool:
         preservation = sys.modules.get("v17.team_event_probability_preservation")
         if installed and preservation is not None:
             preservation._original_run_mlb_llp_governance = team_runtime._run_mlb_llp_governance
+
+        # A dedicated production flag runs one authenticated, non-secret smoke
+        # test against a real confirmed pregame MLB event after startup completes.
+        # It calls the public V17 HTTP boundary with the server-owned Action key,
+        # logs no probability values, and can never execute a wager.
+        if installed and os.getenv("WOW_V17_MLB_BRIDGE_SELF_ACCEPTANCE", "0") == "1":
+            async def _run_after_startup():
+                await asyncio.sleep(5.0)
+                from v17_mlb_bridge_self_acceptance import run_mlb_event_bridge_self_acceptance
+                await run_mlb_event_bridge_self_acceptance(
+                    _MLB_BRIDGE_ACCEPTANCE_LOGGER,
+                    event_api=getattr(getattr(market_api, "prod", None), "event_api", None),
+                )
+
+            task = asyncio.create_task(_run_after_startup())
+            _RUNTIME_TASKS.add(task)
+            task.add_done_callback(_RUNTIME_TASKS.discard)
 
     app.state.v17_mlb_event_bridge_deferred = True
     return True
