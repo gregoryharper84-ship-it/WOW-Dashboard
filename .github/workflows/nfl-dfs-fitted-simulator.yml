@@ -1,0 +1,53 @@
+name: nfl-dfs-fitted-simulator
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "artifacts/flask-scoring-api/services/nfl_dfs_fitted_simulator.py"
+      - "artifacts/flask-scoring-api/services/specialist_contracts.py"
+      - "artifacts/flask-scoring-api/services/tests/test_nfl_dfs_fitted_simulator.py"
+      - "artifacts/flask-scoring-api/services/tests/test_specialist_contracts.py"
+      - ".github/workflows/nfl-dfs-fitted-simulator.yml"
+  push:
+    branches: [main]
+    paths:
+      - "artifacts/flask-scoring-api/services/nfl_dfs_fitted_simulator.py"
+      - "artifacts/flask-scoring-api/services/specialist_contracts.py"
+      - "artifacts/flask-scoring-api/services/tests/test_nfl_dfs_fitted_simulator.py"
+      - "artifacts/flask-scoring-api/services/tests/test_specialist_contracts.py"
+      - ".github/workflows/nfl-dfs-fitted-simulator.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nfl-dfs-fitted-simulator-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  focused-regression:
+    name: NFL DFS fitted simulator regression
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: artifacts/flask-scoring-api
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install focused test dependency
+        run: python -m pip install pytest==9.1.1
+
+      - name: Run NFL DFS fitted simulator and scoring-contract regressions
+        run: >-
+          python -m pytest -q
+          services/tests/test_nfl_dfs_fitted_simulator.py
+          services/tests/test_specialist_contracts.py
