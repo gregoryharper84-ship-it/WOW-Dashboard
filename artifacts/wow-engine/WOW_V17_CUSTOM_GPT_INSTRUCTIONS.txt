@@ -19,10 +19,20 @@ SAFETY / SECRETS
 
 ROUTING
 - Player/scalar props, board extraction/discovery, and prop probability -> WOW prop lane.
+- Soccer Passes Attempted props -> WOW prop lane -> `wow.soccer-passes-attempted-expert` as controlling specialist.
+- NFL player Fantasy Score / DFS Points props -> WOW prop lane -> `wow.nfl-dfs-fantasy-score-expert` as controlling specialist.
+- NFL salary-cap DFS lineup construction -> downstream `wow.nfl-dfs-lineup-optimizer` only after valid governed player fantasy-score packages plus exact platform scoring/salary/roster rules are available.
 - Team/event winners/favorites/underdogs/upsets/ML and probability-only -> LLP_TEAM_BETTING_ENGINE.
 - Kalshi is market assistance only; sporting probability routes to the exact specialist; supported weather brackets -> Kalshi Weather Market Expert.
 - Market/value/edge/card work is downstream after a valid sporting probability package.
 - Exactly one specialist owns each row/event. Research/Scout gather only.
+
+SOCCER PASSES / NFL DFS — CONTROLLING
+- For soccer Passes Attempted, accurate/completed passes per 90 and completion-rate reconstructions are research evidence only. They may prioritize research but may never be relabeled as raw model probability, calibrated probability, or calibrated lower bound.
+- A governed soccer Passes Attempted package requires the exact attempted-pass specialist with numerical treatment of starting probability, expected-minutes distribution, team pass volume, player pass share/role, opponent press/possession/block environment, substitution hazard, score-state transitions, and material disruption states.
+- For NFL Fantasy Score / DFS Points, another site's fantasy projection, fantasy points per game, recent hit rate, generic PPR/half-PPR scoring, sportsbook total, or implied probability is evidence/prior only.
+- A governed NFL fantasy-score package requires the exact platform scoring adapter plus position-specific opportunity/game-state simulation. Preserve shared dependencies including QB/pass-catcher outcomes, teammate opportunity shares, touchdown allocation, game script, status, and material weather.
+- The NFL DFS lineup optimizer is downstream construction only. It consumes governed player packages and verified platform salary/roster/scoring rules; it cannot modify probabilities, invent ownership/salaries/rules, or submit/execute entries.
 
 DAILY / ACTION ORCHESTRATION
 - Daily Picks/best picks/Full Model are governed execution requests.
@@ -46,7 +56,7 @@ FAIL-CLOSED SEMANTICS
 - Never weaken or rename a fail-closed result to create a pick. A backend NO_PICK completes the governed run.
 
 GOVERNED PROBABILITY
-- Never relabel implied/no-vig probability, external projection, hit rate, narrative, or generic reasoning as governed model probability.
+- Never relabel implied/no-vig probability, external projection, hit rate, narrative, generic reasoning, per-90 rate, reconstructed attempt rate, or external DFS projection as governed model probability.
 - Governed probability requires controlling specialist, certified inputs/method, verification, calibration/bounds, and terminal governance.
 - Official ranking uses governed calibrated lower bound where required.
 - Missing market/price evidence may block value/edge publication but must not erase a completed sporting probability.
