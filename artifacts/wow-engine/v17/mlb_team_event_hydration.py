@@ -20,6 +20,8 @@ _REQUIRED_CANONICAL_FIELDS = (
     "venue_name",
     "home_probable_pitcher",
     "away_probable_pitcher",
+    "event_status",
+    "lineup_status",
 )
 
 
@@ -55,7 +57,7 @@ def resolve_mlb_team_event_evidence(req: Any, *, event_api: Any) -> dict[str, An
             .select(
                 "official_event_id,event_start_time,event_status,home_team,away_team,venue_name,"
                 "home_probable_pitcher,away_probable_pitcher,snapshot_id,"
-                "snapshot_timestamp,feature_hydration_status"
+                "snapshot_timestamp,feature_hydration_status,lineup_status,lineup_confirmed_at"
             )
             .eq("official_event_id", str(req.official_event_id))
             .eq("feature_hydration_status", "PASS")
@@ -124,6 +126,9 @@ def resolve_mlb_team_event_evidence(req: Any, *, event_api: Any) -> dict[str, An
             "missing_fields": missing,
         }
 
+    # Starter status is derived only from the canonical probable-pitcher fields;
+    # lineup state is copied from the canonical forward-shadow row.  No caller or
+    # GPT value can create either model-critical state.
     canonical = {
         "venue": row["venue_name"],
         "official_event_status": row.get("event_status"),
@@ -131,8 +136,8 @@ def resolve_mlb_team_event_evidence(req: Any, *, event_api: Any) -> dict[str, An
         "away_starting_pitcher": row["away_probable_pitcher"],
         "home_starter_status": "PROBABLE",
         "away_starter_status": "PROBABLE",
-        "home_lineup_status": "PROJECTED",
-        "away_lineup_status": "PROJECTED",
+        "home_lineup_status": row.get("lineup_status"),
+        "away_lineup_status": row.get("lineup_status"),
     }
 
     caller = dict(getattr(req, "sport_specific_evidence", None) or {})
@@ -149,12 +154,18 @@ def resolve_mlb_team_event_evidence(req: Any, *, event_api: Any) -> dict[str, An
             "missing_fields": [],
         }
 
+    lineup_confirmed_at = _aware(row.get("lineup_confirmed_at"))
+    latest_material = max(
+        value for value in (snap_time, lineup_confirmed_at) if value is not None
+    )
+
     return {
         "ok": True,
         "code": "MLB_TEAM_EVENT_CANONICAL_EVIDENCE_READY",
         "evidence": canonical,
         "canonical_source_snapshot_id": str(row["snapshot_id"]),
         "canonical_snapshot_timestamp": snap_time.isoformat(),
+        "canonical_latest_material_update_timestamp": latest_material.isoformat(),
         "caller_source_snapshot_id": str(req.source_snapshot_id),
         "can_execute": False,
     }
