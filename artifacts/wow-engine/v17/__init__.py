@@ -2,7 +2,8 @@
 
 Importing the package in shared lower-layer tests must not mutate runtime routing.
 Response semantics, immutable projected-score handoff, numerical certification,
-and portfolio construction remain subordinate to V17 terminal governance.
+postmortem learning, and portfolio construction remain subordinate to V17 terminal
+governance.
 """
 from __future__ import annotations
 
@@ -25,6 +26,16 @@ def optimize_slip_portfolio(*args, **kwargs):
     """Lazy public entrypoint for Stage 17-19 card/session exposure governance."""
     from v17.slip_portfolio_optimizer import optimize_portfolio as _optimize
     return _optimize(*args, **kwargs)
+
+
+def build_llp_postmortem_learning_report(*args, **kwargs):
+    """Lazy analytical entrypoint for immutable LLP postmortem learning.
+
+    This helper never mutates production model parameters and never authorizes
+    execution. Any recalibration signal it returns is review-only.
+    """
+    from v17.llp_postmortem_recalibration import build_llp_learning_report as _build
+    return _build(*args, **kwargs)
 
 
 def compose_active_runtime() -> bool:
@@ -56,6 +67,7 @@ compose_active_runtime()
 
 
 __all__ = [
+    "build_llp_postmortem_learning_report",
     "compose_active_runtime",
     "evaluate_game_winner_cash_single",
     "get_certified_numerical_registry",

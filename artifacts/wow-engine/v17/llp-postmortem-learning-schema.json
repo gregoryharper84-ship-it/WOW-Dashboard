@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wow.local/v17/llp-postmortem-learning-schema.json",
+  "title": "WOW V17 LLP Postmortem Learning Record",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "prediction_id",
+    "date",
+    "sport",
+    "event_id",
+    "market_role",
+    "selection",
+    "calibrated_probability",
+    "lower_bound",
+    "result",
+    "model_timestamp"
+  ],
+  "properties": {
+    "prediction_id": {"type": "string", "minLength": 1},
+    "date": {"type": "string", "minLength": 1},
+    "sport": {"type": "string", "minLength": 1},
+    "league": {"type": ["string", "null"]},
+    "event_id": {"type": "string", "minLength": 1},
+    "market_role": {
+      "type": "string",
+      "description": "Favorite/winner and underdog/upset lanes are evaluated separately."
+    },
+    "selection": {"type": "string", "minLength": 1},
+    "independent_probability": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+    "market_prior_weight": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+    "unconditional_probability": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+    "calibrated_probability": {"type": "number", "minimum": 0, "maximum": 1},
+    "lower_bound": {"type": "number", "minimum": 0, "maximum": 1},
+    "upper_bound": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+    "terminal_label": {"type": ["string", "null"]},
+    "blockers": {
+      "oneOf": [
+        {"type": "array", "items": {"type": "string"}},
+        {"type": "string"},
+        {"type": "null"}
+      ]
+    },
+    "failure_tags": {
+      "oneOf": [
+        {"type": "array", "items": {"type": "string"}},
+        {"type": "string"},
+        {"type": "null"}
+      ]
+    },
+    "realized_failure_tags": {
+      "oneOf": [
+        {"type": "array", "items": {"type": "string"}},
+        {"type": "string"},
+        {"type": "null"}
+      ],
+      "description": "Post-settlement path attribution. Must not rewrite the pregame failure tags."
+    },
+    "final_refresh_status": {"type": ["string", "null"]},
+    "snapshot_stage": {"type": ["string", "null"]},
+    "immutable_pregame": {"type": ["boolean", "null"]},
+    "model_timestamp": {"type": "string", "minLength": 1},
+    "closing_price": {},
+    "closing_no_vig": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+    "result": {
+      "type": "string",
+      "enum": ["WIN", "WON", "SETTLED_WIN", "LOSS", "LOST", "SETTLED_LOSS", "PUSH", "VOID", "REFUND", "TIE", "UNKNOWN"]
+    },
+    "brier_score": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+    "log_loss": {"type": ["number", "null"], "minimum": 0},
+    "clv": {"type": ["number", "null"]},
+    "postmortem_note": {"type": ["string", "null"]}
+  },
+  "$defs": {
+    "governance": {
+      "type": "object",
+      "properties": {
+        "automatic_parameter_mutation": {"const": false},
+        "can_execute": {"const": false},
+        "terminal_authority": {"const": "V17_TERMINAL_REDUCER"}
+      }
+    }
+  }
+}
