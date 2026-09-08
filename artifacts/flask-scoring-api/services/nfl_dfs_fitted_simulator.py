@@ -487,6 +487,13 @@ def simulate_exact_line(
     if artifact.certification_status != "CERTIFIED":
         blockers.append("FITTED_MODEL_ARTIFACT_NOT_PROMOTED")
 
+    if not full_context_ready or not regimes_certified:
+        terminal_status = "MODEL_INPUTS_INSUFFICIENT"
+    elif artifact.calibration_status != "CERTIFIED":
+        terminal_status = "CALIBRATION_BLOCKED_NO_PUBLISH"
+    else:
+        terminal_status = "MODEL_QUALIFIED_HOLD"
+
     return {
         "market_family": "NFL_DFS_FANTASY_SCORE",
         "controlling_specialist": CONTROLLING_SPECIALIST,
@@ -511,7 +518,7 @@ def simulate_exact_line(
         "fantasy_score_p90": _quantile(scores_sorted, 0.90),
         "component_means": {name: component_totals[name] / simulation_count for name in COMPONENTS},
         "regime_frequencies": {name: count / simulation_count for name, count in regime_counts.items()},
-        "terminal_status": "MODEL_QUALIFIED_HOLD",
+        "terminal_status": terminal_status,
         "blockers": blockers,
         "probability_publishable": False,
         "rank_eligible": False,
