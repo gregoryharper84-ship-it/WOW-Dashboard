@@ -1,0 +1,63 @@
+{
+  "schema_version": "V17_2026-09-08",
+  "governance": {
+    "official_result_immutable": true,
+    "near_miss_metadata_may_rewrite_result": false,
+    "duplicate_exposure_may_rewrite_sporting_probability": false,
+    "can_execute": false,
+    "dry_run_only": true
+  },
+  "prediction_fields": [
+    "prediction_id",
+    "research_run_id",
+    "candidate_id",
+    "sport",
+    "event_key",
+    "market",
+    "side",
+    "price",
+    "market_probability",
+    "raw_probability",
+    "calibrated_probability",
+    "lower_bound",
+    "upper_bound",
+    "failure_path_score",
+    "terminal_label",
+    "sources",
+    "created_at"
+  ],
+  "outcome_fields": [
+    "prediction_id",
+    "official_result",
+    "settlement_source",
+    "settlement_timestamp",
+    "closing_market_probability",
+    "observed_path",
+    "process_classification",
+    "actual_value",
+    "signed_distance_to_threshold",
+    "close_miss_flag",
+    "close_miss_tolerance",
+    "duplicate_thesis_count",
+    "cards_killed",
+    "critical_leg_rank"
+  ],
+  "outcome_field_semantics": {
+    "official_result": "Immutable exact settlement result for the recorded pregame player/event/stat/line/direction.",
+    "actual_value": "Official settled scalar value when the market has a meaningful numeric outcome; otherwise null.",
+    "signed_distance_to_threshold": "Positive when the selected scalar side cleared the exact recorded threshold, negative when it missed, zero at the numerical boundary; null for non-scalar markets.",
+    "close_miss_flag": "Diagnostic metadata only. A loss remains a loss. Requires a lane/market-specific tolerance rather than a universal cutoff.",
+    "close_miss_tolerance": "Explicit market-aware threshold used for close-miss classification; null means no close-miss classification was attempted.",
+    "duplicate_thesis_count": "Count of exact or exposure-family instances recorded for postmortem structure attribution; never a probability haircut.",
+    "cards_killed": "Count of cards for which this losing thesis was a necessary failed hinge.",
+    "critical_leg_rank": "Pregame structural critical-leg rank when recorded; 1 is the largest modeled card-failure contributor."
+  },
+  "metrics": [
+    "brier_score",
+    "log_loss",
+    "expected_calibration_error",
+    "calibration_bias",
+    "lower_bound_reliability",
+    "clv"
+  ]
+}
