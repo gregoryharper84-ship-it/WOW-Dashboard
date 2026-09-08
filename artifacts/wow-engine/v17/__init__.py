@@ -38,6 +38,42 @@ def build_llp_postmortem_learning_report(*args, **kwargs):
     return _build(*args, **kwargs)
 
 
+def _defer_mlb_event_bridge_install(*, market_api, team_runtime) -> bool:
+    """Install the MLB bridge after module import, before the app becomes ready.
+
+    Production starts with WOW_V17_ACTIVE=1. Installing the bridge while the v17
+    package itself is still importing can mutate partially initialized modules and
+    stall Uvicorn before application startup. Deferring the same governed repair
+    to FastAPI startup keeps import side effects bounded while still installing
+    the bridge before Render marks the service healthy.
+    """
+    app = getattr(market_api, "app", None)
+    if app is None:
+        return False
+    if getattr(app.state, "v17_mlb_event_bridge_deferred", False):
+        return True
+
+    @app.on_event("startup")
+    async def install_mlb_event_bridge_after_imports():
+        from v17.mlb_event_bridge_repair import install_mlb_event_bridge_repair
+
+        installed = install_mlb_event_bridge_repair(
+            market_api=market_api,
+            team_event_module=team_runtime,
+        )
+
+        # team_event_probability_preservation is imported after v17.__init__ and
+        # therefore captures the unpatched governance callable. Once the bridge is
+        # safely installed at startup, point that wrapper at the patched callable
+        # so evidence handoff still traverses the stage-audit taxonomy.
+        preservation = sys.modules.get("v17.team_event_probability_preservation")
+        if installed and preservation is not None:
+            preservation._original_run_mlb_llp_governance = team_runtime._run_mlb_llp_governance
+
+    app.state.v17_mlb_event_bridge_deferred = True
+    return True
+
+
 def compose_active_runtime() -> bool:
     if os.getenv("WOW_V17_ACTIVE", "0") != "1":
         return False
@@ -45,7 +81,6 @@ def compose_active_runtime() -> bool:
     from v17.projected_lineup_scenario_modeling import install_projected_lineup_semantics
     from v17.projected_lineup_probability_rehydration import install_projected_lineup_score_rehydration
     from v17.numerical_engine_production_bridge import install_production_bridges
-    from v17.mlb_event_bridge_repair import install_mlb_event_bridge_repair
     from v17 import team_event_request_runtime as team_runtime
 
     get_certified_numerical_registry()
@@ -55,16 +90,16 @@ def compose_active_runtime() -> bool:
 
     market_api = sys.modules.get("api_prod_market")
     numerical_ok = False
-    mlb_event_bridge_ok = False
+    mlb_event_bridge_deferred = False
     if market_api is not None:
         numerical_ok = install_production_bridges(market_api=market_api, team_event_module=team_runtime)
-        mlb_event_bridge_ok = install_mlb_event_bridge_repair(
+        mlb_event_bridge_deferred = _defer_mlb_event_bridge_install(
             market_api=market_api,
-            team_event_module=team_runtime,
+            team_runtime=team_runtime,
         )
 
     return bool(
-        prop_ok or lineup_ok or rehydration_ok or numerical_ok or mlb_event_bridge_ok
+        prop_ok or lineup_ok or rehydration_ok or numerical_ok or mlb_event_bridge_deferred
         or getattr(market_api, "_v17_certified_numerical_bridge_installed", False)
         or getattr(market_api, "_v17_mlb_event_bridge_repair_installed", False)
     )
