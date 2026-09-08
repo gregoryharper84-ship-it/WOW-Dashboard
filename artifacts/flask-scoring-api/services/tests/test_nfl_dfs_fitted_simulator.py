@@ -167,6 +167,7 @@ def test_raw_distribution_never_becomes_governed_probability_without_promotion()
     assert result["probability_publishable"] is False
     assert result["rank_eligible"] is False
     assert result["can_execute"] is False
+    assert result["terminal_status"] == "CALIBRATION_BLOCKED_NO_PUBLISH"
     assert "BLOCKED_NO_CERTIFIED_EXACT_LINE_CALIBRATION_ARTIFACT" in result["blockers"]
     assert "FITTED_MODEL_ARTIFACT_NOT_PROMOTED" in result["blockers"]
 
@@ -183,6 +184,7 @@ def test_uncertified_regime_package_is_explicit_blocker():
         simulation_count=50_000,
         seed=9,
     )
+    assert result["terminal_status"] == "MODEL_INPUTS_INSUFFICIENT"
     assert "FAILURE_REGIME_PACKAGE_NOT_CERTIFIED" in result["blockers"]
     assert "NFL_FULL_MODEL_CONTEXT_NOT_CERTIFIED" in result["blockers"]
 
