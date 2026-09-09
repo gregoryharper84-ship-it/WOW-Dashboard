@@ -15,15 +15,26 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from nightly_engineering_team_contract import (
-    CLOSURE_RELEASE_STATUSES,
-    REPRODUCTION_STATUSES,
-    SUBSYSTEMS,
-    initial_team_fields,
-    route_subsystem,
-    transition_record,
-    validate_team_record,
-)
+try:
+    from .nightly_engineering_team_contract import (
+        CLOSURE_RELEASE_STATUSES,
+        REPRODUCTION_STATUSES,
+        SUBSYSTEMS,
+        initial_team_fields,
+        route_subsystem,
+        transition_record,
+        validate_team_record,
+    )
+except ImportError:  # direct-script execution: python v17/nightly_incident_records.py
+    from nightly_engineering_team_contract import (
+        CLOSURE_RELEASE_STATUSES,
+        REPRODUCTION_STATUSES,
+        SUBSYSTEMS,
+        initial_team_fields,
+        route_subsystem,
+        transition_record,
+        validate_team_record,
+    )
 
 ROOT = Path(__file__).resolve().parent
 LEDGER = ROOT / "incident-ledger.json"
