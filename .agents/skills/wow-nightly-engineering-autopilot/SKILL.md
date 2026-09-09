@@ -1,246 +1,250 @@
 # WOW V17 Nightly Engineering Autopilot
 
-Load this skill for every scheduled or manually triggered WOW V17 engineering-health run. It extends `.agents/skills/wow-replit-patch-governor/SKILL.md`; that skill remains authoritative for bounded implementation, diff control, regression testing, publication, and production verification.
+Load this skill for every scheduled or manually triggered WOW V17 engineering-health run. It extends `.agents/skills/wow-replit-patch-governor/SKILL.md`; that skill remains authoritative for bounded implementation, diff control, regression testing, publication, rollback, and production verification.
 
 ## Mission
 
-Every night, inspect the live WOW V17 system and repository for defects, regressions, contract drift, broken routes, failing tests, unhealthy deployments, stale assumptions, or inconsistent terminal semantics. When a defect is reproducible and safely bounded, diagnose it, implement the smallest complete repair, validate it, publish only when allowed by the risk policy below, and verify production with fresh evidence.
+Every night, inspect the live WOW V17 system and repository for defects, regressions, contract drift, broken routes, failing tests, unhealthy deployments, stale assumptions, inconsistent persistence, or invalid terminal semantics. The overnight engineer is expected to drive every discovered item to a terminal engineering state before daytime handoff.
 
-The goal is not to maximize code changes. The goal is to keep V17 correct, fail-closed, observable, and continuously acceptance-verified.
+The objective is **finish-safe-work overnight**, not merely diagnose it. A finding may end the run only in one of these terminal states:
+
+- `VERIFIED_CLOSED` — repaired, merged through protected checks when required, deployed when applicable, and verified with fresh evidence;
+- `CLOSED_SUPERSEDED` — proven already fixed or fully replaced by newer authoritative work and stale PR/issue state cleaned up;
+- `BLOCKED_HARD_BOUNDARY` — completion is impossible without violating an immutable V17 safety boundary or an unavailable third-party dependency. This state requires a precise blocker record and must never be used as a convenience substitute for finishing available work;
+- `ROLLBACK_REQUIRED` — a published repair failed fresh production verification and deterministic rollback could not be completed safely in the same run.
+
+`DEGRADED`, `HUMAN_REVIEW_REQUIRED`, or a generic `unresolved` list are not acceptable resting states when the nightly engineer can safely finish the work under the policy below. The engineer must keep reconciling, testing, merging, deploying, closing superseded work, retrying observability, or creating a bounded successor repair until the item reaches a terminal state.
 
 ## Immutable V17 invariants
 
+These may never be weakened by the overnight-completion mandate:
+
 - `can_execute=false` is unconditional.
-- `DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS=true` remains unconditional.
-- `V17_TERMINAL_REDUCER` remains the sole terminal authority.
+- `DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS=true` is unconditional.
+- `V17_TERMINAL_REDUCER` remains the sole global terminal authority.
 - Missing or contradictory evidence fails closed.
-- A model that was invoked but failed must retain the typed scorer/output failure; do not rewrite it as `MODEL_UNAVAILABLE`.
-- Market-price absence may block value publication, but must not erase a completed sporting probability when the governing lane preserves it.
-- Never manufacture a probability, calibration value, model capability, exact-line support, or terminal label to make a run pass.
-- Never expose or rotate secrets automatically.
-- Never weaken GitHub branch protection or required checks.
+- An invoked model failure retains its typed scorer/output failure and is never rewritten as `MODEL_UNAVAILABLE` merely to simplify a run.
+- Market-price absence may block value publication but must not erase a completed sporting probability when the governing lane preserves it.
+- Never manufacture probability, calibration, model capability, exact-line support, terminal labels, settlement evidence, or provenance to make a check pass.
+- Never expose, rotate, replace, or weaken secrets/auth automatically.
+- Never weaken branch protection or required GitHub checks.
+- Never weaken RLS.
+- Never perform destructive or irreversible data changes automatically.
+- Never enable live wager execution, order routing, wager cancellation, or market-order capability.
+
+## Overnight completion authority
+
+The user's standing overnight authorization permits the engineer to complete repair work through protected CI and production when all applicable validation gates pass.
+
+### R0 — no-code / observability / hygiene
+
+Examples: stale PRs, logging defects, diagnostics, comments, typos, dead non-governing config, duplicate/superseded branches.
+
+**Authority:** diagnose, repair, close stale/superseded artifacts, merge, deploy if applicable, and verify automatically.
+
+### R1 — bounded implementation
+
+Deterministic implementation defects with no new probability math, calibration policy, terminal precedence, schema meaning, auth/secret change, branch-protection change, or destructive data effect.
+
+**Authority:** diagnose, patch, add/strengthen regression tests, merge through protected checks, deploy, and verify automatically.
+
+### R2 — governed behavior
+
+Includes probability-model implementation, calibration implementation, evidence precedence, exact-line support, persistence semantics, Action request/response contracts, terminal behavior, identity rules, or cross-lane routing.
+
+R2 is split into:
+
+- **R2-restorative:** restores conformance to an already-authoritative V17 contract/test/schema/accepted invariant without introducing new math, thresholds, precedence, label meaning, schema meaning, or product policy. Complete automatically when high-confidence and all gates pass.
+- **R2-repair-policy:** a bounded policy or contract change required to fix a reproducible defect and explicitly covered by the standing overnight completion authorization. It may be completed overnight only when the change is narrowly scoped, reversible, fully regression-tested, does not touch an R3 hard boundary, and does not invent sporting probability or calibration evidence. The patch contract must explain why the change is necessary, what authoritative behavior it replaces, and what rollback restores the prior state.
+
+An additive, reversible schema migration may be treated as R2-repair-policy when it only adds fail-closed storage/API capability, has a documented rollback, preserves RLS, exposes no secrets, does not destructively transform existing data, and the current request explicitly directs the nightly engineer to finish that exact work. Destructive migrations remain R3.
+
+### R3 — hard safety / infrastructure boundary
+
+Includes secret rotation/replacement, auth weakening, RLS weakening, branch-protection weakening, destructive migrations, irreversible data correction, external credential mutation, or live execution capability.
+
+**Authority:** diagnose and prove the exact blocker only. Do not perform the prohibited mutation. If the defect can be repaired without crossing the R3 boundary, do that instead. Otherwise mark `BLOCKED_HARD_BOUNDARY` with exact evidence and the minimum human-only action required.
 
 ## Nightly run sequence
 
 ### 1. Establish current truth
 
-Inspect, at minimum:
+Inspect at minimum:
 
-1. latest `main` commit and open pull requests;
-2. required GitHub checks and latest failures;
-3. Render deployment state and recent error logs for `wow-governed-probability-engine` and related V17 services;
-4. `/health` and `/governance` behavior where reachable;
-5. recent V17 run failures, terminal states, or schema-validation errors visible in logs or CI;
-6. contract drift among runtime code, `render.yaml`, V17 OpenAPI schemas, current V17 instructions, and tests;
-7. known unresolved defects from recent issues/PRs.
+1. latest `main` SHA and branch-protection requirements;
+2. all open PRs and recent merged PRs relevant to V17;
+3. required GitHub checks and latest failures;
+4. Render deployment state for `wow-governed-probability-engine` and related V17 services;
+5. recent Render application/build/request logs, retrying transient Loki/provider failures with broader/fallback queries;
+6. `/health`, `/governance`, and safe acceptance routes where reachable;
+7. recent V17 workflow/runtime failures, schema errors, Action errors, persistence inconsistencies, or terminal anomalies;
+8. contract drift among runtime code, `render.yaml`, V17 schemas/OpenAPI, current instructions, migrations, and tests;
+9. known unresolved issues and open PRs from prior nightly runs.
 
-Never assume yesterday's diagnosis is still current.
+Never assume yesterday's diagnosis is current.
 
-### 2. Classify findings
+### 2. Classify and choose a terminal target
 
-For each finding assign:
+For each finding record:
 
-- `severity`: P0 / P1 / P2 / P3
-- `domain`: runtime / action-contract / model-input / scoring / calibration / persistence / terminal-reducer / orchestration / CI / deployment / observability / documentation
-- `reproducible`: true / false
-- `root_cause_confidence`: high / medium / low
-- `change_risk`: R0 / R1 / R2 / R3
-
-Risk levels:
-
-- **R0 — no-code/observability:** stale test fixture, logging, comments, diagnostics, typo, dead non-governing config. May auto-fix.
-- **R1 — bounded implementation:** deterministic bug with a narrow fix, no probability math, no terminal precedence, no schema migration, no auth/secret change, no branch-protection change. May auto-fix and publish after all gates pass.
-- **R2 — governed behavior:** probability-model implementation, calibration implementation, terminal semantics, evidence precedence, identity rules, exact-line support, persistence semantics, Action request/response contracts, or cross-lane routing. R2 is split into two classes:
-  - **R2-restorative:** a deterministic defect where the intended behavior is already unambiguously defined by an existing authoritative V17 contract, test, schema, or accepted production invariant, and the patch only restores conformance without introducing a new formula, threshold, precedence rule, label meaning, schema meaning, or product policy. A high-confidence R2-restorative defect may be autonomously repaired, merged, and deployed under the stricter gates in section 7.
-  - **R2-policy-changing:** any change that creates or changes authoritative probability math, calibration formulas/thresholds, terminal precedence/meaning, evidence precedence policy, identity policy, exact-line support policy, persistence meaning, Action contract meaning, or cross-lane routing policy. Diagnose fully and create a tested PR/report, but do not merge/deploy automatically unless a separately approved patch explicitly authorizes that exact policy change.
-- **R3 — infrastructure/security/data-destructive:** secrets/auth, destructive database migration, RLS weakening, branch protection, external credentials, irreversible data correction, or live execution capability. Diagnose only; never autonomously modify or deploy.
-
-When uncertain whether an R2 change is restorative or policy-changing, classify it as R2-policy-changing and require human review.
+- severity: P0/P1/P2/P3;
+- domain;
+- reproducible true/false;
+- root-cause confidence;
+- risk R0/R1/R2-restorative/R2-repair-policy/R3;
+- target terminal state: `VERIFIED_CLOSED`, `CLOSED_SUPERSEDED`, `BLOCKED_HARD_BOUNDARY`, or `ROLLBACK_REQUIRED`.
 
 ### 3. Reproduce before repair
 
-No code change without a concrete failing signal. Acceptable reproductions include:
+No implementation change without a concrete failing signal. Acceptable evidence includes deterministic tests, failed CI with traceable error, fresh production request/log traces, schema validation errors, persisted-row inconsistencies tied to a code path, or a current-main/PR contract mismatch.
 
-- failing deterministic test;
-- failing CI job with traceable stack/error;
-- fresh production request/log trace;
-- schema validation failure;
-- contract assertion mismatch;
-- deterministic persisted-row inconsistency tied to a specific code path.
+### 4. Build the mandatory patch packet
 
-Narrative suspicion alone is not sufficient.
+Use `wow-replit-patch-governor` before editing. Every packet must include exact allowed/protected files, rollback condition, regressions, production verification, and `can_execute=false`.
 
-### 4. Build the patch contract
+For R2 work explicitly state:
 
-For every repair, instantiate the mandatory build packet from `wow-replit-patch-governor` before editing. Set `publish_authorized=true` only for R0, R1, or R2-restorative changes that satisfy this skill's autonomous-publish policy.
-
-For every R2-restorative patch, the build packet must additionally name the exact pre-existing binding authority being restored and state explicitly:
-
-- `new_probability_math: false`
-- `new_calibration_threshold: false`
-- `terminal_precedence_changed: false`
-- `contract_meaning_changed: false`
-- `auth_or_secret_change: false`
-- `schema_migration: none`
-
-If any of those statements cannot be truthfully asserted, the patch is not R2-restorative.
+- `new_probability_math`;
+- `new_calibration_threshold`;
+- `terminal_precedence_changed`;
+- `contract_meaning_changed`;
+- `auth_or_secret_change`;
+- `schema_migration` and rollback;
+- binding authority or explicit overnight repair authorization.
 
 ### 5. Repair minimally
 
-- Touch only declared `allowed_files`.
-- Add or strengthen a regression test that fails before the repair whenever practical.
+- Touch only declared allowed files.
+- Add or strengthen deterministic regression coverage whenever practical.
 - Do not refactor unrelated code.
-- Do not broaden model support merely to eliminate a failure.
-- Preserve typed failure semantics.
-- For R2-restorative repairs, prefer restoring implementation to the binding contract rather than modifying the contract to match current implementation.
+- Do not broaden model support merely to eliminate an error.
+- Preserve typed fail-closed semantics.
+- Reconcile stale PR branches onto current `main` instead of merging old trees over newer authoritative changes.
+- When an older PR is fully superseded, prove that with current-main evidence and close it rather than leaving it open.
 
 ### 6. Validation gates
 
 A repair is not complete until all applicable gates pass:
 
-1. targeted reproduction now passes;
+1. targeted reproduction passes;
 2. relevant unit/integration tests pass;
 3. required WOW regressions pass;
-4. V17 OpenAPI/schema validation passes when applicable;
-5. `can_execute=false` and dry-run invariants remain asserted;
-6. diff boundary contains only allowed files;
-7. no new high-severity logs/errors are introduced;
-8. branch-protection-required checks are green;
-9. for R2-restorative repairs, a contract-conformance test demonstrates that the patch restores pre-existing authoritative behavior rather than creating new behavior.
+4. OpenAPI/schema/Action validation passes when applicable;
+5. migration validation and rollback plan pass when applicable;
+6. `can_execute=false` and dry-run assertions remain intact;
+7. terminal reducer authority remains intact;
+8. diff boundary is clean;
+9. protected GitHub checks are green;
+10. no new P0/P1 production errors appear in the verification window.
 
-### 7. Autonomous merge/deploy policy
+### 7. Merge/deploy policy
 
-Autonomous publication is allowed only when **all** are true:
+Autonomous merge/deploy is allowed for R0, R1, R2-restorative, and explicitly authorized R2-repair-policy when all validation gates pass and no R3 hard boundary is touched.
 
-- risk is R0, R1, or R2-restorative;
-- root-cause confidence is high;
-- a deterministic regression test covers the defect;
-- all required checks pass;
-- no R3 surface is changed, including auth/secrets, RLS, branch protection, external credentials, destructive migrations, or live-execution capability;
-- no database migration is required;
-- no secret or environment-variable value is changed;
-- deployment is reversible by reverting the single patch commit;
-- production verification can be performed immediately afterward;
-- `can_execute=false`, dry-run-only, terminal reducer authority, fail-closed behavior, and required branch protections remain intact.
+Requirements:
 
-Additional requirements for **R2-restorative** autonomous publication:
+- protected checks must pass; never bypass branch protection;
+- no secret/environment credential value may change;
+- no RLS weakening;
+- no destructive migration;
+- deployment must be reversible;
+- additive migrations require explicit rollback instructions and fail-closed access controls;
+- production verification must be possible immediately after deployment;
+- `can_execute=false`, dry-run-only, terminal authority, and fail-closed behavior remain binding.
 
-- the binding authority predates the defect and is cited in the patch contract;
-- the repair does not introduce or tune probability formulas, calibration formulas/thresholds, terminal precedence, terminal-label meaning, evidence-precedence policy, identity policy, persistence meaning, or cross-lane routing policy;
-- an Action/OpenAPI change is allowed only when it restores an already-authoritative canonical request/response contract and does not change contract meaning;
-- model/scoring implementation files may be touched only to restore behavior already required by the binding authority; model capability must not be broadened beyond that authority;
-- the patch must include a deterministic before/after conformance test;
-- the PR description must state `R2_RESTORATIVE_AUTONOMY=true` and identify the binding authority;
-- if required checks, review policy, or branch protection block merge, do not bypass them; leave the PR open and report `HUMAN_REVIEW_REQUIRED`.
-
-Autonomous publication is **not** allowed for R2-policy-changing or any R3 change. If eligibility is ambiguous, leave a tested PR and report `HUMAN_REVIEW_REQUIRED`.
+If the PR is stale relative to current `main`, reconcile through a temporary/current-main branch, run protected checks on the exact combined tree, and merge only that reconciled PR.
 
 ### 8. Production verification
 
-After any autonomous publish/deploy:
+After every published repair:
 
-- confirm the new commit/deploy is live;
-- run a fresh health/governance check;
-- rerun the exact failing scenario or the closest safe production acceptance path with fresh IDs;
-- confirm the original error is absent;
-- confirm no new P0/P1 errors appear in the verification window;
+- confirm the expected commit is live;
+- confirm `/health` and governance/runtime invariants;
+- rerun the exact failing scenario or closest safe acceptance path with fresh IDs;
+- verify Action/schema/persistence behavior when relevant;
+- inspect fresh logs;
+- confirm no new P0/P1 errors;
 - record deployment ID, commit SHA, UTC verification time, and evidence.
 
-If production verification fails, immediately revert or roll back the autonomous R0/R1/R2-restorative patch when a safe deterministic rollback path exists. Otherwise stop and report `ROLLBACK_REQUIRED`.
+If production verification fails, revert/rollback in the same run when deterministic rollback is available. If rollback cannot be safely completed, report `ROLLBACK_REQUIRED` and stop further dependent changes.
 
-## Nightly acceptance probes
+## Observability fallback rule
 
-At minimum, the run should attempt to verify these V17 contracts without manufacturing unavailable data:
+A transient Render Loki/API 5xx is not by itself a WOW defect and must not leave the nightly run `DEGRADED` when alternate evidence is available. Retry with:
 
-- backend runtime is reachable and reports V17-active semantics;
-- canonical prop Action contract parses and routes correctly;
-- canonical team/event Action contract parses and routes correctly;
-- a valid completed sporting probability is not erased solely by missing market evidence;
-- scorer failures preserve typed failure semantics;
-- identity/input failures are not mislabeled as rank-eligible results;
-- terminal reducer remains authoritative;
-- execution remains disabled;
-- required CI contracts remain green.
+1. narrower time windows;
+2. broader unfiltered app/request queries;
+3. deploy/build logs;
+4. health requests and safe self-acceptance traces;
+5. GitHub deployment/CI evidence.
 
-If real pregame inputs are not safely available, use deterministic fixtures or contract tests rather than inventing live sporting data.
+If at least one fresh production verification path succeeds and no P0/P1 runtime error is found, close the observability incident as `CLOSED_SUPERSEDED` or `VERIFIED_CLOSED` with the provider degradation recorded separately. Only use `BLOCKED_HARD_BOUNDARY` when all safe verification paths are unavailable.
 
-## Mandatory incident-record lifecycle
+## Open-PR closure rule
 
-Postmortems and engineering fixes are separate first-class artifacts and must remain linked through `artifacts/wow-engine/v17/incident-ledger.json`.
+Every nightly run must individually classify every open V17 PR as one of:
 
-For every reproducible defect that enters diagnosis beyond simple observation:
+- current and merge-ready repair -> reconcile/test/merge/verify;
+- current but R3-hard-boundary -> block precisely;
+- superseded by current main -> close with evidence;
+- duplicate of another authoritative PR -> close as duplicate/superseded;
+- documentation/acceptance-only and already represented on main -> close as superseded;
+- still-valid future feature rather than defect -> move out of the nightly defect queue with an explicit non-blocking disposition.
 
-1. create a postmortem before changing code using `python artifacts/wow-engine/v17/nightly_incident_records.py create-postmortem ...`;
-2. record impact, evidence, deterministic reproduction or explicit evidence-only status, root cause confidence, severity, domain, and V17 governance classification;
-3. if remediation is warranted, create a linked engineering fix using `create-fix` before implementation;
-4. place implementation, allowed-file boundary, regression test, validation gates, deployment reference, rollback reference, and production verification in the FIX record rather than the PM record;
-5. keep both records and the ledger in the same repair branch/PR as the code change whenever possible;
-6. run `python artifacts/wow-engine/v17/nightly_incident_records.py validate` before publication;
-7. never mark the PM or FIX closed until fresh production verification passes.
+Do not carry a vague backlog of old governed PRs into daytime merely because they are old or complicated.
 
-A PM may exist without a FIX when the issue is observational, unreproduced, accepted risk, or R3 diagnose-only. A FIX must never exist without a linked PM.
+## Mandatory incident lifecycle
 
-Required lifecycle states are:
+For every reproducible defect that proceeds beyond observation, maintain linked PM/FIX records in `artifacts/wow-engine/v17/incident-ledger.json` when the repository tooling supports it. Do not mark a FIX `VERIFIED_CLOSED` until fresh production verification passes.
+
+Lifecycle states:
 
 - `OPEN`
 - `DIAGNOSED`
 - `FIX_IN_PROGRESS`
-- `HUMAN_REVIEW_REQUIRED`
 - `DEPLOYED_PENDING_VERIFY`
 - `VERIFIED_CLOSED`
+- `CLOSED_SUPERSEDED`
+- `BLOCKED_HARD_BOUNDARY`
 - `ROLLBACK_REQUIRED`
-
-Do not use `VERIFIED_CLOSED` as a substitute for actually verifying production.
 
 ## Output contract
 
-Every nightly run must produce one compact engineering report with:
+Every nightly report must include:
 
 ```yaml
-run_status: HEALTHY | REPAIRED_AND_VERIFIED | DEGRADED | HUMAN_REVIEW_REQUIRED | ROLLBACK_REQUIRED
+run_status: HEALTHY | REPAIRED_AND_VERIFIED | BLOCKED_HARD_BOUNDARY | ROLLBACK_REQUIRED
 utc_time:
 main_commit:
 production_deploy:
 findings:
-  - id:
-    postmortem_id:
-    engineering_fix_id:
-    severity:
-    domain:
-    evidence:
-    root_cause:
-    risk:
-    action_taken:
 patches:
-  - change_id:
-    postmortem_id:
-    engineering_fix_id:
-    branch:
-    commit:
-    pr:
-    tests:
-    deployment:
-    production_verification:
-unresolved:
-next_highest_priority:
+production_verification:
+closed_superseded:
+hard_blockers:
+unresolved: []
+next_priority:
 can_execute: false
 ```
 
-Do not report `REPAIRED_AND_VERIFIED` unless the production verification gate actually passed.
+`unresolved` should be empty. Work that cannot be safely completed must instead appear under `hard_blockers` with a terminal `BLOCKED_HARD_BOUNDARY` disposition and exact evidence.
+
+Do not report `REPAIRED_AND_VERIFIED` unless production verification actually passed for every published repair in the run.
 
 ## Priority order
 
 1. P0 security/governance/data-integrity failures
 2. P1 broken production routes or invalid governed output
-3. acceptance blockers for prop/team-event probability lanes
-4. CI or deployment drift
-5. observability and developer-experience defects
-6. documentation drift
+3. persistence/Action/schema inconsistencies
+4. acceptance blockers
+5. CI/deployment drift
+6. stale/superseded PR cleanup
+7. observability and documentation drift
 
 ## Relationship to existing skills
 
-- `wow-replit-patch-governor` controls the patch mechanics and bounded-change workflow.
-- V17 domain/model skills control sporting probability semantics.
-- This nightly skill controls detection, triage, risk classification, repair eligibility, autonomous publication, rollback, nightly reporting, and PM↔FIX lifecycle enforcement.
+- `wow-replit-patch-governor` controls bounded patch mechanics.
+- V17 domain/model contracts control sporting probability semantics.
+- This skill controls overnight completion, triage, repair eligibility, stale-PR reconciliation, publication, rollback, production verification, and terminal handoff state.
 
-No part of this skill may override a stricter V17 governance rule.
+No part of the overnight-completion mandate may override a stricter immutable V17 safety rule.
