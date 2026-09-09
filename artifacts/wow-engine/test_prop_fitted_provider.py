@@ -7,6 +7,7 @@ import pytest
 from prop_distribution_contract import CoverageDecision, PropInferenceRequest, RawDiscreteDistribution
 from prop_fitted_provider import (
     PropFittedProviderUnavailable,
+    capability_key,
     clear_model_family_adapters,
     infer_distribution,
     register_model_family_adapter,
@@ -42,7 +43,10 @@ def _artifact_payload(**overrides):
         "model_artifact_version": "TEST_MODEL_V1",
         "calibrator_version": "CAL_TEST_V1",
         "sport": "WNBA",
+        "league": "WNBA",
+        "market_family": "PLAYER_PROP",
         "stat_type": "POINTS",
+        "period": "FULL_GAME",
         "feature_schema_version": "PROP_FEATURES_V1",
         "feature_transform_version": "PROP_TRANSFORM_V1",
         "specialist_version": "wow.wnba-points-v1",
@@ -83,6 +87,21 @@ def teardown_function():
     clear_model_family_adapters()
 
 
+def test_exact_capability_key_is_sport_league_market_stat_period():
+    key = capability_key(
+        sport="nfl",
+        league="NFL",
+        market_family="player_prop",
+        stat_type="passing_yards",
+        period="full_game",
+    )
+    assert key.sport == "NFL"
+    assert key.league == "NFL"
+    assert key.market_family == "PLAYER_PROP"
+    assert key.stat_type == "PASSING_YARDS"
+    assert key.period == "FULL_GAME"
+
+
 def test_missing_certified_artifact_returns_none():
     client = FakeClient(
         {
@@ -95,7 +114,67 @@ def test_missing_certified_artifact_returns_none():
     assert resolve_certified_artifact(
         client, sport="WNBA", stat_type="POINTS", feature_schema_version="PROP_FEATURES_V1"
     ) is None
-    assert client.calls[0][0] == "wow_prop_certified_model_artifact"
+    name, params = client.calls[0]
+    assert name == "wow_prop_certified_model_artifact_v2"
+    assert params == {
+        "p_sport": "WNBA",
+        "p_league": "WNBA",
+        "p_market_family": "PLAYER_PROP",
+        "p_stat_type": "POINTS",
+        "p_period": "FULL_GAME",
+        "p_feature_schema_version": "PROP_FEATURES_V1",
+    }
+
+
+def test_mlb_global_availability_cannot_satisfy_nfl_exact_route():
+    client = FakeClient(
+        {
+            "ok": False,
+            "code": "PROP_CERTIFIED_MODEL_ARTIFACT_NOT_FOUND",
+            "provider_identity": "WOW_PROP_FITTED_MODEL_V1",
+            "sport": "NFL",
+            "league": "NFL",
+            "market_family": "PLAYER_PROP",
+            "stat_type": "PASSING_YARDS",
+            "period": "FULL_GAME",
+            "blocking_scope": "CAPABILITY",
+            "probability_publishable": False,
+            "can_execute": False,
+        }
+    )
+    result = resolve_certified_artifact(
+        client,
+        sport="NFL",
+        league="NFL",
+        market_family="PLAYER_PROP",
+        stat_type="PASSING_YARDS",
+        period="FULL_GAME",
+        feature_schema_version="PROP_FEATURES_V1",
+    )
+    assert result is None
+    _, params = client.calls[0]
+    assert params["p_sport"] == "NFL"
+    assert params["p_stat_type"] == "PASSING_YARDS"
+
+
+def test_specialist_routing_conflict_fails_closed():
+    client = FakeClient(
+        {
+            "ok": False,
+            "code": "SPECIALIST_ROUTING_CONFLICT",
+            "candidate_count": 2,
+            "probability_publishable": False,
+            "can_execute": False,
+        }
+    )
+    with pytest.raises(PropFittedProviderUnavailable) as exc:
+        resolve_certified_artifact(
+            client,
+            sport="NFL",
+            stat_type="RECEIVING_YARDS",
+            feature_schema_version="PROP_FEATURES_V1",
+        )
+    assert exc.value.code == "SPECIALIST_ROUTING_CONFLICT"
 
 
 def test_wrong_provider_identity_fails_closed():
@@ -107,6 +186,17 @@ def test_wrong_provider_identity_fails_closed():
             feature_schema_version="PROP_FEATURES_V1",
         )
     assert exc.value.code == "PROP_PROVIDER_IDENTITY_MISMATCH"
+
+
+def test_exact_route_payload_mismatch_fails_closed():
+    with pytest.raises(PropFittedProviderUnavailable) as exc:
+        resolve_certified_artifact(
+            FakeClient(_artifact_payload(period="FIRST_HALF")),
+            sport="WNBA",
+            stat_type="POINTS",
+            feature_schema_version="PROP_FEATURES_V1",
+        )
+    assert exc.value.code == "PROP_CAPABILITY_ROUTE_MISMATCH"
 
 
 def test_uncertified_lifecycle_fails_closed():
@@ -142,6 +232,7 @@ def test_reviewed_adapter_can_return_direction_free_distribution():
     def adapter(artifact, request, features):
         assert artifact.bundle.model_artifact_version == "TEST_MODEL_V1"
         assert artifact.bundle.calibrator_version == "CAL_TEST_V1"
+        assert artifact.capability.market_family == "PLAYER_PROP"
         assert request.stat_type == "POINTS"
         assert features["minutes"] == 32
         return RawDiscreteDistribution(
