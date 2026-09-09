@@ -191,15 +191,30 @@ def _projected_acceptance_ok(payload: dict[str, Any]) -> bool:
     return not _projected_acceptance_failures(payload)
 
 
+def _typed_response_detail(payload: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {}
+    detail = payload.get("detail")
+    return dict(detail) if isinstance(detail, dict) else {}
+
+
 def _typed_response_code(response: httpx.Response, payload: dict[str, Any]) -> str | None:
     if isinstance(payload, dict):
         direct = payload.get("code")
         if direct:
             return str(direct)
-        detail = payload.get("detail")
-        if isinstance(detail, dict) and detail.get("code"):
+        detail = _typed_response_detail(payload)
+        if detail.get("code"):
             return str(detail.get("code"))
     return None
+
+
+def _safe_field_names(value: Any) -> list[str]:
+    """Return bounded non-secret diagnostic field names from a typed error body."""
+    if not isinstance(value, (list, tuple, set)):
+        return []
+    names = [str(item).strip() for item in value if str(item).strip()]
+    return sorted(set(names))[:32]
 
 
 async def _post_with_transient_gateway_retry(
@@ -308,16 +323,30 @@ async def run_v17_synthetic_self_acceptance(logger, *, now: datetime | None = No
     projected_http_status: int | None = None
     projected_event_id: str | None = None
     projected_code: str | None = None
+    projected_blocker_code: str | None = None
+    projected_failure_class: str | None = None
+    projected_missing_fields: list[str] = []
     projected_failures: list[str] = []
     if projected_candidate is not None and projected_response is not None:
         projected_event_id = str(projected_candidate.get("official_event_id"))
         projected_http_status = projected_response.status_code
         try:
-            projected_payload = projected_response.json() if projected_response.status_code == 200 else {}
+            raw_projected_payload = projected_response.json()
         except ValueError:
-            projected_payload = {}
-        projected_code = str(projected_payload.get("code") or "") or None
-        projected_failures = _projected_acceptance_failures(projected_payload) if projected_response.status_code == 200 else ["http_status"]
+            raw_projected_payload = {}
+        projected_payload = raw_projected_payload if isinstance(raw_projected_payload, dict) else {}
+        projected_detail = _typed_response_detail(projected_payload)
+        projected_code = _typed_response_code(projected_response, projected_payload)
+        if projected_detail.get("blocker_code"):
+            projected_blocker_code = str(projected_detail.get("blocker_code"))
+        if projected_detail.get("failure_class"):
+            projected_failure_class = str(projected_detail.get("failure_class"))
+        projected_missing_fields = _safe_field_names(projected_detail.get("missing_fields"))
+        projected_failures = (
+            _projected_acceptance_failures(projected_payload)
+            if projected_response.status_code == 200
+            else ["http_status"]
+        )
         projected_ok = bool(projected_response.status_code == 200 and not projected_failures)
         projected_status = "PASS" if projected_ok else "FAIL"
 
@@ -339,6 +368,9 @@ async def run_v17_synthetic_self_acceptance(logger, *, now: datetime | None = No
         "projected_lineup_ok": projected_ok,
         "projected_lineup_event_id": projected_event_id,
         "projected_lineup_code": projected_code,
+        "projected_lineup_blocker_code": projected_blocker_code,
+        "projected_lineup_failure_class": projected_failure_class,
+        "projected_lineup_missing_fields": projected_missing_fields,
         "projected_lineup_failed_checks": projected_failures,
         "projected_lineup_attempts": projected_attempts,
         "can_execute": False,
@@ -348,10 +380,13 @@ async def run_v17_synthetic_self_acceptance(logger, *, now: datetime | None = No
         "WOW_V17_SYNTHETIC_SELF_ACCEPTANCE status=%s prop_http_status=%s prop_ok=%s prop_terminal_label=%s prop_error_code=%s prop_attempts=%s "
         "team_event_http_status=%s team_event_ok=%s team_event_code=%s team_event_attempts=%s projected_lineup_status=%s "
         "projected_lineup_http_status=%s projected_lineup_ok=%s projected_lineup_event_id=%s projected_lineup_code=%s "
+        "projected_lineup_blocker_code=%s projected_lineup_failure_class=%s projected_lineup_missing_fields=%s "
         "projected_lineup_failed_checks=%s projected_lineup_attempts=%s can_execute=false",
         status, prop_response.status_code, prop_ok, prop_row.get("terminal_label") or prop_row.get("code"), prop_error_code, prop_attempts,
         team_event_response.status_code, team_ok, team_row.get("code"), team_event_attempts, projected_status,
         projected_http_status, projected_ok, projected_event_id, projected_code,
+        projected_blocker_code, projected_failure_class,
+        ",".join(projected_missing_fields) if projected_missing_fields else "NONE",
         ",".join(projected_failures) if projected_failures else "NONE", projected_attempts,
     )
     return result
