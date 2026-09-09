@@ -1,14 +1,14 @@
 """Semantic completion gate for governed V17 Top-10 workflows.
 
-A terminal-looking row is not automatically reconciled.  For the target Top-10
+A terminal-looking row is not automatically reconciled. For the target Top-10
 families, each source row must terminate exactly once as either a valid
-controlling-model probability package or an explicit typed blocker.  Generic
+controlling-model probability package or an explicit typed blocker. Generic
 PENDING/NOT_CALLED/UNRESOLVED states, omissions, duplicate receipts, and
 malformed model packages fail closed.
 
-This module never creates or changes a sporting probability.  It only audits
+This module never creates or changes a sporting probability. It only audits
 whether the controlling route produced a valid governed result or an explicit
-failure receipt.  can_execute remains false.
+failure receipt. can_execute remains false.
 """
 from __future__ import annotations
 
@@ -43,10 +43,10 @@ def is_required_top10_row(row: Any) -> bool:
     """Return True only for the families covered by the Sept-9 completion fix.
 
     MLB coverage is intentionally narrow: 1IP, pitcher strikeouts, Fantasy
-    Score, and 95+ MPH pitch rows.  Tennis and soccer scalar/player rows routed
-    through /score-pick-request are all in scope.  Team/event tennis and soccer
-    outcomes belong to the LLP lane and are enforced by the host/daily
-    finalizer contract rather than being misrouted through this prop endpoint.
+    Score, and 95+ MPH pitch rows. Tennis and soccer scalar/player rows routed
+    through /score-pick-request are all in scope. Team/event tennis and soccer
+    outcomes belong to the LLP lane and are enforced by host governance rather
+    than being misrouted through this prop endpoint.
     """
     sport = _text(getattr(row, "sport", None) if not isinstance(row, dict) else row.get("sport"))
     stat = _text(getattr(row, "stat_type", None) if not isinstance(row, dict) else row.get("stat_type"))
@@ -112,10 +112,9 @@ def has_valid_model_package(outcome: dict[str, Any]) -> bool:
 
     The runtime uses both ``calibrated_probability_lower_bound`` and
     ``calibrated_lower_bound`` across specialist generations, so both are
-    accepted.  A generic ``lower_bound`` is accepted only inside an evaluated
-    specialist result (not as standalone evidence).  This deliberately does
-    not require market/payout evidence; sporting probability is a separate
-    contract.
+    accepted. A generic ``lower_bound`` is accepted only inside an evaluated
+    specialist result. Market/payout evidence is deliberately not required;
+    sporting probability is a separate contract.
     """
     if outcome.get("model_evaluated") is not True:
         return False
@@ -133,7 +132,14 @@ def has_valid_model_package(outcome: dict[str, Any]) -> bool:
 
 
 def has_typed_blocker(outcome: dict[str, Any]) -> bool:
-    """Return True only for an explicit terminal failure/blocker receipt."""
+    """Return True only for an explicit terminal failure/blocker receipt.
+
+    ``scoring_attempted`` records that the Action boundary was called. It does
+    not prove the fitted specialist ran. A backend MODEL_UNAVAILABLE receipt is
+    therefore valid when capability/artifact preflight stops before specialist
+    invocation. Once the specialist itself was invoked, MODEL_UNAVAILABLE may
+    not be used to hide an invocation/output failure.
+    """
     if outcome.get("terminal_status") not in {"HELD", "REJECTED"}:
         return False
 
@@ -141,15 +147,14 @@ def has_typed_blocker(outcome: dict[str, Any]) -> bool:
     if code in _GENERIC_NON_BLOCKERS:
         return False
 
-    # V17 semantics: once a scorer was invoked, MODEL_UNAVAILABLE cannot be
-    # used as a catch-all for a thrown/timed-out/invalid scorer invocation.
     detail = outcome.get("detail") if isinstance(outcome.get("detail"), dict) else {}
-    scorer_invoked = bool(
-        outcome.get("scoring_attempted") is True
-        or detail.get("scoring_attempted") is True
-        or detail.get("specialist_invoked") is True
+    specialist_invoked = bool(
+        detail.get("specialist_invoked") is True
+        or detail.get("scorer_invoked") is True
+        or outcome.get("specialist_invoked") is True
+        or outcome.get("scorer_invoked") is True
     )
-    if scorer_invoked and code == "MODEL_UNAVAILABLE":
+    if specialist_invoked and code == "MODEL_UNAVAILABLE":
         return False
 
     return True
@@ -167,7 +172,6 @@ def reconcile_top10_rows(source_rows: list[Any], outcomes: list[dict[str, Any]])
 
     expected_ids = [row_key for row_key, _ in scoped]
     expected_counts = Counter(expected_ids)
-    outcome_counts = Counter(str(outcome.get("row_key") or "") for outcome in outcomes)
     outcomes_by_id: dict[str, list[dict[str, Any]]] = {}
     for outcome in outcomes:
         outcomes_by_id.setdefault(str(outcome.get("row_key") or ""), []).append(outcome)
@@ -197,8 +201,6 @@ def reconcile_top10_rows(source_rows: list[Any], outcomes: list[dict[str, Any]])
         model_package = has_valid_model_package(outcome)
         typed_blocker = has_typed_blocker(outcome)
         if model_package:
-            # Model-package classification takes precedence so a model-rejected
-            # package is counted once, not simultaneously as package+blocker.
             valid_package_row_ids.append(row_id)
             classifications[row_id] = "VALID_MODEL_PACKAGE"
         elif typed_blocker:
@@ -208,8 +210,6 @@ def reconcile_top10_rows(source_rows: list[Any], outcomes: list[dict[str, Any]])
             unreconciled_row_ids.append(row_id)
             classifications[row_id] = "UNRECONCILED"
 
-    # Duplicate source identities make exact-once accounting ambiguous even if
-    # the raw receipt count happens to balance numerically.
     unreconciled_row_ids.extend(duplicate_source_ids)
     unreconciled_row_ids = sorted(set(unreconciled_row_ids))
     omitted_row_ids = sorted(set(omitted_row_ids))
