@@ -160,6 +160,18 @@ jobs:
             --run-id "$run_id"
           echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
           echo "artifact_name=$artifact_name" >> "$GITHUB_OUTPUT"
+      - name: Upload early Scout discovery recovery artifact
+        if: always() && steps.delivery.outputs.artifact_name != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.delivery.outputs.artifact_name }}-discovery
+          path: |
+            ${{ runner.temp }}/wow-multiscout/model-handoff.json
+            ${{ runner.temp }}/wow-multiscout/model-handoff-${{ steps.delivery.outputs.run_id }}.json
+            ${{ runner.temp }}/wow-multiscout/run-manifest.json
+            ${{ runner.temp }}/wow-multiscout/latest-pointer.json
+          if-no-files-found: error
+          retention-days: 90
       - name: Auto-advance Scout candidates into governed specialist routes
         id: advance
         if: steps.scout.outputs.runner_exit_code == '0'
