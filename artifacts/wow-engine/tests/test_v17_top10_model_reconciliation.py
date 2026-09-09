@@ -102,7 +102,15 @@ def test_model_package_requires_calibrated_probability_and_lower_bound():
     assert has_valid_model_package(outcome) is False
 
 
-def test_post_invocation_model_unavailable_is_not_accepted_as_typed_blocker():
+def test_action_attempt_with_pre_specialist_model_unavailable_is_a_typed_blocker():
+    outcome = _blocker("row-1", "MODEL_UNAVAILABLE")
+    outcome["scoring_attempted"] = True
+    outcome["detail"]["specialist_invoked"] = False
+
+    assert has_typed_blocker(outcome) is True
+
+
+def test_post_specialist_invocation_model_unavailable_is_not_a_typed_blocker():
     outcome = _blocker("row-1", "MODEL_UNAVAILABLE")
     outcome["scoring_attempted"] = True
     outcome["detail"]["specialist_invoked"] = True
