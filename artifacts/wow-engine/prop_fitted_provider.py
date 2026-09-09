@@ -83,7 +83,8 @@ def canonical_prop_period(stat_type: str, period: Optional[str] = None) -> str:
     if explicit:
         return explicit
     upper = _normalize(stat_type)
-    return "FIRST_INNING" if "1IP" in upper or "FIRST_INNING" in upper else "FULL_GAME"
+    first_inning_markers = ("1IP", "FIRST_INNING", "1ST_INNING")
+    return "FIRST_INNING" if any(marker in upper for marker in first_inning_markers) else "FULL_GAME"
 
 
 def capability_key(
