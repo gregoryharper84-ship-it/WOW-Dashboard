@@ -36,6 +36,7 @@ CONTROLLING_SPECIALIST = "wow.nfl-dfs-fantasy-score-expert"
 MIN_SIMULATIONS = 50_000
 MIN_TIME_FOLDS = 6
 DEFAULT_CALIBRATION_FRACTION = 0.80
+SUPPORTED_POSITIONS = {"QB", "RB", "WR", "TE"}
 
 
 class NflDfsCalibrationEvidenceError(ValueError):
@@ -180,10 +181,15 @@ def ingest_settled_rows(rows: Sequence[Mapping[str, Any]]) -> tuple[SettledExact
         raise NflDfsCalibrationEvidenceError("settled historical rows are required")
 
     ingested: list[SettledExactLineRow] = []
+    immutable_keys: set[tuple[Any, ...]] = set()
     for raw in rows:
         side = _required_text(raw, "side").upper()
         if side not in {"MORE", "LESS"}:
             raise NflDfsCalibrationEvidenceError("side must be MORE or LESS")
+        position = _required_text(raw, "position").upper()
+        if position not in SUPPORTED_POSITIONS:
+            raise NflDfsCalibrationEvidenceError(f"unsupported NFL DFS position: {position}")
+
         prediction_ts = _required_text(raw, "prediction_timestamp")
         event_start_ts = _required_text(raw, "event_start_timestamp")
         prediction_dt = _parse_aware(prediction_ts)
@@ -199,6 +205,9 @@ def ingest_settled_rows(rows: Sequence[Mapping[str, Any]]) -> tuple[SettledExact
                 f"simulation_count must be >= {MIN_SIMULATIONS}"
             )
 
+        raw_probability = _probability(
+            raw.get("raw_candidate_probability"), "raw_candidate_probability"
+        )
         p_more = raw.get("p_more")
         p_less = raw.get("p_less")
         p_push = raw.get("p_push")
@@ -213,36 +222,64 @@ def ingest_settled_rows(rows: Sequence[Mapping[str, Any]]) -> tuple[SettledExact
             p_push = _probability(p_push, "p_push")
             if abs((p_more + p_less + p_push) - 1.0) > 1e-8:
                 raise NflDfsCalibrationEvidenceError("P(MORE)+P(LESS)+P(PUSH) must equal 1")
+            expected_side_probability = p_more if side == "MORE" else p_less
+            if abs(raw_probability - expected_side_probability) > 1e-8:
+                raise NflDfsCalibrationEvidenceError(
+                    "raw_candidate_probability does not match the exact requested side"
+                )
 
-        row = SettledExactLineRow(
-            event_id=_required_text(raw, "event_id"),
-            player_id=_required_text(raw, "player_id"),
-            position=_required_text(raw, "position").upper(),
-            exact_line=_finite(raw.get("exact_line"), "exact_line"),
-            side=side,
-            raw_candidate_probability=_probability(
-                raw.get("raw_candidate_probability"), "raw_candidate_probability"
-            ),
-            realized_fantasy_score=_finite(
-                raw.get("realized_fantasy_score"), "realized_fantasy_score"
-            ),
-            prediction_timestamp=prediction_ts,
-            event_start_timestamp=event_start_ts,
-            model_version=_required_text(raw, "model_version"),
-            model_source_sha256=_sha256_text(
-                _required_text(raw, "model_source_sha256"), "model_source_sha256"
-            ),
-            scoring_profile_id=_required_text(raw, "scoring_profile_id"),
-            scoring_profile_sha256=_sha256_text(
-                _required_text(raw, "scoring_profile_sha256"), "scoring_profile_sha256"
-            ),
-            simulation_count=simulation_count,
-            seed=int(raw.get("seed") or 0),
-            p_more=p_more,
-            p_less=p_less,
-            p_push=p_push,
+        event_id = _required_text(raw, "event_id")
+        player_id = _required_text(raw, "player_id")
+        exact_line = _finite(raw.get("exact_line"), "exact_line")
+        model_version = _required_text(raw, "model_version")
+        model_source_sha256 = _sha256_text(
+            _required_text(raw, "model_source_sha256"), "model_source_sha256"
         )
-        ingested.append(row)
+        scoring_profile_id = _required_text(raw, "scoring_profile_id")
+        scoring_profile_sha256 = _sha256_text(
+            _required_text(raw, "scoring_profile_sha256"), "scoring_profile_sha256"
+        )
+        immutable_key = (
+            event_id,
+            player_id,
+            exact_line,
+            side,
+            prediction_ts,
+            model_version,
+            model_source_sha256,
+            scoring_profile_id,
+            scoring_profile_sha256,
+        )
+        if immutable_key in immutable_keys:
+            raise NflDfsCalibrationEvidenceError(
+                "duplicate immutable exact-line prediction row detected"
+            )
+        immutable_keys.add(immutable_key)
+
+        ingested.append(
+            SettledExactLineRow(
+                event_id=event_id,
+                player_id=player_id,
+                position=position,
+                exact_line=exact_line,
+                side=side,
+                raw_candidate_probability=raw_probability,
+                realized_fantasy_score=_finite(
+                    raw.get("realized_fantasy_score"), "realized_fantasy_score"
+                ),
+                prediction_timestamp=prediction_ts,
+                event_start_timestamp=event_start_ts,
+                model_version=model_version,
+                model_source_sha256=model_source_sha256,
+                scoring_profile_id=scoring_profile_id,
+                scoring_profile_sha256=scoring_profile_sha256,
+                simulation_count=simulation_count,
+                seed=int(raw.get("seed") or 0),
+                p_more=p_more,
+                p_less=p_less,
+                p_push=p_push,
+            )
+        )
 
     _assert_single_identity(ingested)
     return tuple(sorted(ingested, key=lambda row: (row.event_key, row.player_id, row.exact_line, row.side)))
@@ -310,29 +347,40 @@ def _event_level_holdout(
 ) -> tuple[list[SettledExactLineRow], list[SettledExactLineRow]]:
     if not 0.60 <= fraction <= 0.90:
         raise NflDfsCalibrationEvidenceError("calibration_fraction must be in [0.60, 0.90]")
-    events = sorted({row.event_key for row in rows})
-    if len(events) < 7:
-        raise NflDfsCalibrationEvidenceError("at least seven chronological events are required")
-    cut = int(len(events) * fraction)
-    cut = min(max(cut, 6), len(events) - 1)
-    calibration_events = set(events[:cut])
-    holdout_events = set(events[cut:])
-    calibration = [row for row in rows if row.event_key in calibration_events]
-    holdout = [row for row in rows if row.event_key in holdout_events]
+    start_times = sorted({_parse_aware(row.event_start_timestamp) for row in rows})
+    if len(start_times) < 7:
+        raise NflDfsCalibrationEvidenceError(
+            "at least seven distinct chronological event-start times are required"
+        )
+    cut = int(len(start_times) * fraction)
+    cut = min(max(cut, 6), len(start_times) - 1)
+    calibration_starts = set(start_times[:cut])
+    holdout_starts = set(start_times[cut:])
+    calibration = [
+        row for row in rows if _parse_aware(row.event_start_timestamp) in calibration_starts
+    ]
+    holdout = [
+        row for row in rows if _parse_aware(row.event_start_timestamp) in holdout_starts
+    ]
+    if calibration and holdout:
+        max_calibration = max(_parse_aware(row.event_start_timestamp) for row in calibration)
+        min_holdout = min(_parse_aware(row.event_start_timestamp) for row in holdout)
+        if not max_calibration < min_holdout:
+            raise NflDfsCalibrationEvidenceError("holdout chronology invariant failed")
     return calibration, holdout
 
 
 def _fold_assignments(rows: Sequence[SettledExactLineRow], fold_count: int = MIN_TIME_FOLDS) -> list[int]:
-    events = sorted({row.event_key for row in rows})
-    if len(events) < fold_count:
+    start_times = sorted({_parse_aware(row.event_start_timestamp) for row in rows})
+    if len(start_times) < fold_count:
         raise NflDfsCalibrationEvidenceError(
-            f"at least {fold_count} calibration events are required for time folds"
+            f"at least {fold_count} distinct event-start times are required for time folds"
         )
-    event_to_fold: dict[tuple[datetime, str], int] = {}
-    for index, event in enumerate(events):
-        fold = min(fold_count - 1, (index * fold_count) // len(events))
-        event_to_fold[event] = fold
-    assignments = [event_to_fold[row.event_key] for row in rows]
+    start_to_fold: dict[datetime, int] = {}
+    for index, start in enumerate(start_times):
+        fold = min(fold_count - 1, (index * fold_count) // len(start_times))
+        start_to_fold[start] = fold
+    assignments = [start_to_fold[_parse_aware(row.event_start_timestamp)] for row in rows]
     if sorted(set(assignments)) != list(range(fold_count)):
         raise NflDfsCalibrationEvidenceError("chronological fold construction failed")
     return assignments
@@ -344,6 +392,20 @@ def _region_counts(probs: Sequence[float]) -> list[int]:
         index = min(9, max(0, int(float(value) * 10)))
         counts[index] += 1
     return [count for count in counts if count > 0]
+
+
+def _validate_policy(policy: PromotionPolicy) -> None:
+    if not policy.policy_id.strip():
+        raise NflDfsCalibrationEvidenceError("promotion policy_id is required")
+    if policy.minimum_total_rows <= 0 or policy.minimum_holdout_rows <= 0:
+        raise NflDfsCalibrationEvidenceError("promotion minimum row counts must be positive")
+    for field, value in (
+        ("maximum_brier", policy.maximum_brier),
+        ("maximum_log_loss", policy.maximum_log_loss),
+        ("maximum_ece", policy.maximum_ece),
+    ):
+        if not math.isfinite(float(value)) or float(value) < 0:
+            raise NflDfsCalibrationEvidenceError(f"{field} must be finite and non-negative")
 
 
 def _policy_blockers(
@@ -370,6 +432,54 @@ def _policy_blockers(
     return blockers
 
 
+def _boundary_text(rows: Sequence[SettledExactLineRow], *, latest: bool) -> str:
+    selector = max if latest else min
+    selected = selector(rows, key=lambda row: _parse_aware(row.event_start_timestamp))
+    return selected.event_start_timestamp
+
+
+def _insufficient_packet(
+    *,
+    identity: SettledExactLineRow,
+    dataset_hash: str,
+    total_rows: int,
+    binary_rows: int,
+    pushes: int,
+    calibration: Sequence[SettledExactLineRow],
+    holdout: Sequence[SettledExactLineRow],
+    policy: PromotionPolicy | None,
+    blockers: Sequence[str],
+) -> CalibrationEvidencePacket:
+    return CalibrationEvidencePacket(
+        market_family=MARKET_FAMILY,
+        controlling_specialist=CONTROLLING_SPECIALIST,
+        model_version=identity.model_version,
+        model_source_sha256=identity.model_source_sha256,
+        scoring_profile_id=identity.scoring_profile_id,
+        scoring_profile_sha256=identity.scoring_profile_sha256,
+        evidence_dataset_sha256=dataset_hash,
+        total_rows=total_rows,
+        binary_rows=binary_rows,
+        pushes_excluded=pushes,
+        calibration_rows=len(calibration),
+        holdout_rows=len(holdout),
+        calibration_events=len({row.event_key for row in calibration}),
+        holdout_events=len({row.event_key for row in holdout}),
+        calibration_end=_boundary_text(calibration, latest=True) if calibration else "",
+        holdout_start=_boundary_text(holdout, latest=False) if holdout else "",
+        fold_count=0,
+        calibration_method=None,
+        raw_holdout_metrics=None,
+        calibrated_holdout_metrics=None,
+        oof_calibration_metrics=None,
+        promotion_policy_id=policy.policy_id if policy else None,
+        certification_review_eligible=False,
+        certification_status="CANDIDATE_ONLY",
+        terminal_status="MODEL_INPUTS_INSUFFICIENT",
+        blockers=tuple(blockers),
+    )
+
+
 def build_calibration_evidence(
     raw_rows: Sequence[Mapping[str, Any]],
     *,
@@ -382,6 +492,8 @@ def build_calibration_evidence(
     from binary win-probability fitting. No result from this function is a
     certification receipt or a publishable governed probability package.
     """
+    if promotion_policy is not None:
+        _validate_policy(promotion_policy)
     rows = ingest_settled_rows(raw_rows)
     identity = rows[0]
     dataset_hash = _dataset_hash(rows)
@@ -391,33 +503,16 @@ def build_calibration_evidence(
     blockers: list[str] = []
     if len(binary) < PHASE_B_MIN_N:
         blockers.append(f"PHASE_B_REQUIRES_{PHASE_B_MIN_N}_SETTLED_BINARY_ROWS")
-        return CalibrationEvidencePacket(
-            market_family=MARKET_FAMILY,
-            controlling_specialist=CONTROLLING_SPECIALIST,
-            model_version=identity.model_version,
-            model_source_sha256=identity.model_source_sha256,
-            scoring_profile_id=identity.scoring_profile_id,
-            scoring_profile_sha256=identity.scoring_profile_sha256,
-            evidence_dataset_sha256=dataset_hash,
+        return _insufficient_packet(
+            identity=identity,
+            dataset_hash=dataset_hash,
             total_rows=len(rows),
             binary_rows=len(binary),
-            pushes_excluded=pushes,
-            calibration_rows=0,
-            holdout_rows=0,
-            calibration_events=0,
-            holdout_events=0,
-            calibration_end="",
-            holdout_start="",
-            fold_count=0,
-            calibration_method=None,
-            raw_holdout_metrics=None,
-            calibrated_holdout_metrics=None,
-            oof_calibration_metrics=None,
-            promotion_policy_id=promotion_policy.policy_id if promotion_policy else None,
-            certification_review_eligible=False,
-            certification_status="CANDIDATE_ONLY",
-            terminal_status="MODEL_INPUTS_INSUFFICIENT",
-            blockers=tuple(blockers),
+            pushes=pushes,
+            calibration=(),
+            holdout=(),
+            policy=promotion_policy,
+            blockers=blockers,
         )
 
     calibration, holdout = _event_level_holdout(binary, calibration_fraction)
@@ -426,33 +521,16 @@ def build_calibration_evidence(
     if not holdout:
         blockers.append("UNTOUCHED_HOLDOUT_EMPTY")
     if blockers:
-        return CalibrationEvidencePacket(
-            market_family=MARKET_FAMILY,
-            controlling_specialist=CONTROLLING_SPECIALIST,
-            model_version=identity.model_version,
-            model_source_sha256=identity.model_source_sha256,
-            scoring_profile_id=identity.scoring_profile_id,
-            scoring_profile_sha256=identity.scoring_profile_sha256,
-            evidence_dataset_sha256=dataset_hash,
+        return _insufficient_packet(
+            identity=identity,
+            dataset_hash=dataset_hash,
             total_rows=len(rows),
             binary_rows=len(binary),
-            pushes_excluded=pushes,
-            calibration_rows=len(calibration),
-            holdout_rows=len(holdout),
-            calibration_events=len({row.event_key for row in calibration}),
-            holdout_events=len({row.event_key for row in holdout}),
-            calibration_end=max(row.event_start_timestamp for row in calibration),
-            holdout_start=min(row.event_start_timestamp for row in holdout),
-            fold_count=0,
-            calibration_method=None,
-            raw_holdout_metrics=None,
-            calibrated_holdout_metrics=None,
-            oof_calibration_metrics=None,
-            promotion_policy_id=promotion_policy.policy_id if promotion_policy else None,
-            certification_review_eligible=False,
-            certification_status="CANDIDATE_ONLY",
-            terminal_status="MODEL_INPUTS_INSUFFICIENT",
-            blockers=tuple(blockers),
+            pushes=pushes,
+            calibration=calibration,
+            holdout=holdout,
+            policy=promotion_policy,
+            blockers=blockers,
         )
 
     folds = _fold_assignments(calibration)
@@ -519,8 +597,8 @@ def build_calibration_evidence(
         holdout_rows=len(holdout),
         calibration_events=len({row.event_key for row in calibration}),
         holdout_events=len({row.event_key for row in holdout}),
-        calibration_end=max(row.event_start_timestamp for row in calibration),
-        holdout_start=min(row.event_start_timestamp for row in holdout),
+        calibration_end=_boundary_text(calibration, latest=True),
+        holdout_start=_boundary_text(holdout, latest=False),
         fold_count=len(set(folds)),
         calibration_method=selected_method,
         raw_holdout_metrics=_metrics_dict(raw_metrics),
