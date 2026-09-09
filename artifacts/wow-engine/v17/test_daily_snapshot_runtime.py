@@ -30,17 +30,65 @@ class Market:
     def score_prop(*_): raise HTTPException(status_code=422, detail={"code":"PROP_MODEL_NOT_PUBLISHABLE","probability_publishable":False,"can_execute":False})
 class Event: pass
 
+
+def governed_team_result():
+    return {
+        "code":"FINAL_APPROVED",
+        "terminal_label":"FINAL_APPROVED",
+        "probability_publishable":True,
+        "rank_eligible":True,
+        "can_execute":False,
+        "global_terminal_authority":"V17_TERMINAL_REDUCER",
+        "llp_probability_audit_result":"PASS_PROBABILITY_AUDIT",
+        "event_mutex_status":"PASS",
+        "calibrated_probability":0.62,
+        "calibrated_lower_bound":0.58,
+        "llp_governance":{
+            "probability_publishable":True,
+            "rank_eligible":True,
+            "global_terminal_reducer":"V17_TERMINAL_REDUCER",
+            "can_execute":False,
+            "probability_audit_result":"PASS_PROBABILITY_AUDIT",
+            "event_mutex_status":"PASS",
+            "postmodel_gates_status":"PASS",
+            "final_gates_status":"PASS",
+            "terminal_label":"FINAL_APPROVED",
+        },
+    }
+
+
 def test_daily_snapshot_returns_one_terminal_receipt_per_selected_row(monkeypatch):
-    monkeypatch.setattr("v17.daily_snapshot_runtime.score_team_event_request", lambda *_args, **_kwargs: {"code":"FINAL_APPROVED","probability_publishable":True,"rank_eligible":True,"can_execute":False})
+    monkeypatch.setattr("v17.daily_snapshot_runtime.score_team_event_request", lambda *_args, **_kwargs: governed_team_result())
     result=run_daily_snapshot(DailySnapshotRequest(requested_slate_date=SLATE_DATE,requested_timezone="America/Chicago"),db=DB(),market_api=Market(),event_api=Event())
     assert result["run_status"]=="COMPLETED"
     assert len(result["rows"])==2
     assert result["reconciliation"]=={"rows_in":2,"rows_completed":1,"rows_held":1,"rows_rejected":0,"rows_unclassified":0,"balanced":True}
+    assert result["rows"][1]["result"]["official_publication_guard"]["status"]=="PASS"
 
 def test_moneyline_normal_hold_is_not_completed(monkeypatch):
     monkeypatch.setattr("v17.daily_snapshot_runtime.score_team_event_request", lambda *_args, **_kwargs: {"code":"LLP_EVENT_GOVERNANCE_NOT_PROVEN","probability_publishable":False,"rank_eligible":False,"can_execute":False})
     result=run_daily_snapshot(DailySnapshotRequest(requested_slate_date=SLATE_DATE,requested_timezone="America/Chicago",lanes=["MONEYLINE"]),db=DB(),market_api=Market(),event_api=Event())
     assert result["rows"][0]["row_status"]=="HELD"
+
+def test_moneyline_shadow_style_boolean_leak_is_held_and_depublished(monkeypatch):
+    shadow = {
+        "source_mode":"FORWARD_SHADOW",
+        "probability_publishable":True,
+        "rank_eligible":True,
+        "can_execute":False,
+        "calibrated_probability":0.563781,
+        "calibrated_lower_bound":0.563781,
+    }
+    monkeypatch.setattr("v17.daily_snapshot_runtime.score_team_event_request", lambda *_args, **_kwargs: shadow)
+    result=run_daily_snapshot(DailySnapshotRequest(requested_slate_date=SLATE_DATE,requested_timezone="America/Chicago",lanes=["MONEYLINE"]),db=DB(),market_api=Market(),event_api=Event())
+    row=result["rows"][0]
+    assert row["row_status"]=="HELD"
+    assert row["probability_publishable"] is False
+    assert row["result"]["probability_publishable"] is False
+    assert row["result"]["rank_eligible"] is False
+    assert row["result"]["prepublication_claim"]=={"probability_publishable":True,"rank_eligible":True}
+    assert row["result"]["calibrated_probability"]==0.563781
+    assert any("TEAM_EVENT_RESEARCH_ARTIFACT_NOT_OFFICIAL" in blocker for blocker in row["result"]["official_publication_guard"]["blockers"])
 
 def test_props_research_only_normal_return_is_held():
     class ResearchOnlyMarket(Market):
@@ -64,10 +112,11 @@ def test_props_publishable_without_rank_is_held():
 def test_daily_uses_server_owned_canonical_hydration_for_moneyline(monkeypatch):
     seen={}
     def score(*_args,**kwargs):
-        seen.update(kwargs); return {"probability_publishable":True,"rank_eligible":True,"can_execute":False}
+        seen.update(kwargs); return governed_team_result()
     monkeypatch.setattr("v17.daily_snapshot_runtime.score_team_event_request",score)
-    run_daily_snapshot(DailySnapshotRequest(requested_slate_date=SLATE_DATE,requested_timezone="America/Chicago",lanes=["MONEYLINE"]),db=DB(),market_api=Market(),event_api=Event())
+    result=run_daily_snapshot(DailySnapshotRequest(requested_slate_date=SLATE_DATE,requested_timezone="America/Chicago",lanes=["MONEYLINE"]),db=DB(),market_api=Market(),event_api=Event())
     assert seen["canonical_hydration_required"] is True
+    assert result["rows"][0]["row_status"]=="COMPLETED"
 
 def test_zero_row_query_failures_are_typed_as_data_unobtainable():
     class BrokenQuery(Query):
