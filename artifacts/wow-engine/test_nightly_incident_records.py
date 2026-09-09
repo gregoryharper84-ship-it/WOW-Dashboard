@@ -5,6 +5,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 MODULE_PATH = Path(__file__).parent / "v17" / "nightly_incident_records.py"
 spec = importlib.util.spec_from_file_location("nightly_incident_records", MODULE_PATH)
 assert spec and spec.loader
@@ -44,7 +46,7 @@ def _configure_tmp(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(nir, "_utc_now", lambda: "2026-09-03T23:00:00Z")
 
 
-def test_postmortem_fix_and_validation(monkeypatch, tmp_path: Path) -> None:
+def test_postmortem_requires_triage_before_fix_and_validation(monkeypatch, tmp_path: Path) -> None:
     _configure_tmp(monkeypatch, tmp_path)
 
     pm = nir.create_postmortem(
@@ -56,10 +58,31 @@ def test_postmortem_fix_and_validation(monkeypatch, tmp_path: Path) -> None:
     assert pm.postmortem.name.startswith("PM-2026-09-03-001__")
     assert "can_execute: false" in pm.postmortem.read_text()
 
+    with pytest.raises(ValueError, match="ENGINEERING workflow stage"):
+        nir.create_fix(
+            postmortem_id="PM-2026-09-03-001",
+            title="Repair Action schema contract",
+            risk="R2-restorative",
+            root_cause="Request schema drift.",
+            allowed_files="v17/openapi.wow-betting-engine.v17.yaml",
+        )
+
+    nir.triage_postmortem(
+        postmortem_id="PM-2026-09-03-001",
+        reproduction_status="REPRODUCED",
+        root_cause="Request schema drift.",
+        root_cause_confidence="HIGH",
+        acceptance_criteria=["Canonical Action schema validates and the original reproduction passes."],
+        risk_class="R2-restorative",
+        handoff_evidence="Research/Triage reproduced schema drift and defined the acceptance boundary.",
+        subsystem="WOW_HOST_ORCHESTRATION",
+        protected_contracts=["action_contract_meaning"],
+    )
+
     fix = nir.create_fix(
         postmortem_id="PM-2026-09-03-001",
         title="Repair Action schema contract",
-        risk="R2",
+        risk="R2-restorative",
         root_cause="Request schema drift.",
         allowed_files="v17/openapi.wow-betting-engine.v17.yaml",
     )
@@ -71,6 +94,9 @@ def test_postmortem_fix_and_validation(monkeypatch, tmp_path: Path) -> None:
     record = ledger["records"][0]
     assert record["engineering_fix_ids"] == ["FIX-2026-09-03-001"]
     assert record["state"] == "FIX_IN_PROGRESS"
+    assert record["workflow_stage"] == "ENGINEERING"
+    assert record["root_cause_status"] == "CONFIRMED"
+    assert record["acceptance_criteria"]
     assert ledger["can_execute"] is False
 
     nir.validate()
