@@ -4,9 +4,8 @@ This module learns from immutable pregame team/event probability records without
 mutating the sporting model, rewriting settlements, or allowing market evidence
 to masquerade as governed probability.
 
-It is deliberately diagnostic: it may recommend calibration review after enough
-out-of-sample evidence accumulates, but it never changes model coefficients,
-calibrated probabilities, lower bounds, terminal labels, or execution state.
+Brier/log-loss scoring and lower-bound ranking are gated by the governed package
+contract in LLP-GOVERNED-PACKAGE-SCORING-CONTRACT-2026-09-09.
 """
 from __future__ import annotations
 
@@ -15,6 +14,13 @@ from dataclasses import asdict, dataclass
 from math import isfinite, log
 from statistics import mean
 from typing import Any, Iterable, Mapping, Sequence
+
+from v17.llp_governed_package_scoring import (
+    GovernedPackageError,
+    brier_from_package,
+    log_loss_from_package,
+    require_governed_scoring_package,
+)
 
 CAN_EXECUTE = False
 EPSILON = 1e-12
@@ -76,40 +82,31 @@ def _snapshot_stage(row: Mapping[str, Any]) -> str:
 
 
 def _is_official_immutable_snapshot(row: Mapping[str, Any]) -> bool:
+    """Require an explicit immutable-pregame marker or governed final stage.
+
+    `created_at` and mutable `model_timestamp` are intentionally not accepted as
+    substitutes for immutable pregame publication state.
+    """
     explicit = row.get("immutable_pregame")
     if isinstance(explicit, bool):
         return explicit
     stage = _snapshot_stage(row)
-    if stage:
-        return stage in FINAL_SNAPSHOT_STATES
-    # Stage-20 rows historically did not carry a snapshot-stage field. In that
-    # legacy shape, a settled row with a model timestamp is treated as the
-    # immutable pregame record supplied by the caller, not reconstructed here.
-    return bool(str(row.get("model_timestamp") or row.get("created_at") or "").strip())
+    return bool(stage and stage in FINAL_SNAPSHOT_STATES)
 
 
 def _prediction_probability(row: Mapping[str, Any]) -> float | None:
-    for key in ("calibrated_probability", "calibrated_point", "probability"):
-        value = _prob(row.get(key))
-        if value is not None:
-            return value
-    return None
+    """Return only the governed calibrated probability; no alias fallbacks."""
+    return _prob(row.get("calibrated_probability"))
 
 
 def _lower_bound(row: Mapping[str, Any]) -> float | None:
-    for key in ("lower_bound", "calibrated_probability_lower_bound", "calibrated_lower_bound"):
-        value = _prob(row.get(key))
-        if value is not None:
-            return value
-    return None
+    """Return only the governed calibrated lower bound; no legacy aliases."""
+    return _prob(row.get("calibrated_lower_bound"))
 
 
 def _upper_bound(row: Mapping[str, Any]) -> float | None:
-    for key in ("upper_bound", "calibrated_probability_upper_bound", "calibrated_upper_bound"):
-        value = _prob(row.get(key))
-        if value is not None:
-            return value
-    return None
+    """Return only the governed calibrated upper bound; no legacy aliases."""
+    return _prob(row.get("calibrated_upper_bound"))
 
 
 def _tags(value: Any) -> tuple[str, ...]:
@@ -125,7 +122,7 @@ def _tags(value: Any) -> tuple[str, ...]:
 
 
 def brier_score(probability: float, outcome: float) -> float:
-    """Binary Brier score. Lower is better."""
+    """Binary Brier primitive. Package-level callers must use score_prediction."""
     p = _prob(probability)
     if p is None or outcome not in (0.0, 1.0):
         raise ValueError("INVALID_BRIER_INPUT")
@@ -133,10 +130,7 @@ def brier_score(probability: float, outcome: float) -> float:
 
 
 def log_loss(probability: float, outcome: float) -> float:
-    """Binary log loss with clipping only for numerical stability.
-
-    The clipped value is never written back to the underlying prediction.
-    """
+    """Binary log-loss primitive with numerical clipping only."""
     p = _prob(probability)
     if p is None or outcome not in (0.0, 1.0):
         raise ValueError("INVALID_LOG_LOSS_INPUT")
@@ -180,20 +174,22 @@ class ScoredPrediction:
     market_role: str
     selection: str
     calibrated_probability: float
-    lower_bound: float | None
-    upper_bound: float | None
+    lower_bound: float
+    upper_bound: float
     market_prior_weight: float | None
     independent_probability: float | None
     official_result: str
     binary_outcome: float
     brier_score: float
     log_loss: float
-    interval_width: float | None
+    interval_width: float
     market_dependent_model: bool
     predicted_failure_tags: tuple[str, ...]
     realized_failure_tags: tuple[str, ...]
     final_refresh_status: str
     model_timestamp: str
+    rank_eligible: bool = True
+    scoring_allowed: bool = True
     can_execute: bool = CAN_EXECUTE
 
     def as_dict(self) -> dict[str, Any]:
@@ -201,48 +197,54 @@ class ScoredPrediction:
 
 
 def score_prediction(row: Mapping[str, Any]) -> ScoredPrediction | None:
-    """Score one immutable settled prediction, or return None when ungradeable."""
+    """Score one immutable settled governed prediction.
+
+    Unsettled/push rows remain ungradeable and return None. A final immutable row
+    with a missing, malformed, or stale governed probability package raises the
+    typed GovernedPackageError instead of being silently skipped or scored from a
+    proxy field.
+    """
     if not _is_official_immutable_snapshot(row):
         return None
     outcome = _result_binary(row.get("result") or row.get("official_result"))
-    probability = _prediction_probability(row)
-    if outcome is None or probability is None:
+    if outcome is None:
         return None
-    lower = _lower_bound(row)
-    upper = _upper_bound(row)
-    if lower is not None and lower > probability:
-        raise ValueError("LOWER_BOUND_ABOVE_CALIBRATED_PROBABILITY")
-    if upper is not None and upper < probability:
-        raise ValueError("UPPER_BOUND_BELOW_CALIBRATED_PROBABILITY")
+
+    audit = require_governed_scoring_package(row)
+    assert audit.identifier is not None
+    assert audit.calibrated_probability is not None
+    assert audit.calibrated_lower_bound is not None
+    assert audit.calibrated_upper_bound is not None
+    assert audit.immutable_model_timestamp is not None
+
     market_weight = _prob(row.get("market_prior_weight"))
     independent = _prob(row.get("independent_probability"))
-    prediction_id = str(row.get("prediction_id") or row.get("candidate_id") or "").strip()
-    if not prediction_id:
-        raise ValueError("PREDICTION_ID_REQUIRED")
-    width = upper - lower if upper is not None and lower is not None else None
+    width = audit.calibrated_upper_bound - audit.calibrated_lower_bound
     return ScoredPrediction(
-        prediction_id=prediction_id,
+        prediction_id=audit.identifier,
         date=str(row.get("date") or "").strip(),
         sport=_norm(row.get("sport")),
         league=_norm(row.get("league")),
         event_id=str(row.get("event_id") or row.get("event_key") or "").strip(),
         market_role=_market_role(row),
         selection=str(row.get("selection") or row.get("team") or "").strip(),
-        calibrated_probability=probability,
-        lower_bound=lower,
-        upper_bound=upper,
+        calibrated_probability=audit.calibrated_probability,
+        lower_bound=audit.calibrated_lower_bound,
+        upper_bound=audit.calibrated_upper_bound,
         market_prior_weight=market_weight,
         independent_probability=independent,
         official_result=_norm(row.get("result") or row.get("official_result")),
         binary_outcome=outcome,
-        brier_score=brier_score(probability, outcome),
-        log_loss=log_loss(probability, outcome),
+        brier_score=brier_from_package(row, outcome),
+        log_loss=log_loss_from_package(row, outcome),
         interval_width=width,
         market_dependent_model=bool(market_weight is not None and market_weight > 0.50),
         predicted_failure_tags=_tags(row.get("failure_tags") or row.get("predicted_failure_tags") or row.get("main_failure_path")),
         realized_failure_tags=_tags(row.get("realized_failure_tags") or row.get("observed_path") or row.get("realized_failure_path")),
         final_refresh_status=_norm(row.get("final_refresh_status") or row.get("final_refresh")),
-        model_timestamp=str(row.get("model_timestamp") or row.get("created_at") or "").strip(),
+        model_timestamp=audit.immutable_model_timestamp,
+        rank_eligible=audit.rank_eligible,
+        scoring_allowed=audit.scoring_allowed,
         can_execute=False,
     )
 
@@ -315,10 +317,7 @@ def calibration_report(
     *,
     config: LearningThresholds | None = None,
 ) -> dict[str, Any]:
-    """Produce lane- and sport-specific calibration diagnostics.
-
-    Favorites and upsets are never pooled into one calibration curve by default.
-    """
+    """Produce lane- and sport-specific calibration diagnostics."""
     config = config or LearningThresholds()
     config.validate()
     scored = [row for item in predictions if (row := score_prediction(item)) is not None]
@@ -334,11 +333,10 @@ def calibration_report(
         reliability, ece = _reliability_rows(rows, float(config.bin_width))
         brier = mean(row.brier_score for row in rows)
         losses = mean(row.log_loss for row in rows)
-        lower_rows = [row for row in rows if row.lower_bound is not None]
-        lower_mean = mean(row.lower_bound for row in lower_rows) if lower_rows else None
-        lower_gap = observed - lower_mean if lower_mean is not None else None
-        lower_overstatement = max(0.0, -lower_gap) if lower_gap is not None else None
-        widths = [row.interval_width for row in rows if row.interval_width is not None]
+        lower_mean = mean(row.lower_bound for row in rows)
+        lower_gap = observed - lower_mean
+        lower_overstatement = max(0.0, -lower_gap)
+        widths = [row.interval_width for row in rows]
         status, reasons = _review_status(
             n=len(rows),
             calibration_bias=bias,
@@ -442,8 +440,8 @@ def failure_path_diagnostics(predictions: Iterable[Mapping[str, Any]]) -> dict[s
 
 
 def ranking_regret_diagnostics(predictions: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
-    """Measure lower-bound rank inversions using only immutable pregame ranks."""
-    scored = [row for item in predictions if (row := score_prediction(item)) is not None and row.lower_bound is not None]
+    """Measure rank inversions using governed calibrated lower bound only."""
+    scored = [row for item in predictions if (row := score_prediction(item)) is not None]
     slates: dict[tuple[str, str, str], list[ScoredPrediction]] = defaultdict(list)
     for row in scored:
         slate = (row.date or "UNKNOWN", row.sport or "UNKNOWN", row.market_role or "UNKNOWN")
@@ -453,7 +451,7 @@ def ranking_regret_diagnostics(predictions: Iterable[Mapping[str, Any]]) -> dict
     for (date, sport, role), rows in sorted(slates.items()):
         if len(rows) < 2:
             continue
-        ordered = sorted(rows, key=lambda row: row.lower_bound if row.lower_bound is not None else -1.0, reverse=True)
+        ordered = sorted(rows, key=lambda row: row.lower_bound, reverse=True)
         top = ordered[0]
         if top.binary_outcome == 0.0:
             top_rank_losses += 1
@@ -482,12 +480,7 @@ def ranking_regret_diagnostics(predictions: Iterable[Mapping[str, Any]]) -> dict
 
 
 def final_refresh_diagnostics(predictions: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
-    """Compare diagnostic pre-refresh snapshots with the immutable final snapshot.
-
-    Only final immutable pregame rows are eligible for official Brier/log-loss grading.
-    Earlier snapshots are used solely to determine whether refresh moved the forecast
-    closer to or farther from the eventually observed outcome.
-    """
+    """Compare diagnostic pre-refresh snapshots with the immutable final snapshot."""
     rows = list(predictions)
     groups: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
     for row in rows:
@@ -571,6 +564,7 @@ def build_llp_learning_report(
 
 __all__ = [
     "CAN_EXECUTE",
+    "GovernedPackageError",
     "LearningThresholds",
     "ScoredPrediction",
     "brier_score",
