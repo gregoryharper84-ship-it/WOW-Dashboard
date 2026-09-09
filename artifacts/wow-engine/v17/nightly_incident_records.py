@@ -20,16 +20,18 @@ try:
         CLOSURE_RELEASE_STATUSES,
         REPRODUCTION_STATUSES,
         SUBSYSTEMS,
+        architect_required,
         initial_team_fields,
         route_subsystem,
         transition_record,
         validate_team_record,
     )
-except ImportError:  # direct-script execution: python v17/nightly_incident_records.py
+except ImportError:  # direct-script/spec loader compatibility
     from nightly_engineering_team_contract import (
         CLOSURE_RELEASE_STATUSES,
         REPRODUCTION_STATUSES,
         SUBSYSTEMS,
+        architect_required,
         initial_team_fields,
         route_subsystem,
         transition_record,
@@ -54,6 +56,11 @@ ALLOWED_STATES = {
     "ROLLBACK_REQUIRED",
 }
 RISK_CLASSES = {"R0", "R1", "R2-restorative", "R2-repair-policy", "R3"}
+IMPLEMENTABLE_REPRODUCTION_STATUSES = {
+    "REPRODUCED",
+    "INTERMITTENT",
+    "ENVIRONMENT_SPECIFIC",
+}
 
 
 @dataclass(frozen=True)
@@ -100,21 +107,22 @@ def _find_record(ledger: dict[str, Any], postmortem_id: str) -> dict[str, Any]:
 
 
 def _next_id(prefix: str, date: str, records: list[dict[str, Any]]) -> str:
-    key = "postmortem_id" if prefix == "PM" else "engineering_fix_id"
     pattern = PM_RE if prefix == "PM" else FIX_RE
     numbers: list[int] = []
+
     for row in records:
-        value = row.get(key)
-        if not isinstance(value, str):
-            continue
-        match = pattern.match(value)
-        if match and match.group(1) == date:
-            numbers.append(int(match.group(2)))
-        if prefix == "FIX":
-            for fix_id in row.get("engineering_fix_ids", []):
-                match = FIX_RE.match(str(fix_id))
-                if match and match.group(1) == date:
-                    numbers.append(int(match.group(2)))
+        if prefix == "PM":
+            values = [row.get("postmortem_id")]
+        else:
+            values = [row.get("engineering_fix_id"), *row.get("engineering_fix_ids", [])]
+
+        for value in values:
+            if not isinstance(value, str):
+                continue
+            match = pattern.match(value)
+            if match and match.group(1) == date:
+                numbers.append(int(match.group(2)))
+
     return f"{prefix}-{date}-{(max(numbers, default=0) + 1):03d}"
 
 
@@ -125,6 +133,18 @@ def _slug(value: str) -> str:
 
 def _team_enabled(row: dict[str, Any]) -> bool:
     return row.get("team_contract_version") is not None and row.get("legacy_imported") is not True
+
+
+def _latest_fix_id(row: dict[str, Any]) -> str | None:
+    fix_ids = row.get("engineering_fix_ids", [])
+    return fix_ids[-1] if fix_ids else None
+
+
+def _architect_is_required(row: dict[str, Any]) -> bool:
+    return architect_required(
+        subsystem=row.get("primary_subsystem", "UNKNOWN"),
+        protected_contracts=row.get("protected_contracts_touched", []),
+    )
 
 
 def create_postmortem(
@@ -183,28 +203,65 @@ def triage_postmortem(
         raise ValueError("triage command applies only to team-governed incident records")
     if reproduction_status not in REPRODUCTION_STATUSES - {"PENDING"}:
         raise ValueError(f"invalid reproduction_status: {reproduction_status}")
-    if not root_cause.strip():
-        raise ValueError("root cause is required")
-    if not acceptance_criteria or not all(item.strip() for item in acceptance_criteria):
-        raise ValueError("at least one non-empty acceptance criterion is required")
     if risk_class not in RISK_CLASSES:
         raise ValueError(f"invalid risk class: {risk_class}")
+    if not handoff_evidence.strip():
+        raise ValueError("triage handoff evidence is required")
 
     if row.get("workflow_stage") == "REPORTER_INTAKE":
-        updated = transition_record(row, to_stage="RESEARCH_TRIAGE", evidence="Reporter intake packet accepted by Research/Triage")
+        updated = transition_record(
+            row,
+            to_stage="RESEARCH_TRIAGE",
+            evidence="Reporter intake packet accepted by Research/Triage",
+        )
         row.clear()
         row.update(updated)
     if row.get("workflow_stage") != "RESEARCH_TRIAGE":
         raise ValueError(f"triage requires RESEARCH_TRIAGE stage, got {row.get('workflow_stage')}")
 
-    row["primary_subsystem"] = route_subsystem(row.get("domain", ""), explicit=subsystem) if subsystem else row.get("primary_subsystem")
+    row["primary_subsystem"] = (
+        route_subsystem(row.get("domain", ""), explicit=subsystem)
+        if subsystem
+        else row.get("primary_subsystem")
+    )
     row["reproduction_status"] = reproduction_status
+    row["risk_class"] = risk_class
+    row["protected_contracts_touched"] = protected_contracts or []
+
+    if reproduction_status not in IMPLEMENTABLE_REPRODUCTION_STATUSES:
+        row["root_cause_status"] = "NOT_CONFIRMED"
+        row["root_cause"] = root_cause.strip() or None
+        row["root_cause_confidence"] = root_cause_confidence.strip() or None
+        row["acceptance_criteria"] = [item.strip() for item in acceptance_criteria if item.strip()]
+        row["state"] = "OPEN"
+        updated = transition_record(row, to_stage="REPORTER_CLOSURE", evidence=handoff_evidence)
+        row.clear()
+        row.update(updated)
+        row["updated_utc"] = _utc_now()
+        _save_ledger(ledger)
+        return
+
+    if not root_cause.strip():
+        raise ValueError("root cause is required before Engineering handoff")
+    if not acceptance_criteria or not all(item.strip() for item in acceptance_criteria):
+        raise ValueError("at least one non-empty acceptance criterion is required before Engineering handoff")
+    if risk_class == "R3":
+        row["root_cause_status"] = "CONFIRMED"
+        row["root_cause"] = root_cause.strip()
+        row["root_cause_confidence"] = root_cause_confidence.strip()
+        row["acceptance_criteria"] = [item.strip() for item in acceptance_criteria]
+        row["state"] = "BLOCKED_HARD_BOUNDARY"
+        updated = transition_record(row, to_stage="REPORTER_CLOSURE", evidence=handoff_evidence)
+        row.clear()
+        row.update(updated)
+        row["updated_utc"] = _utc_now()
+        _save_ledger(ledger)
+        return
+
     row["root_cause_status"] = "CONFIRMED"
     row["root_cause"] = root_cause.strip()
     row["root_cause_confidence"] = root_cause_confidence.strip()
     row["acceptance_criteria"] = [item.strip() for item in acceptance_criteria]
-    row["risk_class"] = risk_class
-    row["protected_contracts_touched"] = protected_contracts or []
     row["state"] = "DIAGNOSED"
     updated = transition_record(row, to_stage="ENGINEERING", evidence=handoff_evidence)
     row.clear()
@@ -223,6 +280,13 @@ def create_fix(*, postmortem_id: str, title: str, risk: str, root_cause: str, al
             raise ValueError("team-governed fix creation requires ENGINEERING workflow stage")
         if row.get("root_cause_status") != "CONFIRMED" or not row.get("acceptance_criteria"):
             raise ValueError("team-governed fix requires confirmed root cause and acceptance criteria")
+        if row.get("risk_class") == "R3":
+            raise ValueError("R3 hard-boundary incidents cannot create an autonomous engineering fix")
+        if risk not in RISK_CLASSES:
+            raise ValueError(f"invalid team-governed risk class: {risk}")
+        if row.get("risk_class") and risk != row.get("risk_class"):
+            raise ValueError("engineering fix risk must match the Research/Triage risk classification")
+
     date = _today()
     fix_id = _next_id("FIX", date, ledger["records"])
     path = FIXES / f"{fix_id}__{_slug(title)}.md"
@@ -253,6 +317,17 @@ def handoff(*, postmortem_id: str, to_stage: str, evidence: str) -> None:
     row = _find_record(ledger, postmortem_id)
     if not _team_enabled(row):
         raise ValueError("handoff command applies only to team-governed incident records")
+
+    current = row.get("workflow_stage")
+    if current == "ENGINEERING" and to_stage == "INDEPENDENT_REVIEW" and not _latest_fix_id(row):
+        raise ValueError("Engineering cannot hand off to Review without a linked fix")
+    if current == "INDEPENDENT_REVIEW" and to_stage == "QA_VERIFICATION":
+        raise ValueError("use mark-review to enter QA; direct Review -> QA handoff is prohibited")
+    if current == "QA_VERIFICATION" and to_stage == "RELEASE_OBSERVABILITY":
+        raise ValueError("use mark-qa to enter Release; direct QA -> Release handoff is prohibited")
+    if current == "RELEASE_OBSERVABILITY" and to_stage == "REPORTER_CLOSURE":
+        raise ValueError("use mark-release to enter Reporter closure; direct Release -> closure handoff is prohibited")
+
     updated = transition_record(row, to_stage=to_stage, evidence=evidence)
     row.clear()
     row.update(updated)
@@ -265,12 +340,24 @@ def mark_review(*, postmortem_id: str, status: str, architect_status: str, evide
     row = _find_record(ledger, postmortem_id)
     if row.get("workflow_stage") != "INDEPENDENT_REVIEW":
         raise ValueError("review can be recorded only at INDEPENDENT_REVIEW stage")
+    if not _latest_fix_id(row):
+        raise ValueError("independent review requires a linked engineering fix")
     if status not in {"PASS", "REJECT"}:
         raise ValueError("review status must be PASS or REJECT")
     if architect_status not in {"PASS", "NOT_APPLICABLE", "PENDING", "REJECT"}:
         raise ValueError("invalid architect status")
-    row["review"] = {"status": status, "system_architect_status": architect_status, "evidence": evidence}
-    latest_fix = row.get("engineering_fix_ids", [])[-1] if row.get("engineering_fix_ids") else None
+    if status == "PASS":
+        if _architect_is_required(row) and architect_status != "PASS":
+            raise ValueError("System Architect PASS is required before QA for this protected change")
+        if not _architect_is_required(row) and architect_status not in {"PASS", "NOT_APPLICABLE"}:
+            raise ValueError("architect status must be PASS or NOT_APPLICABLE before QA")
+
+    row["review"] = {
+        "status": status,
+        "system_architect_status": architect_status,
+        "evidence": evidence,
+    }
+    latest_fix = _latest_fix_id(row)
     if latest_fix:
         row["engineering_fixes"][latest_fix]["review_status"] = status
     target = "QA_VERIFICATION" if status == "PASS" else "ENGINEERING"
@@ -286,10 +373,15 @@ def mark_qa(*, postmortem_id: str, status: str, evidence: str) -> None:
     row = _find_record(ledger, postmortem_id)
     if row.get("workflow_stage") != "QA_VERIFICATION":
         raise ValueError("QA can be recorded only at QA_VERIFICATION stage")
+    if (row.get("review") or {}).get("status") != "PASS":
+        raise ValueError("QA requires independent review PASS")
+    if _architect_is_required(row) and (row.get("review") or {}).get("system_architect_status") != "PASS":
+        raise ValueError("QA requires System Architect PASS for this protected change")
     if status not in {"PASS", "FAIL"}:
         raise ValueError("QA status must be PASS or FAIL")
+
     row["qa"] = {"status": status, "evidence": evidence}
-    latest_fix = row.get("engineering_fix_ids", [])[-1] if row.get("engineering_fix_ids") else None
+    latest_fix = _latest_fix_id(row)
     if latest_fix:
         row["engineering_fixes"][latest_fix]["qa_status"] = status
     target = "RELEASE_OBSERVABILITY" if status == "PASS" else "ENGINEERING"
@@ -313,8 +405,15 @@ def mark_release(
     row = _find_record(ledger, postmortem_id)
     if row.get("workflow_stage") != "RELEASE_OBSERVABILITY":
         raise ValueError("release can be recorded only at RELEASE_OBSERVABILITY stage")
+    if (row.get("qa") or {}).get("status") != "PASS":
+        raise ValueError("Release/Observability requires QA PASS")
     if status not in CLOSURE_RELEASE_STATUSES | {"FAILED"}:
         raise ValueError("invalid release status")
+    if status == "PRODUCTION_VERIFIED" and not all(
+        str(value or "").strip() for value in (merge_commit, deployed_commit, deployment_id)
+    ):
+        raise ValueError("PRODUCTION_VERIFIED requires merge_commit, deployed_commit, and deployment_id")
+
     row["release"] = {
         "status": status,
         "production_verified": status == "PRODUCTION_VERIFIED",
@@ -324,7 +423,7 @@ def mark_release(
         "deployment_id": deployment_id,
         "verified_utc": _utc_now() if status == "PRODUCTION_VERIFIED" else None,
     }
-    latest_fix = row.get("engineering_fix_ids", [])[-1] if row.get("engineering_fix_ids") else None
+    latest_fix = _latest_fix_id(row)
     if latest_fix:
         fix = row["engineering_fixes"][latest_fix]
         fix["release_status"] = status
@@ -332,6 +431,7 @@ def mark_release(
             fix["merge_commit"] = merge_commit
         if deployment_id:
             fix["production_deploy"] = deployment_id
+
     if status in CLOSURE_RELEASE_STATUSES:
         row["state"] = "DEPLOYED_PENDING_VERIFY" if status == "PRODUCTION_VERIFIED" else row.get("state")
         target = "REPORTER_CLOSURE"
@@ -349,11 +449,15 @@ def close_verified(*, postmortem_id: str, evidence: str, preventive_control: str
     row = _find_record(ledger, postmortem_id)
     if row.get("workflow_stage") != "REPORTER_CLOSURE":
         raise ValueError("verified closure requires REPORTER_CLOSURE stage")
-    row["reporter_closure"] = {"status": "FIXED_VERIFIED", "evidence": evidence, "closed_utc": _utc_now()}
+    row["reporter_closure"] = {
+        "status": "FIXED_VERIFIED",
+        "evidence": evidence,
+        "closed_utc": _utc_now(),
+    }
     if preventive_control:
         row.setdefault("learning", {})["preventive_control"] = preventive_control
     row["state"] = "VERIFIED_CLOSED"
-    latest_fix = row.get("engineering_fix_ids", [])[-1] if row.get("engineering_fix_ids") else None
+    latest_fix = _latest_fix_id(row)
     if latest_fix:
         row["engineering_fixes"][latest_fix]["state"] = "VERIFIED_CLOSED"
         row["engineering_fixes"][latest_fix]["updated_utc"] = _utc_now()
