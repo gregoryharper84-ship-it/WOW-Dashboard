@@ -158,6 +158,7 @@ def normalize_team_event_sport(value: str) -> str:
     sport = str(value or "").strip().upper()
     aliases = {
         "BASEBALL": "MLB",
+        "BASEBALL_MLB": "MLB",
         "MAJOR LEAGUE BASEBALL": "MLB",
         "MAJOR_LEAGUE_BASEBALL": "MLB",
         "MLS": "SOCCER",
