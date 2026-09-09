@@ -9,7 +9,12 @@ on:
       - main
     paths:
       - ".github/workflows/wow-v17-nightly-engineering-scan.yml"
+      - ".agents/skills/wow-nightly-engineering-autopilot/**"
+      - ".agents/skills/wow-autonomous-product-qa-engineering-recovery/**"
+      - ".agents/skills/wow-engineering-*/**"
+      - "artifacts/wow-engine/v17/nightly_engineering_team_contract.py"
       - "artifacts/wow-engine/v17/nightly_incident_records.py"
+      - "artifacts/wow-engine/test_nightly_engineering_team_contract.py"
       - "artifacts/wow-engine/v17/incident-ledger.json"
       - "artifacts/wow-engine/v17/postmortems/**"
       - "artifacts/wow-engine/v17/engineering-fixes/**"
@@ -23,7 +28,7 @@ concurrency:
 
 jobs:
   nightly-engineering-scan:
-    name: WOW V17 nightly engineering scan
+    name: WOW V17 nightly engineering team scan
     runs-on: ubuntu-latest
     timeout-minutes: 30
     defaults:
@@ -46,6 +51,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install PyYAML openapi-spec-validator
+
+      - name: Validate multi-agent engineering team contract
+        run: |
+          python v17/nightly_engineering_team_contract.py self-check
+          python -m pytest -q test_nightly_engineering_team_contract.py
 
       - name: Run governed probability backend regression suite
         run: python -m pytest -q
@@ -122,7 +132,7 @@ jobs:
         shell: bash
         run: |
           {
-            echo "# WOW V17 Nightly Engineering Scan"
+            echo "# WOW V17 Nightly Engineering Team Scan"
             echo
             echo "- UTC: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
             echo "- Commit: $GITHUB_SHA"
@@ -130,11 +140,14 @@ jobs:
             echo "- Incident ledger: artifacts/wow-engine/v17/incident-ledger.json"
             echo "- Postmortems: artifacts/wow-engine/v17/postmortems/"
             echo "- Engineering fixes: artifacts/wow-engine/v17/engineering-fixes/"
+            echo "- Team contract: artifacts/wow-engine/v17/nightly_engineering_team_contract.py"
             echo "- can_execute: false"
             echo
             echo "This workflow is the deterministic detector/acceptance layer."
-            echo "Autonomous diagnosis and bounded repair are governed by .agents/skills/wow-nightly-engineering-autopilot/SKILL.md."
-            echo "Any reproducible defect entering repair must receive a PM record before code changes and a linked FIX record before implementation."
+            echo "The scheduled wrapper is .agents/skills/wow-nightly-engineering-autopilot/SKILL.md."
+            echo "Every actionable defect is delegated to wow.autonomous-product-qa-engineering-recovery."
+            echo "The enforced lifecycle is Reporter -> Research/Triage -> Engineering -> Independent Review -> QA -> Release/Observability -> Reporter closure."
+            echo "Protected V17 contract changes require System Architect review."
           } | tee "$RUNNER_TEMP/wow-nightly-summary.md"
 
       - name: Upload nightly evidence
