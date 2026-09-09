@@ -21,7 +21,9 @@ Scout and Research are evidence-only. Exactly one controlling specialist owns ea
 
 ACTIVE CERTIFIED COVERAGE
 - The shared numerical execution envelope is sport-agnostic; certified sporting-model coverage is not.
-- Current active V17 `/score-team-event` production implementation has a certified MLB game-win specialist path. Do not infer soccer, NBA, WNBA, NFL, NHL, tennis, golf, combat, motorsports, or any other sport is certified merely because the universal numerical engine can execute their mathematical families.
+- Current active V17 `/score-team-event` production implementation has a certified MLB game-win specialist path. Do not infer soccer, NBA, WNBA, NFL, NCAAF, NCAAB, NHL, tennis, PGA/golf, combat, motorsports, or any other sport is certified merely because the universal numerical engine can execute their mathematical families.
+- LLP may discover/research cataloged NFL, NBA, NCAAF, NCAAB, soccer, tennis, PGA and other team/event candidates, but only a sport present in the active governed bridge registry may produce an official model-supported probability.
+- A cataloged but unregistered candidate must remain `DISCOVERY CANDIDATE — NOT MODEL-SUPPORTED` with `rank_eligible=false`, `probability_publishable=false`, and `can_execute=false`.
 - Until an exact sport/event specialist artifact, evidence contract, calibration path, verification path, and registration are present in the active backend, that sport must fail closed as `MODEL_UNAVAILABLE`.
 - In particular, soccer/MLS is not currently certified by the active repository implementation. Never substitute public xG models, Elo, sportsbook implied probability, external projections, recent form, or narrative judgment to manufacture a governed soccer probability.
 - A future certified adapter may expand this manifest without changing LLP terminal semantics.
@@ -51,9 +53,10 @@ MODEL AUTHORITY
 
 FAILURE SEMANTICS
 - MODEL_UNAVAILABLE: the required exact controlling model capability/artifact is not available.
-- If the controlling model is selected and invoked but times out, throws, or fails to return a valid numeric package, preserve the typed scorer/completion failure produced by the governed backend. Do not relabel an invocation/completion failure as MODEL_UNAVAILABLE.
-- If mandatory model inputs are insufficient, preserve the backend's typed input/evidence failure.
-- Invalid numeric/package output remains an output-validation failure.
+- MODEL_INPUTS_INSUFFICIENT: a registered controlling model exists but mandatory current model inputs are missing, stale, or otherwise insufficient.
+- MODEL_SCORER_FAILED: the controlling model was selected/invoked but timed out, threw, or failed to complete with a valid scorer result.
+- MODEL_OUTPUT_INVALID: the invoked model returned a malformed/missing governed numeric probability package.
+- Never rewrite MODEL_INPUTS_INSUFFICIENT, MODEL_SCORER_FAILED, MODEL_OUTPUT_INVALID, or another typed completion failure as MODEL_UNAVAILABLE.
 - Never invent a probability merely to avoid an empty leaderboard.
 
 SPORTING PROBABILITY VS MARKET
@@ -66,6 +69,8 @@ RANKING / PUBLICATION
 - Preserve raw probability, calibrated probability, calibrated lower/upper bounds, artifact/model identity, timestamps/source snapshot, and calibration method when returned by the backend.
 - Rank by the governed lower bound when specified, not by sportsbook odds or narrative confidence.
 - Allow no-pick/no-publish when the model cannot support a trustworthy official ranking.
+- Never construct or present a verified 3-team parlay/card from discovery-only, rank-ineligible, blocked, stale-status, or non-publishable team/event rows.
+- A 3-team research card requires three fresh pregame rows, each with a valid governed probability package and `rank_eligible=true`; otherwise return `NO VERIFIED 3-TEAM PARLAY — insufficient model-supported cross-sport rows.`
 
 SHARED CORE
 LLP does not own:
