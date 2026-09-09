@@ -15,6 +15,11 @@ Phase 3 addition: injury decision tree enforcement via injury_decision_tree.inju
   ROLE_STATE_STALE      → soft cap to MONEY_QUALIFIED (blocks FINAL_APPROVED)
   All other statuses    → no additional cap
 
+V17 prop-category focus addition:
+  Scout remains broad, but FINAL_APPROVED/user-facing prop recommendations require
+  the sport x prop category to be FOCUS_QUALIFIED. Provisional, research-only,
+  suspended, and unknown categories fail closed from user-facing recommendations.
+
 Phase 2 and Phase 3 caps are applied together after the EV gate check, before
 market routing. This ensures they fire regardless of market_status (including
 MARKET_CONTRADICTION which would otherwise fall through to the fallback).
@@ -25,6 +30,7 @@ from __future__ import annotations
 from typing import Any
 
 from .labels import PropLabel, DataStatus
+from . import prop_category_focus
 
 
 REQUIRED_FOR_FINAL = [
@@ -46,6 +52,11 @@ def classify(row: dict[str, Any]) -> dict[str, Any]:
     if row.get("terminal_label") is not None:
         return row
 
+    gates = row.get("gates", {})
+
+    # V17 focus metadata is attached to every classifier-eligible prop row.
+    # This gate does not change probabilities and does not narrow Scout intake.
+    prop_category_focus.apply(row)
     gates = row.get("gates", {})
 
     if _has_data_failure(row):
@@ -97,15 +108,6 @@ def classify(row: dict[str, Any]) -> dict[str, Any]:
 
     # ------------------------------------------------------------------
     # Phase 2 + Phase 3 caps — applied unconditionally after the EV check.
-    #
-    # This ensures confidence_cap (Phase 2, from market_gate) and
-    # injury_tree_status (Phase 3) are enforced regardless of market_status.
-    # MARKET_CONTRADICTION, SEVERE_DRIFT, etc. all route through here before
-    # reaching the market-routing section below.
-    #
-    # Priority (most restrictive wins):
-    #   MODEL_QUALIFIED_HOLD (Phase 2 or Phase 3) > MONEY_QUALIFIED_MAX (Phase 2) or
-    #   DEPENDENCY_UNRESOLVED/ROLE_STATE_STALE (Phase 3)
     # ------------------------------------------------------------------
     confidence_cap = market.get("confidence_cap")
     cash_status    = market.get("cash_threshold_status", "")
@@ -138,14 +140,27 @@ def classify(row: dict[str, Any]) -> dict[str, Any]:
         return row
 
     # ------------------------------------------------------------------
-    # No Phase 2 or Phase 3 cap — normal market routing
+    # No Phase 2 or Phase 3 cap — normal market routing.
+    # V17 category focus is an additional FINAL_APPROVED eligibility gate.
     # ------------------------------------------------------------------
     if mkt_status in ("MARKET_VERIFIED", "MARKET_EDGE_DETECTED"):
         if has_outlier_flags:
             row["terminal_label"] = PropLabel.MARKET_VERIFIED_HOLD.value
             row["blockers"].append("CLASSIFIER:MARKET_VERIFIED_HOLD:OUTLIER_FLAGS")
         elif _all_required_gates_passed(gates):
-            row["terminal_label"] = PropLabel.FINAL_APPROVED.value
+            focus = gates.get("prop_category_focus", {})
+            if prop_category_focus.user_facing_eligible(row):
+                row["terminal_label"] = PropLabel.FINAL_APPROVED.value
+            elif focus.get("focus_state") == prop_category_focus.RESEARCH_ONLY:
+                row["terminal_label"] = PropLabel.RESEARCH_INTEREST.value
+                row["blockers"].append(
+                    "CLASSIFIER:PROP_CATEGORY_FOCUS:RESEARCH_ONLY"
+                )
+            else:
+                row["terminal_label"] = PropLabel.MODEL_QUALIFIED_HOLD.value
+                row["blockers"].append(
+                    f"CLASSIFIER:PROP_CATEGORY_FOCUS:{focus.get('focus_state', 'UNKNOWN')}"
+                )
         else:
             row["terminal_label"] = PropLabel.MONEY_QUALIFIED.value
         return row
