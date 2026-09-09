@@ -54,14 +54,17 @@ alter table public.wow_prop_fitted_model_artifacts
     add column if not exists period text;
 
 -- Existing certified prop families are player props. Current MLB rows use MLB as
--- both sport and league. Period is derivable from the immutable stat identity.
+-- both sport and league. Period is derivable from immutable stat identity.
+-- Preserve all first-inning spellings already used by certified MLB routes.
 update public.wow_prop_fitted_model_artifacts
    set league = coalesce(nullif(trim(league), ''), upper(trim(sport))),
        market_family = coalesce(nullif(trim(market_family), ''), 'PLAYER_PROP'),
        period = coalesce(
            nullif(trim(period), ''),
            case
-               when upper(stat_type) like '%1IP%' or upper(stat_type) like '%FIRST_INNING%'
+               when upper(stat_type) like '%1IP%'
+                 or upper(stat_type) like '%FIRST_INNING%'
+                 or upper(stat_type) like '%1ST_INNING%'
                    then 'FIRST_INNING'
                else 'FULL_GAME'
            end
@@ -291,6 +294,7 @@ as $$
         case
             when upper(coalesce(p_stat_type, '')) like '%1IP%'
               or upper(coalesce(p_stat_type, '')) like '%FIRST_INNING%'
+              or upper(coalesce(p_stat_type, '')) like '%1ST_INNING%'
                 then 'FIRST_INNING'
             else 'FULL_GAME'
         end,
