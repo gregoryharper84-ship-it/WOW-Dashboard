@@ -30,6 +30,17 @@ get_client = base_api.get_client
 
 PROP_CAPABILITY_KEY = "PROP_PROBABILITY"
 MLB_EVENT_CAPABILITY_KEY = "MLB_EVENT_PROBABILITY"
+NFL_PROP_STAT_FAMILIES = (
+    "PASSING_YARDS",
+    "PASS_ATTEMPTS",
+    "PASS_COMPLETIONS",
+    "PASSING_TDS",
+    "PASSING_INTERCEPTIONS",
+    "RUSHING_YARDS",
+    "RUSH_ATTEMPTS",
+    "RECEIVING_YARDS",
+    "RECEPTIONS",
+)
 LLP_IDENTITIES = {
     "LLP",
     "LLP_TEAM_BETTING_MODEL",
@@ -89,6 +100,117 @@ def _runtime_capability(capability_key: str) -> dict[str, Any]:
     row = dict(rows[0])
     row["can_execute"] = False
     return row
+
+
+def _registered_prop_capabilities() -> dict[str, Any]:
+    """Read exact registered prop artifacts without upgrading them to runtime-ready.
+
+    Registry presence proves only immutable artifact registration. It does not
+    prove evidence hydration, runtime adapter importability, scorer resolution,
+    calibration execution, or publishability. Missing/invalid registry evidence
+    therefore stays fail-closed.
+    """
+    try:
+        result = get_client().rpc("wow_prop_registered_capabilities", {}).execute()
+    except Exception:
+        return {
+            "registry_status": "UNAVAILABLE",
+            "registered_capabilities": [],
+            "reason": "EXACT_PROP_CAPABILITY_REGISTRY_UNAVAILABLE",
+            "probability_publishable": False,
+            "can_execute": False,
+        }
+
+    rows = result.data or []
+    if not isinstance(rows, list):
+        return {
+            "registry_status": "INVALID_RESPONSE",
+            "registered_capabilities": [],
+            "reason": "EXACT_PROP_CAPABILITY_REGISTRY_INVALID_RESPONSE",
+            "probability_publishable": False,
+            "can_execute": False,
+        }
+
+    visible = []
+    for raw in rows:
+        if not isinstance(raw, dict):
+            continue
+        visible.append(
+            {
+                "sport": raw.get("sport"),
+                "league": raw.get("league"),
+                "market_family": raw.get("market_family"),
+                "stat_type": raw.get("stat_type"),
+                "period": raw.get("period"),
+                "provider_identity": raw.get("provider_identity"),
+                "model_family": raw.get("model_family"),
+                "artifact_id": raw.get("artifact_id"),
+                "artifact_sha256": raw.get("artifact_sha256"),
+                "feature_schema_version": raw.get("feature_schema_version"),
+                "calibrator_id": raw.get("calibrator_id"),
+                "lifecycle_state": raw.get("lifecycle_state"),
+                "registered_capability": bool(raw.get("registered_capability", False)),
+                "probability_publishable": False,
+                "can_execute": False,
+            }
+        )
+    return {
+        "registry_status": "AVAILABLE",
+        "registered_capabilities": visible,
+        "probability_publishable": False,
+        "can_execute": False,
+    }
+
+
+def _nfl_prop_family_readiness(exact_registry: dict[str, Any]) -> dict[str, Any]:
+    """Expose truthful NFL stat-family readiness from exact registration only.
+
+    A registered artifact is necessary but not sufficient for AVAILABLE. Until
+    runtime adapter, scorer, evidence hydration, calibration and production
+    invocation are independently verified, the family stays non-publishable.
+    The current repair intentionally contains no synthetic NFL artifacts.
+    """
+    rows = exact_registry.get("registered_capabilities") or []
+    index: dict[tuple[str, str, str, str, str], dict[str, Any]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        key = (
+            str(row.get("sport") or "").upper(),
+            str(row.get("league") or "").upper(),
+            str(row.get("market_family") or "").upper(),
+            str(row.get("stat_type") or "").upper(),
+            str(row.get("period") or "").upper(),
+        )
+        index[key] = row
+
+    output: dict[str, Any] = {}
+    for stat_type in NFL_PROP_STAT_FAMILIES:
+        row = index.get(("NFL", "NFL", "PLAYER_PROP", stat_type, "FULL_GAME"))
+        registered = bool(row and row.get("registered_capability"))
+        output[stat_type] = {
+            "sport": "NFL",
+            "league": "NFL",
+            "market_family": "PLAYER_PROP",
+            "stat_type": stat_type,
+            "period": "FULL_GAME",
+            "status": "REGISTERED_RUNTIME_VERIFICATION_REQUIRED" if registered else "MODEL_UNAVAILABLE",
+            "blocking_scope": "RUNTIME_VERIFICATION" if registered else "CAPABILITY",
+            "registered_capability": registered,
+            "artifact_id": row.get("artifact_id") if row else None,
+            "artifact_sha256": row.get("artifact_sha256") if row else None,
+            "model_family": row.get("model_family") if row else None,
+            "calibrator_id": row.get("calibrator_id") if row else None,
+            "adapter_importable": False,
+            "evidence_provider_ready": False,
+            "scorer_resolvable": False,
+            "calibration_ready": False,
+            "specialist_selected": False,
+            "specialist_invoked": False,
+            "probability_publishable": False,
+            "can_execute": False,
+        }
+    return output
 
 
 def _prop_evidence(req: ScorePropRequest) -> dict[str, Any]:
@@ -218,6 +340,7 @@ def governance():
 
     event_lane = _runtime_capability(MLB_EVENT_CAPABILITY_KEY)
     prop_lane = _runtime_capability(PROP_CAPABILITY_KEY)
+    exact_prop_registry = _registered_prop_capabilities()
 
     return {
         "governed_probability_capability": global_capability,
@@ -237,11 +360,16 @@ def governance():
             },
             PROP_CAPABILITY_KEY: {
                 "status": prop_lane.get("capability_status", "UNAVAILABLE"),
+                "scope": "AGGREGATE_SERVICE_HEALTH_ONLY",
+                "exact_capability_required": True,
+                "exact_capability_key": ["sport", "league", "market_family", "stat_type", "period"],
                 "evidence": prop_lane.get("evidence") or {},
                 "probability_publishable": False,
                 "can_execute": False,
             },
         },
+        "exact_prop_capabilities": exact_prop_registry,
+        "nfl_prop_stat_family_readiness": _nfl_prop_family_readiness(exact_prop_registry),
         "routing_contract": {
             "LLP_TEAM_BETTING_MODEL": "/score-event only for governed team/event outright-winner lanes",
             "WOW_BETTING_ENGINE_PLAYER_PROPS": "/score-prop via api_prod_market",
