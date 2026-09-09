@@ -57,6 +57,18 @@ def _patch_client(monkeypatch, responses):
     monkeypatch.setattr(mod.httpx, "AsyncClient", lambda **kwargs: _FakeAsyncClient(responses, **kwargs))
 
 
+def _projected_candidate():
+    return {
+        "official_event_id": "824226",
+        "official_date": "2026-09-09",
+        "event_start_time": "2026-09-10T00:10:00+00:00",
+        "home_team": "Home Team",
+        "away_team": "Away Team",
+        "snapshot_id": "snapshot-824226",
+        "snapshot_timestamp": "2026-09-09T13:30:00+00:00",
+    }
+
+
 @pytest.mark.anyio
 async def test_both_scenarios_failing_closed_reports_pass(monkeypatch):
     monkeypatch.setenv("WOW_ACTION_API_KEY", "test-key")
@@ -111,3 +123,49 @@ async def test_a_fabricated_probability_would_fail_this_acceptance_check(monkeyp
     result = await mod.run_v17_synthetic_self_acceptance(logger)
     assert result["status"] == "FAIL"
     assert result["prop_ok"] is False
+
+
+@pytest.mark.anyio
+async def test_projected_422_preserves_typed_backend_diagnostics(monkeypatch):
+    monkeypatch.setenv("WOW_ACTION_API_KEY", "test-key")
+    monkeypatch.setattr(mod, "_real_projected_mlb_candidate", lambda now: _projected_candidate())
+    _patch_client(
+        monkeypatch,
+        [
+            _FakeResponse(200, {
+                "rows": [{
+                    "row_key": "TEST-PROP-001", "terminal_status": "HELD",
+                    "terminal_label": "MODEL_UNAVAILABLE", "probability_publishable": False,
+                    "can_execute": False,
+                }],
+            }),
+            _FakeResponse(200, {
+                "rows": [{
+                    "research_run_id": "TEST-EVENT-001-RUN", "terminal_status": "HELD",
+                    "code": "MODEL_UNAVAILABLE", "probability_publishable": False, "can_execute": False,
+                }],
+            }),
+            _FakeResponse(422, {
+                "detail": {
+                    "code": "RUN_INVALID_ACQUISITION_INCOMPLETE",
+                    "blocker_code": "MLB_TEAM_EVENT_CANONICAL_EVIDENCE_UNAVAILABLE",
+                    "failure_class": "RUN_INVALID_ACQUISITION_INCOMPLETE",
+                    "missing_fields": ["away_lineup_status", "home_lineup_status"],
+                    "probability_publishable": False,
+                    "can_execute": False,
+                }
+            }),
+        ],
+    )
+    logger = logging.getLogger("test-v17-synthetic-self-acceptance")
+    result = await mod.run_v17_synthetic_self_acceptance(logger)
+
+    assert result["status"] == "FAIL"
+    assert result["projected_lineup_http_status"] == 422
+    assert result["projected_lineup_code"] == "RUN_INVALID_ACQUISITION_INCOMPLETE"
+    assert result["projected_lineup_blocker_code"] == "MLB_TEAM_EVENT_CANONICAL_EVIDENCE_UNAVAILABLE"
+    assert result["projected_lineup_failure_class"] == "RUN_INVALID_ACQUISITION_INCOMPLETE"
+    assert result["projected_lineup_missing_fields"] == ["away_lineup_status", "home_lineup_status"]
+    assert result["projected_lineup_failed_checks"] == ["http_status"]
+    assert result["projected_lineup_code"] != "MODEL_UNAVAILABLE"
+    assert result["can_execute"] is False
