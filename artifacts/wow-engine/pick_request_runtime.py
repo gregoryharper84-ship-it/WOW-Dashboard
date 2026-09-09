@@ -1,13 +1,16 @@
 """V17 receipt-semantics facade for the governed prop request runtime.
 
 The producing implementation is preserved in ``pick_request_runtime_core``.
-This facade adds only receipt/error-boundary semantics:
+This facade adds receipt/error-boundary and Top-10 completion semantics:
 - pre-scorer construction failures remain ``scoring_attempted=false``;
 - once the fitted scorer is called, success/failure receipts are
   ``scoring_attempted=true``;
-- unexpected scorer exceptions are typed ``MODEL_SCORER_FAILED``; and
+- unexpected scorer exceptions are typed ``MODEL_SCORER_FAILED``;
 - downstream portfolio-governance exceptions fail closed without erasing an
-  already-completed sporting probability receipt.
+  already-completed sporting probability receipt; and
+- target Top-10 families cannot complete on terminal-status accounting alone:
+  every source row must reconcile exactly once to a valid controlling-model
+  package or an explicit typed blocker.
 
 No model, evidence, line, calibration, ranking, or terminal-reducer behavior is
 changed here. Portfolio/card governance remains a downstream objective and can
@@ -17,11 +20,12 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from fastapi import HTTPException
+from fastapi import Header, HTTPException
 
 from github_actions_oidc import scout_route_auth_dependency
 import pick_request_runtime_core as _core
 from pick_request_runtime_core import *  # noqa: F401,F403
+from v17.top10_model_reconciliation import enforce_top10_completion
 
 
 _ORIGINAL_TERMINAL = _core._terminal
@@ -178,17 +182,67 @@ class _ScoringReceiptMarketApi:
             ) from exc
 
 
+def _install_top10_reconciliation_wrapper(app: Any) -> None:
+    """Post-validate the core receipt without rebuilding the scoring route.
+
+    FastAPI stores the callable on the route's dependant. Replacing that call
+    target preserves the original path, schema, dependency graph, operation id,
+    market-api closure, and auth barrier while adding one non-probabilistic
+    completion audit to the returned receipt.
+    """
+    route = next(
+        (
+            candidate
+            for candidate in app.router.routes
+            if getattr(candidate, "path", None) == "/score-pick-request"
+        ),
+        None,
+    )
+    if route is None:
+        raise RuntimeError("SCORE_PICK_REQUEST_ROUTE_NOT_INSTALLED")
+    if getattr(route.endpoint, "_v17_top10_reconciled", False):
+        return
+
+    original_endpoint = route.endpoint
+
+    def reconciled_score_pick_request(
+        batch: _core.PickRequestBatch,
+        x_wow_model_identity: Optional[str] = Header(
+            default=None,
+            alias="X-WOW-Model-Identity",
+        ),
+    ) -> dict[str, Any]:
+        response = original_endpoint(batch, x_wow_model_identity)
+        if not isinstance(response, dict):
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "code": "PICK_REQUEST_RESPONSE_INVALID",
+                    "completion_blocker": "TOP10_INCOMPLETE_MODEL_RECONCILIATION",
+                    "probability_publishable": False,
+                    "can_execute": False,
+                },
+            )
+        return enforce_top10_completion(response, list(batch.rows))
+
+    reconciled_score_pick_request._v17_top10_reconciled = True  # type: ignore[attr-defined]
+    route.endpoint = reconciled_score_pick_request
+    if getattr(route, "dependant", None) is not None:
+        route.dependant.call = reconciled_score_pick_request
+
+
 def install_pick_request_routes(
     app: Any,
     *,
     market_api: Any,
     auth_dependency: Any,
 ) -> None:
-    return _core.install_pick_request_routes(
+    _core.install_pick_request_routes(
         app,
         market_api=_ScoringReceiptMarketApi(market_api),
         auth_dependency=scout_route_auth_dependency(auth_dependency),
     )
+    _install_top10_reconciliation_wrapper(app)
 
 
 def __getattr__(name: str) -> Any:
