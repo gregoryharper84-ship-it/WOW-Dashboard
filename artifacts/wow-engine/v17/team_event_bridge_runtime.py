@@ -120,7 +120,11 @@ def _model_failure_detail(
     }
     if extra:
         detail.update(dict(extra))
-    return HTTPException(status_code=status_code, detail=detail)
+    # Preserve the established LLP host-routing envelope on every new bridge
+    # failure instead of returning a parallel error shape.  This keeps requester,
+    # controlling engine, candidate family and terminal-authority identity intact.
+    augmented = _base_runtime._augment_detail(detail, req)
+    return HTTPException(status_code=status_code, detail=augmented)
 
 
 def _input_value(req: Any, field: str) -> Any:
