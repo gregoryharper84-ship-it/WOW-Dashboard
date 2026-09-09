@@ -33,6 +33,8 @@ def _request(sport: str, *, complete: bool = True):
     required = TEAM_EVENT_INPUT_CONTRACTS[sport]
     evidence = {field: f"verified:{field}" for field in required}
     core = {
+        "requester_host_identity": "WOW_BETTING_ENGINE",
+        "candidate_family": "TEAM_EVENT",
         "sport": sport,
         "league": sport,
         "official_event_id": "event-1",
@@ -113,6 +115,7 @@ def test_no_registered_model_is_model_unavailable(sport):
     with pytest.raises(HTTPException) as caught:
         _score(_request(sport))
     assert caught.value.detail["code"] == "MODEL_UNAVAILABLE"
+    assert caught.value.detail["controlling_engine_identity"] == "LLP_TEAM_BETTING_ENGINE"
     assert caught.value.detail["rank_eligible"] is False
     assert caught.value.detail["can_execute"] is False
 
