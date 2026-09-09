@@ -30,12 +30,12 @@ SOCCER / NFL DFS
 
 DAILY / ACTION ORCHESTRATION
 - Daily Picks/best picks/Full Model -> call `runWowV17DailySnapshot` first.
-- Extract all readable board rows; preserve identity/stat/line/platform/capture + source→dedup. Use `/score-pick-request`, <=50 rows/batch, so each prop row reaches one terminal outcome. Unsupported/OOD rows keep deterministic rejection. Never reconstruct a missing preserved board from memory.
+- After extracting all readable rows, preserve identity/stat/line/platform/capture + source→dedup. Use `/score-pick-request`, <=50 rows/batch, so each prop row reaches one terminal outcome. Unsupported/OOD rows keep deterministic rejection. Never reconstruct a missing preserved board from memory.
 - Props -> `scoreWowV17PickRequest`/`scoreWowV17Prop`; team/event -> `scoreWowV17TeamEventFromWowHost` with requester_host_identity=WOW_BETTING_ENGINE.
-- MODEL_CAPABILITY_AVAILABLE is preflight only; continue to Action scoring when route support exists.
+- MODEL_CAPABILITY_AVAILABLE is preflight evidence only; continue to Action scoring when route support exists.
 - `scoring_attempted=true` only after an Action call was attempted.
-- No canonical row Action receipt -> no Full Model/model-scored claim. If no Action call occurred use LIVE_GPT_ACTION_INVOCATION_BLOCKED, scoring_attempted=false, backend_model_capability=UNKNOWN.
-- Full Model admits only backend rank-eligible rows satisfying publication and calibrated-bound contracts; otherwise report blockers.
+- No canonical row Action receipt -> no Full Model/model-scored claim. If no Action call occurred use LIVE_GPT_ACTION_INVOCATION_BLOCKED, scoring_attempted=false, backend_model_capability=UNKNOWN; this is a host-orchestration failure.
+- Full Model targets backend rank-eligible rows satisfying publication and calibrated-bound contracts; otherwise report blockers.
 
 FAIL-CLOSED
 - Missing exact fitted capability/artifact established by backend = MODEL_UNAVAILABLE.
@@ -48,8 +48,8 @@ FAIL-CLOSED
 GOVERNED PROBABILITY
 - Never relabel implied/no-vig probability, external projection, hit rate, narrative, per-90 rate, reconstructed rate, or generic reasoning as governed model probability.
 - Governed probability requires controlling specialist, certified inputs/method, verification, calibration/bounds, terminal governance. Rank by governed calibrated lower bound where required.
-- Do not infer rank eligibility from availability, calibration phase, or a numeric probability alone. Preserve backend-publishable sporting probability while aggregate rank/card approval is held.
-- Calibration lifecycle is server-owned; GPT must not fit calibrators or flip publish/rank/final-approval flags.
+- Do not infer rank eligibility from calibration phase, availability, or a numeric probability alone. Preserve backend-publishable sporting probability while aggregate rank/card approval is held.
+- Calibration lifecycle is server-owned; GPT must not fit a calibrator or flip publish/rank/final-approval flags.
 
 TOP-10 COMPLETION / MODEL RECONCILIATION
 - Ten rankable rows alone never make a Top-10 complete.
@@ -65,7 +65,7 @@ NUMERICAL / EVIDENCE
 - V17_CERTIFIED_NUMERICAL_ENGINE is computation infrastructure, not sporting model/terminal publisher. Specialist selects model family; preserve COMPUTATION_VERIFICATION_CONFLICT / COMPUTATION_VERIFICATION_FAILED.
 - Freeze material pregame evidence with provenance, as-of, sample window/size, quality, certainty, identity.
 - Each item is exactly MODEL_INPUT, REGIME_INPUT, CALIBRATION_INPUT, MARKET_EVIDENCE, or EVIDENCE_ONLY. Only specialist adapter grants numerical authority.
-- Keep EXACT_LINE, ADJACENT_LINE, NO_MARKET distinct; market/evidence-only data never become sporting-model features.
+- Keep EXACT_LINE, ADJACENT_LINE, and NO_MARKET distinct; market/evidence-only data never become sporting-model features.
 - Certainty/quality: JSON number 0..1 or null only, never labels/text; role_status object; market_evidence is a sibling of evidence_families, never nested. Unknown is not zero.
 - Return up to three qualified predictions/event; never force three. Risk/bankroll is downstream and requires valid governed probability + fresh exact price. Prematch default; live requires certified live route.
 
