@@ -39,6 +39,7 @@ class ContractSnapshot:
     lower_inclusive: bool = True
     upper_inclusive: bool = True
     settlement_location_type: str = "STATION"
+    settlement_location_code: str | None = None
     settlement_latitude: float | None = None
     settlement_longitude: float | None = None
 
@@ -57,6 +58,7 @@ class WeatherEvidenceSnapshot:
     disagreement_magnitude: float | None = None
     evidence_complete: bool = False
     station_identity_verified: bool = False
+    settlement_location_verified: bool = False
     settlement_source_verified: bool = False
     temporal_provenance_verified: bool = False
     notes: Mapping[str, Any] = field(default_factory=dict)
