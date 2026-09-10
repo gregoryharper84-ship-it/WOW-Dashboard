@@ -8,6 +8,8 @@ exact NFL stat-family readiness.
 """
 from __future__ import annotations
 
+import sys
+import types
 from typing import Any, Optional
 
 from fastapi import HTTPException
@@ -237,5 +239,38 @@ ScorePropRequest = _legacy.ScorePropRequest
 score_prop = _legacy.score_prop
 
 
+class _FacadeModule(types.ModuleType):
+    """Keep the historical public module seam writable for tests and callers.
+
+    Before the V17 exact-capability repair, ``api_prod_market`` owned the runtime
+    globals directly. Existing tests and integration harnesses monkeypatch those
+    public globals. The compatibility split into ``api_prod_market_legacy`` must
+    therefore forward writes for legacy-owned symbols, otherwise the FastAPI
+    endpoint keeps executing stale legacy globals and silently ignores overrides.
+    """
+
+    _LOCAL_ONLY = {
+        "_legacy",
+        "app",
+        "ScorePropRequest",
+        "score_prop",
+        "PROP_FEATURE_SCHEMA_VERSION",
+        "_ORIGINAL_PREFLIGHT",
+        "_ORIGINAL_SCORE_DISCRETE",
+        "_FacadeModule",
+    }
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        if name not in self._LOCAL_ONLY and hasattr(_legacy, name):
+            setattr(_legacy, name, value)
+        super().__setattr__(name, value)
+
+
 def __getattr__(name: str):
     return getattr(_legacy, name)
+
+
+# Preserve the original monkeypatch/integration contract without widening the
+# production scoring surface. Attribute writes on this facade now update the
+# legacy globals that the already-registered endpoint resolves at call time.
+sys.modules[__name__].__class__ = _FacadeModule
