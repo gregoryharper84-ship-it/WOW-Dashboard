@@ -5,7 +5,7 @@ import json
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
-from .kalshi_market_data import KALSHI_BASE_URL, KalshiMarketDataError, KalshiPublicMarketAdapter
+from .kalshi_market_data import KALSHI_BASE_URL, KalshiPublicMarketAdapter
 from .rule_snapshot import FrozenRuleSnapshot, freeze_market_rules
 
 
@@ -31,6 +31,9 @@ class FrozenContractRulePackage:
     event_ticker: str
     series_ticker: str
     settlement_source: SettlementSourceEvidence
+    contract_url: str | None
+    contract_terms_url: str | None
+    series_last_updated_at: str | None
     raw_event: Mapping[str, Any]
     raw_series: Mapping[str, Any]
     can_execute: bool = False
@@ -71,6 +74,9 @@ class KalshiContractRuleAcquirer:
             series.get("settlement_sources"),
             market_rule_text=market_rules.combined_rule_text,
         )
+        contract_url = _optional_text(series.get("contract_url"))
+        contract_terms_url = _optional_text(series.get("contract_terms_url"))
+        series_last_updated_at = _optional_text(series.get("last_updated_ts"))
 
         canonical = {
             "market_rule_snapshot_id": market_rules.rule_snapshot_id,
@@ -78,6 +84,9 @@ class KalshiContractRuleAcquirer:
             "series_ticker": series_ticker.upper(),
             "settlement_source_name": settlement_source.name,
             "settlement_source_url": settlement_source.url,
+            "contract_url": contract_url,
+            "contract_terms_url": contract_terms_url,
+            "series_last_updated_at": series_last_updated_at,
             "acquired_at": acquired_at,
         }
         digest = hashlib.sha256(
@@ -91,6 +100,9 @@ class KalshiContractRuleAcquirer:
             event_ticker=event_ticker.upper(),
             series_ticker=series_ticker.upper(),
             settlement_source=settlement_source,
+            contract_url=contract_url,
+            contract_terms_url=contract_terms_url,
+            series_last_updated_at=series_last_updated_at,
             raw_event=dict(event),
             raw_series=dict(series),
             can_execute=False,
@@ -137,7 +149,6 @@ def _normalize_sources(raw_sources: Any) -> tuple[SettlementSourceEvidence, ...]
             continue
         url = str(raw.get("url") or "").strip() or None
         out.append(SettlementSourceEvidence(name=name, url=url, source="SERIES_SETTLEMENT_SOURCES"))
-    # De-duplicate exact source identity without collapsing different URLs.
     deduped: dict[tuple[str, str | None], SettlementSourceEvidence] = {}
     for source in out:
         deduped[(source.name.casefold(), source.url)] = source
@@ -149,3 +160,10 @@ def _required_text(obj: Mapping[str, Any], field: str, blocker: str) -> str:
     if not value:
         raise ContractRuleAcquisitionError("NO_PLAY_SETTLEMENT_AMBIGUITY", (blocker,))
     return value
+
+
+def _optional_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
