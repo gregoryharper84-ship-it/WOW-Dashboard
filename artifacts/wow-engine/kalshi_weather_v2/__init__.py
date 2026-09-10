@@ -4,6 +4,13 @@ from .agents import ContractSettlementAgent, MarketCalibrationAuditor, WeatherPr
 from .calibration_fit import CalibrationFitResult, ForecastResidual, fit_candidate_calibration_profile
 from .contract_resolver import ContractResolutionError, resolve_weather_contract
 from .http_client import HttpPolicy, JsonHttpClient
+from .kalshi_contract_acquisition import (
+    KalshiContractAcquisitionError,
+    KalshiRuleAcquisition,
+    KalshiWeatherContractSource,
+    WeatherSeriesRulePolicy,
+    resolve_acquired_weather_contract,
+)
 from .kalshi_market import ExecutableSides, KalshiMarketDataError, KalshiPublicMarketAdapter, executable_sides_from_orderbook
 from .models import (
     AgentResult,
@@ -32,6 +39,11 @@ __all__ = [
     "KalshiWeatherTerminalGovernor",
     "ContractResolutionError",
     "resolve_weather_contract",
+    "KalshiContractAcquisitionError",
+    "KalshiRuleAcquisition",
+    "KalshiWeatherContractSource",
+    "WeatherSeriesRulePolicy",
+    "resolve_acquired_weather_contract",
     "CalibrationProfile",
     "WeatherProbabilityCore",
     "ForecastResidual",
