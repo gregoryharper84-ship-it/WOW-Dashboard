@@ -76,3 +76,26 @@ def test_invoked_scorer_crash_is_not_relabelled_model_unavailable(monkeypatch):
     with pytest.raises(PropFittedProviderUnavailable) as exc:
         market._guarded_score_discrete_prop_end_to_end()
     assert exc.value.code == "MODEL_SCORER_FAILED"
+
+
+def test_public_facade_override_is_forwarded_to_registered_endpoint_globals(monkeypatch):
+    sentinel = object()
+
+    def fake_score(*_args, **_kwargs):
+        return sentinel
+
+    monkeypatch.setattr(market, "score_discrete_prop_end_to_end", fake_score)
+    assert market._legacy.score_discrete_prop_end_to_end is fake_score
+    assert market.score_discrete_prop_end_to_end() is sentinel
+
+
+def test_public_helper_override_is_forwarded_to_legacy_preflight(monkeypatch):
+    expected = {
+        "ok": True,
+        "code": "PROP_CERTIFIED_MODEL_ARTIFACT_READY",
+        "probability_publishable": False,
+        "can_execute": False,
+    }
+
+    monkeypatch.setattr(market, "_prop_route_artifact", lambda *_args, **_kwargs: expected)
+    assert market._legacy._prop_route_artifact("NFL", "PASSING_YARDS") is expected
