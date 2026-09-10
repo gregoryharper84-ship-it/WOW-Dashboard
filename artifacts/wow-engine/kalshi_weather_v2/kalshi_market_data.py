@@ -33,7 +33,10 @@ class KalshiOrderbookEvidence:
 
     @property
     def market_open(self) -> bool:
-        return self.market_status.lower() == "open"
+        # Current REST Market objects use `active` for tradable markets.
+        # `open` remains accepted for compatibility with older fixtures and
+        # list-filter terminology, but it is not the canonical object state.
+        return self.market_status.strip().lower() in {"active", "open"}
 
     @property
     def orderbook_nonempty(self) -> bool:
