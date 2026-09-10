@@ -25,9 +25,9 @@ class ContractResolutionError(ValueError):
 def resolve_weather_contract(raw: Mapping[str, Any]) -> ContractSnapshot:
     """Normalize already-fetched Kalshi rule metadata into an exact weather contract.
 
-    This function never guesses a settlement station, coordinate, source,
-    threshold, timezone, or rounding rule. Those facts must come from the
-    live/frozen contract-rule acquisition layer.
+    This function never guesses a settlement station, source-native location code,
+    coordinate, source, threshold, timezone, or rounding rule. Those facts must
+    come from the live/frozen contract-rule acquisition layer.
     """
     blockers: list[str] = []
 
@@ -64,18 +64,25 @@ def resolve_weather_contract(raw: Mapping[str, Any]) -> ContractSnapshot:
 
     station_id = _clean_optional(raw.get("settlement_station_id"))
     station_name = _clean_optional(raw.get("settlement_station_name"))
+    location_code = _clean_optional(raw.get("settlement_location_code"))
+    if location_code:
+        location_code = location_code.upper()
     latitude = _optional_float(raw.get("settlement_latitude"), "settlement_latitude", blockers)
     longitude = _optional_float(raw.get("settlement_longitude"), "settlement_longitude", blockers)
     explicit_type = _clean_optional(raw.get("settlement_location_type"))
 
     station_present = bool(station_id or station_name)
+    source_code_present = bool(location_code)
     coordinate_present = latitude is not None or longitude is not None
+    identity_count = int(station_present) + int(source_code_present) + int(coordinate_present)
 
-    if station_present and coordinate_present and not explicit_type:
+    if identity_count > 1 and not explicit_type:
         blockers.append("SETTLEMENT_LOCATION_TYPE_REQUIRED_WHEN_MULTIPLE_IDENTITIES_PRESENT")
         location_type = ""
     elif explicit_type:
         location_type = explicit_type.upper()
+    elif source_code_present:
+        location_type = "SOURCE_LOCATION_CODE"
     elif station_present:
         location_type = "STATION"
     elif coordinate_present:
@@ -87,6 +94,9 @@ def resolve_weather_contract(raw: Mapping[str, Any]) -> ContractSnapshot:
     if location_type == "STATION":
         if not station_id or not station_name:
             blockers.append("SETTLEMENT_STATION_UNRESOLVED")
+    elif location_type == "SOURCE_LOCATION_CODE":
+        if not location_code:
+            blockers.append("SETTLEMENT_SOURCE_LOCATION_CODE_UNRESOLVED")
     elif location_type == "COORDINATE":
         if latitude is None or longitude is None:
             blockers.append("SETTLEMENT_COORDINATE_UNRESOLVED")
@@ -130,6 +140,7 @@ def resolve_weather_contract(raw: Mapping[str, Any]) -> ContractSnapshot:
         lower_inclusive=bool(raw.get("lower_inclusive", True)),
         upper_inclusive=bool(raw.get("upper_inclusive", True)),
         settlement_location_type=location_type,
+        settlement_location_code=location_code,
         settlement_latitude=latitude,
         settlement_longitude=longitude,
     )
