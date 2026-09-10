@@ -6,8 +6,13 @@ from decimal import Decimal, InvalidOperation, ROUND_CEILING, ROUND_FLOOR
 from typing import Any, Mapping, Sequence
 
 
-TRADE_FEE_QUANTUM = Decimal("0.0001")
-BALANCE_QUANTUM = Decimal("0.01")
+# Kalshi's current fixed-point documentation separates model-fee precision from
+# account balance precision. Trade fees are six-decimal dollar values; balance
+# alignment is $0.0001 for direct members and $0.01 for non-direct members.
+TRADE_FEE_QUANTUM = Decimal("0.000001")
+DIRECT_BALANCE_QUANTUM = Decimal("0.0001")
+NON_DIRECT_BALANCE_QUANTUM = Decimal("0.01")
+SUPPORTED_BALANCE_QUANTA = {DIRECT_BALANCE_QUANTUM, NON_DIRECT_BALANCE_QUANTUM}
 GENERAL_TAKER_COEFFICIENT = Decimal("0.07")
 GENERAL_MAKER_COEFFICIENT = Decimal("0.0175")
 SUPPORTED_FEE_TYPES = {"quadratic", "quadratic_with_maker_fees"}
@@ -23,6 +28,7 @@ class FeePolicyError(ValueError):
 @dataclass(frozen=True)
 class FeePolicySnapshot:
     series_ticker: str
+    event_ticker: str | None
     fee_type: str
     fee_multiplier: Decimal
     taker_coefficient: Decimal
@@ -45,6 +51,7 @@ class TradeFeeQuote:
     trade_fee_per_contract: Decimal
     pre_cash_rounding_break_even: Decimal
     cash_rounding_included: bool
+    balance_quantum: Decimal | None = None
     rounding_fee: Decimal | None = None
     net_fee: Decimal | None = None
     effective_break_even: Decimal | None = None
@@ -58,53 +65,48 @@ def resolve_fee_policy(
     event: Mapping[str, Any] | None,
     market: Mapping[str, Any] | None,
     fee_changes: Sequence[Mapping[str, Any]] = (),
+    event_fee_changes: Sequence[Mapping[str, Any]] = (),
     resolved_at: str,
 ) -> FeePolicySnapshot:
-    """Resolve the current analytical fee policy from Kalshi public metadata.
+    """Resolve current analytical fee policy from exact public Kalshi metadata.
 
-    Series fee_type/fee_multiplier are the base policy. Event override fields
-    supersede those values when present. Scheduled fee changes are checked for
-    stale-policy contradictions. An active market fee-waiver marker fails closed
-    because the public field alone does not specify enough fill-level semantics
-    for this analytical calculator to certify an exact fee.
+    Series fee fields establish the base policy. Event override fields layer on
+    top of the series. Historical/effective and scheduled change rows are used
+    to detect stale snapshots and the next known policy transition.
 
-    This module is read-only analytical code; it has no order capability.
+    An active fee-waiver marker remains fail-closed because its exact fee
+    semantics are not encoded by that timestamp alone. This module is read-only
+    analytical code and has no order capability.
     """
     series_ticker = _required_text(series, "ticker", "FEE_SERIES_TICKER_MISSING").upper()
     as_of = _parse_timestamp(resolved_at, "FEE_RESOLVED_AT_INVALID")
 
-    event_series = _optional_text((event or {}).get("series_ticker"))
+    event_obj = event or {}
+    market_obj = market or {}
+    event_series = _optional_text(event_obj.get("series_ticker"))
     if event_series and event_series.upper() != series_ticker:
         raise FeePolicyError("FEE_POLICY_IDENTITY_MISMATCH", ("EVENT_SERIES_TICKER_MISMATCH",))
 
-    market_event = _optional_text((market or {}).get("event_ticker"))
-    event_ticker = _optional_text((event or {}).get("event_ticker"))
+    event_ticker = _optional_text(event_obj.get("event_ticker"))
+    market_event = _optional_text(market_obj.get("event_ticker"))
     if market_event and event_ticker and market_event.upper() != event_ticker.upper():
         raise FeePolicyError("FEE_POLICY_IDENTITY_MISMATCH", ("MARKET_EVENT_TICKER_MISMATCH",))
+    normalized_event_ticker = event_ticker.upper() if event_ticker else None
 
     base_type = _required_text(series, "fee_type", "SERIES_FEE_TYPE_MISSING").lower()
     base_multiplier = _decimal(series.get("fee_multiplier"), "SERIES_FEE_MULTIPLIER_INVALID")
 
-    override_type = _optional_text((event or {}).get("fee_type_override"))
-    override_multiplier_raw = (event or {}).get("fee_multiplier_override")
+    override_type = _optional_text(event_obj.get("fee_type_override"))
+    override_multiplier_raw = event_obj.get("fee_multiplier_override")
     override_multiplier = None
     if override_multiplier_raw not in (None, ""):
         override_multiplier = _decimal(override_multiplier_raw, "EVENT_FEE_MULTIPLIER_OVERRIDE_INVALID")
 
     fee_type = override_type.lower() if override_type else base_type
     fee_multiplier = override_multiplier if override_multiplier is not None else base_multiplier
-    if fee_multiplier < 0:
-        raise FeePolicyError("FEE_POLICY_INVALID", ("FEE_MULTIPLIER_NEGATIVE",))
+    _validate_supported_policy(fee_type, fee_multiplier)
 
-    if fee_type == "flat":
-        raise FeePolicyError(
-            "FEE_POLICY_UNRESOLVED",
-            ("FLAT_FEE_AMOUNT_NOT_EXPOSED_BY_SERIES_POLICY",),
-        )
-    if fee_type not in SUPPORTED_FEE_TYPES:
-        raise FeePolicyError("FEE_POLICY_UNRESOLVED", (f"FEE_TYPE_UNSUPPORTED:{fee_type}",))
-
-    waiver_text = _optional_text((market or {}).get("fee_waiver_expiration_time"))
+    waiver_text = _optional_text(market_obj.get("fee_waiver_expiration_time"))
     if waiver_text:
         waiver_at = _parse_timestamp(waiver_text, "FEE_WAIVER_TIMESTAMP_INVALID")
         if as_of < waiver_at:
@@ -115,37 +117,65 @@ def resolve_fee_policy(
 
     next_change: datetime | None = None
     stale_change_blockers: list[str] = []
+
     for change in fee_changes:
         change_ticker = _optional_text(change.get("series_ticker"))
         if not change_ticker or change_ticker.upper() != series_ticker:
             continue
         scheduled_text = _optional_text(change.get("scheduled_ts"))
         if not scheduled_text:
-            stale_change_blockers.append("FEE_CHANGE_TIMESTAMP_MISSING")
+            stale_change_blockers.append("SERIES_FEE_CHANGE_TIMESTAMP_MISSING")
             continue
-        scheduled = _parse_timestamp(scheduled_text, "FEE_CHANGE_TIMESTAMP_INVALID")
+        scheduled = _parse_timestamp(scheduled_text, "SERIES_FEE_CHANGE_TIMESTAMP_INVALID")
         change_type = (_optional_text(change.get("fee_type")) or "").lower()
         change_multiplier_raw = change.get("fee_multiplier")
         change_multiplier = None
         if change_multiplier_raw not in (None, ""):
-            change_multiplier = _decimal(change_multiplier_raw, "FEE_CHANGE_MULTIPLIER_INVALID")
+            change_multiplier = _decimal(change_multiplier_raw, "SERIES_FEE_CHANGE_MULTIPLIER_INVALID")
 
         if scheduled <= as_of:
-            # The current Series/Event fields should already reflect an effective
-            # scheduled change. If a supplied historical/effective row disagrees,
-            # the snapshot is stale and must not certify fees.
-            effective_type = change_type or fee_type
-            effective_multiplier = change_multiplier if change_multiplier is not None else fee_multiplier
-            if effective_type != fee_type or effective_multiplier != fee_multiplier:
-                stale_change_blockers.append("CURRENT_FEE_POLICY_CONTRADICTS_EFFECTIVE_CHANGE")
-        elif next_change is None or scheduled < next_change:
-            next_change = scheduled
+            effective_base_type = change_type or base_type
+            effective_base_multiplier = change_multiplier if change_multiplier is not None else base_multiplier
+            expected_type = override_type.lower() if override_type else effective_base_type
+            expected_multiplier = override_multiplier if override_multiplier is not None else effective_base_multiplier
+            if expected_type != fee_type or expected_multiplier != fee_multiplier:
+                stale_change_blockers.append("CURRENT_FEE_POLICY_CONTRADICTS_EFFECTIVE_SERIES_CHANGE")
+        else:
+            next_change = _earlier(next_change, scheduled)
+
+    for change in event_fee_changes:
+        change_event = _optional_text(change.get("event_ticker"))
+        change_series = _optional_text(change.get("series_ticker"))
+        if normalized_event_ticker and change_event and change_event.upper() != normalized_event_ticker:
+            continue
+        if change_series and change_series.upper() != series_ticker:
+            stale_change_blockers.append("EVENT_FEE_CHANGE_SERIES_TICKER_MISMATCH")
+            continue
+        scheduled_text = _optional_text(change.get("scheduled_ts"))
+        if not scheduled_text:
+            stale_change_blockers.append("EVENT_FEE_CHANGE_TIMESTAMP_MISSING")
+            continue
+        scheduled = _parse_timestamp(scheduled_text, "EVENT_FEE_CHANGE_TIMESTAMP_INVALID")
+        change_type_override = _optional_text(change.get("fee_type_override"))
+        change_multiplier_raw = change.get("fee_multiplier_override")
+        change_multiplier_override = None
+        if change_multiplier_raw not in (None, ""):
+            change_multiplier_override = _decimal(
+                change_multiplier_raw, "EVENT_FEE_CHANGE_MULTIPLIER_OVERRIDE_INVALID"
+            )
+
+        if scheduled <= as_of:
+            expected_type = change_type_override.lower() if change_type_override else base_type
+            expected_multiplier = (
+                change_multiplier_override if change_multiplier_override is not None else base_multiplier
+            )
+            if expected_type != fee_type or expected_multiplier != fee_multiplier:
+                stale_change_blockers.append("CURRENT_FEE_POLICY_CONTRADICTS_EFFECTIVE_EVENT_CHANGE")
+        else:
+            next_change = _earlier(next_change, scheduled)
 
     if stale_change_blockers:
-        raise FeePolicyError(
-            "FEE_POLICY_STALE",
-            tuple(dict.fromkeys(stale_change_blockers)),
-        )
+        raise FeePolicyError("FEE_POLICY_STALE", tuple(dict.fromkeys(stale_change_blockers)))
 
     policy_source = "EVENT_OVERRIDE" if override_type or override_multiplier is not None else "SERIES"
     maker_coefficient = (
@@ -155,6 +185,7 @@ def resolve_fee_policy(
     )
     return FeePolicySnapshot(
         series_ticker=series_ticker,
+        event_ticker=normalized_event_ticker,
         fee_type=fee_type,
         fee_multiplier=fee_multiplier,
         taker_coefficient=GENERAL_TAKER_COEFFICIENT * fee_multiplier,
@@ -174,13 +205,7 @@ def quote_trade_fee(
     quantity: Any,
     liquidity_role: str = "TAKER",
 ) -> TradeFeeQuote:
-    """Quote the model fee, excluding fill-dependent cent-alignment rounding.
-
-    Current fixed-point fee mechanics round the model trade fee upward to the
-    nearest $0.0001. Rounding fees/rebates depend on actual fill revenue and the
-    per-order accumulator, so this generic quote deliberately does not mark the
-    final cash-friction model as verified.
-    """
+    """Quote model trade fee only, excluding account-balance alignment."""
     p = _decimal(price, "FEE_PRICE_INVALID")
     c = _decimal(quantity, "FEE_QUANTITY_INVALID")
     if not (Decimal("0") <= p <= Decimal("1")):
@@ -226,26 +251,34 @@ def quote_new_order_single_fill_cash_fee(
     *,
     price: Any,
     quantity: Any,
+    balance_quantum: Any,
     liquidity_role: str = "TAKER",
 ) -> TradeFeeQuote:
-    """Calculate exact cash debit for a hypothetical new order filled once.
+    """Calculate one hypothetical fresh-order, one-fill cash debit exactly.
 
-    This is intentionally narrow: one fill, fresh fee accumulator, buy-side
-    revenue. It is useful for deterministic tests and one-fill analytics but is
-    not a claim that a live order will fill in one execution.
+    The caller must supply the user's actual target balance precision. Current
+    documented values are $0.0001 for direct members and $0.01 for non-direct
+    members. No account type is guessed here. Multi-fill orders remain outside
+    this helper because their rounding accumulator/rebate state is fill-path
+    dependent.
     """
+    quantum = _decimal(balance_quantum, "BALANCE_QUANTUM_INVALID")
+    if quantum not in SUPPORTED_BALANCE_QUANTA:
+        raise FeePolicyError(
+            "FEE_POLICY_UNRESOLVED",
+            (f"BALANCE_QUANTUM_UNSUPPORTED:{quantum}",),
+        )
+
     base = quote_trade_fee(policy, price=price, quantity=quantity, liquidity_role=liquidity_role)
     revenue = -(base.price * base.quantity)
     balance_change = revenue - base.trade_fee
-    posted_balance_change = _floor_quantum(balance_change, BALANCE_QUANTUM)
+    posted_balance_change = _floor_quantum(balance_change, quantum)
     rounding_fee = balance_change - posted_balance_change
-    # A single fresh fill has rounding_fee < $0.01, so no accumulator rebate can
-    # trigger on this fill.
-    if not (Decimal("0") <= rounding_fee < BALANCE_QUANTUM):
+    if not (Decimal("0") <= rounding_fee < quantum):
         raise FeePolicyError("FEE_ROUNDING_INVARIANT_FAILED", ("ROUNDING_FEE_OUT_OF_RANGE",))
+
     net_fee = base.trade_fee + rounding_fee
     effective_break_even = base.price + (net_fee / base.quantity)
-
     return TradeFeeQuote(
         fee_type=base.fee_type,
         liquidity_role=base.liquidity_role,
@@ -256,12 +289,29 @@ def quote_new_order_single_fill_cash_fee(
         trade_fee_per_contract=base.trade_fee_per_contract,
         pre_cash_rounding_break_even=base.pre_cash_rounding_break_even,
         cash_rounding_included=True,
+        balance_quantum=quantum,
         rounding_fee=rounding_fee,
         net_fee=net_fee,
         effective_break_even=effective_break_even,
         friction_model_verified=True,
         can_execute=False,
     )
+
+
+def _validate_supported_policy(fee_type: str, fee_multiplier: Decimal) -> None:
+    if fee_multiplier < 0:
+        raise FeePolicyError("FEE_POLICY_INVALID", ("FEE_MULTIPLIER_NEGATIVE",))
+    if fee_type == "flat":
+        raise FeePolicyError(
+            "FEE_POLICY_UNRESOLVED",
+            ("FLAT_FEE_AMOUNT_NOT_EXPOSED_BY_SERIES_POLICY",),
+        )
+    if fee_type not in SUPPORTED_FEE_TYPES:
+        raise FeePolicyError("FEE_POLICY_UNRESOLVED", (f"FEE_TYPE_UNSUPPORTED:{fee_type}",))
+
+
+def _earlier(current: datetime | None, candidate: datetime) -> datetime:
+    return candidate if current is None or candidate < current else current
 
 
 def _ceil_quantum(value: Decimal, quantum: Decimal) -> Decimal:
