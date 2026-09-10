@@ -41,6 +41,9 @@ class ContractSettlementAgent:
         if location_type == "STATION":
             if not contract.settlement_station_id or not contract.settlement_station_name:
                 blockers.append("SETTLEMENT_STATION_UNRESOLVED")
+        elif location_type == "SOURCE_LOCATION_CODE":
+            if not contract.settlement_location_code:
+                blockers.append("SETTLEMENT_SOURCE_LOCATION_CODE_UNRESOLVED")
         elif location_type == "COORDINATE":
             if contract.settlement_latitude is None or contract.settlement_longitude is None:
                 blockers.append("SETTLEMENT_COORDINATE_UNRESOLVED")
@@ -54,7 +57,9 @@ class ContractSettlementAgent:
 
         if not evidence.settlement_source_verified:
             blockers.append("SETTLEMENT_SOURCE_NOT_VERIFIED")
-        if not evidence.station_identity_verified:
+        # settlement_location_verified is the source-neutral V2 signal. Keep the
+        # legacy station flag as a compatibility bridge for existing snapshots.
+        if not (evidence.settlement_location_verified or evidence.station_identity_verified):
             blockers.append("SETTLEMENT_LOCATION_NOT_VERIFIED")
 
         if blockers:
@@ -76,6 +81,7 @@ class ContractSettlementAgent:
                 "settlement_source": contract.settlement_source,
                 "settlement_location_type": location_type,
                 "settlement_station_id": contract.settlement_station_id,
+                "settlement_location_code": contract.settlement_location_code,
                 "settlement_latitude": contract.settlement_latitude,
                 "settlement_longitude": contract.settlement_longitude,
                 "rule_snapshot_id": contract.rule_snapshot_id,
