@@ -3,6 +3,7 @@
 from .agents import ContractSettlementAgent, MarketCalibrationAuditor, WeatherProbabilityAgent
 from .calibration_fit import CalibrationFitResult, ForecastResidual, fit_candidate_calibration_profile
 from .contract_resolver import ContractResolutionError, resolve_weather_contract
+from .evidence_assembler import ForecastPoint, WeatherEvidenceAssemblyError, assemble_daily_high_evidence
 from .http_client import HttpPolicy, JsonHttpClient
 from .kalshi_contract_acquisition import (
     KalshiContractAcquisitionError,
@@ -44,6 +45,9 @@ __all__ = [
     "KalshiWeatherContractSource",
     "WeatherSeriesRulePolicy",
     "resolve_acquired_weather_contract",
+    "ForecastPoint",
+    "WeatherEvidenceAssemblyError",
+    "assemble_daily_high_evidence",
     "CalibrationProfile",
     "WeatherProbabilityCore",
     "ForecastResidual",
