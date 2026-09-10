@@ -40,6 +40,7 @@ def verified_evidence():
         source_snapshot_ids=("rules-1",),
         evidence_complete=True,
         station_identity_verified=True,
+        settlement_location_verified=True,
         settlement_source_verified=True,
         temporal_provenance_verified=True,
     )
@@ -51,6 +52,38 @@ def test_station_contract_resolves_without_city_to_station_guessing():
     assert contract.settlement_station_id == "KNYC"
     assert contract.threshold_lower == 90.0
     assert contract.threshold_upper == 91.0
+
+
+def test_source_location_code_resolves_without_nws_station_substitution():
+    raw = raw_contract(
+        settlement_station_id=None,
+        settlement_station_name=None,
+        settlement_location_code="clinYC",
+    )
+    contract = resolve_weather_contract(raw)
+    assert contract.settlement_location_type == "SOURCE_LOCATION_CODE"
+    assert contract.settlement_location_code == "CLINYC"
+    assert contract.settlement_station_id is None
+    assert contract.settlement_station_name is None
+
+    result = ContractSettlementAgent().evaluate(contract, verified_evidence())
+    assert result.ok is True
+    assert result.payload["settlement_location_type"] == "SOURCE_LOCATION_CODE"
+    assert result.payload["settlement_location_code"] == "CLINYC"
+    assert result.payload["settlement_station_id"] is None
+
+
+def test_source_location_code_type_fails_closed_when_code_missing():
+    raw = raw_contract(
+        settlement_station_id=None,
+        settlement_station_name=None,
+        settlement_location_type="SOURCE_LOCATION_CODE",
+        settlement_location_code=None,
+    )
+    with pytest.raises(ContractResolutionError) as exc:
+        resolve_weather_contract(raw)
+    assert exc.value.code == "NO_PLAY_SETTLEMENT_AMBIGUITY"
+    assert "SETTLEMENT_SOURCE_LOCATION_CODE_UNRESOLVED" in exc.value.blockers
 
 
 def test_coordinate_contract_resolves_without_requiring_station():
@@ -67,6 +100,13 @@ def test_coordinate_contract_resolves_without_requiring_station():
     result = ContractSettlementAgent().evaluate(contract, verified_evidence())
     assert result.ok is True
     assert result.payload["settlement_location_type"] == "COORDINATE"
+
+
+def test_multiple_location_identities_require_explicit_identity_type():
+    raw = raw_contract(settlement_location_code="CLINYC")
+    with pytest.raises(ContractResolutionError) as exc:
+        resolve_weather_contract(raw)
+    assert "SETTLEMENT_LOCATION_TYPE_REQUIRED_WHEN_MULTIPLE_IDENTITIES_PRESENT" in exc.value.blockers
 
 
 def test_both_station_and_coordinate_require_explicit_identity_type():
