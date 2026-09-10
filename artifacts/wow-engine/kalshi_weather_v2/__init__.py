@@ -10,6 +10,16 @@ from .contract_rule_acquisition import (
     SettlementSourceEvidence,
     resolve_settlement_source,
 )
+from .fee_policy import (
+    DIRECT_BALANCE_QUANTUM,
+    NON_DIRECT_BALANCE_QUANTUM,
+    FeePolicyError,
+    FeePolicySnapshot,
+    TradeFeeQuote,
+    quote_new_order_single_fill_cash_fee,
+    quote_trade_fee,
+    resolve_fee_policy,
+)
 from .http_client import HttpAcquisitionError, HttpPolicy, ReadOnlyJsonClient
 from .kalshi_market_data import KalshiMarketDataError, KalshiOrderbookEvidence, KalshiPublicMarketAdapter
 from .models import (
@@ -71,5 +81,13 @@ __all__ = [
     "KalshiMarketDataError",
     "KalshiOrderbookEvidence",
     "KalshiPublicMarketAdapter",
+    "FeePolicyError",
+    "FeePolicySnapshot",
+    "TradeFeeQuote",
+    "DIRECT_BALANCE_QUANTUM",
+    "NON_DIRECT_BALANCE_QUANTUM",
+    "resolve_fee_policy",
+    "quote_trade_fee",
+    "quote_new_order_single_fill_cash_fee",
     "evaluate_weather_contract",
 ]
