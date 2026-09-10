@@ -20,6 +20,15 @@ from .fee_policy import (
     quote_trade_fee,
     resolve_fee_policy,
 )
+from .hourly_index import (
+    KalshiWeatherIndexAdapter,
+    WeatherIndexCalibrationSnapshot,
+    WeatherIndexError,
+    WeatherIndexPoint,
+    WeatherIndexSnapshot,
+    WeatherIndexStationReading,
+    parse_weather_index_payload,
+)
 from .http_client import HttpAcquisitionError, HttpPolicy, ReadOnlyJsonClient
 from .kalshi_market_data import KalshiMarketDataError, KalshiOrderbookEvidence, KalshiPublicMarketAdapter
 from .models import (
@@ -75,6 +84,13 @@ __all__ = [
     "OpenMeteoAdapter",
     "NoaaNceiAdapter",
     "XweatherAdapter",
+    "WeatherIndexError",
+    "WeatherIndexPoint",
+    "WeatherIndexStationReading",
+    "WeatherIndexSnapshot",
+    "WeatherIndexCalibrationSnapshot",
+    "KalshiWeatherIndexAdapter",
+    "parse_weather_index_payload",
     "HttpAcquisitionError",
     "HttpPolicy",
     "ReadOnlyJsonClient",
