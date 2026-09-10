@@ -18,6 +18,8 @@ Supported implementation families currently include:
 
 Weather evidence hierarchy is contract-aware. The exact Kalshi contract controls settlement authority. NWS/official observations, Open-Meteo, NOAA/NCEI, and optional Xweather are model/evidence inputs according to their governed source roles and cannot override a different contract-named settlement source.
 
+Daily-high date windows are evaluated in the exact contract timezone. This applies both to NWS hourly filtering and Open-Meteo daily aggregation, preventing UTC-midnight drift from changing which observations or forecast hours belong to the contract day.
+
 Market price is never a weather-model feature. Kalshi orderbook evidence is evaluated downstream using executable-side semantics. Missing/stale market evidence may block edge publication without erasing a completed weather probability.
 
 Safety invariants:
