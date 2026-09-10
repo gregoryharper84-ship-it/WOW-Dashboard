@@ -23,6 +23,7 @@ from .models import (
 from .observation_reconstruction import ObservationPoint, ReconstructedExtreme, reconstruct_extreme, reconstruct_temperature_series
 from .orchestrator import evaluate_weather_contract
 from .probability_core import CalibrationProfile, WeatherProbabilityCore
+from .rule_semantics import ParsedTemperatureRule, parse_temperature_rule
 from .rule_snapshot import FrozenRuleSnapshot, RuleSnapshotError, freeze_market_rules
 from .source_adapters import NoaaNceiAdapter, NwsAdapter, OpenMeteoAdapter, ProviderSnapshot, XweatherAdapter
 from .terminal_governor import KalshiWeatherTerminalGovernor
@@ -45,6 +46,8 @@ __all__ = [
     "KalshiContractRuleAcquirer",
     "SettlementSourceEvidence",
     "resolve_settlement_source",
+    "ParsedTemperatureRule",
+    "parse_temperature_rule",
     "FrozenRuleSnapshot",
     "RuleSnapshotError",
     "freeze_market_rules",
