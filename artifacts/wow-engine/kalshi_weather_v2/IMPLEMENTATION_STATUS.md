@@ -14,10 +14,19 @@ Implemented:
 - executable ask reconstruction from opposite-side bids only
 - explicit prohibition on last-price/displayed-chance substitution
 - fee/friction fail-closed market conversion; zero fees are never assumed
-- regression tests for fail-closed settlement, probability independence, market holds, terminal precedence and public market plumbing
+- live public market -> event -> series contract-rule acquisition
+- immutable hash-addressed market rule snapshots before interpretation
+- structured settlement-source resolution from Kalshi series metadata
+- multiple-source settlement ambiguity fails closed unless exact market rule text disambiguates one source
+- strict current-shape daily max/min temperature rule parser
+- settlement location code preserved from exact rule text (for example CLINYC) rather than replaced by a nearby NWS station
+- parsed rule source cross-checked against series settlement_sources
+- parsed threshold semantics cross-checked against Kalshi strike_type/floor_strike/cap_strike
+- regression tests for fail-closed settlement, probability independence, market holds, terminal precedence, public market plumbing and rule acquisition/semantics
 
 Not implemented yet:
-- live Kalshi contract-rule acquisition/parser and settlement-source resolver
+- final semantic conversion into ContractSnapshot still requires explicit timezone, observation-window and rounding/settlement-period semantics from controlling terms
+- hourly-temperature rule semantic parser
 - cache/rate-limit coordination beyond bounded per-request retry policy
 - station-specific calibrator fitting from production historical data
 - Supabase persistence and immutable ledgers

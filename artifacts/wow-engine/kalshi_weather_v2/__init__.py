@@ -3,6 +3,13 @@
 from .agents import ContractSettlementAgent, MarketCalibrationAuditor, WeatherProbabilityAgent
 from .calibration_fit import CalibrationFitResult, ForecastResidual, fit_candidate_calibration_profile
 from .contract_resolver import ContractResolutionError, resolve_weather_contract
+from .contract_rule_acquisition import (
+    ContractRuleAcquisitionError,
+    FrozenContractRulePackage,
+    KalshiContractRuleAcquirer,
+    SettlementSourceEvidence,
+    resolve_settlement_source,
+)
 from .http_client import HttpAcquisitionError, HttpPolicy, ReadOnlyJsonClient
 from .kalshi_market_data import KalshiMarketDataError, KalshiOrderbookEvidence, KalshiPublicMarketAdapter
 from .models import (
@@ -16,6 +23,8 @@ from .models import (
 from .observation_reconstruction import ObservationPoint, ReconstructedExtreme, reconstruct_extreme, reconstruct_temperature_series
 from .orchestrator import evaluate_weather_contract
 from .probability_core import CalibrationProfile, WeatherProbabilityCore
+from .rule_semantics import ParsedTemperatureRule, parse_temperature_rule
+from .rule_snapshot import FrozenRuleSnapshot, RuleSnapshotError, freeze_market_rules
 from .source_adapters import NoaaNceiAdapter, NwsAdapter, OpenMeteoAdapter, ProviderSnapshot, XweatherAdapter
 from .terminal_governor import KalshiWeatherTerminalGovernor
 
@@ -32,6 +41,16 @@ __all__ = [
     "KalshiWeatherTerminalGovernor",
     "ContractResolutionError",
     "resolve_weather_contract",
+    "ContractRuleAcquisitionError",
+    "FrozenContractRulePackage",
+    "KalshiContractRuleAcquirer",
+    "SettlementSourceEvidence",
+    "resolve_settlement_source",
+    "ParsedTemperatureRule",
+    "parse_temperature_rule",
+    "FrozenRuleSnapshot",
+    "RuleSnapshotError",
+    "freeze_market_rules",
     "CalibrationProfile",
     "WeatherProbabilityCore",
     "ForecastResidual",
