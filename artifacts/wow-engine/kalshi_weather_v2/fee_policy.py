@@ -70,13 +70,15 @@ def resolve_fee_policy(
 ) -> FeePolicySnapshot:
     """Resolve current analytical fee policy from exact public Kalshi metadata.
 
-    Series fee fields establish the base policy. Event override fields layer on
-    top of the series. Historical/effective and scheduled change rows are used
-    to detect stale snapshots and the next known policy transition.
+    Series fee fields establish the current base policy. Event override fields
+    layer on top of that base. Historical change feeds are reconciled using only
+    the latest effective row at or before ``resolved_at``; older rows are valid
+    audit history and must not make a newer current policy appear stale.
 
-    An active fee-waiver marker remains fail-closed because its exact fee
-    semantics are not encoded by that timestamp alone. This module is read-only
-    analytical code and has no order capability.
+    Future Series/Event rows contribute the earliest known next transition. An
+    active fee-waiver marker remains fail-closed because its exact fee semantics
+    are not encoded by that timestamp alone. This module is read-only analytical
+    code and has no order capability.
     """
     series_ticker = _required_text(series, "ticker", "FEE_SERIES_TICKER_MISSING").upper()
     as_of = _parse_timestamp(resolved_at, "FEE_RESOLVED_AT_INVALID")
@@ -117,36 +119,56 @@ def resolve_fee_policy(
 
     next_change: datetime | None = None
     stale_change_blockers: list[str] = []
+    latest_effective_series: tuple[datetime, Mapping[str, Any]] | None = None
+    latest_effective_event: tuple[datetime, Mapping[str, Any]] | None = None
 
     for change in fee_changes:
+        if not isinstance(change, Mapping):
+            stale_change_blockers.append("SERIES_FEE_CHANGE_ROW_INVALID")
+            continue
         change_ticker = _optional_text(change.get("series_ticker"))
         if not change_ticker or change_ticker.upper() != series_ticker:
+            stale_change_blockers.append("SERIES_FEE_CHANGE_SERIES_TICKER_MISMATCH")
             continue
         scheduled_text = _optional_text(change.get("scheduled_ts"))
         if not scheduled_text:
             stale_change_blockers.append("SERIES_FEE_CHANGE_TIMESTAMP_MISSING")
             continue
         scheduled = _parse_timestamp(scheduled_text, "SERIES_FEE_CHANGE_TIMESTAMP_INVALID")
-        change_type = (_optional_text(change.get("fee_type")) or "").lower()
-        change_multiplier_raw = change.get("fee_multiplier")
-        change_multiplier = None
-        if change_multiplier_raw not in (None, ""):
-            change_multiplier = _decimal(change_multiplier_raw, "SERIES_FEE_CHANGE_MULTIPLIER_INVALID")
-
         if scheduled <= as_of:
-            effective_base_type = change_type or base_type
-            effective_base_multiplier = change_multiplier if change_multiplier is not None else base_multiplier
-            expected_type = override_type.lower() if override_type else effective_base_type
-            expected_multiplier = override_multiplier if override_multiplier is not None else effective_base_multiplier
-            if expected_type != fee_type or expected_multiplier != fee_multiplier:
-                stale_change_blockers.append("CURRENT_FEE_POLICY_CONTRADICTS_EFFECTIVE_SERIES_CHANGE")
+            if latest_effective_series is None or scheduled > latest_effective_series[0]:
+                latest_effective_series = (scheduled, change)
         else:
             next_change = _earlier(next_change, scheduled)
 
+    if latest_effective_series is not None:
+        _, change = latest_effective_series
+        change_type = _optional_text(change.get("fee_type"))
+        change_multiplier_raw = change.get("fee_multiplier")
+        if not change_type and change_multiplier_raw in (None, ""):
+            stale_change_blockers.append("SERIES_FEE_CHANGE_POLICY_FIELDS_MISSING")
+        if change_type and change_type.lower() != base_type:
+            stale_change_blockers.append("CURRENT_FEE_POLICY_CONTRADICTS_EFFECTIVE_SERIES_CHANGE")
+        if change_multiplier_raw not in (None, ""):
+            change_multiplier = _decimal(
+                change_multiplier_raw, "SERIES_FEE_CHANGE_MULTIPLIER_INVALID"
+            )
+            if change_multiplier != base_multiplier:
+                stale_change_blockers.append("CURRENT_FEE_POLICY_CONTRADICTS_EFFECTIVE_SERIES_CHANGE")
+
+    if event_fee_changes and not normalized_event_ticker:
+        stale_change_blockers.append("EVENT_TICKER_REQUIRED_FOR_EVENT_FEE_CHANGES")
+
     for change in event_fee_changes:
+        if not isinstance(change, Mapping):
+            stale_change_blockers.append("EVENT_FEE_CHANGE_ROW_INVALID")
+            continue
         change_event = _optional_text(change.get("event_ticker"))
         change_series = _optional_text(change.get("series_ticker"))
-        if normalized_event_ticker and change_event and change_event.upper() != normalized_event_ticker:
+        if not change_event or (
+            normalized_event_ticker and change_event.upper() != normalized_event_ticker
+        ):
+            stale_change_blockers.append("EVENT_FEE_CHANGE_EVENT_TICKER_MISMATCH")
             continue
         if change_series and change_series.upper() != series_ticker:
             stale_change_blockers.append("EVENT_FEE_CHANGE_SERIES_TICKER_MISMATCH")
@@ -156,23 +178,30 @@ def resolve_fee_policy(
             stale_change_blockers.append("EVENT_FEE_CHANGE_TIMESTAMP_MISSING")
             continue
         scheduled = _parse_timestamp(scheduled_text, "EVENT_FEE_CHANGE_TIMESTAMP_INVALID")
-        change_type_override = _optional_text(change.get("fee_type_override"))
-        change_multiplier_raw = change.get("fee_multiplier_override")
-        change_multiplier_override = None
-        if change_multiplier_raw not in (None, ""):
-            change_multiplier_override = _decimal(
-                change_multiplier_raw, "EVENT_FEE_CHANGE_MULTIPLIER_OVERRIDE_INVALID"
-            )
-
         if scheduled <= as_of:
-            expected_type = change_type_override.lower() if change_type_override else base_type
-            expected_multiplier = (
-                change_multiplier_override if change_multiplier_override is not None else base_multiplier
-            )
-            if expected_type != fee_type or expected_multiplier != fee_multiplier:
-                stale_change_blockers.append("CURRENT_FEE_POLICY_CONTRADICTS_EFFECTIVE_EVENT_CHANGE")
+            if latest_effective_event is None or scheduled > latest_effective_event[0]:
+                latest_effective_event = (scheduled, change)
         else:
             next_change = _earlier(next_change, scheduled)
+
+    if latest_effective_event is not None:
+        _, change = latest_effective_event
+        latest_type_raw = _optional_text(change.get("fee_type_override"))
+        latest_multiplier_raw = change.get("fee_multiplier_override")
+        latest_type = latest_type_raw.lower() if latest_type_raw else None
+        current_type = override_type.lower() if override_type else None
+        latest_multiplier = None
+        if latest_multiplier_raw not in (None, ""):
+            latest_multiplier = _decimal(
+                latest_multiplier_raw, "EVENT_FEE_CHANGE_MULTIPLIER_OVERRIDE_INVALID"
+            )
+
+        # Event change rows describe override state, including null as a clear.
+        # Compare that state directly to the current Event object rather than to
+        # the final fee after Series fallback; otherwise a cleared override can
+        # be mistaken for a contradictory fee policy.
+        if latest_type != current_type or latest_multiplier != override_multiplier:
+            stale_change_blockers.append("CURRENT_FEE_POLICY_CONTRADICTS_EFFECTIVE_EVENT_CHANGE")
 
     if stale_change_blockers:
         raise FeePolicyError("FEE_POLICY_STALE", tuple(dict.fromkeys(stale_change_blockers)))
