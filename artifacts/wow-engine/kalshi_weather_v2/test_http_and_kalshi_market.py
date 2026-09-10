@@ -30,6 +30,19 @@ def test_orderbook_never_uses_midpoint_as_entry_price():
     assert sides.yes_buy != pytest.approx(0.50)
 
 
+def test_empty_orderbook_does_not_claim_executable_price():
+    def get_json(url, _headers):
+        if "/orderbook" in url:
+            return {"orderbook_fp": {"yes_dollars": [], "no_dollars": []}}
+        return {"market": {"ticker": "WX", "status": "open"}}
+
+    snapshot = KalshiPublicMarketAdapter(get_json).snapshot("WX", retrieved_at="2026-09-10T21:00:00Z")
+    assert snapshot.orderbook_nonempty is False
+    assert snapshot.executable_price_verified is False
+    assert snapshot.yes_price is None
+    assert snapshot.no_price is None
+
+
 def test_public_adapter_is_read_only_and_builds_snapshot():
     calls = []
 
@@ -51,6 +64,7 @@ def test_public_adapter_is_read_only_and_builds_snapshot():
     assert snapshot.market_open is True
     assert snapshot.yes_price == pytest.approx(0.60)
     assert snapshot.no_price == pytest.approx(0.45)
+    assert snapshot.executable_price_verified is True
     assert all(call[0].startswith("https://external-api.kalshi.com/trade-api/v2/") for call in calls)
     assert not hasattr(adapter, "place_order")
     assert not hasattr(adapter, "cancel_order")
@@ -70,3 +84,23 @@ def test_json_http_client_retries_get_only():
     assert getter.get_json("https://example.test/data") == {"ok": True}
     assert attempts["n"] == 2
     assert not hasattr(getter, "post_json")
+
+
+def test_json_http_client_caches_successful_get():
+    attempts = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempts["n"] += 1
+        return httpx.Response(200, json={"ok": True}, request=request)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    getter = JsonHttpClient(HttpPolicy(max_attempts=1, cache_ttl_seconds=60), client=client)
+    assert getter.get_json("https://example.test/data") == {"ok": True}
+    assert getter.get_json("https://example.test/data") == {"ok": True}
+    assert attempts["n"] == 1
+
+
+def test_json_http_client_rejects_non_https():
+    getter = JsonHttpClient(HttpPolicy(max_attempts=1))
+    with pytest.raises(ValueError, match="HTTPS"):
+        getter.get_json("http://example.test/data")
