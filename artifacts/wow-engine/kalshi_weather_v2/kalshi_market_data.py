@@ -33,9 +33,6 @@ class KalshiOrderbookEvidence:
 
     @property
     def market_open(self) -> bool:
-        # Current REST Market objects use `active` for tradable markets.
-        # `open` remains accepted for compatibility with older fixtures and
-        # list-filter terminology, but it is not the canonical object state.
         return self.market_status.strip().lower() in {"active", "open"}
 
     @property
@@ -44,13 +41,7 @@ class KalshiOrderbookEvidence:
 
 
 class KalshiPublicMarketAdapter:
-    """Read-only public Kalshi market-data adapter.
-
-    Kalshi orderbooks expose YES and NO bids. In a binary contract, the
-    executable ask for YES is 1 - best NO bid, and vice versa. We derive asks
-    only from the observed opposite-side bid; we never substitute last price,
-    displayed chance, midpoint, or an inferred probability.
-    """
+    """Read-only public Kalshi market and fee-metadata adapter."""
 
     def __init__(self, get_json):
         self.get_json = get_json
@@ -73,11 +64,15 @@ class KalshiPublicMarketAdapter:
             raise KalshiMarketDataError("KALSHI_ORDERBOOK_PAYLOAD_INVALID", "orderbook_fp object missing")
         return orderbook
 
-    def get_series_fee_changes(self, series_ticker: str) -> tuple[Mapping[str, Any], ...]:
-        """Fetch upcoming public fee changes for one exact series ticker."""
+    def get_series_fee_changes(
+        self, series_ticker: str, *, show_historical: bool = True
+    ) -> tuple[Mapping[str, Any], ...]:
+        """Fetch exact-series fee changes, including effective history by default."""
         series_ticker = _clean_ticker(series_ticker)
+        historical = "true" if show_historical else "false"
         payload = self.get_json(
-            f"{KALSHI_BASE_URL}/series/fee_changes?series_ticker={series_ticker}", None
+            f"{KALSHI_BASE_URL}/series/fee_changes?series_ticker={series_ticker}&show_historical={historical}",
+            None,
         )
         rows = payload.get("series_fee_change_arr") if isinstance(payload, Mapping) else None
         if not isinstance(rows, Sequence) or isinstance(rows, (str, bytes)):
@@ -90,7 +85,45 @@ class KalshiPublicMarketAdapter:
             row_ticker = str(row.get("series_ticker") or "").strip().upper()
             if row_ticker != series_ticker:
                 raise KalshiMarketDataError(
-                    "KALSHI_FEE_CHANGE_IDENTITY_MISMATCH", f"expected={series_ticker} got={row_ticker}"
+                    "KALSHI_FEE_CHANGE_IDENTITY_MISMATCH",
+                    f"expected={series_ticker} got={row_ticker}",
+                )
+            normalized.append(dict(row))
+        return tuple(normalized)
+
+    def get_event_fee_changes(self, event_ticker: str) -> tuple[Mapping[str, Any], ...]:
+        """Fetch fee override changes for one exact event ticker.
+
+        The endpoint is paginated. With an exact event filter and the maximum
+        page size, a non-empty cursor is treated as unresolved rather than
+        silently returning an incomplete policy history.
+        """
+        event_ticker = _clean_ticker(event_ticker)
+        payload = self.get_json(
+            f"{KALSHI_BASE_URL}/events/fee_changes?event_ticker={event_ticker}&limit=1000",
+            None,
+        )
+        rows = payload.get("event_fee_changes") if isinstance(payload, Mapping) else None
+        if not isinstance(rows, Sequence) or isinstance(rows, (str, bytes)):
+            raise KalshiMarketDataError(
+                "KALSHI_EVENT_FEE_CHANGES_PAYLOAD_INVALID", "event_fee_changes missing"
+            )
+        cursor = str(payload.get("cursor") or "").strip() if isinstance(payload, Mapping) else ""
+        if cursor:
+            raise KalshiMarketDataError(
+                "KALSHI_EVENT_FEE_CHANGES_PAGINATION_UNRESOLVED",
+                "exact event returned more than 1000 fee-change rows",
+            )
+
+        normalized: list[Mapping[str, Any]] = []
+        for row in rows:
+            if not isinstance(row, Mapping):
+                raise KalshiMarketDataError("KALSHI_EVENT_FEE_CHANGE_ROW_INVALID", repr(row))
+            row_event = str(row.get("event_ticker") or "").strip().upper()
+            if row_event != event_ticker:
+                raise KalshiMarketDataError(
+                    "KALSHI_EVENT_FEE_CHANGE_IDENTITY_MISMATCH",
+                    f"expected={event_ticker} got={row_event}",
                 )
             normalized.append(dict(row))
         return tuple(normalized)
@@ -128,12 +161,6 @@ class KalshiPublicMarketAdapter:
         effective_break_even: float | None = None,
         friction_model_verified: bool = False,
     ) -> MarketSnapshot:
-        """Convert an observed executable ask into the governed market shape.
-
-        Fee/friction values are caller-supplied only after a separate verified
-        fee policy calculation. This adapter deliberately does not invent a
-        zero-fee assumption.
-        """
         normalized = side.strip().upper()
         if normalized not in {"YES", "NO"}:
             raise KalshiMarketDataError("KALSHI_SIDE_INVALID", side)
