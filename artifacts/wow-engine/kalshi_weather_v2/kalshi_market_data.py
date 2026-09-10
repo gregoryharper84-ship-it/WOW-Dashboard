@@ -73,6 +73,28 @@ class KalshiPublicMarketAdapter:
             raise KalshiMarketDataError("KALSHI_ORDERBOOK_PAYLOAD_INVALID", "orderbook_fp object missing")
         return orderbook
 
+    def get_series_fee_changes(self, series_ticker: str) -> tuple[Mapping[str, Any], ...]:
+        """Fetch upcoming public fee changes for one exact series ticker."""
+        series_ticker = _clean_ticker(series_ticker)
+        payload = self.get_json(
+            f"{KALSHI_BASE_URL}/series/fee_changes?series_ticker={series_ticker}", None
+        )
+        rows = payload.get("series_fee_change_arr") if isinstance(payload, Mapping) else None
+        if not isinstance(rows, Sequence) or isinstance(rows, (str, bytes)):
+            raise KalshiMarketDataError("KALSHI_FEE_CHANGES_PAYLOAD_INVALID", "series_fee_change_arr missing")
+
+        normalized: list[Mapping[str, Any]] = []
+        for row in rows:
+            if not isinstance(row, Mapping):
+                raise KalshiMarketDataError("KALSHI_FEE_CHANGE_ROW_INVALID", repr(row))
+            row_ticker = str(row.get("series_ticker") or "").strip().upper()
+            if row_ticker != series_ticker:
+                raise KalshiMarketDataError(
+                    "KALSHI_FEE_CHANGE_IDENTITY_MISMATCH", f"expected={series_ticker} got={row_ticker}"
+                )
+            normalized.append(dict(row))
+        return tuple(normalized)
+
     def snapshot(self, ticker: str, *, retrieved_at: str) -> KalshiOrderbookEvidence:
         market = self.get_market(ticker)
         orderbook = self.get_orderbook(ticker)
