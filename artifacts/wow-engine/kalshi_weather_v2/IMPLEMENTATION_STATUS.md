@@ -18,10 +18,15 @@ Implemented:
 - immutable hash-addressed market rule snapshots before interpretation
 - structured settlement-source resolution from Kalshi series metadata
 - multiple-source settlement ambiguity fails closed unless exact market rule text disambiguates one source
-- regression tests for fail-closed settlement, probability independence, market holds, terminal precedence, public market plumbing and rule acquisition
+- strict current-shape daily max/min temperature rule parser
+- settlement location code preserved from exact rule text (for example CLINYC) rather than replaced by a nearby NWS station
+- parsed rule source cross-checked against series settlement_sources
+- parsed threshold semantics cross-checked against Kalshi strike_type/floor_strike/cap_strike
+- regression tests for fail-closed settlement, probability independence, market holds, terminal precedence, public market plumbing and rule acquisition/semantics
 
 Not implemented yet:
-- full semantic conversion of live rule package into ContractSnapshot (station/coordinate, timezone, rounding and observation-window parser)
+- final semantic conversion into ContractSnapshot still requires explicit timezone, observation-window and rounding/settlement-period semantics from controlling terms
+- hourly-temperature rule semantic parser
 - cache/rate-limit coordination beyond bounded per-request retry policy
 - station-specific calibrator fitting from production historical data
 - Supabase persistence and immutable ledgers
