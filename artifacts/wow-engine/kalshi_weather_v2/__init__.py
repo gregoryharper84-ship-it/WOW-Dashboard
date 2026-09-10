@@ -3,6 +3,8 @@
 from .agents import ContractSettlementAgent, MarketCalibrationAuditor, WeatherProbabilityAgent
 from .calibration_fit import CalibrationFitResult, ForecastResidual, fit_candidate_calibration_profile
 from .contract_resolver import ContractResolutionError, resolve_weather_contract
+from .http_client import HttpAcquisitionError, HttpPolicy, ReadOnlyJsonClient
+from .kalshi_market_data import KalshiMarketDataError, KalshiOrderbookEvidence, KalshiPublicMarketAdapter
 from .models import (
     AgentResult,
     ContractSnapshot,
@@ -44,5 +46,11 @@ __all__ = [
     "OpenMeteoAdapter",
     "NoaaNceiAdapter",
     "XweatherAdapter",
+    "HttpAcquisitionError",
+    "HttpPolicy",
+    "ReadOnlyJsonClient",
+    "KalshiMarketDataError",
+    "KalshiOrderbookEvidence",
+    "KalshiPublicMarketAdapter",
     "evaluate_weather_contract",
 ]
