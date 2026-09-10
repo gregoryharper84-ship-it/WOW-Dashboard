@@ -29,6 +29,7 @@ from .hourly_index import (
     WeatherIndexStationReading,
     parse_weather_index_payload,
 )
+from .hourly_rule_semantics import ParsedHourlyTemperatureRule, parse_hourly_temperature_rule
 from .http_client import HttpAcquisitionError, HttpPolicy, ReadOnlyJsonClient
 from .kalshi_market_data import KalshiMarketDataError, KalshiOrderbookEvidence, KalshiPublicMarketAdapter
 from .models import (
@@ -67,6 +68,8 @@ __all__ = [
     "resolve_settlement_source",
     "ParsedTemperatureRule",
     "parse_temperature_rule",
+    "ParsedHourlyTemperatureRule",
+    "parse_hourly_temperature_rule",
     "FrozenRuleSnapshot",
     "RuleSnapshotError",
     "freeze_market_rules",
