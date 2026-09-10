@@ -17,6 +17,7 @@ from fastapi import Depends, Header, HTTPException
 
 import api_prod_market_acceptance as base
 import calibration_publication_api as lane_patch
+from kalshi_weather_v2.routes import install_kalshi_weather_v2_routes
 from live_probability_runtime import install_live_probability_routes
 from mlb_1ip_refresh_scheduler import run_refresh_loop as run_mlb_1ip_refresh_loop
 from ncaaf_cfbd_client import CFBDClient, CFBDUnavailable
@@ -42,10 +43,12 @@ app = base.app
 _auth = Depends(base.market_api.prod._require_action_api_key)
 _logger = logging.getLogger("wow.ncaaf.readiness")
 _v17_logger = logging.getLogger("wow.v17.activation")
+_kalshi_weather_logger = logging.getLogger("wow.kalshi_weather_v2.activation")
 _mlb_1ip_refresh_logger = logging.getLogger("wow.mlb.1ip.final_refresh")
 _background_tasks: set[asyncio.Task] = set()
 _original_market_score_prop = base.market_api.score_prop
 V17_ACTIVE = os.getenv("WOW_V17_ACTIVE", "0") == "1"
+KALSHI_WEATHER_V2_ACTIVE = os.getenv("WOW_KALSHI_WEATHER_V2_ACTIVE", "0") == "1"
 
 # This mutation is intentionally production-gated. The lower api_prod_market app
 # is a shared FastAPI object imported by several contract tests. Unconditionally
@@ -128,6 +131,12 @@ install_team_event_request_routes(
     event_api=base.market_api.prod.event_api,
 )
 install_live_probability_routes(app, auth_dependency=_auth, db_client_fn=_db_client)
+if KALSHI_WEATHER_V2_ACTIVE:
+    install_kalshi_weather_v2_routes(
+        app,
+        auth_dependency=_auth,
+        db_client_fn=_db_client,
+    )
 
 # V17 is an additive compatibility cutover on the accepted production app: old
 # governed operations remain available while the new host-aware route and ledger
@@ -299,6 +308,14 @@ async def log_v17_activation():
     _v17_logger.warning(
         "WOW_V17_RUNTIME status=%s global_terminal_authority=V17_TERMINAL_REDUCER can_execute=false",
         "ACTIVE" if V17_ACTIVE else "INACTIVE",
+    )
+
+
+@app.on_event("startup")
+async def log_kalshi_weather_v2_activation():
+    _kalshi_weather_logger.warning(
+        "WOW_KALSHI_WEATHER_V2_RUNTIME status=%s mode=SHADOW probability_publishable=false can_execute=false",
+        "ACTIVE" if KALSHI_WEATHER_V2_ACTIVE else "INACTIVE",
     )
 
 
