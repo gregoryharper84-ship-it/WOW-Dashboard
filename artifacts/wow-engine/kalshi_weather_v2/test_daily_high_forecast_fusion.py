@@ -50,32 +50,22 @@ def snapshot(provider, role, source_id, retrieved_at, payload, issued_at=None):
 
 def test_daily_high_is_market_blind_and_reconstructs_observed_max():
     nws_hourly = snapshot(
-        "NWS",
-        "PRIMARY_FORECAST",
-        "nws-hourly",
-        "2026-09-10T16:00:00Z",
+        "NWS", "PRIMARY_FORECAST", "nws-hourly", "2026-09-10T16:00:00Z",
         {"properties": {"periods": [
             {"startTime": "2026-09-10T11:00:00-04:00", "temperature": 86, "temperatureUnit": "F"},
             {"startTime": "2026-09-10T14:00:00-04:00", "temperature": 91, "temperatureUnit": "F"},
             {"startTime": "2026-09-11T13:00:00-04:00", "temperature": 95, "temperatureUnit": "F"},
-        ]}},
-        issued_at="2026-09-10T15:55:00Z",
+        ]}}, issued_at="2026-09-10T15:55:00Z",
     )
     observations = snapshot(
-        "NWS",
-        "OFFICIAL_OBSERVATION",
-        "nws-obs",
-        "2026-09-10T16:00:00Z",
+        "NWS", "OFFICIAL_OBSERVATION", "nws-obs", "2026-09-10T16:00:00Z",
         {"features": [
             {"id": "o1", "properties": {"timestamp": "2026-09-10T14:00:00Z", "temperature": {"value": 28.0, "unitCode": "wmoUnit:degC"}}},
             {"id": "o2", "properties": {"timestamp": "2026-09-10T16:00:00Z", "temperature": {"value": 30.0, "unitCode": "wmoUnit:degC"}}},
         ]},
     )
     open_meteo = snapshot(
-        "OPEN_METEO",
-        "SECONDARY_FORECAST",
-        "om",
-        "2026-09-10T16:00:00Z",
+        "OPEN_METEO", "SECONDARY_FORECAST", "om", "2026-09-10T16:00:00Z",
         {"daily": {
             "time": ["2026-09-10"],
             "temperature_2m_max_gfs_seamless": [90.0],
@@ -84,16 +74,11 @@ def test_daily_high_is_market_blind_and_reconstructs_observed_max():
     )
 
     evidence = build_daily_high_weather_evidence(
-        contract=contract(),
-        analysis_time="2026-09-10T16:01:00Z",
-        local_date="2026-09-10",
-        nws_hourly_snapshot=nws_hourly,
-        nws_observation_snapshot=observations,
-        open_meteo_snapshot=open_meteo,
-        settlement_source_verified=True,
+        contract=contract(), analysis_time="2026-09-10T16:01:00Z", local_date="2026-09-10",
+        nws_hourly_snapshot=nws_hourly, nws_observation_snapshot=observations,
+        open_meteo_snapshot=open_meteo, settlement_source_verified=True,
         settlement_location_verified=True,
     )
-
     assert evidence.central_estimate == 91.0
     assert evidence.observed_extreme_so_far == pytest.approx(86.0)
     assert evidence.evidence_complete is True
@@ -101,6 +86,28 @@ def test_daily_high_is_market_blind_and_reconstructs_observed_max():
     assert evidence.notes["market_price_used_as_input"] is False
     assert evidence.notes["central_estimate_method"] == "NWS_HOURLY_TARGET_LOCAL_DATE_MAX"
     assert evidence.disagreement_magnitude > 0
+
+
+def test_utc_boundary_observation_is_assigned_by_contract_local_date():
+    nws_hourly = snapshot(
+        "NWS", "PRIMARY_FORECAST", "nws-hourly", "2026-09-10T05:00:00Z",
+        {"properties": {"periods": [{"startTime": "2026-09-10T01:00:00-04:00", "temperature": 70, "temperatureUnit": "F"}]}},
+    )
+    observations = snapshot(
+        "NWS", "OFFICIAL_OBSERVATION", "nws-obs", "2026-09-10T05:00:00Z",
+        {"features": [
+            {"id": "prior-local-day", "properties": {"timestamp": "2026-09-10T03:30:00Z", "temperature": {"value": 40.0, "unitCode": "wmoUnit:degC"}}},
+            {"id": "target-local-day", "properties": {"timestamp": "2026-09-10T04:30:00Z", "temperature": {"value": 20.0, "unitCode": "wmoUnit:degC"}}},
+        ]},
+    )
+    evidence = build_daily_high_weather_evidence(
+        contract=contract(), analysis_time="2026-09-10T05:01:00Z", local_date="2026-09-10",
+        nws_hourly_snapshot=nws_hourly, nws_observation_snapshot=observations,
+        open_meteo_snapshot=None, settlement_source_verified=True,
+        settlement_location_verified=True,
+    )
+    assert evidence.observed_extreme_so_far == pytest.approx(68.0)
+    assert evidence.notes["official_observation_points_used"] == 1
 
 
 def test_future_source_timestamp_fails_closed():
@@ -138,11 +145,9 @@ def test_empty_observation_series_fails_closed():
 
 def test_open_meteo_daily_high_supports_contract_timezone():
     urls = []
-
     def get_json(url, _headers=None):
         urls.append(url)
         return {"daily": {"time": ["2026-09-10"], "temperature_2m_max": [91.0]}}
-
     OpenMeteoAdapter(get_json).multi_model_daily_highs(
         40.78, -73.97, "2026-09-10", ["gfs_seamless"],
         retrieved_at="2026-09-10T16:00:00Z", timezone_name="America/New_York",
