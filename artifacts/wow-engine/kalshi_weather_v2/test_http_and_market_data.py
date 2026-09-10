@@ -27,7 +27,7 @@ def test_read_only_http_client_rejects_non_object_json():
 def test_kalshi_orderbook_derives_executable_asks_from_opposite_bids_only():
     def get_json(url, _headers):
         if url.endswith("/markets/KXTEST"):
-            return {"market": {"ticker": "KXTEST", "status": "open", "last_price_dollars": "0.99"}}
+            return {"market": {"ticker": "KXTEST", "status": "active", "last_price_dollars": "0.99"}}
         if url.endswith("/markets/KXTEST/orderbook"):
             return {
                 "orderbook_fp": {
@@ -53,7 +53,7 @@ def test_kalshi_orderbook_derives_executable_asks_from_opposite_bids_only():
 def test_kalshi_market_snapshot_does_not_invent_fee_or_break_even():
     def get_json(url, _headers):
         if url.endswith("/markets/KXTEST"):
-            return {"market": {"ticker": "KXTEST", "status": "open"}}
+            return {"market": {"ticker": "KXTEST", "status": "active"}}
         return {"orderbook_fp": {"yes_dollars": [["0.60", "4"]], "no_dollars": [["0.35", "7"]]}}
 
     evidence = KalshiPublicMarketAdapter(get_json).snapshot("KXTEST", retrieved_at="2026-09-09T23:00:00-05:00")
@@ -68,7 +68,7 @@ def test_kalshi_market_snapshot_does_not_invent_fee_or_break_even():
 def test_kalshi_orderbook_empty_side_does_not_fabricate_ask():
     def get_json(url, _headers):
         if url.endswith("/markets/KXTEST"):
-            return {"market": {"ticker": "KXTEST", "status": "open"}}
+            return {"market": {"ticker": "KXTEST", "status": "active"}}
         return {"orderbook_fp": {"yes_dollars": [["0.60", "4"]], "no_dollars": []}}
 
     evidence = KalshiPublicMarketAdapter(get_json).snapshot("KXTEST", retrieved_at="2026-09-09T23:00:00-05:00")
@@ -77,7 +77,19 @@ def test_kalshi_orderbook_empty_side_does_not_fabricate_ask():
 
 
 def test_kalshi_market_identity_mismatch_fails_closed():
-    adapter = KalshiPublicMarketAdapter(lambda _url, _headers: {"market": {"ticker": "OTHER", "status": "open"}})
+    adapter = KalshiPublicMarketAdapter(lambda _url, _headers: {"market": {"ticker": "OTHER", "status": "active"}})
     with pytest.raises(KalshiMarketDataError) as exc:
         adapter.get_market("KXTEST")
     assert exc.value.code == "KALSHI_MARKET_IDENTITY_MISMATCH"
+
+
+def test_legacy_open_status_remains_compatible_but_closed_is_not_tradable():
+    def snapshot_for(status):
+        def get_json(url, _headers):
+            if url.endswith("/markets/KXTEST"):
+                return {"market": {"ticker": "KXTEST", "status": status}}
+            return {"orderbook_fp": {"yes_dollars": [["0.60", "4"]], "no_dollars": [["0.35", "7"]]}}
+        return KalshiPublicMarketAdapter(get_json).snapshot("KXTEST", retrieved_at="2026-09-09T23:00:00-05:00")
+
+    assert snapshot_for("open").market_open is True
+    assert snapshot_for("closed").market_open is False
