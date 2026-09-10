@@ -23,15 +23,21 @@ Implemented:
 - parsed threshold semantics cross-checked against Kalshi strike_type/floor_strike/cap_strike
 - six immutable Supabase Kalshi Weather ledgers for rules, weather evidence, calibration profiles, predictions, market snapshots and outcomes
 - KALSHI_WEATHER_PROBABILITY runtime capability registered fail-closed as UNAVAILABLE / IMPLEMENTATION_NOT_CERTIFIED / probability_publishable=false / can_execute=false
-- governed analytical fee-policy calculator on this branch: current series policy + event overrides + series/event scheduled fee-change checks
+- governed analytical fee-policy calculator: current series policy + event overrides + series/event scheduled fee-change checks
 - current fixed-point fee treatment: six-decimal model-fee rounding separated from member-specific balance alignment
 - explicit direct-member ($0.0001) vs non-direct-member ($0.01) balance precision; account type is never guessed
 - active fee-waiver markers fail closed until exact waiver semantics are available
-- regression tests for fail-closed settlement, probability independence, market holds, terminal precedence, market plumbing, rule acquisition/semantics and fee calculations
+- canonical Kalshi hourly weather-index read-only acquisition on this branch
+- exact city and Fahrenheit identity checks for hourly index payloads
+- preservation of real minute gaps and `incomplete` index points; no interpolation or zero filling
+- detailed member-station readings preserved only as QC/evidence, never substituted for canonical index value
+- published hourly-index calibration timeline frozen raw pending a separate calibration-semantics parser
+- regression tests for fail-closed settlement, probability independence, market holds, terminal precedence, market plumbing, rule acquisition/semantics, fee calculations and hourly-index acquisition
 
 Not implemented/certified yet:
-- final semantic conversion into ContractSnapshot still requires explicit timezone, observation-window and rounding/settlement-period semantics from controlling terms
-- hourly-temperature rule semantic parser / weather-index lane integration
+- final daily semantic conversion into ContractSnapshot still requires explicit timezone, observation-window and rounding/settlement-period semantics from controlling terms
+- hourly-temperature exact market-rule semantic parser and terminal lane integration
+- hourly-index calibration-contract semantic parser / reproduction audit
 - cache/rate-limit coordination beyond bounded per-request retry policy
 - station/source-specific calibrator fitting from production historical data
 - persistence wiring from live agent outputs into the existing Supabase ledgers
