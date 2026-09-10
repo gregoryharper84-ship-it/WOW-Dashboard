@@ -74,6 +74,47 @@ class OpenMeteoAdapter:
         data = self.get_json(url, None)
         return ProviderSnapshot(self.provider, "SECONDARY_FORECAST", url, retrieved_at, None, (date,), data)
 
+    def multi_model_hourly_temperatures(
+        self,
+        lat: float,
+        lon: float,
+        start_date: str,
+        end_date: str,
+        models: Sequence[str],
+        *,
+        retrieved_at: str,
+    ) -> ProviderSnapshot:
+        """Fetch independent hourly 2m-temperature model evidence in UTC/Fahrenheit.
+
+        Market price and Kalshi settlement-index values are intentionally absent
+        from this adapter. Model identifiers are explicit so historical replay
+        can preserve exactly which forecast families were requested.
+        """
+        clean_models = tuple(str(model).strip() for model in models if str(model).strip())
+        if not clean_models:
+            raise ValueError("at least one Open-Meteo model is required")
+        model_arg = ",".join(clean_models)
+        url = (
+            "https://api.open-meteo.com/v1/forecast"
+            f"?latitude={lat:.4f}&longitude={lon:.4f}"
+            "&hourly=temperature_2m"
+            f"&start_date={start_date}&end_date={end_date}"
+            f"&models={model_arg}&temperature_unit=fahrenheit&timezone=UTC"
+        )
+        data = self.get_json(url, None)
+        hourly = data.get("hourly") if isinstance(data, Mapping) else None
+        times = hourly.get("time", []) if isinstance(hourly, Mapping) else []
+        valid = tuple(str(value) for value in times if value not in (None, ""))
+        return ProviderSnapshot(
+            self.provider,
+            "SECONDARY_FORECAST",
+            url,
+            retrieved_at,
+            None,
+            valid,
+            data,
+        )
+
 
 class NoaaNceiAdapter:
     provider = "NOAA_NCEI"
