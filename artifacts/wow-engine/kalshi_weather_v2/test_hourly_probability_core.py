@@ -1,5 +1,3 @@
-from math import isclose
-
 from kalshi_weather_v2.models import ContractSnapshot, WeatherEvidenceSnapshot
 from kalshi_weather_v2.probability_core import CalibrationProfile, WeatherProbabilityCore
 
@@ -66,21 +64,23 @@ def test_hourly_greater_uses_exact_8199_boundary_not_daily_half_degree_shift():
     package = WeatherProbabilityCore().build(
         contract=_contract(), evidence=_evidence(82.0), calibration=_calibration()
     )
-    # P(X > 81.99) for N(82,1) is just over one half. The old daily +0.5
-    # correction would have produced roughly 0.695 and is therefore caught.
+    # P(X > 81.99) for N(82,1) is just over one half. Applying the daily
+    # continuity correction would materially change this value and is forbidden.
     assert 0.503 < package.p_yes < 0.505
     assert package.probability_source == "KALSHI_WEATHER_V2_POINT_HORIZON_MODEL"
     assert package.calibrated is True
 
 
-def test_daily_lane_retains_existing_continuity_correction():
+def test_daily_lane_retains_existing_strict_greater_continuity_correction():
     daily = _contract(lane="DAILY_HIGH_TEMPERATURE", lower=82, lower_inclusive=False)
     package = WeatherProbabilityCore().build(
         contract=daily,
         evidence=_evidence(82.0),
         calibration=_calibration(lane="DAILY_HIGH_TEMPERATURE"),
     )
-    assert package.p_yes > 0.69
+    # Strict >82 on a whole-degree reported daily extreme uses the 82.5°F
+    # continuity boundary, so N(82,1) produces ~0.3085.
+    assert 0.308 < package.p_yes < 0.309
 
 
 def test_hourly_does_not_condition_on_daily_observed_extreme_so_far():
