@@ -20,6 +20,13 @@ from .fee_policy import (
     quote_trade_fee,
     resolve_fee_policy,
 )
+from .hourly_forecast_fusion import (
+    HourlyForecastEstimate,
+    HourlyForecastFusion,
+    HourlyForecastFusionError,
+    build_hourly_weather_evidence,
+    source_snapshot_id,
+)
 from .hourly_index import (
     KalshiWeatherIndexAdapter,
     WeatherIndexCalibrationSnapshot,
@@ -70,6 +77,11 @@ __all__ = [
     "parse_temperature_rule",
     "ParsedHourlyTemperatureRule",
     "parse_hourly_temperature_rule",
+    "HourlyForecastFusionError",
+    "HourlyForecastEstimate",
+    "HourlyForecastFusion",
+    "build_hourly_weather_evidence",
+    "source_snapshot_id",
     "FrozenRuleSnapshot",
     "RuleSnapshotError",
     "freeze_market_rules",
