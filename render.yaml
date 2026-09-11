@@ -38,6 +38,10 @@ services:
         value: "1"
       - key: WOW_KALSHI_WEATHER_V2_ACTIVE
         value: "1"
+      - key: WOW_KALSHI_WEATHER_EMPIRICAL_COHORT_ENABLED
+        value: "1"
+      - key: WOW_KALSHI_WEATHER_EMPIRICAL_COHORT_INTERVAL_SECONDS
+        value: "900"
       - key: WOW_V17_MLB_BRIDGE_SELF_ACCEPTANCE
         value: "1"
       - key: WOW_NCAAF_MARKET_FEED_URL
