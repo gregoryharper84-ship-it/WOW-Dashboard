@@ -4,13 +4,16 @@ from .models import AgentResult, TerminalDecision
 
 
 class KalshiWeatherTerminalGovernor:
-    """Deterministic lowest-ceiling reducer for Kalshi Weather V2.
+    """Deterministic weather-domain audit reducer beneath V17 global authority.
 
-    This component does not forecast, reinterpret evidence, or vote. It only
-    reduces structured specialist results into one terminal state.
+    This component does not forecast, reinterpret evidence, vote, or publish.
+    It reduces structured weather specialist results into a local/native status
+    only. V17_TERMINAL_REDUCER is the sole authority that may expose a model
+    probability, edge, or rank-eligible recommendation.
     """
 
     name = "KALSHI_WEATHER_TERMINAL_GOVERNOR"
+    global_terminal_authority = "V17_TERMINAL_REDUCER"
 
     def reduce(
         self,
@@ -23,86 +26,52 @@ class KalshiWeatherTerminalGovernor:
         warnings = tuple(dict.fromkeys(settlement.warnings + probability.warnings + market.warnings))
 
         if not settlement.ok:
-            return TerminalDecision(
-                status="NO_PLAY_SETTLEMENT_AMBIGUITY",
-                code="SETTLEMENT_GATE_FAILED",
-                rank_eligible=False,
-                probability_publishable=False,
-                edge_publishable=False,
-                blockers=blockers,
-                warnings=warnings,
-                payload=self._payload(settlement, probability, market),
-            )
-
-        if not probability.ok:
-            return TerminalDecision(
-                status="NO_PLAY_DATA_INSUFFICIENT",
-                code="WEATHER_PROBABILITY_GATE_FAILED",
-                rank_eligible=False,
-                probability_publishable=False,
-                edge_publishable=False,
-                blockers=blockers,
-                warnings=warnings,
-                payload=self._payload(settlement, probability, market),
-            )
-
-        if not market.ok:
-            return TerminalDecision(
-                status="WATCH",
-                code="WEATHER_PROBABILITY_READY_MARKET_EDGE_HELD",
-                rank_eligible=False,
-                probability_publishable=True,
-                edge_publishable=False,
-                blockers=blockers,
-                warnings=warnings,
-                payload=self._payload(settlement, probability, market),
-            )
-
-        side, adjusted_edge, raw_edge = self._best_side(market.payload)
-        if adjusted_edge is None:
-            return TerminalDecision(
-                status="WATCH",
-                code="UNCERTAINTY_ADJUSTED_EDGE_UNRESOLVED",
-                rank_eligible=False,
-                probability_publishable=True,
-                edge_publishable=True,
-                blockers=blockers,
-                warnings=warnings,
-                payload={**self._payload(settlement, probability, market), "best_side": side},
-            )
-
-        if adjusted_edge <= 0:
-            status = "NO_EDGE"
-            code = "NO_POSITIVE_UNCERTAINTY_ADJUSTED_EDGE"
-            rank_eligible = False
+            status, code = "NO_PLAY_SETTLEMENT_AMBIGUITY", "SETTLEMENT_GATE_FAILED"
+            payload = self._payload(settlement, probability, market)
+        elif not probability.ok:
+            status, code = "NO_PLAY_DATA_INSUFFICIENT", "WEATHER_PROBABILITY_GATE_FAILED"
+            payload = self._payload(settlement, probability, market)
+        elif not market.ok:
+            status, code = "WATCH", "WEATHER_PROBABILITY_READY_MARKET_EDGE_HELD"
+            payload = self._payload(settlement, probability, market)
         else:
-            # Edge thresholds are deliberately not invented here. A positive
-            # conservative edge is QUALIFIED_EDGE until calibration policy
-            # establishes an evidence-based STRONG_EDGE threshold.
-            status = "QUALIFIED_EDGE"
-            code = "POSITIVE_UNCERTAINTY_ADJUSTED_EDGE"
-            rank_eligible = True
-
-        return TerminalDecision(
-            status=status,
-            code=code,
-            rank_eligible=rank_eligible,
-            probability_publishable=True,
-            edge_publishable=True,
-            blockers=blockers,
-            warnings=warnings,
-            payload={
+            side, adjusted_edge, raw_edge = self._best_side(market.payload)
+            payload = {
                 **self._payload(settlement, probability, market),
                 "best_side": side,
                 "best_raw_edge": raw_edge,
                 "best_uncertainty_adjusted_edge": adjusted_edge,
-            },
+            }
+            if adjusted_edge is None:
+                status, code = "WATCH", "UNCERTAINTY_ADJUSTED_EDGE_UNRESOLVED"
+            elif adjusted_edge <= 0:
+                status, code = "NO_EDGE", "NO_POSITIVE_UNCERTAINTY_ADJUSTED_EDGE"
+            else:
+                # Do not invent a STRONG_EDGE threshold. Positive conservative
+                # edge remains a local QUALIFIED_EDGE candidate until V17's
+                # global publication/reconciliation gates complete.
+                status, code = "QUALIFIED_EDGE", "POSITIVE_UNCERTAINTY_ADJUSTED_EDGE"
+
+        # Critical V17 boundary: local weather labels are audit-only. A local
+        # specialist may never create a globally publishable/rankable row.
+        return TerminalDecision(
+            status=status,
+            code=code,
+            rank_eligible=False,
+            probability_publishable=False,
+            edge_publishable=False,
+            blockers=blockers,
+            warnings=warnings,
+            payload=payload,
         )
 
     @staticmethod
     def _payload(settlement: AgentResult, probability: AgentResult, market: AgentResult) -> dict:
         return {
             "governor": KalshiWeatherTerminalGovernor.name,
+            "local_terminal_label_audit_only": True,
+            "local_global_terminal_authority": False,
+            "global_terminal_authority_required": KalshiWeatherTerminalGovernor.global_terminal_authority,
             "settlement_agent_code": settlement.code,
             "probability_agent_code": probability.code,
             "market_auditor_code": market.code,

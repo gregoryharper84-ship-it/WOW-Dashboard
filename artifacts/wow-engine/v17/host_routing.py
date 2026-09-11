@@ -13,6 +13,7 @@ CAN_EXECUTE = False
 
 WOW_BETTING_ENGINE = "WOW_BETTING_ENGINE"
 LLP_TEAM_BETTING_ENGINE = "LLP_TEAM_BETTING_ENGINE"
+KALSHI_WEATHER_MARKET_EXPERT = "KALSHI_WEATHER_MARKET_EXPERT"
 PROJECT_CHAT = "PROJECT_CHAT"
 
 LIVE_GPT_ACTION_INVOCATION_BLOCKED = "LIVE_GPT_ACTION_INVOCATION_BLOCKED"
@@ -43,6 +44,21 @@ TEAM_EVENT_FAMILIES = frozenset(
         "FIGHT_WINNER",
     }
 )
+WEATHER_FAMILIES = frozenset(
+    {
+        "DAILY_HIGH_TEMPERATURE",
+        "DAILY_LOW_TEMPERATURE",
+        "HOURLY_TEMPERATURE",
+        "PRECIPITATION_DAILY",
+        "PRECIPITATION_MONTHLY",
+        "HURRICANE_TROPICAL",
+        "CLIMATE_RECORD",
+        "HEATWAVE_EXTREME",
+        "SNOW_SKI_RESORT",
+        "NATURAL_DISASTER_WEATHER",
+        "OTHER_WEATHER",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -58,9 +74,9 @@ class HostRoute:
 class FullModelActionReceipt:
     """Host-side proof that a governed Full Model Action was actually attempted.
 
-    The receipt does not create or reinterpret a sporting probability. It only
-    prevents research/discovery output from being mislabeled as a completed
-    Full Model pass. Backend terminal semantics remain authoritative.
+    The receipt does not create or reinterpret a probability. It only prevents
+    research/discovery output from being mislabeled as a completed Full Model
+    pass. Backend terminal semantics remain authoritative.
     """
 
     candidate_family: str
@@ -72,7 +88,6 @@ class FullModelActionReceipt:
     run_id: str | None = None
     http_result: int | None = None
     exact_error: Any = None
-
 
 
 def normalize_host_identity(value: str) -> str:
@@ -92,7 +107,6 @@ def normalize_host_identity(value: str) -> str:
     return identity
 
 
-
 def normalize_candidate_family(value: str) -> str:
     family = str(value or "").strip().upper()
     aliases = {
@@ -101,9 +115,13 @@ def normalize_candidate_family(value: str) -> str:
         "ML": "MONEYLINE",
         "GAME_WINNER": "OUTRIGHT_WINNER",
         "EVENT_WINNER": "OUTRIGHT_WINNER",
+        "WEATHER": "OTHER_WEATHER",
+        "DAILY_HIGH": "DAILY_HIGH_TEMPERATURE",
+        "DAILY_LOW": "DAILY_LOW_TEMPERATURE",
+        "HOURLY_WEATHER": "HOURLY_TEMPERATURE",
+        "HOURLY_WEATHER_INDEX": "HOURLY_TEMPERATURE",
     }
     return aliases.get(family, family)
-
 
 
 def controlling_engine_for(candidate_family: str) -> str:
@@ -112,8 +130,9 @@ def controlling_engine_for(candidate_family: str) -> str:
         return WOW_BETTING_ENGINE
     if family in TEAM_EVENT_FAMILIES:
         return LLP_TEAM_BETTING_ENGINE
+    if family in WEATHER_FAMILIES:
+        return KALSHI_WEATHER_MARKET_EXPERT
     raise ValueError("CANDIDATE_FAMILY_UNSUPPORTED")
-
 
 
 def expected_full_model_operation_id(candidate_family: str) -> str:
@@ -123,17 +142,18 @@ def expected_full_model_operation_id(candidate_family: str) -> str:
         return "scoreWowV17PickRequest"
     if family in TEAM_EVENT_FAMILIES:
         return "scoreWowV17TeamEventFromWowHost"
+    if family in WEATHER_FAMILIES:
+        return "analyzeKalshiWeatherV17Contract"
     raise ValueError("CANDIDATE_FAMILY_UNSUPPORTED")
-
 
 
 def validate_full_model_action_receipt(receipt: FullModelActionReceipt) -> dict[str, Any]:
     """Fail closed unless a Full Model request has a concrete Action receipt.
 
     `scoring_attempted` is host/Action-attempt state, not a claim that the
-    underlying sporting model evaluated successfully. Once an Action call is
-    made it remains true even when auth, transport, schema, input, scorer, or
-    backend validation fails. Backend statuses are preserved verbatim.
+    underlying model evaluated successfully. Once an Action call is made it
+    remains true even when auth, transport, schema, input, scorer, or backend
+    validation fails. Backend statuses are preserved verbatim.
     """
     family = normalize_candidate_family(receipt.candidate_family)
     expected_operation = expected_full_model_operation_id(family)
@@ -193,7 +213,6 @@ def validate_full_model_action_receipt(receipt: FullModelActionReceipt) -> dict[
     }
 
 
-
 def resolve_host_route(requester_host_identity: str, candidate_family: str) -> HostRoute:
     requester = normalize_host_identity(requester_host_identity)
     family = normalize_candidate_family(candidate_family)
@@ -205,7 +224,6 @@ def resolve_host_route(requester_host_identity: str, candidate_family: str) -> H
         global_terminal_authority=False,
         can_execute=False,
     )
-
 
 
 def host_decision_audit_fields(*, host_label: str | None, host_blockers: list[str] | None = None) -> dict:

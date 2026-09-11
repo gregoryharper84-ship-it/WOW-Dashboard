@@ -1,54 +1,68 @@
-# Kalshi Weather V2 implementation status
+# Kalshi Weather V2 / V17 implementation status
 
-Implemented:
-- three strict specialist agents
-- deterministic terminal governor
-- single orchestrator entrypoint
-- machine-readable exact contract bounds
-- station/lane/lead-time calibration profile structures
-- continuity-corrected exact-event probability math for daily whole-degree extrema
-- exact decimal-threshold probability math for hourly Kalshi Weather Index point contracts; no daily ±0.5°F correction leaks into hourly
-- same-day daily-high conditioning on observed official maximum; hourly point contracts explicitly do not use daily-extreme conditioning
-- NWS, Open-Meteo, NOAA/NCEI and optional Xweather adapter interfaces
-- independent Open-Meteo hourly point-forecast acquisition in UTC/Fahrenheit with explicit model selection
-- hardened HTTPS GET-only JSON client with bounded retries
-- public Kalshi market and orderbook adapter
-- executable ask reconstruction from opposite-side bids only
-- explicit prohibition on last-price/displayed-chance substitution
-- live public market -> event -> series contract-rule acquisition
-- immutable hash-addressed market rule snapshots before interpretation
-- structured settlement-source resolution from Kalshi series metadata
-- multiple-source settlement ambiguity fails closed unless exact market rule text disambiguates one source
-- strict current-shape daily max/min temperature rule parser
-- strict hourly Kalshi Weather Index rule parser requiring exact Series settlement-source match, structured occurrence time, explicit timezone/clock agreement, exact location identity, and structured strike/rule agreement
-- hourly settlement represented as `SOURCE_LOCATION_CODE=KALSHI_WEATHER_INDEX:<city>`; no NWS/station substitution
-- source-native settlement location codes represented directly; no forced nearby-station substitution
-- parsed rule source cross-checked against series settlement_sources
-- parsed threshold semantics cross-checked against Kalshi strike_type/floor_strike/cap_strike
-- six immutable Supabase Kalshi Weather ledgers for rules, weather evidence, calibration profiles, predictions, market snapshots and outcomes
-- KALSHI_WEATHER_PROBABILITY runtime capability registered fail-closed as UNAVAILABLE / IMPLEMENTATION_NOT_CERTIFIED / probability_publishable=false / can_execute=false
-- governed analytical fee-policy calculator: current series policy + event overrides + series/event scheduled fee-change checks
-- current fixed-point fee treatment: six-decimal model-fee rounding separated from member-specific balance alignment
-- explicit direct-member ($0.0001) vs non-direct-member ($0.01) balance precision; account type is never guessed
-- active fee-waiver markers fail closed until exact waiver semantics are available
-- canonical Kalshi hourly weather-index read-only acquisition
-- exact city and Fahrenheit identity checks for hourly index payloads
-- preservation of real minute gaps and `incomplete` index points; no interpolation or zero filling
-- detailed member-station readings preserved only as QC/evidence, never substituted for canonical index value
-- published hourly-index calibration timeline frozen raw pending a separate calibration-semantics parser
-- regression tests for fail-closed settlement, daily/hourly probability separation, market holds, terminal precedence, market plumbing, rule acquisition/semantics, fee calculations, hourly index acquisition and hourly forecast acquisition
+## V17 structural/governance status
 
-Not implemented/certified yet:
-- final daily semantic conversion into ContractSnapshot still requires explicit timezone, observation-window and rounding/settlement-period semantics from controlling terms
-- live hourly forecast fusion into WeatherEvidenceSnapshot
-- hourly point-residual calibration fitting/certification from production historical forecasts and settled index outcomes
-- hourly-index calibration-contract semantic parser / reproduction audit
-- cache/rate-limit coordination beyond bounded per-request retry policy
-- persistence wiring from live agent outputs into the existing Supabase ledgers
-- Render analytical route mounting
-- KALSHI_WEATHER_PROBABILITY certification/promotion
-- portfolio governor integration beyond terminal weather decision
-- live shadow acceptance
-- Custom GPT Action schema synchronization and deployment
+**Status: `V17_STRUCTURAL_COMPLIANCE_LIVE_VERIFIED`**
 
-Safety: can_execute=false; no order-placement/cancel/modify interfaces exist in this package.
+Implemented and live-verified:
+- Kalshi Weather is a first-class in-process V17 controlling specialist (`KALSHI_WEATHER_MARKET_EXPERT`), not a parallel global-terminal host.
+- `V17_TERMINAL_REDUCER` is the sole global publication authority.
+- the local Kalshi Weather terminal governor is audit-only and can never set `rank_eligible`, `probability_publishable`, or `edge_publishable` true.
+- the canonical Render/Supabase production entrypoint mounts Weather behind `WOW_KALSHI_WEATHER_V2_ACTIVE=1`.
+- V17 Weather governance, analyze, immutable-capture, publication-audit, and settlement routes are defined on that canonical app.
+- every declared Weather family routes to the Weather specialist; lanes without a certified end-to-end runtime fail closed instead of substituting generic weather reasoning.
+- immutable prediction persistence precedes every V17 probability-publication attempt.
+- V17 publication revalidates exact rule/ticker/settlement identity, timezone/window, temporal provenance, probability coherence, certified station/lane/lead-time calibration identity, calibration as-of timing, certification evidence, source snapshot existence, and no market-price substitution.
+- market/fee/orderbook holds cannot silently erase a completed independent weather probability.
+- V17 edge reconciliation uses immutable market snapshots; raw executable/pre-fee edge may be reported separately, while uncertainty-adjusted ranking remains blocked unless fees/friction are verified.
+- `can_execute=false` remains invariant; no order placement/cancel/modify interface exists.
+
+Live production attestation on 2026-09-11:
+- protected PR workflows passed on the final implementation revision before merge.
+- protected `main` governed-backend workflow passed after merge.
+- production merge commit: `1414b878724e6be0b63d37dd6880259db75d0e8b`.
+- canonical Render service: `wow-governed-probability-engine` / `srv-da7sa9gu01pc73brt80g`.
+- verified live deploy: `dep-dahut9nqj5pc73alc2pg`.
+- live startup emitted `WOW_V17_RUNTIME status=ACTIVE global_terminal_authority=V17_TERMINAL_REDUCER can_execute=false`.
+- live startup emitted `WOW_KALSHI_WEATHER_V2_RUNTIME status=ACTIVE mode=SHADOW probability_publishable=false can_execute=false`.
+
+## Weather-model/runtime coverage
+
+Implemented end-to-end in shadow form:
+- `HOURLY_TEMPERATURE` / Kalshi Weather Index contract semantics
+- exact decimal-threshold probability treatment
+- NWS + Open-Meteo exact-target forecast fusion
+- canonical Kalshi Weather Index settlement acquisition
+- immutable prediction/outcome grading
+
+Implemented evidence/model components but not yet an end-to-end certified publication runtime:
+- `DAILY_HIGH_TEMPERATURE` evidence fusion using NWS target-local-date hourly maximum, official max-so-far, Open-Meteo model disagreement, contract timezone, and temporal-provenance checks
+
+Declared but intentionally fail-closed until their own governed model/runtime/calibration exists:
+- `DAILY_LOW_TEMPERATURE`
+- `PRECIPITATION_DAILY`
+- `PRECIPITATION_MONTHLY`
+- `HURRICANE_TROPICAL`
+- `CLIMATE_RECORD`
+- `HEATWAVE_EXTREME`
+- `SNOW_SKI_RESORT`
+- `NATURAL_DISASTER_WEATHER`
+- `OTHER_WEATHER`
+
+## Empirical certification gate
+
+`KALSHI_WEATHER_PROBABILITY` must remain `UNAVAILABLE / IMPLEMENTATION_NOT_CERTIFIED / probability_publishable=false` until real immutable shadow evidence supports promotion.
+
+Promotion is not an implementation flag flip. It requires, at minimum:
+- persisted pre-decision Weather predictions
+- settled outcomes from the exact contract settlement authority
+- fitted station/source-location + lane + lead-time calibration profiles
+- non-empty certification evidence for each certified profile
+- forward shadow acceptance and settlement reconciliation
+- capability evidence explicitly ratifying probability publication
+
+No fixed sample-size, Brier-score, or edge threshold is invented here; those acceptance thresholds must be established from the governed calibration/acceptance process rather than guessed.
+
+## Current compliance statement
+
+Kalshi Weather is **structurally V17-compliant and live in production in fail-closed mode**. The remaining empirical certification work is model-readiness work, not a V17 governance exception. With no certified calibration evidence, the V17-compliant behavior is `NO_PLAY_DATA_INSUFFICIENT`, `probability_publishable=false`, and `can_execute=false`; publishing a fabricated or flag-promoted probability would itself violate V17.

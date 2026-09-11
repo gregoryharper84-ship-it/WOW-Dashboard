@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Sequence
+from urllib.parse import quote
 
 
 JsonGetter = Callable[[str, Mapping[str, str] | None], Mapping[str, Any]]
@@ -63,13 +64,28 @@ class OpenMeteoAdapter:
         models: Sequence[str],
         *,
         retrieved_at: str,
+        timezone_name: str = "UTC",
     ) -> ProviderSnapshot:
-        model_arg = ",".join(models)
+        """Fetch multi-model daily highs for an explicit aggregation timezone.
+
+        Daily Kalshi temperature markets settle on a contract-local observation
+        window. Callers should pass the exact contract timezone. UTC remains the
+        default only for backwards compatibility with existing non-daily callers.
+        """
+        clean_models = tuple(str(model).strip() for model in models if str(model).strip())
+        if not clean_models:
+            raise ValueError("at least one Open-Meteo model is required")
+        timezone_name = str(timezone_name or "").strip()
+        if not timezone_name:
+            raise ValueError("timezone_name is required")
+        model_arg = ",".join(clean_models)
+        timezone_arg = quote(timezone_name, safe="/")
         url = (
             "https://api.open-meteo.com/v1/forecast"
             f"?latitude={lat:.4f}&longitude={lon:.4f}"
             "&daily=temperature_2m_max"
-            f"&start_date={date}&end_date={date}&models={model_arg}&temperature_unit=fahrenheit&timezone=UTC"
+            f"&start_date={date}&end_date={date}&models={model_arg}"
+            f"&temperature_unit=fahrenheit&timezone={timezone_arg}"
         )
         data = self.get_json(url, None)
         return ProviderSnapshot(self.provider, "SECONDARY_FORECAST", url, retrieved_at, None, (date,), data)

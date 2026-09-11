@@ -1,44 +1,31 @@
 # Kalshi Weather V2
 
-Governed analytical lane for the separate WOW Kalshi Engine.
+Governed analytical weather-market runtime for the separate `WOW_KALSHI_ENGINE` host.
 
-## Fixed specialist chain
+Core architecture:
 
-1. `ContractSettlementAgent`
-   - owns exact contract identity, settlement source/station, timezone, units, rounding and rule snapshot
-   - cannot create or modify weather probability
-2. `WeatherProbabilityAgent`
-   - owns evidence/provenance and validates the independent calibrated probability package
-   - market price is prohibited as a probability input
-3. `MarketCalibrationAuditor`
-   - owns executable price, edge and EV arithmetic
-   - cannot create or substitute weather probability
-4. `KalshiWeatherTerminalGovernor`
-   - deterministic lowest-ceiling reducer only
-   - no voting, narrative override, or forecasting
+`Kalshi contract/rules -> exact settlement identity -> authoritative weather evidence -> calibrated probability -> executable market evidence -> fee/edge audit -> deterministic terminal governor -> immutable ledger`
 
-`evaluate_weather_contract()` is the only orchestration entrypoint.
+Specialist responsibilities remain separated:
+- `ContractSettlementAgent` owns exact contract and settlement identity.
+- `WeatherProbabilityAgent` owns independent weather probability validation.
+- `MarketCalibrationAuditor` owns executable pricing, calibration and edge validation.
+- `KalshiWeatherTerminalGovernor` is deterministic and applies the lowest valid ceiling. It is not an AI voting agent.
 
-## Probability core
+Supported implementation families currently include:
+- `HOURLY_TEMPERATURE`: end-to-end shadow capture/settlement path with exact hourly rule semantics and weather-index settlement support.
+- `DAILY_HIGH_TEMPERATURE`: deterministic evidence fusion is implemented. NWS target-local-date hourly maximum is the primary forecast estimate; official max-so-far is reconstructed from the station observation series; Open-Meteo multi-model highs are disagreement/corroboration inputs. The full daily-high shadow runtime and certified calibration are still required before publication.
 
-`WeatherProbabilityCore` uses machine-readable exact contract bounds and a station/lane/lead-time calibration profile. Integer-temperature contracts use continuity correction. Same-day daily-high markets condition the remaining distribution on the official maximum already observed.
+Weather evidence hierarchy is contract-aware. The exact Kalshi contract controls settlement authority. NWS/official observations, Open-Meteo, NOAA/NCEI, and optional Xweather are model/evidence inputs according to their governed source roles and cannot override a different contract-named settlement source.
 
-The fixed 3.5F Gaussian from the legacy skill is not implemented here as production truth; it remains a future explicit research fallback only if separately gated.
+Daily-high date windows are evaluated in the exact contract timezone. This applies both to NWS hourly filtering and Open-Meteo daily aggregation, preventing UTC-midnight drift from changing which observations or forecast hours belong to the contract day.
 
-## Approved data adapters
+Market price is never a weather-model feature. Kalshi orderbook evidence is evaluated downstream using executable-side semantics. Missing/stale market evidence may block edge publication without erasing a completed weather probability.
 
-- NWS: primary U.S. forecast + official station observation acquisition
-- Open-Meteo: secondary multi-model/model-disagreement evidence
-- NOAA/NCEI: historical station calibration/reconciliation
-- Xweather: optional corroboration only
-
-None of these sources can override the settlement authority named by the frozen Kalshi contract rules.
-
-## Safety/governance
-
+Safety invariants:
 - `can_execute=false`
 - no order placement/cancel/modify interfaces
 - no capital allocation
-- stale/empty market data can block edge without erasing completed weather probability
-- unresolved settlement identity fails closed
-- market probability cannot substitute for model probability
+- no station substitution
+- no market-implied-probability substitution
+- historical replay must preserve decision-time source vintages
