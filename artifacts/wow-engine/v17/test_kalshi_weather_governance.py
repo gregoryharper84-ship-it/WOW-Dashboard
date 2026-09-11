@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from copy import deepcopy
-
 from v17.host_routing import (
     KALSHI_WEATHER_MARKET_EXPERT,
     PROJECT_CHAT,
@@ -84,6 +82,7 @@ def _tables():
         "evidence_snapshot_ids": ["src-1", "src-2"],
         "model_payload": {
             "contract": contract,
+            "lead_time_bucket": "H1_6",
             "market_price_used_as_model_input": False,
             "can_execute": False,
             "terminal": {
@@ -114,8 +113,11 @@ def _tables():
             "calibration_profile_id": "cal-1",
             "station_id": "KALSHI_WEATHER_INDEX:NYC",
             "lane": "HOURLY_TEMPERATURE",
+            "lead_time_bucket": "H1_6",
             "model_version": prediction["model_version"],
             "certified": True,
+            "sample_n": 100,
+            "certification_evidence": {"acceptance": "CERTIFIED", "source": "immutable_shadow_ledger"},
             "fitted_as_of": "2026-09-10T00:00:00+00:00",
             "can_execute": False,
         }],
@@ -142,7 +144,7 @@ def test_weather_lane_routes_to_weather_specialist_but_not_global_authority():
     assert route.global_terminal_authority is False
     assert route.can_execute is False
     assert controlling_engine_for("DAILY_HIGH_TEMPERATURE") == KALSHI_WEATHER_MARKET_EXPERT
-    assert expected_full_model_operation_id("HOURLY_TEMPERATURE") == "captureKalshiWeatherV17HourlyShadow"
+    assert expected_full_model_operation_id("HOURLY_TEMPERATURE") == "analyzeKalshiWeatherV17Contract"
 
 
 def test_v17_global_reducer_can_publish_only_immutable_certified_probability():
@@ -211,6 +213,22 @@ def test_point_estimate_must_remain_inside_calibration_bounds():
     result = reduce_kalshi_weather_prediction_v17(client=_Client(tables), prediction_id="pred-1")
     assert result["probability_publishable"] is False
     assert "DYNAMIC_CALIBRATION_BOUNDS_INVALID" in result["blockers"]
+
+
+def test_station_lane_lead_time_calibration_identity_is_enforced():
+    tables = _tables()
+    tables["wow_kalshi_weather_calibration_profiles"][0]["lead_time_bucket"] = "H6_24"
+    result = reduce_kalshi_weather_prediction_v17(client=_Client(tables), prediction_id="pred-1")
+    assert result["probability_publishable"] is False
+    assert "CALIBRATION_LEAD_TIME_BUCKET_MISMATCH" in result["blockers"]
+
+
+def test_certified_boolean_without_certification_evidence_cannot_publish():
+    tables = _tables()
+    tables["wow_kalshi_weather_calibration_profiles"][0]["certification_evidence"] = {}
+    result = reduce_kalshi_weather_prediction_v17(client=_Client(tables), prediction_id="pred-1")
+    assert result["probability_publishable"] is False
+    assert "CALIBRATION_CERTIFICATION_EVIDENCE_MISSING" in result["blockers"]
 
 
 def test_governance_snapshot_exposes_single_global_authority_and_no_execution():
