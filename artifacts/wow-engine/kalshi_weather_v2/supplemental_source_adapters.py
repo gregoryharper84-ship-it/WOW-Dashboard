@@ -9,7 +9,7 @@ from urllib.parse import urlencode
 from .source_adapters import ProviderSnapshot
 
 
-USER_AGENT = "WOW-Kalshi-Weather/2.0 research-support"
+USER_AGENT = "WOW-Kalshi-Weather/2.0 github.com/gregoryharper84-ship-it/WOW-Dashboard"
 
 
 class SupplementalSourceError(ValueError):
