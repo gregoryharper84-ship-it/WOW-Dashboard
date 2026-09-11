@@ -10,6 +10,12 @@ from .contract_rule_acquisition import (
     SettlementSourceEvidence,
     resolve_settlement_source,
 )
+from .daily_high_forecast_fusion import (
+    DailyHighForecastEstimate,
+    DailyHighForecastFusion,
+    DailyHighForecastFusionError,
+    build_daily_high_weather_evidence,
+)
 from .fee_policy import (
     DIRECT_BALANCE_QUANTUM,
     NON_DIRECT_BALANCE_QUANTUM,
@@ -77,6 +83,10 @@ __all__ = [
     "parse_temperature_rule",
     "ParsedHourlyTemperatureRule",
     "parse_hourly_temperature_rule",
+    "DailyHighForecastFusionError",
+    "DailyHighForecastEstimate",
+    "DailyHighForecastFusion",
+    "build_daily_high_weather_evidence",
     "HourlyForecastFusionError",
     "HourlyForecastEstimate",
     "HourlyForecastFusion",
