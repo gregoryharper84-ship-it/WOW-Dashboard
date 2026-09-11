@@ -58,10 +58,10 @@ def reduce_kalshi_weather_prediction_v17(*, client, prediction_id: str) -> Mappi
             blockers.append("SETTLEMENT_SOURCE_UNRESOLVED")
 
     capability = persistence.load_runtime_capability(CAPABILITY_KEY)
-    evidence = capability.get("evidence") if isinstance(capability.get("evidence"), Mapping) else {}
+    capability_evidence = capability.get("evidence") if isinstance(capability.get("evidence"), Mapping) else {}
     if str(capability.get("capability_status") or "").upper() != "AVAILABLE":
         blockers.append("KALSHI_WEATHER_PROBABILITY_CAPABILITY_UNAVAILABLE")
-    if evidence.get("probability_publishable") is not True:
+    if capability_evidence.get("probability_publishable") is not True:
         blockers.append("CAPABILITY_NOT_CERTIFIED_FOR_PROBABILITY_PUBLICATION")
     if bool(capability.get("can_execute")):
         blockers.append("CAPABILITY_CAN_EXECUTE_MUST_BE_FALSE")
@@ -80,7 +80,7 @@ def reduce_kalshi_weather_prediction_v17(*, client, prediction_id: str) -> Mappi
             blockers.append("CONTRACT_RULE_SNAPSHOT_MISMATCH")
         if not str(contract.get("settlement_source") or "").strip():
             blockers.append("CONTRACT_SETTLEMENT_SOURCE_MISSING")
-        if not str(contract.get("settlement_location_code") or "").strip() and not str(contract.get("station_id") or "").strip():
+        if not str(contract.get("settlement_location_code") or "").strip() and not str(contract.get("settlement_station_id") or "").strip():
             blockers.append("CONTRACT_SETTLEMENT_LOCATION_MISSING")
         if not str(contract.get("timezone") or "").strip():
             blockers.append("CONTRACT_TIMEZONE_MISSING")
@@ -98,9 +98,6 @@ def reduce_kalshi_weather_prediction_v17(*, client, prediction_id: str) -> Mappi
             blockers.append("GLOBAL_TERMINAL_AUTHORITY_MISMATCH")
         if terminal_payload.get("local_global_terminal_authority") is True:
             blockers.append("LOCAL_TERMINAL_AUTHORITY_PROHIBITED")
-    # Backward-compatible shadow rows created before the local-audit marker are
-    # allowed only if every other V17 publication invariant is independently
-    # proven here. The reducer itself remains the sole publisher.
 
     p_yes = _prob(prediction.get("p_yes"), "P_YES", blockers)
     p_no = _prob(prediction.get("p_no"), "P_NO", blockers)
@@ -118,15 +115,26 @@ def reduce_kalshi_weather_prediction_v17(*, client, prediction_id: str) -> Mappi
     else:
         if calibration.get("certified") is not True:
             blockers.append("CALIBRATION_PROFILE_NOT_CERTIFIED")
+        certification_evidence = calibration.get("certification_evidence")
+        if not isinstance(certification_evidence, Mapping) or not certification_evidence:
+            blockers.append("CALIBRATION_CERTIFICATION_EVIDENCE_MISSING")
+        sample_n = calibration.get("sample_n")
+        if not isinstance(sample_n, int) or isinstance(sample_n, bool) or sample_n <= 0:
+            blockers.append("CALIBRATION_SAMPLE_EVIDENCE_MISSING")
         if bool(calibration.get("can_execute")):
             blockers.append("CALIBRATION_CAN_EXECUTE_MUST_BE_FALSE")
         if str(calibration.get("model_version") or "") != str(prediction.get("model_version") or ""):
             blockers.append("CALIBRATION_MODEL_VERSION_MISMATCH")
         if contract and str(calibration.get("lane") or "") != str(contract.get("lane") or ""):
             blockers.append("CALIBRATION_LANE_MISMATCH")
-        expected_station = str(contract.get("settlement_location_code") or contract.get("station_id") or "") if contract else ""
+        expected_station = str(contract.get("settlement_location_code") or contract.get("settlement_station_id") or "") if contract else ""
         if expected_station and str(calibration.get("station_id") or "") != expected_station:
             blockers.append("CALIBRATION_SETTLEMENT_IDENTITY_MISMATCH")
+        expected_lead_bucket = str(model_payload.get("lead_time_bucket") or "")
+        if not expected_lead_bucket:
+            blockers.append("PREDICTION_LEAD_TIME_BUCKET_MISSING")
+        elif str(calibration.get("lead_time_bucket") or "") != expected_lead_bucket:
+            blockers.append("CALIBRATION_LEAD_TIME_BUCKET_MISMATCH")
         decision_time = _dt(prediction.get("decision_time"))
         fitted_as_of = _dt(calibration.get("fitted_as_of"))
         if decision_time is None or fitted_as_of is None or fitted_as_of > decision_time:
@@ -215,7 +223,8 @@ def governance_snapshot(*, client) -> Mapping[str, Any]:
             "contract_first": True,
             "exact_settlement_identity_required": True,
             "market_probability_is_not_model_probability": True,
-            "certified_calibration_required": True,
+            "certified_station_lane_lead_time_calibration_required": True,
+            "calibration_certification_evidence_required": True,
             "immutable_pregame_write_required": True,
             "row_reconciliation_required": True,
             "point_estimate_is_not_lower_bound": True,
