@@ -107,26 +107,32 @@ def run_all(c=None, e=None, p=None, m=None):
     return settlement_result, probability_result, market_result, decision
 
 
-def test_happy_path_produces_qualified_edge_without_inventing_strong_threshold():
+def assert_local_audit_only(decision):
+    assert decision.rank_eligible is False
+    assert decision.probability_publishable is False
+    assert decision.edge_publishable is False
+    assert decision.payload["local_terminal_label_audit_only"] is True
+    assert decision.payload["local_global_terminal_authority"] is False
+    assert decision.payload["global_terminal_authority_required"] == "V17_TERMINAL_REDUCER"
+    assert decision.can_execute is False
+
+
+def test_happy_path_produces_local_qualified_edge_candidate_but_cannot_publish():
     settlement_result, probability_result, market_result, decision = run_all()
     assert settlement_result.ok is True
     assert probability_result.ok is True
     assert market_result.ok is True
     assert decision.status == "QUALIFIED_EDGE"
-    assert decision.rank_eligible is True
-    assert decision.probability_publishable is True
-    assert decision.edge_publishable is True
     assert decision.payload["best_side"] == "YES"
     assert round(decision.payload["best_uncertainty_adjusted_edge"], 6) == 0.06
-    assert decision.can_execute is False
+    assert_local_audit_only(decision)
 
 
 def test_unresolved_station_is_settlement_ambiguity_and_blocks_probability_publication():
     _, _, _, decision = run_all(c=contract(settlement_station_id=None, settlement_station_name=None))
     assert decision.status == "NO_PLAY_SETTLEMENT_AMBIGUITY"
-    assert decision.probability_publishable is False
-    assert decision.edge_publishable is False
     assert "SETTLEMENT_STATION_UNRESOLVED" in decision.blockers
+    assert_local_audit_only(decision)
 
 
 def test_market_price_substitution_is_data_insufficient_not_market_hold():
@@ -134,19 +140,17 @@ def test_market_price_substitution_is_data_insufficient_not_market_hold():
     assert probability_result.ok is False
     assert "MARKET_PRICE_SUBSTITUTION_PROHIBITED" in probability_result.blockers
     assert decision.status == "NO_PLAY_DATA_INSUFFICIENT"
-    assert decision.probability_publishable is False
+    assert_local_audit_only(decision)
 
 
-def test_stale_or_unverified_market_holds_edge_but_preserves_weather_probability():
+def test_stale_or_unverified_market_holds_edge_and_local_probability_remains_audit_only():
     _, _, market_result, decision = run_all(m=market(executable_price_verified=False))
     assert market_result.ok is False
     assert decision.status == "WATCH"
-    assert decision.probability_publishable is True
-    assert decision.edge_publishable is False
-    assert decision.rank_eligible is False
+    assert_local_audit_only(decision)
 
 
-def test_unresolved_fees_hold_edge_but_preserve_weather_probability():
+def test_unresolved_fees_hold_edge_and_local_probability_remains_audit_only():
     _, _, market_result, decision = run_all(m=market(
         fee_known=False,
         friction_model_verified=False,
@@ -156,11 +160,10 @@ def test_unresolved_fees_hold_edge_but_preserve_weather_probability():
     assert market_result.ok is False
     assert "FEE_SCHEDULE_UNRESOLVED" in market_result.blockers
     assert decision.status == "WATCH"
-    assert decision.probability_publishable is True
-    assert decision.edge_publishable is False
+    assert_local_audit_only(decision)
 
 
-def test_no_positive_conservative_edge_is_no_edge():
+def test_no_positive_conservative_edge_is_local_no_edge_but_not_global_publication():
     _, _, _, decision = run_all(m=market(
         yes_price=0.60,
         no_price=0.45,
@@ -168,20 +171,21 @@ def test_no_positive_conservative_edge_is_no_edge():
         no_effective_break_even=0.46,
     ))
     assert decision.status == "NO_EDGE"
-    assert decision.rank_eligible is False
-    assert decision.edge_publishable is True
+    assert_local_audit_only(decision)
 
 
 def test_probability_incoherence_fails_closed():
     _, probability_result, _, decision = run_all(p=probability(p_yes=0.62, p_no=0.40))
     assert "YES_NO_PROBABILITY_INCOHERENT" in probability_result.blockers
     assert decision.status == "NO_PLAY_DATA_INSUFFICIENT"
+    assert_local_audit_only(decision)
 
 
 def test_calibration_missing_fails_closed():
     _, probability_result, _, decision = run_all(p=probability(calibrated=False, calibration_method=None))
     assert "CALIBRATION_NOT_READY" in probability_result.blockers
     assert decision.status == "NO_PLAY_DATA_INSUFFICIENT"
+    assert_local_audit_only(decision)
 
 
 def test_model_disagreement_is_warning_not_automatic_blocker():
@@ -189,6 +193,7 @@ def test_model_disagreement_is_warning_not_automatic_blocker():
     assert probability_result.ok is True
     assert "MODEL_DISAGREEMENT_PRESENT" in probability_result.warnings
     assert decision.status == "QUALIFIED_EDGE"
+    assert_local_audit_only(decision)
 
 
 def test_xweather_is_not_required_for_probability_agent():
@@ -196,3 +201,4 @@ def test_xweather_is_not_required_for_probability_agent():
     _, probability_result, _, decision = run_all(e=e)
     assert probability_result.ok is True
     assert decision.status == "QUALIFIED_EDGE"
+    assert_local_audit_only(decision)
