@@ -5,8 +5,11 @@ from typing import Callable
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
+from .empirical_runtime import install_empirical_cohort_scheduler
+from .free_public_sources import source_registry_snapshot
 from .persistence import KalshiWeatherPersistence, KalshiWeatherPersistenceError
 from .runtime import DEFAULT_OPEN_METEO_MODELS, KalshiWeatherRuntimeError, capture_hourly_shadow, settle_hourly_prediction
+from .shadow_cohort import build_calibration_report, run_hourly_shadow_cohort_once
 from v17.kalshi_weather_governance import governance_snapshot, reduce_kalshi_weather_prediction_v17
 
 
@@ -100,6 +103,21 @@ def install_kalshi_weather_v2_routes(
             except Exception as exc:
                 _raise_governed(exc)
 
+    if "/kalshi-weather/v17/free-sources" not in existing:
+        @app.get(
+            "/kalshi-weather/v17/free-sources",
+            dependencies=[auth_dependency],
+            operation_id="getKalshiWeatherV17FreeSources",
+        )
+        def free_sources_v17():
+            return {
+                "status": "FREE_PUBLIC_SOURCE_REGISTRY",
+                "sources": source_registry_snapshot(),
+                "settlement_source_override_allowed": False,
+                "probability_publishable": False,
+                "can_execute": False,
+            }
+
     if "/kalshi-weather/v2/hourly/shadow" not in existing:
         @app.post(
             "/kalshi-weather/v2/hourly/shadow",
@@ -127,9 +145,6 @@ def install_kalshi_weather_v2_routes(
         def analyze_v17(req: WeatherAnalyzeRequest):
             lane = req.lane.strip().upper()
             if lane != "HOURLY_TEMPERATURE":
-                # Declared lanes remain V17-compliant by failing closed until an
-                # end-to-end runtime + certified calibration exists. No generic
-                # weather reasoning may substitute for the controlling model.
                 return {
                     "status": "NO_PLAY_DATA_INSUFFICIENT",
                     "code": "WEATHER_LANE_RUNTIME_NOT_CERTIFIED",
@@ -182,7 +197,6 @@ def install_kalshi_weather_v2_routes(
                 ),
                 db_client_fn,
             )
-            # capture_hourly_shadow persisted the immutable row before this call.
             decision = reduce_kalshi_weather_prediction_v17(
                 client=db_client_fn(),
                 prediction_id=str(capture["prediction_id"]),
@@ -227,6 +241,36 @@ def install_kalshi_weather_v2_routes(
         )
         def hourly_settle_v17(req: HourlySettleRequest):
             return _settle_hourly(req, db_client_fn)
+
+    if "/internal/kalshi-weather/v17/empirical-cohort/run" not in existing:
+        @app.post(
+            "/internal/kalshi-weather/v17/empirical-cohort/run",
+            dependencies=[auth_dependency],
+            operation_id="runKalshiWeatherV17EmpiricalCohort",
+        )
+        def empirical_cohort_run():
+            try:
+                result = run_hourly_shadow_cohort_once(db_client_fn=db_client_fn)
+                return {
+                    **result.__dict__,
+                    "global_terminal_authority": "V17_TERMINAL_REDUCER",
+                }
+            except Exception as exc:
+                _raise_governed(exc)
+
+    if "/internal/kalshi-weather/v17/calibration-report" not in existing:
+        @app.get(
+            "/internal/kalshi-weather/v17/calibration-report",
+            dependencies=[auth_dependency],
+            operation_id="getKalshiWeatherV17CalibrationReport",
+        )
+        def empirical_calibration_report():
+            try:
+                return build_calibration_report(client=db_client_fn())
+            except Exception as exc:
+                _raise_governed(exc)
+
+    install_empirical_cohort_scheduler(app, db_client_fn=db_client_fn)
 
 
 def _capture_hourly(req: HourlyShadowRequest, db_client_fn: Callable[[], object]):
