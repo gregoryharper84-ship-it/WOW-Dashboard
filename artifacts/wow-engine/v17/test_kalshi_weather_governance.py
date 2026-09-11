@@ -64,7 +64,7 @@ def _tables():
         "rule_snapshot_id": "rule-1",
         "ticker": contract["ticker"],
         "decision_time": decision_time,
-        "model_version": "KALSHI_WEATHER_V2_HOURLY_SHADOW_1",
+        "model_version": "KALSHI_WEATHER_V2_HOURLY_SHADOW_R1",
         "calibration_profile_id": "cal-1",
         "p_yes": 0.64,
         "p_no": 0.36,
@@ -135,6 +135,19 @@ def _tables():
                 "evidence_time": "2026-09-11T11:30:00+00:00",
             },
         ],
+        "wow_kalshi_weather_market_snapshots": [{
+            "market_snapshot_id": "market-1",
+            "prediction_id": "pred-1",
+            "ticker": contract["ticker"],
+            "retrieved_at": "2026-09-11T12:00:05+00:00",
+            "market_status": "open",
+            "yes_best_ask": 0.50,
+            "no_best_ask": 0.55,
+            "executable_price_verified": True,
+            "friction_model_verified": False,
+            "yes_effective_break_even": None,
+            "no_effective_break_even": None,
+        }],
     }
 
 
@@ -147,19 +160,50 @@ def test_weather_lane_routes_to_weather_specialist_but_not_global_authority():
     assert expected_full_model_operation_id("HOURLY_TEMPERATURE") == "analyzeKalshiWeatherV17Contract"
 
 
-def test_v17_global_reducer_can_publish_only_immutable_certified_probability():
+def test_v17_global_reducer_publishes_probability_and_labeled_pre_fee_edge_only_after_immutable_reconciliation():
     result = reduce_kalshi_weather_prediction_v17(client=_Client(_tables()), prediction_id="pred-1")
     assert result["status"] == "WATCH"
-    assert result["code"] == "V17_WEATHER_PROBABILITY_PUBLISHED_EDGE_HELD"
+    assert result["code"] == "V17_WEATHER_POSITIVE_PRE_FEE_EDGE_FRICTION_HELD"
     assert result["p_yes"] == 0.64
     assert result["p_no"] == 0.36
     assert result["probability_publishable"] is True
-    assert result["edge_publishable"] is False
+    assert result["edge_publishable"] is True
     assert result["rank_eligible"] is False
+    assert result["raw_edge_yes"] == 0.14
+    assert round(result["uncertainty_adjusted_edge_yes"], 10) == 0.08
+    assert result["edge_basis"] == "PRE_FEE_EXECUTABLE_ASK"
+    assert "FRICTION_MODEL_UNVERIFIED" in result["edge_blockers"]
     assert result["immutable_pregame_write_verified"] is True
     assert result["row_reconciliation_verified"] is True
     assert result["global_terminal_authority"] == GLOBAL_TERMINAL_AUTHORITY
     assert result["can_execute"] is False
+
+
+def test_verified_friction_allows_positive_uncertainty_adjusted_edge_to_be_rank_eligible():
+    tables = _tables()
+    market = tables["wow_kalshi_weather_market_snapshots"][0]
+    market["friction_model_verified"] = True
+    market["yes_effective_break_even"] = 0.51
+    market["no_effective_break_even"] = 0.56
+    result = reduce_kalshi_weather_prediction_v17(client=_Client(tables), prediction_id="pred-1")
+    assert result["status"] == "QUALIFIED_EDGE"
+    assert result["code"] == "POSITIVE_UNCERTAINTY_ADJUSTED_EDGE"
+    assert result["edge_publishable"] is True
+    assert result["rank_eligible"] is True
+    assert result["best_side"] == "YES"
+    assert round(result["best_uncertainty_adjusted_edge"], 10) == 0.07
+    assert result["edge_basis"] == "VERIFIED_EFFECTIVE_BREAK_EVEN"
+
+
+def test_missing_market_snapshot_holds_edge_but_does_not_erase_certified_probability():
+    tables = _tables()
+    tables["wow_kalshi_weather_market_snapshots"] = []
+    result = reduce_kalshi_weather_prediction_v17(client=_Client(tables), prediction_id="pred-1")
+    assert result["status"] == "WATCH"
+    assert result["probability_publishable"] is True
+    assert result["edge_publishable"] is False
+    assert result["rank_eligible"] is False
+    assert "MARKET_SNAPSHOT_MISSING" in result["edge_blockers"]
 
 
 def test_unavailable_capability_masks_probability_fail_closed():
@@ -235,5 +279,6 @@ def test_governance_snapshot_exposes_single_global_authority_and_no_execution():
     snapshot = governance_snapshot(client=_Client(_tables()))
     assert snapshot["global_terminal_authority"] == GLOBAL_TERMINAL_AUTHORITY
     assert snapshot["local_terminal_label_audit_only"] is True
+    assert snapshot["invariants"]["market_edge_reconciled_separately_from_probability"] is True
     assert snapshot["invariants"]["local_specialist_may_publish"] is False
     assert snapshot["can_execute"] is False
