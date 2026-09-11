@@ -27,14 +27,16 @@ from fastapi.responses import JSONResponse
 
 from github_actions_oidc import GitHubOIDCValidationError, verify_github_actions_oidc
 
-app = FastAPI(title="WOW Odds API Credential Proxy", version="1.3.0")
+app = FastAPI(title="WOW Odds API Credential Proxy", version="1.4.0")
 
 ODDS_API_BASE = "https://api.the-odds-api.com/v4"
 UPSTREAM_TIMEOUT_SECONDS = 12.0
 QUOTA_HEADERS = ("x-requests-remaining", "x-requests-used", "x-requests-last")
-CORE_EVENT_MARKETS = "h2h,spreads,totals"
+CORE_EVENT_MARKETS = frozenset({"h2h", "spreads", "totals"})
 MARKET_INVENTORY_FALLBACK_HEADER = "x-wow-market-inventory-fallback"
+EVENT_ODDS_FALLBACK_HEADER = "x-wow-event-odds-fallback"
 _market_inventory_endpoint_unavailable = False
+_event_odds_endpoint_unavailable_for_core = False
 
 SportPath = Path(..., pattern=r"^[A-Za-z0-9_]+$", min_length=1, max_length=100)
 EventPath = Path(..., pattern=r"^[A-Za-z0-9_-]+$", min_length=1, max_length=128)
@@ -113,10 +115,10 @@ def _safe_upstream_message(response: httpx.Response) -> Optional[str]:
     return None
 
 
-def _upstream_error_response(response: httpx.Response) -> JSONResponse:
+def _upstream_error_response(response: httpx.Response, code: str = "ODDS_API_UPSTREAM_ERROR") -> JSONResponse:
     body = {
         "ok": False,
-        "code": "ODDS_API_UPSTREAM_ERROR",
+        "code": code,
         "upstream_status": response.status_code,
         "can_execute": False,
     }
@@ -143,30 +145,75 @@ def _proxy_get(upstream_path: str, params: dict[str, str]) -> JSONResponse:
     return _upstream_error_response(response)
 
 
-def _core_market_inventory_fallback(upstream_odds_path: str, params: dict[str, str]) -> JSONResponse:
-    """Use live core event odds as a market-key inventory when /markets is not entitled.
+def _requested_markets(params: dict[str, str]) -> set[str]:
+    return {value.strip() for value in str(params.get("markets", "")).split(",") if value.strip()}
 
-    The returned payload is the vendor's real event-odds response, not synthetic
-    bookmaker evidence. Scout only derives the available market keys from it and
-    then performs its normal evidence fetch. This intentionally exposes only
-    h2h/spreads/totals; prop discovery remains unavailable without market inventory.
+
+def _featured_sport_odds_fallback(
+    sport: str,
+    event_id: str,
+    params: dict[str, str],
+    *,
+    response_header: str,
+) -> JSONResponse:
+    """Fetch featured markets via /sports/{sport}/odds and return one exact event.
+
+    The standard sport-level odds endpoint is the vendor's featured-market path.
+    It is used only for h2h/spreads/totals when event-scoped endpoints reject the
+    account. The response remains live vendor evidence; no bookmaker rows or
+    probabilities are synthesized.
     """
-    fallback_params = dict(params)
-    fallback_params.update({"markets": CORE_EVENT_MARKETS, "oddsFormat": "american"})
+    requested = _requested_markets(params)
+    if not requested or not requested.issubset(CORE_EVENT_MARKETS):
+        return JSONResponse(
+            content={
+                "ok": False,
+                "code": "ODDS_API_EVENT_ENDPOINT_REQUIRED_FOR_NONCORE_MARKETS",
+                "can_execute": False,
+            },
+            status_code=403,
+        )
+
+    allowed_keys = {"markets", "regions", "bookmakers", "dateFormat", "oddsFormat", "includeLinks", "includeSids"}
+    fallback_params = {k: v for k, v in params.items() if k in allowed_keys}
     fallback_params["apiKey"] = _vendor_key()
     try:
-        response = _http_get(f"{ODDS_API_BASE}{upstream_odds_path}", fallback_params)
+        response = _http_get(f"{ODDS_API_BASE}/sports/{sport}/odds", fallback_params)
     except (httpx.TimeoutException, httpx.NetworkError, httpx.RequestError):
         raise HTTPException(status_code=502, detail={"code": "ODDS_API_UPSTREAM_UNREACHABLE", "can_execute": False})
     try:
         payload = response.json()
     except ValueError:
         raise HTTPException(status_code=502, detail={"code": "ODDS_API_UPSTREAM_NON_JSON", "can_execute": False})
-    if 200 <= response.status_code < 300:
-        headers = _quota_headers(response)
-        headers[MARKET_INVENTORY_FALLBACK_HEADER] = "core-event-odds"
-        return JSONResponse(content=payload, status_code=response.status_code, headers=headers)
-    return _upstream_error_response(response)
+    if not (200 <= response.status_code < 300):
+        return _upstream_error_response(response, code="ODDS_API_FEATURED_ODDS_FALLBACK_ERROR")
+    if not isinstance(payload, list):
+        return JSONResponse(
+            content={"ok": False, "code": "ODDS_API_FEATURED_ODDS_FALLBACK_INVALID", "can_execute": False},
+            status_code=502,
+            headers=_quota_headers(response),
+        )
+    event_payload = next((row for row in payload if isinstance(row, dict) and str(row.get("id")) == event_id), None)
+    if event_payload is None:
+        return JSONResponse(
+            content={"ok": False, "code": "ODDS_API_FEATURED_ODDS_EVENT_NOT_FOUND", "can_execute": False},
+            status_code=404,
+            headers=_quota_headers(response),
+        )
+    headers = _quota_headers(response)
+    headers[response_header] = "sport-featured-odds"
+    return JSONResponse(content=event_payload, status_code=200, headers=headers)
+
+
+def _core_market_inventory_fallback(sport: str, event_id: str, params: dict[str, str]) -> JSONResponse:
+    fallback_params = dict(params)
+    fallback_params.update({"markets": ",".join(sorted(CORE_EVENT_MARKETS)), "oddsFormat": "american"})
+    return _featured_sport_odds_fallback(
+        sport,
+        event_id,
+        fallback_params,
+        response_header=MARKET_INVENTORY_FALLBACK_HEADER,
+    )
 
 
 def _require_regions_or_bookmakers(regions: Optional[str], bookmakers: Optional[str]) -> None:
@@ -183,6 +230,7 @@ def health():
         "caller_bearer_auth_configured": bool(os.environ.get("WOW_ODDS_PROXY_ACTION_KEY")),
         "github_multiscout_oidc_enabled": True,
         "market_inventory_core_fallback_enabled": True,
+        "event_core_odds_sport_fallback_enabled": True,
         "can_execute": False,
     }
 
@@ -214,10 +262,9 @@ def get_event_markets(
     global _market_inventory_endpoint_unavailable
     _require_regions_or_bookmakers(regions, bookmakers)
     params = _clean_params(regions=regions, bookmakers=bookmakers, dateFormat=date_format)
-    odds_path = f"/sports/{sport}/events/{event_id}/odds"
 
     if _market_inventory_endpoint_unavailable:
-        return _core_market_inventory_fallback(odds_path, params)
+        return _core_market_inventory_fallback(sport, event_id, params)
 
     upstream_params = dict(params)
     upstream_params["apiKey"] = _vendor_key()
@@ -225,22 +272,15 @@ def get_event_markets(
         response = _http_get(f"{ODDS_API_BASE}/sports/{sport}/events/{event_id}/markets", upstream_params)
     except (httpx.TimeoutException, httpx.NetworkError, httpx.RequestError):
         raise HTTPException(status_code=502, detail={"code": "ODDS_API_UPSTREAM_UNREACHABLE", "can_execute": False})
-
     try:
         payload = response.json()
     except ValueError:
         raise HTTPException(status_code=502, detail={"code": "ODDS_API_UPSTREAM_NON_JSON", "can_execute": False})
-
     if 200 <= response.status_code < 300:
         return JSONResponse(content=payload, status_code=response.status_code, headers=_quota_headers(response))
-
-    # The same key can successfully access /sports and /events while /markets is
-    # plan/endpoint-restricted. Do not let that optional inventory capability zero
-    # the entire Scout slate. Fall back only for 401/403 and only to live core odds.
     if response.status_code in {401, 403}:
         _market_inventory_endpoint_unavailable = True
-        return _core_market_inventory_fallback(odds_path, params)
-
+        return _core_market_inventory_fallback(sport, event_id, params)
     return _upstream_error_response(response)
 
 
@@ -256,6 +296,40 @@ def get_event_odds(
     include_rotation_numbers: Optional[bool] = Query(None, alias="includeRotationNumbers"),
     include_multipliers: Optional[bool] = Query(None, alias="includeMultipliers"),
 ):
+    global _event_odds_endpoint_unavailable_for_core
     _require_regions_or_bookmakers(regions, bookmakers)
     params = _clean_params(markets=markets, regions=regions, bookmakers=bookmakers, dateFormat=date_format, oddsFormat=odds_format, includeLinks=include_links, includeSids=include_sids, includeBetLimits=include_bet_limits, includeRotationNumbers=include_rotation_numbers, includeMultipliers=include_multipliers)
-    return _proxy_get(f"/sports/{sport}/events/{event_id}/odds", params)
+    requested = _requested_markets(params)
+    is_core_only = bool(requested) and requested.issubset(CORE_EVENT_MARKETS)
+
+    if is_core_only and _event_odds_endpoint_unavailable_for_core:
+        return _featured_sport_odds_fallback(
+            sport,
+            event_id,
+            params,
+            response_header=EVENT_ODDS_FALLBACK_HEADER,
+        )
+
+    upstream_params = dict(params)
+    upstream_params["apiKey"] = _vendor_key()
+    try:
+        response = _http_get(f"{ODDS_API_BASE}/sports/{sport}/events/{event_id}/odds", upstream_params)
+    except (httpx.TimeoutException, httpx.NetworkError, httpx.RequestError):
+        raise HTTPException(status_code=502, detail={"code": "ODDS_API_UPSTREAM_UNREACHABLE", "can_execute": False})
+    try:
+        payload = response.json()
+    except ValueError:
+        raise HTTPException(status_code=502, detail={"code": "ODDS_API_UPSTREAM_NON_JSON", "can_execute": False})
+    if 200 <= response.status_code < 300:
+        return JSONResponse(content=payload, status_code=response.status_code, headers=_quota_headers(response))
+
+    if is_core_only and response.status_code in {401, 403}:
+        _event_odds_endpoint_unavailable_for_core = True
+        return _featured_sport_odds_fallback(
+            sport,
+            event_id,
+            params,
+            response_header=EVENT_ODDS_FALLBACK_HEADER,
+        )
+
+    return _upstream_error_response(response)
