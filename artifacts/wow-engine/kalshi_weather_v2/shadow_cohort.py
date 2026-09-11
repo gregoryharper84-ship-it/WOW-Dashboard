@@ -12,8 +12,9 @@ from .contract_rule_acquisition import KalshiContractRuleAcquirer
 from .hourly_rule_semantics import ParsedHourlyTemperatureRule, parse_hourly_temperature_rule
 from .http_client import ReadOnlyJsonClient
 from .market_discovery import KalshiWeatherMarketDiscovery
-from .persistence import KalshiWeatherPersistence, content_id
+from .persistence import content_id
 from .runtime import MODEL_VERSION, capture_hourly_shadow, lead_time_bucket, settle_hourly_prediction
+from .supplemental_capture import capture_hourly_supplemental_sources
 
 
 @dataclass(frozen=True)
@@ -56,8 +57,10 @@ class CohortRunResult:
     contracts_discovered: int
     samples_captured: int
     samples_skipped_existing: int
+    supplemental_snapshots_captured: int
     predictions_settled: int
     capture_failures: tuple[str, ...]
+    supplemental_failures: tuple[str, ...]
     settlement_failures: tuple[str, ...]
     probability_publishable: bool = False
     can_execute: bool = False
@@ -73,10 +76,12 @@ def run_hourly_shadow_cohort_once(
     db = db_client_fn()
     existing_keys = _existing_sample_keys(db)
     capture_failures: list[str] = []
+    supplemental_failures: list[str] = []
     settlement_failures: list[str] = []
     contracts_discovered = 0
     captured = 0
     skipped = 0
+    supplemental_captured = 0
 
     http = ReadOnlyJsonClient()
     try:
@@ -112,7 +117,7 @@ def run_hourly_shadow_cohort_once(
                 # would duplicate the exact same forecast error sample.
                 chosen = min(items, key=lambda item: item.ticker)
                 try:
-                    capture_hourly_shadow(
+                    capture = capture_hourly_shadow(
                         client=db,
                         ticker=chosen.ticker,
                         index_city=target.index_city,
@@ -127,8 +132,31 @@ def run_hourly_shadow_cohort_once(
                         f"{target.index_city}:{target_time}:{bucket}:{chosen.ticker}:{type(exc).__name__}:{getattr(exc, 'code', '')}"
                     )
                     continue
+
                 captured += 1
                 existing_keys.add(sample_key)
+
+                # Supplemental sources are evidence-only. Failure here never
+                # invalidates an otherwise valid core NWS/Open-Meteo capture.
+                try:
+                    supplemental = capture_hourly_supplemental_sources(
+                        client=db,
+                        rule_snapshot_id=str(capture["rule_snapshot_id"]),
+                        forecast_latitude=target.forecast_latitude,
+                        forecast_longitude=target.forecast_longitude,
+                        target_time_utc=target_time,
+                        retrieved_at=decision_time,
+                        http=http,
+                    )
+                    supplemental_captured += len(supplemental.get("source_snapshot_ids") or [])
+                    supplemental_failures.extend(
+                        f"{target.index_city}:{target_time}:{failure}"
+                        for failure in (supplemental.get("failures") or [])
+                    )
+                except Exception as exc:
+                    supplemental_failures.append(
+                        f"{target.index_city}:{target_time}:SUPPLEMENTAL:{type(exc).__name__}:{getattr(exc, 'code', '')}"
+                    )
 
         settled = _settle_ready_predictions(db, http, decision_time, settlement_failures)
     finally:
@@ -140,8 +168,10 @@ def run_hourly_shadow_cohort_once(
         contracts_discovered=contracts_discovered,
         samples_captured=captured,
         samples_skipped_existing=skipped,
+        supplemental_snapshots_captured=supplemental_captured,
         predictions_settled=settled,
         capture_failures=tuple(capture_failures),
+        supplemental_failures=tuple(supplemental_failures),
         settlement_failures=tuple(settlement_failures),
     )
 
@@ -161,14 +191,16 @@ async def run_shadow_cohort_loop(
         try:
             result = await asyncio.to_thread(run_hourly_shadow_cohort_once, db_client_fn=db_client_fn)
             logger.warning(
-                "WOW_KALSHI_WEATHER_EMPIRICAL_COHORT status=%s targets=%s discovered=%s captured=%s skipped=%s settled=%s capture_failures=%s settlement_failures=%s probability_publishable=false can_execute=false",
+                "WOW_KALSHI_WEATHER_EMPIRICAL_COHORT status=%s targets=%s discovered=%s captured=%s skipped=%s supplemental=%s settled=%s capture_failures=%s supplemental_failures=%s settlement_failures=%s probability_publishable=false can_execute=false",
                 result.status,
                 result.targets_checked,
                 result.contracts_discovered,
                 result.samples_captured,
                 result.samples_skipped_existing,
+                result.supplemental_snapshots_captured,
                 result.predictions_settled,
                 len(result.capture_failures),
+                len(result.supplemental_failures),
                 len(result.settlement_failures),
             )
         except Exception as exc:
@@ -214,8 +246,6 @@ def build_calibration_report(*, client, minimum_n: int = 30) -> Mapping[str, Any
             settlement_time=settlement_time,
         )
         key = (station_id, lane, bucket)
-        # Multiple threshold contracts for the same weather target/bucket are
-        # one calibration sample. Prefer the earliest decision-time snapshot.
         current = groups.setdefault(key, {}).get(sample_key)
         if current is None or decision_time < current[0]:
             groups[key][sample_key] = (decision_time, residual)
