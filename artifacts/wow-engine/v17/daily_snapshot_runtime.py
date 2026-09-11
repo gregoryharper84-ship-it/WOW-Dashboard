@@ -1,8 +1,9 @@
 """Bounded, server-owned V17 Daily snapshot runner.
 
-Daily first consumes canonical pregame snapshots.  If the PROPS lane is empty,
-it invokes the certified server-owned prop acquisition producer once and then
-re-queries canonical snapshots before returning a zero-row terminal receipt.
+Daily first consumes canonical pregame snapshots. If the PROPS lane is empty,
+it invokes the certified server-owned prop acquisition producer once, receipts
+that producer's write outcomes, and then performs a paged canonical readback.
+Persisted rows may not silently disappear between producer and canonical store.
 It never invents a probability or executable wager.
 """
 from __future__ import annotations
@@ -48,36 +49,25 @@ def _props_row_status(outcomes: list[dict[str, Any]]) -> str:
 
 
 def _reconcile(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    completed = held = rejected = unclassified = 0
+    counts = {"COMPLETED": 0, "HELD": 0, "REJECTED": 0, "PURGED": 0, "INVALID": 0}
+    unclassified = 0
     for row in rows:
         status = row.get("row_status")
-        if status == "COMPLETED": completed += 1
-        elif status == "HELD": held += 1
-        elif status == "REJECTED": rejected += 1
-        else: unclassified += 1
+        if status in counts:
+            counts[status] += 1
+        else:
+            unclassified += 1
     rows_in = len(rows)
-    return {"rows_in": rows_in, "rows_completed": completed, "rows_held": held, "rows_rejected": rejected, "rows_unclassified": unclassified, "balanced": unclassified == 0 and completed + held + rejected == rows_in}
-
-
-def _lane_reconciliation(rows: list[dict[str, Any]], lane: str, blockers: list[str] | None = None, acquisition: dict[str, Any] | None = None) -> dict[str, Any]:
-    blockers = blockers or []
-    lane_rows = [row for row in rows if row.get("lane") == lane]
-    discovered = len(lane_rows)
-    zero_row_reason = None
-    if discovered == 0:
-        expected = "PROP_SNAPSHOT_QUERY_FAILED" if lane == "PROPS" else "TEAM_EVENT_SNAPSHOT_QUERY_FAILED"
-        if expected in " ".join(blockers): zero_row_reason = "DISCOVERY_DATA_UNOBTAINABLE"
-        elif lane == "PROPS" and acquisition and acquisition.get("status") == "DATA_UNOBTAINABLE": zero_row_reason = "DISCOVERY_DATA_UNOBTAINABLE"
-        else: zero_row_reason = "NO_CANONICAL_CANDIDATES"
+    terminal_total = sum(counts.values())
     return {
-        "discovered_count": discovered,
-        "canonicalized_count": discovered,
-        "scored_count": discovered,
-        "completed_count": sum(1 for row in lane_rows if row.get("row_status") == "COMPLETED"),
-        "held_count": sum(1 for row in lane_rows if row.get("row_status") == "HELD"),
-        "rejected_count": sum(1 for row in lane_rows if row.get("row_status") == "REJECTED"),
-        "zero_row_reason": zero_row_reason,
-        "acquisition": acquisition if lane == "PROPS" else None,
+        "rows_in": rows_in,
+        "rows_completed": counts["COMPLETED"],
+        "rows_held": counts["HELD"],
+        "rows_rejected": counts["REJECTED"],
+        "rows_purged": counts["PURGED"],
+        "rows_invalid": counts["INVALID"],
+        "rows_unclassified": unclassified,
+        "balanced": unclassified == 0 and terminal_total == rows_in,
     }
 
 
@@ -89,19 +79,156 @@ def _future(value: Any) -> bool:
         return False
 
 
+def _matching_slate(row: dict[str, Any], requested_date: str, requested_timezone: str) -> bool:
+    try:
+        zone = ZoneInfo(requested_timezone)
+        parsed = datetime.fromisoformat(str(row.get("event_start_time")).replace("Z", "+00:00"))
+        return parsed.utcoffset() is not None and parsed.astimezone(zone).date().isoformat() == requested_date
+    except (TypeError, ValueError, Exception):
+        return False
+
+
+def _prop_manifest_rows(
+    db: Any,
+    requested_date: str,
+    requested_timezone: str,
+    *,
+    page_size: int = 250,
+) -> list[dict[str, Any]]:
+    """Read the complete canonical slate manifest without a first-page truncation."""
+    selected = "source_snapshot_id,event_id,event_start_time,sport,player,stat_type,line,hydration_status,blockers"
+    manifest: list[dict[str, Any]] = []
+    offset = 0
+    while True:
+        query = db.table("wow_prop_evidence_snapshots").select(selected).eq("hydration_status", "PASS").order("event_start_time")
+        ranged = getattr(query, "range", None)
+        if callable(ranged):
+            batch = ranged(offset, offset + page_size - 1).execute().data or []
+        else:
+            # Compatibility for test doubles/clients without range(); one bounded
+            # read preserves prior behavior while production Supabase uses range().
+            batch = query.limit(page_size).execute().data or []
+        batch = [dict(row) for row in batch]
+        manifest.extend(
+            row for row in batch
+            if not row.get("blockers") and _future(row.get("event_start_time")) and _matching_slate(row, requested_date, requested_timezone)
+        )
+        if not callable(ranged) or len(batch) < page_size:
+            break
+        offset += page_size
+    return manifest
+
+
 def _prop_rows(db: Any, requested_date: str, requested_timezone: str, limit: int) -> list[dict[str, Any]]:
-    rows = db.table("wow_prop_evidence_snapshots").select("source_snapshot_id,event_id,event_start_time,sport,player,stat_type,line,hydration_status,blockers").eq("hydration_status", "PASS").order("event_start_time").limit(max(limit * 4, limit)).execute().data or []
-    try: zone = ZoneInfo(requested_timezone)
-    except Exception: return []
-    def matching(row: dict[str, Any]) -> bool:
-        try: return datetime.fromisoformat(str(row.get("event_start_time")).replace("Z", "+00:00")).astimezone(zone).date().isoformat() == requested_date
-        except (TypeError, ValueError): return False
-    return [dict(row) for row in rows if not row.get("blockers") and _future(row.get("event_start_time")) and matching(row)][:limit]
+    return _prop_manifest_rows(db, requested_date, requested_timezone)[:limit]
 
 
 def _team_rows(db: Any, requested_date: str, limit: int) -> list[dict[str, Any]]:
     rows = db.table("wow_mlb_forward_shadow_events").select("official_event_id,official_date,event_start_time,home_team,away_team,venue_name,home_probable_pitcher,away_probable_pitcher,snapshot_id,snapshot_timestamp,feature_hydration_status").eq("official_date", requested_date).eq("feature_hydration_status", "PASS").order("event_start_time").limit(limit).execute().data or []
     return [dict(row) for row in rows if _future(row.get("event_start_time"))]
+
+
+def _acquisition_counts(acquisition: dict[str, Any] | None) -> dict[str, int]:
+    acquisition = acquisition or {}
+    return {
+        "lane_discovered_raw": int(acquisition.get("attempted") or 0),
+        "lane_snapshot_write_succeeded": int(acquisition.get("snapshot_write_succeeded", acquisition.get("persisted", 0)) or 0),
+        "lane_snapshot_write_failed": int(acquisition.get("snapshot_write_failed") or 0),
+        "explicit_prewrite_exclusions": int(acquisition.get("explicit_prewrite_exclusions", acquisition.get("held", 0)) or 0),
+        "persisted_candidates": int(acquisition.get("persisted") or 0),
+    }
+
+
+def _receipt_snapshot_ids(acquisition: dict[str, Any] | None) -> set[str]:
+    return {
+        str(receipt.get("source_snapshot_id"))
+        for receipt in ((acquisition or {}).get("receipts") or [])
+        if receipt.get("write_status") == "SNAPSHOT_WRITE_SUCCEEDED" and receipt.get("source_snapshot_id")
+    }
+
+
+def _prop_handoff_reconciliation(
+    *,
+    acquisition: dict[str, Any] | None,
+    canonical_manifest: list[dict[str, Any]],
+    scored_rows: int,
+) -> dict[str, Any]:
+    counts = _acquisition_counts(acquisition)
+    canonical_ids = {str(row.get("source_snapshot_id")) for row in canonical_manifest if row.get("source_snapshot_id")}
+    persisted_ids = _receipt_snapshot_ids(acquisition)
+    if persisted_ids:
+        missing_persisted_ids = sorted(persisted_ids - canonical_ids)
+        canonical_from_current_acquisition = len(persisted_ids & canonical_ids)
+    else:
+        # Backward-compatible fallback for older acquisition payloads. The count
+        # is still explicit, but identity-level proof requires receipts.
+        missing_count = max(counts["persisted_candidates"] - len(canonical_manifest), 0)
+        missing_persisted_ids = [f"UNRECEIPTED_PERSISTED_ROW_{index + 1}" for index in range(missing_count)]
+        canonical_from_current_acquisition = min(counts["persisted_candidates"], len(canonical_manifest))
+    explicit_precanonical_exclusions = 0
+    prewrite_balanced = (
+        counts["lane_discovered_raw"]
+        == counts["lane_snapshot_write_succeeded"]
+        + counts["lane_snapshot_write_failed"]
+        + counts["explicit_prewrite_exclusions"]
+    )
+    persisted_balanced = counts["persisted_candidates"] == canonical_from_current_acquisition + explicit_precanonical_exclusions
+    unscored = max(len(canonical_manifest) - scored_rows, 0)
+    return {
+        **counts,
+        "canonical_rows": len(canonical_manifest),
+        "canonical_rows_from_current_acquisition": canonical_from_current_acquisition,
+        "explicit_precanonical_exclusions": explicit_precanonical_exclusions,
+        "missing_persisted_snapshot_ids": missing_persisted_ids,
+        "scored_rows": scored_rows,
+        "explicitly_unscored_with_terminal_reason": unscored,
+        "prewrite_balanced": prewrite_balanced,
+        "persisted_to_canonical_balanced": persisted_balanced and not missing_persisted_ids,
+        "canonical_to_scored_balanced": len(canonical_manifest) == scored_rows + unscored,
+        "can_execute": False,
+    }
+
+
+def _lane_reconciliation(
+    rows: list[dict[str, Any]],
+    lane: str,
+    blockers: list[str] | None = None,
+    acquisition: dict[str, Any] | None = None,
+    canonical_manifest: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    blockers = blockers or []
+    lane_rows = [row for row in rows if row.get("lane") == lane]
+    canonical_count = len(canonical_manifest or []) if lane == "PROPS" else len(lane_rows)
+    zero_row_reason = None
+    if not lane_rows:
+        expected = "PROP_SNAPSHOT_QUERY_FAILED" if lane == "PROPS" else "TEAM_EVENT_SNAPSHOT_QUERY_FAILED"
+        if expected in " ".join(blockers):
+            zero_row_reason = "DISCOVERY_DATA_UNOBTAINABLE"
+        elif lane == "PROPS" and acquisition and acquisition.get("status") == "DATA_UNOBTAINABLE":
+            zero_row_reason = "DISCOVERY_DATA_UNOBTAINABLE"
+        elif lane == "PROPS" and "RUN_INVALID_PROP_SNAPSHOT_WRITE_FAILURE" in blockers:
+            zero_row_reason = "RUN_INVALID_PROP_SNAPSHOT_WRITE_FAILURE"
+        elif lane == "PROPS" and "PROP_SNAPSHOT_INGESTION_EMPTY" in blockers:
+            zero_row_reason = "PROP_SNAPSHOT_INGESTION_EMPTY"
+        else:
+            zero_row_reason = "NO_CANONICAL_CANDIDATES"
+    result = {
+        "discovered_count": canonical_count,
+        "canonicalized_count": canonical_count,
+        "scored_count": len(lane_rows),
+        "completed_count": sum(1 for row in lane_rows if row.get("row_status") == "COMPLETED"),
+        "held_count": sum(1 for row in lane_rows if row.get("row_status") == "HELD"),
+        "rejected_count": sum(1 for row in lane_rows if row.get("row_status") == "REJECTED"),
+        "zero_row_reason": zero_row_reason,
+        "acquisition": acquisition if lane == "PROPS" else None,
+    }
+    if lane == "PROPS":
+        result["handoff_reconciliation"] = _prop_handoff_reconciliation(
+            acquisition=acquisition,
+            canonical_manifest=canonical_manifest or [],
+            scored_rows=len(lane_rows),
+        )
+    return result
 
 
 def _guard_moneyline_result(result: dict[str, Any]) -> tuple[dict[str, Any], str]:
@@ -123,7 +250,8 @@ def _guard_moneyline_result(result: dict[str, Any]) -> tuple[dict[str, Any], str
 
 
 def run_daily_snapshot(req: DailySnapshotRequest, *, db: Any, market_api: Any, event_api: Any) -> dict[str, Any]:
-    try: date.fromisoformat(req.requested_slate_date)
+    try:
+        date.fromisoformat(req.requested_slate_date)
     except ValueError:
         return {"run_id": f"v17-daily-{uuid4()}", "terminal": True, "run_status": "RUN_INVALID_REQUEST", "rows": [], "blockers": ["REQUESTED_SLATE_DATE_INVALID"], "can_execute": False}
 
@@ -132,20 +260,40 @@ def run_daily_snapshot(req: DailySnapshotRequest, *, db: Any, market_api: Any, e
     blockers: list[str] = []
     requested_lanes = set(req.lanes)
     prop_acquisition: dict[str, Any] | None = None
+    prop_manifest: list[dict[str, Any]] = []
 
     if "PROPS" in requested_lanes:
         try:
-            prop_rows = _prop_rows(db, req.requested_slate_date, req.requested_timezone, req.max_props)
+            prop_manifest = _prop_manifest_rows(db, req.requested_slate_date, req.requested_timezone)
+            prop_rows = prop_manifest[:req.max_props]
         except Exception as exc:
             prop_rows = []
+            prop_manifest = []
             blockers.append(f"PROP_SNAPSHOT_QUERY_FAILED:{type(exc).__name__}")
         if not prop_rows and not any(str(x).startswith("PROP_SNAPSHOT_QUERY_FAILED") for x in blockers):
-            prop_acquisition = acquire_daily_prop_snapshots(db=db, requested_date=req.requested_slate_date, requested_timezone=req.requested_timezone, max_candidates=max(req.max_props * 3, req.max_props))
-            if prop_acquisition.get("status") == "DATA_UNOBTAINABLE": blockers.extend(prop_acquisition.get("blockers") or [])
-            try: prop_rows = _prop_rows(db, req.requested_slate_date, req.requested_timezone, req.max_props)
+            prop_acquisition = acquire_daily_prop_snapshots(
+                db=db,
+                requested_date=req.requested_slate_date,
+                requested_timezone=req.requested_timezone,
+                max_candidates=max(req.max_props * 3, req.max_props),
+            )
+            if prop_acquisition.get("status") == "DATA_UNOBTAINABLE":
+                blockers.extend(prop_acquisition.get("blockers") or [])
+            elif prop_acquisition.get("status") == "RUN_INVALID_PROP_SNAPSHOT_WRITE_FAILURE":
+                blockers.append("RUN_INVALID_PROP_SNAPSHOT_WRITE_FAILURE")
+                blockers.extend(prop_acquisition.get("blockers") or [])
+            try:
+                prop_manifest = _prop_manifest_rows(db, req.requested_slate_date, req.requested_timezone)
+                prop_rows = prop_manifest[:req.max_props]
             except Exception as exc:
                 prop_rows = []
+                prop_manifest = []
                 blockers.append(f"PROP_SNAPSHOT_QUERY_FAILED:{type(exc).__name__}")
+
+            persisted = int(prop_acquisition.get("persisted") or 0)
+            if persisted > 0 and not prop_manifest:
+                blockers.append("PROP_SNAPSHOT_INGESTION_EMPTY")
+
         for row in prop_rows:
             identity = {key: row.get(key) for key in ("event_id", "event_start_time", "sport", "player", "stat_type", "line", "source_snapshot_id")}
             outcomes: list[dict[str, Any]] = []
@@ -154,33 +302,77 @@ def run_daily_snapshot(req: DailySnapshotRequest, *, db: Any, market_api: Any, e
                     scored = market_api.score_prop(market_api.ScorePropRequest(**{**identity, "direction": direction}), "WOW_BETTING_ENGINE")
                     status = "COMPLETED" if scored.get("probability_publishable") is True and scored.get("rank_eligible") is True else "HELD"
                     outcomes.append({"direction": direction, "status": status, "payload": scored})
-                except HTTPException as exc: outcomes.append({"direction": direction, "status": "HELD", "payload": _detail(exc)})
-                except Exception as exc: outcomes.append({"direction": direction, "status": "HELD", "payload": {"code": "PROP_SCORER_EXCEPTION", "error_type": type(exc).__name__, "probability_publishable": False, "can_execute": False}})
+                except HTTPException as exc:
+                    outcomes.append({"direction": direction, "status": "HELD", "payload": _detail(exc)})
+                except Exception as exc:
+                    outcomes.append({"direction": direction, "status": "HELD", "payload": {"code": "PROP_SCORER_EXCEPTION", "error_type": type(exc).__name__, "probability_publishable": False, "can_execute": False}})
             publishable = any(x["payload"].get("probability_publishable") is True and x["payload"].get("rank_eligible") is True for x in outcomes)
             rows.append(_terminal_row("PROPS", identity, {"outcomes": outcomes, "probability_publishable": publishable, "rank_eligible": publishable, "can_execute": False}, _props_row_status(outcomes)))
 
     if "MONEYLINE" in requested_lanes:
-        try: event_rows = _team_rows(db, req.requested_slate_date, req.max_team_events)
+        try:
+            event_rows = _team_rows(db, req.requested_slate_date, req.max_team_events)
         except Exception as exc:
             event_rows = []
             blockers.append(f"TEAM_EVENT_SNAPSHOT_QUERY_FAILED:{type(exc).__name__}")
         for event in event_rows:
             identity = {key: event.get(key) for key in ("official_event_id", "event_start_time", "home_team", "away_team", "snapshot_id")}
             request = TeamEventRequest(requester_host_identity="WOW_BETTING_ENGINE", research_run_id=run_id, requested_slate_date=req.requested_slate_date, requested_timezone=req.requested_timezone, candidate_family="OUTRIGHT_WINNER", decision_intent="BEST_SIDE", event_key=f"MLB:{event['official_event_id']}", official_event_id=str(event["official_event_id"]), event_start_time_utc=event["event_start_time"], sport="MLB", league="MLB", settlement_basis="FULL_GAME_INCLUDING_EXTRA_INNINGS", home_team=event["home_team"], away_team=event["away_team"], source_snapshot_id=str(event["snapshot_id"]), latest_material_update_timestamp=event.get("snapshot_timestamp"), sport_specific_evidence={"venue": event.get("venue_name"), "home_starting_pitcher": event.get("home_probable_pitcher"), "away_starting_pitcher": event.get("away_probable_pitcher"), "home_starter_status": "PROBABLE", "away_starter_status": "PROBABLE", "home_lineup_status": "PROJECTED", "away_lineup_status": "PROJECTED"})
-            try: result = score_team_event_request(request, event_api=event_api, canonical_hydration_required=True)
-            except HTTPException as exc: result = _detail(exc)
-            except Exception as exc: result = {"code": "TEAM_EVENT_SCORER_EXCEPTION", "error_type": type(exc).__name__, "probability_publishable": False, "can_execute": False}
+            try:
+                result = score_team_event_request(request, event_api=event_api, canonical_hydration_required=True)
+            except HTTPException as exc:
+                result = _detail(exc)
+            except Exception as exc:
+                result = {"code": "TEAM_EVENT_SCORER_EXCEPTION", "error_type": type(exc).__name__, "probability_publishable": False, "can_execute": False}
             result, row_status = _guard_moneyline_result(result)
             rows.append(_terminal_row("MONEYLINE", identity, result, row_status))
 
-    if not rows and not blockers: blockers.append("NO_CANONICAL_PREGAME_SNAPSHOTS")
-    lane_reconciliation = {lane: _lane_reconciliation(rows, lane, blockers, prop_acquisition) for lane in requested_lanes}
-    return {"run_id": run_id, "terminal": True, "run_status": "COMPLETED" if not blockers else "COMPLETED_WITH_ACQUISITION_BLOCKERS", "requested_slate_date": req.requested_slate_date, "requested_timezone": req.requested_timezone, "requested_lanes": sorted(requested_lanes), "rows": rows, "reconciliation": _reconcile(rows), "lane_reconciliation": lane_reconciliation, "prop_acquisition": prop_acquisition, "blockers": list(dict.fromkeys(blockers)), "can_execute": False}
+    prop_counts = _acquisition_counts(prop_acquisition)
+    true_zero_upstream = (
+        "PROPS" in requested_lanes
+        and not prop_manifest
+        and prop_counts["lane_discovered_raw"] == 0
+        and not any(str(x).startswith("PROP_SNAPSHOT_QUERY_FAILED") for x in blockers)
+        and not any(x in blockers for x in ("PROP_SNAPSHOT_INGESTION_EMPTY", "RUN_INVALID_PROP_SNAPSHOT_WRITE_FAILURE"))
+        and not (prop_acquisition and prop_acquisition.get("status") == "DATA_UNOBTAINABLE")
+    )
+    if not rows and not blockers:
+        if true_zero_upstream:
+            blockers.append("NO_CANONICAL_PREGAME_SNAPSHOTS")
+        elif "PROPS" not in requested_lanes:
+            blockers.append("NO_CANONICAL_PREGAME_SNAPSHOTS")
+
+    lane_reconciliation = {
+        lane: _lane_reconciliation(rows, lane, blockers, prop_acquisition, prop_manifest if lane == "PROPS" else None)
+        for lane in requested_lanes
+    }
+    run_status = "COMPLETED"
+    if "RUN_INVALID_PROP_SNAPSHOT_WRITE_FAILURE" in blockers:
+        run_status = "RUN_INVALID_PROP_SNAPSHOT_WRITE_FAILURE"
+    elif blockers:
+        run_status = "COMPLETED_WITH_ACQUISITION_BLOCKERS"
+    return {
+        "run_id": run_id,
+        "terminal": True,
+        "run_status": run_status,
+        "requested_slate_date": req.requested_slate_date,
+        "requested_timezone": req.requested_timezone,
+        "requested_lanes": sorted(requested_lanes),
+        "rows": rows,
+        "reconciliation": _reconcile(rows),
+        "lane_reconciliation": lane_reconciliation,
+        "prop_acquisition": prop_acquisition,
+        "blockers": list(dict.fromkeys(blockers)),
+        "can_execute": False,
+    }
 
 
 def install_daily_snapshot_route(app: FastAPI, *, auth_dependency: Any, db_client_fn: Any, market_api: Any, event_api: Any) -> None:
     install_v17_detailed_evidence(app, auth_dependency=auth_dependency, market_api=market_api)
     install_prop_forward_cohort_route(app, auth_dependency=auth_dependency, db_client_fn=db_client_fn, market_api=market_api)
-    if any(getattr(route, "path", None) == "/v17/daily-snapshot-run" for route in app.router.routes): return
+    if any(getattr(route, "path", None) == "/v17/daily-snapshot-run" for route in app.router.routes):
+        return
+
     @app.post("/v17/daily-snapshot-run", dependencies=[auth_dependency], operation_id="runWowV17DailySnapshot")
-    def daily_snapshot_run(req: DailySnapshotRequest): return run_daily_snapshot(req, db=db_client_fn(), market_api=market_api, event_api=event_api)
+    def daily_snapshot_run(req: DailySnapshotRequest):
+        return run_daily_snapshot(req, db=db_client_fn(), market_api=market_api, event_api=event_api)
