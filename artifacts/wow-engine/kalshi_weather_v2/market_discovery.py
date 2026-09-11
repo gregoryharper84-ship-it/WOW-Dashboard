@@ -35,7 +35,12 @@ class KalshiWeatherMarketDiscovery:
         self.get_json = get_json
 
     def candidate_series(self, *, expected_location: str) -> tuple[WeatherSeriesCandidate, ...]:
-        params = urlencode({"category": "Climate", "include_product_metadata": "true"})
+        # Do not depend on a hard-coded Kalshi category query token here. The
+        # current exchange category is "Climate and Weather", while older docs
+        # and UI paths have also used "Climate"/"weather" terminology. Fetch the
+        # public series list and apply an explicit weather-category check to the
+        # returned canonical category field instead.
+        params = urlencode({"include_product_metadata": "true"})
         payload = self.get_json(f"{KALSHI_BASE_URL}/series?{params}", None)
         rows = payload.get("series") if isinstance(payload, Mapping) else None
         if not isinstance(rows, Sequence) or isinstance(rows, (str, bytes)):
@@ -51,6 +56,9 @@ class KalshiWeatherMarketDiscovery:
                 continue
             title = str(row.get("title") or "")
             category = str(row.get("category") or "")
+            category_folded = category.casefold()
+            if "weather" not in category_folded and "climate" not in category_folded:
+                continue
             blob = " ".join(
                 [
                     title,
