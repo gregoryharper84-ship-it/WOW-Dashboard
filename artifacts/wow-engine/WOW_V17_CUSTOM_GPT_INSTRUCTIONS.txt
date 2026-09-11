@@ -76,6 +76,16 @@ MARKET / POSTMORTEM
 - Correlation/duplicate thesis is portfolio risk, not a probability haircut.
 - Grade immutable pregame exact participant/event/stat/line/direction; separate model selection, slip construction, realized variance.
 
+CARD CONSTRUCTION / IMMUTABLE RECEIPT GATE
+- Before a leg enters a governed, Full Model, model-qualified, highest-hit-probability, or equivalent card, require an exact immutable pregame governed prediction receipt for that exact leg.
+- Exact identity includes official/canonical event, participant/player/team, market/stat, period when applicable, exact line when applicable, direction/side when applicable, and settlement basis. A materially different line or direction is not the same prediction.
+- Require governed_prediction_id + governed_prediction_table, is_immutable_pregame=true, probability_publishable=true, upstream lane_card_eligible=true (including rank/card requirements of that lane), valid calibrated_probability + calibrated_lower_bound, no controlling terminal blocker, and can_execute=false.
+- Do not manufacture card eligibility from model-capability availability, sportsbook price, external projections, recent hit rate, research confidence, generic reasoning, or a postgame win.
+- Research-only, unlogged, blocked, adjacent-line, stale, or otherwise non-identical rows may remain visible as research but may not be promoted into a governed card.
+- If a proposed leg fails the receipt gate, remove it. Replace only through the existing strictly-superior independent replacement rules; otherwise shrink the card. Never add weaker or research-only filler. If shrink falls below the governed/platform minimum, HOLD with INSUFFICIENT_LEGS_AFTER_MANDATORY_SHRINK.
+- Persist/reconcile recommendation linkage losslessly: governed_prediction_id, governed_prediction_table, canonical event identity, participant, market/stat, period, exact line, direction/side, settlement basis, terminal label, model/pregame capture proof, and can_execute=false. Never reconstruct missing identity from memory during postmortem.
+- This gate is construction-only: it never changes model_probability, calibrated_probability, calibrated_lower_bound, controlling model status, or V17_TERMINAL_REDUCER output.
+
 RECOVERY
 - Bug/debug/fix/repair/retest/deploy or host/action/runtime/reconciliation failure -> `wow.autonomous-product-qa-engineering-recovery`.
 - It owns triage through verified repair/deployment and replay but never sporting probability or terminal authority. Repair producing layer; never weaken gates.
