@@ -32,6 +32,8 @@ def reduce_kalshi_weather_prediction_v17(*, client, prediction_id: str) -> Mappi
 
     The weather specialist owns the weather probability. This reducer owns only
     validation/publication authority. It never invents or modifies probability.
+    Market evidence is reconciled separately after probability validation so a
+    market/fee failure cannot silently erase a completed weather probability.
     """
     persistence = KalshiWeatherPersistence(client)
     prediction = persistence.load_prediction(prediction_id)
@@ -158,7 +160,6 @@ def reduce_kalshi_weather_prediction_v17(*, client, prediction_id: str) -> Mappi
 
     probability_blockers = [b for b in local_blockers if not _market_only(b)] + blockers
     probability_blockers = list(dict.fromkeys(probability_blockers))
-    edge_blockers = list(dict.fromkeys(local_blockers + blockers + ["V17_EDGE_RECONCILIATION_NOT_IMPLEMENTED"]))
 
     if probability_blockers:
         settlement_failure = any("SETTLEMENT" in b or "RULE_" in b or "CONTRACT_" in b for b in probability_blockers)
@@ -167,17 +168,52 @@ def reduce_kalshi_weather_prediction_v17(*, client, prediction_id: str) -> Mappi
             "V17_WEATHER_PUBLICATION_BLOCKED",
             probability_blockers,
             local_blockers=local_blockers,
-            edge_blockers=edge_blockers,
+            edge_blockers=list(dict.fromkeys(local_blockers + blockers)),
             warnings=warnings,
             prediction_id=prediction_id,
             capability=capability,
         )
 
-    # V17 publication is a view over the immutable row. The historical shadow
-    # record is never mutated after the fact.
+    market_result = _reconcile_market_edge(
+        client=client,
+        prediction=prediction,
+        p_yes=float(p_yes),
+        p_no=float(p_no),
+        lower_yes=float(lower),
+        upper_yes=float(upper),
+    )
+    edge_blockers = list(dict.fromkeys([b for b in local_blockers if _market_only(b)] + market_result["blockers"]))
+    raw_yes = market_result.get("raw_edge_yes")
+    raw_no = market_result.get("raw_edge_no")
+    conservative_yes = market_result.get("uncertainty_adjusted_edge_yes")
+    conservative_no = market_result.get("uncertainty_adjusted_edge_no")
+    best_side = market_result.get("best_side")
+    best_adjusted = market_result.get("best_uncertainty_adjusted_edge")
+    friction_verified = bool(market_result.get("friction_model_verified"))
+    edge_publishable = bool(market_result.get("edge_publishable"))
+
+    if not edge_publishable:
+        status = "WATCH"
+        code = "V17_WEATHER_PROBABILITY_PUBLISHED_MARKET_EDGE_HELD"
+        rank_eligible = False
+    elif best_adjusted is None or best_adjusted <= 0.0:
+        status = "NO_EDGE"
+        code = "NO_POSITIVE_UNCERTAINTY_ADJUSTED_EDGE"
+        rank_eligible = False
+    elif not friction_verified:
+        status = "WATCH"
+        code = "V17_WEATHER_POSITIVE_PRE_FEE_EDGE_FRICTION_HELD"
+        rank_eligible = False
+    else:
+        status = "QUALIFIED_EDGE"
+        code = "POSITIVE_UNCERTAINTY_ADJUSTED_EDGE"
+        rank_eligible = True
+
+    # V17 publication is a view over immutable rows. Historical decision-time
+    # weather/model evidence is never mutated after the fact.
     return {
-        "status": "WATCH",
-        "code": "V17_WEATHER_PROBABILITY_PUBLISHED_EDGE_HELD",
+        "status": status,
+        "code": code,
         "prediction_id": prediction_id,
         "ticker": prediction.get("ticker"),
         "decision_time": prediction.get("decision_time"),
@@ -185,13 +221,30 @@ def reduce_kalshi_weather_prediction_v17(*, client, prediction_id: str) -> Mappi
         "calibration_profile_id": calibration_profile_id,
         "p_yes": p_yes,
         "p_no": p_no,
+        "model_fair_price_yes": p_yes,
+        "model_fair_price_no": p_no,
         "lower_bound_yes": lower,
         "upper_bound_yes": upper,
         "central_estimate_f": prediction.get("central_estimate_f"),
         "threshold_distance": prediction.get("threshold_distance"),
+        "current_yes_price": market_result.get("yes_best_ask"),
+        "current_no_price": market_result.get("no_best_ask"),
+        "market_price_time": market_result.get("retrieved_at"),
+        "raw_edge_yes": raw_yes,
+        "raw_edge_no": raw_no,
+        "uncertainty_adjusted_edge_yes": conservative_yes,
+        "uncertainty_adjusted_edge_no": conservative_no,
+        "best_side": best_side,
+        "best_uncertainty_adjusted_edge": best_adjusted,
+        "pre_fee_ev_per_share_yes": market_result.get("pre_fee_ev_per_share_yes"),
+        "pre_fee_ev_per_share_no": market_result.get("pre_fee_ev_per_share_no"),
+        "pre_fee_ev_per_dollar_risked_yes": market_result.get("pre_fee_ev_per_dollar_risked_yes"),
+        "pre_fee_ev_per_dollar_risked_no": market_result.get("pre_fee_ev_per_dollar_risked_no"),
+        "edge_basis": market_result.get("edge_basis"),
+        "friction_model_verified": friction_verified,
         "probability_publishable": True,
-        "edge_publishable": False,
-        "rank_eligible": False,
+        "edge_publishable": edge_publishable,
+        "rank_eligible": rank_eligible,
         "local_terminal_label_audit_only": True,
         "global_terminal_authority": GLOBAL_TERMINAL_AUTHORITY,
         "controlling_specialist": LOCAL_WEATHER_AUTHORITY,
@@ -228,10 +281,94 @@ def governance_snapshot(*, client) -> Mapping[str, Any]:
             "immutable_pregame_write_required": True,
             "row_reconciliation_required": True,
             "point_estimate_is_not_lower_bound": True,
+            "market_edge_reconciled_separately_from_probability": True,
+            "unverified_friction_blocks_rank_not_probability": True,
             "local_specialist_may_publish": False,
             "can_execute": False,
         },
         "can_execute": False,
+    }
+
+
+def _reconcile_market_edge(
+    *,
+    client,
+    prediction: Mapping[str, Any],
+    p_yes: float,
+    p_no: float,
+    lower_yes: float,
+    upper_yes: float,
+) -> dict[str, Any]:
+    blockers: list[str] = []
+    market = _select_one(client, "wow_kalshi_weather_market_snapshots", "prediction_id", str(prediction.get("prediction_id") or ""))
+    if not market:
+        return {"edge_publishable": False, "friction_model_verified": False, "blockers": ["MARKET_SNAPSHOT_MISSING"]}
+
+    if str(market.get("ticker") or "") != str(prediction.get("ticker") or ""):
+        blockers.append("MARKET_PREDICTION_TICKER_MISMATCH")
+    if market.get("executable_price_verified") is not True:
+        blockers.append("EXECUTABLE_PRICE_UNVERIFIED")
+    retrieved_at = _dt(market.get("retrieved_at"))
+    decision_time = _dt(prediction.get("decision_time"))
+    if retrieved_at is None or decision_time is None or retrieved_at < decision_time:
+        blockers.append("MARKET_SNAPSHOT_TIME_INVALID")
+
+    yes_ask = _optional_probability(market.get("yes_best_ask"))
+    no_ask = _optional_probability(market.get("no_best_ask"))
+    if yes_ask is None and no_ask is None:
+        blockers.append("EXECUTABLE_ASK_UNAVAILABLE")
+
+    raw_yes = p_yes - yes_ask if yes_ask is not None else None
+    raw_no = p_no - no_ask if no_ask is not None else None
+    lower_no = 1.0 - upper_yes
+
+    friction_verified = bool(market.get("friction_model_verified"))
+    yes_break_even = _optional_probability(market.get("yes_effective_break_even")) if friction_verified else None
+    no_break_even = _optional_probability(market.get("no_effective_break_even")) if friction_verified else None
+
+    if friction_verified:
+        if yes_ask is not None and yes_break_even is None:
+            blockers.append("YES_EFFECTIVE_BREAK_EVEN_MISSING")
+        if no_ask is not None and no_break_even is None:
+            blockers.append("NO_EFFECTIVE_BREAK_EVEN_MISSING")
+        conservative_yes = lower_yes - yes_break_even if yes_break_even is not None else None
+        conservative_no = lower_no - no_break_even if no_break_even is not None else None
+        edge_basis = "VERIFIED_EFFECTIVE_BREAK_EVEN"
+    else:
+        conservative_yes = lower_yes - yes_ask if yes_ask is not None else None
+        conservative_no = lower_no - no_ask if no_ask is not None else None
+        edge_basis = "PRE_FEE_EXECUTABLE_ASK"
+        blockers.append("FRICTION_MODEL_UNVERIFIED")
+
+    candidates = [("YES", conservative_yes), ("NO", conservative_no)]
+    candidates = [(side, edge) for side, edge in candidates if edge is not None]
+    best_side, best_edge = max(candidates, key=lambda item: item[1]) if candidates else (None, None)
+
+    fatal_edge_blockers = [
+        b for b in blockers
+        if b not in {"FRICTION_MODEL_UNVERIFIED"}
+    ]
+    edge_publishable = not fatal_edge_blockers and bool(candidates)
+
+    return {
+        "market_snapshot_id": market.get("market_snapshot_id"),
+        "retrieved_at": market.get("retrieved_at"),
+        "yes_best_ask": yes_ask,
+        "no_best_ask": no_ask,
+        "raw_edge_yes": raw_yes,
+        "raw_edge_no": raw_no,
+        "uncertainty_adjusted_edge_yes": conservative_yes,
+        "uncertainty_adjusted_edge_no": conservative_no,
+        "best_side": best_side,
+        "best_uncertainty_adjusted_edge": best_edge,
+        "pre_fee_ev_per_share_yes": raw_yes,
+        "pre_fee_ev_per_share_no": raw_no,
+        "pre_fee_ev_per_dollar_risked_yes": (raw_yes / yes_ask) if raw_yes is not None and yes_ask else None,
+        "pre_fee_ev_per_dollar_risked_no": (raw_no / no_ask) if raw_no is not None and no_ask else None,
+        "edge_basis": edge_basis,
+        "friction_model_verified": friction_verified,
+        "edge_publishable": edge_publishable,
+        "blockers": blockers,
     }
 
 
@@ -269,6 +406,15 @@ def _prob(value: Any, name: str, blockers: list[str]) -> float | None:
     number = float(value)
     if not math.isfinite(number) or number < 0.0 or number > 1.0:
         blockers.append(f"{name}_INVALID")
+        return None
+    return number
+
+
+def _optional_probability(value: Any) -> float | None:
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return None
+    number = float(value)
+    if not math.isfinite(number) or number < 0.0 or number > 1.0:
         return None
     return number
 
