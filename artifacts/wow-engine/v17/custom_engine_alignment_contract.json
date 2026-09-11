@@ -80,6 +80,7 @@
     "weather_specialist_module": "kalshi_weather_v2",
     "weather_global_governance_module": "v17/kalshi_weather_governance.py",
     "weather_v17_governance_operation": "getKalshiWeatherV17Governance",
+    "weather_v17_analyze_operation": "analyzeKalshiWeatherV17Contract",
     "weather_v17_capture_operation": "captureKalshiWeatherV17HourlyShadow",
     "weather_v17_publication_operation": "publishKalshiWeatherV17Prediction",
     "weather_v17_settlement_operation": "settleKalshiWeatherV17HourlyPrediction",
