@@ -178,18 +178,21 @@ def test_governor_settlement_failure_has_highest_precedence():
     assert decision.can_execute is False
 
 
-def test_governor_publishes_probability_but_not_edge_when_market_held():
+def test_local_governor_holds_probability_publication_when_market_held():
     package = WeatherProbabilityCore().build(contract=contract(), evidence=evidence(), calibration=calibration())
     decision = evaluate_weather_contract(
         contract=contract(), evidence=evidence(), probability=package,
         market=market(orderbook_nonempty=False, executable_price_verified=False),
     )
     assert decision.status == "WATCH"
-    assert decision.probability_publishable is True
+    assert decision.probability_publishable is False
     assert decision.edge_publishable is False
+    assert decision.rank_eligible is False
+    assert decision.payload["local_terminal_label_audit_only"] is True
+    assert decision.payload["global_terminal_authority_required"] == "V17_TERMINAL_REDUCER"
 
 
-def test_governor_qualifies_only_positive_uncertainty_adjusted_edge():
+def test_local_governor_marks_positive_edge_candidate_but_cannot_rank_globally():
     package = ProbabilityPackage(
         p_yes=0.70, p_no=0.30, central_estimate=92.0,
         lower_bound_yes=0.64, upper_bound_yes=0.75,
@@ -203,9 +206,12 @@ def test_governor_qualifies_only_positive_uncertainty_adjusted_edge():
         market=market(yes_price=0.50, no_price=0.55, yes_effective_break_even=0.51, no_effective_break_even=0.56),
     )
     assert decision.status == "QUALIFIED_EDGE"
-    assert decision.rank_eligible is True
+    assert decision.rank_eligible is False
+    assert decision.probability_publishable is False
+    assert decision.edge_publishable is False
     assert decision.payload["best_side"] == "YES"
     assert decision.payload["best_uncertainty_adjusted_edge"] > 0
+    assert decision.payload["local_terminal_label_audit_only"] is True
 
 
 def test_governor_no_edge_when_conservative_break_even_exceeds_model_bound():
