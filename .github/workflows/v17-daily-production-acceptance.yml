@@ -1,0 +1,74 @@
+name: v17-daily-production-acceptance
+
+on:
+  push:
+    branches:
+      - verify/v17-daily-prod-acceptance-20260911
+
+permissions:
+  contents: read
+
+jobs:
+  production-daily-replay:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Assert authentication secret exists
+        shell: bash
+        env:
+          WOW_ACTION_API_KEY: ${{ secrets.WOW_ACTION_API_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${WOW_ACTION_API_KEY:-}" ]; then
+            echo "WOW_ACTION_API_KEY repository secret is unavailable"
+            exit 2
+          fi
+
+      - name: Run authenticated production Daily PROPS replay
+        shell: bash
+        env:
+          WOW_ACTION_API_KEY: ${{ secrets.WOW_ACTION_API_KEY }}
+        run: |
+          set -euo pipefail
+          HTTP_CODE=$(curl --silent --show-error \
+            --output response.json \
+            --write-out '%{http_code}' \
+            --request POST \
+            --header "Authorization: Bearer ${WOW_ACTION_API_KEY}" \
+            --header 'Content-Type: application/json' \
+            --data '{"requested_slate_date":"2026-09-11","requested_timezone":"America/Chicago","lanes":["PROPS"],"max_props":6,"max_team_events":0}' \
+            'https://wow-governed-probability-engine.onrender.com/v17/daily-snapshot-run')
+          echo "HTTP_STATUS=${HTTP_CODE}"
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          payload=json.loads(Path('response.json').read_text())
+          safe={
+              'run_status': payload.get('run_status'),
+              'blockers': payload.get('blockers'),
+              'reconciliation': payload.get('reconciliation'),
+              'props_lane': (payload.get('lane_reconciliation') or {}).get('PROPS'),
+              'prop_acquisition': payload.get('prop_acquisition'),
+              'can_execute': payload.get('can_execute'),
+          }
+          print(json.dumps(safe, sort_keys=True))
+          if payload.get('can_execute') is not False:
+              raise SystemExit('can_execute must remain false')
+          recon=payload.get('reconciliation') or {}
+          if recon.get('rows_unclassified') not in (0, None):
+              raise SystemExit('unclassified rows detected')
+          props=(payload.get('lane_reconciliation') or {}).get('PROPS') or {}
+          handoff=props.get('handoff_reconciliation') or {}
+          acquisition=payload.get('prop_acquisition') or {}
+          persisted=int(acquisition.get('persisted') or 0)
+          canonical=int(handoff.get('canonical_rows') or 0)
+          blockers=set(payload.get('blockers') or [])
+          if persisted > 0 and canonical == 0 and 'PROP_SNAPSHOT_INGESTION_EMPTY' not in blockers:
+              raise SystemExit('persisted>0/canonical=0 was not classified PROP_SNAPSHOT_INGESTION_EMPTY')
+          writes=int(acquisition.get('snapshot_write_succeeded') or 0)
+          write_fail=int(acquisition.get('snapshot_write_failed') or 0)
+          if write_fail > 0 and writes == 0 and payload.get('run_status') != 'RUN_INVALID_PROP_SNAPSHOT_WRITE_FAILURE':
+              raise SystemExit('all snapshot writes failed without RUN_INVALID_PROP_SNAPSHOT_WRITE_FAILURE')
+          if persisted > 0 and canonical == 0 and 'NO_CANONICAL_PREGAME_SNAPSHOTS' in blockers:
+              raise SystemExit('generic no-canonical label used despite persisted upstream rows')
+          PY
+          test "${HTTP_CODE}" = "200"
