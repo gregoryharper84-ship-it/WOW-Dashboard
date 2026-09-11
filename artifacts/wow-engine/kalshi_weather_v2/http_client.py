@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 import httpx
 
@@ -27,6 +27,7 @@ class ReadOnlyJsonClient:
 
     There are intentionally no POST/PUT/PATCH/DELETE helpers here. The Kalshi
     Weather V2 analytical runtime must not acquire order-placement capability.
+    Text and JSON-array helpers exist only for public read-only weather archives.
     """
 
     def __init__(self, *, policy: HttpPolicy | None = None, client: httpx.Client | None = None):
@@ -34,6 +35,29 @@ class ReadOnlyJsonClient:
         self.client = client or httpx.Client(follow_redirects=True)
 
     def get_json(self, url: str, headers: Mapping[str, str] | None = None) -> Mapping[str, Any]:
+        response = self._get(url, headers)
+        try:
+            data = response.json()
+        except ValueError as exc:
+            raise HttpAcquisitionError("INVALID_JSON_RESPONSE", url, str(exc)) from exc
+        if not isinstance(data, Mapping):
+            raise HttpAcquisitionError("JSON_OBJECT_REQUIRED", url, "top-level JSON must be an object")
+        return data
+
+    def get_json_array(self, url: str, headers: Mapping[str, str] | None = None) -> Sequence[Any]:
+        response = self._get(url, headers)
+        try:
+            data = response.json()
+        except ValueError as exc:
+            raise HttpAcquisitionError("INVALID_JSON_RESPONSE", url, str(exc)) from exc
+        if not isinstance(data, Sequence) or isinstance(data, (str, bytes, bytearray)):
+            raise HttpAcquisitionError("JSON_ARRAY_REQUIRED", url, "top-level JSON must be an array")
+        return data
+
+    def get_text(self, url: str, headers: Mapping[str, str] | None = None) -> str:
+        return self._get(url, headers).text
+
+    def _get(self, url: str, headers: Mapping[str, str] | None = None) -> httpx.Response:
         if not url.startswith("https://"):
             raise HttpAcquisitionError("INSECURE_URL_PROHIBITED", url, "HTTPS is required")
 
@@ -49,13 +73,7 @@ class ReadOnlyJsonClient:
                 retryable = True
             else:
                 if response.status_code == 200:
-                    try:
-                        data = response.json()
-                    except ValueError as exc:
-                        raise HttpAcquisitionError("INVALID_JSON_RESPONSE", url, str(exc)) from exc
-                    if not isinstance(data, Mapping):
-                        raise HttpAcquisitionError("JSON_OBJECT_REQUIRED", url, "top-level JSON must be an object")
-                    return data
+                    return response
 
                 last_detail = f"http_status={response.status_code}"
                 retryable = response.status_code == 429 or 500 <= response.status_code <= 599
