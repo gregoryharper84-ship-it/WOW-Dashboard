@@ -143,7 +143,7 @@ def expected_full_model_operation_id(candidate_family: str) -> str:
     if family in TEAM_EVENT_FAMILIES:
         return "scoreWowV17TeamEventFromWowHost"
     if family in WEATHER_FAMILIES:
-        return "captureKalshiWeatherV17HourlyShadow" if family == "HOURLY_TEMPERATURE" else "analyzeKalshiWeatherV17Contract"
+        return "analyzeKalshiWeatherV17Contract"
     raise ValueError("CANDIDATE_FAMILY_UNSUPPORTED")
 
 
