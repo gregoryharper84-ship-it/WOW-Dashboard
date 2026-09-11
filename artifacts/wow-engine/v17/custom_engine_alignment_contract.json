@@ -80,11 +80,16 @@
     "weather_specialist_module": "kalshi_weather_v2",
     "weather_global_governance_module": "v17/kalshi_weather_governance.py",
     "weather_v17_governance_operation": "getKalshiWeatherV17Governance",
+    "weather_v17_analyze_operation": "analyzeKalshiWeatherV17Contract",
     "weather_v17_capture_operation": "captureKalshiWeatherV17HourlyShadow",
     "weather_v17_publication_operation": "publishKalshiWeatherV17Prediction",
     "weather_v17_settlement_operation": "settleKalshiWeatherV17HourlyPrediction",
     "weather_probability_capability": "KALSHI_WEATHER_PROBABILITY",
     "weather_probability_promotion": "EMPIRICAL_CERTIFICATION_REQUIRED_FAIL_CLOSED",
+    "weather_v17_structural_status": "V17_STRUCTURAL_COMPLIANCE_LIVE_VERIFIED",
+    "weather_live_production_commit": "1414b878724e6be0b63d37dd6880259db75d0e8b",
+    "weather_live_render_deploy_id": "dep-dahut9nqj5pc73alc2pg",
+    "weather_live_verified_at": "2026-09-11T12:08:33Z",
     "host_local_terminal_labels": "AUDIT_ONLY",
     "canonical_host_identity_enforcement": "ACTIVE",
     "recommendation_ledger_routes": "PRODUCTION_ACTIVE",
@@ -127,7 +132,9 @@
     "R12_LIVE_CUSTOM_GPT_EDITOR_SYNC_VERIFIED",
     "R13_KALSHI_WEATHER_SINGLE_GLOBAL_TERMINAL_ALIGNMENT",
     "R14_KALSHI_WEATHER_IMMUTABLE_PREPUBLICATION_GATE",
-    "R15_KALSHI_WEATHER_V17_HOST_ROUTING"
+    "R15_KALSHI_WEATHER_V17_HOST_ROUTING",
+    "R16_KALSHI_WEATHER_MARKET_EDGE_RECONCILIATION",
+    "R17_KALSHI_WEATHER_LIVE_RENDER_ATTESTATION"
   ],
   "remaining_external_sync": []
 }
