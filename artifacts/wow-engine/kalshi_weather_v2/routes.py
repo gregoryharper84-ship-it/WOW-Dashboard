@@ -34,6 +34,20 @@ class WeatherPublishRequest(BaseModel):
     prediction_id: str = Field(min_length=1, max_length=200)
 
 
+class WeatherAnalyzeRequest(BaseModel):
+    """V17 ingress for any declared Weather family; unsupported lanes fail closed."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    lane: str = Field(min_length=1, max_length=80)
+    ticker: str = Field(min_length=1, max_length=200)
+    index_city: str | None = Field(default=None, max_length=80)
+    expected_location: str | None = Field(default=None, max_length=160)
+    forecast_latitude: float | None = Field(default=None, ge=-90.0, le=90.0)
+    forecast_longitude: float | None = Field(default=None, ge=-180.0, le=180.0)
+    open_meteo_models: list[str] = Field(default_factory=lambda: list(DEFAULT_OPEN_METEO_MODELS), min_length=1, max_length=4)
+
+
 def install_kalshi_weather_v2_routes(
     app: FastAPI,
     *,
@@ -102,8 +116,84 @@ def install_kalshi_weather_v2_routes(
             operation_id="captureKalshiWeatherV17HourlyShadow",
         )
         def hourly_shadow_v17(req: HourlyShadowRequest):
-            # Immutable capture happens before any V17 publication attempt.
             return _capture_hourly(req, db_client_fn)
+
+    if "/kalshi-weather/v17/analyze" not in existing:
+        @app.post(
+            "/kalshi-weather/v17/analyze",
+            dependencies=[auth_dependency],
+            operation_id="analyzeKalshiWeatherV17Contract",
+        )
+        def analyze_v17(req: WeatherAnalyzeRequest):
+            lane = req.lane.strip().upper()
+            if lane != "HOURLY_TEMPERATURE":
+                # Declared lanes remain V17-compliant by failing closed until an
+                # end-to-end runtime + certified calibration exists. No generic
+                # weather reasoning may substitute for the controlling model.
+                return {
+                    "status": "NO_PLAY_DATA_INSUFFICIENT",
+                    "code": "WEATHER_LANE_RUNTIME_NOT_CERTIFIED",
+                    "lane": lane,
+                    "ticker": req.ticker,
+                    "p_yes": None,
+                    "p_no": None,
+                    "probability_publishable": False,
+                    "edge_publishable": False,
+                    "rank_eligible": False,
+                    "blockers": [f"LANE_RUNTIME_NOT_CERTIFIED:{lane}"],
+                    "global_terminal_authority": "V17_TERMINAL_REDUCER",
+                    "controlling_specialist": "KALSHI_WEATHER_MARKET_EXPERT",
+                    "can_execute": False,
+                }
+            missing = [
+                name
+                for name, value in (
+                    ("index_city", req.index_city),
+                    ("expected_location", req.expected_location),
+                    ("forecast_latitude", req.forecast_latitude),
+                    ("forecast_longitude", req.forecast_longitude),
+                )
+                if value is None or value == ""
+            ]
+            if missing:
+                return {
+                    "status": "NO_PLAY_DATA_INSUFFICIENT",
+                    "code": "HOURLY_WEATHER_INPUTS_INSUFFICIENT",
+                    "lane": lane,
+                    "ticker": req.ticker,
+                    "p_yes": None,
+                    "p_no": None,
+                    "probability_publishable": False,
+                    "edge_publishable": False,
+                    "rank_eligible": False,
+                    "blockers": [f"MISSING_INPUT:{name}" for name in missing],
+                    "global_terminal_authority": "V17_TERMINAL_REDUCER",
+                    "controlling_specialist": "KALSHI_WEATHER_MARKET_EXPERT",
+                    "can_execute": False,
+                }
+            capture = _capture_hourly(
+                HourlyShadowRequest(
+                    ticker=req.ticker,
+                    index_city=str(req.index_city),
+                    expected_location=str(req.expected_location),
+                    forecast_latitude=float(req.forecast_latitude),
+                    forecast_longitude=float(req.forecast_longitude),
+                    open_meteo_models=req.open_meteo_models,
+                ),
+                db_client_fn,
+            )
+            # capture_hourly_shadow persisted the immutable row before this call.
+            decision = reduce_kalshi_weather_prediction_v17(
+                client=db_client_fn(),
+                prediction_id=str(capture["prediction_id"]),
+            )
+            return {
+                "capture": capture,
+                "decision": decision,
+                "immutable_write_precedes_publication": True,
+                "global_terminal_authority": "V17_TERMINAL_REDUCER",
+                "can_execute": False,
+            }
 
     if "/kalshi-weather/v17/publish" not in existing:
         @app.post(
