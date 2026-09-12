@@ -74,6 +74,25 @@ paths:
       responses:
         '200': {description: "Terminal bounded Daily receipt, including held rows"}
         '401': {description: Authentication failed}
+  /v17/daily-picks:
+    post:
+      operationId: runWowV17DailyPicks
+      x-openai-isConsequential: false
+      description: >-
+        Consolidated V17 daily-pick control plane. Compiles a terse daily-picks
+        request, consumes governed snapshot/scorer outputs, preserves typed
+        failures, refreshes pregame status, reconciles every terminal candidate,
+        and ranks only valid survivors by governed calibrated lower bound.
+        This route never creates model probability and can_execute is always false.
+      security: [{actionBearer: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/DailyPicksRequest'}
+      responses:
+        '200': {description: Consolidated governed daily-pick leaderboard and blocker summary}
+        '401': {description: Authentication failed}
   /score-pick-request:
     post:
       operationId: scoreWowV17PickRequest
@@ -174,6 +193,21 @@ components:
           default: [PROPS, MONEYLINE]
         max_props: {type: integer, minimum: 0, maximum: 12, default: 6}
         max_team_events: {type: integer, minimum: 0, maximum: 12, default: 6}
+    DailyPicksRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        query: {type: [string, 'null'], maxLength: 1000}
+        requested_slate_date: {type: [string, 'null'], format: date}
+        requested_timezone: {type: string, minLength: 1, maxLength: 64, default: America/Chicago}
+        lanes:
+          type: array
+          items: {type: string, enum: [PROPS, MONEYLINE]}
+          default: [PROPS, MONEYLINE]
+        requested_count: {type: integer, minimum: 1, maximum: 50, default: 10}
+        max_props: {type: integer, minimum: 0, maximum: 12, default: 12}
+        max_team_events: {type: integer, minimum: 0, maximum: 12, default: 12}
+        transient_retry_attempts: {type: integer, minimum: 0, maximum: 1, default: 1}
     PickRequestBatch:
       type: object
       additionalProperties: false
