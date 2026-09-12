@@ -12,7 +12,7 @@ can_execute=false unconditionally.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Callable
 from uuid import NAMESPACE_URL, uuid5
 
 from fastapi import HTTPException
@@ -23,6 +23,62 @@ STAT_TYPE = "PITCHER_STRIKEOUTS"
 PROVIDER = "WOW_PROP_FITTED_MODEL_V1"
 CAPABILITY_KEY = "PROP_PROBABILITY"
 DIRECTIONS = ("MORE", "LESS")
+
+# PostgREST returns at most 1000 rows per request. Any unbounded select over a
+# growing ledger silently truncates, which would under-count the calibration
+# cohort rather than fail. Page every unbounded read instead.
+PAGE_SIZE = 1000
+
+# The Supabase edge rejects an oversized request URI with a plain HTTP 400
+# before PostgREST ever sees it, which supabase-py surfaces only as APIError.
+# A ``prediction_id=in.(...)`` filter costs ~45 URL bytes per id, so the whole
+# request line crosses that edge limit at roughly 630 ids. Chunking keeps every
+# filtered read far below it regardless of how large the cohort grows.
+IN_FILTER_CHUNK_SIZE = 200
+
+
+class PropForwardCohortBoundaryError(RuntimeError):
+    """A governed persistence boundary failed.
+
+    Carries the exact table/operation that failed alongside the underlying
+    exception type so a failed pass names its boundary instead of collapsing to
+    an untyped ``APIError``. This never downgrades a failure into a success.
+    """
+
+    def __init__(self, boundary: str, error: BaseException) -> None:
+        super().__init__(f"{boundary}: {type(error).__name__}")
+        self.boundary = boundary
+        self.error_type = type(error).__name__
+        self.__cause__ = error
+
+
+def _db_call(boundary: str, call: Callable[[], Any]) -> Any:
+    try:
+        return call()
+    except PropForwardCohortBoundaryError:
+        raise
+    except Exception as exc:
+        raise PropForwardCohortBoundaryError(boundary, exc) from exc
+
+
+def _paginate(boundary: str, build: Callable[[], Any]) -> list[dict[str, Any]]:
+    """Read every row behind ``build`` without truncating at the page cap."""
+    rows: list[dict[str, Any]] = []
+    start = 0
+    while True:
+        page = _db_call(
+            boundary,
+            lambda start=start: build().range(start, start + PAGE_SIZE - 1).execute().data or [],
+        )
+        batch = [dict(row) for row in page]
+        rows.extend(batch)
+        if len(batch) < PAGE_SIZE:
+            return rows
+        start += PAGE_SIZE
+
+
+def _chunks(values: list[str], size: int) -> list[list[str]]:
+    return [values[index:index + size] for index in range(0, len(values), size)]
 
 
 class PropForwardCohortRequest(BaseModel):
@@ -45,8 +101,9 @@ def _snapshot_key(snapshot_id: Any, direction: str) -> tuple[str, str]:
 
 
 def _eligible_snapshots(db: Any, limit: int, *, now: datetime) -> list[dict[str, Any]]:
-    rows = (
-        db.table("wow_prop_evidence_snapshots")
+    rows = _db_call(
+        "wow_prop_evidence_snapshots.select_eligible",
+        lambda: db.table("wow_prop_evidence_snapshots")
         .select(
             "source_snapshot_id,captured_at,event_id,event_start_time,sport,player,"
             "stat_type,line,hydration_status,blockers"
@@ -54,9 +111,14 @@ def _eligible_snapshots(db: Any, limit: int, *, now: datetime) -> list[dict[str,
         .eq("sport", SPORT)
         .eq("stat_type", STAT_TYPE)
         .eq("hydration_status", "PASS")
+        # Bound the scan to the future slate the caller actually selects from.
+        # Ordering the whole ledger by event_start_time and taking a fixed window
+        # would let accumulated history crowd future rows out of that window
+        # entirely, silently capturing nothing while still reporting success.
+        .gt("event_start_time", now.isoformat())
         .order("event_start_time")
         .limit(limit * 3)
-        .execute().data or []
+        .execute().data or [],
     )
     selected: list[dict[str, Any]] = []
     for raw in rows:
@@ -74,13 +136,13 @@ def _eligible_snapshots(db: Any, limit: int, *, now: datetime) -> list[dict[str,
 
 
 def _existing_forward_keys(db: Any) -> set[tuple[str, str]]:
-    rows = (
-        db.table("wow_predictions")
+    rows = _paginate(
+        "wow_predictions.select_existing_forward_keys",
+        lambda: db.table("wow_predictions")
         .select("source_snapshot_id,direction")
         .eq("sport", SPORT)
         .eq("stat_type", STAT_TYPE)
-        .eq("model_provider_identity", PROVIDER)
-        .execute().data or []
+        .eq("model_provider_identity", PROVIDER),
     )
     return {
         _snapshot_key(row.get("source_snapshot_id"), row.get("direction"))
@@ -186,19 +248,22 @@ def _prediction_payload(
 
 
 def _persist_prediction(db: Any, payload: dict[str, Any]) -> None:
-    db.table("wow_predictions").upsert(
-        payload, on_conflict="prediction_id", ignore_duplicates=True
-    ).execute()
+    _db_call(
+        "wow_predictions.upsert_forward_prediction",
+        lambda: db.table("wow_predictions").upsert(
+            payload, on_conflict="prediction_id", ignore_duplicates=True
+        ).execute(),
+    )
 
 
 def _forward_predictions(db: Any) -> list[dict[str, Any]]:
-    rows = (
-        db.table("wow_predictions")
+    rows = _paginate(
+        "wow_predictions.select_forward_predictions",
+        lambda: db.table("wow_predictions")
         .select("prediction_id,event_start_time,model_timestamp,locked_at,source_snapshot_id,direction")
         .eq("sport", SPORT)
         .eq("stat_type", STAT_TYPE)
-        .eq("model_provider_identity", PROVIDER)
-        .execute().data or []
+        .eq("model_provider_identity", PROVIDER),
     )
     eligible: list[dict[str, Any]] = []
     for raw in rows:
@@ -216,28 +281,32 @@ def _forward_predictions(db: Any) -> list[dict[str, Any]]:
 def _settled_prediction_ids(db: Any, prediction_ids: list[str]) -> set[str]:
     if not prediction_ids:
         return set()
-    rows = (
-        db.table("wow_outcomes")
-        .select("prediction_id,actual_stat,settlement_timestamp,void")
-        .in_("prediction_id", prediction_ids)
-        .execute().data or []
-    )
-    return {
-        str(row["prediction_id"])
-        for row in rows
-        if row.get("prediction_id")
-        and row.get("actual_stat") is not None
-        and row.get("settlement_timestamp") is not None
-        and row.get("void") is not True
-    }
+    settled: set[str] = set()
+    for chunk in _chunks(list(prediction_ids), IN_FILTER_CHUNK_SIZE):
+        rows = _paginate(
+            "wow_outcomes.select_settled_predictions",
+            lambda chunk=chunk: db.table("wow_outcomes")
+            .select("prediction_id,actual_stat,settlement_timestamp,void")
+            .in_("prediction_id", chunk),
+        )
+        settled.update(
+            str(row["prediction_id"])
+            for row in rows
+            if row.get("prediction_id")
+            and row.get("actual_stat") is not None
+            and row.get("settlement_timestamp") is not None
+            and row.get("void") is not True
+        )
+    return settled
 
 
 def _capability_evidence(db: Any) -> tuple[dict[str, Any], bool]:
-    result = (
-        db.table("wow_runtime_capabilities")
+    result = _db_call(
+        "wow_runtime_capabilities.select_evidence",
+        lambda: db.table("wow_runtime_capabilities")
         .select("capability_key,evidence")
         .eq("capability_key", CAPABILITY_KEY)
-        .limit(1).execute()
+        .limit(1).execute(),
     )
     row = (result.data or [None])[0]
     if not isinstance(row, dict):
@@ -316,10 +385,35 @@ def _reconcile_capability(db: Any) -> dict[str, Any]:
         updated["forward_settled_n"] = settled_n
         updated["forward_cohort_counting_basis"] = "UNIQUE_SOURCE_SNAPSHOT"
         updated["forward_cohort_readiness"] = readiness
-        db.table("wow_runtime_capabilities").update({"evidence": updated}).eq(
-            "capability_key", CAPABILITY_KEY
-        ).execute()
+        _db_call(
+            "wow_runtime_capabilities.update_evidence",
+            lambda: db.table("wow_runtime_capabilities").update({"evidence": updated}).eq(
+                "capability_key", CAPABILITY_KEY
+            ).execute(),
+        )
     return readiness
+
+
+def _reconcile_rows(snapshot_count: int, outcomes: list[dict[str, Any]]) -> dict[str, Any]:
+    """Account for every attempted direction exactly once.
+
+    Mirrors the governed row contract ``rows_in = rows_completed + rows_held +
+    rows_rejected``. An unbalanced pass is reported as a reconciliation failure
+    rather than a success with a quietly short count.
+    """
+    rows_in = snapshot_count * len(DIRECTIONS)
+    completed = sum(1 for row in outcomes if row["status"] == "CAPTURED_FORWARD")
+    skipped = sum(1 for row in outcomes if row["status"] == "SKIPPED_ALREADY_CAPTURED")
+    held = sum(1 for row in outcomes if str(row["status"]).startswith("HELD_"))
+    return {
+        "rows_in": rows_in,
+        "rows_completed": completed,
+        "rows_skipped_already_captured": skipped,
+        "rows_held": held,
+        "rows_terminated": len(outcomes),
+        "balanced": rows_in == len(outcomes) == completed + skipped + held,
+        "can_execute": False,
+    }
 
 
 def run_prop_forward_cohort(
@@ -392,15 +486,16 @@ def run_prop_forward_cohort(
             })
 
     readiness = _reconcile_capability(db)
+    reconciliation = _reconcile_rows(len(snapshots), outcomes)
     return {
         "terminal": True,
-        "run_status": "COMPLETED",
+        # A pass that cannot account for every attempted row is not a success.
+        "run_status": "COMPLETED" if reconciliation["balanced"] else "RECONCILIATION_FAILED",
         "snapshots_considered": len(snapshots),
-        "directions_considered": len(snapshots) * len(DIRECTIONS),
-        "captured_forward_predictions": sum(
-            1 for row in outcomes if row["status"] == "CAPTURED_FORWARD"
-        ),
+        "directions_considered": reconciliation["rows_in"],
+        "captured_forward_predictions": reconciliation["rows_completed"],
         "rows": outcomes,
+        "row_reconciliation": reconciliation,
         "calibration_readiness": readiness,
         "calibrator_fit_performed": False,
         "can_execute": False,

@@ -11,7 +11,11 @@ import asyncio
 import logging
 from typing import Any, Callable
 
-from v17.prop_forward_cohort_runtime import PropForwardCohortRequest, run_prop_forward_cohort
+from v17.prop_forward_cohort_runtime import (
+    PropForwardCohortBoundaryError,
+    PropForwardCohortRequest,
+    run_prop_forward_cohort,
+)
 
 
 def _run_once(*, db_client_fn: Callable[[], Any], market_api: Any, max_snapshots: int) -> dict[str, Any]:
@@ -53,20 +57,32 @@ async def run_prop_forward_cohort_loop(
                 max_snapshots=max_snapshots,
             )
             readiness = result.get("calibration_readiness") or {}
+            reconciliation = result.get("row_reconciliation") or {}
             logger.warning(
-                "WOW_PROP_FORWARD_COHORT run_status=%s snapshots=%s captured=%s forward_prediction_n=%s forward_settled_n=%s readiness=%s calibrator_fit_performed=false can_execute=false",
+                "WOW_PROP_FORWARD_COHORT run_status=%s snapshots=%s captured=%s rows_in=%s rows_held=%s reconciled=%s forward_prediction_n=%s forward_settled_n=%s readiness=%s calibrator_fit_performed=false can_execute=false",
                 result.get("run_status"),
                 result.get("snapshots_considered"),
                 result.get("captured_forward_predictions"),
+                reconciliation.get("rows_in"),
+                reconciliation.get("rows_held"),
+                reconciliation.get("balanced"),
                 readiness.get("forward_prediction_n"),
                 readiness.get("forward_settled_n"),
                 readiness.get("status"),
             )
         except asyncio.CancelledError:
             raise
+        except PropForwardCohortBoundaryError as exc:
+            # Name the exact persistence boundary. A bare error_type=APIError
+            # hides which call failed and is not diagnosable from logs alone.
+            logger.error(
+                "WOW_PROP_FORWARD_COHORT run_status=FAILED boundary=%s error_type=%s calibrator_fit_performed=false can_execute=false",
+                exc.boundary,
+                exc.error_type,
+            )
         except Exception as exc:
             logger.error(
-                "WOW_PROP_FORWARD_COHORT run_status=FAILED error_type=%s calibrator_fit_performed=false can_execute=false",
+                "WOW_PROP_FORWARD_COHORT run_status=FAILED boundary=UNCLASSIFIED error_type=%s calibrator_fit_performed=false can_execute=false",
                 type(exc).__name__,
             )
         await asyncio.sleep(interval_seconds)
