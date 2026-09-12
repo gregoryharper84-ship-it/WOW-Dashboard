@@ -1,17 +1,18 @@
 """V17 Daily Pick Orchestrator.
 
-This is a control-plane layer over existing governed V17 scoring. It never
-creates sporting probability itself. It compiles a terse daily-picks request,
-executes the existing governed Daily snapshot runner, retries only transient
-scorer failures once, preserves typed row failures, removes events that have
-started before publication, ranks valid survivors by governed calibrated lower
-bound, and returns compact reconciliation/coverage diagnostics.
+Control-plane orchestration over existing governed V17 scoring. This module
+never creates or repairs sporting probability. It compiles a terse daily-picks
+request, invokes the existing governed Daily snapshot runner, isolates typed
+row failures, retries only transient scorer failures once, performs a final
+pregame refresh, ranks valid survivors by governed calibrated lower bound, and
+returns exact-once reconciliation.
 
 Execution remains disabled. No wager/order path is exposed here.
 """
 from __future__ import annotations
 
 from collections import Counter
+from copy import deepcopy
 from datetime import datetime, timezone
 from enum import StrEnum
 from typing import Any, Callable, Literal
@@ -39,23 +40,10 @@ class OrchestratorStage(StrEnum):
 
 
 STAGE_SEQUENCE = [stage.value for stage in OrchestratorStage]
-
 RETRYABLE_CODES = {
     "PROP_SCORER_EXCEPTION",
     "TEAM_EVENT_SCORER_EXCEPTION",
     "MODEL_SCORER_FAILED",
-}
-
-NON_RETRYABLE_MODEL_CODES = {
-    "MODEL_UNAVAILABLE",
-    "MODEL_INPUTS_INSUFFICIENT",
-    "MODEL_OUTPUT_INVALID",
-    "MODEL_ROUTE_UNSUPPORTED",
-    "EVENT_ALREADY_STARTED",
-    "EVENT_FINISHED",
-    "EVENT_POSTPONED",
-    "EVENT_CANCELED",
-    "FAVORITE_STATUS_CONFLICT",
 }
 
 
@@ -77,12 +65,7 @@ def _today(timezone_name: str) -> str:
 
 
 def compile_request(req: DailyPicksRequest) -> dict[str, Any]:
-    """Compile safe V17 defaults from a terse user request.
-
-    The compiler intentionally does not create model support. Broad daily-pick
-    language means both governed lanes, remaining pregame slate, lower-bound
-    ranking, final refresh, exact-once reconciliation, and no execution.
-    """
+    """Compile safe V17 defaults without manufacturing model support."""
     slate_date = req.requested_slate_date or _today(req.requested_timezone)
     return {
         "request_id": f"v17-picks-{uuid4()}",
@@ -129,30 +112,75 @@ def _payload_code(payload: dict[str, Any]) -> str | None:
     return None
 
 
-def _has_retryable_failure(snapshot: dict[str, Any]) -> bool:
-    for row in snapshot.get("rows") or []:
-        if row.get("lane") == "PROPS":
-            for outcome in (row.get("result") or {}).get("outcomes") or []:
-                code = _payload_code(outcome.get("payload") or {})
-                if code in RETRYABLE_CODES:
-                    return True
-        else:
-            code = _payload_code(row.get("result") or {})
-            if code in RETRYABLE_CODES:
-                return True
-    return False
+def _outcome_quality(outcome: dict[str, Any]) -> tuple[int, int]:
+    payload = outcome.get("payload") or {}
+    return (
+        1 if outcome.get("status") == "COMPLETED" else 0,
+        1 if payload.get("rank_eligible") is True and payload.get("probability_publishable") is True else 0,
+    )
 
 
 def _row_quality(row: dict[str, Any]) -> tuple[int, int]:
     result = row.get("result") or {}
+    if row.get("lane") == "PROPS":
+        outcomes = result.get("outcomes") or []
+        completed = sum(1 for outcome in outcomes if outcome.get("status") == "COMPLETED")
+        eligible = sum(
+            1
+            for outcome in outcomes
+            if (outcome.get("payload") or {}).get("rank_eligible") is True
+            and (outcome.get("payload") or {}).get("probability_publishable") is True
+        )
+        return completed, eligible
     return (
         1 if row.get("row_status") == "COMPLETED" else 0,
-        1 if result.get("rank_eligible") is True else 0,
+        1 if result.get("rank_eligible") is True and result.get("probability_publishable") is True else 0,
     )
 
 
+def _has_retryable_failure(snapshot: dict[str, Any]) -> bool:
+    for row in snapshot.get("rows") or []:
+        if row.get("lane") == "PROPS":
+            for outcome in (row.get("result") or {}).get("outcomes") or []:
+                if _payload_code(outcome.get("payload") or {}) in RETRYABLE_CODES:
+                    return True
+        elif _payload_code(row.get("result") or {}) in RETRYABLE_CODES:
+            return True
+    return False
+
+
+def _merge_prop_row(current: dict[str, Any], candidate: dict[str, Any]) -> dict[str, Any]:
+    """Merge prop retries per direction so one recovered side cannot erase another."""
+    merged = deepcopy(current)
+    current_outcomes = {
+        outcome.get("direction"): outcome
+        for outcome in (merged.get("result") or {}).get("outcomes") or []
+        if outcome.get("direction")
+    }
+    for outcome in (candidate.get("result") or {}).get("outcomes") or []:
+        direction = outcome.get("direction")
+        if not direction:
+            continue
+        existing = current_outcomes.get(direction)
+        if existing is None or _outcome_quality(outcome) > _outcome_quality(existing):
+            current_outcomes[direction] = deepcopy(outcome)
+    outcomes = [current_outcomes[key] for key in ("MORE", "LESS") if key in current_outcomes]
+    merged_result = dict(merged.get("result") or {})
+    merged_result["outcomes"] = outcomes
+    publishable = any(
+        (outcome.get("payload") or {}).get("probability_publishable") is True
+        and (outcome.get("payload") or {}).get("rank_eligible") is True
+        for outcome in outcomes
+    )
+    merged_result["probability_publishable"] = publishable
+    merged_result["rank_eligible"] = publishable
+    merged["result"] = merged_result
+    merged["row_status"] = "COMPLETED" if any(outcome.get("status") == "COMPLETED" for outcome in outcomes) else "HELD"
+    return merged
+
+
 def _merge_attempts(attempts: list[dict[str, Any]]) -> dict[str, Any]:
-    """Merge retry attempts by canonical row identity without duplicating rows."""
+    """Merge retries by canonical identity without duplicating terminal rows."""
     if not attempts:
         return {"rows": [], "blockers": ["ORCHESTRATOR_NO_SNAPSHOT_ATTEMPT"], "run_status": "FAILED"}
     merged: dict[tuple[Any, ...], dict[str, Any]] = {}
@@ -160,8 +188,12 @@ def _merge_attempts(attempts: list[dict[str, Any]]) -> dict[str, Any]:
         for row in attempt.get("rows") or []:
             key = _identity_key(row)
             current = merged.get(key)
-            if current is None or _row_quality(row) > _row_quality(current):
-                merged[key] = row
+            if current is None:
+                merged[key] = deepcopy(row)
+            elif row.get("lane") == "PROPS":
+                merged[key] = _merge_prop_row(current, row)
+            elif _row_quality(row) > _row_quality(current):
+                merged[key] = deepcopy(row)
     last = attempts[-1]
     return {
         **last,
@@ -196,17 +228,9 @@ def _number(payload: dict[str, Any], *keys: str) -> float | None:
     return None
 
 
-def _candidate(
-    *,
-    lane: str,
-    identity: dict[str, Any],
-    payload: dict[str, Any],
-    direction: str | None,
-    row_status: str,
-    now_utc: datetime,
-) -> dict[str, Any]:
+def _candidate(*, lane: str, identity: dict[str, Any], payload: dict[str, Any], direction: str | None, row_status: str, now_utc: datetime) -> dict[str, Any]:
     still_pregame = _future_at_publication(identity, now_utc)
-    lower = _number(payload, "calibrated_lower_bound", "lower_bound")
+    lower = _number(payload, "calibrated_lower_bound", "calibrated_probability_lower_bound", "lower_bound")
     calibrated = _number(payload, "calibrated_probability")
     raw = _number(payload, "raw_model_probability", "model_probability", "raw_probability")
     rank_eligible = bool(
@@ -247,27 +271,23 @@ def _expand_candidates(snapshot: dict[str, Any], *, now_utc: datetime) -> list[d
         result = dict(row.get("result") or {})
         if lane == "PROPS":
             for outcome in result.get("outcomes") or []:
-                candidates.append(
-                    _candidate(
-                        lane=lane,
-                        identity=identity,
-                        payload=dict(outcome.get("payload") or {}),
-                        direction=outcome.get("direction"),
-                        row_status=str(outcome.get("status") or row_status),
-                        now_utc=now_utc,
-                    )
-                )
-        else:
-            candidates.append(
-                _candidate(
+                candidates.append(_candidate(
                     lane=lane,
                     identity=identity,
-                    payload=result,
-                    direction=None,
-                    row_status=row_status,
+                    payload=dict(outcome.get("payload") or {}),
+                    direction=outcome.get("direction"),
+                    row_status=str(outcome.get("status") or row_status),
                     now_utc=now_utc,
-                )
-            )
+                ))
+        else:
+            candidates.append(_candidate(
+                lane=lane,
+                identity=identity,
+                payload=result,
+                direction=None,
+                row_status=row_status,
+                now_utc=now_utc,
+            ))
     return candidates
 
 
@@ -282,30 +302,33 @@ def _blocker_summary(candidates: list[dict[str, Any]], upstream_blockers: list[s
 
 
 def _coverage(snapshot: dict[str, Any], candidates: list[dict[str, Any]]) -> dict[str, Any]:
-    # Current server-owned moneyline snapshot discovery is MLB-specific. Expose
-    # that limitation rather than falsely claiming an all-sports scan. The
-    # orchestrator contract is deliberately extensible as sport adapters are
-    # registered in the backend.
-    sports = sorted({str((c.get("identity") or {}).get("sport")) for c in candidates if (c.get("identity") or {}).get("sport")})
-    moneyline_rows = [c for c in candidates if c.get("lane") == "MONEYLINE"]
+    requested_lanes = set(snapshot.get("requested_lanes") or [])
+    sports = sorted({
+        str((candidate.get("identity") or {}).get("sport"))
+        for candidate in candidates
+        if (candidate.get("identity") or {}).get("sport")
+    })
+    moneyline_requested = "MONEYLINE" in requested_lanes
+    if not moneyline_requested:
+        return {
+            "sports_observed": sports,
+            "props_discovery": "CANONICAL_SNAPSHOT_DISCOVERY" if "PROPS" in requested_lanes else "NOT_REQUESTED",
+            "moneyline_discovery": "NOT_REQUESTED",
+            "cross_sport_moneyline_complete": None,
+            "cross_sport_blocker": None,
+            "future_adapter_registration_required": False,
+        }
     return {
         "sports_observed": sports,
-        "props_discovery": "CANONICAL_SNAPSHOT_DISCOVERY",
-        "moneyline_discovery": "MLB_FORWARD_SHADOW_ONLY" if moneyline_rows or "MONEYLINE" in (snapshot.get("requested_lanes") or []) else "NOT_REQUESTED",
+        "props_discovery": "CANONICAL_SNAPSHOT_DISCOVERY" if "PROPS" in requested_lanes else "NOT_REQUESTED",
+        "moneyline_discovery": "MLB_FORWARD_SHADOW_ONLY",
         "cross_sport_moneyline_complete": False,
         "cross_sport_blocker": "CROSS_SPORT_DISCOVERY_ADAPTERS_NOT_REGISTERED_IN_DAILY_SNAPSHOT_RUNTIME",
         "future_adapter_registration_required": True,
     }
 
 
-def run_daily_picks(
-    req: DailyPicksRequest,
-    *,
-    db: Any,
-    market_api: Any,
-    event_api: Any,
-    snapshot_runner: Callable[..., dict[str, Any]] = run_daily_snapshot,
-) -> dict[str, Any]:
+def run_daily_picks(req: DailyPicksRequest, *, db: Any, market_api: Any, event_api: Any, snapshot_runner: Callable[..., dict[str, Any]] = run_daily_snapshot) -> dict[str, Any]:
     compiled = compile_request(req)
     snapshot_req = DailySnapshotRequest(
         requested_slate_date=compiled["requested_slate_date"],
@@ -315,19 +338,17 @@ def run_daily_picks(
         max_team_events=req.max_team_events,
     )
 
-    attempts: list[dict[str, Any]] = []
-    attempts.append(snapshot_runner(snapshot_req, db=db, market_api=market_api, event_api=event_api))
+    attempts = [snapshot_runner(snapshot_req, db=db, market_api=market_api, event_api=event_api)]
     retries = 0
     while retries < req.transient_retry_attempts and _has_retryable_failure(attempts[-1]):
         retries += 1
         attempts.append(snapshot_runner(snapshot_req, db=db, market_api=market_api, event_api=event_api))
 
     snapshot = _merge_attempts(attempts)
-    now_utc = datetime.now(timezone.utc)
-    candidates = _expand_candidates(snapshot, now_utc=now_utc)
+    candidates = _expand_candidates(snapshot, now_utc=datetime.now(timezone.utc))
     ranked = sorted(
-        (c for c in candidates if c.get("rank_eligible")),
-        key=lambda c: float(c["calibrated_lower_bound"]),
+        (candidate for candidate in candidates if candidate.get("rank_eligible")),
+        key=lambda candidate: float(candidate["calibrated_lower_bound"]),
         reverse=True,
     )
     leaderboard = [dict(candidate, rank=index + 1) for index, candidate in enumerate(ranked[: req.requested_count])]
@@ -345,11 +366,11 @@ def run_daily_picks(
         "no_silent_candidate_loss": terminal_candidates == rank_eligible_count + blocked_count,
     }
 
-    upstream_blockers = [str(x) for x in snapshot.get("blockers") or []]
-    blocker_summary = _blocker_summary(candidates, upstream_blockers)
+    blocker_summary = _blocker_summary(candidates, [str(x) for x in snapshot.get("blockers") or []])
     coverage = _coverage(snapshot, candidates)
     run_status = "COMPLETED" if reconciliation["balanced"] else "RUN_RECONCILIATION_FAILED"
-    if run_status == "COMPLETED" and (blocker_summary or not coverage["cross_sport_moneyline_complete"]):
+    coverage_blocked = coverage.get("cross_sport_moneyline_complete") is False
+    if run_status == "COMPLETED" and (blocker_summary or coverage_blocked):
         run_status = "COMPLETED_WITH_BLOCKERS"
 
     return {
@@ -374,14 +395,7 @@ def run_daily_picks(
     }
 
 
-def install_daily_pick_orchestrator_route(
-    app: FastAPI,
-    *,
-    auth_dependency: Any,
-    db_client_fn: Callable[[], Any],
-    market_api: Any,
-    event_api: Any,
-) -> None:
+def install_daily_pick_orchestrator_route(app: FastAPI, *, auth_dependency: Any, db_client_fn: Callable[[], Any], market_api: Any, event_api: Any) -> None:
     if any(getattr(route, "path", None) == "/v17/daily-picks" for route in app.router.routes):
         return
 
