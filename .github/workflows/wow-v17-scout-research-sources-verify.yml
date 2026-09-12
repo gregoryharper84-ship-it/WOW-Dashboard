@@ -1,0 +1,62 @@
+name: wow-v17-scout-research-sources-verify
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/wow-v17-scout-research-sources-verify.yml"
+      - ".github/workflows/wow-v17-scout-source-refresh.yml"
+      - "artifacts/wow-engine/v17/research_source_adapters.py"
+      - "artifacts/wow-engine/v17/research_source_snapshot_store.py"
+      - "artifacts/wow-engine/v17/research_identity_reconciliation.py"
+      - "artifacts/wow-engine/v17/scout_source_refresh.py"
+      - "artifacts/wow-engine/v17/sql/20260911_add_scout_source_snapshots_identity.sql"
+      - "artifacts/wow-engine/test_v17_research_source_adapters.py"
+      - "artifacts/wow-engine/test_v17_source_snapshot_identity.py"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/wow-v17-scout-research-sources-verify.yml"
+      - ".github/workflows/wow-v17-scout-source-refresh.yml"
+      - "artifacts/wow-engine/v17/research_source_adapters.py"
+      - "artifacts/wow-engine/v17/research_source_snapshot_store.py"
+      - "artifacts/wow-engine/v17/research_identity_reconciliation.py"
+      - "artifacts/wow-engine/v17/scout_source_refresh.py"
+      - "artifacts/wow-engine/test_v17_research_source_adapters.py"
+      - "artifacts/wow-engine/test_v17_source_snapshot_identity.py"
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: artifacts/wow-engine
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: artifacts/wow-engine/requirements.txt
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Run Scout research source contract tests
+        run: >-
+          python -m pytest -q
+          test_v17_research_source_adapters.py
+          test_v17_source_snapshot_identity.py
+      - name: Verify direct refresh CLI imports fail closed without credentials
+        env:
+          WOW_SCOUT_DATABASE_URL: ""
+          WOW_SPORTSDATAIO_API_KEY: ""
+        run: |
+          python - <<'PY'
+          from v17.research_source_adapters import adapter_health
+          h = adapter_health()
+          assert h['credential_configured'] is False
+          assert h['prediction_authority'] is False
+          assert h['can_execute'] is False
+          print('source adapter health fail-closed contract verified')
+          PY
