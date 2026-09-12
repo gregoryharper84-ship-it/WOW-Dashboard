@@ -7,12 +7,15 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 from datetime import date
 from typing import Any
 
-from v17.research_source_adapters import SPORTSDATAIO_CAPABILITIES, sportsdataio_fetch
-from v17.research_source_snapshot_store import persist_source_result
+try:
+    from v17.research_source_adapters import SPORTSDATAIO_CAPABILITIES, sportsdataio_fetch
+    from v17.research_source_snapshot_store import persist_source_result
+except ModuleNotFoundError:
+    from research_source_adapters import SPORTSDATAIO_CAPABILITIES, sportsdataio_fetch
+    from research_source_snapshot_store import persist_source_result
 
 DEFAULT_SPORTS = (
     "americanfootball_ncaaf",
@@ -58,8 +61,6 @@ def main() -> int:
         from pathlib import Path
         Path(args.output).write_text(rendered + "\n", encoding="utf-8")
     print(rendered)
-    # Missing/unsupported provider capabilities remain visible but do not imply
-    # a corrupted runtime. Hard execution governance is unchanged.
     return 0
 
 
