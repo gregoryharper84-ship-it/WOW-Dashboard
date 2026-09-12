@@ -7,8 +7,12 @@ from typing import Any
 
 import psycopg
 
-from v17.scout_brain_persistence import database_url
-from v17.research_source_adapters import ResearchFetchResult
+try:
+    from v17.scout_brain_persistence import database_url
+    from v17.research_source_adapters import ResearchFetchResult
+except ModuleNotFoundError:
+    from scout_brain_persistence import database_url
+    from research_source_adapters import ResearchFetchResult
 
 
 def _payload_hash(payload: Any) -> str:
