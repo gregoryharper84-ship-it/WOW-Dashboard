@@ -29,9 +29,10 @@ def test_transient_proxy_failure_retries_and_recovers(monkeypatch):
 
 
 def test_auth_or_governance_http_failure_is_not_retried(monkeypatch):
-    monkeypatch.setenv("WOW_ODDS_PROXY_ACTION_KEY", "legacy-test-key")
+    monkeypatch.delenv("WOW_ODDS_PROXY_ACTION_KEY", raising=False)
     monkeypatch.setenv("WOW_SCOUT_SOURCE_RETRY_ATTEMPTS", "3")
     monkeypatch.setenv("WOW_SCOUT_SOURCE_RETRY_BASE_SECONDS", "0")
+    monkeypatch.setattr(oidc, "mint_github_actions_oidc", lambda: "test-oidc-token")
 
     calls = []
 
