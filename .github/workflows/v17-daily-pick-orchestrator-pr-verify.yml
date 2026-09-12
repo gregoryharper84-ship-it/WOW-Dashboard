@@ -1,0 +1,58 @@
+name: v17-daily-pick-orchestrator-pr-verify
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v17-daily-pick-orchestrator-pr-verify-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  daily-pick-orchestrator:
+    name: V17 Daily Pick Orchestrator
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: artifacts/wow-engine
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: artifacts/wow-engine/requirements.txt
+
+      - name: Install backend dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run orchestrator regression tests
+        run: python -m pytest -q tests/test_v17_daily_pick_orchestrator.py --tb=short
+
+      - name: Validate canonical V17 Action schema
+        run: |
+          python -m pip install PyYAML openapi-spec-validator
+          python - <<'PY'
+          from pathlib import Path
+          import yaml
+          from openapi_spec_validator import validate_spec
+
+          path = Path("v17/openapi.wow-betting-engine.v17.yaml")
+          spec = yaml.safe_load(path.read_text())
+          validate_spec(spec)
+          assert spec["paths"]["/v17/daily-picks"]["post"]["operationId"] == "runWowV17DailyPicks"
+          schema = spec["components"]["schemas"]["DailyPicksRequest"]
+          assert schema["additionalProperties"] is False
+          assert schema["properties"]["transient_retry_attempts"]["maximum"] == 1
+          print("daily picks action contract valid")
+          PY
