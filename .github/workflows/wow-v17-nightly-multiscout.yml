@@ -17,6 +17,9 @@ on:
       - "artifacts/wow-engine/v17/nightly_multiscout_delivery.py"
       - "artifacts/wow-engine/v17/multiscout_auto_advance.py"
       - "artifacts/wow-engine/v17/multiscout_auto_advance_oidc.py"
+      - "artifacts/wow-engine/v17/sport_scout_registry.py"
+      - "artifacts/wow-engine/v17/sport_scout_enrichment.py"
+      - "artifacts/wow-engine/v17/scout_research_ledger.py"
       - "artifacts/wow-engine/pick_request_runtime.py"
       - "artifacts/wow-engine/team_event_request_runtime.py"
       - "artifacts/wow-engine/agent_runtime/coordinator_v17.py"
@@ -33,6 +36,9 @@ on:
       - "artifacts/wow-engine/v17/nightly_multiscout_delivery.py"
       - "artifacts/wow-engine/v17/multiscout_auto_advance.py"
       - "artifacts/wow-engine/v17/multiscout_auto_advance_oidc.py"
+      - "artifacts/wow-engine/v17/sport_scout_registry.py"
+      - "artifacts/wow-engine/v17/sport_scout_enrichment.py"
+      - "artifacts/wow-engine/v17/scout_research_ledger.py"
       - "artifacts/wow-engine/pick_request_runtime.py"
       - "artifacts/wow-engine/team_event_request_runtime.py"
       - "artifacts/wow-engine/agent_runtime/coordinator_v17.py"
@@ -43,6 +49,7 @@ on:
       - "artifacts/wow-engine/test_agent_runtime_v17_model_failures.py"
       - "artifacts/wow-engine/test_v17_github_oidc.py"
       - "artifacts/wow-engine/test_v17_multiscout_oidc_runtime.py"
+      - "artifacts/wow-engine/tests/test_v17_sport_scout_teams.py"
       - "artifacts/wow-odds-proxy/**"
 
 permissions:
@@ -68,7 +75,7 @@ jobs:
           cache-dependency-path: artifacts/wow-engine/requirements.txt
       - name: Install engine dependencies
         run: pip install -r requirements.txt
-      - name: Run Multi-Scout, OIDC, and typed-failure regression tests
+      - name: Run Multi-Scout, sport-team, OIDC, and typed-failure regression tests
         run: >-
           python -m pytest -q
           test_v17_nightly_multiscout.py
@@ -77,6 +84,7 @@ jobs:
           test_agent_runtime_v17_model_failures.py
           test_v17_github_oidc.py
           test_v17_multiscout_oidc_runtime.py
+          tests/test_v17_sport_scout_teams.py
       - name: Verify odds proxy extension
         working-directory: artifacts/wow-odds-proxy
         run: |
@@ -88,10 +96,6 @@ jobs:
     if: github.event_name != 'pull_request'
     needs: verify
     runs-on: ubuntu-latest
-    # The Sep 9 production run proved that discovery + governed specialist
-    # auto-advance can legitimately exceed 60 minutes on a large all-sport
-    # slate. Preserve the existing routing/scoring semantics and give the
-    # reconciler enough infrastructure budget to write its terminal receipt.
     timeout-minutes: 120
     permissions:
       contents: read
@@ -149,6 +153,29 @@ jobs:
               print("nightly discovery handoff is model-router ready")
           else:
               print(f"nightly discovery blocked: {data.get('reason_code')}")
+          PY
+      - name: Enrich handoff with sport-specialist Scout teams
+        if: always()
+        shell: bash
+        run: |
+          test -f "$RUNNER_TEMP/wow-multiscout/model-handoff.json"
+          python v17/sport_scout_enrichment.py \
+            --input "$RUNNER_TEMP/wow-multiscout/model-handoff.json" \
+            --output "$RUNNER_TEMP/wow-multiscout/model-handoff-enriched.json"
+          mv "$RUNNER_TEMP/wow-multiscout/model-handoff-enriched.json" "$RUNNER_TEMP/wow-multiscout/model-handoff.json"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          p = Path(os.environ["RUNNER_TEMP"]) / "wow-multiscout" / "model-handoff.json"
+          data = json.loads(p.read_text())
+          assert data.get("can_execute") is False
+          assert data.get("sport_scout_registry", {}).get("can_execute") is False
+          for lane in ("team_event_candidates", "prop_candidates"):
+              for row in data.get("model_handoff", {}).get(lane, []):
+                  assert row.get("research_ceiling") == "RESEARCH_INTEREST"
+                  assert row.get("probability_authority") is False
+                  assert row.get("can_execute") is False
+                  assert row.get("controlling_specialist_route") in {"LLP_TEAM_BETTING_ENGINE", "WOW_PROP_LANE"}
           PY
       - name: Stamp recoverable Scout run identity and manifest
         id: delivery
@@ -233,6 +260,7 @@ jobs:
           recon = data.get("reconciliation", {})
           advance_recon = receipt.get("reconciliation", {})
           mapping = receipt.get("mapping", {})
+          scout_team_ids = sorted({r.get("scout_team_id") for lane in ("team_event_candidates", "prop_candidates") for r in h.get(lane, []) if r.get("scout_team_id")})
           lines = [
               "# WOW V17 Nightly Multi-Scout",
               "",
@@ -246,6 +274,7 @@ jobs:
               f"- Recoverable artifact: `{delivery.get('artifact_name')}`",
               f"- Retention: **{delivery.get('retention_days', 90)} days**",
               f"- Sports scanned: **{len(sports)}**",
+              f"- Sport-specialist Scout teams active: **{len(scout_team_ids)}**",
               f"- Sportsbooks/bookmakers observed: **{len(books)}**",
               f"- Team/event Scout candidates: **{len(h.get('team_event_candidates', []))}**",
               f"- Prop Scout evidence rows: **{len(h.get('prop_candidates', []))}**",
@@ -258,10 +287,14 @@ jobs:
               f"- Downstream completed rows: **{advance_recon.get('completed_downstream_rows', 0)}**",
               f"- Downstream governed holds/rejects: **{advance_recon.get('blocked_downstream_rows', 0)}**",
               f"- Downstream reconciliation pass: **{advance_recon.get('response_reconciliation_pass', False)}**",
+              "- Research ceiling: RESEARCH_INTEREST",
               "- Upset probability authority: LLP only",
               "- Scout/market probability authority: none",
               "- V17 Terminal Reducer remains terminal authority",
               "- can_execute: false",
+              "",
+              "## Sport-specialist Scout teams",
+              *[f"- {s}" for s in scout_team_ids],
               "",
               "## Sports",
               *[f"- {s}" for s in sports],
