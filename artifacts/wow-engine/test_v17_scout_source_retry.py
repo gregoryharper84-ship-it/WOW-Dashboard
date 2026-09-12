@@ -55,3 +55,9 @@ def test_transient_classifier_is_narrow():
     assert oidc._is_transient(scout.FetchResult(False, code="TimeoutError")) is True
     assert oidc._is_transient(scout.FetchResult(False, status=429, code="HTTP_429")) is False
     assert oidc._is_transient(scout.FetchResult(False, status=401, code="HTTP_401")) is False
+
+
+def test_vendor_entitlement_401_403_do_not_terminate_remaining_sports(monkeypatch):
+    monkeypatch.setattr(scout, "TERMINAL_SOURCE_HTTP_STATUSES", {401, 403, 429})
+    oidc.configure_source_failure_scope()
+    assert scout.TERMINAL_SOURCE_HTTP_STATUSES == {429}

@@ -4,7 +4,9 @@ If the legacy proxy bearer is configured it remains authoritative and unchanged.
 Otherwise this wrapper mints a short-lived GitHub OIDC token before proxy calls;
 the OIDC client caches only briefly, so long scans refresh automatically.
 Transient proxy cold-start failures on the OIDC path are retried without
-weakening typed auth/governance failures. Scout itself remains discovery-only
+weakening typed auth/governance failures. Vendor 401/403 responses that arrive
+after caller authentication are scoped to the affected source/event rather than
+terminating the entire multi-sport scan. Scout itself remains discovery-only
 and can_execute=false.
 """
 from __future__ import annotations
@@ -60,6 +62,15 @@ def _is_transient(result: scout.FetchResult) -> bool:
     return result.status is None and str(result.code or "") in TRANSIENT_SOURCE_CODES
 
 
+def configure_source_failure_scope() -> None:
+    # The initial /sports request already fails closed immediately on caller auth
+    # failure. On later event/market requests, an upstream 401/403 can represent
+    # vendor endpoint entitlement (for example ODDS_API_FEATURED_ODDS_FALLBACK_ERROR),
+    # not a loss of GitHub-OIDC authority. Keep 429 terminal across the slate while
+    # preserving 401/403 as typed per-source blockers so the remaining sports scan.
+    scout.TERMINAL_SOURCE_HTTP_STATUSES = {429}
+
+
 def install_refreshable_oidc_proxy_auth() -> None:
     # Preserve the existing legacy bearer path exactly. The Sept. 12 cold-start
     # incident occurred on the GitHub-OIDC path, so resilience belongs there.
@@ -94,6 +105,7 @@ def install_refreshable_oidc_proxy_auth() -> None:
 
 
 def main() -> int:
+    configure_source_failure_scope()
     install_refreshable_oidc_proxy_auth()
     return scout.main()
 
