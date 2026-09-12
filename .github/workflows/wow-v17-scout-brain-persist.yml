@@ -16,7 +16,7 @@ permissions:
 
 jobs:
   persist:
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion != 'cancelled'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -43,28 +43,43 @@ jobs:
             echo "configured=false" >> "$GITHUB_OUTPUT"
             echo "WOW_SCOUT_DATABASE_URL is not configured; durable persistence skipped without weakening governance." >> "$GITHUB_STEP_SUMMARY"
           fi
-      - name: Download latest governed Scout handoff artifact
+      - name: Locate recoverable Scout discovery artifact
+        id: artifact
         if: steps.credential.outputs.configured == 'true'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           mkdir -p "$RUNNER_TEMP/scout-brain"
-          artifact_name=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}/artifacts" --jq '.artifacts | map(select(.name | test("^wow-v17-multiscout-wow-scout-.*-discovery$"))) | sort_by(.created_at) | last | .name')
-          test -n "$artifact_name"
-          gh run download "$SOURCE_RUN_ID" --name "$artifact_name" --dir "$RUNNER_TEMP/scout-brain"
+          artifact_name=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}/artifacts" --jq '.artifacts | map(select(.name | test("^wow-v17-multiscout-wow-scout-.*-discovery$"))) | sort_by(.created_at) | last | .name // ""')
+          if [ -n "$artifact_name" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+            echo "name=$artifact_name" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "No recoverable Scout discovery artifact exists for source run ${SOURCE_RUN_ID}; persistence blocked without fabricating a run." >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Download recoverable Scout handoff artifact
+        if: steps.credential.outputs.configured == 'true' && steps.artifact.outputs.present == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_NAME: ${{ steps.artifact.outputs.name }}
+        run: |
+          gh run download "$SOURCE_RUN_ID" --name "$ARTIFACT_NAME" --dir "$RUNNER_TEMP/scout-brain"
           test -f "$RUNNER_TEMP/scout-brain/model-handoff.json"
       - name: Persist enriched candidates and immutable research history
-        if: steps.credential.outputs.configured == 'true'
+        if: steps.credential.outputs.configured == 'true' && steps.artifact.outputs.present == 'true'
         run: |
           python v17/scout_brain_sync.py \
             --input "$RUNNER_TEMP/scout-brain/model-handoff.json" \
             --receipt "$RUNNER_TEMP/scout-brain/persistence-receipt.json"
           cat "$RUNNER_TEMP/scout-brain/persistence-receipt.json" >> "$GITHUB_STEP_SUMMARY"
       - name: Upload persistence receipt
-        if: steps.credential.outputs.configured == 'true'
+        if: steps.credential.outputs.configured == 'true' && steps.artifact.outputs.present == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: wow-v17-scout-brain-persistence-${{ env.SOURCE_RUN_ID }}
           path: ${{ runner.temp }}/scout-brain/persistence-receipt.json
+          if-no-files-found: error
           retention-days: 90
