@@ -4,8 +4,12 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from v17.scout_source_policy import policy_payload
-from v17.sport_scout_registry import scout_team_for
+try:  # module import when artifacts/wow-engine is on sys.path
+    from v17.scout_source_policy import policy_payload
+    from v17.sport_scout_registry import scout_team_for
+except ModuleNotFoundError:  # direct `python v17/...py` execution
+    from scout_source_policy import policy_payload
+    from sport_scout_registry import scout_team_for
 
 WORKER_ROLE = {
     "wow.source-provenance-researcher": "SOURCE_PROVENANCE",
@@ -14,6 +18,7 @@ WORKER_ROLE = {
     "wow.matchup-context-researcher": "MATCHUP_CONTEXT",
     "wow.market-settlement-researcher": "MARKET_SETTLEMENT",
 }
+SUPPORTED_RESEARCH_WORKERS = tuple(WORKER_ROLE.keys())
 
 DAY_NAMES = ("MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN")
 
@@ -112,4 +117,4 @@ def build_research_brief(candidate: dict[str, Any], worker_id: str, *, now: date
     }
 
 
-__all__ = ["WORKER_ROLE", "resolve_cycle_stage", "build_research_brief"]
+__all__ = ["WORKER_ROLE", "SUPPORTED_RESEARCH_WORKERS", "resolve_cycle_stage", "build_research_brief"]
