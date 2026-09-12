@@ -10,7 +10,12 @@ import json
 from pathlib import Path
 from typing import Any
 
-from sport_scout_registry import registry_payload, scout_team_for
+try:  # package import under pytest/backend runtime
+    from v17.sport_scout_registry import registry_payload, scout_team_for
+    from v17.sport_research_brief import SUPPORTED_RESEARCH_WORKERS, build_research_brief
+except ModuleNotFoundError:  # direct `python v17/sport_scout_enrichment.py`
+    from sport_scout_registry import registry_payload, scout_team_for
+    from sport_research_brief import SUPPORTED_RESEARCH_WORKERS, build_research_brief
 
 
 def enrich_candidate(row: dict[str, Any], lane: str) -> dict[str, Any]:
@@ -26,6 +31,11 @@ def enrich_candidate(row: dict[str, Any], lane: str) -> dict[str, Any]:
     enriched["probability_authority"] = False
     enriched["controlling_specialist_route"] = team.controlling_prop_route if lane == "PROP" else team.controlling_team_event_route
     enriched["route"] = enriched["controlling_specialist_route"]
+    enriched["research_worker_briefs"] = {
+        worker_id: build_research_brief(enriched, worker_id)
+        for worker_id in SUPPORTED_RESEARCH_WORKERS
+    }
+    enriched["research_workers_may_create_probability"] = False
     enriched["can_execute"] = False
     return enriched
 
@@ -39,9 +49,17 @@ def enrich_handoff(payload: dict[str, Any]) -> dict[str, Any]:
     handoff["prop_candidates"] = [enrich_candidate(row, "PROP") for row in handoff.get("prop_candidates", []) or [] if isinstance(row, dict)]
     out["model_handoff"] = handoff
     out["sport_scout_registry"] = registry_payload()
+    out["research_worker_registry"] = {
+        "worker_ids": list(SUPPORTED_RESEARCH_WORKERS),
+        "sport_aware_briefs_attached": True,
+        "research_ceiling": "RESEARCH_INTEREST",
+        "prediction_authority": False,
+        "can_execute": False,
+    }
     governance = dict(out.get("governance") or {})
     governance.update({
         "sport_scout_probability_authority": False,
+        "research_worker_probability_authority": False,
         "sportsbook_implied_probability_is_model_probability": False,
         "final_probability_requires_controlling_specialist": True,
         "v17_terminal_reducer_is_terminal_authority": True,
@@ -67,6 +85,7 @@ def main() -> int:
         "status": "SPORT_SCOUT_ENRICHMENT_COMPLETE",
         "team_event_candidates": len(enriched.get("model_handoff", {}).get("team_event_candidates", [])),
         "prop_candidates": len(enriched.get("model_handoff", {}).get("prop_candidates", [])),
+        "research_workers": len(SUPPORTED_RESEARCH_WORKERS),
         "can_execute": False,
     }))
     return 0
