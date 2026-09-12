@@ -1,14 +1,11 @@
 """Server-owned canonical hydration for V17 MLB TEAM_EVENT requests.
 
-Direct team/event ingress must not depend on a Custom GPT caller to reproduce
-venue/starter/lineup-status fields that already exist in WOW's canonical MLB
-forward-shadow ledger.  This module resolves the latest still-pregame PASS
-snapshot for the exact official event and validates immutable event identity
-before handing evidence to the fitted event scorer.
-
-Caller-provided sport_specific_evidence is cross-check context only.  It never
-overrides contradictory canonical identity or creates model inputs when the
-canonical record is missing.
+Direct team/event ingress prefers the canonical MLB forward-shadow ledger for
+venue/starter identity. When that ledger has no usable snapshot (or is missing
+only the scorer's venue/starter fields), the request may supply a complete,
+explicitly timestamped evidence package as a bounded fallback. Caller evidence
+never overrides contradictory canonical identity and never substitutes market
+odds or narrative for fitted-model inputs.
 """
 from __future__ import annotations
 
@@ -20,6 +17,11 @@ _REQUIRED_CANONICAL_FIELDS = (
     "venue_name",
     "home_probable_pitcher",
     "away_probable_pitcher",
+)
+_CALLER_REQUIRED_FIELDS = (
+    "venue",
+    "home_starting_pitcher",
+    "away_starting_pitcher",
 )
 
 
@@ -37,16 +39,46 @@ def _same_text(left: Any, right: Any) -> bool:
     return " ".join(str(left or "").casefold().split()) == " ".join(str(right or "").casefold().split())
 
 
-def resolve_mlb_team_event_evidence(req: Any, *, event_api: Any) -> dict[str, Any]:
-    """Return a typed canonical-evidence resolution for one MLB event.
+def _caller_fallback(req: Any, *, blocker_code: str) -> dict[str, Any] | None:
+    caller = dict(getattr(req, "sport_specific_evidence", None) or {})
+    missing = [name for name in _CALLER_REQUIRED_FIELDS if not str(caller.get(name) or "").strip()]
+    if missing:
+        return None
 
-    Selection is event-id exact and only considers PASS snapshots.  The newest
-    snapshot at or before request time is used.  Event participants and start
-    time are cross-checked against the caller contract; mismatches fail closed.
-    """
+    source_snapshot_id = str(getattr(req, "source_snapshot_id", "") or "").strip()
+    snapshot_time = _aware(getattr(req, "latest_material_update_timestamp", None))
+    now = datetime.now(timezone.utc)
+    if not source_snapshot_id or snapshot_time is None or snapshot_time > now:
+        return None
+
+    evidence = {
+        **caller,
+        "venue": str(caller["venue"]).strip(),
+        "home_starting_pitcher": str(caller["home_starting_pitcher"]).strip(),
+        "away_starting_pitcher": str(caller["away_starting_pitcher"]).strip(),
+        "home_starter_status": str(caller.get("home_starter_status") or "PROBABLE").strip(),
+        "away_starter_status": str(caller.get("away_starter_status") or "PROBABLE").strip(),
+        "home_lineup_status": str(caller.get("home_lineup_status") or "PROJECTED").strip(),
+        "away_lineup_status": str(caller.get("away_lineup_status") or "PROJECTED").strip(),
+    }
+    return {
+        "ok": True,
+        "code": "MLB_TEAM_EVENT_CALLER_EVIDENCE_FALLBACK_READY",
+        "fallback_reason": blocker_code,
+        "evidence": evidence,
+        "canonical_source_snapshot_id": source_snapshot_id,
+        "canonical_snapshot_timestamp": snapshot_time.isoformat(),
+        "caller_source_snapshot_id": source_snapshot_id,
+        "evidence_authority": "EXPLICIT_REQUEST_FALLBACK",
+        "can_execute": False,
+    }
+
+
+def resolve_mlb_team_event_evidence(req: Any, *, event_api: Any) -> dict[str, Any]:
     get_client = getattr(event_api, "get_client", None)
     if not callable(get_client):
-        return {"ok": False, "code": "MLB_TEAM_EVENT_CANONICAL_CLIENT_UNAVAILABLE", "missing_fields": []}
+        fallback = _caller_fallback(req, blocker_code="MLB_TEAM_EVENT_CANONICAL_CLIENT_UNAVAILABLE")
+        return fallback or {"ok": False, "code": "MLB_TEAM_EVENT_CANONICAL_CLIENT_UNAVAILABLE", "missing_fields": []}
 
     try:
         rows = (
@@ -66,7 +98,8 @@ def resolve_mlb_team_event_evidence(req: Any, *, event_api: Any) -> dict[str, An
             or []
         )
     except Exception as exc:
-        return {
+        fallback = _caller_fallback(req, blocker_code="MLB_TEAM_EVENT_CANONICAL_QUERY_FAILED")
+        return fallback or {
             "ok": False,
             "code": "MLB_TEAM_EVENT_CANONICAL_QUERY_FAILED",
             "error_type": type(exc).__name__,
@@ -86,7 +119,8 @@ def resolve_mlb_team_event_evidence(req: Any, *, event_api: Any) -> dict[str, An
         usable.append((snap_time, event_start, row))
 
     if not usable:
-        return {
+        fallback = _caller_fallback(req, blocker_code="MLB_TEAM_EVENT_CANONICAL_SNAPSHOT_UNAVAILABLE")
+        return fallback or {
             "ok": False,
             "code": "MLB_TEAM_EVENT_CANONICAL_SNAPSHOT_UNAVAILABLE",
             "missing_fields": list(_REQUIRED_CANONICAL_FIELDS),
@@ -118,7 +152,8 @@ def resolve_mlb_team_event_evidence(req: Any, *, event_api: Any) -> dict[str, An
 
     missing = [name for name in _REQUIRED_CANONICAL_FIELDS if not str(row.get(name) or "").strip()]
     if missing:
-        return {
+        fallback = _caller_fallback(req, blocker_code="MLB_TEAM_EVENT_CANONICAL_SNAPSHOT_INCOMPLETE")
+        return fallback or {
             "ok": False,
             "code": "MLB_TEAM_EVENT_CANONICAL_SNAPSHOT_INCOMPLETE",
             "missing_fields": missing,
@@ -156,5 +191,6 @@ def resolve_mlb_team_event_evidence(req: Any, *, event_api: Any) -> dict[str, An
         "canonical_source_snapshot_id": str(row["snapshot_id"]),
         "canonical_snapshot_timestamp": snap_time.isoformat(),
         "caller_source_snapshot_id": str(req.source_snapshot_id),
+        "evidence_authority": "CANONICAL_MLB_LEDGER",
         "can_execute": False,
     }
