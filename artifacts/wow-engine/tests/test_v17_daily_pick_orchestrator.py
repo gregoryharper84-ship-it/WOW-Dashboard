@@ -29,6 +29,7 @@ def _moneyline_row(event_id: str, *, lower: float, calibrated: float, raw: float
         "identity": {
             "official_event_id": event_id,
             "event_start_time": start or _future(),
+            "sport": "MLB",
             "home_team": f"HOME-{event_id}",
             "away_team": f"AWAY-{event_id}",
             "snapshot_id": f"snap-{event_id}",
@@ -38,11 +39,55 @@ def _moneyline_row(event_id: str, *, lower: float, calibrated: float, raw: float
     }
 
 
-def _snapshot(rows, blockers=None, run_id="snapshot-1"):
+def _prop_row(event_id: str, outcomes: list[dict]):
+    publishable = any(
+        (outcome.get("payload") or {}).get("probability_publishable") is True
+        and (outcome.get("payload") or {}).get("rank_eligible") is True
+        for outcome in outcomes
+    )
+    return {
+        "lane": "PROPS",
+        "identity": {
+            "event_id": event_id,
+            "event_start_time": _future(),
+            "sport": "MLB",
+            "player": "Pitcher A",
+            "stat_type": "strikeouts",
+            "line": 4.5,
+            "source_snapshot_id": f"prop-snap-{event_id}",
+        },
+        "result": {
+            "outcomes": outcomes,
+            "probability_publishable": publishable,
+            "rank_eligible": publishable,
+            "can_execute": False,
+        },
+        "row_status": "COMPLETED" if any(outcome.get("status") == "COMPLETED" for outcome in outcomes) else "HELD",
+    }
+
+
+def _prop_outcome(direction: str, *, status: str, lower: float | None = None, code: str | None = None):
+    payload = {
+        "probability_publishable": status == "COMPLETED",
+        "rank_eligible": status == "COMPLETED",
+        "can_execute": False,
+    }
+    if lower is not None:
+        payload.update({
+            "raw_model_probability": min(lower + 0.08, 0.99),
+            "calibrated_probability": min(lower + 0.05, 0.99),
+            "calibrated_probability_lower_bound": lower,
+        })
+    if code:
+        payload["code"] = code
+    return {"direction": direction, "status": status, "payload": payload}
+
+
+def _snapshot(rows, blockers=None, run_id="snapshot-1", requested_lanes=None):
     return {
         "run_id": run_id,
         "run_status": "COMPLETED",
-        "requested_lanes": ["MONEYLINE"],
+        "requested_lanes": requested_lanes or ["MONEYLINE"],
         "rows": rows,
         "blockers": blockers or [],
         "lane_reconciliation": {},
@@ -66,13 +111,11 @@ def test_rank_is_governed_lower_bound_not_raw_or_point_probability():
         _moneyline_row("A", lower=0.61, calibrated=0.90, raw=0.94),
         _moneyline_row("B", lower=0.70, calibrated=0.78, raw=0.80),
     ]
-
     result = run_daily_picks(
         DailyPicksRequest(lanes=["MONEYLINE"], requested_count=2, transient_retry_attempts=0),
         db=object(), market_api=object(), event_api=object(),
         snapshot_runner=lambda *_args, **_kwargs: _snapshot(rows),
     )
-
     assert [row["identity"]["official_event_id"] for row in result["leaderboard"]] == ["B", "A"]
     assert result["ranking_metric"] == "calibrated_lower_bound"
     assert result["can_execute"] is False
@@ -97,11 +140,38 @@ def test_isolated_scorer_failure_does_not_abort_other_candidates_and_retries_onc
         DailyPicksRequest(lanes=["MONEYLINE"], requested_count=5, transient_retry_attempts=1),
         db=object(), market_api=object(), event_api=object(), snapshot_runner=runner,
     )
-
     assert calls["n"] == 2
     assert result["reconciliation"]["retry_attempts_used"] == 1
     assert result["reconciliation"]["balanced"] is True
     assert {row["identity"]["official_event_id"] for row in result["leaderboard"]} == {"GOOD", "RETRY"}
+
+
+def test_prop_retry_merges_each_direction_without_erasing_other_side():
+    calls = {"n": 0}
+
+    def runner(*_args, **_kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            rows = [_prop_row("P1", [
+                _prop_outcome("MORE", status="COMPLETED", lower=0.67),
+                _prop_outcome("LESS", status="HELD", code="MODEL_SCORER_FAILED"),
+            ])]
+        else:
+            rows = [_prop_row("P1", [
+                _prop_outcome("MORE", status="HELD", code="MODEL_SCORER_FAILED"),
+                _prop_outcome("LESS", status="COMPLETED", lower=0.62),
+            ])]
+        return _snapshot(rows, run_id=f"snapshot-{calls['n']}", requested_lanes=["PROPS"])
+
+    result = run_daily_picks(
+        DailyPicksRequest(lanes=["PROPS"], requested_count=5, transient_retry_attempts=1),
+        db=object(), market_api=object(), event_api=object(), snapshot_runner=runner,
+    )
+    assert calls["n"] == 2
+    assert result["reconciliation"]["rank_eligible"] == 2
+    assert {row["direction"] for row in result["leaderboard"]} == {"MORE", "LESS"}
+    assert result["coverage"]["cross_sport_moneyline_complete"] is None
+    assert result["run_status"] == "COMPLETED"
 
 
 def test_model_unavailable_is_preserved_and_not_retried():
@@ -117,7 +187,6 @@ def test_model_unavailable_is_preserved_and_not_retried():
         DailyPicksRequest(lanes=["MONEYLINE"], transient_retry_attempts=1),
         db=object(), market_api=object(), event_api=object(), snapshot_runner=runner,
     )
-
     assert calls["n"] == 1
     assert result["blocked_summary"]["MODEL_UNAVAILABLE"] == 1
     assert result["leaderboard"] == []
@@ -130,7 +199,6 @@ def test_event_that_started_during_run_is_removed_at_publication_refresh():
         db=object(), market_api=object(), event_api=object(),
         snapshot_runner=lambda *_args, **_kwargs: _snapshot(rows),
     )
-
     assert result["leaderboard"] == []
     assert result["blocked_summary"]["EVENT_ALREADY_STARTED"] == 1
     terminal = result["diagnostics"]["terminal_candidate_rows"][0]
@@ -149,7 +217,6 @@ def test_exact_once_reconciliation_never_silently_drops_terminal_candidates():
         db=object(), market_api=object(), event_api=object(),
         snapshot_runner=lambda *_args, **_kwargs: _snapshot(rows),
     )
-
     reconciliation = result["reconciliation"]
     assert reconciliation["terminal_candidates"] == 3
     assert reconciliation["rank_eligible"] == 1
@@ -164,7 +231,6 @@ def test_cross_sport_incompleteness_is_explicit_not_silently_claimed_complete():
         db=object(), market_api=object(), event_api=object(),
         snapshot_runner=lambda *_args, **_kwargs: _snapshot([]),
     )
-
     assert result["coverage"]["cross_sport_moneyline_complete"] is False
     assert result["coverage"]["cross_sport_blocker"] == "CROSS_SPORT_DISCOVERY_ADAPTERS_NOT_REGISTERED_IN_DAILY_SNAPSHOT_RUNTIME"
     assert result["run_status"] == "COMPLETED_WITH_BLOCKERS"
