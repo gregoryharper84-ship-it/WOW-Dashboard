@@ -13,6 +13,7 @@ on:
 permissions:
   actions: read
   contents: read
+  id-token: write
 
 jobs:
   persist:
@@ -23,6 +24,7 @@ jobs:
         working-directory: artifacts/wow-engine
     env:
       WOW_SCOUT_DATABASE_URL: ${{ secrets.WOW_SCOUT_DATABASE_URL }}
+      WOW_SCOUT_PERSIST_URL: https://iczfhsmjrrafhvcpmqhr.supabase.co/functions/v1/wow-v17-scout-brain-persist
       SOURCE_RUN_ID: ${{ inputs.run_id || github.event.workflow_run.id }}
     steps:
       - uses: actions/checkout@v4
@@ -33,19 +35,19 @@ jobs:
           cache-dependency-path: artifacts/wow-engine/requirements.txt
       - name: Install dependencies
         run: pip install -r requirements.txt
-      - name: Check durable Scout credential
+      - name: Check direct database credential
         id: credential
         shell: bash
         run: |
           if [ -n "$WOW_SCOUT_DATABASE_URL" ]; then
             echo "configured=true" >> "$GITHUB_OUTPUT"
+            echo "Using configured direct Scout database persistence path." >> "$GITHUB_STEP_SUMMARY"
           else
             echo "configured=false" >> "$GITHUB_OUTPUT"
-            echo "WOW_SCOUT_DATABASE_URL is not configured; durable persistence skipped without weakening governance." >> "$GITHUB_STEP_SUMMARY"
+            echo "WOW_SCOUT_DATABASE_URL is absent; using short-lived GitHub OIDC to the governed Supabase Edge persistence function." >> "$GITHUB_STEP_SUMMARY"
           fi
       - name: Locate recoverable Scout discovery artifact
         id: artifact
-        if: steps.credential.outputs.configured == 'true'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -60,7 +62,7 @@ jobs:
             echo "No recoverable Scout discovery artifact exists for source run ${SOURCE_RUN_ID}; persistence blocked without fabricating a run." >> "$GITHUB_STEP_SUMMARY"
           fi
       - name: Download recoverable Scout handoff artifact
-        if: steps.credential.outputs.configured == 'true' && steps.artifact.outputs.present == 'true'
+        if: steps.artifact.outputs.present == 'true'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -68,15 +70,23 @@ jobs:
         run: |
           gh run download "$SOURCE_RUN_ID" --name "$ARTIFACT_NAME" --dir "$RUNNER_TEMP/scout-brain"
           test -f "$RUNNER_TEMP/scout-brain/model-handoff.json"
-      - name: Persist enriched candidates and immutable research history
-        if: steps.credential.outputs.configured == 'true' && steps.artifact.outputs.present == 'true'
+      - name: Persist through direct database credential
+        if: steps.artifact.outputs.present == 'true' && steps.credential.outputs.configured == 'true'
         run: |
           python v17/scout_brain_sync.py \
             --input "$RUNNER_TEMP/scout-brain/model-handoff.json" \
             --receipt "$RUNNER_TEMP/scout-brain/persistence-receipt.json"
-          cat "$RUNNER_TEMP/scout-brain/persistence-receipt.json" >> "$GITHUB_STEP_SUMMARY"
+      - name: Persist through governed Supabase Edge OIDC
+        if: steps.artifact.outputs.present == 'true' && steps.credential.outputs.configured != 'true'
+        run: |
+          python v17/scout_brain_edge_sync.py \
+            --input "$RUNNER_TEMP/scout-brain/model-handoff.json" \
+            --receipt "$RUNNER_TEMP/scout-brain/persistence-receipt.json"
+      - name: Report persistence receipt
+        if: steps.artifact.outputs.present == 'true'
+        run: cat "$RUNNER_TEMP/scout-brain/persistence-receipt.json" >> "$GITHUB_STEP_SUMMARY"
       - name: Upload persistence receipt
-        if: steps.credential.outputs.configured == 'true' && steps.artifact.outputs.present == 'true'
+        if: steps.artifact.outputs.present == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: wow-v17-scout-brain-persistence-${{ env.SOURCE_RUN_ID }}
