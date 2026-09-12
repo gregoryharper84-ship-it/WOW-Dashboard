@@ -47,6 +47,14 @@ AUTH_FAILURE_CODES = {
     "ODDS_PROXY_AUTH_REQUIRED",
     "ODDS_PROXY_AUTH_INVALID",
 }
+SECONDARY_VENDOR_FAILURE_CODES = {
+    "ODDS_API_FEATURED_ODDS_FALLBACK_ERROR",
+    "ODDS_API_FEATURED_ODDS_FALLBACK_INVALID",
+    "ODDS_API_KEY_UNCONFIGURED",
+    "ODDS_API_UPSTREAM_ERROR",
+    "ODDS_API_UPSTREAM_UNREACHABLE",
+    "ODDS_API_UPSTREAM_NON_JSON",
+}
 
 
 def _retry_attempts() -> int:
@@ -82,18 +90,24 @@ def _eligible_for_secondary(result: scout.FetchResult) -> bool:
     code = str(result.code or "")
     if code in AUTH_FAILURE_CODES or code.startswith("GITHUB_ACTIONS_OIDC"):
         return False
-    # A secondary independent source is appropriate for upstream entitlement,
-    # quota, transient network, and upstream service failures. It is never used
-    # to bypass caller authentication/governance failures.
-    return result.status in {401, 403, 429, 500, 502, 503, 504} or _is_transient(result)
+    # Generic HTTP_401/HTTP_403 remain fail-closed because they cannot prove the
+    # failure is downstream vendor entitlement rather than caller authorization.
+    # Only typed vendor/upstream failures or transient transport/server failures
+    # may use an independent research source.
+    if code in SECONDARY_VENDOR_FAILURE_CODES:
+        return True
+    if result.status in TRANSIENT_HTTP_STATUSES:
+        return True
+    return _is_transient(result)
 
 
 def configure_source_failure_scope() -> None:
     # The initial /sports request already fails closed immediately on caller auth
-    # failure. On later event/market requests, an upstream 401/403 can represent
-    # vendor endpoint entitlement (for example ODDS_API_FEATURED_ODDS_FALLBACK_ERROR),
-    # not a loss of GitHub-OIDC authority. Keep 429 terminal only when no valid
-    # secondary source can satisfy the exact research request.
+    # failure. On later event/market requests, a typed upstream 401/403 can
+    # represent vendor endpoint entitlement (for example
+    # ODDS_API_FEATURED_ODDS_FALLBACK_ERROR), not a loss of GitHub-OIDC authority.
+    # Keep 429 terminal unless the proxy exposes it through an explicitly typed
+    # independent-source-eligible vendor failure.
     scout.TERMINAL_SOURCE_HTTP_STATUSES = {429}
 
 
