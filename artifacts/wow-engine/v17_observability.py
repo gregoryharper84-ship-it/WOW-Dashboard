@@ -2,6 +2,10 @@
 
 Telemetry is disabled when SENTRY_DSN is absent. Enabling it never changes
 scoring, model selection, terminal labels, or execution authority.
+
+The accepted production entrypoint calls this initializer once before routes are
+served. V17 bridge registration/health is bootstrapped before the optional
+telemetry branch, while the public observability return contract stays unchanged.
 """
 from __future__ import annotations
 
@@ -10,6 +14,13 @@ from typing import Any
 
 
 def initialize_observability() -> dict[str, Any]:
+    # Runtime bridge registration is not telemetry. It is intentionally done
+    # before the optional Sentry branch so /health and /score-team-event expose
+    # the same authoritative production registry even when Sentry is disabled.
+    from v17.team_event_bridge_runtime import install_team_event_bridge_runtime
+
+    install_team_event_bridge_runtime()
+
     # The research evaluation is off by default and independent of telemetry.
     # It is scheduled here because this initializer runs once in the accepted
     # production entrypoint before serving starts. Any research-runner defect is

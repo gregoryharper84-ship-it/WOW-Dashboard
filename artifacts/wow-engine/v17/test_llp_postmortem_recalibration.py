@@ -1,5 +1,20 @@
 from copy import deepcopy
 
+import pytest
+
+from v17.llp_governed_package_scoring import (
+    MODEL_INPUTS_INSUFFICIENT,
+    MODEL_OUTPUT_INVALID,
+    MODEL_SCORER_FAILED,
+    MODEL_UNAVAILABLE,
+    STALE_MODEL_OUTPUT,
+    GovernedPackageError,
+    assert_immutable_model_timestamp,
+    classify_model_failure,
+    edge_leaderboard_score,
+    probability_leaderboard_score,
+    validate_governed_scoring_package,
+)
 from v17.llp_postmortem_recalibration import (
     LearningThresholds,
     brier_score,
@@ -41,16 +56,24 @@ def _row(
         "selection": prediction_id,
         "independent_probability": p,
         "market_prior_weight": market_weight,
+        "market_probability": 0.51,
         "unconditional_probability": p,
         "calibrated_probability": p,
-        "lower_bound": p - 0.03 if lower is None else lower,
-        "upper_bound": p + 0.03 if upper is None else upper,
+        "calibrated_lower_bound": p - 0.03 if lower is None else lower,
+        "calibrated_upper_bound": p + 0.03 if upper is None else upper,
+        "immutable_model_timestamp": "2026-09-07T18:00:00Z",
+        "model_version": "llp-test-v17",
+        "calibration_method": "isotonic",
+        "calibration_version": "cal-test-v1",
+        "source_snapshot_id": f"snapshot-{prediction_id}",
+        "source_snapshot_timestamp": "2026-09-07T17:59:00Z",
+        "latest_material_update_at": "2026-09-07T17:58:00Z",
+        "outcome_space": "BINARY_OUTRIGHT_WINNER",
         "failure_tags": failure_tags or [],
         "realized_failure_tags": realized_failure_tags or [],
         "final_refresh_status": "PASS",
         "snapshot_stage": snapshot_stage,
         "immutable_pregame": immutable,
-        "model_timestamp": "2026-09-07T18:00:00Z",
         "result": result,
     }
 
@@ -62,8 +85,134 @@ def test_binary_scores_are_exact_and_non_mutating():
     assert scored is not None
     assert scored.brier_score == brier_score(0.70, 1.0)
     assert scored.log_loss == log_loss(0.70, 1.0)
+    assert scored.calibrated_probability == 0.70
+    assert scored.rank_eligible is True
+    assert scored.scoring_allowed is True
     assert row == before
     assert scored.can_execute is False
+
+
+def test_brier_and_log_loss_ignore_market_probability_and_use_governed_calibrated_probability():
+    row = _row("governed-only", p=0.80, result="LOSS")
+    row["market_probability"] = 0.05
+    row["probability"] = 0.10
+    scored = score_prediction(row)
+    assert scored is not None
+    assert scored.brier_score == brier_score(0.80, 0.0)
+    assert scored.log_loss == log_loss(0.80, 0.0)
+
+
+def test_legacy_probability_alias_cannot_substitute_for_calibrated_probability():
+    row = _row("legacy-p", p=0.70, result="WIN")
+    row.pop("calibrated_probability")
+    row["probability"] = 0.99
+    audit = validate_governed_scoring_package(row)
+    assert audit.status == MODEL_OUTPUT_INVALID
+    assert audit.rank_eligible is False
+    assert audit.scoring_allowed is False
+    with pytest.raises(GovernedPackageError) as exc:
+        score_prediction(row)
+    assert exc.value.code == MODEL_OUTPUT_INVALID
+
+
+def test_legacy_lower_bound_alias_cannot_substitute_for_governed_lower_bound():
+    row = _row("legacy-lb", p=0.70, result="WIN")
+    row.pop("calibrated_lower_bound")
+    row["lower_bound"] = 0.69
+    audit = validate_governed_scoring_package(row)
+    assert audit.status == MODEL_OUTPUT_INVALID
+    assert "CALIBRATED_LOWER_BOUND_REQUIRED" in audit.blockers
+
+
+def test_created_at_or_model_timestamp_cannot_substitute_for_immutable_model_timestamp():
+    row = _row("mutable-time", p=0.70, result="WIN")
+    row.pop("immutable_model_timestamp")
+    row["model_timestamp"] = "2026-09-07T18:00:00Z"
+    row["created_at"] = "2026-09-07T18:01:00Z"
+    audit = validate_governed_scoring_package(row)
+    assert audit.status == MODEL_OUTPUT_INVALID
+    assert "IMMUTABLE_MODEL_TIMESTAMP_REQUIRED" in audit.blockers
+
+
+def test_stale_immutable_model_timestamp_blocks_scoring_and_ranking():
+    row = _row("stale", p=0.70, result="WIN")
+    row["latest_material_update_at"] = "2026-09-07T18:00:01Z"
+    audit = validate_governed_scoring_package(row)
+    assert audit.status == STALE_MODEL_OUTPUT
+    assert audit.rank_eligible is False
+    assert audit.scoring_allowed is False
+    with pytest.raises(GovernedPackageError) as exc:
+        score_prediction(row)
+    assert exc.value.code == STALE_MODEL_OUTPUT
+
+
+def test_probability_bounds_must_be_monotonic_and_in_domain():
+    row = _row("bad-bounds", p=0.70, result="WIN")
+    row["calibrated_lower_bound"] = 0.75
+    audit = validate_governed_scoring_package(row)
+    assert audit.status == MODEL_OUTPUT_INVALID
+    assert "CALIBRATED_PROBABILITY_BOUNDS_INVALID" in audit.blockers
+
+
+def test_candidate_id_can_satisfy_identifier_contract():
+    row = _row("candidate-only", p=0.70, result="WIN")
+    row["candidate_id"] = row.pop("prediction_id")
+    scored = score_prediction(row)
+    assert scored is not None
+    assert scored.prediction_id == "candidate-only"
+
+
+def test_model_artifact_version_can_satisfy_model_version_contract():
+    row = _row("artifact-version", p=0.70, result="WIN")
+    row.pop("model_version")
+    row["model_artifact_version"] = "llp-artifact-20260909"
+    audit = validate_governed_scoring_package(row)
+    assert audit.status == "PASS"
+
+
+def test_probability_leaderboard_uses_calibrated_lower_bound_only():
+    high_point_low_bound = _row("a", p=0.90, lower=0.60, result="WIN")
+    lower_point_high_bound = _row("b", p=0.75, lower=0.70, result="WIN")
+    assert probability_leaderboard_score(lower_point_high_bound) > probability_leaderboard_score(high_point_low_bound)
+
+
+def test_edge_leaderboard_uses_lower_bound_minus_no_vig_minus_friction():
+    row = _row("edge", p=0.75, lower=0.70, result="WIN")
+    assert edge_leaderboard_score(row, no_vig_probability=0.62, friction_buffer=0.02) == pytest.approx(0.06)
+
+
+def test_immutable_model_timestamp_cannot_be_overwritten():
+    original = _row("immutable", p=0.70, result="WIN")
+    candidate = deepcopy(original)
+    candidate["immutable_model_timestamp"] = "2026-09-07T18:05:00Z"
+    with pytest.raises(GovernedPackageError) as exc:
+        assert_immutable_model_timestamp(original, candidate)
+    assert exc.value.code == MODEL_OUTPUT_INVALID
+
+
+def test_failure_taxonomy_does_not_collapse_scorer_failure_to_model_unavailable():
+    assert classify_model_failure(
+        capability_available=False,
+        inputs_ready=False,
+        model_invoked=False,
+    ) == MODEL_UNAVAILABLE
+    assert classify_model_failure(
+        capability_available=True,
+        inputs_ready=False,
+        model_invoked=False,
+    ) == MODEL_INPUTS_INSUFFICIENT
+    assert classify_model_failure(
+        capability_available=True,
+        inputs_ready=True,
+        model_invoked=True,
+        scorer_state="TIMEOUT",
+    ) == MODEL_SCORER_FAILED
+    assert classify_model_failure(
+        capability_available=True,
+        inputs_ready=True,
+        model_invoked=True,
+        scorer_state="MALFORMED",
+    ) == MODEL_OUTPUT_INVALID
 
 
 def test_favorite_and_upset_calibration_are_never_pooled():

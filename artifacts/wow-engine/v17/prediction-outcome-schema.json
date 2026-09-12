@@ -1,11 +1,44 @@
 {
-  "schema_version": "V17_2026-09-08",
+  "schema_version": "V17_2026-09-09_LLP_GOVERNED_SCORING_PACKAGE",
   "governance": {
     "official_result_immutable": true,
     "near_miss_metadata_may_rewrite_result": false,
     "duplicate_exposure_may_rewrite_sporting_probability": false,
     "can_execute": false,
     "dry_run_only": true
+  },
+  "governed_scoring_package": {
+    "patch_id": "LLP-GOVERNED-PACKAGE-SCORING-CONTRACT-2026-09-09",
+    "identifier_any_of": [
+      "prediction_id",
+      "candidate_id"
+    ],
+    "required_fields": [
+      "calibrated_probability",
+      "calibrated_lower_bound",
+      "calibrated_upper_bound",
+      "immutable_model_timestamp",
+      "calibration_method",
+      "calibration_version",
+      "source_snapshot_id",
+      "source_snapshot_timestamp",
+      "outcome_space"
+    ],
+    "model_version_any_of": [
+      "model_version",
+      "model_artifact_version"
+    ],
+    "probability_order": "0 <= calibrated_lower_bound <= calibrated_probability <= calibrated_upper_bound <= 1",
+    "brier_probability_field": "calibrated_probability",
+    "log_loss_probability_field": "calibrated_probability",
+    "probability_leaderboard_field": "calibrated_lower_bound",
+    "edge_leaderboard_formula": "calibrated_lower_bound - no_vig_probability - friction_buffer",
+    "legacy_probability_aliases_allowed_for_scoring": false,
+    "mutable_timestamp_aliases_allowed_for_model_time": false,
+    "stale_model_output_rule": "immutable_model_timestamp < latest_material_update_at => STALE_MODEL_OUTPUT",
+    "malformed_package_rule": "MODEL_OUTPUT_INVALID",
+    "rank_eligible_requires_package_pass": true,
+    "scoring_allowed_requires_package_pass": true
   },
   "prediction_fields": [
     "prediction_id",
@@ -19,8 +52,17 @@
     "market_probability",
     "raw_probability",
     "calibrated_probability",
-    "lower_bound",
-    "upper_bound",
+    "calibrated_lower_bound",
+    "calibrated_upper_bound",
+    "immutable_model_timestamp",
+    "model_version",
+    "model_artifact_version",
+    "calibration_method",
+    "calibration_version",
+    "source_snapshot_id",
+    "source_snapshot_timestamp",
+    "outcome_space",
+    "latest_material_update_at",
     "failure_path_score",
     "terminal_label",
     "sources",
@@ -51,6 +93,12 @@
     "duplicate_thesis_count": "Count of exact or exposure-family instances recorded for postmortem structure attribution; never a probability haircut.",
     "cards_killed": "Count of cards for which this losing thesis was a necessary failed hinge.",
     "critical_leg_rank": "Pregame structural critical-leg rank when recorded; 1 is the largest modeled card-failure contributor."
+  },
+  "failure_semantics": {
+    "missing_or_malformed_governed_package": "MODEL_OUTPUT_INVALID",
+    "model_inputs_missing_or_stale": "MODEL_INPUTS_INSUFFICIENT",
+    "selected_model_failed_timed_out_or_held": "MODEL_SCORER_FAILED",
+    "controlling_capability_absent_before_selection": "MODEL_UNAVAILABLE"
   },
   "metrics": [
     "brier_score",
