@@ -1,10 +1,12 @@
--- WOW V17 governed-write audit trigger repair
--- Root cause: trigger function referenced NEW.recommendation_record_id while
+-- WOW V17 governed-write audit trigger + LLP bridge contract repair
+-- Root cause 1: trigger function referenced NEW.recommendation_record_id while
 -- executing on wow_event_predictions. PL/pgSQL RECORD field resolution raised
 -- 42703 before the LLP governance bridge could complete.
+-- Root cause 2: the Python V17 runtime requires postmodel_gates_status and
+-- final_gates_status, but the probability-only bridge did not emit them.
 --
--- Preserve fail-closed behavior and can_execute=false. This change only makes
--- row identity extraction table-safe by reading NEW through jsonb.
+-- Preserve fail-closed behavior and can_execute=false. No probability, ranking,
+-- publication, or execution gate is weakened.
 
 create or replace function public.wow_log_governed_write()
 returns trigger
@@ -33,6 +35,66 @@ begin
   values (TG_TABLE_NAME, TG_OP, v_row_pk, v_research_run_id);
 
   return NEW;
+end;
+$function$;
+
+-- Keep the canonical public wrapper aligned with the Python runtime contract.
+-- These aggregate status fields summarize already-computed governed gates; they
+-- do not bypass or replace the underlying probability audit, calibration,
+-- decision, final-refresh, publication, or terminal reducer.
+create or replace function public.wow_v17_mlb_team_event_governance_bridge(
+  p_score_snapshot_id uuid,
+  p_research_run_id text,
+  p_event_key text,
+  p_requested_timezone text,
+  p_candidate_family text,
+  p_decision_intent text
+)
+returns jsonb
+language plpgsql
+set search_path to ''
+as $function$
+declare
+  v_result jsonb;
+  v_postmodel text;
+  v_final text;
+begin
+  if upper(coalesce(p_decision_intent,'')) in ('WINNER','BEST_SIDE') then
+    v_result := public.wow_v17_mlb_probability_only_governance_bridge(
+      p_score_snapshot_id,
+      p_research_run_id,
+      p_event_key,
+      p_requested_timezone,
+      p_candidate_family,
+      p_decision_intent
+    );
+
+    v_postmodel := case
+      when coalesce(v_result->>'probability_audit_result','') = 'PASS_PROBABILITY_AUDIT'
+       and coalesce(v_result->>'calibration_health_status','') = 'PASS'
+       and coalesce(v_result->>'event_mutex_status','') = 'PASS'
+      then 'PASS' else 'HOLD' end;
+
+    v_final := case
+      when coalesce(v_result->>'final_refresh_status','') = 'PASS'
+       and coalesce(v_result->>'global_terminal_reducer','') = 'V17_TERMINAL_REDUCER'
+       and coalesce((v_result->>'can_execute')::boolean,false) = false
+      then 'PASS' else 'HOLD' end;
+
+    return v_result || jsonb_build_object(
+      'postmodel_gates_status', v_postmodel,
+      'final_gates_status', v_final
+    );
+  end if;
+
+  return public.wow_v17_mlb_team_event_governance_bridge_legacy(
+    p_score_snapshot_id,
+    p_research_run_id,
+    p_event_key,
+    p_requested_timezone,
+    p_candidate_family,
+    p_decision_intent
+  );
 end;
 $function$;
 
