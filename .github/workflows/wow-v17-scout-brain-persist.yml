@@ -1,0 +1,70 @@
+name: wow-v17-scout-brain-persist
+
+on:
+  workflow_run:
+    workflows: ["wow-v17-nightly-multiscout"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: Optional source workflow run id
+        required: false
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  persist:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: artifacts/wow-engine
+    env:
+      WOW_SCOUT_DATABASE_URL: ${{ secrets.WOW_SCOUT_DATABASE_URL }}
+      SOURCE_RUN_ID: ${{ inputs.run_id || github.event.workflow_run.id }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: artifacts/wow-engine/requirements.txt
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Check durable Scout credential
+        id: credential
+        shell: bash
+        run: |
+          if [ -n "$WOW_SCOUT_DATABASE_URL" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "WOW_SCOUT_DATABASE_URL is not configured; durable persistence skipped without weakening governance." >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Download latest governed Scout handoff artifact
+        if: steps.credential.outputs.configured == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/scout-brain"
+          artifact_name=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}/artifacts" --jq '.artifacts | map(select(.name | test("^wow-v17-multiscout-wow-scout-.*-discovery$"))) | sort_by(.created_at) | last | .name')
+          test -n "$artifact_name"
+          gh run download "$SOURCE_RUN_ID" --name "$artifact_name" --dir "$RUNNER_TEMP/scout-brain"
+          test -f "$RUNNER_TEMP/scout-brain/model-handoff.json"
+      - name: Persist enriched candidates and immutable research history
+        if: steps.credential.outputs.configured == 'true'
+        run: |
+          python v17/scout_brain_sync.py \
+            --input "$RUNNER_TEMP/scout-brain/model-handoff.json" \
+            --receipt "$RUNNER_TEMP/scout-brain/persistence-receipt.json"
+          cat "$RUNNER_TEMP/scout-brain/persistence-receipt.json" >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload persistence receipt
+        if: steps.credential.outputs.configured == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: wow-v17-scout-brain-persistence-${{ env.SOURCE_RUN_ID }}
+          path: ${{ runner.temp }}/scout-brain/persistence-receipt.json
+          retention-days: 90
