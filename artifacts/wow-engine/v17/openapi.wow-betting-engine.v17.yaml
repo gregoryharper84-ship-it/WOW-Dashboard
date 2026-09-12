@@ -79,11 +79,10 @@ paths:
       operationId: runWowV17DailyPicks
       x-openai-isConsequential: false
       description: >-
-        Consolidated V17 daily-pick control plane. Compiles a terse daily-picks
-        request, consumes governed snapshot/scorer outputs, preserves typed
-        failures, refreshes pregame status, reconciles every terminal candidate,
-        and ranks only valid survivors by governed calibrated lower bound.
-        This route never creates model probability and can_execute is always false.
+        Consolidated V17 daily-pick control plane. Compiles terse requests,
+        preserves typed failures, refreshes pregame status, reconciles terminal
+        candidates, and ranks valid survivors by governed calibrated lower bound.
+        It never creates model probability; can_execute is always false.
       security: [{actionBearer: []}]
       requestBody:
         required: true
@@ -442,5 +441,5 @@ components:
           additionalProperties: true
           description: >-
             Sport-specific evidence. Rich V17 research uses v17_detailed_evidence.
-            Server-owned identity, starters, lineups, venue and lifecycle remain
-            authoritative and cannot be overwritten.
+            Server-owned identity, starters, lineups and venue remain authoritative
+            and cannot be overwritten.
