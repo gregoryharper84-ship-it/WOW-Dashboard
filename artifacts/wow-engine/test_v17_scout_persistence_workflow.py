@@ -23,4 +23,14 @@ def test_persistence_requires_recoverable_artifact_before_sync():
 def test_governance_contract_remains_research_only():
     text = _workflow_text()
     assert "scout_brain_sync.py" in text
+    assert "scout_brain_edge_sync.py" in text
     assert "WOW_SCOUT_DATABASE_URL" in text
+    assert "id-token: write" in text
+    assert "wow-v17-scout-brain-persist" in text
+
+
+def test_missing_database_secret_uses_oidc_edge_fallback_instead_of_skipping():
+    text = _workflow_text()
+    assert "using short-lived GitHub OIDC" in text
+    assert "steps.credential.outputs.configured != 'true'" in text
+    assert "Locate recoverable Scout discovery artifact" in text
