@@ -18,11 +18,12 @@ _REQUIRED_CANONICAL_FIELDS = (
     "home_probable_pitcher",
     "away_probable_pitcher",
 )
-_CALLER_REQUIRED_FIELDS = (
-    "venue",
-    "home_starting_pitcher",
-    "away_starting_pitcher",
-)
+_CANONICAL_TO_CALLER = {
+    "venue_name": "venue",
+    "home_probable_pitcher": "home_starting_pitcher",
+    "away_probable_pitcher": "away_starting_pitcher",
+}
+_CALLER_REQUIRED_FIELDS = tuple(_CANONICAL_TO_CALLER.values())
 
 
 def _aware(value: Any) -> datetime | None:
@@ -39,17 +40,25 @@ def _same_text(left: Any, right: Any) -> bool:
     return " ".join(str(left or "").casefold().split()) == " ".join(str(right or "").casefold().split())
 
 
+def _caller_snapshot_metadata(req: Any) -> tuple[str, datetime] | None:
+    source_snapshot_id = str(getattr(req, "source_snapshot_id", "") or "").strip()
+    snapshot_time = _aware(getattr(req, "latest_material_update_timestamp", None))
+    now = datetime.now(timezone.utc)
+    if not source_snapshot_id or snapshot_time is None or snapshot_time > now:
+        return None
+    return source_snapshot_id, snapshot_time
+
+
 def _caller_fallback(req: Any, *, blocker_code: str) -> dict[str, Any] | None:
     caller = dict(getattr(req, "sport_specific_evidence", None) or {})
     missing = [name for name in _CALLER_REQUIRED_FIELDS if not str(caller.get(name) or "").strip()]
     if missing:
         return None
 
-    source_snapshot_id = str(getattr(req, "source_snapshot_id", "") or "").strip()
-    snapshot_time = _aware(getattr(req, "latest_material_update_timestamp", None))
-    now = datetime.now(timezone.utc)
-    if not source_snapshot_id or snapshot_time is None or snapshot_time > now:
+    metadata = _caller_snapshot_metadata(req)
+    if metadata is None:
         return None
+    source_snapshot_id, snapshot_time = metadata
 
     evidence = {
         **caller,
@@ -150,27 +159,21 @@ def resolve_mlb_team_event_evidence(req: Any, *, event_api: Any) -> dict[str, An
             "missing_fields": [],
         }
 
-    missing = [name for name in _REQUIRED_CANONICAL_FIELDS if not str(row.get(name) or "").strip()]
-    if missing:
-        fallback = _caller_fallback(req, blocker_code="MLB_TEAM_EVENT_CANONICAL_SNAPSHOT_INCOMPLETE")
-        return fallback or {
-            "ok": False,
-            "code": "MLB_TEAM_EVENT_CANONICAL_SNAPSHOT_INCOMPLETE",
-            "missing_fields": missing,
-        }
-
+    caller = dict(getattr(req, "sport_specific_evidence", None) or {})
     canonical = {
-        "venue": row["venue_name"],
+        "venue": row.get("venue_name"),
         "official_event_status": row.get("event_status"),
-        "home_starting_pitcher": row["home_probable_pitcher"],
-        "away_starting_pitcher": row["away_probable_pitcher"],
+        "home_starting_pitcher": row.get("home_probable_pitcher"),
+        "away_starting_pitcher": row.get("away_probable_pitcher"),
         "home_starter_status": "PROBABLE",
         "away_starter_status": "PROBABLE",
         "home_lineup_status": "PROJECTED",
         "away_lineup_status": "PROJECTED",
     }
 
-    caller = dict(getattr(req, "sport_specific_evidence", None) or {})
+    # Shadow snapshot is authoritative whenever it has a value. Caller evidence
+    # may only fill a missing canonical scorer input; a conflicting supplied
+    # value always fails closed before any fallback merge occurs.
     contradictions = []
     for key, value in canonical.items():
         supplied = caller.get(key)
@@ -184,13 +187,43 @@ def resolve_mlb_team_event_evidence(req: Any, *, event_api: Any) -> dict[str, An
             "missing_fields": [],
         }
 
+    missing_canonical = [name for name in _REQUIRED_CANONICAL_FIELDS if not str(row.get(name) or "").strip()]
+    fallback_fields: list[str] = []
+    if missing_canonical:
+        missing_caller = [
+            _CANONICAL_TO_CALLER[name]
+            for name in missing_canonical
+            if not str(caller.get(_CANONICAL_TO_CALLER[name]) or "").strip()
+        ]
+        metadata = _caller_snapshot_metadata(req)
+        if missing_caller or metadata is None:
+            return {
+                "ok": False,
+                "code": "MLB_TEAM_EVENT_CANONICAL_SNAPSHOT_INCOMPLETE",
+                "missing_fields": missing_caller or [_CANONICAL_TO_CALLER[name] for name in missing_canonical],
+            }
+
+        for canonical_name in missing_canonical:
+            caller_name = _CANONICAL_TO_CALLER[canonical_name]
+            canonical[caller_name] = str(caller[caller_name]).strip()
+            fallback_fields.append(caller_name)
+
     return {
         "ok": True,
-        "code": "MLB_TEAM_EVENT_CANONICAL_EVIDENCE_READY",
+        "code": (
+            "MLB_TEAM_EVENT_CANONICAL_EVIDENCE_WITH_CALLER_FALLBACK_READY"
+            if fallback_fields
+            else "MLB_TEAM_EVENT_CANONICAL_EVIDENCE_READY"
+        ),
         "evidence": canonical,
         "canonical_source_snapshot_id": str(row["snapshot_id"]),
         "canonical_snapshot_timestamp": snap_time.isoformat(),
         "caller_source_snapshot_id": str(req.source_snapshot_id),
-        "evidence_authority": "CANONICAL_MLB_LEDGER",
+        "fallback_fields": fallback_fields,
+        "evidence_authority": (
+            "CANONICAL_MLB_LEDGER_WITH_EXPLICIT_REQUEST_FALLBACK"
+            if fallback_fields
+            else "CANONICAL_MLB_LEDGER"
+        ),
         "can_execute": False,
     }
