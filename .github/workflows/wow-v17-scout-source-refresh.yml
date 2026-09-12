@@ -19,7 +19,6 @@ jobs:
         working-directory: artifacts/wow-engine
     env:
       WOW_SCOUT_DATABASE_URL: ${{ secrets.WOW_SCOUT_DATABASE_URL }}
-      SPORTSDataIO_UNUSED: ""
       WOW_SPORTSDATAIO_API_KEY: ${{ secrets.WOW_SPORTSDATAIO_API_KEY }}
       WOW_CAN_EXECUTE: "false"
     steps:
