@@ -1,10 +1,11 @@
 """Run Nightly Multi-Scout with refreshable GitHub Actions OIDC source auth.
 
-If the legacy proxy bearer is configured it remains authoritative. Otherwise
-this wrapper mints a short-lived GitHub OIDC token before proxy calls; the OIDC
-client caches only briefly, so long scans refresh automatically. Transient
-proxy cold-start failures are retried without weakening typed auth/governance
-failures. Scout itself remains discovery-only and can_execute=false.
+If the legacy proxy bearer is configured it remains authoritative and unchanged.
+Otherwise this wrapper mints a short-lived GitHub OIDC token before proxy calls;
+the OIDC client caches only briefly, so long scans refresh automatically.
+Transient proxy cold-start failures on the OIDC path are retried without
+weakening typed auth/governance failures. Scout itself remains discovery-only
+and can_execute=false.
 """
 from __future__ import annotations
 
@@ -60,8 +61,12 @@ def _is_transient(result: scout.FetchResult) -> bool:
 
 
 def install_refreshable_oidc_proxy_auth() -> None:
+    # Preserve the existing legacy bearer path exactly. The Sept. 12 cold-start
+    # incident occurred on the GitHub-OIDC path, so resilience belongs there.
+    if os.environ.get("WOW_ODDS_PROXY_ACTION_KEY"):
+        return
+
     original = scout.proxy_get
-    legacy_action_key = bool(os.environ.get("WOW_ODDS_PROXY_ACTION_KEY"))
 
     def _proxy_get(path: str, params: dict[str, Any] | None = None) -> scout.FetchResult:
         attempts = _retry_attempts()
@@ -69,13 +74,12 @@ def install_refreshable_oidc_proxy_auth() -> None:
         last_result: scout.FetchResult | None = None
 
         for attempt in range(1, attempts + 1):
-            if not legacy_action_key:
-                try:
-                    os.environ["WOW_GITHUB_OIDC_TOKEN"] = mint_github_actions_oidc()
-                except GitHubOIDCMintError as exc:
-                    # Authentication/governance failures remain fail-closed and
-                    # are never relabeled as a transient source outage.
-                    return scout.FetchResult(False, code=str(exc))
+            try:
+                os.environ["WOW_GITHUB_OIDC_TOKEN"] = mint_github_actions_oidc()
+            except GitHubOIDCMintError as exc:
+                # Authentication/governance failures remain fail-closed and
+                # are never relabeled as a transient source outage.
+                return scout.FetchResult(False, code=str(exc))
 
             last_result = original(path, params)
             if last_result.ok or not _is_transient(last_result) or attempt == attempts:
