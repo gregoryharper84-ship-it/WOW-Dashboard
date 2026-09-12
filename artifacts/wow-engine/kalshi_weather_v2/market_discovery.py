@@ -8,6 +8,17 @@ from urllib.parse import urlencode
 from .kalshi_market_data import KALSHI_BASE_URL
 
 
+# Live hourly Weather products have stable Series identities. Prefer these
+# explicit identities over broad /series enumeration, which is a discovery
+# surface rather than a settlement or model authority. Exact market rules are
+# still reacquired and parsed for every contract before any capture is accepted.
+KNOWN_HOURLY_SERIES: Mapping[str, tuple[str, ...]] = {
+    "miami": ("KXTEMPMIAH",),
+    "chicago metro area": ("KXTEMPCHIHS",),
+    "coastal los angeles": ("KXTEMPLAXHS",),
+}
+
+
 class WeatherMarketDiscoveryError(RuntimeError):
     def __init__(self, code: str, detail: str):
         self.code = code
@@ -35,42 +46,44 @@ class KalshiWeatherMarketDiscovery:
         self.get_json = get_json
 
     def candidate_series(self, *, expected_location: str) -> tuple[WeatherSeriesCandidate, ...]:
-        # Do not depend on a hard-coded Kalshi category query token here. The
-        # current exchange category is "Climate and Weather", while older docs
-        # and UI paths have also used "Climate"/"weather" terminology. Fetch the
-        # public series list and apply an explicit weather-category check to the
-        # returned canonical category field instead.
+        needle = str(expected_location or "").strip().casefold()
+        if not needle:
+            raise WeatherMarketDiscoveryError("EXPECTED_LOCATION_MISSING", "expected_location")
+
+        # First resolve an explicitly registered hourly Series. This prevents a
+        # silent zero-cohort when the exchange's broad Series listing changes
+        # ordering, indexing, category vocabulary, or visibility. A direct
+        # Series lookup is public market metadata only; the later frozen rules
+        # package remains controlling for source/location/time/strike semantics.
+        registered = KNOWN_HOURLY_SERIES.get(needle, ())
+        direct: list[WeatherSeriesCandidate] = []
+        for ticker in registered:
+            try:
+                payload = self.get_json(f"{KALSHI_BASE_URL}/series/{ticker}", None)
+            except Exception:
+                continue
+            row = payload.get("series") if isinstance(payload, Mapping) else None
+            candidate = _candidate_from_row(row, needle=needle)
+            if candidate is not None and candidate.ticker == ticker:
+                direct.append(candidate)
+        if direct:
+            return tuple(sorted(direct, key=lambda item: item.ticker))
+
+        # Fallback discovery intentionally does not depend on a hard-coded
+        # category query token. Current and historical Kalshi surfaces have used
+        # both climate and weather terminology. Fetch the public Series list and
+        # validate category/location/temperature from the canonical rows.
         params = urlencode({"include_product_metadata": "true"})
         payload = self.get_json(f"{KALSHI_BASE_URL}/series?{params}", None)
         rows = payload.get("series") if isinstance(payload, Mapping) else None
         if not isinstance(rows, Sequence) or isinstance(rows, (str, bytes)):
             raise WeatherMarketDiscoveryError("KALSHI_SERIES_LIST_INVALID", "series array missing")
 
-        needle = str(expected_location or "").strip().casefold()
-        if not needle:
-            raise WeatherMarketDiscoveryError("EXPECTED_LOCATION_MISSING", "expected_location")
-
         out: list[WeatherSeriesCandidate] = []
         for row in rows:
-            if not isinstance(row, Mapping):
-                continue
-            title = str(row.get("title") or "")
-            category = str(row.get("category") or "")
-            category_folded = category.casefold()
-            if "weather" not in category_folded and "climate" not in category_folded:
-                continue
-            blob = " ".join(
-                [
-                    title,
-                    " ".join(str(x) for x in (row.get("tags") or []) if x is not None),
-                    json.dumps(row.get("product_metadata") or {}, sort_keys=True, default=str),
-                ]
-            ).casefold()
-            if needle not in blob or "temperature" not in blob:
-                continue
-            ticker = str(row.get("ticker") or "").strip().upper()
-            if ticker:
-                out.append(WeatherSeriesCandidate(ticker=ticker, title=title, category=category, raw=dict(row)))
+            candidate = _candidate_from_row(row, needle=needle)
+            if candidate is not None:
+                out.append(candidate)
         return tuple(sorted(out, key=lambda item: item.ticker))
 
     def open_markets(self, *, series_ticker: str, max_pages: int = 10) -> tuple[Mapping[str, Any], ...]:
@@ -99,3 +112,26 @@ class KalshiWeatherMarketDiscovery:
         else:
             raise WeatherMarketDiscoveryError("KALSHI_MARKETS_PAGINATION_UNRESOLVED", series)
         return tuple(rows_out)
+
+
+def _candidate_from_row(raw: Any, *, needle: str) -> WeatherSeriesCandidate | None:
+    if not isinstance(raw, Mapping):
+        return None
+    title = str(raw.get("title") or "")
+    category = str(raw.get("category") or "")
+    category_folded = category.casefold()
+    if "weather" not in category_folded and "climate" not in category_folded:
+        return None
+    blob = " ".join(
+        [
+            title,
+            " ".join(str(x) for x in (raw.get("tags") or []) if x is not None),
+            json.dumps(raw.get("product_metadata") or {}, sort_keys=True, default=str),
+        ]
+    ).casefold()
+    if needle not in blob or "temperature" not in blob:
+        return None
+    ticker = str(raw.get("ticker") or "").strip().upper()
+    if not ticker:
+        return None
+    return WeatherSeriesCandidate(ticker=ticker, title=title, category=category, raw=dict(raw))
