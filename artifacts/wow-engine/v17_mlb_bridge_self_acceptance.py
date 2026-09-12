@@ -5,12 +5,14 @@ feature hydration, a confirmed lineup, and a completed forward baseline. It then
 calls the deployed authenticated /score-team-event boundary using the server's
 existing WOW_ACTION_API_KEY.
 
-Acceptance is intentionally narrow: the response must either contain a complete
-calibrated sporting probability package or a canonical completion failure
-(MODEL_INPUTS_INSUFFICIENT, MODEL_SCORER_FAILED, MODEL_OUTPUT_INVALID). The old
-EVENT_MODEL_BRIDGE_UNAVAILABLE value may remain only as secondary blocker detail;
-it cannot be the sole diagnosis. Probability values and credentials are never
-logged. Wager execution remains impossible.
+Acceptance is intentionally narrow: a complete calibrated sporting probability
+package is not enough by itself. When the fitted MLB model completes, the response
+must also prove that the downstream LLP probability audit / event-decision / mutex
+governance bridge was actually reached. A governed NO_PICK/HOLD remains a valid
+operational result; gates are never weakened to manufacture a pick. Canonical
+model completion failures remain typed failures. Legacy bridge-unavailable errors
+cannot pass acceptance. Probability values and credentials are never logged.
+Wager execution remains impossible.
 """
 from __future__ import annotations
 
@@ -29,6 +31,10 @@ _CANONICAL_FAILURES = {
     "MODEL_INPUTS_INSUFFICIENT",
     "MODEL_SCORER_FAILED",
     "MODEL_OUTPUT_INVALID",
+}
+_GOVERNANCE_BRIDGE_FAILURE_CODES = {
+    "EVENT_MODEL_BRIDGE_UNAVAILABLE",
+    "V17_EVENT_GOVERNANCE_BRIDGE_UNAVAILABLE",
 }
 _REQUIRED_PACKAGE_FIELDS = (
     "calibrated_home_probability",
@@ -142,6 +148,25 @@ def _finite_probability(value: Any) -> bool:
     return math.isfinite(number) and 0.0 <= number <= 1.0
 
 
+def _governance_reached(body: dict[str, Any]) -> bool:
+    governance = body.get("llp_governance")
+    if not isinstance(governance, dict):
+        return False
+    status = str(governance.get("status") or "").strip().upper()
+    if status in {"", "UNAVAILABLE", "INVALID", "NOT_PROVEN"}:
+        return False
+    audit = str(governance.get("probability_audit_result") or "").strip().upper()
+    decision = str(governance.get("event_decision") or "").strip().upper()
+    mutex = str(governance.get("event_mutex_status") or "").strip().upper()
+    return bool(
+        audit and audit != "NOT_PROVEN"
+        and decision and decision != "NOT_PROVEN"
+        and mutex and mutex != "NOT_PROVEN"
+        and governance.get("global_terminal_reducer") == "V17_TERMINAL_REDUCER"
+        and governance.get("can_execute") is False
+    )
+
+
 def evaluate_bridge_response(http_status: int, payload: Any) -> dict[str, Any]:
     body = _response_body(payload)
     code = str(body.get("code") or body.get("status") or "").strip().upper() or None
@@ -152,11 +177,20 @@ def evaluate_bridge_response(http_status: int, payload: Any) -> dict[str, Any]:
         and all(_finite_probability(body.get(field)) for field in _REQUIRED_PACKAGE_FIELDS[:4])
     )
     canonical_failure = code in _CANONICAL_FAILURES
+    governance_reached = _governance_reached(body)
+    bridge_unavailable = bool(
+        code in _GOVERNANCE_BRIDGE_FAILURE_CODES
+        or blocker_code in _GOVERNANCE_BRIDGE_FAILURE_CODES
+        or "V17_EVENT_GOVERNANCE_BRIDGE_UNAVAILABLE" in (body.get("blockers") or [])
+    )
     sole_legacy_bridge_diagnosis = code == "EVENT_MODEL_BRIDGE_UNAVAILABLE"
     accepted = bool(
-        not sole_legacy_bridge_diagnosis
+        not bridge_unavailable
         and can_execute_false
-        and (complete_package or canonical_failure)
+        and (
+            canonical_failure
+            or (complete_package and governance_reached)
+        )
         and 200 <= int(http_status) < 600
     )
     return {
@@ -166,6 +200,8 @@ def evaluate_bridge_response(http_status: int, payload: Any) -> dict[str, Any]:
         "blocker_code": blocker_code,
         "complete_probability_package": complete_package,
         "canonical_failure": canonical_failure,
+        "governance_reached": governance_reached,
+        "bridge_unavailable": bridge_unavailable,
         "sole_legacy_bridge_diagnosis": sole_legacy_bridge_diagnosis,
         "can_execute_false": can_execute_false,
         "can_execute": False,
@@ -239,15 +275,16 @@ async def run_mlb_event_bridge_self_acceptance(logger: logging.Logger, *, event_
     }
     log = logger.warning if status == "PASS" else logger.error
     log(
-        "WOW_V17_MLB_EVENT_BRIDGE_SELF_ACCEPTANCE status=%s event_id=%s http_status=%s code=%s blocker_code=%s complete_probability_package=%s canonical_failure=%s sole_legacy_bridge_diagnosis=%s attempts=%s can_execute=false",
+        "WOW_V17_MLB_EVENT_BRIDGE_SELF_ACCEPTANCE status=%s event_id=%s http_status=%s code=%s blocker_code=%s complete_probability_package=%s governance_reached=%s bridge_unavailable=%s canonical_failure=%s attempts=%s can_execute=false",
         status,
         result["event_id"],
         evaluation["http_status"],
         evaluation["code"],
         evaluation["blocker_code"],
         evaluation["complete_probability_package"],
+        evaluation["governance_reached"],
+        evaluation["bridge_unavailable"],
         evaluation["canonical_failure"],
-        evaluation["sole_legacy_bridge_diagnosis"],
         attempts,
     )
     return result
