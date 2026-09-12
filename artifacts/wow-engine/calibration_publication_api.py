@@ -26,6 +26,18 @@ from prop_fitted_provider import CertifiedInference, PropFittedProviderUnavailab
 
 
 _RECOGNIZED_PUBLICATION_PREFIXES = ("FORWARD_SHADOW_",)
+_CAPABILITY_ABSENCE_CODES = {
+    "PROP_CERTIFIED_MODEL_ARTIFACT_NOT_FOUND",
+    "PROP_MODEL_FAMILY_ADAPTER_UNAVAILABLE",
+    "PROP_BUNDLE_NOT_CERTIFIED",
+}
+_OUTPUT_INVALID_CODES = {
+    "PROP_MODEL_ADAPTER_INVALID_OUTPUT",
+    "PROP_CERTIFIED_INFERENCE_INVALID",
+    "PROP_MODEL_ARTIFACT_PAYLOAD_INVALID",
+    "PROP_MODEL_ARTIFACT_METADATA_INVALID",
+    "PROP_PROVIDER_IDENTITY_MISMATCH",
+}
 
 
 def _normalize_blocker(value: Any) -> Optional[str]:
@@ -93,6 +105,42 @@ def _governed_preflight(market_api: Any) -> dict[str, Any]:
     return payload
 
 
+def _requested_scope(req: Any) -> dict[str, str]:
+    return {
+        "sport": str(getattr(req, "sport", "") or "").strip().upper(),
+        "stat_type": str(getattr(req, "stat_type", "") or "").strip().upper(),
+    }
+
+
+def _failure(
+    *,
+    req: Any,
+    status_code: int,
+    code: str,
+    blocker_code: str,
+    specialist_name: str | None,
+    specialist_capability: str,
+    specialist_status: str,
+    extra: dict[str, Any] | None = None,
+) -> HTTPException:
+    detail: dict[str, Any] = {
+        "code": code,
+        "blocker_code": blocker_code,
+        "requested_scope": _requested_scope(req),
+        "specialist_model_capability": specialist_capability,
+        "specialist_model_name": specialist_name,
+        "specialist_model_status": specialist_status,
+        "failed_contract_scope": ["CONFIDENCE"],
+        "probability_claim_status": code,
+        "probability_publishable": False,
+        "governed_publishable": False,
+        "can_execute": False,
+    }
+    if extra:
+        detail.update(extra)
+    return HTTPException(status_code=status_code, detail=detail)
+
+
 def _selected_raw_probability(line_probs: Any, direction: str) -> float:
     side = str(direction or "").strip().upper()
     if side == "MORE":
@@ -109,18 +157,46 @@ def _selected_raw_probability(line_probs: Any, direction: str) -> float:
                 "can_execute": False,
             },
         )
-    value = float(value)
+    try:
+        value = float(value)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "MODEL_OUTPUT_INVALID",
+                "blocker_code": "PROP_RAW_PROBABILITY_INVALID",
+                "failed_contract_scope": ["CONFIDENCE"],
+                "probability_claim_status": "MODEL_OUTPUT_INVALID",
+                "probability_publishable": False,
+                "can_execute": False,
+            },
+        ) from exc
     if not isfinite(value) or not (0.0 < value < 1.0):
         raise HTTPException(
-            status_code=422,
+            status_code=409,
             detail={
-                "code": "PROP_RAW_PROBABILITY_INVALID",
+                "code": "MODEL_OUTPUT_INVALID",
+                "blocker_code": "PROP_RAW_PROBABILITY_INVALID",
                 "failed_contract_scope": ["CONFIDENCE"],
+                "probability_claim_status": "MODEL_OUTPUT_INVALID",
                 "probability_publishable": False,
                 "can_execute": False,
             },
         )
     return value
+
+
+def _classify_provider_failure(exc: Exception) -> tuple[str, str, str, int]:
+    blocker = str(getattr(exc, "code", None) or "PROP_CERTIFIED_MODEL_SCORER_FAILED").upper()
+    if blocker in _CAPABILITY_ABSENCE_CODES:
+        return "MODEL_UNAVAILABLE", "UNAVAILABLE", "CAPABILITY_UNAVAILABLE", 409
+    if blocker in _OUTPUT_INVALID_CODES:
+        return "MODEL_OUTPUT_INVALID", "AVAILABLE", "OUTPUT_INVALID", 409
+    if isinstance(exc, PropDistributionContractError):
+        if blocker == "PROP_MODEL_ADAPTER_INVALID_OUTPUT" or "OUTPUT" in blocker:
+            return "MODEL_OUTPUT_INVALID", "AVAILABLE", "OUTPUT_INVALID", 409
+        return "MODEL_INPUTS_INSUFFICIENT", "AVAILABLE", "ABSTAINED_INPUT_CONTRACT", 422
+    return "MODEL_SCORER_FAILED", "AVAILABLE", "SCORER_FAILED", 503
 
 
 def _raw_specialist_research(
@@ -135,49 +211,49 @@ def _raw_specialist_research(
     """Run certified raw specialist inference only; never run calibration/persistence."""
     specialist = market_api.prod.base_api._controlling_specialist_provider(req.sport, req.stat_type)
     if specialist is None:
-        raise HTTPException(
+        raise _failure(
+            req=req,
             status_code=503,
-            detail={
-                "code": "SPECIALIST_ROUTING_UNAVAILABLE",
-                "specialist_model_capability": "UNAVAILABLE",
-                "failed_contract_scope": ["CONFIDENCE"],
-                "probability_claim_status": "MODEL_UNAVAILABLE",
-                "probability_publishable": False,
-                "can_execute": False,
-            },
+            code="SPECIALIST_ROUTING_UNAVAILABLE",
+            blocker_code="NO_CONTROLLING_SPECIALIST_ROUTE",
+            specialist_name=None,
+            specialist_capability="UNAVAILABLE",
+            specialist_status="ROUTING_UNAVAILABLE",
         )
     specialist_name = specialist.get("controlling_specialist")
     if specialist_name == "MODEL_UNAVAILABLE":
-        raise HTTPException(
+        raise _failure(
+            req=req,
             status_code=422,
-            detail={
-                "code": "MODEL_UNAVAILABLE",
-                "specialist_model_capability": "UNAVAILABLE",
-                "specialist_model_name": specialist_name,
-                "specialist_model_status": "UNAVAILABLE",
-                "failed_contract_scope": ["CONFIDENCE"],
-                "probability_claim_status": "MODEL_UNAVAILABLE",
-                "probability_publishable": False,
-                "can_execute": False,
-            },
+            code="MODEL_UNAVAILABLE",
+            blocker_code="NO_CERTIFIED_FITTED_SPECIALIST",
+            specialist_name=specialist_name,
+            specialist_capability="UNAVAILABLE",
+            specialist_status="UNAVAILABLE",
         )
 
     route_artifact = market_api._prop_route_artifact(req.sport, req.stat_type)
     if route_artifact.get("ok") is not True or route_artifact.get("code") != "PROP_CERTIFIED_MODEL_ARTIFACT_READY":
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "code": "MODEL_UNAVAILABLE",
-                "blocker_code": route_artifact.get("code") or "PROP_CERTIFIED_MODEL_ARTIFACT_NOT_FOUND",
-                "specialist_model_capability": "UNAVAILABLE",
-                "specialist_model_name": specialist_name,
-                "specialist_model_status": "ROUTE_ARTIFACT_UNAVAILABLE",
-                "failed_contract_scope": ["CONFIDENCE"],
-                "probability_claim_status": "MODEL_UNAVAILABLE",
-                "route_artifact_evidence": route_artifact,
-                "probability_publishable": False,
-                "can_execute": False,
-            },
+        blocker_code = str(route_artifact.get("code") or "PROP_CERTIFIED_MODEL_ARTIFACT_NOT_FOUND").upper()
+        if blocker_code in _CAPABILITY_ABSENCE_CODES or blocker_code == "PROP_CERTIFIED_MODEL_ARTIFACT_NOT_FOUND":
+            failure_code = "MODEL_UNAVAILABLE"
+            capability = "UNAVAILABLE"
+            status = "ROUTE_ARTIFACT_UNAVAILABLE"
+            http_status = 409
+        else:
+            failure_code = "MODEL_SCORER_FAILED"
+            capability = "AVAILABLE"
+            status = "ROUTE_ARTIFACT_LOOKUP_FAILED"
+            http_status = 503
+        raise _failure(
+            req=req,
+            status_code=http_status,
+            code=failure_code,
+            blocker_code=blocker_code,
+            specialist_name=specialist_name,
+            specialist_capability=capability,
+            specialist_status=status,
+            extra={"route_artifact_evidence": route_artifact},
         )
 
     evidence = market_api.repair_prop_evidence(
@@ -187,15 +263,18 @@ def _raw_specialist_research(
     )
     if evidence.get("ok") is not True or evidence.get("code") != "PROP_EVIDENCE_READY":
         detail = dict(evidence)
-        detail.setdefault("code", "RUN_INVALID_ACQUISITION_INCOMPLETE")
-        detail["failure_class"] = "RUN_INVALID_ACQUISITION_INCOMPLETE"
+        detail["code"] = "MODEL_INPUTS_INSUFFICIENT"
+        detail["blocker_code"] = str(evidence.get("code") or "RUN_INVALID_ACQUISITION_INCOMPLETE")
+        detail["failure_class"] = "MODEL_INPUTS_INSUFFICIENT"
+        detail["requested_scope"] = _requested_scope(req)
         detail["failed_contract_scope"] = ["CONFIDENCE"]
         detail["specialist_model_capability"] = "AVAILABLE"
         detail["specialist_model_name"] = specialist_name
         detail["specialist_model_status"] = "NOT_INVOKED_MANDATORY_INPUTS_INCOMPLETE"
-        detail["probability_claim_status"] = "MODEL_UNAVAILABLE"
+        detail["probability_claim_status"] = "MODEL_INPUTS_INSUFFICIENT"
         detail["specialist_invoked"] = False
         detail["probability_publishable"] = False
+        detail["governed_publishable"] = False
         detail["can_execute"] = False
         raise HTTPException(status_code=422, detail=detail)
 
@@ -210,56 +289,66 @@ def _raw_specialist_research(
             features=features,
         )
     except (PropFittedProviderUnavailable, PropDistributionContractError) as exc:
-        code = getattr(exc, "code", None) or "PROP_CERTIFIED_MODEL_UNAVAILABLE"
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "code": "MODEL_UNAVAILABLE",
-                "blocker_code": code,
-                "specialist_model_capability": "UNAVAILABLE",
-                "specialist_model_name": specialist_name,
-                "specialist_model_status": "FAILED",
-                "failed_contract_scope": ["CONFIDENCE"],
-                "probability_claim_status": "MODEL_UNAVAILABLE",
-                "probability_publishable": False,
-                "can_execute": False,
-            },
+        failure_code, capability, status, http_status = _classify_provider_failure(exc)
+        raise _failure(
+            req=req,
+            status_code=http_status,
+            code=failure_code,
+            blocker_code=str(getattr(exc, "code", None) or "PROP_CERTIFIED_MODEL_SCORER_FAILED"),
+            specialist_name=specialist_name,
+            specialist_capability=capability,
+            specialist_status=status,
+        ) from exc
+    except Exception as exc:
+        raise _failure(
+            req=req,
+            status_code=503,
+            code="MODEL_SCORER_FAILED",
+            blocker_code="PROP_CERTIFIED_MODEL_SCORER_EXCEPTION",
+            specialist_name=specialist_name,
+            specialist_capability="AVAILABLE",
+            specialist_status="SCORER_FAILED",
+            extra={"error_type": type(exc).__name__},
         ) from exc
 
     if not isinstance(inference, CertifiedInference):
-        raise HTTPException(
+        raise _failure(
+            req=req,
             status_code=409,
-            detail={
-                "code": "MODEL_UNAVAILABLE",
-                "blocker_code": "PROP_CERTIFIED_INFERENCE_INVALID",
-                "specialist_model_capability": "UNAVAILABLE",
-                "specialist_model_name": specialist_name,
-                "specialist_model_status": "FAILED",
-                "failed_contract_scope": ["CONFIDENCE"],
-                "probability_claim_status": "MODEL_UNAVAILABLE",
-                "probability_publishable": False,
-                "can_execute": False,
-            },
+            code="MODEL_OUTPUT_INVALID",
+            blocker_code="PROP_CERTIFIED_INFERENCE_INVALID",
+            specialist_name=specialist_name,
+            specialist_capability="AVAILABLE",
+            specialist_status="OUTPUT_INVALID",
         )
     if not inference.distribution.coverage.in_distribution:
-        raise HTTPException(
+        raise _failure(
+            req=req,
             status_code=422,
-            detail={
-                "code": "MODEL_UNAVAILABLE",
-                "blocker_code": "PROP_MODEL_OUT_OF_DISTRIBUTION",
-                "specialist_model_capability": "AVAILABLE",
-                "specialist_model_name": specialist_name,
-                "specialist_model_status": "ABSTAINED_OUT_OF_DISTRIBUTION",
-                "failed_contract_scope": ["CONFIDENCE"],
-                "probability_claim_status": "MODEL_UNAVAILABLE",
-                "coverage_failures": list(inference.distribution.coverage.coverage_failures),
-                "probability_publishable": False,
-                "can_execute": False,
-            },
+            code="MODEL_INPUTS_INSUFFICIENT",
+            blocker_code="PROP_MODEL_OUT_OF_DISTRIBUTION",
+            specialist_name=specialist_name,
+            specialist_capability="AVAILABLE",
+            specialist_status="ABSTAINED_OUT_OF_DISTRIBUTION",
+            extra={"coverage_failures": list(inference.distribution.coverage.coverage_failures)},
         )
 
-    line_probs = derive_line_probabilities(inference.distribution, req.line)
-    raw_probability = _selected_raw_probability(line_probs, req.direction)
+    try:
+        line_probs = derive_line_probabilities(inference.distribution, req.line)
+        raw_probability = _selected_raw_probability(line_probs, req.direction)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise _failure(
+            req=req,
+            status_code=409,
+            code="MODEL_OUTPUT_INVALID",
+            blocker_code=str(getattr(exc, "code", None) or "PROP_LINE_PROBABILITY_DERIVATION_INVALID"),
+            specialist_name=specialist_name,
+            specialist_capability="AVAILABLE",
+            specialist_status="OUTPUT_INVALID",
+        ) from exc
+
     market_prior = resolve_market_prior(
         req.direction,
         market_api._to_market_quote(req.market_side_a),
@@ -292,6 +381,7 @@ def _raw_specialist_research(
     return {
         "ok": True,
         **decision.as_dict(),
+        "requested_scope": _requested_scope(req),
         "probability_publishable": False,
         "governed_publishable": False,
         "research_only": True,
@@ -386,6 +476,7 @@ def install_calibration_publication_lane_separation(app: Any, market_api: Any) -
                 status_code=409,
                 detail={
                     "code": "PROP_PROBABILITY_UNAVAILABLE",
+                    "requested_scope": _requested_scope(req),
                     "governed_probability_capability": lane.get("capability_status") or "UNAVAILABLE",
                     "specialist_model_capability": "NOT_EVALUATED",
                     "failed_contract_scope": ["GLOBAL"],
