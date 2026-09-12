@@ -1,0 +1,44 @@
+name: wow-v17-scout-board-refresh
+
+on:
+  schedule:
+    - cron: "15 11 * * *"
+    - cron: "15 17 * * *"
+    - cron: "15 23 * * *"
+    - cron: "15 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: artifacts/wow-engine
+    env:
+      WOW_SCOUT_DATABASE_URL: ${{ secrets.WOW_SCOUT_DATABASE_URL }}
+      WOW_CAN_EXECUTE: "false"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: artifacts/wow-engine/requirements.txt
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Enforce research-only governance
+        run: test "$WOW_CAN_EXECUTE" = "false"
+      - name: Materialize current boards
+        if: env.WOW_SCOUT_DATABASE_URL != ''
+        shell: bash
+        run: |
+          today=$(date -u +%F)
+          tomorrow=$(date -u -d '+1 day' +%F)
+          python v17/scout_board_materializer.py --date "$today"
+          python v17/scout_board_materializer.py --date "$tomorrow"
+      - name: Report missing database credential
+        if: env.WOW_SCOUT_DATABASE_URL == ''
+        run: echo "WOW_SCOUT_DATABASE_URL is not configured; board refresh skipped fail-closed." >> "$GITHUB_STEP_SUMMARY"
