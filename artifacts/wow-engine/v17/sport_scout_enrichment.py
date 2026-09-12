@@ -10,8 +10,12 @@ import json
 from pathlib import Path
 from typing import Any
 
-from sport_scout_registry import registry_payload, scout_team_for
-from sport_research_brief import SUPPORTED_RESEARCH_WORKERS, build_research_brief
+try:  # package import under pytest/backend runtime
+    from v17.sport_scout_registry import registry_payload, scout_team_for
+    from v17.sport_research_brief import SUPPORTED_RESEARCH_WORKERS, build_research_brief
+except ModuleNotFoundError:  # direct `python v17/sport_scout_enrichment.py`
+    from sport_scout_registry import registry_payload, scout_team_for
+    from sport_research_brief import SUPPORTED_RESEARCH_WORKERS, build_research_brief
 
 
 def enrich_candidate(row: dict[str, Any], lane: str) -> dict[str, Any]:
