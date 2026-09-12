@@ -1,0 +1,57 @@
+name: wow-v17-scout-source-refresh
+
+on:
+  schedule:
+    - cron: "30 10 * * *"
+    - cron: "30 16 * * *"
+    - cron: "30 22 * * *"
+    - cron: "30 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: artifacts/wow-engine
+    env:
+      WOW_SCOUT_DATABASE_URL: ${{ secrets.WOW_SCOUT_DATABASE_URL }}
+      WOW_SPORTSDATAIO_API_KEY: ${{ secrets.WOW_SPORTSDATAIO_API_KEY }}
+      WOW_CAN_EXECUTE: "false"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: artifacts/wow-engine/requirements.txt
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Enforce research-only governance
+        run: test "$WOW_CAN_EXECUTE" = "false"
+      - name: Check source credentials
+        id: credentials
+        shell: bash
+        run: |
+          if [ -n "$WOW_SCOUT_DATABASE_URL" ] && [ -n "$WOW_SPORTSDATAIO_API_KEY" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "Scout source refresh skipped fail-closed: database and/or SportsDataIO credential is unconfigured." >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Refresh raw structured source snapshots
+        if: steps.credentials.outputs.configured == 'true'
+        run: |
+          mkdir -p "$RUNNER_TEMP/scout-source-refresh"
+          python v17/scout_source_refresh.py --output "$RUNNER_TEMP/scout-source-refresh/receipt.json"
+          cat "$RUNNER_TEMP/scout-source-refresh/receipt.json" >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload source refresh receipt
+        if: steps.credentials.outputs.configured == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: wow-v17-scout-source-refresh-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/scout-source-refresh/receipt.json
+          retention-days: 90
