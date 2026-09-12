@@ -105,8 +105,6 @@ def _prop_manifest_rows(
         if callable(ranged):
             batch = ranged(offset, offset + page_size - 1).execute().data or []
         else:
-            # Compatibility for test doubles/clients without range(); one bounded
-            # read preserves prior behavior while production Supabase uses range().
             batch = query.limit(page_size).execute().data or []
         batch = [dict(row) for row in batch]
         manifest.extend(
@@ -160,8 +158,6 @@ def _prop_handoff_reconciliation(
         missing_persisted_ids = sorted(persisted_ids - canonical_ids)
         canonical_from_current_acquisition = len(persisted_ids & canonical_ids)
     else:
-        # Backward-compatible fallback for older acquisition payloads. The count
-        # is still explicit, but identity-level proof requires receipts.
         missing_count = max(counts["persisted_candidates"] - len(canonical_manifest), 0)
         missing_persisted_ids = [f"UNRECEIPTED_PERSISTED_ROW_{index + 1}" for index in range(missing_count)]
         canonical_from_current_acquisition = min(counts["persisted_candidates"], len(canonical_manifest))
@@ -370,6 +366,20 @@ def run_daily_snapshot(req: DailySnapshotRequest, *, db: Any, market_api: Any, e
 def install_daily_snapshot_route(app: FastAPI, *, auth_dependency: Any, db_client_fn: Any, market_api: Any, event_api: Any) -> None:
     install_v17_detailed_evidence(app, auth_dependency=auth_dependency, market_api=market_api)
     install_prop_forward_cohort_route(app, auth_dependency=auth_dependency, db_client_fn=db_client_fn, market_api=market_api)
+
+    # Mount the consolidated Daily Pick control plane on the same canonical
+    # V17 production app. Import locally after this module is fully initialized
+    # to avoid circular import with the orchestrator's snapshot dependency.
+    from v17.daily_pick_orchestrator import install_daily_pick_orchestrator_route
+
+    install_daily_pick_orchestrator_route(
+        app,
+        auth_dependency=auth_dependency,
+        db_client_fn=db_client_fn,
+        market_api=market_api,
+        event_api=event_api,
+    )
+
     if any(getattr(route, "path", None) == "/v17/daily-snapshot-run" for route in app.router.routes):
         return
 
