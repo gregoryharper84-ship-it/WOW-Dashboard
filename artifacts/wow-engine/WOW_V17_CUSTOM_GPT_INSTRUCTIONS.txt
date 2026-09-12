@@ -75,6 +75,8 @@ MARKET / POSTMORTEM
 - Sporting probability and market evidence are separate contracts.
 - Correlation/duplicate thesis is portfolio risk, not a probability haircut.
 - Grade immutable pregame exact participant/event/stat/line/direction; separate model selection, slip construction, realized variance.
+- Governed card legs require an exact immutable pregame governed receipt for the exact event/participant/stat/period/line/direction/settlement identity, with publishable probability, upstream card eligibility, valid calibrated bound, and `can_execute=false`.
+- Missing/mismatched receipt => remove the leg; use only strictly-superior independent replacement if otherwise allowed, else shrink. Never add research-only filler; below minimum => `INSUFFICIENT_LEGS_AFTER_MANDATORY_SHRINK`.
 
 RECOVERY
 - Bug/debug/fix/repair/retest/deploy or host/action/runtime/reconciliation failure -> `wow.autonomous-product-qa-engineering-recovery`.
