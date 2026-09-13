@@ -214,13 +214,13 @@ def _metrics(p: np.ndarray, y: np.ndarray) -> tuple[float, float, float]:
 
 
 def _date_safe_split(rows: Sequence[FeatureRow], desired_index: int) -> int:
-    """Move a chronological split forward so a calendar date is never divided."""
+    """Move a split backward to the start of its date so a date is never divided."""
     if desired_index <= 0 or desired_index >= len(rows):
         return desired_index
-    boundary_date = rows[desired_index - 1].game_date
+    boundary_date = rows[desired_index].game_date
     index = desired_index
-    while index < len(rows) and rows[index].game_date == boundary_date:
-        index += 1
+    while index > 0 and rows[index - 1].game_date == boundary_date:
+        index -= 1
     return index
 
 
@@ -234,10 +234,13 @@ def train_specialist(rows: Sequence[FeatureRow], sport: str, *, model_artifact_v
     desired = max(MIN_TRAIN_ROWS, int(len(league_rows) * 0.8))
     desired = min(desired, len(league_rows) - MIN_HOLDOUT_ROWS)
     split = _date_safe_split(league_rows, desired)
-    if len(league_rows) - split < MIN_HOLDOUT_ROWS:
-        split = _date_safe_split(league_rows, len(league_rows) - MIN_HOLDOUT_ROWS)
-        if len(league_rows) - split < MIN_HOLDOUT_ROWS:
-            raise BasketballSpecialistError("cannot create date-safe holdout with minimum rows")
+    if split < MIN_TRAIN_ROWS:
+        # Move to the first whole-date boundary at or beyond the training minimum.
+        split = MIN_TRAIN_ROWS
+        while split < len(league_rows) and league_rows[split - 1].game_date == league_rows[split].game_date:
+            split += 1
+    if split < MIN_TRAIN_ROWS or len(league_rows) - split < MIN_HOLDOUT_ROWS:
+        raise BasketballSpecialistError("cannot create date-safe split satisfying minimum train and holdout rows")
     train = league_rows[:split]
     holdout = league_rows[split:]
     x_train = np.asarray([r.values for r in train], dtype=float)
