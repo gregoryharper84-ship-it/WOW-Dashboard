@@ -73,13 +73,13 @@ jobs:
       - name: Persist through direct database credential
         if: steps.artifact.outputs.present == 'true' && steps.credential.outputs.configured == 'true'
         run: |
-          python v17/scout_brain_sync.py \
+          python -m v17.scout_brain_sync \
             --input "$RUNNER_TEMP/scout-brain/model-handoff.json" \
             --receipt "$RUNNER_TEMP/scout-brain/persistence-receipt.json"
       - name: Persist through governed Supabase Edge OIDC
         if: steps.artifact.outputs.present == 'true' && steps.credential.outputs.configured != 'true'
         run: |
-          python v17/scout_brain_edge_sync.py \
+          python -m v17.scout_brain_edge_sync \
             --input "$RUNNER_TEMP/scout-brain/model-handoff.json" \
             --receipt "$RUNNER_TEMP/scout-brain/persistence-receipt.json"
       - name: Report persistence receipt
