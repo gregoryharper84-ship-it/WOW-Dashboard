@@ -29,7 +29,7 @@ from nfl_event_training_p1 import build_game_team_summaries, build_training_game
 
 LOGGER = logging.getLogger("wow.nfl.hydration")
 RAW_BUCKET = "wow-nfl-raw"
-DEFAULT_SEASONS = (2021, 2022, 2023, 2024, 2025)
+DEFAULT_SEASONS = (2021, 2022, 2023, 2024, 2025, 2026)
 BATCH_SIZE = 200
 _BACKGROUND_TASKS: set[asyncio.Task] = set()
 
