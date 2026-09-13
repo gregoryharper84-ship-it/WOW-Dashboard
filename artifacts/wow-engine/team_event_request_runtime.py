@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import date
+import os
 from typing import Any, Literal, Optional
 
 from fastapi import Header, HTTPException
@@ -117,7 +118,12 @@ def install_team_event_request_routes(app: Any, *, auth_dependency: Any, db_clie
     # is fail-closed and never makes wager execution possible.
     install_nfl_hydration_startup(app, db_client_fn=db_client_fn)
     install_nfl_model_startup(app, db_client_fn=db_client_fn)
-    install_nfl_team_event_publication(v17_team_event_base)
+
+    # Scope the NFL dispatcher mutation to the active production V17 composition.
+    # This mirrors the existing production-gated prop mutation and prevents a
+    # production adapter from leaking into lower-layer unit tests/importers.
+    if os.getenv("WOW_V17_ACTIVE", "0") == "1":
+        install_nfl_team_event_publication(v17_team_event_base)
 
     if any(getattr(r, "path", None) == "/score-team-event-request" for r in app.router.routes):
         return
