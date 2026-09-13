@@ -58,9 +58,6 @@ def _sport_identity(sport_key: str) -> tuple[str, str]:
     if key.startswith("tennis_"):
         league = "WTA" if "wta" in key else ("ATP" if "atp" in key else "TENNIS")
         return "TENNIS", league
-    # Unknown public-feed sport identities stay explicit and will fail closed
-    # in the controlling specialist lane rather than being guessed into a
-    # supported sport.
     return key.upper(), key.upper()
 
 
@@ -152,9 +149,20 @@ def _prop_dedupe_key(row: dict[str, Any]) -> tuple[Any, ...]:
 def _team_rows(candidate: dict[str, Any], *, research_run_id: str) -> tuple[list[dict[str, Any]], str | None]:
     event_id = str(candidate.get("official_event_id") or "").strip()
     sport, league = _sport_identity(str(candidate.get("sport_key") or ""))
-    event_start = candidate.get("commence_time")
+    event_start = str(candidate.get("commence_time") or "").strip()
     event_date = _event_date(event_start)
-    if not event_id or not sport or not league or not event_date:
+    home_team = str(candidate.get("home_team") or "").strip()
+    away_team = str(candidate.get("away_team") or "").strip()
+    if (
+        not event_id
+        or not sport
+        or not league
+        or not event_date
+        or _aware(event_start) is None
+        or not home_team
+        or not away_team
+        or home_team.casefold() == away_team.casefold()
+    ):
         return [], "TEAM_EVENT_IDENTITY_INCOMPLETE"
 
     event_key = f"{sport}:{event_id}"
@@ -166,6 +174,9 @@ def _team_rows(candidate: dict[str, Any], *, research_run_id: str) -> tuple[list
         "event_state": "PREGAME",
         "event_date": event_date,
         "timezone": USER_TIMEZONE,
+        "event_start_time_utc": event_start,
+        "home_team": home_team,
+        "away_team": away_team,
     }
     return [
         {
