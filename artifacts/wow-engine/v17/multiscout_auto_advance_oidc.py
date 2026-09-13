@@ -21,11 +21,6 @@ import sys
 from pathlib import Path
 from typing import Any, Callable
 
-# The governed post-merge workflow executes this file directly from
-# artifacts/wow-engine. Preserve that invocation contract by adding only the
-# package parent when Python has not established a package context. Without
-# this bootstrap, direct execution fails before the canonical V17 handoff with
-# ``ModuleNotFoundError: No module named 'v17'``.
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -34,12 +29,7 @@ from v17.multiscout_auto_advance import ACTION_ORIGIN, _post_json, execute_auto_
 
 
 def _refreshing_oidc_post(initial_token: str) -> Callable[..., dict[str, Any]]:
-    """Return a backend POST function that refreshes OIDC once on HTTP 401.
-
-    The current token is reused while valid. On the first 401 for a request, a
-    fresh GitHub Actions OIDC token is minted and only that same request is
-    retried. Any refresh failure remains a typed fail-closed backend receipt.
-    """
+    """Return a backend POST function that refreshes OIDC once on HTTP 401."""
     state = {"token": initial_token}
 
     def post(origin: str, path: str, _token: str, payload: dict[str, Any], timeout: int = 120) -> dict[str, Any]:
@@ -60,6 +50,26 @@ def _refreshing_oidc_post(initial_token: str) -> Callable[..., dict[str, Any]]:
     return post
 
 
+def _dispatchable_handoff(handoff: dict[str, Any]) -> dict[str, Any]:
+    """Preserve degraded source telemetry while allowing valid rows to route.
+
+    `multiscout_auto_advance` intentionally accepts only DISCOVERY_COMPLETE.
+    A row-preserved Scout run can be discovery-complete even when one market
+    evidence source is degraded. Normalize only that exact state for dispatch;
+    global acquisition/auth failures and handoffs with no valid rows remain
+    fail-closed.
+    """
+    if (
+        handoff.get("status") == "DISCOVERY_COMPLETE_WITH_SOURCE_BLOCKERS"
+        and handoff.get("model_handoff_ready") is True
+    ):
+        normalized = dict(handoff)
+        normalized["source_acquisition_status"] = handoff.get("status")
+        normalized["status"] = "DISCOVERY_COMPLETE"
+        return normalized
+    return handoff
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", required=True)
@@ -67,6 +77,7 @@ def main() -> int:
     args = parser.parse_args()
 
     handoff = json.loads(Path(args.input).read_text(encoding="utf-8"))
+    dispatch_handoff = _dispatchable_handoff(handoff)
     static_token = os.environ.get("WOW_ACTION_API_KEY")
     token = static_token
     if not token:
@@ -79,6 +90,7 @@ def main() -> int:
                 "code": str(exc),
                 "source_run_id": handoff.get("run_id"),
                 "research_run_id": handoff.get("research_run_id"),
+                "source_acquisition_status": handoff.get("status"),
                 "can_execute": False,
             }
             output = Path(args.output)
@@ -88,14 +100,17 @@ def main() -> int:
             return 3
 
     if static_token:
-        receipt = execute_auto_advance(handoff, token=token, origin=ACTION_ORIGIN)
+        receipt = execute_auto_advance(dispatch_handoff, token=token, origin=ACTION_ORIGIN)
     else:
         receipt = execute_auto_advance(
-            handoff,
+            dispatch_handoff,
             token=token,
             origin=ACTION_ORIGIN,
             post_fn=_refreshing_oidc_post(token),
         )
+    if dispatch_handoff is not handoff:
+        receipt["source_acquisition_status"] = handoff.get("status")
+        receipt["source_blocker_count"] = len(handoff.get("source_blockers") or [])
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -104,6 +119,7 @@ def main() -> int:
         "code": receipt.get("code"),
         "source_run_id": receipt.get("source_run_id"),
         "research_run_id": receipt.get("research_run_id"),
+        "source_acquisition_status": receipt.get("source_acquisition_status"),
         "can_execute": False,
     }))
     return 0 if str(receipt.get("status") or "").startswith("AUTO_ADVANCE_COMPLETE") else 3

@@ -208,6 +208,52 @@ def bookmaker_rows(payload: Any) -> list[dict[str, Any]]:
     return rows
 
 
+def _blocker_diagnostics(result: FetchResult) -> dict[str, Any]:
+    if not isinstance(result.data, dict):
+        return {}
+    allowed = {
+        "secondary_attempted",
+        "secondary_provider",
+        "secondary_status",
+        "secondary_reason_code",
+        "secondary_http_status",
+        "primary_reason_code",
+        "primary_http_status",
+    }
+    return {key: result.data.get(key) for key in allowed if key in result.data}
+
+
+def _team_event_candidate(
+    event_identity: dict[str, Any],
+    scripts: list[str],
+    event_rows: list[dict[str, Any]],
+    event_blockers: list[dict[str, Any]],
+) -> dict[str, Any]:
+    team_market_rows = [r for r in event_rows if not is_prop_market(str(r.get("market_key") or ""))]
+    if team_market_rows and event_blockers:
+        market_status = "PARTIAL_SOURCE_BLOCKED"
+    elif team_market_rows:
+        market_status = "AVAILABLE"
+    else:
+        market_status = "SOURCE_BLOCKED" if event_blockers else "NO_MARKET_EVIDENCE"
+    return {
+        **event_identity,
+        "route": "LLP_TEAM_BETTING_ENGINE",
+        "discovery_status": "DISCOVERY_ONLY",
+        "research_ceiling": "RESEARCH_INTEREST",
+        "upset_evaluation_requested": True,
+        "game_script_hypotheses": scripts,
+        "game_scripts_are_evidence_only": True,
+        "scout_team": list(SCOUT_TEAM),
+        "market_evidence": team_market_rows,
+        "market_evidence_status": market_status,
+        "market_evidence_source_blockers": event_blockers,
+        "sporting_identity_preserved_without_market_evidence": True,
+        "contrarian_review_required": True,
+        "canonicalization_required": True,
+    }
+
+
 def run() -> dict[str, Any]:
     started = utc_now()
     end = started + timedelta(hours=HORIZON_HOURS)
@@ -230,7 +276,7 @@ def run() -> dict[str, Any]:
             "can_execute": False,
             "model_handoff_ready": False,
             "coverage": coverage,
-            "source_blockers": [{"scope": "sports", "reason_code": sports_res.code, "http_status": sports_res.status}],
+            "source_blockers": [{"scope": "sports", "reason_code": sports_res.code, "http_status": sports_res.status, **_blocker_diagnostics(sports_res)}],
         }
 
     sports = [s for s in (sports_res.data or []) if isinstance(s, dict) and s.get("active", True) and s.get("key")]
@@ -247,7 +293,7 @@ def run() -> dict[str, Any]:
             {"dateFormat": "iso", "commenceTimeFrom": iso(started), "commenceTimeTo": iso(end), "includeRotationNumbers": "true"},
         )
         if not events_res.ok:
-            blocker = {"scope": "sport", "sport": key, "status": "EVENT_FETCH_FAILED", "reason_code": events_res.code, "http_status": events_res.status}
+            blocker = {"scope": "sport", "sport": key, "status": "EVENT_FETCH_FAILED", "reason_code": events_res.code, "http_status": events_res.status, **_blocker_diagnostics(events_res)}
             coverage.append(blocker)
             source_blockers.append(blocker)
             terminal_source_blocked = events_res.status in TERMINAL_SOURCE_HTTP_STATUSES
@@ -259,12 +305,26 @@ def run() -> dict[str, Any]:
             if terminal_source_blocked:
                 break
             event_id = str(event["id"])
+            event_identity = {
+                "official_event_id": event_id,
+                "sport_key": key,
+                "sport_title": sport.get("title"),
+                "commence_time": event.get("commence_time"),
+                "home_team": event.get("home_team"),
+                "away_team": event.get("away_team"),
+            }
+            scripts = game_scripts(key)
+            event_blockers: list[dict[str, Any]] = []
+            event_rows: list[dict[str, Any]] = []
+
             inventory = proxy_get(f"/odds-api/v4/sports/{key}/events/{event_id}/markets", {"regions": regions, "dateFormat": "iso"})
             if not inventory.ok:
-                blocker = {"scope": "event", "sport": key, "event_id": event_id, "status": "MARKET_INVENTORY_FAILED", "reason_code": inventory.code, "http_status": inventory.status}
+                blocker = {"scope": "event", "sport": key, "event_id": event_id, "status": "MARKET_INVENTORY_FAILED", "reason_code": inventory.code, "http_status": inventory.status, **_blocker_diagnostics(inventory)}
                 coverage.append(blocker)
                 source_blockers.append(blocker)
+                event_blockers.append(blocker)
                 terminal_source_blocked = inventory.status in TERMINAL_SOURCE_HTTP_STATUSES
+                team_event_handoff.append(_team_event_candidate(event_identity, scripts, event_rows, event_blockers))
                 continue
 
             all_market_keys = market_keys_from_inventory(inventory.data)
@@ -272,16 +332,16 @@ def run() -> dict[str, Any]:
             if deferred_market_keys:
                 coverage.append({"scope": "event_market_budget", "sport": key, "event_id": event_id, "status": "BOUNDED", "selected_market_count": len(market_keys), "deferred_market_count": len(deferred_market_keys), "deferred_markets": deferred_market_keys})
 
-            event_rows: list[dict[str, Any]] = []
             for market_chunk in chunked(market_keys, max(1, MARKET_CHUNK_SIZE)):
                 odds = proxy_get(
                     f"/odds-api/v4/sports/{key}/events/{event_id}/odds",
                     {"markets": ",".join(market_chunk), "regions": regions, "dateFormat": "iso", "oddsFormat": "american", "includeLinks": "true", "includeSids": "true"},
                 )
                 if not odds.ok:
-                    blocker = {"scope": "event_market_chunk", "sport": key, "event_id": event_id, "markets": market_chunk, "status": "ODDS_FETCH_FAILED", "reason_code": odds.code, "http_status": odds.status}
+                    blocker = {"scope": "event_market_chunk", "sport": key, "event_id": event_id, "markets": market_chunk, "status": "ODDS_FETCH_FAILED", "reason_code": odds.code, "http_status": odds.status, **_blocker_diagnostics(odds)}
                     coverage.append(blocker)
                     source_blockers.append(blocker)
+                    event_blockers.append(blocker)
                     if odds.status in TERMINAL_SOURCE_HTTP_STATUSES:
                         terminal_source_blocked = True
                         break
@@ -292,28 +352,7 @@ def run() -> dict[str, Any]:
                 if REQUEST_DELAY_MS:
                     time.sleep(REQUEST_DELAY_MS / 1000.0)
 
-            event_identity = {
-                "official_event_id": event_id,
-                "sport_key": key,
-                "sport_title": sport.get("title"),
-                "commence_time": event.get("commence_time"),
-                "home_team": event.get("home_team"),
-                "away_team": event.get("away_team"),
-            }
-            scripts = game_scripts(key)
-            team_event_handoff.append({
-                **event_identity,
-                "route": "LLP_TEAM_BETTING_ENGINE",
-                "discovery_status": "DISCOVERY_ONLY",
-                "research_ceiling": "RESEARCH_INTEREST",
-                "upset_evaluation_requested": True,
-                "game_script_hypotheses": scripts,
-                "game_scripts_are_evidence_only": True,
-                "scout_team": list(SCOUT_TEAM),
-                "market_evidence": [r for r in event_rows if not is_prop_market(str(r.get("market_key") or ""))],
-                "contrarian_review_required": True,
-                "canonicalization_required": True,
-            })
+            team_event_handoff.append(_team_event_candidate(event_identity, scripts, event_rows, event_blockers))
             for row in event_rows:
                 if not is_prop_market(str(row.get("market_key") or "")):
                     continue
@@ -323,16 +362,25 @@ def run() -> dict[str, Any]:
                     "discovery_status": "DISCOVERY_ONLY",
                     "research_ceiling": "RESEARCH_INTEREST",
                     "market_evidence": row,
+                    "market_evidence_status": "AVAILABLE",
                     "game_script_hypotheses": scripts,
                     "game_scripts_are_evidence_only": True,
                     "scout_team": list(SCOUT_TEAM),
                     "contrarian_review_required": True,
                     "canonicalization_required": True,
                 })
-            coverage.append({"scope": "event", "sport": key, "event_id": event_id, "status": "PARTIAL_SOURCE_BLOCKED" if terminal_source_blocked else "SCANNED", "market_keys": market_keys, "market_rows": len(event_rows)})
+            coverage.append({
+                "scope": "event",
+                "sport": key,
+                "event_id": event_id,
+                "status": "PARTIAL_SOURCE_BLOCKED" if event_blockers else "SCANNED",
+                "market_keys": market_keys,
+                "market_rows": len(event_rows),
+            })
 
     finished = utc_now()
     status = "DISCOVERY_COMPLETE_WITH_SOURCE_BLOCKERS" if source_blockers else "DISCOVERY_COMPLETE"
+    model_handoff_ready = bool(team_event_handoff or prop_handoff) or not source_blockers
     return {
         "schema_version": "wow.v17.nightly_multiscout.v1",
         "status": status,
@@ -362,11 +410,12 @@ def run() -> dict[str, Any]:
             "sportsbook_implied_probability_is_model_probability": False,
             "scout_consensus_is_model_probability": False,
             "upset_alert_requires_governed_llp_probability": True,
+            "market_evidence_is_separate_from_sporting_probability": True,
             "v17_terminal_reducer_is_terminal_authority": True,
             "can_execute": False,
         },
         "can_execute": False,
-        "model_handoff_ready": not source_blockers,
+        "model_handoff_ready": model_handoff_ready,
     }
 
 
@@ -379,7 +428,9 @@ def main() -> int:
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(json.dumps({"status": payload.get("status"), "output": str(output), "can_execute": False}))
-    return 0 if payload.get("status") == "DISCOVERY_COMPLETE" else 2
+    if payload.get("status") in {"DISCOVERY_COMPLETE", "DISCOVERY_COMPLETE_WITH_SOURCE_BLOCKERS"} and payload.get("model_handoff_ready") is True:
+        return 0
+    return 2
 
 
 if __name__ == "__main__":
