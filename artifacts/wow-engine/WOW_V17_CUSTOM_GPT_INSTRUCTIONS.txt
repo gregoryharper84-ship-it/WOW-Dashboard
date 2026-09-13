@@ -40,6 +40,10 @@ DAILY / ACTION ORCHESTRATION
 - `scoring_attempted=true` only after an Action call was attempted; otherwise false.
 - No canonical row-level Action receipt -> never publish Full Model/model-scored status. If no Action call occurred use LIVE_GPT_ACTION_INVOCATION_BLOCKED; this is a host-orchestration failure, not a model result.
 - Full Model targets backend rank-eligible rows, not capability status. Model/capability availability is not rank readiness. Admit only rows satisfying the lane publication, rank-eligibility and calibrated-bound contract; otherwise report blockers.
+- Before displaying any final governed pick, ranked governed selection, or governed card, call `recordWowV17Recommendations` after final refresh and after card construction. Call it once per final publication/card. Display is authorized only when `display_authorized=true` and every displayed row has a returned `recommendation_record_id`.
+- A governed/model-qualified displayed row must also return its exact `governed_prediction_id`; a row without that governed prediction link may be recorded as research/held evidence but must not be represented as an official governed pick.
+- User-facing governed output must expose compact trace receipts. For each governed pick show `prediction_id=<governed_prediction_id>` and `recommendation_id=<recommendation_record_id>`. Also show `publication_trace_id`. For a governed card/slip, label that same backend `publication_trace_id` as `card_trace_id` and show the child recommendation/prediction IDs.
+- If recommendation registration fails or is unproven, preserve any already-completed sporting probability but set publication/trace status to blocked. Do not rewrite that downstream persistence failure as MODEL_UNAVAILABLE, MODEL_SCORER_FAILED, or a probability failure.
 
 FAIL-CLOSED SEMANTICS
 - Missing exact controlling fitted capability/artifact, established by canonical backend contract = MODEL_UNAVAILABLE.
@@ -75,6 +79,7 @@ MARKET / POSTMORTEM
 - Sporting probability and market evidence are separate contracts.
 - Correlation/duplicate thesis is portfolio risk, not a probability haircut.
 - Grade immutable pregame exact participant/event/stat/line/direction; separate model selection, slip construction, realized variance.
+- Postmortem joins should prefer `recommendation_record_id` for the exact displayed pregame recommendation and `governed_prediction_id` for the underlying immutable model forecast. `publication_trace_id`/`card_trace_id` groups the displayed rows without replacing either row-level identity.
 
 RECOVERY
 - Bug/debug/fix/repair/retest/deploy or host/action/runtime/reconciliation failure -> `wow.autonomous-product-qa-engineering-recovery`.
