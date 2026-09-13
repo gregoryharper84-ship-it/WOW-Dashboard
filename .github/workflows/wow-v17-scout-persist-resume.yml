@@ -1,0 +1,113 @@
+name: wow-v17-scout-persist-resume
+
+on:
+  workflow_run:
+    workflows: ["wow-v17-morning-green-continuation"]
+    types: [completed]
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+
+concurrency:
+  group: wow-v17-scout-persist-resume
+  cancel-in-progress: false
+
+jobs:
+  resume-persistence:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TARGET_SHA: ${{ github.event.workflow_run.head_sha || '' }}
+    steps:
+      - name: Resolve completed Multi-Scout source run
+        id: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_run_id=""
+          if [ -n "$TARGET_SHA" ]; then
+            for _ in $(seq 1 40); do
+              source_run_id=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${TARGET_SHA}&per_page=30" \
+                --jq '[.workflow_runs[] | select(.name == "wow-v17-nightly-multiscout" and .status == "completed" and .conclusion != "cancelled")] | first | .id // ""')
+              if [ -n "$source_run_id" ]; then
+                break
+              fi
+              sleep 15
+            done
+          else
+            source_run_id=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/workflows/wow-v17-nightly-multiscout.yml/runs?branch=main&status=completed&per_page=20" \
+              --jq '[.workflow_runs[] | select(.event != "pull_request" and .conclusion != "cancelled")] | first | .id // ""')
+          fi
+          if [ -z "$source_run_id" ]; then
+            echo "No completed recoverable Multi-Scout run found; fail closed." >&2
+            exit 1
+          fi
+          echo "run_id=$source_run_id" >> "$GITHUB_OUTPUT"
+          echo "Resolved Multi-Scout source run: $source_run_id" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Verify recoverable discovery artifact exists
+        shell: bash
+        env:
+          SOURCE_RUN_ID: ${{ steps.source.outputs.run_id }}
+        run: |
+          set -euo pipefail
+          discovery_count=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}/artifacts" \
+            --jq '[.artifacts[] | select(.expired == false and (.name | test("^wow-v17-multiscout-wow-scout-.*-discovery$")))] | length')
+          if [ "$discovery_count" -lt 1 ]; then
+            echo "Multi-Scout run ${SOURCE_RUN_ID} has no recoverable discovery artifact; refusing to fabricate persistence input." >&2
+            exit 1
+          fi
+
+      - name: Allow native workflow_run persistence to win first
+        run: sleep 30
+
+      - name: Check for existing persistence receipt
+        id: existing
+        shell: bash
+        env:
+          SOURCE_RUN_ID: ${{ steps.source.outputs.run_id }}
+        run: |
+          set -euo pipefail
+          receipt_name="wow-v17-scout-brain-persistence-${SOURCE_RUN_ID}"
+          receipt_count=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/artifacts?name=${receipt_name}&per_page=10" \
+            --jq '[.artifacts[] | select(.expired == false)] | length')
+          if [ "$receipt_count" -gt 0 ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+            echo "Persistence receipt already exists for source run ${SOURCE_RUN_ID}; no dispatch needed." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Explicitly resume Scout persistence
+        if: steps.existing.outputs.present != 'true'
+        shell: bash
+        env:
+          SOURCE_RUN_ID: ${{ steps.source.outputs.run_id }}
+        run: |
+          set -euo pipefail
+          gh workflow run wow-v17-scout-brain-persist.yml --ref main -f run_id="$SOURCE_RUN_ID"
+          echo "Explicitly dispatched governed Scout persistence for source run ${SOURCE_RUN_ID}." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Verify persistence receipt appears
+        shell: bash
+        env:
+          SOURCE_RUN_ID: ${{ steps.source.outputs.run_id }}
+        run: |
+          set -euo pipefail
+          receipt_name="wow-v17-scout-brain-persistence-${SOURCE_RUN_ID}"
+          for _ in $(seq 1 40); do
+            receipt_count=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/artifacts?name=${receipt_name}&per_page=10" \
+              --jq '[.artifacts[] | select(.expired == false)] | length')
+            if [ "$receipt_count" -gt 0 ]; then
+              echo "Scout persistence receipt verified for source run ${SOURCE_RUN_ID}." >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "Persistence receipt did not appear for source run ${SOURCE_RUN_ID}; acceptance remains open." >&2
+          exit 1
