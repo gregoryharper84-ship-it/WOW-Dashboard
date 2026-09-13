@@ -75,28 +75,45 @@ def load_games(client: Any, sport: str) -> list[TrainingGame]:
 
 
 def _walk_forward_raw(rows, *, burn_in: int = 150, folds: int = 6):
-    """Generate strictly out-of-time raw probabilities for V17 calibration."""
-    if len(rows) < burn_in + 200:
-        raise ValueError(f"walk-forward calibration requires >= {burn_in + 200} usable rows; got {len(rows)}")
-    evaluation = list(rows[burn_in:])
-    fold_bounds = np.array_split(np.arange(len(evaluation)), folds)
+    """Generate strictly out-of-time probabilities using date-safe folds.
+
+    No calendar date is split between model training and validation. Every raw
+    probability is produced by a model fit only on dates strictly earlier than
+    that validation fold, matching V17's chronology requirement.
+    """
+    ordered = sorted(rows, key=lambda r: (r.game_date, r.game_id))
+    if len(ordered) < burn_in + 200:
+        raise ValueError(f"walk-forward calibration requires >= {burn_in + 200} usable rows; got {len(ordered)}")
+
+    burn_date = ordered[burn_in - 1].game_date
+    eval_rows = [r for r in ordered if r.game_date > burn_date]
+    if len(eval_rows) < 200:
+        raise ValueError(f"date-safe walk-forward calibration requires >= 200 evaluation rows; got {len(eval_rows)}")
+    unique_dates = sorted({r.game_date for r in eval_rows})
+    if len(unique_dates) < folds:
+        raise ValueError(f"date-safe walk-forward calibration requires >= {folds} distinct evaluation dates")
+    date_chunks = [list(chunk) for chunk in np.array_split(np.asarray(unique_dates, dtype=object), folds)]
+
     raw_probs: list[float] = []
     outcomes: list[int] = []
     fold_ids: list[int] = []
     timestamps: list[str] = []
-    for fold_id, positions in enumerate(fold_bounds):
-        if not len(positions):
+    for fold_id, dates in enumerate(date_chunks):
+        if not dates:
             continue
-        first_global = burn_in + int(positions[0])
-        train = list(rows[:first_global])
+        start_date = dates[0]
+        date_set = set(dates)
+        train = [r for r in ordered if r.game_date < start_date]
+        test = [r for r in eval_rows if r.game_date in date_set]
+        if len(train) < burn_in or not test:
+            raise ValueError("invalid date-safe calibration fold")
         x_train = np.asarray([r.values for r in train], dtype=float)
         y_train = np.asarray([r.outcome for r in train], dtype=float)
         means = x_train.mean(axis=0)
         scales = x_train.std(axis=0)
         scales[scales < 1e-9] = 1.0
         intercept, beta = _fit_logistic((x_train - means) / scales, y_train)
-        for pos in positions:
-            row = evaluation[int(pos)]
+        for row in test:
             x = (np.asarray(row.values, dtype=float) - means) / scales
             raw_probs.append(float(_sigmoid(intercept + x @ beta)))
             outcomes.append(int(row.outcome))
@@ -127,8 +144,7 @@ def fit_and_persist(sport: str, client=None) -> dict[str, Any]:
 
     artifact_payload = asdict(artifact)
     client.table("wow_basketball_team_event_model_artifacts").insert({
-        "sport": sport,
-        "model_family": MODEL_FAMILY,
+        "sport": sport, "model_family": MODEL_FAMILY,
         "model_artifact_version": model_version,
         "feature_schema_version": FEATURE_SCHEMA_VERSION,
         "artifact_format": "WOW_BASKETBALL_LOGISTIC_JSON_V1",
@@ -141,13 +157,11 @@ def fit_and_persist(sport: str, client=None) -> dict[str, Any]:
         "holdout_brier": artifact.holdout_brier,
         "holdout_log_loss": artifact.holdout_log_loss,
         "holdout_accuracy": artifact.holdout_accuracy,
-        "promoted": False,
-        "active": False,
+        "promoted": False, "active": False,
     }).execute()
 
     client.table("wow_basketball_team_event_calibrators").insert({
-        "sport": sport,
-        "calibrator_version": calibrator_version,
+        "sport": sport, "calibrator_version": calibrator_version,
         "model_artifact_version": model_version,
         "calibration_method": calibration_status or "PLATT_TIME_SPLIT_V1_BLOCKED",
         "coefficients": {"a": calibration.coefficients.a, "b": calibration.coefficients.b},
@@ -156,41 +170,32 @@ def fit_and_persist(sport: str, client=None) -> dict[str, Any]:
         "log_loss": calibration.metrics.log_loss,
         "ece": calibration.metrics.ece,
         "calibration_bias": calibration.metrics.calibration_bias,
-        "promoted": False,
-        "active": False,
+        "promoted": False, "active": False,
     }).execute()
 
+    persisted_status = "SHADOW" if decision.capability_status == "CERTIFIED" else decision.capability_status
+    persisted_reason = "CERTIFICATION_REPLAY_REQUIRED" if decision.capability_status == "CERTIFIED" else decision.reason_code
     client.table("wow_basketball_team_event_certification").upsert({
-        "sport": sport,
-        "capability_status": "SHADOW" if decision.capability_status == "CERTIFIED" else decision.capability_status,
-        "reason_code": "CERTIFICATION_REPLAY_REQUIRED" if decision.capability_status == "CERTIFIED" else decision.reason_code,
+        "sport": sport, "capability_status": persisted_status,
+        "reason_code": persisted_reason,
         "model_artifact_version": model_version,
         "calibrator_version": calibrator_version,
-        "corpus_rows": len(games),
-        "settled_rows": len(games),
+        "corpus_rows": len(games), "settled_rows": len(games),
         "certification_notes": {
             "fit_decision": asdict(decision),
             "calibration_status": calibration_status,
-            "promotion_attempted": False,
-            "can_execute": False,
+            "promotion_attempted": False, "can_execute": False,
         },
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }, on_conflict="sport").execute()
 
     return {
-        "sport": sport,
-        "corpus_rows": len(games),
-        "feature_rows": len(features),
-        "model_artifact_version": model_version,
-        "calibrator_version": calibrator_version,
-        "holdout_brier": artifact.holdout_brier,
-        "holdout_log_loss": artifact.holdout_log_loss,
-        "holdout_accuracy": artifact.holdout_accuracy,
-        "calibration_rows": len(raw),
-        "calibration_status": calibration_status,
-        "fit_decision": asdict(decision),
-        "persisted_status": "SHADOW" if decision.capability_status == "CERTIFIED" else decision.capability_status,
-        "promotion_attempted": False,
+        "sport": sport, "corpus_rows": len(games), "feature_rows": len(features),
+        "model_artifact_version": model_version, "calibrator_version": calibrator_version,
+        "holdout_brier": artifact.holdout_brier, "holdout_log_loss": artifact.holdout_log_loss,
+        "holdout_accuracy": artifact.holdout_accuracy, "calibration_rows": len(raw),
+        "calibration_status": calibration_status, "fit_decision": asdict(decision),
+        "persisted_status": persisted_status, "promotion_attempted": False,
         "can_execute": False,
     }
 
