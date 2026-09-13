@@ -13,6 +13,9 @@ on:
       - "artifacts/wow-engine/github_actions_oidc.py"
       - "artifacts/wow-engine/v17/nightly_multiscout.py"
       - "artifacts/wow-engine/v17/nightly_multiscout_oidc.py"
+      - "artifacts/wow-engine/v17/market_evidence_sources.py"
+      - "artifacts/wow-engine/v17/market_evidence_scout_bridge.py"
+      - "artifacts/wow-engine/v17/market_evidence_snapshot.py"
       - "artifacts/wow-engine/v17/github_actions_oidc_client.py"
       - "artifacts/wow-engine/v17/nightly_multiscout_delivery.py"
       - "artifacts/wow-engine/v17/multiscout_auto_advance.py"
@@ -32,6 +35,9 @@ on:
       - "artifacts/wow-engine/github_actions_oidc.py"
       - "artifacts/wow-engine/v17/nightly_multiscout.py"
       - "artifacts/wow-engine/v17/nightly_multiscout_oidc.py"
+      - "artifacts/wow-engine/v17/market_evidence_sources.py"
+      - "artifacts/wow-engine/v17/market_evidence_scout_bridge.py"
+      - "artifacts/wow-engine/v17/market_evidence_snapshot.py"
       - "artifacts/wow-engine/v17/github_actions_oidc_client.py"
       - "artifacts/wow-engine/v17/nightly_multiscout_delivery.py"
       - "artifacts/wow-engine/v17/multiscout_auto_advance.py"
@@ -49,6 +55,7 @@ on:
       - "artifacts/wow-engine/test_agent_runtime_v17_model_failures.py"
       - "artifacts/wow-engine/test_v17_github_oidc.py"
       - "artifacts/wow-engine/test_v17_multiscout_oidc_runtime.py"
+      - "artifacts/wow-engine/tests/test_v17_market_evidence_sources.py"
       - "artifacts/wow-engine/tests/test_v17_sport_scout_teams.py"
       - "artifacts/wow-odds-proxy/**"
 
@@ -85,6 +92,7 @@ jobs:
           test_v17_github_oidc.py
           test_v17_multiscout_oidc_runtime.py
           tests/test_v17_sport_scout_teams.py
+          tests/test_v17_market_evidence_sources.py
       - name: Verify odds proxy extension
         working-directory: artifacts/wow-odds-proxy
         run: |
@@ -113,6 +121,9 @@ jobs:
       WOW_SCOUT_MARKET_CHUNK_SIZE: "10"
       WOW_CAN_EXECUTE: "false"
       WOW_DRY_RUN_ONLY: "true"
+      WOW_MARKET_EVIDENCE_ENABLED: ${{ vars.WOW_MARKET_EVIDENCE_ENABLED || 'false' }}
+      RUNDOWN_API_KEY: ${{ secrets.RUNDOWN_API_KEY }}
+      SHARPAPI_API_KEY: ${{ secrets.SHARPAPI_API_KEY }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -129,6 +140,40 @@ jobs:
           test "$WOW_DRY_RUN_ONLY" = "true"
           test -n "$ACTIONS_ID_TOKEN_REQUEST_URL"
           test -n "$ACTIONS_ID_TOKEN_REQUEST_TOKEN"
+      - name: Capture research-only cross-book market evidence snapshot
+        id: market_evidence
+        if: always()
+        continue-on-error: true
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/wow-multiscout"
+          set +e
+          python v17/market_evidence_snapshot.py \
+            --output "$RUNNER_TEMP/wow-multiscout/market-evidence.json"
+          rc=$?
+          set -e
+          echo "runner_exit_code=$rc" >> "$GITHUB_OUTPUT"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          p = Path(os.environ["RUNNER_TEMP"]) / "wow-multiscout" / "market-evidence.json"
+          if not p.exists():
+              print("market evidence snapshot unavailable; discovery continues without it")
+              raise SystemExit(0)
+          data = json.loads(p.read_text())
+          assert data["can_execute"] is False
+          assert data["prediction_authority"] is False
+          assert data["exact_line_authority"] is False
+          assert data["research_only"] is True
+          assert data["research_ceiling"] == "RESEARCH_INTEREST"
+          assert data["reconciliation"]["balanced"] is True
+          recon = data["reconciliation"]
+          print(f"market evidence status={data['status']} captured={recon['lanes_captured']} blocked={recon['lanes_blocked']} books={len(data['bookmakers_seen'])}")
+          for lane in data["lanes"]:
+              if lane["status"] == "BLOCKED":
+                  print(f"  blocked lane {lane['provider']}/{lane['capability']}/{lane['sport_key']}: {lane['reason_code']}")
+          PY
+
       - name: Run V17 Nightly Multi-Scout
         id: scout
         shell: bash
@@ -316,6 +361,7 @@ jobs:
             ${{ runner.temp }}/wow-multiscout/run-manifest.json
             ${{ runner.temp }}/wow-multiscout/latest-pointer.json
             ${{ runner.temp }}/wow-multiscout/auto-advance-receipt.json
+            ${{ runner.temp }}/wow-multiscout/market-evidence.json
             ${{ runner.temp }}/wow-multiscout/summary.md
           if-no-files-found: warn
           retention-days: 90
