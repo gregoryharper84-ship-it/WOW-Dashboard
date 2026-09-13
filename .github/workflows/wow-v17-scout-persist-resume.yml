@@ -90,7 +90,7 @@ jobs:
           SOURCE_RUN_ID: ${{ steps.source.outputs.run_id }}
         run: |
           set -euo pipefail
-          gh workflow run wow-v17-scout-brain-persist.yml --ref main -f run_id="$SOURCE_RUN_ID"
+          gh workflow run wow-v17-scout-brain-persist.yml --repo "$GITHUB_REPOSITORY" --ref main -f run_id="$SOURCE_RUN_ID"
           echo "Explicitly dispatched governed Scout persistence for source run ${SOURCE_RUN_ID}." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Verify persistence receipt appears
