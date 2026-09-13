@@ -56,6 +56,15 @@ def test_one_row_failure_is_partial():
     b=client(DB([EVENT]),Partial).post("/score-team-event-request",json={"rows":[row(research_run_id="a"),row(research_run_id="b")]}).json()
     assert b["run_status"]=="RUN_PARTIAL" and b["rows_completed"]==1 and len(b["rows"])==2
     assert b["rows"][1]["code"]=="TRANSPORT_FAILURE"
-def test_missing_specialist_is_model_unavailable():
+
+def test_certified_nfl_lane_with_incomplete_identity_is_inputs_insufficient():
     b=client(DB([EVENT])).post("/score-team-event-request",json={"rows":[row(sport="NFL",league="NFL",event_key="NFL:1")]}).json()
+    assert b["rows"][0]["code"]=="MODEL_INPUTS_INSUFFICIENT"
+    assert b["rows"][0]["probability_publishable"] is False
+    assert b["rows"][0]["can_execute"] is False
+
+def test_genuinely_unsupported_sport_is_model_unavailable():
+    b=client(DB([EVENT])).post("/score-team-event-request",json={"rows":[row(sport="NHL",league="NHL",event_key="NHL:1")]}).json()
     assert b["rows"][0]["code"]=="MODEL_UNAVAILABLE"
+    assert b["rows"][0]["probability_publishable"] is False
+    assert b["rows"][0]["can_execute"] is False
