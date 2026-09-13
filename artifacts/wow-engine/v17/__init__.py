@@ -67,6 +67,20 @@ def _defer_mlb_event_bridge_install(*, market_api, team_runtime) -> bool:
             team_event_module=team_runtime,
         )
 
+        # Keep the projected-lineup compatibility adapter startup-only as well.
+        # Importing the direct bridge during v17 package initialization previously
+        # stalled Uvicorn before port binding; do not reintroduce that import-time
+        # mutation. The compatibility path is installed only after the direct
+        # bridge has safely captured its original held-receipt scorer.
+        projected_lineup_compat_installed = False
+        if installed:
+            from v17.projected_lineup_direct_bridge_compat import (
+                install_projected_lineup_direct_bridge_compat,
+            )
+            projected_lineup_compat_installed = install_projected_lineup_direct_bridge_compat(
+                market_api=market_api,
+            )
+
         # team_event_probability_preservation is imported after v17.__init__ and
         # therefore captures the unpatched governance callable. Once the bridge is
         # safely installed at startup, point that wrapper at the patched callable
@@ -74,6 +88,11 @@ def _defer_mlb_event_bridge_install(*, market_api, team_runtime) -> bool:
         preservation = sys.modules.get("v17.team_event_probability_preservation")
         if installed and preservation is not None:
             preservation._original_run_mlb_llp_governance = team_runtime._run_mlb_llp_governance
+
+        if installed and not projected_lineup_compat_installed:
+            _MLB_BRIDGE_ACCEPTANCE_LOGGER.error(
+                "MLB_PROJECTED_LINEUP_DIRECT_BRIDGE_COMPAT=DOWN can_execute=false"
+            )
 
         # A dedicated production flag runs one authenticated, non-secret smoke
         # test against a real confirmed pregame MLB event after startup completes.
