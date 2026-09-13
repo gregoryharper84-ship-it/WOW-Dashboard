@@ -1,0 +1,176 @@
+name: wow-v17-morning-green-continuation
+
+on:
+  workflow_run:
+    workflows: ["wow-verify", "wow-engine-verify"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Optional Morning-Green PR number to evaluate immediately
+        required: false
+
+permissions:
+  actions: read
+  checks: read
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: wow-v17-morning-green-${{ github.event.workflow_run.head_sha || inputs.pr_number || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  continue-repair:
+    name: Resume Morning-Green repair after CI
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion != 'cancelled'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Resolve eligible Morning-Green PR
+        id: resolve
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPLICIT_PR: ${{ inputs.pr_number }}
+          EVENT_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+
+          if [ -n "${EXPLICIT_PR:-}" ]; then
+            pr_number="$EXPLICIT_PR"
+          else
+            pr_number=$(gh api --paginate "/repos/${GITHUB_REPOSITORY}/pulls?state=open&base=main&per_page=100" \
+              --jq '[.[] | select(.head.sha == env.EVENT_HEAD_SHA and .head.repo.full_name == env.GITHUB_REPOSITORY)] | first | .number // empty')
+          fi
+
+          if [ -z "${pr_number:-}" ]; then
+            echo "eligible=false" >> "$GITHUB_OUTPUT"
+            echo "No open same-repository PR matches this completed CI head SHA." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          pr_json=$(gh api "/repos/${GITHUB_REPOSITORY}/pulls/${pr_number}")
+          body=$(jq -r '.body // ""' <<<"$pr_json")
+          base_ref=$(jq -r '.base.ref' <<<"$pr_json")
+          head_repo=$(jq -r '.head.repo.full_name // ""' <<<"$pr_json")
+          head_sha=$(jq -r '.head.sha' <<<"$pr_json")
+          draft=$(jq -r '.draft' <<<"$pr_json")
+          state=$(jq -r '.state' <<<"$pr_json")
+
+          if [ "$state" != "open" ] || [ "$draft" != "false" ] || [ "$base_ref" != "main" ] || [ "$head_repo" != "$GITHUB_REPOSITORY" ]; then
+            echo "eligible=false" >> "$GITHUB_OUTPUT"
+            echo "PR #${pr_number} is not an open, non-draft, same-repository PR targeting main." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          if ! grep -Fq 'Morning-Green-Autonomous: true' <<<"$body"; then
+            echo "eligible=false" >> "$GITHUB_OUTPUT"
+            echo "PR #${pr_number} is not explicitly authorized for Morning-Green autonomous continuation." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          risk=$(sed -n 's/^Morning-Green-Risk:[[:space:]]*//p' <<<"$body" | head -n1 | tr -d '\r')
+          case "$risk" in
+            R0|R1|R2-restorative) ;;
+            *)
+              echo "eligible=false" >> "$GITHUB_OUTPUT"
+              echo "PR #${pr_number} has missing or non-autonomous Morning-Green risk classification: ${risk:-unset}." >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+              ;;
+          esac
+
+          echo "eligible=true" >> "$GITHUB_OUTPUT"
+          echo "pr_number=$pr_number" >> "$GITHUB_OUTPUT"
+          echo "head_sha=$head_sha" >> "$GITHUB_OUTPUT"
+          echo "risk=$risk" >> "$GITHUB_OUTPUT"
+          echo "Resolved PR #${pr_number} at ${head_sha} as autonomous ${risk}." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Re-verify all protected checks on exact head SHA
+        id: gates
+        if: steps.resolve.outputs.eligible == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ steps.resolve.outputs.head_sha }}
+        run: |
+          set -euo pipefail
+
+          checks=$(gh api --paginate "/repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/check-runs?per_page=100" \
+            -H 'Accept: application/vnd.github+json' \
+            --jq '.check_runs')
+
+          required=(
+            "WOW governed probability backend"
+            "WOW required-three regression"
+            "WOW additional required regression"
+          )
+
+          ready=true
+          failed=false
+          for name in "${required[@]}"; do
+            latest=$(jq --arg name "$name" '[.[] | select(.name == $name)] | sort_by(.started_at // .created_at) | last // {}' <<<"$checks")
+            status=$(jq -r '.status // "missing"' <<<"$latest")
+            conclusion=$(jq -r '.conclusion // "missing"' <<<"$latest")
+            echo "${name}: status=${status} conclusion=${conclusion}" >> "$GITHUB_STEP_SUMMARY"
+
+            if [ "$status" != "completed" ]; then
+              ready=false
+            elif [ "$conclusion" != "success" ]; then
+              failed=true
+            fi
+          done
+
+          if [ "$failed" = "true" ]; then
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "failed=true" >> "$GITHUB_OUTPUT"
+            echo "At least one protected check failed. Morning-Green must return this repair to engineering; no merge attempted." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          if [ "$ready" != "true" ]; then
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "failed=false" >> "$GITHUB_OUTPUT"
+            echo "Not all protected checks are complete yet. A later workflow_run completion will resume this repair." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          echo "ready=true" >> "$GITHUB_OUTPUT"
+          echo "failed=false" >> "$GITHUB_OUTPUT"
+          echo "All three protected checks are successful on exact head SHA ${HEAD_SHA}." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Merge protected Morning-Green repair
+        if: steps.resolve.outputs.eligible == 'true' && steps.gates.outputs.ready == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
+          HEAD_SHA: ${{ steps.resolve.outputs.head_sha }}
+        run: |
+          set -euo pipefail
+          gh pr merge "$PR_NUMBER" \
+            --repo "$GITHUB_REPOSITORY" \
+            --merge \
+            --match-head-commit "$HEAD_SHA"
+          echo "Merged Morning-Green PR #${PR_NUMBER} after exact-SHA protected-check verification." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Record resumable continuation state
+        if: always() && steps.resolve.outputs.eligible == 'true'
+        shell: bash
+        env:
+          PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
+          HEAD_SHA: ${{ steps.resolve.outputs.head_sha }}
+          RISK: ${{ steps.resolve.outputs.risk }}
+          READY: ${{ steps.gates.outputs.ready }}
+          FAILED: ${{ steps.gates.outputs.failed }}
+        run: |
+          {
+            echo "### Morning-Green continuation"
+            echo "- PR: #${PR_NUMBER}"
+            echo "- Head SHA: ${HEAD_SHA}"
+            echo "- Risk: ${RISK}"
+            echo "- Required checks ready: ${READY:-false}"
+            echo "- Required check failure detected: ${FAILED:-false}"
+            echo "- can_execute: false"
+          } >> "$GITHUB_STEP_SUMMARY"
