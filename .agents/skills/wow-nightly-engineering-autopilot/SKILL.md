@@ -218,6 +218,35 @@ Rules:
 - Do not weaken a required check to make a repair green.
 - Do not broaden scope opportunistically; split independent defects into separate bounded repair packets.
 
+## Resumable CI continuation contract
+
+Safely autonomous repair PRs that are intended to continue without a live operator/session must include both exact body markers:
+
+```text
+Morning-Green-Autonomous: true
+Morning-Green-Risk: R0
+```
+
+The risk value may be only `R0`, `R1`, or `R2-restorative`.
+
+`.github/workflows/wow-v17-morning-green-continuation.yml` is the deterministic CI-resume layer. It wakes when either protected CI workflow completes, resolves only an open non-draft same-repository PR targeting `main`, requires the exact Morning-Green markers, and then independently re-checks all three protected checks on the PR head SHA:
+
+- `WOW governed probability backend`
+- `WOW required-three regression`
+- `WOW additional required regression`
+
+Behavior:
+
+- if any required check is still pending/missing, exit without merge and rely on the later workflow completion event to resume;
+- if any required check fails, do not merge and return the repair to Engineering/rework;
+- only if all three required checks succeed on the exact PR head SHA may the continuation workflow request the protected merge;
+- merge is pinned to the exact head SHA;
+- GitHub branch protection remains authoritative and may still reject the merge;
+- fork PRs, draft PRs, non-`main` PRs, missing markers, and non-autonomous risk classes are never eligible;
+- this mechanism resumes CI-to-merge only. Production deploy/replay and `FIXED_VERIFIED` still require the applicable Release/Observability acceptance path.
+
+Do not place the autonomous markers on R2-repair-policy or R3/hard-boundary changes.
+
 ## Deadline behavior
 
 When run as an overnight shift, use three operational phases relative to the configured morning handoff deadline:
