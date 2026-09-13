@@ -57,9 +57,16 @@ REQUIRED_COLUMNS: dict[str, frozenset[str]] = {
         "season", "week", "team", "position", "gsis_id",
     }),
     DATASET_INJURIES: frozenset({
-        "season", "season_type", "team", "week", "gsis_id", "position",
-        "report_status", "practice_status", "date_modified",
+        "season", "team", "week", "gsis_id", "position",
+        "report_status", "practice_status",
     }),
+}
+
+# nflverse injury files have used both `season_type` and `game_type` for the
+# regular/postseason discriminator. Treat them as schema aliases instead of
+# making a non-feature-bearing metadata rename block the entire NFL lane.
+REQUIRED_ANY_COLUMNS: dict[str, tuple[frozenset[str], ...]] = {
+    DATASET_INJURIES: (frozenset({"season_type", "game_type"}),),
 }
 
 
@@ -177,6 +184,12 @@ def _scan_csv(path: Path, dataset_name: str) -> tuple[tuple[str, ...], int]:
             raise SourceSchemaChanged(
                 f"{dataset_name}: missing required columns: {','.join(missing)}"
             )
+        for aliases in REQUIRED_ANY_COLUMNS.get(dataset_name, ()):
+            if column_set.isdisjoint(aliases):
+                raise SourceSchemaChanged(
+                    f"{dataset_name}: missing one of required aliases: "
+                    f"{'|'.join(sorted(aliases))}"
+                )
         row_count = sum(1 for _ in reader)
     return columns, row_count
 

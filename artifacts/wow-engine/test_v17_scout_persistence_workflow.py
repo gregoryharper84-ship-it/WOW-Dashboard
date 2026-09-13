@@ -22,8 +22,8 @@ def test_persistence_requires_recoverable_artifact_before_sync():
 
 def test_governance_contract_remains_research_only():
     text = _workflow_text()
-    assert "scout_brain_sync.py" in text
-    assert "scout_brain_edge_sync.py" in text
+    assert "python -m v17.scout_brain_sync" in text
+    assert "python -m v17.scout_brain_edge_sync" in text
     assert "WOW_SCOUT_DATABASE_URL" in text
     assert "id-token: write" in text
     assert "wow-v17-scout-brain-persist" in text
