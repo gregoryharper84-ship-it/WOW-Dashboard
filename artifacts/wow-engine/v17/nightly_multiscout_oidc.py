@@ -20,12 +20,6 @@ import time
 from pathlib import Path
 from typing import Any
 
-# The post-merge GitHub workflow executes this wrapper directly from the
-# artifacts/wow-engine working directory (``python v17/nightly_multiscout_oidc.py``).
-# In that mode Python puts only ``.../wow-engine/v17`` on sys.path, so the
-# package-level ``from v17 ...`` import below would fail before any governed
-# acquisition logic could run. Add only the package parent for direct-script
-# compatibility; module/import execution is unchanged.
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -90,10 +84,6 @@ def _eligible_for_secondary(result: scout.FetchResult) -> bool:
     code = str(result.code or "")
     if code in AUTH_FAILURE_CODES or code.startswith("GITHUB_ACTIONS_OIDC"):
         return False
-    # Generic HTTP_401/HTTP_403 remain fail-closed because they cannot prove the
-    # failure is downstream vendor entitlement rather than caller authorization.
-    # Only typed vendor/upstream failures or transient transport/server failures
-    # may use an independent research source.
     if code in SECONDARY_VENDOR_FAILURE_CODES:
         return True
     if result.status in TRANSIENT_HTTP_STATUSES:
@@ -102,18 +92,12 @@ def _eligible_for_secondary(result: scout.FetchResult) -> bool:
 
 
 def configure_source_failure_scope() -> None:
-    # The initial /sports request already fails closed immediately on caller auth
-    # failure. On later event/market requests, a typed upstream 401/403 can
-    # represent vendor endpoint entitlement (for example
-    # ODDS_API_FEATURED_ODDS_FALLBACK_ERROR), not a loss of GitHub-OIDC authority.
-    # Keep 429 terminal unless the proxy exposes it through an explicitly typed
-    # independent-source-eligible vendor failure.
+    # Typed vendor failures are row/source blockers. Caller auth remains fail-closed
+    # before this point; 429 remains the only slate-terminal source status here.
     scout.TERMINAL_SOURCE_HTTP_STATUSES = {429}
 
 
 def install_refreshable_oidc_proxy_auth() -> None:
-    # Preserve the existing legacy bearer path exactly. The Sept. 12 cold-start
-    # incident occurred on the GitHub-OIDC path, so resilience belongs there.
     if os.environ.get("WOW_ODDS_PROXY_ACTION_KEY"):
         return
 
@@ -159,8 +143,6 @@ def install_refreshable_oidc_proxy_auth() -> None:
             try:
                 os.environ["WOW_GITHUB_OIDC_TOKEN"] = mint_github_actions_oidc()
             except GitHubOIDCMintError as exc:
-                # Authentication/governance failures remain fail-closed and
-                # are never relabeled as a transient source outage.
                 return scout.FetchResult(False, code=str(exc))
 
             last_result = original(path, params)
@@ -169,7 +151,6 @@ def install_refreshable_oidc_proxy_auth() -> None:
                 return last_result
             if not _is_transient(last_result) or attempt == attempts:
                 break
-
             if base_seconds:
                 time.sleep(base_seconds * attempt)
 
@@ -184,7 +165,16 @@ def install_refreshable_oidc_proxy_auth() -> None:
             primary_failure=_primary_failure_label(final),
         )
         if not secondary.ok:
-            return final
+            diagnostic = {
+                "secondary_attempted": True,
+                "secondary_provider": "ESPN_SCOREBOARD_RESEARCH_FALLBACK",
+                "secondary_status": "FAILED",
+                "secondary_reason_code": secondary.code,
+                "secondary_http_status": secondary.status,
+                "primary_reason_code": final.code,
+                "primary_http_status": final.status,
+            }
+            return scout.FetchResult(False, data=diagnostic, status=final.status, code=final.code)
 
         _remember_event_context(path, secondary.data)
         return scout.FetchResult(True, secondary.data, secondary.status or 200, code="SECONDARY_SOURCE_USED")
