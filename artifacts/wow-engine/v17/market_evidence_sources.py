@@ -17,6 +17,11 @@ Governance boundary (CLAUDE.md sections 2, 3 and 7):
   unconfigured, rate-limited, rejected, or returns an unrecognised schema
   yields a reason code and zero rows. Market prices are never converted into
   a synthetic probability to fill a gap.
+- Market-feed failure is an *evidence* outcome, not a model outcome. It
+  terminates as ``MARKET_DATA_UNOBTAINABLE`` (or a more specific provider
+  code). It must never, on its own, downgrade an otherwise valid fitted
+  sporting probability: ``MODEL_UNAVAILABLE`` stays reserved for an absent
+  fitted probability capability, which nothing in this module can cause.
 
 Schema discipline (mirrors ``research_source_adapters``): only request paths
 that were actually observed or documented are used as defaults, and every one
@@ -32,12 +37,18 @@ import json
 import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 CAN_EXECUTE = False
+
+# Terminal evidence-side blocker. Deliberately distinct from MODEL_UNAVAILABLE:
+# losing a market feed removes evidence, it does not remove a fitted model.
+MARKET_DATA_UNOBTAINABLE = "MARKET_DATA_UNOBTAINABLE"
+
 SOURCE_CLASS = "SPORTSBOOK_FEED"
 SOURCE_TIER = "SPORTSBOOK_FEED_RESEARCH"
 TRUST_TIER = "TIER_3_ESTABLISHED_DATA"
@@ -482,6 +493,437 @@ def rundown_event_to_odds_api_v4(raw: Any, *, sport_key: str | None = None) -> d
     }
 
 
+# ---------------------------------------------------------------------------
+# TheRundown V2 native adapter
+#
+# V2 is not a reshuffle of V1: it nests
+#     event -> markets[] -> participants[] -> lines[] -> prices{affiliate_id}
+# where V1 carried event.lines{affiliate_id}.{moneyline,spread,total}. The V2
+# endpoints this module calls (/api/v2/.../events/{date}, /openers/{date})
+# return the V2 model, so they get their own translator rather than being
+# squeezed through the V1 one.
+# ---------------------------------------------------------------------------
+
+def _rundown_market_id_map() -> dict[str, str]:
+    """Optional provider market-id -> canonical key map.
+
+    TheRundown addresses markets by numeric id. Those ids are provider-owned
+    and are not guessed here: markets are matched by name, and an operator can
+    pin ids explicitly via ``WOW_RUNDOWN_MARKET_ID_MAP_JSON``
+    (e.g. ``{"1": "spreads", "3": "h2h"}``).
+    """
+    raw = os.environ.get("WOW_RUNDOWN_MARKET_ID_MAP_JSON", "").strip()
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except ValueError:
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    out: dict[str, str] = {}
+    for key, value in parsed.items():
+        canonical = canonical_market_key(value)
+        if canonical:
+            out[str(key)] = canonical
+    return out
+
+
+def _rundown_v2_participants(event: dict[str, Any], market: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Index participants by every id they can be referenced under.
+
+    Participants may be declared on the market or on the event; both are
+    indexed so a line can resolve its side wherever the provider put it.
+    """
+    index: dict[str, dict[str, Any]] = {}
+    for source in (event.get("participants"), market.get("participants")):
+        for participant in source or []:
+            if not isinstance(participant, dict):
+                continue
+            nested = participant.get("participant") if isinstance(participant.get("participant"), dict) else {}
+            name = (
+                participant.get("name")
+                or participant.get("full_name")
+                or nested.get("name")
+                or nested.get("full_name")
+                or participant.get("abbreviation")
+                or nested.get("abbreviation")
+            )
+            if not name:
+                continue
+            record = {
+                "name": str(name),
+                "is_home": bool(participant.get("is_home") or nested.get("is_home") or str(participant.get("type") or "").lower() == "home"),
+                "is_away": bool(participant.get("is_away") or nested.get("is_away") or str(participant.get("type") or "").lower() == "away"),
+            }
+            for id_key in ("id", "participant_id", "team_id"):
+                for holder in (participant, nested):
+                    value = holder.get(id_key)
+                    if value is not None:
+                        index.setdefault(str(value), record)
+            index.setdefault(_norm(name), record)
+    return index
+
+
+def _rundown_v2_outcome_name(line: dict[str, Any], participants: dict[str, dict[str, Any]]) -> str | None:
+    """Resolve a V2 line to the outcome label the Odds-API-v4 shape expects."""
+    for key in ("participant_id", "team_id", "participant"):
+        value = line.get(key)
+        if isinstance(value, dict):
+            value = value.get("id") or value.get("participant_id") or value.get("name")
+        if value is not None and str(value) in participants:
+            return participants[str(value)]["name"]
+    for key in ("selection", "side", "name", "outcome", "label"):
+        token = str(line.get(key) or "").strip()
+        if not token:
+            continue
+        lowered = token.lower()
+        if lowered in {"over", "under", "draw", "tie"}:
+            return lowered.replace("tie", "draw").capitalize()
+        if lowered in {"home", "away"}:
+            for record in participants.values():
+                if record["is_home" if lowered == "home" else "is_away"]:
+                    return record["name"]
+        if _norm(token) in participants:
+            return participants[_norm(token)]["name"]
+        return token
+    return None
+
+
+def _rundown_v2_prices(line: dict[str, Any]) -> list[tuple[str, Any, Any]]:
+    """Flatten a V2 line's ``prices{affiliate_id}`` map into per-book entries.
+
+    Returns ``(affiliate_id, price_container, price_value)`` triples. A line
+    that carries a single inline price instead of a price map is returned as
+    one entry so both representations converge here.
+    """
+    entries: list[tuple[str, Any, Any]] = []
+    prices = line.get("prices")
+    if isinstance(prices, dict):
+        for affiliate_id, container in prices.items():
+            entries.append((str(affiliate_id), container, container))
+    elif isinstance(prices, list):
+        for container in prices:
+            if not isinstance(container, dict):
+                continue
+            affiliate_id = container.get("affiliate_id") or container.get("affiliate") or container.get("book_id")
+            if affiliate_id is None:
+                continue
+            entries.append((str(affiliate_id), container, container))
+    elif line.get("affiliate_id") is not None:
+        entries.append((str(line["affiliate_id"]), line, line))
+    return entries
+
+
+def _rundown_v2_price_value(container: Any) -> int | float | None:
+    if isinstance(container, (int, float, str)):
+        return _number(container)
+    if not isinstance(container, dict):
+        return None
+    for key in ("american", "american_odds", "price", "odds", "moneyline", "decimal"):
+        value = _number(container.get(key))
+        if value is not None:
+            return value
+    return None
+
+
+def _rundown_v2_point(line: dict[str, Any], container: Any) -> int | float | None:
+    holders = [container, line] if isinstance(container, dict) else [line]
+    for holder in holders:
+        for key in ("spread", "total", "point", "line_value", "value", "handicap"):
+            value = _number(holder.get(key))
+            if value is not None:
+                return value
+    return None
+
+
+def rundown_v2_event_to_odds_api_v4(raw: Any, *, sport_key: str | None = None) -> dict[str, Any] | None:
+    """Translate one TheRundown **V2** event into the Odds-API-v4 shape.
+
+    Walks ``markets[] -> participants[] -> lines[] -> prices{affiliate_id}`` and
+    regroups it by book, because Odds-API-v4 is book-major while V2 is
+    market-major. Returns ``None`` when the payload is not V2-shaped or carries
+    no usable price, so the caller can fall through or fail closed.
+    """
+    if not isinstance(raw, dict):
+        return None
+    markets = raw.get("markets")
+    if not isinstance(markets, list) or not markets:
+        return None
+    event_id = raw.get("event_id") or raw.get("id")
+    if not event_id:
+        return None
+
+    id_map = _rundown_market_id_map()
+    # book key -> {title, markets: {canonical_key: {outcomes, last_update}}}
+    books: dict[str, dict[str, Any]] = {}
+    home = away = None
+
+    for market in markets:
+        if not isinstance(market, dict):
+            continue
+        participants = _rundown_v2_participants(raw, market)
+        for record in participants.values():
+            if record["is_home"] and not home:
+                home = record["name"]
+            elif record["is_away"] and not away:
+                away = record["name"]
+
+        market_key = canonical_market_key(
+            market.get("name") or market.get("market_name") or market.get("type")
+        ) or id_map.get(str(market.get("market_id") or market.get("id") or ""))
+        if market_key is None:
+            continue
+
+        lines = market.get("lines")
+        if not isinstance(lines, list):
+            lines = [market] if market.get("prices") else []
+
+        for line in lines:
+            if not isinstance(line, dict):
+                continue
+            outcome_name = _rundown_v2_outcome_name(line, participants)
+            if not outcome_name:
+                continue
+            for affiliate_id, container, _raw_price in _rundown_v2_prices(line):
+                price = _rundown_v2_price_value(container)
+                if price is None:
+                    continue
+                affiliate = line.get("affiliate") if isinstance(line.get("affiliate"), dict) else {}
+                title = str(
+                    (container.get("affiliate_name") if isinstance(container, dict) else None)
+                    or affiliate.get("affiliate_name")
+                    or affiliate.get("name")
+                    or f"affiliate_{affiliate_id}"
+                )
+                book = books.setdefault(f"rundown_{_norm(title) or affiliate_id}", {
+                    "title": title,
+                    "last_update": None,
+                    "markets": {},
+                })
+                updated = (
+                    (container.get("date_updated") if isinstance(container, dict) else None)
+                    or line.get("date_updated")
+                    or market.get("date_updated")
+                    or raw.get("event_date")
+                )
+                if updated and not book["last_update"]:
+                    book["last_update"] = updated
+                bucket = book["markets"].setdefault(market_key, {"last_update": updated, "outcomes": []})
+                outcome: dict[str, Any] = {"name": outcome_name, "price": price}
+                point = _rundown_v2_point(line, container)
+                if point is not None:
+                    outcome["point"] = point
+                if not any(o["name"] == outcome["name"] and o.get("point") == outcome.get("point") for o in bucket["outcomes"]):
+                    bucket["outcomes"].append(outcome)
+
+    if not books:
+        return None
+    if not home or not away:
+        home_fallback, away_fallback = _rundown_teams(raw)
+        home = home or home_fallback
+        away = away or away_fallback
+
+    return {
+        "id": f"rundown-{event_id}",
+        "sport_key": sport_key,
+        "commence_time": raw.get("event_date") or raw.get("date_event") or raw.get("start_time"),
+        "home_team": home,
+        "away_team": away,
+        "bookmakers": [
+            {
+                "key": key,
+                "title": book["title"],
+                "last_update": book["last_update"],
+                "markets": [
+                    {"key": market_key, "last_update": bucket["last_update"], "outcomes": bucket["outcomes"]}
+                    for market_key, bucket in book["markets"].items()
+                ],
+            }
+            for key, book in books.items()
+        ],
+    }
+
+
+# ---------------------------------------------------------------------------
+# SharpAPI native adapter
+#
+# SharpAPI is row-major: one record per sportsbook/event/market/selection, with
+# a line-shopping variant that nests competing books under ``all_books``.
+# Rows are regrouped event -> sportsbook -> canonical market -> outcomes.
+# ---------------------------------------------------------------------------
+
+SHARPAPI_SPORT_LEAGUES: dict[str, tuple[str, ...]] = {
+    "americanfootball_nfl": ("nfl",),
+    "americanfootball_ncaaf": ("ncaaf", "college-football", "cfb"),
+    "baseball_mlb": ("mlb",),
+    "basketball_nba": ("nba",),
+    "basketball_wnba": ("wnba",),
+    "basketball_ncaab": ("ncaab", "college-basketball"),
+    "icehockey_nhl": ("nhl",),
+    "mma_mixed_martial_arts": ("ufc", "mma"),
+    "soccer_epl": ("epl", "premier-league"),
+}
+
+
+def sharpapi_league(sport_key: str) -> str | None:
+    """Map a WOW sport key to SharpAPI's league identifier.
+
+    An explicit ``WOW_SHARPAPI_LEAGUE_<SPORT_KEY>`` pin wins, so a provider-side
+    rename is a config change rather than a code change. An unmapped sport
+    returns ``None`` and fails closed rather than querying a default league.
+    """
+    pinned = os.environ.get("WOW_SHARPAPI_LEAGUE_" + str(sport_key).upper())
+    if pinned and pinned.strip():
+        return pinned.strip()
+    leagues = SHARPAPI_SPORT_LEAGUES.get(str(sport_key))
+    return leagues[0] if leagues else None
+
+
+def _sharpapi_first(row: dict[str, Any], keys: tuple[str, ...]) -> Any:
+    for key in keys:
+        if key in row and row[key] not in (None, ""):
+            return row[key]
+    return None
+
+
+def _sharpapi_event_identity(row: dict[str, Any]) -> tuple[str, str | None, str | None, Any] | None:
+    event = _sharpapi_first(row, ("event", "game", "match", "fixture"))
+    if isinstance(event, dict):
+        event_id = _sharpapi_first(event, ("id", "event_id", "game_id", "key"))
+        home = _sharpapi_first(event, ("home_team", "home", "home_team_name"))
+        away = _sharpapi_first(event, ("away_team", "away", "away_team_name"))
+        start = _sharpapi_first(event, ("commence_time", "start_time", "start_date", "event_date", "scheduled"))
+    else:
+        event_id = _sharpapi_first(row, ("event_id", "game_id", "match_id"))
+        home = _sharpapi_first(row, ("home_team", "home", "home_team_name"))
+        away = _sharpapi_first(row, ("away_team", "away", "away_team_name"))
+        start = _sharpapi_first(row, ("commence_time", "start_time", "start_date", "event_date", "scheduled"))
+        if event_id is None and isinstance(event, str):
+            event_id = event
+    if event_id is None:
+        if not home or not away:
+            return None
+        event_id = f"{_norm(away)}-at-{_norm(home)}-{_date_token(start)}"
+    return str(event_id), (str(home) if home else None), (str(away) if away else None), start
+
+
+def _date_token(value: Any) -> str:
+    text = str(value or "")
+    return text[:10].replace("-", "") if text else "nodate"
+
+
+def _sharpapi_book_rows(row: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+    """Expand one SharpAPI row into (sportsbook, price-bearing row) pairs.
+
+    The line-shopping endpoint nests competing books under ``all_books``; each
+    becomes its own entry so cross-book comparison survives translation.
+    """
+    entries: list[tuple[str, dict[str, Any]]] = []
+    book = _sharpapi_first(row, ("sportsbook", "book", "bookmaker", "sportsbook_name"))
+    if isinstance(book, dict):
+        book = _sharpapi_first(book, ("name", "key", "title", "id"))
+    if book:
+        entries.append((str(book), row))
+
+    all_books = row.get("all_books")
+    if isinstance(all_books, dict):
+        all_books = [
+            {**(value if isinstance(value, dict) else {"odds": value}), "sportsbook": key}
+            for key, value in all_books.items()
+        ]
+    if isinstance(all_books, list):
+        for nested in all_books:
+            if not isinstance(nested, dict):
+                continue
+            nested_book = _sharpapi_first(nested, ("sportsbook", "book", "bookmaker", "name", "key"))
+            if isinstance(nested_book, dict):
+                nested_book = _sharpapi_first(nested_book, ("name", "key", "title", "id"))
+            if not nested_book:
+                continue
+            entries.append((str(nested_book), {**row, **nested}))
+    return entries
+
+
+def sharpapi_rows_to_odds_api_v4(rows: Any, *, sport_key: str | None = None) -> list[dict[str, Any]]:
+    """Regroup SharpAPI's row-major odds into Odds-API-v4 events.
+
+    ``rows`` is a flat sequence of sportsbook/event/market/selection records.
+    They are grouped event -> sportsbook -> canonical market -> outcomes. Rows
+    missing an event identity, a recognised market, a selection or a price are
+    dropped rather than defaulted.
+    """
+    if not isinstance(rows, list):
+        return []
+
+    events: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        identity = _sharpapi_event_identity(row)
+        if identity is None:
+            continue
+        event_id, home, away, start = identity
+
+        market_key = canonical_market_key(_sharpapi_first(row, ("market", "market_type", "market_key", "bet_type")))
+        if market_key is None:
+            continue
+        selection = _sharpapi_first(row, ("selection", "outcome", "side", "name", "team", "runner"))
+        if isinstance(selection, dict):
+            selection = _sharpapi_first(selection, ("name", "team", "label"))
+        if not selection:
+            continue
+
+        record = events.setdefault(event_id, {
+            "id": f"sharpapi-{event_id}",
+            "sport_key": sport_key,
+            "commence_time": start,
+            "home_team": home,
+            "away_team": away,
+            "books": {},
+        })
+        record["home_team"] = record["home_team"] or home
+        record["away_team"] = record["away_team"] or away
+        record["commence_time"] = record["commence_time"] or start
+
+        for book_name, priced in _sharpapi_book_rows(row):
+            price = _number(_sharpapi_first(priced, ("odds", "price", "american_odds", "american", "moneyline")))
+            if price is None:
+                continue
+            book = record["books"].setdefault(f"sharpapi_{_norm(book_name)}", {
+                "title": book_name,
+                "last_update": _sharpapi_first(priced, ("last_update", "updated_at", "timestamp", "observed_at")),
+                "markets": {},
+            })
+            bucket = book["markets"].setdefault(market_key, {"last_update": book["last_update"], "outcomes": []})
+            outcome: dict[str, Any] = {"name": str(selection), "price": price}
+            point = _number(_sharpapi_first(priced, ("line", "point", "handicap", "spread", "total")))
+            if point is not None:
+                outcome["point"] = point
+            if not any(o["name"] == outcome["name"] and o.get("point") == outcome.get("point") for o in bucket["outcomes"]):
+                bucket["outcomes"].append(outcome)
+
+    built: list[dict[str, Any]] = []
+    for record in events.values():
+        books = record.pop("books")
+        if not books:
+            continue
+        record["bookmakers"] = [
+            {
+                "key": key,
+                "title": book["title"],
+                "last_update": book["last_update"],
+                "markets": [
+                    {"key": market_key, "last_update": bucket["last_update"], "outcomes": bucket["outcomes"]}
+                    for market_key, bucket in book["markets"].items()
+                ],
+            }
+            for key, book in books.items()
+        ]
+        built.append(record)
+    return built
+
+
 def _candidate_events(payload: Any) -> list[Any]:
     if isinstance(payload, list):
         return payload
@@ -490,7 +932,7 @@ def _candidate_events(payload: Any) -> list[Any]:
             value = payload.get(key)
             if isinstance(value, list):
                 return value
-        if payload.get("bookmakers") or payload.get("lines"):
+        if payload.get("bookmakers") or payload.get("lines") or payload.get("markets"):
             return [payload]
     return []
 
@@ -503,32 +945,45 @@ def normalize_market_payload(
     sport_key: str | None = None,
     primary_failure: str | None = None,
 ) -> MarketEvidenceResult:
-    """Convert a provider payload into research-only Odds-API-v4 events.
+    """Translate a provider's **native** payload into research-only Odds-API-v4 events.
 
-    Translation is attempted only against shapes this module actually
-    understands. A payload matching none of them returns
-    ``<PROVIDER>_SCHEMA_UNRECOGNISED`` plus a value-free structural probe, and
-    yields zero rows; nothing is inferred or filled in.
+    Odds-API-v4 is the internal interchange shape, not an assumption about the
+    upstream: each provider gets its own native adapter and the providers
+    disappear at this boundary, so everything downstream sees one established
+    representation.
+
+    Adapters are tried most-specific first. A payload matching none of them
+    returns ``<PROVIDER>_SCHEMA_UNRECOGNISED`` plus a value-free structural
+    probe and yields zero rows; nothing is inferred or filled in.
     """
     provider = str(provider).upper()
-    candidates = _candidate_events(payload)
-    if not candidates:
-        return _fail(
-            provider, capability, f"{provider}_SCHEMA_UNRECOGNISED",
-            schema_probe=structural_probe(payload),
-        )
-
     marker = provider_marker(provider, capability, primary_failure=primary_failure)
     events: list[dict[str, Any]] = []
-    for raw in candidates:
-        event = rundown_event_to_odds_api_v4(raw, sport_key=sport_key) or coerce_odds_api_v4_event(raw)
-        if event is None:
-            continue
+
+    if provider == "SHARPAPI":
+        # Row-major: regroup the whole payload at once rather than per event.
+        events = sharpapi_rows_to_odds_api_v4(_candidate_events(payload), sport_key=sport_key)
+        if not events:
+            events = [
+                event for event in (
+                    coerce_odds_api_v4_event(raw) for raw in _candidate_events(payload)
+                ) if event is not None
+            ]
+    else:
+        for raw in _candidate_events(payload):
+            event = (
+                rundown_v2_event_to_odds_api_v4(raw, sport_key=sport_key)
+                or rundown_event_to_odds_api_v4(raw, sport_key=sport_key)
+                or coerce_odds_api_v4_event(raw)
+            )
+            if event is not None:
+                events.append(event)
+
+    for event in events:
         if sport_key and not event.get("sport_key"):
             event["sport_key"] = sport_key
         event["_wow_secondary_source"] = dict(marker)
         event["_wow_market_evidence"] = dict(marker)
-        events.append(event)
 
     if not events:
         return _fail(
@@ -559,6 +1014,30 @@ _RUNDOWN_SPORT_ALIASES: dict[str, tuple[str, ...]] = {
     "mma_mixed_martial_arts": ("ufcmma", "mma", "ufc"),
     "soccer_epl": ("premierleague", "epl"),
 }
+
+
+def rundown_date_offset_minutes(now: datetime | None = None) -> int:
+    """Minutes to shift TheRundown's date boundary onto WOW's local slate day.
+
+    TheRundown documents ``offset=300`` for a US Central date boundary, which
+    is the current UTC offset of ``America/Chicago`` expressed as positive
+    minutes behind UTC. Deriving it from the compiled zone rather than pinning
+    300 keeps "today" correct across the DST transition, when the same zone is
+    360. ``WOW_USER_TIMEZONE`` selects the zone, matching the nightly job.
+    """
+    override = os.environ.get("WOW_RUNDOWN_DATE_OFFSET_MINUTES", "").strip()
+    if override:
+        try:
+            return int(override)
+        except ValueError:
+            pass
+    name = os.environ.get("WOW_USER_TIMEZONE", "America/Chicago").strip() or "America/Chicago"
+    try:
+        zone = ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError):
+        return 0
+    offset = (now or datetime.now(timezone.utc)).astimezone(zone).utcoffset()
+    return 0 if offset is None else int(-offset.total_seconds() // 60)
 
 
 def rundown_sport_id(sport_key: str, *, opener: Any = None) -> MarketEvidenceResult:
@@ -623,7 +1102,7 @@ def rundown_market_evidence(
     fetched = fetch(
         "RUNDOWN", capability,
         path_values={"sport_id": resolved.data, "date": date},
-        params={"offset": "0"},
+        params={"offset": str(rundown_date_offset_minutes())},
         opener=opener,
     )
     if not fetched.ok:
@@ -642,7 +1121,10 @@ def sharpapi_market_evidence(
     primary_failure: str | None = None,
 ) -> MarketEvidenceResult:
     """Cross-book SharpAPI odds evidence for one sport."""
-    request_params = {"sport": sport_key}
+    league = sharpapi_league(sport_key)
+    if not league:
+        return _fail("SHARPAPI", "odds", "MARKET_EVIDENCE_UNSUPPORTED_SPORT")
+    request_params: dict[str, Any] = {"league": league}
     request_params.update(params or {})
     fetched = fetch("SHARPAPI", "odds", params=request_params, opener=opener)
     if not fetched.ok:
@@ -678,6 +1160,12 @@ def provider_health() -> dict[str, Any]:
 
 __all__ = [
     "CANONICAL_MARKET_KEYS",
+    "MARKET_DATA_UNOBTAINABLE",
+    "SHARPAPI_SPORT_LEAGUES",
+    "rundown_date_offset_minutes",
+    "rundown_v2_event_to_odds_api_v4",
+    "sharpapi_league",
+    "sharpapi_rows_to_odds_api_v4",
     "MarketEvidenceProvider",
     "MarketEvidenceResult",
     "PROVIDERS",

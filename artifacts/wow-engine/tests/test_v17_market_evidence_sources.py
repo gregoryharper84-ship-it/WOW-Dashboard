@@ -359,7 +359,7 @@ def test_snapshot_reconciles_and_reports_unavailable_without_fabricating(monkeyp
     assert recon["balanced"] is True
     assert recon["lanes_requested"] == recon["lanes_captured"] + recon["lanes_blocked"]
     assert recon["lanes_captured"] == 0
-    assert payload["status"] == "MARKET_EVIDENCE_UNAVAILABLE"
+    assert payload["status"] == sources.MARKET_DATA_UNOBTAINABLE
     assert payload["events"] == []
     assert payload["can_execute"] is False
     assert all(lane["reason_code"] == "MARKET_EVIDENCE_DISABLED" for lane in payload["lanes"])

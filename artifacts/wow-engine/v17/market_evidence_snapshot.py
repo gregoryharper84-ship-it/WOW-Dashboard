@@ -17,6 +17,12 @@ default (snapshot)
 Nothing here publishes probability, edge, stake or an executable instruction.
 A provider outage degrades to a typed blocker with zero rows; market prices
 are never substituted for a missing model.
+
+Failure boundary: an unavailable market feed terminates as
+``MARKET_DATA_UNOBTAINABLE``. That is an evidence outcome and never, on its
+own, downgrades a fitted sporting probability — ``MODEL_UNAVAILABLE`` stays
+reserved for an absent fitted probability capability, which this lane cannot
+cause.
 """
 from __future__ import annotations
 
@@ -103,7 +109,7 @@ def collect(sports: list[str], *, dates: list[str] | None = None, opener: Any = 
         "generated_at": _now().replace(microsecond=0).isoformat().replace("+00:00", "Z"),
         "dates": dates,
         "sports_requested": list(sports),
-        "status": "MARKET_EVIDENCE_CAPTURED" if captured else "MARKET_EVIDENCE_UNAVAILABLE",
+        "status": "MARKET_EVIDENCE_CAPTURED" if captured else sources.MARKET_DATA_UNOBTAINABLE,
         "lanes": lanes,
         "events": events,
         "bookmakers_seen": books,
@@ -111,8 +117,16 @@ def collect(sports: list[str], *, dates: list[str] | None = None, opener: Any = 
             "lanes_requested": len(lanes),
             "lanes_captured": captured,
             "lanes_blocked": blocked,
+            "captured_rows": len(events),
             "balanced": len(lanes) == captured + blocked,
         },
+        "provider_capture": {
+            provider: sum(
+                lane["event_count"] for lane in lanes if lane["provider"] == provider
+            )
+            for provider in sorted({lane["provider"] for lane in lanes})
+        },
+        "affects_fitted_model_availability": False,
         "research_ceiling": "RESEARCH_INTEREST",
         "source_class": sources.SOURCE_CLASS,
         "prediction_authority": False,
@@ -146,11 +160,35 @@ def probe(provider: str, capability: str, *, sport_key: str | None = None, date:
     }
 
 
+def acceptance_failures(payload: dict[str, Any]) -> list[str]:
+    """Names every credentialed provider that returned no rows.
+
+    Acceptance is per provider and only applies to providers whose credential
+    is actually configured, so an unconfigured provider is not reported as a
+    failure. A configured provider returning zero rows is: it means the
+    adapter did not translate the provider's real response.
+    """
+    health = {p["provider"]: p for p in sources.provider_health()["providers"]}
+    capture = payload.get("provider_capture") or {}
+    failures: list[str] = []
+    for provider, rows in sorted(capture.items()):
+        if not health.get(provider, {}).get("credential_configured"):
+            continue
+        if rows <= 0:
+            failures.append(provider)
+    return failures
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="WOW V17 research-only market evidence snapshot")
     parser.add_argument("--output", help="write the snapshot JSON here")
     parser.add_argument("--sports", default=",".join(DEFAULT_SPORTS))
     parser.add_argument("--probe", action="store_true", help="print a value-free structural probe instead of a snapshot")
+    parser.add_argument(
+        "--require-capture",
+        action="store_true",
+        help="acceptance mode: exit non-zero unless every credentialed provider returned rows",
+    )
     parser.add_argument("--provider", default="RUNDOWN")
     parser.add_argument("--capability", default="sports")
     parser.add_argument("--sport-key")
@@ -171,6 +209,9 @@ def main(argv: list[str] | None = None) -> int:
         path.write_text(text + "\n")
     else:
         print(text)
+
+    if args.require_capture:
+        return 0 if acceptance_failures(payload) == [] else 1
     return 0 if payload["status"] == "MARKET_EVIDENCE_CAPTURED" else 1
 
 
