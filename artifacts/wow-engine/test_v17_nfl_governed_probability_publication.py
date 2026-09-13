@@ -44,9 +44,20 @@ def test_nfl_publication_patch_is_idempotent_and_non_nfl_delegates_unchanged():
     assert calls == [("MLB", "MLB", event_api, True)]
 
 
-def test_team_event_runtime_installs_nfl_hydration_model_and_publication_hooks(monkeypatch):
-    calls = []
+def _fake_app():
+    class FakeApp:
+        def __init__(self):
+            self.router = SimpleNamespace(routes=[])
 
+        def post(self, *args, **kwargs):
+            def decorator(fn):
+                return fn
+            return decorator
+
+    return FakeApp()
+
+
+def _patch_runtime_installers(monkeypatch, calls):
     monkeypatch.setattr(
         request_runtime,
         "install_nfl_hydration_startup",
@@ -64,18 +75,14 @@ def test_team_event_runtime_installs_nfl_hydration_model_and_publication_hooks(m
     )
     monkeypatch.setattr(request_runtime, "scout_route_auth_dependency", lambda dependency: dependency)
 
-    class FakeApp:
-        def __init__(self):
-            self.router = SimpleNamespace(routes=[])
 
-        def post(self, *args, **kwargs):
-            def decorator(fn):
-                return fn
-            return decorator
+def test_team_event_runtime_installs_nfl_publication_only_when_v17_active(monkeypatch):
+    calls = []
+    _patch_runtime_installers(monkeypatch, calls)
+    monkeypatch.setenv("WOW_V17_ACTIVE", "1")
 
-    app = FakeApp()
     request_runtime.install_team_event_request_routes(
-        app,
+        _fake_app(),
         auth_dependency=object(),
         db_client_fn=lambda: object(),
         event_api=object(),
@@ -84,6 +91,21 @@ def test_team_event_runtime_installs_nfl_hydration_model_and_publication_hooks(m
     assert calls[0:2] == ["hydration", "model"]
     assert calls[2][0] == "publication"
     assert calls[2][1] is request_runtime.v17_team_event_base
+
+
+def test_team_event_runtime_does_not_leak_nfl_publication_into_lower_layers(monkeypatch):
+    calls = []
+    _patch_runtime_installers(monkeypatch, calls)
+    monkeypatch.delenv("WOW_V17_ACTIVE", raising=False)
+
+    request_runtime.install_team_event_request_routes(
+        _fake_app(),
+        auth_dependency=object(),
+        db_client_fn=lambda: object(),
+        event_api=object(),
+    )
+
+    assert calls == ["hydration", "model"]
 
 
 def test_governed_nfl_model_contract_never_enables_execution_or_market_blend():
