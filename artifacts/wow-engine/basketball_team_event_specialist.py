@@ -9,7 +9,8 @@ can_execute=False is unconditional.
 from __future__ import annotations
 
 from dataclasses import dataclass, asdict
-from datetime import date, datetime
+from datetime import date
+from itertools import groupby
 import hashlib
 import json
 import math
@@ -20,7 +21,7 @@ import numpy as np
 can_execute: bool = False
 
 SUPPORTED_SPORTS = ("NBA", "WNBA")
-FEATURE_SCHEMA_VERSION = "BASKETBALL_TEAM_EVENT_FEATURES_V1"
+FEATURE_SCHEMA_VERSION = "BASKETBALL_TEAM_EVENT_FEATURES_V2"
 MODEL_FAMILY = "BASKETBALL_TEAM_EVENT_LOGISTIC_V1"
 MIN_TRAIN_ROWS = 200
 MIN_HOLDOUT_ROWS = 50
@@ -135,47 +136,56 @@ def parse_bdl_game(raw: Mapping[str, object], sport: str) -> TrainingGame:
     if not isinstance(home_team, Mapping) or not isinstance(away_team, Mapping):
         raise BasketballSpecialistError("team identity payload missing")
     date_text = str(raw.get("date") or raw.get("datetime") or "")[:10]
-    if not date_text:
-        raise BasketballSpecialistError("game date missing")
     gid = str(raw.get("id") or "").strip()
-    if not gid:
-        raise BasketballSpecialistError("game id missing")
+    home_id = str(home_team.get("id") or "").strip()
+    away_id = str(away_team.get("id") or "").strip()
+    if not date_text or not gid or not home_id or not away_id:
+        raise BasketballSpecialistError("game identity/date missing")
     return TrainingGame(
         game_id=gid,
         sport=s,
         season=int(raw.get("season") or int(date_text[:4])),
         game_date=date.fromisoformat(date_text),
-        home_team_id=str(home_team.get("id") or "").strip(),
-        away_team_id=str(away_team.get("id") or "").strip(),
+        home_team_id=home_id,
+        away_team_id=away_id,
         home_score=int(home_score),
         away_score=int(away_score),
     )
 
 
 def build_pregame_features(games: Iterable[TrainingGame], sport: str) -> list[FeatureRow]:
-    """Build strictly pregame features using only games dated before each target game."""
+    """Build features from history strictly earlier than the target calendar date.
+
+    Games on the same date are evaluated as a batch. No final from an earlier game
+    that day can enter another same-day game's pregame features.
+    """
     s = _sport(sport)
     ordered = sorted((g for g in games if _sport(g.sport) == s), key=lambda g: (g.game_date, g.game_id))
     history: dict[str, list[tuple[date, int, int, bool]]] = {}
     rows: list[FeatureRow] = []
-    for g in ordered:
-        hh = history.get(g.home_team_id, [])
-        ah = history.get(g.away_team_id, [])
-        if len(hh) >= MIN_PRIOR_GAMES and len(ah) >= MIN_PRIOR_GAMES:
-            hwr = sum(x[3] for x in hh) / len(hh)
-            awr = sum(x[3] for x in ah) / len(ah)
-            hpd = sum(x[1] - x[2] for x in hh) / len(hh)
-            apd = sum(x[1] - x[2] for x in ah) / len(ah)
-            hrest = max(0, (g.game_date - hh[-1][0]).days - 1)
-            arest = max(0, (g.game_date - ah[-1][0]).days - 1)
-            values = (
-                float(hwr), float(awr), float(hpd), float(apd),
-                float(min(hrest, 7)), float(min(arest, 7)),
-                float(hrest == 0), float(arest == 0),
-            )
-            rows.append(FeatureRow(g.game_id, s, g.game_date, len(hh), len(ah), values, g.home_win))
-        history.setdefault(g.home_team_id, []).append((g.game_date, g.home_score, g.away_score, bool(g.home_win)))
-        history.setdefault(g.away_team_id, []).append((g.game_date, g.away_score, g.home_score, not bool(g.home_win)))
+    for _, grouped in groupby(ordered, key=lambda g: g.game_date):
+        day_games = list(grouped)
+        pending_updates: list[tuple[str, tuple[date, int, int, bool]]] = []
+        for g in day_games:
+            hh = history.get(g.home_team_id, [])
+            ah = history.get(g.away_team_id, [])
+            if len(hh) >= MIN_PRIOR_GAMES and len(ah) >= MIN_PRIOR_GAMES:
+                hwr = sum(x[3] for x in hh) / len(hh)
+                awr = sum(x[3] for x in ah) / len(ah)
+                hpd = sum(x[1] - x[2] for x in hh) / len(hh)
+                apd = sum(x[1] - x[2] for x in ah) / len(ah)
+                hrest = max(0, (g.game_date - hh[-1][0]).days - 1)
+                arest = max(0, (g.game_date - ah[-1][0]).days - 1)
+                values = (
+                    float(hwr), float(awr), float(hpd), float(apd),
+                    float(min(hrest, 7)), float(min(arest, 7)),
+                    float(hrest == 0), float(arest == 0),
+                )
+                rows.append(FeatureRow(g.game_id, s, g.game_date, len(hh), len(ah), values, g.home_win))
+            pending_updates.append((g.home_team_id, (g.game_date, g.home_score, g.away_score, bool(g.home_win))))
+            pending_updates.append((g.away_team_id, (g.game_date, g.away_score, g.home_score, not bool(g.home_win))))
+        for team_id, update in pending_updates:
+            history.setdefault(team_id, []).append(update)
     return rows
 
 
@@ -203,6 +213,17 @@ def _metrics(p: np.ndarray, y: np.ndarray) -> tuple[float, float, float]:
     return brier, log_loss, accuracy
 
 
+def _date_safe_split(rows: Sequence[FeatureRow], desired_index: int) -> int:
+    """Move a chronological split forward so a calendar date is never divided."""
+    if desired_index <= 0 or desired_index >= len(rows):
+        return desired_index
+    boundary_date = rows[desired_index - 1].game_date
+    index = desired_index
+    while index < len(rows) and rows[index].game_date == boundary_date:
+        index += 1
+    return index
+
+
 def train_specialist(rows: Sequence[FeatureRow], sport: str, *, model_artifact_version: str) -> LogisticArtifact:
     s = _sport(sport)
     league_rows = sorted((r for r in rows if _sport(r.sport) == s), key=lambda r: (r.game_date, r.game_id))
@@ -210,8 +231,13 @@ def train_specialist(rows: Sequence[FeatureRow], sport: str, *, model_artifact_v
         raise BasketballSpecialistError(
             f"{s} requires >= {MIN_TRAIN_ROWS + MIN_HOLDOUT_ROWS} usable chronological feature rows; got {len(league_rows)}"
         )
-    split = max(MIN_TRAIN_ROWS, int(len(league_rows) * 0.8))
-    split = min(split, len(league_rows) - MIN_HOLDOUT_ROWS)
+    desired = max(MIN_TRAIN_ROWS, int(len(league_rows) * 0.8))
+    desired = min(desired, len(league_rows) - MIN_HOLDOUT_ROWS)
+    split = _date_safe_split(league_rows, desired)
+    if len(league_rows) - split < MIN_HOLDOUT_ROWS:
+        split = _date_safe_split(league_rows, len(league_rows) - MIN_HOLDOUT_ROWS)
+        if len(league_rows) - split < MIN_HOLDOUT_ROWS:
+            raise BasketballSpecialistError("cannot create date-safe holdout with minimum rows")
     train = league_rows[:split]
     holdout = league_rows[split:]
     x_train = np.asarray([r.values for r in train], dtype=float)
@@ -227,15 +253,12 @@ def train_specialist(rows: Sequence[FeatureRow], sport: str, *, model_artifact_v
     p_hold = _sigmoid(intercept + z_hold @ beta)
     brier, log_loss, accuracy = _metrics(p_hold, y_hold)
     payload = {
-        "sport": s,
-        "model_family": MODEL_FAMILY,
+        "sport": s, "model_family": MODEL_FAMILY,
         "model_artifact_version": model_artifact_version,
         "feature_schema_version": FEATURE_SCHEMA_VERSION,
-        "feature_names": FEATURE_NAMES,
-        "intercept": float(intercept),
+        "feature_names": FEATURE_NAMES, "intercept": float(intercept),
         "coefficients": [float(v) for v in beta],
-        "means": [float(v) for v in means],
-        "scales": [float(v) for v in scales],
+        "means": [float(v) for v in means], "scales": [float(v) for v in scales],
     }
     checksum = hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     return LogisticArtifact(
@@ -253,20 +276,16 @@ def train_specialist(rows: Sequence[FeatureRow], sport: str, *, model_artifact_v
 def certification_decision(artifact: LogisticArtifact | None, *, sport: str, calibration_rows: int,
                            calibration_status: str | None, provenance_complete: bool) -> CertificationDecision:
     s = _sport(sport)
-    notes: list[str] = []
     if artifact is None:
         return CertificationDecision(s, "UNAVAILABLE", "MODEL_ARTIFACT_NOT_REGISTERED", 0, 0, calibration_rows, ())
     if artifact.sport != s:
         return CertificationDecision(s, "UNAVAILABLE", "MODEL_ARTIFACT_SPORT_MISMATCH", artifact.training_row_count, artifact.holdout_row_count, calibration_rows, ())
     if not provenance_complete:
-        notes.append("training provenance incomplete")
-        return CertificationDecision(s, "SHADOW", "MODEL_INPUTS_INSUFFICIENT", artifact.training_row_count, artifact.holdout_row_count, calibration_rows, tuple(notes))
+        return CertificationDecision(s, "SHADOW", "MODEL_INPUTS_INSUFFICIENT", artifact.training_row_count, artifact.holdout_row_count, calibration_rows, ("training provenance incomplete",))
     if artifact.training_row_count < MIN_TRAIN_ROWS or artifact.holdout_row_count < MIN_HOLDOUT_ROWS:
         return CertificationDecision(s, "SHADOW", "MODEL_INPUTS_INSUFFICIENT", artifact.training_row_count, artifact.holdout_row_count, calibration_rows, ())
     if calibration_rows < 200 or calibration_status not in {"PLATT_TIME_SPLIT_V1", "ISOTONIC_V1"}:
         return CertificationDecision(s, "SHADOW", "MODEL_CALIBRATION_UNAVAILABLE", artifact.training_row_count, artifact.holdout_row_count, calibration_rows, ())
-    # Certification is deliberately conservative. These are model-quality gates,
-    # not betting/qualification thresholds and do not imply money eligibility.
     if not (artifact.holdout_brier < 0.25 and artifact.holdout_log_loss < math.log(2)):
         return CertificationDecision(s, "SHADOW", "MODEL_VALIDATION_FAILED", artifact.training_row_count, artifact.holdout_row_count, calibration_rows, ())
     return CertificationDecision(s, "CERTIFIED", "OK", artifact.training_row_count, artifact.holdout_row_count, calibration_rows, ())
