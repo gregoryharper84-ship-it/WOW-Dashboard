@@ -58,7 +58,7 @@ REQUIRED_COLUMNS: dict[str, frozenset[str]] = {
     }),
     DATASET_INJURIES: frozenset({
         "season", "team", "week", "gsis_id", "position",
-        "report_status", "practice_status", "date_modified",
+        "report_status", "practice_status",
     }),
 }
 
