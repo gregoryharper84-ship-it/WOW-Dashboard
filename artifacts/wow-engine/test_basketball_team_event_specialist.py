@@ -9,9 +9,10 @@ from basketball_team_event_specialist import (
     certification_decision,
     train_specialist,
 )
+from basketball_specialist_pipeline import _walk_forward_raw
 
 
-def _games(sport: str, n: int = 360):
+def _games(sport: str, n: int = 480):
     teams = [f"{sport}-T{i}" for i in range(12)]
     start = date(2024, 1, 1) if sport == "NBA" else date(2024, 5, 1)
     out = []
@@ -20,7 +21,6 @@ def _games(sport: str, n: int = 360):
         away = teams[(i * 5 + 3) % len(teams)]
         if home == away:
             away = teams[(teams.index(away) + 1) % len(teams)]
-        # Deterministic non-market score process with home-court signal and changing team strength.
         hs = 96 + ((i * 7 + int(home.split("T")[-1]) * 3) % 28) + 4
         aws = 96 + ((i * 11 + int(away.split("T")[-1]) * 2) % 28)
         if hs == aws:
@@ -37,7 +37,24 @@ def test_nba_wnba_features_are_league_isolated():
     assert nba_rows and wnba_rows
     assert all(r.sport == "NBA" for r in nba_rows)
     assert all(r.sport == "WNBA" for r in wnba_rows)
-    assert {r.game_id for r in nba_rows} == {r.game_id for r in wnba_rows}  # ids may overlap; sport keeps them isolated
+    assert {r.game_id for r in nba_rows} == {r.game_id for r in wnba_rows}
+
+
+def test_same_day_results_never_enter_same_day_features():
+    games = _games("NBA", 180)
+    rows = build_pregame_features(games, "NBA")
+    by_id = {r.game_id: r for r in rows}
+    # Games are emitted six per day. Where two same-day target rows are usable,
+    # no same-day final has changed either team's prior-game count.
+    day_to_rows = {}
+    for r in rows:
+        day_to_rows.setdefault(r.game_date, []).append(r)
+    candidate = next(day_rows for day_rows in day_to_rows.values() if len(day_rows) >= 2)
+    source_games = {g.game_id: g for g in games}
+    first, second = candidate[0], candidate[1]
+    assert source_games[first.game_id].game_date == source_games[second.game_id].game_date
+    # The history counts are determined before the whole date is committed.
+    assert first.home_games_prior >= 5 and second.home_games_prior >= 5
 
 
 def test_training_requires_real_minimum_corpus():
@@ -54,6 +71,19 @@ def test_nba_and_wnba_fit_independent_artifacts():
     assert nba.sport == "NBA" and wnba.sport == "WNBA"
     assert nba.model_artifact_version != wnba.model_artifact_version
     assert nba.artifact_checksum != wnba.artifact_checksum
+
+
+def test_walk_forward_calibration_is_date_safe_and_large_enough():
+    rows = build_pregame_features(_games("NBA", 720), "NBA")
+    raw, outcomes, folds, timestamps = _walk_forward_raw(rows)
+    assert len(raw) == len(outcomes) == len(folds) == len(timestamps)
+    assert len(raw) >= 200
+    assert sorted(set(folds)) == list(range(6))
+    fold_dates = {}
+    for fold_id, ts in zip(folds, timestamps):
+        fold_dates.setdefault(fold_id, set()).add(ts[:10])
+    for f in range(1, 6):
+        assert max(fold_dates[f - 1]) < min(fold_dates[f])
 
 
 def test_certification_fail_closed_without_v17_calibration():
