@@ -9,6 +9,9 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from github_actions_oidc import scout_route_auth_dependency
 from nfl_event_hydration_runtime import install_nfl_hydration_startup
+from nfl_event_model_startup import install_nfl_model_startup
+from v17 import team_event_request_runtime as v17_team_event_base
+from v17.nfl_team_event_publication import install_nfl_team_event_publication
 
 ObjectiveLane = Literal["OUTRIGHT_WIN_PROBABILITY", "UPSET_PROBABILITY", "MARKET_EDGE"]
 
@@ -109,9 +112,12 @@ def _completed(row: TeamEventRequestRow, event: dict[str, Any], scored: dict[str
 
 
 def install_team_event_request_routes(app: Any, *, auth_dependency: Any, db_client_fn: Any, event_api: Any) -> None:
-    # Install the fail-closed, opt-in hydration hook alongside the team/event
-    # runtime. It is inert unless WOW_NFL_HYDRATE_ON_STARTUP=1.
+    # Install the fail-closed NFL data/model hooks alongside the team/event runtime.
+    # Hydration remains opt-in via WOW_NFL_HYDRATE_ON_STARTUP. Model certification
+    # is fail-closed and never makes wager execution possible.
     install_nfl_hydration_startup(app, db_client_fn=db_client_fn)
+    install_nfl_model_startup(app, db_client_fn=db_client_fn)
+    install_nfl_team_event_publication(v17_team_event_base)
 
     if any(getattr(r, "path", None) == "/score-team-event-request" for r in app.router.routes):
         return
