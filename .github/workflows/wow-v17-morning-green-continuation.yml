@@ -11,7 +11,7 @@ on:
         required: false
 
 permissions:
-  actions: read
+  actions: write
   checks: read
   contents: write
   pull-requests: write
@@ -81,11 +81,22 @@ jobs:
               ;;
           esac
 
+          acceptance=$(sed -n 's/^Morning-Green-Acceptance-Workflow:[[:space:]]*//p' <<<"$body" | head -n1 | tr -d '\r')
+          case "${acceptance:-none}" in
+            none|wow-v17-nightly-multiscout.yml|wow-v17-nightly-engineering-scan.yml) ;;
+            *)
+              echo "eligible=false" >> "$GITHUB_OUTPUT"
+              echo "PR #${pr_number} requested non-whitelisted acceptance workflow: ${acceptance}." >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+              ;;
+          esac
+
           echo "eligible=true" >> "$GITHUB_OUTPUT"
           echo "pr_number=$pr_number" >> "$GITHUB_OUTPUT"
           echo "head_sha=$head_sha" >> "$GITHUB_OUTPUT"
           echo "risk=$risk" >> "$GITHUB_OUTPUT"
-          echo "Resolved PR #${pr_number} at ${head_sha} as autonomous ${risk}." >> "$GITHUB_STEP_SUMMARY"
+          echo "acceptance=${acceptance:-none}" >> "$GITHUB_OUTPUT"
+          echo "Resolved PR #${pr_number} at ${head_sha} as autonomous ${risk}; acceptance=${acceptance:-none}." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Re-verify all protected checks on exact head SHA
         id: gates
@@ -141,6 +152,7 @@ jobs:
           echo "All three protected checks are successful on exact head SHA ${HEAD_SHA}." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Merge protected Morning-Green repair
+        id: merge
         if: steps.resolve.outputs.eligible == 'true' && steps.gates.outputs.ready == 'true'
         shell: bash
         env:
@@ -153,7 +165,31 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --merge \
             --match-head-commit "$HEAD_SHA"
-          echo "Merged Morning-Green PR #${PR_NUMBER} after exact-SHA protected-check verification." >> "$GITHUB_STEP_SUMMARY"
+          merge_sha=$(gh api "/repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq '.merge_commit_sha')
+          echo "merge_sha=$merge_sha" >> "$GITHUB_OUTPUT"
+          echo "Merged Morning-Green PR #${PR_NUMBER} as ${merge_sha} after exact-SHA protected-check verification." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Resume required main checks after bot merge
+        if: steps.merge.outcome == 'success'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh workflow run wow-engine-verify.yml --repo "$GITHUB_REPOSITORY" --ref main
+          gh workflow run wow-verify.yml --repo "$GITHUB_REPOSITORY" --ref main
+          echo "Explicitly dispatched both protected main verification workflows because GITHUB_TOKEN-authored merges do not recursively trigger normal push workflows." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Resume whitelisted acceptance workflow after bot merge
+        if: steps.merge.outcome == 'success' && steps.resolve.outputs.acceptance != 'none'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ACCEPTANCE_WORKFLOW: ${{ steps.resolve.outputs.acceptance }}
+        run: |
+          set -euo pipefail
+          gh workflow run "$ACCEPTANCE_WORKFLOW" --repo "$GITHUB_REPOSITORY" --ref main
+          echo "Dispatched whitelisted post-merge acceptance workflow: ${ACCEPTANCE_WORKFLOW}." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Record resumable continuation state
         if: always() && steps.resolve.outputs.eligible == 'true'
@@ -161,7 +197,9 @@ jobs:
         env:
           PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
           HEAD_SHA: ${{ steps.resolve.outputs.head_sha }}
+          MERGE_SHA: ${{ steps.merge.outputs.merge_sha }}
           RISK: ${{ steps.resolve.outputs.risk }}
+          ACCEPTANCE: ${{ steps.resolve.outputs.acceptance }}
           READY: ${{ steps.gates.outputs.ready }}
           FAILED: ${{ steps.gates.outputs.failed }}
         run: |
@@ -169,7 +207,9 @@ jobs:
             echo "### Morning-Green continuation"
             echo "- PR: #${PR_NUMBER}"
             echo "- Head SHA: ${HEAD_SHA}"
+            echo "- Merge SHA: ${MERGE_SHA:-not-merged}"
             echo "- Risk: ${RISK}"
+            echo "- Acceptance workflow: ${ACCEPTANCE:-none}"
             echo "- Required checks ready: ${READY:-false}"
             echo "- Required check failure detected: ${FAILED:-false}"
             echo "- can_execute: false"
