@@ -39,6 +39,23 @@ def test_merge_is_head_sha_pinned_and_failure_does_not_merge():
     assert "A later workflow_run completion will resume this repair" in text
 
 
+def test_bot_merge_explicitly_resumes_main_required_checks():
+    text = _text()
+    assert "actions: write" in text
+    assert "gh workflow run wow-engine-verify.yml" in text
+    assert "gh workflow run wow-verify.yml" in text
+    assert "GITHUB_TOKEN-authored merges do not recursively trigger normal push workflows" in text
+
+
+def test_acceptance_workflow_is_explicit_and_whitelisted():
+    text = _text()
+    assert "Morning-Green-Acceptance-Workflow:" in text
+    assert "wow-v17-nightly-multiscout.yml" in text
+    assert "wow-v17-nightly-engineering-scan.yml" in text
+    assert "requested non-whitelisted acceptance workflow" in text
+    assert 'gh workflow run "$ACCEPTANCE_WORKFLOW"' in text
+
+
 def test_governance_invariant_remains_research_only():
     text = _text()
     assert "can_execute: false" in text
