@@ -28,6 +28,9 @@ class TeamEventRequestRow(BaseModel):
     event_date: str
     timezone: str
     price_required_for_objective: bool
+    event_start_time_utc: str | None = None
+    home_team: str | None = None
+    away_team: str | None = None
 
 
 class TeamEventRequestBatch(BaseModel):
@@ -81,6 +84,33 @@ def _score_request(row: TeamEventRequestRow, event: dict[str, Any]) -> dict[str,
     }
 
 
+def _nfl_score_request(row: TeamEventRequestRow) -> Any:
+    if not row.event_start_time_utc or not row.home_team or not row.away_team:
+        raise ValueError("NFL_SCOUT_EVENT_IDENTITY_INCOMPLETE")
+    return v17_team_event_base.TeamEventRequest(
+        requester_host_identity="WOW_BETTING_ENGINE",
+        research_run_id=row.research_run_id,
+        requested_slate_date=row.event_date,
+        requested_timezone=row.timezone,
+        scan_stage=row.event_state,
+        candidate_family="TEAM_EVENT",
+        decision_intent="UPSET" if row.objective_lane == "UPSET_PROBABILITY" else "WINNER",
+        event_key=row.event_key,
+        official_event_id=_event_id(row),
+        event_start_time_utc=row.event_start_time_utc,
+        sport="NFL",
+        league="NFL",
+        market_family="OUTRIGHT_WINNER",
+        settlement_basis="FULL_GAME_OUTRIGHT",
+        home_team=row.home_team,
+        away_team=row.away_team,
+        source_snapshot_id="SCOUT_CANONICALIZATION_PENDING",
+        latest_material_update_timestamp=None,
+        market_prior=None,
+        sport_specific_evidence={},
+    )
+
+
 def _completed(row: TeamEventRequestRow, event: dict[str, Any], scored: dict[str, Any]) -> dict[str, Any]:
     keys = ("calibrated_home_probability", "calibrated_away_probability",
             "calibrated_home_lower_bound", "calibrated_away_lower_bound",
@@ -112,16 +142,58 @@ def _completed(row: TeamEventRequestRow, event: dict[str, Any], scored: dict[str
     }
 
 
+def _completed_nfl(row: TeamEventRequestRow, scored: dict[str, Any]) -> dict[str, Any]:
+    if scored.get("probability_publishable") is not True or scored.get("terminal_label") != "FINAL_APPROVED":
+        blockers = [str(value) for value in (scored.get("blockers") or [])]
+        blocker = blockers[0] if blockers else str(scored.get("code") or "NFL_GOVERNED_PUBLICATION_NOT_PROVEN")
+        return _held(row, str(scored.get("code") or "NFL_GOVERNED_PUBLICATION_NOT_PROVEN"), blocker, scored)
+
+    selected = str(scored.get("selected_participant") or "").strip()
+    home = str(row.home_team or "").strip()
+    away = str(row.away_team or "").strip()
+    if selected.casefold() == home.casefold():
+        side = "home"
+    elif selected.casefold() == away.casefold():
+        side = "away"
+    else:
+        return _held(row, "MODEL_OUTPUT_INVALID", "NFL_SELECTED_PARTICIPANT_IDENTITY_INVALID", scored)
+
+    probability = scored.get("calibrated_selection_probability")
+    lower = scored.get("rank_calibrated_lower_bound", scored.get("ranked_probability"))
+    upper = scored.get(f"calibrated_{side}_upper_bound")
+    values = (probability, lower, upper)
+    if not all(isinstance(value, (int, float)) and not isinstance(value, bool) for value in values):
+        return _held(row, "MODEL_OUTPUT_INVALID", "NFL_GOVERNED_PROBABILITY_FIELDS_INVALID", scored)
+
+    market_needed = row.price_required_for_objective or row.objective_lane != "OUTRIGHT_WIN_PROBABILITY"
+    blockers = ["MARKET_DATA_UNOBTAINABLE"] if market_needed else []
+    return {
+        "research_run_id": row.research_run_id,
+        "event_key": row.event_key,
+        "objective_lane": row.objective_lane,
+        "terminal_status": "COMPLETED",
+        "code": "SPORTING_PROBABILITY_COMPLETED",
+        "selected_team": selected,
+        "calibrated_probability": float(probability),
+        "calibrated_lower_bound": float(lower),
+        "calibrated_upper_bound": float(upper),
+        "audit_result": "PARTIAL" if blockers else "PASS",
+        "event_decision": scored.get("llp_event_decision") or "FINAL_APPROVED",
+        "blockers": blockers,
+        "internal_ceiling": "SPORTING_PROBABILITY_ONLY" if blockers else "FULL_MODEL_PROBABILITY",
+        "governed_publication_code": scored.get("code"),
+        "terminal_label": scored.get("terminal_label"),
+        "score_snapshot_id": scored.get("score_snapshot_id"),
+        "event_prediction_id": scored.get("event_prediction_id"),
+        "probability_publishable": True,
+        "can_execute": False,
+    }
+
+
 def install_team_event_request_routes(app: Any, *, auth_dependency: Any, db_client_fn: Any, event_api: Any) -> None:
-    # Install the fail-closed NFL data/model hooks alongside the team/event runtime.
-    # Hydration remains opt-in via WOW_NFL_HYDRATE_ON_STARTUP. Model certification
-    # is fail-closed and never makes wager execution possible.
     install_nfl_hydration_startup(app, db_client_fn=db_client_fn)
     install_nfl_model_startup(app, db_client_fn=db_client_fn)
 
-    # Scope the NFL dispatcher mutation to the active production V17 composition.
-    # This mirrors the existing production-gated prop mutation and prevents a
-    # production adapter from leaking into lower-layer unit tests/importers.
     if os.getenv("WOW_V17_ACTIVE", "0") == "1":
         install_nfl_team_event_publication(v17_team_event_base)
 
@@ -140,7 +212,29 @@ def install_team_event_request_routes(app: Any, *, auth_dependency: Any, db_clie
                 date.fromisoformat(row.event_date)
             except ValueError:
                 outcomes.append(_held(row, "INPUT_INCOMPLETE", "EVENT_DATE_INVALID")); continue
-            if row.sport.strip().upper() != "MLB" or row.league.strip().upper() != "MLB":
+
+            sport = row.sport.strip().upper()
+            league = row.league.strip().upper()
+            if sport == "NFL" and league == "NFL":
+                if not row.event_start_time_utc or not row.home_team or not row.away_team:
+                    outcomes.append(_held(row, "MODEL_INPUTS_INSUFFICIENT", "NFL_SCOUT_EVENT_IDENTITY_INCOMPLETE")); continue
+                try:
+                    req = _nfl_score_request(row)
+                    scored = v17_team_event_base.score_team_event_request(
+                        req,
+                        event_api=event_api,
+                        canonical_hydration_required=True,
+                    )
+                except HTTPException as exc:
+                    detail = exc.detail if isinstance(exc.detail, dict) else {"message": str(exc.detail)}
+                    raw_code = str(detail.get("code") or "PROVIDER_UNAVAILABLE")
+                    outcomes.append(_held(row, raw_code, str(detail.get("blocker_code") or raw_code), detail)); continue
+                except Exception as exc:
+                    outcomes.append(_held(row, "TRANSPORT_FAILURE", "NFL_ROW_SCORER_FAILURE",
+                                          {"error_type": type(exc).__name__})); continue
+                outcomes.append(_completed_nfl(row, scored)); continue
+
+            if sport != "MLB" or league != "MLB":
                 outcomes.append(_held(row, "MODEL_UNAVAILABLE", "SPORT_SPECIFIC_MODEL_UNAVAILABLE")); continue
             try:
                 event = _hydrate(db_client_fn(), row)
