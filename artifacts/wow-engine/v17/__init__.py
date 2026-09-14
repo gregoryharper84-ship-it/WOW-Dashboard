@@ -104,7 +104,12 @@ def compose_active_runtime() -> bool:
     from v17.projected_lineup_probability_rehydration import install_projected_lineup_score_rehydration
     from v17.numerical_engine_production_bridge import install_production_bridges
     from v17.llp_rundown_market_bridge import install_llp_rundown_market_bridge
+    from v17.rundown_credential_diagnostic import log_rundown_credential_status
     from v17 import team_event_request_runtime as team_runtime
+
+    # One non-secret startup diagnostic makes Render's runtime credential state
+    # observable without ever exposing the credential value.
+    log_rundown_credential_status()
 
     get_certified_numerical_registry()
     prop_ok = install_prop_response_semantics()
