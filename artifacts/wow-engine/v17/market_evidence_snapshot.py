@@ -14,6 +14,14 @@ default (snapshot)
     once, as either ``CAPTURED`` or a typed blocker; the run reconciles
     ``requested == captured + blocked``.
 
+``--require-capture``
+    Run a bounded production acceptance sample rather than the full daily
+    matrix. One current sport/date is sampled per configured provider. A
+    configured provider that is rate-limited, schema-blocked, or otherwise
+    degraded remains explicit evidence telemetry but does not erase another
+    provider's valid capture or a completed sporting probability. Authentication
+    rejection and a total absence of captured market evidence fail closed.
+
 Nothing here publishes probability, edge, stake or an executable instruction.
 A provider outage degrades to a typed blocker with zero rows; market prices
 are never substituted for a missing model.
@@ -50,6 +58,10 @@ DEFAULT_SPORTS = (
     "icehockey_nhl",
 )
 
+ACCEPTANCE_READY = "MARKET_EVIDENCE_ACCEPTANCE_READY"
+ACCEPTANCE_DEGRADED_READY = "MARKET_EVIDENCE_ACCEPTANCE_DEGRADED_READY"
+ACCEPTANCE_BLOCKED = "MARKET_EVIDENCE_ACCEPTANCE_BLOCKED"
+
 
 def _enable_research_market_evidence() -> None:
     """Enable the research evidence lane unless the dedicated kill switch is set."""
@@ -79,7 +91,7 @@ def _sharpapi_live_params(sport_key: str) -> dict[str, str] | None:
 def _bounded_rate_limit_retry(call: Callable[[], sources.MarketEvidenceResult]) -> sources.MarketEvidenceResult:
     """Retry only HTTP 429, with a tiny bounded backoff and no auth retries.
 
-    The default is one retry.  This is intentionally conservative so the
+    The default is one retry. This is intentionally conservative so the
     hardening itself cannot amplify provider quota pressure.
     """
     result = call()
@@ -115,6 +127,132 @@ def _lane(provider: str, sport_key: str, capability: str, result: sources.Market
     if result.schema_probe:
         lane["schema_probe"] = result.schema_probe
     return lane
+
+
+def _provider_health_map() -> dict[str, dict[str, Any]]:
+    return {row["provider"]: row for row in sources.provider_health()["providers"]}
+
+
+def collect_acceptance(
+    sport_key: str = "baseball_mlb",
+    *,
+    date: str | None = None,
+    opener: Any = None,
+) -> dict[str, Any]:
+    """Take one bounded live sample per configured provider.
+
+    This intentionally does *not* walk every sport, both dates, and both
+    TheRundown capabilities. The acceptance contract is to prove that at least
+    one configured market-evidence source can produce normalized rows while
+    preserving typed degradation for independent providers. That avoids the
+    old acceptance harness becoming its own rate-limit incident.
+    """
+    date = date or snapshot_dates()[0]
+    health = _provider_health_map()
+    lanes: list[dict[str, Any]] = []
+    events: list[dict[str, Any]] = []
+
+    if health.get("RUNDOWN", {}).get("credential_configured"):
+        rundown = _bounded_rate_limit_retry(
+            lambda: live.rundown_market_evidence(
+                sport_key,
+                date,
+                capability="events",
+                opener=opener,
+            )
+        )
+        lanes.append(_lane("RUNDOWN", sport_key, "events", rundown, date))
+        if rundown.ok and isinstance(rundown.data, list):
+            events.extend(rundown.data)
+
+    if health.get("SHARPAPI", {}).get("credential_configured"):
+        sharp = _bounded_rate_limit_retry(
+            lambda: live.sharpapi_market_evidence(sport_key, opener=opener)
+        )
+        lanes.append(_lane("SHARPAPI", sport_key, "odds", sharp, None))
+        if sharp.ok and isinstance(sharp.data, list):
+            events.extend(sharp.data)
+
+    configured = sorted(
+        provider for provider, row in health.items()
+        if row.get("credential_configured")
+    )
+    provider_capture = {
+        provider: sum(
+            lane["event_count"] for lane in lanes if lane["provider"] == provider
+        )
+        for provider in configured
+    }
+    provider_degradation = {
+        provider: [
+            {
+                "sport_key": lane["sport_key"],
+                "capability": lane["capability"],
+                "date": lane["date"],
+                "reason_code": lane["reason_code"],
+                "http_status": lane["http_status"],
+                "degradation_class": lane["degradation_class"],
+            }
+            for lane in lanes
+            if lane["provider"] == provider and lane["status"] == "BLOCKED"
+        ]
+        for provider in configured
+    }
+    auth_blockers = sorted({
+        lane["provider"]
+        for lane in lanes
+        if lane.get("degradation_class") == "AUTH_REJECTED"
+    })
+    capture_failures = sorted(
+        provider for provider in configured if provider_capture.get(provider, 0) <= 0
+    )
+    captured_providers = sorted(
+        provider for provider in configured if provider_capture.get(provider, 0) > 0
+    )
+    ready = bool(captured_providers) and not auth_blockers
+    if not ready:
+        status = ACCEPTANCE_BLOCKED
+    elif capture_failures:
+        status = ACCEPTANCE_DEGRADED_READY
+    else:
+        status = ACCEPTANCE_READY
+
+    return {
+        "schema_version": "wow.v17.market_evidence_acceptance.v1",
+        "generated_at": _now().replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        "status": status,
+        "sport_key": sport_key,
+        "date": date,
+        "configured_providers": configured,
+        "captured_providers": captured_providers,
+        "provider_capture": provider_capture,
+        "provider_degradation": provider_degradation,
+        "capture_failures": capture_failures,
+        "auth_blockers": auth_blockers,
+        "ready_for_market_evidence": ready,
+        "lanes": lanes,
+        "captured_rows": len(events),
+        "affects_fitted_model_availability": False,
+        "prediction_authority": False,
+        "exact_line_authority": False,
+        "research_only": True,
+        "can_execute": False,
+        "secret_values_exposed": False,
+    }
+
+
+def acceptance_blockers(payload: dict[str, Any]) -> list[str]:
+    """Return only production blockers for the bounded acceptance sample.
+
+    An independent provider's rate limit, schema mismatch, or HTTP acquisition
+    failure is a typed evidence degradation. It is observable but does not
+    erase another provider's successful capture. Authentication rejection is a
+    hard blocker, and zero successful configured providers is a hard blocker.
+    """
+    blockers = [f"AUTH_REJECTED:{provider}" for provider in payload.get("auth_blockers") or []]
+    if payload.get("configured_providers") and not payload.get("captured_providers"):
+        blockers.append("NO_PROVIDER_CAPTURE")
+    return blockers
 
 
 def collect(sports: list[str], *, dates: list[str] | None = None, opener: Any = None) -> dict[str, Any]:
@@ -237,8 +375,13 @@ def probe(provider: str, capability: str, *, sport_key: str | None = None, date:
 
 
 def acceptance_failures(payload: dict[str, Any]) -> list[str]:
-    """Names every credentialed provider that returned no rows."""
-    health = {p["provider"]: p for p in sources.provider_health()["providers"]}
+    """Names every credentialed provider that returned no rows.
+
+    Kept as a strict diagnostic helper for regression tests and offline audits.
+    The production acceptance CLI uses ``acceptance_blockers`` so an optional
+    independent provider cannot erase a successful market-evidence source.
+    """
+    health = _provider_health_map()
     capture = payload.get("provider_capture") or {}
     failures: list[str] = []
     for provider, rows in sorted(capture.items()):
@@ -258,7 +401,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--require-capture",
         action="store_true",
-        help="acceptance mode: exit non-zero unless every credentialed provider returned rows",
+        help=(
+            "bounded live acceptance: fail only on provider-auth rejection or "
+            "when no configured provider can produce normalized rows"
+        ),
     )
     parser.add_argument("--provider", default="RUNDOWN")
     parser.add_argument("--capability", default="sports")
@@ -271,8 +417,17 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(report, indent=2, sort_keys=True))
         return 0 if report.get("status") == "PROBED" else 1
 
-    sports = [s.strip() for s in str(args.sports).split(",") if s.strip()]
-    payload = collect(sports)
+    if args.require_capture:
+        acceptance_sport = (
+            args.sport_key
+            or os.environ.get("WOW_MARKET_EVIDENCE_ACCEPTANCE_SPORT")
+            or "baseball_mlb"
+        )
+        payload = collect_acceptance(acceptance_sport, date=args.date)
+    else:
+        sports = [s.strip() for s in str(args.sports).split(",") if s.strip()]
+        payload = collect(sports)
+
     text = json.dumps(payload, indent=2, sort_keys=True)
     if args.output:
         path = Path(args.output)
@@ -282,7 +437,7 @@ def main(argv: list[str] | None = None) -> int:
         print(text)
 
     if args.require_capture:
-        return 0 if acceptance_failures(payload) == [] else 1
+        return 0 if acceptance_blockers(payload) == [] else 1
     return 0 if payload["status"] == "MARKET_EVIDENCE_CAPTURED" else 1
 
 
