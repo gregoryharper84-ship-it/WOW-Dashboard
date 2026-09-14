@@ -67,18 +67,10 @@ def _defer_mlb_event_bridge_install(*, market_api, team_runtime) -> bool:
             team_event_module=team_runtime,
         )
 
-        # team_event_probability_preservation is imported after v17.__init__ and
-        # therefore captures the unpatched governance callable. Once the bridge is
-        # safely installed at startup, point that wrapper at the patched callable
-        # so evidence handoff still traverses the stage-audit taxonomy.
         preservation = sys.modules.get("v17.team_event_probability_preservation")
         if installed and preservation is not None:
             preservation._original_run_mlb_llp_governance = team_runtime._run_mlb_llp_governance
 
-        # A dedicated production flag runs one authenticated, non-secret smoke
-        # test against a real confirmed pregame MLB event after startup completes.
-        # It calls the public V17 HTTP boundary with the server-owned Action key,
-        # logs no probability values, and can never execute a wager.
         if installed and os.getenv("WOW_V17_MLB_BRIDGE_SELF_ACCEPTANCE", "0") == "1":
             async def _run_after_startup():
                 await asyncio.sleep(5.0)
@@ -107,9 +99,9 @@ def compose_active_runtime() -> bool:
     from v17.rundown_credential_diagnostic import log_rundown_credential_status
     from v17 import team_event_request_runtime as team_runtime
 
-    # One non-secret startup diagnostic makes Render's runtime credential state
-    # observable without ever exposing the credential value.
-    log_rundown_credential_status()
+    # Route the non-secret diagnostic through Uvicorn's configured logger so it
+    # reliably reaches Render app logs during process startup.
+    log_rundown_credential_status(logging.getLogger("uvicorn.error"))
 
     get_certified_numerical_registry()
     prop_ok = install_prop_response_semantics()
