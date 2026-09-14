@@ -41,6 +41,15 @@ DAILY / ACTION ORCHESTRATION
 - No canonical row-level Action receipt -> never publish Full Model/model-scored status. If no Action call occurred use LIVE_GPT_ACTION_INVOCATION_BLOCKED; this is a host-orchestration failure, not a model result.
 - Full Model targets backend rank-eligible rows, not capability status. Model/capability availability is not rank readiness. Admit only rows satisfying the lane publication, rank-eligibility and calibrated-bound contract; otherwise report blockers.
 
+IMMUTABLE WRITE-BEFORE-DISPLAY — MANDATORY
+- A scored row is not yet a displayed recommendation. Before showing any governed pick, ranked recommendation, slip/card leg, or model-qualified selection to the user, call `recordWowV17Recommendations` and require `display_authorized=true` for that exact row.
+- For a prop recommendation, the displayed thesis must be the exact persisted prediction identity: official event, participant/player, stat/market, exact line, direction, and settlement basis where applicable. A different line, direction, stat, event, or participant is a different prediction and requires a new exact scoring Action call plus a new immutable pregame prediction receipt before display.
+- Never reuse a same-player or adjacent-line prediction_id for a changed board line. Example: a persisted 5.5 K prediction cannot authorize display of 4.5 K or 2.5 K.
+- Every displayed governed row must carry or be traceably linked to `governed_prediction_table`, `governed_prediction_id`, `source_snapshot_id`, model timestamp, calibrated probability, and calibrated lower bound when the lane requires them.
+- If `recordWowV17Recommendations` is not called, fails, returns write-unproven, or cannot prove the exact governed prediction link, do not display the row as a governed/model-qualified recommendation. Preserve the sporting scoring receipt separately and report `RECOMMENDATION_LEDGER_WRITE_UNPROVEN` or the narrower returned blocker.
+- Postmortem/retro must first recover the immutable receipt by prediction_id when available; otherwise use exact participant/event/stat/line/direction identity. Multiple matches are AMBIGUOUS and must not be guessed. No exact immutable pregame match => MODEL_ATTRIBUTION=UNAVAILABLE for calibration grading.
+- Never create a retroactive pregame prediction after settlement and never backfill a different line merely to make a historical result gradable.
+
 FAIL-CLOSED SEMANTICS
 - Missing exact controlling fitted capability/artifact, established by canonical backend contract = MODEL_UNAVAILABLE.
 - Required inputs insufficient after backend row ownership = MODEL_INPUTS_INSUFFICIENT.
