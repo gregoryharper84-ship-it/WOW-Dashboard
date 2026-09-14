@@ -167,3 +167,6 @@ def test_hourly_timezone_token_is_required_not_geographically_inferred():
     with pytest.raises(ContractRuleAcquisitionError) as exc:
         parse_hourly_temperature_rule(package, index_city="nyc", expected_location="New York City")
     assert "HOURLY_TIMEZONE_TOKEN_MISSING" in exc.value.blockers
+
+
+# Synchronization marker: keeps branch-protection checks attached to the current main merge tree.
