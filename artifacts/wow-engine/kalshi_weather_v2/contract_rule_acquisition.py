@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
@@ -42,8 +43,10 @@ class FrozenContractRulePackage:
 class KalshiContractRuleAcquirer:
     """Acquire and freeze market -> event -> series rule evidence.
 
-    Series settlement_sources are treated as authoritative structured metadata,
-    but ambiguity still fails closed. Market title alone never chooses a source.
+    Exact market rules are the most specific settlement evidence. Series
+    settlement_sources remain authoritative structured metadata, but a generic
+    Kalshi series source may be refined by an explicit `as reported by ...`
+    source named in the exact market rule. Any non-generic conflict fails closed.
     """
 
     def __init__(self, get_json):
@@ -84,6 +87,7 @@ class KalshiContractRuleAcquirer:
             "series_ticker": series_ticker.upper(),
             "settlement_source_name": settlement_source.name,
             "settlement_source_url": settlement_source.url,
+            "settlement_source_resolution": settlement_source.source,
             "contract_url": contract_url,
             "contract_terms_url": contract_terms_url,
             "series_last_updated_at": series_last_updated_at,
@@ -110,31 +114,85 @@ class KalshiContractRuleAcquirer:
 
 
 def resolve_settlement_source(raw_sources: Any, *, market_rule_text: str) -> SettlementSourceEvidence:
-    """Resolve exact structured settlement source without series-family guessing.
+    """Resolve exact settlement source with market-rule precedence.
 
-    One valid series source is accepted directly because Kalshi documents the
-    series settlement_sources field as defining the applied settlement source.
-    If multiple sources exist, the exact market rule text must disambiguate by
-    naming exactly one of them. Otherwise publication fails closed.
+    The market rule is the exact contract-specific statement. Structured Series
+    metadata is used directly when it agrees. A generic `Kalshi` Series source
+    is allowed to be refined only when the exact rule explicitly states
+    `as reported by <source>`. A specific structured-source conflict is never
+    silently overridden.
     """
     sources = _normalize_sources(raw_sources)
     if not sources:
         raise ContractRuleAcquisitionError(
             "NO_PLAY_SETTLEMENT_AMBIGUITY", ("SETTLEMENT_SOURCE_MISSING",)
         )
-    if len(sources) == 1:
-        return sources[0]
 
     text = (market_rule_text or "").casefold()
+    explicit_rule_source = _explicit_reported_source(market_rule_text)
+
+    if len(sources) == 1:
+        source = sources[0]
+        if source.name.casefold() in text:
+            return source
+
+        if _is_generic_kalshi_source(source.name) and explicit_rule_source:
+            return SettlementSourceEvidence(
+                name=explicit_rule_source,
+                url=None,
+                source="MARKET_RULE_EXPLICIT_SOURCE_OVER_GENERIC_SERIES_METADATA",
+            )
+
+        if explicit_rule_source and source.name.casefold() != explicit_rule_source.casefold():
+            raise ContractRuleAcquisitionError(
+                "NO_PLAY_SETTLEMENT_AMBIGUITY",
+                ("SERIES_MARKET_SETTLEMENT_SOURCE_CONFLICT",),
+            )
+        return source
+
     named = [source for source in sources if source.name.casefold() in text]
     if len(named) == 1:
         source = named[0]
-        return SettlementSourceEvidence(name=source.name, url=source.url, source="SERIES_PLUS_MARKET_RULE_DISAMBIGUATION")
+        return SettlementSourceEvidence(
+            name=source.name,
+            url=source.url,
+            source="SERIES_PLUS_MARKET_RULE_DISAMBIGUATION",
+        )
+
+    if explicit_rule_source:
+        exact = [
+            source
+            for source in sources
+            if source.name.casefold() == explicit_rule_source.casefold()
+        ]
+        if len(exact) == 1:
+            return SettlementSourceEvidence(
+                name=exact[0].name,
+                url=exact[0].url,
+                source="SERIES_PLUS_MARKET_RULE_EXPLICIT_SOURCE",
+            )
 
     raise ContractRuleAcquisitionError(
         "NO_PLAY_SETTLEMENT_AMBIGUITY",
         ("MULTIPLE_SETTLEMENT_SOURCES_UNRESOLVED",),
     )
+
+
+def _explicit_reported_source(text: str) -> str | None:
+    match = re.search(
+        r"\bas\s+reported\s+by\s+(?P<source>[A-Za-z0-9][A-Za-z0-9 .&'/-]{1,80}?)(?:,|\s+is\b|\s+are\b)",
+        text or "",
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return None
+    value = " ".join(match.group("source").split()).strip(" .")
+    return value or None
+
+
+def _is_generic_kalshi_source(name: str) -> bool:
+    normalized = re.sub(r"[^a-z]", "", str(name or "").casefold())
+    return normalized in {"kalshi", "kalshiinc", "kalshiex"}
 
 
 def _normalize_sources(raw_sources: Any) -> tuple[SettlementSourceEvidence, ...]:
