@@ -14,7 +14,7 @@ def test_miami_hourly_series_uses_explicit_registered_identity():
                     "ticker": "KXTEMPMIAH",
                     "title": "Hourly Directional Miami Temperature",
                     "category": "Climate and Weather",
-                    "tags": ["Hourly temperature", "Miami"],
+                    "tags": ["Hourly temperature"],
                     "product_metadata": {},
                 }
             }
@@ -62,24 +62,55 @@ def test_registered_series_that_fails_identity_validation_falls_back_to_broad_li
     assert any("/series?" in url for url in calls)
 
 
-def test_known_registry_also_tracks_current_chicago_and_coastal_la_hourly_series():
+def test_registered_chicago_and_coastal_la_accept_current_series_labels():
     expected = {
-        "Chicago Metro Area": "KXTEMPCHIHS",
-        "Coastal Los Angeles": "KXTEMPLAXHS",
+        "Chicago Metro Area": ("KXTEMPCHIHS", "Hourly Directional Chicago Metro Temperature"),
+        "Coastal Los Angeles": ("KXTEMPLAXHS", "Hourly Directional Coastal LA Temperature"),
     }
 
-    for location, ticker in expected.items():
-        def get_json(url, _headers, *, _location=location, _ticker=ticker):
+    for location, (ticker, title) in expected.items():
+        def get_json(url, _headers, *, _ticker=ticker, _title=title):
             assert url.endswith(f"/series/{_ticker}")
             return {
                 "series": {
                     "ticker": _ticker,
-                    "title": f"Hourly temperature in {_location}",
+                    "title": _title,
                     "category": "Climate and Weather",
-                    "tags": ["Hourly temperature", _location],
+                    "tags": ["Hourly temperature"],
                     "product_metadata": {},
                 }
             }
 
         rows = KalshiWeatherMarketDiscovery(get_json).candidate_series(expected_location=location)
         assert [row.ticker for row in rows] == [ticker]
+
+
+def test_open_market_discovery_falls_back_to_nested_open_events():
+    calls: list[str] = []
+
+    def get_json(url, _headers):
+        calls.append(url)
+        if "/markets?" in url and "status=open" in url:
+            return {"markets": [], "cursor": ""}
+        if "/events?" in url:
+            return {
+                "events": [
+                    {
+                        "event_ticker": "KXTEMPMIAH-26SEP1312",
+                        "markets": [
+                            {
+                                "ticker": "KXTEMPMIAH-26SEP1312-T89.99",
+                                "status": "active",
+                            }
+                        ],
+                    }
+                ],
+                "cursor": "",
+            }
+        raise AssertionError(url)
+
+    discovery = KalshiWeatherMarketDiscovery(get_json)
+    rows = discovery.open_markets(series_ticker="KXTEMPMIAH")
+
+    assert [row["ticker"] for row in rows] == ["KXTEMPMIAH-26SEP1312-T89.99"]
+    assert discovery.last_market_discovery_path == "EVENTS_STATUS_OPEN_NESTED_MARKETS"
