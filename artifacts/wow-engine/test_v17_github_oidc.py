@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from fastapi import Depends, HTTPException
 
@@ -92,3 +94,21 @@ def test_route_dependency_preserves_original_auth_failure_when_oidc_invalid(monk
     with pytest.raises(HTTPException) as caught:
         dep.dependency("Bearer invalid")
     assert caught.value.detail == "original-action-auth"
+
+
+def test_secret_sync_workflow_is_protected_main_only_and_never_pr_exposed():
+    repo_root = Path(__file__).resolve().parents[2]
+    workflow = (repo_root / ".github" / "workflows" / "wow-v17-secret-sync.yml").read_text(
+        encoding="utf-8"
+    )
+    assert "pull_request:" not in workflow
+    assert "push:" in workflow
+    assert "branches:\n      - main" in workflow
+    assert '      - ".github/workflows/wow-v17-secret-sync.yml"' in workflow
+    assert '      - "artifacts/wow-engine/v17/secret_sync.py"' in workflow
+    assert '      - "artifacts/wow-engine/v17/secret_sync_manifest.json"' in workflow
+    assert "if: github.ref == 'refs/heads/main'" in workflow
+    assert "RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}" in workflow
+    assert "WOW_GITHUB_SECRET_SYNC_TOKEN: ${{ secrets.WOW_GITHUB_SECRET_SYNC_TOKEN }}" in workflow
+    assert 'WOW_CAN_EXECUTE: "false"' in workflow
+    assert 'WOW_DRY_RUN_ONLY: "true"' in workflow
