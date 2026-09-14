@@ -358,12 +358,12 @@ def run_sync(
 
     if mode in {"both", "render-to-github"}:
         token = str(env.get("WOW_GITHUB_SECRET_SYNC_TOKEN", ""))
-        if not token:
+        if not token and not dry_run:
             raise SecretSyncError(
                 "BOOTSTRAP_GITHUB_SECRET_SYNC_TOKEN_UNCONFIGURED",
                 "WOW_GITHUB_SECRET_SYNC_TOKEN is required for Render-to-GitHub synchronization",
             )
-        github = github_writer or GitHubSecretWriter(token, str(manifest["github_repository"]))
+        github = github_writer or GitHubSecretWriter(token or "dry-run-no-write", str(manifest["github_repository"]))
         checked, changed, skipped = sync_render_to_github(
             manifest,
             render,
