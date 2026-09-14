@@ -3,8 +3,8 @@
 2024 is development data: early 2024 fits the league prior/history and later
 2024 chooses the Dirichlet shrinkage alpha. After alpha selection, the model is
 refit on all 2024 rows and evaluated exactly once on untouched chronological
-2025 rows. Each 2025 prediction is made before that row is admitted into the
-rolling pitcher history.
+2025 rows. Each prediction uses only the pitcher's previous 10 first innings,
+matching live 1IP hydration, and the current row is admitted only after scoring.
 
 Research only: no publication, promotion, database writes, or execution.
 """
@@ -22,14 +22,16 @@ import httpx
 from mlb_1ip_bf_model import (
     BFObservation,
     MODEL_FAMILY,
+    RECENT_HISTORY_LIMIT,
     bf_bucket,
     binary_metrics,
+    counts_from_buckets,
     fit_league_prior,
-    history_counts,
+    history_buckets,
     multiclass_brier,
     multiclass_log_loss,
     score_pitcher,
-    update_history,
+    update_history_buckets,
 )
 from mlb_1ip_training_dataset import game_training_rows
 from prop_auto_hydration import MLB_STATS_API_BASE, _int, _request_json
@@ -112,10 +114,10 @@ def _rolling_predictions(
     *,
     evaluation_rows: list[BFObservation],
     league_prior: dict[str, float],
-    initial_history: dict[int, dict[str, int]],
+    initial_histories: dict[int, list[str]],
     alpha: float,
 ) -> dict[str, Any]:
-    history = {pid: dict(counts) for pid, counts in initial_history.items()}
+    histories = {pid: list(values[-RECENT_HISTORY_LIMIT:]) for pid, values in initial_histories.items()}
     actual_bucket: list[str] = []
     predicted_bucket: list[dict[str, float]] = []
     actual_35: list[int] = []
@@ -125,10 +127,11 @@ def _rolling_predictions(
     assignments: list[dict[str, Any]] = []
 
     for row in evaluation_rows:
+        pitcher_counts = {row.pitcher_id: counts_from_buckets(histories, row.pitcher_id)}
         scored = score_pitcher(
             pitcher_id=row.pitcher_id,
             league_prior=league_prior,
-            pitcher_counts=history,
+            pitcher_counts=pitcher_counts,
             alpha=alpha,
         )
         y_bucket = bf_bucket(row.bf)
@@ -153,13 +156,14 @@ def _rolling_predictions(
             "actual_bf": row.bf,
             "actual_bucket": y_bucket,
             "pitcher_history_n": scored["pitcher_history_n"],
+            "history_limit": RECENT_HISTORY_LIMIT,
             "P_BF_3": scored["P_BF_3"],
             "P_BF_4": scored["P_BF_4"],
             "P_BF_GE_5": scored["P_BF_GE_5"],
             "P_MORE_3_5": scored["P_MORE_3_5"],
             "P_MORE_4_5": scored["P_MORE_4_5"],
         })
-        update_history(history, row)
+        update_history_buckets(histories, row)
 
     return {
         "multiclass_brier": multiclass_brier(actual_bucket, predicted_bucket),
@@ -187,13 +191,13 @@ def _constant_baseline(rows: list[BFObservation], prior: dict[str, float]) -> di
 
 def _select_alpha(fit_rows: list[BFObservation], tune_rows: list[BFObservation]) -> dict[str, Any]:
     prior = fit_league_prior(fit_rows)
-    history = history_counts(fit_rows)
+    histories = history_buckets(fit_rows)
     trials = []
     for alpha in ALPHA_CANDIDATES:
         result = _rolling_predictions(
             evaluation_rows=tune_rows,
             league_prior=prior,
-            initial_history=history,
+            initial_histories=histories,
             alpha=alpha,
         )
         trials.append({
@@ -214,6 +218,7 @@ def _select_alpha(fit_rows: list[BFObservation], tune_rows: list[BFObservation])
     return {
         "fit_rows": len(fit_rows),
         "tune_rows": len(tune_rows),
+        "history_limit": RECENT_HISTORY_LIMIT,
         "trials": trials,
         "selected_alpha": selected["alpha"],
     }
@@ -252,11 +257,11 @@ def main() -> None:
     alpha = float(alpha_selection["selected_alpha"])
 
     final_prior = fit_league_prior(train_rows)
-    initial_history = history_counts(train_rows)
+    initial_histories = history_buckets(train_rows)
     candidate = _rolling_predictions(
         evaluation_rows=validation_rows,
         league_prior=final_prior,
-        initial_history=initial_history,
+        initial_histories=initial_histories,
         alpha=alpha,
     )
     baseline = _constant_baseline(validation_rows, final_prior)
@@ -266,6 +271,7 @@ def main() -> None:
         "model_family": MODEL_FAMILY,
         "alpha": alpha,
         "league_prior": final_prior,
+        "recent_history_limit": RECENT_HISTORY_LIMIT,
         "training_rows": len(train_rows),
         "training_season": TRAIN_SEASON,
         "validation_season": VALIDATION_SEASON,
@@ -287,6 +293,8 @@ def main() -> None:
             "fit_window": "early 2024",
             "tuning_window": "later 2024",
             "untouched_validation": "2025",
+            "pitcher_history": f"most recent {RECENT_HISTORY_LIMIT} starts only",
+            "live_contract_alignment": "matches MLB_1IP live hydration MAX_PRIOR_STARTS=10",
             "rolling_rule": "predict each row before adding that row to pitcher history",
             "test_reuse_prohibited": True,
         },
@@ -322,6 +330,7 @@ def main() -> None:
         "historical_validation_passed": passed,
         "blockers": blockers,
         "selected_alpha": alpha,
+        "recent_history_limit": RECENT_HISTORY_LIMIT,
         "training_rows": len(train_rows),
         "validation_rows": len(validation_rows),
         "candidate_metrics": {k: v for k, v in candidate.items() if k != "assignments"},
