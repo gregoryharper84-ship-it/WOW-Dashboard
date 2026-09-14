@@ -57,6 +57,21 @@ def snapshot_dates(now: datetime | None = None) -> list[str]:
     return [(base + timedelta(days=offset)).strftime("%Y-%m-%d") for offset in (0, 1)]
 
 
+def _sharpapi_live_params(sport_key: str) -> dict[str, str] | None:
+    """Build the documented SharpAPI league query for a WOW sport key.
+
+    SharpAPI's REST examples use canonical uppercase league identifiers such as
+    ``MLB``, ``NFL`` and ``NBA``. The lower-case values retained by the source
+    mapper are useful aliases internally, but the provider request itself must
+    use the documented token. An unmapped sport still fails closed in the
+    source adapter before any request is made.
+    """
+    league = sources.sharpapi_league(sport_key)
+    if not league:
+        return None
+    return {"league": str(league).upper()}
+
+
 def _lane(provider: str, sport_key: str, capability: str, result: sources.MarketEvidenceResult, date: str | None) -> dict[str, Any]:
     lane: dict[str, Any] = {
         "provider": provider,
@@ -83,7 +98,11 @@ def collect(sports: list[str], *, dates: list[str] | None = None, opener: Any = 
     events: list[dict[str, Any]] = []
 
     for sport_key in sports:
-        sharp = sources.sharpapi_market_evidence(sport_key, opener=opener)
+        sharp = sources.sharpapi_market_evidence(
+            sport_key,
+            params=_sharpapi_live_params(sport_key),
+            opener=opener,
+        )
         lanes.append(_lane("SHARPAPI", sport_key, "odds", sharp, None))
         if sharp.ok:
             events.extend(sharp.data)
@@ -137,21 +156,26 @@ def collect(sports: list[str], *, dates: list[str] | None = None, opener: Any = 
 
 
 def probe(provider: str, capability: str, *, sport_key: str | None = None, date: str | None = None) -> dict[str, Any]:
+    provider_name = provider.upper()
     path_values: dict[str, Any] = {}
-    if sport_key and provider.upper() == "RUNDOWN" and capability in {"events", "openers"}:
+    if sport_key and provider_name == "RUNDOWN" and capability in {"events", "openers"}:
         resolved = sources.rundown_sport_id(sport_key)
         if not resolved.ok:
-            return {"provider": provider.upper(), "capability": capability, "status": "BLOCKED", "reason_code": resolved.code}
+            return {"provider": provider_name, "capability": capability, "status": "BLOCKED", "reason_code": resolved.code}
         path_values["sport_id"] = resolved.data
-    if date:
+        # Acceptance probes are diagnostic and should be runnable without the
+        # caller manually reproducing provider path parameters. The production
+        # collector still supplies its compiled slate date explicitly.
+        path_values["date"] = date or snapshot_dates()[0]
+    elif date:
         path_values["date"] = date
 
-    params = {"sport": sport_key} if provider.upper() == "SHARPAPI" and sport_key else None
+    params = _sharpapi_live_params(sport_key) if provider_name == "SHARPAPI" and sport_key else None
     result = sources.fetch(provider, capability, path_values=path_values, params=params)
     if not result.ok:
-        return {"provider": provider.upper(), "capability": capability, "status": "BLOCKED", "reason_code": result.code, "http_status": result.status}
+        return {"provider": provider_name, "capability": capability, "status": "BLOCKED", "reason_code": result.code, "http_status": result.status}
     return {
-        "provider": provider.upper(),
+        "provider": provider_name,
         "capability": capability,
         "status": "PROBED",
         "http_status": result.status,
