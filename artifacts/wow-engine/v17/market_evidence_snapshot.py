@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -46,6 +47,21 @@ DEFAULT_SPORTS = (
     "basketball_nba",
     "icehockey_nhl",
 )
+
+
+def _enable_research_market_evidence() -> None:
+    """Enable the research evidence lane unless the dedicated kill switch is set.
+
+    The nightly OIDC Scout wrapper already follows this rule. Keeping the
+    standalone snapshot on the same rule prevents a stale repository variable
+    from disabling the evidence capture step while credentialed provider
+    acceptance succeeds. This changes acquisition only: provider output remains
+    research-only, prediction_authority=False, exact_line_authority=False and
+    can_execute=False.
+    """
+    kill_switch = os.environ.get("WOW_MARKET_EVIDENCE_KILL_SWITCH", "false").strip().lower() == "true"
+    sources.ENABLED = not kill_switch
+    os.environ["WOW_MARKET_EVIDENCE_ENABLED"] = "false" if kill_switch else "true"
 
 
 def _now() -> datetime:
@@ -185,6 +201,7 @@ def acceptance_failures(payload: dict[str, Any]) -> list[str]:
 
 
 def main(argv: list[str] | None = None) -> int:
+    _enable_research_market_evidence()
     parser = argparse.ArgumentParser(description="WOW V17 research-only market evidence snapshot")
     parser.add_argument("--output", help="write the snapshot JSON here")
     parser.add_argument("--sports", default=",".join(DEFAULT_SPORTS))
