@@ -1,9 +1,9 @@
 """Research-only fitted MLB first-inning batters-faced model.
 
 The model predicts the first-inning batter-count bucket (3, 4, 5+) with a
-Dirichlet-shrunk pitcher history around a league prior.  It is intentionally
-small and auditable so the derived PrizePicks-style 3.5/4.5 BF probabilities
-can be validated before any governed promotion.
+Dirichlet-shrunk pitcher history around a league prior. Pitcher state is capped
+at the most recent 10 starts so historical validation matches the live 1IP
+evidence contract (which hydrates at most 10 prior starts).
 
 This module never publishes a governed probability and can never execute a
 wager/order.
@@ -18,6 +18,7 @@ from typing import Any, Iterable
 CAN_EXECUTE = False
 MODEL_FAMILY = "MLB_1IP_BF_DIRICHLET_SHRINKAGE_V1"
 CATEGORIES = ("3", "4", "5_PLUS")
+RECENT_HISTORY_LIMIT = 10
 
 
 def bf_bucket(bf: int) -> str:
@@ -57,11 +58,48 @@ def fit_league_prior(rows: Iterable[BFObservation]) -> dict[str, float]:
     return _normalize_counts(counts)
 
 
-def history_counts(rows: Iterable[BFObservation]) -> dict[int, dict[str, int]]:
-    out: dict[int, dict[str, int]] = defaultdict(lambda: {k: 0 for k in CATEGORIES})
+def history_buckets(
+    rows: Iterable[BFObservation],
+    *,
+    limit: int = RECENT_HISTORY_LIMIT,
+) -> dict[int, list[str]]:
+    """Build chronological per-pitcher BF histories capped to recent starts.
+
+    Callers must pass rows in chronological order. Keeping bucket sequences,
+    rather than lifetime counts, makes the temporal update rule explicit and
+    lets live/shadow scoring use exactly the same recent-start window.
+    """
+    if limit <= 0:
+        raise ValueError("MLB_1IP_BF_HISTORY_LIMIT_INVALID")
+    out: dict[int, list[str]] = defaultdict(list)
     for row in rows:
-        out[int(row.pitcher_id)][bf_bucket(row.bf)] += 1
-    return {pid: dict(counts) for pid, counts in out.items()}
+        pid = int(row.pitcher_id)
+        out[pid].append(bf_bucket(row.bf))
+        if len(out[pid]) > limit:
+            del out[pid][:-limit]
+    return {pid: list(values) for pid, values in out.items()}
+
+
+def counts_from_buckets(
+    histories: dict[int, list[str]],
+    pitcher_id: int,
+) -> dict[str, int]:
+    counts = {k: 0 for k in CATEGORIES}
+    for bucket in histories.get(int(pitcher_id), []):
+        if bucket not in CATEGORIES:
+            raise ValueError("MLB_1IP_BF_HISTORY_BUCKET_INVALID")
+        counts[bucket] += 1
+    return counts
+
+
+def history_counts(
+    rows: Iterable[BFObservation],
+    *,
+    limit: int = RECENT_HISTORY_LIMIT,
+) -> dict[int, dict[str, int]]:
+    """Compatibility helper returning counts from the capped recent history."""
+    histories = history_buckets(rows, limit=limit)
+    return {pid: counts_from_buckets(histories, pid) for pid in histories}
 
 
 def score_pitcher(
@@ -73,14 +111,19 @@ def score_pitcher(
 ) -> dict[str, Any]:
     """Return a three-bucket posterior and exact 3.5/4.5 derivative lines.
 
-    ``alpha`` is the effective league-prior sample size.  No market data enters
-    the sporting distribution.
+    ``alpha`` is the effective league-prior sample size. ``pitcher_counts``
+    must represent only the certified recent-history window. No market data
+    enters the sporting distribution.
     """
     if not math.isfinite(float(alpha)) or float(alpha) <= 0:
         raise ValueError("MLB_1IP_BF_ALPHA_INVALID")
     prior = _normalize_counts({k: float(league_prior.get(k, 0.0)) for k in CATEGORIES})
     observed = pitcher_counts.get(int(pitcher_id), {k: 0 for k in CATEGORIES})
+    if any(int(observed.get(k, 0)) < 0 for k in CATEGORIES):
+        raise ValueError("MLB_1IP_BF_HISTORY_COUNT_INVALID")
     n = sum(int(observed.get(k, 0)) for k in CATEGORIES)
+    if n > RECENT_HISTORY_LIMIT:
+        raise ValueError("MLB_1IP_BF_HISTORY_EXCEEDS_CERTIFIED_WINDOW")
     denom = float(alpha) + n
     posterior = {
         k: (float(alpha) * prior[k] + int(observed.get(k, 0))) / denom
@@ -92,6 +135,7 @@ def score_pitcher(
         "pitcher_id": int(pitcher_id),
         "alpha": float(alpha),
         "pitcher_history_n": n,
+        "history_limit": RECENT_HISTORY_LIMIT,
         "P_BF_3": p3,
         "P_BF_4": p4,
         "P_BF_GE_5": p5,
@@ -105,14 +149,19 @@ def score_pitcher(
     }
 
 
-def update_history(
-    pitcher_counts: dict[int, dict[str, int]],
+def update_history_buckets(
+    histories: dict[int, list[str]],
     row: BFObservation,
+    *,
+    limit: int = RECENT_HISTORY_LIMIT,
 ) -> None:
+    """Admit one settled row only after its prediction, then trim to limit."""
+    if limit <= 0:
+        raise ValueError("MLB_1IP_BF_HISTORY_LIMIT_INVALID")
     pid = int(row.pitcher_id)
-    if pid not in pitcher_counts:
-        pitcher_counts[pid] = {k: 0 for k in CATEGORIES}
-    pitcher_counts[pid][bf_bucket(row.bf)] += 1
+    histories.setdefault(pid, []).append(bf_bucket(row.bf))
+    if len(histories[pid]) > limit:
+        del histories[pid][:-limit]
 
 
 def multiclass_brier(actual: list[str], predicted: list[dict[str, float]]) -> float:
