@@ -12,6 +12,7 @@ from github_actions_oidc import scout_route_auth_dependency
 from nfl_event_hydration_runtime import install_nfl_hydration_startup
 from nfl_event_model_startup import install_nfl_model_startup
 from v17 import team_event_request_runtime as v17_team_event_base
+from v17.ncaaf_team_event_publication import install_ncaaf_team_event_publication
 from v17.nfl_team_event_publication import install_nfl_team_event_publication
 
 ObjectiveLane = Literal["OUTRIGHT_WIN_PROBABILITY", "UPSET_PROBABILITY", "MARKET_EDGE"]
@@ -111,6 +112,33 @@ def _nfl_score_request(row: TeamEventRequestRow) -> Any:
     )
 
 
+def _ncaaf_score_request(row: TeamEventRequestRow) -> Any:
+    if not row.event_start_time_utc or not row.home_team or not row.away_team:
+        raise ValueError("NCAAF_SCOUT_EVENT_IDENTITY_INCOMPLETE")
+    return v17_team_event_base.TeamEventRequest(
+        requester_host_identity="WOW_BETTING_ENGINE",
+        research_run_id=row.research_run_id,
+        requested_slate_date=row.event_date,
+        requested_timezone=row.timezone,
+        scan_stage=row.event_state,
+        candidate_family="TEAM_EVENT",
+        decision_intent="UPSET" if row.objective_lane == "UPSET_PROBABILITY" else "WINNER",
+        event_key=row.event_key,
+        official_event_id=_event_id(row),
+        event_start_time_utc=row.event_start_time_utc,
+        sport="NCAAF",
+        league="NCAAF",
+        market_family="OUTRIGHT_WINNER",
+        settlement_basis="FULL_GAME_OUTRIGHT_INCLUDING_OVERTIME",
+        home_team=row.home_team,
+        away_team=row.away_team,
+        source_snapshot_id="SCOUT_CANONICALIZATION_PENDING",
+        latest_material_update_timestamp=None,
+        market_prior=None,
+        sport_specific_evidence={},
+    )
+
+
 def _completed(row: TeamEventRequestRow, event: dict[str, Any], scored: dict[str, Any]) -> dict[str, Any]:
     keys = ("calibrated_home_probability", "calibrated_away_probability",
             "calibrated_home_lower_bound", "calibrated_away_lower_bound",
@@ -190,12 +218,57 @@ def _completed_nfl(row: TeamEventRequestRow, scored: dict[str, Any]) -> dict[str
     }
 
 
+def _completed_ncaaf(row: TeamEventRequestRow, scored: dict[str, Any]) -> dict[str, Any]:
+    if scored.get("sporting_probability_completed") is not True:
+        blockers = [str(value) for value in (scored.get("blockers") or [])]
+        blocker = blockers[0] if blockers else str(scored.get("code") or "NCAAF_MODEL_SCORING_NOT_COMPLETED")
+        return _held(row, str(scored.get("code") or "NCAAF_MODEL_SCORING_NOT_COMPLETED"), blocker, scored)
+
+    selected = str(scored.get("selected_participant") or "").strip()
+    probability = scored.get("calibrated_selection_probability")
+    if not selected or not isinstance(probability, (int, float)) or isinstance(probability, bool):
+        return _held(row, "MODEL_OUTPUT_INVALID", "NCAAF_COMPLETED_PROBABILITY_FIELDS_INVALID", scored)
+
+    blockers = [str(value) for value in (scored.get("blockers") or [])]
+    market_needed = row.price_required_for_objective or row.objective_lane != "OUTRIGHT_WIN_PROBABILITY"
+    if market_needed:
+        blockers.append("MARKET_DATA_UNOBTAINABLE")
+    blockers = list(dict.fromkeys(blockers))
+
+    # Preserve the completed fitted sporting probability even though NCAAF's
+    # final dynamic-calibration lower bound is not yet certified.  Do not invent
+    # a rankable lower bound from the static Wilson diagnostic.
+    return {
+        "research_run_id": row.research_run_id,
+        "event_key": row.event_key,
+        "objective_lane": row.objective_lane,
+        "terminal_status": "COMPLETED",
+        "code": "SPORTING_PROBABILITY_COMPLETED",
+        "selected_team": selected,
+        "calibrated_probability": float(probability),
+        "calibrated_lower_bound": None,
+        "calibrated_upper_bound": None,
+        "audit_result": "BLOCKED",
+        "event_decision": str(scored.get("code") or "NCAAF_DYNAMIC_CALIBRATION_BOUND_NOT_CERTIFIED"),
+        "blockers": blockers,
+        "internal_ceiling": "SPORTING_PROBABILITY_ONLY",
+        "governed_publication_code": scored.get("code"),
+        "terminal_label": scored.get("terminal_label"),
+        "model_artifact_version": scored.get("model_artifact_version"),
+        "calibration_version": scored.get("calibration_version"),
+        "probability_publishable": False,
+        "rank_eligible": False,
+        "can_execute": False,
+    }
+
+
 def install_team_event_request_routes(app: Any, *, auth_dependency: Any, db_client_fn: Any, event_api: Any) -> None:
     install_nfl_hydration_startup(app, db_client_fn=db_client_fn)
     install_nfl_model_startup(app, db_client_fn=db_client_fn)
 
     if os.getenv("WOW_V17_ACTIVE", "0") == "1":
         install_nfl_team_event_publication(v17_team_event_base)
+        install_ncaaf_team_event_publication(v17_team_event_base)
 
     if any(getattr(r, "path", None) == "/score-team-event-request" for r in app.router.routes):
         return
@@ -233,6 +306,25 @@ def install_team_event_request_routes(app: Any, *, auth_dependency: Any, db_clie
                     outcomes.append(_held(row, "TRANSPORT_FAILURE", "NFL_ROW_SCORER_FAILURE",
                                           {"error_type": type(exc).__name__})); continue
                 outcomes.append(_completed_nfl(row, scored)); continue
+
+            if sport in {"NCAAF", "CFB"} and league in {"NCAAF", "CFB"}:
+                if not row.event_start_time_utc or not row.home_team or not row.away_team:
+                    outcomes.append(_held(row, "MODEL_INPUTS_INSUFFICIENT", "NCAAF_SCOUT_EVENT_IDENTITY_INCOMPLETE")); continue
+                try:
+                    req = _ncaaf_score_request(row)
+                    scored = v17_team_event_base.score_team_event_request(
+                        req,
+                        event_api=event_api,
+                        canonical_hydration_required=True,
+                    )
+                except HTTPException as exc:
+                    detail = exc.detail if isinstance(exc.detail, dict) else {"message": str(exc.detail)}
+                    raw_code = str(detail.get("code") or "PROVIDER_UNAVAILABLE")
+                    outcomes.append(_held(row, raw_code, str(detail.get("blocker_code") or raw_code), detail)); continue
+                except Exception as exc:
+                    outcomes.append(_held(row, "TRANSPORT_FAILURE", "NCAAF_ROW_SCORER_FAILURE",
+                                          {"error_type": type(exc).__name__})); continue
+                outcomes.append(_completed_ncaaf(row, scored)); continue
 
             if sport != "MLB" or league != "MLB":
                 outcomes.append(_held(row, "MODEL_UNAVAILABLE", "SPORT_SPECIFIC_MODEL_UNAVAILABLE")); continue
