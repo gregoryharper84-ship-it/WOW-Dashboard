@@ -58,10 +58,11 @@ def _aware(value: Any) -> datetime | None:
     return parsed.astimezone(timezone.utc)
 
 
-def _latest_confirmed_candidate(event_api: Any, now: datetime) -> dict[str, Any] | None:
+def _latest_confirmed_candidate(event_api: Any, now: datetime) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    unavailable = {"future_events": 0, "eligible": 0, "canonical_ledger_readable": False}
     get_client = getattr(event_api, "get_client", None)
     if not callable(get_client):
-        return None
+        return None, unavailable
     try:
         rows = (
             get_client()
@@ -76,7 +77,7 @@ def _latest_confirmed_candidate(event_api: Any, now: datetime) -> dict[str, Any]
             .execute().data or []
         )
     except Exception:
-        return None
+        return None, unavailable
 
     latest_by_event: dict[str, tuple[datetime, dict[str, Any]]] = {}
     for raw in rows:
@@ -91,22 +92,38 @@ def _latest_confirmed_candidate(event_api: Any, now: datetime) -> dict[str, Any]
         if current is None or snap_time > current[0]:
             latest_by_event[event_id] = (snap_time, dict(raw))
 
+    # Count why each future event was rejected. Without this, a SKIPPED run is
+    # indistinguishable from a broken canonical producer, which is exactly how an
+    # on-schedule pregame lineup wait gets misread as a production defect.
+    breakdown = {
+        "future_events": len(latest_by_event),
+        "rejected_hydration_not_pass": 0,
+        "rejected_lineup_pending": 0,
+        "rejected_not_shadow_scored_pregame": 0,
+        "rejected_event_status": 0,
+        "eligible": 0,
+    }
     eligible: list[dict[str, Any]] = []
     for _, row in latest_by_event.values():
         if str(row.get("feature_hydration_status") or "").upper() != "PASS":
+            breakdown["rejected_hydration_not_pass"] += 1
             continue
         if str(row.get("lineup_status") or "").upper() not in {"CONFIRMED", "OFFICIAL", "FINAL"}:
+            breakdown["rejected_lineup_pending"] += 1
             continue
         if str(row.get("model_score_status") or "").upper() != "SHADOW_SCORED_PREGAME":
+            breakdown["rejected_not_shadow_scored_pregame"] += 1
             continue
         if str(row.get("event_status") or "").upper() not in {"PRE-GAME", "PREGAME", "SCHEDULED"}:
+            breakdown["rejected_event_status"] += 1
             continue
         eligible.append(row)
 
+    breakdown["eligible"] = len(eligible)
     if not eligible:
-        return None
+        return None, breakdown
     eligible.sort(key=lambda row: _aware(row.get("event_start_time")) or datetime.max.replace(tzinfo=timezone.utc))
-    return dict(eligible[0])
+    return dict(eligible[0]), breakdown
 
 
 def _request_payload(row: dict[str, Any]) -> dict[str, Any]:
@@ -230,10 +247,30 @@ async def run_mlb_event_bridge_self_acceptance(logger: logging.Logger, *, event_
         return result
 
     now = now or datetime.now(timezone.utc)
-    candidate = _latest_confirmed_candidate(event_api, now)
+    candidate, breakdown = _latest_confirmed_candidate(event_api, now)
     if candidate is None:
-        result = {"status": "SKIPPED", "code": "NO_ELIGIBLE_CONFIRMED_PREGAME_MLB_EVENT", "can_execute": False}
-        logger.warning("WOW_V17_MLB_EVENT_BRIDGE_SELF_ACCEPTANCE status=SKIPPED code=NO_ELIGIBLE_CONFIRMED_PREGAME_MLB_EVENT can_execute=false")
+        # Every future event still waiting on an official lineup is the normal
+        # pregame state, not a canonical producer gap. Report it as its own code
+        # so the two are never conflated again.
+        lineup_pending_only = bool(
+            breakdown.get("future_events")
+            and breakdown.get("rejected_lineup_pending") == breakdown.get("future_events")
+        )
+        code = (
+            "ALL_FUTURE_MLB_EVENTS_AWAITING_OFFICIAL_LINEUP"
+            if lineup_pending_only
+            else "NO_ELIGIBLE_CONFIRMED_PREGAME_MLB_EVENT"
+        )
+        result = {"status": "SKIPPED", "code": code, "candidate_breakdown": breakdown, "can_execute": False}
+        logger.warning(
+            "WOW_V17_MLB_EVENT_BRIDGE_SELF_ACCEPTANCE status=SKIPPED code=%s future_events=%s lineup_pending=%s hydration_not_pass=%s not_shadow_scored_pregame=%s event_status_rejected=%s can_execute=false",
+            code,
+            breakdown.get("future_events"),
+            breakdown.get("rejected_lineup_pending"),
+            breakdown.get("rejected_hydration_not_pass"),
+            breakdown.get("rejected_not_shadow_scored_pregame"),
+            breakdown.get("rejected_event_status"),
+        )
         return result
 
     base_url = os.getenv("RENDER_EXTERNAL_URL", DEFAULT_SERVICE_URL).strip().rstrip("/") or DEFAULT_SERVICE_URL

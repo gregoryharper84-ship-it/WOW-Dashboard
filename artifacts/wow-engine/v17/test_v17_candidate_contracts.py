@@ -85,3 +85,42 @@ def test_host_contract_requires_bearer_auth_in_both_production_schemas():
 def test_both_action_contracts_preserve_no_execution_language():
     assert "can_execute is always false" in WOW_SCHEMA.read_text()
     assert "can_execute is always false" in LLP_SCHEMA.read_text()
+
+
+def test_declared_combat_sports_terminate_as_model_unavailable():
+    # #337 requires MMA/Boxing to be declared and to stay MODEL_UNAVAILABLE.
+    # Declaration must never become capability.
+    from v17.team_event_capability_manifest import (
+        CERTIFIED_TEAM_EVENT_SPORTS,
+        EXPECTED_TEAM_EVENT_SPORTS,
+        TEAM_EVENT_INPUT_CONTRACTS,
+        team_event_capability,
+    )
+
+    for sport in ("MMA", "BOXING"):
+        assert sport in EXPECTED_TEAM_EVENT_SPORTS
+        assert sport in TEAM_EVENT_INPUT_CONTRACTS
+        assert sport not in CERTIFIED_TEAM_EVENT_SPORTS
+        capability = team_event_capability(sport)
+        assert capability.status == "MODEL_UNAVAILABLE"
+        assert capability.controlling_specialist is None
+        assert capability.blocker == "TEAM_EVENT_SPECIALIST_ARTIFACT_NOT_CERTIFIED"
+        assert capability.can_execute is False
+        # A combat bout can end without a winner; the outcome space must say so.
+        assert "no_contest_draw_outcome_space" in capability.required_inputs
+
+
+def test_combat_sport_aliases_resolve_without_borrowing_a_certified_model():
+    from v17.team_event_capability_manifest import team_event_capability
+
+    for alias in ("UFC", "Mixed Martial Arts", "mma"):
+        assert team_event_capability(alias).sport == "MMA"
+    assert team_event_capability("BOX").sport == "BOXING"
+    for alias in ("UFC", "BOX"):
+        assert team_event_capability(alias).controlling_specialist is None
+
+
+def test_only_mlb_remains_certified():
+    from v17.team_event_capability_manifest import CERTIFIED_TEAM_EVENT_SPORTS
+
+    assert set(CERTIFIED_TEAM_EVENT_SPORTS) == {"MLB"}

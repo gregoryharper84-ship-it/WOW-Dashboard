@@ -8,6 +8,9 @@ It never invents a probability or executable wager.
 """
 from __future__ import annotations
 
+import asyncio
+import logging
+import os
 from datetime import date, datetime, timezone
 from typing import Any, Literal
 from uuid import uuid4
@@ -18,6 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from v17.daily_prop_acquisition import acquire_daily_prop_snapshots
 from v17.detailed_evidence_install import install_v17_detailed_evidence
+from v17.prop_evidence_acquisition_scheduler import run_prop_evidence_acquisition_loop
 from v17.prop_forward_cohort_route import install_prop_forward_cohort_route
 from v17.team_event_official_publication_guard import evaluate_team_event_official_publication
 from v17.team_event_request_runtime import TeamEventRequest, score_team_event_request
@@ -367,9 +371,69 @@ def run_daily_snapshot(req: DailySnapshotRequest, *, db: Any, market_api: Any, e
     }
 
 
+_ACQUISITION_LOGGER = logging.getLogger("wow.v17.prop_evidence_acquisition")
+_ACQUISITION_STATE_KEY = "wow_prop_evidence_acquisition_scheduler_installed"
+
+
+def _int_env(name: str, default: int, *, minimum: int, maximum: int) -> int:
+    try:
+        value = int(os.getenv(name, str(default)))
+    except ValueError:
+        value = default
+    return max(minimum, min(value, maximum))
+
+
+def _install_prop_evidence_acquisition_scheduler(app: FastAPI, *, db_client_fn: Any) -> None:
+    """Give prop evidence acquisition an autonomous pass.
+
+    Off by default: enabling it is an explicit production decision, exactly like
+    the forward cohort loop it feeds. It seeds the same snapshots the
+    authenticated daily route already produces and changes no scoring,
+    publication, or calibration semantics.
+    """
+    if os.getenv("WOW_PROP_EVIDENCE_ACQUISITION_ENABLED", "0") != "1":
+        return
+    if getattr(app.state, _ACQUISITION_STATE_KEY, False):
+        return
+    setattr(app.state, _ACQUISITION_STATE_KEY, True)
+
+    interval_seconds = _int_env(
+        "WOW_PROP_EVIDENCE_ACQUISITION_INTERVAL_SECONDS", 3600, minimum=300, maximum=86400
+    )
+    max_candidates = _int_env(
+        "WOW_PROP_EVIDENCE_ACQUISITION_MAX_CANDIDATES", 60, minimum=1, maximum=200
+    )
+    forward_days = _int_env("WOW_PROP_EVIDENCE_ACQUISITION_FORWARD_DAYS", 2, minimum=1, maximum=3)
+    initial_delay_seconds = _int_env(
+        "WOW_PROP_EVIDENCE_ACQUISITION_INITIAL_DELAY_SECONDS", 15, minimum=0, maximum=300
+    )
+    timezone_name = os.getenv("WOW_PROP_EVIDENCE_ACQUISITION_TIMEZONE", "America/Chicago").strip() or "America/Chicago"
+
+    @app.on_event("startup")
+    async def schedule_prop_evidence_acquisition() -> None:
+        task = asyncio.create_task(
+            run_prop_evidence_acquisition_loop(
+                db_client_fn=db_client_fn,
+                logger=_ACQUISITION_LOGGER,
+                interval_seconds=interval_seconds,
+                max_candidates=max_candidates,
+                forward_days=forward_days,
+                timezone_name=timezone_name,
+                initial_delay_seconds=initial_delay_seconds,
+            )
+        )
+        tasks = getattr(app.state, "wow_prop_evidence_acquisition_tasks", None)
+        if tasks is None:
+            tasks = set()
+            app.state.wow_prop_evidence_acquisition_tasks = tasks
+        tasks.add(task)
+        task.add_done_callback(tasks.discard)
+
+
 def install_daily_snapshot_route(app: FastAPI, *, auth_dependency: Any, db_client_fn: Any, market_api: Any, event_api: Any) -> None:
     install_v17_detailed_evidence(app, auth_dependency=auth_dependency, market_api=market_api)
     install_prop_forward_cohort_route(app, auth_dependency=auth_dependency, db_client_fn=db_client_fn, market_api=market_api)
+    _install_prop_evidence_acquisition_scheduler(app, db_client_fn=db_client_fn)
     if any(getattr(route, "path", None) == "/v17/daily-snapshot-run" for route in app.router.routes):
         return
 
