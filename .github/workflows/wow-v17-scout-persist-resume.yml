@@ -31,14 +31,19 @@ jobs:
           set -euo pipefail
           source_run_id=""
           if [ -n "$TARGET_SHA" ]; then
-            for _ in $(seq 1 40); do
+            for _ in $(seq 1 4); do
               source_run_id=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${TARGET_SHA}&per_page=30" \
                 --jq '[.workflow_runs[] | select(.name == "wow-v17-nightly-multiscout" and .status == "completed" and .conclusion != "cancelled")] | first | .id // ""')
               if [ -n "$source_run_id" ]; then
                 break
               fi
-              sleep 15
+              sleep 5
             done
+            if [ -z "$source_run_id" ]; then
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              echo "No completed Multi-Scout run exists for target SHA ${TARGET_SHA}; persistence is not applicable to this workflow_run event." >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
           else
             source_run_id=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/workflows/wow-v17-nightly-multiscout.yml/runs?branch=main&status=completed&per_page=20" \
               --jq '[.workflow_runs[] | select(.event != "pull_request" and .conclusion != "cancelled")] | first | .id // ""')
@@ -47,10 +52,12 @@ jobs:
             echo "No completed recoverable Multi-Scout run found; fail closed." >&2
             exit 1
           fi
+          echo "skip=false" >> "$GITHUB_OUTPUT"
           echo "run_id=$source_run_id" >> "$GITHUB_OUTPUT"
           echo "Resolved Multi-Scout source run: $source_run_id" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Verify recoverable discovery artifact exists
+        if: steps.source.outputs.skip != 'true'
         shell: bash
         env:
           SOURCE_RUN_ID: ${{ steps.source.outputs.run_id }}
@@ -64,10 +71,12 @@ jobs:
           fi
 
       - name: Allow native workflow_run persistence to win first
+        if: steps.source.outputs.skip != 'true'
         run: sleep 30
 
       - name: Check for existing persistence receipt
         id: existing
+        if: steps.source.outputs.skip != 'true'
         shell: bash
         env:
           SOURCE_RUN_ID: ${{ steps.source.outputs.run_id }}
@@ -84,7 +93,7 @@ jobs:
           fi
 
       - name: Explicitly resume Scout persistence
-        if: steps.existing.outputs.present != 'true'
+        if: steps.source.outputs.skip != 'true' && steps.existing.outputs.present != 'true'
         shell: bash
         env:
           SOURCE_RUN_ID: ${{ steps.source.outputs.run_id }}
@@ -94,6 +103,7 @@ jobs:
           echo "Explicitly dispatched governed Scout persistence for source run ${SOURCE_RUN_ID}." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Verify persistence receipt appears
+        if: steps.source.outputs.skip != 'true'
         shell: bash
         env:
           SOURCE_RUN_ID: ${{ steps.source.outputs.run_id }}
