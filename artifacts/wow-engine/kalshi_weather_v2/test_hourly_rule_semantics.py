@@ -97,7 +97,7 @@ def test_hourly_occurrence_must_match_explicit_edt_clock():
             index_city="nyc",
             expected_location="New York City",
         )
-    assert "HOURLY_OCCURRENCE_TIMEZONE_MISMATCH" in exc.value.blockers
+    assert "HOURLY_OCCURRENCE_RULE_TIME_MISMATCH" in exc.value.blockers
 
 
 def test_hourly_rule_and_structured_strike_must_match():
