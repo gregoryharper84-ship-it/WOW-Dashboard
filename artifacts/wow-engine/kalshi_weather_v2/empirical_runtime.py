@@ -5,12 +5,14 @@ import hmac
 import logging
 import os
 from dataclasses import asdict
+from datetime import datetime, timezone
 from typing import Callable
 
 from fastapi import FastAPI, Header, HTTPException
 
+from .bounded_cohort import run_bounded_capture_only_cohort_once
 from .operational_cycle import VERIFIED_HOURLY_TARGETS
-from .shadow_cohort import HourlyCohortTarget, run_hourly_shadow_cohort_once
+from .shadow_cohort import HourlyCohortTarget
 
 
 _logger = logging.getLogger("wow.kalshi_weather_v2.empirical_cohort")
@@ -20,11 +22,8 @@ _tasks: set[asyncio.Task] = set()
 def _automated_shadow_targets() -> tuple[HourlyCohortTarget, ...]:
     """Mirror governed operational targets into the bounded empirical collector.
 
-    The automated web-process loop is intentionally calibration-first: one
-    threshold sibling per exact weather target/lead bucket is sufficient to
-    produce an unbiased temperature residual. Repeating identical NWS and
-    Open-Meteo acquisitions for every threshold sibling is deferred to explicit
-    on-demand analysis until shared-evidence sibling expansion is implemented.
+    Exact settlement identity remains controlled by frozen Kalshi rules. These
+    coordinates are forecast-grid references only.
     """
     return tuple(
         HourlyCohortTarget(
@@ -39,10 +38,31 @@ def _automated_shadow_targets() -> tuple[HourlyCohortTarget, ...]:
     )
 
 
+def _scheduled_shadow_targets() -> tuple[HourlyCohortTarget, ...]:
+    """Rotate a small target slice through the shared low-resource web process.
+
+    The empirical collector is calibration-first, not the full live market
+    monitor. Defaulting to one city per 15-minute pass prevents NWS/Open-Meteo
+    acquisition plus historical settlement backlog from destabilizing V17. The
+    exact on-demand Weather routes remain available for any individual contract.
+    """
+    enabled = tuple(target for target in _automated_shadow_targets() if target.enabled)
+    if not enabled:
+        return ()
+    try:
+        max_targets = int(os.getenv("WOW_KALSHI_WEATHER_EMPIRICAL_MAX_TARGETS", "1"))
+    except ValueError:
+        max_targets = 1
+    max_targets = max(1, min(max_targets, len(enabled)))
+    slot = int(datetime.now(timezone.utc).timestamp() // 900)
+    start = slot % len(enabled)
+    return tuple(enabled[(start + offset) % len(enabled)] for offset in range(max_targets))
+
+
 def _run_bounded_shadow_cycle(*, db_client_fn: Callable[[], object]):
-    return run_hourly_shadow_cohort_once(
+    return run_bounded_capture_only_cohort_once(
         db_client_fn=db_client_fn,
-        targets=_automated_shadow_targets(),
+        targets=_scheduled_shadow_targets(),
     )
 
 
@@ -53,11 +73,11 @@ def install_empirical_cohort_scheduler(
 ) -> None:
     """Install bounded automated Weather calibration collection plus trigger.
 
-    The automatic web-process workload deliberately captures one representative
-    threshold sibling per exact weather target/lead bucket. That preserves
-    unbiased calibration sampling while preventing duplicate provider work from
-    destabilizing the shared web service. Exact sibling contracts remain
-    available through the authenticated on-demand Weather routes.
+    The shared web process captures one representative threshold sibling and a
+    small rotating target slice per pass. Historical settlement backlog is kept
+    out of this process boundary so old rows cannot recycle the production API.
+    Exact sibling contracts remain available through authenticated on-demand
+    Weather routes.
 
     Nothing here can promote model capability, publish an uncertified
     probability, or execute a trade.
@@ -101,7 +121,7 @@ def install_empirical_cohort_scheduler(
         return {
             **asdict(result),
             "trigger": "EXTERNAL_LEAST_PRIVILEGE_SCHEDULER",
-            "collection_mode": "BOUNDED_REPRESENTATIVE_SHADOW",
+            "collection_mode": "BOUNDED_ROTATING_CAPTURE_ONLY_SHADOW",
             "probability_publishable": False,
             "can_execute": False,
         }
@@ -136,8 +156,9 @@ async def _run_bounded_shadow_loop(
     interval_seconds: int,
 ) -> None:
     _logger.warning(
-        "WOW_KALSHI_WEATHER_EMPIRICAL_COHORT status=STARTED collection_mode=BOUNDED_REPRESENTATIVE_SHADOW interval_seconds=%s probability_publishable=false can_execute=false",
+        "WOW_KALSHI_WEATHER_EMPIRICAL_COHORT status=STARTED collection_mode=BOUNDED_ROTATING_CAPTURE_ONLY_SHADOW interval_seconds=%s max_targets=%s probability_publishable=false can_execute=false",
         interval_seconds,
+        os.getenv("WOW_KALSHI_WEATHER_EMPIRICAL_MAX_TARGETS", "1"),
     )
     while True:
         try:
@@ -146,7 +167,7 @@ async def _run_bounded_shadow_loop(
                 db_client_fn=db_client_fn,
             )
             _logger.warning(
-                "WOW_KALSHI_WEATHER_EMPIRICAL_COHORT status=%s collection_mode=BOUNDED_REPRESENTATIVE_SHADOW targets=%s discovered=%s captured=%s skipped=%s supplemental=%s settled=%s capture_failures=%s supplemental_failures=%s settlement_failures=%s failure_samples=%s probability_publishable=false can_execute=false",
+                "WOW_KALSHI_WEATHER_EMPIRICAL_COHORT status=%s collection_mode=BOUNDED_ROTATING_CAPTURE_ONLY_SHADOW targets=%s discovered=%s captured=%s skipped=%s supplemental=%s settled=%s capture_failures=%s supplemental_failures=%s settlement_failures=%s failure_samples=%s probability_publishable=false can_execute=false",
                 result.status,
                 result.targets_checked,
                 result.contracts_discovered,
@@ -161,7 +182,7 @@ async def _run_bounded_shadow_loop(
             )
         except Exception as exc:
             _logger.exception(
-                "WOW_KALSHI_WEATHER_EMPIRICAL_COHORT status=FAILED collection_mode=BOUNDED_REPRESENTATIVE_SHADOW error_type=%s probability_publishable=false can_execute=false",
+                "WOW_KALSHI_WEATHER_EMPIRICAL_COHORT status=FAILED collection_mode=BOUNDED_ROTATING_CAPTURE_ONLY_SHADOW error_type=%s probability_publishable=false can_execute=false",
                 type(exc).__name__,
             )
         await asyncio.sleep(interval_seconds)
