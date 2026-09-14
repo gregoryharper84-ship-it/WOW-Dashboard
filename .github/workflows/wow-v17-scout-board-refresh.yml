@@ -7,12 +7,16 @@ on:
     - cron: "15 23 * * *"
     - cron: "15 3 * * *"
   workflow_dispatch:
+  workflow_run:
+    workflows: ["wow-v17-scout-brain-persist"]
+    types: [completed]
 
 permissions:
   contents: read
 
 jobs:
   refresh:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     defaults:
       run:
