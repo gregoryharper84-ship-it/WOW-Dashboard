@@ -1,0 +1,4 @@
+WOW V17 NFL governed publication bridge deployment marker
+Created after PR #370 bridge merge and PR #372 persistence-ordering repair.
+No runtime behavior, model math, calibration, ranking, terminal governance, or execution settings are changed by this file.
+can_execute=false remains authoritative.
