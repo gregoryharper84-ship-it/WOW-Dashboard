@@ -28,6 +28,12 @@ EXPECTED_TEAM_EVENT_SPORTS = (
     "SOCCER",
     "TENNIS",
     "PGA",
+    # Declared so a request for them terminates as MODEL_UNAVAILABLE against a
+    # known contract instead of an unknown sport. Declaration is not capability:
+    # neither has a certified specialist, and neither may borrow another
+    # sport's model or a sportsbook-implied probability.
+    "MMA",
+    "BOXING",
 )
 
 # Minimum bridge-owned inputs.  Universal identity/status/settlement checks still
@@ -132,6 +138,28 @@ TEAM_EVENT_INPUT_CONTRACTS: dict[str, tuple[str, ...]] = {
         "withdrawal_dq_rules",
         "settlement_basis",
     ),
+    "MMA": (
+        "official_event_id",
+        "home_team",
+        "away_team",
+        "weight_class",
+        "scheduled_rounds",
+        "participant_status",
+        "weigh_in_status",
+        "no_contest_draw_outcome_space",
+        "settlement_basis",
+    ),
+    "BOXING": (
+        "official_event_id",
+        "home_team",
+        "away_team",
+        "weight_class",
+        "scheduled_rounds",
+        "participant_status",
+        "weigh_in_status",
+        "no_contest_draw_outcome_space",
+        "settlement_basis",
+    ),
 }
 
 # Certification is deliberately narrower than discovery/catalog support.
@@ -172,6 +200,10 @@ def normalize_team_event_sport(value: str) -> str:
         "COLLEGE BASKETBALL": "NCAAB",
         "NCAA BASKETBALL": "NCAAB",
         "GOLF": "PGA",
+        "UFC": "MMA",
+        "MIXED MARTIAL ARTS": "MMA",
+        "MIXED_MARTIAL_ARTS": "MMA",
+        "BOX": "BOXING",
     }
     return aliases.get(sport, sport)
 

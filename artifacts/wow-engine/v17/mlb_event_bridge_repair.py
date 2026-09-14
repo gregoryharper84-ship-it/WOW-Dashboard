@@ -221,14 +221,27 @@ def _resolve_bridge_payload(req: Any, *, event_api: Any) -> dict[str, Any]:
                 "source_snapshot_id": str(event.get("snapshot_id") or ""),
                 "source_snapshot_timestamp": str(event.get("snapshot_timestamp") or ""),
             }
-    if not lineup_rows:
+    # A canonical snapshot that is present and PASS-hydrated but still waiting on
+    # an official lineup is a timing hold, not a missing producer. Classifying it
+    # as CANONICAL_SNAPSHOT_UNAVAILABLE makes an on-schedule pregame wait
+    # indistinguishable from a broken canonical path. Keep the two separate; both
+    # remain fail-closed, and neither publishes a probability.
+    lineup_pending = not lineup_rows
+    if lineup_pending:
         missing.extend(["home_lineup_status", "away_lineup_status"])
 
     if missing:
+        canonical_snapshot_present = not (set(missing) - {"home_lineup_status", "away_lineup_status"})
         return {
             "ok": False,
             "status": "MODEL_INPUTS_INSUFFICIENT",
-            "blocker_code": "MLB_TEAM_EVENT_CANONICAL_SNAPSHOT_UNAVAILABLE",
+            "blocker_code": (
+                "MLB_TEAM_EVENT_LINEUP_NOT_YET_AVAILABLE"
+                if canonical_snapshot_present
+                else "MLB_TEAM_EVENT_CANONICAL_SNAPSHOT_UNAVAILABLE"
+            ),
+            "canonical_snapshot_present": canonical_snapshot_present,
+            "lineup_status": str(event.get("lineup_status") or ""),
             "missing_fields": sorted(set(missing)),
             "sport_model_invoked": False,
             "source_snapshot_id": str(event.get("snapshot_id") or ""),
@@ -466,6 +479,11 @@ def score_event_v17_bridge(
             error_type=resolution.get("error_type"),
             scorer_error_code=resolution.get("scorer_error_code"),
             failing_fields=list(resolution.get("failing_fields") or []),
+            extra={
+                key: resolution[key]
+                for key in ("canonical_snapshot_present", "lineup_status")
+                if key in resolution
+            },
         ))
 
     try:

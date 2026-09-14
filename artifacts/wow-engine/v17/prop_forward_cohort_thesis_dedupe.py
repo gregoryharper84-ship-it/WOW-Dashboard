@@ -35,8 +35,9 @@ def thesis_key(row: dict[str, Any]) -> tuple[str, str, str, str] | None:
 
 
 def _eligible_snapshots(db: Any, limit: int, *, now: Any) -> list[dict[str, Any]]:
-    rows = (
-        db.table("wow_prop_evidence_snapshots")
+    rows = runtime._db_call(
+        "wow_prop_evidence_snapshots.select_eligible_theses",
+        lambda: db.table("wow_prop_evidence_snapshots")
         .select(
             "source_snapshot_id,captured_at,event_id,event_start_time,sport,player,"
             "stat_type,line,hydration_status,blockers"
@@ -44,10 +45,13 @@ def _eligible_snapshots(db: Any, limit: int, *, now: Any) -> list[dict[str, Any]
         .eq("sport", runtime.SPORT)
         .eq("stat_type", runtime.STAT_TYPE)
         .eq("hydration_status", "PASS")
+        # Same future-slate bound as the base runtime: accumulated history must
+        # not push the future slate out of the scan window.
+        .gt("event_start_time", now.isoformat())
         .order("event_start_time")
         .order("captured_at")
         .limit(limit * 10)
-        .execute().data or []
+        .execute().data or [],
     )
     selected: list[dict[str, Any]] = []
     seen: set[tuple[str, str, str, str]] = set()
@@ -70,16 +74,16 @@ def _eligible_snapshots(db: Any, limit: int, *, now: Any) -> list[dict[str, Any]
 
 
 def _forward_predictions(db: Any) -> list[dict[str, Any]]:
-    rows = (
-        db.table("wow_predictions")
+    rows = runtime._paginate(
+        "wow_predictions.select_forward_theses",
+        lambda: db.table("wow_predictions")
         .select(
             "prediction_id,event_id,event_start_time,model_timestamp,locked_at,"
             "source_snapshot_id,player,stat_type,line,direction"
         )
         .eq("sport", runtime.SPORT)
         .eq("stat_type", runtime.STAT_TYPE)
-        .eq("model_provider_identity", runtime.PROVIDER)
-        .execute().data or []
+        .eq("model_provider_identity", runtime.PROVIDER),
     )
     eligible: list[dict[str, Any]] = []
     for raw in rows:
@@ -120,18 +124,32 @@ def _reconcile_capability(db: Any) -> dict[str, Any]:
         updated["forward_settled_n"] = settled_n
         updated["forward_cohort_counting_basis"] = "UNIQUE_EVENT_PLAYER_STAT_LINE_THESIS"
         updated["forward_cohort_readiness"] = readiness
-        db.table("wow_runtime_capabilities").update({"evidence": updated}).eq(
-            "capability_key", runtime.CAPABILITY_KEY
-        ).execute()
+        runtime._db_call(
+            "wow_runtime_capabilities.update_thesis_evidence",
+            lambda: db.table("wow_runtime_capabilities").update({"evidence": updated}).eq(
+                "capability_key", runtime.CAPABILITY_KEY
+            ).execute(),
+        )
     return readiness
+
+
+#: Runtime implementations displaced by :func:`install`, kept so the overrides
+#: stay auditable and so both the base and override paths remain testable.
+BASE_IMPLEMENTATIONS: dict[str, Any] = {}
+
+_OVERRIDES = {
+    "_eligible_snapshots": _eligible_snapshots,
+    "_forward_predictions": _forward_predictions,
+    "_cohort_counts": _cohort_counts,
+    "_reconcile_capability": _reconcile_capability,
+}
 
 
 def install() -> None:
     """Install independence-preserving overrides into the existing runtime."""
-    runtime._eligible_snapshots = _eligible_snapshots
-    runtime._forward_predictions = _forward_predictions
-    runtime._cohort_counts = _cohort_counts
-    runtime._reconcile_capability = _reconcile_capability
+    for name, override in _OVERRIDES.items():
+        BASE_IMPLEMENTATIONS.setdefault(name, getattr(runtime, name))
+        setattr(runtime, name, override)
 
 
 install()
