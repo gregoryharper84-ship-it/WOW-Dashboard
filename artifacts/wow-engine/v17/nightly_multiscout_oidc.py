@@ -24,6 +24,7 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from v17 import nightly_multiscout as scout
+from v17 import market_evidence_sources as market_sources
 from v17.github_actions_oidc_client import GitHubOIDCMintError, mint_github_actions_oidc
 from v17.market_evidence_scout_bridge import market_evidence_for_request
 from v17.scout_secondary_source import secondary_for_request
@@ -96,6 +97,19 @@ def configure_source_failure_scope() -> None:
     # Typed vendor failures are row/source blockers. Caller auth remains fail-closed
     # before this point; 429 remains the only slate-terminal source status here.
     scout.TERMINAL_SOURCE_HTTP_STATUSES = {429}
+
+
+def enable_research_market_evidence() -> None:
+    """Keep the production Scout evidence lane on by default.
+
+    This affects acquisition only. The market-evidence module remains
+    research-only, prediction_authority=False, exact_line_authority=False and
+    can_execute=False. An explicit emergency kill switch can still disable the
+    provider tier without changing model/governance semantics.
+    """
+    kill_switch = os.environ.get("WOW_MARKET_EVIDENCE_KILL_SWITCH", "false").strip().lower() == "true"
+    market_sources.ENABLED = not kill_switch
+    os.environ["WOW_MARKET_EVIDENCE_ENABLED"] = "false" if kill_switch else "true"
 
 
 def install_refreshable_oidc_proxy_auth() -> None:
@@ -194,6 +208,7 @@ def install_refreshable_oidc_proxy_auth() -> None:
 
 def main() -> int:
     configure_source_failure_scope()
+    enable_research_market_evidence()
     install_refreshable_oidc_proxy_auth()
     return scout.main()
 
