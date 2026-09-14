@@ -84,11 +84,16 @@ def install_mlb_1ip_bf_shadow_routes(
                         "can_execute": False,
                     },
                 ) from exc
+            sample_complete = bool(health.get("forward_sample_complete"))
+            blockers = ["INDEPENDENT_PROMOTION_REVIEW_REQUIRED", "CALIBRATOR_CERTIFICATION_REQUIRED"]
+            if not sample_complete:
+                blockers.insert(0, "FORWARD_SAMPLE_INCOMPLETE")
             return {
                 "status": "FORWARD_SHADOW_ACTIVE",
                 "health": health,
-                "certification_ready": bool(health.get("forward_sample_complete")) and False,
-                "promotion_requires_independent_review": True,
+                "forward_sample_complete": sample_complete,
+                "certification_ready": False,
+                "certification_blockers": blockers,
                 "probability_publishable": False,
                 "rank_eligible": False,
                 "can_execute": False,
