@@ -26,6 +26,7 @@ from v17 import nightly_multiscout as scout
 from v17 import market_evidence_sources as market_sources
 from v17.github_actions_oidc_client import GitHubOIDCMintError, mint_github_actions_oidc
 from v17.market_evidence_scout_bridge import market_evidence_for_request
+from v17.rundown_ml_board import augment_event_discovery
 from v17.scout_secondary_source import secondary_for_request
 
 DEFAULT_ODDS_ROUTER_URL = "https://wow-odds-router.onrender.com"
@@ -180,8 +181,17 @@ def install_refreshable_oidc_proxy_auth() -> None:
 
             last_result = original(path, params)
             if last_result.ok:
-                _remember_event_context(path, last_result.data)
-                return last_result
+                # TheRundown is a standing additive current-board source for ML
+                # event discovery, not merely a tertiary fallback. If it is
+                # unavailable, preserve the already-successful primary result.
+                augmented, audit = augment_event_discovery(path, last_result.data)
+                _remember_event_context(path, augmented)
+                result = scout.FetchResult(True, augmented, last_result.status or 200, code=last_result.code)
+                if isinstance(result.data, list) and audit.get("attempted"):
+                    for event in result.data:
+                        if isinstance(event, dict):
+                            event.setdefault("_wow_rundown_board_audit", audit)
+                return result
             if not _is_transient(last_result) or attempt == attempts:
                 break
             if base_seconds:
@@ -194,8 +204,14 @@ def install_refreshable_oidc_proxy_auth() -> None:
         primary_failure = _primary_failure_label(final)
         secondary = secondary_for_request(path, params, event_context, primary_failure=primary_failure)
         if secondary.ok:
-            _remember_event_context(path, secondary.data)
-            return scout.FetchResult(True, secondary.data, secondary.status or 200, code="SECONDARY_SOURCE_USED")
+            augmented, audit = augment_event_discovery(path, secondary.data)
+            _remember_event_context(path, augmented)
+            result = scout.FetchResult(True, augmented, secondary.status or 200, code="SECONDARY_SOURCE_USED")
+            if isinstance(result.data, list) and audit.get("attempted"):
+                for event in result.data:
+                    if isinstance(event, dict):
+                        event.setdefault("_wow_rundown_board_audit", audit)
+            return result
 
         # Tertiary tier: subscription market-evidence feeds. Same research
         # ceiling as every other tier — evidence only, never probability.
