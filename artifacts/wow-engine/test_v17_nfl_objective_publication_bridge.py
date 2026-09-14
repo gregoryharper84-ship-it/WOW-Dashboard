@@ -54,6 +54,7 @@ def test_nfl_objective_dispatch_calls_governed_publication(monkeypatch):
     monkeypatch.setattr(request_runtime, "install_nfl_hydration_startup", lambda app, *, db_client_fn: None)
     monkeypatch.setattr(request_runtime, "install_nfl_model_startup", lambda app, *, db_client_fn: None)
     monkeypatch.setattr(request_runtime, "install_nfl_team_event_publication", lambda module: True)
+    monkeypatch.setattr(request_runtime, "install_ncaaf_team_event_publication", lambda module: True)
     monkeypatch.setattr(request_runtime, "scout_route_auth_dependency", lambda dependency: dependency)
     monkeypatch.setenv("WOW_V17_ACTIVE", "1")
 
