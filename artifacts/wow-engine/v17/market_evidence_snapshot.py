@@ -37,6 +37,7 @@ from typing import Any
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from v17 import market_evidence_hardening as hardening
 from v17 import market_evidence_sources as sources
 from v17 import market_evidence_native_live as live
 
@@ -50,15 +51,7 @@ DEFAULT_SPORTS = (
 
 
 def _enable_research_market_evidence() -> None:
-    """Enable the research evidence lane unless the dedicated kill switch is set.
-
-    The nightly OIDC Scout wrapper already follows this rule. Keeping the
-    standalone snapshot on the same rule prevents a stale repository variable
-    from disabling the evidence capture step while credentialed provider
-    acceptance succeeds. This changes acquisition only: provider output remains
-    research-only, prediction_authority=False, exact_line_authority=False and
-    can_execute=False.
-    """
+    """Enable the research evidence lane unless the dedicated kill switch is set."""
     kill_switch = os.environ.get("WOW_MARKET_EVIDENCE_KILL_SWITCH", "false").strip().lower() == "true"
     sources.ENABLED = not kill_switch
     os.environ["WOW_MARKET_EVIDENCE_ENABLED"] = "false" if kill_switch else "true"
@@ -91,7 +84,10 @@ def _lane(provider: str, sport_key: str, capability: str, result: sources.Market
         "status": "CAPTURED" if result.ok else "BLOCKED",
         "reason_code": result.code,
         "http_status": result.status,
+        "observed_at": result.observed_at,
         "event_count": len(result.data) if result.ok and isinstance(result.data, list) else 0,
+        "degradation_class": None if result.ok else hardening.provider_degradation(result.code, result.status),
+        "affects_model_capability": False,
         "prediction_authority": False,
         "exact_line_authority": False,
         "research_only": True,
@@ -128,10 +124,32 @@ def collect(sports: list[str], *, dates: list[str] | None = None, opener: Any = 
         for book in event.get("bookmakers") or []
         if isinstance(book, dict) and book.get("key")
     })
+    generated_at = _now().replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    hardening_report = hardening.analyze_snapshot_events(
+        events,
+        generated_at=generated_at,
+        max_age_minutes=float(sources.MAX_AGE_MINUTES),
+    )
+
+    provider_degradation = {
+        provider: [
+            {
+                "sport_key": lane["sport_key"],
+                "capability": lane["capability"],
+                "date": lane["date"],
+                "reason_code": lane["reason_code"],
+                "http_status": lane["http_status"],
+                "degradation_class": lane["degradation_class"],
+            }
+            for lane in lanes
+            if lane["provider"] == provider and lane["status"] == "BLOCKED"
+        ]
+        for provider in sorted({lane["provider"] for lane in lanes})
+    }
 
     return {
-        "schema_version": "wow.v17.market_evidence_snapshot.v1",
-        "generated_at": _now().replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        "schema_version": "wow.v17.market_evidence_snapshot.v2",
+        "generated_at": generated_at,
         "dates": dates,
         "sports_requested": list(sports),
         "status": "MARKET_EVIDENCE_CAPTURED" if captured else sources.MARKET_DATA_UNOBTAINABLE,
@@ -151,6 +169,14 @@ def collect(sports: list[str], *, dates: list[str] | None = None, opener: Any = 
             )
             for provider in sorted({lane["provider"] for lane in lanes})
         },
+        "provider_degradation": provider_degradation,
+        "freshness": {
+            key: value
+            for key, value in hardening_report.items()
+            if key != "disagreement_alerts"
+        },
+        "source_disagreement_alerts": hardening_report["disagreement_alerts"],
+        "source_disagreement_alert_count": hardening_report["disagreement_alert_count"],
         "affects_fitted_model_availability": False,
         "research_ceiling": "RESEARCH_INTEREST",
         "source_class": sources.SOURCE_CLASS,
