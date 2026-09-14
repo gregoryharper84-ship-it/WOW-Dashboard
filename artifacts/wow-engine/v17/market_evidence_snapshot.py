@@ -30,13 +30,15 @@ import argparse
 import json
 import os
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from v17 import market_evidence_hardening as hardening
 from v17 import market_evidence_sources as sources
 from v17 import market_evidence_native_live as live
 
@@ -50,15 +52,7 @@ DEFAULT_SPORTS = (
 
 
 def _enable_research_market_evidence() -> None:
-    """Enable the research evidence lane unless the dedicated kill switch is set.
-
-    The nightly OIDC Scout wrapper already follows this rule. Keeping the
-    standalone snapshot on the same rule prevents a stale repository variable
-    from disabling the evidence capture step while credentialed provider
-    acceptance succeeds. This changes acquisition only: provider output remains
-    research-only, prediction_authority=False, exact_line_authority=False and
-    can_execute=False.
-    """
+    """Enable the research evidence lane unless the dedicated kill switch is set."""
     kill_switch = os.environ.get("WOW_MARKET_EVIDENCE_KILL_SWITCH", "false").strip().lower() == "true"
     sources.ENABLED = not kill_switch
     os.environ["WOW_MARKET_EVIDENCE_ENABLED"] = "false" if kill_switch else "true"
@@ -82,6 +76,24 @@ def _sharpapi_live_params(sport_key: str) -> dict[str, str] | None:
     return {"league": str(league).upper()}
 
 
+def _bounded_rate_limit_retry(call: Callable[[], sources.MarketEvidenceResult]) -> sources.MarketEvidenceResult:
+    """Retry only HTTP 429, with a tiny bounded backoff and no auth retries.
+
+    The default is one retry.  This is intentionally conservative so the
+    hardening itself cannot amplify provider quota pressure.
+    """
+    result = call()
+    max_retries = max(0, min(int(os.environ.get("WOW_MARKET_EVIDENCE_429_RETRIES", "1")), 2))
+    backoff = max(0.0, min(float(os.environ.get("WOW_MARKET_EVIDENCE_429_BACKOFF_SECONDS", "0.5")), 2.0))
+    retries = 0
+    while result.status == 429 and retries < max_retries:
+        retries += 1
+        if backoff:
+            time.sleep(backoff * retries)
+        result = call()
+    return result
+
+
 def _lane(provider: str, sport_key: str, capability: str, result: sources.MarketEvidenceResult, date: str | None) -> dict[str, Any]:
     lane: dict[str, Any] = {
         "provider": provider,
@@ -91,7 +103,10 @@ def _lane(provider: str, sport_key: str, capability: str, result: sources.Market
         "status": "CAPTURED" if result.ok else "BLOCKED",
         "reason_code": result.code,
         "http_status": result.status,
+        "observed_at": result.observed_at,
         "event_count": len(result.data) if result.ok and isinstance(result.data, list) else 0,
+        "degradation_class": None if result.ok else hardening.provider_degradation(result.code, result.status),
+        "affects_model_capability": False,
         "prediction_authority": False,
         "exact_line_authority": False,
         "research_only": True,
@@ -108,14 +123,18 @@ def collect(sports: list[str], *, dates: list[str] | None = None, opener: Any = 
     events: list[dict[str, Any]] = []
 
     for sport_key in sports:
-        sharp = live.sharpapi_market_evidence(sport_key, opener=opener)
+        sharp = _bounded_rate_limit_retry(lambda: live.sharpapi_market_evidence(sport_key, opener=opener))
         lanes.append(_lane("SHARPAPI", sport_key, "odds", sharp, None))
         if sharp.ok:
             events.extend(sharp.data)
 
         for date in dates:
             for capability in ("openers", "events"):
-                result = live.rundown_market_evidence(sport_key, date, capability=capability, opener=opener)
+                result = _bounded_rate_limit_retry(
+                    lambda sport_key=sport_key, date=date, capability=capability: live.rundown_market_evidence(
+                        sport_key, date, capability=capability, opener=opener,
+                    )
+                )
                 lanes.append(_lane("RUNDOWN", sport_key, capability, result, date))
                 if result.ok:
                     events.extend(result.data)
@@ -128,10 +147,32 @@ def collect(sports: list[str], *, dates: list[str] | None = None, opener: Any = 
         for book in event.get("bookmakers") or []
         if isinstance(book, dict) and book.get("key")
     })
+    generated_at = _now().replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    hardening_report = hardening.analyze_snapshot_events(
+        events,
+        generated_at=generated_at,
+        max_age_minutes=float(sources.MAX_AGE_MINUTES),
+    )
+
+    provider_degradation = {
+        provider: [
+            {
+                "sport_key": lane["sport_key"],
+                "capability": lane["capability"],
+                "date": lane["date"],
+                "reason_code": lane["reason_code"],
+                "http_status": lane["http_status"],
+                "degradation_class": lane["degradation_class"],
+            }
+            for lane in lanes
+            if lane["provider"] == provider and lane["status"] == "BLOCKED"
+        ]
+        for provider in sorted({lane["provider"] for lane in lanes})
+    }
 
     return {
-        "schema_version": "wow.v17.market_evidence_snapshot.v1",
-        "generated_at": _now().replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        "schema_version": "wow.v17.market_evidence_snapshot.v2",
+        "generated_at": generated_at,
         "dates": dates,
         "sports_requested": list(sports),
         "status": "MARKET_EVIDENCE_CAPTURED" if captured else sources.MARKET_DATA_UNOBTAINABLE,
@@ -151,6 +192,14 @@ def collect(sports: list[str], *, dates: list[str] | None = None, opener: Any = 
             )
             for provider in sorted({lane["provider"] for lane in lanes})
         },
+        "provider_degradation": provider_degradation,
+        "freshness": {
+            key: value
+            for key, value in hardening_report.items()
+            if key != "disagreement_alerts"
+        },
+        "source_disagreement_alerts": hardening_report["disagreement_alerts"],
+        "source_disagreement_alert_count": hardening_report["disagreement_alert_count"],
         "affects_fitted_model_availability": False,
         "research_ceiling": "RESEARCH_INTEREST",
         "source_class": sources.SOURCE_CLASS,

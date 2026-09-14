@@ -5,6 +5,8 @@ from datetime import datetime, timezone
 from v17.market_evidence_snapshot_bridge import attach_snapshot_evidence
 from v17.scout_research_promotion import evaluate_candidate
 
+NOW = datetime(2026, 9, 14, 20, 1, tzinfo=timezone.utc)
+
 
 def _handoff(*, duplicate=False, sport_key="baseball_mlb", home="Texas Rangers", away="Houston Astros", start="2026-09-14T20:00:00Z"):
     candidate = {
@@ -43,6 +45,8 @@ def _event(
     outcome_home=None,
     outcome_away=None,
     start="2026-09-14T20:03:00Z",
+    updated="2026-09-14T19:59:00Z",
+    capability="events",
 ):
     return {
         "id": f"{provider}-evt",
@@ -52,7 +56,7 @@ def _event(
         "away_team": away,
         "_wow_market_evidence": {
             "provider": provider,
-            "capability": "events",
+            "provider_detail": capability,
             "prediction_authority": False,
             "exact_line_authority": False,
             "research_only": True,
@@ -61,10 +65,10 @@ def _event(
         "bookmakers": [{
             "key": book,
             "title": book,
-            "last_update": "2026-09-14T19:59:00Z",
+            "last_update": updated,
             "markets": [{
                 "key": "h2h",
-                "last_update": "2026-09-14T19:59:00Z",
+                "last_update": updated,
                 "outcomes": [
                     {"name": outcome_home or home, "price": price},
                     {"name": outcome_away or away, "price": 110},
@@ -74,8 +78,8 @@ def _event(
     }
 
 
-def _snapshot(events):
-    return {
+def _snapshot(events, **extra):
+    payload = {
         "status": "MARKET_EVIDENCE_CAPTURED",
         "generated_at": "2026-09-14T20:00:00Z",
         "events": events,
@@ -85,6 +89,8 @@ def _snapshot(events):
         "research_only": True,
         "can_execute": False,
     }
+    payload.update(extra)
+    return payload
 
 
 def test_exact_event_match_attaches_cross_book_evidence_without_probability_authority():
@@ -94,10 +100,12 @@ def test_exact_event_match_attaches_cross_book_evidence_without_probability_auth
             _event("RUNDOWN", "book-a", -120),
             _event("SHARPAPI", "book-b", -118),
         ]),
+        now=NOW,
     )
     candidate = result["model_handoff"]["team_event_candidates"][0]
     assert len(candidate["market_evidence"]) == 4
     assert {row["bookmaker"] for row in candidate["market_evidence"]} == {"book-a", "book-b"}
+    assert all(row["freshness_state"] == "FRESH" for row in candidate["market_evidence"])
     assert all(row["prediction_authority"] is False for row in candidate["market_evidence"])
     assert all(row["can_execute"] is False for row in candidate["market_evidence"])
     assert candidate["probability"] is None
@@ -105,7 +113,7 @@ def test_exact_event_match_attaches_cross_book_evidence_without_probability_auth
     assert result["market_evidence_snapshot_bridge"]["evidence_rows_attached"] == 4
     assert result["can_execute"] is False
 
-    evaluation = evaluate_candidate(candidate, now=datetime(2026, 9, 14, 20, 1, tzinfo=timezone.utc))
+    evaluation = evaluate_candidate(candidate, now=NOW)
     assert evaluation["research_status"] in {"RESEARCH_INTEREST_MEDIUM", "RESEARCH_INTEREST_HIGH"}
     assert evaluation["probability"] is None
     assert evaluation["prediction_authority"] is False
@@ -128,8 +136,11 @@ def test_provider_city_labels_match_only_when_full_franchise_names_are_explicit_
         outcome_home="Kansas City Chiefs",
         outcome_away="Denver Broncos",
         start="2026-09-15T00:15:00Z",
+        updated="2026-09-15T00:10:00Z",
     )
-    result = attach_snapshot_evidence(handoff, _snapshot([event]))
+    result = attach_snapshot_evidence(
+        handoff, _snapshot([event]), now=datetime(2026, 9, 15, 0, 11, tzinfo=timezone.utc),
+    )
     candidate = result["model_handoff"]["team_event_candidates"][0]
     assert len(candidate["market_evidence"]) == 2
     assert {row["outcome_name"] for row in candidate["market_evidence"]} == {"Kansas City Chiefs", "Denver Broncos"}
@@ -156,12 +167,62 @@ def test_provider_city_prefix_without_exact_full_h2h_identity_is_rejected():
         outcome_home="Kansas City",
         outcome_away="Denver",
         start="2026-09-15T00:15:00Z",
+        updated="2026-09-15T00:10:00Z",
     )
-    result = attach_snapshot_evidence(handoff, _snapshot([event]))
+    result = attach_snapshot_evidence(
+        handoff, _snapshot([event]), now=datetime(2026, 9, 15, 0, 11, tzinfo=timezone.utc),
+    )
     candidate = result["model_handoff"]["team_event_candidates"][0]
     assert candidate["market_evidence"] == []
     assert result["market_evidence_snapshot_bridge"]["matched_events"] == 0
     assert result["market_evidence_snapshot_bridge"]["unmatched_events"] == 1
+
+
+def test_stale_current_market_rows_are_quarantined_at_consumption():
+    result = attach_snapshot_evidence(
+        _handoff(),
+        _snapshot([_event("RUNDOWN", "book-a", -120, updated="2026-09-14T19:30:00Z")]),
+        now=NOW,
+    )
+    candidate = result["model_handoff"]["team_event_candidates"][0]
+    assert candidate["market_evidence"] == []
+    assert len(candidate["market_evidence_stale"]) == 2
+    assert candidate["market_evidence_status"] == "STALE_OR_HISTORICAL_ONLY"
+    assert "MARKET_EVIDENCE_STALE_AT_CONSUMPTION" in candidate["market_evidence_source_blockers"]
+    assert result["market_evidence_snapshot_bridge"]["stale_or_unknown_rows_quarantined"] == 2
+    evaluation = evaluate_candidate(candidate, now=NOW)
+    assert evaluation["research_status"] == "WATCH"
+    assert evaluation["probability"] is None
+
+
+def test_historical_openers_never_become_current_market_evidence():
+    result = attach_snapshot_evidence(
+        _handoff(),
+        _snapshot([_event("RUNDOWN", "book-a", -120, capability="openers")]),
+        now=NOW,
+    )
+    candidate = result["model_handoff"]["team_event_candidates"][0]
+    assert candidate["market_evidence"] == []
+    assert len(candidate["market_evidence_historical"]) == 2
+    assert "MARKET_EVIDENCE_HISTORICAL_ONLY" in candidate["market_evidence_source_blockers"]
+    assert result["market_evidence_snapshot_bridge"]["historical_opener_rows_quarantined"] == 2
+
+
+def test_snapshot_disagreement_alerts_are_forwarded_without_probability_mutation():
+    alert = {
+        "code": "MARKET_SOURCE_DISAGREEMENT",
+        "prediction_authority": False,
+        "can_execute": False,
+    }
+    result = attach_snapshot_evidence(
+        _handoff(),
+        _snapshot([_event("RUNDOWN", "book-a", -120)], source_disagreement_alert_count=1, source_disagreement_alerts=[alert]),
+        now=NOW,
+    )
+    assert result["source_disagreement_alerts"] == [alert]
+    assert result["market_evidence_snapshot_bridge"]["source_disagreement_alert_count"] == 1
+    candidate = result["model_handoff"]["team_event_candidates"][0]
+    assert candidate["probability"] is None
 
 
 def test_team_or_time_mismatch_never_attaches():
@@ -169,7 +230,7 @@ def test_team_or_time_mismatch_never_attaches():
         _event("RUNDOWN", "book-a", -120, home="Seattle Mariners"),
         _event("SHARPAPI", "book-b", -118, start="2026-09-15T05:00:00Z"),
     ])
-    result = attach_snapshot_evidence(_handoff(), snapshot)
+    result = attach_snapshot_evidence(_handoff(), snapshot, now=NOW)
     candidate = result["model_handoff"]["team_event_candidates"][0]
     assert candidate["market_evidence"] == []
     assert result["market_evidence_snapshot_bridge"]["evidence_rows_attached"] == 0
@@ -177,7 +238,9 @@ def test_team_or_time_mismatch_never_attaches():
 
 
 def test_ambiguous_candidate_identity_is_left_unattached():
-    result = attach_snapshot_evidence(_handoff(duplicate=True), _snapshot([_event("RUNDOWN", "book-a", -120)]))
+    result = attach_snapshot_evidence(
+        _handoff(duplicate=True), _snapshot([_event("RUNDOWN", "book-a", -120)]), now=NOW,
+    )
     assert all(not candidate["market_evidence"] for candidate in result["model_handoff"]["team_event_candidates"])
     assert result["market_evidence_snapshot_bridge"]["ambiguous_events"] == 1
     assert result["market_evidence_snapshot_bridge"]["evidence_rows_attached"] == 0
@@ -188,7 +251,7 @@ def test_prop_without_existing_player_market_identity_is_not_inferred_from_team_
     team = handoff["model_handoff"]["team_event_candidates"].pop()
     prop = dict(team, route="WOW_PROP_LANE", market_evidence=[])
     handoff["model_handoff"]["prop_candidates"] = [prop]
-    result = attach_snapshot_evidence(handoff, _snapshot([_event("RUNDOWN", "book-a", -120)]))
+    result = attach_snapshot_evidence(handoff, _snapshot([_event("RUNDOWN", "book-a", -120)]), now=NOW)
     candidate = result["model_handoff"]["prop_candidates"][0]
     assert candidate["market_evidence"] == []
     assert result["market_evidence_snapshot_bridge"]["evidence_rows_attached"] == 0
