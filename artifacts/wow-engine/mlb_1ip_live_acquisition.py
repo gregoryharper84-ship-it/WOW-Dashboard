@@ -182,6 +182,7 @@ def hydrate_mlb_1ip_evidence(*, player: str, event_start_time: str, http_get: Ca
     return {
         "provider": PROVIDER,
         "captured_at": ts,
+        "pitcher_id": pitcher_id,
         "starter_name": official_name,
         "starter_name_at_capture": official_name,
         "starter_status": "CONFIRMED",
