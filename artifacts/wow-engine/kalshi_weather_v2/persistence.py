@@ -20,12 +20,7 @@ class KalshiWeatherPersistenceError(RuntimeError):
 
 
 class KalshiWeatherPersistence:
-    """Append-only persistence bridge for the six governed weather ledgers.
-
-    The database migration also blocks UPDATE/DELETE. This adapter adds an
-    application-side identity-collision check so retries are idempotent only
-    when the already-persisted row is materially identical.
-    """
+    """Append-only persistence bridge for the governed Weather ledgers."""
 
     def __init__(self, client):
         self.client = client
@@ -217,7 +212,9 @@ class KalshiWeatherPersistence:
     def load_rule(self, rule_snapshot_id: str) -> Mapping[str, Any] | None:
         return self._select_one("wow_kalshi_weather_contract_rules", "rule_snapshot_id", rule_snapshot_id)
 
-    def load_runtime_capability(self, capability_key: str = "KALSHI_WEATHER_PROBABILITY") -> Mapping[str, Any]:
+    def load_runtime_capability(
+        self, capability_key: str = "KALSHI_WEATHER_PROBABILITY"
+    ) -> Mapping[str, Any]:
         row = self._select_one("wow_runtime_capabilities", "capability_key", capability_key)
         if not row:
             return {
@@ -237,9 +234,16 @@ class KalshiWeatherPersistence:
         lane: str,
         lead_time_bucket: str,
         fitted_before: str,
+        model_version: str | None = None,
     ) -> tuple[str, CalibrationProfile] | None:
+        """Load only a profile compatible with the scoring model version.
+
+        `model_version` is optional for backwards compatibility with existing
+        V1 callers. New governed runtimes must supply it so a calibration fitted
+        for one forecast model can never be silently reused by another model.
+        """
         try:
-            result = (
+            query = (
                 self.client.table("wow_kalshi_weather_calibration_profiles")
                 .select("*")
                 .eq("station_id", station_id)
@@ -247,12 +251,14 @@ class KalshiWeatherPersistence:
                 .eq("lead_time_bucket", lead_time_bucket)
                 .eq("certified", True)
                 .lte("fitted_as_of", fitted_before)
-                .order("fitted_as_of", desc=True)
-                .limit(1)
-                .execute()
             )
+            if model_version:
+                query = query.eq("model_version", model_version)
+            result = query.order("fitted_as_of", desc=True).limit(1).execute()
         except Exception as exc:
-            raise KalshiWeatherPersistenceError("KALSHI_WEATHER_CALIBRATION_READ_FAILED", type(exc).__name__) from exc
+            raise KalshiWeatherPersistenceError(
+                "KALSHI_WEATHER_CALIBRATION_READ_FAILED", type(exc).__name__
+            ) from exc
         rows = result.data or []
         if not rows:
             return None
@@ -278,7 +284,9 @@ class KalshiWeatherPersistence:
         try:
             result = self.client.table(table).select("*").eq(key, value).limit(1).execute()
         except Exception as exc:
-            raise KalshiWeatherPersistenceError("KALSHI_WEATHER_LEDGER_READ_FAILED", f"{table}:{type(exc).__name__}") from exc
+            raise KalshiWeatherPersistenceError(
+                "KALSHI_WEATHER_LEDGER_READ_FAILED", f"{table}:{type(exc).__name__}"
+            ) from exc
         rows = result.data or []
         return dict(rows[0]) if rows else None
 
@@ -296,13 +304,17 @@ class KalshiWeatherPersistence:
         try:
             result = self.client.table(table).insert(dict(row)).execute()
         except Exception as exc:
-            raise KalshiWeatherPersistenceError("KALSHI_WEATHER_LEDGER_INSERT_FAILED", f"{table}:{type(exc).__name__}") from exc
+            raise KalshiWeatherPersistenceError(
+                "KALSHI_WEATHER_LEDGER_INSERT_FAILED", f"{table}:{type(exc).__name__}"
+            ) from exc
         rows = result.data or []
         if not rows:
             raise KalshiWeatherPersistenceError("KALSHI_WEATHER_LEDGER_INSERT_UNCONFIRMED", table)
         persisted = dict(rows[0])
         if str(persisted.get(primary_key)) != str(row[primary_key]):
-            raise KalshiWeatherPersistenceError("KALSHI_WEATHER_LEDGER_INSERT_IDENTITY_MISMATCH", table)
+            raise KalshiWeatherPersistenceError(
+                "KALSHI_WEATHER_LEDGER_INSERT_IDENTITY_MISMATCH", table
+            )
         return persisted
 
 
