@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import asdict
 from typing import Callable
 
 from fastapi import FastAPI, HTTPException
@@ -7,9 +8,11 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .empirical_runtime import install_empirical_cohort_scheduler
 from .free_public_sources import source_registry_snapshot
+from .operational_cycle import run_weather_operational_cycle_once
+from .opportunity_board import build_opportunity_board
 from .persistence import KalshiWeatherPersistence, KalshiWeatherPersistenceError
 from .runtime import DEFAULT_OPEN_METEO_MODELS, KalshiWeatherRuntimeError, capture_hourly_shadow, settle_hourly_prediction
-from .shadow_cohort import build_calibration_report, run_hourly_shadow_cohort_once
+from .shadow_cohort import build_calibration_report
 from v17.kalshi_weather_governance import governance_snapshot, reduce_kalshi_weather_prediction_v17
 
 
@@ -117,6 +120,25 @@ def install_kalshi_weather_v2_routes(
                 "probability_publishable": False,
                 "can_execute": False,
             }
+
+    if "/kalshi-weather/v17/opportunities" not in existing:
+        @app.get(
+            "/kalshi-weather/v17/opportunities",
+            dependencies=[auth_dependency],
+            operation_id="getKalshiWeatherV17Opportunities",
+        )
+        def opportunities_v17():
+            try:
+                result = build_opportunity_board(client=db_client_fn())
+                return {
+                    **asdict(result),
+                    "ranking_principle": "UNCERTAINTY_ADJUSTED_EDGE_ONLY_WHEN_FRICTION_VERIFIED",
+                    "market_price_used_as_weather_probability": False,
+                    "global_terminal_authority": "V17_TERMINAL_REDUCER",
+                    "can_execute": False,
+                }
+            except Exception as exc:
+                _raise_governed(exc)
 
     if "/kalshi-weather/v2/hourly/shadow" not in existing:
         @app.post(
@@ -250,10 +272,11 @@ def install_kalshi_weather_v2_routes(
         )
         def empirical_cohort_run():
             try:
-                result = run_hourly_shadow_cohort_once(db_client_fn=db_client_fn)
+                result = run_weather_operational_cycle_once(db_client_fn=db_client_fn)
                 return {
-                    **result.__dict__,
+                    **asdict(result),
                     "global_terminal_authority": "V17_TERMINAL_REDUCER",
+                    "can_execute": False,
                 }
             except Exception as exc:
                 _raise_governed(exc)
