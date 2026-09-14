@@ -126,6 +126,20 @@ def persist_feature_replay(client: Any, sport: str) -> dict[str, Any]:
             "feature_payload_sha256": hashlib.sha256(canonical.encode()).hexdigest(),
         })
 
+    seen: set[str] = set()
+    duplicates: list[str] = []
+    for payload in payloads:
+        gid = str(payload["game_id"])
+        if gid in seen:
+            duplicates.append(gid)
+            if len(duplicates) >= 10:
+                break
+        seen.add(gid)
+    if duplicates:
+        raise RuntimeError(
+            f"{sport}_FEATURE_REPLAY_DUPLICATE_GAME_IDS sample={','.join(duplicates)}"
+        )
+
     for offset in range(0, len(payloads), 250):
         client.table(table).upsert(payloads[offset:offset + 250], on_conflict="game_id").execute()
 
@@ -144,7 +158,11 @@ def run_training_replay(sport: str, client: Any | None = None) -> dict[str, Any]
     client = client or _client()
     provenance = verify_training_provenance(client, sport)
     feature_replay = persist_feature_replay(client, sport)
-    fit = fit_and_persist(sport, client=client)
+    fit = fit_and_persist(
+        sport,
+        client=client,
+        provenance_complete=bool(provenance.get("provenance_complete")),
+    )
     fit["provenance_preflight"] = provenance
     fit["feature_replay"] = feature_replay
     fit["promotion_attempted"] = False
