@@ -11,14 +11,31 @@ from dataclasses import dataclass
 from typing import Iterable
 
 
+# What actually produced the terminal. This is reported separately from the
+# blocker list because a row can carry an infrastructure blocker while its
+# terminal was decided by the model, and counting that row as
+# infrastructure-blocked both inflates infrastructure failures and hides a real
+# model rejection.
+CAUSE_MODEL_JUDGMENT = "MODEL_JUDGMENT"
+CAUSE_INFRASTRUCTURE = "INFRASTRUCTURE"
+CAUSE_EVENT = "EVENT"
+CAUSE_MODEL_SUPPORTED = "MODEL_SUPPORTED"
+CAUSE_UNEVALUATED = "UNEVALUATED"
+
+
 @dataclass(frozen=True)
 class PropTerminalDecision:
     terminal_label: str
     verdict_class: str
     model_evaluated: bool
     pick_rejected: bool
+    #: True only when infrastructure *caused* this terminal. A model-decided
+    #: terminal that merely coexists with an infrastructure blocker is False,
+    #: and that blocker is listed in ``concurrent_infrastructure_blockers``.
     infrastructure_blocked: bool
     blockers: tuple[str, ...]
+    terminal_cause: str = CAUSE_UNEVALUATED
+    concurrent_infrastructure_blockers: tuple[str, ...] = ()
 
 
 MODEL_CAPABILITY_BLOCKERS = {
@@ -57,24 +74,29 @@ def reduce_prop_terminal(*, proposed_label: str, blockers: Iterable[str] = (), m
     bset = set(bs)
     label = str(proposed_label or "").strip().upper() or "MODEL_UNAVAILABLE"
 
+    concurrent_market = tuple(b for b in bs if b in MARKET_BLOCKERS)
+
     if bset & EVENT_BLOCKERS:
-        return PropTerminalDecision("NO_PLAY", "EVENT_INVALIDATED", model_evaluated, False, False, bs)
+        return PropTerminalDecision("NO_PLAY", "EVENT_INVALIDATED", model_evaluated, False, False, bs, CAUSE_EVENT, concurrent_market)
     if bset & MODEL_CAPABILITY_BLOCKERS:
-        return PropTerminalDecision("MODEL_UNAVAILABLE", "CAPABILITY_BLOCKED", False, False, True, bs)
+        return PropTerminalDecision("MODEL_UNAVAILABLE", "CAPABILITY_BLOCKED", False, False, True, bs, CAUSE_INFRASTRUCTURE, concurrent_market)
     if (bset & SCORER_FAILURE_BLOCKERS) or label == "MODEL_SCORER_FAILED":
-        return PropTerminalDecision("MODEL_SCORER_FAILED", "SCORER_FAILED", False, False, True, bs)
+        return PropTerminalDecision("MODEL_SCORER_FAILED", "SCORER_FAILED", False, False, True, bs, CAUSE_INFRASTRUCTURE, concurrent_market)
     if (bset & OUTPUT_INVALID_BLOCKERS) or label == "MODEL_OUTPUT_INVALID":
-        return PropTerminalDecision("MODEL_OUTPUT_INVALID", "MODEL_OUTPUT_INVALID", model_evaluated, False, True, bs)
+        return PropTerminalDecision("MODEL_OUTPUT_INVALID", "MODEL_OUTPUT_INVALID", model_evaluated, False, True, bs, CAUSE_INFRASTRUCTURE, concurrent_market)
     if bset & INPUT_BLOCKERS and not model_evaluated:
-        return PropTerminalDecision("MODEL_INPUTS_INSUFFICIENT", "ACQUISITION_BLOCKED", False, False, True, bs)
+        return PropTerminalDecision("MODEL_INPUTS_INSUFFICIENT", "ACQUISITION_BLOCKED", False, False, True, bs, CAUSE_INFRASTRUCTURE, concurrent_market)
     if label in PREMODEL_ROW_REJECTION_LABELS:
-        return PropTerminalDecision(label, "ROW_INVALIDATED" if label == "SLATE_PURGE" else "DATA_QUALITY_REJECTED", False, True, False, bs)
+        return PropTerminalDecision(label, "ROW_INVALIDATED" if label == "SLATE_PURGE" else "DATA_QUALITY_REJECTED", False, True, False, bs, CAUSE_MODEL_JUDGMENT, concurrent_market)
     if label == "REJECT_OOD" and not model_evaluated and bset & PREMODEL_MODEL_CONTRACT_REJECTION_BLOCKERS:
-        return PropTerminalDecision("REJECT_OOD", "MODEL_CONTRACT_REJECTED", False, True, False, bs)
+        return PropTerminalDecision("REJECT_OOD", "MODEL_CONTRACT_REJECTED", False, True, False, bs, CAUSE_MODEL_JUDGMENT, concurrent_market)
     if label in TRUE_MODEL_REJECTION_LABELS:
         if not model_evaluated:
-            return PropTerminalDecision("MODEL_OUTPUT_INVALID", "MODEL_OUTPUT_INVALID", False, False, True, bs + ("REJECTION_WITHOUT_MODEL_EVALUATION",))
-        return PropTerminalDecision(label, "MODEL_REJECTED", True, True, bool(bset & MARKET_BLOCKERS), bs)
+            return PropTerminalDecision("MODEL_OUTPUT_INVALID", "MODEL_OUTPUT_INVALID", False, False, True, bs + ("REJECTION_WITHOUT_MODEL_EVALUATION",), CAUSE_INFRASTRUCTURE, concurrent_market)
+        # The model evaluated and rejected. A market blocker present alongside
+        # that decision did not cause the terminal, so it is reported as
+        # concurrent rather than as the cause.
+        return PropTerminalDecision(label, "MODEL_REJECTED", True, True, False, bs, CAUSE_MODEL_JUDGMENT, concurrent_market)
     if bset & MARKET_BLOCKERS:
-        return PropTerminalDecision(label if model_evaluated else "MODEL_INPUTS_INSUFFICIENT", "MARKET_BLOCKED", model_evaluated, False, True, bs)
-    return PropTerminalDecision(label, "MODEL_SUPPORTED" if model_evaluated else "UNEVALUATED", model_evaluated, False, False, bs)
+        return PropTerminalDecision(label if model_evaluated else "MODEL_INPUTS_INSUFFICIENT", "MARKET_BLOCKED", model_evaluated, False, True, bs, CAUSE_INFRASTRUCTURE, concurrent_market)
+    return PropTerminalDecision(label, "MODEL_SUPPORTED" if model_evaluated else "UNEVALUATED", model_evaluated, False, False, bs, CAUSE_MODEL_SUPPORTED if model_evaluated else CAUSE_UNEVALUATED, concurrent_market)

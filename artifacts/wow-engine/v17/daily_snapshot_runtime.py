@@ -20,6 +20,18 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
 from v17.daily_prop_acquisition import acquire_daily_prop_snapshots
+from v17.daily_response_contract import (
+    DETAIL_PAGE_DEFAULT_LIMIT,
+    DETAIL_PAGE_MAX_LIMIT,
+    compact_response,
+    persist_row_detail,
+    read_row_detail_page,
+)
+from v17.daily_terminal_reduction import (
+    assert_no_terminal_upgrade,
+    classify_stage_status,
+    reduce_row_terminal,
+)
 from v17.detailed_evidence_install import install_v17_detailed_evidence
 from v17.prop_evidence_acquisition_scheduler import run_prop_evidence_acquisition_loop
 from v17.prop_forward_cohort_route import install_prop_forward_cohort_route
@@ -34,22 +46,49 @@ class DailySnapshotRequest(BaseModel):
     lanes: list[Literal["PROPS", "MONEYLINE"]] = Field(default_factory=lambda: ["PROPS", "MONEYLINE"])
     max_props: int = Field(default=6, ge=0, le=12)
     max_team_events: int = Field(default=6, ge=0, le=12)
+    # COMPACT is the normal client contract: full per-row evidence is persisted
+    # and read back through the paged retrieval route instead of being inlined.
+    response_mode: Literal["COMPACT", "FULL"] = "COMPACT"
 
 
 def _detail(exc: HTTPException) -> dict[str, Any]:
     return dict(exc.detail) if isinstance(exc.detail, dict) else {"code": "HTTP_EXCEPTION", "message": str(exc.detail)}
 
 
-def _terminal_row(lane: str, identity: dict[str, Any], payload: dict[str, Any], row_status: str) -> dict[str, Any]:
-    publishable = bool(payload.get("probability_publishable") is True and payload.get("rank_eligible") is True)
-    return {"lane": lane, "identity": identity, "result": payload, "terminal": True, "row_status": row_status, "probability_publishable": publishable, "can_execute": False}
+def _terminal_row(
+    lane: str,
+    identity: dict[str, Any],
+    payload: dict[str, Any],
+    reduction: dict[str, Any],
+) -> dict[str, Any]:
+    """Build one terminal row whose status is the reduced stage terminal.
+
+    The row status is never computed independently of the stage ladder, so the
+    wrapper cannot report a terminal softer than the stages it aggregated.
+    """
+    row_status = reduction["final_terminal"]
+    publishable = bool(
+        payload.get("probability_publishable") is True
+        and payload.get("rank_eligible") is True
+        and row_status == "COMPLETED"
+    )
+    return {
+        "lane": lane,
+        "identity": identity,
+        "result": payload,
+        "terminal": True,
+        "row_status": row_status,
+        "terminal_reduction": reduction,
+        "probability_publishable": publishable,
+        "can_execute": False,
+    }
 
 
-def _props_row_status(outcomes: list[dict[str, Any]]) -> str:
-    statuses = {outcome.get("status") for outcome in outcomes}
-    if "COMPLETED" in statuses:
-        return "COMPLETED"
-    return "HELD"
+def _props_row_reduction(outcomes: list[dict[str, Any]]) -> dict[str, Any]:
+    """Reduce both direction assessments to one row terminal, lowest wins."""
+    return assert_no_terminal_upgrade(
+        reduce_row_terminal(outcome.get("status") for outcome in outcomes)
+    )
 
 
 def _reconcile(rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -199,6 +238,7 @@ def _lane_reconciliation(
     blockers: list[str] | None = None,
     acquisition: dict[str, Any] | None = None,
     canonical_manifest: list[dict[str, Any]] | None = None,
+    requested_limit: int | None = None,
 ) -> dict[str, Any]:
     blockers = blockers or []
     lane_rows = [row for row in rows if row.get("lane") == lane]
@@ -214,11 +254,17 @@ def _lane_reconciliation(
             zero_row_reason = "RUN_INVALID_PROP_SNAPSHOT_WRITE_FAILURE"
         elif lane == "PROPS" and "PROP_SNAPSHOT_INGESTION_EMPTY" in blockers:
             zero_row_reason = "PROP_SNAPSHOT_INGESTION_EMPTY"
+        elif requested_limit == 0:
+            # Zero rows caused by the request itself are never evidence that the
+            # canonical lane is empty. Reporting NO_CANONICAL_CANDIDATES here
+            # misattributes a client-requested bound to missing upstream data.
+            zero_row_reason = "REQUESTED_ROW_LIMIT_ZERO"
         else:
             zero_row_reason = "NO_CANONICAL_CANDIDATES"
     result = {
         "discovered_count": canonical_count,
         "canonicalized_count": canonical_count,
+        "requested_row_limit": requested_limit,
         "scored_count": len(lane_rows),
         "completed_count": sum(1 for row in lane_rows if row.get("row_status") == "COMPLETED"),
         "held_count": sum(1 for row in lane_rows if row.get("row_status") == "HELD"),
@@ -247,9 +293,13 @@ def _guard_moneyline_result(result: dict[str, Any]) -> tuple[dict[str, Any], str
         },
     }
     if guard["official_publication_allowed"] is not True:
+        # Depublication is a publication control, not a terminal. If the inner
+        # model already decided a hard rejection, that terminal is preserved
+        # rather than being softened into a hold by the guard.
+        inner_status = classify_stage_status(result)
         guarded["probability_publishable"] = False
         guarded["rank_eligible"] = False
-        return guarded, "HELD"
+        return guarded, inner_status if inner_status in ("REJECTED", "PURGED") else "HELD"
     return guarded, "COMPLETED"
 
 
@@ -274,7 +324,10 @@ def run_daily_snapshot(req: DailySnapshotRequest, *, db: Any, market_api: Any, e
             prop_rows = []
             prop_manifest = []
             blockers.append(f"PROP_SNAPSHOT_QUERY_FAILED:{type(exc).__name__}")
-        if not prop_rows and not any(str(x).startswith("PROP_SNAPSHOT_QUERY_FAILED") for x in blockers):
+        # Acquisition exists to fill an empty canonical lane. A zero-length page
+        # caused by max_props is not an empty lane, so it must not trigger a
+        # producer run (and must not later be typed NO_CANONICAL_CANDIDATES).
+        if not prop_manifest and not any(str(x).startswith("PROP_SNAPSHOT_QUERY_FAILED") for x in blockers):
             prop_acquisition = acquire_daily_prop_snapshots(
                 db=db,
                 requested_date=req.requested_slate_date,
@@ -304,14 +357,23 @@ def run_daily_snapshot(req: DailySnapshotRequest, *, db: Any, market_api: Any, e
             for direction in ("MORE", "LESS"):
                 try:
                     scored = market_api.score_prop(market_api.ScorePropRequest(**{**identity, "direction": direction}), "WOW_BETTING_ENGINE")
-                    status = "COMPLETED" if scored.get("probability_publishable") is True and scored.get("rank_eligible") is True else "HELD"
-                    outcomes.append({"direction": direction, "status": status, "payload": scored})
+                    outcomes.append({"direction": direction, "status": classify_stage_status(scored), "payload": scored})
                 except HTTPException as exc:
-                    outcomes.append({"direction": direction, "status": "HELD", "payload": _detail(exc)})
+                    # A typed rejection returned as an error still carries the
+                    # controlling model's terminal; it is classified, not assumed held.
+                    detail = _detail(exc)
+                    outcomes.append({"direction": direction, "status": classify_stage_status(detail), "payload": detail})
                 except Exception as exc:
                     outcomes.append({"direction": direction, "status": "HELD", "payload": {"code": "PROP_SCORER_EXCEPTION", "error_type": type(exc).__name__, "probability_publishable": False, "can_execute": False}})
             publishable = any(x["payload"].get("probability_publishable") is True and x["payload"].get("rank_eligible") is True for x in outcomes)
-            rows.append(_terminal_row("PROPS", identity, {"outcomes": outcomes, "probability_publishable": publishable, "rank_eligible": publishable, "can_execute": False}, _props_row_status(outcomes)))
+            rows.append(
+                _terminal_row(
+                    "PROPS",
+                    identity,
+                    {"outcomes": outcomes, "probability_publishable": publishable, "rank_eligible": publishable, "can_execute": False},
+                    _props_row_reduction(outcomes),
+                )
+            )
 
     if "MONEYLINE" in requested_lanes:
         try:
@@ -328,8 +390,9 @@ def run_daily_snapshot(req: DailySnapshotRequest, *, db: Any, market_api: Any, e
                 result = _detail(exc)
             except Exception as exc:
                 result = {"code": "TEAM_EVENT_SCORER_EXCEPTION", "error_type": type(exc).__name__, "probability_publishable": False, "can_execute": False}
-            result, row_status = _guard_moneyline_result(result)
-            rows.append(_terminal_row("MONEYLINE", identity, result, row_status))
+            result, stage_status = _guard_moneyline_result(result)
+            reduction = assert_no_terminal_upgrade(reduce_row_terminal([stage_status]))
+            rows.append(_terminal_row("MONEYLINE", identity, result, reduction))
 
     prop_counts = _acquisition_counts(prop_acquisition)
     true_zero_upstream = (
@@ -346,16 +409,29 @@ def run_daily_snapshot(req: DailySnapshotRequest, *, db: Any, market_api: Any, e
         elif "PROPS" not in requested_lanes:
             blockers.append("NO_CANONICAL_PREGAME_SNAPSHOTS")
 
+    requested_limits = {"PROPS": req.max_props, "MONEYLINE": req.max_team_events}
     lane_reconciliation = {
-        lane: _lane_reconciliation(rows, lane, blockers, prop_acquisition, prop_manifest if lane == "PROPS" else None)
+        lane: _lane_reconciliation(
+            rows,
+            lane,
+            blockers,
+            prop_acquisition,
+            prop_manifest if lane == "PROPS" else None,
+            requested_limit=requested_limits.get(lane),
+        )
         for lane in requested_lanes
     }
+    # Full per-row evidence is persisted before the response is compacted, so
+    # compact transport relocates evidence rather than discarding it.
+    detail_persistence = persist_row_detail(db, run_id=run_id, rows=rows)
+    blockers.extend(detail_persistence.get("blockers") or [])
+
     run_status = "COMPLETED"
     if "RUN_INVALID_PROP_SNAPSHOT_WRITE_FAILURE" in blockers:
         run_status = "RUN_INVALID_PROP_SNAPSHOT_WRITE_FAILURE"
     elif blockers:
         run_status = "COMPLETED_WITH_ACQUISITION_BLOCKERS"
-    return {
+    response = {
         "run_id": run_id,
         "terminal": True,
         "run_status": run_status,
@@ -366,9 +442,14 @@ def run_daily_snapshot(req: DailySnapshotRequest, *, db: Any, market_api: Any, e
         "reconciliation": _reconcile(rows),
         "lane_reconciliation": lane_reconciliation,
         "prop_acquisition": prop_acquisition,
+        "row_detail_persistence": detail_persistence,
         "blockers": list(dict.fromkeys(blockers)),
         "can_execute": False,
     }
+    if req.response_mode == "FULL":
+        response["response_mode"] = "FULL"
+        return response
+    return compact_response(response, detail_available=bool(detail_persistence.get("detail_available")))
 
 
 _ACQUISITION_LOGGER = logging.getLogger("wow.v17.prop_evidence_acquisition")
@@ -440,3 +521,21 @@ def install_daily_snapshot_route(app: FastAPI, *, auth_dependency: Any, db_clien
     @app.post("/v17/daily-snapshot-run", dependencies=[auth_dependency], operation_id="runWowV17DailySnapshot")
     def daily_snapshot_run(req: DailySnapshotRequest):
         return run_daily_snapshot(req, db=db_client_fn(), market_api=market_api, event_api=event_api)
+
+    @app.get(
+        "/v17/daily-snapshot-run/{run_id}/rows",
+        dependencies=[auth_dependency],
+        operation_id="readWowV17DailySnapshotRowDetail",
+    )
+    def daily_snapshot_row_detail(
+        run_id: str,
+        offset: int = 0,
+        limit: int = DETAIL_PAGE_DEFAULT_LIMIT,
+    ):
+        """Page the full per-row evidence a compact Daily response points at."""
+        return read_row_detail_page(
+            db_client_fn(),
+            run_id=run_id,
+            offset=offset,
+            limit=min(limit, DETAIL_PAGE_MAX_LIMIT),
+        )

@@ -216,6 +216,10 @@ def governance():
         global_status = "NOT_PRODUCED"
         deployment_gates = "GATE_LEDGER_UNREACHABLE"
 
+    # Imported lazily: v17/__init__ composes the active runtime at import time
+    # and must not run before api_prod_market is in sys.modules.
+    from v17.prop_capability_manifest import declared_prop_lane_manifest
+
     event_lane = _runtime_capability(MLB_EVENT_CAPABILITY_KEY)
     prop_lane = _runtime_capability(PROP_CAPABILITY_KEY)
 
@@ -238,6 +242,9 @@ def governance():
             PROP_CAPABILITY_KEY: {
                 "status": prop_lane.get("capability_status", "UNAVAILABLE"),
                 "evidence": prop_lane.get("evidence") or {},
+                # Every reachable prop lane is declared with its true status, so
+                # an active route can never be silently absent from the manifest.
+                "declared_lanes": declared_prop_lane_manifest(),
                 "probability_publishable": False,
                 "can_execute": False,
             },

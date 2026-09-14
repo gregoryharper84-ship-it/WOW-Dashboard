@@ -36,6 +36,15 @@ def _valid_calibrated_package(outcome: dict[str, Any]) -> bool:
 
 
 def _scoring_attempted(outcome: dict[str, Any]) -> bool:
+    """Did the controlling specialist scorer run for this row.
+
+    This is the backend fact only. It is never the host contract's
+    "a required Action call occurred", which is reported separately as
+    ``action_invocation_attempted``.
+    """
+    explicit = outcome.get("specialist_scoring_attempted")
+    if isinstance(explicit, bool):
+        return explicit
     if outcome.get("model_evaluated") is True or isinstance(outcome.get("result"), dict):
         return True
     return str(outcome.get("terminal_label") or "").upper() in {"MODEL_SCORER_FAILED", "MODEL_OUTPUT_INVALID"}
@@ -52,9 +61,12 @@ def _dimensioned_reconciliation(outcomes: list[dict[str, Any]]) -> dict[str, Any
     for outcome in outcomes:
         terminal = str(outcome.get("terminal_label") or "UNKNOWN").upper()
         terminal_counts[terminal] = terminal_counts.get(terminal, 0) + 1
+    specialist_scoring_attempted = sum(1 for row in outcomes if _scoring_attempted(row))
     return {
         "rows_in": len(outcomes),
-        "scoring_attempted": sum(1 for row in outcomes if _scoring_attempted(row)),
+        "specialist_scoring_attempted": specialist_scoring_attempted,
+        # Retained alias; this count has always meant the backend scorer fact.
+        "scoring_attempted": specialist_scoring_attempted,
         "scoring_completed": sum(1 for row in outcomes if row.get("model_evaluated") is True),
         "valid_probability_packages": sum(1 for row in outcomes if _valid_calibrated_package(row)),
         "model_qualified_rows": sum(1 for row in outcomes if row.get("model_qualified") is True),
@@ -139,6 +151,8 @@ def _qualification_payload(
         "pick_rejected": terminal.pick_rejected,
         "verdict_class": terminal.verdict_class,
         "infrastructure_blocked": terminal.infrastructure_blocked,
+        "terminal_cause": terminal.terminal_cause,
+        "concurrent_infrastructure_blockers": list(terminal.concurrent_infrastructure_blockers),
         "value_qualification_status": value_status,
         "card_qualification_status": "NOT_EVALUATED",
         "downstream_money_evaluation_allowed": qualification.downstream_money_evaluation_allowed,

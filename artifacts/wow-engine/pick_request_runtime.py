@@ -2,15 +2,23 @@
 
 The producing implementation is preserved in ``pick_request_runtime_core``.
 This facade adds receipt/error-boundary and Top-10 completion semantics:
-- pre-scorer construction failures remain ``scoring_attempted=false``;
+- pre-scorer construction failures remain ``specialist_scoring_attempted=false``;
 - once the fitted scorer is called, success/failure receipts are
-  ``scoring_attempted=true``;
+  ``specialist_scoring_attempted=true``;
 - unexpected scorer exceptions are typed ``MODEL_SCORER_FAILED``;
 - downstream portfolio-governance exceptions fail closed without erasing an
   already-completed sporting probability receipt; and
 - target Top-10 families cannot complete on terminal-status accounting alone:
   every source row must reconcile exactly once to a valid controlling-model
   package or an explicit typed blocker.
+
+``specialist_scoring_attempted`` is this layer's unambiguous name for "the
+controlling specialist scorer was invoked". It is deliberately distinct from the
+host contract's ``action_invocation_attempted`` ("a required Action call
+occurred"), because reporting the backend fact under the host's
+``scoring_attempted`` name made a row that terminated before the scorer ran read
+as though no Action call had happened at all. ``scoring_attempted`` is retained
+here as a backward-compatible alias of the backend fact for existing consumers.
 
 No model, evidence, line, calibration, ranking, or terminal-reducer behavior is
 changed here. Portfolio/card governance remains a downstream objective and can
@@ -86,12 +94,14 @@ def _terminal(
         snapshot_id=snapshot_id,
         acquisition=acquisition,
     )
+    out["specialist_scoring_attempted"] = scoring_attempted
     out["scoring_attempted"] = scoring_attempted
     return out
 
 
 def _completed_scored_outcome(**kwargs: Any) -> dict[str, Any]:
     out = _ORIGINAL_COMPLETED_SCORED_OUTCOME(**kwargs)
+    out["specialist_scoring_attempted"] = True
     out["scoring_attempted"] = True
     return out
 
@@ -139,6 +149,7 @@ class _ScoringReceiptMarketApi:
             return self._wrapped.score_prop(*args, **kwargs)
         except HTTPException as exc:
             detail = dict(exc.detail) if isinstance(exc.detail, dict) else {"message": str(exc.detail)}
+            detail["specialist_scoring_attempted"] = True
             detail["scoring_attempted"] = True
             detail.setdefault("specialist_invoked", True)
             raise HTTPException(status_code=exc.status_code, detail=detail, headers=exc.headers) from exc
@@ -148,6 +159,7 @@ class _ScoringReceiptMarketApi:
                 detail={
                     "code": "MODEL_SCORER_FAILED",
                     "error_type": type(exc).__name__,
+                    "specialist_scoring_attempted": True,
                     "scoring_attempted": True,
                     "specialist_invoked": True,
                 },

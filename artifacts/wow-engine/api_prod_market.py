@@ -435,6 +435,8 @@ def _probability_qualification(row: Any, market_lane: dict[str, Any], money_lane
         "pick_rejected": terminal.pick_rejected,
         "verdict_class": terminal.verdict_class,
         "infrastructure_blocked": terminal.infrastructure_blocked,
+        "terminal_cause": terminal.terminal_cause,
+        "concurrent_infrastructure_blockers": list(terminal.concurrent_infrastructure_blockers),
         "downstream_money_evaluation_allowed": qualification.downstream_money_evaluation_allowed,
         "final_approved_allowed": False,
         "blockers": list(terminal.blockers),

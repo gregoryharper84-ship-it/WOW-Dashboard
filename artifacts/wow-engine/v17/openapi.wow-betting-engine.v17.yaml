@@ -63,8 +63,9 @@ paths:
       operationId: runWowV17DailySnapshot
       x-openai-isConsequential: false
       description: >-
-        Canonical bounded Daily runner. Selects still-pregame governed snapshots,
-        scores capped prop and moneyline rows, and returns one terminal receipt.
+        Canonical bounded Daily runner. Scores capped pregame prop and moneyline
+        rows and returns one terminal receipt per row. COMPACT by default; read
+        full per-row evidence via readWowV17DailySnapshotRowDetail.
       security: [{actionBearer: []}]
       requestBody:
         required: true
@@ -73,6 +74,30 @@ paths:
             schema: {$ref: '#/components/schemas/DailySnapshotRequest'}
       responses:
         '200': {description: "Terminal bounded Daily receipt, including held rows"}
+        '401': {description: Authentication failed}
+  /v17/daily-snapshot-run/{run_id}/rows:
+    get:
+      operationId: readWowV17DailySnapshotRowDetail
+      x-openai-isConsequential: false
+      description: >-
+        Read one bounded page of full per-row evidence for a Daily run, as
+        referenced by a compact Daily response. Read-only.
+      security: [{actionBearer: []}]
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema: {type: string}
+        - name: offset
+          in: query
+          required: false
+          schema: {type: integer, minimum: 0, default: 0}
+        - name: limit
+          in: query
+          required: false
+          schema: {type: integer, minimum: 1, maximum: 25, default: 5}
+      responses:
+        '200': {description: One page of full Daily row evidence}
         '401': {description: Authentication failed}
   /score-pick-request:
     post:
@@ -174,6 +199,10 @@ components:
           default: [PROPS, MONEYLINE]
         max_props: {type: integer, minimum: 0, maximum: 12, default: 6}
         max_team_events: {type: integer, minimum: 0, maximum: 12, default: 6}
+        response_mode:
+          type: string
+          enum: [COMPACT, FULL]
+          default: COMPACT
     PickRequestBatch:
       type: object
       additionalProperties: false

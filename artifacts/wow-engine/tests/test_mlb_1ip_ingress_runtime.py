@@ -13,6 +13,8 @@ class _Decision:
     pick_rejected = False
     verdict_class = "MODEL_SUPPORTED_HOLD"
     infrastructure_blocked = False
+    terminal_cause = "MODEL_SUPPORTED"
+    concurrent_infrastructure_blockers = ()
 
 
 class _Table:

@@ -70,7 +70,7 @@ def governed_team_result():
 
 def test_daily_snapshot_returns_one_terminal_receipt_per_selected_row(monkeypatch):
     monkeypatch.setattr("v17.daily_snapshot_runtime.score_team_event_request", lambda *_args, **_kwargs: governed_team_result())
-    result=run_daily_snapshot(DailySnapshotRequest(requested_slate_date=SLATE_DATE,requested_timezone="America/Chicago"),db=DB(),market_api=Market(),event_api=Event())
+    result=run_daily_snapshot(DailySnapshotRequest(requested_slate_date=SLATE_DATE,requested_timezone="America/Chicago",response_mode="FULL"),db=DB(),market_api=Market(),event_api=Event())
     assert result["run_status"]=="COMPLETED"
     assert len(result["rows"])==2
     assert result["reconciliation"] == {
@@ -89,7 +89,7 @@ def test_moneyline_normal_hold_is_not_completed(monkeypatch):
 def test_moneyline_shadow_style_boolean_leak_is_held_and_depublished(monkeypatch):
     shadow = {"source_mode":"FORWARD_SHADOW","probability_publishable":True,"rank_eligible":True,"can_execute":False,"calibrated_probability":0.563781,"calibrated_lower_bound":0.563781}
     monkeypatch.setattr("v17.daily_snapshot_runtime.score_team_event_request", lambda *_args, **_kwargs: shadow)
-    result=run_daily_snapshot(DailySnapshotRequest(requested_slate_date=SLATE_DATE,requested_timezone="America/Chicago",lanes=["MONEYLINE"]),db=DB(),market_api=Market(),event_api=Event())
+    result=run_daily_snapshot(DailySnapshotRequest(requested_slate_date=SLATE_DATE,requested_timezone="America/Chicago",lanes=["MONEYLINE"],response_mode="FULL"),db=DB(),market_api=Market(),event_api=Event())
     row=result["rows"][0]
     assert row["row_status"]=="HELD"
     assert row["probability_publishable"] is False
