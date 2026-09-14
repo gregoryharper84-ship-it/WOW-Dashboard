@@ -1,0 +1,32 @@
+{
+  "alpha": 50.0,
+  "alpha_candidates": [2.0, 4.0, 8.0, 12.0, 20.0, 30.0, 50.0],
+  "artifact_checksum": "6dfda83565d5af658408261c49645ee83345afa75a08590d8a2af2dc9a46ae73",
+  "can_execute": false,
+  "development_split": 0.7,
+  "historical_validation": {
+    "validation_rows": 1331,
+    "multiclass_brier": 0.6641519908101262,
+    "multiclass_log_loss": 1.0948369029354865,
+    "line_3_5_more_brier": 0.21998094285844097,
+    "line_3_5_more_ece": 0.01309061163315687,
+    "line_4_5_more_brier": 0.22848512453350933,
+    "line_4_5_more_ece": 0.010163218920937517,
+    "historical_validation_passed": true
+  },
+  "league_prior": {
+    "3": 0.33562691131498473,
+    "4": 0.31116207951070335,
+    "5_PLUS": 0.3532110091743119
+  },
+  "lifecycle_state": "HISTORICALLY_VALIDATED_FORWARD_SHADOW_REQUIRED",
+  "model_family": "MLB_1IP_BF_DIRICHLET_SHRINKAGE_V1",
+  "probability_publishable": false,
+  "rank_eligible": false,
+  "recent_history_limit": 10,
+  "training_manifest_hash": "61e7f45d513ee6e32ed7517c64e2804f0b802e03322085e0beed10ea7055f545",
+  "training_rows": 1308,
+  "training_season": 2024,
+  "validation_manifest_hash": "2be7cf6b663e48212edf45eeafd33465cbdf487e4ea46891ad5d343110a50227",
+  "validation_season": 2025
+}
