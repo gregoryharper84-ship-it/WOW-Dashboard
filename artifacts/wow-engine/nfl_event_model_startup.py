@@ -19,7 +19,14 @@ def install_nfl_model_startup(app: Any, *, db_client_fn: Any) -> None:
 
     @app.on_event("startup")
     async def _schedule_nfl_model_certification() -> None:
-        if os.getenv("WOW_NFL_MODEL_CERTIFY_ON_STARTUP", "1") != "1":
+        # Fitting/certification loads the complete historical feature cohort and
+        # is intentionally not part of the web-server lifecycle.  Render may
+        # restart or replace a web instance for reasons unrelated to model data;
+        # default-on certification turns every such event into a memory-heavy
+        # training run.  Operators can still request the one-shot maintenance
+        # action explicitly.  Runtime scoring continues to load only an already
+        # promoted champion and fails closed when none exists.
+        if os.getenv("WOW_NFL_MODEL_CERTIFY_ON_STARTUP", "0") != "1":
             return
 
         async def _run() -> None:
