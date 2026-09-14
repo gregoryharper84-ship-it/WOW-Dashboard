@@ -13,6 +13,7 @@ from dataclasses import dataclass
 CAN_EXECUTE = False
 
 MLB_GAME_WIN_PROBABILITY_EXPERT = "MLB_GAME_WIN_PROBABILITY_EXPERT"
+NFL_GAME_WIN_PROBABILITY_EXPERT = "NFL_GAME_WIN_PROBABILITY_EXPERT"
 
 # The catalog is intentionally broader than the production bridge registry.  A
 # catalog entry means LLP knows the sport/contract shape; it does NOT mean the
@@ -134,9 +135,13 @@ TEAM_EVENT_INPUT_CONTRACTS: dict[str, tuple[str, ...]] = {
     ),
 }
 
-# Certification is deliberately narrower than discovery/catalog support.
+# Certification is deliberately narrower than discovery/catalog support.  NFL
+# is listed here only after its production fitted model, calibration/lower-bound
+# package, immutable prediction ledger, terminal governance bridge, and trusted
+# OIDC end-to-end acceptance all completed successfully.
 CERTIFIED_TEAM_EVENT_SPORTS: dict[str, str] = {
     "MLB": MLB_GAME_WIN_PROBABILITY_EXPERT,
+    "NFL": NFL_GAME_WIN_PROBABILITY_EXPERT,
 }
 
 KNOWN_UNCERTIFIED_TEAM_EVENT_SPORTS = frozenset(
@@ -205,6 +210,7 @@ __all__ = [
     "EXPECTED_TEAM_EVENT_SPORTS",
     "KNOWN_UNCERTIFIED_TEAM_EVENT_SPORTS",
     "MLB_GAME_WIN_PROBABILITY_EXPERT",
+    "NFL_GAME_WIN_PROBABILITY_EXPERT",
     "TEAM_EVENT_INPUT_CONTRACTS",
     "TeamEventCapability",
     "normalize_team_event_sport",
