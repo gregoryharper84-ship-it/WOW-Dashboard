@@ -1,15 +1,14 @@
 """Run Nightly Multi-Scout with refreshable GitHub Actions OIDC source auth.
 
 If the legacy proxy bearer is configured it remains authoritative and unchanged.
-Otherwise this wrapper mints a short-lived GitHub OIDC token before proxy calls;
+Otherwise this wrapper mints a short-lived GitHub OIDC token before source calls;
 the OIDC client caches only briefly, so long scans refresh automatically.
-Transient proxy cold-start failures on the OIDC path are retried without
-weakening typed auth/governance failures. Vendor 401/403 responses that arrive
-after caller authentication are scoped to the affected source/event rather than
-terminating the entire multi-sport scan. If the primary Odds API path remains
-unavailable after governed retries, supported team/event requests can fail over
-to a secondary live research feed. Secondary evidence never becomes model
-probability, exact-line authority, or executable betting authority.
+Transient source cold-start failures on the OIDC path are retried without
+weakening typed auth/governance failures. The production source path uses the
+read-only WOW odds acquisition router, which can preserve primary Odds API
+coverage and fail over evidence acquisition without creating probability or
+execution authority. Secondary evidence never becomes model probability,
+exact-line authority, or executable betting authority.
 Scout itself remains discovery-only and can_execute=false.
 """
 from __future__ import annotations
@@ -24,10 +23,12 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from v17 import nightly_multiscout as scout
+from v17 import market_evidence_sources as market_sources
 from v17.github_actions_oidc_client import GitHubOIDCMintError, mint_github_actions_oidc
 from v17.market_evidence_scout_bridge import market_evidence_for_request
 from v17.scout_secondary_source import secondary_for_request
 
+DEFAULT_ODDS_ROUTER_URL = "https://wow-odds-router.onrender.com"
 TRANSIENT_HTTP_STATUSES = {500, 502, 503, 504}
 TRANSIENT_SOURCE_CODES = {
     "URLError",
@@ -41,6 +42,8 @@ AUTH_FAILURE_CODES = {
     "WOW_SCOUT_SOURCE_AUTH_UNCONFIGURED",
     "ODDS_PROXY_AUTH_REQUIRED",
     "ODDS_PROXY_AUTH_INVALID",
+    "ODDS_ROUTER_AUTH_REQUIRED",
+    "ODDS_ROUTER_AUTH_INVALID",
 }
 SECONDARY_VENDOR_FAILURE_CODES = {
     "ODDS_API_FEATURED_ODDS_FALLBACK_ERROR",
@@ -96,6 +99,35 @@ def configure_source_failure_scope() -> None:
     # Typed vendor failures are row/source blockers. Caller auth remains fail-closed
     # before this point; 429 remains the only slate-terminal source status here.
     scout.TERMINAL_SOURCE_HTTP_STATUSES = {429}
+
+
+def configure_acquisition_router() -> None:
+    """Route production Scout through the read-only multi-provider router.
+
+    The existing workflow variable keeps its historical name, but this wrapper
+    deliberately overrides the imported primary-proxy URL unless an emergency
+    kill switch is set. The router accepts the same short-lived GitHub OIDC
+    identity and remains evidence-only/can_execute=false.
+    """
+    kill_switch = os.environ.get("WOW_SCOUT_ODDS_ROUTER_KILL_SWITCH", "false").strip().lower() == "true"
+    if kill_switch:
+        return
+    router_url = os.environ.get("WOW_ODDS_ROUTER_URL", DEFAULT_ODDS_ROUTER_URL).strip()
+    if router_url:
+        scout.PROXY_URL = router_url.rstrip("/")
+
+
+def enable_research_market_evidence() -> None:
+    """Keep the production Scout evidence lane on by default.
+
+    This affects acquisition only. The market-evidence module remains
+    research-only, prediction_authority=False, exact_line_authority=False and
+    can_execute=False. An explicit emergency kill switch can still disable the
+    provider tier without changing model/governance semantics.
+    """
+    kill_switch = os.environ.get("WOW_MARKET_EVIDENCE_KILL_SWITCH", "false").strip().lower() == "true"
+    market_sources.ENABLED = not kill_switch
+    os.environ["WOW_MARKET_EVIDENCE_ENABLED"] = "false" if kill_switch else "true"
 
 
 def install_refreshable_oidc_proxy_auth() -> None:
@@ -194,6 +226,8 @@ def install_refreshable_oidc_proxy_auth() -> None:
 
 def main() -> int:
     configure_source_failure_scope()
+    configure_acquisition_router()
+    enable_research_market_evidence()
     install_refreshable_oidc_proxy_auth()
     return scout.main()
 
