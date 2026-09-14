@@ -11,10 +11,12 @@ from pathlib import Path
 from typing import Any
 
 try:  # package import under pytest/backend runtime
+    from v17.market_evidence_snapshot_bridge import attach_snapshot_evidence
     from v17.scout_research_promotion import promote_handoff
     from v17.sport_scout_registry import registry_payload, scout_team_for
     from v17.sport_research_brief import SUPPORTED_RESEARCH_WORKERS, build_research_brief
 except ModuleNotFoundError:  # direct `python v17/sport_scout_enrichment.py`
+    from market_evidence_snapshot_bridge import attach_snapshot_evidence
     from scout_research_promotion import promote_handoff
     from sport_scout_registry import registry_payload, scout_team_for
     from sport_research_brief import SUPPORTED_RESEARCH_WORKERS, build_research_brief
@@ -72,6 +74,15 @@ def enrich_handoff(payload: dict[str, Any]) -> dict[str, Any]:
     return promote_handoff(out)
 
 
+def _attach_sibling_snapshot(payload: dict[str, Any], source: Path) -> dict[str, Any]:
+    """Consume the workflow's sibling market-evidence artifact when present."""
+    snapshot_path = source.parent / "market-evidence.json"
+    if not snapshot_path.exists():
+        return payload
+    snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    return attach_snapshot_evidence(payload, snapshot)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", required=True)
@@ -80,15 +91,19 @@ def main() -> int:
     source = Path(args.input)
     target = Path(args.output)
     payload = json.loads(source.read_text(encoding="utf-8"))
+    payload = _attach_sibling_snapshot(payload, source)
     enriched = enrich_handoff(payload)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(enriched, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    bridge = enriched.get("market_evidence_snapshot_bridge", {})
     print(json.dumps({
         "status": "SPORT_SCOUT_ENRICHMENT_COMPLETE",
         "team_event_candidates": len(enriched.get("model_handoff", {}).get("team_event_candidates", [])),
         "prop_candidates": len(enriched.get("model_handoff", {}).get("prop_candidates", [])),
         "research_workers": len(SUPPORTED_RESEARCH_WORKERS),
         "research_status_counts": enriched.get("research_promotion", {}).get("status_counts", {}),
+        "snapshot_evidence_rows_attached": bridge.get("evidence_rows_attached", 0),
+        "snapshot_candidates_touched": bridge.get("candidates_touched", 0),
         "can_execute": False,
     }))
     return 0
