@@ -30,9 +30,10 @@ import argparse
 import json
 import os
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -75,6 +76,24 @@ def _sharpapi_live_params(sport_key: str) -> dict[str, str] | None:
     return {"league": str(league).upper()}
 
 
+def _bounded_rate_limit_retry(call: Callable[[], sources.MarketEvidenceResult]) -> sources.MarketEvidenceResult:
+    """Retry only HTTP 429, with a tiny bounded backoff and no auth retries.
+
+    The default is one retry.  This is intentionally conservative so the
+    hardening itself cannot amplify provider quota pressure.
+    """
+    result = call()
+    max_retries = max(0, min(int(os.environ.get("WOW_MARKET_EVIDENCE_429_RETRIES", "1")), 2))
+    backoff = max(0.0, min(float(os.environ.get("WOW_MARKET_EVIDENCE_429_BACKOFF_SECONDS", "0.5")), 2.0))
+    retries = 0
+    while result.status == 429 and retries < max_retries:
+        retries += 1
+        if backoff:
+            time.sleep(backoff * retries)
+        result = call()
+    return result
+
+
 def _lane(provider: str, sport_key: str, capability: str, result: sources.MarketEvidenceResult, date: str | None) -> dict[str, Any]:
     lane: dict[str, Any] = {
         "provider": provider,
@@ -104,14 +123,18 @@ def collect(sports: list[str], *, dates: list[str] | None = None, opener: Any = 
     events: list[dict[str, Any]] = []
 
     for sport_key in sports:
-        sharp = live.sharpapi_market_evidence(sport_key, opener=opener)
+        sharp = _bounded_rate_limit_retry(lambda: live.sharpapi_market_evidence(sport_key, opener=opener))
         lanes.append(_lane("SHARPAPI", sport_key, "odds", sharp, None))
         if sharp.ok:
             events.extend(sharp.data)
 
         for date in dates:
             for capability in ("openers", "events"):
-                result = live.rundown_market_evidence(sport_key, date, capability=capability, opener=opener)
+                result = _bounded_rate_limit_retry(
+                    lambda sport_key=sport_key, date=date, capability=capability: live.rundown_market_evidence(
+                        sport_key, date, capability=capability, opener=opener,
+                    )
+                )
                 lanes.append(_lane("RUNDOWN", sport_key, capability, result, date))
                 if result.ok:
                     events.extend(result.data)
