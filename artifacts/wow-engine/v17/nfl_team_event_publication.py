@@ -81,6 +81,7 @@ def _canonicalize(req: Any, *, db: Any, base: Any) -> Any:
         update={
             "sport": "NFL",
             "league": "NFL",
+            "official_event_id": str(resolution["canonical_event_id"]),
             "sport_specific_evidence": dict(resolution["evidence"]),
             "source_snapshot_id": str(resolution["canonical_source_snapshot_id"]),
             "latest_material_update_timestamp": str(resolution["canonical_snapshot_timestamp"]),
@@ -241,7 +242,17 @@ def install_nfl_team_event_publication(team_event_module: Any) -> bool:
             raise _typed_failure(team_event_module, effective_req, exc) from exc
 
         governed["scout_research_barrier"] = scout_research_barrier
-        governed["canonical_acquisition"] = {"status": "PASS", "source_snapshot_id": effective_req.source_snapshot_id, "latest_material_update_timestamp": effective_req.latest_material_update_timestamp, "provider": "NFLVERSE_PUBLIC_DATA", "can_execute": False}
+        evidence = dict(effective_req.sport_specific_evidence or {})
+        governed["canonical_acquisition"] = {
+            "status": "PASS",
+            "source_snapshot_id": effective_req.source_snapshot_id,
+            "latest_material_update_timestamp": effective_req.latest_material_update_timestamp,
+            "provider": "NFLVERSE_PUBLIC_DATA",
+            "canonical_event_id": effective_req.official_event_id,
+            "provider_event_id": evidence.get("provider_event_id"),
+            "identity_resolution": evidence.get("identity_resolution"),
+            "can_execute": False,
+        }
         governed["candidate_envelope"] = {
             "research_run_id": envelope.research_run_id,
             "event_key": envelope.event_key,
