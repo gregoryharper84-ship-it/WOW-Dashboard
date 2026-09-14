@@ -3,7 +3,9 @@
 This is an evidence-transport boundary only. It never computes probability,
 edge, qualification, stake, or execution instructions. Snapshot events attach
 only when sport, both team identities, and commencement time agree within a
-tight tolerance. Ambiguous matches are left unattached rather than guessed.
+tight tolerance. Provider city-only labels may resolve to a full franchise
+identity only when that exact full identity is explicitly present in the same
+event's H2H outcomes. Ambiguous matches are left unattached rather than guessed.
 """
 from __future__ import annotations
 
@@ -34,14 +36,50 @@ def _aware(value: Any) -> datetime | None:
     return parsed.astimezone(timezone.utc)
 
 
+def _h2h_outcome_names(event: dict[str, Any]) -> set[str]:
+    """Return exact normalized H2H participant names explicitly supplied by a provider."""
+    names: set[str] = set()
+    for book in event.get("bookmakers", []) or []:
+        if not isinstance(book, dict):
+            continue
+        for market in book.get("markets", []) or []:
+            if not isinstance(market, dict) or str(market.get("key") or "").lower() != "h2h":
+                continue
+            for outcome in market.get("outcomes", []) or []:
+                if not isinstance(outcome, dict):
+                    continue
+                name = _norm(outcome.get("name"))
+                if name:
+                    names.add(name)
+    return names
+
+
+def _side_identity_matches(candidate_name: Any, event_name: Any, *, h2h_names: set[str]) -> bool:
+    """Match one home/away side without generic fuzzy identity inference.
+
+    Exact normalized names always match. A provider abbreviation such as
+    ``Kansas City`` may match ``Kansas City Chiefs`` only when the exact full
+    candidate name is also an H2H outcome in this same event and the provider
+    side label is a leading token sequence of that candidate name. This keeps
+    the side orientation deterministic and prevents unrelated prefix guessing.
+    """
+    candidate = _norm(candidate_name)
+    provider = _norm(event_name)
+    if not candidate or not provider:
+        return False
+    if candidate == provider:
+        return True
+    return candidate in h2h_names and candidate.startswith(provider)
+
+
 def _same_event(candidate: dict[str, Any], event: dict[str, Any], *, tolerance_minutes: float) -> bool:
     if str(candidate.get("sport_key") or "") != str(event.get("sport_key") or ""):
         return False
-    for field in ("home_team", "away_team"):
-        left = _norm(candidate.get(field))
-        right = _norm(event.get(field))
-        if not left or not right or left != right:
-            return False
+    h2h_names = _h2h_outcome_names(event)
+    if not _side_identity_matches(candidate.get("home_team"), event.get("home_team"), h2h_names=h2h_names):
+        return False
+    if not _side_identity_matches(candidate.get("away_team"), event.get("away_team"), h2h_names=h2h_names):
+        return False
     candidate_time = _aware(candidate.get("commence_time"))
     event_time = _aware(event.get("commence_time"))
     if candidate_time is None or event_time is None:
@@ -189,7 +227,7 @@ def attach_snapshot_evidence(
         "unmatched_events": unmatched_events,
         "candidates_touched": len(candidates_touched),
         "evidence_rows_attached": attached_rows,
-        "identity_policy": "EXACT_NORMALIZED_TEAMS_PLUS_SPORT_AND_TIME_TOLERANCE",
+        "identity_policy": "EXACT_TEAMS_OR_PROVIDER_H2H_CANONICAL_ALIAS_PLUS_SPORT_AND_TIME_TOLERANCE",
         "tolerance_minutes": tolerance_minutes,
         "sportsbook_evidence_only": True,
         "prediction_authority": False,
