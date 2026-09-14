@@ -1,7 +1,7 @@
 """Attach sport-specialist Scout team metadata to a V17 Multi-Scout handoff.
 
-This is additive enrichment only. It does not score, calibrate, qualify, approve,
-or execute any wager.
+This is additive enrichment and research disposition only. It does not score,
+calibrate, qualify, approve, or execute any wager.
 """
 from __future__ import annotations
 
@@ -11,9 +11,11 @@ from pathlib import Path
 from typing import Any
 
 try:  # package import under pytest/backend runtime
+    from v17.scout_research_promotion import promote_handoff
     from v17.sport_scout_registry import registry_payload, scout_team_for
     from v17.sport_research_brief import SUPPORTED_RESEARCH_WORKERS, build_research_brief
 except ModuleNotFoundError:  # direct `python v17/sport_scout_enrichment.py`
+    from scout_research_promotion import promote_handoff
     from sport_scout_registry import registry_payload, scout_team_for
     from sport_research_brief import SUPPORTED_RESEARCH_WORKERS, build_research_brief
 
@@ -67,7 +69,7 @@ def enrich_handoff(payload: dict[str, Any]) -> dict[str, Any]:
     })
     out["governance"] = governance
     out["can_execute"] = False
-    return out
+    return promote_handoff(out)
 
 
 def main() -> int:
@@ -86,6 +88,7 @@ def main() -> int:
         "team_event_candidates": len(enriched.get("model_handoff", {}).get("team_event_candidates", [])),
         "prop_candidates": len(enriched.get("model_handoff", {}).get("prop_candidates", [])),
         "research_workers": len(SUPPORTED_RESEARCH_WORKERS),
+        "research_status_counts": enriched.get("research_promotion", {}).get("status_counts", {}),
         "can_execute": False,
     }))
     return 0
