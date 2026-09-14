@@ -12,6 +12,10 @@ This facade adds receipt/error-boundary and Top-10 completion semantics:
   every source row must reconcile exactly once to a valid controlling-model
   package or an explicit typed blocker.
 
+The same route installer also exposes a read-only immutable prediction-receipt
+lookup so postmortem grading can recover the exact persisted pregame forecast
+instead of relying on chat history or postgame reconstruction.
+
 No model, evidence, line, calibration, ranking, or terminal-reducer behavior is
 changed here. Portfolio/card governance remains a downstream objective and can
 never mutate sporting probability. ``can_execute=false`` remains binding.
@@ -25,6 +29,7 @@ from fastapi import Header, HTTPException
 from github_actions_oidc import scout_route_auth_dependency
 import pick_request_runtime_core as _core
 from pick_request_runtime_core import *  # noqa: F401,F403
+from v17.prediction_receipt_lookup_runtime import install_prediction_receipt_lookup_route
 from v17.top10_model_reconciliation import enforce_top10_completion
 
 
@@ -196,12 +201,18 @@ def install_pick_request_routes(
     market_api: Any,
     auth_dependency: Any,
 ) -> None:
+    wrapped_auth = scout_route_auth_dependency(auth_dependency)
     _core.install_pick_request_routes(
         app,
         market_api=_ScoringReceiptMarketApi(market_api),
-        auth_dependency=scout_route_auth_dependency(auth_dependency),
+        auth_dependency=wrapped_auth,
     )
     _install_top10_reconciliation_wrapper(app)
+    install_prediction_receipt_lookup_route(
+        app,
+        db_client_fn=lambda: market_api.prod.get_client(),
+        auth_dependency=wrapped_auth,
+    )
 
 
 def __getattr__(name: str) -> Any:
