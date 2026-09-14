@@ -102,6 +102,8 @@ def main() -> int:
         "prop_candidates": len(enriched.get("model_handoff", {}).get("prop_candidates", [])),
         "research_workers": len(SUPPORTED_RESEARCH_WORKERS),
         "research_status_counts": enriched.get("research_promotion", {}).get("status_counts", {}),
+        "snapshot_bridge_status": bridge.get("snapshot_status", "NOT_PRESENT"),
+        "snapshot_identity_policy": bridge.get("identity_policy", "NOT_PRESENT"),
         "snapshot_evidence_rows_attached": bridge.get("evidence_rows_attached", 0),
         "snapshot_candidates_touched": bridge.get("candidates_touched", 0),
         "can_execute": False,
