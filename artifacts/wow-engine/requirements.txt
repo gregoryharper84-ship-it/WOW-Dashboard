@@ -15,4 +15,4 @@ psycopg[binary]>=3.2,<4  # WOW Agent Runtime V1 real Postgres+Redis+Celery integ
 sentry-sdk[fastapi]>=2.0,<3  # optional production telemetry; inert without SENTRY_DSN
 pandas>=2.2,<3
 pandera>=0.20,<1  # typed external-source dataframe validation
-# #402 production acceptance trigger: cycle 1/3 (semantic no-op)
+# #402 production acceptance trigger: cycle 2/3 (semantic no-op)
