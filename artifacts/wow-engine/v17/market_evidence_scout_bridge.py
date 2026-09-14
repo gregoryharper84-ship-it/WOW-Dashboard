@@ -16,6 +16,7 @@ import re
 from typing import Any
 
 from v17 import market_evidence_sources as sources
+from v17 import market_evidence_native_live as live
 from v17.market_evidence_snapshot import snapshot_dates
 
 _EVENTS_RE = re.compile(r"^/odds-api/v4/sports/([^/]+)/events$")
@@ -33,14 +34,14 @@ def _collect(sport_key: str, *, opener: Any = None, primary_failure: str | None 
     events: list[dict[str, Any]] = []
     codes: list[str] = []
 
-    sharp = sources.sharpapi_market_evidence(sport_key, opener=opener, primary_failure=primary_failure)
+    sharp = live.sharpapi_market_evidence(sport_key, opener=opener, primary_failure=primary_failure)
     if sharp.ok:
         events.extend(sharp.data)
     else:
         codes.append(f"SHARPAPI:{sharp.code}")
 
     for date in snapshot_dates():
-        result = sources.rundown_market_evidence(
+        result = live.rundown_market_evidence(
             sport_key, date, capability="events", opener=opener, primary_failure=primary_failure,
         )
         if result.ok:

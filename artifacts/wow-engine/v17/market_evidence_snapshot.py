@@ -37,6 +37,7 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from v17 import market_evidence_sources as sources
+from v17 import market_evidence_native_live as live
 
 DEFAULT_SPORTS = (
     "americanfootball_nfl",
@@ -58,14 +59,7 @@ def snapshot_dates(now: datetime | None = None) -> list[str]:
 
 
 def _sharpapi_live_params(sport_key: str) -> dict[str, str] | None:
-    """Build the documented SharpAPI league query for a WOW sport key.
-
-    SharpAPI's REST examples use canonical uppercase league identifiers such as
-    ``MLB``, ``NFL`` and ``NBA``. The lower-case values retained by the source
-    mapper are useful aliases internally, but the provider request itself must
-    use the documented token. An unmapped sport still fails closed in the
-    source adapter before any request is made.
-    """
+    """Build the documented SharpAPI league query for a WOW sport key."""
     league = sources.sharpapi_league(sport_key)
     if not league:
         return None
@@ -98,18 +92,14 @@ def collect(sports: list[str], *, dates: list[str] | None = None, opener: Any = 
     events: list[dict[str, Any]] = []
 
     for sport_key in sports:
-        sharp = sources.sharpapi_market_evidence(
-            sport_key,
-            params=_sharpapi_live_params(sport_key),
-            opener=opener,
-        )
+        sharp = live.sharpapi_market_evidence(sport_key, opener=opener)
         lanes.append(_lane("SHARPAPI", sport_key, "odds", sharp, None))
         if sharp.ok:
             events.extend(sharp.data)
 
         for date in dates:
             for capability in ("openers", "events"):
-                result = sources.rundown_market_evidence(sport_key, date, capability=capability, opener=opener)
+                result = live.rundown_market_evidence(sport_key, date, capability=capability, opener=opener)
                 lanes.append(_lane("RUNDOWN", sport_key, capability, result, date))
                 if result.ok:
                     events.extend(result.data)
@@ -163,9 +153,6 @@ def probe(provider: str, capability: str, *, sport_key: str | None = None, date:
         if not resolved.ok:
             return {"provider": provider_name, "capability": capability, "status": "BLOCKED", "reason_code": resolved.code}
         path_values["sport_id"] = resolved.data
-        # Acceptance probes are diagnostic and should be runnable without the
-        # caller manually reproducing provider path parameters. The production
-        # collector still supplies its compiled slate date explicitly.
         path_values["date"] = date or snapshot_dates()[0]
     elif date:
         path_values["date"] = date
@@ -185,13 +172,7 @@ def probe(provider: str, capability: str, *, sport_key: str | None = None, date:
 
 
 def acceptance_failures(payload: dict[str, Any]) -> list[str]:
-    """Names every credentialed provider that returned no rows.
-
-    Acceptance is per provider and only applies to providers whose credential
-    is actually configured, so an unconfigured provider is not reported as a
-    failure. A configured provider returning zero rows is: it means the
-    adapter did not translate the provider's real response.
-    """
+    """Names every credentialed provider that returned no rows."""
     health = {p["provider"]: p for p in sources.provider_health()["providers"]}
     capture = payload.get("provider_capture") or {}
     failures: list[str] = []
