@@ -41,7 +41,15 @@ A nightly run is successful only when every reproduced incident is in one of the
 3. `CLOSED_SUPERSEDED` — another verified repair fully resolves the same root cause;
 4. `ROLLBACK_REQUIRED` — a published repair failed production verification and deterministic rollback cannot safely complete in the current tool surface.
 
-`PR_OPEN`, `CI_GREEN`, `MERGED`, `DEPLOYED`, `PATCH_WRITTEN`, `ROOT_CAUSE_ISOLATED`, and `TESTS_PASS_LOCAL` are intermediate states, never nightly success states.
+`PR_OPEN`, `CI_GREEN`, `MERGED`, `DEPLOYED`, `PATCH_WRITTEN`, `ROOT_CAUSE_ISOLATED`, `TESTS_PASS_LOCAL`, `CI_PENDING`, and `CI_FAILED` are intermediate states, never nightly success states.
+
+If any safely repairable R0/R1 incident remains in an intermediate state at handoff, the entire run MUST be labeled:
+
+```text
+INCOMPLETE_ENGINEERING_RUN
+```
+
+It must not be reported as healthy, repaired, or successfully completed.
 
 ### Morning Repair Rate
 
@@ -51,13 +59,20 @@ Track:
 morning_repair_rate = safely_repairable_incidents_fixed_verified / safely_repairable_incidents_reproduced
 ```
 
-The overnight target is `1.00`. Any safely repairable incident left in an intermediate state must be treated as unfinished work, not as a report-only outcome.
+Also emit the top-line completion score on every run:
+
+```text
+R0_R1_OPEN_AT_START / FIXED_VERIFIED_THIS_RUN / HARD_BLOCKED / UNFINISHED
+```
+
+The overnight target is `UNFINISHED=0` and `morning_repair_rate=1.00` for safely repairable work. Any safely repairable incident left in an intermediate state must be treated as unfinished work, not as a report-only outcome.
 
 ## Mission
 
 Every night:
 
 - inspect the live WOW V17 system and repository;
+- load unresolved prior incidents before opening new work;
 - reproduce defects from strongest current evidence;
 - repair every R0, R1, and eligible R2-restorative defect autonomously;
 - iterate through CI/review/QA failures instead of stopping at the first failure;
@@ -110,18 +125,19 @@ Reporter/Research/Engineering/Review/QA/Release are engineering roles only. None
 
 Before creating or reopening incidents, establish current truth from the strongest available evidence:
 
-1. latest `main` SHA and required repository checks;
-2. relevant open/recent PR state;
-3. latest CI/workflow failures;
-4. Render/service deployment state where applicable;
-5. fresh production health/governance probes;
-6. safe acceptance/runtime traces;
-7. Action/schema/persistence/reconciliation anomalies;
-8. current instructions/OpenAPI/runtime/test contract drift;
-9. prior PM/FIX records and recurring failure fingerprints;
-10. subsystem-specific regression signals for WOW Props, LLP Team/Event, and Kalshi Weather.
+1. unresolved incidents from the prior nightly ledger, ordered R0 then R1 then production/acceptance blockers;
+2. latest `main` SHA and required repository checks;
+3. relevant open/recent PR state;
+4. latest CI/workflow failures;
+5. Render/service deployment state where applicable;
+6. fresh production health/governance probes;
+7. safe acceptance/runtime traces;
+8. Action/schema/persistence/reconciliation anomalies;
+9. current instructions/OpenAPI/runtime/test contract drift;
+10. prior PM/FIX records and recurring failure fingerprints;
+11. subsystem-specific regression signals for WOW Props, LLP Team/Event, and Kalshi Weather.
 
-Never assume yesterday's diagnosis is still current.
+Never assume yesterday's diagnosis is still current. An unresolved incident does not leave the active queue merely because a patch or PR exists.
 
 ## Queue rules
 
@@ -135,6 +151,16 @@ For each finding:
 - set `workflow_stage=REPORTER_INTAKE` for a new team-governed incident;
 - hand off immediately to `RESEARCH_TRIAGE_AGENT`;
 - once reproduced and safely repairable, continue through the complete repair loop without an operator checkpoint.
+
+Work order is authoritative:
+
+1. unresolved R0 incidents;
+2. unresolved R1 incidents;
+3. production regressions;
+4. acceptance failures;
+5. new R0/R1 discoveries;
+6. R2/R3 diagnosis and safe PR preparation;
+7. lower-severity discoveries.
 
 A discovery signal is not a root cause and is not a model result.
 
@@ -189,6 +215,31 @@ The following are hard boundaries unless separately and explicitly authorized:
 
 If no safe non-R3 repair exists, mark `BLOCKED_HARD_BOUNDARY` with the exact missing dependency or authorization.
 
+## Permitted hard-stop conditions
+
+R0/R1 work may stop before `FIXED_VERIFIED` only when at least one of these conditions is proven:
+
+1. required GitHub/CI/Render/Supabase engineering capability is unavailable;
+2. required repository/service permission is unavailable;
+3. the next repair necessarily crosses into R2-repair-policy or R3;
+4. required auth/secret material is unavailable and cannot safely be created or rotated;
+5. production verification failed and deterministic rollback is unavailable;
+6. an external infrastructure outage prevents verification after alternate safe evidence paths are attempted;
+7. a required fitted specialist/model artifact genuinely does not exist.
+
+Every hard stop MUST record:
+
+```text
+STOP_REASON
+FIRST_BLOCKED_OPERATION
+EXACT_ERROR_OR_STATUS
+MISSING_CAPABILITY_OR_AUTHORITY
+WORK_COMPLETED_BEFORE_BLOCK
+SMALLEST_NEXT_ACTION
+```
+
+`CI_FAILED`, `CI_PENDING`, `PR_OPEN`, `PATCH_CREATED`, `ROOT_CAUSE_ISOLATED`, or elapsed nightly time are not valid hard-stop reasons by themselves.
+
 ## Mandatory repair/rework loop
 
 For each reproduced R0/R1/eligible R2-restorative incident, the orchestrator must continue this loop:
@@ -214,9 +265,13 @@ Rules:
 - A review rejection is engineering input, not a nightly stopping condition.
 - A QA failure is engineering input, not a nightly stopping condition.
 - A production acceptance failure is engineering input unless it proves a hard boundary or requires rollback.
+- When required CI fails, retrieve the exact failing job/test/error, classify patch-caused vs pre-existing vs infrastructure vs protected R2/R3 behavior, make the smallest bounded repair, and rerun targeted + required regression suites.
+- `CI_PENDING` is not completion. Recheck protected checks in the same nightly run whenever the current tool surface permits.
+- If CI cannot be rechecked because the capability is absent, report `BLOCKED_HARD_BOUNDARY` with `STOP_REASON=CI_RECHECK_CAPABILITY_UNAVAILABLE` and exact evidence.
 - Do not close a run merely because a rerun is pending if the current tool surface allows polling/inspection and continued repair.
 - Do not weaken a required check to make a repair green.
 - Do not broaden scope opportunistically; split independent defects into separate bounded repair packets.
+- Once an R0/R1 patch exists, closure work (test/review/CI/merge/deploy/replay) outranks discovery of additional non-critical defects.
 
 ## Resumable CI continuation contract
 
@@ -304,17 +359,47 @@ artifacts/wow-engine/v17/engineering-fixes/
 
 New incidents use the multi-agent team contract. Historical records remain valid and are not retroactively rewritten.
 
+Every unresolved incident must persist across nightly runs under a stable incident ID until `FIXED_VERIFIED`, `CLOSED_SUPERSEDED`, or an approved governance retirement. A PR number is linkage, not closure.
+
 ## Relationship to Multi-Scout
 
 `.agents/skills/wow-v17-nightly-multiscout/SKILL.md` remains a sporting **discovery/evidence-only** team and runs separately. Scout agreement can raise research priority only; it cannot become sporting probability and does not replace this engineering recovery team.
 
+## Mandatory unfinished-work record
+
+Every incident that is not `FIXED_VERIFIED`, `CLOSED_SUPERSEDED`, or an approved hard-boundary/rollback terminal must appear in the nightly report with all of these fields:
+
+```text
+incident_id
+severity
+current_state
+first_failing_stage
+root_cause
+last_action_attempted
+last_test_result
+PR
+CI
+merged_sha
+deployed_sha
+acceptance_replay
+stop_reason
+next_executable_action
+```
+
+No unresolved incident may disappear from the handoff because a patch was written, a PR was opened, CI started, or a deploy was triggered.
+
 ## Nightly output
 
 ```yaml
-run_status: HEALTHY | REPAIRED_AND_VERIFIED | PARTIALLY_REPAIRED_HARD_BLOCKED | BLOCKED_HARD_BOUNDARY | ROLLBACK_REQUIRED
+run_status: HEALTHY | REPAIRED_AND_VERIFIED | PARTIALLY_REPAIRED_HARD_BLOCKED | BLOCKED_HARD_BOUNDARY | ROLLBACK_REQUIRED | INCOMPLETE_ENGINEERING_RUN
 utc_time:
 main_commit:
 production_deploy:
+r0_r1_open_at_start:
+fixed_verified_this_run:
+hard_blocked:
+unfinished:
+r0_r1_completion_score: "R0_R1_OPEN_AT_START / FIXED_VERIFIED_THIS_RUN / HARD_BLOCKED / UNFINISHED"
 reproduced_incidents:
 safely_repairable_incidents:
 fixed_verified_incidents:
@@ -324,12 +409,38 @@ incidents_by_owner:
 verified_closed:
 closed_superseded:
 hard_blockers:
-unfinished_intermediate_states: []
+unfinished_intermediate_states:
+  - incident_id:
+    severity:
+    current_state:
+    first_failing_stage:
+    root_cause:
+    last_action_attempted:
+    last_test_result:
+    PR:
+    CI:
+    merged_sha:
+    deployed_sha:
+    acceptance_replay:
+    stop_reason:
+    next_executable_action:
 next_priority:
 can_execute: false
 ```
 
 Do not report `REPAIRED_AND_VERIFIED` unless every safely repairable reproduced incident reached applicable production verification and Reporter closure.
+
+If `unfinished > 0` for safely repairable R0/R1 work, `run_status` MUST equal `INCOMPLETE_ENGINEERING_RUN`.
+
+## Anti-report-only rule
+
+For autonomous R0/R1 work, this outcome is prohibited whenever engineering capability remains available:
+
+```text
+Root cause isolated; PR created; CI failed/pending; continue next run.
+```
+
+Instead, continue engineering in the current run through rework, CI, merge, deployment, and acceptance replay. The nightly autopilot exists to close bounded engineering defects, not merely hand them to the next nightly run.
 
 ## Priority order
 
