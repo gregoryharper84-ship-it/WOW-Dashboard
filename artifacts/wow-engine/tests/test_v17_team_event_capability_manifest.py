@@ -16,8 +16,17 @@ def test_mlb_team_event_model_is_certified():
     assert result.can_execute is False
 
 
+def test_nfl_team_event_model_is_certified_after_production_acceptance():
+    result = team_event_capability("NFL")
+    assert result.status == "AVAILABLE"
+    assert result.controlling_specialist == "NFL_GAME_WIN_PROBABILITY_EXPERT"
+    assert result.blocker is None
+    assert result.required_inputs == TEAM_EVENT_INPUT_CONTRACTS["NFL"]
+    assert result.can_execute is False
+
+
 def test_cataloged_cross_sport_routes_are_not_silently_certified():
-    for sport in ("NFL", "NBA", "NCAAF", "NCAAB", "SOCCER", "TENNIS", "PGA"):
+    for sport in ("NBA", "WNBA", "NCAAF", "NCAAB", "NHL", "SOCCER", "TENNIS", "PGA"):
         result = team_event_capability(sport)
         assert sport in EXPECTED_TEAM_EVENT_SPORTS
         assert result.status == "MODEL_UNAVAILABLE"
