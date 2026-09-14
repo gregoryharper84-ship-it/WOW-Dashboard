@@ -1,0 +1,110 @@
+name: tmp-score-pp-k-board-20260914
+
+on:
+  push:
+    branches:
+      - chatgpt/run-pp-k-board-20260914-1304
+    paths:
+      - .github/workflows/tmp-score-pp-k-board-20260914.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  score-board:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Score exact PrizePicks strikeout board through canonical V17 route
+        env:
+          WOW_ACTION_API_KEY: ${{ secrets.WOW_ACTION_API_KEY }}
+        run: |
+          python - <<'PY'
+          import json, os, urllib.request, urllib.error
+
+          games = {
+              "Gavin Williams": ("MLB:824386", "2026-09-14T22:40:00Z", 8.0, ["LESS", "MORE"]),
+              "Sean Newcomb": ("MLB:824386", "2026-09-14T22:40:00Z", 1.5, ["MORE"]),
+              "Tarik Skubal": ("MLB:824465", "2026-09-14T22:40:00Z", 7.5, ["LESS", "MORE"]),
+              "Nick Lodolo": ("MLB:824465", "2026-09-14T22:40:00Z", 4.5, ["LESS", "MORE"]),
+              "José Soriano": ("MLB:822765", "2026-09-14T23:07:00Z", 5.0, ["LESS", "MORE"]),
+              "Troy Melton": ("MLB:822765", "2026-09-14T23:07:00Z", 3.5, ["LESS", "MORE"]),
+              "Jonah Tong": ("MLB:823575", "2026-09-14T23:10:00Z", 5.5, ["LESS", "MORE"]),
+              "Brandon Young": ("MLB:823575", "2026-09-14T23:10:00Z", 4.0, ["LESS", "MORE"]),
+              "Dean Kremer": ("MLB:823656", "2026-09-14T23:40:00Z", 5.0, ["LESS", "MORE"]),
+              "Will Warren": ("MLB:823656", "2026-09-14T23:40:00Z", 4.0, ["LESS", "MORE"]),
+              "David Peterson": ("MLB:824629", "2026-09-14T23:40:00Z", 4.0, ["LESS", "MORE"]),
+              "Reynaldo López": ("MLB:824629", "2026-09-14T23:40:00Z", 4.0, ["LESS", "MORE"]),
+              "Landen Roupp": ("MLB:823006", "2026-09-14T23:45:00Z", 4.0, ["LESS", "MORE"]),
+              "Quinn Mathews": ("MLB:823006", "2026-09-14T23:45:00Z", 5.0, ["LESS", "MORE"]),
+              "Tomoyuki Sugano": ("MLB:824308", "2026-09-15T00:40:00Z", 3.0, ["LESS", "MORE"]),
+              "Casey Mize": ("MLB:824308", "2026-09-15T00:40:00Z", 4.0, ["LESS", "MORE"]),
+              "Reid Detmers": ("MLB:823981", "2026-09-15T01:38:00Z", 6.5, ["LESS", "MORE"]),
+              "Kade Anderson": ("MLB:823981", "2026-09-15T01:38:00Z", 5.5, ["LESS", "MORE"]),
+              "Sandy Alcantara": ("MLB:825034", "2026-09-15T01:40:00Z", 3.5, ["LESS", "MORE"]),
+              "Corbin Burnes": ("MLB:825034", "2026-09-15T01:40:00Z", 4.0, ["LESS", "MORE"]),
+          }
+
+          rows = []
+          for player, (event_id, start, line, directions) in games.items():
+              for direction in directions:
+                  rows.append({
+                      "row_key": f"{player}|{line}|{direction}",
+                      "event_id": event_id,
+                      "event_start_time": start,
+                      "sport": "MLB",
+                      "player": player,
+                      "stat_type": "PITCHER_STRIKEOUTS",
+                      "line": line,
+                      "direction": direction,
+                      "source_type": "PDF",
+                      "platform": "PrizePicks",
+                      "source_capture_timestamp": "2026-09-14T18:04:14Z",
+                      "seed": 0,
+                      "money_lane_status": "PAYOUT_UNRESOLVED",
+                  })
+
+          body = json.dumps({
+              "request_id": "pp-k-board-20260914-1304",
+              "rows": rows,
+          }).encode("utf-8")
+
+          key = os.environ.get("WOW_ACTION_API_KEY", "")
+          if not key:
+              raise SystemExit("WOW_ACTION_API_KEY secret is unavailable")
+
+          req = urllib.request.Request(
+              "https://wow-governed-probability-engine.onrender.com/score-pick-request",
+              data=body,
+              method="POST",
+              headers={
+                  "Authorization": f"Bearer {key}",
+                  "Content-Type": "application/json",
+                  "X-WOW-Model-Identity": "WOW_BETTING_ENGINE",
+              },
+          )
+          try:
+              with urllib.request.urlopen(req, timeout=600) as resp:
+                  raw = resp.read().decode("utf-8")
+                  status = resp.status
+          except urllib.error.HTTPError as exc:
+              raw = exc.read().decode("utf-8", errors="replace")
+              print(raw)
+              raise
+
+          parsed = json.loads(raw)
+          with open("score-pick-request-response.json", "w", encoding="utf-8") as f:
+              json.dump(parsed, f, indent=2, ensure_ascii=False, sort_keys=True)
+          print(json.dumps({"http_status": status, "rows_requested": len(rows), "response_keys": sorted(parsed.keys())}, sort_keys=True))
+          PY
+
+      - name: Upload governed scoring receipt
+        uses: actions/upload-artifact@v4
+        with:
+          name: pp-k-board-20260914-1304
+          path: score-pick-request-response.json
+          if-no-files-found: error
+          retention-days: 7
