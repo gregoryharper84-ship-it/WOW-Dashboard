@@ -2,10 +2,11 @@
 from __future__ import annotations
 
 import csv
-from datetime import date
+from datetime import date, datetime
 import gzip
 import io
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from nfl_event_model_v17 import (
     NFLModelInputsInsufficient,
@@ -20,6 +21,43 @@ from nfl_event_prediction_features import build_prediction_feature_row
 
 SCHEDULE_DATASET = "SCHEDULES"
 RAW_BUCKET = "wow-nfl-raw"
+
+# Identity aliases only. These never contribute to model features or probability math.
+NFL_TEAM_NAME_TO_ABBREVIATION = {
+    "arizona cardinals": "ARI",
+    "atlanta falcons": "ATL",
+    "baltimore ravens": "BAL",
+    "buffalo bills": "BUF",
+    "carolina panthers": "CAR",
+    "chicago bears": "CHI",
+    "cincinnati bengals": "CIN",
+    "cleveland browns": "CLE",
+    "dallas cowboys": "DAL",
+    "denver broncos": "DEN",
+    "detroit lions": "DET",
+    "green bay packers": "GB",
+    "houston texans": "HOU",
+    "indianapolis colts": "IND",
+    "jacksonville jaguars": "JAX",
+    "kansas city chiefs": "KC",
+    "las vegas raiders": "LV",
+    "los angeles chargers": "LAC",
+    "los angeles rams": "LA",
+    "miami dolphins": "MIA",
+    "minnesota vikings": "MIN",
+    "new england patriots": "NE",
+    "new orleans saints": "NO",
+    "new york giants": "NYG",
+    "new york jets": "NYJ",
+    "philadelphia eagles": "PHI",
+    "pittsburgh steelers": "PIT",
+    "san francisco 49ers": "SF",
+    "seattle seahawks": "SEA",
+    "tampa bay buccaneers": "TB",
+    "tennessee titans": "TEN",
+    "washington commanders": "WAS",
+}
+NFL_CANONICAL_TEAM_CODES = frozenset(NFL_TEAM_NAME_TO_ABBREVIATION.values())
 
 
 def _paginate(query: Any, page_size: int = 500) -> list[dict[str, Any]]:
@@ -74,6 +112,26 @@ def _has_score(row: dict[str, Any]) -> bool:
     return str(row.get("home_score") or "").strip() != "" or str(row.get("away_score") or "").strip() != ""
 
 
+def _canonical_team(value: Any) -> str | None:
+    raw = " ".join(str(value or "").strip().split())
+    if not raw:
+        return None
+    upper = raw.upper()
+    if upper in NFL_CANONICAL_TEAM_CODES:
+        return upper
+    return NFL_TEAM_NAME_TO_ABBREVIATION.get(raw.casefold())
+
+
+def _aware_datetime(value: Any) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(str(value or "").replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if parsed.utcoffset() is None:
+        return None
+    return parsed
+
+
 def _prior_completed_count(schedule_rows: list[dict[str, str]], *, season: int, team: str, target_date: date) -> int:
     n = 0
     for row in schedule_rows:
@@ -91,17 +149,113 @@ def _prior_completed_count(schedule_rows: list[dict[str, str]], *, season: int, 
 
 def resolve_nfl_team_event_evidence(req: Any, *, db: Any) -> dict[str, Any]:
     snapshot, schedule_rows = _load_latest_schedule_snapshot(db)
-    event_id = str(req.official_event_id or "").strip()
-    exact = [row for row in schedule_rows if str(row.get("game_id") or "").strip() == event_id]
-    if len(exact) != 1:
-        return {"ok": False, "code": "NFL_OFFICIAL_EVENT_ID_NOT_IN_CANONICAL_SCHEDULE", "failure_code": "MODEL_INPUTS_INSUFFICIENT", "missing_fields": ["official_event_id"] if not event_id else [], "identity_mismatches": []}
-    event = exact[0]
+    provider_event_id = str(req.official_event_id or "").strip()
+    requested_home = _canonical_team(req.home_team)
+    requested_away = _canonical_team(req.away_team)
+    missing_fields: list[str] = []
+    if not provider_event_id:
+        missing_fields.append("official_event_id")
+    if requested_home is None:
+        missing_fields.append("home_team")
+    if requested_away is None:
+        missing_fields.append("away_team")
+    if missing_fields:
+        return {
+            "ok": False,
+            "code": "NFL_PROVIDER_EVENT_IDENTITY_INCOMPLETE",
+            "failure_code": "MODEL_INPUTS_INSUFFICIENT",
+            "missing_fields": missing_fields,
+            "identity_mismatches": [],
+        }
+
+    try:
+        requested_date = date.fromisoformat(str(req.requested_slate_date))
+    except (TypeError, ValueError):
+        return {
+            "ok": False,
+            "code": "NFL_REQUESTED_SLATE_DATE_INVALID",
+            "failure_code": "MODEL_INPUTS_INSUFFICIENT",
+            "missing_fields": ["requested_slate_date"],
+            "identity_mismatches": [],
+        }
+
+    event_start = _aware_datetime(req.event_start_time_utc)
+    if event_start is None:
+        return {
+            "ok": False,
+            "code": "NFL_EVENT_START_TIME_INVALID",
+            "failure_code": "MODEL_INPUTS_INSUFFICIENT",
+            "missing_fields": ["event_start_time_utc"],
+            "identity_mismatches": [],
+        }
+    try:
+        local_start_date = event_start.astimezone(ZoneInfo(str(req.requested_timezone))).date()
+    except Exception:
+        return {
+            "ok": False,
+            "code": "NFL_REQUESTED_TIMEZONE_INVALID",
+            "failure_code": "MODEL_INPUTS_INSUFFICIENT",
+            "missing_fields": ["requested_timezone"],
+            "identity_mismatches": [],
+        }
+    if local_start_date != requested_date:
+        return {
+            "ok": False,
+            "code": "NFL_EVENT_START_SLATE_DATE_MISMATCH",
+            "failure_code": "MODEL_INPUTS_INSUFFICIENT",
+            "missing_fields": [],
+            "identity_mismatches": ["EVENT_START_SLATE_DATE_MISMATCH"],
+        }
+
+    exact = [row for row in schedule_rows if str(row.get("game_id") or "").strip() == provider_event_id]
+    identity_resolution = "EXACT_CANONICAL_EVENT_ID"
+    if len(exact) > 1:
+        return {
+            "ok": False,
+            "code": "NFL_CANONICAL_EVENT_ID_AMBIGUOUS",
+            "failure_code": "MODEL_INPUTS_INSUFFICIENT",
+            "missing_fields": [],
+            "identity_mismatches": ["DUPLICATE_CANONICAL_EVENT_ID"],
+        }
+    if len(exact) == 1:
+        event = exact[0]
+    else:
+        candidates: list[dict[str, str]] = []
+        for row in schedule_rows:
+            try:
+                row_date = date.fromisoformat(str(row.get("gameday") or "")[:10])
+            except (TypeError, ValueError):
+                continue
+            row_home = str(row.get("home_team") or "").upper().strip()
+            row_away = str(row.get("away_team") or "").upper().strip()
+            if row_date == requested_date and row_home == requested_home and row_away == requested_away:
+                candidates.append(row)
+        if not candidates:
+            return {
+                "ok": False,
+                "code": "NFL_PROVIDER_EVENT_ID_CANONICAL_MATCH_NOT_FOUND",
+                "failure_code": "MODEL_INPUTS_INSUFFICIENT",
+                "missing_fields": [],
+                "identity_mismatches": ["PROVIDER_EVENT_ID_NOT_CANONICAL"],
+            }
+        if len(candidates) != 1:
+            return {
+                "ok": False,
+                "code": "NFL_PROVIDER_EVENT_ID_CANONICAL_MATCH_AMBIGUOUS",
+                "failure_code": "MODEL_INPUTS_INSUFFICIENT",
+                "missing_fields": [],
+                "identity_mismatches": ["PROVIDER_EVENT_ID_CANONICAL_MATCH_AMBIGUOUS"],
+            }
+        event = candidates[0]
+        identity_resolution = "PROVIDER_ID_TO_CANONICAL_SCHEDULE_MATCH"
+
+    canonical_event_id = str(event.get("game_id") or "").strip()
     home = str(event.get("home_team") or "").upper().strip()
     away = str(event.get("away_team") or "").upper().strip()
     mismatches: list[str] = []
-    if home != str(req.home_team or "").upper().strip():
+    if home != requested_home:
         mismatches.append("HOME_TEAM_MISMATCH")
-    if away != str(req.away_team or "").upper().strip():
+    if away != requested_away:
         mismatches.append("AWAY_TEAM_MISMATCH")
     if _has_score(event):
         mismatches.append("CANONICAL_EVENT_ALREADY_STARTED_OR_COMPLETED")
@@ -110,15 +264,35 @@ def resolve_nfl_team_event_evidence(req: Any, *, db: Any) -> dict[str, Any]:
         season = int(float(str(event.get("season") or "0")))
         week = int(float(str(event.get("week") or "0")))
     except (ValueError, TypeError):
-        return {"ok": False, "code": "NFL_CANONICAL_EVENT_METADATA_INVALID", "failure_code": "MODEL_INPUTS_INSUFFICIENT", "missing_fields": [], "identity_mismatches": mismatches}
-    if gameday.isoformat() != str(req.requested_slate_date):
+        return {
+            "ok": False,
+            "code": "NFL_CANONICAL_EVENT_METADATA_INVALID",
+            "failure_code": "MODEL_INPUTS_INSUFFICIENT",
+            "missing_fields": [],
+            "identity_mismatches": mismatches,
+        }
+    if gameday != requested_date:
         mismatches.append("REQUESTED_SLATE_DATE_MISMATCH")
+    if not canonical_event_id:
+        mismatches.append("CANONICAL_EVENT_ID_MISSING")
     if mismatches:
-        return {"ok": False, "code": "NFL_CANONICAL_EVENT_IDENTITY_MISMATCH", "failure_code": "MODEL_INPUTS_INSUFFICIENT", "missing_fields": [], "identity_mismatches": mismatches}
+        return {
+            "ok": False,
+            "code": "NFL_CANONICAL_EVENT_IDENTITY_MISMATCH",
+            "failure_code": "MODEL_INPUTS_INSUFFICIENT",
+            "missing_fields": [],
+            "identity_mismatches": mismatches,
+        }
+
     required_home_history = _prior_completed_count(schedule_rows, season=season, team=home, target_date=gameday)
     required_away_history = _prior_completed_count(schedule_rows, season=season, team=away, target_date=gameday)
     return {
         "ok": True,
+        "canonical_event_id": canonical_event_id,
+        "provider_event_id": provider_event_id,
+        "canonical_home_team": home,
+        "canonical_away_team": away,
+        "identity_resolution": identity_resolution,
         "canonical_source_snapshot_id": str(snapshot["snapshot_id"]),
         "canonical_snapshot_timestamp": str(snapshot["fetched_at"]),
         "schedule_content_sha256": str(snapshot["content_sha256"]),
@@ -133,6 +307,11 @@ def resolve_nfl_team_event_evidence(req: Any, *, db: Any) -> dict[str, Any]:
             "required_away_season_prior_games": required_away_history,
             "schedule_content_sha256": str(snapshot["content_sha256"]),
             "canonical_schedule_snapshot_id": str(snapshot["snapshot_id"]),
+            "canonical_game_id": canonical_event_id,
+            "provider_event_id": provider_event_id,
+            "canonical_home_team": home,
+            "canonical_away_team": away,
+            "identity_resolution": identity_resolution,
         },
     }
 
@@ -147,22 +326,34 @@ def _load_history(db: Any) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
 
 def score_nfl_team_event(req: Any, *, db: Any) -> dict[str, Any]:
     evidence = dict(req.sport_specific_evidence or {})
-    required = ("season", "week", "gameday", "schedule_content_sha256")
+    required = (
+        "season",
+        "week",
+        "gameday",
+        "schedule_content_sha256",
+        "canonical_game_id",
+        "canonical_home_team",
+        "canonical_away_team",
+    )
     missing = [name for name in required if evidence.get(name) in (None, "")]
     if missing:
         raise NFLModelInputsInsufficient("NFL_CANONICAL_EVIDENCE_INCOMPLETE:" + ",".join(missing))
+
+    canonical_game_id = str(evidence["canonical_game_id"])
+    canonical_home_team = str(evidence["canonical_home_team"])
+    canonical_away_team = str(evidence["canonical_away_team"])
 
     try:
         games, summaries = _load_history(db)
         feature_row = build_prediction_feature_row(
             training_games=games,
             team_summaries=summaries,
-            game_id=req.official_event_id,
+            game_id=canonical_game_id,
             season=int(evidence["season"]),
             week=int(evidence["week"]),
             gameday=str(evidence["gameday"]),
-            home_team=req.home_team,
-            away_team=req.away_team,
+            home_team=canonical_home_team,
+            away_team=canonical_away_team,
             schedule_content_sha256=str(evidence["schedule_content_sha256"]),
         )
     except NFLModelInputsInsufficient:
@@ -197,10 +388,23 @@ def score_nfl_team_event(req: Any, *, db: Any) -> dict[str, Any]:
         selection_lower = float(model_result["calibrated_away_lower_bound"])
         selection_upper = float(model_result["calibrated_away_upper_bound"])
 
+    model_output_snapshot = {
+        **model_result,
+        "feature_row_hash": feature_row["row_inputs_hash"],
+        "feature_max_prior_gameday": feature_row.get("max_prior_gameday"),
+        "selected_participant": selected,
+        "ranked_probability": selection_lower,
+        "ranking_basis": "CALIBRATED_LOWER_BOUND",
+        "canonical_game_id": canonical_game_id,
+        "provider_event_id": evidence.get("provider_event_id"),
+        "canonical_home_team": canonical_home_team,
+        "canonical_away_team": canonical_away_team,
+        "identity_resolution": evidence.get("identity_resolution"),
+    }
     payload = {
         "research_run_id": req.research_run_id,
         "event_key": req.event_key,
-        "official_event_id": req.official_event_id,
+        "official_event_id": canonical_game_id,
         "requested_slate_date": req.requested_slate_date,
         "requested_timezone": req.requested_timezone,
         "event_start_time_utc": req.event_start_time_utc,
@@ -241,7 +445,7 @@ def score_nfl_team_event(req: Any, *, db: Any) -> dict[str, Any]:
         "model_probability_publishable": True,
         "blend_publishable": False,
         "can_execute": False,
-        "model_output_snapshot": {**model_result, "feature_row_hash": feature_row["row_inputs_hash"], "feature_max_prior_gameday": feature_row.get("max_prior_gameday"), "selected_participant": selected, "ranked_probability": selection_lower, "ranking_basis": "CALIBRATED_LOWER_BOUND"},
+        "model_output_snapshot": model_output_snapshot,
     }
     try:
         inserted = db.table("wow_nfl_event_predictions").insert(payload).execute()
@@ -258,6 +462,9 @@ def score_nfl_team_event(req: Any, *, db: Any) -> dict[str, Any]:
         "score_snapshot_id": str(row["score_snapshot_id"]),
         "base_score_snapshot_id": str(row["score_snapshot_id"]),
         "event_prediction_id": str(row["event_prediction_id"]),
+        "canonical_event_id": canonical_game_id,
+        "provider_event_id": evidence.get("provider_event_id"),
+        "identity_resolution": evidence.get("identity_resolution"),
         "selected_participant": selected,
         "opponent": opponent,
         "calibrated_selection_probability": selection_probability,
