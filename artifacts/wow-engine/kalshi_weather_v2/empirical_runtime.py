@@ -9,11 +9,41 @@ from typing import Callable
 
 from fastapi import FastAPI, Header, HTTPException
 
-from .operational_cycle import run_weather_operational_cycle_once
+from .operational_cycle import VERIFIED_HOURLY_TARGETS
+from .shadow_cohort import HourlyCohortTarget, run_hourly_shadow_cohort_once
 
 
 _logger = logging.getLogger("wow.kalshi_weather_v2.empirical_cohort")
 _tasks: set[asyncio.Task] = set()
+
+
+def _automated_shadow_targets() -> tuple[HourlyCohortTarget, ...]:
+    """Mirror governed operational targets into the bounded empirical collector.
+
+    The automated web-process loop is intentionally calibration-first: one
+    threshold sibling per exact weather target/lead bucket is sufficient to
+    produce an unbiased temperature residual. Repeating identical NWS and
+    Open-Meteo acquisitions for every threshold sibling is deferred to explicit
+    on-demand analysis until shared-evidence sibling expansion is implemented.
+    """
+    return tuple(
+        HourlyCohortTarget(
+            index_city=target.index_city,
+            expected_location=target.expected_location,
+            forecast_latitude=target.forecast_latitude,
+            forecast_longitude=target.forecast_longitude,
+            forecast_reference_note=target.forecast_reference_note,
+            enabled=target.enabled,
+        )
+        for target in VERIFIED_HOURLY_TARGETS
+    )
+
+
+def _run_bounded_shadow_cycle(*, db_client_fn: Callable[[], object]):
+    return run_hourly_shadow_cohort_once(
+        db_client_fn=db_client_fn,
+        targets=_automated_shadow_targets(),
+    )
 
 
 def install_empirical_cohort_scheduler(
@@ -21,12 +51,16 @@ def install_empirical_cohort_scheduler(
     *,
     db_client_fn: Callable[[], object],
 ) -> None:
-    """Install automated Weather collection plus least-privilege wake route.
+    """Install bounded automated Weather calibration collection plus trigger.
 
-    The operational cycle performs exact contract discovery, immutable forecast
-    capture, official Weather Index trajectory capture, market-only quote/fee
-    refresh, and automatic settlement. It cannot promote model capability,
-    publish an uncertified probability, or execute a trade.
+    The automatic web-process workload deliberately captures one representative
+    threshold sibling per exact weather target/lead bucket. That preserves
+    unbiased calibration sampling while preventing duplicate provider work from
+    destabilizing the shared web service. Exact sibling contracts remain
+    available through the authenticated on-demand Weather routes.
+
+    Nothing here can promote model capability, publish an uncertified
+    probability, or execute a trade.
     """
     if getattr(app.state, "kalshi_weather_empirical_scheduler_installed", False):
         return
@@ -63,10 +97,11 @@ def install_empirical_cohort_scheduler(
                     "can_execute": False,
                 },
             )
-        result = run_weather_operational_cycle_once(db_client_fn=db_client_fn)
+        result = _run_bounded_shadow_cycle(db_client_fn=db_client_fn)
         return {
             **asdict(result),
             "trigger": "EXTERNAL_LEAST_PRIVILEGE_SCHEDULER",
+            "collection_mode": "BOUNDED_REPRESENTATIVE_SHADOW",
             "probability_publishable": False,
             "can_execute": False,
         }
@@ -75,7 +110,7 @@ def install_empirical_cohort_scheduler(
     async def _schedule_empirical_cohort() -> None:
         if os.getenv("WOW_KALSHI_WEATHER_EMPIRICAL_COHORT_ENABLED", "0") != "1":
             _logger.warning(
-                "WOW_KALSHI_WEATHER_OPERATIONAL_CYCLE status=DISABLED probability_publishable=false can_execute=false"
+                "WOW_KALSHI_WEATHER_EMPIRICAL_COHORT status=DISABLED probability_publishable=false can_execute=false"
             )
             return
         try:
@@ -86,7 +121,7 @@ def install_empirical_cohort_scheduler(
             interval_seconds = 900
         interval_seconds = max(300, interval_seconds)
         task = asyncio.create_task(
-            _run_operational_loop(
+            _run_bounded_shadow_loop(
                 db_client_fn=db_client_fn,
                 interval_seconds=interval_seconds,
             )
@@ -95,45 +130,38 @@ def install_empirical_cohort_scheduler(
         task.add_done_callback(_tasks.discard)
 
 
-async def _run_operational_loop(
+async def _run_bounded_shadow_loop(
     *,
     db_client_fn: Callable[[], object],
     interval_seconds: int,
 ) -> None:
     _logger.warning(
-        "WOW_KALSHI_WEATHER_OPERATIONAL_CYCLE status=STARTED interval_seconds=%s probability_publishable=false can_execute=false",
+        "WOW_KALSHI_WEATHER_EMPIRICAL_COHORT status=STARTED collection_mode=BOUNDED_REPRESENTATIVE_SHADOW interval_seconds=%s probability_publishable=false can_execute=false",
         interval_seconds,
     )
     while True:
         try:
             result = await asyncio.to_thread(
-                run_weather_operational_cycle_once,
+                _run_bounded_shadow_cycle,
                 db_client_fn=db_client_fn,
             )
-            first_rejections = [
-                reason
-                for diagnostic in result.discovery_diagnostics
-                for reason in diagnostic.rejection_reasons[:3]
-            ][:8]
             _logger.warning(
-                "WOW_KALSHI_WEATHER_OPERATIONAL_CYCLE status=%s targets=%s markets_seen=%s discovered=%s captured=%s skipped=%s supplemental=%s trajectories=%s market_refresh=%s settled=%s capture_failures=%s market_failures=%s rejection_samples=%s probability_publishable=false can_execute=false",
+                "WOW_KALSHI_WEATHER_EMPIRICAL_COHORT status=%s collection_mode=BOUNDED_REPRESENTATIVE_SHADOW targets=%s discovered=%s captured=%s skipped=%s supplemental=%s settled=%s capture_failures=%s supplemental_failures=%s settlement_failures=%s failure_samples=%s probability_publishable=false can_execute=false",
                 result.status,
                 result.targets_checked,
-                result.markets_seen,
                 result.contracts_discovered,
-                result.predictions_captured,
-                result.predictions_skipped_existing,
+                result.samples_captured,
+                result.samples_skipped_existing,
                 result.supplemental_snapshots_captured,
-                result.official_trajectory_snapshots_captured,
-                result.market_snapshots_refreshed,
                 result.predictions_settled,
                 len(result.capture_failures),
-                len(result.market_monitor_failures),
-                first_rejections,
+                len(result.supplemental_failures),
+                len(result.settlement_failures),
+                list(result.capture_failures[:6]),
             )
         except Exception as exc:
             _logger.exception(
-                "WOW_KALSHI_WEATHER_OPERATIONAL_CYCLE status=FAILED error_type=%s probability_publishable=false can_execute=false",
+                "WOW_KALSHI_WEATHER_EMPIRICAL_COHORT status=FAILED collection_mode=BOUNDED_REPRESENTATIVE_SHADOW error_type=%s probability_publishable=false can_execute=false",
                 type(exc).__name__,
             )
         await asyncio.sleep(interval_seconds)
