@@ -6,13 +6,13 @@ from v17.market_evidence_snapshot_bridge import attach_snapshot_evidence
 from v17.scout_research_promotion import evaluate_candidate
 
 
-def _handoff(*, duplicate=False):
+def _handoff(*, duplicate=False, sport_key="baseball_mlb", home="Texas Rangers", away="Houston Astros", start="2026-09-14T20:00:00Z"):
     candidate = {
         "official_event_id": "primary-evt-1",
-        "sport_key": "baseball_mlb",
-        "commence_time": "2026-09-14T20:00:00Z",
-        "home_team": "Texas Rangers",
-        "away_team": "Houston Astros",
+        "sport_key": sport_key,
+        "commence_time": start,
+        "home_team": home,
+        "away_team": away,
         "route": "LLP_TEAM_BETTING_ENGINE",
         "market_evidence": [],
         "market_evidence_status": "NO_MARKET_EVIDENCE",
@@ -32,10 +32,21 @@ def _handoff(*, duplicate=False):
     }
 
 
-def _event(provider, book, price, *, home="Texas Rangers", away="Houston Astros", start="2026-09-14T20:03:00Z"):
+def _event(
+    provider,
+    book,
+    price,
+    *,
+    sport_key="baseball_mlb",
+    home="Texas Rangers",
+    away="Houston Astros",
+    outcome_home=None,
+    outcome_away=None,
+    start="2026-09-14T20:03:00Z",
+):
     return {
         "id": f"{provider}-evt",
-        "sport_key": "baseball_mlb",
+        "sport_key": sport_key,
         "commence_time": start,
         "home_team": home,
         "away_team": away,
@@ -55,8 +66,8 @@ def _event(provider, book, price, *, home="Texas Rangers", away="Houston Astros"
                 "key": "h2h",
                 "last_update": "2026-09-14T19:59:00Z",
                 "outcomes": [
-                    {"name": "Texas Rangers", "price": price},
-                    {"name": "Houston Astros", "price": 110},
+                    {"name": outcome_home or home, "price": price},
+                    {"name": outcome_away or away, "price": 110},
                 ],
             }],
         }],
@@ -98,6 +109,59 @@ def test_exact_event_match_attaches_cross_book_evidence_without_probability_auth
     assert evaluation["research_status"] in {"RESEARCH_INTEREST_MEDIUM", "RESEARCH_INTEREST_HIGH"}
     assert evaluation["probability"] is None
     assert evaluation["prediction_authority"] is False
+
+
+def test_provider_city_labels_match_only_when_full_franchise_names_are_explicit_h2h_outcomes():
+    handoff = _handoff(
+        sport_key="americanfootball_nfl",
+        home="Kansas City Chiefs",
+        away="Denver Broncos",
+        start="2026-09-15T00:15:00Z",
+    )
+    event = _event(
+        "RUNDOWN",
+        "book-a",
+        -120,
+        sport_key="americanfootball_nfl",
+        home="Kansas City",
+        away="Denver",
+        outcome_home="Kansas City Chiefs",
+        outcome_away="Denver Broncos",
+        start="2026-09-15T00:15:00Z",
+    )
+    result = attach_snapshot_evidence(handoff, _snapshot([event]))
+    candidate = result["model_handoff"]["team_event_candidates"][0]
+    assert len(candidate["market_evidence"]) == 2
+    assert {row["outcome_name"] for row in candidate["market_evidence"]} == {"Kansas City Chiefs", "Denver Broncos"}
+    assert result["market_evidence_snapshot_bridge"]["matched_events"] == 1
+    assert result["market_evidence_snapshot_bridge"]["evidence_rows_attached"] == 2
+    assert candidate["probability"] is None
+    assert all(row["prediction_authority"] is False for row in candidate["market_evidence"])
+
+
+def test_provider_city_prefix_without_exact_full_h2h_identity_is_rejected():
+    handoff = _handoff(
+        sport_key="americanfootball_nfl",
+        home="Kansas City Chiefs",
+        away="Denver Broncos",
+        start="2026-09-15T00:15:00Z",
+    )
+    event = _event(
+        "RUNDOWN",
+        "book-a",
+        -120,
+        sport_key="americanfootball_nfl",
+        home="Kansas City",
+        away="Denver",
+        outcome_home="Kansas City",
+        outcome_away="Denver",
+        start="2026-09-15T00:15:00Z",
+    )
+    result = attach_snapshot_evidence(handoff, _snapshot([event]))
+    candidate = result["model_handoff"]["team_event_candidates"][0]
+    assert candidate["market_evidence"] == []
+    assert result["market_evidence_snapshot_bridge"]["matched_events"] == 0
+    assert result["market_evidence_snapshot_bridge"]["unmatched_events"] == 1
 
 
 def test_team_or_time_mismatch_never_attaches():
