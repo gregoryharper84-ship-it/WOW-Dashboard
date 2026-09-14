@@ -113,12 +113,17 @@ def _patch_runtime_installers(monkeypatch, calls):
     monkeypatch.setattr(
         request_runtime,
         "install_nfl_team_event_publication",
-        lambda module: calls.append(("publication", module)) or True,
+        lambda module: calls.append(("nfl_publication", module)) or True,
+    )
+    monkeypatch.setattr(
+        request_runtime,
+        "install_ncaaf_team_event_publication",
+        lambda module: calls.append(("ncaaf_publication", module)) or True,
     )
     monkeypatch.setattr(request_runtime, "scout_route_auth_dependency", lambda dependency: dependency)
 
 
-def test_team_event_runtime_installs_nfl_publication_only_when_v17_active(monkeypatch):
+def test_team_event_runtime_installs_certified_publication_boundaries_only_when_v17_active(monkeypatch):
     calls = []
     _patch_runtime_installers(monkeypatch, calls)
     monkeypatch.setenv("WOW_V17_ACTIVE", "1")
@@ -131,11 +136,13 @@ def test_team_event_runtime_installs_nfl_publication_only_when_v17_active(monkey
     )
 
     assert calls[0:2] == ["hydration", "model"]
-    assert calls[2][0] == "publication"
+    assert calls[2][0] == "nfl_publication"
     assert calls[2][1] is request_runtime.v17_team_event_base
+    assert calls[3][0] == "ncaaf_publication"
+    assert calls[3][1] is request_runtime.v17_team_event_base
 
 
-def test_team_event_runtime_does_not_leak_nfl_publication_into_lower_layers(monkeypatch):
+def test_team_event_runtime_does_not_leak_publication_into_lower_layers(monkeypatch):
     calls = []
     _patch_runtime_installers(monkeypatch, calls)
     monkeypatch.delenv("WOW_V17_ACTIVE", raising=False)
