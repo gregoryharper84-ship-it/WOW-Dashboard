@@ -169,4 +169,4 @@ def test_hourly_timezone_token_is_required_not_geographically_inferred():
     assert "HOURLY_TIMEZONE_TOKEN_MISSING" in exc.value.blockers
 
 
-# Synchronization marker v2: attach protected checks to the latest-main Weather tree.
+# Synchronization marker v3: attach protected checks to the latest-main Weather tree.
