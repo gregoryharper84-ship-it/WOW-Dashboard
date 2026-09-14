@@ -31,6 +31,7 @@ from v17.scout_secondary_source import secondary_for_request
 
 DEFAULT_ODDS_ROUTER_URL = "https://wow-odds-router.onrender.com"
 TRANSIENT_HTTP_STATUSES = {500, 502, 503, 504}
+SOURCE_QUOTA_HTTP_STATUSES = {429}
 TRANSIENT_SOURCE_CODES = {
     "URLError",
     "TimeoutError",
@@ -53,6 +54,7 @@ SECONDARY_VENDOR_FAILURE_CODES = {
     "ODDS_API_UPSTREAM_ERROR",
     "ODDS_API_UPSTREAM_UNREACHABLE",
     "ODDS_API_UPSTREAM_NON_JSON",
+    "ODDS_PROVIDER_NON_JSON",
 }
 
 
@@ -84,12 +86,21 @@ def _primary_failure_label(result: scout.FetchResult) -> str:
 
 
 def _eligible_for_secondary(result: scout.FetchResult) -> bool:
+    """Allow typed provider failures and quota exhaustion into research fallback.
+
+    Generic 401/403 remain fail-closed because they may represent caller auth or
+    governance failures. Vendor entitlement failures are eligible only when they
+    carry a known source-side reason code. Provider 429 quota exhaustion is
+    eligible after typed caller-auth failures have already been excluded.
+    """
     if result.ok:
         return False
     code = str(result.code or "")
     if code in AUTH_FAILURE_CODES or code.startswith("GITHUB_ACTIONS_OIDC"):
         return False
     if code in SECONDARY_VENDOR_FAILURE_CODES:
+        return True
+    if result.status in SOURCE_QUOTA_HTTP_STATUSES:
         return True
     if result.status in TRANSIENT_HTTP_STATUSES:
         return True
@@ -98,7 +109,7 @@ def _eligible_for_secondary(result: scout.FetchResult) -> bool:
 
 def configure_source_failure_scope() -> None:
     # Typed vendor failures are row/source blockers. Caller auth remains fail-closed
-    # before this point; 429 remains the only slate-terminal source status here.
+    # before this point; a 429 that survives all research fallbacks remains slate-terminal.
     scout.TERMINAL_SOURCE_HTTP_STATUSES = {429}
 
 
