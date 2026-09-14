@@ -22,6 +22,12 @@ def test_exact_protected_main_multiscout_claims_are_accepted():
     assert oidc.validate_github_actions_claims(_claims())["repository_id"] == oidc.REPOSITORY_ID
 
 
+def test_protected_workflow_ref_stays_pinned_to_nightly_multiscout_main():
+    assert oidc.WORKFLOW_REF.endswith(
+        "/.github/workflows/wow-v17-nightly-multiscout.yml@refs/heads/main"
+    )
+
+
 @pytest.mark.parametrize(
     ("field", "bad"),
     [

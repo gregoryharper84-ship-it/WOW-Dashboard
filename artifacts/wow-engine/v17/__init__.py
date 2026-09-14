@@ -107,9 +107,9 @@ def compose_active_runtime() -> bool:
     from v17.rundown_credential_diagnostic import log_rundown_credential_status
     from v17 import team_event_request_runtime as team_runtime
 
-    # One non-secret startup diagnostic makes Render's runtime credential state
-    # observable without ever exposing the credential value.
-    log_rundown_credential_status()
+    # Route the non-secret diagnostic through Uvicorn's configured logger so it
+    # reliably reaches Render app logs during process startup.
+    log_rundown_credential_status(logging.getLogger("uvicorn.error"))
 
     get_certified_numerical_registry()
     prop_ok = install_prop_response_semantics()
