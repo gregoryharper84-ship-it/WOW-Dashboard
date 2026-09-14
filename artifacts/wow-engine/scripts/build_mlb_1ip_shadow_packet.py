@@ -8,16 +8,23 @@ authority are permitted here. The workflow compares:
 
 The shrinkage hyperparameter is selected on a later-2024 tuning window after
 fitting the league prior on earlier 2024 rows. The untouched 2025 sample is the
-prospective-style validation set. This is deliberately simpler than layering a
-post-hoc calibrator over a misspecified tail model.
+prospective-style validation set.
+
+V17 discrimination hardening: population calibration alone is not sufficient
+for a player-prop ranking model. The packet now measures within-exact-line
+ranking discrimination. A same-line constant model is expected to score 0.50
+AUC and cannot be preferred for player-level ranking merely because its global
+Brier/ECE are slightly better.
 """
 from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import random
+from statistics import pstdev
 
 from mlb_1ip_artifact_pipeline import fit_candidate, validate_candidate
 from mlb_1ip_specialist import simulate_1ip_event_tree
@@ -31,6 +38,9 @@ VALIDATION_LINES = (11.5, 13.5, 15.5, 17.5, 19.5, 21.5)
 SIM_TRIALS = 100_000
 MAX_BRIER = 0.25
 MAX_ECE = 0.06
+MAX_BRIER_REGRESSION_VS_AGGREGATE = 0.01
+MIN_WITHIN_LINE_AUC_GAIN = 0.02
+MIN_SAME_LINE_STD = 0.005
 ALPHA_CANDIDATES = (4.0, 8.0, 12.0, 20.0, 30.0)
 RECENT_START_LIMIT = 10
 
@@ -78,6 +88,57 @@ def _metrics(actual: list[int], predicted: list[float]) -> dict:
         acc = sum(actual[j] for j in idx) / len(idx)
         ece += len(idx) / n * abs(conf - acc)
     return {"validation_rows": n, "brier": brier, "ece": ece, "gates_passed": brier <= MAX_BRIER and ece <= MAX_ECE}
+
+
+def _binary_auc(actual: list[int], predicted: list[float]) -> tuple[float | None, int]:
+    positives = [p for y, p in zip(actual, predicted) if y == 1]
+    negatives = [p for y, p in zip(actual, predicted) if y == 0]
+    pairs = len(positives) * len(negatives)
+    if pairs == 0:
+        return None, 0
+    wins = 0.0
+    for pos in positives:
+        for neg in negatives:
+            if pos > neg:
+                wins += 1.0
+            elif pos == neg:
+                wins += 0.5
+    return wins / pairs, pairs
+
+
+def _within_line_discrimination(details: list[dict]) -> dict:
+    by_line: dict[float, list[dict]] = {}
+    for row in details:
+        by_line.setdefault(float(row["line"]), []).append(row)
+
+    total_pairs = 0
+    weighted_auc = 0.0
+    line_metrics: dict[str, dict] = {}
+    std_values = []
+    for line, rows in sorted(by_line.items()):
+        actual = [int(row["actual_more"]) for row in rows]
+        predicted = [float(row["p_more"]) for row in rows]
+        auc, pairs = _binary_auc(actual, predicted)
+        probability_std = pstdev(predicted) if len(predicted) > 1 else 0.0
+        if probability_std > 0:
+            std_values.append(probability_std)
+        line_metrics[str(line)] = {
+            "rows": len(rows),
+            "auc": auc,
+            "comparable_pairs": pairs,
+            "probability_std": probability_std,
+            "unique_probability_count": len({round(v, 12) for v in predicted}),
+        }
+        if auc is not None and pairs > 0:
+            total_pairs += pairs
+            weighted_auc += auc * pairs
+
+    return {
+        "within_line_auc": (weighted_auc / total_pairs) if total_pairs else None,
+        "comparable_pairs": total_pairs,
+        "mean_nonzero_same_line_probability_std": (sum(std_values) / len(std_values)) if std_values else 0.0,
+        "line_metrics": line_metrics,
+    }
 
 
 def _bf_bucket(bf: int) -> str:
@@ -142,12 +203,27 @@ def _select_alpha(train_identity_rows: list[dict]) -> dict:
     tune_rows = train_identity_rows[split:]
     trials = []
     for alpha in ALPHA_CANDIDATES:
-        y, p, _ = _rolling_shrinkage_predictions(base_rows=fit_rows, evaluation_rows=tune_rows, alpha=alpha)
+        y, p, details = _rolling_shrinkage_predictions(base_rows=fit_rows, evaluation_rows=tune_rows, alpha=alpha)
         metrics = _metrics(y, p)
-        trials.append({"alpha": alpha, **metrics})
-    # Hyperparameter choice is entirely within 2024. Prefer lowest Brier, then ECE.
+        discrimination = _within_line_discrimination(details)
+        trials.append({"alpha": alpha, **metrics, "discrimination": discrimination})
+    # Hyperparameter choice remains calibration-first within 2024. Discrimination
+    # is reported, not used to tune alpha, so the untouched 2025 set stays clean.
     selected = min(trials, key=lambda x: (x["brier"], x["ece"]))
     return {"fit_rows": len(fit_rows), "tune_rows": len(tune_rows), "trials": trials, "selected_alpha": selected["alpha"]}
+
+
+def _aggregate_details(identity_rows: list[dict], probability_by_line: dict[str, float]) -> list[dict]:
+    details = []
+    for idx, row in enumerate(identity_rows):
+        line = VALIDATION_LINES[idx % len(VALIDATION_LINES)]
+        details.append({
+            **row,
+            "line": line,
+            "actual_more": 1 if int(row["pitches"]) > line else 0,
+            "p_more": float(probability_by_line[str(line)]),
+        })
+    return details
 
 
 def main() -> None:
@@ -214,32 +290,68 @@ def main() -> None:
     aggregate_metrics = _metrics(actual, aggregate_predicted)
     shrink_metrics = _metrics(shrink_actual, shrink_predicted)
 
+    aggregate_discrimination = _within_line_discrimination(
+        _aggregate_details(validation_identity, aggregate_probability_by_line)
+    )
+    shrink_discrimination = _within_line_discrimination(shrink_assignments)
+
+    aggregate_auc = aggregate_discrimination["within_line_auc"]
+    shrink_auc = shrink_discrimination["within_line_auc"]
+    auc_gain = (
+        float(shrink_auc) - float(aggregate_auc)
+        if shrink_auc is not None and aggregate_auc is not None
+        else None
+    )
+    discrimination_gate_passed = bool(
+        shrink_metrics["gates_passed"]
+        and shrink_metrics["brier"] <= aggregate_metrics["brier"] + MAX_BRIER_REGRESSION_VS_AGGREGATE
+        and auc_gain is not None
+        and auc_gain >= MIN_WITHIN_LINE_AUC_GAIN
+        and shrink_discrimination["mean_nonzero_same_line_probability_std"] >= MIN_SAME_LINE_STD
+    )
+
     shrink_artifact = {
-        "model_family": "MLB_1IP_PITCHER_SHRUNK_EMPIRICAL_PMF_V1",
+        "model_family": "MLB_1IP_PITCHER_SHRUNK_EMPIRICAL_PMF_V2",
         "league_total_pitches": [int(r["pitches"]) for r in train_identity],
         "recent_start_limit": RECENT_START_LIMIT,
         "shrinkage_alpha": selected_alpha,
         "alpha_selection": alpha_selection,
         "training_rows": len(train_identity),
-        "artifact_checksum": _sha({"league_total_pitches": [int(r["pitches"]) for r in train_identity], "recent_start_limit": RECENT_START_LIMIT, "shrinkage_alpha": selected_alpha}),
+        "artifact_checksum": _sha({
+            "league_total_pitches": [int(r["pitches"]) for r in train_identity],
+            "recent_start_limit": RECENT_START_LIMIT,
+            "shrinkage_alpha": selected_alpha,
+            "model_family": "MLB_1IP_PITCHER_SHRUNK_EMPIRICAL_PMF_V2",
+        }),
         "probability_publishable": False,
         "can_execute": False,
     }
+
+    preferred_research_model = (
+        shrink_artifact["model_family"]
+        if discrimination_gate_passed
+        else aggregate["model_family"] if aggregate_metrics["gates_passed"] else "NO_CERTIFIABLE_RESEARCH_MODEL"
+    )
 
     comparison = {
         "current": current_validated["validation_metrics"],
         "aggregate_empirical": aggregate_metrics,
         "pitcher_shrunk_empirical": shrink_metrics,
+        "aggregate_discrimination": aggregate_discrimination,
+        "pitcher_shrunk_discrimination": shrink_discrimination,
+        "within_line_auc_gain": auc_gain,
+        "discrimination_gate_passed": discrimination_gate_passed,
+        "discrimination_gate_thresholds": {
+            "max_brier_regression_vs_aggregate": MAX_BRIER_REGRESSION_VS_AGGREGATE,
+            "min_within_line_auc_gain": MIN_WITHIN_LINE_AUC_GAIN,
+            "min_same_line_probability_std": MIN_SAME_LINE_STD,
+        },
         "alpha_selection": alpha_selection,
-        "preferred_research_model": (
-            shrink_artifact["model_family"]
-            if shrink_metrics["gates_passed"] and shrink_metrics["brier"] <= aggregate_metrics["brier"]
-            else aggregate["model_family"] if aggregate_metrics["gates_passed"] else "NO_CERTIFIABLE_RESEARCH_MODEL"
-        ),
+        "preferred_research_model": preferred_research_model,
     }
 
     packet = {
-        "purpose": "RESEARCH_ONLY_TEMPORAL_SHADOW_MODEL_COMPARISON",
+        "purpose": "RESEARCH_ONLY_TEMPORAL_SHADOW_MODEL_COMPARISON_WITH_PLAYER_DISCRIMINATION",
         "training": {"season": TRAIN_SEASON, "games_sampled": len(train_games), "rows": len(train_rows), "identity_rows": len(train_identity), "manifest_hash": train_manifest_hash},
         "validation": {"season": VALIDATION_SEASON, "games_sampled": len(validation_games), "rows": len(validation_rows), "identity_rows": len(validation_identity), "manifest_hash": validation_manifest_hash, "line_grid": VALIDATION_LINES},
         "split_hash": split_hash,
@@ -250,20 +362,39 @@ def main() -> None:
         "comparison": comparison,
         "certification_ready": False,
         "certification_blockers": [
-            "INDEPENDENT_PR_REVIEW_REQUIRED",
+            "PLAYER_DISCRIMINATION_REVIEW_REQUIRED",
             "PREFERRED_CHALLENGER_REQUIRES_FORMAL_ARTIFACT_AND_RUNTIME_CONTRACT",
             "LINE_SUPPORT_CERTIFICATION_REVIEW_REQUIRED",
-            "PROMOTION_REQUIRES_DISTINCT_REVIEWER_CONTEXT",
+            "PROMOTION_REQUIRES_DISTINCT_REVIEWER_CONTEXT_OR_ACTIVE_OWNER_EXCEPTION",
         ],
         "probability_publishable": False,
         "can_execute": False,
     }
 
+    discrimination_report = {
+        "selected_alpha": selected_alpha,
+        "aggregate": {**aggregate_metrics, **aggregate_discrimination},
+        "pitcher_shrunk": {**shrink_metrics, **shrink_discrimination},
+        "within_line_auc_gain": auc_gain,
+        "discrimination_gate_passed": discrimination_gate_passed,
+        "preferred_research_model": preferred_research_model,
+        "probability_publishable": False,
+        "can_execute": False,
+    }
+
     (out_dir / "shadow_packet.json").write_text(json.dumps(packet, indent=2, sort_keys=True))
+    (out_dir / "discrimination_report.json").write_text(json.dumps(discrimination_report, indent=2, sort_keys=True))
     (out_dir / "train_manifests.json").write_text(json.dumps(train_manifests, indent=2, sort_keys=True))
     (out_dir / "validation_manifests.json").write_text(json.dumps(validation_manifests, indent=2, sort_keys=True))
     (out_dir / "pitcher_shrunk_validation_assignments.json").write_text(json.dumps(shrink_assignments, indent=2, sort_keys=True))
-    print(json.dumps({"training_rows": len(train_rows), "validation_rows": len(validation_rows), "comparison": comparison, "probability_publishable": False, "can_execute": False}, sort_keys=True))
+    print(json.dumps({
+        "training_rows": len(train_rows),
+        "validation_rows": len(validation_rows),
+        "comparison": comparison,
+        "selected_alpha": selected_alpha,
+        "probability_publishable": False,
+        "can_execute": False,
+    }, sort_keys=True))
 
 
 if __name__ == "__main__":
