@@ -30,7 +30,7 @@ from v17.scout_secondary_source import secondary_for_request
 
 DEFAULT_ODDS_ROUTER_URL = "https://wow-odds-router.onrender.com"
 TRANSIENT_HTTP_STATUSES = {500, 502, 503, 504}
-SOURCE_LIMIT_HTTP_STATUSES = {401, 403, 429}
+SOURCE_QUOTA_HTTP_STATUSES = {429}
 TRANSIENT_SOURCE_CODES = {
     "URLError",
     "TimeoutError",
@@ -85,13 +85,12 @@ def _primary_failure_label(result: scout.FetchResult) -> str:
 
 
 def _eligible_for_secondary(result: scout.FetchResult) -> bool:
-    """Allow provider-side limits/failures into research fallback, never caller auth.
+    """Allow typed provider failures and quota exhaustion into research fallback.
 
-    401/403 can be vendor entitlement responses and 429 can be provider quota
-    exhaustion. They are eligible only after typed caller-auth failures have
-    already been excluded. This keeps OIDC/auth fail-closed while allowing the
-    existing ESPN evidence-only source to recover schedule/h2h research when a
-    paid/public odds source is unavailable.
+    Generic 401/403 remain fail-closed because they may represent caller auth or
+    governance failures. Vendor entitlement failures are eligible only when they
+    carry a known source-side reason code. Provider 429 quota exhaustion is
+    eligible after typed caller-auth failures have already been excluded.
     """
     if result.ok:
         return False
@@ -100,7 +99,7 @@ def _eligible_for_secondary(result: scout.FetchResult) -> bool:
         return False
     if code in SECONDARY_VENDOR_FAILURE_CODES:
         return True
-    if result.status in SOURCE_LIMIT_HTTP_STATUSES:
+    if result.status in SOURCE_QUOTA_HTTP_STATUSES:
         return True
     if result.status in TRANSIENT_HTTP_STATUSES:
         return True
