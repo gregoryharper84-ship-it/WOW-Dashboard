@@ -45,6 +45,12 @@ def _client():
 
 
 def load_games(client: Any, sport: str) -> list[TrainingGame]:
+    """Load settled games with a total, stable pagination order.
+
+    PostgREST range pagination MUST use a unique tie-breaker. Ordering only by
+    game_date is insufficient because many games share a date and can move
+    across offset page boundaries, producing duplicate game_ids in one replay.
+    """
     sport = sport.upper()
     table = TRAIN_TABLE[sport]
     rows: list[dict[str, Any]] = []
@@ -55,6 +61,7 @@ def load_games(client: Any, sport: str) -> list[TrainingGame]:
             .select("game_id,season,game_date,home_team_id,away_team_id,home_score,away_score")
             .eq("settled", True)
             .order("game_date")
+            .order("game_id")
             .range(offset, offset + 999)
             .execute()
         )
@@ -63,6 +70,21 @@ def load_games(client: Any, sport: str) -> list[TrainingGame]:
         if len(batch) < 1000:
             break
         offset += 1000
+
+    seen: set[str] = set()
+    duplicate_ids: list[str] = []
+    for row in rows:
+        gid = str(row.get("game_id") or "")
+        if gid in seen:
+            duplicate_ids.append(gid)
+            if len(duplicate_ids) >= 10:
+                break
+        seen.add(gid)
+    if duplicate_ids:
+        raise RuntimeError(
+            f"{sport}_TRAINING_PAGINATION_DUPLICATE_GAME_IDS sample={','.join(duplicate_ids)}"
+        )
+
     return [
         TrainingGame(
             game_id=str(r["game_id"]), sport=sport, season=int(r["season"]),
@@ -122,7 +144,18 @@ def _walk_forward_raw(rows, *, burn_in: int = 150, folds: int = 6):
     return raw_probs, outcomes, fold_ids, timestamps
 
 
-def fit_and_persist(sport: str, client=None) -> dict[str, Any]:
+def fit_and_persist(
+    sport: str,
+    client=None,
+    *,
+    provenance_complete: bool = False,
+) -> dict[str, Any]:
+    """Fit and persist SHADOW evidence; provenance must be explicitly proven.
+
+    Direct callers default to provenance_complete=False. The governed replay is
+    responsible for validating every source row before passing True. This avoids
+    a caller accidentally earning certification from an unverified corpus.
+    """
     sport = sport.upper()
     if sport not in TRAIN_TABLE:
         raise ValueError(f"unsupported sport {sport}")
@@ -137,8 +170,11 @@ def fit_and_persist(sport: str, client=None) -> dict[str, Any]:
     calibration = phase_b_platt(raw, outcomes, folds, timestamps)
     calibration_status = calibration.result.calibration_status if calibration.result is not None else None
     decision = certification_decision(
-        artifact, sport=sport, calibration_rows=len(raw),
-        calibration_status=calibration_status, provenance_complete=True,
+        artifact,
+        sport=sport,
+        calibration_rows=len(raw),
+        calibration_status=calibration_status,
+        provenance_complete=bool(provenance_complete),
     )
     calibrator_version = f"{sport}_TEAM_EVENT_PLATT_V1_{version_stamp}"
 
@@ -184,6 +220,7 @@ def fit_and_persist(sport: str, client=None) -> dict[str, Any]:
         "certification_notes": {
             "fit_decision": asdict(decision),
             "calibration_status": calibration_status,
+            "provenance_complete": bool(provenance_complete),
             "promotion_attempted": False, "can_execute": False,
         },
         "updated_at": datetime.now(timezone.utc).isoformat(),
@@ -195,7 +232,9 @@ def fit_and_persist(sport: str, client=None) -> dict[str, Any]:
         "holdout_brier": artifact.holdout_brier, "holdout_log_loss": artifact.holdout_log_loss,
         "holdout_accuracy": artifact.holdout_accuracy, "calibration_rows": len(raw),
         "calibration_status": calibration_status, "fit_decision": asdict(decision),
-        "persisted_status": persisted_status, "promotion_attempted": False,
+        "persisted_status": persisted_status,
+        "provenance_complete": bool(provenance_complete),
+        "promotion_attempted": False,
         "can_execute": False,
     }
 
