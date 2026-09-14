@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from kalshi_weather_v2.empirical_runtime import _automated_shadow_targets
 from kalshi_weather_v2.market_discovery import KalshiWeatherMarketDiscovery
+from kalshi_weather_v2.operational_cycle import VERIFIED_HOURLY_TARGETS
 
 
 def test_miami_hourly_series_uses_explicit_registered_identity():
@@ -114,3 +116,16 @@ def test_open_market_discovery_falls_back_to_nested_open_events():
 
     assert [row["ticker"] for row in rows] == ["KXTEMPMIAH-26SEP1312-T89.99"]
     assert discovery.last_market_discovery_path == "EVENTS_STATUS_OPEN_NESTED_MARKETS"
+
+
+def test_bounded_scheduler_mirrors_all_verified_operational_targets():
+    bounded = _automated_shadow_targets()
+
+    assert len(bounded) == len(VERIFIED_HOURLY_TARGETS) == 3
+    assert [target.index_city for target in bounded] == [
+        target.index_city for target in VERIFIED_HOURLY_TARGETS
+    ]
+    assert [target.expected_location for target in bounded] == [
+        target.expected_location for target in VERIFIED_HOURLY_TARGETS
+    ]
+    assert all(target.enabled for target in bounded)
