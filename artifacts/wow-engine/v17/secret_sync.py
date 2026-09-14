@@ -342,6 +342,13 @@ def run_sync(
             "RENDER_API_KEY is required to synchronize Render environment variables",
         )
 
+    reverse_token = str(env.get("WOW_GITHUB_SECRET_SYNC_TOKEN", ""))
+    if mode in {"both", "render-to-github"} and not reverse_token and not dry_run:
+        raise SecretSyncError(
+            "BOOTSTRAP_GITHUB_SECRET_SYNC_TOKEN_UNCONFIGURED",
+            "WOW_GITHUB_SECRET_SYNC_TOKEN is required for Render-to-GitHub synchronization",
+        )
+
     render = render_client or RenderClient(render_api_key, str(manifest["render_service_id"]))
     summary = SyncSummary()
 
@@ -357,13 +364,10 @@ def run_sync(
         summary.github_to_render_skipped = skipped
 
     if mode in {"both", "render-to-github"}:
-        token = str(env.get("WOW_GITHUB_SECRET_SYNC_TOKEN", ""))
-        if not token and not dry_run:
-            raise SecretSyncError(
-                "BOOTSTRAP_GITHUB_SECRET_SYNC_TOKEN_UNCONFIGURED",
-                "WOW_GITHUB_SECRET_SYNC_TOKEN is required for Render-to-GitHub synchronization",
-            )
-        github = github_writer or GitHubSecretWriter(token or "dry-run-no-write", str(manifest["github_repository"]))
+        github = github_writer or GitHubSecretWriter(
+            reverse_token or "dry-run-no-write",
+            str(manifest["github_repository"]),
+        )
         checked, changed, skipped = sync_render_to_github(
             manifest,
             render,
