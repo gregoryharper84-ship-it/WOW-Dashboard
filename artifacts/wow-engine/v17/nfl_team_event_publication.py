@@ -5,6 +5,7 @@ delegated to the exact pre-existing scorer, preserving MLB behavior.
 """
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any, Callable
 
 from fastapi import HTTPException
@@ -102,7 +103,7 @@ def _nfl_envelope(base: Any, req: Any) -> Any:
         "bullpen_source": "NOT_APPLICABLE_NFL",
         "weather_source": "NOT_USED_BY_NFL_FITTED_V1",
     }
-    return envelope.model_copy(update=updates)
+    return replace(envelope, **updates)
 
 
 def _govern(base: Any, req: Any, route: Any, model_result: dict[str, Any], envelope: Any, *, db: Any) -> dict[str, Any]:
