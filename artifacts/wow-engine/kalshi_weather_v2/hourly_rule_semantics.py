@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping
 
 from .contract_rule_acquisition import ContractRuleAcquisitionError, FrozenContractRulePackage
@@ -11,10 +11,10 @@ from .models import ContractSnapshot
 
 
 # Hourly Weather Index contracts are point-in-time index contracts, not daily
-# extrema. The parser therefore requires an exact structured occurrence time,
-# an explicit timezone token in the immutable market/event text, and a source
-# match to the Series settlement metadata. It never borrows a station, daily
-# window, or another exchange's weather rules.
+# extrema. The exact market rule date + local clock + timezone define the
+# settlement observation instant. Kalshi's occurrence_datetime may represent a
+# determination/availability timestamp a few minutes after that observation, so
+# it is corroborating evidence only and must not silently replace the rule time.
 _TZ_OFFSETS = {
     "EST": -5,
     "EDT": -4,
@@ -27,6 +27,26 @@ _TZ_OFFSETS = {
 }
 _TZ_RE = re.compile(r"\b(EST|EDT|CST|CDT|MST|MDT|PST|PDT)\b", re.IGNORECASE)
 _CLOCK_RE = re.compile(r"\b(?P<hour>1[0-2]|0?[1-9])(?::(?P<minute>[0-5]\d))?\s*(?P<ampm>am|pm)\b", re.IGNORECASE)
+_DATE_RE = re.compile(
+    r"\b(?P<month>Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+"
+    r"(?P<day>[0-3]?\d),?\s+(?P<year>20\d{2})\b",
+    re.IGNORECASE,
+)
+_MONTHS = {
+    "jan": 1,
+    "feb": 2,
+    "mar": 3,
+    "apr": 4,
+    "may": 5,
+    "jun": 6,
+    "jul": 7,
+    "aug": 8,
+    "sep": 9,
+    "oct": 10,
+    "nov": 11,
+    "dec": 12,
+}
+_MAX_OCCURRENCE_LAG = timedelta(minutes=15)
 
 
 @dataclass(frozen=True)
@@ -95,7 +115,7 @@ def parse_hourly_temperature_rule(
 
     The exact market rule text remains controlling. Structured strike metadata
     defines the machine predicate only after the rule text, Series source, and
-    point-in-time event identity are mutually consistent.
+    point-in-time identity are mutually consistent.
 
     `index_city` is an explicit caller-supplied key that must be the exact city
     used by the Kalshi weather-index endpoint. It is never derived from a nearby
@@ -114,15 +134,20 @@ def parse_hourly_temperature_rule(
     if not source or source.casefold() not in combined.casefold():
         raise _ambiguous("HOURLY_SETTLEMENT_SOURCE_NOT_NAMED_IN_RULE")
 
-    occurrence = _resolve_occurrence_time(raw_market, raw_event)
     timezone_token = _resolve_timezone_token(combined, market.title, market.subtitle, raw_event)
-    _cross_check_clock_text(occurrence, timezone_token, combined, market.title, raw_event)
+    observation_utc = _resolve_rule_observation_time(
+        combined,
+        market.title,
+        raw_event,
+        timezone_token,
+    )
+    occurrence = _resolve_occurrence_time_optional(raw_market, raw_event)
+    _cross_check_occurrence(observation_utc, occurrence)
 
     location = _resolve_location(raw_market, raw_event, expected_location=expected_location)
     strike = _resolve_strike(raw_market, combined)
 
     close_time = _required_timestamp(market.close_time, "HOURLY_MARKET_CLOSE_TIME_MISSING")
-    observation_utc = occurrence.astimezone(timezone.utc)
     observation_iso = observation_utc.isoformat().replace("+00:00", "Z")
     observation_ms = int(observation_utc.timestamp() * 1000)
 
@@ -163,18 +188,74 @@ def parse_hourly_temperature_rule(
     )
 
 
-def _resolve_occurrence_time(market: Mapping[str, Any], event: Mapping[str, Any]) -> datetime:
+def _resolve_rule_observation_time(
+    rule_text: str,
+    title: str,
+    event: Mapping[str, Any],
+    timezone_token: str,
+) -> datetime:
+    """Resolve the exact point-in-time from the controlling human rule text.
+
+    Live hourly markets currently expose occurrence_datetime five minutes after
+    the rule's observation clock. The rule itself is therefore authoritative for
+    the observation instant; occurrence_datetime is checked separately below.
+    """
+    blobs = [rule_text, title, str(event.get("title") or "")]
+    values: set[tuple[int, int, int, int, int]] = set()
+    for blob in blobs:
+        dates = []
+        clocks = []
+        for match in _DATE_RE.finditer(blob or ""):
+            month = _MONTHS[match.group("month")[:3].casefold()]
+            year = int(match.group("year"))
+            day = int(match.group("day"))
+            try:
+                datetime(year, month, day)
+            except ValueError as exc:
+                raise _ambiguous("HOURLY_RULE_DATE_INVALID") from exc
+            dates.append((year, month, day))
+        for match in _CLOCK_RE.finditer(blob or ""):
+            hour = int(match.group("hour")) % 12
+            if match.group("ampm").lower() == "pm":
+                hour += 12
+            clocks.append((hour, int(match.group("minute") or 0)))
+        for year, month, day in dates:
+            for hour, minute in clocks:
+                values.add((year, month, day, hour, minute))
+
+    if not values:
+        raise _ambiguous("HOURLY_RULE_OBSERVATION_TIME_MISSING")
+    if len(values) != 1:
+        raise _ambiguous("HOURLY_RULE_OBSERVATION_TIME_CONFLICT")
+
+    year, month, day, hour, minute = next(iter(values))
+    offset = timezone(timedelta(hours=_TZ_OFFSETS[timezone_token]))
+    local = datetime(year, month, day, hour, minute, tzinfo=offset)
+    return local.astimezone(timezone.utc)
+
+
+def _resolve_occurrence_time_optional(
+    market: Mapping[str, Any], event: Mapping[str, Any]
+) -> datetime | None:
     values: list[datetime] = []
     for obj, field in ((market, "occurrence_datetime"), (event, "occurrence_datetime")):
         value = obj.get(field)
         if value not in (None, ""):
             values.append(_parse_timestamp(str(value), f"HOURLY_{field.upper()}_INVALID"))
     if not values:
-        raise _ambiguous("HOURLY_OCCURRENCE_TIME_MISSING")
+        return None
     first = values[0]
     if any(value != first for value in values[1:]):
         raise _ambiguous("HOURLY_OCCURRENCE_TIME_CONFLICT")
     return first
+
+
+def _cross_check_occurrence(observation: datetime, occurrence: datetime | None) -> None:
+    if occurrence is None:
+        return
+    lag = occurrence - observation
+    if lag < timedelta(0) or lag > _MAX_OCCURRENCE_LAG:
+        raise _ambiguous("HOURLY_OCCURRENCE_RULE_TIME_MISMATCH")
 
 
 def _resolve_timezone_token(rule_text: str, title: str, subtitle: str, event: Mapping[str, Any]) -> str:
@@ -185,33 +266,6 @@ def _resolve_timezone_token(rule_text: str, title: str, subtitle: str, event: Ma
     if len(tokens) != 1:
         raise _ambiguous("HOURLY_TIMEZONE_TOKEN_CONFLICT")
     return next(iter(tokens))
-
-
-def _cross_check_clock_text(
-    occurrence: datetime,
-    timezone_token: str,
-    rule_text: str,
-    title: str,
-    event: Mapping[str, Any],
-) -> None:
-    blobs = [rule_text, title, str(event.get("title") or "")]
-    clock_values: set[tuple[int, int]] = set()
-    for blob in blobs:
-        for match in _CLOCK_RE.finditer(blob or ""):
-            hour = int(match.group("hour")) % 12
-            if match.group("ampm").lower() == "pm":
-                hour += 12
-            clock_values.add((hour, int(match.group("minute") or 0)))
-    if not clock_values:
-        raise _ambiguous("HOURLY_LOCAL_CLOCK_MISSING")
-    if len(clock_values) != 1:
-        raise _ambiguous("HOURLY_LOCAL_CLOCK_CONFLICT")
-
-    local_hour, local_minute = next(iter(clock_values))
-    offset = _TZ_OFFSETS[timezone_token]
-    expected_utc_hour = (local_hour - offset) % 24
-    if occurrence.astimezone(timezone.utc).hour != expected_utc_hour or occurrence.astimezone(timezone.utc).minute != local_minute:
-        raise _ambiguous("HOURLY_OCCURRENCE_TIMEZONE_MISMATCH")
 
 
 def _resolve_location(
@@ -235,9 +289,6 @@ def _resolve_location(
             raise _ambiguous("HOURLY_EXPECTED_LOCATION_NOT_PRESENT")
         return expected
 
-    # Without an explicit expected location, only accept the canonical product
-    # phrases that identify the KEX weather-index geography exactly. Do not map
-    # arbitrary titles to stations or nearby cities.
     canonical = (
         "New York City",
         "Chicago Metro Area",
@@ -292,9 +343,6 @@ def _resolve_strike(market: Mapping[str, Any], rule_text: str) -> tuple[str, flo
             raise _ambiguous("HOURLY_RULE_STRIKE_OPERATOR_MISMATCH")
         return f"{floor:g}°F <= index <= {cap:g}°F", floor, cap, True, True
 
-    # Equality / at-least / at-most require explicit structured semantics from
-    # the live API before enabling. They must not be approximated as a nearby
-    # greater/less strike.
     raise _ambiguous(f"HOURLY_STRIKE_TYPE_UNSUPPORTED:{strike_type or 'missing'}")
 
 
