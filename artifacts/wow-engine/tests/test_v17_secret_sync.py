@@ -100,6 +100,24 @@ def test_github_to_render_required_missing_fails_closed(manifest, tmp_path):
     assert render.deploy_calls == 0
 
 
+def test_both_mode_missing_reverse_bootstrap_fails_before_any_mutation(manifest, tmp_path):
+    render = FakeRender({"RUNDOWN_API_KEY": "old"})
+    with pytest.raises(secret_sync.SecretSyncError) as exc:
+        secret_sync.run_sync(
+            manifest,
+            mode="both",
+            repo_root=tmp_path,
+            environ={
+                "RENDER_API_KEY": "render-control",
+                "RUNDOWN_API_KEY": "new",
+            },
+            render_client=render,
+        )
+    assert exc.value.reason_code == "BOOTSTRAP_GITHUB_SECRET_SYNC_TOKEN_UNCONFIGURED"
+    assert render.set_calls == []
+    assert render.deploy_calls == 0
+
+
 def test_github_to_render_updates_only_changed_key_and_triggers_one_deploy(manifest, tmp_path):
     render = FakeRender({"RUNDOWN_API_KEY": "old"})
     summary = secret_sync.run_sync(
@@ -179,7 +197,7 @@ def test_render_to_github_uses_workflow_refs_but_excludes_github_owned_and_contr
     assert render.deploy_calls == 0
 
 
-def test_dry_run_never_mutates_either_store(manifest, tmp_path):
+def test_dry_run_never_mutates_either_store_and_needs_no_github_write_token(manifest, tmp_path):
     workflows = tmp_path / ".github" / "workflows"
     workflows.mkdir(parents=True)
     (workflows / "sync.yml").write_text(
@@ -194,7 +212,6 @@ def test_dry_run_never_mutates_either_store(manifest, tmp_path):
         repo_root=tmp_path,
         environ={
             "RENDER_API_KEY": "render-control",
-            "WOW_GITHUB_SECRET_SYNC_TOKEN": "github-control",
             "RUNDOWN_API_KEY": "new",
         },
         dry_run=True,
