@@ -123,7 +123,12 @@ def validate_and_aggregate_upset_pathways(
         if abs(raw_upset - governed_raw) > tolerance:
             raise UpsetPathwayInvalid("PATHWAY_UNCONDITIONAL_PROBABILITY_MISMATCH")
 
-    failure_probability = sum(r.probability for r in regimes if r.favorite_failure)
+    failure_regime_mass = sum(r.probability for r in regimes if r.favorite_failure)
+    independent_fragility = package.get("independent_favorite_fragility_probability")
+    failure_probability = (
+        _prob(independent_fragility, "independent_favorite_fragility_probability")
+        if independent_fragility is not None else failure_regime_mass
+    )
     total = raw_upset or 1.0
     shares = [r.contribution / total for r in regimes if r.contribution > 0.0]
     breadth = 1.0 / sum(share * share for share in shares) if shares else 0.0
@@ -143,6 +148,7 @@ def validate_and_aggregate_upset_pathways(
         "feature_schema_hash": package["feature_schema_hash"],
         "unconditional_raw_upset_probability": raw_upset,
         "favorite_fragility_probability": failure_probability,
+        "favorite_failure_regime_mass": failure_regime_mass,
         "regime_contributions": [{**asdict(r), "contribution": r.contribution} for r in regimes],
         "diagnostics": asdict(diagnostics), "probability_mutated_downstream": False,
         "market_inputs_used": False, "can_execute": False,
