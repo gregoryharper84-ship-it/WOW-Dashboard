@@ -11,6 +11,7 @@ import os
 import re
 from typing import Any
 
+from v17 import market_evidence_native_live as live
 from v17 import market_evidence_sources as sources
 from v17.market_evidence_snapshot import snapshot_dates
 
@@ -70,7 +71,7 @@ def _collect_rundown(sport_key: str, *, opener: Any = None) -> tuple[list[dict[s
     rows: list[dict[str, Any]] = []
     codes: list[str] = []
     for slate_date in snapshot_dates():
-        result = sources.rundown_market_evidence(
+        result = live.get_sport_date_odds_snapshot(
             sport_key,
             slate_date,
             capability="events",

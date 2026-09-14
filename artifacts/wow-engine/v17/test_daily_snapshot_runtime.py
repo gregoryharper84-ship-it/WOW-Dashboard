@@ -255,3 +255,101 @@ def test_prop_manifest_pages_through_1000_rows_without_truncation():
     assert len(manifest)==1000
     assert manifest[0]["source_snapshot_id"]=="snap-0"
     assert manifest[-1]["source_snapshot_id"]=="snap-999"
+
+
+# ---------------------------------------------------------------------------
+# Cross-sport MONEYLINE discovery
+#
+# The certified MLB canonical-snapshot lane above is unchanged. These cover the
+# additive lane that stops the board from *being* MLB whenever MLB is the only
+# healthy bridge.
+# ---------------------------------------------------------------------------
+
+def _cross_sport_feed(rows_by_sport):
+    def fetch(sport, sport_key):
+        return rows_by_sport.get(sport, [])
+
+    return fetch
+
+
+def _cross_sport_event(event_id, *, home="Alpha", away="Beta"):
+    return {
+        "id": event_id,
+        "home_team": home,
+        "away_team": away,
+        "commence_time": FUTURE,
+        "status": "SCHEDULED",
+    }
+
+
+def test_moneyline_lane_retains_unsupported_sports_instead_of_shrinking_to_mlb(monkeypatch):
+    """The real lane runs; only the upstream feed is stubbed."""
+    from v17 import cross_sport_discovery_feed as feed
+    from v17 import cross_sport_winner_discovery as discovery
+    from v17 import daily_snapshot_runtime as runtime
+    from v17.team_event_bridge_runtime import TEAM_EVENT_BRIDGES
+
+    monkeypatch.setattr(runtime, "score_team_event_request", lambda *a, **k: governed_team_result())
+
+    slate = _cross_sport_feed(
+        {
+            "NFL": [_cross_sport_event("nfl-1")],
+            "NHL": [_cross_sport_event("nhl-1")],
+            "SOCCER": [_cross_sport_event("soccer-1")],
+        }
+    )
+    monkeypatch.setattr(feed, "odds_proxy_feed", lambda **kwargs: slate)
+    monkeypatch.setattr(feed, "rundown_board_feed", lambda **kwargs: slate)
+
+    # No non-MLB bridge is registered, so every discovered non-MLB row must be
+    # retained as MODEL_UNAVAILABLE rather than disappear from the board.
+    for sport in ("NFL", "NHL", "SOCCER"):
+        monkeypatch.delitem(TEAM_EVENT_BRIDGES, sport, raising=False)
+
+    payload = run_daily_snapshot(
+        DailySnapshotRequest(requested_slate_date=SLATE_DATE, requested_timezone="America/Chicago", lanes=["MONEYLINE"]),
+        db=DB(),
+        market_api=Market,
+        event_api=Event,
+    )
+
+    moneyline_rows = [row for row in payload["rows"] if row["lane"] == "MONEYLINE"]
+    sports = {row["identity"].get("sport") for row in moneyline_rows}
+    assert {"NFL", "NHL", "SOCCER"}.issubset(sports), "unsupported sports stay on the board"
+
+    audit = payload["cross_sport_discovery_audit"]
+    reconciliation = audit["reconciliation"]
+    assert reconciliation["row_reconciliation"] == "PASS"
+    assert reconciliation["events_accounted"] == reconciliation["events_discovered"]
+    assert reconciliation["retained_unsupported_rows"] >= 3
+    # Every supported sport was *queried*, not just the ones with a model.
+    assert audit["discovery"]["sports_queried"] == list(discovery.SUPPORTED_DISCOVERY_SPORTS)
+    assert audit["discovery"]["discovery_independent_of_model_registry"] is True
+
+    for row in moneyline_rows:
+        if row["identity"].get("sport") in {"NFL", "NHL", "SOCCER"}:
+            assert row["result"]["model_status"] == "MODEL_UNAVAILABLE"
+            assert row["result"]["rank_eligible"] is False
+            assert row["result"]["market_probability_substitution_allowed"] is False
+            assert row["probability_publishable"] is False
+        assert row["can_execute"] is False
+    assert payload["can_execute"] is False
+
+
+def test_moneyline_lane_degrades_cleanly_when_cross_sport_discovery_is_disabled(monkeypatch):
+    from v17 import cross_sport_discovery_feed as feed
+
+    monkeypatch.setattr(feed, "enabled", lambda: False)
+    monkeypatch.setattr(
+        "v17.daily_snapshot_runtime.score_team_event_request", lambda *a, **k: governed_team_result()
+    )
+    payload = run_daily_snapshot(
+        DailySnapshotRequest(requested_slate_date=SLATE_DATE, requested_timezone="America/Chicago", lanes=["MONEYLINE"]),
+        db=DB(),
+        market_api=Market,
+        event_api=Event,
+    )
+    assert payload["cross_sport_discovery_audit"] is None
+    assert [row for row in payload["rows"] if row["lane"] == "MONEYLINE"]
+    assert payload["reconciliation"]["balanced"] is True
+    assert payload["can_execute"] is False

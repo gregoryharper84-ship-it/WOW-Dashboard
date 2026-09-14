@@ -21,3 +21,43 @@ def _agent_runtime_celery_eager():
     celery_app.conf.task_always_eager = True
     celery_app.conf.task_eager_propagates = True
     yield
+
+
+@pytest.fixture(autouse=True)
+def _rundown_snapshot_cache_isolation():
+    """Keep the process-global TheRundown snapshot cache out of test coupling.
+
+    The cache and its counters are deliberately process-scoped in production so
+    one research run issues one provider request per sport/date. In a test run
+    that same scope would let one test's stubbed payload satisfy the next test's
+    fetch, so both are reset around every test.
+    """
+    from v17 import market_evidence_observability, rundown_snapshot_cache
+
+    rundown_snapshot_cache.reset()
+    market_evidence_observability.reset()
+    yield
+    rundown_snapshot_cache.reset()
+    market_evidence_observability.reset()
+
+
+@pytest.fixture(autouse=True)
+def _discovery_source_env_isolation():
+    """Stop one test's minted proxy token from becoming another test's live feed.
+
+    The nightly Multi-Scout deliberately writes a freshly minted OIDC token into
+    the process environment so its proxy calls can use it. Under pytest that
+    write outlives the test, and the cross-sport discovery lane would then treat
+    a stubbed token as a real credential and attempt outbound calls from
+    unrelated tests. Snapshot and restore the credentials discovery reads.
+    """
+    import os
+
+    names = ("WOW_GITHUB_OIDC_TOKEN", "WOW_ODDS_PROXY_ACTION_KEY")
+    before = {name: os.environ.get(name) for name in names}
+    yield
+    for name, value in before.items():
+        if value is None:
+            os.environ.pop(name, None)
+        else:
+            os.environ[name] = value

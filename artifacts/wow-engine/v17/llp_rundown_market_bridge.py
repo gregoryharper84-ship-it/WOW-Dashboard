@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 from threading import RLock
 from typing import Any
 
+from v17 import market_evidence_native_live as live
 from v17 import market_evidence_sources as sources
 
 CAN_EXECUTE = False
@@ -193,17 +194,25 @@ def resolve_rundown_market_context(req: Any, *, opener: Any = None) -> dict[str,
             "prediction_authority": False,
             "can_execute": False,
         }
-    result = sources.rundown_market_evidence(
+    # One shared sport/date snapshot per research run. Scoring a 12-game board
+    # used to mean 12 identical provider requests; the snapshot layer collapses
+    # them, so every row in one run also reads the same market timestamp.
+    result = live.get_sport_date_odds_snapshot(
         sport_key,
         str(getattr(req, "requested_slate_date", "")),
         capability="events",
         opener=opener,
+        market_ids=sources.rundown_winner_market_ids() or None,
+        main_line=True,
+        hide_closed=True,
     )
     if not result.ok:
         return {
             "status": "MARKET_DATA_UNOBTAINABLE",
             "provider": BRIDGE_SOURCE,
             "reason_code": result.code,
+            "rate_limit": result.rate_limit,
+            "request_audit": result.request_audit,
             "prediction_authority": False,
             "can_execute": False,
         }

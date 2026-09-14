@@ -31,8 +31,10 @@ from v17.team_event_capability_manifest import (
     CERTIFIED_TEAM_EVENT_SPORTS,
     EXPECTED_TEAM_EVENT_SPORTS,
     TEAM_EVENT_INPUT_CONTRACTS,
+    normalize_team_event_identity,
     normalize_team_event_sport,
 )
+from v17.team_event_model_registry_audit import probe_sport, resolve_state
 
 CAN_EXECUTE = False
 DISCOVERY_ONLY_LABEL = "DISCOVERY CANDIDATE — NOT MODEL-SUPPORTED"
@@ -92,6 +94,16 @@ def unregister_team_event_bridge(sport: str) -> None:
     TEAM_EVENT_BRIDGES.pop(normalize_team_event_sport(sport), None)
 
 
+def request_sport(req: Any) -> str:
+    """Governed sport contract for a request, resolved from sport *and* league.
+
+    A request carrying sport="FOOTBALL", league="NFL" names the NFL contract.
+    Reading the sport field alone produced the unknown sport "FOOTBALL" and a
+    MODEL_UNAVAILABLE that blamed a missing model for a missing alias.
+    """
+    return normalize_team_event_identity(getattr(req, "sport", ""), getattr(req, "league", None))
+
+
 def _model_failure_detail(
     req: Any,
     *,
@@ -100,7 +112,7 @@ def _model_failure_detail(
     status_code: int,
     extra: Mapping[str, Any] | None = None,
 ) -> HTTPException:
-    sport = normalize_team_event_sport(getattr(req, "sport", ""))
+    sport = request_sport(req)
     detail: dict[str, Any] = {
         "code": code,
         "sport": sport,
@@ -185,7 +197,7 @@ def score_registered_team_event_request(
     canonical_hydration_required: bool = False,
 ) -> dict[str, Any]:
     """Dispatch through the exact registered sport bridge or fail closed."""
-    sport = normalize_team_event_sport(getattr(req, "sport", ""))
+    sport = request_sport(req)
     registration = TEAM_EVENT_BRIDGES.get(sport)
     if registration is None:
         raise _model_failure_detail(
@@ -253,21 +265,35 @@ def score_registered_team_event_request(
 
 
 def team_event_bridge_health() -> dict[str, dict[str, Any]]:
-    """Expose catalog support separately from production registration."""
+    """Expose catalog support, implementation coverage and registration separately.
+
+    Coverage is inspectable without trial-scoring an arbitrary event, and a
+    sport is never reported UP merely because some generic scorer imports: the
+    status is driven by *this sport's* registration, and the probe fields say
+    what exists behind it.
+    """
     sports = list(EXPECTED_TEAM_EVENT_SPORTS)
     extras = sorted(set(TEAM_EVENT_BRIDGES).difference(sports))
     health: dict[str, dict[str, Any]] = {}
     for sport in [*sports, *extras]:
         registration = TEAM_EVENT_BRIDGES.get(sport)
+        registered = registration is not None
+        probe = probe_sport(sport)
         health[sport] = {
-            "status": "UP" if registration is not None else MODEL_UNAVAILABLE,
-            "registered": registration is not None,
+            "status": "UP" if registered else MODEL_UNAVAILABLE,
+            "registered": registered,
+            "registered_capability": registered,
+            "registry_state": resolve_state(sport, registered=registered, probe=probe),
+            "model_artifact_present": bool(probe.fitted_module) and probe.scorer_resolvable,
+            "adapter_importable": probe.adapter_importable,
+            "scorer_resolvable": probe.scorer_resolvable,
             "controlling_specialist": (
-                registration.controlling_specialist if registration is not None else None
+                registration.controlling_specialist if registered else None
             ),
-            "adapter": registration.adapter_name if registration is not None else None,
+            "adapter": registration.adapter_name if registered else None,
             "required_inputs": list(TEAM_EVENT_INPUT_CONTRACTS.get(sport, ())),
             "discovery_supported": sport in EXPECTED_TEAM_EVENT_SPORTS,
+            "reason_if_unavailable": None if registered else probe.notes,
             "probability_publishable": False,
             "can_execute": False,
         }
@@ -375,6 +401,45 @@ def _install_health_overlay() -> None:
     )
 
 
+NFL_OUTRIGHT_WIN_SPECIALIST = "NFL_OUTRIGHT_WIN_FITTED_MODEL_V1"
+
+
+def _register_nfl_bridge_if_available() -> bool:
+    """Register the NFL bridge when its implementation chain actually imports.
+
+    An import failure is left as ``ADAPTER_MISSING`` rather than being turned
+    into a half-registered bridge: a sport that cannot import its adapter must
+    stay MODEL_UNAVAILABLE, not become a route that fails at score time.
+    """
+    if os.getenv("WOW_V17_NFL_TEAM_EVENT_BRIDGE", "1") != "1":
+        return False
+    try:
+        from v17.nfl_team_event_publication import score_nfl_team_event_request
+    except Exception:  # noqa: BLE001 - absence is an audit answer, not a crash
+        return False
+
+    def scorer(req: Any, *, event_api: Any, canonical_hydration_required: bool = False) -> dict[str, Any]:
+        return score_nfl_team_event_request(
+            _base_runtime,
+            req,
+            event_api=event_api,
+            canonical_hydration_required=canonical_hydration_required,
+        )
+
+    register_team_event_bridge(
+        "NFL",
+        adapter_name="V17_NFL_TEAM_EVENT_BRIDGE",
+        controlling_specialist=NFL_OUTRIGHT_WIN_SPECIALIST,
+        scorer=scorer,
+        required_inputs=TEAM_EVENT_INPUT_CONTRACTS["NFL"],
+        # The NFL publication chain owns its own canonical acquisition, input
+        # resolution and governed-package construction, exactly as MLB does.
+        # Re-validating it here would apply a second, different contract.
+        standard_package_validation=False,
+    )
+    return True
+
+
 def install_team_event_bridge_runtime() -> dict[str, Any]:
     """Install the authoritative production registry exactly once."""
     global _INSTALLED
@@ -396,6 +461,19 @@ def install_team_event_bridge_runtime() -> dict[str, Any]:
         # home/away package validator; do not re-interpret that mature contract.
         standard_package_validation=False,
     )
+
+    # NFL has a fitted outright-win bundle, a sport-specific evidence adapter, a
+    # governed publication chain and its own acceptance tests, all reachable
+    # from this process. It was already wired as an additive wrapper keyed on a
+    # narrow sport alias, which meant the registry — and therefore /health —
+    # reported NFL as unavailable while NFL scoring actually worked, and a
+    # request naming sport="FOOTBALL" missed the wrapper entirely.
+    #
+    # Registering it makes one registry the single answer for both. This does
+    # not certify an NFL specialist artifact: champion promotion stays a runtime
+    # condition, and with no promoted champion the scorer still fails closed as
+    # MODEL_UNAVAILABLE at score time.
+    _register_nfl_bridge_if_available()
 
     _base_runtime.score_team_event_request = score_registered_team_event_request
     _install_health_overlay()

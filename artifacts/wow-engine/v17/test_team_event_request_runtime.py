@@ -191,10 +191,15 @@ def test_llp_requester_team_event_is_controlled_by_llp():
 
 
 def test_unsupported_sport_fails_closed_without_probability():
+    # NBA is declared in the discovery catalog but has no fitted team/event
+    # model, adapter or scorer anywhere in the repository. NFL is deliberately
+    # no longer the fixture here: it now has a registered bridge, so a failure
+    # on an NFL row is a failure of that bridge (inputs/scorer/output), never
+    # "the sport is unsupported" -- see the NFL test below.
     req = _base(
-        sport="NFL",
-        league="NFL",
-        event_key="NFL:test-2",
+        sport="NBA",
+        league="NBA",
+        event_key="NBA:test-2",
         official_event_id="test-2",
         settlement_basis="FULL_GAME_OUTRIGHT",
         sport_specific_evidence={},
