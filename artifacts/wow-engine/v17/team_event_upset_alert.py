@@ -60,6 +60,7 @@ class UpsetAlert:
     favorite_failure_path_probability_if_modeled: float | None = None
     largest_favorite_loss_path: str | None = None
     underdog_upset_path: Any = None
+    upset_pathway_model: Any = None
     market_role_only: bool = True
     probability_mutated: bool = False
     admission_mutated: bool = False
@@ -94,6 +95,7 @@ def evaluate_favorite_upset_alert(
     favorite_failure_path_probability_if_modeled: float | None = None,
     largest_favorite_loss_path: str | None = None,
     underdog_upset_path: Any = None,
+    upset_pathway_model: Mapping[str, Any] | None = None,
 ) -> UpsetAlert:
     """Classify a market favorite using only governed sporting probabilities.
 
@@ -177,6 +179,11 @@ def evaluate_favorite_upset_alert(
         reasons.append("FAVORITE_LOSS_PATH_IDENTIFIED")
     if underdog_upset_path is not None:
         reasons.append("UNDERDOG_UPSET_PATH_IDENTIFIED")
+    if upset_pathway_model is not None:
+        if upset_pathway_model.get("status") == "PASS":
+            reasons.append("FITTED_UPSET_PATHWAY_MODEL_AVAILABLE")
+        else:
+            reasons.append("UPSET_PATHWAY_MODEL_NOT_AVAILABLE")
 
     return UpsetAlert(
         status=status,
@@ -196,6 +203,7 @@ def evaluate_favorite_upset_alert(
         favorite_failure_path_probability_if_modeled=favorite_failure_path_probability_if_modeled,
         largest_favorite_loss_path=largest_favorite_loss_path,
         underdog_upset_path=underdog_upset_path,
+        upset_pathway_model=dict(upset_pathway_model) if upset_pathway_model is not None else None,
     )
 
 
