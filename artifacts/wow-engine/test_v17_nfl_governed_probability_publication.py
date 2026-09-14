@@ -1,9 +1,12 @@
+from dataclasses import is_dataclass
 from types import SimpleNamespace
 
 import nfl_event_hydration_runtime as hydration
 import nfl_event_model_v17 as model
 import team_event_request_runtime as request_runtime
-from v17.nfl_team_event_publication import install_nfl_team_event_publication
+from v17 import team_event_request_runtime as v17_team_event_base
+from v17.nfl_team_event_publication import _nfl_envelope, install_nfl_team_event_publication
+from v17.v17_candidate_envelopes import V17TeamEventCandidateEnvelope
 
 
 def test_nfl_default_hydration_includes_current_2026_without_changing_model_split():
@@ -42,6 +45,45 @@ def test_nfl_publication_patch_is_idempotent_and_non_nfl_delegates_unchanged():
     )
     assert result == {"sentinel": "unchanged", "can_execute": False}
     assert calls == [("MLB", "MLB", event_api, True)]
+
+
+def test_nfl_publication_envelope_uses_real_frozen_dataclass_without_attribute_error():
+    req = v17_team_event_base.TeamEventRequest(
+        requester_host_identity="WOW_BETTING_ENGINE",
+        research_run_id="test-nfl-envelope",
+        requested_slate_date="2099-09-14",
+        requested_timezone="America/Chicago",
+        scan_stage="PREGAME",
+        candidate_family="TEAM_EVENT",
+        decision_intent="WINNER",
+        event_key="NFL:provider-event-123",
+        official_event_id="2099_01_DEN_KC",
+        event_start_time_utc="2099-09-15T00:20:00+00:00",
+        sport="NFL",
+        league="NFL",
+        market_family="OUTRIGHT_WINNER",
+        settlement_basis="FULL_GAME_OUTRIGHT",
+        home_team="Kansas City Chiefs",
+        away_team="Denver Broncos",
+        source_snapshot_id="nflverse-snapshot-1",
+        latest_material_update_timestamp="2099-09-14T12:00:00+00:00",
+        market_prior=None,
+        sport_specific_evidence={},
+    )
+
+    envelope = _nfl_envelope(v17_team_event_base, req)
+
+    assert isinstance(envelope, V17TeamEventCandidateEnvelope)
+    assert is_dataclass(envelope)
+    assert envelope.official_event_id == "2099_01_DEN_KC"
+    assert envelope.official_event_id_source == "CANONICAL_NFLVERSE_LEDGER"
+    assert envelope.official_event_status_source == "CANONICAL_NFLVERSE_LEDGER"
+    assert envelope.home_starter_source == "NOT_APPLICABLE_NFL"
+    assert envelope.away_starter_source == "NOT_APPLICABLE_NFL"
+    assert envelope.injury_source == "NOT_USED_BY_NFL_FITTED_V1"
+    assert envelope.weather_source == "NOT_USED_BY_NFL_FITTED_V1"
+    assert envelope.bullpen_source == "NOT_APPLICABLE_NFL"
+    assert envelope.source_snapshot_id == "nflverse-snapshot-1"
 
 
 def _fake_app():
