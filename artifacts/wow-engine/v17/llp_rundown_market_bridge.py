@@ -139,7 +139,10 @@ def _market_from_event(req: Any, event: dict[str, Any]) -> dict[str, Any]:
             if stamp:
                 timestamps.append(str(stamp))
 
-    if three_way and not pairs:
+    # Mixed two-way/three-way source observations are a market-definition
+    # conflict, not permission to discard the draw and manufacture a binary
+    # prior from whichever book happened to omit it.
+    if three_way:
         return {
             "status": "THREE_WAY_MARKET_UNSUPPORTED_FOR_BINARY_PRIOR",
             "provider": BRIDGE_SOURCE,
