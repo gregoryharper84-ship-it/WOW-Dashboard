@@ -20,7 +20,7 @@ def manifest():
         ],
         "render_to_github": {
             "workflow_referenced": True,
-            "explicit_names": ["RENDER_OWNED_API_KEY"],
+            "explicit_names": ["PLATFORM_SHARED_API_KEY"],
             "exclude_names": ["WOW_ACTION_API_KEY", "SUPABASE_SERVICE_ROLE_KEY"],
             "exclude_prefixes": ["GITHUB_", "RENDER_"],
         },
@@ -76,11 +76,11 @@ def test_workflow_secret_discovery_reads_names_only(tmp_path):
     workflows = tmp_path / ".github" / "workflows"
     workflows.mkdir(parents=True)
     (workflows / "a.yml").write_text(
-        "env:\n  A: ${{ secrets.RENDER_OWNED_API_KEY }}\n  B: ${{ secrets['SECOND_TOKEN'] }}\n",
+        "env:\n  A: ${{ secrets.PLATFORM_SHARED_API_KEY }}\n  B: ${{ secrets['SECOND_TOKEN'] }}\n",
         encoding="utf-8",
     )
     assert secret_sync.discover_workflow_secret_names(tmp_path) == {
-        "RENDER_OWNED_API_KEY",
+        "PLATFORM_SHARED_API_KEY",
         "SECOND_TOKEN",
     }
 
@@ -159,7 +159,7 @@ def test_render_to_github_uses_workflow_refs_but_excludes_github_owned_and_contr
     (workflows / "sync.yml").write_text(
         "\n".join(
             [
-                "A: ${{ secrets.RENDER_OWNED_API_KEY }}",
+                "A: ${{ secrets.PLATFORM_SHARED_API_KEY }}",
                 "B: ${{ secrets.SECOND_TOKEN }}",
                 "C: ${{ secrets.RUNDOWN_API_KEY }}",
                 "D: ${{ secrets.WOW_ACTION_API_KEY }}",
@@ -170,7 +170,7 @@ def test_render_to_github_uses_workflow_refs_but_excludes_github_owned_and_contr
     )
     render = FakeRender(
         {
-            "RENDER_OWNED_API_KEY": "render-one",
+            "PLATFORM_SHARED_API_KEY": "render-one",
             "SECOND_TOKEN": "render-two",
             "RUNDOWN_API_KEY": "must-not-win",
             "WOW_ACTION_API_KEY": "must-not-copy",
@@ -190,7 +190,7 @@ def test_render_to_github_uses_workflow_refs_but_excludes_github_owned_and_contr
         github_writer=github,
     )
     assert sorted(github.calls) == [
-        ("RENDER_OWNED_API_KEY", "render-one"),
+        ("PLATFORM_SHARED_API_KEY", "render-one"),
         ("SECOND_TOKEN", "render-two"),
     ]
     assert summary.render_to_github_changed == 2
@@ -201,10 +201,10 @@ def test_dry_run_never_mutates_either_store_and_needs_no_github_write_token(mani
     workflows = tmp_path / ".github" / "workflows"
     workflows.mkdir(parents=True)
     (workflows / "sync.yml").write_text(
-        "A: ${{ secrets.RENDER_OWNED_API_KEY }}\n",
+        "A: ${{ secrets.PLATFORM_SHARED_API_KEY }}\n",
         encoding="utf-8",
     )
-    render = FakeRender({"RUNDOWN_API_KEY": "old", "RENDER_OWNED_API_KEY": "render"})
+    render = FakeRender({"RUNDOWN_API_KEY": "old", "PLATFORM_SHARED_API_KEY": "render"})
     github = FakeGitHub()
     summary = secret_sync.run_sync(
         manifest,
