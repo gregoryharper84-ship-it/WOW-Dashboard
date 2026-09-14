@@ -25,6 +25,7 @@ if __package__ in {None, ""}:
 
 from v17 import nightly_multiscout as scout
 from v17.github_actions_oidc_client import GitHubOIDCMintError, mint_github_actions_oidc
+from v17.market_evidence_scout_bridge import market_evidence_for_request
 from v17.scout_secondary_source import secondary_for_request
 
 TRANSIENT_HTTP_STATUSES = {500, 502, 503, 504}
@@ -158,26 +159,34 @@ def install_refreshable_oidc_proxy_auth() -> None:
         if not _eligible_for_secondary(final):
             return final
 
-        secondary = secondary_for_request(
-            path,
-            params,
-            event_context,
-            primary_failure=_primary_failure_label(final),
-        )
-        if not secondary.ok:
-            diagnostic = {
-                "secondary_attempted": True,
-                "secondary_provider": "ESPN_SCOREBOARD_RESEARCH_FALLBACK",
-                "secondary_status": "FAILED",
-                "secondary_reason_code": secondary.code,
-                "secondary_http_status": secondary.status,
-                "primary_reason_code": final.code,
-                "primary_http_status": final.status,
-            }
-            return scout.FetchResult(False, data=diagnostic, status=final.status, code=final.code)
+        primary_failure = _primary_failure_label(final)
+        secondary = secondary_for_request(path, params, event_context, primary_failure=primary_failure)
+        if secondary.ok:
+            _remember_event_context(path, secondary.data)
+            return scout.FetchResult(True, secondary.data, secondary.status or 200, code="SECONDARY_SOURCE_USED")
 
-        _remember_event_context(path, secondary.data)
-        return scout.FetchResult(True, secondary.data, secondary.status or 200, code="SECONDARY_SOURCE_USED")
+        # Tertiary tier: subscription market-evidence feeds. Same research
+        # ceiling as every other tier — evidence only, never probability.
+        tertiary = market_evidence_for_request(path, params, event_context, primary_failure=primary_failure)
+        if tertiary.ok:
+            _remember_event_context(path, tertiary.data)
+            return scout.FetchResult(True, tertiary.data, tertiary.status or 200, code="MARKET_EVIDENCE_SOURCE_USED")
+
+        diagnostic = {
+            "secondary_attempted": True,
+            "secondary_provider": "ESPN_SCOREBOARD_RESEARCH_FALLBACK",
+            "secondary_status": "FAILED",
+            "secondary_reason_code": secondary.code,
+            "secondary_http_status": secondary.status,
+            "tertiary_attempted": True,
+            "tertiary_provider": tertiary.provider,
+            "tertiary_status": "FAILED",
+            "tertiary_reason_code": tertiary.code,
+            "tertiary_http_status": tertiary.status,
+            "primary_reason_code": final.code,
+            "primary_http_status": final.status,
+        }
+        return scout.FetchResult(False, data=diagnostic, status=final.status, code=final.code)
 
     scout.proxy_get = _proxy_get
     scout.bookmaker_rows = _bookmaker_rows

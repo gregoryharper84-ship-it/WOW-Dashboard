@@ -217,6 +217,11 @@ def _blocker_diagnostics(result: FetchResult) -> dict[str, Any]:
         "secondary_status",
         "secondary_reason_code",
         "secondary_http_status",
+        "tertiary_attempted",
+        "tertiary_provider",
+        "tertiary_status",
+        "tertiary_reason_code",
+        "tertiary_http_status",
         "primary_reason_code",
         "primary_http_status",
     }

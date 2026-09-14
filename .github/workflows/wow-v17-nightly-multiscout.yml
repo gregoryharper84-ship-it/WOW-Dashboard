@@ -13,6 +13,9 @@ on:
       - "artifacts/wow-engine/github_actions_oidc.py"
       - "artifacts/wow-engine/v17/nightly_multiscout.py"
       - "artifacts/wow-engine/v17/nightly_multiscout_oidc.py"
+      - "artifacts/wow-engine/v17/market_evidence_sources.py"
+      - "artifacts/wow-engine/v17/market_evidence_scout_bridge.py"
+      - "artifacts/wow-engine/v17/market_evidence_snapshot.py"
       - "artifacts/wow-engine/v17/github_actions_oidc_client.py"
       - "artifacts/wow-engine/v17/nightly_multiscout_delivery.py"
       - "artifacts/wow-engine/v17/multiscout_auto_advance.py"
@@ -32,6 +35,9 @@ on:
       - "artifacts/wow-engine/github_actions_oidc.py"
       - "artifacts/wow-engine/v17/nightly_multiscout.py"
       - "artifacts/wow-engine/v17/nightly_multiscout_oidc.py"
+      - "artifacts/wow-engine/v17/market_evidence_sources.py"
+      - "artifacts/wow-engine/v17/market_evidence_scout_bridge.py"
+      - "artifacts/wow-engine/v17/market_evidence_snapshot.py"
       - "artifacts/wow-engine/v17/github_actions_oidc_client.py"
       - "artifacts/wow-engine/v17/nightly_multiscout_delivery.py"
       - "artifacts/wow-engine/v17/multiscout_auto_advance.py"
@@ -49,6 +55,8 @@ on:
       - "artifacts/wow-engine/test_agent_runtime_v17_model_failures.py"
       - "artifacts/wow-engine/test_v17_github_oidc.py"
       - "artifacts/wow-engine/test_v17_multiscout_oidc_runtime.py"
+      - "artifacts/wow-engine/tests/test_v17_market_evidence_sources.py"
+      - "artifacts/wow-engine/tests/test_v17_market_evidence_provider_contracts.py"
       - "artifacts/wow-engine/tests/test_v17_sport_scout_teams.py"
       - "artifacts/wow-odds-proxy/**"
 
@@ -85,11 +93,83 @@ jobs:
           test_v17_github_oidc.py
           test_v17_multiscout_oidc_runtime.py
           tests/test_v17_sport_scout_teams.py
+          tests/test_v17_market_evidence_sources.py
+          tests/test_v17_market_evidence_provider_contracts.py
       - name: Verify odds proxy extension
         working-directory: artifacts/wow-odds-proxy
         run: |
           pip install -r requirements.txt
           pytest -q
+
+  market-evidence-acceptance:
+    name: Credentialed provider acceptance (captured_rows > 0)
+    # Proves each configured provider's REAL response translates into the
+    # internal Odds-API-v4 shape. Fixtures cannot prove this; only a live,
+    # credentialed call can. Skipped entirely when no key is configured.
+    if: github.event_name != 'pull_request'
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: artifacts/wow-engine
+    env:
+      WOW_MARKET_EVIDENCE_ENABLED: "true"
+      WOW_USER_TIMEZONE: America/Chicago
+      WOW_CAN_EXECUTE: "false"
+      WOW_DRY_RUN_ONLY: "true"
+      RUNDOWN_API_KEY: ${{ secrets.RUNDOWN_API_KEY }}
+      SHARPAPI_API_KEY: ${{ secrets.SHARPAPI_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Skip when no provider credential is configured
+        id: gate
+        shell: bash
+        run: |
+          if [ -z "$RUNDOWN_API_KEY" ] && [ -z "$SHARPAPI_API_KEY" ]; then
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "No provider credential configured; acceptance is not applicable."
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/setup-python@v5
+        if: steps.gate.outputs.configured == 'true'
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: artifacts/wow-engine/requirements.txt
+      - name: Install engine dependencies
+        if: steps.gate.outputs.configured == 'true'
+        run: pip install -r requirements.txt
+      - name: Capture the provider response structure (no values, no credentials)
+        if: steps.gate.outputs.configured == 'true'
+        continue-on-error: true
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/market-acceptance"
+          for spec in "RUNDOWN sports" "RUNDOWN events" "SHARPAPI odds"; do
+            set -- $spec
+            python v17/market_evidence_snapshot.py --probe \
+              --provider "$1" --capability "$2" --sport-key baseball_mlb \
+              > "$RUNNER_TEMP/market-acceptance/probe-$1-$2.json" || true
+            echo "--- $1/$2"
+            cat "$RUNNER_TEMP/market-acceptance/probe-$1-$2.json"
+          done
+      - name: Require captured_rows > 0 from every credentialed provider
+        if: steps.gate.outputs.configured == 'true'
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/market-acceptance"
+          python v17/market_evidence_snapshot.py --require-capture \
+            --output "$RUNNER_TEMP/market-acceptance/market-evidence.json"
+      - name: Upload acceptance evidence and structural probes
+        if: always() && steps.gate.outputs.configured == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: wow-v17-market-evidence-acceptance-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/market-acceptance
+          if-no-files-found: warn
+          retention-days: 30
 
   nightly-discovery:
     name: Nightly all-sport discovery and governed specialist handoff
@@ -113,6 +193,9 @@ jobs:
       WOW_SCOUT_MARKET_CHUNK_SIZE: "10"
       WOW_CAN_EXECUTE: "false"
       WOW_DRY_RUN_ONLY: "true"
+      WOW_MARKET_EVIDENCE_ENABLED: ${{ vars.WOW_MARKET_EVIDENCE_ENABLED || 'false' }}
+      RUNDOWN_API_KEY: ${{ secrets.RUNDOWN_API_KEY }}
+      SHARPAPI_API_KEY: ${{ secrets.SHARPAPI_API_KEY }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -129,6 +212,42 @@ jobs:
           test "$WOW_DRY_RUN_ONLY" = "true"
           test -n "$ACTIONS_ID_TOKEN_REQUEST_URL"
           test -n "$ACTIONS_ID_TOKEN_REQUEST_TOKEN"
+      - name: Capture research-only cross-book market evidence snapshot
+        id: market_evidence
+        if: always()
+        continue-on-error: true
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/wow-multiscout"
+          set +e
+          python v17/market_evidence_snapshot.py \
+            --output "$RUNNER_TEMP/wow-multiscout/market-evidence.json"
+          rc=$?
+          set -e
+          echo "runner_exit_code=$rc" >> "$GITHUB_OUTPUT"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          p = Path(os.environ["RUNNER_TEMP"]) / "wow-multiscout" / "market-evidence.json"
+          if not p.exists():
+              print("market evidence snapshot unavailable; discovery continues without it")
+              raise SystemExit(0)
+          data = json.loads(p.read_text())
+          assert data["can_execute"] is False
+          assert data["prediction_authority"] is False
+          assert data["exact_line_authority"] is False
+          assert data["research_only"] is True
+          assert data["research_ceiling"] == "RESEARCH_INTEREST"
+          assert data["reconciliation"]["balanced"] is True
+          recon = data["reconciliation"]
+          print(f"market evidence status={data['status']} captured={recon['lanes_captured']} blocked={recon['lanes_blocked']} rows={recon['captured_rows']} books={len(data['bookmakers_seen'])}")
+          print(f"per-provider captured rows: {data['provider_capture']}")
+          assert data["affects_fitted_model_availability"] is False
+          for lane in data["lanes"]:
+              if lane["status"] == "BLOCKED":
+                  print(f"  blocked lane {lane['provider']}/{lane['capability']}/{lane['sport_key']}: {lane['reason_code']}")
+          PY
+
       - name: Run V17 Nightly Multi-Scout
         id: scout
         shell: bash
@@ -316,6 +435,7 @@ jobs:
             ${{ runner.temp }}/wow-multiscout/run-manifest.json
             ${{ runner.temp }}/wow-multiscout/latest-pointer.json
             ${{ runner.temp }}/wow-multiscout/auto-advance-receipt.json
+            ${{ runner.temp }}/wow-multiscout/market-evidence.json
             ${{ runner.temp }}/wow-multiscout/summary.md
           if-no-files-found: warn
           retention-days: 90
