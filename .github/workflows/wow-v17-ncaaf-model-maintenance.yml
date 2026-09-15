@@ -19,9 +19,11 @@ on:
       - "artifacts/wow-engine/ncaaf_three_way_trainer.py"
       - "artifacts/wow-engine/ncaaf_trainer.py"
       - "artifacts/wow-engine/v17/ncaaf_model_maintenance.py"
+      - "artifacts/wow-engine/v17/capability_build_registry.py"
       - "artifacts/wow-engine/team_event_request_runtime.py"
       - "artifacts/wow-engine/test_ncaaf_feature_compiler.py"
       - "artifacts/wow-engine/test_v17_ncaaf_model_maintenance.py"
+      - "artifacts/wow-engine/test_v17_capability_build_registry.py"
       - "artifacts/wow-engine/test_v17_github_oidc.py"
   pull_request:
     paths:
@@ -36,9 +38,11 @@ on:
       - "artifacts/wow-engine/ncaaf_three_way_trainer.py"
       - "artifacts/wow-engine/ncaaf_trainer.py"
       - "artifacts/wow-engine/v17/ncaaf_model_maintenance.py"
+      - "artifacts/wow-engine/v17/capability_build_registry.py"
       - "artifacts/wow-engine/team_event_request_runtime.py"
       - "artifacts/wow-engine/test_ncaaf_feature_compiler.py"
       - "artifacts/wow-engine/test_v17_ncaaf_model_maintenance.py"
+      - "artifacts/wow-engine/test_v17_capability_build_registry.py"
       - "artifacts/wow-engine/test_v17_github_oidc.py"
 
 permissions:
@@ -70,9 +74,9 @@ jobs:
           test_ncaaf_feature_compiler.py
           test_v17_ncaaf_model_maintenance.py
           test_ncaaf_cfbd_hydrator.py
-          test_ncaaf_training_materializer.py
           test_ncaaf_candidate_training_runner.py
           test_ncaaf_feature_transform.py
+          test_v17_capability_build_registry.py
           test_v17_github_oidc.py
 
   maintain:
