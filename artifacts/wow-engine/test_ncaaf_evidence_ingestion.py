@@ -12,10 +12,12 @@ class Result:
 class Table:
     def __init__(self):
         self.rows = None
+
     def upsert(self, rows, on_conflict=None):
         self.rows = rows
         assert on_conflict == "official_event_id,evidence_kind,scope,source_provider,payload_sha256"
         return self
+
     def execute(self):
         return Result()
 
@@ -23,6 +25,7 @@ class Table:
 class DB:
     def __init__(self):
         self.table_obj = Table()
+
     def table(self, name):
         assert name == "wow_ncaaf_pregame_evidence"
         return self.table_obj
@@ -64,7 +67,16 @@ def test_rejects_execution_flag():
     assert exc.value.code == "NCAAF_EVIDENCE_EXECUTION_FLAG_INVALID"
 
 
-def test_rejects_arbitrary_model_ready_evidence_kind():
+def test_accepts_declared_model_feature_evidence_kind_without_making_it_model_ready():
+    db = DB()
+    assert persist_normalized_evidence(db, [row("TEAM_POWER")]) == 1
+    persisted = db.table_obj.rows[0]
+    assert persisted["evidence_kind"] == "TEAM_POWER"
+    assert persisted["can_execute"] is False
+    assert "probability_publishable" not in persisted
+
+
+def test_rejects_arbitrary_undeclared_evidence_kind():
     with pytest.raises(NCAAFAcquisitionUnavailable) as exc:
-        persist_normalized_evidence(DB(), [row("TEAM_POWER")])
+        persist_normalized_evidence(DB(), [row("MODEL_READY_PROBABILITY")])
     assert exc.value.code == "NCAAF_EVIDENCE_KIND_NOT_ALLOWED_BY_INGESTION"
