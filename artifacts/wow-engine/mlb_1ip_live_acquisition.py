@@ -72,6 +72,68 @@ def _first_inning_pitch_counts(game_pk: int, pitcher_id: int, http_get: Callable
     return len(pa_pitch_counts), pa_pitch_counts
 
 
+def hydrate_mlb_1ip_bf_recent_history(
+    *,
+    pitcher_id: int,
+    event_start_time: str,
+    http_get: Callable[..., Any] = httpx.get,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Hydrate the exact recent-start BF state used by the BF shadow model.
+
+    The returned history is ordinary source evidence, never a probability.
+    Games are returned most-recent first, matching the existing 1IP acquisition
+    order. At most 10 starts are retained, which is the fitted model's certified
+    history window.
+    """
+    captured = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    event_start = _aware(event_start_time)
+    if event_start <= captured:
+        raise PropAutoHydrationError("EVENT_ALREADY_STARTED", "1IP BF hydration is pregame only")
+
+    history: list[dict[str, Any]] = []
+    pitch_counts: list[int] = []
+    for pk in _schedule_games_for_pitcher(int(pitcher_id), event_start, http_get):
+        bf, ppb = _first_inning_pitch_counts(pk, int(pitcher_id), http_get)
+        if bf >= 3:
+            history.append({"game_pk": int(pk), "bf": int(bf)})
+            pitch_counts.extend(ppb)
+
+    if len(history) < MIN_PRIOR_STARTS:
+        raise PropAutoHydrationError(
+            "MLB_1IP_PRIOR_SAMPLE_INSUFFICIENT",
+            "insufficient official first-inning play-by-play",
+            detail={"starts": len(history)},
+        )
+
+    bfs = [int(row["bf"]) for row in history]
+    counts = {
+        "3": sum(1 for x in bfs if x == 3),
+        "4": sum(1 for x in bfs if x == 4),
+        "5_PLUS": sum(1 for x in bfs if x >= 5),
+    }
+    n = len(bfs)
+    ts = captured.isoformat()
+    return {
+        "provider": PROVIDER,
+        "captured_at": ts,
+        "pitcher_id": int(pitcher_id),
+        "recent_bf_history": history,
+        "recent_bf_counts": counts,
+        "pitcher_bf_distribution": {
+            "p_bf_3": counts["3"] / n,
+            "p_bf_4": counts["4"] / n,
+            "p_bf_gte5": counts["5_PLUS"] / n,
+            "sample_n": n,
+        },
+        "pitch_counts": pitch_counts,
+        "history_limit": MAX_PRIOR_STARTS,
+        "source_timestamps": {"MLB_STATS_API_1IP_PLAYBYPLAY": ts},
+        "probability_publishable": False,
+        "can_execute": False,
+    }
+
+
 def _official_or_recent_lineup(game_pk: int, opponent_side: str, http_get: Callable[..., Any]) -> tuple[str, list[int]]:
     payload = _request_json(
         f"{MLB_STATS_API_BASE}/game/{game_pk}/boxscore",
@@ -145,7 +207,6 @@ def hydrate_mlb_1ip_evidence(*, player: str, event_start_time: str, http_get: Ca
     pitcher_side = str(sched.get("side") or "").upper()
     opponent_side = "AWAY" if pitcher_side == "HOME" else "HOME"
 
-    # current game teams
     current = _request_json(f"{MLB_STATS_API_BASE}/schedule", params={"sportId":"1", "gamePk": current_game_pk, "hydrate":"team,probablePitcher"}, http_get=http_get)
     game = (((current.get("dates") or [{}])[0].get("games") or [{}])[0])
     teams = game.get("teams") or {}
@@ -159,22 +220,23 @@ def hydrate_mlb_1ip_evidence(*, player: str, event_start_time: str, http_get: Ca
     projected_top_four = [_person_profile(pid, http_get) for pid in top_ids[:4]]
     projected_top_four = [x for x in projected_top_four if x]
 
-    bfs: list[int] = []
-    pitch_counts: list[int] = []
-    for pk in _schedule_games_for_pitcher(pitcher_id, event_start, http_get):
-        bf, ppb = _first_inning_pitch_counts(pk, pitcher_id, http_get)
-        if bf >= 3:
-            bfs.append(bf)
-            pitch_counts.extend(ppb)
-    if len(bfs) < MIN_PRIOR_STARTS or not pitch_counts:
-        raise PropAutoHydrationError("MLB_1IP_PRIOR_SAMPLE_INSUFFICIENT", "insufficient official first-inning play-by-play", detail={"starts": len(bfs)})
+    recent = hydrate_mlb_1ip_bf_recent_history(
+        pitcher_id=pitcher_id,
+        event_start_time=event_start_time,
+        http_get=http_get,
+        now=captured,
+    )
+    pitch_counts = list(recent.get("pitch_counts") or [])
+    if not pitch_counts:
+        raise PropAutoHydrationError(
+            "MLB_1IP_PRIOR_SAMPLE_INSUFFICIENT",
+            "insufficient official first-inning pitch counts",
+            detail={"starts": len(recent.get("recent_bf_history") or [])},
+        )
 
-    n = len(bfs)
-    p3 = sum(1 for x in bfs if x == 3) / n
-    p4 = sum(1 for x in bfs if x == 4) / n
-    p5 = sum(1 for x in bfs if x >= 5) / n
     ppb_mean = mean(pitch_counts)
     ppb_std = pstdev(pitch_counts) if len(pitch_counts) > 1 else 1.1
+    n = int((recent.get("pitcher_bf_distribution") or {}).get("sample_n") or 0)
     ts = captured.isoformat()
     return {
         "provider": PROVIDER,
@@ -184,7 +246,9 @@ def hydrate_mlb_1ip_evidence(*, player: str, event_start_time: str, http_get: Ca
         "starter_status": "CONFIRMED",
         "official_lineup_status": lineup_status,
         "projected_top_four": projected_top_four,
-        "pitcher_bf_distribution": {"p_bf_3": p3, "p_bf_4": p4, "p_bf_gte5": p5, "sample_n": n},
+        "pitcher_bf_distribution": recent["pitcher_bf_distribution"],
+        "recent_bf_history": recent["recent_bf_history"],
+        "recent_bf_counts": recent["recent_bf_counts"],
         "baseline_pitches_per_batter": {"mean": round(ppb_mean, 4), "std": round(max(ppb_std, 0.25), 4), "sample_n": len(pitch_counts)},
         "failure_path_prior": {"status": "RESOLVED_FROM_OFFICIAL_PRIOR_STARTS", "sample_n": n},
         "source_timestamps": {"MLB_STATS_API_1IP_PLAYBYPLAY": ts, "MLB_STATS_API_LINEUP": ts, "MLB_STATS_API_PROBABLE_PITCHER": ts},

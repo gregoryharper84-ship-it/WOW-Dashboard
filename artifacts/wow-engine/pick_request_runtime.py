@@ -31,6 +31,7 @@ from typing import Any, Optional
 from fastapi import Header, HTTPException
 
 from github_actions_oidc import scout_route_auth_dependency
+from mlb_1ip_bf_shadow_api import install_mlb_1ip_bf_shadow_routes
 import pick_request_runtime_core as _core
 from pick_request_runtime_core import *  # noqa: F401,F403
 from v17.top10_model_reconciliation import enforce_top10_completion
@@ -214,6 +215,11 @@ def install_pick_request_routes(
         auth_dependency=scout_route_auth_dependency(auth_dependency),
     )
     _install_top10_reconciliation_wrapper(app)
+    install_mlb_1ip_bf_shadow_routes(
+        app,
+        auth_dependency=auth_dependency,
+        db_client_fn=lambda: market_api.prod.get_client(),
+    )
 
 
 def __getattr__(name: str) -> Any:
