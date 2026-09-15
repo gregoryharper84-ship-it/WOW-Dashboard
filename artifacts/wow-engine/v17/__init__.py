@@ -128,6 +128,7 @@ def compose_active_runtime() -> bool:
     from v17.numerical_engine_production_bridge import install_production_bridges
     from v17.llp_rundown_market_bridge import install_llp_rundown_market_bridge
     from v17.rundown_credential_diagnostic import log_rundown_credential_status
+    from v17.runtime_acceptance_probe import install_runtime_acceptance_probe
     from v17.sep15_runtime_contract_repairs import (
         install_market_prior_ingress_repair,
         install_rundown_v2_auth_repair,
@@ -152,16 +153,27 @@ def compose_active_runtime() -> bool:
     market_api = sys.modules.get("api_prod_market")
     numerical_ok = False
     mlb_event_bridge_deferred = False
+    runtime_acceptance_ok = False
     if market_api is not None:
         numerical_ok = install_production_bridges(market_api=market_api, team_event_module=team_runtime)
         mlb_event_bridge_deferred = _defer_mlb_event_bridge_install(
             market_api=market_api,
             team_runtime=team_runtime,
         )
+        app = getattr(market_api, "app", None)
+        if app is not None:
+            # Register after the deferred MLB bridge handler so the one-shot
+            # acceptance task observes the final composed production runtime.
+            runtime_acceptance_ok = install_runtime_acceptance_probe(
+                app=app,
+                market_api=market_api,
+                team_runtime=team_runtime,
+            )
 
     return bool(
         rundown_auth_ok or market_prior_ok
-        or prop_ok or lineup_ok or rehydration_ok or rundown_llp_ok or numerical_ok or mlb_event_bridge_deferred
+        or prop_ok or lineup_ok or rehydration_ok or rundown_llp_ok or numerical_ok
+        or mlb_event_bridge_deferred or runtime_acceptance_ok
         or getattr(market_api, "_v17_certified_numerical_bridge_installed", False)
         or getattr(market_api, "_v17_mlb_event_bridge_repair_installed", False)
         or getattr(team_runtime, "_v17_llp_rundown_market_bridge_installed", False)
