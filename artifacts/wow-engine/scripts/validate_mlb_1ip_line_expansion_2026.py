@@ -1,22 +1,19 @@
-"""Leakage-safe exact-line validation for MLB 1IP 14.5/16.5 expansion.
+"""Independent exact-line validation for MLB 1IP 14.5/16.5 expansion.
 
-This validation is intentionally frozen and non-serving:
-- aggregate PMF and BF shrinkage inputs come from the immutable 2024/2025
-  development bundle;
-- settled 2026 games through 2026-09-13 are used exactly once as the temporal
-  test period;
-- the first 400 games only warm pitcher BF history;
-- the next 700 games are scored before the current outcome is admitted;
-- no parameters, thresholds, or line-specific transforms are tuned on 2026.
+Frozen model inputs are the immutable 2024/2025 development bundle. To avoid
+reusing the later-2026 test cohort used by the player-conditioning study, this
+script uses the *earliest* 1,100 final 2026 regular-season games: 400 warmup
+only, then 700 scored games. Every pitcher is scored before the current outcome
+is admitted to history. No parameter, threshold, line transform, or gate is
+tuned on this cohort.
 
-The script validates exact half-point support only. It does not interpolate,
-promote an artifact, mutate Supabase, publish probabilities, or execute bets.
+This is validation only: no interpolation, registry mutation, probability
+publication, ranking permission, or wager execution.
 """
 from __future__ import annotations
 
 import hashlib
 import json
-import math
 import os
 from pathlib import Path
 from statistics import mean, pstdev
@@ -46,7 +43,7 @@ MAX_BRIER_REGRESSION = 0.005
 MAX_ECE = 0.06
 MIN_AUC_GAIN = 0.01
 MIN_PROBABILITY_STD = 0.002
-CAN_EXECUTE = False
+SAMPLE_POLICY = "EARLIEST_400_WARMUP_PLUS_700_TEST_FINAL_GAMES_2026"
 
 
 def _sha(value: Any) -> str:
@@ -55,19 +52,16 @@ def _sha(value: Any) -> str:
     ).hexdigest()
 
 
-def _fixture_path() -> Path:
-    return (
+def _load_bundle() -> dict[str, Any]:
+    path = (
         Path(__file__).resolve().parents[1]
         / "research-fixtures"
         / "mlb_1ip_player_conditioning_dev_bundle_20260914.json"
     )
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
-def _load_bundle() -> dict[str, Any]:
-    return json.loads(_fixture_path().read_text(encoding="utf-8"))
-
-
-def _final_games() -> list[tuple[str, int]]:
+def _validation_games() -> list[tuple[str, int]]:
     payload = _request_json(
         f"{MLB_STATS_API_BASE}/schedule",
         params={
@@ -93,7 +87,8 @@ def _final_games() -> list[tuple[str, int]]:
         raise RuntimeError(
             f"MLB_1IP_LINE_EXPANSION_SAMPLE_INSUFFICIENT n={len(games)} need={required}"
         )
-    return games[-required:]
+    # Deliberately disjoint from the prior study's last-1100-games cohort.
+    return games[:required]
 
 
 def _auc(actual: list[int], predicted: list[float]) -> float | None:
@@ -109,7 +104,7 @@ def _auc(actual: list[int], predicted: list[float]) -> float | None:
         j = i + 1
         while j < len(pairs) and pairs[j][0] == pairs[i][0]:
             j += 1
-        avg_rank = (rank + (rank + (j - i) - 1)) / 2.0
+        avg_rank = (rank + (rank + j - i - 1)) / 2.0
         positive_rank_sum += avg_rank * sum(y for _, y in pairs[i:j])
         rank += j - i
         i = j
@@ -120,32 +115,21 @@ def _auc(actual: list[int], predicted: list[float]) -> float | None:
 
 def _metrics(rows: list[dict[str, Any]], probability_key: str) -> dict[str, Any]:
     if not rows:
-        return {
-            "n": 0,
-            "brier": None,
-            "ece": None,
-            "auc": None,
-            "probability_std": None,
-            "unique_probability_count": 0,
-        }
+        return {"n": 0, "brier": None, "ece": None, "auc": None,
+                "probability_std": None, "unique_probability_count": 0}
     actual = [int(row["actual_more"]) for row in rows]
     predicted = [float(row[probability_key]) for row in rows]
     n = len(rows)
     brier = sum((y - p) ** 2 for y, p in zip(actual, predicted)) / n
     ece = 0.0
     for bin_index in range(10):
-        lo = bin_index / 10
-        hi = (bin_index + 1) / 10
-        idx = [
-            j
-            for j, p in enumerate(predicted)
-            if (lo <= p < hi) or (bin_index == 9 and p == 1.0)
-        ]
-        if not idx:
-            continue
-        confidence = sum(predicted[j] for j in idx) / len(idx)
-        hit_rate = sum(actual[j] for j in idx) / len(idx)
-        ece += len(idx) / n * abs(confidence - hit_rate)
+        lo, hi = bin_index / 10, (bin_index + 1) / 10
+        idx = [j for j, p in enumerate(predicted)
+               if (lo <= p < hi) or (bin_index == 9 and p == 1.0)]
+        if idx:
+            confidence = sum(predicted[j] for j in idx) / len(idx)
+            hit_rate = sum(actual[j] for j in idx) / len(idx)
+            ece += len(idx) / n * abs(confidence - hit_rate)
     hit_rate = sum(actual) / n
     mean_probability = sum(predicted) / n
     return {
@@ -195,7 +179,7 @@ def main() -> None:
     if bundle["bf_artifact"].get("historical_validation_passed") is not True:
         raise RuntimeError("MLB_1IP_LINE_EXPANSION_BF_ARTIFACT_NOT_VALIDATED")
 
-    games = _final_games()
+    games = _validation_games()
     histories: dict[int, list[int]] = {}
     assignments: list[dict[str, Any]] = []
     gaps: list[dict[str, Any]] = []
@@ -206,23 +190,16 @@ def main() -> None:
     for game_index, (event_time, game_pk) in enumerate(games):
         try:
             _, manifest = game_training_rows(game_pk)
-        except Exception as exc:  # typed into evidence; never silently drop gaps
-            gaps.append(
-                {
-                    "game_pk": game_pk,
-                    "event_time": event_time,
-                    "error_type": type(exc).__name__,
-                }
-            )
+        except Exception as exc:  # evidence gap is typed, never silently dropped
+            gaps.append({"game_pk": game_pk, "event_time": event_time,
+                         "error_type": type(exc).__name__})
             continue
-        manifests.append(
-            {
-                "event_time": event_time,
-                "game_pk": game_pk,
-                "source_sha256": manifest.get("source_sha256"),
-                "selection_rule": manifest.get("selection_rule"),
-            }
-        )
+        manifests.append({
+            "event_time": event_time,
+            "game_pk": game_pk,
+            "source_sha256": manifest.get("source_sha256"),
+            "selection_rule": manifest.get("selection_rule"),
+        })
         for detail in list(manifest.get("rows_detail") or []):
             pitcher_id = int(detail.get("pitcher_id") or 0)
             bf = int(detail.get("bf") or 0)
@@ -248,32 +225,26 @@ def main() -> None:
                     )
                     if abs(float(more["selected_probability"]) + float(less["selected_probability"]) - 1.0) > 1e-12:
                         partition_failures += 1
-                    if not (
-                        float(more["lower_bound"])
-                        <= float(more["selected_probability"])
-                        <= float(more["upper_bound"])
-                    ):
+                    if not (float(more["lower_bound"]) <= float(more["selected_probability"]) <= float(more["upper_bound"])):
                         bound_invariant_failures += 1
-                    assignments.append(
-                        {
-                            "event_time": event_time,
-                            "game_pk": game_pk,
-                            "pitcher_id": pitcher_id,
-                            "line": line,
-                            "actual_pitches": pitches,
-                            "actual_bf": bf,
-                            "actual_more": 1 if pitches > line else 0,
-                            "history_n": len(recent),
-                            "aggregate_probability": float(more["aggregate_baseline_probability"]),
-                            "player_probability": float(more["selected_probability"]),
-                            "player_lower_bound": float(more["lower_bound"]),
-                            "player_upper_bound": float(more["upper_bound"]),
-                            "player_delta": float(more["player_probability_delta_vs_aggregate"]),
-                            "P_BF_3": float(more["P_BF_3"]),
-                            "P_BF_4": float(more["P_BF_4"]),
-                            "P_BF_GE_5": float(more["P_BF_GE_5"]),
-                        }
-                    )
+                    assignments.append({
+                        "event_time": event_time,
+                        "game_pk": game_pk,
+                        "pitcher_id": pitcher_id,
+                        "line": line,
+                        "actual_pitches": pitches,
+                        "actual_bf": bf,
+                        "actual_more": 1 if pitches > line else 0,
+                        "history_n": len(recent),
+                        "aggregate_probability": float(more["aggregate_baseline_probability"]),
+                        "player_probability": float(more["selected_probability"]),
+                        "player_lower_bound": float(more["lower_bound"]),
+                        "player_upper_bound": float(more["upper_bound"]),
+                        "player_delta": float(more["player_probability_delta_vs_aggregate"]),
+                        "P_BF_3": float(more["P_BF_3"]),
+                        "P_BF_4": float(more["P_BF_4"]),
+                        "P_BF_GE_5": float(more["P_BF_GE_5"]),
+                    })
             _append_history(histories, pitcher_id, bf)
 
     gap_rate = len(gaps) / len(games)
@@ -290,16 +261,10 @@ def main() -> None:
         line_rows = [row for row in assignments if float(row["line"]) == line]
         aggregate = _metrics(line_rows, "aggregate_probability")
         player = _metrics(line_rows, "player_probability")
-        auc_gain = (
-            float(player["auc"]) - float(aggregate["auc"])
-            if player["auc"] is not None and aggregate["auc"] is not None
-            else None
-        )
-        brier_delta = (
-            float(player["brier"]) - float(aggregate["brier"])
-            if player["brier"] is not None and aggregate["brier"] is not None
-            else None
-        )
+        auc_gain = (float(player["auc"]) - float(aggregate["auc"])
+                    if player["auc"] is not None and aggregate["auc"] is not None else None)
+        brier_delta = (float(player["brier"]) - float(aggregate["brier"])
+                       if player["brier"] is not None and aggregate["brier"] is not None else None)
         lower_bounds = [float(row["player_lower_bound"]) for row in line_rows]
         result = {
             "aggregate": aggregate,
@@ -310,9 +275,6 @@ def main() -> None:
             "lower_bound_unique_count": len({round(v, 12) for v in lower_bounds}),
         }
         line_results[str(line)] = result
-
-        # The sentinel proves the previously certified serving behavior did not
-        # collapse, while promotion is gated specifically by expansion lines.
         if line in EXPANSION_LINES:
             if int(player["n"] or 0) < MIN_MATURE_ROWS_PER_LINE:
                 failures.append(f"LINE_{line}_MATURE_SAMPLE_INSUFFICIENT")
@@ -334,6 +296,7 @@ def main() -> None:
         "bf_artifact_checksum": bf_checksum,
         "validation_code_sha": os.getenv("GITHUB_SHA") or "LOCAL",
         "cutoff_date": CUT_OFF_DATE,
+        "sample_policy": SAMPLE_POLICY,
         "warmup_games": WARMUP_GAMES,
         "test_games": TEST_GAMES,
         "validation_lines": list(VALIDATION_LINES),
@@ -343,8 +306,9 @@ def main() -> None:
     lineage["validation_lineage_hash"] = _sha(lineage)
 
     report = {
-        "purpose": "MLB_1IP_EXACT_LINE_EXPANSION_14_5_16_5_UNTOUCHED_2026",
+        "purpose": "MLB_1IP_EXACT_LINE_EXPANSION_14_5_16_5_INDEPENDENT_EARLY_2026",
         "cutoff_date": CUT_OFF_DATE,
+        "sample_policy": SAMPLE_POLICY,
         "warmup_games": WARMUP_GAMES,
         "test_games": TEST_GAMES,
         "games_attempted": len(games),
@@ -373,12 +337,10 @@ def main() -> None:
         "can_execute": False,
     }
 
-    out_dir = Path(
-        os.environ.get(
-            "MLB_1IP_LINE_EXPANSION_OUT",
-            "research-output/mlb-1ip-line-expansion",
-        )
-    )
+    out_dir = Path(os.environ.get(
+        "MLB_1IP_LINE_EXPANSION_OUT",
+        "research-output/mlb-1ip-line-expansion",
+    ))
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "line_expansion_validation_report.json").write_text(
         json.dumps(report, indent=2, sort_keys=True), encoding="utf-8"
