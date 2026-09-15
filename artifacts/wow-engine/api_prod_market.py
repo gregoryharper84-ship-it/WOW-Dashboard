@@ -412,6 +412,7 @@ def _probability_qualification(row: Any, market_lane: dict[str, Any], money_lane
         calibrated_lower_bound=getattr(row, "calibrated_probability_lower_bound", None),
         calibration_status=getattr(row, "calibration_status", None),
         blockers=getattr(row, "data_gaps", None) or [],
+        risk_flags=getattr(row, "failure_cause_tags", None) or [],
         probability_publishable=bool(getattr(row, "probability_publishable", False)),
     )
     blockers = list(qualification.blockers)
@@ -608,6 +609,7 @@ def _discrete_model_evidence(result: Any) -> dict[str, Any]:
         "calibrated_probability_upper_bound": getattr(row, "calibrated_probability_upper_bound", None),
         "model_timestamp": getattr(row, "model_timestamp", None),
         "probability_publishable": bool(getattr(row, "probability_publishable", False)),
+        "failure_cause_tags": list(getattr(row, "failure_cause_tags", None) or []),
         # Advisory/explanatory only -- see RawDiscreteDistribution.
         # failure_path_evidence. Empty for adapters that report nothing
         # (the default); never a probability, bound, or terminal label.
