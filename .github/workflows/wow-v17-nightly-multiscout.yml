@@ -193,7 +193,10 @@ jobs:
       WOW_SCOUT_MARKET_CHUNK_SIZE: "10"
       WOW_CAN_EXECUTE: "false"
       WOW_DRY_RUN_ONLY: "true"
-      WOW_MARKET_EVIDENCE_ENABLED: ${{ vars.WOW_MARKET_EVIDENCE_ENABLED || 'false' }}
+      # Production Scout must consume the same research-only evidence that
+      # credentialed acceptance just proved. Do not let a repo variable
+      # silently disable the bridge while provider capture remains healthy.
+      WOW_MARKET_EVIDENCE_ENABLED: "true"
       RUNDOWN_API_KEY: ${{ secrets.RUNDOWN_API_KEY }}
       SHARPAPI_API_KEY: ${{ secrets.SHARPAPI_API_KEY }}
     steps:
@@ -210,6 +213,7 @@ jobs:
         run: |
           test "$WOW_CAN_EXECUTE" = "false"
           test "$WOW_DRY_RUN_ONLY" = "true"
+          test "$WOW_MARKET_EVIDENCE_ENABLED" = "true"
           test -n "$ACTIONS_ID_TOKEN_REQUEST_URL"
           test -n "$ACTIONS_ID_TOKEN_REQUEST_TOKEN"
       - name: Capture research-only cross-book market evidence snapshot
