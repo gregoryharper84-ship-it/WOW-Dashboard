@@ -1,0 +1,317 @@
+"""Compact V17 Daily response projection and paged full-evidence retrieval.
+
+A Daily run scores many rows, and each scored row carries the full governed
+package: prediction, evidence ledger, acquisition packet, model artifact
+metadata, numerical-engine output, objective lanes, and backend traversal.
+Embedding every one of those in a single Daily response makes a normal client
+flow fail with ``ResponseTooLargeError`` well before the requested row count is
+reached, so the bounded run cannot complete at all.
+
+The repair separates transport from evidence. Daily returns only compact
+run/row terminal fields. The complete per-row evidence is persisted once during
+the run and then read back through a paged retrieval route, so no evidence is
+discarded — only relocated off the single monolithic response.
+
+This module never scores, never mutates a terminal, and never authorizes
+execution.
+"""
+from __future__ import annotations
+
+import json
+from datetime import datetime, timezone
+from typing import Any
+
+CAN_EXECUTE = False
+
+DAILY_ROW_DETAIL_TABLE = "wow_v17_daily_run_row_detail"
+
+DETAIL_PERSISTENCE_UNAVAILABLE = "DAILY_ROW_DETAIL_PERSISTENCE_UNAVAILABLE"
+DETAIL_RETRIEVAL_UNAVAILABLE = "DAILY_ROW_DETAIL_RETRIEVAL_UNAVAILABLE"
+
+# Compact-mode blocker budget. The complete, untrimmed blocker list always
+# remains in the persisted detail; trimming applies to transport only.
+MAX_COMPACT_BLOCKERS = 4
+MAX_COMPACT_BLOCKER_CHARS = 100
+
+DETAIL_PAGE_DEFAULT_LIMIT = 5
+DETAIL_PAGE_MAX_LIMIT = 25
+
+_COMPACT_DIRECTION_FIELDS = (
+    "terminal_label",
+    "verdict_class",
+    "pick_rejected",
+    "model_evaluated",
+    "model_qualified",
+    "confidence_tier",
+    "value_qualification_status",
+)
+
+_COMPACT_PREDICTION_FIELDS = (
+    "prediction_id",
+    "calibrated_probability",
+    "calibrated_probability_lower_bound",
+    "calibrated_probability_upper_bound",
+    "calibration_status",
+)
+
+_COMPACT_MONEYLINE_FIELDS = (
+    "terminal_label",
+    "code",
+    "calibrated_probability",
+    "calibrated_lower_bound",
+    "llp_probability_audit_result",
+    "event_mutex_status",
+)
+
+
+def _compact_blocker(value: Any) -> str:
+    text = str(value)
+    if len(text) <= MAX_COMPACT_BLOCKER_CHARS:
+        return text
+    return text[:MAX_COMPACT_BLOCKER_CHARS]
+
+
+def _compact_blockers(values: Any) -> tuple[list[str], int]:
+    if not isinstance(values, (list, tuple)):
+        return [], 0
+    kept = [_compact_blocker(value) for value in values[:MAX_COMPACT_BLOCKERS]]
+    return kept, max(len(values) - MAX_COMPACT_BLOCKERS, 0)
+
+
+def _qualification(payload: dict[str, Any]) -> dict[str, Any]:
+    qualification = payload.get("probability_qualification")
+    return qualification if isinstance(qualification, dict) else {}
+
+
+def _pick(source: dict[str, Any], fields: tuple[str, ...]) -> dict[str, Any]:
+    return {field: source[field] for field in fields if field in source}
+
+
+def compact_direction(outcome: dict[str, Any]) -> dict[str, Any]:
+    """Project one scored direction down to its terminal/probability summary."""
+    payload = outcome.get("payload") if isinstance(outcome.get("payload"), dict) else {}
+    qualification = _qualification(payload)
+    prediction = payload.get("prediction") if isinstance(payload.get("prediction"), dict) else {}
+
+    compact: dict[str, Any] = {
+        "direction": outcome.get("direction"),
+        "stage_status": outcome.get("status"),
+    }
+    compact.update(_pick(payload, _COMPACT_DIRECTION_FIELDS))
+    for field in _COMPACT_DIRECTION_FIELDS:
+        if field not in compact and field in qualification:
+            compact[field] = qualification[field]
+    compact.update(_pick(prediction, _COMPACT_PREDICTION_FIELDS))
+
+    if "code" in payload:
+        compact["code"] = payload["code"]
+    if "error_type" in payload:
+        compact["error_type"] = payload["error_type"]
+
+    rank_eligible = (
+        payload.get("rank_eligible") is True
+        or payload.get("probability_rank_eligible") is True
+        or qualification.get("rank_eligible") is True
+        or qualification.get("probability_rank_eligible") is True
+    )
+    compact["probability_publishable"] = payload.get("probability_publishable") is True
+    compact["probability_rank_eligible"] = bool(rank_eligible)
+
+    blockers = payload.get("blockers")
+    if blockers is None:
+        blockers = qualification.get("blockers")
+    kept, truncated = _compact_blockers(blockers)
+    if kept:
+        compact["blockers"] = kept
+    if truncated:
+        compact["blockers_truncated"] = truncated
+
+    compact["can_execute"] = False
+    return compact
+
+
+def compact_moneyline_result(result: dict[str, Any]) -> dict[str, Any]:
+    """Project a team/event result down to terminal/guard fields."""
+    compact = _pick(result, _COMPACT_MONEYLINE_FIELDS)
+    guard = result.get("official_publication_guard")
+    if isinstance(guard, dict):
+        kept, truncated = _compact_blockers(guard.get("blockers"))
+        compact["official_publication_guard"] = {
+            "status": guard.get("status"),
+            "official_publication_allowed": guard.get("official_publication_allowed"),
+            **({"blockers": kept} if kept else {}),
+            **({"blockers_truncated": truncated} if truncated else {}),
+        }
+    prepublication = result.get("prepublication_claim")
+    if isinstance(prepublication, dict):
+        compact["prepublication_claim"] = prepublication
+    compact["probability_publishable"] = result.get("probability_publishable") is True
+    compact["rank_eligible"] = result.get("rank_eligible") is True
+    compact["can_execute"] = False
+    return compact
+
+
+def compact_row(row: dict[str, Any], *, run_id: str, row_index: int, detail_available: bool) -> dict[str, Any]:
+    """Project one terminal Daily row into the compact transport contract."""
+    result = row.get("result") if isinstance(row.get("result"), dict) else {}
+    compact: dict[str, Any] = {
+        "lane": row.get("lane"),
+        "identity": row.get("identity"),
+        "terminal": True,
+        "row_status": row.get("row_status"),
+        "probability_publishable": row.get("probability_publishable") is True,
+        "can_execute": False,
+    }
+
+    reduction = row.get("terminal_reduction")
+    if isinstance(reduction, dict):
+        compact["terminal_reduction"] = reduction
+
+    if row.get("lane") == "PROPS":
+        outcomes = result.get("outcomes")
+        compact["directions"] = [
+            compact_direction(outcome) for outcome in outcomes if isinstance(outcome, dict)
+        ] if isinstance(outcomes, list) else []
+    else:
+        compact["result_summary"] = compact_moneyline_result(result)
+
+    compact["detail_ref"] = {
+        "run_id": run_id,
+        "row_index": row_index,
+        "detail_available": bool(detail_available),
+        "retrieval_operation_id": "readWowV17DailySnapshotRowDetail",
+    }
+    return compact
+
+
+def compact_response(response: dict[str, Any], *, detail_available: bool) -> dict[str, Any]:
+    """Return the Daily response with compact rows in place of full packages."""
+    run_id = str(response.get("run_id") or "")
+    rows = response.get("rows") if isinstance(response.get("rows"), list) else []
+    compacted = dict(response)
+    compacted["rows"] = [
+        compact_row(row, run_id=run_id, row_index=index, detail_available=detail_available)
+        for index, row in enumerate(rows)
+    ]
+    compacted["response_mode"] = "COMPACT"
+    compacted["row_detail_retrieval"] = {
+        "mode": "PAGED",
+        "detail_available": bool(detail_available),
+        "operation_id": "readWowV17DailySnapshotRowDetail",
+        "path": "/v17/daily-snapshot-run/{run_id}/rows",
+        "default_limit": DETAIL_PAGE_DEFAULT_LIMIT,
+        "max_limit": DETAIL_PAGE_MAX_LIMIT,
+        "rows_available": len(rows),
+        "can_execute": False,
+    }
+    compacted["can_execute"] = False
+    return compacted
+
+
+def persist_row_detail(db: Any, *, run_id: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Persist full per-row evidence once so compact transport loses nothing.
+
+    Fails closed and explicitly: a persistence failure is reported as a typed
+    blocker with ``detail_available=false`` rather than being swallowed.
+    """
+    if not rows:
+        return {"status": "NO_ROWS", "detail_available": False, "rows_persisted": 0, "blockers": [], "can_execute": False}
+
+    captured_at = datetime.now(timezone.utc).isoformat()
+    payload = [
+        {
+            "run_id": run_id,
+            "row_index": index,
+            "lane": row.get("lane"),
+            "row_status": row.get("row_status"),
+            "identity": row.get("identity") or {},
+            "detail": row,
+            "captured_at": captured_at,
+            "can_execute": False,
+        }
+        for index, row in enumerate(rows)
+    ]
+    try:
+        db.table(DAILY_ROW_DETAIL_TABLE).upsert(payload).execute()
+    except Exception as exc:
+        return {
+            "status": "PERSISTENCE_UNAVAILABLE",
+            "detail_available": False,
+            "rows_persisted": 0,
+            "blockers": [f"{DETAIL_PERSISTENCE_UNAVAILABLE}:{type(exc).__name__}"],
+            "can_execute": False,
+        }
+    return {
+        "status": "PERSISTED",
+        "detail_available": True,
+        "rows_persisted": len(payload),
+        "blockers": [],
+        "can_execute": False,
+    }
+
+
+def read_row_detail_page(db: Any, *, run_id: str, offset: int = 0, limit: int = DETAIL_PAGE_DEFAULT_LIMIT) -> dict[str, Any]:
+    """Read one bounded page of persisted full row evidence for a Daily run."""
+    bounded_limit = max(1, min(int(limit), DETAIL_PAGE_MAX_LIMIT))
+    bounded_offset = max(0, int(offset))
+    try:
+        query = (
+            db.table(DAILY_ROW_DETAIL_TABLE)
+            .select("run_id,row_index,lane,row_status,identity,detail,captured_at")
+            .eq("run_id", run_id)
+            .order("row_index")
+        )
+        ranged = getattr(query, "range", None)
+        if callable(ranged):
+            rows = ranged(bounded_offset, bounded_offset + bounded_limit - 1).execute().data or []
+        else:
+            rows = (query.limit(bounded_offset + bounded_limit).execute().data or [])[bounded_offset:bounded_offset + bounded_limit]
+    except Exception as exc:
+        return {
+            "run_id": run_id,
+            "terminal": True,
+            "status": "DETAIL_UNAVAILABLE",
+            "rows": [],
+            "offset": bounded_offset,
+            "limit": bounded_limit,
+            "returned": 0,
+            "blockers": [f"{DETAIL_RETRIEVAL_UNAVAILABLE}:{type(exc).__name__}"],
+            "can_execute": False,
+        }
+
+    page = [dict(row) for row in rows]
+    return {
+        "run_id": run_id,
+        "terminal": True,
+        "status": "OK" if page else "NO_ROWS_FOR_PAGE",
+        "rows": page,
+        "offset": bounded_offset,
+        "limit": bounded_limit,
+        "returned": len(page),
+        "next_offset": bounded_offset + len(page) if len(page) == bounded_limit else None,
+        "blockers": [],
+        "can_execute": False,
+    }
+
+
+def serialized_byte_size(payload: Any) -> int:
+    """Transport size of a response, used by the response-size regression test."""
+    return len(json.dumps(payload, default=str).encode("utf-8"))
+
+
+__all__ = [
+    "CAN_EXECUTE",
+    "DAILY_ROW_DETAIL_TABLE",
+    "DETAIL_PAGE_DEFAULT_LIMIT",
+    "DETAIL_PAGE_MAX_LIMIT",
+    "DETAIL_PERSISTENCE_UNAVAILABLE",
+    "DETAIL_RETRIEVAL_UNAVAILABLE",
+    "MAX_COMPACT_BLOCKERS",
+    "compact_direction",
+    "compact_moneyline_result",
+    "compact_response",
+    "compact_row",
+    "persist_row_detail",
+    "read_row_detail_page",
+    "serialized_byte_size",
+]

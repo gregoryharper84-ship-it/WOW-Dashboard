@@ -77,6 +77,10 @@ class FullModelActionReceipt:
     The receipt does not create or reinterpret a probability. It only prevents
     research/discovery output from being mislabeled as a completed Full Model
     pass. Backend terminal semantics remain authoritative.
+
+    ``backend_specialist_scoring_attempted`` is the backend's own statement of
+    whether the controlling specialist scorer ran. It is a different fact from
+    whether the host invoked the Action, and the two are never merged.
     """
 
     candidate_family: str
@@ -88,6 +92,7 @@ class FullModelActionReceipt:
     run_id: str | None = None
     http_result: int | None = None
     exact_error: Any = None
+    backend_specialist_scoring_attempted: bool | None = None
 
 
 def normalize_host_identity(value: str) -> str:
@@ -147,16 +152,34 @@ def expected_full_model_operation_id(candidate_family: str) -> str:
     raise ValueError("CANDIDATE_FAMILY_UNSUPPORTED")
 
 
+def _specialist_scoring_attempted(receipt: FullModelActionReceipt) -> bool | str:
+    """Report the backend scorer fact separately, never inferred from the host."""
+    if receipt.backend_specialist_scoring_attempted is None:
+        return "UNKNOWN"
+    return bool(receipt.backend_specialist_scoring_attempted)
+
+
 def validate_full_model_action_receipt(receipt: FullModelActionReceipt) -> dict[str, Any]:
     """Fail closed unless a Full Model request has a concrete Action receipt.
 
-    `scoring_attempted` is host/Action-attempt state, not a claim that the
-    underlying model evaluated successfully. Once an Action call is made it
-    remains true even when auth, transport, schema, input, scorer, or backend
-    validation fails. Backend statuses are preserved verbatim.
+    Two distinct facts are reported under two distinct names, because conflating
+    them made a receipt read as "no Action call occurred" when the Action had in
+    fact been invoked and only the specialist scorer had not run:
+
+    - ``action_invocation_attempted`` — the controlling host contract's fact:
+      did a required Action call occur at all. ``scoring_attempted`` is retained
+      as its contract-compatible alias and keeps exactly this meaning. Once an
+      Action call is made it stays true even when auth, transport, schema,
+      input, scorer, or backend validation fails.
+    - ``specialist_scoring_attempted`` — the backend's fact: did the controlling
+      specialist scorer run. ``UNKNOWN`` when the backend did not report it;
+      it is never inferred from host-side invocation.
+
+    Backend statuses are preserved verbatim.
     """
     family = normalize_candidate_family(receipt.candidate_family)
     expected_operation = expected_full_model_operation_id(family)
+    specialist_scoring_attempted = _specialist_scoring_attempted(receipt)
 
     if not receipt.action_invoked:
         return {
@@ -164,6 +187,8 @@ def validate_full_model_action_receipt(receipt: FullModelActionReceipt) -> dict[
             "candidate_family": family,
             "expected_operation_id": expected_operation,
             "operation_id": None,
+            "action_invocation_attempted": False,
+            "specialist_scoring_attempted": specialist_scoring_attempted,
             "scoring_attempted": False,
             "backend_model_capability": "UNKNOWN",
             "backend_terminal_status": None,
@@ -183,6 +208,8 @@ def validate_full_model_action_receipt(receipt: FullModelActionReceipt) -> dict[
             "candidate_family": family,
             "expected_operation_id": expected_operation,
             "operation_id": operation or None,
+            "action_invocation_attempted": True,
+            "specialist_scoring_attempted": specialist_scoring_attempted,
             "scoring_attempted": True,
             "backend_model_capability": receipt.backend_model_capability or "UNKNOWN",
             "backend_terminal_status": receipt.backend_terminal_status,
@@ -200,6 +227,8 @@ def validate_full_model_action_receipt(receipt: FullModelActionReceipt) -> dict[
         "candidate_family": family,
         "expected_operation_id": expected_operation,
         "operation_id": operation,
+        "action_invocation_attempted": True,
+        "specialist_scoring_attempted": specialist_scoring_attempted,
         "scoring_attempted": True,
         "backend_model_capability": receipt.backend_model_capability or "UNKNOWN",
         "backend_terminal_status": receipt.backend_terminal_status,

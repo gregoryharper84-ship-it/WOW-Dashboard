@@ -366,6 +366,8 @@ def score_mlb_1ip_ingress(
         "pick_rejected": decision.pick_rejected,
         "verdict_class": decision.verdict_class,
         "infrastructure_blocked": decision.infrastructure_blocked,
+        "terminal_cause": decision.terminal_cause,
+        "concurrent_infrastructure_blockers": list(decision.concurrent_infrastructure_blockers),
         "acquisition": acquisition,
         "result": result,
         "probability_publishable": False,
