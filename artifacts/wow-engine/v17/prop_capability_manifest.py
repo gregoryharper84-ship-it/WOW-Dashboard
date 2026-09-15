@@ -1,19 +1,16 @@
 """Machine-readable V17 player-prop lane classification.
 
-The governed prop capability ledger advertises one aggregate
-``PROP_PROBABILITY`` status, which cannot express that a prop route exists and
-is actively reachable while its controlling artifact is not certified for
-publication. MLB 1IP is exactly that case: ``/score-pick-request`` carries an
-active ``MLB_STATS_API_OFFICIAL_1IP_V1`` hydration route and returns 1IP-native
-terminals, while the advertised manifest named only ``MLB / PITCHER_STRIKEOUTS``.
-Silent partial coverage is the drift this module removes: every reachable prop
-lane is declared with its true status.
+This manifest reports exact route authority. It must never collapse a mixed prop
+registry into a single sentence such as "only MLB pitcher strikeouts are
+supported" when other certified routes exist, and it must never turn a candidate
+artifact into production authority merely because cross-sport infrastructure is
+present.
 
-Declaration is not capability. A declared lane says the governed backend knows
-the lane's shape and which specialist controls it; publication still requires a
-certified, promoted artifact plus calibration. A lane that is declared but not
-certified terminates against a known contract instead of an unknown stat type,
-and it may never borrow another lane's model or a market-implied probability.
+Declaration is not capability. Production publication still requires the exact
+controlling specialist, a promoted/active fitted artifact, calibration/bounds,
+valid current inputs, and terminal governance. Candidate/development lanes are
+visible here so cross-sport build state is auditable, but remain non-publishable
+until the backend lifecycle promotes them.
 
 This module never scores, never promotes an artifact, and never authorizes
 execution.
@@ -25,26 +22,37 @@ from typing import Any
 
 CAN_EXECUTE = False
 
-MLB_STRIKEOUT_EXPERT = "wow.mlb-strikeout-expert"
+MLB_STRIKEOUT_EXPERT = "wow.mlb-pitcher-failure-path-expert"
 MLB_FIRST_INNING_PITCH_COUNT_EXPERT = "wow.mlb-first-inning-pitch-count-expert"
+MLB_PITCHING_OUTS_EXPERT = "wow.mlb-pitcher-outs-workload-expert"
+MLB_PITCH_COMPOSITION_EXPERT = "wow.mlb-pitcher-pitch-composition-expert"
+MLB_PLATE_APPEARANCES_EXPERT = "wow.mlb-batter-plate-appearances-expert"
+WNBA_PLAYER_PROP_EXPERT = "wow.wnba-player-prop-probability-expert"
 
 # Lane classifications. Ordered from most to least production authority.
 CERTIFIED_PRODUCTION = "CERTIFIED_PRODUCTION"
 SUPPORTED_HOLD_ONLY = "SUPPORTED_HOLD_ONLY"
+CANDIDATE_ONLY = "CANDIDATE_ONLY"
 TEST_ONLY = "TEST_ONLY"
 NOT_DECLARED = "NOT_DECLARED"
 
 PUBLICATION_ALLOWED_LANES = frozenset({CERTIFIED_PRODUCTION})
 
-# Exact-line policies. Adjacent-line substitution is never permitted: an
-# unsupported exact line rejects as REJECT_OOD so a row is never scored against
-# a line the artifact was not certified for.
+# Exact-line policies. Adjacent-line substitution is never permitted.
 EXACT_CERTIFIED_LINES_ONLY = "EXACT_CERTIFIED_LINES_ONLY_REJECT_OOD"
 CONTINUOUS_LINE_SUPPORT = "CONTINUOUS_LINE_SUPPORT"
 
-# Canonical stat types, matching PROP_STAT_ALIASES in pick_request_runtime_core.
+# Canonical stat types used by the production fitted-artifact registry.
 MLB_PITCHER_STRIKEOUTS = "PITCHER_STRIKEOUTS"
 MLB_1IP_STAT_TYPE = "1ST_INNING_PITCHES_THROWN"
+MLB_PITCHING_OUTS = "PITCHING_OUTS"
+MLB_STRIKES_THROWN = "STRIKES_THROWN"
+MLB_BALLS_THROWN = "BALLS_THROWN"
+MLB_PLATE_APPEARANCES = "PLATE_APPEARANCES"
+WNBA_POINTS = "POINTS"
+WNBA_REBOUNDS = "REBOUNDS"
+WNBA_ASSISTS = "ASSISTS"
+WNBA_THREES_MADE = "THREE_POINTERS_MADE"
 
 
 @dataclass(frozen=True)
@@ -79,19 +87,72 @@ class PropCapability:
         }
 
 
-DECLARED_PROP_LANES: dict[tuple[str, str], PropCapability] = {
-    ("MLB", MLB_PITCHER_STRIKEOUTS): PropCapability(
+def _certified_mlb(
+    stat_type: str,
+    specialist: str,
+    *,
+    notes: str | None = None,
+) -> PropCapability:
+    return PropCapability(
         sport="MLB",
-        stat_type=MLB_PITCHER_STRIKEOUTS,
+        stat_type=stat_type,
         lane_status=CERTIFIED_PRODUCTION,
-        controlling_specialist=MLB_STRIKEOUT_EXPERT,
+        controlling_specialist=specialist,
         route_active=True,
         declared_skill_status="PRODUCTION",
         exact_line_support_policy=CONTINUOUS_LINE_SUPPORT,
-        certified_line_support_source=None,
+        certified_line_support_source="wow_prop_certified_model_artifact",
         publication_allowed=True,
         blocker=None,
-        notes="Aggregate PROP_PROBABILITY capability status still gates publication at runtime.",
+        notes=notes or "Exact route still requires runtime artifact/input/calibration gates.",
+    )
+
+
+def _wnba_candidate(stat_type: str) -> PropCapability:
+    return PropCapability(
+        sport="WNBA",
+        stat_type=stat_type,
+        lane_status=CANDIDATE_ONLY,
+        controlling_specialist=WNBA_PLAYER_PROP_EXPERT,
+        route_active=False,
+        declared_skill_status="CANDIDATE",
+        exact_line_support_policy=CONTINUOUS_LINE_SUPPORT,
+        certified_line_support_source="wow_prop_fitted_model_artifacts",
+        publication_allowed=False,
+        blocker="WNBA_PROP_CANDIDATE_NOT_PROMOTED",
+        notes=(
+            "Fitted WNBA candidate/trainer, model adapter, calibration adapter, and hydration provider exist. "
+            "The lane remains non-publishable until governed registration, lifecycle review, certification, "
+            "promotion, and exact runtime artifact readiness pass."
+        ),
+    )
+
+
+DECLARED_PROP_LANES: dict[tuple[str, str], PropCapability] = {
+    ("MLB", MLB_PITCHER_STRIKEOUTS): _certified_mlb(
+        MLB_PITCHER_STRIKEOUTS,
+        MLB_STRIKEOUT_EXPERT,
+        notes="Certified failure-path negative-binomial pitcher strikeout route.",
+    ),
+    ("MLB", MLB_PITCHING_OUTS): _certified_mlb(
+        MLB_PITCHING_OUTS,
+        MLB_PITCHING_OUTS_EXPERT,
+        notes="Certified pitcher workload/outs route.",
+    ),
+    ("MLB", MLB_STRIKES_THROWN): _certified_mlb(
+        MLB_STRIKES_THROWN,
+        MLB_PITCH_COMPOSITION_EXPERT,
+        notes="Certified pitcher pitch-composition strikes-thrown route.",
+    ),
+    ("MLB", MLB_BALLS_THROWN): _certified_mlb(
+        MLB_BALLS_THROWN,
+        MLB_PITCH_COMPOSITION_EXPERT,
+        notes="Certified pitcher pitch-composition balls-thrown route.",
+    ),
+    ("MLB", MLB_PLATE_APPEARANCES): _certified_mlb(
+        MLB_PLATE_APPEARANCES,
+        MLB_PLATE_APPEARANCES_EXPERT,
+        notes="Certified batter plate-appearances route.",
     ),
     ("MLB", MLB_1IP_STAT_TYPE): PropCapability(
         sport="MLB",
@@ -99,22 +160,21 @@ DECLARED_PROP_LANES: dict[tuple[str, str], PropCapability] = {
         lane_status=SUPPORTED_HOLD_ONLY,
         controlling_specialist=MLB_FIRST_INNING_PITCH_COUNT_EXPERT,
         route_active=True,
-        # The immutable v3 skill stays TEST_ONLY under the contract registry's
-        # own promotion rules; the live artifact is PROSPECTIVE_CERTIFIED, not
-        # promoted. The lane is therefore reachable and scorable, but held.
         declared_skill_status=TEST_ONLY,
         exact_line_support_policy=EXACT_CERTIFIED_LINES_ONLY,
-        # Never hardcoded here: the certified line set is read from the governed
-        # registry artifact's validation_metrics.validated_lines at score time.
         certified_line_support_source="wow_prop_fitted_model_artifacts.validation_metrics.validated_lines",
         publication_allowed=False,
-        blocker="MLB_1IP_ARTIFACT_PROSPECTIVE_CERTIFIED_NOT_PROMOTED",
+        blocker="MLB_1IP_PUBLICATION_HELD",
         notes=(
-            "Active MLB_STATS_API_OFFICIAL_1IP_V1 hydration route. An exact line "
-            "outside certified support terminates REJECT_OOD; adjacent-line "
+            "The exact fitted artifact is registry-ready, but this lane remains hold-only under its separate "
+            "serving/publication contract. Unsupported exact lines terminate REJECT_OOD; adjacent-line "
             "substitution is prohibited."
         ),
     ),
+    ("WNBA", WNBA_POINTS): _wnba_candidate(WNBA_POINTS),
+    ("WNBA", WNBA_REBOUNDS): _wnba_candidate(WNBA_REBOUNDS),
+    ("WNBA", WNBA_ASSISTS): _wnba_candidate(WNBA_ASSISTS),
+    ("WNBA", WNBA_THREES_MADE): _wnba_candidate(WNBA_THREES_MADE),
 }
 
 
@@ -125,6 +185,8 @@ def normalize_prop_sport(value: str) -> str:
         "BASEBALL_MLB": "MLB",
         "MAJOR LEAGUE BASEBALL": "MLB",
         "MAJOR_LEAGUE_BASEBALL": "MLB",
+        "WOMENS_NBA": "WNBA",
+        "WOMEN'S NBA": "WNBA",
     }
     return aliases.get(sport, sport)
 
@@ -147,19 +209,25 @@ def prop_capability(sport: str, stat_type: str) -> PropCapability:
         certified_line_support_source=None,
         publication_allowed=False,
         blocker="PROP_LANE_NOT_DECLARED",
-        notes="Undeclared prop lane terminates MODEL_UNAVAILABLE against a known contract.",
+        notes="Undeclared prop lane terminates against the route-specific model-capability contract.",
     )
 
 
 def declared_prop_lane_manifest() -> dict[str, Any]:
-    """Advertise every declared prop lane and its true classification."""
+    """Advertise production, hold-only, and candidate routes without conflating them."""
     lanes = [capability.as_dict() for capability in DECLARED_PROP_LANES.values()]
     return {
-        "manifest_version": "WOW_V17_PROP_LANE_MANIFEST_V1",
+        "manifest_version": "WOW_V17_PROP_LANE_MANIFEST_V2",
+        "numerical_engine_scope": "SPORT_AGNOSTIC_BY_CERTIFIED_ADAPTER",
+        "production_authority_is_route_specific": True,
+        "candidate_presence_does_not_grant_probability_authority": True,
+        "unsupported_route_fallback_prohibited": True,
         "lanes": lanes,
         "declared_lane_count": len(lanes),
         "publication_allowed_lane_count": sum(1 for lane in lanes if lane["publication_allowed"]),
         "route_active_lane_count": sum(1 for lane in lanes if lane["route_active"]),
+        "candidate_lane_count": sum(1 for lane in lanes if lane["lane_status"] == CANDIDATE_ONLY),
+        "sports_declared": sorted({lane["sport"] for lane in lanes}),
         "declaration_is_not_capability": True,
         "adjacent_line_substitution_permitted": False,
         "can_execute": False,
@@ -168,18 +236,31 @@ def declared_prop_lane_manifest() -> dict[str, Any]:
 
 __all__ = [
     "CAN_EXECUTE",
+    "CANDIDATE_ONLY",
     "CERTIFIED_PRODUCTION",
     "CONTINUOUS_LINE_SUPPORT",
     "DECLARED_PROP_LANES",
     "EXACT_CERTIFIED_LINES_ONLY",
     "MLB_1IP_STAT_TYPE",
+    "MLB_BALLS_THROWN",
     "MLB_FIRST_INNING_PITCH_COUNT_EXPERT",
+    "MLB_PITCHING_OUTS",
+    "MLB_PITCHING_OUTS_EXPERT",
     "MLB_PITCHER_STRIKEOUTS",
+    "MLB_PLATE_APPEARANCES",
+    "MLB_PLATE_APPEARANCES_EXPERT",
+    "MLB_PITCH_COMPOSITION_EXPERT",
+    "MLB_STRIKES_THROWN",
     "MLB_STRIKEOUT_EXPERT",
     "NOT_DECLARED",
     "PUBLICATION_ALLOWED_LANES",
     "SUPPORTED_HOLD_ONLY",
     "TEST_ONLY",
+    "WNBA_ASSISTS",
+    "WNBA_PLAYER_PROP_EXPERT",
+    "WNBA_POINTS",
+    "WNBA_REBOUNDS",
+    "WNBA_THREES_MADE",
     "PropCapability",
     "declared_prop_lane_manifest",
     "normalize_prop_sport",
