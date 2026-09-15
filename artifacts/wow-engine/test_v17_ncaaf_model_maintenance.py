@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from fastapi import Depends, FastAPI
 import pytest
 
 import v17.ncaaf_model_maintenance as maintenance
@@ -29,6 +30,25 @@ class Snapshot:
         self.blocker_codes = list(blocker_codes)
 
 
+def _feature_report(complete_rows: int):
+    return {
+        "status": "COMPLETE" if complete_rows else "BLOCKED",
+        "games_seen": complete_rows,
+        "evidence_rows_seen": complete_rows * 29,
+        "features_persisted": complete_rows,
+        "features_existing": 0,
+        "complete_feature_rows": complete_rows,
+        "blocked_games": 0,
+        "blocker_counts": {},
+        "blocker_samples": [],
+        "feature_schema_version": "NCAAF_FEATURES_V1",
+        "compiler_version": "NCAAF_EVIDENCE_FEATURE_COMPILER_V1",
+        "market_features_used": False,
+        "probability_publishable": False,
+        "can_execute": False,
+    }
+
+
 def _install_successful_acquisition(monkeypatch, *, complete_rows: int):
     monkeypatch.setattr(maintenance.CFBDClient, "from_environment", classmethod(lambda cls: object()))
     monkeypatch.setattr(maintenance, "hydrate_cfbd_season", lambda *args, **kwargs: [Snapshot()])
@@ -37,22 +57,7 @@ def _install_successful_acquisition(monkeypatch, *, complete_rows: int):
     monkeypatch.setattr(
         maintenance,
         "materialize_complete_training_features",
-        lambda db: {
-            "status": "COMPLETE" if complete_rows else "BLOCKED",
-            "games_seen": complete_rows,
-            "evidence_rows_seen": complete_rows * 29,
-            "features_persisted": complete_rows,
-            "features_existing": 0,
-            "complete_feature_rows": complete_rows,
-            "blocked_games": 0,
-            "blocker_counts": {},
-            "blocker_samples": [],
-            "feature_schema_version": "NCAAF_FEATURES_V1",
-            "compiler_version": "NCAAF_EVIDENCE_FEATURE_COMPILER_V1",
-            "market_features_used": False,
-            "probability_publishable": False,
-            "can_execute": False,
-        },
+        lambda db: _feature_report(complete_rows),
     )
 
 
@@ -67,6 +72,47 @@ def test_missing_cfbd_configuration_fails_closed_before_any_model_work(monkeypat
     assert result["blocked_stage"] == "CFBD_ACQUISITION"
     assert result["automatic_certification"] is False
     assert result["automatic_promotion"] is False
+    assert result["probability_publishable"] is False
+    assert result["can_execute"] is False
+
+
+def test_cfbd_refresh_http_failure_can_evaluate_existing_prior_result_corpus(monkeypatch):
+    monkeypatch.setattr(maintenance.CFBDClient, "from_environment", classmethod(lambda cls: object()))
+
+    def refresh_failed(*_args, **_kwargs):
+        raise CFBDUnavailable("CFBD_HTTP_ERROR", "upstream unavailable")
+
+    monkeypatch.setattr(maintenance, "hydrate_cfbd_season", refresh_failed)
+    monkeypatch.setattr(maintenance, "materialize_complete_training_features", lambda db: _feature_report(0))
+
+    def fallback(_db, *, training_code_sha):
+        assert training_code_sha == "e" * 40
+        return {
+            "ok": True,
+            "code": "NCAAF_RESULT_FORM_CANDIDATE_PERSISTED",
+            "model_artifact_version": "result-form-existing-corpus",
+            "feature_schema_version": "NCAAF_RESULT_FORM_PRIOR_V1",
+            "eligible_rows": 1100,
+            "metrics": {"research_screen_pass": True},
+            "research_screen_pass": True,
+            "lifecycle_state": "CANDIDATE",
+            "automatic_certification": False,
+            "automatic_promotion": False,
+            "probability_publishable": False,
+            "can_execute": False,
+        }
+
+    monkeypatch.setattr(maintenance, "train_result_form_candidate", fallback)
+    result = maintenance.run_ncaaf_model_maintenance(
+        DummyDB(), seasons=[2023, 2024], weeks=[1], training_code_sha="e" * 40
+    )
+    assert result["status"] == "CANDIDATE_EVIDENCE_UPDATED"
+    assert result["refresh_status"] == "BLOCKED_USING_EXISTING_CORPUS"
+    assert result["candidate_lane"] == "RESULT_FORM_PRIOR_V1"
+    assert result["acquisition"][0]["code"] == "CFBD_HTTP_ERROR"
+    assert result["acquisition"][0]["using_existing_corpus"] is True
+    assert "CFBD_HTTP_ERROR" in result["blockers"]
+    assert result["candidate_training"]["lifecycle_state"] == "CANDIDATE"
     assert result["probability_publishable"] is False
     assert result["can_execute"] is False
 
@@ -101,6 +147,7 @@ def test_incomplete_rich_feature_corpus_uses_separate_prior_result_candidate(mon
     assert rich_called == []
     assert fallback_called == ["a" * 40]
     assert result["status"] == "CANDIDATE_EVIDENCE_UPDATED"
+    assert result["refresh_status"] == "COMPLETE"
     assert result["candidate_lane"] == "RESULT_FORM_PRIOR_V1"
     assert result["candidate_training"]["lifecycle_state"] == "CANDIDATE"
     assert result["feature_compilation"]["complete_feature_rows"] == 299
@@ -186,6 +233,20 @@ def test_training_code_identity_is_required_for_auditable_candidate(monkeypatch)
     assert result["training_blocker"]["code"] == "NCAAF_TRAINING_CODE_SHA_UNAVAILABLE"
     assert result["candidate_training"] is None
     assert result["can_execute"] is False
+
+
+def test_runtime_deployment_route_is_registered_behind_existing_auth(monkeypatch):
+    app = FastAPI()
+    monkeypatch.setattr(maintenance, "install_nhl_model_maintenance_route", lambda *args, **kwargs: None)
+    monkeypatch.setattr(maintenance, "install_first_six_open_data_maintenance_routes", lambda *args, **kwargs: None)
+    maintenance.install_ncaaf_model_maintenance_route(
+        app,
+        auth_dependency=Depends(lambda: None),
+        db_client_fn=lambda: DummyDB(),
+    )
+    paths = {getattr(route, "path", None) for route in app.router.routes}
+    assert "/internal/v17/runtime-deployment" in paths
+    assert "/internal/v17/ncaaf-model-maintenance" in paths
 
 
 def test_ncaaf_live_maintenance_never_runs_on_push():
