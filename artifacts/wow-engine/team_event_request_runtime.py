@@ -367,8 +367,9 @@ def install_team_event_request_routes(app: Any, *, auth_dependency: Any, db_clie
             if not event or event.get("feature_hydration_status") != "PASS":
                 outcomes.append(_held(row, "INPUT_INCOMPLETE", "EVENT_EVIDENCE_INCOMPLETE")); continue
             cache_key = (str(event["official_event_id"]), row.objective_lane)
-            if cache_key in completed_cache:
-                outcomes.append(_reuse_completed(row, event, completed_cache[cache_key])); continue
+            prior = completed_cache.get(cache_key)
+            if prior is not None and str(prior.get("event_key") or "") != row.event_key:
+                outcomes.append(_reuse_completed(row, event, prior)); continue
             try:
                 if os.getenv("WOW_V17_ACTIVE", "0") == "1":
                     req = _mlb_v17_score_request(row, event)
