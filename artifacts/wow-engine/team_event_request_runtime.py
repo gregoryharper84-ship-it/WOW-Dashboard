@@ -12,6 +12,7 @@ from github_actions_oidc import scout_route_auth_dependency
 from nfl_event_hydration_runtime import install_nfl_hydration_startup
 from nfl_event_model_startup import install_nfl_model_startup
 from v17 import team_event_request_runtime as v17_team_event_base
+from v17.nfl_forward_shadow import run_forward_shadow
 from v17.nfl_team_event_publication import install_nfl_team_event_publication
 
 ObjectiveLane = Literal["OUTRIGHT_WIN_PROBABILITY", "UPSET_PROBABILITY", "MARKET_EDGE"]
@@ -196,6 +197,29 @@ def install_team_event_request_routes(app: Any, *, auth_dependency: Any, db_clie
 
     if os.getenv("WOW_V17_ACTIVE", "0") == "1":
         install_nfl_team_event_publication(v17_team_event_base)
+        if not any(getattr(r, "path", None) == "/internal/v17/nfl-forward-shadow" for r in app.router.routes):
+            @app.post(
+                "/internal/v17/nfl-forward-shadow",
+                dependencies=[scout_route_auth_dependency(auth_dependency)],
+                operation_id="runWowV17NflForwardShadow",
+            )
+            def run_nfl_forward_shadow():
+                try:
+                    return run_forward_shadow(db_client_fn())
+                except HTTPException:
+                    raise
+                except Exception as exc:
+                    raise HTTPException(
+                        status_code=503,
+                        detail={
+                            "code": "NFL_FORWARD_SHADOW_RUN_FAILED",
+                            "error_type": type(exc).__name__,
+                            "automatic_certification": False,
+                            "automatic_promotion": False,
+                            "probability_publishable": False,
+                            "can_execute": False,
+                        },
+                    ) from exc
 
     if any(getattr(r, "path", None) == "/score-team-event-request" for r in app.router.routes):
         return
