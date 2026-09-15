@@ -19,6 +19,9 @@ from zoneinfo import ZoneInfo
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
+from v17 import cross_sport_discovery_feed as discovery_feed
+from v17 import cross_sport_winner_discovery as discovery
+from v17 import team_event_bridge_runtime as bridge_runtime
 from v17.daily_prop_acquisition import acquire_daily_prop_snapshots
 from v17.daily_response_contract import (
     DETAIL_PAGE_DEFAULT_LIMIT,
@@ -281,6 +284,134 @@ def _lane_reconciliation(
     return result
 
 
+def _settlement_basis(sport: str) -> str:
+    """Governed settlement identity per sport.  Never a generic default."""
+    return {
+        "MLB": "FULL_GAME_INCLUDING_EXTRA_INNINGS",
+        "NFL": "FULL_GAME_INCLUDING_OVERTIME",
+        "NCAAF": "FULL_GAME_INCLUDING_OVERTIME",
+        "NBA": "FULL_GAME_INCLUDING_OVERTIME",
+        "WNBA": "FULL_GAME_INCLUDING_OVERTIME",
+        "NCAAB": "FULL_GAME_INCLUDING_OVERTIME",
+        "NHL": "FULL_GAME_INCLUDING_OVERTIME_AND_SHOOTOUT",
+        "SOCCER": "FULL_TIME_1X2_EXCLUDING_EXTRA_TIME",
+        "TENNIS": "MATCH_WINNER_INCLUDING_RETIREMENT_RULES",
+        "PGA": "TOURNAMENT_OR_HEAD_TO_HEAD_SETTLEMENT",
+        "MMA": "FIGHT_WINNER_INCLUDING_DRAW_AND_NO_CONTEST",
+        "BOXING": "FIGHT_WINNER_INCLUDING_DRAW_AND_NO_CONTEST",
+    }.get(sport, "FULL_GAME_OUTRIGHT")
+
+
+def _cross_sport_moneyline_rows(
+    req: DailySnapshotRequest,
+    *,
+    run_id: str,
+    event_api: Any,
+    covered_event_ids: set[str],
+    fetch_sport_events: Any = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]] | None:
+    """Discover the full cross-sport winner slate, then ask the registry per row.
+
+    MLB's certified canonical-snapshot path above is untouched. This lane exists
+    so the board stops *being* MLB whenever MLB is the only healthy bridge: every
+    supported sport is discovered, rows whose sport has no registered model are
+    retained with a typed MODEL_UNAVAILABLE, and the whole discovered slate
+    reconciles.
+    """
+    if not discovery_feed.enabled():
+        return None
+
+    feed = fetch_sport_events
+    if feed is None:
+        feed = discovery_feed.union_feed(
+            discovery_feed.odds_proxy_feed(),
+            discovery_feed.rundown_board_feed(slate_date=req.requested_slate_date),
+        )
+
+    def resolve_model(event: discovery.DiscoveredEvent) -> Any:
+        return bridge_runtime.TEAM_EVENT_BRIDGES.get(event.sport)
+
+    def score(event: discovery.DiscoveredEvent, _model: Any) -> dict[str, Any]:
+        if str(event.official_event_id or "") in covered_event_ids:
+            return {
+                "code": "ALREADY_SCORED_IN_CANONICAL_LANE",
+                "probability_publishable": False,
+                "rank_eligible": False,
+                "can_execute": False,
+            }
+        try:
+            request = TeamEventRequest(
+                requester_host_identity="WOW_BETTING_ENGINE",
+                research_run_id=run_id,
+                requested_slate_date=req.requested_slate_date,
+                requested_timezone=req.requested_timezone,
+                candidate_family="OUTRIGHT_WINNER",
+                decision_intent="BEST_SIDE",
+                event_key=event.event_key,
+                official_event_id=str(event.official_event_id),
+                event_start_time_utc=str(event.commence_time_utc),
+                sport=event.sport,
+                league=event.league or event.sport,
+                settlement_basis=_settlement_basis(event.sport),
+                home_team=str(event.home_team),
+                away_team=str(event.away_team),
+                source_snapshot_id=f"discovery:{event.sport_key}:{event.official_event_id}",
+            )
+        except Exception as exc:  # noqa: BLE001 - a malformed row is inputs-insufficient
+            return {
+                "code": "MODEL_INPUTS_INSUFFICIENT",
+                "blockers": ["TEAM_EVENT_REQUEST_CONTRACT_INVALID"],
+                "error_type": type(exc).__name__,
+                "probability_publishable": False,
+                "rank_eligible": False,
+                "can_execute": False,
+            }
+        try:
+            # The registered bridge owns its own canonical acquisition, so a
+            # discovered row that cannot be hydrated terminates as
+            # MODEL_INPUTS_INSUFFICIENT rather than as a missing model.
+            return score_team_event_request(
+                request, event_api=event_api, canonical_hydration_required=True
+            )
+        except HTTPException as exc:
+            return _detail(exc)
+        except Exception as exc:  # noqa: BLE001 - an invoked scorer that throws
+            return {
+                "code": "MODEL_SCORER_FAILED",
+                "error_type": type(exc).__name__,
+                "model_invoked": True,
+                "probability_publishable": False,
+                "rank_eligible": False,
+                "can_execute": False,
+            }
+
+    scan = discovery.run_cross_sport_winner_scan(
+        requested_slate_date=req.requested_slate_date,
+        requested_timezone=req.requested_timezone,
+        fetch_sport_events=feed,
+        resolve_model=resolve_model,
+        score_row=score,
+    )
+    rows = [
+        _terminal_row(
+            "MONEYLINE",
+            {
+                key: row.get(key)
+                for key in ("official_event_id", "commence_time_utc", "home_team", "away_team", "sport")
+            },
+            row,
+            assert_no_terminal_upgrade(
+                reduce_row_terminal(
+                    ["COMPLETED" if row.get("bucket") == discovery.MODEL_COMPLETED else "HELD"]
+                )
+            ),
+        )
+        for row in scan["rows"]
+        if str(row.get("official_event_id") or "") not in covered_event_ids
+    ]
+    return rows, scan
+
+
 def _guard_moneyline_result(result: dict[str, Any]) -> tuple[dict[str, Any], str]:
     """Apply official-publication proof without erasing the sporting output."""
     guard = evaluate_team_event_official_publication(result)
@@ -375,6 +506,7 @@ def run_daily_snapshot(req: DailySnapshotRequest, *, db: Any, market_api: Any, e
                 )
             )
 
+    cross_sport_audit: dict[str, Any] | None = None
     if "MONEYLINE" in requested_lanes:
         try:
             event_rows = _team_rows(db, req.requested_slate_date, req.max_team_events)
@@ -393,6 +525,22 @@ def run_daily_snapshot(req: DailySnapshotRequest, *, db: Any, market_api: Any, e
             result, stage_status = _guard_moneyline_result(result)
             reduction = assert_no_terminal_upgrade(reduce_row_terminal([stage_status]))
             rows.append(_terminal_row("MONEYLINE", identity, result, reduction))
+
+        # Broad discovery runs after — never instead of — the certified MLB
+        # canonical lane, and never filtered by which sports have a model.
+        covered = {str(event.get("official_event_id") or "") for event in event_rows}
+        try:
+            produced = _cross_sport_moneyline_rows(
+                req, run_id=run_id, event_api=event_api, covered_event_ids=covered
+            )
+        except Exception as exc:  # noqa: BLE001 - discovery defects must not void the lane
+            produced = None
+            blockers.append(f"CROSS_SPORT_DISCOVERY_FAILED:{type(exc).__name__}")
+        if produced is not None:
+            cross_sport_rows, cross_sport_audit = produced
+            rows.extend(cross_sport_rows)
+            if cross_sport_audit["reconciliation"]["row_reconciliation"] != "PASS":
+                blockers.append("RUN_INVALID_CROSS_SPORT_ROW_RECONCILIATION")
 
     prop_counts = _acquisition_counts(prop_acquisition)
     true_zero_upstream = (
@@ -441,6 +589,7 @@ def run_daily_snapshot(req: DailySnapshotRequest, *, db: Any, market_api: Any, e
         "rows": rows,
         "reconciliation": _reconcile(rows),
         "lane_reconciliation": lane_reconciliation,
+        "cross_sport_discovery_audit": cross_sport_audit,
         "prop_acquisition": prop_acquisition,
         "row_detail_persistence": detail_persistence,
         "blockers": list(dict.fromkeys(blockers)),

@@ -16,9 +16,15 @@ provider diagnostics rather than being reinterpreted as model failures.
 """
 from __future__ import annotations
 
+import time
+from dataclasses import replace
 from typing import Any
 
+from v17 import market_evidence_observability as observability
 from v17 import market_evidence_sources as sources
+from v17 import rundown_payload_contract as payload_contract
+from v17 import rundown_rate_limit as rate_limit
+from v17 import rundown_snapshot_cache as snapshot_cache
 
 CAN_EXECUTE = False
 
@@ -408,6 +414,244 @@ def rundown_v2_event_to_odds_api_v4(raw: Any, *, sport_key: str | None = None) -
     }
 
 
+def _snapshot_params(
+    *,
+    market_ids: tuple[str, ...] | list[str] | None,
+    affiliate_ids: tuple[str, ...] | list[str] | None,
+    main_line: bool | None,
+    hide_closed: bool | None,
+) -> dict[str, str]:
+    """Build the narrow sport/date snapshot query.
+
+    Every narrowing dimension is optional and omitted when unset, so the
+    established request shape is unchanged unless a caller (or an operator) has
+    supplied real provider ids. Narrowing is a quota measure only — it can never
+    change how a payload is parsed or what a model is allowed to conclude.
+    """
+    params: dict[str, str] = {"offset": str(sources.rundown_date_offset_minutes())}
+    if market_ids:
+        params["market_ids"] = ",".join(str(value) for value in market_ids)
+    if affiliate_ids:
+        params["affiliate_ids"] = ",".join(str(value) for value in affiliate_ids)
+    if main_line is not None:
+        params["main_line"] = "true" if main_line else "false"
+    if hide_closed is not None:
+        params["hide_closed"] = "true" if hide_closed else "false"
+    return params
+
+
+def _fetch_with_bounded_429_retry(
+    capability: str,
+    *,
+    sport_id: Any,
+    date: str,
+    params: dict[str, str],
+    opener: Any,
+    audit: dict[str, Any],
+) -> sources.MarketEvidenceResult:
+    """One provider fetch plus, for a burst throttle only, a bounded retry.
+
+    Quota exhaustion and an unclassifiable 429 are returned immediately: an
+    account that is out of data points does not recover by being asked again,
+    and retrying an unreadable refusal is how one 429 becomes a storm.
+    """
+    attempt = 0
+    while True:
+        attempt += 1
+        result = sources.fetch(
+            "RUNDOWN", capability,
+            path_values={"sport_id": sport_id, "date": date},
+            params=params,
+            opener=opener,
+        )
+        audit["attempts"] = attempt
+        if result.ok or result.status != 429:
+            return result
+
+        limit = rate_limit.RundownRateLimit.from_dict(result.rate_limit)
+        audit["rate_limit_classification"] = limit.classification
+        if not rate_limit.should_retry(limit, attempt):
+            return sources.MarketEvidenceResult(
+                False, "RUNDOWN", capability,
+                status=result.status,
+                code=limit.classification,
+                observed_at=result.observed_at,
+                endpoint=result.endpoint,
+                rate_limit=limit.as_dict(),
+            )
+        delay = rate_limit.retry_delay_seconds(limit, attempt)
+        audit["retries"] = audit.get("retries", 0) + 1
+        observability.increment("rundown_429_retries")
+        if delay:
+            time.sleep(delay)
+
+
+def get_sport_date_odds_snapshot(
+    sport_key: str,
+    date: str,
+    *,
+    capability: str = "events",
+    opener: Any = None,
+    primary_failure: str | None = None,
+    market_ids: tuple[str, ...] | list[str] | None = None,
+    affiliate_ids: tuple[str, ...] | list[str] | None = None,
+    main_line: bool | None = None,
+    hide_closed: bool | None = None,
+    sport_id: Any = None,
+) -> sources.MarketEvidenceResult:
+    """One narrow sport/date **current odds snapshot**, normalised once and shared.
+
+    The name is deliberate. A route that returns *which markets exist* is a
+    catalog and is a different contract from this one; the classifier below
+    rejects a catalog rather than letting it reach the odds parser, so that
+    mistake can no longer surface as an unexplained schema failure.
+
+    Identical concurrent requests collapse to one provider call, so every scorer
+    in a research run reads the same snapshot at the same timestamp.
+    """
+    if capability not in {"events", "openers"}:
+        return sources._fail("RUNDOWN", capability, "MARKET_EVIDENCE_CAPABILITY_UNSUPPORTED")
+
+    observability.increment("rundown_snapshot_requests")
+    if sport_id is not None:
+        # A caller holding a provider-verified sport id addresses the slate
+        # directly. Resolving a name to an id is only for callers that do not
+        # have one, and a name lookup is exactly where a guessed key used to
+        # become an indistinguishable empty result.
+        resolved_sport_id: Any = sport_id
+    else:
+        resolved = sources.rundown_sport_id(sport_key, opener=opener)
+        if not resolved.ok:
+            observability.record_failure(resolved.code, resolved.status)
+            return resolved
+        resolved_sport_id = resolved.data
+
+    params = _snapshot_params(
+        market_ids=market_ids,
+        affiliate_ids=affiliate_ids,
+        main_line=main_line,
+        hide_closed=hide_closed,
+    )
+    key = snapshot_cache.snapshot_key(
+        provider="RUNDOWN",
+        capability=capability,
+        sport_key=sport_key,
+        sport_id=resolved_sport_id,
+        slate_date=date,
+        market_ids=market_ids,
+        affiliate_ids=affiliate_ids,
+        main_line=main_line,
+        hide_closed=hide_closed,
+    )
+
+    audit: dict[str, Any] = {
+        "provider": "RUNDOWN_MARKET_EVIDENCE",
+        "endpoint_family": f"sport_date_{capability}_snapshot",
+        "sport_key": sport_key,
+        "provider_sport_id": resolved_sport_id,
+        "requested_date": date,
+        "requested_market_ids": [str(value) for value in (market_ids or ())],
+        "requested_affiliate_ids": [str(value) for value in (affiliate_ids or ())],
+        "main_line": main_line,
+        "hide_closed": hide_closed,
+        "attempts": 0,
+        "retries": 0,
+        "can_execute": False,
+    }
+
+    def _produce() -> sources.MarketEvidenceResult:
+        started = time.monotonic()
+        fetched = _fetch_with_bounded_429_retry(
+            capability,
+            sport_id=resolved_sport_id,
+            date=date,
+            params=params,
+            opener=opener,
+            audit=audit,
+        )
+        audit["duration_ms"] = round((time.monotonic() - started) * 1000.0, 3)
+        audit["http_status"] = fetched.status
+        observability.increment("rundown_provider_calls")
+        if not fetched.ok:
+            audit["payload_classification"] = None
+            observability.record_failure(fetched.code, fetched.status)
+            return sources.MarketEvidenceResult(
+                False, "RUNDOWN", capability,
+                status=fetched.status, code=fetched.code, observed_at=fetched.observed_at,
+                endpoint=fetched.endpoint, rate_limit=fetched.rate_limit,
+                request_audit=dict(audit),
+            )
+
+        classification = payload_contract.classify_rundown_payload(fetched.data)
+        audit["payload_classification"] = classification.kind
+        diagnostics = payload_contract.schema_diagnostics(
+            classification,
+            endpoint_family=str(audit["endpoint_family"]),
+            http_status=fetched.status,
+            requested_market_ids=market_ids,
+        )
+        if not classification.is_odds_snapshot:
+            # The odds parser is never invoked on a payload that is not an odds
+            # snapshot. A catalog, a sport index or an error envelope gets its
+            # own typed contract failure plus value-free diagnostics.
+            code = classification.reason_code or payload_contract.RUNDOWN_SCHEMA_UNRECOGNISED
+            observability.record_failure(code, fetched.status)
+            return sources.MarketEvidenceResult(
+                False, "RUNDOWN", capability,
+                status=fetched.status, code=code, observed_at=fetched.observed_at,
+                endpoint=fetched.endpoint,
+                schema_probe={**sources.structural_probe(fetched.data), "diagnostics": diagnostics},
+                request_audit=dict(audit),
+            )
+
+        events = [
+            event for event in (
+                rundown_v2_event_to_odds_api_v4(raw, sport_key=sport_key)
+                for raw in _candidate_events(fetched.data)
+            ) if event is not None
+        ]
+        if not events:
+            legacy = sources.normalize_market_payload(
+                fetched.data, provider="RUNDOWN", capability=capability,
+                sport_key=sport_key, primary_failure=primary_failure,
+            )
+            if legacy.ok:
+                legacy.request_audit = dict(audit)
+                observability.increment("rundown_snapshot_ok")
+                return legacy
+            observability.record_failure(payload_contract.RUNDOWN_SCHEMA_UNRECOGNISED, fetched.status)
+            return sources.MarketEvidenceResult(
+                False, "RUNDOWN", capability,
+                status=fetched.status, code=payload_contract.RUNDOWN_SCHEMA_UNRECOGNISED,
+                observed_at=fetched.observed_at, endpoint=fetched.endpoint,
+                schema_probe={**sources.structural_probe(fetched.data), "diagnostics": diagnostics},
+                request_audit=dict(audit),
+            )
+
+        marker = _marker("RUNDOWN", capability, primary_failure)
+        for event in events:
+            event["_wow_secondary_source"] = dict(marker)
+            event["_wow_market_evidence"] = dict(marker)
+        observability.increment("rundown_snapshot_ok")
+        return sources.MarketEvidenceResult(
+            True, "RUNDOWN", capability, data=events, status=fetched.status,
+            code="MARKET_EVIDENCE_NORMALISED", observed_at=fetched.observed_at,
+            request_audit=dict(audit),
+        )
+
+    result, origin = snapshot_cache.get_or_fetch(
+        key, _produce, cacheable=lambda value: bool(getattr(value, "ok", False))
+    )
+    if origin == "CACHE":
+        observability.increment("rundown_cache_hits")
+    elif origin == "SINGLEFLIGHT":
+        observability.increment("rundown_singleflight_hits")
+    if isinstance(result.request_audit, dict):
+        # Never mutate a shared cached result: callers read their own origin.
+        result = replace(result, request_audit={**result.request_audit, "cache_origin": origin})
+    return result
+
+
 def rundown_market_evidence(
     sport_key: str,
     date: str,
@@ -415,49 +659,29 @@ def rundown_market_evidence(
     capability: str = "events",
     opener: Any = None,
     primary_failure: str | None = None,
+    market_ids: tuple[str, ...] | list[str] | None = None,
+    affiliate_ids: tuple[str, ...] | list[str] | None = None,
+    main_line: bool | None = None,
+    hide_closed: bool | None = None,
+    sport_id: Any = None,
 ) -> sources.MarketEvidenceResult:
-    if capability not in {"events", "openers"}:
-        return sources._fail("RUNDOWN", capability, "MARKET_EVIDENCE_CAPABILITY_UNSUPPORTED")
-    resolved = sources.rundown_sport_id(sport_key, opener=opener)
-    if not resolved.ok:
-        return resolved
-    fetched = sources.fetch(
-        "RUNDOWN", capability,
-        path_values={"sport_id": resolved.data, "date": date},
-        params={"offset": str(sources.rundown_date_offset_minutes())},
+    """Established entry point. Delegates to the explicitly named snapshot call."""
+    return get_sport_date_odds_snapshot(
+        sport_key, date,
+        capability=capability,
         opener=opener,
-    )
-    if not fetched.ok:
-        return fetched
-    events = [
-        event for event in (
-            rundown_v2_event_to_odds_api_v4(raw, sport_key=sport_key)
-            for raw in _candidate_events(fetched.data)
-        ) if event is not None
-    ]
-    if not events:
-        legacy = sources.normalize_market_payload(
-            fetched.data, provider="RUNDOWN", capability=capability,
-            sport_key=sport_key, primary_failure=primary_failure,
-        )
-        if legacy.ok:
-            return legacy
-        return sources._fail(
-            "RUNDOWN", capability, "RUNDOWN_SCHEMA_UNRECOGNISED",
-            status=fetched.status, schema_probe=sources.structural_probe(fetched.data),
-        )
-    marker = _marker("RUNDOWN", capability, primary_failure)
-    for event in events:
-        event["_wow_secondary_source"] = dict(marker)
-        event["_wow_market_evidence"] = dict(marker)
-    return sources.MarketEvidenceResult(
-        True, "RUNDOWN", capability, data=events, status=fetched.status,
-        code="MARKET_EVIDENCE_NORMALISED", observed_at=fetched.observed_at,
+        primary_failure=primary_failure,
+        market_ids=market_ids,
+        affiliate_ids=affiliate_ids,
+        main_line=main_line,
+        hide_closed=hide_closed,
+        sport_id=sport_id,
     )
 
 
 __all__ = [
     "CAN_EXECUTE",
+    "get_sport_date_odds_snapshot",
     "rundown_market_evidence",
     "rundown_v2_event_to_odds_api_v4",
     "sharpapi_market_evidence",

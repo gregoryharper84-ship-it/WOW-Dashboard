@@ -43,6 +43,8 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
+from v17.rundown_rate_limit import classify_rate_limit
+
 CAN_EXECUTE = False
 
 # Terminal evidence-side blocker. Deliberately distinct from MODEL_UNAVAILABLE:
@@ -155,6 +157,13 @@ class MarketEvidenceResult:
     prediction_authority: bool = False
     exact_line_authority: bool = False
     research_only: bool = True
+    # Populated only for HTTP 429. Preserves the provider's own rate-limit
+    # headers so burst throttling stays distinguishable from quota exhaustion.
+    rate_limit: dict[str, Any] | None = None
+    # Value-free per-request metadata (endpoint family, cache origin, retries,
+    # payload classification) so a provider failure is debuggable from the
+    # result alone rather than from a bare reason code.
+    request_audit: dict[str, Any] | None = None
     can_execute: bool = False
 
 
@@ -303,7 +312,21 @@ def fetch(
             body = response.read().decode("utf-8")
             status = getattr(response, "status", None) or getattr(response, "code", None)
     except HTTPError as exc:
-        return _fail(provider.name, capability, f"{provider.name}_HTTP_{exc.code}", status=exc.code, endpoint=safe_endpoint)
+        # A 429 carries the only evidence that separates a short burst throttle
+        # from an exhausted account allowance. Collapsing it to a bare status
+        # code is what made every rate-limit incident unreadable, so preserve
+        # the provider's headers while keeping the established failure code.
+        rate_limit = None
+        if exc.code == 429:
+            try:
+                body = exc.read().decode("utf-8", "replace")[:2048]
+            except Exception:  # noqa: BLE001 - diagnostics must never raise
+                body = ""
+            rate_limit = classify_rate_limit(getattr(exc, "headers", None), body).as_dict()
+        return _fail(
+            provider.name, capability, f"{provider.name}_HTTP_{exc.code}",
+            status=exc.code, endpoint=safe_endpoint, rate_limit=rate_limit,
+        )
     except (URLError, TimeoutError, OSError) as exc:
         return _fail(provider.name, capability, f"{provider.name}_{type(exc).__name__}", endpoint=safe_endpoint)
 
@@ -527,6 +550,23 @@ def _rundown_market_id_map() -> dict[str, str]:
         if canonical:
             out[str(key)] = canonical
     return out
+
+
+def rundown_winner_market_ids() -> tuple[str, ...]:
+    """Provider market ids for the outright-winner market, or ``()`` if unknown.
+
+    Narrowing a slate request to the winner market is the cheapest way to keep a
+    cross-sport scan inside the provider's data-point allowance, but it is only
+    safe with *real* ids. Those come from the same operator-pinned canonical map
+    the V2 adapter already uses — never from a guessed or historical constant.
+    An empty result means "do not narrow", which is the correct fail-open for a
+    research-only evidence lane: a wider payload is a cost, not a defect.
+    """
+    explicit = os.environ.get("WOW_RUNDOWN_WINNER_MARKET_IDS", "").strip()
+    if explicit:
+        return tuple(token.strip() for token in explicit.split(",") if token.strip())
+    mapping = _rundown_market_id_map()
+    return tuple(sorted(key for key, canonical in mapping.items() if canonical == "h2h"))
 
 
 def _rundown_v2_participants(event: dict[str, Any], market: dict[str, Any]) -> dict[str, dict[str, Any]]:

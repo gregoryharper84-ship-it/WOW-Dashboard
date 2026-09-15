@@ -208,6 +208,29 @@ def normalize_team_event_sport(value: str) -> str:
     return aliases.get(sport, sport)
 
 
+def normalize_team_event_identity(sport: str, league: str | None = None) -> str:
+    """Resolve the governed sport contract from a sport/league pair.
+
+    A broad family name ("FOOTBALL", "BASKETBALL") does not identify a governed
+    sport contract on its own — the league does. A request carrying
+    sport="FOOTBALL", league="NFL" used to normalize to the unknown sport
+    "FOOTBALL" and terminate as MODEL_UNAVAILABLE against no contract at all,
+    which reads as a missing model when it is really a missing alias.
+
+    The league is consulted only when the sport does not already resolve to a
+    declared contract, so it can never *override* an explicit governed sport.
+    It never creates capability either: an unknown pair still terminates against
+    the manifest as MODEL_UNAVAILABLE.
+    """
+    normalized_sport = normalize_team_event_sport(sport)
+    if normalized_sport in TEAM_EVENT_INPUT_CONTRACTS:
+        return normalized_sport
+    normalized_league = normalize_team_event_sport(league or "")
+    if normalized_league in TEAM_EVENT_INPUT_CONTRACTS:
+        return normalized_league
+    return normalized_sport
+
+
 def team_event_capability(value: str) -> TeamEventCapability:
     sport = normalize_team_event_sport(value)
     specialist = CERTIFIED_TEAM_EVENT_SPORTS.get(sport)
@@ -239,6 +262,7 @@ __all__ = [
     "MLB_GAME_WIN_PROBABILITY_EXPERT",
     "TEAM_EVENT_INPUT_CONTRACTS",
     "TeamEventCapability",
+    "normalize_team_event_identity",
     "normalize_team_event_sport",
     "team_event_capability",
 ]

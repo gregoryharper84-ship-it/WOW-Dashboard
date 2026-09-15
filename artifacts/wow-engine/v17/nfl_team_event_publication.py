@@ -202,6 +202,83 @@ def _govern(base: Any, req: Any, route: Any, model_result: dict[str, Any], envel
     }
 
 
+def score_nfl_team_event_request(
+    team_event_module: Any,
+    req: Any,
+    *,
+    event_api: Any,
+    canonical_hydration_required: bool = False,
+) -> dict[str, Any]:
+    """Score one NFL team/event request through the governed publication chain.
+
+    This is the single NFL implementation. Both entry points that can reach NFL
+    — the additive publication wrapper and the production bridge registry — call
+    it, so the two can never drift into two different NFL contracts.
+    """
+    try:
+        route = team_event_module.resolve_host_route(req.requester_host_identity, req.candidate_family)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail={"code": str(exc), "probability_publishable": False, "can_execute": False}) from exc
+    if route.controlling_engine_identity != team_event_module.LLP_TEAM_BETTING_ENGINE:
+        raise HTTPException(status_code=422, detail={"code": "TEAM_EVENT_CONTROLLING_ENGINE_MISMATCH", "probability_publishable": False, "can_execute": False})
+
+    errors = team_event_module._base_errors(req)
+    if errors:
+        raise HTTPException(status_code=422, detail=team_event_module._augment_detail({"code": "TEAM_EVENT_CONTRACT_INVALID", "errors": errors, "probability_publishable": False}, req))
+
+    get_client = getattr(event_api, "get_client", None)
+    if not callable(get_client):
+        raise HTTPException(status_code=503, detail=team_event_module._augment_detail({"code": "NFL_EVENT_LEDGER_CLIENT_UNAVAILABLE", "probability_publishable": False}, req))
+    db = get_client()
+    effective_req = _canonicalize(req, db=db, base=team_event_module) if canonical_hydration_required else req
+    scout_research_barrier = team_event_module._run_mandatory_scout_research(effective_req)
+
+    try:
+        try:
+            load_champion_model(db)
+        except NFLModelUnavailable:
+            promotion = ensure_champion_model(db)
+            if promotion.get("status") == "CERTIFICATION_BLOCKED":
+                raise NFLModelUnavailable("NFL_MODEL_CERTIFICATION_BLOCKED")
+        result = score_nfl_team_event(effective_req, db=db)
+        envelope = _nfl_envelope(team_event_module, effective_req)
+        governed = _govern(team_event_module, effective_req, route, result, envelope, db=db)
+    except (NFLModelUnavailable, NFLModelInputsInsufficient, NFLModelOutputInvalid, NFLModelScorerFailed) as exc:
+        raise _typed_failure(team_event_module, effective_req, exc) from exc
+
+    governed["scout_research_barrier"] = scout_research_barrier
+    evidence = dict(effective_req.sport_specific_evidence or {})
+    governed["canonical_acquisition"] = {
+        "status": "PASS",
+        "source_snapshot_id": effective_req.source_snapshot_id,
+        "latest_material_update_timestamp": effective_req.latest_material_update_timestamp,
+        "provider": "NFLVERSE_PUBLIC_DATA",
+        "canonical_event_id": effective_req.official_event_id,
+        "provider_event_id": evidence.get("provider_event_id"),
+        "identity_resolution": evidence.get("identity_resolution"),
+        "can_execute": False,
+    }
+    governed["candidate_envelope"] = {
+        "research_run_id": envelope.research_run_id,
+        "event_key": envelope.event_key,
+        "official_event_id": envelope.official_event_id,
+        "official_event_id_source": envelope.official_event_id_source,
+        "event_start_time_utc": envelope.event_start_time_utc,
+        "sport": envelope.sport,
+        "league": envelope.league,
+        "home_team": envelope.home_team,
+        "away_team": envelope.away_team,
+        "settlement_market": envelope.settlement_market,
+        "settlement_basis": envelope.settlement_basis,
+        "settlement_source": envelope.settlement_source,
+        "source_snapshot_id": envelope.source_snapshot_id,
+        "source_snapshot_timestamp": envelope.source_snapshot_timestamp,
+        "latest_material_update_timestamp": envelope.latest_material_update_timestamp,
+        "evidence_as_of": envelope.evidence_as_of,
+    }
+    return governed
+
+
 def install_nfl_team_event_publication(team_event_module: Any) -> bool:
     if getattr(team_event_module, _PATCH_MARKER, False):
         return True
@@ -210,69 +287,12 @@ def install_nfl_team_event_publication(team_event_module: Any) -> bool:
     def score_team_event_request(req: Any, *, event_api: Any, canonical_hydration_required: bool = False) -> dict[str, Any]:
         if not _nfl_sport(req):
             return original(req, event_api=event_api, canonical_hydration_required=canonical_hydration_required)
-
-        try:
-            route = team_event_module.resolve_host_route(req.requester_host_identity, req.candidate_family)
-        except ValueError as exc:
-            raise HTTPException(status_code=422, detail={"code": str(exc), "probability_publishable": False, "can_execute": False}) from exc
-        if route.controlling_engine_identity != team_event_module.LLP_TEAM_BETTING_ENGINE:
-            raise HTTPException(status_code=422, detail={"code": "TEAM_EVENT_CONTROLLING_ENGINE_MISMATCH", "probability_publishable": False, "can_execute": False})
-
-        errors = team_event_module._base_errors(req)
-        if errors:
-            raise HTTPException(status_code=422, detail=team_event_module._augment_detail({"code": "TEAM_EVENT_CONTRACT_INVALID", "errors": errors, "probability_publishable": False}, req))
-
-        get_client = getattr(event_api, "get_client", None)
-        if not callable(get_client):
-            raise HTTPException(status_code=503, detail=team_event_module._augment_detail({"code": "NFL_EVENT_LEDGER_CLIENT_UNAVAILABLE", "probability_publishable": False}, req))
-        db = get_client()
-        effective_req = _canonicalize(req, db=db, base=team_event_module) if canonical_hydration_required else req
-        scout_research_barrier = team_event_module._run_mandatory_scout_research(effective_req)
-
-        try:
-            try:
-                load_champion_model(db)
-            except NFLModelUnavailable:
-                promotion = ensure_champion_model(db)
-                if promotion.get("status") == "CERTIFICATION_BLOCKED":
-                    raise NFLModelUnavailable("NFL_MODEL_CERTIFICATION_BLOCKED")
-            result = score_nfl_team_event(effective_req, db=db)
-            envelope = _nfl_envelope(team_event_module, effective_req)
-            governed = _govern(team_event_module, effective_req, route, result, envelope, db=db)
-        except (NFLModelUnavailable, NFLModelInputsInsufficient, NFLModelOutputInvalid, NFLModelScorerFailed) as exc:
-            raise _typed_failure(team_event_module, effective_req, exc) from exc
-
-        governed["scout_research_barrier"] = scout_research_barrier
-        evidence = dict(effective_req.sport_specific_evidence or {})
-        governed["canonical_acquisition"] = {
-            "status": "PASS",
-            "source_snapshot_id": effective_req.source_snapshot_id,
-            "latest_material_update_timestamp": effective_req.latest_material_update_timestamp,
-            "provider": "NFLVERSE_PUBLIC_DATA",
-            "canonical_event_id": effective_req.official_event_id,
-            "provider_event_id": evidence.get("provider_event_id"),
-            "identity_resolution": evidence.get("identity_resolution"),
-            "can_execute": False,
-        }
-        governed["candidate_envelope"] = {
-            "research_run_id": envelope.research_run_id,
-            "event_key": envelope.event_key,
-            "official_event_id": envelope.official_event_id,
-            "official_event_id_source": envelope.official_event_id_source,
-            "event_start_time_utc": envelope.event_start_time_utc,
-            "sport": envelope.sport,
-            "league": envelope.league,
-            "home_team": envelope.home_team,
-            "away_team": envelope.away_team,
-            "settlement_market": envelope.settlement_market,
-            "settlement_basis": envelope.settlement_basis,
-            "settlement_source": envelope.settlement_source,
-            "source_snapshot_id": envelope.source_snapshot_id,
-            "source_snapshot_timestamp": envelope.source_snapshot_timestamp,
-            "latest_material_update_timestamp": envelope.latest_material_update_timestamp,
-            "evidence_as_of": envelope.evidence_as_of,
-        }
-        return governed
+        return score_nfl_team_event_request(
+            team_event_module,
+            req,
+            event_api=event_api,
+            canonical_hydration_required=canonical_hydration_required,
+        )
 
     team_event_module.score_team_event_request = score_team_event_request
     setattr(team_event_module, _PATCH_MARKER, True)
