@@ -13,6 +13,7 @@ on:
       - "artifacts/wow-engine/github_actions_oidc.py"
       - "artifacts/wow-engine/v17/nightly_multiscout.py"
       - "artifacts/wow-engine/v17/nightly_multiscout_oidc.py"
+      - "artifacts/wow-engine/v17/scout_secondary_source.py"
       - "artifacts/wow-engine/v17/market_evidence_sources.py"
       - "artifacts/wow-engine/v17/market_evidence_scout_bridge.py"
       - "artifacts/wow-engine/v17/market_evidence_snapshot.py"
@@ -35,6 +36,7 @@ on:
       - "artifacts/wow-engine/github_actions_oidc.py"
       - "artifacts/wow-engine/v17/nightly_multiscout.py"
       - "artifacts/wow-engine/v17/nightly_multiscout_oidc.py"
+      - "artifacts/wow-engine/v17/scout_secondary_source.py"
       - "artifacts/wow-engine/v17/market_evidence_sources.py"
       - "artifacts/wow-engine/v17/market_evidence_scout_bridge.py"
       - "artifacts/wow-engine/v17/market_evidence_snapshot.py"
@@ -50,6 +52,7 @@ on:
       - "artifacts/wow-engine/agent_runtime/coordinator_v17.py"
       - "artifacts/wow-engine/agent_runtime/durable_runner.py"
       - "artifacts/wow-engine/test_v17_nightly_multiscout.py"
+      - "artifacts/wow-engine/test_v17_scout_secondary_window.py"
       - "artifacts/wow-engine/test_v17_nightly_multiscout_delivery.py"
       - "artifacts/wow-engine/test_v17_multiscout_auto_advance.py"
       - "artifacts/wow-engine/test_agent_runtime_v17_model_failures.py"
@@ -87,6 +90,7 @@ jobs:
         run: >-
           python -m pytest -q
           test_v17_nightly_multiscout.py
+          test_v17_scout_secondary_window.py
           test_v17_nightly_multiscout_delivery.py
           test_v17_multiscout_auto_advance.py
           test_agent_runtime_v17_model_failures.py
@@ -103,9 +107,6 @@ jobs:
 
   market-evidence-acceptance:
     name: Credentialed provider acceptance (captured_rows > 0)
-    # Proves each configured provider's REAL response translates into the
-    # internal Odds-API-v4 shape. Fixtures cannot prove this; only a live,
-    # credentialed call can. Skipped entirely when no key is configured.
     if: github.event_name != 'pull_request'
     needs: verify
     runs-on: ubuntu-latest
@@ -193,9 +194,6 @@ jobs:
       WOW_SCOUT_MARKET_CHUNK_SIZE: "10"
       WOW_CAN_EXECUTE: "false"
       WOW_DRY_RUN_ONLY: "true"
-      # Production Scout must consume the same research-only evidence that
-      # credentialed acceptance just proved. Do not let a repo variable
-      # silently disable the bridge while provider capture remains healthy.
       WOW_MARKET_EVIDENCE_ENABLED: "true"
       RUNDOWN_API_KEY: ${{ secrets.RUNDOWN_API_KEY }}
       SHARPAPI_API_KEY: ${{ secrets.SHARPAPI_API_KEY }}
@@ -251,7 +249,6 @@ jobs:
               if lane["status"] == "BLOCKED":
                   print(f"  blocked lane {lane['provider']}/{lane['capability']}/{lane['sport_key']}: {lane['reason_code']}")
           PY
-
       - name: Run V17 Nightly Multi-Scout
         id: scout
         shell: bash
@@ -349,13 +346,7 @@ jobs:
           assert receipt.get("source_run_id") == handoff.get("run_id")
           assert receipt.get("research_run_id") == handoff.get("research_run_id")
           status = str(receipt.get("status") or "")
-          assert status in {
-              "AUTO_ADVANCE_COMPLETE",
-              "AUTO_ADVANCE_COMPLETE_WITH_BLOCKERS",
-              "BLOCKED_BACKEND_HANDOFF",
-              "BLOCKED_RECONCILIATION",
-              "BLOCKED_INVALID_SCOUT_HANDOFF",
-          }
+          assert status in {"AUTO_ADVANCE_COMPLETE", "AUTO_ADVANCE_COMPLETE_WITH_BLOCKERS", "BLOCKED_BACKEND_HANDOFF", "BLOCKED_RECONCILIATION", "BLOCKED_INVALID_SCOUT_HANDOFF"}
           print(f"governed auto-advance status={status} code={receipt.get('code')}")
           PY
       - name: Write human-readable Scout summary
