@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 import pytest
 
@@ -144,3 +145,14 @@ def test_training_code_identity_is_required_for_auditable_candidate(monkeypatch)
     assert result["training_blocker"]["code"] == "NCAAF_TRAINING_CODE_SHA_UNAVAILABLE"
     assert result["candidate_training"] is None
     assert result["can_execute"] is False
+
+
+def test_ncaaf_live_maintenance_never_runs_on_push():
+    repo_root = Path(__file__).resolve().parents[2]
+    workflow = (repo_root / ".github" / "workflows" / "wow-v17-ncaaf-model-maintenance.yml").read_text(
+        encoding="utf-8"
+    )
+    assert "if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'" in workflow
+    assert "(github.event_name == 'push' && github.ref == 'refs/heads/main')" not in workflow
+    assert 'WOW_CAN_EXECUTE: "false"' in workflow
+    assert 'WOW_DRY_RUN_ONLY: "true"' in workflow
