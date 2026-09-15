@@ -13,6 +13,7 @@ from nfl_event_hydration_runtime import install_nfl_hydration_startup
 from nfl_event_model_startup import install_nfl_model_startup
 from v17 import team_event_request_runtime as v17_team_event_base
 from v17.basketball_model_maintenance import install_basketball_model_maintenance_route
+from v17.ncaaf_model_maintenance import install_ncaaf_model_maintenance_route
 from v17.nfl_forward_shadow import run_forward_shadow
 from v17.nfl_team_event_publication import install_nfl_team_event_publication
 
@@ -199,6 +200,11 @@ def install_team_event_request_routes(app: Any, *, auth_dependency: Any, db_clie
     if os.getenv("WOW_V17_ACTIVE", "0") == "1":
         install_nfl_team_event_publication(v17_team_event_base)
         install_basketball_model_maintenance_route(
+            app,
+            auth_dependency=auth_dependency,
+            db_client_fn=db_client_fn,
+        )
+        install_ncaaf_model_maintenance_route(
             app,
             auth_dependency=auth_dependency,
             db_client_fn=db_client_fn,
