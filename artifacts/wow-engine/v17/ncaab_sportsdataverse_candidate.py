@@ -15,6 +15,7 @@ import csv
 import io
 import json
 import math
+import tempfile
 from typing import Any
 
 import requests
@@ -31,6 +32,14 @@ SOURCE_LICENSE = "CC-BY-4.0"
 RELEASE_TAG = "espn_mens_college_basketball_team_boxscores"
 BASE_URL = f"https://github.com/sportsdataverse/sportsdataverse-data/releases/download/{RELEASE_TAG}"
 SEASONS = (2022, 2023, 2024, 2025, 2026)
+SPOOL_MAX_MEMORY_BYTES = 8 * 1024 * 1024
+STREAM_CHUNK_BYTES = 1024 * 1024
+TEAM_ROW_FIELDS = (
+    "game_id", "game_date_time", "game_date", "season",
+    "team_id", "team_display_name", "team_home_away", "team_score",
+    "total_rebounds", "turnovers", "total_turnovers", "field_goal_pct",
+    "three_point_field_goal_pct",
+)
 FEATURE_NAMES = (
     "home_recent_win_rate", "away_recent_win_rate",
     "home_recent_point_diff", "away_recent_point_diff",
@@ -50,10 +59,6 @@ class NCAABCandidateUnavailable(RuntimeError):
         self.code = code
 
 
-def _digest(data: bytes) -> str:
-    return sha256(data).hexdigest()
-
-
 def _json_hash(payload: Any) -> str:
     return sha256(json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode()).hexdigest()
 
@@ -65,10 +70,6 @@ def _float(value: Any, default: float = 0.0) -> float:
         return float(value)
     except (TypeError, ValueError):
         return default
-
-
-def _bool(value: Any) -> bool:
-    return str(value or "").strip().lower() in {"true", "t", "1", "yes"}
 
 
 def _event_time(row: dict[str, Any]) -> datetime:
@@ -87,21 +88,31 @@ def _event_time(row: dict[str, Any]) -> datetime:
     return datetime.fromisoformat(f"{date_text}T12:00:00+00:00")
 
 
-def fetch_games(*, seasons: tuple[int, ...] = SEASONS) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+def _compact_team_row(row: dict[str, Any], *, url: str, source_sha256: str) -> dict[str, Any]:
+    compact = {name: row.get(name) for name in TEAM_ROW_FIELDS}
+    compact["_source_url"] = url
+    compact["_source_sha256"] = source_sha256
+    return compact
+
+
+def _season_games_from_spool(
+    spool: Any,
+    *,
+    url: str,
+    source_sha256: str,
+) -> list[dict[str, Any]]:
     grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    sources: list[dict[str, Any]] = []
-    for season in seasons:
-        url = f"{BASE_URL}/team_box_{season}.csv"
-        response = requests.get(url, timeout=60)
-        if response.status_code != 200:
-            raise NCAABCandidateUnavailable("NCAAB_SPORTSDATAVERSE_HTTP_FAILED", f"{response.status_code}:{url}")
-        digest = _digest(response.content)
-        sources.append({"season": season, "url": url, "sha256": digest, "license": SOURCE_LICENSE})
-        text = response.content.decode("utf-8-sig", errors="replace")
-        for row in csv.DictReader(io.StringIO(text)):
+    spool.seek(0)
+    wrapper = io.TextIOWrapper(spool, encoding="utf-8-sig", errors="replace", newline="")
+    try:
+        for row in csv.DictReader(wrapper):
             game_id = str(row.get("game_id") or "").strip()
             if game_id:
-                grouped[game_id].append({**row, "_source_url": url, "_source_sha256": digest})
+                grouped[game_id].append(
+                    _compact_team_row(row, url=url, source_sha256=source_sha256)
+                )
+    finally:
+        wrapper.detach()
 
     games: list[dict[str, Any]] = []
     for game_id, team_rows in grouped.items():
@@ -112,12 +123,57 @@ def fetch_games(*, seasons: tuple[int, ...] = SEASONS) -> tuple[list[dict[str, A
         if home.get("team_score") in (None, "") or away.get("team_score") in (None, ""):
             continue
         games.append({
-            "game_id": game_id, "event_start": _event_time(home), "season": int(_float(home.get("season"))),
+            "game_id": game_id,
+            "event_start": _event_time(home),
+            "season": int(_float(home.get("season"))),
             "home_team_id": str(home.get("team_id") or home.get("team_display_name") or "").strip(),
             "away_team_id": str(away.get("team_id") or away.get("team_display_name") or "").strip(),
-            "home_score": int(_float(home.get("team_score"))), "away_score": int(_float(away.get("team_score"))),
-            "home": home, "away": away, "source_url": home["_source_url"], "source_sha256": home["_source_sha256"],
+            "home_score": int(_float(home.get("team_score"))),
+            "away_score": int(_float(away.get("team_score"))),
+            "home": home,
+            "away": away,
+            "source_url": url,
+            "source_sha256": source_sha256,
         })
+    return games
+
+
+def fetch_games(*, seasons: tuple[int, ...] = SEASONS) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    # Bound memory deliberately: stream one release asset at a time, spill large
+    # assets to disk, compact raw team rows, and discard each season grouping
+    # before acquiring the next season.
+    games: list[dict[str, Any]] = []
+    sources: list[dict[str, Any]] = []
+    for season in seasons:
+        url = f"{BASE_URL}/team_box_{season}.csv"
+        response = requests.get(url, timeout=60, stream=True)
+        try:
+            if response.status_code != 200:
+                raise NCAABCandidateUnavailable("NCAAB_SPORTSDATAVERSE_HTTP_FAILED", f"{response.status_code}:{url}")
+            digest = sha256()
+            with tempfile.SpooledTemporaryFile(max_size=SPOOL_MAX_MEMORY_BYTES, mode="w+b") as spool:
+                for chunk in response.iter_content(chunk_size=STREAM_CHUNK_BYTES):
+                    if not chunk:
+                        continue
+                    digest.update(chunk)
+                    spool.write(chunk)
+                source_sha256 = digest.hexdigest()
+                games.extend(
+                    _season_games_from_spool(
+                        spool,
+                        url=url,
+                        source_sha256=source_sha256,
+                    )
+                )
+        finally:
+            response.close()
+        sources.append({
+            "season": season,
+            "url": url,
+            "sha256": source_sha256,
+            "license": SOURCE_LICENSE,
+        })
+
     if not games:
         raise NCAABCandidateUnavailable("NCAAB_SPORTSDATAVERSE_EMPTY", "no settled games")
     return sorted(games, key=lambda row: (row["event_start"], row["game_id"])), sources
@@ -126,11 +182,15 @@ def fetch_games(*, seasons: tuple[int, ...] = SEASONS) -> tuple[list[dict[str, A
 def _history_entry(team: dict[str, Any], opponent: dict[str, Any], *, game_id: str, start: datetime) -> dict[str, Any]:
     team_score, opp_score = _float(team.get("team_score")), _float(opponent.get("team_score"))
     return {
-        "event_id": game_id, "start": start, "win": team_score > opp_score,
-        "point_diff": team_score - opp_score, "points_for": team_score,
+        "event_id": game_id,
+        "start": start,
+        "win": team_score > opp_score,
+        "point_diff": team_score - opp_score,
+        "points_for": team_score,
         "rebound_margin_proxy": _float(team.get("total_rebounds")) - _float(opponent.get("total_rebounds")),
         "turnovers": _float(team.get("turnovers") or team.get("total_turnovers")),
-        "fg_pct": _float(team.get("field_goal_pct")), "three_pct": _float(team.get("three_point_field_goal_pct")),
+        "fg_pct": _float(team.get("field_goal_pct")),
+        "three_pct": _float(team.get("three_point_field_goal_pct")),
     }
 
 
@@ -140,14 +200,23 @@ def _summary(history: list[dict[str, Any]], start: datetime):
         return None
     recent = prior[-10:]
     mean = lambda key: sum(float(row[key]) for row in recent) / len(recent)
+    prior_ids = [str(row["event_id"]) for row in prior]
     return {
         "win_rate": sum(1 for row in recent if row["win"]) / len(recent),
-        "point_diff": mean("point_diff"), "points_for": mean("points_for"),
-        "rebound_margin_proxy": mean("rebound_margin_proxy"), "turnovers": mean("turnovers"),
-        "fg_pct": mean("fg_pct"), "three_pct": mean("three_pct"),
+        "point_diff": mean("point_diff"),
+        "points_for": mean("points_for"),
+        "rebound_margin_proxy": mean("rebound_margin_proxy"),
+        "turnovers": mean("turnovers"),
+        "fg_pct": mean("fg_pct"),
+        "three_pct": mean("three_pct"),
         "games_prior_log": math.log1p(len(prior)),
         "rest_days_capped": max(0.0, min(21.0, (start - prior[-1]["start"]).total_seconds() / 86400.0)),
-        "prior_event_ids": [row["event_id"] for row in prior],
+        # Preserve direct provenance for the observations actually used by the
+        # rolling features and a tamper-evident digest/count for the full prior
+        # history used by games_prior_log, without retaining quadratic ID lists.
+        "recent_event_ids": [str(row["event_id"]) for row in recent],
+        "prior_event_count": len(prior_ids),
+        "prior_event_ids_sha256": _json_hash(prior_ids),
     }
 
 
@@ -173,9 +242,17 @@ def build_training_rows(games: list[dict[str, Any]]) -> tuple[list[BinaryTrainin
                 "home_rest_days_capped": hs["rest_days_capped"], "away_rest_days_capped": aws["rest_days_capped"],
             }
             manifest = {
-                "policy": SOURCE_POLICY_ID, "license": SOURCE_LICENSE, "source_url": game["source_url"],
-                "source_sha256": game["source_sha256"], "game_id": game["game_id"],
-                "home_prior_event_ids": hs["prior_event_ids"], "away_prior_event_ids": aws["prior_event_ids"],
+                "policy": SOURCE_POLICY_ID,
+                "license": SOURCE_LICENSE,
+                "source_url": game["source_url"],
+                "source_sha256": game["source_sha256"],
+                "game_id": game["game_id"],
+                "home_recent_event_ids": hs["recent_event_ids"],
+                "away_recent_event_ids": aws["recent_event_ids"],
+                "home_prior_event_count": hs["prior_event_count"],
+                "away_prior_event_count": aws["prior_event_count"],
+                "home_prior_event_ids_sha256": hs["prior_event_ids_sha256"],
+                "away_prior_event_ids_sha256": aws["prior_event_ids_sha256"],
                 "market_features_used": False,
             }
             manifest_sha = _json_hash(manifest)
@@ -193,6 +270,18 @@ def build_training_rows(games: list[dict[str, Any]]) -> tuple[list[BinaryTrainin
     return rows, metadata
 
 
+def _training_payload(row: BinaryTrainingRow, meta: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "sport": SPORT, "league": LEAGUE, "official_event_id": row.event_id,
+        "event_start_time": row.event_start_time, "feature_as_of": row.feature_as_of,
+        "feature_schema_version": FEATURE_SCHEMA_VERSION, "model_family": MODEL_FAMILY,
+        "features": dict(row.features), "outcome_json": {"home_win": bool(row.positive_outcome)},
+        "source_manifest": meta["source_manifest"], "source_manifest_sha256": row.source_manifest_sha256,
+        "historical_reconstruction": True, "archived_pregame_snapshot": False,
+        "market_features_used": False, "can_execute": False,
+    }
+
+
 def train_and_persist(client: Any, *, training_code_sha: str) -> dict[str, Any]:
     code_sha = str(training_code_sha or "").strip().lower()
     if len(code_sha) < 7:
@@ -203,25 +292,24 @@ def train_and_persist(client: Any, *, training_code_sha: str) -> dict[str, Any]:
         candidate = train_binary_candidate(rows, model_family=MODEL_FAMILY, feature_names=FEATURE_NAMES, min_rows=500)
     except BinaryCandidateError as exc:
         raise NCAABCandidateUnavailable(exc.code, str(exc)) from exc
-    payloads = [{
-        "sport": SPORT, "league": LEAGUE, "official_event_id": row.event_id,
-        "event_start_time": row.event_start_time, "feature_as_of": row.feature_as_of,
-        "feature_schema_version": FEATURE_SCHEMA_VERSION, "model_family": MODEL_FAMILY,
-        "features": dict(row.features), "outcome_json": {"home_win": bool(row.positive_outcome)},
-        "source_manifest": meta["source_manifest"], "source_manifest_sha256": row.source_manifest_sha256,
-        "historical_reconstruction": True, "archived_pregame_snapshot": False,
-        "market_features_used": False, "can_execute": False,
-    } for row, meta in zip(rows, metadata)]
-    for offset in range(0, len(payloads), 250):
+
+    for offset in range(0, len(rows), 250):
+        batch = [
+            _training_payload(row, meta)
+            for row, meta in zip(rows[offset:offset + 250], metadata[offset:offset + 250])
+        ]
         client.table("wow_d1_training_rows").upsert(
-            payloads[offset:offset + 250],
+            batch,
             on_conflict="sport,official_event_id,feature_schema_version,source_manifest_sha256",
         ).execute()
+
     artifact = dict(candidate.artifact_payload)
     version = f"NCAAB_RESULT_FORM_LOGIT_V1_{candidate.dataset_hash[:16]}_{code_sha[:12]}"
     metrics = asdict(candidate.metrics) | {
-        "research_screen_pass": candidate.research_screen_pass, "source_license": SOURCE_LICENSE,
-        "market_features_used": False, "untouched_test": True,
+        "research_screen_pass": candidate.research_screen_pass,
+        "source_license": SOURCE_LICENSE,
+        "market_features_used": False,
+        "untouched_test": True,
     }
     client.table("wow_d1_candidate_artifacts").upsert({
         "sport": SPORT, "league": LEAGUE, "market_family": MARKET_FAMILY,
@@ -245,5 +333,7 @@ def train_and_persist(client: Any, *, training_code_sha: str) -> dict[str, Any]:
     }
 
 
-__all__ = ["CAN_EXECUTE", "FEATURE_SCHEMA_VERSION", "MODEL_FAMILY", "NCAABCandidateUnavailable",
-           "SOURCE_LICENSE", "SOURCE_POLICY_ID", "build_training_rows", "fetch_games", "train_and_persist"]
+__all__ = [
+    "CAN_EXECUTE", "FEATURE_SCHEMA_VERSION", "MODEL_FAMILY", "NCAABCandidateUnavailable",
+    "SOURCE_LICENSE", "SOURCE_POLICY_ID", "build_training_rows", "fetch_games", "train_and_persist",
+]
