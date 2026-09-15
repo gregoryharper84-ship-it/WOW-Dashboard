@@ -1,0 +1,161 @@
+name: wow-v17-first-six-model-maintenance
+
+on:
+  schedule:
+    - cron: "10 12 * * *"
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/wow-v17-first-six-model-maintenance.yml"
+      - "artifacts/wow-engine/github_actions_oidc.py"
+      - "artifacts/wow-engine/v17/team_event_specialist_ownership.py"
+      - "artifacts/wow-engine/v17/ncaaf_result_form_candidate.py"
+      - "artifacts/wow-engine/v17/ncaaf_model_maintenance.py"
+      - "artifacts/wow-engine/v17/multiclass_candidate_lifecycle.py"
+      - "artifacts/wow-engine/v17/ncaab_sportsdataverse_candidate.py"
+      - "artifacts/wow-engine/v17/soccer_openfootball_candidate.py"
+      - "artifacts/wow-engine/v17/tennis_valuebet_candidate.py"
+      - "artifacts/wow-engine/v17/first_six_open_data_maintenance.py"
+      - "artifacts/wow-engine/v17/basketball_model_maintenance.py"
+      - "artifacts/wow-engine/basketball_event_hydration_runtime.py"
+      - "artifacts/wow-engine/basketball_training_replay.py"
+      - "artifacts/wow-engine/basketball_specialist_pipeline.py"
+      - "artifacts/wow-engine/test_v17_first_six_certification.py"
+      - "artifacts/wow-engine/test_v17_github_oidc.py"
+  pull_request:
+    paths:
+      - ".github/workflows/wow-v17-first-six-model-maintenance.yml"
+      - "artifacts/wow-engine/github_actions_oidc.py"
+      - "artifacts/wow-engine/v17/team_event_specialist_ownership.py"
+      - "artifacts/wow-engine/v17/ncaaf_result_form_candidate.py"
+      - "artifacts/wow-engine/v17/ncaaf_model_maintenance.py"
+      - "artifacts/wow-engine/v17/multiclass_candidate_lifecycle.py"
+      - "artifacts/wow-engine/v17/ncaab_sportsdataverse_candidate.py"
+      - "artifacts/wow-engine/v17/soccer_openfootball_candidate.py"
+      - "artifacts/wow-engine/v17/tennis_valuebet_candidate.py"
+      - "artifacts/wow-engine/v17/first_six_open_data_maintenance.py"
+      - "artifacts/wow-engine/test_v17_first_six_certification.py"
+      - "artifacts/wow-engine/test_v17_github_oidc.py"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wow-v17-first-six-model-maintenance
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Verify first-six model contracts
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: artifacts/wow-engine
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: artifacts/wow-engine/requirements.txt
+      - name: Install engine dependencies
+        run: pip install -r requirements.txt
+      - name: Run first-six certification regressions
+        run: >-
+          python -m pytest -q
+          test_v17_first_six_certification.py
+          test_v17_team_event_specialist_ownership.py
+          test_v17_ncaaf_model_maintenance.py
+          test_v17_basketball_model_maintenance.py
+          test_v17_github_oidc.py
+
+  maintain:
+    name: Advance first-six candidate evidence
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      WOW_ACTION_ORIGIN: https://wow-governed-probability-engine.onrender.com
+      WOW_CAN_EXECUTE: "false"
+      WOW_DRY_RUN_ONLY: "true"
+    steps:
+      - name: Assert non-execution governance and OIDC context
+        shell: bash
+        run: |
+          test "$WOW_CAN_EXECUTE" = "false"
+          test "$WOW_DRY_RUN_ONLY" = "true"
+          test -n "$ACTIONS_ID_TOKEN_REQUEST_URL"
+          test -n "$ACTIONS_ID_TOKEN_REQUEST_TOKEN"
+
+      - name: Advance six governed model-development lanes
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import urllib.parse
+          import urllib.request
+          import urllib.error
+
+          oidc_url = os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"]
+          sep = "&" if "?" in oidc_url else "?"
+          oidc_url += sep + urllib.parse.urlencode({"audience": "wow-v17-multiscout"})
+          token_request = urllib.request.Request(
+              oidc_url,
+              headers={"Authorization": f"Bearer {os.environ['ACTIONS_ID_TOKEN_REQUEST_TOKEN']}"},
+          )
+          with urllib.request.urlopen(token_request, timeout=20) as response:
+              token = json.load(response)["value"]
+
+          origin = os.environ["WOW_ACTION_ORIGIN"].rstrip("/")
+          endpoints = [
+              ("BASKETBALL", "/internal/v17/basketball-model-maintenance"),
+              ("NCAAF", "/internal/v17/ncaaf-model-maintenance"),
+              ("NCAAB", "/internal/v17/ncaab-model-maintenance"),
+              ("SOCCER", "/internal/v17/soccer-model-maintenance"),
+              ("TENNIS", "/internal/v17/tennis-model-maintenance"),
+          ]
+          results = {}
+          for name, path in endpoints:
+              request = urllib.request.Request(
+                  origin + path,
+                  data=b"",
+                  method="POST",
+                  headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+              )
+              try:
+                  with urllib.request.urlopen(request, timeout=1800) as response:
+                      payload = json.load(response)
+              except urllib.error.HTTPError as exc:
+                  body = exc.read().decode("utf-8", errors="replace")
+                  raise RuntimeError(f"{name}_HTTP_{exc.code}:{body[:1000]}") from exc
+              assert payload.get("can_execute") is False, (name, payload)
+              assert payload.get("probability_publishable") is False, (name, payload)
+              if "automatic_certification" in payload:
+                  assert payload.get("automatic_certification") is False, (name, payload)
+              if "automatic_promotion" in payload:
+                  assert payload.get("automatic_promotion") is False, (name, payload)
+              results[name] = payload
+              print(json.dumps({"lane": name, "result": payload}, sort_keys=True))
+
+          basketball = results.get("BASKETBALL") or {}
+          sports = {str(row.get("sport")): row for row in (basketball.get("rows") or [])}
+          assert "NBA" in sports and "WNBA" in sports
+          print(json.dumps({
+              "checkpoint": {
+                  "NCAAF": (results.get("NCAAF") or {}).get("status"),
+                  "NBA": (sports.get("NBA") or {}).get("status"),
+                  "WNBA": (sports.get("WNBA") or {}).get("status"),
+                  "NCAAB": (results.get("NCAAB") or {}).get("status"),
+                  "SOCCER": (results.get("SOCCER") or {}).get("status"),
+                  "TENNIS": (results.get("TENNIS") or {}).get("status"),
+                  "can_execute": False,
+              }
+          }, sort_keys=True))
+          PY
