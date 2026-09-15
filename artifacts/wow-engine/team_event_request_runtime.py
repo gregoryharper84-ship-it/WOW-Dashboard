@@ -1,7 +1,7 @@
 """Objective-aware dispatcher for governed team/event probability requests."""
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
 import os
 from typing import Any, Literal, Optional
 
@@ -16,8 +16,10 @@ from v17.basketball_model_maintenance import install_basketball_model_maintenanc
 from v17.ncaaf_model_maintenance import install_ncaaf_model_maintenance_route
 from v17.nfl_forward_shadow import run_forward_shadow
 from v17.nfl_team_event_publication import install_nfl_team_event_publication
+from v17.team_event_probability_preservation import score_team_event_request as score_v17_team_event_request
 
 ObjectiveLane = Literal["OUTRIGHT_WIN_PROBABILITY", "UPSET_PROBABILITY", "MARKET_EDGE"]
+CANONICAL_TIME_TOLERANCE_MINUTES = 30.0
 
 
 class TeamEventRequestRow(BaseModel):
@@ -57,8 +59,18 @@ def _event_id(row: TeamEventRequestRow) -> str:
     return row.event_key[len(prefix):] if row.event_key.upper().startswith(prefix) else row.event_key
 
 
+def _aware(value: Any) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if parsed.utcoffset() is None:
+        return None
+    return parsed.astimezone(timezone.utc)
+
+
 def _latest_pass(query: Any) -> Optional[dict[str, Any]]:
-    result = query.eq("feature_hydration_status", "PASS").order("snapshot_timestamp", desc=True).limit(2).execute()
+    result = query.eq("feature_hydration_status", "PASS").order("snapshot_timestamp", desc=True).limit(64).execute()
     rows = result.data or []
     if not rows:
         return None
@@ -67,7 +79,7 @@ def _latest_pass(query: Any) -> Optional[dict[str, Any]]:
 
 
 def _hydrate(db: Any, row: TeamEventRequestRow) -> Optional[dict[str, Any]]:
-    fields = ("official_event_id,official_date,event_start_time,home_team,away_team,"
+    fields = ("official_event_id,official_date,event_start_time,event_status,home_team,away_team,"
               "venue_name,home_probable_pitcher,away_probable_pitcher,snapshot_id,"
               "snapshot_timestamp,feature_hydration_status")
     table = db.table("wow_mlb_forward_shadow_events")
@@ -78,16 +90,26 @@ def _hydrate(db: Any, row: TeamEventRequestRow) -> Optional[dict[str, Any]]:
         return direct
     if not row.home_team or not row.away_team or not row.event_start_time_utc:
         return None
-    return _latest_pass(
+    canonical = _latest_pass(
         table.select(fields)
         .eq("official_date", row.event_date)
         .eq("home_team", row.home_team)
         .eq("away_team", row.away_team)
-        .eq("event_start_time", row.event_start_time_utc)
     )
+    if canonical is None:
+        return None
+    requested_start = _aware(row.event_start_time_utc)
+    canonical_start = _aware(canonical.get("event_start_time"))
+    if requested_start is None or canonical_start is None:
+        return None
+    delta_minutes = abs((requested_start - canonical_start).total_seconds()) / 60.0
+    if delta_minutes > CANONICAL_TIME_TOLERANCE_MINUTES:
+        return None
+    return canonical
 
 
 def _score_request(row: TeamEventRequestRow, event: dict[str, Any]) -> dict[str, Any]:
+    """Legacy V16 request payload retained for WOW_V17_ACTIVE=0 rollback."""
     return {
         "research_run_id": row.research_run_id, "requested_slate_date": row.event_date,
         "requested_timezone": row.timezone, "scan_stage": row.event_state,
@@ -103,6 +125,40 @@ def _score_request(row: TeamEventRequestRow, event: dict[str, Any]) -> dict[str,
         "latest_material_update_timestamp": event.get("snapshot_timestamp"),
         "source_snapshot_id": event["snapshot_id"],
     }
+
+
+def _mlb_v17_score_request(row: TeamEventRequestRow, event: dict[str, Any]) -> Any:
+    return v17_team_event_base.TeamEventRequest(
+        requester_host_identity="WOW_BETTING_ENGINE",
+        research_run_id=row.research_run_id,
+        requested_slate_date=row.event_date,
+        requested_timezone=row.timezone,
+        scan_stage=row.event_state,
+        candidate_family="TEAM_EVENT",
+        decision_intent="UPSET" if row.objective_lane == "UPSET_PROBABILITY" else "WINNER",
+        event_key=row.event_key,
+        official_event_id=str(event["official_event_id"]),
+        event_start_time_utc=str(event["event_start_time"]),
+        sport="MLB",
+        league="MLB",
+        market_family="OUTRIGHT_WINNER",
+        settlement_basis="FULL_GAME_INCLUDING_EXTRA_INNINGS",
+        home_team=str(event["home_team"]),
+        away_team=str(event["away_team"]),
+        source_snapshot_id=str(event["snapshot_id"]),
+        latest_material_update_timestamp=str(event.get("snapshot_timestamp") or "") or None,
+        market_prior=None,
+        sport_specific_evidence={
+            "venue": event["venue_name"],
+            "official_event_status": event.get("event_status"),
+            "home_starting_pitcher": event["home_probable_pitcher"],
+            "away_starting_pitcher": event["away_probable_pitcher"],
+            "home_starter_status": "PROBABLE",
+            "away_starter_status": "PROBABLE",
+            "home_lineup_status": "PROJECTED",
+            "away_lineup_status": "PROJECTED",
+        },
+    )
 
 
 def _nfl_score_request(row: TeamEventRequestRow) -> Any:
@@ -132,18 +188,47 @@ def _nfl_score_request(row: TeamEventRequestRow) -> Any:
     )
 
 
+def _typed_mlb_failure(detail: dict[str, Any]) -> tuple[str, str]:
+    raw_code = str(detail.get("code") or "PROVIDER_UNAVAILABLE")
+    blocker = str(detail.get("blocker_code") or raw_code)
+    if raw_code in {
+        "MODEL_INPUTS_INSUFFICIENT",
+        "MODEL_SCORER_FAILED",
+        "MODEL_OUTPUT_INVALID",
+        "MODEL_UNAVAILABLE",
+        "INPUT_INCOMPLETE",
+    }:
+        return raw_code, blocker
+    if raw_code == "RUN_INVALID_ACQUISITION_INCOMPLETE":
+        return "INPUT_INCOMPLETE", blocker
+    if raw_code.startswith("MODEL_"):
+        return raw_code, blocker
+    if "SCORER" in raw_code or "OUTPUT" in raw_code:
+        return "MODEL_OUTPUT_INVALID", blocker
+    return "PROVIDER_UNAVAILABLE", blocker
+
+
 def _completed(row: TeamEventRequestRow, event: dict[str, Any], scored: dict[str, Any]) -> dict[str, Any]:
     keys = ("calibrated_home_probability", "calibrated_away_probability",
             "calibrated_home_lower_bound", "calibrated_away_lower_bound",
             "calibrated_home_upper_bound", "calibrated_away_upper_bound")
     if not all(isinstance(scored.get(k), (int, float)) and not isinstance(scored.get(k), bool) for k in keys):
-        return _held(row, "PROVIDER_UNAVAILABLE", "EVENT_SCORER_INVALID_RESPONSE")
+        code = str(scored.get("code") or "MODEL_OUTPUT_INVALID")
+        blockers = [str(value) for value in (scored.get("blockers") or [])]
+        blocker = blockers[0] if blockers else "GOVERNED_PROBABILITY_FIELDS_INVALID"
+        if code == "REAL_FITTED_MODEL_PATH_PROVEN":
+            code = "MODEL_INPUTS_INSUFFICIENT"
+        return _held(row, code, blocker, scored)
     home = float(scored["calibrated_home_lower_bound"]) >= float(scored["calibrated_away_lower_bound"])
     side = "home" if home else "away"
     market_needed = row.price_required_for_objective or row.objective_lane != "OUTRIGHT_WIN_PROBABILITY"
-    blockers = ["MARKET_DATA_UNOBTAINABLE"] if market_needed else []
-    decision = "MANUAL_QUALIFIED_WINNER"
-    if row.objective_lane == "UPSET_PROBABILITY":
+    inherited_blockers = [str(value) for value in (scored.get("blockers") or [])]
+    blockers = list(dict.fromkeys([
+        *inherited_blockers,
+        *(["MARKET_DATA_UNOBTAINABLE"] if market_needed else []),
+    ]))
+    decision = str(scored.get("llp_event_decision") or "MANUAL_QUALIFIED_WINNER")
+    if row.objective_lane == "UPSET_PROBABILITY" and not scored.get("llp_event_decision"):
         decision = "INPUT_INCOMPLETE"
     elif row.objective_lane == "MARKET_EDGE":
         decision = "MARKET_DATA_UNOBTAINABLE"
@@ -157,7 +242,13 @@ def _completed(row: TeamEventRequestRow, event: dict[str, Any], scored: dict[str
         "calibrated_upper_bound": float(scored[f"calibrated_{side}_upper_bound"]),
         "audit_result": "PARTIAL" if blockers else "PASS", "event_decision": decision,
         "blockers": blockers,
-        "internal_ceiling": "SPORTING_PROBABILITY_ONLY" if blockers else "FULL_MODEL_PROBABILITY",
+        "internal_ceiling": scored.get("terminal_label") or (
+            "SPORTING_PROBABILITY_ONLY" if blockers else "FULL_MODEL_PROBABILITY"
+        ),
+        "governed_publication_code": scored.get("code"),
+        "terminal_label": scored.get("terminal_label"),
+        "score_snapshot_id": scored.get("score_snapshot_id") or scored.get("base_score_snapshot_id"),
+        "event_prediction_id": scored.get("event_prediction_id"),
         "probability_publishable": bool(scored.get("probability_publishable")),
         "can_execute": False,
     }
@@ -298,16 +389,25 @@ def install_team_event_request_routes(app: Any, *, auth_dependency: Any, db_clie
             if not event or event.get("feature_hydration_status") != "PASS":
                 outcomes.append(_held(row, "INPUT_INCOMPLETE", "EVENT_EVIDENCE_INCOMPLETE")); continue
             try:
-                req = event_api.ScoreEventRequest(**_score_request(row, event))
-                scored = event_api.score_event(req)
+                if os.getenv("WOW_V17_ACTIVE", "0") == "1":
+                    req = _mlb_v17_score_request(row, event)
+                    scored = score_v17_team_event_request(
+                        req,
+                        event_api=event_api,
+                        canonical_hydration_required=False,
+                    )
+                else:
+                    req = event_api.ScoreEventRequest(**_score_request(row, event))
+                    scored = event_api.score_event(req)
             except HTTPException as exc:
                 detail = exc.detail if isinstance(exc.detail, dict) else {"message": str(exc.detail)}
-                raw_code = str(detail.get("code") or "PROVIDER_UNAVAILABLE")
-                code = "MODEL_UNAVAILABLE" if "MODEL" in raw_code else "PROVIDER_UNAVAILABLE"
-                outcomes.append(_held(row, code, raw_code, detail)); continue
+                code, blocker = _typed_mlb_failure(detail)
+                outcomes.append(_held(row, code, blocker, detail)); continue
             except Exception as exc:
                 outcomes.append(_held(row, "TRANSPORT_FAILURE", "ROW_SCORER_FAILURE",
                                       {"error_type": type(exc).__name__})); continue
+            if not isinstance(scored, dict):
+                outcomes.append(_held(row, "MODEL_OUTPUT_INVALID", "TEAM_EVENT_BACKEND_INVALID_RESPONSE")); continue
             outcomes.append(_completed(row, event, scored))
 
         count = len(batch.rows)
