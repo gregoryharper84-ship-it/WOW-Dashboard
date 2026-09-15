@@ -10,7 +10,7 @@ from __future__ import annotations
 import math
 import sys
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Iterable
 
 from qualification_policy_v2 import classify_prop_probability
 from prop_terminal_reducer_v2 import reduce_prop_terminal
@@ -105,6 +105,7 @@ def _qualification_payload(
         calibrated_upper_bound=getattr(row, "calibrated_probability_upper_bound", None),
         calibration_status=getattr(row, "calibration_status", None),
         blockers=getattr(row, "data_gaps", None) or [],
+        risk_flags=getattr(row, "failure_cause_tags", None) or [],
         probability_publishable=bool(getattr(row, "probability_publishable", False)),
         model_quality_status="PASS",
         input_complete=True,
@@ -162,13 +163,20 @@ def _qualification_payload(
     }
 
 
-def _direction_assessment(direction: str, raw: float, calibration: Any, probability_publishable: bool) -> dict[str, Any]:
+def _direction_assessment(
+    direction: str,
+    raw: float,
+    calibration: Any,
+    probability_publishable: bool,
+    risk_flags: Iterable[str] = (),
+) -> dict[str, Any]:
     qualification = classify_prop_probability(
         calibrated_probability=calibration.calibrated_probability,
         calibrated_lower_bound=calibration.lower_bound,
         calibrated_upper_bound=calibration.upper_bound,
         calibration_status=calibration.calibration_status,
         blockers=[],
+        risk_flags=risk_flags,
         probability_publishable=probability_publishable,
         model_quality_status="PASS",
         input_complete=True,
@@ -243,6 +251,8 @@ def install_prop_response_semantics() -> bool:
                 payload = dict(original_model_evidence(result))
                 calibrations = getattr(result, "directional_calibrations", {}) or {}
                 lp = result.line_probabilities
+                selected_direction = str(getattr(result.row, "direction", "") or "").upper()
+                selected_risk_flags = list(getattr(result.row, "failure_cause_tags", None) or [])
                 if "MORE" in calibrations and "LESS" in calibrations:
                     payload["directional_probability_assessments"] = {
                         "MORE": _direction_assessment(
@@ -250,12 +260,14 @@ def install_prop_response_semantics() -> bool:
                             float(lp.probability_more),
                             calibrations["MORE"],
                             bool(getattr(result.row, "probability_publishable", False)),
+                            selected_risk_flags if selected_direction == "MORE" else (),
                         ),
                         "LESS": _direction_assessment(
                             "LESS",
                             float(lp.probability_less),
                             calibrations["LESS"],
                             bool(getattr(result.row, "probability_publishable", False)),
+                            selected_risk_flags if selected_direction == "LESS" else (),
                         ),
                     }
                     payload["push_probability"] = float(lp.push_probability)
