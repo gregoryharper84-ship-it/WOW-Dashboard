@@ -62,7 +62,7 @@ jobs:
     if: github.event_name != 'pull_request'
     needs: verify
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 40
     permissions:
       contents: read
       id-token: write
@@ -118,7 +118,9 @@ jobs:
 
           result = None
           transient_statuses = {404, 502, 503, 504}
-          for attempt in range(1, 31):
+          max_attempts = 90
+          retry_delay_seconds = 20
+          for attempt in range(1, max_attempts + 1):
               oidc_token = fresh_oidc_token()
               request = urllib.request.Request(
                   endpoint,
@@ -134,9 +136,13 @@ jobs:
                       result = json.load(response)
                   break
               except urllib.error.HTTPError as exc:
-                  if exc.code not in transient_statuses or attempt == 30:
+                  if exc.code not in transient_statuses or attempt == max_attempts:
                       raise
-                  time.sleep(20)
+                  time.sleep(retry_delay_seconds)
+              except (urllib.error.URLError, TimeoutError):
+                  if attempt == max_attempts:
+                      raise
+                  time.sleep(retry_delay_seconds)
 
           if not isinstance(result, dict):
               raise RuntimeError("DAILY_SNAPSHOT_RESPONSE_MISSING")
