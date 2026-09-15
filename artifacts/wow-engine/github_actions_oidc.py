@@ -28,7 +28,14 @@ WORKFLOW_REF = f"{REPOSITORY}/.github/workflows/wow-v17-nightly-multiscout.yml@{
 NFL_FORWARD_SHADOW_WORKFLOW_REF = (
     f"{REPOSITORY}/.github/workflows/wow-v17-nfl-forward-shadow.yml@{REF}"
 )
-ALLOWED_WORKFLOW_REFS = frozenset({WORKFLOW_REF, NFL_FORWARD_SHADOW_WORKFLOW_REF})
+BASKETBALL_MODEL_MAINTENANCE_WORKFLOW_REF = (
+    f"{REPOSITORY}/.github/workflows/wow-v17-basketball-model-maintenance.yml@{REF}"
+)
+ALLOWED_WORKFLOW_REFS = frozenset({
+    WORKFLOW_REF,
+    NFL_FORWARD_SHADOW_WORKFLOW_REF,
+    BASKETBALL_MODEL_MAINTENANCE_WORKFLOW_REF,
+})
 ALLOWED_EVENTS = frozenset({"push", "schedule", "workflow_dispatch"})
 
 
@@ -134,6 +141,7 @@ def scout_route_auth_dependency(existing_auth_dependency: Any) -> Any:
 __all__ = [
     "ALLOWED_WORKFLOW_REFS",
     "AUDIENCE",
+    "BASKETBALL_MODEL_MAINTENANCE_WORKFLOW_REF",
     "GitHubOIDCValidationError",
     "NFL_FORWARD_SHADOW_WORKFLOW_REF",
     "WORKFLOW_REF",
