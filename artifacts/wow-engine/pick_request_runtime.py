@@ -34,6 +34,7 @@ from github_actions_oidc import scout_route_auth_dependency
 import pick_request_runtime_core as _core
 from pick_request_runtime_core import *  # noqa: F401,F403
 from v17.top10_model_reconciliation import enforce_top10_completion
+from v17.wnba_prop_candidate_registry import install_wnba_prop_candidate_registration_route
 
 
 _ORIGINAL_TERMINAL = _core._terminal
@@ -214,6 +215,18 @@ def install_pick_request_routes(
         auth_dependency=scout_route_auth_dependency(auth_dependency),
     )
     _install_top10_reconciliation_wrapper(app)
+
+    # Candidate registration is an internal control-plane route only. It stores
+    # validated WNBA fitted-model artifacts as CANDIDATE rows and cannot promote,
+    # activate, certify, publish probabilities, or execute wagers.
+    prod = getattr(market_api, "prod", None)
+    get_client_fn = getattr(prod, "get_client", None)
+    if callable(get_client_fn):
+        install_wnba_prop_candidate_registration_route(
+            app,
+            auth_dependency=auth_dependency,
+            db_client_fn=get_client_fn,
+        )
 
 
 def __getattr__(name: str) -> Any:
