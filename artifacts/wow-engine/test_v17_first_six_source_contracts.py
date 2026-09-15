@@ -3,6 +3,7 @@ from __future__ import annotations
 import inspect
 from pathlib import Path
 
+from v17 import ncaaf_result_form_candidate as ncaaf
 from v17 import ncaab_sportsdataverse_candidate as ncaab
 from v17 import soccer_openfootball_candidate as soccer
 from v17 import tennis_valuebet_candidate as tennis
@@ -23,6 +24,20 @@ def test_ncaab_acquisition_is_bounded_memory_and_training_writes_are_batched():
     assert "SPOOL_MAX_MEMORY_BYTES" in fetch_source
     assert "batch = [" in train_source
     assert "payloads = [" not in train_source
+
+
+def test_first_six_candidate_writers_respect_immutable_d1_registry_and_defer_source_review():
+    for module in (ncaaf, ncaab, soccer, tennis):
+        source = inspect.getsource(module)
+        assert "persist_candidate" in source
+        assert '"source_review_status": "REQUIRED"' in source
+        assert "ignore_duplicates=True" in source
+        assert '"probability_publishable": False' in source
+        assert '"can_execute": False' in source
+    assert "RECONSTRUCTED_PRIOR_RESULTS_PROVENANCE_READY" in inspect.getsource(ncaaf)
+    assert "CC_BY_4_0_PROVENANCE_READY" in inspect.getsource(ncaab)
+    assert "CC0_PUBLIC_DOMAIN_PROVENANCE_READY" in inspect.getsource(soccer)
+    assert "CC_BY_4_0_PROVENANCE_READY" in inspect.getsource(tennis)
 
 
 def test_soccer_source_contract_is_cc0_and_true_three_way():
