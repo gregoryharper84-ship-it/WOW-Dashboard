@@ -17,6 +17,7 @@ from typing import Any
 
 import requests
 
+from v17.d1_candidate_registry import D1RegistryError, persist_candidate
 from v17.multiclass_candidate_lifecycle import (
     MulticlassCandidateError,
     MulticlassTrainingRow,
@@ -190,6 +191,7 @@ def _persist_rows(client: Any, competition: str, rows: list[MulticlassTrainingRo
         client.table("wow_d1_training_rows").upsert(
             payloads[offset:offset + 250],
             on_conflict="sport,official_event_id,feature_schema_version,source_manifest_sha256",
+            ignore_duplicates=True,
         ).execute()
 
 
@@ -210,10 +212,12 @@ def train_and_persist_competition(client: Any, *, competition: str, code: str, t
     checksum = _hash_json(artifact)
     metrics = asdict(candidate.metrics) | {
         "research_screen_pass": candidate.research_screen_pass,
-        "source_license": SOURCE_LICENSE, "market_features_used": False,
+        "source_license": SOURCE_LICENSE,
+        "source_provenance_status": "CC0_PUBLIC_DOMAIN_PROVENANCE_READY",
+        "market_features_used": False,
         "outcome_space": ["HOME", "DRAW", "AWAY"],
     }
-    client.table("wow_d1_candidate_artifacts").upsert({
+    candidate_row = {
         "sport": SPORT, "league": competition, "market_family": MARKET_FAMILY,
         "model_family": family, "model_artifact_version": version,
         "feature_schema_version": FEATURE_SCHEMA_VERSION, "source_policy_id": SOURCE_POLICY_ID,
@@ -222,14 +226,20 @@ def train_and_persist_competition(client: Any, *, competition: str, code: str, t
         "calibrator_payload": dict(candidate.calibrator_payload), "validation_metrics": metrics,
         "training_rows": candidate.metrics.train_n, "calibration_rows": candidate.metrics.calibration_n,
         "test_rows": candidate.metrics.test_n, "research_screen_pass": candidate.research_screen_pass,
-        "source_review_status": "CC0_PUBLIC_DOMAIN_PROVENANCE_READY", "lifecycle_state": "CANDIDATE",
+        "source_review_status": "REQUIRED", "lifecycle_state": "CANDIDATE",
         "promoted": False, "active": False, "automatic_certification": False,
         "automatic_promotion": False, "probability_publishable": False, "can_execute": False,
-    }, on_conflict="model_artifact_version").execute()
+    }
+    try:
+        registration = persist_candidate(client, candidate_row)
+    except D1RegistryError as exc:
+        raise SoccerCandidateUnavailable(exc.code, str(exc)) from exc
     return {
         "competition": competition, "model_artifact_version": version,
         "eligible_rows": len(rows), "source_assets": len(sources), "metrics": metrics,
-        "research_screen_pass": candidate.research_screen_pass, "lifecycle_state": "CANDIDATE",
+        "research_screen_pass": candidate.research_screen_pass,
+        "source_review_status": "REQUIRED", "registry_status": registration.get("status"),
+        "lifecycle_state": "CANDIDATE",
         "probability_publishable": False, "can_execute": False,
     }
 

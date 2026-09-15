@@ -21,6 +21,7 @@ from typing import Any
 import requests
 
 from v17.binary_candidate_lifecycle import BinaryCandidateError, BinaryTrainingRow, train_binary_candidate
+from v17.d1_candidate_registry import D1RegistryError, persist_candidate
 
 CAN_EXECUTE = False
 SPORT = "TENNIS"
@@ -208,7 +209,9 @@ def _persist_rows(client: Any, tour: str, family: str, rows: list[BinaryTraining
                 "market_features_used": False, "can_execute": False,
             })
         client.table("wow_d1_training_rows").upsert(
-            payloads, on_conflict="sport,official_event_id,feature_schema_version,source_manifest_sha256"
+            payloads,
+            on_conflict="sport,official_event_id,feature_schema_version,source_manifest_sha256",
+            ignore_duplicates=True,
         ).execute()
 
 
@@ -229,12 +232,14 @@ def train_all(client: Any, *, training_code_sha: str) -> dict[str, Any]:
         artifact = dict(candidate.artifact_payload)
         version = f"{family}_{candidate.dataset_hash[:16]}_{code_sha[:12]}"
         metrics = asdict(candidate.metrics) | {
-            "research_screen_pass": candidate.research_screen_pass, "source_license": SOURCE_LICENSE,
+            "research_screen_pass": candidate.research_screen_pass,
+            "source_license": SOURCE_LICENSE,
+            "source_provenance_status": "CC_BY_4_0_PROVENANCE_READY",
             "market_features_used": False, "training_settlement_scope": "COMPLETED_MATCHES_ONLY",
             "retirement_rows_excluded": True, "surface_feature_required": True,
             "supported_categories": sorted(SUPPORTED_CATEGORIES),
         }
-        client.table("wow_d1_candidate_artifacts").upsert({
+        candidate_row = {
             "sport": SPORT, "league": tour, "market_family": MARKET_FAMILY,
             "model_family": family, "model_artifact_version": version,
             "feature_schema_version": FEATURE_SCHEMA_VERSION, "source_policy_id": SOURCE_POLICY_ID,
@@ -243,13 +248,18 @@ def train_all(client: Any, *, training_code_sha: str) -> dict[str, Any]:
             "calibrator_payload": dict(candidate.calibrator_payload), "validation_metrics": metrics,
             "training_rows": candidate.metrics.train_n, "calibration_rows": candidate.metrics.calibration_n,
             "test_rows": candidate.metrics.test_n, "research_screen_pass": candidate.research_screen_pass,
-            "source_review_status": "CC_BY_4_0_PROVENANCE_READY", "lifecycle_state": "CANDIDATE",
+            "source_review_status": "REQUIRED", "lifecycle_state": "CANDIDATE",
             "promoted": False, "active": False, "automatic_certification": False,
             "automatic_promotion": False, "probability_publishable": False, "can_execute": False,
-        }, on_conflict="model_artifact_version").execute()
+        }
+        try:
+            registration = persist_candidate(client, candidate_row)
+        except D1RegistryError as exc:
+            raise TennisCandidateUnavailable(exc.code, str(exc)) from exc
         output.append({
             "tour": tour, "model_artifact_version": version, "eligible_rows": len(rows),
             "metrics": metrics, "research_screen_pass": candidate.research_screen_pass,
+            "source_review_status": "REQUIRED", "registry_status": registration.get("status"),
             "lifecycle_state": "CANDIDATE", "supported_categories": sorted(SUPPORTED_CATEGORIES),
             "probability_publishable": False, "can_execute": False,
         })
