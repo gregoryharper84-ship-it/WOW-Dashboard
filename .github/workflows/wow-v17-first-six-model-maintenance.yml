@@ -5,13 +5,16 @@ on:
     - cron: "10 12 * * *"
   workflow_dispatch:
   push:
-    branches:
-      - main
+    branches: [main]
     paths:
       - ".github/workflows/wow-v17-first-six-model-maintenance.yml"
       - "artifacts/wow-engine/FIRST_SIX_CERTIFICATION_CHECKPOINT.md"
+      - "artifacts/wow-engine/LLP_TEAM_STATE_ACCURACY_V1.md"
       - "artifacts/wow-engine/github_actions_oidc.py"
       - "artifacts/wow-engine/v17/team_event_specialist_ownership.py"
+      - "artifacts/wow-engine/v17/team_state_intelligence.py"
+      - "artifacts/wow-engine/v17/team_state_challenger_training.py"
+      - "artifacts/wow-engine/v17/team_state_challenger_maintenance.py"
       - "artifacts/wow-engine/v17/ncaaf_result_form_candidate.py"
       - "artifacts/wow-engine/v17/ncaaf_model_maintenance.py"
       - "artifacts/wow-engine/v17/multiclass_candidate_lifecycle.py"
@@ -25,23 +28,21 @@ on:
       - "artifacts/wow-engine/basketball_specialist_pipeline.py"
       - "artifacts/wow-engine/test_v17_first_six_certification.py"
       - "artifacts/wow-engine/test_v17_first_six_source_contracts.py"
+      - "artifacts/wow-engine/test_v17_team_state_intelligence.py"
+      - "artifacts/wow-engine/test_v17_team_state_challenger_training.py"
       - "artifacts/wow-engine/test_v17_github_oidc.py"
   pull_request:
     paths:
       - ".github/workflows/wow-v17-first-six-model-maintenance.yml"
-      - "artifacts/wow-engine/FIRST_SIX_CERTIFICATION_CHECKPOINT.md"
-      - "artifacts/wow-engine/github_actions_oidc.py"
-      - "artifacts/wow-engine/v17/team_event_specialist_ownership.py"
-      - "artifacts/wow-engine/v17/ncaaf_result_form_candidate.py"
-      - "artifacts/wow-engine/v17/ncaaf_model_maintenance.py"
-      - "artifacts/wow-engine/v17/multiclass_candidate_lifecycle.py"
-      - "artifacts/wow-engine/v17/ncaab_sportsdataverse_candidate.py"
-      - "artifacts/wow-engine/v17/soccer_openfootball_candidate.py"
-      - "artifacts/wow-engine/v17/tennis_valuebet_candidate.py"
+      - "artifacts/wow-engine/LLP_TEAM_STATE_ACCURACY_V1.md"
+      - "artifacts/wow-engine/v17/team_state_intelligence.py"
+      - "artifacts/wow-engine/v17/team_state_challenger_training.py"
+      - "artifacts/wow-engine/v17/team_state_challenger_maintenance.py"
       - "artifacts/wow-engine/v17/first_six_open_data_maintenance.py"
+      - "artifacts/wow-engine/test_v17_team_state_intelligence.py"
+      - "artifacts/wow-engine/test_v17_team_state_challenger_training.py"
       - "artifacts/wow-engine/test_v17_first_six_certification.py"
       - "artifacts/wow-engine/test_v17_first_six_source_contracts.py"
-      - "artifacts/wow-engine/test_v17_github_oidc.py"
 
 permissions:
   contents: read
@@ -74,6 +75,8 @@ jobs:
           test_v17_team_event_specialist_ownership.py
           test_v17_ncaaf_model_maintenance.py
           test_v17_basketball_model_maintenance.py
+          test_v17_team_state_intelligence.py
+          test_v17_team_state_challenger_training.py
           test_v17_github_oidc.py
 
   maintain:
@@ -101,69 +104,69 @@ jobs:
           test -n "$ACTIONS_ID_TOKEN_REQUEST_URL"
           test -n "$ACTIONS_ID_TOKEN_REQUEST_TOKEN"
 
-      - name: Advance six governed model-development lanes
+      - name: Advance governed model-development lanes and team-state challengers
         shell: bash
         run: |
           python - <<'PY'
-          import json
-          import os
-          import urllib.parse
-          import urllib.request
-          import urllib.error
+          import json, os, time, urllib.error, urllib.parse, urllib.request
 
           oidc_url = os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"]
-          sep = "&" if "?" in oidc_url else "?"
-          oidc_url += sep + urllib.parse.urlencode({"audience": "wow-v17-multiscout"})
-          token_request = urllib.request.Request(
-              oidc_url,
-              headers={"Authorization": f"Bearer {os.environ['ACTIONS_ID_TOKEN_REQUEST_TOKEN']}"},
-          )
+          oidc_url += ("&" if "?" in oidc_url else "?") + urllib.parse.urlencode({"audience":"wow-v17-multiscout"})
+          token_request = urllib.request.Request(oidc_url, headers={"Authorization":f"Bearer {os.environ['ACTIONS_ID_TOKEN_REQUEST_TOKEN']}"})
           with urllib.request.urlopen(token_request, timeout=20) as response:
               token = json.load(response)["value"]
 
           origin = os.environ["WOW_ACTION_ORIGIN"].rstrip("/")
           endpoints = [
-              ("BASKETBALL", "/internal/v17/basketball-model-maintenance"),
-              ("NCAAF", "/internal/v17/ncaaf-model-maintenance"),
-              ("NCAAB", "/internal/v17/ncaab-model-maintenance"),
-              ("SOCCER", "/internal/v17/soccer-model-maintenance"),
-              ("TENNIS", "/internal/v17/tennis-model-maintenance"),
+              ("BASKETBALL","/internal/v17/basketball-model-maintenance"),
+              ("NCAAF","/internal/v17/ncaaf-model-maintenance"),
+              ("NCAAB","/internal/v17/ncaab-model-maintenance"),
+              ("SOCCER","/internal/v17/soccer-model-maintenance"),
+              ("TENNIS","/internal/v17/tennis-model-maintenance"),
+              ("TEAM_STATE","/internal/v17/team-state-challenger-maintenance"),
           ]
+
+          def post_with_deploy_retry(name, path):
+              last = None
+              for attempt in range(60):
+                  request = urllib.request.Request(origin+path, data=b"", method="POST",
+                      headers={"Authorization":f"Bearer {token}","Content-Type":"application/json"})
+                  try:
+                      with urllib.request.urlopen(request, timeout=1800) as response:
+                          return json.load(response)
+                  except urllib.error.HTTPError as exc:
+                      body = exc.read().decode("utf-8", errors="replace")
+                      last = f"{name}_HTTP_{exc.code}:{body[:1000]}"
+                      if exc.code not in {404,502,503,504}:
+                          raise RuntimeError(last) from exc
+                  except urllib.error.URLError as exc:
+                      last = f"{name}_URL_ERROR:{exc}"
+                  if attempt < 59:
+                      time.sleep(10)
+              raise RuntimeError(last or f"{name}_DEPLOYMENT_NOT_READY")
+
           results = {}
-          for name, path in endpoints:
-              request = urllib.request.Request(
-                  origin + path,
-                  data=b"",
-                  method="POST",
-                  headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-              )
-              try:
-                  with urllib.request.urlopen(request, timeout=1800) as response:
-                      payload = json.load(response)
-              except urllib.error.HTTPError as exc:
-                  body = exc.read().decode("utf-8", errors="replace")
-                  raise RuntimeError(f"{name}_HTTP_{exc.code}:{body[:1000]}") from exc
-              assert payload.get("can_execute") is False, (name, payload)
-              assert payload.get("probability_publishable") is False, (name, payload)
-              if "automatic_certification" in payload:
-                  assert payload.get("automatic_certification") is False, (name, payload)
-              if "automatic_promotion" in payload:
-                  assert payload.get("automatic_promotion") is False, (name, payload)
+          for name,path in endpoints:
+              payload = post_with_deploy_retry(name,path)
+              assert payload.get("can_execute") is False, (name,payload)
+              assert payload.get("probability_publishable") is False, (name,payload)
+              if "automatic_certification" in payload: assert payload.get("automatic_certification") is False, (name,payload)
+              if "automatic_promotion" in payload: assert payload.get("automatic_promotion") is False, (name,payload)
               results[name] = payload
-              print(json.dumps({"lane": name, "result": payload}, sort_keys=True))
+              print(json.dumps({"lane":name,"result":payload},sort_keys=True))
 
           basketball = results.get("BASKETBALL") or {}
-          sports = {str(row.get("sport")): row for row in (basketball.get("rows") or [])}
+          sports = {str(row.get("sport")):row for row in (basketball.get("rows") or [])}
           assert "NBA" in sports and "WNBA" in sports
-          print(json.dumps({
-              "checkpoint": {
-                  "NCAAF": (results.get("NCAAF") or {}).get("status"),
-                  "NBA": (sports.get("NBA") or {}).get("status"),
-                  "WNBA": (sports.get("WNBA") or {}).get("status"),
-                  "NCAAB": (results.get("NCAAB") or {}).get("status"),
-                  "SOCCER": (results.get("SOCCER") or {}).get("status"),
-                  "TENNIS": (results.get("TENNIS") or {}).get("status"),
-                  "can_execute": False,
-              }
-          }, sort_keys=True))
+          team_state = results.get("TEAM_STATE") or {}
+          assert team_state.get("program") == "LLP_DYNAMIC_TEAM_STATE_CHALLENGER_V1", team_state
+          assert isinstance(team_state.get("rows"),list) and team_state.get("rows"), team_state
+          assert all(row.get("can_execute") is False for row in team_state["rows"]), team_state
+          assert all(row.get("probability_publishable") is False for row in team_state["rows"]), team_state
+          print(json.dumps({"checkpoint":{"NCAAF":(results.get("NCAAF") or {}).get("status"),
+              "NBA":(sports.get("NBA") or {}).get("status"),"WNBA":(sports.get("WNBA") or {}).get("status"),
+              "NCAAB":(results.get("NCAAB") or {}).get("status"),"SOCCER":(results.get("SOCCER") or {}).get("status"),
+              "TENNIS":(results.get("TENNIS") or {}).get("status"),"TEAM_STATE":team_state.get("status"),
+              "team_state_updated":team_state.get("candidate_rows_updated"),"team_state_blocked":team_state.get("candidate_rows_blocked"),
+              "can_execute":False}},sort_keys=True))
           PY
