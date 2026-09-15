@@ -60,7 +60,18 @@ def _row(kind: str, scope: str, *, idx: int, value: float = 1.0) -> dict:
 
 
 def complete_evidence() -> list[dict]:
-    return [_row(kind, scope, idx=i, value=float(i + 1) / 10.0) for i, (kind, scope) in enumerate(REQUIRED_SCOPED_KEYS)]
+    rows: list[dict] = []
+    for i, (kind, scope) in enumerate(REQUIRED_SCOPED_KEYS):
+        # QB certainty is explicitly a bounded probability-like confidence
+        # feature and must stay in [0, 1]. Other numeric evidence families use
+        # deliberately varied values to exercise the transform without implying
+        # a shared scale across unrelated features.
+        if kind == "QB_CERTAINTY":
+            value = 0.8 if scope == "HOME" else 0.7
+        else:
+            value = float(i + 1) / 10.0
+        rows.append(_row(kind, scope, idx=i, value=value))
+    return rows
 
 
 def test_complete_pregame_evidence_compiles_exact_model_feature_contract():
