@@ -9,6 +9,7 @@ on:
       - main
     paths:
       - ".github/workflows/wow-v17-first-six-model-maintenance.yml"
+      - "artifacts/wow-engine/FIRST_SIX_CERTIFICATION_CHECKPOINT.md"
       - "artifacts/wow-engine/github_actions_oidc.py"
       - "artifacts/wow-engine/v17/team_event_specialist_ownership.py"
       - "artifacts/wow-engine/v17/ncaaf_result_form_candidate.py"
@@ -28,6 +29,7 @@ on:
   pull_request:
     paths:
       - ".github/workflows/wow-v17-first-six-model-maintenance.yml"
+      - "artifacts/wow-engine/FIRST_SIX_CERTIFICATION_CHECKPOINT.md"
       - "artifacts/wow-engine/github_actions_oidc.py"
       - "artifacts/wow-engine/v17/team_event_specialist_ownership.py"
       - "artifacts/wow-engine/v17/ncaaf_result_form_candidate.py"
@@ -76,7 +78,10 @@ jobs:
 
   maintain:
     name: Advance first-six candidate evidence
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: >-
+      github.event_name == 'schedule' ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[RUN_FIRST_SIX]'))
     needs: verify
     runs-on: ubuntu-latest
     timeout-minutes: 90
