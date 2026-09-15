@@ -41,6 +41,7 @@ import pick_request_runtime_core as _core
 from pick_request_runtime_core import *  # noqa: F401,F403
 from prop_auto_hydration_router import auto_hydrate_prop_evidence as _sport_aware_auto_hydrate_prop_evidence
 from v17.top10_model_reconciliation import enforce_top10_completion
+from v17.mlb_1ip_line_expansion_maintenance import install_mlb_1ip_line_expansion_maintenance_route
 from v17.wnba_prop_candidate_registry import install_wnba_prop_candidate_registration_route
 
 
@@ -253,6 +254,11 @@ def install_pick_request_routes(
     get_client_fn = getattr(prod, "get_client", None)
     if callable(get_client_fn):
         install_wnba_prop_candidate_registration_route(
+            app,
+            auth_dependency=auth_dependency,
+            db_client_fn=get_client_fn,
+        )
+        install_mlb_1ip_line_expansion_maintenance_route(
             app,
             auth_dependency=auth_dependency,
             db_client_fn=get_client_fn,
