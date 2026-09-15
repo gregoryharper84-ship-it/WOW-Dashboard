@@ -400,7 +400,11 @@ def _cross_sport_moneyline_rows(
                 for key in ("official_event_id", "commence_time_utc", "home_team", "away_team", "sport")
             },
             row,
-            "COMPLETED" if row.get("bucket") == discovery.MODEL_COMPLETED else "HELD",
+            assert_no_terminal_upgrade(
+                reduce_row_terminal(
+                    ["COMPLETED" if row.get("bucket") == discovery.MODEL_COMPLETED else "HELD"]
+                )
+            ),
         )
         for row in scan["rows"]
         if str(row.get("official_event_id") or "") not in covered_event_ids
