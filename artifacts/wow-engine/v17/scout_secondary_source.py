@@ -53,14 +53,23 @@ def _norm(value: Any) -> str:
     return "".join(ch for ch in str(value or "").lower() if ch.isalnum())
 
 
+def _parse_utc(value: Any) -> datetime | None:
+    if value in {None, ""}:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
 def _date_key(value: str | None) -> str:
     if not value:
         return datetime.now(timezone.utc).strftime("%Y%m%d")
-    try:
-        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
-        return dt.astimezone(timezone.utc).strftime("%Y%m%d")
-    except ValueError:
-        return datetime.now(timezone.utc).strftime("%Y%m%d")
+    dt = _parse_utc(value)
+    return (dt or datetime.now(timezone.utc)).strftime("%Y%m%d")
 
 
 def _date_range(params: dict[str, Any] | None) -> str:
@@ -68,6 +77,27 @@ def _date_range(params: dict[str, Any] | None) -> str:
     start = _date_key(str(params.get("commenceTimeFrom") or ""))
     end = _date_key(str(params.get("commenceTimeTo") or ""))
     return start if start == end else f"{start}-{end}"
+
+
+def _within_exact_window(event: dict[str, Any], params: dict[str, Any] | None) -> bool:
+    """Defensively enforce the caller's timestamp window after ESPN date expansion.
+
+    ESPN's scoreboard ``dates=YYYYMMDD-YYYYMMDD`` is day-granular and can return
+    events later on the final date than the Scout's exact commenceTimeTo. Those
+    rows must not enter discovery or terminate the scan on an out-of-window
+    market lookup.
+    """
+    params = params or {}
+    event_time = _parse_utc(event.get("date"))
+    if event_time is None:
+        return False
+    start = _parse_utc(params.get("commenceTimeFrom"))
+    end = _parse_utc(params.get("commenceTimeTo"))
+    if start is not None and event_time < start:
+        return False
+    if end is not None and event_time > end:
+        return False
+    return True
 
 
 def _http_json(url: str, params: dict[str, Any] | None = None) -> SecondaryResult:
@@ -252,7 +282,8 @@ def secondary_for_request(
         if not board.ok:
             return board
         events = board.data.get("events") if isinstance(board.data, dict) else []
-        converted = [espn_event_to_primary_shape(event, sport_key) for event in (events or []) if isinstance(event, dict)]
+        in_window = [event for event in (events or []) if isinstance(event, dict) and _within_exact_window(event, params)]
+        converted = [espn_event_to_primary_shape(event, sport_key) for event in in_window]
         return SecondaryResult(True, [event for event in converted if event], 200)
 
     match = _EVENT_DATA_RE.match(path)
