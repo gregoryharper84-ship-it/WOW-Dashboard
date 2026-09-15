@@ -1,10 +1,10 @@
-"""ATP/WTA match-winner research candidates from Valuebetennis open data.
+"""ATP/WTA main-tour match-winner research candidates from Valuebetennis.
 
-Valuebetennis publishes settled singles CSVs under CC BY 4.0. This pipeline
-explicitly ignores all opening/closing odds columns. Features are strictly prior
-player results, surface form, head-to-head and workload. Retirements/walkovers
-are excluded from the training outcome so serving can retain explicit retirement
-settlement controls. ATP and WTA are fit as separate artifacts.
+The public source is CC BY 4.0 and semicolon-delimited. Odds columns are present
+in the source but are never read into model features. To keep the first governed
+lane route-scoped and operationally bounded, only Main tour, Masters and Grand
+Slam singles are eligible; ITF/Challenger rows are excluded rather than silently
+sharing authority. Retirements/walkovers are excluded from training outcomes.
 """
 from __future__ import annotations
 
@@ -25,14 +25,16 @@ from v17.binary_candidate_lifecycle import BinaryCandidateError, BinaryTrainingR
 CAN_EXECUTE = False
 SPORT = "TENNIS"
 MARKET_FAMILY = "OUTRIGHT_WINNER"
-BASE_MODEL_FAMILY = "TENNIS_MATCH_WIN_LOGIT_V1"
-FEATURE_SCHEMA_VERSION = "TENNIS_FORM_SURFACE_PRIOR_V1"
-SOURCE_POLICY_ID = "VALUEBETENNIS_CC_BY_4_SETTLED_SINGLES_V1"
+BASE_MODEL_FAMILY = "TENNIS_MAIN_TOUR_MATCH_WIN_LOGIT_V1"
+FEATURE_SCHEMA_VERSION = "TENNIS_MAIN_TOUR_FORM_SURFACE_PRIOR_V1"
+SOURCE_POLICY_ID = "VALUEBETENNIS_CC_BY_4_SETTLED_MAIN_TOUR_SINGLES_V1"
 SOURCE_LICENSE = "CC-BY-4.0"
 SOURCE_PAGE = "https://www.valuebetennis.com/en/donnees.htm"
 BASE_URL = "https://www.valuebetennis.com/datasets"
+CSV_DELIMITER = ";"
 SEASONS = (2021, 2022, 2023, 2024, 2025, 2026)
 TOURS = ("ATP", "WTA")
+SUPPORTED_CATEGORIES = frozenset({"MAIN TOUR", "MASTERS", "GRAND SLAM"})
 FEATURE_NAMES = (
     "p1_recent_win_rate", "p2_recent_win_rate",
     "p1_surface_win_rate", "p2_surface_win_rate",
@@ -56,6 +58,10 @@ def _hash_bytes(data: bytes) -> str:
 
 def _hash_json(payload: Any) -> str:
     return sha256(json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode()).hexdigest()
+
+
+def _ids_hash(ids: list[str]) -> str:
+    return sha256("\n".join(ids).encode()).hexdigest()
 
 
 def _parse_time(value: Any) -> datetime:
@@ -90,25 +96,32 @@ def fetch_matches(*, seasons: tuple[int, ...] = SEASONS) -> tuple[list[dict[str,
         digest = _hash_bytes(response.content)
         sources.append({"season": season, "url": url, "sha256": digest, "license": SOURCE_LICENSE})
         text = response.content.decode("utf-8-sig", errors="replace")
-        for row in csv.DictReader(io.StringIO(text)):
+        reader = csv.DictReader(io.StringIO(text), delimiter=CSV_DELIMITER)
+        required = {"match_id", "date", "categorie", "genre", "surface", "joueur1_id", "joueur2_id", "vainqueur_id", "score"}
+        if not reader.fieldnames or not required.issubset(set(reader.fieldnames)):
+            raise TennisCandidateUnavailable("TENNIS_VALUEBET_SCHEMA_INVALID", f"season={season}")
+        for row in reader:
             match_id = str(row.get("match_id") or "").strip()
             p1 = str(row.get("joueur1_id") or "").strip()
             p2 = str(row.get("joueur2_id") or "").strip()
             winner = str(row.get("vainqueur_id") or "").strip()
             tour = str(row.get("genre") or "").strip().upper()
+            category = str(row.get("categorie") or "").strip().upper()
             surface = str(row.get("surface") or "UNKNOWN").strip().upper() or "UNKNOWN"
+            if category not in SUPPORTED_CATEGORIES:
+                continue
             if not match_id or not p1 or not p2 or winner not in {p1, p2} or tour not in TOURS:
                 continue
             if not _completed_score(row.get("score")):
                 continue
             matches.append({
                 "match_id": match_id, "start": _parse_time(row.get("date")), "tour": tour,
-                "surface": surface, "p1": p1, "p2": p2, "winner": winner,
+                "category": category, "surface": surface, "p1": p1, "p2": p2, "winner": winner,
                 "tournament": str(row.get("tournoi") or ""), "round": str(row.get("tour") or ""),
                 "source_url": url, "source_sha256": digest,
             })
     if not matches:
-        raise TennisCandidateUnavailable("TENNIS_VALUEBET_EMPTY", "no eligible completed singles matches")
+        raise TennisCandidateUnavailable("TENNIS_VALUEBET_EMPTY", "no eligible completed main-tour singles matches")
     return sorted(matches, key=lambda row: (row["start"], row["match_id"])), sources
 
 
@@ -120,19 +133,21 @@ def _player_summary(history: list[dict[str, Any]], start: datetime, surface: str
     surface_prior = [row for row in prior if row["surface"] == surface]
     surface_recent = surface_prior[-20:]
     matches_14 = sum(1 for row in prior if (start - row["start"]).total_seconds() <= 14 * 86400)
+    prior_ids = [str(row["event_id"]) for row in prior]
     return {
         "recent_win_rate": sum(1 for row in recent if row["won"]) / len(recent),
         "surface_win_rate": (sum(1 for row in surface_recent if row["won"]) / len(surface_recent)) if surface_recent else 0.5,
         "games_prior_log": math.log1p(len(prior)), "surface_games_prior_log": math.log1p(len(surface_prior)),
         "rest_days_capped": max(0.0, min(28.0, (start - prior[-1]["start"]).total_seconds() / 86400.0)),
-        "matches_last_14d": float(matches_14), "prior_event_ids": [row["event_id"] for row in prior],
+        "matches_last_14d": float(matches_14), "prior_event_count": len(prior),
+        "prior_event_ids_sha256": _ids_hash(prior_ids),
     }
 
 
 def build_training_rows(matches: list[dict[str, Any]], *, tour: str) -> tuple[list[BinaryTrainingRow], list[dict[str, Any]]]:
     tour = tour.upper()
     histories: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    h2h: dict[tuple[str, str], list[str]] = defaultdict(list)
+    h2h: dict[tuple[str, str], dict[str, int]] = defaultdict(lambda: defaultdict(int))
     rows: list[BinaryTrainingRow] = []
     metadata: list[dict[str, Any]] = []
     for match in [row for row in matches if row["tour"] == tour]:
@@ -140,9 +155,10 @@ def build_training_rows(matches: list[dict[str, Any]], *, tour: str) -> tuple[li
         s1, s2 = _player_summary(histories[p1], start, surface), _player_summary(histories[p2], start, surface)
         pair = tuple(sorted((p1, p2)))
         prior_h2h = h2h[pair]
+        h2h_n = int(sum(prior_h2h.values()))
         if s1 and s2:
-            p1_h2h = (sum(1 for winner in prior_h2h if winner == p1) / len(prior_h2h)) if prior_h2h else 0.5
-            p2_h2h = 1.0 - p1_h2h if prior_h2h else 0.5
+            p1_h2h = (prior_h2h[p1] / h2h_n) if h2h_n else 0.5
+            p2_h2h = (prior_h2h[p2] / h2h_n) if h2h_n else 0.5
             features = {
                 "p1_recent_win_rate": s1["recent_win_rate"], "p2_recent_win_rate": s2["recent_win_rate"],
                 "p1_surface_win_rate": s1["surface_win_rate"], "p2_surface_win_rate": s2["surface_win_rate"],
@@ -155,11 +171,12 @@ def build_training_rows(matches: list[dict[str, Any]], *, tour: str) -> tuple[li
             manifest = {
                 "policy": SOURCE_POLICY_ID, "license": SOURCE_LICENSE, "source_page": SOURCE_PAGE,
                 "source_url": match["source_url"], "source_sha256": match["source_sha256"],
-                "match_id": match["match_id"], "tour": tour, "surface": surface,
-                "tournament": match["tournament"], "round": match["round"],
+                "match_id": match["match_id"], "tour": tour, "category": match["category"],
+                "surface": surface, "tournament": match["tournament"], "round": match["round"],
                 "training_settlement_scope": "COMPLETED_MATCHES_ONLY",
-                "p1_prior_event_ids": s1["prior_event_ids"], "p2_prior_event_ids": s2["prior_event_ids"],
-                "market_columns_present_but_used": False,
+                "p1_prior_event_count": s1["prior_event_count"], "p1_prior_event_ids_sha256": s1["prior_event_ids_sha256"],
+                "p2_prior_event_count": s2["prior_event_count"], "p2_prior_event_ids_sha256": s2["prior_event_ids_sha256"],
+                "h2h_prior_match_count": h2h_n, "market_columns_present_but_used": False,
             }
             manifest_sha = _hash_json(manifest)
             rows.append(BinaryTrainingRow(
@@ -171,26 +188,27 @@ def build_training_rows(matches: list[dict[str, Any]], *, tour: str) -> tuple[li
             metadata.append({"source_manifest": manifest})
         histories[p1].append({"event_id": match["match_id"], "start": start, "surface": surface, "won": match["winner"] == p1})
         histories[p2].append({"event_id": match["match_id"], "start": start, "surface": surface, "won": match["winner"] == p2})
-        h2h[pair].append(match["winner"])
+        h2h[pair][match["winner"]] += 1
     if len(rows) < 1000:
         raise TennisCandidateUnavailable("TENNIS_CANDIDATE_SAMPLE_INSUFFICIENT", f"tour={tour};rows={len(rows)}")
     return rows, metadata
 
 
 def _persist_rows(client: Any, tour: str, family: str, rows: list[BinaryTrainingRow], metadata: list[dict[str, Any]]) -> None:
-    payloads = [{
-        "sport": SPORT, "league": tour, "official_event_id": row.event_id,
-        "event_start_time": row.event_start_time, "feature_as_of": row.feature_as_of,
-        "feature_schema_version": FEATURE_SCHEMA_VERSION, "model_family": family,
-        "features": dict(row.features), "outcome_json": {"player1_win": bool(row.positive_outcome)},
-        "source_manifest": meta["source_manifest"], "source_manifest_sha256": row.source_manifest_sha256,
-        "historical_reconstruction": True, "archived_pregame_snapshot": False,
-        "market_features_used": False, "can_execute": False,
-    } for row, meta in zip(rows, metadata)]
-    for offset in range(0, len(payloads), 250):
+    for offset in range(0, len(rows), 250):
+        payloads = []
+        for row, meta in zip(rows[offset:offset + 250], metadata[offset:offset + 250]):
+            payloads.append({
+                "sport": SPORT, "league": tour, "official_event_id": row.event_id,
+                "event_start_time": row.event_start_time, "feature_as_of": row.feature_as_of,
+                "feature_schema_version": FEATURE_SCHEMA_VERSION, "model_family": family,
+                "features": dict(row.features), "outcome_json": {"player1_win": bool(row.positive_outcome)},
+                "source_manifest": meta["source_manifest"], "source_manifest_sha256": row.source_manifest_sha256,
+                "historical_reconstruction": True, "archived_pregame_snapshot": False,
+                "market_features_used": False, "can_execute": False,
+            })
         client.table("wow_d1_training_rows").upsert(
-            payloads[offset:offset + 250],
-            on_conflict="sport,official_event_id,feature_schema_version,source_manifest_sha256",
+            payloads, on_conflict="sport,official_event_id,feature_schema_version,source_manifest_sha256"
         ).execute()
 
 
@@ -214,6 +232,7 @@ def train_all(client: Any, *, training_code_sha: str) -> dict[str, Any]:
             "research_screen_pass": candidate.research_screen_pass, "source_license": SOURCE_LICENSE,
             "market_features_used": False, "training_settlement_scope": "COMPLETED_MATCHES_ONLY",
             "retirement_rows_excluded": True, "surface_feature_required": True,
+            "supported_categories": sorted(SUPPORTED_CATEGORIES),
         }
         client.table("wow_d1_candidate_artifacts").upsert({
             "sport": SPORT, "league": tour, "market_family": MARKET_FAMILY,
@@ -231,16 +250,19 @@ def train_all(client: Any, *, training_code_sha: str) -> dict[str, Any]:
         output.append({
             "tour": tour, "model_artifact_version": version, "eligible_rows": len(rows),
             "metrics": metrics, "research_screen_pass": candidate.research_screen_pass,
-            "lifecycle_state": "CANDIDATE", "probability_publishable": False, "can_execute": False,
+            "lifecycle_state": "CANDIDATE", "supported_categories": sorted(SUPPORTED_CATEGORIES),
+            "probability_publishable": False, "can_execute": False,
         })
     return {
-        "ok": True, "code": "TENNIS_MATCH_WIN_CANDIDATES_PERSISTED", "source_assets": sources,
+        "ok": True, "code": "TENNIS_MAIN_TOUR_MATCH_WIN_CANDIDATES_PERSISTED", "source_assets": sources,
         "rows": output, "research_screen_pass_n": sum(bool(row["research_screen_pass"]) for row in output),
         "automatic_certification": False, "automatic_promotion": False,
         "probability_publishable": False, "can_execute": False,
     }
 
 
-__all__ = ["BASE_MODEL_FAMILY", "CAN_EXECUTE", "FEATURE_SCHEMA_VERSION", "SOURCE_LICENSE",
-           "SOURCE_POLICY_ID", "TennisCandidateUnavailable", "TOURS", "build_training_rows",
-           "fetch_matches", "train_all"]
+__all__ = [
+    "BASE_MODEL_FAMILY", "CAN_EXECUTE", "CSV_DELIMITER", "FEATURE_SCHEMA_VERSION", "SOURCE_LICENSE",
+    "SOURCE_POLICY_ID", "SUPPORTED_CATEGORIES", "TennisCandidateUnavailable", "TOURS",
+    "build_training_rows", "fetch_matches", "train_all",
+]
