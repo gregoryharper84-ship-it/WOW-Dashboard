@@ -1,0 +1,184 @@
+name: wow-v17-render-production-deploy
+
+on:
+  workflow_run:
+    workflows: ["wow-verify"]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  checks: read
+
+concurrency:
+  group: wow-v17-render-production-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy-production:
+    name: Deploy governed backend after required checks
+    if: >-
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_branch == 'main') ||
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      WOW_CAN_EXECUTE: "false"
+      WOW_DRY_RUN_ONLY: "true"
+      WOW_RENDER_SERVICE_ID: srv-da7sa9gu01pc73brt80g
+      RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+      GH_API_TOKEN: ${{ github.token }}
+    steps:
+      - name: Assert deployment governance
+        shell: bash
+        run: |
+          test "$WOW_CAN_EXECUTE" = "false"
+          test "$WOW_DRY_RUN_ONLY" = "true"
+          test -n "$RENDER_API_KEY"
+          test -n "$GH_API_TOKEN"
+
+      - name: Verify required checks and deploy current main
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import time
+          import urllib.parse
+          import urllib.request
+
+          repo = os.environ["GITHUB_REPOSITORY"]
+          event_name = os.environ["GITHUB_EVENT_NAME"]
+          with open(os.environ["GITHUB_EVENT_PATH"], "r", encoding="utf-8") as handle:
+              event = json.load(handle)
+
+          if event_name == "workflow_run":
+              target_sha = str((event.get("workflow_run") or {}).get("head_sha") or "")
+          else:
+              target_sha = str(os.environ.get("GITHUB_SHA") or "")
+          if not target_sha:
+              raise RuntimeError("RENDER_DEPLOY_TARGET_SHA_MISSING")
+
+          gh_headers = {
+              "Accept": "application/vnd.github+json",
+              "Authorization": f"Bearer {os.environ['GH_API_TOKEN']}",
+              "X-GitHub-Api-Version": "2022-11-28",
+          }
+
+          def github_json(path):
+              request = urllib.request.Request(
+                  f"https://api.github.com/repos/{repo}{path}",
+                  headers=gh_headers,
+              )
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  return json.load(response)
+
+          def current_main_sha():
+              branch = github_json("/branches/main")
+              return str(((branch.get("commit") or {}).get("sha")) or "")
+
+          required = {
+              "WOW additional required regression",
+              "WOW governed probability backend",
+              "WOW required-three regression",
+          }
+          deadline = time.time() + 900
+          while True:
+              checks = github_json(
+                  f"/commits/{urllib.parse.quote(target_sha, safe='')}/check-runs?per_page=100"
+              ).get("check_runs") or []
+              latest = {}
+              for check in checks:
+                  name = str(check.get("name") or "")
+                  if name not in required:
+                      continue
+                  prior = latest.get(name)
+                  if prior is None or int(check.get("id") or 0) > int(prior.get("id") or 0):
+                      latest[name] = check
+
+              missing = sorted(required - set(latest))
+              pending = sorted(
+                  name for name, check in latest.items()
+                  if check.get("status") != "completed"
+              )
+              failed = sorted(
+                  name for name, check in latest.items()
+                  if check.get("status") == "completed" and check.get("conclusion") != "success"
+              )
+              if failed:
+                  raise RuntimeError("RENDER_DEPLOY_REQUIRED_CHECK_FAILED:" + ",".join(failed))
+              if not missing and not pending:
+                  break
+              if time.time() >= deadline:
+                  raise RuntimeError(
+                      "RENDER_DEPLOY_REQUIRED_CHECK_TIMEOUT:"
+                      + ",".join(missing + pending)
+                  )
+              time.sleep(15)
+
+          main_sha = current_main_sha()
+          if main_sha != target_sha:
+              print(json.dumps({
+                  "status": "STALE_SHA_NO_DEPLOY",
+                  "target_sha": target_sha,
+                  "current_main_sha": main_sha,
+                  "can_execute": False,
+              }, sort_keys=True))
+              raise SystemExit(0)
+
+          render_headers = {
+              "Accept": "application/json",
+              "Authorization": f"Bearer {os.environ['RENDER_API_KEY']}",
+          }
+          service_id = urllib.parse.quote(os.environ["WOW_RENDER_SERVICE_ID"], safe="")
+          deploys_request = urllib.request.Request(
+              f"https://api.render.com/v1/services/{service_id}/deploys?limit=20",
+              headers=render_headers,
+          )
+          with urllib.request.urlopen(deploys_request, timeout=30) as response:
+              raw_deploys = json.load(response)
+
+          if isinstance(raw_deploys, list):
+              entries = raw_deploys
+          elif isinstance(raw_deploys, dict):
+              entries = raw_deploys.get("deploys") or raw_deploys.get("items") or []
+          else:
+              entries = []
+
+          active_statuses = {"created", "build_in_progress", "update_in_progress", "live"}
+          for entry in entries:
+              deploy = entry.get("deploy") if isinstance(entry, dict) and isinstance(entry.get("deploy"), dict) else entry
+              if not isinstance(deploy, dict):
+                  continue
+              commit = deploy.get("commit") if isinstance(deploy.get("commit"), dict) else {}
+              if str(commit.get("id") or "") == target_sha and str(deploy.get("status") or "") in active_statuses:
+                  print(json.dumps({
+                      "status": "DEPLOY_ALREADY_ACTIVE",
+                      "commit_sha": target_sha,
+                      "deploy_status": deploy.get("status"),
+                      "can_execute": False,
+                  }, sort_keys=True))
+                  raise SystemExit(0)
+
+          body = json.dumps({"clearCache": "do_not_clear"}).encode("utf-8")
+          deploy_request = urllib.request.Request(
+              f"https://api.render.com/v1/services/{service_id}/deploys",
+              data=body,
+              method="POST",
+              headers={**render_headers, "Content-Type": "application/json"},
+          )
+          with urllib.request.urlopen(deploy_request, timeout=30) as response:
+              deployed = json.load(response)
+          deploy_id = str(deployed.get("id") or "") if isinstance(deployed, dict) else ""
+          if not deploy_id:
+              raise RuntimeError("RENDER_DEPLOY_RESPONSE_INVALID")
+
+          print(json.dumps({
+              "status": "DEPLOY_TRIGGERED",
+              "commit_sha": target_sha,
+              "deploy_id": deploy_id,
+              "can_execute": False,
+          }, sort_keys=True))
+          PY
