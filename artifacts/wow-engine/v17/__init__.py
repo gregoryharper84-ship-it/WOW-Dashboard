@@ -74,11 +74,21 @@ def _defer_mlb_event_bridge_install(*, market_api, team_runtime) -> bool:
                 team_runtime=team_runtime,
             )
 
+        # The MLB repair owns MLB scoring/taxonomy only. Its compatibility health
+        # route must not become the global terminal health publisher after the
+        # authoritative V17 team-event registry has already been installed.
+        # Restore the cross-sport overlay after the deferred repair so /health
+        # exposes registration/certification as separate axes for every sport.
         if installed:
             from v17.team_event_bridge_runtime import _install_health_overlay
 
             _install_health_overlay()
 
+        # team_event_probability_preservation is imported after v17.__init__ and
+        # therefore captures the unpatched governance callable. Once the bridge and
+        # projected-lineup composition repair are safely installed at startup,
+        # point that wrapper at the final callable so completed morning scores are
+        # preserved while final ranking remains held for lineup refresh.
         preservation = sys.modules.get("v17.team_event_probability_preservation")
         if installed and preservation is not None:
             preservation._original_run_mlb_llp_governance = team_runtime._run_mlb_llp_governance
@@ -88,6 +98,10 @@ def _defer_mlb_event_bridge_install(*, market_api, team_runtime) -> bool:
                 "V17_SEP15_MLB_POST_BRIDGE_REPAIR=FAIL can_execute=false"
             )
 
+        # A dedicated production flag runs one authenticated, non-secret smoke
+        # test against a real confirmed pregame MLB event after startup completes.
+        # It calls the public V17 HTTP boundary with the server-owned Action key,
+        # logs no probability values, and can never execute a wager.
         if installed and os.getenv("WOW_V17_MLB_BRIDGE_SELF_ACCEPTANCE", "0") == "1":
             async def _run_after_startup():
                 await asyncio.sleep(5.0)
@@ -122,8 +136,13 @@ def compose_active_runtime() -> bool:
     )
     from v17 import team_event_request_runtime as team_runtime
 
+    # Repair provider auth and optional market-prior ingress before any live
+    # team/event market bridge can use those contracts.
     rundown_auth_ok = install_rundown_v2_auth_repair()
     market_prior_ok = install_market_prior_ingress_repair(team_runtime)
+
+    # Route the non-secret diagnostic through Uvicorn's configured logger so it
+    # reliably reaches Render app logs during process startup.
     log_rundown_credential_status(logging.getLogger("uvicorn.error"))
 
     get_certified_numerical_registry()
@@ -145,6 +164,8 @@ def compose_active_runtime() -> bool:
         )
         app = getattr(market_api, "app", None)
         if app is not None:
+            # Register after the deferred MLB bridge handler so the one-shot
+            # acceptance task observes the final composed production runtime.
             runtime_acceptance_ok = install_runtime_acceptance_probe(
                 app=app,
                 market_api=market_api,
