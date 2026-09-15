@@ -49,6 +49,10 @@ def build_recent_role_profile(
     Unlike the fitted strikeout history, which intentionally uses prior starts,
     this diagnostic must inspect *all* recent appearances so an opener/reliever
     conversion cannot disappear merely because `gamesStarted == 0`.
+
+    Some provider payloads omit ``gamesStarted`` on a split. Missing is treated
+    as unknown, never silently converted to relief usage. Outs/BF can still prove
+    a short-workload regime independently.
     """
     appearances: list[tuple[str, dict[str, Any]]] = []
     for split_season, split in season_splits:
@@ -69,7 +73,8 @@ def build_recent_role_profile(
             outs = outs_from_ip(ip)
         except Exception:
             continue
-        games_started = int_value(stat.get("gamesStarted"))
+        raw_games_started = stat.get("gamesStarted")
+        games_started = int_value(raw_games_started) if raw_games_started is not None else None
         batters_faced = int_value(stat.get("battersFaced"))
         pitches = int_value(stat.get("numberOfPitches"))
         appearances.append(
@@ -89,9 +94,10 @@ def build_recent_role_profile(
     appearances.sort(key=lambda item: item[0], reverse=True)
     recent = [row for _, row in appearances[:RECENT_ROLE_WINDOW]]
     n = len(recent)
-    starts = sum(1 for row in recent if row["games_started"] >= 1)
+    known_start_rows = [row for row in recent if row["games_started"] is not None]
+    starts = sum(1 for row in known_start_rows if row["games_started"] >= 1)
     short = sum(1 for row in recent if row["outs"] <= SHORT_APPEARANCE_MAX_OUTS)
-    start_share = starts / n if n else None
+    start_share = starts / len(known_start_rows) if known_start_rows else None
     short_share = short / n if n else None
     outs_values = [float(row["outs"]) for row in recent]
     bf_values = [float(row["batters_faced"]) for row in recent if row["batters_faced"] > 0]
@@ -115,6 +121,7 @@ def build_recent_role_profile(
         "status": status,
         "window": RECENT_ROLE_WINDOW,
         "appearances_found": n,
+        "start_signal_observations": len(known_start_rows),
         "starts": starts,
         "start_share": start_share,
         "short_appearance_count": short,
