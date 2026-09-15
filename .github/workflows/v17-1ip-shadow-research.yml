@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - chatgpt/v17-1ip-artifact-research-20260901
+      - chatgpt/fix-1ip-player-discrimination-20260914
     paths:
       - "artifacts/wow-engine/scripts/build_mlb_1ip_shadow_packet.py"
       - ".github/workflows/v17-1ip-shadow-research.yml"

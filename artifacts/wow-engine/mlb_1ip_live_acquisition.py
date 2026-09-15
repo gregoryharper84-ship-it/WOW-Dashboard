@@ -145,7 +145,6 @@ def hydrate_mlb_1ip_evidence(*, player: str, event_start_time: str, http_get: Ca
     pitcher_side = str(sched.get("side") or "").upper()
     opponent_side = "AWAY" if pitcher_side == "HOME" else "HOME"
 
-    # current game teams
     current = _request_json(f"{MLB_STATS_API_BASE}/schedule", params={"sportId":"1", "gamePk": current_game_pk, "hydrate":"team,probablePitcher"}, http_get=http_get)
     game = (((current.get("dates") or [{}])[0].get("games") or [{}])[0])
     teams = game.get("teams") or {}
@@ -161,10 +160,14 @@ def hydrate_mlb_1ip_evidence(*, player: str, event_start_time: str, http_get: Ca
 
     bfs: list[int] = []
     pitch_counts: list[int] = []
+    recent_1ip_pitch_totals: list[int] = []
+    recent_1ip_batters_faced: list[int] = []
     for pk in _schedule_games_for_pitcher(pitcher_id, event_start, http_get):
         bf, ppb = _first_inning_pitch_counts(pk, pitcher_id, http_get)
-        if bf >= 3:
+        if bf >= 3 and ppb:
             bfs.append(bf)
+            recent_1ip_batters_faced.append(bf)
+            recent_1ip_pitch_totals.append(sum(ppb))
             pitch_counts.extend(ppb)
     if len(bfs) < MIN_PRIOR_STARTS or not pitch_counts:
         raise PropAutoHydrationError("MLB_1IP_PRIOR_SAMPLE_INSUFFICIENT", "insufficient official first-inning play-by-play", detail={"starts": len(bfs)})
@@ -179,6 +182,7 @@ def hydrate_mlb_1ip_evidence(*, player: str, event_start_time: str, http_get: Ca
     return {
         "provider": PROVIDER,
         "captured_at": ts,
+        "pitcher_id": pitcher_id,
         "starter_name": official_name,
         "starter_name_at_capture": official_name,
         "starter_status": "CONFIRMED",
@@ -186,6 +190,8 @@ def hydrate_mlb_1ip_evidence(*, player: str, event_start_time: str, http_get: Ca
         "projected_top_four": projected_top_four,
         "pitcher_bf_distribution": {"p_bf_3": p3, "p_bf_4": p4, "p_bf_gte5": p5, "sample_n": n},
         "baseline_pitches_per_batter": {"mean": round(ppb_mean, 4), "std": round(max(ppb_std, 0.25), 4), "sample_n": len(pitch_counts)},
+        "recent_1ip_pitch_totals": recent_1ip_pitch_totals,
+        "recent_1ip_batters_faced": recent_1ip_batters_faced,
         "failure_path_prior": {"status": "RESOLVED_FROM_OFFICIAL_PRIOR_STARTS", "sample_n": n},
         "source_timestamps": {"MLB_STATS_API_1IP_PLAYBYPLAY": ts, "MLB_STATS_API_LINEUP": ts, "MLB_STATS_API_PROBABLE_PITCHER": ts},
         "final_refresh_required": lineup_status != "CONFIRMED",
