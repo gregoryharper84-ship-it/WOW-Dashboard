@@ -1,0 +1,14 @@
+WNBA_PROP_CANDIDATE_INGRESS_V2
+
+Purpose:
+- marks the frozen-source provenance-compatible WNBA candidate ingress introduced by PR #428
+- provides a runtime-root change so the Render service rooted at artifacts/wow-engine advances past the pre-V2 validator after checks pass
+- documents the deploy boundary used before retrying governed candidate registration
+
+Governance invariants:
+- lifecycle=CANDIDATE only
+- automatic_certification=false
+- automatic_promotion=false
+- probability_publishable=false
+- can_execute=false
+- registration remains through the authenticated governed control plane; no service-role credential is added to GitHub Actions
