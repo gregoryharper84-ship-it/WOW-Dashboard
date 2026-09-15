@@ -45,7 +45,10 @@ class CapabilityBuildPlan:
 # therefore not the controlling probability class for any modeled winner lane.
 TEAM_EVENT_BUILD_REGISTRY: dict[str, CapabilityBuildPlan] = {
     "MLB": CapabilityBuildPlan("MLB", "D1", ("A1",), "CERTIFIED", True, False, False, False, False),
-    "NFL": CapabilityBuildPlan("NFL", "D1", ("A1",), "FORWARD_EVIDENCE_PENDING", True, False, False, False, False),
+    # The production NFL champion + active PASS calibrator now resolve through
+    # NFL_EVENT_PREGAME_PRIOR_V1. Forward evidence can improve the model, but it
+    # is no longer a prerequisite for the already-certified serving route.
+    "NFL": CapabilityBuildPlan("NFL", "D1", ("A1",), "CERTIFIED", True, False, False, False, False),
     "NBA": CapabilityBuildPlan("NBA", "D1", ("A1",), "CURRENT_DATA_PENDING", True, False, False, False, False),
     "WNBA": CapabilityBuildPlan("WNBA", "D1", ("A1",), "CURRENT_DATA_PENDING", True, False, False, False, False),
     "NCAAF": CapabilityBuildPlan("NCAAF", "D1", ("A1", "A2"), "EVIDENCE_CORPUS_PENDING", True, False, False, False, False),
