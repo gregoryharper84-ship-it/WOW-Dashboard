@@ -13,6 +13,8 @@ Repairs coupled orchestration defects without relaxing governance:
    rank/final publication is held for confirmation refresh.
 6. A verified market favorite may be annotated with the cross-sport upset-alert
    interpretation layer after a complete calibrated sporting package exists.
+7. Valid model probabilities remain visible even when official publication or
+   leaderboard eligibility is held; publication gates never become visibility gates.
 
 Market-relative FAVORITE/UNDERDOG/UPSET requests remain on the existing market
 consensus path. The upset alert uses market context only to identify which outcome
@@ -22,6 +24,7 @@ bypassed, and wager execution remains impossible.
 """
 from __future__ import annotations
 
+from math import isfinite
 from threading import RLock
 from typing import Any
 
@@ -43,6 +46,80 @@ _UPSET_ALERT_NUMERIC_FIELDS = (
     "calibrated_away_lower_bound",
     "calibrated_away_upper_bound",
 )
+_VISIBILITY_NUMERIC_FIELDS = (
+    "raw_model_probability",
+    "raw_home_probability",
+    "raw_away_probability",
+    "independent_probability",
+    "independent_home_probability",
+    "independent_away_probability",
+    "unconditional_probability",
+    "calibrated_probability",
+    "calibrated_lower_bound",
+    "calibrated_upper_bound",
+    "selected_calibrated_probability",
+    "selected_calibrated_lower_bound",
+    "selected_calibrated_upper_bound",
+    "calibrated_home_probability",
+    "calibrated_home_lower_bound",
+    "calibrated_home_upper_bound",
+    "calibrated_away_probability",
+    "calibrated_away_lower_bound",
+    "calibrated_away_upper_bound",
+)
+_FATAL_MODEL_STATUSES = {
+    "MODEL_UNAVAILABLE",
+    "MODEL_SCORER_FAILED",
+    "MODEL_OUTPUT_INVALID",
+    "MODEL_INPUTS_INSUFFICIENT",
+    "MODEL_ROUTE_UNSUPPORTED",
+    "RUN_INVALID_ACQUISITION_INCOMPLETE",
+}
+
+
+def _finite_probability(value: Any) -> bool:
+    if isinstance(value, bool):
+        return False
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return False
+    return isfinite(parsed) and 0.0 <= parsed <= 1.0
+
+
+def _model_probability_available(result: dict[str, Any]) -> bool:
+    """Detect a real returned model probability without changing qualification."""
+    status = str(result.get("code") or result.get("terminal_status") or "").upper()
+    if status in _FATAL_MODEL_STATUSES:
+        return False
+    if result.get("probability_fields_withheld") is True:
+        return False
+    return any(_finite_probability(result.get(field)) for field in _VISIBILITY_NUMERIC_FIELDS)
+
+
+def _annotate_probability_visibility(result: dict[str, Any]) -> dict[str, Any]:
+    """Separate model-result visibility from official leaderboard publication.
+
+    This is presentation metadata only. It never upgrades rank eligibility,
+    probability_publishable, a terminal label, or execution authority.
+    """
+    out = dict(result)
+    official = bool(
+        out.get("probability_publishable") is True
+        and out.get("rank_eligible") is True
+    )
+    available = _model_probability_available(out)
+    out["model_probability_available"] = available
+    out["official_leaderboard_eligible"] = official
+    if official:
+        visibility = "OFFICIAL_QUALIFIED"
+    elif available:
+        visibility = "MODELED_HELD"
+    else:
+        visibility = "BLOCKED_UNSCORED"
+    out["probability_visibility_status"] = visibility
+    out["can_execute"] = False
+    return out
 
 
 def _preserve_completed_probability_hold(
@@ -334,7 +411,8 @@ def score_team_event_request(
                 event_api=event_api,
                 canonical_hydration_required=canonical_hydration_required,
             )
-            return _attach_upset_alert(req, result)
+            result = _attach_upset_alert(req, result)
+            return _annotate_probability_visibility(result)
         finally:
             _base._llp_governance_hold = previous_hold
             _base._run_mlb_llp_governance = previous_governance
