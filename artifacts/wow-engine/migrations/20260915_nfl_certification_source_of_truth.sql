@@ -38,7 +38,6 @@ begin
                and c.promoted = true
                and c.validation_status = 'PASS'
                and c.health_status = 'PASS'
-               and c.can_execute = false
         ) into v_calibrator_ready;
     end if;
 
@@ -152,7 +151,6 @@ begin
                and cal.promoted = true
                and cal.validation_status = 'PASS'
                and cal.health_status = 'PASS'
-               and cal.can_execute = false
         ) into v_calibrator_ready;
     end if;
 
