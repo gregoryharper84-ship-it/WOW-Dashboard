@@ -101,10 +101,13 @@ jobs:
 
   train-and-register:
     name: Train and register WNBA prop candidates
-    # A protected-main push touching this lane should not wait for the next
-    # weekly schedule to populate the candidate registry. Registration remains
+    # Registration intentionally does not run on the same protected-main push
+    # that must first clear Render's checksPass deployment gate. Running the
+    # control-plane POST before the new runtime is live creates a deploy/check
+    # cycle and can send a new candidate envelope to an older validator.
+    # Scheduled/manual runs are post-deploy activation attempts and remain
     # candidate-only: no certification, promotion, publication, or execution.
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.event_name == 'push'
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     needs: verify
     runs-on: ubuntu-latest
     timeout-minutes: 25
