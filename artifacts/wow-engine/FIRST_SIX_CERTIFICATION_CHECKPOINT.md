@@ -37,3 +37,7 @@ Existing basketball maintenance hydrates current settled team games, performs de
 All new lanes follow chronological training -> calibration -> untouched test evaluation. Candidate artifacts cannot self-certify or self-promote. Research-screen failure remains a typed model-quality blocker. Passing a research screen means only that the lane is eligible for deterministic replay/lifecycle review.
 
 No workflow, migration, candidate, specialist, or route may set `can_execute=true` or place/modify/approve/cancel a wager.
+
+## Production run trigger
+
+Prepared after merge `ab6eb8cc911802ab82423db2ebf569fb59cad119`. This one-line checkpoint mutation exists only to trigger the governed protected-main first-six maintenance workflow after the exact implementation is confirmed live on Render. It does not alter model semantics, certification thresholds, publication authority, or `can_execute=false`.
