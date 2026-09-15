@@ -19,9 +19,11 @@ def test_soccer_source_contract_is_cc0_and_true_three_way():
     assert all("odds" not in name and "price" not in name and "market" not in name for name in soccer.FEATURE_NAMES)
 
 
-def test_tennis_contract_ignores_odds_and_separates_atp_wta():
+def test_tennis_contract_ignores_odds_uses_real_delimiter_and_separates_tours():
     assert tennis.SOURCE_LICENSE == "CC-BY-4.0"
+    assert tennis.CSV_DELIMITER == ";"
     assert tennis.TOURS == ("ATP", "WTA")
+    assert tennis.SUPPORTED_CATEGORIES == frozenset({"MAIN TOUR", "MASTERS", "GRAND SLAM"})
     assert all("odds" not in name and "price" not in name and "market" not in name for name in tennis.FEATURE_NAMES)
     assert tennis._completed_score("6-4 6-3") is True
     assert tennis._completed_score("6-4 2-1 ret") is False
