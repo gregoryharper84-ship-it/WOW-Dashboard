@@ -105,11 +105,13 @@ jobs:
         shell: bash
         run: |
           python - <<'PY'
+          import http.client
           import json
           import os
+          import time
+          import urllib.error
           import urllib.parse
           import urllib.request
-          import urllib.error
 
           oidc_url = os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"]
           sep = "&" if "?" in oidc_url else "?"
@@ -122,6 +124,42 @@ jobs:
               token = json.load(response)["value"]
 
           origin = os.environ["WOW_ACTION_ORIGIN"].rstrip("/")
+          headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+          # Marker-triggered pushes can race Render's checksPass auto-deploy. Do
+          # not call model maintenance until the protected runtime proves it is
+          # serving the exact triggering commit. 404/502/503 are expected while
+          # an older instance is draining or the new one is starting.
+          if os.environ.get("GITHUB_EVENT_NAME") == "push":
+              target_sha = os.environ.get("GITHUB_SHA", "").strip().lower()
+              if len(target_sha) < 7:
+                  raise RuntimeError("FIRST_SIX_TARGET_SHA_UNAVAILABLE")
+              deployment_ready = False
+              last_runtime_state = None
+              for _ in range(180):
+                  request = urllib.request.Request(
+                      origin + "/internal/v17/runtime-deployment",
+                      method="GET",
+                      headers=headers,
+                  )
+                  try:
+                      with urllib.request.urlopen(request, timeout=20) as response:
+                          last_runtime_state = json.load(response)
+                      if str(last_runtime_state.get("git_commit") or "").strip().lower() == target_sha:
+                          deployment_ready = True
+                          break
+                  except urllib.error.HTTPError as exc:
+                      if exc.code not in {404, 502, 503}:
+                          raise
+                  except (urllib.error.URLError, TimeoutError, ConnectionError, OSError, http.client.RemoteDisconnected):
+                      pass
+                  time.sleep(5)
+              if not deployment_ready:
+                  raise RuntimeError(
+                      f"FIRST_SIX_RUNTIME_COMMIT_NOT_READY:target={target_sha}:last={last_runtime_state}"
+                  )
+              print(json.dumps({"runtime_deployment": last_runtime_state}, sort_keys=True), flush=True)
+
           endpoints = [
               ("BASKETBALL", "/internal/v17/basketball-model-maintenance"),
               ("NCAAF", "/internal/v17/ncaaf-model-maintenance"),
@@ -130,19 +168,47 @@ jobs:
               ("TENNIS", "/internal/v17/tennis-model-maintenance"),
           ]
           results = {}
+          transport_failures = []
           for name, path in endpoints:
               request = urllib.request.Request(
                   origin + path,
                   data=b"",
                   method="POST",
-                  headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                  headers=headers,
               )
               try:
                   with urllib.request.urlopen(request, timeout=1800) as response:
                       payload = json.load(response)
               except urllib.error.HTTPError as exc:
                   body = exc.read().decode("utf-8", errors="replace")
-                  raise RuntimeError(f"{name}_HTTP_{exc.code}:{body[:1000]}") from exc
+                  payload = {
+                      "status": "TRANSPORT_FAILED",
+                      "code": f"{name}_HTTP_{exc.code}",
+                      "detail": body[:1000],
+                      "automatic_certification": False,
+                      "automatic_promotion": False,
+                      "probability_publishable": False,
+                      "can_execute": False,
+                  }
+                  transport_failures.append(payload["code"])
+                  results[name] = payload
+                  print(json.dumps({"lane": name, "result": payload}, sort_keys=True), flush=True)
+                  continue
+              except (urllib.error.URLError, TimeoutError, ConnectionError, OSError, http.client.RemoteDisconnected) as exc:
+                  payload = {
+                      "status": "TRANSPORT_FAILED",
+                      "code": f"{name}_TRANSPORT_FAILED",
+                      "detail": type(exc).__name__,
+                      "automatic_certification": False,
+                      "automatic_promotion": False,
+                      "probability_publishable": False,
+                      "can_execute": False,
+                  }
+                  transport_failures.append(payload["code"])
+                  results[name] = payload
+                  print(json.dumps({"lane": name, "result": payload}, sort_keys=True), flush=True)
+                  continue
+
               assert payload.get("can_execute") is False, (name, payload)
               assert payload.get("probability_publishable") is False, (name, payload)
               if "automatic_certification" in payload:
@@ -150,20 +216,24 @@ jobs:
               if "automatic_promotion" in payload:
                   assert payload.get("automatic_promotion") is False, (name, payload)
               results[name] = payload
-              print(json.dumps({"lane": name, "result": payload}, sort_keys=True))
+              print(json.dumps({"lane": name, "result": payload}, sort_keys=True), flush=True)
 
           basketball = results.get("BASKETBALL") or {}
           sports = {str(row.get("sport")): row for row in (basketball.get("rows") or [])}
-          assert "NBA" in sports and "WNBA" in sports
-          print(json.dumps({
-              "checkpoint": {
-                  "NCAAF": (results.get("NCAAF") or {}).get("status"),
-                  "NBA": (sports.get("NBA") or {}).get("status"),
-                  "WNBA": (sports.get("WNBA") or {}).get("status"),
-                  "NCAAB": (results.get("NCAAB") or {}).get("status"),
-                  "SOCCER": (results.get("SOCCER") or {}).get("status"),
-                  "TENNIS": (results.get("TENNIS") or {}).get("status"),
-                  "can_execute": False,
-              }
-          }, sort_keys=True))
+          if basketball.get("status") != "TRANSPORT_FAILED":
+              assert "NBA" in sports and "WNBA" in sports
+          basketball_transport_status = basketball.get("status") if basketball.get("status") == "TRANSPORT_FAILED" else None
+          checkpoint = {
+              "NCAAF": (results.get("NCAAF") or {}).get("status"),
+              "NBA": (sports.get("NBA") or {}).get("status") or basketball_transport_status,
+              "WNBA": (sports.get("WNBA") or {}).get("status") or basketball_transport_status,
+              "NCAAB": (results.get("NCAAB") or {}).get("status"),
+              "SOCCER": (results.get("SOCCER") or {}).get("status"),
+              "TENNIS": (results.get("TENNIS") or {}).get("status"),
+              "transport_failures": transport_failures,
+              "can_execute": False,
+          }
+          print(json.dumps({"checkpoint": checkpoint}, sort_keys=True), flush=True)
+          if transport_failures:
+              raise RuntimeError("FIRST_SIX_TRANSPORT_FAILURES:" + ",".join(transport_failures))
           PY
