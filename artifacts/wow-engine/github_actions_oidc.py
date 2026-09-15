@@ -25,24 +25,13 @@ REPOSITORY_ID = "1240256887"
 REPOSITORY_OWNER_ID = "285088163"
 REF = "refs/heads/main"
 WORKFLOW_REF = f"{REPOSITORY}/.github/workflows/wow-v17-nightly-multiscout.yml@{REF}"
-DAILY_SNAPSHOT_WORKFLOW_REF = (
-    f"{REPOSITORY}/.github/workflows/wow-v17-daily-snapshot.yml@{REF}"
-)
-NFL_FORWARD_SHADOW_WORKFLOW_REF = (
-    f"{REPOSITORY}/.github/workflows/wow-v17-nfl-forward-shadow.yml@{REF}"
-)
-BASKETBALL_MODEL_MAINTENANCE_WORKFLOW_REF = (
-    f"{REPOSITORY}/.github/workflows/wow-v17-basketball-model-maintenance.yml@{REF}"
-)
-NCAAF_MODEL_MAINTENANCE_WORKFLOW_REF = (
-    f"{REPOSITORY}/.github/workflows/wow-v17-ncaaf-model-maintenance.yml@{REF}"
-)
-WNBA_PROP_CANDIDATE_WORKFLOW_REF = (
-    f"{REPOSITORY}/.github/workflows/wow-v17-wnba-prop-candidate.yml@{REF}"
-)
-NHL_MODEL_MAINTENANCE_WORKFLOW_REF = (
-    f"{REPOSITORY}/.github/workflows/wow-v17-nhl-model-maintenance.yml@{REF}"
-)
+DAILY_SNAPSHOT_WORKFLOW_REF = f"{REPOSITORY}/.github/workflows/wow-v17-daily-snapshot.yml@{REF}"
+NFL_FORWARD_SHADOW_WORKFLOW_REF = f"{REPOSITORY}/.github/workflows/wow-v17-nfl-forward-shadow.yml@{REF}"
+BASKETBALL_MODEL_MAINTENANCE_WORKFLOW_REF = f"{REPOSITORY}/.github/workflows/wow-v17-basketball-model-maintenance.yml@{REF}"
+NCAAF_MODEL_MAINTENANCE_WORKFLOW_REF = f"{REPOSITORY}/.github/workflows/wow-v17-ncaaf-model-maintenance.yml@{REF}"
+WNBA_PROP_CANDIDATE_WORKFLOW_REF = f"{REPOSITORY}/.github/workflows/wow-v17-wnba-prop-candidate.yml@{REF}"
+NHL_MODEL_MAINTENANCE_WORKFLOW_REF = f"{REPOSITORY}/.github/workflows/wow-v17-nhl-model-maintenance.yml@{REF}"
+FIRST_SIX_MODEL_MAINTENANCE_WORKFLOW_REF = f"{REPOSITORY}/.github/workflows/wow-v17-first-six-model-maintenance.yml@{REF}"
 ALLOWED_WORKFLOW_REFS = frozenset({
     WORKFLOW_REF,
     DAILY_SNAPSHOT_WORKFLOW_REF,
@@ -51,6 +40,7 @@ ALLOWED_WORKFLOW_REFS = frozenset({
     NCAAF_MODEL_MAINTENANCE_WORKFLOW_REF,
     WNBA_PROP_CANDIDATE_WORKFLOW_REF,
     NHL_MODEL_MAINTENANCE_WORKFLOW_REF,
+    FIRST_SIX_MODEL_MAINTENANCE_WORKFLOW_REF,
 })
 ALLOWED_EVENTS = frozenset({"push", "schedule", "workflow_dispatch"})
 
@@ -100,12 +90,7 @@ def verify_github_actions_oidc(token: str, *, jwk_client: PyJWKClient | None = N
 
 
 def authorize_action_key_or_multiscout_oidc(authorization: str | None) -> str:
-    """Authorize an existing WOW Action bearer or an approved workflow OIDC token.
-
-    The legacy function name is retained because existing Scout callers import
-    it directly. The verifier itself now supports only the explicit workflow
-    allowlist above; it is not a generic GitHub Actions credential.
-    """
+    """Authorize an existing WOW Action bearer or an approved workflow OIDC token."""
     if not authorization or not authorization.startswith("Bearer "):
         raise GitHubOIDCValidationError("SCOUT_ROUTE_AUTH_REQUIRED")
     supplied = authorization[len("Bearer ") :]
@@ -117,13 +102,7 @@ def authorize_action_key_or_multiscout_oidc(authorization: str | None) -> str:
 
 
 def scout_route_auth_dependency(existing_auth_dependency: Any) -> Any:
-    """Return a FastAPI dependency preserving the caller's existing auth seam.
-
-    Production supplies Depends(_require_action_api_key). Lower-layer tests may
-    supply a permissive dependency. We try that exact dependency first; only a
-    rejected production-style auth attempt falls through to the strict OIDC
-    verifier. This keeps existing test/staging injection behavior intact.
-    """
+    """Return a FastAPI dependency preserving the caller's existing auth seam."""
     existing_fn = getattr(existing_auth_dependency, "dependency", None)
     if existing_fn is None and callable(existing_auth_dependency):
         existing_fn = existing_auth_dependency
@@ -159,6 +138,7 @@ __all__ = [
     "AUDIENCE",
     "BASKETBALL_MODEL_MAINTENANCE_WORKFLOW_REF",
     "DAILY_SNAPSHOT_WORKFLOW_REF",
+    "FIRST_SIX_MODEL_MAINTENANCE_WORKFLOW_REF",
     "GitHubOIDCValidationError",
     "NCAAF_MODEL_MAINTENANCE_WORKFLOW_REF",
     "NFL_FORWARD_SHADOW_WORKFLOW_REF",
