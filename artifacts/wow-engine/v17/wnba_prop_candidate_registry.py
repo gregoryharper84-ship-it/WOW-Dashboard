@@ -4,6 +4,11 @@ This boundary deliberately cannot certify, promote, activate, or publish a model
 It exists so the already-built chronological WNBA trainer can persist validated
 candidate evidence in the production artifact registry without exposing a
 service-role credential to GitHub Actions.
+
+Frozen-source provenance fields are accepted as transport metadata and verified
+when present. The registry table does not own those top-level convenience
+fields, so they are stripped before insert; the durable validation_metrics
+payload retains the complete source snapshot/provenance record.
 """
 from __future__ import annotations
 
@@ -25,6 +30,13 @@ ARTIFACT_FORMAT = "JSON_POISSON_LOGGLM_V1"
 ALLOWED_STATS = frozenset({"POINTS", "REBOUNDS", "ASSISTS", "THREE_POINTERS_MADE"})
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 _HEX_CODE = re.compile(r"^[0-9a-f]{40,64}$")
+_FROZEN_TRANSPORT_FIELDS = (
+    "numeric_canonicalization_decimals",
+    "source_snapshot_bundle_id",
+    "source_provider",
+    "source_license_id",
+    "source_attribution_required",
+)
 
 
 class WNBAPropCandidateArtifact(BaseModel):
@@ -51,6 +63,11 @@ class WNBAPropCandidateArtifact(BaseModel):
     training_rows: int
     validation_metrics: dict[str, Any]
     certification_eligible: bool | None = None
+    numeric_canonicalization_decimals: int | None = None
+    source_snapshot_bundle_id: str | None = None
+    source_provider: str | None = None
+    source_license_id: str | None = None
+    source_attribution_required: bool | None = None
     promoted: bool
     active: bool
     probability_publishable: bool
@@ -65,6 +82,41 @@ class WNBAPropCandidateBatch(BaseModel):
 def _canonical_checksum(payload: dict[str, Any]) -> str:
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _validate_frozen_source_provenance(candidate: WNBAPropCandidateArtifact, blockers: list[str]) -> None:
+    transport_present = any(getattr(candidate, field) is not None for field in _FROZEN_TRANSPORT_FIELDS)
+    if not transport_present:
+        return
+
+    if not candidate.source_snapshot_bundle_id:
+        blockers.append("WNBA_PROP_FROZEN_SOURCE_BUNDLE_MISSING")
+    if not candidate.source_provider:
+        blockers.append("WNBA_PROP_FROZEN_SOURCE_PROVIDER_MISSING")
+    if not candidate.source_license_id:
+        blockers.append("WNBA_PROP_FROZEN_SOURCE_LICENSE_MISSING")
+    if candidate.source_attribution_required is not True:
+        blockers.append("WNBA_PROP_FROZEN_SOURCE_ATTRIBUTION_NOT_ENFORCED")
+    if candidate.numeric_canonicalization_decimals is None or candidate.numeric_canonicalization_decimals < 0:
+        blockers.append("WNBA_PROP_NUMERIC_CANONICALIZATION_INVALID")
+
+    source = candidate.validation_metrics.get("source")
+    snapshot = source.get("source_snapshot") if isinstance(source, dict) else None
+    if not isinstance(snapshot, dict):
+        blockers.append("WNBA_PROP_FROZEN_SOURCE_METRICS_MISSING")
+        return
+    if str(snapshot.get("bundle_id") or "") != str(candidate.source_snapshot_bundle_id or ""):
+        blockers.append("WNBA_PROP_FROZEN_SOURCE_BUNDLE_MISMATCH")
+    if str(snapshot.get("provider") or "") != str(candidate.source_provider or ""):
+        blockers.append("WNBA_PROP_FROZEN_SOURCE_PROVIDER_MISMATCH")
+    if str(snapshot.get("license_id") or "") != str(candidate.source_license_id or ""):
+        blockers.append("WNBA_PROP_FROZEN_SOURCE_LICENSE_MISMATCH")
+    if snapshot.get("attribution_required") is not True:
+        blockers.append("WNBA_PROP_FROZEN_SOURCE_METRICS_ATTRIBUTION_NOT_ENFORCED")
+    if snapshot.get("grants_model_capability") is not False:
+        blockers.append("WNBA_PROP_FROZEN_SOURCE_CANNOT_GRANT_MODEL_CAPABILITY")
+    if snapshot.get("probability_publishable") is not False or snapshot.get("can_execute") is not False:
+        blockers.append("WNBA_PROP_FROZEN_SOURCE_GOVERNANCE_INVALID")
 
 
 def validate_candidate(candidate: WNBAPropCandidateArtifact) -> dict[str, Any]:
@@ -117,6 +169,8 @@ def validate_candidate(candidate: WNBAPropCandidateArtifact) -> dict[str, Any]:
     if candidate.certification_eligible is not True:
         blockers.append("WNBA_PROP_OFFLINE_CERTIFICATION_ELIGIBILITY_NOT_PASS")
 
+    _validate_frozen_source_provenance(candidate, blockers)
+
     if blockers:
         raise HTTPException(
             status_code=422,
@@ -129,10 +183,12 @@ def validate_candidate(candidate: WNBAPropCandidateArtifact) -> dict[str, Any]:
             },
         )
 
-    # Registry schema contains no certification_eligible column. Preserve the
-    # trainer's evidence inside validation_metrics and strip only that transport
-    # convenience field from the table insert.
+    # Registry schema contains neither certification_eligible nor the frozen
+    # source transport convenience fields. Their durable evidence is already
+    # present inside validation_metrics.source.source_snapshot.
     row.pop("certification_eligible", None)
+    for field in _FROZEN_TRANSPORT_FIELDS:
+        row.pop(field, None)
     row["sport"] = "WNBA"
     row["stat_type"] = stat
     row["lifecycle_state"] = "CANDIDATE"
