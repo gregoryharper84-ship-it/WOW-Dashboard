@@ -5,10 +5,11 @@ and GOVERNANCE-DECISION-2026-09-14-NFL.
 
 Two things are pinned here.
 
-**Certification is not registration.** A registered, UP, scoring NFL bridge
-proves routing capability. It does not prove calibrated prospective fitness, and
-it may not promote NFL into the certified set. ``status=UP`` must never be
-readable as certified.
+**Certification is not registration.** A registered, UP, scoring bridge proves
+routing capability. It does not by itself prove calibrated prospective fitness
+or promote a sport into the certified set. NFL is now independently certified
+through its governed champion + calibrator evidence, so registration must
+preserve that catalog state rather than create it.
 
 **Discovery keys are verified, never guessed.** Provider sport ids come from the
 live TheRundown registry. A family the provider does not carry (boxing) returns
@@ -105,16 +106,19 @@ def _audit_for(inventory, family):
 # CD-001 / CD-002 — certification is a separate axis from registration
 # ---------------------------------------------------------------------------
 
-def test_cd_001_nfl_bridge_registration_is_not_certification():
+def test_cd_001_nfl_bridge_registration_preserves_governed_certification():
+    # NFL certification now exists before any in-memory bridge registration.
+    status, certification_id = certification_state("NFL", registered=False)
+    assert status == CERTIFIED
+    assert certification_id == CERTIFIED_TEAM_EVENT_SPORTS["NFL"]
+
     _register("NFL")
     health = team_event_bridge_health()
 
     assert health["NFL"]["registered_capability"] is True
     assert health["NFL"]["status"] == "UP"
-    # UP is capability. Certification is withheld until its own evidence exists.
-    assert health["NFL"]["certification_status"] == CANDIDATE_REGISTERED_UNCERTIFIED
-    assert health["NFL"]["certification_id"] is None
-    assert "NFL" not in CERTIFIED_TEAM_EVENT_SPORTS
+    assert health["NFL"]["certification_status"] == CERTIFIED
+    assert health["NFL"]["certification_id"] == CERTIFIED_TEAM_EVENT_SPORTS["NFL"]
     assert health["NFL"]["can_execute"] is False
 
 
@@ -134,19 +138,18 @@ def test_cd_001_an_unregistered_sport_is_not_certified_and_not_a_candidate():
 
 
 def test_cd_002_certification_is_driven_only_by_the_governed_catalog(monkeypatch):
-    # Certification arrives through the repository's certification catalog, not
-    # by a bridge asserting it. Once the catalog carries NFL, health reports it
-    # with its certification id; nothing about the bridge itself changed.
-    assert certification_state("NFL", registered=True)[0] == CANDIDATE_REGISTERED_UNCERTIFIED
-    monkeypatch.setitem(CERTIFIED_TEAM_EVENT_SPORTS, "NFL", "NFL_OUTRIGHT_WIN_EXPERT")
-    status, certification_id = certification_state("NFL", registered=True)
+    # Use NHL to prove registration cannot self-certify. Only the governed
+    # catalog transition changes certification status.
+    assert certification_state("NHL", registered=True)[0] == CANDIDATE_REGISTERED_UNCERTIFIED
+    monkeypatch.setitem(CERTIFIED_TEAM_EVENT_SPORTS, "NHL", "NHL_OUTRIGHT_WIN_EXPERT")
+    status, certification_id = certification_state("NHL", registered=True)
     assert status == CERTIFIED
-    assert certification_id == "NFL_OUTRIGHT_WIN_EXPERT"
+    assert certification_id == "NHL_OUTRIGHT_WIN_EXPERT"
 
-    _register("NFL")
+    _register("NHL")
     health = team_event_bridge_health()
-    assert health["NFL"]["certification_status"] == CERTIFIED
-    assert health["NFL"]["certification_id"] == "NFL_OUTRIGHT_WIN_EXPERT"
+    assert health["NHL"]["certification_status"] == CERTIFIED
+    assert health["NHL"]["certification_id"] == "NHL_OUTRIGHT_WIN_EXPERT"
 
 
 def test_a_registered_bridge_can_never_self_promote_into_the_certified_set():

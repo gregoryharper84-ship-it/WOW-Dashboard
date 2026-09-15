@@ -1,8 +1,8 @@
 """Machine-readable V17 team/event certified model coverage.
 
 This manifest describes intended cross-sport team/event coverage and the exact
-minimum input families each future bridge must own.  It does not create model
-capability.  A sport becomes production-capable only when an exact specialist
+minimum input families each future bridge must own. It does not create model
+capability. A sport becomes production-capable only when an exact specialist
 artifact, governed evidence contract, numerical verification, calibration/bounds
 path, and runtime bridge registration are all active.
 """
@@ -13,8 +13,9 @@ from dataclasses import dataclass
 CAN_EXECUTE = False
 
 MLB_GAME_WIN_PROBABILITY_EXPERT = "MLB_GAME_WIN_PROBABILITY_EXPERT"
+NFL_GAME_WIN_PROBABILITY_EXPERT = "wow.nfl-game-win-probability-expert"
 
-# The catalog is intentionally broader than the production bridge registry.  A
+# The catalog is intentionally broader than the production bridge registry. A
 # catalog entry means LLP knows the sport/contract shape; it does NOT mean the
 # governed backend can score that sport today.
 EXPECTED_TEAM_EVENT_SPORTS = (
@@ -36,7 +37,7 @@ EXPECTED_TEAM_EVENT_SPORTS = (
     "BOXING",
 )
 
-# Minimum bridge-owned inputs.  Universal identity/status/settlement checks still
+# Minimum bridge-owned inputs. Universal identity/status/settlement checks still
 # apply in addition to these sport-specific families.
 TEAM_EVENT_INPUT_CONTRACTS: dict[str, tuple[str, ...]] = {
     "MLB": (
@@ -162,9 +163,13 @@ TEAM_EVENT_INPUT_CONTRACTS: dict[str, tuple[str, ...]] = {
     ),
 }
 
-# Certification is deliberately narrower than discovery/catalog support.
+# Certification is deliberately narrower than discovery/catalog support. This
+# map mirrors routes whose fitted artifact + calibration path have been
+# independently verified; adding a route here never substitutes for those
+# backend checks.
 CERTIFIED_TEAM_EVENT_SPORTS: dict[str, str] = {
     "MLB": MLB_GAME_WIN_PROBABILITY_EXPERT,
+    "NFL": NFL_GAME_WIN_PROBABILITY_EXPERT,
 }
 
 KNOWN_UNCERTIFIED_TEAM_EVENT_SPORTS = frozenset(
@@ -260,6 +265,7 @@ __all__ = [
     "EXPECTED_TEAM_EVENT_SPORTS",
     "KNOWN_UNCERTIFIED_TEAM_EVENT_SPORTS",
     "MLB_GAME_WIN_PROBABILITY_EXPERT",
+    "NFL_GAME_WIN_PROBABILITY_EXPERT",
     "TEAM_EVENT_INPUT_CONTRACTS",
     "TeamEventCapability",
     "normalize_team_event_identity",

@@ -14,11 +14,13 @@ from fastapi import FastAPI
 
 from github_actions_oidc import scout_route_auth_dependency
 from nhl_candidate_pipeline import NHLCandidateError, build_candidate
+from v17.cross_sport_certification_inventory import CertificationEvidence, assess
 from v17.d1_bulk_candidate_registry import persist_candidate_package_bulk
 from v17.d1_candidate_registry import D1RegistryError
 
 CAN_EXECUTE = False
 PROBABILITY_PUBLISHABLE = False
+CONTROLLING_SPECIALIST = "wow.nhl-game-win-probability-expert"
 
 
 def default_start_years(now: datetime | None = None) -> tuple[int, ...]:
@@ -53,6 +55,42 @@ def _attach_training_outcomes(package: dict[str, Any]) -> None:
         if event_id not in outcomes:
             raise D1RegistryError("NHL_TRAINING_OUTCOME_NOT_RECONCILED", event_id)
         row["positive_outcome"] = outcomes[event_id]
+
+
+def _certification_assessment(candidate: dict[str, Any]) -> dict[str, Any]:
+    source_review_status = str(candidate.get("source_review_status") or "REQUIRED").upper()
+    metrics = candidate.get("validation_metrics") or {}
+    calibration_rows = int(candidate.get("calibration_rows") or 0)
+    test_rows = int(candidate.get("test_rows") or 0)
+    assessment = assess(CertificationEvidence(
+        sport="NHL",
+        surface="TEAM_EVENT",
+        controlling_specialist_ready=True,
+        fitted_model_present=bool(candidate.get("model_artifact_version")),
+        exact_certified_artifact_ready=False,
+        calibrator_ready=bool(candidate.get("calibrator_payload")) and calibration_rows >= 50,
+        candidate_ready=bool(candidate.get("research_screen_pass")),
+        deterministic_replay_ready=False,
+        # Maintenance consumes the five most recently completed seasons. This
+        # means candidate training data are current enough for model development,
+        # but it does not satisfy source/prospective review by itself.
+        data_current=test_rows >= 50,
+        model_build_exists=True,
+        source_provenance_ready=source_review_status == "PASS",
+        notes=(
+            f"source_review_status={source_review_status}",
+            f"research_screen_pass={bool(candidate.get('research_screen_pass'))}",
+            f"calibration_rows={calibration_rows}",
+            f"test_rows={test_rows}",
+            f"ece={metrics.get('ece')}",
+        ),
+    ))
+    return {
+        "status": assessment.status,
+        "blockers": list(assessment.blockers),
+        "numerical_authority": assessment.numerical_authority,
+        "can_execute": False,
+    }
 
 
 def run_nhl_model_maintenance(
@@ -98,6 +136,7 @@ def run_nhl_model_maintenance(
         )
 
     candidate = package.get("candidate") or {}
+    certification = _certification_assessment(candidate)
     return {
         "status": "CANDIDATE_EVIDENCE_UPDATED",
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -109,6 +148,10 @@ def run_nhl_model_maintenance(
         "model_artifact_version": candidate.get("model_artifact_version"),
         "research_screen_pass": bool(candidate.get("research_screen_pass")),
         "source_review_status": candidate.get("source_review_status"),
+        "controlling_specialist": CONTROLLING_SPECIALIST,
+        "certification_status": certification["status"],
+        "certification_blockers": certification["blockers"],
+        "numerical_authority": certification["numerical_authority"],
         "persistence": persisted,
         "automatic_certification": False,
         "automatic_promotion": False,
@@ -138,6 +181,7 @@ def install_nhl_model_maintenance_route(
 
 __all__ = [
     "CAN_EXECUTE",
+    "CONTROLLING_SPECIALIST",
     "default_start_years",
     "install_nhl_model_maintenance_route",
     "run_nhl_model_maintenance",
