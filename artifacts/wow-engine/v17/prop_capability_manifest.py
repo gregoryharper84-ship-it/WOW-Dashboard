@@ -27,7 +27,7 @@ MLB_FIRST_INNING_PITCH_COUNT_EXPERT = "wow.mlb-first-inning-pitch-count-expert"
 MLB_PITCHING_OUTS_EXPERT = "wow.mlb-pitcher-outs-workload-expert"
 MLB_PITCH_COMPOSITION_EXPERT = "wow.mlb-pitcher-pitch-composition-expert"
 MLB_PLATE_APPEARANCES_EXPERT = "wow.mlb-batter-plate-appearances-expert"
-WNBA_PLAYER_PROP_EXPERT = "wow.wnba-player-prop-probability-expert@1"
+WNBA_PLAYER_PROP_EXPERT = "wow.wnba-player-prop-probability-expert"
 
 # Lane classifications. Ordered from most to least production authority.
 CERTIFIED_PRODUCTION = "CERTIFIED_PRODUCTION"
