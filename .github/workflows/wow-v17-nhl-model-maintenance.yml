@@ -1,0 +1,169 @@
+name: wow-v17-nhl-model-maintenance
+
+on:
+  schedule:
+    - cron: "20 14 * * 1"
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/wow-v17-nhl-model-maintenance.yml"
+      - "artifacts/wow-engine/github_actions_oidc.py"
+      - "artifacts/wow-engine/nhl_candidate_pipeline.py"
+      - "artifacts/wow-engine/v17/binary_candidate_lifecycle.py"
+      - "artifacts/wow-engine/v17/model_source_entitlements.py"
+      - "artifacts/wow-engine/v17/d1_candidate_registry.py"
+      - "artifacts/wow-engine/v17/d1_bulk_candidate_registry.py"
+      - "artifacts/wow-engine/v17/nhl_model_maintenance.py"
+      - "artifacts/wow-engine/v17/ncaaf_model_maintenance.py"
+      - "artifacts/wow-engine/v17/capability_build_registry.py"
+      - "artifacts/wow-engine/test_v17_binary_candidate_lifecycle.py"
+      - "artifacts/wow-engine/test_v17_model_source_entitlements.py"
+      - "artifacts/wow-engine/test_v17_d1_candidate_registry.py"
+      - "artifacts/wow-engine/test_v17_nhl_candidate_pipeline.py"
+      - "artifacts/wow-engine/test_v17_nhl_model_maintenance.py"
+      - "artifacts/wow-engine/test_v17_capability_build_registry.py"
+  pull_request:
+    paths:
+      - ".github/workflows/wow-v17-nhl-model-maintenance.yml"
+      - "artifacts/wow-engine/github_actions_oidc.py"
+      - "artifacts/wow-engine/nhl_candidate_pipeline.py"
+      - "artifacts/wow-engine/v17/binary_candidate_lifecycle.py"
+      - "artifacts/wow-engine/v17/model_source_entitlements.py"
+      - "artifacts/wow-engine/v17/d1_candidate_registry.py"
+      - "artifacts/wow-engine/v17/d1_bulk_candidate_registry.py"
+      - "artifacts/wow-engine/v17/nhl_model_maintenance.py"
+      - "artifacts/wow-engine/v17/ncaaf_model_maintenance.py"
+      - "artifacts/wow-engine/v17/capability_build_registry.py"
+      - "artifacts/wow-engine/test_v17_binary_candidate_lifecycle.py"
+      - "artifacts/wow-engine/test_v17_model_source_entitlements.py"
+      - "artifacts/wow-engine/test_v17_d1_candidate_registry.py"
+      - "artifacts/wow-engine/test_v17_nhl_candidate_pipeline.py"
+      - "artifacts/wow-engine/test_v17_nhl_model_maintenance.py"
+      - "artifacts/wow-engine/test_v17_capability_build_registry.py"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wow-v17-nhl-model-maintenance
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Verify NHL candidate maintenance contract
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: artifacts/wow-engine
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: artifacts/wow-engine/requirements.txt
+      - name: Install engine dependencies
+        run: pip install -r requirements.txt
+      - name: Run D1 and NHL model-development regressions
+        run: >-
+          python -m pytest -q
+          test_v17_binary_candidate_lifecycle.py
+          test_v17_model_source_entitlements.py
+          test_v17_d1_candidate_registry.py
+          test_v17_nhl_candidate_pipeline.py
+          test_v17_nhl_model_maintenance.py
+          test_v17_capability_build_registry.py
+          test_v17_github_oidc.py
+
+  maintain:
+    name: Advance NHL research candidate evidence
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      WOW_ACTION_ORIGIN: https://wow-governed-probability-engine.onrender.com
+      WOW_CAN_EXECUTE: "false"
+      WOW_DRY_RUN_ONLY: "true"
+    steps:
+      - name: Assert non-execution governance and OIDC context
+        shell: bash
+        run: |
+          test "$WOW_CAN_EXECUTE" = "false"
+          test "$WOW_DRY_RUN_ONLY" = "true"
+          test -n "$ACTIONS_ID_TOKEN_REQUEST_URL"
+          test -n "$ACTIONS_ID_TOKEN_REQUEST_TOKEN"
+
+      - name: Run governed NHL model maintenance
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import time
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+
+          oidc_url = os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"]
+          separator = "&" if "?" in oidc_url else "?"
+          oidc_url += separator + urllib.parse.urlencode({"audience": "wow-v17-multiscout"})
+          oidc_request = urllib.request.Request(
+              oidc_url,
+              headers={"Authorization": f"Bearer {os.environ['ACTIONS_ID_TOKEN_REQUEST_TOKEN']}"},
+          )
+          with urllib.request.urlopen(oidc_request, timeout=20) as response:
+              oidc_token = json.load(response)["value"]
+
+          endpoint = os.environ["WOW_ACTION_ORIGIN"].rstrip("/") + "/internal/v17/nhl-model-maintenance"
+          payload = None
+          last_error = None
+          # A protected-main push can start this job at the same time Render is
+          # deploying the commit that introduces the endpoint. Retry only
+          # deployment/transient statuses; all other HTTP failures remain hard.
+          for attempt in range(20):
+              request = urllib.request.Request(
+                  endpoint,
+                  data=b"",
+                  method="POST",
+                  headers={
+                      "Authorization": f"Bearer {oidc_token}",
+                      "Content-Type": "application/json",
+                  },
+              )
+              try:
+                  with urllib.request.urlopen(request, timeout=1200) as response:
+                      payload = json.load(response)
+                  break
+              except urllib.error.HTTPError as exc:
+                  last_error = exc
+                  if exc.code not in {404, 502, 503, 504}:
+                      raise
+              except (urllib.error.URLError, TimeoutError) as exc:
+                  last_error = exc
+              if attempt == 19:
+                  raise RuntimeError(f"NHL_MAINTENANCE_ENDPOINT_NOT_READY:{type(last_error).__name__}")
+              time.sleep(20)
+
+          assert isinstance(payload, dict)
+          assert payload.get("can_execute") is False
+          assert payload.get("automatic_certification") is False
+          assert payload.get("automatic_promotion") is False
+          assert payload.get("probability_publishable") is False
+          if payload.get("status") == "CANDIDATE_EVIDENCE_UPDATED":
+              assert payload.get("source_review_status") == "REQUIRED"
+          print(json.dumps({
+              "status": payload.get("status"),
+              "code": payload.get("code"),
+              "source_event_n": payload.get("source_event_n"),
+              "training_feature_n": payload.get("training_feature_n"),
+              "model_artifact_version": payload.get("model_artifact_version"),
+              "source_review_status": payload.get("source_review_status"),
+              "can_execute": False,
+          }, sort_keys=True))
+          PY
