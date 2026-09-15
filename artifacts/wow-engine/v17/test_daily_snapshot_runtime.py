@@ -266,7 +266,7 @@ def test_prop_manifest_pages_through_1000_rows_without_truncation():
 # ---------------------------------------------------------------------------
 
 def _cross_sport_feed(rows_by_sport):
-    def fetch(sport, sport_key):
+    def fetch(sport, sport_key=None, *, target=None, **_kwargs):
         return rows_by_sport.get(sport, [])
 
     return fetch
