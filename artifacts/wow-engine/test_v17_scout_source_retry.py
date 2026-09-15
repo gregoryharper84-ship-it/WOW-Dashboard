@@ -57,7 +57,52 @@ def test_transient_classifier_is_narrow():
     assert oidc._is_transient(scout.FetchResult(False, status=401, code="HTTP_401")) is False
 
 
-def test_vendor_entitlement_401_403_do_not_terminate_remaining_sports(monkeypatch):
+def test_provider_failures_do_not_terminate_remaining_sports(monkeypatch):
     monkeypatch.setattr(scout, "TERMINAL_SOURCE_HTTP_STATUSES", {401, 403, 429})
     oidc.configure_source_failure_scope()
-    assert scout.TERMINAL_SOURCE_HTTP_STATUSES == {429}
+    assert scout.TERMINAL_SOURCE_HTTP_STATUSES == set()
+
+
+def test_exhausted_provider_429_is_typed_blocker_but_scan_continues(monkeypatch):
+    """A provider-local 429 must not truncate independent later sports."""
+    monkeypatch.setattr(scout, "TERMINAL_SOURCE_HTTP_STATUSES", {401, 403, 429})
+    oidc.configure_source_failure_scope()
+
+    sports = [
+        {"key": "baseball_mlb", "title": "MLB", "active": True},
+        {"key": "icehockey_nhl", "title": "NHL", "active": True},
+    ]
+    seen = []
+
+    def fake_proxy(path, params=None):
+        seen.append(path)
+        if path == "/odds-api/v4/sports":
+            return scout.FetchResult(True, sports, 200)
+        if path == "/odds-api/v4/sports/baseball_mlb/events":
+            return scout.FetchResult(True, [{
+                "id": "mlb-1",
+                "commence_time": "2026-09-15T22:40:00Z",
+                "home_team": "Tampa Bay Rays",
+                "away_team": "Athletics",
+            }], 200)
+        if path == "/odds-api/v4/sports/baseball_mlb/events/mlb-1/markets":
+            return scout.FetchResult(False, status=429, code="ODDS_PROVIDER_RATE_LIMITED")
+        if path == "/odds-api/v4/sports/icehockey_nhl/events":
+            return scout.FetchResult(True, [], 200)
+        raise AssertionError(path)
+
+    monkeypatch.setattr(scout, "proxy_get", fake_proxy)
+    payload = scout.run()
+
+    assert payload["status"] == "DISCOVERY_COMPLETE_WITH_SOURCE_BLOCKERS"
+    assert any(
+        row.get("sport") == "baseball_mlb" and row.get("http_status") == 429
+        for row in payload["source_blockers"]
+    )
+    assert "/odds-api/v4/sports/icehockey_nhl/events" in seen
+    scanned_nhl = [
+        row for row in payload["coverage"]
+        if row.get("scope") == "sport" and row.get("sport") == "icehockey_nhl"
+    ]
+    assert scanned_nhl and scanned_nhl[0]["status"] == "SCANNED"
+    assert payload["governance"]["can_execute"] is False
