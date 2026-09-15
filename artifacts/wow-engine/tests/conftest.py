@@ -18,10 +18,12 @@ def _keep_synthetic_discovery_slate_future(request, monkeypatch):
     These suites validate discovery/routing taxonomy, not the historical date
     2026-09-15. Explicit started/final fixtures still provide their own status or
     past timestamp and therefore continue to exercise the real pregame guard.
+    A seven-day offset also stays distinct from the cache-key test's explicit
+    2026-09-16 alternate slate value.
     """
     module = getattr(request, "module", None)
     module_name = str(getattr(module, "__name__", "")).split(".")[-1]
     if module_name not in _TIME_SENSITIVE_DISCOVERY_MODULES or not hasattr(module, "SLATE_DATE"):
         return
-    tomorrow = (datetime.now(timezone.utc) + timedelta(days=1)).date().isoformat()
-    monkeypatch.setattr(module, "SLATE_DATE", tomorrow)
+    future_slate = (datetime.now(timezone.utc) + timedelta(days=7)).date().isoformat()
+    monkeypatch.setattr(module, "SLATE_DATE", future_slate)
