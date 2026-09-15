@@ -1,6 +1,6 @@
 """Targeted V17 runtime repairs for the 2026-09-15 team/event regression.
 
-This module fixes three composition/ingress defects without changing fitted model
+This module fixes four composition/ingress defects without changing fitted model
 weights, calibration, ranking semantics, terminal authority, or execution safety:
 
 1. TheRundown Product V2 authentication uses the provider-documented
@@ -9,14 +9,17 @@ weights, calibration, ranking semantics, terminal authority, or execution safety
    ingress so malformed market evidence cannot turn a sporting-model attempt into
    a scorer exception. Invalid market context is omitted from the fitted scorer;
    the separate market handoff retains its own typed DATA_UNOBTAINABLE semantics.
-3. The direct MLB bridge may discover that official lineups are not yet available
+3. MLB discovery-provider ids are resolved to the unique server-owned canonical
+   MLB event identity before the direct bridge performs its exact snapshot lookup.
+   No provider id is relabeled as canonical without a participant/start/slate match.
+4. The direct MLB bridge may discover that official lineups are not yet available
    even though a ratified immutable ``SHADOW_SCORED_LINEUP_PENDING`` fitted score
    already exists. In that exact case only, recover the canonical held bridge
    receipt and rehydrate the immutable score before LLP governance. Final ranking
    remains held until the official-lineup refresh.
 
-Boston/Texas-style canonical hydration failures are deliberately untouched.
-``can_execute`` remains false throughout.
+Every unresolved or ambiguous identity still fails closed. ``can_execute`` remains
+false throughout.
 """
 from __future__ import annotations
 
@@ -204,7 +207,7 @@ def _load_projected_bridge_receipt(req: Any, *, event_api: Any) -> dict[str, Any
 
 
 def install_post_mlb_bridge_repairs(*, market_api: Any, team_runtime: Any) -> bool:
-    """Compose projected-score preservation *after* the direct bridge is installed."""
+    """Compose identity and projected-score repairs after the direct bridge."""
     if getattr(market_api, "_v17_sep15_mlb_contract_repairs_installed", False):
         return True
     event_api = getattr(getattr(market_api, "prod", None), "event_api", None)
@@ -212,10 +215,28 @@ def install_post_mlb_bridge_repairs(*, market_api: Any, team_runtime: Any) -> bo
         return False
     original_score_event = getattr(event_api, "score_event", None)
     original_governance = getattr(team_runtime, "_run_mlb_llp_governance", None)
-    if not callable(original_score_event) or not callable(original_governance):
+    original_canonicalize = getattr(team_runtime, "_canonicalize_public_mlb_request", None)
+    if not all(callable(value) for value in (original_score_event, original_governance, original_canonicalize)):
         return False
 
+    from v17.mlb_team_event_hydration import resolve_mlb_team_event_evidence
     from v17.projected_lineup_probability_rehydration import rehydrate_projected_probability
+
+    def canonicalize_provider_identity(req: Any, event_api_arg: Any) -> Any:
+        """Rewrite a provider id only after the server ledger proves one MLB id."""
+        resolution = resolve_mlb_team_event_evidence(req, event_api=event_api_arg)
+        canonical_id = (
+            str(resolution.get("canonical_official_event_id") or "").strip()
+            if resolution.get("ok") is True
+            else ""
+        )
+        supplied_id = str(getattr(req, "official_event_id", "") or "").strip()
+        if canonical_id and canonical_id != supplied_id:
+            model_copy = getattr(req, "model_copy", None)
+            if not callable(model_copy):
+                return original_canonicalize(req, event_api_arg)
+            req = model_copy(update={"official_event_id": canonical_id})
+        return original_canonicalize(req, event_api_arg)
 
     def score_event_with_projected_lineup(req: Any) -> dict[str, Any]:
         try:
@@ -267,8 +288,10 @@ def install_post_mlb_bridge_repairs(*, market_api: Any, team_runtime: Any) -> bo
             event_api=event_api,
         )
 
+    team_runtime._canonicalize_public_mlb_request = canonicalize_provider_identity
     event_api.score_event = score_event_with_projected_lineup
     team_runtime._run_mlb_llp_governance = governance_with_projected_rehydration
+    team_runtime._v17_sep15_provider_identity_repair_installed = True
     team_runtime._v17_sep15_projected_lineup_composition_repair_installed = True
     market_api._v17_sep15_mlb_contract_repairs_installed = True
     return True
