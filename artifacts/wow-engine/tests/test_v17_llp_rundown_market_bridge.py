@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from v17 import llp_rundown_market_bridge as bridge
+from v17 import market_evidence_native_live as live
 from v17 import market_evidence_sources as sources
 
 
@@ -62,8 +63,8 @@ def _env(monkeypatch):
 
 def test_resolve_builds_cross_book_no_vig_context(monkeypatch):
     monkeypatch.setattr(
-        sources,
-        "rundown_market_evidence",
+        live,
+        "get_sport_date_odds_snapshot",
         lambda *a, **k: sources.MarketEvidenceResult(
             True, "RUNDOWN", "events", data=[_event()], code="MARKET_EVIDENCE_FETCH_OK"
         ),
@@ -225,8 +226,8 @@ def test_winner_intent_preserves_rank_on_market_role_disagreement(monkeypatch):
 
 def test_three_way_market_is_not_collapsed_into_binary_prior(monkeypatch):
     monkeypatch.setattr(
-        sources,
-        "rundown_market_evidence",
+        live,
+        "get_sport_date_odds_snapshot",
         lambda *a, **k: sources.MarketEvidenceResult(
             True, "RUNDOWN", "events", data=[_event(draw=True)], code="MARKET_EVIDENCE_FETCH_OK"
         ),
