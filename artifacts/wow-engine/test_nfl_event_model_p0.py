@@ -16,6 +16,7 @@ from nfl_event_model_contract import (
     validate_candidate_identity,
     validate_feature_packet,
 )
+from nfl_event_features_p2 import FEATURE_SCHEMA_VERSION as P2_FEATURE_SCHEMA_VERSION
 
 
 def _model_env(payload: dict) -> WorkerJobEnvelope:
@@ -38,7 +39,8 @@ def test_nfl_p0_identity_is_specific_and_non_executable():
     assert PROVIDER_IDENTITY == "WOW_NFL_EVENT_FITTED_MODEL_V1"
     assert CONTROLLING_SPECIALIST == "wow.nfl-game-win-probability-expert"
     assert CAPABILITY_KEY == "NFL_EVENT_PROBABILITY"
-    assert FEATURE_SCHEMA_VERSION == "NFL_EVENT_FEATURES_V1"
+    assert FEATURE_SCHEMA_VERSION == "NFL_EVENT_PREGAME_PRIOR_V1"
+    assert FEATURE_SCHEMA_VERSION == P2_FEATURE_SCHEMA_VERSION
 
 
 def test_nfl_candidate_identity_contract_accepts_only_full_game_moneyline():
@@ -106,7 +108,7 @@ def test_existing_controlling_model_runner_does_not_fallback_for_nfl():
     assert out.can_execute is False
 
 
-def test_p0_migration_seeds_no_fake_artifact_and_registers_unavailable_capability():
+def test_p0_migration_is_historical_seed_not_current_schema_authority():
     sql = (Path(__file__).parent / "migrations" / "20260901_nfl_event_model_p0.sql").read_text()
     normalized = " ".join(sql.split())
     assert "WOW_NFL_EVENT_FITTED_MODEL_V1" in sql
@@ -114,5 +116,7 @@ def test_p0_migration_seeds_no_fake_artifact_and_registers_unavailable_capabilit
     assert "NFL_EVENT_PROBABILITY" in sql
     assert "'UNAVAILABLE'" in sql
     assert "terminal_label_if_scored_now', 'MODEL_UNAVAILABLE'" in normalized
+    # Historical P0 intentionally predates the P2 production feature schema.
+    assert "NFL_EVENT_FEATURES_V1" in sql
     # P0 creates the registry but never inserts a model artifact row.
     assert "insert into public.wow_nfl_event_fitted_model_artifacts" not in sql.lower()
