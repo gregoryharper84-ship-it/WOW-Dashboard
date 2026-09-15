@@ -113,18 +113,13 @@ def _identity_join_rows(req: Any, *, client: Any, now: datetime) -> dict[str, An
     requested_start = _aware(getattr(req, "event_start_time_utc", None))
     requested_slate_date = str(getattr(req, "requested_slate_date", "") or "").strip()
     if requested_start is None or not requested_slate_date:
+        # Keep the pre-existing no-canonical-row contract when the caller does not
+        # provide enough bounded identity to attempt a provider-id join. This lets
+        # legacy caller-evidence fallback retain its exact blocker semantics.
         return {
             "ok": False,
-            "code": "MLB_TEAM_EVENT_CANONICAL_IDENTITY_UNRESOLVED",
-            "identity_mismatches": [
-                name
-                for name, value in (
-                    ("event_start_time_utc", requested_start),
-                    ("requested_slate_date", requested_slate_date),
-                )
-                if not value
-            ],
-            "missing_fields": [],
+            "code": "MLB_TEAM_EVENT_CANONICAL_SNAPSHOT_UNAVAILABLE",
+            "missing_fields": list(_REQUIRED_CANONICAL_FIELDS),
         }
 
     try:
