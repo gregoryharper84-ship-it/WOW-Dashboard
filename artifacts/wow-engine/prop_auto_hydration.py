@@ -12,6 +12,10 @@ import time
 
 import httpx
 
+from mlb_pitcher_k_risk_guard import (
+    ROLE_INCOMPATIBLE,
+    build_recent_role_profile,
+)
 from prop_auto_hydration_workload import WORKLOAD_STATS, hydrate_mlb_workload_evidence
 from prop_hydration_resilience import (
     fetch_cross_season_pitching_splits,
@@ -215,13 +219,24 @@ def _game_log(
     season: int,
     event_start: datetime,
     http_get: Callable[..., Any],
-) -> tuple[list[float], list[dict[str, Any]]]:
+) -> tuple[list[float], list[dict[str, Any]], dict[str, Any]]:
     season_splits, seasons_queried = fetch_cross_season_pitching_splits(
         player_id,
         event_start=event_start,
         request_json=_request_json,
         http_get=http_get,
         mlb_stats_api_base=MLB_STATS_API_BASE,
+    )
+
+    # Current-role compatibility must look at all recent pitching appearances,
+    # not only starts. This closes the opener/reliever blind spot where an
+    # official probable-pitcher listing could previously cause old full starts
+    # to be scored as if they represented tonight's workload.
+    recent_role_profile = build_recent_role_profile(
+        season_splits,
+        event_start=event_start,
+        outs_from_ip=_outs_from_ip,
+        int_value=_int,
     )
 
     parsed: list[tuple[str, dict[str, Any]]] = []
@@ -270,7 +285,7 @@ def _game_log(
                 "seasons_queried": seasons_queried,
             },
         )
-    return [float(row["so"]) for row in recent], recent
+    return [float(row["so"]) for row in recent], recent, recent_role_profile
 
 
 def _pitcher_throwing_hand(player_id: int, *, http_get: Callable[..., Any]) -> str | None:
@@ -464,12 +479,24 @@ def auto_hydrate_prop_evidence(
         http_get=http_get,
     )
     schedule = _schedule_context(player_id, event_start=event_start, http_get=http_get)
-    game_log, box_score_log = _game_log(
+    game_log, box_score_log, recent_role_profile = _game_log(
         player_id,
         season=event_start.year,
         event_start=event_start,
         http_get=http_get,
     )
+    if recent_role_profile.get("status") == ROLE_INCOMPATIBLE:
+        raise PropAutoHydrationError(
+            "MLB_STARTER_ROLE_WORKLOAD_MISMATCH",
+            "recent official usage is incompatible with the starter-only pitcher strikeout model",
+            detail={
+                "player_id": player_id,
+                "official_name": official_name,
+                "schedule_starter_status": schedule.get("starter_status"),
+                "recent_role_profile": recent_role_profile,
+                "required_action": "use a certified opener/bulk-role model or hold as MODEL_INPUTS_INSUFFICIENT",
+            },
+        )
     opponent_context, opponent_context_status = _hydrate_opponent_context(
         pitcher_id=player_id,
         schedule=schedule,
@@ -500,14 +527,15 @@ def auto_hydrate_prop_evidence(
         "role_status": {
             "status": schedule["starter_status"],
             "role": "STARTING_PITCHER",
-            "confirmation_strength": "OFFICIAL_PROBABLE_PITCHER",
+            "confirmation_strength": "OFFICIAL_PROBABLE_PITCHER_PLUS_RECENT_USAGE_CHECK",
             "team": schedule["team"],
             "opponent": schedule["opponent"],
             "venue": schedule["venue"],
             "official_game_pk": schedule["official_game_pk"],
             "official_game_date": schedule["official_game_date"],
             "schedule_status": schedule["schedule_status"],
-            "source": "MLB StatsAPI official schedule/probablePitcher",
+            "recent_role_profile": recent_role_profile,
+            "source": "MLB StatsAPI official schedule/probablePitcher + all-recent-appearance role audit",
         },
         "role_timestamp": timestamp,
         "opportunity_ledger": {
@@ -515,14 +543,15 @@ def auto_hydrate_prop_evidence(
             "game_log_stat": "pitcher strikeouts",
             "box_score_alignment": "1:1",
             "regular_season_prior_starts": len(box_score_log),
-            "starter_confirmation": "OFFICIAL_PROBABLE_PITCHER",
+            "starter_confirmation": "OFFICIAL_PROBABLE_PITCHER_PLUS_RECENT_USAGE_CHECK",
+            "recent_role_status": recent_role_profile.get("status"),
             "model_opponent_context": opponent_context_status,
             "history_seasons_used": selected_seasons,
             "history_selection": "MOST_RECENT_OFFICIAL_STARTS_NO_IMPUTATION",
         },
         "source_timestamps": source_timestamps,
         "evidence_version": AUTO_HYDRATION_EVIDENCE_VERSION,
-        "rate_provenance": "MLB StatsAPI official pitching gameLog; bounded cross-season L10 by recency; outs derived from inningsPitched; no history imputed",
+        "rate_provenance": "MLB StatsAPI official pitching gameLog; bounded cross-season L10 starts by recency; all recent appearances audited separately for role/workload compatibility; outs derived from inningsPitched; no history imputed",
     }
     if opponent_context is not None:
         payload["opponent_context"] = opponent_context
