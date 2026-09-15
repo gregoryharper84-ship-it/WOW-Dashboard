@@ -1,0 +1,168 @@
+name: wow-v17-prop-rerun-20260915
+
+on:
+  push:
+    branches:
+      - chatgpt/v17-prop-rerun-20260915
+    paths:
+      - ".github/workflows/wow-v17-prop-rerun-20260915.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  rerun:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      WOW_ACTION_API_KEY: ${{ secrets.WOW_ACTION_API_KEY }}
+      WOW_CAN_EXECUTE: "false"
+      WOW_DRY_RUN_ONLY: "true"
+      WOW_ENDPOINT: "https://wow-governed-probability-engine.onrender.com/score-pick-request"
+    steps:
+      - name: Assert dry-run governance and credential
+        shell: bash
+        run: |
+          test "$WOW_CAN_EXECUTE" = "false"
+          test "$WOW_DRY_RUN_ONLY" = "true"
+          test -n "$WOW_ACTION_API_KEY"
+
+      - name: Rerun 31 strikeout and 29 1IP lines
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import re
+          import time
+          import unicodedata
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+
+          endpoint = os.environ["WOW_ENDPOINT"]
+          api_key = os.environ["WOW_ACTION_API_KEY"]
+          rows = json.loads(r'''[{"row_key": "K-01", "player": "Foster Griffin", "team": "CLE", "opponent": "CWS", "stat_type": "PITCHER_STRIKEOUTS", "line": 5.0, "direction": "MORE", "source_capture_timestamp": "2026-09-15T18:28:51Z"}, {"row_key": "K-02", "player": "Davis Martin", "team": "CWS", "opponent": "CLE", "stat_type": "PITCHER_STRIKEOUTS", "line": 2.5, "direction": "MORE", "source_capture_timestamp": "2026-09-15T18:28:51Z"}, {"row_key": "K-03", "player": "Chris Murphy", "team": "CWS", "opponent": "CLE", "stat_type": "PITCHER_STRIKEOUTS", "line": 0.5, "direction": "MORE", "source_capture_timestamp": "2026-09-15T18:28:51Z"}, {"row_key": "K-04", "player": "Yoshinobu Yamamoto", "team": "LAD", "opponent": "CIN", "stat_type": "PITCHER_STRIKEOUTS", "line": 7.5, "direction": "MORE", "source_capture_timestamp": "2026-09-15T18:28:51Z"}, {"row_key": "K-05", "player": "Rhett Lowder", "team": "CIN", "opponent": "LAD", "stat_type": "PITCHER_STRIKEOUTS", "line": 3.5, "direction": "MORE", "source_capture_timestamp": "2026-09-15T18:28:51Z"}, {"row_key": "K-06", "player": "Griffin Jax", "team": "TB", "opponent": "ATH", "stat_type": "PITCHER_STRIKEOUTS", "line": 5.0, "direction": "MORE", "source_capture_timestamp": "2026-09-15T18:28:51Z"}, {"row_key": "K-07", "player": "Jack Perkins", "team": "ATH", "opponent": "TB", "stat_type": "PITCHER_STRIKEOUTS", "line": 4.0, "direction": "MORE", "source_capture_timestamp": "2026-09-15T18:28:51Z"}, {"row_key": "K-08", "player": "Jacob Misiorowski", "team": "MIL", "opponent": "PIT", "stat_type": "PITCHER_STRIKEOUTS", "line": 5.5, "direction": "MORE", "source_capture_timestamp": "2026-09-15T18:28:51Z"}, {"row_key": "K-09", "player": "Lake Bachar", "team": "PIT", "opponent": "MIL", "stat_type": "PITCHER_STRIKEOUTS", "line": 1.5, "direction": "MORE", "source_capture_timestamp": "2026-09-15T18:28:51Z"}, {"row_key": "K-10", "player": "Cristopher Sánchez", "team": "PHI", "opponent": "WSH", "stat_type": "PITCHER_STRIKEOUTS", "line": 6.5, "direction": "MORE", "source_capture_timestamp": "2026-09-15T18:28:51Z"}, {"row_key": "K-11", "player": "Jackson Kent", "team": "WSH", "opponent": "PHI", "stat_type": "PITCHER_STRIKEOUTS", "line": 3.5, "direction": "MORE", "source_capture_timestamp": "2026-09-15T18:28:51Z"}, {"row_key": "K-12", "player": "Drew Anderson", "team": "DET", "opponent": "TOR", "stat_type": "PITCHER_STRIKEOUTS", "line": 4.0, "direction": "MORE", "source_capture_timestamp": "2026-09-15T18:28:51Z"}, {"row_key": "K-13", "player": "Braydon Fisher", "team": "TOR", "opponent": "DET", "stat_type": "PITCHER_STRIKEOUTS", "line": 0.5, "direction": "MORE", "source_capture_timestamp": "2026-09-15T18:28:51Z"}, {"row_key": "K-14", "player": "Sean Manaea", "team": "NYM", "opponent": "BAL", "stat_type": "PITCHER_STRIKEOUTS", "line": 6.0, "direction": "MORE", "source_capture_timestamp": "2026-09-15T18:28:51Z"}, {"row_key": "K-15", "player": "Shane Baz", "team": "BAL", "opponent": "NYM", "stat_type": "PITCHER_STRIKEOUTS", "line": 4.5, "direction": "MORE", "source_capture_timestamp": "2026-09-15T18:28:51Z"}, {"row_key": "K-16", "player": "Kevin Gausman", "team": "CHC", "opponent": "ATL", "stat_type": "PITCHER_STRIKEOUTS", "line": 5.5, "direction": "MORE", "source_capture_timestamp": "2026-09-15T18:28:51Z"}, {"row_key": "K-17", "player": "Martín Pérez", "team": "ATL", "opponent": "CHC", "stat_type": "PITCHER_STRIKEOUTS", "line": 2.5, "direction": "MORE", "source_capture_timestamp": "2026-09-15T18:28:51Z"}, {"row_key": "K-18", "player": "Max Fried", "team": "NYY", "opponent": "MIN", "stat_type": "PITCHER_STRIKEOUTS", "line": 2.5, "direction": "MORE", "source_capture_timestamp": "2026-09-15T18:28:51Z"}, {"row_key": "K-19", "player": "Bailey Ober", "team": "MIN", "opponent": "NYY", "stat_type": "PITCHER_STRIKEOUTS", "line": 4.0, "direction": "MORE", "source_capture_timestamp": "2026-09-15T18:28:51Z"}, {"row_key": "K-20", "player": "Andre Pallante", "team": "STL", "opponent": "SF", "stat_type": "PITCHER_STRIKEOUTS", "line": 3.5, "direction": "MORE", "source_capture_timestamp": "2026-09-15T18:28:51Z"}, {"row_key": "K-21", "player": "Blade Tidwell", "team": "SF", "opponent": "STL", "stat_type": "PITCHER_STRIKEOUTS", "line": 3.5, "direction": "MORE", "source_capture_timestamp": "2026-09-15T18:28:51Z"}, {"row_key": "K-22", "player": "Jacob deGrom", "team": "TEX", "opponent": "BOS", "stat_type": "PITCHER_STRIKEOUTS", "line": 6.5, "direction": "MORE", "source_capture_timestamp": "2026-09-15T18:28:51Z"}, {"row_key": "K-23", "player": "Patrick Sandoval", "team": "BOS", "opponent": "TEX", "stat_type": "PITCHER_STRIKEOUTS", "line": 5.0, "direction": "MORE", "source_capture_timestamp": "2026-09-15T18:28:51Z"}, {"row_key": "K-24", "player": "Hunter Brown", "team": "HOU", "opponent": "KC", "stat_type": "PITCHER_STRIKEOUTS", "line": 5.5, "direction": "MORE", "source_capture_timestamp": "2026-09-15T18:28:51Z"}, {"row_key": "K-25", "player": "Michael Wacha", "team": "KC", "opponent": "HOU", "stat_type": "PITCHER_STRIKEOUTS", "line": 4.5, "direction": "MORE", "source_capture_timestamp": "2026-09-15T18:28:51Z"}, {"row_key": "K-26", "player": "Walker Buehler", "team": "SD", "opponent": "COL", "stat_type": "PITCHER_STRIKEOUTS", "line": 3.5, "direction": "MORE", "source_capture_timestamp": "2026-09-15T18:28:51Z"}, {"row_key": "K-27", "player": "Kyle Freeland", "team": "COL", "opponent": "SD", "stat_type": "PITCHER_STRIKEOUTS", "line": 2.5, "direction": "MORE", "source_capture_timestamp": "2026-09-15T18:28:51Z"}, {"row_key": "K-28", "player": "Logan Gilbert", "team": "SEA", "opponent": "LAA", "stat_type": "PITCHER_STRIKEOUTS", "line": 5.5, "direction": "MORE", "source_capture_timestamp": "2026-09-15T18:28:51Z"}, {"row_key": "K-29", "player": "Ryan Johnson", "team": "LAA", "opponent": "SEA", "stat_type": "PITCHER_STRIKEOUTS", "line": 4.0, "direction": "MORE", "source_capture_timestamp": "2026-09-15T18:28:51Z"}, {"row_key": "K-30", "player": "Michael Soroka", "team": "AZ", "opponent": "MIA", "stat_type": "PITCHER_STRIKEOUTS", "line": 4.0, "direction": "MORE", "source_capture_timestamp": "2026-09-15T18:28:51Z"}, {"row_key": "K-31", "player": "Janson Junk", "team": "MIA", "opponent": "AZ", "stat_type": "PITCHER_STRIKEOUTS", "line": 2.5, "direction": "MORE", "source_capture_timestamp": "2026-09-15T18:28:51Z"}, {"row_key": "1IP-01", "player": "Foster Griffin", "team": "CLE", "opponent": "CWS", "stat_type": "1ST_INNING_PITCHES_THROWN", "line": 15.5, "direction": "MORE", "source_capture_timestamp": "2026-09-15T18:30:28Z"}, {"row_key": "1IP-02", "player": "Rhett Lowder", "team": "CIN", "opponent": "LAD", "stat_type": "1ST_INNING_PITCHES_THROWN", "line": 15.5, "direction": "MORE", "source_capture_timestamp": "2026-09-15T18:30:28Z"}, {"row_key": "1IP-03", "player": "Yoshinobu Yamamoto", "team": "LAD", "opponent": "CIN", "stat_type": "1ST_INNING_PITCHES_THROWN", "line": 14.5, "direction": "MORE", "source_capture_timestamp": "2026-09-15T18:30:28Z"}, {"row_key": "1IP-04", "player": "Jack Perkins", "team": "ATH", "opponent": "TB", "stat_type": "1ST_INNING_PITCHES_THROWN", "line": 16.5, "direction": "MORE", "source_capture_timestamp": "2026-09-15T18:30:28Z"}, {"row_key": "1IP-05", "player": "Griffin Jax", "team": "TB", "opponent": "ATH", "stat_type": "1ST_INNING_PITCHES_THROWN", "line": 14.5, "direction": "MORE", "source_capture_timestamp": "2026-09-15T18:30:28Z"}, {"row_key": "1IP-06", "player": "Lake Bachar", "team": "PIT", "opponent": "MIL", "stat_type": "1ST_INNING_PITCHES_THROWN", "line": 16.5, "direction": "MORE", "source_capture_timestamp": "2026-09-15T18:30:28Z"}, {"row_key": "1IP-07", "player": "Jacob Misiorowski", "team": "MIL", "opponent": "PIT", "stat_type": "1ST_INNING_PITCHES_THROWN", "line": 14.5, "direction": "MORE", "source_capture_timestamp": "2026-09-15T18:30:28Z"}, {"row_key": "1IP-08", "player": "Jackson Kent", "team": "WSH", "opponent": "PHI", "stat_type": "1ST_INNING_PITCHES_THROWN", "line": 15.5, "direction": "MORE", "source_capture_timestamp": "2026-09-15T18:30:28Z"}, {"row_key": "1IP-09", "player": "Cristopher Sánchez", "team": "PHI", "opponent": "WSH", "stat_type": "1ST_INNING_PITCHES_THROWN", "line": 14.5, "direction": "MORE", "source_capture_timestamp": "2026-09-15T18:30:28Z"}, {"row_key": "1IP-10", "player": "Braydon Fisher", "team": "TOR", "opponent": "DET", "stat_type": "1ST_INNING_PITCHES_THROWN", "line": 16.5, "direction": "MORE", "source_capture_timestamp": "2026-09-15T18:30:28Z"}, {"row_key": "1IP-11", "player": "Drew Anderson", "team": "DET", "opponent": "TOR", "stat_type": "1ST_INNING_PITCHES_THROWN", "line": 15.5, "direction": "MORE", "source_capture_timestamp": "2026-09-15T18:30:28Z"}, {"row_key": "1IP-12", "player": "Shane Baz", "team": "BAL", "opponent": "NYM", "stat_type": "1ST_INNING_PITCHES_THROWN", "line": 15.5, "direction": "MORE", "source_capture_timestamp": "2026-09-15T18:30:28Z"}, {"row_key": "1IP-13", "player": "Sean Manaea", "team": "NYM", "opponent": "BAL", "stat_type": "1ST_INNING_PITCHES_THROWN", "line": 15.5, "direction": "MORE", "source_capture_timestamp": "2026-09-15T18:30:28Z"}, {"row_key": "1IP-14", "player": "Martín Pérez", "team": "ATL", "opponent": "CHC", "stat_type": "1ST_INNING_PITCHES_THROWN", "line": 15.5, "direction": "MORE", "source_capture_timestamp": "2026-09-15T18:30:28Z"}, {"row_key": "1IP-15", "player": "Kevin Gausman", "team": "CHC", "opponent": "ATL", "stat_type": "1ST_INNING_PITCHES_THROWN", "line": 15.5, "direction": "MORE", "source_capture_timestamp": "2026-09-15T18:30:28Z"}, {"row_key": "1IP-16", "player": "Bailey Ober", "team": "MIN", "opponent": "NYY", "stat_type": "1ST_INNING_PITCHES_THROWN", "line": 15.5, "direction": "MORE", "source_capture_timestamp": "2026-09-15T18:30:28Z"}, {"row_key": "1IP-17", "player": "Max Fried", "team": "NYY", "opponent": "MIN", "stat_type": "1ST_INNING_PITCHES_THROWN", "line": 14.5, "direction": "MORE", "source_capture_timestamp": "2026-09-15T18:30:28Z"}, {"row_key": "1IP-18", "player": "Blade Tidwell", "team": "SF", "opponent": "STL", "stat_type": "1ST_INNING_PITCHES_THROWN", "line": 15.5, "direction": "MORE", "source_capture_timestamp": "2026-09-15T18:30:28Z"}, {"row_key": "1IP-19", "player": "Andre Pallante", "team": "STL", "opponent": "SF", "stat_type": "1ST_INNING_PITCHES_THROWN", "line": 16.0, "direction": "MORE", "source_capture_timestamp": "2026-09-15T18:30:28Z"}, {"row_key": "1IP-20", "player": "Cody Bradford", "team": "TEX", "opponent": "BOS", "stat_type": "1ST_INNING_PITCHES_THROWN", "line": 15.5, "direction": "MORE", "source_capture_timestamp": "2026-09-15T18:30:28Z"}, {"row_key": "1IP-21", "player": "Patrick Sandoval", "team": "BOS", "opponent": "TEX", "stat_type": "1ST_INNING_PITCHES_THROWN", "line": 15.5, "direction": "MORE", "source_capture_timestamp": "2026-09-15T18:30:28Z"}, {"row_key": "1IP-22", "player": "Michael Wacha", "team": "KC", "opponent": "HOU", "stat_type": "1ST_INNING_PITCHES_THROWN", "line": 14.5, "direction": "MORE", "source_capture_timestamp": "2026-09-15T18:30:28Z"}, {"row_key": "1IP-23", "player": "Hunter Brown", "team": "HOU", "opponent": "KC", "stat_type": "1ST_INNING_PITCHES_THROWN", "line": 15.0, "direction": "MORE", "source_capture_timestamp": "2026-09-15T18:30:28Z"}, {"row_key": "1IP-24", "player": "Kyle Freeland", "team": "COL", "opponent": "SD", "stat_type": "1ST_INNING_PITCHES_THROWN", "line": 15.5, "direction": "MORE", "source_capture_timestamp": "2026-09-15T18:30:28Z"}, {"row_key": "1IP-25", "player": "Walker Buehler", "team": "SD", "opponent": "COL", "stat_type": "1ST_INNING_PITCHES_THROWN", "line": 15.5, "direction": "MORE", "source_capture_timestamp": "2026-09-15T18:30:28Z"}, {"row_key": "1IP-26", "player": "Ryan Johnson", "team": "LAA", "opponent": "SEA", "stat_type": "1ST_INNING_PITCHES_THROWN", "line": 15.5, "direction": "MORE", "source_capture_timestamp": "2026-09-15T18:30:28Z"}, {"row_key": "1IP-27", "player": "Logan Gilbert", "team": "SEA", "opponent": "LAA", "stat_type": "1ST_INNING_PITCHES_THROWN", "line": 15.5, "direction": "MORE", "source_capture_timestamp": "2026-09-15T18:30:28Z"}, {"row_key": "1IP-28", "player": "Michael Soroka", "team": "AZ", "opponent": "MIA", "stat_type": "1ST_INNING_PITCHES_THROWN", "line": 15.5, "direction": "MORE", "source_capture_timestamp": "2026-09-15T18:30:28Z"}, {"row_key": "1IP-29", "player": "Janson Junk", "team": "MIA", "opponent": "AZ", "stat_type": "1ST_INNING_PITCHES_THROWN", "line": 14.5, "direction": "MORE", "source_capture_timestamp": "2026-09-15T18:30:28Z"}]''')
+
+          def norm(value):
+              text = unicodedata.normalize("NFKD", str(value or ""))
+              text = "".join(ch for ch in text if not unicodedata.combining(ch))
+              return re.sub(r"[^a-z0-9]+", "", text.lower())
+
+          schedule_url = (
+              "https://statsapi.mlb.com/api/v1/schedule?"
+              + urllib.parse.urlencode({"sportId": "1", "date": "2026-09-15", "hydrate": "probablePitcher,team"})
+          )
+          with urllib.request.urlopen(schedule_url, timeout=30) as response:
+              schedule = json.load(response)
+
+          games = []
+          for block in schedule.get("dates") or []:
+              for game in block.get("games") or []:
+                  teams = game.get("teams") or {}
+                  home_node = teams.get("home") or {}
+                  away_node = teams.get("away") or {}
+                  games.append({
+                      "gamePk": game.get("gamePk"),
+                      "gameDate": game.get("gameDate"),
+                      "home": (home_node.get("team") or {}).get("abbreviation") or "",
+                      "away": (away_node.get("team") or {}).get("abbreviation") or "",
+                      "home_prob": (home_node.get("probablePitcher") or {}).get("fullName") or "",
+                      "away_prob": (away_node.get("probablePitcher") or {}).get("fullName") or "",
+                  })
+
+          def resolve_game(row):
+              team = str(row["team"]).upper()
+              opp = str(row["opponent"]).upper()
+              matchup = [g for g in games if {str(g["home"]).upper(), str(g["away"]).upper()} == {team, opp}]
+              if len(matchup) == 1:
+                  return matchup[0]
+              player_n = norm(row["player"])
+              probable = [g for g in games if player_n in {norm(g["home_prob"]), norm(g["away_prob"])}]
+              return probable[0] if len(probable) == 1 else None
+
+          prepared = []
+          preflight_failures = []
+          for row in rows:
+              game = resolve_game(row)
+              if not game or not game.get("gamePk") or not game.get("gameDate"):
+                  preflight_failures.append({"row_key": row["row_key"], "player": row["player"], "terminal_status": "HELD", "code": "LOCAL_CANONICAL_EVENT_RESOLUTION_FAILED", "model_evaluated": False, "probability_publishable": False, "can_execute": False})
+                  continue
+              prepared.append({
+                  "row_key": row["row_key"], "event_id": str(game["gamePk"]), "event_start_time": str(game["gameDate"]),
+                  "sport": "MLB", "player": row["player"], "stat_type": row["stat_type"], "line": row["line"],
+                  "direction": row["direction"], "source_type": "PDF", "platform": "PrizePicks", "league": "MLB",
+                  "opponent": row["opponent"], "source_capture_timestamp": row["source_capture_timestamp"],
+                  "money_lane_status": "PAYOUT_UNRESOLVED",
+              })
+
+          results = []
+          batch_size = 4
+          for offset in range(0, len(prepared), batch_size):
+              batch = prepared[offset:offset + batch_size]
+              body = json.dumps({"request_id": f"pp-20260915-rerun-{offset // batch_size + 1:02d}", "rows": batch}).encode("utf-8")
+              request = urllib.request.Request(endpoint, data=body, method="POST", headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json", "Accept": "application/json"})
+              payload = None
+              for attempt in range(1, 3):
+                  try:
+                      with urllib.request.urlopen(request, timeout=300) as response:
+                          payload = json.load(response)
+                      break
+                  except urllib.error.HTTPError as exc:
+                      raw = exc.read().decode("utf-8", errors="replace")
+                      if exc.code in {502, 503, 504} and attempt == 1:
+                          time.sleep(15)
+                          continue
+                      payload = {"http_error": exc.code, "body": raw[:4000], "rows": [{"row_key": item["row_key"], "terminal_status": "HELD", "code": f"HTTP_{exc.code}", "model_evaluated": False, "probability_publishable": False, "can_execute": False} for item in batch]}
+                      break
+                  except Exception as exc:
+                      if attempt == 1:
+                          time.sleep(15)
+                          continue
+                      payload = {"transport_error": type(exc).__name__, "rows": [{"row_key": item["row_key"], "terminal_status": "HELD", "code": "ACTION_TRANSPORT_FAILED", "model_evaluated": False, "probability_publishable": False, "can_execute": False} for item in batch]}
+              results.append(payload)
+              time.sleep(1)
+
+          all_rows = []
+          for payload in results:
+              if isinstance(payload, dict):
+                  all_rows.extend(payload.get("rows") or [])
+          all_rows.extend(preflight_failures)
+
+          def compact(outcome):
+              result = outcome.get("result") if isinstance(outcome.get("result"), dict) else {}
+              pred = result.get("prediction") if isinstance(result.get("prediction"), dict) else result
+              return {
+                  "row_key": outcome.get("row_key"), "terminal_status": outcome.get("terminal_status"), "code": outcome.get("code"),
+                  "terminal_label": outcome.get("terminal_label"), "model_evaluated": outcome.get("model_evaluated"),
+                  "rank_eligible": outcome.get("rank_eligible"), "probability_publishable": outcome.get("probability_publishable"),
+                  "raw_model_probability": pred.get("raw_model_probability"), "calibrated_probability": pred.get("calibrated_probability"),
+                  "calibrated_lower_bound": pred.get("calibrated_probability_lower_bound") or pred.get("calibrated_lower_bound"),
+                  "calibrated_upper_bound": pred.get("calibrated_probability_upper_bound") or pred.get("calibrated_upper_bound"),
+                  "lineup_evidence_state": outcome.get("lineup_evidence_state") or result.get("lineup_evidence_state"),
+                  "final_refresh_required": outcome.get("final_refresh_required") or result.get("final_refresh_required"),
+                  "blockers": outcome.get("blockers") or result.get("blockers") or [], "can_execute": False,
+              }
+
+          compact_rows = [compact(row) for row in all_rows]
+          summary = {
+              "requested_lines": len(rows), "prepared_lines": len(prepared), "preflight_failures": len(preflight_failures),
+              "returned_rows": len(all_rows), "completed": sum(1 for r in all_rows if r.get("terminal_status") == "COMPLETED"),
+              "held": sum(1 for r in all_rows if r.get("terminal_status") == "HELD"), "rejected": sum(1 for r in all_rows if r.get("terminal_status") == "REJECTED"),
+              "model_evaluated": sum(1 for r in all_rows if r.get("model_evaluated") is True), "probability_publishable": sum(1 for r in all_rows if r.get("probability_publishable") is True),
+              "can_execute": False,
+          }
+          output = {"summary": summary, "source_rows": rows, "prepared_rows": prepared, "action_batches": results, "compact_rows": compact_rows, "can_execute": False}
+          with open("v17_prop_rerun_20260915.json", "w", encoding="utf-8") as handle:
+              json.dump(output, handle, indent=2, ensure_ascii=False)
+          print("RUN_SUMMARY " + json.dumps(summary, sort_keys=True))
+          for row in compact_rows:
+              print("ROW_RESULT " + json.dumps(row, ensure_ascii=False, sort_keys=True))
+          PY
+
+      - name: Upload governed rerun results
+        uses: actions/upload-artifact@v4
+        with:
+          name: v17-prop-rerun-20260915
+          path: v17_prop_rerun_20260915.json
+          retention-days: 7
