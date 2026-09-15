@@ -36,6 +36,37 @@ ADAPTER_MISSING = "ADAPTER_MISSING"
 
 RESOLVER_STATES = (REGISTERED, UNREGISTERED, DISABLED, MODEL_ARTIFACT_MISSING, ADAPTER_MISSING)
 
+# Certification states. Deliberately a separate axis from the resolver state.
+#
+# A registered bridge proves routing and scoring capability. It does not prove
+# calibrated prospective production fitness, which is what certification
+# records: model identity, pinned artifact, calibration health, forward-shadow
+# evidence and a governed terminal ceiling. Reading UP as certified is the
+# specific mistake this split exists to prevent.
+CERTIFIED = "CERTIFIED"
+CANDIDATE_REGISTERED_UNCERTIFIED = "CANDIDATE_REGISTERED_UNCERTIFIED"
+NOT_CERTIFIED = "NOT_CERTIFIED"
+
+CERTIFICATION_STATES = (CERTIFIED, CANDIDATE_REGISTERED_UNCERTIFIED, NOT_CERTIFIED)
+
+
+def certification_state(sport: str, *, registered: bool) -> tuple[str, str | None]:
+    """Certification status and id for a sport, independent of bridge status.
+
+    Certification comes only from the governed certification catalog. A bridge
+    being registered and UP can at most make a sport a *candidate*; it can never
+    promote it.
+    """
+    from v17.team_event_capability_manifest import CERTIFIED_TEAM_EVENT_SPORTS
+
+    normalized = normalize_team_event_sport(sport)
+    certification_id = CERTIFIED_TEAM_EVENT_SPORTS.get(normalized)
+    if certification_id:
+        return CERTIFIED, certification_id
+    if registered:
+        return CANDIDATE_REGISTERED_UNCERTIFIED, None
+    return NOT_CERTIFIED, None
+
 
 @dataclass(frozen=True)
 class CapabilityProbe:
@@ -205,6 +236,8 @@ def audit_table(is_registered: Callable[[str], bool] | None = None) -> list[dict
                 **probe.as_dict(),
                 "registry_state": state,
                 "registered_capability": registered,
+                "certification_status": certification_state(sport, registered=registered)[0],
+                "certification_id": certification_state(sport, registered=registered)[1],
                 "safe_to_register": bool(probe.scorer_resolvable),
                 "reason_if_not_registered": None if registered else probe.notes,
                 "probability_publishable": False,
@@ -216,7 +249,12 @@ def audit_table(is_registered: Callable[[str], bool] | None = None) -> list[dict
 
 __all__ = [
     "ADAPTER_MISSING",
+    "CANDIDATE_REGISTERED_UNCERTIFIED",
     "CAN_EXECUTE",
+    "CERTIFICATION_STATES",
+    "CERTIFIED",
+    "NOT_CERTIFIED",
+    "certification_state",
     "CapabilityProbe",
     "DISABLED",
     "MODEL_ARTIFACT_MISSING",

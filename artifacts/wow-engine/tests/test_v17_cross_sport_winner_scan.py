@@ -126,8 +126,19 @@ def _discovered(sport, event_id, *, status="SCHEDULED", commence=None, home="Alp
 
 
 def _feed(rows_by_sport):
-    def fetch(sport, sport_key):
-        return rows_by_sport.get(sport, [])
+    """Serve a family's rows once, from its first configured target.
+
+    A family can have many provider targets (twelve soccer competitions), so a
+    naive feed that answers every target with the same rows would be testing the
+    fixture rather than the sweep.
+    """
+    served: set[str] = set()
+
+    def fetch(family, target=None):
+        if family in served:
+            return []
+        served.add(family)
+        return rows_by_sport.get(family, [])
 
     return fetch
 

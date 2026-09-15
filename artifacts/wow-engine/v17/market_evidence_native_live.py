@@ -497,6 +497,7 @@ def get_sport_date_odds_snapshot(
     affiliate_ids: tuple[str, ...] | list[str] | None = None,
     main_line: bool | None = None,
     hide_closed: bool | None = None,
+    sport_id: Any = None,
 ) -> sources.MarketEvidenceResult:
     """One narrow sport/date **current odds snapshot**, normalised once and shared.
 
@@ -512,10 +513,18 @@ def get_sport_date_odds_snapshot(
         return sources._fail("RUNDOWN", capability, "MARKET_EVIDENCE_CAPABILITY_UNSUPPORTED")
 
     observability.increment("rundown_snapshot_requests")
-    resolved = sources.rundown_sport_id(sport_key, opener=opener)
-    if not resolved.ok:
-        observability.record_failure(resolved.code, resolved.status)
-        return resolved
+    if sport_id is not None:
+        # A caller holding a provider-verified sport id addresses the slate
+        # directly. Resolving a name to an id is only for callers that do not
+        # have one, and a name lookup is exactly where a guessed key used to
+        # become an indistinguishable empty result.
+        resolved_sport_id: Any = sport_id
+    else:
+        resolved = sources.rundown_sport_id(sport_key, opener=opener)
+        if not resolved.ok:
+            observability.record_failure(resolved.code, resolved.status)
+            return resolved
+        resolved_sport_id = resolved.data
 
     params = _snapshot_params(
         market_ids=market_ids,
@@ -527,7 +536,7 @@ def get_sport_date_odds_snapshot(
         provider="RUNDOWN",
         capability=capability,
         sport_key=sport_key,
-        sport_id=resolved.data,
+        sport_id=resolved_sport_id,
         slate_date=date,
         market_ids=market_ids,
         affiliate_ids=affiliate_ids,
@@ -539,6 +548,7 @@ def get_sport_date_odds_snapshot(
         "provider": "RUNDOWN_MARKET_EVIDENCE",
         "endpoint_family": f"sport_date_{capability}_snapshot",
         "sport_key": sport_key,
+        "provider_sport_id": resolved_sport_id,
         "requested_date": date,
         "requested_market_ids": [str(value) for value in (market_ids or ())],
         "requested_affiliate_ids": [str(value) for value in (affiliate_ids or ())],
@@ -553,7 +563,7 @@ def get_sport_date_odds_snapshot(
         started = time.monotonic()
         fetched = _fetch_with_bounded_429_retry(
             capability,
-            sport_id=resolved.data,
+            sport_id=resolved_sport_id,
             date=date,
             params=params,
             opener=opener,
@@ -653,6 +663,7 @@ def rundown_market_evidence(
     affiliate_ids: tuple[str, ...] | list[str] | None = None,
     main_line: bool | None = None,
     hide_closed: bool | None = None,
+    sport_id: Any = None,
 ) -> sources.MarketEvidenceResult:
     """Established entry point. Delegates to the explicitly named snapshot call."""
     return get_sport_date_odds_snapshot(
@@ -664,6 +675,7 @@ def rundown_market_evidence(
         affiliate_ids=affiliate_ids,
         main_line=main_line,
         hide_closed=hide_closed,
+        sport_id=sport_id,
     )
 
 

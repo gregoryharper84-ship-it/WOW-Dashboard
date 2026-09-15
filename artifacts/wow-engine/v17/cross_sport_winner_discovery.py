@@ -31,6 +31,7 @@ from typing import Any, Callable, Iterable, Mapping
 from zoneinfo import ZoneInfo
 
 from v17 import market_evidence_observability as observability
+from v17 import rundown_sport_registry as registry
 from v17.llp_governed_package_scoring import (
     MODEL_INPUTS_INSUFFICIENT,
     MODEL_OUTPUT_INVALID,
@@ -51,21 +52,124 @@ REQUIRED_EVENT_STATE = "PREGAME"
 # must be *looked for*, whether or not anything can score it.
 SUPPORTED_DISCOVERY_SPORTS: tuple[str, ...] = tuple(EXPECTED_TEAM_EVENT_SPORTS)
 
-# Canonical sport -> provider sport key for the discovery feeds already in use.
-DISCOVERY_SPORT_KEYS: dict[str, tuple[str, ...]] = {
-    "MLB": ("baseball_mlb",),
-    "NFL": ("americanfootball_nfl",),
-    "NCAAF": ("americanfootball_ncaaf",),
-    "NBA": ("basketball_nba",),
-    "WNBA": ("basketball_wnba",),
-    "NCAAB": ("basketball_ncaab",),
-    "NHL": ("icehockey_nhl",),
-    "SOCCER": ("soccer_epl",),
-    "TENNIS": ("tennis_atp", "tennis_wta"),
-    "PGA": ("golf_pga_championship_winner",),
-    "MMA": ("mma_mixed_martial_arts",),
-    "BOXING": ("boxing_boxing",),
-}
+# Per-family acquisition outcomes. These describe what happened when we tried to
+# *look*, and are deliberately separate from what a model could do afterwards.
+EVENTS_RETURNED = "EVENTS_RETURNED"
+NO_EVENTS_RETURNED = "NO_EVENTS_RETURNED"
+NO_CONFIGURED_DISCOVERY_FEED = "NO_CONFIGURED_DISCOVERY_FEED"
+PROVIDER_REQUEST_FAILED = "PROVIDER_REQUEST_FAILED"
+PROVIDER_RATE_LIMITED = "PROVIDER_RATE_LIMITED"
+PROVIDER_SCHEMA_FAILURE = "PROVIDER_SCHEMA_FAILURE"
+DISCOVERY_BUDGET_EXHAUSTED = "DISCOVERY_BUDGET_EXHAUSTED"
+
+ACQUISITION_STATUSES = (
+    EVENTS_RETURNED,
+    NO_EVENTS_RETURNED,
+    NO_CONFIGURED_DISCOVERY_FEED,
+    PROVIDER_REQUEST_FAILED,
+    PROVIDER_RATE_LIMITED,
+    PROVIDER_SCHEMA_FAILURE,
+    DISCOVERY_BUDGET_EXHAUSTED,
+)
+
+
+class DiscoveryFeedError(RuntimeError):
+    """A feed failure that carries the provider's own typed reason code."""
+
+    def __init__(self, code: str):
+        super().__init__(str(code))
+        self.code = str(code)
+
+
+def classify_acquisition_failure(code: Any) -> str:
+    """Map a provider reason code onto its acquisition status.
+
+    Rate limiting and a schema/contract failure are distinguishable from a plain
+    request failure, because they call for different operator action.
+    """
+    token = str(code or "").upper()
+    if "429" in token or "THROTTLED" in token or "QUOTA_EXHAUSTED" in token or "RATE_LIMIT" in token:
+        return PROVIDER_RATE_LIMITED
+    if (
+        "SCHEMA_UNRECOGNISED" in token
+        or "SCHEMA_UNRECOGNIZED" in token
+        or "MARKET_CATALOG" in token
+        or "WITHOUT_PRICES" in token
+        or "INVALID_JSON" in token
+    ):
+        return PROVIDER_SCHEMA_FAILURE
+    return PROVIDER_REQUEST_FAILED
+
+
+@dataclass(frozen=True)
+class DiscoveryTarget:
+    """One concrete thing to query: a provider, a sport id, a league, a regime.
+
+    Provider sport ids are verified registry values, never names guessed from a
+    family. A family with no targets has no configured feed — which is a
+    different answer from a query that returned nothing.
+    """
+
+    family: str
+    provider: str
+    league: str
+    regime: str = registry.REGULAR_SEASON
+    sport_id: int | None = None
+    sport_key: str | None = None
+
+    @property
+    def label(self) -> str:
+        return str(self.sport_id) if self.sport_id is not None else str(self.sport_key or "")
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "family": self.family,
+            "provider": self.provider,
+            "provider_sport_id": self.sport_id,
+            "sport_key": self.sport_key,
+            "league": self.league,
+            "regime": self.regime,
+        }
+
+
+def rundown_discovery_targets(
+    family: str, *, include_regime_variants: bool = False
+) -> tuple[DiscoveryTarget, ...]:
+    """Verified TheRundown targets for one family, league and regime preserved.
+
+    Soccer expands across every configured competition rather than collapsing to
+    EPL, and each row keeps its exact competition. A family the provider registry
+    does not carry (boxing today) yields no targets at all.
+    """
+    ids = registry.discovery_sport_ids(family, include_regime_variants=include_regime_variants)
+    targets: list[DiscoveryTarget] = []
+    for sport_id in ids:
+        sport = registry.provider_sport(sport_id)
+        if sport is None:
+            continue
+        targets.append(
+            DiscoveryTarget(
+                family=sport.family,
+                provider=registry.PROVIDER,
+                league=sport.league,
+                regime=sport.regime,
+                sport_id=sport.sport_id,
+            )
+        )
+    return tuple(targets)
+
+
+def default_discovery_targets(
+    supported_sports: Iterable[str] = SUPPORTED_DISCOVERY_SPORTS,
+    *,
+    include_regime_variants: bool = False,
+) -> dict[str, tuple[DiscoveryTarget, ...]]:
+    return {
+        family: rundown_discovery_targets(
+            family, include_regime_variants=include_regime_variants
+        )
+        for family in supported_sports
+    }
 
 # Terminal row buckets. Exactly one applies to every discovered row.
 WRONG_DATE = "EVENT_WRONG_DATE"
@@ -105,6 +209,12 @@ class DiscoveredEvent:
     commence_time_utc: str | None
     event_status: str
     source: str
+    # Competition/season regime. Preserved from the provider target rather than
+    # assumed: a preseason or playoff row must stay distinguishable from a
+    # regular-season one all the way to model routing.
+    regime: str = registry.REGULAR_SEASON
+    provider: str | None = None
+    provider_sport_id: int | None = None
     raw: Mapping[str, Any] = field(default_factory=dict, repr=False)
 
     @property
@@ -116,6 +226,9 @@ class DiscoveredEvent:
             "sport": self.sport,
             "league": self.league,
             "sport_key": self.sport_key,
+            "regime": self.regime,
+            "provider": self.provider,
+            "provider_sport_id": self.provider_sport_id,
             "event_key": self.event_key,
             "official_event_id": self.official_event_id,
             "home_team": self.home_team,
@@ -168,6 +281,23 @@ def classify_event_status(raw_status: Any, commence_time: Any, *, now: datetime 
     return "UNKNOWN"
 
 
+def _dedupe_identity(event: DiscoveredEvent) -> tuple[str, str, str]:
+    """Identity for suppressing the same fixture seen under two provider ids."""
+    if event.official_event_id:
+        return ("ID", event.sport, str(event.official_event_id))
+    return (
+        "TEAMS",
+        event.sport,
+        "|".join(
+            (
+                _text(event.home_team).lower(),
+                _text(event.away_team).lower(),
+                _text(event.commence_time_utc)[:16],
+            )
+        ),
+    )
+
+
 def _slate_date_matches(commence_time: Any, slate_date: str, tz_name: str) -> bool:
     start = _parse_instant(commence_time)
     if start is None:
@@ -186,9 +316,17 @@ def normalize_discovered_event(
     sport_key: str,
     source: str,
     now: datetime | None = None,
+    target: "DiscoveryTarget | None" = None,
 ) -> DiscoveredEvent:
-    """Translate one provider event row into a canonical discovery candidate."""
+    """Translate one provider event row into a canonical discovery candidate.
+
+    The target's league and regime win over anything the row says about itself:
+    the provider sport id is what was actually queried, so it is the authority on
+    which competition and which season regime this row belongs to.
+    """
     league = _text(raw.get("league") or raw.get("league_name") or raw.get("sport_title")) or sport
+    if target is not None and target.league:
+        league = target.league
     commence = (
         raw.get("commence_time")
         or raw.get("event_date")
@@ -211,6 +349,9 @@ def normalize_discovered_event(
             now=now,
         ),
         source=source,
+        regime=target.regime if target is not None else registry.REGULAR_SEASON,
+        provider=target.provider if target is not None else None,
+        provider_sport_id=target.sport_id if target is not None else None,
         raw=dict(raw),
     )
 
@@ -225,6 +366,8 @@ class DiscoveryInventory:
     sports_with_events: list[str] = field(default_factory=list)
     events: list[DiscoveredEvent] = field(default_factory=list)
     source_blockers: list[dict[str, Any]] = field(default_factory=list)
+    # One row per family describing what the acquisition attempt actually did.
+    acquisition_audit: list[dict[str, Any]] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -235,6 +378,7 @@ class DiscoveryInventory:
             "sports_with_events": list(self.sports_with_events),
             "events_discovered": len(self.events),
             "source_blockers": list(self.source_blockers),
+            "acquisition_audit": list(self.acquisition_audit),
             "discovery_independent_of_model_registry": True,
             "can_execute": False,
         }
@@ -243,11 +387,11 @@ class DiscoveryInventory:
 def discovery_budget_seconds() -> float:
     """Wall-clock ceiling for one discovery sweep across every supported sport.
 
-    Broad discovery means one feed call per sport, so an unreachable or slow
-    source must degrade into typed blockers rather than hold a request open for
-    the sum of every timeout. Exhausting the budget is evidence, not silence:
-    the sports that were not reached are recorded as blockers and the board
-    still reconciles.
+    Broad discovery means one feed call per configured target, so an unreachable
+    or slow source must degrade into typed blockers rather than hold a request
+    open for the sum of every timeout. Exhausting the budget is evidence, not
+    silence: the families that were not reached are recorded and the board still
+    reconciles.
     """
     try:
         configured = float(os.environ.get("WOW_CROSS_SPORT_DISCOVERY_BUDGET_SECONDS", "8"))
@@ -260,74 +404,172 @@ def discover_winner_slate(
     *,
     requested_slate_date: str,
     requested_timezone: str,
-    fetch_sport_events: Callable[[str, str], Iterable[Mapping[str, Any]]],
+    fetch_sport_events: Callable[..., Iterable[Mapping[str, Any]]],
     supported_sports: Iterable[str] = SUPPORTED_DISCOVERY_SPORTS,
-    sport_keys: Mapping[str, tuple[str, ...]] | None = None,
+    discovery_targets: Mapping[str, tuple[DiscoveryTarget, ...]] | None = None,
+    include_regime_variants: bool = False,
     now: datetime | None = None,
     budget_seconds: float | None = None,
 ) -> DiscoveryInventory:
     """Walk the full supported universe, independent of registered model coverage.
 
-    ``fetch_sport_events(sport, sport_key)`` is injected so discovery is not
-    bound to one feed. A sport that raises or returns nothing is recorded as a
-    source blocker — never silently dropped, because "we could not look" and
-    "there was nothing there" are different answers.
+    ``fetch_sport_events(family, target)`` is injected so discovery is not bound
+    to one feed. Every family terminates with exactly one acquisition status:
+    "we never had a feed", "the provider refused", and "the provider answered
+    and there was nothing" are three different answers and are recorded as such.
+    ``NO_EVENTS_RETURNED`` is only ever used after a configured query succeeded.
     """
-    keys = dict(sport_keys or DISCOVERY_SPORT_KEYS)
+    targets = dict(
+        discovery_targets
+        if discovery_targets is not None
+        else default_discovery_targets(
+            supported_sports, include_regime_variants=include_regime_variants
+        )
+    )
     inventory = DiscoveryInventory(
         requested_slate_date=requested_slate_date,
         requested_timezone=requested_timezone,
     )
     budget = discovery_budget_seconds() if budget_seconds is None else float(budget_seconds)
     deadline = monotonic() + budget
-    for sport in supported_sports:
-        inventory.sports_queried.append(sport)
-        found = 0
-        if monotonic() >= deadline:
+
+    for family in supported_sports:
+        inventory.sports_queried.append(family)
+        family_targets = tuple(targets.get(family) or ())
+        attempted: list[Any] = []
+        returned = 0
+        succeeded = False
+        failures: list[str] = []
+
+        if not family_targets:
+            # Never queried, because nothing is configured to query. This must
+            # not read as an empty slate.
+            inventory.acquisition_audit.append(
+                {
+                    "family": family,
+                    "provider": registry.PROVIDER,
+                    "provider_sport_ids_attempted": [],
+                    "request_status": NO_CONFIGURED_DISCOVERY_FEED,
+                    "events_returned": 0,
+                    "blocker_if_any": NO_CONFIGURED_DISCOVERY_FEED,
+                    "can_execute": False,
+                }
+            )
             inventory.source_blockers.append(
                 {
-                    "scope": "sport",
-                    "sport": sport,
+                    "scope": "family",
+                    "sport": family,
                     "sport_key": None,
-                    "status": "DISCOVERY_BUDGET_EXHAUSTED",
+                    "status": NO_CONFIGURED_DISCOVERY_FEED,
+                }
+            )
+            continue
+
+        if monotonic() >= deadline:
+            inventory.acquisition_audit.append(
+                {
+                    "family": family,
+                    "provider": registry.PROVIDER,
+                    "provider_sport_ids_attempted": [],
+                    "request_status": DISCOVERY_BUDGET_EXHAUSTED,
+                    "events_returned": 0,
+                    "blocker_if_any": DISCOVERY_BUDGET_EXHAUSTED,
+                    "budget_seconds": budget,
+                    "can_execute": False,
+                }
+            )
+            inventory.source_blockers.append(
+                {
+                    "scope": "family",
+                    "sport": family,
+                    "sport_key": None,
+                    "status": DISCOVERY_BUDGET_EXHAUSTED,
                     "budget_seconds": budget,
                 }
             )
             continue
-        for sport_key in keys.get(sport, ()):  # a sport with no feed key is still queried
+
+        seen_identities: set[tuple[str, str, str]] = set()
+        duplicates = 0
+        for target in family_targets:
+            attempted.append(target.sport_id if target.sport_id is not None else target.sport_key)
             try:
-                rows = list(fetch_sport_events(sport, sport_key) or ())
-            except Exception as exc:  # noqa: BLE001 - a feed defect is evidence
+                rows = list(fetch_sport_events(family, target) or ())
+            except DiscoveryFeedError as exc:
+                failures.append(exc.code)
                 inventory.source_blockers.append(
                     {
-                        "scope": "sport",
-                        "sport": sport,
-                        "sport_key": sport_key,
-                        "status": "EVENT_DISCOVERY_FAILED",
+                        "scope": "target",
+                        "sport": family,
+                        **target.as_dict(),
+                        "status": classify_acquisition_failure(exc.code),
+                        "reason_code": exc.code,
+                    }
+                )
+                continue
+            except Exception as exc:  # noqa: BLE001 - a feed defect is evidence
+                failures.append(type(exc).__name__)
+                inventory.source_blockers.append(
+                    {
+                        "scope": "target",
+                        "sport": family,
+                        **target.as_dict(),
+                        "status": PROVIDER_REQUEST_FAILED,
                         "error_type": type(exc).__name__,
                     }
                 )
                 continue
+
+            succeeded = True
             for raw in rows:
                 if not isinstance(raw, Mapping):
                     continue
-                inventory.events.append(
-                    normalize_discovered_event(
-                        raw, sport=sport, sport_key=sport_key, source="DISCOVERY_FEED", now=now
-                    )
+                event = normalize_discovered_event(
+                    raw,
+                    sport=family,
+                    sport_key=target.label,
+                    source="DISCOVERY_FEED",
+                    now=now,
+                    target=target,
                 )
-                found += 1
-        if not keys.get(sport):
-            inventory.source_blockers.append(
-                {
-                    "scope": "sport",
-                    "sport": sport,
-                    "sport_key": None,
-                    "status": "NO_CONFIGURED_DISCOVERY_FEED",
-                }
-            )
-        if found:
-            inventory.sports_with_events.append(sport)
+                # A family is queried across several provider ids (twelve soccer
+                # competitions; regular season alongside a regime variant). The
+                # same fixture surfacing under two of them is one event, not two
+                # — counting it twice would inflate the board and break
+                # reconciliation against the real slate.
+                identity = _dedupe_identity(event)
+                if identity in seen_identities:
+                    duplicates += 1
+                    continue
+                seen_identities.add(identity)
+                inventory.events.append(event)
+                returned += 1
+
+        if returned:
+            status = EVENTS_RETURNED
+            blocker = None
+            inventory.sports_with_events.append(family)
+        elif succeeded:
+            # A configured provider answered and carried nothing. This is the
+            # only case where an empty slate is a real answer.
+            status = NO_EVENTS_RETURNED
+            blocker = None
+        else:
+            status = classify_acquisition_failure(failures[0] if failures else None)
+            blocker = failures[0] if failures else status
+
+        inventory.acquisition_audit.append(
+            {
+                "family": family,
+                "provider": registry.PROVIDER,
+                "provider_sport_ids_attempted": attempted,
+                "request_status": status,
+                "events_returned": returned,
+                "duplicate_rows_suppressed": duplicates,
+                "blocker_if_any": blocker,
+                "can_execute": False,
+            }
+        )
     return inventory
 
 
@@ -378,12 +620,27 @@ def _model_bucket(code: Any) -> str:
     return OTHER_GOVERNED_HOLD
 
 
+def model_supports_regime(event: DiscoveredEvent, model: Any) -> bool:
+    """Whether a resolved model is contracted to score this row's regime.
+
+    Fails closed by design. A model that does not declare ``supported_regimes``
+    is treated as regular-season only, because a fitted regular-season artifact
+    has no calibration evidence for preseason, playoff, spring-training or
+    summer-league play and must never inherit those regimes by default.
+    """
+    declared = getattr(model, "supported_regimes", None)
+    if not declared:
+        return event.regime == registry.REGULAR_SEASON
+    return event.regime in {str(value).upper() for value in declared}
+
+
 def route_discovered_slate(
     inventory: DiscoveryInventory,
     *,
     resolve_model: Callable[[DiscoveredEvent], Any],
     score_row: Callable[[DiscoveredEvent, Any], Mapping[str, Any]],
     now: datetime | None = None,
+    regime_supported: Callable[[DiscoveredEvent, Any], bool] = model_supports_regime,
 ) -> list[RoutedRow]:
     """Route every discovered row to exactly one terminal outcome.
 
@@ -391,6 +648,10 @@ def route_discovered_slate(
     ``None`` never removes the row: it produces a retained ``MODEL_UNAVAILABLE``
     candidate. A model that *was* selected and then failed keeps its own typed
     status — a scorer failure is not a missing model.
+
+    A model resolved for the wrong season regime is treated as no controlling
+    model for that row: it terminates as ``MODEL_UNAVAILABLE`` with its own
+    blocker rather than being invoked outside its calibration contract.
     """
     rows: list[RoutedRow] = []
     for event in inventory.events:
@@ -436,6 +697,28 @@ def route_discovered_slate(
                     detail={
                         "reason": f"{event.sport}_TEAM_EVENT_FITTED_MODEL_OR_ADAPTER_UNAVAILABLE",
                         "backend_route_status": "SPORT_SPECIFIC_TEAM_EVENT_ADAPTER_NOT_REGISTERED",
+                        "model_invoked": False,
+                    },
+                )
+            )
+            continue
+
+        if not regime_supported(event, model):
+            # Discovered and retained, but not routed. The regular-season model
+            # is not the controlling model for this regime, and there is no
+            # other one, so the row is MODEL_UNAVAILABLE for a named reason.
+            rows.append(
+                RoutedRow(
+                    identity=event.identity(),
+                    bucket=MODEL_UNAVAILABLE,
+                    model_status=MODEL_UNAVAILABLE,
+                    detail={
+                        "reason": f"{event.sport}_{event.regime}_REGIME_NOT_SUPPORTED_BY_FITTED_MODEL",
+                        "backend_route_status": "SPORT_SPECIFIC_TEAM_EVENT_REGIME_NOT_REGISTERED",
+                        "regime": event.regime,
+                        "supported_regimes": [
+                            str(value) for value in (getattr(model, "supported_regimes", None) or (registry.REGULAR_SEASON,))
+                        ],
                         "model_invoked": False,
                     },
                 )
@@ -493,6 +776,12 @@ def reconcile(inventory: DiscoveryInventory, rows: list[RoutedRow]) -> dict[str,
         "retained_unsupported_rows": counts[MODEL_UNAVAILABLE],
         "row_reconciliation": "PASS" if accounted == discovered else "FAIL",
         "run_status": "COMPLETED" if accounted == discovered else "RUN_INVALID_ROW_RECONCILIATION",
+        "acquisition_audit": list(inventory.acquisition_audit),
+        "families_without_configured_feed": [
+            row["family"]
+            for row in inventory.acquisition_audit
+            if row.get("request_status") == NO_CONFIGURED_DISCOVERY_FEED
+        ],
         "source_blockers": list(inventory.source_blockers),
         "discovery_independent_of_model_registry": True,
         "can_execute": False,
@@ -503,11 +792,12 @@ def run_cross_sport_winner_scan(
     *,
     requested_slate_date: str,
     requested_timezone: str,
-    fetch_sport_events: Callable[[str, str], Iterable[Mapping[str, Any]]],
+    fetch_sport_events: Callable[..., Iterable[Mapping[str, Any]]],
     resolve_model: Callable[[DiscoveredEvent], Any],
     score_row: Callable[[DiscoveredEvent, Any], Mapping[str, Any]],
     supported_sports: Iterable[str] = SUPPORTED_DISCOVERY_SPORTS,
-    sport_keys: Mapping[str, tuple[str, ...]] | None = None,
+    discovery_targets: Mapping[str, tuple[DiscoveryTarget, ...]] | None = None,
+    include_regime_variants: bool = False,
     now: datetime | None = None,
     budget_seconds: float | None = None,
 ) -> dict[str, Any]:
@@ -518,7 +808,8 @@ def run_cross_sport_winner_scan(
         requested_timezone=requested_timezone,
         fetch_sport_events=fetch_sport_events,
         supported_sports=supported_sports,
-        sport_keys=sport_keys,
+        discovery_targets=discovery_targets,
+        include_regime_variants=include_regime_variants,
         now=now,
         budget_seconds=budget_seconds,
     )
@@ -537,10 +828,23 @@ def run_cross_sport_winner_scan(
 
 
 __all__ = [
+    "ACQUISITION_STATUSES",
     "ALL_BUCKETS",
+    "DISCOVERY_BUDGET_EXHAUSTED",
+    "DiscoveryFeedError",
+    "DiscoveryTarget",
+    "EVENTS_RETURNED",
+    "NO_CONFIGURED_DISCOVERY_FEED",
+    "NO_EVENTS_RETURNED",
+    "PROVIDER_RATE_LIMITED",
+    "PROVIDER_REQUEST_FAILED",
+    "PROVIDER_SCHEMA_FAILURE",
+    "classify_acquisition_failure",
+    "default_discovery_targets",
+    "model_supports_regime",
+    "rundown_discovery_targets",
     "CANCELLED_OR_POSTPONED",
     "CAN_EXECUTE",
-    "DISCOVERY_SPORT_KEYS",
     "DiscoveredEvent",
     "DiscoveryInventory",
     "IDENTITY_UNRESOLVED",

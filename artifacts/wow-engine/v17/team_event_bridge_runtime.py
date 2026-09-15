@@ -34,7 +34,12 @@ from v17.team_event_capability_manifest import (
     normalize_team_event_identity,
     normalize_team_event_sport,
 )
-from v17.team_event_model_registry_audit import probe_sport, resolve_state
+from v17.rundown_sport_registry import REGULAR_SEASON
+from v17.team_event_model_registry_audit import (
+    certification_state,
+    probe_sport,
+    resolve_state,
+)
 
 CAN_EXECUTE = False
 DISCOVERY_ONLY_LABEL = "DISCOVERY CANDIDATE — NOT MODEL-SUPPORTED"
@@ -53,6 +58,11 @@ class TeamEventBridgeRegistration:
     required_inputs: tuple[str, ...]
     scorer: BridgeScorer
     standard_package_validation: bool = True
+    # Season regimes this fitted artifact is contracted to score. Defaults to
+    # regular season only: a regular-season model has no calibration evidence
+    # for preseason, playoff, spring-training or summer-league play and must not
+    # inherit those regimes by being registered for the sport.
+    supported_regimes: tuple[str, ...] = (REGULAR_SEASON,)
     can_execute: bool = False
 
 
@@ -73,8 +83,13 @@ def register_team_event_bridge(
     scorer: BridgeScorer,
     required_inputs: tuple[str, ...] | None = None,
     standard_package_validation: bool = True,
+    supported_regimes: tuple[str, ...] | None = None,
 ) -> TeamEventBridgeRegistration:
-    """Register one exact bridge; callers must already own certification proof."""
+    """Register one exact bridge; callers must already own certification proof.
+
+    Registration is capability, never certification: it makes a sport routable,
+    and says nothing about whether its model is certified for publication.
+    """
     normalized = normalize_team_event_sport(sport)
     registration = TeamEventBridgeRegistration(
         sport=normalized,
@@ -83,6 +98,7 @@ def register_team_event_bridge(
         required_inputs=tuple(required_inputs or TEAM_EVENT_INPUT_CONTRACTS.get(normalized, ())),
         scorer=scorer,
         standard_package_validation=standard_package_validation,
+        supported_regimes=tuple(supported_regimes or (REGULAR_SEASON,)),
         can_execute=False,
     )
     TEAM_EVENT_BRIDGES[normalized] = registration
@@ -279,11 +295,17 @@ def team_event_bridge_health() -> dict[str, dict[str, Any]]:
         registration = TEAM_EVENT_BRIDGES.get(sport)
         registered = registration is not None
         probe = probe_sport(sport)
+        certification, certification_id = certification_state(sport, registered=registered)
         health[sport] = {
             "status": "UP" if registered else MODEL_UNAVAILABLE,
             "registered": registered,
             "registered_capability": registered,
             "registry_state": resolve_state(sport, registered=registered, probe=probe),
+            "certification_status": certification,
+            "certification_id": certification_id,
+            "supported_regimes": list(
+                registration.supported_regimes if registered else ()
+            ),
             "model_artifact_present": bool(probe.fitted_module) and probe.scorer_resolvable,
             "adapter_importable": probe.adapter_importable,
             "scorer_resolvable": probe.scorer_resolvable,
@@ -436,6 +458,10 @@ def _register_nfl_bridge_if_available() -> bool:
         # resolution and governed-package construction, exactly as MLB does.
         # Re-validating it here would apply a second, different contract.
         standard_package_validation=False,
+        # The fitted bundle trains on regular-season cohorts (2021-2023 train,
+        # 2024 calibration, 2025 validation) and carries no preseason or playoff
+        # calibration evidence, so it is registered for regular season only.
+        supported_regimes=(REGULAR_SEASON,),
     )
     return True
 
