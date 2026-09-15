@@ -20,6 +20,7 @@ from ncaaf_cfbd_client import CFBDClient, CFBDUnavailable
 from ncaaf_cfbd_hydrator import hydrate_cfbd_season, persist_source_snapshots
 from ncaaf_training_materializer import materialize_training_games
 from ncaaf_feature_compiler import materialize_complete_training_features
+from v17.first_six_open_data_maintenance import install_first_six_open_data_maintenance_routes
 from v17.ncaaf_result_form_candidate import NCAAFResultFormUnavailable, train_and_persist as train_result_form_candidate
 from v17.nhl_model_maintenance import install_nhl_model_maintenance_route
 
@@ -134,9 +135,13 @@ def run_ncaaf_model_maintenance(
 
 
 def install_ncaaf_model_maintenance_route(app: FastAPI, *, auth_dependency: Any, db_client_fn: Any) -> None:
-    # Preserve the already-composed candidate routes; NHL remains candidate-only
-    # and has been explicitly deprioritized by roadmap, not promoted here.
+    # Compose candidate-only maintenance surfaces behind the same strict auth.
+    # NHL is still present for compatibility but remains explicitly deprioritized
+    # and this composition cannot promote/certify any lane.
     install_nhl_model_maintenance_route(app, auth_dependency=auth_dependency, db_client_fn=db_client_fn)
+    install_first_six_open_data_maintenance_routes(
+        app, auth_dependency=auth_dependency, db_client_fn=db_client_fn
+    )
     path = "/internal/v17/ncaaf-model-maintenance"
     if any(getattr(route, "path", None) == path for route in app.router.routes):
         return
