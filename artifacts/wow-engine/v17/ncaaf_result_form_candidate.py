@@ -16,6 +16,7 @@ import math
 from typing import Any, Mapping
 
 from v17.binary_candidate_lifecycle import BinaryCandidateError, BinaryTrainingRow, train_binary_candidate
+from v17.d1_candidate_registry import D1RegistryError, persist_candidate
 
 CAN_EXECUTE = False
 SPORT = LEAGUE = "NCAAF"
@@ -140,6 +141,7 @@ def _persist_training_rows(client: Any, rows: list[BinaryTrainingRow], meta: lis
         client.table("wow_d1_training_rows").upsert(
             payloads[offset:offset + 250],
             on_conflict="sport,official_event_id,feature_schema_version,source_manifest_sha256",
+            ignore_duplicates=True,
         ).execute()
 
 
@@ -160,8 +162,9 @@ def train_and_persist(client: Any, *, training_code_sha: str) -> dict[str, Any]:
         "split_policy": "CHRONOLOGICAL_60_20_20", "untouched_test": True,
         "historical_reconstruction": True, "archived_pregame_snapshot": False,
         "market_features_used": False,
+        "source_provenance_status": "RECONSTRUCTED_PRIOR_RESULTS_PROVENANCE_READY",
     }
-    client.table("wow_d1_candidate_artifacts").upsert({
+    candidate_row = {
         "sport": SPORT, "league": LEAGUE, "market_family": MARKET_FAMILY,
         "model_family": MODEL_FAMILY, "model_artifact_version": version,
         "feature_schema_version": FEATURE_SCHEMA_VERSION, "source_policy_id": SOURCE_POLICY_ID,
@@ -170,16 +173,22 @@ def train_and_persist(client: Any, *, training_code_sha: str) -> dict[str, Any]:
         "calibrator_payload": calibrator_payload, "validation_metrics": metrics,
         "training_rows": candidate.metrics.train_n, "calibration_rows": candidate.metrics.calibration_n,
         "test_rows": candidate.metrics.test_n, "research_screen_pass": candidate.research_screen_pass,
-        "source_review_status": "RECONSTRUCTED_PRIOR_RESULTS_PROVENANCE_READY",
+        "source_review_status": "REQUIRED",
         "lifecycle_state": "CANDIDATE", "promoted": False, "active": False,
         "automatic_certification": False, "automatic_promotion": False,
         "probability_publishable": False, "can_execute": False,
-    }, on_conflict="model_artifact_version").execute()
+    }
+    try:
+        registration = persist_candidate(client, candidate_row)
+    except D1RegistryError as exc:
+        raise NCAAFResultFormUnavailable(exc.code, str(exc)) from exc
     return {
         "ok": True, "code": "NCAAF_RESULT_FORM_CANDIDATE_PERSISTED",
         "model_artifact_version": version, "feature_schema_version": FEATURE_SCHEMA_VERSION,
         "eligible_rows": len(rows), "metrics": metrics,
         "research_screen_pass": candidate.research_screen_pass,
+        "source_review_status": "REQUIRED",
+        "registry_status": registration.get("status"),
         "lifecycle_state": "CANDIDATE", "automatic_certification": False,
         "automatic_promotion": False, "probability_publishable": False, "can_execute": False,
     }
