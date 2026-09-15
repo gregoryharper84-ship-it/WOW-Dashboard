@@ -12,12 +12,17 @@ run/row terminal fields. The complete per-row evidence is persisted once during
 the run and then read back through a paged retrieval route, so no evidence is
 discarded — only relocated off the single monolithic response.
 
+For team/event rows, compact transport also preserves the small numeric sporting-
+probability package needed to distinguish a valid modeled hold from an unscored
+blocker. Official publication and leaderboard eligibility remain separate fields.
+
 This module never scores, never mutates a terminal, and never authorizes
 execution.
 """
 from __future__ import annotations
 
 import json
+from math import isfinite
 from datetime import datetime, timezone
 from typing import Any
 
@@ -57,11 +62,63 @@ _COMPACT_PREDICTION_FIELDS = (
 _COMPACT_MONEYLINE_FIELDS = (
     "terminal_label",
     "code",
+    "sporting_probability_completed",
+    "sporting_probability_status",
+    "probability_fields_withheld",
+    "model_probability_available",
+    "probability_visibility_status",
+    "official_leaderboard_eligible",
+    "raw_model_probability",
+    "raw_home_probability",
+    "raw_away_probability",
+    "independent_probability",
+    "independent_home_probability",
+    "independent_away_probability",
+    "unconditional_probability",
     "calibrated_probability",
     "calibrated_lower_bound",
+    "calibrated_upper_bound",
+    "selected_calibrated_probability",
+    "selected_calibrated_lower_bound",
+    "selected_calibrated_upper_bound",
+    "calibrated_home_probability",
+    "calibrated_home_lower_bound",
+    "calibrated_home_upper_bound",
+    "calibrated_away_probability",
+    "calibrated_away_lower_bound",
+    "calibrated_away_upper_bound",
+    "model_timestamp",
+    "model_version",
     "llp_probability_audit_result",
     "event_mutex_status",
 )
+
+_MONEYLINE_PROBABILITY_FIELDS = (
+    "raw_model_probability",
+    "raw_home_probability",
+    "raw_away_probability",
+    "independent_probability",
+    "independent_home_probability",
+    "independent_away_probability",
+    "unconditional_probability",
+    "calibrated_probability",
+    "calibrated_lower_bound",
+    "selected_calibrated_probability",
+    "selected_calibrated_lower_bound",
+    "calibrated_home_probability",
+    "calibrated_home_lower_bound",
+    "calibrated_away_probability",
+    "calibrated_away_lower_bound",
+)
+
+_FATAL_MONEYLINE_MODEL_STATUSES = {
+    "MODEL_UNAVAILABLE",
+    "MODEL_SCORER_FAILED",
+    "MODEL_OUTPUT_INVALID",
+    "MODEL_INPUTS_INSUFFICIENT",
+    "MODEL_ROUTE_UNSUPPORTED",
+    "RUN_INVALID_ACQUISITION_INCOMPLETE",
+}
 
 
 def _compact_blocker(value: Any) -> str:
@@ -85,6 +142,27 @@ def _qualification(payload: dict[str, Any]) -> dict[str, Any]:
 
 def _pick(source: dict[str, Any], fields: tuple[str, ...]) -> dict[str, Any]:
     return {field: source[field] for field in fields if field in source}
+
+
+def _finite_probability(value: Any) -> bool:
+    if isinstance(value, bool):
+        return False
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return False
+    return isfinite(parsed) and 0.0 <= parsed <= 1.0
+
+
+def _moneyline_model_probability_available(result: dict[str, Any]) -> bool:
+    if result.get("model_probability_available") is True:
+        return True
+    status = str(result.get("code") or result.get("terminal_status") or "").upper()
+    if status in _FATAL_MONEYLINE_MODEL_STATUSES:
+        return False
+    if result.get("probability_fields_withheld") is True:
+        return False
+    return any(_finite_probability(result.get(field)) for field in _MONEYLINE_PROBABILITY_FIELDS)
 
 
 def compact_direction(outcome: dict[str, Any]) -> dict[str, Any]:
@@ -131,7 +209,7 @@ def compact_direction(outcome: dict[str, Any]) -> dict[str, Any]:
 
 
 def compact_moneyline_result(result: dict[str, Any]) -> dict[str, Any]:
-    """Project a team/event result down to terminal/guard fields."""
+    """Project a team/event result without hiding valid held probabilities."""
     compact = _pick(result, _COMPACT_MONEYLINE_FIELDS)
     guard = result.get("official_publication_guard")
     if isinstance(guard, dict):
@@ -145,8 +223,20 @@ def compact_moneyline_result(result: dict[str, Any]) -> dict[str, Any]:
     prepublication = result.get("prepublication_claim")
     if isinstance(prepublication, dict):
         compact["prepublication_claim"] = prepublication
-    compact["probability_publishable"] = result.get("probability_publishable") is True
-    compact["rank_eligible"] = result.get("rank_eligible") is True
+
+    publishable = result.get("probability_publishable") is True
+    rank_eligible = result.get("rank_eligible") is True
+    model_available = _moneyline_model_probability_available(result)
+    official = bool(publishable and rank_eligible)
+
+    compact["probability_publishable"] = publishable
+    compact["rank_eligible"] = rank_eligible
+    compact["model_probability_available"] = model_available
+    compact["official_leaderboard_eligible"] = official
+    compact["probability_visibility_status"] = str(
+        result.get("probability_visibility_status")
+        or ("OFFICIAL_QUALIFIED" if official else "MODELED_HELD" if model_available else "BLOCKED_UNSCORED")
+    )
     compact["can_execute"] = False
     return compact
 
@@ -173,7 +263,11 @@ def compact_row(row: dict[str, Any], *, run_id: str, row_index: int, detail_avai
             compact_direction(outcome) for outcome in outcomes if isinstance(outcome, dict)
         ] if isinstance(outcomes, list) else []
     else:
-        compact["result_summary"] = compact_moneyline_result(result)
+        summary = compact_moneyline_result(result)
+        compact["result_summary"] = summary
+        compact["model_probability_available"] = summary["model_probability_available"]
+        compact["probability_visibility_status"] = summary["probability_visibility_status"]
+        compact["official_leaderboard_eligible"] = summary["official_leaderboard_eligible"]
 
     compact["detail_ref"] = {
         "run_id": run_id,
