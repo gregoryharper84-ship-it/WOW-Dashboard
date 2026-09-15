@@ -11,20 +11,32 @@ on:
       - ".github/workflows/wow-v17-wnba-prop-candidate.yml"
       - "artifacts/wow-engine/github_actions_oidc.py"
       - "artifacts/wow-engine/scripts/train_wnba_props.py"
+      - "artifacts/wow-engine/scripts/train_wnba_props_offset.py"
+      - "artifacts/wow-engine/scripts/train_wnba_props_frozen.py"
+      - "artifacts/wow-engine/wnba_training_source.py"
+      - "artifacts/wow-engine/data/source_snapshots/wnba/**"
       - "artifacts/wow-engine/wnba_prop_model_adapter.py"
       - "artifacts/wow-engine/v17/wnba_prop_candidate_registry.py"
       - "artifacts/wow-engine/pick_request_runtime.py"
       - "artifacts/wow-engine/test_v17_wnba_prop_candidate_registry.py"
+      - "artifacts/wow-engine/test_wnba_training_source.py"
+      - "artifacts/wow-engine/test_wnba_frozen_numeric_canonicalization.py"
       - "artifacts/wow-engine/test_v17_github_oidc.py"
   pull_request:
     paths:
       - ".github/workflows/wow-v17-wnba-prop-candidate.yml"
       - "artifacts/wow-engine/github_actions_oidc.py"
       - "artifacts/wow-engine/scripts/train_wnba_props.py"
+      - "artifacts/wow-engine/scripts/train_wnba_props_offset.py"
+      - "artifacts/wow-engine/scripts/train_wnba_props_frozen.py"
+      - "artifacts/wow-engine/wnba_training_source.py"
+      - "artifacts/wow-engine/data/source_snapshots/wnba/**"
       - "artifacts/wow-engine/wnba_prop_model_adapter.py"
       - "artifacts/wow-engine/v17/wnba_prop_candidate_registry.py"
       - "artifacts/wow-engine/pick_request_runtime.py"
       - "artifacts/wow-engine/test_v17_wnba_prop_candidate_registry.py"
+      - "artifacts/wow-engine/test_wnba_training_source.py"
+      - "artifacts/wow-engine/test_wnba_frozen_numeric_canonicalization.py"
       - "artifacts/wow-engine/test_v17_github_oidc.py"
 
 permissions:
@@ -54,6 +66,10 @@ jobs:
         run: >-
           python -m pytest -q
           test_v17_wnba_prop_candidate_registry.py
+          test_wnba_training_source.py
+          test_wnba_frozen_numeric_canonicalization.py
+          test_wnba_prop_trainer.py
+          test_wnba_prop_offset_trainer.py
           test_wnba_prop_model_adapter.py
           test_v17_github_oidc.py
           test_v17_prop_cross_sport_activation.py
@@ -94,10 +110,10 @@ jobs:
           test "$WOW_DRY_RUN_ONLY" = "true"
           test -n "$ACTIONS_ID_TOKEN_REQUEST_URL"
           test -n "$ACTIONS_ID_TOKEN_REQUEST_TOKEN"
-      - name: Train leakage-safe WNBA prop candidates
+      - name: Train leakage-safe WNBA prop candidates from immutable snapshot
         run: |
           mkdir -p "$WNBA_ARTIFACT_OUT_DIR"
-          python scripts/train_wnba_props.py
+          PYTHONPATH=. python scripts/train_wnba_props_frozen.py
           test -s "$WNBA_ARTIFACT_OUT_DIR/wow_wnba_prop_artifacts_v1.json"
           test -s "$WNBA_ARTIFACT_OUT_DIR/wow_wnba_prop_training_report_v1.json"
       - name: Register validated candidates through governed control plane
@@ -120,6 +136,8 @@ jobs:
               assert artifact.get("active") is False
               assert artifact.get("probability_publishable") is False
               assert artifact.get("can_execute") is False
+              assert artifact.get("source_snapshot_bundle_id")
+              assert artifact.get("source_attribution_required") is True
               metrics = artifact.get("validation_metrics") or {}
               assert metrics.get("validation_status") == "PASS"
               assert metrics.get("probability_publishable") is False
@@ -161,6 +179,7 @@ jobs:
               "status": payload.get("status"),
               "registered_n": payload.get("registered_n"),
               "routes": sorted(row.get("stat_type") for row in payload.get("registered", [])),
+              "source": "WOW_FROZEN_WNBA_SNAPSHOT",
               "can_execute": False,
           }, sort_keys=True))
           PY
