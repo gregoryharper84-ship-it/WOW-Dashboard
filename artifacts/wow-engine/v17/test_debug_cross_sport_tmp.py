@@ -1,13 +1,11 @@
 from v17.test_daily_snapshot_runtime import (
-    DB,
     Event,
-    Market,
     SLATE_DATE,
     _cross_sport_event,
     _cross_sport_feed,
     governed_team_result,
 )
-from v17.daily_snapshot_runtime import DailySnapshotRequest, run_daily_snapshot
+from v17.daily_snapshot_runtime import DailySnapshotRequest
 
 
 def test_debug_cross_sport_payload(monkeypatch):
@@ -26,18 +24,16 @@ def test_debug_cross_sport_payload(monkeypatch):
     for sport in ("NFL", "NHL", "SOCCER"):
         monkeypatch.delitem(TEAM_EVENT_BRIDGES, sport, raising=False)
 
-    payload = run_daily_snapshot(
-        DailySnapshotRequest(
-            requested_slate_date=SLATE_DATE,
-            requested_timezone="America/Chicago",
-            lanes=["MONEYLINE"],
-        ),
-        db=DB(),
-        market_api=Market,
-        event_api=Event,
+    req = DailySnapshotRequest(
+        requested_slate_date=SLATE_DATE,
+        requested_timezone="America/Chicago",
+        lanes=["MONEYLINE"],
     )
-    raise AssertionError(repr({
-        "blockers": payload.get("blockers"),
-        "audit": payload.get("cross_sport_discovery_audit"),
-        "rows": payload.get("rows"),
-    }))
+    # Call the cross-sport integration boundary directly so pytest prints the
+    # exact exception/traceback rather than run_daily_snapshot's typed wrapper.
+    runtime._cross_sport_moneyline_rows(
+        req,
+        run_id="debug-cross-sport",
+        event_api=Event,
+        covered_event_ids=set(),
+    )
