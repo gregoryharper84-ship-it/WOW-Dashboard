@@ -10,6 +10,10 @@ on:
       - "artifacts/wow-engine/mlb_1ip_training_dataset.py"
       - "artifacts/wow-engine/scripts/validate_mlb_1ip_line_expansion_2026.py"
       - "artifacts/wow-engine/research-fixtures/mlb_1ip_player_conditioning_dev_bundle_20260914.json"
+      - "artifacts/wow-engine/v17/certification/mlb_1ip_line_expansion_20260916.json"
+      - "artifacts/wow-engine/v17/mlb_1ip_line_expansion_maintenance.py"
+      - "artifacts/wow-engine/tests/test_mlb_1ip_exact_line_expansion.py"
+      - "artifacts/wow-engine/test_v17_mlb_1ip_line_expansion_maintenance.py"
   push:
     branches:
       - chatgpt/v17-1ip-line-expansion-20260916
@@ -20,13 +24,17 @@ on:
       - "artifacts/wow-engine/mlb_1ip_training_dataset.py"
       - "artifacts/wow-engine/scripts/validate_mlb_1ip_line_expansion_2026.py"
       - "artifacts/wow-engine/research-fixtures/mlb_1ip_player_conditioning_dev_bundle_20260914.json"
+      - "artifacts/wow-engine/v17/certification/mlb_1ip_line_expansion_20260916.json"
+      - "artifacts/wow-engine/v17/mlb_1ip_line_expansion_maintenance.py"
+      - "artifacts/wow-engine/tests/test_mlb_1ip_exact_line_expansion.py"
+      - "artifacts/wow-engine/test_v17_mlb_1ip_line_expansion_maintenance.py"
 
 permissions:
   contents: read
 
 concurrency:
   group: v17-1ip-line-expansion-validation-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   validate-line-expansion:
@@ -45,13 +53,14 @@ jobs:
           cache-dependency-path: artifacts/wow-engine/requirements.txt
       - name: Install engine dependencies
         run: pip install -r requirements.txt
-      - name: Compile validation and serving scorer
+      - name: Compile validation, serving, and maintenance modules
         run: >-
           python -m py_compile
           scripts/validate_mlb_1ip_line_expansion_2026.py
           mlb_1ip_player_conditioned.py
           mlb_1ip_empirical_specialist.py
-      - name: Run untouched-2026 exact-line validation
+          v17/mlb_1ip_line_expansion_maintenance.py
+      - name: Run independent early-2026 exact-line validation
         env:
           PYTHONPATH: .
           MLB_1IP_LINE_EXPANSION_OUT: /tmp/mlb-1ip-line-expansion
@@ -68,6 +77,7 @@ jobs:
           assert report['probability_publishable'] is False
           assert report['rank_eligible'] is False
           assert report['can_execute'] is False
+          assert report['sample_policy'] == 'EARLIEST_400_WARMUP_PLUS_700_TEST_FINAL_GAMES_2026'
           assert report['expansion_lines'] == [14.5, 16.5]
           for line in ('14.5', '16.5'):
               row = report['line_results'][line]
@@ -75,6 +85,14 @@ jobs:
               assert row['player_conditioned']['unique_probability_count'] >= 2
               assert row['lower_bound_unique_count'] >= 2
           PY
+      - name: Run exact-line serving and maintenance regressions
+        env:
+          PYTHONPATH: .
+        run: >-
+          python -m pytest -q
+          tests/test_mlb_1ip_exact_line_expansion.py
+          test_v17_mlb_1ip_line_expansion_maintenance.py
+          test_v17_github_oidc.py
       - name: Upload immutable validation packet
         if: always()
         uses: actions/upload-artifact@v4
