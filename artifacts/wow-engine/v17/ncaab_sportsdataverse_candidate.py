@@ -21,6 +21,7 @@ from typing import Any
 import requests
 
 from v17.binary_candidate_lifecycle import BinaryCandidateError, BinaryTrainingRow, train_binary_candidate
+from v17.d1_candidate_registry import D1RegistryError, persist_candidate
 
 CAN_EXECUTE = False
 SPORT = LEAGUE = "NCAAB"
@@ -211,9 +212,6 @@ def _summary(history: list[dict[str, Any]], start: datetime):
         "three_pct": mean("three_pct"),
         "games_prior_log": math.log1p(len(prior)),
         "rest_days_capped": max(0.0, min(21.0, (start - prior[-1]["start"]).total_seconds() / 86400.0)),
-        # Preserve direct provenance for the observations actually used by the
-        # rolling features and a tamper-evident digest/count for the full prior
-        # history used by games_prior_log, without retaining quadratic ID lists.
         "recent_event_ids": [str(row["event_id"]) for row in recent],
         "prior_event_count": len(prior_ids),
         "prior_event_ids_sha256": _json_hash(prior_ids),
@@ -301,6 +299,7 @@ def train_and_persist(client: Any, *, training_code_sha: str) -> dict[str, Any]:
         client.table("wow_d1_training_rows").upsert(
             batch,
             on_conflict="sport,official_event_id,feature_schema_version,source_manifest_sha256",
+            ignore_duplicates=True,
         ).execute()
 
     artifact = dict(candidate.artifact_payload)
@@ -308,10 +307,11 @@ def train_and_persist(client: Any, *, training_code_sha: str) -> dict[str, Any]:
     metrics = asdict(candidate.metrics) | {
         "research_screen_pass": candidate.research_screen_pass,
         "source_license": SOURCE_LICENSE,
+        "source_provenance_status": "CC_BY_4_0_PROVENANCE_READY",
         "market_features_used": False,
         "untouched_test": True,
     }
-    client.table("wow_d1_candidate_artifacts").upsert({
+    candidate_row = {
         "sport": SPORT, "league": LEAGUE, "market_family": MARKET_FAMILY,
         "model_family": MODEL_FAMILY, "model_artifact_version": version,
         "feature_schema_version": FEATURE_SCHEMA_VERSION, "source_policy_id": SOURCE_POLICY_ID,
@@ -320,14 +320,20 @@ def train_and_persist(client: Any, *, training_code_sha: str) -> dict[str, Any]:
         "calibrator_payload": dict(candidate.calibrator_payload), "validation_metrics": metrics,
         "training_rows": candidate.metrics.train_n, "calibration_rows": candidate.metrics.calibration_n,
         "test_rows": candidate.metrics.test_n, "research_screen_pass": candidate.research_screen_pass,
-        "source_review_status": "CC_BY_4_0_PROVENANCE_READY", "lifecycle_state": "CANDIDATE",
+        "source_review_status": "REQUIRED", "lifecycle_state": "CANDIDATE",
         "promoted": False, "active": False, "automatic_certification": False,
         "automatic_promotion": False, "probability_publishable": False, "can_execute": False,
-    }, on_conflict="model_artifact_version").execute()
+    }
+    try:
+        registration = persist_candidate(client, candidate_row)
+    except D1RegistryError as exc:
+        raise NCAABCandidateUnavailable(exc.code, str(exc)) from exc
     return {
         "ok": True, "code": "NCAAB_CANDIDATE_PERSISTED", "model_artifact_version": version,
         "eligible_rows": len(rows), "source_assets": sources, "metrics": metrics,
-        "research_screen_pass": candidate.research_screen_pass, "lifecycle_state": "CANDIDATE",
+        "research_screen_pass": candidate.research_screen_pass,
+        "source_review_status": "REQUIRED", "registry_status": registration.get("status"),
+        "lifecycle_state": "CANDIDATE",
         "automatic_certification": False, "automatic_promotion": False,
         "probability_publishable": False, "can_execute": False,
     }
