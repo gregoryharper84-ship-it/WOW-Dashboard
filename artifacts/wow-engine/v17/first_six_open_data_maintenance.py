@@ -11,6 +11,7 @@ from github_actions_oidc import scout_route_auth_dependency
 from v17.ncaab_sportsdataverse_candidate import NCAABCandidateUnavailable, train_and_persist as train_ncaab
 from v17.soccer_openfootball_candidate import SoccerCandidateUnavailable, train_all as train_soccer
 from v17.tennis_valuebet_candidate import TennisCandidateUnavailable, train_all as train_tennis
+from v17.team_state_challenger_maintenance import run_all_team_state_challengers
 
 CAN_EXECUTE = False
 
@@ -22,63 +23,56 @@ def _sha() -> str:
 def _run(name: str, fn: Callable[..., dict[str, Any]], db: Any) -> dict[str, Any]:
     sha = _sha()
     if len(sha) < 7:
-        return {
-            "status": "BLOCKED", "code": f"{name}_TRAINING_CODE_SHA_UNAVAILABLE",
-            "automatic_certification": False, "automatic_promotion": False,
-            "probability_publishable": False, "can_execute": False,
-        }
+        return {"status":"BLOCKED","code":f"{name}_TRAINING_CODE_SHA_UNAVAILABLE",
+                "automatic_certification":False,"automatic_promotion":False,"probability_publishable":False,"can_execute":False}
     try:
         result = fn(db, training_code_sha=sha)
     except (NCAABCandidateUnavailable, SoccerCandidateUnavailable, TennisCandidateUnavailable) as exc:
-        return {
-            "status": "BLOCKED", "code": exc.code, "detail": str(exc),
-            "automatic_certification": False, "automatic_promotion": False,
-            "probability_publishable": False, "can_execute": False,
-        }
-    except Exception as exc:  # noqa: BLE001 - typed maintenance boundary
-        return {
-            "status": "BLOCKED", "code": f"{name}_CANDIDATE_MAINTENANCE_FAILED",
-            "detail": {"error_type": type(exc).__name__},
-            "automatic_certification": False, "automatic_promotion": False,
-            "probability_publishable": False, "can_execute": False,
-        }
-    return {
-        "status": "CANDIDATE_EVIDENCE_UPDATED",
-        "generated_at": datetime.now(timezone.utc).isoformat(), **result,
-        "automatic_certification": False, "automatic_promotion": False,
-        "probability_publishable": False, "can_execute": False,
-    }
+        return {"status":"BLOCKED","code":exc.code,"detail":str(exc),"automatic_certification":False,
+                "automatic_promotion":False,"probability_publishable":False,"can_execute":False}
+    except Exception as exc:
+        return {"status":"BLOCKED","code":f"{name}_CANDIDATE_MAINTENANCE_FAILED","detail":{"error_type":type(exc).__name__},
+                "automatic_certification":False,"automatic_promotion":False,"probability_publishable":False,"can_execute":False}
+    return {"status":"CANDIDATE_EVIDENCE_UPDATED","generated_at":datetime.now(timezone.utc).isoformat(),**result,
+            "automatic_certification":False,"automatic_promotion":False,"probability_publishable":False,"can_execute":False}
 
 
-def install_first_six_open_data_maintenance_routes(
-    app: FastAPI, *, auth_dependency: Any, db_client_fn: Any,
-) -> None:
+def _run_team_state(db: Any) -> dict[str, Any]:
+    sha = _sha()
+    if len(sha) < 7:
+        return {"status":"BLOCKED","code":"TEAM_STATE_TRAINING_CODE_SHA_UNAVAILABLE","automatic_certification":False,
+                "automatic_promotion":False,"probability_publishable":False,"can_execute":False}
+    try:
+        result = run_all_team_state_challengers(db, training_code_sha=sha)
+    except Exception as exc:
+        return {"status":"BLOCKED","code":"TEAM_STATE_CHALLENGER_MAINTENANCE_FAILED","detail":{"error_type":type(exc).__name__},
+                "automatic_certification":False,"automatic_promotion":False,"probability_publishable":False,"can_execute":False}
+    return {**result,"automatic_certification":False,"automatic_promotion":False,"probability_publishable":False,"can_execute":False}
+
+
+def install_first_six_open_data_maintenance_routes(app: FastAPI, *, auth_dependency: Any, db_client_fn: Any) -> None:
     dependency = scout_route_auth_dependency(auth_dependency)
-    routes = {getattr(route, "path", None) for route in app.router.routes}
+    routes = {getattr(route,"path",None) for route in app.router.routes}
 
     if "/internal/v17/ncaab-model-maintenance" not in routes:
-        @app.post(
-            "/internal/v17/ncaab-model-maintenance", dependencies=[dependency],
-            operation_id="runWowV17NcaabModelMaintenance",
-        )
+        @app.post("/internal/v17/ncaab-model-maintenance",dependencies=[dependency],operation_id="runWowV17NcaabModelMaintenance")
         def run_ncaab_maintenance() -> dict[str, Any]:
-            return _run("NCAAB", train_ncaab, db_client_fn())
+            return _run("NCAAB",train_ncaab,db_client_fn())
 
     if "/internal/v17/soccer-model-maintenance" not in routes:
-        @app.post(
-            "/internal/v17/soccer-model-maintenance", dependencies=[dependency],
-            operation_id="runWowV17SoccerModelMaintenance",
-        )
+        @app.post("/internal/v17/soccer-model-maintenance",dependencies=[dependency],operation_id="runWowV17SoccerModelMaintenance")
         def run_soccer_maintenance() -> dict[str, Any]:
-            return _run("SOCCER", train_soccer, db_client_fn())
+            return _run("SOCCER",train_soccer,db_client_fn())
 
     if "/internal/v17/tennis-model-maintenance" not in routes:
-        @app.post(
-            "/internal/v17/tennis-model-maintenance", dependencies=[dependency],
-            operation_id="runWowV17TennisModelMaintenance",
-        )
+        @app.post("/internal/v17/tennis-model-maintenance",dependencies=[dependency],operation_id="runWowV17TennisModelMaintenance")
         def run_tennis_maintenance() -> dict[str, Any]:
-            return _run("TENNIS", train_tennis, db_client_fn())
+            return _run("TENNIS",train_tennis,db_client_fn())
+
+    if "/internal/v17/team-state-challenger-maintenance" not in routes:
+        @app.post("/internal/v17/team-state-challenger-maintenance",dependencies=[dependency],operation_id="runWowV17TeamStateChallengerMaintenance")
+        def run_team_state_challenger_maintenance() -> dict[str, Any]:
+            return _run_team_state(db_client_fn())
 
 
-__all__ = ["CAN_EXECUTE", "install_first_six_open_data_maintenance_routes"]
+__all__ = ["CAN_EXECUTE","install_first_six_open_data_maintenance_routes"]
