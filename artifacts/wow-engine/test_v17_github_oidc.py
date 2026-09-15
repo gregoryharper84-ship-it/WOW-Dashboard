@@ -30,6 +30,34 @@ def test_protected_workflow_ref_stays_pinned_to_nightly_multiscout_main():
     )
 
 
+def test_nfl_forward_shadow_workflow_is_explicitly_pinned_and_accepted():
+    assert oidc.NFL_FORWARD_SHADOW_WORKFLOW_REF.endswith(
+        "/.github/workflows/wow-v17-nfl-forward-shadow.yml@refs/heads/main"
+    )
+    claims = _claims()
+    claims["workflow_ref"] = oidc.NFL_FORWARD_SHADOW_WORKFLOW_REF
+    claims["event_name"] = "schedule"
+    assert oidc.validate_github_actions_claims(claims)["workflow_ref"] == oidc.NFL_FORWARD_SHADOW_WORKFLOW_REF
+
+
+def test_basketball_model_maintenance_workflow_is_explicitly_pinned_and_accepted():
+    assert oidc.BASKETBALL_MODEL_MAINTENANCE_WORKFLOW_REF.endswith(
+        "/.github/workflows/wow-v17-basketball-model-maintenance.yml@refs/heads/main"
+    )
+    claims = _claims()
+    claims["workflow_ref"] = oidc.BASKETBALL_MODEL_MAINTENANCE_WORKFLOW_REF
+    claims["event_name"] = "schedule"
+    assert oidc.validate_github_actions_claims(claims)["workflow_ref"] == oidc.BASKETBALL_MODEL_MAINTENANCE_WORKFLOW_REF
+
+
+def test_workflow_allowlist_contains_only_known_internal_workflows():
+    assert oidc.ALLOWED_WORKFLOW_REFS == frozenset({
+        oidc.WORKFLOW_REF,
+        oidc.NFL_FORWARD_SHADOW_WORKFLOW_REF,
+        oidc.BASKETBALL_MODEL_MAINTENANCE_WORKFLOW_REF,
+    })
+
+
 @pytest.mark.parametrize(
     ("field", "bad"),
     [
@@ -50,6 +78,22 @@ def test_oidc_claim_identity_mismatch_fails_closed(field, bad):
 
 def test_pull_request_oidc_is_never_authorized_for_live_scout():
     claims = _claims()
+    claims["event_name"] = "pull_request"
+    with pytest.raises(oidc.GitHubOIDCValidationError, match="EVENT_NOT_ALLOWED"):
+        oidc.validate_github_actions_claims(claims)
+
+
+def test_pull_request_oidc_is_never_authorized_for_nfl_forward_shadow():
+    claims = _claims()
+    claims["workflow_ref"] = oidc.NFL_FORWARD_SHADOW_WORKFLOW_REF
+    claims["event_name"] = "pull_request"
+    with pytest.raises(oidc.GitHubOIDCValidationError, match="EVENT_NOT_ALLOWED"):
+        oidc.validate_github_actions_claims(claims)
+
+
+def test_pull_request_oidc_is_never_authorized_for_basketball_maintenance():
+    claims = _claims()
+    claims["workflow_ref"] = oidc.BASKETBALL_MODEL_MAINTENANCE_WORKFLOW_REF
     claims["event_name"] = "pull_request"
     with pytest.raises(oidc.GitHubOIDCValidationError, match="EVENT_NOT_ALLOWED"):
         oidc.validate_github_actions_claims(claims)

@@ -1,9 +1,10 @@
-"""Strict GitHub Actions OIDC verifier for the WOW V17 Multi-Scout workflow.
+"""Strict GitHub Actions OIDC verifier for approved WOW V17 internal workflows.
 
 This is an internal automation credential path only. It does not replace
 WOW_ACTION_API_KEY for Custom GPT Actions and it never authorizes wager
 execution. Tokens are accepted only from GitHub's OIDC issuer for this exact
-repository, workflow, main ref, and a small set of non-PR production events.
+repository, an explicit workflow allowlist, protected main, and a small set of
+non-PR production events.
 """
 from __future__ import annotations
 
@@ -24,11 +25,22 @@ REPOSITORY_ID = "1240256887"
 REPOSITORY_OWNER_ID = "285088163"
 REF = "refs/heads/main"
 WORKFLOW_REF = f"{REPOSITORY}/.github/workflows/wow-v17-nightly-multiscout.yml@{REF}"
+NFL_FORWARD_SHADOW_WORKFLOW_REF = (
+    f"{REPOSITORY}/.github/workflows/wow-v17-nfl-forward-shadow.yml@{REF}"
+)
+BASKETBALL_MODEL_MAINTENANCE_WORKFLOW_REF = (
+    f"{REPOSITORY}/.github/workflows/wow-v17-basketball-model-maintenance.yml@{REF}"
+)
+ALLOWED_WORKFLOW_REFS = frozenset({
+    WORKFLOW_REF,
+    NFL_FORWARD_SHADOW_WORKFLOW_REF,
+    BASKETBALL_MODEL_MAINTENANCE_WORKFLOW_REF,
+})
 ALLOWED_EVENTS = frozenset({"push", "schedule", "workflow_dispatch"})
 
 
 class GitHubOIDCValidationError(ValueError):
-    """Raised when an OIDC token cannot satisfy the exact Scout trust policy."""
+    """Raised when an OIDC token cannot satisfy the exact internal trust policy."""
 
 
 def validate_github_actions_claims(claims: dict[str, Any]) -> dict[str, Any]:
@@ -37,13 +49,15 @@ def validate_github_actions_claims(claims: dict[str, Any]) -> dict[str, Any]:
         "repository_id": REPOSITORY_ID,
         "repository_owner_id": REPOSITORY_OWNER_ID,
         "ref": REF,
-        "workflow_ref": WORKFLOW_REF,
         "runner_environment": "github-hosted",
     }
     for field, expected in checks.items():
         actual = str(claims.get(field) or "")
         if actual != expected:
             raise GitHubOIDCValidationError(f"GITHUB_OIDC_{field.upper()}_MISMATCH")
+    workflow_ref = str(claims.get("workflow_ref") or "")
+    if workflow_ref not in ALLOWED_WORKFLOW_REFS:
+        raise GitHubOIDCValidationError("GITHUB_OIDC_WORKFLOW_REF_MISMATCH")
     event_name = str(claims.get("event_name") or "")
     if event_name not in ALLOWED_EVENTS:
         raise GitHubOIDCValidationError("GITHUB_OIDC_EVENT_NOT_ALLOWED")
@@ -70,7 +84,12 @@ def verify_github_actions_oidc(token: str, *, jwk_client: PyJWKClient | None = N
 
 
 def authorize_action_key_or_multiscout_oidc(authorization: str | None) -> str:
-    """Authorize an existing WOW Action bearer or the exact Scout OIDC token."""
+    """Authorize an existing WOW Action bearer or an approved workflow OIDC token.
+
+    The legacy function name is retained because existing Scout callers import
+    it directly. The verifier itself now supports only the explicit workflow
+    allowlist above; it is not a generic GitHub Actions credential.
+    """
     if not authorization or not authorization.startswith("Bearer "):
         raise GitHubOIDCValidationError("SCOUT_ROUTE_AUTH_REQUIRED")
     supplied = authorization[len("Bearer ") :]
@@ -120,8 +139,12 @@ def scout_route_auth_dependency(existing_auth_dependency: Any) -> Any:
 
 
 __all__ = [
+    "ALLOWED_WORKFLOW_REFS",
     "AUDIENCE",
+    "BASKETBALL_MODEL_MAINTENANCE_WORKFLOW_REF",
     "GitHubOIDCValidationError",
+    "NFL_FORWARD_SHADOW_WORKFLOW_REF",
+    "WORKFLOW_REF",
     "authorize_action_key_or_multiscout_oidc",
     "scout_route_auth_dependency",
     "validate_github_actions_claims",
