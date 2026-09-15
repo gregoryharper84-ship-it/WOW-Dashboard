@@ -67,6 +67,16 @@ def _defer_mlb_event_bridge_install(*, market_api, team_runtime) -> bool:
             team_event_module=team_runtime,
         )
 
+        # The MLB repair owns MLB scoring/taxonomy only. Its compatibility health
+        # route must not become the global terminal health publisher after the
+        # authoritative V17 team-event registry has already been installed.
+        # Restore the cross-sport overlay after the deferred repair so /health
+        # exposes registration/certification as separate axes for every sport.
+        if installed:
+            from v17.team_event_bridge_runtime import _install_health_overlay
+
+            _install_health_overlay()
+
         # team_event_probability_preservation is imported after v17.__init__ and
         # therefore captures the unpatched governance callable. Once the bridge is
         # safely installed at startup, point that wrapper at the patched callable
