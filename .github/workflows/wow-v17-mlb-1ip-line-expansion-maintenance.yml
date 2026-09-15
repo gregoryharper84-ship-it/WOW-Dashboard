@@ -1,0 +1,106 @@
+name: wow-v17-mlb-1ip-line-expansion-maintenance
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/wow-v17-mlb-1ip-line-expansion-maintenance.yml"
+      - "artifacts/wow-engine/v17/line_expansion_run_marker.txt"
+
+permissions:
+  contents: read
+
+jobs:
+  activate-certified-lines:
+    name: Activate certified MLB 1IP 14.5/16.5 support
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[RUN_1IP_LINE_EXPANSION]'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      WOW_ACTION_ORIGIN: https://wow-governed-probability-engine.onrender.com
+      WOW_CAN_EXECUTE: "false"
+      WOW_DRY_RUN_ONLY: "true"
+    steps:
+      - name: Assert fail-closed governance
+        run: |
+          test "$WOW_CAN_EXECUTE" = "false"
+          test "$WOW_DRY_RUN_ONLY" = "true"
+          test -n "$ACTIONS_ID_TOKEN_REQUEST_URL"
+          test -n "$ACTIONS_ID_TOKEN_REQUEST_TOKEN"
+
+      - name: Invoke protected exact-line certification maintenance
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import time
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+          from http.client import IncompleteRead, RemoteDisconnected
+
+          origin = os.environ['WOW_ACTION_ORIGIN'].rstrip('/')
+          endpoint = origin + '/internal/v17/mlb-1ip-line-expansion-maintenance'
+
+          def token():
+              oidc_url = os.environ['ACTIONS_ID_TOKEN_REQUEST_URL']
+              sep = '&' if '?' in oidc_url else '?'
+              oidc_url += sep + urllib.parse.urlencode({'audience': 'wow-v17-multiscout'})
+              request = urllib.request.Request(
+                  oidc_url,
+                  headers={'Authorization': f"Bearer {os.environ['ACTIONS_ID_TOKEN_REQUEST_TOKEN']}"},
+              )
+              with urllib.request.urlopen(request, timeout=20) as response:
+                  payload = json.load(response)
+              value = str(payload.get('value') or '')
+              if not value:
+                  raise RuntimeError('GITHUB_OIDC_TOKEN_MISSING')
+              return value
+
+          result = None
+          for attempt in range(1, 61):
+              request = urllib.request.Request(
+                  endpoint,
+                  data=b'{}',
+                  method='POST',
+                  headers={
+                      'Authorization': f'Bearer {token()}',
+                      'Content-Type': 'application/json',
+                      'Accept': 'application/json',
+                  },
+              )
+              try:
+                  with urllib.request.urlopen(request, timeout=180) as response:
+                      result = json.load(response)
+                  break
+              except urllib.error.HTTPError as exc:
+                  if exc.code not in {404, 429, 502, 503, 504} or attempt == 60:
+                      body = exc.read().decode('utf-8', errors='replace')
+                      raise RuntimeError(f'MLB_1IP_LINE_EXPANSION_HTTP_{exc.code}:{body[:800]}') from exc
+              except (urllib.error.URLError, TimeoutError, RemoteDisconnected, IncompleteRead, ConnectionResetError, ConnectionAbortedError) as exc:
+                  if attempt == 60:
+                      raise RuntimeError('MLB_1IP_LINE_EXPANSION_TRANSPORT_FAILED') from exc
+              time.sleep(10)
+
+          if not isinstance(result, dict):
+              raise RuntimeError('MLB_1IP_LINE_EXPANSION_RESPONSE_MISSING')
+          if result.get('status') not in {'PROMOTED', 'ALREADY_ACTIVE'}:
+              raise RuntimeError('MLB_1IP_LINE_EXPANSION_NOT_ACTIVATED:' + json.dumps(result, sort_keys=True))
+          if result.get('validated_lines') != [11.5, 13.5, 14.5, 15.5, 16.5, 17.5, 19.5, 21.5]:
+              raise RuntimeError('MLB_1IP_LINE_EXPANSION_GRID_MISMATCH')
+          if result.get('probability_publishable') is not False:
+              raise RuntimeError('MLB_1IP_LINE_EXPANSION_PUBLICATION_INVARIANT_FAILED')
+          if result.get('rank_eligible') is not False:
+              raise RuntimeError('MLB_1IP_LINE_EXPANSION_RANK_INVARIANT_FAILED')
+          if result.get('can_execute') is not False:
+              raise RuntimeError('MLB_1IP_LINE_EXPANSION_EXECUTION_INVARIANT_FAILED')
+          print('MLB_1IP_LINE_EXPANSION_RESULT ' + json.dumps(result, sort_keys=True))
+          PY

@@ -1,0 +1,40 @@
+{
+  "aggregate_artifact": {
+    "artifact_checksum": "3fd0fbd528f7b07556dfb93c41674a4f486e5d4fab70b33bfdac33fc7b4ef7a6",
+    "artifact_payload": {
+      "artifact_checksum": "3fd0fbd528f7b07556dfb93c41674a4f486e5d4fab70b33bfdac33fc7b4ef7a6",
+      "artifact_format": "JSON_CONDITIONAL_DISCRETE_PMF_V1",
+      "bf_weights": {"3": 0.3490990990990991, "4": 0.30180180180180183, "5_PLUS": 0.3490990990990991},
+      "can_execute": false,
+      "conditional_total_pitch_counts": {
+        "3": {"9": 63, "10": 53, "11": 72, "12": 45, "13": 60, "14": 59, "15": 51, "16": 30, "17": 19, "18": 7, "19": 4, "20": 1, "22": 1},
+        "4": {"9": 5, "10": 10, "11": 21, "12": 20, "13": 40, "14": 46, "15": 43, "16": 41, "17": 42, "18": 45, "19": 31, "20": 21, "21": 9, "22": 6, "23": 11, "24": 4, "25": 2, "26": 1, "27": 3, "29": 1},
+        "5_PLUS": {"11": 2, "12": 3, "13": 11, "14": 12, "15": 15, "16": 15, "17": 24, "18": 29, "19": 34, "20": 28, "21": 33, "22": 38, "23": 30, "24": 31, "25": 23, "26": 20, "27": 20, "28": 14, "29": 17, "30": 15, "31": 10, "32": 9, "33": 7, "34": 7, "35": 2, "36": 4, "37": 1, "38": 1, "39": 1, "40": 2, "41": 3, "42": 2, "43": 1, "45": 1}
+      },
+      "model_family": "MLB_1IP_CONDITIONAL_TOTAL_PITCH_PMF_V1",
+      "probability_publishable": false,
+      "training_rows": 1332
+    },
+    "model_family": "MLB_1IP_CONDITIONAL_TOTAL_PITCH_PMF_V1",
+    "training_rows": 1332,
+    "validated_lines": [11.5, 13.5, 15.5, 17.5, 19.5, 21.5]
+  },
+  "bf_artifact": {
+    "alpha": 50.0,
+    "artifact_checksum": "6dfda83565d5af658408261c49645ee83345afa75a08590d8a2af2dc9a46ae73",
+    "historical_validation_passed": true,
+    "historical_validation_rows": 1331,
+    "league_prior": {"3": 0.33562691131498473, "4": 0.31116207951070335, "5_PLUS": 0.3532110091743119},
+    "model_family": "MLB_1IP_BF_DIRICHLET_SHRINKAGE_V1",
+    "recent_history_limit": 10
+  },
+  "bundle_type": "MLB_1IP_PLAYER_CONDITIONING_DEVELOPMENT_SNAPSHOT_V1",
+  "created_for": "2026_UNTOUCHED_PLAYER_DISCRIMINATION_TEST",
+  "governance": {
+    "can_execute": false,
+    "development_data": ["2024", "2025"],
+    "new_untouched_test": "2026 settled games through 2026-09-13",
+    "probability_publishable": false,
+    "rank_eligible": false
+  }
+}

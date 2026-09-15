@@ -1,0 +1,128 @@
+{
+  "bound_invariant_failures": 0,
+  "can_execute": false,
+  "cutoff_date": "2026-09-13",
+  "expansion_lines": [14.5, 16.5],
+  "games_attempted": 1100,
+  "gates": {
+    "max_brier_regression": 0.005,
+    "max_ece": 0.06,
+    "max_gap_rate": 0.05,
+    "min_auc_gain": 0.01,
+    "min_mature_rows_per_line": 500,
+    "min_probability_std": 0.002
+  },
+  "line_results": {
+    "14.5": {
+      "aggregate": {
+        "auc": 0.5,
+        "brier": 0.23381042950140338,
+        "calibration_bias": -0.020822709501946313,
+        "ece": 0.020822709501946313,
+        "mean_probability": 0.6081081081081166,
+        "n": 954,
+        "observed_hit_rate": 0.6289308176100629,
+        "probability_std": 0.0,
+        "unique_probability_count": 1
+      },
+      "auc_gain": 0.015560263653483952,
+      "brier_delta": -0.0005074664635004167,
+      "lower_bound_unique_count": 183,
+      "mean_calibrated_lower_bound": 0.5875190429224534,
+      "player_conditioned": {
+        "auc": 0.515560263653484,
+        "brier": 0.23330296303790296,
+        "calibration_bias": -0.014920088371448204,
+        "ece": 0.014920088371447381,
+        "mean_probability": 0.6140107292386147,
+        "n": 954,
+        "observed_hit_rate": 0.6289308176100629,
+        "probability_std": 0.014976487139056402,
+        "unique_probability_count": 183
+      }
+    },
+    "15.5": {
+      "aggregate": {
+        "auc": 0.5,
+        "brier": 0.2484869813719887,
+        "calibration_bias": -0.015652444897723217,
+        "ece": 0.015652444897723217,
+        "mean_probability": 0.5262762762762809,
+        "n": 954,
+        "observed_hit_rate": 0.5419287211740041,
+        "probability_std": 0.0,
+        "unique_probability_count": 1
+      },
+      "auc_gain": 0.014619637142642139,
+      "brier_delta": -0.00045511209827320265,
+      "lower_bound_unique_count": 183,
+      "mean_calibrated_lower_bound": 0.5056572341134172,
+      "player_conditioned": {
+        "auc": 0.5146196371426421,
+        "brier": 0.2480318692737155,
+        "calibration_bias": -0.009419670256560209,
+        "ece": 0.013316827174618288,
+        "mean_probability": 0.5325090509174439,
+        "n": 954,
+        "observed_hit_rate": 0.5419287211740041,
+        "probability_std": 0.016681243369421606,
+        "unique_probability_count": 183
+      }
+    },
+    "16.5": {
+      "aggregate": {
+        "auc": 0.5,
+        "brier": 0.24889738667785608,
+        "calibration_bias": -0.00474531134909234,
+        "ece": 0.00474531134909234,
+        "mean_probability": 0.46171171171170433,
+        "n": 954,
+        "observed_hit_rate": 0.46645702306079667,
+        "probability_std": 0.0,
+        "unique_probability_count": 1
+      },
+      "auc_gain": 0.021981854705194093,
+      "brier_delta": -0.00041695366258731603,
+      "lower_bound_unique_count": 183,
+      "mean_calibrated_lower_bound": 0.44115917021577716,
+      "player_conditioned": {
+        "auc": 0.5219818547051941,
+        "brier": 0.24848043301526876,
+        "calibration_bias": 0.0013267299908107932,
+        "ece": 0.0019336411013054179,
+        "mean_probability": 0.46778375305160746,
+        "n": 954,
+        "observed_hit_rate": 0.46645702306079667,
+        "probability_std": 0.017498950816614563,
+        "unique_probability_count": 183
+      }
+    }
+  },
+  "mature_assignment_rows": 2862,
+  "partition_failures": 0,
+  "probability_publishable": false,
+  "promotion_status": "REVIEW_REQUIRED",
+  "purpose": "MLB_1IP_EXACT_LINE_EXPANSION_14_5_16_5_INDEPENDENT_EARLY_2026",
+  "rank_eligible": false,
+  "sample_policy": "EARLIEST_400_WARMUP_PLUS_700_TEST_FINAL_GAMES_2026",
+  "sentinel_lines": [15.5],
+  "source_gap_rate": 0.0,
+  "source_gaps": [],
+  "test_games": 700,
+  "validation_failures": [],
+  "validation_lineage": {
+    "aggregate_artifact_checksum": "3fd0fbd528f7b07556dfb93c41674a4f486e5d4fab70b33bfdac33fc7b4ef7a6",
+    "assignments_hash": "ec0ece484272744c0ae674d8866b8f3e6bcfa22572c6a8caf83c0e57b0f4458b",
+    "bf_artifact_checksum": "6dfda83565d5af658408261c49645ee83345afa75a08590d8a2af2dc9a46ae73",
+    "cutoff_date": "2026-09-13",
+    "sample_policy": "EARLIEST_400_WARMUP_PLUS_700_TEST_FINAL_GAMES_2026",
+    "source_manifest_hash": "053ffd5c0b2bc9c60873408149d429216822430d178070b41f4bdbd768f5fb32",
+    "test_games": 700,
+    "validation_code_sha": "e09e29f5397ca83bafe0973708c7f161db588c90",
+    "validation_lineage_hash": "439fc1b1267eb4da0053bbcfe1ae8cae782392a2f45eb78ddcdcf8f745a03078",
+    "validation_lines": [14.5, 16.5, 15.5],
+    "warmup_games": 400
+  },
+  "validation_passed": true,
+  "warmup_games": 400
+}
