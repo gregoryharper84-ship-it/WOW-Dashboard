@@ -74,6 +74,30 @@ jobs:
           test_v17_github_oidc.py
           test_v17_prop_cross_sport_activation.py
           v17/test_prop_capability_manifest.py
+      - name: Dry-run immutable-source WNBA candidate training
+        env:
+          WNBA_ARTIFACT_OUT_DIR: /tmp/wow-wnba-prop-candidate-verify
+        run: |
+          mkdir -p "$WNBA_ARTIFACT_OUT_DIR"
+          PYTHONPATH=. python scripts/train_wnba_props_frozen.py
+          test -s "$WNBA_ARTIFACT_OUT_DIR/wow_wnba_prop_artifacts_v1.json"
+          test -s "$WNBA_ARTIFACT_OUT_DIR/wow_wnba_prop_training_report_v1.json"
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          from v17.wnba_prop_candidate_registry import WNBAPropCandidateArtifact, validate_candidate
+
+          artifacts = json.loads(
+              Path(os.environ["WNBA_ARTIFACT_OUT_DIR"], "wow_wnba_prop_artifacts_v1.json").read_text()
+          )
+          assert len(artifacts) == 4
+          for artifact in artifacts:
+              row = validate_candidate(WNBAPropCandidateArtifact(**artifact))
+              assert row["lifecycle_state"] == "CANDIDATE"
+              assert row["probability_publishable"] is False
+              assert row["can_execute"] is False
+          PY
 
   train-and-register:
     name: Train and register WNBA prop candidates
