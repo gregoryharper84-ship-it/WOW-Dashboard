@@ -140,6 +140,18 @@ def test_route_dependency_preserves_original_auth_failure_when_oidc_invalid(monk
     assert caught.value.detail == "original-action-auth"
 
 
+def test_model_maintenance_pushes_are_verification_only_to_avoid_render_checkspass_cycle():
+    repo_root = Path(__file__).resolve().parents[2]
+    for filename in (
+        "wow-v17-ncaaf-model-maintenance.yml",
+        "wow-v17-nhl-model-maintenance.yml",
+    ):
+        workflow = (repo_root / ".github" / "workflows" / filename).read_text(encoding="utf-8")
+        assert "push:" in workflow
+        assert "github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'" in workflow
+        assert "github.event_name == 'push' && github.ref == 'refs/heads/main'" not in workflow
+
+
 def test_secret_sync_workflow_is_protected_main_only_and_never_pr_exposed():
     repo_root = Path(__file__).resolve().parents[2]
     workflow = (repo_root / ".github" / "workflows" / "wow-v17-secret-sync.yml").read_text(

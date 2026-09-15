@@ -24,6 +24,7 @@ on:
       - "artifacts/wow-engine/test_v17_nhl_candidate_pipeline.py"
       - "artifacts/wow-engine/test_v17_nhl_model_maintenance.py"
       - "artifacts/wow-engine/test_v17_capability_build_registry.py"
+      - "artifacts/wow-engine/test_v17_github_oidc.py"
   pull_request:
     paths:
       - ".github/workflows/wow-v17-nhl-model-maintenance.yml"
@@ -42,6 +43,7 @@ on:
       - "artifacts/wow-engine/test_v17_nhl_candidate_pipeline.py"
       - "artifacts/wow-engine/test_v17_nhl_model_maintenance.py"
       - "artifacts/wow-engine/test_v17_capability_build_registry.py"
+      - "artifacts/wow-engine/test_v17_github_oidc.py"
 
 permissions:
   contents: read
@@ -77,9 +79,11 @@ jobs:
           test_v17_capability_build_registry.py
           test_v17_github_oidc.py
 
+  # Live maintenance must never be a push check while Render uses checksPass.
+  # Otherwise the job waits for the new endpoint while Render waits for the job.
   maintain:
     name: Advance NHL research candidate evidence
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     needs: verify
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -123,9 +127,6 @@ jobs:
           endpoint = os.environ["WOW_ACTION_ORIGIN"].rstrip("/") + "/internal/v17/nhl-model-maintenance"
           payload = None
           last_error = None
-          # A protected-main push can start this job at the same time Render is
-          # deploying the commit that introduces the endpoint. Retry only
-          # deployment/transient statuses; all other HTTP failures remain hard.
           for attempt in range(20):
               request = urllib.request.Request(
                   endpoint,

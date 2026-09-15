@@ -83,9 +83,11 @@ jobs:
           test_v17_capability_build_registry.py
           test_v17_github_oidc.py
 
+  # Live maintenance is schedule/dispatch only. Push remains verification-only
+  # so Render checksPass cannot deadlock on an endpoint that has not deployed yet.
   maintain:
     name: Advance NCAAF research candidate evidence
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     needs: verify
     runs-on: ubuntu-latest
     timeout-minutes: 30
