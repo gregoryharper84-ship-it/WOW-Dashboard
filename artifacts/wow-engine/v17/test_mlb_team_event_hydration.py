@@ -32,6 +32,7 @@ class _Api:
 def _req(**updates):
     base = dict(
         official_event_id="823983",
+        requested_slate_date="2099-09-02",
         event_start_time_utc="2099-09-03T01:38:00Z",
         home_team="Los Angeles Angels",
         away_team="New York Yankees",
@@ -45,6 +46,7 @@ def _req(**updates):
 def _row(**updates):
     base = dict(
         official_event_id="823983",
+        official_date="2099-09-02",
         event_start_time="2099-09-03T01:38:00Z",
         event_status="Scheduled",
         home_team="Los Angeles Angels",
@@ -75,6 +77,7 @@ def test_823983_shape_hydrates_all_required_event_fields_from_canonical_snapshot
         "away_lineup_status": "PROJECTED",
     }
     assert result["canonical_source_snapshot_id"] == "c2419143-687b-4bef-b9b5-1f589f497b56"
+    assert result["canonical_official_event_id"] == "823983"
     assert result["caller_source_snapshot_id"] == "KALSHI-SNAPSHOT-823983"
     assert result["can_execute"] is False
 
