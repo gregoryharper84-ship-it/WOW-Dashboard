@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -79,6 +80,57 @@ def test_valid_candidate_is_normalized_to_inert_registry_row():
     assert row["probability_publishable"] is False
     assert row["can_execute"] is False
     assert "certification_eligible" not in row
+
+
+def test_frozen_candidate_provenance_is_accepted_verified_and_stripped_from_table_row():
+    artifacts_path = Path(__file__).resolve().parent / "data" / "wow_wnba_prop_artifacts_v1.json"
+    artifact_doc = json.loads(artifacts_path.read_text(encoding="utf-8"))[0]
+    candidate = WNBAPropCandidateArtifact(**artifact_doc)
+    row = validate_candidate(candidate)
+
+    assert candidate.source_snapshot_bundle_id == "wnba-2026-20260904"
+    assert candidate.source_attribution_required is True
+    assert row["validation_metrics"]["source"]["source_snapshot"]["bundle_id"] == "wnba-2026-20260904"
+    assert row["validation_metrics"]["source"]["source_snapshot"]["grants_model_capability"] is False
+    assert row["probability_publishable"] is False
+    assert row["can_execute"] is False
+    for field in (
+        "numeric_canonicalization_decimals",
+        "source_snapshot_bundle_id",
+        "source_provider",
+        "source_license_id",
+        "source_attribution_required",
+    ):
+        assert field not in row
+
+
+def test_frozen_candidate_source_mismatch_fails_closed():
+    source_snapshot = {
+        "bundle_id": "wnba-2026-20260904",
+        "provider": "SPORTSDATAVERSE_WNBA_STATS",
+        "license_id": "CC-BY-4.0",
+        "attribution_required": True,
+        "grants_model_capability": False,
+        "probability_publishable": False,
+        "can_execute": False,
+    }
+    candidate = _candidate(
+        numeric_canonicalization_decimals=12,
+        source_snapshot_bundle_id="wrong-bundle",
+        source_provider="SPORTSDATAVERSE_WNBA_STATS",
+        source_license_id="CC-BY-4.0",
+        source_attribution_required=True,
+        validation_metrics={
+            "validation_status": "PASS",
+            "blockers": [],
+            "probability_publishable": False,
+            "can_execute": False,
+            "source": {"source_snapshot": source_snapshot},
+        },
+    )
+    with pytest.raises(HTTPException) as caught:
+        validate_candidate(candidate)
+    assert "WNBA_PROP_FROZEN_SOURCE_BUNDLE_MISMATCH" in caught.value.detail["blockers"]
 
 
 def test_checksum_mismatch_fails_closed():
