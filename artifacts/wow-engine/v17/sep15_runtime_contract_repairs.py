@@ -216,7 +216,7 @@ def install_post_mlb_bridge_repairs(*, market_api: Any, team_runtime: Any) -> bo
     original_score_event = getattr(event_api, "score_event", None)
     original_governance = getattr(team_runtime, "_run_mlb_llp_governance", None)
     original_canonicalize = getattr(team_runtime, "_canonicalize_public_mlb_request", None)
-    if not all(callable(value) for value in (original_score_event, original_governance, original_canonicalize)):
+    if not callable(original_score_event) or not callable(original_governance):
         return False
 
     from v17.mlb_team_event_hydration import resolve_mlb_team_event_evidence
@@ -224,6 +224,8 @@ def install_post_mlb_bridge_repairs(*, market_api: Any, team_runtime: Any) -> bo
 
     def canonicalize_provider_identity(req: Any, event_api_arg: Any) -> Any:
         """Rewrite a provider id only after the server ledger proves one MLB id."""
+        if not callable(original_canonicalize):
+            return req
         resolution = resolve_mlb_team_event_evidence(req, event_api=event_api_arg)
         canonical_id = (
             str(resolution.get("canonical_official_event_id") or "").strip()
@@ -288,10 +290,16 @@ def install_post_mlb_bridge_repairs(*, market_api: Any, team_runtime: Any) -> bo
             event_api=event_api,
         )
 
-    team_runtime._canonicalize_public_mlb_request = canonicalize_provider_identity
+    if callable(original_canonicalize):
+        team_runtime._canonicalize_public_mlb_request = canonicalize_provider_identity
+        team_runtime._v17_sep15_provider_identity_repair_installed = True
+    else:
+        # Projected-score recovery predates public canonicalization wrapping and is
+        # independently installable in tests/partial runtimes. Preserve that
+        # compatibility rather than making the optional identity repair mandatory.
+        team_runtime._v17_sep15_provider_identity_repair_installed = False
     event_api.score_event = score_event_with_projected_lineup
     team_runtime._run_mlb_llp_governance = governance_with_projected_rehydration
-    team_runtime._v17_sep15_provider_identity_repair_installed = True
     team_runtime._v17_sep15_projected_lineup_composition_repair_installed = True
     market_api._v17_sep15_mlb_contract_repairs_installed = True
     return True
