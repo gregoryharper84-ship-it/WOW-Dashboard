@@ -110,12 +110,6 @@ jobs:
           python - <<'PY'
           import json, os, time, urllib.error, urllib.parse, urllib.request
 
-          oidc_url = os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"]
-          oidc_url += ("&" if "?" in oidc_url else "?") + urllib.parse.urlencode({"audience":"wow-v17-multiscout"})
-          token_request = urllib.request.Request(oidc_url, headers={"Authorization":f"Bearer {os.environ['ACTIONS_ID_TOKEN_REQUEST_TOKEN']}"})
-          with urllib.request.urlopen(token_request, timeout=20) as response:
-              token = json.load(response)["value"]
-
           origin = os.environ["WOW_ACTION_ORIGIN"].rstrip("/")
           endpoints = [
               ("BASKETBALL","/internal/v17/basketball-model-maintenance"),
@@ -126,9 +120,20 @@ jobs:
               ("TEAM_STATE","/internal/v17/team-state-challenger-maintenance"),
           ]
 
+          def fresh_oidc_token():
+              oidc_url = os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"]
+              oidc_url += ("&" if "?" in oidc_url else "?") + urllib.parse.urlencode({"audience":"wow-v17-multiscout"})
+              token_request = urllib.request.Request(
+                  oidc_url,
+                  headers={"Authorization":f"Bearer {os.environ['ACTIONS_ID_TOKEN_REQUEST_TOKEN']}"},
+              )
+              with urllib.request.urlopen(token_request, timeout=20) as response:
+                  return json.load(response)["value"]
+
           def post_with_deploy_retry(name, path):
               last = None
               for attempt in range(60):
+                  token = fresh_oidc_token()
                   request = urllib.request.Request(origin+path, data=b"", method="POST",
                       headers={"Authorization":f"Bearer {token}","Content-Type":"application/json"})
                   try:
