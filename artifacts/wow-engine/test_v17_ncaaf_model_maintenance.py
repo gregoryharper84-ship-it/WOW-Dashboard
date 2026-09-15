@@ -8,6 +8,7 @@ import pytest
 import v17.ncaaf_model_maintenance as maintenance
 from ncaaf_candidate_training_runner import NCAAFTrainingRunnerUnavailable
 from ncaaf_cfbd_client import CFBDUnavailable
+from v17.ncaaf_result_form_candidate import NCAAFResultFormUnavailable
 
 
 class DummyDB:
@@ -30,11 +31,7 @@ class Snapshot:
 
 def _install_successful_acquisition(monkeypatch, *, complete_rows: int):
     monkeypatch.setattr(maintenance.CFBDClient, "from_environment", classmethod(lambda cls: object()))
-    monkeypatch.setattr(
-        maintenance,
-        "hydrate_cfbd_season",
-        lambda *args, **kwargs: [Snapshot()],
-    )
+    monkeypatch.setattr(maintenance, "hydrate_cfbd_season", lambda *args, **kwargs: [Snapshot()])
     monkeypatch.setattr(maintenance, "persist_source_snapshots", lambda db, rows: len(rows))
     monkeypatch.setattr(maintenance, "materialize_training_games", lambda db, rows: FakeGames())
     monkeypatch.setattr(
@@ -74,18 +71,61 @@ def test_missing_cfbd_configuration_fails_closed_before_any_model_work(monkeypat
     assert result["can_execute"] is False
 
 
-def test_incomplete_feature_corpus_does_not_attempt_candidate_training(monkeypatch):
+def test_incomplete_rich_feature_corpus_uses_separate_prior_result_candidate(monkeypatch):
     _install_successful_acquisition(monkeypatch, complete_rows=299)
-    called = []
-    monkeypatch.setattr(maintenance, "train_and_persist_candidate", lambda *a, **k: called.append(True))
+    rich_called = []
+    fallback_called = []
+    monkeypatch.setattr(maintenance, "train_and_persist_candidate", lambda *a, **k: rich_called.append(True))
+
+    def fallback(_db, *, training_code_sha):
+        fallback_called.append(training_code_sha)
+        return {
+            "ok": True,
+            "code": "NCAAF_RESULT_FORM_CANDIDATE_PERSISTED",
+            "model_artifact_version": "result-form-v1",
+            "feature_schema_version": "NCAAF_RESULT_FORM_PRIOR_V1",
+            "eligible_rows": 1200,
+            "metrics": {"research_screen_pass": True},
+            "research_screen_pass": True,
+            "lifecycle_state": "CANDIDATE",
+            "automatic_certification": False,
+            "automatic_promotion": False,
+            "probability_publishable": False,
+            "can_execute": False,
+        }
+
+    monkeypatch.setattr(maintenance, "train_result_form_candidate", fallback)
     result = maintenance.run_ncaaf_model_maintenance(
         DummyDB(), seasons=[2026], weeks=[1], training_code_sha="a" * 40
     )
-    assert called == []
-    assert result["status"] == "BLOCKED"
-    assert result["training_blocker"]["code"] == "NCAAF_COMPLETE_TRAINING_ROWS_INSUFFICIENT"
+    assert rich_called == []
+    assert fallback_called == ["a" * 40]
+    assert result["status"] == "CANDIDATE_EVIDENCE_UPDATED"
+    assert result["candidate_lane"] == "RESULT_FORM_PRIOR_V1"
+    assert result["candidate_training"]["lifecycle_state"] == "CANDIDATE"
     assert result["feature_compilation"]["complete_feature_rows"] == 299
     assert result["feature_compilation"]["market_features_used"] is False
+    assert result["automatic_certification"] is False
+    assert result["automatic_promotion"] is False
+    assert result["probability_publishable"] is False
+    assert result["can_execute"] is False
+
+
+def test_prior_result_fallback_failure_preserves_typed_blocker(monkeypatch):
+    _install_successful_acquisition(monkeypatch, complete_rows=0)
+
+    def fail(*_args, **_kwargs):
+        raise NCAAFResultFormUnavailable("NCAAF_RESULT_FORM_SAMPLE_INSUFFICIENT", "not enough prior-result rows")
+
+    monkeypatch.setattr(maintenance, "train_result_form_candidate", fail)
+    result = maintenance.run_ncaaf_model_maintenance(
+        DummyDB(), seasons=[2026], weeks=[1], training_code_sha="d" * 40
+    )
+    assert result["status"] == "BLOCKED"
+    assert result["candidate_lane"] == "RESULT_FORM_PRIOR_V1"
+    assert result["training_blocker"]["code"] == "NCAAF_RESULT_FORM_SAMPLE_INSUFFICIENT"
+    assert "NCAAF_RESULT_FORM_SAMPLE_INSUFFICIENT" in result["blockers"]
+    assert result["probability_publishable"] is False
     assert result["can_execute"] is False
 
 
@@ -112,6 +152,7 @@ def test_complete_corpus_can_only_create_candidate_evidence(monkeypatch):
         DummyDB(), seasons=[2026], weeks=[1], training_code_sha="b" * 40
     )
     assert result["status"] == "CANDIDATE_EVIDENCE_UPDATED"
+    assert result["candidate_lane"] == "RICH_FEATURES_V1"
     assert result["candidate_training"]["lifecycle_state"] == "CANDIDATE"
     assert result["candidate_training"]["calibration_health_status"] == "BLOCKED"
     assert result["automatic_certification"] is False
