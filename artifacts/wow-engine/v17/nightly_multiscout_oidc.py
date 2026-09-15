@@ -108,9 +108,15 @@ def _eligible_for_secondary(result: scout.FetchResult) -> bool:
 
 
 def configure_source_failure_scope() -> None:
-    # Typed vendor failures are row/source blockers. Caller auth remains fail-closed
-    # before this point; a 429 that survives all research fallbacks remains slate-terminal.
-    scout.TERMINAL_SOURCE_HTTP_STATUSES = {429}
+    """Keep provider-local acquisition failures from terminating all-sport discovery.
+
+    Caller auth/OIDC failures remain fail-closed before this point. A provider
+    429 that survives secondary and tertiary research fallbacks is persisted as
+    a typed row/sport source blocker, but it must not stop independent sports or
+    later events from being scanned. This changes acquisition scope only; it does
+    not grant probability or execution authority.
+    """
+    scout.TERMINAL_SOURCE_HTTP_STATUSES = set()
 
 
 def configure_acquisition_router() -> None:
@@ -192,9 +198,6 @@ def install_refreshable_oidc_proxy_auth() -> None:
 
             last_result = original(path, params)
             if last_result.ok:
-                # TheRundown is a standing additive current-board source for ML
-                # event discovery, not merely a tertiary fallback. If it is
-                # unavailable, preserve the already-successful primary result.
                 augmented, audit = augment_event_discovery(path, last_result.data)
                 _remember_event_context(path, augmented)
                 result = scout.FetchResult(True, augmented, last_result.status or 200, code=last_result.code)
@@ -224,8 +227,6 @@ def install_refreshable_oidc_proxy_auth() -> None:
                         event.setdefault("_wow_rundown_board_audit", audit)
             return result
 
-        # Tertiary tier: subscription market-evidence feeds. Same research
-        # ceiling as every other tier — evidence only, never probability.
         tertiary = market_evidence_for_request(path, params, event_context, primary_failure=primary_failure)
         if tertiary.ok:
             _remember_event_context(path, tertiary.data)
