@@ -4,6 +4,7 @@ name: WNBA Prop Offline Fit
 on:
   push:
     branches:
+      - main
       - chatgpt/p1-wnba-prop-offline-fit
       - feat/v17-wnba-certification-replay-20260905
     paths:
@@ -37,6 +38,23 @@ on:
       - 'artifacts/wow-engine/test_wnba_prop_certification_replay.py'
       - 'artifacts/wow-engine/data/wow_wnba_prop_artifacts_v1.json'
       - 'artifacts/wow-engine/data/source_snapshots/wnba/**'
+      - 'artifacts/wow-engine/migrations/*wnba*prop*certification*.sql'
+      - '.github/workflows/wnba-prop-offline-fit.yml'
+  pull_request:
+    paths:
+      - 'artifacts/wow-engine/scripts/train_wnba_props_frozen.py'
+      - 'artifacts/wow-engine/scripts/audit_wnba_prop_certification_replay.py'
+      - 'artifacts/wow-engine/wnba_training_source.py'
+      - 'artifacts/wow-engine/wnba_prop_training_contract.py'
+      - 'artifacts/wow-engine/wnba_prop_model_adapter.py'
+      - 'artifacts/wow-engine/wnba_prop_calibration_adapter.py'
+      - 'artifacts/wow-engine/wnba_prop_auto_hydration.py'
+      - 'artifacts/wow-engine/wnba_prop_certification_replay.py'
+      - 'artifacts/wow-engine/historical_source_manifest_v1.json'
+      - 'artifacts/wow-engine/test_wnba_prop_certification_replay.py'
+      - 'artifacts/wow-engine/data/wow_wnba_prop_artifacts_v1.json'
+      - 'artifacts/wow-engine/data/source_snapshots/wnba/**'
+      - 'artifacts/wow-engine/migrations/*wnba*prop*certification*.sql'
       - '.github/workflows/wnba-prop-offline-fit.yml'
   workflow_dispatch:
 
@@ -99,6 +117,20 @@ jobs:
           --replay data/wnba-replay/wow_wnba_prop_artifacts_v1.json
           --manifest historical_source_manifest_v1.json
           --report data/wnba_prop_certification_replay_v1.json
+
+      - name: Assert lifecycle review readiness without promotion
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          report = json.loads(Path('data/wnba_prop_certification_replay_v1.json').read_text())
+          assert report['certification_replay_status'] == 'READY_FOR_LIFECYCLE_REVIEW'
+          assert report['ready_for_lifecycle_review'] is True
+          assert report['artifact_replay_match'] is True
+          assert report['blockers'] == []
+          assert report['probability_publishable'] is False
+          assert report['can_execute'] is False
+          PY
 
       - name: Upload governed replay evidence
         if: always()
