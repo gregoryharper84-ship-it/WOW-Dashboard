@@ -12,16 +12,20 @@ on:
       - "artifacts/wow-engine/github_actions_oidc.py"
       - "artifacts/wow-engine/v17/nfl_forward_shadow.py"
       - "artifacts/wow-engine/team_event_request_runtime.py"
+      - "artifacts/wow-engine/basketball_training_replay.py"
       - "artifacts/wow-engine/test_v17_nfl_forward_shadow.py"
       - "artifacts/wow-engine/test_v17_github_oidc.py"
+      - "artifacts/wow-engine/test_basketball_training_freshness.py"
   pull_request:
     paths:
       - ".github/workflows/wow-v17-nfl-forward-shadow.yml"
       - "artifacts/wow-engine/github_actions_oidc.py"
       - "artifacts/wow-engine/v17/nfl_forward_shadow.py"
       - "artifacts/wow-engine/team_event_request_runtime.py"
+      - "artifacts/wow-engine/basketball_training_replay.py"
       - "artifacts/wow-engine/test_v17_nfl_forward_shadow.py"
       - "artifacts/wow-engine/test_v17_github_oidc.py"
+      - "artifacts/wow-engine/test_basketball_training_freshness.py"
 
 permissions:
   contents: read
@@ -32,7 +36,7 @@ concurrency:
 
 jobs:
   verify:
-    name: Verify NFL forward-shadow contract
+    name: Verify cross-sport capability phase 1
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -46,11 +50,12 @@ jobs:
           cache-dependency-path: artifacts/wow-engine/requirements.txt
       - name: Install engine dependencies
         run: pip install -r requirements.txt
-      - name: Run forward-shadow and OIDC regressions
+      - name: Run forward-shadow, OIDC, and basketball freshness regressions
         run: >-
           python -m pytest -q
           test_v17_nfl_forward_shadow.py
           test_v17_github_oidc.py
+          test_basketball_training_freshness.py
 
   forward-shadow:
     name: Grade immutable NFL forward predictions
