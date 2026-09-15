@@ -33,7 +33,8 @@ def test_current_known_build_states_are_explicit():
     assert capability_build_plan("NBA").status == "CURRENT_DATA_PENDING"
     assert capability_build_plan("WNBA").status == "CURRENT_DATA_PENDING"
     assert capability_build_plan("NCAAF").status == "EVIDENCE_CORPUS_PENDING"
-    for sport in ("NCAAB", "NHL", "SOCCER", "TENNIS", "PGA", "MMA", "BOXING"):
+    assert capability_build_plan("NHL").status == "EVIDENCE_CORPUS_PENDING"
+    for sport in ("NCAAB", "SOCCER", "TENNIS", "PGA", "MMA", "BOXING"):
         assert capability_build_plan(sport).status == "FITTED_SPECIALIST_PENDING"
 
 

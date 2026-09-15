@@ -23,6 +23,7 @@ from ncaaf_cfbd_client import CFBDClient, CFBDUnavailable
 from ncaaf_cfbd_hydrator import hydrate_cfbd_season, persist_source_snapshots
 from ncaaf_training_materializer import materialize_training_games
 from ncaaf_feature_compiler import materialize_complete_training_features
+from v17.nhl_model_maintenance import install_nhl_model_maintenance_route
 
 CAN_EXECUTE = False
 PROBABILITY_PUBLISHABLE = False
@@ -173,6 +174,15 @@ def install_ncaaf_model_maintenance_route(
     auth_dependency: Any,
     db_client_fn: Any,
 ) -> None:
+    # Compose the next D1 candidate lane at the same authenticated internal
+    # maintenance boundary. This remains candidate-only and does not alter
+    # serving/scoring ownership for NCAAF or NHL.
+    install_nhl_model_maintenance_route(
+        app,
+        auth_dependency=auth_dependency,
+        db_client_fn=db_client_fn,
+    )
+
     path = "/internal/v17/ncaaf-model-maintenance"
     if any(getattr(route, "path", None) == path for route in app.router.routes):
         return

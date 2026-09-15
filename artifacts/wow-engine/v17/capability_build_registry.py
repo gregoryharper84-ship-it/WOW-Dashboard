@@ -1,7 +1,7 @@
 """Step-0 build classification for V17 cross-sport capability work.
 
 This registry separates deterministic contracts (D0), fitted/simulation math (D1),
-evidence agents (A1), and multi-source research orchestration (A2).  It is a
+evidence agents (A1), and multi-source research orchestration (A2). It is a
 build-planning contract only and never creates model capability.
 
 Controlling sporting probability is D1 for every team/event winner lane below.
@@ -50,7 +50,10 @@ TEAM_EVENT_BUILD_REGISTRY: dict[str, CapabilityBuildPlan] = {
     "WNBA": CapabilityBuildPlan("WNBA", "D1", ("A1",), "CURRENT_DATA_PENDING", True, False, False, False, False),
     "NCAAF": CapabilityBuildPlan("NCAAF", "D1", ("A1", "A2"), "EVIDENCE_CORPUS_PENDING", True, False, False, False, False),
     "NCAAB": CapabilityBuildPlan("NCAAB", "D1", ("A1",), "FITTED_SPECIALIST_PENDING", True, False, False, False, False),
-    "NHL": CapabilityBuildPlan("NHL", "D1", ("A1",), "FITTED_SPECIALIST_PENDING", True, False, False, False, False),
+    # Phase 3 now has a real NHL fitted-candidate implementation. It remains
+    # non-publishable while the governed corpus/source review and prospective
+    # evidence are built, so this is not a certification claim.
+    "NHL": CapabilityBuildPlan("NHL", "D1", ("A1",), "EVIDENCE_CORPUS_PENDING", True, False, False, False, False),
     "SOCCER": CapabilityBuildPlan("SOCCER", "D1", ("A1", "A2"), "FITTED_SPECIALIST_PENDING", True, False, False, False, False),
     "TENNIS": CapabilityBuildPlan("TENNIS", "D1", ("A1",), "FITTED_SPECIALIST_PENDING", True, False, False, False, False),
     "PGA": CapabilityBuildPlan("PGA", "D1", ("A1", "A2"), "FITTED_SPECIALIST_PENDING", True, False, False, False, False),
