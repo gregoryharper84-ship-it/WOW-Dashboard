@@ -56,10 +56,15 @@ jobs:
           test_v17_wnba_prop_candidate_registry.py
           test_wnba_prop_model_adapter.py
           test_v17_github_oidc.py
+          test_v17_prop_cross_sport_activation.py
+          v17/test_prop_capability_manifest.py
 
   train-and-register:
     name: Train and register WNBA prop candidates
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    # A protected-main push touching this lane should not wait for the next
+    # weekly schedule to populate the candidate registry. Registration remains
+    # candidate-only: no certification, promotion, publication, or execution.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.event_name == 'push'
     needs: verify
     runs-on: ubuntu-latest
     timeout-minutes: 25
