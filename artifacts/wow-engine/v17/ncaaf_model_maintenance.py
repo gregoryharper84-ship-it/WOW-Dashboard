@@ -62,6 +62,7 @@ def run_ncaaf_model_maintenance(
     source_snapshot_n = source_persisted_n = 0
     training_game_candidate_n = training_game_persisted_n = 0
     acquisition_blockers: set[str] = set()
+    refresh_complete = True
     for season in season_values:
         try:
             snapshots = hydrate_cfbd_season(
@@ -70,8 +71,22 @@ def run_ncaaf_model_maintenance(
             persisted_n = persist_source_snapshots(db, snapshots)
             games = materialize_training_games(db, snapshots)
         except CFBDUnavailable as exc:
-            return _blocked(exc.code, stage="CFBD_ACQUISITION", detail={"season": season})
+            # A source refresh outage must remain visible, but it does not erase
+            # an already-persisted settled corpus. The separate result/form lane
+            # is allowed to evaluate that corpus without claiming refresh success.
+            refresh_complete = False
+            acquisition_blockers.add(exc.code)
+            acquisition.append({
+                "season": season,
+                "status": "BLOCKED",
+                "code": exc.code,
+                "detail": str(exc),
+                "using_existing_corpus": True,
+            })
+            break
         except Exception as exc:  # noqa: BLE001
+            # Non-provider failures may indicate persistence/schema corruption;
+            # do not train through those failures.
             return _blocked(
                 "NCAAF_HISTORY_HYDRATION_FAILED", stage="CFBD_ACQUISITION",
                 detail={"season": season, "error_type": type(exc).__name__},
@@ -83,7 +98,7 @@ def run_ncaaf_model_maintenance(
         acquisition_blockers.update(code for snap in snapshots for code in snap.blocker_codes)
         acquisition_blockers.update(games.blocker_codes)
         acquisition.append({
-            "season": season, "source_snapshot_n": len(snapshots),
+            "season": season, "status": "COMPLETE", "source_snapshot_n": len(snapshots),
             "source_snapshot_persisted_n": persisted_n, "training_games": asdict(games),
         })
 
@@ -123,6 +138,7 @@ def run_ncaaf_model_maintenance(
     return {
         "status": status, "generated_at": datetime.now(timezone.utc).isoformat(),
         "seasons": list(season_values), "weeks": [min(week_values), max(week_values)],
+        "refresh_status": "COMPLETE" if refresh_complete else "BLOCKED_USING_EXISTING_CORPUS",
         "acquisition": acquisition, "source_snapshot_n": source_snapshot_n,
         "source_snapshot_persisted_n": source_persisted_n,
         "training_game_candidate_n": training_game_candidate_n,
@@ -142,11 +158,28 @@ def install_ncaaf_model_maintenance_route(app: FastAPI, *, auth_dependency: Any,
     install_first_six_open_data_maintenance_routes(
         app, auth_dependency=auth_dependency, db_client_fn=db_client_fn
     )
+    dependency = scout_route_auth_dependency(auth_dependency)
+
+    deployment_path = "/internal/v17/runtime-deployment"
+    if not any(getattr(route, "path", None) == deployment_path for route in app.router.routes):
+        @app.get(
+            deployment_path,
+            dependencies=[dependency],
+            operation_id="getWowV17RuntimeDeployment",
+        )
+        def runtime_deployment() -> dict[str, Any]:
+            return {
+                "git_commit": str(os.getenv("RENDER_GIT_COMMIT") or os.getenv("GIT_COMMIT_SHA") or "").strip().lower(),
+                "runtime_generation": "V17_ACTIVE",
+                "probability_publishable": False,
+                "can_execute": False,
+            }
+
     path = "/internal/v17/ncaaf-model-maintenance"
     if any(getattr(route, "path", None) == path for route in app.router.routes):
         return
 
-    @app.post(path, dependencies=[scout_route_auth_dependency(auth_dependency)], operation_id="runWowV17NcaafModelMaintenance")
+    @app.post(path, dependencies=[dependency], operation_id="runWowV17NcaafModelMaintenance")
     def run_maintenance() -> dict[str, Any]:
         return run_ncaaf_model_maintenance(db_client_fn())
 
