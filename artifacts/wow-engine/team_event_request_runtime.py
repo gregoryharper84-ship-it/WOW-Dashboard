@@ -57,16 +57,34 @@ def _event_id(row: TeamEventRequestRow) -> str:
     return row.event_key[len(prefix):] if row.event_key.upper().startswith(prefix) else row.event_key
 
 
+def _latest_pass(query: Any) -> Optional[dict[str, Any]]:
+    result = query.eq("feature_hydration_status", "PASS").order("snapshot_timestamp", desc=True).limit(2).execute()
+    rows = result.data or []
+    if not rows:
+        return None
+    event_ids = {str(item.get("official_event_id") or "") for item in rows}
+    return rows[0] if len(event_ids) == 1 else None
+
+
 def _hydrate(db: Any, row: TeamEventRequestRow) -> Optional[dict[str, Any]]:
-    result = (
-        db.table("wow_mlb_forward_shadow_events")
-        .select("official_event_id,official_date,event_start_time,home_team,away_team,"
-                "venue_name,home_probable_pitcher,away_probable_pitcher,snapshot_id,"
-                "snapshot_timestamp,feature_hydration_status")
-        .eq("official_event_id", _event_id(row)).eq("official_date", row.event_date)
-        .order("snapshot_timestamp", desc=True).limit(1).execute()
+    fields = ("official_event_id,official_date,event_start_time,home_team,away_team,"
+              "venue_name,home_probable_pitcher,away_probable_pitcher,snapshot_id,"
+              "snapshot_timestamp,feature_hydration_status")
+    table = db.table("wow_mlb_forward_shadow_events")
+    direct = _latest_pass(
+        table.select(fields).eq("official_event_id", _event_id(row)).eq("official_date", row.event_date)
     )
-    return (result.data or [None])[0]
+    if direct:
+        return direct
+    if not row.home_team or not row.away_team or not row.event_start_time_utc:
+        return None
+    return _latest_pass(
+        table.select(fields)
+        .eq("official_date", row.event_date)
+        .eq("home_team", row.home_team)
+        .eq("away_team", row.away_team)
+        .eq("event_start_time", row.event_start_time_utc)
+    )
 
 
 def _score_request(row: TeamEventRequestRow, event: dict[str, Any]) -> dict[str, Any]:
