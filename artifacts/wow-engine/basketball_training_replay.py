@@ -3,14 +3,15 @@
 This wrapper turns the persisted settled-game corpus into an auditable training
 chain before fitting:
 
-  source provenance -> deterministic pregame features -> persisted feature hash
-  -> independent league fit -> V17 calibration -> SHADOW evidence
+  source provenance -> corpus freshness -> deterministic pregame features
+  -> persisted feature hash -> independent league fit -> V17 calibration
+  -> SHADOW evidence
 
 It never promotes/activates an artifact and never enables execution.
 """
 from __future__ import annotations
 
-from datetime import datetime, time, timezone
+from datetime import date, datetime, time, timezone
 import hashlib
 import json
 from typing import Any
@@ -19,6 +20,7 @@ from basketball_specialist_pipeline import _client, fit_and_persist, load_games
 from basketball_team_event_specialist import FEATURE_NAMES, FEATURE_SCHEMA_VERSION, build_pregame_features
 
 can_execute: bool = False
+MAX_TRAINING_CORPUS_AGE_DAYS = 400
 
 TRAIN_TABLES = {
     "NBA": "wow_nba_training_games",
@@ -89,6 +91,74 @@ def verify_training_provenance(client: Any, sport: str) -> dict[str, Any]:
     }
 
 
+def evaluate_training_freshness(
+    sport: str,
+    latest_game_date: str | date,
+    *,
+    as_of: date | None = None,
+    max_age_days: int = MAX_TRAINING_CORPUS_AGE_DAYS,
+) -> dict[str, Any]:
+    """Require basketball training evidence to include a recent season.
+
+    Four hundred days intentionally spans one complete annual league cycle plus
+    offseason. A corpus older than that is useful research history but cannot be
+    treated as current V17 certification evidence for a 2026 specialist.
+    """
+    normalized = sport.upper().strip()
+    if normalized not in TRAIN_TABLES:
+        raise ValueError(f"unsupported sport {normalized}")
+    if max_age_days <= 0:
+        raise ValueError("max_age_days must be positive")
+    latest = latest_game_date if isinstance(latest_game_date, date) else date.fromisoformat(str(latest_game_date)[:10])
+    cutoff_date = as_of or datetime.now(timezone.utc).date()
+    age_days = (cutoff_date - latest).days
+    if age_days < 0:
+        raise RuntimeError(f"{normalized}_TRAINING_CORPUS_FUTURE_DATED latest={latest.isoformat()}")
+    result = {
+        "sport": normalized,
+        "latest_game_date": latest.isoformat(),
+        "as_of": cutoff_date.isoformat(),
+        "age_days": age_days,
+        "max_age_days": int(max_age_days),
+        "freshness_status": "PASS" if age_days <= int(max_age_days) else "STALE",
+        "can_execute": False,
+    }
+    if age_days > int(max_age_days):
+        raise RuntimeError(
+            f"{normalized}_TRAINING_CORPUS_STALE latest={latest.isoformat()} "
+            f"age_days={age_days} max_age_days={int(max_age_days)}"
+        )
+    return result
+
+
+def verify_training_freshness(
+    client: Any,
+    sport: str,
+    *,
+    as_of: date | None = None,
+    max_age_days: int = MAX_TRAINING_CORPUS_AGE_DAYS,
+) -> dict[str, Any]:
+    normalized = sport.upper().strip()
+    table = TRAIN_TABLES[normalized]
+    result = (
+        client.table(table)
+        .select("game_date")
+        .eq("settled", True)
+        .order("game_date", desc=True)
+        .limit(1)
+        .execute()
+    )
+    rows = list(result.data or [])
+    if not rows or not rows[0].get("game_date"):
+        raise RuntimeError(f"{normalized}_TRAINING_CORPUS_EMPTY")
+    return evaluate_training_freshness(
+        normalized,
+        rows[0]["game_date"],
+        as_of=as_of,
+        max_age_days=max_age_days,
+    )
+
+
 def persist_feature_replay(client: Any, sport: str) -> dict[str, Any]:
     sport = sport.upper().strip()
     games = load_games(client, sport)
@@ -157,6 +227,7 @@ def run_training_replay(sport: str, client: Any | None = None) -> dict[str, Any]
         raise ValueError(f"unsupported sport {sport}")
     client = client or _client()
     provenance = verify_training_provenance(client, sport)
+    freshness = verify_training_freshness(client, sport)
     feature_replay = persist_feature_replay(client, sport)
     fit = fit_and_persist(
         sport,
@@ -164,6 +235,7 @@ def run_training_replay(sport: str, client: Any | None = None) -> dict[str, Any]
         provenance_complete=bool(provenance.get("provenance_complete")),
     )
     fit["provenance_preflight"] = provenance
+    fit["freshness_preflight"] = freshness
     fit["feature_replay"] = feature_replay
     fit["promotion_attempted"] = False
     fit["can_execute"] = False
