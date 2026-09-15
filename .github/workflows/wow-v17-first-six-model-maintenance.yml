@@ -23,6 +23,7 @@ on:
       - "artifacts/wow-engine/basketball_training_replay.py"
       - "artifacts/wow-engine/basketball_specialist_pipeline.py"
       - "artifacts/wow-engine/test_v17_first_six_certification.py"
+      - "artifacts/wow-engine/test_v17_first_six_source_contracts.py"
       - "artifacts/wow-engine/test_v17_github_oidc.py"
   pull_request:
     paths:
@@ -37,6 +38,7 @@ on:
       - "artifacts/wow-engine/v17/tennis_valuebet_candidate.py"
       - "artifacts/wow-engine/v17/first_six_open_data_maintenance.py"
       - "artifacts/wow-engine/test_v17_first_six_certification.py"
+      - "artifacts/wow-engine/test_v17_first_six_source_contracts.py"
       - "artifacts/wow-engine/test_v17_github_oidc.py"
 
 permissions:
@@ -66,6 +68,7 @@ jobs:
         run: >-
           python -m pytest -q
           test_v17_first_six_certification.py
+          test_v17_first_six_source_contracts.py
           test_v17_team_event_specialist_ownership.py
           test_v17_ncaaf_model_maintenance.py
           test_v17_basketball_model_maintenance.py
