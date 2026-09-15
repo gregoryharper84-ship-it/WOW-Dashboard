@@ -79,6 +79,12 @@ def test_scout_wrapper_keeps_legacy_proxy_key_path(monkeypatch):
     assert scout_oidc.scout.proxy_get is original
 
 
+def test_provider_429_is_not_global_scout_terminal(monkeypatch):
+    monkeypatch.setattr(scout, "TERMINAL_SOURCE_HTTP_STATUSES", {401, 403, 429})
+    scout_oidc.configure_source_failure_scope()
+    assert scout.TERMINAL_SOURCE_HTTP_STATUSES == set()
+
+
 def test_auto_advance_refreshes_oidc_on_401_and_retries_only_failed_request(monkeypatch):
     posts = []
     minted = []
