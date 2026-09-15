@@ -61,11 +61,18 @@ def _defer_mlb_event_bridge_install(*, market_api, team_runtime) -> bool:
     @app.on_event("startup")
     async def install_mlb_event_bridge_after_imports():
         from v17.mlb_event_bridge_repair import install_mlb_event_bridge_repair
+        from v17.sep15_runtime_contract_repairs import install_post_mlb_bridge_repairs
 
         installed = install_mlb_event_bridge_repair(
             market_api=market_api,
             team_event_module=team_runtime,
         )
+        post_repair_installed = False
+        if installed:
+            post_repair_installed = install_post_mlb_bridge_repairs(
+                market_api=market_api,
+                team_runtime=team_runtime,
+            )
 
         # The MLB repair owns MLB scoring/taxonomy only. Its compatibility health
         # route must not become the global terminal health publisher after the
@@ -78,12 +85,18 @@ def _defer_mlb_event_bridge_install(*, market_api, team_runtime) -> bool:
             _install_health_overlay()
 
         # team_event_probability_preservation is imported after v17.__init__ and
-        # therefore captures the unpatched governance callable. Once the bridge is
-        # safely installed at startup, point that wrapper at the patched callable
-        # so evidence handoff still traverses the stage-audit taxonomy.
+        # therefore captures the unpatched governance callable. Once the bridge and
+        # projected-lineup composition repair are safely installed at startup,
+        # point that wrapper at the final callable so completed morning scores are
+        # preserved while final ranking remains held for lineup refresh.
         preservation = sys.modules.get("v17.team_event_probability_preservation")
         if installed and preservation is not None:
             preservation._original_run_mlb_llp_governance = team_runtime._run_mlb_llp_governance
+
+        if installed and not post_repair_installed:
+            _MLB_BRIDGE_ACCEPTANCE_LOGGER.error(
+                "V17_SEP15_MLB_POST_BRIDGE_REPAIR=FAIL can_execute=false"
+            )
 
         # A dedicated production flag runs one authenticated, non-secret smoke
         # test against a real confirmed pregame MLB event after startup completes.
@@ -115,7 +128,16 @@ def compose_active_runtime() -> bool:
     from v17.numerical_engine_production_bridge import install_production_bridges
     from v17.llp_rundown_market_bridge import install_llp_rundown_market_bridge
     from v17.rundown_credential_diagnostic import log_rundown_credential_status
+    from v17.sep15_runtime_contract_repairs import (
+        install_market_prior_ingress_repair,
+        install_rundown_v2_auth_repair,
+    )
     from v17 import team_event_request_runtime as team_runtime
+
+    # Repair provider auth and optional market-prior ingress before any live
+    # team/event market bridge can use those contracts.
+    rundown_auth_ok = install_rundown_v2_auth_repair()
+    market_prior_ok = install_market_prior_ingress_repair(team_runtime)
 
     # Route the non-secret diagnostic through Uvicorn's configured logger so it
     # reliably reaches Render app logs during process startup.
@@ -138,10 +160,12 @@ def compose_active_runtime() -> bool:
         )
 
     return bool(
-        prop_ok or lineup_ok or rehydration_ok or rundown_llp_ok or numerical_ok or mlb_event_bridge_deferred
+        rundown_auth_ok or market_prior_ok
+        or prop_ok or lineup_ok or rehydration_ok or rundown_llp_ok or numerical_ok or mlb_event_bridge_deferred
         or getattr(market_api, "_v17_certified_numerical_bridge_installed", False)
         or getattr(market_api, "_v17_mlb_event_bridge_repair_installed", False)
         or getattr(team_runtime, "_v17_llp_rundown_market_bridge_installed", False)
+        or getattr(team_runtime, "_v17_sep15_market_prior_ingress_repair_installed", False)
     )
 
 
