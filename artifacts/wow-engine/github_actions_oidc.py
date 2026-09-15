@@ -31,10 +31,18 @@ NFL_FORWARD_SHADOW_WORKFLOW_REF = (
 BASKETBALL_MODEL_MAINTENANCE_WORKFLOW_REF = (
     f"{REPOSITORY}/.github/workflows/wow-v17-basketball-model-maintenance.yml@{REF}"
 )
+NCAAF_MODEL_MAINTENANCE_WORKFLOW_REF = (
+    f"{REPOSITORY}/.github/workflows/wow-v17-ncaaf-model-maintenance.yml@{REF}"
+)
+WNBA_PROP_CANDIDATE_WORKFLOW_REF = (
+    f"{REPOSITORY}/.github/workflows/wow-v17-wnba-prop-candidate.yml@{REF}"
+)
 ALLOWED_WORKFLOW_REFS = frozenset({
     WORKFLOW_REF,
     NFL_FORWARD_SHADOW_WORKFLOW_REF,
     BASKETBALL_MODEL_MAINTENANCE_WORKFLOW_REF,
+    NCAAF_MODEL_MAINTENANCE_WORKFLOW_REF,
+    WNBA_PROP_CANDIDATE_WORKFLOW_REF,
 })
 ALLOWED_EVENTS = frozenset({"push", "schedule", "workflow_dispatch"})
 
@@ -143,7 +151,9 @@ __all__ = [
     "AUDIENCE",
     "BASKETBALL_MODEL_MAINTENANCE_WORKFLOW_REF",
     "GitHubOIDCValidationError",
+    "NCAAF_MODEL_MAINTENANCE_WORKFLOW_REF",
     "NFL_FORWARD_SHADOW_WORKFLOW_REF",
+    "WNBA_PROP_CANDIDATE_WORKFLOW_REF",
     "WORKFLOW_REF",
     "authorize_action_key_or_multiscout_oidc",
     "scout_route_auth_dependency",
