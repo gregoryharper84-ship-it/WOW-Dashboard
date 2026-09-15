@@ -28,10 +28,14 @@ def test_tennis_contract_ignores_odds_and_separates_atp_wta():
     assert tennis._completed_score("W/O") is False
 
 
-def test_first_six_workflow_cannot_run_maintenance_on_pull_request():
+def test_first_six_workflow_never_runs_maintenance_from_pull_request_and_push_is_marker_gated():
     repo_root = Path(__file__).resolve().parents[2]
     text = (repo_root / ".github" / "workflows" / "wow-v17-first-six-model-maintenance.yml").read_text()
     assert "pull_request:" in text
-    assert "if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'" in text
+    assert "github.event_name == 'schedule'" in text
+    assert "github.event_name == 'workflow_dispatch'" in text
+    assert "github.event_name == 'push'" in text
+    assert "github.ref == 'refs/heads/main'" in text
+    assert "contains(github.event.head_commit.message, '[RUN_FIRST_SIX]')" in text
     assert 'WOW_CAN_EXECUTE: "false"' in text
     assert 'WOW_DRY_RUN_ONLY: "true"' in text
