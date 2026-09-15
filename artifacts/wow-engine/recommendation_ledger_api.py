@@ -19,6 +19,7 @@ from v17.postmortem_engine import install_postmortem_routes
 
 _NAMESPACE = uuid.UUID("3f750180-e938-4cb0-af6f-2a58e32facb5")
 _ALLOWED_RESULTS = {"WIN", "LOSS", "PUSH", "VOID"}
+_TRACE_PAYLOAD_KEY = "_wow_trace"
 
 
 def _aware(value: str) -> datetime:
@@ -150,6 +151,33 @@ class SettlementBatch(BaseModel):
         return self
 
 
+def _publication_trace_id(batch: RecommendationBatch) -> str:
+    """Deterministic trace id for one write-before-display publication batch.
+
+    The host should call /record-recommendations once per final publication/card.
+    This id therefore becomes the user-visible card trace id for a card request,
+    while the child recommendation_record_ids remain the settlement join keys.
+    """
+    row_identities = sorted(
+        f"{row.row_key}|{row.event_id}|{row.selection}" for row in batch.rows
+    )
+    identity = "|".join(
+        (
+            batch.research_run_id,
+            batch.request_id or "",
+            batch.source_conversation_ref or "",
+            "||".join(row_identities),
+        )
+    )
+    return str(uuid.uuid5(_NAMESPACE, f"publication|{identity}"))
+
+
+def _trace_status(row: RecommendationRow) -> str:
+    if row.probability_publishable and row.governed_prediction_id:
+        return "GOVERNED_PREGAME_REGISTERED"
+    return "PREGAME_RECOMMENDATION_REGISTERED"
+
+
 def install_recommendation_ledger_routes(
     app: FastAPI,
     *,
@@ -159,11 +187,25 @@ def install_recommendation_ledger_routes(
     @app.post("/record-recommendations", dependencies=[auth_dependency])
     def record_recommendations(batch: RecommendationBatch):
         recorded_at = datetime.now(timezone.utc)
+        publication_trace_id = _publication_trace_id(batch)
         payloads = []
         for row in batch.rows:
             identity = f"{batch.research_run_id}|{row.row_key}|{row.event_id}|{row.selection}"
             record_id = uuid.uuid5(_NAMESPACE, identity)
             row_payload = row.model_dump()
+            display_payload = dict(row_payload.get("display_payload") or {})
+            # _wow_trace is backend-owned. Caller-provided content at this key is
+            # replaced so a response cannot spoof persistence/trace authority.
+            display_payload[_TRACE_PAYLOAD_KEY] = {
+                "publication_trace_id": publication_trace_id,
+                "recommendation_record_id": str(record_id),
+                "governed_prediction_id": row.governed_prediction_id,
+                "governed_prediction_table": row.governed_prediction_table,
+                "trace_status": _trace_status(row),
+                "recorded_at": recorded_at.isoformat(),
+                "can_execute": False,
+            }
+            row_payload["display_payload"] = display_payload
             row_payload.update(
                 {
                     "recommendation_record_id": str(record_id),
@@ -202,6 +244,8 @@ def install_recommendation_ledger_routes(
                     status_code=503,
                     detail={
                         "code": "RECOMMENDATION_LEDGER_WRITE_FAILED",
+                        "publication_trace_id": publication_trace_id,
+                        "trace_status": "TRACE_REGISTRATION_FAILED",
                         "display_authorized": False,
                         "can_execute": False,
                     },
@@ -214,15 +258,39 @@ def install_recommendation_ledger_routes(
                 status_code=503,
                 detail={
                     "code": "RECOMMENDATION_LEDGER_WRITE_UNPROVEN",
+                    "publication_trace_id": publication_trace_id,
+                    "trace_status": "TRACE_REGISTRATION_UNPROVEN",
                     "display_authorized": False,
                     "can_execute": False,
                 },
             )
+
+        trace_receipts = []
+        for item in payloads:
+            trace = item["display_payload"][_TRACE_PAYLOAD_KEY]
+            trace_receipts.append(
+                {
+                    "row_key": item["row_key"],
+                    "recommendation_record_id": item["recommendation_record_id"],
+                    "governed_prediction_id": item.get("governed_prediction_id"),
+                    "governed_prediction_table": item.get("governed_prediction_table"),
+                    "terminal_label": item["terminal_label"],
+                    "probability_publishable": item["probability_publishable"],
+                    "trace_status": trace["trace_status"],
+                    "display_authorized": True,
+                    "recorded_at": recorded_at.isoformat(),
+                    "can_execute": False,
+                }
+            )
+
         return {
             "code": "RECOMMENDATION_LEDGER_WRITE_PASS",
             "rows_in": len(payloads),
             "rows_persisted": len(persisted_ids),
             "recommendation_record_ids": persisted_ids,
+            "publication_trace_id": publication_trace_id,
+            "trace_receipts": trace_receipts,
+            "all_rows_traceable": len(trace_receipts) == len(payloads),
             "display_authorized": True,
             "recorded_at": recorded_at.isoformat(),
             "can_execute": False,
@@ -303,7 +371,7 @@ def install_recommendation_ledger_routes(
         }
 
     # The same authenticated cross-sport ledger layer owns retrospective
-    # traceability.  Installing here makes the V17 postmortem endpoints part of
+    # traceability. Installing here makes the V17 postmortem endpoints part of
     # the existing api_prod_market production app without changing its start
     # command or any sporting-model route.
     install_postmortem_routes(

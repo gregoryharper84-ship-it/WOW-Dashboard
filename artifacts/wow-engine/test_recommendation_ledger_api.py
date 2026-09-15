@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
+import uuid
 
 from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
@@ -116,18 +117,80 @@ def recommendation_payload():
     }
 
 
-def test_write_before_display_returns_durable_id():
+def test_write_before_display_returns_durable_id_and_visible_trace_receipt():
     client, db = app_client()
     response = client.post("/record-recommendations", json=recommendation_payload())
     assert response.status_code == 200
     body = response.json()
     assert body["display_authorized"] is True
     assert body["rows_in"] == body["rows_persisted"] == 1
+    assert body["all_rows_traceable"] is True
     assert body["can_execute"] is False
+    uuid.UUID(body["publication_trace_id"])
+    assert len(body["trace_receipts"]) == 1
+    receipt = body["trace_receipts"][0]
+    assert receipt["row_key"] == "fsu"
+    assert receipt["recommendation_record_id"] == body["recommendation_record_ids"][0]
+    assert receipt["governed_prediction_id"] is None
+    assert receipt["trace_status"] == "PREGAME_RECOMMENDATION_REGISTERED"
+    assert receipt["display_authorized"] is True
+    assert receipt["can_execute"] is False
     assert len(db.tables["wow_recommendation_records"].rows) == 1
     row = db.tables["wow_recommendation_records"].rows[0]
     assert row["capture_timing"] == "PREGAME"
     assert row["calibration_eligible"] is False
+    stored_trace = row["display_payload"]["_wow_trace"]
+    assert stored_trace["publication_trace_id"] == body["publication_trace_id"]
+    assert stored_trace["recommendation_record_id"] == receipt["recommendation_record_id"]
+    assert stored_trace["trace_status"] == "PREGAME_RECOMMENDATION_REGISTERED"
+    assert stored_trace["can_execute"] is False
+
+
+def test_publishable_governed_row_returns_both_trace_ids():
+    client, db = app_client()
+    payload = recommendation_payload()
+    governed_id = "11111111-1111-4111-8111-111111111111"
+    payload["rows"][0].update(
+        {
+            "terminal_label": "MODEL_QUALIFIED",
+            "probability_publishable": True,
+            "model_probability": 0.64,
+            "calibrated_probability": 0.62,
+            "calibrated_probability_lower_bound": 0.58,
+            "governed_prediction_table": "wow_event_predictions",
+            "governed_prediction_id": governed_id,
+        }
+    )
+    response = client.post("/record-recommendations", json=payload)
+    assert response.status_code == 200
+    body = response.json()
+    trace = body["trace_receipts"][0]
+    assert trace["governed_prediction_id"] == governed_id
+    assert trace["governed_prediction_table"] == "wow_event_predictions"
+    assert trace["probability_publishable"] is True
+    assert trace["trace_status"] == "GOVERNED_PREGAME_REGISTERED"
+    stored = db.tables["wow_recommendation_records"].rows[0]
+    assert stored["calibration_eligible"] is True
+    assert stored["display_payload"]["_wow_trace"]["governed_prediction_id"] == governed_id
+
+
+def test_backend_owned_trace_payload_overrides_caller_spoofing():
+    client, db = app_client()
+    payload = recommendation_payload()
+    payload["rows"][0]["display_payload"] = {
+        "_wow_trace": {
+            "publication_trace_id": "spoofed",
+            "recommendation_record_id": "spoofed",
+            "trace_status": "GOVERNED_PREGAME_REGISTERED",
+        }
+    }
+    response = client.post("/record-recommendations", json=payload)
+    assert response.status_code == 200
+    body = response.json()
+    stored_trace = db.tables["wow_recommendation_records"].rows[0]["display_payload"]["_wow_trace"]
+    assert stored_trace["publication_trace_id"] == body["publication_trace_id"]
+    assert stored_trace["recommendation_record_id"] == body["recommendation_record_ids"][0]
+    assert stored_trace["trace_status"] == "PREGAME_RECOMMENDATION_REGISTERED"
 
 
 def test_started_event_is_rejected_before_write():
