@@ -1,9 +1,12 @@
-"""WOW v16 NFL full-game moneyline fitted-specialist P0 contract.
+"""WOW V17 NFL full-game moneyline fitted-specialist contract.
 
-P0 establishes identity, input requirements, and publication boundaries only.
-It does NOT implement or approximate an NFL win-probability model.  Until a
-certified fitted artifact and calibrator are promoted, NFL event probability
-must remain MODEL_UNAVAILABLE.
+The governed NFL team/event lane owns full-game outright win probability through
+``wow.nfl-game-win-probability-expert``.  A model result is available only when
+an exact certified fitted artifact, active PASS calibrator, complete pregame
+feature packet, and runtime capability agree on the same feature schema.
+
+This contract never substitutes market/implied probability for model output and
+never grants wager execution authority.
 """
 from __future__ import annotations
 
@@ -13,13 +16,15 @@ from typing import Any
 PROVIDER_IDENTITY = "WOW_NFL_EVENT_FITTED_MODEL_V1"
 CONTROLLING_SPECIALIST = "wow.nfl-game-win-probability-expert"
 CAPABILITY_KEY = "NFL_EVENT_PROBABILITY"
-FEATURE_SCHEMA_VERSION = "NFL_EVENT_FEATURES_V1"
+# P2 is the production feature contract used by the certified champion bundle.
+# Keep this aligned with nfl_event_features_p2.FEATURE_SCHEMA_VERSION.
+FEATURE_SCHEMA_VERSION = "NFL_EVENT_PREGAME_PRIOR_V1"
 MODEL_SCOPE = "FULL_GAME_MONEYLINE"
 SUPPORTED_MARKET_FAMILIES = frozenset({"OUTRIGHT_WINNER"})
 SUPPORTED_PERIODS = frozenset({"FULL_GAME", "FULL_GAME_INCLUDING_OVERTIME"})
 TERMINAL_CEILING = "MODEL_QUALIFIED_HOLD"
 
-# These are feature GROUPS, not caller-trusted scalar values.  P1/P2 must
+# These are feature GROUPS, not caller-trusted scalar values. P1/P2 must
 # materialize them from timestamped evidence and bind them to an immutable
 # pregame snapshot before a fitted artifact can score a game.
 REQUIRED_FEATURE_GROUPS = (
@@ -66,7 +71,7 @@ def validate_candidate_identity(candidate: dict[str, Any]) -> ContractCheck:
 
 
 def validate_feature_packet(packet: dict[str, Any] | None) -> ContractCheck:
-    """Require every P0 feature group; never synthesize absent evidence."""
+    """Require every governed feature group; never synthesize absent evidence."""
     if not isinstance(packet, dict):
         return ContractCheck(False, ("NFL_EVENT_FEATURE_PACKET_MISSING",))
     missing = [
@@ -80,7 +85,7 @@ def validate_feature_packet(packet: dict[str, Any] | None) -> ContractCheck:
 
 
 def p0_readiness(*, artifact_ready: bool, calibrator_ready: bool, capability_status: str) -> dict[str, Any]:
-    """Return non-predictive readiness state for P0/P1 orchestration."""
+    """Return fail-closed fitted-model readiness for orchestration."""
     blockers: list[str] = []
     if not artifact_ready:
         blockers.append("NFL_FITTED_MODEL_ARTIFACT_UNAVAILABLE")
