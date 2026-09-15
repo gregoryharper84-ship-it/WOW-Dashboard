@@ -30,24 +30,21 @@ def test_protected_workflow_ref_stays_pinned_to_nightly_multiscout_main():
     )
 
 
-def test_nfl_forward_shadow_workflow_is_explicitly_pinned_and_accepted():
-    assert oidc.NFL_FORWARD_SHADOW_WORKFLOW_REF.endswith(
-        "/.github/workflows/wow-v17-nfl-forward-shadow.yml@refs/heads/main"
-    )
+@pytest.mark.parametrize(
+    "workflow_ref,expected_suffix",
+    [
+        (oidc.NFL_FORWARD_SHADOW_WORKFLOW_REF, "/.github/workflows/wow-v17-nfl-forward-shadow.yml@refs/heads/main"),
+        (oidc.BASKETBALL_MODEL_MAINTENANCE_WORKFLOW_REF, "/.github/workflows/wow-v17-basketball-model-maintenance.yml@refs/heads/main"),
+        (oidc.NCAAF_MODEL_MAINTENANCE_WORKFLOW_REF, "/.github/workflows/wow-v17-ncaaf-model-maintenance.yml@refs/heads/main"),
+        (oidc.WNBA_PROP_CANDIDATE_WORKFLOW_REF, "/.github/workflows/wow-v17-wnba-prop-candidate.yml@refs/heads/main"),
+    ],
+)
+def test_internal_workflow_is_explicitly_pinned_and_accepted(workflow_ref, expected_suffix):
+    assert workflow_ref.endswith(expected_suffix)
     claims = _claims()
-    claims["workflow_ref"] = oidc.NFL_FORWARD_SHADOW_WORKFLOW_REF
+    claims["workflow_ref"] = workflow_ref
     claims["event_name"] = "schedule"
-    assert oidc.validate_github_actions_claims(claims)["workflow_ref"] == oidc.NFL_FORWARD_SHADOW_WORKFLOW_REF
-
-
-def test_basketball_model_maintenance_workflow_is_explicitly_pinned_and_accepted():
-    assert oidc.BASKETBALL_MODEL_MAINTENANCE_WORKFLOW_REF.endswith(
-        "/.github/workflows/wow-v17-basketball-model-maintenance.yml@refs/heads/main"
-    )
-    claims = _claims()
-    claims["workflow_ref"] = oidc.BASKETBALL_MODEL_MAINTENANCE_WORKFLOW_REF
-    claims["event_name"] = "schedule"
-    assert oidc.validate_github_actions_claims(claims)["workflow_ref"] == oidc.BASKETBALL_MODEL_MAINTENANCE_WORKFLOW_REF
+    assert oidc.validate_github_actions_claims(claims)["workflow_ref"] == workflow_ref
 
 
 def test_workflow_allowlist_contains_only_known_internal_workflows():
@@ -55,6 +52,8 @@ def test_workflow_allowlist_contains_only_known_internal_workflows():
         oidc.WORKFLOW_REF,
         oidc.NFL_FORWARD_SHADOW_WORKFLOW_REF,
         oidc.BASKETBALL_MODEL_MAINTENANCE_WORKFLOW_REF,
+        oidc.NCAAF_MODEL_MAINTENANCE_WORKFLOW_REF,
+        oidc.WNBA_PROP_CANDIDATE_WORKFLOW_REF,
     })
 
 
@@ -76,24 +75,19 @@ def test_oidc_claim_identity_mismatch_fails_closed(field, bad):
         oidc.validate_github_actions_claims(claims)
 
 
-def test_pull_request_oidc_is_never_authorized_for_live_scout():
+@pytest.mark.parametrize(
+    "workflow_ref",
+    [
+        oidc.WORKFLOW_REF,
+        oidc.NFL_FORWARD_SHADOW_WORKFLOW_REF,
+        oidc.BASKETBALL_MODEL_MAINTENANCE_WORKFLOW_REF,
+        oidc.NCAAF_MODEL_MAINTENANCE_WORKFLOW_REF,
+        oidc.WNBA_PROP_CANDIDATE_WORKFLOW_REF,
+    ],
+)
+def test_pull_request_oidc_is_never_authorized_for_internal_workflows(workflow_ref):
     claims = _claims()
-    claims["event_name"] = "pull_request"
-    with pytest.raises(oidc.GitHubOIDCValidationError, match="EVENT_NOT_ALLOWED"):
-        oidc.validate_github_actions_claims(claims)
-
-
-def test_pull_request_oidc_is_never_authorized_for_nfl_forward_shadow():
-    claims = _claims()
-    claims["workflow_ref"] = oidc.NFL_FORWARD_SHADOW_WORKFLOW_REF
-    claims["event_name"] = "pull_request"
-    with pytest.raises(oidc.GitHubOIDCValidationError, match="EVENT_NOT_ALLOWED"):
-        oidc.validate_github_actions_claims(claims)
-
-
-def test_pull_request_oidc_is_never_authorized_for_basketball_maintenance():
-    claims = _claims()
-    claims["workflow_ref"] = oidc.BASKETBALL_MODEL_MAINTENANCE_WORKFLOW_REF
+    claims["workflow_ref"] = workflow_ref
     claims["event_name"] = "pull_request"
     with pytest.raises(oidc.GitHubOIDCValidationError, match="EVENT_NOT_ALLOWED"):
         oidc.validate_github_actions_claims(claims)
