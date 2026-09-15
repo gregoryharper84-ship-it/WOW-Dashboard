@@ -12,6 +12,12 @@ This facade adds receipt/error-boundary and Top-10 completion semantics:
   every source row must reconcile exactly once to a valid controlling-model
   package or an explicit typed blocker.
 
+The facade also installs the reviewed sport-aware hydration router. This does
+not grant model authority: specialist routing and exact certified-artifact
+preflight still run before acquisition, so a WNBA candidate can hydrate only
+after the governed route becomes artifact-ready and can never borrow MLB or
+market-implied probability.
+
 ``specialist_scoring_attempted`` is this layer's unambiguous name for "the
 controlling specialist scorer was invoked". It is deliberately distinct from the
 host contract's ``action_invocation_attempted`` ("a required Action call
@@ -21,7 +27,7 @@ as though no Action call had happened at all. ``scoring_attempted`` is retained
 here as a backward-compatible alias of the backend fact for existing consumers.
 
 No model, evidence, line, calibration, ranking, or terminal-reducer behavior is
-changed here. Portfolio/card governance remains a downstream objective and can
+weakened here. Portfolio/card governance remains a downstream objective and can
 never mutate sporting probability. ``can_execute=false`` remains binding.
 """
 from __future__ import annotations
@@ -33,6 +39,7 @@ from fastapi import Header, HTTPException
 from github_actions_oidc import scout_route_auth_dependency
 import pick_request_runtime_core as _core
 from pick_request_runtime_core import *  # noqa: F401,F403
+from prop_auto_hydration_router import auto_hydrate_prop_evidence as _sport_aware_auto_hydrate_prop_evidence
 from v17.top10_model_reconciliation import enforce_top10_completion
 from v17.wnba_prop_candidate_registry import install_wnba_prop_candidate_registration_route
 
@@ -46,6 +53,29 @@ _ORIGINAL_APPLY_PORTFOLIO_GOVERNANCE = _core._apply_portfolio_governance
 # frozen snapshot contains `"line": float(row.line)` and the score request
 # contains `"line": row.line`; the request threshold is never overwritten.
 
+# Normalize common WNBA board labels before specialist/artifact lookup. These
+# aliases only resolve stat identity; they never grant model support.
+_core.PROP_STAT_ALIASES.update(
+    {
+        ("WNBA", "PTS"): "POINTS",
+        ("WNBA", "POINT"): "POINTS",
+        ("WNBA", "REB"): "REBOUNDS",
+        ("WNBA", "REBOUND"): "REBOUNDS",
+        ("WNBA", "AST"): "ASSISTS",
+        ("WNBA", "ASSIST"): "ASSISTS",
+        ("WNBA", "3PM"): "THREE_POINTERS_MADE",
+        ("WNBA", "3PT_MADE"): "THREE_POINTERS_MADE",
+        ("WNBA", "3_PT_MADE"): "THREE_POINTERS_MADE",
+        ("WNBA", "THREES_MADE"): "THREE_POINTERS_MADE",
+        ("WNBA", "THREE_POINTERS"): "THREE_POINTERS_MADE",
+    }
+)
+
+# The star import above intentionally preserves the historical public monkeypatch
+# seam. Point that seam at the sport-aware router by default; tests/diagnostics
+# may still replace it after installation.
+auto_hydrate_prop_evidence = _sport_aware_auto_hydrate_prop_evidence
+
 
 def _auto_hydrate_prop_evidence_delegate(*args: Any, **kwargs: Any) -> Any:
     """Keep the historical monkeypatch/public-module seam intact.
@@ -58,10 +88,10 @@ def _auto_hydrate_prop_evidence_delegate(*args: Any, **kwargs: Any) -> Any:
     """
     current = globals().get(
         "auto_hydrate_prop_evidence",
-        _ORIGINAL_AUTO_HYDRATE_PROP_EVIDENCE,
+        _sport_aware_auto_hydrate_prop_evidence,
     )
     if current is _auto_hydrate_prop_evidence_delegate:
-        current = _ORIGINAL_AUTO_HYDRATE_PROP_EVIDENCE
+        current = _sport_aware_auto_hydrate_prop_evidence
     return current(*args, **kwargs)
 
 
