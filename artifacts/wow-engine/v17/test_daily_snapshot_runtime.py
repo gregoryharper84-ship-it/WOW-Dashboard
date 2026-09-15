@@ -307,7 +307,12 @@ def test_moneyline_lane_retains_unsupported_sports_instead_of_shrinking_to_mlb(m
         monkeypatch.delitem(TEAM_EVENT_BRIDGES, sport, raising=False)
 
     payload = run_daily_snapshot(
-        DailySnapshotRequest(requested_slate_date=SLATE_DATE, requested_timezone="America/Chicago", lanes=["MONEYLINE"]),
+        DailySnapshotRequest(
+            requested_slate_date=SLATE_DATE,
+            requested_timezone="America/Chicago",
+            lanes=["MONEYLINE"],
+            response_mode="FULL",
+        ),
         db=DB(),
         market_api=Market,
         event_api=Event,
