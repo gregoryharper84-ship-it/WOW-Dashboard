@@ -1,6 +1,6 @@
 # WOW Betting Engine — v17 Custom GPT Editor Sync Packet
 
-Status: `SOURCE_CONTRACT_READY_LIVE_EDITOR_SYNC_EXTERNAL`
+Status: `SOURCE_CONTRACT_READY_LIVE_EDITOR_SYNC_PENDING`
 
 The V17 governed backend may be active independently of the live Custom GPT editor distribution state. This packet defines the exact live-editor state required to synchronize WOW Betting Engine with the already-prepared V17 production source contract. It does not grant execution authority and must not be used to falsely attest an editor change that has not actually been saved.
 
@@ -26,6 +26,8 @@ schema = artifacts/wow-engine/v17/openapi.wow-betting-engine.v17.yaml
 server = https://wow-governed-probability-engine.onrender.com
 auth = Bearer/API key using WOW_ACTION_API_KEY
 schema_status = PRODUCTION_SOURCE_CONTRACT
+required_prop_batch_operation = scoreWowV17PickRequest
+required_prop_batch_path = POST /score-pick-request
 ```
 
 Required responsibilities:
@@ -33,7 +35,7 @@ Required responsibilities:
 ```text
 health/governance
 player-prop scoring
-prop pick-request ingestion
+prop pick-request ingestion through scoreWowV17PickRequest
 team-event delegation to LLP controlling engine
 write-before-display recommendation recording
 recommendation settlement
@@ -67,7 +69,7 @@ WOW Daily uses probability-first Pass A then money/slip Pass B.
 PLAYER_PROP/PLAYER_SCALAR are owned by WOW_BETTING_ENGINE.
 TEAM_EVENT/OUTRIGHT_WINNER/MONEYLINE/UPSET are controlled by LLP_TEAM_BETTING_ENGINE.
 Exactly one controlling specialist is allowed per row/event model.
-Controlling specialist failure returns MODEL_UNAVAILABLE.
+Controlling specialist failure returns the exact governed typed failure; MODEL_UNAVAILABLE is reserved for true capability absence.
 Calibration Health and Dynamic Calibration remain separate gates.
 Failure paths change unconditional probability.
 Published probability requires calibrated lower bound.
@@ -91,6 +93,7 @@ action_schema_title:
 action_schema_version:
 action_server_origin:
 auth_type:
+scoreWowV17PickRequest_exposed:
 full_model_trigger_contract:
 wow_daily_contract:
 lane_ownership_contract:
@@ -99,25 +102,43 @@ legacy_primary_replit_route_present:
 can_execute:
 ```
 
+## Required post-save canary
+
+After the production editor is saved/published and reloaded, use one still-pregame supported prop row to prove the host can actually cross the Action boundary.
+
+```text
+expected_operation = scoreWowV17PickRequest
+expected_path = POST /score-pick-request
+scoring_attempted = true only after an Action call is attempted
+success_evidence = canonical row-level Action receipt
+acceptable_failure_evidence = exact typed Action-attempt failure returned after invocation
+missing Action exposure = LIVE_GPT_ACTION_INVOCATION_BLOCKED with scoring_attempted=false
+can_execute = false
+```
+
+A manual research reconstruction, local scorer replay, capability preflight, or model-availability statement does not satisfy this canary.
+
 ## Editor-sync PASS criteria
 
 ```text
 custom_gpt_identity = WOW_BETTING_ENGINE
 action_server_origin = https://wow-governed-probability-engine.onrender.com
 canonical v17 WOW Action schema installed
+scoreWowV17PickRequest exposed after reload
 auth configured without exposing credential
 legacy_primary_replit_route_present = false
 prop ownership = WOW_BETTING_ENGINE
 team/event controlling ownership = LLP_TEAM_BETTING_ENGINE
 global_terminal_authority = false
 can_execute = false
+post-save still-pregame canary produced a canonical row-level Action receipt or exact typed Action-attempt failure
 all trigger/governance requirements aligned
 ```
 
-Until the editor itself is inspected and saved:
+Until the editor itself is inspected, saved/published, reloaded, and the canary is completed:
 
 ```text
-WOW_CUSTOM_GPT_EDITOR_SYNC = EXTERNAL_SYNC_REQUIRED
+WOW_CUSTOM_GPT_EDITOR_SYNC = PENDING
 V17_BACKEND_CUTOVER_ALLOWED = true
 can_execute = false
 ```
