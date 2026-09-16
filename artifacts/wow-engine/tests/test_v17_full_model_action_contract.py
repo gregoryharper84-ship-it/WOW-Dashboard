@@ -4,6 +4,7 @@ from v17.host_routing import (
     FullModelActionReceipt,
     LIVE_GPT_ACTION_INVOCATION_BLOCKED,
     LIVE_GPT_ACTION_RESULT_INVALID,
+    accepted_full_model_operation_ids,
     expected_full_model_operation_id,
     validate_full_model_action_receipt,
 )
@@ -18,7 +19,7 @@ def test_full_model_prop_without_action_is_invocation_blocked():
     assert out["backend_model_capability"] == "UNKNOWN"
     assert out["rank_eligible"] is False
     assert out["full_model_completed"] is False
-    assert out["expected_operation_id"] == "scoreWowV17PickRequest"
+    assert out["expected_operation_id"] == "scoreWowPickRequest"
     assert out["can_execute"] is False
 
 
@@ -28,7 +29,7 @@ def test_full_model_moneyline_without_action_is_invocation_blocked():
     )
     assert out["status"] == LIVE_GPT_ACTION_INVOCATION_BLOCKED
     assert out["scoring_attempted"] is False
-    assert out["expected_operation_id"] == "scoreWowV17TeamEventFromWowHost"
+    assert out["expected_operation_id"] == "scoreWowTeamEventRequest"
     assert out["can_execute"] is False
 
 
@@ -37,7 +38,7 @@ def test_action_attempt_preserves_backend_model_unavailable():
         FullModelActionReceipt(
             candidate_family="MONEYLINE",
             action_invoked=True,
-            operation_id="scoreWowV17TeamEventFromWowHost",
+            operation_id="scoreWowTeamEventRequest",
             backend_terminal_status="MODEL_UNAVAILABLE",
             backend_model_capability="UNAVAILABLE",
             http_result=200,
@@ -55,7 +56,7 @@ def test_action_attempt_preserves_scorer_failure_not_model_unavailable():
         FullModelActionReceipt(
             candidate_family="PLAYER_PROP",
             action_invoked=True,
-            operation_id="scoreWowV17PickRequest",
+            operation_id="scoreWowPickRequest",
             backend_terminal_status="MODEL_SCORER_FAILED",
             backend_model_capability="AVAILABLE",
             http_result=500,
@@ -73,7 +74,7 @@ def test_wrong_operation_cannot_complete_full_model():
         FullModelActionReceipt(
             candidate_family="MONEYLINE",
             action_invoked=True,
-            operation_id="scoreWowV17PickRequest",
+            operation_id="scoreWowEvent",
             backend_terminal_status="MODEL_QUALIFIED",
         )
     )
@@ -84,8 +85,34 @@ def test_wrong_operation_cannot_complete_full_model():
 
 
 def test_canonical_operation_mapping_is_lane_specific():
-    assert expected_full_model_operation_id("PITCHER_PROP") == "scoreWowV17PickRequest"
-    assert expected_full_model_operation_id("ML") == "scoreWowV17TeamEventFromWowHost"
+    assert expected_full_model_operation_id("PITCHER_PROP") == "scoreWowPickRequest"
+    assert expected_full_model_operation_id("ML") == "scoreWowTeamEventRequest"
+
+
+def test_pre_sync_operation_ids_remain_accepted_compatibility_aliases():
+    assert "scoreWowV17PickRequest" in accepted_full_model_operation_ids("PLAYER_PROP")
+    assert "scoreWowV17TeamEventFromWowHost" in accepted_full_model_operation_ids("MONEYLINE")
+
+    prop = validate_full_model_action_receipt(
+        FullModelActionReceipt(
+            candidate_family="PLAYER_PROP",
+            action_invoked=True,
+            operation_id="scoreWowV17PickRequest",
+            backend_terminal_status="MODEL_INPUTS_INSUFFICIENT",
+        )
+    )
+    team = validate_full_model_action_receipt(
+        FullModelActionReceipt(
+            candidate_family="MONEYLINE",
+            action_invoked=True,
+            operation_id="scoreWowV17TeamEventFromWowHost",
+            backend_terminal_status="MODEL_UNAVAILABLE",
+        )
+    )
+    assert prop["status"] == "MODEL_INPUTS_INSUFFICIENT"
+    assert team["status"] == "MODEL_UNAVAILABLE"
+    assert prop["can_execute"] is False
+    assert team["can_execute"] is False
 
 
 def test_pick_request_keeps_exact_line_in_snapshot_and_score_request():
@@ -98,7 +125,7 @@ def test_pick_request_keeps_exact_line_in_snapshot_and_score_request():
     source = (Path(__file__).parents[1] / "pick_request_runtime.py").read_text()
     assert '"line": float(row.line)' in source
     assert '"line": row.line' in source
-    assert 'request_payload["line"]' not in source  # no later line override
+    assert 'request_payload["line"]' not in source
 
 
 def test_adjacent_market_lines_are_not_prop_model_authority():

@@ -141,15 +141,30 @@ def controlling_engine_for(candidate_family: str) -> str:
 
 
 def expected_full_model_operation_id(candidate_family: str) -> str:
-    """Return the canonical V17 Action operation for a Full Model row."""
+    """Return the current live Custom GPT Action operation for a Full Model row."""
     family = normalize_candidate_family(candidate_family)
     if family in PROP_FAMILIES:
-        return "scoreWowV17PickRequest"
+        return "scoreWowPickRequest"
     if family in TEAM_EVENT_FAMILIES:
-        return "scoreWowV17TeamEventFromWowHost"
+        return "scoreWowTeamEventRequest"
     if family in WEATHER_FAMILIES:
         return "analyzeKalshiWeatherV17Contract"
     raise ValueError("CANDIDATE_FAMILY_UNSUPPORTED")
+
+
+def accepted_full_model_operation_ids(candidate_family: str) -> frozenset[str]:
+    """Accept the live operation ID plus the pre-sync V17 alias during cutover.
+
+    This is naming compatibility only. Both names identify the same governed
+    lane and neither changes probability, terminal, or execution semantics.
+    """
+    family = normalize_candidate_family(candidate_family)
+    canonical = expected_full_model_operation_id(family)
+    if family in PROP_FAMILIES:
+        return frozenset({canonical, "scoreWowV17PickRequest"})
+    if family in TEAM_EVENT_FAMILIES:
+        return frozenset({canonical, "scoreWowV17TeamEventFromWowHost"})
+    return frozenset({canonical})
 
 
 def _specialist_scoring_attempted(receipt: FullModelActionReceipt) -> bool | str:
@@ -179,6 +194,7 @@ def validate_full_model_action_receipt(receipt: FullModelActionReceipt) -> dict[
     """
     family = normalize_candidate_family(receipt.candidate_family)
     expected_operation = expected_full_model_operation_id(family)
+    accepted_operations = accepted_full_model_operation_ids(family)
     specialist_scoring_attempted = _specialist_scoring_attempted(receipt)
 
     if not receipt.action_invoked:
@@ -202,7 +218,7 @@ def validate_full_model_action_receipt(receipt: FullModelActionReceipt) -> dict[
         }
 
     operation = str(receipt.operation_id or "").strip()
-    if operation != expected_operation:
+    if operation not in accepted_operations:
         return {
             "status": LIVE_GPT_ACTION_RESULT_INVALID,
             "candidate_family": family,
