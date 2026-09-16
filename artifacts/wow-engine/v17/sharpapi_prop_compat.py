@@ -1,10 +1,10 @@
 """SharpAPI player-prop compatibility for the V17 Scout acquisition lane.
 
-SharpAPI's live row schema includes explicit ``is_player_prop``, ``player_name``,
-``stat_category``, ``line``, ``selection`` and ``odds`` fields. The existing
-adapters recognise team mainlines but discard these live prop rows as
-``SHARPAPI_SCHEMA_UNRECOGNISED`` before Scout can route them to governed prop
-specialists.
+SharpAPI's credentialed live row schema includes explicit ``is_player_prop``,
+``player_name``, ``stat_category``, ``line``, ``selection``, ``odds_american``
+and ``event_start_time`` fields. The existing adapters recognise team mainlines
+but can discard those player-prop rows before Scout can route them to governed
+prop specialists.
 
 This module augments both SharpAPI adapter entrypoints used by V17: the generic
 acceptance/normalisation adapter and the live Nightly Scout adapter. It emits the
@@ -57,6 +57,18 @@ def _merge_outcome(bucket: dict[str, Any], outcome: dict[str, Any]) -> None:
     bucket["outcomes"].append(outcome)
 
 
+def _live_identity(row: dict[str, Any]) -> tuple[str, str | None, str | None, Any] | None:
+    """Resolve identity from the exact credentialed SharpAPI live fields.
+
+    ``market_evidence_sources._sharpapi_event_identity`` predates the observed
+    ``event_start_time`` field. Feed that value through its existing ``start_time``
+    contract rather than inventing a second identity algorithm.
+    """
+    if row.get("event_start_time") not in (None, "") and row.get("start_time") in (None, ""):
+        row = {**row, "start_time": row.get("event_start_time")}
+    return sources._sharpapi_event_identity(row)
+
+
 def augment_sharpapi_props(
     base_events: list[dict[str, Any]], rows: Any, *, sport_key: str | None = None,
 ) -> list[dict[str, Any]]:
@@ -71,7 +83,7 @@ def augment_sharpapi_props(
         market_key = _prop_market_key(row)
         if not market_key:
             continue
-        identity = sources._sharpapi_event_identity(row)
+        identity = _live_identity(row)
         if identity is None:
             continue
         event_id, home, away, start = identity
@@ -98,7 +110,7 @@ def augment_sharpapi_props(
 
         for book_name, priced in sources._sharpapi_book_rows(row):
             price = sources._number(sources._sharpapi_first(
-                priced, ("odds", "price", "american_odds", "american", "moneyline")
+                priced, ("odds_american", "odds", "price", "american_odds", "american", "moneyline")
             ))
             point = sources._number(sources._sharpapi_first(
                 priced, ("line", "point", "handicap", "spread", "total")
