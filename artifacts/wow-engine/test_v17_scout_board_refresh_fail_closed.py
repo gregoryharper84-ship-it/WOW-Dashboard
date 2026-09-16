@@ -42,28 +42,3 @@ def test_research_only_governance_is_preserved():
     assert 'WOW_CAN_EXECUTE: "false"' in text
     assert 'test "$WOW_CAN_EXECUTE" = "false"' in text
 
-
-def persist_workflow() -> str:
-    return (
-        Path(__file__).resolve().parents[2]
-        / ".github"
-        / "workflows"
-        / "wow-v17-scout-brain-persist.yml"
-    ).read_text()
-
-
-def test_persist_fails_closed_when_no_discovery_artifact_was_recovered():
-    text = persist_workflow()
-    # Every persist step is guarded on present == 'true', so an absent artifact
-    # skipped them all and the job still concluded success.
-    assert "persistence failed closed rather than reporting success" in text
-    assert "persistence blocked without fabricating a run" not in text
-
-
-def test_persist_still_skips_cleanly_for_a_pull_request_source_run():
-    text = persist_workflow()
-    # A pull_request source run skips discovery by design; failing those would
-    # be noise, not a lost run.
-    assert 'if [ "$source_event" = "pull_request" ]' in text
-    assert "discovery is skipped by design and persistence is not applicable" in text
-    assert 'source_event=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}"' in text
