@@ -191,13 +191,17 @@ class _FakeMarket:
 
     def __init__(self):
         self.calls = []
+        self.certified = False
 
     def score_prop(self, req, identity=None):
         self.calls.append((req.sport, req.stat_type, identity))
         return {"source": "captured-original", "can_execute": False}
 
+    def _prop_route_artifact(self, _sport, _stat_type):
+        return {"ok": self.certified}
 
-def test_runtime_installer_delegates_nonfantasy_and_intercepts_only_fantasy(monkeypatch):
+
+def test_runtime_installer_delegates_nonfantasy_intercepts_candidate_and_prefers_certified(monkeypatch):
     app = FastAPI()
     market = _FakeMarket()
     candidate_calls = []
@@ -220,12 +224,19 @@ def test_runtime_installer_delegates_nonfantasy_and_intercepts_only_fantasy(monk
     ) is True
 
     normal = market.score_prop(_Req(sport="MLB", stat_type="PITCHER_STRIKEOUTS"), "WOW_BETTING_ENGINE")
-    fantasy = market.score_prop(_Req(sport="NFL", stat_type="FANTASY_SCORE"), "WOW_BETTING_ENGINE")
+    candidate = market.score_prop(_Req(sport="NFL", stat_type="FANTASY_SCORE"), "WOW_BETTING_ENGINE")
 
     assert normal["source"] == "captured-original"
     assert market.calls == [("MLB", "PITCHER_STRIKEOUTS", "WOW_BETTING_ENGINE")]
-    assert fantasy["source"] == "fantasy-candidate"
+    assert candidate["source"] == "fantasy-candidate"
     assert candidate_calls == [("NFL", "FANTASY_SCORE", "WOW_BETTING_ENGINE")]
+
+    market.certified = True
+    promoted = market.score_prop(_Req(sport="NFL", stat_type="FANTASY_SCORE"), "WOW_BETTING_ENGINE")
+    assert promoted["source"] == "captured-original"
+    assert market.calls[-1] == ("NFL", "FANTASY_SCORE", "WOW_BETTING_ENGINE")
+    assert len(candidate_calls) == 1
+
     score_routes = [
         route for route in app.router.routes
         if getattr(route, "path", None) == "/score-prop" and "POST" in (getattr(route, "methods", set()) or set())
