@@ -22,22 +22,53 @@ in GitHub.
 
 ## Transport phases
 
-A full nightly slate does not fit in one Edge Function worker; posting it whole
-returned HTTP 546 `WORKER_RESOURCE_LIMIT` and lost the run. The function accepts
-a `persist_phase`:
+A full slate does not fit in one Edge Function worker. The first attempt posted
+the whole handoff and returned HTTP 546 `WORKER_RESOURCE_LIMIT`; bounding whole
+candidates did not help, because one team/event candidate in run 35131443035 was
+1,135,529 bytes over 1,952 evidence rows (largest: 5,291,090 bytes over 2,704)
+and a batch always emitted at least one candidate, so it travelled intact under
+both a 256 KiB and a 64 KiB bound.
+
+Evidence is therefore sliced, and the bounds apply to the request itself:
 
 | Phase | Body | Effect |
 | --- | --- | --- |
 | `BEGIN` | run identity and governance header | opens the run, resets counters |
-| `APPEND` | header plus one `candidates` batch | persists the batch, accumulates tallies on the row |
+| `APPEND` | header plus candidate slices | persists the slices, accumulates tallies |
 | `FINALIZE` | run identity and governance header | recomputes sport counts, closes the run |
 
-A request with no `persist_phase` keeps the original single-request behavior for
-small slates and for callers that have not been updated.
+Each `APPEND` entry carries the candidate's metadata, a bounded chunk of its
+`market_evidence`, and an `evidence_slice` of `{index, final, offset, count,
+total}`. A request with no `persist_phase` keeps the original single-request
+behavior for small slates and for callers that have not been updated.
 
-Phases change transport only. Governance is re-validated on every phase, so a
-chunked upload is not a way to move a row past the gate, and tallies are
-accumulated server-side rather than supplied by the caller.
+Phases and slices change transport only. Governance is re-validated on every
+request, and tallies are accumulated server-side rather than supplied by the
+caller.
+
+## Invariants the slicing depends on
+
+- **Candidate identity is slice-independent.** A team/event row keys off
+  sport + event id + route, never its first evidence row, which changes per
+  slice. The key preserves the seven-field shape with the evidence fields
+  empty, so it reproduces the id the previous algorithm produced for an
+  evidence-free team/event row and existing rows keep their identity. Prop
+  rows keep the original algorithm and the object evidence shape.
+- **A candidate is counted once.** `changed_candidate_count` advances on the
+  first slice, `candidate_count` and `quarantined_count` on the final slice.
+- **`candidate_history` is written once per candidate per run**, via a guarded
+  insert. Production already holds 302 duplicate `(candidate_id,
+  research_run_id)` groups, so the unique constraint belongs in a separate
+  hardening migration after those are cleaned, not here.
+- **History does not carry the evidence array.** Evidence is durable in
+  `observations`, `source_snapshots` and `candidate_source_links`; history
+  keeps the research snapshot plus `evidence_row_count`.
+- **JSON columns are bound as text and cast in the statement.** With
+  `prepare: false`, a `${...}::jsonb` parameter makes Postgres infer the
+  parameter as jsonb and the driver then JSON-encodes the already-serialized
+  string, storing a jsonb *string*. Every pre-existing
+  `candidate_history.snapshot` is a string for that reason. Historical
+  normalization is deliberately left to a separate cleanup.
 
 ## Deployment
 
