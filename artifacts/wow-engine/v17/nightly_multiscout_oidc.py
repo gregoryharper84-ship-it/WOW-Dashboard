@@ -28,6 +28,7 @@ from v17.github_actions_oidc_client import GitHubOIDCMintError, mint_github_acti
 from v17.market_evidence_scout_bridge import market_evidence_for_request
 from v17.rundown_ml_board import augment_event_discovery
 from v17.scout_secondary_source import secondary_for_request
+from v17.sharpapi_prop_compat import install as install_sharpapi_prop_compat
 
 DEFAULT_ODDS_ROUTER_URL = "https://wow-odds-router.onrender.com"
 TRANSIENT_HTTP_STATUSES = {500, 502, 503, 504}
@@ -256,6 +257,7 @@ def main() -> int:
     configure_source_failure_scope()
     configure_acquisition_router()
     enable_research_market_evidence()
+    install_sharpapi_prop_compat()
     install_refreshable_oidc_proxy_auth()
     return scout.main()
 
