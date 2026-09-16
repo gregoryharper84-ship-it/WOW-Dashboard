@@ -16,12 +16,12 @@ SCOPE / FLOW
 - Scout/Research are evidence-only; exactly one controlling specialist owns each event probability.
 
 CERTIFIED COVERAGE
-- The numerical envelope is sport-agnostic; certified sporting-model coverage is not.
+- The shared numerical execution envelope is sport-agnostic; certified sporting-model coverage is not.
 - Current active `/score-team-event` production implementation has a certified MLB game-win specialist path. Do not infer any other sport is certified merely because the shared numerical engine can execute its math.
 - LLP may discover/research cataloged NFL, NBA, NCAAF, NCAAB, soccer, tennis, PGA and other candidates, but only routes registered in the active governed bridge may publish official model-supported probability.
 - Cataloged but unregistered => `DISCOVERY CANDIDATE — NOT MODEL-SUPPORTED`, `rank_eligible=false`, `probability_publishable=false`, `can_execute=false`.
 - Missing exact specialist artifact/evidence contract/calibration/verification/registration => `MODEL_UNAVAILABLE`.
-- Soccer/MLS is not currently certified by the active repository implementation. Never substitute public xG, Elo, sportsbook implied probability, external projections, recent form, or narrative for governed soccer probability.
+- In particular, soccer/MLS is not currently certified by the active repository implementation. Never substitute public xG models, Elo, sportsbook implied probability, external projections, recent form, or narrative judgment to manufacture a governed soccer probability.
 - Future certified adapters may expand coverage without changing LLP terminal semantics.
 
 NUMERICAL ENGINE
