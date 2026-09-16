@@ -1,0 +1,57 @@
+name: fantasy-score-calibration-evidence
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "artifacts/wow-engine/fantasy_score_calibration_evidence.py"
+      - "artifacts/wow-engine/nfl_dfs_calibration_evidence.py"
+      - "artifacts/wow-engine/calibration.py"
+      - "artifacts/wow-engine/test_fantasy_score_calibration_evidence.py"
+      - "artifacts/wow-engine/test_nfl_dfs_calibration_evidence.py"
+      - ".github/workflows/fantasy-score-calibration-evidence.yml"
+  push:
+    branches: [main]
+    paths:
+      - "artifacts/wow-engine/fantasy_score_calibration_evidence.py"
+      - "artifacts/wow-engine/nfl_dfs_calibration_evidence.py"
+      - "artifacts/wow-engine/calibration.py"
+      - "artifacts/wow-engine/test_fantasy_score_calibration_evidence.py"
+      - "artifacts/wow-engine/test_nfl_dfs_calibration_evidence.py"
+      - ".github/workflows/fantasy-score-calibration-evidence.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fantasy-score-calibration-evidence-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  focused-regression:
+    name: Fantasy Score calibration evidence regression
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: artifacts/wow-engine
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: artifacts/wow-engine/requirements.txt
+
+      - name: Install engine dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run Fantasy Score calibration governance regressions
+        run: >-
+          python -m pytest -q
+          test_fantasy_score_calibration_evidence.py
+          test_nfl_dfs_calibration_evidence.py
