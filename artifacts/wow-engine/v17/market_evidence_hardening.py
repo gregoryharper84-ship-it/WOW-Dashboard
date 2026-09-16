@@ -11,6 +11,14 @@ import os
 from datetime import datetime, timezone
 from typing import Any
 
+from v17.sharpapi_prop_compat import install as _install_sharpapi_prop_compat
+
+# market_evidence_snapshot imports this module before invoking the public
+# provider normalizer. Install the observed SharpAPI player-prop compatibility
+# here as well as in Nightly Scout so credentialed acceptance and production
+# discovery exercise the same schema boundary.
+_install_sharpapi_prop_compat()
+
 CAN_EXECUTE = False
 DEFAULT_MAX_AGE_MINUTES = 15.0
 DEFAULT_DISAGREEMENT_IMPLIED_DELTA = 0.035
