@@ -28,6 +28,11 @@ REQUEST_DELAY_MS = int(os.environ.get("WOW_SCOUT_REQUEST_DELAY_MS", "75"))
 MARKET_CHUNK_SIZE = int(os.environ.get("WOW_SCOUT_MARKET_CHUNK_SIZE", "10"))
 MAX_MARKETS_PER_EVENT = int(os.environ.get("WOW_SCOUT_MAX_MARKETS_PER_EVENT", "30"))
 TERMINAL_SOURCE_HTTP_STATUSES = {401, 403, 429}
+# The proxy answers 200 with core markets only when the vendor rejects the
+# event-scoped endpoints for this account. Without this the run records zero
+# prop candidates and no blocker, which is indistinguishable from a slate that
+# genuinely has no props.
+SOURCE_DEGRADATION_FIELD = "wow_source_degradation"
 
 MANDATORY_SPORT_FAMILIES = {
     "basketball_nba": "NBA",
@@ -158,6 +163,14 @@ def market_keys_from_inventory(payload: Any) -> list[str]:
                 if key:
                     keys.add(str(key))
     return sorted(keys)
+
+
+def source_degradation(payload: Any) -> str | None:
+    """Degradation code the proxy reported inside an otherwise-successful body."""
+    if not isinstance(payload, dict):
+        return None
+    code = payload.get(SOURCE_DEGRADATION_FIELD)
+    return str(code) if code else None
 
 
 def is_prop_market(key: str) -> bool:
@@ -332,6 +345,21 @@ def run() -> dict[str, Any]:
                 team_event_handoff.append(_team_event_candidate(event_identity, scripts, event_rows, event_blockers))
                 continue
 
+            inventory_degradation = source_degradation(inventory.data)
+            if inventory_degradation:
+                blocker = {
+                    "scope": "event_market_inventory",
+                    "sport": key,
+                    "event_id": event_id,
+                    "status": "MARKET_INVENTORY_DEGRADED",
+                    "reason_code": inventory_degradation,
+                    "http_status": inventory.status,
+                    "prop_markets_unavailable": True,
+                }
+                coverage.append(blocker)
+                source_blockers.append(blocker)
+                event_blockers.append(blocker)
+
             all_market_keys = market_keys_from_inventory(inventory.data)
             market_keys, deferred_market_keys = bounded_market_keys(all_market_keys)
             if deferred_market_keys:
@@ -351,6 +379,20 @@ def run() -> dict[str, Any]:
                         terminal_source_blocked = True
                         break
                     continue
+                odds_degradation = source_degradation(odds.data)
+                if odds_degradation:
+                    blocker = {
+                        "scope": "event_market_chunk",
+                        "sport": key,
+                        "event_id": event_id,
+                        "markets": market_chunk,
+                        "status": "ODDS_SOURCE_DEGRADED",
+                        "reason_code": odds_degradation,
+                        "http_status": odds.status,
+                    }
+                    coverage.append(blocker)
+                    source_blockers.append(blocker)
+                    event_blockers.append(blocker)
                 rows = bookmaker_rows(odds.data)
                 event_rows.extend(rows)
                 sportsbook_set.update(str(r["bookmaker"]) for r in rows if r.get("bookmaker"))
