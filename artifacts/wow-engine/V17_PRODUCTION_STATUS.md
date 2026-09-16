@@ -1,6 +1,6 @@
 # WOW V17 production status
 
-Updated: 2026-09-02
+Updated: 2026-09-02 runtime baseline; editor-sync reconciliation: 2026-09-16
 
 This file is the current-status pointer for the governed WOW V17 system. Historical review packets and earlier proposal/candidate documents remain archival and must not override this file when they describe an older lifecycle state.
 
@@ -32,7 +32,7 @@ V17 activation is additive and governed. It does not convert unsupported sport/s
 
 ## Daily-picks instruction layer
 
-The canonical V17 skill layer is active in the repository and synchronized to the live WOW Custom GPT instruction surface.
+The canonical V17 skill layer is active in the repository. Live Custom GPT distribution state is tracked separately under **Custom GPT editor synchronization** below and must not be inferred from repository state alone.
 
 Supported shorthand includes:
 - `Run V17 Daily Picks`
@@ -82,12 +82,15 @@ Repository-governance state remains separate from model/runtime capability and m
 
 ## Custom GPT editor synchronization
 
-**LIVE_EDITOR_SYNC_VERIFIED.** The live `WOW_BETTING_ENGINE` was refreshed and verified after reload against the canonical `WOW_V17_CUSTOM_GPT_INSTRUCTIONS.txt` content, including the persistent skill router.
+**LIVE_EDITOR_SYNC_PENDING.** The repository source contract is ready, but the current repository does not contain evidence that the production `WOW_BETTING_ENGINE` editor has been saved and reloaded with the current canonical instructions and canonical V17 Action schema. `V17_CUSTOM_GPT_EDITOR_SYNC.md` is authoritative for this layer.
 
-- Canonical instruction blob SHA: `202157522b96921d973e7a9dbc1d373f95249eb7`
-- Existing V17 Action schema remained unchanged.
-- Existing Bearer/API-key authentication remained unchanged.
-- GPT saved successfully and remained `Live`.
-- The LLP editor required no change for the WOW-only skill-router refresh; its previously verified V17 team/event contract remains authoritative.
+Required live-editor sources and acceptance boundary:
 
-Current product configuration should therefore be reported as `LIVE_EDITOR_SYNC_VERIFIED`, not `LIVE_EDITOR_SYNC_EXTERNAL`.
+- Instructions: `artifacts/wow-engine/WOW_V17_CUSTOM_GPT_INSTRUCTIONS.txt`
+- Action schema: `artifacts/wow-engine/v17/openapi.wow-betting-engine.v17.yaml`
+- Action origin: `https://wow-governed-probability-engine.onrender.com`
+- Required prop-batch operation: `scoreWowV17PickRequest` on `POST /score-pick-request`
+- Authentication: Bearer/API key using `WOW_ACTION_API_KEY` only; never expose credential material in repository artifacts or acceptance logs.
+- After save/publish and reload, a still-pregame supported prop row must actually invoke `scoreWowV17PickRequest` and return a canonical row-level Action receipt or the exact typed Action-attempt failure. `scoring_attempted=true` is valid only after an Action call was attempted.
+
+Until that save + reload + canary is evidenced, report `LIVE_GPT_EDITOR_SYNC=PENDING`. Do not collapse this state into `MODEL_UNAVAILABLE`, `MODEL_INPUTS_INSUFFICIENT`, `MODEL_SCORER_FAILED`, `MODEL_OUTPUT_INVALID`, or any sporting-model status. Backend runtime, route/model capability, repository governance, and live editor synchronization remain independent.
