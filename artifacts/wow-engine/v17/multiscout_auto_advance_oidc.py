@@ -24,8 +24,27 @@ from typing import Any, Callable
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from v17 import multiscout_auto_advance as auto_advance
 from v17.github_actions_oidc_client import GitHubOIDCMintError, mint_github_actions_oidc
 from v17.multiscout_auto_advance import ACTION_ORIGIN, _post_json, execute_auto_advance
+
+
+# Production run 35137881356 sent 64 team/event objective rows in one request
+# and hit the bridge's exact 120-second transport timeout. Bound only the OIDC
+# Nightly path here so large Scout slates are split into smaller canonical
+# /score-team-event-request calls without changing scoring, routing, calibration,
+# reconciliation, terminal authority, or execution semantics.
+def _team_event_batch_rows() -> int:
+    raw = os.environ.get("WOW_AUTO_ADVANCE_TEAM_EVENT_BATCH_ROWS", "8")
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        value = 8
+    return max(1, min(value, 50))
+
+
+TEAM_EVENT_BATCH_ROWS = _team_event_batch_rows()
+auto_advance.MAX_TEAM_EVENT_ROWS = TEAM_EVENT_BATCH_ROWS
 
 
 def _refreshing_oidc_post(initial_token: str) -> Callable[..., dict[str, Any]]:
