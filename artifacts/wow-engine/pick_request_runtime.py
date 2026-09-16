@@ -40,6 +40,7 @@ from github_actions_oidc import scout_route_auth_dependency
 import pick_request_runtime_core as _core
 from pick_request_runtime_core import *  # noqa: F401,F403
 from prop_auto_hydration_router import auto_hydrate_prop_evidence as _sport_aware_auto_hydrate_prop_evidence
+from v17.prediction_receipt_lookup_runtime import install_prediction_receipt_lookup_route
 from v17.top10_model_reconciliation import enforce_top10_completion
 from v17.mlb_1ip_line_expansion_maintenance import install_mlb_1ip_line_expansion_maintenance_route
 from v17.wnba_prop_candidate_registry import install_wnba_prop_candidate_registration_route
@@ -240,10 +241,11 @@ def install_pick_request_routes(
     market_api: Any,
     auth_dependency: Any,
 ) -> None:
+    wrapped_auth = scout_route_auth_dependency(auth_dependency)
     _core.install_pick_request_routes(
         app,
         market_api=_ScoringReceiptMarketApi(market_api),
-        auth_dependency=scout_route_auth_dependency(auth_dependency),
+        auth_dependency=wrapped_auth,
     )
     _install_top10_reconciliation_wrapper(app)
 
@@ -253,6 +255,11 @@ def install_pick_request_routes(
     prod = getattr(market_api, "prod", None)
     get_client_fn = getattr(prod, "get_client", None)
     if callable(get_client_fn):
+        install_prediction_receipt_lookup_route(
+            app,
+            auth_dependency=wrapped_auth,
+            db_client_fn=get_client_fn,
+        )
         install_wnba_prop_candidate_registration_route(
             app,
             auth_dependency=auth_dependency,

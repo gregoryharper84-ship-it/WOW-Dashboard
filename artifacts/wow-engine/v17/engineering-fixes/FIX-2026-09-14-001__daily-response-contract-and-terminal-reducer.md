@@ -2,10 +2,12 @@
 
 ## Status
 
-TESTING
+DEPLOYED — PRIMARY and CRITICAL VERIFIED IN PRODUCTION
 
-Code complete and green on the full backend suite. Not yet deployed, so
-production verification below is unfilled and `FIXED_VERIFIED` remains false.
+Merged and live. The two headline defects are confirmed repaired against live
+production data (see Production Verification). The four secondary repairs are
+deployed in the running image but have not been independently observed in
+production, so `FIXED_VERIFIED` is **partial**, not global.
 
 ## Linked Postmortem(s)
 
@@ -213,26 +215,73 @@ status stricter or more precise, never softer.
 ## Deployment
 
 - Branch: `claude/wizardly-planck-9uz0ni`
-- Commit SHA: (pending)
-- PR: (none requested)
-- Deploy ID: (not deployed)
-- Environment: (not deployed)
-- Deployed at: (not deployed)
+- Commit SHA: `171673b24fda17d1c87056e7379457dacc718909` (squash merge of `0cfe835`)
+- PR: #413 (merged 2026-09-15)
+- Service: Render `wow-governed-probability-engine`
+  (`srv-da7sa9gu01pc73brt80g`), `autoDeployTrigger=checksPass` on `main`
+- Environment: production
+- Deployed at: 2026-09-15; confirmed still live inside `94dd5270`
+  (`171673b` verified as an ancestor; all three new modules present and wired)
+- Supabase migration `v17_daily_run_row_detail` applied to the governed
+  production project `wow-engine-validation` (`iczfhsmjrrafhvcpmqhr`) before the
+  merge, per explicit owner authorization. Verified post-apply: RLS enabled,
+  zero policies, zero `anon`/`authenticated` grants, `service_role` only, and
+  all five check constraints present including `never_execute`.
 
 ## Production Verification
 
-Not yet performed. Git state is not production state.
+Evidence window 2026-09-15T15:28Z to 2026-09-16T15:23Z: **850 persisted row
+details across 21 production Daily runs.**
 
-- Health/governance check: pending
-- Reproduction request/run ID: pending
-- HTTP result: pending
-- Terminal status: pending
-- `scoring_attempted`: pending (verify `action_invocation_attempted` and
-  `specialist_scoring_attempted` separately)
-- Expected result: `max_props=12` returns without a response-size failure; a
-  `NO_LOW_PROBABILITY` row returns `row_status=REJECTED`; Will Warren 16.5
-  returns `REJECT_OOD`.
-- Observed result: pending
+The session verifying this could not call the production HTTP boundary — the
+execution environment's egress policy denies
+`wow-governed-probability-engine.onrender.com` (gateway 403 on CONNECT). The
+verification below is therefore drawn from the governed persistence layer and
+the deployed-commit state, not from a replayed Action call. That is direct
+evidence of what the running service actually produced, but it is not a
+substitute for an owner-run Action replay of the exact reported requests.
+
+**PRIMARY — `DAILY_RESPONSE_SERIALIZATION_TOO_LARGE`: VERIFIED.**
+Three real 12-row production runs (e.g.
+`v17-daily-1924a718-8c9d-4009-81f9-3a169381017d`, 2026-09-15T21:40Z) each carry
+**469,134 bytes** of row payload, averaging **39,094 bytes per row**. That is
+what the previous contract had to serialize into one response — roughly 4.7x the
+~100KB client limit, and precisely the reported `max_props=12`
+`ResponseTooLargeError`. Those runs now complete, with the evidence persisted and
+served by page instead of inlined. Runs as large as **95 rows** completed in the
+same window, well beyond the 12-row acceptance target.
+
+**CRITICAL — `TERMINAL_REDUCER_UPGRADE`: VERIFIED.**
+36 PROPS rows whose controlling model returned `terminal_label=NO_LOW_PROBABILITY`
+now terminate `row_status=REJECTED`, with
+`terminal_reduction.lowest_stage_terminal=REJECTED`,
+`final_terminal=REJECTED`, and
+`terminal_upgraded_from_rejection=false`. This is exactly the reported Reynaldo
+Lopez condition; under the previous wrapper every one of these rows would have
+reported `HELD`. Across all 850 rows, `terminal_upgraded_from_rejection` is
+`false` without exception, and `row_status=COMPLETED` is zero.
+
+A second, larger effect of the same repair: **354 MONEYLINE rows whose inner
+terminal was `SLATE_PURGE` now terminate `PURGED`** rather than `HELD` (188 with
+inner code `LLP_EVENT_GOVERNANCE_NOT_PROVEN`, 166 with
+`LINEUP_PROJECTED_PROBABILITY_AVAILABLE`). Every one carries
+`lowest_stage_terminal=PURGED`, so these are faithfully reported inner terminals,
+not reclassifications introduced by the wrapper. Downstream consumers that
+previously counted these rows as held will see the count move to purged.
+
+- `can_execute`: false on all 850 rows (`any_executable = 0`).
+- Approved-stage exception: `approved_stage_exception_applied=false` on every
+  row — the one judgment call in this fix has not fired in production at all.
+- Detail persistence: healthy; no
+  `DAILY_ROW_DETAIL_PERSISTENCE_UNAVAILABLE` condition observed.
+
+**NOT independently verified in production** (deployed, but not observed):
+`1IP_CAPABILITY_MANIFEST_DRIFT` (requires reading `/governance`),
+`ZERO_ROW_REASON_MISCLASSIFIED` (no `max_props=0` run in the window),
+`SCORING_ATTEMPTED_SEMANTICS_AMBIGUOUS`, and
+`INFRASTRUCTURE_BLOCKED_SEMANTICS_SUSPECT`. The Will Warren 16.5 `REJECT_OOD`
+gate is covered by the unchanged `test_mlb_1ip_exact_line_contract.py`; no 1IP
+OOD row appeared in the production window, so it was not re-observed live.
 
 ## Rollback
 
@@ -245,17 +294,32 @@ Not yet performed. Git state is not production state.
 
 ## Result
 
-**PARTIALLY COMPLETE — NOT VERIFIED IN PRODUCTION.** All six reported defects
-are repaired in source with acceptance coverage, and the full backend suite is
-green. `FIXED_VERIFIED=false` until a production replay confirms the three
-acceptance conditions against the deployed SHA.
+**FIXED — PRIMARY and CRITICAL VERIFIED IN PRODUCTION; four secondary repairs
+deployed but not independently observed.**
+
+```text
+INCIDENT_STATUS = REPAIRED
+DAILY_RESPONSE_SERIALIZATION_TOO_LARGE = FIXED_VERIFIED
+TERMINAL_REDUCER_UPGRADE = FIXED_VERIFIED
+1IP_CAPABILITY_MANIFEST_DRIFT = DEPLOYED_NOT_OBSERVED
+ZERO_ROW_REASON_MISCLASSIFIED = DEPLOYED_NOT_OBSERVED
+SCORING_ATTEMPTED_SEMANTICS_AMBIGUOUS = DEPLOYED_NOT_OBSERVED
+INFRASTRUCTURE_BLOCKED_SEMANTICS_SUSPECT = DEPLOYED_NOT_OBSERVED
+can_execute = false
+```
 
 ## Follow-up
 
-- Apply `v17/sql/20260914_v17_daily_run_row_detail.sql` under independent review
-  before the compact contract is relied on in production; until it exists, Daily
-  reports `detail_available=false` with a typed blocker and `response_mode=FULL`
-  remains the only full-evidence path.
+- DONE: `v17/sql/20260914_v17_daily_run_row_detail.sql` applied to the governed
+  production project and verified least-privilege. The file header still reads
+  "repository source only" as the standing rule for re-application elsewhere.
+- Owner-run Action replay to close out the four `DEPLOYED_NOT_OBSERVED` items:
+  read `/governance` for the declared 1IP lane, run Daily once with
+  `max_props=0` to confirm `REQUESTED_ROW_LIMIT_ZERO`, and check one receipt for
+  `action_invocation_attempted` vs `specialist_scoring_attempted`.
+- Confirm downstream consumers of Daily reconciliation tolerate the
+  `HELD` -> `PURGED` movement on `SLATE_PURGE` moneyline rows (354 rows/day in
+  the observed window).
 - Pre-existing and out of scope for this fix: with `WOW_V17_ACTIVE=1`,
   `api_ncaaf_acceptance.app.openapi()` raises `PydanticUserError` for an
   unresolved `market_api.ScorePropRequest` forward reference. Verified present
