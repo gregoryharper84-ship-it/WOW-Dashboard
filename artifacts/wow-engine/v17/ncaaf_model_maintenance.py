@@ -56,7 +56,7 @@ def run_ncaaf_model_maintenance(
     try:
         cfbd = CFBDClient.from_environment()
     except CFBDUnavailable as exc:
-        return _blocked(exc.code, stage="CFBD_ACQUISITION")
+        return _blocked(exc.code, stage="CFBD_ACQUISITION", detail={"provider_detail": str(exc)})
 
     acquisition: list[dict[str, Any]] = []
     source_snapshot_n = source_persisted_n = 0
@@ -70,7 +70,14 @@ def run_ncaaf_model_maintenance(
             persisted_n = persist_source_snapshots(db, snapshots)
             games = materialize_training_games(db, snapshots)
         except CFBDUnavailable as exc:
-            return _blocked(exc.code, stage="CFBD_ACQUISITION", detail={"season": season})
+            # Preserve the provider's non-secret diagnostic (HTTP status/endpoint
+            # or typed acquisition code) so a production blocker can be repaired
+            # without guessing or exposing credentials.
+            return _blocked(
+                exc.code,
+                stage="CFBD_ACQUISITION",
+                detail={"season": season, "provider_detail": str(exc)},
+            )
         except Exception as exc:  # noqa: BLE001
             return _blocked(
                 "NCAAF_HISTORY_HYDRATION_FAILED", stage="CFBD_ACQUISITION",
