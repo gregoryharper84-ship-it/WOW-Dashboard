@@ -1,26 +1,33 @@
 from __future__ import annotations
 
+# market_evidence_snapshot imports hardening before provider capture. Importing
+# it here verifies the same compatibility installation boundary used in the
+# credentialed acceptance workflow.
+from v17 import market_evidence_hardening as hardening  # noqa: F401
 from v17 import market_evidence_sources as sources
 from v17 import sharpapi_prop_compat as compat
 from v17.nightly_multiscout import bookmaker_rows, is_prop_market
 
 
 def _live_shape_rows():
+    """Exact field names observed by the 2026-09-16 credentialed probe."""
     return [
         {
-            "game_id": "nfl-1",
+            "event_id": "nfl-1",
+            "event_uuid": "nfl-1-uuid",
             "league": "nfl",
             "home_team": "Detroit Lions",
             "away_team": "Buffalo Bills",
-            "start_time": "2026-09-17T00:15:00Z",
-            "bookmaker": "ExampleBook",
+            "event_start_time": "2026-09-17T00:15:00Z",
+            "sportsbook": "ExampleBook",
             "is_player_prop": True,
             "market_type": "Player Props",
             "stat_category": "Receiving Yards",
             "player_name": "Example Receiver",
             "selection": "Over",
             "line": 49.5,
-            "odds": -110,
+            "odds_american": -110,
+            "timestamp": "2026-09-16T19:55:00Z",
         }
     ]
 
@@ -28,6 +35,7 @@ def _live_shape_rows():
 def test_live_sharpapi_player_prop_shape_becomes_scout_prop_market():
     events = compat.augment_sharpapi_props([], _live_shape_rows(), sport_key="americanfootball_nfl")
     assert len(events) == 1
+    assert events[0]["commence_time"] == "2026-09-17T00:15:00Z"
     rows = bookmaker_rows(events[0])
     assert len(rows) == 1
     assert rows[0]["market_key"] == "receiving_yards"
@@ -46,13 +54,7 @@ def test_unknown_player_stat_is_explicitly_prop_prefixed():
     assert is_prop_market(market_key) is True
 
 
-def test_installed_adapter_preserves_evidence_only_normalization(monkeypatch):
-    original = sources.sharpapi_rows_to_odds_api_v4
-    monkeypatch.setattr(compat, "_INSTALLED", False)
-    monkeypatch.setattr(compat, "_SOURCES_ORIGINAL", None)
-    monkeypatch.setattr(compat, "_LIVE_ORIGINAL", None)
-    monkeypatch.setattr(sources, "sharpapi_rows_to_odds_api_v4", original)
-    compat.install()
+def test_acceptance_normalizer_recognizes_exact_live_prop_schema():
     result = sources.normalize_market_payload(
         {"data": _live_shape_rows()},
         provider="SHARPAPI",
@@ -64,6 +66,9 @@ def test_installed_adapter_preserves_evidence_only_normalization(monkeypatch):
     assert result.code == "MARKET_EVIDENCE_NORMALISED"
     assert len(result.data) == 1
     assert result.data[0]["_wow_market_evidence"]["prediction_authority"] is False
+    assert result.data[0]["_wow_market_evidence"]["can_execute"] is False
+    assert result.data[0]["commence_time"] == "2026-09-17T00:15:00Z"
     rows = bookmaker_rows(result.data[0])
     assert rows[0]["description"] == "Example Receiver"
     assert rows[0]["point"] == 49.5
+    assert rows[0]["price"] == -110
