@@ -17,7 +17,21 @@ def test_persistence_requires_recoverable_artifact_before_sync():
     assert "id: artifact" in text
     assert "present=false" in text
     assert "steps.artifact.outputs.present == 'true'" in text
-    assert "persistence blocked without fabricating a run" in text
+    # Every sync step is guarded on present == 'true'. Echoing a summary line
+    # from a step that exits 0 left the job concluding success with nothing
+    # persisted, so the missing-artifact path has to fail the job instead.
+    assert "persistence failed closed rather than reporting success" in text
+    assert "persistence blocked without fabricating a run" not in text
+
+
+def test_a_pull_request_source_run_is_the_only_missing_artifact_exemption():
+    text = _workflow_text()
+    # A pull_request source run skips discovery by design, so it has no
+    # artifact and nothing to persist. Every other source run that produced
+    # none is a lost run.
+    assert 'source_event=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}"' in text
+    assert 'if [ "$source_event" = "pull_request" ]' in text
+    assert "discovery is skipped by design and persistence is not applicable" in text
 
 
 def test_governance_contract_remains_research_only():

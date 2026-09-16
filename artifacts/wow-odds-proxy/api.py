@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import os
 import secrets
+import time
 from typing import Literal, Optional
 
 import httpx
@@ -35,8 +36,30 @@ QUOTA_HEADERS = ("x-requests-remaining", "x-requests-used", "x-requests-last")
 CORE_EVENT_MARKETS = frozenset({"h2h", "spreads", "totals"})
 MARKET_INVENTORY_FALLBACK_HEADER = "x-wow-market-inventory-fallback"
 EVENT_ODDS_FALLBACK_HEADER = "x-wow-event-odds-fallback"
-_market_inventory_endpoint_unavailable = False
-_event_odds_endpoint_unavailable_for_core = False
+# Degradation is reported in the body as well as the header: acquisition clients
+# read the JSON payload, so a header-only signal is silently discarded and a
+# core-markets-only response is indistinguishable from a slate with no props.
+SOURCE_DEGRADATION_FIELD = "wow_source_degradation"
+SOURCE_DEGRADATION_CODES = {
+    MARKET_INVENTORY_FALLBACK_HEADER: "MARKET_INVENTORY_CORE_MARKETS_ONLY_FALLBACK",
+    EVENT_ODDS_FALLBACK_HEADER: "EVENT_ODDS_FEATURED_MARKETS_ONLY_FALLBACK",
+}
+# A 401/403 on an event-scoped endpoint is an account entitlement answer, not a
+# permanent fact. Re-probe after the window so a plan change or a transient
+# rejection cannot disable prop inventory for the lifetime of the process.
+ENDPOINT_UNAVAILABLE_TTL_SECONDS = float(os.environ.get("WOW_ODDS_PROXY_ENDPOINT_RETRY_SECONDS", "900"))
+_market_inventory_unavailable_at: float | None = None
+_event_odds_unavailable_for_core_at: float | None = None
+
+
+def _mark_unavailable() -> float:
+    return time.monotonic()
+
+
+def _is_unavailable(marked_at: float | None) -> bool:
+    if marked_at is None:
+        return False
+    return (time.monotonic() - marked_at) < ENDPOINT_UNAVAILABLE_TTL_SECONDS
 
 SportPath = Path(..., pattern=r"^[A-Za-z0-9_]+$", min_length=1, max_length=100)
 EventPath = Path(..., pattern=r"^[A-Za-z0-9_-]+$", min_length=1, max_length=128)
@@ -202,7 +225,11 @@ def _featured_sport_odds_fallback(
         )
     headers = _quota_headers(response)
     headers[response_header] = "sport-featured-odds"
-    return JSONResponse(content=event_payload, status_code=200, headers=headers)
+    degraded = {
+        **event_payload,
+        SOURCE_DEGRADATION_FIELD: SOURCE_DEGRADATION_CODES[response_header],
+    }
+    return JSONResponse(content=degraded, status_code=200, headers=headers)
 
 
 def _core_market_inventory_fallback(sport: str, event_id: str, params: dict[str, str]) -> JSONResponse:
@@ -259,11 +286,11 @@ def get_event_markets(
     sport: str = SportPath, event_id: str = EventPath, regions: Optional[str] = _csv_query(),
     bookmakers: Optional[str] = _csv_query(), date_format: Literal["iso", "unix"] = Query("iso", alias="dateFormat"),
 ):
-    global _market_inventory_endpoint_unavailable
+    global _market_inventory_unavailable_at
     _require_regions_or_bookmakers(regions, bookmakers)
     params = _clean_params(regions=regions, bookmakers=bookmakers, dateFormat=date_format)
 
-    if _market_inventory_endpoint_unavailable:
+    if _is_unavailable(_market_inventory_unavailable_at):
         return _core_market_inventory_fallback(sport, event_id, params)
 
     upstream_params = dict(params)
@@ -279,7 +306,7 @@ def get_event_markets(
     if 200 <= response.status_code < 300:
         return JSONResponse(content=payload, status_code=response.status_code, headers=_quota_headers(response))
     if response.status_code in {401, 403}:
-        _market_inventory_endpoint_unavailable = True
+        _market_inventory_unavailable_at = _mark_unavailable()
         return _core_market_inventory_fallback(sport, event_id, params)
     return _upstream_error_response(response)
 
@@ -296,13 +323,13 @@ def get_event_odds(
     include_rotation_numbers: Optional[bool] = Query(None, alias="includeRotationNumbers"),
     include_multipliers: Optional[bool] = Query(None, alias="includeMultipliers"),
 ):
-    global _event_odds_endpoint_unavailable_for_core
+    global _event_odds_unavailable_for_core_at
     _require_regions_or_bookmakers(regions, bookmakers)
     params = _clean_params(markets=markets, regions=regions, bookmakers=bookmakers, dateFormat=date_format, oddsFormat=odds_format, includeLinks=include_links, includeSids=include_sids, includeBetLimits=include_bet_limits, includeRotationNumbers=include_rotation_numbers, includeMultipliers=include_multipliers)
     requested = _requested_markets(params)
     is_core_only = bool(requested) and requested.issubset(CORE_EVENT_MARKETS)
 
-    if is_core_only and _event_odds_endpoint_unavailable_for_core:
+    if is_core_only and _is_unavailable(_event_odds_unavailable_for_core_at):
         return _featured_sport_odds_fallback(
             sport,
             event_id,
@@ -324,7 +351,7 @@ def get_event_odds(
         return JSONResponse(content=payload, status_code=response.status_code, headers=_quota_headers(response))
 
     if is_core_only and response.status_code in {401, 403}:
-        _event_odds_endpoint_unavailable_for_core = True
+        _event_odds_unavailable_for_core_at = _mark_unavailable()
         return _featured_sport_odds_fallback(
             sport,
             event_id,

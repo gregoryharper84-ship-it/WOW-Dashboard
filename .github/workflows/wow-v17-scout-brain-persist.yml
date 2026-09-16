@@ -57,10 +57,19 @@ jobs:
           if [ -n "$artifact_name" ]; then
             echo "present=true" >> "$GITHUB_OUTPUT"
             echo "name=$artifact_name" >> "$GITHUB_OUTPUT"
-          else
-            echo "present=false" >> "$GITHUB_OUTPUT"
-            echo "No recoverable Scout discovery artifact exists for source run ${SOURCE_RUN_ID}; persistence blocked without fabricating a run." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
           fi
+          echo "present=false" >> "$GITHUB_OUTPUT"
+          # A pull_request source run skips discovery by design, so it has no
+          # artifact and nothing to persist. Every other source run that
+          # produced none is a real loss and must not report success.
+          source_event=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}" --jq '.event // ""')
+          if [ "$source_event" = "pull_request" ]; then
+            echo "Source run ${SOURCE_RUN_ID} is a pull_request run; discovery is skipped by design and persistence is not applicable." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "No recoverable Scout discovery artifact exists for source run ${SOURCE_RUN_ID} (event '${source_event:-unknown}'); persistence failed closed rather than reporting success without fabricating a run." >> "$GITHUB_STEP_SUMMARY"
+          exit 1
       - name: Download recoverable Scout handoff artifact
         if: steps.artifact.outputs.present == 'true'
         shell: bash
