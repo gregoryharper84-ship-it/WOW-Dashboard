@@ -40,14 +40,22 @@ def install_fantasy_score_candidate_runtime_bridge(
     The captured scorer remains authoritative for every non-Fantasy request and
     for any Fantasy request whose exact route has since become certified. That
     keeps this research bridge incapable of shadowing future production promotion.
+
+    Isolated scheduler/unit contexts may intentionally provide only the small
+    market-api surface needed by the generic forward-cohort scheduler.  In those
+    contexts there is no scorer to wrap, so return False without mutating the app.
+    Production uses the full market API and therefore installs normally.
     """
     if getattr(app.state, _BRIDGE_STATE_KEY, False):
         return True
 
-    captured_score_prop = market_api.score_prop
+    captured_score_prop = getattr(market_api, "score_prop", None)
+    score_request_model = getattr(market_api, "ScorePropRequest", None)
+    if not callable(captured_score_prop) or score_request_model is None:
+        return False
 
     def score_prop_with_fantasy_candidate(
-        req: market_api.ScorePropRequest,
+        req: score_request_model,
         x_wow_model_identity: Optional[str] = None,
     ) -> dict[str, Any]:
         model_identity = market_api.prod._reject_llp_prop_identity(x_wow_model_identity)
@@ -79,7 +87,7 @@ def install_fantasy_score_candidate_runtime_bridge(
         operation_id="scoreWowProp",
     )
     def score_prop_with_fantasy_candidate_route(
-        req: market_api.ScorePropRequest,
+        req: score_request_model,
         x_wow_model_identity: Optional[str] = Header(default=None, alias="X-WOW-Model-Identity"),
     ):
         return score_prop_with_fantasy_candidate(req, x_wow_model_identity)
@@ -102,7 +110,9 @@ def install_fantasy_score_forward_cohort_route(
 
     # api_ncaaf_acceptance installs the final calibration/publication wrapper
     # before daily/forward-cohort routes.  Install the Fantasy candidate branch
-    # here so it composes outside that wrapper instead of bypassing it.
+    # here so it composes outside that wrapper instead of bypassing it.  A minimal
+    # test/scheduler market API can legitimately omit score_prop; in that case the
+    # bridge is simply not installable in that isolated context.
     install_fantasy_score_candidate_runtime_bridge(
         app,
         auth_dependency=auth_dependency,
