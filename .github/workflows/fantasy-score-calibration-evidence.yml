@@ -9,6 +9,11 @@ on:
       - "artifacts/wow-engine/calibration.py"
       - "artifacts/wow-engine/test_fantasy_score_calibration_evidence.py"
       - "artifacts/wow-engine/test_nfl_dfs_calibration_evidence.py"
+      - "artifacts/wow-engine/v17/fantasy_score_forward_cohort_runtime.py"
+      - "artifacts/wow-engine/v17/fantasy_score_forward_cohort_route.py"
+      - "artifacts/wow-engine/v17/test_fantasy_score_forward_cohort_runtime.py"
+      - "artifacts/wow-engine/v17/prop_forward_cohort_route.py"
+      - "artifacts/wow-engine/migrations/20260916_fantasy_score_forward_evidence.sql"
       - ".github/workflows/fantasy-score-calibration-evidence.yml"
   push:
     branches: [main]
@@ -18,6 +23,11 @@ on:
       - "artifacts/wow-engine/calibration.py"
       - "artifacts/wow-engine/test_fantasy_score_calibration_evidence.py"
       - "artifacts/wow-engine/test_nfl_dfs_calibration_evidence.py"
+      - "artifacts/wow-engine/v17/fantasy_score_forward_cohort_runtime.py"
+      - "artifacts/wow-engine/v17/fantasy_score_forward_cohort_route.py"
+      - "artifacts/wow-engine/v17/test_fantasy_score_forward_cohort_runtime.py"
+      - "artifacts/wow-engine/v17/prop_forward_cohort_route.py"
+      - "artifacts/wow-engine/migrations/20260916_fantasy_score_forward_evidence.sql"
       - ".github/workflows/fantasy-score-calibration-evidence.yml"
   workflow_dispatch:
 
@@ -50,8 +60,9 @@ jobs:
       - name: Install engine dependencies
         run: pip install -r requirements.txt
 
-      - name: Run Fantasy Score calibration governance regressions
+      - name: Run Fantasy Score calibration and forward-evidence regressions
         run: >-
           python -m pytest -q
           test_fantasy_score_calibration_evidence.py
           test_nfl_dfs_calibration_evidence.py
+          v17/test_fantasy_score_forward_cohort_runtime.py

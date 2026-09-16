@@ -9,6 +9,7 @@ from typing import Any
 from fastapi import FastAPI
 
 import v17.prop_forward_cohort_thesis_dedupe  # installs statistical-independence guard
+from v17.fantasy_score_forward_cohort_route import install_fantasy_score_forward_cohort_route
 from v17.phase_a_row_publication import install_phase_a_row_publication
 from v17.prop_forward_cohort_market_adapter import ForwardCohortMarketAdapter
 from v17.prop_forward_cohort_runtime import PropForwardCohortRequest, run_prop_forward_cohort
@@ -77,6 +78,15 @@ def install_prop_forward_cohort_route(
     install_phase_a_row_publication(
         app,
         auth_dependency=auth_dependency,
+        market_api=market_api,
+    )
+
+    # Fantasy Score capture has a separate strict candidate package contract.
+    # It is manual/on-demand until runtime candidate scorers are registered.
+    install_fantasy_score_forward_cohort_route(
+        app,
+        auth_dependency=auth_dependency,
+        db_client_fn=db_client_fn,
         market_api=market_api,
     )
 
