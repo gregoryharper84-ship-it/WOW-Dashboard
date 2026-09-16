@@ -14,8 +14,8 @@ def test_exact_supported_prop_row_cannot_terminate_at_capability_only():
     assert "preflight evidence only" in text
     assert "never a terminal result" in text
     assert "continue to Action scoring" in text
-    assert "scoreWowV17PickRequest" in text
-    assert "scoreWowV17Prop" in text
+    assert "scoreWowPickRequest" in text
+    assert "scoreWowProp" in text
 
 
 def test_no_action_attempt_has_typed_host_orchestration_failure():
