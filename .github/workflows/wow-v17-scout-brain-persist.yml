@@ -26,6 +26,18 @@ jobs:
       WOW_SCOUT_DATABASE_URL: ${{ secrets.WOW_SCOUT_DATABASE_URL }}
       WOW_SCOUT_PERSIST_URL: https://iczfhsmjrrafhvcpmqhr.supabase.co/functions/v1/wow-v17-scout-brain-persist
       SOURCE_RUN_ID: ${{ inputs.run_id || github.event.workflow_run.id }}
+      # Chunking by candidate count and payload bytes did not avoid
+      # WORKER_RESOURCE_LIMIT: run 35132005942 failed on its first APPEND, at
+      # most 25 candidates and 256 KiB, the same limit the whole-payload POST
+      # hit. So payload size is not the binding constraint.
+      #
+      # A team/event candidate carries every bookmaker x market x outcome row
+      # for its event, and the function does three hashes and three separately
+      # awaited inserts per evidence row. This bound puts any candidate at or
+      # above 64 KiB in a request of its own, which isolates whether one such
+      # candidate alone exhausts the worker. Prop rows are small and still
+      # batch densely, so request count stays bounded.
+      WOW_SCOUT_PERSIST_BATCH_BYTES: "65536"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
