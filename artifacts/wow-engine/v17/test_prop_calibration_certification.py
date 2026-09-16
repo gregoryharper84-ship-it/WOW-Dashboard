@@ -54,11 +54,15 @@ def _row(index: int, *, outcome: int = 1, p: float = 0.70, lb: float = 0.60, cal
 
 
 def _passing_packet():
+    # Deliberately coherent calibration fixture: strong outcomes receive high p,
+    # the miss receives low p, and lower bounds remain below the point estimate.
+    # This keeps the test focused on the certification/promotion mechanics rather
+    # than accidentally tripping the explicit ECE gate.
     rows = [
-        _row(1, outcome=1, p=0.70, lb=0.60),
-        _row(2, outcome=1, p=0.68, lb=0.59),
-        _row(3, outcome=0, p=0.55, lb=0.51),
-        _row(4, outcome=1, p=0.72, lb=0.62),
+        _row(1, outcome=1, p=0.80, lb=0.65),
+        _row(2, outcome=1, p=0.75, lb=0.62),
+        _row(3, outcome=0, p=0.25, lb=0.18),
+        _row(4, outcome=1, p=0.80, lb=0.65),
     ]
     return build_calibration_certification_packet(rows, policy=_policy())
 
