@@ -41,3 +41,13 @@ def test_first_six_workflow_never_runs_maintenance_from_pull_request_and_push_is
     assert "contains(github.event.head_commit.message, '[RUN_FIRST_SIX]')" in text
     assert 'WOW_CAN_EXECUTE: "false"' in text
     assert 'WOW_DRY_RUN_ONLY: "true"' in text
+
+
+def test_first_six_workflow_isolates_transport_failures_and_runs_ncaab_last():
+    repo_root = Path(__file__).resolve().parents[2]
+    text = (repo_root / ".github" / "workflows" / "wow-v17-first-six-model-maintenance.yml").read_text()
+    assert "transport_failures = {}" in text
+    assert "FIRST_SIX_TRANSPORT_FAILURES" in text
+    assert '"status":"TRANSPORT_FAILED"' in text
+    assert text.index('(\"TEAM_STATE\",\"/internal/v17/team-state-challenger-maintenance\")') < text.index('(\"NCAAB\",\"/internal/v17/ncaab-model-maintenance\")')
+    assert "if transport_failures:" in text
