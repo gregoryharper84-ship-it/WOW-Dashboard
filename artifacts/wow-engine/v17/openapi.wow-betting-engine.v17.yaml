@@ -137,6 +137,25 @@ paths:
         '401': {description: Authentication failed}
         '409': {description: Sport-specific model unavailable or held}
         '422': {description: Host/event/evidence contract invalid}
+  /v17/prediction-receipts/lookup:
+    post:
+      operationId: lookupWowV17PredictionReceipts
+      x-openai-isConsequential: false
+      description: >-
+        Read-only immutable pregame prop receipt lookup. Prefer prediction_id;
+        supplied identity must agree. Without prediction_id, exact
+        event_id/player/stat_type/line/direction is required.
+      security: [{actionBearer: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/PredictionReceiptLookupBatch'}
+      responses:
+        '200': {description: Row-isolated immutable prediction receipt lookup}
+        '401': {description: Authentication failed}
+        '422': {description: Request validation failed}
+        '503': {description: Prediction ledger unavailable}
   /record-recommendations:
     post:
       operationId: recordWowV17Recommendations
@@ -243,6 +262,39 @@ components:
         money_lane_status: {type: string, default: PAYOUT_UNRESOLVED}
         market_side_a: {type: [object, 'null'], additionalProperties: true}
         market_side_b: {type: [object, 'null'], additionalProperties: true}
+    PredictionReceiptLookupBatch:
+      type: object
+      additionalProperties: false
+      required: [rows]
+      properties:
+        request_id: {type: [string, 'null']}
+        rows:
+          type: array
+          minItems: 1
+          maxItems: 50
+          items: {$ref: '#/components/schemas/PredictionReceiptLookupRow'}
+    PredictionReceiptLookupRow:
+      type: object
+      additionalProperties: false
+      anyOf:
+        - required: [prediction_id]
+        - required: [event_id, player, stat_type, line, direction]
+      properties:
+        row_key: {type: [string, 'null']}
+        prediction_id: {type: [string, 'null']}
+        event_id: {type: [string, 'null']}
+        sport: {type: [string, 'null']}
+        player: {type: [string, 'null']}
+        team: {type: [string, 'null']}
+        opponent: {type: [string, 'null']}
+        stat_type: {type: [string, 'null']}
+        line: {type: [number, 'null']}
+        direction:
+          anyOf:
+            - {type: string, enum: [MORE, LESS]}
+            - {type: 'null'}
+        event_start_min: {type: [string, 'null'], format: date-time}
+        event_start_max: {type: [string, 'null'], format: date-time}
     RawPropEvidence:
       type: object
       additionalProperties: false
