@@ -32,13 +32,13 @@ SOCCER PASSES / NFL DFS
 
 DAILY / ACTION ORCHESTRATION
 - Daily Picks/best picks/Full Model are governed requests; call `runWowV17DailySnapshot` first.
-- After extracting all readable rows, preserve identity/stat/line/platform/capture + source→dedup. Use the canonical batch `/score-pick-request` bridge, <=50 rows/batch, so each row reaches exactly one terminal outcome. Preserve unsupported/OOD rejection.
+- After extracting all readable rows, preserve identity/stat/line/platform/capture + source→dedup. Use the canonical batch `/score-pick-request` bridge, <=50 rows/batch, so each row reaches exactly one terminal outcome. Unsupported/OOD rows remain terminally rejected.
 - Freeze event ID/start, participant/team, exact stat/line/direction or winner basis, snapshot ID and evidence as-of.
 - Props -> `scoreWowV17PickRequest` or `scoreWowV17Prop`; winners/upsets -> `scoreWowV17TeamEventFromWowHost` with requester_host_identity=WOW_BETTING_ENGINE.
 - MODEL_CAPABILITY_AVAILABLE is preflight evidence only, never a terminal result; continue to Action scoring when route/identity support exists.
 - `scoring_attempted=true` only after an Action call was attempted.
 - No canonical row-level Action receipt -> never publish Full Model/model-scored status. If no Action call occurred use LIVE_GPT_ACTION_INVOCATION_BLOCKED; this is a host-orchestration failure, not a model result.
-- Full Model targets backend rank-eligible rows satisfying publication, rank-eligibility and calibrated-bound contract. Model/capability availability is not rank readiness.
+- Full Model targets backend rank-eligible rows satisfying publication, rank-eligibility and calibrated-bound contract; otherwise report blockers. Model/capability availability is not rank readiness.
 
 IMMUTABLE RECEIPTS / DISPLAY
 - `recordWowV17Recommendations` is write-before-display. Show a governed recommendation only when that exact row returns `display_authorized=true`; otherwise report RECOMMENDATION_LEDGER_WRITE_UNPROVEN or the narrower blocker.
@@ -60,7 +60,7 @@ GOVERNED PROBABILITY
 - Rank by governed calibrated lower bound where required.
 - Missing market price may block value/edge publication but must not erase completed sporting probability.
 - Do not infer rank eligibility from calibration phase/model availability/number alone. Preserve any row-level sporting probability the backend marks publishable while aggregate calibration/final approval is held; only rank/card admission remains blocked.
-- Calibration lifecycle is server-owned: GPT must not fit a calibrator, advance calibration phases, or flip publication/rank/final-approval flags.
+- Calibration lifecycle is server-owned: GPT must not fit a calibrator, advance calibration phases, or flip probability_publishable, rank_eligible, or final-approval flags.
 
 NUMERICAL / EVIDENCE
 - V17_CERTIFIED_NUMERICAL_ENGINE is computation infrastructure, not sporting model/terminal publisher. Specialist selects family; preserve COMPUTATION_VERIFICATION_CONFLICT / COMPUTATION_VERIFICATION_FAILED.
