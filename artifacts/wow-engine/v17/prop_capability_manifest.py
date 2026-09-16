@@ -1,19 +1,10 @@
 """Machine-readable V17 player-prop lane classification.
 
-This manifest reports exact route authority. It must never collapse a mixed prop
-registry into a single sentence such as "only MLB pitcher strikeouts are
-supported" when other certified routes exist, and it must never turn a candidate
-artifact into production authority merely because cross-sport infrastructure is
-present.
-
 Declaration is not capability. Production publication still requires the exact
 controlling specialist, a promoted/active fitted artifact, calibration/bounds,
 valid current inputs, and terminal governance. Candidate/development lanes are
-visible here so cross-sport build state is auditable, but remain non-publishable
-until the backend lifecycle promotes them.
-
-This module never scores, never promotes an artifact, and never authorizes
-execution.
+visible so cross-sport build state is auditable, but remain non-publishable until
+the governed lifecycle promotes them.
 """
 from __future__ import annotations
 
@@ -28,8 +19,12 @@ MLB_PITCHING_OUTS_EXPERT = "wow.mlb-pitcher-outs-workload-expert"
 MLB_PITCH_COMPOSITION_EXPERT = "wow.mlb-pitcher-pitch-composition-expert"
 MLB_PLATE_APPEARANCES_EXPERT = "wow.mlb-batter-plate-appearances-expert"
 WNBA_PLAYER_PROP_EXPERT = "wow.wnba-player-prop-probability-expert"
+NFL_FANTASY_SCORE_EXPERT = "wow.nfl-dfs-fantasy-score-expert"
+NBA_FANTASY_SCORE_EXPERT = "wow.nba-dfs-fantasy-score-expert"
+WNBA_FANTASY_SCORE_EXPERT = "wow.wnba-dfs-fantasy-score-expert"
+MLB_HITTER_FANTASY_SCORE_EXPERT = "wow.mlb-hitter-fantasy-score-expert"
+MLB_PITCHER_FANTASY_SCORE_EXPERT = "wow.mlb-pitcher-fantasy-score-expert"
 
-# Lane classifications. Ordered from most to least production authority.
 CERTIFIED_PRODUCTION = "CERTIFIED_PRODUCTION"
 SUPPORTED_HOLD_ONLY = "SUPPORTED_HOLD_ONLY"
 CANDIDATE_ONLY = "CANDIDATE_ONLY"
@@ -37,12 +32,9 @@ TEST_ONLY = "TEST_ONLY"
 NOT_DECLARED = "NOT_DECLARED"
 
 PUBLICATION_ALLOWED_LANES = frozenset({CERTIFIED_PRODUCTION})
-
-# Exact-line policies. Adjacent-line substitution is never permitted.
 EXACT_CERTIFIED_LINES_ONLY = "EXACT_CERTIFIED_LINES_ONLY_REJECT_OOD"
 CONTINUOUS_LINE_SUPPORT = "CONTINUOUS_LINE_SUPPORT"
 
-# Canonical stat types used by the production fitted-artifact registry.
 MLB_PITCHER_STRIKEOUTS = "PITCHER_STRIKEOUTS"
 MLB_1IP_STAT_TYPE = "1ST_INNING_PITCHES_THROWN"
 MLB_PITCHING_OUTS = "PITCHING_OUTS"
@@ -53,6 +45,9 @@ WNBA_POINTS = "POINTS"
 WNBA_REBOUNDS = "REBOUNDS"
 WNBA_ASSISTS = "ASSISTS"
 WNBA_THREES_MADE = "THREE_POINTERS_MADE"
+FANTASY_SCORE = "FANTASY_SCORE"
+MLB_HITTER_FANTASY_SCORE = "HITTER_FANTASY_SCORE"
+MLB_PITCHER_FANTASY_SCORE = "PITCHER_FANTASY_SCORE"
 
 
 @dataclass(frozen=True)
@@ -87,12 +82,7 @@ class PropCapability:
         }
 
 
-def _certified_mlb(
-    stat_type: str,
-    specialist: str,
-    *,
-    notes: str | None = None,
-) -> PropCapability:
+def _certified_mlb(stat_type: str, specialist: str, *, notes: str | None = None) -> PropCapability:
     return PropCapability(
         sport="MLB",
         stat_type=stat_type,
@@ -128,30 +118,51 @@ def _wnba_candidate(stat_type: str) -> PropCapability:
     )
 
 
+def _fantasy_candidate(
+    sport: str,
+    stat_type: str,
+    specialist: str,
+    *,
+    source: str,
+) -> PropCapability:
+    return PropCapability(
+        sport=sport,
+        stat_type=stat_type,
+        lane_status=CANDIDATE_ONLY,
+        controlling_specialist=specialist,
+        route_active=False,
+        declared_skill_status="CANDIDATE",
+        exact_line_support_policy=CONTINUOUS_LINE_SUPPORT,
+        certified_line_support_source=source,
+        publication_allowed=False,
+        blocker="FANTASY_SCORE_CANDIDATE_NOT_PROMOTED",
+        notes=(
+            "NFL-parity fitted candidate stage only: whole-event chronological split, joint residual simulation, "
+            "50k standard simulation floor, exact verified scoring profile, and failure-regime support exist. "
+            "Exact-line calibration, certification, promotion, and production registration are still required."
+        ),
+    )
+
+
 DECLARED_PROP_LANES: dict[tuple[str, str], PropCapability] = {
     ("MLB", MLB_PITCHER_STRIKEOUTS): _certified_mlb(
-        MLB_PITCHER_STRIKEOUTS,
-        MLB_STRIKEOUT_EXPERT,
+        MLB_PITCHER_STRIKEOUTS, MLB_STRIKEOUT_EXPERT,
         notes="Certified failure-path negative-binomial pitcher strikeout route.",
     ),
     ("MLB", MLB_PITCHING_OUTS): _certified_mlb(
-        MLB_PITCHING_OUTS,
-        MLB_PITCHING_OUTS_EXPERT,
+        MLB_PITCHING_OUTS, MLB_PITCHING_OUTS_EXPERT,
         notes="Certified pitcher workload/outs route.",
     ),
     ("MLB", MLB_STRIKES_THROWN): _certified_mlb(
-        MLB_STRIKES_THROWN,
-        MLB_PITCH_COMPOSITION_EXPERT,
+        MLB_STRIKES_THROWN, MLB_PITCH_COMPOSITION_EXPERT,
         notes="Certified pitcher pitch-composition strikes-thrown route.",
     ),
     ("MLB", MLB_BALLS_THROWN): _certified_mlb(
-        MLB_BALLS_THROWN,
-        MLB_PITCH_COMPOSITION_EXPERT,
+        MLB_BALLS_THROWN, MLB_PITCH_COMPOSITION_EXPERT,
         notes="Certified pitcher pitch-composition balls-thrown route.",
     ),
     ("MLB", MLB_PLATE_APPEARANCES): _certified_mlb(
-        MLB_PLATE_APPEARANCES,
-        MLB_PLATE_APPEARANCES_EXPERT,
+        MLB_PLATE_APPEARANCES, MLB_PLATE_APPEARANCES_EXPERT,
         notes="Certified batter plate-appearances route.",
     ),
     ("MLB", MLB_1IP_STAT_TYPE): PropCapability(
@@ -175,6 +186,28 @@ DECLARED_PROP_LANES: dict[tuple[str, str], PropCapability] = {
     ("WNBA", WNBA_REBOUNDS): _wnba_candidate(WNBA_REBOUNDS),
     ("WNBA", WNBA_ASSISTS): _wnba_candidate(WNBA_ASSISTS),
     ("WNBA", WNBA_THREES_MADE): _wnba_candidate(WNBA_THREES_MADE),
+
+    # Fantasy Score candidate parity. These declarations do not activate publication authority.
+    ("NFL", FANTASY_SCORE): _fantasy_candidate(
+        "NFL", FANTASY_SCORE, NFL_FANTASY_SCORE_EXPERT,
+        source="services/nfl_dfs_fitted_simulator.py",
+    ),
+    ("NBA", FANTASY_SCORE): _fantasy_candidate(
+        "NBA", FANTASY_SCORE, NBA_FANTASY_SCORE_EXPERT,
+        source="services/fantasy_score_fitted_candidates.py",
+    ),
+    ("WNBA", FANTASY_SCORE): _fantasy_candidate(
+        "WNBA", FANTASY_SCORE, WNBA_FANTASY_SCORE_EXPERT,
+        source="services/fantasy_score_fitted_candidates.py",
+    ),
+    ("MLB", MLB_HITTER_FANTASY_SCORE): _fantasy_candidate(
+        "MLB", MLB_HITTER_FANTASY_SCORE, MLB_HITTER_FANTASY_SCORE_EXPERT,
+        source="services/fantasy_score_fitted_candidates.py",
+    ),
+    ("MLB", MLB_PITCHER_FANTASY_SCORE): _fantasy_candidate(
+        "MLB", MLB_PITCHER_FANTASY_SCORE, MLB_PITCHER_FANTASY_SCORE_EXPERT,
+        source="services/fantasy_score_fitted_candidates.py",
+    ),
 }
 
 
@@ -217,7 +250,7 @@ def declared_prop_lane_manifest() -> dict[str, Any]:
     """Advertise production, hold-only, and candidate routes without conflating them."""
     lanes = [capability.as_dict() for capability in DECLARED_PROP_LANES.values()]
     return {
-        "manifest_version": "WOW_V17_PROP_LANE_MANIFEST_V2",
+        "manifest_version": "WOW_V17_PROP_LANE_MANIFEST_V3",
         "numerical_engine_scope": "SPORT_AGNOSTIC_BY_CERTIFIED_ADAPTER",
         "production_authority_is_route_specific": True,
         "candidate_presence_does_not_grant_probability_authority": True,
@@ -241,9 +274,14 @@ __all__ = [
     "CONTINUOUS_LINE_SUPPORT",
     "DECLARED_PROP_LANES",
     "EXACT_CERTIFIED_LINES_ONLY",
+    "FANTASY_SCORE",
     "MLB_1IP_STAT_TYPE",
     "MLB_BALLS_THROWN",
     "MLB_FIRST_INNING_PITCH_COUNT_EXPERT",
+    "MLB_HITTER_FANTASY_SCORE",
+    "MLB_HITTER_FANTASY_SCORE_EXPERT",
+    "MLB_PITCHER_FANTASY_SCORE",
+    "MLB_PITCHER_FANTASY_SCORE_EXPERT",
     "MLB_PITCHING_OUTS",
     "MLB_PITCHING_OUTS_EXPERT",
     "MLB_PITCHER_STRIKEOUTS",
@@ -252,11 +290,14 @@ __all__ = [
     "MLB_PITCH_COMPOSITION_EXPERT",
     "MLB_STRIKES_THROWN",
     "MLB_STRIKEOUT_EXPERT",
+    "NBA_FANTASY_SCORE_EXPERT",
+    "NFL_FANTASY_SCORE_EXPERT",
     "NOT_DECLARED",
     "PUBLICATION_ALLOWED_LANES",
     "SUPPORTED_HOLD_ONLY",
     "TEST_ONLY",
     "WNBA_ASSISTS",
+    "WNBA_FANTASY_SCORE_EXPERT",
     "WNBA_PLAYER_PROP_EXPERT",
     "WNBA_POINTS",
     "WNBA_REBOUNDS",
