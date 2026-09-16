@@ -1,76 +1,34 @@
 # WOW V17 Custom GPT editor synchronization
 
-Updated: 2026-09-02
+Updated: 2026-09-15
 
-Status: **LIVE_EDITOR_SYNC_VERIFIED**
+Status: **LIVE_EDITOR_SYNC_PENDING**
 
-Backend/runtime deployment does **not** modify the live Custom GPT editors. Repository skill files are canonical workflow contracts, and the live WOW GPT must contain the compact skill router in its Instructions field for shorthand commands to persist across chats.
+Repository changes, protected CI, Render/backend deployment, and production Action replay do **not** update the live Custom GPT editors. Editor synchronization is a separate product-configuration step.
 
-## Verified live WOW editor state
+## Current state
 
-The `WOW_BETTING_ENGINE` editor refresh is complete and was verified after reload:
+- `BACKEND_RUNTIME`: remains independently determined by the governed backend.
+- `MODEL_CAPABILITY`: remains route-specific and must preserve the backend's exact typed status.
+- `REPOSITORY_GOVERNANCE`: current code/instruction changes may be merged and CI-green independently of editor state.
+- `LIVE_GPT_EDITOR_SYNC`: **PENDING** until the production editors are saved with the current canonical instructions/actions and verified after reload.
 
-- Instructions match the current canonical `artifacts/wow-engine/WOW_V17_CUSTOM_GPT_INSTRUCTIONS.txt` content.
-- Canonical Git blob SHA: `202157522b96921d973e7a9dbc1d373f95249eb7`.
-- The existing production V17 Action schema `artifacts/wow-engine/v17/openapi.wow-betting-engine.v17.yaml` remained unchanged.
-- API-key/Bearer authentication using the existing production `WOW_ACTION_API_KEY` remained unchanged.
-- The GPT saved successfully and remained `Live`.
-- No Render redeploy was required for this instruction-layer refresh.
+The canonical editor sources are:
+- WOW: `artifacts/wow-engine/WOW_V17_CUSTOM_GPT_INSTRUCTIONS.txt`
+- LLP: `artifacts/wow-engine/LLP_V17_CUSTOM_GPT_INSTRUCTIONS.txt`
 
-The LLP editor required no change solely for this WOW skill-router update. Its previously verified V17 team/event contract remains authoritative.
+The LLP canonical source now explicitly requires this separation. A repository/backend fix may be reported as verified at those layers while editor synchronization is still pending, but the full LLP stack must not be called `FIXED_VERIFIED` until the production LLP editor has the current canonical instructions/actions saved and verified after reload.
 
-## Persistent skill router
+A pending or failed editor sync is a product/admin state. It must never be rewritten as `MODEL_UNAVAILABLE`, `MODEL_INPUTS_INSUFFICIENT`, `MODEL_SCORER_FAILED`, `MODEL_OUTPUT_INVALID`, or another sporting-model result.
 
-The live WOW GPT now recognizes these controlling shorthand commands:
-- `Run V17 Daily Picks` -> `WOW_V17_DAILY_PICKS`
-- `Run V17 Best Props` -> `WOW_V17_BEST_PROPS`
-- screenshot/PDF/image/pasted-board review -> `WOW_V17_SCREENSHOT_REVIEW`
-- `Run V17 ML Winners` -> `WOW_V17_ML_WINNERS`
-- `Build the V17 Core` -> `WOW_V17_PICK_CORE`
+## Live-editor verification checklist
 
-Daily, prop, ML and screenshot workflows automatically invoke `WOW_V17_RESEARCH_MARKET_CONTEXT` before final ranking whenever current context is material.
+After saving the current canonical instructions/actions in each affected production editor, reload and verify:
+1. V17 identity/terminal authority and `can_execute=false` remain intact.
+2. WOW continues to own player/scalar props; LLP continues to own team/event winners/favorites/underdogs/upsets.
+3. Full Model team/event requests still require the canonical Action attempt and preserve exact backend typed failures.
+4. `BACKEND_RUNTIME`, `MODEL_CAPABILITY`, `REPOSITORY_GOVERNANCE`, and `LIVE_GPT_EDITOR_SYNC` are reported independently.
+5. A pending editor sync does not become `MODEL_UNAVAILABLE`.
+6. The full stack is called `FIXED_VERIFIED` only after save + reload verification of the current canonical editor source.
 
-## Research + market context semantics
-
-The research/context stage refreshes, where relevant: schedule/event identity; starters/lineups/rosters; injuries, scratches and team changes; role/workload; recent plus longer-run historical context; opponent/matchup splits; rest/travel; venue/weather; current exact-line prices across credible books; opener/current movement; consensus/no-vig context; and source/as-of provenance.
-
-These rules are controlling:
-- research may hydrate a certified fitted input and audit model output, but never substitutes for the fitted model;
-- market implied probability, external projections, rankings, records, hit rates and narrative are never governed model probability;
-- material evidence must be temporally knowable at the decision timestamp;
-- market evidence remains typed `EXACT_LINE`, `ADJACENT_LINE`, or `NO_MARKET`;
-- adjacent lines are context only and never exact-line no-vig authority;
-- missing market evidence may block economics/value analysis but must not erase completed sporting probability where the backend preserves it;
-- no manual double-penalty may be added after the certified model has already consumed the same evidence.
-
-## V17 invariants preserved
-- `custom_gpt_identity=WOW_BETTING_ENGINE`
-- WOW owns player/prop/scalar intelligence; LLP owns team/event winners/favorites/underdogs/upsets
-- exactly one controlling specialist per row/event
-- Scout/Research are evidence/reconciliation only
-- `V17_TERMINAL_REDUCER` is sole global terminal authority
-- unsupported fitted routes remain fail closed
-- screenshot workflows extract every readable betting row before filtering
-- dependency/session/directional/duplicate-thesis exposure affects portfolio qualification, not individual fitted probability
-- `can_execute=false`
-- no live wager/order execution
-
-## Ongoing verification
-
-After future instruction changes, re-verify:
-1. `Governance/health check` reports V17 active, `V17_TERMINAL_REDUCER`, and `can_execute=false`.
-2. `Run V17 Daily Picks` is interpreted as the master daily workflow rather than a generic chat response.
-3. `Run V17 Best Props` routes to WOW prop discovery and does not collapse to one market family.
-4. `Run V17 ML Winners` routes team/event probability through LLP.
-5. A screenshot-review request first commits to extracting every visible row before filtering.
-6. Research/market context is refreshed before final ranking, while unsupported model routes remain fail closed rather than receiving a market-derived probability.
-7. `Build the V17 Core` preserves individual leg probabilities and applies existing portfolio governance.
-
-Do not manufacture a production recommendation merely to test synchronization; governance/host-contract and deliberately unsupported routes are sufficient for safety acceptance.
-
-## Status language
-Keep these independent:
-- `BACKEND_RUNTIME`: V17 active/live when backend confirms it
-- `MODEL_CAPABILITY`: route-specific certified support or governed fail-closed state
-- `REPOSITORY_GOVERNANCE`: protected-main/CI governance state
-- `LIVE_GPT_EDITOR_SYNC`: **LIVE_EDITOR_SYNC_VERIFIED**
+Do not manufacture a betting recommendation merely to test editor synchronization. Governance/health prompts and deliberately unsupported routes are sufficient acceptance checks.
