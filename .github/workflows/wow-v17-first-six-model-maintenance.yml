@@ -15,6 +15,7 @@ on:
       - "artifacts/wow-engine/v17/team_state_intelligence.py"
       - "artifacts/wow-engine/v17/team_state_challenger_training.py"
       - "artifacts/wow-engine/v17/team_state_challenger_maintenance.py"
+      - "artifacts/wow-engine/v17/team_state_scoped_maintenance.py"
       - "artifacts/wow-engine/v17/ncaaf_result_form_candidate.py"
       - "artifacts/wow-engine/v17/ncaaf_model_maintenance.py"
       - "artifacts/wow-engine/v17/multiclass_candidate_lifecycle.py"
@@ -30,6 +31,7 @@ on:
       - "artifacts/wow-engine/test_v17_first_six_source_contracts.py"
       - "artifacts/wow-engine/test_v17_team_state_intelligence.py"
       - "artifacts/wow-engine/test_v17_team_state_challenger_training.py"
+      - "artifacts/wow-engine/test_v17_team_state_scoped_maintenance.py"
       - "artifacts/wow-engine/test_v17_github_oidc.py"
   pull_request:
     paths:
@@ -38,9 +40,11 @@ on:
       - "artifacts/wow-engine/v17/team_state_intelligence.py"
       - "artifacts/wow-engine/v17/team_state_challenger_training.py"
       - "artifacts/wow-engine/v17/team_state_challenger_maintenance.py"
+      - "artifacts/wow-engine/v17/team_state_scoped_maintenance.py"
       - "artifacts/wow-engine/v17/first_six_open_data_maintenance.py"
       - "artifacts/wow-engine/test_v17_team_state_intelligence.py"
       - "artifacts/wow-engine/test_v17_team_state_challenger_training.py"
+      - "artifacts/wow-engine/test_v17_team_state_scoped_maintenance.py"
       - "artifacts/wow-engine/test_v17_first_six_certification.py"
       - "artifacts/wow-engine/test_v17_first_six_source_contracts.py"
 
@@ -77,6 +81,7 @@ jobs:
           test_v17_basketball_model_maintenance.py
           test_v17_team_state_intelligence.py
           test_v17_team_state_challenger_training.py
+          test_v17_team_state_scoped_maintenance.py
           test_v17_github_oidc.py
 
   maintain:
@@ -111,13 +116,18 @@ jobs:
           import json, os, time, urllib.error, urllib.parse, urllib.request
 
           origin = os.environ["WOW_ACTION_ORIGIN"].rstrip("/")
-          endpoints = [
-              ("BASKETBALL","/internal/v17/basketball-model-maintenance"),
-              ("NCAAF","/internal/v17/ncaaf-model-maintenance"),
-              ("NCAAB","/internal/v17/ncaab-model-maintenance"),
-              ("SOCCER","/internal/v17/soccer-model-maintenance"),
-              ("TENNIS","/internal/v17/tennis-model-maintenance"),
-              ("TEAM_STATE","/internal/v17/team-state-challenger-maintenance"),
+          program = "LLP_DYNAMIC_TEAM_STATE_CHALLENGER_V1"
+          team_state_scopes = [
+              "NFL", "NBA", "WNBA", "NCAAF", "MLB", "NCAAB",
+              "SOCCER_EPL", "SOCCER_BUNDESLIGA", "SOCCER_LALIGA",
+              "SOCCER_SERIE_A", "SOCCER_LIGUE_1",
+          ]
+          ancillary_endpoints = [
+              ("BASKETBALL", "/internal/v17/basketball-model-maintenance"),
+              ("NCAAF", "/internal/v17/ncaaf-model-maintenance"),
+              ("NCAAB", "/internal/v17/ncaab-model-maintenance"),
+              ("SOCCER", "/internal/v17/soccer-model-maintenance"),
+              ("TENNIS", "/internal/v17/tennis-model-maintenance"),
           ]
 
           def fresh_oidc_token():
@@ -130,48 +140,111 @@ jobs:
               with urllib.request.urlopen(token_request, timeout=20) as response:
                   return json.load(response)["value"]
 
-          def post_with_deploy_retry(name, path):
-              last = None
-              for attempt in range(60):
+          def transport_block(name, code, detail=None):
+              return {
+                  "status": "BLOCKED",
+                  "code": code,
+                  "detail": detail or {},
+                  "automatic_certification": False,
+                  "automatic_promotion": False,
+                  "probability_publishable": False,
+                  "can_execute": False,
+              }
+
+          def post_bounded(name, path, *, attempts=2, timeout=180):
+              last_code = f"{name}_MAINTENANCE_TRANSPORT_UNAVAILABLE"
+              last_detail = {}
+              for attempt in range(attempts):
                   token = fresh_oidc_token()
-                  request = urllib.request.Request(origin+path, data=b"", method="POST",
-                      headers={"Authorization":f"Bearer {token}","Content-Type":"application/json"})
+                  request = urllib.request.Request(
+                      origin + path, data=b"", method="POST",
+                      headers={"Authorization":f"Bearer {token}","Content-Type":"application/json"},
+                  )
                   try:
-                      with urllib.request.urlopen(request, timeout=1800) as response:
+                      with urllib.request.urlopen(request, timeout=timeout) as response:
                           return json.load(response)
                   except urllib.error.HTTPError as exc:
                       body = exc.read().decode("utf-8", errors="replace")
-                      last = f"{name}_HTTP_{exc.code}:{body[:1000]}"
-                      if exc.code not in {404,502,503,504}:
-                          raise RuntimeError(last) from exc
-                  except urllib.error.URLError as exc:
-                      last = f"{name}_URL_ERROR:{exc}"
-                  if attempt < 59:
+                      if exc.code in {401, 403}:
+                          raise RuntimeError(f"{name}_AUTH_HTTP_{exc.code}:{body[:500]}") from exc
+                      last_code = f"{name}_HTTP_{exc.code}"
+                      last_detail = {"http_status": exc.code, "body_prefix": body[:500]}
+                      if exc.code not in {404, 429, 502, 503, 504}:
+                          break
+                  except (urllib.error.URLError, TimeoutError) as exc:
+                      last_code = f"{name}_TRANSPORT_ERROR"
+                      last_detail = {"error_type": type(exc).__name__}
+                  if attempt + 1 < attempts:
                       time.sleep(10)
-              raise RuntimeError(last or f"{name}_DEPLOYMENT_NOT_READY")
+              return transport_block(name, last_code, last_detail)
 
-          results = {}
-          for name,path in endpoints:
-              payload = post_with_deploy_retry(name,path)
-              assert payload.get("can_execute") is False, (name,payload)
-              assert payload.get("probability_publishable") is False, (name,payload)
-              if "automatic_certification" in payload: assert payload.get("automatic_certification") is False, (name,payload)
-              if "automatic_promotion" in payload: assert payload.get("automatic_promotion") is False, (name,payload)
-              results[name] = payload
-              print(json.dumps({"lane":name,"result":payload},sort_keys=True))
+          # The scoped route is new in this deployment. Gate route readiness on
+          # the fast local NFL scope before invoking any source-heavy scope.
+          nfl = post_bounded(
+              "TEAM_STATE_NFL",
+              "/internal/v17/team-state-challenger-maintenance/NFL",
+              attempts=36,
+              timeout=180,
+          )
+          assert nfl.get("program") == program, nfl
+          assert isinstance(nfl.get("rows"), list) and nfl.get("rows"), nfl
 
-          basketball = results.get("BASKETBALL") or {}
-          sports = {str(row.get("sport")):row for row in (basketball.get("rows") or [])}
-          assert "NBA" in sports and "WNBA" in sports
-          team_state = results.get("TEAM_STATE") or {}
-          assert team_state.get("program") == "LLP_DYNAMIC_TEAM_STATE_CHALLENGER_V1", team_state
-          assert isinstance(team_state.get("rows"),list) and team_state.get("rows"), team_state
-          assert all(row.get("can_execute") is False for row in team_state["rows"]), team_state
-          assert all(row.get("probability_publishable") is False for row in team_state["rows"]), team_state
-          print(json.dumps({"checkpoint":{"NCAAF":(results.get("NCAAF") or {}).get("status"),
-              "NBA":(sports.get("NBA") or {}).get("status"),"WNBA":(sports.get("WNBA") or {}).get("status"),
-              "NCAAB":(results.get("NCAAB") or {}).get("status"),"SOCCER":(results.get("SOCCER") or {}).get("status"),
-              "TENNIS":(results.get("TENNIS") or {}).get("status"),"TEAM_STATE":team_state.get("status"),
-              "team_state_updated":team_state.get("candidate_rows_updated"),"team_state_blocked":team_state.get("candidate_rows_blocked"),
-              "can_execute":False}},sort_keys=True))
+          team_state_results = {"NFL": nfl}
+          for scope in team_state_scopes[1:]:
+              payload = post_bounded(
+                  f"TEAM_STATE_{scope}",
+                  f"/internal/v17/team-state-challenger-maintenance/{scope}",
+                  attempts=2,
+                  timeout=180,
+              )
+              team_state_results[scope] = payload
+
+          governed_team_state_payloads = [
+              payload for payload in team_state_results.values()
+              if payload.get("program") == program
+          ]
+          assert governed_team_state_payloads, team_state_results
+          for payload in governed_team_state_payloads:
+              assert payload.get("can_execute") is False, payload
+              assert payload.get("probability_publishable") is False, payload
+              assert payload.get("automatic_certification") is False, payload
+              assert payload.get("automatic_promotion") is False, payload
+              assert isinstance(payload.get("rows"), list) and payload.get("rows"), payload
+              assert all(row.get("can_execute") is False for row in payload["rows"]), payload
+              assert all(row.get("probability_publishable") is False for row in payload["rows"]), payload
+
+          # Preserve the pre-existing first-six maintenance work, but a single
+          # unavailable external source cannot prevent the other lanes from being
+          # attempted or erase completed team-state evidence.
+          ancillary_results = {}
+          for name, path in ancillary_endpoints:
+              payload = post_bounded(name, path, attempts=1, timeout=180)
+              assert payload.get("can_execute") is False, (name, payload)
+              assert payload.get("probability_publishable") is False, (name, payload)
+              if "automatic_certification" in payload:
+                  assert payload.get("automatic_certification") is False, (name, payload)
+              if "automatic_promotion" in payload:
+                  assert payload.get("automatic_promotion") is False, (name, payload)
+              ancillary_results[name] = payload
+
+          scope_updated = sum(int(payload.get("candidate_rows_updated") or 0) for payload in governed_team_state_payloads)
+          scope_blocked = sum(int(payload.get("candidate_rows_blocked") or 0) for payload in governed_team_state_payloads)
+          transport_blocked_scopes = [
+              scope for scope, payload in team_state_results.items()
+              if payload.get("program") != program
+          ]
+          print(json.dumps({
+              "checkpoint": {
+                  "TEAM_STATE": "SCOPED_MAINTENANCE_COMPLETED",
+                  "team_state_scopes_attempted": len(team_state_results),
+                  "team_state_scopes_with_governed_response": len(governed_team_state_payloads),
+                  "team_state_candidate_rows_updated": scope_updated,
+                  "team_state_candidate_rows_blocked": scope_blocked,
+                  "team_state_transport_blocked_scopes": transport_blocked_scopes,
+                  "ancillary_statuses": {name: payload.get("status") for name, payload in ancillary_results.items()},
+                  "can_execute": False,
+              },
+              "team_state": team_state_results,
+              "ancillary": ancillary_results,
+          }, sort_keys=True))
           PY

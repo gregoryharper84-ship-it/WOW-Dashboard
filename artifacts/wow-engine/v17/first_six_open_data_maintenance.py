@@ -12,6 +12,7 @@ from v17.ncaab_sportsdataverse_candidate import NCAABCandidateUnavailable, train
 from v17.soccer_openfootball_candidate import SoccerCandidateUnavailable, train_all as train_soccer
 from v17.tennis_valuebet_candidate import TennisCandidateUnavailable, train_all as train_tennis
 from v17.team_state_challenger_maintenance import run_all_team_state_challengers
+from v17.team_state_scoped_maintenance import run_team_state_scope
 
 CAN_EXECUTE = False
 
@@ -50,6 +51,23 @@ def _run_team_state(db: Any) -> dict[str, Any]:
     return {**result,"automatic_certification":False,"automatic_promotion":False,"probability_publishable":False,"can_execute":False}
 
 
+def _run_team_state_scope(db: Any, scope: str) -> dict[str, Any]:
+    sha = _sha()
+    if len(sha) < 7:
+        return {"status":"BLOCKED","program":"LLP_DYNAMIC_TEAM_STATE_CHALLENGER_V1","scope":str(scope or "").upper(),
+                "code":"TEAM_STATE_TRAINING_CODE_SHA_UNAVAILABLE","rows":[],"candidate_rows_updated":0,
+                "candidate_rows_blocked":1,"automatic_certification":False,"automatic_promotion":False,
+                "probability_publishable":False,"can_execute":False}
+    try:
+        result = run_team_state_scope(db, scope=scope, training_code_sha=sha)
+    except Exception as exc:
+        return {"status":"BLOCKED","program":"LLP_DYNAMIC_TEAM_STATE_CHALLENGER_V1","scope":str(scope or "").upper(),
+                "code":"TEAM_STATE_SCOPED_MAINTENANCE_FAILED","detail":{"error_type":type(exc).__name__},"rows":[],
+                "candidate_rows_updated":0,"candidate_rows_blocked":1,"automatic_certification":False,
+                "automatic_promotion":False,"probability_publishable":False,"can_execute":False}
+    return {**result,"automatic_certification":False,"automatic_promotion":False,"probability_publishable":False,"can_execute":False}
+
+
 def install_first_six_open_data_maintenance_routes(app: FastAPI, *, auth_dependency: Any, db_client_fn: Any) -> None:
     dependency = scout_route_auth_dependency(auth_dependency)
     routes = {getattr(route,"path",None) for route in app.router.routes}
@@ -73,6 +91,11 @@ def install_first_six_open_data_maintenance_routes(app: FastAPI, *, auth_depende
         @app.post("/internal/v17/team-state-challenger-maintenance",dependencies=[dependency],operation_id="runWowV17TeamStateChallengerMaintenance")
         def run_team_state_challenger_maintenance() -> dict[str, Any]:
             return _run_team_state(db_client_fn())
+
+    if "/internal/v17/team-state-challenger-maintenance/{scope}" not in routes:
+        @app.post("/internal/v17/team-state-challenger-maintenance/{scope}",dependencies=[dependency],operation_id="runWowV17TeamStateChallengerMaintenanceScope")
+        def run_team_state_challenger_maintenance_scope(scope: str) -> dict[str, Any]:
+            return _run_team_state_scope(db_client_fn(), scope)
 
 
 __all__ = ["CAN_EXECUTE","install_first_six_open_data_maintenance_routes"]
