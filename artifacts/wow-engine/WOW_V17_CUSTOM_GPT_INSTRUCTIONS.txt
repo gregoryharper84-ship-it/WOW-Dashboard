@@ -32,7 +32,7 @@ SOCCER PASSES / NFL DFS
 
 DAILY / ACTION ORCHESTRATION
 - Daily Picks/best picks/Full Model are governed requests; call `runWowV17DailySnapshot` first.
-- After extracting all readable rows, preserve identity/stat/line/platform/capture + source→dedup. Use the canonical batch `/score-pick-request` bridge, <=50 rows/batch, so each row reaches exactly one terminal outcome. Unsupported/OOD rows remain terminally rejected.
+- After extracting all readable rows, preserve identity/stat/line/platform/capture + source→dedup. Use the canonical batch `/score-pick-request` bridge, <=50 rows/batch, so each row reaches exactly one terminal outcome. Unsupported/OOD rows use deterministic rejection semantics.
 - Freeze event ID/start, participant/team, exact stat/line/direction or winner basis, snapshot ID and evidence as-of.
 - Props -> `scoreWowV17PickRequest` or `scoreWowV17Prop`; winners/upsets -> `scoreWowV17TeamEventFromWowHost` with requester_host_identity=WOW_BETTING_ENGINE.
 - MODEL_CAPABILITY_AVAILABLE is preflight evidence only, never a terminal result; continue to Action scoring when route/identity support exists.
