@@ -1,25 +1,27 @@
 """SharpAPI player-prop compatibility for the V17 Scout acquisition lane.
 
 SharpAPI's live row schema includes explicit ``is_player_prop``, ``player_name``,
-``stat_category``, ``line``, ``selection`` and ``odds`` fields.  The canonical
-market-evidence adapter currently recognizes only team mainlines, so those live
-prop rows are discarded as ``SHARPAPI_SCHEMA_UNRECOGNISED`` before Scout can
-route them to the governed prop specialists.
+``stat_category``, ``line``, ``selection`` and ``odds`` fields. The existing
+adapters recognise team mainlines but discard these live prop rows as
+``SHARPAPI_SCHEMA_UNRECOGNISED`` before Scout can route them to governed prop
+specialists.
 
-This module augments that adapter at the acquisition boundary only.  It emits
-the existing Odds-API-v4 interchange shape and preserves SharpAPI as
-research/evidence input: it does not calculate probability, qualify a pick, or
-change terminal/execution authority. ``can_execute`` remains false downstream.
+This module augments both SharpAPI adapter entrypoints used by V17: the generic
+acceptance/normalisation adapter and the live Nightly Scout adapter. It emits the
+existing Odds-API-v4 interchange shape and preserves SharpAPI as research/evidence
+input only. It does not calculate probability, qualify a pick, or change terminal
+or execution authority. ``can_execute`` remains false downstream.
 """
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import Any, Callable
 
 from v17 import market_evidence_sources as sources
 
 _INSTALLED = False
-_ORIGINAL = None
+_SOURCES_ORIGINAL: Callable[..., list[dict[str, Any]]] | None = None
+_LIVE_ORIGINAL: Callable[..., list[dict[str, Any]]] | None = None
 
 
 def _clean_key(value: Any) -> str:
@@ -33,9 +35,6 @@ def _prop_market_key(row: dict[str, Any]) -> str | None:
     key = _clean_key(raw)
     if not key:
         return None
-    # Preserve specialist-friendly native categories when they already identify
-    # a prop family. Otherwise make the prop nature explicit so Scout's existing
-    # classifier cannot confuse it with a team total or side market.
     prop_tokens = (
         "player_", "pitcher_", "batter_", "passing_", "rushing_", "receiving_",
         "points", "rebounds", "assists", "threes", "blocks", "steals",
@@ -132,18 +131,27 @@ def augment_sharpapi_props(
     return [event for event in events.values() if event.get("bookmakers")]
 
 
+def _wrap(original: Callable[..., list[dict[str, Any]]]) -> Callable[..., list[dict[str, Any]]]:
+    def wrapped(rows: Any, *, sport_key: str | None = None) -> list[dict[str, Any]]:
+        base = original(rows, sport_key=sport_key)
+        return augment_sharpapi_props(base, rows, sport_key=sport_key)
+    return wrapped
+
+
 def install() -> None:
-    """Install the compatibility wrapper once for the Nightly Scout process."""
-    global _INSTALLED, _ORIGINAL
+    """Install compatibility on both adapters used by acceptance and Nightly Scout."""
+    global _INSTALLED, _SOURCES_ORIGINAL, _LIVE_ORIGINAL
     if _INSTALLED:
         return
-    _ORIGINAL = sources.sharpapi_rows_to_odds_api_v4
 
-    def wrapped(rows: Any, *, sport_key: str | None = None) -> list[dict[str, Any]]:
-        base = _ORIGINAL(rows, sport_key=sport_key)
-        return augment_sharpapi_props(base, rows, sport_key=sport_key)
+    # Imported lazily to avoid making the generic provider module depend on the
+    # live adapter during module initialization.
+    from v17 import market_evidence_native_live as live
 
-    sources.sharpapi_rows_to_odds_api_v4 = wrapped
+    _SOURCES_ORIGINAL = sources.sharpapi_rows_to_odds_api_v4
+    _LIVE_ORIGINAL = live.sharpapi_rows_to_odds_api_v4
+    sources.sharpapi_rows_to_odds_api_v4 = _wrap(_SOURCES_ORIGINAL)
+    live.sharpapi_rows_to_odds_api_v4 = _wrap(_LIVE_ORIGINAL)
     _INSTALLED = True
 
 
