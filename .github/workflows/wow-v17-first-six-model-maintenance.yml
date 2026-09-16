@@ -28,6 +28,7 @@ on:
       - "artifacts/wow-engine/basketball_specialist_pipeline.py"
       - "artifacts/wow-engine/test_v17_first_six_certification.py"
       - "artifacts/wow-engine/test_v17_first_six_source_contracts.py"
+      - "artifacts/wow-engine/test_v17_team_event_specialist_ownership.py"
       - "artifacts/wow-engine/test_v17_team_state_intelligence.py"
       - "artifacts/wow-engine/test_v17_team_state_challenger_training.py"
       - "artifacts/wow-engine/test_v17_github_oidc.py"
@@ -35,10 +36,12 @@ on:
     paths:
       - ".github/workflows/wow-v17-first-six-model-maintenance.yml"
       - "artifacts/wow-engine/LLP_TEAM_STATE_ACCURACY_V1.md"
+      - "artifacts/wow-engine/v17/team_event_specialist_ownership.py"
       - "artifacts/wow-engine/v17/team_state_intelligence.py"
       - "artifacts/wow-engine/v17/team_state_challenger_training.py"
       - "artifacts/wow-engine/v17/team_state_challenger_maintenance.py"
       - "artifacts/wow-engine/v17/first_six_open_data_maintenance.py"
+      - "artifacts/wow-engine/test_v17_team_event_specialist_ownership.py"
       - "artifacts/wow-engine/test_v17_team_state_intelligence.py"
       - "artifacts/wow-engine/test_v17_team_state_challenger_training.py"
       - "artifacts/wow-engine/test_v17_first_six_certification.py"
@@ -111,13 +114,16 @@ jobs:
           import json, os, time, urllib.error, urllib.parse, urllib.request
 
           origin = os.environ["WOW_ACTION_ORIGIN"].rstrip("/")
+          # Long-running/open-data lanes are independent. Keep NCAAB last because
+          # its remote acquisition is the most deployment-sensitive; no single
+          # lane may prevent the remaining specialists from reporting evidence.
           endpoints = [
               ("BASKETBALL","/internal/v17/basketball-model-maintenance"),
               ("NCAAF","/internal/v17/ncaaf-model-maintenance"),
-              ("NCAAB","/internal/v17/ncaab-model-maintenance"),
               ("SOCCER","/internal/v17/soccer-model-maintenance"),
               ("TENNIS","/internal/v17/tennis-model-maintenance"),
               ("TEAM_STATE","/internal/v17/team-state-challenger-maintenance"),
+              ("NCAAB","/internal/v17/ncaab-model-maintenance"),
           ]
 
           def fresh_oidc_token():
@@ -132,7 +138,10 @@ jobs:
 
           def post_with_deploy_retry(name, path):
               last = None
-              for attempt in range(60):
+              # Render checksPass deployments can overlap a maintenance trigger.
+              # Retry transient cutover codes for up to ~15 minutes while using a
+              # fresh OIDC token on every attempt.
+              for attempt in range(90):
                   token = fresh_oidc_token()
                   request = urllib.request.Request(origin+path, data=b"", method="POST",
                       headers={"Authorization":f"Bearer {token}","Content-Type":"application/json"})
@@ -146,32 +155,66 @@ jobs:
                           raise RuntimeError(last) from exc
                   except urllib.error.URLError as exc:
                       last = f"{name}_URL_ERROR:{exc}"
-                  if attempt < 59:
+                  if attempt < 89:
                       time.sleep(10)
               raise RuntimeError(last or f"{name}_DEPLOYMENT_NOT_READY")
 
           results = {}
+          transport_failures = {}
           for name,path in endpoints:
-              payload = post_with_deploy_retry(name,path)
+              try:
+                  payload = post_with_deploy_retry(name,path)
+              except Exception as exc:
+                  transport_failures[name] = f"{type(exc).__name__}:{exc}"
+                  payload = {
+                      "status":"TRANSPORT_FAILED",
+                      "code":f"{name}_MAINTENANCE_TRANSPORT_FAILED",
+                      "detail":{"error_type":type(exc).__name__},
+                      "automatic_certification":False,
+                      "automatic_promotion":False,
+                      "probability_publishable":False,
+                      "can_execute":False,
+                  }
+
               assert payload.get("can_execute") is False, (name,payload)
               assert payload.get("probability_publishable") is False, (name,payload)
-              if "automatic_certification" in payload: assert payload.get("automatic_certification") is False, (name,payload)
-              if "automatic_promotion" in payload: assert payload.get("automatic_promotion") is False, (name,payload)
+              if "automatic_certification" in payload:
+                  assert payload.get("automatic_certification") is False, (name,payload)
+              if "automatic_promotion" in payload:
+                  assert payload.get("automatic_promotion") is False, (name,payload)
               results[name] = payload
               print(json.dumps({"lane":name,"result":payload},sort_keys=True))
 
           basketball = results.get("BASKETBALL") or {}
           sports = {str(row.get("sport")):row for row in (basketball.get("rows") or [])}
-          assert "NBA" in sports and "WNBA" in sports
+          if basketball.get("status") != "TRANSPORT_FAILED":
+              assert "NBA" in sports and "WNBA" in sports
+
           team_state = results.get("TEAM_STATE") or {}
-          assert team_state.get("program") == "LLP_DYNAMIC_TEAM_STATE_CHALLENGER_V1", team_state
-          assert isinstance(team_state.get("rows"),list) and team_state.get("rows"), team_state
-          assert all(row.get("can_execute") is False for row in team_state["rows"]), team_state
-          assert all(row.get("probability_publishable") is False for row in team_state["rows"]), team_state
-          print(json.dumps({"checkpoint":{"NCAAF":(results.get("NCAAF") or {}).get("status"),
-              "NBA":(sports.get("NBA") or {}).get("status"),"WNBA":(sports.get("WNBA") or {}).get("status"),
-              "NCAAB":(results.get("NCAAB") or {}).get("status"),"SOCCER":(results.get("SOCCER") or {}).get("status"),
-              "TENNIS":(results.get("TENNIS") or {}).get("status"),"TEAM_STATE":team_state.get("status"),
-              "team_state_updated":team_state.get("candidate_rows_updated"),"team_state_blocked":team_state.get("candidate_rows_blocked"),
-              "can_execute":False}},sort_keys=True))
+          if team_state.get("status") != "TRANSPORT_FAILED":
+              assert team_state.get("program") == "LLP_DYNAMIC_TEAM_STATE_CHALLENGER_V1", team_state
+              assert isinstance(team_state.get("rows"),list) and team_state.get("rows"), team_state
+              assert all(row.get("can_execute") is False for row in team_state["rows"]), team_state
+              assert all(row.get("probability_publishable") is False for row in team_state["rows"]), team_state
+
+          checkpoint = {
+              "NCAAF":(results.get("NCAAF") or {}).get("status"),
+              "NBA":(sports.get("NBA") or {}).get("status") or basketball.get("status"),
+              "WNBA":(sports.get("WNBA") or {}).get("status") or basketball.get("status"),
+              "NCAAB":(results.get("NCAAB") or {}).get("status"),
+              "SOCCER":(results.get("SOCCER") or {}).get("status"),
+              "TENNIS":(results.get("TENNIS") or {}).get("status"),
+              "TEAM_STATE":team_state.get("status"),
+              "team_state_updated":team_state.get("candidate_rows_updated"),
+              "team_state_blocked":team_state.get("candidate_rows_blocked"),
+              "transport_failures":sorted(transport_failures),
+              "can_execute":False,
+          }
+          print(json.dumps({"checkpoint":checkpoint},sort_keys=True))
+
+          # Fail the job only after every independent lane has had a chance to
+          # report. This preserves CI visibility without converting transport
+          # failure into model unavailability or bypassing any promotion gate.
+          if transport_failures:
+              raise RuntimeError("FIRST_SIX_TRANSPORT_FAILURES:" + json.dumps(transport_failures,sort_keys=True))
           PY
