@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 import pytest
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from pydantic import BaseModel
 
 import v17.fantasy_score_candidate_bridge as bridge
@@ -217,7 +215,7 @@ def test_runtime_installer_delegates_nonfantasy_and_intercepts_only_fantasy(monk
 
     assert route_mod.install_fantasy_score_candidate_runtime_bridge(
         app,
-        auth_dependency=lambda: None,
+        auth_dependency=Depends(lambda: None),
         market_api=market,
     ) is True
 
