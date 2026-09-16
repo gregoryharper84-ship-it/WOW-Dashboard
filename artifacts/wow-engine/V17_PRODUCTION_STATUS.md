@@ -72,6 +72,22 @@ The old instruction blob SHA `202157522b96921d973e7a9dbc1d373f95249eb7` and the 
 
 The exact byte-for-byte 5,418-character live instruction export/hash was not available to the repository-write session. That repository parity detail does not reopen the completed live editor synchronization.
 
+## User-journey health
+
+**USER_JOURNEY_HEALTH = FAIL — NO_END_TO_END_GOVERNED_PROP_RESULT.**
+
+This is separate from backend runtime, editor synchronization, repository governance, and route/model capability. The live editor and `/score-pick-request` route are verified prerequisites, but they do not prove that the actual user request completes end to end.
+
+The golden production acceptance prompt is:
+
+```text
+Use full model and provide me the best props across all sports.
+```
+
+`USER_JOURNEY_HEALTH` becomes PASS only after that production ChatGPT path invokes the live `scoreWowPickRequest` Action, acquires current prop inventory with explicit source typing, routes supported rows through the correct fitted specialists, preserves exact typed failures, returns governed probability/calibration/lower-bound packages where applicable, passes through `V17_TERMINAL_REDUCER`, and hands the actual governed result back to ChatGPT. Green CI, backend health, route-mounted evidence, editor save/reload, Scout discovery, or a local reconstruction cannot independently set this status to PASS.
+
+Authoritative detail: `artifacts/wow-engine/V17_USER_JOURNEY_HEALTH.md`.
+
 ## Status language
 
 Report these independently:
@@ -80,3 +96,4 @@ Report these independently:
 - `MODEL_CAPABILITY = route-specific backend result`
 - `REPOSITORY_GOVERNANCE = protected/CI state`
 - `LIVE_GPT_EDITOR_SYNC = VERIFIED 2026-09-16`
+- `USER_JOURNEY_HEALTH = FAIL until golden production canary passes`
