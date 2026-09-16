@@ -49,7 +49,8 @@ def test_unknown_player_stat_is_explicitly_prop_prefixed():
 def test_installed_adapter_preserves_evidence_only_normalization(monkeypatch):
     original = sources.sharpapi_rows_to_odds_api_v4
     monkeypatch.setattr(compat, "_INSTALLED", False)
-    monkeypatch.setattr(compat, "_ORIGINAL", None)
+    monkeypatch.setattr(compat, "_SOURCES_ORIGINAL", None)
+    monkeypatch.setattr(compat, "_LIVE_ORIGINAL", None)
     monkeypatch.setattr(sources, "sharpapi_rows_to_odds_api_v4", original)
     compat.install()
     result = sources.normalize_market_payload(
