@@ -15,6 +15,12 @@ permissions:
   contents: read
   id-token: write
 
+# Native nightly persistence and persist-resume can target the same source run.
+# Serialize those writers so a second BEGIN cannot reset in-flight counters.
+concurrency:
+  group: wow-v17-scout-brain-persist-${{ inputs.run_id || github.event.workflow_run.id }}
+  cancel-in-progress: false
+
 jobs:
   persist:
     if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion != 'cancelled'
