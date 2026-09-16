@@ -20,6 +20,8 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
+from mlb_1ip_direction_neutrality import build_direction_neutral_1ip_audit
+
 ORIGIN = os.environ["WOW_ACTION_ORIGIN"].rstrip("/")
 ENDPOINT = ORIGIN + "/score-pick-request"
 OUTPUT_PATH = Path("v17_canonical_prop_action_result.json")
@@ -269,13 +271,21 @@ outcomes: list[dict] = []
 for batch in action_batches:
     outcomes.extend(batch.get("rows") or [])
 
+prepared_by_key = {str(row["row_key"]): row for row in prepared}
 compact_rows: list[dict] = []
 for outcome in outcomes:
     result = outcome.get("result") if isinstance(outcome.get("result"), dict) else {}
     prediction = result.get("prediction") if isinstance(result.get("prediction"), dict) else result
+    source_row = prepared_by_key.get(str(outcome.get("row_key"))) or {}
     compact_rows.append(
         {
             "row_key": outcome.get("row_key"),
+            "event_id": source_row.get("event_id"),
+            "player": source_row.get("player"),
+            "opponent": source_row.get("opponent"),
+            "stat_type": source_row.get("stat_type"),
+            "line": source_row.get("line"),
+            "direction": source_row.get("direction"),
             "terminal_status": outcome.get("terminal_status"),
             "code": outcome.get("code"),
             "terminal_label": outcome.get("terminal_label"),
@@ -297,6 +307,8 @@ for outcome in outcomes:
         }
     )
 
+direction_neutral_1ip = build_direction_neutral_1ip_audit(lines, compact_rows)
+
 summary = {
     "request_id": request_doc.get("request_id"),
     "source_lines": len(lines),
@@ -308,6 +320,11 @@ summary = {
     "rejected": sum(1 for r in outcomes if r.get("terminal_status") == "REJECTED"),
     "model_evaluated": sum(1 for r in outcomes if r.get("model_evaluated") is True),
     "probability_publishable": sum(1 for r in outcomes if r.get("probability_publishable") is True),
+    "mlb_1ip_bidirectional_expected": direction_neutral_1ip["bidirectional_expected"],
+    "mlb_1ip_bidirectional_complete": direction_neutral_1ip["bidirectional_complete"],
+    "mlb_1ip_more_preferred": direction_neutral_1ip["more_preferred"],
+    "mlb_1ip_less_preferred": direction_neutral_1ip["less_preferred"],
+    "mlb_1ip_incomplete_pairs": direction_neutral_1ip["incomplete_pairs"],
     "can_execute": False,
 }
 if len(outcomes) != len(prepared):
@@ -321,9 +338,24 @@ output = {
     "preflight_failures": preflight_failures,
     "action_batches": action_batches,
     "compact_rows": compact_rows,
+    "mlb_1ip_direction_neutrality": direction_neutral_1ip,
     "can_execute": False,
 }
 OUTPUT_PATH.write_text(json.dumps(output, indent=2, ensure_ascii=False), encoding="utf-8")
 print("RUN_SUMMARY " + json.dumps(summary, sort_keys=True))
+print(
+    "MLB_1IP_DIRECTION_AUDIT "
+    + json.dumps(
+        {
+            "bidirectional_expected": direction_neutral_1ip["bidirectional_expected"],
+            "bidirectional_complete": direction_neutral_1ip["bidirectional_complete"],
+            "more_preferred": direction_neutral_1ip["more_preferred"],
+            "less_preferred": direction_neutral_1ip["less_preferred"],
+            "incomplete_pairs": direction_neutral_1ip["incomplete_pairs"],
+            "can_execute": False,
+        },
+        sort_keys=True,
+    )
+)
 for row in compact_rows:
     print("ROW_RESULT " + json.dumps(row, sort_keys=True, ensure_ascii=False))
