@@ -29,6 +29,27 @@ def _model(row_id: str, probability: float = 0.64, lower: float = 0.58):
     }
 
 
+def _research_model(row_id: str, probability: float = 0.64, lower: float = 0.58):
+    return {
+        "row_key": row_id,
+        "terminal_status": "COMPLETED",
+        "code": "RESEARCH_INTEREST",
+        "model_evaluated": True,
+        "probability_publishable": True,
+        "result": {
+            "governed_sporting_probability_completed": True,
+            "sporting_probability_publishable": True,
+            "probability_publishable": True,
+            "governed_publishable": False,
+            "official_final_publishable": False,
+            "research_model_output": {
+                "calibrated_probability": probability,
+                "calibrated_probability_lower_bound": lower,
+            },
+        },
+    }
+
+
 def _blocker(row_id: str, code: str = "MODEL_INPUTS_INSUFFICIENT"):
     return {
         "row_key": row_id,
@@ -80,6 +101,21 @@ def test_duplicate_receipt_fails_exact_once_reconciliation():
 def test_model_package_requires_calibrated_probability_and_lower_bound():
     outcome = _model("row-1")
     del outcome["result"]["prediction"]["calibrated_probability_lower_bound"]
+    assert has_valid_model_package(outcome) is False
+
+
+def test_publication_hold_research_model_output_is_valid_probability_package():
+    outcome = _research_model("row-1")
+    assert has_valid_model_package(outcome) is True
+    report = reconcile_top10_rows([_row(1)], [outcome])
+    assert report["balanced"] is True
+    assert report["rows_with_valid_model_package"] == 1
+    assert report["valid_model_package_row_ids"] == ["row-1"]
+
+
+def test_research_model_output_still_requires_calibrated_lower_bound():
+    outcome = _research_model("row-1")
+    del outcome["result"]["research_model_output"]["calibrated_probability_lower_bound"]
     assert has_valid_model_package(outcome) is False
 
 
