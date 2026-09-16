@@ -18,6 +18,7 @@ import argparse
 import json
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Any, Callable
 
@@ -45,13 +46,38 @@ def _team_event_batch_rows() -> int:
 
 TEAM_EVENT_BATCH_ROWS = _team_event_batch_rows()
 auto_advance.MAX_TEAM_EVENT_ROWS = TEAM_EVENT_BATCH_ROWS
+_TRANSIENT_HTTP_STATUSES = frozenset({502, 503, 504})
+_TRANSIENT_RETRY_BACKOFF_SECONDS = (1.0, 3.0)
+
+
+def _repeat_safe_transient_retry(path: str, payload: dict[str, Any]) -> bool:
+    """Retry only the batch shape with a proven repeat-safe persistence contract.
+
+    MLB team/event governance upserts by frozen research/event/settlement identity,
+    so a lost 502/503/504 response can be retried without manufacturing a second
+    sporting thesis. NFL currently writes immutable prediction rows, so mixed or
+    non-MLB batches remain fail-closed until they have an explicit idempotency key.
+    """
+    if path != "/score-team-event-request":
+        return False
+    rows = payload.get("rows")
+    if not isinstance(rows, list) or not rows:
+        return False
+    return all(
+        isinstance(row, dict)
+        and str(row.get("sport") or "").strip().upper() == "MLB"
+        and str(row.get("league") or "").strip().upper() == "MLB"
+        and bool(str(row.get("research_run_id") or "").strip())
+        and bool(str(row.get("event_key") or "").strip())
+        for row in rows
+    )
 
 
 def _refreshing_oidc_post(initial_token: str) -> Callable[..., dict[str, Any]]:
-    """Return a backend POST function that refreshes OIDC once on HTTP 401."""
+    """Refresh OIDC on 401 and retry repeat-safe transient MLB gateway failures."""
     state = {"token": initial_token}
 
-    def post(origin: str, path: str, _token: str, payload: dict[str, Any], timeout: int = 120) -> dict[str, Any]:
+    def authorized_post(origin: str, path: str, payload: dict[str, Any], timeout: int) -> dict[str, Any]:
         receipt = _post_json(origin, path, state["token"], payload, timeout=timeout)
         if receipt.get("http_status") != 401:
             return receipt
@@ -65,6 +91,25 @@ def _refreshing_oidc_post(initial_token: str) -> Callable[..., dict[str, Any]]:
                 "can_execute": False,
             }
         return _post_json(origin, path, state["token"], payload, timeout=timeout)
+
+    def post(origin: str, path: str, _token: str, payload: dict[str, Any], timeout: int = 120) -> dict[str, Any]:
+        receipt = authorized_post(origin, path, payload, timeout)
+        first_status = receipt.get("http_status")
+        retry_count = 0
+        if _repeat_safe_transient_retry(path, payload):
+            for delay in _TRANSIENT_RETRY_BACKOFF_SECONDS:
+                if receipt.get("http_status") not in _TRANSIENT_HTTP_STATUSES:
+                    break
+                time.sleep(delay)
+                retry_count += 1
+                receipt = authorized_post(origin, path, payload, timeout)
+        if retry_count:
+            receipt = dict(receipt)
+            receipt["transient_retry_count"] = retry_count
+            receipt["initial_http_status"] = first_status
+            receipt["repeat_safe_retry"] = True
+            receipt["can_execute"] = False
+        return receipt
 
     return post
 
