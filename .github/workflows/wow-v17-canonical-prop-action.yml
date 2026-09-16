@@ -14,6 +14,9 @@ on:
     paths:
       - ".github/workflows/wow-v17-canonical-prop-action.yml"
       - "artifacts/wow-engine/v17/canonical_prop_action_runner.py"
+      - "artifacts/wow-engine/v17/mlb_1ip_direction_neutrality.py"
+      - "artifacts/wow-engine/test_v17_mlb_1ip_direction_neutrality.py"
+      - "artifacts/wow-engine/WOW_V17_CUSTOM_GPT_INSTRUCTIONS.txt"
       - "artifacts/wow-engine/v17/prop_action_requests/**"
   pull_request:
     paths:
@@ -21,6 +24,9 @@ on:
       - "artifacts/wow-engine/github_actions_oidc.py"
       - "artifacts/wow-engine/test_v17_github_oidc.py"
       - "artifacts/wow-engine/v17/canonical_prop_action_runner.py"
+      - "artifacts/wow-engine/v17/mlb_1ip_direction_neutrality.py"
+      - "artifacts/wow-engine/test_v17_mlb_1ip_direction_neutrality.py"
+      - "artifacts/wow-engine/WOW_V17_CUSTOM_GPT_INSTRUCTIONS.txt"
       - "artifacts/wow-engine/v17/prop_action_requests/**"
 
 permissions:
@@ -32,7 +38,7 @@ concurrency:
 
 jobs:
   verify:
-    name: Verify canonical prop OIDC contract
+    name: Verify canonical prop OIDC + 1IP direction-neutral contract
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -46,10 +52,10 @@ jobs:
           cache-dependency-path: artifacts/wow-engine/requirements.txt
       - name: Install engine dependencies
         run: pip install -r requirements.txt
-      - name: Run OIDC regression
-        run: python -m pytest -q test_v17_github_oidc.py
+      - name: Run focused regressions
+        run: python -m pytest -q test_v17_github_oidc.py test_v17_mlb_1ip_direction_neutrality.py tests/test_v17_live_editor_compat.py
       - name: Compile canonical prop runner
-        run: python -m py_compile v17/canonical_prop_action_runner.py
+        run: python -m py_compile v17/canonical_prop_action_runner.py v17/mlb_1ip_direction_neutrality.py
 
   canonical-prop-action:
     name: Run canonical V17 prop Action
