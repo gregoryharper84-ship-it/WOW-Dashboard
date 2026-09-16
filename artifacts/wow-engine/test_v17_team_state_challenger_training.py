@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 from v17 import team_state_challenger_training as training
 
@@ -41,3 +42,57 @@ def test_postmortem_snapshot_preserves_attribution_without_probability_rewrite()
     assert "HOME:STREAK_WITHOUT_DRIVER" in payload["diagnostic_flags"]
     assert "HOME:RESULTS_PROCESS_DIVERGENCE" in payload["diagnostic_flags"]
     assert payload["probability_rewritten"] is False and payload["can_execute"] is False
+
+
+class _Query:
+    def __init__(self, table, calls):
+        self.table = table
+        self.calls = calls
+
+    def upsert(self, payload, **kwargs):
+        self.calls.append((self.table, payload, kwargs))
+        return self
+
+    def execute(self):
+        return SimpleNamespace(data=[])
+
+
+class _Client:
+    def __init__(self):
+        self.calls = []
+
+    def table(self, name):
+        return _Query(name, self.calls)
+
+
+def test_candidate_persistence_uses_registry_valid_review_state_and_immutable_safe_insert():
+    client = _Client()
+    candidate = SimpleNamespace(
+        artifact_payload={"model": "test"},
+        dataset_hash="a" * 64,
+        calibrator_payload={"method": "TEST"},
+        metrics=SimpleNamespace(train_n=300, calibration_n=100, test_n=100),
+        research_screen_pass=True,
+    )
+
+    version = training._persist_artifact(
+        client,
+        sport="NFL",
+        league="NFL",
+        family="NFL_DYNAMIC_TEAM_STATE_LOGIT_V2",
+        schema="NFL_DYNAMIC_TEAM_STATE_FEATURES_V2",
+        training_code_sha="b" * 40,
+        candidate=candidate,
+        metrics={"can_execute": False},
+    )
+
+    table, payload, kwargs = client.calls[-1]
+    assert table == "wow_d1_candidate_artifacts"
+    assert payload["source_review_status"] == "REQUIRED"
+    assert payload["automatic_certification"] is False
+    assert payload["automatic_promotion"] is False
+    assert payload["probability_publishable"] is False
+    assert payload["can_execute"] is False
+    assert kwargs["on_conflict"] == "model_artifact_version"
+    assert kwargs["ignore_duplicates"] is True
+    assert version.startswith("NFL_DYNAMIC_TEAM_STATE_LOGIT_V2_")

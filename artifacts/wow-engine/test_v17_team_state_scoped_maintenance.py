@@ -1,3 +1,4 @@
+from v17 import team_state_challenger_maintenance as maintenance
 from v17 import team_state_scoped_maintenance as scoped
 
 
@@ -79,3 +80,30 @@ def test_scope_exception_is_typed_blocked_candidate_evidence(monkeypatch):
     assert result["rows"][0]["code"] == "NBA_TEAM_STATE_MAINTENANCE_FAILED"
     assert result["probability_publishable"] is False
     assert result["can_execute"] is False
+
+
+def test_mlb_official_events_deduplicate_repeated_gamepk(monkeypatch):
+    game = {
+        "gamePk": 123,
+        "gameDate": "2026-04-01T19:05:00Z",
+        "status": {"abstractGameState": "Final"},
+        "teams": {
+            "home": {"team": {"id": 1}, "score": 4},
+            "away": {"team": {"id": 2}, "score": 3},
+        },
+    }
+
+    class Response:
+        status_code = 200
+        content = b"same-source-payload"
+
+        @staticmethod
+        def json():
+            return {"dates": [{"games": [game]}, {"games": [game]}]}
+
+    monkeypatch.setattr(maintenance.requests, "get", lambda *args, **kwargs: Response())
+    rows = maintenance._mlb_official_events(seasons=(2026,))
+
+    assert [row["event_id"] for row in rows] == ["MLB:123"]
+    assert rows[0]["home_score"] == 4.0
+    assert rows[0]["away_score"] == 3.0
