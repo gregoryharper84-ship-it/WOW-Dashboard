@@ -15,6 +15,7 @@ const ALLOWED_STATUSES = new Set([
   "RESEARCH_INTEREST_HIGH", "QUARANTINED", "NO_INTEREST",
 ]);
 const ALLOWED_PHASES = new Set(["BEGIN", "APPEND", "FINALIZE"]);
+const TEAM_EVENT_ROUTE = "LLP_TEAM_BETTING_ENGINE";
 
 type Row = Record<string, unknown>;
 
@@ -88,13 +89,51 @@ function stageFor(row: Row): string {
 }
 
 function priorityScore(row: Row): number {
-  const evidenceCount = evidenceList(row).length;
+  const evidenceCount = evidenceTotal(row);
   const edgeCount = asList(row.edge_classes).length;
   const redCount = asList(row.required_red_team_checks).length;
   return Math.min(100, 35 + Math.min(evidenceCount, 20) * 2 + Math.min(edgeCount, 10) * 2 + Math.min(redCount, 10) * 0.5);
 }
 
+function isTeamEventRow(row: Row): boolean {
+  return str(row.route || row.controlling_specialist_route || "") === TEAM_EVENT_ROUTE;
+}
+
+/**
+ * Evidence rows carried by a request, and the candidate's true total.
+ *
+ * A sliced request holds only part of a candidate's evidence, so anything
+ * candidate-level (priority, market type) must read the slice total rather
+ * than the rows present in this request.
+ */
+function evidenceTotal(row: Row): number {
+  const slice = asObj(row.evidence_slice);
+  if (slice.total != null) return Number(slice.total);
+  return evidenceList(row).length;
+}
+
+function isFinalSlice(row: Row): boolean {
+  const slice = asObj(row.evidence_slice);
+  return slice.final == null ? true : slice.final === true;
+}
+
+function isFirstSlice(row: Row): boolean {
+  const slice = asObj(row.evidence_slice);
+  return slice.index == null ? true : Number(slice.index) === 0;
+}
+
 async function stableCandidateId(row: Row): Promise<string> {
+  if (isTeamEventRow(row)) {
+    // Identity cannot depend on the first evidence row once evidence is
+    // sliced across requests: each slice would key to a different candidate.
+    // Keeping the original seven-field shape with the evidence fields empty
+    // reproduces byte-for-byte the id the previous algorithm produced for an
+    // evidence-free team/event row, so existing rows keep their identity
+    // instead of being re-keyed. Only rows previously mis-keyed by their
+    // first evidence row move, which is the defect being repaired.
+    const raw = [row.sport_key, row.official_event_id, row.route, "", "", "", ""].map(str).join("|");
+    return `scout_${(await sha256(raw)).slice(0, 24)}`;
+  }
   const evidence = evidenceList(row)[0] || {};
   const raw = [
     row.sport_key, row.official_event_id, row.route,
@@ -109,6 +148,14 @@ async function stableSourceSnapshot(row: Row, evidence: Row): Promise<{id: strin
   const provider = str(evidence.source_provider || evidence.bookmaker || evidence.bookmaker_title || "UNKNOWN");
   const raw = [provider, str(row.sport_key || "UNKNOWN"), "MARKET_EVIDENCE", hash].join("|");
   return { id: `source_${(await sha256(raw)).slice(0, 24)}`, payload, hash, provider };
+}
+
+function candidateWithoutEvidence(row: Row): Row {
+  const out: Row = {};
+  for (const [k, v] of Object.entries(row)) {
+    if (k !== "market_evidence" && k !== "evidence_slice") out[k] = v;
+  }
+  return out;
 }
 
 function scoutTeam(row: Row): string {
@@ -157,14 +204,34 @@ function runSnapshot(body: Row, sports: Record<string, number>): string {
 type BatchCounts = {
   changed: number;
   quarantined: number;
+  candidatesFinalized: number;
   observations: number;
   sourceSnapshots: number;
   candidateSourceLinks: number;
 };
 
+/**
+ * Persist one request's worth of candidate slices.
+ *
+ * Evidence is written set-wise: one statement each for observations, source
+ * snapshots and candidate source links, over arrays unnested in the database,
+ * instead of three separately awaited round trips per evidence row. The prior
+ * shape issued thousands of sequential writes for a single large team/event
+ * candidate.
+ *
+ * Every array is bound as text[] and cast per row inside the statement. With
+ * prepare:false a `${...}::jsonb` parameter makes Postgres infer the parameter
+ * as jsonb, and the driver then JSON-encodes the already-serialized string, so
+ * the column receives a jsonb *string* rather than an object. Every existing
+ * candidate_history.snapshot is a string for exactly that reason. Casting from
+ * text parses the value instead.
+ */
 // deno-lint-ignore no-explicit-any
 async function persistCandidates(tx: any, runId: string, candidates: Row[]): Promise<BatchCounts> {
-  const counts: BatchCounts = { changed: 0, quarantined: 0, observations: 0, sourceSnapshots: 0, candidateSourceLinks: 0 };
+  const counts: BatchCounts = {
+    changed: 0, quarantined: 0, candidatesFinalized: 0,
+    observations: 0, sourceSnapshots: 0, candidateSourceLinks: 0,
+  };
 
   for (const row of candidates) {
     const cid = await stableCandidateId(row);
@@ -172,12 +239,13 @@ async function persistCandidates(tx: any, runId: string, candidates: Row[]): Pro
     const team = scoutTeam(row);
     const route = str(row.controlling_specialist_route || row.controlling_specialist || row.route || "UNRESOLVED");
     const status = normalizeStatus(row);
-    counts.quarantined += status === "QUARANTINED" ? 1 : 0;
     const score = priorityScore(row);
     const evidences = evidenceList(row);
-    const evidenceObj = evidences[0] || {};
-    const marketType = str(evidenceObj.market_key || (row.route === "LLP_TEAM_BETTING_ENGINE" ? "TEAM_EVENT" : "PROP"));
-    const selection = nullableStr(evidenceObj.outcome_name || evidenceObj.description);
+    const teamRow = isTeamEventRow(row);
+    // A team/event row's market type and selection must not vary by slice, so
+    // they come from the row's own identity rather than its first evidence.
+    const marketType = teamRow ? "TEAM_EVENT" : str(asObj(evidences[0]).market_key || "PROP");
+    const selection = teamRow ? null : nullableStr(asObj(evidences[0]).outcome_name || asObj(evidences[0]).description);
     const edgeClasses = asList(row.edge_classes).map(str);
     const redFlags = asList(row.red_team_flags).map(str);
     const contradictory = asList(row.contradictory_evidence).map(str);
@@ -201,63 +269,110 @@ async function persistCandidates(tx: any, runId: string, candidates: Row[]): Pro
          probability=null, can_execute=false, updated_at=now()
       returning (xmax = 0) as inserted
     `;
-    counts.changed += insertedRows[0]?.inserted ? 1 : 0;
+    // Counted once per candidate, on its first slice, not once per slice.
+    if (isFirstSlice(row)) counts.changed += insertedRows[0]?.inserted ? 1 : 0;
 
-    for (const e of evidences) {
-      const text = JSON.stringify(e, Object.keys(e).sort());
-      const checksum = await sha256(text);
-      const sourceName = str(e.source_provider || e.bookmaker || "UNKNOWN");
+    if (evidences.length) {
+      const stage = stageFor(row);
+      const sourceStatus = str(row.market_evidence_status || "AVAILABLE");
+      const obsName: string[] = [], obsText: string[] = [], obsValue: string[] = [], obsChecksum: string[] = [];
+      const snapId: string[] = [], snapProvider: string[] = [], snapClass: string[] = [], snapObserved: string[] = [];
+      const snapCode: (string | null)[] = [], snapHttp: (number | null)[] = [], snapPayload: string[] = [], snapHash: string[] = [];
+      const linkSnapId: string[] = [], linkEntities: string[] = [];
+
+      for (const e of evidences) {
+        const text = JSON.stringify(e, Object.keys(e).sort());
+        obsName.push(str(e.source_provider || e.bookmaker || "UNKNOWN"));
+        obsText.push(text);
+        obsValue.push(JSON.stringify(e));
+        obsChecksum.push(await sha256(text));
+
+        const snapshot = await stableSourceSnapshot(row, e);
+        snapId.push(snapshot.id);
+        snapProvider.push(snapshot.provider);
+        snapClass.push(str(e.source_class || e.source_tier || "SPORTSBOOK_FEED"));
+        snapObserved.push(nullableStr(e.market_last_update || e.bookmaker_last_update || e.captured_at) || new Date().toISOString());
+        snapCode.push(nullableStr(e.source_code || e.primary_source_failure));
+        snapHttp.push(e.source_http_status == null ? null : Number(e.source_http_status));
+        snapPayload.push(snapshot.payload);
+        snapHash.push(snapshot.hash);
+
+        linkSnapId.push(snapshot.id);
+        linkEntities.push(JSON.stringify({
+          official_event_id: row.official_event_id ?? null,
+          canonical_event_id: row.canonical_event_id ?? null,
+          home_team: row.home_team ?? null,
+          away_team: row.away_team ?? null,
+          bookmaker: e.bookmaker ?? null,
+          market_key: e.market_key ?? null,
+        }));
+      }
+
       await tx`
         insert into wow_scout.observations
           (candidate_id,agent_id,stage,source_type,source_name,evidence_type,evidence_text,evidence_value,is_contradictory,is_stale,checksum)
-        values (${cid},'MARKET_SCOUT',${stageFor(row)},'SPORTSBOOK',${sourceName},'MARKET_EVIDENCE',${text},${JSON.stringify(e)}::jsonb,false,false,${checksum})
+        select ${cid},'MARKET_SCOUT',${stage},'SPORTSBOOK',n,'MARKET_EVIDENCE',t,v::jsonb,false,false,c
+        from unnest(${obsName}::text[],${obsText}::text[],${obsValue}::text[],${obsChecksum}::text[]) as e(n,t,v,c)
         on conflict (candidate_id,agent_id,checksum) do nothing
       `;
-      counts.observations += 1;
+      counts.observations += evidences.length;
 
-      const snapshot = await stableSourceSnapshot(row, e);
-      const observedAt = nullableStr(e.market_last_update || e.bookmaker_last_update || e.captured_at) || new Date().toISOString();
-      const sourceClass = str(e.source_class || e.source_tier || "SPORTSBOOK_FEED");
-      const sourceStatus = str(row.market_evidence_status || "AVAILABLE");
-      const sourceCode = nullableStr(e.source_code || e.primary_source_failure);
-      const sourceHttpStatus = e.source_http_status == null ? null : Number(e.source_http_status);
       await tx`
         insert into wow_scout.source_snapshots
           (snapshot_id,provider,sport_key,capability,source_class,observed_at,source_status,source_code,source_http_status,payload,payload_hash,prediction_authority,can_execute)
-        values (${snapshot.id},${snapshot.provider},${sport},'MARKET_EVIDENCE',${sourceClass},${observedAt},${sourceStatus},${sourceCode},${sourceHttpStatus},${snapshot.payload}::jsonb,${snapshot.hash},false,false)
+        select id,provider,${sport},'MARKET_EVIDENCE',cls,observed::timestamptz,${sourceStatus},code,http,payload::jsonb,hash,false,false
+        from unnest(${snapId}::text[],${snapProvider}::text[],${snapClass}::text[],${snapObserved}::text[],${snapCode}::text[],${snapHttp}::int[],${snapPayload}::text[],${snapHash}::text[])
+             as s(id,provider,cls,observed,code,http,payload,hash)
         on conflict (snapshot_id) do update set
           observed_at=excluded.observed_at, source_status=excluded.source_status,
           source_code=excluded.source_code, source_http_status=excluded.source_http_status,
           payload=excluded.payload, payload_hash=excluded.payload_hash,
           prediction_authority=false, can_execute=false
       `;
-      counts.sourceSnapshots += 1;
+      counts.sourceSnapshots += evidences.length;
 
-      const providerEntities = JSON.stringify({
-        official_event_id: row.official_event_id ?? null,
-        canonical_event_id: row.canonical_event_id ?? null,
-        home_team: row.home_team ?? null,
-        away_team: row.away_team ?? null,
-        bookmaker: e.bookmaker ?? null,
-        market_key: e.market_key ?? null,
-      });
       await tx`
         insert into wow_scout.candidate_source_links
           (candidate_id,snapshot_id,link_status,link_reason,provider_entities,prediction_authority,can_execute)
-        values (${cid},${snapshot.id},'LINKED','DIRECT_CANDIDATE_MARKET_EVIDENCE',${providerEntities}::jsonb,false,false)
+        select ${cid},id,'LINKED','DIRECT_CANDIDATE_MARKET_EVIDENCE',ent::jsonb,false,false
+        from unnest(${linkSnapId}::text[],${linkEntities}::text[]) as l(id,ent)
         on conflict (candidate_id,snapshot_id) do update set
           link_status='LINKED', link_reason='DIRECT_CANDIDATE_MARKET_EVIDENCE', provider_entities=excluded.provider_entities,
           prediction_authority=false, can_execute=false, linked_at=now()
       `;
-      counts.candidateSourceLinks += 1;
+      counts.candidateSourceLinks += evidences.length;
     }
 
+    if (!isFinalSlice(row)) continue;
+
+    counts.candidatesFinalized += 1;
+    counts.quarantined += status === "QUARANTINED" ? 1 : 0;
+
+    // The evidence array is already durable in observations, source snapshots
+    // and links. Re-sending a multi-megabyte candidate into history would just
+    // move the payload problem from HTTP into this insert, so history keeps
+    // the research-level snapshot plus evidence counts.
+    const historySnapshot = JSON.stringify({
+      ...candidateWithoutEvidence(row),
+      evidence_row_count: evidenceTotal(row),
+      evidence_reference: "wow_scout.observations,wow_scout.source_snapshots,wow_scout.candidate_source_links",
+      can_execute: false,
+    });
+
+    // Guarded rather than constraint-backed: production already holds 302
+    // duplicate (candidate_id, research_run_id) groups, so adding the unique
+    // index here would fail against existing data. The constraint belongs in a
+    // separate hardening migration after those duplicates are cleaned.
     await tx`
       insert into wow_scout.candidate_history
         (candidate_id,research_run_id,research_status,research_priority_score,thesis,edge_classes,contradictory_evidence,red_team_flags,
          data_completeness,source_freshness_score,probability,snapshot)
-      values (${cid},${runId},${status},${score},${thesis},${edgeClasses}::text[],${contradictory}::text[],${redFlags}::text[],
-         ${row.data_completeness == null ? null : Number(row.data_completeness)},${row.source_freshness_score == null ? null : Number(row.source_freshness_score)},null,${JSON.stringify(row)}::jsonb)
+      select ${cid},${runId},${status},${score},${thesis},${edgeClasses}::text[],${contradictory}::text[],${redFlags}::text[],
+         ${row.data_completeness == null ? null : Number(row.data_completeness)},${row.source_freshness_score == null ? null : Number(row.source_freshness_score)},null,${historySnapshot}::text::jsonb
+      where not exists (
+        select 1 from wow_scout.candidate_history
+        where candidate_id = ${cid} and research_run_id = ${runId}
+      )
     `;
   }
 
@@ -270,7 +385,7 @@ async function openRun(tx: any, runId: string, body: Row): Promise<void> {
   await tx`
     insert into wow_scout.research_runs
       (research_run_id,sport_key,scout_team,stage,started_at,completed_at,status,source_snapshot,candidate_count,changed_candidate_count,quarantined_count,error_code,can_execute)
-    values (${runId},'MULTI','WOW_CHIEF_SCOUT','MULTISPORT_REFRESH',now(),null,'PERSISTING',${runSnapshot(body, {})}::jsonb,0,0,0,${nullableStr(firstBlocker.reason_code)},false)
+    values (${runId},'MULTI','WOW_CHIEF_SCOUT','MULTISPORT_REFRESH',now(),null,'PERSISTING',${runSnapshot(body, {})}::text::jsonb,0,0,0,${nullableStr(firstBlocker.reason_code)},false)
     on conflict (research_run_id) do update set
       status='PERSISTING', completed_at=null, started_at=now(), can_execute=false,
       source_snapshot=excluded.source_snapshot,
@@ -278,18 +393,27 @@ async function openRun(tx: any, runId: string, body: Row): Promise<void> {
   `;
 }
 
-/** Running tallies live on the row itself so no phase has to hold the whole slate. */
+/** Running tallies live on the row itself so no phase has to hold the whole slate.
+ *
+ * The base is guarded on jsonb_typeof rather than coalesced. Every source
+ * snapshot written before this change is a jsonb *string*, and `string ||
+ * object` yields a jsonb array in Postgres, not an object, after which
+ * `->>'observations_seen'` reads NULL and the tallies silently reset to zero
+ * on every request. Guarding makes those rows self-heal on their next run.
+ *
+ * candidate_count advances by candidates finalized, never by request entries:
+ * a sliced candidate appears in several requests but must be counted once. */
 // deno-lint-ignore no-explicit-any
-async function accumulate(tx: any, runId: string, batchSize: number, counts: BatchCounts): Promise<void> {
+async function accumulate(tx: any, runId: string, counts: BatchCounts): Promise<void> {
   await tx`
     update wow_scout.research_runs set
-      candidate_count = candidate_count + ${batchSize},
+      candidate_count = candidate_count + ${counts.candidatesFinalized},
       changed_candidate_count = changed_candidate_count + ${counts.changed},
       quarantined_count = quarantined_count + ${counts.quarantined},
-      source_snapshot = coalesce(source_snapshot,'{}'::jsonb) || jsonb_build_object(
-        'observations_seen', coalesce((source_snapshot->>'observations_seen')::int,0) + ${counts.observations},
-        'source_snapshots_seen', coalesce((source_snapshot->>'source_snapshots_seen')::int,0) + ${counts.sourceSnapshots},
-        'candidate_source_links_seen', coalesce((source_snapshot->>'candidate_source_links_seen')::int,0) + ${counts.candidateSourceLinks}
+      source_snapshot = (case when jsonb_typeof(source_snapshot)='object' then source_snapshot else '{}'::jsonb end) || jsonb_build_object(
+        'observations_seen', coalesce(((case when jsonb_typeof(source_snapshot)='object' then source_snapshot else '{}'::jsonb end)->>'observations_seen')::int,0) + ${counts.observations},
+        'source_snapshots_seen', coalesce(((case when jsonb_typeof(source_snapshot)='object' then source_snapshot else '{}'::jsonb end)->>'source_snapshots_seen')::int,0) + ${counts.sourceSnapshots},
+        'candidate_source_links_seen', coalesce(((case when jsonb_typeof(source_snapshot)='object' then source_snapshot else '{}'::jsonb end)->>'candidate_source_links_seen')::int,0) + ${counts.candidateSourceLinks}
       ),
       can_execute = false
     where research_run_id = ${runId}
@@ -311,11 +435,11 @@ async function closeRun(tx: any, runId: string, body: Row): Promise<Row> {
   const updated = await tx`
     update wow_scout.research_runs set
       completed_at=now(), status='COMPLETE', can_execute=false,
-      source_snapshot = coalesce(source_snapshot,'{}'::jsonb) || ${runSnapshot(body, sports)}::jsonb
+      source_snapshot = (case when jsonb_typeof(source_snapshot)='object' then source_snapshot else '{}'::jsonb end) || ${runSnapshot(body, sports)}::text::jsonb
         || jsonb_build_object(
-          'observations_seen', coalesce((source_snapshot->>'observations_seen')::int,0),
-          'source_snapshots_seen', coalesce((source_snapshot->>'source_snapshots_seen')::int,0),
-          'candidate_source_links_seen', coalesce((source_snapshot->>'candidate_source_links_seen')::int,0)
+          'observations_seen', coalesce(((case when jsonb_typeof(source_snapshot)='object' then source_snapshot else '{}'::jsonb end)->>'observations_seen')::int,0),
+          'source_snapshots_seen', coalesce(((case when jsonb_typeof(source_snapshot)='object' then source_snapshot else '{}'::jsonb end)->>'source_snapshots_seen')::int,0),
+          'candidate_source_links_seen', coalesce(((case when jsonb_typeof(source_snapshot)='object' then source_snapshot else '{}'::jsonb end)->>'candidate_source_links_seen')::int,0)
         )
     where research_run_id=${runId}
     returning candidate_count, changed_candidate_count, quarantined_count, source_snapshot
@@ -371,16 +495,18 @@ Deno.serve(async (req: Request) => {
 
     if (phase === "APPEND") {
       const candidates = candidateRows(body);
-      let counts: BatchCounts = { changed: 0, quarantined: 0, observations: 0, sourceSnapshots: 0, candidateSourceLinks: 0 };
+      let counts: BatchCounts = { changed: 0, quarantined: 0, candidatesFinalized: 0, observations: 0, sourceSnapshots: 0, candidateSourceLinks: 0 };
       await sql.begin(async (tx) => {
         counts = await persistCandidates(tx, runId, candidates);
-        await accumulate(tx, runId, candidates.length, counts);
+        await accumulate(tx, runId, counts);
       });
       return response({
         ok: true,
         persist_phase: "APPEND",
         research_run_id: runId,
-        batch_candidate_count: candidates.length,
+        batch_entry_count: candidates.length,
+        batch_finalized_candidate_count: counts.candidatesFinalized,
+        batch_evidence_row_count: counts.observations,
         batch_changed_candidate_count: counts.changed,
         batch_quarantined_count: counts.quarantined,
         batch_observation_count: counts.observations,
@@ -406,12 +532,12 @@ Deno.serve(async (req: Request) => {
     // No phase: the original single-request path, preserved for small slates
     // and for any caller that has not been updated.
     const candidates = candidateRows(body);
-    let counts: BatchCounts = { changed: 0, quarantined: 0, observations: 0, sourceSnapshots: 0, candidateSourceLinks: 0 };
+    let counts: BatchCounts = { changed: 0, quarantined: 0, candidatesFinalized: 0, observations: 0, sourceSnapshots: 0, candidateSourceLinks: 0 };
     let summary: Row = {};
     await sql.begin(async (tx) => {
       await openRun(tx, runId, body);
       counts = await persistCandidates(tx, runId, candidates);
-      await accumulate(tx, runId, candidates.length, counts);
+      await accumulate(tx, runId, counts);
       summary = await closeRun(tx, runId, body);
     });
     return response({

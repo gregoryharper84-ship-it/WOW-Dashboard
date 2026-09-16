@@ -5,12 +5,18 @@ GitHub OIDC is short-lived; no Supabase database or service-role credential is
 stored in GitHub. The Edge Function re-validates governance and writes only
 research-layer state with can_execute=false.
 
-The handoff is uploaded in bounded batches (BEGIN / APPEND* / FINALIZE) because
-a full nightly slate does not fit in one Edge Function worker: posting it whole
-exceeded the worker resource limit and lost the run. Batching changes only the
-transport. The Edge Function re-validates governance on every batch, no row is
-upgraded, and a batch that fails raises rather than letting the run report a
-completion it did not reach.
+Uploads are sliced so that no single request carries an unbounded amount of
+work. Bounding whole candidates was not enough: a team/event candidate holds
+every bookmaker x market x outcome row for its event, and one such candidate in
+run 35131443035 was 1,135,529 bytes across 1,952 evidence rows, with the largest
+reaching 5,291,090 bytes across 2,704. Because a batch always emitted at least
+one candidate, that candidate was posted whole under both the 256 KiB and the
+64 KiB bound and exhausted the worker each time. Slicing applies the byte and
+row bounds to the request itself, evidence included.
+
+Slicing is transport only. The Edge Function re-validates governance on every
+request, no row is upgraded, and a candidate is counted once, on its final
+slice, rather than once per slice.
 """
 from __future__ import annotations
 
@@ -25,9 +31,11 @@ from urllib.request import Request, urlopen
 from v17.github_actions_oidc_client import GitHubOIDCMintError, mint_github_actions_oidc
 
 DEFAULT_URL = "https://iczfhsmjrrafhvcpmqhr.supabase.co/functions/v1/wow-v17-scout-brain-persist"
-DEFAULT_BATCH_CANDIDATES = 25
-DEFAULT_BATCH_BYTES = 256 * 1024
+DEFAULT_REQUEST_BYTES = 256 * 1024
+DEFAULT_EVIDENCE_ROWS = 150
+MIN_CONTENT_BYTES = 8 * 1024
 CANDIDATE_LANES = ("team_event_candidates", "prop_candidates")
+TEAM_EVENT_ROUTE = "LLP_TEAM_BETTING_ENGINE"
 
 
 def _int_env(name: str, default: int) -> int:
@@ -45,12 +53,23 @@ def persist_url() -> str:
     return str(os.environ.get("WOW_SCOUT_PERSIST_URL") or DEFAULT_URL).strip()
 
 
-def handoff_header(handoff: dict[str, Any]) -> dict[str, Any]:
-    """Run identity and governance context, without the candidate lanes.
+def _size(payload: Any) -> int:
+    return len(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
 
-    Every phase carries this so the Edge Function can re-validate governance
-    and stamp run identity without ever receiving the whole slate.
+
+def envelope_bytes(header: dict[str, Any]) -> int:
+    """Bytes an APPEND request costs before any candidate is added.
+
+    The advertised ceiling is a bound on the POST, so the handoff header, the
+    phase marker and the JSON wrapper have to come out of the same budget. The
+    slicer previously budgeted only candidate metadata plus evidence, so the
+    real request always exceeded the configured bound by the envelope.
     """
+    return _size({**header, "persist_phase": "APPEND", "candidates": []})
+
+
+def handoff_header(handoff: dict[str, Any]) -> dict[str, Any]:
+    """Run identity and governance context, without the candidate lanes."""
     header = {k: v for k, v in handoff.items() if k != "model_handoff"}
     header["can_execute"] = handoff.get("can_execute")
     return header
@@ -67,28 +86,115 @@ def candidate_rows(handoff: dict[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
-def batches(
+def is_team_event(row: dict[str, Any]) -> bool:
+    route = str(row.get("route") or row.get("controlling_specialist_route") or "")
+    return route == TEAM_EVENT_ROUTE
+
+
+def evidence_list(row: dict[str, Any]) -> list[dict[str, Any]]:
+    evidence = row.get("market_evidence")
+    if isinstance(evidence, list):
+        return [item for item in evidence if isinstance(item, dict) and item]
+    if isinstance(evidence, dict) and evidence:
+        return [evidence]
+    return []
+
+
+def candidate_metadata(row: dict[str, Any]) -> dict[str, Any]:
+    return {k: v for k, v in row.items() if k != "market_evidence"}
+
+
+def candidate_slices(
+    row: dict[str, Any],
+    *,
+    max_evidence_rows: int,
+    max_bytes: int,
+) -> Iterator[dict[str, Any]]:
+    """Yield one or more wire entries for a candidate.
+
+    A prop-shaped row carries a single evidence object and is never sliced, so
+    its `market_evidence` keeps the object shape the Edge Function's existing
+    identity algorithm depends on. A team/event row is sliced, and its identity
+    is derived server-side from event fields instead of the first evidence row.
+    """
+    meta = candidate_metadata(row)
+    evidence = evidence_list(row)
+    total = len(evidence)
+
+    if not is_team_event(row):
+        entry = dict(meta)
+        entry["market_evidence"] = row.get("market_evidence")
+        entry["evidence_slice"] = {"index": 0, "final": True, "offset": 0, "count": total, "total": total}
+        yield entry
+        return
+
+    meta_bytes = _size(meta)
+    index = 0
+    offset = 0
+    while offset < total or (total == 0 and index == 0):
+        chunk: list[dict[str, Any]] = []
+        size = meta_bytes
+        start = offset
+        while offset < total and len(chunk) < max_evidence_rows:
+            row_size = _size(evidence[offset])
+            if chunk and size + row_size > max_bytes:
+                break
+            chunk.append(evidence[offset])
+            size += row_size
+            offset += 1
+
+        def build(rows_in_slice: list[dict[str, Any]], final: bool) -> dict[str, Any]:
+            entry = dict(meta)
+            entry["market_evidence"] = rows_in_slice
+            entry["evidence_slice"] = {
+                "index": index,
+                "final": final,
+                "offset": start,
+                "count": len(rows_in_slice),
+                "total": total,
+            }
+            return entry
+
+        entry = build(chunk, offset >= total)
+        # Measure rather than estimate. Summing metadata and row sizes cannot
+        # account exactly for JSON assembly (separators, the market_evidence
+        # key, array brackets, the serialized evidence_slice), and the residue
+        # is what pushed the real POST past the advertised ceiling.
+        while len(chunk) > 1 and _size(entry) > max_bytes:
+            chunk.pop()
+            offset -= 1
+            entry = build(chunk, offset >= total)
+        yield entry
+        index += 1
+        if total == 0:
+            return
+
+
+def requests_for(
     rows: list[dict[str, Any]],
     *,
-    max_candidates: int,
+    max_evidence_rows: int,
     max_bytes: int,
 ) -> Iterator[list[dict[str, Any]]]:
-    """Split candidates into batches bounded by both count and serialized size.
+    """Pack candidate slices into APPEND requests bounded by rows and bytes.
 
-    Team/event rows carry a list of market-evidence rows and prop rows carry
-    one, so a count-only bound would still produce batches that differ in
-    weight by an order of magnitude. A batch always carries at least one row,
-    so an oversized single candidate still makes progress rather than stalling.
+    Packing keeps a prop-heavy slate from becoming one request per candidate
+    while still bounding the work any single request asks the worker to do.
     """
     batch: list[dict[str, Any]] = []
     size = 0
+    rows_in_batch = 0
     for row in rows:
-        row_size = len(json.dumps(row, separators=(",", ":")).encode("utf-8"))
-        if batch and (len(batch) >= max_candidates or size + row_size > max_bytes):
-            yield batch
-            batch, size = [], 0
-        batch.append(row)
-        size += row_size
+        for entry in candidate_slices(row, max_evidence_rows=max_evidence_rows, max_bytes=max_bytes):
+            entry_size = _size(entry)
+            entry_rows = len(evidence_list(entry))
+            separator = 1 if batch else 0
+            if batch and (size + entry_size + separator > max_bytes or rows_in_batch + entry_rows > max_evidence_rows):
+                yield batch
+                batch, size, rows_in_batch = [], 0, 0
+            batch.append(entry)
+            size += entry_size + separator
+            rows_in_batch += entry_rows
     if batch:
         yield batch
 
@@ -110,7 +216,7 @@ def _post(url: str, payload: dict[str, Any]) -> dict[str, Any]:
         method="POST",
     )
     try:
-        with urlopen(req, timeout=60) as response:
+        with urlopen(req, timeout=120) as response:
             body = json.loads(response.read().decode("utf-8"))
     except HTTPError as exc:
         try:
@@ -135,29 +241,48 @@ def sync(input_path: str, receipt_path: str) -> dict:
     url = persist_url()
     header = handoff_header(handoff)
     rows = candidate_rows(handoff)
+    expected_evidence = sum(len(evidence_list(row)) for row in rows)
+
+    request_bytes = _int_env("WOW_SCOUT_PERSIST_REQUEST_BYTES", DEFAULT_REQUEST_BYTES)
+    # What is left for candidate content once the envelope is paid for.
+    content_bytes = max(MIN_CONTENT_BYTES, request_bytes - envelope_bytes(header))
 
     _post(url, {**header, "persist_phase": "BEGIN"})
 
-    uploaded = 0
-    batch_count = 0
-    for batch in batches(
+    finalized = 0
+    uploaded_evidence = 0
+    request_count = 0
+    for batch in requests_for(
         rows,
-        max_candidates=_int_env("WOW_SCOUT_PERSIST_BATCH_SIZE", DEFAULT_BATCH_CANDIDATES),
-        max_bytes=_int_env("WOW_SCOUT_PERSIST_BATCH_BYTES", DEFAULT_BATCH_BYTES),
+        max_evidence_rows=_int_env("WOW_SCOUT_PERSIST_EVIDENCE_ROWS", DEFAULT_EVIDENCE_ROWS),
+        max_bytes=content_bytes,
     ):
         _post(url, {**header, "persist_phase": "APPEND", "candidates": batch})
-        uploaded += len(batch)
-        batch_count += 1
+        request_count += 1
+        for entry in batch:
+            slice_meta = entry.get("evidence_slice") or {}
+            uploaded_evidence += len(evidence_list(entry))
+            if slice_meta.get("final") is True:
+                finalized += 1
+        print(
+            f"append request={request_count} entries={len(batch)} "
+            f"evidence_rows={sum(len(evidence_list(e)) for e in batch)} "
+            f"finalized_candidates={finalized}/{len(rows)}",
+            flush=True,
+        )
 
-    if uploaded != len(rows):
-        raise RuntimeError("SCOUT_EDGE_PERSIST_BATCH_RECONCILIATION_FAILED")
+    if finalized != len(rows):
+        raise RuntimeError("SCOUT_EDGE_PERSIST_CANDIDATE_RECONCILIATION_FAILED")
+    if uploaded_evidence != expected_evidence:
+        raise RuntimeError("SCOUT_EDGE_PERSIST_EVIDENCE_RECONCILIATION_FAILED")
 
     payload = _post(url, {**header, "persist_phase": "FINALIZE"})
 
     receipt = {k: v for k, v in payload.items() if k != "ok"}
-    receipt["uploaded_candidate_rows"] = uploaded
-    receipt["upload_batches"] = batch_count
-    if receipt.get("candidate_count") != uploaded:
+    receipt["uploaded_candidate_rows"] = finalized
+    receipt["uploaded_evidence_rows"] = uploaded_evidence
+    receipt["upload_requests"] = request_count
+    if receipt.get("candidate_count") != finalized:
         raise RuntimeError("SCOUT_EDGE_PERSIST_RECEIPT_RECONCILIATION_FAILED")
     Path(receipt_path).write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return receipt
