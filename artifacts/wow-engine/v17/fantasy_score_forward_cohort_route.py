@@ -4,7 +4,9 @@ The forward collector remains manual/on-demand until real frozen Fantasy Score
 candidate artifacts and hydrated snapshots exist.  This installer also places a
 narrow evidence-only scorer in front of the already-composed production prop
 boundary.  Non-Fantasy requests delegate byte-for-byte to the scorer that was
-present before this installer ran.
+present before this installer ran.  If a Fantasy route later gains an exact
+certified production artifact, that production scorer also takes precedence over
+the research bridge.
 """
 from __future__ import annotations
 
@@ -35,10 +37,9 @@ def install_fantasy_score_candidate_runtime_bridge(
 ) -> bool:
     """Install the evidence-only Fantasy branch after the final prop wrapper.
 
-    The captured scorer remains authoritative for every non-Fantasy request.
-    Replacing the HTTP route and the in-process ``market_api.score_prop`` pointer
-    together prevents Pick Request/Daily/forward-cohort callers from observing a
-    different policy from authenticated HTTP callers.
+    The captured scorer remains authoritative for every non-Fantasy request and
+    for any Fantasy request whose exact route has since become certified. That
+    keeps this research bridge incapable of shadowing future production promotion.
     """
     if getattr(app.state, _BRIDGE_STATE_KEY, False):
         return True
@@ -51,6 +52,11 @@ def install_fantasy_score_candidate_runtime_bridge(
     ) -> dict[str, Any]:
         model_identity = market_api.prod._reject_llp_prop_identity(x_wow_model_identity)
         if is_fantasy_score_request(req):
+            certified_resolver = getattr(market_api, "_prop_route_artifact", None)
+            if callable(certified_resolver):
+                certified = certified_resolver(req.sport, req.stat_type)
+                if isinstance(certified, dict) and certified.get("ok") is True:
+                    return captured_score_prop(req, x_wow_model_identity)
             return score_fantasy_candidate_research(
                 market_api,
                 req,
