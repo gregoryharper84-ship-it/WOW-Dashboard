@@ -1,0 +1,238 @@
+name: WOW V17 prop retry now
+
+on:
+  push:
+    branches:
+      - ops/retry-20260916-prop-full-model
+    paths:
+      - .github/workflows/wow-v17-prop-retry-now.yml
+
+permissions:
+  contents: read
+
+jobs:
+  retry:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Score remaining PrizePicks board through production V17
+        env:
+          WOW_ACTION_API_KEY: ${{ secrets.WOW_ACTION_API_KEY }}
+        run: |
+          python - <<'PY'
+          import json, os, urllib.request, urllib.error, time
+
+          key = os.environ.get('WOW_ACTION_API_KEY','').strip()
+          if not key:
+              raise SystemExit('WOW_ACTION_API_KEY missing')
+
+          URL = 'https://wow-governed-probability-engine.onrender.com/score-pick-request'
+          CAPTURE = '2026-09-16T20:08:44+00:00'
+
+          events = {
+              'PIT-MIL': ('MLB-2026-09-16-MIL-PIT','2026-09-16T22:40:00+00:00','MLB'),
+              'ATH-TB': ('MLB-2026-09-16-ATH-TB','2026-09-16T22:40:00+00:00','MLB'),
+              'LAD-CIN': ('MLB-2026-09-16-LAD-CIN','2026-09-16T22:40:00+00:00','MLB'),
+              'PHI-WSH': ('MLB-2026-09-16-PHI-WSH','2026-09-16T22:45:00+00:00','MLB'),
+              'BAL-NYM': ('MLB-2026-09-16-BAL-NYM','2026-09-16T23:10:00+00:00','MLB'),
+              'ATL-CHC': ('MLB-2026-09-16-ATL-CHC','2026-09-16T23:40:00+00:00','MLB'),
+              'TEX-BOS': ('MLB-2026-09-16-BOS-TEX','2026-09-17T00:05:00+00:00','MLB'),
+              'KC-HOU': ('MLB-2026-09-16-KC-HOU','2026-09-17T00:10:00+00:00','MLB'),
+              'SD-COL': ('MLB-2026-09-16-SD-COL','2026-09-17T00:40:00+00:00','MLB'),
+              'SEA-LAA': ('MLB-2026-09-16-SEA-LAA','2026-09-17T01:38:00+00:00','MLB'),
+              'MIA-AZ': ('MLB-2026-09-16-MIA-AZ','2026-09-17T01:40:00+00:00','MLB'),
+              'KOSTYUK-TOWNSEND': ('TENNIS-2026-09-16-KOSTYUK-TOWNSEND','2026-09-16T23:00:00+00:00','TENNIS'),
+              'SAMSONOVA-DAY': ('TENNIS-2026-09-16-SAMSONOVA-DAY','2026-09-17T00:10:00+00:00','TENNIS'),
+          }
+
+          props = []
+          def add(game, player, stat, line): props.append((game, player, stat, float(line)))
+
+          # MLB pitcher strikeouts (DET-TOR excluded: event already started at retry time)
+          for x in [
+            ('PIT-MIL','Jared Jones', 'PITCHER_STRIKEOUTS',5.5),('PIT-MIL','Logan Henderson','PITCHER_STRIKEOUTS',6),
+            ('ATH-TB','Nick Martinez','PITCHER_STRIKEOUTS',4),('ATH-TB','Brady Basso','PITCHER_STRIKEOUTS',2.5),
+            ('LAD-CIN','Blake Snell','PITCHER_STRIKEOUTS',4.5),('LAD-CIN','Andrew Abbott','PITCHER_STRIKEOUTS',2.5),
+            ('PHI-WSH','Zack Wheeler','PITCHER_STRIKEOUTS',6.5),('BAL-NYM','Chris Bassitt','PITCHER_STRIKEOUTS',4),
+            ('BAL-NYM','Xzavion Curry','PITCHER_STRIKEOUTS',2.5),('ATL-CHC','Shota Imanaga','PITCHER_STRIKEOUTS',5),
+            ('ATL-CHC','JR Ritchie','PITCHER_STRIKEOUTS',4),('TEX-BOS','MacKenzie Gore','PITCHER_STRIKEOUTS',5),
+            ('TEX-BOS','Jake Bennett','PITCHER_STRIKEOUTS',4),('KC-HOU','Daniel Lynch IV','PITCHER_STRIKEOUTS',3),
+            ('KC-HOU','Cristian Javier','PITCHER_STRIKEOUTS',4.5),('SD-COL','Robbie Ray','PITCHER_STRIKEOUTS',4),
+            ('SD-COL','Mason Adams','PITCHER_STRIKEOUTS',3.5),('SEA-LAA','Yusei Kikuchi','PITCHER_STRIKEOUTS',5.5),
+            ('SEA-LAA','George Kirby','PITCHER_STRIKEOUTS',4.5),('MIA-AZ','Merrill Kelly','PITCHER_STRIKEOUTS',4),
+            ('MIA-AZ','Ryan Gusto','PITCHER_STRIKEOUTS',3.5)]: add(*x)
+
+          # MLB pitcher fantasy score
+          for x in [
+            ('PIT-MIL','Logan Henderson','PITCHER_FANTASY_SCORE',34.5),('PIT-MIL','Jared Jones','PITCHER_FANTASY_SCORE',27.5),
+            ('ATH-TB','Nick Martinez','PITCHER_FANTASY_SCORE',27.5),('ATH-TB','Brady Basso','PITCHER_FANTASY_SCORE',15.5),
+            ('LAD-CIN','Blake Snell','PITCHER_FANTASY_SCORE',41.5),('LAD-CIN','Andrew Abbott','PITCHER_FANTASY_SCORE',18.5),
+            ('PHI-WSH','Zack Wheeler','PITCHER_FANTASY_SCORE',36.5),('BAL-NYM','Chris Bassitt','PITCHER_FANTASY_SCORE',21.5),
+            ('ATL-CHC','Shota Imanaga','PITCHER_FANTASY_SCORE',30.5),('TEX-BOS','Jake Bennett','PITCHER_FANTASY_SCORE',25.5),
+            ('TEX-BOS','MacKenzie Gore','PITCHER_FANTASY_SCORE',25.5),('KC-HOU','Cristian Javier','PITCHER_FANTASY_SCORE',24.5),
+            ('KC-HOU','Daniel Lynch IV','PITCHER_FANTASY_SCORE',17.5),('SD-COL','Robbie Ray','PITCHER_FANTASY_SCORE',23.5),
+            ('SD-COL','Mason Adams','PITCHER_FANTASY_SCORE',18.5),('SEA-LAA','George Kirby','PITCHER_FANTASY_SCORE',32.5),
+            ('SEA-LAA','Yusei Kikuchi','PITCHER_FANTASY_SCORE',28.5),('MIA-AZ','Merrill Kelly','PITCHER_FANTASY_SCORE',23.5),
+            ('MIA-AZ','Ryan Gusto','PITCHER_FANTASY_SCORE',21.5)]: add(*x)
+
+          # MLB plate appearances
+          pa = {
+            'PIT-MIL':['Bryan Reynolds','William Contreras','Brice Turang','Brandon Lowe','Jackson Chourio','Oneil Cruz','Garrett Mitchell','Konnor Griffin'],
+            'ATH-TB':['Lawrence Butler','Yandy Diaz','Junior Caminero','Jeff McNeil','Jonny DeLuca','Henry Bolte'],
+            'LAD-CIN':['Tyler Stephenson','Sal Stewart','Will Smith','Elly De La Cruz','Tommy Edman','Mookie Betts','Dane Myers','Freddie Freeman'],
+            'PHI-WSH':['CJ Abrams','Bryce Harper','Kyle Schwarber','James Wood','Trea Turner','Luis Arraez'],
+            'BAL-NYM':['Dylan Beavers','Coby Mayo','Jackson Holliday','Bo Bichette','Francisco Lindor','Juan Soto','Pete Alonso','Carson Benge'],
+            'ATL-CHC':['Matt Olson','Ozzie Albies','Michael Busch','Pete Crow-Armstrong','Drake Baldwin','Seiya Suzuki','Alex Bregman','Ronald Acuña Jr.'],
+            'TEX-BOS':['Corey Seager','Josh Jung','Roman Anthony','Willson Contreras','Brandon Nimmo','Wilyer Abreu'],
+            'KC-HOU':['Jac Caglianone','Bobby Witt Jr.','Isaac Paredes','Jose Altuve','Yordan Alvarez','Carter Jensen','Maikel Garcia','Jeremy Peña'],
+            'SD-COL':['Fernando Tatis Jr.','Dustin Harris','Connor Norby','TJ Rumfield','Hunter Goodman','Jake McCarthy','Manny Machado','Ty France'],
+            'SEA-LAA':['Wade Meckler','Zach Neto','J.P. Crawford','Randy Arozarena','Mike Trout','Dominic Canzone','Cal Raleigh','Vaughn Grissom'],
+            'MIA-AZ':['Gabriel Moreno','Ketel Marte','Kyle Stowers','Griffin Conine','Lars Nootbaar','Otto Lopez','Geraldo Perdomo','Heriberto Hernández']
+          }
+          for game, players in pa.items():
+              for player in players:
+                  line = 5.5 if player=='Fernando Tatis Jr.' else 4.5
+                  add(game, player, 'PLATE_APPEARANCES', line)
+          for player in ['Abimelec Ortiz','Jahmai Jones','Justin Foscue']:
+              game = 'PHI-WSH' if player=='Abimelec Ortiz' else 'TEX-BOS'
+              add(game, player, 'PLATE_APPEARANCES', 3.5)
+
+          # Remaining pregame tennis rows only; rows already started by 15:53 CT are intentionally excluded.
+          add('KOSTYUK-TOWNSEND','Marta Kostyuk','FANTASY_SCORE',19.5)
+          add('SAMSONOVA-DAY','Liudmila Samsonova','FANTASY_SCORE',18)
+
+          # MLB 1st inning pitches thrown
+          for x in [
+            ('PIT-MIL','Jared Jones','FIRST_INNING_PITCHES_THROWN',16.5),('PIT-MIL','Logan Henderson','FIRST_INNING_PITCHES_THROWN',16),
+            ('ATH-TB','Brady Basso','FIRST_INNING_PITCHES_THROWN',16.5),('ATH-TB','Nick Martinez','FIRST_INNING_PITCHES_THROWN',14),
+            ('LAD-CIN','Andrew Abbott','FIRST_INNING_PITCHES_THROWN',16.5),('LAD-CIN','Blake Snell','FIRST_INNING_PITCHES_THROWN',16),
+            ('PHI-WSH','Zack Wheeler','FIRST_INNING_PITCHES_THROWN',16),('PHI-WSH','Jared Simpson','FIRST_INNING_PITCHES_THROWN',16.5),
+            ('BAL-NYM','Chris Bassitt','FIRST_INNING_PITCHES_THROWN',16.5),('ATL-CHC','JR Ritchie','FIRST_INNING_PITCHES_THROWN',16.5),
+            ('ATL-CHC','Shota Imanaga','FIRST_INNING_PITCHES_THROWN',15),('TEX-BOS','MacKenzie Gore','FIRST_INNING_PITCHES_THROWN',16),
+            ('TEX-BOS','Jake Bennett','FIRST_INNING_PITCHES_THROWN',15.5),('KC-HOU','Daniel Lynch IV','FIRST_INNING_PITCHES_THROWN',16),
+            ('KC-HOU','Cristian Javier','FIRST_INNING_PITCHES_THROWN',16),('SD-COL','Robbie Ray','FIRST_INNING_PITCHES_THROWN',16.5),
+            ('SD-COL','Mason Adams','FIRST_INNING_PITCHES_THROWN',12.5),('SEA-LAA','Yusei Kikuchi','FIRST_INNING_PITCHES_THROWN',16),
+            ('SEA-LAA','George Kirby','FIRST_INNING_PITCHES_THROWN',15.5),('MIA-AZ','Merrill Kelly','FIRST_INNING_PITCHES_THROWN',15.5),
+            ('MIA-AZ','Ryan Gusto','FIRST_INNING_PITCHES_THROWN',16.5)]: add(*x)
+
+          if len(props) != 148:
+              raise SystemExit(f'prop-count mismatch: {len(props)} != 148')
+
+          rows=[]
+          for game, player, stat, line in props:
+              event_id, start, sport = events[game]
+              for direction in ('MORE','LESS'):
+                  rows.append({
+                    'row_key': f'{game}|{player}|{stat}|{line:g}|{direction}',
+                    'event_id': event_id,
+                    'event_start_time': start,
+                    'sport': sport,
+                    'player': player,
+                    'stat_type': stat,
+                    'line': line,
+                    'direction': direction,
+                    'source_type': 'PDF',
+                    'platform': 'PrizePicks',
+                    'league': 'MLB' if sport=='MLB' else 'TENNIS',
+                    'source_capture_timestamp': CAPTURE,
+                  })
+
+          print(f'props={len(props)} directional_rows={len(rows)}')
+          all_responses=[]
+          for i in range(0,len(rows),40):
+              batch=rows[i:i+40]
+              payload={'request_id':f'retry-20260916-{i//40+1:02d}','rows':batch}
+              data=json.dumps(payload).encode()
+              req=urllib.request.Request(URL,data=data,method='POST',headers={
+                'Authorization':f'Bearer {key}',
+                'Content-Type':'application/json',
+                'User-Agent':'WOW-V17-retry-now/1.0',
+              })
+              try:
+                  with urllib.request.urlopen(req,timeout=120) as r:
+                      body=r.read().decode()
+                      print('batch',i//40+1,'status',r.status,'bytes',len(body))
+                      parsed=json.loads(body)
+              except urllib.error.HTTPError as e:
+                  body=e.read().decode(errors='replace')
+                  parsed={'http_error':e.code,'body':body}
+                  print('batch',i//40+1,'HTTP',e.code,body[:500])
+              except Exception as e:
+                  parsed={'transport_error':repr(e)}
+                  print('batch',i//40+1,'ERR',repr(e))
+              all_responses.append({'batch':i//40+1,'request_rows':batch,'response':parsed})
+              time.sleep(1)
+
+          def pkg(outcome):
+              result=outcome.get('result') if isinstance(outcome,dict) and isinstance(outcome.get('result'),dict) else {}
+              candidates=[]
+              for obj in [result.get('prediction'), result.get('research_model_output'), result.get('probability_package'), outcome.get('prediction'), outcome.get('research_model_output')]:
+                  if isinstance(obj,dict): candidates.append(obj)
+              # some wrappers nest research output one level deeper
+              rmo=result.get('research_model_output')
+              if isinstance(rmo,dict):
+                  for k in ('prediction','probability_package'):
+                      if isinstance(rmo.get(k),dict): candidates.append(rmo[k])
+              for obj in candidates:
+                  p=obj.get('calibrated_probability')
+                  lb=obj.get('calibrated_probability_lower_bound',obj.get('calibrated_lower_bound'))
+                  ub=obj.get('calibrated_probability_upper_bound',obj.get('calibrated_upper_bound'))
+                  try: p=float(p); lb=float(lb)
+                  except (TypeError,ValueError): continue
+                  if 0 < lb <= p < 1: return p,lb,ub,obj
+              return None,None,None,None
+
+          flattened=[]
+          for b in all_responses:
+              resp=b['response']
+              outs=resp.get('rows',[]) if isinstance(resp,dict) else []
+              for out in outs:
+                  p,lb,ub,obj=pkg(out)
+                  flattened.append({
+                    'row_key':out.get('row_key'),
+                    'terminal_label':out.get('terminal_label') or out.get('code') or out.get('terminal_status'),
+                    'model_evaluated':out.get('model_evaluated'),
+                    'model_qualified':out.get('model_qualified'),
+                    'probability_rank_eligible':out.get('probability_rank_eligible',out.get('rank_eligible')),
+                    'calibrated_probability':p,
+                    'calibrated_lower_bound':lb,
+                    'calibrated_upper_bound':ub,
+                    'blockers':out.get('blockers') or out.get('detail') or [],
+                  })
+
+          high=[]
+          for x in flattened:
+              p,lb=x['calibrated_probability'],x['calibrated_lower_bound']
+              if p is not None and lb is not None and p>=0.65 and lb>=0.60:
+                  high.append(x)
+          high.sort(key=lambda x:(x['calibrated_lower_bound'],x['calibrated_probability']),reverse=True)
+
+          summary={
+            'source_prop_count':len(props),
+            'directional_rows_submitted':len(rows),
+            'batch_count':len(all_responses),
+            'outcomes_returned':len(flattened),
+            'valid_probability_packages':sum(1 for x in flattened if x['calibrated_probability'] is not None),
+            'high_confidence_rows':len(high),
+            'high_confidence_definition':'calibrated_probability >= 0.65 AND calibrated_lower_bound >= 0.60 (PROP_MODEL_QUALIFICATION_V17_CERTIFIED_THRESHOLDS)',
+            'high_confidence':high,
+            'all_outcomes':flattened,
+            'can_execute':False,
+          }
+          with open('retry_results.json','w') as f: json.dump({'summary':summary,'raw_batches':all_responses},f,indent=2)
+          with open('retry_summary.json','w') as f: json.dump(summary,f,indent=2)
+          print(json.dumps({k:v for k,v in summary.items() if k not in ('high_confidence','all_outcomes')},indent=2))
+          print('TOP HIGH')
+          for x in high[:30]: print(x['row_key'],x['calibrated_probability'],x['calibrated_lower_bound'],x['terminal_label'])
+          PY
+
+      - name: Upload retry results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wow-v17-prop-retry-20260916
+          path: |
+            retry_results.json
+            retry_summary.json
+          if-no-files-found: error
+          retention-days: 7
