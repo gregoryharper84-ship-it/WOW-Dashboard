@@ -24,6 +24,8 @@ def test_live_gpt_instructions_fit_editor_limit_and_preserve_controls():
     assert "role_status object" in text
     assert "market_evidence is a sibling of evidence_families, never nested" in text
     assert "Unknown is not zero" in text
+    assert "lookupWowV17PredictionReceipts" in text
+    assert "display_authorized=true" in text
     assert KNOWLEDGE.exists()
 
 
@@ -45,7 +47,22 @@ def test_action_schema_preserves_v17_boundary():
     assert paths["/score-pick-request"]["post"]["operationId"] == "scoreWowV17PickRequest"
     assert paths["/score-team-event"]["post"]["operationId"] == "scoreWowV17TeamEventFromWowHost"
     assert paths["/v17/detailed-evidence-contract"]["get"]["operationId"] == "getWowV17DetailedEvidenceContract"
+    assert paths["/v17/prediction-receipts/lookup"]["post"]["operationId"] == "lookupWowV17PredictionReceipts"
     assert document["components"]["securitySchemes"]["actionBearer"]["scheme"] == "bearer"
+
+
+def test_prediction_receipt_openapi_requires_id_or_complete_exact_identity():
+    schemas = _schema()["components"]["schemas"]
+    batch = schemas["PredictionReceiptLookupBatch"]
+    row = schemas["PredictionReceiptLookupRow"]
+    assert batch["additionalProperties"] is False
+    assert batch["required"] == ["rows"]
+    assert row["additionalProperties"] is False
+    assert row["anyOf"] == [
+        {"required": ["prediction_id"]},
+        {"required": ["event_id", "player", "stat_type", "line", "direction"]},
+    ]
+    assert row["properties"]["direction"]["anyOf"][0]["enum"] == ["MORE", "LESS"]
 
 
 def test_detailed_evidence_openapi_matches_runtime_required_families():
