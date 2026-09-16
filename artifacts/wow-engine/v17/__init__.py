@@ -93,9 +93,21 @@ def _defer_mlb_event_bridge_install(*, market_api, team_runtime) -> bool:
         if installed and preservation is not None:
             preservation._original_run_mlb_llp_governance = team_runtime._run_mlb_llp_governance
 
+        handoff_rank_fix_installed = False
+        if installed and preservation is not None:
+            from v17.sep16_evidence_handoff_rank_fix import install_evidence_handoff_rank_fix
+
+            handoff_rank_fix_installed = install_evidence_handoff_rank_fix(
+                preservation=preservation,
+            )
+
         if installed and not post_repair_installed:
             _MLB_BRIDGE_ACCEPTANCE_LOGGER.error(
                 "V17_SEP15_MLB_POST_BRIDGE_REPAIR=FAIL can_execute=false"
+            )
+        if installed and preservation is not None and not handoff_rank_fix_installed:
+            _MLB_BRIDGE_ACCEPTANCE_LOGGER.error(
+                "V17_SEP16_EVIDENCE_HANDOFF_RANK_FIX=FAIL can_execute=false"
             )
 
         # A dedicated production flag runs one authenticated, non-secret smoke
