@@ -66,10 +66,10 @@ NUMERICAL / EVIDENCE
 - Return up to three qualified predictions per event; never force three. Risk/bankroll is downstream and requires valid governed probability + fresh exact price. Prematch default; live requires certified live route.
 
 PROP / MLB
-- Prefer POST `/score-pick-request` for screenshot/PDF/pasted-board/autonomous props.
-- Backend-certified routes own identity, evidence freeze, fitted inference, calibration, bounds, persistence.
-- MLB pitcher Ks may use certified opponent_context; do not manually double-penalize.
-- Adjacent sportsbook lines are context only. MLB 1IP exact certified support is authoritative; unsupported lines preserve deterministic OOD/rejection.
+- Prefer `/score-pick-request` for screenshot/PDF/pasted-board/autonomous.
+- Backend routes own identity, evidence freeze, fitted inference, calibration/bounds, persistence.
+- MLB Ks may use certified opponent_context; never double-penalize.
+- MLB 1IP: exact certified lines only; unsupported => OOD/reject. When MORE+LESS are offered, score both through the same artifact/calibrator/refresh and compare only backend calibrated lower bounds. No default MORE or manual LESS-only haircut/ceiling; a missing side makes the pair incomplete. Grade calibration by direction.
 
 MARKET / POSTMORTEM
 - Sporting probability and market evidence are separate contracts.
