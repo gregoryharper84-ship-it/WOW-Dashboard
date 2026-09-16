@@ -106,7 +106,10 @@ def test_one_oversized_candidate_no_longer_travels_whole(tmp_path, recorder):
     assert len(appends) > 1, "a 1,952-row candidate must not be one request"
     for call in appends:
         body = len(json.dumps(call, separators=(",", ":")).encode())
-        assert body <= sync_mod.DEFAULT_REQUEST_BYTES * 2, f"request of {body} bytes is unbounded"
+        assert body <= sync_mod.DEFAULT_REQUEST_BYTES, (
+            f"serialized POST is {body} bytes, over the configured "
+            f"{sync_mod.DEFAULT_REQUEST_BYTES} ceiling"
+        )
 
 
 def test_every_evidence_row_is_uploaded_exactly_once(tmp_path, recorder):
@@ -256,3 +259,62 @@ def test_evidence_row_bound_is_respected_per_request(tmp_path, recorder, monkeyp
     for call in recorder.appends():
         rows = sum(len(sync_mod.evidence_list(e)) for e in call["candidates"])
         assert rows <= 40, f"request carried {rows} evidence rows"
+
+
+def test_serialized_post_respects_the_configured_ceiling(tmp_path, recorder, monkeypatch):
+    """The advertised bound is on the POST, envelope included.
+
+    The slicer budgets candidate metadata and evidence, so the handoff header,
+    phase marker and JSON wrapper have to be paid for out of the same ceiling.
+    Asserting on the real serialized request is the only way CI can prove the
+    contract the workflow advertises.
+    """
+    monkeypatch.setenv("WOW_SCOUT_PERSIST_REQUEST_BYTES", "40000")
+    monkeypatch.setenv("WOW_SCOUT_PERSIST_EVIDENCE_ROWS", "10000")
+    src = tmp_path / "h.json"
+    handoff_body = handoff(team=3, props=2, rows=600)
+    # A bulky header is the case the old accounting silently ignored.
+    handoff_body["source_blockers"] = [
+        {"scope": "event", "event_id": f"e-{i}", "reason_code": "ODDS_FETCH_FAILED", "detail": "x" * 200}
+        for i in range(20)
+    ]
+    src.write_text(json.dumps(handoff_body))
+
+    sync_mod.sync(str(src), str(tmp_path / "r.json"))
+
+    sizes = [len(json.dumps(c, separators=(",", ":")).encode()) for c in recorder.appends()]
+    assert sizes, "no APPEND was sent"
+    assert max(sizes) <= 40000, f"largest serialized POST was {max(sizes)} bytes, over the 40000 ceiling"
+
+
+def test_envelope_is_charged_against_the_request_budget():
+    header = {"can_execute": False, "run_id": "r", "research_run_id": "r",
+              "source_blockers": [{"reason_code": "X", "detail": "y" * 5000}]}
+    assert sync_mod.envelope_bytes(header) > 5000
+    assert sync_mod.envelope_bytes({"can_execute": False}) < 200
+
+
+def test_a_single_evidence_row_over_the_ceiling_still_makes_progress(tmp_path, recorder, monkeypatch):
+    """The one case the ceiling cannot hold, bounded to exactly one row.
+
+    Trimming stops at a single row, so an evidence row larger than the whole
+    budget still travels rather than looping forever. Real rows are ~2 KB
+    against a 256 KiB ceiling, so this is a guard, not an expected path.
+    """
+    monkeypatch.setenv("WOW_SCOUT_PERSIST_REQUEST_BYTES", "9000")
+    row = team_candidate("evt-huge", rows=0)
+    row["market_evidence"] = [{"bookmaker": "b", "market_key": "h2h", "price": -110, "blob": "z" * 30000}] * 2
+    src = tmp_path / "h.json"
+    src.write_text(json.dumps({
+        "can_execute": False, "run_id": "r", "research_run_id": "r",
+        "model_handoff": {"team_event_candidates": [row], "prop_candidates": []},
+    }))
+
+    sync_mod.sync(str(src), str(tmp_path / "r.json"))
+
+    appends = recorder.appends()
+    assert len(appends) == 2, "each oversized row must travel alone"
+    for call in appends:
+        assert sum(len(sync_mod.evidence_list(e)) for e in call["candidates"]) == 1
+    finals = [e for c in appends for e in c["candidates"] if e["evidence_slice"]["final"]]
+    assert len(finals) == 1

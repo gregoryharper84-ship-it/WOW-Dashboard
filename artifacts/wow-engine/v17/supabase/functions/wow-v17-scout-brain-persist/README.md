@@ -63,11 +63,17 @@ caller.
 - **History does not carry the evidence array.** Evidence is durable in
   `observations`, `source_snapshots` and `candidate_source_links`; history
   keeps the research snapshot plus `evidence_row_count`.
-- **JSON columns are bound as text and cast in the statement.** With
-  `prepare: false`, a `${...}::jsonb` parameter makes Postgres infer the
-  parameter as jsonb and the driver then JSON-encodes the already-serialized
-  string, storing a jsonb *string*. Every pre-existing
-  `candidate_history.snapshot` is a string for that reason. Historical
+- **Every JSON column is bound as text and cast in the statement**, including
+  `research_runs.source_snapshot` on BEGIN and FINALIZE. With `prepare: false`,
+  a `${...}::jsonb` parameter makes Postgres infer the parameter as jsonb and
+  the driver then JSON-encodes the already-serialized string, storing a jsonb
+  *string*. Every pre-existing `candidate_history.snapshot` and every
+  `research_runs.source_snapshot` is a string for that reason.
+- **Snapshot merges are guarded on `jsonb_typeof`.** `string || object` yields
+  a jsonb *array* in Postgres, after which `->>'observations_seen'` reads NULL
+  and the running tallies silently reset to zero on every request. Guarding the
+  base on `jsonb_typeof(...)='object'` makes the existing string-valued rows
+  self-heal on their next run instead of corrupting the receipt. Historical
   normalization is deliberately left to a separate cleanup.
 
 ## Deployment

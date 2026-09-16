@@ -33,6 +33,7 @@ from v17.github_actions_oidc_client import GitHubOIDCMintError, mint_github_acti
 DEFAULT_URL = "https://iczfhsmjrrafhvcpmqhr.supabase.co/functions/v1/wow-v17-scout-brain-persist"
 DEFAULT_REQUEST_BYTES = 256 * 1024
 DEFAULT_EVIDENCE_ROWS = 150
+MIN_CONTENT_BYTES = 8 * 1024
 CANDIDATE_LANES = ("team_event_candidates", "prop_candidates")
 TEAM_EVENT_ROUTE = "LLP_TEAM_BETTING_ENGINE"
 
@@ -54,6 +55,17 @@ def persist_url() -> str:
 
 def _size(payload: Any) -> int:
     return len(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
+
+
+def envelope_bytes(header: dict[str, Any]) -> int:
+    """Bytes an APPEND request costs before any candidate is added.
+
+    The advertised ceiling is a bound on the POST, so the handoff header, the
+    phase marker and the JSON wrapper have to come out of the same budget. The
+    slicer previously budgeted only candidate metadata plus evidence, so the
+    real request always exceeded the configured bound by the envelope.
+    """
+    return _size({**header, "persist_phase": "APPEND", "candidates": []})
 
 
 def handoff_header(handoff: dict[str, Any]) -> dict[str, Any]:
@@ -122,6 +134,7 @@ def candidate_slices(
     while offset < total or (total == 0 and index == 0):
         chunk: list[dict[str, Any]] = []
         size = meta_bytes
+        start = offset
         while offset < total and len(chunk) < max_evidence_rows:
             row_size = _size(evidence[offset])
             if chunk and size + row_size > max_bytes:
@@ -129,15 +142,28 @@ def candidate_slices(
             chunk.append(evidence[offset])
             size += row_size
             offset += 1
-        entry = dict(meta)
-        entry["market_evidence"] = chunk
-        entry["evidence_slice"] = {
-            "index": index,
-            "final": offset >= total,
-            "offset": offset - len(chunk),
-            "count": len(chunk),
-            "total": total,
-        }
+
+        def build(rows_in_slice: list[dict[str, Any]], final: bool) -> dict[str, Any]:
+            entry = dict(meta)
+            entry["market_evidence"] = rows_in_slice
+            entry["evidence_slice"] = {
+                "index": index,
+                "final": final,
+                "offset": start,
+                "count": len(rows_in_slice),
+                "total": total,
+            }
+            return entry
+
+        entry = build(chunk, offset >= total)
+        # Measure rather than estimate. Summing metadata and row sizes cannot
+        # account exactly for JSON assembly (separators, the market_evidence
+        # key, array brackets, the serialized evidence_slice), and the residue
+        # is what pushed the real POST past the advertised ceiling.
+        while len(chunk) > 1 and _size(entry) > max_bytes:
+            chunk.pop()
+            offset -= 1
+            entry = build(chunk, offset >= total)
         yield entry
         index += 1
         if total == 0:
@@ -162,11 +188,12 @@ def requests_for(
         for entry in candidate_slices(row, max_evidence_rows=max_evidence_rows, max_bytes=max_bytes):
             entry_size = _size(entry)
             entry_rows = len(evidence_list(entry))
-            if batch and (size + entry_size > max_bytes or rows_in_batch + entry_rows > max_evidence_rows):
+            separator = 1 if batch else 0
+            if batch and (size + entry_size + separator > max_bytes or rows_in_batch + entry_rows > max_evidence_rows):
                 yield batch
                 batch, size, rows_in_batch = [], 0, 0
             batch.append(entry)
-            size += entry_size
+            size += entry_size + separator
             rows_in_batch += entry_rows
     if batch:
         yield batch
@@ -216,6 +243,10 @@ def sync(input_path: str, receipt_path: str) -> dict:
     rows = candidate_rows(handoff)
     expected_evidence = sum(len(evidence_list(row)) for row in rows)
 
+    request_bytes = _int_env("WOW_SCOUT_PERSIST_REQUEST_BYTES", DEFAULT_REQUEST_BYTES)
+    # What is left for candidate content once the envelope is paid for.
+    content_bytes = max(MIN_CONTENT_BYTES, request_bytes - envelope_bytes(header))
+
     _post(url, {**header, "persist_phase": "BEGIN"})
 
     finalized = 0
@@ -224,7 +255,7 @@ def sync(input_path: str, receipt_path: str) -> dict:
     for batch in requests_for(
         rows,
         max_evidence_rows=_int_env("WOW_SCOUT_PERSIST_EVIDENCE_ROWS", DEFAULT_EVIDENCE_ROWS),
-        max_bytes=_int_env("WOW_SCOUT_PERSIST_REQUEST_BYTES", DEFAULT_REQUEST_BYTES),
+        max_bytes=content_bytes,
     ):
         _post(url, {**header, "persist_phase": "APPEND", "candidates": batch})
         request_count += 1

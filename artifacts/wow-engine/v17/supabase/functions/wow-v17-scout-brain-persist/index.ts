@@ -385,7 +385,7 @@ async function openRun(tx: any, runId: string, body: Row): Promise<void> {
   await tx`
     insert into wow_scout.research_runs
       (research_run_id,sport_key,scout_team,stage,started_at,completed_at,status,source_snapshot,candidate_count,changed_candidate_count,quarantined_count,error_code,can_execute)
-    values (${runId},'MULTI','WOW_CHIEF_SCOUT','MULTISPORT_REFRESH',now(),null,'PERSISTING',${runSnapshot(body, {})}::jsonb,0,0,0,${nullableStr(firstBlocker.reason_code)},false)
+    values (${runId},'MULTI','WOW_CHIEF_SCOUT','MULTISPORT_REFRESH',now(),null,'PERSISTING',${runSnapshot(body, {})}::text::jsonb,0,0,0,${nullableStr(firstBlocker.reason_code)},false)
     on conflict (research_run_id) do update set
       status='PERSISTING', completed_at=null, started_at=now(), can_execute=false,
       source_snapshot=excluded.source_snapshot,
@@ -394,6 +394,12 @@ async function openRun(tx: any, runId: string, body: Row): Promise<void> {
 }
 
 /** Running tallies live on the row itself so no phase has to hold the whole slate.
+ *
+ * The base is guarded on jsonb_typeof rather than coalesced. Every source
+ * snapshot written before this change is a jsonb *string*, and `string ||
+ * object` yields a jsonb array in Postgres, not an object, after which
+ * `->>'observations_seen'` reads NULL and the tallies silently reset to zero
+ * on every request. Guarding makes those rows self-heal on their next run.
  *
  * candidate_count advances by candidates finalized, never by request entries:
  * a sliced candidate appears in several requests but must be counted once. */
@@ -404,10 +410,10 @@ async function accumulate(tx: any, runId: string, counts: BatchCounts): Promise<
       candidate_count = candidate_count + ${counts.candidatesFinalized},
       changed_candidate_count = changed_candidate_count + ${counts.changed},
       quarantined_count = quarantined_count + ${counts.quarantined},
-      source_snapshot = coalesce(source_snapshot,'{}'::jsonb) || jsonb_build_object(
-        'observations_seen', coalesce((source_snapshot->>'observations_seen')::int,0) + ${counts.observations},
-        'source_snapshots_seen', coalesce((source_snapshot->>'source_snapshots_seen')::int,0) + ${counts.sourceSnapshots},
-        'candidate_source_links_seen', coalesce((source_snapshot->>'candidate_source_links_seen')::int,0) + ${counts.candidateSourceLinks}
+      source_snapshot = (case when jsonb_typeof(source_snapshot)='object' then source_snapshot else '{}'::jsonb end) || jsonb_build_object(
+        'observations_seen', coalesce(((case when jsonb_typeof(source_snapshot)='object' then source_snapshot else '{}'::jsonb end)->>'observations_seen')::int,0) + ${counts.observations},
+        'source_snapshots_seen', coalesce(((case when jsonb_typeof(source_snapshot)='object' then source_snapshot else '{}'::jsonb end)->>'source_snapshots_seen')::int,0) + ${counts.sourceSnapshots},
+        'candidate_source_links_seen', coalesce(((case when jsonb_typeof(source_snapshot)='object' then source_snapshot else '{}'::jsonb end)->>'candidate_source_links_seen')::int,0) + ${counts.candidateSourceLinks}
       ),
       can_execute = false
     where research_run_id = ${runId}
@@ -429,11 +435,11 @@ async function closeRun(tx: any, runId: string, body: Row): Promise<Row> {
   const updated = await tx`
     update wow_scout.research_runs set
       completed_at=now(), status='COMPLETE', can_execute=false,
-      source_snapshot = coalesce(source_snapshot,'{}'::jsonb) || ${runSnapshot(body, sports)}::jsonb
+      source_snapshot = (case when jsonb_typeof(source_snapshot)='object' then source_snapshot else '{}'::jsonb end) || ${runSnapshot(body, sports)}::text::jsonb
         || jsonb_build_object(
-          'observations_seen', coalesce((source_snapshot->>'observations_seen')::int,0),
-          'source_snapshots_seen', coalesce((source_snapshot->>'source_snapshots_seen')::int,0),
-          'candidate_source_links_seen', coalesce((source_snapshot->>'candidate_source_links_seen')::int,0)
+          'observations_seen', coalesce(((case when jsonb_typeof(source_snapshot)='object' then source_snapshot else '{}'::jsonb end)->>'observations_seen')::int,0),
+          'source_snapshots_seen', coalesce(((case when jsonb_typeof(source_snapshot)='object' then source_snapshot else '{}'::jsonb end)->>'source_snapshots_seen')::int,0),
+          'candidate_source_links_seen', coalesce(((case when jsonb_typeof(source_snapshot)='object' then source_snapshot else '{}'::jsonb end)->>'candidate_source_links_seen')::int,0)
         )
     where research_run_id=${runId}
     returning candidate_count, changed_candidate_count, quarantined_count, source_snapshot
