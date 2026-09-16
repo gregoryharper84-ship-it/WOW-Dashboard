@@ -48,11 +48,26 @@ def _finite_probability(value: Any) -> bool:
 
 
 def _candidate_probability_dicts(outcome: dict[str, Any]) -> Iterable[dict[str, Any]]:
+    """Yield every governed probability-package shape emitted by V17.
+
+    Publication-hold scoring deliberately preserves a completed sporting
+    probability under ``research_model_output`` instead of promoting it to an
+    official final-publication package.  That shape is still a real fitted
+    model package and must reconcile exactly like ``prediction`` when it
+    contains calibrated probability plus a calibrated lower bound.
+    """
     result = outcome.get("result")
     if not isinstance(result, dict):
         return []
     candidates: list[dict[str, Any]] = [result]
-    for key in ("prediction", "probability_package", "model_probability_package", "governed_probability_package", "full_model_probability"):
+    for key in (
+        "prediction",
+        "probability_package",
+        "model_probability_package",
+        "governed_probability_package",
+        "full_model_probability",
+        "research_model_output",
+    ):
         nested = result.get(key)
         if isinstance(nested, dict):
             candidates.append(nested)
