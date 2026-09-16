@@ -144,8 +144,11 @@ def _persist_rows(client: Any, *, sport: str, league: str, schema: str, model_fa
                          "source_manifest_sha256":row.source_manifest_sha256,"historical_reconstruction":True,
                          "archived_pregame_snapshot":False,"market_features_used":False,"can_execute":False})
     for offset in range(0,len(payloads),250):
-        client.table("wow_d1_training_rows").upsert(payloads[offset:offset+250],
-            on_conflict="sport,official_event_id,feature_schema_version,source_manifest_sha256").execute()
+        client.table("wow_d1_training_rows").upsert(
+            payloads[offset:offset+250],
+            on_conflict="sport,official_event_id,feature_schema_version,source_manifest_sha256",
+            ignore_duplicates=True,
+        ).execute()
 
 
 def _persist_artifact(client: Any, *, sport: str, league: str, family: str, schema: str,
@@ -157,10 +160,10 @@ def _persist_artifact(client: Any, *, sport: str, league: str, family: str, sche
         "training_dataset_hash":candidate.dataset_hash,"training_code_sha":training_code_sha,"artifact_checksum":_hash(artifact),
         "artifact_payload":artifact,"calibrator_payload":dict(candidate.calibrator_payload),"validation_metrics":metrics,
         "training_rows":candidate.metrics.train_n,"calibration_rows":candidate.metrics.calibration_n,"test_rows":candidate.metrics.test_n,
-        "research_screen_pass":candidate.research_screen_pass,"source_review_status":"DYNAMIC_PRIOR_RECONSTRUCTION_READY",
+        "research_screen_pass":candidate.research_screen_pass,"source_review_status":"REQUIRED",
         "lifecycle_state":"CANDIDATE","promoted":False,"active":False,"automatic_certification":False,
         "automatic_promotion":False,"probability_publishable":False,"can_execute":False},
-        on_conflict="model_artifact_version").execute()
+        on_conflict="model_artifact_version", ignore_duplicates=True).execute()
     return version
 
 

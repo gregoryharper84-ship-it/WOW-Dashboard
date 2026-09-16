@@ -113,7 +113,7 @@ def _nfl_events(client: Any) -> list[dict[str,Any]]:
 
 
 def _mlb_official_events(seasons: Sequence[int]=(2023,2024,2025,2026)) -> list[dict[str,Any]]:
-    out=[]
+    out=[]; seen_event_ids:set[str]=set()
     for season in seasons:
         response=requests.get("https://statsapi.mlb.com/api/v1/schedule",
             params={"sportId":1,"season":int(season),"gameType":"R","hydrate":"team"},timeout=60)
@@ -124,8 +124,11 @@ def _mlb_official_events(seasons: Sequence[int]=(2023,2024,2025,2026)) -> list[d
                 if str(((game.get("status") or {}).get("abstractGameState") or "")).upper() != "FINAL": continue
                 teams=game.get("teams") or {}; h=teams.get("home") or {}; a=teams.get("away") or {}
                 home=str(((h.get("team") or {}).get("id") or "")); away=str(((a.get("team") or {}).get("id") or "")); gid=str(game.get("gamePk") or "")
-                if not home or not away or not gid or h.get("score") is None or a.get("score") is None: continue
-                out.append({"event_id":f"MLB:{gid}","event_start_time":game.get("gameDate"),"season":int(season),"home_team":home,"away_team":away,
+                event_id=f"MLB:{gid}" if gid else ""
+                if not home or not away or not event_id or h.get("score") is None or a.get("score") is None: continue
+                if event_id in seen_event_ids: continue
+                seen_event_ids.add(event_id)
+                out.append({"event_id":event_id,"event_start_time":game.get("gameDate"),"season":int(season),"home_team":home,"away_team":away,
                             "home_score":float(h["score"]),"away_score":float(a["score"]),
                             "source_manifest":{"source":"MLB_STATSAPI_OFFICIAL","season":int(season),"sha256":digest}})
     if not out: raise TeamStateMaintenanceUnavailable("MLB_STATSAPI_EMPTY","no settled regular-season games")
