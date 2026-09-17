@@ -12,10 +12,15 @@ import v17.prop_forward_cohort_thesis_dedupe  # installs statistical-independenc
 import v17.fantasy_score_forward_cohort_thesis_dedupe as fantasy_thesis_dedupe
 from v17.fantasy_score_forward_cohort_route import install_fantasy_score_forward_cohort_route
 from v17.phase_a_row_publication import install_phase_a_row_publication
+from v17.prop_certification_runtime import PropCertificationAuditRequest, run_prop_certification_audit
 from v17.prop_exact_route_settlement import ExactRouteSettlementRequest, run_exact_route_settlement
 from v17.prop_forward_cohort_market_adapter import ForwardCohortMarketAdapter
 from v17.prop_forward_cohort_runtime import PropForwardCohortRequest, run_prop_forward_cohort
 from v17.prop_forward_cohort_scheduler import run_prop_forward_cohort_loop
+from v17.prop_production_registration import (
+    PropProductionRegistrationAuditRequest,
+    run_prop_production_registration_audit,
+)
 from v17.prop_universal_forward_evidence import (
     UniversalPropForwardEvidenceRequest,
     run_universal_prop_forward_evidence,
@@ -138,3 +143,31 @@ def install_prop_forward_cohort_route(
         )
         def prop_forward_settlement_run(req: ExactRouteSettlementRequest):
             return run_exact_route_settlement(req, db=db_client_fn())
+
+    # #492 control plane: descriptive forward metrics + exact reviewed-policy
+    # certification. It never fits, certifies by declaration, or promotes.
+    if not any(
+        getattr(route, "path", None) == "/v17/prop-calibration-certification-audit"
+        for route in app.router.routes
+    ):
+        @app.post(
+            "/v17/prop-calibration-certification-audit",
+            dependencies=[auth_dependency],
+            operation_id="auditWowV17PropCalibrationCertification",
+        )
+        def prop_calibration_certification_audit(req: PropCertificationAuditRequest):
+            return run_prop_certification_audit(req, db=db_client_fn())
+
+    # #493 control plane: binds certification to registry/runtime/hydration and
+    # an immutable real Action receipt. No synthetic receipt can satisfy it.
+    if not any(
+        getattr(route, "path", None) == "/v17/prop-production-registration-audit"
+        for route in app.router.routes
+    ):
+        @app.post(
+            "/v17/prop-production-registration-audit",
+            dependencies=[auth_dependency],
+            operation_id="auditWowV17PropProductionRegistration",
+        )
+        def prop_production_registration_audit(req: PropProductionRegistrationAuditRequest):
+            return run_prop_production_registration_audit(req, db=db_client_fn())
