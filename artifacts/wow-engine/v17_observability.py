@@ -12,6 +12,8 @@ from __future__ import annotations
 import os
 from typing import Any
 
+from v17.interactive_latency_telemetry import install_interactive_latency_middleware
+
 
 def initialize_observability() -> dict[str, Any]:
     # Runtime bridge registration is not telemetry. It is intentionally done
@@ -20,6 +22,19 @@ def initialize_observability() -> dict[str, Any]:
     from v17.team_event_bridge_runtime import install_team_event_bridge_runtime
 
     install_team_event_bridge_runtime()
+
+    # Install non-secret total-wall-time telemetry on the accepted production
+    # FastAPI app. This observes only route/method/status/elapsed time and never
+    # reads request bodies or changes model, calibration, terminal, or execution
+    # semantics. api_prod_market_acceptance is already loaded by the accepted
+    # production entrypoint before initialize_observability is invoked.
+    try:
+        import api_prod_market_acceptance as _accepted_base
+
+        install_interactive_latency_middleware(_accepted_base.app)
+    except Exception:
+        # Observability must never make the governed API unavailable.
+        pass
 
     # The research evaluation is off by default and independent of telemetry.
     # It is scheduled here because this initializer runs once in the accepted
