@@ -201,7 +201,7 @@ class _FakeMarket:
         return {"ok": self.certified}
 
 
-def test_runtime_installer_delegates_nonfantasy_intercepts_candidate_and_prefers_certified(monkeypatch):
+def _install_runtime_bridge(monkeypatch):
     app = FastAPI()
     market = _FakeMarket()
     candidate_calls = []
@@ -216,12 +216,16 @@ def test_runtime_installer_delegates_nonfantasy_intercepts_candidate_and_prefers
         }
 
     monkeypatch.setattr(route_mod, "score_fantasy_candidate_research", fake_candidate)
-
     assert route_mod.install_fantasy_score_candidate_runtime_bridge(
         app,
         auth_dependency=Depends(lambda: None),
         market_api=market,
     ) is True
+    return app, market, candidate_calls
+
+
+def test_runtime_installer_delegates_nonfantasy_intercepts_candidate_and_prefers_certified(monkeypatch):
+    app, market, candidate_calls = _install_runtime_bridge(monkeypatch)
 
     normal = market.score_prop(_Req(sport="MLB", stat_type="PITCHER_STRIKEOUTS"), "WOW_BETTING_ENGINE")
     candidate = market.score_prop(_Req(sport="NFL", stat_type="FANTASY_SCORE"), "WOW_BETTING_ENGINE")
@@ -242,6 +246,15 @@ def test_runtime_installer_delegates_nonfantasy_intercepts_candidate_and_prefers
         if getattr(route, "path", None) == "/score-prop" and "POST" in (getattr(route, "methods", set()) or set())
     ]
     assert len(score_routes) == 1
+
+
+def test_runtime_installer_exposes_concrete_request_model_to_openapi(monkeypatch):
+    app, _market, _candidate_calls = _install_runtime_bridge(monkeypatch)
+    schema = app.openapi()
+    operation = schema["paths"]["/score-prop"]["post"]
+    assert operation["operationId"] == "scoreWowProp"
+    request_schema = operation["requestBody"]["content"]["application/json"]["schema"]
+    assert request_schema["$ref"].endswith("/_Req")
 
 
 def test_schema_repair_selector_omits_nonexistent_team_and_opponent_columns():
