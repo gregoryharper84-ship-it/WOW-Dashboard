@@ -13,6 +13,7 @@ import os
 from typing import Any
 
 from v17.interactive_latency_telemetry import install_interactive_latency_middleware
+from v17.interactive_pick_hydration import schedule_interactive_pick_hydration_install
 
 
 def initialize_observability() -> dict[str, Any]:
@@ -23,17 +24,22 @@ def initialize_observability() -> dict[str, Any]:
 
     install_team_event_bridge_runtime()
 
-    # Install non-secret total-wall-time telemetry on the accepted production
-    # FastAPI app. This observes only route/method/status/elapsed time and never
-    # reads request bodies or changes model, calibration, terminal, or execution
-    # semantics. api_prod_market_acceptance is already loaded by the accepted
-    # production entrypoint before initialize_observability is invoked.
+    # Install non-secret total-wall-time telemetry and schedule the bounded
+    # external pre-hydration wrapper on the accepted production FastAPI app.
+    # The wrapper installs at startup, after api_ncaaf_acceptance has composed
+    # all routes, and delegates validation/persistence/scoring/reconciliation
+    # back to the captured canonical endpoint.
     try:
         import api_prod_market_acceptance as _accepted_base
 
         install_interactive_latency_middleware(_accepted_base.app)
+        schedule_interactive_pick_hydration_install(
+            _accepted_base.app,
+            market_api=_accepted_base.market_api,
+        )
     except Exception:
-        # Observability must never make the governed API unavailable.
+        # Observability/latency optimization must never make the governed API
+        # unavailable; canonical route behavior remains intact on any failure.
         pass
 
     # The research evaluation is off by default and independent of telemetry.
