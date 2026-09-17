@@ -56,21 +56,24 @@ def test_wrong_line_cannot_complete_even_when_probability_package_is_valid():
     assert out["can_execute"] is False
 
 
-def test_matching_exact_identity_remains_completion_eligible():
-    out = enforce_top10_completion(_response(line=6.5), _source(line=6.5))
+def test_matching_exact_identity_remains_completion_eligible_and_rows_unchanged():
+    original = _response(line=6.5)
+    original_rows = original["rows"]
+    out = enforce_top10_completion(original, _source(line=6.5))
     assert out["ok"] is True
     assert out["reconciliation_pass"] is True
     assert out["completion_blocker"] is None if "completion_blocker" in out else True
     audit = out["exact_board_identity_reconciliation"]
     assert audit["balanced"] is True
     assert audit["mismatch_count"] == 0
-    assert out["rows"][0]["request_identity"]["line"] == 6.5
-    assert out["rows"][0]["request_identity"]["direction"] == "MORE"
+    assert audit["request_identities"]["wheeler"]["line"] == 6.5
+    assert audit["request_identities"]["wheeler"]["direction"] == "MORE"
+    assert out["rows"] == original_rows
     assert out["top10_model_reconciliation"]["balanced"] is True
     assert out["can_execute"] is False
 
 
-def test_typed_blocker_still_gets_exact_request_identity_echo():
+def test_typed_blocker_keeps_row_shape_and_records_exact_request_identity_in_audit():
     response = {
         "rows": [{
             "row_key": "wheeler",
@@ -81,9 +84,11 @@ def test_typed_blocker_still_gets_exact_request_identity_echo():
         }],
         "can_execute": False,
     }
+    original_rows = list(response["rows"])
     out = enforce_top10_completion(response, _source(line=6.5))
     assert out["top10_model_reconciliation"]["balanced"] is True
-    assert out["rows"][0]["request_identity"] == {
+    assert out["rows"] == original_rows
+    assert out["exact_board_identity_reconciliation"]["request_identities"]["wheeler"] == {
         "event_id": "MLB:PHI:WSH:2026-09-17",
         "player": "Zack Wheeler",
         "sport": "MLB",
