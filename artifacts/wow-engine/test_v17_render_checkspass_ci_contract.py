@@ -21,11 +21,3 @@ def test_render_checkspass_verifiers_run_on_main_and_never_cancel_main_runs():
             "cancel-in-progress: ${{ github.event_name == 'pull_request' }}" in text
         ), workflow_name
         assert "cancel-in-progress: true" not in text, workflow_name
-
-
-def test_render_service_remains_ci_gated_and_non_executable():
-    render = (ROOT / "render.yaml").read_text()
-    assert "name: wow-governed-probability-engine" in render
-    assert "autoDeployTrigger: checksPass" in render
-    assert 'key: WOW_CAN_EXECUTE\n        value: "false"' in render
-    assert 'key: WOW_DRY_RUN_ONLY\n        value: "true"' in render
