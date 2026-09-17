@@ -507,8 +507,8 @@ def _new_specialist_utilization_audit() -> dict[str, Any]:
         "fitted_artifact_found": False,
         "model_execution_path": "NOT_REACHED",
         "model_family": None,
-        "model_family_adapter_invoked": False,
-        "calibrator_invoked": False,
+        "model_family_adapter_invoked": None,
+        "calibrator_invoked": None,
         "raw_probability_produced": False,
         "publication_allowed": False,
         "rank_eligible": False,
@@ -580,6 +580,7 @@ def _mark_1ip_utilization(audit: dict[str, Any], outcome: dict[str, Any]) -> Non
         )
     audit["model_execution_path"] = "DIRECT_SPECIALIST"
     audit["model_family"] = result.get("model_family")
+    audit["model_family_adapter_invoked"] = False
     audit["specialist_invoked"] = bool(
         outcome.get("model_evaluated") is True
         or detail.get("specialist_invoked") is True
@@ -610,13 +611,13 @@ def _specialist_utilization_summary(outcomes: list[dict[str, Any]]) -> dict[str,
     ]
     return {
         "rows_audited": len(audits),
-        "rows_with_specialist_assigned": sum(bool(a.get("assigned_specialist")) for a in audits),
+        "rows_with_specialist_assigned": sum(bool(a.get("specialist_registered")) for a in audits),
         "rows_research_barrier_invoked": sum(a.get("research_barrier_status") != "NOT_REACHED" for a in audits),
         "rows_research_barrier_passed": sum(a.get("research_barrier_status") == "PASS" for a in audits),
         "rows_specialist_invoked": sum(bool(a.get("specialist_invoked")) for a in audits),
         "rows_fitted_artifact_found": sum(bool(a.get("fitted_artifact_found")) for a in audits),
-        "rows_model_family_adapter_confirmed": sum(bool(a.get("model_family_adapter_invoked")) for a in audits),
-        "rows_calibrator_confirmed": sum(bool(a.get("calibrator_invoked")) for a in audits),
+        "rows_model_family_adapter_confirmed": sum(a.get("model_family_adapter_invoked") is True for a in audits),
+        "rows_calibrator_confirmed": sum(a.get("calibrator_invoked") is True for a in audits),
         "rows_raw_probability_produced": sum(bool(a.get("raw_probability_produced")) for a in audits),
         "rows_publication_allowed": sum(bool(a.get("publication_allowed")) for a in audits),
         "rows_rank_eligible": sum(bool(a.get("rank_eligible")) for a in audits),
