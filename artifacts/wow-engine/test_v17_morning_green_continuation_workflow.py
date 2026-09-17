@@ -8,10 +8,12 @@ def _text() -> str:
     return WORKFLOW.read_text()
 
 
-def test_continuation_wakes_on_both_protected_ci_workflows():
+def test_continuation_wakes_on_both_protected_ci_workflows_and_rescans():
     text = _text()
     assert 'workflows: ["wow-verify", "wow-engine-verify"]' in text
     assert "types: [completed]" in text
+    assert 'cron: "*/15 * * * *"' in text
+    assert "github.event_name == 'schedule'" in text
 
 
 def test_autonomous_marker_and_risk_are_required_before_merge():
@@ -23,6 +25,13 @@ def test_autonomous_marker_and_risk_are_required_before_merge():
     assert 'base_ref" != "main"' in text
 
 
+def test_scheduled_rescan_discovers_authorized_open_prs():
+    text = _text()
+    assert 'contains("Morning-Green-Autonomous: true")' in text
+    assert "No eligible open same-repository Morning-Green PR found" in text
+    assert "sort_by(.created_at)" in text
+
+
 def test_exact_three_protected_checks_are_reverified():
     text = _text()
     assert "WOW governed probability backend" in text
@@ -31,12 +40,22 @@ def test_exact_three_protected_checks_are_reverified():
     assert "All three protected checks are successful on exact head SHA" in text
 
 
+def test_failed_ci_is_retried_once_then_marked_for_rework():
+    text = _text()
+    assert "Retry failed protected CI once" in text
+    assert "Morning-Green-CI-Retry:" in text
+    assert "/actions/jobs/${job_id}/rerun" in text
+    assert "Morning-Green-Rework-Required:" in text
+    assert "CI_FAILED_REWORK_REQUIRED" in text
+    assert "Automatically retried" in text
+
+
 def test_merge_is_head_sha_pinned_and_failure_does_not_merge():
     text = _text()
     assert '--match-head-commit "$HEAD_SHA"' in text
     assert "At least one protected check failed" in text
     assert "no merge attempted" in text
-    assert "A later workflow_run completion will resume this repair" in text
+    assert "scheduled rescan will resume this repair" in text
 
 
 def test_bot_merge_explicitly_resumes_main_required_checks():
