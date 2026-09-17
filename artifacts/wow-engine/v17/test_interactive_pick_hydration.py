@@ -47,16 +47,23 @@ def _evidence() -> RawPropEvidence:
     )
 
 
-def _row(player: str) -> dict:
+def _row(
+    player: str,
+    *,
+    direction: str = "MORE",
+    line: float = 4.5,
+    opponent: Optional[str] = None,
+) -> dict:
     return {
         "event_id": "777",
         "event_start_time": "2026-09-18T00:00:00+00:00",
         "sport": "MLB",
         "player": player,
         "stat_type": "PITCHER_STRIKEOUTS",
-        "line": 4.5,
-        "direction": "MORE",
+        "line": line,
+        "direction": direction,
         "source_type": "NORMALIZED",
+        "opponent": opponent,
     }
 
 
@@ -127,7 +134,51 @@ def test_wrapper_parallelizes_only_successful_external_hydration_and_preserves_o
     assert routes[0].operation_id == "scoreWowPickRequest"
 
 
-def test_failed_prefetch_delegates_untouched_row_to_canonical_handler(monkeypatch):
+def test_bidirectional_same_prop_hydrates_once_and_reuses_evidence(monkeypatch):
+    called = {"count": 0}
+
+    def hydrate(_row):
+        called["count"] += 1
+        return _evidence()
+
+    client, captured = _client(monkeypatch, hydrate)
+    response = client.post(
+        "/score-pick-request",
+        json={
+            "request_id": "direction-pair-test",
+            "rows": [
+                _row("Pitcher A", direction="MORE"),
+                _row("Pitcher A", direction="LESS"),
+            ],
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["can_execute"] is False
+    assert called["count"] == 1
+    rows = captured["batch"].rows
+    assert [row.direction for row in rows] == ["MORE", "LESS"]
+    assert all(row.evidence is not None for row in rows)
+    assert rows[0].evidence is rows[1].evidence
+
+
+def test_single_eligible_row_is_prehydrated_when_parallel_workers_available(monkeypatch):
+    called = {"count": 0}
+
+    def hydrate(_row):
+        called["count"] += 1
+        return _evidence()
+
+    client, captured = _client(monkeypatch, hydrate)
+    response = client.post(
+        "/score-pick-request",
+        json={"request_id": "single-row-test", "rows": [_row("Pitcher A")]},
+    )
+    assert response.status_code == 200
+    assert called["count"] == 1
+    assert captured["batch"].rows[0].evidence is not None
+
+
+def test_failed_prefetch_delegates_untouched_evidence_group_to_canonical_handler(monkeypatch):
     def hydrate(row):
         if row.player == "Pitcher A":
             raise RuntimeError("provider failure belongs to canonical handler")
@@ -136,12 +187,19 @@ def test_failed_prefetch_delegates_untouched_row_to_canonical_handler(monkeypatc
     client, captured = _client(monkeypatch, hydrate)
     response = client.post(
         "/score-pick-request",
-        json={"rows": [_row("Pitcher A"), _row("Pitcher B")]},
+        json={
+            "rows": [
+                _row("Pitcher A", direction="MORE"),
+                _row("Pitcher A", direction="LESS"),
+                _row("Pitcher B"),
+            ]
+        },
     )
     assert response.status_code == 200
     rows = captured["batch"].rows
     assert rows[0].player == "Pitcher A" and rows[0].evidence is None
-    assert rows[1].player == "Pitcher B" and rows[1].evidence is not None
+    assert rows[1].player == "Pitcher A" and rows[1].evidence is None
+    assert rows[2].player == "Pitcher B" and rows[2].evidence is not None
 
 
 def test_unproven_route_is_never_prehydrated(monkeypatch):
@@ -177,3 +235,21 @@ def test_single_worker_setting_preserves_canonical_serial_path(monkeypatch):
     prepared = subject.prehydrate_batch(batch, market_api=_Market())
     assert prepared is batch
     assert called["count"] == 0
+
+
+def test_prehydration_uses_canonical_sport_aware_router():
+    assert subject.auto_hydrate_prop_evidence.__module__ == "prop_auto_hydration_router"
+
+
+def test_hydration_forwards_opponent_to_canonical_router(monkeypatch):
+    captured = {}
+
+    def fake_router(**kwargs):
+        captured.update(kwargs)
+        return _evidence().model_dump()
+
+    monkeypatch.setattr(subject, "auto_hydrate_prop_evidence", fake_router)
+    row = PickRequestBatch(rows=[_row("Pitcher A", opponent="TEX")]).rows[0]
+    hydrated = subject._hydrate(row)
+    assert hydrated is not None
+    assert captured["opponent"] == "TEX"
