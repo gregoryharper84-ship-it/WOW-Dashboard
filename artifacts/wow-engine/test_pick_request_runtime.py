@@ -89,7 +89,12 @@ def _build(monkeypatch, *, unsupported_sports=(), capability="AVAILABLE"):
 
     def route(sport, stat):
         routed.append((sport, stat))
-        return {"ok": True, "code": "PROP_CERTIFIED_MODEL_ARTIFACT_READY", "can_execute": False}
+        return {
+            "ok": True,
+            "code": "PROP_CERTIFIED_MODEL_ARTIFACT_READY",
+            "specialist_version": "wow.test-specialist@1",
+            "can_execute": False,
+        }
 
     def score(req, x_wow_model_identity=None):
         scored.append((req, x_wow_model_identity))
@@ -102,6 +107,10 @@ def _build(monkeypatch, *, unsupported_sports=(), capability="AVAILABLE"):
                 "calibration_status": "PRECALIBRATION_SHRINKAGE",
             },
             "model_evidence": {
+                "model_family": "TEST_MODEL_FAMILY",
+                "specialist_version": "wow.test-specialist@1",
+                "raw_model_probability": 0.65,
+                "calibration_status": "PRECALIBRATION_SHRINKAGE",
                 "calibrated_probability": 0.63,
                 "calibrated_probability_lower_bound": 0.56,
             },
@@ -169,6 +178,8 @@ def test_k_alias_freezes_snapshot_and_reaches_certified_pitcher_route(monkeypatc
     assert audit["assigned_specialist"] == "wow.test-specialist"
     assert audit["specialist_registered"] is True
     assert audit["fitted_artifact_found"] is True
+    assert audit["artifact_specialist_version"] == "wow.test-specialist@1"
+    assert audit["specialist_artifact_identity_match"] is True
     assert audit["research_barrier_status"] == "PASS"
     assert audit["research_agents_invoked"] == [
         "wow.global-scout-coordinator",
@@ -181,6 +192,11 @@ def test_k_alias_freezes_snapshot_and_reaches_certified_pitcher_route(monkeypatc
         "wow.research-evidence-reconciler",
     ]
     assert audit["specialist_invoked"] is True
+    assert audit["model_family"] == "TEST_MODEL_FAMILY"
+    assert audit["model_family_adapter_invoked"] is True
+    assert audit["executed_specialist_version"] == "wow.test-specialist@1"
+    assert audit["specialist_execution_identity_match"] is True
+    assert audit["raw_probability_produced"] is True
     assert audit["calibrator_invoked"] is True
     assert audit["publication_allowed"] is True
     assert audit["rank_eligible"] is True
@@ -194,7 +210,11 @@ def test_k_alias_freezes_snapshot_and_reaches_certified_pitcher_route(monkeypatc
     assert summary["rows_research_barrier_passed"] == 1
     assert summary["rows_specialist_invoked"] == 1
     assert summary["rows_fitted_artifact_found"] == 1
+    assert summary["rows_specialist_artifact_identity_proven"] == 1
+    assert summary["rows_specialist_execution_identity_proven"] == 1
+    assert summary["rows_model_family_adapter_confirmed"] == 1
     assert summary["rows_calibrator_confirmed"] == 1
+    assert summary["rows_raw_probability_produced"] == 1
     assert summary["rows_publication_allowed"] == 1
     assert summary["rows_rank_eligible"] == 1
     assert summary["can_execute"] is False
