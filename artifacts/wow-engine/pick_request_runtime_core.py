@@ -492,6 +492,14 @@ def _apply_portfolio_governance(
         outcome["downstream_portfolio_evaluation_allowed"] = decision["downstream_portfolio_evaluation_allowed"]
 
 
+PROP_RESEARCH_AGENT_ROSTER = (
+    "wow.global-scout-coordinator",
+    "wow.prop-scout-router",
+    *RESEARCH_WORKERS,
+    RESEARCH_RECONCILER,
+)
+
+
 def _new_specialist_utilization_audit() -> dict[str, Any]:
     """Compact per-row proof of which V17 specialist/orchestration stages ran.
 
@@ -502,7 +510,8 @@ def _new_specialist_utilization_audit() -> dict[str, Any]:
         "assigned_specialist": None,
         "specialist_registered": False,
         "specialist_invoked": False,
-        "research_agents_invoked": [],
+        "research_agents_invoked": 0,
+        "research_agent_failures": [],
         "research_barrier_status": "NOT_REACHED",
         "fitted_artifact_found": False,
         "artifact_specialist_version": None,
@@ -531,10 +540,18 @@ def _specialist_identity_matches(assigned: Any, versioned: Any) -> bool | None:
 
 def _mark_research_utilization(audit: dict[str, Any], detail: dict[str, Any], *, passed: bool) -> None:
     stages = list(detail.get("stages") or [])
-    audit["research_agents_invoked"] = [
+    invoked = [
         str(stage.get("worker_id"))
         for stage in stages
         if isinstance(stage, dict) and stage.get("worker_id")
+    ]
+    audit["research_agents_invoked"] = len(invoked)
+    audit["research_agent_failures"] = [
+        str(stage.get("worker_id"))
+        for stage in stages
+        if isinstance(stage, dict)
+        and stage.get("worker_id")
+        and stage.get("status") != "SUCCEEDED"
     ]
     audit["research_barrier_status"] = "PASS" if passed else "BLOCKED"
     if not passed and audit.get("exact_blocker") is None:
@@ -599,6 +616,12 @@ def _mark_1ip_utilization(audit: dict[str, Any], outcome: dict[str, Any]) -> Non
     audit["model_execution_path"] = "DIRECT_SPECIALIST"
     audit["model_family"] = result.get("model_family")
     audit["model_family_adapter_invoked"] = False
+    executed_specialist = result.get("controlling_specialist")
+    audit["executed_specialist_version"] = executed_specialist
+    audit["specialist_execution_identity_match"] = _specialist_identity_matches(
+        audit.get("assigned_specialist"),
+        executed_specialist,
+    )
     audit["specialist_invoked"] = bool(
         outcome.get("model_evaluated") is True
         or detail.get("specialist_invoked") is True
@@ -629,6 +652,7 @@ def _specialist_utilization_summary(outcomes: list[dict[str, Any]]) -> dict[str,
     ]
     return {
         "rows_audited": len(audits),
+        "research_agent_roster": list(PROP_RESEARCH_AGENT_ROSTER),
         "rows_with_specialist_assigned": sum(bool(a.get("specialist_registered")) for a in audits),
         "rows_research_barrier_invoked": sum(a.get("research_barrier_status") != "NOT_REACHED" for a in audits),
         "rows_research_barrier_passed": sum(a.get("research_barrier_status") == "PASS" for a in audits),
@@ -708,8 +732,8 @@ def _scout_research_envelope(run_id: str, candidate_id: str, worker_id: str, pay
 def _run_mandatory_scout_research(
     *, row_key: str, run_id: str, candidate: dict[str, Any]
 ) -> tuple[bool, dict[str, Any]]:
-    """Mandatory Scout -> Research evidence barrier ahead of the 1IP
-    specialist, driven synchronously in-process against the exact worker
+    """Mandatory Scout -> Research evidence barrier ahead of the controlling
+    prop specialist, driven synchronously in-process against the exact worker
     handlers the durable Agent Runtime coordinator dispatches through Celery
     for full-slate/prop runs (agent_runtime.runner_scout_research). Reused
     from the same primitive as the v17 team-event convergence work -- this
