@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 import pytest
 
 import v17.prop_lifecycle_autopilot as base
+import v17.prop_calibrator_candidate_runtime as candidate_runtime
 import v17.prop_lifecycle_autopilot_runtime as runtime
 
 
@@ -238,3 +239,40 @@ def test_production_registered_requires_every_runtime_and_canary_guard(monkeypat
     )
     assert dashboard["kpi"]["production_registered_n"] == 1
     assert dashboard["kpi"]["improperly_promoted_route_n"] == 1
+
+
+def test_calibrator_candidate_observation_does_not_require_prediction_can_execute_column():
+    predictions = [{
+        "prediction_id": "pred-1",
+        "event_id": "MLB:1",
+        "event_start_time": "2026-09-18T00:00:00+00:00",
+        "model_timestamp": "2026-09-17T20:00:00+00:00",
+        "locked_at": "2026-09-17T20:01:00+00:00",
+        "source_snapshot_id": "snapshot-1",
+        "player": "Test Pitcher",
+        "sport": "MLB",
+        "stat_type": "PITCHER_STRIKEOUTS",
+        "line": 5.5,
+        "direction": "MORE",
+        "model_family": "SO_MODEL",
+        "model_artifact_version": "SO_ARTIFACT_V1",
+        "model_artifact_checksum": "sha256:abc",
+        "feature_schema_version": "PROP_FEATURES_V1",
+        "raw_model_probability": 0.67,
+        "model_provider_identity": candidate_runtime.PROVIDER,
+    }]
+    outcomes = {
+        "pred-1": {
+            "prediction_id": "pred-1",
+            "hit": True,
+            "push": False,
+            "void": False,
+        }
+    }
+
+    rows, counts = candidate_runtime.build_independent_raw_observations(predictions, outcomes)
+
+    assert len(rows) == 1
+    assert rows[0].prediction_id == "pred-1"
+    assert rows[0].can_execute is False
+    assert counts["excluded_invalid_row_n"] == 0
