@@ -20,6 +20,7 @@ jobs:
   resume-persistence:
     if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     env:
       GH_TOKEN: ${{ github.token }}
       TARGET_SHA: ${{ github.event.workflow_run.head_sha || '' }}
@@ -117,8 +118,26 @@ jobs:
             echo "present=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Explicitly resume Scout persistence
+      - name: Detect active same-source persistence writer
+        id: writer
         if: steps.source.outputs.force_replay == 'true' || steps.existing.outputs.present != 'true'
+        shell: bash
+        env:
+          SOURCE_RUN_ID: ${{ steps.source.outputs.run_id }}
+        run: |
+          set -euo pipefail
+          active_run_id=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/workflows/wow-v17-scout-brain-persist.yml/runs?branch=main&per_page=100" \
+            --jq "[.workflow_runs[] | select(.display_title == \"wow-v17-scout-brain-persist source=${SOURCE_RUN_ID}\" and (.status == \"queued\" or .status == \"in_progress\" or .status == \"waiting\" or .status == \"requested\" or .status == \"pending\"))] | first | .id // \"\"")
+          if [ -n "$active_run_id" ]; then
+            echo "active=true" >> "$GITHUB_OUTPUT"
+            echo "run_id=$active_run_id" >> "$GITHUB_OUTPUT"
+            echo "Existing same-source persistence writer ${active_run_id} is active for source run ${SOURCE_RUN_ID}; monitoring it instead of dispatching a duplicate writer." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "active=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Explicitly resume Scout persistence
+        if: (steps.source.outputs.force_replay == 'true' || steps.existing.outputs.present != 'true') && steps.writer.outputs.active != 'true'
         shell: bash
         env:
           SOURCE_RUN_ID: ${{ steps.source.outputs.run_id }}
@@ -136,7 +155,9 @@ jobs:
         run: |
           set -euo pipefail
           receipt_name="wow-v17-scout-brain-persistence-${SOURCE_RUN_ID}"
-          for _ in $(seq 1 40); do
+          # The canonical writer is allowed 45 minutes. Give it a small buffer
+          # rather than declaring recovery failure after only ten minutes.
+          for _ in $(seq 1 200); do
             receipt_count=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/artifacts?name=${receipt_name}&per_page=100" \
               --jq '[.artifacts[] | select(.expired == false)] | length')
             if [ "$FORCE_REPLAY" = "true" ]; then
