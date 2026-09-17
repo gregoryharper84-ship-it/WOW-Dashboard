@@ -1070,7 +1070,11 @@ def install_pick_request_routes(
                 "exact_line": float(row.line),
                 "side": str(row.direction).strip().upper(),
                 "event_start_utc": row.event_start_time,
-                "evidence": normalized,
+                # Research consumes the same frozen evidence packet that was
+                # persisted for scoring, not the smaller identity/timestamp
+                # normalization shell. This preserves one evidence authority
+                # across Scout/Research and the fitted-model path.
+                "evidence": snapshot,
             }
             research_ok, research_detail = _run_mandatory_scout_research(
                 row_key=row_key,
