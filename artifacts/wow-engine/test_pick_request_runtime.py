@@ -165,6 +165,40 @@ def test_k_alias_freezes_snapshot_and_reaches_certified_pitcher_route(monkeypatc
     assert persisted[0]["can_execute"] is False
     assert scored[0][0].stat_type == "PITCHER_STRIKEOUTS"
 
+    audit = body["rows"][0]["specialist_utilization_audit"]
+    assert audit["assigned_specialist"] == "wow.test-specialist"
+    assert audit["specialist_registered"] is True
+    assert audit["fitted_artifact_found"] is True
+    assert audit["research_barrier_status"] == "PASS"
+    assert audit["research_agents_invoked"] == [
+        "wow.global-scout-coordinator",
+        "wow.prop-scout-router",
+        "wow.source-provenance-researcher",
+        "wow.participant-status-researcher",
+        "wow.history-comparables-researcher",
+        "wow.matchup-context-researcher",
+        "wow.market-settlement-researcher",
+        "wow.research-evidence-reconciler",
+    ]
+    assert audit["specialist_invoked"] is True
+    assert audit["calibrator_invoked"] is True
+    assert audit["publication_allowed"] is True
+    assert audit["rank_eligible"] is True
+    assert audit["exact_blocker"] is None
+    assert audit["can_execute"] is False
+
+    summary = body["specialist_utilization_summary"]
+    assert summary["rows_audited"] == 1
+    assert summary["rows_with_specialist_assigned"] == 1
+    assert summary["rows_research_barrier_invoked"] == 1
+    assert summary["rows_research_barrier_passed"] == 1
+    assert summary["rows_specialist_invoked"] == 1
+    assert summary["rows_fitted_artifact_found"] == 1
+    assert summary["rows_calibrator_confirmed"] == 1
+    assert summary["rows_publication_allowed"] == 1
+    assert summary["rows_rank_eligible"] == 1
+    assert summary["can_execute"] is False
+
 
 def test_opponent_context_absent_leaves_persisted_snapshot_payload_unchanged(monkeypatch):
     """Postmortem patch WOW-PATCH-2026-09-02: opponent_context is an opt-in
@@ -217,6 +251,15 @@ def test_unsupported_row_is_held_without_route_hydration_model_or_snapshot(monke
     assert persisted == []
     assert routed == []
     assert scored == []
+
+    audit = terminal["specialist_utilization_audit"]
+    assert audit["assigned_specialist"] == "MODEL_UNAVAILABLE"
+    assert audit["specialist_registered"] is False
+    assert audit["specialist_invoked"] is False
+    assert audit["research_barrier_status"] == "NOT_REACHED"
+    assert audit["fitted_artifact_found"] is False
+    assert audit["exact_blocker"] == "MODEL_UNAVAILABLE"
+    assert body["specialist_utilization_summary"]["rows_specialist_invoked"] == 0
 
 
 def test_unavailable_aggregate_capability_blocks_before_route_and_auto_hydration(monkeypatch):
