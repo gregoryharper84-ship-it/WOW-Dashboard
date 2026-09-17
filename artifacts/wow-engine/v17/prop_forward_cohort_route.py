@@ -17,6 +17,7 @@ from v17.prop_exact_route_settlement import ExactRouteSettlementRequest, run_exa
 from v17.prop_forward_cohort_market_adapter import ForwardCohortMarketAdapter
 from v17.prop_forward_cohort_runtime import PropForwardCohortRequest, run_prop_forward_cohort
 from v17.prop_forward_cohort_scheduler import run_prop_forward_cohort_loop
+from v17.prop_lifecycle_autopilot_runtime import install_prop_lifecycle_autopilot
 from v17.prop_production_registration import (
     PropProductionRegistrationAuditRequest,
     run_prop_production_registration_audit,
@@ -100,6 +101,18 @@ def install_prop_forward_cohort_route(
 
     cohort_market_api = ForwardCohortMarketAdapter(market_api)
     _install_scheduler(app, db_client_fn=db_client_fn, market_api=cohort_market_api)
+
+    # Universal lifecycle autopilot is distinct from the legacy MLB strikeout
+    # cohort loop. It continuously runs every declared exact route through
+    # forward capture, exact settlement, certification-readiness and production
+    # registration audit, then persists route/artifact health. It cannot certify
+    # or promote an artifact by itself.
+    install_prop_lifecycle_autopilot(
+        app,
+        auth_dependency=auth_dependency,
+        db_client_fn=db_client_fn,
+        market_api=cohort_market_api,
+    )
 
     if not any(
         getattr(route, "path", None) == "/v17/prop-forward-cohort-run"
