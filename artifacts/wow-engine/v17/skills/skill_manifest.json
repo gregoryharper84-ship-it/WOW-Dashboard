@@ -9,7 +9,7 @@
       "skill_id": "WOW_V17_DAILY_PICKS",
       "file": "WOW_V17_DAILY_PICKS_SKILL_PACK.md",
       "triggers": ["Run V17 Daily Picks", "best picks today", "Full model"],
-      "composes": ["WOW_V17_RESEARCH_MARKET_CONTEXT", "WOW_V17_BEST_PROPS", "WOW_V17_ML_WINNERS", "WOW_V17_SCREENSHOT_REVIEW", "WOW_V17_PICK_CORE"]
+      "composes": ["WOW_V17_RESEARCH_MARKET_CONTEXT", "WOW_V17_BEST_PROPS", "WOW_V17_PRIZEPICKS_BOARD_TO_SLIPS", "WOW_V17_ML_WINNERS", "WOW_V17_SCREENSHOT_REVIEW", "WOW_V17_PICK_CORE"]
     },
     {
       "skill_id": "WOW_V17_RESEARCH_MARKET_CONTEXT",
@@ -23,6 +23,13 @@
       "file": "WOW_V17_BEST_PROPS_SKILL.md",
       "owner": "WOW_BETTING_ENGINE",
       "triggers": ["Run V17 Best Props", "best props today", "full model props"]
+    },
+    {
+      "skill_id": "WOW_V17_PRIZEPICKS_BOARD_TO_SLIPS",
+      "file": "WOW_V17_PRIZEPICKS_BOARD_TO_SLIPS_SKILL.md",
+      "owner": "WOW_BETTING_ENGINE",
+      "triggers": ["Run PrizePicks Board to Slips", "Use Full Model on this PrizePicks board", "score the entire PrizePicks board", "build slips from the verified pool"],
+      "composes": ["WOW_V17_SCREENSHOT_REVIEW", "WOW_V17_RESEARCH_MARKET_CONTEXT", "WOW_V17_PICK_CORE"]
     },
     {
       "skill_id": "WOW_V17_SCREENSHOT_REVIEW",
@@ -53,6 +60,10 @@
     "market_probability_is_not_model_probability": true,
     "portfolio_governance_must_not_mutate_leg_probability": true,
     "fail_closed_on_unsupported_routes": true,
-    "never_force_pick_quota": true
+    "never_force_pick_quota": true,
+    "directionless_best_side_expands_more_less_before_action": true,
+    "action_transport_failure_not_model_scorer_failure": true,
+    "current_prizepicks_recommendation_requires_fresh_exact_line_direction_verification": true,
+    "slip_construction_uses_verified_pool_only": true
   }
 }
