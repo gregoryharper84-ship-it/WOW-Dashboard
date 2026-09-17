@@ -54,6 +54,45 @@ print(json.dumps({
     }
 
 
+def test_v17_active_production_openapi_generates_and_exposes_mounted_action_routes():
+    code = r'''
+import json
+import api_ncaaf_acceptance as api
+schema = api.app.openapi()
+paths = schema.get("paths", {})
+print(json.dumps({
+    "score_prop": paths.get("/score-prop", {}).get("post", {}).get("operationId"),
+    "score_pick": paths.get("/score-pick-request", {}).get("post", {}).get("operationId"),
+    "score_team_request": paths.get("/score-team-event-request", {}).get("post", {}).get("operationId"),
+    "record": paths.get("/record-recommendations", {}).get("post", {}).get("operationId"),
+    "settle": paths.get("/settle-recommendations", {}).get("post", {}).get("operationId"),
+    "host": paths.get("/v17/host-contract", {}).get("get", {}).get("operationId"),
+    "daily": paths.get("/v17/daily-snapshot-run", {}).get("post", {}).get("operationId"),
+    "can_execute": False,
+}))
+'''
+    env = dict(os.environ)
+    env["WOW_V17_ACTIVE"] = "1"
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout.strip().splitlines()[-1])
+    assert payload["score_prop"] == "scoreWowProp"
+    assert payload["score_pick"] == "scoreWowPickRequest"
+    assert payload["score_team_request"] == "scoreWowTeamEventRequest"
+    assert payload["record"]
+    assert payload["settle"]
+    assert payload["host"] == "getWowV17HostContract"
+    assert payload["daily"]
+    assert payload["can_execute"] is False
+
+
 def test_v17_disabled_preserves_compatibility_surface_without_new_host_route():
     code = r'''
 import json

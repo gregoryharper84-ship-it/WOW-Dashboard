@@ -54,7 +54,7 @@ def install_fantasy_score_candidate_runtime_bridge(
         return False
 
     def score_prop_with_fantasy_candidate(
-        req: score_request_model,
+        req: Any,
         x_wow_model_identity: Optional[str] = None,
     ) -> dict[str, Any]:
         model_identity = market_api.prod._reject_llp_prop_identity(x_wow_model_identity)
@@ -71,6 +71,10 @@ def install_fantasy_score_candidate_runtime_bridge(
             )
         return captured_score_prop(req, x_wow_model_identity)
 
+    # Keep the in-process callable's concrete request type available to tooling
+    # without leaving a postponed local-name ForwardRef behind.
+    score_prop_with_fantasy_candidate.__annotations__["req"] = score_request_model
+
     app.router.routes[:] = [
         route
         for route in app.router.routes
@@ -80,16 +84,21 @@ def install_fantasy_score_candidate_runtime_bridge(
         )
     ]
 
-    @app.post(
-        "/score-prop",
-        dependencies=[auth_dependency],
-        operation_id="scoreWowProp",
-    )
     def score_prop_with_fantasy_candidate_route(
-        req: score_request_model,
+        req: Any,
         x_wow_model_identity: Optional[str] = Header(default=None, alias="X-WOW-Model-Identity"),
     ):
         return score_prop_with_fantasy_candidate(req, x_wow_model_identity)
+
+    # `score_request_model` is function-local. Bind the actual Pydantic model
+    # before FastAPI registers the endpoint so app.openapi() sees a concrete
+    # request schema instead of an unresolved ForwardRef.
+    score_prop_with_fantasy_candidate_route.__annotations__["req"] = score_request_model
+    app.post(
+        "/score-prop",
+        dependencies=[auth_dependency],
+        operation_id="scoreWowProp",
+    )(score_prop_with_fantasy_candidate_route)
 
     market_api.score_prop = score_prop_with_fantasy_candidate
     setattr(app.state, _BRIDGE_STATE_KEY, True)

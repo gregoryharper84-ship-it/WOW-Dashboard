@@ -96,15 +96,23 @@ def install_phase_a_row_publication(
         )
     ]
 
-    @app.post(
-        "/score-prop",
-        dependencies=[auth_dependency],
-        operation_id="scoreWowProp",
-    )
+    # `market_api` is a function-local dependency. With postponed annotations,
+    # writing `req: market_api.ScorePropRequest` here leaves FastAPI/Pydantic a
+    # ForwardRef that cannot be resolved later by `app.openapi()`. Define the
+    # endpoint first, bind the concrete request model into `__annotations__`,
+    # then register it. This preserves the exact request schema and route
+    # operation ID without changing scoring or publication semantics.
     def score_prop_phase_a_route(
-        req: market_api.ScorePropRequest,
+        req: Any,
         x_wow_model_identity: Optional[str] = Header(default=None, alias="X-WOW-Model-Identity"),
     ):
         return market_api.score_prop(req, x_wow_model_identity)
+
+    score_prop_phase_a_route.__annotations__["req"] = market_api.ScorePropRequest
+    app.post(
+        "/score-prop",
+        dependencies=[auth_dependency],
+        operation_id="scoreWowProp",
+    )(score_prop_phase_a_route)
 
     return True
