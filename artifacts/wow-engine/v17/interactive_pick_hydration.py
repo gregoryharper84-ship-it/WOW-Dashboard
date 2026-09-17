@@ -2,12 +2,18 @@
 
 The existing /score-pick-request handler remains sole owner of validation,
 immutable persistence, fitted scoring, calibration, reconciliation, portfolio
-governance, and terminal reduction.  This wrapper moves only successful external
+governance, and terminal reduction. This wrapper moves only successful external
 raw-evidence acquisition ahead of that handler and runs independent acquisitions
 with a small bounded thread pool.
 
+Rows that share one immutable evidence identity (for example MORE and LESS for
+the same player/stat/event) share one external hydration result. Direction and
+line are deliberately not part of the hydration identity because evidence is
+upstream of settlement direction/threshold. The canonical scorer still receives
+and scores every row independently.
+
 If pre-hydration cannot prove route eligibility or any acquisition fails, the
-row is passed to the captured canonical handler unchanged.  Therefore failure
+row is passed to the captured canonical handler unchanged. Therefore failure
 codes and fail-closed semantics remain owned by the canonical handler.
 """
 from __future__ import annotations
@@ -22,7 +28,7 @@ from fastapi import Header
 
 from mlb_1ip_specialist import CANONICAL_STAT_TYPE as MLB_1IP_STAT_TYPE
 from pick_request_runtime_core import PickRequestBatch, PickRequestRow, RawPropEvidence, _canonical_stat
-from prop_auto_hydration import auto_hydrate_prop_evidence
+from prop_auto_hydration_router import auto_hydrate_prop_evidence
 
 LOGGER = logging.getLogger("wow.v17.interactive_latency")
 _STATE_KEY = "wow_interactive_pick_hydration_installed"
@@ -68,6 +74,21 @@ def _route_is_prehydration_eligible(row: PickRequestRow, market_api: Any) -> boo
         return False
 
 
+def _hydration_key(row: PickRequestRow) -> tuple[str, ...]:
+    """Identity of external evidence acquisition, intentionally direction-free."""
+    return (
+        str(row.sport or "").strip().upper(),
+        _canonical_stat(row.sport, row.stat_type),
+        " ".join(str(row.player or "").strip().split()),
+        str(row.event_id or "").strip(),
+        str(row.event_start_time or "").strip(),
+        str(row.source_capture_timestamp or "").strip(),
+        str(row.source_type or "").strip().upper(),
+        str(row.platform or "").strip().upper(),
+        str(row.opponent or "").strip().upper(),
+    )
+
+
 def _hydrate(row: PickRequestRow) -> RawPropEvidence:
     raw = auto_hydrate_prop_evidence(
         sport=str(row.sport or "").strip().upper(),
@@ -76,6 +97,7 @@ def _hydrate(row: PickRequestRow) -> RawPropEvidence:
         event_start_time=row.event_start_time,
         source_capture_timestamp=row.source_capture_timestamp,
         source_label=f"{row.source_type}:{row.platform or 'UNKNOWN'}",
+        opponent=row.opponent,
     )
     return RawPropEvidence.model_validate(raw)
 
@@ -88,21 +110,41 @@ def prehydrate_batch(batch: PickRequestBatch, *, market_api: Any) -> PickRequest
         for index, row in enumerate(batch.rows)
         if _route_is_prehydration_eligible(row, market_api)
     ]
-    if workers <= 1 or len(eligible) <= 1:
+    if workers <= 1 or not eligible:
         return batch
+
+    groups: dict[tuple[str, ...], tuple[PickRequestRow, list[int]]] = {}
+    for index, row in eligible:
+        key = _hydration_key(row)
+        if key not in groups:
+            groups[key] = (row, [])
+        groups[key][1].append(index)
 
     started = perf_counter()
     evidence_by_index: dict[int, RawPropEvidence] = {}
-    with ThreadPoolExecutor(max_workers=min(workers, len(eligible)), thread_name_prefix="wow-prop-hydrate") as pool:
-        future_to_index = {pool.submit(_hydrate, row): index for index, row in eligible}
-        for future in as_completed(future_to_index):
-            index = future_to_index[future]
+    failure_codes: set[str] = set()
+    successful_fetches = 0
+    pool_workers = min(workers, len(groups))
+
+    with ThreadPoolExecutor(max_workers=pool_workers, thread_name_prefix="wow-prop-hydrate") as pool:
+        future_to_key = {
+            pool.submit(_hydrate, representative): key
+            for key, (representative, _indices) in groups.items()
+        }
+        for future in as_completed(future_to_key):
+            key = future_to_key[future]
+            _representative, indices = groups[key]
             try:
-                evidence_by_index[index] = future.result()
-            except Exception:
-                # Preserve canonical failure typing by leaving the row untouched;
-                # the captured handler will perform its normal acquisition path.
+                evidence = future.result()
+            except Exception as exc:
+                # Preserve canonical failure typing by leaving every row in this
+                # evidence group untouched. The captured handler performs its
+                # normal acquisition path and remains terminal-status authority.
+                failure_codes.add(str(getattr(exc, "code", None) or type(exc).__name__))
                 continue
+            successful_fetches += 1
+            for index in indices:
+                evidence_by_index[index] = evidence
 
     if evidence_by_index:
         rows = [
@@ -117,11 +159,17 @@ def prehydrate_batch(batch: PickRequestBatch, *, market_api: Any) -> PickRequest
 
     LOGGER.warning(
         "WOW_V17_INTERACTIVE_STAGE route=/score-pick-request stage=prehydrate "
-        "rows_in=%s eligible=%s prefetched=%s workers=%s stage_ms=%.3f can_execute=false",
+        "rows_in=%s eligible=%s unique_fetches=%s successful_fetches=%s prefetched=%s "
+        "reused=%s failed_fetches=%s failure_codes=%s workers=%s stage_ms=%.3f can_execute=false",
         len(batch.rows),
         len(eligible),
+        len(groups),
+        successful_fetches,
         len(evidence_by_index),
-        min(workers, len(eligible)),
+        max(0, len(evidence_by_index) - successful_fetches),
+        len(groups) - successful_fetches,
+        ",".join(sorted(failure_codes)) if failure_codes else "NONE",
+        pool_workers,
         (perf_counter() - started) * 1000.0,
     )
     return hydrated
@@ -130,7 +178,7 @@ def prehydrate_batch(batch: PickRequestBatch, *, market_api: Any) -> PickRequest
 def install_interactive_pick_hydration_wrapper(app: Any, *, market_api: Any) -> bool:
     """Replace the canonical route with a pre-hydrating delegating wrapper.
 
-    The captured endpoint remains the canonical scorer.  Existing auth
+    The captured endpoint remains the canonical scorer. Existing auth
     dependencies and the operation id are copied from the route being wrapped.
     """
     if getattr(app.state, _STATE_KEY, False):
