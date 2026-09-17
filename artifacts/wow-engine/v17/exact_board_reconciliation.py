@@ -2,9 +2,9 @@
 
 This is a publication/completion guard only. It never computes or mutates a
 sporting probability. Completed model packages are checked against the exact
-source row whenever the package exposes identity fields. Every response row also
-receives a canonical request_identity echo so downstream consumers cannot
-silently join to an older player/stat/line/direction ledger row.
+source row whenever the package exposes identity fields. Canonical source
+identity is recorded in the reconciliation audit rather than injected into the
+historical receipt rows, preserving response-shape compatibility.
 
 A material identity mismatch blocks the batch from completion while preserving
 the scorer receipt for audit. ``can_execute`` remains false.
@@ -108,20 +108,17 @@ def _mismatches(expected: dict[str, Any], observed: dict[str, Any]) -> list[str]
 
 
 def enforce_exact_board_identity(response: dict[str, Any], source_rows: list[Any]) -> dict[str, Any]:
-    """Echo source identity and block completion on any observed mismatch."""
+    """Audit source identity and block completion on any observed mismatch."""
     out = dict(response)
     identities = dict(_source_identity(row, index) for index, row in enumerate(source_rows))
-    rows = [dict(row) for row in (out.get("rows") or []) if isinstance(row, dict)]
+    rows = [row for row in (out.get("rows") or []) if isinstance(row, dict)]
     mismatch_rows: list[dict[str, Any]] = []
     unverifiable_rows: list[str] = []
 
     for outcome in rows:
         row_key = str(outcome.get("row_key") or "")
         expected = identities.get(row_key)
-        if expected is None:
-            continue
-        outcome["request_identity"] = {**expected, "can_execute": False}
-        if outcome.get("model_evaluated") is not True:
+        if expected is None or outcome.get("model_evaluated") is not True:
             continue
         observed = _observed_identity(outcome)
         if not observed:
@@ -137,10 +134,13 @@ def enforce_exact_board_identity(response: dict[str, Any], source_rows: list[Any
                 "can_execute": False,
             })
 
-    out["rows"] = rows
     audit = {
         "required": bool(identities),
         "rows_in_scope": len(identities),
+        "request_identities": {
+            row_key: {**identity, "can_execute": False}
+            for row_key, identity in identities.items()
+        },
         "mismatch_count": len(mismatch_rows),
         "mismatches": mismatch_rows,
         "identity_unverifiable_row_ids": sorted(set(unverifiable_rows)),
