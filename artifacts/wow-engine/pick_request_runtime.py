@@ -7,16 +7,16 @@ This facade adds receipt/error-boundary and Top-10 completion semantics:
   ``specialist_scoring_attempted=true``;
 - unexpected scorer exceptions are typed ``MODEL_SCORER_FAILED``;
 - downstream portfolio-governance exceptions fail closed without erasing an
-  already-completed sporting probability receipt; and
+  already-completed sporting probability receipt;
+- exact source player/stat/line/direction identity is echoed and reconciled; and
 - target Top-10 families cannot complete on terminal-status accounting alone:
   every source row must reconcile exactly once to a valid controlling-model
   package or an explicit typed blocker.
 
-The facade also installs the reviewed sport-aware hydration router. This does
-not grant model authority: specialist routing and exact certified-artifact
-preflight still run before acquisition, so a WNBA candidate can hydrate only
-after the governed route becomes artifact-ready and can never borrow MLB or
-market-implied probability.
+Fantasy Score candidate evidence is frozen through a narrow research-only seam
+before the production-artifact preflight. This fixes the calibration-cohort
+bootstrap deadlock without granting candidate probabilities publication,
+ranking, promotion, or execution authority.
 
 ``specialist_scoring_attempted`` is this layer's unambiguous name for "the
 controlling specialist scorer was invoked". It is deliberately distinct from the
@@ -40,6 +40,8 @@ from github_actions_oidc import scout_route_auth_dependency
 import pick_request_runtime_core as _core
 from pick_request_runtime_core import *  # noqa: F401,F403
 from prop_auto_hydration_router import auto_hydrate_prop_evidence as _sport_aware_auto_hydrate_prop_evidence
+from v17.exact_board_reconciliation import enforce_exact_board_identity
+from v17.fantasy_score_pick_capture import capture_fantasy_score_candidate_evidence
 from v17.prediction_receipt_lookup_runtime import install_prediction_receipt_lookup_route
 from v17.top10_model_reconciliation import enforce_top10_completion
 from v17.mlb_1ip_line_expansion_maintenance import install_mlb_1ip_line_expansion_maintenance_route
@@ -80,14 +82,7 @@ auto_hydrate_prop_evidence = _sport_aware_auto_hydrate_prop_evidence
 
 
 def _auto_hydrate_prop_evidence_delegate(*args: Any, **kwargs: Any) -> Any:
-    """Keep the historical monkeypatch/public-module seam intact.
-
-    Existing tests and diagnostic harnesses patch
-    ``pick_request_runtime.auto_hydrate_prop_evidence`` after route
-    installation. The core route resolves its global at request time, so this
-    delegate forwards to the facade's current value instead of hiding that
-    seam behind the implementation module.
-    """
+    """Keep the historical monkeypatch/public-module seam intact."""
     current = globals().get(
         "auto_hydrate_prop_evidence",
         _sport_aware_auto_hydrate_prop_evidence,
@@ -199,7 +194,60 @@ class _ScoringReceiptMarketApi:
             ) from exc
 
 
-def _install_top10_reconciliation_wrapper(app: Any) -> None:
+def _apply_fantasy_candidate_capture(
+    response: dict[str, Any],
+    captures: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    """Attach research evidence receipts and correct false MODEL_UNAVAILABLE labels.
+
+    A successful evidence freeze proves the candidate lane exists but remains
+    uncalibrated. It does not make the row model-evaluated or publishable.
+    """
+    if not captures:
+        return response
+    out = dict(response)
+    rows: list[dict[str, Any]] = []
+    for existing in list(out.get("rows") or []):
+        outcome = dict(existing)
+        row_key = str(outcome.get("row_key") or "")
+        capture = captures.get(row_key)
+        if capture is None:
+            rows.append(outcome)
+            continue
+        if capture.get("status") == "CAPTURED" and outcome.get("code") == "MODEL_UNAVAILABLE":
+            detail = outcome.get("detail") if isinstance(outcome.get("detail"), dict) else {}
+            blocker = str(detail.get("blocker_code") or "")
+            if blocker in {"PROP_CERTIFIED_MODEL_ARTIFACT_NOT_FOUND", "FANTASY_SCORE_CANDIDATE_NOT_PROMOTED"}:
+                outcome = _terminal(
+                    row_key,
+                    "HELD",
+                    "FANTASY_SCORE_CANDIDATE_NOT_PROMOTED",
+                    detail={
+                        "blocker_code": "FANTASY_SCORE_CANDIDATE_NOT_PROMOTED",
+                        "calibration_blocker": "BLOCKED_NO_CERTIFIED_EXACT_LINE_CALIBRATION_ARTIFACT",
+                        "terminal_label": "CALIBRATION_BLOCKED_NO_PUBLISH",
+                        "candidate_evidence_capture": "PASS",
+                        "specialist_invoked": False,
+                        "candidate_presence_does_not_grant_probability_authority": True,
+                    },
+                    snapshot_id=str(capture.get("source_snapshot_id") or "") or None,
+                    acquisition=capture.get("acquisition") if isinstance(capture.get("acquisition"), dict) else None,
+                )
+        outcome["candidate_evidence_capture"] = capture
+        rows.append(outcome)
+    out["rows"] = rows
+    out["fantasy_score_candidate_evidence_capture"] = {
+        "rows_considered": len(captures),
+        "rows_captured": sum(1 for receipt in captures.values() if receipt.get("status") == "CAPTURED"),
+        "rows_held": sum(1 for receipt in captures.values() if receipt.get("status") != "CAPTURED"),
+        "publication_authority_granted": False,
+        "rank_authority_granted": False,
+        "can_execute": False,
+    }
+    return out
+
+
+def _install_top10_reconciliation_wrapper(app: Any, market_api: Any) -> None:
     """Post-validate the core receipt without rebuilding the scoring route."""
     route = next(
         (candidate for candidate in app.router.routes if getattr(candidate, "path", None) == "/score-pick-request"),
@@ -216,6 +264,11 @@ def _install_top10_reconciliation_wrapper(app: Any) -> None:
         batch: _core.PickRequestBatch,
         x_wow_model_identity: Optional[str] = Header(default=None, alias="X-WOW-Model-Identity"),
     ) -> dict[str, Any]:
+        captures = capture_fantasy_score_candidate_evidence(
+            batch,
+            market_api=market_api,
+            hydrate=_auto_hydrate_prop_evidence_delegate,
+        )
         response = original_endpoint(batch, x_wow_model_identity)
         if not isinstance(response, dict):
             raise HTTPException(
@@ -227,6 +280,8 @@ def _install_top10_reconciliation_wrapper(app: Any) -> None:
                     "can_execute": False,
                 },
             )
+        response = _apply_fantasy_candidate_capture(response, captures)
+        response = enforce_exact_board_identity(response, list(batch.rows))
         return enforce_top10_completion(response, list(batch.rows))
 
     reconciled_score_pick_request._v17_top10_reconciled = True  # type: ignore[attr-defined]
@@ -247,7 +302,7 @@ def install_pick_request_routes(
         market_api=_ScoringReceiptMarketApi(market_api),
         auth_dependency=wrapped_auth,
     )
-    _install_top10_reconciliation_wrapper(app)
+    _install_top10_reconciliation_wrapper(app, market_api)
 
     # Candidate registration is an internal control-plane route only. It stores
     # validated WNBA fitted-model artifacts as CANDIDATE rows and cannot promote,
