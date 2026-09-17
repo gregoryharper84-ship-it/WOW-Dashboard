@@ -2,15 +2,17 @@
 
 Each in-scope source row must terminate exactly once as either a valid
 controlling-model probability package or an explicit typed blocker. Generic
-PENDING/NOT_CALLED/UNRESOLVED states, omissions, duplicate receipts, and
-malformed model packages fail closed. This module never creates or changes a
-sporting probability. can_execute remains false.
+PENDING/NOT_CALLED/UNRESOLVED states, omissions, duplicate receipts, malformed
+model packages, and observed source/model identity mismatches fail closed. This
+module never creates or changes a sporting probability. can_execute remains false.
 """
 from __future__ import annotations
 
 import math
 from collections import Counter
 from typing import Any, Iterable
+
+from v17.exact_board_reconciliation import enforce_exact_board_identity
 
 TOP10_INCOMPLETE_MODEL_RECONCILIATION = "TOP10_INCOMPLETE_MODEL_RECONCILIATION"
 _GENERIC_NON_BLOCKERS = {"", "NONE", "NULL", "UNKNOWN", "UNRESOLVED", "PENDING", "NOT_CALLED", "NOT CALLED", "HELD", "REJECTED", "COMPLETED", "INCOMPLETE"}
@@ -48,14 +50,7 @@ def _finite_probability(value: Any) -> bool:
 
 
 def _candidate_probability_dicts(outcome: dict[str, Any]) -> Iterable[dict[str, Any]]:
-    """Yield every governed probability-package shape emitted by V17.
-
-    Publication-hold scoring deliberately preserves a completed sporting
-    probability under ``research_model_output`` instead of promoting it to an
-    official final-publication package.  That shape is still a real fitted
-    model package and must reconcile exactly like ``prediction`` when it
-    contains calibrated probability plus a calibrated lower bound.
-    """
+    """Yield every governed probability-package shape emitted by V17."""
     result = outcome.get("result")
     if not isinstance(result, dict):
         return []
@@ -171,14 +166,19 @@ def reconcile_top10_rows(source_rows: list[Any], outcomes: list[dict[str, Any]])
 
 
 def enforce_top10_completion(response: dict[str, Any], source_rows: list[Any]) -> dict[str, Any]:
-    out = dict(response)
+    # Exact board identity is a prerequisite to semantic completion. The guard
+    # only compares identity fields exposed by the model receipt and never
+    # mutates the sporting probability itself.
+    out = enforce_exact_board_identity(dict(response), source_rows)
     audit = reconcile_top10_rows(source_rows, list(out.get("rows") or []))
     out["top10_model_reconciliation"] = audit
     if audit["required"] and not audit["balanced"]:
         out["ok"] = False
         out["run_controller_status"] = "BLOCKED"
         out["reconciliation_pass"] = False
-        out["completion_blocker"] = TOP10_INCOMPLETE_MODEL_RECONCILIATION
+        # Preserve a stronger exact-identity blocker if it already fired.
+        if not out.get("completion_blocker"):
+            out["completion_blocker"] = TOP10_INCOMPLETE_MODEL_RECONCILIATION
         blockers = list(out.get("blockers") or [])
         if TOP10_INCOMPLETE_MODEL_RECONCILIATION not in blockers:
             blockers.append(TOP10_INCOMPLETE_MODEL_RECONCILIATION)
