@@ -17,6 +17,8 @@ import math
 import os
 from typing import Any, Iterable, Mapping, Sequence
 
+from v17.nfl_forward_settlement_refresh import refresh_recent_settled_outcomes
+
 CAN_EXECUTE = False
 MIN_FORWARD_GRADED = 100
 HEALTH_SCHEMA_VERSION = "NFL_FORWARD_CALIBRATION_HEALTH_V1"
@@ -376,7 +378,17 @@ def persist_health(db: Any, health: Mapping[str, Any]) -> None:
     }).execute()
 
 
-def run_forward_shadow(db: Any, *, min_forward: int = MIN_FORWARD_GRADED) -> dict[str, Any]:
+def run_forward_shadow(
+    db: Any,
+    *,
+    min_forward: int = MIN_FORWARD_GRADED,
+    settlement_refresh_fn: Any = refresh_recent_settled_outcomes,
+) -> dict[str, Any]:
+    # Forward grading is only meaningful when its settled-outcome producer is
+    # at least as fresh as the prediction cohort.  Refresh the narrow schedules
+    # source first; if acquisition/provenance fails, fail the run instead of
+    # silently recording another zero-grade "success".
+    settlement_refresh = settlement_refresh_fn(db)
     prediction_rows = load_prediction_rows(db)
     canonical = select_canonical_forward_predictions(prediction_rows)
     grades = grade_forward_predictions(canonical, load_outcome_rows(db))
@@ -385,6 +397,7 @@ def run_forward_shadow(db: Any, *, min_forward: int = MIN_FORWARD_GRADED) -> dic
     persist_health(db, health)
     return {
         "status": "COMPLETED",
+        "settlement_refresh": settlement_refresh,
         "prediction_rows_seen": len(prediction_rows),
         "canonical_events": len(canonical),
         "graded_events": len(grades),
