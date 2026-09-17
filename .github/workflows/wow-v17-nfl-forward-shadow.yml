@@ -11,9 +11,11 @@ on:
       - ".github/workflows/wow-v17-nfl-forward-shadow.yml"
       - "artifacts/wow-engine/github_actions_oidc.py"
       - "artifacts/wow-engine/v17/nfl_forward_shadow.py"
+      - "artifacts/wow-engine/v17/nfl_forward_settlement_refresh.py"
       - "artifacts/wow-engine/team_event_request_runtime.py"
       - "artifacts/wow-engine/basketball_training_replay.py"
       - "artifacts/wow-engine/test_v17_nfl_forward_shadow.py"
+      - "artifacts/wow-engine/test_v17_nfl_forward_settlement_refresh.py"
       - "artifacts/wow-engine/test_v17_github_oidc.py"
       - "artifacts/wow-engine/test_basketball_training_freshness.py"
   pull_request:
@@ -21,9 +23,11 @@ on:
       - ".github/workflows/wow-v17-nfl-forward-shadow.yml"
       - "artifacts/wow-engine/github_actions_oidc.py"
       - "artifacts/wow-engine/v17/nfl_forward_shadow.py"
+      - "artifacts/wow-engine/v17/nfl_forward_settlement_refresh.py"
       - "artifacts/wow-engine/team_event_request_runtime.py"
       - "artifacts/wow-engine/basketball_training_replay.py"
       - "artifacts/wow-engine/test_v17_nfl_forward_shadow.py"
+      - "artifacts/wow-engine/test_v17_nfl_forward_settlement_refresh.py"
       - "artifacts/wow-engine/test_v17_github_oidc.py"
       - "artifacts/wow-engine/test_basketball_training_freshness.py"
 
@@ -50,10 +54,11 @@ jobs:
           cache-dependency-path: artifacts/wow-engine/requirements.txt
       - name: Install engine dependencies
         run: pip install -r requirements.txt
-      - name: Run forward-shadow, OIDC, and basketball freshness regressions
+      - name: Run forward-shadow, settlement-refresh, OIDC, and basketball freshness regressions
         run: >-
           python -m pytest -q
           test_v17_nfl_forward_shadow.py
+          test_v17_nfl_forward_settlement_refresh.py
           test_v17_github_oidc.py
           test_basketball_training_freshness.py
 
@@ -115,6 +120,9 @@ jobs:
           assert payload.get("automatic_certification") is False
           assert payload.get("automatic_promotion") is False
           health = payload.get("calibration_health") or {}
+          refresh = payload.get("settlement_refresh") or {}
+          assert refresh.get("can_execute") is False
+          assert refresh.get("status") == "COMPLETED"
           assert health.get("can_execute") is False
           assert health.get("certification_recommendation") in {
               "DO_NOT_CERTIFY_YET",
@@ -122,6 +130,9 @@ jobs:
           }
           print(json.dumps({
               "status": payload.get("status"),
+              "settlement_refresh_status": refresh.get("status"),
+              "settled_games_materialized": refresh.get("completed_games_materialized"),
+              "latest_settled_gameday": refresh.get("latest_gameday"),
               "canonical_events": payload.get("canonical_events"),
               "graded_events": payload.get("graded_events"),
               "new_grades_persisted": payload.get("new_grades_persisted"),
