@@ -41,6 +41,7 @@ def test_protected_workflow_ref_stays_pinned_to_nightly_multiscout_main():
         (oidc.NHL_MODEL_MAINTENANCE_WORKFLOW_REF, "/.github/workflows/wow-v17-nhl-model-maintenance.yml@refs/heads/main"),
         (oidc.PROP_ACTION_WORKFLOW_REF, "/.github/workflows/wow-v17-canonical-prop-action.yml@refs/heads/main"),
         (oidc.FIRST_SIX_MODEL_MAINTENANCE_WORKFLOW_REF, "/.github/workflows/wow-v17-first-six-model-maintenance.yml@refs/heads/main"),
+        (oidc.FIRST_SIX_TRANSPORT_RESCUE_WORKFLOW_REF, "/.github/workflows/wow-v17-first-six-transport-rescue.yml@refs/heads/main"),
         (oidc.MLB_1IP_LINE_EXPANSION_MAINTENANCE_WORKFLOW_REF, "/.github/workflows/wow-v17-mlb-1ip-line-expansion-maintenance.yml@refs/heads/main"),
     ],
 )
@@ -63,6 +64,7 @@ def test_workflow_allowlist_contains_only_known_internal_workflows():
         oidc.NHL_MODEL_MAINTENANCE_WORKFLOW_REF,
         oidc.PROP_ACTION_WORKFLOW_REF,
         oidc.FIRST_SIX_MODEL_MAINTENANCE_WORKFLOW_REF,
+        oidc.FIRST_SIX_TRANSPORT_RESCUE_WORKFLOW_REF,
         oidc.MLB_1IP_LINE_EXPANSION_MAINTENANCE_WORKFLOW_REF,
     })
 
@@ -97,6 +99,7 @@ def test_oidc_claim_identity_mismatch_fails_closed(field, bad):
         oidc.NHL_MODEL_MAINTENANCE_WORKFLOW_REF,
         oidc.PROP_ACTION_WORKFLOW_REF,
         oidc.FIRST_SIX_MODEL_MAINTENANCE_WORKFLOW_REF,
+        oidc.FIRST_SIX_TRANSPORT_RESCUE_WORKFLOW_REF,
         oidc.MLB_1IP_LINE_EXPANSION_MAINTENANCE_WORKFLOW_REF,
     ],
 )
