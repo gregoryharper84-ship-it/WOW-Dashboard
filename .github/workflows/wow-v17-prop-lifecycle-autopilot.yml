@@ -1,0 +1,117 @@
+name: wow-v17-prop-lifecycle-autopilot
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: wow-v17-prop-lifecycle-autopilot
+  cancel-in-progress: false
+
+jobs:
+  production-lifecycle-cycle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      WOW_SERVICE_URL: https://wow-governed-probability-engine.onrender.com
+      WOW_OIDC_AUDIENCE: wow-v17-multiscout
+      WOW_CAN_EXECUTE: "false"
+      WOW_DRY_RUN_ONLY: "true"
+    steps:
+      - name: Assert fail-closed GitHub OIDC context
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$WOW_CAN_EXECUTE" = "false"
+          test "$WOW_DRY_RUN_ONLY" = "true"
+          test -n "$ACTIONS_ID_TOKEN_REQUEST_URL"
+          test -n "$ACTIONS_ID_TOKEN_REQUEST_TOKEN"
+
+      - name: Run universal V17 prop lifecycle cycle
+        shell: bash
+        run: |
+          set -euo pipefail
+          separator='?'
+          case "$ACTIONS_ID_TOKEN_REQUEST_URL" in
+            *\?*) separator='&' ;;
+          esac
+          oidc_json="$(curl \
+            --silent \
+            --show-error \
+            --fail \
+            --connect-timeout 15 \
+            --max-time 30 \
+            --header "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}${separator}audience=${WOW_OIDC_AUDIENCE}")"
+          oidc_token="$(python -c 'import json,sys; value=json.load(sys.stdin).get("value"); assert isinstance(value,str) and value.strip(); print(value.strip())' <<<"${oidc_json}")"
+          unset oidc_json
+
+          http_code="$(curl \
+            --silent \
+            --show-error \
+            --retry 3 \
+            --retry-all-errors \
+            --retry-delay 5 \
+            --connect-timeout 30 \
+            --max-time 240 \
+            --output /tmp/wow-prop-lifecycle.json \
+            --write-out '%{http_code}' \
+            --request POST \
+            --header "Authorization: Bearer ${oidc_token}" \
+            --header 'Content-Type: application/json' \
+            --data '{"routes":[],"max_snapshots_per_route":50,"settlement_limit":500,"persist_health":true}' \
+            "${WOW_SERVICE_URL}/v17/prop-lifecycle-autopilot-run")"
+          unset oidc_token
+          if [ "${http_code}" -lt 200 ] || [ "${http_code}" -ge 300 ]; then
+            echo "Lifecycle endpoint returned HTTP ${http_code}." >&2
+            python - <<'PY'
+          from pathlib import Path
+          p = Path('/tmp/wow-prop-lifecycle.json')
+          if p.exists():
+              print(p.read_text()[:2000])
+          PY
+            exit 1
+          fi
+
+      - name: Validate fail-closed lifecycle result
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          payload = json.loads(Path('/tmp/wow-prop-lifecycle.json').read_text())
+          if payload.get('can_execute') is not False:
+              raise SystemExit('can_execute invariant failed')
+          if payload.get('automatic_certification') is not False:
+              raise SystemExit('automatic certification must remain disabled')
+          if payload.get('automatic_promotion') is not False:
+              raise SystemExit('automatic promotion must remain disabled')
+          if payload.get('artifact_isolation_enforced') is not True:
+              raise SystemExit('artifact isolation proof missing')
+          run_status = payload.get('run_status')
+          if run_status not in {'COMPLETED', 'COMPLETED_WITH_STAGE_BLOCKERS'}:
+              raise SystemExit(f'unexpected lifecycle run status: {run_status}')
+          dashboard = payload.get('dashboard') or {}
+          kpi = dashboard.get('kpi') or {}
+          if int(kpi.get('improperly_promoted_route_n') or 0) != 0:
+              raise SystemExit('improperly promoted route detected')
+          print(json.dumps({
+              'run_status': run_status,
+              'cycle_id': payload.get('cycle_id'),
+              'routes_requested': payload.get('routes_requested'),
+              'failed_stages': payload.get('failed_stages') or [],
+              'production_registered_n': kpi.get('production_registered_n'),
+              'artifact_forward_prediction_n': kpi.get('artifact_forward_prediction_n'),
+              'artifact_forward_settled_n': kpi.get('artifact_forward_settled_n'),
+              'artifact_eligible_n': kpi.get('artifact_eligible_n'),
+              'improperly_promoted_route_n': kpi.get('improperly_promoted_route_n'),
+              'can_execute': False,
+          }, sort_keys=True))
+          PY
