@@ -35,6 +35,48 @@ def test_target_outcome_does_not_change_its_pregame_features():
     assert dict(aa[eid].features) == dict(bb[eid].features)
 
 
+def test_binary_research_screen_judges_final_calibrated_artifact():
+    metrics=SimpleNamespace(
+        raw_brier=.2314, calibrated_brier=.2327, baseline_brier=.2449,
+        raw_log_loss=.6543, calibrated_log_loss=.6579, baseline_log_loss=.6829,
+        ece=.0368,
+    )
+    screen=training.evaluate_binary_research_screen(metrics)
+    assert screen["passed"] is True
+    assert screen["checks"]["calibrated_beats_baseline_brier"] is True
+    assert screen["checks"]["calibrated_beats_baseline_log_loss"] is True
+    assert screen["checks"]["calibrated_ece_within_limit"] is True
+    assert screen["automatic_certification"] is False
+    assert screen["automatic_promotion"] is False
+    assert screen["probability_publishable"] is False
+    assert screen["can_execute"] is False
+
+
+def test_binary_research_screen_still_blocks_nonsharp_calibrated_candidate():
+    metrics=SimpleNamespace(
+        raw_brier=.24, calibrated_brier=.251, baseline_brier=.249,
+        raw_log_loss=.68, calibrated_log_loss=.696, baseline_log_loss=.692,
+        ece=.04,
+    )
+    screen=training.evaluate_binary_research_screen(metrics)
+    assert screen["passed"] is False
+    assert screen["checks"]["calibrated_beats_baseline_brier"] is False
+    assert screen["checks"]["calibrated_beats_baseline_log_loss"] is False
+
+
+def test_multiclass_research_screen_uses_calibrated_baseline_and_ece():
+    metrics=SimpleNamespace(
+        raw_brier=.665, calibrated_brier=.649, baseline_brier=.659,
+        raw_log_loss=1.132, calibrated_log_loss=1.085, baseline_log_loss=1.087,
+        calibrated_ece=.034,
+    )
+    screen=training.evaluate_multiclass_research_screen(metrics)
+    assert screen["passed"] is True
+    assert all(screen["checks"].values())
+    assert screen["probability_publishable"] is False
+    assert screen["can_execute"] is False
+
+
 def test_postmortem_snapshot_preserves_attribution_without_probability_rewrite():
     payload=training.postmortem_feature_snapshot(
         prediction_id="p1",home_state={"streak_without_driver":1,"results_process_divergence":1},
@@ -96,3 +138,34 @@ def test_candidate_persistence_uses_registry_valid_review_state_and_immutable_sa
     assert kwargs["on_conflict"] == "model_artifact_version"
     assert kwargs["ignore_duplicates"] is True
     assert version.startswith("NFL_DYNAMIC_TEAM_STATE_LOGIT_V2_")
+
+
+def test_team_state_screen_can_override_generic_candidate_screen_without_promotion():
+    client = _Client()
+    candidate = SimpleNamespace(
+        artifact_payload={"model": "test"},
+        dataset_hash="c" * 64,
+        calibrator_payload={"method": "TEST"},
+        metrics=SimpleNamespace(train_n=300, calibration_n=100, test_n=100),
+        research_screen_pass=False,
+    )
+
+    training._persist_artifact(
+        client,
+        sport="NBA",
+        league="NBA",
+        family="NBA_DYNAMIC_TEAM_STATE_LOGIT_V2",
+        schema="NBA_DYNAMIC_TEAM_STATE_FEATURES_V2",
+        training_code_sha="d" * 40,
+        candidate=candidate,
+        metrics={"can_execute": False},
+        research_screen_pass=True,
+    )
+
+    _, payload, _ = client.calls[-1]
+    assert payload["research_screen_pass"] is True
+    assert payload["lifecycle_state"] == "CANDIDATE"
+    assert payload["promoted"] is False
+    assert payload["active"] is False
+    assert payload["probability_publishable"] is False
+    assert payload["can_execute"] is False

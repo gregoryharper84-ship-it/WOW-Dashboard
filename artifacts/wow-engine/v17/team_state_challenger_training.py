@@ -17,6 +17,9 @@ from v17.team_state_intelligence import FEATURE_FAMILY_VERSION, build_team_state
 
 CAN_EXECUTE = False
 MODEL_PROGRAM = "LLP_DYNAMIC_TEAM_STATE_CHALLENGER_V1"
+TEAM_STATE_RESEARCH_SCREEN_VERSION = "CALIBRATED_BASELINE_ECE_V2"
+TEAM_STATE_BINARY_MAX_ECE = 0.10
+TEAM_STATE_MULTICLASS_MAX_ECE = 0.08
 
 
 class TeamStateChallengerUnavailable(RuntimeError):
@@ -33,6 +36,71 @@ def _dt(value: Any) -> datetime:
 
 def _hash(payload: Any) -> str:
     return sha256(json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode()).hexdigest()
+
+
+def evaluate_binary_research_screen(metrics: Any) -> dict[str, Any]:
+    """Judge the final calibrated team-state candidate, not an unused raw score.
+
+    The generic binary lifecycle intentionally has a conservative cross-program
+    screen that requires the raw model to beat prevalence and calibration to
+    improve both raw metrics.  Team-state challengers are a narrower program:
+    only the calibrated artifact can ever advance to replay/certification, so
+    its research screen should answer whether that final artifact adds signal
+    beyond prevalence while remaining acceptably calibrated.
+
+    Passing this screen grants candidate-review eligibility only.  It does not
+    certify, promote, publish, register a bridge, or change can_execute=false.
+    """
+    calibrated_brier = float(metrics.calibrated_brier)
+    baseline_brier = float(metrics.baseline_brier)
+    calibrated_log_loss = float(metrics.calibrated_log_loss)
+    baseline_log_loss = float(metrics.baseline_log_loss)
+    ece = float(metrics.ece)
+    checks = {
+        "calibrated_beats_baseline_brier": calibrated_brier < baseline_brier,
+        "calibrated_beats_baseline_log_loss": calibrated_log_loss < baseline_log_loss,
+        "calibrated_ece_within_limit": ece <= TEAM_STATE_BINARY_MAX_ECE,
+    }
+    return {
+        "version": TEAM_STATE_RESEARCH_SCREEN_VERSION,
+        "passed": all(checks.values()),
+        "checks": checks,
+        "calibrated_brier_gain_vs_baseline": baseline_brier - calibrated_brier,
+        "calibrated_log_loss_gain_vs_baseline": baseline_log_loss - calibrated_log_loss,
+        "calibrated_ece": ece,
+        "ece_limit": TEAM_STATE_BINARY_MAX_ECE,
+        "automatic_certification": False,
+        "automatic_promotion": False,
+        "probability_publishable": False,
+        "can_execute": False,
+    }
+
+
+def evaluate_multiclass_research_screen(metrics: Any) -> dict[str, Any]:
+    """Research-only final-artifact screen for calibrated multi-outcome models."""
+    calibrated_brier = float(metrics.calibrated_brier)
+    baseline_brier = float(metrics.baseline_brier)
+    calibrated_log_loss = float(metrics.calibrated_log_loss)
+    baseline_log_loss = float(metrics.baseline_log_loss)
+    calibrated_ece = float(metrics.calibrated_ece)
+    checks = {
+        "calibrated_beats_baseline_brier": calibrated_brier < baseline_brier,
+        "calibrated_beats_baseline_log_loss": calibrated_log_loss < baseline_log_loss,
+        "calibrated_ece_within_limit": calibrated_ece <= TEAM_STATE_MULTICLASS_MAX_ECE,
+    }
+    return {
+        "version": TEAM_STATE_RESEARCH_SCREEN_VERSION,
+        "passed": all(checks.values()),
+        "checks": checks,
+        "calibrated_brier_gain_vs_baseline": baseline_brier - calibrated_brier,
+        "calibrated_log_loss_gain_vs_baseline": baseline_log_loss - calibrated_log_loss,
+        "calibrated_ece": calibrated_ece,
+        "ece_limit": TEAM_STATE_MULTICLASS_MAX_ECE,
+        "automatic_certification": False,
+        "automatic_promotion": False,
+        "probability_publishable": False,
+        "can_execute": False,
+    }
 
 
 def _prior_strength(history: Sequence[Mapping[str, Any]]) -> float:
@@ -152,15 +220,17 @@ def _persist_rows(client: Any, *, sport: str, league: str, schema: str, model_fa
 
 
 def _persist_artifact(client: Any, *, sport: str, league: str, family: str, schema: str,
-                      training_code_sha: str, candidate: Any, metrics: dict[str,Any]) -> str:
+                      training_code_sha: str, candidate: Any, metrics: dict[str,Any],
+                      research_screen_pass: bool | None = None) -> str:
     artifact=dict(candidate.artifact_payload); version=f"{family}_{candidate.dataset_hash[:16]}_{training_code_sha[:12]}"
+    screen_pass = candidate.research_screen_pass if research_screen_pass is None else bool(research_screen_pass)
     client.table("wow_d1_candidate_artifacts").upsert({
         "sport":sport,"league":league,"market_family":"OUTRIGHT_WINNER","model_family":family,
         "model_artifact_version":version,"feature_schema_version":schema,"source_policy_id":"TEAM_STATE_DYNAMIC_PRIOR_ONLY_V1",
         "training_dataset_hash":candidate.dataset_hash,"training_code_sha":training_code_sha,"artifact_checksum":_hash(artifact),
         "artifact_payload":artifact,"calibrator_payload":dict(candidate.calibrator_payload),"validation_metrics":metrics,
         "training_rows":candidate.metrics.train_n,"calibration_rows":candidate.metrics.calibration_n,"test_rows":candidate.metrics.test_n,
-        "research_screen_pass":candidate.research_screen_pass,"source_review_status":"REQUIRED",
+        "research_screen_pass":screen_pass,"source_review_status":"REQUIRED",
         "lifecycle_state":"CANDIDATE","promoted":False,"active":False,"automatic_certification":False,
         "automatic_promotion":False,"probability_publishable":False,"can_execute":False},
         on_conflict="model_artifact_version", ignore_duplicates=True).execute()
@@ -173,12 +243,18 @@ def train_binary_challenger(client: Any, *, sport: str, league: str, events: Seq
     family=f"{sport}_DYNAMIC_TEAM_STATE_LOGIT_V2"; schema=f"{sport}_DYNAMIC_TEAM_STATE_FEATURES_V2"
     try: candidate=train_binary_candidate(rows,model_family=family,feature_names=names,min_rows=min_rows)
     except BinaryCandidateError as exc: raise TeamStateChallengerUnavailable(exc.code,str(exc)) from exc
+    screen=evaluate_binary_research_screen(candidate.metrics)
     _persist_rows(client,sport=sport,league=league,schema=schema,model_family=family,rows=rows,metadata=metadata,multiclass=False)
-    metrics=asdict(candidate.metrics)|{"research_screen_pass":candidate.research_screen_pass,"feature_family_version":FEATURE_FAMILY_VERSION,
-             "manual_probability_adjustments":False,"market_features_used":False,"champion_challenger_required":True}
-    version=_persist_artifact(client,sport=sport,league=league,family=family,schema=schema,training_code_sha=training_code_sha,candidate=candidate,metrics=metrics)
+    metrics=asdict(candidate.metrics)|{"research_screen_pass":screen["passed"],
+             "generic_lifecycle_research_screen_pass":candidate.research_screen_pass,
+             "team_state_research_screen":screen,"research_screen_version":TEAM_STATE_RESEARCH_SCREEN_VERSION,
+             "feature_family_version":FEATURE_FAMILY_VERSION,"manual_probability_adjustments":False,
+             "market_features_used":False,"champion_challenger_required":True}
+    version=_persist_artifact(client,sport=sport,league=league,family=family,schema=schema,training_code_sha=training_code_sha,
+                              candidate=candidate,metrics=metrics,research_screen_pass=screen["passed"])
     return {"sport":sport,"league":league,"model_family":family,"feature_schema_version":schema,"model_artifact_version":version,
-            "eligible_rows":len(rows),"feature_count":len(names),"metrics":metrics,"research_screen_pass":candidate.research_screen_pass,
+            "eligible_rows":len(rows),"feature_count":len(names),"metrics":metrics,"research_screen_pass":screen["passed"],
+            "generic_lifecycle_research_screen_pass":candidate.research_screen_pass,"team_state_research_screen":screen,
             "lifecycle_state":"CANDIDATE","automatic_certification":False,"automatic_promotion":False,
             "probability_publishable":False,"can_execute":False}
 
@@ -189,12 +265,18 @@ def train_multiclass_challenger(client: Any, *, sport: str, league: str, events:
     family=f"{sport}_{league}_DYNAMIC_TEAM_STATE_1X2_V2"; schema=f"{sport}_{league}_DYNAMIC_TEAM_STATE_FEATURES_V2"
     try: candidate=train_multiclass_candidate(rows,model_family=family,feature_names=names,expected_classes=("HOME","DRAW","AWAY"),min_rows=min_rows)
     except MulticlassCandidateError as exc: raise TeamStateChallengerUnavailable(exc.code,str(exc)) from exc
+    screen=evaluate_multiclass_research_screen(candidate.metrics)
     _persist_rows(client,sport=sport,league=league,schema=schema,model_family=family,rows=rows,metadata=metadata,multiclass=True)
-    metrics=asdict(candidate.metrics)|{"research_screen_pass":candidate.research_screen_pass,"feature_family_version":FEATURE_FAMILY_VERSION,
-             "outcome_space":["HOME","DRAW","AWAY"],"manual_probability_adjustments":False,"market_features_used":False,"champion_challenger_required":True}
-    version=_persist_artifact(client,sport=sport,league=league,family=family,schema=schema,training_code_sha=training_code_sha,candidate=candidate,metrics=metrics)
+    metrics=asdict(candidate.metrics)|{"research_screen_pass":screen["passed"],
+             "generic_lifecycle_research_screen_pass":candidate.research_screen_pass,
+             "team_state_research_screen":screen,"research_screen_version":TEAM_STATE_RESEARCH_SCREEN_VERSION,
+             "feature_family_version":FEATURE_FAMILY_VERSION,"outcome_space":["HOME","DRAW","AWAY"],
+             "manual_probability_adjustments":False,"market_features_used":False,"champion_challenger_required":True}
+    version=_persist_artifact(client,sport=sport,league=league,family=family,schema=schema,training_code_sha=training_code_sha,
+                              candidate=candidate,metrics=metrics,research_screen_pass=screen["passed"])
     return {"sport":sport,"league":league,"model_family":family,"feature_schema_version":schema,"model_artifact_version":version,
-            "eligible_rows":len(rows),"feature_count":len(names),"metrics":metrics,"research_screen_pass":candidate.research_screen_pass,
+            "eligible_rows":len(rows),"feature_count":len(names),"metrics":metrics,"research_screen_pass":screen["passed"],
+            "generic_lifecycle_research_screen_pass":candidate.research_screen_pass,"team_state_research_screen":screen,
             "lifecycle_state":"CANDIDATE","automatic_certification":False,"automatic_promotion":False,
             "probability_publishable":False,"can_execute":False}
 
@@ -215,5 +297,7 @@ def compare_shadow_predictions(rows: Sequence[Mapping[str,Any]]) -> dict[str,Any
     return champion_challenger_metrics(rows)
 
 
-__all__=["CAN_EXECUTE","MODEL_PROGRAM","TeamStateChallengerUnavailable","build_dynamic_binary_rows","build_dynamic_multiclass_rows",
-         "train_binary_challenger","train_multiclass_challenger","postmortem_feature_snapshot","compare_shadow_predictions"]
+__all__=["CAN_EXECUTE","MODEL_PROGRAM","TEAM_STATE_RESEARCH_SCREEN_VERSION","TeamStateChallengerUnavailable",
+         "build_dynamic_binary_rows","build_dynamic_multiclass_rows","evaluate_binary_research_screen",
+         "evaluate_multiclass_research_screen","train_binary_challenger","train_multiclass_challenger",
+         "postmortem_feature_snapshot","compare_shadow_predictions"]
