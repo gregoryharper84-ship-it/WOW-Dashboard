@@ -146,6 +146,7 @@ jobs:
                   "status": "BLOCKED",
                   "code": code,
                   "detail": detail or {},
+                  "transport_blocked": True,
                   "automatic_certification": False,
                   "automatic_promotion": False,
                   "probability_publishable": False,
@@ -191,14 +192,7 @@ jobs:
               return transport_block(name, last_code, last_detail)
 
           def is_transport_block(payload):
-              if payload.get("status") != "BLOCKED":
-                  return False
-              code = str(payload.get("code") or "")
-              return (
-                  "_HTTP_" in code
-                  or "_TRANSPORT" in code
-                  or code.endswith("MAINTENANCE_TRANSPORT_UNAVAILABLE")
-              )
+              return payload.get("transport_blocked") is True
 
           # Gate route readiness on the fast local NFL scope before invoking any
           # source-heavy scope. This also absorbs checksPass deploy replacement.
@@ -254,7 +248,7 @@ jobs:
           scope_blocked = sum(int(payload.get("candidate_rows_blocked") or 0) for payload in governed_team_state_payloads)
           transport_blocked_scopes = [
               scope for scope, payload in team_state_results.items()
-              if payload.get("program") != program
+              if is_transport_block(payload)
           ]
           ancillary_transport_blocked = [
               name for name, payload in ancillary_results.items()
