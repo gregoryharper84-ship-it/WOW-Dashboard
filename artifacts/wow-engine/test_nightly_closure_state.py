@@ -4,6 +4,8 @@ import pytest
 
 from v17.nightly_closure_state import is_terminal, require_terminal, transition_allowed, validate_closure
 
+# Regression contract: an autonomous closure incident cannot become successful
+# merely because a CI cycle ended; only FIXED_VERIFIED/HARD_BLOCKED are terminal.
 
 def test_only_fixed_verified_and_hard_blocked_are_terminal() -> None:
     assert is_terminal("FIXED_VERIFIED") is True
