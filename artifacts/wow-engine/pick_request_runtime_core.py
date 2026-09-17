@@ -492,6 +492,138 @@ def _apply_portfolio_governance(
         outcome["downstream_portfolio_evaluation_allowed"] = decision["downstream_portfolio_evaluation_allowed"]
 
 
+def _new_specialist_utilization_audit() -> dict[str, Any]:
+    """Compact per-row proof of which V17 specialist/orchestration stages ran.
+
+    This is observability only. It never creates model support, changes a
+    probability, promotes a candidate artifact, or grants execution authority.
+    """
+    return {
+        "assigned_specialist": None,
+        "specialist_registered": False,
+        "specialist_invoked": False,
+        "research_agents_invoked": [],
+        "research_barrier_status": "NOT_REACHED",
+        "fitted_artifact_found": False,
+        "model_execution_path": "NOT_REACHED",
+        "model_family": None,
+        "model_family_adapter_invoked": False,
+        "calibrator_invoked": False,
+        "raw_probability_produced": False,
+        "publication_allowed": False,
+        "rank_eligible": False,
+        "exact_blocker": None,
+        "can_execute": False,
+    }
+
+
+def _mark_research_utilization(audit: dict[str, Any], detail: dict[str, Any], *, passed: bool) -> None:
+    stages = list(detail.get("stages") or [])
+    audit["research_agents_invoked"] = [
+        str(stage.get("worker_id"))
+        for stage in stages
+        if isinstance(stage, dict) and stage.get("worker_id")
+    ]
+    audit["research_barrier_status"] = "PASS" if passed else "BLOCKED"
+    if not passed and audit.get("exact_blocker") is None:
+        blockers = list(detail.get("blockers") or [])
+        audit["exact_blocker"] = str(blockers[0] if blockers else "SCOUT_RESEARCH_BARRIER_BLOCKED")
+
+
+def _mark_scored_utilization(audit: dict[str, Any], scored: dict[str, Any]) -> None:
+    model_evidence = scored.get("model_evidence") if isinstance(scored.get("model_evidence"), dict) else {}
+    prediction = scored.get("prediction") if isinstance(scored.get("prediction"), dict) else {}
+    qualification = (
+        scored.get("probability_qualification")
+        if isinstance(scored.get("probability_qualification"), dict)
+        else {}
+    )
+    model_family = model_evidence.get("model_family") or prediction.get("model_family")
+    audit["model_family"] = model_family
+    audit["model_family_adapter_invoked"] = bool(model_family)
+    audit["raw_probability_produced"] = any(
+        value is not None
+        for value in (
+            model_evidence.get("raw_model_probability"),
+            model_evidence.get("raw_probability"),
+            model_evidence.get("probability_more"),
+            model_evidence.get("probability_less"),
+            prediction.get("raw_model_probability"),
+            prediction.get("raw_probability"),
+        )
+    )
+    audit["calibrator_invoked"] = any(
+        value is not None
+        for value in (
+            model_evidence.get("calibration_status"),
+            model_evidence.get("calibration_method"),
+            model_evidence.get("calibrated_probability"),
+            model_evidence.get("calibrated_probability_lower_bound"),
+            prediction.get("calibration_status"),
+            prediction.get("calibrated_probability"),
+            prediction.get("calibrated_probability_lower_bound"),
+        )
+    )
+    audit["publication_allowed"] = bool(scored.get("probability_publishable"))
+    audit["rank_eligible"] = bool(qualification.get("rank_eligible"))
+
+
+def _mark_1ip_utilization(audit: dict[str, Any], outcome: dict[str, Any]) -> None:
+    result = outcome.get("result") if isinstance(outcome.get("result"), dict) else {}
+    detail = outcome.get("detail") if isinstance(outcome.get("detail"), dict) else {}
+    barrier = result.get("scout_research_barrier") or detail.get("scout_research_barrier")
+    if isinstance(barrier, dict):
+        _mark_research_utilization(
+            audit,
+            barrier,
+            passed=outcome.get("code") != "SCOUT_RESEARCH_BARRIER_BLOCKED",
+        )
+    audit["model_execution_path"] = "DIRECT_SPECIALIST"
+    audit["model_family"] = result.get("model_family")
+    audit["specialist_invoked"] = bool(
+        outcome.get("model_evaluated") is True
+        or detail.get("specialist_invoked") is True
+    )
+    audit["raw_probability_produced"] = any(
+        result.get(key) is not None
+        for key in ("raw_probability", "selected_probability")
+    )
+    audit["calibrator_invoked"] = any(
+        result.get(key) is not None
+        for key in (
+            "calibration_method",
+            "calibrated_probability",
+            "calibrated_probability_lower_bound",
+        )
+    )
+    audit["publication_allowed"] = bool(outcome.get("probability_publishable"))
+    audit["rank_eligible"] = bool(outcome.get("rank_eligible"))
+    if outcome.get("terminal_status") == "HELD" and audit.get("exact_blocker") is None:
+        audit["exact_blocker"] = str(outcome.get("code") or "UNKNOWN_BLOCKER")
+
+
+def _specialist_utilization_summary(outcomes: list[dict[str, Any]]) -> dict[str, Any]:
+    audits = [
+        outcome.get("specialist_utilization_audit")
+        for outcome in outcomes
+        if isinstance(outcome.get("specialist_utilization_audit"), dict)
+    ]
+    return {
+        "rows_audited": len(audits),
+        "rows_with_specialist_assigned": sum(bool(a.get("assigned_specialist")) for a in audits),
+        "rows_research_barrier_invoked": sum(a.get("research_barrier_status") != "NOT_REACHED" for a in audits),
+        "rows_research_barrier_passed": sum(a.get("research_barrier_status") == "PASS" for a in audits),
+        "rows_specialist_invoked": sum(bool(a.get("specialist_invoked")) for a in audits),
+        "rows_fitted_artifact_found": sum(bool(a.get("fitted_artifact_found")) for a in audits),
+        "rows_model_family_adapter_confirmed": sum(bool(a.get("model_family_adapter_invoked")) for a in audits),
+        "rows_calibrator_confirmed": sum(bool(a.get("calibrator_invoked")) for a in audits),
+        "rows_raw_probability_produced": sum(bool(a.get("raw_probability_produced")) for a in audits),
+        "rows_publication_allowed": sum(bool(a.get("publication_allowed")) for a in audits),
+        "rows_rank_eligible": sum(bool(a.get("rank_eligible")) for a in audits),
+        "can_execute": False,
+    }
+
+
 def _telemetry(outcomes: list[dict[str, Any]]) -> dict[str, int]:
     auto_attempted = 0
     auto_succeeded = 0
@@ -654,10 +786,13 @@ def install_pick_request_routes(
     ):
         outcomes: list[dict[str, Any]] = []
         scored_legs: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        utilization_by_row: dict[str, dict[str, Any]] = {}
 
         for index, original_row in enumerate(batch.rows):
             row = original_row
             row_key = row.row_key or f"row-{index + 1}"
+            utilization = _new_specialist_utilization_audit()
+            utilization_by_row[row_key] = utilization
             canonical_stat = _canonical_stat(row.sport, row.stat_type)
             sport = str(row.sport).strip().upper()
             route_blocked_acquisition = {
@@ -670,7 +805,14 @@ def install_pick_request_routes(
                 sport,
                 canonical_stat,
             )
+            if isinstance(specialist, dict):
+                utilization["assigned_specialist"] = specialist.get("controlling_specialist")
+                utilization["specialist_registered"] = bool(
+                    specialist.get("controlling_specialist")
+                    and specialist.get("controlling_specialist") != "MODEL_UNAVAILABLE"
+                )
             if specialist is None:
+                utilization["exact_blocker"] = "SPECIALIST_ROUTING_UNAVAILABLE"
                 outcomes.append(
                     _terminal(
                         row_key,
@@ -682,6 +824,7 @@ def install_pick_request_routes(
                 )
                 continue
             if specialist.get("controlling_specialist") == "MODEL_UNAVAILABLE":
+                utilization["exact_blocker"] = "MODEL_UNAVAILABLE"
                 outcomes.append(
                     _terminal(
                         row_key,
@@ -699,6 +842,7 @@ def install_pick_request_routes(
 
             lane = market_api.prod._runtime_capability(market_api.prod.PROP_CAPABILITY_KEY)
             if lane.get("capability_status") != "AVAILABLE":
+                utilization["exact_blocker"] = "PROP_PROBABILITY_UNAVAILABLE"
                 outcomes.append(
                     _terminal(
                         row_key,
@@ -717,6 +861,9 @@ def install_pick_request_routes(
 
             route = market_api._prop_route_artifact(sport, canonical_stat)
             if route.get("ok") is not True or route.get("code") != "PROP_CERTIFIED_MODEL_ARTIFACT_READY":
+                utilization["exact_blocker"] = str(
+                    route.get("code") or "PROP_CERTIFIED_MODEL_ARTIFACT_NOT_FOUND"
+                )
                 outcomes.append(
                     _terminal(
                         row_key,
@@ -734,8 +881,11 @@ def install_pick_request_routes(
                 )
                 continue
 
+            utilization["fitted_artifact_found"] = True
+
             if canonical_stat == MLB_1IP_STAT_TYPE:
                 mlb_1ip_outcome = _score_mlb_1ip_row(row, row_key, market_api=market_api, request_id=batch.request_id)
+                _mark_1ip_utilization(utilization, mlb_1ip_outcome)
                 outcomes.append(mlb_1ip_outcome)
                 if mlb_1ip_outcome["terminal_status"] == "COMPLETED":
                     scored_legs.append(
@@ -854,6 +1004,47 @@ def install_pick_request_routes(
             acquisition["snapshot_status"] = "FROZEN"
             acquisition["source_snapshot_id"] = snapshot_id
 
+            research_candidate = {
+                "sport": sport,
+                "league": row.league,
+                "official_event_id": row.event_id,
+                "participant": row.player,
+                "opponent": row.opponent,
+                "market_family": "PLAYER_PROP",
+                "stat_family": canonical_stat,
+                "period": _prop_period(canonical_stat) if hasattr(market_api, "_prop_period") else "FULL_GAME",
+                "exact_line": float(row.line),
+                "side": str(row.direction).strip().upper(),
+                "event_start_utc": row.event_start_time,
+                "evidence": normalized,
+            }
+            research_ok, research_detail = _run_mandatory_scout_research(
+                row_key=row_key,
+                run_id=f"pick-request-prop-{batch.request_id or 'adhoc'}-{row_key}",
+                candidate=research_candidate,
+            )
+            _mark_research_utilization(utilization, research_detail, passed=research_ok)
+            if not research_ok:
+                outcomes.append(
+                    _terminal(
+                        row_key,
+                        "HELD",
+                        "SCOUT_RESEARCH_BARRIER_BLOCKED",
+                        detail={
+                            "terminal_label": "RESEARCH_INTEREST",
+                            "stage": research_detail.get("stage"),
+                            "blocker": (
+                                (research_detail.get("blockers") or ["SCOUT_RESEARCH_BARRIER_BLOCKED"])[0]
+                            ),
+                            "scout_research_barrier": research_detail,
+                            "specialist_invoked": False,
+                        },
+                        snapshot_id=snapshot_id,
+                        acquisition=acquisition,
+                    )
+                )
+                continue
+
             request_payload: dict[str, Any] = {
                 "event_id": normalized["event_id"],
                 "event_start_time": normalized["event_start_time"],
@@ -877,6 +1068,8 @@ def install_pick_request_routes(
 
             try:
                 score_req = market_api.ScorePropRequest(**request_payload)
+                utilization["specialist_invoked"] = True
+                utilization["model_execution_path"] = "CERTIFIED_MODEL_FAMILY_ADAPTER"
                 scored = market_api.score_prop(
                     score_req,
                     x_wow_model_identity=x_wow_model_identity,
@@ -888,6 +1081,9 @@ def install_pick_request_routes(
                     else {"message": str(exc.detail)}
                 )
                 code = str(raw_detail.get("code") or "ROW_SCORING_FAILED")
+                utilization["exact_blocker"] = str(
+                    raw_detail.get("blocker_code") or raw_detail.get("blocker") or code
+                )
                 held_status = (
                     exc.status_code >= 500
                     or exc.status_code == 409
@@ -905,6 +1101,7 @@ def install_pick_request_routes(
                 )
                 continue
             except Exception as exc:
+                utilization["exact_blocker"] = "ROW_SCORING_UNAVAILABLE"
                 outcomes.append(
                     _terminal(
                         row_key,
@@ -917,6 +1114,7 @@ def install_pick_request_routes(
                 )
                 continue
 
+            _mark_scored_utilization(utilization, scored)
             completed_outcome = _completed_scored_outcome(
                 row_key=row_key,
                 scored=scored,
@@ -929,6 +1127,11 @@ def install_pick_request_routes(
                 scored_legs.append((_portfolio_leg(row_key, row, canonical_stat, scored), completed_outcome))
 
         _apply_portfolio_governance(batch.request_id, scored_legs)
+
+        for outcome in outcomes:
+            audit = utilization_by_row.get(str(outcome.get("row_key")))
+            if audit is not None:
+                outcome["specialist_utilization_audit"] = audit
 
         completed = sum(
             1 for outcome in outcomes if outcome["terminal_status"] == "COMPLETED"
@@ -976,6 +1179,7 @@ def install_pick_request_routes(
             "infrastructure_blocked_count": infrastructure_blocked_count,
             "reconciliation_pass": reconciliation_pass,
             "telemetry": _telemetry(outcomes),
+            "specialist_utilization_summary": _specialist_utilization_summary(outcomes),
             "rows": outcomes,
             "probability_objective": "GOVERNED_MODEL_ONLY",
             "can_execute": False,
