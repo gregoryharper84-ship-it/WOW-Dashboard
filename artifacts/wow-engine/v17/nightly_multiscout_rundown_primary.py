@@ -2,9 +2,9 @@
 
 This composes the existing OIDC/router fallback stack rather than replacing it.
 For the sports/events/event-market/event-odds paths that define the Scout board,
-TheRundown is authoritative for inventory.  A board auth/entitlement/coverage
+TheRundown is authoritative for inventory. A board auth/entitlement/coverage
 failure is returned as a typed source failure instead of being silently replaced
-by a smaller provider slate.  Paths outside that contract keep the existing
+by a smaller provider slate. Paths outside that contract keep the existing
 OIDC/router/secondary behavior.
 
 No probability or execution authority is introduced here. ``can_execute=false``
@@ -21,7 +21,7 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from v17 import nightly_multiscout_oidc as base
-from v17 import rundown_board_primary as board
+from v17 import rundown_board_primary_v2 as board
 
 
 def install_rundown_board_primary() -> None:
