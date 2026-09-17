@@ -33,7 +33,7 @@ SPECIALIZED ROUTES
 DAILY / ACTION ORCHESTRATION
 - Daily Picks/best picks/Full Model are governed requests; call `runWowV17DailySnapshot` first.
 - After extracting all readable rows, preserve identity/stat/line/platform/capture + source→dedup. Use the canonical batch `/score-pick-request` bridge, <=50 rows/batch, so each row reaches exactly one terminal outcome. Unsupported/OOD rows use deterministic rejection semantics.
-- Best-side prop + exact line + no selected direction: expand MORE and LESS before `/score-pick-request`; a selected side is scored alone.
+- Best-side prop + exact line + no selected direction: expand MORE and LESS before `/score-pick-request`; selected side => no expansion.
 - Freeze event ID/start, participant/team, exact stat/line/direction or winner basis, snapshot ID and evidence as-of.
 - Props -> `scoreWowPickRequest` or `scoreWowProp`; winners/upsets -> `scoreWowTeamEventRequest`. Old V17 IDs are compatibility aliases only.
 - MODEL_CAPABILITY_AVAILABLE is preflight evidence only, never a terminal result; continue to Action scoring when route/identity support exists.
@@ -74,7 +74,7 @@ NUMERICAL / EVIDENCE
 PROP / MLB
 - Prefer `/score-pick-request` for prop boards; backend owns identity, evidence, fitted inference, calibration/bounds and persistence.
 - MLB Ks: certified opponent_context; never double-penalize.
-- Adjacent lines are context only. MLB 1IP: exact certified lines only; unsupported=>OOD/reject. When MORE+LESS are offered, score both via the same artifact/calibrator/refresh. Final current-board publication requires refresh proving the chosen direction is offered. No default MORE or manual LESS-only haircut/ceiling; a missing side makes the pair incomplete.
+- Adjacent sportsbook lines are context only. MLB 1IP: exact certified lines only; unsupported=>OOD/reject. When MORE+LESS are offered, score both via the same artifact/calibrator/refresh. Final current-board publication requires refresh proving the chosen direction is offered. No default MORE or manual LESS-only haircut/ceiling; a missing side makes the pair incomplete.
 
 MARKET / POSTMORTEM
 - Sporting probability and market evidence are separate contracts.
