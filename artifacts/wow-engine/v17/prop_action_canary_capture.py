@@ -57,7 +57,7 @@ def _persisted_prediction(db: Any, prediction_id: str) -> dict[str, Any] | None:
                 "prediction_id,sport,stat_type,feature_schema_version,model_family,"
                 "model_artifact_version,model_artifact_checksum,calibration_version,"
                 "raw_model_probability,calibrated_probability,"
-                "calibrated_probability_lower_bound,can_execute"
+                "calibrated_probability_lower_bound"
             )
             .eq("prediction_id", prediction_id)
             .limit(1)
@@ -138,10 +138,6 @@ def capture_action_canary_receipts(
         if prediction is None:
             blockers.append("CANARY_PERSISTED_PREDICTION_NOT_FOUND")
             continue
-        if prediction.get("can_execute") is not False:
-            blockers.append("CANARY_PREDICTION_CAN_EXECUTE_MUST_BE_FALSE")
-            continue
-
         key = _release_key(
             str(prediction.get("sport") or ""),
             str(prediction.get("stat_type") or ""),
