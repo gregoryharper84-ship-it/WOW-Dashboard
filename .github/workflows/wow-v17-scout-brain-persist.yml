@@ -1,4 +1,5 @@
 name: wow-v17-scout-brain-persist
+run-name: wow-v17-scout-brain-persist source=${{ inputs.run_id || github.event.workflow_run.id }}
 
 on:
   workflow_run:
@@ -96,6 +97,11 @@ jobs:
         run: |
           gh run download "$SOURCE_RUN_ID" --name "$ARTIFACT_NAME" --dir "$RUNNER_TEMP/scout-brain"
           test -f "$RUNNER_TEMP/scout-brain/model-handoff.json"
+      - name: Bound persistence transport metadata
+        if: steps.artifact.outputs.present == 'true'
+        run: |
+          python -m v17.scout_brain_transport_sanitizer \
+            --input "$RUNNER_TEMP/scout-brain/model-handoff.json"
       - name: Persist through direct database credential
         if: steps.artifact.outputs.present == 'true' && steps.credential.outputs.configured == 'true'
         run: |
