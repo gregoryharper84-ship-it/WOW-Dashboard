@@ -21,7 +21,7 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from v17 import nightly_multiscout_oidc as base
-from v17 import rundown_board_primary_v2 as board
+from v17 import rundown_board_primary as board
 
 
 def install_rundown_board_primary() -> None:
