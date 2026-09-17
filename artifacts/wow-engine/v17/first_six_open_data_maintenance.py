@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 import os
 from typing import Any, Callable
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 
 from github_actions_oidc import scout_route_auth_dependency
 from v17.ncaab_sportsdataverse_candidate import NCAABCandidateUnavailable, train_and_persist as train_ncaab
@@ -15,6 +15,18 @@ from v17.team_state_challenger_maintenance import run_all_team_state_challengers
 from v17.team_state_scoped_maintenance import run_team_state_scope
 
 CAN_EXECUTE = False
+
+_TEAM_STATE_SOURCE_HEAVY_SPORTS = {"MLB", "NCAAB", "SOCCER"}
+_TEAM_STATE_PERSIST_CONTRACTS = {
+    "wow_d1_training_rows": {
+        "on_conflict": "sport,official_event_id,feature_schema_version,source_manifest_sha256",
+        "max_rows": 250,
+    },
+    "wow_d1_candidate_artifacts": {
+        "on_conflict": "model_artifact_version",
+        "max_rows": 5,
+    },
+}
 
 
 def _sha() -> str:
@@ -68,6 +80,82 @@ def _run_team_state_scope(db: Any, scope: str) -> dict[str, Any]:
     return {**result,"automatic_certification":False,"automatic_promotion":False,"probability_publishable":False,"can_execute":False}
 
 
+def _persist_team_state_batch(db: Any, payload: dict[str, Any]) -> dict[str, Any]:
+    """Persist only governed team-state training/artifact upsert batches.
+
+    Source-heavy public acquisition and fitting may run on a protected GitHub
+    runner, but database authority stays on the backend.  This endpoint is not a
+    generic table writer: it permits only the two team-state evidence tables,
+    exact conflict contracts, bounded batches, and fail-closed candidate flags.
+    """
+    table = str(payload.get("table") or "").strip()
+    contract = _TEAM_STATE_PERSIST_CONTRACTS.get(table)
+    if contract is None:
+        raise HTTPException(status_code=400, detail={"code":"TEAM_STATE_PERSIST_TABLE_NOT_ALLOWED","can_execute":False})
+
+    rows = payload.get("rows")
+    if not isinstance(rows, list) or not rows or len(rows) > int(contract["max_rows"]):
+        raise HTTPException(status_code=400, detail={"code":"TEAM_STATE_PERSIST_BATCH_INVALID","can_execute":False})
+    if not all(isinstance(row, dict) for row in rows):
+        raise HTTPException(status_code=400, detail={"code":"TEAM_STATE_PERSIST_ROW_INVALID","can_execute":False})
+
+    on_conflict = str(payload.get("on_conflict") or "")
+    if on_conflict != contract["on_conflict"] or payload.get("ignore_duplicates") is not True:
+        raise HTTPException(status_code=400, detail={"code":"TEAM_STATE_PERSIST_UPSERT_CONTRACT_INVALID","can_execute":False})
+
+    for row in rows:
+        if row.get("can_execute") is not False:
+            raise HTTPException(status_code=400, detail={"code":"TEAM_STATE_PERSIST_CAN_EXECUTE_MUST_BE_FALSE","can_execute":False})
+
+        sport = str(row.get("sport") or "").strip().upper()
+        model_family = str(row.get("model_family") or "").strip().upper()
+        feature_schema = str(row.get("feature_schema_version") or "").strip().upper()
+        if sport not in _TEAM_STATE_SOURCE_HEAVY_SPORTS:
+            raise HTTPException(status_code=400, detail={"code":"TEAM_STATE_PERSIST_SPORT_NOT_ALLOWED","can_execute":False})
+        if "DYNAMIC_TEAM_STATE" not in model_family or "DYNAMIC_TEAM_STATE" not in feature_schema:
+            raise HTTPException(status_code=400, detail={"code":"TEAM_STATE_PERSIST_MODEL_FAMILY_INVALID","can_execute":False})
+
+        if table == "wow_d1_training_rows":
+            source_manifest = row.get("source_manifest")
+            if (
+                row.get("market_features_used") is not False
+                or row.get("historical_reconstruction") is not True
+                or not isinstance(source_manifest, dict)
+                or source_manifest.get("program") != "LLP_DYNAMIC_TEAM_STATE_CHALLENGER_V1"
+            ):
+                raise HTTPException(status_code=400, detail={"code":"TEAM_STATE_TRAINING_ROW_GOVERNANCE_INVALID","can_execute":False})
+        else:
+            required_false = (
+                "promoted",
+                "active",
+                "automatic_certification",
+                "automatic_promotion",
+                "probability_publishable",
+            )
+            if (
+                row.get("lifecycle_state") != "CANDIDATE"
+                or row.get("market_family") != "OUTRIGHT_WINNER"
+                or row.get("source_policy_id") != "TEAM_STATE_DYNAMIC_PRIOR_ONLY_V1"
+                or any(row.get(field) is not False for field in required_false)
+            ):
+                raise HTTPException(status_code=400, detail={"code":"TEAM_STATE_ARTIFACT_GOVERNANCE_INVALID","can_execute":False})
+
+    db.table(table).upsert(
+        rows,
+        on_conflict=on_conflict,
+        ignore_duplicates=True,
+    ).execute()
+    return {
+        "status":"PERSISTED",
+        "table":table,
+        "row_count":len(rows),
+        "automatic_certification":False,
+        "automatic_promotion":False,
+        "probability_publishable":False,
+        "can_execute":False,
+    }
+
+
 def install_first_six_open_data_maintenance_routes(app: FastAPI, *, auth_dependency: Any, db_client_fn: Any) -> None:
     dependency = scout_route_auth_dependency(auth_dependency)
     routes = {getattr(route,"path",None) for route in app.router.routes}
@@ -96,6 +184,11 @@ def install_first_six_open_data_maintenance_routes(app: FastAPI, *, auth_depende
         @app.post("/internal/v17/team-state-challenger-maintenance/{scope}",dependencies=[dependency],operation_id="runWowV17TeamStateChallengerMaintenanceScope")
         def run_team_state_challenger_maintenance_scope(scope: str) -> dict[str, Any]:
             return _run_team_state_scope(db_client_fn(), scope)
+
+    if "/internal/v17/team-state-challenger-persist-batch" not in routes:
+        @app.post("/internal/v17/team-state-challenger-persist-batch",dependencies=[dependency],operation_id="persistWowV17TeamStateChallengerBatch")
+        def persist_team_state_challenger_batch(payload: dict[str, Any]) -> dict[str, Any]:
+            return _persist_team_state_batch(db_client_fn(), payload)
 
 
 __all__ = ["CAN_EXECUTE","install_first_six_open_data_maintenance_routes"]
