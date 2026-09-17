@@ -181,16 +181,8 @@ def test_k_alias_freezes_snapshot_and_reaches_certified_pitcher_route(monkeypatc
     assert audit["artifact_specialist_version"] == "wow.test-specialist@1"
     assert audit["specialist_artifact_identity_match"] is True
     assert audit["research_barrier_status"] == "PASS"
-    assert audit["research_agents_invoked"] == [
-        "wow.global-scout-coordinator",
-        "wow.prop-scout-router",
-        "wow.source-provenance-researcher",
-        "wow.participant-status-researcher",
-        "wow.history-comparables-researcher",
-        "wow.matchup-context-researcher",
-        "wow.market-settlement-researcher",
-        "wow.research-evidence-reconciler",
-    ]
+    assert audit["research_agents_invoked"] == 8
+    assert audit["research_agent_failures"] == []
     assert audit["specialist_invoked"] is True
     assert audit["model_family"] == "TEST_MODEL_FAMILY"
     assert audit["model_family_adapter_invoked"] is True
@@ -205,6 +197,16 @@ def test_k_alias_freezes_snapshot_and_reaches_certified_pitcher_route(monkeypatc
 
     summary = body["specialist_utilization_summary"]
     assert summary["rows_audited"] == 1
+    assert summary["research_agent_roster"] == [
+        "wow.global-scout-coordinator",
+        "wow.prop-scout-router",
+        "wow.source-provenance-researcher",
+        "wow.participant-status-researcher",
+        "wow.history-comparables-researcher",
+        "wow.matchup-context-researcher",
+        "wow.market-settlement-researcher",
+        "wow.research-evidence-reconciler",
+    ]
     assert summary["rows_with_specialist_assigned"] == 1
     assert summary["rows_research_barrier_invoked"] == 1
     assert summary["rows_research_barrier_passed"] == 1
