@@ -4,6 +4,16 @@ on:
   schedule:
     - cron: "*/15 * * * *"
   workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/wow-v17-prop-lifecycle-autopilot.yml"
+      - "artifacts/wow-engine/v17/prop_lifecycle_autopilot.py"
+      - "artifacts/wow-engine/v17/prop_lifecycle_autopilot_runtime.py"
+      - "artifacts/wow-engine/v17/prop_action_canary_capture.py"
+      - "artifacts/wow-engine/v17/prop_calibrator_candidate_runtime.py"
+      - "artifacts/wow-engine/v17/prop_forward_cohort_route.py"
 
 permissions:
   contents: read
