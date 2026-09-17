@@ -1,4 +1,4 @@
-"""Authenticated V17 route and scheduler installer for prop forward cohort capture."""
+"""Authenticated V17 routes and scheduler installer for prop forward evidence."""
 from __future__ import annotations
 
 import asyncio
@@ -12,6 +12,7 @@ import v17.prop_forward_cohort_thesis_dedupe  # installs statistical-independenc
 import v17.fantasy_score_forward_cohort_thesis_dedupe as fantasy_thesis_dedupe
 from v17.fantasy_score_forward_cohort_route import install_fantasy_score_forward_cohort_route
 from v17.phase_a_row_publication import install_phase_a_row_publication
+from v17.prop_exact_route_settlement import ExactRouteSettlementRequest, run_exact_route_settlement
 from v17.prop_forward_cohort_market_adapter import ForwardCohortMarketAdapter
 from v17.prop_forward_cohort_runtime import PropForwardCohortRequest, run_prop_forward_cohort
 from v17.prop_forward_cohort_scheduler import run_prop_forward_cohort_loop
@@ -78,25 +79,18 @@ def install_prop_forward_cohort_route(
     db_client_fn: Any,
     market_api: Any,
 ) -> None:
-    # V17 activation first restores the certified Phase-A row-scoring path.
-    # The original scorer still owns calibration/bounds/publication; this merely
-    # prevents the aggregate preflight hold from suppressing a valid row attempt.
     install_phase_a_row_publication(
         app,
         auth_dependency=auth_dependency,
         market_api=market_api,
     )
 
-    # Fantasy Score capture has a separate strict candidate package contract.
-    # Its installer first applies the live Supabase snapshot-schema repair.
     install_fantasy_score_forward_cohort_route(
         app,
         auth_dependency=auth_dependency,
         db_client_fn=db_client_fn,
         market_api=market_api,
     )
-    # Re-apply the independent-thesis selector after that schema repair so the
-    # live selector is both schema-correct and calibration-independent.
     fantasy_thesis_dedupe.install()
 
     cohort_market_api = ForwardCohortMarketAdapter(market_api)
@@ -114,10 +108,6 @@ def install_prop_forward_cohort_route(
         def prop_forward_cohort_run(req: PropForwardCohortRequest):
             return run_prop_forward_cohort(req, db=db_client_fn(), market_api=cohort_market_api)
 
-    # Universal evidence capture is deliberately an authenticated control-plane
-    # operation. It inventories every declared route, dispatches only to an exact
-    # registered collector, and leaves separate/unsupported routes explicitly
-    # blocked rather than borrowing a neighboring sport/stat model.
     if not any(
         getattr(route, "path", None) == "/v17/prop-forward-evidence-run"
         for route in app.router.routes
@@ -133,3 +123,18 @@ def install_prop_forward_cohort_route(
                 db=db_client_fn(),
                 market_api=cohort_market_api,
             )
+
+    # Settlement is a separate authenticated stage. It can only write outcomes
+    # for exact routes with an explicit official-stat adapter; unsupported and
+    # separate-contract routes stay typed/blocked and never borrow a proxy stat.
+    if not any(
+        getattr(route, "path", None) == "/v17/prop-forward-settlement-run"
+        for route in app.router.routes
+    ):
+        @app.post(
+            "/v17/prop-forward-settlement-run",
+            dependencies=[auth_dependency],
+            operation_id="runWowV17ExactRoutePropSettlement",
+        )
+        def prop_forward_settlement_run(req: ExactRouteSettlementRequest):
+            return run_exact_route_settlement(req, db=db_client_fn())
