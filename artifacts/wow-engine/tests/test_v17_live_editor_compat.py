@@ -31,7 +31,7 @@ def test_live_gpt_instructions_fit_editor_limit_and_preserve_controls():
 
 def test_directionless_best_side_expands_at_host_without_weakening_action_schema():
     text = INSTRUCTIONS.read_text(encoding="utf-8")
-    assert "Best-side prop request + exact line but no selected direction: expand host-side to MORE and LESS before `/score-pick-request`" in text
+    assert "Best-side prop + exact line + no selected direction: expand MORE and LESS before `/score-pick-request`" in text
     assert "Final current-board publication requires refresh proving the chosen direction is offered" in text
 
     row = _schema()["components"]["schemas"]["PickRequestRow"]
