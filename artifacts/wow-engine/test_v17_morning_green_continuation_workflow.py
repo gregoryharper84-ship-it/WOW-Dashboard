@@ -28,15 +28,17 @@ def test_exact_three_protected_checks_are_reverified():
     assert "WOW governed probability backend" in text
     assert "WOW required-three regression" in text
     assert "WOW additional required regression" in text
-    assert "All three protected checks are successful on exact head SHA" in text
+    assert 'state="MERGING"' in text
+    assert 'ready=true' in text
 
 
-def test_merge_is_head_sha_pinned_and_failure_does_not_merge():
+def test_merge_is_head_sha_pinned_and_failure_is_nonterminal():
     text = _text()
     assert '--match-head-commit "$HEAD_SHA"' in text
-    assert "At least one protected check failed" in text
-    assert "no merge attempted" in text
-    assert "A later workflow_run completion will resume this repair" in text
+    assert 'state="CI_REWORK"' in text
+    assert 'state="CI_WAIT"' in text
+    assert "successful workflow termination is forbidden" in text
+    assert "exit 1" in text
 
 
 def test_bot_merge_explicitly_resumes_main_required_checks():
@@ -44,7 +46,7 @@ def test_bot_merge_explicitly_resumes_main_required_checks():
     assert "actions: write" in text
     assert "gh workflow run wow-engine-verify.yml" in text
     assert "gh workflow run wow-verify.yml" in text
-    assert "GITHUB_TOKEN-authored merges do not recursively trigger normal push workflows" in text
+    assert "steps.merge.outcome == 'success'" in text
 
 
 def test_acceptance_workflow_is_explicit_and_whitelisted():
@@ -52,8 +54,17 @@ def test_acceptance_workflow_is_explicit_and_whitelisted():
     assert "Morning-Green-Acceptance-Workflow:" in text
     assert "wow-v17-nightly-multiscout.yml" in text
     assert "wow-v17-nightly-engineering-scan.yml" in text
-    assert "requested non-whitelisted acceptance workflow" in text
+    assert 'case "${acceptance:-none}" in' in text
     assert 'gh workflow run "$ACCEPTANCE_WORKFLOW"' in text
+
+
+def test_machine_readable_closure_state_is_persisted():
+    text = _text()
+    assert "Persist machine-readable closure state" in text
+    assert "closure-state.json" in text
+    assert "failed_checks" in text
+    assert "pending_checks" in text
+    assert "can_execute:false" in text
 
 
 def test_governance_invariant_remains_research_only():
