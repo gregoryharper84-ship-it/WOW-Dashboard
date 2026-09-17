@@ -1,0 +1,192 @@
+name: wow-v17-first-six-transport-rescue
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/wow-v17-first-six-transport-rescue.yml"
+  pull_request:
+    paths:
+      - ".github/workflows/wow-v17-first-six-transport-rescue.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wow-v17-first-six-transport-rescue
+  cancel-in-progress: false
+
+jobs:
+  rescue:
+    name: Rescue first-six source-heavy scopes
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 80
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      WOW_ACTION_ORIGIN: https://wow-governed-probability-engine.onrender.com
+      WOW_CAN_EXECUTE: "false"
+      WOW_DRY_RUN_ONLY: "true"
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        scope:
+          - MLB
+          - NCAAB
+          - SOCCER_EPL
+          - SOCCER_BUNDESLIGA
+          - SOCCER_LALIGA
+          - SOCCER_SERIE_A
+    steps:
+      - name: Assert non-execution governance and OIDC context
+        shell: bash
+        run: |
+          test "$WOW_CAN_EXECUTE" = "false"
+          test "$WOW_DRY_RUN_ONLY" = "true"
+          test -n "$ACTIONS_ID_TOKEN_REQUEST_URL"
+          test -n "$ACTIONS_ID_TOKEN_REQUEST_TOKEN"
+
+      - name: Retry governed source-heavy scope
+        shell: bash
+        env:
+          TEAM_STATE_SCOPE: ${{ matrix.scope }}
+        run: |
+          python - <<'PY'
+          import email.utils
+          import json
+          import os
+          import random
+          import time
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+          from datetime import datetime, timezone
+
+          origin = os.environ["WOW_ACTION_ORIGIN"].rstrip("/")
+          scope = os.environ["TEAM_STATE_SCOPE"].strip().upper()
+          program = "LLP_DYNAMIC_TEAM_STATE_CHALLENGER_V1"
+          path = f"/internal/v17/team-state-challenger-maintenance/{scope}"
+
+          def fresh_oidc_token():
+              oidc_url = os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"]
+              oidc_url += ("&" if "?" in oidc_url else "?") + urllib.parse.urlencode(
+                  {"audience": "wow-v17-multiscout"}
+              )
+              request = urllib.request.Request(
+                  oidc_url,
+                  headers={"Authorization": f"Bearer {os.environ['ACTIONS_ID_TOKEN_REQUEST_TOKEN']}"},
+              )
+              with urllib.request.urlopen(request, timeout=20) as response:
+                  return json.load(response)["value"]
+
+          def retry_after_seconds(value):
+              text = str(value or "").strip()
+              if not text:
+                  return None
+              try:
+                  return max(0.0, float(text))
+              except ValueError:
+                  try:
+                      when = email.utils.parsedate_to_datetime(text)
+                      if when.tzinfo is None:
+                          when = when.replace(tzinfo=timezone.utc)
+                      return max(0.0, (when - datetime.now(timezone.utc)).total_seconds())
+                  except Exception:
+                      return None
+
+          transient = {429, 502, 503, 504}
+          attempts = 7
+          last = None
+
+          for attempt in range(1, attempts + 1):
+              token = fresh_oidc_token()
+              request = urllib.request.Request(
+                  origin + path,
+                  data=b"",
+                  method="POST",
+                  headers={
+                      "Authorization": f"Bearer {token}",
+                      "Content-Type": "application/json",
+                      "User-Agent": "WOW-V17-first-six-rescue/1.0",
+                  },
+              )
+              try:
+                  with urllib.request.urlopen(request, timeout=240) as response:
+                      payload = json.load(response)
+                  assert payload.get("program") == program, payload
+                  assert payload.get("can_execute") is False, payload
+                  assert payload.get("probability_publishable") is False, payload
+                  assert payload.get("automatic_certification") is False, payload
+                  assert payload.get("automatic_promotion") is False, payload
+                  rows = payload.get("rows")
+                  assert isinstance(rows, list) and rows, payload
+                  assert all(row.get("can_execute") is False for row in rows), payload
+                  assert all(row.get("probability_publishable") is False for row in rows), payload
+                  print(json.dumps({"scope": scope, "attempt": attempt, "payload": payload}, sort_keys=True))
+                  raise SystemExit(0)
+              except urllib.error.HTTPError as exc:
+                  body = exc.read().decode("utf-8", errors="replace")
+                  last = {
+                      "kind": "HTTPError",
+                      "status": exc.code,
+                      "body_prefix": body[:500],
+                  }
+                  if exc.code in {401, 403}:
+                      raise RuntimeError(f"{scope}_AUTH_HTTP_{exc.code}:{body[:500]}") from exc
+                  if exc.code not in transient:
+                      break
+                  server_delay = retry_after_seconds(exc.headers.get("Retry-After"))
+              except (urllib.error.URLError, TimeoutError) as exc:
+                  last = {"kind": type(exc).__name__}
+                  server_delay = None
+
+              if attempt < attempts:
+                  exponential = min(120.0, 12.0 * (2 ** (attempt - 1)))
+                  jitter = random.uniform(0.0, 4.0)
+                  delay = max(exponential, server_delay or 0.0) + jitter
+                  print(json.dumps({"scope": scope, "attempt": attempt, "retry_in_seconds": round(delay, 2), "last": last}, sort_keys=True))
+                  time.sleep(delay)
+
+          raise RuntimeError(json.dumps({
+              "scope": scope,
+              "code": f"TEAM_STATE_{scope}_TRANSPORT_EXHAUSTED",
+              "last": last,
+              "automatic_certification": False,
+              "automatic_promotion": False,
+              "probability_publishable": False,
+              "can_execute": False,
+          }, sort_keys=True))
+          PY
+
+      - name: Cool down before next source-heavy scope
+        shell: bash
+        run: sleep 20
+
+  pr-contract:
+    name: Verify rescue workflow governance contract
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Assert rescue workflow keeps governance closed
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          text = Path('.github/workflows/wow-v17-first-six-transport-rescue.yml').read_text()
+          required = [
+              'WOW_CAN_EXECUTE: "false"',
+              'WOW_DRY_RUN_ONLY: "true"',
+              'max-parallel: 1',
+              'probability_publishable',
+              'automatic_certification',
+              'automatic_promotion',
+              'can_execute',
+          ]
+          missing = [item for item in required if item not in text]
+          assert not missing, missing
+          PY
