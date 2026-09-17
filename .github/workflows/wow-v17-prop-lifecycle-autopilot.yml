@@ -26,7 +26,7 @@ concurrency:
 jobs:
   production-lifecycle-cycle:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     env:
       WOW_SERVICE_URL: https://wow-governed-probability-engine.onrender.com
       WOW_OIDC_AUDIENCE: wow-v17-multiscout
@@ -64,11 +64,8 @@ jobs:
           http_code="$(curl \
             --silent \
             --show-error \
-            --retry 3 \
-            --retry-all-errors \
-            --retry-delay 5 \
             --connect-timeout 30 \
-            --max-time 240 \
+            --max-time 720 \
             --output /tmp/wow-prop-lifecycle.json \
             --write-out '%{http_code}' \
             --request POST \
