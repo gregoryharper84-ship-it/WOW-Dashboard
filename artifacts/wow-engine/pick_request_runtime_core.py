@@ -505,8 +505,12 @@ def _new_specialist_utilization_audit() -> dict[str, Any]:
         "research_agents_invoked": [],
         "research_barrier_status": "NOT_REACHED",
         "fitted_artifact_found": False,
+        "artifact_specialist_version": None,
+        "specialist_artifact_identity_match": None,
         "model_execution_path": "NOT_REACHED",
         "model_family": None,
+        "executed_specialist_version": None,
+        "specialist_execution_identity_match": None,
         "model_family_adapter_invoked": None,
         "calibrator_invoked": None,
         "raw_probability_produced": False,
@@ -515,6 +519,14 @@ def _new_specialist_utilization_audit() -> dict[str, Any]:
         "exact_blocker": None,
         "can_execute": False,
     }
+
+
+def _specialist_identity_matches(assigned: Any, versioned: Any) -> bool | None:
+    if not assigned or not versioned:
+        return None
+    assigned_base = str(assigned).strip().split("@", 1)[0]
+    versioned_base = str(versioned).strip().split("@", 1)[0]
+    return assigned_base == versioned_base
 
 
 def _mark_research_utilization(audit: dict[str, Any], detail: dict[str, Any], *, passed: bool) -> None:
@@ -540,6 +552,12 @@ def _mark_scored_utilization(audit: dict[str, Any], scored: dict[str, Any]) -> N
     )
     model_family = model_evidence.get("model_family") or prediction.get("model_family")
     audit["model_family"] = model_family
+    executed_specialist = model_evidence.get("specialist_version") or prediction.get("specialist_version")
+    audit["executed_specialist_version"] = executed_specialist
+    audit["specialist_execution_identity_match"] = _specialist_identity_matches(
+        audit.get("assigned_specialist"),
+        executed_specialist,
+    )
     audit["model_family_adapter_invoked"] = bool(model_family)
     audit["raw_probability_produced"] = any(
         value is not None
@@ -616,6 +634,12 @@ def _specialist_utilization_summary(outcomes: list[dict[str, Any]]) -> dict[str,
         "rows_research_barrier_passed": sum(a.get("research_barrier_status") == "PASS" for a in audits),
         "rows_specialist_invoked": sum(bool(a.get("specialist_invoked")) for a in audits),
         "rows_fitted_artifact_found": sum(bool(a.get("fitted_artifact_found")) for a in audits),
+        "rows_specialist_artifact_identity_proven": sum(
+            a.get("specialist_artifact_identity_match") is True for a in audits
+        ),
+        "rows_specialist_execution_identity_proven": sum(
+            a.get("specialist_execution_identity_match") is True for a in audits
+        ),
         "rows_model_family_adapter_confirmed": sum(a.get("model_family_adapter_invoked") is True for a in audits),
         "rows_calibrator_confirmed": sum(a.get("calibrator_invoked") is True for a in audits),
         "rows_raw_probability_produced": sum(bool(a.get("raw_probability_produced")) for a in audits),
@@ -883,6 +907,11 @@ def install_pick_request_routes(
                 continue
 
             utilization["fitted_artifact_found"] = True
+            utilization["artifact_specialist_version"] = route.get("specialist_version")
+            utilization["specialist_artifact_identity_match"] = _specialist_identity_matches(
+                utilization.get("assigned_specialist"),
+                route.get("specialist_version"),
+            )
 
             if canonical_stat == MLB_1IP_STAT_TYPE:
                 mlb_1ip_outcome = _score_mlb_1ip_row(row, row_key, market_api=market_api, request_id=batch.request_id)
