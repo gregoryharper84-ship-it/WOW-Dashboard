@@ -30,6 +30,8 @@ services:
         sync: false
       - key: WOW_ACTION_API_KEY
         sync: false
+      - key: balldontlie
+        sync: false
       - key: WOW_PROP_SELF_ACCEPTANCE
         value: "1"
       - key: WOW_CALIBRATION_PUBLICATION_LANE_SEPARATION
@@ -90,6 +92,8 @@ services:
       - key: SUPABASE_URL
         sync: false
       - key: SUPABASE_SERVICE_KEY
+        sync: false
+      - key: balldontlie
         sync: false
       - key: WOLFRAM_ALPHA_APP_ID
         sync: false
