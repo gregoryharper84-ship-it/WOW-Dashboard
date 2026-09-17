@@ -176,7 +176,7 @@ def _prediction_rows(db: Any, artifact: Mapping[str, Any]) -> list[dict[str, Any
     fields = (
         "prediction_id,event_id,event_start_time,model_timestamp,locked_at,source_snapshot_id,player,"
         "sport,stat_type,line,direction,model_family,model_artifact_version,model_artifact_checksum,"
-        "feature_schema_version,raw_model_probability,model_provider_identity,can_execute"
+        "feature_schema_version,raw_model_probability,model_provider_identity"
     )
     return _paginate(
         lambda: db.table("wow_predictions").select(fields)
@@ -215,11 +215,7 @@ def build_independent_raw_observations(
         outcome = outcomes.get(prediction_id)
         if not outcome or outcome.get("hit") is None or outcome.get("push") is True or outcome.get("void") is True:
             continue
-        settled_direction_rows += 1
-        if row.get("can_execute") is not False:
-            excluded_invalid_rows += 1
-            continue
-        if not row.get("source_snapshot_id") or not row.get("locked_at"):
+        settled_direction_rows += 1        if not row.get("source_snapshot_id") or not row.get("locked_at"):
             excluded_invalid_rows += 1
             continue
         model_ts = _aware(row.get("model_timestamp"))
