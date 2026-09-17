@@ -215,7 +215,8 @@ def build_independent_raw_observations(
         outcome = outcomes.get(prediction_id)
         if not outcome or outcome.get("hit") is None or outcome.get("push") is True or outcome.get("void") is True:
             continue
-        settled_direction_rows += 1        if not row.get("source_snapshot_id") or not row.get("locked_at"):
+        settled_direction_rows += 1
+        if not row.get("source_snapshot_id") or not row.get("locked_at"):
             excluded_invalid_rows += 1
             continue
         model_ts = _aware(row.get("model_timestamp"))
