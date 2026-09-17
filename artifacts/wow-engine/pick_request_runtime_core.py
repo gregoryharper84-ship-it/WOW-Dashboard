@@ -1066,7 +1066,7 @@ def install_pick_request_routes(
                 "opponent": row.opponent,
                 "market_family": "PLAYER_PROP",
                 "stat_family": canonical_stat,
-                "period": _prop_period(canonical_stat) if hasattr(market_api, "_prop_period") else "FULL_GAME",
+                "period": market_api._prop_period(canonical_stat) if hasattr(market_api, "_prop_period") else "FULL_GAME",
                 "exact_line": float(row.line),
                 "side": str(row.direction).strip().upper(),
                 "event_start_utc": row.event_start_time,
