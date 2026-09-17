@@ -16,6 +16,10 @@ def _auth():
     return None
 
 
+def _route_n(app, path):
+    return sum(route.path == path for route in app.router.routes)
+
+
 def test_scheduler_defaults_off(monkeypatch):
     monkeypatch.delenv("WOW_PROP_FORWARD_COHORT_ENABLED", raising=False)
     app = FastAPI()
@@ -28,7 +32,11 @@ def test_scheduler_defaults_off(monkeypatch):
     )
 
     assert getattr(app.state, "wow_prop_forward_cohort_scheduler_installed", False) is False
-    assert sum(route.path == "/v17/prop-forward-cohort-run" for route in app.router.routes) == 1
+    assert _route_n(app, "/v17/prop-forward-cohort-run") == 1
+    assert _route_n(app, "/v17/prop-forward-evidence-run") == 1
+    assert _route_n(app, "/v17/prop-forward-settlement-run") == 1
+    assert _route_n(app, "/v17/prop-calibration-certification-audit") == 1
+    assert _route_n(app, "/v17/prop-production-registration-audit") == 1
 
 
 def test_scheduler_registers_once_when_enabled(monkeypatch):
@@ -47,7 +55,9 @@ def test_scheduler_registers_once_when_enabled(monkeypatch):
 
     assert app.state.wow_prop_forward_cohort_scheduler_installed is True
     assert len(app.router.on_startup) == initial_startup_n + 1
-    assert sum(route.path == "/v17/prop-forward-cohort-run" for route in app.router.routes) == 1
+    assert _route_n(app, "/v17/prop-forward-cohort-run") == 1
+    assert _route_n(app, "/v17/prop-calibration-certification-audit") == 1
+    assert _route_n(app, "/v17/prop-production-registration-audit") == 1
 
 
 def test_scheduler_env_bounds(monkeypatch):
@@ -60,8 +70,5 @@ def test_scheduler_env_bounds(monkeypatch):
 
 
 def test_scheduler_loop_contract_is_non_execution_oriented():
-    # The loop is server-side capture orchestration only; it is not an order or
-    # wager executor. Keep this assertion close to the scheduled entrypoint so a
-    # future refactor cannot quietly introduce an execution API here.
     assert callable(run_prop_forward_cohort_loop)
     assert logging.getLogger("wow.v17.prop_forward_cohort").name == "wow.v17.prop_forward_cohort"
