@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: read
+  id-token: write
 
 concurrency:
   group: wow-v17-prop-lifecycle-autopilot
@@ -18,21 +19,38 @@ jobs:
     timeout-minutes: 10
     env:
       WOW_SERVICE_URL: https://wow-governed-probability-engine.onrender.com
-      WOW_ACTION_API_KEY: ${{ secrets.WOW_ACTION_API_KEY }}
+      WOW_OIDC_AUDIENCE: wow-v17-multiscout
+      WOW_CAN_EXECUTE: "false"
+      WOW_DRY_RUN_ONLY: "true"
     steps:
-      - name: Require production Action credential
+      - name: Assert fail-closed GitHub OIDC context
         shell: bash
         run: |
           set -euo pipefail
-          if [ -z "${WOW_ACTION_API_KEY:-}" ]; then
-            echo "WOW_ACTION_API_KEY repository secret is required for the authenticated production lifecycle cycle." >&2
-            exit 1
-          fi
+          test "$WOW_CAN_EXECUTE" = "false"
+          test "$WOW_DRY_RUN_ONLY" = "true"
+          test -n "$ACTIONS_ID_TOKEN_REQUEST_URL"
+          test -n "$ACTIONS_ID_TOKEN_REQUEST_TOKEN"
 
       - name: Run universal V17 prop lifecycle cycle
         shell: bash
         run: |
           set -euo pipefail
+          separator='?'
+          case "$ACTIONS_ID_TOKEN_REQUEST_URL" in
+            *\?*) separator='&' ;;
+          esac
+          oidc_json="$(curl \
+            --silent \
+            --show-error \
+            --fail \
+            --connect-timeout 15 \
+            --max-time 30 \
+            --header "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}${separator}audience=${WOW_OIDC_AUDIENCE}")"
+          oidc_token="$(python -c 'import json,sys; value=json.load(sys.stdin).get("value"); assert isinstance(value,str) and value.strip(); print(value.strip())' <<<"${oidc_json}")"
+          unset oidc_json
+
           http_code="$(curl \
             --silent \
             --show-error \
@@ -44,17 +62,17 @@ jobs:
             --output /tmp/wow-prop-lifecycle.json \
             --write-out '%{http_code}' \
             --request POST \
-            --header "Authorization: Bearer ${WOW_ACTION_API_KEY}" \
+            --header "Authorization: Bearer ${oidc_token}" \
             --header 'Content-Type: application/json' \
             --data '{"routes":[],"max_snapshots_per_route":50,"settlement_limit":500,"persist_health":true}' \
             "${WOW_SERVICE_URL}/v17/prop-lifecycle-autopilot-run")"
+          unset oidc_token
           if [ "${http_code}" -lt 200 ] || [ "${http_code}" -ge 300 ]; then
             echo "Lifecycle endpoint returned HTTP ${http_code}." >&2
             python - <<'PY'
           from pathlib import Path
           p = Path('/tmp/wow-prop-lifecycle.json')
           if p.exists():
-              # Bound failure output and never print credentials.
               print(p.read_text()[:2000])
           PY
             exit 1
