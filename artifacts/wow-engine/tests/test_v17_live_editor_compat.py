@@ -29,6 +29,16 @@ def test_live_gpt_instructions_fit_editor_limit_and_preserve_controls():
     assert KNOWLEDGE.exists()
 
 
+def test_directionless_best_side_expands_at_host_without_weakening_action_schema():
+    text = INSTRUCTIONS.read_text(encoding="utf-8")
+    assert "Best-side prop + exact line + no selected direction: expand MORE and LESS before `/score-pick-request`" in text
+    assert "Final current-board publication requires refresh proving the chosen direction is offered" in text
+
+    row = _schema()["components"]["schemas"]["PickRequestRow"]
+    assert "direction" in set(row["required"])
+    assert row["properties"]["direction"]["enum"] == ["MORE", "LESS"]
+
+
 def test_action_operation_descriptions_fit_editor_limit():
     document = _schema()
     for path, methods in document["paths"].items():
