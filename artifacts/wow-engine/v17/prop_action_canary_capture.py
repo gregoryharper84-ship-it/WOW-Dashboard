@@ -207,10 +207,17 @@ def install_prop_action_canary_capture(
     app: Any,
     *,
     db_client_fn: Any,
-) -> None:
-    """Wrap the real canonical endpoint; internal scorer calls never reach here."""
+) -> bool:
+    """Wrap the canonical endpoint when present; stay inert on partial test apps.
+
+    ``install_prop_forward_cohort_route`` is also unit-tested against intentionally
+    minimal FastAPI apps that do not compose the canonical scorer. Absence there
+    is not a production capability claim, so the wrapper returns ``False`` rather
+    than making unrelated scheduler tests fail. On the production app the route
+    is already present because detailed-evidence composition runs first.
+    """
     if getattr(app.state, _INSTALLED_ATTR, False):
-        return
+        return True
     original_route = next(
         (
             route for route in app.router.routes
@@ -220,7 +227,7 @@ def install_prop_action_canary_capture(
         None,
     )
     if original_route is None:
-        raise RuntimeError("V17_PROP_ACTION_CANARY_PICK_ROUTE_NOT_FOUND")
+        return False
 
     original_endpoint = original_route.endpoint
     dependencies = list(getattr(original_route, "dependencies", None) or [])
@@ -247,6 +254,7 @@ def install_prop_action_canary_capture(
         return result
 
     setattr(app.state, _INSTALLED_ATTR, True)
+    return True
 
 
 __all__ = [
