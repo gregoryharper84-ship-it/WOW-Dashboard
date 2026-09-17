@@ -1,0 +1,91 @@
+name: wow-v17-rundown-board-primary-validation
+
+on:
+  push:
+    branches:
+      - chatgpt/v17-rundown-board-primary
+    paths:
+      - ".github/workflows/wow-v17-rundown-board-primary-validation.yml"
+      - "artifacts/wow-engine/v17/rundown_board_primary.py"
+      - "artifacts/wow-engine/v17/nightly_multiscout_rundown_primary.py"
+      - "artifacts/wow-engine/tests/test_v17_rundown_board_primary.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: artifacts/wow-engine
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt
+      - run: python -m pytest -q tests/test_v17_rundown_board_primary.py
+
+  credentialed-board-smoke:
+    needs: unit
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: artifacts/wow-engine
+    env:
+      THERUNDOWN_API_KEY: ${{ secrets.RUNDOWN_API_KEY }}
+      RUNDOWN_API_KEY: ${{ secrets.RUNDOWN_API_KEY }}
+      WOW_RUNDOWN_BOARD_PRIMARY_ENABLED: "true"
+      WOW_CAN_EXECUTE: "false"
+      WOW_DRY_RUN_ONLY: "true"
+      WOW_SCOUT_HORIZON_HOURS: "36"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt
+      - name: Require credential and inspect board catalogs
+        shell: bash
+        run: |
+          test -n "$THERUNDOWN_API_KEY"
+          python - <<'PY'
+          import json
+          from v17 import rundown_board_primary as board
+          sports = board.serve('/odds-api/v4/sports', {'all': 'true'})
+          print(json.dumps({'sports_ok': sports.ok, 'sports_status': sports.status, 'sports_code': sports.code, 'sport_count': len(sports.data or []) if sports.ok else 0}))
+          if not sports.ok:
+              raise SystemExit(2)
+          assert board.CAN_EXECUTE is False
+          assert len(sports.data or []) > 0
+          PY
+      - name: Exercise a real current sport board
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from datetime import datetime, timedelta, timezone
+          from v17 import rundown_board_primary as board
+          sports = board.serve('/odds-api/v4/sports', {'all': 'true'})
+          preferred = ['baseball_mlb','americanfootball_nfl','americanfootball_ncaaf','basketball_wnba']
+          keys = [row['key'] for row in sports.data]
+          sport = next((key for key in preferred if key in keys), keys[0])
+          now = datetime.now(timezone.utc)
+          params = {
+              'commenceTimeFrom': now.replace(microsecond=0).isoformat().replace('+00:00','Z'),
+              'commenceTimeTo': (now + timedelta(hours=36)).replace(microsecond=0).isoformat().replace('+00:00','Z'),
+          }
+          result = board.serve(f'/odds-api/v4/sports/{sport}/events', params)
+          summary = {'sport': sport, 'ok': result.ok, 'status': result.status, 'code': result.code, 'events': len(result.data or []) if result.ok else 0}
+          if result.ok:
+              markets = sorted({m.get('key') for e in result.data for b in e.get('bookmakers',[]) for m in b.get('markets',[]) if m.get('key')})
+              books = sorted({b.get('key') for e in result.data for b in e.get('bookmakers',[]) if b.get('key')})
+              props = [m for m in markets if any(t in m for t in ('player_','pitcher_','batter_','passing_','rushing_','receiving_','points','rebounds','assists','strikeouts','outs','shots','saves','goalscorer','aces','double_faults')) and m not in {'h2h','spreads','totals'}]
+              summary.update({'markets': len(markets), 'books': len(books), 'prop_market_count': len(props), 'sample_prop_markets': props[:20]})
+          print(json.dumps(summary, sort_keys=True))
+          if not result.ok:
+              raise SystemExit(3)
+          PY
