@@ -4,6 +4,8 @@ on:
   workflow_run:
     workflows: ["wow-verify", "wow-engine-verify"]
     types: [completed]
+  schedule:
+    - cron: "*/15 * * * *"
   workflow_dispatch:
     inputs:
       pr_number:
@@ -23,7 +25,7 @@ concurrency:
 jobs:
   continue-repair:
     name: Resume Morning-Green repair after CI
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion != 'cancelled'
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion != 'cancelled'
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -40,14 +42,17 @@ jobs:
 
           if [ -n "${EXPLICIT_PR:-}" ]; then
             pr_number="$EXPLICIT_PR"
-          else
+          elif [ -n "${EVENT_HEAD_SHA:-}" ]; then
             pr_number=$(gh api --paginate "/repos/${GITHUB_REPOSITORY}/pulls?state=open&base=main&per_page=100" \
               --jq '[.[] | select(.head.sha == env.EVENT_HEAD_SHA and .head.repo.full_name == env.GITHUB_REPOSITORY)] | first | .number // empty')
+          else
+            pr_number=$(gh api --paginate "/repos/${GITHUB_REPOSITORY}/pulls?state=open&base=main&per_page=100" \
+              --jq '[.[] | select(.draft == false and .head.repo.full_name == env.GITHUB_REPOSITORY and ((.body // "") | contains("Morning-Green-Autonomous: true")))] | sort_by(.created_at) | first | .number // empty')
           fi
 
           if [ -z "${pr_number:-}" ]; then
             echo "eligible=false" >> "$GITHUB_OUTPUT"
-            echo "No open same-repository PR matches this completed CI head SHA." >> "$GITHUB_STEP_SUMMARY"
+            echo "No eligible open same-repository Morning-Green PR found." >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
 
@@ -120,36 +125,88 @@ jobs:
 
           ready=true
           failed=false
+          failed_names=""
+          failed_job_ids=""
           for name in "${required[@]}"; do
             latest=$(jq --arg name "$name" '[.[] | select(.name == $name)] | sort_by(.started_at // .created_at) | last // {}' <<<"$checks")
             status=$(jq -r '.status // "missing"' <<<"$latest")
             conclusion=$(jq -r '.conclusion // "missing"' <<<"$latest")
+            details_url=$(jq -r '.details_url // ""' <<<"$latest")
             echo "${name}: status=${status} conclusion=${conclusion}" >> "$GITHUB_STEP_SUMMARY"
 
             if [ "$status" != "completed" ]; then
               ready=false
             elif [ "$conclusion" != "success" ]; then
               failed=true
+              ready=false
+              failed_names="${failed_names}${failed_names:+|}${name}"
+              job_id=$(sed -n 's#.*\/job\/\([0-9][0-9]*\).*#\1#p' <<<"$details_url")
+              if [ -n "$job_id" ]; then
+                failed_job_ids="${failed_job_ids}${failed_job_ids:+,}${job_id}"
+              fi
             fi
           done
+
+          echo "failed_names=$failed_names" >> "$GITHUB_OUTPUT"
+          echo "failed_job_ids=$failed_job_ids" >> "$GITHUB_OUTPUT"
 
           if [ "$failed" = "true" ]; then
             echo "ready=false" >> "$GITHUB_OUTPUT"
             echo "failed=true" >> "$GITHUB_OUTPUT"
-            echo "At least one protected check failed. Morning-Green must return this repair to engineering; no merge attempted." >> "$GITHUB_STEP_SUMMARY"
+            echo "At least one protected check failed. Morning-Green will retry once, then surface deterministic engineering rework; no merge attempted." >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
 
           if [ "$ready" != "true" ]; then
             echo "ready=false" >> "$GITHUB_OUTPUT"
             echo "failed=false" >> "$GITHUB_OUTPUT"
-            echo "Not all protected checks are complete yet. A later workflow_run completion will resume this repair." >> "$GITHUB_STEP_SUMMARY"
+            echo "Not all protected checks are complete yet. A later workflow_run completion or scheduled rescan will resume this repair." >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
 
           echo "ready=true" >> "$GITHUB_OUTPUT"
           echo "failed=false" >> "$GITHUB_OUTPUT"
           echo "All three protected checks are successful on exact head SHA ${HEAD_SHA}." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Retry failed protected CI once
+        id: retry
+        if: steps.resolve.outputs.eligible == 'true' && steps.gates.outputs.failed == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
+          HEAD_SHA: ${{ steps.resolve.outputs.head_sha }}
+          FAILED_NAMES: ${{ steps.gates.outputs.failed_names }}
+          FAILED_JOB_IDS: ${{ steps.gates.outputs.failed_job_ids }}
+        run: |
+          set -euo pipefail
+          retry_marker="Morning-Green-CI-Retry: ${HEAD_SHA}"
+          rework_marker="Morning-Green-Rework-Required: ${HEAD_SHA}"
+          comments=$(gh api --paginate "/repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments?per_page=100" --jq '.[].body // ""')
+
+          if ! grep -Fq "$retry_marker" <<<"$comments"; then
+            retried=0
+            IFS=',' read -ra ids <<<"${FAILED_JOB_IDS:-}"
+            for job_id in "${ids[@]}"; do
+              [ -n "$job_id" ] || continue
+              gh api --method POST "/repos/${GITHUB_REPOSITORY}/actions/jobs/${job_id}/rerun"
+              retried=$((retried + 1))
+            done
+            gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body "${retry_marker}
+
+Protected CI failed on exact head ${HEAD_SHA}: ${FAILED_NAMES:-unknown}. Morning-Green automatically requested one bounded retry (${retried} job(s)). If the same exact-head failure persists, the repair remains open and is explicitly returned to engineering rework rather than reported as running or complete. can_execute=false."
+            echo "retry_dispatched=true" >> "$GITHUB_OUTPUT"
+            echo "Automatically retried ${retried} failed protected job(s) once for ${HEAD_SHA}." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          echo "retry_dispatched=false" >> "$GITHUB_OUTPUT"
+          if ! grep -Fq "$rework_marker" <<<"$comments"; then
+            gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body "${rework_marker}
+
+The bounded automatic CI retry for exact head ${HEAD_SHA} did not clear: ${FAILED_NAMES:-unknown}. Current state is CI_FAILED_REWORK_REQUIRED, not running and not complete. The next engineering continuation must inspect the exact failed job/log and make the smallest safe repair before rerunning protected CI. can_execute=false."
+          fi
+          echo "Repeated protected failure is now explicitly queued as engineering rework." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Merge protected Morning-Green repair
         id: merge
@@ -202,6 +259,7 @@ jobs:
           ACCEPTANCE: ${{ steps.resolve.outputs.acceptance }}
           READY: ${{ steps.gates.outputs.ready }}
           FAILED: ${{ steps.gates.outputs.failed }}
+          RETRY_DISPATCHED: ${{ steps.retry.outputs.retry_dispatched }}
         run: |
           {
             echo "### Morning-Green continuation"
@@ -212,5 +270,6 @@ jobs:
             echo "- Acceptance workflow: ${ACCEPTANCE:-none}"
             echo "- Required checks ready: ${READY:-false}"
             echo "- Required check failure detected: ${FAILED:-false}"
+            echo "- Automatic CI retry dispatched: ${RETRY_DISPATCHED:-false}"
             echo "- can_execute: false"
           } >> "$GITHUB_STEP_SUMMARY"
