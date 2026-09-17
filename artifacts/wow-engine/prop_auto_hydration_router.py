@@ -15,6 +15,11 @@ from prop_auto_hydration import (
     auto_hydrate_prop_evidence as _hydrate_mlb,
     AUTO_HYDRATION_PROVIDER as MLB_PROVIDER,
 )
+from v17.mlb_pitcher_fantasy_score_hydration import (
+    PROVIDER_ID as MLB_PITCHER_FANTASY_SCORE_PROVIDER,
+    STAT_TYPE as MLB_PITCHER_FANTASY_SCORE_STAT,
+    hydrate_mlb_pitcher_fantasy_score_evidence,
+)
 import wnba_prop_auto_hydration as _wnba
 from wnba_injury_status import WNBAInjuryStatusError, availability_from_report as _strict_availability
 
@@ -34,8 +39,14 @@ def _strict_availability_adapter(*args, **kwargs):
 _wnba._availability_from_report = _strict_availability_adapter
 
 
-def provider_for_sport(sport: str) -> str:
-    return WNBA_PROVIDER if str(sport or "").strip().upper() == "WNBA" else MLB_PROVIDER
+def provider_for_sport(sport: str, stat_type: Optional[str] = None) -> str:
+    normalized_sport = str(sport or "").strip().upper()
+    normalized_stat = str(stat_type or "").strip().upper()
+    if normalized_sport == "WNBA":
+        return WNBA_PROVIDER
+    if normalized_sport == "MLB" and normalized_stat == MLB_PITCHER_FANTASY_SCORE_STAT:
+        return MLB_PITCHER_FANTASY_SCORE_PROVIDER
+    return MLB_PROVIDER
 
 
 def auto_hydrate_prop_evidence(
@@ -51,6 +62,7 @@ def auto_hydrate_prop_evidence(
     opponent: Optional[str] = None,
 ) -> dict[str, Any]:
     normalized_sport = str(sport or "").strip().upper()
+    normalized_stat = str(stat_type or "").strip().upper()
     if normalized_sport == "WNBA":
         try:
             result = _wnba.hydrate_wnba_prop_evidence(
@@ -68,6 +80,16 @@ def auto_hydrate_prop_evidence(
         result = dict(result)
         result.pop("hydration_provider", None)
         return result
+
+    if normalized_sport == "MLB" and normalized_stat == MLB_PITCHER_FANTASY_SCORE_STAT:
+        return hydrate_mlb_pitcher_fantasy_score_evidence(
+            player=player,
+            event_start_time=event_start_time,
+            http_get=http_get,
+            now=now,
+            source_capture_timestamp=source_capture_timestamp,
+            source_label=source_label,
+        )
 
     return _hydrate_mlb(
         sport=normalized_sport,
