@@ -67,6 +67,30 @@ R0_R1_OPEN_AT_START / FIXED_VERIFIED_THIS_RUN / HARD_BLOCKED / UNFINISHED
 
 The overnight target is `UNFINISHED=0` and `morning_repair_rate=1.00` for safely repairable work. Any safely repairable incident left in an intermediate state must be treated as unfinished work, not as a report-only outcome.
 
+## Machine-readable Morning-Green PR scope
+
+Every PR requesting unattended Morning-Green merge MUST include exactly one fenced scope block:
+
+```morning-green-scope
+risk_class: R1
+allowed_files:
+  - exact/repository/path.py
+protected_files: []
+```
+
+Rules:
+
+- `risk_class` must exactly match the `Morning-Green-Risk:` marker.
+- `allowed_files` contains exact repository-relative paths only; globs are prohibited.
+- every file in the current PR diff must be declared in `allowed_files`.
+- a path declared in `protected_files`, or matching the repository's central Morning-Green protected-path manifest, is never eligible for unattended merge.
+- the workflow must compare the live PR head SHA with the exact SHA whose required checks were verified.
+- workflow changes fail closed when their diff cannot be inspected.
+- workflow changes that add write/merge privilege tokens are not eligible for unattended merge.
+- scope verification is an additional gate; it never replaces protected CI, independent review, QA, branch protection, or V17 governance.
+
+The machine-readable scope is derived from the patch governor's bounded build packet. It does not create new probability/model authority.
+
 ## Mission
 
 Every night:
