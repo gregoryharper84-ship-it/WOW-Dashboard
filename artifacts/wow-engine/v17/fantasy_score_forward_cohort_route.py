@@ -1,12 +1,11 @@
 """Authenticated V17 route for Fantasy Score forward-evidence capture.
 
-The forward collector remains manual/on-demand until real frozen Fantasy Score
-candidate artifacts and hydrated snapshots exist.  This installer also places a
-narrow evidence-only scorer in front of the already-composed production prop
-boundary.  Non-Fantasy requests delegate byte-for-byte to the scorer that was
-present before this installer ran.  If a Fantasy route later gains an exact
-certified production artifact, that production scorer also takes precedence over
-the research bridge.
+The forward collector remains available for batch/backfill capture. This installer
+also places a narrow evidence-only scorer in front of the already-composed
+production prop boundary. Non-Fantasy requests delegate byte-for-byte to the
+scorer that was present before this installer ran. If a Fantasy route later gains
+an exact certified production artifact, that production scorer takes precedence
+over the research bridge.
 """
 from __future__ import annotations
 
@@ -14,7 +13,7 @@ from typing import Any, Optional
 
 from fastapi import FastAPI, Header
 
-from v17.fantasy_score_candidate_bridge import (
+from v17.fantasy_score_candidate_persistence_bridge import (
     is_fantasy_score_request,
     score_fantasy_candidate_research,
 )
@@ -42,7 +41,7 @@ def install_fantasy_score_candidate_runtime_bridge(
     keeps this research bridge incapable of shadowing future production promotion.
 
     Isolated scheduler/unit contexts may intentionally provide only the small
-    market-api surface needed by the generic forward-cohort scheduler.  In those
+    market-api surface needed by the generic forward-cohort scheduler. In those
     contexts there is no scorer to wrap, so return False without mutating the app.
     Production uses the full market API and therefore installs normally.
     """
@@ -109,8 +108,8 @@ def install_fantasy_score_forward_cohort_route(
     install_fantasy_score_forward_schema_repair()
 
     # api_ncaaf_acceptance installs the final calibration/publication wrapper
-    # before daily/forward-cohort routes.  Install the Fantasy candidate branch
-    # here so it composes outside that wrapper instead of bypassing it.  A minimal
+    # before daily/forward-cohort routes. Install the Fantasy candidate branch
+    # here so it composes outside that wrapper instead of bypassing it. A minimal
     # test/scheduler market API can legitimately omit score_prop; in that case the
     # bridge is simply not installable in that isolated context.
     install_fantasy_score_candidate_runtime_bridge(

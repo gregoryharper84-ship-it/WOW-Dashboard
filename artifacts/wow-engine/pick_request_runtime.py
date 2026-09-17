@@ -13,10 +13,11 @@ This facade adds receipt/error-boundary and Top-10 completion semantics:
   package or an explicit typed blocker.
 
 The facade also installs the reviewed sport-aware hydration router. This does
-not grant model authority: specialist routing and exact certified-artifact
-preflight still run before acquisition, so a WNBA candidate can hydrate only
-after the governed route becomes artifact-ready and can never borrow MLB or
-market-implied probability.
+not grant model authority: specialist routing and exact production-artifact
+preflight still own publishable scoring. A narrowly declared Fantasy Score
+research candidate may clear only the evidence-acquisition preflight so the
+system can collect immutable forward evidence needed for later calibration;
+that compatibility path remains nonpublishable and non-rankable.
 
 ``specialist_scoring_attempted`` is this layer's unambiguous name for "the
 controlling specialist scorer was invoked". It is deliberately distinct from the
@@ -40,6 +41,10 @@ from github_actions_oidc import scout_route_auth_dependency
 import pick_request_runtime_core as _core
 from pick_request_runtime_core import *  # noqa: F401,F403
 from prop_auto_hydration_router import auto_hydrate_prop_evidence as _sport_aware_auto_hydrate_prop_evidence
+from v17.fantasy_score_pick_request_bridge import (
+    research_candidate_outcome as _fantasy_research_candidate_outcome,
+    research_candidate_preflight as _fantasy_research_candidate_preflight,
+)
 from v17.prediction_receipt_lookup_runtime import install_prediction_receipt_lookup_route
 from v17.top10_model_reconciliation import enforce_top10_completion
 from v17.mlb_1ip_line_expansion_maintenance import install_mlb_1ip_line_expansion_maintenance_route
@@ -133,6 +138,9 @@ def _terminal(
 
 
 def _completed_scored_outcome(**kwargs: Any) -> dict[str, Any]:
+    research_hold = _fantasy_research_candidate_outcome(**kwargs)
+    if research_hold is not None:
+        return research_hold
     out = _ORIGINAL_COMPLETED_SCORED_OUTCOME(**kwargs)
     out["specialist_scoring_attempted"] = True
     out["scoring_attempted"] = True
@@ -176,6 +184,26 @@ class _ScoringReceiptMarketApi:
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._wrapped, name)
+
+    def _prop_route_artifact(self, sport: str, stat_type: str) -> dict[str, Any]:
+        """Keep production readiness authoritative while permitting evidence-only candidates.
+
+        The producing core currently has a binary certified/not-ready preflight.
+        For the exact declared Fantasy Score research route, an explicitly active
+        non-promoted candidate may pass only that acquisition gate. The original
+        market API remains untouched, so the subsequent /score-prop bridge still
+        sees the true CANDIDATE lifecycle and cannot mistake it for certification.
+        """
+        route = self._wrapped._prop_route_artifact(sport, stat_type)
+        if isinstance(route, dict) and route.get("ok") is True and route.get("code") == "PROP_CERTIFIED_MODEL_ARTIFACT_READY":
+            return route
+        research = _fantasy_research_candidate_preflight(
+            self._wrapped,
+            sport,
+            stat_type,
+            route,
+        )
+        return research if research is not None else route
 
     def score_prop(self, *args: Any, **kwargs: Any) -> Any:
         try:
