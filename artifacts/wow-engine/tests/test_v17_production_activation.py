@@ -79,8 +79,9 @@ print(json.dumps({
         env=env,
         text=True,
         capture_output=True,
-        check=True,
+        check=False,
     )
+    assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout.strip().splitlines()[-1])
     assert payload["score_prop"] == "scoreWowProp"
     assert payload["score_pick"] == "scoreWowPickRequest"
