@@ -220,5 +220,6 @@ jobs:
           ]
           missing = [item for item in required if item not in text]
           assert not missing, missing
-          assert '/internal/v17/team-state-challenger-maintenance/{scope}' not in text
+          old_sync_path = '/internal/v17/team-state-challenger-' + 'maintenance/{scope}'
+          assert old_sync_path not in text
           PY
