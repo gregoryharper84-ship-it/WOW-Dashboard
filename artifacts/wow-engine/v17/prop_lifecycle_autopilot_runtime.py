@@ -14,6 +14,7 @@ from typing import Any, Callable, Mapping
 
 from fastapi import FastAPI
 
+from github_actions_oidc import scout_route_auth_dependency
 from v17.prop_lifecycle_autopilot import (
     PropLifecycleAutopilotRequest,
     _int_env,
@@ -188,10 +189,15 @@ def install_prop_lifecycle_autopilot(
     db_client_fn: Callable[[], Any],
     market_api: Any,
 ) -> None:
+    # Preserve the existing WOW_ACTION_API_KEY seam for Custom GPT/manual calls
+    # while permitting only the explicitly allowlisted protected-main GitHub
+    # workflow to use short-lived OIDC for scheduled wakeups.
+    automation_auth = scout_route_auth_dependency(auth_dependency)
+
     if not any(getattr(route, "path", None) == "/v17/prop-lifecycle-autopilot-run" for route in app.router.routes):
         @app.post(
             "/v17/prop-lifecycle-autopilot-run",
-            dependencies=[auth_dependency],
+            dependencies=[automation_auth],
             operation_id="runWowV17PropLifecycleAutopilot",
         )
         def prop_lifecycle_autopilot_run(req: PropLifecycleAutopilotRequest):
@@ -200,7 +206,7 @@ def install_prop_lifecycle_autopilot(
     if not any(getattr(route, "path", None) == "/v17/prop-lifecycle-health" for route in app.router.routes):
         @app.get(
             "/v17/prop-lifecycle-health",
-            dependencies=[auth_dependency],
+            dependencies=[automation_auth],
             operation_id="readWowV17PropLifecycleHealth",
         )
         def prop_lifecycle_health():
