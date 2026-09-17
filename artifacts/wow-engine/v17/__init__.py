@@ -101,6 +101,17 @@ def _defer_mlb_event_bridge_install(*, market_api, team_runtime) -> bool:
                 preservation=preservation,
             )
 
+        publication_chain_repair_installed = False
+        if installed and preservation is not None:
+            from v17.sep17_team_event_publication_chain_repair import (
+                install_team_event_publication_chain_repair,
+            )
+
+            publication_chain_repair_installed = install_team_event_publication_chain_repair(
+                preservation=preservation,
+                team_runtime=team_runtime,
+            )
+
         if installed and not post_repair_installed:
             _MLB_BRIDGE_ACCEPTANCE_LOGGER.error(
                 "V17_SEP15_MLB_POST_BRIDGE_REPAIR=FAIL can_execute=false"
@@ -108,6 +119,10 @@ def _defer_mlb_event_bridge_install(*, market_api, team_runtime) -> bool:
         if installed and preservation is not None and not handoff_rank_fix_installed:
             _MLB_BRIDGE_ACCEPTANCE_LOGGER.error(
                 "V17_SEP16_EVIDENCE_HANDOFF_RANK_FIX=FAIL can_execute=false"
+            )
+        if installed and preservation is not None and not publication_chain_repair_installed:
+            _MLB_BRIDGE_ACCEPTANCE_LOGGER.error(
+                "V17_SEP17_PUBLICATION_CHAIN_REPAIR=FAIL can_execute=false"
             )
 
         # A dedicated production flag runs one authenticated, non-secret smoke
