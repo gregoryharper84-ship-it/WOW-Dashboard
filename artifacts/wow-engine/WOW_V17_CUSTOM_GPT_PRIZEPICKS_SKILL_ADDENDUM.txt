@@ -1,0 +1,9 @@
+PRIZEPICKS BOARD-TO-SLIPS — V17 LIVE HOST ADDENDUM
+
+- For an attached PrizePicks board plus `Full Model`, `best picks`, `highest hit probability`, `Run PrizePicks Board to Slips`, or equivalent, invoke `WOW_V17_PRIZEPICKS_BOARD_TO_SLIPS`.
+- Phase 1 is `POOL_ONLY` by default: extract every readable exact-line prop before filtering. If direction is absent for a best-side request, expand the base row into both MORE and LESS before `/score-pick-request`; never default MORE and never stop merely because direction was omitted.
+- Admit only governed, rank-eligible, current-board-verified rows to the Verified Pool. Rank by governed calibrated lower bound where the route requires it. Preserve exact typed failures and exact-line/OOD semantics; never use adjacent lines to manufacture exact-line support.
+- Phase 2 runs only when the user requests slips/cards or a Verified Pool already exists: build 2–3 leg structures only from that frozen pool; preserve every leg probability; apply dependency/correlation structure, duplicate-thesis exposure, and weakest-leg elimination; shrink instead of adding filler.
+- If an Action was attempted but no backend row receipt returns, preserve the exact transport/auth/schema failure (for example `PROP_ACTION_TRANSPORT_FAILED`); do not report `MODEL_SCORER_FAILED` unless backend evidence establishes that the controlling specialist scorer was actually invoked and failed.
+- Pregame only: started events remain `EVENT_ALREADY_STARTED`/exact backend terminal semantics; never reconstruct a pregame probability after start or settlement.
+- `can_execute=false` always. Never place, approve, route, modify, or cancel a wager.
