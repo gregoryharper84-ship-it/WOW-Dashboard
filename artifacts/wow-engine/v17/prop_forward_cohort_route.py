@@ -9,11 +9,17 @@ from typing import Any
 from fastapi import FastAPI
 
 import v17.prop_forward_cohort_thesis_dedupe  # installs statistical-independence guard
+import v17.fantasy_score_forward_cohort_thesis_dedupe as fantasy_thesis_dedupe
 from v17.fantasy_score_forward_cohort_route import install_fantasy_score_forward_cohort_route
 from v17.phase_a_row_publication import install_phase_a_row_publication
 from v17.prop_forward_cohort_market_adapter import ForwardCohortMarketAdapter
 from v17.prop_forward_cohort_runtime import PropForwardCohortRequest, run_prop_forward_cohort
 from v17.prop_forward_cohort_scheduler import run_prop_forward_cohort_loop
+from v17.prop_universal_forward_evidence import (
+    UniversalPropForwardEvidenceRequest,
+    run_universal_prop_forward_evidence,
+)
+import v17.prop_universal_forward_schema_repair  # align with live Supabase snapshot schema
 
 
 _LOGGER = logging.getLogger("wow.v17.prop_forward_cohort")
@@ -82,24 +88,48 @@ def install_prop_forward_cohort_route(
     )
 
     # Fantasy Score capture has a separate strict candidate package contract.
-    # It is manual/on-demand until runtime candidate scorers are registered.
+    # Its installer first applies the live Supabase snapshot-schema repair.
     install_fantasy_score_forward_cohort_route(
         app,
         auth_dependency=auth_dependency,
         db_client_fn=db_client_fn,
         market_api=market_api,
     )
+    # Re-apply the independent-thesis selector after that schema repair so the
+    # live selector is both schema-correct and calibration-independent.
+    fantasy_thesis_dedupe.install()
 
     cohort_market_api = ForwardCohortMarketAdapter(market_api)
     _install_scheduler(app, db_client_fn=db_client_fn, market_api=cohort_market_api)
 
-    if any(getattr(route, "path", None) == "/v17/prop-forward-cohort-run" for route in app.router.routes):
-        return
+    if not any(
+        getattr(route, "path", None) == "/v17/prop-forward-cohort-run"
+        for route in app.router.routes
+    ):
+        @app.post(
+            "/v17/prop-forward-cohort-run",
+            dependencies=[auth_dependency],
+            operation_id="runWowV17PropForwardCohort",
+        )
+        def prop_forward_cohort_run(req: PropForwardCohortRequest):
+            return run_prop_forward_cohort(req, db=db_client_fn(), market_api=cohort_market_api)
 
-    @app.post(
-        "/v17/prop-forward-cohort-run",
-        dependencies=[auth_dependency],
-        operation_id="runWowV17PropForwardCohort",
-    )
-    def prop_forward_cohort_run(req: PropForwardCohortRequest):
-        return run_prop_forward_cohort(req, db=db_client_fn(), market_api=cohort_market_api)
+    # Universal evidence capture is deliberately an authenticated control-plane
+    # operation. It inventories every declared route, dispatches only to an exact
+    # registered collector, and leaves separate/unsupported routes explicitly
+    # blocked rather than borrowing a neighboring sport/stat model.
+    if not any(
+        getattr(route, "path", None) == "/v17/prop-forward-evidence-run"
+        for route in app.router.routes
+    ):
+        @app.post(
+            "/v17/prop-forward-evidence-run",
+            dependencies=[auth_dependency],
+            operation_id="runWowV17UniversalPropForwardEvidence",
+        )
+        def prop_forward_evidence_run(req: UniversalPropForwardEvidenceRequest):
+            return run_universal_prop_forward_evidence(
+                req,
+                db=db_client_fn(),
+                market_api=cohort_market_api,
+            )
