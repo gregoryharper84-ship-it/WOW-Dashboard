@@ -1,0 +1,24 @@
+# Paths/patterns that may never be changed by a Morning-Green autonomous merge.
+# A PR may still change them through normal review; this guard only denies unattended merge.
+
+# Autonomous merge/deploy/security control surface
+.github/workflows/wow-v17-morning-green-continuation.yml
+.github/workflows/wow-v17-render-production-deploy.yml
+.github/workflows/wow-v17-secret-sync.yml
+.github/scripts/morning_green_scope_guard.py
+.github/scripts/tests/test_morning_green_scope_guard.py
+.github/morning-green-protected-paths.txt
+render.yaml
+
+# Probability/governance-sensitive implementation families
+artifacts/wow-engine/**/*terminal*
+artifacts/wow-engine/**/*calibration*
+artifacts/wow-engine/**/*model*
+artifacts/wow-engine/**/models/**
+artifacts/wow-engine/**/*.sql
+artifacts/wow-engine/**/migrations/**
+
+# Authentication/credential-sensitive implementation families
+**/*auth*
+**/*secret*
+**/*credential*
