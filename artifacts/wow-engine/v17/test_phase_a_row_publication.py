@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi import Depends, FastAPI, HTTPException
+from pydantic import BaseModel
 
 import v17.phase_a_row_publication as bridge
 
@@ -53,8 +54,8 @@ def test_phase_a_bridge_remains_fail_closed_for_other_states(override):
 
 
 class FakeMarketApi:
-    class ScorePropRequest:
-        pass
+    class ScorePropRequest(BaseModel):
+        event_id: str
 
     def __init__(self):
         self.fallback_calls = []
@@ -64,7 +65,7 @@ class FakeMarketApi:
         return {"source": "fallback", "probability_publishable": False, "can_execute": False}
 
 
-def test_install_routes_phase_a_to_original_and_other_states_to_fallback(monkeypatch):
+def _install(monkeypatch):
     original_calls = []
 
     def original(req, identity=None):
@@ -93,6 +94,11 @@ def test_install_routes_phase_a_to_original_and_other_states_to_fallback(monkeyp
         auth_dependency=Depends(lambda: True),
         market_api=market,
     ) is True
+    return app, market, state, original_calls
+
+
+def test_install_routes_phase_a_to_original_and_other_states_to_fallback(monkeypatch):
+    _app, market, state, original_calls = _install(monkeypatch)
 
     req = object()
     result = market.score_prop(req, "WOW_BETTING_ENGINE")
@@ -106,6 +112,16 @@ def test_install_routes_phase_a_to_original_and_other_states_to_fallback(monkeyp
     fallback = market.score_prop(req, "WOW_BETTING_ENGINE")
     assert fallback["source"] == "fallback"
     assert len(market.fallback_calls) == 1
+
+
+def test_phase_a_installed_route_generates_openapi_with_concrete_request_schema(monkeypatch):
+    app, _market, _state, _original_calls = _install(monkeypatch)
+    schema = app.openapi()
+
+    operation = schema["paths"]["/score-prop"]["post"]
+    assert operation["operationId"] == "scoreWowProp"
+    request_schema = operation["requestBody"]["content"]["application/json"]["schema"]
+    assert request_schema["$ref"].endswith("/ScorePropRequest")
 
 
 def test_install_fails_closed_when_original_scorer_is_not_available(monkeypatch):
