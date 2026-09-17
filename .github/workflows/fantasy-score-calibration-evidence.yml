@@ -13,9 +13,15 @@ on:
       - "artifacts/wow-engine/v17/fantasy_score_forward_cohort_runtime.py"
       - "artifacts/wow-engine/v17/fantasy_score_forward_cohort_route.py"
       - "artifacts/wow-engine/v17/fantasy_score_forward_cohort_schema_repair.py"
+      - "artifacts/wow-engine/v17/fantasy_score_forward_cohort_thesis_dedupe.py"
+      - "artifacts/wow-engine/v17/prop_universal_forward_evidence.py"
+      - "artifacts/wow-engine/v17/prop_universal_forward_schema_repair.py"
       - "artifacts/wow-engine/v17/test_fantasy_score_candidate_bridge.py"
       - "artifacts/wow-engine/v17/test_fantasy_score_bridge_install_capability.py"
       - "artifacts/wow-engine/v17/test_fantasy_score_forward_cohort_runtime.py"
+      - "artifacts/wow-engine/v17/test_fantasy_score_forward_cohort_thesis_dedupe.py"
+      - "artifacts/wow-engine/v17/test_prop_universal_forward_evidence.py"
+      - "artifacts/wow-engine/v17/test_prop_forward_artifact_cohorts.py"
       - "artifacts/wow-engine/v17/prop_forward_cohort_route.py"
       - "artifacts/wow-engine/migrations/20260916_fantasy_score_forward_evidence.sql"
       - "artifacts/wow-engine/migrations/20260916_fantasy_score_candidate_research_activation.sql"
@@ -32,9 +38,15 @@ on:
       - "artifacts/wow-engine/v17/fantasy_score_forward_cohort_runtime.py"
       - "artifacts/wow-engine/v17/fantasy_score_forward_cohort_route.py"
       - "artifacts/wow-engine/v17/fantasy_score_forward_cohort_schema_repair.py"
+      - "artifacts/wow-engine/v17/fantasy_score_forward_cohort_thesis_dedupe.py"
+      - "artifacts/wow-engine/v17/prop_universal_forward_evidence.py"
+      - "artifacts/wow-engine/v17/prop_universal_forward_schema_repair.py"
       - "artifacts/wow-engine/v17/test_fantasy_score_candidate_bridge.py"
       - "artifacts/wow-engine/v17/test_fantasy_score_bridge_install_capability.py"
       - "artifacts/wow-engine/v17/test_fantasy_score_forward_cohort_runtime.py"
+      - "artifacts/wow-engine/v17/test_fantasy_score_forward_cohort_thesis_dedupe.py"
+      - "artifacts/wow-engine/v17/test_prop_universal_forward_evidence.py"
+      - "artifacts/wow-engine/v17/test_prop_forward_artifact_cohorts.py"
       - "artifacts/wow-engine/v17/prop_forward_cohort_route.py"
       - "artifacts/wow-engine/migrations/20260916_fantasy_score_forward_evidence.sql"
       - "artifacts/wow-engine/migrations/20260916_fantasy_score_candidate_research_activation.sql"
@@ -78,3 +90,6 @@ jobs:
           v17/test_fantasy_score_candidate_bridge.py
           v17/test_fantasy_score_bridge_install_capability.py
           v17/test_fantasy_score_forward_cohort_runtime.py
+          v17/test_fantasy_score_forward_cohort_thesis_dedupe.py
+          v17/test_prop_universal_forward_evidence.py
+          v17/test_prop_forward_artifact_cohorts.py

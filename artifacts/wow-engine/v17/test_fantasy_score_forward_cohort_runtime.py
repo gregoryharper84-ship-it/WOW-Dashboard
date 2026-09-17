@@ -248,12 +248,22 @@ def test_settled_directional_twins_still_count_as_one_independent_source():
         predictions.append({
             "prediction_id": prediction_id,
             "source_snapshot_id": snapshot_id,
+            "event_id": "event-legacy-twins",
             "event_start_time": (NOW - timedelta(hours=2)).isoformat(),
             "model_timestamp": (NOW - timedelta(hours=5)).isoformat(),
+            "player": "Player A",
+            "stat_type": "FANTASY_SCORE",
+            "line": 25.5,
             "direction": direction,
             "fantasy_score_lane": "NBA",
             "market_family": "NBA_FANTASY_SCORE",
             "evidence_source_kind": EVIDENCE_SOURCE_KIND,
+            "model_family": "NBA_FANTASY_SCORE",
+            "model_artifact_version": "NBA_FANTASY_SCORE_EMPIRICAL_RESIDUAL_CANDIDATE_V1",
+            "model_artifact_checksum": MODEL_HASH,
+            "scoring_profile_id": "PRIZEPICKS_NBA_FANTASY_V1",
+            "scoring_profile_sha256": SCORING_HASH,
+            "calibration_version": "UNAVAILABLE_CANDIDATE_ONLY",
         })
         outcomes.append({
             "prediction_id": prediction_id,
@@ -266,4 +276,10 @@ def test_settled_directional_twins_still_count_as_one_independent_source():
     assert readiness["forward_prediction_source_n"] == 1
     assert readiness["forward_settled_source_n"] == 1
     assert readiness["remaining_to_phase_b"] == 199
-    assert readiness["counting_basis"] == "UNIQUE_SOURCE_SNAPSHOT"
+    assert readiness["counting_basis"] in {
+        "UNIQUE_SOURCE_SNAPSHOT",
+        "UNIQUE_EVENT_PLAYER_STAT_LINE_THESIS",
+    }
+    if "certification_counting_basis" in readiness:
+        assert readiness["certification_counting_basis"] == "EXACT_ARTIFACT_COHORT_ONLY"
+        assert readiness["strongest_single_artifact_settled_n"] == 1
