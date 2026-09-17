@@ -29,3 +29,20 @@ def test_worker_remains_non_executing_even_though_web_autopilot_is_enabled():
     env = {item["key"]: item for item in worker["envVars"]}
     assert env["WOW_CAN_EXECUTE"]["value"] == "false"
     assert env["WOW_DRY_RUN_ONLY"]["value"] == "true"
+
+
+def test_external_lifecycle_wakeup_is_scheduled_and_uses_short_lived_oidc_only():
+    repo_root = Path(__file__).resolve().parents[3]
+    path = repo_root / ".github" / "workflows" / "wow-v17-prop-lifecycle-autopilot.yml"
+    text = path.read_text(encoding="utf-8")
+
+    assert 'cron: "*/15 * * * *"' in text
+    assert "id-token: write" in text
+    assert "ACTIONS_ID_TOKEN_REQUEST_URL" in text
+    assert "ACTIONS_ID_TOKEN_REQUEST_TOKEN" in text
+    assert "audience=${WOW_OIDC_AUDIENCE}" in text
+    assert "/v17/prop-lifecycle-autopilot-run" in text
+    assert 'WOW_CAN_EXECUTE: "false"' in text
+    assert 'WOW_DRY_RUN_ONLY: "true"' in text
+    assert "secrets.WOW_ACTION_API_KEY" not in text
+    assert "pull_request:" not in text
