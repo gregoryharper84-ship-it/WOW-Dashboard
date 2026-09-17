@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 
 import api_prod_market as market_api
 import pick_request_runtime as runtime
+import pick_request_runtime_core as runtime_core
 from pick_request_runtime import install_pick_request_routes
 
 
@@ -220,6 +221,33 @@ def test_k_alias_freezes_snapshot_and_reaches_certified_pitcher_route(monkeypatc
     assert summary["rows_publication_allowed"] == 1
     assert summary["rows_rank_eligible"] == 1
     assert summary["can_execute"] is False
+
+
+def test_research_barrier_receives_the_frozen_full_evidence_snapshot(monkeypatch):
+    client, persisted, _routed, _scored = _build(monkeypatch)
+    seen = {}
+
+    def research_barrier(*, row_key, run_id, candidate):
+        seen["row_key"] = row_key
+        seen["run_id"] = run_id
+        seen["candidate"] = candidate
+        stages = [
+            {"worker_id": worker_id, "status": "SUCCEEDED", "blockers": []}
+            for worker_id in runtime_core.PROP_RESEARCH_AGENT_ROSTER
+        ]
+        return True, {"stages": stages}
+
+    monkeypatch.setattr(runtime_core, "_run_mandatory_scout_research", research_barrier)
+    response = client.post("/score-pick-request", json={"rows": [_row("research-evidence")]})
+    assert response.status_code == 200
+    evidence = seen["candidate"]["evidence"]
+    assert evidence == persisted[0]
+    assert len(evidence["game_log"]) == 10
+    assert len(evidence["box_score_log"]) == 10
+    assert evidence["role_status"]["status"] == "ACTIVE"
+    assert evidence["opportunity_ledger"]["status"] == "PASS"
+    assert evidence["hydration_status"] == "PASS"
+    assert evidence["can_execute"] is False
 
 
 def test_opponent_context_absent_leaves_persisted_snapshot_payload_unchanged(monkeypatch):
