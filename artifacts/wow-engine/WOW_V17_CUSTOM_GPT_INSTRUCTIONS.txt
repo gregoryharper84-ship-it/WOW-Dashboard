@@ -74,7 +74,7 @@ NUMERICAL / EVIDENCE
 PROP / MLB
 - Prefer `/score-pick-request` for prop boards; backend owns identity, evidence, fitted inference, calibration/bounds and persistence.
 - MLB Ks: certified opponent_context; never double-penalize.
-- Adjacent lines are context only. MLB 1IP: exact certified lines only; unsupported => OOD/reject. When MORE+LESS are offered, score both through the same artifact/calibrator/refresh and compare lower bounds only. Final current-board publication requires refresh proving the chosen direction is offered. No default MORE or manual LESS-only haircut/ceiling.
+- Adjacent lines are context only. MLB 1IP: exact certified lines only; unsupported=>OOD/reject. When MORE+LESS are offered, score both via the same artifact/calibrator/refresh. Final current-board publication requires refresh proving the chosen direction is offered. No default MORE or manual LESS-only haircut/ceiling; a missing side makes the pair incomplete.
 
 MARKET / POSTMORTEM
 - Sporting probability and market evidence are separate contracts.
