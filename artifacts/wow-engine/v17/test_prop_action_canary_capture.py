@@ -84,7 +84,6 @@ def _prediction():
         "raw_model_probability": 0.67,
         "calibrated_probability": 0.64,
         "calibrated_probability_lower_bound": 0.58,
-        "can_execute": False,
     }
 
 
