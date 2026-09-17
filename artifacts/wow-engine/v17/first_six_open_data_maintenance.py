@@ -16,6 +16,7 @@ from v17.team_state_scoped_maintenance import run_team_state_scope
 
 CAN_EXECUTE = False
 
+_TEAM_STATE_SOURCE_HEAVY_SPORTS = {"MLB", "NCAAB", "SOCCER"}
 _TEAM_STATE_PERSIST_CONTRACTS = {
     "wow_d1_training_rows": {
         "on_conflict": "sport,official_event_id,feature_schema_version,source_manifest_sha256",
@@ -105,8 +106,23 @@ def _persist_team_state_batch(db: Any, payload: dict[str, Any]) -> dict[str, Any
     for row in rows:
         if row.get("can_execute") is not False:
             raise HTTPException(status_code=400, detail={"code":"TEAM_STATE_PERSIST_CAN_EXECUTE_MUST_BE_FALSE","can_execute":False})
+
+        sport = str(row.get("sport") or "").strip().upper()
+        model_family = str(row.get("model_family") or "").strip().upper()
+        feature_schema = str(row.get("feature_schema_version") or "").strip().upper()
+        if sport not in _TEAM_STATE_SOURCE_HEAVY_SPORTS:
+            raise HTTPException(status_code=400, detail={"code":"TEAM_STATE_PERSIST_SPORT_NOT_ALLOWED","can_execute":False})
+        if "DYNAMIC_TEAM_STATE" not in model_family or "DYNAMIC_TEAM_STATE" not in feature_schema:
+            raise HTTPException(status_code=400, detail={"code":"TEAM_STATE_PERSIST_MODEL_FAMILY_INVALID","can_execute":False})
+
         if table == "wow_d1_training_rows":
-            if row.get("market_features_used") is not False or row.get("historical_reconstruction") is not True:
+            source_manifest = row.get("source_manifest")
+            if (
+                row.get("market_features_used") is not False
+                or row.get("historical_reconstruction") is not True
+                or not isinstance(source_manifest, dict)
+                or source_manifest.get("program") != "LLP_DYNAMIC_TEAM_STATE_CHALLENGER_V1"
+            ):
                 raise HTTPException(status_code=400, detail={"code":"TEAM_STATE_TRAINING_ROW_GOVERNANCE_INVALID","can_execute":False})
         else:
             required_false = (
@@ -116,7 +132,12 @@ def _persist_team_state_batch(db: Any, payload: dict[str, Any]) -> dict[str, Any
                 "automatic_promotion",
                 "probability_publishable",
             )
-            if row.get("lifecycle_state") != "CANDIDATE" or any(row.get(field) is not False for field in required_false):
+            if (
+                row.get("lifecycle_state") != "CANDIDATE"
+                or row.get("market_family") != "OUTRIGHT_WINNER"
+                or row.get("source_policy_id") != "TEAM_STATE_DYNAMIC_PRIOR_ONLY_V1"
+                or any(row.get(field) is not False for field in required_false)
+            ):
                 raise HTTPException(status_code=400, detail={"code":"TEAM_STATE_ARTIFACT_GOVERNANCE_INVALID","can_execute":False})
 
     db.table(table).upsert(
