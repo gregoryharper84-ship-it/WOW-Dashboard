@@ -7,6 +7,7 @@ on:
     paths:
       - ".github/workflows/wow-v17-rundown-board-primary-validation.yml"
       - "artifacts/wow-engine/v17/rundown_board_primary.py"
+      - "artifacts/wow-engine/v17/rundown_board_primary_v2.py"
       - "artifacts/wow-engine/v17/nightly_multiscout_rundown_primary.py"
       - "artifacts/wow-engine/tests/test_v17_rundown_board_primary.py"
   workflow_dispatch:
@@ -84,7 +85,10 @@ jobs:
               markets = sorted({m.get('key') for e in result.data for b in e.get('bookmakers',[]) for m in b.get('markets',[]) if m.get('key')})
               books = sorted({b.get('key') for e in result.data for b in e.get('bookmakers',[]) if b.get('key')})
               props = [m for m in markets if any(t in m for t in ('player_','pitcher_','batter_','passing_','rushing_','receiving_','points','rebounds','assists','strikeouts','outs','shots','saves','goalscorer','aces','double_faults')) and m not in {'h2h','spreads','totals'}]
-              summary.update({'markets': len(markets), 'books': len(books), 'prop_market_count': len(props), 'sample_prop_markets': props[:20]})
+              summary.update({'markets': len(markets), 'books': len(books), 'prop_market_count': len(props), 'sample_prop_markets': props[:20], 'audit': result.data[0].get('_wow_rundown_board_audit') if result.data else None})
+          elif isinstance(result.data, dict):
+              summary['audit'] = result.data.get('audit')
+              summary['partial_event_count'] = len(result.data.get('events') or [])
           print(json.dumps(summary, sort_keys=True))
           if not result.ok:
               raise SystemExit(3)
