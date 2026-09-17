@@ -90,6 +90,21 @@ def _finite_probability(value: Any) -> float | None:
     return number if math.isfinite(number) and 0.0 <= number <= 1.0 else None
 
 
+def _release_matches_registry(artifact: Mapping[str, Any], release: ReviewedCertificationRelease | None) -> bool:
+    if release is None or release.can_execute is not False:
+        return False
+    return (
+        normalize_prop_sport(str(artifact.get("sport") or "")) == normalize_prop_sport(release.sport)
+        and str(artifact.get("stat_type") or "").upper() == release.stat_type.upper()
+        and str(artifact.get("feature_schema_version") or "") == release.feature_schema_version
+        and str(artifact.get("model_family") or "") == release.model_family
+        and str(artifact.get("model_artifact_version") or "") == release.model_artifact_version
+        and str(artifact.get("artifact_checksum") or "") == release.artifact_checksum
+        and str(artifact.get("calibrator_version") or "") == release.calibrator_version
+        and str(artifact.get("certification_id") or "") == release.certification_id
+    )
+
+
 def validate_action_canary_receipt(receipt: Mapping[str, Any], artifact: Mapping[str, Any], release: ReviewedCertificationRelease) -> tuple[bool, tuple[str, ...]]:
     """Validate an immutable receipt from a real canonical Action invocation."""
     blockers: list[str] = []
@@ -152,8 +167,6 @@ def _canary_receipts(db: Any, artifact: Mapping[str, Any], release: ReviewedCert
         )
         return _rows(result)
     except Exception:
-        # Missing/unavailable canary storage is a typed lack of proof, never a
-        # reason to infer success from a model prediction row.
         return []
 
 
@@ -201,9 +214,10 @@ def audit_registration_for_artifact(
         calibrator_version=str(artifact.get("calibrator_version") or ""),
     )
     calibration_pass = bool(certification_audit and certification_audit.get("status") == CALIBRATION_CERTIFIED_PASS)
+    registry_release_match = _release_matches_registry(artifact, release)
     release_valid = bool(
-        release
-        and release.can_execute is False
+        registry_release_match
+        and release
         and release.certification_review_status == CERTIFICATION_APPROVED
         and release.deterministic_replay_ready
         and release.source_provenance_ready
@@ -212,13 +226,20 @@ def audit_registration_for_artifact(
     )
     canary_verified = False
     canary_blockers: tuple[str, ...] = ("CANONICAL_ACTION_CANARY_REQUIRED",)
-    if release_valid:
+    if release_valid and release:
         for receipt in canary_receipts:
-            valid, blockers = validate_action_canary_receipt(receipt, artifact, release)  # type: ignore[arg-type]
+            valid, blockers = validate_action_canary_receipt(receipt, artifact, release)
             if valid:
                 canary_verified, canary_blockers = True, ()
                 break
             canary_blockers = blockers
+
+    # Promotion/active state counts for the new universal lifecycle only after
+    # the registry carries the exact reviewed certification ID. A legacy
+    # prospective certification remains valid for its legacy serving contract but
+    # cannot be reused as the new forward-certification promotion.
+    universal_promoted = bool(artifact.get("promoted")) and release_valid
+    universal_active = bool(artifact.get("active")) and release_valid
 
     evidence = PropRouteLifecycleEvidence(
         sport=sport,
@@ -241,9 +262,9 @@ def audit_registration_for_artifact(
         ),
         certification_review_status=release.certification_review_status if release_valid and release else "NOT_ASSESSED",
         certification_id=release.certification_id if release_valid and release else None,
-        lifecycle_state=str(artifact.get("lifecycle_state") or ""),
-        promoted=bool(artifact.get("promoted")),
-        active=bool(artifact.get("active")),
+        lifecycle_state=str(artifact.get("lifecycle_state") or "") if release_valid else "CANDIDATE",
+        promoted=universal_promoted,
+        active=universal_active,
         model_adapter_registered=bool(runtime["model_adapter_registered"]),
         calibrator_adapter_registered=bool(runtime["calibrator_adapter_registered"]),
         hydration_registered=bool(runtime["hydration_route_registered"]),
@@ -261,6 +282,7 @@ def audit_registration_for_artifact(
         "registry_active": bool(artifact.get("active")),
         "legacy_registry_certification_id": artifact.get("certification_id"),
         "universal_certification_release_present": release is not None,
+        "reviewed_release_matches_registry": registry_release_match,
         "universal_calibration_certified_pass": calibration_pass,
         "model_adapter_registered": runtime["model_adapter_registered"],
         "calibrator_adapter_registered": runtime["calibrator_adapter_registered"],
