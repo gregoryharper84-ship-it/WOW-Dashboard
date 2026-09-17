@@ -10,9 +10,11 @@ on:
 permissions:
   contents: read
 
+# PR runs may supersede older PR runs. A push to protected main is authoritative
+# for Render checksPass and must always reach a terminal check conclusion.
 concurrency:
-  group: wow-verify-${{ github.ref }}
-  cancel-in-progress: true
+  group: wow-verify-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   required-three:
