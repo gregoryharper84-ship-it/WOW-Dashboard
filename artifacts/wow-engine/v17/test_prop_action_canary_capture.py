@@ -128,7 +128,7 @@ def test_no_reviewed_release_means_no_canary(monkeypatch):
     assert db.receipts == []
 
 
-def test_real_reconciled_persisted_prediction_writes_exact_release_canary(monkeypatch):
+def test_real_reconciled_persisted_prediction_without_row_can_execute_writes_exact_release_canary(monkeypatch):
     release = _release()
     key = _release_key("MLB", "PITCHER_STRIKEOUTS", "SO_ARTIFACT_V1", "sha256:abc")
     monkeypatch.setattr(subject, "REVIEWED_CERTIFICATION_RELEASES", {key: release})
