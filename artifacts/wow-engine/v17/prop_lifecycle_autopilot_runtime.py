@@ -1,9 +1,15 @@
 """Artifact-isolated runtime wrapper for the continuous V17 prop lifecycle.
 
-The base autopilot owns stage ordering. This wrapper binds its forward-evidence
-artifact cohorts to calibration/certification artifact rows so the operational
-health surface reports independent predicted / settled / eligible N for the
-*same immutable model artifact* instead of only route-level aggregate counts.
+The base autopilot owns forward capture, exact settlement, certification audit,
+registration audit and health persistence. This wrapper adds two universal
+engineering stages without weakening governance:
+
+* exact-artifact Forward N / Settled N / Eligible N joins; and
+* candidate-only Platt/isotonic calibration evidence with untouched chronological
+  holdout metrics and deterministic evidence hashes.
+
+Candidate calibration evidence never certifies, promotes, registers or publishes
+an artifact. Independent certification remains a separate reviewed boundary.
 """
 from __future__ import annotations
 
@@ -15,6 +21,10 @@ from typing import Any, Callable, Mapping
 from fastapi import FastAPI
 
 from github_actions_oidc import scout_route_auth_dependency
+from v17.prop_calibrator_candidate_runtime import (
+    PropCalibratorCandidateRequest,
+    run_prop_calibrator_candidate_audit,
+)
 from v17.prop_lifecycle_autopilot import (
     PropLifecycleAutopilotRequest,
     _int_env,
@@ -47,6 +57,15 @@ def _artifact_identity(row: Mapping[str, Any], *, forward: bool = False) -> tupl
         str(row.get("model_artifact_version") or ""),
         str(row.get(checksum_key) or ""),
         str(row.get(calibrator_key) or ""),
+    )
+
+
+def _model_artifact_identity(row: Mapping[str, Any]) -> tuple[str, str, str, str]:
+    return (
+        str(row.get("feature_schema_version") or ""),
+        str(row.get("model_family") or ""),
+        str(row.get("model_artifact_version") or ""),
+        str(row.get("artifact_checksum") or row.get("model_artifact_checksum") or ""),
     )
 
 
@@ -106,6 +125,77 @@ def enrich_artifact_cohort_health(result: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def enrich_calibrator_candidate_health(
+    result: dict[str, Any],
+    candidate_audit: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Attach candidate-only untouched-holdout evidence to exact model artifacts."""
+    packets = [
+        dict(row) for row in (candidate_audit or {}).get("artifact_packets") or []
+        if isinstance(row, Mapping)
+    ]
+    by_identity = {
+        (_route_token(row.get("sport"), row.get("stat_type")), _model_artifact_identity(row)): row
+        for row in packets
+    }
+    dashboard = result.get("dashboard") or {}
+    artifacts = dashboard.get("artifact_cohort_rows") or []
+    matched = 0
+    for artifact in artifacts:
+        if not isinstance(artifact, dict):
+            continue
+        key = (
+            _route_token(artifact.get("sport"), artifact.get("stat_type")),
+            _model_artifact_identity(artifact),
+        )
+        packet = by_identity.get(key)
+        if packet is None:
+            artifact["calibrator_candidate_status"] = "NO_EXACT_MODEL_ARTIFACT_CANDIDATE_PACKET"
+            artifact["calibrator_candidate_review_ready"] = False
+            continue
+        matched += 1
+        artifact.update({
+            "calibrator_candidate_status": packet.get("status"),
+            "calibrator_candidate_method": packet.get("selected_method"),
+            "calibrator_candidate_evidence_hash": packet.get("evidence_hash"),
+            "calibrator_candidate_training_n": packet.get("training_n"),
+            "calibrator_candidate_holdout_n": packet.get("holdout_n"),
+            "calibrator_candidate_raw_holdout_metrics": packet.get("raw_holdout_metrics"),
+            "calibrator_candidate_holdout_metrics": packet.get("calibrated_holdout_metrics"),
+            "calibrator_candidate_oof_metrics": packet.get("fit_oof_metrics"),
+            "calibrator_candidate_review_ready": bool(packet.get("certification_review_packet_ready")),
+            "calibrator_candidate_blockers": packet.get("blockers") or [],
+        })
+
+    kpi = dashboard.setdefault("kpi", {})
+    kpi["calibrator_candidate_artifact_n"] = len(packets)
+    kpi["calibrator_candidate_identity_match_n"] = matched
+    kpi["calibrator_review_packet_ready_n"] = sum(
+        1 for packet in packets if packet.get("certification_review_packet_ready") is True
+    )
+    result["dashboard"] = dashboard
+    return result
+
+
+def _run_candidate_stage(req: PropLifecycleAutopilotRequest, *, db: Any) -> dict[str, Any]:
+    try:
+        audit = run_prop_calibrator_candidate_audit(
+            PropCalibratorCandidateRequest(routes=list(req.routes), include_inactive=True),
+            db=db,
+        )
+        return {"stage": "CALIBRATOR_CANDIDATE_EVIDENCE", "status": "PASS", "result": audit, "can_execute": False}
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        return {
+            "stage": "CALIBRATOR_CANDIDATE_EVIDENCE",
+            "status": "FAILED",
+            "error_type": type(exc).__name__,
+            "result": None,
+            "can_execute": False,
+        }
+
+
 def run_prop_lifecycle_autopilot(
     req: PropLifecycleAutopilotRequest,
     *,
@@ -114,7 +204,17 @@ def run_prop_lifecycle_autopilot(
 ) -> dict[str, Any]:
     base_req = req.model_copy(update={"persist_health": False})
     result = _run_base(base_req, db=db, market_api=market_api)
+    candidate_stage = _run_candidate_stage(req, db=db)
+    result["calibrator_candidate_evidence"] = candidate_stage
+    result.setdefault("stage_statuses", {})[candidate_stage["stage"]] = candidate_stage["status"]
+    if candidate_stage["status"] != "PASS":
+        failed = result.setdefault("failed_stages", [])
+        if candidate_stage["stage"] not in failed:
+            failed.append(candidate_stage["stage"])
+        result["run_status"] = "COMPLETED_WITH_STAGE_BLOCKERS"
+
     enrich_artifact_cohort_health(result)
+    enrich_calibrator_candidate_health(result, candidate_stage.get("result"))
     if req.persist_health:
         result["health_persistence"] = persist_lifecycle_health(
             db,
@@ -128,6 +228,8 @@ def run_prop_lifecycle_autopilot(
             "can_execute": False,
         }
     result["artifact_isolation_enforced"] = True
+    result["calibrator_candidate_generation_enabled"] = True
+    result["untouched_holdout_required"] = True
     result["automatic_certification"] = False
     result["automatic_promotion"] = False
     result["can_execute"] = False
@@ -161,7 +263,7 @@ async def run_prop_lifecycle_autopilot_loop(
             )
             kpi = result.get("dashboard", {}).get("kpi", {})
             logger.warning(
-                "WOW_PROP_LIFECYCLE_AUTOPILOT status=%s cycle_id=%s routes=%s artifacts=%s forward_n=%s settled_n=%s eligible_n=%s production_registered=%s improper_promotions=%s can_execute=false",
+                "WOW_PROP_LIFECYCLE_AUTOPILOT status=%s cycle_id=%s routes=%s artifacts=%s forward_n=%s settled_n=%s eligible_n=%s calibrator_review_ready=%s production_registered=%s improper_promotions=%s can_execute=false",
                 result.get("run_status"),
                 result.get("cycle_id"),
                 result.get("routes_requested"),
@@ -169,6 +271,7 @@ async def run_prop_lifecycle_autopilot_loop(
                 kpi.get("artifact_forward_prediction_n"),
                 kpi.get("artifact_forward_settled_n"),
                 kpi.get("artifact_eligible_n"),
+                kpi.get("calibrator_review_packet_ready_n"),
                 kpi.get("production_registered_n"),
                 kpi.get("improperly_promoted_route_n"),
             )
@@ -189,9 +292,9 @@ def install_prop_lifecycle_autopilot(
     db_client_fn: Callable[[], Any],
     market_api: Any,
 ) -> None:
-    # Preserve the existing WOW_ACTION_API_KEY seam for Custom GPT/manual calls
-    # while permitting only the explicitly allowlisted protected-main GitHub
-    # workflow to use short-lived OIDC for scheduled wakeups.
+    # Preserve WOW_ACTION_API_KEY for Custom GPT/manual calls while permitting
+    # only the explicitly allowlisted protected-main workflow to use short-lived
+    # OIDC for scheduled production wakeups.
     automation_auth = scout_route_auth_dependency(auth_dependency)
 
     if not any(getattr(route, "path", None) == "/v17/prop-lifecycle-autopilot-run" for route in app.router.routes):
@@ -255,6 +358,7 @@ def install_prop_lifecycle_autopilot(
 __all__ = [
     "CAN_EXECUTE",
     "enrich_artifact_cohort_health",
+    "enrich_calibrator_candidate_health",
     "install_prop_lifecycle_autopilot",
     "run_prop_lifecycle_autopilot",
     "run_prop_lifecycle_autopilot_loop",
