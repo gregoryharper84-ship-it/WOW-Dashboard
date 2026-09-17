@@ -21,8 +21,8 @@ from typing import Any, Optional
 from fastapi import Header
 
 from mlb_1ip_specialist import CANONICAL_STAT_TYPE as MLB_1IP_STAT_TYPE
+import pick_request_runtime_core as pick_core
 from pick_request_runtime_core import PickRequestBatch, PickRequestRow, RawPropEvidence, _canonical_stat
-from prop_auto_hydration import auto_hydrate_prop_evidence
 
 LOGGER = logging.getLogger("wow.v17.interactive_latency")
 _STATE_KEY = "wow_interactive_pick_hydration_installed"
@@ -69,7 +69,11 @@ def _route_is_prehydration_eligible(row: PickRequestRow, market_api: Any) -> boo
 
 
 def _hydrate(row: PickRequestRow) -> RawPropEvidence:
-    raw = auto_hydrate_prop_evidence(
+    # Resolve the same runtime hydration seam used by the canonical scorer.
+    # pick_request_runtime rewires this global to the reviewed sport-aware
+    # router, so workload/WNBA/other certified routes are prefetched by the
+    # same hydrator they would use in the canonical serial fallback.
+    raw = pick_core.auto_hydrate_prop_evidence(
         sport=str(row.sport or "").strip().upper(),
         player=row.player,
         stat_type=_canonical_stat(row.sport, row.stat_type),
