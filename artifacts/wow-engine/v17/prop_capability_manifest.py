@@ -2,9 +2,9 @@
 
 Declaration is not capability. Production publication still requires the exact
 controlling specialist, a promoted/active fitted artifact, calibration/bounds,
-valid current inputs, and terminal governance. Candidate/development lanes are
-visible so cross-sport build state is auditable, but remain non-publishable until
-the governed lifecycle promotes them.
+valid current inputs, and terminal governance. Candidate/development/build-required
+lanes are visible so cross-sport build state is auditable, but remain
+non-publishable until the governed lifecycle promotes them.
 """
 from __future__ import annotations
 
@@ -19,6 +19,7 @@ MLB_PITCHING_OUTS_EXPERT = "wow.mlb-pitcher-outs-workload-expert"
 MLB_PITCH_COMPOSITION_EXPERT = "wow.mlb-pitcher-pitch-composition-expert"
 MLB_PLATE_APPEARANCES_EXPERT = "wow.mlb-batter-plate-appearances-expert"
 WNBA_PLAYER_PROP_EXPERT = "wow.wnba-player-prop-probability-expert"
+WNBA_COMPOSITE_PROP_EXPERT = "wow.wnba-composite-prop-expert"
 NFL_FANTASY_SCORE_EXPERT = "wow.nfl-dfs-fantasy-score-expert"
 NBA_FANTASY_SCORE_EXPERT = "wow.nba-dfs-fantasy-score-expert"
 WNBA_FANTASY_SCORE_EXPERT = "wow.wnba-dfs-fantasy-score-expert"
@@ -28,6 +29,7 @@ MLB_PITCHER_FANTASY_SCORE_EXPERT = "wow.mlb-pitcher-fantasy-score-expert"
 CERTIFIED_PRODUCTION = "CERTIFIED_PRODUCTION"
 SUPPORTED_HOLD_ONLY = "SUPPORTED_HOLD_ONLY"
 CANDIDATE_ONLY = "CANDIDATE_ONLY"
+BUILD_REQUIRED = "BUILD_REQUIRED"
 TEST_ONLY = "TEST_ONLY"
 NOT_DECLARED = "NOT_DECLARED"
 
@@ -45,6 +47,10 @@ WNBA_POINTS = "POINTS"
 WNBA_REBOUNDS = "REBOUNDS"
 WNBA_ASSISTS = "ASSISTS"
 WNBA_THREES_MADE = "THREE_POINTERS_MADE"
+BASKETBALL_PRA = "PRA"
+BASKETBALL_POINTS_REBOUNDS = "POINTS_REBOUNDS"
+BASKETBALL_POINTS_ASSISTS = "POINTS_ASSISTS"
+BASKETBALL_REBOUNDS_ASSISTS = "REBOUNDS_ASSISTS"
 FANTASY_SCORE = "FANTASY_SCORE"
 MLB_HITTER_FANTASY_SCORE = "HITTER_FANTASY_SCORE"
 MLB_PITCHER_FANTASY_SCORE = "PITCHER_FANTASY_SCORE"
@@ -98,22 +104,43 @@ def _certified_mlb(stat_type: str, specialist: str, *, notes: str | None = None)
     )
 
 
-def _wnba_candidate(stat_type: str) -> PropCapability:
+def _wnba_component_hold(stat_type: str) -> PropCapability:
+    return PropCapability(
+        sport="WNBA",
+        stat_type=stat_type,
+        lane_status=SUPPORTED_HOLD_ONLY,
+        controlling_specialist=WNBA_PLAYER_PROP_EXPERT,
+        route_active=True,
+        declared_skill_status="PROSPECTIVE_CERTIFIED",
+        exact_line_support_policy=CONTINUOUS_LINE_SUPPORT,
+        certified_line_support_source="wow_prop_fitted_model_artifacts",
+        publication_allowed=False,
+        blocker="WNBA_PROP_PROSPECTIVE_NOT_PUBLISHABLE",
+        notes=(
+            "A promoted/active prospective WNBA component artifact exists, but the governed "
+            "artifact registry still marks probability_publishable=false. Preserve the model "
+            "lifecycle state and fail closed until calibration/publication ratification passes."
+        ),
+    )
+
+
+def _wnba_composite_candidate(stat_type: str) -> PropCapability:
     return PropCapability(
         sport="WNBA",
         stat_type=stat_type,
         lane_status=CANDIDATE_ONLY,
-        controlling_specialist=WNBA_PLAYER_PROP_EXPERT,
+        controlling_specialist=WNBA_COMPOSITE_PROP_EXPERT,
         route_active=False,
-        declared_skill_status="CANDIDATE",
+        declared_skill_status="RESEARCH_ONLY_FORWARD_TEST",
         exact_line_support_policy=CONTINUOUS_LINE_SUPPORT,
         certified_line_support_source="wow_prop_fitted_model_artifacts",
         publication_allowed=False,
-        blocker="WNBA_PROP_CANDIDATE_NOT_PROMOTED",
+        blocker="WNBA_COMPOSITE_FITTED_MODEL_ARTIFACT_MISSING",
         notes=(
-            "Fitted WNBA candidate/trainer, model adapter, calibration adapter, and hydration provider exist. "
-            "The lane remains non-publishable until governed registration, lifecycle review, certification, "
-            "promotion, and exact runtime artifact readiness pass."
+            "The WNBA composite specialist contract exists and requires a role-conditioned joint "
+            "(P,R,A) distribution. V17 has no fitted composite artifact/calibrator for this exact "
+            "stat family yet; independent component multiplication or generic Poisson substitution "
+            "is prohibited."
         ),
     )
 
@@ -137,9 +164,29 @@ def _fantasy_candidate(
         publication_allowed=False,
         blocker="FANTASY_SCORE_CANDIDATE_NOT_PROMOTED",
         notes=(
-            "NFL-parity fitted candidate stage only: whole-event chronological split, joint residual simulation, "
+            "Fitted candidate stage only: whole-event chronological split, joint residual simulation, "
             "50k standard simulation floor, exact verified scoring profile, and failure-regime support exist. "
             "Exact-line calibration, certification, promotion, and production registration are still required."
+        ),
+    )
+
+
+def _build_required(sport: str, stat_type: str) -> PropCapability:
+    return PropCapability(
+        sport=sport,
+        stat_type=stat_type,
+        lane_status=BUILD_REQUIRED,
+        controlling_specialist=None,
+        route_active=False,
+        declared_skill_status="MODEL_BUILD_REQUIRED",
+        exact_line_support_policy=CONTINUOUS_LINE_SUPPORT,
+        certified_line_support_source="wow_prop_fitted_model_artifacts",
+        publication_allowed=False,
+        blocker="PROP_FITTED_SPECIALIST_BUILD_REQUIRED",
+        notes=(
+            "This stat family is in the V17 all-sports prop inventory but has no route-specific "
+            "governed fitted specialist artifact/calibrator registered in production. Legacy "
+            "ACTIVE/PROVISIONAL formulas do not satisfy V17 probability authority."
         ),
     )
 
@@ -182,10 +229,14 @@ DECLARED_PROP_LANES: dict[tuple[str, str], PropCapability] = {
             "substitution is prohibited."
         ),
     ),
-    ("WNBA", WNBA_POINTS): _wnba_candidate(WNBA_POINTS),
-    ("WNBA", WNBA_REBOUNDS): _wnba_candidate(WNBA_REBOUNDS),
-    ("WNBA", WNBA_ASSISTS): _wnba_candidate(WNBA_ASSISTS),
-    ("WNBA", WNBA_THREES_MADE): _wnba_candidate(WNBA_THREES_MADE),
+    ("WNBA", WNBA_POINTS): _wnba_component_hold(WNBA_POINTS),
+    ("WNBA", WNBA_REBOUNDS): _wnba_component_hold(WNBA_REBOUNDS),
+    ("WNBA", WNBA_ASSISTS): _wnba_component_hold(WNBA_ASSISTS),
+    ("WNBA", WNBA_THREES_MADE): _wnba_component_hold(WNBA_THREES_MADE),
+    ("WNBA", BASKETBALL_PRA): _wnba_composite_candidate(BASKETBALL_PRA),
+    ("WNBA", BASKETBALL_POINTS_REBOUNDS): _wnba_composite_candidate(BASKETBALL_POINTS_REBOUNDS),
+    ("WNBA", BASKETBALL_POINTS_ASSISTS): _wnba_composite_candidate(BASKETBALL_POINTS_ASSISTS),
+    ("WNBA", BASKETBALL_REBOUNDS_ASSISTS): _wnba_composite_candidate(BASKETBALL_REBOUNDS_ASSISTS),
 
     # Fantasy Score candidate parity. These declarations do not activate publication authority.
     ("NFL", FANTASY_SCORE): _fantasy_candidate(
@@ -211,23 +262,136 @@ DECLARED_PROP_LANES: dict[tuple[str, str], PropCapability] = {
 }
 
 
+# V17 all-sports inventory targets. These are declarations of missing governed work,
+# not claims that a fitted model already exists. They prevent "undeclared" from hiding
+# a known model-build gap and keep legacy generic formulas quarantined.
+_CROSS_SPORT_BUILD_TARGETS: dict[str, tuple[str, ...]] = {
+    "NBA": (
+        "POINTS", "REBOUNDS", "ASSISTS", "THREE_POINTERS_MADE",
+        BASKETBALL_PRA, BASKETBALL_POINTS_REBOUNDS,
+        BASKETBALL_POINTS_ASSISTS, BASKETBALL_REBOUNDS_ASSISTS,
+    ),
+    "NFL": (
+        "PASSING_YARDS", "PASSING_TOUCHDOWNS", "PASS_ATTEMPTS", "COMPLETIONS",
+        "RUSHING_YARDS", "RUSH_ATTEMPTS", "RECEIVING_YARDS", "RECEPTIONS",
+    ),
+    "NCAAF": (
+        "PASSING_YARDS", "PASSING_TOUCHDOWNS", "PASS_ATTEMPTS", "COMPLETIONS",
+        "RUSHING_YARDS", "RUSH_ATTEMPTS", "RECEIVING_YARDS", "RECEPTIONS",
+    ),
+    "NCAAB": (
+        "POINTS", "REBOUNDS", "ASSISTS", "THREE_POINTERS_MADE",
+        BASKETBALL_PRA,
+    ),
+    "NHL": ("GOALS", "ASSISTS", "POINTS", "SHOTS_ON_GOAL", "SAVES"),
+    "SOCCER": ("SHOTS", "SHOTS_ON_TARGET", "GOALS", "ASSISTS", "SAVES"),
+    "TENNIS": ("ACES", "DOUBLE_FAULTS", "GAMES_WON", "SETS_WON"),
+    "GOLF": ("BIRDIES", "ROUND_SCORE", "GREENS_IN_REGULATION"),
+    "MMA": ("SIGNIFICANT_STRIKES", "TAKEDOWNS", "FIGHT_TIME"),
+    "BOXING": ("PUNCHES_LANDED", "FIGHT_TIME"),
+}
+
+for _sport, _stats in _CROSS_SPORT_BUILD_TARGETS.items():
+    for _stat in _stats:
+        DECLARED_PROP_LANES.setdefault((_sport, _stat), _build_required(_sport, _stat))
+
+
+SPORT_ALIASES = {
+    "BASEBALL": "MLB",
+    "BASEBALL_MLB": "MLB",
+    "MAJOR LEAGUE BASEBALL": "MLB",
+    "MAJOR_LEAGUE_BASEBALL": "MLB",
+    "WOMENS_NBA": "WNBA",
+    "WOMEN'S NBA": "WNBA",
+    "WOMEN'S BASKETBALL": "WNBA",
+    "COLLEGE FOOTBALL": "NCAAF",
+    "CFB": "NCAAF",
+    "COLLEGE BASKETBALL": "NCAAB",
+    "CBB": "NCAAB",
+    "ATP": "TENNIS",
+    "WTA": "TENNIS",
+    "UFC": "MMA",
+    "MLS": "SOCCER",
+    "EPL": "SOCCER",
+}
+
+STAT_ALIASES: dict[tuple[str, str], str] = {
+    ("WNBA", "PTS"): WNBA_POINTS,
+    ("WNBA", "POINT"): WNBA_POINTS,
+    ("WNBA", "REB"): WNBA_REBOUNDS,
+    ("WNBA", "REBOUND"): WNBA_REBOUNDS,
+    ("WNBA", "AST"): WNBA_ASSISTS,
+    ("WNBA", "ASSIST"): WNBA_ASSISTS,
+    ("WNBA", "3PM"): WNBA_THREES_MADE,
+    ("WNBA", "3PT_MADE"): WNBA_THREES_MADE,
+    ("WNBA", "3_PT_MADE"): WNBA_THREES_MADE,
+    ("WNBA", "THREES_MADE"): WNBA_THREES_MADE,
+    ("WNBA", "THREE_POINTERS"): WNBA_THREES_MADE,
+    ("WNBA", "PTS+REB+AST"): BASKETBALL_PRA,
+    ("WNBA", "POINTS+REBOUNDS+ASSISTS"): BASKETBALL_PRA,
+    ("WNBA", "POINTS_REBOUNDS_ASSISTS"): BASKETBALL_PRA,
+    ("WNBA", "PTS_REB_AST"): BASKETBALL_PRA,
+    ("WNBA", "PTS+REB"): BASKETBALL_POINTS_REBOUNDS,
+    ("WNBA", "POINTS+REBOUNDS"): BASKETBALL_POINTS_REBOUNDS,
+    ("WNBA", "PTS_REB"): BASKETBALL_POINTS_REBOUNDS,
+    ("WNBA", "PTS+AST"): BASKETBALL_POINTS_ASSISTS,
+    ("WNBA", "POINTS+ASSISTS"): BASKETBALL_POINTS_ASSISTS,
+    ("WNBA", "PTS_AST"): BASKETBALL_POINTS_ASSISTS,
+    ("WNBA", "REB+AST"): BASKETBALL_REBOUNDS_ASSISTS,
+    ("WNBA", "REBOUNDS+ASSISTS"): BASKETBALL_REBOUNDS_ASSISTS,
+    ("WNBA", "REB_AST"): BASKETBALL_REBOUNDS_ASSISTS,
+}
+
+for _basketball_sport in ("NBA", "NCAAB"):
+    STAT_ALIASES.update({
+        (_basketball_sport, "PTS"): "POINTS",
+        (_basketball_sport, "REB"): "REBOUNDS",
+        (_basketball_sport, "AST"): "ASSISTS",
+        (_basketball_sport, "3PM"): "THREE_POINTERS_MADE",
+        (_basketball_sport, "PTS+REB+AST"): BASKETBALL_PRA,
+        (_basketball_sport, "POINTS+REBOUNDS+ASSISTS"): BASKETBALL_PRA,
+        (_basketball_sport, "POINTS_REBOUNDS_ASSISTS"): BASKETBALL_PRA,
+        (_basketball_sport, "PTS+REB"): BASKETBALL_POINTS_REBOUNDS,
+        (_basketball_sport, "PTS+AST"): BASKETBALL_POINTS_ASSISTS,
+        (_basketball_sport, "REB+AST"): BASKETBALL_REBOUNDS_ASSISTS,
+    })
+
+for _football_sport in ("NFL", "NCAAF"):
+    STAT_ALIASES.update({
+        (_football_sport, "PASS_YDS"): "PASSING_YARDS",
+        (_football_sport, "PASSING_YDS"): "PASSING_YARDS",
+        (_football_sport, "PASS_TDS"): "PASSING_TOUCHDOWNS",
+        (_football_sport, "PASS_TD"): "PASSING_TOUCHDOWNS",
+        (_football_sport, "RUSH_YDS"): "RUSHING_YARDS",
+        (_football_sport, "REC_YDS"): "RECEIVING_YARDS",
+        (_football_sport, "REC"): "RECEPTIONS",
+    })
+
+
 def normalize_prop_sport(value: str) -> str:
     sport = str(value or "").strip().upper()
-    aliases = {
-        "BASEBALL": "MLB",
-        "BASEBALL_MLB": "MLB",
-        "MAJOR LEAGUE BASEBALL": "MLB",
-        "MAJOR_LEAGUE_BASEBALL": "MLB",
-        "WOMENS_NBA": "WNBA",
-        "WOMEN'S NBA": "WNBA",
-    }
-    return aliases.get(sport, sport)
+    return SPORT_ALIASES.get(sport, sport)
+
+
+def normalize_prop_stat(sport: str, stat_type: str) -> str:
+    normalized_sport = normalize_prop_sport(sport)
+    raw = "_".join(str(stat_type or "").strip().upper().replace("-", " ").split())
+    return STAT_ALIASES.get((normalized_sport, raw), raw)
+
+
+def runtime_prop_stat_aliases() -> dict[tuple[str, str], str]:
+    """Return safe identity aliases for the canonical request runtime.
+
+    Alias registration never grants probability capability; it only makes the exact
+    requested stat reach the correct manifest/artifact key before failing or scoring.
+    """
+    return dict(STAT_ALIASES)
 
 
 def prop_capability(sport: str, stat_type: str) -> PropCapability:
     """Classify one prop lane. An undeclared lane fails closed, never guesses."""
     normalized_sport = normalize_prop_sport(sport)
-    normalized_stat = str(stat_type or "").strip().upper()
+    normalized_stat = normalize_prop_stat(normalized_sport, stat_type)
     declared = DECLARED_PROP_LANES.get((normalized_sport, normalized_stat))
     if declared is not None:
         return declared
@@ -247,19 +411,22 @@ def prop_capability(sport: str, stat_type: str) -> PropCapability:
 
 
 def declared_prop_lane_manifest() -> dict[str, Any]:
-    """Advertise production, hold-only, and candidate routes without conflating them."""
+    """Advertise production, hold-only, candidate, and build-required routes."""
     lanes = [capability.as_dict() for capability in DECLARED_PROP_LANES.values()]
     return {
-        "manifest_version": "WOW_V17_PROP_LANE_MANIFEST_V3",
+        "manifest_version": "WOW_V17_PROP_LANE_MANIFEST_V4",
         "numerical_engine_scope": "SPORT_AGNOSTIC_BY_CERTIFIED_ADAPTER",
         "production_authority_is_route_specific": True,
         "candidate_presence_does_not_grant_probability_authority": True,
+        "build_target_presence_does_not_grant_probability_authority": True,
         "unsupported_route_fallback_prohibited": True,
+        "legacy_provisional_formulas_grant_v17_authority": False,
         "lanes": lanes,
         "declared_lane_count": len(lanes),
         "publication_allowed_lane_count": sum(1 for lane in lanes if lane["publication_allowed"]),
         "route_active_lane_count": sum(1 for lane in lanes if lane["route_active"]),
         "candidate_lane_count": sum(1 for lane in lanes if lane["lane_status"] == CANDIDATE_ONLY),
+        "build_required_lane_count": sum(1 for lane in lanes if lane["lane_status"] == BUILD_REQUIRED),
         "sports_declared": sorted({lane["sport"] for lane in lanes}),
         "declaration_is_not_capability": True,
         "adjacent_line_substitution_permitted": False,
@@ -268,6 +435,11 @@ def declared_prop_lane_manifest() -> dict[str, Any]:
 
 
 __all__ = [
+    "BASKETBALL_PRA",
+    "BASKETBALL_POINTS_ASSISTS",
+    "BASKETBALL_POINTS_REBOUNDS",
+    "BASKETBALL_REBOUNDS_ASSISTS",
+    "BUILD_REQUIRED",
     "CAN_EXECUTE",
     "CANDIDATE_ONLY",
     "CERTIFIED_PRODUCTION",
@@ -294,9 +466,11 @@ __all__ = [
     "NFL_FANTASY_SCORE_EXPERT",
     "NOT_DECLARED",
     "PUBLICATION_ALLOWED_LANES",
+    "STAT_ALIASES",
     "SUPPORTED_HOLD_ONLY",
     "TEST_ONLY",
     "WNBA_ASSISTS",
+    "WNBA_COMPOSITE_PROP_EXPERT",
     "WNBA_FANTASY_SCORE_EXPERT",
     "WNBA_PLAYER_PROP_EXPERT",
     "WNBA_POINTS",
@@ -305,5 +479,7 @@ __all__ = [
     "PropCapability",
     "declared_prop_lane_manifest",
     "normalize_prop_sport",
+    "normalize_prop_stat",
     "prop_capability",
+    "runtime_prop_stat_aliases",
 ]

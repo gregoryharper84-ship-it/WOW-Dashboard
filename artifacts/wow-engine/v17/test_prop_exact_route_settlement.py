@@ -2,8 +2,8 @@ from datetime import datetime, timedelta, timezone
 
 from v17.cross_sport_certification_inventory import CERTIFICATION_SPORTS
 from v17.prop_exact_route_settlement import (
+    EXACT_SETTLEMENT_ADAPTER_REQUIRED,
     FANTASY_COMPONENT_SETTLEMENT_REQUIRED,
-    NO_CURRENT_PROP_CATEGORY_DECLARED,
     SEPARATE_SETTLEMENT_REQUIRED,
     SETTLEMENT_READY,
     WNBA_SUPPORTED,
@@ -87,8 +87,14 @@ def test_inventory_accounts_for_every_required_sport_and_keeps_special_contracts
     nba_fs = next(row for row in rows if row["sport"] == "NBA" and row["stat_type"] == "FANTASY_SCORE")
     assert nba_fs["status"] == FANTASY_COMPONENT_SETTLEMENT_REQUIRED
 
-    ncaaf = next(row for row in rows if row["sport"] == "NCAAF")
-    assert ncaaf["status"] == NO_CURRENT_PROP_CATEGORY_DECLARED
+    # Cross-sport build targets are now explicit exact routes. That does not
+    # mean settlement capability exists; every such route stays blocked until
+    # an exact official outcome adapter is wired.
+    ncaaf_rows = [row for row in rows if row["sport"] == "NCAAF"]
+    assert ncaaf_rows
+    assert all(row["status"] == EXACT_SETTLEMENT_ADAPTER_REQUIRED for row in ncaaf_rows)
+    assert all(row["official_source"] is None for row in ncaaf_rows)
+    assert all(row["blocker"] == "CERTIFIED_OFFICIAL_OUTCOME_ADAPTER_NOT_WIRED" for row in ncaaf_rows)
 
 
 def test_mlb_pitching_routes_extract_exact_official_stats():
