@@ -1,0 +1,76 @@
+name: wow-v17-rundown-playwright-validation
+
+on:
+  push:
+    branches:
+      - chatgpt/v17-rundown-playwright
+    paths:
+      - ".github/workflows/wow-v17-rundown-playwright-validation.yml"
+      - "artifacts/wow-engine/requirements.txt"
+      - "artifacts/wow-engine/v17/rundown_playwright_capture.py"
+      - "artifacts/wow-engine/v17/nightly_multiscout_rundown_primary.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  rendered-board-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: artifacts/wow-engine
+    env:
+      WOW_CAN_EXECUTE: "false"
+      WOW_DRY_RUN_ONLY: "true"
+      WOW_RUNDOWN_BOARD_URL: "https://therundown.io/odds/"
+      RUNDOWN_EMAIL: ${{ secrets.RUNDOWN_EMAIL }}
+      RUNDOWN_PASSWORD: ${{ secrets.RUNDOWN_PASSWORD }}
+      RUNDOWN_STORAGE_STATE_B64: ${{ secrets.RUNDOWN_STORAGE_STATE_B64 }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: artifacts/wow-engine/requirements.txt
+      - name: Install engine dependencies
+        run: pip install -r requirements.txt
+      - name: Install Chromium
+        run: python -m playwright install --with-deps chromium
+      - name: Capture rendered TheRundown board
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/rundown-playwright"
+          set +e
+          python v17/rundown_playwright_capture.py \
+            --output "$RUNNER_TEMP/rundown-playwright/board-capture.json"
+          rc=$?
+          set -e
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          p = Path(os.environ['RUNNER_TEMP']) / 'rundown-playwright' / 'board-capture.json'
+          data = json.loads(p.read_text())
+          assert data['can_execute'] is False
+          assert data['prediction_authority'] is False
+          assert data['research_ceiling'] == 'RESEARCH_INTEREST'
+          print(json.dumps({
+              'status': data['status'],
+              'reason_code': data['reason_code'],
+              'auth_status': data['auth_status'],
+              'coverage': data['coverage'],
+              'sports_with_rows': data['sports_with_rows'],
+              'network_shapes': data['network_json_shapes'][:20],
+          }, indent=2, sort_keys=True))
+          PY
+          exit "$rc"
+      - name: Upload sanitized rendered-board capture
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wow-v17-rundown-playwright-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/rundown-playwright/board-capture.json
+          if-no-files-found: warn
+          retention-days: 14
