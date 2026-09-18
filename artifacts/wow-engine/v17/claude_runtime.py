@@ -4,12 +4,16 @@ Claude is a supporting research/engineering advisory capability only. It is not 
 fitted sports model, cannot publish governed sporting probability, cannot alter
 calibration, and cannot override V17_TERMINAL_REDUCER. No wager execution is
 possible through this module.
+
+Authentication is deliberately separated by surface:
+- ANTHROPIC_API_KEY authenticates direct Anthropic Messages API calls from Render.
+- CLAUDE_CODE_OAUTH_TOKEN is reported only as Claude Code worker configuration;
+  it is never sent to the Messages API.
 """
 from __future__ import annotations
 
 import os
 import time
-from dataclasses import dataclass
 from typing import Any
 
 import httpx
@@ -36,29 +40,24 @@ class ClaudeAdvisoryRequest(BaseModel):
     max_tokens: int = Field(default=600, ge=1, le=1_200)
 
 
-@dataclass(frozen=True)
-class ClaudeAuth:
-    mode: str
-    secret: str
-
-
-def _resolve_auth() -> ClaudeAuth | None:
-    oauth = os.getenv("CLAUDE_CODE_OAUTH_TOKEN", "").strip()
-    if oauth:
-        return ClaudeAuth(mode="oauth", secret=oauth)
+def _messages_api_key() -> str | None:
     api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
-    if api_key:
-        return ClaudeAuth(mode="api_key", secret=api_key)
-    return None
+    return api_key or None
 
 
 def claude_runtime_readiness() -> dict[str, Any]:
-    auth = _resolve_auth()
+    messages_api_configured = _messages_api_key() is not None
+    claude_code_oauth_configured = bool(
+        os.getenv("CLAUDE_CODE_OAUTH_TOKEN", "").strip()
+    )
     return {
         "ok": True,
         "enabled": os.getenv("WOW_CLAUDE_RUNTIME_ENABLED", "0") == "1",
-        "configured": auth is not None,
-        "auth_mode": auth.mode if auth else "none",
+        # Backward-compatible meaning: configured for the Render Messages API.
+        "configured": messages_api_configured,
+        "messages_api_configured": messages_api_configured,
+        "claude_code_oauth_configured": claude_code_oauth_configured,
+        "auth_mode": "api_key" if messages_api_configured else "none",
         "model": os.getenv("WOW_CLAUDE_MODEL", DEFAULT_MODEL),
         "role": "SUPPORTING_ADVISORY_ONLY",
         "probability_authority": False,
@@ -72,16 +71,13 @@ class ClaudeRuntime:
     def __init__(self, *, transport: httpx.BaseTransport | None = None) -> None:
         self._transport = transport
 
-    def _headers(self, auth: ClaudeAuth) -> dict[str, str]:
-        headers = {
+    @staticmethod
+    def _headers(api_key: str) -> dict[str, str]:
+        return {
             "anthropic-version": ANTHROPIC_VERSION,
             "content-type": "application/json",
+            "x-api-key": api_key,
         }
-        if auth.mode == "oauth":
-            headers["authorization"] = f"Bearer {auth.secret}"
-        else:
-            headers["x-api-key"] = auth.secret
-        return headers
 
     def _invoke(self, *, prompt: str, max_tokens: int) -> dict[str, Any]:
         state = claude_runtime_readiness()
@@ -94,11 +90,18 @@ class ClaudeRuntime:
                     "can_execute": False,
                 },
             )
-        auth = _resolve_auth()
-        if auth is None:
+
+        api_key = _messages_api_key()
+        if api_key is None:
             raise HTTPException(
                 status_code=503,
-                detail={"code": "CLAUDE_AUTH_MISSING", "can_execute": False},
+                detail={
+                    "code": "CLAUDE_MESSAGES_API_KEY_MISSING",
+                    "claude_code_oauth_configured": state[
+                        "claude_code_oauth_configured"
+                    ],
+                    "can_execute": False,
+                },
             )
 
         payload = {
@@ -112,7 +115,7 @@ class ClaudeRuntime:
             with httpx.Client(timeout=30.0, transport=self._transport) as client:
                 response = client.post(
                     ANTHROPIC_MESSAGES_URL,
-                    headers=self._headers(auth),
+                    headers=self._headers(api_key),
                     json=payload,
                 )
         except httpx.HTTPError as exc:
@@ -125,7 +128,9 @@ class ClaudeRuntime:
                 },
             ) from exc
 
-        request_id = response.headers.get("request-id") or response.headers.get("x-request-id")
+        request_id = response.headers.get("request-id") or response.headers.get(
+            "x-request-id"
+        )
         if response.status_code >= 400:
             raise HTTPException(
                 status_code=502,
@@ -168,11 +173,13 @@ class ClaudeRuntime:
         return {
             "status": "COMPLETE",
             "model": body.get("model") or state["model"],
-            "auth_mode": auth.mode,
+            "auth_mode": "api_key",
             "request_id": request_id,
             "latency_ms": round((time.monotonic() - started) * 1000),
             "text": text,
-            "usage": body.get("usage") if isinstance(body.get("usage"), dict) else None,
+            "usage": body.get("usage")
+            if isinstance(body.get("usage"), dict)
+            else None,
             "role": "SUPPORTING_ADVISORY_ONLY",
             "probability_authority": False,
             "terminal_authority": False,
@@ -207,7 +214,10 @@ def install_claude_runtime_routes(
     runtime: ClaudeRuntime | None = None,
 ) -> None:
     existing_paths = {getattr(route, "path", None) for route in app.router.routes}
-    if "/internal/claude/readiness" in existing_paths or "/internal/claude/advisory" in existing_paths:
+    if (
+        "/internal/claude/readiness" in existing_paths
+        or "/internal/claude/advisory" in existing_paths
+    ):
         return
 
     runtime = runtime or ClaudeRuntime()
@@ -223,7 +233,7 @@ def install_claude_runtime_routes(
         state = claude_runtime_readiness()
         if not probe:
             return state
-        if not state["enabled"] or not state["configured"]:
+        if not state["enabled"] or not state["messages_api_configured"]:
             return {**state, "probe_status": "NOT_RUN"}
         probe_result = runtime.probe()
         return {
