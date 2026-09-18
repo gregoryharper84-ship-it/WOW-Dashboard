@@ -7,6 +7,8 @@ on:
     paths:
       - ".github/workflows/wow-v17-rundown-sweep-inventory-probe.yml"
       - "artifacts/wow-engine/v17/rundown_sweep_inventory_probe.py"
+      - "artifacts/wow-engine/v17/rundown_prop_schema_probe.py"
+      - "artifacts/wow-engine/v17/rundown_authenticated_scout_v7.py"
   workflow_dispatch:
 
 permissions:
@@ -38,3 +40,5 @@ jobs:
         run: python -m playwright install --with-deps chromium
       - name: Count authenticated sweep inventory
         run: python -m v17.rundown_sweep_inventory_probe
+      - name: Inspect sanitized prop line schema
+        run: python -m v17.rundown_prop_schema_probe
