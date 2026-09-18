@@ -19,6 +19,12 @@ research candidate may clear only the evidence-acquisition preflight so the
 system can collect immutable forward evidence needed for later calibration;
 that compatibility path remains nonpublishable and non-rankable.
 
+The V17 prop capability manifest is also consulted when the certified-artifact
+registry reports a genuine absence. This does not bypass the registry. It
+preserves the exact lifecycle cause (hold-only, candidate, build-required, or
+undeclared) instead of collapsing every missing route into a generic artifact
+absence. Registry transport/scorer failures retain their original typed errors.
+
 ``specialist_scoring_attempted`` is this layer's unambiguous name for "the
 controlling specialist scorer was invoked". It is deliberately distinct from the
 host contract's ``action_invocation_attempted`` ("a required Action call
@@ -49,6 +55,10 @@ from v17.prediction_receipt_lookup_runtime import install_prediction_receipt_loo
 from v17.top10_model_reconciliation import enforce_top10_completion
 from v17.mlb_1ip_line_expansion_maintenance import install_mlb_1ip_line_expansion_maintenance_route
 from v17.wnba_prop_candidate_registry import install_wnba_prop_candidate_registration_route
+from v17.prop_capability_manifest import (
+    prop_capability as _prop_capability,
+    runtime_prop_stat_aliases as _runtime_prop_stat_aliases,
+)
 
 
 _ORIGINAL_TERMINAL = _core._terminal
@@ -60,23 +70,11 @@ _ORIGINAL_APPLY_PORTFOLIO_GOVERNANCE = _core._apply_portfolio_governance
 # frozen snapshot contains `"line": float(row.line)` and the score request
 # contains `"line": row.line`; the request threshold is never overwritten.
 
-# Normalize common WNBA board labels before specialist/artifact lookup. These
-# aliases only resolve stat identity; they never grant model support.
-_core.PROP_STAT_ALIASES.update(
-    {
-        ("WNBA", "PTS"): "POINTS",
-        ("WNBA", "POINT"): "POINTS",
-        ("WNBA", "REB"): "REBOUNDS",
-        ("WNBA", "REBOUND"): "REBOUNDS",
-        ("WNBA", "AST"): "ASSISTS",
-        ("WNBA", "ASSIST"): "ASSISTS",
-        ("WNBA", "3PM"): "THREE_POINTERS_MADE",
-        ("WNBA", "3PT_MADE"): "THREE_POINTERS_MADE",
-        ("WNBA", "3_PT_MADE"): "THREE_POINTERS_MADE",
-        ("WNBA", "THREES_MADE"): "THREE_POINTERS_MADE",
-        ("WNBA", "THREE_POINTERS"): "THREE_POINTERS_MADE",
-    }
-)
+# Normalize common board labels before specialist/artifact lookup. These aliases
+# resolve stat identity only; they never grant model support or publication
+# authority. The source of truth is the V17 capability manifest so discovery,
+# canonical scoring, and engineering health all use the same stat identity.
+_core.PROP_STAT_ALIASES.update(_runtime_prop_stat_aliases())
 
 # The star import above intentionally preserves the historical public monkeypatch
 # seam. Point that seam at the sport-aware router by default; tests/diagnostics
@@ -176,6 +174,46 @@ _core._completed_scored_outcome = _completed_scored_outcome
 _core._apply_portfolio_governance = _apply_portfolio_governance
 
 
+_ARTIFACT_ABSENCE_CODES = frozenset({
+    "PROP_CERTIFIED_MODEL_ARTIFACT_NOT_FOUND",
+    "PROP_MODEL_ARTIFACT_NOT_FOUND",
+})
+
+
+def _manifest_typed_absence(
+    *,
+    sport: str,
+    stat_type: str,
+    route: dict[str, Any],
+) -> dict[str, Any]:
+    """Refine a genuine artifact absence with V17 lifecycle state.
+
+    Only genuine absence codes are refined. Transport, RPC, scorer, malformed
+    registry response, and other infrastructure errors pass through unchanged.
+    A manifest entry can never turn ``ok`` true or grant publication authority.
+    """
+    code = str(route.get("code") or "").strip().upper()
+    if code not in _ARTIFACT_ABSENCE_CODES:
+        return route
+
+    capability = _prop_capability(sport, stat_type)
+    typed = dict(route)
+    typed.update(
+        {
+            "ok": False,
+            "code": capability.blocker or code,
+            "capability_lane_status": capability.lane_status,
+            "capability_route_active": capability.route_active,
+            "controlling_specialist": capability.controlling_specialist,
+            "declared_skill_status": capability.declared_skill_status,
+            "probability_publishable": False,
+            "can_execute": False,
+        }
+    )
+    typed["capability_manifest"] = capability.as_dict()
+    return typed
+
+
 class _ScoringReceiptMarketApi:
     """Transparent market-api proxy that types post-invocation failures."""
 
@@ -186,24 +224,32 @@ class _ScoringReceiptMarketApi:
         return getattr(self._wrapped, name)
 
     def _prop_route_artifact(self, sport: str, stat_type: str) -> dict[str, Any]:
-        """Keep production readiness authoritative while permitting evidence-only candidates.
+        """Keep production readiness authoritative while typing lifecycle blockers.
 
-        The producing core currently has a binary certified/not-ready preflight.
-        For the exact declared Fantasy Score research route, an explicitly active
-        non-promoted candidate may pass only that acquisition gate. The original
-        market API remains untouched, so the subsequent /score-prop bridge still
-        sees the true CANDIDATE lifecycle and cannot mistake it for certification.
+        The producing core has a binary certified/not-ready preflight. Fantasy
+        Score retains its explicitly reviewed evidence-only compatibility bridge.
+        Every other genuine registry absence is refined through the V17 capability
+        manifest, but remains ``ok=false`` and nonpublishable.
         """
         route = self._wrapped._prop_route_artifact(sport, stat_type)
-        if isinstance(route, dict) and route.get("ok") is True and route.get("code") == "PROP_CERTIFIED_MODEL_ARTIFACT_READY":
+        if (
+            isinstance(route, dict)
+            and route.get("ok") is True
+            and route.get("code") == "PROP_CERTIFIED_MODEL_ARTIFACT_READY"
+        ):
             return route
+
         research = _fantasy_research_candidate_preflight(
             self._wrapped,
             sport,
             stat_type,
             route,
         )
-        return research if research is not None else route
+        if research is not None:
+            return research
+        if not isinstance(route, dict):
+            return route
+        return _manifest_typed_absence(sport=sport, stat_type=stat_type, route=route)
 
     def score_prop(self, *args: Any, **kwargs: Any) -> Any:
         try:
