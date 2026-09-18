@@ -71,9 +71,11 @@ def test_api_key_uses_x_api_key_even_when_oauth_is_present(monkeypatch):
     monkeypatch.setenv("WOW_CLAUDE_RUNTIME_ENABLED", "1")
     monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "oauth-token")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "api-key")
+    monkeypatch.setenv("ANTHROPIC_WORKSPACE_ID", "wrkspc_test")
 
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.headers["x-api-key"] == "api-key"
+        assert request.headers["anthropic-workspace-id"] == "wrkspc_test"
         assert "authorization" not in request.headers
         assert request.headers["anthropic-version"] == "2023-06-01"
         payload = json.loads(request.content)

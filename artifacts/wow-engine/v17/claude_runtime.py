@@ -78,11 +78,15 @@ class ClaudeRuntime:
 
     @staticmethod
     def _headers(api_key: str) -> dict[str, str]:
-        return {
+        headers = {
             "anthropic-version": ANTHROPIC_VERSION,
             "content-type": "application/json",
             "x-api-key": api_key,
         }
+        workspace_id = os.getenv("ANTHROPIC_WORKSPACE_ID", "").strip()
+        if workspace_id:
+            headers["anthropic-workspace-id"] = workspace_id
+        return headers
 
     def _invoke(self, *, prompt: str, max_tokens: int) -> dict[str, Any]:
         state = claude_runtime_readiness()
