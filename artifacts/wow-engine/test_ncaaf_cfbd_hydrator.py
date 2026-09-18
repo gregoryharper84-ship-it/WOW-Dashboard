@@ -3,12 +3,19 @@ from pathlib import Path
 import pytest
 
 from ncaaf_cfbd_client import CFBDResponse
-from ncaaf_cfbd_hydrator import hydrate_cfbd_season
+from ncaaf_cfbd_hydrator import hydrate_cfbd_player_stats, hydrate_cfbd_season
 
 
 class FakeCFBD:
     def games(self, *, year, week=None, classification=None):
         return CFBDResponse(endpoint="/games", params={"year": year, "week": week, "classification": classification}, rows=[{"id": f"{year}-{week}"}])
+
+    def player_game_stats(self, *, year, week, classification=None, season_type=None):
+        return CFBDResponse(
+            endpoint="/games/players",
+            params={"year": year, "week": week, "classification": classification, "seasonType": season_type},
+            rows=[{"id": f"player-{year}-{week}", "teams": []}],
+        )
 
     def ratings(self, family, *, year, week=None):
         endpoint = {"elo": "/ratings/elo", "sp": "/ratings/sp"}[family]
@@ -23,6 +30,15 @@ def test_weekly_games_and_elo_are_staged_with_hashes():
     assert all(row.can_execute is False for row in rows)
 
 
+def test_weekly_player_stats_are_staged_separately_from_model_features():
+    rows = hydrate_cfbd_player_stats(FakeCFBD(), season=2026, weeks=[1, 2], classification="fbs")
+    assert len(rows) == 2
+    assert all(row.endpoint == "/games/players" for row in rows)
+    assert [row.week for row in rows] == [1, 2]
+    assert all(len(row.payload_sha256) == 64 for row in rows)
+    assert all(row.can_execute is False for row in rows)
+
+
 def test_full_season_rating_is_explicitly_blocked_from_pregame_feature_use():
     rows = hydrate_cfbd_season(FakeCFBD(), season=2025, weeks=[1], rating_families=("sp",))
     season_rating = next(row for row in rows if row.endpoint == "/ratings/sp")
@@ -33,6 +49,8 @@ def test_full_season_rating_is_explicitly_blocked_from_pregame_feature_use():
 def test_invalid_week_contract_fails_closed():
     with pytest.raises(ValueError):
         hydrate_cfbd_season(FakeCFBD(), season=2025, weeks=[])
+    with pytest.raises(ValueError):
+        hydrate_cfbd_player_stats(FakeCFBD(), season=2025, weeks=[])
 
 
 def test_staging_sql_is_internal_and_non_executable():
@@ -42,3 +60,4 @@ def test_staging_sql_is_internal_and_non_executable():
     assert "revoke all on table public.wow_ncaaf_source_snapshots from anon, authenticated" in lowered
     assert "can_execute boolean not null default false" in lowered
     assert "wow_ncaaf_source_never_execute" in lowered
+    assert "'/games/players'" in lowered
