@@ -8,6 +8,7 @@ on:
       - ".github/workflows/wow-v17-rundown-playwright-auth-validation.yml"
       - "artifacts/wow-engine/requirements.txt"
       - "artifacts/wow-engine/v17/rundown_playwright_capture.py"
+      - "artifacts/wow-engine/v17/rundown_playwright_inventory_probe.py"
   workflow_dispatch:
 
 permissions:
@@ -61,7 +62,7 @@ jobs:
               browser.close()
           PY
 
-      - name: Exercise fail-closed authenticated collector
+      - name: Exercise authenticated collector
         shell: bash
         run: |
           mkdir -p "$RUNNER_TEMP/rundown-playwright"
@@ -102,11 +103,35 @@ jobs:
           }, sort_keys=True))
           PY
 
+      - name: Probe authenticated provider inventory
+        shell: bash
+        run: |
+          if [[ -z "$RUNDOWN_EMAIL" || -z "$RUNDOWN_PASSWORD" ]]; then
+            echo "Inventory probe skipped until login secrets are configured"
+            exit 0
+          fi
+          python v17/rundown_playwright_inventory_probe.py \
+            --output "$RUNNER_TEMP/rundown-playwright/inventory-probe.json"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          data = json.loads((Path(os.environ['RUNNER_TEMP']) / 'rundown-playwright' / 'inventory-probe.json').read_text())
+          assert data['status'] == 'DISCOVERY_COMPLETE', data
+          assert data['can_execute'] is False
+          assert data['prediction_authority'] is False
+          assert data['research_ceiling'] == 'RESEARCH_INTEREST'
+          assert data['captured_path_count'] > 0
+          assert all('auth.therundown.io' not in path for path in data['captured_paths'])
+          assert '/api/v2/markets' in data['captured_paths']
+          print('RUNDOWN_AUTHENTICATED_INVENTORY_PROBE=PASS')
+          print(json.dumps({'captured_path_count': data['captured_path_count'], 'captured_paths': data['captured_paths']}, sort_keys=True))
+          PY
+
       - name: Upload sanitized collector evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: wow-v17-rundown-playwright-auth-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/rundown-playwright/board-capture.json
+          path: ${{ runner.temp }}/rundown-playwright/
           if-no-files-found: warn
           retention-days: 14
