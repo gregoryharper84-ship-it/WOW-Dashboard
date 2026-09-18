@@ -51,6 +51,13 @@ _PROP_PRIORITIES = {
     8: ("points", "player_rebounds", "player_assists"),
 }
 _PILOT_AFFILIATE_IDS = "3,19,22,23"
+_TRANSPORT_HEADERS = {
+    "cookie",
+    "host",
+    "content-length",
+    "accept-encoding",
+    "connection",
+}
 
 
 def _allowed_response(response: Response) -> bool:
@@ -85,11 +92,13 @@ def _redact(node: Any, depth: int = 0) -> Any:
 
 
 def _ephemeral_api_headers(request: Request) -> dict[str, str]:
-    """Copy only app-added API auth/context headers, never cookies.
+    """Copy native app request context in memory only, never browser cookies.
 
-    Values live only in process memory and are never serialized, logged, or
-    returned by this probe. BrowserContext.request already shares the browser
-    cookie jar, so copying Cookie is neither needed nor allowed.
+    The app may place request authorization in a non-``x-*`` header. Therefore
+    the replay keeps all non-transport headers except browser-managed ``sec-*``
+    headers. Values are never serialized, logged, or returned by this probe.
+    BrowserContext.request shares the browser cookie jar, so Cookie is neither
+    needed nor allowed here.
     """
     try:
         headers = request.all_headers()
@@ -98,8 +107,9 @@ def _ephemeral_api_headers(request: Request) -> dict[str, str]:
     copied: dict[str, str] = {}
     for raw_name, raw_value in headers.items():
         name = str(raw_name).lower()
-        if name == "authorization" or name.startswith("x-"):
-            copied[name] = str(raw_value)
+        if name in _TRANSPORT_HEADERS or name.startswith("sec-"):
+            continue
+        copied[name] = str(raw_value)
     return copied
 
 
@@ -143,8 +153,8 @@ def _bounded_prop_pilot(
     """Fetch a tiny same-session prop sample to pin the live player-line schema.
 
     This deliberately requests only up to three player O/U markets for four
-    sports and four known books. The app's own API authorization/context header
-    is reused only in memory. Header values are never persisted or printed.
+    sports and four known books. The app's own request context is reused only in
+    memory. Header values are never persisted or printed.
     """
     date = datetime.now(timezone.utc).date().isoformat()
     results: dict[str, Any] = {}
@@ -203,6 +213,8 @@ def probe(output: str | Path) -> dict[str, Any]:
     # Sensitive values may live here transiently. This mapping is intentionally
     # never included in the result object or any print statement.
     ephemeral_headers: dict[str, str] = {}
+    # Header names alone are safe diagnostics; values are never persisted.
+    app_event_request_header_names: list[str] = []
 
     with sync_playwright() as pw:
         browser = pw.chromium.launch(headless=True)
@@ -211,14 +223,20 @@ def probe(output: str | Path) -> dict[str, Any]:
         page.set_default_timeout(TIMEOUT_MS)
 
         def on_request(request: Request) -> None:
+            nonlocal app_event_request_header_names
             parts = urlsplit(request.url)
             if parts.netloc.lower() != "therundown.io" or not _EVENT_PATH_RE.match(parts.path):
                 return
-            # Do not let the synthetic pilot overwrite the auth context learned
-            # from the application's own successful event requests.
-            if "market_ids=" in parts.query or ephemeral_headers:
+            # The application's own event requests normally include market_ids.
+            # Capture the first native request before the synthetic pilot begins;
+            # once populated, never overwrite the context.
+            if ephemeral_headers:
                 return
-            ephemeral_headers.update(_ephemeral_api_headers(request))
+            captured = _ephemeral_api_headers(request)
+            if not captured:
+                return
+            ephemeral_headers.update(captured)
+            app_event_request_header_names = sorted(captured)
 
         def on_response(response: Response) -> None:
             if not _allowed_response(response):
@@ -239,7 +257,7 @@ def probe(output: str | Path) -> dict[str, Any]:
             ok, blocker = _login(page)
             if not ok:
                 result = {
-                    "schema": "wow.v17.rundown.authenticated-inventory-probe.v3",
+                    "schema": "wow.v17.rundown.authenticated-inventory-probe.v4",
                     "status": "DISCOVERY_BLOCKED",
                     "reason_code": blocker,
                     "can_execute": False,
@@ -247,6 +265,7 @@ def probe(output: str | Path) -> dict[str, Any]:
                     "research_ceiling": RESEARCH_CEILING,
                     "payloads": {},
                     "prop_pilot": {},
+                    "app_event_request_header_names": [],
                 }
                 Path(output).write_text(json.dumps(result, indent=2, sort_keys=True))
                 return result
@@ -270,7 +289,7 @@ def probe(output: str | Path) -> dict[str, Any]:
             browser.close()
 
     result = {
-        "schema": "wow.v17.rundown.authenticated-inventory-probe.v3",
+        "schema": "wow.v17.rundown.authenticated-inventory-probe.v4",
         "status": "DISCOVERY_COMPLETE" if not blocker and payloads else "DISCOVERY_BLOCKED",
         "reason_code": blocker or (None if payloads else "RUNDOWN_AUTHENTICATED_INVENTORY_EMPTY"),
         "can_execute": CAN_EXECUTE,
@@ -278,6 +297,7 @@ def probe(output: str | Path) -> dict[str, Any]:
         "research_ceiling": RESEARCH_CEILING,
         "captured_path_count": len(payloads),
         "captured_paths": sorted(payloads),
+        "app_event_request_header_names": app_event_request_header_names,
         "payloads": payloads,
         "prop_pilot": prop_pilot,
     }
@@ -295,7 +315,7 @@ def main() -> int:
         "status": result["status"],
         "reason_code": result["reason_code"],
         "captured_path_count": result.get("captured_path_count", 0),
-        "captured_paths": result.get("captured_paths", []),
+        "app_event_request_header_names": result.get("app_event_request_header_names", []),
         "prop_pilot_statuses": {k: v.get("status") for k, v in pilot.items()},
         "can_execute": result["can_execute"],
     }, sort_keys=True))
