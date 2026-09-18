@@ -15,10 +15,12 @@ from urllib.parse import urlencode
 
 from v17 import rundown_authenticated_scout as base
 
+AUTH_READY_WAIT_MS = 6000
+
 
 def _api_json_browser(context, path: str, params: dict[str, Any] | None = None) -> tuple[int, Any, str | None]:
     query = urlencode({k: v for k, v in (params or {}).items() if v not in (None, "")})
-    url = "https://therundown.io" + path + ("?" + query if query else "")
+    relative_url = path + ("?" + query if query else "")
     pages = context.pages
     if not pages:
         return 0, None, "RUNDOWN_BROWSER_PAGE_UNAVAILABLE"
@@ -48,13 +50,19 @@ def _api_json_browser(context, path: str, params: dict[str, Any] | None = None) 
                         clearTimeout(timer);
                     }
                 }""",
-                {"url": url, "timeoutMs": base.TIMEOUT_MS},
+                {"url": relative_url, "timeoutMs": base.TIMEOUT_MS},
             )
             last_status = int(result.get("status") or 0)
             if last_status == 200:
                 if result.get("parseError"):
                     return last_status, None, "RUNDOWN_JSON_INVALID"
                 return last_status, result.get("payload"), None
+            if last_status == 401 and attempt + 1 < base.MAX_RETRIES:
+                # The authenticated app hydrates its session/local state shortly
+                # after the post-login board navigation. The safe transport probe
+                # proved this same-origin fetch succeeds after that readiness window.
+                page.wait_for_timeout(AUTH_READY_WAIT_MS)
+                continue
             if last_status == 429 and attempt + 1 < base.MAX_RETRIES:
                 time.sleep(min(8.0, 2 ** attempt))
                 continue
