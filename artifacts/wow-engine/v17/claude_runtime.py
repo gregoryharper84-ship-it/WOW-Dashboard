@@ -7,6 +7,8 @@ possible through this module.
 """
 from __future__ import annotations
 
+import asyncio
+import logging
 import os
 import time
 from dataclasses import dataclass
@@ -19,6 +21,9 @@ from pydantic import BaseModel, Field
 ANTHROPIC_MESSAGES_URL = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_VERSION = "2023-06-01"
 DEFAULT_MODEL = "claude-sonnet-4-6"
+
+_logger = logging.getLogger("wow.claude.runtime")
+_background_tasks: set[asyncio.Task] = set()
 
 _SYSTEM_PROMPT = """You are a supporting advisory capability inside WOW V17.
 You may assist with engineering diagnosis, research synthesis, evidence review,
@@ -200,6 +205,59 @@ class ClaudeRuntime:
         return result
 
 
+def claude_runtime_self_acceptance(runtime: ClaudeRuntime | None = None) -> dict[str, Any]:
+    """Run one tiny live Claude call and return only secret-safe diagnostics."""
+    state = claude_runtime_readiness()
+    if os.getenv("WOW_CLAUDE_SELF_ACCEPTANCE", "0") != "1":
+        return {**state, "self_acceptance_status": "SKIPPED_DISABLED"}
+    if not state["enabled"]:
+        return {**state, "self_acceptance_status": "SKIPPED_RUNTIME_DISABLED"}
+    if not state["configured"]:
+        return {**state, "self_acceptance_status": "FAILED", "code": "CLAUDE_AUTH_MISSING"}
+
+    runtime = runtime or ClaudeRuntime()
+    try:
+        probe = runtime.probe()
+    except HTTPException as exc:
+        detail = exc.detail if isinstance(exc.detail, dict) else {}
+        return {
+            **state,
+            "self_acceptance_status": "FAILED",
+            "code": detail.get("code") or "CLAUDE_SELF_ACCEPTANCE_HTTP_ERROR",
+            "upstream_status": detail.get("upstream_status"),
+            "request_id": detail.get("request_id"),
+        }
+    except Exception as exc:
+        return {
+            **state,
+            "self_acceptance_status": "FAILED",
+            "code": "CLAUDE_SELF_ACCEPTANCE_UNEXPECTED_ERROR",
+            "error_type": type(exc).__name__,
+        }
+
+    return {
+        **state,
+        "self_acceptance_status": "PASS",
+        "request_id": probe.get("request_id"),
+        "latency_ms": probe.get("latency_ms"),
+    }
+
+
+def _log_self_acceptance_result(result: dict[str, Any]) -> None:
+    level = _logger.warning if result.get("self_acceptance_status") == "PASS" else _logger.error
+    level(
+        "WOW_CLAUDE_RUNTIME status=%s configured=%s auth_mode=%s model=%s code=%s upstream_status=%s request_id=%s latency_ms=%s role=SUPPORTING_ADVISORY_ONLY probability_authority=false terminal_authority=false global_terminal_authority=V17_TERMINAL_REDUCER can_execute=false secret_value_exposed=false",
+        result.get("self_acceptance_status"),
+        result.get("configured"),
+        result.get("auth_mode"),
+        result.get("model"),
+        result.get("code"),
+        result.get("upstream_status"),
+        result.get("request_id"),
+        result.get("latency_ms"),
+    )
+
+
 def install_claude_runtime_routes(
     app: FastAPI,
     *,
@@ -240,3 +298,17 @@ def install_claude_runtime_routes(
     )
     def run_claude_advisory(request: ClaudeAdvisoryRequest) -> dict[str, Any]:
         return runtime.advisory(request)
+
+    @app.on_event("startup")
+    async def run_claude_startup_self_acceptance() -> None:
+        if os.getenv("WOW_CLAUDE_SELF_ACCEPTANCE", "0") != "1":
+            return
+
+        async def _run() -> None:
+            await asyncio.sleep(1.0)
+            result = await asyncio.to_thread(claude_runtime_self_acceptance, runtime)
+            _log_self_acceptance_result(result)
+
+        task = asyncio.create_task(_run())
+        _background_tasks.add(task)
+        task.add_done_callback(_background_tasks.discard)
