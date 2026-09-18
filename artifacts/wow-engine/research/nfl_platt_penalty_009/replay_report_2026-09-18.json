@@ -1,0 +1,165 @@
+{
+  "alternative_finite_C": {
+    "C=1e+06": {
+      "platt_a": 0.9358406954434028,
+      "platt_b": -0.057402642995193126
+    },
+    "C=1e+09": {
+      "platt_a": 0.9358407244848103,
+      "platt_b": -0.057402650127540936
+    },
+    "C=1e+12": {
+      "platt_a": 0.9358407245138516,
+      "platt_b": -0.05740265013467323
+    }
+  },
+  "artifact_reproduction": {
+    "abs_delta_a": 1.0658141036401503e-14,
+    "abs_delta_b": 7.28583859910259e-15,
+    "registered_platt_a": 0.9358407245138914,
+    "registered_platt_b": -0.05740265013467314,
+    "replayed_platt_a": 0.9358407245138808,
+    "replayed_platt_b": -0.057402650134680426
+  },
+  "bootstrap_stress": {
+    "draws": 200,
+    "failures": [],
+    "max_abs_param_delta": 0.0,
+    "max_abs_probability_delta": 0.0
+  },
+  "can_execute": false,
+  "certification_checks_all_pass": true,
+  "certification_checks_identical": true,
+  "challenger": {
+    "baseline_brier_score": 0.24890796301353832,
+    "baseline_log_loss": 0.6909632983050226,
+    "baseline_probability": 0.5473684210526316,
+    "certification_checks": {
+      "auc_not_below_chance": true,
+      "beats_baseline_brier": true,
+      "beats_baseline_log_loss": true,
+      "ece_within_limit": true,
+      "platt_positive_slope": true
+    },
+    "platt_a": 0.9358407245138808,
+    "platt_b": -0.057402650134680426,
+    "raw_validation_brier_score": 0.23275629814404242,
+    "uncertainty_margin": 0.05591808310857692,
+    "validation_auc": 0.6555023923444976,
+    "validation_brier_score": 0.2311589684674904,
+    "validation_ece_10": 0.04190465343841591,
+    "validation_log_loss": 0.6529250857823067
+  },
+  "challenger_warnings": [],
+  "champion": {
+    "baseline_brier_score": 0.24890796301353832,
+    "baseline_log_loss": 0.6909632983050226,
+    "baseline_probability": 0.5473684210526316,
+    "certification_checks": {
+      "auc_not_below_chance": true,
+      "beats_baseline_brier": true,
+      "beats_baseline_log_loss": true,
+      "ece_within_limit": true,
+      "platt_positive_slope": true
+    },
+    "platt_a": 0.9358407245138808,
+    "platt_b": -0.057402650134680426,
+    "raw_validation_brier_score": 0.23275629814404242,
+    "uncertainty_margin": 0.05591808310857692,
+    "validation_auc": 0.6555023923444976,
+    "validation_brier_score": 0.2311589684674904,
+    "validation_ece_10": 0.04190465343841591,
+    "validation_log_loss": 0.6529250857823067
+  },
+  "champion_warnings": [
+    "FutureWarning"
+  ],
+  "change_class": "C",
+  "counterexample_review": [
+    {
+      "cohort": "validation_2025",
+      "favourite_side_flips": 0,
+      "lower_bound_threshold_flips": {
+        "lower_bound_crosses_0.50": 0,
+        "lower_bound_crosses_0.55": 0,
+        "lower_bound_crosses_0.60": 0,
+        "lower_bound_crosses_0.65": 0,
+        "lower_bound_crosses_0.70": 0
+      },
+      "max_abs_lower_bound_delta": 0.0,
+      "max_abs_probability_delta": 0.0,
+      "mean_abs_probability_delta": 0.0,
+      "n": 284,
+      "worst_case_game": {
+        "base_logit": 0.56497163273,
+        "challenger_probability": 0.6156963271892479,
+        "champion_probability": 0.6156963271892479,
+        "index": 0
+      }
+    },
+    {
+      "cohort": "calibration_2024",
+      "favourite_side_flips": 0,
+      "lower_bound_threshold_flips": {
+        "lower_bound_crosses_0.50": 0,
+        "lower_bound_crosses_0.55": 0,
+        "lower_bound_crosses_0.60": 0,
+        "lower_bound_crosses_0.65": 0,
+        "lower_bound_crosses_0.70": 0
+      },
+      "max_abs_lower_bound_delta": 0.0,
+      "max_abs_probability_delta": 0.0,
+      "mean_abs_probability_delta": 0.0,
+      "n": 285,
+      "worst_case_game": {
+        "base_logit": 0.394596514983,
+        "challenger_probability": 0.5773433098491412,
+        "champion_probability": 0.5773433098491412,
+        "index": 0
+      }
+    }
+  ],
+  "metric_deltas": {
+    "uncertainty_margin": 0.0,
+    "validation_auc": 0.0,
+    "validation_brier_score": 0.0,
+    "validation_ece_10": 0.0,
+    "validation_log_loss": 0.0
+  },
+  "parameter_deltas": {
+    "abs_delta_platt_a": 0.0,
+    "abs_delta_platt_b": 0.0
+  },
+  "probability_publishable": false,
+  "registered_artifact_metrics": {
+    "baseline_brier_score": 0.24890796301353832,
+    "baseline_log_loss": 0.6909632983050226,
+    "baseline_probability": 0.5473684210526316,
+    "calibration_n": 285,
+    "raw_validation_brier_score": 0.23275629814404553,
+    "train_n": 787,
+    "uncertainty_margin": 0.05591808310857731,
+    "validation_auc": 0.6555023923444976,
+    "validation_brier_score": 0.23115896846749356,
+    "validation_ece_10": 0.04190465343842191,
+    "validation_log_loss": 0.6529250857823151,
+    "validation_n": 284
+  },
+  "separability_probe": {
+    "challenger": {
+      "platt_a": 8.346883534226432,
+      "platt_b": -1.1877432856881991e-16,
+      "warnings": []
+    },
+    "champion": {
+      "platt_a": 8.346883534226432,
+      "platt_b": -1.1877432856881991e-16,
+      "warnings": [
+        "FutureWarning"
+      ]
+    },
+    "max_abs_param_delta": 0.0
+  },
+  "sklearn_version": "1.9.1",
+  "ticket": "WOW-MODEL-NFL-PLATT-PENALTY-HYPOTHESIS-009"
+}
