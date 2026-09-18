@@ -36,7 +36,7 @@ class ScopeGuardError(ValueError):
 
 def extract_scope_block(body: str) -> str:
     pattern = re.compile(
-        rf"```{re.escape(SCOPE_FENCE)}[ \\t]*\\r?\\n(.*?)\\r?\\n```",
+        rf"```{re.escape(SCOPE_FENCE)}[ \t]*\r?\n(.*?)\r?\n```",
         re.DOTALL,
     )
     matches = pattern.findall(body or "")
@@ -73,7 +73,7 @@ def parse_scope_block(text: str) -> dict[str, Any]:
     for lineno, raw in enumerate(text.splitlines(), 1):
         if not raw.strip() or raw.lstrip().startswith("#"):
             continue
-        if "\\t" in raw:
+        if "\t" in raw:
             raise ScopeGuardError(f"line {lineno}: tabs are not allowed")
         stripped = raw.strip()
         if stripped.startswith("- "):
@@ -156,7 +156,7 @@ def verify_workflow_patch(file_row: dict[str, Any]) -> None:
             f"workflow change {filename!r} has no inspectable patch; autonomous merge denied"
         )
     for line in added_patch_lines(patch):
-        compact = re.sub(r"\\s+", " ", line)
+        compact = re.sub(r"\s+", " ", line)
         for token in WORKFLOW_PRIVILEGE_TOKENS:
             if token in compact:
                 raise ScopeGuardError(
