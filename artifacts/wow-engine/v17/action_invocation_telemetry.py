@@ -70,15 +70,23 @@ def _caller_class(headers: Any, status_code: int) -> str:
     authorization = headers.get("authorization")
     auth_scheme = _auth_scheme(authorization)
 
+    # A 401 means authentication did not succeed, so transport hints cannot be
+    # elevated into an attributable caller class.
     if status_code == 401:
         return "UNKNOWN"
 
+    # GitHub OIDC is independently authenticated by the existing API auth layer.
+    # We only inspect its issuer claim here to distinguish CI/synthetic traffic;
+    # no token contents are persisted and this result grants no authority.
     if _jwt_issuer(authorization) == _GITHUB_OIDC_ISSUER:
         return "GITHUB_ACTIONS"
 
     user_agent = str(headers.get("user-agent") or "")
     lowered = user_agent.casefold()
 
+    # The live GPT host is not allowed to self-assert CHATGPT_ACTION through a
+    # custom header. Upgrade to CHATGPT_ACTION only when the authenticated
+    # transport also presents an OpenAI/ChatGPT user-agent identity.
     if auth_scheme == "BEARER" and ("openai" in lowered or "chatgpt" in lowered):
         return "CHATGPT_ACTION"
 
@@ -89,6 +97,9 @@ def _caller_class(headers: Any, status_code: int) -> str:
     if "github" in lowered and "action" in lowered:
         return "GITHUB_ACTIONS"
 
+    # A successful/validated bearer request without stronger attributable
+    # transport evidence is only ACTION_API_KEY. Never infer CHATGPT_ACTION from
+    # bearer authentication alone.
     if auth_scheme == "BEARER":
         return "ACTION_API_KEY"
     return "UNKNOWN"
@@ -106,7 +117,11 @@ def _rows_in(headers: Any) -> int | None:
 
 
 def _request_id(headers: Any) -> str | None:
-    value = str(headers.get("x-wow-request-id") or headers.get("x-request-id") or "").strip()
+    value = str(
+        headers.get("x-wow-request-id")
+        or headers.get("x-request-id")
+        or ""
+    ).strip()
     return value[:256] or None
 
 
@@ -159,7 +174,8 @@ def install_action_invocation_middleware(
                 )
             except Exception as exc:
                 LOGGER.warning(
-                    "WOW_V17_ACTION_INVOCATION_PERSISTENCE_FAILED route=%s status_code=%s error=%s can_execute=false",
+                    "WOW_V17_ACTION_INVOCATION_PERSISTENCE_FAILED route=%s status_code=%s "
+                    "error=%s can_execute=false",
                     path,
                     status_code,
                     type(exc).__name__,
