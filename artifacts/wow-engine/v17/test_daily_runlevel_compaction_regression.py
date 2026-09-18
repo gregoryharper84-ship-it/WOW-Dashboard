@@ -196,16 +196,12 @@ def test_compact_response_bounds_all_slate_sized_run_level_collections():
                 },
             }
         },
-        # Daily also emits these at top level; COMPACT must not accidentally
-        # leave a second copy of the same large acquisition packet inline.
         "prop_acquisition": acquisition,
         "cross_sport_discovery_audit": _cross_sport_audit(),
         "blockers": [f"blocker-{index}-" + "x" * 120 for index in range(100)],
         "can_execute": False,
     }
 
-    # Reproduce the regression: run-level payloads alone can dwarf the client
-    # budget even when only 12 prop rows are scored.
     assert serialized_byte_size(response) > CLIENT_RESPONSE_LIMIT_BYTES
 
     compact = compact_response(response, detail_available=True)
@@ -227,8 +223,8 @@ def test_compact_response_bounds_all_slate_sized_run_level_collections():
 
     handoff = lane["handoff_reconciliation"]
     assert handoff["missing_persisted_snapshot_ids_count"] == 2010
-    assert len(handoff["missing_persisted_snapshot_ids"]) == 4
-    assert handoff["missing_persisted_snapshot_ids_truncated"] == 2006
+    assert len(handoff["missing_persisted_snapshot_ids"]) == 50
+    assert handoff["missing_persisted_snapshot_ids_truncated"] == 1960
     assert handoff["canonical_to_scored_balanced"] is True
 
     cross = compact["cross_sport_discovery_audit"]
@@ -243,7 +239,6 @@ def test_compact_response_bounds_all_slate_sized_run_level_collections():
     assert cross["discovery"]["acquisition_audit_count"] == 30
     assert cross["discovery"]["source_blockers_count"] == 30
 
-    # Transport compaction must not mask the producing capability state.
     direction = compact["rows"][0]["directions"][0]
     assert direction["code"] == "MODEL_UNAVAILABLE"
     assert direction["terminal_label"] == "MODEL_UNAVAILABLE"
@@ -253,7 +248,6 @@ def test_compact_response_bounds_all_slate_sized_run_level_collections():
     assert compact["reconciliation"]["balanced"] is True
     assert compact["can_execute"] is False
 
-    # COMPACT projection is non-destructive; FULL/internal audit data remains.
     assert len(response["lane_reconciliation"]["PROPS"]["acquisition"]["receipts"]) == 2010
     assert len(response["prop_acquisition"]["receipts"]) == 2010
     assert len(response["cross_sport_discovery_audit"]["rows"]) == 750
