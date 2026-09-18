@@ -76,7 +76,7 @@ jobs:
 
       CLAUDE_ARGS: >-
         --max-turns 40
-        --allowedTools "Edit,Read,Write,Glob,Grep,Bash(python -m pytest:*),Bash(python artifacts/wow-engine/v17/nightly_incident_records.py:*),Bash(python artifacts/wow-engine/v17/nightly_engineering_team_contract.py:*),Bash(git status),Bash(git diff:*),Bash(git log:*)"
+        --allowedTools "Edit,Read,Write,Glob,Grep,Bash(python -m pytest *),Bash(python artifacts/wow-engine/v17/nightly_incident_records.py *),Bash(python artifacts/wow-engine/v17/nightly_engineering_team_contract.py *),Bash(git status),Bash(git diff *),Bash(git log *)"
         --json-schema '{"type":"object","properties":{"changed":{"type":"boolean"},"incident_id":{"type":"string"},"risk_class":{"type":"string","enum":["R0","R1","R2-restorative","R2-repair-policy","R3","NONE"]},"summary":{"type":"string"},"tests":{"type":"string"},"hard_boundary":{"type":"string"}},"required":["changed","incident_id","risk_class","summary","tests","hard_boundary"],"additionalProperties":false}'
 
     steps:
