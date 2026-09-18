@@ -1,0 +1,40 @@
+name: wow-v17-rundown-sweep-inventory-probe
+
+on:
+  push:
+    branches:
+      - fix/v17-rundown-authenticated-full-sweep
+    paths:
+      - ".github/workflows/wow-v17-rundown-sweep-inventory-probe.yml"
+      - "artifacts/wow-engine/v17/rundown_sweep_inventory_probe.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    defaults:
+      run:
+        working-directory: artifacts/wow-engine
+    env:
+      WOW_CAN_EXECUTE: "false"
+      WOW_DRY_RUN_ONLY: "true"
+      WOW_SCOUT_HORIZON_HOURS: "36"
+      RUNDOWN_EMAIL: ${{ secrets.RUNDOWN_EMAIL }}
+      RUNDOWN_PASSWORD: ${{ secrets.RUNDOWN_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: artifacts/wow-engine/requirements.txt
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Install Chromium
+        run: python -m playwright install --with-deps chromium
+      - name: Count authenticated sweep inventory
+        run: python -m v17.rundown_sweep_inventory_probe
