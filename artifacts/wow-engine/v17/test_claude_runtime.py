@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 
 import httpx
 import pytest
@@ -11,7 +12,9 @@ from v17.claude_runtime import (
     ClaudeAdvisoryRequest,
     ClaudeRuntime,
     claude_runtime_readiness,
+    emit_claude_startup_readiness_receipt,
     install_claude_runtime_routes,
+    install_claude_startup_readiness_probe,
 )
 
 
@@ -133,6 +136,89 @@ def test_upstream_error_is_sanitized(monkeypatch):
     }
     assert "do-not-reflect-this-body" not in str(exc_info.value.detail)
     assert "api-key-secret" not in str(exc_info.value.detail)
+
+
+def test_startup_receipt_reports_missing_api_key_without_secret(monkeypatch, caplog):
+    monkeypatch.setenv("WOW_CLAUDE_RUNTIME_ENABLED", "1")
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "oauth-startup-secret")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+    with caplog.at_level(logging.WARNING, logger="wow.claude_runtime"):
+        receipt = emit_claude_startup_readiness_receipt(
+            ClaudeRuntime(transport=httpx.MockTransport(_ok_response))
+        )
+
+    assert receipt["status"] == "NOT_CONFIGURED"
+    assert receipt["probe_status"] == "NOT_RUN"
+    assert receipt["messages_api_configured"] is False
+    assert receipt["claude_code_oauth_configured"] is True
+    assert receipt["can_execute"] is False
+    assert "oauth-startup-secret" not in caplog.text
+    assert "messages_api_configured=false" in caplog.text
+
+
+def test_startup_receipt_probes_api_key_and_logs_no_secret(monkeypatch, caplog):
+    monkeypatch.setenv("WOW_CLAUDE_RUNTIME_ENABLED", "1")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "startup-api-secret")
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "startup-oauth-secret")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.headers["x-api-key"] == "startup-api-secret"
+        return _ok_response(request)
+
+    runtime = ClaudeRuntime(transport=httpx.MockTransport(handler))
+    with caplog.at_level(logging.INFO, logger="wow.claude_runtime"):
+        receipt = emit_claude_startup_readiness_receipt(runtime)
+
+    assert receipt["status"] == "READY"
+    assert receipt["probe_status"] == "PASS"
+    assert receipt["messages_api_configured"] is True
+    assert receipt["claude_code_oauth_configured"] is True
+    assert receipt["request_id"] == "req_test_123"
+    assert receipt["can_execute"] is False
+    assert "startup-api-secret" not in caplog.text
+    assert "startup-oauth-secret" not in caplog.text
+    assert "status=READY" in caplog.text
+    assert "probe_status=PASS" in caplog.text
+
+
+def test_startup_receipt_upstream_failure_is_sanitized_and_nonfatal(monkeypatch, caplog):
+    monkeypatch.setenv("WOW_CLAUDE_RUNTIME_ENABLED", "1")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "startup-api-secret")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            401,
+            headers={"request-id": "req_startup_denied"},
+            json={"error": {"message": "sensitive-upstream-body"}},
+            request=request,
+        )
+
+    runtime = ClaudeRuntime(transport=httpx.MockTransport(handler))
+    with caplog.at_level(logging.WARNING, logger="wow.claude_runtime"):
+        receipt = emit_claude_startup_readiness_receipt(runtime)
+
+    assert receipt["status"] == "DEGRADED"
+    assert receipt["probe_status"] == "FAIL"
+    assert receipt["error_code"] == "CLAUDE_UPSTREAM_HTTP_401"
+    assert receipt["can_execute"] is False
+    assert "startup-api-secret" not in caplog.text
+    assert "sensitive-upstream-body" not in caplog.text
+    assert "error_code=CLAUDE_UPSTREAM_HTTP_401" in caplog.text
+
+
+def test_startup_probe_install_is_idempotent(monkeypatch):
+    monkeypatch.setenv("WOW_CLAUDE_RUNTIME_ENABLED", "0")
+    app = FastAPI()
+    runtime = ClaudeRuntime(transport=httpx.MockTransport(_ok_response))
+
+    initial_count = len(app.router.on_startup)
+    install_claude_startup_readiness_probe(app, runtime=runtime)
+    after_first = len(app.router.on_startup)
+    install_claude_startup_readiness_probe(app, runtime=runtime)
+
+    assert after_first == initial_count + 1
+    assert len(app.router.on_startup) == after_first
 
 
 def test_routes_are_authenticated_idempotent_and_fail_closed_without_api_key(monkeypatch):
