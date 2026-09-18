@@ -13,6 +13,7 @@ on:
       - "artifacts/wow-engine/v17/rundown_authenticated_scout_v3.py"
       - "artifacts/wow-engine/v17/rundown_authenticated_scout_v4.py"
       - "artifacts/wow-engine/v17/rundown_authenticated_scout_v5.py"
+      - "artifacts/wow-engine/v17/rundown_authenticated_scout_v6.py"
       - "artifacts/wow-engine/test_v17_rundown_authenticated_scout.py"
   workflow_dispatch:
 
@@ -56,7 +57,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p "$RUNNER_TEMP/rundown-full-sweep"
-          python -m v17.rundown_authenticated_scout_v5 \
+          python -m v17.rundown_authenticated_scout_v6 \
             --output "$RUNNER_TEMP/rundown-full-sweep/model-handoff.json"
 
       - name: Verify full-slate acceptance contract
@@ -69,7 +70,7 @@ jobs:
           data = json.loads(path.read_text())
           assert data['status'] in {'DISCOVERY_COMPLETE', 'DISCOVERY_COMPLETE_WITH_SOURCE_BLOCKERS'}, data.get('reason_code')
           assert data['provider'] == 'THERUNDOWN_AUTHENTICATED_BOARD'
-          assert data['acquisition_transport'] == 'PLAYWRIGHT_APP_NETWORK_PLUS_CURRENT_SESSION'
+          assert data['acquisition_transport'] == 'PLAYWRIGHT_AUTHENTICATED_BROWSER_FETCH_PLUS_APP_NETWORK'
           assert data['can_execute'] is False
           assert data['prediction_authority'] is False
           assert data['research_ceiling'] == 'RESEARCH_INTEREST'
