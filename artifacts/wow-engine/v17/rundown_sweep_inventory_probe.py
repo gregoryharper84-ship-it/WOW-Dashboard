@@ -1,7 +1,8 @@
 """Sanitized authenticated TheRundown sweep-size probe.
 
-Counts inventory only; it does not emit odds, account identifiers, credentials,
-cookies, tokens, or candidate selections. can_execute=false.
+The app's own successful first-party request query is captured in memory and
+reused for discovery. Query values (including the provider-issued key) are never
+logged, serialized, or persisted. can_execute=false.
 """
 from __future__ import annotations
 
@@ -23,7 +24,7 @@ def browser_json(page, path: str, params=None):
           const controller = new AbortController();
           const timer = setTimeout(() => controller.abort(), 20000);
           try {
-            const response = await fetch(url, {credentials:'include', headers:{accept:'application/json'}, signal:controller.signal});
+            const response = await fetch(url, {credentials:'include', headers:{accept:'application/json'}, cache:'no-store', signal:controller.signal});
             const text = await response.text();
             return {status:response.status, text};
           } catch (error) {
@@ -55,15 +56,18 @@ def main() -> int:
         "market_batches_at_12": 0,
         "http_failures": 0,
         "event_status_counts": {},
-        "synthetic_no_params_status": None,
-        "synthetic_legacy_params_status": None,
         "native_event_status": None,
         "native_event_query_keys": [],
+        "native_market_status": None,
+        "native_market_query_keys": [],
+        "template_same_path_status": None,
+        "template_cross_sport_status": None,
         "can_execute": False,
         "prediction_authority": False,
     }
     status_counts: Counter[int] = Counter()
-    native_event = {"status": None, "path": None, "query_keys": []}
+    native_event = {"status": None, "path": None, "query": {}}
+    native_market = {"status": None, "path": None, "query": {}}
 
     with sync_playwright() as pw:
         browser = pw.chromium.launch(headless=True)
@@ -76,11 +80,15 @@ def main() -> int:
                 parts = urlsplit(response.url)
                 if parts.netloc.lower() != "therundown.io":
                     return
-                path_parts = [p for p in parts.path.split("/") if p]
-                if len(path_parts) == 6 and path_parts[:3] == ["api", "v2", "sports"] and path_parts[4] == "events" and native_event["path"] is None:
+                pieces = [p for p in parts.path.split("/") if p]
+                if len(pieces) == 6 and pieces[:3] == ["api", "v2", "sports"] and pieces[4] == "events" and native_event["path"] is None:
                     native_event["status"] = int(response.status)
                     native_event["path"] = parts.path
-                    native_event["query_keys"] = sorted({k for k, _ in parse_qsl(parts.query, keep_blank_values=True)})
+                    native_event["query"] = dict(parse_qsl(parts.query, keep_blank_values=True))
+                elif len(pieces) == 6 and pieces[:3] == ["api", "v2", "sports"] and pieces[4] == "markets" and native_market["path"] is None:
+                    native_market["status"] = int(response.status)
+                    native_market["path"] = parts.path
+                    native_market["query"] = dict(parse_qsl(parts.query, keep_blank_values=True))
             except Exception:
                 return
 
@@ -94,7 +102,7 @@ def main() -> int:
                 return 2
             page.goto(base.BOARD_URL, wait_until="domcontentloaded", timeout=base.TIMEOUT_MS)
             base._wait(page)
-            page.wait_for_timeout(4500)
+            page.wait_for_timeout(5000)
 
             status, payload = browser_json(page, "/api/v1/sports")
             if status != 200 or not isinstance(payload, dict) or not isinstance(payload.get("sports"), list):
@@ -102,19 +110,33 @@ def main() -> int:
                 return 2
             sports = [r for r in payload["sports"] if isinstance(r, dict) and r.get("sport_id") is not None]
             summary["sports_discovered"] = len(sports)
+            summary["native_event_status"] = native_event["status"]
+            summary["native_event_query_keys"] = sorted(native_event["query"].keys())
+            summary["native_market_status"] = native_market["status"]
+            summary["native_market_query_keys"] = sorted(native_market["query"].keys())
 
-            # Compare one exact synthetic path both with and without the two legacy
-            # parameters. The app's own observed request above is the control.
+            if not native_event["path"] or native_event["status"] != 200 or "key" not in native_event["query"]:
+                print(json.dumps({**summary, "status":"RUNDOWN_NATIVE_EVENT_TEMPLATE_UNAVAILABLE"}, sort_keys=True))
+                return 2
+
+            # Re-fetch the exact native path/query as a control. Values stay only
+            # in memory and are never included in the printed summary.
+            same_status, _ = browser_json(page, native_event["path"], native_event["query"])
+            summary["template_same_path_status"] = same_status
+
             first_sport = next((r for r in sports if str(r.get("sport_name") or "") not in base.NON_SPORT_NAMES), None)
             if first_sport is not None:
-                first_path = f"/api/v2/sports/{int(first_sport['sport_id'])}/events/{start.date().isoformat()}"
-                no_param_status, _ = browser_json(page, first_path)
-                legacy_status, _ = browser_json(page, first_path, {"main_line":"true","hide_closed":"true"})
-                summary["synthetic_no_params_status"] = no_param_status
-                summary["synthetic_legacy_params_status"] = legacy_status
+                test_path = f"/api/v2/sports/{int(first_sport['sport_id'])}/events/{start.date().isoformat()}"
+                cross_status, _ = browser_json(page, test_path, native_event["query"])
+                summary["template_cross_sport_status"] = cross_status
 
-            # Sweep event inventory with the exact documented/app path and no
-            # invented query parameters. Only active sport/dates progress further.
+            event_template = dict(native_event["query"])
+            # The event template controls authentication, timezone/offset, include,
+            # market_ids and hide_closed. We do not invent or persist any values.
+            market_template = dict(native_market["query"]) if native_market["query"] else {
+                k: v for k, v in event_template.items() if k in {"key", "offset", "include", "hide_closed"}
+            }
+
             for sport in sports:
                 sport_id = int(sport["sport_id"])
                 sport_name = str(sport.get("sport_name") or sport_id)
@@ -124,7 +146,7 @@ def main() -> int:
                 for date in base._date_strings(start, end):
                     summary["sport_dates_checked"] += 1
                     ep = f"/api/v2/sports/{sport_id}/events/{date}"
-                    status, events_payload = browser_json(page, ep)
+                    status, events_payload = browser_json(page, ep, event_template)
                     status_counts[status] += 1
                     if status != 200 or not isinstance(events_payload, dict):
                         summary["http_failures"] += 1
@@ -139,7 +161,7 @@ def main() -> int:
                     summary["sport_dates_with_upcoming_events"] += 1
                     summary["upcoming_events"] += len(relevant)
                     mp = f"/api/v2/sports/{sport_id}/markets/{date}"
-                    status, markets_payload = browser_json(page, mp)
+                    status, markets_payload = browser_json(page, mp, market_template)
                     if status != 200:
                         summary["http_failures"] += 1
                         continue
@@ -151,8 +173,6 @@ def main() -> int:
             context.close(); browser.close()
 
     summary["event_status_counts"] = {str(k): v for k, v in sorted(status_counts.items())}
-    summary["native_event_status"] = native_event["status"]
-    summary["native_event_query_keys"] = native_event["query_keys"]
     print(json.dumps(summary, sort_keys=True))
     return 0
 
