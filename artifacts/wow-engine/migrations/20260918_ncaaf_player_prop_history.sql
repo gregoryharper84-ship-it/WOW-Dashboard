@@ -55,7 +55,11 @@ create table if not exists public.wow_ncaaf_player_stat_history (
     'RECEIVING_TDS',
     'RECEPTIONS'
   )),
-  constraint wow_ncaaf_player_stat_value_finite check (isfinite(stat_value)),
+  constraint wow_ncaaf_player_stat_value_finite check (
+    stat_value <> 'NaN'::double precision
+    and stat_value <> 'Infinity'::double precision
+    and stat_value <> '-Infinity'::double precision
+  ),
   constraint wow_ncaaf_player_stat_never_execute check (can_execute = false),
   unique (season, week, game_id, team, athlete_id, stat_type, source_payload_sha256)
 );
