@@ -8,6 +8,7 @@ on:
       - ".github/workflows/wow-v17-rundown-full-sweep-validation.yml"
       - "artifacts/wow-engine/requirements.txt"
       - "artifacts/wow-engine/v17/rundown_authenticated_scout.py"
+      - "artifacts/wow-engine/v17/rundown_authenticated_scout_browser_transport.py"
       - "artifacts/wow-engine/test_v17_rundown_authenticated_scout.py"
   workflow_dispatch:
 
@@ -51,7 +52,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p "$RUNNER_TEMP/rundown-full-sweep"
-          python -m v17.rundown_authenticated_scout \
+          python -m v17.rundown_authenticated_scout_browser_transport \
             --output "$RUNNER_TEMP/rundown-full-sweep/model-handoff.json"
 
       - name: Verify full-slate acceptance contract
@@ -64,6 +65,7 @@ jobs:
           data = json.loads(path.read_text())
           assert data['status'] in {'DISCOVERY_COMPLETE', 'DISCOVERY_COMPLETE_WITH_SOURCE_BLOCKERS'}, data.get('reason_code')
           assert data['provider'] == 'THERUNDOWN_AUTHENTICATED_BOARD'
+          assert data['acquisition_transport'] == 'PLAYWRIGHT_BROWSER_FETCH'
           assert data['can_execute'] is False
           assert data['prediction_authority'] is False
           assert data['research_ceiling'] == 'RESEARCH_INTEREST'
@@ -88,6 +90,7 @@ jobs:
           print('RUNDOWN_FULL_SWEEP=PASS')
           print(json.dumps({
               'status': data['status'],
+              'transport': data['acquisition_transport'],
               'sports_discovered': inventory[-1]['sports_discovered'],
               'events_scanned': len(event_rows),
               'team_event_candidates': len(team),
