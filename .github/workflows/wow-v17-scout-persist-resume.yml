@@ -12,8 +12,12 @@ permissions:
   actions: write
   contents: read
 
+# One global group let a */15 cron tick and a workflow_run trigger contend for
+# the single pending slot, so queued runs cancelled each other. Key the group by
+# trigger source (and, for workflow_run, by the SHA being resumed) so a
+# SHA-specific resume is never cancelled by an unrelated scheduled sweep.
 concurrency:
-  group: wow-v17-scout-persist-resume
+  group: wow-v17-scout-persist-resume-${{ github.event_name == 'workflow_run' && format('sha-{0}', github.event.workflow_run.head_sha) || 'scheduled' }}
   cancel-in-progress: false
 
 jobs:
@@ -118,7 +122,7 @@ jobs:
             echo "present=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Detect active same-source persistence writer
+      - name: Detect same-source persistence writer state
         id: writer
         if: steps.source.outputs.force_replay == 'true' || steps.existing.outputs.present != 'true'
         shell: bash
@@ -126,8 +130,23 @@ jobs:
           SOURCE_RUN_ID: ${{ steps.source.outputs.run_id }}
         run: |
           set -euo pipefail
-          active_run_id=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/workflows/wow-v17-scout-brain-persist.yml/runs?branch=main&per_page=100" \
-            --jq "[.workflow_runs[] | select(.display_title == \"wow-v17-scout-brain-persist source=${SOURCE_RUN_ID}\" and (.status == \"queued\" or .status == \"in_progress\" or .status == \"waiting\" or .status == \"requested\" or .status == \"pending\"))] | first | .id // \"\"")
+          main_sha=$(gh api "/repos/${GITHUB_REPOSITORY}/commits/main" --jq '.sha')
+          display_title="wow-v17-scout-brain-persist source=${SOURCE_RUN_ID}"
+          persist_runs=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/workflows/wow-v17-scout-brain-persist.yml/runs?branch=main&per_page=100")
+
+          active_run_id=$(printf '%s' "$persist_runs" | jq -r \
+            --arg title "$display_title" \
+            '[.workflow_runs[] | select(.display_title == $title and (.status == "queued" or .status == "in_progress" or .status == "waiting" or .status == "requested" or .status == "pending"))] | first | .id // ""')
+
+          # Idempotency: a successful persistence writer for this source run that
+          # already ran on the current main tip means the replay this run would
+          # dispatch has been performed. Re-dispatching it writes the same
+          # discovery payload into the Scout brain a second time.
+          replayed_run_id=$(printf '%s' "$persist_runs" | jq -r \
+            --arg title "$display_title" --arg sha "$main_sha" \
+            '[.workflow_runs[] | select(.display_title == $title and .status == "completed" and .conclusion == "success" and .head_sha == $sha)] | first | .id // ""')
+
+          echo "main_sha=$main_sha" >> "$GITHUB_OUTPUT"
           if [ -n "$active_run_id" ]; then
             echo "active=true" >> "$GITHUB_OUTPUT"
             echo "run_id=$active_run_id" >> "$GITHUB_OUTPUT"
@@ -136,8 +155,16 @@ jobs:
             echo "active=false" >> "$GITHUB_OUTPUT"
           fi
 
+          if [ -n "$replayed_run_id" ]; then
+            echo "replayed=true" >> "$GITHUB_OUTPUT"
+            echo "replayed_run_id=$replayed_run_id" >> "$GITHUB_OUTPUT"
+            echo "Source run ${SOURCE_RUN_ID} was already persisted through current main (${main_sha}) by run ${replayed_run_id}; skipping redundant re-dispatch." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "replayed=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Explicitly resume Scout persistence
-        if: (steps.source.outputs.force_replay == 'true' || steps.existing.outputs.present != 'true') && steps.writer.outputs.active != 'true'
+        if: (steps.source.outputs.force_replay == 'true' || steps.existing.outputs.present != 'true') && steps.writer.outputs.active != 'true' && steps.writer.outputs.replayed != 'true'
         shell: bash
         env:
           SOURCE_RUN_ID: ${{ steps.source.outputs.run_id }}
@@ -151,7 +178,10 @@ jobs:
         env:
           SOURCE_RUN_ID: ${{ steps.source.outputs.run_id }}
           BASELINE_COUNT: ${{ steps.baseline.outputs.count }}
-          FORCE_REPLAY: ${{ steps.source.outputs.force_replay }}
+          # Only a replay this run actually dispatched may demand a *new*
+          # receipt. When the current-main replay already happened, the existing
+          # receipt is the evidence.
+          EXPECT_FRESH_RECEIPT: ${{ steps.source.outputs.force_replay == 'true' && steps.writer.outputs.replayed != 'true' }}
         run: |
           set -euo pipefail
           receipt_name="wow-v17-scout-brain-persistence-${SOURCE_RUN_ID}"
@@ -160,7 +190,7 @@ jobs:
           for _ in $(seq 1 200); do
             receipt_count=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/artifacts?name=${receipt_name}&per_page=100" \
               --jq '[.artifacts[] | select(.expired == false)] | length')
-            if [ "$FORCE_REPLAY" = "true" ]; then
+            if [ "$EXPECT_FRESH_RECEIPT" = "true" ]; then
               if [ "$receipt_count" -gt "$BASELINE_COUNT" ]; then
                 echo "Fresh Scout persistence receipt verified for source run ${SOURCE_RUN_ID}: ${BASELINE_COUNT} -> ${receipt_count}." >> "$GITHUB_STEP_SUMMARY"
                 exit 0
@@ -171,7 +201,7 @@ jobs:
             fi
             sleep 15
           done
-          if [ "$FORCE_REPLAY" = "true" ]; then
+          if [ "$EXPECT_FRESH_RECEIPT" = "true" ]; then
             echo "Fresh persistence receipt did not appear for source run ${SOURCE_RUN_ID}; current-main replay acceptance remains open." >&2
           else
             echo "Persistence receipt did not appear for source run ${SOURCE_RUN_ID}; acceptance remains open." >&2

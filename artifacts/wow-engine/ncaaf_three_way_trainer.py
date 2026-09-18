@@ -157,7 +157,7 @@ def train_calibrate_test(rows: Sequence[TrainingRow], *, min_rows: int = 300,
             raise NCAAFTrainingError("NCAAF_TRAINING_CLASS_DEGENERATE", f"{name} partition lacks both outcomes")
 
     scaler = StandardScaler().fit(X_train)
-    model = LogisticRegression(C=1.0, penalty="l2", solver="lbfgs", max_iter=500, random_state=0)
+    model = LogisticRegression(C=1.0, solver="lbfgs", max_iter=500, random_state=0)
     model.fit(scaler.transform(X_train), y_train)
     p_cal_raw = model.predict_proba(scaler.transform(X_cal))[:, 1]
     p_test_raw = model.predict_proba(scaler.transform(X_test))[:, 1]

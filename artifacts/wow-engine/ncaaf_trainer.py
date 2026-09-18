@@ -170,7 +170,7 @@ def train_candidate(
     scaler = StandardScaler()
     X_train_scaled = scaler.fit_transform(X_train)
     X_val_scaled = scaler.transform(X_val)
-    model = LogisticRegression(C=1.0, penalty="l2", solver="lbfgs", max_iter=500, random_state=0)
+    model = LogisticRegression(C=1.0, solver="lbfgs", max_iter=500, random_state=0)
     model.fit(X_train_scaled, y_train)
     p_val = model.predict_proba(X_val_scaled)[:, 1]
 

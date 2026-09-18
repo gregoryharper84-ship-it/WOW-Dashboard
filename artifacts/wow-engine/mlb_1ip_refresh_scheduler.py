@@ -39,13 +39,19 @@ async def run_refresh_loop(
         try:
             result = await asyncio.to_thread(run_once, client=db_client_fn())
             logger.warning(
-                "WOW_MLB_1IP_FINAL_REFRESH status=PASS seen=%s waiting=%s rerun_completed=%s purged=%s expired=%s failed=%s probability_publishable=false can_execute=false",
+                "WOW_MLB_1IP_FINAL_REFRESH status=PASS seen=%s waiting=%s rerun_completed=%s purged=%s "
+                "expired=%s expired_stale=%s failed=%s retry_scheduled=%s dead_lettered=%s "
+                "dead_letter_backlog=%s probability_publishable=false can_execute=false",
                 result.get("seen", 0),
                 result.get("waiting", 0),
                 result.get("rerun_completed", 0),
                 result.get("purged", 0),
                 result.get("expired", 0),
+                result.get("expired_stale", 0),
                 result.get("failed", 0),
+                result.get("retry_scheduled", 0),
+                result.get("dead_lettered", 0),
+                result.get("dead_letter_backlog", 0),
             )
         except asyncio.CancelledError:
             raise
