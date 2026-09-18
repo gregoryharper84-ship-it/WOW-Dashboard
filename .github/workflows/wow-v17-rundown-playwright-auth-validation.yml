@@ -110,7 +110,7 @@ jobs:
             echo "Inventory probe skipped until login secrets are configured"
             exit 0
           fi
-          python v17/rundown_playwright_inventory_probe.py \
+          python -m v17.rundown_playwright_inventory_probe \
             --output "$RUNNER_TEMP/rundown-playwright/inventory-probe.json"
           python - <<'PY'
           import json, os
