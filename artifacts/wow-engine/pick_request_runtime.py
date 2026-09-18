@@ -7,7 +7,9 @@ This facade adds receipt/error-boundary and Top-10 completion semantics:
   ``specialist_scoring_attempted=true``;
 - unexpected scorer exceptions are typed ``MODEL_SCORER_FAILED``;
 - downstream portfolio-governance exceptions fail closed without erasing an
-  already-completed sporting probability receipt; and
+  already-completed sporting probability receipt;
+- completed sporting-probability rows are admitted to downstream card work only
+  when the backend itself says they are rank-eligible and publishable; and
 - target Top-10 families cannot complete on terminal-status accounting alone:
   every source row must reconcile exactly once to a valid controlling-model
   package or an explicit typed blocker.
@@ -147,28 +149,120 @@ def _completed_scored_outcome(**kwargs: Any) -> dict[str, Any]:
     return out
 
 
+def _prediction_id(outcome: dict[str, Any]) -> str | None:
+    result = outcome.get("result")
+    if not isinstance(result, dict):
+        return None
+    prediction = result.get("prediction")
+    if not isinstance(prediction, dict):
+        return None
+    value = prediction.get("prediction_id")
+    text = str(value or "").strip()
+    return text or None
+
+
 def _apply_portfolio_governance(
     request_id: Optional[str],
     scored_legs: list[tuple[dict[str, Any], dict[str, Any]]],
 ) -> None:
-    """Fail closed downstream without destroying a sporting-model receipt."""
+    """Fail closed for card admission without mutating sporting probability.
+
+    Portfolio/dependence governance remains separate from sporting probability,
+    but a row may not cross into downstream card construction merely because it
+    completed model scoring. The authoritative row-level ``rank_eligible`` and
+    ``probability_publishable`` flags must both be true, the terminal row must
+    remain completed/non-rejected, and portfolio governance itself must pass.
+
+    The emitted card-admission receipt binds the governed prediction id to the
+    exact event/player/stat/line/direction sent through ``/score-pick-request``.
+    A later line/direction change therefore requires a fresh scoring receipt;
+    this layer never treats an adjacent line as the same thesis.
+    """
     try:
         _ORIGINAL_APPLY_PORTFOLIO_GOVERNANCE(request_id, scored_legs)
-        return
     except Exception as exc:
         error_type = type(exc).__name__
+        for leg, outcome in scored_legs:
+            blocker = "PORTFOLIO_GOVERNANCE_UNAVAILABLE"
+            outcome["portfolio_governance"] = {
+                "status": "BLOCKED",
+                "code": blocker,
+                "error_type": error_type,
+                "blockers": [blocker],
+                "receipt_preserved": True,
+                "sporting_probability_mutated": False,
+                "can_execute": False,
+            }
+            outcome["downstream_portfolio_evaluation_allowed"] = False
+            outcome["card_admission_eligible"] = False
+            outcome["card_admission_blockers"] = [blocker]
+            outcome["card_admission_receipt"] = {
+                "prediction_id": _prediction_id(outcome),
+                "event_id": leg.get("event_id"),
+                "participant": leg.get("player"),
+                "market_stat": leg.get("prop_type"),
+                "exact_line": leg.get("line"),
+                "direction": leg.get("direction"),
+                "rank_eligible": outcome.get("rank_eligible") is True,
+                "probability_publishable": outcome.get("probability_publishable") is True,
+                "portfolio_eligible": False,
+                "can_execute": False,
+            }
+        return
 
-    for _leg, outcome in scored_legs:
-        outcome["portfolio_governance"] = {
-            "status": "BLOCKED",
-            "code": "PORTFOLIO_GOVERNANCE_UNAVAILABLE",
-            "error_type": error_type,
-            "blockers": ["PORTFOLIO_GOVERNANCE_UNAVAILABLE"],
-            "receipt_preserved": True,
-            "sporting_probability_mutated": False,
+    for leg, outcome in scored_legs:
+        upstream_blockers: list[str] = []
+        if outcome.get("rank_eligible") is not True:
+            upstream_blockers.append("CARD_ADMISSION:RANK_INELIGIBLE")
+        if outcome.get("probability_publishable") is not True:
+            upstream_blockers.append("CARD_ADMISSION:PROBABILITY_NOT_PUBLISHABLE")
+        if outcome.get("terminal_status") != "COMPLETED":
+            upstream_blockers.append("CARD_ADMISSION:TERMINAL_NOT_COMPLETED")
+        if outcome.get("pick_rejected") is True:
+            upstream_blockers.append("CARD_ADMISSION:TERMINAL_REJECTED")
+
+        governance = outcome.get("portfolio_governance")
+        if not isinstance(governance, dict):
+            governance = {
+                "status": "BLOCKED",
+                "code": "PORTFOLIO_GOVERNANCE_MISSING",
+                "blockers": ["PORTFOLIO_GOVERNANCE_MISSING"],
+                "sporting_probability_mutated": False,
+                "can_execute": False,
+            }
+            outcome["portfolio_governance"] = governance
+            outcome["downstream_portfolio_evaluation_allowed"] = False
+
+        portfolio_allowed = outcome.get("downstream_portfolio_evaluation_allowed") is True
+        portfolio_blockers = [str(item) for item in governance.get("blockers") or []]
+        if not portfolio_allowed and not portfolio_blockers:
+            portfolio_blockers.append("CARD_ADMISSION:PORTFOLIO_NOT_QUALIFIED")
+
+        card_blockers = list(dict.fromkeys([*upstream_blockers, *portfolio_blockers]))
+        if upstream_blockers:
+            outcome["downstream_portfolio_evaluation_allowed"] = False
+            governance["status"] = "BLOCKED"
+            governance["portfolio_qualification"] = "HELD_FOR_UPSTREAM_ELIGIBILITY"
+            governance["card_admission_blocked"] = True
+            governance["blockers"] = list(dict.fromkeys([*portfolio_blockers, *upstream_blockers]))
+            governance["sporting_probability_mutated"] = False
+            governance["can_execute"] = False
+            portfolio_allowed = False
+
+        outcome["card_admission_eligible"] = bool(not card_blockers and portfolio_allowed)
+        outcome["card_admission_blockers"] = card_blockers
+        outcome["card_admission_receipt"] = {
+            "prediction_id": _prediction_id(outcome),
+            "event_id": leg.get("event_id"),
+            "participant": leg.get("player"),
+            "market_stat": leg.get("prop_type"),
+            "exact_line": leg.get("line"),
+            "direction": leg.get("direction"),
+            "rank_eligible": outcome.get("rank_eligible") is True,
+            "probability_publishable": outcome.get("probability_publishable") is True,
+            "portfolio_eligible": portfolio_allowed,
             "can_execute": False,
         }
-        outcome["downstream_portfolio_evaluation_allowed"] = False
 
 
 _core._terminal = _terminal
