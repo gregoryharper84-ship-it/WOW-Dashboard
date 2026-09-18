@@ -41,10 +41,11 @@ DETAIL_RETRIEVAL_UNAVAILABLE = "DAILY_ROW_DETAIL_RETRIEVAL_UNAVAILABLE"
 
 # Compact-mode budgets. Complete row evidence remains in persisted detail and
 # FULL mode remains available for internal audit; trimming applies to the normal
-# Action transport only.
+# Action transport only. Preserve ordinary/small reconciliation diagnostics in
+# full and only truncate lists that have grown to slate scale.
 MAX_COMPACT_BLOCKERS = 4
 MAX_COMPACT_BLOCKER_CHARS = 100
-MAX_COMPACT_IDENTITY_ITEMS = 4
+MAX_COMPACT_IDENTITY_ITEMS = 50
 MAX_COMPACT_AUDIT_ITEMS = 4
 
 DETAIL_PAGE_DEFAULT_LIMIT = 5
@@ -210,7 +211,7 @@ def compact_acquisition(acquisition: dict[str, Any]) -> dict[str, Any]:
 
 
 def compact_handoff_reconciliation(handoff: dict[str, Any]) -> dict[str, Any]:
-    """Preserve reconciliation math while bounding potentially huge ID arrays."""
+    """Preserve reconciliation math while bounding only slate-sized ID arrays."""
     compact = dict(handoff)
     values = handoff.get("missing_persisted_snapshot_ids")
     if isinstance(values, list):
@@ -269,10 +270,11 @@ def _compact_cross_sport_reconciliation(reconciliation: dict[str, Any]) -> dict[
         compact[f"{field}_count"] = total
         if truncated:
             compact[f"{field}_truncated"] = truncated
-    blockers, truncated = _compact_blockers(reconciliation.get("source_blockers"))
-    if "source_blockers" in reconciliation:
-        compact["source_blockers"] = blockers
-        compact["source_blockers_count"] = len(reconciliation.get("source_blockers") or [])
+    source_blockers = reconciliation.get("source_blockers")
+    if isinstance(source_blockers, (list, tuple)):
+        kept, total, truncated = _compact_list(source_blockers)
+        compact["source_blockers"] = kept
+        compact["source_blockers_count"] = total
         if truncated:
             compact["source_blockers_truncated"] = truncated
     compact["can_execute"] = False
@@ -281,9 +283,7 @@ def _compact_cross_sport_reconciliation(reconciliation: dict[str, Any]) -> dict[
 
 def compact_cross_sport_discovery_audit(audit: dict[str, Any]) -> dict[str, Any]:
     """Remove slate-sized routed rows from the normal Daily Action response."""
-    compact: dict[str, Any] = {
-        "can_execute": False,
-    }
+    compact: dict[str, Any] = {"can_execute": False}
     discovery = audit.get("discovery")
     if isinstance(discovery, dict):
         compact["discovery"] = _compact_discovery_inventory(discovery)
