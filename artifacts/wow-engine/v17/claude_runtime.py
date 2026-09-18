@@ -206,6 +206,10 @@ def install_claude_runtime_routes(
     auth_dependency: Any,
     runtime: ClaudeRuntime | None = None,
 ) -> None:
+    existing_paths = {getattr(route, "path", None) for route in app.router.routes}
+    if "/internal/claude/readiness" in existing_paths or "/internal/claude/advisory" in existing_paths:
+        return
+
     runtime = runtime or ClaudeRuntime()
 
     @app.get(
