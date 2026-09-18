@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode, urlsplit
 
-from playwright.sync_api import Page, Response, sync_playwright
+from playwright.sync_api import BrowserContext, Page, Request, Response, sync_playwright
 
 from v17.rundown_playwright_capture import (
     BOARD_URL,
@@ -36,6 +36,7 @@ _ALLOWED_PATHS = (
     re.compile(r"^/api/v2/markets$"),
     re.compile(r"^/api/v2/sports/\d+/(?:events|openers|markets)/\d{4}-\d{2}-\d{2}$"),
 )
+_EVENT_PATH_RE = re.compile(r"^/api/v2/sports/\d+/events/\d{4}-\d{2}-\d{2}$")
 # Only applied as defence in depth to approved market-data responses. `scope`
 # is intentionally not redacted because it is provider market taxonomy, not an
 # OAuth scope, on these whitelisted paths.
@@ -83,6 +84,25 @@ def _redact(node: Any, depth: int = 0) -> Any:
     return str(node)
 
 
+def _ephemeral_api_headers(request: Request) -> dict[str, str]:
+    """Copy only app-added API auth/context headers, never cookies.
+
+    Values live only in process memory and are never serialized, logged, or
+    returned by this probe. BrowserContext.request already shares the browser
+    cookie jar, so copying Cookie is neither needed nor allowed.
+    """
+    try:
+        headers = request.all_headers()
+    except Exception:
+        headers = request.headers
+    copied: dict[str, str] = {}
+    for raw_name, raw_value in headers.items():
+        name = str(raw_name).lower()
+        if name == "authorization" or name.startswith("x-"):
+            copied[name] = str(raw_value)
+    return copied
+
+
 def _available_prop_market_ids(payloads: dict[str, Any], sport_id: int, date: str) -> list[int]:
     catalog_raw = payloads.get("/api/v2/markets") or []
     catalog = {
@@ -115,15 +135,31 @@ def _available_prop_market_ids(payloads: dict[str, Any], sport_id: int, date: st
     return selected[:3]
 
 
-def _bounded_prop_pilot(page: Page, payloads: dict[str, Any]) -> dict[str, Any]:
+def _bounded_prop_pilot(
+    context: BrowserContext,
+    payloads: dict[str, Any],
+    ephemeral_headers: dict[str, str],
+) -> dict[str, Any]:
     """Fetch a tiny same-session prop sample to pin the live player-line schema.
 
     This deliberately requests only up to three player O/U markets for four
-    sports and four known books. It is diagnostic, bounded, and does not expose
-    or persist any session credential.
+    sports and four known books. The app's own API authorization/context header
+    is reused only in memory. Header values are never persisted or printed.
     """
     date = datetime.now(timezone.utc).date().isoformat()
     results: dict[str, Any] = {}
+    if not ephemeral_headers:
+        return {
+            str(sport_id): {
+                "status": "APP_REQUEST_AUTH_CONTEXT_UNAVAILABLE",
+                "http_status": None,
+                "market_ids": _available_prop_market_ids(payloads, sport_id, date),
+                "affiliate_ids": [3, 19, 22, 23],
+                "body": None,
+            }
+            for sport_id in _PROP_PRIORITIES
+        }
+
     for sport_id in _PROP_PRIORITIES:
         market_ids = _available_prop_market_ids(payloads, sport_id, date)
         if not market_ids:
@@ -139,18 +175,18 @@ def _bounded_prop_pilot(page: Page, payloads: dict[str, Any]) -> dict[str, Any]:
             "main_line": "true",
         })
         url = f"https://therundown.io/api/v2/sports/{sport_id}/events/{date}?{query}"
-        response = page.evaluate(
-            """async (url) => {
-                const response = await fetch(url, {credentials: 'include'});
-                const text = await response.text();
-                let body = null;
-                try { body = JSON.parse(text); } catch (_) {}
-                return {status: response.status, body};
-            }""",
-            url,
-        )
-        status = int(response.get("status") or 0)
-        body = response.get("body")
+        try:
+            response = context.request.get(
+                url,
+                headers=ephemeral_headers,
+                timeout=TIMEOUT_MS,
+                fail_on_status_code=False,
+            )
+            status = int(response.status)
+            body = response.json() if status == 200 else None
+        except Exception:
+            status = 0
+            body = None
         results[str(sport_id)] = {
             "status": "OK" if status == 200 and isinstance(body, dict) else "HTTP_BLOCKED",
             "http_status": status,
@@ -164,11 +200,25 @@ def _bounded_prop_pilot(page: Page, payloads: dict[str, Any]) -> dict[str, Any]:
 def probe(output: str | Path) -> dict[str, Any]:
     payloads: dict[str, Any] = {}
     prop_pilot: dict[str, Any] = {}
+    # Sensitive values may live here transiently. This mapping is intentionally
+    # never included in the result object or any print statement.
+    ephemeral_headers: dict[str, str] = {}
+
     with sync_playwright() as pw:
         browser = pw.chromium.launch(headless=True)
         context = browser.new_context(viewport={"width": 1680, "height": 1300}, locale="en-US")
         page = context.new_page()
         page.set_default_timeout(TIMEOUT_MS)
+
+        def on_request(request: Request) -> None:
+            parts = urlsplit(request.url)
+            if parts.netloc.lower() != "therundown.io" or not _EVENT_PATH_RE.match(parts.path):
+                return
+            # Do not let the synthetic pilot overwrite the auth context learned
+            # from the application's own successful event requests.
+            if "market_ids=" in parts.query or ephemeral_headers:
+                return
+            ephemeral_headers.update(_ephemeral_api_headers(request))
 
         def on_response(response: Response) -> None:
             if not _allowed_response(response):
@@ -181,6 +231,7 @@ def probe(output: str | Path) -> dict[str, Any]:
             except Exception:
                 return
 
+        page.on("request", on_request)
         page.on("response", on_response)
         try:
             page.goto(BOARD_URL, wait_until="domcontentloaded", timeout=TIMEOUT_MS)
@@ -188,7 +239,7 @@ def probe(output: str | Path) -> dict[str, Any]:
             ok, blocker = _login(page)
             if not ok:
                 result = {
-                    "schema": "wow.v17.rundown.authenticated-inventory-probe.v2",
+                    "schema": "wow.v17.rundown.authenticated-inventory-probe.v3",
                     "status": "DISCOVERY_BLOCKED",
                     "reason_code": blocker,
                     "can_execute": False,
@@ -210,13 +261,16 @@ def probe(output: str | Path) -> dict[str, Any]:
                 blocker = None
             page.wait_for_timeout(8000)
             if blocker is None:
-                prop_pilot = _bounded_prop_pilot(page, payloads)
+                prop_pilot = _bounded_prop_pilot(context, payloads, ephemeral_headers)
         finally:
+            # Explicitly drop the transient auth material before closing the
+            # browser context. It is never serialized.
+            ephemeral_headers.clear()
             context.close()
             browser.close()
 
     result = {
-        "schema": "wow.v17.rundown.authenticated-inventory-probe.v2",
+        "schema": "wow.v17.rundown.authenticated-inventory-probe.v3",
         "status": "DISCOVERY_COMPLETE" if not blocker and payloads else "DISCOVERY_BLOCKED",
         "reason_code": blocker or (None if payloads else "RUNDOWN_AUTHENTICATED_INVENTORY_EMPTY"),
         "can_execute": CAN_EXECUTE,
