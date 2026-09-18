@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit
 
-from playwright.sync_api import PlaywrightTimeoutError
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 from v17 import rundown_authenticated_scout as base
 from v17 import rundown_authenticated_scout_v4 as impl
