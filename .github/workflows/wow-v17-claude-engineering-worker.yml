@@ -1,6 +1,8 @@
 name: wow-v17-claude-engineering-worker
 
 on:
+  schedule:
+    - cron: "17 * * * *"
   workflow_run:
     workflows: ["wow-v17-nightly-engineering-scan"]
     types: [completed]
@@ -23,6 +25,7 @@ jobs:
     name: Claude V17 engineering worker
     if: >-
       github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'schedule' ||
       (github.event.workflow_run.event == 'schedule' && github.event.workflow_run.conclusion != 'cancelled') ||
       (github.event.workflow_run.event == 'workflow_dispatch' && github.event.workflow_run.conclusion != 'cancelled')
     runs-on: ubuntu-latest
