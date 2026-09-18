@@ -55,6 +55,7 @@ from v17.prediction_receipt_lookup_runtime import install_prediction_receipt_loo
 from v17.top10_model_reconciliation import enforce_top10_completion
 from v17.mlb_1ip_line_expansion_maintenance import install_mlb_1ip_line_expansion_maintenance_route
 from v17.wnba_prop_candidate_registry import install_wnba_prop_candidate_registration_route
+from v17.wnba_composite_candidate_registry import install_wnba_composite_candidate_registration_route
 from v17.prop_capability_manifest import (
     prop_capability as _prop_capability,
     runtime_prop_stat_aliases as _runtime_prop_stat_aliases,
@@ -335,6 +336,11 @@ def install_pick_request_routes(
             db_client_fn=get_client_fn,
         )
         install_wnba_prop_candidate_registration_route(
+            app,
+            auth_dependency=auth_dependency,
+            db_client_fn=get_client_fn,
+        )
+        install_wnba_composite_candidate_registration_route(
             app,
             auth_dependency=auth_dependency,
             db_client_fn=get_client_fn,
