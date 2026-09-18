@@ -123,6 +123,60 @@ def test_completed_sporting_probability_survives_market_failure_for_every_catalo
     assert result["can_execute"] is False
 
 
+@pytest.mark.parametrize(("sport", "league"), SPORTS)
+def test_probability_objective_stays_rank_eligible_when_market_edge_data_is_missing(monkeypatch, sport, league):
+    def scorer(req, *, event_api, canonical_hydration_required):
+        package = _valid_standard_package(req)
+        package.update({
+            "market_role": "UNDERDOG",
+            "underdog_verified": True,
+            "llp_event_decision": "GOVERNED_UPSET_PROBABILITY_COMPLETE",
+        })
+        return package
+
+    body = _client(monkeypatch, scorer).post(
+        "/score-team-event-request",
+        json={"rows": [_row(
+            sport,
+            league,
+            objective_lane="UPSET_PROBABILITY",
+            price_required_for_objective=True,
+        )]},
+    ).json()
+
+    result = body["rows"][0]
+    assert result["terminal_status"] == "COMPLETED"
+    assert result["sporting_probability_status"] == "COMPLETE"
+    assert result["probability_gate"] == "PASS"
+    assert result["market_gate"] == "DATA_UNOBTAINABLE"
+    assert result["probability_rank_eligible"] is True
+    assert result["objective_rank_eligible"] is True
+    assert result["blockers"] == ["MARKET_DATA_UNOBTAINABLE"]
+    assert result["can_execute"] is False
+
+
+def test_upset_probability_does_not_bypass_unresolved_market_role(monkeypatch):
+    def scorer(req, *, event_api, canonical_hydration_required):
+        return _valid_standard_package(req)
+
+    body = _client(monkeypatch, scorer).post(
+        "/score-team-event-request",
+        json={"rows": [_row(
+            "NBA",
+            "NBA",
+            objective_lane="UPSET_PROBABILITY",
+            price_required_for_objective=True,
+        )]},
+    ).json()
+
+    result = body["rows"][0]
+    assert result["terminal_status"] == "COMPLETED"
+    assert result["probability_rank_eligible"] is True
+    assert result["objective_rank_eligible"] is False
+    assert result["market_gate"] == "DATA_UNOBTAINABLE"
+    assert result["can_execute"] is False
+
+
 def test_cross_sport_batch_preserves_typed_model_unavailable_from_shared_scorer(monkeypatch):
     def scorer(req, *, event_api, canonical_hydration_required):
         raise HTTPException(
