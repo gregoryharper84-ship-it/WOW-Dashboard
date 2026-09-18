@@ -14,6 +14,7 @@ from typing import Any
 
 from fastapi import Depends
 
+from v17.action_invocation_telemetry import install_action_invocation_middleware
 from v17.interactive_latency_telemetry import install_interactive_latency_middleware
 from v17.interactive_pick_hydration import schedule_interactive_pick_hydration_install
 
@@ -26,15 +27,21 @@ def initialize_observability() -> dict[str, Any]:
 
     install_team_event_bridge_runtime()
 
-    # Install non-secret total-wall-time telemetry and schedule the bounded
-    # external pre-hydration wrapper on the accepted production FastAPI app.
-    # The wrapper installs at startup, after api_ncaaf_acceptance has composed
-    # all routes, and delegates validation/persistence/scoring/reconciliation
-    # back to the captured canonical endpoint.
+    # Install non-secret total-wall-time telemetry, certification-independent
+    # Action invocation receipts, and schedule the bounded external pre-hydration
+    # wrapper on the accepted production FastAPI app. Invocation telemetry is
+    # fail-open and never participates in certification or scoring authority.
+    # The hydration wrapper installs at startup, after api_ncaaf_acceptance has
+    # composed all routes, and delegates validation/persistence/scoring/
+    # reconciliation back to the captured canonical endpoint.
     try:
         import api_prod_market_acceptance as _accepted_base
 
         install_interactive_latency_middleware(_accepted_base.app)
+        install_action_invocation_middleware(
+            _accepted_base.app,
+            db_client_fn=_accepted_base.market_api.prod.get_client,
+        )
         schedule_interactive_pick_hydration_install(
             _accepted_base.app,
             market_api=_accepted_base.market_api,

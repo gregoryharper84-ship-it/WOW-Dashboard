@@ -4,10 +4,14 @@ on:
   workflow_dispatch:
     inputs:
       request_file:
-        description: Repository-relative governed prop request JSON
+        description: Repository-relative governed prop request JSON; use a current pregame slate unless explicitly replaying history
         required: true
-        default: artifacts/wow-engine/v17/prop_action_requests/2026-09-15-strikeouts-1ip.json
         type: string
+      allow_historical_request:
+        description: Explicitly allow a historical/stale request for reproduction only; never counts as current-slate/live-host proof
+        required: true
+        default: false
+        type: boolean
   push:
     branches:
       - main
@@ -53,13 +57,16 @@ jobs:
       - name: Install engine dependencies
         run: pip install -r requirements.txt
       - name: Run focused regressions
-        run: python -m pytest -q test_v17_github_oidc.py test_v17_mlb_1ip_direction_neutrality.py tests/test_v17_live_editor_compat.py
+        run: python -m pytest -q test_v17_github_oidc.py test_v17_mlb_1ip_direction_neutrality.py tests/test_v17_live_editor_compat.py tests/test_v17_canonical_prop_workflow_contract.py test_v17_action_invocation_telemetry.py test_v17_interactive_latency_telemetry.py
       - name: Compile canonical prop runner
-        run: python -m py_compile v17/canonical_prop_action_runner.py v17/mlb_1ip_direction_neutrality.py
+        run: python -m py_compile v17/canonical_prop_action_runner.py v17/mlb_1ip_direction_neutrality.py v17/action_invocation_telemetry.py
 
   canonical-prop-action:
     name: Run canonical V17 prop Action
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    # Deliberately manual-only. Push/PR verifies the contract but does not create
+    # synthetic production traffic from a fixture. A current-slate Action proof
+    # must be explicitly dispatched with its exact request file.
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     needs: verify
     runs-on: ubuntu-latest
     timeout-minutes: 55
@@ -68,7 +75,9 @@ jobs:
       id-token: write
     env:
       WOW_ACTION_ORIGIN: https://wow-governed-probability-engine.onrender.com
-      WOW_REQUEST_FILE: ${{ inputs.request_file || 'artifacts/wow-engine/v17/prop_action_requests/2026-09-15-strikeouts-1ip.json' }}
+      WOW_REQUEST_FILE: ${{ inputs.request_file }}
+      WOW_ALLOW_HISTORICAL_REQUEST: ${{ inputs.allow_historical_request }}
+      WOW_SLATE_TIMEZONE: America/New_York
       WOW_CAN_EXECUTE: "false"
       WOW_DRY_RUN_ONLY: "true"
     steps:
@@ -81,7 +90,33 @@ jobs:
           test "$WOW_DRY_RUN_ONLY" = "true"
           test -n "$ACTIONS_ID_TOKEN_REQUEST_URL"
           test -n "$ACTIONS_ID_TOKEN_REQUEST_TOKEN"
+          test -n "$WOW_REQUEST_FILE"
           test -f "$WOW_REQUEST_FILE"
+
+      - name: Reject stale request unless explicitly historical
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from datetime import datetime
+          from pathlib import Path
+          from zoneinfo import ZoneInfo
+
+          path = Path(os.environ["WOW_REQUEST_FILE"])
+          payload = json.loads(path.read_text(encoding="utf-8"))
+          slate_date = str(payload.get("slate_date") or "").strip()
+          timezone_name = os.environ.get("WOW_SLATE_TIMEZONE", "America/New_York")
+          today = datetime.now(ZoneInfo(timezone_name)).date().isoformat()
+          historical = str(os.environ.get("WOW_ALLOW_HISTORICAL_REQUEST", "false")).strip().lower() == "true"
+          if slate_date != today and not historical:
+              raise SystemExit(
+                  f"STALE_CANONICAL_PROP_REQUEST_BLOCKED slate_date={slate_date!r} current_slate={today!r} "
+                  "set allow_historical_request=true only for an explicitly historical reproduction"
+              )
+          classification = "HISTORICAL_REPRODUCTION" if slate_date != today else "CURRENT_SLATE_CANARY"
+          print(f"CANONICAL_PROP_REQUEST_CLASSIFICATION={classification} slate_date={slate_date} current_slate={today}")
+          PY
 
       - name: Resolve exact events and invoke canonical score-pick-request
         run: python artifacts/wow-engine/v17/canonical_prop_action_runner.py

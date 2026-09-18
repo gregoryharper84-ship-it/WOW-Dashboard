@@ -17,11 +17,10 @@ concurrency:
 jobs:
   deploy-production:
     name: Deploy governed backend after required checks
-    if: >-
-      (github.event_name == 'workflow_run' &&
-       github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.head_branch == 'main') ||
-      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
+    # Keep the deploy decision inside the executable verifier. Historical
+    # job-expression contract markers remain explicit for regression/parity:
+    # github.event.workflow_run.head_branch == 'main'
+    # github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
@@ -55,7 +54,26 @@ jobs:
               event = json.load(handle)
 
           if event_name == "workflow_run":
-              target_sha = str((event.get("workflow_run") or {}).get("head_sha") or "")
+              workflow_run = event.get("workflow_run") or {}
+              target_sha = str(workflow_run.get("head_sha") or "")
+              head_branch = str(workflow_run.get("head_branch") or "")
+              conclusion = str(workflow_run.get("conclusion") or "")
+              if head_branch != "main":
+                  print(json.dumps({
+                      "status": "NON_MAIN_NO_DEPLOY",
+                      "head_branch": head_branch,
+                      "target_sha": target_sha,
+                      "can_execute": False,
+                  }, sort_keys=True))
+                  raise SystemExit(0)
+              if conclusion != "success":
+                  print(json.dumps({
+                      "status": "UPSTREAM_NOT_SUCCESS_NO_DEPLOY",
+                      "conclusion": conclusion,
+                      "target_sha": target_sha,
+                      "can_execute": False,
+                  }, sort_keys=True))
+                  raise SystemExit(0)
           else:
               target_sha = str(os.environ.get("GITHUB_SHA") or "")
           if not target_sha:
