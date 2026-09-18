@@ -50,8 +50,14 @@ def _messages_api_key() -> str | None:
     return api_key or None
 
 
+def _workspace_id() -> str | None:
+    workspace_id = os.getenv("ANTHROPIC_WORKSPACE_ID", "").strip()
+    return workspace_id or None
+
+
 def claude_runtime_readiness() -> dict[str, Any]:
     messages_api_configured = _messages_api_key() is not None
+    workspace_id_configured = _workspace_id() is not None
     claude_code_oauth_configured = bool(
         os.getenv("CLAUDE_CODE_OAUTH_TOKEN", "").strip()
     )
@@ -61,6 +67,7 @@ def claude_runtime_readiness() -> dict[str, Any]:
         # Backward-compatible meaning: configured for the Render Messages API.
         "configured": messages_api_configured,
         "messages_api_configured": messages_api_configured,
+        "workspace_id_configured": workspace_id_configured,
         "claude_code_oauth_configured": claude_code_oauth_configured,
         "auth_mode": "api_key" if messages_api_configured else "none",
         "model": os.getenv("WOW_CLAUDE_MODEL", DEFAULT_MODEL),
@@ -70,6 +77,51 @@ def claude_runtime_readiness() -> dict[str, Any]:
         "global_terminal_authority": "V17_TERMINAL_REDUCER",
         "can_execute": False,
     }
+
+
+def _classify_upstream_error(response: httpx.Response) -> str:
+    """Map known Anthropic failures to secret-safe typed codes.
+
+    Never reflect upstream messages or identifiers into WOW responses/logs. Only
+    match documented categories and preserve the generic HTTP code otherwise.
+    """
+    fallback = f"CLAUDE_UPSTREAM_HTTP_{response.status_code}"
+    try:
+        body = response.json()
+    except ValueError:
+        return fallback
+    if not isinstance(body, dict):
+        return fallback
+    error = body.get("error")
+    if not isinstance(error, dict):
+        return fallback
+
+    message = error.get("message")
+    message_lower = message.lower() if isinstance(message, str) else ""
+    details = error.get("details")
+    details_code = details.get("error_code") if isinstance(details, dict) else None
+
+    if details_code == "enforced_spend_limit_reached":
+        return "CLAUDE_SPEND_LIMIT_REACHED"
+    if response.status_code == 402:
+        return "CLAUDE_BILLING_ERROR"
+    if response.status_code == 404 and "workspace" in message_lower:
+        return "CLAUDE_WORKSPACE_NOT_FOUND_OR_UNAUTHORIZED"
+    if response.status_code == 400:
+        if "anthropic-workspace-id is required" in message_lower:
+            return "CLAUDE_WORKSPACE_ID_REQUIRED"
+        if (
+            "anthropic-workspace-id" in message_lower
+            and "valid workspace id" in message_lower
+        ):
+            return "CLAUDE_WORKSPACE_ID_INVALID"
+        if "specified workspace api usage limits" in message_lower:
+            return "CLAUDE_WORKSPACE_SPEND_LIMIT_REACHED"
+        if "specified api usage limits" in message_lower:
+            return "CLAUDE_ORG_SPEND_LIMIT_REACHED"
+        if "credit balance" in message_lower or "billing" in message_lower:
+            return "CLAUDE_BILLING_OR_CREDIT_BLOCKED"
+    return fallback
 
 
 class ClaudeRuntime:
@@ -83,7 +135,7 @@ class ClaudeRuntime:
             "content-type": "application/json",
             "x-api-key": api_key,
         }
-        workspace_id = os.getenv("ANTHROPIC_WORKSPACE_ID", "").strip()
+        workspace_id = _workspace_id()
         if workspace_id:
             headers["anthropic-workspace-id"] = workspace_id
         return headers
@@ -144,7 +196,7 @@ class ClaudeRuntime:
             raise HTTPException(
                 status_code=502,
                 detail={
-                    "code": f"CLAUDE_UPSTREAM_HTTP_{response.status_code}",
+                    "code": _classify_upstream_error(response),
                     "upstream_status": response.status_code,
                     "request_id": request_id,
                     "can_execute": False,
@@ -237,6 +289,7 @@ def emit_claude_startup_readiness_receipt(
     receipt: dict[str, Any] = {
         "enabled": state["enabled"],
         "messages_api_configured": state["messages_api_configured"],
+        "workspace_id_configured": state["workspace_id_configured"],
         "claude_code_oauth_configured": state["claude_code_oauth_configured"],
         "model": state["model"],
         "role": "SUPPORTING_ADVISORY_ONLY",
@@ -272,13 +325,15 @@ def emit_claude_startup_readiness_receipt(
     # receipt survives conservative root logger thresholds on Render.
     _LOGGER.warning(
         "WOW_CLAUDE_RUNTIME status=%s enabled=%s messages_api_configured=%s "
-        "claude_code_oauth_configured=%s probe_status=%s model=%s "
-        "error_code=%s request_id=%s latency_ms=%s role=SUPPORTING_ADVISORY_ONLY "
-        "probability_authority=false terminal_authority=false "
-        "global_terminal_authority=V17_TERMINAL_REDUCER can_execute=false",
+        "workspace_id_configured=%s claude_code_oauth_configured=%s "
+        "probe_status=%s model=%s error_code=%s request_id=%s latency_ms=%s "
+        "role=SUPPORTING_ADVISORY_ONLY probability_authority=false "
+        "terminal_authority=false global_terminal_authority=V17_TERMINAL_REDUCER "
+        "can_execute=false",
         receipt["status"],
         str(receipt["enabled"]).lower(),
         str(receipt["messages_api_configured"]).lower(),
+        str(receipt["workspace_id_configured"]).lower(),
         str(receipt["claude_code_oauth_configured"]).lower(),
         receipt["probe_status"],
         receipt["model"],
