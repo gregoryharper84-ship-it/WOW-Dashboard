@@ -53,7 +53,25 @@ jobs:
           data = json.loads(p.read_text())
           assert data['can_execute'] is False
           assert data['prediction_authority'] is False
-          print('PUBLIC_ROUTE_PROBE=' + json.dumps(data, sort_keys=True))
+          summary = []
+          for r in data['routes']:
+              network = []
+              for n in r.get('network') or []:
+                  key = (n.get('host'), n.get('url'), n.get('resource_type'), n.get('status'), tuple(n.get('top_level_keys') or ()))
+                  if key not in network:
+                      network.append(key)
+              summary.append({
+                  'sport': r['sport'],
+                  'status': r.get('http_status'),
+                  'real_rows': r.get('real_board_row_count'),
+                  'preview_rows': r.get('marketing_preview_row_count'),
+                  'sign_in_form': r.get('sign_in_form'),
+                  'iframes': r.get('iframes'),
+                  'network': network[:30],
+                  'dom_candidates': (r.get('dom_candidates') or [])[:10],
+                  'body_text_sample': (r.get('body_text_sample') or '')[:1200],
+              })
+          print('ROUTE_DIAGNOSTIC=' + json.dumps(summary, sort_keys=True))
           PY
       - name: Capture rendered TheRundown root board
         shell: bash
