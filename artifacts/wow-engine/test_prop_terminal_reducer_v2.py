@@ -1,4 +1,4 @@
-from prop_terminal_reducer_v2 import reduce_prop_terminal
+from prop_terminal_reducer_v2 import CAUSE_INFRASTRUCTURE, CAUSE_MODEL_SUPPORTED, reduce_prop_terminal
 
 
 def test_missing_artifact_is_capability_blocked_not_pick_rejected():
@@ -30,6 +30,17 @@ def test_missing_market_data_preserves_completed_model_terminal_without_rejectio
     assert result.terminal_label == "MODEL_QUALIFIED_HOLD"
     assert result.verdict_class == "MARKET_BLOCKED"
     assert result.model_evaluated is True
+    assert result.infrastructure_blocked is False
+    assert result.terminal_cause == CAUSE_MODEL_SUPPORTED
+    assert result.concurrent_infrastructure_blockers == ("PAYOUT_UNRESOLVED",)
+
+
+def test_market_blocker_before_model_completion_remains_infrastructure_hold():
+    result = reduce_prop_terminal(proposed_label="MODEL_QUALIFIED_HOLD", blockers=["MARKET_DATA_UNAVAILABLE"], model_evaluated=False)
+    assert result.terminal_label == "MODEL_INPUTS_INSUFFICIENT"
+    assert result.verdict_class == "MARKET_BLOCKED"
+    assert result.infrastructure_blocked is True
+    assert result.terminal_cause == CAUSE_INFRASTRUCTURE
 
 
 def test_real_low_probability_rejection_survives_market_hold():
