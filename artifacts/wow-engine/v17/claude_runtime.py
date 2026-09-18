@@ -12,7 +12,9 @@ Authentication is deliberately separated by surface:
 """
 from __future__ import annotations
 
+import logging
 import os
+import threading
 import time
 from typing import Any
 
@@ -23,6 +25,9 @@ from pydantic import BaseModel, Field
 ANTHROPIC_MESSAGES_URL = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_VERSION = "2023-06-01"
 DEFAULT_MODEL = "claude-sonnet-4-6"
+
+_LOGGER = logging.getLogger("wow.claude_runtime")
+_STARTUP_PROBE_STATE_ATTR = "_wow_claude_startup_probe_installed"
 
 _SYSTEM_PROMPT = """You are a supporting advisory capability inside WOW V17.
 You may assist with engineering diagnosis, research synthesis, evidence review,
@@ -207,20 +212,114 @@ class ClaudeRuntime:
         return result
 
 
+def _startup_probe_error_code(exc: Exception) -> str:
+    if isinstance(exc, HTTPException) and isinstance(exc.detail, dict):
+        code = exc.detail.get("code")
+        if isinstance(code, str) and code:
+            return code
+    return type(exc).__name__
+
+
+def emit_claude_startup_readiness_receipt(
+    runtime: ClaudeRuntime | None = None,
+) -> dict[str, Any]:
+    """Emit one secret-safe startup receipt and, when possible, probe Anthropic.
+
+    This helper never raises. A Claude outage or bad credential therefore cannot
+    prevent the governed WOW API from starting.
+    """
+    runtime = runtime or ClaudeRuntime()
+    state = claude_runtime_readiness()
+    receipt: dict[str, Any] = {
+        "enabled": state["enabled"],
+        "messages_api_configured": state["messages_api_configured"],
+        "claude_code_oauth_configured": state["claude_code_oauth_configured"],
+        "model": state["model"],
+        "role": "SUPPORTING_ADVISORY_ONLY",
+        "probability_authority": False,
+        "terminal_authority": False,
+        "global_terminal_authority": "V17_TERMINAL_REDUCER",
+        "can_execute": False,
+    }
+
+    if not state["enabled"]:
+        receipt.update(status="DISABLED", probe_status="NOT_RUN")
+    elif not state["messages_api_configured"]:
+        receipt.update(status="NOT_CONFIGURED", probe_status="NOT_RUN")
+    else:
+        try:
+            result = runtime.probe()
+        except Exception as exc:  # noqa: BLE001 - boundary must fail closed.
+            receipt.update(
+                status="DEGRADED",
+                probe_status="FAIL",
+                error_code=_startup_probe_error_code(exc),
+            )
+        else:
+            receipt.update(
+                status="READY",
+                probe_status="PASS",
+                model=result["model"],
+                request_id=result["request_id"],
+                latency_ms=result["latency_ms"],
+            )
+
+    log_fn = _LOGGER.info if receipt["status"] in {"READY", "DISABLED"} else _LOGGER.warning
+    log_fn(
+        "WOW_CLAUDE_RUNTIME status=%s enabled=%s messages_api_configured=%s "
+        "claude_code_oauth_configured=%s probe_status=%s model=%s "
+        "error_code=%s request_id=%s latency_ms=%s role=SUPPORTING_ADVISORY_ONLY "
+        "probability_authority=false terminal_authority=false "
+        "global_terminal_authority=V17_TERMINAL_REDUCER can_execute=false",
+        receipt["status"],
+        str(receipt["enabled"]).lower(),
+        str(receipt["messages_api_configured"]).lower(),
+        str(receipt["claude_code_oauth_configured"]).lower(),
+        receipt["probe_status"],
+        receipt["model"],
+        receipt.get("error_code", "none"),
+        receipt.get("request_id", "none"),
+        receipt.get("latency_ms", "none"),
+    )
+    return receipt
+
+
+def install_claude_startup_readiness_probe(
+    app: FastAPI,
+    *,
+    runtime: ClaudeRuntime,
+) -> None:
+    """Install one non-blocking startup probe on a FastAPI app."""
+    if getattr(app.state, _STARTUP_PROBE_STATE_ATTR, False):
+        return
+    setattr(app.state, _STARTUP_PROBE_STATE_ATTR, True)
+
+    def _run_probe_in_background() -> None:
+        threading.Thread(
+            target=emit_claude_startup_readiness_receipt,
+            kwargs={"runtime": runtime},
+            name="wow-claude-startup-readiness",
+            daemon=True,
+        ).start()
+
+    app.add_event_handler("startup", _run_probe_in_background)
+
+
 def install_claude_runtime_routes(
     app: FastAPI,
     *,
     auth_dependency: Any,
     runtime: ClaudeRuntime | None = None,
 ) -> None:
+    runtime = runtime or ClaudeRuntime()
+    install_claude_startup_readiness_probe(app, runtime=runtime)
+
     existing_paths = {getattr(route, "path", None) for route in app.router.routes}
     if (
         "/internal/claude/readiness" in existing_paths
         or "/internal/claude/advisory" in existing_paths
     ):
         return
-
-    runtime = runtime or ClaudeRuntime()
 
     @app.get(
         "/internal/claude/readiness",
