@@ -211,7 +211,7 @@ def train_multiclass_candidate(
             raise MulticlassCandidateError("MULTICLASS_CLASS_DEGENERATE", label)
 
     scaler = StandardScaler().fit(X_train)
-    model = LogisticRegression(C=1.0, penalty="l2", solver="lbfgs", max_iter=1000, random_state=0)
+    model = LogisticRegression(C=1.0, solver="lbfgs", max_iter=1000, random_state=0)
     model.fit(scaler.transform(X_train), y_train)
     classes = np.asarray(model.classes_, dtype=object)
     p_cal_raw = model.predict_proba(scaler.transform(X_cal))
