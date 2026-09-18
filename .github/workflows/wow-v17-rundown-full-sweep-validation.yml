@@ -11,6 +11,7 @@ on:
       - "artifacts/wow-engine/v17/rundown_authenticated_scout_browser_transport.py"
       - "artifacts/wow-engine/v17/rundown_authenticated_scout_v2.py"
       - "artifacts/wow-engine/v17/rundown_authenticated_scout_v3.py"
+      - "artifacts/wow-engine/v17/rundown_authenticated_scout_v4.py"
       - "artifacts/wow-engine/test_v17_rundown_authenticated_scout.py"
   workflow_dispatch:
 
@@ -54,7 +55,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p "$RUNNER_TEMP/rundown-full-sweep"
-          python -m v17.rundown_authenticated_scout_v3 \
+          python -m v17.rundown_authenticated_scout_v4 \
             --output "$RUNNER_TEMP/rundown-full-sweep/model-handoff.json"
 
       - name: Verify full-slate acceptance contract
@@ -67,13 +68,15 @@ jobs:
           data = json.loads(path.read_text())
           assert data['status'] in {'DISCOVERY_COMPLETE', 'DISCOVERY_COMPLETE_WITH_SOURCE_BLOCKERS'}, data.get('reason_code')
           assert data['provider'] == 'THERUNDOWN_AUTHENTICATED_BOARD'
-          assert data['acquisition_transport'] == 'PLAYWRIGHT_HYBRID_AUTHENTICATED_SESSION'
+          assert data['acquisition_transport'] == 'PLAYWRIGHT_NATIVE_REQUEST_REPLAY'
           assert data['can_execute'] is False
           assert data['prediction_authority'] is False
           assert data['research_ceiling'] == 'RESEARCH_INTEREST'
           assert data['acquisition_budget']['market_ids_per_request'] <= 12
           inventory = [row for row in data['coverage'] if row.get('scope') == 'provider_inventory']
           assert inventory and inventory[-1]['sports_discovered'] >= 30, inventory
+          assert inventory[-1].get('auth_session_ready') is True
+          assert inventory[-1].get('native_request_context_ready') is True
           excluded = [row for row in data['coverage'] if row.get('status') == 'NON_SPORT_INVENTORY_EXCLUDED']
           assert any(row.get('sport') == 'Politics' for row in excluded), excluded
           handoff = data['model_handoff']
@@ -84,16 +87,19 @@ jobs:
           assert all(row.get('route') == 'LLP_TEAM_BETTING_ENGINE' for row in team)
           assert all(row.get('route') == 'WOW_PROP_LANE' for row in props)
           assert all(row.get('research_ceiling') == 'RESEARCH_INTEREST' for row in team + props)
-          assert all(row.get('can_execute') is not True for row in team + props)
+          assert all(row.get('can_execute') is False for row in team + props)
+          assert all(row.get('probability_authority') is False for row in team + props)
           blob = path.read_text().lower()
           for forbidden in ('rundown_email', 'rundown_password', 'authorization', 'refresh_token', 'access_token', 'cookie'):
               assert forbidden not in blob, forbidden
           event_rows = [row for row in data['coverage'] if row.get('scope') == 'event']
+          sports_scanned = [row for row in data['coverage'] if row.get('scope') == 'sport' and row.get('status') == 'SCANNED']
           print('RUNDOWN_FULL_SWEEP=PASS')
           print(json.dumps({
               'status': data['status'],
               'transport': data['acquisition_transport'],
               'sports_discovered': inventory[-1]['sports_discovered'],
+              'sports_scanned': len(sports_scanned),
               'events_scanned': len(event_rows),
               'team_event_candidates': len(team),
               'prop_candidates': len(props),
