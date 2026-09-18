@@ -29,7 +29,7 @@ def test_controlling_probability_is_d1_not_agent_reasoning(sport):
 
 def test_current_known_build_states_are_explicit():
     assert capability_build_plan("MLB").status == "CERTIFIED"
-    assert capability_build_plan("NFL").status == "FORWARD_EVIDENCE_PENDING"
+    assert capability_build_plan("NFL").status == "CERTIFIED"
     assert capability_build_plan("NBA").status == "CURRENT_DATA_PENDING"
     assert capability_build_plan("WNBA").status == "CURRENT_DATA_PENDING"
     assert capability_build_plan("NCAAF").status == "EVIDENCE_CORPUS_PENDING"

@@ -101,7 +101,7 @@ def fake_package():
             "training_code_sha": "d" * 40, "artifact_checksum": "e" * 64,
             "artifact_payload": {"model_family": "NHL_REGULAR_SEASON_LOGISTIC_V1"},
             "calibrator_payload": {"method": "EMPIRICAL_WILSON_BINS_V1"},
-            "validation_metrics": {"can_execute": False, "probability_publishable": False},
+            "validation_metrics": {"can_execute": False, "probability_publishable": False, "ece": 0.04},
             "training_rows": 400, "calibration_rows": 80, "test_rows": 80,
             "research_screen_pass": True, "source_review_status": "REQUIRED",
             "lifecycle_state": "CANDIDATE", "promoted": False, "active": False,
@@ -122,10 +122,24 @@ def test_maintenance_persists_candidate_and_reconciles_training_outcome(monkeypa
     db = FakeDB()
     result = maintenance.run_nhl_model_maintenance(db, start_years=(2021,), training_code_sha="f" * 40)
     assert result["status"] == "CANDIDATE_EVIDENCE_UPDATED"
+    assert result["controlling_specialist"] == "wow.nhl-game-win-probability-expert"
+    assert result["certification_status"] == "CANDIDATE_ONLY"
+    assert result["numerical_authority"] is False
+    assert "SOURCE_PROVENANCE_NOT_CERTIFIED" in result["certification_blockers"]
+    assert "DETERMINISTIC_REPLAY_NOT_READY" in result["certification_blockers"]
     assert result["probability_publishable"] is False
     assert result["can_execute"] is False
     assert db.rows["wow_d1_training_rows"][0]["outcome_json"] == {"positive_outcome": True}
     assert db.rows["wow_d1_candidate_artifacts"][0]["lifecycle_state"] == "CANDIDATE"
+
+
+def test_source_review_pass_still_requires_deterministic_replay_before_lifecycle_review():
+    candidate = fake_package()["candidate"]
+    candidate["source_review_status"] = "PASS"
+    state = maintenance._certification_assessment(candidate)
+    assert state["status"] == "CANDIDATE_ONLY"
+    assert state["numerical_authority"] is False
+    assert state["blockers"] == ["DETERMINISTIC_REPLAY_NOT_READY"]
 
 
 def test_batch_persistence_is_idempotent_for_source_and_training_rows(monkeypatch):
