@@ -34,6 +34,8 @@ services:
         sync: false
       - key: CLAUDE_CODE_OAUTH_TOKEN
         sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
       - key: WOW_CLAUDE_RUNTIME_ENABLED
         value: "1"
       - key: WOW_CLAUDE_MODEL
