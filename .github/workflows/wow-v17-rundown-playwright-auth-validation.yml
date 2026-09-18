@@ -99,7 +99,6 @@ jobs:
               'auth_status': data['auth_status'],
               'board_surface': data['board_surface'],
               'coverage': data['coverage'],
-              'network_shapes': data['network_json_shapes'][:20],
           }, sort_keys=True))
           PY
 
@@ -123,8 +122,17 @@ jobs:
           assert data['captured_path_count'] > 0
           assert all('auth.therundown.io' not in path for path in data['captured_paths'])
           assert '/api/v2/markets' in data['captured_paths']
+          pilot = data.get('prop_pilot') or {}
+          ok = {sport: row for sport, row in pilot.items() if row.get('status') == 'OK'}
+          assert ok, {sport: {'status': row.get('status'), 'http_status': row.get('http_status')} for sport, row in pilot.items()}
+          assert any(isinstance(row.get('body'), dict) and isinstance(row['body'].get('events'), list) for row in ok.values())
           print('RUNDOWN_AUTHENTICATED_INVENTORY_PROBE=PASS')
-          print(json.dumps({'captured_path_count': data['captured_path_count'], 'captured_paths': data['captured_paths']}, sort_keys=True))
+          print('RUNDOWN_AUTHENTICATED_PROP_PILOT=PASS')
+          print(json.dumps({
+              'captured_path_count': data['captured_path_count'],
+              'prop_pilot_statuses': {sport: row.get('status') for sport, row in pilot.items()},
+              'prop_pilot_http_statuses': {sport: row.get('http_status') for sport, row in pilot.items()},
+          }, sort_keys=True))
           PY
 
       - name: Upload sanitized collector evidence
