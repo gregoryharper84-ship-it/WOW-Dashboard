@@ -1,8 +1,9 @@
 """Hybrid authenticated transport for TheRundown Scout full-slate acquisition.
 
-Uses browser fetch first and the same BrowserContext.request fallback that the
-credentialed transport probe proved returns HTTP 200. No credential values are
-logged or serialized. Governance remains discovery-only, can_execute=false.
+Matches the credentialed transport probe's proven sequence: use the authenticated
+BrowserContext.request transport first, then browser fetch only as a fallback.
+No credential values are logged or serialized. Governance remains discovery-only,
+can_execute=false.
 """
 from __future__ import annotations
 
@@ -24,6 +25,24 @@ def _hybrid_json(page, path: str, params: dict[str, Any] | None = None) -> tuple
     last_status = 0
 
     for attempt in range(base.MAX_RETRIES):
+        # The unchanged live probe repeatedly proves this transport returns 200
+        # as the first authenticated API call after the app readiness window.
+        try:
+            response = page.context.request.get(
+                absolute_url, timeout=base.TIMEOUT_MS, fail_on_status_code=False,
+            )
+            last_status = int(response.status)
+            if last_status == 200:
+                try:
+                    return last_status, response.json(), None
+                except Exception:
+                    return last_status, None, "RUNDOWN_JSON_INVALID"
+        except Exception as exc:
+            if attempt + 1 >= base.MAX_RETRIES:
+                return last_status, None, f"RUNDOWN_SESSION_REQUEST_{type(exc).__name__.upper()}"
+
+        # Same-origin browser fetch is only a fallback. A failed browser request
+        # must never precede/poison the probe-proven context-request path.
         try:
             browser_result = page.evaluate(
                 """async ({url, timeoutMs}) => {
@@ -44,31 +63,13 @@ def _hybrid_json(page, path: str, params: dict[str, Any] | None = None) -> tuple
                 }""",
                 {"url": relative_url, "timeoutMs": base.TIMEOUT_MS},
             )
-            last_status = int(browser_result.get("status") or 0)
-            if last_status == 200:
+            last_status = int(browser_result.get("status") or last_status or 0)
+            if int(browser_result.get("status") or 0) == 200:
                 if browser_result.get("parseError"):
-                    return last_status, None, "RUNDOWN_JSON_INVALID"
-                return last_status, browser_result.get("payload"), None
+                    return 200, None, "RUNDOWN_JSON_INVALID"
+                return 200, browser_result.get("payload"), None
         except Exception:
-            last_status = 0
-
-        # The live probe proved BrowserContext.request can inherit the established
-        # session even when a direct page fetch is not yet ready. Give the app a
-        # readiness window before this fallback.
-        page.wait_for_timeout(6000 if attempt == 0 else 1500)
-        try:
-            response = page.context.request.get(
-                absolute_url, timeout=base.TIMEOUT_MS, fail_on_status_code=False,
-            )
-            last_status = int(response.status)
-            if last_status == 200:
-                try:
-                    return last_status, response.json(), None
-                except Exception:
-                    return last_status, None, "RUNDOWN_JSON_INVALID"
-        except Exception as exc:
-            if attempt + 1 >= base.MAX_RETRIES:
-                return last_status, None, f"RUNDOWN_SESSION_REQUEST_{type(exc).__name__.upper()}"
+            pass
 
         if last_status in {401, 429} and attempt + 1 < base.MAX_RETRIES:
             page.wait_for_timeout(6000 if last_status == 401 else min(8000, (2 ** attempt) * 1000))
