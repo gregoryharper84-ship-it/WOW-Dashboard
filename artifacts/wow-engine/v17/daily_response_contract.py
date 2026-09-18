@@ -13,10 +13,10 @@ the run and then read back through a paged retrieval route, so no evidence is
 discarded — only relocated off the single monolithic response.
 
 Compact mode also projects run-level reconciliation structures. Acquisition
-receipts and identity lists can scale with the discovered slate even when only a
-small number of rows is scored; those collections are summarized/bounded in the
-Action response while their scalar counts and reconciliation results remain
-visible. FULL mode is unchanged.
+receipts, cross-sport routed rows, and identity/audit lists can scale with the
+discovered slate even when only a small number of rows is scored; those
+collections are summarized/bounded in the Action response while their scalar
+counts and reconciliation results remain visible. FULL mode is unchanged.
 
 For team/event rows, compact transport also preserves the small numeric sporting-
 probability package needed to distinguish a valid modeled hold from an unscored
@@ -45,6 +45,7 @@ DETAIL_RETRIEVAL_UNAVAILABLE = "DAILY_ROW_DETAIL_RETRIEVAL_UNAVAILABLE"
 MAX_COMPACT_BLOCKERS = 4
 MAX_COMPACT_BLOCKER_CHARS = 100
 MAX_COMPACT_IDENTITY_ITEMS = 4
+MAX_COMPACT_AUDIT_ITEMS = 4
 
 DETAIL_PAGE_DEFAULT_LIMIT = 5
 DETAIL_PAGE_MAX_LIMIT = 25
@@ -156,6 +157,14 @@ def _compact_blockers(values: Any) -> tuple[list[str], int]:
     return kept, max(len(values) - MAX_COMPACT_BLOCKERS, 0)
 
 
+def _compact_list(values: Any, *, limit: int = MAX_COMPACT_AUDIT_ITEMS) -> tuple[list[Any], int, int]:
+    if not isinstance(values, (list, tuple)):
+        return [], 0, 0
+    kept = list(values[:limit])
+    total = len(values)
+    return kept, total, max(total - len(kept), 0)
+
+
 def _qualification(payload: dict[str, Any]) -> dict[str, Any]:
     qualification = payload.get("probability_qualification")
     return qualification if isinstance(qualification, dict) else {}
@@ -231,6 +240,66 @@ def compact_lane_reconciliation(lanes: dict[str, Any]) -> dict[str, Any]:
                 lane["handoff_reconciliation"] = compact_handoff_reconciliation(handoff)
         compacted[lane_name] = lane
     return compacted
+
+
+def _compact_discovery_inventory(discovery: dict[str, Any]) -> dict[str, Any]:
+    """Bound discovery diagnostics while preserving slate/accounting metadata."""
+    compact = dict(discovery)
+    for field in ("sports_queried", "sports_with_events", "source_blockers", "acquisition_audit"):
+        values = discovery.get(field)
+        if not isinstance(values, (list, tuple)):
+            continue
+        kept, total, truncated = _compact_list(values)
+        compact[field] = kept
+        compact[f"{field}_count"] = total
+        if truncated:
+            compact[f"{field}_truncated"] = truncated
+    compact["can_execute"] = False
+    return compact
+
+
+def _compact_cross_sport_reconciliation(reconciliation: dict[str, Any]) -> dict[str, Any]:
+    compact = dict(reconciliation)
+    for field in ("acquisition_audit", "families_without_configured_feed"):
+        values = reconciliation.get(field)
+        if not isinstance(values, (list, tuple)):
+            continue
+        kept, total, truncated = _compact_list(values)
+        compact[field] = kept
+        compact[f"{field}_count"] = total
+        if truncated:
+            compact[f"{field}_truncated"] = truncated
+    blockers, truncated = _compact_blockers(reconciliation.get("source_blockers"))
+    if "source_blockers" in reconciliation:
+        compact["source_blockers"] = blockers
+        compact["source_blockers_count"] = len(reconciliation.get("source_blockers") or [])
+        if truncated:
+            compact["source_blockers_truncated"] = truncated
+    compact["can_execute"] = False
+    return compact
+
+
+def compact_cross_sport_discovery_audit(audit: dict[str, Any]) -> dict[str, Any]:
+    """Remove slate-sized routed rows from the normal Daily Action response."""
+    compact: dict[str, Any] = {
+        "can_execute": False,
+    }
+    discovery = audit.get("discovery")
+    if isinstance(discovery, dict):
+        compact["discovery"] = _compact_discovery_inventory(discovery)
+
+    rows = audit.get("rows")
+    compact["rows_count"] = len(rows) if isinstance(rows, list) else 0
+    compact["rows_inlined"] = False
+
+    reconciliation = audit.get("reconciliation")
+    if isinstance(reconciliation, dict):
+        compact["reconciliation"] = _compact_cross_sport_reconciliation(reconciliation)
+
+    counters = audit.get("market_evidence_counters")
+    if isinstance(counters, dict):
+        compact["market_evidence_counters"] = dict(counters)
+    return compact
 
 
 def compact_direction(outcome: dict[str, Any]) -> dict[str, Any]:
@@ -360,6 +429,14 @@ def compact_response(response: dict[str, Any], *, detail_available: bool) -> dic
     if isinstance(lanes, dict):
         compacted["lane_reconciliation"] = compact_lane_reconciliation(lanes)
 
+    acquisition = response.get("prop_acquisition")
+    if isinstance(acquisition, dict):
+        compacted["prop_acquisition"] = compact_acquisition(acquisition)
+
+    cross_sport = response.get("cross_sport_discovery_audit")
+    if isinstance(cross_sport, dict):
+        compacted["cross_sport_discovery_audit"] = compact_cross_sport_discovery_audit(cross_sport)
+
     if "blockers" in compacted:
         blockers, truncated = _compact_blockers(compacted.get("blockers"))
         compacted["blockers"] = blockers
@@ -479,9 +556,11 @@ __all__ = [
     "DETAIL_PAGE_MAX_LIMIT",
     "DETAIL_PERSISTENCE_UNAVAILABLE",
     "DETAIL_RETRIEVAL_UNAVAILABLE",
+    "MAX_COMPACT_AUDIT_ITEMS",
     "MAX_COMPACT_BLOCKERS",
     "MAX_COMPACT_IDENTITY_ITEMS",
     "compact_acquisition",
+    "compact_cross_sport_discovery_audit",
     "compact_direction",
     "compact_handoff_reconciliation",
     "compact_lane_reconciliation",
