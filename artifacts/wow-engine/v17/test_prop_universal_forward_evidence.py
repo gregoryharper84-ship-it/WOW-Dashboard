@@ -4,7 +4,9 @@ from v17.cross_sport_certification_inventory import CERTIFICATION_SPORTS
 from v17.prop_capability_manifest import BUILD_REQUIRED, DECLARED_PROP_LANES
 from v17.prop_universal_forward_evidence import (
     COLLECTOR_GENERIC,
+    COLLECTOR_NONE,
     COLLECTOR_SEPARATE,
+    MODEL_BUILD_REQUIRED,
     UniversalPropForwardEvidenceRequest,
     build_forward_evidence_inventory,
     run_generic_forward_route,
@@ -126,13 +128,16 @@ def test_inventory_accounts_for_every_declared_route_and_required_sport():
     assert all(row["can_execute"] is False for row in rows)
 
 
-def test_cross_sport_build_targets_are_explicit_not_placeholder_categories():
+def test_cross_sport_build_targets_are_visible_but_have_no_phantom_collector():
     rows = build_forward_evidence_inventory()
     ncaaf_rows = [row for row in rows if row["sport"] == "NCAAF"]
     assert ncaaf_rows
     assert all(row["stat_type"] != "__SPORT_PROP_CATEGORY_INVENTORY__" for row in ncaaf_rows)
     assert all(row["declared_lane_status"] == BUILD_REQUIRED for row in ncaaf_rows)
     assert all(row["controlling_specialist"] is None for row in ncaaf_rows)
+    assert all(row["collector"] == COLLECTOR_NONE for row in ncaaf_rows)
+    assert all(row["status"] == MODEL_BUILD_REQUIRED for row in ncaaf_rows)
+    assert all(row["blocker"] == "PROP_FITTED_SPECIALIST_BUILD_REQUIRED" for row in ncaaf_rows)
     assert all(row["can_execute"] is False for row in ncaaf_rows)
 
 
