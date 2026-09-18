@@ -64,7 +64,14 @@ ACCEPTANCE_BLOCKED = "MARKET_EVIDENCE_ACCEPTANCE_BLOCKED"
 
 
 def _enable_research_market_evidence() -> None:
-    """Enable the research evidence lane unless the dedicated kill switch is set."""
+    """Enable research evidence using the same provider auth contract as production."""
+    # The standalone acceptance CLI does not set WOW_V17_ACTIVE, so v17.__init__
+    # intentionally does not compose the full production runtime. Install only
+    # the provider-contract repair needed by this lane; this keeps the GitHub
+    # probe aligned with Render without enabling any model/execution capability.
+    from v17.sep15_runtime_contract_repairs import install_rundown_v2_auth_repair
+
+    install_rundown_v2_auth_repair()
     kill_switch = os.environ.get("WOW_MARKET_EVIDENCE_KILL_SWITCH", "false").strip().lower() == "true"
     sources.ENABLED = not kill_switch
     os.environ["WOW_MARKET_EVIDENCE_ENABLED"] = "false" if kill_switch else "true"

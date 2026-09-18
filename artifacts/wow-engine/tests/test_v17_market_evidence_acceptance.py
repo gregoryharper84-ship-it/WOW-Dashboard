@@ -146,6 +146,9 @@ def test_require_capture_cli_uses_bounded_acceptance_contract(monkeypatch, tmp_p
         return payload
 
     monkeypatch.setattr(snapshot, "collect_acceptance", fake_collect)
+    # This unit test owns only CLI routing/serialization. Provider-auth parity is
+    # covered separately by test_v17_market_evidence_acceptance_auth_contract.py.
+    monkeypatch.setattr(snapshot, "_enable_research_market_evidence", lambda: None)
     monkeypatch.setenv("WOW_MARKET_EVIDENCE_ACCEPTANCE_SPORT", "baseball_mlb")
     out = tmp_path / "acceptance.json"
 
