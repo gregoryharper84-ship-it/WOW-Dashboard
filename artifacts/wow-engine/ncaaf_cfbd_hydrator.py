@@ -64,6 +64,13 @@ def _snapshot(response: CFBDResponse, *, season: int, week: Optional[int], reque
     )
 
 
+def _validated_weeks(weeks: Iterable[int]) -> list[int]:
+    normalized_weeks = sorted({int(w) for w in weeks})
+    if not normalized_weeks or any(w < 0 or w > 30 for w in normalized_weeks):
+        raise ValueError("weeks must contain valid NCAAF week numbers")
+    return normalized_weeks
+
+
 def hydrate_cfbd_season(
     client: CFBDClient,
     *,
@@ -80,9 +87,7 @@ def hydrate_cfbd_season(
     """
     requested_at = _utc_now()
     snapshots: list[SourceSnapshot] = []
-    normalized_weeks = sorted({int(w) for w in weeks})
-    if not normalized_weeks or any(w < 0 or w > 30 for w in normalized_weeks):
-        raise ValueError("weeks must contain valid NCAAF week numbers")
+    normalized_weeks = _validated_weeks(weeks)
 
     try:
         for week in normalized_weeks:
@@ -112,6 +117,33 @@ def hydrate_cfbd_season(
     except CFBDUnavailable:
         raise
 
+    return snapshots
+
+
+def hydrate_cfbd_player_stats(
+    client: CFBDClient,
+    *,
+    season: int,
+    weeks: Iterable[int],
+    classification: Optional[str] = "fbs",
+    season_type: Optional[str] = "regular",
+) -> list[SourceSnapshot]:
+    """Fetch weekly CFBD player box scores into immutable raw staging.
+
+    The result remains research data only. Historical box scores are outcomes,
+    never same-event pregame features; later training code must enforce temporal
+    cutoffs before building any feature vector for a target event.
+    """
+    requested_at = _utc_now()
+    snapshots: list[SourceSnapshot] = []
+    for week in _validated_weeks(weeks):
+        response = client.player_game_stats(
+            year=season,
+            week=week,
+            classification=classification,
+            season_type=season_type,
+        )
+        snapshots.append(_snapshot(response, season=season, week=week, requested_at=requested_at))
     return snapshots
 
 
