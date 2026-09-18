@@ -20,7 +20,7 @@ create table if not exists public.wow_ncaaf_source_snapshots (
     blocker_codes jsonb not null default '[]'::jsonb,
     can_execute boolean not null default false,
     constraint wow_ncaaf_source_provider check (provider in ('CFBD')),
-    constraint wow_ncaaf_source_endpoint check (endpoint in ('/games','/ratings/core','/ratings/sp','/ratings/srs','/ratings/elo','/ratings/fpi')),
+    constraint wow_ncaaf_source_endpoint check (endpoint in ('/games','/games/players','/ratings/core','/ratings/sp','/ratings/srs','/ratings/elo','/ratings/fpi')),
     constraint wow_ncaaf_source_params_object check (jsonb_typeof(request_params) = 'object'),
     constraint wow_ncaaf_source_rows_array check (jsonb_typeof(response_rows) = 'array'),
     constraint wow_ncaaf_source_blockers_array check (jsonb_typeof(blocker_codes) = 'array'),
