@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import httpx
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field
 
 ANTHROPIC_MESSAGES_URL = "https://api.anthropic.com/v1/messages"
@@ -220,14 +220,13 @@ def install_claude_runtime_routes(
         if not probe:
             return state
         if not state["enabled"] or not state["configured"]:
-            return {
-                **state,
-                "probe_status": "NOT_RUN",
-            }
+            return {**state, "probe_status": "NOT_RUN"}
+        probe_result = runtime.probe()
         return {
             **state,
-            "probe_status": runtime.probe()["status"],
-            "probe": runtime.probe() if False else None,
+            "probe_status": probe_result["status"],
+            "probe_request_id": probe_result["request_id"],
+            "probe_latency_ms": probe_result["latency_ms"],
         }
 
     @app.post(
