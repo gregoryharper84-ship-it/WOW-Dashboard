@@ -8,6 +8,7 @@ on:
       - ".github/workflows/wow-v17-rundown-playwright-validation.yml"
       - "artifacts/wow-engine/requirements.txt"
       - "artifacts/wow-engine/v17/rundown_playwright_capture.py"
+      - "artifacts/wow-engine/v17/rundown_route_probe.py"
       - "artifacts/wow-engine/v17/nightly_multiscout_rundown_primary.py"
   workflow_dispatch:
 
@@ -39,10 +40,24 @@ jobs:
         run: pip install -r requirements.txt
       - name: Install Chromium
         run: python -m playwright install --with-deps chromium
-      - name: Capture rendered TheRundown board
+      - name: Probe public sport/date routes
         shell: bash
         run: |
           mkdir -p "$RUNNER_TEMP/rundown-playwright"
+          python v17/rundown_route_probe.py \
+            --output "$RUNNER_TEMP/rundown-playwright/route-probe.json"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          p = Path(os.environ['RUNNER_TEMP']) / 'rundown-playwright' / 'route-probe.json'
+          data = json.loads(p.read_text())
+          assert data['can_execute'] is False
+          assert data['prediction_authority'] is False
+          print('PUBLIC_ROUTE_PROBE=' + json.dumps(data, sort_keys=True))
+          PY
+      - name: Capture rendered TheRundown root board
+        shell: bash
+        run: |
           set +e
           python v17/rundown_playwright_capture.py \
             --output "$RUNNER_TEMP/rundown-playwright/board-capture.json"
@@ -66,11 +81,11 @@ jobs:
           }, indent=2, sort_keys=True))
           PY
           exit "$rc"
-      - name: Upload sanitized rendered-board capture
+      - name: Upload sanitized rendered-board diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: wow-v17-rundown-playwright-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/rundown-playwright/board-capture.json
+          path: ${{ runner.temp }}/rundown-playwright
           if-no-files-found: warn
           retention-days: 14
