@@ -1,0 +1,110 @@
+name: wow-v17-rundown-playwright-auth-validation
+
+on:
+  push:
+    branches:
+      - fix/v17-rundown-playwright-auth
+    paths:
+      - ".github/workflows/wow-v17-rundown-playwright-auth-validation.yml"
+      - "artifacts/wow-engine/requirements.txt"
+      - "artifacts/wow-engine/v17/rundown_playwright_capture.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: artifacts/wow-engine
+    env:
+      WOW_CAN_EXECUTE: "false"
+      WOW_DRY_RUN_ONLY: "true"
+      WOW_RUNDOWN_BOARD_URL: "https://therundown.io/odds/"
+      WOW_RUNDOWN_LOGIN_URL: "https://auth.therundown.io/login/"
+      RUNDOWN_EMAIL: ${{ secrets.RUNDOWN_EMAIL }}
+      RUNDOWN_PASSWORD: ${{ secrets.RUNDOWN_PASSWORD }}
+      RUNDOWN_STORAGE_STATE_B64: ${{ secrets.RUNDOWN_STORAGE_STATE_B64 }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: artifacts/wow-engine/requirements.txt
+      - name: Install engine dependencies
+        run: pip install -r requirements.txt
+      - name: Install Chromium
+        run: python -m playwright install --with-deps chromium
+
+      - name: Verify login and public marketing boundaries
+        shell: bash
+        run: |
+          python - <<'PY'
+          from playwright.sync_api import sync_playwright
+          with sync_playwright() as pw:
+              browser = pw.chromium.launch(headless=True)
+              page = browser.new_page()
+              response = page.goto('https://auth.therundown.io/login/', wait_until='domcontentloaded', timeout=45000)
+              assert response is not None and response.status == 200
+              assert page.locator('input[type="email"], input[name="email"]').count() > 0
+              assert page.locator('input[type="password"], input[name="password"]').count() > 0
+              assert page.locator('button[type="submit"], button:has-text("Sign In")').count() > 0
+              page.goto('https://therundown.io/odds/', wait_until='domcontentloaded', timeout=45000)
+              assert page.locator('[class*="OddsLanding_landing"], [class*="OddsLandingHero_hero"], [class*="OddsPreviewSection_oddsRow"]').count() > 0
+              print('RUNDOWN_BOUNDARY_CONTRACT=OK')
+              browser.close()
+          PY
+
+      - name: Exercise fail-closed authenticated collector
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/rundown-playwright"
+          set +e
+          python v17/rundown_playwright_capture.py \
+            --output "$RUNNER_TEMP/rundown-playwright/board-capture.json"
+          rc=$?
+          set -e
+          export COLLECTOR_RC="$rc"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          data = json.loads((Path(os.environ['RUNNER_TEMP']) / 'rundown-playwright' / 'board-capture.json').read_text())
+          rc = int(os.environ['COLLECTOR_RC'])
+          assert data['can_execute'] is False
+          assert data['prediction_authority'] is False
+          assert data['research_ceiling'] == 'RESEARCH_INTEREST'
+          assert data['coverage']['marketing_rows_accepted'] == 0
+          configured = bool(os.environ.get('RUNDOWN_EMAIL')) and bool(os.environ.get('RUNDOWN_PASSWORD'))
+          if configured or os.environ.get('RUNDOWN_STORAGE_STATE_B64'):
+              assert rc == 0, (data['status'], data['reason_code'], data['auth_status'], data['board_surface'])
+              assert data['status'] == 'DISCOVERY_COMPLETE'
+              assert data['board_surface'] == 'AUTHENTICATED_ODDS_APP'
+              assert data['coverage']['rows_captured'] > 0
+              print('RUNDOWN_AUTHENTICATED_CAPTURE=PASS')
+          else:
+              assert rc != 0
+              assert data['status'] == 'DISCOVERY_BLOCKED'
+              assert data['reason_code'] == 'RUNDOWN_AUTH_CREDENTIALS_UNCONFIGURED'
+              print('RUNDOWN_AUTHENTICATED_CAPTURE=BLOCKED_EXPECTED_SECRETS_UNCONFIGURED')
+          print(json.dumps({
+              'status': data['status'],
+              'reason_code': data['reason_code'],
+              'auth_status': data['auth_status'],
+              'board_surface': data['board_surface'],
+              'coverage': data['coverage'],
+              'network_shapes': data['network_json_shapes'][:20],
+          }, sort_keys=True))
+          PY
+
+      - name: Upload sanitized collector evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wow-v17-rundown-playwright-auth-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/rundown-playwright/board-capture.json
+          if-no-files-found: warn
+          retention-days: 14
