@@ -42,6 +42,64 @@ def test_games_request_is_read_only_and_bearer_authenticated(monkeypatch):
     assert cfbd.CAN_EXECUTE is False
 
 
+def test_player_game_stats_is_bounded_and_bearer_authenticated(monkeypatch):
+    captured = {}
+
+    def fake_get(url, params, headers, timeout):
+        captured.update(url=url, params=params, headers=headers, timeout=timeout)
+        return SimpleNamespace(
+            status_code=200,
+            json=lambda: [
+                {
+                    "id": 123,
+                    "teams": [
+                        {
+                            "team": "Miami",
+                            "conference": "ACC",
+                            "homeAway": "away",
+                            "points": 31,
+                            "categories": [],
+                        }
+                    ],
+                }
+            ],
+        )
+
+    monkeypatch.setattr(cfbd.httpx, "get", fake_get)
+    client = cfbd.CFBDClient(api_key="secret")
+    response = client.player_game_stats(year=2026, week=3, classification="fbs")
+
+    assert captured["url"] == "https://api.collegefootballdata.com/games/players"
+    assert captured["headers"] == {"Authorization": "Bearer secret"}
+    assert captured["params"] == {
+        "year": 2026,
+        "week": 3,
+        "classification": "fbs",
+        "seasonType": "regular",
+    }
+    assert response.rows[0]["id"] == 123
+    assert cfbd.CAN_EXECUTE is False
+
+
+def test_player_game_stats_requires_bounded_filter():
+    client = cfbd.CFBDClient(api_key="secret")
+    with pytest.raises(ValueError, match="require week, team, conference, or game_id"):
+        client.player_game_stats(year=2026)
+
+
+def test_player_game_stats_supports_exact_game_id_without_year(monkeypatch):
+    captured = {}
+
+    def fake_get(url, params, headers, timeout):
+        captured.update(url=url, params=params)
+        return SimpleNamespace(status_code=200, json=lambda: [])
+
+    monkeypatch.setattr(cfbd.httpx, "get", fake_get)
+    client = cfbd.CFBDClient(api_key="secret")
+    client.player_game_stats(game_id=12345, classification=None, season_type=None)
+    assert captured["params"] == {"id": 12345}
+
+
 def test_elo_week_is_supported_but_other_ratings_do_not_invent_week(monkeypatch):
     calls = []
 
