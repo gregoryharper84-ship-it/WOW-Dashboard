@@ -1,0 +1,61 @@
+name: wow-v17-claude-action-diagnostic
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  id-token: write
+
+concurrency:
+  group: wow-v17-claude-action-diagnostic
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    name: Claude Action zero-turn diagnostic
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout protected main
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Run isolated Claude probe
+        id: probe
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            This is an isolated runtime diagnostic. Read README.md only.
+            Do not inspect any other file, do not run Bash, do not edit or write anything,
+            and do not create a branch, commit, issue, or pull request.
+            After reading README.md, respond exactly with: OK
+          base_branch: main
+          claude_args: >-
+            --max-turns 3
+            --allowedTools "Read"
+          display_report: "false"
+          show_full_output: "true"
+
+      - name: Record probe receipt
+        if: always()
+        shell: bash
+        env:
+          CONCLUSION: ${{ steps.probe.outputs.conclusion }}
+          SESSION_ID: ${{ steps.probe.outputs.session_id }}
+          EXECUTION_FILE: ${{ steps.probe.outputs.execution_file }}
+        run: |
+          {
+            echo "# Claude Action isolated diagnostic"
+            echo
+            echo "- conclusion: ${CONCLUSION:-missing}"
+            echo "- session_id_present: $([ -n \"${SESSION_ID:-}\" ] && echo true || echo false)"
+            echo "- execution_file_present: $([ -n \"${EXECUTION_FILE:-}\" ] && echo true || echo false)"
+            echo "- can_execute: false"
+          } >> "$GITHUB_STEP_SUMMARY"
