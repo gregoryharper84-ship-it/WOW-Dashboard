@@ -39,6 +39,19 @@ def test_directionless_best_side_expands_at_host_without_weakening_action_schema
     assert row["properties"]["direction"]["enum"] == ["MORE", "LESS"]
 
 
+def test_live_gpt_large_prop_pools_chunk_and_recover_immutable_receipts():
+    text = INSTRUCTIONS.read_text(encoding="utf-8")
+    assert "LIVE_GPT interactive scoring must use <=3 directional rows per Action call" in text
+    assert "continue chunk-by-chunk until every source row reconciles exactly once" in text
+    assert "On an Action timeout/disconnect/ambiguous completion" in text
+    assert "First call `lookupWowV17PredictionReceipts`" in text
+    assert "Retry only still-unresolved rows" in text
+    assert "Do not rank a partial pool as Full Model" in text
+
+    batch = _schema()["components"]["schemas"]["PickRequestBatch"]
+    assert batch["properties"]["rows"]["maxItems"] == 50
+
+
 def test_action_operation_descriptions_fit_editor_limit():
     document = _schema()
     for path, methods in document["paths"].items():
