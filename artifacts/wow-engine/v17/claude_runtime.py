@@ -264,8 +264,9 @@ def emit_claude_startup_readiness_receipt(
                 latency_ms=result["latency_ms"],
             )
 
-    log_fn = _LOGGER.info if receipt["status"] in {"READY", "DISABLED"} else _LOGGER.warning
-    log_fn(
+    # Deliberately warning-level even for READY so the one-shot production health
+    # receipt survives conservative root logger thresholds on Render.
+    _LOGGER.warning(
         "WOW_CLAUDE_RUNTIME status=%s enabled=%s messages_api_configured=%s "
         "claude_code_oauth_configured=%s probe_status=%s model=%s "
         "error_code=%s request_id=%s latency_ms=%s role=SUPPORTING_ADVISORY_ONLY "
@@ -302,7 +303,9 @@ def install_claude_startup_readiness_probe(
             daemon=True,
         ).start()
 
-    app.add_event_handler("startup", _run_probe_in_background)
+    # FastAPI 0.141 no longer exposes app.add_event_handler; the Starlette router
+    # startup list remains the compatibility surface used by this repository.
+    app.router.on_startup.append(_run_probe_in_background)
 
 
 def install_claude_runtime_routes(
