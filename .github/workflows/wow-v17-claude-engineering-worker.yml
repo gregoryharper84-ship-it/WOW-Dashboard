@@ -1,0 +1,285 @@
+name: wow-v17-claude-engineering-worker
+
+on:
+  workflow_run:
+    workflows: ["wow-v17-nightly-engineering-scan"]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  checks: read
+  contents: write
+  pull-requests: write
+  issues: write
+  id-token: write
+
+concurrency:
+  group: wow-v17-claude-engineering-worker
+  cancel-in-progress: false
+
+jobs:
+  claude-engineering:
+    name: Claude V17 engineering worker
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.event == 'schedule' && github.event.workflow_run.conclusion != 'cancelled') ||
+      (github.event.workflow_run.event == 'workflow_dispatch' && github.event.workflow_run.conclusion != 'cancelled')
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      CLAUDE_PROMPT: |
+        You are the implementation worker for the existing WOW V17 engineering organization.
+
+        Read and obey, in this order:
+        1. CLAUDE.md
+        2. .agents/skills/wow-nightly-engineering-autopilot/SKILL.md
+        3. .agents/skills/wow-autonomous-product-qa-engineering-recovery/SKILL.md
+        4. the relevant engineering role skills under .agents/skills/
+
+        This is an engineering execution run, not an architecture-design exercise.
+
+        Start from persistent repository truth. Inspect the unresolved incident ledger at
+        artifacts/wow-engine/v17/incident-ledger.json before opening new work. Also inspect
+        the upstream nightly engineering scan and current CI evidence when relevant.
+
+        Work exactly one highest-priority safely repairable incident per run unless the
+        incident is already superseded by a verified repair. Prefer unfinished P0/P1 and
+        previously stalled incidents before new discoveries.
+
+        Required lifecycle:
+        reproduce -> root cause -> smallest bounded patch -> targeted tests -> relevant
+        regressions -> diff audit -> durable incident/fix evidence.
+
+        Do not stop merely because a test fails. Rework bounded implementation failures
+        during this run when possible.
+
+        Do NOT:
+        - write directly to main;
+        - merge, deploy, or bypass branch protection;
+        - modify .github/workflows/** in this worker;
+        - alter can_execute=false or dry-run-only execution safety;
+        - alter V17 terminal authority;
+        - silently change model math, calibration, fitted artifacts, probability thresholds,
+          qualification policy, or other Class C / R2-repair-policy / R3 behavior.
+
+        If the required repair is R2-repair-policy, R3, or otherwise changes sporting
+        probability behavior, do not implement it. Preserve evidence and return changed=false
+        with the exact hard boundary.
+
+        If you implement a safe R0, R1, or eligible R2-restorative repair, update the
+        existing incident/fix persistence required by repository contracts, run the strongest
+        relevant tests available in this runner, and leave the branch in a reviewable state.
+
+        The final structured result must truthfully describe what happened. PR creation and
+        merge/deploy decisions are handled by the surrounding workflow, not by you.
+
+      CLAUDE_ARGS: >-
+        --max-turns 40
+        --allowedTools "Edit,Read,Write,Glob,Grep,Bash(python -m pytest:*),Bash(python artifacts/wow-engine/v17/nightly_incident_records.py:*),Bash(python artifacts/wow-engine/v17/nightly_engineering_team_contract.py:*),Bash(git status),Bash(git diff:*),Bash(git log:*)"
+        --json-schema '{"type":"object","properties":{"changed":{"type":"boolean"},"incident_id":{"type":"string"},"risk_class":{"type":"string","enum":["R0","R1","R2-restorative","R2-repair-policy","R3","NONE"]},"summary":{"type":"string"},"tests":{"type":"string"},"hard_boundary":{"type":"string"}},"required":["changed","incident_id","risk_class","summary","tests","hard_boundary"],"additionalProperties":false}'
+
+    steps:
+      - name: Checkout protected main
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: artifacts/wow-engine/requirements.txt
+
+      - name: Install WOW validation dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -r artifacts/wow-engine/requirements.txt
+          pip install PyYAML openapi-spec-validator
+
+      - name: Resolve Anthropic authentication
+        id: auth
+        shell: bash
+        env:
+          OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -n "${OAUTH_TOKEN:-}" ]; then
+            echo "mode=oauth" >> "$GITHUB_OUTPUT"
+          elif [ -n "${API_KEY:-}" ]; then
+            echo "mode=api" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::Claude authentication is missing. Add CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY in repository Actions secrets."
+            exit 1
+          fi
+
+      - name: Run Claude Engineering with OAuth
+        id: claude_oauth
+        if: steps.auth.outputs.mode == 'oauth'
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: ${{ env.CLAUDE_PROMPT }}
+          base_branch: main
+          branch_prefix: claude/engineering/
+          additional_permissions: |
+            actions: read
+            checks: read
+          claude_args: ${{ env.CLAUDE_ARGS }}
+          display_report: "false"
+          show_full_output: "false"
+
+      - name: Run Claude Engineering with API key
+        id: claude_api
+        if: steps.auth.outputs.mode == 'api'
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: ${{ env.CLAUDE_PROMPT }}
+          base_branch: main
+          branch_prefix: claude/engineering/
+          additional_permissions: |
+            actions: read
+            checks: read
+          claude_args: ${{ env.CLAUDE_ARGS }}
+          display_report: "false"
+          show_full_output: "false"
+
+      - name: Normalize Claude execution result
+        id: result
+        if: always() && (steps.claude_oauth.outcome == 'success' || steps.claude_api.outcome == 'success')
+        shell: bash
+        env:
+          OAUTH_RESULT: ${{ steps.claude_oauth.outputs.structured_output }}
+          API_RESULT: ${{ steps.claude_api.outputs.structured_output }}
+          OAUTH_BRANCH: ${{ steps.claude_oauth.outputs.branch_name }}
+          API_BRANCH: ${{ steps.claude_api.outputs.branch_name }}
+        run: |
+          set -euo pipefail
+          result="${OAUTH_RESULT:-}"
+          branch="${OAUTH_BRANCH:-}"
+          if [ -z "$result" ]; then result="${API_RESULT:-}"; fi
+          if [ -z "$branch" ]; then branch="${API_BRANCH:-}"; fi
+          if [ -z "$result" ]; then
+            echo "::error::Claude completed without the required structured result."
+            exit 1
+          fi
+          jq -e . >/dev/null <<<"$result"
+          changed=$(jq -r '.changed' <<<"$result")
+          risk=$(jq -r '.risk_class' <<<"$result")
+          incident=$(jq -r '.incident_id' <<<"$result")
+          echo "changed=$changed" >> "$GITHUB_OUTPUT"
+          echo "risk=$risk" >> "$GITHUB_OUTPUT"
+          echo "incident=$incident" >> "$GITHUB_OUTPUT"
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          {
+            echo "result<<EOF"
+            echo "$result"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+          if [ "$changed" = "true" ] && [ -z "$branch" ]; then
+            echo "::error::Claude reported changes but did not return a branch."
+            exit 1
+          fi
+
+      - name: Open or update engineering PR
+        if: steps.result.outputs.changed == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CLAUDE_BRANCH: ${{ steps.result.outputs.branch }}
+          RESULT_JSON: ${{ steps.result.outputs.result }}
+          RISK: ${{ steps.result.outputs.risk }}
+          INCIDENT: ${{ steps.result.outputs.incident }}
+        run: |
+          set -euo pipefail
+
+          existing=$(gh pr list --repo "$GITHUB_REPOSITORY" --state open --base main --head "$CLAUDE_BRANCH" --json number --jq '.[0].number // empty')
+          if [ -n "$existing" ]; then
+            echo "Claude branch already has open PR #$existing; no duplicate created." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          compare=$(gh api "/repos/${GITHUB_REPOSITORY}/compare/main...${CLAUDE_BRANCH}")
+          mapfile -t files < <(jq -r '.files[].filename' <<<"$compare")
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "::error::Claude reported changes but branch has no diff from main."
+            exit 1
+          fi
+
+          summary=$(jq -r '.summary' <<<"$RESULT_JSON")
+          tests=$(jq -r '.tests' <<<"$RESULT_JSON")
+          boundary=$(jq -r '.hard_boundary' <<<"$RESULT_JSON")
+
+          hardened=false
+          if gh api "/repos/${GITHUB_REPOSITORY}/contents/.github/morning-green-protected-paths.txt?ref=main" >/dev/null 2>&1; then
+            hardened=true
+          fi
+
+          body="$RUNNER_TEMP/claude-engineering-pr.md"
+          {
+            echo "## Claude Engineering repair"
+            echo
+            echo "Incident: \`${INCIDENT:-UNSPECIFIED}\`"
+            echo "Risk: \`$RISK\`"
+            echo
+            echo "### Summary"
+            echo "$summary"
+            echo
+            echo "### Tests"
+            echo "$tests"
+            echo
+            echo "### Hard boundary"
+            echo "$boundary"
+            echo
+            echo "### Changed files"
+            for file in "${files[@]}"; do echo "- \`$file\`"; done
+            echo
+            echo "### Governance"
+            echo "- can_execute=false remains binding"
+            echo "- dry-run-only remains binding"
+            echo "- no direct merge or deployment performed by Claude Engineering"
+
+            if [ "$hardened" = "true" ] && { [ "$RISK" = "R0" ] || [ "$RISK" = "R1" ] || [ "$RISK" = "R2-restorative" ]; }; then
+              echo
+              echo "Morning-Green-Autonomous: true"
+              echo "Morning-Green-Risk: $RISK"
+              echo "Morning-Green-Acceptance-Workflow: wow-v17-nightly-engineering-scan.yml"
+              echo
+              echo '```morning-green-scope'
+              echo "risk_class: $RISK"
+              echo "allowed_files:"
+              for file in "${files[@]}"; do echo "  - $file"; done
+              echo "protected_files: []"
+              echo '```'
+            else
+              echo
+              echo "This PR is review-controlled and is NOT authorized for unattended Morning-Green merge."
+            fi
+          } > "$body"
+
+          title="Claude Engineering: ${INCIDENT:-nightly-repair}"
+          gh pr create --repo "$GITHUB_REPOSITORY" --base main --head "$CLAUDE_BRANCH" --title "$title" --body-file "$body"
+
+      - name: Record worker receipt
+        if: always()
+        shell: bash
+        env:
+          RESULT_JSON: ${{ steps.result.outputs.result }}
+          WORKER_BRANCH: ${{ steps.result.outputs.branch }}
+        run: |
+          {
+            echo "# WOW V17 Claude Engineering Worker"
+            echo
+            echo "- UTC: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "- Upstream event: $GITHUB_EVENT_NAME"
+            echo "- Worker branch: ${WORKER_BRANCH:-none}"
+            echo "- can_execute: false"
+            echo "- Result: ${RESULT_JSON:-no structured result}"
+          } >> "$GITHUB_STEP_SUMMARY"

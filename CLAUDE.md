@@ -95,7 +95,14 @@ Missing required evidence fails closed.
 
 No downstream stage may erase an upstream blocker.
 
-Controlling-model failure remains `MODEL_UNAVAILABLE` where governed.
+Preserve the narrow V17 model-failure semantics returned by the controlling route:
+
+- `MODEL_UNAVAILABLE` only when the exact required fitted capability/artifact/adapter is genuinely unavailable;
+- `MODEL_SCORER_FAILED` when a selected existing model is invoked but throws, times out, fails as a service, or returns no valid completion;
+- `MODEL_INPUTS_INSUFFICIENT` when candidate-specific required inputs are unavailable or insufficient;
+- `MODEL_OUTPUT_INVALID` when the model returns malformed, non-numeric, schema-invalid, or otherwise unusable output.
+
+Do not collapse scorer, input, output, market/tooling, repository, or editor-sync failures into `MODEL_UNAVAILABLE`.
 
 Unavailable specialist/model output must not be replaced with raw L5/L10, trends, market intuition, qualitative fallback, sportsbook-implied probability, or synthetic probability.
 
