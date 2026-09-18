@@ -69,7 +69,7 @@ jobs:
           data = json.loads(path.read_text())
           assert data['status'] in {'DISCOVERY_COMPLETE', 'DISCOVERY_COMPLETE_WITH_SOURCE_BLOCKERS'}, data.get('reason_code')
           assert data['provider'] == 'THERUNDOWN_AUTHENTICATED_BOARD'
-          assert data['acquisition_transport'] == 'PLAYWRIGHT_CURRENT_AUTHENTICATED_COOKIE_JAR'
+          assert data['acquisition_transport'] == 'PLAYWRIGHT_APP_NETWORK_PLUS_CURRENT_SESSION'
           assert data['can_execute'] is False
           assert data['prediction_authority'] is False
           assert data['research_ceiling'] == 'RESEARCH_INTEREST'
