@@ -45,6 +45,7 @@ jobs:
         run: |
           python - <<'PY'
           from playwright.sync_api import sync_playwright
+          from v17.rundown_playwright_capture import _is_marketing_landing
           with sync_playwright() as pw:
               browser = pw.chromium.launch(headless=True)
               page = browser.new_page()
@@ -54,7 +55,8 @@ jobs:
               assert page.locator('input[type="password"], input[name="password"]').count() > 0
               assert page.locator('button[type="submit"], button:has-text("Sign In")').count() > 0
               page.goto('https://therundown.io/odds/', wait_until='domcontentloaded', timeout=45000)
-              assert page.locator('[class*="OddsLanding_landing"], [class*="OddsLandingHero_hero"], [class*="OddsPreviewSection_oddsRow"]').count() > 0
+              page.wait_for_timeout(1800)
+              assert _is_marketing_landing(page) is True
               print('RUNDOWN_BOUNDARY_CONTRACT=OK')
               browser.close()
           PY
