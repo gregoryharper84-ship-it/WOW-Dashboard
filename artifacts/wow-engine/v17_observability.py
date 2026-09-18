@@ -14,6 +14,7 @@ from typing import Any
 
 from fastapi import Depends
 
+from v17.action_invocation_telemetry import install_action_invocation_telemetry
 from v17.interactive_latency_telemetry import install_interactive_latency_middleware
 from v17.interactive_pick_hydration import schedule_interactive_pick_hydration_install
 
@@ -35,6 +36,14 @@ def initialize_observability() -> dict[str, Any]:
         import api_prod_market_acceptance as _accepted_base
 
         install_interactive_latency_middleware(_accepted_base.app)
+        # Certification-independent invocation telemetry (P0-A). The canary
+        # ledger cannot answer "was the Action called" because it is gated
+        # behind a reviewed certification release that is intentionally empty;
+        # this records the invocation envelope itself, failures included.
+        install_action_invocation_telemetry(
+            _accepted_base.app,
+            db_client_fn=_accepted_base.market_api.prod.get_client,
+        )
         schedule_interactive_pick_hydration_install(
             _accepted_base.app,
             market_api=_accepted_base.market_api,

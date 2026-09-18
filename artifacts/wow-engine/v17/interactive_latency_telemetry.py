@@ -11,7 +11,15 @@ from typing import Any
 
 
 LOGGER = logging.getLogger("wow.v17.interactive_latency")
-INTERACTIVE_PATHS = frozenset({"/score-pick-request", "/score-team-event-request"})
+# Both public team-event route variants are served in production, so both
+# must be observed until one is formally retired. /score-team-event was
+# missing here, so direct calls to it produced no latency record at all
+# (WOW-RUNTIME-ACTION-CANARY-NEVER-VERIFIED-011, repair P0-C).
+INTERACTIVE_PATHS = frozenset({
+    "/score-pick-request",
+    "/score-team-event-request",
+    "/score-team-event",
+})
 
 
 def install_interactive_latency_middleware(app: Any) -> None:
