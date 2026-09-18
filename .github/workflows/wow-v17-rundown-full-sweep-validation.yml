@@ -8,12 +8,8 @@ on:
       - ".github/workflows/wow-v17-rundown-full-sweep-validation.yml"
       - "artifacts/wow-engine/requirements.txt"
       - "artifacts/wow-engine/v17/rundown_authenticated_scout.py"
-      - "artifacts/wow-engine/v17/rundown_authenticated_scout_browser_transport.py"
-      - "artifacts/wow-engine/v17/rundown_authenticated_scout_v2.py"
-      - "artifacts/wow-engine/v17/rundown_authenticated_scout_v3.py"
       - "artifacts/wow-engine/v17/rundown_authenticated_scout_v4.py"
-      - "artifacts/wow-engine/v17/rundown_authenticated_scout_v5.py"
-      - "artifacts/wow-engine/v17/rundown_authenticated_scout_v6.py"
+      - "artifacts/wow-engine/v17/rundown_authenticated_scout_v7.py"
       - "artifacts/wow-engine/test_v17_rundown_authenticated_scout.py"
   workflow_dispatch:
 
@@ -57,7 +53,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p "$RUNNER_TEMP/rundown-full-sweep"
-          python -m v17.rundown_authenticated_scout_v6 \
+          python -m v17.rundown_authenticated_scout_v7 \
             --output "$RUNNER_TEMP/rundown-full-sweep/model-handoff.json"
 
       - name: Verify full-slate acceptance contract
@@ -70,7 +66,7 @@ jobs:
           data = json.loads(path.read_text())
           assert data['status'] in {'DISCOVERY_COMPLETE', 'DISCOVERY_COMPLETE_WITH_SOURCE_BLOCKERS'}, data.get('reason_code')
           assert data['provider'] == 'THERUNDOWN_AUTHENTICATED_BOARD'
-          assert data['acquisition_transport'] == 'PLAYWRIGHT_AUTHENTICATED_BROWSER_FETCH_PLUS_APP_NETWORK'
+          assert data['acquisition_transport'] == 'PLAYWRIGHT_NATIVE_QUERY_TEMPLATE_BROWSER_FETCH'
           assert data['can_execute'] is False
           assert data['prediction_authority'] is False
           assert data['research_ceiling'] == 'RESEARCH_INTEREST'
@@ -92,10 +88,12 @@ jobs:
           assert all(row.get('can_execute') is False for row in team + props)
           assert all(row.get('probability_authority') is False for row in team + props)
           blob = path.read_text().lower()
-          for forbidden in ('rundown_email', 'rundown_password', 'authorization', 'refresh_token', 'access_token', 'cookie'):
+          for forbidden in ('rundown_email', 'rundown_password', 'authorization', 'refresh_token', 'access_token', 'cookie', 'therundown_token'):
               assert forbidden not in blob, forbidden
           event_rows = [row for row in data['coverage'] if row.get('scope') == 'event']
           sports_scanned = [row for row in data['coverage'] if row.get('scope') == 'sport' and row.get('status') == 'SCANNED']
+          assert event_rows, 'No event coverage rows were produced'
+          assert data['sportsbook_coverage']['bookmaker_count'] > 0, 'No sportsbook evidence captured'
           print('RUNDOWN_FULL_SWEEP=PASS')
           print(json.dumps({
               'status': data['status'],
