@@ -12,6 +12,8 @@ from __future__ import annotations
 import os
 from typing import Any
 
+from fastapi import Depends
+
 from v17.interactive_latency_telemetry import install_interactive_latency_middleware
 from v17.interactive_pick_hydration import schedule_interactive_pick_hydration_install
 
@@ -40,6 +42,22 @@ def initialize_observability() -> dict[str, Any]:
     except Exception:
         # Observability/latency optimization must never make the governed API
         # unavailable; canonical route behavior remains intact on any failure.
+        pass
+
+    # Mount the Render-hosted Claude support runtime on the same accepted app.
+    # This is intentionally advisory-only: it has no fitted-model authority,
+    # probability-publication authority, terminal authority, or wager execution.
+    # Installation failure is isolated so Anthropic availability can never make
+    # the governed sports API unavailable.
+    try:
+        import api_prod_market_acceptance as _accepted_base
+        from v17.claude_runtime import install_claude_runtime_routes
+
+        install_claude_runtime_routes(
+            _accepted_base.app,
+            auth_dependency=Depends(_accepted_base.market_api.prod._require_action_api_key),
+        )
+    except Exception:
         pass
 
     # The research evaluation is off by default and independent of telemetry.
