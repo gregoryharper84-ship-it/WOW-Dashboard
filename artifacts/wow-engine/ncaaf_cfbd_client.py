@@ -20,6 +20,7 @@ CAN_EXECUTE = False
 
 _ALLOWED_ENDPOINTS = {
     "/games",
+    "/games/players",
     "/ratings/core",
     "/ratings/sp",
     "/ratings/srs",
@@ -87,6 +88,45 @@ class CFBDClient:
         return self.get(
             "/games",
             params={"year": year, "week": week, "classification": classification},
+        )
+
+    def player_game_stats(
+        self,
+        *,
+        year: Optional[int] = None,
+        week: Optional[int] = None,
+        team: Optional[str] = None,
+        conference: Optional[str] = None,
+        classification: Optional[str] = "fbs",
+        season_type: Optional[str] = "regular",
+        category: Optional[str] = None,
+        game_id: Optional[int] = None,
+    ) -> CFBDResponse:
+        """Return CFBD ``/games/players`` box-score rows for model research.
+
+        CFBD requires ``year`` unless ``id`` is supplied, and when filtering by
+        year requires at least one of week/team/conference. Enforce that here so
+        an accidental broad call cannot become an unbounded production scrape.
+        """
+        if game_id is None:
+            if year is None or year < 2000 or year > 2100:
+                raise ValueError("year is required and outside supported research bounds")
+            if week is None and not str(team or "").strip() and not str(conference or "").strip():
+                raise ValueError("player game stats require week, team, conference, or game_id")
+        if week is not None and (week < 0 or week > 30):
+            raise ValueError("week is outside supported NCAAF bounds")
+        return self.get(
+            "/games/players",
+            params={
+                "year": year,
+                "week": week,
+                "team": team,
+                "conference": conference,
+                "classification": classification,
+                "seasonType": season_type,
+                "category": category,
+                "id": game_id,
+            },
         )
 
     def ratings(self, family: str, *, year: int, week: Optional[int] = None) -> CFBDResponse:
