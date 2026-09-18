@@ -6,8 +6,9 @@ cookies, tokens, or candidate selections. can_execute=false.
 from __future__ import annotations
 
 import json
+from collections import Counter
 from datetime import timedelta
-from urllib.parse import urlencode
+from urllib.parse import parse_qsl, urlencode, urlsplit
 
 from playwright.sync_api import sync_playwright
 
@@ -25,6 +26,8 @@ def browser_json(page, path: str, params=None):
             const response = await fetch(url, {credentials:'include', headers:{accept:'application/json'}, signal:controller.signal});
             const text = await response.text();
             return {status:response.status, text};
+          } catch (error) {
+            return {status:0, error:String(error && error.name ? error.name : error)};
           } finally { clearTimeout(timer); }
         }""",
         {"url": url},
@@ -51,14 +54,37 @@ def main() -> int:
         "available_market_ids": 0,
         "market_batches_at_12": 0,
         "http_failures": 0,
+        "event_status_counts": {},
+        "synthetic_no_params_status": None,
+        "synthetic_legacy_params_status": None,
+        "native_event_status": None,
+        "native_event_query_keys": [],
         "can_execute": False,
         "prediction_authority": False,
     }
+    status_counts: Counter[int] = Counter()
+    native_event = {"status": None, "path": None, "query_keys": []}
+
     with sync_playwright() as pw:
         browser = pw.chromium.launch(headless=True)
         context = browser.new_context(viewport={"width":1680,"height":1300}, locale="en-US")
         page = context.new_page()
         page.set_default_timeout(base.TIMEOUT_MS)
+
+        def observe_response(response):
+            try:
+                parts = urlsplit(response.url)
+                if parts.netloc.lower() != "therundown.io":
+                    return
+                path_parts = [p for p in parts.path.split("/") if p]
+                if len(path_parts) == 6 and path_parts[:3] == ["api", "v2", "sports"] and path_parts[4] == "events" and native_event["path"] is None:
+                    native_event["status"] = int(response.status)
+                    native_event["path"] = parts.path
+                    native_event["query_keys"] = sorted({k for k, _ in parse_qsl(parts.query, keep_blank_values=True)})
+            except Exception:
+                return
+
+        page.on("response", observe_response)
         try:
             page.goto(base.BOARD_URL, wait_until="domcontentloaded", timeout=base.TIMEOUT_MS)
             base._wait(page)
@@ -68,13 +94,27 @@ def main() -> int:
                 return 2
             page.goto(base.BOARD_URL, wait_until="domcontentloaded", timeout=base.TIMEOUT_MS)
             base._wait(page)
-            page.wait_for_timeout(2500)
+            page.wait_for_timeout(4500)
+
             status, payload = browser_json(page, "/api/v1/sports")
             if status != 200 or not isinstance(payload, dict) or not isinstance(payload.get("sports"), list):
                 print(json.dumps({"status":"RUNDOWN_SPORT_INVENTORY_FAILED","http_status":status,"can_execute":False}, sort_keys=True))
                 return 2
             sports = [r for r in payload["sports"] if isinstance(r, dict) and r.get("sport_id") is not None]
             summary["sports_discovered"] = len(sports)
+
+            # Compare one exact synthetic path both with and without the two legacy
+            # parameters. The app's own observed request above is the control.
+            first_sport = next((r for r in sports if str(r.get("sport_name") or "") not in base.NON_SPORT_NAMES), None)
+            if first_sport is not None:
+                first_path = f"/api/v2/sports/{int(first_sport['sport_id'])}/events/{start.date().isoformat()}"
+                no_param_status, _ = browser_json(page, first_path)
+                legacy_status, _ = browser_json(page, first_path, {"main_line":"true","hide_closed":"true"})
+                summary["synthetic_no_params_status"] = no_param_status
+                summary["synthetic_legacy_params_status"] = legacy_status
+
+            # Sweep event inventory with the exact documented/app path and no
+            # invented query parameters. Only active sport/dates progress further.
             for sport in sports:
                 sport_id = int(sport["sport_id"])
                 sport_name = str(sport.get("sport_name") or sport_id)
@@ -84,7 +124,8 @@ def main() -> int:
                 for date in base._date_strings(start, end):
                     summary["sport_dates_checked"] += 1
                     ep = f"/api/v2/sports/{sport_id}/events/{date}"
-                    status, events_payload = browser_json(page, ep, {"main_line":"true","hide_closed":"true"})
+                    status, events_payload = browser_json(page, ep)
+                    status_counts[status] += 1
                     if status != 200 or not isinstance(events_payload, dict):
                         summary["http_failures"] += 1
                         continue
@@ -108,6 +149,10 @@ def main() -> int:
                     summary["market_batches_at_12"] += (len(ids) + 11) // 12
         finally:
             context.close(); browser.close()
+
+    summary["event_status_counts"] = {str(k): v for k, v in sorted(status_counts.items())}
+    summary["native_event_status"] = native_event["status"]
+    summary["native_event_query_keys"] = native_event["query_keys"]
     print(json.dumps(summary, sort_keys=True))
     return 0
 
