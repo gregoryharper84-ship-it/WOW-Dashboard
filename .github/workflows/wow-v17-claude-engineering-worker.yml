@@ -131,6 +131,7 @@ jobs:
           prompt: ${{ env.CLAUDE_PROMPT }}
           base_branch: main
           branch_prefix: claude/engineering/
+          allowed_bots: "github-actions[bot]"
           additional_permissions: |
             actions: read
             checks: read
@@ -147,6 +148,7 @@ jobs:
           prompt: ${{ env.CLAUDE_PROMPT }}
           base_branch: main
           branch_prefix: claude/engineering/
+          allowed_bots: "github-actions[bot]"
           additional_permissions: |
             actions: read
             checks: read
