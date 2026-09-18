@@ -98,11 +98,5 @@ def reduce_prop_terminal(*, proposed_label: str, blockers: Iterable[str] = (), m
         # concurrent rather than as the cause.
         return PropTerminalDecision(label, "MODEL_REJECTED", True, True, False, bs, CAUSE_MODEL_JUDGMENT, concurrent_market)
     if bset & MARKET_BLOCKERS:
-        # Downstream market/value/payout evidence is orthogonal to a completed
-        # sporting-model result. Once the fitted specialist has evaluated the
-        # row, market-only blockers may hold value/card work but they must not
-        # reclassify the sporting probability itself as infrastructure-blocked.
-        if model_evaluated:
-            return PropTerminalDecision(label, "MARKET_BLOCKED", True, False, False, bs, CAUSE_MODEL_SUPPORTED, concurrent_market)
-        return PropTerminalDecision("MODEL_INPUTS_INSUFFICIENT", "MARKET_BLOCKED", False, False, True, bs, CAUSE_INFRASTRUCTURE, concurrent_market)
+        return PropTerminalDecision(label if model_evaluated else "MODEL_INPUTS_INSUFFICIENT", "MARKET_BLOCKED", model_evaluated, False, True, bs, CAUSE_INFRASTRUCTURE, concurrent_market)
     return PropTerminalDecision(label, "MODEL_SUPPORTED" if model_evaluated else "UNEVALUATED", model_evaluated, False, False, bs, CAUSE_MODEL_SUPPORTED if model_evaluated else CAUSE_UNEVALUATED, concurrent_market)
