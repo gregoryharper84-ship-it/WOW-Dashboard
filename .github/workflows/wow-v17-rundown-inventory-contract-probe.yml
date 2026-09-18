@@ -1,0 +1,39 @@
+name: wow-v17-rundown-inventory-contract-probe
+
+on:
+  push:
+    branches:
+      - fix/v17-rundown-authenticated-full-sweep
+    paths:
+      - ".github/workflows/wow-v17-rundown-inventory-contract-probe.yml"
+      - "artifacts/wow-engine/v17/rundown_inventory_contract_probe.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: artifacts/wow-engine
+    env:
+      WOW_CAN_EXECUTE: "false"
+      WOW_DRY_RUN_ONLY: "true"
+      RUNDOWN_EMAIL: ${{ secrets.RUNDOWN_EMAIL }}
+      RUNDOWN_PASSWORD: ${{ secrets.RUNDOWN_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: artifacts/wow-engine/requirements.txt
+      - name: Install engine dependencies
+        run: pip install -r requirements.txt
+      - name: Install Chromium
+        run: python -m playwright install --with-deps chromium
+      - name: Probe authenticated inventory endpoints without secret values
+        run: python -m v17.rundown_inventory_contract_probe
