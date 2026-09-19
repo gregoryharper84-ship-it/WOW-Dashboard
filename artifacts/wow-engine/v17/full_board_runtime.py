@@ -5,8 +5,10 @@ change a fitted model, alter calibration, or grant execution authority.
 """
 from __future__ import annotations
 
+import os
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Callable
 
 from fastapi import Depends, FastAPI, HTTPException, Query
 
@@ -14,6 +16,17 @@ from v17.full_board_stabilization import capability_matrix, compact_event_page
 from v17.rundown_provider_health import probe_rundown_provider_health
 
 CAN_EXECUTE = False
+DIAGNOSTIC_DEADLINE_SECONDS = float(
+    os.environ.get("WOW_V17_DIAGNOSTIC_DEADLINE_SECONDS", "4.0")
+)
+_DIAGNOSTIC_EXECUTOR = ThreadPoolExecutor(
+    max_workers=4,
+    thread_name_prefix="wow-v17-diagnostic",
+)
+
+
+class DiagnosticDeadlineExceeded(TimeoutError):
+    """Raised when a read-only diagnostic exceeds the host-safe deadline."""
 
 
 def _iso_date_yyyymmdd(value: str | None) -> tuple[str, str]:
@@ -26,6 +39,91 @@ def _iso_date_yyyymmdd(value: str | None) -> tuple[str, str]:
     else:
         parsed = datetime.now(timezone.utc)
     return parsed.strftime("%Y-%m-%d"), parsed.strftime("%Y%m%d")
+
+
+def _bounded_diagnostic_call(
+    fn: Callable[..., dict[str, Any]],
+    /,
+    *args: Any,
+    **kwargs: Any,
+) -> dict[str, Any]:
+    """Run a diagnostic behind a hard host-facing deadline.
+
+    Provider transports keep their own lower-level timeout/error semantics, but
+    those calls can still be delayed by DNS, connection establishment, proxy
+    behavior, or dependency stalls. The Action surface must return a typed
+    diagnostic result before the client abandons the request.
+    """
+    deadline = max(0.05, float(DIAGNOSTIC_DEADLINE_SECONDS))
+    future = _DIAGNOSTIC_EXECUTOR.submit(fn, *args, **kwargs)
+    try:
+        result = future.result(timeout=deadline)
+    except FutureTimeoutError as exc:
+        future.cancel()
+        raise DiagnosticDeadlineExceeded("DIAGNOSTIC_DEADLINE_EXCEEDED") from exc
+    if not isinstance(result, dict):
+        raise TypeError("DIAGNOSTIC_RESULT_MUST_BE_OBJECT")
+    return result
+
+
+def _rundown_route_blocked(
+    *,
+    sport_key: str,
+    date_iso: str,
+    provider_code: str,
+) -> dict[str, Any]:
+    access = {
+        "market_acquisition_status": "MARKET_DATA_UNOBTAINABLE",
+        "provider_code": provider_code,
+        "http_status": None,
+        "market_snapshot_present": False,
+        "auth_ok": None,
+        "blocker": provider_code,
+        "can_execute": False,
+    }
+    return {
+        "provider": "RUNDOWN",
+        "sport_key": sport_key,
+        "date": date_iso,
+        "status": "BLOCKED",
+        "health_contract": "CATALOG_PLUS_EVENTS",
+        "credential_configured": None,
+        "market_snapshot_present": False,
+        "catalog_access": access,
+        "event_access": {
+            "market_acquisition_status": "NOT_ATTEMPTED",
+            "provider_code": None,
+            "http_status": None,
+            "market_snapshot_present": False,
+            "auth_ok": None,
+            "blocker": "DIAGNOSTIC_ROUTE_DID_NOT_COMPLETE",
+            "can_execute": False,
+        },
+        "affects_model_capability": False,
+        "prediction_authority": False,
+        "can_execute": False,
+    }
+
+
+def _espn_route_blocked(
+    *,
+    sport_key: str,
+    date_iso: str,
+    provider_code: str,
+) -> dict[str, Any]:
+    return {
+        "status": "BLOCKED",
+        "sport_key": sport_key,
+        "date": date_iso,
+        "provider": "ESPN_SCOREBOARD_RESEARCH_FALLBACK",
+        "provider_code": provider_code,
+        "http_status": None,
+        "response_contract": "IDENTITY_ONLY_PAGINATED",
+        "prediction_authority": False,
+        "exact_line_authority": False,
+        "events": [],
+        "can_execute": False,
+    }
 
 
 def run_rundown_live_health(
@@ -74,7 +172,11 @@ def _compact_espn_event(raw: dict[str, Any], sport_key: str) -> dict[str, Any]:
         if isinstance(probable_athlete, list) and probable_athlete:
             probable_athlete = probable_athlete[0]
         if isinstance(probable_athlete, dict):
-            athlete = probable_athlete.get("athlete") if isinstance(probable_athlete.get("athlete"), dict) else probable_athlete
+            athlete = (
+                probable_athlete.get("athlete")
+                if isinstance(probable_athlete.get("athlete"), dict)
+                else probable_athlete
+            )
             name = athlete.get("displayName") or athlete.get("fullName")
             side = competitor.get("homeAway")
             if side and name:
@@ -119,17 +221,23 @@ def compact_espn_scoreboard(
             "can_execute": False,
         }
     raw_events = result.data.get("events") if isinstance(result.data, dict) else []
-    compact = [_compact_espn_event(raw, sport_key) for raw in (raw_events or []) if isinstance(raw, dict)]
+    compact = [
+        _compact_espn_event(raw, sport_key)
+        for raw in (raw_events or [])
+        if isinstance(raw, dict)
+    ]
     page_payload = compact_event_page(compact, page=page, page_size=page_size)
-    page_payload.update({
-        "status": "PASS",
-        "sport_key": sport_key,
-        "date": date_iso,
-        "provider": "ESPN_SCOREBOARD_RESEARCH_FALLBACK",
-        "response_contract": "IDENTITY_ONLY_PAGINATED",
-        "prediction_authority": False,
-        "can_execute": False,
-    })
+    page_payload.update(
+        {
+            "status": "PASS",
+            "sport_key": sport_key,
+            "date": date_iso,
+            "provider": "ESPN_SCOREBOARD_RESEARCH_FALLBACK",
+            "response_contract": "IDENTITY_ONLY_PAGINATED",
+            "prediction_authority": False,
+            "can_execute": False,
+        }
+    )
     return page_payload
 
 
@@ -162,9 +270,31 @@ def install_full_board_runtime_routes(
         date: str | None = Query(None),
     ):
         try:
-            return run_rundown_live_health(sport_key=sport_key, date=date)
+            date_iso, _ = _iso_date_yyyymmdd(date)
         except ValueError as exc:
-            raise HTTPException(status_code=422, detail={"code": str(exc), "can_execute": False}) from exc
+            raise HTTPException(
+                status_code=422,
+                detail={"code": str(exc), "can_execute": False},
+            ) from exc
+
+        try:
+            return _bounded_diagnostic_call(
+                run_rundown_live_health,
+                sport_key=sport_key,
+                date=date_iso,
+            )
+        except DiagnosticDeadlineExceeded:
+            return _rundown_route_blocked(
+                sport_key=sport_key,
+                date_iso=date_iso,
+                provider_code="RUNDOWN_DIAGNOSTIC_DEADLINE_EXCEEDED",
+            )
+        except Exception as exc:  # noqa: BLE001 - typed diagnostic boundary
+            return _rundown_route_blocked(
+                sport_key=sport_key,
+                date_iso=date_iso,
+                provider_code=f"RUNDOWN_DIAGNOSTIC_EXCEPTION_{type(exc).__name__}",
+            )
 
     @app.get(
         "/v17/discovery/espn-compact",
@@ -178,14 +308,33 @@ def install_full_board_runtime_routes(
         page_size: int = Query(100, ge=1, le=250),
     ):
         try:
-            return compact_espn_scoreboard(
+            date_iso, _ = _iso_date_yyyymmdd(date)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": str(exc), "can_execute": False},
+            ) from exc
+
+        try:
+            return _bounded_diagnostic_call(
+                compact_espn_scoreboard,
                 sport_key=sport_key,
-                date=date,
+                date=date_iso,
                 page=page,
                 page_size=page_size,
             )
-        except ValueError as exc:
-            raise HTTPException(status_code=422, detail={"code": str(exc), "can_execute": False}) from exc
+        except DiagnosticDeadlineExceeded:
+            return _espn_route_blocked(
+                sport_key=sport_key,
+                date_iso=date_iso,
+                provider_code="ESPN_DIAGNOSTIC_DEADLINE_EXCEEDED",
+            )
+        except Exception as exc:  # noqa: BLE001 - typed diagnostic boundary
+            return _espn_route_blocked(
+                sport_key=sport_key,
+                date_iso=date_iso,
+                provider_code=f"ESPN_DIAGNOSTIC_EXCEPTION_{type(exc).__name__}",
+            )
 
     app.state.v17_full_board_runtime_routes_installed = True
     return True
@@ -193,6 +342,8 @@ def install_full_board_runtime_routes(
 
 __all__ = [
     "CAN_EXECUTE",
+    "DIAGNOSTIC_DEADLINE_SECONDS",
+    "DiagnosticDeadlineExceeded",
     "compact_espn_scoreboard",
     "install_full_board_runtime_routes",
     "run_rundown_live_health",

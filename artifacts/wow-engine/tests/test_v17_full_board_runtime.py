@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+import time
 from urllib.error import HTTPError
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from v17 import full_board_runtime as runtime
 from v17 import market_evidence_sources as sources
 from v17 import scout_secondary_source as secondary
 from v17.full_board_runtime import (
@@ -142,7 +144,9 @@ def test_compact_espn_scoreboard_returns_bounded_identity_rows(monkeypatch):
     monkeypatch.setattr(
         secondary,
         "_scoreboard",
-        lambda *args, **kwargs: secondary.SecondaryResult(True, {"events": raw_events}, 200),
+        lambda *args, **kwargs: secondary.SecondaryResult(
+            True, {"events": raw_events}, 200
+        ),
     )
     page = compact_espn_scoreboard(
         sport_key="baseball_mlb", date="2026-09-19", page=2, page_size=100
@@ -172,3 +176,99 @@ def test_runtime_routes_expose_capabilities_and_are_read_only(monkeypatch):
     paths = {route.path for route in app.routes}
     assert "/v17/market-health/rundown" in paths
     assert "/v17/discovery/espn-compact" in paths
+
+
+def test_rundown_route_deadline_returns_typed_blocked_payload(monkeypatch):
+    monkeypatch.setattr(runtime, "DIAGNOSTIC_DEADLINE_SECONDS", 0.01)
+
+    def hanging_health(**kwargs):
+        time.sleep(0.10)
+        return {"status": "PASS"}
+
+    monkeypatch.setattr(runtime, "run_rundown_live_health", hanging_health)
+
+    app = FastAPI()
+    assert install_full_board_runtime_routes(app) is True
+    client = TestClient(app)
+    response = client.get(
+        "/v17/market-health/rundown",
+        params={"sport_key": "baseball_mlb", "date": "2026-09-19"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "BLOCKED"
+    assert body["provider"] == "RUNDOWN"
+    assert body["catalog_access"]["market_acquisition_status"] == "MARKET_DATA_UNOBTAINABLE"
+    assert body["catalog_access"]["provider_code"] == "RUNDOWN_DIAGNOSTIC_DEADLINE_EXCEEDED"
+    assert body["prediction_authority"] is False
+    assert body["can_execute"] is False
+
+
+def test_espn_route_deadline_returns_typed_blocked_payload(monkeypatch):
+    monkeypatch.setattr(runtime, "DIAGNOSTIC_DEADLINE_SECONDS", 0.01)
+
+    def hanging_scoreboard(**kwargs):
+        time.sleep(0.10)
+        return {"status": "PASS"}
+
+    monkeypatch.setattr(runtime, "compact_espn_scoreboard", hanging_scoreboard)
+
+    app = FastAPI()
+    assert install_full_board_runtime_routes(app) is True
+    client = TestClient(app)
+    response = client.get(
+        "/v17/discovery/espn-compact",
+        params={
+            "sport_key": "baseball_mlb",
+            "date": "2026-09-19",
+            "page": 1,
+            "page_size": 100,
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "BLOCKED"
+    assert body["provider"] == "ESPN_SCOREBOARD_RESEARCH_FALLBACK"
+    assert body["provider_code"] == "ESPN_DIAGNOSTIC_DEADLINE_EXCEEDED"
+    assert body["prediction_authority"] is False
+    assert body["exact_line_authority"] is False
+    assert body["can_execute"] is False
+
+
+def test_diagnostic_routes_convert_unexpected_exceptions_to_typed_blocked(monkeypatch):
+    def broken_rundown(**kwargs):
+        raise RuntimeError("do-not-leak")
+
+    def broken_espn(**kwargs):
+        raise KeyError("do-not-leak")
+
+    monkeypatch.setattr(runtime, "run_rundown_live_health", broken_rundown)
+    monkeypatch.setattr(runtime, "compact_espn_scoreboard", broken_espn)
+
+    app = FastAPI()
+    assert install_full_board_runtime_routes(app) is True
+    client = TestClient(app)
+
+    rundown = client.get(
+        "/v17/market-health/rundown",
+        params={"sport_key": "baseball_mlb", "date": "2026-09-19"},
+    )
+    assert rundown.status_code == 200
+    rundown_body = rundown.json()
+    assert rundown_body["status"] == "BLOCKED"
+    assert rundown_body["catalog_access"]["provider_code"] == "RUNDOWN_DIAGNOSTIC_EXCEPTION_RuntimeError"
+    assert "do-not-leak" not in rundown.text
+    assert rundown_body["can_execute"] is False
+
+    espn = client.get(
+        "/v17/discovery/espn-compact",
+        params={"sport_key": "baseball_mlb", "date": "2026-09-19"},
+    )
+    assert espn.status_code == 200
+    espn_body = espn.json()
+    assert espn_body["status"] == "BLOCKED"
+    assert espn_body["provider_code"] == "ESPN_DIAGNOSTIC_EXCEPTION_KeyError"
+    assert "do-not-leak" not in espn.text
+    assert espn_body["can_execute"] is False
