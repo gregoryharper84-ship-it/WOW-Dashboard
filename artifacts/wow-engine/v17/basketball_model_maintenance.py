@@ -18,6 +18,7 @@ from fastapi import FastAPI
 from basketball_event_hydration_runtime import BasketballHydrationError, hydrate
 from basketball_training_replay import run_training_replay
 from github_actions_oidc import scout_route_auth_dependency
+from v17.team_event_model_development_manifest import development_lane
 
 CAN_EXECUTE = False
 SUPPORTED_SPORTS = ("NBA", "WNBA")
@@ -29,10 +30,12 @@ def default_seasons(now: datetime | None = None) -> tuple[int, ...]:
 
 
 def _blocked(sport: str, code: str, *, error_type: str | None = None) -> dict[str, Any]:
+    lane = development_lane(sport)
     payload: dict[str, Any] = {
         "sport": sport,
         "status": "BLOCKED",
         "code": code,
+        "model_development": lane.as_dict() if lane is not None else None,
         "promotion_attempted": False,
         "probability_publishable": False,
         "can_execute": False,
@@ -59,11 +62,13 @@ def run_basketball_model_maintenance(
         try:
             hydration = hydrate(sport, season_values, client=db)
             replay = run_training_replay(sport, client=db)
+            lane = development_lane(sport)
             results.append({
                 "sport": sport,
                 "status": "SHADOW_EVIDENCE_UPDATED",
                 "hydration": hydration,
                 "training_replay": replay,
+                "model_development": lane.as_dict() if lane is not None else None,
                 "promotion_attempted": False,
                 "probability_publishable": False,
                 "can_execute": False,
