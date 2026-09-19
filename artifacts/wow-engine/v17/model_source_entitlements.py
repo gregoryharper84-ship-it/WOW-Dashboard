@@ -17,6 +17,7 @@ SourceUse = Literal[
     "EVENT_MARKET_ONLY",
     "TRAINING_WITH_CREDENTIAL",
     "TRAINING_WITH_ENTITLEMENT",
+    "TRAINING_OPEN_LICENSED",
     "CANDIDATE_FIRST_PARTY_UNDOCUMENTED",
     "RESEARCH_ONLY",
     "NO_APPROVED_SOURCE",
@@ -34,6 +35,9 @@ class SourceEntitlement:
     fitted_training_allowed_when_ready: bool = False
     certification_source_review_required: bool = True
     probability_source: bool = False
+    license_id: str | None = None
+    license_url: str | None = None
+    attribution_required: bool = False
     can_execute: bool = False
 
 
@@ -46,6 +50,26 @@ SOURCES: dict[str, SourceEntitlement] = {
         market_feature_allowed=False,
         fitted_training_allowed_when_ready=False,
         certification_source_review_required=False,
+    ),
+    "SPORTSDATAVERSE_ESPN": SourceEntitlement(
+        "SPORTSDATAVERSE_ESPN",
+        ("NBA", "WNBA", "NCAAB"),
+        "TRAINING_OPEN_LICENSED",
+        fitted_training_allowed_when_ready=True,
+        certification_source_review_required=True,
+        license_id="CC-BY-4.0",
+        license_url="https://github.com/sportsdataverse/sportsdataverse-data/blob/main/LICENSE",
+        attribution_required=True,
+    ),
+    "SPORTSDATAVERSE_WNBA_STATS": SourceEntitlement(
+        "SPORTSDATAVERSE_WNBA_STATS",
+        ("WNBA",),
+        "TRAINING_OPEN_LICENSED",
+        fitted_training_allowed_when_ready=True,
+        certification_source_review_required=True,
+        license_id="CC-BY-4.0",
+        license_url="https://github.com/sportsdataverse/sportsdataverse-data/blob/main/LICENSE",
+        attribution_required=True,
     ),
     "BALLDONTLIE": SourceEntitlement(
         "BALLDONTLIE",
@@ -166,6 +190,8 @@ def source_readiness(source_id: str) -> SourceReadiness:
         blockers.append("MODEL_SOURCE_CREDENTIAL_MISSING")
     if source.entitlement_env and not _truthy_env(source.entitlement_env):
         blockers.append("MODEL_SOURCE_TRAINING_ENTITLEMENT_NOT_CONFIRMED")
+    if source.use == "TRAINING_OPEN_LICENSED" and not (source.license_id and source.license_url):
+        blockers.append("MODEL_SOURCE_LICENSE_METADATA_MISSING")
     return SourceReadiness(
         source_id=source.source_id,
         ready_for_candidate_training=not blockers,
@@ -196,6 +222,11 @@ def assert_source_registry() -> None:
             raise RuntimeError(f"RESEARCH_SOURCE_CANNOT_TRAIN_PRODUCTION_MODEL:{key}")
         if source.use == "NO_APPROVED_SOURCE" and source.fitted_training_allowed_when_ready:
             raise RuntimeError(f"UNAPPROVED_SOURCE_CANNOT_TRAIN_MODEL:{key}")
+        if source.use == "TRAINING_OPEN_LICENSED":
+            if not source.fitted_training_allowed_when_ready:
+                raise RuntimeError(f"OPEN_LICENSED_SOURCE_MUST_ALLOW_CANDIDATE_TRAINING:{key}")
+            if not source.license_id or not source.license_url:
+                raise RuntimeError(f"OPEN_LICENSED_SOURCE_LICENSE_METADATA_REQUIRED:{key}")
 
 
 assert_source_registry()
