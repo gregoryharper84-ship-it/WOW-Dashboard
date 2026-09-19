@@ -56,6 +56,10 @@ def test_live_gpt_large_prop_pools_chunk_and_recover_immutable_receipts():
     # host-orchestration latency bound, not a weakening of the API schema.
     batch = _schema()["components"]["schemas"]["PickRequestBatch"]
     assert batch["properties"]["rows"]["maxItems"] == 50
+    response_mode = batch["properties"]["response_mode"]
+    assert response_mode["enum"] == ["COMPACT", "FULL"]
+    assert response_mode["default"] == "COMPACT"
+    assert "response_mode=COMPACT" in text
 
 
 def test_action_operation_descriptions_fit_editor_limit():
