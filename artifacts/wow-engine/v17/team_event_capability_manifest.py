@@ -158,11 +158,21 @@ TEAM_EVENT_INPUT_CONTRACTS: dict[str, tuple[str, ...]] = {
     ),
 }
 
-# Runtime installers may add a certification only after the exact bridge and
-# scorer are importable. Keeping the static catalog narrow preserves the rule
-# that declaration/registration alone cannot self-promote capability.
+# Static certification remains deliberately narrow. It records unconditional
+# repository certification and cannot be expanded merely because code imports.
 CERTIFIED_TEAM_EVENT_SPORTS: dict[str, str] = {
     "MLB": MLB_GAME_WIN_PROBABILITY_EXPERT,
+}
+
+# These identities are eligible for runtime certification only when the exact
+# live bridge is registered with the matching controlling specialist. A dummy or
+# generic registration does not satisfy this contract and cannot self-promote.
+ACTIVATABLE_TEAM_EVENT_CERTIFICATIONS: dict[str, str] = {
+    "WNBA": WNBA_GAME_WIN_PROBABILITY_EXPERT,
+    "NHL": NHL_GAME_WIN_PROBABILITY_EXPERT,
+    "SOCCER": SOCCER_1X2_WIN_PROBABILITY_EXPERT,
+    "TENNIS": TENNIS_MATCH_WIN_PROBABILITY_EXPERT,
+    "MMA": MMA_FIGHT_WIN_PROBABILITY_EXPERT,
 }
 
 KNOWN_UNCERTIFIED_TEAM_EVENT_SPORTS = frozenset(
@@ -247,6 +257,7 @@ def team_event_capability(value: str) -> TeamEventCapability:
 
 
 __all__ = [
+    "ACTIVATABLE_TEAM_EVENT_CERTIFICATIONS",
     "CAN_EXECUTE",
     "CERTIFIED_TEAM_EVENT_SPORTS",
     "EXPECTED_TEAM_EVENT_SPORTS",
