@@ -31,11 +31,18 @@ def resolve_odds_api_credential() -> tuple[str | None, str | None]:
     return None, None
 
 
-def _status(code: str, *, key_source: str | None, http_status: int | None = None) -> dict[str, Any]:
+def _status(
+    code: str,
+    *,
+    key_source: str | None,
+    http_status: int | None = None,
+    provider_detail: str | None = None,
+) -> dict[str, Any]:
     healthy = code == "PASS"
     return {
         "provider": "THE_ODDS_API",
         "status": code,
+        "provider_detail": provider_detail,
         "http_status": http_status,
         "credential_configured": key_source is not None,
         "credential_source": key_source,
@@ -53,7 +60,8 @@ def probe_odds_api_health(*, opener: Any = None) -> dict[str, Any]:
 
     A configured-but-deactivated key returns ``AUTH_FAILED`` and is explicitly
     ineligible for fallback routing. No request is attempted when no credential is
-    configured.
+    configured. Transport/schema detail remains subordinate to the canonical
+    V17 provider taxonomy rather than minting one-off terminal codes.
     """
     api_key, key_source = resolve_odds_api_credential()
     if not api_key:
@@ -70,11 +78,21 @@ def probe_odds_api_health(*, opener: Any = None) -> dict[str, Any]:
             body = response.read()
             status = getattr(response, "status", None) or getattr(response, "code", None) or 200
             if int(status) != 200:
-                return _status(f"HTTP_{status}", key_source=key_source, http_status=int(status))
+                return _status(
+                    "PROVIDER_REQUEST_FAILED",
+                    key_source=key_source,
+                    http_status=int(status),
+                    provider_detail=f"HTTP_{int(status)}",
+                )
             try:
                 payload = json.loads(body.decode("utf-8"))
             except (json.JSONDecodeError, UnicodeDecodeError):
-                return _status("PROVIDER_NON_JSON", key_source=key_source, http_status=200)
+                return _status(
+                    "PROVIDER_SCHEMA_FAILURE",
+                    key_source=key_source,
+                    http_status=200,
+                    provider_detail="NON_JSON_RESPONSE",
+                )
             result = _status("PASS", key_source=key_source, http_status=200)
             result["catalog_rows_present"] = isinstance(payload, list) and bool(payload)
             return result
@@ -83,9 +101,18 @@ def probe_odds_api_health(*, opener: Any = None) -> dict[str, Any]:
             return _status("AUTH_FAILED", key_source=key_source, http_status=exc.code)
         if exc.code == 429:
             return _status("RATE_LIMITED", key_source=key_source, http_status=429)
-        return _status(f"HTTP_{exc.code}", key_source=key_source, http_status=exc.code)
-    except (URLError, TimeoutError, OSError):
-        return _status("PROVIDER_UNREACHABLE", key_source=key_source)
+        return _status(
+            "PROVIDER_REQUEST_FAILED",
+            key_source=key_source,
+            http_status=exc.code,
+            provider_detail=f"HTTP_{exc.code}",
+        )
+    except (URLError, TimeoutError, OSError) as exc:
+        return _status(
+            "PROVIDER_REQUEST_FAILED",
+            key_source=key_source,
+            provider_detail=type(exc).__name__,
+        )
 
 
 def fallback_provider_allowed(health: dict[str, Any]) -> bool:
