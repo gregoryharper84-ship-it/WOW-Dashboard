@@ -1,0 +1,92 @@
+name: wow-v17-prop-transport-production-replay
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/wow-v17-prop-transport-production-replay.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wow-v17-prop-transport-production-replay-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  replay:
+    name: Replay large canonical prop batch against production
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      WOW_ACTION_ORIGIN: https://wow-governed-probability-engine.onrender.com
+      WOW_REQUEST_FILE: artifacts/wow-engine/v17/prop_action_requests/2026-09-15-strikeouts-1ip.json
+      WOW_ALLOW_HISTORICAL_REQUEST: "true"
+      WOW_SLATE_TIMEZONE: America/New_York
+      WOW_CAN_EXECUTE: "false"
+      WOW_DRY_RUN_ONLY: "true"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: artifacts/wow-engine/requirements.txt
+
+      - name: Install engine dependencies
+        run: pip install -r artifacts/wow-engine/requirements.txt
+
+      - name: Assert governed historical replay context
+        shell: bash
+        run: |
+          test "$WOW_CAN_EXECUTE" = "false"
+          test "$WOW_DRY_RUN_ONLY" = "true"
+          test "$WOW_ALLOW_HISTORICAL_REQUEST" = "true"
+          test -n "$ACTIONS_ID_TOKEN_REQUEST_URL"
+          test -n "$ACTIONS_ID_TOKEN_REQUEST_TOKEN"
+          test -f "$WOW_REQUEST_FILE"
+
+      - name: Invoke canonical production prop Action
+        run: python artifacts/wow-engine/v17/canonical_prop_action_runner.py
+
+      - name: Assert transport reconciliation and fail-closed invariants
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          p = Path("v17_canonical_prop_action_result.json")
+          if not p.exists():
+              raise SystemExit("PROP_TRANSPORT_REPLAY_RESULT_MISSING")
+          data = json.loads(p.read_text(encoding="utf-8"))
+          if data.get("can_execute") is not False:
+              raise SystemExit("CAN_EXECUTE_INVARIANT_FAILED")
+          if data.get("reconciliation_pass") is not True:
+              raise SystemExit(f"PROP_REPLAY_RECONCILIATION_FAILED:{data.get('reconciliation_pass')}")
+          rows = data.get("rows") or []
+          if not rows:
+              raise SystemExit("PROP_REPLAY_ROWS_MISSING")
+          if any(str(r.get("code") or "") == "PROP_ACTION_TRANSPORT_FAILED" for r in rows):
+              raise SystemExit("BOARD_WIDE_PROP_ACTION_TRANSPORT_FAILED_RECURRED")
+          unresolved = [r for r in rows if not (r.get("terminal_status") or r.get("code"))]
+          if unresolved:
+              raise SystemExit(f"PROP_REPLAY_UNTYPED_ROWS:{len(unresolved)}")
+          print(f"PROP_TRANSPORT_REPLAY_PASS rows={len(rows)} reconciliation_pass=true can_execute=false")
+          PY
+
+      - name: Upload production replay artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v17-prop-transport-production-replay
+          path: v17_canonical_prop_action_result.json
+          if-no-files-found: warn
+          retention-days: 14
