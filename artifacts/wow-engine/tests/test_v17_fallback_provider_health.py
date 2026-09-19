@@ -54,6 +54,23 @@ def test_deactivated_odds_api_key_is_typed_auth_failed(monkeypatch):
     assert fallback_provider_allowed(health) is False
 
 
+def test_health_probe_uses_same_paid_then_100k_precedence_as_real_odds_service(monkeypatch):
+    _clear(monkeypatch)
+    monkeypatch.setenv("ODDS_API_PAID_KEY", "paid-key")
+    monkeypatch.setenv("ODDS_API_KEY_100K", "high-key")
+    seen = {}
+
+    def opener(request, timeout=None):
+        seen["url"] = request.full_url
+        return _Response([{"key": "baseball_mlb", "active": True}])
+
+    health = probe_odds_api_health(opener=opener)
+    assert health["status"] == "PASS"
+    assert health["credential_source"] == "ODDS_API_PAID_KEY"
+    assert "paid-key" in seen["url"]
+    assert "high-key" not in seen["url"]
+
+
 def test_live_odds_api_catalog_auth_makes_provider_fallback_eligible(monkeypatch):
     _clear(monkeypatch)
     monkeypatch.setenv("ODDS_API_KEY_100K", "not-a-real-key")
