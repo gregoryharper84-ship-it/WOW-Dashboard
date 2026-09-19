@@ -11,6 +11,7 @@ on:
       - "artifacts/wow-engine/FIRST_SIX_CERTIFICATION_CHECKPOINT.md"
       - "artifacts/wow-engine/LLP_TEAM_STATE_ACCURACY_V1.md"
       - "artifacts/wow-engine/github_actions_oidc.py"
+      - "artifacts/wow-engine/v17/model_source_entitlements.py"
       - "artifacts/wow-engine/v17/team_event_specialist_ownership.py"
       - "artifacts/wow-engine/v17/team_state_intelligence.py"
       - "artifacts/wow-engine/v17/team_state_challenger_training.py"
@@ -27,6 +28,7 @@ on:
       - "artifacts/wow-engine/basketball_event_hydration_runtime.py"
       - "artifacts/wow-engine/basketball_training_replay.py"
       - "artifacts/wow-engine/basketball_specialist_pipeline.py"
+      - "artifacts/wow-engine/test_v17_model_source_entitlements.py"
       - "artifacts/wow-engine/test_v17_first_six_certification.py"
       - "artifacts/wow-engine/test_v17_first_six_source_contracts.py"
       - "artifacts/wow-engine/test_v17_team_state_intelligence.py"
@@ -37,11 +39,13 @@ on:
     paths:
       - ".github/workflows/wow-v17-first-six-model-maintenance.yml"
       - "artifacts/wow-engine/LLP_TEAM_STATE_ACCURACY_V1.md"
+      - "artifacts/wow-engine/v17/model_source_entitlements.py"
       - "artifacts/wow-engine/v17/team_state_intelligence.py"
       - "artifacts/wow-engine/v17/team_state_challenger_training.py"
       - "artifacts/wow-engine/v17/team_state_challenger_maintenance.py"
       - "artifacts/wow-engine/v17/team_state_scoped_maintenance.py"
       - "artifacts/wow-engine/v17/first_six_open_data_maintenance.py"
+      - "artifacts/wow-engine/test_v17_model_source_entitlements.py"
       - "artifacts/wow-engine/test_v17_team_state_intelligence.py"
       - "artifacts/wow-engine/test_v17_team_state_challenger_training.py"
       - "artifacts/wow-engine/test_v17_team_state_scoped_maintenance.py"
@@ -74,6 +78,7 @@ jobs:
       - name: Run first-six certification regressions
         run: >-
           python -m pytest -q
+          test_v17_model_source_entitlements.py
           test_v17_first_six_certification.py
           test_v17_first_six_source_contracts.py
           test_v17_team_event_specialist_ownership.py
