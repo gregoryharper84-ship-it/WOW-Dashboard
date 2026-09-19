@@ -2,8 +2,9 @@
 
 The audit separates implementation, registration, and certification. A sport can
 have numerical code without being registered, and registration alone never
-certifies it. Only exact importable scorer chains are reported as implementation
-coverage.
+certifies it. Runtime certification for newly promoted sports is derived only
+when the live registration's controlling specialist exactly matches the approved
+V17 certification identity.
 """
 from __future__ import annotations
 
@@ -12,6 +13,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from v17.team_event_capability_manifest import (
+    ACTIVATABLE_TEAM_EVENT_CERTIFICATIONS,
     EXPECTED_TEAM_EVENT_SPORTS,
     normalize_team_event_sport,
 )
@@ -46,14 +48,35 @@ def certification_state(
     *,
     registered: bool,
 ) -> tuple[str, str | None]:
-    """Certification status/id independent of bridge registration."""
+    """Certification status/id independent from generic registration alone.
+
+    Static certification comes from the governed catalog. For the new multisport
+    lanes, certification activates only if the *currently registered* exact
+    bridge uses the approved controlling specialist identity. A test/dummy bridge
+    therefore remains candidate-registered and cannot promote itself.
+    """
     from v17.team_event_capability_manifest import CERTIFIED_TEAM_EVENT_SPORTS
 
     normalized = normalize_team_event_sport(sport)
-    certification_id = CERTIFIED_TEAM_EVENT_SPORTS.get(normalized)
-    if certification_id:
-        return CERTIFIED, certification_id
+    static_certification_id = CERTIFIED_TEAM_EVENT_SPORTS.get(normalized)
+    if static_certification_id:
+        return CERTIFIED, static_certification_id
+
     if registered:
+        expected = ACTIVATABLE_TEAM_EVENT_CERTIFICATIONS.get(normalized)
+        if expected:
+            try:
+                import v17.team_event_bridge_runtime as bridge_runtime
+
+                live_registration = bridge_runtime.TEAM_EVENT_BRIDGES.get(normalized)
+                if (
+                    live_registration is not None
+                    and live_registration.controlling_specialist == expected
+                    and callable(live_registration.scorer)
+                ):
+                    return CERTIFIED, expected
+            except Exception:  # noqa: BLE001 - audit must fail closed
+                pass
         return CANDIDATE_REGISTERED_UNCERTIFIED, None
     return NOT_CERTIFIED, None
 
