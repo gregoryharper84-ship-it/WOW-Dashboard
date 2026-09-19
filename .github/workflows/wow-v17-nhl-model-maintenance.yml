@@ -23,6 +23,7 @@ on:
       - "artifacts/wow-engine/test_v17_d1_candidate_registry.py"
       - "artifacts/wow-engine/test_v17_nhl_candidate_pipeline.py"
       - "artifacts/wow-engine/test_v17_nhl_model_maintenance.py"
+      - "artifacts/wow-engine/test_v17_nhl_workflow_oidc_refresh_contract.py"
       - "artifacts/wow-engine/test_v17_capability_build_registry.py"
   pull_request:
     paths:
@@ -41,6 +42,7 @@ on:
       - "artifacts/wow-engine/test_v17_d1_candidate_registry.py"
       - "artifacts/wow-engine/test_v17_nhl_candidate_pipeline.py"
       - "artifacts/wow-engine/test_v17_nhl_model_maintenance.py"
+      - "artifacts/wow-engine/test_v17_nhl_workflow_oidc_refresh_contract.py"
       - "artifacts/wow-engine/test_v17_capability_build_registry.py"
 
 permissions:
@@ -74,6 +76,7 @@ jobs:
           test_v17_d1_candidate_registry.py
           test_v17_nhl_candidate_pipeline.py
           test_v17_nhl_model_maintenance.py
+          test_v17_nhl_workflow_oidc_refresh_contract.py
           test_v17_capability_build_registry.py
           test_v17_github_oidc.py
 
@@ -110,23 +113,27 @@ jobs:
           import urllib.parse
           import urllib.request
 
-          oidc_url = os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"]
-          separator = "&" if "?" in oidc_url else "?"
-          oidc_url += separator + urllib.parse.urlencode({"audience": "wow-v17-multiscout"})
-          oidc_request = urllib.request.Request(
-              oidc_url,
-              headers={"Authorization": f"Bearer {os.environ['ACTIONS_ID_TOKEN_REQUEST_TOKEN']}"},
-          )
-          with urllib.request.urlopen(oidc_request, timeout=20) as response:
-              oidc_token = json.load(response)["value"]
+          def mint_oidc_token():
+              oidc_url = os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"]
+              separator = "&" if "?" in oidc_url else "?"
+              oidc_url += separator + urllib.parse.urlencode({"audience": "wow-v17-multiscout"})
+              oidc_request = urllib.request.Request(
+                  oidc_url,
+                  headers={"Authorization": f"Bearer {os.environ['ACTIONS_ID_TOKEN_REQUEST_TOKEN']}"},
+              )
+              with urllib.request.urlopen(oidc_request, timeout=20) as response:
+                  return json.load(response)["value"]
 
           endpoint = os.environ["WOW_ACTION_ORIGIN"].rstrip("/") + "/internal/v17/nhl-model-maintenance"
           payload = None
           last_error = None
           # A protected-main push can start this job at the same time Render is
-          # deploying the commit that introduces the endpoint. Retry only
-          # deployment/transient statuses; all other HTTP failures remain hard.
+          # deploying the commit that introduces the endpoint. Mint a fresh
+          # short-lived OIDC token for each attempt so deploy retries cannot
+          # age the credential into an otherwise misleading 401. A 401 from a
+          # fresh token remains a hard authorization failure.
           for attempt in range(20):
+              oidc_token = mint_oidc_token()
               request = urllib.request.Request(
                   endpoint,
                   data=b"",
