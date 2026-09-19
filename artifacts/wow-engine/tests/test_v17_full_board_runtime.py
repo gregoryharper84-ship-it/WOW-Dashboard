@@ -31,32 +31,58 @@ class _Response:
         return False
 
 
+def _rundown_health_opener(calls=None):
+    def opener(request, timeout=None):
+        if calls is not None:
+            calls.append(request)
+        if request.full_url.endswith("/api/v2/sports"):
+            return _Response({"sports": [{"sport_id": 3, "sport_name": "MLB"}]})
+        if "/api/v2/sports/3/events/2026-09-19" in request.full_url:
+            return _Response({"events": []})
+        raise AssertionError(request.full_url)
+    return opener
+
+
 def test_rundown_health_requires_catalog_and_event_access(monkeypatch):
     monkeypatch.setattr(sources, "ENABLED", True)
     monkeypatch.setenv("THERUNDOWN_API_KEY", "not-a-real-key")
     monkeypatch.setenv("WOW_RUNDOWN_SPORT_ID_BASEBALL_MLB", "3")
     calls = []
 
-    def opener(request, timeout=None):
-        calls.append(request)
-        if request.full_url.endswith("/api/v2/sports"):
-            return _Response({"sports": [{"sport_id": 3, "sport_name": "MLB"}]})
-        if "/api/v2/sports/3/events/2026-09-19" in request.full_url:
-            return _Response({"events": []})
-        raise AssertionError(request.full_url)
-
     result = run_rundown_live_health(
-        sport_key="baseball_mlb", date="2026-09-19", opener=opener
+        sport_key="baseball_mlb",
+        date="2026-09-19",
+        opener=_rundown_health_opener(calls),
     )
     assert result["status"] == "PASS"
     assert result["catalog_access"]["market_acquisition_status"] == "PASS"
     assert result["event_access"]["market_acquisition_status"] == "PASS"
     assert result["event_access"]["market_snapshot_present"] is False
     assert result["auth_contract"] == "X-TheRundown-Key"
+    assert result["market_evidence_feature_enabled"] is True
     assert len(calls) == 2
     for request in calls:
         assert request.headers.get("X-therundown-key") == "not-a-real-key"
         assert "?key=" not in request.full_url
+
+
+def test_rundown_provider_health_still_probes_when_market_feature_is_disabled(monkeypatch):
+    monkeypatch.setattr(sources, "ENABLED", False)
+    monkeypatch.setenv("THERUNDOWN_API_KEY", "not-a-real-key")
+    monkeypatch.setenv("WOW_RUNDOWN_SPORT_ID_BASEBALL_MLB", "3")
+    calls = []
+
+    result = run_rundown_live_health(
+        sport_key="baseball_mlb",
+        date="2026-09-19",
+        opener=_rundown_health_opener(calls),
+    )
+    assert result["status"] == "PASS"
+    assert result["market_evidence_feature_enabled"] is False
+    assert result["feature_enablement_affects_health_probe"] is False
+    assert result["catalog_access"]["auth_ok"] is True
+    assert result["event_access"]["auth_ok"] is True
+    assert len(calls) == 2
 
 
 def test_rundown_health_fails_when_catalog_works_but_events_are_unauthorized(monkeypatch):
