@@ -12,6 +12,7 @@ from math import isfinite
 from typing import Any, Mapping
 
 from v17.llp_governed_package_scoring import PASS, validate_governed_scoring_package
+from v17.multisport_team_event_calibration import MIN_CALIBRATION_N
 from v17.team_event_model_registry_audit import CERTIFIED, certification_state
 
 CAN_EXECUTE = False
@@ -31,6 +32,16 @@ def _probability(value: Any) -> float | None:
     if not isfinite(parsed) or not 0.0 <= parsed <= 1.0:
         return None
     return parsed
+
+
+def _number(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if isfinite(parsed) else None
 
 
 def _aware(value: Any) -> datetime | None:
@@ -105,6 +116,33 @@ def _status_blockers(req: Any, sport: str) -> list[str]:
     return blockers
 
 
+def _calibration_blockers(package: Mapping[str, Any]) -> list[str]:
+    blockers: list[str] = []
+    if package.get("calibration_history_present") is not True:
+        blockers.append("CALIBRATION_HISTORY_NOT_PROVEN")
+    if package.get("calibration_artifact_certified") is not True:
+        blockers.append("CALIBRATION_ARTIFACT_NOT_CERTIFIED")
+    if str(package.get("calibration_health_status") or "").upper() != "PASS":
+        blockers.append("CALIBRATION_HEALTH_NOT_PASS")
+    if str(package.get("calibration_status") or "").upper() != "PASS":
+        blockers.append("CALIBRATION_STATUS_NOT_PASS")
+    training_n = _number(package.get("calibration_training_n"))
+    if training_n is None or training_n < MIN_CALIBRATION_N:
+        blockers.append("CALIBRATION_HISTORY_SAMPLE_INSUFFICIENT")
+    fingerprint = str(package.get("calibration_artifact_fingerprint") or "").lower()
+    if len(fingerprint) != 64 or any(ch not in "0123456789abcdef" for ch in fingerprint):
+        blockers.append("CALIBRATION_ARTIFACT_FINGERPRINT_INVALID")
+    model_at = _aware(package.get("immutable_model_timestamp"))
+    fit_end = _aware(package.get("calibration_fit_end"))
+    if fit_end is None or model_at is None or fit_end > model_at:
+        blockers.append("CALIBRATION_FIT_END_INVALID_OR_FUTURE_LEAKAGE")
+    if _number(package.get("calibration_brier_score")) is None:
+        blockers.append("CALIBRATION_BRIER_MISSING")
+    if _number(package.get("calibration_error")) is None:
+        blockers.append("CALIBRATION_ERROR_MISSING")
+    return blockers
+
+
 def reduce_multisport_team_event(
     req: Any,
     package: Mapping[str, Any],
@@ -122,6 +160,8 @@ def reduce_multisport_team_event(
         blockers.append("TEAM_EVENT_SPECIALIST_ARTIFACT_NOT_CERTIFIED")
     elif package.get("controlling_specialist") != certified_specialist:
         blockers.append("CONTROLLING_SPECIALIST_CERTIFICATION_MISMATCH")
+
+    blockers.extend(_calibration_blockers(package))
 
     if package.get("can_execute") is not False:
         blockers.append("CAN_EXECUTE_MUST_BE_FALSE")
