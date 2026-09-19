@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import math
 import uuid
+from copy import deepcopy
 from datetime import datetime, timezone
 from hashlib import sha256
 from typing import Any, Literal, Optional
@@ -811,6 +812,29 @@ def _score_mlb_1ip_row(
     )
 
 
+
+_PICK_REQUEST_COMPACT_DETAIL_KEYS = frozenset({"result", "detail", "acquisition", "specialist_utilization_audit"})
+
+def _compact_pick_outcome(outcome: dict[str, Any]) -> dict[str, Any]:
+    """Bound synchronous Action payload size without changing row governance."""
+    compact = {k: deepcopy(v) for k, v in outcome.items() if k not in _PICK_REQUEST_COMPACT_DETAIL_KEYS}
+    detail = outcome.get("detail")
+    if isinstance(detail, dict):
+        for key in ("blocker_code", "failure_class", "blocker", "sport", "stat_type", "controlling_specialist"):
+            if detail.get(key) is not None:
+                compact[key] = deepcopy(detail[key])
+    result = outcome.get("result")
+    if isinstance(result, dict):
+        prediction = result.get("prediction") if isinstance(result.get("prediction"), dict) else {}
+        qualification = result.get("probability_qualification") if isinstance(result.get("probability_qualification"), dict) else {}
+        for source, mapping in ((prediction, {"raw_model_probability":"model_probability","calibrated_probability":"calibrated_probability","calibrated_probability_lower_bound":"calibrated_probability_lower_bound","calibration_status":"calibration_status","model_version":"model_version"}),(qualification, {"confidence_tier":"confidence_tier","rank_eligible":"rank_eligible","model_supported":"model_supported","terminal_label":"terminal_label"})):
+            for src, dst in mapping.items():
+                if source.get(src) is not None:
+                    compact[dst] = deepcopy(source[src])
+    compact["detail_available"] = any(k in outcome for k in _PICK_REQUEST_COMPACT_DETAIL_KEYS)
+    compact["can_execute"] = False
+    return compact
+
 def install_pick_request_routes(
     app: Any,
     *,
@@ -1238,7 +1262,9 @@ def install_pick_request_routes(
             "reconciliation_pass": reconciliation_pass,
             "telemetry": _telemetry(outcomes),
             "specialist_utilization_summary": _specialist_utilization_summary(outcomes),
-            "rows": outcomes,
+            "response_mode": "COMPACT",
+            "rows": [_compact_pick_outcome(outcome) for outcome in outcomes],
+            "detail_retrieval": {"mode": "IMMUTABLE_RECEIPT_LOOKUP", "operation_id": "lookupWowV17PredictionReceipts"},
             "probability_objective": "GOVERNED_MODEL_ONLY",
             "can_execute": False,
         }
