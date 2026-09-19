@@ -2,7 +2,9 @@
 
 This is a development/maintenance map, not production capability. It records the
 strongest repository lane that can advance each sport toward a certified fitted
-team/event model while preserving fail-closed production routing.
+team/event model while preserving fail-closed production routing. Exact runtime
+installers may promote an entry only after its scorer/bridge/certification chain
+activates successfully.
 """
 from __future__ import annotations
 
@@ -54,4 +56,9 @@ def development_lane(sport: str) -> ModelDevelopmentLane | None:
     return TEAM_EVENT_MODEL_DEVELOPMENT.get(str(sport or "").strip().upper())
 
 
-__all__ = ["CAN_EXECUTE", "ModelDevelopmentLane", "TEAM_EVENT_MODEL_DEVELOPMENT", "development_lane"]
+__all__ = [
+    "CAN_EXECUTE",
+    "ModelDevelopmentLane",
+    "TEAM_EVENT_MODEL_DEVELOPMENT",
+    "development_lane",
+]

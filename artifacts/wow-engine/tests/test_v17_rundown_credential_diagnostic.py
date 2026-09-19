@@ -6,7 +6,9 @@ from v17.rundown_credential_diagnostic import (
 )
 
 
-ALIASES = ("RUNDOWN_API_KEY", "WOW_RUNDOWN_API_KEY", "THERUNDOWN_API_KEY")
+# Active Product V2 runtime precedence. This must match
+# install_rundown_v2_auth_repair, independent of test/import order.
+ALIASES = ("THERUNDOWN_API_KEY", "RUNDOWN_API_KEY", "WOW_RUNDOWN_API_KEY")
 
 
 def _clear(monkeypatch):
@@ -21,28 +23,30 @@ def test_reports_unconfigured_without_secret_fields(monkeypatch):
     assert status["status"] == "UNCONFIGURED"
     assert status["selected_alias"] is None
     assert status["aliases_checked"] == list(ALIASES)
+    assert status["auth_style"] == "header"
+    assert status["auth_name"] == "X-TheRundown-Key"
     assert status["secret_value_exposed"] is False
     assert status["can_execute"] is False
 
 
-def test_reports_selected_alias_by_existing_precedence(monkeypatch):
+def test_reports_selected_alias_by_active_v2_precedence(monkeypatch):
     _clear(monkeypatch)
-    monkeypatch.setenv("WOW_RUNDOWN_API_KEY", "super-secret-value")
-    monkeypatch.setenv("THERUNDOWN_API_KEY", "lower-precedence-secret")
+    monkeypatch.setenv("WOW_RUNDOWN_API_KEY", "lower-precedence-secret")
+    monkeypatch.setenv("THERUNDOWN_API_KEY", "higher-precedence-secret")
     status = rundown_credential_status()
     assert status["configured"] is True
     assert status["status"] == "CONFIGURED"
-    assert status["selected_alias"] == "WOW_RUNDOWN_API_KEY"
-    assert "super-secret-value" not in repr(status)
+    assert status["selected_alias"] == "THERUNDOWN_API_KEY"
     assert "lower-precedence-secret" not in repr(status)
+    assert "higher-precedence-secret" not in repr(status)
 
 
 def test_first_alias_wins_when_multiple_are_configured(monkeypatch):
     _clear(monkeypatch)
-    monkeypatch.setenv("RUNDOWN_API_KEY", "first-secret")
-    monkeypatch.setenv("WOW_RUNDOWN_API_KEY", "second-secret")
+    monkeypatch.setenv("THERUNDOWN_API_KEY", "first-secret")
+    monkeypatch.setenv("RUNDOWN_API_KEY", "second-secret")
     status = rundown_credential_status()
-    assert status["selected_alias"] == "RUNDOWN_API_KEY"
+    assert status["selected_alias"] == "THERUNDOWN_API_KEY"
     assert "first-secret" not in repr(status)
     assert "second-secret" not in repr(status)
 
@@ -62,6 +66,8 @@ def test_log_line_never_contains_secret_value(monkeypatch, caplog):
     assert "WOW_RUNDOWN_CREDENTIAL" in text
     assert "status=CONFIGURED" in text
     assert "selected_alias=THERUNDOWN_API_KEY" in text
+    assert "auth_style=header" in text
+    assert "auth_name=X-TheRundown-Key" in text
     assert "market_evidence_enabled=true" in text
     assert "llp_rundown_bridge_enabled=true" in text
     assert "secret_value_exposed=false" in text
