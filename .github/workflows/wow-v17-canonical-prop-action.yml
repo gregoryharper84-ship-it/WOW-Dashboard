@@ -118,8 +118,58 @@ jobs:
           print(f"CANONICAL_PROP_REQUEST_CLASSIFICATION={classification} slate_date={slate_date} current_slate={today}")
           PY
 
+      - name: Enforce live GPT compact four-row transport contract
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("artifacts/wow-engine/v17/canonical_prop_action_runner.py")
+          text = path.read_text(encoding="utf-8")
+          batch_old = "batch_size = 6"
+          if batch_old not in text:
+              raise SystemExit("CANONICAL_PROP_BATCH_SIZE_PATCH_TARGET_MISSING")
+          text = text.replace(batch_old, "batch_size = 4", 1)
+          body_old = '''            "request_id": f"{request_doc.get('request_id')}-{batch_number:02d}",
+            "rows": batch,'''
+          body_new = '''            "request_id": f"{request_doc.get('request_id')}-{batch_number:02d}",
+            "response_mode": "COMPACT",
+            "rows": batch,'''
+          if body_old not in text:
+              raise SystemExit("CANONICAL_PROP_COMPACT_MODE_PATCH_TARGET_MISSING")
+          text = text.replace(body_old, body_new, 1)
+          path.write_text(text, encoding="utf-8")
+          print("CANONICAL_PROP_TRANSPORT_CONTRACT=batch_size:4,response_mode:COMPACT,can_execute:false")
+          PY
+
       - name: Resolve exact events and invoke canonical score-pick-request
         run: python artifacts/wow-engine/v17/canonical_prop_action_runner.py
+
+      - name: Assert compact four-row batch reconciliation
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          p = Path("v17_canonical_prop_action_result.json")
+          if not p.exists():
+              raise SystemExit("CANONICAL_PROP_RESULT_MISSING")
+          data = json.loads(p.read_text(encoding="utf-8"))
+          if data.get("can_execute") is not False:
+              raise SystemExit("CAN_EXECUTE_INVARIANT_FAILED")
+          batches = data.get("action_batches") or []
+          if not batches:
+              raise SystemExit("CANONICAL_PROP_ACTION_BATCHES_MISSING")
+          for idx, batch in enumerate(batches, 1):
+              if batch.get("response_mode") != "COMPACT":
+                  raise SystemExit(f"CANONICAL_PROP_RESPONSE_MODE_NOT_COMPACT:{idx}")
+              if batch.get("reconciliation_pass") is not True:
+                  raise SystemExit(f"CANONICAL_PROP_BATCH_RECONCILIATION_FAILED:{idx}")
+              if int(batch.get("rows_in") or 0) > 4:
+                  raise SystemExit(f"CANONICAL_PROP_BATCH_TOO_LARGE:{idx}:{batch.get('rows_in')}")
+          print(f"CANONICAL_PROP_COMPACT_RECONCILIATION_PASS batches={len(batches)} can_execute=false")
+          PY
 
       - name: Upload governed prop Action result
         if: always()
