@@ -24,8 +24,10 @@ def initialize_observability() -> dict[str, Any]:
     # before the optional Sentry branch so /health and /score-team-event expose
     # the same authoritative production registry even when Sentry is disabled.
     from v17.team_event_bridge_runtime import install_team_event_bridge_runtime
+    from v17.universal_team_event_governance import install_universal_team_event_governance
 
     install_team_event_bridge_runtime()
+    install_universal_team_event_governance()
 
     # Install non-secret total-wall-time telemetry, certification-independent
     # Action invocation receipts, and schedule the bounded external pre-hydration
