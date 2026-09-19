@@ -96,14 +96,14 @@
     },
     {
       "sport": "NHL",
-      "provider": "NHL_PUBLIC_API",
+      "provider": "NHL_PUBLIC_WEB_API",
       "evidence_domain": "SPORTING",
       "rights_state": "LICENSE_REVIEW_REQUIRED",
       "credential_required": false,
       "coverage_start": null,
       "coverage_end": null,
       "grants_model_capability": false,
-      "notes": "Candidate low-cost box-score/play-by-play/game-log source; complete production-use review before approval."
+      "notes": "Reconciled onto the canonical NHL_PUBLIC_WEB_API source ID (previously listed here as NHL_PUBLIC_API; the entitlement layer and nhl_candidate_pipeline.py already used NHL_PUBLIC_WEB_API for this same api-web.nhle.com source -- see NHL_SKATER_SOG_PHASE1_DATA_IDENTITY_DESIGN.md Section 0). Candidate low-cost box-score/play-by-play/game-log source; complete production-use review before approval."
     },
     {
       "sport": "NHL",
