@@ -15,9 +15,11 @@ from urllib.request import Request, urlopen
 
 CAN_EXECUTE = False
 ODDS_API_BASE = os.environ.get("WOW_ODDS_API_BASE_URL", "https://api.the-odds-api.com/v4").rstrip("/")
+# Match services.odds_api.resolve_odds_api_key_with_source exactly so a health
+# probe and the real acquisition path cannot disagree about which key is active.
 ODDS_API_KEY_LADDER = (
-    "ODDS_API_KEY_100K",
     "ODDS_API_PAID_KEY",
+    "ODDS_API_KEY_100K",
     "ODDS_API_FREE_KEY",
     "ODDS_API_KEY",
 )
