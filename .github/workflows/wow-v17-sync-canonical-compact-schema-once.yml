@@ -1,0 +1,77 @@
+name: WOW V17 one-shot canonical compact schema sync
+
+on:
+  push:
+    branches:
+      - fix/v17-canonical-compact-schema-20260919
+    paths:
+      - .github/workflows/wow-v17-sync-canonical-compact-schema-once.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/v17-canonical-compact-schema-20260919
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Patch canonical schema and lock editor contract
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import yaml
+
+          schema_path = Path('artifacts/wow-engine/v17/openapi.wow-betting-engine.v17.yaml')
+          test_path = Path('artifacts/wow-engine/tests/test_v17_live_editor_compat.py')
+
+          schema = schema_path.read_text(encoding='utf-8')
+          anchor = '''    PickRequestBatch:\n      type: object\n      additionalProperties: false\n      required: [rows]\n      properties:\n        request_id: {type: [string, 'null']}\n        rows:\n'''
+          replacement = '''    PickRequestBatch:\n      type: object\n      additionalProperties: false\n      required: [rows]\n      properties:\n        request_id: {type: [string, 'null']}\n        response_mode:\n          type: string\n          enum: [COMPACT, FULL]\n          default: COMPACT\n        rows:\n'''
+          if schema.count(anchor) != 1:
+              raise SystemExit(f'PICK_REQUEST_BATCH_PATCH_TARGET_COUNT={schema.count(anchor)}')
+          schema = schema.replace(anchor, replacement, 1)
+          yaml.safe_load(schema)
+          schema_path.write_text(schema, encoding='utf-8')
+
+          tests = test_path.read_text(encoding='utf-8')
+          old = '''    batch = _schema()["components"]["schemas"]["PickRequestBatch"]\n    assert batch["properties"]["rows"]["maxItems"] == 50\n'''
+          new = '''    batch = _schema()["components"]["schemas"]["PickRequestBatch"]\n    assert batch["properties"]["rows"]["maxItems"] == 50\n    response_mode = batch["properties"]["response_mode"]\n    assert response_mode["enum"] == ["COMPACT", "FULL"]\n    assert response_mode["default"] == "COMPACT"\n    assert "response_mode=COMPACT" in text\n'''
+          if tests.count(old) != 1:
+              raise SystemExit(f'LIVE_EDITOR_TEST_PATCH_TARGET_COUNT={tests.count(old)}')
+          test_path.write_text(tests.replace(old, new, 1), encoding='utf-8')
+          PY
+
+      - name: Validate canonical editor contract
+        shell: bash
+        run: |
+          pip install -q pyyaml pytest
+          python - <<'PY'
+          import yaml
+          from pathlib import Path
+          p = Path('artifacts/wow-engine/v17/openapi.wow-betting-engine.v17.yaml')
+          doc = yaml.safe_load(p.read_text(encoding='utf-8'))
+          mode = doc['components']['schemas']['PickRequestBatch']['properties']['response_mode']
+          assert mode['enum'] == ['COMPACT', 'FULL']
+          assert mode['default'] == 'COMPACT'
+          print('CANONICAL_PICK_REQUEST_RESPONSE_MODE=COMPACT')
+          PY
+          pytest -q artifacts/wow-engine/tests/test_v17_live_editor_compat.py
+
+      - name: Commit synchronized contract and remove one-shot workflow
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm .github/workflows/wow-v17-sync-canonical-compact-schema-once.yml
+          git add artifacts/wow-engine/v17/openapi.wow-betting-engine.v17.yaml artifacts/wow-engine/tests/test_v17_live_editor_compat.py
+          git commit -m 'V17: synchronize canonical compact Action schema'
+          git push origin HEAD:fix/v17-canonical-compact-schema-20260919
