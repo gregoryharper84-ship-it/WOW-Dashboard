@@ -300,6 +300,10 @@ components:
       required: [rows]
       properties:
         request_id: {type: [string, 'null']}
+        response_mode:
+          type: string
+          enum: [COMPACT, FULL]
+          default: COMPACT
         rows:
           type: array
           minItems: 1
