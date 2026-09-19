@@ -8,7 +8,7 @@ chain blocker.
 """
 from __future__ import annotations
 
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from v17.full_board_stabilization import capability_matrix, publication_chain_audit, reconcile_full_board
 
@@ -184,6 +184,66 @@ def _publication_audit_for_row(row: Mapping[str, Any]) -> dict[str, Any] | None:
     return publication_chain_audit(merged).as_dict()
 
 
+def _safe_score_wrapper(score_row: Callable[..., Any]) -> Callable[..., Mapping[str, Any]]:
+    """Convert scorer completion failures into row-level V17 typed results.
+
+    The base cross-sport router already maps returned typed codes into its exact
+    terminal buckets, but an exception or malformed return could escape before
+    that mapping and abort the whole board. Full Board requires a terminal row
+    even in those cases.
+    """
+    def safe_score(*args: Any, **kwargs: Any) -> Mapping[str, Any]:
+        try:
+            result = score_row(*args, **kwargs)
+        except Exception as exc:  # noqa: BLE001 - exact row fails closed
+            return {
+                "code": "MODEL_SCORER_FAILED",
+                "model_status": "MODEL_SCORER_FAILED",
+                "scorer_status": "MODEL_SCORER_FAILED",
+                "error_type": type(exc).__name__,
+                "model_invoked": True,
+                "probability_publishable": False,
+                "rank_eligible": False,
+                "can_execute": False,
+            }
+        if result is None:
+            return {
+                "code": "MODEL_SCORER_FAILED",
+                "model_status": "MODEL_SCORER_FAILED",
+                "scorer_status": "EMPTY_MODEL_COMPLETION",
+                "model_invoked": True,
+                "probability_publishable": False,
+                "rank_eligible": False,
+                "can_execute": False,
+            }
+        if not isinstance(result, Mapping):
+            return {
+                "code": "MODEL_OUTPUT_INVALID",
+                "model_status": "MODEL_OUTPUT_INVALID",
+                "scorer_status": "NON_MAPPING_MODEL_COMPLETION",
+                "returned_type": type(result).__name__,
+                "model_invoked": True,
+                "probability_publishable": False,
+                "rank_eligible": False,
+                "can_execute": False,
+            }
+        payload = dict(result)
+        if not payload:
+            return {
+                "code": "MODEL_SCORER_FAILED",
+                "model_status": "MODEL_SCORER_FAILED",
+                "scorer_status": "EMPTY_MODEL_COMPLETION",
+                "model_invoked": True,
+                "probability_publishable": False,
+                "rank_eligible": False,
+                "can_execute": False,
+            }
+        payload["can_execute"] = False
+        return payload
+
+    return safe_score
+
+
 def enrich_full_board_result(payload: Mapping[str, Any]) -> dict[str, Any]:
     """Attach the mandatory cross-sport completeness/reporting contract."""
     out = dict(payload)
@@ -271,7 +331,11 @@ def install_cross_sport_full_board_overlay() -> bool:
         return False
 
     def wrapped(*args: Any, **kwargs: Any) -> dict[str, Any]:
-        return enrich_full_board_result(original(*args, **kwargs))
+        call_kwargs = dict(kwargs)
+        score_row = call_kwargs.get("score_row")
+        if callable(score_row):
+            call_kwargs["score_row"] = _safe_score_wrapper(score_row)
+        return enrich_full_board_result(original(*args, **call_kwargs))
 
     discovery._v17_full_board_original_scan = original
     discovery.run_cross_sport_winner_scan = wrapped
