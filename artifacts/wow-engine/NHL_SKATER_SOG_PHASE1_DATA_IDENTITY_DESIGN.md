@@ -20,17 +20,32 @@ phases, gated on this design being reviewed.
   relocation handling (`TEAM_ABBREVIATIONS` already includes `ARI`/`UTA`
   for the Coyotes→Utah relocation) are the correct foundation to extend to
   skater-level identity, not replace.
-- Two source entries for NHL already exist in
-  `historical_source_manifest_v1.json`: `NHL_PUBLIC_API` (candidate,
-  `LICENSE_REVIEW_REQUIRED`) and `SPORTRADAR_NHL` (`CONTRACT_REQUIRED`,
-  coverage from 2013). Neither `grants_model_capability`. This design
-  extends that same manifest with skater-shot-specific rows rather than
-  inventing a parallel one.
+- **Naming drift to reconcile before PR 1, not after**:
+  `historical_source_manifest_v1.json` lists this same source as
+  `NHL_PUBLIC_API` (candidate, `LICENSE_REVIEW_REQUIRED`), while
+  `v17/model_source_entitlements.py` and `nhl_candidate_pipeline.py`
+  (`SOURCE_ID = "NHL_PUBLIC_WEB_API"`) both use `NHL_PUBLIC_WEB_API`
+  for the identical underlying source (`api-web.nhle.com`
+  box-score/play-by-play/game-log). These are two string IDs for one
+  logical source, not two distinct contracts. **Decision for this
+  design: `NHL_PUBLIC_WEB_API` is canonical** (it matches the code that
+  is actually wired and entitlement-gated); `NHL_PUBLIC_API` in the
+  manifest is a legacy label for the same source and must be corrected
+  to an alias of, or renamed to, `NHL_PUBLIC_WEB_API` as an explicit
+  acceptance criterion of PR 1 (see Section J.10) — not silently
+  duplicated into a second logical source.
+- `SPORTRADAR_NHL` (`CONTRACT_REQUIRED`, coverage from 2013) remains a
+  separate, genuinely distinct licensed source. Neither source
+  `grants_model_capability`. This design extends the manifest with
+  skater-shot-specific rows under the reconciled `NHL_PUBLIC_WEB_API`
+  ID rather than inventing a parallel one.
 - `v17/model_source_entitlements.py` already registers
   `NHL_PUBLIC_WEB_API` as `CANDIDATE_FIRST_PARTY_UNDOCUMENTED` with
   `certification_source_review_required=True`. Any new NHL skater-data
   source added under this design inherits the same review gate — no
-  source becomes trusted for training just by being named here.
+  source becomes trusted for training just by being named here, and
+  **ingestion working is not the same fact as the source being
+  certified** (see Section J.10).
 - **Generic identity-reconciliation contract already exists and should be
   reused, not reinvented**: `v17/research_identity_reconciliation.py`'s
   `IdentityResolution` states (`LINKED` / `IDENTITY_UNRESOLVED` /
@@ -51,36 +66,51 @@ phases, gated on this design being reviewed.
 | Field | Type | Normalization rule |
 |---|---|---|
 | `league` | const | `"NHL"` |
-| `season` | string | `"YYYY-YYYY"` matching `nhl_candidate_pipeline.py`'s `season_id` convention (e.g. `20262027`), never a bare year |
+| `season_label` | string | Human-readable `"2026-2027"` form, display/reporting only, never used as a join key |
+| `provider_season_id` | string | The actual join key, matching `nhl_candidate_pipeline.py`'s `season_id` convention verbatim (e.g. `20262027`); `season_label` is derived from this, never the reverse |
 | `game_id` | string | NHL official `gamePk`/`id` from `api-web.nhle.com`, stored verbatim as string (never re-derived or guessed); a third-party provider's own game ID is a separate `provider_game_id`, never substituted here |
 | `game_start_time` | ISO-8601 UTC | source-provided; never client-supplied, never inferred from local scoreboard time |
-| `home_team_id` / `away_team_id` | string | official NHL team abbreviation from the existing `TEAM_ABBREVIATIONS` table; relocated/renamed franchises (Arizona→Utah) resolve to the **current** franchise ID for post-relocation games and the **historical** ID for pre-relocation games — never unified retroactively |
-| `team_id` | string | the skater's team for *this* game (handles in-season trades; never the season-opening team) |
+| `home_team_id` / `away_team_id` | string | **stable canonical/provider team identifier** (e.g. the official numeric or franchise-scoped ID from `api-web.nhle.com`), not an abbreviation; a relocated/renamed franchise (Arizona→Utah) is either the same stable ID carried across the relocation or a new stable ID with an explicit franchise-succession mapping, decided during source review — but never represented only as a changing abbreviation string |
+| `home_team_abbreviation` / `away_team_abbreviation` | string | display/reporting/normalization-evidence field, sourced from the existing `TEAM_ABBREVIATIONS` table; historical-period abbreviation is preserved for historical games (e.g. `ARI` pre-relocation, `UTA` post-relocation) even though `*_team_id` above is the stable identifier — abbreviation is derived evidence, never the join key |
+| `team_id` | string | the skater's stable team identifier for *this* game (handles in-season trades; never the season-opening team); same stable-ID rule as `home_team_id`/`away_team_id`, not an abbreviation |
 | `player_id` | string | official NHL player ID (numeric, from the same public API family used for game IDs) |
 | `player_name` | string | display name is evidence/labeling only, never an identity key; see Section B |
 | `position` | enum | `C`/`LW`/`RW`/`D` (goalies excluded from this vertical entirely — SOG is a skater-only stat) |
 | `stat_type` | const | canonical value `SHOTS_ON_GOAL` (see alias table below) |
+| `period` | const (V1) | fixed to `FULL_GAME` for V1; a first-class schema field, not prose-only — see canonical prop key below |
 | `line` | decimal | exact numeric line as offered, 0.5-increment typical; stored at source precision, never rounded |
 | `direction` | enum | `MORE` / `LESS`, matching the existing cross-sport convention in `prop_distribution_contract.py` |
 | `platform` | string | e.g. `PRIZEPICKS`, or `UPLOADED_BOARD` for manually supplied boards |
 | `offer_type` | string | e.g. `STANDARD`, `FLEX`, `GOBLIN`/`DEMON` equivalents if platform-specific line adjustments exist — captured but never silently folded into `line` |
+| `market_identity_id` | string | immutable exact-offer identity, matching `PropInferenceRequest.market_identity_id`'s existing role — the non-lossy anchor for this specific offer, independent of the derived prop key below |
+| `settlement_rule_version` | string | the specific settlement-rule version in effect for this offer (push/void/exact-line rules can change over time); required alongside `market_identity_id` so settlement never re-derives a rule from a mutable "current" table |
 | `observed_at` | ISO-8601 UTC | when the offer/data point was actually retrieved (source-clock or ingestion-clock, whichever is source-verifiable) |
 | `as_of` | ISO-8601 UTC | the caller-declared evaluation instant for this request (matches `PropInferenceRequest.as_of_timestamp`) |
 | `source` | string | the specific provider/source ID (see Section C); never a generic label like `"web"` |
 
-**Canonical stat alias resolution** (all must map to `SHOTS_ON_GOAL`, case/whitespace-normalized before lookup):
-`"Shots on Goal"`, `"SOG"`, `"Shots"`, `"Player Shots on Goal"`,
-`"shots_on_goal"`. Any alias not in this explicit table is a typed
-blocker (`PROP_STAT_ALIAS_UNRECOGNIZED`), never a best-guess match —
-"shots" alone is ambiguous with "shot attempts"/Corsi and must not be
-silently coerced.
+**Canonical stat alias resolution** (global aliases, case/whitespace-normalized before lookup, all mapping to `SHOTS_ON_GOAL`):
+`"Shots on Goal"`, `"SOG"`, `"Player Shots on Goal"`, `"shots_on_goal"`.
+**`"Shots"` alone is deliberately excluded from this global table** — it
+is genuinely ambiguous with shot attempts/Corsi and must never be a
+universal alias. If a specific platform is confirmed to use bare
+`"Shots"` to mean SOG (e.g. PrizePicks, pending verification), that
+mapping is registered as a **source-scoped alias**
+(`platform="PRIZEPICKS", raw_label="Shots" -> SHOTS_ON_GOAL`), not added
+to the global table. Any alias not found in either the global table or a
+verified source-scoped table is a typed blocker
+(`PROP_STAT_ALIAS_UNRECOGNIZED`), never a best-guess match.
 
 **Canonical prop key** (mirrors the existing MLB exact-line identity
-shape used for settlement matching): `(league, game_id, player_id,
-stat_type, line, direction, period)` where `period` is fixed to
-`FULL_GAME` for V1 (see Section D on why period-level SOG, e.g.
-1st-period-only offers, is out of scope for V1 and must fail closed as
-`LINE_OUTSIDE_CERTIFIED_SUPPORT` rather than silently scored as full-game).
+shape used for settlement matching, extended per V17's non-lossy exact-offer
+requirement): `(league, game_id, player_id, stat_type, line, direction,
+period, platform, market_identity_id, settlement_rule_version)`. `period`
+is fixed to `FULL_GAME` for V1 (period-level SOG, e.g. 1st-period-only
+offers, is out of scope for V1 and must fail closed as
+`LINE_OUTSIDE_CERTIFIED_SUPPORT` rather than silently scored as
+full-game). `platform` and `market_identity_id` are included because the
+same numeric line/direction on two different platforms, or two different
+offers on the same platform under different settlement rules, are
+distinct offers and must never be merged into one settlement identity.
 
 ## B. Identity reconciliation
 
@@ -108,17 +138,25 @@ not a new state machine:
   or identical display names must never collapse into one canonical
   entity; the verified-mapping table is keyed by provider ID, not name,
   precisely to prevent this.
-- **Team abbreviations**: resolved through the existing
+- **Team abbreviations**: `team_abbreviation` (display/normalization
+  evidence only, per Section A) is resolved through the existing
   `TEAM_ABBREVIATIONS` table in `nhl_candidate_pipeline.py`, extended
   (not replaced) if a new source uses different abbreviations (e.g.
   three-letter vs. city-based) — a translation table per source, mapping
-  into the one canonical set.
-- **Relocated/renamed franchises**: Arizona Coyotes → Utah (already
-  represented as `ARI`/`UTA` in the existing table) is the only currently
-  relevant case; historical games keep the historical team ID, matching
-  how the existing D1 pipeline already treats it. Any future
-  relocation/rename follows the same pattern: add the new ID, never
-  rewrite historical rows.
+  into the one canonical abbreviation set. This is separate from
+  resolving the stable `team_id`, which never changes based on which
+  abbreviation a given source happens to use.
+- **Relocated/renamed franchises**: Arizona Coyotes → Utah is the only
+  currently relevant case. The existing D1 pipeline represents this only
+  as an abbreviation change (`ARI`/`UTA`); this design requires the
+  stable `team_id` question be resolved explicitly during source review
+  before PR 1 ships franchise-spanning historical rows — either the
+  stable ID is carried across the relocation (same franchise, new
+  abbreviation) or an explicit franchise-succession mapping links two
+  stable IDs. Historical `team_abbreviation` is always preserved
+  per-period (`ARI` pre-relocation, `UTA` post-relocation) regardless of
+  which stable-ID approach is chosen. Any future relocation/rename
+  follows the same pattern: never rewrite historical rows.
 - **Postponed/rescheduled games**: the canonical `game_id` and
   `game_start_time` always reflect the game as actually played. A
   snapshot taken against a since-postponed `game_start_time` is stale
@@ -184,7 +222,7 @@ confirmed source, and role/TOI context may need to launch V1 on
 | PP units | Same as line combinations | Same | Same |
 | Projected/confirmed goalie | Confirmed within 3h of puck drop | Projected only, >3h out | Fully unresolved within 1h of puck drop → `NHL_GOALIE_STATUS_UNRESOLVED` (proposed) |
 | Historical stats | N/A (immutable once settled) | N/A | Insufficient prior-game sample below minimum window (Section F) → `MODEL_INPUTS_INSUFFICIENT` (existing canonical code, NHL-specific reason `NHL_RECENT_GAMES_INSUFFICIENT` proposed, mirroring `MLB_RECENT_STARTS_INSUFFICIENT`) |
-| Market/PrizePicks line | `observed_at` within the platform's normal refresh cadence | Line stale relative to a since-changed official board | Line confirmed removed/changed at final board refresh (Section 17 of the audit) → existing settlement/market blockers apply (`PRICE_STALE`, `MARKET_DATA_UNAVAILABLE`) |
+| Market/PrizePicks line | `observed_at` within the platform's normal refresh cadence | Line stale relative to a since-changed official board | Line confirmed removed/changed at final board refresh (Section 17 of the audit) → `PRICE_STALE`/`MARKET_DATA_UNAVAILABLE` block the **market/value/card publication lane only**; a sporting probability the specialist already completed against the originally-requested exact line is not automatically discarded or re-labeled `MODEL_UNAVAILABLE` — per V17's sporting/market separation, a completed sporting-probability package may be retained (e.g. for postmortem/evidence purposes, or re-offered if the same exact line reappears) exactly where the governing contract allows, while the market lane independently reports the offer as blocked |
 
 ## E. Leakage-safe snapshot design
 
@@ -250,10 +288,16 @@ TBD).
   aggregate may be applied across a trade boundary.
 - **Rookies/small samples**: a player with fewer prior games than the
   minimum window (Section G thresholds) is not excluded from the
-  *dataset*, but at *inference* time their row must fail closed via
-  `MODEL_INPUTS_INSUFFICIENT` (proposed `NHL_RECENT_GAMES_INSUFFICIENT`)
-  rather than being scored on a league-average fallback that would look
-  like fabricated evidence.
+  *dataset*. At *inference* time, insufficient effective sample fails
+  closed via `MODEL_INPUTS_INSUFFICIENT` (proposed reason
+  `NHL_RECENT_GAMES_INSUFFICIENT`) **unless the certified specialist
+  explicitly supports that cohort through fitted, validated model
+  structure** (e.g. a hierarchical model with fitted shrinkage toward a
+  population/role prior, analogous to the shrinkage already used in the
+  MLB strikeouts adapter) — a generic, unfitted league-average fallback
+  remains invalid and is never an acceptable substitute, but this
+  document does not foreclose a future certified low-sample-capable
+  model design.
 - **Call-ups**: identical treatment to rookies for feature-sufficiency
   purposes — call-up status itself is not a separate flag needed in the
   schema beyond "how many qualifying prior games exist."
@@ -286,25 +330,39 @@ TBD).
 | Rest/back-to-back | REQUIRED_V1 | Already computed for the team-winner lane; reusable pattern |
 | Travel | HIGH_VALUE_OPTIONAL | More complex (distance/time-zone deltas); defer past V1 unless rest/back-to-back alone proves insufficient |
 | Pace (team possession/shot-pace context) | HIGH_VALUE_OPTIONAL | Derivable from official data; not required for V1 |
-| Team implied game environment (market-derived) | DO_NOT_USE / LEAKAGE **as a governed model input** | Per report and CLAUDE.md: market context may inform evidence/explanation, never enter the fitted probability itself |
+| Team implied game environment (market-derived) | DO_NOT_USE / MARKET_SEPARATION **as a governed model input** | Not temporal leakage in the strict sense (the market data can genuinely be pregame) — excluded on a separate governance ground: V17 requires sporting probability and market evidence to remain independent, so market-implied signals may inform evidence/explanation only, never enter the fitted probability itself |
 
 ## H. Failure taxonomy proposal (mapping only, no new codes registered)
 
-| Proposed NHL-SOG condition | Canonical category | Existing code to reuse, or proposed new code (mirroring an existing MLB pattern) |
-|---|---|---|
-| Unresolved player identity | MODEL_INPUTS_INSUFFICIENT (pre-model) | Reuse `PROP_PLAYER_IDENTITY_UNRESOLVED` / `PROP_IDENTITY_UNRESOLVED` (existing, sport-agnostic) |
-| Unresolved game identity / cross-provider conflict | MODEL_INPUTS_INSUFFICIENT (pre-model) | Reuse `PROP_EVENT_IDENTITY_CONFLICT` (existing) |
-| Stale lineup status | MODEL_INPUTS_INSUFFICIENT | Propose `NHL_LINEUP_STATUS_UNRESOLVED`, mirroring `MLB_STARTER_STATUS_UNRESOLVED` |
-| Insufficient historical sample | MODEL_INPUTS_INSUFFICIENT | Propose `NHL_RECENT_GAMES_INSUFFICIENT`, mirroring `MLB_RECENT_STARTS_INSUFFICIENT` |
-| Missing role/TOI context | MODEL_INPUTS_INSUFFICIENT | Propose `NHL_ROLE_CONTEXT_INSUFFICIENT` (no direct MLB analogue; closest precedent is opponent-context being evidence-only when absent, per `prop_model_adapters.py`) |
-| Post-start hydration attempt | EVENT blocker | Reuse `EVENT_ALREADY_STARTED` (existing, sport-agnostic) |
-| Unsupported exact line (e.g. period-level SOG in V1) | Pre-model model-contract rejection | Reuse `LINE_OUTSIDE_CERTIFIED_SUPPORT` (existing, generic form of `MLB_1IP_LINE_OUTSIDE_CERTIFIED_SUPPORT`) |
-| Fitted artifact unavailable | MODEL_UNAVAILABLE | Reuse `MODEL_ARTIFACT_NOT_REGISTERED` / `PROP_CERTIFIED_MODEL_ARTIFACT_NOT_FOUND` (existing) — this is exactly the code the manifest placeholder deferred in this phase would have returned |
+Preference order for every condition below: (1) an existing sport-agnostic
+canonical code, used as-is; (2) an existing canonical code plus a
+structured, non-code `reason` metadata field (e.g. `reason:
+"NHL_RECENT_GAMES_INSUFFICIENT"` carried as data on a
+`MODEL_INPUTS_INSUFFICIENT` result, not as a new top-level blocker
+string); (3) only if neither suffices, a genuinely new top-level code
+proposed for explicit review and registration — this document proposes
+none at tier 3.
 
-No new code is registered by this document. Any code marked "propose"
-above requires review before being added to
-`prop_terminal_reducer_v2.py`'s blocker sets in a later PR, per the same
-disjointness discipline verified for MLB strikeouts.
+| NHL-SOG condition | Canonical category (existing code, used as-is) | Structured reason metadata (not a new top-level code) |
+|---|---|---|
+| Unresolved player identity | `PROP_PLAYER_IDENTITY_UNRESOLVED` / `PROP_IDENTITY_UNRESOLVED` (existing, sport-agnostic) | — (existing code is specific enough) |
+| Unresolved game identity / cross-provider conflict | `PROP_EVENT_IDENTITY_CONFLICT` (existing) | — |
+| Stale lineup status | `MODEL_INPUTS_INSUFFICIENT` (existing) | `reason: "NHL_LINEUP_STATUS_UNRESOLVED"`, mirroring the same relationship `MLB_STARTER_STATUS_UNRESOLVED` has to its category |
+| Insufficient historical sample | `MODEL_INPUTS_INSUFFICIENT` (existing) | `reason: "NHL_RECENT_GAMES_INSUFFICIENT"`, mirroring `MLB_RECENT_STARTS_INSUFFICIENT` |
+| Missing role/TOI context | `MODEL_INPUTS_INSUFFICIENT` (existing) | `reason: "NHL_ROLE_CONTEXT_INSUFFICIENT"` |
+| Post-start hydration attempt | `EVENT_ALREADY_STARTED` (existing, sport-agnostic) | — |
+| Unsupported exact line (e.g. period-level SOG in V1) | `LINE_OUTSIDE_CERTIFIED_SUPPORT` (existing, generic form of `MLB_1IP_LINE_OUTSIDE_CERTIFIED_SUPPORT`) | — |
+| Fitted artifact unavailable | `MODEL_ARTIFACT_NOT_REGISTERED` / `PROP_CERTIFIED_MODEL_ARTIFACT_NOT_FOUND` (existing) | — this is exactly the code the manifest placeholder deferred in this phase would have returned |
+
+No new top-level code is registered by this document, and this design's
+default is that none should be needed for V1 — the existing categories
+plus structured reason metadata should cover every condition above. If a
+later PR finds a condition that genuinely cannot be expressed this way,
+that specific gap requires its own review before being added to
+`prop_terminal_reducer_v2.py`'s blocker sets, per the same disjointness
+discipline verified for MLB strikeouts and per the V17 process
+addendum's requirement that failure codes be registered, not proliferated
+ad hoc.
 
 ## I. Output summary
 
@@ -334,6 +392,21 @@ disjointness discipline verified for MLB strikeouts.
     entry, no scorer. This keeps the same narrow vertical-slice discipline
     used for MLB strikeouts and avoids creating a route before the
     underlying data model is proven.
+
+    **PR 1 acceptance criteria, explicitly required, not optional:**
+    - Reconcile `NHL_PUBLIC_API` (manifest) vs `NHL_PUBLIC_WEB_API`
+      (entitlements/pipeline) into one canonical source ID
+      (`NHL_PUBLIC_WEB_API`) before any new skater-data manifest rows are
+      added, so PR 1 cannot accidentally create a duplicate logical
+      source under a second name.
+    - Ingested/persisted historical player×game SOG rows are **research
+      evidence only**. `NHL_PUBLIC_WEB_API` remains
+      `certification_source_review_required=True` throughout PR 1 — the
+      ingestion working, being tested, and being persisted does **not**,
+      by itself, mark the source certified or promote it to a trusted
+      training source. That promotion is a separate, later, explicitly
+      reviewed step, matching how `grants_model_capability: false` is
+      already treated elsewhere in `historical_source_manifest_v1.json`.
 
 ## Explicitly out of scope for this document
 
