@@ -139,11 +139,15 @@ def configure_acquisition_router() -> None:
 def enable_research_market_evidence() -> None:
     """Keep the production Scout evidence lane on by default.
 
-    This affects acquisition only. The market-evidence module remains
-    research-only, prediction_authority=False, exact_line_authority=False and
-    can_execute=False. An explicit emergency kill switch can still disable the
-    provider tier without changing model/governance semantics.
+    Installing SharpAPI compatibility is part of enabling this lane so every
+    Nightly evidence consumer uses the same observed live-schema boundary as the
+    credentialed acceptance snapshot. This affects acquisition only. The
+    market-evidence module remains research-only, prediction_authority=False,
+    exact_line_authority=False and can_execute=False. An explicit emergency kill
+    switch can still disable the provider tier without changing model/governance
+    semantics.
     """
+    install_sharpapi_prop_compat()
     kill_switch = os.environ.get("WOW_MARKET_EVIDENCE_KILL_SWITCH", "false").strip().lower() == "true"
     market_sources.ENABLED = not kill_switch
     os.environ["WOW_MARKET_EVIDENCE_ENABLED"] = "false" if kill_switch else "true"
@@ -257,7 +261,6 @@ def main() -> int:
     configure_source_failure_scope()
     configure_acquisition_router()
     enable_research_market_evidence()
-    install_sharpapi_prop_compat()
     install_refreshable_oidc_proxy_auth()
     return scout.main()
 
