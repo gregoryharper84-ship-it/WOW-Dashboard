@@ -2,7 +2,9 @@
 
 This module is additive to the mature MLB and NFL paths. It registers only exact
 sport specialists and never falls back to market implied probability, generic
-LLM reasoning, or another sport's model.
+LLM reasoning, or another sport's model. Certification is activated only after
+the exact scorer is importable and registration succeeds; a failed install rolls
+back both certification and development-state mutations.
 """
 from __future__ import annotations
 
@@ -12,6 +14,8 @@ from fastapi import HTTPException
 
 import v17.team_event_bridge_runtime as bridges
 import v17.team_event_request_runtime as base_runtime
+import v17.team_event_capability_manifest as capability_manifest
+import v17.team_event_model_development_manifest as development_manifest
 from v17.llp_governed_package_scoring import (
     MODEL_INPUTS_INSUFFICIENT,
     MODEL_OUTPUT_INVALID,
@@ -29,7 +33,6 @@ from v17.multisport_team_event_models import (
     ModelOutputInvalid,
     ModelScorerFailed,
 )
-from v17.team_event_capability_manifest import TEAM_EVENT_INPUT_CONTRACTS
 from v17.team_event_official_publication_guard import (
     evaluate_team_event_official_publication,
 )
@@ -52,6 +55,25 @@ SPORT_MODEL_INPUTS: dict[str, tuple[str, ...]] = {
     # and returns MODEL_INPUTS_INSUFFICIENT when none is present.
     "TENNIS": (),
     "MMA": ("fight_history",),
+}
+
+RUNTIME_CERTIFICATIONS: dict[str, str] = {
+    "WNBA": capability_manifest.WNBA_GAME_WIN_PROBABILITY_EXPERT,
+    "NHL": capability_manifest.NHL_GAME_WIN_PROBABILITY_EXPERT,
+    "SOCCER": capability_manifest.SOCCER_1X2_WIN_PROBABILITY_EXPERT,
+    "TENNIS": capability_manifest.TENNIS_MATCH_WIN_PROBABILITY_EXPERT,
+    "MMA": capability_manifest.MMA_FIGHT_WIN_PROBABILITY_EXPERT,
+}
+
+RUNTIME_DEVELOPMENT_LANES: dict[str, tuple[str, str]] = {
+    "WNBA": ("WNBA_TEAM_EVENT_PROBABILITY", "LIVE_GOVERNANCE_ACCEPTANCE"),
+    "NHL": ("NHL_TEAM_EVENT_PROBABILITY", "LIVE_GOVERNANCE_ACCEPTANCE"),
+    "SOCCER": ("SOCCER_TEAM_EVENT_PROBABILITY", "LIVE_GOVERNANCE_ACCEPTANCE"),
+    "TENNIS": ("TENNIS_TEAM_EVENT_PROBABILITY", "LIVE_GOVERNANCE_ACCEPTANCE"),
+    "MMA": (
+        "MMA_TEAM_EVENT_PROBABILITY",
+        "LIVE_GOVERNANCE_ACCEPTANCE_AND_HISTORY_HYDRATION",
+    ),
 }
 
 
@@ -163,9 +185,7 @@ def _score_one(
         "candidate_family": route.candidate_family,
         "scout_research_barrier": scout_research_barrier,
         "llp_governance": governance,
-        "llp_probability_audit_result": governance.get(
-            "probability_audit_result"
-        ),
+        "llp_probability_audit_result": governance.get("probability_audit_result"),
         "event_mutex_status": governance.get("event_mutex_status"),
         "global_terminal_authority": GLOBAL_TERMINAL_REDUCER,
         "terminal_label": governance.get("terminal_label"),
@@ -235,7 +255,26 @@ BRIDGE_SCORERS: dict[str, Callable[..., dict[str, Any]]] = {
 }
 
 
+def _activate_runtime_certification(sport: str) -> None:
+    capability_manifest.CERTIFIED_TEAM_EVENT_SPORTS[sport] = RUNTIME_CERTIFICATIONS[sport]
+    capability_manifest.KNOWN_UNCERTIFIED_TEAM_EVENT_SPORTS = frozenset(
+        value
+        for value in capability_manifest.EXPECTED_TEAM_EVENT_SPORTS
+        if value not in capability_manifest.CERTIFIED_TEAM_EVENT_SPORTS
+    )
+    maintenance_lane, next_gate = RUNTIME_DEVELOPMENT_LANES[sport]
+    development_manifest.TEAM_EVENT_MODEL_DEVELOPMENT[sport] = (
+        development_manifest.ModelDevelopmentLane(
+            sport,
+            "PRODUCTION_MODEL_PRESENT",
+            maintenance_lane,
+            next_gate,
+        )
+    )
+
+
 def install_multisport_team_event_bridges() -> dict[str, Any]:
+    """Atomically activate the five exact multisport bridge contracts."""
     global _INSTALLED
     if _INSTALLED:
         return {
@@ -244,32 +283,56 @@ def install_multisport_team_event_bridges() -> dict[str, Any]:
             "can_execute": False,
         }
 
+    previous_bridges = dict(bridges.TEAM_EVENT_BRIDGES)
+    previous_certifications = dict(capability_manifest.CERTIFIED_TEAM_EVENT_SPORTS)
+    previous_uncertified = capability_manifest.KNOWN_UNCERTIFIED_TEAM_EVENT_SPORTS
+    previous_development = {
+        sport: development_manifest.TEAM_EVENT_MODEL_DEVELOPMENT[sport]
+        for sport in BRIDGE_SCORERS
+    }
     registered: list[str] = []
-    for sport, scorer in BRIDGE_SCORERS.items():
-        spec = MODEL_SPECS[sport]
-        required = tuple(
-            dict.fromkeys(
-                [
-                    *TEAM_EVENT_INPUT_CONTRACTS[sport],
-                    *SPORT_MODEL_INPUTS[sport],
-                ]
+    try:
+        for sport, scorer in BRIDGE_SCORERS.items():
+            spec = MODEL_SPECS[sport]
+            # The imported scorer identity and certification identity must agree
+            # before either can become visible as production capability.
+            if spec["specialist"] != RUNTIME_CERTIFICATIONS[sport]:
+                raise RuntimeError(f"{sport}_SPECIALIST_CERTIFICATION_IDENTITY_MISMATCH")
+
+            required = tuple(
+                dict.fromkeys(
+                    [
+                        *capability_manifest.TEAM_EVENT_INPUT_CONTRACTS[sport],
+                        *SPORT_MODEL_INPUTS[sport],
+                    ]
+                )
             )
-        )
-        bridges.register_team_event_bridge(
-            sport,
-            adapter_name=f"V17_{sport}_TEAM_EVENT_BRIDGE",
-            controlling_specialist=spec["specialist"],
-            scorer=scorer,
-            required_inputs=required,
-            standard_package_validation=True,
-        )
-        registered.append(sport)
+            bridges.register_team_event_bridge(
+                sport,
+                adapter_name=f"V17_{sport}_TEAM_EVENT_BRIDGE",
+                controlling_specialist=spec["specialist"],
+                scorer=scorer,
+                required_inputs=required,
+                standard_package_validation=True,
+            )
+            _activate_runtime_certification(sport)
+            registered.append(sport)
+    except Exception:
+        bridges.TEAM_EVENT_BRIDGES.clear()
+        bridges.TEAM_EVENT_BRIDGES.update(previous_bridges)
+        capability_manifest.CERTIFIED_TEAM_EVENT_SPORTS.clear()
+        capability_manifest.CERTIFIED_TEAM_EVENT_SPORTS.update(previous_certifications)
+        capability_manifest.KNOWN_UNCERTIFIED_TEAM_EVENT_SPORTS = previous_uncertified
+        for sport, lane in previous_development.items():
+            development_manifest.TEAM_EVENT_MODEL_DEVELOPMENT[sport] = lane
+        raise
 
     bridges._install_health_overlay()
     _INSTALLED = True
     return {
         "status": "INSTALLED",
         "registered_sports": sorted(registered),
+        "certified_sports": sorted(RUNTIME_CERTIFICATIONS),
         "global_terminal_authority": GLOBAL_TERMINAL_REDUCER,
         "can_execute": False,
     }
@@ -278,6 +341,7 @@ def install_multisport_team_event_bridges() -> dict[str, Any]:
 __all__ = [
     "BRIDGE_SCORERS",
     "CAN_EXECUTE",
+    "RUNTIME_CERTIFICATIONS",
     "SPORT_MODEL_INPUTS",
     "install_multisport_team_event_bridges",
     "score_mma_team_event_request",
