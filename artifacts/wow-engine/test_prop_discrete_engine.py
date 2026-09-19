@@ -139,6 +139,28 @@ def test_discrete_prop_path_publishes_without_fake_pitcher_simulation_fields():
     assert not hasattr(row, "can_execute")
 
 
+def test_controlling_specialist_identity_reaches_the_persisted_row():
+    """Regression for the confirmed publication-integrity gap: the governed
+    routing ledger's specialist identity was resolved by the caller but
+    silently dropped before the row that gets persisted to wow_predictions
+    was built (controlling_specialist stayed NULL on nearly every row)."""
+    register_prop_calibration_adapter("WNBA_POINTS_CAL_V1", _calibrator)
+    result = score_discrete_prop_end_to_end(
+        client=object(),
+        request=_request(),
+        event_start_time="2026-08-30T00:00:00+00:00",
+        player="Test Player",
+        line=22.0,
+        direction="MORE",
+        source_snapshot_id="22222222-2222-4222-8222-222222222222",
+        features={"game_log": [20] * 10},
+        seed=7,
+        infer_fn=_infer_factory(_inference()),
+        controlling_specialist="wow.wnba-player-prop-generative-expert",
+    )
+    assert result.row.controlling_specialist == "wow.wnba-player-prop-generative-expert"
+
+
 def test_missing_calibration_adapter_abstains_without_legacy_fallback():
     with pytest.raises(PropCalibrationUnavailable) as exc:
         score_discrete_prop_end_to_end(

@@ -21,15 +21,17 @@ class Query:
     def __init__(self, table, columns):
         self.table = table
         self.columns = columns
+        self.id_column = "recommendation_record_id"
         self.ids = []
 
-    def in_(self, _column, ids):
+    def in_(self, column, ids):
+        self.id_column = column
         self.ids = ids
         return self
 
     def execute(self):
         return SimpleNamespace(
-            data=[row for row in self.table.rows if row.get("recommendation_record_id") in self.ids]
+            data=[row for row in self.table.rows if row.get(self.id_column) in self.ids]
         )
 
 
@@ -74,7 +76,7 @@ class Client:
         self.positions = []
 
     def table(self, name):
-        return self.tables[name]
+        return self.tables.setdefault(name, Table())
 
     def rpc(self, name, params):
         assert name == "wow_settle_recommendation_batch"
@@ -231,3 +233,121 @@ def test_settlement_rejects_mixed_or_mismatched_position_economics():
     }
     response = client.post("/settle-recommendations", json=payload)
     assert response.status_code == 422
+
+
+def _publishable_row(**overrides):
+    row = {
+        "row_key": "cole-k",
+        "sport": "MLB",
+        "league": "MLB",
+        "event_id": "MLB:NYY:BOS:20260919",
+        "event_start_time": (datetime.now(timezone.utc) + timedelta(hours=6)).isoformat(),
+        "participant": "Gerrit Cole",
+        "opponent": "Boston Red Sox",
+        "market_family": "PROP_DISCRETE_PMF",
+        "selection": "Gerrit Cole MORE 5.5 strikeouts",
+        "terminal_label": "MODEL_QUALIFIED_RANK_ELIGIBLE",
+        "probability_publishable": True,
+        "calibrated_probability": 0.62,
+        "calibrated_probability_lower_bound": 0.55,
+        "governed_prediction_table": "wow_predictions",
+        "governed_prediction_id": "11111111-1111-1111-1111-111111111111",
+        "stat_type": "PITCHER_STRIKEOUTS",
+        "line": 5.5,
+        "direction": "MORE",
+        "final_refresh": {"status": "PASS", "checked_at": datetime.now(timezone.utc).isoformat()},
+    }
+    row.update(overrides)
+    return row
+
+
+def _matching_prediction(**overrides):
+    prediction = {
+        "prediction_id": "11111111-1111-1111-1111-111111111111",
+        "event_id": "MLB:NYY:BOS:20260919",
+        "player": "Gerrit Cole",
+        "stat_type": "PITCHER_STRIKEOUTS",
+        "line": 5.5,
+        "direction": "MORE",
+        "probability_publishable": True,
+        "blockers": [],
+        "calibrated_probability": 0.62,
+        "calibrated_probability_lower_bound": 0.55,
+        "locked_at": (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat(),
+    }
+    prediction.update(overrides)
+    return prediction
+
+
+def test_publishable_row_backed_by_exact_frozen_prediction_is_admitted():
+    client, db = app_client()
+    db.tables["wow_predictions"] = Table()
+    db.tables["wow_predictions"].rows.append(_matching_prediction())
+
+    payload = recommendation_payload()
+    payload["rows"] = [_publishable_row()]
+    response = client.post("/record-recommendations", json=payload)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["governed_admitted_row_keys"] == ["cole-k"]
+    assert body["governed_blocked_rows"] == []
+    row = db.tables["wow_recommendation_records"].rows[0]
+    assert row["probability_publishable"] is True
+    assert row["calibration_eligible"] is True
+
+
+def test_publishable_row_without_matching_prediction_is_persisted_but_not_admitted():
+    client, db = app_client()
+    db.tables["wow_predictions"] = Table()  # no matching row
+
+    payload = recommendation_payload()
+    payload["rows"] = [_publishable_row()]
+    response = client.post("/record-recommendations", json=payload)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["governed_admitted_row_keys"] == []
+    assert len(body["governed_blocked_rows"]) == 1
+    assert body["governed_blocked_rows"][0]["row_key"] == "cole-k"
+    assert "PUBLICATION_NO_MATCHING_GOVERNED_PREDICTION_ROW" in body["governed_blocked_rows"][0]["blockers"]
+
+    # The row is still durably recorded (write-before-display), but the
+    # unproven publication claim is never persisted as publishable/eligible.
+    assert body["rows_persisted"] == 1
+    row = db.tables["wow_recommendation_records"].rows[0]
+    assert row["probability_publishable"] is False
+    assert row["calibration_eligible"] is False
+    assert any(b.startswith("PUBLICATION_") for b in row["blockers"])
+
+
+def test_publishable_row_with_mismatched_line_is_blocked_not_admitted():
+    client, db = app_client()
+    db.tables["wow_predictions"] = Table()
+    db.tables["wow_predictions"].rows.append(_matching_prediction(line=6.5))
+
+    payload = recommendation_payload()
+    payload["rows"] = [_publishable_row()]
+    response = client.post("/record-recommendations", json=payload)
+
+    body = response.json()
+    assert body["governed_admitted_row_keys"] == []
+    assert "PUBLICATION_EXACT_IDENTITY_MISMATCH:line" in body["governed_blocked_rows"][0]["blockers"]
+    row = db.tables["wow_recommendation_records"].rows[0]
+    assert row["probability_publishable"] is False
+
+
+def test_publishable_row_missing_final_refresh_evidence_is_blocked():
+    client, db = app_client()
+    db.tables["wow_predictions"] = Table()
+    db.tables["wow_predictions"].rows.append(_matching_prediction())
+
+    payload = recommendation_payload()
+    row = _publishable_row()
+    row.pop("final_refresh")
+    payload["rows"] = [row]
+    response = client.post("/record-recommendations", json=payload)
+
+    body = response.json()
+    assert body["governed_admitted_row_keys"] == []
+    assert "PUBLICATION_FINAL_REFRESH_EVIDENCE_MISSING" in body["governed_blocked_rows"][0]["blockers"]

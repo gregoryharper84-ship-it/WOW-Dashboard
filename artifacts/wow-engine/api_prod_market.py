@@ -834,6 +834,7 @@ def score_prop(
             money_lane_status=req.money_lane_status,
             market_side_a=market_audit.side_a,
             market_side_b=market_audit.side_b,
+            controlling_specialist=specialist.get("controlling_specialist"),
         )
     except (PropFittedProviderUnavailable, PropDistributionContractError, PropCalibrationUnavailable) as exc:
         _raise_model_path_error(exc)

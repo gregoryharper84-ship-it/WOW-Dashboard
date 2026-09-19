@@ -187,6 +187,7 @@ def score_discrete_prop_end_to_end(
     market_side_a: Optional[MarketQuote] = None,
     market_side_b: Optional[MarketQuote] = None,
     infer_fn=infer_certified_distribution,
+    controlling_specialist: Optional[str] = None,
 ) -> DiscretePropScoreResult:
     """Score one exact prop without legacy pitcher-regime parameters.
 
@@ -276,6 +277,7 @@ def score_discrete_prop_end_to_end(
         probability_more=line_probs.probability_more,
         probability_less=line_probs.probability_less,
         push_probability=line_probs.push_probability,
+        controlling_specialist=controlling_specialist,
     )
     return DiscretePropScoreResult(
         row=determine_publishability(row),

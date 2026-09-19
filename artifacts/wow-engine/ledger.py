@@ -141,6 +141,12 @@ class PredictionRow:
     data_gaps: list[str] = field(default_factory=list)
     blockers: list[str] = field(default_factory=list)
 
+    # Identity of the specialist that governed-routing selected for this
+    # (sport, stat_type) before scoring began. This is metadata about which
+    # specialist ran, not a probability input -- it carries no gating weight
+    # here and must never be inferred/backfilled after the fact.
+    controlling_specialist: Optional[str] = None
+
 
 def _validate_discrete_prop_provenance(row: PredictionRow, gaps: list[str]) -> None:
     required_text = {
@@ -242,10 +248,61 @@ def determine_publishability(row: PredictionRow) -> PredictionRow:
     return row
 
 
+# Columns that, taken together, identify one specific scoring attempt: the
+# same market thesis (event/sport/market/stat/line/direction/player-or-team)
+# scored from the same evidence snapshot. Re-submitting the exact same
+# attempt must not inflate the ledger with a second row.
+_EXACT_IDENTITY_COLUMNS = (
+    "event_id",
+    "sport",
+    "market_type",
+    "stat_type",
+    "line",
+    "direction",
+    "source_snapshot_id",
+)
+_EXACT_IDENTITY_NULLABLE_COLUMNS = ("player", "team")
+
+
+def _find_exact_duplicate(client: "Client", payload: dict) -> Optional[dict]:
+    """Best-effort application-layer idempotency check: does a row with this
+    exact identity (including evidence snapshot) already exist?
+
+    This is a query-before-insert, not a database constraint, so it does not
+    close a race between two concurrent identical inserts -- that requires
+    the exact-identity unique index proposed in
+    migrations/20260919_publication_integrity_recovery.sql, which is pending
+    governed review and is not applied by this function. It does eliminate
+    the sequential-retry duplication this ledger has been accumulating.
+    """
+    query = client.table("wow_predictions").select("*")
+    for column in _EXACT_IDENTITY_COLUMNS:
+        query = query.eq(column, payload.get(column))
+    for column in _EXACT_IDENTITY_NULLABLE_COLUMNS:
+        value = payload.get(column)
+        if value is None:
+            query = query.is_(column, "null")
+        else:
+            query = query.eq(column, value)
+    existing = query.execute().data or []
+    return existing[0] if existing else None
+
+
 def insert_prediction(row: PredictionRow) -> dict:
     row = determine_publishability(row)
     client = get_client()
     payload = asdict(row)
+
+    try:
+        duplicate = _find_exact_duplicate(client, payload)
+    except Exception:
+        # The dedupe check itself failing must never block a real scoring
+        # attempt from being persisted -- it only prevents a redundant write,
+        # so fail open on the check and proceed to the normal insert.
+        duplicate = None
+    if duplicate is not None:
+        return duplicate
+
     payload["prediction_id"] = str(uuid.uuid4())
     result = client.table("wow_predictions").insert(payload).execute()
     return result.data[0] if result.data else payload

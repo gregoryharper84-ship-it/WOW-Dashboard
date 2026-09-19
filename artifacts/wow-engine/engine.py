@@ -100,6 +100,7 @@ def score_prop_end_to_end(
     draws: int = MIN_SIMULATION_DRAWS,
     load_calibrator_fn=load_active_calibrator,
     load_historical_rows_fn=load_historical_calibration_rows,
+    controlling_specialist: str | None = None,
 ) -> EndToEndResult:
     """Full pipeline. Every step's real ratified logic runs — nothing here
     is stubbed or shortcut. Raises no exceptions on the happy path;
@@ -109,13 +110,19 @@ def score_prop_end_to_end(
     `load_calibrator_fn`/`load_historical_rows_fn` default to the real
     Supabase-backed lookups (calibrator_store.py) but are injectable so
     this pipeline stays testable without a live database — mirroring how
-    `resample_fn` is already injected for Phase A."""
+    `resample_fn` is already injected for Phase A.
+
+    `controlling_specialist` records which specialist the caller's own
+    governed routing ledger already selected before invoking this pipeline.
+    It is identity metadata only -- this function does not select, validate,
+    or gate on it."""
 
     def _blocked(data_gaps: list[str], **extra) -> EndToEndResult:
         row = PredictionRow(
             event_id=event_id, event_start_time=event_start_time, sport=sport,
             market_type="engine", stat_type=stat_type, line=line, direction=direction,
             source_snapshot_id=source_snapshot_id, model_timestamp=scored_at,
+            controlling_specialist=controlling_specialist,
             data_gaps=data_gaps, **extra,
         )
         return EndToEndResult(row=determine_publishability(row), error="; ".join(data_gaps))
@@ -317,6 +324,7 @@ def score_prop_end_to_end(
         calibrated_probability_lower_bound=lower_bound,
         calibrated_probability_upper_bound=upper_bound,
         money_lane_status=money_lane_status,
+        controlling_specialist=controlling_specialist,
     )
     return EndToEndResult(
         row=determine_publishability(row), error=None,

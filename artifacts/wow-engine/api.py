@@ -489,6 +489,7 @@ def score_prop(req: ScorePropRequest):
         candidate_direction=req.direction, scored_at=scored_at,
         parent_cohort=bundle.parent_cohort, settled_n_in_cohort=bundle.settled_n_in_cohort,
         money_lane_status=req.money_lane_status, draws=draws,
+        controlling_specialist=specialist.get("controlling_specialist"),
     )
 
     if not result.row.probability_publishable:

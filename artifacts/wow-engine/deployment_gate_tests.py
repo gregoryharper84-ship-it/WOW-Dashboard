@@ -700,6 +700,26 @@ def test_gate_11_end_to_end_positive_path_produces_publishable_probability():
     assert row.model_timestamp == "2026-08-26T00:00:02Z"
 
 
+def test_gate_11a_controlling_specialist_identity_reaches_the_persisted_row():
+    """Regression for the confirmed publication-integrity gap: the governed
+    routing ledger's specialist identity was resolved by the caller (api.py)
+    but silently dropped before the persisted row was built."""
+    cohort = _uniform_cohort()
+    pitcher = _sample_pitcher()
+    params = _synthetic_fitted_params()
+
+    result = score_prop_end_to_end(
+        event_id="synthetic_evt", event_start_time="2026-08-27T00:00:00Z", sport="MLB",
+        stat_type="strikeouts", line=4.5, direction="MORE", source_snapshot_id="snap-synthetic",
+        cohort=cohort, pitcher=pitcher, regime_params=params,
+        resample_fn=_synthetic_resampler, n_eff=16, seed=7, candidate_direction="OVER",
+        scored_at="2026-08-26T00:00:02Z",
+        settled_n_in_cohort=0, money_lane_status="RESOLVED",
+        controlling_specialist="wow.mlb-pitcher-strikeouts-specialist",
+    )
+    assert result.row.controlling_specialist == "wow.mlb-pitcher-strikeouts-specialist"
+
+
 def test_gate_11b_missing_regime_data_fails_end_to_end_cleanly():
     cohort = _uniform_cohort()
     pitcher = _sample_pitcher()

@@ -15,6 +15,7 @@ from typing import Any, Callable, Optional
 from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from publication_admission import evaluate_publication_eligibility, fetch_governed_predictions
 from v17.postmortem_engine import install_postmortem_routes
 
 _NAMESPACE = uuid.UUID("3f750180-e938-4cb0-af6f-2a58e32facb5")
@@ -59,6 +60,20 @@ class RecommendationRow(BaseModel):
     evidence_fingerprint: Optional[str] = None
     blockers: list[str] = Field(default_factory=list)
     display_payload: dict[str, Any] = Field(default_factory=dict)
+
+    # Exact-identity fields the publication admission gate compares against
+    # the named governed_prediction_table/governed_prediction_id row. Optional
+    # because a non-publishable (RESEARCH/HOLD) row never needs them.
+    stat_type: Optional[str] = None
+    line: Optional[float] = None
+    direction: Optional[str] = None
+
+    # Host-observed final pregame state (lineup, status, price freshness),
+    # captured immediately before this row was recorded. wow_predictions
+    # itself carries no per-row final-refresh column, so a publishable row
+    # must carry this evidence itself; the publication admission gate fails
+    # closed when it is absent. Shape: {"status": "PASS", "checked_at": <iso>}.
+    final_refresh: Optional[dict[str, Any]] = None
 
     @model_validator(mode="after")
     def validate_row(self):
@@ -159,11 +174,33 @@ def install_recommendation_ledger_routes(
     @app.post("/record-recommendations", dependencies=[auth_dependency])
     def record_recommendations(batch: RecommendationBatch):
         recorded_at = datetime.now(timezone.utc)
+
+        # One batched fetch of every distinct governed prediction a row in
+        # this batch claims to be backed by, so each row can be verified
+        # against the frozen upstream record instead of the caller's own
+        # unverified text.
+        predictions_by_claim = fetch_governed_predictions(
+            get_client_fn,
+            ((row.governed_prediction_table, row.governed_prediction_id) for row in batch.rows),
+        )
+
         payloads = []
+        admitted_row_keys: list[str] = []
+        blocked_rows: list[dict[str, Any]] = []
         for row in batch.rows:
             identity = f"{batch.research_run_id}|{row.row_key}|{row.event_id}|{row.selection}"
             record_id = uuid.uuid5(_NAMESPACE, identity)
-            row_payload = row.model_dump()
+
+            prediction = predictions_by_claim.get((row.governed_prediction_table, row.governed_prediction_id))
+            admission = evaluate_publication_eligibility(row.model_dump(), prediction, now=recorded_at)
+
+            claimed_publishable = row.probability_publishable
+            if claimed_publishable and admission.admitted:
+                admitted_row_keys.append(row.row_key)
+            elif claimed_publishable:
+                blocked_rows.append({"row_key": row.row_key, "blockers": list(admission.blockers)})
+
+            row_payload = row.model_dump(exclude={"stat_type", "line", "direction", "final_refresh"})
             row_payload.update(
                 {
                     "recommendation_record_id": str(record_id),
@@ -176,7 +213,13 @@ def install_recommendation_ledger_routes(
                     "source_type": batch.source_type,
                     "source_conversation_ref": batch.source_conversation_ref,
                     "capture_timing": "PREGAME",
-                    "calibration_eligible": bool(row.probability_publishable and row.governed_prediction_id),
+                    # A publication claim this backend cannot prove against the
+                    # frozen upstream prediction is never persisted as
+                    # publishable or calibration-eligible -- fail closed, do
+                    # not trust the caller's own attestation.
+                    "probability_publishable": bool(claimed_publishable and admission.admitted),
+                    "calibration_eligible": admission.admitted,
+                    "blockers": list(dict.fromkeys([*row.blockers, *([] if admission.admitted else admission.blockers)])),
                     "can_execute": False,
                 }
             )
@@ -225,6 +268,12 @@ def install_recommendation_ledger_routes(
             "recommendation_record_ids": persisted_ids,
             "display_authorized": True,
             "recorded_at": recorded_at.isoformat(),
+            # Publication admission is per-row and separate from write success:
+            # a row can be durably persisted (rows_persisted) while still
+            # failing to prove its publication claim against the frozen
+            # governed prediction it named.
+            "governed_admitted_row_keys": admitted_row_keys,
+            "governed_blocked_rows": blocked_rows,
             "can_execute": False,
         }
 
