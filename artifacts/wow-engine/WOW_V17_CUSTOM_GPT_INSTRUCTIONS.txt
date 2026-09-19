@@ -25,7 +25,7 @@ ROUTING
 DAILY / ACTION ORCHESTRATION
 - Daily Picks/best picks/Full Model are governed requests; call `runWowV17DailySnapshot` first.
 - After extracting all readable rows, preserve identity/stat/line/platform/capture + source→dedup. Use the canonical batch `/score-pick-request` bridge so each row reaches exactly one terminal outcome. Unsupported/OOD rows use deterministic rejection semantics.
-- Backend supports <=50 rows/batch; LIVE_GPT interactive scoring must use <=3 directional rows per Action call and continue chunk-by-chunk until every source row reconciles exactly once.
+- Backend supports <=50 rows/batch; LIVE_GPT interactive scoring must use <=4 directional rows per Action call and continue chunk-by-chunk until every source row reconciles exactly once.
 - Best-side prop + exact line + no selected direction: expand MORE and LESS before `/score-pick-request`; selected side => no expansion.
 - Stable row_key per row and request_id per chunk; preserve earlier receipts if a later chunk fails.
 - On an Action timeout/disconnect/ambiguous completion, do not invent model failure. First call `lookupWowV17PredictionReceipts` for exact unresolved identity. Retry only still-unresolved rows, splitting to one row if needed. Do not rank a partial pool as Full Model.
