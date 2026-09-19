@@ -150,6 +150,7 @@ def compose_active_runtime() -> bool:
     if os.getenv("WOW_V17_ACTIVE", "0") != "1":
         return False
     from v17.daily_snapshot_oidc_bridge import install_daily_snapshot_oidc_bridge
+    from v17.full_board_runtime import install_full_board_runtime_routes
     from v17.prop_response_semantics import install_prop_response_semantics
     from v17.projected_lineup_scenario_modeling import install_projected_lineup_semantics
     from v17.projected_lineup_probability_rehydration import install_projected_lineup_score_rehydration
@@ -183,6 +184,7 @@ def compose_active_runtime() -> bool:
     mlb_event_bridge_deferred = False
     runtime_acceptance_ok = False
     daily_snapshot_oidc_ok = False
+    full_board_runtime_ok = False
     if market_api is not None:
         numerical_ok = install_production_bridges(market_api=market_api, team_event_module=team_runtime)
         mlb_event_bridge_deferred = _defer_mlb_event_bridge_install(
@@ -202,11 +204,21 @@ def compose_active_runtime() -> bool:
                 app=app,
                 market_api=market_api,
             )
+            auth_dependency = getattr(
+                getattr(market_api, "prod", None),
+                "_require_action_api_key",
+                None,
+            )
+            full_board_runtime_ok = install_full_board_runtime_routes(
+                app,
+                auth_dependency=auth_dependency,
+            )
 
     return bool(
         rundown_auth_ok or market_prior_ok
         or prop_ok or lineup_ok or rehydration_ok or rundown_llp_ok or numerical_ok
         or mlb_event_bridge_deferred or runtime_acceptance_ok or daily_snapshot_oidc_ok
+        or full_board_runtime_ok
         or getattr(market_api, "_v17_certified_numerical_bridge_installed", False)
         or getattr(market_api, "_v17_mlb_event_bridge_repair_installed", False)
         or getattr(team_runtime, "_v17_llp_rundown_market_bridge_installed", False)
