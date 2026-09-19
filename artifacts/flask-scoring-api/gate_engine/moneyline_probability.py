@@ -19,11 +19,16 @@ Responsibilities
 * Immutable prediction snapshot hashed at output time
 * can_execute = False (unconditional)
 
-Sport model status
-------------------
-  ACTIVE      : MLB, NBA, WNBA, ATP, WTA, TENNIS, MMA, UFC
-  PROVISIONAL : NFL, NHL, SOCCER, EPL, MLS
-  UNAVAILABLE : anything else
+Governed production authority
+-----------------------------
+  ACTIVE / V17 CERTIFIED : MLB
+  DECLARATION ONLY       : NBA, WNBA, ATP, WTA, TENNIS, MMA, UFC,
+                           NFL, NHL, SOCCER, EPL, MLS
+  UNAVAILABLE            : anything else
+
+The legacy registry below retains parsing/model-family metadata only. It does
+not create V17 capability. ``get_model_for_sport`` fails closed for every
+sport absent from the V17 certified team/event authority set.
 
 Soccer 1X2 special handling
 ----------------------------
@@ -140,16 +145,37 @@ _SPORT_MODEL_REGISTRY: dict[str, dict[str, Any]] = {
 }
 
 
+# V17 authority is intentionally narrower than legacy declaration metadata.
+# Keep this fail-closed mirror synchronized with
+# v17/team_event_capability_manifest.py. A declaration, legacy model id, or
+# market parser is never sufficient to create governed model capability.
+_V17_CERTIFIED_TEAM_EVENT_SPORTS = frozenset({"MLB"})
+
+
 def get_model_for_sport(sport: str) -> dict[str, Any]:
     sport_key = sport.strip().upper()
-    if sport_key in _SPORT_MODEL_REGISTRY:
-        return _SPORT_MODEL_REGISTRY[sport_key]
-    return {
-        "model_id":    None,
-        "status":      ModelStatus.UNAVAILABLE,
-        "output_type": None,
-        "features":    [],
-    }
+    declared = _SPORT_MODEL_REGISTRY.get(sport_key)
+    if declared is None:
+        return {
+            "model_id": None,
+            "status": ModelStatus.UNAVAILABLE,
+            "output_type": None,
+            "features": [],
+            "certification_status": "NO_DECLARED_MODEL",
+            "authority_source": "V17_CERTIFIED_TEAM_EVENT_SPORTS",
+        }
+
+    resolved = dict(declared)
+    resolved["authority_source"] = "V17_CERTIFIED_TEAM_EVENT_SPORTS"
+    if sport_key not in _V17_CERTIFIED_TEAM_EVENT_SPORTS:
+        resolved["declared_model_id"] = resolved.get("model_id")
+        resolved["model_id"] = None
+        resolved["status"] = ModelStatus.UNAVAILABLE
+        resolved["certification_status"] = "UNCERTIFIED_DECLARATION_ONLY"
+        return resolved
+
+    resolved["certification_status"] = "CERTIFIED"
+    return resolved
 
 
 # ---------------------------------------------------------------------------

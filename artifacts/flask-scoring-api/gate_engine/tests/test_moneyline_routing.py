@@ -233,7 +233,9 @@ class TestATPMatchWinnerNoMoreLess:
     def test_atp_model_is_active(self):
         from gate_engine.moneyline_probability import get_model_for_sport, ModelStatus
         model = get_model_for_sport("ATP")
-        assert model["status"] == ModelStatus.ACTIVE
+        assert model["status"] == ModelStatus.UNAVAILABLE
+        assert model["model_id"] is None
+        assert model["declared_model_id"] == "atp-match-winner-elo-v1"
 
 
 # ---------------------------------------------------------------------------
@@ -271,7 +273,9 @@ class TestMMABoutWinnerNoPropType:
     def test_mma_model_is_active(self):
         from gate_engine.moneyline_probability import get_model_for_sport, ModelStatus
         model = get_model_for_sport("MMA")
-        assert model["status"] == ModelStatus.ACTIVE
+        assert model["status"] == ModelStatus.UNAVAILABLE
+        assert model["model_id"] is None
+        assert model["declared_model_id"] == "mma-bout-winner-v1"
 
     def test_fight_winner_key_classifies(self):
         from gate_engine.market_family import classify_market_family, MarketFamily
