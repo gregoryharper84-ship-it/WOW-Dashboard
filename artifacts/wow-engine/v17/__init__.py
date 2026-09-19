@@ -150,6 +150,7 @@ def compose_active_runtime() -> bool:
     if os.getenv("WOW_V17_ACTIVE", "0") != "1":
         return False
     from v17.daily_snapshot_oidc_bridge import install_daily_snapshot_oidc_bridge
+    from v17.full_board_overlay import install_cross_sport_full_board_overlay
     from v17.full_board_runtime import install_full_board_runtime_routes
     from v17.prop_response_semantics import install_prop_response_semantics
     from v17.projected_lineup_scenario_modeling import install_projected_lineup_semantics
@@ -178,6 +179,7 @@ def compose_active_runtime() -> bool:
     lineup_ok = install_projected_lineup_semantics()
     rehydration_ok = install_projected_lineup_score_rehydration(team_runtime)
     rundown_llp_ok = install_llp_rundown_market_bridge(team_runtime)
+    full_board_overlay_ok = install_cross_sport_full_board_overlay()
 
     market_api = sys.modules.get("api_prod_market")
     numerical_ok = False
@@ -217,6 +219,7 @@ def compose_active_runtime() -> bool:
     return bool(
         rundown_auth_ok or market_prior_ok
         or prop_ok or lineup_ok or rehydration_ok or rundown_llp_ok or numerical_ok
+        or full_board_overlay_ok
         or mlb_event_bridge_deferred or runtime_acceptance_ok or daily_snapshot_oidc_ok
         or full_board_runtime_ok
         or getattr(market_api, "_v17_certified_numerical_bridge_installed", False)
