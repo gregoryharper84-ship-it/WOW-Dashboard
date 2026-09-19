@@ -15,7 +15,7 @@ def materialize(slate_date: date) -> dict:
         token = mint_github_actions_oidc()
     except GitHubOIDCMintError as exc:
         raise RuntimeError(str(exc)) from exc
-    payload = {"persist_phase": "MATERIALIZE", "slate_date": slate_date.isoformat(), "can_execute": False}
+    payload = {"persist_phase": "MATERIALIZE", "slate_date": slate_date.isoformat(), "run_id": f"board-materialize:{slate_date.isoformat()}", "can_execute": False}
     req = Request(url, data=json.dumps(payload, separators=(",", ":")).encode(), headers={
         "Authorization": f"Bearer {token}", "Content-Type": "application/json", "Accept": "application/json",
     }, method="POST")
