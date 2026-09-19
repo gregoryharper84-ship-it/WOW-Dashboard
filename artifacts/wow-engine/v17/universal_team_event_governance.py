@@ -18,6 +18,7 @@ from v17.team_event_governance_profiles import (
     governance_health,
     governance_profile_preflight,
 )
+from v17.team_event_model_development_manifest import TEAM_EVENT_MODEL_DEVELOPMENT
 
 CAN_EXECUTE = False
 _INSTALLED = False
@@ -96,10 +97,12 @@ def install_universal_team_event_governance() -> dict[str, Any]:
         output: dict[str, dict[str, Any]] = {}
         for sport, profile in profiles.items():
             base = dict(bridge_health.get(sport) or {})
+            development = TEAM_EVENT_MODEL_DEVELOPMENT[sport].as_dict()
             output[sport] = {
                 **base,
                 "governance_profile_installed": True,
                 "governance_profile": profile,
+                "model_development": development,
                 "global_terminal_authority": TERMINAL_AUTHORITY,
                 "can_execute": False,
             }
@@ -121,6 +124,7 @@ def install_universal_team_event_governance() -> dict[str, Any]:
     return {
         "status": "INSTALLED",
         "governance_profiles": governance_health(),
+        "model_development": {sport: lane.as_dict() for sport, lane in TEAM_EVENT_MODEL_DEVELOPMENT.items()},
         "global_terminal_authority": TERMINAL_AUTHORITY,
         "can_execute": False,
     }
