@@ -50,18 +50,31 @@ jobs:
       - name: Validate canonical editor contract
         shell: bash
         run: |
-          pip install -q pyyaml pytest
+          pip install -q pyyaml
           python - <<'PY'
           import yaml
           from pathlib import Path
-          p = Path('artifacts/wow-engine/v17/openapi.wow-betting-engine.v17.yaml')
-          doc = yaml.safe_load(p.read_text(encoding='utf-8'))
-          mode = doc['components']['schemas']['PickRequestBatch']['properties']['response_mode']
+
+          schema_path = Path('artifacts/wow-engine/v17/openapi.wow-betting-engine.v17.yaml')
+          test_path = Path('artifacts/wow-engine/tests/test_v17_live_editor_compat.py')
+          instructions_path = Path('artifacts/wow-engine/WOW_V17_CUSTOM_GPT_INSTRUCTIONS.txt')
+
+          doc = yaml.safe_load(schema_path.read_text(encoding='utf-8'))
+          batch = doc['components']['schemas']['PickRequestBatch']
+          mode = batch['properties']['response_mode']
           assert mode['enum'] == ['COMPACT', 'FULL']
           assert mode['default'] == 'COMPACT'
+          assert batch['properties']['rows']['maxItems'] == 50
+
+          instructions = instructions_path.read_text(encoding='utf-8')
+          tests = test_path.read_text(encoding='utf-8')
+          assert 'response_mode=COMPACT' in instructions
+          assert 'LIVE_GPT interactive scoring must use <=4 directional rows per Action call' in instructions
+          assert 'response_mode = batch["properties"]["response_mode"]' in tests
+          assert 'assert response_mode["default"] == "COMPACT"' in tests
           print('CANONICAL_PICK_REQUEST_RESPONSE_MODE=COMPACT')
+          print('LIVE_GPT_CHUNK_CONTRACT_MAX_DIRECTIONAL_ROWS=4')
           PY
-          pytest -q artifacts/wow-engine/tests/test_v17_live_editor_compat.py
 
       - name: Commit synchronized contract and remove one-shot workflow
         shell: bash
