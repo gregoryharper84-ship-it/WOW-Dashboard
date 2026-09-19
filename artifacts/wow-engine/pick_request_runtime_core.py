@@ -119,6 +119,7 @@ class PickRequestBatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     request_id: Optional[str] = None
+    response_mode: Literal["FULL", "COMPACT"] = "FULL"
     rows: list[PickRequestRow] = Field(min_length=1, max_length=50)
 
 
@@ -1262,9 +1263,9 @@ def install_pick_request_routes(
             "reconciliation_pass": reconciliation_pass,
             "telemetry": _telemetry(outcomes),
             "specialist_utilization_summary": _specialist_utilization_summary(outcomes),
-            "response_mode": "COMPACT",
-            "rows": [_compact_pick_outcome(outcome) for outcome in outcomes],
-            "detail_retrieval": {"mode": "IMMUTABLE_RECEIPT_LOOKUP", "operation_id": "lookupWowV17PredictionReceipts"},
+            "response_mode": batch.response_mode,
+            "rows": ([_compact_pick_outcome(outcome) for outcome in outcomes] if batch.response_mode == "COMPACT" else outcomes),
+            "detail_retrieval": ({"mode": "IMMUTABLE_RECEIPT_LOOKUP", "operation_id": "lookupWowV17PredictionReceipts"} if batch.response_mode == "COMPACT" else None),
             "probability_objective": "GOVERNED_MODEL_ONLY",
             "can_execute": False,
         }
