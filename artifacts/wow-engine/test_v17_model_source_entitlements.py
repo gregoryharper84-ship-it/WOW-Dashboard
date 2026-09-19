@@ -19,6 +19,27 @@ def test_therundown_is_event_market_evidence_not_fitted_training(monkeypatch):
     assert "MODEL_SOURCE_NOT_AUTHORIZED_FOR_FITTED_TRAINING" in readiness.blockers
 
 
+def test_sportsdataverse_espn_is_open_licensed_candidate_training_but_still_requires_certification_review():
+    readiness = source_readiness("SPORTSDATAVERSE_ESPN")
+    source = SOURCES["SPORTSDATAVERSE_ESPN"]
+    assert readiness.ready_for_candidate_training is True
+    assert readiness.blockers == ()
+    assert source.use == "TRAINING_OPEN_LICENSED"
+    assert source.license_id == "CC-BY-4.0"
+    assert source.license_url
+    assert source.attribution_required is True
+    assert source.certification_source_review_required is True
+    assert source.probability_source is False
+    assert source.can_execute is False
+
+
+def test_sportsdataverse_source_is_registered_for_basketball_candidate_lanes():
+    for sport in ("NBA", "WNBA", "NCAAB"):
+        readiness = sport_source_readiness(sport)
+        assert "SPORTSDATAVERSE_ESPN" in readiness
+        assert readiness["SPORTSDATAVERSE_ESPN"].ready_for_candidate_training is True
+
+
 def test_nhl_first_party_public_source_can_support_candidate_training_but_not_certification_by_itself():
     readiness = source_readiness("NHL_PUBLIC_WEB_API")
     assert readiness.ready_for_candidate_training is True
@@ -59,7 +80,7 @@ def test_data_golf_requires_explicit_commercial_training_entitlement(monkeypatch
     assert source_readiness("DATA_GOLF").ready_for_candidate_training is True
 
 
-def test_ncaab_has_no_approved_training_source_and_fails_closed():
+def test_ncaab_legacy_approved_stats_alias_remains_fail_closed():
     readiness = source_readiness("NCAAB_APPROVED_STATS")
     assert readiness.ready_for_candidate_training is False
     assert "MODEL_SOURCE_NOT_AUTHORIZED_FOR_FITTED_TRAINING" in readiness.blockers
