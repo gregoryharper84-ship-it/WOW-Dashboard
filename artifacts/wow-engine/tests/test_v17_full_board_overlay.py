@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from v17.full_board_overlay import enrich_full_board_result
+from v17.full_board_overlay import _safe_score_wrapper, enrich_full_board_result
 
 
 def _base_payload():
@@ -145,3 +145,27 @@ def test_capability_preflight_is_included_before_user_facing_publication():
     assert "registered_models" in preflight
     assert "sports" in preflight
     assert preflight["can_execute"] is False
+
+
+def test_scorer_exception_becomes_typed_row_failure_instead_of_board_abort():
+    def explode(*_args, **_kwargs):
+        raise RuntimeError("simulated scorer transport failure")
+
+    result = _safe_score_wrapper(explode)(object(), object())
+    assert result["code"] == "MODEL_SCORER_FAILED"
+    assert result["model_invoked"] is True
+    assert result["probability_publishable"] is False
+    assert result["rank_eligible"] is False
+    assert result["can_execute"] is False
+    assert "simulated scorer transport failure" not in repr(result)
+
+
+def test_empty_or_malformed_scorer_completion_preserves_distinct_typed_statuses():
+    empty = _safe_score_wrapper(lambda *_args, **_kwargs: None)(object(), object())
+    assert empty["code"] == "MODEL_SCORER_FAILED"
+    assert empty["scorer_status"] == "EMPTY_MODEL_COMPLETION"
+
+    malformed = _safe_score_wrapper(lambda *_args, **_kwargs: 0.72)(object(), object())
+    assert malformed["code"] == "MODEL_OUTPUT_INVALID"
+    assert malformed["returned_type"] == "float"
+    assert malformed["rank_eligible"] is False
