@@ -12,7 +12,7 @@ from math import isfinite
 from typing import Any, Mapping
 
 from v17.llp_governed_package_scoring import PASS, validate_governed_scoring_package
-from v17.team_event_capability_manifest import CERTIFIED_TEAM_EVENT_SPORTS
+from v17.team_event_model_registry_audit import CERTIFIED, certification_state
 
 CAN_EXECUTE = False
 GLOBAL_TERMINAL_REDUCER = "V17_TERMINAL_REDUCER"
@@ -117,8 +117,8 @@ def reduce_multisport_team_event(
     if audit.status != PASS:
         blockers.extend(f"GOVERNED_PACKAGE:{item}" for item in audit.blockers)
 
-    certified_specialist = CERTIFIED_TEAM_EVENT_SPORTS.get(sport)
-    if certified_specialist is None:
+    certification, certified_specialist = certification_state(sport, registered=True)
+    if certification != CERTIFIED or certified_specialist is None:
         blockers.append("TEAM_EVENT_SPECIALIST_ARTIFACT_NOT_CERTIFIED")
     elif package.get("controlling_specialist") != certified_specialist:
         blockers.append("CONTROLLING_SPECIALIST_CERTIFICATION_MISMATCH")
@@ -167,6 +167,8 @@ def reduce_multisport_team_event(
     return {
         "status": "PASS" if passed else "HOLD",
         "sport": sport,
+        "certification_status": certification,
+        "certification_id": certified_specialist,
         "probability_audit_result": PASS_PROBABILITY_AUDIT if audit.status == PASS else audit.status,
         "event_mutex_status": "PASS" if not any("EVENT_MUTEX" in b for b in blockers) else "HOLD",
         "postmodel_gates_status": "PASS" if not blockers else "HOLD",
