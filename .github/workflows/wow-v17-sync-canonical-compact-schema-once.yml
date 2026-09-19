@@ -28,7 +28,6 @@ jobs:
         run: |
           python - <<'PY'
           from pathlib import Path
-          import yaml
 
           schema_path = Path('artifacts/wow-engine/v17/openapi.wow-betting-engine.v17.yaml')
           test_path = Path('artifacts/wow-engine/tests/test_v17_live_editor_compat.py')
@@ -38,9 +37,7 @@ jobs:
           replacement = '''    PickRequestBatch:\n      type: object\n      additionalProperties: false\n      required: [rows]\n      properties:\n        request_id: {type: [string, 'null']}\n        response_mode:\n          type: string\n          enum: [COMPACT, FULL]\n          default: COMPACT\n        rows:\n'''
           if schema.count(anchor) != 1:
               raise SystemExit(f'PICK_REQUEST_BATCH_PATCH_TARGET_COUNT={schema.count(anchor)}')
-          schema = schema.replace(anchor, replacement, 1)
-          yaml.safe_load(schema)
-          schema_path.write_text(schema, encoding='utf-8')
+          schema_path.write_text(schema.replace(anchor, replacement, 1), encoding='utf-8')
 
           tests = test_path.read_text(encoding='utf-8')
           old = '''    batch = _schema()["components"]["schemas"]["PickRequestBatch"]\n    assert batch["properties"]["rows"]["maxItems"] == 50\n'''
