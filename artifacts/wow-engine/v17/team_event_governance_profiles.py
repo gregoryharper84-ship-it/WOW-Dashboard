@@ -1,9 +1,10 @@
 """Universal V17 governance profiles for team/event probability lanes.
 
 The governance envelope is shared across sports; sporting evidence and fitted
-models are not.  Every cataloged sport therefore owns an explicit profile that
+models are not. Every cataloged sport therefore owns an explicit profile that
 states its outcome space, settlement semantics, and sport-specific evidence
-families.  Profiles never create model capability and never authorize execution.
+families. Profiles never create model capability, replace a specialist input
+contract, or authorize execution.
 """
 from __future__ import annotations
 
@@ -72,31 +73,29 @@ def governance_profile(sport: str, league: str | None = None) -> TeamEventGovern
 
 
 def governance_profile_preflight(req: Any) -> dict[str, Any]:
+    """Resolve governance metadata without replacing specialist validation.
+
+    The exact registered sport bridge remains authoritative for capability,
+    identity/evidence completeness, scorer failures, and output validation. An
+    unknown profile is therefore DEFERred to that bridge so the existing typed
+    MODEL_UNAVAILABLE semantics are preserved.
+    """
     sport = normalize_team_event_identity(getattr(req, "sport", ""), getattr(req, "league", None))
     profile = _PROFILES.get(sport)
     if profile is None:
         return {
-            "status": "FAIL",
+            "status": "DEFER",
             "sport": sport,
             "code": "TEAM_EVENT_GOVERNANCE_PROFILE_MISSING",
+            "profile": None,
             "terminal_authority": TERMINAL_AUTHORITY,
             "can_execute": False,
         }
 
-    missing_identity: list[str] = []
-    for field in ("event_key", "official_event_id", "event_start_time_utc"):
-        if getattr(req, field, None) in (None, ""):
-            missing_identity.append(field)
-    if sport != "PGA":
-        for field in ("home_team", "away_team"):
-            if getattr(req, field, None) in (None, ""):
-                missing_identity.append(field)
-
     return {
-        "status": "PASS" if not missing_identity else "FAIL",
+        "status": "PASS",
         "sport": sport,
-        "code": "PASS" if not missing_identity else "TEAM_EVENT_IDENTITY_INCOMPLETE",
-        "missing_identity_fields": missing_identity,
+        "code": "PASS",
         "profile": profile.as_dict(),
         "terminal_authority": TERMINAL_AUTHORITY,
         "can_execute": False,
