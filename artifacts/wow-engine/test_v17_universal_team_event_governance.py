@@ -7,6 +7,7 @@ from v17.team_event_governance_profiles import (
     governance_health,
     governance_profile,
 )
+from v17.team_event_model_development_manifest import TEAM_EVENT_MODEL_DEVELOPMENT
 
 
 def test_every_cataloged_sport_has_exact_governance_profile():
@@ -28,6 +29,20 @@ def test_profiles_preserve_sport_specific_outcome_spaces():
     assert governance_profile("TENNIS").outcome_space == "PLAYER_A_PLAYER_B"
     assert governance_profile("UFC").outcome_space == "FIGHTER_A_FIGHTER_B_DRAW_NC"
     assert governance_profile("GOLF").outcome_space == "FIELD_OR_HEAD_TO_HEAD"
+
+
+def test_model_development_manifest_covers_every_governed_sport_without_fake_promotion():
+    assert set(TEAM_EVENT_MODEL_DEVELOPMENT) == set(EXPECTED_TEAM_EVENT_SPORTS)
+    assert TEAM_EVENT_MODEL_DEVELOPMENT["MLB"].status == "PRODUCTION_MODEL_PRESENT"
+    assert TEAM_EVENT_MODEL_DEVELOPMENT["NFL"].status == "PRODUCTION_MODEL_PRESENT"
+    for sport in ("NBA", "WNBA", "NCAAF", "NCAAB", "NHL", "SOCCER", "TENNIS"):
+        assert TEAM_EVENT_MODEL_DEVELOPMENT[sport].status == "CANDIDATE_PIPELINE_PRESENT"
+        assert TEAM_EVENT_MODEL_DEVELOPMENT[sport].maintenance_lane
+        assert TEAM_EVENT_MODEL_DEVELOPMENT[sport].can_execute is False
+    for sport in ("PGA", "MMA", "BOXING"):
+        assert TEAM_EVENT_MODEL_DEVELOPMENT[sport].status == "BUILD_REQUIRED"
+        assert TEAM_EVENT_MODEL_DEVELOPMENT[sport].maintenance_lane is None
+        assert TEAM_EVENT_MODEL_DEVELOPMENT[sport].can_execute is False
 
 
 def test_universal_wrapper_is_installed_after_bridge_registry():
