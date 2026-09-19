@@ -6,6 +6,21 @@ class DummyClient:
     pass
 
 
+class ChainClient:
+    def table(self, name):
+        assert name == "wow_mlb_team_games_multiseason"
+        return self
+
+    def select(self, *args, **kwargs):
+        return self
+
+    def eq(self, *args, **kwargs):
+        return self
+
+    def order(self, *args, **kwargs):
+        return self
+
+
 def test_supported_scopes_include_team_sports_and_each_soccer_competition():
     scopes = set(scoped.supported_scopes())
     assert {"NFL", "MLB", "NBA", "WNBA", "NCAAF", "NCAAB"} <= scopes
@@ -80,6 +95,62 @@ def test_scope_exception_is_typed_blocked_candidate_evidence(monkeypatch):
     assert result["rows"][0]["code"] == "NBA_TEAM_STATE_MAINTENANCE_FAILED"
     assert result["probability_publishable"] is False
     assert result["can_execute"] is False
+
+
+def test_mlb_persisted_events_pairs_home_and_away(monkeypatch):
+    rows = [
+        {
+            "game_key": "TEX202609170",
+            "game_date": "2026-09-17",
+            "site_key": "TEX01",
+            "team_alignment": 0,
+            "team_key": "SEA",
+            "opponent_key": "TEX",
+            "team_runs": 2,
+            "team_runs_allowed": 5,
+            "season_year": 2026,
+            "season_phase": "R",
+        },
+        {
+            "game_key": "TEX202609170",
+            "game_date": "2026-09-17",
+            "site_key": "TEX01",
+            "team_alignment": 1,
+            "team_key": "TEX",
+            "opponent_key": "SEA",
+            "team_runs": 5,
+            "team_runs_allowed": 2,
+            "season_year": 2026,
+            "season_phase": "R",
+        },
+    ]
+    monkeypatch.setattr(scoped, "_paginate", lambda query: rows)
+    events = scoped._mlb_persisted_events(ChainClient())
+
+    assert len(events) == 1
+    assert events[0]["event_id"] == "MLB:HIST:TEX202609170"
+    assert events[0]["home_team"] == "TEX"
+    assert events[0]["away_team"] == "SEA"
+    assert events[0]["home_score"] == 5.0
+    assert events[0]["away_score"] == 2.0
+    assert events[0]["source_manifest"]["source"] == "WOW_MLB_TEAM_GAMES_MULTI_SEASON"
+
+
+def test_mlb_team_state_events_fetch_only_current_season(monkeypatch):
+    historical = [{"event_id": "MLB:HIST:one", "event_start_time": "2025-09-01T12:00:00+00:00"}]
+    current = [{"event_id": "MLB:999", "event_start_time": "2026-09-01T12:00:00+00:00"}]
+    calls = []
+    monkeypatch.setattr(scoped, "_mlb_persisted_events", lambda client: historical)
+
+    def current_fetch(*, seasons):
+        calls.append(seasons)
+        return current
+
+    monkeypatch.setattr(scoped, "_mlb_official_events", current_fetch)
+    rows = scoped._mlb_team_state_events(DummyClient(), current_season=2026)
+
+    assert calls == [(2026,)]
+    assert [row["event_id"] for row in rows] == ["MLB:HIST:one", "MLB:999"]
 
 
 def test_mlb_official_events_deduplicate_repeated_gamepk(monkeypatch):

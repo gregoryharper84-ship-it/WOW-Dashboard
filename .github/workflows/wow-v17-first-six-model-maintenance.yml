@@ -129,6 +129,7 @@ jobs:
               ("SOCCER", "/internal/v17/soccer-model-maintenance"),
               ("TENNIS", "/internal/v17/tennis-model-maintenance"),
           ]
+          retryable_http = {404, 429, 502, 503, 504}
 
           def fresh_oidc_token():
               oidc_url = os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"]
@@ -145,13 +146,23 @@ jobs:
                   "status": "BLOCKED",
                   "code": code,
                   "detail": detail or {},
+                  "transport_blocked": True,
                   "automatic_certification": False,
                   "automatic_promotion": False,
                   "probability_publishable": False,
                   "can_execute": False,
               }
 
-          def post_bounded(name, path, *, attempts=2, timeout=180):
+          def retry_delay(attempt, retry_after=None, base_sleep=15):
+              delay = min(90, base_sleep * (2 ** attempt))
+              if retry_after:
+                  try:
+                      delay = max(delay, min(120, int(float(retry_after))))
+                  except (TypeError, ValueError):
+                      pass
+              return delay
+
+          def post_bounded(name, path, *, attempts=4, timeout=180, base_sleep=15):
               last_code = f"{name}_MAINTENANCE_TRANSPORT_UNAVAILABLE"
               last_detail = {}
               for attempt in range(attempts):
@@ -160,6 +171,7 @@ jobs:
                       origin + path, data=b"", method="POST",
                       headers={"Authorization":f"Bearer {token}","Content-Type":"application/json"},
                   )
+                  retry_after = None
                   try:
                       with urllib.request.urlopen(request, timeout=timeout) as response:
                           return json.load(response)
@@ -167,24 +179,29 @@ jobs:
                       body = exc.read().decode("utf-8", errors="replace")
                       if exc.code in {401, 403}:
                           raise RuntimeError(f"{name}_AUTH_HTTP_{exc.code}:{body[:500]}") from exc
+                      retry_after = exc.headers.get("Retry-After") if exc.headers else None
                       last_code = f"{name}_HTTP_{exc.code}"
                       last_detail = {"http_status": exc.code, "body_prefix": body[:500]}
-                      if exc.code not in {404, 429, 502, 503, 504}:
+                      if exc.code not in retryable_http:
                           break
                   except (urllib.error.URLError, TimeoutError) as exc:
                       last_code = f"{name}_TRANSPORT_ERROR"
                       last_detail = {"error_type": type(exc).__name__}
                   if attempt + 1 < attempts:
-                      time.sleep(10)
+                      time.sleep(retry_delay(attempt, retry_after, base_sleep))
               return transport_block(name, last_code, last_detail)
 
-          # The scoped route is new in this deployment. Gate route readiness on
-          # the fast local NFL scope before invoking any source-heavy scope.
+          def is_transport_block(payload):
+              return payload.get("transport_blocked") is True
+
+          # Gate route readiness on the fast local NFL scope before invoking any
+          # source-heavy scope. This also absorbs checksPass deploy replacement.
           nfl = post_bounded(
               "TEAM_STATE_NFL",
               "/internal/v17/team-state-challenger-maintenance/NFL",
               attempts=36,
               timeout=180,
+              base_sleep=10,
           )
           assert nfl.get("program") == program, nfl
           assert isinstance(nfl.get("rows"), list) and nfl.get("rows"), nfl
@@ -194,10 +211,12 @@ jobs:
               payload = post_bounded(
                   f"TEAM_STATE_{scope}",
                   f"/internal/v17/team-state-challenger-maintenance/{scope}",
-                  attempts=2,
-                  timeout=180,
+                  attempts=4,
+                  timeout=240 if scope == "MLB" else 180,
+                  base_sleep=15,
               )
               team_state_results[scope] = payload
+              time.sleep(5)
 
           governed_team_state_payloads = [
               payload for payload in team_state_results.values()
@@ -213,12 +232,9 @@ jobs:
               assert all(row.get("can_execute") is False for row in payload["rows"]), payload
               assert all(row.get("probability_publishable") is False for row in payload["rows"]), payload
 
-          # Preserve the pre-existing first-six maintenance work, but a single
-          # unavailable external source cannot prevent the other lanes from being
-          # attempted or erase completed team-state evidence.
           ancillary_results = {}
           for name, path in ancillary_endpoints:
-              payload = post_bounded(name, path, attempts=1, timeout=180)
+              payload = post_bounded(name, path, attempts=3, timeout=180, base_sleep=15)
               assert payload.get("can_execute") is False, (name, payload)
               assert payload.get("probability_publishable") is False, (name, payload)
               if "automatic_certification" in payload:
@@ -226,25 +242,42 @@ jobs:
               if "automatic_promotion" in payload:
                   assert payload.get("automatic_promotion") is False, (name, payload)
               ancillary_results[name] = payload
+              time.sleep(5)
 
           scope_updated = sum(int(payload.get("candidate_rows_updated") or 0) for payload in governed_team_state_payloads)
           scope_blocked = sum(int(payload.get("candidate_rows_blocked") or 0) for payload in governed_team_state_payloads)
           transport_blocked_scopes = [
               scope for scope, payload in team_state_results.items()
-              if payload.get("program") != program
+              if is_transport_block(payload)
           ]
+          ancillary_transport_blocked = [
+              name for name, payload in ancillary_results.items()
+              if is_transport_block(payload)
+          ]
+          checkpoint = {
+              "TEAM_STATE": "SCOPED_MAINTENANCE_COMPLETED",
+              "team_state_scopes_attempted": len(team_state_results),
+              "team_state_scopes_with_governed_response": len(governed_team_state_payloads),
+              "team_state_candidate_rows_updated": scope_updated,
+              "team_state_candidate_rows_blocked": scope_blocked,
+              "team_state_transport_blocked_scopes": transport_blocked_scopes,
+              "ancillary_statuses": {name: payload.get("status") for name, payload in ancillary_results.items()},
+              "ancillary_transport_blocked": ancillary_transport_blocked,
+              "can_execute": False,
+          }
           print(json.dumps({
-              "checkpoint": {
-                  "TEAM_STATE": "SCOPED_MAINTENANCE_COMPLETED",
-                  "team_state_scopes_attempted": len(team_state_results),
-                  "team_state_scopes_with_governed_response": len(governed_team_state_payloads),
-                  "team_state_candidate_rows_updated": scope_updated,
-                  "team_state_candidate_rows_blocked": scope_blocked,
-                  "team_state_transport_blocked_scopes": transport_blocked_scopes,
-                  "ancillary_statuses": {name: payload.get("status") for name, payload in ancillary_results.items()},
-                  "can_execute": False,
-              },
+              "checkpoint": checkpoint,
               "team_state": team_state_results,
               "ancillary": ancillary_results,
           }, sort_keys=True))
+
+          if transport_blocked_scopes or ancillary_transport_blocked:
+              raise RuntimeError(
+                  "FIRST_SIX_TRANSPORT_INCOMPLETE:"
+                  + json.dumps({
+                      "team_state": transport_blocked_scopes,
+                      "ancillary": ancillary_transport_blocked,
+                  }, sort_keys=True)
+              )
+          assert len(governed_team_state_payloads) == len(team_state_results), checkpoint
           PY
