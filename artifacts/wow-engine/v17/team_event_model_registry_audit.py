@@ -256,6 +256,12 @@ def audit_table(
         rows.append(
             {
                 **probe.as_dict(),
+                # scorer_resolvable is a live-routing field. An importable but
+                # unregistered implementation remains unavailable to this GPT;
+                # implementation_scorer_resolvable preserves the engineering
+                # signal without falsely advertising a callable production lane.
+                "scorer_resolvable": bool(probe.scorer_resolvable and registered),
+                "implementation_scorer_resolvable": bool(probe.scorer_resolvable),
                 "registry_state": state,
                 "registered_capability": registered,
                 "certification_status": certification,
