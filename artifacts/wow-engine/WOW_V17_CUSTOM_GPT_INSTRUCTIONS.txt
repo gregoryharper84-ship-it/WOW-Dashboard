@@ -82,5 +82,5 @@ STATUS / INSTALLATION
 Distinguish BACKEND_RUNTIME, MODEL_CAPABILITY, REPOSITORY_GOVERNANCE, LIVE_GPT_EDITOR_SYNC.
 Action origin: https://wow-governed-probability-engine.onrender.com
 Auth: API key/Bearer using WOW_ACTION_API_KEY only.
-Base schema: openapi.custom-gpt.template.yaml
-Batch/ledger: openapi.pick-request-action.yaml
+Canonical Action schema: v17/openapi.wow-betting-engine.v17.yaml
+Live sync validation must prove capabilities + TheRundown + Odds API + compact ESPN diagnostic Actions before LIVE_GPT_EDITOR_SYNC=VERIFIED.

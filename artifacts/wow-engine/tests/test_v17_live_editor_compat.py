@@ -26,6 +26,10 @@ def test_live_gpt_instructions_fit_editor_limit_and_preserve_controls():
     assert "Unknown is not zero" in text
     assert "lookupWowV17PredictionReceipts" in text
     assert "display_authorized=true" in text
+    assert "Canonical Action schema: v17/openapi.wow-betting-engine.v17.yaml" in text
+    assert "openapi.custom-gpt.template.yaml" not in text
+    assert "openapi.pick-request-action.yaml" not in text
+    assert "LIVE_GPT_EDITOR_SYNC=VERIFIED" in text
     assert KNOWLEDGE.exists()
 
 
@@ -74,6 +78,29 @@ def test_action_schema_preserves_v17_boundary():
     assert paths["/v17/detailed-evidence-contract"]["get"]["operationId"] == "getWowV17DetailedEvidenceContract"
     assert paths["/v17/prediction-receipts/lookup"]["post"]["operationId"] == "lookupWowV17PredictionReceipts"
     assert document["components"]["securitySchemes"]["actionBearer"]["scheme"] == "bearer"
+
+
+def test_live_editor_schema_exposes_full_board_diagnostics_with_bearer_auth():
+    paths = _schema()["paths"]
+    expected = {
+        "/v17/capabilities": "getWowV17Capabilities",
+        "/v17/market-health/rundown": "getWowV17RundownMarketHealth",
+        "/v17/market-health/odds-api": "getWowV17OddsApiMarketHealth",
+        "/v17/discovery/espn-compact": "getWowV17CompactEspnDiscovery",
+    }
+    for path, operation_id in expected.items():
+        operation = paths[path]["get"]
+        assert operation["operationId"] == operation_id
+        assert operation["security"] == [{"actionBearer": []}]
+        assert operation["x-openai-isConsequential"] is False
+
+    espn_parameters = {
+        parameter["name"]: parameter
+        for parameter in paths["/v17/discovery/espn-compact"]["get"]["parameters"]
+    }
+    assert espn_parameters["page"]["schema"]["minimum"] == 1
+    assert espn_parameters["page_size"]["schema"]["minimum"] == 1
+    assert espn_parameters["page_size"]["schema"]["maximum"] == 250
 
 
 def test_prediction_receipt_openapi_requires_id_or_complete_exact_identity():
