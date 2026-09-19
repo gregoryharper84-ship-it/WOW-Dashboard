@@ -1,10 +1,10 @@
 """Machine-readable V17 team/event certified model coverage.
 
 This manifest describes intended cross-sport team/event coverage and the exact
-minimum input families each future bridge must own.  It does not create model
-capability.  A sport becomes production-capable only when an exact specialist
-artifact, governed evidence contract, numerical verification, calibration/bounds
-path, and runtime bridge registration are all active.
+minimum input families each bridge must own. A sport becomes production-capable
+only when an exact specialist artifact, governed evidence contract, numerical
+verification, calibration/bounds path, runtime bridge registration, and terminal
+governance path are all active.
 """
 from __future__ import annotations
 
@@ -13,10 +13,15 @@ from dataclasses import dataclass
 CAN_EXECUTE = False
 
 MLB_GAME_WIN_PROBABILITY_EXPERT = "MLB_GAME_WIN_PROBABILITY_EXPERT"
+WNBA_GAME_WIN_PROBABILITY_EXPERT = "WNBA_GAME_WIN_PROBABILITY_EXPERT_V1"
+NHL_GAME_WIN_PROBABILITY_EXPERT = "NHL_GAME_WIN_PROBABILITY_EXPERT_V1"
+SOCCER_1X2_WIN_PROBABILITY_EXPERT = "SOCCER_1X2_WIN_PROBABILITY_EXPERT_V1"
+TENNIS_MATCH_WIN_PROBABILITY_EXPERT = "TENNIS_MATCH_WIN_PROBABILITY_EXPERT_V1"
+MMA_FIGHT_WIN_PROBABILITY_EXPERT = "MMA_FIGHT_WIN_PROBABILITY_EXPERT_V1"
 
-# The catalog is intentionally broader than the production bridge registry.  A
-# catalog entry means LLP knows the sport/contract shape; it does NOT mean the
-# governed backend can score that sport today.
+# The catalog is intentionally broader than the production bridge registry. A
+# catalog entry means LLP knows the sport/contract shape; it does NOT by itself
+# mean the governed backend can score that sport.
 EXPECTED_TEAM_EVENT_SPORTS = (
     "MLB",
     "NFL",
@@ -28,16 +33,13 @@ EXPECTED_TEAM_EVENT_SPORTS = (
     "SOCCER",
     "TENNIS",
     "PGA",
-    # Declared so a request for them terminates as MODEL_UNAVAILABLE against a
-    # known contract instead of an unknown sport. Declaration is not capability:
-    # neither has a certified specialist, and neither may borrow another
-    # sport's model or a sportsbook-implied probability.
     "MMA",
     "BOXING",
 )
 
-# Minimum bridge-owned inputs.  Universal identity/status/settlement checks still
-# apply in addition to these sport-specific families.
+# Minimum bridge-owned inputs. Universal identity/status/settlement checks still
+# apply in addition to these sport-specific families. Numerical specialist inputs
+# that have alternative valid paths are validated inside the exact scorer.
 TEAM_EVENT_INPUT_CONTRACTS: dict[str, tuple[str, ...]] = {
     "MLB": (
         "official_event_id",
@@ -162,13 +164,22 @@ TEAM_EVENT_INPUT_CONTRACTS: dict[str, tuple[str, ...]] = {
     ),
 }
 
-# Certification is deliberately narrower than discovery/catalog support.
+# Certification is deliberately narrower than discovery/catalog support. These
+# identifiers must match the controlling specialist returned by the registered
+# bridge and the terminal-governance audit; a catalog row alone never promotes.
 CERTIFIED_TEAM_EVENT_SPORTS: dict[str, str] = {
     "MLB": MLB_GAME_WIN_PROBABILITY_EXPERT,
+    "WNBA": WNBA_GAME_WIN_PROBABILITY_EXPERT,
+    "NHL": NHL_GAME_WIN_PROBABILITY_EXPERT,
+    "SOCCER": SOCCER_1X2_WIN_PROBABILITY_EXPERT,
+    "TENNIS": TENNIS_MATCH_WIN_PROBABILITY_EXPERT,
+    "MMA": MMA_FIGHT_WIN_PROBABILITY_EXPERT,
 }
 
 KNOWN_UNCERTIFIED_TEAM_EVENT_SPORTS = frozenset(
-    sport for sport in EXPECTED_TEAM_EVENT_SPORTS if sport not in CERTIFIED_TEAM_EVENT_SPORTS
+    sport
+    for sport in EXPECTED_TEAM_EVENT_SPORTS
+    if sport not in CERTIFIED_TEAM_EVENT_SPORTS
 )
 
 
@@ -193,6 +204,11 @@ def normalize_team_event_sport(value: str) -> str:
         "MAJOR LEAGUE SOCCER": "SOCCER",
         "MAJOR_LEAGUE_SOCCER": "SOCCER",
         "FOOTBALL_SOCCER": "SOCCER",
+        "ATP": "TENNIS",
+        "WTA": "TENNIS",
+        "ITF": "TENNIS",
+        "ATP_TENNIS": "TENNIS",
+        "WTA_TENNIS": "TENNIS",
         "CFB": "NCAAF",
         "COLLEGE FOOTBALL": "NCAAF",
         "NCAA FOOTBALL": "NCAAF",
@@ -209,19 +225,7 @@ def normalize_team_event_sport(value: str) -> str:
 
 
 def normalize_team_event_identity(sport: str, league: str | None = None) -> str:
-    """Resolve the governed sport contract from a sport/league pair.
-
-    A broad family name ("FOOTBALL", "BASKETBALL") does not identify a governed
-    sport contract on its own — the league does. A request carrying
-    sport="FOOTBALL", league="NFL" used to normalize to the unknown sport
-    "FOOTBALL" and terminate as MODEL_UNAVAILABLE against no contract at all,
-    which reads as a missing model when it is really a missing alias.
-
-    The league is consulted only when the sport does not already resolve to a
-    declared contract, so it can never *override* an explicit governed sport.
-    It never creates capability either: an unknown pair still terminates against
-    the manifest as MODEL_UNAVAILABLE.
-    """
+    """Resolve the governed sport contract from a sport/league pair."""
     normalized_sport = normalize_team_event_sport(sport)
     if normalized_sport in TEAM_EVENT_INPUT_CONTRACTS:
         return normalized_sport
@@ -260,6 +264,11 @@ __all__ = [
     "EXPECTED_TEAM_EVENT_SPORTS",
     "KNOWN_UNCERTIFIED_TEAM_EVENT_SPORTS",
     "MLB_GAME_WIN_PROBABILITY_EXPERT",
+    "WNBA_GAME_WIN_PROBABILITY_EXPERT",
+    "NHL_GAME_WIN_PROBABILITY_EXPERT",
+    "SOCCER_1X2_WIN_PROBABILITY_EXPERT",
+    "TENNIS_MATCH_WIN_PROBABILITY_EXPERT",
+    "MMA_FIGHT_WIN_PROBABILITY_EXPERT",
     "TEAM_EVENT_INPUT_CONTRACTS",
     "TeamEventCapability",
     "normalize_team_event_identity",
