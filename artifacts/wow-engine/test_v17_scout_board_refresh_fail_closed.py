@@ -10,14 +10,12 @@ def workflow() -> str:
     ).read_text()
 
 
-def test_missing_database_credential_fails_closed_instead_of_reporting_success():
+def test_board_refresh_uses_short_lived_oidc_instead_of_database_secret():
     text = workflow()
-    assert "Fail closed when the database credential is absent" in text
-    assert 'if [ -z "$WOW_SCOUT_DATABASE_URL" ]; then' in text
-    # The skip-and-succeed path is what made an unpersisted run look green.
-    assert "board refresh skipped fail-closed" not in text
-    assert "if: env.WOW_SCOUT_DATABASE_URL == ''" not in text
-    assert "if: env.WOW_SCOUT_DATABASE_URL != ''" not in text
+    assert "WOW_SCOUT_DATABASE_URL" not in text
+    assert "id-token: write" in text
+    assert "WOW_SCOUT_PERSIST_URL" in text
+    assert "scout_board_edge_materializer" in text
 
 
 def test_board_refresh_cannot_report_success_when_brain_persist_did_not_succeed():
@@ -33,7 +31,7 @@ def test_board_refresh_cannot_report_success_when_brain_persist_did_not_succeed(
 def test_materialization_is_unconditional_once_the_gates_pass():
     text = workflow()
     materialize = text.split("Materialize current boards", 1)[1]
-    assert "scout_board_materializer.py" in materialize
+    assert "scout_board_edge_materializer" in materialize
     assert "if:" not in materialize.split("run: |", 1)[0]
 
 
