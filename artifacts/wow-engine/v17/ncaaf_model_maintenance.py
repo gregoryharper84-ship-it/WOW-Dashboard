@@ -23,6 +23,7 @@ from ncaaf_feature_compiler import materialize_complete_training_features
 from v17.first_six_open_data_maintenance import install_first_six_open_data_maintenance_routes
 from v17.ncaaf_result_form_candidate import NCAAFResultFormUnavailable, train_and_persist as train_result_form_candidate
 from v17.nhl_model_maintenance import install_nhl_model_maintenance_route
+from v17.team_event_model_development_manifest import development_lane
 
 CAN_EXECUTE = False
 PROBABILITY_PUBLISHABLE = False
@@ -34,8 +35,10 @@ def default_seasons(now: datetime | None = None) -> tuple[int, ...]:
 
 
 def _blocked(code: str, *, stage: str, detail: Any = None) -> dict[str, Any]:
+    lane = development_lane("NCAAF")
     return {
         "status": "BLOCKED", "code": code, "blocked_stage": stage, "detail": detail,
+        "model_development": lane.as_dict() if lane is not None else None,
         "automatic_certification": False, "automatic_promotion": False,
         "probability_publishable": False, "can_execute": False,
     }
@@ -120,6 +123,7 @@ def run_ncaaf_model_maintenance(
 
     status = "CANDIDATE_EVIDENCE_UPDATED" if training and training.get("ok") is True else "BLOCKED"
     blockers = sorted(set(acquisition_blockers) | ({str(training_blocker["code"])} if training_blocker else set()))
+    lane = development_lane("NCAAF")
     return {
         "status": status, "generated_at": datetime.now(timezone.utc).isoformat(),
         "seasons": list(season_values), "weeks": [min(week_values), max(week_values)],
@@ -129,7 +133,9 @@ def run_ncaaf_model_maintenance(
         "training_game_persisted_n": training_game_persisted_n,
         "feature_compilation": feature_report, "candidate_lane": candidate_lane,
         "candidate_training": training, "training_blocker": training_blocker,
-        "blockers": blockers, "automatic_certification": False,
+        "blockers": blockers,
+        "model_development": lane.as_dict() if lane is not None else None,
+        "automatic_certification": False,
         "automatic_promotion": False, "probability_publishable": False, "can_execute": False,
     }
 
