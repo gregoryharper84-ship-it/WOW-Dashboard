@@ -1,11 +1,12 @@
 """Universal V17 governance coordinator for registered team/event bridges.
 
 This wrapper makes governance coverage universal without pretending sporting-model
-coverage is universal. It executes a sport profile preflight before the exact
-registered scorer, preserves typed specialist failures, annotates the returned
-package with the shared governance contract, and keeps V17_TERMINAL_REDUCER as
-sole terminal authority. It never registers a missing model and never promotes
-rank eligibility.
+coverage is universal. It resolves a sport governance profile, then delegates to
+the exact registered scorer so the controlling lane remains authoritative for
+capability, inputs, scorer failures, and output validation. It annotates the
+result/error with the shared governance contract and keeps V17_TERMINAL_REDUCER
+as sole terminal authority. It never registers a missing model or promotes rank
+eligibility.
 """
 from __future__ import annotations
 
@@ -65,22 +66,9 @@ def install_universal_team_event_governance() -> dict[str, Any]:
     _ORIGINAL_HEALTH = bridges.team_event_bridge_health
 
     def universal_score(req: Any, *, event_api: Any, canonical_hydration_required: bool = False) -> dict[str, Any]:
+        # Profile resolution is descriptive. The sport bridge owns all typed
+        # capability/input/scorer/output decisions and must run first.
         preflight = governance_profile_preflight(req)
-        if preflight.get("status") != "PASS":
-            detail = {
-                "code": preflight.get("code") or "TEAM_EVENT_GOVERNANCE_PREFLIGHT_FAILED",
-                "sport": preflight.get("sport"),
-                "blockers": list(preflight.get("missing_identity_fields") or []),
-                "failed_contract_scope": ["UNIVERSAL_GOVERNANCE_PREFLIGHT"],
-                "market_probability_substitution_allowed": False,
-                "generic_reasoning_substitution_allowed": False,
-                "probability_publishable": False,
-                "rank_eligible": False,
-                "universal_governance_profile": preflight.get("profile"),
-                "global_terminal_reducer": TERMINAL_AUTHORITY,
-                "can_execute": False,
-            }
-            raise HTTPException(status_code=422, detail=detail)
         try:
             result = _ORIGINAL_SCORE(
                 req,
