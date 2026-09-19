@@ -24,9 +24,11 @@ def initialize_observability() -> dict[str, Any]:
     # before the optional Sentry branch so /health and /score-team-event expose
     # the same authoritative production registry even when Sentry is disabled.
     from v17.team_event_bridge_runtime import install_team_event_bridge_runtime
+    from v17.multisport_team_event_bridges import install_multisport_team_event_bridges
     from v17.universal_team_event_governance import install_universal_team_event_governance
 
     install_team_event_bridge_runtime()
+    install_multisport_team_event_bridges()
     install_universal_team_event_governance()
 
     # Install non-secret total-wall-time telemetry, certification-independent
@@ -64,7 +66,9 @@ def initialize_observability() -> dict[str, Any]:
 
         install_claude_runtime_routes(
             _accepted_base.app,
-            auth_dependency=Depends(_accepted_base.market_api.prod._require_action_api_key),
+            auth_dependency=Depends(
+                _accepted_base.market_api.prod._require_action_api_key
+            ),
         )
     except Exception:
         pass
@@ -90,7 +94,9 @@ def initialize_observability() -> dict[str, Any]:
 
     import sentry_sdk
 
-    traces_sample_rate = float(os.getenv("SENTRY_TRACES_SAMPLE_RATE", "0.05"))
+    traces_sample_rate = float(
+        os.getenv("SENTRY_TRACES_SAMPLE_RATE", "0.05")
+    )
     traces_sample_rate = min(max(traces_sample_rate, 0.0), 1.0)
     sentry_sdk.init(
         dsn=dsn,
