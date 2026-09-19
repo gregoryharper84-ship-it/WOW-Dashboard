@@ -19,9 +19,6 @@ SOCCER_1X2_WIN_PROBABILITY_EXPERT = "SOCCER_1X2_WIN_PROBABILITY_EXPERT_V1"
 TENNIS_MATCH_WIN_PROBABILITY_EXPERT = "TENNIS_MATCH_WIN_PROBABILITY_EXPERT_V1"
 MMA_FIGHT_WIN_PROBABILITY_EXPERT = "MMA_FIGHT_WIN_PROBABILITY_EXPERT_V1"
 
-# The catalog is intentionally broader than the production bridge registry. A
-# catalog entry means LLP knows the sport/contract shape; it does NOT by itself
-# mean the governed backend can score that sport.
 EXPECTED_TEAM_EVENT_SPORTS = (
     "MLB",
     "NFL",
@@ -37,9 +34,6 @@ EXPECTED_TEAM_EVENT_SPORTS = (
     "BOXING",
 )
 
-# Minimum bridge-owned inputs. Universal identity/status/settlement checks still
-# apply in addition to these sport-specific families. Numerical specialist inputs
-# that have alternative valid paths are validated inside the exact scorer.
 TEAM_EVENT_INPUT_CONTRACTS: dict[str, tuple[str, ...]] = {
     "MLB": (
         "official_event_id",
@@ -164,16 +158,11 @@ TEAM_EVENT_INPUT_CONTRACTS: dict[str, tuple[str, ...]] = {
     ),
 }
 
-# Certification is deliberately narrower than discovery/catalog support. These
-# identifiers must match the controlling specialist returned by the registered
-# bridge and the terminal-governance audit; a catalog row alone never promotes.
+# Runtime installers may add a certification only after the exact bridge and
+# scorer are importable. Keeping the static catalog narrow preserves the rule
+# that declaration/registration alone cannot self-promote capability.
 CERTIFIED_TEAM_EVENT_SPORTS: dict[str, str] = {
     "MLB": MLB_GAME_WIN_PROBABILITY_EXPERT,
-    "WNBA": WNBA_GAME_WIN_PROBABILITY_EXPERT,
-    "NHL": NHL_GAME_WIN_PROBABILITY_EXPERT,
-    "SOCCER": SOCCER_1X2_WIN_PROBABILITY_EXPERT,
-    "TENNIS": TENNIS_MATCH_WIN_PROBABILITY_EXPERT,
-    "MMA": MMA_FIGHT_WIN_PROBABILITY_EXPERT,
 }
 
 KNOWN_UNCERTIFIED_TEAM_EVENT_SPORTS = frozenset(
@@ -225,7 +214,6 @@ def normalize_team_event_sport(value: str) -> str:
 
 
 def normalize_team_event_identity(sport: str, league: str | None = None) -> str:
-    """Resolve the governed sport contract from a sport/league pair."""
     normalized_sport = normalize_team_event_sport(sport)
     if normalized_sport in TEAM_EVENT_INPUT_CONTRACTS:
         return normalized_sport
