@@ -269,6 +269,27 @@ def _probability_separation_fields(*, market_needed: bool) -> dict[str, Any]:
     }
 
 
+def _objective_rank_eligible(row: TeamEventRequestRow, probability_rank_eligible: bool, scored: dict[str, Any]) -> bool:
+    """Separate sporting-probability eligibility from downstream market/value availability.
+
+    MARKET_EDGE remains blocked without exact market evidence. Probability objectives keep their
+    governed ranking eligibility. Upset publication additionally requires an explicit verified
+    underdog/LLP decision signal so market-role uncertainty cannot be bypassed.
+    """
+    if not probability_rank_eligible:
+        return False
+    if row.objective_lane == "MARKET_EDGE":
+        return False
+    if row.objective_lane == "UPSET_PROBABILITY":
+        market_role = str(scored.get("market_role") or "").strip().upper()
+        return bool(
+            scored.get("underdog_verified") is True
+            or market_role == "UNDERDOG"
+            or scored.get("llp_event_decision")
+        )
+    return True
+
+
 def _completed(row: TeamEventRequestRow, event: dict[str, Any], scored: dict[str, Any]) -> dict[str, Any]:
     keys = ("calibrated_home_probability", "calibrated_away_probability",
             "calibrated_home_lower_bound", "calibrated_away_lower_bound",
@@ -290,6 +311,7 @@ def _completed(row: TeamEventRequestRow, event: dict[str, Any], scored: dict[str
         decision = "INPUT_INCOMPLETE"
     elif row.objective_lane == "MARKET_EDGE":
         decision = "MARKET_DATA_UNOBTAINABLE"
+    probability_rank_eligible = bool(scored.get("rank_eligible", scored.get("probability_publishable")))
     return {
         "research_run_id": row.research_run_id, "event_key": row.event_key,
         "objective_lane": row.objective_lane, "terminal_status": "COMPLETED",
@@ -306,8 +328,8 @@ def _completed(row: TeamEventRequestRow, event: dict[str, Any], scored: dict[str
         "score_snapshot_id": scored.get("score_snapshot_id") or scored.get("base_score_snapshot_id"),
         "event_prediction_id": scored.get("event_prediction_id"),
         "probability_publishable": bool(scored.get("probability_publishable")),
-        "probability_rank_eligible": bool(scored.get("rank_eligible", scored.get("probability_publishable"))),
-        "objective_rank_eligible": bool(scored.get("rank_eligible", scored.get("probability_publishable"))) and not market_needed,
+        "probability_rank_eligible": probability_rank_eligible,
+        "objective_rank_eligible": _objective_rank_eligible(row, probability_rank_eligible, scored),
         **_probability_separation_fields(market_needed=market_needed),
         "can_execute": False,
     }
@@ -344,6 +366,7 @@ def _completed_nfl(row: TeamEventRequestRow, scored: dict[str, Any]) -> dict[str
         return _held(row, "MODEL_OUTPUT_INVALID", "NFL_GOVERNED_PROBABILITY_FIELDS_INVALID", scored)
     market_needed = row.price_required_for_objective or row.objective_lane != "OUTRIGHT_WIN_PROBABILITY"
     blockers = ["MARKET_DATA_UNOBTAINABLE"] if market_needed else []
+    probability_rank_eligible = bool(scored.get("rank_eligible", True))
     return {
         "research_run_id": row.research_run_id, "event_key": row.event_key, "objective_lane": row.objective_lane,
         "terminal_status": "COMPLETED", "code": "SPORTING_PROBABILITY_COMPLETED", "selected_team": selected,
@@ -353,8 +376,8 @@ def _completed_nfl(row: TeamEventRequestRow, scored: dict[str, Any]) -> dict[str
         "governed_publication_code": scored.get("code"), "terminal_label": scored.get("terminal_label"),
         "score_snapshot_id": scored.get("score_snapshot_id"), "event_prediction_id": scored.get("event_prediction_id"),
         "probability_publishable": True,
-        "probability_rank_eligible": bool(scored.get("rank_eligible", True)),
-        "objective_rank_eligible": bool(scored.get("rank_eligible", True)) and not market_needed,
+        "probability_rank_eligible": probability_rank_eligible,
+        "objective_rank_eligible": _objective_rank_eligible(row, probability_rank_eligible, scored),
         **_probability_separation_fields(market_needed=market_needed),
         "can_execute": False,
     }
@@ -398,7 +421,7 @@ def _completed_registered(row: TeamEventRequestRow, scored: dict[str, Any]) -> d
         "event_prediction_id": scored.get("event_prediction_id") or scored.get("prediction_id"),
         "probability_publishable": bool(scored.get("probability_publishable")),
         "probability_rank_eligible": probability_rank_eligible,
-        "objective_rank_eligible": probability_rank_eligible and not market_needed,
+        "objective_rank_eligible": _objective_rank_eligible(row, probability_rank_eligible, scored),
         **_probability_separation_fields(market_needed=market_needed),
         "can_execute": False,
     }

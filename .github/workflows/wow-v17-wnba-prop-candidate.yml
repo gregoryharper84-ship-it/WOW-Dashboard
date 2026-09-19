@@ -17,12 +17,8 @@ on:
       - "artifacts/wow-engine/data/source_snapshots/wnba/**"
       - "artifacts/wow-engine/wnba_prop_model_adapter.py"
       - "artifacts/wow-engine/v17/wnba_prop_candidate_registry.py"
-      - "artifacts/wow-engine/v17/wnba_composite_fitted_candidate.py"
-      - "artifacts/wow-engine/v17/wnba_composite_candidate_registry.py"
       - "artifacts/wow-engine/pick_request_runtime.py"
       - "artifacts/wow-engine/test_v17_wnba_prop_candidate_registry.py"
-      - "artifacts/wow-engine/test_v17_wnba_composite_fitted_candidate.py"
-      - "artifacts/wow-engine/test_v17_wnba_composite_candidate_registry.py"
       - "artifacts/wow-engine/test_wnba_training_source.py"
       - "artifacts/wow-engine/test_wnba_frozen_numeric_canonicalization.py"
       - "artifacts/wow-engine/test_v17_github_oidc.py"
@@ -37,12 +33,8 @@ on:
       - "artifacts/wow-engine/data/source_snapshots/wnba/**"
       - "artifacts/wow-engine/wnba_prop_model_adapter.py"
       - "artifacts/wow-engine/v17/wnba_prop_candidate_registry.py"
-      - "artifacts/wow-engine/v17/wnba_composite_fitted_candidate.py"
-      - "artifacts/wow-engine/v17/wnba_composite_candidate_registry.py"
       - "artifacts/wow-engine/pick_request_runtime.py"
       - "artifacts/wow-engine/test_v17_wnba_prop_candidate_registry.py"
-      - "artifacts/wow-engine/test_v17_wnba_composite_fitted_candidate.py"
-      - "artifacts/wow-engine/test_v17_wnba_composite_candidate_registry.py"
       - "artifacts/wow-engine/test_wnba_training_source.py"
       - "artifacts/wow-engine/test_wnba_frozen_numeric_canonicalization.py"
       - "artifacts/wow-engine/test_v17_github_oidc.py"
@@ -74,8 +66,6 @@ jobs:
         run: >-
           python -m pytest -q
           test_v17_wnba_prop_candidate_registry.py
-          test_v17_wnba_composite_fitted_candidate.py
-          test_v17_wnba_composite_candidate_registry.py
           test_wnba_training_source.py
           test_wnba_frozen_numeric_canonicalization.py
           test_wnba_prop_trainer.py
