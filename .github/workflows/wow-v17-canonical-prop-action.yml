@@ -126,19 +126,27 @@ jobs:
 
           path = Path("artifacts/wow-engine/v17/canonical_prop_action_runner.py")
           text = path.read_text(encoding="utf-8")
-          batch_old = "batch_size = 6"
-          if batch_old not in text:
+          if "batch_size = 6" not in text:
               raise SystemExit("CANONICAL_PROP_BATCH_SIZE_PATCH_TARGET_MISSING")
-          text = text.replace(batch_old, "batch_size = 4", 1)
-          body_old = '''            "request_id": f"{request_doc.get('request_id')}-{batch_number:02d}",
-            "rows": batch,'''
-          body_new = '''            "request_id": f"{request_doc.get('request_id')}-{batch_number:02d}",
-            "response_mode": "COMPACT",
-            "rows": batch,'''
-          if body_old not in text:
-              raise SystemExit("CANONICAL_PROP_COMPACT_MODE_PATCH_TARGET_MISSING")
-          text = text.replace(body_old, body_new, 1)
+          text = text.replace("batch_size = 6", "batch_size = 4", 1)
+
+          marker = '"request_id": f"{request_doc.get(\'request_id\')}-{batch_number:02d}",'
+          lines = text.splitlines()
+          match_indexes = [i for i, line in enumerate(lines) if line.strip() == marker]
+          if len(match_indexes) != 1:
+              raise SystemExit(f"CANONICAL_PROP_COMPACT_MODE_PATCH_TARGET_COUNT:{len(match_indexes)}")
+          i = match_indexes[0]
+          if i + 1 < len(lines) and '"response_mode": "COMPACT"' in lines[i + 1]:
+              pass
+          else:
+              indent = lines[i][: len(lines[i]) - len(lines[i].lstrip())]
+              lines.insert(i + 1, indent + '"response_mode": "COMPACT",')
+          text = "\n".join(lines) + "\n"
           path.write_text(text, encoding="utf-8")
+
+          verified = path.read_text(encoding="utf-8")
+          if "batch_size = 4" not in verified or '"response_mode": "COMPACT"' not in verified:
+              raise SystemExit("CANONICAL_PROP_COMPACT_TRANSPORT_ENFORCEMENT_FAILED")
           print("CANONICAL_PROP_TRANSPORT_CONTRACT=batch_size:4,response_mode:COMPACT,can_execute:false")
           PY
 
