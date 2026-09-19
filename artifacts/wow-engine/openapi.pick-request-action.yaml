@@ -47,11 +47,18 @@ paths:
                   telemetry:
                     type: object
                     additionalProperties: true
+                  response_mode:
+                    type: string
+                    enum: [COMPACT]
                   rows:
                     type: array
+                    description: Compact terminal row receipts; full nested evidence is retrieved separately.
                     items:
                       type: object
                       additionalProperties: true
+                  detail_retrieval:
+                    type: object
+                    additionalProperties: true
                   can_execute:
                     type: boolean
                     const: false
