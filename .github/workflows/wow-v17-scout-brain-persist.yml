@@ -16,8 +16,6 @@ permissions:
   contents: read
   id-token: write
 
-# Native nightly persistence and persist-resume can target the same source run.
-# Serialize those writers so a second BEGIN cannot reset in-flight counters.
 concurrency:
   group: wow-v17-scout-brain-persist-${{ inputs.run_id || github.event.workflow_run.id }}
   cancel-in-progress: false
@@ -26,8 +24,6 @@ jobs:
   persist:
     if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion != 'cancelled'
     runs-on: ubuntu-latest
-    # A full slate is now several hundred bounded requests rather than one, so
-    # cap the job instead of letting a hang run for the six-hour default.
     timeout-minutes: 45
     defaults:
       run:
@@ -36,14 +32,12 @@ jobs:
       WOW_SCOUT_DATABASE_URL: ${{ secrets.WOW_SCOUT_DATABASE_URL }}
       WOW_SCOUT_PERSIST_URL: https://iczfhsmjrrafhvcpmqhr.supabase.co/functions/v1/wow-v17-scout-brain-persist
       SOURCE_RUN_ID: ${{ inputs.run_id || github.event.workflow_run.id }}
-      # Bounds apply to the APPEND request itself, evidence included. Bounding
-      # whole candidates was not enough: one team/event candidate in run
-      # 35131443035 was 1,135,529 bytes over 1,952 evidence rows, and a batch
-      # always emitted at least one candidate, so it was posted intact under
-      # both the 256 KiB and the 64 KiB bound and exhausted the worker each
-      # time. Evidence is now sliced across requests.
+      # Keep each Edge transaction below the observed worker/DB timeout envelope.
+      # The 150-row bound still produced 52s APPENDs and then HTTP 500 on the
+      # same protected-main replay. 25 rows preserves identical evidence and
+      # candidate reconciliation while reducing per-request database work.
       WOW_SCOUT_PERSIST_REQUEST_BYTES: "262144"
-      WOW_SCOUT_PERSIST_EVIDENCE_ROWS: "150"
+      WOW_SCOUT_PERSIST_EVIDENCE_ROWS: "25"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -78,9 +72,6 @@ jobs:
             exit 0
           fi
           echo "present=false" >> "$GITHUB_OUTPUT"
-          # A pull_request source run skips discovery by design, so it has no
-          # artifact and nothing to persist. Every other source run that
-          # produced none is a real loss and must not report success.
           source_event=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}" --jq '.event // ""')
           if [ "$source_event" = "pull_request" ]; then
             echo "Source run ${SOURCE_RUN_ID} is a pull_request run; discovery is skipped by design and persistence is not applicable." >> "$GITHUB_STEP_SUMMARY"
