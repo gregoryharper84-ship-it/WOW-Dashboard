@@ -39,7 +39,6 @@ from fastapi import Header
 from mlb_1ip_specialist import CANONICAL_STAT_TYPE as MLB_1IP_STAT_TYPE
 import pick_request_runtime_core as pick_runtime
 from pick_request_runtime_core import PickRequestBatch, PickRequestRow, RawPropEvidence, _canonical_stat
-from prop_auto_hydration_router import auto_hydrate_prop_evidence
 from v17.top10_model_reconciliation import enforce_top10_completion
 
 LOGGER = logging.getLogger("wow.v17.interactive_latency")
@@ -134,7 +133,20 @@ def _hydration_key(row: PickRequestRow) -> tuple[str, ...]:
 
 
 def _hydrate(row: PickRequestRow) -> RawPropEvidence:
-    raw = auto_hydrate_prop_evidence(sport=str(row.sport or "").strip().upper(),player=row.player,stat_type=_canonical_stat(row.sport,row.stat_type),event_start_time=row.event_start_time,source_capture_timestamp=row.source_capture_timestamp,source_label=f"{row.source_type}:{row.platform or 'UNKNOWN'}",opponent=row.opponent)
+    # Resolve the function dynamically from the canonical runtime seam. This
+    # keeps diagnostics/monkeypatches and the production sport-aware router on
+    # one acquisition path while carrying the WOW canonical event identity all
+    # the way into provider-alias verification.
+    raw = pick_runtime.auto_hydrate_prop_evidence(
+        sport=str(row.sport or "").strip().upper(),
+        player=row.player,
+        stat_type=_canonical_stat(row.sport,row.stat_type),
+        event_start_time=row.event_start_time,
+        source_capture_timestamp=row.source_capture_timestamp,
+        source_label=f"{row.source_type}:{row.platform or 'UNKNOWN'}",
+        opponent=row.opponent,
+        canonical_event_id=row.event_id,
+    )
     return RawPropEvidence.model_validate(raw)
 
 
