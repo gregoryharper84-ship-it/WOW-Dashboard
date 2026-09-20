@@ -15,20 +15,31 @@ and scores every row independently.
 If pre-hydration cannot prove route eligibility or any acquisition fails, the
 row is passed to the captured canonical handler unchanged. Therefore failure
 codes and fail-closed semantics remain owned by the canonical handler.
+
+One narrow exception is an all-row EVENT_ALREADY_STARTED batch after the same
+specialist/capability/certified-artifact preflight has already passed. Those
+rows are terminalized immediately through the canonical terminal reducer and
+Top-10 reconciler instead of repeating expensive downstream work that cannot
+change a pregame-only event invalidation. This preserves blocker precedence,
+row identity, reconciliation, and can_execute=false while keeping historical
+reproduction traffic from exhausting the interactive transport path.
 """
 from __future__ import annotations
 
 import logging
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timezone
 from time import perf_counter
 from typing import Any, Optional
 
 from fastapi import Header
 
 from mlb_1ip_specialist import CANONICAL_STAT_TYPE as MLB_1IP_STAT_TYPE
+import pick_request_runtime_core as pick_runtime
 from pick_request_runtime_core import PickRequestBatch, PickRequestRow, RawPropEvidence, _canonical_stat
 from prop_auto_hydration_router import auto_hydrate_prop_evidence
+from v17.top10_model_reconciliation import enforce_top10_completion
 
 LOGGER = logging.getLogger("wow.v17.interactive_latency")
 _STATE_KEY = "wow_interactive_pick_hydration_installed"
@@ -72,6 +83,122 @@ def _route_is_prehydration_eligible(row: PickRequestRow, market_api: Any) -> boo
         # Pre-hydration is an optimization only. Any uncertainty delegates the
         # untouched row to the canonical handler and preserves its typed result.
         return False
+
+
+def _event_started(value: str) -> bool:
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return False
+    if parsed.utcoffset() is None:
+        return False
+    return parsed.astimezone(timezone.utc) <= datetime.now(timezone.utc)
+
+
+def _all_rows_started_and_preflight_ready(batch: PickRequestBatch, *, market_api: Any) -> bool:
+    """Prove the exact canonical preflight before a fast EVENT_ALREADY_STARTED exit.
+
+    Results are cached only for the lifetime of this single request and only by
+    (sport, canonical stat). No model output, probability, calibration, or
+    certification state is persisted or shared between requests.
+    """
+    specialist_cache: dict[tuple[str, str], Any] = {}
+    route_cache: dict[tuple[str, str], Any] = {}
+    lane: Any = None
+    lane_loaded = False
+
+    for row in batch.rows:
+        if not _event_started(row.event_start_time):
+            return False
+        sport = str(row.sport or "").strip().upper()
+        canonical_stat = _canonical_stat(sport, row.stat_type)
+        key = (sport, canonical_stat)
+        try:
+            if key not in specialist_cache:
+                specialist_cache[key] = market_api.prod.base_api._controlling_specialist_provider(
+                    sport, canonical_stat
+                )
+            specialist = specialist_cache[key]
+            if not isinstance(specialist, dict):
+                return False
+            if specialist.get("controlling_specialist") == "MODEL_UNAVAILABLE":
+                return False
+
+            if not lane_loaded:
+                lane = market_api.prod._runtime_capability(market_api.prod.PROP_CAPABILITY_KEY)
+                lane_loaded = True
+            if not isinstance(lane, dict) or lane.get("capability_status") != "AVAILABLE":
+                return False
+
+            if key not in route_cache:
+                route_cache[key] = market_api._prop_route_artifact(sport, canonical_stat)
+            route = route_cache[key]
+            if not isinstance(route, dict):
+                return False
+            if route.get("ok") is not True or route.get("code") != "PROP_CERTIFIED_MODEL_ARTIFACT_READY":
+                return False
+        except Exception:
+            return False
+    return True
+
+
+def _event_started_response(batch: PickRequestBatch) -> dict[str, Any]:
+    outcomes: list[dict[str, Any]] = []
+    for index, row in enumerate(batch.rows):
+        row_key = row.row_key or f"row-{index + 1}"
+        outcomes.append(
+            pick_runtime._terminal(
+                row_key,
+                "REJECTED",
+                "EVENT_ALREADY_STARTED",
+                detail={
+                    "terminal_label": "NO_PLAY",
+                    "specialist_invoked": False,
+                    "fast_path": "PREGAME_EVENT_INVALIDATED",
+                },
+                acquisition={
+                    "mode": "AUTO_HYDRATION",
+                    "status": "FAILED",
+                    "provider": "PREGAME_EVENT_GUARD",
+                    "source_type": row.source_type,
+                    "platform": row.platform,
+                    "can_execute": False,
+                },
+            )
+        )
+
+    rows_in = len(batch.rows)
+    response = {
+        "ok": False,
+        "request_id": batch.request_id,
+        "run_controller_status": "BLOCKED",
+        "rows_in": rows_in,
+        "rows_completed": 0,
+        "rows_held": 0,
+        "rows_rejected": rows_in,
+        "pick_rejected_count": sum(1 for row in outcomes if row.get("pick_rejected") is True),
+        "infrastructure_blocked_count": sum(1 for row in outcomes if row.get("infrastructure_blocked") is True),
+        "reconciliation_pass": True,
+        "telemetry": pick_runtime._telemetry(outcomes),
+        "specialist_utilization_summary": pick_runtime._specialist_utilization_summary(outcomes),
+        "response_mode": batch.response_mode,
+        "rows": (
+            [pick_runtime._compact_pick_outcome(outcome) for outcome in outcomes]
+            if batch.response_mode == "COMPACT"
+            else outcomes
+        ),
+        "detail_retrieval": (
+            {
+                "mode": "IMMUTABLE_RECEIPT_LOOKUP",
+                "operation_id": "lookupWowV17PredictionReceipts",
+            }
+            if batch.response_mode == "COMPACT"
+            else None
+        ),
+        "probability_objective": "GOVERNED_MODEL_ONLY",
+        "can_execute": False,
+    }
+    return enforce_top10_completion(response, list(batch.rows))
 
 
 def _hydration_key(row: PickRequestRow) -> tuple[str, ...]:
@@ -206,6 +333,14 @@ def install_interactive_pick_hydration_wrapper(app: Any, *, market_api: Any) -> 
         batch: PickRequestBatch,
         x_wow_model_identity: Optional[str] = Header(default=None, alias="X-WOW-Model-Identity"),
     ):
+        if _all_rows_started_and_preflight_ready(batch, market_api=market_api):
+            LOGGER.warning(
+                "WOW_V17_INTERACTIVE_STAGE route=/score-pick-request stage=event-invalidated-fast-path "
+                "rows_in=%s response_mode=%s can_execute=false",
+                len(batch.rows),
+                batch.response_mode,
+            )
+            return _event_started_response(batch)
         prepared = prehydrate_batch(batch, market_api=market_api)
         return captured_endpoint(prepared, x_wow_model_identity)
 
