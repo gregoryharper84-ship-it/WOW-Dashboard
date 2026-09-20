@@ -46,6 +46,7 @@ def test_bot_merge_explicitly_resumes_main_required_checks():
     assert "actions: write" in text
     assert "gh workflow run wow-engine-verify.yml" in text
     assert "gh workflow run wow-verify.yml" in text
+    assert "gh workflow run wow-v17-render-production-deploy.yml" in text
     assert "steps.merge.outcome == 'success'" in text
 
 

@@ -221,6 +221,7 @@ jobs:
           set -euo pipefail
           gh workflow run wow-engine-verify.yml --repo "$GITHUB_REPOSITORY" --ref main
           gh workflow run wow-verify.yml --repo "$GITHUB_REPOSITORY" --ref main
+          gh workflow run wow-v17-render-production-deploy.yml --repo "$GITHUB_REPOSITORY" --ref main
 
       - name: Resume whitelisted acceptance workflow after bot merge
         if: steps.merge.outcome == 'success' && steps.resolve.outputs.acceptance != 'none'
