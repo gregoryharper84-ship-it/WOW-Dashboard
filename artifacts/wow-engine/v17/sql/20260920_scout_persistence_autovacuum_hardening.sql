@@ -2,7 +2,7 @@
 -- Repeated governed persistence replays can create dead tuples from conflict
 -- updates faster than PostgreSQL's default 20% autovacuum threshold notices
 -- them. Keep cleanup proportional to the write workload without changing any
--- row, identity, governance, probability, or execution semantics.
+-- row, identity, governance, or execution semantics.
 
 alter table wow_scout.source_snapshots set (
   autovacuum_vacuum_scale_factor = 0.01,
