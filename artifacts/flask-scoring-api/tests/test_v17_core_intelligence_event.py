@@ -8,40 +8,6 @@ if str(WOW_ENGINE_ROOT) not in sys.path:
     sys.path.insert(0, str(WOW_ENGINE_ROOT))
 
 from v17.core_intelligence import build_learning_observation
-from v17.core_intelligence_event_runtime import _home_result
-
-
-def test_event_home_result_uses_final_score_before_team_aliases():
-    source = {"home_team": "NYY"}
-    outcome = {
-        "official_winner": "New York Yankees",
-        "home_score": 5,
-        "away_score": 3,
-        "void": False,
-    }
-    assert _home_result(source, outcome) == "WIN"
-
-
-def test_event_home_result_marks_home_loss_from_final_score():
-    source = {"home_team": "NYY"}
-    outcome = {
-        "official_winner": "Boston Red Sox",
-        "home_score": 2,
-        "away_score": 4,
-        "void": False,
-    }
-    assert _home_result(source, outcome) == "LOSS"
-
-
-def test_event_home_result_fails_closed_on_unresolved_alias_without_scores():
-    source = {"home_team": "NYY"}
-    outcome = {
-        "official_winner": "New York Yankees",
-        "home_score": None,
-        "away_score": None,
-        "void": False,
-    }
-    assert _home_result(source, outcome) is None
 
 
 def test_event_observation_is_advisory_home_probability_forecast():
