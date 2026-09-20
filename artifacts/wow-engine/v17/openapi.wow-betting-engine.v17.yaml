@@ -115,7 +115,7 @@ paths:
         '422': {description: Invalid date or pagination request}
   /score-prop:
     post:
-      operationId: scoreWowV17Prop
+      operationId: scoreWowProp
       x-openai-isConsequential: false
       description: >-
         WOW player-prop lane only. Never use this route for team/event winners.
@@ -173,7 +173,7 @@ paths:
         '401': {description: Authentication failed}
   /score-pick-request:
     post:
-      operationId: scoreWowV17PickRequest
+      operationId: scoreWowPickRequest
       x-openai-isConsequential: false
       description: >-
         Canonical prop batch bridge. Caller evidence may include detailed_evidence;
