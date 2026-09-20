@@ -2,8 +2,7 @@ name: tmp-nfl-prop-train-20260920
 
 on:
   push:
-    branches:
-      - fix/v17-nfl-prop-governed-lane-20260920-active
+    branches: [fix/v17-nfl-prop-governed-lane-20260920-active]
     paths:
       - 'artifacts/wow-engine/scripts/train_nfl_props.py'
       - '.github/workflows/tmp-nfl-prop-train-20260920.yml'
@@ -35,7 +34,7 @@ jobs:
           code=$?
           echo "exit_code=$code" >> "$GITHUB_OUTPUT"
           exit 0
-      - name: Persist training evidence and remove one-shot workflow
+      - name: Persist exact training evidence and self-delete
         shell: bash
         run: |
           set -euo pipefail
@@ -46,9 +45,10 @@ jobs:
           git add artifacts/wow-engine/data/wow_nfl_prop_artifacts_v1.json artifacts/wow-engine/data/wow_nfl_prop_training_report_v1.json
           git rm .github/workflows/tmp-nfl-prop-train-20260920.yml
           git commit -m 'build(v17): freeze NFL prop fitted candidate evidence'
+          git pull --rebase origin fix/v17-nfl-prop-governed-lane-20260920-active
           git push origin HEAD:fix/v17-nfl-prop-governed-lane-20260920-active
       - name: Enforce training gate
         if: steps.train.outputs.exit_code != '0'
         run: |
-          echo "NFL prop offline training gate failed; frozen report was committed for diagnosis."
+          echo "NFL prop offline training gate failed; frozen report is preserved for diagnosis."
           exit 1
