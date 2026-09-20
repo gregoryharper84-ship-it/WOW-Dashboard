@@ -11,13 +11,14 @@ from historical_data_backbone import SourceRightsState, load_source_manifest
 from v17.model_source_entitlements import SOURCES, source_readiness
 
 
-def test_pinned_snapshot_contains_three_direct_identity_completed_seasons_and_six_assets():
+def test_pinned_snapshot_contains_three_direct_identity_seasons_and_nine_assets():
     assets = snap.pinned_assets()
     assert snap.PINNED_SEASONS == (2024, 2025, 2026)
     assert snap.QUARANTINED_SCHEMA_SEASONS == (2022, 2023)
-    assert len(assets) == 6
+    assert len(assets) == 9
     assert {asset.season for asset in assets} == set(snap.PINNED_SEASONS)
-    assert all(sum(1 for row in assets if row.season == season) == 2 for season in snap.PINNED_SEASONS)
+    assert all(sum(1 for row in assets if row.season == season) == 3 for season in snap.PINNED_SEASONS)
+    assert {asset.kind for asset in assets} == {"PLAYER_BOXSCORES", "GAME_INFO", "SCHEDULE"}
     assert not (set(snap.PINNED_SEASONS) & set(snap.QUARANTINED_SCHEMA_SEASONS))
 
 
@@ -25,6 +26,18 @@ def test_2026_assets_are_explicitly_pinned_by_release_digest():
     by_name = {asset.filename: asset for asset in snap.pinned_assets()}
     assert by_name["player_box_2026.csv"].sha256 == "41a35357d65e0d51967568ca9d0d16dae0dba593bf0193372f6cd14e5a46b102"
     assert by_name["game_info_2026.csv"].sha256 == "15bfbde574d9b84f07ffc387460127cb66b0173a06c6812132fbc718b524b610"
+    assert by_name["nhl_schedule_2026.csv"].sha256 == "51bf53885ad4807ae9cb65b96a09715473ae5f466c834269d4df521b8debef4c"
+
+
+def test_schedule_assets_are_pinned_for_each_replay_season():
+    expected = {
+        2024: "9292b99f8d5daf362a9e7316f3146fd677e5bafe99063f6fb759baa9383f8d07",
+        2025: "017f89619c13857e8b7f2f52ccbf7c1ea20fcef46f5bc90de719ea12475d1e00",
+        2026: "51bf53885ad4807ae9cb65b96a09715473ae5f466c834269d4df521b8debef4c",
+    }
+    schedule_assets = [asset for asset in snap.pinned_assets() if asset.kind == "SCHEDULE"]
+    assert {asset.season: asset.sha256 for asset in schedule_assets} == expected
+    assert all(f"/{snap.SCHEDULE_TAG}/" in asset.url for asset in schedule_assets)
 
 
 def test_all_pinned_assets_use_expected_github_release_origin_and_sha256():
@@ -49,6 +62,7 @@ def test_snapshot_manifest_is_deterministic_and_governance_locked():
     assert left["can_execute"] is False
     assert left["seasons"] == [2024, 2025, 2026]
     assert left["quarantined_schema_seasons"] == [2022, 2023]
+    assert len(left["assets"]) == 9
 
 
 def test_snapshot_manifest_rejects_incomplete_asset_set():
