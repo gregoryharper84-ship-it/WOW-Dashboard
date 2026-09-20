@@ -86,6 +86,24 @@ def test_large_overconfident_cohort_opens_review_hypothesis_only():
     assert all(h.can_execute is False for h in hypotheses)
 
 
+def test_hypothesis_id_changes_when_append_only_evidence_snapshot_grows():
+    first_rows = tuple(
+        _observation(i, "WIN" if i < 10 else "LOSS", 0.80)
+        for i in range(30)
+    )
+    second_rows = first_rows + tuple(
+        _observation(i, "LOSS", 0.80)
+        for i in range(30, 35)
+    )
+    first = detect_learning_hypotheses(summarize_cohort(first_rows, min_samples=30))
+    second = detect_learning_hypotheses(summarize_cohort(second_rows, min_samples=30))
+    first_cal = next(h for h in first if h.hypothesis_type == "CALIBRATION_BIAS")
+    second_cal = next(h for h in second if h.hypothesis_type == "CALIBRATION_BIAS")
+    assert first_cal.evidence_n == 30
+    assert second_cal.evidence_n == 35
+    assert first_cal.hypothesis_id != second_cal.hypothesis_id
+
+
 def test_mixed_model_versions_cannot_be_silently_pooled():
     a = _observation(1, "WIN")
     prediction = _prediction(2)
