@@ -46,6 +46,21 @@ def test_nhl_first_party_public_source_can_support_candidate_training_but_not_ce
     assert SOURCES["NHL_PUBLIC_WEB_API"].certification_source_review_required is True
 
 
+def test_sportsdataverse_nhl_is_candidate_training_distribution_but_not_open_licensed_or_self_certifying():
+    readiness = source_readiness("SPORTSDATAVERSE_NHL")
+    source = SOURCES["SPORTSDATAVERSE_NHL"]
+    assert readiness.ready_for_candidate_training is True
+    assert readiness.blockers == ()
+    assert source.use == "CANDIDATE_FIRST_PARTY_UNDOCUMENTED"
+    assert source.license_id is None
+    assert source.license_url is None
+    assert source.attribution_required is False
+    assert source.certification_source_review_required is True
+    assert source.probability_source is False
+    assert source.market_feature_allowed is False
+    assert source.can_execute is False
+
+
 def test_ufcstats_candidate_source_still_requires_source_review_before_certification():
     readiness = source_readiness("UFCSTATS_PUBLIC")
     assert readiness.ready_for_candidate_training is True
@@ -90,8 +105,10 @@ def test_sport_source_readiness_keeps_event_market_sources_separate():
     nhl = sport_source_readiness("NHL")
     assert "THERUNDOWN" in nhl
     assert "NHL_PUBLIC_WEB_API" in nhl
+    assert "SPORTSDATAVERSE_NHL" in nhl
     assert nhl["THERUNDOWN"].ready_for_candidate_training is False
     assert nhl["NHL_PUBLIC_WEB_API"].ready_for_candidate_training is True
+    assert nhl["SPORTSDATAVERSE_NHL"].ready_for_candidate_training is True
 
 
 def test_unclassified_source_fails_closed():
