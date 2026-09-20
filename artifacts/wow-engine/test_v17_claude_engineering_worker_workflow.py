@@ -1,6 +1,6 @@
 from pathlib import Path
 
-WORKFLOW = Path(".github/workflows/wow-v17-claude-engineering-worker.yml")
+WORKFLOW = Path(__file__).resolve().parents[2] / ".github/workflows/wow-v17-claude-engineering-worker.yml"
 
 
 def test_worker_preserves_edits_when_claude_omits_branch_output():
