@@ -20,6 +20,12 @@ from v17.mlb_pitcher_fantasy_score_hydration import (
     STAT_TYPE as MLB_PITCHER_FANTASY_SCORE_STAT,
     hydrate_mlb_pitcher_fantasy_score_evidence,
 )
+from v17.wnba_composite_auto_hydration import (
+    COMPONENT_COLUMNS as WNBA_COMPOSITE_COLUMNS,
+    PROVIDER_ID as WNBA_COMPOSITE_PROVIDER,
+    canonical_stat as _canonical_wnba_composite_stat,
+    hydrate_wnba_composite_evidence,
+)
 import wnba_prop_auto_hydration as _wnba
 from wnba_injury_status import WNBAInjuryStatusError, availability_from_report as _strict_availability
 import nfl_prop_auto_hydration as _nfl
@@ -35,17 +41,21 @@ def _strict_availability_adapter(*args, **kwargs):
         raise _wnba.WNBAPropHydrationError(exc.code, str(exc), detail=exc.detail) from exc
 
 
-# Canonical router owns the production WNBA hydration path. Replace the legacy
-# broad-scan parser at import time so no later-player designation can be
-# attributed to the target player. This is fail-closed and covered in CI.
 _wnba._availability_from_report = _strict_availability_adapter
+
+
+def _is_wnba_composite(stat_type: str) -> bool:
+    try:
+        return _canonical_wnba_composite_stat(stat_type) in WNBA_COMPOSITE_COLUMNS
+    except _wnba.WNBAPropHydrationError:
+        return False
 
 
 def provider_for_sport(sport: str, stat_type: Optional[str] = None) -> str:
     normalized_sport = str(sport or "").strip().upper()
     normalized_stat = str(stat_type or "").strip().upper()
     if normalized_sport == "WNBA":
-        return WNBA_PROVIDER
+        return WNBA_COMPOSITE_PROVIDER if _is_wnba_composite(normalized_stat) else WNBA_PROVIDER
     if normalized_sport == "NFL":
         return NFL_PROVIDER
     if normalized_sport == "MLB" and normalized_stat == MLB_PITCHER_FANTASY_SCORE_STAT:
@@ -69,16 +79,28 @@ def auto_hydrate_prop_evidence(
     normalized_stat = str(stat_type or "").strip().upper()
     if normalized_sport == "WNBA":
         try:
-            result = _wnba.hydrate_wnba_prop_evidence(
-                player=player,
-                stat_type=stat_type,
-                event_start_time=event_start_time,
-                http_get=http_get,
-                now=now,
-                source_capture_timestamp=source_capture_timestamp,
-                source_label=source_label,
-                opponent=opponent,
-            )
+            if _is_wnba_composite(normalized_stat):
+                result = hydrate_wnba_composite_evidence(
+                    player=player,
+                    stat_type=stat_type,
+                    event_start_time=event_start_time,
+                    http_get=http_get,
+                    now=now,
+                    source_capture_timestamp=source_capture_timestamp,
+                    source_label=source_label,
+                    opponent=opponent,
+                )
+            else:
+                result = _wnba.hydrate_wnba_prop_evidence(
+                    player=player,
+                    stat_type=stat_type,
+                    event_start_time=event_start_time,
+                    http_get=http_get,
+                    now=now,
+                    source_capture_timestamp=source_capture_timestamp,
+                    source_label=source_label,
+                    opponent=opponent,
+                )
         except _wnba.WNBAPropHydrationError as exc:
             raise PropAutoHydrationError(exc.code, str(exc), detail=exc.detail) from exc
         result = dict(result)
