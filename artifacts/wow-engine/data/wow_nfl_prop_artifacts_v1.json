@@ -1,0 +1,553 @@
+[
+  {
+    "active": false,
+    "artifact_checksum": "b0178abe250d52bbdd6923056a524121d10b91ab744d7e60a351a7223eebdc2c",
+    "artifact_format": "JSON_NFL_PROP_ROLLING_V1",
+    "artifact_payload": {
+      "blend_weight_fitted": 1.0,
+      "coef": [
+        26.979139823479,
+        7.685995823169,
+        0.589483359822,
+        4.764586427447,
+        -4.662604079715,
+        11.490363316295
+      ],
+      "feature_mean": [
+        226.474306839187,
+        224.466728280961,
+        222.466728280961,
+        31.647597042514,
+        31.498521256932,
+        31.230129390018
+      ],
+      "feature_names": [
+        "l10_stat_mean",
+        "l5_stat_mean",
+        "last_stat",
+        "l10_opportunity_mean",
+        "l5_opportunity_mean",
+        "last_opportunity"
+      ],
+      "feature_scale": [
+        49.706577532836,
+        56.001530397445,
+        87.560347830604,
+        6.348541011041,
+        7.182085025808,
+        10.709821437088
+      ],
+      "feature_transform_version": "NFL_PROP_ROLLING_FORM_V1",
+      "intercept": 220.182994454713,
+      "max_abs_z_for_coverage": 6.0,
+      "min_prior_games": 10,
+      "model_family": "NFL_PROP_ROLLING_FITTED_V1",
+      "model_kind": "GAUSSIAN_RIDGE_BLEND_V1",
+      "residual_sigma": 83.650076847303,
+      "stat_type": "PASSING_YARDS",
+      "support_max": 675,
+      "support_min": -50
+    },
+    "calibrator_version": "NFL_PROP_PRECALIBRATION_BOOTSTRAP_V1",
+    "can_execute": false,
+    "certification_eligible": true,
+    "certification_id": "NFL-PASSYDS-OFFLINE-2026-09-20",
+    "feature_schema_version": "PROP_FEATURES_V1",
+    "feature_transform_version": "NFL_PROP_ROLLING_FORM_V1",
+    "lifecycle_state": "CANDIDATE",
+    "model_artifact_version": "NFL_PASSYDS_ROLLING_FITTED_V1_2026_09_20",
+    "model_family": "NFL_PROP_ROLLING_FITTED_V1",
+    "probability_publishable": false,
+    "promoted": false,
+    "provider_identity": "WOW_PROP_FITTED_MODEL_V1",
+    "source_attribution_required": true,
+    "source_license_id": "CC-BY-4.0",
+    "source_provider": "NFLVERSE_STATS_PLAYER",
+    "specialist_version": "wow.nfl-player-prop-probability-expert@1",
+    "sport": "NFL",
+    "stat_type": "PASSING_YARDS",
+    "supported_line_max": 600.0,
+    "supported_line_min": 0.0,
+    "training_code_sha": "baa23d502be843c5ba3ee44525be277b237bc37c",
+    "training_dataset_hash": "852fda61d88b6b37646e58d8714ed1b7239d023511b57c55ac93f053eaf97c47",
+    "training_rows": 1082,
+    "validation_metrics": {
+      "baseline_l10_mae": 67.757279693487,
+      "baseline_l10_rmse": 87.021913939807,
+      "blockers": [],
+      "calibration_rows": 535,
+      "calibration_season": 2024,
+      "can_execute": false,
+      "holdout_max_abs_feature_z": 4.780247459965577,
+      "holdout_ood_rate_z_gt_6": 0.0,
+      "holdout_rows": 522,
+      "holdout_season": 2025,
+      "mae": 66.75104317192,
+      "mae_ratio_vs_naive": 0.985149396107,
+      "probability_publishable": false,
+      "residual_sigma_calibration": 83.650076847303,
+      "rmse": 84.629005997944,
+      "selected_blend_weight": 1.0,
+      "source": {
+        "source_snapshot": {
+          "assets": {
+            "2021": {
+              "rows": 18969,
+              "sha256": "41915fb49238902ad1f129ebf0405b11a1e710454ae0fe8f7b3e4f9145875f48",
+              "url": "https://github.com/nflverse/nflverse-data/releases/download/stats_player/stats_player_week_2021.csv"
+            },
+            "2022": {
+              "rows": 18831,
+              "sha256": "ad426c3fe5bf1cc30c3f137fdfe96d054e19d400879ee4413129da49fa7b54be",
+              "url": "https://github.com/nflverse/nflverse-data/releases/download/stats_player/stats_player_week_2022.csv"
+            },
+            "2023": {
+              "rows": 18643,
+              "sha256": "f19cb71a5de0dce7fd09376026237c9ee9d5a93fe13815a2ea3ec2d37204cb17",
+              "url": "https://github.com/nflverse/nflverse-data/releases/download/stats_player/stats_player_week_2023.csv"
+            },
+            "2024": {
+              "rows": 18983,
+              "sha256": "3ddc45a84f759aa348ce465ae001752c530575455717657cdfe1f8abfcdb4759",
+              "url": "https://github.com/nflverse/nflverse-data/releases/download/stats_player/stats_player_week_2024.csv"
+            },
+            "2025": {
+              "rows": 19422,
+              "sha256": "e5e0615b3d96a3eaebfaee91e55afb4a4e7fe0caf057454177bcd7d6ad4bcfc2",
+              "url": "https://github.com/nflverse/nflverse-data/releases/download/stats_player/stats_player_week_2025.csv"
+            }
+          },
+          "attribution_required": true,
+          "bundle_hash": "9913273fdaa1abdbc7277ac23d2139e134d5d9e550a0e4873e6858c553605522",
+          "bundle_id": "nflverse-player-weekly-2021-2025-20260920",
+          "can_execute": false,
+          "evidence_domain": "SPORTING",
+          "grants_model_capability": false,
+          "license_id": "CC-BY-4.0",
+          "probability_publishable": false,
+          "provider": "NFLVERSE_STATS_PLAYER"
+        }
+      },
+      "train_rows": 1082,
+      "train_seasons": [
+        2021,
+        2022,
+        2023
+      ],
+      "validation_status": "PASS",
+      "whole_week_chronological_split": true
+    }
+  },
+  {
+    "active": false,
+    "artifact_checksum": "e6e93c84f6de079c01922ba3e0fddbadac355d959975f712855965aa7e6331fb",
+    "artifact_format": "JSON_NFL_PROP_ROLLING_V1",
+    "artifact_payload": {
+      "blend_weight_fitted": 0.8,
+      "coef": [
+        6.62867749568,
+        5.435886473834,
+        0.860314609258,
+        3.7582051476,
+        0.720316420056,
+        5.411041141281
+      ],
+      "feature_mean": [
+        35.881537075953,
+        35.372260582408,
+        34.851696187331,
+        8.204683278295,
+        8.164935454818,
+        8.099069348544
+      ],
+      "feature_names": [
+        "l10_stat_mean",
+        "l5_stat_mean",
+        "last_stat",
+        "l10_opportunity_mean",
+        "l5_opportunity_mean",
+        "last_opportunity"
+      ],
+      "feature_scale": [
+        24.296726652108,
+        26.038405443767,
+        34.470497124285,
+        5.202755630295,
+        5.461702708485,
+        6.546907325705
+      ],
+      "feature_transform_version": "NFL_PROP_ROLLING_FORM_V1",
+      "intercept": 34.500150105074,
+      "max_abs_z_for_coverage": 6.0,
+      "min_prior_games": 10,
+      "model_family": "NFL_PROP_ROLLING_FITTED_V1",
+      "model_kind": "GAUSSIAN_RIDGE_BLEND_V1",
+      "residual_sigma": 26.33252733959,
+      "stat_type": "RUSHING_YARDS",
+      "support_max": 425,
+      "support_min": -50
+    },
+    "calibrator_version": "NFL_PROP_PRECALIBRATION_BOOTSTRAP_V1",
+    "can_execute": false,
+    "certification_eligible": true,
+    "certification_id": "NFL-RUSHYDS-OFFLINE-2026-09-20",
+    "feature_schema_version": "PROP_FEATURES_V1",
+    "feature_transform_version": "NFL_PROP_ROLLING_FORM_V1",
+    "lifecycle_state": "CANDIDATE",
+    "model_artifact_version": "NFL_RUSHYDS_ROLLING_FITTED_V1_2026_09_20",
+    "model_family": "NFL_PROP_ROLLING_FITTED_V1",
+    "probability_publishable": false,
+    "promoted": false,
+    "provider_identity": "WOW_PROP_FITTED_MODEL_V1",
+    "source_attribution_required": true,
+    "source_license_id": "CC-BY-4.0",
+    "source_provider": "NFLVERSE_STATS_PLAYER",
+    "specialist_version": "wow.nfl-player-prop-probability-expert@1",
+    "sport": "NFL",
+    "stat_type": "RUSHING_YARDS",
+    "supported_line_max": 350.0,
+    "supported_line_min": 0.0,
+    "training_code_sha": "baa23d502be843c5ba3ee44525be277b237bc37c",
+    "training_dataset_hash": "8185574be5467f43b1cd5683029e00b1ec8c44a785a116774c6eb64e2e201db4",
+    "training_rows": 3331,
+    "validation_metrics": {
+      "baseline_l10_mae": 19.132912912913,
+      "baseline_l10_rmse": 27.277329023911,
+      "blockers": [],
+      "calibration_rows": 1686,
+      "calibration_season": 2024,
+      "can_execute": false,
+      "holdout_max_abs_feature_z": 6.06745829799243,
+      "holdout_ood_rate_z_gt_6": 0.0006006006006006006,
+      "holdout_rows": 1665,
+      "holdout_season": 2025,
+      "mae": 18.578107391718,
+      "mae_ratio_vs_naive": 0.97100255859,
+      "probability_publishable": false,
+      "residual_sigma_calibration": 26.33252733959,
+      "rmse": 26.725145550262,
+      "selected_blend_weight": 0.8,
+      "source": {
+        "source_snapshot": {
+          "assets": {
+            "2021": {
+              "rows": 18969,
+              "sha256": "41915fb49238902ad1f129ebf0405b11a1e710454ae0fe8f7b3e4f9145875f48",
+              "url": "https://github.com/nflverse/nflverse-data/releases/download/stats_player/stats_player_week_2021.csv"
+            },
+            "2022": {
+              "rows": 18831,
+              "sha256": "ad426c3fe5bf1cc30c3f137fdfe96d054e19d400879ee4413129da49fa7b54be",
+              "url": "https://github.com/nflverse/nflverse-data/releases/download/stats_player/stats_player_week_2022.csv"
+            },
+            "2023": {
+              "rows": 18643,
+              "sha256": "f19cb71a5de0dce7fd09376026237c9ee9d5a93fe13815a2ea3ec2d37204cb17",
+              "url": "https://github.com/nflverse/nflverse-data/releases/download/stats_player/stats_player_week_2023.csv"
+            },
+            "2024": {
+              "rows": 18983,
+              "sha256": "3ddc45a84f759aa348ce465ae001752c530575455717657cdfe1f8abfcdb4759",
+              "url": "https://github.com/nflverse/nflverse-data/releases/download/stats_player/stats_player_week_2024.csv"
+            },
+            "2025": {
+              "rows": 19422,
+              "sha256": "e5e0615b3d96a3eaebfaee91e55afb4a4e7fe0caf057454177bcd7d6ad4bcfc2",
+              "url": "https://github.com/nflverse/nflverse-data/releases/download/stats_player/stats_player_week_2025.csv"
+            }
+          },
+          "attribution_required": true,
+          "bundle_hash": "9913273fdaa1abdbc7277ac23d2139e134d5d9e550a0e4873e6858c553605522",
+          "bundle_id": "nflverse-player-weekly-2021-2025-20260920",
+          "can_execute": false,
+          "evidence_domain": "SPORTING",
+          "grants_model_capability": false,
+          "license_id": "CC-BY-4.0",
+          "probability_publishable": false,
+          "provider": "NFLVERSE_STATS_PLAYER"
+        }
+      },
+      "train_rows": 3331,
+      "train_seasons": [
+        2021,
+        2022,
+        2023
+      ],
+      "validation_status": "PASS",
+      "whole_week_chronological_split": true
+    }
+  },
+  {
+    "active": false,
+    "artifact_checksum": "e27831a0d89cf61df882ea27f5efad1983883d2868a3fc914197b070cc2e0178",
+    "artifact_format": "JSON_NFL_PROP_ROLLING_V1",
+    "artifact_payload": {
+      "blend_weight_fitted": 1.0,
+      "coef": [
+        13.0140266517,
+        -0.617947954604,
+        1.156801434669,
+        2.563670926648,
+        2.899453142543,
+        1.203288112713
+      ],
+      "feature_mean": [
+        34.485820492025,
+        33.931900513652,
+        33.502162746688,
+        4.616909975669,
+        4.574885104082,
+        4.521627466883
+      ],
+      "feature_names": [
+        "l10_stat_mean",
+        "l5_stat_mean",
+        "last_stat",
+        "l10_opportunity_mean",
+        "l5_opportunity_mean",
+        "last_opportunity"
+      ],
+      "feature_scale": [
+        21.771442471622,
+        23.610007144113,
+        33.363156701882,
+        2.30786279463,
+        2.457945105291,
+        3.217367198559
+      ],
+      "feature_transform_version": "NFL_PROP_ROLLING_FORM_V1",
+      "intercept": 33.284401189511,
+      "max_abs_z_for_coverage": 6.0,
+      "min_prior_games": 10,
+      "model_family": "NFL_PROP_ROLLING_FITTED_V1",
+      "model_kind": "GAUSSIAN_RIDGE_BLEND_V1",
+      "residual_sigma": 26.66537844986,
+      "stat_type": "RECEIVING_YARDS",
+      "support_max": 425,
+      "support_min": -50
+    },
+    "calibrator_version": "NFL_PROP_PRECALIBRATION_BOOTSTRAP_V1",
+    "can_execute": false,
+    "certification_eligible": true,
+    "certification_id": "NFL-RECYDS-OFFLINE-2026-09-20",
+    "feature_schema_version": "PROP_FEATURES_V1",
+    "feature_transform_version": "NFL_PROP_ROLLING_FORM_V1",
+    "lifecycle_state": "CANDIDATE",
+    "model_artifact_version": "NFL_RECYDS_ROLLING_FITTED_V1_2026_09_20",
+    "model_family": "NFL_PROP_ROLLING_FITTED_V1",
+    "probability_publishable": false,
+    "promoted": false,
+    "provider_identity": "WOW_PROP_FITTED_MODEL_V1",
+    "source_attribution_required": true,
+    "source_license_id": "CC-BY-4.0",
+    "source_provider": "NFLVERSE_STATS_PLAYER",
+    "specialist_version": "wow.nfl-player-prop-probability-expert@1",
+    "sport": "NFL",
+    "stat_type": "RECEIVING_YARDS",
+    "supported_line_max": 350.0,
+    "supported_line_min": 0.0,
+    "training_code_sha": "baa23d502be843c5ba3ee44525be277b237bc37c",
+    "training_dataset_hash": "45ba792d18344395203aec8f5415ddb20ac08651700b5ea82e77f3f4a535e752",
+    "training_rows": 7398,
+    "validation_metrics": {
+      "baseline_l10_mae": 19.54259844783,
+      "baseline_l10_rmse": 26.337145631437,
+      "blockers": [],
+      "calibration_rows": 3505,
+      "calibration_season": 2024,
+      "can_execute": false,
+      "holdout_max_abs_feature_z": 5.743320980394885,
+      "holdout_ood_rate_z_gt_6": 0.0,
+      "holdout_rows": 3479,
+      "holdout_season": 2025,
+      "mae": 19.093724105168,
+      "mae_ratio_vs_naive": 0.977030979587,
+      "probability_publishable": false,
+      "residual_sigma_calibration": 26.66537844986,
+      "rmse": 25.878932862426,
+      "selected_blend_weight": 1.0,
+      "source": {
+        "source_snapshot": {
+          "assets": {
+            "2021": {
+              "rows": 18969,
+              "sha256": "41915fb49238902ad1f129ebf0405b11a1e710454ae0fe8f7b3e4f9145875f48",
+              "url": "https://github.com/nflverse/nflverse-data/releases/download/stats_player/stats_player_week_2021.csv"
+            },
+            "2022": {
+              "rows": 18831,
+              "sha256": "ad426c3fe5bf1cc30c3f137fdfe96d054e19d400879ee4413129da49fa7b54be",
+              "url": "https://github.com/nflverse/nflverse-data/releases/download/stats_player/stats_player_week_2022.csv"
+            },
+            "2023": {
+              "rows": 18643,
+              "sha256": "f19cb71a5de0dce7fd09376026237c9ee9d5a93fe13815a2ea3ec2d37204cb17",
+              "url": "https://github.com/nflverse/nflverse-data/releases/download/stats_player/stats_player_week_2023.csv"
+            },
+            "2024": {
+              "rows": 18983,
+              "sha256": "3ddc45a84f759aa348ce465ae001752c530575455717657cdfe1f8abfcdb4759",
+              "url": "https://github.com/nflverse/nflverse-data/releases/download/stats_player/stats_player_week_2024.csv"
+            },
+            "2025": {
+              "rows": 19422,
+              "sha256": "e5e0615b3d96a3eaebfaee91e55afb4a4e7fe0caf057454177bcd7d6ad4bcfc2",
+              "url": "https://github.com/nflverse/nflverse-data/releases/download/stats_player/stats_player_week_2025.csv"
+            }
+          },
+          "attribution_required": true,
+          "bundle_hash": "9913273fdaa1abdbc7277ac23d2139e134d5d9e550a0e4873e6858c553605522",
+          "bundle_id": "nflverse-player-weekly-2021-2025-20260920",
+          "can_execute": false,
+          "evidence_domain": "SPORTING",
+          "grants_model_capability": false,
+          "license_id": "CC-BY-4.0",
+          "probability_publishable": false,
+          "provider": "NFLVERSE_STATS_PLAYER"
+        }
+      },
+      "train_rows": 7398,
+      "train_seasons": [
+        2021,
+        2022,
+        2023
+      ],
+      "validation_status": "PASS",
+      "whole_week_chronological_split": true
+    }
+  },
+  {
+    "active": false,
+    "artifact_checksum": "b193c279c8f3ccd4b365bafa95a19dcd21c0035e8ef5391f2af61463dbc8516d",
+    "artifact_format": "JSON_NFL_PROP_ROLLING_V1",
+    "artifact_payload": {
+      "blend_weight_fitted": 0.9,
+      "coef": [
+        0.244833449972,
+        0.021691287357,
+        0.040147413566,
+        0.017930408177,
+        0.246545889502,
+        0.120902100668
+      ],
+      "feature_mean": [
+        0.232462399824,
+        0.227884509825,
+        0.225052146229,
+        6.940717971237,
+        6.896278405972,
+        6.825886485893
+      ],
+      "feature_names": [
+        "l10_stat_mean",
+        "l5_stat_mean",
+        "last_stat",
+        "l10_opportunity_mean",
+        "l5_opportunity_mean",
+        "last_opportunity"
+      ],
+      "feature_scale": [
+        0.181397118887,
+        0.223633144562,
+        0.417616663588,
+        4.960680923079,
+        5.142900782588,
+        5.940365405717
+      ],
+      "feature_transform_version": "NFL_PROP_ROLLING_FORM_V1",
+      "intercept": -1.326814503658,
+      "max_abs_z_for_coverage": 6.0,
+      "min_prior_games": 10,
+      "model_family": "NFL_PROP_ROLLING_FITTED_V1",
+      "model_kind": "BERNOULLI_LOGISTIC_BLEND_V1",
+      "stat_type": "ANYTIME_TD"
+    },
+    "calibrator_version": "NFL_PROP_PRECALIBRATION_BOOTSTRAP_V1",
+    "can_execute": false,
+    "certification_eligible": true,
+    "certification_id": "NFL-ATTD-OFFLINE-2026-09-20",
+    "feature_schema_version": "PROP_FEATURES_V1",
+    "feature_transform_version": "NFL_PROP_ROLLING_FORM_V1",
+    "lifecycle_state": "CANDIDATE",
+    "model_artifact_version": "NFL_ATTD_ROLLING_FITTED_V1_2026_09_20",
+    "model_family": "NFL_PROP_ROLLING_FITTED_V1",
+    "probability_publishable": false,
+    "promoted": false,
+    "provider_identity": "WOW_PROP_FITTED_MODEL_V1",
+    "source_attribution_required": true,
+    "source_license_id": "CC-BY-4.0",
+    "source_provider": "NFLVERSE_STATS_PLAYER",
+    "specialist_version": "wow.nfl-player-prop-probability-expert@1",
+    "sport": "NFL",
+    "stat_type": "ANYTIME_TD",
+    "supported_line_max": 1.5,
+    "supported_line_min": 0.0,
+    "training_code_sha": "baa23d502be843c5ba3ee44525be277b237bc37c",
+    "training_dataset_hash": "74b9ef6e8fa84ebbce3d7216c8181ee01d2ecf87a2ca53171670a6d7528f06be",
+    "training_rows": 9109,
+    "validation_metrics": {
+      "baseline_l10_brier": 0.173844334414,
+      "blockers": [],
+      "brier": 0.16182406617,
+      "brier_ratio_vs_naive": 0.930856140441,
+      "calibration_rows": 4321,
+      "calibration_season": 2024,
+      "can_execute": false,
+      "holdout_max_abs_feature_z": 4.9111648057932875,
+      "holdout_ood_rate_z_gt_6": 0.0,
+      "holdout_positive_rate": 0.223483094025,
+      "holdout_rows": 4318,
+      "holdout_season": 2025,
+      "probability_publishable": false,
+      "selected_blend_weight": 0.9,
+      "source": {
+        "source_snapshot": {
+          "assets": {
+            "2021": {
+              "rows": 18969,
+              "sha256": "41915fb49238902ad1f129ebf0405b11a1e710454ae0fe8f7b3e4f9145875f48",
+              "url": "https://github.com/nflverse/nflverse-data/releases/download/stats_player/stats_player_week_2021.csv"
+            },
+            "2022": {
+              "rows": 18831,
+              "sha256": "ad426c3fe5bf1cc30c3f137fdfe96d054e19d400879ee4413129da49fa7b54be",
+              "url": "https://github.com/nflverse/nflverse-data/releases/download/stats_player/stats_player_week_2022.csv"
+            },
+            "2023": {
+              "rows": 18643,
+              "sha256": "f19cb71a5de0dce7fd09376026237c9ee9d5a93fe13815a2ea3ec2d37204cb17",
+              "url": "https://github.com/nflverse/nflverse-data/releases/download/stats_player/stats_player_week_2023.csv"
+            },
+            "2024": {
+              "rows": 18983,
+              "sha256": "3ddc45a84f759aa348ce465ae001752c530575455717657cdfe1f8abfcdb4759",
+              "url": "https://github.com/nflverse/nflverse-data/releases/download/stats_player/stats_player_week_2024.csv"
+            },
+            "2025": {
+              "rows": 19422,
+              "sha256": "e5e0615b3d96a3eaebfaee91e55afb4a4e7fe0caf057454177bcd7d6ad4bcfc2",
+              "url": "https://github.com/nflverse/nflverse-data/releases/download/stats_player/stats_player_week_2025.csv"
+            }
+          },
+          "attribution_required": true,
+          "bundle_hash": "9913273fdaa1abdbc7277ac23d2139e134d5d9e550a0e4873e6858c553605522",
+          "bundle_id": "nflverse-player-weekly-2021-2025-20260920",
+          "can_execute": false,
+          "evidence_domain": "SPORTING",
+          "grants_model_capability": false,
+          "license_id": "CC-BY-4.0",
+          "probability_publishable": false,
+          "provider": "NFLVERSE_STATS_PLAYER"
+        }
+      },
+      "train_rows": 9109,
+      "train_seasons": [
+        2021,
+        2022,
+        2023
+      ],
+      "validation_status": "PASS",
+      "whole_week_chronological_split": true
+    }
+  }
+]

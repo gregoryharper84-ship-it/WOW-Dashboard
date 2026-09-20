@@ -10,7 +10,7 @@ from __future__ import annotations
 import uuid
 from contextvars import ContextVar
 from hashlib import sha256
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from fastapi import Header, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
@@ -48,6 +48,7 @@ class DetailedPickRequestRow(pick_runtime.PickRequestRow):
 class DetailedPickRequestBatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
     request_id: Optional[str] = None
+    response_mode: Literal["FULL", "COMPACT"] = "FULL"
     rows: list[DetailedPickRequestRow] = Field(min_length=1, max_length=50)
 
 
@@ -219,6 +220,7 @@ def install_v17_detailed_evidence(
 
         base_batch = pick_runtime.PickRequestBatch(
             request_id=batch.request_id,
+            response_mode=batch.response_mode,
             rows=base_rows,
         )
         token = _detailed_by_row_key.set(detail_map)
@@ -230,7 +232,10 @@ def install_v17_detailed_evidence(
         finally:
             _detailed_by_row_key.reset(token)
 
-        if isinstance(result, dict) and isinstance(result.get("rows"), list):
+        if isinstance(result, dict):
+            result["response_mode"] = batch.response_mode
+
+        if batch.response_mode == "FULL" and isinstance(result, dict) and isinstance(result.get("rows"), list):
             for outcome in result["rows"]:
                 if not isinstance(outcome, dict):
                     continue

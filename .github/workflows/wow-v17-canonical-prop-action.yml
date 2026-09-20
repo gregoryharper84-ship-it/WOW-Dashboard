@@ -60,9 +60,209 @@ jobs:
       - name: Install engine dependencies
         run: pip install -r requirements.txt
       - name: Run focused regressions
-        run: python -m pytest -q test_v17_github_oidc.py test_v17_mlb_1ip_direction_neutrality.py tests/test_v17_live_editor_compat.py tests/test_v17_canonical_prop_workflow_contract.py test_v17_action_invocation_telemetry.py test_v17_interactive_latency_telemetry.py
+        run: >-
+          python -m pytest -q
+          test_v17_github_oidc.py
+          test_v17_mlb_1ip_direction_neutrality.py
+          tests/test_v17_live_editor_compat.py
+          tests/test_v17_canonical_prop_workflow_contract.py
+          test_v17_action_invocation_telemetry.py
+          test_v17_interactive_latency_telemetry.py
+          tests/test_v17_compact_outer_wrapper.py
+          tests/test_v17_compact_receipt_contract.py
+          tests/test_v17_prop_canonical_identity.py
+          tests/test_v17_daily_unique_prop_limit.py
       - name: Compile canonical prop runner
         run: python -m py_compile v17/canonical_prop_action_runner.py v17/mlb_1ip_direction_neutrality.py v17/action_invocation_telemetry.py
+
+  production-infrastructure-acceptance:
+    name: Verify live COMPACT + prop dedup infrastructure
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      WOW_ACTION_ORIGIN: https://wow-governed-probability-engine.onrender.com
+      WOW_USER_TIMEZONE: America/Chicago
+      WOW_CAN_EXECUTE: "false"
+      WOW_DRY_RUN_ONLY: "true"
+    steps:
+      - name: Run authenticated production acceptance
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$WOW_CAN_EXECUTE" = "false"
+          test "$WOW_DRY_RUN_ONLY" = "true"
+          test -n "$ACTIONS_ID_TOKEN_REQUEST_URL"
+          test -n "$ACTIONS_ID_TOKEN_REQUEST_TOKEN"
+          python - <<'PY'
+          import json
+          import os
+          import urllib.parse
+          import urllib.request
+          from datetime import datetime, timedelta, timezone
+          from zoneinfo import ZoneInfo
+
+          ORIGIN = os.environ["WOW_ACTION_ORIGIN"].rstrip("/")
+          FORBIDDEN_COMPACT_KEYS = {
+              "result", "detail", "detailed_evidence", "model_evidence",
+              "failure_path_evidence", "directional_probability_assessments",
+              "v17_numerical_engine", "objective_lanes", "backend_traversal",
+              "specialist_utilization_audit",
+          }
+
+          def fresh_oidc_token():
+              oidc_url = os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"]
+              separator = "&" if "?" in oidc_url else "?"
+              oidc_url += separator + urllib.parse.urlencode({"audience": "wow-v17-multiscout"})
+              request = urllib.request.Request(
+                  oidc_url,
+                  headers={"Authorization": f"Bearer {os.environ['ACTIONS_ID_TOKEN_REQUEST_TOKEN']}"},
+              )
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  return json.load(response)["value"]
+
+          def post(path, payload, timeout=300):
+              token = fresh_oidc_token()
+              body = json.dumps(payload).encode("utf-8")
+              request = urllib.request.Request(
+                  ORIGIN + path,
+                  data=body,
+                  method="POST",
+                  headers={
+                      "Authorization": f"Bearer {token}",
+                      "Content-Type": "application/json",
+                      "X-WOW-Model-Identity": "WOW_BETTING_ENGINE",
+                  },
+              )
+              with urllib.request.urlopen(request, timeout=timeout) as response:
+                  if response.status != 200:
+                      raise AssertionError(f"{path} HTTP {response.status}")
+                  value = json.load(response)
+              if not isinstance(value, dict):
+                  raise AssertionError(f"{path} response is not an object")
+              return value
+
+          def assert_compact_batch(payload, expected_rows, label):
+              if payload.get("response_mode") != "COMPACT":
+                  raise AssertionError(f"{label}: response_mode not COMPACT")
+              if payload.get("reconciliation_pass") is not True:
+                  raise AssertionError(f"{label}: reconciliation failed")
+              if payload.get("can_execute") is not False:
+                  raise AssertionError(f"{label}: can_execute invariant failed")
+              rows = payload.get("outcomes") or payload.get("rows") or []
+              if len(rows) != expected_rows:
+                  raise AssertionError(f"{label}: expected {expected_rows} rows, got {len(rows)}")
+              for index, row in enumerate(rows, 1):
+                  if row.get("can_execute") is not False:
+                      raise AssertionError(f"{label}: row {index} can_execute invariant failed")
+                  leaked = sorted(FORBIDDEN_COMPACT_KEYS.intersection(row))
+                  if leaked:
+                      raise AssertionError(f"{label}: row {index} leaked FULL keys: {leaked}")
+                  if not (row.get("code") or row.get("terminal_label") or row.get("terminal_status")):
+                      raise AssertionError(f"{label}: row {index} has no typed terminal")
+              return rows
+
+          event_start = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
+          mlb_rows = []
+          for player in ("V17 Compact Pitcher A", "V17 Compact Pitcher B"):
+              for direction in ("MORE", "LESS"):
+                  mlb_rows.append({
+                      "row_key": f"mlb-{len(mlb_rows)+1}",
+                      "event_id": f"V17-COMPACT-MLB-{1 if player.endswith('A') else 2}",
+                      "event_start_time": event_start,
+                      "sport": "MLB",
+                      "player": player,
+                      "stat_type": "V17_UNSUPPORTED_ACCEPTANCE_STAT",
+                      "line": 1.5,
+                      "direction": direction,
+                      "source_type": "NORMALIZED",
+                      "platform": "WOW_PRODUCTION_ACCEPTANCE",
+                      "league": "MLB",
+                  })
+          mlb = post("/score-pick-request", {
+              "request_id": "v17-live-compact-mlb-four-direction",
+              "response_mode": "COMPACT",
+              "rows": mlb_rows,
+          })
+          assert_compact_batch(mlb, 4, "MLB_FOUR_DIRECTION_COMPACT")
+
+          cross_rows = []
+          for sport in ("MLB", "NFL", "WNBA", "NCAAF"):
+              cross_rows.append({
+                  "row_key": f"cross-{sport.lower()}",
+                  "event_id": f"V17-COMPACT-{sport}-1",
+                  "event_start_time": event_start,
+                  "sport": sport,
+                  "player": f"V17 {sport} Test Player",
+                  "stat_type": "V17_UNSUPPORTED_ACCEPTANCE_STAT",
+                  "line": 1.5,
+                  "direction": "MORE",
+                  "source_type": "NORMALIZED",
+                  "platform": "WOW_PRODUCTION_ACCEPTANCE",
+                  "league": sport,
+              })
+          cross = post("/score-pick-request", {
+              "request_id": "v17-live-compact-cross-sport",
+              "response_mode": "COMPACT",
+              "rows": cross_rows,
+          })
+          assert_compact_batch(cross, 4, "CROSS_SPORT_COMPACT")
+
+          slate_date = datetime.now(ZoneInfo(os.environ["WOW_USER_TIMEZONE"])).date().isoformat()
+          daily = post("/internal/v17/daily-snapshot", {
+              "requested_slate_date": slate_date,
+              "requested_timezone": os.environ["WOW_USER_TIMEZONE"],
+              "lanes": ["PROPS"],
+              "max_props": 4,
+              "max_team_events": 0,
+              "response_mode": "COMPACT",
+          }, timeout=600)
+          if daily.get("can_execute") is not False:
+              raise AssertionError("DAILY: can_execute invariant failed")
+          if daily.get("global_terminal_authority") != "V17_TERMINAL_REDUCER":
+              raise AssertionError("DAILY: terminal authority mismatch")
+          reconciliation = daily.get("reconciliation") or {}
+          if reconciliation.get("balanced") is not True:
+              raise AssertionError("DAILY: row reconciliation failed")
+          lane = (daily.get("lane_reconciliation") or {}).get("PROPS") or {}
+          if lane.get("requested_row_limit") != 4:
+              raise AssertionError("DAILY: max_props=4 not applied")
+          if int(lane.get("scored_count") or 0) != 4:
+              raise AssertionError(f"DAILY: expected four unique scored props, got {lane.get('scored_count')}")
+          discovered = int(lane.get("discovered_count") or 0)
+          canonicalized = int(lane.get("canonicalized_count") or 0)
+          duplicates = int(lane.get("duplicate_source_instance_count") or 0)
+          if discovered != canonicalized + duplicates:
+              raise AssertionError("DAILY: source-instance/canonical dedup accounting mismatch")
+          prop_rows = [row for row in (daily.get("rows") or []) if row.get("lane") == "PROPS"]
+          if len(prop_rows) != 4:
+              raise AssertionError(f"DAILY: expected four PROPS rows, got {len(prop_rows)}")
+          keys = []
+          for row in prop_rows:
+              identity = row.get("identity") or {}
+              keys.append((
+                  identity.get("event_id"), identity.get("sport"), identity.get("player"),
+                  identity.get("stat_type"), identity.get("line"),
+              ))
+          if len(set(keys)) != 4:
+              raise AssertionError("DAILY: duplicate sporting identities consumed max_props slots")
+
+          print(json.dumps({
+              "status": "FIXED_VERIFIED",
+              "mlb_four_direction_compact": "PASS",
+              "cross_sport_compact": "PASS",
+              "daily_max_props_4": "PASS",
+              "daily_source_instances": discovered,
+              "daily_canonical_props": canonicalized,
+              "daily_duplicate_source_instances_collapsed": duplicates,
+              "global_terminal_authority": "V17_TERMINAL_REDUCER",
+              "can_execute": False,
+          }, sort_keys=True))
+          PY
 
   canonical-prop-action:
     name: Run canonical V17 prop Action

@@ -64,10 +64,12 @@ def _promoted(**overrides) -> PropRouteLifecycleEvidence:
     return PropRouteLifecycleEvidence(**values)
 
 
-def test_undeclared_sport_route_is_explicit_not_silently_omitted() -> None:
+def test_declared_cross_sport_build_target_is_explicit_model_build_required() -> None:
     result = assess_prop_route(PropRouteLifecycleEvidence(sport="NHL", stat_type="POINTS"))
-    assert result.status == NO_CURRENT_PROP_CATEGORY_DECLARED
-    assert result.blockers == ("PROP_ROUTE_NOT_DECLARED",)
+    assert result.status == MODEL_BUILD_REQUIRED
+    assert "CONTROLLING_SPECIALIST_UNAVAILABLE" in result.blockers
+    assert "SOURCE_PROVENANCE_NOT_CERTIFIED" in result.blockers
+    assert "FITTED_MODEL_BUILD_REQUIRED" in result.blockers
     assert result.production_numerical_authority is False
     assert result.can_execute is False
 

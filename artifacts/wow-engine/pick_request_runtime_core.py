@@ -34,7 +34,8 @@ from agent_runtime.scout_research import RESEARCH_RECONCILER, RESEARCH_WORKERS, 
 from mlb_1ip_specialist import CANONICAL_STAT_TYPE as MLB_1IP_STAT_TYPE
 from mlb_1ip_specialist import score_mlb_1ip, starter_changed
 from mlb_1ip_ingress_runtime import score_mlb_1ip_ingress
-from prop_auto_hydration import PropAutoHydrationError, auto_hydrate_prop_evidence
+from prop_auto_hydration import PropAutoHydrationError
+from prop_auto_hydration_router import auto_hydrate_prop_evidence
 from qualification_policy_v2 import classify_prop_probability
 from prop_terminal_reducer_v2 import EVENT_BLOCKERS, TRUE_MODEL_REJECTION_LABELS, reduce_prop_terminal
 from v17.portfolio_exposure_gate import evaluate_portfolio_qualification
@@ -55,6 +56,16 @@ PROP_STAT_ALIASES: dict[tuple[str, str], str] = {
     ("MLB", "FIRST_INNING_PITCHES"): MLB_1IP_STAT_TYPE,
     ("MLB", "FIRST_INNING_PITCH_COUNT"): MLB_1IP_STAT_TYPE,
     ("MLB", "FIRST_INNING_PITCHES_THROWN"): MLB_1IP_STAT_TYPE,
+    ("NFL", "PASS_YARDS"): "PASSING_YARDS",
+    ("NFL", "PASSING_YARDS"): "PASSING_YARDS",
+    ("NFL", "RUSH_YARDS"): "RUSHING_YARDS",
+    ("NFL", "RUSHING_YARDS"): "RUSHING_YARDS",
+    ("NFL", "REC_YARDS"): "RECEIVING_YARDS",
+    ("NFL", "RECEIVING_YARDS"): "RECEIVING_YARDS",
+    ("NFL", "ANYTIME_TD"): "ANYTIME_TD",
+    ("NFL", "ANYTIME_TDS"): "ANYTIME_TD",
+    ("NFL", "ANYTIME_TOUCHDOWN"): "ANYTIME_TD",
+    ("NFL", "ANYTIME_TOUCHDOWNS"): "ANYTIME_TD",
 }
 
 PickSourceType = Literal[
@@ -814,25 +825,41 @@ def _score_mlb_1ip_row(
 
 
 
-_PICK_REQUEST_COMPACT_DETAIL_KEYS = frozenset({"result", "detail", "acquisition", "specialist_utilization_audit"})
+_PICK_REQUEST_COMPACT_DETAIL_KEYS = frozenset({
+    "result", "detail", "acquisition", "specialist_utilization_audit",
+    "evidence", "acquisition_evidence", "box_score_log", "game_log",
+    "model_evidence", "failure_path_evidence", "directional_probability_assessments",
+    "v17_numerical_engine", "objective_lanes", "backend_traversal",
+    "detailed_evidence", "artifact_metadata", "training_metadata", "source_timestamps",
+})
 
 def _compact_pick_outcome(outcome: dict[str, Any]) -> dict[str, Any]:
     """Bound synchronous Action payload size without changing row governance."""
     compact = {k: deepcopy(v) for k, v in outcome.items() if k not in _PICK_REQUEST_COMPACT_DETAIL_KEYS}
     detail = outcome.get("detail")
     if isinstance(detail, dict):
-        for key in ("blocker_code", "failure_class", "blocker", "sport", "stat_type", "controlling_specialist"):
+        for key in (
+            "blocker_code", "failure_class", "blocker", "primary_blocker", "blockers",
+            "event_id", "event_start_time", "sport", "league", "player", "stat_type",
+            "line", "direction", "controlling_specialist",
+        ):
             if detail.get(key) is not None:
                 compact[key] = deepcopy(detail[key])
     result = outcome.get("result")
     if isinstance(result, dict):
         prediction = result.get("prediction") if isinstance(result.get("prediction"), dict) else {}
         qualification = result.get("probability_qualification") if isinstance(result.get("probability_qualification"), dict) else {}
-        for source, mapping in ((prediction, {"raw_model_probability":"model_probability","calibrated_probability":"calibrated_probability","calibrated_probability_lower_bound":"calibrated_probability_lower_bound","calibration_status":"calibration_status","model_version":"model_version"}),(qualification, {"confidence_tier":"confidence_tier","rank_eligible":"rank_eligible","model_supported":"model_supported","terminal_label":"terminal_label"})):
+        for source, mapping in ((prediction, {"prediction_id":"prediction_id","raw_model_probability":"model_probability","calibrated_probability":"calibrated_probability","calibrated_probability_lower_bound":"calibrated_probability_lower_bound","calibrated_probability_upper_bound":"calibrated_probability_upper_bound","calibrated_upper_bound":"calibrated_probability_upper_bound","calibration_status":"calibration_status","model_version":"model_version"}),(qualification, {"confidence_tier":"confidence_tier","rank_eligible":"rank_eligible","model_supported":"model_supported","terminal_label":"terminal_label"})):
             for src, dst in mapping.items():
                 if source.get(src) is not None:
                     compact[dst] = deepcopy(source[src])
-    compact["detail_available"] = any(k in outcome for k in _PICK_REQUEST_COMPACT_DETAIL_KEYS)
+    detail_available = any(k in outcome for k in _PICK_REQUEST_COMPACT_DETAIL_KEYS)
+    compact["detail_available"] = detail_available
+    compact["detail_ref"] = {
+        "prediction_id": compact.get("prediction_id"),
+        "row_key": compact.get("row_key"),
+        "detail_available": detail_available,
+    }
     compact["can_execute"] = False
     return compact
 

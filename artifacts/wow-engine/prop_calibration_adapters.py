@@ -164,3 +164,12 @@ def register() -> None:
         WNBA_CALIBRATOR_VERSION,
         wnba_precalibration_bootstrap_adapter,
     )
+
+    from nfl_prop_calibration_adapter import (
+        CALIBRATOR_VERSION as NFL_CALIBRATOR_VERSION,
+        nfl_prop_precalibration_bootstrap_adapter,
+    )
+    register_prop_calibration_adapter(
+        NFL_CALIBRATOR_VERSION,
+        nfl_prop_precalibration_bootstrap_adapter,
+    )
