@@ -19,7 +19,7 @@ MLB_PITCH_COMPOSITION_EXPERT = "wow.mlb-pitcher-pitch-composition-expert"
 MLB_PLATE_APPEARANCES_EXPERT = "wow.mlb-batter-plate-appearances-expert"
 WNBA_PLAYER_PROP_EXPERT = "wow.wnba-player-prop-probability-expert"
 WNBA_COMPOSITE_PROP_EXPERT = "wow.wnba-composite-prop-expert"
-NFL_PLAYER_PROP_EXPERT = "wow.nfl-player-prop-probability-expert"
+NFL_PLAYER_PROP_EXPERT = "wow.nfl-direct-player-prop-expert"
 NFL_FANTASY_SCORE_EXPERT = "wow.nfl-dfs-fantasy-score-expert"
 NBA_FANTASY_SCORE_EXPERT = "wow.nba-dfs-fantasy-score-expert"
 WNBA_FANTASY_SCORE_EXPERT = "wow.wnba-dfs-fantasy-score-expert"
@@ -218,21 +218,16 @@ DECLARED_PROP_LANES: dict[tuple[str, str], PropCapability] = {
     ("WNBA", BASKETBALL_POINTS_REBOUNDS): _wnba_composite_candidate(BASKETBALL_POINTS_REBOUNDS),
     ("WNBA", BASKETBALL_POINTS_ASSISTS): _wnba_composite_candidate(BASKETBALL_POINTS_ASSISTS),
     ("WNBA", BASKETBALL_REBOUNDS_ASSISTS): _wnba_composite_candidate(BASKETBALL_REBOUNDS_ASSISTS),
-
-    # NFL direct-prop production routes from the governed NFL build.
     ("NFL", NFL_PASSING_YARDS): _certified("NFL", NFL_PASSING_YARDS, NFL_PLAYER_PROP_EXPERT, "Validated rolling fitted NFL passing-yards route; runtime artifact/input/calibration gates remain mandatory."),
     ("NFL", NFL_RUSHING_YARDS): _certified("NFL", NFL_RUSHING_YARDS, NFL_PLAYER_PROP_EXPERT, "Validated rolling fitted NFL rushing-yards route; runtime artifact/input/calibration gates remain mandatory."),
     ("NFL", NFL_RECEIVING_YARDS): _certified("NFL", NFL_RECEIVING_YARDS, NFL_PLAYER_PROP_EXPERT, "Validated rolling fitted NFL receiving-yards route; runtime artifact/input/calibration gates remain mandatory."),
     ("NFL", NFL_ANYTIME_TD): _certified("NFL", NFL_ANYTIME_TD, NFL_PLAYER_PROP_EXPERT, "Validated fitted NFL anytime-TD Bernoulli route; runtime artifact/input/calibration gates remain mandatory."),
-
-    # Fitted research candidates: explicit, nonpublishable until exact-route lifecycle graduation.
     ("NFL", FANTASY_SCORE): _fantasy_candidate("NFL", FANTASY_SCORE, NFL_FANTASY_SCORE_EXPERT, source="services/nfl_dfs_fitted_simulator.py"),
     ("NBA", FANTASY_SCORE): _fantasy_candidate("NBA", FANTASY_SCORE, NBA_FANTASY_SCORE_EXPERT, source="services/fantasy_score_fitted_candidates.py"),
     ("WNBA", FANTASY_SCORE): _fantasy_candidate("WNBA", FANTASY_SCORE, WNBA_FANTASY_SCORE_EXPERT, source="services/fantasy_score_fitted_candidates.py"),
     ("MLB", MLB_HITTER_FANTASY_SCORE): _fantasy_candidate("MLB", MLB_HITTER_FANTASY_SCORE, MLB_HITTER_FANTASY_SCORE_EXPERT, source="services/fantasy_score_fitted_candidates.py"),
     ("MLB", MLB_PITCHER_FANTASY_SCORE): _fantasy_candidate("MLB", MLB_PITCHER_FANTASY_SCORE, MLB_PITCHER_FANTASY_SCORE_EXPERT, source="services/fantasy_score_fitted_candidates.py"),
 }
-
 
 _CROSS_SPORT_BUILD_TARGETS: dict[str, tuple[str, ...]] = {
     "NBA": ("POINTS", "REBOUNDS", "ASSISTS", "THREE_POINTERS_MADE", BASKETBALL_PRA, BASKETBALL_POINTS_REBOUNDS, BASKETBALL_POINTS_ASSISTS, BASKETBALL_REBOUNDS_ASSISTS),
@@ -265,7 +260,6 @@ for _sport, _stats in _CROSS_SPORT_BUILD_TARGETS.items():
             )
         else:
             DECLARED_PROP_LANES.setdefault((_sport, _stat), _build_required(_sport, _stat))
-
 
 SPORT_ALIASES = {
     "BASEBALL": "MLB", "BASEBALL_MLB": "MLB", "MAJOR LEAGUE BASEBALL": "MLB", "MAJOR_LEAGUE_BASEBALL": "MLB",
