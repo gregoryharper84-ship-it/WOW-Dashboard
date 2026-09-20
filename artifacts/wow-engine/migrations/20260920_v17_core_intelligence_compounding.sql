@@ -196,6 +196,7 @@ create table if not exists public.wow_intelligence_promotion_reviews (
 do $$
 declare
   tbl text;
+  trigger_name text;
 begin
   foreach tbl in array array[
     'wow_intelligence_market_observations',
@@ -206,10 +207,11 @@ begin
     'wow_intelligence_challenger_proposals',
     'wow_intelligence_promotion_reviews'
   ] loop
-    execute format('drop trigger if exists trg_%I_immutable on public.%I', tbl, tbl);
+    trigger_name := 'trg_' || tbl || '_immutable';
+    execute format('drop trigger if exists %I on public.%I', trigger_name, tbl);
     execute format(
-      'create trigger trg_%I_immutable before update or delete on public.%I for each row execute function public.wow_core_intelligence_block_mutation()',
-      tbl, tbl
+      'create trigger %I before update or delete on public.%I for each row execute function public.wow_core_intelligence_block_mutation()',
+      trigger_name, tbl
     );
     execute format('revoke all on public.%I from public, anon, authenticated', tbl);
     execute format('grant select, insert on public.%I to service_role', tbl);
