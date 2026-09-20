@@ -128,17 +128,17 @@ PROVIDERS: dict[str, MarketEvidenceProvider] = {
         name="RUNDOWN",
         base_url_env="WOW_RUNDOWN_BASE_URL",
         default_base_url="https://therundown.io",
-        key_envs=("RUNDOWN_API_KEY", "WOW_RUNDOWN_API_KEY", "THERUNDOWN_API_KEY"),
-        auth_style="query",
-        auth_name="key",
+        key_envs=("THERUNDOWN_API_KEY", "RUNDOWN_API_KEY", "WOW_RUNDOWN_API_KEY"),
+        auth_style="header",
+        auth_name="X-TheRundown-Key",
         endpoints={
-            "sports": "/api/v1/sports",
+            "sports": "/api/v2/sports",
             "events": "/api/v2/sports/{sport_id}/events/{date}",
             "openers": "/api/v2/sports/{sport_id}/openers/{date}",
             "delta": "/api/v2/markets/delta",
         },
         endpoint_env_prefix="WOW_RUNDOWN_",
-        notes="Openers and market delta make this the opener/CLV source. Sport ids are resolved at runtime, never guessed.",
+        notes="Product V2 header-auth market evidence. Openers and market delta make this the opener/CLV source; sport ids are resolved at runtime, never guessed.",
     ),
 }
 
