@@ -28,6 +28,10 @@ from v17.prop_universal_forward_evidence import (
     run_universal_prop_forward_evidence,
 )
 import v17.prop_universal_forward_schema_repair  # align with live Supabase snapshot schema
+# Explicit research-only candidate lifecycle extensions. Importing these patches the
+# shared module objects used above; neither module grants publication/certification.
+import v17.basketball_candidate_forward_overlay  # noqa: F401
+import v17.wnba_composite_settlement_overlay  # noqa: F401
 
 
 _LOGGER = logging.getLogger("wow.v17.prop_forward_cohort")
@@ -49,15 +53,9 @@ def _install_scheduler(app: FastAPI, *, db_client_fn: Any, market_api: Any) -> N
         return
     setattr(app.state, _STATE_KEY, True)
 
-    interval_seconds = _int_env(
-        "WOW_PROP_FORWARD_COHORT_INTERVAL_SECONDS", 900, minimum=60, maximum=86400
-    )
-    max_snapshots = _int_env(
-        "WOW_PROP_FORWARD_COHORT_MAX_SNAPSHOTS", 100, minimum=1, maximum=200
-    )
-    initial_delay_seconds = _int_env(
-        "WOW_PROP_FORWARD_COHORT_INITIAL_DELAY_SECONDS", 5, minimum=0, maximum=300
-    )
+    interval_seconds = _int_env("WOW_PROP_FORWARD_COHORT_INTERVAL_SECONDS", 900, minimum=60, maximum=86400)
+    max_snapshots = _int_env("WOW_PROP_FORWARD_COHORT_MAX_SNAPSHOTS", 100, minimum=1, maximum=200)
+    initial_delay_seconds = _int_env("WOW_PROP_FORWARD_COHORT_INITIAL_DELAY_SECONDS", 5, minimum=0, maximum=300)
 
     @app.on_event("startup")
     async def schedule_prop_forward_cohort() -> None:
@@ -86,11 +84,7 @@ def install_prop_forward_cohort_route(
     db_client_fn: Any,
     market_api: Any,
 ) -> None:
-    install_phase_a_row_publication(
-        app,
-        auth_dependency=auth_dependency,
-        market_api=market_api,
-    )
+    install_phase_a_row_publication(app, auth_dependency=auth_dependency, market_api=market_api)
 
     install_fantasy_score_forward_cohort_route(
         app,
@@ -103,11 +97,6 @@ def install_prop_forward_cohort_route(
     cohort_market_api = ForwardCohortMarketAdapter(market_api)
     _install_scheduler(app, db_client_fn=db_client_fn, market_api=cohort_market_api)
 
-    # Universal lifecycle autopilot is distinct from the legacy MLB strikeout
-    # cohort loop. It continuously runs every declared exact route through
-    # forward capture, exact settlement, certification-readiness and production
-    # registration audit, then persists route/artifact health. It cannot certify
-    # or promote an artifact by itself.
     install_prop_lifecycle_autopilot(
         app,
         auth_dependency=auth_dependency,
@@ -115,16 +104,9 @@ def install_prop_forward_cohort_route(
         market_api=cohort_market_api,
     )
 
-    # This wraps the already-composed canonical HTTP Action boundary. Internal
-    # model calls do not pass through it, so a persisted canary is evidence of a
-    # real canonical endpoint invocation. It remains inert until a reviewed exact
-    # certification release exists.
     install_prop_action_canary_capture(app, db_client_fn=db_client_fn)
 
-    if not any(
-        getattr(route, "path", None) == "/v17/prop-forward-cohort-run"
-        for route in app.router.routes
-    ):
+    if not any(getattr(route, "path", None) == "/v17/prop-forward-cohort-run" for route in app.router.routes):
         @app.post(
             "/v17/prop-forward-cohort-run",
             dependencies=[auth_dependency],
@@ -133,10 +115,7 @@ def install_prop_forward_cohort_route(
         def prop_forward_cohort_run(req: PropForwardCohortRequest):
             return run_prop_forward_cohort(req, db=db_client_fn(), market_api=cohort_market_api)
 
-    if not any(
-        getattr(route, "path", None) == "/v17/prop-forward-evidence-run"
-        for route in app.router.routes
-    ):
+    if not any(getattr(route, "path", None) == "/v17/prop-forward-evidence-run" for route in app.router.routes):
         @app.post(
             "/v17/prop-forward-evidence-run",
             dependencies=[auth_dependency],
@@ -149,13 +128,7 @@ def install_prop_forward_cohort_route(
                 market_api=cohort_market_api,
             )
 
-    # Settlement is a separate authenticated stage. It can only write outcomes
-    # for exact routes with an explicit official-stat adapter; unsupported and
-    # separate-contract routes stay typed/blocked and never borrow a proxy stat.
-    if not any(
-        getattr(route, "path", None) == "/v17/prop-forward-settlement-run"
-        for route in app.router.routes
-    ):
+    if not any(getattr(route, "path", None) == "/v17/prop-forward-settlement-run" for route in app.router.routes):
         @app.post(
             "/v17/prop-forward-settlement-run",
             dependencies=[auth_dependency],
@@ -164,12 +137,7 @@ def install_prop_forward_cohort_route(
         def prop_forward_settlement_run(req: ExactRouteSettlementRequest):
             return run_exact_route_settlement(req, db=db_client_fn())
 
-    # #492 control plane: descriptive forward metrics + exact reviewed-policy
-    # certification. It never fits, certifies by declaration, or promotes.
-    if not any(
-        getattr(route, "path", None) == "/v17/prop-calibration-certification-audit"
-        for route in app.router.routes
-    ):
+    if not any(getattr(route, "path", None) == "/v17/prop-calibration-certification-audit" for route in app.router.routes):
         @app.post(
             "/v17/prop-calibration-certification-audit",
             dependencies=[auth_dependency],
@@ -178,12 +146,7 @@ def install_prop_forward_cohort_route(
         def prop_calibration_certification_audit(req: PropCertificationAuditRequest):
             return run_prop_certification_audit(req, db=db_client_fn())
 
-    # #493 control plane: binds certification to registry/runtime/hydration and
-    # an immutable real Action receipt. No synthetic receipt can satisfy it.
-    if not any(
-        getattr(route, "path", None) == "/v17/prop-production-registration-audit"
-        for route in app.router.routes
-    ):
+    if not any(getattr(route, "path", None) == "/v17/prop-production-registration-audit" for route in app.router.routes):
         @app.post(
             "/v17/prop-production-registration-audit",
             dependencies=[auth_dependency],
