@@ -46,6 +46,7 @@ LOGGER = logging.getLogger("wow.v17.interactive_latency")
 _STATE_KEY = "wow_interactive_pick_hydration_installed"
 DEFAULT_WORKERS = 4
 MAX_WORKERS = 8
+_DEFAULT_AUTO_HYDRATE_PROP_EVIDENCE = auto_hydrate_prop_evidence
 
 
 def _worker_count() -> int:
@@ -134,9 +135,16 @@ def _hydration_key(row: PickRequestRow) -> tuple[str, ...]:
 
 
 def _hydrate(row: PickRequestRow) -> RawPropEvidence:
-    # Keep the historical public monkeypatch seam while carrying the WOW
-    # canonical event identity into provider-alias verification.
-    raw = auto_hydrate_prop_evidence(
+    # Preserve both historical diagnostic seams. Tests/tools may monkeypatch the
+    # public symbol in this module; the V17 facade may instead replace the core
+    # runtime's hydrator with a delegate. A public override wins, otherwise use
+    # the core runtime's current function when available.
+    hydrator = auto_hydrate_prop_evidence
+    if hydrator is _DEFAULT_AUTO_HYDRATE_PROP_EVIDENCE:
+        runtime_hydrator = getattr(pick_runtime, "auto_hydrate_prop_evidence", None)
+        if callable(runtime_hydrator):
+            hydrator = runtime_hydrator
+    raw = hydrator(
         sport=str(row.sport or "").strip().upper(),
         player=row.player,
         stat_type=_canonical_stat(row.sport,row.stat_type),
