@@ -37,7 +37,7 @@ import numpy as np
 from scipy import stats
 from scipy.special import gammaln
 
-from nhl_skater_sog_feature_hydration import FeatureSnapshot, hydrate_pregame_snapshot
+from nhl_skater_sog_feature_hydration import FeatureSnapshot, build_history_index, hydrate_pregame_snapshot
 from nhl_skater_sog_ingestion import PARTICIPATION_DRESSED_PLAYED, SkaterGameSogRecord
 
 RESEARCH_ONLY = True
@@ -172,9 +172,15 @@ def build_training_dataset(
     nothing in the Phase 1 ingestion schema currently carries that flag --
     see the Phase 3 completion report for this as an explicit dependency on
     a future ingestion field, not a silently ignored requirement).
+
+    Builds one HistoryIndex over `history` up front and reuses it for every
+    row's hydration call, rather than letting each call rebuild its own --
+    this is what keeps building a full training dataset close to
+    O(n log n) rather than O(n^2) in the size of `history`.
     """
     rows: list[TrainingRow] = []
     excluded: list[ExcludedRow] = []
+    index = build_history_index(history)
 
     for record in history:
         if record.participation_status != PARTICIPATION_DRESSED_PLAYED or record.actual_value is None:
@@ -195,7 +201,7 @@ def build_training_dataset(
                 target_provider_season_id=record.provider_season_id,
                 event_start=record.game_start_time,
                 as_of=as_of,
-                history=history,
+                history_index=index,
             )
         except Exception as exc:  # noqa: BLE001 -- any hydration failure excludes this row with a typed reason
             excluded.append(

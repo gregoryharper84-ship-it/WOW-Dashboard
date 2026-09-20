@@ -396,3 +396,29 @@ def test_data_sufficiency_meets_threshold_when_synthetically_large_enough():
     assert report.meets_promotion_threshold is True
     assert report.seasons == 3
     assert report.unique_skaters >= p3.MIN_UNIQUE_SKATERS
+
+
+# --- performance: build_training_dataset must not be quadratic in history size ---
+
+
+def test_build_training_dataset_scales_subquadratically():
+    import time
+
+    small_history = _synthetic_history(n_players=15, n_games=20, seed=3)   # 300 records
+    large_history = _synthetic_history(n_players=45, n_games=20, seed=3)   # 900 records (3x)
+
+    t0 = time.perf_counter()
+    small_rows, _ = p3.build_training_dataset(small_history)
+    t_small = time.perf_counter() - t0
+
+    t0 = time.perf_counter()
+    large_rows, _ = p3.build_training_dataset(large_history)
+    t_large = time.perf_counter() - t0
+
+    ratio_rows = len(large_rows) / len(small_rows)
+    ratio_time = t_large / max(t_small, 1e-6)
+    # A true O(n^2) implementation would show ratio_time ~= ratio_rows^2 (~9x
+    # for a 3x row increase). Indexed lookups should keep this close to
+    # linear; allow generous slack (2x the row ratio) to avoid CI flakiness
+    # while still catching a real quadratic regression.
+    assert ratio_time < ratio_rows * 2.0, f"ratio_time={ratio_time:.2f} ratio_rows={ratio_rows:.2f}"

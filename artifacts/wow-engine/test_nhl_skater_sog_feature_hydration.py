@@ -476,3 +476,24 @@ def test_no_market_derived_features_present():
     for key in snap.feature_values:
         lowered = key.lower()
         assert not any(term in lowered for term in forbidden_substrings), key
+
+
+def test_precomputed_history_index_matches_raw_history_path():
+    history = _veteran_history()
+    kwargs = dict(
+        event_id="TARGET", player_id="100", team_id="10", opponent_team_id="20", is_home=True,
+        target_provider_season_id="20252026", event_start="2025-10-13T00:00:00Z", as_of="2025-10-12T00:00:00Z",
+    )
+    snap_raw = feat.hydrate_pregame_snapshot(history=history, **kwargs)
+    index = feat.build_history_index(history)
+    snap_indexed = feat.hydrate_pregame_snapshot(history_index=index, **kwargs)
+    assert snap_raw.to_dict() == snap_indexed.to_dict()
+
+
+def test_hydrate_requires_history_or_index():
+    with pytest.raises(feat.NHLSogFeatureError) as exc:
+        feat.hydrate_pregame_snapshot(
+            event_id="TARGET", player_id="100", team_id="10", opponent_team_id="20", is_home=True,
+            target_provider_season_id="20252026", event_start="2025-10-13T00:00:00Z", as_of="2025-10-12T00:00:00Z",
+        )
+    assert exc.value.code == "NHL_SOG_FEATURE_NO_HISTORY_PROVIDED"
