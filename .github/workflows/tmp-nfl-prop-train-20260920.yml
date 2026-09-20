@@ -52,3 +52,4 @@ jobs:
         run: |
           echo "NFL prop offline training gate failed; frozen report is preserved for diagnosis."
           exit 1
+      # retrigger marker: evidence-floor-v2
