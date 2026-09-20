@@ -21,6 +21,7 @@ on:
       - "artifacts/wow-engine/v17/nightly_multiscout_delivery.py"
       - "artifacts/wow-engine/v17/multiscout_auto_advance.py"
       - "artifacts/wow-engine/v17/multiscout_auto_advance_oidc.py"
+      - "artifacts/wow-engine/v17/morning_scout_report.py"
       - "artifacts/wow-engine/v17/sport_scout_registry.py"
       - "artifacts/wow-engine/v17/sport_scout_enrichment.py"
       - "artifacts/wow-engine/v17/scout_research_ledger.py"
@@ -59,6 +60,7 @@ on:
       - "artifacts/wow-engine/test_v17_scout_secondary_window.py"
       - "artifacts/wow-engine/test_v17_nightly_multiscout_delivery.py"
       - "artifacts/wow-engine/test_v17_multiscout_auto_advance.py"
+      - "artifacts/wow-engine/test_v17_morning_scout_report.py"
       - "artifacts/wow-engine/test_agent_runtime_v17_model_failures.py"
       - "artifacts/wow-engine/test_v17_github_oidc.py"
       - "artifacts/wow-engine/test_v17_multiscout_oidc_runtime.py"
@@ -100,6 +102,7 @@ jobs:
           test_v17_scout_secondary_window.py
           test_v17_nightly_multiscout_delivery.py
           test_v17_multiscout_auto_advance.py
+          test_v17_morning_scout_report.py
           test_agent_runtime_v17_model_failures.py
           test_v17_github_oidc.py
           test_v17_multiscout_oidc_runtime.py
@@ -433,87 +436,10 @@ jobs:
         if: always()
         shell: bash
         run: |
-          python - <<'PY'
-          import json, os
-          from pathlib import Path
-
-          root = Path(os.environ["RUNNER_TEMP"]) / "wow-multiscout"
-          handoff_path = root / "model-handoff.json"
-          receipt_path = root / "auto-advance-receipt.json"
-          report_path = root / "morning-scout-picks.json"
-          if not handoff_path.exists():
-              raise SystemExit("Scout handoff missing; fail closed.")
-
-          handoff = json.loads(handoff_path.read_text())
-          receipt = json.loads(receipt_path.read_text()) if receipt_path.exists() else {}
-          qualified, blocked = [], []
-          specialist_status = str(receipt.get("status") or "NOT_RUN")
-          reconciliation_pass = receipt.get("reconciliation", {}).get("response_reconciliation_pass") is True
-          publication_gate_open = (
-              specialist_status in {"AUTO_ADVANCE_COMPLETE", "AUTO_ADVANCE_COMPLETE_WITH_BLOCKERS"}
-              and reconciliation_pass
-              and receipt.get("can_execute") is False
-          )
-
-          def rows_from(receipts):
-              for call in receipts or []:
-                  body = (call or {}).get("body") or {}
-                  rows = body.get("outcomes") or body.get("rows") or []
-                  if isinstance(rows, list):
-                      yield from (r for r in rows if isinstance(r, dict))
-
-          for route, receipts in (
-              ("WOW_PROP_LANE", receipt.get("prop_receipts")),
-              ("LLP_TEAM_BETTING_ENGINE", receipt.get("team_event_receipts")),
-          ):
-              for row in rows_from(receipts):
-                  status = str(row.get("terminal_status") or row.get("status") or "").upper()
-                  item = {**row, "controlling_specialist_route": route, "can_execute": False}
-                  if status == "COMPLETED" and publication_gate_open:
-                      qualified.append(item)
-                  else:
-                      if status == "COMPLETED" and not publication_gate_open:
-                          item["publication_blocker"] = "SPECIALIST_RECEIPT_NOT_RECONCILED"
-                      blocked.append(item)
-
-          def lower_bound(row):
-              for key in ("calibrated_lower_bound", "probability_lower_bound", "lower_bound"):
-                  value = row.get(key)
-                  if isinstance(value, (int, float)):
-                      return float(value)
-              return -1.0
-
-          qualified.sort(key=lower_bound, reverse=True)
-          report = {
-              "schema_version": "wow.v17.morning-scout-picks.v1",
-              "run_id": handoff.get("run_id"),
-              "research_run_id": handoff.get("research_run_id"),
-              "scout_status": handoff.get("status"),
-              "specialist_status": specialist_status,
-              "specialist_code": receipt.get("code") or "NOT_RUN",
-              "specialist_reconciliation_pass": reconciliation_pass,
-              "publication_gate_open": publication_gate_open,
-              "governed_picks": qualified,
-              "blocked_or_unresolved": blocked,
-              "research_only_candidates": handoff.get("model_handoff", {}),
-              "governance": {
-                  "scout_discovery_only": True,
-                  "sportsbook_external_probability_is_evidence_only": True,
-                  "final_probability_requires_controlling_specialist": True,
-                  "ranking_metric": "calibrated_lower_bound",
-                  "can_execute": False,
-              },
-              "can_execute": False,
-          }
-          assert report["can_execute"] is False
-          assert report["governance"]["can_execute"] is False
-          assert all(row.get("can_execute") is False for row in qualified)
-          assert all(str(row.get("terminal_status") or row.get("status") or "").upper() == "COMPLETED" for row in qualified)
-          if not publication_gate_open:
-              assert qualified == []
-          report_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
-          print(f"governed picks={len(qualified)} blocked/unresolved={len(blocked)} publication_gate_open={publication_gate_open} can_execute=false")
-          PY
+          python v17/morning_scout_report.py \
+            --handoff "$RUNNER_TEMP/wow-multiscout/model-handoff.json" \
+            --receipt "$RUNNER_TEMP/wow-multiscout/auto-advance-receipt.json" \
+            --output "$RUNNER_TEMP/wow-multiscout/morning-scout-picks.json"
           test -f "$RUNNER_TEMP/wow-multiscout/morning-scout-picks.json"
       - name: Upload governed Scout and downstream receipt artifact
         if: always()
