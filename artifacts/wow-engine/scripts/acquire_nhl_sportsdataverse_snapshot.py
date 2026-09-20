@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import sys
 import tempfile
 import time
@@ -56,12 +57,18 @@ def _download_bytes(url: str, *, timeout: int, attempts: int) -> bytes:
 
 
 def _write_verified_asset(output_dir: Path, asset, payload: bytes) -> None:
+    """Write into an isolated temp directory using the exact pinned filename.
+
+    The verifier intentionally rejects filename drift. Keeping the canonical
+    basename in a temporary directory lets us verify both identity and digest
+    before the atomic rename into the final snapshot directory.
+    """
     output_dir.mkdir(parents=True, exist_ok=True)
     final_path = output_dir / asset.filename
-    fd, temp_name = tempfile.mkstemp(prefix=asset.filename + ".", suffix=".tmp", dir=output_dir)
-    temp_path = Path(temp_name)
+    temp_dir = Path(tempfile.mkdtemp(prefix=".nhl-sdv-", dir=output_dir))
+    temp_path = temp_dir / asset.filename
     try:
-        with os.fdopen(fd, "wb") as handle:
+        with temp_path.open("wb") as handle:
             handle.write(payload)
             handle.flush()
             os.fsync(handle.fileno())
@@ -69,8 +76,7 @@ def _write_verified_asset(output_dir: Path, asset, payload: bytes) -> None:
         os.replace(temp_path, final_path)
         verify_asset_file(final_path, asset)
     finally:
-        if temp_path.exists():
-            temp_path.unlink()
+        shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 def acquire_snapshot(
