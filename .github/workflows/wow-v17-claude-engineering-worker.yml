@@ -165,6 +165,7 @@ jobs:
           API_RESULT: ${{ steps.claude_api.outputs.structured_output }}
           OAUTH_BRANCH: ${{ steps.claude_oauth.outputs.branch_name }}
           API_BRANCH: ${{ steps.claude_api.outputs.branch_name }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           result="${OAUTH_RESULT:-}"
@@ -189,8 +190,19 @@ jobs:
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
           if [ "$changed" = "true" ] && [ -z "$branch" ]; then
-            echo "::error::Claude reported changes but did not return a branch."
-            exit 1
+            if git diff --quiet --exit-code; then
+              echo "::error::Claude reported changes but returned neither a branch nor a working-tree diff."
+              exit 1
+            fi
+            branch="claude/engineering/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git switch -c "$branch"
+            git add --all
+            git commit -m "Claude Engineering: ${incident:-nightly-repair}"
+            git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+            git push --set-upstream origin "$branch"
+            echo "branch=$branch" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Open or update engineering PR
