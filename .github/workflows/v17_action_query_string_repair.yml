@@ -1,0 +1,52 @@
+name: v17-action-query-string-repair
+
+on:
+  push:
+    branches:
+      - fix/v17-action-date-transport-20260920
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/v17-action-date-transport-20260920
+          fetch-depth: 0
+      - name: Patch canonical Action query dates
+        shell: python
+        run: |
+          from pathlib import Path
+
+          schema_path = Path('artifacts/wow-engine/v17/openapi.wow-betting-engine.v17.yaml')
+          test_path = Path('artifacts/wow-engine/tests/test_v17_live_editor_compat.py')
+
+          schema = schema_path.read_text(encoding='utf-8')
+          needle = "        - name: date\n          in: query\n          required: false\n          schema: {type: string, format: date}"
+          replacement = "        - name: date\n          in: query\n          required: false\n          schema: {type: string}"
+          count = schema.count(needle)
+          if count != 2:
+              raise SystemExit(f'expected exactly 2 diagnostic date query schemas, found {count}')
+          schema = schema.replace(needle, replacement)
+          schema_path.write_text(schema, encoding='utf-8')
+
+          test = test_path.read_text(encoding='utf-8')
+          old = '        assert parameters["date"]["schema"] == {"type": "string", "format": "date"}'
+          new = '        assert parameters["date"]["schema"] == {"type": "string"}'
+          if test.count(old) != 1:
+              raise SystemExit('expected editor compatibility assertion not found exactly once')
+          test = test.replace(old, new)
+          test_path.write_text(test, encoding='utf-8')
+      - name: Remove one-shot workflow and commit repair
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/v17_action_query_string_repair.yml
+          git add artifacts/wow-engine/v17/openapi.wow-betting-engine.v17.yaml artifacts/wow-engine/tests/test_v17_live_editor_compat.py
+          git diff --cached --check
+          git commit -m "V17: remove Action client date-format dispatch hazard"
+          git push origin HEAD:fix/v17-action-date-transport-20260920
