@@ -1,11 +1,10 @@
-"""Authenticated V17 route for Fantasy Score forward-evidence capture.
+"""Authenticated V17 route for Fantasy Score and basketball research candidates.
 
 The forward collector remains available for batch/backfill capture. This installer
-also places a narrow evidence-only scorer in front of the already-composed
-production prop boundary. Non-Fantasy requests delegate byte-for-byte to the
-scorer that was present before this installer ran. If a Fantasy route later gains
-an exact certified production artifact, that production scorer takes precedence
-over the research bridge.
+also places narrow evidence-only scorers in front of the already-composed production
+prop boundary. Non-candidate requests delegate byte-for-byte to the scorer that was
+present before this installer ran. If an exact candidate route later gains a certified
+production artifact, that production scorer always takes precedence.
 """
 from __future__ import annotations
 
@@ -24,6 +23,11 @@ from v17.fantasy_score_forward_cohort_runtime import (
 from v17.fantasy_score_forward_cohort_schema_repair import (
     install_fantasy_score_forward_schema_repair,
 )
+from v17.nba_scalar_candidate_bridge import (
+    is_nba_scalar_candidate_request,
+    score_nba_scalar_candidate_research,
+)
+from v17.nba_scalar_candidate_registry import install_nba_scalar_candidate_registration_route
 
 _BRIDGE_STATE_KEY = "wow_fantasy_score_candidate_runtime_bridge_installed"
 
@@ -34,16 +38,15 @@ def install_fantasy_score_candidate_runtime_bridge(
     auth_dependency: Any,
     market_api: Any,
 ) -> bool:
-    """Install the evidence-only Fantasy branch after the final prop wrapper.
+    """Install evidence-only fitted-candidate branches after the final prop wrapper.
 
-    The captured scorer remains authoritative for every non-Fantasy request and
-    for any Fantasy request whose exact route has since become certified. That
-    keeps this research bridge incapable of shadowing future production promotion.
+    The captured scorer remains authoritative for every ordinary request and for any
+    candidate request whose exact route has since become certified. That makes the
+    research bridge incapable of shadowing a future production promotion.
 
-    Isolated scheduler/unit contexts may intentionally provide only the small
-    market-api surface needed by the generic forward-cohort scheduler. In those
-    contexts there is no scorer to wrap, so return False without mutating the app.
-    Production uses the full market API and therefore installs normally.
+    Isolated scheduler/unit contexts may intentionally provide only the small market-
+    API surface needed by the generic forward scheduler. In those contexts there is
+    no scorer to wrap, so return False without mutating the app.
     """
     if getattr(app.state, _BRIDGE_STATE_KEY, False):
         return True
@@ -53,27 +56,37 @@ def install_fantasy_score_candidate_runtime_bridge(
     if not callable(captured_score_prop) or score_request_model is None:
         return False
 
-    def score_prop_with_fantasy_candidate(
+    def _certified_route_available(req: Any) -> bool:
+        certified_resolver = getattr(market_api, "_prop_route_artifact", None)
+        if not callable(certified_resolver):
+            return False
+        certified = certified_resolver(req.sport, req.stat_type)
+        return isinstance(certified, dict) and certified.get("ok") is True
+
+    def score_prop_with_fitted_candidate(
         req: Any,
         x_wow_model_identity: Optional[str] = None,
     ) -> dict[str, Any]:
         model_identity = market_api.prod._reject_llp_prop_identity(x_wow_model_identity)
         if is_fantasy_score_request(req):
-            certified_resolver = getattr(market_api, "_prop_route_artifact", None)
-            if callable(certified_resolver):
-                certified = certified_resolver(req.sport, req.stat_type)
-                if isinstance(certified, dict) and certified.get("ok") is True:
-                    return captured_score_prop(req, x_wow_model_identity)
+            if _certified_route_available(req):
+                return captured_score_prop(req, x_wow_model_identity)
             return score_fantasy_candidate_research(
+                market_api,
+                req,
+                model_identity=model_identity,
+            )
+        if is_nba_scalar_candidate_request(req):
+            if _certified_route_available(req):
+                return captured_score_prop(req, x_wow_model_identity)
+            return score_nba_scalar_candidate_research(
                 market_api,
                 req,
                 model_identity=model_identity,
             )
         return captured_score_prop(req, x_wow_model_identity)
 
-    # Keep the in-process callable's concrete request type available to tooling
-    # without leaving a postponed local-name ForwardRef behind.
-    score_prop_with_fantasy_candidate.__annotations__["req"] = score_request_model
+    score_prop_with_fitted_candidate.__annotations__["req"] = score_request_model
 
     app.router.routes[:] = [
         route
@@ -84,23 +97,20 @@ def install_fantasy_score_candidate_runtime_bridge(
         )
     ]
 
-    def score_prop_with_fantasy_candidate_route(
+    def score_prop_with_fitted_candidate_route(
         req: Any,
         x_wow_model_identity: Optional[str] = Header(default=None, alias="X-WOW-Model-Identity"),
     ):
-        return score_prop_with_fantasy_candidate(req, x_wow_model_identity)
+        return score_prop_with_fitted_candidate(req, x_wow_model_identity)
 
-    # `score_request_model` is function-local. Bind the actual Pydantic model
-    # before FastAPI registers the endpoint so app.openapi() sees a concrete
-    # request schema instead of an unresolved ForwardRef.
-    score_prop_with_fantasy_candidate_route.__annotations__["req"] = score_request_model
+    score_prop_with_fitted_candidate_route.__annotations__["req"] = score_request_model
     app.post(
         "/score-prop",
         dependencies=[auth_dependency],
         operation_id="scoreWowProp",
-    )(score_prop_with_fantasy_candidate_route)
+    )(score_prop_with_fitted_candidate_route)
 
-    market_api.score_prop = score_prop_with_fantasy_candidate
+    market_api.score_prop = score_prop_with_fitted_candidate
     setattr(app.state, _BRIDGE_STATE_KEY, True)
     return True
 
@@ -112,15 +122,17 @@ def install_fantasy_score_forward_cohort_route(
     db_client_fn: Any,
     market_api: Any,
 ) -> None:
-    # PR #458 selected two columns that are not part of the live evidence table.
-    # Repair that exact selector before any request can enter the collector.
     install_fantasy_score_forward_schema_repair()
 
-    # api_ncaaf_acceptance installs the final calibration/publication wrapper
-    # before daily/forward-cohort routes. Install the Fantasy candidate branch
-    # here so it composes outside that wrapper instead of bypassing it. A minimal
-    # test/scheduler market API can legitimately omit score_prop; in that case the
-    # bridge is simply not installable in that isolated context.
+    # Registration is an authenticated control-plane route only. It derives
+    # CANDIDATE rows from the existing frozen NBA Fantasy artifact and never
+    # certifies/promotes/publishes them.
+    install_nba_scalar_candidate_registration_route(
+        app,
+        auth_dependency=auth_dependency,
+        db_client_fn=db_client_fn,
+    )
+
     install_fantasy_score_candidate_runtime_bridge(
         app,
         auth_dependency=auth_dependency,
