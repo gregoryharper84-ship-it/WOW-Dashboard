@@ -429,6 +429,75 @@ jobs:
           out.write_text("\n".join(lines) + "\n")
           PY
           cat "$RUNNER_TEMP/wow-multiscout/summary.md" >> "$GITHUB_STEP_SUMMARY"
+      - name: Build governed morning pick report
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+
+          root = Path(os.environ["RUNNER_TEMP"]) / "wow-multiscout"
+          handoff_path = root / "model-handoff.json"
+          receipt_path = root / "auto-advance-receipt.json"
+          report_path = root / "morning-scout-picks.json"
+          if not handoff_path.exists():
+              raise SystemExit("Scout handoff missing; fail closed.")
+
+          handoff = json.loads(handoff_path.read_text())
+          receipt = json.loads(receipt_path.read_text()) if receipt_path.exists() else {}
+          qualified, blocked = [], []
+
+          def rows_from(receipts):
+              for call in receipts or []:
+                  body = (call or {}).get("body") or {}
+                  rows = body.get("outcomes") or body.get("rows") or []
+                  if isinstance(rows, list):
+                      yield from (r for r in rows if isinstance(r, dict))
+
+          for route, receipts in (
+              ("WOW_PROP_LANE", receipt.get("prop_receipts")),
+              ("LLP_TEAM_BETTING_ENGINE", receipt.get("team_event_receipts")),
+          ):
+              for row in rows_from(receipts):
+                  status = str(row.get("terminal_status") or row.get("status") or "").upper()
+                  item = {**row, "controlling_specialist_route": route, "can_execute": False}
+                  if status == "COMPLETED":
+                      qualified.append(item)
+                  else:
+                      blocked.append(item)
+
+          def lower_bound(row):
+              for key in ("calibrated_lower_bound", "probability_lower_bound", "lower_bound"):
+                  value = row.get(key)
+                  if isinstance(value, (int, float)):
+                      return float(value)
+              return -1.0
+
+          qualified.sort(key=lower_bound, reverse=True)
+          report = {
+              "schema_version": "wow.v17.morning-scout-picks.v1",
+              "run_id": handoff.get("run_id"),
+              "research_run_id": handoff.get("research_run_id"),
+              "scout_status": handoff.get("status"),
+              "specialist_status": receipt.get("status") or "NOT_RUN",
+              "specialist_code": receipt.get("code") or "NOT_RUN",
+              "governed_picks": qualified,
+              "blocked_or_unresolved": blocked,
+              "research_only_candidates": handoff.get("model_handoff", {}),
+              "governance": {
+                  "scout_discovery_only": True,
+                  "sportsbook_external_probability_is_evidence_only": True,
+                  "final_probability_requires_controlling_specialist": True,
+                  "ranking_metric": "calibrated_lower_bound",
+                  "can_execute": False,
+              },
+              "can_execute": False,
+          }
+          report_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
+          print(f"governed picks={len(qualified)} blocked/unresolved={len(blocked)} can_execute=false")
+          PY
+          test -f "$RUNNER_TEMP/wow-multiscout/morning-scout-picks.json"
       - name: Upload governed Scout and downstream receipt artifact
         if: always()
         uses: actions/upload-artifact@v4
@@ -442,6 +511,7 @@ jobs:
             ${{ runner.temp }}/wow-multiscout/auto-advance-receipt.json
             ${{ runner.temp }}/wow-multiscout/market-evidence.json
             ${{ runner.temp }}/wow-multiscout/summary.md
+            ${{ runner.temp }}/wow-multiscout/morning-scout-picks.json
           if-no-files-found: warn
           retention-days: 90
       - name: Fail nightly run if source acquisition was blocked
