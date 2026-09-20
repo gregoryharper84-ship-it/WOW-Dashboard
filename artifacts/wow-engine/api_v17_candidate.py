@@ -50,27 +50,32 @@ install_recommendation_ledger_routes(
     get_client_fn=v16._db_client,
 )
 
+# Core Intelligence installers expect the underlying callable so they can wrap it
+# in FastAPI Depends. Passing v16._auth (already a Depends object) would otherwise
+# skip dependency installation and expose these routes without the Action-key gate.
+_core_intelligence_auth = v16.base.market_api.prod._require_action_api_key
+
 # Core Intelligence is out-of-band learning only. It reads immutable predictions
 # and authoritative outcomes, writes append-only evidence, and cannot change the
 # V17 scoring terminal or execute a wager.
 install_core_intelligence_routes(
     app,
-    auth_dependency=v16._auth,
+    auth_dependency=_core_intelligence_auth,
     get_client_fn=v16._db_client,
 )
 install_core_intelligence_event_routes(
     app,
-    auth_dependency=v16._auth,
+    auth_dependency=_core_intelligence_auth,
     get_client_fn=v16._db_client,
 )
 install_compounding_intelligence_routes_read_only(
     app,
-    auth_dependency=v16._auth,
+    auth_dependency=_core_intelligence_auth,
     get_client_fn=v16._db_client,
 )
 install_shadow_lab_routes(
     app,
-    auth_dependency=v16._auth,
+    auth_dependency=_core_intelligence_auth,
     get_client_fn=v16._db_client,
 )
 
