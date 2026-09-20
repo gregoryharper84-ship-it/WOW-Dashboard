@@ -14,7 +14,7 @@ permissions:
   actions: write
 
 concurrency:
-  group: wow-v17-prop-transport-production-replay-v2-${{ github.ref }}
+  group: wow-v17-prop-transport-production-replay-v3-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
