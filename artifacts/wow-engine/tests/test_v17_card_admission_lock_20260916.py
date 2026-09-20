@@ -148,3 +148,5 @@ def test_team_event_held_row_is_explicitly_card_ineligible():
     assert outcome["card_admission_eligible"] is False
     assert outcome["card_admission_receipt"] is None
     assert outcome["can_execute"] is False
+
+# CI context refresh: preserve exact card-admission regression coverage.
