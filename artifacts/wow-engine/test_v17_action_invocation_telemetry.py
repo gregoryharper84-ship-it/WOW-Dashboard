@@ -1,6 +1,7 @@
 import base64
 import json
 import logging
+import time
 
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
@@ -108,6 +109,9 @@ def test_action_invocation_telemetry_records_success_failure_and_caller_class_wi
 
     assert client.get("/health").status_code == 200
 
+    deadline = time.monotonic() + 1.0
+    while len(receipts) < 4 and time.monotonic() < deadline:
+        time.sleep(0.01)
     assert len(receipts) == 4
     prop, pick, team, unauthorized = receipts
 
@@ -165,4 +169,10 @@ def test_action_invocation_telemetry_persistence_failure_never_changes_action_re
 
     assert response.status_code == 200
     assert response.json()["can_execute"] is False
+    deadline = time.monotonic() + 1.0
+    while (
+        not any("WOW_V17_ACTION_INVOCATION_PERSISTENCE_FAILED" in record.getMessage() for record in caplog.records)
+        and time.monotonic() < deadline
+    ):
+        time.sleep(0.01)
     assert any("WOW_V17_ACTION_INVOCATION_PERSISTENCE_FAILED" in record.getMessage() for record in caplog.records)
