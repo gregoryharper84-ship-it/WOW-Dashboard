@@ -22,8 +22,10 @@ from v17.mlb_pitcher_fantasy_score_hydration import (
 )
 import wnba_prop_auto_hydration as _wnba
 from wnba_injury_status import WNBAInjuryStatusError, availability_from_report as _strict_availability
+import nfl_prop_auto_hydration as _nfl
 
 WNBA_PROVIDER = _wnba.PROVIDER_ID
+NFL_PROVIDER = _nfl.PROVIDER_ID
 
 
 def _strict_availability_adapter(*args, **kwargs):
@@ -44,6 +46,8 @@ def provider_for_sport(sport: str, stat_type: Optional[str] = None) -> str:
     normalized_stat = str(stat_type or "").strip().upper()
     if normalized_sport == "WNBA":
         return WNBA_PROVIDER
+    if normalized_sport == "NFL":
+        return NFL_PROVIDER
     if normalized_sport == "MLB" and normalized_stat == MLB_PITCHER_FANTASY_SCORE_STAT:
         return MLB_PITCHER_FANTASY_SCORE_PROVIDER
     return MLB_PROVIDER
@@ -80,6 +84,17 @@ def auto_hydrate_prop_evidence(
         result = dict(result)
         result.pop("hydration_provider", None)
         return result
+
+    if normalized_sport == "NFL":
+        try:
+            result = _nfl.hydrate_nfl_prop_evidence(
+                player=player, stat_type=stat_type, event_start_time=event_start_time,
+                http_get=http_get, now=now, source_capture_timestamp=source_capture_timestamp,
+                source_label=source_label, opponent=opponent,
+            )
+        except _nfl.NFLPropHydrationError as exc:
+            raise PropAutoHydrationError(exc.code, str(exc), detail=exc.detail) from exc
+        result = dict(result); result.pop("hydration_provider", None); return result
 
     if normalized_sport == "MLB" and normalized_stat == MLB_PITCHER_FANTASY_SCORE_STAT:
         return hydrate_mlb_pitcher_fantasy_score_evidence(

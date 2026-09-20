@@ -25,6 +25,7 @@ import prop_discrete_engine
 import prop_fitted_provider
 from prop_auto_hydration_workload import WORKLOAD_STATS
 import wnba_prop_auto_hydration
+import nfl_prop_auto_hydration
 
 from v17.cross_sport_certification_inventory import CERTIFICATION_SPORTS
 from v17.prop_capability_manifest import DECLARED_PROP_LANES, normalize_prop_sport
@@ -95,6 +96,8 @@ def hydration_route_registered(sport: str, stat_type: str) -> bool:
         column = wnba_prop_auto_hydration.STAT_COLUMNS.get(stat_key)
         canonical = wnba_prop_auto_hydration.CANONICAL_STATS.get(str(column or ""))
         return canonical == stat_key
+    if sport_key == "NFL":
+        return stat_key in nfl_prop_auto_hydration.STAT_CONFIG
     return False
 
 
