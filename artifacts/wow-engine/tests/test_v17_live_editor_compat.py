@@ -77,7 +77,8 @@ def test_action_schema_preserves_v17_boundary():
     document = _schema()
     assert document["servers"][0]["url"] == "https://wow-governed-probability-engine.onrender.com"
     paths = document["paths"]
-    assert paths["/score-pick-request"]["post"]["operationId"] == "scoreWowV17PickRequest"
+    assert paths["/score-prop"]["post"]["operationId"] == "scoreWowProp"
+    assert paths["/score-pick-request"]["post"]["operationId"] == "scoreWowPickRequest"
     assert paths["/score-team-event"]["post"]["operationId"] == "scoreWowV17TeamEventFromWowHost"
     assert paths["/v17/detailed-evidence-contract"]["get"]["operationId"] == "getWowV17DetailedEvidenceContract"
     assert paths["/v17/prediction-receipts/lookup"]["post"]["operationId"] == "lookupWowV17PredictionReceipts"
