@@ -4,6 +4,13 @@ This module freezes source identity and bytes only. It does not parse the CSV
 schema, build features, fit a model, publish probability, or grant source/model
 certification. `SPORTSDATAVERSE_NHL` remains source-review-pending.
 
+The first real Phase-3 replay deliberately pins 2024-2026 only. Those three
+player-boxscore seasons carry direct player x game identity fields in the
+SportsDataverse release family. Earlier 2022/2023 assets remain useful research
+evidence but are quarantined from the first replay because their player-boxscore
+schema lacks direct `game_id`/`season`/`game_date` fields; WOW will not reconstruct
+those joins from row ordering or another heuristic.
+
 can_execute=false unconditionally.
 """
 from __future__ import annotations
@@ -26,7 +33,8 @@ CAN_EXECUTE = False
 RELEASE_BASE = "https://github.com/sportsdataverse/sportsdataverse-data/releases/download"
 PLAYER_TAG = "nhl_player_boxscores"
 GAME_TAG = "nhl_game_info"
-PINNED_SEASONS = (2022, 2023, 2024, 2025)
+PINNED_SEASONS = (2024, 2025, 2026)
+QUARANTINED_SCHEMA_SEASONS = (2022, 2023)
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
@@ -66,20 +74,6 @@ class PinnedAsset:
 PINNED_ASSETS: tuple[PinnedAsset, ...] = (
     PinnedAsset(
         "PLAYER_BOXSCORES",
-        2022,
-        "player_box_2022.csv",
-        f"{RELEASE_BASE}/{PLAYER_TAG}/player_box_2022.csv",
-        "60c457cfe62c125929861367816c4eb243ebf17574cd35ad9982318a1e484e4d",
-    ),
-    PinnedAsset(
-        "PLAYER_BOXSCORES",
-        2023,
-        "player_box_2023.csv",
-        f"{RELEASE_BASE}/{PLAYER_TAG}/player_box_2023.csv",
-        "4f823eb8146a03becdaaf220128f68729528443c08a18852e54aae3f3833dd44",
-    ),
-    PinnedAsset(
-        "PLAYER_BOXSCORES",
         2024,
         "player_box_2024.csv",
         f"{RELEASE_BASE}/{PLAYER_TAG}/player_box_2024.csv",
@@ -93,18 +87,11 @@ PINNED_ASSETS: tuple[PinnedAsset, ...] = (
         "511f58b09996be6165c7ad2a0f475ac029f0206653ce4e11665e1ff8088516b0",
     ),
     PinnedAsset(
-        "GAME_INFO",
-        2022,
-        "game_info_2022.csv",
-        f"{RELEASE_BASE}/{GAME_TAG}/game_info_2022.csv",
-        "752fb3b3406c9f14b91d76d66fb6d1efd78eb17e94a6261b9931da484e632786",
-    ),
-    PinnedAsset(
-        "GAME_INFO",
-        2023,
-        "game_info_2023.csv",
-        f"{RELEASE_BASE}/{GAME_TAG}/game_info_2023.csv",
-        "cd2746413a4eaf8819140c894b5297d57098a4736ec52aa5b7d9e17f58351fcc",
+        "PLAYER_BOXSCORES",
+        2026,
+        "player_box_2026.csv",
+        f"{RELEASE_BASE}/{PLAYER_TAG}/player_box_2026.csv",
+        "41a35357d65e0d51967568ca9d0d16dae0dba593bf0193372f6cd14e5a46b102",
     ),
     PinnedAsset(
         "GAME_INFO",
@@ -119,6 +106,13 @@ PINNED_ASSETS: tuple[PinnedAsset, ...] = (
         "game_info_2025.csv",
         f"{RELEASE_BASE}/{GAME_TAG}/game_info_2025.csv",
         "e743bafe13dfa761f3ac84ab978b8e7de73ea7f126f2daf4f27e437017f3212b",
+    ),
+    PinnedAsset(
+        "GAME_INFO",
+        2026,
+        "game_info_2026.csv",
+        f"{RELEASE_BASE}/{GAME_TAG}/game_info_2026.csv",
+        "15bfbde574d9b84f07ffc387460127cb66b0173a06c6812132fbc718b524b610",
     ),
 )
 
@@ -190,6 +184,7 @@ def snapshot_manifest(
         "can_execute": CAN_EXECUTE,
         "retrieved_at": retrieved_at,
         "seasons": list(PINNED_SEASONS),
+        "quarantined_schema_seasons": list(QUARANTINED_SCHEMA_SEASONS),
         "assets": [asdict(asset) for asset in assets],
     }
     base["manifest_sha256"] = hashlib.sha256(_canonical_json(base)).hexdigest()
@@ -213,6 +208,7 @@ __all__ = [
     "PLAYER_TAG",
     "PROBABILITY_PUBLISHABLE",
     "PinnedAsset",
+    "QUARANTINED_SCHEMA_SEASONS",
     "RELEASE_BASE",
     "RESEARCH_ONLY",
     "SOURCE_ID",
