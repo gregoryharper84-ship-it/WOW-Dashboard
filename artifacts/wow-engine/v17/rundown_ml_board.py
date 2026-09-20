@@ -14,6 +14,7 @@ from typing import Any
 from v17 import market_evidence_native_live as live
 from v17 import market_evidence_sources as sources
 from v17.market_evidence_snapshot import snapshot_dates
+from v17.sep15_runtime_contract_repairs import install_rundown_v2_auth_repair
 
 _EVENTS_RE = re.compile(r"^/odds-api/v4/sports/([^/]+)/events$")
 
@@ -68,6 +69,12 @@ def _merge_bookmakers(primary: dict[str, Any], additive: dict[str, Any]) -> dict
 
 
 def _collect_rundown(sport_key: str, *, opener: Any = None) -> tuple[list[dict[str, Any]], list[str]]:
+    # The ML discovery path can run in workers that import the V17 package
+    # without the full active-runtime composition hook. Install the documented
+    # Product V2 transport contract at the call boundary so those workers never
+    # fall back to the stale query-key/v1-catalog provider definition.
+    install_rundown_v2_auth_repair()
+
     rows: list[dict[str, Any]] = []
     codes: list[str] = []
     for slate_date in snapshot_dates():
