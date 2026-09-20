@@ -260,6 +260,39 @@ def _typed_mlb_failure(detail: dict[str, Any]) -> tuple[str, str]:
     return "PROVIDER_UNAVAILABLE", blocker
 
 
+def _apply_card_admission(row: TeamEventRequestRow, outcome: dict[str, Any]) -> None:
+    """Bind downstream card admission to the exact governed event prediction."""
+    rank_eligible = bool(outcome.get("objective_rank_eligible", outcome.get("rank_eligible")) is True)
+    probability_publishable = outcome.get("probability_publishable") is True
+    blockers: list[str] = []
+    if outcome.get("terminal_status") != "COMPLETED":
+        blockers.append("CARD_ADMISSION:TERMINAL_NOT_COMPLETED")
+    if not rank_eligible:
+        blockers.append("CARD_ADMISSION:RANK_INELIGIBLE")
+    if not probability_publishable:
+        blockers.append("CARD_ADMISSION:PROBABILITY_NOT_PUBLISHABLE")
+    prediction_id = str(outcome.get("event_prediction_id") or "").strip() or None
+    if prediction_id is None:
+        blockers.append("CARD_ADMISSION:PREDICTION_ID_MISSING")
+    selected = str(outcome.get("selected_team") or "").strip() or None
+    if selected is None:
+        blockers.append("CARD_ADMISSION:SELECTION_MISSING")
+    outcome["rank_eligible"] = rank_eligible
+    outcome["card_admission_eligible"] = not blockers
+    outcome["card_admission_blockers"] = blockers
+    outcome["card_admission_receipt"] = {
+        "event_prediction_id": prediction_id,
+        "official_event_id": _event_id(row),
+        "event_key": row.event_key,
+        "selection": selected,
+        "market_family": "OUTRIGHT_WINNER",
+        "rank_eligible": rank_eligible,
+        "probability_publishable": probability_publishable,
+        "can_execute": False,
+    } if outcome.get("terminal_status") == "COMPLETED" else None
+    outcome["can_execute"] = False
+
+
 def _probability_separation_fields(*, market_needed: bool) -> dict[str, Any]:
     return {
         "sporting_probability_status": "COMPLETE",
@@ -519,4 +552,7 @@ def install_team_event_request_routes(app: Any, *, auth_dependency: Any, db_clie
         count = len(batch.rows); completed = sum(x["terminal_status"] == "COMPLETED" for x in outcomes)
         if len(outcomes) != count:
             raise HTTPException(status_code=500, detail={"code": "RECONCILIATION_FAILURE", "can_execute": False})
-        return {"ok": completed > 0, "run_status": "COMPLETE" if completed == count else ("RUN_PARTIAL" if completed else "BLOCKED"), "rows_in": count, "rows_completed": completed, "rows_held": count - completed, "reconciliation_pass": True, "rows": outcomes, "can_execute": False}
+        for source_row, outcome in zip(batch.rows, outcomes):
+            _apply_card_admission(source_row, outcome)
+        rows_card_admissible = sum(item.get("card_admission_eligible") is True for item in outcomes)
+        return {"ok": completed > 0, "run_status": "COMPLETE" if completed == count else ("RUN_PARTIAL" if completed else "BLOCKED"), "rows_in": count, "rows_completed": completed, "rows_held": count - completed, "rows_card_admissible": rows_card_admissible, "card_pool_status": "QUALIFIED" if rows_card_admissible else "NONE_QUALIFIED", "reconciliation_pass": True, "rows": outcomes, "can_execute": False}
