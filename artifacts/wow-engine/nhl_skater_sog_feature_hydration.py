@@ -1,4 +1,4 @@
-"""NHL Skater Shots on Goal -- Phase 2 (PR 2): leakage-safe feature hydration.
+"""NHL Skater Shots on Goal -- Phase 2 / 2.1: leakage-safe feature hydration.
 
 Builds candidate feature snapshots on top of the immutable player x game SOG
 records produced by nhl_skater_sog_ingestion.py. This module produces
@@ -7,6 +7,31 @@ measurable deltas for a future fitted specialist to select among (Phase 3
 does the fitting/ablation/window selection). It contains no fitted
 coefficients, no probability, no calibration, no capability-manifest entry,
 and no scorer.
+
+Phase 2.1 hardening over the original Phase 2 cut:
+  1. Leakage gating uses each record's `available_at` (settlement/retrieval
+     timestamp), never `game_start_time` -- a game starting is not the same
+     fact as its stats being published.
+  2. Opponent shot-suppression evidence is taken only from team-games whose
+     `team_shot_reconciliation_status` is MATCHED or
+     UNOFFICIAL_FULL_ROSTER_ASSERTED (ingestion-time reconciliation against
+     an official total or an explicit full-roster assertion) -- never from
+     an unverified partial skater sum.
+  3. Rest/back-to-back are derived from the TEAM's canonical schedule
+     history (any record for a game the team played in), not the
+     individual player's own row history -- correct for call-ups, trades,
+     and players with no prior individual record. Back-to-back is a
+     calendar-date adjacency rule, not an elapsed-hours threshold.
+  4. `sample_sufficiency_status` (how much history exists) is reported
+     separately from `freshness_status` (how recent that history is
+     relative to `as_of`) -- a full 5-game window of old games is
+     sufficient but not fresh.
+  5. `snapshot_hash` covers the complete canonical snapshot content
+     (identities, as_of, event_start, versions, feature values/sample
+     counts, source_ids, evidence_ids, missing features/reasons,
+     freshness, sample sufficiency) -- excluding only the hash field
+     itself -- so identical numeric features from different evidence
+     never collide.
 
 Deferred to a later phase, not built here: projected line combinations,
 projected PP units, unofficial lineup feeds, individual xG, teammate-effect
@@ -26,6 +51,8 @@ from typing import Any, Mapping, Sequence
 
 from nhl_skater_sog_ingestion import (
     PARTICIPATION_DRESSED_PLAYED,
+    RECONCILIATION_MATCHED,
+    RECONCILIATION_UNOFFICIAL_FULL_ROSTER_ASSERTED,
     SkaterGameSogRecord,
 )
 
@@ -38,11 +65,22 @@ TRANSFORMATION_VERSION = "NHL_SOG_FEATURE_TRANSFORM_V1"
 
 ROLLING_WINDOWS = (5, 10, 20)
 OPPONENT_WINDOWS = (5, 10)
-BACK_TO_BACK_MAX_REST_DAYS = 1.0
 
+TRUSTED_TEAM_SHOT_STATUSES = {RECONCILIATION_MATCHED, RECONCILIATION_UNOFFICIAL_FULL_ROSTER_ASSERTED}
+
+# Sample-sufficiency thresholds: purely "how much qualifying history exists,"
+# independent of how recent it is.
+SAMPLE_SUFFICIENT = "SUFFICIENT"
+SAMPLE_PARTIAL = "PARTIAL"
+SAMPLE_INSUFFICIENT = "INSUFFICIENT"
+
+# Freshness thresholds: how recent the newest contributing evidence is
+# relative to as_of, independent of sample count.
 FRESHNESS_FRESH = "FRESH"
 FRESHNESS_DEGRADED = "DEGRADED"
 FRESHNESS_STALE = "STALE"
+FRESHNESS_FRESH_MAX_DAYS = 10.0
+FRESHNESS_DEGRADED_MAX_DAYS = 30.0
 
 HOME = "HOME"
 AWAY = "AWAY"
@@ -103,6 +141,14 @@ def _rolling_feature(values: Sequence[float], window: int) -> FeatureResult:
     return FeatureResult(_round(_mean(windowed)), len(windowed))
 
 
+def _available_before(record: SkaterGameSogRecord, *, as_of_dt: datetime) -> bool:
+    return _aware(record.available_at) <= as_of_dt
+
+
+def _started_before_target(record: SkaterGameSogRecord, *, target_start_dt: datetime) -> bool:
+    return _aware(record.game_start_time) < target_start_dt
+
+
 def _qualifying_player_games(
     player_id: str,
     history: Sequence[SkaterGameSogRecord],
@@ -111,10 +157,13 @@ def _qualifying_player_games(
     as_of_dt: datetime,
     target_start_dt: datetime,
 ) -> list[SkaterGameSogRecord]:
-    """Strictly-prior, dressed-with-recorded-value games for this player,
-    most-recent-first. Excludes the target event_id itself as a defense-in-
-    depth guard against current-game leakage, independent of the timestamp
-    check."""
+    """Strictly-prior, strictly-available, dressed-with-recorded-value games
+    for this player, most-recent-first (by game_start_time). A record
+    qualifies only when its game started before the target game AND its
+    stats had actually become available (`available_at <= as_of`) --
+    settlement availability, not puck-drop time, gates evidence entry.
+    Excludes the target event_id itself as a defense-in-depth guard against
+    current-game leakage, independent of either timestamp check."""
     qualifying = [
         r
         for r in history
@@ -122,49 +171,71 @@ def _qualifying_player_games(
         and r.canonical_game_id != event_id
         and r.participation_status == PARTICIPATION_DRESSED_PLAYED
         and r.actual_value is not None
-        and _aware(r.game_start_time) < target_start_dt
-        and _aware(r.game_start_time) <= as_of_dt
+        and _started_before_target(r, target_start_dt=target_start_dt)
+        and _available_before(r, as_of_dt=as_of_dt)
     ]
     return sorted(qualifying, key=lambda r: r.game_start_time, reverse=True)
 
 
-def _qualifying_player_games_any_status(
-    player_id: str,
+def _team_schedule(
+    team_id: str,
     history: Sequence[SkaterGameSogRecord],
     *,
     event_id: str,
-    as_of_dt: datetime,
     target_start_dt: datetime,
-) -> list[SkaterGameSogRecord]:
-    """Same cutoff, but any participation status -- used for rest-day
-    computation, where a scratch still marks the player's most recent team
-    involvement even though it doesn't count toward SOG rolling stats."""
-    qualifying = [
-        r
-        for r in history
-        if r.player_id == player_id
-        and r.canonical_game_id != event_id
-        and _aware(r.game_start_time) < target_start_dt
-        and _aware(r.game_start_time) <= as_of_dt
-    ]
-    return sorted(qualifying, key=lambda r: r.game_start_time, reverse=True)
+) -> list[tuple[str, datetime]]:
+    """[(canonical_game_id, game_start_time)] for every strictly-prior game
+    this TEAM played (home or away), from any record of that game --
+    independent of any specific player's own row history, so it is correct
+    for call-ups, trades, and players with zero individual prior games.
+
+    Schedule/occurrence facts (a team played on date X) are not settlement
+    facts -- the schedule is public before puck drop -- so this is gated
+    only by chronological ordering against the target game, not by
+    `available_at`.
+    """
+    seen_games: dict[str, datetime] = {}
+    for r in history:
+        if r.canonical_game_id == event_id:
+            continue
+        if team_id not in (r.home_team.team_id, r.away_team.team_id):
+            continue
+        start_dt = _aware(r.game_start_time)
+        if not _started_before_target(r, target_start_dt=target_start_dt):
+            continue
+        seen_games.setdefault(r.canonical_game_id, start_dt)
+    return sorted(seen_games.items(), key=lambda item: item[1], reverse=True)
 
 
-def _team_game_shot_totals(
+def _trusted_team_game_shots(
     history: Sequence[SkaterGameSogRecord],
-) -> tuple[dict[tuple[str, str], int], dict[tuple[str, str], int]]:
-    """(game_id, team_id) -> summed SOG across dressed skaters with a
-    recorded value in that game. A game/team combination with no such
-    records is simply absent -- never assumed zero."""
+) -> dict[tuple[str, str], int]:
+    """(game_id, team_id) -> the team's officially-reconciled SOG total for
+    that game. Only MATCHED / UNOFFICIAL_FULL_ROSTER_ASSERTED team-games
+    contribute -- a MISMATCH or INCOMPLETE_SKATER_COVERAGE team-game is
+    absent here entirely, never approximated from a partial skater sum."""
     totals: dict[tuple[str, str], int] = {}
+    for r in history:
+        if r.team_shot_reconciliation_status not in TRUSTED_TEAM_SHOT_STATUSES:
+            continue
+        if r.official_team_sog_total is None:
+            continue
+        totals[(r.canonical_game_id, r.team_id)] = r.official_team_sog_total
+    return totals
+
+
+def _trusted_team_game_dressed_counts(
+    history: Sequence[SkaterGameSogRecord],
+) -> dict[tuple[str, str], int]:
     counts: dict[tuple[str, str], int] = {}
     for r in history:
+        if r.team_shot_reconciliation_status not in TRUSTED_TEAM_SHOT_STATUSES:
+            continue
         if r.participation_status != PARTICIPATION_DRESSED_PLAYED or r.actual_value is None:
             continue
         key = (r.canonical_game_id, r.team_id)
-        totals[key] = totals.get(key, 0) + r.actual_value
         counts[key] = counts.get(key, 0) + 1
-    return totals, counts
+    return counts
 
 
 def _game_team_ids_and_start(history: Sequence[SkaterGameSogRecord]) -> dict[str, tuple[str, str, str]]:
@@ -184,10 +255,15 @@ def _opponent_prior_shots_allowed(
     target_start_dt: datetime,
 ) -> list[tuple[str, int, int | None]]:
     """[(game_id, shots_allowed, attacking_team_dressed_skater_count)],
-    most-recent-first, for opponent_team_id's strictly-prior qualifying
-    games (either home or away)."""
-    shot_totals, skater_counts = _team_game_shot_totals(history)
+    most-recent-first, for opponent_team_id's strictly-prior, strictly-
+    available, RECONCILIATION-TRUSTED games (either home or away)."""
+    trusted_totals = _trusted_team_game_shots(history)
+    trusted_counts = _trusted_team_game_dressed_counts(history)
     game_teams = _game_team_ids_and_start(history)
+    availability_by_game_team: dict[tuple[str, str], list[datetime]] = {}
+    for r in history:
+        availability_by_game_team.setdefault((r.canonical_game_id, r.team_id), []).append(_aware(r.available_at))
+
     rows: list[tuple[str, str, int, int | None]] = []
     for game_id, (home_id, away_id, start) in game_teams.items():
         if game_id == event_id:
@@ -195,13 +271,18 @@ def _opponent_prior_shots_allowed(
         if opponent_team_id not in (home_id, away_id):
             continue
         start_dt = _aware(start)
-        if not (start_dt < target_start_dt and start_dt <= as_of_dt):
+        if not (start_dt < target_start_dt):
             continue
         attacking_team_id = away_id if opponent_team_id == home_id else home_id
-        shots_allowed = shot_totals.get((game_id, attacking_team_id))
+        shots_allowed = trusted_totals.get((game_id, attacking_team_id))
         if shots_allowed is None:
-            continue  # no resolved attacking-team shot data for this game -- not fabricated as zero
-        attacking_count = skater_counts.get((game_id, attacking_team_id))
+            continue  # untrusted/absent team-shot evidence -- never approximated
+        # The attacking team's evidence must itself have become available by
+        # as_of -- a trusted total is still settlement evidence.
+        availabilities = availability_by_game_team.get((game_id, attacking_team_id), [])
+        if not availabilities or max(availabilities) > as_of_dt:
+            continue
+        attacking_count = trusted_counts.get((game_id, attacking_team_id))
         rows.append((game_id, start, shots_allowed, attacking_count))
     rows.sort(key=lambda row: row[1], reverse=True)
     return [(g, s, c) for g, _start, s, c in rows]
@@ -221,6 +302,7 @@ class FeatureSnapshot:
     feature_values: Mapping[str, float | None]
     feature_sample_counts: Mapping[str, int]
     freshness_status: str
+    sample_sufficiency_status: str
     missing_features: tuple[str, ...]
     missing_feature_reasons: Mapping[str, str]
     evidence_ids: tuple[str, ...]
@@ -254,8 +336,9 @@ def hydrate_pregame_snapshot(
     player x game NHL SOG evaluation.
 
     `history` is the full pool of already-ingested SkaterGameSogRecord
-    evidence (this player's and the opponent's games); this function applies
-    its own leakage filtering rather than trusting a pre-filtered input.
+    evidence (this player's, this team's, and the opponent's games); this
+    function applies its own leakage filtering rather than trusting a
+    pre-filtered input.
     """
     as_of_dt = _aware(as_of)
     target_start_dt = _aware(event_start)
@@ -263,9 +346,6 @@ def hydrate_pregame_snapshot(
         raise NHLSogFeatureError("EVENT_ALREADY_STARTED", f"as_of={as_of} >= event_start={event_start}")
 
     player_games = _qualifying_player_games(
-        player_id, history, event_id=event_id, as_of_dt=as_of_dt, target_start_dt=target_start_dt
-    )
-    player_games_any_status = _qualifying_player_games_any_status(
         player_id, history, event_id=event_id, as_of_dt=as_of_dt, target_start_dt=target_start_dt
     )
 
@@ -316,7 +396,8 @@ def hydrate_pregame_snapshot(
     _record("recent_vs_long_sog_rate_delta_5_20", _delta("rolling_sog_per_game_5", "rolling_sog_per_game_20"))
     _record("recent_vs_long_shots_per_60_delta_5_20", _delta("rolling_shots_per_60_5", "rolling_shots_per_60_20"))
 
-    # Opponent shot suppression, from strictly-prior official records only.
+    # Opponent shot suppression, from strictly-prior, reconciliation-trusted
+    # official records only.
     opponent_rows = _opponent_prior_shots_allowed(
         opponent_team_id, history, event_id=event_id, as_of_dt=as_of_dt, target_start_dt=target_start_dt
     )
@@ -334,11 +415,21 @@ def hydrate_pregame_snapshot(
     feature_values["is_home"] = 1.0 if is_home else 0.0
     feature_sample_counts["is_home"] = 1
 
-    most_recent_any = player_games_any_status[0] if player_games_any_status else None
-    if most_recent_any is not None:
-        rest_days = (target_start_dt - _aware(most_recent_any.game_start_time)).total_seconds() / 86400.0
+    # Team-based rest / back-to-back (correct for call-ups, trades, and
+    # players with no individual prior-game record).
+    team_schedule = _team_schedule(team_id, history, event_id=event_id, target_start_dt=target_start_dt)
+    if team_schedule:
+        _, most_recent_team_game_start = team_schedule[0]
+        rest_days = (target_start_dt - most_recent_team_game_start).total_seconds() / 86400.0
         _record("rest_days", FeatureResult(_round(rest_days), 1))
-        back_to_back = 1.0 if rest_days <= BACK_TO_BACK_MAX_REST_DAYS else 0.0
+        # Back-to-back is calendar-date adjacency, not an elapsed-hours
+        # threshold: two games on consecutive UTC dates are a back-to-back
+        # even if ~25 hours apart, and two games on the same date with a
+        # large gap are not meaningfully "rested" either -- but the
+        # canonical NHL definition is date adjacency, so that governs.
+        target_date = target_start_dt.date()
+        prior_date = most_recent_team_game_start.date()
+        back_to_back = 1.0 if (target_date - prior_date).days == 1 else 0.0
         _record("back_to_back", FeatureResult(back_to_back, 1))
     else:
         _record("rest_days", FeatureResult(None, 0, "NO_PRIOR_TEAM_GAME_AVAILABLE"))
@@ -346,17 +437,41 @@ def hydrate_pregame_snapshot(
 
     missing_features = tuple(sorted(name for name, value in feature_values.items() if value is None))
 
+    # Sample sufficiency: how much qualifying history exists (unrelated to
+    # how recent it is).
     core_sample = feature_sample_counts.get("rolling_sog_per_game_5", 0)
     if core_sample >= 5:
-        freshness_status = FRESHNESS_FRESH
+        sample_sufficiency_status = SAMPLE_SUFFICIENT
     elif core_sample > 0:
-        freshness_status = FRESHNESS_DEGRADED
+        sample_sufficiency_status = SAMPLE_PARTIAL
     else:
+        sample_sufficiency_status = SAMPLE_INSUFFICIENT
+
+    # Freshness: how recent the newest contributing evidence is relative to
+    # as_of. A full sample of old games is sufficient but not fresh.
+    newest_evidence_dt = None
+    if player_games:
+        newest_evidence_dt = _aware(player_games[0].game_start_time)
+    if team_schedule:
+        _, team_start = team_schedule[0]
+        newest_evidence_dt = team_start if newest_evidence_dt is None else max(newest_evidence_dt, team_start)
+    if newest_evidence_dt is None:
         freshness_status = FRESHNESS_STALE
+    else:
+        recency_days = (as_of_dt - newest_evidence_dt).total_seconds() / 86400.0
+        if recency_days <= FRESHNESS_FRESH_MAX_DAYS:
+            freshness_status = FRESHNESS_FRESH
+        elif recency_days <= FRESHNESS_DEGRADED_MAX_DAYS:
+            freshness_status = FRESHNESS_DEGRADED
+        else:
+            freshness_status = FRESHNESS_STALE
 
     evidence_ids = tuple(sorted({r.canonical_game_id for r in player_games} | {g for g, _s, _c in opponent_rows}))
-    source_ids = tuple(sorted({r.source for r in player_games} | {r.source for r in history if r.canonical_game_id in evidence_ids}))
+    source_ids = tuple(sorted({r.source for r in history if r.canonical_game_id in evidence_ids}))
 
+    # Hash the complete canonical snapshot content, excluding only the hash
+    # field itself, so identical numeric feature values sourced from
+    # different evidence (different evidence_ids/source_ids) never collide.
     hash_payload = {
         "schema_version": SCHEMA_VERSION,
         "event_id": event_id,
@@ -366,9 +481,14 @@ def hydrate_pregame_snapshot(
         "as_of": as_of,
         "event_start": event_start,
         "transformation_version": TRANSFORMATION_VERSION,
+        "source_ids": source_ids,
         "feature_values": feature_values,
         "feature_sample_counts": feature_sample_counts,
+        "freshness_status": freshness_status,
+        "sample_sufficiency_status": sample_sufficiency_status,
         "missing_features": missing_features,
+        "missing_feature_reasons": missing_reasons,
+        "evidence_ids": evidence_ids,
     }
     snapshot_hash = _compute_hash(hash_payload)
 
@@ -385,6 +505,7 @@ def hydrate_pregame_snapshot(
         feature_values=feature_values,
         feature_sample_counts=feature_sample_counts,
         freshness_status=freshness_status,
+        sample_sufficiency_status=sample_sufficiency_status,
         missing_features=missing_features,
         missing_feature_reasons=missing_reasons,
         evidence_ids=evidence_ids,
@@ -400,6 +521,12 @@ __all__ = [
     "TRANSFORMATION_VERSION",
     "ROLLING_WINDOWS",
     "OPPONENT_WINDOWS",
+    "SAMPLE_SUFFICIENT",
+    "SAMPLE_PARTIAL",
+    "SAMPLE_INSUFFICIENT",
+    "FRESHNESS_FRESH",
+    "FRESHNESS_DEGRADED",
+    "FRESHNESS_STALE",
     "HOME",
     "AWAY",
     "NHLSogFeatureError",

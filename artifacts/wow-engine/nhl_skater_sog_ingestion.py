@@ -43,6 +43,14 @@ PARTICIPATION_SCRATCHED_DNP = "SCRATCHED_DNP"
 
 VALID_POSITIONS = {"C", "LW", "RW", "D"}
 
+# Team-shot-reconciliation statuses (Phase 2.1 hardening). A team-game's
+# summed skater SOG is never trusted as "opponent shots allowed" evidence on
+# its own -- see _reconcile_team_shots.
+RECONCILIATION_MATCHED = "MATCHED"
+RECONCILIATION_MISMATCH = "MISMATCH"
+RECONCILIATION_UNOFFICIAL_FULL_ROSTER_ASSERTED = "UNOFFICIAL_FULL_ROSTER_ASSERTED"
+RECONCILIATION_INCOMPLETE_SKATER_COVERAGE = "INCOMPLETE_SKATER_COVERAGE"
+
 # Global canonical stat aliases. "Shots" is deliberately excluded -- it is
 # ambiguous with shot attempts/Corsi and must never be a universal mapping
 # (design doc Section A). A platform found to use bare "Shots" for SOG gets a
@@ -157,6 +165,15 @@ class SkaterGameSogRecord:
     source_payload_sha256: str
     effective_at: str  # this game's settlement instant (game_start_time is the pregame anchor;
                         # effective_at marks when this fact became true/observable, i.e. post-game)
+    available_at: str  # the authoritative instant this settled fact became consumable as pregame
+                        # evidence for a LATER game -- an explicit source settlement timestamp when
+                        # the source provides one, else the conservative fallback of when WOW
+                        # actually retrieved the finalized box score (source_retrieved_at). Never
+                        # game_start_time -- a game starting does not mean its stats are published.
+    official_team_sog_total: int | None  # this team's official per-game SOG total, only when
+                                          # team_shot_reconciliation_status confirms it (see below)
+    team_shot_reconciliation_status: str  # MATCHED | MISMATCH | UNOFFICIAL_FULL_ROSTER_ASSERTED |
+                                           # INCOMPLETE_SKATER_COVERAGE -- see _reconcile_team_shots
     feature_schema_version: str = FEATURE_SCHEMA_VERSION
     can_execute: bool = False
     research_evidence_only: bool = True
@@ -255,6 +272,62 @@ def _parse_skater_stat_entry(
     )
 
 
+def _resolve_available_at(boxscore_raw: Mapping[str, Any], *, retrieved_at: str) -> str:
+    """Authoritative settlement/availability timestamp for this box score.
+
+    Prefers an explicit source-provided settlement timestamp
+    (`settledAtUTC`); a malformed value there fails closed rather than
+    silently falling back. Only a genuinely *absent* field falls back to the
+    conservative `retrieved_at` (when WOW actually retrieved the finalized
+    box score) -- never `game_start_time`, which only marks when the game
+    began, not when its stats became available.
+    """
+    raw_settled = boxscore_raw.get("settledAtUTC")
+    if raw_settled is not None and str(raw_settled).strip():
+        try:
+            return _aware(raw_settled).isoformat()
+        except (NHLSogIngestionError, ValueError) as exc:
+            raise NHLSogIngestionError("NHL_SOG_AVAILABILITY_TIMESTAMP_INVALID", str(raw_settled)) from exc
+    try:
+        return _aware(retrieved_at).isoformat()
+    except (NHLSogIngestionError, ValueError) as exc:
+        raise NHLSogIngestionError("NHL_SOG_AVAILABILITY_TIMESTAMP_INVALID", str(retrieved_at)) from exc
+
+
+def _reconcile_team_shots(
+    *,
+    team: TeamIdentity,
+    resolved_dressed: list[_ParsedSkaterStat],
+    unresolved_dressed_count: int,
+    official_totals: Mapping[str, Any] | None,
+    roster_fully_resolved: Mapping[str, Any] | None,
+    side: str,
+) -> tuple[int | None, str]:
+    """Reconcile summed skater SOG against an official team total.
+
+    Never trusts a partial/unverified skater sum as suppression evidence:
+    the caller gets a value back only for MATCHED or
+    UNOFFICIAL_FULL_ROSTER_ASSERTED; MISMATCH and INCOMPLETE_SKATER_COVERAGE
+    both return None and a structured status the feature-hydration layer
+    must exclude from opponent-suppression evidence.
+    """
+    summed = sum(p.actual_value for p in resolved_dressed if p.actual_value is not None)
+    official = None
+    if isinstance(official_totals, Mapping):
+        official = official_totals.get(side)
+    if official is not None:
+        try:
+            official_int = int(official)
+        except (TypeError, ValueError):
+            return None, RECONCILIATION_MISMATCH
+        if official_int == summed:
+            return official_int, RECONCILIATION_MATCHED
+        return None, RECONCILIATION_MISMATCH
+    if unresolved_dressed_count == 0 and isinstance(roster_fully_resolved, Mapping) and bool(roster_fully_resolved.get(side)):
+        return summed, RECONCILIATION_UNOFFICIAL_FULL_ROSTER_ASSERTED
+    return None, RECONCILIATION_INCOMPLETE_SKATER_COVERAGE
+
+
 def ingest_settled_game_skater_sog(
     boxscore_raw: Mapping[str, Any],
     *,
@@ -273,12 +346,15 @@ def ingest_settled_game_skater_sog(
           "season": "<8-digit provider_season_id>",
           "gameState": "OFF" | "FINAL" | "PPD" | ...,
           "startTimeUTC": "<ISO-8601>",
+          "settledAtUTC": "<ISO-8601, optional>",
           "homeTeam": {"id": <int>, "abbrev": "TOR"},
           "awayTeam": {"id": <int>, "abbrev": "BOS"},
           "playerByGameStats": {
             "homeTeam": {"forwards": [...], "defense": [...]},
             "awayTeam": {"forwards": [...], "defense": [...]}
-          }
+          },
+          "teamSogTotals": {"home": <int>, "away": <int>},          # optional
+          "rosterFullyResolved": {"home": <bool>, "away": <bool>}   # optional
         }
 
     Each stat entry: {"playerId": <int>, "name": {"default": "..."},
@@ -290,6 +366,12 @@ def ingest_settled_game_skater_sog(
     (design doc Section C.9), never inferred from a skater's absence alone
     (an absent skater with no corroborating scratch record is unresolved,
     not assumed scratched and not assumed to have played).
+
+    `teamSogTotals` / `rosterFullyResolved` drive Phase 2.1's team-shot
+    reconciliation (see _reconcile_team_shots): a team-game's summed skater
+    SOG is used as opponent-suppression evidence only when it is either
+    corroborated by an official total or the source explicitly asserts full
+    roster resolution -- never from an unverified partial sum.
     """
     retrieved_at = retrieved_at or _utcnow_iso()
     payload_hash = _hash_payload(boxscore_raw)
@@ -328,6 +410,10 @@ def ingest_settled_game_skater_sog(
     if not isinstance(home_stats, Mapping) or not isinstance(away_stats, Mapping):
         raise NHLSogIngestionError("NHL_SOG_BOXSCORE_SCHEMA_INVALID", "playerByGameStats missing home/away team blocks")
 
+    available_at = _resolve_available_at(boxscore_raw, retrieved_at=retrieved_at)
+    official_totals = boxscore_raw.get("teamSogTotals")
+    roster_fully_resolved = boxscore_raw.get("rosterFullyResolved")
+
     scratch_ids: set[tuple[str, str]] = set()  # (team_id, player_id)
     for entry in scratches_raw or ():
         team_id = str(entry.get("teamId") if entry.get("teamId") is not None else "").strip()
@@ -335,10 +421,14 @@ def ingest_settled_game_skater_sog(
         if team_id and player_id:
             scratch_ids.add((team_id, player_id))
 
-    records: list[SkaterGameSogRecord] = []
     unresolved: list[UnresolvedSkaterEntry] = []
     seen_dressed_ids: set[str] = set()
     conflicted_ids: set[str] = set()
+
+    # First pass: parse every dressed entry per team without building records
+    # yet, so team-shot reconciliation can run before any record is created.
+    resolved_by_team: dict[str, list[_ParsedSkaterStat]] = {home_team.team_id: [], away_team.team_id: []}
+    unresolved_dressed_count_by_team: dict[str, int] = {home_team.team_id: 0, away_team.team_id: 0}
 
     for team, stats_block in ((home_team, home_stats), (away_team, away_stats)):
         entries: list[Mapping[str, Any]] = []
@@ -350,6 +440,7 @@ def ingest_settled_game_skater_sog(
             parsed = _parse_skater_stat_entry(raw_entry, participation_status=PARTICIPATION_DRESSED_PLAYED)
             if isinstance(parsed, UnresolvedSkaterEntry):
                 unresolved.append(parsed)
+                unresolved_dressed_count_by_team[team.team_id] += 1
                 continue
             if (team.team_id, parsed.player_id) in scratch_ids:
                 # A player cannot be both dressed-with-stats and scratched for
@@ -363,8 +454,26 @@ def ingest_settled_game_skater_sog(
                     )
                 )
                 conflicted_ids.add(parsed.player_id)
+                unresolved_dressed_count_by_team[team.team_id] += 1
                 continue
             seen_dressed_ids.add(parsed.player_id)
+            resolved_by_team[team.team_id].append(parsed)
+
+    reconciliation: dict[str, tuple[int | None, str]] = {}
+    for team, side in ((home_team, "home"), (away_team, "away")):
+        reconciliation[team.team_id] = _reconcile_team_shots(
+            team=team,
+            resolved_dressed=resolved_by_team[team.team_id],
+            unresolved_dressed_count=unresolved_dressed_count_by_team[team.team_id],
+            official_totals=official_totals,
+            roster_fully_resolved=roster_fully_resolved,
+            side=side,
+        )
+
+    records: list[SkaterGameSogRecord] = []
+    for team in (home_team, away_team):
+        official_total, reconciliation_status = reconciliation[team.team_id]
+        for parsed in resolved_by_team[team.team_id]:
             records.append(
                 SkaterGameSogRecord(
                     canonical_game_id=game_id,
@@ -387,6 +496,9 @@ def ingest_settled_game_skater_sog(
                     source_retrieved_at=retrieved_at,
                     source_payload_sha256=payload_hash,
                     effective_at=start_utc.isoformat(),
+                    available_at=available_at,
+                    official_team_sog_total=official_total,
+                    team_shot_reconciliation_status=reconciliation_status,
                 )
             )
 
@@ -399,6 +511,7 @@ def ingest_settled_game_skater_sog(
                 UnresolvedSkaterEntry("NHL_SOG_SCRATCH_TEAM_UNRESOLVED", team_id, {"teamId": team_id, "playerId": player_id})
             )
             continue
+        official_total, reconciliation_status = reconciliation[team.team_id]
         records.append(
             SkaterGameSogRecord(
                 canonical_game_id=game_id,
@@ -420,6 +533,9 @@ def ingest_settled_game_skater_sog(
                 source_uri=source_uri,
                 source_retrieved_at=retrieved_at,
                 source_payload_sha256=payload_hash,
+                available_at=available_at,
+                official_team_sog_total=official_total,
+                team_shot_reconciliation_status=reconciliation_status,
                 effective_at=start_utc.isoformat(),
             )
         )
@@ -477,9 +593,21 @@ def build_pregame_snapshot(
     target_game_start_time: str,
     history: Iterable[SkaterGameSogRecord],
 ) -> PregameSnapshot:
-    """Select only records whose game_start_time is strictly before both
-    `as_of` and `target_game_start_time`. Rejects outright if `as_of` is at
-    or after the target game's puck-drop time (post-start hydration)."""
+    """Select strictly-prior, strictly-available settled records for one
+    player as of `as_of`.
+
+    A record qualifies only when BOTH hold:
+      * its game started strictly before the target game
+        (`game_start_time < target_game_start_time` -- chronological
+        ordering; a fact from a later game can never appear here even if
+        mislabeled as available early);
+      * it had actually become available by `as_of`
+        (`available_at <= as_of` -- a game that started earlier but whose
+        stats were not yet settled/published by `as_of` is excluded, even
+        though it is chronologically prior).
+
+    Rejects outright if `as_of` is at or after the target game's puck-drop
+    time (post-start hydration)."""
     as_of_dt = _aware(as_of)
     target_start_dt = _aware(target_game_start_time)
     if as_of_dt >= target_start_dt:
@@ -490,7 +618,9 @@ def build_pregame_snapshot(
             (
                 r
                 for r in history
-                if r.player_id == player_id and _aware(r.game_start_time) < target_start_dt and _aware(r.game_start_time) <= as_of_dt
+                if r.player_id == player_id
+                and _aware(r.game_start_time) < target_start_dt
+                and _aware(r.available_at) <= as_of_dt
             ),
             key=lambda r: r.game_start_time,
         )
@@ -506,6 +636,10 @@ __all__ = [
     "STAT_TYPE",
     "GLOBAL_STAT_ALIASES",
     "SOURCE_SCOPED_STAT_ALIASES",
+    "RECONCILIATION_MATCHED",
+    "RECONCILIATION_MISMATCH",
+    "RECONCILIATION_UNOFFICIAL_FULL_ROSTER_ASSERTED",
+    "RECONCILIATION_INCOMPLETE_SKATER_COVERAGE",
     "NHLSogIngestionError",
     "TeamIdentity",
     "SkaterGameSogRecord",
