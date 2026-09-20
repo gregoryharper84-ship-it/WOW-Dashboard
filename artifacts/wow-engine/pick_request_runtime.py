@@ -40,7 +40,11 @@ from fastapi import Header, HTTPException
 from github_actions_oidc import scout_route_auth_dependency
 import pick_request_runtime_core as _core
 from pick_request_runtime_core import *  # noqa: F401,F403
-from prop_auto_hydration_router import auto_hydrate_prop_evidence as _sport_aware_auto_hydrate_prop_evidence
+from prop_auto_hydration_router import (
+    auto_hydrate_prop_evidence as _sport_aware_auto_hydrate_prop_evidence,
+    hydration_request_context,
+    provider_for_sport,
+)
 from v17.fantasy_score_pick_request_bridge import (
     research_candidate_outcome as _fantasy_research_candidate_outcome,
     research_candidate_preflight as _fantasy_research_candidate_preflight,
@@ -55,6 +59,7 @@ _ORIGINAL_TERMINAL = _core._terminal
 _ORIGINAL_COMPLETED_SCORED_OUTCOME = _core._completed_scored_outcome
 _ORIGINAL_AUTO_HYDRATE_PROP_EVIDENCE = _core.auto_hydrate_prop_evidence
 _ORIGINAL_APPLY_PORTFOLIO_GOVERNANCE = _core._apply_portfolio_governance
+_ORIGINAL_VALIDATE_EVIDENCE = _core._validate_evidence
 
 # Preserve the source-level exact-line contract used by V17 certification:
 # frozen snapshot contains `"line": float(row.line)` and the score request
@@ -103,6 +108,25 @@ def _auto_hydrate_prop_evidence_delegate(*args: Any, **kwargs: Any) -> Any:
 
 
 _core.auto_hydrate_prop_evidence = _auto_hydrate_prop_evidence_delegate
+
+
+def _validate_evidence(row: Any, canonical_stat: str) -> dict[str, Any]:
+    """Add canonical-event binding verification to the historical validator."""
+    normalized = _ORIGINAL_VALIDATE_EVIDENCE(row, canonical_stat)
+    evidence = getattr(row, "evidence", None)
+    role_status = getattr(evidence, "role_status", None) if evidence is not None else None
+    role = role_status if isinstance(role_status, dict) else {}
+    bound_event_id = str(role.get("canonical_event_id") or "").strip()
+    request_event_id = str(normalized.get("event_id") or "").strip()
+    if bound_event_id and bound_event_id != request_event_id:
+        raise ValueError("PROP_EVENT_IDENTITY_CONFLICT:CANONICAL_EVENT_ID_MISMATCH")
+    identity_status = str(role.get("identity_binding_status") or "").strip().upper()
+    if identity_status and identity_status not in {"PASS", "PROVIDER_IDENTITY_ONLY"}:
+        raise ValueError("PROP_EVENT_IDENTITY_CONFLICT:IDENTITY_BINDING_NOT_PASS")
+    return normalized
+
+
+_core._validate_evidence = _validate_evidence
 
 
 def _terminal(
@@ -319,6 +343,23 @@ class _ScoringReceiptMarketApi:
             ) from exc
 
 
+def _normalize_hydration_provider_receipts(response: dict[str, Any], batch: Any) -> None:
+    """Correct legacy core telemetry without changing any terminal semantics."""
+    if str(response.get("response_mode") or "FULL").upper() == "COMPACT":
+        return
+    rows = response.get("rows")
+    if not isinstance(rows, list):
+        return
+    for request_row, outcome in zip(batch.rows, rows):
+        if not isinstance(outcome, dict):
+            continue
+        acquisition = outcome.get("acquisition")
+        if not isinstance(acquisition, dict) or acquisition.get("mode") != "AUTO_HYDRATION":
+            continue
+        canonical_stat = _core._canonical_stat(request_row.sport, request_row.stat_type)
+        acquisition["provider"] = provider_for_sport(request_row.sport, canonical_stat)
+
+
 def _install_top10_reconciliation_wrapper(app: Any) -> None:
     """Post-validate the core receipt without rebuilding the scoring route."""
     route = next(
@@ -336,7 +377,12 @@ def _install_top10_reconciliation_wrapper(app: Any) -> None:
         batch: _core.PickRequestBatch,
         x_wow_model_identity: Optional[str] = Header(default=None, alias="X-WOW-Model-Identity"),
     ) -> dict[str, Any]:
-        response = original_endpoint(batch, x_wow_model_identity)
+        # The producing core predates canonical-event propagation in its
+        # hydration function call. Bind the request rows for the duration of the
+        # call so fallback hydration receives the same event/opponent identity as
+        # interactive prehydration without changing probability/model behavior.
+        with hydration_request_context(batch.rows):
+            response = original_endpoint(batch, x_wow_model_identity)
         if not isinstance(response, dict):
             raise HTTPException(
                 status_code=500,
@@ -347,6 +393,7 @@ def _install_top10_reconciliation_wrapper(app: Any) -> None:
                     "can_execute": False,
                 },
             )
+        _normalize_hydration_provider_receipts(response, batch)
         return enforce_top10_completion(response, list(batch.rows))
 
     reconciled_score_pick_request._v17_top10_reconciled = True  # type: ignore[attr-defined]
