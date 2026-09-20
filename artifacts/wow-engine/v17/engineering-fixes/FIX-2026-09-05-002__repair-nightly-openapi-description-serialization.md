@@ -1,6 +1,6 @@
 # FIX-2026-09-05-002 — Repair nightly OpenAPI description serialization
 
-- status: FIX_IN_PROGRESS
+- status: VERIFIED_CLOSED
 - linked_postmortem: PM-2026-09-05-002
 - risk: R1
 - created_utc: 2026-09-05T09:59:00Z
@@ -49,3 +49,12 @@ No manual deployment is authorized or required. Render remains configured for `c
 ## Rollback
 
 If this bounded serialization repair is later identified as causal, deterministic rollback is a git revert of the merge commit. No model/persistence migration is involved.
+
+## Closure Verification (2026-09-20)
+
+- `merge_commit`: `a8cc314476eddc59f4571b4943efc520e51dc254` (already an ancestor of current `main`, `0d1c1a89ef3b58256351dab1bfccc2e4f10827ea`).
+- Targeted regression `python -m pytest artifacts/wow-engine/test_v17_openapi_description_serialization.py` passes locally against current `main`.
+- Ledger validator `python artifacts/wow-engine/v17/nightly_incident_records.py validate` accepts the closed record.
+- Nightly scan run `35511352472` (main commit `25747d16...`) and `wow-verify` run `35512943348` (main tip `0d1c1a89...`) both concluded `success`, including a clean OpenAPI contract validation and a live production health/governance probe.
+- No Render deploy ID is recorded for this artifact: the canonical OpenAPI YAML is a source-controlled GPT Action contract document, not code served by the Render runtime, so this fix's own "Deployment" section above correctly notes no manual/runtime deployment is required or applicable.
+- This closure only corrects stale lifecycle metadata; no additional code, test, or contract change was made in this pass.
