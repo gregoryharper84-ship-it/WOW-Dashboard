@@ -107,6 +107,19 @@
     },
     {
       "sport": "NHL",
+      "provider": "SPORTSDATAVERSE_NHL",
+      "evidence_domain": "SPORTING",
+      "rights_state": "LICENSE_REVIEW_REQUIRED",
+      "credential_required": false,
+      "coverage_start": "2010",
+      "coverage_end": null,
+      "grants_model_capability": false,
+      "source_repository": "sportsdataverse/sportsdataverse-data",
+      "upstream_source": "NHL public API (api-web.nhle.com)",
+      "notes": "Pinned SportsDataverse NHL release assets are a candidate research/corpus-hydration distribution layer. The repository/software license must not be treated as automatically licensing the NHL-derived data for production fitted-model training. Upstream provenance is the NHL public API, so source review remains required. This row grants no model capability and no probability authority."
+    },
+    {
+      "sport": "NHL",
       "provider": "SPORTRADAR_NHL",
       "evidence_domain": "SPORTING",
       "rights_state": "CONTRACT_REQUIRED",
