@@ -18,6 +18,7 @@ from typing import Any, Callable, Mapping, Optional
 
 from ledger import PredictionRow, determine_publishability
 from market import MarketQuote, resolve_market_prior
+from mlb_pitcher_k_risk_guard import low_line_more_tail_risk
 from prop_distribution_contract import LineProbabilities, PropInferenceRequest, derive_line_probabilities
 from prop_fitted_provider import CertifiedInference, ResolvedArtifact, infer_certified_distribution
 
@@ -172,6 +173,24 @@ def _calibrate(
     return result
 
 
+def _qualification_risk_flags(
+    *,
+    request: PropInferenceRequest,
+    line: float,
+    direction: str,
+    features: Mapping[str, Any],
+) -> list[str]:
+    """Derive reviewed recommendation-risk flags without changing probability."""
+    if str(request.sport).strip().upper() != "MLB" or str(request.stat_type).strip().upper() != "PITCHER_STRIKEOUTS":
+        return []
+    tail = low_line_more_tail_risk(
+        features.get("game_log") or [],
+        line=float(line),
+        direction=direction,
+    )
+    return [str(tail["flag"])] if tail.get("applies") and tail.get("flag") else []
+
+
 def score_discrete_prop_end_to_end(
     *,
     client: Any,
@@ -222,6 +241,12 @@ def score_discrete_prop_end_to_end(
     artifact = inference.artifact
     bundle = artifact.bundle
     calibration_parent_cohort = prop_calibration_parent_cohort(request, artifact)
+    risk_flags = _qualification_risk_flags(
+        request=request,
+        line=float(line),
+        direction=direction,
+        features=features,
+    )
 
     row = PredictionRow(
         event_id=request.event_id,
@@ -234,6 +259,7 @@ def score_discrete_prop_end_to_end(
         direction=str(direction).upper(),
         source_snapshot_id=source_snapshot_id,
         model_timestamp=request.as_of_timestamp,
+        failure_cause_tags=risk_flags,
         raw_model_probability=raw_probability,
         independent_model_probability=calibration.calibrated_probability,
         effective_sample_size=calibration.effective_sample_size,

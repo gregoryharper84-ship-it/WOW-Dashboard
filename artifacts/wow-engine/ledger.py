@@ -233,10 +233,12 @@ def determine_publishability(row: PredictionRow) -> PredictionRow:
         calibrated_lower_bound=row.calibrated_probability_lower_bound,
         calibration_status=row.calibration_status,
         blockers=row.data_gaps,
+        risk_flags=row.failure_cause_tags,
         probability_publishable=row.probability_publishable,
     )
     # Probability and money are separate objectives. The immutable
-    # probability ceiling records the model verdict only.
+    # probability ceiling records the model verdict only. Reviewed risk flags
+    # can lower recommendation qualification without mutating probability.
     row.probability_ceiling = qualification.terminal_label
 
     return row

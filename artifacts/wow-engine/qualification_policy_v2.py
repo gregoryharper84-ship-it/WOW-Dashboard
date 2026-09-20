@@ -16,6 +16,13 @@ sporting model clears the normal model-qualification thresholds. This mirrors
 calibration.py's ratified MONEY_QUALIFIED / FINAL_APPROVED prohibition without
 erasing or relabeling the model result.
 
+A small set of reviewed risk flags may impose a *qualification ceiling* without
+changing the sporting probability. These flags identify evidence patterns that the
+currently certified fitted model does not numerically consume strongly enough to
+support a high-confidence recommendation. They may demote a would-be qualified row
+to RESEARCH_INTEREST, but they never haircut raw/calibrated probability, rewrite a
+valid lower bound, or masquerade as a fitted coefficient.
+
 No new uncertainty-width cutoff is introduced without a separately certified policy
 artifact. can_execute remains false.
 """
@@ -26,8 +33,10 @@ from math import isfinite
 from typing import Iterable
 
 
-QUALIFICATION_POLICY_VERSION = "PROP_MODEL_QUALIFICATION_V17_CERTIFIED_THRESHOLDS"
+QUALIFICATION_POLICY_VERSION = "PROP_MODEL_QUALIFICATION_V17_RISK_CEILING_V2"
 PRECALIBRATION_STATUS = "PRECALIBRATION_SHRINKAGE"
+RISK_FLAG_RECENT_LOW_K_TAIL = "RECENT_LOW_K_TAIL_CONTRADICTION"
+QUALIFICATION_CEILING_RISK_FLAGS = {RISK_FLAG_RECENT_LOW_K_TAIL}
 
 
 @dataclass(frozen=True)
@@ -67,8 +76,8 @@ UNHEALTHY_CALIBRATION_STATES = {
 }
 
 
-def _normalized(blockers: Iterable[str]) -> tuple[str, ...]:
-    return tuple(dict.fromkeys(str(b).strip().upper() for b in blockers if str(b).strip()))
+def _normalized(values: Iterable[str]) -> tuple[str, ...]:
+    return tuple(dict.fromkeys(str(v).strip().upper() for v in values if str(v).strip()))
 
 
 def _decision(
@@ -107,11 +116,13 @@ def classify_prop_probability(
     calibrated_upper_bound: float | None = None,
     calibration_status: str | None,
     blockers: Iterable[str] = (),
+    risk_flags: Iterable[str] = (),
     probability_publishable: bool,
     model_quality_status: str = "PASS",
     input_complete: bool = True,
 ) -> PropQualificationDecision:
     blocker_tuple = _normalized(blockers)
+    risk_flag_tuple = _normalized(risk_flags)
     if not input_complete:
         return _decision(
             terminal_label="MODEL_INPUTS_INSUFFICIENT",
@@ -254,6 +265,27 @@ def classify_prop_probability(
         tier = "BELOW_THRESHOLD"
         terminal = "NO_LOW_PROBABILITY"
         qualified = False
+
+    # A reviewed risk flag can cap recommendation qualification without
+    # changing the completed sporting probability package. This is the V17
+    # response to evidence that is diagnostically material but not yet backed
+    # by a certified fitted coefficient. No manual probability penalty is
+    # applied here.
+    active_ceilings = tuple(flag for flag in risk_flag_tuple if flag in QUALIFICATION_CEILING_RISK_FLAGS)
+    if qualified and active_ceilings:
+        reasons.extend(f"QUALIFICATION_CEILING={flag}" for flag in active_ceilings)
+        return _decision(
+            terminal_label="RESEARCH_INTEREST",
+            confidence_tier="RISK_CEILING",
+            rank_eligible=False,
+            model_supported=True,
+            model_qualified=False,
+            model_qualification_status="MODEL_NOT_QUALIFIED",
+            uncertainty_width=width,
+            downstream_money_evaluation_allowed=False,
+            blockers=blocker_tuple,
+            reasons=tuple(reasons),
+        )
 
     money_allowed = qualified
     if calibration_health == PRECALIBRATION_STATUS:
