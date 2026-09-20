@@ -14,6 +14,7 @@ from fastapi import FastAPI
 
 import api_ncaaf_acceptance as v16
 from recommendation_ledger_api import install_recommendation_ledger_routes
+from v17.core_intelligence_compounding_runtime import install_compounding_intelligence_routes
 from v17.core_intelligence_event_runtime import install_core_intelligence_event_routes
 from v17.core_intelligence_runtime import install_core_intelligence_routes
 # Import through the V17 preservation shim so downstream LLP governance holds
@@ -57,6 +58,11 @@ install_core_intelligence_routes(
     get_client_fn=v16._db_client,
 )
 install_core_intelligence_event_routes(
+    app,
+    auth_dependency=v16._auth,
+    get_client_fn=v16._db_client,
+)
+install_compounding_intelligence_routes(
     app,
     auth_dependency=v16._auth,
     get_client_fn=v16._db_client,
