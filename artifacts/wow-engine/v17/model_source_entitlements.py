@@ -71,6 +71,13 @@ SOURCES: dict[str, SourceEntitlement] = {
         license_url="https://github.com/sportsdataverse/sportsdataverse-data/blob/main/LICENSE",
         attribution_required=True,
     ),
+    "SPORTSDATAVERSE_NHL": SourceEntitlement(
+        "SPORTSDATAVERSE_NHL",
+        ("NHL",),
+        "CANDIDATE_FIRST_PARTY_UNDOCUMENTED",
+        fitted_training_allowed_when_ready=True,
+        certification_source_review_required=True,
+    ),
     "BALLDONTLIE": SourceEntitlement(
         "BALLDONTLIE",
         ("NBA", "WNBA"),
