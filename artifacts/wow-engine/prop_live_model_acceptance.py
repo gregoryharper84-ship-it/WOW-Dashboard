@@ -53,7 +53,11 @@ def _valid_probability(value: Any) -> bool:
     return math.isfinite(p) and 0.0 < p < 1.0
 
 
-def _is_governed_model_path_pass(body: dict[str, Any]) -> tuple[bool, str | None]:
+def _is_governed_model_path_pass(
+    body: dict[str, Any],
+    *,
+    expected_model_family: str = "MLB_PITCHER_SO_FAILURE_PATH_NB_V1",
+) -> tuple[bool, str | None]:
     prediction = body.get("prediction") if isinstance(body.get("prediction"), dict) else {}
     model = body.get("model_evidence") if isinstance(body.get("model_evidence"), dict) else {}
     lanes = body.get("objective_lanes") if isinstance(body.get("objective_lanes"), dict) else {}
@@ -63,7 +67,7 @@ def _is_governed_model_path_pass(body: dict[str, Any]) -> tuple[bool, str | None
         body.get("ok") is True
         and bool(prediction_id)
         and model.get("provider_identity") == "WOW_PROP_FITTED_MODEL_V1"
-        and model.get("model_family") == "MLB_PITCHER_SO_FAILURE_PATH_NB_V1"
+        and model.get("model_family") == expected_model_family
         and model.get("calibration_status") == "PRECALIBRATION_SHRINKAGE"
         and model.get("probability_publishable") is True
         and model.get("can_execute") is False
@@ -75,7 +79,11 @@ def _is_governed_model_path_pass(body: dict[str, Any]) -> tuple[bool, str | None
     return ok, str(prediction_id) if prediction_id else None
 
 
-def _is_research_only_model_path_pass(body: dict[str, Any]) -> bool:
+def _is_research_only_model_path_pass(
+    body: dict[str, Any],
+    *,
+    expected_model_family: str = "MLB_PITCHER_SO_FAILURE_PATH_NB_V1",
+) -> bool:
     research = body.get("research_model_output") if isinstance(body.get("research_model_output"), dict) else {}
     lanes = body.get("objective_lanes") if isinstance(body.get("objective_lanes"), dict) else {}
     model_lane = lanes.get("MODEL") if isinstance(lanes.get("MODEL"), dict) else {}
@@ -92,7 +100,7 @@ def _is_research_only_model_path_pass(body: dict[str, Any]) -> bool:
         and _valid_probability(research.get("raw_probability_more"))
         and _valid_probability(research.get("raw_probability_less"))
         and research.get("provider_identity") == "WOW_PROP_FITTED_MODEL_V1"
-        and research.get("model_family") == "MLB_PITCHER_SO_FAILURE_PATH_NB_V1"
+        and research.get("model_family") == expected_model_family
         and research.get("calibration_status") == "UNKNOWN_OR_BLOCKED"
         and research.get("calibrated_probability") is None
         and research.get("calibrated_probability_lower_bound") is None
@@ -171,7 +179,26 @@ def _bootstrap_pick_payload(raw: str) -> dict[str, Any]:
     }
 
 
-def _is_bootstrap_pick_pass(response: httpx.Response) -> tuple[bool, str, str | None, str]:
+def _expected_bootstrap_model_family(payload: dict[str, Any]) -> str:
+    rows = payload.get("rows") if isinstance(payload.get("rows"), list) else []
+    row = rows[0] if rows and isinstance(rows[0], dict) else {}
+    sport = str(row.get("sport") or "").strip().upper()
+    stat = "_".join(str(row.get("stat_type") or "").strip().upper().replace("-", " ").split())
+    nfl_aliases = {
+        "PASS_YARDS", "PASSING_YARDS", "RUSH_YARDS", "RUSHING_YARDS",
+        "REC_YARDS", "RECEIVING_YARDS", "ANYTIME_TD", "ANYTIME_TDS",
+        "ANYTIME_TOUCHDOWN", "ANYTIME_TOUCHDOWNS",
+    }
+    if sport == "NFL" and stat in nfl_aliases:
+        return "NFL_PROP_ROLLING_FITTED_V1"
+    return "MLB_PITCHER_SO_FAILURE_PATH_NB_V1"
+
+
+def _is_bootstrap_pick_pass(
+    response: httpx.Response,
+    *,
+    expected_model_family: str = "MLB_PITCHER_SO_FAILURE_PATH_NB_V1",
+) -> tuple[bool, str, str | None, str]:
     body = _result_body(response)
     if body is None:
         return False, "INVALID_BODY", None, "INVALID"
@@ -199,9 +226,13 @@ def _is_bootstrap_pick_pass(response: httpx.Response) -> tuple[bool, str, str | 
     )
     if not common:
         return False, code, str(snapshot_id) if snapshot_id else None, "CONTRACT_FAIL"
-    if row.get("code") == "MODEL_QUALIFIED_HOLD" and _is_research_only_model_path_pass(result):
+    if row.get("code") == "MODEL_QUALIFIED_HOLD" and _is_research_only_model_path_pass(
+        result, expected_model_family=expected_model_family
+    ):
         return True, code, str(snapshot_id), "RESEARCH_ONLY_PUBLICATION_LOCK"
-    governed_ok, prediction_id = _is_governed_model_path_pass(result)
+    governed_ok, prediction_id = _is_governed_model_path_pass(
+        result, expected_model_family=expected_model_family
+    )
     if row.get("code") == "MODEL_QUALIFIED" and governed_ok:
         return True, code, str(snapshot_id), "GOVERNED_PUBLISHABLE"
     return False, code, str(snapshot_id) if snapshot_id else prediction_id, "MODEL_RESULT_FAIL"
@@ -235,7 +266,9 @@ async def _bootstrap_fresh_snapshot(key: str, port: str, raw: str, log: logging.
                     json=payload,
                 )
             last_status = response.status_code
-            passed, last_code, last_snapshot, last_mode = _is_bootstrap_pick_pass(response)
+            passed, last_code, last_snapshot, last_mode = _is_bootstrap_pick_pass(
+                response, expected_model_family=_expected_bootstrap_model_family(payload)
+            )
             if passed:
                 log.warning(
                     "WOW_PROP_MODEL_SELF_ACCEPTANCE result=PASS status=200 mode=AUTO_HYDRATED_E2E_%s snapshot_id=%s acquisition=PASS snapshot=FROZEN specialist_invoked=true governed_publishable=%s terminal=%s can_execute=false",
