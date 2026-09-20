@@ -16,13 +16,14 @@ If pre-hydration cannot prove route eligibility or any acquisition fails, the
 row is passed to the captured canonical handler unchanged. Therefore failure
 codes and fail-closed semantics remain owned by the canonical handler.
 
-One narrow exception is an all-row EVENT_ALREADY_STARTED batch after the same
-specialist/capability/certified-artifact preflight has already passed. Those
-rows are terminalized immediately through the canonical terminal reducer and
-Top-10 reconciler instead of repeating expensive downstream work that cannot
-change a pregame-only event invalidation. This preserves blocker precedence,
-row identity, reconciliation, and can_execute=false while keeping historical
-reproduction traffic from exhausting the interactive transport path.
+One narrow exception is a COMPACT all-row EVENT_ALREADY_STARTED batch after the
+same specialist/capability/certified-artifact preflight has already passed.
+Those rows are terminalized immediately through the canonical terminal reducer
+and Top-10 reconciler instead of repeating expensive downstream work that cannot
+change a pregame-only event invalidation. FULL internal callers remain on the
+captured canonical path unchanged. This preserves blocker precedence, row
+identity, reconciliation, and can_execute=false while keeping historical
+interactive reproduction traffic from exhausting the transport path.
 """
 from __future__ import annotations
 
@@ -333,7 +334,9 @@ def install_interactive_pick_hydration_wrapper(app: Any, *, market_api: Any) -> 
         batch: PickRequestBatch,
         x_wow_model_identity: Optional[str] = Header(default=None, alias="X-WOW-Model-Identity"),
     ):
-        if _all_rows_started_and_preflight_ready(batch, market_api=market_api):
+        if batch.response_mode == "COMPACT" and _all_rows_started_and_preflight_ready(
+            batch, market_api=market_api
+        ):
             LOGGER.warning(
                 "WOW_V17_INTERACTIVE_STAGE route=/score-pick-request stage=event-invalidated-fast-path "
                 "rows_in=%s response_mode=%s can_execute=false",
