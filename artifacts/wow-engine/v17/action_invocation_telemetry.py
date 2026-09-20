@@ -19,6 +19,9 @@ from time import perf_counter
 from typing import Any, Callable
 
 
+_PERSIST_TIMEOUT_SECONDS = 1.0
+
+
 LOGGER = logging.getLogger("wow.v17.action_invocation")
 TABLE = "wow_action_invocation_receipts"
 CAN_EXECUTE = False
@@ -69,37 +72,19 @@ def _caller_class(headers: Any, status_code: int) -> str:
     """Classify caller for observability only; never use this for authorization."""
     authorization = headers.get("authorization")
     auth_scheme = _auth_scheme(authorization)
-
-    # A 401 means authentication did not succeed, so transport hints cannot be
-    # elevated into an attributable caller class.
     if status_code == 401:
         return "UNKNOWN"
-
-    # GitHub OIDC is independently authenticated by the existing API auth layer.
-    # We only inspect its issuer claim here to distinguish CI/synthetic traffic;
-    # no token contents are persisted and this result grants no authority.
     if _jwt_issuer(authorization) == _GITHUB_OIDC_ISSUER:
         return "GITHUB_ACTIONS"
-
     user_agent = str(headers.get("user-agent") or "")
     lowered = user_agent.casefold()
-
-    # The live GPT host is not allowed to self-assert CHATGPT_ACTION through a
-    # custom header. Upgrade to CHATGPT_ACTION only when the authenticated
-    # transport also presents an OpenAI/ChatGPT user-agent identity.
     if auth_scheme == "BEARER" and ("openai" in lowered or "chatgpt" in lowered):
         return "CHATGPT_ACTION"
-
     explicit = str(headers.get("x-wow-caller-class") or "").strip().upper()
     if explicit in _EXPLICIT_CALLER_CLASSES:
         return explicit
-
     if "github" in lowered and "action" in lowered:
         return "GITHUB_ACTIONS"
-
-    # A successful/validated bearer request without stronger attributable
-    # transport evidence is only ACTION_API_KEY. Never infer CHATGPT_ACTION from
-    # bearer authentication alone.
     if auth_scheme == "BEARER":
         return "ACTION_API_KEY"
     return "UNKNOWN"
@@ -117,11 +102,7 @@ def _rows_in(headers: Any) -> int | None:
 
 
 def _request_id(headers: Any) -> str | None:
-    value = str(
-        headers.get("x-wow-request-id")
-        or headers.get("x-request-id")
-        or ""
-    ).strip()
+    value = str(headers.get("x-wow-request-id") or headers.get("x-request-id") or "").strip()
     return value[:256] or None
 
 
@@ -129,11 +110,7 @@ def _insert_receipt(db_client_fn: Callable[[], Any], receipt: dict[str, Any]) ->
     db_client_fn().table(TABLE).insert(receipt).execute()
 
 
-def install_action_invocation_middleware(
-    app: Any,
-    *,
-    db_client_fn: Callable[[], Any],
-) -> None:
+def install_action_invocation_middleware(app: Any, *, db_client_fn: Callable[[], Any]) -> None:
     """Install one fail-open invocation ledger probe on canonical Action routes."""
     if getattr(app.state, "wow_action_invocation_telemetry_installed", False):
         return
@@ -144,7 +121,6 @@ def install_action_invocation_middleware(
         operation_id = ROUTE_OPERATION_IDS.get(path)
         if operation_id is None:
             return await call_next(request)
-
         started = perf_counter()
         status_code = 500
         try:
@@ -167,26 +143,18 @@ def install_action_invocation_middleware(
                 "duration_ms": round(duration_ms, 3),
                 "can_execute": False,
             }
-            try:
-                await asyncio.wait_for(
-                    asyncio.to_thread(_insert_receipt, db_client_fn, receipt),
-                    timeout=1.0,
-                )
-            except Exception as exc:
-                LOGGER.warning(
-                    "WOW_V17_ACTION_INVOCATION_PERSISTENCE_FAILED route=%s status_code=%s "
-                    "error=%s can_execute=false",
-                    path,
-                    status_code,
-                    type(exc).__name__,
-                )
+            async def _persist_receipt() -> None:
+                try:
+                    await asyncio.wait_for(asyncio.to_thread(_insert_receipt, db_client_fn, receipt), timeout=_PERSIST_TIMEOUT_SECONDS)
+                except Exception as exc:
+                    LOGGER.warning(
+                        "WOW_V17_ACTION_INVOCATION_PERSISTENCE_FAILED route=%s status_code=%s error=%s can_execute=false",
+                        path, status_code, type(exc).__name__,
+                    )
+            task = asyncio.create_task(_persist_receipt())
+            task.add_done_callback(lambda done: done.exception() if not done.cancelled() else None)
 
     app.state.wow_action_invocation_telemetry_installed = True
 
 
-__all__ = [
-    "CAN_EXECUTE",
-    "ROUTE_OPERATION_IDS",
-    "TABLE",
-    "install_action_invocation_middleware",
-]
+__all__ = ["CAN_EXECUTE", "ROUTE_OPERATION_IDS", "TABLE", "install_action_invocation_middleware"]
