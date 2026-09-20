@@ -83,6 +83,31 @@
           "production_deploy": null
         }
       }
+    },
+    {
+      "postmortem_id": "PM-2026-09-20-001",
+      "title": "Flask app import starts a live manifest reaper thread under pytest",
+      "severity": "P1",
+      "domain": "CI / legacy Flask test infrastructure",
+      "state": "FIX_IN_PROGRESS",
+      "postmortem_path": "artifacts/wow-engine/v17/postmortems/PM-2026-09-20-001__flask-app-import-starts-live-reaper-under-pytest.md",
+      "engineering_fix_ids": [
+        "FIX-2026-09-20-001"
+      ],
+      "created_utc": "2026-09-20T22:40:00Z",
+      "updated_utc": "2026-09-20T22:40:00Z",
+      "engineering_fixes": {
+        "FIX-2026-09-20-001": {
+          "title": "Skip Flask app manifest bootstrap/reaper under pytest",
+          "risk": "R1",
+          "state": "TESTING",
+          "path": "artifacts/wow-engine/v17/engineering-fixes/FIX-2026-09-20-001__skip-flask-app-manifest-bootstrap-under-pytest.md",
+          "created_utc": "2026-09-20T22:40:00Z",
+          "updated_utc": "2026-09-20T22:40:00Z",
+          "merge_commit": null,
+          "production_deploy": null
+        }
+      }
     }
   ]
 }

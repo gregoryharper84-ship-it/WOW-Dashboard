@@ -17,6 +17,7 @@ _bt("start app import")
 
 import os
 import re
+import sys
 import json
 import random
 import math
@@ -144,8 +145,18 @@ from gate_engine.daily_run_lifecycle import (
     ensure_manifest_ready,
     start_manifest_reaper,
 )
-ensure_manifest_ready()
-start_manifest_reaper()
+# Skipped under pytest: any test file that does `import app` would otherwise
+# bootstrap the live manifest schema and start a real background reaper
+# thread that polls the database every REAPER_INTERVAL_SECONDS for the life
+# of the process. That thread's DB activity races with foreground test
+# transactions (observed as spurious lock-contention/transaction-abort
+# noise) and, if it fires while a test has `storage.daily_manifest.*`
+# mocked, records an unexpected call on that mock. Production/gunicorn is
+# unaffected: gunicorn_conf.py's post_fork hook explicitly restarts the
+# reaper in every worker regardless of whether the master started it here.
+if "pytest" not in sys.modules:
+    ensure_manifest_ready()
+    start_manifest_reaper()
 _bt("flask app created — registering routes")
 
 BUILD_ID = "wow-repair-2026-08-10-acquisition-routing-identity"

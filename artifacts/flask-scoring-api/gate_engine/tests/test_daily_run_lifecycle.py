@@ -795,5 +795,42 @@ class TestManifestTimeoutsAndReconciliation(unittest.TestCase):
         self.assertEqual(result["excess_ids"], [])
 
 
+class TestAppImportDoesNotStartLiveReaperUnderPytest(unittest.TestCase):
+    """Regression: loading app.py's module body must not bootstrap the live
+    manifest schema or start the real DB-polling reaper thread while running
+    under pytest.
+
+    jobs/wow_daily_scan.py loads app.py's entire module body via
+    importlib.util (to reach compute_wow_score), and several tests import
+    app.py directly. Before this fix, app.py called ensure_manifest_ready()
+    and start_manifest_reaper() unconditionally at import time, so any test
+    suite that imports either module started a real background thread
+    polling the database every REAPER_INTERVAL_SECONDS for the rest of the
+    process. That thread raced with foreground test transactions (observed
+    as spurious Postgres lock-contention/transaction-abort noise) and, if it
+    fired while a test had storage.daily_manifest.* mocked, recorded an
+    unexpected call on that mock (e.g. test_persist_false_skips_db_writes).
+    """
+
+    def test_fresh_app_module_load_skips_manifest_bootstrap_and_reaper(self):
+        import importlib.util
+        import pathlib
+
+        app_path = (
+            pathlib.Path(__file__).resolve().parents[2] / "app.py"
+        )
+        with (
+            patch("gate_engine.daily_run_lifecycle.ensure_manifest_ready") as mock_ready,
+            patch("gate_engine.daily_run_lifecycle.start_manifest_reaper") as mock_reaper,
+        ):
+            spec = importlib.util.spec_from_file_location(
+                "_regression_fix_2026_09_20_app_reimport_probe", app_path
+            )
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+        mock_ready.assert_not_called()
+        mock_reaper.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
