@@ -1,20 +1,21 @@
 """Cross-sport /score-pick-request compatibility for research candidates.
 
-Fantasy Score fitted candidates need evidence acquisition before exact-line forward
-calibration can mature. This bridge permits only that evidence-building path for
-an explicitly active, non-promoted CANDIDATE/SHADOW artifact. Genuine artifact
-absence is refined through the V17 capability manifest; transport, registry, RPC,
-scorer, and malformed-response failures are never rewritten.
+Fitted candidates need evidence acquisition before exact-line forward calibration
+can mature. This bridge permits only that evidence-building path for explicitly
+activated, non-promoted CANDIDATE/SHADOW artifacts. Genuine artifact absence is
+refined through the V17 capability manifest; transport, registry, RPC, scorer,
+and malformed-response failures are never rewritten.
 
-The module also restores the WNBA composite candidate control-plane route that
-was lost in a later merge. That route derives/registers a CANDIDATE only and can
-never certify, promote, publish, rank, or execute.
+The module also composes the WNBA composite candidate control-plane route. These
+research routes can never certify, promote, publish, rank, price, or execute.
 """
 from __future__ import annotations
 
 from typing import Any
 
 import pick_request_runtime_core as _runtime_core
+from v17.nba_scalar_candidate_bridge import candidate_preflight as _nba_scalar_candidate_preflight
+from v17.wnba_composite_candidate_bridge import candidate_preflight as _wnba_composite_candidate_preflight
 from v17.prop_capability_manifest import prop_capability as _prop_capability, runtime_prop_stat_aliases
 
 RESEARCH_ROUTES = {
@@ -30,7 +31,6 @@ _ARTIFACT_ABSENCE_CODES = frozenset({
     "PROP_MODEL_ARTIFACT_NOT_FOUND",
 })
 
-# Identity-only aliases. They never grant probability/publication authority.
 _runtime_core.PROP_STAT_ALIASES.update(runtime_prop_stat_aliases())
 
 
@@ -62,10 +62,26 @@ def _manifest_typed_absence(sport: Any, stat_type: Any, production_route: Any) -
 
 
 def research_candidate_preflight(market_api: Any, sport: Any, stat_type: Any, production_route: Any) -> dict[str, Any] | None:
-    """Return research-evidence compatibility or an exact lifecycle blocker."""
+    """Return research-evidence compatibility or an exact lifecycle blocker.
+
+    A research candidate is consulted only after a genuine production-artifact
+    absence. Registry/RPC/transport/scorer failures pass through unchanged.
+    """
+    if not isinstance(production_route, dict):
+        return None
+    route_code = str(production_route.get("code") or "").strip().upper()
+    if route_code not in _ARTIFACT_ABSENCE_CODES:
+        return None
+
     sport_n, stat_n = _key(sport, stat_type)
     specialist = RESEARCH_ROUTES.get((sport_n, stat_n))
     if specialist is None:
+        if not hasattr(market_api, "prod"):
+            return _manifest_typed_absence(sport, stat_type, production_route)
+        for candidate in (_wnba_composite_candidate_preflight, _nba_scalar_candidate_preflight):
+            result = candidate(market_api, sport, stat_type, production_route)
+            if result is not None:
+                return result
         return _manifest_typed_absence(sport, stat_type, production_route)
 
     try:
@@ -100,7 +116,7 @@ def research_candidate_preflight(market_api: Any, sport: Any, stat_type: Any, pr
     if str(artifact.get("specialist_version") or "").split("@", 1)[0] != specialist:
         return _manifest_typed_absence(sport, stat_type, production_route)
 
-    original = dict(production_route) if isinstance(production_route, dict) else {}
+    original = dict(production_route)
     return {
         "ok": True,
         "code": "PROP_CERTIFIED_MODEL_ARTIFACT_READY",
@@ -129,6 +145,11 @@ def research_candidate_outcome(**kwargs: Any) -> dict[str, Any] | None:
     if candidate.get("probability_publishable") is not False or candidate.get("rank_eligible") is not False:
         return None
 
+    family = str(candidate.get("candidate_family") or "").strip().upper()
+    terminal_cause = {
+        "NBA_SCALAR": "NBA_SCALAR_CANDIDATE_UNCALIBRATED",
+        "WNBA_COMPOSITE": "WNBA_COMPOSITE_CANDIDATE_UNCALIBRATED",
+    }.get(family, "FANTASY_SCORE_CANDIDATE_UNCALIBRATED")
     blockers = list(candidate.get("blockers") or [])
     forward = scored.get("forward_evidence") if isinstance(scored.get("forward_evidence"), dict) else {}
     blockers.extend(list(forward.get("blockers") or []))
@@ -147,7 +168,7 @@ def research_candidate_outcome(**kwargs: Any) -> dict[str, Any] | None:
         "pick_rejected": False,
         "verdict_class": "CALIBRATION_HOLD",
         "infrastructure_blocked": False,
-        "terminal_cause": "FANTASY_SCORE_CANDIDATE_UNCALIBRATED",
+        "terminal_cause": terminal_cause,
         "concurrent_infrastructure_blockers": [],
         "blockers": blockers,
         "downstream_money_evaluation_allowed": False,
@@ -164,12 +185,6 @@ def research_candidate_outcome(**kwargs: Any) -> dict[str, Any] | None:
 
 
 def _install_wnba_composite_registration_overlay() -> None:
-    """Compose the lost composite candidate route into the existing WNBA installer.
-
-    pick_request_runtime imports this module before importing the base WNBA
-    candidate installer, so replacing the module attribute here makes the
-    canonical installation path explicit without adding a second prop scorer.
-    """
     import v17.wnba_prop_candidate_registry as base_registry
     from v17.wnba_composite_candidate_registry import install_wnba_composite_candidate_registration_route
 
