@@ -34,7 +34,8 @@ from agent_runtime.scout_research import RESEARCH_RECONCILER, RESEARCH_WORKERS, 
 from mlb_1ip_specialist import CANONICAL_STAT_TYPE as MLB_1IP_STAT_TYPE
 from mlb_1ip_specialist import score_mlb_1ip, starter_changed
 from mlb_1ip_ingress_runtime import score_mlb_1ip_ingress
-from prop_auto_hydration import PropAutoHydrationError, auto_hydrate_prop_evidence
+from prop_auto_hydration import PropAutoHydrationError
+from prop_auto_hydration_router import auto_hydrate_prop_evidence
 from qualification_policy_v2 import classify_prop_probability
 from prop_terminal_reducer_v2 import EVENT_BLOCKERS, TRUE_MODEL_REJECTION_LABELS, reduce_prop_terminal
 from v17.portfolio_exposure_gate import evaluate_portfolio_qualification
@@ -55,6 +56,16 @@ PROP_STAT_ALIASES: dict[tuple[str, str], str] = {
     ("MLB", "FIRST_INNING_PITCHES"): MLB_1IP_STAT_TYPE,
     ("MLB", "FIRST_INNING_PITCH_COUNT"): MLB_1IP_STAT_TYPE,
     ("MLB", "FIRST_INNING_PITCHES_THROWN"): MLB_1IP_STAT_TYPE,
+    ("NFL", "PASS_YARDS"): "PASSING_YARDS",
+    ("NFL", "PASSING_YARDS"): "PASSING_YARDS",
+    ("NFL", "RUSH_YARDS"): "RUSHING_YARDS",
+    ("NFL", "RUSHING_YARDS"): "RUSHING_YARDS",
+    ("NFL", "REC_YARDS"): "RECEIVING_YARDS",
+    ("NFL", "RECEIVING_YARDS"): "RECEIVING_YARDS",
+    ("NFL", "ANYTIME_TD"): "ANYTIME_TD",
+    ("NFL", "ANYTIME_TDS"): "ANYTIME_TD",
+    ("NFL", "ANYTIME_TOUCHDOWN"): "ANYTIME_TD",
+    ("NFL", "ANYTIME_TOUCHDOWNS"): "ANYTIME_TD",
 }
 
 PickSourceType = Literal[

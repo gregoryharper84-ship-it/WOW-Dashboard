@@ -19,6 +19,7 @@ MLB_PITCHING_OUTS_EXPERT = "wow.mlb-pitcher-outs-workload-expert"
 MLB_PITCH_COMPOSITION_EXPERT = "wow.mlb-pitcher-pitch-composition-expert"
 MLB_PLATE_APPEARANCES_EXPERT = "wow.mlb-batter-plate-appearances-expert"
 WNBA_PLAYER_PROP_EXPERT = "wow.wnba-player-prop-probability-expert"
+NFL_PLAYER_PROP_EXPERT = "wow.nfl-player-prop-probability-expert"
 NFL_FANTASY_SCORE_EXPERT = "wow.nfl-dfs-fantasy-score-expert"
 NBA_FANTASY_SCORE_EXPERT = "wow.nba-dfs-fantasy-score-expert"
 WNBA_FANTASY_SCORE_EXPERT = "wow.wnba-dfs-fantasy-score-expert"
@@ -45,6 +46,10 @@ WNBA_POINTS = "POINTS"
 WNBA_REBOUNDS = "REBOUNDS"
 WNBA_ASSISTS = "ASSISTS"
 WNBA_THREES_MADE = "THREE_POINTERS_MADE"
+NFL_PASSING_YARDS = "PASSING_YARDS"
+NFL_RUSHING_YARDS = "RUSHING_YARDS"
+NFL_RECEIVING_YARDS = "RECEIVING_YARDS"
+NFL_ANYTIME_TD = "ANYTIME_TD"
 FANTASY_SCORE = "FANTASY_SCORE"
 MLB_HITTER_FANTASY_SCORE = "HITTER_FANTASY_SCORE"
 MLB_PITCHER_FANTASY_SCORE = "PITCHER_FANTASY_SCORE"
@@ -186,6 +191,26 @@ DECLARED_PROP_LANES: dict[tuple[str, str], PropCapability] = {
     ("WNBA", WNBA_REBOUNDS): _wnba_candidate(WNBA_REBOUNDS),
     ("WNBA", WNBA_ASSISTS): _wnba_candidate(WNBA_ASSISTS),
     ("WNBA", WNBA_THREES_MADE): _wnba_candidate(WNBA_THREES_MADE),
+    ("NFL", NFL_PASSING_YARDS): PropCapability(
+        sport="NFL", stat_type=NFL_PASSING_YARDS, lane_status=CERTIFIED_PRODUCTION,
+        controlling_specialist=NFL_PLAYER_PROP_EXPERT, route_active=True, declared_skill_status="PRODUCTION",
+        exact_line_support_policy=CONTINUOUS_LINE_SUPPORT, certified_line_support_source="wow_prop_fitted_model_artifacts",
+        publication_allowed=True, blocker=None, notes="Validated rolling fitted NFL passing-yards route; runtime artifact/input/calibration gates remain mandatory."),
+    ("NFL", NFL_RUSHING_YARDS): PropCapability(
+        sport="NFL", stat_type=NFL_RUSHING_YARDS, lane_status=CERTIFIED_PRODUCTION,
+        controlling_specialist=NFL_PLAYER_PROP_EXPERT, route_active=True, declared_skill_status="PRODUCTION",
+        exact_line_support_policy=CONTINUOUS_LINE_SUPPORT, certified_line_support_source="wow_prop_fitted_model_artifacts",
+        publication_allowed=True, blocker=None, notes="Validated rolling fitted NFL rushing-yards route; runtime artifact/input/calibration gates remain mandatory."),
+    ("NFL", NFL_RECEIVING_YARDS): PropCapability(
+        sport="NFL", stat_type=NFL_RECEIVING_YARDS, lane_status=CERTIFIED_PRODUCTION,
+        controlling_specialist=NFL_PLAYER_PROP_EXPERT, route_active=True, declared_skill_status="PRODUCTION",
+        exact_line_support_policy=CONTINUOUS_LINE_SUPPORT, certified_line_support_source="wow_prop_fitted_model_artifacts",
+        publication_allowed=True, blocker=None, notes="Validated rolling fitted NFL receiving-yards route; runtime artifact/input/calibration gates remain mandatory."),
+    ("NFL", NFL_ANYTIME_TD): PropCapability(
+        sport="NFL", stat_type=NFL_ANYTIME_TD, lane_status=CERTIFIED_PRODUCTION,
+        controlling_specialist=NFL_PLAYER_PROP_EXPERT, route_active=True, declared_skill_status="PRODUCTION",
+        exact_line_support_policy=CONTINUOUS_LINE_SUPPORT, certified_line_support_source="wow_prop_fitted_model_artifacts",
+        publication_allowed=True, blocker=None, notes="Validated fitted NFL anytime-TD Bernoulli route; runtime artifact/input/calibration gates remain mandatory."),
 
     # Fantasy Score candidate parity. These declarations do not activate publication authority.
     ("NFL", FANTASY_SCORE): _fantasy_candidate(

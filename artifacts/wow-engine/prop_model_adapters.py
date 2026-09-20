@@ -335,3 +335,5 @@ def register() -> None:
     register_model_family_adapter(MLB_PITCHER_SO_MODEL_FAMILY, mlb_pitcher_so_failure_path_nb_v1_adapter)
     from wnba_prop_model_adapter import MODEL_FAMILY as WNBA_MODEL_FAMILY, wnba_prop_poisson_logglm_v1_adapter
     register_model_family_adapter(WNBA_MODEL_FAMILY, wnba_prop_poisson_logglm_v1_adapter)
+    from nfl_prop_model_adapter import MODEL_FAMILY as NFL_MODEL_FAMILY, nfl_prop_rolling_fitted_v1_adapter
+    register_model_family_adapter(NFL_MODEL_FAMILY, nfl_prop_rolling_fitted_v1_adapter)
