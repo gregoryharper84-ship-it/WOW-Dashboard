@@ -39,6 +39,30 @@ def _chunks(values: list[str], size: int = IN_FILTER_CHUNK_SIZE) -> list[list[st
     return [values[index:index + size] for index in range(0, len(values), size)]
 
 
+def _home_result(source: dict[str, Any], outcome: dict[str, Any]) -> str | None:
+    """Return the canonical HOME-side result from authoritative settlement facts."""
+    if outcome.get("void") is True:
+        return "VOID"
+    home_score = outcome.get("home_score")
+    away_score = outcome.get("away_score")
+    if (
+        isinstance(home_score, int)
+        and not isinstance(home_score, bool)
+        and isinstance(away_score, int)
+        and not isinstance(away_score, bool)
+        and home_score != away_score
+    ):
+        return "WIN" if home_score > away_score else "LOSS"
+
+    # Legacy fallback only when a settlement row lacks final scores. Exact name
+    # equality is intentionally conservative; an unresolved alias is skipped.
+    home_team = str(source.get("home_team") or "").strip()
+    winner = str(outcome.get("official_winner") or "").strip()
+    if home_team and winner and home_team.casefold() == winner.casefold():
+        return "WIN"
+    return None
+
+
 def capture_settled_event_observations(
     db: Any,
     *,
@@ -52,8 +76,8 @@ def capture_settled_event_observations(
         "wow_event_outcomes.select_core_intelligence_candidates",
         lambda: db.table("wow_event_outcomes")
         .select(
-            "event_prediction_id,official_winner,void,settlement_source,"
-            "settlement_timestamp,failure_category"
+            "event_prediction_id,official_winner,home_score,away_score,void,"
+            "settlement_source,settlement_timestamp,failure_category"
         )
         .order("settlement_timestamp", desc=True)
         .limit(max_outcomes)
@@ -101,13 +125,8 @@ def capture_settled_event_observations(
             skipped_n += 1
             continue
 
-        home_team = str(source.get("home_team") or "").strip()
-        winner = str(outcome.get("official_winner") or "").strip()
-        if outcome.get("void") is True:
-            official_result = "VOID"
-        elif home_team and winner:
-            official_result = "WIN" if winner.casefold() == home_team.casefold() else "LOSS"
-        else:
+        official_result = _home_result(source, outcome)
+        if official_result is None:
             skipped_n += 1
             continue
 
