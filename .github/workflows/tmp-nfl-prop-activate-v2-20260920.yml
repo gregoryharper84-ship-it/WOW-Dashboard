@@ -1,0 +1,37 @@
+name: tmp-nfl-prop-activate-v2-20260920
+on:
+  push:
+    branches: [fix/v17-nfl-prop-governed-lane-20260920-active]
+    paths: ['.github/workflows/tmp-nfl-prop-activate-v2-20260920.yml']
+permissions:
+  contents: write
+jobs:
+  activate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/v17-nfl-prop-governed-lane-20260920-active
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Generate exact activation contract
+        run: python artifacts/wow-engine/scripts/generate_nfl_prop_activation.py
+      - name: Run focused governed NFL tests
+        run: |
+          cd artifacts/wow-engine
+          python -m pip install --disable-pip-version-check -r requirements.txt >/dev/null
+          pytest -q test_nfl_prop_runtime_wiring.py test_nfl_prop_model_adapter.py test_nfl_prop_hydration_contract.py test_nfl_prop_certification_evidence.py
+      - name: Commit generated contract and self-delete temporary workflows
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add artifacts/wow-engine
+          git rm -f .github/workflows/tmp-nfl-prop-activate-20260920.yml .github/workflows/tmp-nfl-prop-activate-v2-20260920.yml
+          git commit -m 'feat(v17): certify exact NFL direct prop routes'
+          git pull --rebase origin fix/v17-nfl-prop-governed-lane-20260920-active
+          git push origin HEAD:fix/v17-nfl-prop-governed-lane-20260920-active
