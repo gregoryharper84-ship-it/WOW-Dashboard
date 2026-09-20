@@ -9,6 +9,7 @@ on:
 
 permissions:
   contents: read
+  id-token: write
 
 jobs:
   nfl-prop-live-canary:
@@ -16,25 +17,35 @@ jobs:
     timeout-minutes: 6
     env:
       WOW_SERVICE_URL: https://wow-governed-probability-engine.onrender.com
+      WOW_OIDC_AUDIENCE: wow-v17-multiscout
       WOW_CAN_EXECUTE: "false"
       WOW_DRY_RUN_ONLY: "true"
-      WOW_ACTION_API_KEY: ${{ secrets.WOW_ACTION_API_KEY }}
     steps:
-      - name: Assert fail-closed canary context
+      - name: Assert fail-closed OIDC canary context
         shell: bash
         run: |
           set -euo pipefail
           test "$WOW_CAN_EXECUTE" = "false"
           test "$WOW_DRY_RUN_ONLY" = "true"
-          test -n "$WOW_ACTION_API_KEY"
+          test -n "$ACTIONS_ID_TOKEN_REQUEST_URL"
+          test -n "$ACTIONS_ID_TOKEN_REQUEST_TOKEN"
 
       - name: Score four live NFL directions through canonical Action boundary
         shell: bash
         run: |
           set -euo pipefail
+          separator='?'
+          case "$ACTIONS_ID_TOKEN_REQUEST_URL" in
+            *\?*) separator='&' ;;
+          esac
+          oidc_json="$(curl --silent --show-error --fail --connect-timeout 15 --max-time 30 \
+            --header "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}${separator}audience=${WOW_OIDC_AUDIENCE}")"
+          oidc_token="$(python -c 'import json,sys; value=json.load(sys.stdin).get("value"); assert isinstance(value,str) and value.strip(); print(value.strip())' <<<"${oidc_json}")"
+          unset oidc_json
           cat >/tmp/request.json <<'JSON'
           {
-            "request_id":"nfl-prop-live-canary-20260920",
+            "request_id":"nfl-prop-live-canary-20260920-oidc",
             "response_mode":"COMPACT",
             "rows":[
               {"row_key":"henry-rush-more","event_id":"401872938","event_start_time":"2026-09-20T17:00:00Z","sport":"NFL","player":"Derrick Henry","stat_type":"Rush Yards","line":93.5,"direction":"MORE","source_type":"PDF","platform":"PrizePicks","league":"NFL","opponent":"New Orleans Saints"},
@@ -46,9 +57,18 @@ jobs:
           JSON
           code="$(curl --silent --show-error --retry 2 --retry-all-errors --connect-timeout 20 --max-time 240 \
             --output /tmp/response.json --write-out '%{http_code}' \
-            --request POST --header "Authorization: Bearer ${WOW_ACTION_API_KEY}" --header 'Content-Type: application/json' \
+            --request POST --header "Authorization: Bearer ${oidc_token}" --header 'Content-Type: application/json' \
             --data-binary @/tmp/request.json "${WOW_SERVICE_URL}/score-pick-request")"
-          test "$code" = "200"
+          unset oidc_token
+          if [ "$code" != "200" ]; then
+            echo "score-pick-request HTTP ${code}" >&2
+            python - <<'PY'
+          from pathlib import Path
+          p=Path('/tmp/response.json')
+          if p.exists(): print(p.read_text()[:2000])
+          PY
+            exit 1
+          fi
 
       - name: Validate governed NFL prop response
         shell: bash
