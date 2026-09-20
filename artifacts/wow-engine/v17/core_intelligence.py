@@ -372,7 +372,8 @@ def detect_learning_hypotheses(
         hypotheses.append(LearningHypothesis(
             hypothesis_id=str(uuid5(
                 NAMESPACE_URL,
-                f"{SCHEMA_VERSION}:{summary.cohort_key}:CALIBRATION_BIAS:{direction}",
+                f"{SCHEMA_VERSION}:{summary.cohort_key}:CALIBRATION_BIAS:{direction}:"
+                f"{summary.scored_n}:{summary.calibration_bias:.12f}",
             )),
             cohort_key=summary.cohort_key,
             hypothesis_type="CALIBRATION_BIAS",
@@ -387,7 +388,8 @@ def detect_learning_hypotheses(
         hypotheses.append(LearningHypothesis(
             hypothesis_id=str(uuid5(
                 NAMESPACE_URL,
-                f"{SCHEMA_VERSION}:{summary.cohort_key}:BRIER_DEGRADATION",
+                f"{SCHEMA_VERSION}:{summary.cohort_key}:BRIER_DEGRADATION:"
+                f"{summary.scored_n}:{summary.mean_brier_score:.12f}",
             )),
             cohort_key=summary.cohort_key,
             hypothesis_type="PREDICTIVE_ACCURACY_DEGRADATION",
