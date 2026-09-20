@@ -34,7 +34,7 @@ jobs:
           path = Path('artifacts/wow-engine/tests/test_v17_compact_outer_wrapper.py')
           text = path.read_text(encoding='utf-8')
           text = text.replace('from fastapi import FastAPI, Header', 'from fastapi import Depends, FastAPI, Header')
-          text = text.replace('auth_dependency=lambda: None, market_api=object()', 'auth_dependency=[Depends(lambda: None)], market_api=object()')
+          text = text.replace('auth_dependency=lambda: None, market_api=object()', 'auth_dependency=Depends(lambda: None), market_api=object()')
           path.write_text(text, encoding='utf-8')
           PY
 
