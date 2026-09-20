@@ -15,6 +15,7 @@ from typing import Any
 
 import pick_request_runtime_core as _runtime_core
 from v17.nba_scalar_candidate_bridge import candidate_preflight as _nba_scalar_candidate_preflight
+from v17.wnba_composite_candidate_bridge import candidate_preflight as _wnba_composite_candidate_preflight
 from v17.prop_capability_manifest import prop_capability as _prop_capability, runtime_prop_stat_aliases
 
 RESEARCH_ROUTES = {
@@ -65,9 +66,10 @@ def research_candidate_preflight(market_api: Any, sport: Any, stat_type: Any, pr
     sport_n, stat_n = _key(sport, stat_type)
     specialist = RESEARCH_ROUTES.get((sport_n, stat_n))
     if specialist is None:
-        nba = _nba_scalar_candidate_preflight(market_api, sport, stat_type, production_route)
-        if nba is not None:
-            return nba
+        for candidate in (_wnba_composite_candidate_preflight, _nba_scalar_candidate_preflight):
+            result = candidate(market_api, sport, stat_type, production_route)
+            if result is not None:
+                return result
         return _manifest_typed_absence(sport, stat_type, production_route)
 
     try:
@@ -132,11 +134,10 @@ def research_candidate_outcome(**kwargs: Any) -> dict[str, Any] | None:
         return None
 
     family = str(candidate.get("candidate_family") or "").strip().upper()
-    terminal_cause = (
-        "NBA_SCALAR_CANDIDATE_UNCALIBRATED"
-        if family == "NBA_SCALAR"
-        else "FANTASY_SCORE_CANDIDATE_UNCALIBRATED"
-    )
+    terminal_cause = {
+        "NBA_SCALAR": "NBA_SCALAR_CANDIDATE_UNCALIBRATED",
+        "WNBA_COMPOSITE": "WNBA_COMPOSITE_CANDIDATE_UNCALIBRATED",
+    }.get(family, "FANTASY_SCORE_CANDIDATE_UNCALIBRATED")
     blockers = list(candidate.get("blockers") or [])
     forward = scored.get("forward_evidence") if isinstance(scored.get("forward_evidence"), dict) else {}
     blockers.extend(list(forward.get("blockers") or []))
@@ -172,7 +173,6 @@ def research_candidate_outcome(**kwargs: Any) -> dict[str, Any] | None:
 
 
 def _install_wnba_composite_registration_overlay() -> None:
-    """Compose WNBA composite candidate derivation into the existing WNBA installer."""
     import v17.wnba_prop_candidate_registry as base_registry
     from v17.wnba_composite_candidate_registry import install_wnba_composite_candidate_registration_route
 
