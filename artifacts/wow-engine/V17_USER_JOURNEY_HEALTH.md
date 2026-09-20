@@ -1,10 +1,10 @@
 # WOW V17 user-journey health
 
-Updated: 2026-09-16
+Updated: 2026-09-20
 
 Status: **FAIL — NO_END_TO_END_GOVERNED_PROP_RESULT**
 
-This status is intentionally stricter than component health. A healthy backend, verified live editor, green repository CI, successful Scout discovery, mounted route, or available fitted model does not by itself prove that the product is usable from ChatGPT.
+This status is intentionally stricter than component health. A healthy backend, repository CI, mounted route, historical editor acceptance, successful Scout discovery, or available fitted model does not by itself prove that the product is usable from ChatGPT.
 
 ## Golden user journey
 
@@ -56,7 +56,7 @@ FAIL_RESPONSE_HANDOFF
 - repository CI success;
 - backend health endpoint success;
 - route-mounted or HTTP-200 evidence without the golden user request;
-- live editor save/reload success;
+- historical live editor save/reload success;
 - model-capability registry presence;
 - Scout discovery success;
 - locally reconstructed model output;
@@ -66,13 +66,15 @@ The latest full-path production ChatGPT canary receipt is the authority for this
 
 ## Current recovery state
 
-The 2026-09-16 editor reconciliation independently established `LIVE_GPT_EDITOR_SYNC=VERIFIED`, the production backend is V17 active, and `/score-pick-request` is mounted. Those are prerequisites, not proof of the golden journey.
+Repository PR #617 repaired the canonical prop Action operation IDs and direct production probing confirms `/score-pick-request` is mounted and bearer-protected. Production health reports V17 active with `can_execute=false`.
 
-Until the golden production prompt crosses the live Action boundary and returns the governed result contract:
+However, the live GPT editor still requires save/reload acceptance against the current repository contract. The historical 2026-09-16 editor verification is not current semantic/schema parity after P0-D and PR #617.
+
+Until the current live editor is resynchronized and the golden production prompt completes the full governed path:
 
 ```text
 USER_JOURNEY_HEALTH = FAIL
 REASON = NO_END_TO_END_GOVERNED_PROP_RESULT
-LIVE_GPT_EDITOR_SYNC = VERIFIED 2026-09-16
+LIVE_GPT_EDITOR_SYNC = RESYNC_REQUIRED_AFTER_PR617
 can_execute = false
 ```

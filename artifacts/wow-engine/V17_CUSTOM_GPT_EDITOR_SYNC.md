@@ -1,56 +1,65 @@
 # WOW V17 Custom GPT editor synchronization
 
-Updated: 2026-09-18
+Updated: 2026-09-20
 
-Status: **LIVE_EDITOR_SYNC_REQUIRED_AFTER_P0_D**
+Status: **LIVE_EDITOR_SYNC_REQUIRED_AFTER_PR617**
 
-The production `WOW_BETTING_ENGINE` editor was last saved, reloaded, and acceptance-tested on 2026-09-16. The historical state was `LIVE_EDITOR_SYNC_VERIFIED`; it is not the current state. Repository semantic instructions later changed for the P0-D large-prop-pool completion/receipt-recovery contract, so a new editor save/reload acceptance is required. Repository, backend/runtime, and live editor state remain separate.
+Repository and backend contracts are repaired through PR #617, but the production `WOW_BETTING_ENGINE` editor has not yet been re-saved/reloaded against that repaired contract in this repository session. Repository correctness, backend runtime, model capability, and live editor state remain separate.
 
-## Last verified live state
+## Current repository contract
 
-- Historical 2026-09-16 token: `LIVE_EDITOR_SYNC_VERIFIED`.
-- Current `LIVE_GPT_EDITOR_SYNC`: **RESYNC_REQUIRED_AFTER_P0_D**.
-- The Sep 16 live instructions reported 5,418 characters, below the 8,000-character limit.
-- The saved instructions preserved `can_execute=false`, dry-run behavior, WOW prop ownership, LLP team/event ownership, one controlling specialist per row/event, Scout/Research as evidence-only, governed calibrated probability/lower-bound rules, typed failures, immutable receipt identity, exact-line/OOD handling, and secret non-exposure.
-- The live Action contained 14 operations and retained pick-request/team-event/record/settle plus V17 host/detailed-evidence/daily-row/receipt operations.
-- Authentication remained API Key -> Bearer using `WOW_ACTION_API_KEY`; the credential was not exposed or re-entered during verification.
-- Live acceptance invoked `getWowProbabilityHealth` against the production origin and returned V17 active, external governed backend, and `can_execute=false`.
+- Canonical Action schema: `artifacts/wow-engine/v17/openapi.wow-betting-engine.v17.yaml`.
+- Canonical prop operations exposed by that schema:
+  - `/score-prop` -> `scoreWowProp`
+  - `/score-pick-request` -> `scoreWowPickRequest`
+- Legacy `scoreWowV17Prop` / `scoreWowV17PickRequest` identifiers remain compatibility aliases only where backend host routing explicitly accepts them.
+- Authentication remains API Key -> Bearer using `WOW_ACTION_API_KEY`.
+- `can_execute=false`, dry-run-only behavior, and `V17_TERMINAL_REDUCER` authority remain binding.
 
-## P0-D editor delta requiring synchronization
+## Large-board interactive contract
 
-`WOW_V17_CUSTOM_GPT_INSTRUCTIONS.txt` now adds a large-board contract that is not proven live until the editor is saved/reloaded again:
+`WOW_V17_CUSTOM_GPT_INSTRUCTIONS.txt` is the semantic source for the live host. Current required behavior is:
 
-- backend `/score-pick-request` keeps <=50-row schema capability, while LIVE_GPT interactive scoring uses <=3 directional rows per Action call;
-- stable row/chunk identity is preserved across the pool;
-- timeout/disconnect/ambiguous completion triggers exact immutable receipt lookup before retry;
-- only unresolved rows are retried, splitting to one row if needed;
+- backend `/score-pick-request` keeps <=50-row API capability;
+- LIVE_GPT interactive scoring uses <=4 directional rows per Action call;
+- stable `row_key` / chunk identity is preserved;
+- timeout/disconnect/ambiguous completion triggers immutable prediction-receipt lookup before retry;
+- only unresolved rows are retried, splitting to one row when needed;
 - successful earlier receipts are preserved; and
 - a partial pool is never ranked or described as Full Model completion.
 
-Until this text is saved and acceptance-tested in the live GPT editor, repository correctness must not be reported as live-host completion.
+## Historical live editor evidence
 
-## Action source reconciliation
+The production `WOW_BETTING_ENGINE` editor was last positively saved/reloaded and Action-tested on 2026-09-16. That historical attestation proves the editor previously had a working bearer-authenticated Action connection, but it does not prove current semantic/schema parity after subsequent P0-D and PR #617 changes.
 
-The live editor schema is a merged contract sourced from:
-- `artifacts/wow-engine/openapi.custom-gpt.template.yaml`
-- `artifacts/wow-engine/openapi.pick-request-action.yaml`
-- verified active V17 host/detailed-evidence/daily-row/prediction-receipt operations
+Historical facts only:
 
-The claim that `v17/openapi.wow-betting-engine.v17.yaml` alone is the live installed schema is obsolete. The last verified live pick operation is `scoreWowPickRequest`, not `scoreWowV17PickRequest`; batch/ledger operations include `scoreWowTeamEventRequest`, `recordWowRecommendations`, and `settleWowRecommendations`.
+- prior token: `LIVE_EDITOR_SYNC_VERIFIED`;
+- prior live pick operation included `scoreWowPickRequest`;
+- prior health invocation reached the production Render origin and returned V17 active with `can_execute=false`;
+- no credential was exposed.
 
-## Repository text parity note
+## Required live product synchronization
 
-The prior instruction blob SHA must not be reported as the current live-editor instruction hash. `WOW_V17_CUSTOM_GPT_INSTRUCTIONS.txt` is the repository semantic source; after P0-D, semantic parity with the live editor is pending a fresh save/reload acceptance.
+To move `LIVE_GPT_EDITOR_SYNC` back to VERIFIED, the live GPT editor must be saved/reloaded using the current repository semantic instructions and canonical V17 Action schema, while retaining the existing Bearer credential. Acceptance must then prove at minimum:
 
-## OpenAPI introspection defect is separate
+1. `scoreWowPickRequest` is present and callable;
+2. `/health` reaches the production Render origin;
+3. bearer authentication succeeds without exposing or replacing `WOW_ACTION_API_KEY`;
+4. current diagnostic operations for capabilities, TheRundown, Odds API, and compact ESPN discovery remain callable as required by the live-host contract; and
+5. `can_execute=false` remains true.
 
-The deployed backend routes are live, while server-generated `/openapi.json` still has a known `market_api.ScorePropRequest` forward-reference defect. Direct production probes established the relevant scoring/ledger routes. Do not rewrite an editor synchronization requirement as a model failure.
+Until that product/editor acceptance is completed, do not report `LIVE_GPT_EDITOR_SYNC=VERIFIED`.
+
+## Backend route evidence
+
+Direct production probing has established that `/score-pick-request` is mounted and bearer-protected: an unauthenticated request returns HTTP 401 for a missing/malformed Authorization header. That is evidence of a live protected route, not a model failure.
 
 ## Status separation
 
 - `BACKEND_RUNTIME`: V17 active when backend confirms it.
 - `MODEL_CAPABILITY`: route-specific; preserve exact typed status.
-- `REPOSITORY_GOVERNANCE`: protected-main/CI/repository state.
-- `LIVE_GPT_EDITOR_SYNC`: **RESYNC_REQUIRED_AFTER_P0_D**; historical 2026-09-16 state was `LIVE_EDITOR_SYNC_VERIFIED`.
+- `REPOSITORY_GOVERNANCE`: PR #617 merged; canonical Action IDs repaired.
+- `LIVE_GPT_EDITOR_SYNC`: **RESYNC_REQUIRED_AFTER_PR617** until editor save/reload acceptance succeeds.
 
-A product/editor problem must never be rewritten as `MODEL_UNAVAILABLE`, `MODEL_INPUTS_INSUFFICIENT`, `MODEL_SCORER_FAILED`, or `MODEL_OUTPUT_INVALID`.
+A product/editor synchronization problem must never be rewritten as `MODEL_UNAVAILABLE`, `MODEL_INPUTS_INSUFFICIENT`, `MODEL_SCORER_FAILED`, or `MODEL_OUTPUT_INVALID`.

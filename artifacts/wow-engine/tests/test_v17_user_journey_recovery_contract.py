@@ -8,16 +8,16 @@ USER_HEALTH = ROOT / "artifacts" / "wow-engine" / "V17_USER_JOURNEY_HEALTH.md"
 PERSIST_RESUME = ROOT / ".github" / "workflows" / "wow-v17-scout-persist-resume.yml"
 
 
-def test_verified_editor_sync_does_not_imply_user_journey_pass():
+def test_editor_resync_requirement_does_not_imply_user_journey_pass():
     production = STATUS.read_text(encoding="utf-8")
     editor = EDITOR_SYNC.read_text(encoding="utf-8")
     health = USER_HEALTH.read_text(encoding="utf-8")
 
-    assert "LIVE_EDITOR_SYNC_VERIFIED" in production
-    assert "LIVE_EDITOR_SYNC_VERIFIED" in editor
+    assert "LIVE_GPT_EDITOR_SYNC = RESYNC_REQUIRED_AFTER_PR617" in production
+    assert "RESYNC_REQUIRED_AFTER_PR617" in editor
     assert "USER_JOURNEY_HEALTH = FAIL" in production
     assert "Status: **FAIL — NO_END_TO_END_GOVERNED_PROP_RESULT**" in health
-    assert "live editor save/reload success" in health
+    assert "historical live editor save/reload success" in health
 
 
 def test_live_pick_request_operation_is_distinct_from_golden_journey_acceptance():
@@ -25,7 +25,7 @@ def test_live_pick_request_operation_is_distinct_from_golden_journey_acceptance(
     health = USER_HEALTH.read_text(encoding="utf-8")
 
     assert "scoreWowPickRequest" in editor
-    assert "not `scoreWowV17PickRequest`" in editor
+    assert "compatibility aliases only" in editor
     assert "scoreWowPickRequest" in health
     assert "Use full model and provide me the best props across all sports." in health
     assert "backend health endpoint success" in health
@@ -54,4 +54,4 @@ def test_user_journey_health_remains_fail_closed_until_full_path_canary():
     assert "V17_TERMINAL_REDUCER" in health
     assert "can_execute=false" in health
     assert "USER_JOURNEY_HEALTH = FAIL" in health
-    assert "LIVE_GPT_EDITOR_SYNC = VERIFIED 2026-09-16" in health
+    assert "LIVE_GPT_EDITOR_SYNC = RESYNC_REQUIRED_AFTER_PR617" in health
