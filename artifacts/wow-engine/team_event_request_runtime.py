@@ -286,7 +286,7 @@ def _apply_card_admission(row: TeamEventRequestRow, outcome: dict[str, Any]) -> 
     outcome["card_admission_blockers"] = blockers
     outcome["card_admission_receipt"] = {
         "event_prediction_id": prediction_id,
-        "official_event_id": _event_id(row),
+        "official_event_id": row.event_key,
         "event_key": row.event_key,
         "selection": selected,
         "market_family": "OUTRIGHT_WINNER",
