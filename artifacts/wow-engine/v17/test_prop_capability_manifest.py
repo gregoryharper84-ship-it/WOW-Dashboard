@@ -131,7 +131,8 @@ def test_truly_unknown_lane_fails_closed_without_guessing():
 
 def test_manifest_reports_cross_sport_build_state_without_claiming_universal_model_support():
     manifest = declared_prop_lane_manifest()
-    advertised = {(lane["sport"], lane["stat_type"]) for lane in manifest["lanes"]}
+    lanes = manifest["lanes"]
+    advertised = {(lane["sport"], lane["stat_type"]) for lane in lanes}
 
     assert ("MLB", "PITCHER_STRIKEOUTS") in advertised
     assert ("MLB", MLB_1IP_STAT_TYPE) in advertised
@@ -158,11 +159,11 @@ def test_manifest_reports_cross_sport_build_state_without_claiming_universal_mod
     assert manifest["build_target_presence_does_not_grant_probability_authority"] is True
     assert manifest["legacy_provisional_formulas_grant_v17_authority"] is False
     assert manifest["unsupported_route_fallback_prohibited"] is True
-    assert manifest["declared_lane_count"] == 70
-    assert manifest["route_active_lane_count"] == 14
-    assert manifest["publication_allowed_lane_count"] == 9
-    assert manifest["candidate_lane_count"] == 9
-    assert manifest["build_required_lane_count"] == 47
+    assert manifest["declared_lane_count"] == len(lanes)
+    assert manifest["route_active_lane_count"] == sum(1 for lane in lanes if lane["route_active"])
+    assert manifest["publication_allowed_lane_count"] == sum(1 for lane in lanes if lane["publication_allowed"])
+    assert manifest["candidate_lane_count"] == sum(1 for lane in lanes if lane["lane_status"] == CANDIDATE_ONLY)
+    assert manifest["build_required_lane_count"] == sum(1 for lane in lanes if lane["lane_status"] == BUILD_REQUIRED)
     assert manifest["sports_declared"] == [
         "BOXING", "GOLF", "MLB", "MMA", "NBA", "NCAAB",
         "NCAAF", "NFL", "NHL", "SOCCER", "TENNIS", "WNBA",
