@@ -1,8 +1,9 @@
 """Read-only V17 certification replay for team/event model-development lanes.
 
-This module turns candidate-development evidence into an explicit engineering
-status without creating capability. It never certifies, promotes, activates,
-registers, publishes, ranks, or executes a sporting probability.
+Certification is lane-specific. A sport with multiple controlling candidate lanes
+(e.g. soccer competitions or tennis tours) must not let the newest artifact in
+one lane erase evidence from another lane. This module never certifies,
+promotes, activates, registers, publishes, ranks, or executes a probability.
 """
 from __future__ import annotations
 
@@ -29,6 +30,9 @@ class CertificationReplayResult:
     research_screen_pass: bool | None
     source_review_status: str | None
     next_gate: str | None
+    league: str | None = None
+    model_family: str | None = None
+    lane_id: str | None = None
     automatic_certification: bool = False
     automatic_promotion: bool = False
     probability_publishable: bool = False
@@ -37,6 +41,9 @@ class CertificationReplayResult:
     def as_dict(self) -> dict[str, Any]:
         return {
             "sport": self.sport,
+            "league": self.league,
+            "model_family": self.model_family,
+            "lane_id": self.lane_id,
             "status": self.status,
             "blockers": list(self.blockers),
             "candidate_id": self.candidate_id,
@@ -51,16 +58,29 @@ class CertificationReplayResult:
         }
 
 
-def _latest_by_sport(rows: Sequence[Mapping[str, Any]]) -> dict[str, dict[str, Any]]:
-    latest: dict[str, dict[str, Any]] = {}
+def _lane_identity(row: Mapping[str, Any]) -> tuple[str, str, str]:
+    return (
+        str(row.get("sport") or "").strip().upper(),
+        str(row.get("league") or row.get("sport") or "").strip().upper(),
+        str(row.get("model_family") or "").strip().upper(),
+    )
+
+
+def _lane_id(row: Mapping[str, Any]) -> str:
+    sport, league, family = _lane_identity(row)
+    return f"{sport}:{league}:{family}" if family else f"{sport}:{league}"
+
+
+def _latest_by_lane(rows: Sequence[Mapping[str, Any]]) -> dict[tuple[str, str, str], dict[str, Any]]:
+    latest: dict[tuple[str, str, str], dict[str, Any]] = {}
     for raw in rows:
-        sport = str(raw.get("sport") or "").strip().upper()
-        if not sport:
-            continue
         row = dict(raw)
-        current = latest.get(sport)
+        key = _lane_identity(row)
+        if not key[0] or not key[2]:
+            continue
+        current = latest.get(key)
         if current is None or str(row.get("created_at") or "") > str(current.get("created_at") or ""):
-            latest[sport] = row
+            latest[key] = row
     return latest
 
 
@@ -93,6 +113,9 @@ def assess_candidate(
     normalized = str(sport or "").strip().upper()
     lane = development_lane(normalized)
     next_gate = lane.next_gate if lane is not None else None
+    league = None if candidate is None else str(candidate.get("league") or normalized).strip().upper() or None
+    model_family = None if candidate is None else str(candidate.get("model_family") or "").strip() or None
+    lane_id = None if candidate is None else _lane_id(candidate)
 
     if lane is not None and lane.status == "PRODUCTION_MODEL_PRESENT":
         return CertificationReplayResult(
@@ -104,6 +127,9 @@ def assess_candidate(
             research_screen_pass=None if candidate is None else bool(candidate.get("research_screen_pass")),
             source_review_status=None if candidate is None else str(candidate.get("source_review_status") or "") or None,
             next_gate=next_gate,
+            league=league,
+            model_family=model_family,
+            lane_id=lane_id,
         )
 
     if lane is not None and lane.status == "BUILD_REQUIRED":
@@ -175,32 +201,85 @@ def assess_candidate(
         research_screen_pass=bool(candidate.get("research_screen_pass")),
         source_review_status=source_review,
         next_gate=next_gate,
+        league=league,
+        model_family=model_family,
+        lane_id=lane_id,
     )
+
+
+def _aggregate_candidate_sport(sport: str, lane_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    priority = {
+        "CERTIFICATION_REPLAY_PASS": 0,
+        "SOURCE_REVIEW_PENDING": 1,
+        "CERTIFICATION_REPLAY_BLOCKED": 2,
+        "SOURCE_REVIEW_FAILED": 3,
+        "RESEARCH_SCREEN_FAILED": 4,
+        "CANDIDATE_EVIDENCE_MISSING": 5,
+    }
+    best = min(lane_rows, key=lambda row: priority.get(str(row.get("status")), 99))
+    blockers = sorted({blocker for row in lane_rows for blocker in row.get("blockers", [])})
+    return {
+        "sport": sport,
+        "status": best["status"],
+        "blockers": blockers,
+        "lane_count": len(lane_rows),
+        "research_pass_lane_count": sum(row.get("research_screen_pass") is True for row in lane_rows),
+        "replay_pass_lane_count": sum(row.get("status") == "CERTIFICATION_REPLAY_PASS" for row in lane_rows),
+        "lanes": lane_rows,
+        "next_gate": best.get("next_gate"),
+        "automatic_certification": False,
+        "automatic_promotion": False,
+        "probability_publishable": False,
+        "can_execute": False,
+    }
 
 
 def build_certification_report(
     rows: Sequence[Mapping[str, Any]],
     *,
+    replay_evidence_by_lane: Mapping[str, bool] | None = None,
     replay_evidence_by_sport: Mapping[str, bool] | None = None,
 ) -> dict[str, Any]:
-    latest = _latest_by_sport(rows)
-    evidence = {str(k).upper(): bool(v) for k, v in (replay_evidence_by_sport or {}).items()}
-    results = [
-        assess_candidate(
-            sport,
-            latest.get(sport),
-            replay_evidence_pass=evidence.get(sport, False),
-        ).as_dict()
-        for sport in EXPECTED_TEAM_EVENT_SPORTS
-    ]
+    latest = _latest_by_lane(rows)
+    lane_evidence = {str(k).upper(): bool(v) for k, v in (replay_evidence_by_lane or {}).items()}
+    sport_evidence = {str(k).upper(): bool(v) for k, v in (replay_evidence_by_sport or {}).items()}
+    all_lane_results: list[dict[str, Any]] = []
+    sport_results: list[dict[str, Any]] = []
+
+    for sport in EXPECTED_TEAM_EVENT_SPORTS:
+        lane = development_lane(sport)
+        sport_candidates = [row for key, row in latest.items() if key[0] == sport]
+        if lane is not None and lane.status == "PRODUCTION_MODEL_PRESENT":
+            candidate = max(sport_candidates, key=lambda row: str(row.get("created_at") or ""), default=None)
+            sport_results.append(assess_candidate(sport, candidate).as_dict())
+            continue
+        if lane is not None and lane.status == "BUILD_REQUIRED":
+            sport_results.append(assess_candidate(sport, None).as_dict())
+            continue
+        if not sport_candidates:
+            sport_results.append(assess_candidate(sport, None).as_dict())
+            continue
+
+        lane_rows: list[dict[str, Any]] = []
+        for candidate in sorted(sport_candidates, key=lambda row: _lane_id(row)):
+            lid = _lane_id(candidate)
+            replay_pass = lane_evidence.get(lid.upper(), sport_evidence.get(sport, False))
+            assessed = assess_candidate(sport, candidate, replay_evidence_pass=replay_pass).as_dict()
+            lane_rows.append(assessed)
+            all_lane_results.append(assessed)
+        sport_results.append(_aggregate_candidate_sport(sport, lane_rows))
+
     return {
         "status": "CERTIFICATION_REPLAY_COMPLETE",
-        "sports": results,
+        "sports": sport_results,
+        "candidate_lanes": all_lane_results,
         "summary": {
-            "cataloged": len(results),
-            "production_model_present": sum(1 for row in results if row["status"] == "PRODUCTION_MODEL_PRESENT"),
-            "replay_pass": sum(1 for row in results if row["status"] == "CERTIFICATION_REPLAY_PASS"),
-            "blocked": sum(1 for row in results if row["status"] not in {"PRODUCTION_MODEL_PRESENT", "CERTIFICATION_REPLAY_PASS"}),
+            "cataloged_sports": len(sport_results),
+            "candidate_lanes": len(all_lane_results),
+            "production_model_present": sum(1 for row in sport_results if row["status"] == "PRODUCTION_MODEL_PRESENT"),
+            "sports_with_replay_pass_lane": sum(1 for row in sport_results if row["status"] == "CERTIFICATION_REPLAY_PASS"),
+            "research_pass_candidate_lanes": sum(row.get("research_screen_pass") is True for row in all_lane_results),
+            "blocked_candidate_lanes": sum(row.get("status") != "CERTIFICATION_REPLAY_PASS" for row in all_lane_results),
         },
         "automatic_certification": False,
         "automatic_promotion": False,
@@ -213,13 +292,13 @@ def run_certification_replay(db: Any) -> dict[str, Any]:
     result = (
         db.table(CANDIDATE_TABLE)
         .select(
-            "candidate_id,created_at,sport,model_family,model_artifact_version,training_dataset_hash,"
+            "candidate_id,created_at,sport,league,model_family,model_artifact_version,training_dataset_hash,"
             "training_code_sha,artifact_checksum,training_rows,calibration_rows,test_rows,"
             "research_screen_pass,source_review_status,lifecycle_state,promoted,active,"
             "automatic_certification,automatic_promotion,probability_publishable,can_execute"
         )
         .order("created_at", desc=True)
-        .limit(1000)
+        .limit(2000)
         .execute()
     )
     return build_certification_report(list(getattr(result, "data", None) or []))
