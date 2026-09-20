@@ -27,11 +27,8 @@ from zoneinfo import ZoneInfo
 import httpx
 
 from pick_request_runtime import PickRequestRow, RawPropEvidence, _snapshot_payload, _validate_evidence
-from prop_auto_hydration import (
-    MLB_STATS_API_BASE,
-    PropAutoHydrationError,
-    auto_hydrate_prop_evidence,
-)
+from prop_auto_hydration import MLB_STATS_API_BASE, PropAutoHydrationError
+from prop_auto_hydration_router import auto_hydrate_prop_evidence
 
 SPORT = "MLB"
 STAT_TYPE = "PITCHER_STRIKEOUTS"
@@ -88,10 +85,15 @@ def _schedule_pitchers(payload: dict[str, Any], *, requested_date: str, requeste
                 player = " ".join(str(probable.get("fullName") or "").split())
                 if not player:
                     continue
+                other = "away" if side == "home" else "home"
+                opponent_node = teams.get(other) if isinstance(teams.get(other), dict) else {}
+                opponent_team = opponent_node.get("team") if isinstance(opponent_node.get("team"), dict) else {}
+                opponent = str(opponent_team.get("abbreviation") or opponent_team.get("name") or "").strip() or None
                 candidates.append({
                     "event_id": f"MLB:{game_pk}",
                     "event_start_time": event_start.isoformat(),
                     "player": player,
+                    "opponent": opponent,
                 })
     return candidates
 
@@ -108,6 +110,7 @@ def _base_receipt(candidate: dict[str, Any]) -> dict[str, Any]:
         "event_start_time": candidate.get("event_start_time"),
         "sport": SPORT,
         "player": candidate.get("player"),
+        "opponent": candidate.get("opponent"),
         "stat_type": STAT_TYPE,
         "line": None,
         "side": "MORE",
@@ -169,6 +172,8 @@ def acquire_daily_prop_snapshots(
                 now=now,
                 source_capture_timestamp=now.isoformat(),
                 source_label="V17_DAILY_AUTONOMOUS_DISCOVERY",
+                opponent=candidate.get("opponent"),
+                canonical_event_id=candidate["event_id"],
             )
             evidence = RawPropEvidence.model_validate(raw)
             line = _candidate_line(evidence.game_log)
@@ -184,6 +189,7 @@ def acquire_daily_prop_snapshots(
                 evidence=evidence,
                 source_type=SOURCE_TYPE,
                 platform=PLATFORM,
+                opponent=candidate.get("opponent"),
                 source_capture_timestamp=now.isoformat(),
             )
             normalized = _validate_evidence(row, STAT_TYPE)
