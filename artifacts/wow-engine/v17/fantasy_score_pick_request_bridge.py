@@ -1,10 +1,14 @@
-"""Narrow /score-pick-request compatibility for research candidates and lifecycle blocker typing.
+"""Cross-sport /score-pick-request compatibility for research candidates.
 
 Fantasy Score fitted candidates need evidence acquisition before exact-line forward
 calibration can mature. This bridge permits only that evidence-building path for
 an explicitly active, non-promoted CANDIDATE/SHADOW artifact. Genuine artifact
 absence is refined through the V17 capability manifest; transport, registry, RPC,
 scorer, and malformed-response failures are never rewritten.
+
+The module also restores the WNBA composite candidate control-plane route that
+was lost in a later merge. That route derives/registers a CANDIDATE only and can
+never certify, promote, publish, rank, or execute.
 """
 from __future__ import annotations
 
@@ -157,6 +161,35 @@ def research_candidate_outcome(**kwargs: Any) -> dict[str, Any] | None:
         "scoring_attempted": True,
         "can_execute": False,
     }
+
+
+def _install_wnba_composite_registration_overlay() -> None:
+    """Compose the lost composite candidate route into the existing WNBA installer.
+
+    pick_request_runtime imports this module before importing the base WNBA
+    candidate installer, so replacing the module attribute here makes the
+    canonical installation path explicit without adding a second prop scorer.
+    """
+    import v17.wnba_prop_candidate_registry as base_registry
+    from v17.wnba_composite_candidate_registry import install_wnba_composite_candidate_registration_route
+
+    original = base_registry.install_wnba_prop_candidate_registration_route
+    if getattr(original, "_v17_composite_overlay", False):
+        return
+
+    def combined(app: Any, *, auth_dependency: Any, db_client_fn: Any) -> None:
+        original(app, auth_dependency=auth_dependency, db_client_fn=db_client_fn)
+        install_wnba_composite_candidate_registration_route(
+            app,
+            auth_dependency=auth_dependency,
+            db_client_fn=db_client_fn,
+        )
+
+    combined._v17_composite_overlay = True  # type: ignore[attr-defined]
+    base_registry.install_wnba_prop_candidate_registration_route = combined
+
+
+_install_wnba_composite_registration_overlay()
 
 
 __all__ = ["RESEARCH_ROUTES", "research_candidate_outcome", "research_candidate_preflight"]
