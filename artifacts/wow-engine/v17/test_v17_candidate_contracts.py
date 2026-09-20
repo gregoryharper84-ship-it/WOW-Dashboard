@@ -54,8 +54,8 @@ def test_both_v17_action_schemas_are_production_source_contracts_on_same_render_
 def test_wow_action_has_prop_and_team_event_delegation():
     text = WOW_SCHEMA.read_text()
     ops = _operations(text)
-    assert "scoreWowV17Prop" in ops
-    assert "scoreWowV17PickRequest" in ops
+    assert "scoreWowProp" in ops
+    assert "scoreWowPickRequest" in ops
     assert "scoreWowV17TeamEventFromWowHost" in ops
     assert "runWowV17DailySnapshot" in ops
     assert "recordWowV17Recommendations" in ops
