@@ -1,0 +1,67 @@
+name: v17-temp-action-query-date-compat
+
+on:
+  push:
+    branches:
+      - fix/v17-action-query-date-compat-20260919
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/v17-action-query-date-compat-20260919
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Patch canonical Action query date schema and regression
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          schema = Path('artifacts/wow-engine/v17/openapi.wow-betting-engine.v17.yaml')
+          text = schema.read_text(encoding='utf-8')
+          old = "schema: {type: [string, 'null'], format: date}"
+          count = text.count(old)
+          if count != 2:
+              raise SystemExit(f'expected exactly 2 nullable Action query date schemas, found {count}')
+          text = text.replace(old, "schema: {type: string, format: date}")
+          schema.write_text(text, encoding='utf-8')
+
+          test = Path('artifacts/wow-engine/tests/test_v17_live_editor_compat.py')
+          body = test.read_text(encoding='utf-8')
+          anchor = '    assert espn_parameters["page_size"]["schema"]["maximum"] == 250\n'
+          addition = '''\n    rundown_parameters = {\n        parameter["name"]: parameter\n        for parameter in paths["/v17/market-health/rundown"]["get"]["parameters"]\n    }\n    for parameters in (rundown_parameters, espn_parameters):\n        assert parameters["date"]["required"] is False\n        assert parameters["date"]["schema"] == {"type": "string", "format": "date"}\n'''
+          if addition.strip() not in body:
+              if anchor not in body:
+                  raise SystemExit('editor compatibility assertion anchor not found')
+              body = body.replace(anchor, anchor + addition, 1)
+          test.write_text(body, encoding='utf-8')
+          PY
+      - name: Validate schema contract
+        run: |
+          python -m pip install --quiet PyYAML==6.0.3
+          python - <<'PY'
+          from pathlib import Path
+          import yaml
+          p = Path('artifacts/wow-engine/v17/openapi.wow-betting-engine.v17.yaml')
+          doc = yaml.safe_load(p.read_text(encoding='utf-8'))
+          paths = doc['paths']
+          for route in ('/v17/market-health/rundown', '/v17/discovery/espn-compact'):
+              params = {p['name']: p for p in paths[route]['get']['parameters']}
+              assert params['date']['required'] is False
+              assert params['date']['schema'] == {'type': 'string', 'format': 'date'}
+          print('ACTION_QUERY_DATE_COMPAT=PASS')
+          PY
+      - name: Commit deterministic repair and remove helper
+        run: |
+          rm .github/workflows/v17-temp-action-query-date-compat.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add artifacts/wow-engine/v17/openapi.wow-betting-engine.v17.yaml artifacts/wow-engine/tests/test_v17_live_editor_compat.py .github/workflows/v17-temp-action-query-date-compat.yml
+          git commit -m 'V17: make diagnostic query dates Action-client compatible'
+          git push origin HEAD:fix/v17-action-query-date-compat-20260919
