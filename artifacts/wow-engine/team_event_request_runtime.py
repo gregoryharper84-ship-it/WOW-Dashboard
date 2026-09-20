@@ -349,7 +349,7 @@ def _completed(row: TeamEventRequestRow, event: dict[str, Any], scored: dict[str
     elif row.objective_lane == "MARKET_EDGE":
         decision = "MARKET_DATA_UNOBTAINABLE"
     probability_rank_eligible = bool(scored.get("rank_eligible", scored.get("probability_publishable")))
-    return {
+    outcome = {
         "research_run_id": row.research_run_id, "event_key": row.event_key,
         "objective_lane": row.objective_lane, "terminal_status": "COMPLETED",
         "code": "SPORTING_PROBABILITY_COMPLETED",
@@ -370,6 +370,8 @@ def _completed(row: TeamEventRequestRow, event: dict[str, Any], scored: dict[str
         **_probability_separation_fields(market_needed=market_needed),
         "can_execute": False,
     }
+    _apply_card_admission(row, outcome)
+    return outcome
 
 
 def _reuse_completed(row: TeamEventRequestRow, event: dict[str, Any], prior: dict[str, Any]) -> dict[str, Any]:
