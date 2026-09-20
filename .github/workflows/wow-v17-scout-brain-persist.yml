@@ -116,3 +116,11 @@ jobs:
           path: ${{ runner.temp }}/scout-brain/persistence-receipt.json
           if-no-files-found: error
           retention-days: 90
+      - name: Materialize current Scout boards after successful persistence
+        if: steps.artifact.outputs.present == 'true'
+        shell: bash
+        run: |
+          today=$(date -u +%F)
+          tomorrow=$(date -u -d '+1 day' +%F)
+          python -m v17.scout_board_edge_materializer --date "$today"
+          python -m v17.scout_board_edge_materializer --date "$tomorrow"
