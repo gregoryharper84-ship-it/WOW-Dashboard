@@ -65,3 +65,45 @@ def test_action_invocation_telemetry_persistence_failure_never_changes_action_re
         deadline=time.monotonic()+1.0
         while not any("WOW_V17_ACTION_INVOCATION_PERSISTENCE_FAILED" in r.getMessage() for r in caplog.records) and time.monotonic()<deadline: time.sleep(0.01)
     assert any("WOW_V17_ACTION_INVOCATION_PERSISTENCE_FAILED" in r.getMessage() for r in caplog.records)
+
+
+def test_action_invocation_telemetry_owns_tasks_until_completion():
+    receipts = []
+    app = FastAPI()
+    install_action_invocation_middleware(app, db_client_fn=lambda: _DB(receipts))
+    @app.post("/score-pick-request")
+    def score_pick_request(): return {"ok": True, "can_execute": False}
+    with TestClient(app) as client:
+        response = client.post("/score-pick-request")
+        assert response.status_code == 200
+        deadline = time.monotonic() + 1.0
+        while app.state.wow_action_invocation_tasks and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert not app.state.wow_action_invocation_tasks
+    assert len(receipts) == 1
+    assert receipts[0]["can_execute"] is False
+
+
+def test_action_invocation_telemetry_shutdown_drains_pending_receipt():
+    import threading
+    release = threading.Event()
+    receipts = []
+    class _SlowTable(_Table):
+        def execute(self):
+            release.wait(0.5)
+            return super().execute()
+    class _SlowDB(_DB):
+        def table(self, name):
+            assert name == "wow_action_invocation_receipts"
+            return _SlowTable(self.sink)
+    app = FastAPI()
+    install_action_invocation_middleware(app, db_client_fn=lambda: _SlowDB(receipts))
+    @app.post("/score-pick-request")
+    def score_pick_request(): return {"ok": True, "can_execute": False}
+    with TestClient(app) as client:
+        response = client.post("/score-pick-request")
+        assert response.status_code == 200
+        assert response.json()["can_execute"] is False
+        release.set()
+    assert len(receipts) == 1
+    assert not app.state.wow_action_invocation_tasks
