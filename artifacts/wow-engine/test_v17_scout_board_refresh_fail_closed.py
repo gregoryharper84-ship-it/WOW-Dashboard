@@ -1,6 +1,7 @@
 from pathlib import Path
 
 
+# Validation refresh: force required protected checks against current main without changing runtime behavior.
 def workflow() -> str:
     return (
         Path(__file__).resolve().parents[2]
