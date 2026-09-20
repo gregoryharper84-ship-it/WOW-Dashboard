@@ -62,10 +62,22 @@ def _manifest_typed_absence(sport: Any, stat_type: Any, production_route: Any) -
 
 
 def research_candidate_preflight(market_api: Any, sport: Any, stat_type: Any, production_route: Any) -> dict[str, Any] | None:
-    """Return research-evidence compatibility or an exact lifecycle blocker."""
+    """Return research-evidence compatibility or an exact lifecycle blocker.
+
+    A research candidate is consulted only after a genuine production-artifact
+    absence. Registry/RPC/transport/scorer failures pass through unchanged.
+    """
+    if not isinstance(production_route, dict):
+        return None
+    route_code = str(production_route.get("code") or "").strip().upper()
+    if route_code not in _ARTIFACT_ABSENCE_CODES:
+        return None
+
     sport_n, stat_n = _key(sport, stat_type)
     specialist = RESEARCH_ROUTES.get((sport_n, stat_n))
     if specialist is None:
+        if not hasattr(market_api, "prod"):
+            return _manifest_typed_absence(sport, stat_type, production_route)
         for candidate in (_wnba_composite_candidate_preflight, _nba_scalar_candidate_preflight):
             result = candidate(market_api, sport, stat_type, production_route)
             if result is not None:
@@ -104,7 +116,7 @@ def research_candidate_preflight(market_api: Any, sport: Any, stat_type: Any, pr
     if str(artifact.get("specialist_version") or "").split("@", 1)[0] != specialist:
         return _manifest_typed_absence(sport, stat_type, production_route)
 
-    original = dict(production_route) if isinstance(production_route, dict) else {}
+    original = dict(production_route)
     return {
         "ok": True,
         "code": "PROP_CERTIFIED_MODEL_ARTIFACT_READY",
