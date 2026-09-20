@@ -3,6 +3,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 WOW_ENGINE_ROOT = Path(__file__).resolve().parents[2] / "wow-engine"
 if str(WOW_ENGINE_ROOT) not in sys.path:
     sys.path.insert(0, str(WOW_ENGINE_ROOT))
@@ -47,9 +49,9 @@ def test_market_memory_compares_frozen_model_to_close_without_rewriting_probabil
         closing_market_probability=0.60,
         specialist_id="wow.mlb-k-expert",
     )
-    assert row.model_probability == 0.70
-    assert row.market_move == 0.05
-    assert row.model_minus_closing == 0.10
+    assert row.model_probability == pytest.approx(0.70)
+    assert row.market_move == pytest.approx(0.05)
+    assert row.model_minus_closing == pytest.approx(0.10)
     assert row.brier_advantage_vs_close > 0
     assert row.model_outperformed_close is True
     assert row.can_execute is False
