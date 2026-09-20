@@ -1,0 +1,27 @@
+name: tmp-nfl-prop-rebase-20260920
+on:
+  push:
+    branches: [fix/v17-nfl-prop-governed-lane-20260920-active]
+    paths: ['.github/workflows/tmp-nfl-prop-rebase-20260920.yml']
+permissions:
+  contents: write
+jobs:
+  rebase:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/v17-nfl-prop-governed-lane-20260920-active
+          fetch-depth: 0
+      - name: Rebase tested NFL prop branch onto protected main and self-delete
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git fetch origin main fix/v17-nfl-prop-governed-lane-20260920-active
+          git rm .github/workflows/tmp-nfl-prop-rebase-20260920.yml
+          git commit -m 'chore(v17): remove temporary NFL prop rebase workflow'
+          git rebase origin/main
+          git push --force-with-lease origin HEAD:fix/v17-nfl-prop-governed-lane-20260920-active
