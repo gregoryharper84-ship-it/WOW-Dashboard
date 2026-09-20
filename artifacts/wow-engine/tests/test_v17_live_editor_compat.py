@@ -106,6 +106,14 @@ def test_live_editor_schema_exposes_full_board_diagnostics_with_bearer_auth():
     assert espn_parameters["page_size"]["schema"]["minimum"] == 1
     assert espn_parameters["page_size"]["schema"]["maximum"] == 250
 
+    rundown_parameters = {
+        parameter["name"]: parameter
+        for parameter in paths["/v17/market-health/rundown"]["get"]["parameters"]
+    }
+    for parameters in (rundown_parameters, espn_parameters):
+        assert parameters["date"]["required"] is False
+        assert parameters["date"]["schema"] == {"type": "string", "format": "date"}
+
 
 def test_prediction_receipt_openapi_requires_id_or_complete_exact_identity():
     schemas = _schema()["components"]["schemas"]
