@@ -19,6 +19,7 @@ MLB_PITCH_COMPOSITION_EXPERT = "wow.mlb-pitcher-pitch-composition-expert"
 MLB_PLATE_APPEARANCES_EXPERT = "wow.mlb-batter-plate-appearances-expert"
 WNBA_PLAYER_PROP_EXPERT = "wow.wnba-player-prop-probability-expert"
 WNBA_COMPOSITE_PROP_EXPERT = "wow.wnba-composite-prop-expert"
+NBA_PLAYER_PROP_EXPERT = "wow.nba-player-prop-probability-expert"
 NFL_PLAYER_PROP_EXPERT = "wow.nfl-player-prop-probability-expert"
 NFL_FANTASY_SCORE_EXPERT = "wow.nfl-dfs-fantasy-score-expert"
 NBA_FANTASY_SCORE_EXPERT = "wow.nba-dfs-fantasy-score-expert"
@@ -134,7 +135,7 @@ def _wnba_component_hold(stat_type: str) -> PropCapability:
         blocker="WNBA_PROP_PROSPECTIVE_NOT_PUBLISHABLE",
         notes=(
             "A promoted/active prospective WNBA component artifact exists, but the governed "
-            "artifact registry still marks probability_publishable=false."
+            "artifact registry still marks probability_publishable=false pending forward calibration."
         ),
     )
 
@@ -150,10 +151,29 @@ def _wnba_composite_candidate(stat_type: str) -> PropCapability:
         exact_line_support_policy=CONTINUOUS_LINE_SUPPORT,
         certified_line_support_source="wow_prop_fitted_model_artifacts",
         publication_allowed=False,
-        blocker="WNBA_COMPOSITE_FITTED_MODEL_ARTIFACT_MISSING",
+        blocker="WNBA_COMPOSITE_CANDIDATE_NOT_PROMOTED",
         notes=(
-            "Joint P/R/A fitted-candidate infrastructure exists. Exact-line calibration, forward "
-            "certification, governed promotion, production registration, and Action-canary proof remain required."
+            "Joint P/R/A fitted-candidate infrastructure and candidate registration exist. Exact-line calibration, "
+            "settled forward certification, governed promotion, production registration, and Action-canary proof remain required."
+        ),
+    )
+
+
+def _nba_scalar_candidate(stat_type: str) -> PropCapability:
+    return PropCapability(
+        sport="NBA",
+        stat_type=stat_type,
+        lane_status=CANDIDATE_ONLY,
+        controlling_specialist=NBA_PLAYER_PROP_EXPERT,
+        route_active=False,
+        declared_skill_status="RESEARCH_ONLY_FORWARD_TEST",
+        exact_line_support_policy=CONTINUOUS_LINE_SUPPORT,
+        certified_line_support_source="wow_prop_fitted_model_artifacts",
+        publication_allowed=False,
+        blocker="NBA_SCALAR_CANDIDATE_NOT_PROMOTED",
+        notes=(
+            "Exact-route candidate derived from the fitted NBA joint component residual artifact. It preserves P/R/A "
+            "dependence and is research-only until exact-line calibration, settlement, certification and production registration pass."
         ),
     )
 
@@ -218,6 +238,16 @@ DECLARED_PROP_LANES: dict[tuple[str, str], PropCapability] = {
     ("WNBA", BASKETBALL_POINTS_REBOUNDS): _wnba_composite_candidate(BASKETBALL_POINTS_REBOUNDS),
     ("WNBA", BASKETBALL_POINTS_ASSISTS): _wnba_composite_candidate(BASKETBALL_POINTS_ASSISTS),
     ("WNBA", BASKETBALL_REBOUNDS_ASSISTS): _wnba_composite_candidate(BASKETBALL_REBOUNDS_ASSISTS),
+
+    # NBA fitted P/R/A research candidates. 3PM remains BUILD_REQUIRED because the
+    # existing joint Fantasy artifact does not contain a three-pointer component.
+    ("NBA", "POINTS"): _nba_scalar_candidate("POINTS"),
+    ("NBA", "REBOUNDS"): _nba_scalar_candidate("REBOUNDS"),
+    ("NBA", "ASSISTS"): _nba_scalar_candidate("ASSISTS"),
+    ("NBA", BASKETBALL_PRA): _nba_scalar_candidate(BASKETBALL_PRA),
+    ("NBA", BASKETBALL_POINTS_REBOUNDS): _nba_scalar_candidate(BASKETBALL_POINTS_REBOUNDS),
+    ("NBA", BASKETBALL_POINTS_ASSISTS): _nba_scalar_candidate(BASKETBALL_POINTS_ASSISTS),
+    ("NBA", BASKETBALL_REBOUNDS_ASSISTS): _nba_scalar_candidate(BASKETBALL_REBOUNDS_ASSISTS),
 
     # NFL direct-prop production routes from the governed NFL build.
     ("NFL", NFL_PASSING_YARDS): _certified("NFL", NFL_PASSING_YARDS, NFL_PLAYER_PROP_EXPERT, "Validated rolling fitted NFL passing-yards route; runtime artifact/input/calibration gates remain mandatory."),
@@ -348,7 +378,7 @@ def prop_capability(sport: str, stat_type: str) -> PropCapability:
 def declared_prop_lane_manifest() -> dict[str, Any]:
     lanes = [capability.as_dict() for capability in DECLARED_PROP_LANES.values()]
     return {
-        "manifest_version": "WOW_V17_PROP_LANE_MANIFEST_V5",
+        "manifest_version": "WOW_V17_PROP_LANE_MANIFEST_V6",
         "numerical_engine_scope": "SPORT_AGNOSTIC_BY_CERTIFIED_ADAPTER",
         "production_authority_is_route_specific": True,
         "candidate_presence_does_not_grant_probability_authority": True,
@@ -377,7 +407,7 @@ __all__ = [
     "MLB_PITCHER_FANTASY_SCORE_EXPERT", "MLB_PITCHING_OUTS", "MLB_PITCHING_OUTS_EXPERT",
     "MLB_PITCHER_STRIKEOUTS", "MLB_PLATE_APPEARANCES", "MLB_PLATE_APPEARANCES_EXPERT",
     "MLB_PITCH_COMPOSITION_EXPERT", "MLB_STRIKES_THROWN", "MLB_STRIKEOUT_EXPERT",
-    "NBA_FANTASY_SCORE_EXPERT", "NFL_ANYTIME_TD", "NFL_FANTASY_SCORE_EXPERT", "NFL_PASSING_YARDS",
+    "NBA_FANTASY_SCORE_EXPERT", "NBA_PLAYER_PROP_EXPERT", "NFL_ANYTIME_TD", "NFL_FANTASY_SCORE_EXPERT", "NFL_PASSING_YARDS",
     "NFL_PLAYER_PROP_EXPERT", "NFL_RECEIVING_YARDS", "NFL_RUSHING_YARDS", "NOT_DECLARED",
     "PUBLICATION_ALLOWED_LANES", "STAT_ALIASES", "SUPPORTED_HOLD_ONLY", "TEST_ONLY",
     "WNBA_ASSISTS", "WNBA_COMPOSITE_PROP_EXPERT", "WNBA_FANTASY_SCORE_EXPERT", "WNBA_PLAYER_PROP_EXPERT",

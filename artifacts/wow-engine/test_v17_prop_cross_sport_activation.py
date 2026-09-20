@@ -55,26 +55,32 @@ def test_core_route_uses_facade_delegate_without_granting_probability_authority(
     assert core.PROP_STAT_ALIASES[("WNBA", "3PM")] == "THREE_POINTERS_MADE"
     assert core.PROP_STAT_ALIASES[("WNBA", "PTS+REB+AST")] == "PRA"
     assert core.PROP_STAT_ALIASES[("NFL", "PASS_YDS")] == "PASSING_YARDS"
-    # This plumbing change never touches execution authority.
     assert prop_auto_hydration_router.WNBA_PROVIDER
+    assert prop_auto_hydration_router.WNBA_COMPOSITE_PROVIDER
 
 
-def test_wnba_pra_missing_artifact_is_typed_to_composite_model_gap():
-    route = runtime._ScoringReceiptMarketApi(_ArtifactMissingMarket())._prop_route_artifact(
-        "WNBA", "PRA"
-    )
+def test_wnba_pra_missing_registry_candidate_is_typed_to_candidate_hold():
+    route = runtime._ScoringReceiptMarketApi(_ArtifactMissingMarket())._prop_route_artifact("WNBA", "PRA")
     assert route["ok"] is False
-    assert route["code"] == "WNBA_COMPOSITE_FITTED_MODEL_ARTIFACT_MISSING"
+    assert route["code"] == "WNBA_COMPOSITE_CANDIDATE_NOT_PROMOTED"
     assert route["capability_lane_status"] == "CANDIDATE_ONLY"
     assert route["controlling_specialist"] == "wow.wnba-composite-prop-expert"
     assert route["probability_publishable"] is False
     assert route["can_execute"] is False
 
 
-def test_known_cross_sport_model_gap_is_typed_as_build_required():
-    route = runtime._ScoringReceiptMarketApi(_ArtifactMissingMarket())._prop_route_artifact(
-        "NBA", "POINTS"
-    )
+def test_nba_points_missing_registry_candidate_is_typed_to_candidate_hold():
+    route = runtime._ScoringReceiptMarketApi(_ArtifactMissingMarket())._prop_route_artifact("NBA", "POINTS")
+    assert route["ok"] is False
+    assert route["code"] == "NBA_SCALAR_CANDIDATE_NOT_PROMOTED"
+    assert route["capability_lane_status"] == "CANDIDATE_ONLY"
+    assert route["controlling_specialist"] == "wow.nba-player-prop-probability-expert"
+    assert route["probability_publishable"] is False
+    assert route["can_execute"] is False
+
+
+def test_still_unbuilt_nba_3pm_is_typed_as_build_required():
+    route = runtime._ScoringReceiptMarketApi(_ArtifactMissingMarket())._prop_route_artifact("NBA", "THREE_POINTERS_MADE")
     assert route["ok"] is False
     assert route["code"] == "PROP_FITTED_SPECIALIST_BUILD_REQUIRED"
     assert route["capability_lane_status"] == "BUILD_REQUIRED"
@@ -83,9 +89,7 @@ def test_known_cross_sport_model_gap_is_typed_as_build_required():
 
 
 def test_truly_unknown_prop_lane_is_typed_as_undeclared():
-    route = runtime._ScoringReceiptMarketApi(_ArtifactMissingMarket())._prop_route_artifact(
-        "LACROSSE", "GROUND_BALLS"
-    )
+    route = runtime._ScoringReceiptMarketApi(_ArtifactMissingMarket())._prop_route_artifact("LACROSSE", "GROUND_BALLS")
     assert route["ok"] is False
     assert route["code"] == "PROP_LANE_NOT_DECLARED"
     assert route["capability_lane_status"] == "NOT_DECLARED"
@@ -94,9 +98,7 @@ def test_truly_unknown_prop_lane_is_typed_as_undeclared():
 
 
 def test_registry_transport_or_lookup_failure_is_never_rewritten_as_capability_absence():
-    route = runtime._ScoringReceiptMarketApi(_ArtifactLookupFailedMarket())._prop_route_artifact(
-        "WNBA", "PRA"
-    )
+    route = runtime._ScoringReceiptMarketApi(_ArtifactLookupFailedMarket())._prop_route_artifact("WNBA", "PRA")
     assert route["ok"] is False
     assert route["code"] == "PROP_CERTIFIED_MODEL_ARTIFACT_LOOKUP_FAILED"
     assert "capability_lane_status" not in route

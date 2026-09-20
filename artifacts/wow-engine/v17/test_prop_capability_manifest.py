@@ -7,6 +7,7 @@ from v17.prop_capability_manifest import (
     MLB_1IP_STAT_TYPE,
     MLB_HITTER_FANTASY_SCORE,
     MLB_PITCHER_FANTASY_SCORE,
+    NBA_PLAYER_PROP_EXPERT,
     NOT_DECLARED,
     SUPPORTED_HOLD_ONLY,
     WNBA_COMPOSITE_PROP_EXPERT,
@@ -53,14 +54,14 @@ def test_wnba_component_artifacts_are_hold_only_until_publication_ratification()
         assert lane.can_execute is False
 
 
-def test_wnba_pra_and_composites_are_declared_without_fake_probability_authority():
+def test_wnba_pra_and_composites_are_fitted_candidates_without_fake_authority():
     for stat in ("PRA", "POINTS_REBOUNDS", "POINTS_ASSISTS", "REBOUNDS_ASSISTS"):
         lane = prop_capability("WNBA", stat)
         assert lane.lane_status == CANDIDATE_ONLY
         assert lane.controlling_specialist == WNBA_COMPOSITE_PROP_EXPERT
         assert lane.route_active is False
         assert lane.publication_allowed is False
-        assert lane.blocker == "WNBA_COMPOSITE_FITTED_MODEL_ARTIFACT_MISSING"
+        assert lane.blocker == "WNBA_COMPOSITE_CANDIDATE_NOT_PROMOTED"
         assert lane.can_execute is False
 
 
@@ -69,7 +70,26 @@ def test_wnba_pra_aliases_resolve_to_one_exact_governed_identity():
         assert normalize_prop_stat("WNBA", raw) == BASKETBALL_PRA
         lane = prop_capability("WNBA", raw)
         assert lane.stat_type == BASKETBALL_PRA
-        assert lane.blocker == "WNBA_COMPOSITE_FITTED_MODEL_ARTIFACT_MISSING"
+        assert lane.blocker == "WNBA_COMPOSITE_CANDIDATE_NOT_PROMOTED"
+
+
+def test_nba_pr_a_scalar_families_are_fitted_candidates_but_three_pointer_model_still_required():
+    for stat in (
+        "POINTS", "REBOUNDS", "ASSISTS", "PRA",
+        "POINTS_REBOUNDS", "POINTS_ASSISTS", "REBOUNDS_ASSISTS",
+    ):
+        lane = prop_capability("NBA", stat)
+        assert lane.lane_status == CANDIDATE_ONLY
+        assert lane.controlling_specialist == NBA_PLAYER_PROP_EXPERT
+        assert lane.route_active is False
+        assert lane.publication_allowed is False
+        assert lane.blocker == "NBA_SCALAR_CANDIDATE_NOT_PROMOTED"
+        assert lane.can_execute is False
+    threes = prop_capability("NBA", "THREE_POINTERS_MADE")
+    assert threes.lane_status == BUILD_REQUIRED
+    assert threes.blocker == "PROP_FITTED_SPECIALIST_BUILD_REQUIRED"
+    assert threes.publication_allowed is False
+    assert threes.can_execute is False
 
 
 def test_fantasy_score_lanes_are_visible_without_granting_authority():
@@ -99,9 +119,8 @@ def test_certified_nfl_direct_prop_lanes_are_exact_and_route_specific():
         assert lane.can_execute is False
 
 
-def test_known_cross_sport_inventory_reports_model_build_required_not_undeclared():
+def test_remaining_cross_sport_build_targets_stay_explicitly_fail_closed():
     targets = (
-        ("NBA", "POINTS"),
         ("NCAAF", "RUSHING_YARDS"),
         ("NCAAB", "PRA"),
         ("NHL", "POINTS"),
@@ -129,7 +148,7 @@ def test_truly_unknown_lane_fails_closed_without_guessing():
     assert lane.can_execute is False
 
 
-def test_manifest_reports_cross_sport_build_state_without_claiming_universal_model_support():
+def test_manifest_reports_cross_sport_state_without_claiming_universal_model_support():
     manifest = declared_prop_lane_manifest()
     lanes = manifest["lanes"]
     advertised = {(lane["sport"], lane["stat_type"]) for lane in lanes}
@@ -152,7 +171,7 @@ def test_manifest_reports_cross_sport_build_state_without_claiming_universal_mod
     assert ("MMA", "SIGNIFICANT_STRIKES") in advertised
     assert ("BOXING", "PUNCHES_LANDED") in advertised
 
-    assert manifest["manifest_version"] == "WOW_V17_PROP_LANE_MANIFEST_V5"
+    assert manifest["manifest_version"] == "WOW_V17_PROP_LANE_MANIFEST_V6"
     assert manifest["numerical_engine_scope"] == "SPORT_AGNOSTIC_BY_CERTIFIED_ADAPTER"
     assert manifest["production_authority_is_route_specific"] is True
     assert manifest["candidate_presence_does_not_grant_probability_authority"] is True
