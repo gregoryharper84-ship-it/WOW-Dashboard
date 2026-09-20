@@ -68,3 +68,45 @@ def test_canonical_401_stays_typed_market_evidence_failure(monkeypatch):
     assert result.status == 401
     assert result.code == "RUNDOWN_HTTP_401"
     assert result.can_execute is False
+
+
+def test_rundown_retries_next_distinct_alias_only_after_auth_failure(monkeypatch):
+    monkeypatch.setattr(sources, "ENABLED", True)
+    monkeypatch.setenv("THERUNDOWN_API_KEY", "stale-canonical-key")
+    monkeypatch.setenv("RUNDOWN_API_KEY", "known-good-legacy-alias")
+    monkeypatch.delenv("WOW_RUNDOWN_API_KEY", raising=False)
+    attempts = []
+
+    def opener(request, timeout=None):
+        headers = {key.lower(): value for key, value in request.header_items()}
+        token = headers.get("x-therundown-key")
+        attempts.append(token)
+        if token == "stale-canonical-key":
+            raise HTTPError(request.full_url, 403, "forbidden", {}, io.BytesIO(b""))
+        return _Response(b'{"sports": [{"sport_id": 3, "sport_name": "MLB"}]}')
+
+    result = sources.fetch("RUNDOWN", "sports", opener=opener)
+    assert result.ok is True
+    assert result.status == 200
+    assert attempts == ["stale-canonical-key", "known-good-legacy-alias"]
+    assert result.can_execute is False
+
+
+def test_rundown_does_not_alias_failover_on_non_auth_http_failure(monkeypatch):
+    monkeypatch.setattr(sources, "ENABLED", True)
+    monkeypatch.setenv("THERUNDOWN_API_KEY", "first-key")
+    monkeypatch.setenv("RUNDOWN_API_KEY", "second-key")
+    monkeypatch.delenv("WOW_RUNDOWN_API_KEY", raising=False)
+    attempts = []
+
+    def opener(request, timeout=None):
+        headers = {key.lower(): value for key, value in request.header_items()}
+        attempts.append(headers.get("x-therundown-key"))
+        raise HTTPError(request.full_url, 500, "server error", {}, io.BytesIO(b""))
+
+    result = sources.fetch("RUNDOWN", "sports", opener=opener)
+    assert result.ok is False
+    assert result.status == 500
+    assert result.code == "RUNDOWN_HTTP_500"
+    assert attempts == ["first-key"]
+    assert result.can_execute is False
