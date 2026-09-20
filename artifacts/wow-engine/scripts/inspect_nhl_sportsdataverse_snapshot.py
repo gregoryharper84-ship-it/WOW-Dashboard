@@ -32,7 +32,18 @@ PLAYER_IDENTITY_COLUMNS = ("game_id", "season", "game_date", "player_id", "team_
 PLAYER_REQUIRED_VALUE_COLUMNS = PLAYER_IDENTITY_COLUMNS + ("shots_on_goal", "home_away", "team_abbrev", "position")
 GAME_IDENTITY_COLUMNS = ("game_id", "season", "game_date", "home_team_abbr", "away_team_abbr")
 GAME_REQUIRED_VALUE_COLUMNS = GAME_IDENTITY_COLUMNS + ("game_type", "game_state")
+SCHEDULE_MIN_IDENTITY_COLUMNS = ("game_id", "season")
 CATEGORICAL_REPORT_COLUMNS = ("game_type", "game_state", "home_away", "position")
+EXACT_START_TIME_NAMES = {
+    "start_time_utc",
+    "starttimeutc",
+    "game_start_time",
+    "start_time",
+    "starttime",
+    "game_datetime",
+    "game_date_time",
+    "datetime",
+}
 
 
 def _trim(value: str | None, limit: int = 160) -> str | None:
@@ -46,6 +57,16 @@ def _is_blank(value: str | None) -> bool:
     return value is None or not str(value).strip()
 
 
+def _column_contract(kind: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    if kind == "PLAYER_BOXSCORES":
+        return PLAYER_REQUIRED_VALUE_COLUMNS, PLAYER_IDENTITY_COLUMNS
+    if kind == "GAME_INFO":
+        return GAME_REQUIRED_VALUE_COLUMNS, GAME_IDENTITY_COLUMNS
+    if kind == "SCHEDULE":
+        return SCHEDULE_MIN_IDENTITY_COLUMNS, SCHEDULE_MIN_IDENTITY_COLUMNS
+    raise RuntimeError(f"NHL_SDV_ASSET_KIND_UNKNOWN:{kind}")
+
+
 def inspect_snapshot(directory: str | Path) -> dict[str, object]:
     root = Path(directory)
     reports: list[dict[str, object]] = []
@@ -54,8 +75,7 @@ def inspect_snapshot(directory: str | Path) -> dict[str, object]:
         verify_asset_file(path, asset)
         row_count = 0
         samples: list[dict[str, str | None]] = []
-        required_columns = PLAYER_REQUIRED_VALUE_COLUMNS if asset.kind == "PLAYER_BOXSCORES" else GAME_REQUIRED_VALUE_COLUMNS
-        identity_columns = PLAYER_IDENTITY_COLUMNS if asset.kind == "PLAYER_BOXSCORES" else GAME_IDENTITY_COLUMNS
+        required_columns, identity_columns = _column_contract(asset.kind)
         missing_counts: Counter[str] = Counter()
         categorical_counts: dict[str, Counter[str]] = {
             key: Counter() for key in CATEGORICAL_REPORT_COLUMNS
@@ -79,6 +99,13 @@ def inspect_snapshot(directory: str | Path) -> dict[str, object]:
                         raw = row.get(key)
                         categorical_counts[key]["<BLANK>" if _is_blank(raw) else str(raw).strip()] += 1
         identity_complete = all(key in fieldnames for key in identity_columns)
+        lower_map = {key.lower(): key for key in fieldnames}
+        exact_time_columns = sorted(
+            original for lowered, original in lower_map.items() if lowered in EXACT_START_TIME_NAMES
+        )
+        temporal_columns = sorted(
+            key for key in fieldnames if "time" in key.lower() or "date" in key.lower()
+        )
         report = {
             "kind": asset.kind,
             "season": asset.season,
@@ -94,20 +121,22 @@ def inspect_snapshot(directory: str | Path) -> dict[str, object]:
                 for key, counter in categorical_counts.items()
                 if key in fieldnames
             },
+            "temporal_columns": temporal_columns,
+            "exact_start_time_columns": exact_time_columns,
             "sample_rows": samples,
         }
         if asset.kind == "PLAYER_BOXSCORES":
             report["player_game_identity_complete"] = identity_complete
             report["has_shots_on_goal"] = "shots_on_goal" in fieldnames
-        else:
+        elif asset.kind == "GAME_INFO":
             report["game_identity_complete"] = identity_complete
-            report["has_exact_start_time"] = any(
-                key in fieldnames
-                for key in ("start_time_utc", "startTimeUTC", "game_start_time", "start_time")
-            )
+            report["has_exact_start_time"] = bool(exact_time_columns)
+        else:
+            report["schedule_min_identity_complete"] = identity_complete
+            report["has_exact_start_time"] = bool(exact_time_columns)
         reports.append(report)
     return {
-        "schema_version": "WOW_NHL_SDV_SCHEMA_REPORT_V2",
+        "schema_version": "WOW_NHL_SDV_SCHEMA_REPORT_V3",
         "source_id": SOURCE_ID,
         "source_review_required": SOURCE_REVIEW_REQUIRED,
         "probability_publishable": PROBABILITY_PUBLISHABLE,
