@@ -1,0 +1,537 @@
+name: One-shot V17 compact and canonical dedup build
+
+on:
+  push:
+    branches:
+      - chatgpt/v17-compact-dedup-fix
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    if: github.event.head_commit.message != 'chore(v17): apply compact/dedup repair'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: chatgpt/v17-compact-dedup-fix
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: artifacts/wow-engine/requirements.txt
+
+      - name: Apply V17 repair
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          root = Path('.')
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              p = root / path
+              text = p.read_text(encoding='utf-8')
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'PATCH_TARGET_COUNT:{path}:{count}:{old[:80]!r}')
+              p.write_text(text.replace(old, new, 1), encoding='utf-8')
+
+          # 1) Preserve response_mode through the outer detailed-evidence wrapper.
+          detailed = 'artifacts/wow-engine/v17/detailed_evidence_install.py'
+          replace_once(detailed, 'from typing import Any, Optional\n', 'from typing import Any, Literal, Optional\n')
+          replace_once(
+              detailed,
+              'class DetailedPickRequestBatch(BaseModel):\n    model_config = ConfigDict(extra="forbid")\n    request_id: Optional[str] = None\n    rows: list[DetailedPickRequestRow] = Field(min_length=1, max_length=50)\n',
+              'class DetailedPickRequestBatch(BaseModel):\n    model_config = ConfigDict(extra="forbid")\n    request_id: Optional[str] = None\n    response_mode: Literal["FULL", "COMPACT"] = "FULL"\n    rows: list[DetailedPickRequestRow] = Field(min_length=1, max_length=50)\n',
+          )
+          replace_once(
+              detailed,
+              '        base_batch = pick_runtime.PickRequestBatch(\n            request_id=batch.request_id,\n            rows=base_rows,\n        )\n',
+              '        base_batch = pick_runtime.PickRequestBatch(\n            request_id=batch.request_id,\n            response_mode=batch.response_mode,\n            rows=base_rows,\n        )\n',
+          )
+          replace_once(
+              detailed,
+              '        if isinstance(result, dict) and isinstance(result.get("rows"), list):\n            for outcome in result["rows"]:\n',
+              '        if isinstance(result, dict):\n            # The outer wrapper owns request-shape preservation. Never let a\n            # wrapper silently downgrade a client COMPACT request back to FULL.\n            result["response_mode"] = batch.response_mode\n\n        if batch.response_mode == "FULL" and isinstance(result, dict) and isinstance(result.get("rows"), list):\n            for outcome in result["rows"]:\n',
+          )
+
+          # 2) COMPACT rows are valid model packages even after nested result is stripped.
+          top10 = 'artifacts/wow-engine/v17/top10_model_reconciliation.py'
+          replace_once(
+              top10,
+              'def has_valid_model_package(outcome: dict[str, Any]) -> bool:\n    if outcome.get("model_evaluated") is not True:\n        return False\n    for package in _candidate_probability_dicts(outcome):\n',
+              'def has_valid_model_package(outcome: dict[str, Any]) -> bool:\n    if outcome.get("model_evaluated") is not True:\n        return False\n    compact_lower = outcome.get("calibrated_probability_lower_bound")\n    if compact_lower is None:\n        compact_lower = outcome.get("calibrated_lower_bound")\n    if _finite_probability(outcome.get("calibrated_probability")) and _finite_probability(compact_lower):\n        return True\n    for package in _candidate_probability_dicts(outcome):\n',
+          )
+
+          # 3) Harden the actual COMPACT serializer denylist and preserve the bounded receipt fields.
+          core = 'artifacts/wow-engine/pick_request_runtime_core.py'
+          replace_once(
+              core,
+              '_PICK_REQUEST_COMPACT_DETAIL_KEYS = frozenset({"result", "detail", "acquisition", "specialist_utilization_audit"})\n',
+              '_PICK_REQUEST_COMPACT_DETAIL_KEYS = frozenset({\n    "result", "detail", "acquisition", "specialist_utilization_audit",\n    "evidence", "acquisition_evidence", "box_score_log", "game_log",\n    "model_evidence", "failure_path_evidence", "directional_probability_assessments",\n    "v17_numerical_engine", "objective_lanes", "backend_traversal",\n    "detailed_evidence", "artifact_metadata", "training_metadata", "source_timestamps",\n})\n',
+          )
+          replace_once(
+              core,
+              '        for key in ("blocker_code", "failure_class", "blocker", "sport", "stat_type", "controlling_specialist"):\n',
+              '        for key in (\n            "blocker_code", "failure_class", "blocker", "primary_blocker", "blockers",\n            "event_id", "event_start_time", "sport", "league", "player", "stat_type",\n            "line", "direction", "controlling_specialist",\n        ):\n',
+          )
+          replace_once(
+              core,
+              '        for source, mapping in ((prediction, {"raw_model_probability":"model_probability","calibrated_probability":"calibrated_probability","calibrated_probability_lower_bound":"calibrated_probability_lower_bound","calibration_status":"calibration_status","model_version":"model_version"}),(qualification, {"confidence_tier":"confidence_tier","rank_eligible":"rank_eligible","model_supported":"model_supported","terminal_label":"terminal_label"})):\n',
+              '        for source, mapping in ((prediction, {"prediction_id":"prediction_id","raw_model_probability":"model_probability","calibrated_probability":"calibrated_probability","calibrated_probability_lower_bound":"calibrated_probability_lower_bound","calibrated_probability_upper_bound":"calibrated_probability_upper_bound","calibrated_upper_bound":"calibrated_probability_upper_bound","calibration_status":"calibration_status","model_version":"model_version"}),(qualification, {"confidence_tier":"confidence_tier","rank_eligible":"rank_eligible","model_supported":"model_supported","terminal_label":"terminal_label"})):\n',
+          )
+          replace_once(
+              core,
+              '    compact["detail_available"] = any(k in outcome for k in _PICK_REQUEST_COMPACT_DETAIL_KEYS)\n    compact["can_execute"] = False\n    return compact\n',
+              '    detail_available = any(k in outcome for k in _PICK_REQUEST_COMPACT_DETAIL_KEYS)\n    compact["detail_available"] = detail_available\n    compact["detail_ref"] = {\n        "prediction_id": compact.get("prediction_id"),\n        "row_key": compact.get("row_key"),\n        "detail_available": detail_available,\n    }\n    compact["can_execute"] = False\n    return compact\n',
+          )
+
+          # 4) Canonical sporting identity for snapshot manifests. Snapshot/provider IDs are provenance, not identity.
+          identity_path = root / 'artifacts/wow-engine/v17/prop_canonical_identity.py'
+          identity_path.write_text(r'''"""Canonical sporting identity for V17 prop source instances.
+
+Source snapshots and provider aliases are provenance.  They must not consume
+multiple scoring slots for the same exact sporting proposition.  This module
+never changes model math, calibration, terminal semantics, or can_execute.
+"""
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
+from typing import Any, Iterable
+
+
+_SPORT_ALIASES = {
+    "CFB": "NCAAF",
+    "COLLEGE_FOOTBALL": "NCAAF",
+    "NCAA_FOOTBALL": "NCAAF",
+}
+
+
+def _text(value: Any) -> str:
+    return "_".join(str(value or "").strip().upper().replace("-", " ").split())
+
+
+def _player(value: Any) -> str:
+    return " ".join(str(value or "").split()).casefold()
+
+
+def _line(value: Any) -> str | None:
+    try:
+        return format(Decimal(str(value)).normalize(), "f")
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+
+
+def _time(value: Any) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return raw
+    if parsed.utcoffset() is None:
+        return raw
+    return parsed.astimezone(timezone.utc).isoformat()
+
+
+def canonical_sporting_key(row: dict[str, Any]) -> tuple[str, ...] | None:
+    sport = _SPORT_ALIASES.get(_text(row.get("sport")), _text(row.get("sport")))
+    event_id = str(row.get("event_id") or row.get("official_event_id") or "").strip()
+    event_start = _time(row.get("event_start_time") or row.get("event_start_time_utc"))
+    player = _player(row.get("player") or row.get("participant"))
+    stat_type = _text(row.get("stat_type") or row.get("market_stat"))
+    line = _line(row.get("line"))
+    if not sport or not event_id or not event_start or not player or not stat_type or line is None:
+        return None
+    # Direction is intentionally optional here: Daily evidence snapshots are base
+    # props before direction expansion, while directional Action rows include it.
+    direction = _text(row.get("direction"))
+    period = _text(row.get("period"))
+    settlement = _text(row.get("settlement_identity") or row.get("settlement_basis"))
+    return sport, event_id, event_start, player, stat_type, line, direction, period, settlement
+
+
+def _snapshot_ids(row: dict[str, Any]) -> list[str]:
+    values: list[str] = []
+    for value in row.get("source_snapshot_ids") or []:
+        text = str(value or "").strip()
+        if text and text not in values:
+            values.append(text)
+    single = str(row.get("source_snapshot_id") or "").strip()
+    if single and single not in values:
+        values.append(single)
+    return values
+
+
+def _captured_at(row: dict[str, Any]) -> datetime:
+    raw = str(row.get("captured_at") or "").strip()
+    try:
+        value = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if value.utcoffset() is not None:
+            return value.astimezone(timezone.utc)
+    except (TypeError, ValueError):
+        pass
+    return datetime.min.replace(tzinfo=timezone.utc)
+
+
+def canonicalize_prop_manifest(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    selected: list[dict[str, Any]] = []
+    index_by_key: dict[tuple[str, ...], int] = {}
+    for raw in rows:
+        row = dict(raw)
+        key = canonical_sporting_key(row)
+        ids = _snapshot_ids(row)
+        if key is None:
+            row["source_snapshot_ids"] = ids
+            row["source_instance_count"] = max(len(ids), 1)
+            row["canonical_sporting_key"] = None
+            selected.append(row)
+            continue
+
+        index = index_by_key.get(key)
+        if index is None:
+            row["source_snapshot_ids"] = ids
+            row["source_instance_count"] = max(len(ids), 1)
+            row["canonical_sporting_key"] = "|".join(key)
+            index_by_key[key] = len(selected)
+            selected.append(row)
+            continue
+
+        current = selected[index]
+        merged_ids = _snapshot_ids(current)
+        for snapshot_id in ids:
+            if snapshot_id not in merged_ids:
+                merged_ids.append(snapshot_id)
+
+        # Score the freshest source instance while preserving every source link.
+        if _captured_at(row) > _captured_at(current):
+            replacement = row
+            replacement["canonical_sporting_key"] = current.get("canonical_sporting_key")
+            selected[index] = replacement
+            current = replacement
+        current["source_snapshot_ids"] = merged_ids
+        current["source_instance_count"] = max(len(merged_ids), 1)
+
+    return selected
+
+
+def canonical_source_snapshot_ids(rows: Iterable[dict[str, Any]]) -> set[str]:
+    ids: set[str] = set()
+    for row in rows:
+        ids.update(_snapshot_ids(row))
+    return ids
+
+
+__all__ = [
+    "canonical_sporting_key",
+    "canonicalize_prop_manifest",
+    "canonical_source_snapshot_ids",
+]
+''', encoding='utf-8')
+
+          # 5) Apply canonicalization before Daily limits/scoring, and reconcile all source instances.
+          daily = 'artifacts/wow-engine/v17/daily_snapshot_runtime.py'
+          replace_once(
+              daily,
+              'from v17.prop_forward_cohort_route import install_prop_forward_cohort_route\n',
+              'from v17.prop_forward_cohort_route import install_prop_forward_cohort_route\nfrom v17.prop_canonical_identity import canonical_source_snapshot_ids, canonicalize_prop_manifest\n',
+          )
+          replace_once(
+              daily,
+              '    selected = "source_snapshot_id,event_id,event_start_time,sport,player,stat_type,line,hydration_status,blockers"\n',
+              '    selected = "source_snapshot_id,captured_at,event_id,event_start_time,sport,player,stat_type,line,hydration_status,blockers"\n',
+          )
+          replace_once(
+              daily,
+              '        offset += page_size\n    return manifest\n\n\ndef _prop_rows',
+              '        offset += page_size\n    return canonicalize_prop_manifest(manifest)\n\n\ndef _prop_rows',
+          )
+          replace_once(
+              daily,
+              '    canonical_ids = {str(row.get("source_snapshot_id")) for row in canonical_manifest if row.get("source_snapshot_id")}\n',
+              '    canonical_ids = canonical_source_snapshot_ids(canonical_manifest)\n',
+          )
+          replace_once(
+              daily,
+              '    canonical_count = len(canonical_manifest or []) if lane == "PROPS" else len(lane_rows)\n',
+              '    canonical_count = len(canonical_manifest or []) if lane == "PROPS" else len(lane_rows)\n    source_instance_count = (\n        sum(int(row.get("source_instance_count") or 1) for row in (canonical_manifest or []))\n        if lane == "PROPS"\n        else canonical_count\n    )\n',
+          )
+          replace_once(
+              daily,
+              '        "discovered_count": canonical_count,\n        "canonicalized_count": canonical_count,\n',
+              '        "discovered_count": source_instance_count,\n        "canonicalized_count": canonical_count,\n        "duplicate_source_instance_count": max(source_instance_count - canonical_count, 0),\n',
+          )
+
+          # Regression tests.
+          (root / 'artifacts/wow-engine/tests/test_v17_compact_outer_wrapper.py').write_text(r'''from __future__ import annotations
+
+import pytest
+from fastapi import FastAPI, Header
+from fastapi.testclient import TestClient
+
+import pick_request_runtime as pick_runtime
+import v17.detailed_evidence_install as subject
+
+
+@pytest.mark.parametrize("sport", ["MLB", "NFL", "WNBA", "NCAAF"])
+def test_detailed_evidence_wrapper_preserves_compact_mode(monkeypatch, sport):
+    app = FastAPI()
+    captured = {}
+
+    @app.post("/score-pick-request")
+    def base_route(
+        batch: pick_runtime.PickRequestBatch,
+        x_wow_model_identity: str | None = Header(default=None, alias="X-WOW-Model-Identity"),
+    ):
+        captured["response_mode"] = batch.response_mode
+        return {
+            "ok": True,
+            "response_mode": batch.response_mode,
+            "rows": [{
+                "row_key": batch.rows[0].row_key,
+                "terminal_status": "HELD",
+                "code": "TEST_TYPED_BLOCKER",
+                "model_evaluated": False,
+                "probability_publishable": False,
+                "rank_eligible": False,
+                "can_execute": False,
+            }],
+            "can_execute": False,
+        }
+
+    monkeypatch.setattr(subject, "_patch_model_features", lambda _market: None)
+    monkeypatch.setattr(subject, "_patch_snapshot_payload", lambda: None)
+    monkeypatch.setattr(subject, "_patch_team_event_canonicalizer", lambda: None)
+
+    subject.install_v17_detailed_evidence(
+        app,
+        auth_dependency=lambda: None,
+        market_api=object(),
+    )
+    response = TestClient(app).post(
+        "/score-pick-request",
+        json={
+            "request_id": f"compact-{sport.lower()}",
+            "response_mode": "COMPACT",
+            "rows": [{
+                "row_key": "row-1",
+                "event_id": f"{sport}-event-1",
+                "event_start_time": "2099-09-20T20:00:00Z",
+                "sport": sport,
+                "player": "Test Player",
+                "stat_type": "TEST_STAT",
+                "line": 1.5,
+                "direction": "MORE",
+            }],
+        },
+    )
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert captured["response_mode"] == "COMPACT"
+    assert payload["response_mode"] == "COMPACT"
+    assert payload["can_execute"] is False
+''', encoding='utf-8')
+
+          (root / 'artifacts/wow-engine/tests/test_v17_compact_receipt_contract.py').write_text(r'''from pick_request_runtime_core import _compact_pick_outcome
+from v17.top10_model_reconciliation import has_valid_model_package
+
+
+def test_compact_receipt_is_bounded_and_preserves_probability_package():
+    source = {
+        "row_key": "r1",
+        "terminal_status": "COMPLETED",
+        "code": "FINAL_APPROVED",
+        "model_evaluated": True,
+        "detail": {
+            "event_id": "evt-1",
+            "event_start_time": "2099-09-20T20:00:00Z",
+            "sport": "MLB",
+            "league": "MLB",
+            "player": "Pitcher One",
+            "stat_type": "PITCHER_STRIKEOUTS",
+            "line": 6.5,
+            "direction": "MORE",
+            "controlling_specialist": "wow.mlb-pitcher-failure-path-expert",
+            "blockers": [],
+        },
+        "result": {
+            "prediction": {
+                "prediction_id": "pred-1",
+                "raw_model_probability": 0.72,
+                "calibrated_probability": 0.69,
+                "calibrated_probability_lower_bound": 0.63,
+                "calibrated_probability_upper_bound": 0.75,
+                "calibration_status": "PASS",
+                "model_version": "v1",
+            },
+            "probability_qualification": {
+                "rank_eligible": True,
+                "model_supported": True,
+                "confidence_tier": "HIGH",
+                "terminal_label": "MODEL_QUALIFIED",
+            },
+        },
+        "detailed_evidence": {"huge": "x" * 10000},
+        "model_evidence": {"huge": "x" * 10000},
+        "failure_path_evidence": {"huge": "x" * 10000},
+        "directional_probability_assessments": [{"x": "y" * 1000}],
+        "v17_numerical_engine": {"huge": "x" * 10000},
+        "objective_lanes": {"huge": "x" * 10000},
+        "backend_traversal": {"huge": "x" * 10000},
+        "specialist_utilization_audit": {"huge": "x" * 10000},
+        "can_execute": False,
+    }
+    out = _compact_pick_outcome(source)
+    assert out["prediction_id"] == "pred-1"
+    assert out["model_probability"] == 0.72
+    assert out["calibrated_probability"] == 0.69
+    assert out["calibrated_probability_lower_bound"] == 0.63
+    assert out["calibrated_probability_upper_bound"] == 0.75
+    assert out["rank_eligible"] is True
+    assert out["detail_ref"]["prediction_id"] == "pred-1"
+    assert has_valid_model_package(out) is True
+    for forbidden in (
+        "result", "detail", "detailed_evidence", "model_evidence",
+        "failure_path_evidence", "directional_probability_assessments",
+        "v17_numerical_engine", "objective_lanes", "backend_traversal",
+        "specialist_utilization_audit",
+    ):
+        assert forbidden not in out
+    assert out["can_execute"] is False
+''', encoding='utf-8')
+
+          (root / 'artifacts/wow-engine/tests/test_v17_prop_canonical_identity.py').write_text(r'''from v17.prop_canonical_identity import canonical_sporting_key, canonicalize_prop_manifest
+
+
+def _row(snapshot_id, *, line=6.5, direction=None, captured="2099-09-20T10:00:00Z"):
+    row = {
+        "source_snapshot_id": snapshot_id,
+        "captured_at": captured,
+        "event_id": "evt-1",
+        "event_start_time": "2099-09-20T20:00:00Z",
+        "sport": "MLB",
+        "player": "Pitcher One",
+        "stat_type": "PITCHER_STRIKEOUTS",
+        "line": line,
+    }
+    if direction is not None:
+        row["direction"] = direction
+    return row
+
+
+def test_snapshot_id_is_provenance_not_sporting_identity():
+    rows = [_row(f"snap-{i}", captured=f"2099-09-20T1{i}:00:00Z") for i in range(4)]
+    out = canonicalize_prop_manifest(rows)
+    assert len(out) == 1
+    assert out[0]["source_snapshot_ids"] == ["snap-0", "snap-1", "snap-2", "snap-3"]
+    assert out[0]["source_snapshot_id"] == "snap-3"
+    assert out[0]["source_instance_count"] == 4
+
+
+def test_materially_different_lines_and_directions_remain_distinct():
+    assert canonical_sporting_key(_row("a", line=6.5)) != canonical_sporting_key(_row("b", line=7.5))
+    assert canonical_sporting_key(_row("a", direction="MORE")) != canonical_sporting_key(_row("b", direction="LESS"))
+    assert len(canonicalize_prop_manifest([_row("a", line=6.5), _row("b", line=7.5)])) == 2
+''', encoding='utf-8')
+
+          (root / 'artifacts/wow-engine/tests/test_v17_daily_unique_prop_limit.py').write_text(r'''from __future__ import annotations
+
+from types import SimpleNamespace
+
+from v17.daily_snapshot_runtime import _prop_manifest_rows
+
+
+class _Query:
+    def __init__(self, rows):
+        self.rows = list(rows)
+        self.start = 0
+        self.end = len(self.rows) - 1
+    def select(self, *_args, **_kwargs): return self
+    def eq(self, *_args, **_kwargs): return self
+    def order(self, *_args, **_kwargs): return self
+    def limit(self, n): self.start, self.end = 0, n - 1; return self
+    def range(self, start, end): self.start, self.end = start, end; return self
+    def execute(self): return SimpleNamespace(data=self.rows[self.start:self.end + 1])
+
+
+class _DB:
+    def __init__(self, rows): self.rows = rows
+    def table(self, name):
+        assert name == "wow_prop_evidence_snapshots"
+        return _Query(self.rows)
+
+
+def _row(snapshot_id, player, line):
+    return {
+        "source_snapshot_id": snapshot_id,
+        "captured_at": "2099-09-20T10:00:00Z",
+        "event_id": f"evt-{player}",
+        "event_start_time": "2099-09-20T20:00:00Z",
+        "sport": "MLB",
+        "player": player,
+        "stat_type": "PITCHER_STRIKEOUTS",
+        "line": line,
+        "hydration_status": "PASS",
+        "blockers": [],
+    }
+
+
+def test_twenty_duplicate_snapshots_do_not_consume_four_prop_limit_slots():
+    rows = [_row(f"dup-{i}", "Cristopher Sanchez", 6.5) for i in range(20)]
+    rows += [
+        _row("u-1", "Pitcher Two", 5.5),
+        _row("u-2", "Pitcher Three", 4.5),
+        _row("u-3", "Pitcher Four", 7.5),
+    ]
+    manifest = _prop_manifest_rows(_DB(rows), "2099-09-20", "UTC")
+    limited = manifest[:4]
+    assert len(manifest) == 4
+    assert len(limited) == 4
+    assert [row["player"] for row in limited] == [
+        "Cristopher Sanchez", "Pitcher Two", "Pitcher Three", "Pitcher Four"
+    ]
+    assert limited[0]["source_instance_count"] == 20
+    assert len(limited[0]["source_snapshot_ids"]) == 20
+''', encoding='utf-8')
+
+          print('V17_COMPACT_DEDUP_PATCH_APPLIED=true')
+          PY
+
+      - name: Install engine dependencies
+        run: python -m pip install -r artifacts/wow-engine/requirements.txt
+
+      - name: Run targeted regressions
+        env:
+          PYTHONPATH: artifacts/wow-engine
+        run: |
+          python -m pytest -q \
+            artifacts/wow-engine/tests/test_v17_compact_outer_wrapper.py \
+            artifacts/wow-engine/tests/test_v17_compact_receipt_contract.py \
+            artifacts/wow-engine/tests/test_v17_prop_canonical_identity.py \
+            artifacts/wow-engine/tests/test_v17_daily_unique_prop_limit.py \
+            artifacts/wow-engine/tests/test_pick_request_compact_response.py \
+            artifacts/wow-engine/v17/test_daily_response_contract_acceptance.py
+
+      - name: Commit repair
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            artifacts/wow-engine/pick_request_runtime_core.py \
+            artifacts/wow-engine/v17/detailed_evidence_install.py \
+            artifacts/wow-engine/v17/top10_model_reconciliation.py \
+            artifacts/wow-engine/v17/daily_snapshot_runtime.py \
+            artifacts/wow-engine/v17/prop_canonical_identity.py \
+            artifacts/wow-engine/tests/test_v17_compact_outer_wrapper.py \
+            artifacts/wow-engine/tests/test_v17_compact_receipt_contract.py \
+            artifacts/wow-engine/tests/test_v17_prop_canonical_identity.py \
+            artifacts/wow-engine/tests/test_v17_daily_unique_prop_limit.py
+          git commit -m 'chore(v17): apply compact/dedup repair'
+          git push origin HEAD:chatgpt/v17-compact-dedup-fix
