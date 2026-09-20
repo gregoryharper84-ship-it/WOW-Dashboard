@@ -30,6 +30,10 @@ from prop_live_model_acceptance import run_prop_model_live_self_acceptance
 from v17_synthetic_self_acceptance import run_v17_synthetic_self_acceptance
 from recommendation_ledger_api import install_recommendation_ledger_routes
 from team_event_request_runtime import install_team_event_request_routes
+from v17.core_intelligence_compounding_routes import install_compounding_intelligence_routes_read_only
+from v17.core_intelligence_event_runtime import install_core_intelligence_event_routes
+from v17.core_intelligence_runtime import install_core_intelligence_routes
+from v17.core_intelligence_shadow_runtime import install_shadow_lab_routes
 from v17.team_event_probability_preservation import (
     install_team_event_routes as install_v17_team_event_routes,
     score_team_event_request as score_v17_team_event_request,
@@ -43,11 +47,13 @@ app = base.app
 _auth = Depends(base.market_api.prod._require_action_api_key)
 _logger = logging.getLogger("wow.ncaaf.readiness")
 _v17_logger = logging.getLogger("wow.v17.activation")
+_core_intelligence_logger = logging.getLogger("wow.v17.core_intelligence.activation")
 _kalshi_weather_logger = logging.getLogger("wow.kalshi_weather_v2.activation")
 _mlb_1ip_refresh_logger = logging.getLogger("wow.mlb.1ip.final_refresh")
 _background_tasks: set[asyncio.Task] = set()
 _original_market_score_prop = base.market_api.score_prop
 V17_ACTIVE = os.getenv("WOW_V17_ACTIVE", "0") == "1"
+V17_CORE_INTELLIGENCE_ACTIVE = os.getenv("WOW_V17_CORE_INTELLIGENCE_ACTIVE", "0") == "1"
 KALSHI_WEATHER_V2_ACTIVE = os.getenv("WOW_KALSHI_WEATHER_V2_ACTIVE", "0") == "1"
 
 # This mutation is intentionally production-gated. The lower api_prod_market app
@@ -155,6 +161,34 @@ if V17_ACTIVE:
             auth_dependency=_auth,
             get_client_fn=_db_client,
         )
+
+    # Core Intelligence is separately gated so migrations can land before route
+    # exposure and rollback remains one environment-variable change. Its route
+    # installers require the underlying callable (not an already-created Depends
+    # object) so the Action-key dependency is actually attached.
+    if V17_CORE_INTELLIGENCE_ACTIVE:
+        core_intelligence_auth = base.market_api.prod._require_action_api_key
+        install_core_intelligence_routes(
+            app,
+            auth_dependency=core_intelligence_auth,
+            get_client_fn=_db_client,
+        )
+        install_core_intelligence_event_routes(
+            app,
+            auth_dependency=core_intelligence_auth,
+            get_client_fn=_db_client,
+        )
+        install_compounding_intelligence_routes_read_only(
+            app,
+            auth_dependency=core_intelligence_auth,
+            get_client_fn=_db_client,
+        )
+        install_shadow_lab_routes(
+            app,
+            auth_dependency=core_intelligence_auth,
+            get_client_fn=_db_client,
+        )
+
     # Daily imported the base scorer for deterministic lower-layer tests. Bind
     # only the active production V17 Daily module to the scoped repaired scorer;
     # this does not mutate the base team-event runtime or weaken any gate.
@@ -308,6 +342,15 @@ async def log_v17_activation():
     _v17_logger.warning(
         "WOW_V17_RUNTIME status=%s global_terminal_authority=V17_TERMINAL_REDUCER can_execute=false",
         "ACTIVE" if V17_ACTIVE else "INACTIVE",
+    )
+
+
+@app.on_event("startup")
+async def log_v17_core_intelligence_activation():
+    _core_intelligence_logger.warning(
+        "WOW_V17_CORE_INTELLIGENCE status=%s configured=%s authority=ADVISORY_ONLY automatic_promotion=false probability_publishable=false can_execute=false",
+        "ACTIVE" if (V17_ACTIVE and V17_CORE_INTELLIGENCE_ACTIVE) else "INACTIVE",
+        "1" if V17_CORE_INTELLIGENCE_ACTIVE else "0",
     )
 
 
