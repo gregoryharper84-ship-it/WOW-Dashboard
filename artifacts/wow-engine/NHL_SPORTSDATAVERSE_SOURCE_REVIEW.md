@@ -33,7 +33,9 @@ The safe governed state is therefore source-review-pending rather than open-lice
 
 ## Candidate corpus
 
-Phase 3 requires at least three completed regular seasons and an untouched final-season holdout. The initial raw corpus freeze therefore pins the four completed season assets below and deliberately excludes the current 2026 asset from the first research replay.
+Phase 3 requires at least three completed regular seasons and an untouched final-season holdout. The first real-data replay pins **2024, 2025, and 2026** because those SportsDataverse player-boxscore assets expose direct player × game identity fields (`game_id`, `season`, and `game_date`) alongside player/team identity and `shots_on_goal`.
+
+The older 2022 and 2023 player-boxscore assets were downloaded and inspected during source research but are **quarantined from the first model replay**: their raw schema does not expose `game_id`, `season`, or `game_date`. WOW will not reconstruct those joins from file order, row position, or another heuristic merely to increase sample size.
 
 ### Player box scores
 
@@ -41,12 +43,11 @@ Release tag: `nhl_player_boxscores`
 
 | Season asset | SHA-256 |
 |---|---|
-| `player_box_2022.csv` | `60c457cfe62c125929861367816c4eb243ebf17574cd35ad9982318a1e484e4d` |
-| `player_box_2023.csv` | `4f823eb8146a03becdaaf220128f68729528443c08a18852e54aae3f3833dd44` |
 | `player_box_2024.csv` | `889d439dae5b5a2e831496a3a0dcbea4d385883d68d55b70d55a554169ff6e74` |
 | `player_box_2025.csv` | `511f58b09996be6165c7ad2a0f475ac029f0206653ce4e11665e1ff8088516b0` |
+| `player_box_2026.csv` | `41a35357d65e0d51967568ca9d0d16dae0dba593bf0193372f6cd14e5a46b102` |
 
-The release describes these assets as NHL player box scores, one row per player per game, with historical assets from 2010 onward and upstream source `api-web.nhle.com`.
+The release describes these assets as NHL player box scores with upstream source `api-web.nhle.com`. The pinned 2026 asset was published after the 2025-26 season and is treated as historical research data, not current-game evidence.
 
 ### Game metadata
 
@@ -54,12 +55,22 @@ Release tag: `nhl_game_info`
 
 | Season asset | SHA-256 |
 |---|---|
-| `game_info_2022.csv` | `752fb3b3406c9f14b91d76d66fb6d1efd78eb17e94a6261b9931da484e632786` |
-| `game_info_2023.csv` | `cd2746413a4eaf8819140c894b5297d57098a4736ec52aa5b7d9e17f58351fcc` |
 | `game_info_2024.csv` | `03f87329a2113ddaf4b8f31b213952efc49d85d413155ec67b00d8b6c4043994` |
 | `game_info_2025.csv` | `e743bafe13dfa761f3ac84ab978b8e7de73ea7f126f2daf4f27e437017f3212b` |
+| `game_info_2026.csv` | `15bfbde574d9b84f07ffc387460127cb66b0173a06c6812132fbc718b524b610` |
 
-The raw release metadata contains older assets as well, even though its human-readable season-count summary is narrower. WOW therefore trusts only the concrete pinned asset identity plus digest, not an inferred coverage claim from the summary text.
+The release metadata contains older assets as well, even though its human-readable season-count summary is narrower. WOW trusts only concrete pinned asset identity plus digest, not an inferred coverage claim from the summary text.
+
+## Timing limitation discovered by schema inspection
+
+The pinned `nhl_game_info` CSV schema contains `game_date` but no exact puck-drop timestamp. Phase 2.1's leakage contract requires exact historical event timing and settled-stat availability semantics; date-only metadata is not sufficient to manufacture `game_start_time`.
+
+Therefore:
+
+- WOW will **not** synthesize midnight/noon start times from `game_date`;
+- SportsDataverse remains the candidate distribution layer for settled box-score/game metadata;
+- exact `game_start_time` must come from a separately governed, exact-`game_id` timing source before a Phase-3 row is admitted;
+- if exact timing cannot be resolved for a game, that game fails closed from the real replay rather than receiving a guessed timestamp.
 
 ## Raw-corpus rules
 
@@ -70,7 +81,7 @@ The raw release metadata contains older assets as well, even though its human-re
 5. No credentials or secrets are required for these public release assets.
 6. Raw acquisition does not parse or reinterpret schema fields.
 7. Schema transformation into WOW canonical NHL SOG records is a separate step and must fail closed on unknown or changed columns.
-8. The current/incomplete season is excluded from the first Phase 3 real-data replay.
+8. 2022/2023 are explicitly quarantined from the first replay because their player-boxscore schema lacks direct player × game identity.
 9. No sportsbook/market evidence is part of this corpus.
 10. No action in this source lane can set `can_execute=true`.
 
@@ -86,4 +97,4 @@ The following remain separate decisions and are **not** authorized by this sourc
 - wiring `/score-pick-request` to a production NHL SOG specialist;
 - any wager/order execution.
 
-The next allowed engineering step is to freeze the pinned raw corpus, inspect and version its real schema, transform it through the already-built Phase 1/2.1 contracts, and rerun Phase 3 as research. If the source-review gate remains open, any resulting challenger remains non-publishable regardless of model quality.
+The next allowed engineering step is to freeze the 2024-2026 pinned corpus, inspect/version its schema, add exact game timing by verified `game_id`, transform it through the already-built Phase 1/2.1 contracts, and rerun Phase 3 as research. If the source-review gate remains open, any resulting challenger remains non-publishable regardless of model quality.
