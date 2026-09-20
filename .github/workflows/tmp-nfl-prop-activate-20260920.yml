@@ -1,0 +1,113 @@
+name: tmp-nfl-prop-activate-20260920
+
+on:
+  push:
+    branches: [fix/v17-nfl-prop-governed-lane-20260920-active]
+    paths: ['.github/workflows/tmp-nfl-prop-activate-20260920.yml']
+
+permissions:
+  contents: write
+
+jobs:
+  activate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/v17-nfl-prop-governed-lane-20260920-active
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Generate activation migration, manifest and certification tests
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          root=Path('artifacts/wow-engine')
+          artifacts=json.loads((root/'data/wow_nfl_prop_artifacts_v1.json').read_text())
+          expected={'PASSING_YARDS','RUSHING_YARDS','RECEIVING_YARDS','ANYTIME_TD'}
+          by_stat={a['stat_type']:a for a in artifacts}
+          assert set(by_stat)==expected
+          for stat,a in by_stat.items():
+              m=a['validation_metrics']
+              assert a['certification_eligible'] is True
+              assert m['validation_status']=='PASS' and m['blockers']==[]
+              assert a['model_family']=='NFL_PROP_ROLLING_FITTED_V1'
+              assert a['calibrator_version']=='NFL_PROP_PRECALIBRATION_BOOTSTRAP_V1'
+              assert a['specialist_version']=='wow.nfl-player-prop-probability-expert@1'
+              assert a['provider_identity']=='WOW_PROP_FITTED_MODEL_V1'
+              assert a['source_license_id']=='CC-BY-4.0'
+              assert a['can_execute'] is False
+
+          def lit(v):
+              if v is None: return 'null'
+              if isinstance(v,bool): return 'true' if v else 'false'
+              if isinstance(v,(int,float)): return str(v)
+              return "'"+str(v).replace("'","''")+"'"
+          def js(v):
+              return "'"+json.dumps(v,sort_keys=True,separators=(',',':')).replace("'","''")+"'::jsonb"
+
+          cols=(
+              'provider_identity','model_family','model_artifact_version','calibrator_version','sport','stat_type',
+              'feature_schema_version','feature_transform_version','specialist_version','certification_id','lifecycle_state',
+              'training_dataset_hash','training_code_sha','artifact_checksum','artifact_format','artifact_payload',
+              'supported_line_min','supported_line_max','training_rows','validation_metrics','promoted','active',
+              'probability_publishable','can_execute'
+          )
+          value_rows=[]
+          versions=[]
+          for stat in sorted(expected):
+              a=by_stat[stat]; versions.append(a['model_artifact_version'])
+              values=[
+                  a['provider_identity'],a['model_family'],a['model_artifact_version'],a['calibrator_version'],'NFL',stat,
+                  a['feature_schema_version'],a['feature_transform_version'],a['specialist_version'],a['certification_id'],
+                  'PROSPECTIVE_CERTIFIED',a['training_dataset_hash'],a['training_code_sha'],a['artifact_checksum'],
+                  a['artifact_format'],None,a['supported_line_min'],a['supported_line_max'],a['training_rows'],None,
+                  True,True,False,False
+              ]
+              encoded=[]
+              for idx,v in enumerate(values):
+                  if idx==15: encoded.append(js(a['artifact_payload']))
+                  elif idx==19: encoded.append(js(a['validation_metrics']))
+                  else: encoded.append(lit(v))
+              value_rows.append('  ('+', '.join(encoded)+')')
+
+          version_list=', '.join(lit(v) for v in versions)
+          sql=f'''-- WOW V17 governed NFL direct-prop activation, 2026-09-20.\n-- Generated only from frozen PASS validation artifacts.\n-- No sportsbook/market probability enters these model rows. can_execute=false.\n\nbegin;\n\n-- Retire any older active artifact for the same four exact NFL routes before\n-- promoting the frozen validated bundle. This does not affect NFL Fantasy Score.\nupdate public.wow_prop_fitted_model_artifacts\nset active=false, promoted=false, probability_publishable=false, can_execute=false\nwhere upper(sport)='NFL'\n  and upper(stat_type) in ('PASSING_YARDS','RUSHING_YARDS','RECEIVING_YARDS','ANYTIME_TD')\n  and model_artifact_version not in ({version_list});\n\ninsert into public.wow_prop_fitted_model_artifacts (\n  {', '.join(cols)}\n) values\n{',\n'.join(value_rows)}\non conflict (model_artifact_version) do update set\n  provider_identity=excluded.provider_identity,\n  model_family=excluded.model_family,\n  calibrator_version=excluded.calibrator_version,\n  sport=excluded.sport,\n  stat_type=excluded.stat_type,\n  feature_schema_version=excluded.feature_schema_version,\n  feature_transform_version=excluded.feature_transform_version,\n  specialist_version=excluded.specialist_version,\n  certification_id=excluded.certification_id,\n  lifecycle_state='PROSPECTIVE_CERTIFIED',\n  training_dataset_hash=excluded.training_dataset_hash,\n  training_code_sha=excluded.training_code_sha,\n  artifact_checksum=excluded.artifact_checksum,\n  artifact_format=excluded.artifact_format,\n  artifact_payload=excluded.artifact_payload,\n  supported_line_min=excluded.supported_line_min,\n  supported_line_max=excluded.supported_line_max,\n  training_rows=excluded.training_rows,\n  validation_metrics=excluded.validation_metrics,\n  promoted=true, active=true, probability_publishable=false, can_execute=false;\n\ncreate or replace function public.wow_controlling_specialist(\n  p_sport text, p_prop_type text\n) returns jsonb\nlanguage plpgsql\nimmutable\nset search_path to ''\nas $function$\ndeclare\n  v_sport text := upper(trim(coalesce(p_sport,'')));\n  v_key text := upper(regexp_replace(trim(coalesce(p_prop_type,'')), '[^A-Za-z0-9]+', '_', 'g'));\n  v_controller text;\n  v_supporting jsonb := '[]'::jsonb;\nbegin\n  v_key := trim(both '_' from v_key);\n  if v_sport='MLB' and v_key in ('1ST_INNING_PITCHES_THROWN','FIRST_INNING_PITCHES_THROWN','1ST_INNING_PITCH_COUNT','FIRST_INNING_PITCH_COUNT') then\n    v_controller := 'wow.mlb-first-inning-pitch-count-expert';\n    v_supporting := jsonb_build_array('wow.mlb-pitcher-failure-path-expert');\n  elsif v_sport='MLB' and v_key='PITCHING_OUTS' then\n    v_controller := 'wow.mlb-pitcher-outs-workload-expert';\n  elsif v_sport='MLB' and v_key in ('STRIKES_THROWN','BALLS_THROWN') then\n    v_controller := 'wow.mlb-pitcher-pitch-composition-expert';\n  elsif v_sport='MLB' and v_key='PLATE_APPEARANCES' then\n    v_controller := 'wow.mlb-batter-plate-appearances-expert';\n  elsif v_sport='MLB' and v_key='PITCHER_FANTASY_SCORE' then\n    v_controller := 'wow.mlb-pitcher-fantasy-score-expert';\n  elsif v_sport='MLB' and (v_key like '%STRIKEOUT%' or v_key like '%PITCH_COUNT%' or v_key like '%WALK%' or v_key like '%HIT_ALLOWED%' or v_key like '%RUN_ALLOWED%') then\n    v_controller := 'wow.mlb-pitcher-failure-path-expert';\n  elsif v_sport='WNBA' and v_key in ('POINTS','REBOUNDS','ASSISTS','THREE_POINTERS_MADE') then\n    v_controller := 'wow.wnba-player-prop-probability-expert';\n  elsif v_sport='NFL' and v_key in ('PASSING_YARDS','RUSHING_YARDS','RECEIVING_YARDS','ANYTIME_TD') then\n    v_controller := 'wow.nfl-player-prop-probability-expert';\n  else\n    v_controller := 'MODEL_UNAVAILABLE';\n  end if;\n  return jsonb_build_object(\n    'sport',v_sport,'canonical_prop_type',v_key,'controlling_specialist',v_controller,\n    'supporting_specialists',v_supporting,\n    'min_event_tree_simulations',case when v_controller='wow.mlb-first-inning-pitch-count-expert' then 25000 else null end,\n    'can_execute',false\n  );\nend;\n$function$;\n\ncomment on function public.wow_controlling_specialist(text,text) is\n'V17 controlling-specialist router. Certified MLB/WNBA production routes plus validated NFL PASSING_YARDS/RUSHING_YARDS/RECEIVING_YARDS/ANYTIME_TD route to exact specialists. Unsupported routes fail closed. can_execute=false.';\n\ncommit;\n'''
+          (root/'migrations/20260920_nfl_direct_prop_governed_activation.sql').write_text(sql)
+
+          # Manifest: declare only the exact four validated routes as production.
+          p=root/'v17/prop_capability_manifest.py'; s=p.read_text()
+          anchor='WNBA_PLAYER_PROP_EXPERT = "wow.wnba-player-prop-probability-expert"\n'
+          assert anchor in s and 'NFL_PLAYER_PROP_EXPERT' not in s
+          s=s.replace(anchor,anchor+'NFL_PLAYER_PROP_EXPERT = "wow.nfl-player-prop-probability-expert"\n')
+          anchor='WNBA_THREES_MADE = "THREE_POINTERS_MADE"\n'
+          s=s.replace(anchor,anchor+'NFL_PASSING_YARDS = "PASSING_YARDS"\nNFL_RUSHING_YARDS = "RUSHING_YARDS"\nNFL_RECEIVING_YARDS = "RECEIVING_YARDS"\nNFL_ANYTIME_TD = "ANYTIME_TD"\n')
+          marker='''    ("WNBA", WNBA_THREES_MADE): _wnba_candidate(WNBA_THREES_MADE),\n\n    # Fantasy Score candidate parity.'''
+          repl='''    ("WNBA", WNBA_THREES_MADE): _wnba_candidate(WNBA_THREES_MADE),\n    ("NFL", NFL_PASSING_YARDS): PropCapability(\n        sport="NFL", stat_type=NFL_PASSING_YARDS, lane_status=CERTIFIED_PRODUCTION,\n        controlling_specialist=NFL_PLAYER_PROP_EXPERT, route_active=True, declared_skill_status="PRODUCTION",\n        exact_line_support_policy=CONTINUOUS_LINE_SUPPORT, certified_line_support_source="wow_prop_fitted_model_artifacts",\n        publication_allowed=True, blocker=None, notes="Validated rolling fitted NFL passing-yards route; runtime artifact/input/calibration gates remain mandatory."),\n    ("NFL", NFL_RUSHING_YARDS): PropCapability(\n        sport="NFL", stat_type=NFL_RUSHING_YARDS, lane_status=CERTIFIED_PRODUCTION,\n        controlling_specialist=NFL_PLAYER_PROP_EXPERT, route_active=True, declared_skill_status="PRODUCTION",\n        exact_line_support_policy=CONTINUOUS_LINE_SUPPORT, certified_line_support_source="wow_prop_fitted_model_artifacts",\n        publication_allowed=True, blocker=None, notes="Validated rolling fitted NFL rushing-yards route; runtime artifact/input/calibration gates remain mandatory."),\n    ("NFL", NFL_RECEIVING_YARDS): PropCapability(\n        sport="NFL", stat_type=NFL_RECEIVING_YARDS, lane_status=CERTIFIED_PRODUCTION,\n        controlling_specialist=NFL_PLAYER_PROP_EXPERT, route_active=True, declared_skill_status="PRODUCTION",\n        exact_line_support_policy=CONTINUOUS_LINE_SUPPORT, certified_line_support_source="wow_prop_fitted_model_artifacts",\n        publication_allowed=True, blocker=None, notes="Validated rolling fitted NFL receiving-yards route; runtime artifact/input/calibration gates remain mandatory."),\n    ("NFL", NFL_ANYTIME_TD): PropCapability(\n        sport="NFL", stat_type=NFL_ANYTIME_TD, lane_status=CERTIFIED_PRODUCTION,\n        controlling_specialist=NFL_PLAYER_PROP_EXPERT, route_active=True, declared_skill_status="PRODUCTION",\n        exact_line_support_policy=CONTINUOUS_LINE_SUPPORT, certified_line_support_source="wow_prop_fitted_model_artifacts",\n        publication_allowed=True, blocker=None, notes="Validated fitted NFL anytime-TD Bernoulli route; runtime artifact/input/calibration gates remain mandatory."),\n\n    # Fantasy Score candidate parity.'''
+          assert marker in s; s=s.replace(marker,repl)
+          p.write_text(s)
+
+          (root/'test_nfl_prop_certification_evidence.py').write_text('''import json\nfrom pathlib import Path\n\nROOT=Path(__file__).resolve().parent\nEXPECTED={"PASSING_YARDS","RUSHING_YARDS","RECEIVING_YARDS","ANYTIME_TD"}\n\ndef _artifacts():\n    return json.loads((ROOT/"data/wow_nfl_prop_artifacts_v1.json").read_text())\n\ndef test_all_exact_routes_have_passed_frozen_certification_evidence():\n    rows=_artifacts(); assert {r["stat_type"] for r in rows}==EXPECTED\n    for row in rows:\n        m=row["validation_metrics"]\n        assert row["certification_eligible"] is True\n        assert m["validation_status"]=="PASS" and m["blockers"]==[]\n        assert m["holdout_season"]==2025 and m["whole_week_chronological_split"] is True\n        assert m["holdout_rows"]>=300 and m["calibration_rows"]>=300 and m["train_rows"]>=1000\n        assert m["holdout_ood_rate_z_gt_6"]<=0.08\n        assert row["source_license_id"]=="CC-BY-4.0"\n        assert row["can_execute"] is False and row["probability_publishable"] is False\n        if row["stat_type"]=="ANYTIME_TD": assert m["brier_ratio_vs_naive"]<=1.03\n        else: assert m["mae_ratio_vs_naive"]<=1.03\n\ndef test_activation_migration_is_exact_and_fail_closed():\n    sql=(ROOT/"migrations/20260920_nfl_direct_prop_governed_activation.sql").read_text()\n    for stat in EXPECTED: assert stat in sql\n    assert "wow.nfl-player-prop-probability-expert" in sql\n    assert "PROSPECTIVE_CERTIFIED" in sql\n    assert "probability_publishable=false" in sql.replace(" ","")\n    assert "can_execute=false" in sql.replace(" ","")\n    assert "MODEL_UNAVAILABLE" in sql\n''')
+          PY
+      - name: Run focused certification/runtime tests
+        shell: bash
+        run: |
+          cd artifacts/wow-engine
+          python -m pip install --disable-pip-version-check -r requirements.txt >/dev/null
+          pytest -q test_nfl_prop_runtime_wiring.py test_nfl_prop_model_adapter.py test_nfl_prop_hydration_contract.py test_nfl_prop_certification_evidence.py
+      - name: Commit exact activation contract and self-delete
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add artifacts/wow-engine
+          git rm .github/workflows/tmp-nfl-prop-activate-20260920.yml
+          git commit -m 'feat(v17): certify exact NFL direct prop routes'
+          git pull --rebase origin fix/v17-nfl-prop-governed-lane-20260920-active
+          git push origin HEAD:fix/v17-nfl-prop-governed-lane-20260920-active
