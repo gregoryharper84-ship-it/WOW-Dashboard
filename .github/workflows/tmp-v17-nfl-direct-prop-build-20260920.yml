@@ -1,23 +1,18 @@
 name: tmp-v17-nfl-direct-prop-build-20260920
 
 on:
-  pull_request:
+  push:
     branches:
-      - main
-    types: [opened, synchronize, reopened]
+      - feature/v17-nfl-direct-props-20260920
 
 permissions:
   contents: write
-  pull-requests: write
-  actions: read
-  checks: read
-  id-token: write
 
 jobs:
-  build:
-    if: github.event.pull_request.head.ref == 'feature/v17-nfl-direct-props-20260920'
+  train:
+    if: ${{ !contains(github.event.head_commit.message, '[generated-nfl-props]') }}
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
         with:
@@ -30,53 +25,18 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r artifacts/wow-engine/requirements.txt
-          pip install PyYAML openapi-spec-validator
-      - name: Implement governed NFL direct player props
-        uses: anthropics/claude-code-action@v1
-        with:
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          base_branch: feature/v17-nfl-direct-props-20260920
-          branch_prefix: claude/nfl-direct-props/
-          display_report: 'false'
-          show_full_output: 'false'
-          prompt: |
-            Implement the complete governed WOW V17 NFL direct player-prop capability. This is an explicitly authorized sporting-model build on a feature branch, not an R0/R1 repair. Do not merge or deploy.
-
-            Read CLAUDE.md and V17 governance first. Preserve V17_TERMINAL_REDUCER and can_execute=false. Never use sportsbook implied probability, external projections, recent hit rate alone, or generic AI reasoning as model probability. Unsupported or uncertified routes must fail closed.
-
-            Production target routes, all WOW prop lane:
-            - NFL PASSING_YARDS
-            - NFL RUSHING_YARDS
-            - NFL RECEIVING_YARDS
-            - NFL ANYTIME_TD
-            Use one explicit controlling specialist identity, preferably wow.nfl-player-prop-probability-expert, with a versioned specialist identity in artifacts. ANYTIME_TD MUST NOT count passing TDs. It means player scored via rushing, receiving, or special-teams/return if the approved source supplies it. If exact source coverage is insufficient, leave that route blocked rather than redefining the market.
-
-            Data/model constraints:
-            - Only approved nflverse player_stats/schedules/players under nflverse_dataset_policy_v1.json. No excluded FTN participation/charting.
-            - player_stats CSV source is https://github.com/nflverse/nflverse-data/releases/download/player_stats/player_stats_<YEAR>.csv . Prefer CSV/httpx/pandas already installed.
-            - Build a real fitted model, NOT gate_engine's old PROVISIONAL Poisson/Bernoulli registry.
-            - Yardage: leakage-safe strictly-prior-game features and a fitted empirical/residual or statistically justified non-market distribution.
-            - Anytime TD: separately fitted binary model/prior using strictly prior data.
-            - Whole-event/week chronological train/calibration/untouched-test split. No target-game leakage. Validate against a naive baseline. Record holdout metrics. Only promote routes that pass deterministic validation gates.
-            - Runtime Phase-A PRECALIBRATION_SHRINKAGE is allowed under current prop_calibration_adapters.py if supplied genuine calibration evidence. It must emit calibrated probability + lower/upper bounds and money_qualified=false.
-            - Continuous exact-line support only inside artifact-supported numeric ranges; reject OOD otherwise.
-
-            Runtime integration:
-            1. Add NFL aliases in pick_request_runtime_core.py: Pass Yards/PASS_YARDS -> PASSING_YARDS; Rush Yards/RUSH_YARDS -> RUSHING_YARDS; Receiving Yards/REC_YARDS -> RECEIVING_YARDS; Anytime TDs/ANYTIME_TDS/TD -> ANYTIME_TD where unambiguous for this route.
-            2. Add dedicated NFL direct-prop model adapter and calibration registration via existing prop_model_adapters / prop_calibration_adapters seams.
-            3. Add NFL auto hydration, ideally new nfl_prop_auto_hydration.py. Acquire >=10 completed games strictly before event_start, cross-season if needed; aligned game_log + nonempty box_score_log; role/team/position; opportunity_ledger; source timestamps; evidence version; rate provenance. Validate player/current team against exact target event. Bad board identities such as a player whose verified team is not in target event must terminate PROP_EVENT_IDENTITY_CONFLICT. Do not silently correct caller event.
-            4. Add routes to v17/prop_capability_manifest.py only at achieved lifecycle.
-            5. Add additive Supabase migration preserving every existing wow_controlling_specialist case while adding exact NFL direct routes; seed fitted artifacts only for routes that pass validation; candidate/nonpassing inactive/unpromoted.
-            6. Preserve exact wow_prop_certified_model_artifact lifecycle requirements and specialist identity.
-            7. Tests: aliases, fitted distribution, calibration/bounds, cross-season hydration chronology, event/player mismatch, OOD, specialist identity, route preflight, adapter registration, can_execute=false, and deterministic /score-pick-request happy path.
-            8. Do NOT edit Custom GPT Instructions/OpenAPI/Knowledge unless Action contract truly needs it. It should not.
-
-            Training artifacts:
-            - Add deterministic trainer under artifacts/wow-engine/scripts/ and run it here if network is available. Store JSON artifact/report under artifacts/wow-engine/data/ with source hashes, training_dataset_hash, training_code_sha, artifact_checksum, validation metrics, supported line ranges, versions.
-            - Historical completed seasons may train the model; runtime hydration must support 2026 + prior season history.
-            - If a route fails validation, leave it fail-closed. Never weaken validation to force all four through.
-
-            Run targeted tests and strongest feasible touched regressions. Inspect git diff for accidental scope. Do not touch .github/workflows/**. Commit implementation changes to the Claude-created branch. Final response must state exact certified routes, blocked routes, and tests.
-          claude_args: >-
-            --max-turns 300
-            --allowedTools "Read,Edit,Write,Glob,Grep,Bash(python *),Bash(python -m pytest *),Bash(git status),Bash(git diff *),Bash(git log *),Bash(curl *),Bash(ls *),Bash(cat *),Bash(find *),Bash(pip *),Bash(pytest *)"
+      - name: Train governed NFL direct-prop candidates
+        run: |
+          python artifacts/wow-engine/scripts/train_nfl_direct_props.py --output-dir artifacts/wow-engine/data | tee /tmp/nfl-direct-prop-training.json
+          cat artifacts/wow-engine/data/wow_nfl_direct_prop_training_report_v1.json
+      - name: Commit generated artifacts
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add artifacts/wow-engine/data/wow_nfl_direct_prop_artifacts_v1.json artifacts/wow-engine/data/wow_nfl_direct_prop_training_report_v1.json
+          if git diff --cached --quiet; then
+            echo 'No generated artifact changes.'
+            exit 0
+          fi
+          git commit -m 'data(nfl-props): generate governed direct-prop artifacts [generated-nfl-props]'
+          git push origin HEAD:feature/v17-nfl-direct-props-20260920
