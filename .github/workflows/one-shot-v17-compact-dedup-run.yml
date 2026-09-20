@@ -26,6 +26,18 @@ jobs:
       - name: Apply repair
         run: python artifacts/wow-engine/v17/apply_compact_dedup_fix_once.py
 
+      - name: Correct test dependency fixture
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('artifacts/wow-engine/tests/test_v17_compact_outer_wrapper.py')
+          text = path.read_text(encoding='utf-8')
+          text = text.replace('from fastapi import FastAPI, Header', 'from fastapi import Depends, FastAPI, Header')
+          text = text.replace('auth_dependency=lambda: None, market_api=object()', 'auth_dependency=[Depends(lambda: None)], market_api=object()')
+          path.write_text(text, encoding='utf-8')
+          PY
+
       - name: Install engine dependencies
         run: python -m pip install -r artifacts/wow-engine/requirements.txt
 
