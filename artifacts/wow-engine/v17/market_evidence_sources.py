@@ -248,12 +248,27 @@ def _base_url(provider: MarketEvidenceProvider) -> str:
     return os.environ.get(provider.base_url_env, provider.default_base_url).rstrip("/")
 
 
-def _api_key(provider: MarketEvidenceProvider) -> str | None:
+def _api_keys(provider: MarketEvidenceProvider) -> tuple[str, ...]:
+    """Return configured credentials in declared priority order, de-duplicated.
+
+    Values are intentionally never logged or returned through diagnostics. The
+    multi-key form exists so TheRundown can survive a credential-alias migration
+    where one configured alias is stale while another is still valid.
+    """
+    keys: list[str] = []
+    seen: set[str] = set()
     for env in provider.key_envs:
         value = os.environ.get(env)
-        if value and value.strip():
-            return value.strip()
-    return None
+        token = value.strip() if value and value.strip() else ""
+        if token and token not in seen:
+            seen.add(token)
+            keys.append(token)
+    return tuple(keys)
+
+
+def _api_key(provider: MarketEvidenceProvider) -> str | None:
+    keys = _api_keys(provider)
+    return keys[0] if keys else None
 
 
 def _endpoint_path(provider: MarketEvidenceProvider, capability: str) -> str | None:
@@ -275,15 +290,22 @@ def fetch(
     params: dict[str, Any] | None = None,
     opener: Any = None,
 ) -> MarketEvidenceResult:
-    """Fetch one provider capability. Never raises; every failure is typed."""
+    """Fetch one provider capability. Never raises; every failure is typed.
+
+    TheRundown Product V2 may have more than one credential alias configured
+    during migrations. For that provider only, a 401/403 may advance to the next
+    distinct configured alias. No other status or transport failure is retried,
+    so rate limits, timeouts, malformed payloads, and provider outages remain
+    fail-closed and retain their original typed semantics.
+    """
     provider = PROVIDERS.get(str(provider_name).upper())
     if provider is None:
         return _fail(str(provider_name).upper(), capability, "MARKET_EVIDENCE_PROVIDER_UNKNOWN")
     if not ENABLED:
         return _fail(provider.name, capability, "MARKET_EVIDENCE_DISABLED")
 
-    api_key = _api_key(provider)
-    if not api_key:
+    api_keys = _api_keys(provider)
+    if not api_keys:
         return _fail(provider.name, capability, "MARKET_EVIDENCE_CREDENTIAL_UNCONFIGURED")
 
     path = _endpoint_path(provider, capability)
@@ -295,50 +317,62 @@ def fetch(
     if "{" in path or "}" in path:
         return _fail(provider.name, capability, "MARKET_EVIDENCE_PATH_PARAMETER_MISSING")
 
-    query = {k: v for k, v in (params or {}).items() if v is not None}
-    headers = {"Accept": "application/json", "User-Agent": USER_AGENT}
-    if provider.auth_style == "header":
-        headers[provider.auth_name] = api_key
-    else:
-        query[provider.auth_name] = api_key
-
+    base_query = {k: v for k, v in (params or {}).items() if v is not None}
     url = _base_url(provider) + (path if path.startswith("/") else "/" + path)
-    full = url + (f"?{urlencode(query)}" if query else "")
-    safe_endpoint = _redact(url, api_key)
 
-    request = Request(full, headers=headers)
-    try:
-        with (opener or urlopen)(request, timeout=TIMEOUT_SECONDS) as response:
-            body = response.read().decode("utf-8")
-            status = getattr(response, "status", None) or getattr(response, "code", None)
-    except HTTPError as exc:
-        # A 429 carries the only evidence that separates a short burst throttle
-        # from an exhausted account allowance. Collapsing it to a bare status
-        # code is what made every rate-limit incident unreadable, so preserve
-        # the provider's headers while keeping the established failure code.
-        rate_limit = None
-        if exc.code == 429:
-            try:
-                body = exc.read().decode("utf-8", "replace")[:2048]
-            except Exception:  # noqa: BLE001 - diagnostics must never raise
-                body = ""
-            rate_limit = classify_rate_limit(getattr(exc, "headers", None), body).as_dict()
-        return _fail(
-            provider.name, capability, f"{provider.name}_HTTP_{exc.code}",
-            status=exc.code, endpoint=safe_endpoint, rate_limit=rate_limit,
+    allow_auth_failover = provider.name == "RUNDOWN" and provider.auth_style == "header"
+    attempt_keys = api_keys if allow_auth_failover else api_keys[:1]
+
+    for attempt_index, api_key in enumerate(attempt_keys):
+        query = dict(base_query)
+        headers = {"Accept": "application/json", "User-Agent": USER_AGENT}
+        if provider.auth_style == "header":
+            headers[provider.auth_name] = api_key
+        else:
+            query[provider.auth_name] = api_key
+
+        full = url + (f"?{urlencode(query)}" if query else "")
+        safe_endpoint = _redact(url, api_key)
+        request = Request(full, headers=headers)
+
+        try:
+            with (opener or urlopen)(request, timeout=TIMEOUT_SECONDS) as response:
+                body = response.read().decode("utf-8")
+                status = getattr(response, "status", None) or getattr(response, "code", None)
+        except HTTPError as exc:
+            has_next_alias = attempt_index + 1 < len(attempt_keys)
+            if allow_auth_failover and exc.code in (401, 403) and has_next_alias:
+                continue
+
+            # A 429 carries the only evidence that separates a short burst throttle
+            # from an exhausted account allowance. Preserve provider headers while
+            # keeping the established failure code.
+            rate_limit = None
+            if exc.code == 429:
+                try:
+                    error_body = exc.read().decode("utf-8", "replace")[:2048]
+                except Exception:  # noqa: BLE001 - diagnostics must never raise
+                    error_body = ""
+                rate_limit = classify_rate_limit(getattr(exc, "headers", None), error_body).as_dict()
+            return _fail(
+                provider.name, capability, f"{provider.name}_HTTP_{exc.code}",
+                status=exc.code, endpoint=safe_endpoint, rate_limit=rate_limit,
+            )
+        except (URLError, TimeoutError, OSError) as exc:
+            return _fail(provider.name, capability, f"{provider.name}_{type(exc).__name__}", endpoint=safe_endpoint)
+
+        try:
+            payload = json.loads(body)
+        except ValueError:
+            return _fail(provider.name, capability, f"{provider.name}_INVALID_JSON", status=status, endpoint=safe_endpoint)
+
+        return MarketEvidenceResult(
+            True, provider.name, capability, data=payload, status=status,
+            code="MARKET_EVIDENCE_FETCH_OK", observed_at=_now_iso(), endpoint=safe_endpoint,
         )
-    except (URLError, TimeoutError, OSError) as exc:
-        return _fail(provider.name, capability, f"{provider.name}_{type(exc).__name__}", endpoint=safe_endpoint)
 
-    try:
-        payload = json.loads(body)
-    except ValueError:
-        return _fail(provider.name, capability, f"{provider.name}_INVALID_JSON", status=status, endpoint=safe_endpoint)
-
-    return MarketEvidenceResult(
-        True, provider.name, capability, data=payload, status=status,
-        code="MARKET_EVIDENCE_FETCH_OK", observed_at=_now_iso(), endpoint=safe_endpoint,
-    )
+    # Defensive only: every configured attempt returns from the loop.
+    return _fail(provider.name, capability, f"{provider.name}_AUTH_ALIASES_EXHAUSTED")
 
 
 # ---------------------------------------------------------------------------
