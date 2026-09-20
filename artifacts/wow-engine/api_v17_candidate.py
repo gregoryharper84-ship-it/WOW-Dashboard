@@ -14,6 +14,7 @@ from fastapi import FastAPI
 
 import api_ncaaf_acceptance as v16
 from recommendation_ledger_api import install_recommendation_ledger_routes
+from v17.core_intelligence_runtime import install_core_intelligence_routes
 # Import through the V17 preservation shim so downstream LLP governance holds
 # cannot erase a completed fitted sporting probability. The shim preserves all
 # rank/publication/terminal gates and can_execute=false.
@@ -41,6 +42,15 @@ install_team_event_routes(
 # but the accepted production wrapper does not mount these routes. Mount them
 # explicitly here so this shadow harness matches both active V17 Action schemas.
 install_recommendation_ledger_routes(
+    app,
+    auth_dependency=v16._auth,
+    get_client_fn=v16._db_client,
+)
+
+# Core Intelligence is out-of-band learning only. It reads immutable predictions
+# and authoritative outcomes, writes append-only evidence, and cannot change the
+# V17 scoring terminal or execute a wager.
+install_core_intelligence_routes(
     app,
     auth_dependency=v16._auth,
     get_client_fn=v16._db_client,
