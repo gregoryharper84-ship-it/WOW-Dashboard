@@ -37,14 +37,16 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: pip
+          cache-dependency-path: artifacts/wow-engine/requirements.txt
 
       - name: Assert research-only governance
         run: |
           test "$WOW_CAN_EXECUTE" = "false"
           test "$WOW_DRY_RUN_ONLY" = "true"
 
-      - name: Install test runner
-        run: python -m pip install --disable-pip-version-check pytest
+      - name: Install engine dependencies
+        run: python -m pip install --disable-pip-version-check -r requirements.txt
 
       - name: Run source and snapshot contract tests
         run: >-
