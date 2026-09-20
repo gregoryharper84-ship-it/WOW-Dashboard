@@ -3,11 +3,13 @@
 This module does not certify, promote, publish, rank, or execute anything.  It
 makes every declared prop route and every required V17 sport visible, dispatches
 routes to the narrow evidence collector that owns them, and adds a generic
-exact-route collector for fitted scalar routes that already use the canonical
+exact-route collector only for fitted scalar routes that already use the canonical
 WOW prop scorer.
 
-Production/calibration authority is never inferred from evidence collection.
-can_execute=false unconditionally.
+A declared build target is not evidence-collection capability. BUILD_REQUIRED and
+candidate routes without an exact forward contract stay visible but receive no
+generic collector. Production/calibration authority is never inferred from
+evidence collection. can_execute=false unconditionally.
 """
 from __future__ import annotations
 
@@ -26,7 +28,7 @@ from v17.fantasy_score_forward_cohort_runtime import (
     LANE_SPECS,
     run_fantasy_score_forward_cohort,
 )
-from v17.prop_capability_manifest import DECLARED_PROP_LANES, normalize_prop_sport
+from v17.prop_capability_manifest import BUILD_REQUIRED, DECLARED_PROP_LANES, normalize_prop_sport
 from v17.prop_forward_cohort_runtime import PropForwardCohortRequest, run_prop_forward_cohort
 from v17.prop_route_lifecycle import FEATURE_SCHEMA_VERSION
 
@@ -46,6 +48,8 @@ COLLECTOR_NONE = "NO_COLLECTOR"
 COLLECTING = "FORWARD_EVIDENCE_COLLECTING"
 COLLECTION_AVAILABLE = "FORWARD_EVIDENCE_COLLECTION_AVAILABLE"
 SEPARATE_CONTRACT_REQUIRED = "SEPARATE_FORWARD_CONTRACT_REQUIRED"
+MODEL_BUILD_REQUIRED = "MODEL_BUILD_REQUIRED"
+FORWARD_CONTRACT_REQUIRED = "FORWARD_CONTRACT_REQUIRED"
 NO_CURRENT_PROP_CATEGORY_DECLARED = "NO_CURRENT_PROP_CATEGORY_DECLARED"
 
 STRIKEOUT_ROUTE = ("MLB", "PITCHER_STRIKEOUTS")
@@ -96,9 +100,18 @@ def _collector_for(key: tuple[str, str]) -> tuple[str, str, str | None]:
             SEPARATE_CONTRACT_REQUIRED,
             "EXACT_ROUTE_SEPARATE_FORWARD_CONTRACT_REQUIRED",
         )
-    if key in DECLARED_PROP_LANES:
-        return COLLECTOR_GENERIC, COLLECTION_AVAILABLE, None
-    return COLLECTOR_NONE, NO_CURRENT_PROP_CATEGORY_DECLARED, "PROP_ROUTE_NOT_DECLARED"
+    capability = DECLARED_PROP_LANES.get(key)
+    if capability is None:
+        return COLLECTOR_NONE, NO_CURRENT_PROP_CATEGORY_DECLARED, "PROP_ROUTE_NOT_DECLARED"
+    if capability.lane_status == BUILD_REQUIRED:
+        return COLLECTOR_NONE, MODEL_BUILD_REQUIRED, "PROP_FITTED_SPECIALIST_BUILD_REQUIRED"
+    if not capability.route_active:
+        return (
+            COLLECTOR_NONE,
+            FORWARD_CONTRACT_REQUIRED,
+            capability.blocker or "EXACT_ROUTE_FORWARD_ADAPTER_REQUIRED",
+        )
+    return COLLECTOR_GENERIC, COLLECTION_AVAILABLE, None
 
 
 def build_forward_evidence_inventory(
@@ -678,9 +691,12 @@ __all__ = [
     "CAN_EXECUTE",
     "COLLECTOR_FANTASY",
     "COLLECTOR_GENERIC",
+    "COLLECTOR_NONE",
     "COLLECTOR_SEPARATE",
     "COLLECTOR_STRIKEOUT",
     "EVIDENCE_SOURCE_KIND",
+    "FORWARD_CONTRACT_REQUIRED",
+    "MODEL_BUILD_REQUIRED",
     "ForwardRouteInventoryRow",
     "UniversalPropForwardEvidenceRequest",
     "build_forward_evidence_inventory",
