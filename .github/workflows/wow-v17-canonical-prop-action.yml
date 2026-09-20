@@ -38,6 +38,7 @@ permissions:
 
 # v2 preserves one-at-a-time canonical replay execution while isolating repaired
 # runs from the stale pre-fix serialization queue.
+# Acceptance trigger revision: wrapper-v3.
 concurrency:
   group: wow-v17-canonical-prop-action-v2-${{ github.ref }}
   cancel-in-progress: false
