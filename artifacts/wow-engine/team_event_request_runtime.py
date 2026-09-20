@@ -58,7 +58,11 @@ def _held(row: TeamEventRequestRow, code: str, blocker: str, detail: Any = None)
         "probability_gate": "BLOCKED",
         "market_gate": "NOT_EVALUATED",
         "market_edge_status": "NOT_EVALUATED",
-        "detail": detail, "probability_publishable": False, "can_execute": False,
+        "detail": detail, "probability_publishable": False, "rank_eligible": False,
+        "card_admission_eligible": False,
+        "card_admission_blockers": [f"CARD_ADMISSION:{blocker}"],
+        "card_admission_receipt": None,
+        "can_execute": False,
     }
 
 
