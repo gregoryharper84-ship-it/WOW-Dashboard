@@ -11,6 +11,10 @@ evidence but are quarantined from the first replay because their player-boxscore
 schema lacks direct `game_id`/`season`/`game_date` fields; WOW will not reconstruct
 those joins from row ordering or another heuristic.
 
+Three matching schedule assets are pinned as a separate evidence kind so the
+pipeline can inspect whether SportsDataverse itself supplies exact historical
+puck-drop timing before falling back to a separately governed timing source.
+
 can_execute=false unconditionally.
 """
 from __future__ import annotations
@@ -33,6 +37,7 @@ CAN_EXECUTE = False
 RELEASE_BASE = "https://github.com/sportsdataverse/sportsdataverse-data/releases/download"
 PLAYER_TAG = "nhl_player_boxscores"
 GAME_TAG = "nhl_game_info"
+SCHEDULE_TAG = "nhl_schedules"
 PINNED_SEASONS = (2024, 2025, 2026)
 QUARANTINED_SCHEMA_SEASONS = (2022, 2023)
 
@@ -55,7 +60,8 @@ class PinnedAsset:
     sha256: str
 
     def __post_init__(self) -> None:
-        if self.kind not in {"PLAYER_BOXSCORES", "GAME_INFO"}:
+        valid_kinds = {"PLAYER_BOXSCORES", "GAME_INFO", "SCHEDULE"}
+        if self.kind not in valid_kinds:
             raise NHLSportsDataverseSnapshotError("NHL_SDV_ASSET_KIND_INVALID", self.kind)
         if self.season not in PINNED_SEASONS:
             raise NHLSportsDataverseSnapshotError("NHL_SDV_SEASON_OUTSIDE_PIN", str(self.season))
@@ -63,7 +69,11 @@ class PinnedAsset:
             raise NHLSportsDataverseSnapshotError("NHL_SDV_ASSET_URL_UNTRUSTED", self.url)
         if not _SHA256_RE.fullmatch(self.sha256):
             raise NHLSportsDataverseSnapshotError("NHL_SDV_ASSET_DIGEST_INVALID", self.sha256)
-        expected_prefix = "player_box_" if self.kind == "PLAYER_BOXSCORES" else "game_info_"
+        expected_prefix = {
+            "PLAYER_BOXSCORES": "player_box_",
+            "GAME_INFO": "game_info_",
+            "SCHEDULE": "nhl_schedule_",
+        }[self.kind]
         expected_name = f"{expected_prefix}{self.season}.csv"
         if self.filename != expected_name or not self.url.endswith("/" + expected_name):
             raise NHLSportsDataverseSnapshotError(
@@ -113,6 +123,27 @@ PINNED_ASSETS: tuple[PinnedAsset, ...] = (
         "game_info_2026.csv",
         f"{RELEASE_BASE}/{GAME_TAG}/game_info_2026.csv",
         "15bfbde574d9b84f07ffc387460127cb66b0173a06c6812132fbc718b524b610",
+    ),
+    PinnedAsset(
+        "SCHEDULE",
+        2024,
+        "nhl_schedule_2024.csv",
+        f"{RELEASE_BASE}/{SCHEDULE_TAG}/nhl_schedule_2024.csv",
+        "9292b99f8d5daf362a9e7316f3146fd677e5bafe99063f6fb759baa9383f8d07",
+    ),
+    PinnedAsset(
+        "SCHEDULE",
+        2025,
+        "nhl_schedule_2025.csv",
+        f"{RELEASE_BASE}/{SCHEDULE_TAG}/nhl_schedule_2025.csv",
+        "017f89619c13857e8b7f2f52ccbf7c1ea20fcef46f5bc90de719ea12475d1e00",
+    ),
+    PinnedAsset(
+        "SCHEDULE",
+        2026,
+        "nhl_schedule_2026.csv",
+        f"{RELEASE_BASE}/{SCHEDULE_TAG}/nhl_schedule_2026.csv",
+        "51bf53885ad4807ae9cb65b96a09715473ae5f466c834269d4df521b8debef4c",
     ),
 )
 
@@ -211,6 +242,7 @@ __all__ = [
     "QUARANTINED_SCHEMA_SEASONS",
     "RELEASE_BASE",
     "RESEARCH_ONLY",
+    "SCHEDULE_TAG",
     "SOURCE_ID",
     "SOURCE_REPOSITORY",
     "SOURCE_REVIEW_REQUIRED",
