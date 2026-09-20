@@ -72,6 +72,11 @@ def _candidate_probability_dicts(outcome: dict[str, Any]) -> Iterable[dict[str, 
 def has_valid_model_package(outcome: dict[str, Any]) -> bool:
     if outcome.get("model_evaluated") is not True:
         return False
+    compact_lower = outcome.get("calibrated_probability_lower_bound")
+    if compact_lower is None:
+        compact_lower = outcome.get("calibrated_lower_bound")
+    if _finite_probability(outcome.get("calibrated_probability")) and _finite_probability(compact_lower):
+        return True
     for package in _candidate_probability_dicts(outcome):
         calibrated = package.get("calibrated_probability")
         lower = package.get("calibrated_probability_lower_bound")
