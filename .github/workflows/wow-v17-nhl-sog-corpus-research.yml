@@ -80,9 +80,11 @@ jobs:
           assert manifest['can_execute'] is False
           assert manifest['seasons'] == [2024, 2025, 2026]
           assert manifest['quarantined_schema_seasons'] == [2022, 2023]
+          assert len(manifest['assets']) == 9
           player_assets = [row for row in schema['assets'] if row['kind'] == 'PLAYER_BOXSCORES']
           game_assets = [row for row in schema['assets'] if row['kind'] == 'GAME_INFO']
-          assert len(player_assets) == 3 and len(game_assets) == 3
+          schedule_assets = [row for row in schema['assets'] if row['kind'] == 'SCHEDULE']
+          assert len(player_assets) == 3 and len(game_assets) == 3 and len(schedule_assets) == 3
           assert all(row['player_game_identity_complete'] is True for row in player_assets), player_assets
           assert all(row['has_shots_on_goal'] is True for row in player_assets), player_assets
           assert all(row['game_identity_complete'] is True for row in game_assets), game_assets
@@ -92,9 +94,12 @@ jobs:
               'source_review_status': manifest['source_review_status'],
               'player_rows': {str(row['season']): row['row_count'] for row in player_assets},
               'game_rows': {str(row['season']): row['row_count'] for row in game_assets},
+              'schedule_rows': {str(row['season']): row['row_count'] for row in schedule_assets},
               'game_type_counts': {str(row['season']): row['categorical_value_counts'].get('game_type', {}) for row in game_assets},
               'game_state_counts': {str(row['season']): row['categorical_value_counts'].get('game_state', {}) for row in game_assets},
-              'exact_start_time_present': {str(row['season']): row['has_exact_start_time'] for row in game_assets},
+              'game_info_exact_start_time_present': {str(row['season']): row['has_exact_start_time'] for row in game_assets},
+              'schedule_exact_start_time_present': {str(row['season']): row['has_exact_start_time'] for row in schedule_assets},
+              'schedule_temporal_columns': {str(row['season']): row['temporal_columns'] for row in schedule_assets},
               'can_execute': False,
           }, sort_keys=True))
           PY
