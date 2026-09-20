@@ -8,13 +8,16 @@ const REPOSITORY = "gregoryharper84-ship-it/WOW-Dashboard";
 const REPOSITORY_ID = "1240256887";
 const REPOSITORY_OWNER_ID = "285088163";
 const REF = "refs/heads/main";
-const WORKFLOW_REF = `${REPOSITORY}/.github/workflows/wow-v17-scout-brain-persist.yml@${REF}`;
-const ALLOWED_EVENTS = new Set(["workflow_run", "workflow_dispatch"]);
+const ALLOWED_WORKFLOW_REFS = new Set([
+  `${REPOSITORY}/.github/workflows/wow-v17-scout-brain-persist.yml@${REF}`,
+  `${REPOSITORY}/.github/workflows/wow-v17-scout-board-refresh.yml@${REF}`,
+]);
+const ALLOWED_EVENTS = new Set(["workflow_run", "workflow_dispatch", "schedule"]);
 const ALLOWED_STATUSES = new Set([
   "WATCH", "RESEARCH_INTEREST_LOW", "RESEARCH_INTEREST_MEDIUM",
   "RESEARCH_INTEREST_HIGH", "QUARANTINED", "NO_INTEREST",
 ]);
-const ALLOWED_PHASES = new Set(["BEGIN", "APPEND", "FINALIZE"]);
+const ALLOWED_PHASES = new Set(["BEGIN", "APPEND", "FINALIZE", "MATERIALIZE"]);
 const TEAM_EVENT_ROUTE = "LLP_TEAM_BETTING_ENGINE";
 
 type Row = Record<string, unknown>;
@@ -40,12 +43,12 @@ async function authorize(req: Request): Promise<void> {
     repository_id: REPOSITORY_ID,
     repository_owner_id: REPOSITORY_OWNER_ID,
     ref: REF,
-    workflow_ref: WORKFLOW_REF,
     runner_environment: "github-hosted",
   };
   for (const [field, expected] of Object.entries(exact)) {
     if (String(payload[field] || "") !== expected) throw new Error(`GITHUB_OIDC_${field.toUpperCase()}_MISMATCH`);
   }
+  if (!ALLOWED_WORKFLOW_REFS.has(String(payload.workflow_ref || ""))) throw new Error("GITHUB_OIDC_WORKFLOW_REF_MISMATCH");
   if (!ALLOWED_EVENTS.has(String(payload.event_name || ""))) throw new Error("GITHUB_OIDC_EVENT_NOT_ALLOWED");
 }
 
@@ -457,6 +460,124 @@ async function closeRun(tx: any, runId: string, body: Row): Promise<Row> {
   };
 }
 
+
+const BOARD_SPORTS: Record<string, string> = {
+  americanfootball_ncaaf: "CFB", americanfootball_nfl: "NFL", baseball_mlb: "MLB",
+  basketball_nba: "NBA", basketball_wnba: "WNBA",
+};
+
+function baseProbability(status = "PENDING_SPECIALIST"): Row {
+  return { governed_selection: null, governed_probability: null, calibrated_lower_bound: null,
+    probability_publishable: false, specialist_status: status, probability_source: "CONTROLLING_SPECIALIST",
+    specialist_model_version: null, terminal_label: null, probability_recorded_at: null, can_execute: false };
+}
+
+// deno-lint-ignore no-explicit-any
+async function governedProbability(tx: any, row: Row): Promise<Row> {
+  if (row.can_execute !== false) return baseProbability("SCOUT_GOVERNANCE_INVALID");
+  try {
+    if (str(row.sport_key) === "americanfootball_nfl") {
+      const eventId = str(row.event_id || row.canonical_event_id);
+      if (!eventId) return baseProbability("MODEL_INPUTS_INSUFFICIENT");
+      const found = await tx`
+        select selected_participant,calibrated_selection_probability,calibrated_selection_lower_bound,
+               model_probability_publishable,model_version,created_at
+        from public.wow_nfl_event_predictions
+        where event_key=${`NFL:${eventId}`} and home_team=${row.home_team} and away_team=${row.away_team}
+          and abs(extract(epoch from (event_start_time_utc-${row.commence_time}::timestamptz))) <= 900
+          and model_probability_publishable=true and can_execute=false
+        order by created_at desc limit 1`;
+      if (!found.length) return baseProbability();
+      const r = found[0];
+      if (r.model_probability_publishable !== true || r.calibrated_selection_probability == null ||
+          r.calibrated_selection_lower_bound == null || !r.selected_participant) return baseProbability("MODEL_OUTPUT_INVALID");
+      return { governed_selection: str(r.selected_participant), governed_probability: Number(r.calibrated_selection_probability),
+        calibrated_lower_bound: Number(r.calibrated_selection_lower_bound), probability_publishable: true,
+        specialist_status: "PUBLISHED", probability_source: "CONTROLLING_SPECIALIST",
+        specialist_model_version: r.model_version, terminal_label: "FINAL_APPROVED",
+        probability_recorded_at: r.created_at ? new Date(r.created_at).toISOString() : null, can_execute: false };
+    }
+    if (str(row.sport_key) === "baseball_mlb") {
+      const found = await tx`
+        select selected_participant,
+          case when selected_participant=home_team then calibrated_home_probability
+               when selected_participant=away_team then calibrated_away_probability end as calibrated_probability,
+          case when selected_participant=home_team then calibrated_home_lower_bound
+               when selected_participant=away_team then calibrated_away_lower_bound end as calibrated_lower_bound,
+          probability_publishable,controlling_specialist,terminal_label,created_at
+        from public.wow_event_predictions
+        where home_team=${row.home_team} and away_team=${row.away_team}
+          and abs(extract(epoch from (event_start_time-${row.commence_time}::timestamptz))) <= 900
+          and probability_publishable=true and coalesce(probability_invalidated,false)=false
+          and can_execute=false and selected_participant in (home_team,away_team)
+        order by created_at desc limit 1`;
+      if (!found.length) return baseProbability();
+      const r = found[0];
+      if (r.probability_publishable !== true || r.calibrated_probability == null ||
+          r.calibrated_lower_bound == null || !r.selected_participant) return baseProbability("MODEL_OUTPUT_INVALID");
+      return { governed_selection: str(r.selected_participant), governed_probability: Number(r.calibrated_probability),
+        calibrated_lower_bound: Number(r.calibrated_lower_bound), probability_publishable: true,
+        specialist_status: "PUBLISHED", probability_source: "CONTROLLING_SPECIALIST",
+        specialist_model_version: r.controlling_specialist, terminal_label: r.terminal_label || "FINAL_APPROVED",
+        probability_recorded_at: r.created_at ? new Date(r.created_at).toISOString() : null, can_execute: false };
+    }
+  } catch {
+    return baseProbability("SPECIALIST_LEDGER_UNAVAILABLE");
+  }
+  return baseProbability("MODEL_UNAVAILABLE");
+}
+
+// deno-lint-ignore no-explicit-any
+async function materializeBoards(tx: any, slateDate: string): Promise<Row[]> {
+  const boards: Row[] = [];
+  for (const [sportKey, label] of Object.entries(BOARD_SPORTS)) {
+    const rows = await tx`
+      select candidate_id,research_status,research_priority_score,controlling_specialist,commence_time,
+             coalesce(thesis,'') as thesis,edge_classes,contradictory_evidence,red_team_flags,
+             event_id,canonical_event_id,home_team,away_team,can_execute,selection,market_type,sport_key
+      from wow_scout.candidates where sport_key=${sportKey} and commence_time::date=${slateDate}::date
+      order by research_priority_score desc nulls last, updated_at desc`;
+    const active = rows.filter((r: Row) => ["RESEARCH_INTEREST_LOW","RESEARCH_INTEREST_MEDIUM","RESEARCH_INTEREST_HIGH"].includes(str(r.research_status)));
+    const quarantined = rows.filter((r: Row) => str(r.research_status) === "QUARANTINED");
+    const unresolved = rows.filter((r: Row) => str(r.research_status) === "WATCH");
+    const interest: Row[] = [];
+    for (const r of active) {
+      const governed = await governedProbability(tx, r);
+      const p = governed.governed_probability == null ? null : Number(governed.governed_probability);
+      const lower = governed.calibrated_lower_bound == null ? null : Number(governed.calibrated_lower_bound);
+      interest.push({ candidate_id:r.candidate_id, pick:governed.governed_selection || r.selection, status:r.research_status,
+        research_priority_score:r.research_priority_score == null ? null : Number(r.research_priority_score),
+        controlling_specialist:r.controlling_specialist, commence_time:r.commence_time ? new Date(r.commence_time).toISOString() : null,
+        home_team:r.home_team, away_team:r.away_team, thesis:r.thesis, edge_classes:r.edge_classes,
+        contradictory_evidence:r.contradictory_evidence, red_team_flags:r.red_team_flags, probability:null, ...governed,
+        governed_probability_pct:p == null ? null : Math.round(p*10000)/100,
+        calibrated_lower_bound_pct:lower == null ? null : Math.round(lower*10000)/100,
+        probability_display:p == null ? "—" : `${(p*100).toFixed(2)}%`,
+        lower_bound_display:lower == null ? "—" : `${(lower*100).toFixed(2)}%`, can_execute:false });
+    }
+    const payload = { sport:label, sport_key:sportKey, research_interest:interest,
+      quarantined_candidate_ids:quarantined.map((r:Row)=>r.candidate_id),
+      unresolved_candidate_ids:unresolved.map((r:Row)=>r.candidate_id),
+      probability_authority:"CONTROLLING_SPECIALIST_ONLY", market_probability_is_governed_probability:false, can_execute:false };
+    const boardId = `${sportKey}:${slateDate}:SCOUT_FINAL_BOARD`;
+    await tx`
+      insert into wow_scout.final_boards
+        (board_id,sport_key,slate_date,board_type,status,candidate_ids,quarantined_candidate_ids,unresolved_candidate_ids,
+         specialist_handoff_ready,payload,can_execute)
+      values (${boardId},${sportKey},${slateDate}::date,'SCOUT_FINAL_BOARD','MATERIALIZED',
+        ${active.map((r:Row)=>str(r.candidate_id))}::text[],${quarantined.map((r:Row)=>str(r.candidate_id))}::text[],
+        ${unresolved.map((r:Row)=>str(r.candidate_id))}::text[],${active.length>0},${JSON.stringify(payload)}::text::jsonb,false)
+      on conflict (sport_key,slate_date,board_type) do update set generated_at=now(),status='MATERIALIZED',
+        candidate_ids=excluded.candidate_ids,quarantined_candidate_ids=excluded.quarantined_candidate_ids,
+        unresolved_candidate_ids=excluded.unresolved_candidate_ids,specialist_handoff_ready=excluded.specialist_handoff_ready,
+        payload=excluded.payload,can_execute=false`;
+    boards.push({sport:label,research_interest:active.length,
+      governed_probabilities_published:interest.filter((r)=>r.probability_publishable===true).length,
+      quarantined:quarantined.length,unresolved:unresolved.length});
+  }
+  return boards;
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method !== "POST") return response({ ok: false, code: "METHOD_NOT_ALLOWED", can_execute: false }, 405);
   try {
@@ -486,6 +607,14 @@ Deno.serve(async (req: Request) => {
 
   const sql = postgres(dbUrl, { max: 1, prepare: false });
   try {
+    if (phase === "MATERIALIZE") {
+      const slateDate = str(body.slate_date);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(slateDate)) return response({ ok:false, code:"SLATE_DATE_INVALID", can_execute:false }, 422);
+      let boards: Row[] = [];
+      await sql.begin(async (tx) => { boards = await materializeBoards(tx, slateDate); });
+      return response({ ok:true, persist_phase:"MATERIALIZE", slate_date:slateDate, boards, can_execute:false });
+    }
+
     if (phase === "BEGIN") {
       await sql.begin(async (tx) => {
         await openRun(tx, runId, body);

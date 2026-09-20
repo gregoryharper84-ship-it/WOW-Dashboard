@@ -48,3 +48,16 @@ def test_missing_database_secret_uses_oidc_edge_fallback_instead_of_skipping():
     assert "using short-lived GitHub OIDC" in text
     assert "steps.credential.outputs.configured != 'true'" in text
     assert "Locate recoverable Scout discovery artifact" in text
+
+
+def test_successful_persistence_materializes_today_and_tomorrow_inline():
+    text = _workflow_text()
+    persist = text.index("Persist through governed Supabase Edge OIDC")
+    receipt = text.index("Upload persistence receipt")
+    materialize = text.index("Materialize current Scout boards after successful persistence")
+    assert persist < receipt < materialize
+    assert "if: steps.artifact.outputs.present == 'true'" in text[materialize:]
+    assert 'today=$(date -u +%F)' in text[materialize:]
+    assert "tomorrow=$(date -u -d '+1 day' +%F)" in text[materialize:]
+    assert 'python -m v17.scout_board_edge_materializer --date "$today"' in text[materialize:]
+    assert 'python -m v17.scout_board_edge_materializer --date "$tomorrow"' in text[materialize:]

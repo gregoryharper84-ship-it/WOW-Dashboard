@@ -20,6 +20,8 @@ from typing import Any, Callable
 
 
 _PERSIST_TIMEOUT_SECONDS = 1.0
+_SHUTDOWN_DRAIN_SECONDS = 1.25
+_MAX_IN_FLIGHT = 32
 
 
 LOGGER = logging.getLogger("wow.v17.action_invocation")
@@ -115,6 +117,29 @@ def install_action_invocation_middleware(app: Any, *, db_client_fn: Callable[[],
     if getattr(app.state, "wow_action_invocation_telemetry_installed", False):
         return
 
+    tasks: set[asyncio.Task[None]] = set()
+    app.state.wow_action_invocation_tasks = tasks
+
+    def _task_done(done: asyncio.Task[None]) -> None:
+        tasks.discard(done)
+        if done.cancelled():
+            return
+        try:
+            done.exception()
+        except Exception:
+            LOGGER.exception("WOW_V17_ACTION_INVOCATION_TASK_FAILED can_execute=false")
+
+    @app.on_event("shutdown")
+    async def _drain_action_invocation_tasks() -> None:
+        pending = tuple(tasks)
+        if not pending:
+            return
+        _, still_pending = await asyncio.wait(pending, timeout=_SHUTDOWN_DRAIN_SECONDS)
+        for task in still_pending:
+            task.cancel()
+        if still_pending:
+            await asyncio.gather(*still_pending, return_exceptions=True)
+
     @app.middleware("http")
     async def _action_invocation_probe(request: Any, call_next: Any):
         path = str(getattr(request.url, "path", ""))
@@ -151,8 +176,15 @@ def install_action_invocation_middleware(app: Any, *, db_client_fn: Callable[[],
                         "WOW_V17_ACTION_INVOCATION_PERSISTENCE_FAILED route=%s status_code=%s error=%s can_execute=false",
                         path, status_code, type(exc).__name__,
                     )
-            task = asyncio.create_task(_persist_receipt())
-            task.add_done_callback(lambda done: done.exception() if not done.cancelled() else None)
+            if len(tasks) >= _MAX_IN_FLIGHT:
+                LOGGER.warning(
+                    "WOW_V17_ACTION_INVOCATION_PERSISTENCE_DROPPED route=%s status_code=%s reason=IN_FLIGHT_LIMIT can_execute=false",
+                    path, status_code,
+                )
+            else:
+                task = asyncio.create_task(_persist_receipt())
+                tasks.add(task)
+                task.add_done_callback(_task_done)
 
     app.state.wow_action_invocation_telemetry_installed = True
 
