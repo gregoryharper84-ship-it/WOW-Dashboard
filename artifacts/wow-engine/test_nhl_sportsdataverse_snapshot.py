@@ -11,13 +11,20 @@ from historical_data_backbone import SourceRightsState, load_source_manifest
 from v17.model_source_entitlements import SOURCES, source_readiness
 
 
-def test_pinned_snapshot_contains_exactly_four_completed_seasons_and_eight_assets():
+def test_pinned_snapshot_contains_three_direct_identity_completed_seasons_and_six_assets():
     assets = snap.pinned_assets()
-    assert snap.PINNED_SEASONS == (2022, 2023, 2024, 2025)
-    assert len(assets) == 8
+    assert snap.PINNED_SEASONS == (2024, 2025, 2026)
+    assert snap.QUARANTINED_SCHEMA_SEASONS == (2022, 2023)
+    assert len(assets) == 6
     assert {asset.season for asset in assets} == set(snap.PINNED_SEASONS)
     assert all(sum(1 for row in assets if row.season == season) == 2 for season in snap.PINNED_SEASONS)
-    assert 2026 not in {asset.season for asset in assets}
+    assert not (set(snap.PINNED_SEASONS) & set(snap.QUARANTINED_SCHEMA_SEASONS))
+
+
+def test_2026_assets_are_explicitly_pinned_by_release_digest():
+    by_name = {asset.filename: asset for asset in snap.pinned_assets()}
+    assert by_name["player_box_2026.csv"].sha256 == "41a35357d65e0d51967568ca9d0d16dae0dba593bf0193372f6cd14e5a46b102"
+    assert by_name["game_info_2026.csv"].sha256 == "15bfbde574d9b84f07ffc387460127cb66b0173a06c6812132fbc718b524b610"
 
 
 def test_all_pinned_assets_use_expected_github_release_origin_and_sha256():
@@ -40,6 +47,8 @@ def test_snapshot_manifest_is_deterministic_and_governance_locked():
     assert left["research_only"] is True
     assert left["probability_publishable"] is False
     assert left["can_execute"] is False
+    assert left["seasons"] == [2024, 2025, 2026]
+    assert left["quarantined_schema_seasons"] == [2022, 2023]
 
 
 def test_snapshot_manifest_rejects_incomplete_asset_set():
@@ -60,8 +69,16 @@ def test_asset_digest_mismatch_fails_closed(tmp_path: Path):
     assert exc.value.code == "NHL_SDV_ASSET_DIGEST_MISMATCH"
 
 
-def test_unpinned_filename_fails_closed(tmp_path: Path):
-    path = tmp_path / "player_box_2026.csv"
+def test_quarantined_legacy_player_box_filename_is_not_pinned(tmp_path: Path):
+    path = tmp_path / "player_box_2023.csv"
+    path.write_text("x\n", encoding="utf-8")
+    with pytest.raises(snap.NHLSportsDataverseSnapshotError) as exc:
+        snap.verify_asset_file(path)
+    assert exc.value.code == "NHL_SDV_ASSET_NOT_PINNED"
+
+
+def test_unpinned_future_filename_fails_closed(tmp_path: Path):
+    path = tmp_path / "player_box_2027.csv"
     path.write_text("x\n", encoding="utf-8")
     with pytest.raises(snap.NHLSportsDataverseSnapshotError) as exc:
         snap.verify_asset_file(path)
