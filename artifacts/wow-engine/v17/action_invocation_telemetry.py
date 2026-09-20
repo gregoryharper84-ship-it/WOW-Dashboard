@@ -19,6 +19,9 @@ from time import perf_counter
 from typing import Any, Callable
 
 
+_PERSIST_TIMEOUT_SECONDS = 1.0
+
+
 LOGGER = logging.getLogger("wow.v17.action_invocation")
 TABLE = "wow_action_invocation_receipts"
 CAN_EXECUTE = False
@@ -167,19 +170,25 @@ def install_action_invocation_middleware(
                 "duration_ms": round(duration_ms, 3),
                 "can_execute": False,
             }
-            try:
-                await asyncio.wait_for(
-                    asyncio.to_thread(_insert_receipt, db_client_fn, receipt),
-                    timeout=1.0,
-                )
-            except Exception as exc:
-                LOGGER.warning(
-                    "WOW_V17_ACTION_INVOCATION_PERSISTENCE_FAILED route=%s status_code=%s "
-                    "error=%s can_execute=false",
-                    path,
-                    status_code,
-                    type(exc).__name__,
-                )
+            async def _persist_receipt() -> None:
+                try:
+                    await asyncio.wait_for(
+                        asyncio.to_thread(_insert_receipt, db_client_fn, receipt),
+                        timeout=_PERSIST_TIMEOUT_SECONDS,
+                    )
+                except Exception as exc:
+                    LOGGER.warning(
+                        "WOW_V17_ACTION_INVOCATION_PERSISTENCE_FAILED route=%s status_code=%s "
+                        "error=%s can_execute=false",
+                        path,
+                        status_code,
+                        type(exc).__name__,
+                    )
+
+            # Telemetry is deliberately off the response critical path. Scoring
+            # semantics and response latency must never depend on observability.
+            task = asyncio.create_task(_persist_receipt())
+            task.add_done_callback(lambda done: done.exception() if not done.cancelled() else None)
 
     app.state.wow_action_invocation_telemetry_installed = True
 
