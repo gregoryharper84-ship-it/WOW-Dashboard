@@ -68,7 +68,7 @@ paths:
         - name: date
           in: query
           required: false
-          schema: {type: string, format: date}
+          schema: {type: string}
       responses:
         '200': {description: TheRundown catalog plus event endpoint health}
         '401': {description: Authentication failed}
@@ -100,7 +100,7 @@ paths:
         - name: date
           in: query
           required: false
-          schema: {type: string, format: date}
+          schema: {type: string}
         - name: page
           in: query
           required: false

@@ -112,7 +112,7 @@ def test_live_editor_schema_exposes_full_board_diagnostics_with_bearer_auth():
     }
     for parameters in (rundown_parameters, espn_parameters):
         assert parameters["date"]["required"] is False
-        assert parameters["date"]["schema"] == {"type": "string", "format": "date"}
+        assert parameters["date"]["schema"] == {"type": "string"}
 
 
 def test_prediction_receipt_openapi_requires_id_or_complete_exact_identity():
