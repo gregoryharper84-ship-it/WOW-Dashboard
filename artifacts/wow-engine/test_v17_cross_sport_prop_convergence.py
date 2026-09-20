@@ -32,15 +32,28 @@ def test_wnba_components_are_hold_only_and_composites_candidate_only():
         cap = prop_capability("WNBA", stat)
         assert cap.lane_status == CANDIDATE_ONLY
         assert cap.controlling_specialist == "wow.wnba-composite-prop-expert"
+        assert cap.blocker == "WNBA_COMPOSITE_CANDIDATE_NOT_PROMOTED"
         assert cap.publication_allowed is False
         assert cap.can_execute is False
 
 
-def test_build_required_inventory_preserves_real_model_gaps():
-    nba = prop_capability("NBA", "POINTS")
-    assert nba.lane_status == BUILD_REQUIRED
-    assert nba.blocker == "PROP_FITTED_SPECIALIST_BUILD_REQUIRED"
-    assert nba.publication_allowed is False
+def test_nba_fitted_scalar_candidates_and_remaining_real_model_gaps():
+    for stat in (
+        "POINTS", "REBOUNDS", "ASSISTS", "PRA",
+        "POINTS_REBOUNDS", "POINTS_ASSISTS", "REBOUNDS_ASSISTS",
+    ):
+        nba = prop_capability("NBA", stat)
+        assert nba.lane_status == CANDIDATE_ONLY
+        assert nba.controlling_specialist == "wow.nba-player-prop-probability-expert"
+        assert nba.blocker == "NBA_SCALAR_CANDIDATE_NOT_PROMOTED"
+        assert nba.publication_allowed is False
+        assert nba.can_execute is False
+
+    nba_threes = prop_capability("NBA", "THREE_POINTERS_MADE")
+    assert nba_threes.lane_status == BUILD_REQUIRED
+    assert nba_threes.blocker == "PROP_FITTED_SPECIALIST_BUILD_REQUIRED"
+    assert nba_threes.publication_allowed is False
+
     nhl = prop_capability("NHL", "SHOTS_ON_GOAL")
     assert nhl.lane_status == BUILD_REQUIRED
     assert nhl.blocker == "NHL_SOG_REAL_MULTI_SEASON_CORPUS_REQUIRED"
@@ -71,10 +84,11 @@ def test_cross_sport_aliases_normalize_without_granting_authority():
 
 def test_manifest_is_explicit_and_non_executable():
     manifest = declared_prop_lane_manifest()
-    assert manifest["manifest_version"] == "WOW_V17_PROP_LANE_MANIFEST_V5"
+    assert manifest["manifest_version"] == "WOW_V17_PROP_LANE_MANIFEST_V6"
     assert manifest["can_execute"] is False
     assert manifest["candidate_presence_does_not_grant_probability_authority"] is True
     assert manifest["build_target_presence_does_not_grant_probability_authority"] is True
+    assert manifest["candidate_lane_count"] > 0
     assert manifest["build_required_lane_count"] > 0
 
 
