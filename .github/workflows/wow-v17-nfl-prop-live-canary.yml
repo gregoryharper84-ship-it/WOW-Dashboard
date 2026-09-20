@@ -1,0 +1,85 @@
+name: wow-v17-nfl-prop-live-canary
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/wow-v17-nfl-prop-live-canary.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  nfl-prop-live-canary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      WOW_SERVICE_URL: https://wow-governed-probability-engine.onrender.com
+      WOW_CAN_EXECUTE: "false"
+      WOW_DRY_RUN_ONLY: "true"
+      WOW_ACTION_API_KEY: ${{ secrets.WOW_ACTION_API_KEY }}
+    steps:
+      - name: Assert fail-closed canary context
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$WOW_CAN_EXECUTE" = "false"
+          test "$WOW_DRY_RUN_ONLY" = "true"
+          test -n "$WOW_ACTION_API_KEY"
+
+      - name: Score four live NFL directions through canonical Action boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat >/tmp/request.json <<'JSON'
+          {
+            "request_id":"nfl-prop-live-canary-20260920",
+            "response_mode":"COMPACT",
+            "rows":[
+              {"row_key":"henry-rush-more","event_id":"401872938","event_start_time":"2026-09-20T17:00:00Z","sport":"NFL","player":"Derrick Henry","stat_type":"Rush Yards","line":93.5,"direction":"MORE","source_type":"PDF","platform":"PrizePicks","league":"NFL","opponent":"New Orleans Saints"},
+              {"row_key":"henry-rush-less","event_id":"401872938","event_start_time":"2026-09-20T17:00:00Z","sport":"NFL","player":"Derrick Henry","stat_type":"Rush Yards","line":93.5,"direction":"LESS","source_type":"PDF","platform":"PrizePicks","league":"NFL","opponent":"New Orleans Saints"},
+              {"row_key":"caleb-pass-more","event_id":"401872937","event_start_time":"2026-09-20T17:00:00Z","sport":"NFL","player":"Caleb Williams","stat_type":"Pass Yards","line":229.5,"direction":"MORE","source_type":"PDF","platform":"PrizePicks","league":"NFL","opponent":"Minnesota Vikings"},
+              {"row_key":"caleb-pass-less","event_id":"401872937","event_start_time":"2026-09-20T17:00:00Z","sport":"NFL","player":"Caleb Williams","stat_type":"Pass Yards","line":229.5,"direction":"LESS","source_type":"PDF","platform":"PrizePicks","league":"NFL","opponent":"Minnesota Vikings"}
+            ]
+          }
+          JSON
+          code="$(curl --silent --show-error --retry 2 --retry-all-errors --connect-timeout 20 --max-time 240 \
+            --output /tmp/response.json --write-out '%{http_code}' \
+            --request POST --header "Authorization: Bearer ${WOW_ACTION_API_KEY}" --header 'Content-Type: application/json' \
+            --data-binary @/tmp/request.json "${WOW_SERVICE_URL}/score-pick-request")"
+          test "$code" = "200"
+
+      - name: Validate governed NFL prop response
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=json.loads(Path('/tmp/response.json').read_text())
+          if p.get('can_execute') is not False:
+              raise SystemExit('can_execute invariant failed')
+          if p.get('reconciliation_pass') is not True:
+              raise SystemExit('reconciliation failed')
+          rows=p.get('outcomes') or p.get('rows') or []
+          if len(rows) != 4:
+              raise SystemExit(f'expected 4 outcomes, got {len(rows)}')
+          summary=[]
+          for row in rows:
+              code=str(row.get('code') or row.get('terminal_label') or '')
+              detail=row.get('detail') or {}
+              audit=detail.get('specialist_utilization') or row.get('specialist_utilization') or {}
+              if code == 'MODEL_UNAVAILABLE' or audit.get('exact_blocker') == 'MODEL_UNAVAILABLE':
+                  raise SystemExit(f"route still MODEL_UNAVAILABLE: {row.get('row_key')}")
+              summary.append({
+                  'row_key':row.get('row_key'),
+                  'terminal_status':row.get('terminal_status'),
+                  'code':code,
+                  'model_evaluated':row.get('model_evaluated'),
+                  'probability_publishable':row.get('probability_publishable'),
+                  'exact_blocker':audit.get('exact_blocker'),
+                  'can_execute':row.get('can_execute'),
+              })
+          print(json.dumps({'reconciliation_pass':True,'rows':summary,'can_execute':False},sort_keys=True))
+          PY
