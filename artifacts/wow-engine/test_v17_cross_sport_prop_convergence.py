@@ -10,13 +10,13 @@ from v17.prop_capability_manifest import (
 )
 
 
-def test_nfl_direct_routes_preserve_new_production_specialist():
+def test_nfl_direct_routes_preserve_governed_production_specialist():
     for stat in ("PASSING_YARDS", "RUSHING_YARDS", "RECEIVING_YARDS", "ANYTIME_TD"):
         cap = prop_capability("NFL", stat)
         assert cap.lane_status == CERTIFIED_PRODUCTION
         assert cap.route_active is True
         assert cap.publication_allowed is True
-        assert cap.controlling_specialist == "wow.nfl-direct-player-prop-expert"
+        assert cap.controlling_specialist == "wow.nfl-player-prop-probability-expert"
         assert cap.can_execute is False
 
 
