@@ -17,9 +17,14 @@ def test_receipt_retry_queue_is_idempotent_and_execution_disabled():
 
 def test_dead_letter_payload_is_telemetry_envelope_not_probability_authority():
     lower = SQL.lower()
+    normalized = " ".join(SQL.split())
     assert "receipt_payload jsonb" in lower
-    assert "probability" not in lower.replace(
-        "never changes scoring, terminal semantics, probability publication, or can_execute=false.", ""
-    ).replace(
-        "never probability or execution authority.", ""
-    )
+    assert "can_execute boolean not null default false check (can_execute = false)" in normalized
+    for forbidden_field in (
+        "model_probability",
+        "raw_probability",
+        "calibrated_probability",
+        "calibrated_lower_bound",
+        "calibrated_upper_bound",
+    ):
+        assert forbidden_field not in lower
