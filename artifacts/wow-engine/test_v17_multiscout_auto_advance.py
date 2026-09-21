@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import threading
+import time
+
 from v17.multiscout_auto_advance import build_dispatch, execute_auto_advance
 
 
@@ -236,4 +239,81 @@ def test_mapping_reject_is_complete_with_blockers_not_silent_success():
     assert receipt["code"] == "SCOUT_MAPPING_BLOCKERS_PRESENT"
     assert receipt["reconciliation"]["mapping_blocked_rows"] == 1
     assert receipt["reconciliation"]["response_reconciliation_pass"] is True
+    assert receipt["can_execute"] is False
+
+
+def test_large_slate_uses_bounded_parallel_batches_and_deterministic_receipt_order():
+    handoff = _handoff()
+    template = handoff["model_handoff"]["prop_candidates"][0]
+    props = []
+    for index in range(120):
+        props.append({
+            **template,
+            "official_event_id": f"mlb-event-{index}",
+            "market_evidence": {
+                **template["market_evidence"],
+                "description": f"Example Pitcher {index}",
+            },
+        })
+    handoff["model_handoff"]["prop_candidates"] = props
+    handoff["model_handoff"]["team_event_candidates"] = []
+
+    lock = threading.Lock()
+    active = 0
+    max_active = 0
+    progress = []
+
+    def fake_post(origin, path, token, payload):
+        nonlocal active, max_active
+        assert path == "/score-pick-request"
+        with lock:
+            active += 1
+            max_active = max(max_active, active)
+        time.sleep(0.02)
+        with lock:
+            active -= 1
+        return {
+            "ok": True,
+            "http_status": 200,
+            "body": {
+                "rows": [
+                    {
+                        "row_key": row["row_key"],
+                        "terminal_status": "COMPLETED",
+                        "can_execute": False,
+                    }
+                    for row in payload["rows"]
+                ],
+                "reconciliation_pass": True,
+                "can_execute": False,
+            },
+            "can_execute": False,
+        }
+
+    receipt = execute_auto_advance(
+        handoff,
+        token="test-token",
+        origin="https://example.invalid",
+        post_fn=fake_post,
+        max_in_flight=3,
+        progress_fn=lambda **event: progress.append(event),
+    )
+
+    assert max_active > 1
+    assert max_active <= 3
+    assert [row["batch_index"] for row in receipt["prop_receipts"]] == [1, 2, 3]
+    assert [row["batch_key"] for row in receipt["prop_receipts"]] == [
+        "wow-scout-test-1:props:1",
+        "wow-scout-test-1:props:2",
+        "wow-scout-test-1:props:3",
+    ]
+    assert len(progress) == 3
+    assert {event["batch_key"] for event in progress} == {
+        "wow-scout-test-1:props:1",
+        "wow-scout-test-1:props:2",
+        "wow-scout-test-1:props:3",
+    }
+    assert receipt["reconciliation"]["returned_prop_rows"] == 120
+    assert receipt["reconciliation"]["response_reconciliation_pass"] is True
+    assert receipt["status"] == "AUTO_ADVANCE_COMPLETE"
     assert receipt["can_execute"] is False

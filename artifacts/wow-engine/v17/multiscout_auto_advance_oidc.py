@@ -19,6 +19,7 @@ import json
 import os
 import sys
 import time
+from threading import Lock
 from pathlib import Path
 from typing import Any, Callable
 
@@ -76,13 +77,19 @@ def _repeat_safe_transient_retry(path: str, payload: dict[str, Any]) -> bool:
 def _refreshing_oidc_post(initial_token: str) -> Callable[..., dict[str, Any]]:
     """Refresh OIDC on 401 and retry repeat-safe transient MLB gateway failures."""
     state = {"token": initial_token}
+    refresh_lock = Lock()
 
     def authorized_post(origin: str, path: str, payload: dict[str, Any], timeout: int) -> dict[str, Any]:
-        receipt = _post_json(origin, path, state["token"], payload, timeout=timeout)
+        with refresh_lock:
+            request_token = state["token"]
+        receipt = _post_json(origin, path, request_token, payload, timeout=timeout)
         if receipt.get("http_status") != 401:
             return receipt
         try:
-            state["token"] = mint_github_actions_oidc(force=True)
+            with refresh_lock:
+                if state["token"] == request_token:
+                    state["token"] = mint_github_actions_oidc(force=True)
+                refreshed_token = state["token"]
         except GitHubOIDCMintError as exc:
             return {
                 "ok": False,
@@ -90,7 +97,7 @@ def _refreshing_oidc_post(initial_token: str) -> Callable[..., dict[str, Any]]:
                 "body": {"code": str(exc)},
                 "can_execute": False,
             }
-        return _post_json(origin, path, state["token"], payload, timeout=timeout)
+        return _post_json(origin, path, refreshed_token, payload, timeout=timeout)
 
     def post(origin: str, path: str, _token: str, payload: dict[str, Any], timeout: int = 120) -> dict[str, Any]:
         receipt = authorized_post(origin, path, payload, timeout)
@@ -134,6 +141,40 @@ def _dispatchable_handoff(handoff: dict[str, Any]) -> dict[str, Any]:
     return handoff
 
 
+
+def _progress_writer(output: Path, handoff: dict[str, Any]) -> Callable[..., None]:
+    """Persist cancellation-visible batch progress without granting scoring authority."""
+    state: dict[str, Any] = {
+        "schema_version": "wow.v17.multiscout.auto-advance-progress.v1",
+        "status": "AUTO_ADVANCE_IN_PROGRESS",
+        "source_run_id": handoff.get("run_id"),
+        "research_run_id": handoff.get("research_run_id"),
+        "completed_batches": [],
+        "can_execute": False,
+    }
+    write_lock = Lock()
+
+    def write(**event: Any) -> None:
+        compact = {
+            "lane": event.get("lane"),
+            "batch_key": event.get("batch_key"),
+            "batch_index": event.get("batch_index"),
+            "completed_batches": event.get("completed_batches"),
+            "total_batches": event.get("total_batches"),
+            "ok": bool((event.get("receipt") or {}).get("ok")),
+            "http_status": (event.get("receipt") or {}).get("http_status"),
+            "can_execute": False,
+        }
+        with write_lock:
+            state["completed_batches"].append(compact)
+            output.parent.mkdir(parents=True, exist_ok=True)
+            temporary = output.with_suffix(output.suffix + ".tmp")
+            temporary.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            temporary.replace(output)
+
+    return write
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", required=True)
@@ -141,6 +182,8 @@ def main() -> int:
     args = parser.parse_args()
 
     handoff = json.loads(Path(args.input).read_text(encoding="utf-8"))
+    output = Path(args.output)
+    progress_fn = _progress_writer(output, handoff)
     dispatch_handoff = _dispatchable_handoff(handoff)
     static_token = os.environ.get("WOW_ACTION_API_KEY")
     token = static_token
@@ -157,25 +200,24 @@ def main() -> int:
                 "source_acquisition_status": handoff.get("status"),
                 "can_execute": False,
             }
-            output = Path(args.output)
             output.parent.mkdir(parents=True, exist_ok=True)
             output.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
             print(json.dumps({"status": receipt["status"], "code": receipt["code"], "can_execute": False}))
             return 3
 
     if static_token:
-        receipt = execute_auto_advance(dispatch_handoff, token=token, origin=ACTION_ORIGIN)
+        receipt = execute_auto_advance(dispatch_handoff, token=token, origin=ACTION_ORIGIN, progress_fn=progress_fn)
     else:
         receipt = execute_auto_advance(
             dispatch_handoff,
             token=token,
             origin=ACTION_ORIGIN,
             post_fn=_refreshing_oidc_post(token),
+            progress_fn=progress_fn,
         )
     if dispatch_handoff is not handoff:
         receipt["source_acquisition_status"] = handoff.get("status")
         receipt["source_blocker_count"] = len(handoff.get("source_blockers") or [])
-    output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(json.dumps({
