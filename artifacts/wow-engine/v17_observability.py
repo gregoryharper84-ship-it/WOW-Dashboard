@@ -18,6 +18,7 @@ from v17.action_invocation_telemetry import install_action_invocation_middleware
 from v17.interactive_latency_telemetry import install_interactive_latency_middleware
 from v17.interactive_pick_hydration import schedule_interactive_pick_hydration_install
 from v17.interactive_pick_parallel import schedule_interactive_pick_parallel_install
+from v17.interactive_team_event_transport import install_interactive_team_event_transport
 from v17.pick_request_state_hooks import install_pick_request_state_hooks
 from v17.pick_request_state_runtime import schedule_pick_request_state_install
 
@@ -35,16 +36,18 @@ def initialize_observability() -> dict[str, Any]:
     install_universal_team_event_governance()
 
     # Install non-secret total-wall-time telemetry, certification-independent
-    # Action invocation receipts, bounded external pre-hydration, bounded
-    # independent-row scoring, and the correctness-critical durable pick-request
-    # state wrapper. The canonical single-row scorer still owns fitted inference,
-    # calibration/bounds, persistence and terminal reduction; the interactive
-    # wrapper only overlaps independent rows. Global registry/runtime functions
-    # are deliberately left untouched so tests, diagnostics, and fail-closed
-    # capability refreshes always observe current state.
+    # Action invocation receipts, bounded interactive team-event transport,
+    # bounded external prop pre-hydration, bounded independent-row scoring, and
+    # the correctness-critical durable pick-request state wrapper. The canonical
+    # scorers still own fitted inference, calibration/bounds, persistence and
+    # terminal reduction; transport wrappers never create probability authority.
     try:
         import api_prod_market_acceptance as _accepted_base
 
+        install_interactive_team_event_transport(
+            _accepted_base.app,
+            event_api=_accepted_base.market_api.prod.event_api,
+        )
         install_interactive_latency_middleware(_accepted_base.app)
         install_action_invocation_middleware(
             _accepted_base.app,
