@@ -16,6 +16,9 @@ from fastapi import Header, Query
 
 from v17 import pick_request_durable_job_queue as queue
 from v17 import pick_request_run_control as control
+from v17.pick_request_durable_job_queue_hardening import (
+    install_durable_job_queue_hardening,
+)
 from v17.pick_request_run_control_hardening import (
     install_pick_request_run_control_hardening,
 )
@@ -48,6 +51,7 @@ def install_durable_pick_job_queue_routes(
 ) -> tuple[bool, Callable[..., dict[str, Any]] | None]:
     """Replace only run-control routes; return the canonical scorer for worker use."""
     install_pick_request_run_control_hardening()
+    install_durable_job_queue_hardening()
     if getattr(app.state, _STATE_KEY, False):
         score = _route(app, "/score-pick-request", "POST")
         return True, getattr(score, "endpoint", None) if score is not None else None
