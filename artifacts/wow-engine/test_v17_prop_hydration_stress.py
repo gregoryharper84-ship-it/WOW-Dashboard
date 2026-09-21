@@ -240,11 +240,13 @@ def _colts_chiefs_event(*, state: str = "pre") -> dict:
     return {
         "id": "401872945",
         "date": "2026-09-21T00:20:00Z",
+        "season": {"year": 2026},
+        "week": {"number": 2},
         "status": {"type": {"state": state, "completed": state == "post"}},
         "competitions": [{
             "competitors": [
-                {"team": {"abbreviation": "KC"}},
-                {"team": {"abbreviation": "IND"}},
+                {"homeAway": "home", "team": {"abbreviation": "KC"}},
+                {"homeAway": "away", "team": {"abbreviation": "IND"}},
             ]
         }],
     }
@@ -265,7 +267,18 @@ def test_colts_chiefs_utc_rollover_survives_100_replays_and_duplicate_aliases() 
             opponent="Indianapolis Colts",
             http_get=http_get,
         )
-        assert result == {"event_id": "401872945", "team": "KC", "opponent": "IND"}
+        assert result == {
+            "event_id": "401872945",
+            "team": "KC",
+            "opponent": "IND",
+            "provider_season": 2026,
+            "provider_week": 2,
+            "provider_home_team": "KC",
+            "provider_away_team": "IND",
+            "canonical_home_team": "KC",
+            "canonical_away_team": "IND",
+            "verified_canonical_event_id": "2026_02_IND_KC",
+        }
 
 
 def test_multiple_distinct_matching_provider_events_fail_closed() -> None:
