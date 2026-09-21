@@ -17,8 +17,11 @@ from fastapi import Depends
 from v17.action_invocation_telemetry import install_action_invocation_middleware
 from v17.interactive_latency_telemetry import install_interactive_latency_middleware
 from v17.interactive_pick_hydration import schedule_interactive_pick_hydration_install
+from v17.interactive_pick_parallel import schedule_interactive_pick_parallel_install
+from v17.interactive_runtime_optimizations import install_interactive_runtime_optimizations
 from v17.pick_request_state_hooks import install_pick_request_state_hooks
 from v17.pick_request_state_runtime import schedule_pick_request_state_install
+from v17.wnba_source_compat import install_wnba_current_source_compat
 
 
 def initialize_observability() -> dict[str, Any]:
@@ -34,15 +37,22 @@ def initialize_observability() -> dict[str, Any]:
     install_universal_team_event_governance()
 
     # Install non-secret total-wall-time telemetry, certification-independent
-    # Action invocation receipts, bounded external pre-hydration, and the
-    # correctness-critical durable pick-request state wrapper. Invocation
-    # telemetry remains fail-open. Durable pick-request state does not: it is
-    # installed outside pre-hydration at startup so every board row is INGESTED
-    # before external evidence fetches begin, and completed model work can resume
-    # by exact request_id/row_key without duplicate model execution.
+    # Action invocation receipts, bounded external pre-hydration, bounded
+    # independent-row scoring, and the correctness-critical durable pick-request
+    # state wrapper. Registry caches are positive-only and short lived; the WNBA
+    # compatibility shim changes only official-source HTTP ordering/headers.
+    #
+    # Startup handlers execute in registration order:
+    #   1. hydration wrapper,
+    #   2. row-parallel wrapper,
+    #   3. durable state wrapper (outermost).
+    # This keeps INGESTED persistence outside all external work while allowing
+    # the interactive layer to share evidence before splitting independent rows.
     try:
         import api_prod_market_acceptance as _accepted_base
 
+        install_wnba_current_source_compat()
+        install_interactive_runtime_optimizations(_accepted_base.market_api)
         install_interactive_latency_middleware(_accepted_base.app)
         install_action_invocation_middleware(
             _accepted_base.app,
@@ -53,9 +63,12 @@ def initialize_observability() -> dict[str, Any]:
             _accepted_base.app,
             market_api=_accepted_base.market_api,
         )
-        # Startup handlers execute in registration order. Register durable state
-        # after interactive hydration so this wrapper becomes the outer boundary
-        # and persists INGESTED before pre-hydration starts.
+        schedule_interactive_pick_parallel_install(
+            _accepted_base.app,
+            market_api=_accepted_base.market_api,
+        )
+        # Register durable state last so it becomes the outer boundary and
+        # persists INGESTED before pre-hydration/parallel scoring starts.
         schedule_pick_request_state_install(
             _accepted_base.app,
             db_client_fn=_accepted_base.market_api.prod.get_client,
