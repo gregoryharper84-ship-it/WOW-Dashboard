@@ -52,8 +52,8 @@ begin
         from public.wow_pick_request_jobs j
         join public.wow_pick_request_runs r on r.run_id = j.run_id
         where j.status in ('QUEUED','RETRY_WAIT','RUNNING')
-          and r.run_status not like 'STOPPED\_%' escape '\\'
-          and r.run_status not like 'CLOSED%'
+          and left(r.run_status, 8) <> 'STOPPED_'
+          and left(r.run_status, 6) <> 'CLOSED'
           and (j.next_attempt_at is null or j.next_attempt_at <= now())
           and (
               j.status <> 'RUNNING'
