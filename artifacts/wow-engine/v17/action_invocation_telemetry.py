@@ -1,13 +1,10 @@
 """Certification-independent telemetry for canonical V17 Action invocations.
 
-This module records only that a governed Action route was called and what HTTP
-status it returned. It deliberately does not inspect request bodies or persist
-players, lines, prices, probabilities, credentials, or certification state.
-
-Presence of a telemetry row is never evidence that a model is certified,
-publishable, rank eligible, or successful. Failed calls are recorded too.
-Telemetry failure is isolated from request handling and can never change scoring,
-terminal semantics, or ``can_execute=false``.
+The request/response path never waits on telemetry.  Each invocation gets a stable
+client-generated UUID so an unconfirmed write can be retried idempotently.  After
+bounded retries, the same non-sensitive receipt envelope is written to a durable
+Supabase dead-letter table which is recovered by pg_cron.  Telemetry can never
+change scoring, terminal semantics, probability publication, or can_execute=false.
 """
 from __future__ import annotations
 
@@ -15,21 +12,25 @@ import asyncio
 import base64
 import json
 import logging
+from datetime import datetime, timezone
 from time import perf_counter
 from typing import Any, Callable
+from uuid import uuid4
 
 
-# Supabase/PostgREST receipt inserts can legitimately take longer than one
-# second on the production free-tier path. Keep persistence off the scoring
-# response critical path, but retain a finite ownership bound so a degraded
-# telemetry service cannot consume the in-flight task pool indefinitely.
-_PERSIST_TIMEOUT_SECONDS = 5.0
-_SHUTDOWN_DRAIN_SECONDS = 5.25
-_MAX_IN_FLIGHT = 32
-
+# Persistence is off the scoring response critical path. The old five-second wait
+# produced false failure logs while Supabase was still committing successfully.
+# Give one background write enough time to receive its acknowledgement, then retry
+# the exact same invocation_id rather than creating a second receipt.
+_PERSIST_TIMEOUT_SECONDS = 15.0
+_MAX_PERSIST_ATTEMPTS = 2
+_RETRY_BACKOFF_SECONDS = 0.25
+_SHUTDOWN_DRAIN_SECONDS = 15.5
+_MAX_IN_FLIGHT = 64
 
 LOGGER = logging.getLogger("wow.v17.action_invocation")
 TABLE = "wow_action_invocation_receipts"
+DEAD_LETTER_TABLE = "wow_action_invocation_receipt_dead_letters"
 CAN_EXECUTE = False
 _GITHUB_OIDC_ISSUER = "https://token.actions.githubusercontent.com"
 
@@ -56,7 +57,6 @@ def _auth_scheme(value: str | None) -> str:
 
 
 def _jwt_issuer(authorization: str | None) -> str | None:
-    """Read only JWT issuer for telemetry classification; never authorize here."""
     value = str(authorization or "").strip()
     if not value.lower().startswith("bearer "):
         return None
@@ -75,7 +75,6 @@ def _jwt_issuer(authorization: str | None) -> str | None:
 
 
 def _caller_class(headers: Any, status_code: int) -> str:
-    """Classify caller for observability only; never use this for authorization."""
     authorization = headers.get("authorization")
     auth_scheme = _auth_scheme(authorization)
     if status_code == 401:
@@ -112,8 +111,41 @@ def _request_id(headers: Any) -> str | None:
     return value[:256] or None
 
 
-def _insert_receipt(db_client_fn: Callable[[], Any], receipt: dict[str, Any]) -> None:
-    db_client_fn().table(TABLE).insert(receipt).execute()
+def _upsert_receipt(db_client_fn: Callable[[], Any], receipt: dict[str, Any]) -> None:
+    table = db_client_fn().table(TABLE)
+    upsert = getattr(table, "upsert", None)
+    if callable(upsert):
+        upsert(receipt, on_conflict="invocation_id").execute()
+    else:
+        # Test-double/backward-client compatibility. Production Supabase supports
+        # upsert; stable invocation_id still remains present in the row.
+        table.insert(receipt).execute()
+
+
+def _upsert_dead_letter(
+    db_client_fn: Callable[[], Any],
+    receipt: dict[str, Any],
+    *,
+    attempt_count: int,
+    error_type: str,
+) -> None:
+    now = datetime.now(timezone.utc).isoformat()
+    payload = {
+        "invocation_id": receipt["invocation_id"],
+        "first_failed_at": now,
+        "last_failed_at": now,
+        "attempt_count": attempt_count,
+        "last_error_type": error_type[:160],
+        "receipt_payload": receipt,
+        "recovered_at": None,
+        "can_execute": False,
+    }
+    table = db_client_fn().table(DEAD_LETTER_TABLE)
+    upsert = getattr(table, "upsert", None)
+    if callable(upsert):
+        upsert(payload, on_conflict="invocation_id").execute()
+    else:
+        table.insert(payload).execute()
 
 
 def install_action_invocation_middleware(app: Any, *, db_client_fn: Callable[[], Any]) -> None:
@@ -160,6 +192,8 @@ def install_action_invocation_middleware(app: Any, *, db_client_fn: Callable[[],
             duration_ms = (perf_counter() - started) * 1000.0
             headers = getattr(request, "headers", {})
             receipt = {
+                "invocation_id": str(uuid4()),
+                "occurred_at": datetime.now(timezone.utc).isoformat(),
                 "route": path,
                 "action_operation_id": operation_id,
                 "http_method": str(getattr(request, "method", "UNKNOWN")).upper(),
@@ -172,21 +206,56 @@ def install_action_invocation_middleware(app: Any, *, db_client_fn: Callable[[],
                 "duration_ms": round(duration_ms, 3),
                 "can_execute": False,
             }
+
             async def _persist_receipt() -> None:
+                last_exc: Exception | None = None
+                for attempt in range(1, _MAX_PERSIST_ATTEMPTS + 1):
+                    try:
+                        await asyncio.wait_for(
+                            asyncio.to_thread(_upsert_receipt, db_client_fn, receipt),
+                            timeout=_PERSIST_TIMEOUT_SECONDS,
+                        )
+                        if attempt > 1:
+                            LOGGER.warning(
+                                "WOW_V17_ACTION_INVOCATION_PERSISTENCE_RECOVERED route=%s status_code=%s attempt=%s invocation_id=%s can_execute=false",
+                                path, status_code, attempt, receipt["invocation_id"],
+                            )
+                        return
+                    except Exception as exc:
+                        last_exc = exc
+                        if attempt < _MAX_PERSIST_ATTEMPTS:
+                            LOGGER.warning(
+                                "WOW_V17_ACTION_INVOCATION_PERSISTENCE_RETRY route=%s status_code=%s attempt=%s error=%s invocation_id=%s can_execute=false",
+                                path, status_code, attempt, type(exc).__name__, receipt["invocation_id"],
+                            )
+                            await asyncio.sleep(_RETRY_BACKOFF_SECONDS)
+
+                error_type = type(last_exc).__name__ if last_exc is not None else "UNKNOWN"
                 try:
                     await asyncio.wait_for(
-                        asyncio.to_thread(_insert_receipt, db_client_fn, receipt),
+                        asyncio.to_thread(
+                            _upsert_dead_letter,
+                            db_client_fn,
+                            receipt,
+                            attempt_count=_MAX_PERSIST_ATTEMPTS,
+                            error_type=error_type,
+                        ),
                         timeout=_PERSIST_TIMEOUT_SECONDS,
                     )
-                except Exception as exc:
-                    LOGGER.warning(
-                        "WOW_V17_ACTION_INVOCATION_PERSISTENCE_FAILED route=%s status_code=%s error=%s can_execute=false",
-                        path, status_code, type(exc).__name__,
+                    LOGGER.error(
+                        "WOW_V17_ACTION_INVOCATION_DEAD_LETTERED route=%s status_code=%s error=%s invocation_id=%s can_execute=false",
+                        path, status_code, error_type, receipt["invocation_id"],
                     )
+                except Exception as dead_exc:
+                    LOGGER.error(
+                        "WOW_V17_ACTION_INVOCATION_PERSISTENCE_FAILED route=%s status_code=%s error=%s dead_letter_error=%s invocation_id=%s can_execute=false",
+                        path, status_code, error_type, type(dead_exc).__name__, receipt["invocation_id"],
+                    )
+
             if len(tasks) >= _MAX_IN_FLIGHT:
-                LOGGER.warning(
-                    "WOW_V17_ACTION_INVOCATION_PERSISTENCE_DROPPED route=%s status_code=%s reason=IN_FLIGHT_LIMIT can_execute=false",
-                    path, status_code,
+                LOGGER.error(
+                    "WOW_V17_ACTION_INVOCATION_PERSISTENCE_DROPPED route=%s status_code=%s reason=IN_FLIGHT_LIMIT invocation_id=%s can_execute=false",
+                    path, status_code, receipt["invocation_id"],
                 )
             else:
                 task = asyncio.create_task(_persist_receipt())
@@ -196,4 +265,10 @@ def install_action_invocation_middleware(app: Any, *, db_client_fn: Callable[[],
     app.state.wow_action_invocation_telemetry_installed = True
 
 
-__all__ = ["CAN_EXECUTE", "ROUTE_OPERATION_IDS", "TABLE", "install_action_invocation_middleware"]
+__all__ = [
+    "CAN_EXECUTE",
+    "DEAD_LETTER_TABLE",
+    "ROUTE_OPERATION_IDS",
+    "TABLE",
+    "install_action_invocation_middleware",
+]
