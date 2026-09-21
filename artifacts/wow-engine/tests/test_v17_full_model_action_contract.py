@@ -1,13 +1,43 @@
 from pathlib import Path
 
 from v17.host_routing import (
+    FULL_MODEL_PROP_REQUIRED_ACTION_OPERATION_IDS,
     FullModelActionReceipt,
     LIVE_GPT_ACTION_INVOCATION_BLOCKED,
     LIVE_GPT_ACTION_RESULT_INVALID,
     accepted_full_model_operation_ids,
     expected_full_model_operation_id,
+    preflight_full_model_prop_action_surface,
     validate_full_model_action_receipt,
 )
+
+
+def test_full_model_prop_action_surface_preflight_blocks_before_row_preparation():
+    out = preflight_full_model_prop_action_surface(
+        ["getWowV17BackendHealth", "scoreWowPickRequest"]
+    )
+    assert out["preflight_pass"] is False
+    assert out["status"] == LIVE_GPT_ACTION_INVOCATION_BLOCKED
+    assert out["missing_operation_ids"] == ["lookupWowV17PredictionReceipts"]
+    assert out["rows_attempted"] == 0
+    assert out["action_invocation_attempted"] is False
+    assert out["scoring_attempted"] is False
+    assert out["backend_model_capability"] == "UNKNOWN"
+    assert out["rank_eligible"] is False
+    assert out["full_model_completed"] is False
+    assert out["can_execute"] is False
+
+
+def test_full_model_prop_action_surface_preflight_passes_only_with_all_required_actions():
+    out = preflight_full_model_prop_action_surface(
+        [*FULL_MODEL_PROP_REQUIRED_ACTION_OPERATION_IDS, "unrelatedAction"]
+    )
+    assert out["preflight_pass"] is True
+    assert out["status"] is None
+    assert out["missing_operation_ids"] == []
+    assert out["rows_attempted"] == 0
+    assert out["backend_model_capability"] == "UNKNOWN"
+    assert out["can_execute"] is False
 
 
 def test_full_model_prop_without_action_is_invocation_blocked():
