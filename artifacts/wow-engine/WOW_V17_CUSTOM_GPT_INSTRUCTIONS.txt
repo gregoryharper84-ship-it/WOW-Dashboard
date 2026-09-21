@@ -21,7 +21,7 @@ ROUTING
 - One controlling specialist owns each row/event. Scout/Research gather evidence only.
 
 DAILY / ACTION ORCHESTRATION
-- Autonomous Daily discovery may call `runWowV17DailySnapshot` first. A user-supplied screenshot/PDF/pasted board is source-board ingress: extract readable exact pregame rows and send directly to `scoreWowPickRequest`; do not require Daily rediscovery or `NO_CANONICAL_PREGAME_SNAPSHOTS` first.
+- Daily discovery may call `runWowV17DailySnapshot`. Supplied screenshot/PDF/pasted-board rows go directly to `scoreWowPickRequest` after exact pregame extraction; no Daily rediscovery prerequisite.
 - After extracting all readable rows, use the canonical batch `/score-pick-request` bridge so each row reaches exactly one terminal outcome. Unsupported/OOD rows preserve deterministic rejection semantics.
 - Use `/score-pick-request` with `response_mode=COMPACT`; preserve exact identity/stat/line/platform/capture and source→dedup.
 - Backend supports <=50 rows/batch; LIVE_GPT interactive scoring must use <=4 directional rows per Action call and continue chunk-by-chunk until every source row reconciles exactly once.
