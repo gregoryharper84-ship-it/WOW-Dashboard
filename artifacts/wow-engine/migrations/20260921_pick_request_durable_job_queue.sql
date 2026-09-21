@@ -27,6 +27,8 @@ create table if not exists public.wow_pick_request_jobs (
 
 create index if not exists wow_pick_request_jobs_claim_idx
     on public.wow_pick_request_jobs(status, next_attempt_at, lease_expires_at, updated_at);
+create index if not exists wow_pick_request_jobs_run_id_idx
+    on public.wow_pick_request_jobs(run_id);
 
 alter table public.wow_pick_request_jobs enable row level security;
 revoke all on table public.wow_pick_request_jobs from public, anon, authenticated;
