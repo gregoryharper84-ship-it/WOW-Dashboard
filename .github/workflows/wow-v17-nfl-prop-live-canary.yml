@@ -20,7 +20,7 @@ jobs:
       WOW_OIDC_AUDIENCE: wow-v17-multiscout
       WOW_CAN_EXECUTE: "false"
       WOW_DRY_RUN_ONLY: "true"
-      WOW_REQUEST_ID: nfl-prop-live-canary-20260921-rams-giants
+      WOW_REQUEST_ID: nfl-prop-live-canary-20260921-rams-giants-canonical-v2
     steps:
       - name: Assert fail-closed OIDC canary context
         shell: bash
@@ -49,10 +49,10 @@ jobs:
             "request_id":"${WOW_REQUEST_ID}",
             "response_mode":"COMPACT",
             "rows":[
-              {"row_key":"puka-rec-more","event_id":"401872947","event_start_time":"2026-09-22T00:15:00Z","sport":"NFL","player":"Puka Nacua","stat_type":"Receiving Yards","line":77.5,"direction":"MORE","source_type":"PDF","platform":"PrizePicks","league":"NFL","opponent":"New York Giants"},
-              {"row_key":"puka-rec-less","event_id":"401872947","event_start_time":"2026-09-22T00:15:00Z","sport":"NFL","player":"Puka Nacua","stat_type":"Receiving Yards","line":77.5,"direction":"LESS","source_type":"PDF","platform":"PrizePicks","league":"NFL","opponent":"New York Giants"},
-              {"row_key":"davante-rec-more","event_id":"401872947","event_start_time":"2026-09-22T00:15:00Z","sport":"NFL","player":"Davante Adams","stat_type":"Receiving Yards","line":62.5,"direction":"MORE","source_type":"PDF","platform":"PrizePicks","league":"NFL","opponent":"New York Giants"},
-              {"row_key":"davante-rec-less","event_id":"401872947","event_start_time":"2026-09-22T00:15:00Z","sport":"NFL","player":"Davante Adams","stat_type":"Receiving Yards","line":62.5,"direction":"LESS","source_type":"PDF","platform":"PrizePicks","league":"NFL","opponent":"New York Giants"}
+              {"row_key":"puka-rec-more","event_id":"2026_02_NYG_LA","event_start_time":"2026-09-22T00:15:00Z","sport":"NFL","player":"Puka Nacua","stat_type":"Receiving Yards","line":77.5,"direction":"MORE","source_type":"PDF","platform":"PrizePicks","league":"NFL","opponent":"New York Giants"},
+              {"row_key":"puka-rec-less","event_id":"2026_02_NYG_LA","event_start_time":"2026-09-22T00:15:00Z","sport":"NFL","player":"Puka Nacua","stat_type":"Receiving Yards","line":77.5,"direction":"LESS","source_type":"PDF","platform":"PrizePicks","league":"NFL","opponent":"New York Giants"},
+              {"row_key":"davante-rec-more","event_id":"2026_02_NYG_LA","event_start_time":"2026-09-22T00:15:00Z","sport":"NFL","player":"Davante Adams","stat_type":"Receiving Yards","line":62.5,"direction":"MORE","source_type":"PDF","platform":"PrizePicks","league":"NFL","opponent":"New York Giants"},
+              {"row_key":"davante-rec-less","event_id":"2026_02_NYG_LA","event_start_time":"2026-09-22T00:15:00Z","sport":"NFL","player":"Davante Adams","stat_type":"Receiving Yards","line":62.5,"direction":"LESS","source_type":"PDF","platform":"PrizePicks","league":"NFL","opponent":"New York Giants"}
             ]
           }
           JSON
@@ -103,26 +103,35 @@ jobs:
               result=row.get('result') or {}
               prediction=result.get('prediction') if isinstance(result,dict) else {}
               prediction=prediction if isinstance(prediction,dict) else {}
-              raw=(prediction.get('raw_model_probability') if prediction else None)
-              calibrated=(prediction.get('calibrated_probability') if prediction else None)
-              lower=(prediction.get('calibrated_probability_lower_bound') if prediction else None)
+              raw=row.get('model_probability')
+              if raw is None:
+                  raw=prediction.get('raw_model_probability') if prediction else None
+              calibrated=row.get('calibrated_probability')
+              if calibrated is None:
+                  calibrated=prediction.get('calibrated_probability') if prediction else None
+              lower=row.get('calibrated_probability_lower_bound')
+              if lower is None:
+                  lower=prediction.get('calibrated_probability_lower_bound') if prediction else None
+              blockers=list(row.get('blockers') or [])
+              blocker_code=row.get('blocker_code') or detail.get('blocker_code') or detail.get('blocker') or audit.get('exact_blocker')
               item={
                   'row_key':row.get('row_key'),
                   'terminal_status':row.get('terminal_status'),
                   'code':code,
+                  'blocker_code':blocker_code,
+                  'blockers':blockers,
                   'model_evaluated':row.get('model_evaluated'),
                   'probability_publishable':row.get('probability_publishable'),
                   'raw_model_probability':raw,
                   'calibrated_probability':calibrated,
                   'calibrated_lower_bound':lower,
-                  'exact_blocker':audit.get('exact_blocker'),
                   'can_execute':row.get('can_execute'),
               }
               summary.append(item)
               if row.get('can_execute') is not False:
                   failures.append(f"{row.get('row_key')}:can_execute")
               if row.get('terminal_status') != 'COMPLETED':
-                  failures.append(f"{row.get('row_key')}:terminal={row.get('terminal_status')}:{code}:{audit.get('exact_blocker')}")
+                  failures.append(f"{row.get('row_key')}:terminal={row.get('terminal_status')}:{code}:{blocker_code}:{blockers}")
               if row.get('model_evaluated') is not True:
                   failures.append(f"{row.get('row_key')}:model_not_evaluated")
               if row.get('probability_publishable') is not True:
