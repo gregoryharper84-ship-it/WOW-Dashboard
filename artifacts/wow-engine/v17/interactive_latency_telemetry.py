@@ -11,7 +11,12 @@ from typing import Any
 
 
 LOGGER = logging.getLogger("wow.v17.interactive_latency")
-INTERACTIVE_PATHS = frozenset({"/score-pick-request", "/score-team-event-request"})
+INTERACTIVE_PATHS = frozenset({
+    "/score-prop",
+    "/score-pick-request",
+    "/score-team-event-request",
+    "/score-team-event",
+})
 
 
 def install_interactive_latency_middleware(app: Any) -> None:

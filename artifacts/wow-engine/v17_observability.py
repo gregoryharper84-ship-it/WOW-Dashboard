@@ -14,8 +14,14 @@ from typing import Any
 
 from fastapi import Depends
 
+from v17.action_invocation_telemetry import install_action_invocation_middleware
 from v17.interactive_latency_telemetry import install_interactive_latency_middleware
 from v17.interactive_pick_hydration import schedule_interactive_pick_hydration_install
+from v17.interactive_pick_parallel import schedule_interactive_pick_parallel_install
+from v17.interactive_team_event_io import install_interactive_team_event_io
+from v17.interactive_team_event_latency import install_interactive_team_event_latency
+from v17.pick_request_state_hooks import install_pick_request_state_hooks
+from v17.pick_request_state_runtime import schedule_pick_request_state_install
 
 
 def initialize_observability() -> dict[str, Any]:
@@ -23,25 +29,64 @@ def initialize_observability() -> dict[str, Any]:
     # before the optional Sentry branch so /health and /score-team-event expose
     # the same authoritative production registry even when Sentry is disabled.
     from v17.team_event_bridge_runtime import install_team_event_bridge_runtime
+    from v17.multisport_team_event_bridges import install_multisport_team_event_bridges
+    from v17.universal_team_event_governance import install_universal_team_event_governance
 
     install_team_event_bridge_runtime()
+    install_multisport_team_event_bridges()
+    install_universal_team_event_governance()
 
-    # Install non-secret total-wall-time telemetry and schedule the bounded
-    # external pre-hydration wrapper on the accepted production FastAPI app.
-    # The wrapper installs at startup, after api_ncaaf_acceptance has composed
-    # all routes, and delegates validation/persistence/scoring/reconciliation
-    # back to the captured canonical endpoint.
+    # Team/event Scout and lane routing remain ordered. Only the five independent
+    # Research workers are overlapped, using the same canonical envelopes,
+    # workers, reconciler and typed failure contract. This is intentionally
+    # installed after bridge registration so every registered sport observes the
+    # same bounded barrier implementation.
+    try:
+        install_interactive_team_event_latency()
+    except Exception:
+        # Latency optimization must never make the governed API unavailable.
+        # The canonical serial barrier remains fail-closed if installation fails.
+        pass
+
+    # Install non-secret total-wall-time telemetry, certification-independent
+    # Action invocation receipts, bounded external pre-hydration, bounded
+    # independent-row scoring, reusable TEAM_EVENT transport clients, bounded
+    # external MLB evidence, and the correctness-critical durable pick-request
+    # state wrapper. The canonical scorer still owns fitted inference,
+    # calibration/bounds, persistence and terminal reduction; transport wrappers
+    # never create or modify probability authority.
     try:
         import api_prod_market_acceptance as _accepted_base
 
+        install_interactive_team_event_io(
+            event_api=_accepted_base.market_api.prod.event_api,
+        )
         install_interactive_latency_middleware(_accepted_base.app)
+        install_action_invocation_middleware(
+            _accepted_base.app,
+            db_client_fn=_accepted_base.market_api.prod.get_client,
+        )
+        install_pick_request_state_hooks()
+        # Startup handlers execute in registration order:
+        #   1. hydration/research wrapper,
+        #   2. bounded row-parallel wrapper,
+        #   3. durable state wrapper (outermost).
         schedule_interactive_pick_hydration_install(
             _accepted_base.app,
             market_api=_accepted_base.market_api,
         )
+        schedule_interactive_pick_parallel_install(
+            _accepted_base.app,
+            market_api=_accepted_base.market_api,
+        )
+        schedule_pick_request_state_install(
+            _accepted_base.app,
+            db_client_fn=_accepted_base.market_api.prod.get_client,
+        )
     except Exception:
         # Observability/latency optimization must never make the governed API
         # unavailable; canonical route behavior remains intact on any failure.
+        # Durable state itself remains fail-closed once installed.
         pass
 
     # Mount the Render-hosted Claude support runtime on the same accepted app.
@@ -55,7 +100,9 @@ def initialize_observability() -> dict[str, Any]:
 
         install_claude_runtime_routes(
             _accepted_base.app,
-            auth_dependency=Depends(_accepted_base.market_api.prod._require_action_api_key),
+            auth_dependency=Depends(
+                _accepted_base.market_api.prod._require_action_api_key
+            ),
         )
     except Exception:
         pass
@@ -81,7 +128,9 @@ def initialize_observability() -> dict[str, Any]:
 
     import sentry_sdk
 
-    traces_sample_rate = float(os.getenv("SENTRY_TRACES_SAMPLE_RATE", "0.05"))
+    traces_sample_rate = float(
+        os.getenv("SENTRY_TRACES_SAMPLE_RATE", "0.05")
+    )
     traces_sample_rate = min(max(traces_sample_rate, 0.0), 1.0)
     sentry_sdk.init(
         dsn=dsn,

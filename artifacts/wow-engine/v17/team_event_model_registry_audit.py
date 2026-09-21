@@ -1,18 +1,10 @@
 """Explicit resolver states and repository audit for team/event model coverage.
 
-``team_event_bridge_health`` could previously only say registered or not, so a
-sport with a real adapter that simply was not wired looked identical to a sport
-with no model at all — and both looked identical to a sport whose model exists
-but has no promoted artifact.  Those are three different engineering problems.
-
-This module answers one question per sport, from the repository itself rather
-than from documentation:
-
-    Is there a fitted implementation, an adapter, and a resolvable scorer?
-
-It never creates capability.  Everything here is read-only inspection; a sport
-with no importable adapter stays ``ADAPTER_MISSING`` and resolves, externally, to
-``MODEL_UNAVAILABLE``.  Governance decides what that means downstream.
+The audit separates implementation, registration, and certification. A sport can
+have numerical code without being registered, and registration alone never
+certifies it. Runtime certification for newly promoted sports is derived only
+when the live registration's controlling specialist exactly matches the approved
+V17 certification identity.
 """
 from __future__ import annotations
 
@@ -21,57 +13,76 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from v17.team_event_capability_manifest import (
+    ACTIVATABLE_TEAM_EVENT_CERTIFICATIONS,
     EXPECTED_TEAM_EVENT_SPORTS,
     normalize_team_event_sport,
 )
 
 CAN_EXECUTE = False
 
-# Resolver states. Only REGISTERED may score.
 REGISTERED = "REGISTERED"
 UNREGISTERED = "UNREGISTERED"
 DISABLED = "DISABLED"
 MODEL_ARTIFACT_MISSING = "MODEL_ARTIFACT_MISSING"
 ADAPTER_MISSING = "ADAPTER_MISSING"
+RESOLVER_STATES = (
+    REGISTERED,
+    UNREGISTERED,
+    DISABLED,
+    MODEL_ARTIFACT_MISSING,
+    ADAPTER_MISSING,
+)
 
-RESOLVER_STATES = (REGISTERED, UNREGISTERED, DISABLED, MODEL_ARTIFACT_MISSING, ADAPTER_MISSING)
-
-# Certification states. Deliberately a separate axis from the resolver state.
-#
-# A registered bridge proves routing and scoring capability. It does not prove
-# calibrated prospective production fitness, which is what certification
-# records: model identity, pinned artifact, calibration health, forward-shadow
-# evidence and a governed terminal ceiling. Reading UP as certified is the
-# specific mistake this split exists to prevent.
 CERTIFIED = "CERTIFIED"
 CANDIDATE_REGISTERED_UNCERTIFIED = "CANDIDATE_REGISTERED_UNCERTIFIED"
 NOT_CERTIFIED = "NOT_CERTIFIED"
+CERTIFICATION_STATES = (
+    CERTIFIED,
+    CANDIDATE_REGISTERED_UNCERTIFIED,
+    NOT_CERTIFIED,
+)
 
-CERTIFICATION_STATES = (CERTIFIED, CANDIDATE_REGISTERED_UNCERTIFIED, NOT_CERTIFIED)
 
+def certification_state(
+    sport: str,
+    *,
+    registered: bool,
+) -> tuple[str, str | None]:
+    """Certification status/id independent from generic registration alone.
 
-def certification_state(sport: str, *, registered: bool) -> tuple[str, str | None]:
-    """Certification status and id for a sport, independent of bridge status.
-
-    Certification comes only from the governed certification catalog. A bridge
-    being registered and UP can at most make a sport a *candidate*; it can never
-    promote it.
+    Static certification comes from the governed catalog. For the new multisport
+    lanes, certification activates only if the *currently registered* exact
+    bridge uses the approved controlling specialist identity. A test/dummy bridge
+    therefore remains candidate-registered and cannot promote itself.
     """
     from v17.team_event_capability_manifest import CERTIFIED_TEAM_EVENT_SPORTS
 
     normalized = normalize_team_event_sport(sport)
-    certification_id = CERTIFIED_TEAM_EVENT_SPORTS.get(normalized)
-    if certification_id:
-        return CERTIFIED, certification_id
+    static_certification_id = CERTIFIED_TEAM_EVENT_SPORTS.get(normalized)
+    if static_certification_id:
+        return CERTIFIED, static_certification_id
+
     if registered:
+        expected = ACTIVATABLE_TEAM_EVENT_CERTIFICATIONS.get(normalized)
+        if expected:
+            try:
+                import v17.team_event_bridge_runtime as bridge_runtime
+
+                live_registration = bridge_runtime.TEAM_EVENT_BRIDGES.get(normalized)
+                if (
+                    live_registration is not None
+                    and live_registration.controlling_specialist == expected
+                    and callable(live_registration.scorer)
+                ):
+                    return CERTIFIED, expected
+            except Exception:  # noqa: BLE001 - audit must fail closed
+                pass
         return CANDIDATE_REGISTERED_UNCERTIFIED, None
     return NOT_CERTIFIED, None
 
 
 @dataclass(frozen=True)
 class CapabilityProbe:
-    """What the repository actually contains for one sport."""
-
     sport: str
     fitted_module: str | None
     adapter_module: str | None
@@ -96,10 +107,6 @@ class CapabilityProbe:
         }
 
 
-# Declared implementation chains. A sport appears here only when a concrete
-# module path is claimed; the probe then verifies that claim by import. Absence
-# from this table is itself an audit answer: no fitted team/event implementation
-# was found in the repository for that sport.
 _DECLARED_CHAINS: dict[str, dict[str, str]] = {
     "MLB": {
         "fitted_module": "v17.mlb_event_bridge_repair",
@@ -114,35 +121,56 @@ _DECLARED_CHAINS: dict[str, dict[str, str]] = {
         "scorer_symbol": "score_nfl_team_event",
         "model_artifact_loader": "nfl_event_model_v17:load_champion_model",
         "notes": (
-            "Fitted NFL outright-win bundle with Platt calibration and governed publication "
-            "bridge. Champion promotion is a runtime/database condition: with no promoted "
-            "artifact the scorer fails closed as MODEL_UNAVAILABLE at score time."
+            "Fitted NFL outright-win bundle with Platt calibration and governed "
+            "publication bridge. Champion promotion remains a runtime/database condition."
         ),
+    },
+    "WNBA": {
+        "fitted_module": "v17.multisport_team_event_models",
+        "adapter_module": "v17.multisport_team_event_bridges",
+        "scorer_symbol": "score_wnba_team_event_request",
+        "model_artifact_loader": "v17.multisport_team_event_models:score_wnba_team_event",
+        "notes": "WNBA Bradley-Terry specialist with V17 dynamic uncertainty and terminal governance.",
+    },
+    "NHL": {
+        "fitted_module": "v17.multisport_team_event_models",
+        "adapter_module": "v17.multisport_team_event_bridges",
+        "scorer_symbol": "score_nhl_team_event_request",
+        "model_artifact_loader": "v17.multisport_team_event_models:score_nhl_team_event",
+        "notes": "NHL Elo + goalie/special-teams/OT simulation with governed bounds.",
+    },
+    "SOCCER": {
+        "fitted_module": "v17.multisport_team_event_models",
+        "adapter_module": "v17.multisport_team_event_bridges",
+        "scorer_symbol": "score_soccer_team_event_request",
+        "model_artifact_loader": "v17.multisport_team_event_models:score_soccer_team_event",
+        "notes": "Soccer independent-Poisson three-state 1X2 specialist; draw is never collapsed into binary.",
+    },
+    "TENNIS": {
+        "fitted_module": "v17.multisport_team_event_models",
+        "adapter_module": "v17.multisport_team_event_bridges",
+        "scorer_symbol": "score_tennis_team_event_request",
+        "model_artifact_loader": "v17.multisport_team_event_models:score_tennis_team_event",
+        "notes": "Tennis surface/form, Elo, hold-rate, H2H specialist hierarchy with retirement-aware input contract.",
+    },
+    "MMA": {
+        "fitted_module": "v17.multisport_team_event_models",
+        "adapter_module": "v17.multisport_team_event_bridges",
+        "scorer_symbol": "score_mma_team_event_request",
+        "model_artifact_loader": "v17.multisport_team_event_models:score_mma_team_event",
+        "notes": "MMA internally fitted chronological fight-ledger Elo specialist; no sportsbook or generic-probability substitution.",
     },
 }
 
-# Sports whose evidence/trust or training material exists but which have no
-# team/event winner scorer entry point. Recorded so the audit answer is a
-# reason, not a silence. These never become registered capability.
 _KNOWN_PARTIAL_WORK: dict[str, str] = {
     "NCAAF": (
         "Fitted-artifact provider (ncaaf_fitted_provider), logistic model-family adapter and "
         "trust layer exist, but there is no team/event winner scorer entry point, no governed "
         "probability-package mapping and no event-governor binding."
     ),
-    "WNBA": (
-        "WNBA history/runtime and prop-lane work exist; no team/event winner model, adapter or "
-        "scorer."
-    ),
-    "NBA": "No fitted team/event winner model, adapter or scorer in the repository.",
+    "NBA": "No certified V17 team/event winner bridge in the repository.",
     "NCAAB": "No fitted team/event winner model, adapter or scorer in the repository.",
-    "NHL": "No fitted team/event winner model, adapter or scorer in the repository.",
-    "SOCCER": (
-        "No fitted three-way (home/draw/away) winner model, adapter or scorer in the repository."
-    ),
-    "TENNIS": "No fitted match-winner model, adapter or scorer in the repository.",
     "PGA": "No calibrated field-distribution or head-to-head model, adapter or scorer.",
-    "MMA": "No fitted fight-winner specialist, adapter or scorer in the repository.",
     "BOXING": "No fitted fight-winner specialist, adapter or scorer in the repository.",
 }
 
@@ -172,7 +200,6 @@ def _probe_chain(sport: str, chain: dict[str, str]) -> CapabilityProbe:
 
 
 def probe_sport(sport: str) -> CapabilityProbe:
-    """Inspect one sport's implementation chain by import, never by documentation."""
     normalized = normalize_team_event_sport(sport)
     chain = _DECLARED_CHAINS.get(normalized)
     if chain is not None:
@@ -186,7 +213,8 @@ def probe_sport(sport: str) -> CapabilityProbe:
         scorer_resolvable=False,
         model_artifact_loader=None,
         notes=_KNOWN_PARTIAL_WORK.get(
-            normalized, "No fitted team/event winner model, adapter or scorer in the repository."
+            normalized,
+            "No fitted team/event winner model, adapter or scorer in the repository.",
         ),
     )
 
@@ -198,13 +226,6 @@ def resolve_state(
     probe: CapabilityProbe | None = None,
     disabled: bool = False,
 ) -> str:
-    """Map a sport onto exactly one resolver state.
-
-    The states are ordered by what an engineer would have to do next: a
-    registered bridge is done, a disabled one needs an operator, an importable
-    adapter that is not registered needs wiring, and everything else needs a
-    model-development project.
-    """
     if disabled:
         return DISABLED
     if registered:
@@ -219,25 +240,32 @@ def resolve_state(
     return ADAPTER_MISSING
 
 
-def audit_table(is_registered: Callable[[str], bool] | None = None) -> list[dict[str, Any]]:
-    """Repository audit across the declared discovery universe.
-
-    Returns one row per sport describing what exists, what is wired, and — when
-    a sport is not registered — why not. This is the evidence behind every
-    ``MODEL_UNAVAILABLE`` the cross-sport lane emits.
-    """
+def audit_table(
+    is_registered: Callable[[str], bool] | None = None,
+) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for sport in EXPECTED_TEAM_EVENT_SPORTS:
         probe = probe_sport(sport)
-        registered = bool(is_registered(sport)) if is_registered is not None else False
+        registered = (
+            bool(is_registered(sport)) if is_registered is not None else False
+        )
         state = resolve_state(sport, registered=registered, probe=probe)
+        certification, certification_id = certification_state(
+            sport, registered=registered
+        )
         rows.append(
             {
                 **probe.as_dict(),
+                # scorer_resolvable is a live-routing field. An importable but
+                # unregistered implementation remains unavailable to this GPT;
+                # implementation_scorer_resolvable preserves the engineering
+                # signal without falsely advertising a callable production lane.
+                "scorer_resolvable": bool(probe.scorer_resolvable and registered),
+                "implementation_scorer_resolvable": bool(probe.scorer_resolvable),
                 "registry_state": state,
                 "registered_capability": registered,
-                "certification_status": certification_state(sport, registered=registered)[0],
-                "certification_id": certification_state(sport, registered=registered)[1],
+                "certification_status": certification,
+                "certification_id": certification_id,
                 "safe_to_register": bool(probe.scorer_resolvable),
                 "reason_if_not_registered": None if registered else probe.notes,
                 "probability_publishable": False,

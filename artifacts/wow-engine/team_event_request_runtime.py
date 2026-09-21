@@ -36,6 +36,10 @@ class TeamEventRequestRow(BaseModel):
     event_start_time_utc: str | None = None
     home_team: str | None = None
     away_team: str | None = None
+    source_snapshot_id: str | None = None
+    latest_material_update_timestamp: str | None = None
+    settlement_basis: str | None = None
+    sport_specific_evidence: dict[str, Any] = Field(default_factory=dict)
 
 
 class TeamEventRequestBatch(BaseModel):
@@ -50,7 +54,15 @@ def _held(row: TeamEventRequestRow, code: str, blocker: str, detail: Any = None)
         "calibrated_probability": None, "calibrated_lower_bound": None,
         "calibrated_upper_bound": None, "audit_result": "BLOCKED",
         "event_decision": code, "blockers": [blocker], "internal_ceiling": code,
-        "detail": detail, "probability_publishable": False, "can_execute": False,
+        "sporting_probability_status": "NOT_COMPLETED",
+        "probability_gate": "BLOCKED",
+        "market_gate": "NOT_EVALUATED",
+        "market_edge_status": "NOT_EVALUATED",
+        "detail": detail, "probability_publishable": False, "rank_eligible": False,
+        "card_admission_eligible": False,
+        "card_admission_blockers": [f"CARD_ADMISSION:{blocker}"],
+        "card_admission_receipt": None,
+        "can_execute": False,
     }
 
 
@@ -200,22 +212,42 @@ def _mlb_v17_score_request(row: TeamEventRequestRow, event: dict[str, Any]) -> A
     )
 
 
-def _nfl_score_request(row: TeamEventRequestRow) -> Any:
+def _registered_score_request(row: TeamEventRequestRow) -> Any:
+    """Build the shared V17 TEAM_EVENT envelope for any registered sport bridge.
+
+    This function does not create capability. The active bridge registry remains
+    authoritative: unregistered sports fail closed as MODEL_UNAVAILABLE, while a
+    registered sport with missing sport-specific inputs returns the typed input
+    failure from that bridge.
+    """
     if not row.event_start_time_utc or not row.home_team or not row.away_team:
-        raise ValueError("NFL_SCOUT_EVENT_IDENTITY_INCOMPLETE")
+        raise ValueError("TEAM_EVENT_IDENTITY_INCOMPLETE")
     return v17_team_event_base.TeamEventRequest(
         requester_host_identity="WOW_BETTING_ENGINE",
-        research_run_id=row.research_run_id, requested_slate_date=row.event_date,
-        requested_timezone=row.timezone, scan_stage=row.event_state,
+        research_run_id=row.research_run_id,
+        requested_slate_date=row.event_date,
+        requested_timezone=row.timezone,
+        scan_stage=row.event_state,
         candidate_family="TEAM_EVENT",
         decision_intent="UPSET" if row.objective_lane == "UPSET_PROBABILITY" else "WINNER",
-        event_key=row.event_key, official_event_id=_event_id(row),
-        event_start_time_utc=row.event_start_time_utc, sport="NFL", league="NFL",
-        market_family="OUTRIGHT_WINNER", settlement_basis="FULL_GAME_OUTRIGHT",
-        home_team=row.home_team, away_team=row.away_team,
-        source_snapshot_id="SCOUT_CANONICALIZATION_PENDING",
-        latest_material_update_timestamp=None, market_prior=None, sport_specific_evidence={},
+        event_key=row.event_key,
+        official_event_id=_event_id(row),
+        event_start_time_utc=row.event_start_time_utc,
+        sport=row.sport,
+        league=row.league,
+        market_family="OUTRIGHT_WINNER",
+        settlement_basis=row.settlement_basis or "FULL_GAME_OUTRIGHT",
+        home_team=row.home_team,
+        away_team=row.away_team,
+        source_snapshot_id=row.source_snapshot_id or "SCOUT_CANONICALIZATION_PENDING",
+        latest_material_update_timestamp=row.latest_material_update_timestamp,
+        market_prior=None,
+        sport_specific_evidence=dict(row.sport_specific_evidence or {}),
     )
+
+
+def _nfl_score_request(row: TeamEventRequestRow) -> Any:
+    return _registered_score_request(row)
 
 
 def _typed_mlb_failure(detail: dict[str, Any]) -> tuple[str, str]:
@@ -230,6 +262,69 @@ def _typed_mlb_failure(detail: dict[str, Any]) -> tuple[str, str]:
     if "SCORER" in raw_code or "OUTPUT" in raw_code:
         return "MODEL_OUTPUT_INVALID", blocker
     return "PROVIDER_UNAVAILABLE", blocker
+
+
+def _apply_card_admission(row: TeamEventRequestRow, outcome: dict[str, Any]) -> None:
+    """Bind downstream card admission to the exact governed event prediction."""
+    rank_eligible = bool(outcome.get("objective_rank_eligible", outcome.get("rank_eligible")) is True)
+    probability_publishable = outcome.get("probability_publishable") is True
+    blockers: list[str] = []
+    if outcome.get("terminal_status") != "COMPLETED":
+        blockers.append("CARD_ADMISSION:TERMINAL_NOT_COMPLETED")
+    if not rank_eligible:
+        blockers.append("CARD_ADMISSION:RANK_INELIGIBLE")
+    if not probability_publishable:
+        blockers.append("CARD_ADMISSION:PROBABILITY_NOT_PUBLISHABLE")
+    prediction_id = str(outcome.get("event_prediction_id") or "").strip() or None
+    if prediction_id is None:
+        blockers.append("CARD_ADMISSION:PREDICTION_ID_MISSING")
+    selected = str(outcome.get("selected_team") or "").strip() or None
+    if selected is None:
+        blockers.append("CARD_ADMISSION:SELECTION_MISSING")
+    outcome["rank_eligible"] = rank_eligible
+    outcome["card_admission_eligible"] = not blockers
+    outcome["card_admission_blockers"] = blockers
+    outcome["card_admission_receipt"] = {
+        "event_prediction_id": prediction_id,
+        "official_event_id": row.event_key,
+        "event_key": row.event_key,
+        "selection": selected,
+        "market_family": "OUTRIGHT_WINNER",
+        "rank_eligible": rank_eligible,
+        "probability_publishable": probability_publishable,
+        "can_execute": False,
+    } if outcome.get("terminal_status") == "COMPLETED" else None
+    outcome["can_execute"] = False
+
+
+def _probability_separation_fields(*, market_needed: bool) -> dict[str, Any]:
+    return {
+        "sporting_probability_status": "COMPLETE",
+        "probability_gate": "PASS",
+        "market_gate": "DATA_UNOBTAINABLE" if market_needed else "NOT_REQUIRED",
+        "market_edge_status": "MARKET_DATA_UNOBTAINABLE" if market_needed else "NOT_REQUESTED",
+    }
+
+
+def _objective_rank_eligible(row: TeamEventRequestRow, probability_rank_eligible: bool, scored: dict[str, Any]) -> bool:
+    """Separate sporting-probability eligibility from downstream market/value availability.
+
+    MARKET_EDGE remains blocked without exact market evidence. Probability objectives keep their
+    governed ranking eligibility. Upset publication additionally requires an explicit verified
+    underdog/LLP decision signal so market-role uncertainty cannot be bypassed.
+    """
+    if not probability_rank_eligible:
+        return False
+    if row.objective_lane == "MARKET_EDGE":
+        return False
+    if row.objective_lane == "UPSET_PROBABILITY":
+        market_role = str(scored.get("market_role") or "").strip().upper()
+        return bool(
+            scored.get("underdog_verified") is True
+            or market_role == "UNDERDOG"
+            or scored.get("llp_event_decision")
+        )
+    return True
 
 
 def _completed(row: TeamEventRequestRow, event: dict[str, Any], scored: dict[str, Any]) -> dict[str, Any]:
@@ -253,7 +348,8 @@ def _completed(row: TeamEventRequestRow, event: dict[str, Any], scored: dict[str
         decision = "INPUT_INCOMPLETE"
     elif row.objective_lane == "MARKET_EDGE":
         decision = "MARKET_DATA_UNOBTAINABLE"
-    return {
+    probability_rank_eligible = bool(scored.get("rank_eligible", scored.get("probability_publishable")))
+    outcome = {
         "research_run_id": row.research_run_id, "event_key": row.event_key,
         "objective_lane": row.objective_lane, "terminal_status": "COMPLETED",
         "code": "SPORTING_PROBABILITY_COMPLETED",
@@ -269,8 +365,13 @@ def _completed(row: TeamEventRequestRow, event: dict[str, Any], scored: dict[str
         "score_snapshot_id": scored.get("score_snapshot_id") or scored.get("base_score_snapshot_id"),
         "event_prediction_id": scored.get("event_prediction_id"),
         "probability_publishable": bool(scored.get("probability_publishable")),
+        "probability_rank_eligible": probability_rank_eligible,
+        "objective_rank_eligible": _objective_rank_eligible(row, probability_rank_eligible, scored),
+        **_probability_separation_fields(market_needed=market_needed),
         "can_execute": False,
     }
+    _apply_card_admission(row, outcome)
+    return outcome
 
 
 def _reuse_completed(row: TeamEventRequestRow, event: dict[str, Any], prior: dict[str, Any]) -> dict[str, Any]:
@@ -304,6 +405,7 @@ def _completed_nfl(row: TeamEventRequestRow, scored: dict[str, Any]) -> dict[str
         return _held(row, "MODEL_OUTPUT_INVALID", "NFL_GOVERNED_PROBABILITY_FIELDS_INVALID", scored)
     market_needed = row.price_required_for_objective or row.objective_lane != "OUTRIGHT_WIN_PROBABILITY"
     blockers = ["MARKET_DATA_UNOBTAINABLE"] if market_needed else []
+    probability_rank_eligible = bool(scored.get("rank_eligible", True))
     return {
         "research_run_id": row.research_run_id, "event_key": row.event_key, "objective_lane": row.objective_lane,
         "terminal_status": "COMPLETED", "code": "SPORTING_PROBABILITY_COMPLETED", "selected_team": selected,
@@ -312,7 +414,55 @@ def _completed_nfl(row: TeamEventRequestRow, scored: dict[str, Any]) -> dict[str
         "blockers": blockers, "internal_ceiling": "SPORTING_PROBABILITY_ONLY" if blockers else "FULL_MODEL_PROBABILITY",
         "governed_publication_code": scored.get("code"), "terminal_label": scored.get("terminal_label"),
         "score_snapshot_id": scored.get("score_snapshot_id"), "event_prediction_id": scored.get("event_prediction_id"),
-        "probability_publishable": True, "can_execute": False,
+        "probability_publishable": True,
+        "probability_rank_eligible": probability_rank_eligible,
+        "objective_rank_eligible": _objective_rank_eligible(row, probability_rank_eligible, scored),
+        **_probability_separation_fields(market_needed=market_needed),
+        "can_execute": False,
+    }
+
+
+def _completed_registered(row: TeamEventRequestRow, scored: dict[str, Any]) -> dict[str, Any]:
+    """Normalize a standard registered sport package without coupling market state.
+
+    This path is intentionally generic. It does not register or certify a sport;
+    it only prevents the batch boundary from discarding a valid governed package
+    returned by an already-registered controlling specialist.
+    """
+    keys = ("calibrated_probability", "calibrated_lower_bound", "calibrated_upper_bound")
+    if not all(isinstance(scored.get(k), (int, float)) and not isinstance(scored.get(k), bool) for k in keys):
+        blockers = [str(value) for value in (scored.get("blockers") or [])]
+        return _held(row, str(scored.get("code") or "MODEL_OUTPUT_INVALID"), blockers[0] if blockers else "GOVERNED_PROBABILITY_FIELDS_INVALID", scored)
+    selected = str(scored.get("selected_participant") or scored.get("selected_team") or scored.get("selection") or "").strip()
+    if not selected:
+        return _held(row, "MODEL_OUTPUT_INVALID", "TEAM_EVENT_SELECTED_PARTICIPANT_IDENTITY_MISSING", scored)
+    market_needed = row.price_required_for_objective or row.objective_lane != "OUTRIGHT_WIN_PROBABILITY"
+    inherited_blockers = [str(value) for value in (scored.get("blockers") or [])]
+    blockers = list(dict.fromkeys([*inherited_blockers, *(["MARKET_DATA_UNOBTAINABLE"] if market_needed else [])]))
+    probability_rank_eligible = bool(scored.get("rank_eligible") is True and scored.get("probability_publishable") is True)
+    return {
+        "research_run_id": row.research_run_id,
+        "event_key": row.event_key,
+        "objective_lane": row.objective_lane,
+        "terminal_status": "COMPLETED",
+        "code": "SPORTING_PROBABILITY_COMPLETED",
+        "selected_team": selected,
+        "calibrated_probability": float(scored["calibrated_probability"]),
+        "calibrated_lower_bound": float(scored["calibrated_lower_bound"]),
+        "calibrated_upper_bound": float(scored["calibrated_upper_bound"]),
+        "audit_result": "PARTIAL" if blockers else "PASS",
+        "event_decision": scored.get("event_decision") or scored.get("llp_event_decision") or "GOVERNED_PROBABILITY_COMPLETE",
+        "blockers": blockers,
+        "internal_ceiling": scored.get("terminal_label") or ("SPORTING_PROBABILITY_ONLY" if blockers else "FULL_MODEL_PROBABILITY"),
+        "governed_publication_code": scored.get("code"),
+        "terminal_label": scored.get("terminal_label"),
+        "score_snapshot_id": scored.get("score_snapshot_id"),
+        "event_prediction_id": scored.get("event_prediction_id") or scored.get("prediction_id"),
+        "probability_publishable": bool(scored.get("probability_publishable")),
+        "probability_rank_eligible": probability_rank_eligible,
+        "objective_rank_eligible": _objective_rank_eligible(row, probability_rank_eligible, scored),
+        **_probability_separation_fields(market_needed=market_needed),
+        "can_execute": False,
     }
 
 
@@ -350,16 +500,33 @@ def install_team_event_request_routes(app: Any, *, auth_dependency: Any, db_clie
                     outcomes.append(_held(row, "MODEL_INPUTS_INSUFFICIENT", "NFL_SCOUT_EVENT_IDENTITY_INCOMPLETE")); continue
                 try:
                     req = _nfl_score_request(row)
-                    scored = v17_team_event_base.score_team_event_request(req, event_api=event_api, canonical_hydration_required=True)
+                    scored = score_v17_team_event_request(req, event_api=event_api, canonical_hydration_required=True)
                 except HTTPException as exc:
                     detail = exc.detail if isinstance(exc.detail, dict) else {"message": str(exc.detail)}
                     raw_code = str(detail.get("code") or "PROVIDER_UNAVAILABLE")
-                    outcomes.append(_held(row, raw_code, str(detail.get("blocker_code") or raw_code), detail)); continue
+                    outcomes.append(_held(row, raw_code, str(detail.get("blocker_code") or (detail.get("blockers") or [raw_code])[0]), detail)); continue
                 except Exception as exc:
-                    outcomes.append(_held(row, "TRANSPORT_FAILURE", "NFL_ROW_SCORER_FAILURE", {"error_type": type(exc).__name__})); continue
+                    outcomes.append(_held(row, "MODEL_SCORER_FAILED", "NFL_ROW_SCORER_FAILURE", {"error_type": type(exc).__name__})); continue
                 outcomes.append(_completed_nfl(row, scored)); continue
             if sport != "MLB" or league != "MLB":
-                outcomes.append(_held(row, "MODEL_UNAVAILABLE", "SPORT_SPECIFIC_MODEL_UNAVAILABLE")); continue
+                if os.getenv("WOW_V17_ACTIVE", "0") != "1":
+                    outcomes.append(_held(row, "MODEL_UNAVAILABLE", "SPORT_SPECIFIC_MODEL_UNAVAILABLE")); continue
+                if not row.event_start_time_utc or not row.home_team or not row.away_team:
+                    outcomes.append(_held(row, "MODEL_INPUTS_INSUFFICIENT", "TEAM_EVENT_IDENTITY_INCOMPLETE")); continue
+                try:
+                    req = _registered_score_request(row)
+                    scored = score_v17_team_event_request(req, event_api=event_api, canonical_hydration_required=True)
+                except HTTPException as exc:
+                    detail = exc.detail if isinstance(exc.detail, dict) else {"message": str(exc.detail)}
+                    raw_code = str(detail.get("code") or "PROVIDER_UNAVAILABLE")
+                    blockers = [str(value) for value in (detail.get("blockers") or [])]
+                    blocker = str(detail.get("blocker_code") or (blockers[0] if blockers else raw_code))
+                    outcomes.append(_held(row, raw_code, blocker, detail)); continue
+                except Exception as exc:
+                    outcomes.append(_held(row, "MODEL_SCORER_FAILED", "TEAM_EVENT_ROW_SCORER_FAILURE", {"error_type": type(exc).__name__})); continue
+                if not isinstance(scored, dict):
+                    outcomes.append(_held(row, "MODEL_OUTPUT_INVALID", "TEAM_EVENT_BACKEND_INVALID_RESPONSE")); continue
+                outcomes.append(_completed_registered(row, scored)); continue
             try:
                 event = _hydrate(db_client_fn(), row)
             except Exception as exc:
@@ -391,4 +558,7 @@ def install_team_event_request_routes(app: Any, *, auth_dependency: Any, db_clie
         count = len(batch.rows); completed = sum(x["terminal_status"] == "COMPLETED" for x in outcomes)
         if len(outcomes) != count:
             raise HTTPException(status_code=500, detail={"code": "RECONCILIATION_FAILURE", "can_execute": False})
-        return {"ok": completed > 0, "run_status": "COMPLETE" if completed == count else ("RUN_PARTIAL" if completed else "BLOCKED"), "rows_in": count, "rows_completed": completed, "rows_held": count - completed, "reconciliation_pass": True, "rows": outcomes, "can_execute": False}
+        for source_row, outcome in zip(batch.rows, outcomes):
+            _apply_card_admission(source_row, outcome)
+        rows_card_admissible = sum(item.get("card_admission_eligible") is True for item in outcomes)
+        return {"ok": completed > 0, "run_status": "COMPLETE" if completed == count else ("RUN_PARTIAL" if completed else "BLOCKED"), "rows_in": count, "rows_completed": completed, "rows_held": count - completed, "rows_card_admissible": rows_card_admissible, "card_pool_status": "QUALIFIED" if rows_card_admissible else "NONE_QUALIFIED", "reconciliation_pass": True, "rows": outcomes, "can_execute": False}

@@ -38,6 +38,7 @@ from v17.daily_terminal_reduction import (
 from v17.detailed_evidence_install import install_v17_detailed_evidence
 from v17.prop_evidence_acquisition_scheduler import run_prop_evidence_acquisition_loop
 from v17.prop_forward_cohort_route import install_prop_forward_cohort_route
+from v17.prop_canonical_identity import canonical_source_snapshot_ids, canonicalize_prop_manifest
 from v17.team_event_official_publication_guard import evaluate_team_event_official_publication
 from v17.team_event_request_runtime import TeamEventRequest, score_team_event_request
 
@@ -142,7 +143,7 @@ def _prop_manifest_rows(
     page_size: int = 250,
 ) -> list[dict[str, Any]]:
     """Read the complete canonical slate manifest without a first-page truncation."""
-    selected = "source_snapshot_id,event_id,event_start_time,sport,player,stat_type,line,hydration_status,blockers"
+    selected = "source_snapshot_id,captured_at,event_id,event_start_time,sport,player,stat_type,line,hydration_status,blockers"
     manifest: list[dict[str, Any]] = []
     offset = 0
     while True:
@@ -162,7 +163,7 @@ def _prop_manifest_rows(
         if not callable(ranged) or len(batch) < page_size:
             break
         offset += page_size
-    return manifest
+    return canonicalize_prop_manifest(manifest)
 
 
 def _prop_rows(db: Any, requested_date: str, requested_timezone: str, limit: int) -> list[dict[str, Any]]:
@@ -200,7 +201,7 @@ def _prop_handoff_reconciliation(
     scored_rows: int,
 ) -> dict[str, Any]:
     counts = _acquisition_counts(acquisition)
-    canonical_ids = {str(row.get("source_snapshot_id")) for row in canonical_manifest if row.get("source_snapshot_id")}
+    canonical_ids = canonical_source_snapshot_ids(canonical_manifest)
     persisted_ids = _receipt_snapshot_ids(acquisition)
     if persisted_ids:
         missing_persisted_ids = sorted(persisted_ids - canonical_ids)
@@ -246,6 +247,11 @@ def _lane_reconciliation(
     blockers = blockers or []
     lane_rows = [row for row in rows if row.get("lane") == lane]
     canonical_count = len(canonical_manifest or []) if lane == "PROPS" else len(lane_rows)
+    source_instance_count = (
+        sum(int(row.get("source_instance_count") or 1) for row in (canonical_manifest or []))
+        if lane == "PROPS"
+        else canonical_count
+    )
     zero_row_reason = None
     if not lane_rows:
         expected = "PROP_SNAPSHOT_QUERY_FAILED" if lane == "PROPS" else "TEAM_EVENT_SNAPSHOT_QUERY_FAILED"
@@ -265,8 +271,9 @@ def _lane_reconciliation(
         else:
             zero_row_reason = "NO_CANONICAL_CANDIDATES"
     result = {
-        "discovered_count": canonical_count,
+        "discovered_count": source_instance_count,
         "canonicalized_count": canonical_count,
+        "duplicate_source_instance_count": max(source_instance_count - canonical_count, 0),
         "requested_row_limit": requested_limit,
         "scored_count": len(lane_rows),
         "completed_count": sum(1 for row in lane_rows if row.get("row_status") == "COMPLETED"),

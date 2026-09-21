@@ -86,12 +86,12 @@ def test_legacy_replit_cannot_be_primary_v17_route():
     assert c["backward_compatible_v16_routes_preserved"] is True
 
 
-def test_render_deployment_attestation_matches_sep16_verified_state():
+def test_render_deployment_attestation_matches_current_live_state():
     backend = _contract()["backend_contract"]
     assert backend["current_render_service"] == "wow-governed-probability-engine"
     assert backend["current_render_service_id"] == "srv-da7sa9gu01pc73brt80g"
-    assert backend["current_deployed_sha"] == "1762c4fc2c1a9f9670c3c5a6a0fe551ddb98f3cf"
-    assert backend["current_render_deploy_id"] == "dep-daldrgf40ujc73dm0a9g"
+    assert backend["current_deployed_sha"] == "2d430886dc003b942cf9ca9d0251963cfc88d858"
+    assert backend["current_render_deploy_id"] == "dep-daoib7rbc2fs73e4vco0"
     assert backend["auto_deploy"] is True
     assert backend["auto_deploy_trigger"] == "checksPass"
     assert backend["openapi_introspection_blocks_live_editor_sync"] is False
@@ -107,6 +107,7 @@ def test_v17_active_backend_uses_existing_governed_team_event_adapter_without_fa
     assert active["host_local_terminal_labels"] == "AUDIT_ONLY"
     assert active["canonical_host_identity_enforcement"] == "ACTIVE"
     assert active["recommendation_ledger_routes"] == "PRODUCTION_ACTIVE"
+    assert active["action_schemas"]["WOW_BETTING_ENGINE"] == "v17/openapi.wow-betting-engine.v17.yaml"
 
 
 def test_v16_is_legacy_compatibility_not_current_generation():
@@ -118,7 +119,7 @@ def test_v16_is_legacy_compatibility_not_current_generation():
     assert "scoreWowTeamEventRequest" in legacy["pick_request"]["operations"]
 
 
-def test_live_editor_sync_is_verified_without_stale_blob_or_schema_claims():
+def test_wow_editor_update_is_recorded_but_live_action_acceptance_stays_fail_closed():
     c = _contract()
     attest = c["editor_attestation"]
     wow = attest["WOW_BETTING_ENGINE"]
@@ -126,22 +127,24 @@ def test_live_editor_sync_is_verified_without_stale_blob_or_schema_claims():
 
     assert wow["required"] is True
     assert llp["required"] is True
-    assert wow["status"] == "LIVE_EDITOR_SYNC_VERIFIED"
-    assert llp["status"] == "LIVE_EDITOR_SYNC_VERIFIED"
-    assert wow["verified_at"] == "2026-09-16"
-    assert wow["instructions_length_chars"] == 5418
+    assert wow["status"] == "EDITOR_UPDATED__LIVE_ACTION_ACCEPTANCE_REQUIRED"
+    assert wow["historical_status"] == "LIVE_EDITOR_SYNC_VERIFIED"
+    assert wow["historical_verified_at"] == "2026-09-16"
+    assert wow["editor_update_reported_at"] == "2026-09-20T22:14:47Z"
+    assert wow["editor_update_evidence"] == "USER_REPORTED_IN_CHAT"
     assert wow["instructions_blob_sha"] is None
-    assert wow["instructions_hash_status"] == "NOT_CAPTURED_FROM_LIVE_EDITOR_EXPORT"
-    assert wow["action_schema"] == "LIVE_EDITOR_MERGED_14_OPERATION_CONTRACT"
-    assert wow["action_operation_count"] == 14
-    assert wow["action_schema_changed"] is True
+    assert wow["repository_instruction_parity"] == "USER_REPORTED_IMPORTED_AND_UPDATED__ACTION_ACCEPTANCE_PENDING"
+    assert wow["action_schema"] == "v17/openapi.wow-betting-engine.v17.yaml"
+    assert wow["canonical_prop_operation"] == "scoreWowPickRequest"
+    assert wow["legacy_prop_operation_alias"] == "scoreWowV17PickRequest"
     assert wow["bearer_auth_changed"] is False
-    assert wow["verified_after_reload"] is True
+    assert wow["verified_after_reload"] is False
+    assert wow["live_action_acceptance_verified"] is False
     assert wow["live"] is True
-    assert wow["health_acceptance_operation"] == "getWowProbabilityHealth"
-    assert wow["health_acceptance_status"] == "PASS"
-    assert wow["health_acceptance_runtime"] == "V17_ACTIVE"
+    assert wow["historical_health_acceptance_status"] == "PASS"
+    assert wow["historical_health_acceptance_runtime"] == "V17_ACTIVE"
     assert wow["health_acceptance_can_execute"] is False
-    assert c["remaining_external_sync"] == []
+    assert llp["status"] == "LIVE_EDITOR_SYNC_VERIFIED"
+    assert c["remaining_external_sync"] == ["WOW_BETTING_ENGINE_LIVE_ACTION_ACCEPTANCE_AFTER_EDITOR_UPDATE"]
     assert c["activation"]["v17_cutover_allowed"] is True
     assert c["activation"]["can_execute"] is False

@@ -40,7 +40,11 @@ from fastapi import Header, HTTPException
 from github_actions_oidc import scout_route_auth_dependency
 import pick_request_runtime_core as _core
 from pick_request_runtime_core import *  # noqa: F401,F403
-from prop_auto_hydration_router import auto_hydrate_prop_evidence as _sport_aware_auto_hydrate_prop_evidence
+from prop_auto_hydration_router import (
+    auto_hydrate_prop_evidence as _sport_aware_auto_hydrate_prop_evidence,
+    hydration_request_context,
+    provider_for_sport,
+)
 from v17.fantasy_score_pick_request_bridge import (
     research_candidate_outcome as _fantasy_research_candidate_outcome,
     research_candidate_preflight as _fantasy_research_candidate_preflight,
@@ -55,6 +59,7 @@ _ORIGINAL_TERMINAL = _core._terminal
 _ORIGINAL_COMPLETED_SCORED_OUTCOME = _core._completed_scored_outcome
 _ORIGINAL_AUTO_HYDRATE_PROP_EVIDENCE = _core.auto_hydrate_prop_evidence
 _ORIGINAL_APPLY_PORTFOLIO_GOVERNANCE = _core._apply_portfolio_governance
+_ORIGINAL_VALIDATE_EVIDENCE = _core._validate_evidence
 
 # Preserve the source-level exact-line contract used by V17 certification:
 # frozen snapshot contains `"line": float(row.line)` and the score request
@@ -105,6 +110,49 @@ def _auto_hydrate_prop_evidence_delegate(*args: Any, **kwargs: Any) -> Any:
 _core.auto_hydrate_prop_evidence = _auto_hydrate_prop_evidence_delegate
 
 
+def _validate_evidence(row: Any, canonical_stat: str) -> dict[str, Any]:
+    """Add canonical-event binding verification to the historical validator.
+
+    NFL automatic hydration now carries a provider-derived nflverse canonical
+    event id. The request may not self-attest a different canonical identity:
+    fail before immutable evidence persistence or specialist scoring.
+    """
+    normalized = _ORIGINAL_VALIDATE_EVIDENCE(row, canonical_stat)
+    evidence = getattr(row, "evidence", None)
+    role_status = getattr(evidence, "role_status", None) if evidence is not None else None
+    role = role_status if isinstance(role_status, dict) else {}
+    bound_event_id = str(role.get("canonical_event_id") or "").strip()
+    request_event_id = str(normalized.get("event_id") or "").strip()
+    if bound_event_id and bound_event_id != request_event_id:
+        raise ValueError("PROP_EVENT_IDENTITY_CONFLICT:CANONICAL_EVENT_ID_MISMATCH")
+
+    if str(normalized.get("sport") or "").strip().upper() == "NFL":
+        aliases = role.get("provider_event_ids")
+        espn_alias = (
+            str(aliases.get("ESPN") or "").strip()
+            if isinstance(aliases, dict)
+            else ""
+        )
+        provider_backed = bool(
+            espn_alias
+            or str(role.get("espn_athlete_id") or "").strip()
+            or str(role.get("status") or "").strip().upper() == "ACTIVE_CURRENT_ESPN_ROSTER"
+        )
+        verified_event_id = str(role.get("verified_canonical_event_id") or "").strip()
+        if provider_backed and not verified_event_id:
+            raise ValueError("PROP_EVENT_IDENTITY_CONFLICT:NFL_CANONICAL_EVENT_ID_UNVERIFIED")
+        if verified_event_id and verified_event_id != request_event_id:
+            raise ValueError("PROP_EVENT_IDENTITY_CONFLICT:NFL_CANONICAL_EVENT_ID_MISMATCH")
+
+    identity_status = str(role.get("identity_binding_status") or "").strip().upper()
+    if identity_status and identity_status not in {"PASS", "PROVIDER_IDENTITY_ONLY"}:
+        raise ValueError("PROP_EVENT_IDENTITY_CONFLICT:IDENTITY_BINDING_NOT_PASS")
+    return normalized
+
+
+_core._validate_evidence = _validate_evidence
+
+
 def _terminal(
     row_key: str,
     status: str,
@@ -147,28 +195,120 @@ def _completed_scored_outcome(**kwargs: Any) -> dict[str, Any]:
     return out
 
 
+def _prediction_id(outcome: dict[str, Any]) -> str | None:
+    result = outcome.get("result")
+    if not isinstance(result, dict):
+        return None
+    prediction = result.get("prediction")
+    if not isinstance(prediction, dict):
+        return None
+    value = prediction.get("prediction_id")
+    text = str(value or "").strip()
+    return text or None
+
+
 def _apply_portfolio_governance(
     request_id: Optional[str],
     scored_legs: list[tuple[dict[str, Any], dict[str, Any]]],
 ) -> None:
-    """Fail closed downstream without destroying a sporting-model receipt."""
+    """Fail closed for card admission without mutating sporting probability.
+
+    Portfolio/dependence governance remains separate from sporting probability,
+    but a row may not cross into downstream card construction merely because it
+    completed model scoring. The authoritative row-level ``rank_eligible`` and
+    ``probability_publishable`` flags must both be true, the terminal row must
+    remain completed/non-rejected, and portfolio governance itself must pass.
+
+    The emitted card-admission receipt binds the governed prediction id to the
+    exact event/player/stat/line/direction sent through ``/score-pick-request``.
+    A later line/direction change therefore requires a fresh scoring receipt;
+    this layer never treats an adjacent line as the same thesis.
+    """
     try:
         _ORIGINAL_APPLY_PORTFOLIO_GOVERNANCE(request_id, scored_legs)
-        return
     except Exception as exc:
         error_type = type(exc).__name__
+        for leg, outcome in scored_legs:
+            blocker = "PORTFOLIO_GOVERNANCE_UNAVAILABLE"
+            outcome["portfolio_governance"] = {
+                "status": "BLOCKED",
+                "code": blocker,
+                "error_type": error_type,
+                "blockers": [blocker],
+                "receipt_preserved": True,
+                "sporting_probability_mutated": False,
+                "can_execute": False,
+            }
+            outcome["downstream_portfolio_evaluation_allowed"] = False
+            outcome["card_admission_eligible"] = False
+            outcome["card_admission_blockers"] = [blocker]
+            outcome["card_admission_receipt"] = {
+                "prediction_id": _prediction_id(outcome),
+                "event_id": leg.get("event_id"),
+                "participant": leg.get("player"),
+                "market_stat": leg.get("prop_type"),
+                "exact_line": leg.get("line"),
+                "direction": leg.get("direction"),
+                "rank_eligible": outcome.get("rank_eligible") is True,
+                "probability_publishable": outcome.get("probability_publishable") is True,
+                "portfolio_eligible": False,
+                "can_execute": False,
+            }
+        return
 
-    for _leg, outcome in scored_legs:
-        outcome["portfolio_governance"] = {
-            "status": "BLOCKED",
-            "code": "PORTFOLIO_GOVERNANCE_UNAVAILABLE",
-            "error_type": error_type,
-            "blockers": ["PORTFOLIO_GOVERNANCE_UNAVAILABLE"],
-            "receipt_preserved": True,
-            "sporting_probability_mutated": False,
+    for leg, outcome in scored_legs:
+        upstream_blockers: list[str] = []
+        if outcome.get("rank_eligible") is not True:
+            upstream_blockers.append("CARD_ADMISSION:RANK_INELIGIBLE")
+        if outcome.get("probability_publishable") is not True:
+            upstream_blockers.append("CARD_ADMISSION:PROBABILITY_NOT_PUBLISHABLE")
+        if outcome.get("terminal_status") != "COMPLETED":
+            upstream_blockers.append("CARD_ADMISSION:TERMINAL_NOT_COMPLETED")
+        if outcome.get("pick_rejected") is True:
+            upstream_blockers.append("CARD_ADMISSION:TERMINAL_REJECTED")
+
+        governance = outcome.get("portfolio_governance")
+        if not isinstance(governance, dict):
+            governance = {
+                "status": "BLOCKED",
+                "code": "PORTFOLIO_GOVERNANCE_MISSING",
+                "blockers": ["PORTFOLIO_GOVERNANCE_MISSING"],
+                "sporting_probability_mutated": False,
+                "can_execute": False,
+            }
+            outcome["portfolio_governance"] = governance
+            outcome["downstream_portfolio_evaluation_allowed"] = False
+
+        portfolio_allowed = outcome.get("downstream_portfolio_evaluation_allowed") is True
+        portfolio_blockers = [str(item) for item in governance.get("blockers") or []]
+        if not portfolio_allowed and not portfolio_blockers:
+            portfolio_blockers.append("CARD_ADMISSION:PORTFOLIO_NOT_QUALIFIED")
+
+        card_blockers = list(dict.fromkeys([*upstream_blockers, *portfolio_blockers]))
+        if upstream_blockers:
+            outcome["downstream_portfolio_evaluation_allowed"] = False
+            governance["status"] = "BLOCKED"
+            governance["portfolio_qualification"] = "HELD_FOR_UPSTREAM_ELIGIBILITY"
+            governance["card_admission_blocked"] = True
+            governance["blockers"] = list(dict.fromkeys([*portfolio_blockers, *upstream_blockers]))
+            governance["sporting_probability_mutated"] = False
+            governance["can_execute"] = False
+            portfolio_allowed = False
+
+        outcome["card_admission_eligible"] = bool(not card_blockers and portfolio_allowed)
+        outcome["card_admission_blockers"] = card_blockers
+        outcome["card_admission_receipt"] = {
+            "prediction_id": _prediction_id(outcome),
+            "event_id": leg.get("event_id"),
+            "participant": leg.get("player"),
+            "market_stat": leg.get("prop_type"),
+            "exact_line": leg.get("line"),
+            "direction": leg.get("direction"),
+            "rank_eligible": outcome.get("rank_eligible") is True,
+            "probability_publishable": outcome.get("probability_publishable") is True,
+            "portfolio_eligible": portfolio_allowed,
             "can_execute": False,
         }
-        outcome["downstream_portfolio_evaluation_allowed"] = False
 
 
 _core._terminal = _terminal
@@ -227,6 +367,23 @@ class _ScoringReceiptMarketApi:
             ) from exc
 
 
+def _normalize_hydration_provider_receipts(response: dict[str, Any], batch: Any) -> None:
+    """Correct legacy core telemetry without changing any terminal semantics."""
+    if str(response.get("response_mode") or "FULL").upper() == "COMPACT":
+        return
+    rows = response.get("rows")
+    if not isinstance(rows, list):
+        return
+    for request_row, outcome in zip(batch.rows, rows):
+        if not isinstance(outcome, dict):
+            continue
+        acquisition = outcome.get("acquisition")
+        if not isinstance(acquisition, dict) or acquisition.get("mode") != "AUTO_HYDRATION":
+            continue
+        canonical_stat = _core._canonical_stat(request_row.sport, request_row.stat_type)
+        acquisition["provider"] = provider_for_sport(request_row.sport, canonical_stat)
+
+
 def _install_top10_reconciliation_wrapper(app: Any) -> None:
     """Post-validate the core receipt without rebuilding the scoring route."""
     route = next(
@@ -244,7 +401,12 @@ def _install_top10_reconciliation_wrapper(app: Any) -> None:
         batch: _core.PickRequestBatch,
         x_wow_model_identity: Optional[str] = Header(default=None, alias="X-WOW-Model-Identity"),
     ) -> dict[str, Any]:
-        response = original_endpoint(batch, x_wow_model_identity)
+        # The producing core predates canonical-event propagation in its
+        # hydration function call. Bind the request rows for the duration of the
+        # call so fallback hydration receives the same event/opponent identity as
+        # interactive prehydration without changing probability/model behavior.
+        with hydration_request_context(batch.rows):
+            response = original_endpoint(batch, x_wow_model_identity)
         if not isinstance(response, dict):
             raise HTTPException(
                 status_code=500,
@@ -255,6 +417,7 @@ def _install_top10_reconciliation_wrapper(app: Any) -> None:
                     "can_execute": False,
                 },
             )
+        _normalize_hydration_provider_receipts(response, batch)
         return enforce_top10_completion(response, list(batch.rows))
 
     reconciled_score_pick_request._v17_top10_reconciled = True  # type: ignore[attr-defined]

@@ -1,0 +1,42 @@
+name: wow-v17-multisport-prop-live-canary
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/wow-v17-nfl-prop-live-canary.yml"
+      - "artifacts/wow-engine/v17/multisport_prop_live_canary.py"
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  multisport-prop-live-canary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      WOW_SERVICE_URL: https://wow-governed-probability-engine.onrender.com
+      WOW_OIDC_AUDIENCE: wow-v17-multiscout
+      WOW_CAN_EXECUTE: "false"
+      WOW_DRY_RUN_ONLY: "true"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Assert fail-closed OIDC canary context
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$WOW_CAN_EXECUTE" = "false"
+          test "$WOW_DRY_RUN_ONLY" = "true"
+          test -n "$ACTIONS_ID_TOKEN_REQUEST_URL"
+          test -n "$ACTIONS_ID_TOKEN_REQUEST_TOKEN"
+
+      - name: Validate multi-sport canary configuration
+        working-directory: artifacts/wow-engine
+        run: python v17/multisport_prop_live_canary.py self-test
+
+      - name: Run governed NFL MLB WNBA live canaries and stress
+        working-directory: artifacts/wow-engine
+        run: python v17/multisport_prop_live_canary.py all

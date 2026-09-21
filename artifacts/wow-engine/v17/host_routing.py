@@ -6,6 +6,7 @@ and can never execute a wager.
 """
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
@@ -18,6 +19,12 @@ PROJECT_CHAT = "PROJECT_CHAT"
 
 LIVE_GPT_ACTION_INVOCATION_BLOCKED = "LIVE_GPT_ACTION_INVOCATION_BLOCKED"
 LIVE_GPT_ACTION_RESULT_INVALID = "LIVE_GPT_ACTION_RESULT_INVALID"
+
+FULL_MODEL_PROP_REQUIRED_ACTION_OPERATION_IDS = (
+    "getWowV17BackendHealth",
+    "scoreWowPickRequest",
+    "lookupWowV17PredictionReceipts",
+)
 
 AUTHORIZED_REQUESTER_HOSTS = frozenset(
     {WOW_BETTING_ENGINE, LLP_TEAM_BETTING_ENGINE, PROJECT_CHAT}
@@ -165,6 +172,48 @@ def accepted_full_model_operation_ids(candidate_family: str) -> frozenset[str]:
     if family in TEAM_EVENT_FAMILIES:
         return frozenset({canonical, "scoreWowV17TeamEventFromWowHost"})
     return frozenset({canonical})
+
+
+def preflight_full_model_prop_action_surface(
+    available_operation_ids: Iterable[str] | None,
+) -> dict[str, Any]:
+    """Fail before prop-row preparation when the live GPT Action surface is incomplete.
+
+    This is a host/session capability check, not a sporting-model capability
+    check. Therefore a missing Action keeps backend model capability UNKNOWN and
+    must never be rewritten as MODEL_UNAVAILABLE.
+    """
+    available = tuple(
+        sorted(
+            {
+                str(operation_id or "").strip()
+                for operation_id in (available_operation_ids or ())
+                if str(operation_id or "").strip()
+            }
+        )
+    )
+    available_set = frozenset(available)
+    missing = tuple(
+        operation_id
+        for operation_id in FULL_MODEL_PROP_REQUIRED_ACTION_OPERATION_IDS
+        if operation_id not in available_set
+    )
+    blocked = bool(missing)
+    return {
+        "preflight_pass": not blocked,
+        "status": LIVE_GPT_ACTION_INVOCATION_BLOCKED if blocked else None,
+        "required_operation_ids": list(FULL_MODEL_PROP_REQUIRED_ACTION_OPERATION_IDS),
+        "available_operation_ids": list(available),
+        "missing_operation_ids": list(missing),
+        "rows_attempted": 0,
+        "action_invocation_attempted": False,
+        "specialist_scoring_attempted": "UNKNOWN",
+        "scoring_attempted": False,
+        "backend_model_capability": "UNKNOWN",
+        "rank_eligible": False,
+        "full_model_completed": False,
+        "can_execute": False,
+    }
 
 
 def _specialist_scoring_attempted(receipt: FullModelActionReceipt) -> bool | str:

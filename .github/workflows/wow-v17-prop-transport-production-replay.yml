@@ -1,0 +1,137 @@
+name: wow-v17-prop-transport-production-replay
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/wow-v17-prop-transport-production-replay.yml"
+      - ".github/workflows/wow-v17-canonical-prop-action.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: wow-v17-prop-transport-production-replay-v3-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  replay:
+    name: Dispatch governed canonical production replay
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REQUEST_FILE: artifacts/wow-engine/v17/prop_action_requests/2026-09-15-strikeouts-1ip.json
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Dispatch exact authorized canonical prop workflow
+        id: dispatch
+        shell: bash
+        run: |
+          set -euo pipefail
+          started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          echo "started_at=$started_at" >> "$GITHUB_OUTPUT"
+          gh workflow run wow-v17-canonical-prop-action.yml \
+            --ref main \
+            -f request_file="$REQUEST_FILE" \
+            -f allow_historical_request=true
+          echo "CANONICAL_PROP_REPLAY_DISPATCHED request_file=$REQUEST_FILE can_execute=false"
+
+      - name: Resolve dispatched canonical run
+        id: resolve
+        shell: bash
+        run: |
+          set -euo pipefail
+          started_at='${{ steps.dispatch.outputs.started_at }}'
+          run_id=""
+          for attempt in $(seq 1 30); do
+            run_id="$(gh run list \
+              --workflow wow-v17-canonical-prop-action.yml \
+              --branch main \
+              --event workflow_dispatch \
+              --limit 20 \
+              --json databaseId,createdAt \
+              --jq '.[] | select(.createdAt >= "'"$started_at"'") | .databaseId' \
+              | head -n1)"
+            if [ -n "$run_id" ]; then
+              break
+            fi
+            sleep 2
+          done
+          test -n "$run_id" || { echo "CANONICAL_PROP_DISPATCH_RUN_NOT_FOUND" >&2; exit 1; }
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+          echo "CANONICAL_PROP_REPLAY_RUN_ID=$run_id"
+
+      - name: Wait for canonical production replay
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh run watch '${{ steps.resolve.outputs.run_id }}' --exit-status
+
+      - name: Download canonical governed replay artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p replay-artifact
+          gh run download '${{ steps.resolve.outputs.run_id }}' \
+            --name v17-canonical-prop-action-result \
+            --dir replay-artifact
+          test -f replay-artifact/v17_canonical_prop_action_result.json
+
+      - name: Assert transport reconciliation and fail-closed invariants
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          p = Path("replay-artifact/v17_canonical_prop_action_result.json")
+          data = json.loads(p.read_text(encoding="utf-8"))
+          if data.get("can_execute") is not False:
+              raise SystemExit("CAN_EXECUTE_INVARIANT_FAILED")
+          summary = data.get("summary") or {}
+          prepared = int(summary.get("directional_rows_prepared") or 0)
+          returned = int(summary.get("returned_rows") or 0)
+          if prepared <= 4:
+              raise SystemExit(f"PROP_REPLAY_NOT_LARGE_BATCH:{prepared}")
+          if returned != prepared:
+              raise SystemExit(f"PROP_REPLAY_GLOBAL_RECONCILIATION_FAILED:{returned}:{prepared}")
+          batches = data.get("action_batches") or []
+          if not batches:
+              raise SystemExit("PROP_REPLAY_ACTION_BATCHES_MISSING")
+          for idx, batch in enumerate(batches, 1):
+              if batch.get("can_execute") is not False:
+                  raise SystemExit(f"PROP_REPLAY_BATCH_CAN_EXECUTE_FAILED:{idx}")
+              if batch.get("response_mode") != "COMPACT":
+                  raise SystemExit(f"PROP_REPLAY_RESPONSE_MODE_NOT_COMPACT:{idx}")
+              if batch.get("reconciliation_pass") is not True:
+                  raise SystemExit(f"PROP_REPLAY_BATCH_RECONCILIATION_FAILED:{idx}")
+              if int(batch.get("rows_in") or 0) > 4:
+                  raise SystemExit(f"PROP_REPLAY_BATCH_TOO_LARGE:{idx}:{batch.get('rows_in')}")
+          rows = data.get("compact_rows") or []
+          if len(rows) != returned:
+              raise SystemExit(f"PROP_REPLAY_COMPACT_ROW_COUNT_MISMATCH:{len(rows)}:{returned}")
+          if any(str(r.get("code") or "") == "PROP_ACTION_TRANSPORT_FAILED" for r in rows):
+              raise SystemExit("BOARD_WIDE_PROP_ACTION_TRANSPORT_FAILED_RECURRED")
+          untyped = [r for r in rows if not (r.get("terminal_status") and r.get("code"))]
+          if untyped:
+              raise SystemExit(f"PROP_REPLAY_UNTYPED_ROWS:{len(untyped)}")
+          print(
+              f"PROP_TRANSPORT_REPLAY_PASS rows={returned} batches={len(batches)} "
+              "response_mode=COMPACT max_batch=4 reconciliation_pass=true can_execute=false"
+          )
+          PY
+
+      - name: Preserve acceptance artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v17-prop-transport-production-replay
+          path: replay-artifact/v17_canonical_prop_action_result.json
+          if-no-files-found: warn
+          retention-days: 14

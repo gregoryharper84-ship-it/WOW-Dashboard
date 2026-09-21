@@ -41,9 +41,81 @@ paths:
       responses:
         '200': {description: Active detailed-evidence governance contract}
         '401': {description: Authentication failed}
+  /v17/capabilities:
+    get:
+      operationId: getWowV17Capabilities
+      x-openai-isConsequential: false
+      description: >-
+        Read-only V17 capability matrix. Separates discovery, implementation,
+        runtime registration, certification, publication eligibility and execution.
+      security: [{actionBearer: []}]
+      responses:
+        '200': {description: Current V17 capability matrix}
+        '401': {description: Authentication failed}
+  /v17/market-health/rundown:
+    get:
+      operationId: getWowV17RundownMarketHealth
+      x-openai-isConsequential: false
+      description: >-
+        Strict TheRundown health probe that requires catalog and event access.
+        Market health never substitutes for sporting-model capability.
+      security: [{actionBearer: []}]
+      parameters:
+        - name: sport_key
+          in: query
+          required: false
+          schema: {type: string, default: baseball_mlb}
+        - name: date
+          in: query
+          required: false
+          schema: {type: string}
+      responses:
+        '200': {description: TheRundown catalog plus event endpoint health}
+        '401': {description: Authentication failed}
+        '422': {description: Invalid date or provider diagnostic request}
+  /v17/market-health/odds-api:
+    get:
+      operationId: getWowV17OddsApiMarketHealth
+      x-openai-isConsequential: false
+      description: >-
+        Read-only fallback-provider health probe. Reports credential/auth/rate state
+        without exposing secret values or creating sporting probabilities.
+      security: [{actionBearer: []}]
+      responses:
+        '200': {description: Odds API fallback health state}
+        '401': {description: Authentication failed}
+  /v17/discovery/espn-compact:
+    get:
+      operationId: getWowV17CompactEspnDiscovery
+      x-openai-isConsequential: false
+      description: >-
+        Bounded identity-only ESPN discovery fallback. Provider event IDs remain
+        aliases until canonical identity resolution and carry no prediction authority.
+      security: [{actionBearer: []}]
+      parameters:
+        - name: sport_key
+          in: query
+          required: false
+          schema: {type: string, default: baseball_mlb}
+        - name: date
+          in: query
+          required: false
+          schema: {type: string}
+        - name: page
+          in: query
+          required: false
+          schema: {type: integer, minimum: 1, default: 1}
+        - name: page_size
+          in: query
+          required: false
+          schema: {type: integer, minimum: 1, maximum: 250, default: 100}
+      responses:
+        '200': {description: Compact paginated discovery identities}
+        '401': {description: Authentication failed}
+        '422': {description: Invalid date or pagination request}
   /score-prop:
     post:
-      operationId: scoreWowV17Prop
+      operationId: scoreWowProp
       x-openai-isConsequential: false
       description: >-
         WOW player-prop lane only. Never use this route for team/event winners.
@@ -101,7 +173,7 @@ paths:
         '401': {description: Authentication failed}
   /score-pick-request:
     post:
-      operationId: scoreWowV17PickRequest
+      operationId: scoreWowPickRequest
       x-openai-isConsequential: false
       description: >-
         Canonical prop batch bridge. Caller evidence may include detailed_evidence;
@@ -228,6 +300,10 @@ components:
       required: [rows]
       properties:
         request_id: {type: [string, 'null']}
+        response_mode:
+          type: string
+          enum: [COMPACT, FULL]
+          default: COMPACT
         rows:
           type: array
           minItems: 1

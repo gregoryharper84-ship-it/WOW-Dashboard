@@ -182,6 +182,51 @@ def _dead_letter_backlog(client: Any) -> int:
     return total
 
 
+def _reconcile_expired_dead_letters(client: Any, ts: datetime) -> int:
+    """Terminate dead letters whose pregame window is irreversibly closed.
+
+    These rows cannot be retried or scored safely after first pitch. Preserve
+    the prior typed failure in the audit code while moving them to the same
+    explicit terminal disposition used by the normal refresh state machine.
+    """
+    response = (
+        client.table("wow_mlb_1ip_refresh_queue")
+        .select("queue_id,event_id,player,event_start_time,last_error_code")
+        .eq("status", "FAILED")
+        .limit(50)
+        .execute()
+    )
+    reconciled = 0
+    for row in list(getattr(response, "data", None) or []):
+        try:
+            event_start = _aware(row.get("event_start_time"))
+        except Exception:
+            continue
+        if ts < event_start:
+            continue
+        prior_code = str(row.get("last_error_code") or "UNKNOWN")
+        update = {
+            "status": "EXPIRED_PREGAME_WINDOW",
+            "next_refresh_at": None,
+            "terminal_label": "EXPIRED_PREGAME_WINDOW",
+            "last_error_code": f"RECONCILED_EXPIRED_DEAD_LETTER:{prior_code}",
+            "updated_at": ts.isoformat(),
+            "probability_publishable": False,
+            "can_execute": False,
+        }
+        client.table("wow_mlb_1ip_refresh_queue").update(update).eq(
+            "queue_id", row.get("queue_id")
+        ).execute()
+        reconciled += 1
+        LOGGER.warning(
+            "WOW_MLB_1IP_REFRESH_DEAD_LETTER_RECONCILED queue_id=%s event_id=%s "
+            "player=%s terminal_status=EXPIRED_PREGAME_WINDOW prior_error_code=%s "
+            "probability_publishable=false can_execute=false",
+            row.get("queue_id"), row.get("event_id"), row.get("player"), prior_code,
+        )
+    return reconciled
+
+
 def run_once(*, client: Any | None = None, now: datetime | None = None, hydrator: Callable[..., dict[str, Any]] | None = None) -> dict[str, int]:
     if client is None:
         url = os.environ["SUPABASE_URL"]
@@ -213,6 +258,7 @@ def run_once(*, client: Any | None = None, now: datetime | None = None, hydrator
         "failed": 0,
         "retry_scheduled": 0,
         "dead_lettered": 0,
+        "dead_letter_reconciled_expired": 0,
     }
 
     # Resolve once per batch so every row in the refresh pass is scored by the
@@ -311,6 +357,7 @@ def run_once(*, client: Any | None = None, now: datetime | None = None, hydrator
 
         client.table("wow_mlb_1ip_refresh_queue").update(base_update).eq("queue_id", queue_id).execute()
 
+    counters["dead_letter_reconciled_expired"] = _reconcile_expired_dead_letters(client, ts)
     counters["dead_letter_backlog"] = _dead_letter_backlog(client)
     return counters
 

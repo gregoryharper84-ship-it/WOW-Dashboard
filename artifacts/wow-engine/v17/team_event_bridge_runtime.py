@@ -283,10 +283,10 @@ def score_registered_team_event_request(
 def team_event_bridge_health() -> dict[str, dict[str, Any]]:
     """Expose catalog support, implementation coverage and registration separately.
 
-    Coverage is inspectable without trial-scoring an arbitrary event, and a
-    sport is never reported UP merely because some generic scorer imports: the
-    status is driven by *this sport's* registration, and the probe fields say
-    what exists behind it.
+    Coverage is inspectable without trial-scoring an arbitrary event. Runtime
+    scorer resolution is intentionally distinct from repository implementation
+    availability: an unregistered sport may have importable numerical machinery,
+    but it is not runtime-resolvable until an exact governed bridge is installed.
     """
     sports = list(EXPECTED_TEAM_EVENT_SPORTS)
     extras = sorted(set(TEAM_EVENT_BRIDGES).difference(sports))
@@ -308,7 +308,8 @@ def team_event_bridge_health() -> dict[str, dict[str, Any]]:
             ),
             "model_artifact_present": bool(probe.fitted_module) and probe.scorer_resolvable,
             "adapter_importable": probe.adapter_importable,
-            "scorer_resolvable": probe.scorer_resolvable,
+            "implementation_resolvable": probe.scorer_resolvable,
+            "scorer_resolvable": bool(registered and probe.scorer_resolvable),
             "controlling_specialist": (
                 registration.controlling_specialist if registered else None
             ),

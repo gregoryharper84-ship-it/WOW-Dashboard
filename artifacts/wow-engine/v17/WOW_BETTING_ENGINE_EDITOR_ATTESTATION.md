@@ -1,12 +1,15 @@
 # WOW Betting Engine — V17 Custom GPT editor attestation
 
-Status: `LIVE_EDITOR_SYNC_VERIFIED`
+Status: `RESYNC_REQUIRED_AFTER_PR654__LIVE_ACTION_ACCEPTANCE_REQUIRED`
 
-Verified: 2026-09-16
+Historical verification date: 2026-09-16
+Post-PR617 editor update reported: 2026-09-20
+PR654 repository repair merged: 2026-09-21
+Current reconciliation date: 2026-09-21
 
-This record attests the live `WOW_BETTING_ENGINE` Custom GPT configuration after save, reload, and a real Action health invocation. It records product configuration only; backend runtime, model capability, and repository governance remain separate states.
+This record preserves the last fully verified live `WOW_BETTING_ENGINE` editor acceptance while separately recording later editor and repository changes. PR #654 changed the canonical host instructions after the 2026-09-20 editor save, so that prior editor update no longer proves current instruction parity. Full current verification requires the PR654 instruction source to be saved/reloaded in the production WOW editor and a post-save authenticated Action acceptance from a fresh production WOW chat.
 
-## Live editor identity and safety
+## Historical live editor identity and safety
 
 ```text
 custom_gpt_name = WOW Betting Engine
@@ -19,77 +22,87 @@ DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS = true
 
 WOW owns player/scalar props. Team/event winner/favorite/underdog/upset objectives route to `LLP_TEAM_BETTING_ENGINE`. Scout/Research remain evidence-only. Exactly one controlling fitted specialist owns each row/event.
 
-## Instructions verification
+## Historical verified acceptance
 
-- Live editor instructions were rewritten in plain operational language and saved successfully.
-- The editor reported 5,418 characters, below the 8,000-character product limit.
-- Required behavior preserved: no wager execution, secrets non-exposure, governed-probability-only sourcing, calibrated lower-bound ranking where required, typed failure semantics, immutable pregame identity, receipt-gated display, exact-line/OOD behavior, and status separation.
-- The previous instruction blob SHA `202157522b96921d973e7a9dbc1d373f95249eb7` is historical and must not be reported as the current live-editor hash.
-- The exact byte-for-byte 5,418-character live text/hash was not available to this repository-write session. Repository semantic instructions are maintained in `WOW_V17_CUSTOM_GPT_INSTRUCTIONS.txt`; no false current hash is asserted here.
+On 2026-09-16 the live editor was saved, reloaded, and a real Action health invocation succeeded. The live Action reached the production Render origin with Bearer authentication and preserved `can_execute=false`.
 
-## Live Action contract
+Subsequent repository changes modified the required large-board orchestration contract and PR #617 repaired canonical prop Action operation IDs, so that 2026-09-16 verification cannot alone prove current parity.
+
+## Current canonical repository contract
 
 ```text
+schema = artifacts/wow-engine/v17/openapi.wow-betting-engine.v17.yaml
+instructions = artifacts/wow-engine/WOW_V17_CUSTOM_GPT_INSTRUCTIONS.txt
 server = https://wow-governed-probability-engine.onrender.com
 auth = API Key / Bearer using existing WOW_ACTION_API_KEY
-action_operation_count = 14
+/score-prop operationId = scoreWowProp
+/score-pick-request operationId = scoreWowPickRequest
+/v17/prediction-receipts/lookup operationId = lookupWowV17PredictionReceipts
 can_execute = false
 ```
 
-The installed live schema is a merged contract sourced from:
+The current semantic host instructions require LIVE_GPT interactive scoring in <=4 directional rows per Action call, immutable receipt recovery before retry after ambiguous completion, exact-once reconciliation, and no ranking of partial pools.
+
+PR #654 additionally requires a preflight before large-board row preparation. The live GPT Action surface must expose all three operations:
 
 ```text
-artifacts/wow-engine/openapi.custom-gpt.template.yaml
-artifacts/wow-engine/openapi.pick-request-action.yaml
-verified active V17 host/detailed-evidence/daily-row/prediction-receipt operations
-```
-
-Confirmed batch/ledger operation IDs include:
-
-```text
+getWowV17BackendHealth
 scoreWowPickRequest
-scoreWowTeamEventRequest
-recordWowRecommendations
-settleWowRecommendations
+lookupWowV17PredictionReceipts
 ```
 
-The previous statement that `v17/openapi.wow-betting-engine.v17.yaml` alone was the installed live Action schema is obsolete.
-
-## Save/reload evidence
+If any are absent, the host must stop before row preparation with:
 
 ```text
-save_result = GPT Updated
-last_edited = Sep 16
-updates_pending = false
-verified_after_reload = true
-live = true
-bearer_auth_changed = false
-credential_exposed = false
-```
-
-## Live Action acceptance
-
-`getWowProbabilityHealth` was invoked from the GPT editor against the production `/health` Action and returned a healthy V17 response including:
-
-```text
-status = ok
-Runtime = V17_ACTIVE
-Host = EXTERNAL_GOVERNED_BACKEND
+LIVE_GPT_ACTION_INVOCATION_BLOCKED
+rows_attempted = 0
+scoring_attempted = false
+backend_model_capability = UNKNOWN
 can_execute = false
 ```
 
-This proves a real Action invocation against the live Render backend rather than a prose fallback.
+This is a host/session Action-binding failure, not `MODEL_UNAVAILABLE` and not a sporting-model result.
 
-## Backend OpenAPI note
+## Post-PR617 editor update record
 
-The production routes required by the live Action are mounted, including `/score-pick-request`, `/score-team-event-request`, `/record-recommendations`, and `/settle-recommendations`. The server-generated `/openapi.json` remains incomplete because full FastAPI OpenAPI generation has a known unresolved `market_api.ScorePropRequest` forward-reference defect. Track that as a backend introspection bug; it does not reopen editor synchronization.
+User-confirmed on 2026-09-20:
 
-## Final attestation
+- the pinned canonical V17 Action schema was imported into the production WOW editor;
+- `scoreWowPickRequest` was present in the Action surface;
+- the production Render Action origin remained configured;
+- the existing Bearer authentication configuration was preserved and not replaced;
+- the editor update was saved; and
+- a fresh WOW chat was opened to bind the updated Action schema.
+
+That update resolved `RESYNC_REQUIRED_AFTER_PR617` at the time, but it predates PR #654's canonical instruction change and therefore is now historical configuration evidence rather than current parity evidence.
+
+## PR654 repository repair
+
+PR #654 (`fix(v17): fail fast when live GPT prop Actions are not bound`) merged to protected `main` on 2026-09-21.
+
+It adds the deterministic live Action-surface preflight, preserves the typed `LIVE_GPT_ACTION_INVOCATION_BLOCKED` host failure, prevents hundreds of board rows from being prepared before discovering an unbound Action surface, and does not alter sporting probabilities, calibration, terminal authority, or execution capability.
+
+## Current live-editor status
 
 ```text
-WOW_CUSTOM_GPT_EDITOR_SYNC = LIVE_EDITOR_SYNC_VERIFIED
-BACKEND_RUNTIME = separate state
+LIVE_GPT_EDITOR_SYNC = RESYNC_REQUIRED_AFTER_PR654__LIVE_ACTION_ACCEPTANCE_REQUIRED
+REPOSITORY_GOVERNANCE = CURRENT_MAIN
+BACKEND_RUNTIME = separately verified production state
 MODEL_CAPABILITY = route-specific separate state
-REPOSITORY_GOVERNANCE = separate state
 can_execute = false
 ```
+
+Repository state, CI success, and backend health do not prove that a production Custom GPT conversation has the canonical Action operations bound to its tool surface.
+
+## Acceptance required to re-attest VERIFIED
+
+A new live editor attestation may set `LIVE_GPT_EDITOR_SYNC=VERIFIED` only after all of the following are observed after saving/reloading the PR654 canonical instructions in the production WOW editor and opening a fresh WOW chat:
+
+1. `getWowV17BackendHealth` is visible and a live `/health` Action invocation reaches the production Render backend;
+2. Bearer auth succeeds using the existing `WOW_ACTION_API_KEY` without exposing or replacing it;
+3. `scoreWowPickRequest` is visible, callable, and returns a typed governed response/receipt for a known pregame directional row;
+4. `lookupWowV17PredictionReceipts` is visible, callable, and recovers that exact immutable receipt;
+5. required V17 diagnostic Actions remain callable; and
+6. `can_execute=false` remains true.
+
+Until then, preserve the 2026-09-16 verification as historical fully verified evidence, preserve the 2026-09-20 editor update as historical configuration evidence, and do not represent current live Action binding or PR654 editor parity as complete.

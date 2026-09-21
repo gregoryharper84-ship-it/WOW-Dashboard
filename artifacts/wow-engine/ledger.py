@@ -2,14 +2,21 @@
 ledger.py
 WOW-PATCH-2026-08-26-FREE-HOST-PROBABILITY-ENGINE v2, Section 8B.2
 
-Thin wrapper around the Supabase client for wow_predictions /
-wow_outcomes. Enforces, at the Python layer (in addition to the SQL
-constraints in schema.sql), the rule that any incomplete/failed
-component sets probability_publishable = false with no silent repair.
+Thin wrapper around the Supabase client for wow_predictions / wow_outcomes.
+Enforces, at the Python layer (in addition to the SQL constraints in schema.sql),
+the rule that any incomplete/failed component sets probability_publishable =
+false with no silent repair.
 
 Generic player props use the direction-free WOW_PROP_FITTED_MODEL_V1 discrete
 PMF contract. They are validated against explicit model/artifact/distribution
-provenance rather than the legacy pitcher-regime/simulation fields.
+provenance rather than legacy pitcher-regime/simulation fields.
+
+Prediction insertion is crash-idempotent for the same frozen sporting-model
+computation. A deterministic prediction UUID binds source snapshot, exact row,
+model/calibrator identity, and numeric sporting output. Retrying after a process
+failure therefore reuses the immutable ledger row instead of creating a second
+prediction. Money/publication metadata is intentionally excluded from that
+identity because it is downstream of sporting probability.
 """
 from __future__ import annotations
 
@@ -32,6 +39,7 @@ _RECOGNIZED_CALIBRATION_STATUSES = {
 _PROP_DISCRETE_MARKET_TYPE = "PROP_DISCRETE_PMF"
 _PROP_PROVIDER_IDENTITY = "WOW_PROP_FITTED_MODEL_V1"
 _PROP_CERTIFIED_STATES = {"PROSPECTIVE_CERTIFIED", "CHAMPION"}
+_PREDICTION_ID_NAMESPACE = uuid.UUID("7a036b7e-1512-4f83-a4c1-a51e81b8f4b6")
 
 
 def _valid_iso_timestamp(ts) -> bool:
@@ -186,15 +194,7 @@ def _validate_discrete_prop_provenance(row: PredictionRow, gaps: list[str]) -> N
 
 
 def determine_publishability(row: PredictionRow) -> PredictionRow:
-    """Evaluate confidence publication separately from the money lane.
-
-    Missing confidence/model evidence keeps probability_publishable false.
-    Missing payout/price evidence lowers only the downstream money ceiling.
-    Generic discrete prop rows are never forced through pitcher-regime or
-    simulation-count requirements; they must instead prove certified model
-    provenance, normalized MORE/LESS/PUSH outcomes, positive ESS, calibration,
-    and numerical bounds.
-    """
+    """Evaluate confidence publication separately from the money lane."""
     gaps = list(row.data_gaps)
 
     if row.raw_model_probability is None or not (0 < row.raw_model_probability < 1):
@@ -235,19 +235,81 @@ def determine_publishability(row: PredictionRow) -> PredictionRow:
         blockers=row.data_gaps,
         probability_publishable=row.probability_publishable,
     )
-    # Probability and money are separate objectives. The immutable
-    # probability ceiling records the model verdict only.
     row.probability_ceiling = qualification.terminal_label
-
     return row
+
+
+def _prediction_idempotency_material(row: PredictionRow) -> str:
+    """Bind one immutable sporting computation to one prediction UUID.
+
+    ``model_timestamp`` and money/publication fields are deliberately omitted:
+    a retry may occur at a later wall-clock instant, and the market/value lane is
+    separate from the sporting probability contract. Material model/calibration
+    changes remain distinct through artifact/calibration/simulation identities and
+    the numeric output itself.
+    """
+    values = (
+        row.source_snapshot_id,
+        row.event_id,
+        row.sport,
+        row.market_type,
+        row.stat_type,
+        repr(float(row.line)),
+        row.direction,
+        row.model_provider_identity,
+        row.model_family,
+        row.model_bundle_fingerprint,
+        row.regime_model_version,
+        row.simulation_seed,
+        row.calibration_status,
+        row.calibration_method,
+        row.calibration_version,
+        row.bounds_method_version,
+        row.raw_model_probability,
+        row.independent_model_probability,
+        row.calibrated_probability,
+        row.calibrated_probability_lower_bound,
+        row.calibrated_probability_upper_bound,
+    )
+    return "\x1f".join("" if value is None else str(value) for value in values)
+
+
+def prediction_id_for(row: PredictionRow) -> str:
+    return str(uuid.uuid5(_PREDICTION_ID_NAMESPACE, _prediction_idempotency_material(row)))
+
+
+def _existing_prediction(client, prediction_id: str) -> Optional[dict]:
+    result = (
+        client.table("wow_predictions")
+        .select("*")
+        .eq("prediction_id", prediction_id)
+        .limit(1)
+        .execute()
+    )
+    rows = list(result.data or [])
+    return dict(rows[0]) if rows else None
 
 
 def insert_prediction(row: PredictionRow) -> dict:
     row = determine_publishability(row)
     client = get_client()
     payload = asdict(row)
-    payload["prediction_id"] = str(uuid.uuid4())
-    result = client.table("wow_predictions").insert(payload).execute()
+    payload["prediction_id"] = prediction_id_for(row)
+
+    existing = _existing_prediction(client, payload["prediction_id"])
+    if existing is not None:
+        return existing
+
+    try:
+        result = client.table("wow_predictions").insert(payload).execute()
+    except Exception:
+        # Close the race where two retries both observe absence before one insert
+        # commits. If the deterministic row now exists, the second caller reuses
+        # it; otherwise preserve the original persistence failure.
+        existing = _existing_prediction(client, payload["prediction_id"])
+        if existing is not None:
+            return existing
+        raise
     return result.data[0] if result.data else payload
 
 

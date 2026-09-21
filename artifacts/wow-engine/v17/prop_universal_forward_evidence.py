@@ -3,14 +3,17 @@
 This module does not certify, promote, publish, rank, or execute anything.  It
 makes every declared prop route and every required V17 sport visible, dispatches
 routes to the narrow evidence collector that owns them, and adds a generic
-exact-route collector for fitted scalar routes that already use the canonical
+exact-route collector only for fitted scalar routes that already use the canonical
 WOW prop scorer.
 
-Production/calibration authority is never inferred from evidence collection.
-can_execute=false unconditionally.
+A declared build target is not evidence-collection capability. BUILD_REQUIRED and
+candidate routes without an exact forward contract stay visible but receive no
+generic collector. Production/calibration authority is never inferred from
+evidence collection. can_execute=false unconditionally.
 """
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
@@ -26,7 +29,7 @@ from v17.fantasy_score_forward_cohort_runtime import (
     LANE_SPECS,
     run_fantasy_score_forward_cohort,
 )
-from v17.prop_capability_manifest import DECLARED_PROP_LANES, normalize_prop_sport
+from v17.prop_capability_manifest import BUILD_REQUIRED, DECLARED_PROP_LANES, normalize_prop_sport
 from v17.prop_forward_cohort_runtime import PropForwardCohortRequest, run_prop_forward_cohort
 from v17.prop_route_lifecycle import FEATURE_SCHEMA_VERSION
 
@@ -36,6 +39,7 @@ EVIDENCE_SOURCE_KIND = "IMMUTABLE_PREGAME_SETTLED"
 DIRECTIONS = ("MORE", "LESS")
 PAGE_SIZE = 1000
 IN_FILTER_CHUNK_SIZE = 200
+FORWARD_ROUTE_WORKERS = 8
 
 COLLECTOR_STRIKEOUT = "LEGACY_STRIKEOUT_FORWARD_COHORT"
 COLLECTOR_FANTASY = "FANTASY_SCORE_FORWARD_COHORT"
@@ -46,6 +50,8 @@ COLLECTOR_NONE = "NO_COLLECTOR"
 COLLECTING = "FORWARD_EVIDENCE_COLLECTING"
 COLLECTION_AVAILABLE = "FORWARD_EVIDENCE_COLLECTION_AVAILABLE"
 SEPARATE_CONTRACT_REQUIRED = "SEPARATE_FORWARD_CONTRACT_REQUIRED"
+MODEL_BUILD_REQUIRED = "MODEL_BUILD_REQUIRED"
+FORWARD_CONTRACT_REQUIRED = "FORWARD_CONTRACT_REQUIRED"
 NO_CURRENT_PROP_CATEGORY_DECLARED = "NO_CURRENT_PROP_CATEGORY_DECLARED"
 
 STRIKEOUT_ROUTE = ("MLB", "PITCHER_STRIKEOUTS")
@@ -96,9 +102,18 @@ def _collector_for(key: tuple[str, str]) -> tuple[str, str, str | None]:
             SEPARATE_CONTRACT_REQUIRED,
             "EXACT_ROUTE_SEPARATE_FORWARD_CONTRACT_REQUIRED",
         )
-    if key in DECLARED_PROP_LANES:
-        return COLLECTOR_GENERIC, COLLECTION_AVAILABLE, None
-    return COLLECTOR_NONE, NO_CURRENT_PROP_CATEGORY_DECLARED, "PROP_ROUTE_NOT_DECLARED"
+    capability = DECLARED_PROP_LANES.get(key)
+    if capability is None:
+        return COLLECTOR_NONE, NO_CURRENT_PROP_CATEGORY_DECLARED, "PROP_ROUTE_NOT_DECLARED"
+    if capability.lane_status == BUILD_REQUIRED:
+        return COLLECTOR_NONE, MODEL_BUILD_REQUIRED, "PROP_FITTED_SPECIALIST_BUILD_REQUIRED"
+    if not capability.route_active:
+        return (
+            COLLECTOR_NONE,
+            FORWARD_CONTRACT_REQUIRED,
+            capability.blocker or "EXACT_ROUTE_FORWARD_ADAPTER_REQUIRED",
+        )
+    return COLLECTOR_GENERIC, COLLECTION_AVAILABLE, None
 
 
 def build_forward_evidence_inventory(
@@ -606,7 +621,7 @@ def run_universal_prop_forward_evidence(
             spec = LANE_SPECS[lane_result["lane"]]
             fantasy_by_key[(spec.sport, spec.stat_type)] = lane_result
 
-    for key in requested:
+    def collect_route(key: tuple[str, str]) -> dict[str, Any]:
         sport, stat_type = key
         collector, inventory_status, blocker = _collector_for(key)
         if collector == COLLECTOR_STRIKEOUT:
@@ -616,44 +631,49 @@ def run_universal_prop_forward_evidence(
                 market_api=market_api,
                 now=now,
             )
-            route_results.append({
+            return {
                 "sport": sport,
                 "stat_type": stat_type,
                 "collector": collector,
                 "status": result["run_status"],
                 "result": result,
                 "can_execute": False,
-            })
+            }
         elif collector == COLLECTOR_FANTASY:
             result = fantasy_by_key[key]
-            route_results.append({
+            return {
                 "sport": sport,
                 "stat_type": stat_type,
                 "collector": collector,
                 "status": "COMPLETED" if result["row_reconciliation"]["balanced"] else "RECONCILIATION_FAILED",
                 "result": result,
                 "can_execute": False,
-            })
+            }
         elif collector == COLLECTOR_GENERIC:
-            route_results.append(
-                run_generic_forward_route(
-                    sport=sport,
-                    stat_type=stat_type,
-                    max_snapshots=req.max_snapshots_per_route,
-                    db=db,
-                    market_api=market_api,
-                    now=now,
-                )
+            return run_generic_forward_route(
+                sport=sport,
+                stat_type=stat_type,
+                max_snapshots=req.max_snapshots_per_route,
+                db=db,
+                market_api=market_api,
+                now=now,
             )
-        else:
-            route_results.append({
-                "sport": sport,
-                "stat_type": stat_type,
-                "collector": collector,
-                "status": inventory_status,
-                "blockers": [blocker] if blocker else [],
-                "can_execute": False,
-            })
+        return {
+            "sport": sport,
+            "stat_type": stat_type,
+            "collector": collector,
+            "status": inventory_status,
+            "blockers": [blocker] if blocker else [],
+            "can_execute": False,
+        }
+
+    # Network-backed route collection dominates the universal cycle. Keep the
+    # complete declared inventory, but collect independent routes concurrently
+    # with a fixed bound. executor.map preserves requested-route order so the
+    # reconciliation and audit output remain deterministic.
+    worker_n = min(FORWARD_ROUTE_WORKERS, max(1, len(requested)))
+    with ThreadPoolExecutor(max_workers=worker_n, thread_name_prefix="wow-prop-forward") as pool:
+        route_results.extend(pool.map(collect_route, requested))
 
     route_keys = {(row["sport"], row["stat_type"]) for row in route_results}
     requested_keys = set(requested)
@@ -678,9 +698,12 @@ __all__ = [
     "CAN_EXECUTE",
     "COLLECTOR_FANTASY",
     "COLLECTOR_GENERIC",
+    "COLLECTOR_NONE",
     "COLLECTOR_SEPARATE",
     "COLLECTOR_STRIKEOUT",
     "EVIDENCE_SOURCE_KIND",
+    "FORWARD_CONTRACT_REQUIRED",
+    "MODEL_BUILD_REQUIRED",
     "ForwardRouteInventoryRow",
     "UniversalPropForwardEvidenceRequest",
     "build_forward_evidence_inventory",

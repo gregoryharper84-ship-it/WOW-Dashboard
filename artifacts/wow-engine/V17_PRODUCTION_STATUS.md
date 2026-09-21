@@ -1,25 +1,20 @@
 # WOW V17 production status
 
-Updated: 2026-09-16
+Updated: 2026-09-21
 
 This is the current-status pointer for the governed WOW V17 system. Historical proposal, migration, review, and incident documents remain archival and must not override this file when they describe an older lifecycle state.
 
 ## Current state
 
-- Runtime: **V17 ACTIVE / VERIFIED_ACTIVE**
-- Production service: `wow-governed-probability-engine`
-- Render service ID: `srv-da7sa9gu01pc73brt80g`
-- Production branch: `main`
-- Production entrypoint: `api_ncaaf_acceptance:app`
-- Verified deployed runtime SHA on 2026-09-16: `1762c4fc2c1a9f9670c3c5a6a0fe551ddb98f3cf`
-- Render deploy: `dep-daldrgf40ujc73dm0a9g` reached `live`
-- Render deployment policy: `autoDeploy=yes`, `autoDeployTrigger=checksPass`
-- Global terminal reducer: `V17_TERMINAL_REDUCER`
-- `WOW_CAN_EXECUTE=false`
-- `WOW_DRY_RUN_ONLY=true`
+- Runtime: **V17 ACTIVE** when confirmed by production health.
+- Production service: `wow-governed-probability-engine`.
+- Production branch: `main`.
+- Current live production SHA: `2d430886dc003b942cf9ca9d0251963cfc88d858`.
+- Current live Render deploy: `dep-daoib7rbc2fs73e4vco0`.
+- Global terminal reducer: `V17_TERMINAL_REDUCER`.
+- `WOW_CAN_EXECUTE=false`.
+- `WOW_DRY_RUN_ONLY=true`.
 - No wager/order execution path is authorized.
-
-The earlier statement that this production service required manual deploy because auto-deploy was disabled is obsolete.
 
 ## Routing and probability contract
 
@@ -34,57 +29,52 @@ The earlier statement that this production service required manual deploy becaus
 
 ## Production route verification
 
-The current production entrypoint mounts the V17/compatibility routes used by the Custom GPT. On 2026-09-16 production verification established:
-
-- `/score-pick-request` is live; Render logs contain successful `POST /score-pick-request` 200 responses.
-- `/score-team-event-request`, `/record-recommendations`, and `/settle-recommendations` are mounted; direct GET probes return 405 Method Not Allowed, proving the POST route exists.
-- V17 startup logs report `WOW_V17_RUNTIME status=ACTIVE` and `can_execute=false`.
-
-The server-generated `/openapi.json` remains incomplete because full FastAPI OpenAPI generation has a known unresolved `market_api.ScorePropRequest` forward-reference defect. This is an introspection defect, not evidence that the mounted routes are absent, and it is not an editor-sync blocker.
-
-## Release acceptance
-
-Production code changes require protected-branch CI and Render deployment through the configured `checksPass` policy. Required checks remain:
-
-- `WOW governed probability backend`
-- `WOW required-three regression`
-- `WOW additional required regression`
-
-A release is production-verified only after the intended commit reaches Render `live`, startup/runtime evidence is healthy, required migrations are present, and any scenario-specific acceptance is completed. Documentation-only commits need no manual redeploy; current Render policy handles eligible `main` changes automatically after checks pass.
+Direct production probing established that `/score-pick-request` is mounted and bearer-protected. The latest Render deployment for `wow-governed-probability-engine` is live at SHA `2d430886dc003b942cf9ca9d0251963cfc88d858`. Production health and runtime verification remain separate from live GPT editor acceptance and route-specific model capability.
 
 ## Repository governance
 
-**VERIFIED.** `main` remains protected. Repository-governance state is separate from backend runtime, model capability, and live editor configuration and must never be reported as a sporting-model failure.
+**PR #617 MERGED.** The canonical V17 Action contract is `artifacts/wow-engine/v17/openapi.wow-betting-engine.v17.yaml` and advertises:
+
+- `/score-prop` -> `scoreWowProp`
+- `/score-pick-request` -> `scoreWowPickRequest`
+
+Legacy `scoreWowV17Prop` / `scoreWowV17PickRequest` identifiers remain compatibility aliases only where backend host routing explicitly accepts them.
+
+Subsequent protected-main work includes the governed Scout publication boundary and current production canaries. The current team/event publication guard fails closed unless the row proves publishability, rank eligibility, calibrated probability/lower-bound package, terminal approval, probability audit, event mutex, correct terminal authority, and `can_execute=false`.
 
 ## Custom GPT editor synchronization
 
-**LIVE_EDITOR_SYNC_VERIFIED — 2026-09-16.**
+**LIVE_GPT_EDITOR_SYNC = EDITOR_UPDATED__LIVE_ACTION_ACCEPTANCE_REQUIRED.**
 
-The live `WOW_BETTING_ENGINE` was edited, saved, reloaded, and health-tested against the production Render backend.
+The stale `RESYNC_REQUIRED_AFTER_PR617` state is retired. On 2026-09-20 the production WOW editor update was user-confirmed: the pinned canonical V17 schema was imported, `scoreWowPickRequest` was visible, the production server target remained configured, the existing Bearer authentication configuration was preserved, the GPT update was saved, and a fresh WOW chat was opened.
 
-- Live instructions: plain operational rewrite; editor reported 5,418 characters, below the 8,000-character limit.
-- Live Action: merged 14-operation contract using the base runbook contract, pick-request/ledger contract, and retained active V17 operations.
-- Authentication: API Key/Bearer using the existing `WOW_ACTION_API_KEY`; credential not exposed.
-- Save result: `GPT Updated`; `Last edited` Sep 16; no updates pending.
-- Acceptance: `getWowProbabilityHealth` invoked the production `/health` Action and returned `status: ok`, `Runtime: V17_ACTIVE`, `Host: EXTERNAL_GOVERNED_BACKEND`, `can_execute=false`.
+That proves the editor update was performed, but it does not yet prove the post-update live Action acceptance. `LIVE_GPT_EDITOR_SYNC` becomes `VERIFIED` only after the fresh production WOW chat supplies live evidence that `/health` reaches the production backend through the installed Action, Bearer auth succeeds, `scoreWowPickRequest` is callable and returns a typed governed response/receipt, required diagnostics remain callable, and `can_execute=false` remains true.
 
-The old instruction blob SHA `202157522b96921d973e7a9dbc1d373f95249eb7` and the statement that the live Action schema remained unchanged are obsolete and must not be used as current attestations.
+Current live-host requirements continue to include:
 
-The exact byte-for-byte 5,418-character live instruction export/hash was not available to the repository-write session. That repository parity detail does not reopen the completed live editor synchronization.
+- canonical schema: `v17/openapi.wow-betting-engine.v17.yaml`;
+- canonical prop operation: `scoreWowPickRequest`;
+- API Key/Bearer auth using the existing `WOW_ACTION_API_KEY`;
+- LIVE_GPT interactive scoring in <=4 directional rows per Action call;
+- immutable receipt lookup before retry after timeout/disconnect/ambiguous completion;
+- exact-once reconciliation and no ranking of partial pools; and
+- `can_execute=false` unchanged.
+
+Authoritative detail: `artifacts/wow-engine/V17_CUSTOM_GPT_EDITOR_SYNC.md`.
 
 ## User-journey health
 
 **USER_JOURNEY_HEALTH = FAIL — NO_END_TO_END_GOVERNED_PROP_RESULT.**
 
-This is separate from backend runtime, editor synchronization, repository governance, and route/model capability. The live editor and `/score-pick-request` route are verified prerequisites, but they do not prove that the actual user request completes end to end.
-
-The golden production acceptance prompt is:
+The golden production acceptance prompt remains:
 
 ```text
 Use full model and provide me the best props across all sports.
 ```
 
-`USER_JOURNEY_HEALTH` becomes PASS only after that production ChatGPT path invokes the live `scoreWowPickRequest` Action, acquires current prop inventory with explicit source typing, routes supported rows through the correct fitted specialists, preserves exact typed failures, returns governed probability/calibration/lower-bound packages where applicable, passes through `V17_TERMINAL_REDUCER`, and hands the actual governed result back to ChatGPT. Green CI, backend health, route-mounted evidence, editor save/reload, Scout discovery, or a local reconstruction cannot independently set this status to PASS.
+`USER_JOURNEY_HEALTH` becomes PASS only after the production ChatGPT path invokes the live `scoreWowPickRequest` Action, acquires current prop inventory with explicit source typing, routes supported rows through the correct fitted specialists, preserves exact typed failures, returns governed probability/calibration/lower-bound packages where applicable, passes through `V17_TERMINAL_REDUCER`, and hands the actual governed result back to ChatGPT.
+
+Green CI, backend health, route-mounted evidence, editor-update evidence, Scout discovery, or a local reconstruction cannot independently set this status to PASS.
 
 Authoritative detail: `artifacts/wow-engine/V17_USER_JOURNEY_HEALTH.md`.
 
@@ -92,8 +82,8 @@ Authoritative detail: `artifacts/wow-engine/V17_USER_JOURNEY_HEALTH.md`.
 
 Report these independently:
 
-- `BACKEND_RUNTIME = V17 ACTIVE`
-- `MODEL_CAPABILITY = route-specific backend result`
-- `REPOSITORY_GOVERNANCE = protected/CI state`
-- `LIVE_GPT_EDITOR_SYNC = VERIFIED 2026-09-16`
-- `USER_JOURNEY_HEALTH = FAIL until golden production canary passes`
+- `BACKEND_RUNTIME = V17 ACTIVE` when production health confirms it.
+- `MODEL_CAPABILITY = route-specific backend result`.
+- `REPOSITORY_GOVERNANCE = current protected-main CI state`.
+- `LIVE_GPT_EDITOR_SYNC = EDITOR_UPDATED__LIVE_ACTION_ACCEPTANCE_REQUIRED` until the post-update live Action acceptance passes.
+- `USER_JOURNEY_HEALTH = FAIL` until the golden production canary passes.

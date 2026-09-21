@@ -83,11 +83,18 @@ jobs:
 
       - name: Collect required-three suite
         run: |
+          set +e
           python -m pytest --collect-only -q \
             gate_engine/tests \
             services/tests \
             tests > "$RUNNER_TEMP/required-three-collection.txt" 2>&1
+          collection_status=$?
+          set -e
           cat "$RUNNER_TEMP/required-three-collection.txt"
+          if [ "$collection_status" -ne 0 ]; then
+            echo "pytest collection failed with exit code $collection_status"
+            exit "$collection_status"
+          fi
           python - "$RUNNER_TEMP/required-three-collection.txt" "$MIN_REQUIRED_COLLECTION" <<'PY'
           import re
           import sys

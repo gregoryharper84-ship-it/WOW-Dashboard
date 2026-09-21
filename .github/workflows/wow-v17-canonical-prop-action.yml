@@ -4,10 +4,14 @@ on:
   workflow_dispatch:
     inputs:
       request_file:
-        description: Repository-relative governed prop request JSON
+        description: Repository-relative governed prop request JSON; use a current pregame slate unless explicitly replaying history
         required: true
-        default: artifacts/wow-engine/v17/prop_action_requests/2026-09-15-strikeouts-1ip.json
         type: string
+      allow_historical_request:
+        description: Explicitly allow a historical/stale request for reproduction only; never counts as current-slate/live-host proof
+        required: true
+        default: false
+        type: boolean
   push:
     branches:
       - main
@@ -32,8 +36,11 @@ on:
 permissions:
   contents: read
 
+# v2 preserves one-at-a-time canonical replay execution while isolating repaired
+# runs from the stale pre-fix serialization queue.
+# Acceptance trigger revision: wrapper-v3.
 concurrency:
-  group: wow-v17-canonical-prop-action-${{ github.ref }}
+  group: wow-v17-canonical-prop-action-v2-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -53,13 +60,214 @@ jobs:
       - name: Install engine dependencies
         run: pip install -r requirements.txt
       - name: Run focused regressions
-        run: python -m pytest -q test_v17_github_oidc.py test_v17_mlb_1ip_direction_neutrality.py tests/test_v17_live_editor_compat.py
+        run: >-
+          python -m pytest -q
+          test_v17_github_oidc.py
+          test_v17_mlb_1ip_direction_neutrality.py
+          tests/test_v17_live_editor_compat.py
+          tests/test_v17_canonical_prop_workflow_contract.py
+          test_v17_action_invocation_telemetry.py
+          test_v17_interactive_latency_telemetry.py
+          tests/test_v17_compact_outer_wrapper.py
+          tests/test_v17_compact_receipt_contract.py
+          tests/test_v17_prop_canonical_identity.py
+          tests/test_v17_daily_unique_prop_limit.py
       - name: Compile canonical prop runner
-        run: python -m py_compile v17/canonical_prop_action_runner.py v17/mlb_1ip_direction_neutrality.py
+        run: python -m py_compile v17/canonical_prop_action_runner.py v17/mlb_1ip_direction_neutrality.py v17/action_invocation_telemetry.py
+
+  production-infrastructure-acceptance:
+    name: Verify live COMPACT + prop dedup infrastructure
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      WOW_ACTION_ORIGIN: https://wow-governed-probability-engine.onrender.com
+      WOW_USER_TIMEZONE: America/Chicago
+      WOW_CAN_EXECUTE: "false"
+      WOW_DRY_RUN_ONLY: "true"
+    steps:
+      - name: Run authenticated production acceptance
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$WOW_CAN_EXECUTE" = "false"
+          test "$WOW_DRY_RUN_ONLY" = "true"
+          test -n "$ACTIONS_ID_TOKEN_REQUEST_URL"
+          test -n "$ACTIONS_ID_TOKEN_REQUEST_TOKEN"
+          python - <<'PY'
+          import json
+          import os
+          import urllib.parse
+          import urllib.request
+          from datetime import datetime, timedelta, timezone
+          from zoneinfo import ZoneInfo
+
+          ORIGIN = os.environ["WOW_ACTION_ORIGIN"].rstrip("/")
+          CANARY_RUN = f"{os.environ['GITHUB_RUN_ID']}-{os.environ['GITHUB_RUN_ATTEMPT']}"
+          FORBIDDEN_COMPACT_KEYS = {
+              "result", "detail", "detailed_evidence", "model_evidence",
+              "failure_path_evidence", "directional_probability_assessments",
+              "v17_numerical_engine", "objective_lanes", "backend_traversal",
+              "specialist_utilization_audit",
+          }
+
+          def fresh_oidc_token():
+              oidc_url = os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"]
+              separator = "&" if "?" in oidc_url else "?"
+              oidc_url += separator + urllib.parse.urlencode({"audience": "wow-v17-multiscout"})
+              request = urllib.request.Request(
+                  oidc_url,
+                  headers={"Authorization": f"Bearer {os.environ['ACTIONS_ID_TOKEN_REQUEST_TOKEN']}"},
+              )
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  return json.load(response)["value"]
+
+          def post(path, payload, timeout=300):
+              token = fresh_oidc_token()
+              body = json.dumps(payload).encode("utf-8")
+              request = urllib.request.Request(
+                  ORIGIN + path,
+                  data=body,
+                  method="POST",
+                  headers={
+                      "Authorization": f"Bearer {token}",
+                      "Content-Type": "application/json",
+                      "X-WOW-Model-Identity": "WOW_BETTING_ENGINE",
+                  },
+              )
+              with urllib.request.urlopen(request, timeout=timeout) as response:
+                  if response.status != 200:
+                      raise AssertionError(f"{path} HTTP {response.status}")
+                  value = json.load(response)
+              if not isinstance(value, dict):
+                  raise AssertionError(f"{path} response is not an object")
+              return value
+
+          def assert_compact_batch(payload, expected_rows, label):
+              if payload.get("response_mode") != "COMPACT":
+                  raise AssertionError(f"{label}: response_mode not COMPACT")
+              if payload.get("reconciliation_pass") is not True:
+                  raise AssertionError(f"{label}: reconciliation failed")
+              if payload.get("can_execute") is not False:
+                  raise AssertionError(f"{label}: can_execute invariant failed")
+              rows = payload.get("outcomes") or payload.get("rows") or []
+              if len(rows) != expected_rows:
+                  raise AssertionError(f"{label}: expected {expected_rows} rows, got {len(rows)}")
+              for index, row in enumerate(rows, 1):
+                  if row.get("can_execute") is not False:
+                      raise AssertionError(f"{label}: row {index} can_execute invariant failed")
+                  leaked = sorted(FORBIDDEN_COMPACT_KEYS.intersection(row))
+                  if leaked:
+                      raise AssertionError(f"{label}: row {index} leaked FULL keys: {leaked}")
+                  if not (row.get("code") or row.get("terminal_label") or row.get("terminal_status")):
+                      raise AssertionError(f"{label}: row {index} has no typed terminal")
+              return rows
+
+          event_start = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
+          mlb_rows = []
+          for player in ("V17 Compact Pitcher A", "V17 Compact Pitcher B"):
+              for direction in ("MORE", "LESS"):
+                  mlb_rows.append({
+                      "row_key": f"mlb-{len(mlb_rows)+1}",
+                      "event_id": f"V17-COMPACT-MLB-{1 if player.endswith('A') else 2}",
+                      "event_start_time": event_start,
+                      "sport": "MLB",
+                      "player": player,
+                      "stat_type": "V17_UNSUPPORTED_ACCEPTANCE_STAT",
+                      "line": 1.5,
+                      "direction": direction,
+                      "source_type": "NORMALIZED",
+                      "platform": "WOW_PRODUCTION_ACCEPTANCE",
+                      "league": "MLB",
+                  })
+          mlb = post("/score-pick-request", {
+              "request_id": f"v17-live-compact-mlb-four-direction-{CANARY_RUN}",
+              "response_mode": "COMPACT",
+              "rows": mlb_rows,
+          })
+          assert_compact_batch(mlb, 4, "MLB_FOUR_DIRECTION_COMPACT")
+
+          cross_rows = []
+          for sport in ("MLB", "NFL", "WNBA", "NCAAF"):
+              cross_rows.append({
+                  "row_key": f"cross-{sport.lower()}",
+                  "event_id": f"V17-COMPACT-{sport}-1",
+                  "event_start_time": event_start,
+                  "sport": sport,
+                  "player": f"V17 {sport} Test Player",
+                  "stat_type": "V17_UNSUPPORTED_ACCEPTANCE_STAT",
+                  "line": 1.5,
+                  "direction": "MORE",
+                  "source_type": "NORMALIZED",
+                  "platform": "WOW_PRODUCTION_ACCEPTANCE",
+                  "league": sport,
+              })
+          cross = post("/score-pick-request", {
+              "request_id": f"v17-live-compact-cross-sport-{CANARY_RUN}",
+              "response_mode": "COMPACT",
+              "rows": cross_rows,
+          })
+          assert_compact_batch(cross, 4, "CROSS_SPORT_COMPACT")
+
+          slate_date = datetime.now(ZoneInfo(os.environ["WOW_USER_TIMEZONE"])).date().isoformat()
+          daily = post("/internal/v17/daily-snapshot", {
+              "requested_slate_date": slate_date,
+              "requested_timezone": os.environ["WOW_USER_TIMEZONE"],
+              "lanes": ["PROPS"],
+              "max_props": 4,
+              "max_team_events": 0,
+              "response_mode": "COMPACT",
+          }, timeout=600)
+          if daily.get("can_execute") is not False:
+              raise AssertionError("DAILY: can_execute invariant failed")
+          if daily.get("global_terminal_authority") != "V17_TERMINAL_REDUCER":
+              raise AssertionError("DAILY: terminal authority mismatch")
+          reconciliation = daily.get("reconciliation") or {}
+          if reconciliation.get("balanced") is not True:
+              raise AssertionError("DAILY: row reconciliation failed")
+          lane = (daily.get("lane_reconciliation") or {}).get("PROPS") or {}
+          if lane.get("requested_row_limit") != 4:
+              raise AssertionError("DAILY: max_props=4 not applied")
+          if int(lane.get("scored_count") or 0) != 4:
+              raise AssertionError(f"DAILY: expected four unique scored props, got {lane.get('scored_count')}")
+          discovered = int(lane.get("discovered_count") or 0)
+          canonicalized = int(lane.get("canonicalized_count") or 0)
+          duplicates = int(lane.get("duplicate_source_instance_count") or 0)
+          if discovered != canonicalized + duplicates:
+              raise AssertionError("DAILY: source-instance/canonical dedup accounting mismatch")
+          prop_rows = [row for row in (daily.get("rows") or []) if row.get("lane") == "PROPS"]
+          if len(prop_rows) != 4:
+              raise AssertionError(f"DAILY: expected four PROPS rows, got {len(prop_rows)}")
+          keys = []
+          for row in prop_rows:
+              identity = row.get("identity") or {}
+              keys.append((
+                  identity.get("event_id"), identity.get("sport"), identity.get("player"),
+                  identity.get("stat_type"), identity.get("line"),
+              ))
+          if len(set(keys)) != 4:
+              raise AssertionError("DAILY: duplicate sporting identities consumed max_props slots")
+
+          print(json.dumps({
+              "status": "FIXED_VERIFIED",
+              "mlb_four_direction_compact": "PASS",
+              "cross_sport_compact": "PASS",
+              "daily_max_props_4": "PASS",
+              "daily_source_instances": discovered,
+              "daily_canonical_props": canonicalized,
+              "daily_duplicate_source_instances_collapsed": duplicates,
+              "global_terminal_authority": "V17_TERMINAL_REDUCER",
+              "can_execute": False,
+          }, sort_keys=True))
+          PY
 
   canonical-prop-action:
     name: Run canonical V17 prop Action
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     needs: verify
     runs-on: ubuntu-latest
     timeout-minutes: 55
@@ -68,7 +276,9 @@ jobs:
       id-token: write
     env:
       WOW_ACTION_ORIGIN: https://wow-governed-probability-engine.onrender.com
-      WOW_REQUEST_FILE: ${{ inputs.request_file || 'artifacts/wow-engine/v17/prop_action_requests/2026-09-15-strikeouts-1ip.json' }}
+      WOW_REQUEST_FILE: ${{ inputs.request_file }}
+      WOW_ALLOW_HISTORICAL_REQUEST: ${{ inputs.allow_historical_request }}
+      WOW_SLATE_TIMEZONE: America/New_York
       WOW_CAN_EXECUTE: "false"
       WOW_DRY_RUN_ONLY: "true"
     steps:
@@ -81,10 +291,94 @@ jobs:
           test "$WOW_DRY_RUN_ONLY" = "true"
           test -n "$ACTIONS_ID_TOKEN_REQUEST_URL"
           test -n "$ACTIONS_ID_TOKEN_REQUEST_TOKEN"
+          test -n "$WOW_REQUEST_FILE"
           test -f "$WOW_REQUEST_FILE"
+
+      - name: Reject stale request unless explicitly historical
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from datetime import datetime
+          from pathlib import Path
+          from zoneinfo import ZoneInfo
+
+          path = Path(os.environ["WOW_REQUEST_FILE"])
+          payload = json.loads(path.read_text(encoding="utf-8"))
+          slate_date = str(payload.get("slate_date") or "").strip()
+          timezone_name = os.environ.get("WOW_SLATE_TIMEZONE", "America/New_York")
+          today = datetime.now(ZoneInfo(timezone_name)).date().isoformat()
+          historical = str(os.environ.get("WOW_ALLOW_HISTORICAL_REQUEST", "false")).strip().lower() == "true"
+          if slate_date != today and not historical:
+              raise SystemExit(
+                  f"STALE_CANONICAL_PROP_REQUEST_BLOCKED slate_date={slate_date!r} current_slate={today!r} "
+                  "set allow_historical_request=true only for an explicitly historical reproduction"
+              )
+          classification = "HISTORICAL_REPRODUCTION" if slate_date != today else "CURRENT_SLATE_CANARY"
+          print(f"CANONICAL_PROP_REQUEST_CLASSIFICATION={classification} slate_date={slate_date} current_slate={today}")
+          PY
+
+      - name: Enforce live GPT compact four-row transport contract
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("artifacts/wow-engine/v17/canonical_prop_action_runner.py")
+          text = path.read_text(encoding="utf-8")
+          if "batch_size = 6" not in text:
+              raise SystemExit("CANONICAL_PROP_BATCH_SIZE_PATCH_TARGET_MISSING")
+          text = text.replace("batch_size = 6", "batch_size = 4", 1)
+
+          marker = '"request_id": f"{request_doc.get(\'request_id\')}-{batch_number:02d}",'
+          lines = text.splitlines()
+          match_indexes = [i for i, line in enumerate(lines) if line.strip() == marker]
+          if len(match_indexes) != 1:
+              raise SystemExit(f"CANONICAL_PROP_COMPACT_MODE_PATCH_TARGET_COUNT:{len(match_indexes)}")
+          i = match_indexes[0]
+          if i + 1 < len(lines) and '"response_mode": "COMPACT"' in lines[i + 1]:
+              pass
+          else:
+              indent = lines[i][: len(lines[i]) - len(lines[i].lstrip())]
+              lines.insert(i + 1, indent + '"response_mode": "COMPACT",')
+          text = "\n".join(lines) + "\n"
+          path.write_text(text, encoding="utf-8")
+
+          verified = path.read_text(encoding="utf-8")
+          if "batch_size = 4" not in verified or '"response_mode": "COMPACT"' not in verified:
+              raise SystemExit("CANONICAL_PROP_COMPACT_TRANSPORT_ENFORCEMENT_FAILED")
+          print("CANONICAL_PROP_TRANSPORT_CONTRACT=batch_size:4,response_mode:COMPACT,can_execute:false")
+          PY
 
       - name: Resolve exact events and invoke canonical score-pick-request
         run: python artifacts/wow-engine/v17/canonical_prop_action_runner.py
+
+      - name: Assert compact four-row batch reconciliation
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          p = Path("v17_canonical_prop_action_result.json")
+          if not p.exists():
+              raise SystemExit("CANONICAL_PROP_RESULT_MISSING")
+          data = json.loads(p.read_text(encoding="utf-8"))
+          if data.get("can_execute") is not False:
+              raise SystemExit("CAN_EXECUTE_INVARIANT_FAILED")
+          batches = data.get("action_batches") or []
+          if not batches:
+              raise SystemExit("CANONICAL_PROP_ACTION_BATCHES_MISSING")
+          for idx, batch in enumerate(batches, 1):
+              if batch.get("response_mode") != "COMPACT":
+                  raise SystemExit(f"CANONICAL_PROP_RESPONSE_MODE_NOT_COMPACT:{idx}")
+              if batch.get("reconciliation_pass") is not True:
+                  raise SystemExit(f"CANONICAL_PROP_BATCH_RECONCILIATION_FAILED:{idx}")
+              if int(batch.get("rows_in") or 0) > 4:
+                  raise SystemExit(f"CANONICAL_PROP_BATCH_TOO_LARGE:{idx}:{batch.get('rows_in')}")
+          print(f"CANONICAL_PROP_COMPACT_RECONCILIATION_PASS batches={len(batches)} can_execute=false")
+          PY
 
       - name: Upload governed prop Action result
         if: always()

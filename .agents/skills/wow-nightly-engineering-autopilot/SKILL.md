@@ -456,6 +456,24 @@ Do not report `REPAIRED_AND_VERIFIED` unless every safely repairable reproduced 
 
 If `unfinished > 0` for safely repairable R0/R1 work, `run_status` MUST equal `INCOMPLETE_ENGINEERING_RUN`.
 
+## No-incomplete-stop execution rule
+
+`INCOMPLETE_ENGINEERING_RUN` is a truthful handoff label only; it is NEVER an authorized stopping condition while a safe engineering action remains available in the current tool surface.
+
+Before emitting `INCOMPLETE_ENGINEERING_RUN`, the orchestrator MUST exhaust the active R0/R1 repair loop in the same invocation:
+
+1. inspect/recheck pending CI when polling is available;
+2. retrieve and debug exact failures;
+3. patch and retest the smallest safe fix;
+4. merge the exact protected-green head when authorized;
+5. deploy/reconcile the exact merged SHA;
+6. replay production acceptance and repair any safely repairable acceptance failure;
+7. repeat until `FIXED_VERIFIED` or a permitted hard-stop condition is proven.
+
+Ordinary latency, a pending workflow, a failed test, an open PR, a deployment in progress, or an acceptance failure MUST NOT cause an early return. If a tool call returns an intermediate state and the same tool surface permits another safe inspection, retry, repair, merge, deploy, or verification action, perform that action before reporting.
+
+If an invocation is forcibly ended by an external execution/runtime limit after the above continuation attempts, `INCOMPLETE_ENGINEERING_RUN` may be emitted only as a truthful non-success state with the exact next executable action. It must never be treated as closure, success, or permission to select new work on the next invocation.
+
 ## Anti-report-only rule
 
 For autonomous R0/R1 work, this outcome is prohibited whenever engineering capability remains available:

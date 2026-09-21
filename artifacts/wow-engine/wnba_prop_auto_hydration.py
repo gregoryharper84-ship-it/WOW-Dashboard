@@ -13,11 +13,13 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from io import BytesIO
+import logging
 import math
 import re
 import time
 import unicodedata
 from typing import Any, Callable, Mapping, Optional
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -35,6 +37,7 @@ MIN_PRIOR_GAMES = 10
 MAX_EVENT_START_DELTA_SECONDS = 30 * 60
 MAX_INJURY_REPORT_AGE_SECONDS = 2 * 60 * 60
 ET = ZoneInfo("America/New_York")
+LOGGER = logging.getLogger("wow.wnba_prop_auto_hydration")
 
 STAT_COLUMNS = {
     "POINTS": "PTS",
@@ -84,12 +87,20 @@ def _aware(value: Any) -> datetime:
 
 
 def _stats_headers() -> dict[str, str]:
+    # Match the browser-like transport contract that the official WNBA Stats
+    # endpoints currently expect. These are public-request headers only; no
+    # credential or authentication material is introduced here.
     return {
+        "Host": "stats.wnba.com",
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Accept": "application/json, text/plain, */*",
-        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Language": "en-US,en;q=0.5",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Connection": "keep-alive",
         "Origin": "https://stats.wnba.com",
         "Referer": "https://www.wnba.com/",
+        "Pragma": "no-cache",
+        "Cache-Control": "no-cache",
         "x-nba-stats-origin": "stats",
         "x-nba-stats-token": "true",
     }
@@ -129,6 +140,14 @@ def _request(
             errors.append(f"{type(exc).__name__}:{exc}")
             if attempt < HTTP_ATTEMPTS:
                 time.sleep(0.05)
+    parsed = urlsplit(url)
+    LOGGER.warning(
+        "WOW_WNBA_OFFICIAL_SOURCE status=UNAVAILABLE host=%s path=%s attempts=%s errors=%s can_execute=false",
+        parsed.netloc,
+        parsed.path,
+        HTTP_ATTEMPTS,
+        " | ".join(errors[-4:]),
+    )
     raise WNBAPropHydrationError(
         "WNBA_OFFICIAL_SOURCE_UNAVAILABLE",
         "a required official WNBA evidence source could not be retrieved",
@@ -429,8 +448,6 @@ def _availability_from_report(
             detail={"matchup": matchup, "team": team_name, "game_date": game_date},
         )
 
-    # Inspect a bounded team section around the team name. If the team has not
-    # submitted, no player from that team is allowed to pass by omission.
     team_pos = normalized.find(team_key)
     section = normalized[team_pos : team_pos + 1800]
     if "not yet submitted" in section[:250]:

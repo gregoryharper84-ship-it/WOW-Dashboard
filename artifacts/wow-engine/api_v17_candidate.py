@@ -14,6 +14,10 @@ from fastapi import FastAPI
 
 import api_ncaaf_acceptance as v16
 from recommendation_ledger_api import install_recommendation_ledger_routes
+from v17.core_intelligence_compounding_routes import install_compounding_intelligence_routes_read_only
+from v17.core_intelligence_event_runtime import install_core_intelligence_event_routes
+from v17.core_intelligence_runtime import install_core_intelligence_routes
+from v17.core_intelligence_shadow_runtime import install_shadow_lab_routes
 # Import through the V17 preservation shim so downstream LLP governance holds
 # cannot erase a completed fitted sporting probability. The shim preserves all
 # rank/publication/terminal gates and can_execute=false.
@@ -43,6 +47,35 @@ install_team_event_routes(
 install_recommendation_ledger_routes(
     app,
     auth_dependency=v16._auth,
+    get_client_fn=v16._db_client,
+)
+
+# Core Intelligence installers expect the underlying callable so they can wrap it
+# in FastAPI Depends. Passing v16._auth (already a Depends object) would otherwise
+# skip dependency installation and expose these routes without the Action-key gate.
+_core_intelligence_auth = v16.base.market_api.prod._require_action_api_key
+
+# Core Intelligence is out-of-band learning only. It reads immutable predictions
+# and authoritative outcomes, writes append-only evidence, and cannot change the
+# V17 scoring terminal or execute a wager.
+install_core_intelligence_routes(
+    app,
+    auth_dependency=_core_intelligence_auth,
+    get_client_fn=v16._db_client,
+)
+install_core_intelligence_event_routes(
+    app,
+    auth_dependency=_core_intelligence_auth,
+    get_client_fn=v16._db_client,
+)
+install_compounding_intelligence_routes_read_only(
+    app,
+    auth_dependency=_core_intelligence_auth,
+    get_client_fn=v16._db_client,
+)
+install_shadow_lab_routes(
+    app,
+    auth_dependency=_core_intelligence_auth,
     get_client_fn=v16._db_client,
 )
 

@@ -14,6 +14,16 @@ on:
       - "artifacts/wow-engine/v17/prop_action_canary_capture.py"
       - "artifacts/wow-engine/v17/prop_calibrator_candidate_runtime.py"
       - "artifacts/wow-engine/v17/prop_forward_cohort_route.py"
+      - "artifacts/wow-engine/v17/basketball_candidate_forward_overlay.py"
+      - "artifacts/wow-engine/v17/nba_scalar_fitted_candidate.py"
+      - "artifacts/wow-engine/v17/nba_scalar_candidate_registry.py"
+      - "artifacts/wow-engine/v17/nba_scalar_candidate_bridge.py"
+      - "artifacts/wow-engine/v17/wnba_composite_fitted_candidate.py"
+      - "artifacts/wow-engine/v17/wnba_composite_candidate_registry.py"
+      - "artifacts/wow-engine/v17/wnba_composite_candidate_bridge.py"
+      - "artifacts/wow-engine/v17/wnba_composite_auto_hydration.py"
+      - "artifacts/wow-engine/v17/wnba_composite_settlement_overlay.py"
+      - "artifacts/wow-engine/prop_auto_hydration_router.py"
 
 permissions:
   contents: read
@@ -26,7 +36,7 @@ concurrency:
 jobs:
   production-lifecycle-cycle:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 12
     env:
       WOW_SERVICE_URL: https://wow-governed-probability-engine.onrender.com
       WOW_OIDC_AUDIENCE: wow-v17-multiscout
@@ -42,6 +52,95 @@ jobs:
           test -n "$ACTIONS_ID_TOKEN_REQUEST_URL"
           test -n "$ACTIONS_ID_TOKEN_REQUEST_TOKEN"
 
+      - name: Register exact basketball research candidates after runtime deploy
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+        shell: bash
+        run: |
+          set -euo pipefail
+          separator='?'
+          case "$ACTIONS_ID_TOKEN_REQUEST_URL" in
+            *\?*) separator='&' ;;
+          esac
+
+          issue_oidc_token() {
+            local oidc_json
+            oidc_json="$(curl --silent --show-error --fail --connect-timeout 15 --max-time 30 \
+              --header "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+              "${ACTIONS_ID_TOKEN_REQUEST_URL}${separator}audience=${WOW_OIDC_AUDIENCE}")"
+            python -c 'import json,sys; value=json.load(sys.stdin).get("value"); assert isinstance(value,str) and value.strip(); print(value.strip())' <<<"${oidc_json}"
+          }
+
+          # On a main push Render deploys only after protected checks pass. Poll the
+          # new NBA control route so this job cannot accidentally register against
+          # the previous runtime. GitHub OIDC tokens are intentionally short-lived,
+          # so mint a fresh token for every probe instead of reusing one across a
+          # potentially multi-minute Render rollout.
+          ready=0
+          for attempt in $(seq 1 60); do
+            oidc_token="$(issue_oidc_token)"
+            code="$(curl --silent --show-error --connect-timeout 10 --max-time 30 \
+              --output /tmp/wow-nba-scalar-register.json --write-out '%{http_code}' \
+              --request POST --header "Authorization: Bearer ${oidc_token}" \
+              --header 'Content-Type: application/json' \
+              "${WOW_SERVICE_URL}/internal/v17/nba-scalar-candidates/derive" || true)"
+            unset oidc_token
+            if [ "${code}" -ge 200 ] && [ "${code}" -lt 300 ]; then
+              ready=1
+              break
+            fi
+            sleep 5
+          done
+          if [ "${ready}" -ne 1 ]; then
+            echo 'NBA scalar candidate registration route did not become ready.' >&2
+            test -f /tmp/wow-nba-scalar-register.json && head -c 2000 /tmp/wow-nba-scalar-register.json >&2 || true
+            exit 1
+          fi
+
+          oidc_token="$(issue_oidc_token)"
+          wnba_code="$(curl --silent --show-error --fail --connect-timeout 15 --max-time 120 \
+            --output /tmp/wow-wnba-composite-register.json --write-out '%{http_code}' \
+            --request POST --header "Authorization: Bearer ${oidc_token}" \
+            --header 'Content-Type: application/json' \
+            "${WOW_SERVICE_URL}/internal/v17/wnba-composite-candidate/derive")"
+          unset oidc_token
+          test "${wnba_code}" -ge 200
+          test "${wnba_code}" -lt 300
+
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          nba = json.loads(Path('/tmp/wow-nba-scalar-register.json').read_text())
+          wnba = json.loads(Path('/tmp/wow-wnba-composite-register.json').read_text())
+          if nba.get('status') != 'NBA_SCALAR_CANDIDATE_REGISTRATION_COMPLETE':
+              raise SystemExit(f"unexpected NBA registration status: {nba.get('status')}")
+          if int(nba.get('registered_n') or 0) != 7:
+              raise SystemExit(f"expected 7 NBA candidate routes, got {nba.get('registered_n')}")
+          if wnba.get('status') != 'WNBA_COMPOSITE_CANDIDATE_REGISTRATION_COMPLETE':
+              raise SystemExit(f"unexpected WNBA registration status: {wnba.get('status')}")
+          if int(wnba.get('registered_n') or 0) != 4:
+              raise SystemExit(f"expected 4 WNBA composite routes, got {wnba.get('registered_n')}")
+          for payload in (nba, wnba):
+              if payload.get('automatic_certification') is not False:
+                  raise SystemExit('automatic certification must remain disabled')
+              if payload.get('automatic_promotion') is not False:
+                  raise SystemExit('automatic promotion must remain disabled')
+              if payload.get('probability_publishable') is not False:
+                  raise SystemExit('candidate registration cannot publish probability')
+              if payload.get('can_execute') is not False:
+                  raise SystemExit('can_execute invariant failed')
+              for row in payload.get('registered') or []:
+                  if row.get('probability_publishable') is not False or row.get('can_execute') is not False:
+                      raise SystemExit('candidate row authority invariant failed')
+          print(json.dumps({
+              'nba_candidate_routes': sorted(r.get('stat_type') for r in nba.get('registered') or []),
+              'wnba_composite_routes': sorted(r.get('stat_type') for r in wnba.get('registered') or []),
+              'automatic_certification': False,
+              'automatic_promotion': False,
+              'can_execute': False,
+          }, sort_keys=True))
+          PY
+
       - name: Run universal V17 prop lifecycle cycle
         shell: bash
         run: |
@@ -50,33 +149,43 @@ jobs:
           case "$ACTIONS_ID_TOKEN_REQUEST_URL" in
             *\?*) separator='&' ;;
           esac
-          oidc_json="$(curl \
-            --silent \
-            --show-error \
-            --fail \
-            --connect-timeout 15 \
-            --max-time 30 \
-            --header "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
-            "${ACTIONS_ID_TOKEN_REQUEST_URL}${separator}audience=${WOW_OIDC_AUDIENCE}")"
-          oidc_token="$(python -c 'import json,sys; value=json.load(sys.stdin).get("value"); assert isinstance(value,str) and value.strip(); print(value.strip())' <<<"${oidc_json}")"
-          unset oidc_json
+          issue_oidc_token() {
+            local oidc_json
+            oidc_json="$(curl --silent --show-error --fail --connect-timeout 15 --max-time 30 \
+              --header "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+              "${ACTIONS_ID_TOKEN_REQUEST_URL}${separator}audience=${WOW_OIDC_AUDIENCE}")"
+            python -c 'import json,sys; value=json.load(sys.stdin).get("value"); assert isinstance(value,str) and value.strip(); print(value.strip())' <<<"${oidc_json}"
+          }
 
-          http_code="$(curl \
-            --silent \
-            --show-error \
-            --retry 3 \
-            --retry-all-errors \
-            --retry-delay 5 \
-            --connect-timeout 30 \
-            --max-time 240 \
-            --output /tmp/wow-prop-lifecycle.json \
-            --write-out '%{http_code}' \
-            --request POST \
-            --header "Authorization: Bearer ${oidc_token}" \
-            --header 'Content-Type: application/json' \
-            --data '{"routes":[],"max_snapshots_per_route":50,"settlement_limit":500,"persist_health":true}' \
-            "${WOW_SERVICE_URL}/v17/prop-lifecycle-autopilot-run")"
-          unset oidc_token
+          http_code=''
+          for attempt in 1 2; do
+            oidc_token="$(issue_oidc_token)"
+            set +e
+            http_code="$(curl \
+              --silent \
+              --show-error \
+              --connect-timeout 30 \
+              --max-time 240 \
+              --output /tmp/wow-prop-lifecycle.json \
+              --write-out '%{http_code}' \
+              --request POST \
+              --header "Authorization: Bearer ${oidc_token}" \
+              --header 'Content-Type: application/json' \
+              --data '{"routes":[],"max_snapshots_per_route":50,"settlement_limit":500,"persist_health":true}' \
+              "${WOW_SERVICE_URL}/v17/prop-lifecycle-autopilot-run")"
+            curl_rc=$?
+            set -e
+            unset oidc_token
+            if [ "${curl_rc}" -eq 0 ] && [ "${http_code}" -ge 200 ] && [ "${http_code}" -lt 300 ]; then
+              break
+            fi
+            if [ "${attempt}" -eq 1 ] && { [ "${curl_rc}" -ne 0 ] || [ "${http_code:-000}" -ge 500 ]; }; then
+              echo "Transient lifecycle attempt failed (curl_rc=${curl_rc}, HTTP ${http_code:-000}); retrying with a fresh OIDC token." >&2
+              sleep 5
+              continue
+            fi
+            break
+          done
           if [ "${http_code}" -lt 200 ] || [ "${http_code}" -ge 300 ]; then
             echo "Lifecycle endpoint returned HTTP ${http_code}." >&2
             python - <<'PY'

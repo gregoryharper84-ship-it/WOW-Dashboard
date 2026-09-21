@@ -26,6 +26,10 @@ def test_live_gpt_instructions_fit_editor_limit_and_preserve_controls():
     assert "Unknown is not zero" in text
     assert "lookupWowV17PredictionReceipts" in text
     assert "display_authorized=true" in text
+    assert "Canonical Action schema: v17/openapi.wow-betting-engine.v17.yaml" in text
+    assert "openapi.custom-gpt.template.yaml" not in text
+    assert "openapi.pick-request-action.yaml" not in text
+    assert "LIVE_GPT_EDITOR_SYNC=VERIFIED" in text
     assert KNOWLEDGE.exists()
 
 
@@ -37,6 +41,25 @@ def test_directionless_best_side_expands_at_host_without_weakening_action_schema
     row = _schema()["components"]["schemas"]["PickRequestRow"]
     assert "direction" in set(row["required"])
     assert row["properties"]["direction"]["enum"] == ["MORE", "LESS"]
+
+
+def test_live_gpt_large_prop_pools_chunk_and_recover_immutable_receipts():
+    text = INSTRUCTIONS.read_text(encoding="utf-8")
+    assert "LIVE_GPT interactive scoring must use <=4 directional rows per Action call" in text
+    assert "continue chunk-by-chunk until every source row reconciles exactly once" in text
+    assert "On an Action timeout/disconnect/ambiguous completion" in text
+    assert "First call `lookupWowV17PredictionReceipts`" in text
+    assert "Retry only still-unresolved rows" in text
+    assert "Do not rank a partial pool as Full Model" in text
+
+    # The backend remains capable of larger non-interactive batches; this is a
+    # host-orchestration latency bound, not a weakening of the API schema.
+    batch = _schema()["components"]["schemas"]["PickRequestBatch"]
+    assert batch["properties"]["rows"]["maxItems"] == 50
+    response_mode = batch["properties"]["response_mode"]
+    assert response_mode["enum"] == ["COMPACT", "FULL"]
+    assert response_mode["default"] == "COMPACT"
+    assert "response_mode=COMPACT" in text
 
 
 def test_action_operation_descriptions_fit_editor_limit():
@@ -54,11 +77,43 @@ def test_action_schema_preserves_v17_boundary():
     document = _schema()
     assert document["servers"][0]["url"] == "https://wow-governed-probability-engine.onrender.com"
     paths = document["paths"]
-    assert paths["/score-pick-request"]["post"]["operationId"] == "scoreWowV17PickRequest"
+    assert paths["/score-prop"]["post"]["operationId"] == "scoreWowProp"
+    assert paths["/score-pick-request"]["post"]["operationId"] == "scoreWowPickRequest"
     assert paths["/score-team-event"]["post"]["operationId"] == "scoreWowV17TeamEventFromWowHost"
     assert paths["/v17/detailed-evidence-contract"]["get"]["operationId"] == "getWowV17DetailedEvidenceContract"
     assert paths["/v17/prediction-receipts/lookup"]["post"]["operationId"] == "lookupWowV17PredictionReceipts"
     assert document["components"]["securitySchemes"]["actionBearer"]["scheme"] == "bearer"
+
+
+def test_live_editor_schema_exposes_full_board_diagnostics_with_bearer_auth():
+    paths = _schema()["paths"]
+    expected = {
+        "/v17/capabilities": "getWowV17Capabilities",
+        "/v17/market-health/rundown": "getWowV17RundownMarketHealth",
+        "/v17/market-health/odds-api": "getWowV17OddsApiMarketHealth",
+        "/v17/discovery/espn-compact": "getWowV17CompactEspnDiscovery",
+    }
+    for path, operation_id in expected.items():
+        operation = paths[path]["get"]
+        assert operation["operationId"] == operation_id
+        assert operation["security"] == [{"actionBearer": []}]
+        assert operation["x-openai-isConsequential"] is False
+
+    espn_parameters = {
+        parameter["name"]: parameter
+        for parameter in paths["/v17/discovery/espn-compact"]["get"]["parameters"]
+    }
+    assert espn_parameters["page"]["schema"]["minimum"] == 1
+    assert espn_parameters["page_size"]["schema"]["minimum"] == 1
+    assert espn_parameters["page_size"]["schema"]["maximum"] == 250
+
+    rundown_parameters = {
+        parameter["name"]: parameter
+        for parameter in paths["/v17/market-health/rundown"]["get"]["parameters"]
+    }
+    for parameters in (rundown_parameters, espn_parameters):
+        assert parameters["date"]["required"] is False
+        assert parameters["date"]["schema"] == {"type": "string"}
 
 
 def test_prediction_receipt_openapi_requires_id_or_complete_exact_identity():
