@@ -1,9 +1,14 @@
-"""V17 terminal governance for certified multisport team/event packages.
+"""V17 terminal governance for multisport team/event probability packages.
 
 This module is not a sporting model. It receives an already-computed probability
 package, proves the shared V17 gates, and is the only component in the new
 multisport path allowed to emit FINAL_APPROVED. Sporting probabilities are
 preserved on HOLD; governance never edits the model point estimate or bounds.
+
+A registered/importable bridge is not certification. Newly promoted sport lanes
+must pass an explicit immutable fitted-artifact certification receipt resolved by
+the trusted registry path. Request evidence or package metadata cannot self-assert
+certification.
 """
 from __future__ import annotations
 
@@ -11,6 +16,7 @@ from datetime import datetime, timezone
 from math import isfinite
 from typing import Any, Mapping
 
+from v17.fitted_team_event_certification import FittedTeamEventCertification
 from v17.llp_governed_package_scoring import PASS, validate_governed_scoring_package
 from v17.multisport_team_event_calibration import MIN_CALIBRATION_N
 from v17.team_event_model_registry_audit import CERTIFIED, certification_state
@@ -143,9 +149,52 @@ def _calibration_blockers(package: Mapping[str, Any]) -> list[str]:
     return blockers
 
 
+def _certification_gate(
+    sport: str,
+    package: Mapping[str, Any],
+    certification_receipt: FittedTeamEventCertification | None,
+) -> tuple[str, str | None, str | None, list[str]]:
+    """Resolve terminal certification without trusting request/package assertions.
+
+    Static legacy certification remains available through the narrow canonical
+    catalog. Any new sport must pass a resolved FittedTeamEventCertification
+    object supplied by the trusted registry-owning runtime adapter.
+    """
+    if certification_receipt is None:
+        state, specialist = certification_state(sport, registered=True)
+        if state == CERTIFIED and specialist:
+            return state, specialist, specialist, []
+        return state, None, None, ["TEAM_EVENT_SPECIALIST_ARTIFACT_NOT_CERTIFIED"]
+
+    blockers: list[str] = []
+    receipt = certification_receipt
+    if receipt.sport != sport:
+        blockers.append("TEAM_EVENT_CERTIFICATION_SPORT_MISMATCH")
+    if str(package.get("controlling_specialist") or "") != receipt.controlling_specialist:
+        blockers.append("TEAM_EVENT_CERTIFICATION_SPECIALIST_MISMATCH")
+    if str(package.get("model_version") or "") != receipt.model_version:
+        blockers.append("TEAM_EVENT_CERTIFICATION_MODEL_VERSION_MISMATCH")
+    if str(package.get("artifact_id") or "") != receipt.artifact_id:
+        blockers.append("TEAM_EVENT_CERTIFICATION_ARTIFACT_MISMATCH")
+    if str(package.get("calibration_method") or "") != receipt.calibration_method:
+        blockers.append("TEAM_EVENT_CERTIFICATION_CALIBRATION_MISMATCH")
+    if receipt.independent_verification_status != "PASS":
+        blockers.append("TEAM_EVENT_INDEPENDENT_VERIFICATION_NOT_PASS")
+    if receipt.certification_status != "CERTIFIED":
+        blockers.append("TEAM_EVENT_SPECIALIST_NOT_CERTIFIED")
+    if receipt.can_execute is not False:
+        blockers.append("CAN_EXECUTE_MUST_BE_FALSE")
+
+    if blockers:
+        return "NOT_CERTIFIED", None, receipt.certification_id, blockers
+    return CERTIFIED, receipt.controlling_specialist, receipt.certification_id, []
+
+
 def reduce_multisport_team_event(
     req: Any,
     package: Mapping[str, Any],
+    *,
+    certification_receipt: FittedTeamEventCertification | None = None,
 ) -> dict[str, Any]:
     """Apply the shared V17 terminal gates to one immutable model package."""
     sport = str(package.get("sport") or getattr(req, "sport", "") or "").upper().strip()
@@ -155,11 +204,12 @@ def reduce_multisport_team_event(
     if audit.status != PASS:
         blockers.extend(f"GOVERNED_PACKAGE:{item}" for item in audit.blockers)
 
-    certification, certified_specialist = certification_state(sport, registered=True)
-    if certification != CERTIFIED or certified_specialist is None:
-        blockers.append("TEAM_EVENT_SPECIALIST_ARTIFACT_NOT_CERTIFIED")
-    elif package.get("controlling_specialist") != certified_specialist:
-        blockers.append("CONTROLLING_SPECIALIST_CERTIFICATION_MISMATCH")
+    certification, certified_specialist, certification_id, cert_blockers = _certification_gate(
+        sport,
+        package,
+        certification_receipt,
+    )
+    blockers.extend(cert_blockers)
 
     blockers.extend(_calibration_blockers(package))
 
@@ -208,7 +258,8 @@ def reduce_multisport_team_event(
         "status": "PASS" if passed else "HOLD",
         "sport": sport,
         "certification_status": certification,
-        "certification_id": certified_specialist,
+        "certification_id": certification_id,
+        "certified_controlling_specialist": certified_specialist,
         "probability_audit_result": PASS_PROBABILITY_AUDIT if audit.status == PASS else audit.status,
         "event_mutex_status": "PASS" if not any("EVENT_MUTEX" in b for b in blockers) else "HOLD",
         "postmodel_gates_status": "PASS" if not blockers else "HOLD",
