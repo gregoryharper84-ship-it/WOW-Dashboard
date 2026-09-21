@@ -3,6 +3,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 LLP_EDITOR = ROOT / "LLP_V17_CUSTOM_GPT_INSTRUCTIONS.txt"
+WOW_EDITOR = ROOT / "WOW_V17_CUSTOM_GPT_INSTRUCTIONS.txt"
 LLP_AUTHORITY = ROOT.parent.parent / "LLP-TEAM-BETTING-GPT-INSTRUCTIONS.md"
 
 
@@ -27,6 +28,15 @@ def test_llp_editor_does_not_conflate_rank_gate_with_probability_visibility():
     assert "`BLOCKED_UNSCORED`" in text
     assert "`NO VERIFIED PLAY` cannot be the sole board verdict" in text
     assert "Never say the actual winner probability is unavailable until lineup lock" in text
+
+
+def test_wow_parent_routes_team_event_full_model_to_canonical_v17_action():
+    text = _text(WOW_EDITOR)
+    assert "winners/upsets -> canonical V17 `scoreWowV17TeamEventFromWowHost`" in text
+    assert "getWowV17Capabilities" in text
+    assert "`rank_eligible=false` blocks ranking/card admission" in text
+    assert "do not collapse the board to `NO VERIFIED PLAY` alone" in text
+    assert "winners/upsets -> `scoreWowTeamEventRequest`" not in text
 
 
 def test_llp_authority_contract_preserves_modeled_held_probability():
