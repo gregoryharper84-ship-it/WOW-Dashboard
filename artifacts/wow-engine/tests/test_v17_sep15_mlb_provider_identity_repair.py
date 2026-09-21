@@ -43,18 +43,21 @@ class _Query:
 class _Db:
     def __init__(self, rows):
         self.rows = rows
+        self.table_calls = 0
 
     def table(self, _name):
+        self.table_calls += 1
         return _Query(self.rows)
 
 
 class _EventApi:
     def __init__(self, rows):
         self.rows = rows
+        self.db = _Db(rows)
         self.score_event = lambda req: {"status": "ORIGINAL", "can_execute": False}
 
     def get_client(self):
-        return _Db(self.rows)
+        return self.db
 
 
 class _Req(SimpleNamespace):
@@ -93,6 +96,9 @@ def _row(**updates):
         snapshot_id="canonical-snapshot-822849",
         snapshot_timestamp="2026-09-15T16:47:00Z",
         feature_hydration_status="PASS",
+        lineup_status="NOT_YET_AVAILABLE",
+        lineup_snapshot_id=None,
+        lineup_confirmed_at=None,
     )
     base.update(updates)
     return base
@@ -100,12 +106,12 @@ def _row(**updates):
 
 def test_provider_event_id_resolves_to_unique_canonical_mlb_identity():
     result = resolve_mlb_team_event_evidence(_req(), event_api=_EventApi([_row()]))
-
     assert result["ok"] is True
     assert result["canonical_official_event_id"] == "822849"
     assert result["caller_official_event_id"] == "rundown-822849"
     assert result["canonical_identity_resolution"] == "PARTICIPANTS_START_SLATE"
     assert result["canonical_source_snapshot_id"] == "canonical-snapshot-822849"
+    assert result["evidence"]["home_lineup_status"] == "NOT_YET_AVAILABLE"
     assert result["can_execute"] is False
 
 
@@ -113,10 +119,25 @@ def test_exact_canonical_event_id_stays_on_exact_lookup_path():
     result = resolve_mlb_team_event_evidence(
         _req(official_event_id="822849"), event_api=_EventApi([_row()])
     )
-
     assert result["ok"] is True
     assert result["canonical_official_event_id"] == "822849"
     assert result["canonical_identity_resolution"] == "EXACT_OFFICIAL_EVENT_ID"
+
+
+def test_confirmed_lineup_state_is_carried_from_canonical_snapshot():
+    result = resolve_mlb_team_event_evidence(
+        _req(official_event_id="822849"),
+        event_api=_EventApi([_row(
+            lineup_status="CONFIRMED",
+            lineup_snapshot_id="lineup-1",
+            lineup_confirmed_at="2026-09-15T23:00:00Z",
+            snapshot_timestamp="2026-09-15T22:55:00Z",
+        )]),
+    )
+    assert result["ok"] is True
+    assert result["evidence"]["home_lineup_status"] == "CONFIRMED"
+    assert result["evidence"]["away_lineup_status"] == "CONFIRMED"
+    assert result["canonical_latest_material_update_timestamp"] == "2026-09-15T23:00:00+00:00"
 
 
 def test_identity_join_fails_closed_when_two_official_events_match():
@@ -125,7 +146,6 @@ def test_identity_join_fails_closed_when_two_official_events_match():
         _row(official_event_id="999999", snapshot_id="snapshot-b"),
     ]
     result = resolve_mlb_team_event_evidence(_req(), event_api=_EventApi(rows))
-
     assert result["ok"] is False
     assert result["code"] == "MLB_TEAM_EVENT_CANONICAL_IDENTITY_AMBIGUOUS"
     assert result["candidate_count"] == 2
@@ -136,18 +156,17 @@ def test_identity_join_does_not_match_different_participants():
         _req(),
         event_api=_EventApi([_row(home_team="Houston Astros")]),
     )
-
     assert result["ok"] is False
     assert result["code"] == "MLB_TEAM_EVENT_CANONICAL_SNAPSHOT_UNAVAILABLE"
 
 
-def test_post_bridge_runtime_rewrites_provider_id_before_original_canonicalizer():
+def test_post_bridge_runtime_reuses_resolved_canonical_row_without_second_lookup():
     event_api = _EventApi([_row()])
     market_api = SimpleNamespace(prod=SimpleNamespace(event_api=event_api))
-    seen = {}
+    original_calls = []
 
     def original_canonicalize(req, _event_api):
-        seen["official_event_id"] = req.official_event_id
+        original_calls.append(req.official_event_id)
         return req
 
     team_runtime = SimpleNamespace(
@@ -162,5 +181,8 @@ def test_post_bridge_runtime_rewrites_provider_id_before_original_canonicalizer(
 
     out = team_runtime._canonicalize_public_mlb_request(_req(), event_api)
     assert out.official_event_id == "822849"
-    assert seen["official_event_id"] == "822849"
+    assert out.source_snapshot_id == "canonical-snapshot-822849"
+    assert out.sport_specific_evidence["home_lineup_status"] == "NOT_YET_AVAILABLE"
+    assert event_api.db.table_calls == 2  # exact provider-id miss + one bounded slate identity join
+    assert original_calls == []
     assert team_runtime._v17_sep15_provider_identity_repair_installed is True
