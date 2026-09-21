@@ -12,6 +12,14 @@ line are deliberately not part of the hydration identity because evidence is
 upstream of settlement direction/threshold. The canonical scorer still receives
 and scores every row independently.
 
+Before making a new external request, the wrapper may reuse a sufficiently fresh
+immutable evidence snapshot for the exact event/player/stat/line. Reuse never
+creates probability authority: the canonical handler still validates the packet,
+performs idempotent snapshot persistence, invokes the fitted specialist, applies
+calibration/bounds, reconciles the batch, and runs terminal reduction. Cache
+lookup is opportunistic only; any lookup/validation miss falls back to the same
+canonical external hydrator and typed failure path.
+
 If pre-hydration cannot prove route eligibility or any acquisition fails, the
 row is passed to the captured canonical handler unchanged. Therefore failure
 codes and fail-closed semantics remain owned by the canonical handler.
@@ -46,6 +54,8 @@ LOGGER = logging.getLogger("wow.v17.interactive_latency")
 _STATE_KEY = "wow_interactive_pick_hydration_installed"
 DEFAULT_WORKERS = 4
 MAX_WORKERS = 8
+DEFAULT_CACHE_MAX_AGE_SECONDS = 300
+MAX_CACHE_MAX_AGE_SECONDS = 900
 _DEFAULT_AUTO_HYDRATE_PROP_EVIDENCE = auto_hydrate_prop_evidence
 
 
@@ -55,6 +65,19 @@ def _worker_count() -> int:
     except (TypeError, ValueError):
         value = DEFAULT_WORKERS
     return max(1, min(MAX_WORKERS, value))
+
+
+def _cache_max_age_seconds() -> int:
+    try:
+        value = int(
+            os.getenv(
+                "WOW_INTERACTIVE_PROP_EVIDENCE_MAX_AGE_SECONDS",
+                str(DEFAULT_CACHE_MAX_AGE_SECONDS),
+            )
+        )
+    except (TypeError, ValueError):
+        value = DEFAULT_CACHE_MAX_AGE_SECONDS
+    return max(0, min(MAX_CACHE_MAX_AGE_SECONDS, value))
 
 
 def _route_is_prehydration_eligible(row: PickRequestRow, market_api: Any) -> bool:
@@ -78,14 +101,19 @@ def _route_is_prehydration_eligible(row: PickRequestRow, market_api: Any) -> boo
         return False
 
 
-def _event_started(value: str) -> bool:
+def _aware_or_none(value: Any) -> Optional[datetime]:
     try:
         parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
     except (TypeError, ValueError):
-        return False
+        return None
     if parsed.utcoffset() is None:
-        return False
-    return parsed.astimezone(timezone.utc) <= datetime.now(timezone.utc)
+        return None
+    return parsed.astimezone(timezone.utc)
+
+
+def _event_started(value: str) -> bool:
+    parsed = _aware_or_none(value)
+    return bool(parsed is not None and parsed <= datetime.now(timezone.utc))
 
 
 def _all_rows_started_and_preflight_ready(batch: PickRequestBatch, *, market_api: Any) -> bool:
@@ -134,6 +162,73 @@ def _hydration_key(row: PickRequestRow) -> tuple[str, ...]:
     return (str(row.sport or "").strip().upper(),_canonical_stat(row.sport,row.stat_type)," ".join(str(row.player or "").strip().split()),str(row.event_id or "").strip(),str(row.event_start_time or "").strip(),str(row.source_capture_timestamp or "").strip(),str(row.source_type or "").strip().upper(),str(row.platform or "").strip().upper(),str(row.opponent or "").strip().upper())
 
 
+def _cached_evidence(row: PickRequestRow, *, market_api: Any) -> Optional[RawPropEvidence]:
+    """Reuse only fresh, exact, already-frozen evidence; miss safely on doubt."""
+    max_age = _cache_max_age_seconds()
+    if max_age <= 0:
+        return None
+    now = datetime.now(timezone.utc)
+    event_start = _aware_or_none(row.event_start_time)
+    if event_start is None or event_start <= now:
+        return None
+    sport = str(row.sport or "").strip().upper()
+    canonical_stat = _canonical_stat(sport, row.stat_type)
+    player = " ".join(str(row.player or "").strip().split())
+    try:
+        result = (
+            market_api.prod.get_client()
+            .table("wow_prop_evidence_snapshots")
+            .select("*")
+            .eq("event_id", str(row.event_id).strip())
+            .eq("sport", sport)
+            .eq("player", player)
+            .eq("stat_type", canonical_stat)
+            .eq("line", float(row.line))
+            .eq("hydration_status", "PASS")
+            .order("captured_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+    except Exception:
+        return None
+    records = getattr(result, "data", None) or []
+    if not isinstance(records, list) or not records or not isinstance(records[0], dict):
+        return None
+    record = records[0]
+    if record.get("blockers"):
+        return None
+    captured = _aware_or_none(record.get("captured_at"))
+    if captured is None or captured >= event_start:
+        return None
+    age_seconds = (now - captured).total_seconds()
+    if age_seconds < 0 or age_seconds > max_age:
+        return None
+    if str(record.get("event_start_time") or "").strip():
+        cached_event_start = _aware_or_none(record.get("event_start_time"))
+        if cached_event_start is None or cached_event_start != event_start:
+            return None
+    raw = {
+        "captured_at": record.get("captured_at"),
+        "game_log": record.get("game_log"),
+        "box_score_log": record.get("box_score_log"),
+        "role_status": record.get("role_status"),
+        "role_timestamp": record.get("role_timestamp"),
+        "opportunity_ledger": record.get("opportunity_ledger"),
+        "source_timestamps": record.get("source_timestamps"),
+        "evidence_version": record.get("evidence_version") or "PROP_EVIDENCE_V1",
+        "rate_provenance": record.get("rate_provenance")
+        or f"REUSED_IMMUTABLE_SNAPSHOT:{record.get('source_snapshot_id') or 'UNKNOWN'}",
+    }
+    if record.get("lineup_evidence") is not None:
+        raw["lineup_evidence"] = record.get("lineup_evidence")
+    if record.get("opponent_context") is not None:
+        raw["opponent_context"] = record.get("opponent_context")
+    try:
+        return RawPropEvidence.model_validate(raw)
+    except Exception:
+        return None
+
+
 def _hydrate(row: PickRequestRow) -> RawPropEvidence:
     # Preserve both historical diagnostic seams. Tests/tools may monkeypatch the
     # public symbol in this module; the V17 facade may instead replace the core
@@ -165,18 +260,28 @@ def prehydrate_batch(batch: PickRequestBatch, *, market_api: Any) -> PickRequest
         key=_hydration_key(row)
         if key not in groups: groups[key]=(row,[])
         groups[key][1].append(index)
-    started=perf_counter(); evidence_by_index={}; failure_codes=set(); successful_fetches=0; pool_workers=min(workers,len(groups))
-    with ThreadPoolExecutor(max_workers=pool_workers,thread_name_prefix="wow-prop-hydrate") as pool:
-        future_to_key={pool.submit(_hydrate,representative):key for key,(representative,_indices) in groups.items()}
-        for future in as_completed(future_to_key):
-            key=future_to_key[future]; _representative,indices=groups[key]
-            try: evidence=future.result()
-            except Exception as exc:
-                failure_codes.add(str(getattr(exc,"code",None) or type(exc).__name__)); continue
-            successful_fetches+=1
-            for index in indices: evidence_by_index[index]=evidence
+    started=perf_counter(); evidence_by_index={}; failure_codes=set(); successful_fetches=0; cache_hits=0; cache_rows=0
+    misses={}
+    for key,(representative,indices) in groups.items():
+        evidence=_cached_evidence(representative,market_api=market_api)
+        if evidence is None:
+            misses[key]=(representative,indices)
+            continue
+        cache_hits+=1; cache_rows+=len(indices)
+        for index in indices: evidence_by_index[index]=evidence
+    pool_workers=min(workers,len(misses)) if misses else 0
+    if misses:
+        with ThreadPoolExecutor(max_workers=pool_workers,thread_name_prefix="wow-prop-hydrate") as pool:
+            future_to_key={pool.submit(_hydrate,representative):key for key,(representative,_indices) in misses.items()}
+            for future in as_completed(future_to_key):
+                key=future_to_key[future]; _representative,indices=misses[key]
+                try: evidence=future.result()
+                except Exception as exc:
+                    failure_codes.add(str(getattr(exc,"code",None) or type(exc).__name__)); continue
+                successful_fetches+=1
+                for index in indices: evidence_by_index[index]=evidence
     hydrated=batch.model_copy(update={"rows":[row.model_copy(update={"evidence":evidence_by_index[index]}) if index in evidence_by_index else row for index,row in enumerate(batch.rows)]}) if evidence_by_index else batch
-    LOGGER.warning("WOW_V17_INTERACTIVE_STAGE route=/score-pick-request stage=prehydrate rows_in=%s eligible=%s unique_fetches=%s successful_fetches=%s prefetched=%s reused=%s failed_fetches=%s failure_codes=%s workers=%s stage_ms=%.3f can_execute=false",len(batch.rows),len(eligible),len(groups),successful_fetches,len(evidence_by_index),max(0,len(evidence_by_index)-successful_fetches),len(groups)-successful_fetches,",".join(sorted(failure_codes)) if failure_codes else "NONE",pool_workers,(perf_counter()-started)*1000.0)
+    LOGGER.warning("WOW_V17_INTERACTIVE_STAGE route=/score-pick-request stage=prehydrate rows_in=%s eligible=%s unique_fetches=%s cache_hits=%s cache_rows=%s external_fetches=%s successful_fetches=%s prefetched=%s reused=%s failed_fetches=%s failure_codes=%s workers=%s stage_ms=%.3f can_execute=false",len(batch.rows),len(eligible),len(groups),cache_hits,cache_rows,len(misses),successful_fetches,len(evidence_by_index),max(0,len(evidence_by_index)-cache_hits-successful_fetches),len(misses)-successful_fetches,",".join(sorted(failure_codes)) if failure_codes else "NONE",pool_workers,(perf_counter()-started)*1000.0)
     return hydrated
 
 
@@ -201,4 +306,4 @@ def schedule_interactive_pick_hydration_install(app: Any, *, market_api: Any) ->
         installed=install_interactive_pick_hydration_wrapper(app,market_api=market_api); LOGGER.warning("WOW_V17_INTERACTIVE_HYDRATION status=%s workers=%s can_execute=false","INSTALLED" if installed else "NOT_INSTALLED_ROUTE_UNAVAILABLE",_worker_count())
     setattr(app.state,f"{_STATE_KEY}_scheduled",True)
 
-__all__=["DEFAULT_WORKERS","MAX_WORKERS","install_interactive_pick_hydration_wrapper","prehydrate_batch","schedule_interactive_pick_hydration_install"]
+__all__=["DEFAULT_WORKERS","MAX_WORKERS","DEFAULT_CACHE_MAX_AGE_SECONDS","MAX_CACHE_MAX_AGE_SECONDS","install_interactive_pick_hydration_wrapper","prehydrate_batch","schedule_interactive_pick_hydration_install"]
