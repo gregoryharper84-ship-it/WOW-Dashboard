@@ -1,11 +1,12 @@
 # WOW Betting Engine — V17 Custom GPT editor attestation
 
-Status: `HISTORICAL_LIVE_EDITOR_SYNC_VERIFIED__CURRENT_RESYNC_REQUIRED_AFTER_PR617`
+Status: `CURRENT_EDITOR_UPDATE_REPORTED__LIVE_ACTION_ACCEPTANCE_REQUIRED`
 
 Historical verification date: 2026-09-16
-Current reconciliation date: 2026-09-20
+Post-PR617 editor update reported: 2026-09-20
+Current reconciliation date: 2026-09-21
 
-This record preserves the last verified live `WOW_BETTING_ENGINE` editor acceptance while explicitly separating that historical evidence from the current required editor resynchronization. It must not be used to claim that the live editor is currently synchronized after P0-D and PR #617.
+This record preserves the last fully verified live `WOW_BETTING_ENGINE` editor acceptance while separately recording the post-PR617 editor update that the user completed on 2026-09-20. The editor is no longer correctly described as "resync not performed". Full current verification still requires a post-update authenticated Action acceptance from the fresh production WOW chat.
 
 ## Historical live editor identity and safety
 
@@ -20,11 +21,11 @@ DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS = true
 
 WOW owns player/scalar props. Team/event winner/favorite/underdog/upset objectives route to `LLP_TEAM_BETTING_ENGINE`. Scout/Research remain evidence-only. Exactly one controlling fitted specialist owns each row/event.
 
-## Historical save/reload acceptance
+## Historical verified acceptance
 
-On 2026-09-16 the live editor was saved, reloaded, and a real Action health invocation succeeded. The editor then reported 5,418 instruction characters, below the 8,000-character product limit. The live Action reached the production Render origin with Bearer authentication and preserved `can_execute=false`.
+On 2026-09-16 the live editor was saved, reloaded, and a real Action health invocation succeeded. The live Action reached the production Render origin with Bearer authentication and preserved `can_execute=false`.
 
-That evidence is historical only. Subsequent repository changes modified the required large-board orchestration contract and PR #617 repaired canonical prop Action operation IDs. A fresh editor save/reload acceptance is therefore required.
+Subsequent repository changes modified the required large-board orchestration contract and PR #617 repaired canonical prop Action operation IDs, so that 2026-09-16 verification cannot alone prove current parity.
 
 ## Current canonical repository contract
 
@@ -41,28 +42,37 @@ can_execute = false
 
 The current semantic host instructions require LIVE_GPT interactive scoring in <=4 directional rows per Action call, immutable receipt recovery before retry after ambiguous completion, exact-once reconciliation, and no ranking of partial pools.
 
+## Post-PR617 editor update record
+
+User-confirmed on 2026-09-20:
+
+- the pinned canonical V17 Action schema was imported into the production WOW editor;
+- `scoreWowPickRequest` was present in the Action surface;
+- the production Render Action origin remained configured;
+- the existing Bearer authentication configuration was preserved and not replaced;
+- the editor update was saved; and
+- a fresh WOW chat was opened to bind the updated Action schema.
+
+This resolves the stale `RESYNC_REQUIRED_AFTER_PR617` status. It is evidence of the editor update, not evidence that the fresh session successfully executed an authenticated Action.
+
 ## Current live-editor status
 
-The current repository/runtime repair does **not** prove that the live product editor has been re-saved/reloaded with the repaired schema and latest semantic instructions.
-
 ```text
-LIVE_GPT_EDITOR_SYNC = RESYNC_REQUIRED_AFTER_PR617
-REPOSITORY_GOVERNANCE = PR617_MERGED
-BACKEND_RUNTIME = separate state
+LIVE_GPT_EDITOR_SYNC = EDITOR_UPDATED__LIVE_ACTION_ACCEPTANCE_REQUIRED
+REPOSITORY_GOVERNANCE = CURRENT_MAIN
+BACKEND_RUNTIME = V17_ACTIVE when production health confirms it
 MODEL_CAPABILITY = route-specific separate state
 can_execute = false
 ```
 
 ## Acceptance required to re-attest VERIFIED
 
-A new live editor attestation may set `LIVE_GPT_EDITOR_SYNC=VERIFIED` only after all of the following are observed from the actual GPT editor:
+A new live editor attestation may set `LIVE_GPT_EDITOR_SYNC=VERIFIED` only after all of the following are observed from the fresh production WOW chat:
 
-1. current instructions are saved and survive reload;
-2. the current canonical V17 Action schema is installed;
-3. `scoreWowPickRequest` is visible/callable;
-4. Bearer auth succeeds using the existing `WOW_ACTION_API_KEY` without exposing or replacing it;
-5. a live `/health` Action invocation reaches the production Render backend;
-6. required V17 diagnostic Actions remain callable; and
-7. `can_execute=false` remains true.
+1. a live `/health` Action invocation reaches the production Render backend;
+2. Bearer auth succeeds using the existing `WOW_ACTION_API_KEY` without exposing or replacing it;
+3. `scoreWowPickRequest` is actually callable and returns a typed governed response/receipt;
+4. required V17 diagnostic Actions remain callable; and
+5. `can_execute=false` remains true.
 
-Until then, preserve the 2026-09-16 verification as historical evidence only and do not represent it as current live-editor synchronization.
+Until then, preserve the 2026-09-16 verification as historical fully verified evidence, preserve the 2026-09-20 editor update as current user-reported configuration evidence, and do not represent the post-PR617 live Action acceptance as complete.
