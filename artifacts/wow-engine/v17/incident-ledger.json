@@ -83,6 +83,20 @@
           "production_deploy": null
         }
       }
+    },
+    {
+      "postmortem_id": "PM-2026-09-21-001",
+      "title": "Recurring wow-v17-prop-lifecycle-autopilot OIDC/timeout failure on the lifecycle-cycle step",
+      "severity": "P2",
+      "domain": "CI / deployment automation",
+      "state": "BLOCKED_HARD_BOUNDARY",
+      "postmortem_path": "artifacts/wow-engine/v17/postmortems/PM-2026-09-21-001__prop-lifecycle-autopilot-oidc-timeout-recurrence.md",
+      "engineering_fix_ids": [],
+      "created_utc": "2026-09-21T14:40:00Z",
+      "updated_utc": "2026-09-21T14:40:00Z",
+      "stop_reason": "Complete remediation requires editing .github/workflows/wow-v17-prop-lifecycle-autopilot.yml (mint a fresh OIDC token per curl attempt on the lifecycle-cycle step, mirroring the already-merged PR #631 fix for the sibling registration step); this worker is prohibited from modifying .github/workflows/** in this run.",
+      "related_prs": [528, 631],
+      "engineering_fixes": {}
     }
   ]
 }
