@@ -21,7 +21,8 @@ def _claims(**overrides):
 
 def test_nfl_prop_live_canary_main_workflow_is_explicitly_authorized():
     claims = _claims()
-    assert oidc.NFL_PROP_LIVE_CANARY_WORKFLOW_REF in oidc.ALLOWED_WORKFLOW_REFS
+    assert oidc.NFL_PROP_LIVE_CANARY_WORKFLOW_REF in oidc.LIVE_CANARY_WORKFLOW_REFS
+    assert oidc.NFL_PROP_LIVE_CANARY_WORKFLOW_REF not in oidc.ALLOWED_WORKFLOW_REFS
     assert oidc.validate_github_actions_claims(claims) == claims
 
 
