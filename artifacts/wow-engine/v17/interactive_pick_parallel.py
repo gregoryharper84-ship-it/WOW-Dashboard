@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from copy import deepcopy
+import inspect
 import logging
 import os
 from typing import Any, Optional
@@ -47,6 +48,23 @@ def _row_key(row: Any, index: int) -> str:
 
 def _single_row_batch(batch: PickRequestBatch, row: Any) -> PickRequestBatch:
     return batch.model_copy(update={"response_mode": "FULL", "rows": [row]})
+
+
+def _invoke_captured_endpoint(endpoint: Any, batch: PickRequestBatch, model_identity: Optional[str]) -> Any:
+    """Call the captured canonical endpoint without guessing its test/runtime signature.
+
+    The production endpoint accepts ``x_wow_model_identity`` while several
+    focused unit-test endpoints intentionally accept only the batch. Inspection
+    avoids catching a TypeError raised *inside* canonical scoring and mistaking
+    it for a signature mismatch.
+    """
+    try:
+        parameters = inspect.signature(endpoint).parameters
+    except (TypeError, ValueError):
+        parameters = {}
+    if "x_wow_model_identity" in parameters:
+        return endpoint(batch, x_wow_model_identity=model_identity)
+    return endpoint(batch)
 
 
 def _unexpected_row_failure(row: Any, index: int, exc: Exception) -> dict[str, Any]:
@@ -186,7 +204,7 @@ def install_interactive_pick_parallel_wrapper(app: Any, *, market_api: Any) -> b
     ) -> dict[str, Any]:
         workers = _score_worker_count()
         if str(batch.response_mode or "FULL").upper() != "COMPACT" or len(batch.rows) <= 1 or workers <= 1:
-            response = captured_endpoint(batch, x_wow_model_identity)
+            response = _invoke_captured_endpoint(captured_endpoint, batch, x_wow_model_identity)
             if isinstance(response, dict):
                 response["can_execute"] = False
             return response
@@ -197,6 +215,7 @@ def install_interactive_pick_parallel_wrapper(app: Any, *, market_api: Any) -> b
         with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="wow-v17-prop-score") as pool:
             pending = {
                 pool.submit(
+                    _invoke_captured_endpoint,
                     captured_endpoint,
                     _single_row_batch(prepared, row),
                     x_wow_model_identity,
