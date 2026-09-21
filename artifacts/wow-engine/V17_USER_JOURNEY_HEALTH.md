@@ -1,10 +1,10 @@
 # WOW V17 user-journey health
 
-Updated: 2026-09-20
+Updated: 2026-09-21
 
 Status: **FAIL — NO_END_TO_END_GOVERNED_PROP_RESULT**
 
-This status is intentionally stricter than component health. A healthy backend, repository CI, mounted route, historical editor acceptance, successful Scout discovery, or available fitted model does not by itself prove that the product is usable from ChatGPT.
+This status is intentionally stricter than component health. A healthy backend, repository CI, mounted route, editor-update evidence, successful Scout discovery, or available fitted model does not by itself prove that the product is usable from ChatGPT.
 
 ## Golden user journey
 
@@ -57,6 +57,7 @@ FAIL_RESPONSE_HANDOFF
 - backend health endpoint success;
 - route-mounted or HTTP-200 evidence without the golden user request;
 - historical live editor save/reload success;
+- current editor import/update evidence without a fresh authenticated Action result;
 - model-capability registry presence;
 - Scout discovery success;
 - locally reconstructed model output;
@@ -66,15 +67,17 @@ The latest full-path production ChatGPT canary receipt is the authority for this
 
 ## Current recovery state
 
-Repository PR #617 repaired the canonical prop Action operation IDs and direct production probing confirms `/score-pick-request` is mounted and bearer-protected. Production health reports V17 active with `can_execute=false`.
+Repository PR #617 repaired the canonical prop Action operation IDs. Direct production evidence confirms `/score-pick-request` is mounted and bearer-protected, and the current `wow-governed-probability-engine` deployment is live.
 
-However, the live GPT editor still requires save/reload acceptance against the current repository contract. The historical 2026-09-16 editor verification is not current semantic/schema parity after P0-D and PR #617.
+The post-PR617 editor update was user-confirmed on 2026-09-20: the pinned canonical schema was imported, `scoreWowPickRequest` was visible, the production Action origin remained configured, Bearer authentication configuration was preserved, the GPT update was saved, and a fresh WOW chat was opened.
 
-Until the current live editor is resynchronized and the golden production prompt completes the full governed path:
+The remaining missing proof is narrower: no post-update fresh-chat authenticated Action receipt has yet been recorded here for `/health` plus `scoreWowPickRequest`, and the golden full-model user journey has not yet been captured end to end.
+
+Until that fresh live Action acceptance and the golden production prompt complete the full governed path:
 
 ```text
 USER_JOURNEY_HEALTH = FAIL
 REASON = NO_END_TO_END_GOVERNED_PROP_RESULT
-LIVE_GPT_EDITOR_SYNC = RESYNC_REQUIRED_AFTER_PR617
+LIVE_GPT_EDITOR_SYNC = EDITOR_UPDATED__LIVE_ACTION_ACCEPTANCE_REQUIRED
 can_execute = false
 ```
