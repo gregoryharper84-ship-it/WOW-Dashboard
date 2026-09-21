@@ -17,19 +17,24 @@ import json
 import logging
 from time import perf_counter
 from typing import Any, Callable
+import uuid
 
 
-# Supabase/PostgREST receipt inserts can legitimately take longer than one
-# second on the production free-tier path. Keep persistence off the scoring
-# response critical path, but retain a finite ownership bound so a degraded
-# telemetry service cannot consume the in-flight task pool indefinitely.
-_PERSIST_TIMEOUT_SECONDS = 5.0
+# Receipt persistence is deliberately off the response critical path. Each
+# attempt is bounded, then retried with short backoff. A receipt that still
+# cannot be written is persisted to a service-role-only dead-letter ledger for
+# later recovery. None of these telemetry paths can change the Action response.
+_PERSIST_TIMEOUT_SECONDS = 3.0
+_PERSIST_MAX_ATTEMPTS = 3
+_PERSIST_RETRY_DELAYS_SECONDS = (0.05, 0.15)
+_DEAD_LETTER_TIMEOUT_SECONDS = 3.0
 _SHUTDOWN_DRAIN_SECONDS = 5.25
 _MAX_IN_FLIGHT = 32
 
 
 LOGGER = logging.getLogger("wow.v17.action_invocation")
 TABLE = "wow_action_invocation_receipts"
+DEAD_LETTER_TABLE = "wow_action_invocation_receipt_dead_letters"
 CAN_EXECUTE = False
 _GITHUB_OIDC_ISSUER = "https://token.actions.githubusercontent.com"
 
@@ -112,8 +117,38 @@ def _request_id(headers: Any) -> str | None:
     return value[:256] or None
 
 
+def _write_idempotent(table: Any, payload: dict[str, Any], *, conflict_key: str) -> None:
+    """Prefer idempotent upsert; retain insert compatibility for unit-test fakes."""
+    upsert = getattr(table, "upsert", None)
+    if callable(upsert):
+        upsert(payload, on_conflict=conflict_key).execute()
+        return
+    table.insert(payload).execute()
+
+
 def _insert_receipt(db_client_fn: Callable[[], Any], receipt: dict[str, Any]) -> None:
-    db_client_fn().table(TABLE).insert(receipt).execute()
+    _write_idempotent(db_client_fn().table(TABLE), receipt, conflict_key="invocation_id")
+
+
+def _dead_letter_receipt(
+    db_client_fn: Callable[[], Any],
+    receipt: dict[str, Any],
+    *,
+    attempt_count: int,
+    last_error: str,
+) -> None:
+    payload = {
+        "invocation_id": receipt["invocation_id"],
+        "receipt": receipt,
+        "attempt_count": int(attempt_count),
+        "last_error": str(last_error)[:256],
+        "can_execute": False,
+    }
+    _write_idempotent(
+        db_client_fn().table(DEAD_LETTER_TABLE),
+        payload,
+        conflict_key="invocation_id",
+    )
 
 
 def install_action_invocation_middleware(app: Any, *, db_client_fn: Callable[[], Any]) -> None:
@@ -160,6 +195,9 @@ def install_action_invocation_middleware(app: Any, *, db_client_fn: Callable[[],
             duration_ms = (perf_counter() - started) * 1000.0
             headers = getattr(request, "headers", {})
             receipt = {
+                # Generate the identity before the first write so a timeout after
+                # server commit is safe to retry without duplicating the receipt.
+                "invocation_id": str(uuid.uuid4()),
                 "route": path,
                 "action_operation_id": operation_id,
                 "http_method": str(getattr(request, "method", "UNKNOWN")).upper(),
@@ -172,17 +210,56 @@ def install_action_invocation_middleware(app: Any, *, db_client_fn: Callable[[],
                 "duration_ms": round(duration_ms, 3),
                 "can_execute": False,
             }
+
             async def _persist_receipt() -> None:
+                last_exc: Exception | None = None
+                for attempt in range(1, _PERSIST_MAX_ATTEMPTS + 1):
+                    try:
+                        await asyncio.wait_for(
+                            asyncio.to_thread(_insert_receipt, db_client_fn, receipt),
+                            timeout=_PERSIST_TIMEOUT_SECONDS,
+                        )
+                        if attempt > 1:
+                            LOGGER.info(
+                                "WOW_V17_ACTION_INVOCATION_PERSISTENCE_RECOVERED route=%s status_code=%s attempt=%s can_execute=false",
+                                path, status_code, attempt,
+                            )
+                        return
+                    except Exception as exc:
+                        last_exc = exc
+                        if attempt < _PERSIST_MAX_ATTEMPTS:
+                            LOGGER.warning(
+                                "WOW_V17_ACTION_INVOCATION_PERSISTENCE_RETRY route=%s status_code=%s attempt=%s error=%s can_execute=false",
+                                path, status_code, attempt, type(exc).__name__,
+                            )
+                            await asyncio.sleep(_PERSIST_RETRY_DELAYS_SECONDS[attempt - 1])
+
+                error_name = type(last_exc).__name__ if last_exc is not None else "UNKNOWN"
+                LOGGER.warning(
+                    "WOW_V17_ACTION_INVOCATION_PERSISTENCE_FAILED route=%s status_code=%s attempts=%s error=%s can_execute=false",
+                    path, status_code, _PERSIST_MAX_ATTEMPTS, error_name,
+                )
                 try:
                     await asyncio.wait_for(
-                        asyncio.to_thread(_insert_receipt, db_client_fn, receipt),
-                        timeout=_PERSIST_TIMEOUT_SECONDS,
+                        asyncio.to_thread(
+                            _dead_letter_receipt,
+                            db_client_fn,
+                            receipt,
+                            attempt_count=_PERSIST_MAX_ATTEMPTS,
+                            last_error=error_name,
+                        ),
+                        timeout=_DEAD_LETTER_TIMEOUT_SECONDS,
                     )
-                except Exception as exc:
                     LOGGER.warning(
-                        "WOW_V17_ACTION_INVOCATION_PERSISTENCE_FAILED route=%s status_code=%s error=%s can_execute=false",
-                        path, status_code, type(exc).__name__,
+                        "WOW_V17_ACTION_INVOCATION_DEAD_LETTERED route=%s status_code=%s invocation_id=%s can_execute=false",
+                        path, status_code, receipt["invocation_id"],
                     )
+                except Exception as dead_exc:
+                    LOGGER.error(
+                        "WOW_V17_ACTION_INVOCATION_DEAD_LETTER_FAILED route=%s status_code=%s error=%s can_execute=false",
+                        path, status_code, type(dead_exc).__name__,
+                    )
+
             if len(tasks) >= _MAX_IN_FLIGHT:
                 LOGGER.warning(
                     "WOW_V17_ACTION_INVOCATION_PERSISTENCE_DROPPED route=%s status_code=%s reason=IN_FLIGHT_LIMIT can_execute=false",
@@ -196,4 +273,10 @@ def install_action_invocation_middleware(app: Any, *, db_client_fn: Callable[[],
     app.state.wow_action_invocation_telemetry_installed = True
 
 
-__all__ = ["CAN_EXECUTE", "ROUTE_OPERATION_IDS", "TABLE", "install_action_invocation_middleware"]
+__all__ = [
+    "CAN_EXECUTE",
+    "ROUTE_OPERATION_IDS",
+    "TABLE",
+    "DEAD_LETTER_TABLE",
+    "install_action_invocation_middleware",
+]
