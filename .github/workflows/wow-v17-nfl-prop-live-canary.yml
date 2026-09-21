@@ -20,7 +20,7 @@ jobs:
       WOW_OIDC_AUDIENCE: wow-v17-multiscout
       WOW_CAN_EXECUTE: "false"
       WOW_DRY_RUN_ONLY: "true"
-      WOW_REQUEST_ID: nfl-prop-live-canary-20260921-rams-giants-canonical-v2
+      WOW_REQUEST_ID: nfl-prop-live-canary-20260921-rams-giants-canonical-v3
     steps:
       - name: Assert fail-closed OIDC canary context
         shell: bash
