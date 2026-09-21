@@ -16,11 +16,10 @@ concurrency:
 
 jobs:
   deploy-production:
-    name: Deploy governed backend after required checks
-    # Keep the deploy decision inside the executable verifier. Historical
-    # job-expression contract markers remain explicit for regression/parity:
-    # github.event.workflow_run.head_branch == 'main'
-    # github.event.workflow_run.conclusion == 'success'
+    name: Verify governed backend deploy after required checks
+    # Render checksPass auto-deploy is the sole production deploy authority.
+    # This workflow verifies the protected-main SHA and observes the native
+    # Render deploy; it must never POST a second same-SHA deployment.
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
@@ -38,7 +37,7 @@ jobs:
           test -n "$RENDER_API_KEY"
           test -n "$GH_API_TOKEN"
 
-      - name: Verify required checks and deploy current main
+      - name: Verify required checks and observe current-main native deploy
         shell: bash
         run: |
           python - <<'PY'
@@ -60,7 +59,7 @@ jobs:
               conclusion = str(workflow_run.get("conclusion") or "")
               if head_branch != "main":
                   print(json.dumps({
-                      "status": "NON_MAIN_NO_DEPLOY",
+                      "status": "NON_MAIN_NO_DEPLOY_OBSERVATION",
                       "head_branch": head_branch,
                       "target_sha": target_sha,
                       "can_execute": False,
@@ -68,7 +67,7 @@ jobs:
                   raise SystemExit(0)
               if conclusion != "success":
                   print(json.dumps({
-                      "status": "UPSTREAM_NOT_SUCCESS_NO_DEPLOY",
+                      "status": "UPSTREAM_NOT_SUCCESS_NO_DEPLOY_OBSERVATION",
                       "conclusion": conclusion,
                       "target_sha": target_sha,
                       "can_execute": False,
@@ -139,7 +138,7 @@ jobs:
           main_sha = current_main_sha()
           if main_sha != target_sha:
               print(json.dumps({
-                  "status": "STALE_SHA_NO_DEPLOY",
+                  "status": "STALE_SHA_NO_DEPLOY_OBSERVATION",
                   "target_sha": target_sha,
                   "current_main_sha": main_sha,
                   "can_execute": False,
@@ -151,52 +150,62 @@ jobs:
               "Authorization": f"Bearer {os.environ['RENDER_API_KEY']}",
           }
           service_id = urllib.parse.quote(os.environ["WOW_RENDER_SERVICE_ID"], safe="")
-          deploys_request = urllib.request.Request(
-              f"https://api.render.com/v1/services/{service_id}/deploys?limit=20",
-              headers=render_headers,
-          )
-          with urllib.request.urlopen(deploys_request, timeout=30) as response:
-              raw_deploys = json.load(response)
 
-          if isinstance(raw_deploys, list):
-              entries = raw_deploys
-          elif isinstance(raw_deploys, dict):
-              entries = raw_deploys.get("deploys") or raw_deploys.get("items") or []
-          else:
-              entries = []
+          def render_deploys():
+              request = urllib.request.Request(
+                  f"https://api.render.com/v1/services/{service_id}/deploys?limit=20",
+                  headers=render_headers,
+              )
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  raw = json.load(response)
+              if isinstance(raw, list):
+                  return raw
+              if isinstance(raw, dict):
+                  return raw.get("deploys") or raw.get("items") or []
+              return []
 
-          active_statuses = {"created", "build_in_progress", "update_in_progress", "live"}
-          for entry in entries:
-              deploy = entry.get("deploy") if isinstance(entry, dict) and isinstance(entry.get("deploy"), dict) else entry
-              if not isinstance(deploy, dict):
-                  continue
-              commit = deploy.get("commit") if isinstance(deploy.get("commit"), dict) else {}
-              if str(commit.get("id") or "") == target_sha and str(deploy.get("status") or "") in active_statuses:
+          # Observe the native checksPass auto-deploy. Do not POST a deployment.
+          deploy_deadline = time.time() + 900
+          last_seen = []
+          while True:
+              matches = []
+              for entry in render_deploys():
+                  deploy = entry.get("deploy") if isinstance(entry, dict) and isinstance(entry.get("deploy"), dict) else entry
+                  if not isinstance(deploy, dict):
+                      continue
+                  commit = deploy.get("commit") if isinstance(deploy.get("commit"), dict) else {}
+                  if str(commit.get("id") or "") == target_sha:
+                      matches.append(deploy)
+              last_seen = [
+                  {"id": d.get("id"), "status": d.get("status"), "trigger": d.get("trigger")}
+                  for d in matches[:5]
+              ]
+              live = next((d for d in matches if str(d.get("status") or "") == "live"), None)
+              active = next((d for d in matches if str(d.get("status") or "") in {"created", "build_in_progress", "update_in_progress"}), None)
+              if live is not None:
                   print(json.dumps({
-                      "status": "DEPLOY_ALREADY_ACTIVE",
+                      "status": "NATIVE_DEPLOY_LIVE",
                       "commit_sha": target_sha,
-                      "deploy_status": deploy.get("status"),
+                      "deploy_id": live.get("id"),
+                      "deploy_trigger": live.get("trigger"),
+                      "deploy_count_for_sha": len(matches),
                       "can_execute": False,
                   }, sort_keys=True))
                   raise SystemExit(0)
-
-          body = json.dumps({"clearCache": "do_not_clear"}).encode("utf-8")
-          deploy_request = urllib.request.Request(
-              f"https://api.render.com/v1/services/{service_id}/deploys",
-              data=body,
-              method="POST",
-              headers={**render_headers, "Content-Type": "application/json"},
-          )
-          with urllib.request.urlopen(deploy_request, timeout=30) as response:
-              deployed = json.load(response)
-          deploy_id = str(deployed.get("id") or "") if isinstance(deployed, dict) else ""
-          if not deploy_id:
-              raise RuntimeError("RENDER_DEPLOY_RESPONSE_INVALID")
-
-          print(json.dumps({
-              "status": "DEPLOY_TRIGGERED",
-              "commit_sha": target_sha,
-              "deploy_id": deploy_id,
-              "can_execute": False,
-          }, sort_keys=True))
+              if active is not None:
+                  print(json.dumps({
+                      "status": "NATIVE_DEPLOY_OBSERVED_IN_PROGRESS",
+                      "commit_sha": target_sha,
+                      "deploy_id": active.get("id"),
+                      "deploy_status": active.get("status"),
+                      "deploy_trigger": active.get("trigger"),
+                      "deploy_count_for_sha": len(matches),
+                      "can_execute": False,
+                  }, sort_keys=True))
+                  raise SystemExit(0)
+              if time.time() >= deploy_deadline:
+                  raise RuntimeError(
+                      "RENDER_NATIVE_DEPLOY_NOT_OBSERVED:" + json.dumps(last_seen, sort_keys=True)
+                  )
+              time.sleep(15)
           PY
