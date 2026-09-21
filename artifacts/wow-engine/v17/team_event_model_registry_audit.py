@@ -1,10 +1,9 @@
 """Explicit resolver states and repository audit for team/event model coverage.
 
-The audit separates implementation, registration, and certification. A sport can
-have numerical code without being registered, and registration alone never
-certifies it. Runtime certification for newly promoted sports is derived only
-when the live registration's controlling specialist exactly matches the approved
-V17 certification identity.
+The audit separates numerical implementation, bridge registration, fitted-artifact
+presence, and governed certification. A sport can have useful model code without
+being registered; it can be registered without being fitted-artifact certified;
+and neither state may be promoted merely because an exact scorer imports.
 """
 from __future__ import annotations
 
@@ -13,7 +12,6 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from v17.team_event_capability_manifest import (
-    ACTIVATABLE_TEAM_EVENT_CERTIFICATIONS,
     EXPECTED_TEAM_EVENT_SPORTS,
     normalize_team_event_sport,
 )
@@ -48,12 +46,14 @@ def certification_state(
     *,
     registered: bool,
 ) -> tuple[str, str | None]:
-    """Certification status/id independent from generic registration alone.
+    """Return repository/runtime certification without self-certifying bridges.
 
-    Static certification comes from the governed catalog. For the new multisport
-    lanes, certification activates only if the *currently registered* exact
-    bridge uses the approved controlling specialist identity. A test/dummy bridge
-    therefore remains candidate-registered and cannot promote itself.
+    Static certification comes from the governed catalog. A live bridge may be
+    registered for research, hydration, shadow validation, or a runtime-gated
+    champion path, but registration/importability alone is not fitted-model
+    certification. Newly promoted sports must receive an explicit immutable
+    certification receipt and then be admitted to the governed catalog/runtime
+    proof path in a separate reviewed change.
     """
     from v17.team_event_capability_manifest import CERTIFIED_TEAM_EVENT_SPORTS
 
@@ -61,22 +61,7 @@ def certification_state(
     static_certification_id = CERTIFIED_TEAM_EVENT_SPORTS.get(normalized)
     if static_certification_id:
         return CERTIFIED, static_certification_id
-
     if registered:
-        expected = ACTIVATABLE_TEAM_EVENT_CERTIFICATIONS.get(normalized)
-        if expected:
-            try:
-                import v17.team_event_bridge_runtime as bridge_runtime
-
-                live_registration = bridge_runtime.TEAM_EVENT_BRIDGES.get(normalized)
-                if (
-                    live_registration is not None
-                    and live_registration.controlling_specialist == expected
-                    and callable(live_registration.scorer)
-                ):
-                    return CERTIFIED, expected
-            except Exception:  # noqa: BLE001 - audit must fail closed
-                pass
         return CANDIDATE_REGISTERED_UNCERTIFIED, None
     return NOT_CERTIFIED, None
 
@@ -107,7 +92,7 @@ class CapabilityProbe:
         }
 
 
-_DECLARED_CHAINS: dict[str, dict[str, str]] = {
+_DECLARED_CHAINS: dict[str, dict[str, Any]] = {
     "MLB": {
         "fitted_module": "v17.mlb_event_bridge_repair",
         "adapter_module": "v17.team_event_request_runtime",
@@ -125,57 +110,72 @@ _DECLARED_CHAINS: dict[str, dict[str, str]] = {
             "publication bridge. Champion promotion remains a runtime/database condition."
         ),
     },
+    # These implementations remain useful research/shadow scorers, but they are
+    # deliberately not advertised as fitted production artifacts. Their fitted
+    # candidate pipelines and certification work are tracked separately below.
     "WNBA": {
-        "fitted_module": "v17.multisport_team_event_models",
         "adapter_module": "v17.multisport_team_event_bridges",
         "scorer_symbol": "score_wnba_team_event_request",
-        "model_artifact_loader": "v17.multisport_team_event_models:score_wnba_team_event",
-        "notes": "WNBA Bradley-Terry specialist with V17 dynamic uncertainty and terminal governance.",
+        "notes": (
+            "Numerical WNBA bridge is importable, but its Bradley-Terry raw path is not "
+            "the fitted basketball artifact pipeline and cannot self-certify."
+        ),
     },
     "NHL": {
-        "fitted_module": "v17.multisport_team_event_models",
         "adapter_module": "v17.multisport_team_event_bridges",
         "scorer_symbol": "score_nhl_team_event_request",
-        "model_artifact_loader": "v17.multisport_team_event_models:score_nhl_team_event",
-        "notes": "NHL Elo + goalie/special-teams/OT simulation with governed bounds.",
+        "notes": (
+            "Numerical NHL Elo/goalie/special-teams bridge is importable; fitted candidate "
+            "artifacts exist separately and require replay/promotion before publication."
+        ),
     },
     "SOCCER": {
-        "fitted_module": "v17.multisport_team_event_models",
         "adapter_module": "v17.multisport_team_event_bridges",
         "scorer_symbol": "score_soccer_team_event_request",
-        "model_artifact_loader": "v17.multisport_team_event_models:score_soccer_team_event",
-        "notes": "Soccer independent-Poisson three-state 1X2 specialist; draw is never collapsed into binary.",
+        "notes": (
+            "Numerical soccer 1X2 bridge is importable; competition-scoped fitted multinomial "
+            "candidate artifacts require three-way replay/promotion before publication."
+        ),
     },
     "TENNIS": {
-        "fitted_module": "v17.multisport_team_event_models",
         "adapter_module": "v17.multisport_team_event_bridges",
         "scorer_symbol": "score_tennis_team_event_request",
-        "model_artifact_loader": "v17.multisport_team_event_models:score_tennis_team_event",
-        "notes": "Tennis surface/form, Elo, hold-rate, H2H specialist hierarchy with retirement-aware input contract.",
+        "notes": (
+            "Numerical tennis specialist hierarchy is importable; fitted tour/surface candidates "
+            "require retirement-aware replay/promotion before publication."
+        ),
     },
     "MMA": {
-        "fitted_module": "v17.multisport_team_event_models",
         "adapter_module": "v17.multisport_team_event_bridges",
         "scorer_symbol": "score_mma_team_event_request",
-        "model_artifact_loader": "v17.multisport_team_event_models:score_mma_team_event",
-        "notes": "MMA internally fitted chronological fight-ledger Elo specialist; no sportsbook or generic-probability substitution.",
+        "notes": (
+            "MMA chronological fight-ledger Elo is an event-time fitted calculation, not a "
+            "persisted certified artifact. Historical fitted-artifact lifecycle remains required."
+        ),
     },
 }
 
 _KNOWN_PARTIAL_WORK: dict[str, str] = {
     "NCAAF": (
-        "Fitted-artifact provider (ncaaf_fitted_provider), logistic model-family adapter and "
-        "trust layer exist, but there is no team/event winner scorer entry point, no governed "
-        "probability-package mapping and no event-governor binding."
+        "Fitted-artifact provider (ncaaf_fitted_provider), logistic model-family adapter, live "
+        "feature snapshots and static calibrator registry exist, but the team/event publication "
+        "bridge still lacks the complete failure-path/dynamic-bound/governor chain."
     ),
-    "NBA": "No certified V17 team/event winner bridge in the repository.",
-    "NCAAB": "No fitted team/event winner model, adapter or scorer in the repository.",
-    "PGA": "No calibrated field-distribution or head-to-head model, adapter or scorer.",
+    "NBA": (
+        "NBA has an independent fitted basketball candidate/training/calibration pipeline and a "
+        "certified-artifact RPC, but no complete current-pregame feature hydration + publication bridge."
+    ),
+    "NCAAB": (
+        "NCAAB has a fitted SportsDataverse prior-form logistic candidate with chronological "
+        "calibration/test partitions, but it remains immutable CANDIDATE evidence pending replay, "
+        "promotion, current-event feature hydration and a governed publication bridge."
+    ),
+    "PGA": "No calibrated field-distribution or head-to-head fitted model, adapter or scorer.",
     "BOXING": "No fitted fight-winner specialist, adapter or scorer in the repository.",
 }
 
 
-def _probe_chain(sport: str, chain: dict[str, str]) -> CapabilityProbe:
+def _probe_chain(sport: str, chain: dict[str, Any]) -> CapabilityProbe:
     adapter_module = chain.get("adapter_module")
     scorer_symbol = chain.get("scorer_symbol")
     adapter_importable = False
@@ -266,6 +266,7 @@ def audit_table(
                 "registered_capability": registered,
                 "certification_status": certification,
                 "certification_id": certification_id,
+                "fitted_artifact_backed": bool(probe.fitted_module and probe.model_artifact_loader),
                 "safe_to_register": bool(probe.scorer_resolvable),
                 "reason_if_not_registered": None if registered else probe.notes,
                 "probability_publishable": False,
