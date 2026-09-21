@@ -15,7 +15,7 @@ def _receipt(status="AUTO_ADVANCE_COMPLETE_WITH_BLOCKERS", reconciled=True):
         "status":status,"code":"TEST","can_execute":False,
         "reconciliation":{"response_reconciliation_pass":reconciled},
         "prop_receipts":[{"body":{"outcomes":[
-            {"row_key":"c","terminal_status":"COMPLETED","calibrated_lower_bound":0.72},
+            {"row_key":"c","terminal_status":"COMPLETED","calibrated_lower_bound":0.72,"probability_publishable":True,"rank_eligible":True,"card_admission_eligible":True},
             {"row_key":"h","terminal_status":"HELD"},
             {"row_key":"b","terminal_status":"BLOCKED"},
             {"row_key":"u","status":"UNRESOLVED"},
@@ -46,3 +46,15 @@ def test_raw_scout_candidates_remain_research_only():
     assert raw["research_ceiling"] == "RESEARCH_INTEREST"
     assert raw["probability_authority"] is False
     assert raw["can_execute"] is False
+
+
+def test_completed_but_rank_ineligible_is_not_published_as_pick():
+    receipt=_receipt()
+    row=receipt["prop_receipts"][0]["body"]["outcomes"][0]
+    row["rank_eligible"]=False
+    row["card_admission_eligible"]=False
+    report=build_report(_handoff(), receipt)
+    assert report["governed_picks"] == []
+    blocked=next(r for r in report["blocked_or_unresolved"] if r["row_key"]=="c")
+    assert blocked["publication_blocker"] == "GOVERNED_PICK_ADMISSION_NOT_PROVEN"
+    assert blocked["can_execute"] is False

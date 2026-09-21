@@ -31,11 +31,19 @@ def build_report(handoff: dict[str, Any], receipt: dict[str, Any]) -> dict[str, 
         for row in rows_from(receipts):
             status = str(row.get("terminal_status") or row.get("status") or "").upper()
             item = {**row, "controlling_specialist_route": route, "can_execute": False}
-            if status == "COMPLETED" and publication_gate_open:
+            governed_admission = (
+                status == "COMPLETED"
+                and row.get("probability_publishable") is True
+                and row.get("rank_eligible") is True
+                and row.get("card_admission_eligible", True) is True
+            )
+            if governed_admission and publication_gate_open:
                 qualified.append(item)
             else:
                 if status == "COMPLETED" and not publication_gate_open:
                     item["publication_blocker"] = "SPECIALIST_RECEIPT_NOT_RECONCILED"
+                elif status == "COMPLETED" and not governed_admission:
+                    item["publication_blocker"] = "GOVERNED_PICK_ADMISSION_NOT_PROVEN"
                 blocked.append(item)
 
     def lower_bound(row):
@@ -71,6 +79,9 @@ def build_report(handoff: dict[str, Any], receipt: dict[str, Any]) -> dict[str, 
     assert report["governance"]["can_execute"] is False
     assert all(row.get("can_execute") is False for row in qualified)
     assert all(str(row.get("terminal_status") or row.get("status") or "").upper() == "COMPLETED" for row in qualified)
+    assert all(row.get("probability_publishable") is True for row in qualified)
+    assert all(row.get("rank_eligible") is True for row in qualified)
+    assert all(row.get("card_admission_eligible", True) is True for row in qualified)
     if not publication_gate_open:
         assert qualified == []
     return report
