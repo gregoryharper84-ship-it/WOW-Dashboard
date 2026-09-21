@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import pytest
-
 from v17 import daily_async_runtime as async_daily
 from v17.daily_snapshot_runtime import DailySnapshotRequest
 
@@ -35,6 +33,10 @@ class _Query:
         self.filters.append(("eq", key, value))
         return self
 
+    def in_(self, key, values):
+        self.filters.append(("in", key, set(values)))
+        return self
+
     def is_(self, key, value):
         self.filters.append(("is", key, value))
         return self
@@ -49,6 +51,8 @@ class _Query:
     def _matches(self, row):
         for op, key, value in self.filters:
             if op == "eq" and row.get(key) != value:
+                return False
+            if op == "in" and row.get(key) not in value:
                 return False
             if op == "is" and row.get(key) is not value:
                 return False
@@ -222,3 +226,20 @@ def test_public_submission_receipt_is_nonterminal_and_pollable():
     assert row["run_id"] in receipt["poll_url"]
     assert receipt["global_terminal_authority"] == "V17_TERMINAL_REDUCER"
     assert receipt["can_execute"] is False
+
+
+def test_recovery_query_filters_terminal_rows_before_limit():
+    db = _DB()
+    for index in range(25):
+        db.rows[f"done-{index}"] = {
+            "run_id": f"done-{index}",
+            "status": "COMPLETED",
+            "lease_expires_at": None,
+        }
+    db.rows["queued"] = {
+        "run_id": "queued",
+        "status": "QUEUED",
+        "lease_expires_at": None,
+    }
+
+    assert async_daily._recoverable_runs(db, limit=20) == ["queued"]
