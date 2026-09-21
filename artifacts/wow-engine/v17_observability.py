@@ -15,6 +15,7 @@ from typing import Any
 from fastapi import Depends
 
 from v17.action_invocation_telemetry import install_action_invocation_middleware
+from v17.daily_async_runtime import schedule_async_daily_snapshot_install
 from v17.interactive_latency_telemetry import install_interactive_latency_middleware
 from v17.interactive_pick_hydration import schedule_interactive_pick_hydration_install
 from v17.interactive_pick_parallel import schedule_interactive_pick_parallel_install
@@ -51,10 +52,10 @@ def initialize_observability() -> dict[str, Any]:
     # Install non-secret total-wall-time telemetry, certification-independent
     # Action invocation receipts, bounded external pre-hydration, bounded
     # independent-row scoring, reusable TEAM_EVENT transport clients, bounded
-    # external MLB evidence, and the correctness-critical durable pick-request
-    # state wrapper. The canonical scorer still owns fitted inference,
-    # calibration/bounds, persistence and terminal reduction; transport wrappers
-    # never create or modify probability authority.
+    # external MLB evidence, the durable public Daily completion wrapper, and
+    # the correctness-critical durable pick-request state wrapper. The canonical
+    # scorers still own fitted inference, calibration/bounds, persistence and
+    # terminal reduction; transport wrappers never create probability authority.
     try:
         import api_prod_market_acceptance as _accepted_base
 
@@ -67,7 +68,21 @@ def initialize_observability() -> dict[str, Any]:
             db_client_fn=_accepted_base.market_api.prod.get_client,
         )
         install_pick_request_state_hooks()
-        # Startup handlers execute in registration order:
+        # Startup handlers execute in registration order. The Daily installer is
+        # deliberately scheduled here but mutates routes only at startup, after
+        # api_ncaaf_acceptance has finished installing the legacy synchronous
+        # Daily route. That keeps lower-layer tests and internal OIDC automation
+        # unchanged while the public Action becomes submit/poll durable.
+        schedule_async_daily_snapshot_install(
+            _accepted_base.app,
+            auth_dependency=Depends(
+                _accepted_base.market_api.prod._require_action_api_key
+            ),
+            db_client_fn=_accepted_base.market_api.prod.get_client,
+            market_api=_accepted_base.market_api,
+            event_api=_accepted_base.market_api.prod.event_api,
+        )
+        # Pick-request startup handlers execute in registration order:
         #   1. hydration/research wrapper,
         #   2. bounded row-parallel wrapper,
         #   3. durable state wrapper (outermost).
