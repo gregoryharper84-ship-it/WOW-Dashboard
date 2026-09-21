@@ -109,7 +109,7 @@ def _row() -> PickRequestRow:
     )
 
 
-def test_receipt_recovery_removes_row_from_retry_set():
+def test_receipt_recovery_removes_row_from_retry_set_and_finishes_governance():
     db = _DB()
     run_id = state._run_id("receipt-recovery")
     record = {
@@ -186,7 +186,9 @@ def test_receipt_recovery_removes_row_from_retry_set():
     assert retryable == []
     persisted = db.tables[state.ROW_TABLE][0]
     assert persisted["prediction_id"] == "11111111-1111-5111-8111-111111111111"
-    assert persisted["stage_seq"] == state.STAGE_SEQ["RECEIPT_PERSISTED"]
+    assert persisted["current_stage"] == "GOVERNANCE_AUDITED"
+    assert persisted["stage_seq"] == state.STAGE_SEQ["GOVERNANCE_AUDITED"]
+    assert persisted["terminal_status"] == "REJECTED"
     assert persisted["can_execute"] is False
 
 
