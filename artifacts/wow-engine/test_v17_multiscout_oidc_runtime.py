@@ -158,8 +158,8 @@ def test_auto_advance_oidc_wrapper_uses_minted_token(monkeypatch, tmp_path):
     monkeypatch.setattr(advance_oidc, "mint_github_actions_oidc", lambda force=True: "fresh-oidc")
     seen = []
 
-    def fake_execute(payload, *, token, origin, post_fn=None):
-        seen.append((token, origin, payload["run_id"], post_fn))
+    def fake_execute(payload, *, token, origin, post_fn=None, progress_fn=None):
+        seen.append((token, origin, payload["run_id"], post_fn, progress_fn))
         return {
             "status": "AUTO_ADVANCE_COMPLETE",
             "code": "AUTO_ADVANCE_RECONCILED",
@@ -173,6 +173,7 @@ def test_auto_advance_oidc_wrapper_uses_minted_token(monkeypatch, tmp_path):
     assert advance_oidc.main() == 0
     assert seen[0][0] == "fresh-oidc"
     assert callable(seen[0][3])
+    assert callable(seen[0][4])
     assert json.loads(output.read_text())["can_execute"] is False
 
 
@@ -191,8 +192,8 @@ def test_auto_advance_static_action_key_keeps_existing_nonrefreshing_path(monkey
     monkeypatch.setenv("WOW_ACTION_API_KEY", "static-action-key")
     seen = []
 
-    def fake_execute(payload, *, token, origin):
-        seen.append((token, origin, payload["run_id"]))
+    def fake_execute(payload, *, token, origin, progress_fn=None):
+        seen.append((token, origin, payload["run_id"], progress_fn))
         return {
             "status": "AUTO_ADVANCE_COMPLETE",
             "code": "AUTO_ADVANCE_RECONCILED",
@@ -204,7 +205,8 @@ def test_auto_advance_static_action_key_keeps_existing_nonrefreshing_path(monkey
     monkeypatch.setattr(advance_oidc, "execute_auto_advance", fake_execute)
     monkeypatch.setattr("sys.argv", ["prog", "--input", str(source), "--output", str(output)])
     assert advance_oidc.main() == 0
-    assert seen == [("static-action-key", advance_oidc.ACTION_ORIGIN, "run-static")]
+    assert seen[0][:3] == ("static-action-key", advance_oidc.ACTION_ORIGIN, "run-static")
+    assert callable(seen[0][3])
 
 
 def test_postmerge_workflow_direct_script_invocations_import_v17_package():
@@ -242,3 +244,25 @@ def test_postmerge_workflow_installs_runtime_dependencies_before_live_scout():
     run_at = live_job.index("- name: Run V17 Nightly Multi-Scout")
     assert "pip install -r requirements.txt" in live_job[install_at:run_at]
     assert install_at < run_at
+
+
+def test_auto_advance_progress_writer_is_atomic_and_fail_closed(tmp_path):
+    output = tmp_path / "auto-advance-receipt.json"
+    handoff = {"run_id": "run-progress", "research_run_id": "research-progress"}
+    write = advance_oidc._progress_writer(output, handoff)
+    write(
+        lane="props",
+        batch_key="research-progress:props:1",
+        batch_index=1,
+        completed_batches=1,
+        total_batches=3,
+        receipt={"ok": True, "http_status": 200, "can_execute": False},
+    )
+    data = json.loads(output.read_text())
+    assert data["status"] == "AUTO_ADVANCE_IN_PROGRESS"
+    assert data["source_run_id"] == "run-progress"
+    assert data["research_run_id"] == "research-progress"
+    assert data["completed_batches"][0]["batch_key"] == "research-progress:props:1"
+    assert data["completed_batches"][0]["ok"] is True
+    assert data["can_execute"] is False
+    assert not output.with_suffix(output.suffix + ".tmp").exists()
