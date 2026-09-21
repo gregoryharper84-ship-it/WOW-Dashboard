@@ -13,9 +13,9 @@ paths:
       operationId: getWowV17PickRequestRunState
       x-openai-isConsequential: false
       description: >-
-        Read the durable server-side manifest and exact row lifecycle state for
-        one board request. Use this after a session or transport interruption;
-        never reconstruct row identity from chat memory when this Action is available.
+        Read the durable server-side manifest, worker job, and exact row state.
+        Poll this after enqueue or a transport/session interruption; never
+        reconstruct persisted row identity from chat memory.
       security: [{actionBearer: []}]
       parameters:
         - name: request_id
@@ -35,7 +35,7 @@ paths:
           required: false
           schema: {type: boolean, default: false}
       responses:
-        '200': {description: Durable run manifest and row state}
+        '200': {description: Durable run manifest, worker job, and row state}
         '401': {description: Authentication failed}
         '404': {description: Run not found}
   /v17/pick-request-runs/resumable:
@@ -43,10 +43,9 @@ paths:
       operationId: runWowV17ResumablePickRequest
       x-openai-isConsequential: false
       description: >-
-        Freeze an entire exact board manifest before scoring, then invoke the
-        existing canonical governed /score-pick-request path server-side in
-        bounded batches. A later call may omit rows and resume using request_id
-        alone. Closed runs fail closed. can_execute is always false.
+        Freeze the exact board manifest and enqueue a DB-leased scoring job.
+        The Action returns without waiting for scoring; poll run state by
+        request_id. The worker uses canonical scoring in <=50-row batches.
       security: [{actionBearer: []}]
       requestBody:
         required: true
@@ -54,11 +53,11 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/ResumablePickRunRequest'}
       responses:
-        '200': {description: Resumable run progress or terminal state}
+        '200': {description: Durable enqueue acknowledgement and current job state}
         '401': {description: Authentication failed}
         '409': {description: Closed run or exact identity conflict}
         '422': {description: Invalid manifest or request}
-        '503': {description: Durable state or scorer service unavailable}
+        '503': {description: Durable state service unavailable}
   /v17/pick-request-runs/{request_id}/close:
     post:
       operationId: closeWowV17PickRequestRun
