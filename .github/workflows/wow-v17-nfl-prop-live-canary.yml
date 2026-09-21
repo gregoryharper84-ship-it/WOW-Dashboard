@@ -20,6 +20,7 @@ jobs:
       WOW_OIDC_AUDIENCE: wow-v17-multiscout
       WOW_CAN_EXECUTE: "false"
       WOW_DRY_RUN_ONLY: "true"
+      WOW_REQUEST_ID: nfl-prop-live-canary-20260921-rams-giants
     steps:
       - name: Assert fail-closed OIDC canary context
         shell: bash
@@ -43,21 +44,26 @@ jobs:
             "${ACTIONS_ID_TOKEN_REQUEST_URL}${separator}audience=${WOW_OIDC_AUDIENCE}")"
           oidc_token="$(python -c 'import json,sys; value=json.load(sys.stdin).get("value"); assert isinstance(value,str) and value.strip(); print(value.strip())' <<<"${oidc_json}")"
           unset oidc_json
-          cat >/tmp/request.json <<'JSON'
+          cat >/tmp/request.json <<JSON
           {
-            "request_id":"nfl-prop-live-canary-20260920-oidc",
+            "request_id":"${WOW_REQUEST_ID}",
             "response_mode":"COMPACT",
             "rows":[
-              {"row_key":"henry-rush-more","event_id":"401872938","event_start_time":"2026-09-20T17:00:00Z","sport":"NFL","player":"Derrick Henry","stat_type":"Rush Yards","line":93.5,"direction":"MORE","source_type":"PDF","platform":"PrizePicks","league":"NFL","opponent":"New Orleans Saints"},
-              {"row_key":"henry-rush-less","event_id":"401872938","event_start_time":"2026-09-20T17:00:00Z","sport":"NFL","player":"Derrick Henry","stat_type":"Rush Yards","line":93.5,"direction":"LESS","source_type":"PDF","platform":"PrizePicks","league":"NFL","opponent":"New Orleans Saints"},
-              {"row_key":"caleb-pass-more","event_id":"401872937","event_start_time":"2026-09-20T17:00:00Z","sport":"NFL","player":"Caleb Williams","stat_type":"Pass Yards","line":229.5,"direction":"MORE","source_type":"PDF","platform":"PrizePicks","league":"NFL","opponent":"Minnesota Vikings"},
-              {"row_key":"caleb-pass-less","event_id":"401872937","event_start_time":"2026-09-20T17:00:00Z","sport":"NFL","player":"Caleb Williams","stat_type":"Pass Yards","line":229.5,"direction":"LESS","source_type":"PDF","platform":"PrizePicks","league":"NFL","opponent":"Minnesota Vikings"}
+              {"row_key":"puka-rec-more","event_id":"401872947","event_start_time":"2026-09-22T00:15:00Z","sport":"NFL","player":"Puka Nacua","stat_type":"Receiving Yards","line":77.5,"direction":"MORE","source_type":"PDF","platform":"PrizePicks","league":"NFL","opponent":"New York Giants"},
+              {"row_key":"puka-rec-less","event_id":"401872947","event_start_time":"2026-09-22T00:15:00Z","sport":"NFL","player":"Puka Nacua","stat_type":"Receiving Yards","line":77.5,"direction":"LESS","source_type":"PDF","platform":"PrizePicks","league":"NFL","opponent":"New York Giants"},
+              {"row_key":"davante-rec-more","event_id":"401872947","event_start_time":"2026-09-22T00:15:00Z","sport":"NFL","player":"Davante Adams","stat_type":"Receiving Yards","line":62.5,"direction":"MORE","source_type":"PDF","platform":"PrizePicks","league":"NFL","opponent":"New York Giants"},
+              {"row_key":"davante-rec-less","event_id":"401872947","event_start_time":"2026-09-22T00:15:00Z","sport":"NFL","player":"Davante Adams","stat_type":"Receiving Yards","line":62.5,"direction":"LESS","source_type":"PDF","platform":"PrizePicks","league":"NFL","opponent":"New York Giants"}
             ]
           }
           JSON
           code="$(curl --silent --show-error --retry 2 --retry-all-errors --connect-timeout 20 --max-time 240 \
             --output /tmp/response.json --write-out '%{http_code}' \
-            --request POST --header "Authorization: Bearer ${oidc_token}" --header 'Content-Type: application/json' \
+            --request POST \
+            --header "Authorization: Bearer ${oidc_token}" \
+            --header 'Content-Type: application/json' \
+            --header 'X-WOW-Caller-Class: GITHUB_ACTIONS' \
+            --header "X-WOW-Request-ID: ${WOW_REQUEST_ID}" \
+            --header 'X-WOW-Rows-In: 4' \
             --data-binary @/tmp/request.json "${WOW_SERVICE_URL}/score-pick-request")"
           unset oidc_token
           if [ "$code" != "200" ]; then
@@ -65,7 +71,7 @@ jobs:
             python - <<'PY'
           from pathlib import Path
           p=Path('/tmp/response.json')
-          if p.exists(): print(p.read_text()[:2000])
+          if p.exists(): print(p.read_text()[:4000])
           PY
             exit 1
           fi
@@ -77,6 +83,7 @@ jobs:
           python - <<'PY'
           import json
           from pathlib import Path
+
           p=json.loads(Path('/tmp/response.json').read_text())
           if p.get('can_execute') is not False:
               raise SystemExit('can_execute invariant failed')
@@ -85,21 +92,45 @@ jobs:
           rows=p.get('outcomes') or p.get('rows') or []
           if len(rows) != 4:
               raise SystemExit(f'expected 4 outcomes, got {len(rows)}')
+
           summary=[]
+          failures=[]
           for row in rows:
               code=str(row.get('code') or row.get('terminal_label') or '')
               detail=row.get('detail') or {}
-              audit=detail.get('specialist_utilization') or row.get('specialist_utilization') or {}
-              if code == 'MODEL_UNAVAILABLE' or audit.get('exact_blocker') == 'MODEL_UNAVAILABLE':
-                  raise SystemExit(f"route still MODEL_UNAVAILABLE: {row.get('row_key')}")
-              summary.append({
+              audit=(detail.get('specialist_utilization') or row.get('specialist_utilization') or
+                     row.get('specialist_utilization_audit') or {})
+              result=row.get('result') or {}
+              prediction=result.get('prediction') if isinstance(result,dict) else {}
+              prediction=prediction if isinstance(prediction,dict) else {}
+              raw=(prediction.get('raw_model_probability') if prediction else None)
+              calibrated=(prediction.get('calibrated_probability') if prediction else None)
+              lower=(prediction.get('calibrated_probability_lower_bound') if prediction else None)
+              item={
                   'row_key':row.get('row_key'),
                   'terminal_status':row.get('terminal_status'),
                   'code':code,
                   'model_evaluated':row.get('model_evaluated'),
                   'probability_publishable':row.get('probability_publishable'),
+                  'raw_model_probability':raw,
+                  'calibrated_probability':calibrated,
+                  'calibrated_lower_bound':lower,
                   'exact_blocker':audit.get('exact_blocker'),
                   'can_execute':row.get('can_execute'),
-              })
-          print(json.dumps({'reconciliation_pass':True,'rows':summary,'can_execute':False},sort_keys=True))
+              }
+              summary.append(item)
+              if row.get('can_execute') is not False:
+                  failures.append(f"{row.get('row_key')}:can_execute")
+              if row.get('terminal_status') != 'COMPLETED':
+                  failures.append(f"{row.get('row_key')}:terminal={row.get('terminal_status')}:{code}:{audit.get('exact_blocker')}")
+              if row.get('model_evaluated') is not True:
+                  failures.append(f"{row.get('row_key')}:model_not_evaluated")
+              if row.get('probability_publishable') is not True:
+                  failures.append(f"{row.get('row_key')}:probability_not_publishable")
+              for name,value in [('raw',raw),('calibrated',calibrated),('lower',lower)]:
+                  if not isinstance(value,(int,float)) or not (0.0 <= float(value) <= 1.0):
+                      failures.append(f"{row.get('row_key')}:{name}_probability_invalid={value!r}")
+          print(json.dumps({'request_id':p.get('request_id'),'reconciliation_pass':True,'rows':summary,'can_execute':False},sort_keys=True))
+          if failures:
+              raise SystemExit(' | '.join(failures))
           PY
