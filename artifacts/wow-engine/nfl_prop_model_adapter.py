@@ -158,12 +158,20 @@ def distribution_for_vector(payload: Mapping[str, Any], vector: tuple[float, ...
         return {0: 1.0 - mean, 1: mean}, max_abs_z
     try:
         sigma = float(payload["residual_sigma"])
-        support_min = int(payload["support_min"])
+        artifact_support_min = int(payload["support_min"])
         support_max = int(payload["support_max"])
     except (KeyError, TypeError, ValueError) as exc:
         raise PropDistributionContractError(
             "PROP_MODEL_ARTIFACT_PAYLOAD_INVALID", "NFL Gaussian distribution metadata is invalid"
         ) from exc
+    # V17's RawDiscreteDistribution contract admits only non-negative integer
+    # outcomes. The original 2026-09-20 NFL Gaussian artifacts were trained with
+    # support_min=-50, which made the otherwise valid fitted PMF impossible to
+    # instantiate. Preserve the fitted mean/sigma and all probability mass by
+    # censoring that legacy lower tail into outcome 0. For every supported
+    # positive prop line this is probability-preserving: MORE/LESS mass is
+    # unchanged; only impossible negative support labels are collapsed to zero.
+    support_min = max(0, artifact_support_min)
     if not math.isfinite(sigma) or sigma <= 0 or support_max <= support_min:
         raise PropDistributionContractError(
             "PROP_MODEL_ARTIFACT_PAYLOAD_INVALID", "NFL Gaussian support/sigma is invalid"
