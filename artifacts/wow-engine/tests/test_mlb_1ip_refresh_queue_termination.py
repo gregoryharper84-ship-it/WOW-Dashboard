@@ -51,9 +51,13 @@ class _Query:
     def execute(self):
         if self._update is not None:
             self.table.updates.append((self._eq.get("queue_id"), dict(self._update)))
+            for item in self.table.failed_rows:
+                if item.get("queue_id") == self._eq.get("queue_id"):
+                    item.update(self._update)
             return SimpleNamespace(data=[], count=None)
         if self._eq.get("status") == "FAILED":
-            return SimpleNamespace(data=list(self.table.failed_rows), count=len(self.table.failed_rows))
+            rows = [item for item in self.table.failed_rows if item.get("status", "FAILED") == "FAILED"]
+            return SimpleNamespace(data=rows, count=len(rows))
         return SimpleNamespace(data=list(self._rows), count=self._count)
 
 
@@ -233,6 +237,31 @@ def test_existing_failed_backlog_is_alerted_every_pass(caplog):
     assert counters["dead_letter_backlog"] == 1
     assert "WOW_MLB_1IP_REFRESH_DEAD_LETTER_BACKLOG" in caplog.text
     assert "parked-1" in caplog.text
+
+
+def test_expired_dead_letter_is_reconciled_to_explicit_terminal_state(caplog):
+    parked = {
+        "queue_id": "parked-expired-1",
+        "event_id": "MLB:823576",
+        "player": "Robert Stock",
+        "event_start_time": (NOW - timedelta(days=1)).isoformat(),
+        "status": "FAILED",
+        "last_error_code": "REFRESH_RUNTIME_ERROR:PropAutoHydrationError",
+    }
+    client = _Client([], failed_rows=[parked])
+
+    with caplog.at_level("WARNING"):
+        counters = job.run_once(client=client, now=NOW)
+
+    assert counters["dead_letter_reconciled_expired"] == 1
+    assert counters["dead_letter_backlog"] == 0
+    update = next(payload for queue_id, payload in client.table_state.updates if queue_id == "parked-expired-1")
+    assert update["status"] == "EXPIRED_PREGAME_WINDOW"
+    assert update["terminal_label"] == "EXPIRED_PREGAME_WINDOW"
+    assert update["last_error_code"].startswith("RECONCILED_EXPIRED_DEAD_LETTER:")
+    assert update["probability_publishable"] is False
+    assert update["can_execute"] is False
+    assert "WOW_MLB_1IP_REFRESH_DEAD_LETTER_RECONCILED" in caplog.text
 
 
 def test_backoff_is_bounded():
