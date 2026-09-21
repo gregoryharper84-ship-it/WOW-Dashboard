@@ -1,4 +1,4 @@
-name: wow-v17-nfl-prop-live-canary
+name: wow-v17-multisport-prop-live-canary
 
 on:
   workflow_dispatch:
@@ -6,22 +6,24 @@ on:
     branches: [main]
     paths:
       - ".github/workflows/wow-v17-nfl-prop-live-canary.yml"
+      - "artifacts/wow-engine/v17/multisport_prop_live_canary.py"
 
 permissions:
   contents: read
   id-token: write
 
 jobs:
-  nfl-prop-live-canary:
+  multisport-prop-live-canary:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 45
     env:
       WOW_SERVICE_URL: https://wow-governed-probability-engine.onrender.com
       WOW_OIDC_AUDIENCE: wow-v17-multiscout
       WOW_CAN_EXECUTE: "false"
       WOW_DRY_RUN_ONLY: "true"
-      WOW_REQUEST_ID: nfl-prop-live-canary-20260921-rams-giants-canonical-v5
     steps:
+      - uses: actions/checkout@v4
+
       - name: Assert fail-closed OIDC canary context
         shell: bash
         run: |
@@ -31,129 +33,10 @@ jobs:
           test -n "$ACTIONS_ID_TOKEN_REQUEST_URL"
           test -n "$ACTIONS_ID_TOKEN_REQUEST_TOKEN"
 
-      - name: Score four live NFL directions through canonical Action boundary
-        shell: bash
-        run: |
-          set -euo pipefail
-          separator='?'
-          case "$ACTIONS_ID_TOKEN_REQUEST_URL" in
-            *\?*) separator='&' ;;
-          esac
-          cat >/tmp/request.json <<JSON
-          {
-            "request_id":"${WOW_REQUEST_ID}",
-            "response_mode":"COMPACT",
-            "rows":[
-              {"row_key":"puka-rec-more","event_id":"2026_02_NYG_LA","event_start_time":"2026-09-22T00:15:00Z","sport":"NFL","player":"Puka Nacua","stat_type":"Receiving Yards","line":77.5,"direction":"MORE","source_type":"PDF","platform":"PrizePicks","league":"NFL","opponent":"New York Giants"},
-              {"row_key":"puka-rec-less","event_id":"2026_02_NYG_LA","event_start_time":"2026-09-22T00:15:00Z","sport":"NFL","player":"Puka Nacua","stat_type":"Receiving Yards","line":77.5,"direction":"LESS","source_type":"PDF","platform":"PrizePicks","league":"NFL","opponent":"New York Giants"},
-              {"row_key":"davante-rec-more","event_id":"2026_02_NYG_LA","event_start_time":"2026-09-22T00:15:00Z","sport":"NFL","player":"Davante Adams","stat_type":"Receiving Yards","line":62.5,"direction":"MORE","source_type":"PDF","platform":"PrizePicks","league":"NFL","opponent":"New York Giants"},
-              {"row_key":"davante-rec-less","event_id":"2026_02_NYG_LA","event_start_time":"2026-09-22T00:15:00Z","sport":"NFL","player":"Davante Adams","stat_type":"Receiving Yards","line":62.5,"direction":"LESS","source_type":"PDF","platform":"PrizePicks","league":"NFL","opponent":"New York Giants"}
-            ]
-          }
-          JSON
+      - name: Validate multi-sport canary configuration
+        working-directory: artifacts/wow-engine
+        run: python v17/multisport_prop_live_canary.py self-test
 
-          code=''
-          for attempt in 1 2; do
-            oidc_json="$(curl --silent --show-error --fail --connect-timeout 15 --max-time 30 \
-              --header "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
-              "${ACTIONS_ID_TOKEN_REQUEST_URL}${separator}audience=${WOW_OIDC_AUDIENCE}")"
-            oidc_token="$(python -c 'import json,sys; value=json.load(sys.stdin).get("value"); assert isinstance(value,str) and value.strip(); print(value.strip())' <<<"${oidc_json}")"
-            unset oidc_json
-            set +e
-            code="$(curl --silent --show-error --connect-timeout 20 --max-time 300 \
-              --output /tmp/response.json --write-out '%{http_code}' \
-              --request POST \
-              --header "Authorization: Bearer ${oidc_token}" \
-              --header 'Content-Type: application/json' \
-              --header 'X-WOW-Caller-Class: GITHUB_ACTIONS' \
-              --header "X-WOW-Request-ID: ${WOW_REQUEST_ID}" \
-              --header 'X-WOW-Rows-In: 4' \
-              --data-binary @/tmp/request.json "${WOW_SERVICE_URL}/score-pick-request")"
-            curl_rc=$?
-            set -e
-            unset oidc_token
-            if [ "$curl_rc" -eq 0 ] && [ "$code" = "200" ]; then
-              break
-            fi
-            if [ "$attempt" -eq 1 ] && { [ "$curl_rc" -ne 0 ] || [[ "$code" =~ ^5 ]]; }; then
-              echo "Transient canary attempt failed (curl_rc=${curl_rc}, HTTP ${code}); retrying unresolved rows with a fresh OIDC token." >&2
-              continue
-            fi
-            echo "score-pick-request failed (curl_rc=${curl_rc}, HTTP ${code})" >&2
-            python - <<'PY'
-          from pathlib import Path
-          p=Path('/tmp/response.json')
-          if p.exists(): print(p.read_text()[:4000])
-          PY
-            exit 1
-          done
-          test "$code" = "200"
-
-      - name: Validate governed NFL prop response
-        shell: bash
-        run: |
-          set -euo pipefail
-          python - <<'PY'
-          import json
-          from pathlib import Path
-
-          p=json.loads(Path('/tmp/response.json').read_text())
-          if p.get('can_execute') is not False:
-              raise SystemExit('can_execute invariant failed')
-          if p.get('reconciliation_pass') is not True:
-              raise SystemExit('reconciliation failed')
-          rows=p.get('outcomes') or p.get('rows') or []
-          if len(rows) != 4:
-              raise SystemExit(f'expected 4 outcomes, got {len(rows)}')
-
-          summary=[]
-          failures=[]
-          for row in rows:
-              code=str(row.get('code') or row.get('terminal_label') or '')
-              detail=row.get('detail') or {}
-              audit=(detail.get('specialist_utilization') or row.get('specialist_utilization') or
-                     row.get('specialist_utilization_audit') or {})
-              result=row.get('result') or {}
-              prediction=result.get('prediction') if isinstance(result,dict) else {}
-              prediction=prediction if isinstance(prediction,dict) else {}
-              raw=row.get('model_probability')
-              if raw is None:
-                  raw=prediction.get('raw_model_probability') if prediction else None
-              calibrated=row.get('calibrated_probability')
-              if calibrated is None:
-                  calibrated=prediction.get('calibrated_probability') if prediction else None
-              lower=row.get('calibrated_probability_lower_bound')
-              if lower is None:
-                  lower=prediction.get('calibrated_probability_lower_bound') if prediction else None
-              blockers=list(row.get('blockers') or [])
-              blocker_code=row.get('blocker_code') or detail.get('blocker_code') or detail.get('blocker') or audit.get('exact_blocker')
-              terminal=str(row.get('terminal_status') or '')
-              item={
-                  'row_key':row.get('row_key'),
-                  'terminal_status':terminal,
-                  'code':code,
-                  'blocker_code':blocker_code,
-                  'blockers':blockers,
-                  'model_evaluated':row.get('model_evaluated'),
-                  'probability_publishable':row.get('probability_publishable'),
-                  'raw_model_probability':raw,
-                  'calibrated_probability':calibrated,
-                  'calibrated_lower_bound':lower,
-                  'can_execute':row.get('can_execute'),
-              }
-              summary.append(item)
-              if row.get('can_execute') is not False:
-                  failures.append(f"{row.get('row_key')}:can_execute")
-              if terminal not in {'COMPLETED','REJECTED'}:
-                  failures.append(f"{row.get('row_key')}:terminal={terminal}:{code}:{blocker_code}:{blockers}")
-              if row.get('model_evaluated') is not True:
-                  failures.append(f"{row.get('row_key')}:model_not_evaluated")
-              if row.get('probability_publishable') is not True:
-                  failures.append(f"{row.get('row_key')}:probability_not_publishable")
-              for name,value in [('raw',raw),('calibrated',calibrated),('lower',lower)]:
-                  if not isinstance(value,(int,float)) or not (0.0 <= float(value) <= 1.0):
-                      failures.append(f"{row.get('row_key')}:{name}_probability_invalid={value!r}")
-          print(json.dumps({'request_id':p.get('request_id'),'reconciliation_pass':True,'rows':summary,'can_execute':False},sort_keys=True))
-          if failures:
-              raise SystemExit(' | '.join(failures))
-          PY
+      - name: Run governed NFL MLB WNBA live canaries and stress
+        working-directory: artifacts/wow-engine
+        run: python v17/multisport_prop_live_canary.py all
