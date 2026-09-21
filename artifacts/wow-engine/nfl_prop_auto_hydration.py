@@ -174,15 +174,35 @@ def _target_event(
     opponent: Optional[str],
     http_get: Callable[..., Any],
 ) -> dict[str, Any]:
-    payload = _request(
-        ESPN_SCOREBOARD_URL,
-        params={"dates": event_start.strftime("%Y%m%d"), "limit": 100},
-        http_get=http_get,
-    )
+    # ESPN groups late U.S. NFL games by the local league slate date. A Sunday
+    # night kickoff can therefore be Monday in UTC, so using the UTC calendar
+    # date alone can miss the exact game. Search a bounded adjacent-date window,
+    # dedupe provider aliases by ESPN event id, and keep all existing time/team/
+    # status validation fail-closed.
+    queried_dates = [
+        (event_start + timedelta(days=offset)).strftime("%Y%m%d")
+        for offset in (-1, 0, 1)
+    ]
+    events_by_id: dict[str, dict[str, Any]] = {}
+    anonymous_events: list[dict[str, Any]] = []
+    for date_key in queried_dates:
+        payload = _request(
+            ESPN_SCOREBOARD_URL,
+            params={"dates": date_key, "limit": 100},
+            http_get=http_get,
+        )
+        for raw_event in payload.get("events", []):
+            if not isinstance(raw_event, Mapping):
+                continue
+            event = dict(raw_event)
+            provider_id = str(event.get("id") or "").strip()
+            if provider_id:
+                events_by_id.setdefault(provider_id, event)
+            else:
+                anonymous_events.append(event)
+
     candidates: list[tuple[float, dict[str, Any], set[str]]] = []
-    for event in payload.get("events", []):
-        if not isinstance(event, Mapping):
-            continue
+    for event in [*events_by_id.values(), *anonymous_events]:
         try:
             scheduled = _aware(event.get("date"))
         except NFLPropHydrationError:
@@ -209,14 +229,17 @@ def _target_event(
         raise NFLPropHydrationError(
             "PROP_EVENT_IDENTITY_CONFLICT",
             "ESPN schedule did not resolve exactly one event for the player's current team/start time",
-            detail={"team": team, "event_start": event_start.isoformat(), "match_n": len(candidates)},
+            detail={
+                "team": team,
+                "event_start": event_start.isoformat(),
+                "match_n": len(candidates),
+                "espn_dates_queried": queried_dates,
+            },
         )
     _delta, event, teams = candidates[0]
     if opponent:
-        opp_key = str(opponent).upper().strip()
-        # Accept either abbreviation or full-name caller values by requiring the
-        # event to contain exactly one other team; source-board team typos are
-        # caught by the current-team requirement above.
+        # Full-name and abbreviation reconciliation is enforced by the shared V17
+        # identity binder. Here the provider must still yield exactly one opponent.
         if len(teams - {team}) != 1:
             raise NFLPropHydrationError("PROP_EVENT_IDENTITY_CONFLICT", "NFL opponent identity was ambiguous")
     status_type = ((event.get("status") or {}).get("type") or {}) if isinstance(event.get("status"), Mapping) else {}
