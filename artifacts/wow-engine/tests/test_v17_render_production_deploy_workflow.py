@@ -19,8 +19,8 @@ def test_render_deploy_waits_for_protected_main_required_checks():
     text = _workflow_text()
 
     assert 'workflows: ["wow-verify"]' in text
-    assert "github.event.workflow_run.head_branch == 'main'" in text
-    assert "github.event.workflow_run.conclusion == 'success'" in text
+    assert 'head_branch != "main"' in text
+    assert 'conclusion != "success"' in text
     assert '"/branches/main"' in text
     assert "if main_sha != target_sha:" in text
     for check_name in REQUIRED_CHECKS:
@@ -38,14 +38,16 @@ def test_render_deploy_uses_control_plane_secret_without_betting_secrets():
     assert '"can_execute": False' in text
 
 
-def test_render_deploy_deduplicates_active_commit_before_posting():
+def test_render_deploy_observes_native_checkspass_without_second_post():
     text = _workflow_text()
 
     assert "/deploys?limit=20" in text
-    assert "DEPLOY_ALREADY_ACTIVE" in text
-    assert 'active_statuses = {"created", "build_in_progress", "update_in_progress", "live"}' in text
-    assert 'method="POST"' in text
-    assert "DEPLOY_TRIGGERED" in text
+    assert "NATIVE_DEPLOY_LIVE" in text
+    assert "NATIVE_DEPLOY_OBSERVED_IN_PROGRESS" in text
+    assert '{"created", "build_in_progress", "update_in_progress"}' in text
+    assert 'method="POST"' not in text
+    assert "DEPLOY_TRIGGERED" not in text
+    assert "clearCache" not in text
 
 
 def test_daily_snapshot_has_deploy_handoff_runway_and_network_retries():
