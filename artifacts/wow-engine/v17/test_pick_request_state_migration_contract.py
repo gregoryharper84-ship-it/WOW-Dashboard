@@ -35,3 +35,23 @@ def test_pick_request_state_machine_is_explicit_and_monotonic():
         assert f"'{stage}'" in sql
     assert "stage_seq between 0 and 6" in sql
     assert "unique (run_id, row_key, stage_seq)" in sql
+
+
+def test_pick_request_runtime_acl_hardening_removes_destructive_service_role_grants():
+    root = Path(__file__).resolve().parents[1]
+    sql = (root / "migrations" / "20260920_pick_request_durable_acl_hardening.sql").read_text()
+    lowered = sql.lower()
+
+    for table in (
+        "wow_pick_request_runs",
+        "wow_pick_request_row_states",
+        "wow_pick_request_row_transitions",
+    ):
+        assert f"revoke all on table public.{table} from service_role" in lowered
+
+    assert "grant select, insert, update on table public.wow_pick_request_runs to service_role" in lowered
+    assert "grant select, insert, update on table public.wow_pick_request_row_states to service_role" in lowered
+    assert "grant select, insert on table public.wow_pick_request_row_transitions to service_role" in lowered
+    assert "delete" not in lowered
+    assert "truncate" not in lowered
+    assert "grant update on table public.wow_pick_request_row_transitions" not in lowered
