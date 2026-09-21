@@ -11,6 +11,9 @@ import v17.interactive_team_event_latency as latency
 import v17.team_event_request_runtime as team_runtime
 
 
+_CANONICAL_BARRIER = team_runtime._run_mandatory_scout_research
+
+
 def _req():
     return SimpleNamespace(
         research_run_id="latency-test",
@@ -32,8 +35,24 @@ def _out(worker_id: str, *, status: str = "SUCCEEDED", blockers=None):
     )
 
 
+def _isolate_installer(monkeypatch, workers):
+    # The production installer intentionally mutates the canonical barrier once
+    # per process. Register that global with pytest's monkeypatch before calling
+    # the installer so every test restores the original runtime afterward.
+    monkeypatch.setattr(
+        team_runtime,
+        "_run_mandatory_scout_research",
+        _CANONICAL_BARRIER,
+    )
+    monkeypatch.setattr(team_runtime, latency._STATE_KEY, False, raising=False)
+    # Keep the concurrency assertion deterministic even if a CI environment
+    # overrides the production worker-count environment variable.
+    monkeypatch.setattr(latency, "_worker_count", lambda: len(workers))
+
+
 def test_team_event_research_workers_overlap_and_reconcile_in_canonical_order(monkeypatch):
     workers = ("research-1", "research-2", "research-3")
+    _isolate_installer(monkeypatch, workers)
     monkeypatch.setattr(team_runtime, "RESEARCH_WORKERS", workers)
     monkeypatch.setattr(team_runtime, "RESEARCH_RECONCILER", "reconciler")
     monkeypatch.setattr(team_runtime, "scout_lane", lambda _candidate: "TEAM_EVENT")
@@ -44,7 +63,6 @@ def test_team_event_research_workers_overlap_and_reconcile_in_canonical_order(mo
             worker_id=worker_id, payload=payload
         ),
     )
-    monkeypatch.delattr(team_runtime, latency._STATE_KEY, raising=False)
 
     lock = threading.Lock()
     all_research_started = threading.Event()
@@ -92,6 +110,7 @@ def test_team_event_research_workers_overlap_and_reconcile_in_canonical_order(mo
 
 def test_team_event_parallel_barrier_preserves_reconciler_blocker(monkeypatch):
     workers = ("research-1", "research-2")
+    _isolate_installer(monkeypatch, workers)
     monkeypatch.setattr(team_runtime, "RESEARCH_WORKERS", workers)
     monkeypatch.setattr(team_runtime, "RESEARCH_RECONCILER", "reconciler")
     monkeypatch.setattr(team_runtime, "scout_lane", lambda _candidate: "TEAM_EVENT")
@@ -102,7 +121,6 @@ def test_team_event_parallel_barrier_preserves_reconciler_blocker(monkeypatch):
             worker_id=worker_id, payload=payload
         ),
     )
-    monkeypatch.delattr(team_runtime, latency._STATE_KEY, raising=False)
 
     def execute(env):
         if env.worker_id == "reconciler":
