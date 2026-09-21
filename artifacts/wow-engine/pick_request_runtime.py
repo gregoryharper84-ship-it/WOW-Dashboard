@@ -111,7 +111,12 @@ _core.auto_hydrate_prop_evidence = _auto_hydrate_prop_evidence_delegate
 
 
 def _validate_evidence(row: Any, canonical_stat: str) -> dict[str, Any]:
-    """Add canonical-event binding verification to the historical validator."""
+    """Add canonical-event binding verification to the historical validator.
+
+    NFL automatic hydration now carries a provider-derived nflverse canonical
+    event id. The request may not self-attest a different canonical identity:
+    fail before immutable evidence persistence or specialist scoring.
+    """
     normalized = _ORIGINAL_VALIDATE_EVIDENCE(row, canonical_stat)
     evidence = getattr(row, "evidence", None)
     role_status = getattr(evidence, "role_status", None) if evidence is not None else None
@@ -120,6 +125,25 @@ def _validate_evidence(row: Any, canonical_stat: str) -> dict[str, Any]:
     request_event_id = str(normalized.get("event_id") or "").strip()
     if bound_event_id and bound_event_id != request_event_id:
         raise ValueError("PROP_EVENT_IDENTITY_CONFLICT:CANONICAL_EVENT_ID_MISMATCH")
+
+    if str(normalized.get("sport") or "").strip().upper() == "NFL":
+        aliases = role.get("provider_event_ids")
+        espn_alias = (
+            str(aliases.get("ESPN") or "").strip()
+            if isinstance(aliases, dict)
+            else ""
+        )
+        provider_backed = bool(
+            espn_alias
+            or str(role.get("espn_athlete_id") or "").strip()
+            or str(role.get("status") or "").strip().upper() == "ACTIVE_CURRENT_ESPN_ROSTER"
+        )
+        verified_event_id = str(role.get("verified_canonical_event_id") or "").strip()
+        if provider_backed and not verified_event_id:
+            raise ValueError("PROP_EVENT_IDENTITY_CONFLICT:NFL_CANONICAL_EVENT_ID_UNVERIFIED")
+        if verified_event_id and verified_event_id != request_event_id:
+            raise ValueError("PROP_EVENT_IDENTITY_CONFLICT:NFL_CANONICAL_EVENT_ID_MISMATCH")
+
     identity_status = str(role.get("identity_binding_status") or "").strip().upper()
     if identity_status and identity_status not in {"PASS", "PROVIDER_IDENTITY_ONLY"}:
         raise ValueError("PROP_EVENT_IDENTITY_CONFLICT:IDENTITY_BINDING_NOT_PASS")
