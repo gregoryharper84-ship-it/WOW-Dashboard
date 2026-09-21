@@ -107,6 +107,7 @@ jobs:
           from zoneinfo import ZoneInfo
 
           ORIGIN = os.environ["WOW_ACTION_ORIGIN"].rstrip("/")
+          CANARY_RUN = f"{os.environ['GITHUB_RUN_ID']}-{os.environ['GITHUB_RUN_ATTEMPT']}"
           FORBIDDEN_COMPACT_KEYS = {
               "result", "detail", "detailed_evidence", "model_evidence",
               "failure_path_evidence", "directional_probability_assessments",
@@ -184,7 +185,7 @@ jobs:
                       "league": "MLB",
                   })
           mlb = post("/score-pick-request", {
-              "request_id": "v17-live-compact-mlb-four-direction",
+              "request_id": f"v17-live-compact-mlb-four-direction-{CANARY_RUN}",
               "response_mode": "COMPACT",
               "rows": mlb_rows,
           })
@@ -206,7 +207,7 @@ jobs:
                   "league": sport,
               })
           cross = post("/score-pick-request", {
-              "request_id": "v17-live-compact-cross-sport",
+              "request_id": f"v17-live-compact-cross-sport-{CANARY_RUN}",
               "response_mode": "COMPACT",
               "rows": cross_rows,
           })
