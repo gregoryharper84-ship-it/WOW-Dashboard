@@ -83,6 +83,32 @@
           "production_deploy": null
         }
       }
+    },
+    {
+      "postmortem_id": "PM-2026-09-14-001",
+      "title": "Daily response contract, terminal reducer, and lane/receipt semantics",
+      "severity": "P0",
+      "domain": "V17 Daily runner / prop terminal reducer / host routing receipt semantics",
+      "state": "DEPLOYED_PENDING_VERIFY",
+      "postmortem_path": "artifacts/wow-engine/v17/postmortems/PM-2026-09-14-001__daily-response-contract-and-terminal-reducer.md",
+      "engineering_fix_ids": [
+        "FIX-2026-09-14-001"
+      ],
+      "created_utc": "2026-09-14T00:00:00Z",
+      "updated_utc": "2026-09-21T00:00:00Z",
+      "engineering_fixes": {
+        "FIX-2026-09-14-001": {
+          "title": "Daily response contract, terminal reducer, and lane/receipt semantics",
+          "risk": "R1",
+          "state": "DEPLOYED_PENDING_VERIFY",
+          "path": "artifacts/wow-engine/v17/engineering-fixes/FIX-2026-09-14-001__daily-response-contract-and-terminal-reducer.md",
+          "created_utc": "2026-09-14T00:00:00Z",
+          "updated_utc": "2026-09-16T15:23:00Z",
+          "merge_commit": "171673b24fda17d1c87056e7379457dacc718909",
+          "production_deploy": null,
+          "note": "PRIMARY (DAILY_RESPONSE_SERIALIZATION_TOO_LARGE) and CRITICAL (TERMINAL_REDUCER_UPGRADE) items independently verified in production; four secondary items (1IP capability manifest drift, zero-row reason, scoring_attempted split, infrastructure_blocked semantics) are deployed but not yet independently observed."
+        }
+      }
     }
   ]
 }
