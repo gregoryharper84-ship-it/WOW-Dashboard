@@ -75,6 +75,8 @@ def test_823983_shape_hydrates_all_required_event_fields_from_canonical_snapshot
         "away_starter_status": "PROBABLE",
         "home_lineup_status": "PROJECTED",
         "away_lineup_status": "PROJECTED",
+        "lineup_snapshot_id": None,
+        "lineup_confirmed_at": None,
     }
     assert result["canonical_source_snapshot_id"] == "c2419143-687b-4bef-b9b5-1f589f497b56"
     assert result["canonical_official_event_id"] == "823983"

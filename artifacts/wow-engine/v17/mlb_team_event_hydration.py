@@ -1,17 +1,10 @@
 """Server-owned canonical hydration for V17 MLB TEAM_EVENT requests.
 
-Direct team/event ingress prefers the canonical MLB forward-shadow ledger for
-venue/starter identity. Provider discovery ids are not automatically MLB
-canonical event ids, so the resolver first tries the supplied id and then, only
-when that exact lookup is empty, performs a bounded server-owned identity join
-on slate date + participants + scheduled start. The fallback must resolve to
-exactly one canonical MLB event before any request id is rewritten.
-
-When the canonical ledger has no usable snapshot (or is missing only the
-scorer's venue/starter fields), the request may supply a complete, explicitly
-timestamped evidence package as a bounded fallback. Caller evidence never
-overrides contradictory canonical identity and never substitutes market odds or
-narrative for fitted-model inputs.
+The resolver locks provider discovery rows to one canonical MLB event and returns
+only server-owned evidence.  Current canonical lineup state is carried forward so
+interactive scoring can avoid repeating the same shadow-event and lineup lookups
+before deciding whether the confirmed-lineup scorer or immutable projected-score
+path applies.
 """
 from __future__ import annotations
 
@@ -33,7 +26,7 @@ _IDENTITY_START_TOLERANCE_SECONDS = 60
 _CANONICAL_SELECT = (
     "official_event_id,official_date,event_start_time,event_status,home_team,away_team,venue_name,"
     "home_probable_pitcher,away_probable_pitcher,snapshot_id,"
-    "snapshot_timestamp,feature_hydration_status"
+    "snapshot_timestamp,feature_hydration_status,lineup_status,lineup_snapshot_id,lineup_confirmed_at"
 )
 
 
@@ -49,6 +42,15 @@ def _aware(value: Any) -> datetime | None:
 
 def _same_text(left: Any, right: Any) -> bool:
     return " ".join(str(left or "").casefold().split()) == " ".join(str(right or "").casefold().split())
+
+
+def _normalized_lineup_status(row: dict[str, Any]) -> str:
+    status = str(row.get("lineup_status") or "").strip().upper()
+    if status == "CONFIRMED" and row.get("lineup_confirmed_at"):
+        return "CONFIRMED"
+    if status in {"NOT_YET_AVAILABLE", "PROJECTED", "PROJECTED_HIGH_CONFIDENCE", "PROJECTED_MEDIUM_CONFIDENCE"}:
+        return status
+    return "PROJECTED"
 
 
 def _caller_fallback(req: Any, *, blocker_code: str) -> dict[str, Any] | None:
@@ -80,6 +82,7 @@ def _caller_fallback(req: Any, *, blocker_code: str) -> dict[str, Any] | None:
         "evidence": evidence,
         "canonical_source_snapshot_id": source_snapshot_id,
         "canonical_snapshot_timestamp": snapshot_time.isoformat(),
+        "canonical_latest_material_update_timestamp": snapshot_time.isoformat(),
         "canonical_official_event_id": str(getattr(req, "official_event_id", "") or ""),
         "caller_source_snapshot_id": source_snapshot_id,
         "evidence_authority": "EXPLICIT_REQUEST_FALLBACK",
@@ -94,28 +97,16 @@ def _usable_rows(rows: list[dict[str, Any]], *, now: datetime) -> list[tuple[dat
         row = dict(raw)
         snap_time = _aware(row.get("snapshot_timestamp"))
         event_start = _aware(row.get("event_start_time"))
-        if snap_time is None or event_start is None:
-            continue
-        if snap_time > now:
+        if snap_time is None or event_start is None or snap_time > now:
             continue
         usable.append((snap_time, event_start, row))
     return usable
 
 
 def _identity_join_rows(req: Any, *, client: Any, now: datetime) -> dict[str, Any]:
-    """Resolve a provider event id to exactly one server-owned MLB identity.
-
-    The provider id itself is ignored here. The join is deliberately bounded to
-    the requested slate and requires both participants plus start-time agreement.
-    Multiple snapshots of the same official event collapse to the newest one;
-    multiple *event ids* remain ambiguous and fail closed.
-    """
     requested_start = _aware(getattr(req, "event_start_time_utc", None))
     requested_slate_date = str(getattr(req, "requested_slate_date", "") or "").strip()
     if requested_start is None or not requested_slate_date:
-        # Keep the pre-existing no-canonical-row contract when the caller does not
-        # provide enough bounded identity to attempt a provider-id join. This lets
-        # legacy caller-evidence fallback retain its exact blocker semantics.
         return {
             "ok": False,
             "code": "MLB_TEAM_EVENT_CANONICAL_SNAPSHOT_UNAVAILABLE",
@@ -124,15 +115,13 @@ def _identity_join_rows(req: Any, *, client: Any, now: datetime) -> dict[str, An
 
     try:
         rows = (
-            client
-            .table("wow_mlb_forward_shadow_events")
+            client.table("wow_mlb_forward_shadow_events")
             .select(_CANONICAL_SELECT)
             .eq("official_date", requested_slate_date)
             .eq("feature_hydration_status", "PASS")
             .order("snapshot_timestamp", desc=True)
             .limit(128)
-            .execute()
-            .data
+            .execute().data
             or []
         )
     except Exception as exc:
@@ -192,15 +181,13 @@ def resolve_mlb_team_event_evidence(req: Any, *, event_api: Any) -> dict[str, An
     try:
         client = get_client()
         rows = (
-            client
-            .table("wow_mlb_forward_shadow_events")
+            client.table("wow_mlb_forward_shadow_events")
             .select(_CANONICAL_SELECT)
             .eq("official_event_id", str(req.official_event_id))
             .eq("feature_hydration_status", "PASS")
             .order("snapshot_timestamp", desc=True)
             .limit(8)
-            .execute()
-            .data
+            .execute().data
             or []
         )
     except Exception as exc:
@@ -234,7 +221,7 @@ def resolve_mlb_team_event_evidence(req: Any, *, event_api: Any) -> dict[str, An
             "missing_fields": [],
         }
 
-    identity_mismatches = []
+    identity_mismatches: list[str] = []
     if not _same_text(row.get("home_team"), req.home_team):
         identity_mismatches.append("home_team")
     if not _same_text(row.get("away_team"), req.away_team):
@@ -256,6 +243,7 @@ def resolve_mlb_team_event_evidence(req: Any, *, event_api: Any) -> dict[str, An
             "missing_fields": missing,
         }
 
+    lineup_status = _normalized_lineup_status(row)
     canonical = {
         "venue": row["venue_name"],
         "official_event_status": row.get("event_status"),
@@ -263,13 +251,25 @@ def resolve_mlb_team_event_evidence(req: Any, *, event_api: Any) -> dict[str, An
         "away_starting_pitcher": row["away_probable_pitcher"],
         "home_starter_status": "PROBABLE",
         "away_starter_status": "PROBABLE",
-        "home_lineup_status": "PROJECTED",
-        "away_lineup_status": "PROJECTED",
+        "home_lineup_status": lineup_status,
+        "away_lineup_status": lineup_status,
+        "lineup_snapshot_id": row.get("lineup_snapshot_id"),
+        "lineup_confirmed_at": row.get("lineup_confirmed_at"),
     }
 
     caller = dict(getattr(req, "sport_specific_evidence", None) or {})
     contradictions = []
-    for key, value in canonical.items():
+    for key in (
+        "venue",
+        "official_event_status",
+        "home_starting_pitcher",
+        "away_starting_pitcher",
+        "home_starter_status",
+        "away_starter_status",
+        "home_lineup_status",
+        "away_lineup_status",
+    ):
+        value = canonical.get(key)
         supplied = caller.get(key)
         if value not in (None, "") and supplied not in (None, "") and not _same_text(supplied, value):
             contradictions.append(key)
@@ -281,6 +281,12 @@ def resolve_mlb_team_event_evidence(req: Any, *, event_api: Any) -> dict[str, An
             "missing_fields": [],
         }
 
+    latest_candidates = [snap_time]
+    lineup_confirmed_at = _aware(row.get("lineup_confirmed_at"))
+    if lineup_confirmed_at is not None:
+        latest_candidates.append(lineup_confirmed_at)
+    latest_material = max(latest_candidates).isoformat()
+
     return {
         "ok": True,
         "code": "MLB_TEAM_EVENT_CANONICAL_EVIDENCE_READY",
@@ -288,6 +294,9 @@ def resolve_mlb_team_event_evidence(req: Any, *, event_api: Any) -> dict[str, An
         "canonical_official_event_id": str(row["official_event_id"]),
         "canonical_source_snapshot_id": str(row["snapshot_id"]),
         "canonical_snapshot_timestamp": snap_time.isoformat(),
+        "canonical_latest_material_update_timestamp": latest_material,
+        "canonical_lineup_status": lineup_status,
+        "canonical_lineup_confirmed_at": row.get("lineup_confirmed_at"),
         "caller_official_event_id": str(getattr(req, "official_event_id", "") or ""),
         "caller_source_snapshot_id": str(req.source_snapshot_id),
         "evidence_authority": "CANONICAL_MLB_LEDGER",

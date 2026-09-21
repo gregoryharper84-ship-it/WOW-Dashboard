@@ -1,36 +1,25 @@
-"""Targeted V17 runtime repairs for the 2026-09-15 team/event regression.
+"""Targeted V17 runtime contract repairs.
 
-This module fixes four composition/ingress defects without changing fitted model
-weights, calibration, ranking semantics, terminal authority, or execution safety:
-
-1. TheRundown Product V2 authentication uses the provider-documented
-   ``X-TheRundown-Key`` request header rather than the obsolete query-key shape.
-2. Optional ``market_prior`` evidence is validated/sanitized before Pydantic scorer
-   ingress so malformed market evidence cannot turn a sporting-model attempt into
-   a scorer exception. Invalid market context is omitted from the fitted scorer;
-   the separate market handoff retains its own typed DATA_UNOBTAINABLE semantics.
-3. MLB discovery-provider ids are resolved to the unique server-owned canonical
-   MLB event identity before the direct bridge performs its exact snapshot lookup.
-   No provider id is relabeled as canonical without a participant/start/slate match.
-4. The direct MLB bridge may discover that official lineups are not yet available
-   even though a ratified immutable ``SHADOW_SCORED_LINEUP_PENDING`` fitted score
-   already exists. In that exact case only, recover the canonical held bridge
-   receipt and rehydrate the immutable score before LLP governance. Final ranking
-   remains held until the official-lineup refresh.
-
-Every unresolved or ambiguous identity still fails closed. ``can_execute`` remains
-false throughout.
+This module keeps the September 15 routing fixes and adds a latency-safe composition
+rule for public MLB TEAM_EVENT scoring: canonical evidence is resolved once, and a
+pre-lineup request may go directly to the already-produced immutable projected-score
+receipt instead of repeating canonical event/lineup reads before reaching that same
+receipt. No fitted-model weight, calibration, terminal rule, or execution authority
+is changed. ``can_execute`` remains false throughout.
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import replace
 from datetime import datetime
 from math import isfinite
+from time import perf_counter
 from typing import Any
 
 from fastapi import HTTPException
 
 CAN_EXECUTE = False
+_LOGGER = logging.getLogger("wow.v17.team_event.interactive")
 _PROJECTED_LINEUPS = {
     "NOT_YET_AVAILABLE",
     "PROJECTED",
@@ -55,8 +44,6 @@ def install_rundown_v2_auth_repair() -> bool:
         return True
 
     endpoints = dict(provider.endpoints)
-    # The current provider reference catalog is V2. Keep the remaining endpoint
-    # paths unchanged because they are already V2 and are covered independently.
     endpoints["sports"] = "/api/v2/sports"
     sources.PROVIDERS["RUNDOWN"] = replace(
         provider,
@@ -73,12 +60,7 @@ def install_rundown_v2_auth_repair() -> bool:
 
 
 def sanitize_model_market_prior(prior: dict[str, Any] | None) -> dict[str, Any] | None:
-    """Return only a scorer-valid EventMarketPrior, otherwise no model prior.
-
-    Market context is optional for the MLB fitted scorer (current certified weight
-    is zero). A malformed optional object must therefore not create a Pydantic
-    ``ValidationError`` that changes sporting-model eligibility.
-    """
+    """Return only a scorer-valid EventMarketPrior, otherwise no model prior."""
     if not isinstance(prior, dict) or not prior:
         return None
 
@@ -115,7 +97,6 @@ def sanitize_model_market_prior(prior: dict[str, Any] | None) -> dict[str, Any] 
 
 
 def install_market_prior_ingress_repair(team_runtime: Any) -> bool:
-    """Keep optional market evidence outside the scorer failure boundary."""
     if getattr(team_runtime, "_v17_sep15_market_prior_ingress_repair_installed", False):
         return True
     if not callable(getattr(team_runtime, "_model_market_prior", None)):
@@ -206,6 +187,13 @@ def _load_projected_bridge_receipt(req: Any, *, event_api: Any) -> dict[str, Any
     return out
 
 
+def _projected_from_canonical_request(req: Any) -> bool:
+    evidence = dict(getattr(req, "sport_specific_evidence", None) or {})
+    home = str(evidence.get("home_lineup_status") or "").upper()
+    away = str(evidence.get("away_lineup_status") or "").upper()
+    return bool(home in _PROJECTED_LINEUPS and away in _PROJECTED_LINEUPS)
+
+
 def install_post_mlb_bridge_repairs(*, market_api: Any, team_runtime: Any) -> bool:
     """Compose identity and projected-score repairs after the direct bridge."""
     if getattr(market_api, "_v17_sep15_mlb_contract_repairs_installed", False):
@@ -221,36 +209,72 @@ def install_post_mlb_bridge_repairs(*, market_api: Any, team_runtime: Any) -> bo
 
     from v17.mlb_team_event_hydration import resolve_mlb_team_event_evidence
     from v17.projected_lineup_probability_rehydration import rehydrate_projected_probability
+    from v17.team_event_capability_manifest import team_event_capability
 
     def canonicalize_provider_identity(req: Any, event_api_arg: Any) -> Any:
-        """Rewrite a provider id only after the server ledger proves one MLB id."""
+        """Resolve one canonical row and reuse it instead of querying it twice."""
         if not callable(original_canonicalize):
             return req
+        capability = team_event_capability("MLB")
+        if capability.status != "AVAILABLE":
+            return original_canonicalize(req, event_api_arg)
+
+        started = perf_counter()
         resolution = resolve_mlb_team_event_evidence(req, event_api=event_api_arg)
-        canonical_id = (
-            str(resolution.get("canonical_official_event_id") or "").strip()
-            if resolution.get("ok") is True
-            else ""
+        if resolution.get("ok") is not True:
+            # Preserve the original exact failure mapping. The slower second read
+            # occurs only on an already-failing path, never on healthy ingress.
+            return original_canonicalize(req, event_api_arg)
+
+        model_copy = getattr(req, "model_copy", None)
+        if not callable(model_copy):
+            return original_canonicalize(req, event_api_arg)
+        canonical_id = str(resolution.get("canonical_official_event_id") or getattr(req, "official_event_id", "") or "")
+        latest_material = str(
+            resolution.get("canonical_latest_material_update_timestamp")
+            or resolution.get("canonical_snapshot_timestamp")
+            or getattr(req, "latest_material_update_timestamp", "")
         )
-        supplied_id = str(getattr(req, "official_event_id", "") or "").strip()
-        if canonical_id and canonical_id != supplied_id:
-            model_copy = getattr(req, "model_copy", None)
-            if not callable(model_copy):
-                return original_canonicalize(req, event_api_arg)
-            req = model_copy(update={"official_event_id": canonical_id})
-        return original_canonicalize(req, event_api_arg)
+        out = model_copy(update={
+            "official_event_id": canonical_id,
+            "sport_specific_evidence": dict(resolution["evidence"]),
+            "source_snapshot_id": str(resolution["canonical_source_snapshot_id"]),
+            "latest_material_update_timestamp": latest_material,
+        })
+        _LOGGER.warning(
+            "WOW_V17_TEAM_EVENT_STAGE stage=canonical_hydration status=PASS elapsed_ms=%.3f source=CACHED_CANONICAL_LEDGER can_execute=false",
+            (perf_counter() - started) * 1000.0,
+        )
+        return out
 
     def score_event_with_projected_lineup(req: Any) -> dict[str, Any]:
+        """Use the immutable held score first when canonical lineup state proves pre-lineup."""
+        started = perf_counter()
+        if _projected_from_canonical_request(req):
+            receipt = _load_projected_bridge_receipt(req, event_api=event_api)
+            if receipt is not None:
+                _LOGGER.warning(
+                    "WOW_V17_TEAM_EVENT_STAGE stage=sport_model status=PROJECTED_RECEIPT_REUSED elapsed_ms=%.3f can_execute=false",
+                    (perf_counter() - started) * 1000.0,
+                )
+                return receipt
         try:
-            return original_score_event(req)
+            result = original_score_event(req)
+            _LOGGER.warning(
+                "WOW_V17_TEAM_EVENT_STAGE stage=sport_model status=SCORER_COMPLETED elapsed_ms=%.3f can_execute=false",
+                (perf_counter() - started) * 1000.0,
+            )
+            return result
         except HTTPException as exc:
-            # Preserve every canonical/input/scorer/output failure except the one
-            # exact state where an immutable projected-lineup score already exists.
             if not _is_lineup_pending_failure(exc):
                 raise
             receipt = _load_projected_bridge_receipt(req, event_api=event_api)
             if receipt is None:
                 raise
+            _LOGGER.warning(
+                "WOW_V17_TEAM_EVENT_STAGE stage=sport_model status=PROJECTED_RECEIPT_RECOVERED elapsed_ms=%.3f can_execute=false",
+                (perf_counter() - started) * 1000.0,
+            )
             return receipt
 
     def governance_with_projected_rehydration(
@@ -261,6 +285,7 @@ def install_post_mlb_bridge_repairs(*, market_api: Any, team_runtime: Any) -> bo
         *,
         event_api: Any,
     ) -> dict[str, Any]:
+        started = perf_counter()
         hydrated = rehydrate_projected_probability(model_result, req, event_api=event_api)
         if (
             isinstance(hydrated, dict)
@@ -277,26 +302,27 @@ def install_post_mlb_bridge_repairs(*, market_api: Any, team_runtime: Any) -> bo
                 "model_provider": hydrated.get("controlling_specialist"),
                 "source_snapshot_id": hydrated.get("server_snapshot_id"),
                 "source_snapshot_timestamp": hydrated.get("server_snapshot_timestamp"),
-                # Final rank/publication is intentionally still gated by the
-                # official-lineup refresh and V17_TERMINAL_REDUCER.
                 "rank_eligible": False,
                 "can_execute": False,
             })
-        return original_governance(
+        result = original_governance(
             req,
             route,
             hydrated,
             envelope=envelope,
             event_api=event_api,
         )
+        _LOGGER.warning(
+            "WOW_V17_TEAM_EVENT_STAGE stage=governance status=%s elapsed_ms=%.3f can_execute=false",
+            str((result or {}).get("terminal_label") or (result or {}).get("code") or "COMPLETE"),
+            (perf_counter() - started) * 1000.0,
+        )
+        return result
 
     if callable(original_canonicalize):
         team_runtime._canonicalize_public_mlb_request = canonicalize_provider_identity
         team_runtime._v17_sep15_provider_identity_repair_installed = True
     else:
-        # Projected-score recovery predates public canonicalization wrapping and is
-        # independently installable in tests/partial runtimes. Preserve that
-        # compatibility rather than making the optional identity repair mandatory.
         team_runtime._v17_sep15_provider_identity_repair_installed = False
     event_api.score_event = score_event_with_projected_lineup
     team_runtime._run_mlb_llp_governance = governance_with_projected_rehydration
