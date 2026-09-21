@@ -48,7 +48,7 @@ FAIL-CLOSED SEMANTICS
 - Malformed package = MODEL_OUTPUT_INVALID.
 - Durable correctness receipt unavailable = RECEIPT_SERVICE_UNREACHABLE. Never acknowledge governed completion without required durable state.
 - Keep MODEL_UNAVAILABLE, MODEL_SERVICE_UNREACHABLE, RECEIPT_SERVICE_UNREACHABLE and PUBLICATION_SERVICE_UNREACHABLE distinct; do not rename failures to create a pick.
-- Required Action not attempted = LIVE_GPT_ACTION_INVOCATION_BLOCKED with scoring_attempted=false and backend_model_capability=UNKNOWN.
+- Action not attempted = host-orchestration failure: LIVE_GPT_ACTION_INVOCATION_BLOCKED; scoring_attempted=false; backend_model_capability=UNKNOWN.
 - Backend NO_PICK completes the run.
 
 GOVERNED PROBABILITY
