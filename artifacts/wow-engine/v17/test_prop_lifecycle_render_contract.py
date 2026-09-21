@@ -13,7 +13,7 @@ def test_render_enables_continuous_prop_evidence_and_lifecycle_without_execution
     assert env["WOW_PROP_EVIDENCE_ACQUISITION_ENABLED"]["value"] == "1"
     assert int(env["WOW_PROP_EVIDENCE_ACQUISITION_INTERVAL_SECONDS"]["value"]) >= 300
     assert int(env["WOW_PROP_EVIDENCE_ACQUISITION_FORWARD_DAYS"]["value"]) >= 2
-    assert env["WOW_PROP_LIFECYCLE_AUTOPILOT_ENABLED"]["value"] == "1"
+    assert env["WOW_PROP_LIFECYCLE_AUTOPILOT_ENABLED"]["value"] == "0"
     assert int(env["WOW_PROP_LIFECYCLE_AUTOPILOT_INTERVAL_SECONDS"]["value"]) >= 300
     assert int(env["WOW_PROP_LIFECYCLE_AUTOPILOT_MAX_SNAPSHOTS_PER_ROUTE"]["value"]) >= 1
     assert int(env["WOW_PROP_LIFECYCLE_AUTOPILOT_SETTLEMENT_LIMIT"]["value"]) >= 1
@@ -49,3 +49,14 @@ def test_external_lifecycle_wakeup_is_scheduled_and_uses_short_lived_oidc_only()
     assert 'WOW_DRY_RUN_ONLY: "true"' in text
     assert "secrets.WOW_ACTION_API_KEY" not in text
     assert "pull_request:" not in text
+
+
+def test_external_oidc_workflow_is_the_only_lifecycle_scheduler():
+    repo_root = Path(__file__).resolve().parents[3]
+    render = yaml.safe_load((repo_root / "render.yaml").read_text())
+    service = next(item for item in render["services"] if item["name"] == "wow-governed-probability-engine")
+    env = {item["key"]: item for item in service["envVars"]}
+
+    assert env["WOW_PROP_LIFECYCLE_AUTOPILOT_ENABLED"]["value"] == "0"
+    workflow = (repo_root / ".github" / "workflows" / "wow-v17-prop-lifecycle-autopilot.yml").read_text()
+    assert "/v17/prop-lifecycle-autopilot-run" in workflow
