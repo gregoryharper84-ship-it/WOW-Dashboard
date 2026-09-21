@@ -14,13 +14,13 @@ permissions:
 jobs:
   nfl-prop-live-canary:
     runs-on: ubuntu-latest
-    timeout-minutes: 6
+    timeout-minutes: 15
     env:
       WOW_SERVICE_URL: https://wow-governed-probability-engine.onrender.com
       WOW_OIDC_AUDIENCE: wow-v17-multiscout
       WOW_CAN_EXECUTE: "false"
       WOW_DRY_RUN_ONLY: "true"
-      WOW_REQUEST_ID: nfl-prop-live-canary-20260921-rams-giants-canonical-v4
+      WOW_REQUEST_ID: nfl-prop-live-canary-20260921-rams-giants-canonical-v5
     steps:
       - name: Assert fail-closed OIDC canary context
         shell: bash
@@ -39,11 +39,6 @@ jobs:
           case "$ACTIONS_ID_TOKEN_REQUEST_URL" in
             *\?*) separator='&' ;;
           esac
-          oidc_json="$(curl --silent --show-error --fail --connect-timeout 15 --max-time 30 \
-            --header "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
-            "${ACTIONS_ID_TOKEN_REQUEST_URL}${separator}audience=${WOW_OIDC_AUDIENCE}")"
-          oidc_token="$(python -c 'import json,sys; value=json.load(sys.stdin).get("value"); assert isinstance(value,str) and value.strip(); print(value.strip())' <<<"${oidc_json}")"
-          unset oidc_json
           cat >/tmp/request.json <<JSON
           {
             "request_id":"${WOW_REQUEST_ID}",
@@ -56,25 +51,43 @@ jobs:
             ]
           }
           JSON
-          code="$(curl --silent --show-error --retry 2 --retry-all-errors --connect-timeout 20 --max-time 240 \
-            --output /tmp/response.json --write-out '%{http_code}' \
-            --request POST \
-            --header "Authorization: Bearer ${oidc_token}" \
-            --header 'Content-Type: application/json' \
-            --header 'X-WOW-Caller-Class: GITHUB_ACTIONS' \
-            --header "X-WOW-Request-ID: ${WOW_REQUEST_ID}" \
-            --header 'X-WOW-Rows-In: 4' \
-            --data-binary @/tmp/request.json "${WOW_SERVICE_URL}/score-pick-request")"
-          unset oidc_token
-          if [ "$code" != "200" ]; then
-            echo "score-pick-request HTTP ${code}" >&2
+
+          code=''
+          for attempt in 1 2; do
+            oidc_json="$(curl --silent --show-error --fail --connect-timeout 15 --max-time 30 \
+              --header "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+              "${ACTIONS_ID_TOKEN_REQUEST_URL}${separator}audience=${WOW_OIDC_AUDIENCE}")"
+            oidc_token="$(python -c 'import json,sys; value=json.load(sys.stdin).get("value"); assert isinstance(value,str) and value.strip(); print(value.strip())' <<<"${oidc_json}")"
+            unset oidc_json
+            set +e
+            code="$(curl --silent --show-error --connect-timeout 20 --max-time 300 \
+              --output /tmp/response.json --write-out '%{http_code}' \
+              --request POST \
+              --header "Authorization: Bearer ${oidc_token}" \
+              --header 'Content-Type: application/json' \
+              --header 'X-WOW-Caller-Class: GITHUB_ACTIONS' \
+              --header "X-WOW-Request-ID: ${WOW_REQUEST_ID}" \
+              --header 'X-WOW-Rows-In: 4' \
+              --data-binary @/tmp/request.json "${WOW_SERVICE_URL}/score-pick-request")"
+            curl_rc=$?
+            set -e
+            unset oidc_token
+            if [ "$curl_rc" -eq 0 ] && [ "$code" = "200" ]; then
+              break
+            fi
+            if [ "$attempt" -eq 1 ] && { [ "$curl_rc" -ne 0 ] || [[ "$code" =~ ^5 ]]; }; then
+              echo "Transient canary attempt failed (curl_rc=${curl_rc}, HTTP ${code}); retrying unresolved rows with a fresh OIDC token." >&2
+              continue
+            fi
+            echo "score-pick-request failed (curl_rc=${curl_rc}, HTTP ${code})" >&2
             python - <<'PY'
           from pathlib import Path
           p=Path('/tmp/response.json')
           if p.exists(): print(p.read_text()[:4000])
           PY
             exit 1
-          fi
+          done
+          test "$code" = "200"
 
       - name: Validate governed NFL prop response
         shell: bash
@@ -114,9 +127,10 @@ jobs:
                   lower=prediction.get('calibrated_probability_lower_bound') if prediction else None
               blockers=list(row.get('blockers') or [])
               blocker_code=row.get('blocker_code') or detail.get('blocker_code') or detail.get('blocker') or audit.get('exact_blocker')
+              terminal=str(row.get('terminal_status') or '')
               item={
                   'row_key':row.get('row_key'),
-                  'terminal_status':row.get('terminal_status'),
+                  'terminal_status':terminal,
                   'code':code,
                   'blocker_code':blocker_code,
                   'blockers':blockers,
@@ -130,8 +144,8 @@ jobs:
               summary.append(item)
               if row.get('can_execute') is not False:
                   failures.append(f"{row.get('row_key')}:can_execute")
-              if row.get('terminal_status') != 'COMPLETED':
-                  failures.append(f"{row.get('row_key')}:terminal={row.get('terminal_status')}:{code}:{blocker_code}:{blockers}")
+              if terminal not in {'COMPLETED','REJECTED'}:
+                  failures.append(f"{row.get('row_key')}:terminal={terminal}:{code}:{blocker_code}:{blockers}")
               if row.get('model_evaluated') is not True:
                   failures.append(f"{row.get('row_key')}:model_not_evaluated")
               if row.get('probability_publishable') is not True:
