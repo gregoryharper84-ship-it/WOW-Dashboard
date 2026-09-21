@@ -17,6 +17,8 @@ from fastapi import Depends
 from v17.action_invocation_telemetry import install_action_invocation_middleware
 from v17.interactive_latency_telemetry import install_interactive_latency_middleware
 from v17.interactive_pick_hydration import schedule_interactive_pick_hydration_install
+from v17.pick_request_state_hooks import install_pick_request_state_hooks
+from v17.pick_request_state_runtime import schedule_pick_request_state_install
 
 
 def initialize_observability() -> dict[str, Any]:
@@ -32,12 +34,12 @@ def initialize_observability() -> dict[str, Any]:
     install_universal_team_event_governance()
 
     # Install non-secret total-wall-time telemetry, certification-independent
-    # Action invocation receipts, and schedule the bounded external pre-hydration
-    # wrapper on the accepted production FastAPI app. Invocation telemetry is
-    # fail-open and never participates in certification or scoring authority.
-    # The hydration wrapper installs at startup, after api_ncaaf_acceptance has
-    # composed all routes, and delegates validation/persistence/scoring/
-    # reconciliation back to the captured canonical endpoint.
+    # Action invocation receipts, bounded external pre-hydration, and the
+    # correctness-critical durable pick-request state wrapper. Invocation
+    # telemetry remains fail-open. Durable pick-request state does not: it is
+    # installed outside pre-hydration at startup so every board row is INGESTED
+    # before external evidence fetches begin, and completed model work can resume
+    # by exact request_id/row_key without duplicate model execution.
     try:
         import api_prod_market_acceptance as _accepted_base
 
@@ -46,13 +48,22 @@ def initialize_observability() -> dict[str, Any]:
             _accepted_base.app,
             db_client_fn=_accepted_base.market_api.prod.get_client,
         )
+        install_pick_request_state_hooks()
         schedule_interactive_pick_hydration_install(
             _accepted_base.app,
             market_api=_accepted_base.market_api,
         )
+        # Startup handlers execute in registration order. Register durable state
+        # after interactive hydration so this wrapper becomes the outer boundary
+        # and persists INGESTED before pre-hydration starts.
+        schedule_pick_request_state_install(
+            _accepted_base.app,
+            db_client_fn=_accepted_base.market_api.prod.get_client,
+        )
     except Exception:
         # Observability/latency optimization must never make the governed API
         # unavailable; canonical route behavior remains intact on any failure.
+        # Durable state itself remains fail-closed once installed.
         pass
 
     # Mount the Render-hosted Claude support runtime on the same accepted app.
