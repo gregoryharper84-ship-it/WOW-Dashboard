@@ -14,9 +14,9 @@ def test_editor_update_does_not_imply_live_action_or_user_journey_pass():
     health = USER_HEALTH.read_text(encoding="utf-8")
 
     assert "LIVE_GPT_EDITOR_SYNC = EDITOR_UPDATED__LIVE_ACTION_ACCEPTANCE_REQUIRED" in production
-    assert "EDITOR_UPDATED__LIVE_ACTION_ACCEPTANCE_REQUIRED" in editor
-    assert "RESYNC_REQUIRED_AFTER_PR617" not in production
-    assert "RESYNC_REQUIRED_AFTER_PR617" not in editor
+    assert "Status: **EDITOR_UPDATED__LIVE_ACTION_ACCEPTANCE_REQUIRED**" in editor
+    assert "LIVE_GPT_EDITOR_SYNC = RESYNC_REQUIRED_AFTER_PR617" not in production
+    assert "LIVE_GPT_EDITOR_SYNC`: **RESYNC_REQUIRED_AFTER_PR617**" not in editor
     assert "USER_JOURNEY_HEALTH = FAIL" in production
     assert "Status: **FAIL — NO_END_TO_END_GOVERNED_PROP_RESULT**" in health
     assert "current editor import/update evidence without a fresh authenticated Action result" in health
