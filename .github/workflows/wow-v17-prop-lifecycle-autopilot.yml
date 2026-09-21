@@ -70,11 +70,6 @@ jobs:
             python -c 'import json,sys; value=json.load(sys.stdin).get("value"); assert isinstance(value,str) and value.strip(); print(value.strip())' <<<"${oidc_json}"
           }
 
-          # On a main push Render deploys only after protected checks pass. Poll the
-          # new NBA control route so this job cannot accidentally register against
-          # the previous runtime. GitHub OIDC tokens are intentionally short-lived,
-          # so mint a fresh token for every probe instead of reusing one across a
-          # potentially multi-minute Render rollout.
           ready=0
           for attempt in $(seq 1 60); do
             oidc_token="$(issue_oidc_token)"
@@ -141,7 +136,7 @@ jobs:
           }, sort_keys=True))
           PY
 
-      - name: Run universal V17 prop lifecycle cycle
+      - name: Run bounded universal V17 prop lifecycle cycle
         shell: bash
         run: |
           set -euo pipefail
@@ -149,51 +144,29 @@ jobs:
           case "$ACTIONS_ID_TOKEN_REQUEST_URL" in
             *\?*) separator='&' ;;
           esac
-          issue_oidc_token() {
-            local oidc_json
-            oidc_json="$(curl --silent --show-error --fail --connect-timeout 15 --max-time 30 \
-              --header "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
-              "${ACTIONS_ID_TOKEN_REQUEST_URL}${separator}audience=${WOW_OIDC_AUDIENCE}")"
-            python -c 'import json,sys; value=json.load(sys.stdin).get("value"); assert isinstance(value,str) and value.strip(); print(value.strip())' <<<"${oidc_json}"
-          }
-
-          http_code=''
-          for attempt in 1 2; do
-            oidc_token="$(issue_oidc_token)"
-            set +e
-            http_code="$(curl \
-              --silent \
-              --show-error \
-              --connect-timeout 30 \
-              --max-time 240 \
-              --output /tmp/wow-prop-lifecycle.json \
-              --write-out '%{http_code}' \
-              --request POST \
-              --header "Authorization: Bearer ${oidc_token}" \
-              --header 'Content-Type: application/json' \
-              --data '{"routes":[],"max_snapshots_per_route":50,"settlement_limit":500,"persist_health":true}' \
-              "${WOW_SERVICE_URL}/v17/prop-lifecycle-autopilot-run")"
-            curl_rc=$?
-            set -e
-            unset oidc_token
-            if [ "${curl_rc}" -eq 0 ] && [ "${http_code}" -ge 200 ] && [ "${http_code}" -lt 300 ]; then
-              break
-            fi
-            if [ "${attempt}" -eq 1 ] && { [ "${curl_rc}" -ne 0 ] || [ "${http_code:-000}" -ge 500 ]; }; then
-              echo "Transient lifecycle attempt failed (curl_rc=${curl_rc}, HTTP ${http_code:-000}); retrying with a fresh OIDC token." >&2
-              sleep 5
-              continue
-            fi
-            break
-          done
-          if [ "${http_code}" -lt 200 ] || [ "${http_code}" -ge 300 ]; then
-            echo "Lifecycle endpoint returned HTTP ${http_code}." >&2
-            python - <<'PY'
-          from pathlib import Path
-          p = Path('/tmp/wow-prop-lifecycle.json')
-          if p.exists():
-              print(p.read_text()[:2000])
-          PY
+          oidc_json="$(curl --silent --show-error --fail --connect-timeout 15 --max-time 30 \
+            --header "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}${separator}audience=${WOW_OIDC_AUDIENCE}")"
+          oidc_token="$(python -c 'import json,sys; value=json.load(sys.stdin).get("value"); assert isinstance(value,str) and value.strip(); print(value.strip())' <<<"${oidc_json}")"
+          set +e
+          http_code="$(curl \
+            --silent \
+            --show-error \
+            --connect-timeout 30 \
+            --max-time 300 \
+            --output /tmp/wow-prop-lifecycle.json \
+            --write-out '%{http_code}' \
+            --request POST \
+            --header "Authorization: Bearer ${oidc_token}" \
+            --header 'Content-Type: application/json' \
+            --data '{"routes":[],"max_snapshots_per_route":5,"settlement_limit":50,"persist_health":true}' \
+            "${WOW_SERVICE_URL}/v17/prop-lifecycle-autopilot-run")"
+          curl_rc=$?
+          set -e
+          unset oidc_token
+          if [ "${curl_rc}" -ne 0 ] || [ "${http_code}" -lt 200 ] || [ "${http_code}" -ge 300 ]; then
+            echo "Lifecycle endpoint failed once (curl_rc=${curl_rc}, HTTP ${http_code:-000}); not retrying a possibly still-running POST." >&2
+            test -f /tmp/wow-prop-lifecycle.json && head -c 2000 /tmp/wow-prop-lifecycle.json >&2 || true
             exit 1
           fi
 
