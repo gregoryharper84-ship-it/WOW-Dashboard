@@ -108,6 +108,37 @@ def _fail(db: Any, *, run_id: str, lease_token: str, error_code: str, max_attemp
     return dict(receipt) if isinstance(receipt, dict) else {"status": "INVALID_FAILURE_RECEIPT"}
 
 
+def _claim_from_factory(db_client_fn: Any, lease_seconds: int) -> dict[str, Any] | None:
+    return _claim(db_client_fn(), lease_seconds)
+
+
+def _complete_from_factory(
+    db_client_fn: Any,
+    *,
+    run_id: str,
+    lease_token: str,
+    result: dict[str, Any],
+) -> dict[str, Any]:
+    return _complete(db_client_fn(), run_id=run_id, lease_token=lease_token, result=result)
+
+
+def _fail_from_factory(
+    db_client_fn: Any,
+    *,
+    run_id: str,
+    lease_token: str,
+    error_code: str,
+    max_attempts: int,
+) -> dict[str, Any]:
+    return _fail(
+        db_client_fn(),
+        run_id=run_id,
+        lease_token=lease_token,
+        error_code=error_code,
+        max_attempts=max_attempts,
+    )
+
+
 def _run_existing_daily(
     request_payload: dict[str, Any],
     *,
@@ -143,7 +174,7 @@ async def _worker_loop(
     while True:
         claim: dict[str, Any] | None = None
         try:
-            claim = await asyncio.to_thread(_claim, db_client_fn(), lease_seconds)
+            claim = await asyncio.to_thread(_claim_from_factory, db_client_fn, lease_seconds)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -185,8 +216,8 @@ async def _worker_loop(
                 event_api=event_api,
             )
             completion = await asyncio.to_thread(
-                _complete,
-                db_client_fn(),
+                _complete_from_factory,
+                db_client_fn,
                 run_id=run_id,
                 lease_token=lease_token,
                 result=result,
@@ -204,8 +235,8 @@ async def _worker_loop(
             error_code = f"ASYNC_DAILY_WORKER_EXCEPTION:{type(exc).__name__}"
             try:
                 failure = await asyncio.to_thread(
-                    _fail,
-                    db_client_fn(),
+                    _fail_from_factory,
+                    db_client_fn,
                     run_id=run_id,
                     lease_token=lease_token,
                     error_code=error_code,
@@ -325,6 +356,14 @@ def install_daily_async_routes(
                 app.state.wow_v17_daily_async_tasks = tasks
             tasks.add(task)
             task.add_done_callback(tasks.discard)
+
+        @app.on_event("shutdown")
+        async def stop_daily_async_worker() -> None:
+            tasks = tuple(getattr(app.state, "wow_v17_daily_async_tasks", set()) or ())
+            for task in tasks:
+                task.cancel()
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
 
         app.state.wow_v17_daily_async_worker_installed = True
 
