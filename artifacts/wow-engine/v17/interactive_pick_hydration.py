@@ -16,6 +16,13 @@ If pre-hydration cannot prove route eligibility or any acquisition fails, the
 row is passed to the captured canonical handler unchanged. Therefore failure
 codes and fail-closed semantics remain owned by the canonical handler.
 
+For the mandatory Scout -> Research barrier, only the five independent Research
+workers are parallelized. Scout routing remains ordered before Research and the
+existing reconciler still runs after all five workers complete. This changes no
+worker roster, evidence contract, probability authority, calibration, terminal
+reduction, persistence, or execution semantics; it only removes unnecessary
+serial I/O from the interactive critical path.
+
 One narrow exception is a COMPACT all-row EVENT_ALREADY_STARTED batch after the
 same specialist/capability/certified-artifact preflight has already passed.
 Those rows are terminalized immediately through the canonical terminal reducer
@@ -44,8 +51,11 @@ from v17.top10_model_reconciliation import enforce_top10_completion
 
 LOGGER = logging.getLogger("wow.v17.interactive_latency")
 _STATE_KEY = "wow_interactive_pick_hydration_installed"
+_RESEARCH_PATCH_KEY = "wow_interactive_parallel_research_installed"
 DEFAULT_WORKERS = 4
 MAX_WORKERS = 8
+DEFAULT_RESEARCH_WORKERS = 5
+MAX_RESEARCH_WORKERS = 5
 _DEFAULT_AUTO_HYDRATE_PROP_EVIDENCE = auto_hydrate_prop_evidence
 
 
@@ -55,6 +65,126 @@ def _worker_count() -> int:
     except (TypeError, ValueError):
         value = DEFAULT_WORKERS
     return max(1, min(MAX_WORKERS, value))
+
+
+def _research_worker_count() -> int:
+    try:
+        value = int(os.getenv("WOW_INTERACTIVE_PROP_RESEARCH_WORKERS", str(DEFAULT_RESEARCH_WORKERS)))
+    except (TypeError, ValueError):
+        value = DEFAULT_RESEARCH_WORKERS
+    return max(1, min(MAX_RESEARCH_WORKERS, value))
+
+
+def _install_parallel_research_barrier() -> bool:
+    """Parallelize only independent Research workers inside the canonical barrier.
+
+    Scout coordinator and lane router remain strictly ordered. The same worker
+    handlers and envelopes are used. Research reports are reassembled in the
+    canonical RESEARCH_WORKERS order before the unchanged reconciler executes,
+    so ordering, blocker semantics, and audit shape stay deterministic.
+    """
+    if getattr(pick_runtime, _RESEARCH_PATCH_KEY, False):
+        return True
+
+    def _parallel_barrier(*, row_key: str, run_id: str, candidate: dict[str, Any]):
+        stages_by_worker: dict[str, dict[str, Any]] = {}
+
+        def _run(worker_id: str, payload: dict[str, Any]):
+            env = pick_runtime._scout_research_envelope(run_id, row_key, worker_id, payload)
+            out = pick_runtime.execute_envelope(env)
+            stages_by_worker[worker_id] = {
+                "worker_id": worker_id,
+                "status": out.status,
+                "blockers": list(out.blockers),
+            }
+            return out
+
+        scout_worker = "wow.global-scout-coordinator"
+        scout_out = _run(scout_worker, {"candidate": candidate, "scout_mode": "FOCUSED"})
+        if scout_out.status != "SUCCEEDED":
+            return False, {
+                "stage": scout_worker,
+                "blockers": scout_out.blockers,
+                "stages": [stages_by_worker[scout_worker]],
+            }
+
+        lane = pick_runtime.scout_lane(candidate)
+        lane_worker = "wow.prop-scout-router" if lane == "PROP" else "wow.ml-event-scout-router"
+        lane_out = _run(lane_worker, {"candidate": candidate})
+        if lane_out.status != "SUCCEEDED":
+            return False, {
+                "stage": lane_worker,
+                "blockers": lane_out.blockers,
+                "stages": [stages_by_worker[scout_worker], stages_by_worker[lane_worker]],
+            }
+
+        research_outputs: dict[str, Any] = {}
+        worker_n = min(_research_worker_count(), len(pick_runtime.RESEARCH_WORKERS))
+        started = perf_counter()
+        if worker_n <= 1:
+            for worker_id in pick_runtime.RESEARCH_WORKERS:
+                research_outputs[worker_id] = _run(
+                    worker_id,
+                    {"candidate": candidate, "evidence": candidate.get("evidence")},
+                )
+        else:
+            with ThreadPoolExecutor(max_workers=worker_n, thread_name_prefix="wow-prop-research") as pool:
+                future_to_worker = {
+                    pool.submit(
+                        _run,
+                        worker_id,
+                        {"candidate": candidate, "evidence": candidate.get("evidence")},
+                    ): worker_id
+                    for worker_id in pick_runtime.RESEARCH_WORKERS
+                }
+                for future in as_completed(future_to_worker):
+                    worker_id = future_to_worker[future]
+                    research_outputs[worker_id] = future.result()
+
+        reports: list[dict[str, Any]] = []
+        team_jobs_ok = True
+        for worker_id in pick_runtime.RESEARCH_WORKERS:
+            out = research_outputs[worker_id]
+            team_jobs_ok = team_jobs_ok and out.status == "SUCCEEDED"
+            reports.append(
+                out.output
+                if out.status == "SUCCEEDED"
+                else {"research_status": "DATA_UNOBTAINABLE", "worker_id": worker_id}
+            )
+
+        reconciler_out = _run(
+            pick_runtime.RESEARCH_RECONCILER,
+            {
+                "research_reports": reports,
+                "team_jobs_ok": team_jobs_ok,
+                "evidence_present": isinstance(candidate.get("evidence"), dict),
+                "event_start_present": bool(candidate.get("event_start_utc")),
+            },
+        )
+        ordered_stage_ids = [
+            scout_worker,
+            lane_worker,
+            *pick_runtime.RESEARCH_WORKERS,
+            pick_runtime.RESEARCH_RECONCILER,
+        ]
+        stages = [stages_by_worker[worker_id] for worker_id in ordered_stage_ids if worker_id in stages_by_worker]
+        LOGGER.warning(
+            "WOW_V17_INTERACTIVE_STAGE route=/score-pick-request stage=research-barrier row_key=%s research_workers=%s stage_ms=%.3f can_execute=false",
+            row_key,
+            worker_n,
+            (perf_counter() - started) * 1000.0,
+        )
+        if reconciler_out.status != "SUCCEEDED":
+            return False, {
+                "stage": pick_runtime.RESEARCH_RECONCILER,
+                "blockers": reconciler_out.blockers,
+                "stages": stages,
+            }
+        return True, {"stages": stages}
+
+    pick_runtime._run_mandatory_scout_research = _parallel_barrier
+    setattr(pick_runtime, _RESEARCH_PATCH_KEY, True)
+    return True
 
 
 def _route_is_prehydration_eligible(row: PickRequestRow, market_api: Any) -> bool:
@@ -135,10 +265,6 @@ def _hydration_key(row: PickRequestRow) -> tuple[str, ...]:
 
 
 def _hydrate(row: PickRequestRow) -> RawPropEvidence:
-    # Preserve both historical diagnostic seams. Tests/tools may monkeypatch the
-    # public symbol in this module; the V17 facade may instead replace the core
-    # runtime's hydrator with a delegate. A public override wins, otherwise use
-    # the core runtime's current function when available.
     hydrator = auto_hydrate_prop_evidence
     if hydrator is _DEFAULT_AUTO_HYDRATE_PROP_EVIDENCE:
         runtime_hydrator = getattr(pick_runtime, "auto_hydrate_prop_evidence", None)
@@ -182,6 +308,7 @@ def prehydrate_batch(batch: PickRequestBatch, *, market_api: Any) -> PickRequest
 
 def install_interactive_pick_hydration_wrapper(app: Any, *, market_api: Any) -> bool:
     if getattr(app.state,_STATE_KEY,False): return True
+    _install_parallel_research_barrier()
     captured_route=next((route for route in app.router.routes if getattr(route,"path",None)=="/score-pick-request" and "POST" in (getattr(route,"methods",set()) or set())),None)
     if captured_route is None or not callable(getattr(captured_route,"endpoint",None)): return False
     captured_endpoint=captured_route.endpoint; dependencies=list(getattr(captured_route,"dependencies",None) or []); operation_id=str(getattr(captured_route,"operation_id",None) or "scoreWowPickRequest")
@@ -198,7 +325,7 @@ def schedule_interactive_pick_hydration_install(app: Any, *, market_api: Any) ->
     if getattr(app.state,f"{_STATE_KEY}_scheduled",False): return
     @app.on_event("startup")
     async def _install_interactive_pick_hydration() -> None:
-        installed=install_interactive_pick_hydration_wrapper(app,market_api=market_api); LOGGER.warning("WOW_V17_INTERACTIVE_HYDRATION status=%s workers=%s can_execute=false","INSTALLED" if installed else "NOT_INSTALLED_ROUTE_UNAVAILABLE",_worker_count())
+        installed=install_interactive_pick_hydration_wrapper(app,market_api=market_api); LOGGER.warning("WOW_V17_INTERACTIVE_HYDRATION status=%s workers=%s research_workers=%s can_execute=false","INSTALLED" if installed else "NOT_INSTALLED_ROUTE_UNAVAILABLE",_worker_count(),_research_worker_count())
     setattr(app.state,f"{_STATE_KEY}_scheduled",True)
 
-__all__=["DEFAULT_WORKERS","MAX_WORKERS","install_interactive_pick_hydration_wrapper","prehydrate_batch","schedule_interactive_pick_hydration_install"]
+__all__=["DEFAULT_WORKERS","MAX_WORKERS","DEFAULT_RESEARCH_WORKERS","MAX_RESEARCH_WORKERS","install_interactive_pick_hydration_wrapper","prehydrate_batch","schedule_interactive_pick_hydration_install"]
