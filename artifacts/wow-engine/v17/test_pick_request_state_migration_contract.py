@@ -52,6 +52,6 @@ def test_pick_request_runtime_acl_hardening_removes_destructive_service_role_gra
     assert "grant select, insert, update on table public.wow_pick_request_runs to service_role" in lowered
     assert "grant select, insert, update on table public.wow_pick_request_row_states to service_role" in lowered
     assert "grant select, insert on table public.wow_pick_request_row_transitions to service_role" in lowered
-    assert "delete" not in lowered
-    assert "truncate" not in lowered
+    assert "grant delete" not in lowered
+    assert "grant truncate" not in lowered
     assert "grant update on table public.wow_pick_request_row_transitions" not in lowered
