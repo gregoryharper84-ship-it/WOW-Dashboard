@@ -49,7 +49,7 @@ create table if not exists public.wow_pick_request_row_states (
     model_evaluated boolean not null default false,
     probability_publishable boolean not null default false,
     rank_eligible boolean not null default false,
-    prediction_id text,
+    prediction_id uuid references public.wow_predictions(prediction_id),
     source_snapshot_id text,
     outcome jsonb,
     can_execute boolean not null default false check (can_execute = false),
@@ -86,13 +86,13 @@ alter table public.wow_pick_request_runs enable row level security;
 alter table public.wow_pick_request_row_states enable row level security;
 alter table public.wow_pick_request_row_transitions enable row level security;
 
-revoke all on public.wow_pick_request_runs from anon, authenticated;
-revoke all on public.wow_pick_request_row_states from anon, authenticated;
-revoke all on public.wow_pick_request_row_transitions from anon, authenticated;
+revoke all on table public.wow_pick_request_runs from public, anon, authenticated;
+revoke all on table public.wow_pick_request_row_states from public, anon, authenticated;
+revoke all on table public.wow_pick_request_row_transitions from public, anon, authenticated;
 
-grant select, insert, update on public.wow_pick_request_runs to service_role;
-grant select, insert, update on public.wow_pick_request_row_states to service_role;
-grant select, insert on public.wow_pick_request_row_transitions to service_role;
+grant select, insert, update on table public.wow_pick_request_runs to service_role;
+grant select, insert, update on table public.wow_pick_request_row_states to service_role;
+grant select, insert on table public.wow_pick_request_row_transitions to service_role;
 
 comment on table public.wow_pick_request_runs is 'V17 durable prop-board run manifest. can_execute is permanently false.';
 comment on table public.wow_pick_request_row_states is 'V17 exact-row resumable state. Sporting-model output may be retained before publication authorization; can_execute is permanently false.';
