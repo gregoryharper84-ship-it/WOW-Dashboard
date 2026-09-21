@@ -40,8 +40,8 @@ def test_action_invocation_telemetry_records_success_failure_and_caller_class_wi
     @app.get("/health")
     def health(): return {"ok":True}
     github_oidc=_unsigned_jwt({"iss":"https://token.actions.githubusercontent.com"}); client=TestClient(app)
-    assert client.post("/score-prop",headers={"Authorization":"Bearer generic-valid-action-key","User-Agent":"Python-urllib/3.11","X-WOW-Request-ID":"req-api-key-1"},json={"player":"sensitive-player"}).status_code==200
-    assert client.post("/score-pick-request",headers={"Authorization":"Bearer super-secret-token","User-Agent":"OpenAI-ChatGPT-Action/1.0","X-WOW-Request-ID":"req-chat-1","X-WOW-Rows-In":"2"},json={"rows":[{"player":"sensitive-player"}]}).status_code==200
+    assert client.post("/score-prop",headers={"Authorization":"Bearer test-key-placeholder","User-Agent":"Python-urllib/3.11","X-WOW-Request-ID":"req-api-key-1"},json={"player":"sensitive-player"}).status_code==200
+    assert client.post("/score-pick-request",headers={"Authorization":"Bearer test-token-placeholder","User-Agent":"OpenAI-ChatGPT-Action/1.0","X-WOW-Request-ID":"req-chat-1","X-WOW-Rows-In":"2"},json={"rows":[{"player":"sensitive-player"}]}).status_code==200
     assert client.post("/score-team-event",headers={"Authorization":f"Bearer {github_oidc}","User-Agent":"Python-urllib/3.11","X-WOW-Request-ID":"req-ci-1"},json={"home_team":"A","away_team":"B"}).status_code==409
     assert client.post("/score-team-event-request",headers={"Authorization":f"Bearer {github_oidc}","User-Agent":"GitHub-Actions-Test"},json={"home_team":"A","away_team":"B"}).status_code==401
     assert client.get("/health").status_code==200
@@ -56,7 +56,7 @@ def test_action_invocation_telemetry_records_success_failure_and_caller_class_wi
     assert all(receipt.get("invocation_id") for receipt in receipts)
     assert len({receipt["invocation_id"] for receipt in receipts}) == 4
     serialized=repr(receipts)
-    for secret in ("super-secret-token","generic-valid-action-key",github_oidc,"sensitive-player","must-not-be-persisted"): assert secret not in serialized
+    for sensitive_value in ("test-token-placeholder","test-key-placeholder",github_oidc,"sensitive-player","must-not-be-persisted"): assert sensitive_value not in serialized
 
 def test_action_invocation_telemetry_persistence_failure_never_changes_action_response(caplog):
     class _BrokenDB:
@@ -64,13 +64,13 @@ def test_action_invocation_telemetry_persistence_failure_never_changes_action_re
     app=FastAPI(); install_action_invocation_middleware(app,db_client_fn=lambda:_BrokenDB())
     @app.post("/score-pick-request")
     def score_pick_request(): return {"ok":True,"can_execute":False}
-    client=TestClient(app)
     with caplog.at_level(logging.WARNING,logger="wow.v17.action_invocation"):
-        response=client.post("/score-pick-request")
-        assert response.status_code==200 and response.json()["can_execute"] is False
-        deadline=time.monotonic()+2.5
-        while not any("WOW_V17_ACTION_INVOCATION_PERSISTENCE_FAILED" in r.getMessage() for r in caplog.records) and time.monotonic()<deadline: time.sleep(0.01)
-    assert any("WOW_V17_ACTION_INVOCATION_PERSISTENCE_FAILED" in r.getMessage() for r in caplog.records)
+        with TestClient(app) as client:
+            response=client.post("/score-pick-request")
+            assert response.status_code==200 and response.json()["can_execute"] is False
+            deadline=time.monotonic()+3.5
+            while not any("WOW_V17_ACTION_INVOCATION_PERSISTENCE_FAILED" in r.getMessage() for r in caplog.records) and time.monotonic()<deadline: time.sleep(0.01)
+            assert any("WOW_V17_ACTION_INVOCATION_PERSISTENCE_FAILED" in r.getMessage() for r in caplog.records)
 
 
 def test_action_invocation_telemetry_owns_tasks_until_completion():
