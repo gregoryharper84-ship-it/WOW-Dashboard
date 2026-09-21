@@ -6,7 +6,8 @@ mounted and tightens exact-once recovery in two places:
 
 1. a durably closed request_id rejects manifest reseeding before any row mutation;
 2. an immutable receipt recovered after a lost response is removed from the
-   retry set, so the canonical scorer is never invoked for that row again.
+   retry set, then advanced through the same durable governance stages that the
+   normal finalizer would have reached from its already-persisted outcome.
 
 can_execute remains false unconditionally.
 """
@@ -118,8 +119,22 @@ def _receipt_preflight_without_rescore(
             migrated = dict(record)
             migrated["prediction_id"] = match.get("governed_prediction_id")
             migrated["terminal_status"] = terminal_status
-            migrated["current_stage"] = "RECEIPT_PERSISTED"
-            migrated["stage_seq"] = state.STAGE_SEQ["RECEIPT_PERSISTED"]
+
+            # Mirror the normal state finalizer from already-persisted outcome
+            # fields. This never creates model authority; it only finishes the
+            # durable lifecycle for work the canonical scorer already produced.
+            stage = "RECEIPT_PERSISTED"
+            if durable_outcome.get("model_evaluated") is True:
+                stage = "GOVERNANCE_AUDITED"
+                migrated["model_evaluated"] = True
+                migrated["probability_publishable"] = (
+                    durable_outcome.get("probability_publishable") is True
+                )
+                migrated["rank_eligible"] = durable_outcome.get("rank_eligible") is True
+                if durable_outcome.get("probability_publishable") is True:
+                    stage = "PUBLICATION_AUTHORIZED"
+            migrated["current_stage"] = stage
+            migrated["stage_seq"] = state.STAGE_SEQ[stage]
             migrated["durable_status"] = state._durable_status(migrated)
             migrated["updated_at"] = state._now()
             migrated["can_execute"] = False
