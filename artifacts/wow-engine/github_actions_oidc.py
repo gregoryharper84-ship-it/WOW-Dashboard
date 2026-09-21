@@ -3,7 +3,7 @@
 This is an internal automation credential path only. It does not replace
 WOW_ACTION_API_KEY for Custom GPT Actions and it never authorizes wager
 execution. Tokens are accepted only from GitHub's OIDC issuer for this exact
-repository, an explicit workflow allowlist, protected main, and a small set of
+repository, explicit protected-main workflow identities, and a small set of
 non-PR production events.
 """
 from __future__ import annotations
@@ -30,6 +30,9 @@ DAILY_SNAPSHOT_WORKFLOW_REF = (
 )
 NFL_FORWARD_SHADOW_WORKFLOW_REF = (
     f"{REPOSITORY}/.github/workflows/wow-v17-nfl-forward-shadow.yml@{REF}"
+)
+NFL_PROP_LIVE_CANARY_WORKFLOW_REF = (
+    f"{REPOSITORY}/.github/workflows/wow-v17-nfl-prop-live-canary.yml@{REF}"
 )
 BASKETBALL_MODEL_MAINTENANCE_WORKFLOW_REF = (
     f"{REPOSITORY}/.github/workflows/wow-v17-basketball-model-maintenance.yml@{REF}"
@@ -72,6 +75,9 @@ ALLOWED_WORKFLOW_REFS = frozenset({
     FIRST_SIX_TRANSPORT_RESCUE_WORKFLOW_REF,
     MLB_1IP_LINE_EXPANSION_MAINTENANCE_WORKFLOW_REF,
 })
+# Live scoring canaries are kept separate from the long-lived automation set so
+# their trust boundary stays explicit and independently reviewable.
+LIVE_CANARY_WORKFLOW_REFS = frozenset({NFL_PROP_LIVE_CANARY_WORKFLOW_REF})
 ALLOWED_EVENTS = frozenset({"push", "schedule", "workflow_dispatch"})
 
 
@@ -92,7 +98,7 @@ def validate_github_actions_claims(claims: dict[str, Any]) -> dict[str, Any]:
         if actual != expected:
             raise GitHubOIDCValidationError(f"GITHUB_OIDC_{field.upper()}_MISMATCH")
     workflow_ref = str(claims.get("workflow_ref") or "")
-    if workflow_ref not in ALLOWED_WORKFLOW_REFS:
+    if workflow_ref not in ALLOWED_WORKFLOW_REFS and workflow_ref not in LIVE_CANARY_WORKFLOW_REFS:
         raise GitHubOIDCValidationError("GITHUB_OIDC_WORKFLOW_REF_MISMATCH")
     event_name = str(claims.get("event_name") or "")
     if event_name not in ALLOWED_EVENTS:
@@ -120,12 +126,7 @@ def verify_github_actions_oidc(token: str, *, jwk_client: PyJWKClient | None = N
 
 
 def authorize_action_key_or_multiscout_oidc(authorization: str | None) -> str:
-    """Authorize an existing WOW Action bearer or an approved workflow OIDC token.
-
-    The legacy function name is retained because existing Scout callers import
-    it directly. The verifier itself now supports only the explicit workflow
-    allowlist above; it is not a generic GitHub Actions credential.
-    """
+    """Authorize an existing WOW Action bearer or an approved workflow OIDC token."""
     if not authorization or not authorization.startswith("Bearer "):
         raise GitHubOIDCValidationError("SCOUT_ROUTE_AUTH_REQUIRED")
     supplied = authorization[len("Bearer ") :]
@@ -137,13 +138,7 @@ def authorize_action_key_or_multiscout_oidc(authorization: str | None) -> str:
 
 
 def scout_route_auth_dependency(existing_auth_dependency: Any) -> Any:
-    """Return a FastAPI dependency preserving the caller's existing auth seam.
-
-    Production supplies Depends(_require_action_api_key). Lower-layer tests may
-    supply a permissive dependency. We try that exact dependency first; only a
-    rejected production-style auth attempt falls through to the strict OIDC
-    verifier. This keeps existing test/staging injection behavior intact.
-    """
+    """Return a FastAPI dependency preserving the caller's existing auth seam."""
     existing_fn = getattr(existing_auth_dependency, "dependency", None)
     if existing_fn is None and callable(existing_auth_dependency):
         existing_fn = existing_auth_dependency
@@ -176,6 +171,7 @@ def scout_route_auth_dependency(existing_auth_dependency: Any) -> Any:
 
 __all__ = [
     "ALLOWED_WORKFLOW_REFS",
+    "LIVE_CANARY_WORKFLOW_REFS",
     "AUDIENCE",
     "BASKETBALL_MODEL_MAINTENANCE_WORKFLOW_REF",
     "DAILY_SNAPSHOT_WORKFLOW_REF",
@@ -185,6 +181,7 @@ __all__ = [
     "GitHubOIDCValidationError",
     "NCAAF_MODEL_MAINTENANCE_WORKFLOW_REF",
     "NFL_FORWARD_SHADOW_WORKFLOW_REF",
+    "NFL_PROP_LIVE_CANARY_WORKFLOW_REF",
     "NHL_MODEL_MAINTENANCE_WORKFLOW_REF",
     "PROP_ACTION_WORKFLOW_REF",
     "PROP_LIFECYCLE_AUTOPILOT_WORKFLOW_REF",
