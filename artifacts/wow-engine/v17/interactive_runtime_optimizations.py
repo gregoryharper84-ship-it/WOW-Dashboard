@@ -17,7 +17,7 @@ from __future__ import annotations
 from copy import deepcopy
 import logging
 import os
-from threading import Lock, RLock
+from threading import Lock, RLock, local
 from time import monotonic
 from typing import Any, Callable, Hashable
 
@@ -32,6 +32,7 @@ _MAX_TTL_SECONDS = 30.0
 _CACHE_LOCK = RLock()
 _CACHE: dict[tuple[str, Hashable], tuple[float, Any]] = {}
 _KEY_LOCKS: dict[tuple[str, Hashable], Lock] = {}
+_THREAD_LOCAL = local()
 
 
 def _ttl_seconds() -> float:
@@ -110,11 +111,19 @@ def install_interactive_runtime_optimizations(market_api: Any) -> bool:
         return True
 
     prod = getattr(market_api, "prod", None)
+    original_get_client = getattr(prod, "get_client", None)
     original_capability = getattr(prod, "_runtime_capability", None)
     original_route = getattr(market_api, "_prop_route_artifact", None)
     original_resolver = getattr(prop_fitted_provider, "resolve_certified_artifact", None)
-    if not callable(original_capability) or not callable(original_route) or not callable(original_resolver):
+    if not callable(original_get_client) or not callable(original_capability) or not callable(original_route) or not callable(original_resolver):
         return False
+
+    def thread_local_get_client() -> Any:
+        client = getattr(_THREAD_LOCAL, "supabase_client", None)
+        if client is None:
+            client = original_get_client()
+            _THREAD_LOCAL.supabase_client = client
+        return client
 
     def cached_runtime_capability(capability_key: str) -> dict[str, Any]:
         key = str(capability_key or "").strip().upper()
@@ -146,7 +155,7 @@ def install_interactive_runtime_optimizations(market_api: Any) -> bool:
         feature_schema_version: str,
     ) -> Any:
         key = (
-            id(client),
+            str(os.getenv("SUPABASE_URL") or "").strip(),
             str(sport or "").strip().upper(),
             str(stat_type or "").strip().upper(),
             str(feature_schema_version or "").strip().upper(),
@@ -163,12 +172,16 @@ def install_interactive_runtime_optimizations(market_api: Any) -> bool:
             lambda value: value is not None,
         )
 
+    prod.get_client = thread_local_get_client
+    base_api = getattr(prod, "base_api", None)
+    if base_api is not None and getattr(base_api, "get_client", None) is original_get_client:
+        base_api.get_client = thread_local_get_client
     prod._runtime_capability = cached_runtime_capability
     market_api._prop_route_artifact = cached_prop_route_artifact
     prop_fitted_provider.resolve_certified_artifact = cached_resolve_certified_artifact
     setattr(market_api, _STATE_ATTR, True)
     _LOG.warning(
-        "WOW_V17_INTERACTIVE_REGISTRY_CACHE status=INSTALLED ttl_seconds=%s positive_only=true can_execute=false",
+        "WOW_V17_INTERACTIVE_REGISTRY_CACHE status=INSTALLED ttl_seconds=%s positive_only=true thread_local_db_client=true can_execute=false",
         _ttl_seconds(),
     )
     return True
