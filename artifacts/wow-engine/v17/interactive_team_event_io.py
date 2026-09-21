@@ -89,6 +89,9 @@ def _stats_client() -> httpx.Client:
 
 
 def _copy_player_map(value: dict[int, dict[str, Any]]) -> dict[int, dict[str, Any]]:
+    # Downstream reads these payloads but does not mutate them. A shallow mapping
+    # copy prevents accidental key mutation of the cache while avoiding expensive
+    # deep copies of the StatsAPI response.
     return dict(value)
 
 
