@@ -24,7 +24,7 @@ from uuid import uuid4
 # the exact same invocation_id rather than creating a second receipt.
 _PERSIST_TIMEOUT_SECONDS = 15.0
 _MAX_PERSIST_ATTEMPTS = 2
-_RETRY_BACKOFF_SECONDS = 0.25
+_RETRY_BACKOFF_SECONDS = 0.01
 _SHUTDOWN_DRAIN_SECONDS = 15.5
 _MAX_IN_FLIGHT = 64
 
@@ -231,6 +231,10 @@ def install_action_invocation_middleware(app: Any, *, db_client_fn: Callable[[],
                             await asyncio.sleep(_RETRY_BACKOFF_SECONDS)
 
                 error_type = type(last_exc).__name__ if last_exc is not None else "UNKNOWN"
+                LOGGER.error(
+                    "WOW_V17_ACTION_INVOCATION_PERSISTENCE_FAILED route=%s status_code=%s error=%s recovery=DEAD_LETTER_ATTEMPT invocation_id=%s can_execute=false",
+                    path, status_code, error_type, receipt["invocation_id"],
+                )
                 try:
                     await asyncio.wait_for(
                         asyncio.to_thread(
@@ -248,7 +252,7 @@ def install_action_invocation_middleware(app: Any, *, db_client_fn: Callable[[],
                     )
                 except Exception as dead_exc:
                     LOGGER.error(
-                        "WOW_V17_ACTION_INVOCATION_PERSISTENCE_FAILED route=%s status_code=%s error=%s dead_letter_error=%s invocation_id=%s can_execute=false",
+                        "WOW_V17_ACTION_INVOCATION_DEAD_LETTER_FAILED route=%s status_code=%s error=%s dead_letter_error=%s invocation_id=%s can_execute=false",
                         path, status_code, error_type, type(dead_exc).__name__, receipt["invocation_id"],
                     )
 
