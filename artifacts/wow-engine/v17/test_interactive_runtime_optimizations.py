@@ -7,6 +7,11 @@ import v17.interactive_runtime_optimizations as subject
 class Prod:
     def __init__(self):
         self.calls = 0
+        self.client_calls = 0
+
+    def get_client(self):
+        self.client_calls += 1
+        return {"client": self.client_calls}
 
     def _runtime_capability(self, key):
         self.calls += 1
@@ -39,6 +44,11 @@ def test_positive_registry_reads_are_reused_within_interactive_burst(monkeypatch
     assert market.prod._runtime_capability("PROP")["capability_status"] == "AVAILABLE"
     assert market.prod._runtime_capability("PROP")["capability_status"] == "AVAILABLE"
     assert market.prod.calls == 1
+
+    first_client = market.prod.get_client()
+    second_client = market.prod.get_client()
+    assert first_client is second_client
+    assert market.prod.client_calls == 1
 
     assert market._prop_route_artifact("NFL", "RECEIVING_YARDS")["ok"] is True
     assert market._prop_route_artifact("NFL", "RECEIVING_YARDS")["ok"] is True
