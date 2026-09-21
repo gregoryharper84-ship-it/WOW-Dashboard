@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+from threading import Barrier, Lock
 
 from v17.cross_sport_certification_inventory import CERTIFICATION_SPORTS
 from v17.prop_capability_manifest import BUILD_REQUIRED, DECLARED_PROP_LANES
@@ -235,4 +236,35 @@ def test_universal_selected_route_reconciles_exactly_once_without_promotion():
     assert result["certification_performed"] is False
     assert result["promotion_performed"] is False
     assert result["production_registration_performed"] is False
+    assert result["can_execute"] is False
+
+
+def test_universal_route_collection_is_bounded_parallel_and_ordered(monkeypatch):
+    routes = ["WNBA:POINTS", "WNBA:REBOUNDS"]
+    barrier = Barrier(len(routes))
+    lock = Lock()
+    active = 0
+    peak = 0
+
+    def fake_collect(*, sport, stat_type, **_kwargs):
+        nonlocal active, peak
+        with lock:
+            active += 1
+            peak = max(peak, active)
+        barrier.wait(timeout=2)
+        with lock:
+            active -= 1
+        return {"sport": sport, "stat_type": stat_type, "collector": COLLECTOR_GENERIC, "can_execute": False}
+
+    monkeypatch.setattr("v17.prop_universal_forward_evidence.run_generic_forward_route", fake_collect)
+    result = run_universal_prop_forward_evidence(
+        UniversalPropForwardEvidenceRequest(routes=routes, max_snapshots_per_route=1),
+        db=_Db({}),
+        market_api=_Market(),
+        now=NOW,
+    )
+
+    assert peak == 2
+    assert [f'{row["sport"]}:{row["stat_type"]}' for row in result["route_results"]] == routes
+    assert result["route_reconciliation_balanced"] is True
     assert result["can_execute"] is False
