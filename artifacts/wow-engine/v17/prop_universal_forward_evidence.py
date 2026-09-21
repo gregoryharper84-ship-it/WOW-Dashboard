@@ -13,6 +13,7 @@ evidence collection. can_execute=false unconditionally.
 """
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
@@ -38,6 +39,7 @@ EVIDENCE_SOURCE_KIND = "IMMUTABLE_PREGAME_SETTLED"
 DIRECTIONS = ("MORE", "LESS")
 PAGE_SIZE = 1000
 IN_FILTER_CHUNK_SIZE = 200
+FORWARD_ROUTE_WORKERS = 8
 
 COLLECTOR_STRIKEOUT = "LEGACY_STRIKEOUT_FORWARD_COHORT"
 COLLECTOR_FANTASY = "FANTASY_SCORE_FORWARD_COHORT"
@@ -619,7 +621,7 @@ def run_universal_prop_forward_evidence(
             spec = LANE_SPECS[lane_result["lane"]]
             fantasy_by_key[(spec.sport, spec.stat_type)] = lane_result
 
-    for key in requested:
+    def collect_route(key: tuple[str, str]) -> dict[str, Any]:
         sport, stat_type = key
         collector, inventory_status, blocker = _collector_for(key)
         if collector == COLLECTOR_STRIKEOUT:
@@ -629,44 +631,49 @@ def run_universal_prop_forward_evidence(
                 market_api=market_api,
                 now=now,
             )
-            route_results.append({
+            return {
                 "sport": sport,
                 "stat_type": stat_type,
                 "collector": collector,
                 "status": result["run_status"],
                 "result": result,
                 "can_execute": False,
-            })
+            }
         elif collector == COLLECTOR_FANTASY:
             result = fantasy_by_key[key]
-            route_results.append({
+            return {
                 "sport": sport,
                 "stat_type": stat_type,
                 "collector": collector,
                 "status": "COMPLETED" if result["row_reconciliation"]["balanced"] else "RECONCILIATION_FAILED",
                 "result": result,
                 "can_execute": False,
-            })
+            }
         elif collector == COLLECTOR_GENERIC:
-            route_results.append(
-                run_generic_forward_route(
-                    sport=sport,
-                    stat_type=stat_type,
-                    max_snapshots=req.max_snapshots_per_route,
-                    db=db,
-                    market_api=market_api,
-                    now=now,
-                )
+            return run_generic_forward_route(
+                sport=sport,
+                stat_type=stat_type,
+                max_snapshots=req.max_snapshots_per_route,
+                db=db,
+                market_api=market_api,
+                now=now,
             )
-        else:
-            route_results.append({
-                "sport": sport,
-                "stat_type": stat_type,
-                "collector": collector,
-                "status": inventory_status,
-                "blockers": [blocker] if blocker else [],
-                "can_execute": False,
-            })
+        return {
+            "sport": sport,
+            "stat_type": stat_type,
+            "collector": collector,
+            "status": inventory_status,
+            "blockers": [blocker] if blocker else [],
+            "can_execute": False,
+        }
+
+    # Network-backed route collection dominates the universal cycle. Keep the
+    # complete declared inventory, but collect independent routes concurrently
+    # with a fixed bound. executor.map preserves requested-route order so the
+    # reconciliation and audit output remain deterministic.
+    worker_n = min(FORWARD_ROUTE_WORKERS, max(1, len(requested)))
+    with ThreadPoolExecutor(max_workers=worker_n, thread_name_prefix="wow-prop-forward") as pool:
+        route_results.extend(pool.map(collect_route, requested))
 
     route_keys = {(row["sport"], row["stat_type"]) for row in route_results}
     requested_keys = set(requested)
