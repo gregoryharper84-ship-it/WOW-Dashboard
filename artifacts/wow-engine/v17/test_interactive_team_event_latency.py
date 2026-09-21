@@ -16,7 +16,7 @@ _CANONICAL_BARRIER = team_runtime._run_mandatory_scout_research
 
 def _req():
     return SimpleNamespace(
-        requester_host_identity="WOW_CUSTOM_GPT",
+        requester_host_identity="WOW_BETTING_ENGINE",
         candidate_family="TEAM_EVENT",
         research_run_id="latency-test",
         event_key="WNBA:test-event",
@@ -38,17 +38,12 @@ def _out(worker_id: str, *, status: str = "SUCCEEDED", blockers=None):
 
 
 def _isolate_installer(monkeypatch, workers):
-    # The production installer intentionally mutates the canonical barrier once
-    # per process. Register that global with pytest's monkeypatch before calling
-    # the installer so every test restores the original runtime afterward.
     monkeypatch.setattr(
         team_runtime,
         "_run_mandatory_scout_research",
         _CANONICAL_BARRIER,
     )
     monkeypatch.setattr(team_runtime, latency._STATE_KEY, False, raising=False)
-    # Keep the concurrency assertion deterministic even if a CI environment
-    # overrides the production worker-count environment variable.
     monkeypatch.setattr(latency, "_worker_count", lambda: len(workers))
 
 
