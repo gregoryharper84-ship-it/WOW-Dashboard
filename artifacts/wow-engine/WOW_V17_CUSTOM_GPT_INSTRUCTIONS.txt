@@ -80,6 +80,6 @@ STATUS / INSTALLATION
 Distinguish BACKEND_RUNTIME, MODEL_CAPABILITY, REPOSITORY_GOVERNANCE, LIVE_GPT_EDITOR_SYNC.
 Action origin: https://wow-governed-probability-engine.onrender.com
 Auth: API key/Bearer using WOW_ACTION_API_KEY only.
-Canonical scoring Action schema: v17/openapi.wow-betting-engine.v17.yaml
+Canonical Action schema: v17/openapi.wow-betting-engine.v17.yaml
 Run-control companion Action schema: v17/openapi.wow-betting-engine.v17.run-control.yaml
 `LIVE_GPT_EDITOR_SYNC=VERIFIED` only after both live editor Action schemas save/reload + diagnostic Action recheck; repository state alone does not establish it.
