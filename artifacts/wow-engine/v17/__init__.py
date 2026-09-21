@@ -189,20 +189,19 @@ def compose_active_runtime() -> bool:
                 app=app,
                 market_api=market_api,
             )
-            auth_dependency = getattr(
-                getattr(market_api, "prod", None),
-                "_require_action_api_key",
-                None,
-            )
-            if callable(auth_dependency):
+            prod = getattr(market_api, "prod", None)
+            auth_dependency = getattr(prod, "_require_action_api_key", None)
+            db_client_fn = getattr(prod, "get_client", None)
+            event_api = getattr(prod, "event_api", None)
+            if callable(auth_dependency) and callable(db_client_fn) and event_api is not None:
                 from v17.daily_async_runtime import install_daily_async_routes
 
                 daily_async_ok = install_daily_async_routes(
                     app,
                     auth_callable=auth_dependency,
-                    db_client_fn=getattr(market_api.prod, "get_client"),
+                    db_client_fn=db_client_fn,
                     market_api=market_api,
-                    event_api=getattr(market_api.prod, "event_api"),
+                    event_api=event_api,
                 )
             full_board_runtime_ok = install_full_board_runtime_routes(
                 app,
