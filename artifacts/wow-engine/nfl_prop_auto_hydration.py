@@ -52,6 +52,20 @@ STAT_ALIASES = {
     "ANYTIME_TOUCHDOWNS": "ANYTIME_TD",
 }
 
+# ESPN and nflverse mostly share current abbreviations, but a few identities
+# differ. This mapping is identity-only and never contributes to probability.
+ESPN_TO_NFLVERSE_TEAM = {
+    "LAR": "LA",
+    "WSH": "WAS",
+    "JAC": "JAX",
+    "GNB": "GB",
+    "KAN": "KC",
+    "NWE": "NE",
+    "NOR": "NO",
+    "SFO": "SF",
+    "TBB": "TB",
+}
+
 _CACHE_LOCK = threading.RLock()
 _CSV_CACHE: dict[int, tuple[float, list[dict[str, str]], str]] = {}
 
@@ -167,6 +181,77 @@ def _athlete_team(athlete_id: str, *, http_get: Callable[..., Any]) -> str:
     return abbreviation
 
 
+def _nflverse_team_code(value: Any) -> str:
+    code = str(value or "").upper().strip()
+    return ESPN_TO_NFLVERSE_TEAM.get(code, code)
+
+
+def _canonical_event_metadata(event: Mapping[str, Any]) -> dict[str, Any]:
+    competitions = event.get("competitions")
+    competition = competitions[0] if isinstance(competitions, list) and competitions and isinstance(competitions[0], Mapping) else {}
+    competitors = competition.get("competitors") if isinstance(competition, Mapping) else None
+    if not isinstance(competitors, list):
+        raise NFLPropHydrationError(
+            "PROP_EVENT_IDENTITY_CONFLICT",
+            "ESPN target NFL event lacked home/away competitors needed for canonical identity",
+        )
+
+    home_team = ""
+    away_team = ""
+    for competitor in competitors:
+        if not isinstance(competitor, Mapping):
+            continue
+        team_payload = competitor.get("team")
+        abbreviation = (
+            str(team_payload.get("abbreviation") or "").upper().strip()
+            if isinstance(team_payload, Mapping)
+            else ""
+        )
+        side = str(competitor.get("homeAway") or "").strip().lower()
+        if side == "home":
+            home_team = abbreviation
+        elif side == "away":
+            away_team = abbreviation
+
+    season_payload = event.get("season")
+    if not isinstance(season_payload, Mapping):
+        season_payload = competition.get("season") if isinstance(competition, Mapping) else None
+    week_payload = event.get("week")
+    if not isinstance(week_payload, Mapping):
+        week_payload = competition.get("week") if isinstance(competition, Mapping) else None
+    try:
+        season = int((season_payload or {}).get("year"))
+        week = int((week_payload or {}).get("number"))
+    except (TypeError, ValueError, AttributeError) as exc:
+        raise NFLPropHydrationError(
+            "PROP_EVENT_IDENTITY_CONFLICT",
+            "ESPN target NFL event lacked season/week metadata needed for canonical identity",
+        ) from exc
+    if season <= 0 or week <= 0 or not home_team or not away_team:
+        raise NFLPropHydrationError(
+            "PROP_EVENT_IDENTITY_CONFLICT",
+            "ESPN target NFL event canonical identity metadata was incomplete",
+            detail={
+                "season": season,
+                "week": week,
+                "home_team": home_team,
+                "away_team": away_team,
+            },
+        )
+
+    canonical_home = _nflverse_team_code(home_team)
+    canonical_away = _nflverse_team_code(away_team)
+    return {
+        "provider_season": season,
+        "provider_week": week,
+        "provider_home_team": home_team,
+        "provider_away_team": away_team,
+        "canonical_home_team": canonical_home,
+        "canonical_away_team": canonical_away,
+        "verified_canonical_event_id": f"{season}_{week:02d}_{canonical_away}_{canonical_home}",
+    }
+
+
 def _target_event(
     *,
     event_start: datetime,
@@ -246,7 +331,19 @@ def _target_event(
     if bool(status_type.get("completed")) or str(status_type.get("state") or "pre").lower() != "pre":
         raise NFLPropHydrationError("EVENT_ALREADY_STARTED", "ESPN target NFL event is not pregame")
     other = next(iter(teams - {team}))
-    return {"event_id": str(event.get("id") or ""), "team": team, "opponent": other}
+    canonical_metadata = _canonical_event_metadata(event)
+    if {canonical_metadata["provider_home_team"], canonical_metadata["provider_away_team"]} != teams:
+        raise NFLPropHydrationError(
+            "PROP_EVENT_IDENTITY_CONFLICT",
+            "ESPN competitor orientation did not match the resolved NFL event teams",
+            detail={"teams": sorted(teams), **canonical_metadata},
+        )
+    return {
+        "event_id": str(event.get("id") or ""),
+        "team": team,
+        "opponent": other,
+        **canonical_metadata,
+    }
 
 
 def _cached_nflverse_rows(season: int, *, http_get: Callable[..., Any], now_ts: float) -> tuple[list[dict[str, str]], str]:
@@ -394,6 +491,13 @@ def hydrate_nfl_prop_evidence(
             "team": team,
             "opponent": target["opponent"],
             "event_id": target["event_id"],
+            "provider_season": target["provider_season"],
+            "provider_week": target["provider_week"],
+            "provider_home_team": target["provider_home_team"],
+            "provider_away_team": target["provider_away_team"],
+            "canonical_home_team": target["canonical_home_team"],
+            "canonical_away_team": target["canonical_away_team"],
+            "verified_canonical_event_id": target["verified_canonical_event_id"],
         },
         "role_timestamp": captured.isoformat(),
         "opportunity_ledger": {
@@ -418,6 +522,7 @@ def hydrate_nfl_prop_evidence(
 
 
 __all__ = [
+    "ESPN_TO_NFLVERSE_TEAM",
     "PROVIDER_ID",
     "STAT_CONFIG",
     "STAT_ALIASES",

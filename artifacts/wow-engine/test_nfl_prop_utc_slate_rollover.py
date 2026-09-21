@@ -19,12 +19,14 @@ def _event() -> dict:
     return {
         "id": "401872945",
         "date": "2026-09-21T00:20:00Z",
+        "season": {"year": 2026},
+        "week": {"number": 2},
         "status": {"type": {"state": "pre", "completed": False}},
         "competitions": [
             {
                 "competitors": [
-                    {"team": {"abbreviation": "KC"}},
-                    {"team": {"abbreviation": "IND"}},
+                    {"homeAway": "home", "team": {"abbreviation": "KC"}},
+                    {"homeAway": "away", "team": {"abbreviation": "IND"}},
                 ]
             }
         ],
@@ -50,7 +52,18 @@ def test_target_event_finds_sunday_night_game_on_prior_espn_slate_date() -> None
     )
 
     assert requested_dates == ["20260920", "20260921", "20260922"]
-    assert result == {"event_id": "401872945", "team": "KC", "opponent": "IND"}
+    assert result == {
+        "event_id": "401872945",
+        "team": "KC",
+        "opponent": "IND",
+        "provider_season": 2026,
+        "provider_week": 2,
+        "provider_home_team": "KC",
+        "provider_away_team": "IND",
+        "canonical_home_team": "KC",
+        "canonical_away_team": "IND",
+        "verified_canonical_event_id": "2026_02_IND_KC",
+    }
 
 
 def test_target_event_dedupes_same_espn_alias_across_adjacent_dates() -> None:
@@ -69,3 +82,4 @@ def test_target_event_dedupes_same_espn_alias_across_adjacent_dates() -> None:
 
     assert result["event_id"] == "401872945"
     assert result["opponent"] == "IND"
+    assert result["verified_canonical_event_id"] == "2026_02_IND_KC"
