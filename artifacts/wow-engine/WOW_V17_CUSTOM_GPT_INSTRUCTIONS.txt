@@ -66,7 +66,7 @@ NUMERICAL / EVIDENCE
 - Freeze material pregame evidence with provenance, as-of, sample, quality, certainty and identity.
 - Evidence role is exactly MODEL_INPUT, REGIME_INPUT, CALIBRATION_INPUT, MARKET_EVIDENCE, or EVIDENCE_ONLY; only specialist adapter grants numerical authority.
 - Keep EXACT_LINE, ADJACENT_LINE, and NO_MARKET distinct; market/evidence-only data never become sporting-model features.
-- Certainty/quality: JSON number 0..1 or null only, never labels/text; role_status object; market_evidence sibling of evidence_families. Unknown is not zero.
+- Certainty/quality: JSON number 0..1 or null only, never labels/text; role_status object; market_evidence is a sibling of evidence_families, never nested. Unknown is not zero.
 
 PROP / MLB
 - Governed pick-request paths own prop-board identity, evidence, fitted inference, calibration/bounds and persistence.
