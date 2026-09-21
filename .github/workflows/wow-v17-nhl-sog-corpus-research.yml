@@ -1,0 +1,115 @@
+name: wow-v17-nhl-sog-corpus-research
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/wow-v17-nhl-sog-corpus-research.yml"
+      - "artifacts/wow-engine/NHL_SPORTSDATAVERSE_SOURCE_REVIEW.md"
+      - "artifacts/wow-engine/historical_source_manifest_v1.json"
+      - "artifacts/wow-engine/nhl_sportsdataverse_snapshot.py"
+      - "artifacts/wow-engine/scripts/acquire_nhl_sportsdataverse_snapshot.py"
+      - "artifacts/wow-engine/scripts/inspect_nhl_sportsdataverse_snapshot.py"
+      - "artifacts/wow-engine/test_nhl_sportsdataverse_snapshot.py"
+      - "artifacts/wow-engine/test_v17_model_source_entitlements.py"
+      - "artifacts/wow-engine/v17/model_source_entitlements.py"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wow-v17-nhl-sog-corpus-research-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  freeze-and-inspect:
+    name: Freeze pinned NHL SOG research corpus and inspect schema
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: artifacts/wow-engine
+    env:
+      WOW_CAN_EXECUTE: "false"
+      WOW_DRY_RUN_ONLY: "true"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: artifacts/wow-engine/requirements.txt
+
+      - name: Assert research-only governance
+        run: |
+          test "$WOW_CAN_EXECUTE" = "false"
+          test "$WOW_DRY_RUN_ONLY" = "true"
+
+      - name: Install engine dependencies
+        run: python -m pip install --disable-pip-version-check -r requirements.txt
+
+      - name: Run source and snapshot contract tests
+        run: >-
+          python -m pytest -q
+          test_nhl_sportsdataverse_snapshot.py
+          test_v17_model_source_entitlements.py
+          test_historical_data_backbone.py
+
+      - name: Acquire pinned raw corpus
+        run: >-
+          python scripts/acquire_nhl_sportsdataverse_snapshot.py
+          --output-dir .tmp/nhl-sdv-raw
+
+      - name: Inspect raw schema without transforming it
+        run: >-
+          python scripts/inspect_nhl_sportsdataverse_snapshot.py
+          --input-dir .tmp/nhl-sdv-raw
+          --output .tmp/nhl-sdv-schema-report.json
+
+      - name: Reassert frozen manifest and direct-identity corpus contract
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          manifest = json.loads(Path('.tmp/nhl-sdv-raw/snapshot_manifest.json').read_text())
+          schema = json.loads(Path('.tmp/nhl-sdv-schema-report.json').read_text())
+          assert manifest['source_review_status'] == 'REQUIRED'
+          assert manifest['source_review_required'] is True
+          assert manifest['research_only'] is True
+          assert manifest['probability_publishable'] is False
+          assert manifest['can_execute'] is False
+          assert manifest['seasons'] == [2024, 2025, 2026]
+          assert manifest['quarantined_schema_seasons'] == [2022, 2023]
+          assert len(manifest['assets']) == 9
+          player_assets = [row for row in schema['assets'] if row['kind'] == 'PLAYER_BOXSCORES']
+          game_assets = [row for row in schema['assets'] if row['kind'] == 'GAME_INFO']
+          schedule_assets = [row for row in schema['assets'] if row['kind'] == 'SCHEDULE']
+          assert len(player_assets) == 3 and len(game_assets) == 3 and len(schedule_assets) == 3
+          assert all(row['player_game_identity_complete'] is True for row in player_assets), player_assets
+          assert all(row['has_shots_on_goal'] is True for row in player_assets), player_assets
+          assert all(row['game_identity_complete'] is True for row in game_assets), game_assets
+          print(json.dumps({
+              'manifest_sha256': manifest['manifest_sha256'],
+              'asset_count': len(manifest['assets']),
+              'source_review_status': manifest['source_review_status'],
+              'player_rows': {str(row['season']): row['row_count'] for row in player_assets},
+              'game_rows': {str(row['season']): row['row_count'] for row in game_assets},
+              'schedule_rows': {str(row['season']): row['row_count'] for row in schedule_assets},
+              'game_type_counts': {str(row['season']): row['categorical_value_counts'].get('game_type', {}) for row in game_assets},
+              'game_state_counts': {str(row['season']): row['categorical_value_counts'].get('game_state', {}) for row in game_assets},
+              'game_info_exact_start_time_present': {str(row['season']): row['has_exact_start_time'] for row in game_assets},
+              'schedule_exact_start_time_present': {str(row['season']): row['has_exact_start_time'] for row in schedule_assets},
+              'schedule_temporal_columns': {str(row['season']): row['temporal_columns'] for row in schedule_assets},
+              'can_execute': False,
+          }, sort_keys=True))
+          PY
+
+      - name: Upload provenance and schema evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: nhl-sog-sportsdataverse-research-evidence
+          path: |
+            artifacts/wow-engine/.tmp/nhl-sdv-raw/snapshot_manifest.json
+            artifacts/wow-engine/.tmp/nhl-sdv-schema-report.json
+          if-no-files-found: error
+          retention-days: 14

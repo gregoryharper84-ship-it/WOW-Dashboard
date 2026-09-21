@@ -96,14 +96,27 @@
     },
     {
       "sport": "NHL",
-      "provider": "NHL_PUBLIC_API",
+      "provider": "NHL_PUBLIC_WEB_API",
       "evidence_domain": "SPORTING",
       "rights_state": "LICENSE_REVIEW_REQUIRED",
       "credential_required": false,
       "coverage_start": null,
       "coverage_end": null,
       "grants_model_capability": false,
-      "notes": "Candidate low-cost box-score/play-by-play/game-log source; complete production-use review before approval."
+      "notes": "Reconciled onto the canonical NHL_PUBLIC_WEB_API source ID (previously listed here as NHL_PUBLIC_API; the entitlement layer and nhl_candidate_pipeline.py already used NHL_PUBLIC_WEB_API for this same api-web.nhle.com source -- see NHL_SKATER_SOG_PHASE1_DATA_IDENTITY_DESIGN.md Section 0). Candidate low-cost box-score/play-by-play/game-log source; complete production-use review before approval."
+    },
+    {
+      "sport": "NHL",
+      "provider": "SPORTSDATAVERSE_NHL",
+      "evidence_domain": "SPORTING",
+      "rights_state": "LICENSE_REVIEW_REQUIRED",
+      "credential_required": false,
+      "coverage_start": "2010",
+      "coverage_end": null,
+      "grants_model_capability": false,
+      "source_repository": "sportsdataverse/sportsdataverse-data",
+      "upstream_source": "NHL public API (api-web.nhle.com)",
+      "notes": "Pinned SportsDataverse NHL release assets are a candidate research/corpus-hydration distribution layer. The repository/software license must not be treated as automatically licensing the NHL-derived data for production fitted-model training. Upstream provenance is the NHL public API, so source review remains required. This row grants no model capability and no probability authority."
     },
     {
       "sport": "NHL",
