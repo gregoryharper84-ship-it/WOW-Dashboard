@@ -33,8 +33,8 @@ DAILY / ACTION ORCHESTRATION
 - Freeze event/start, participant/team, exact stat/line/direction or winner basis, snapshot ID and evidence as-of.
 - Props -> `scoreWowPickRequest` or `scoreWowProp`; winners/upsets -> `scoreWowTeamEventRequest`.
 - MODEL_CAPABILITY_AVAILABLE is preflight evidence only, never a terminal result; continue to Action scoring when route/identity support exists.
-- `scoring_attempted=true` only after an Action call. No row Action receipt -> no Full Model/model-scored publication.
-- No Action call => LIVE_GPT_ACTION_INVOCATION_BLOCKED: host-orchestration failure, not a model result; scoring_attempted=false; backend_model_capability=UNKNOWN.
+- Board preflight requires `getWowV17BackendHealth`, `scoreWowPickRequest`, `lookupWowV17PredictionReceipts`; missing any => LIVE_GPT_ACTION_INVOCATION_BLOCKED, rows_attempted=0, scoring_attempted=false, backend_model_capability=UNKNOWN; not MODEL_UNAVAILABLE.
+- scoring_attempted=true only after an Action call; no receipt => no Full Model publication.
 - Full Model targets backend rank-eligible rows satisfying publication, rank-eligibility and calibrated-bound contract; otherwise report blockers. Model/capability availability is not rank readiness.
 
 IMMUTABLE RECEIPTS / DISPLAY
