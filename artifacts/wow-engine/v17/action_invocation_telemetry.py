@@ -19,8 +19,12 @@ from time import perf_counter
 from typing import Any, Callable
 
 
-_PERSIST_TIMEOUT_SECONDS = 1.0
-_SHUTDOWN_DRAIN_SECONDS = 1.25
+# Supabase/PostgREST receipt inserts can legitimately take longer than one
+# second on the production free-tier path. Keep persistence off the scoring
+# response critical path, but retain a finite ownership bound so a degraded
+# telemetry service cannot consume the in-flight task pool indefinitely.
+_PERSIST_TIMEOUT_SECONDS = 5.0
+_SHUTDOWN_DRAIN_SECONDS = 5.25
 _MAX_IN_FLIGHT = 32
 
 
@@ -170,7 +174,10 @@ def install_action_invocation_middleware(app: Any, *, db_client_fn: Callable[[],
             }
             async def _persist_receipt() -> None:
                 try:
-                    await asyncio.wait_for(asyncio.to_thread(_insert_receipt, db_client_fn, receipt), timeout=_PERSIST_TIMEOUT_SECONDS)
+                    await asyncio.wait_for(
+                        asyncio.to_thread(_insert_receipt, db_client_fn, receipt),
+                        timeout=_PERSIST_TIMEOUT_SECONDS,
+                    )
                 except Exception as exc:
                     LOGGER.warning(
                         "WOW_V17_ACTION_INVOCATION_PERSISTENCE_FAILED route=%s status_code=%s error=%s can_execute=false",
