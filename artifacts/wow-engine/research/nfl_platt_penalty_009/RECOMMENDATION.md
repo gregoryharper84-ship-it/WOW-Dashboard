@@ -152,12 +152,44 @@ fabricated, or bypassed; forward calibration cohorts are untouched.
 - Failure taxonomy: untouched. `MODEL_UNAVAILABLE` / `MODEL_SCORER_FAILED` /
   `MODEL_INPUTS_INSUFFICIENT` / `MODEL_OUTPUT_INVALID` semantics are unaffected.
 
-## 8. Residual item for the reviewer
+## 8. Residual item for the reviewer — now closed by CI
 
-`requirements.txt` pins `scikit-learn>=1.4` with no upper bound. `C=np.inf` was
-verified on 1.9.1 (the production version). It was **not** verified on 1.4–1.7,
-which CI could still resolve to. Confirm on the resolved version, or pin the
-floor, before promotion. This is the only open question in the package.
+`requirements.txt` pins `scikit-learn>=1.4` with no upper bound, and the original
+version of this package could only claim verification on 1.9.1 (the production
+version). That was the single open question here.
+
+It is now settled empirically. The `NFL Platt sklearn compatibility` matrix
+(`.github/workflows/nfl-platt-sklearn-compat.yml`) replays champion vs challenger
+on the real cohorts across the whole supported range, and on 2026-09-21 every
+released leg passed:
+
+| sklearn | result |
+|---|---|
+| 1.4.* | pass |
+| 1.5.* | pass |
+| 1.6.* | pass |
+| 1.7.* | pass |
+| 1.8.* | pass |
+| 1.9.1 | pass |
+| 1.10.* | not published yet — leg is inert |
+
+Each released leg asserts the same bar as the main replay: parameter deltas
+exactly `0.0`, every metric delta `0.0`, certification checks identical and
+passing, bootstrap deltas `0.0`, and zero per-game probability, lower-bound,
+favourite-side or threshold-crossing differences. So the equivalence holds on
+every version CI can resolve to, not just the production one. No dependency
+floor change is needed.
+
+The 1.10 leg cannot run yet because that release does not exist on PyPI. It is
+marked `unreleased_ok` and reports "not published yet" instead of failing; it
+starts enforcing automatically the moment 1.10 ships, at which point it checks
+the `C=np.inf` challenger against the frozen governed 1.9.1 Platt reference
+(the champion `penalty` kwarg is removed in 1.10, so the two cannot be fitted
+side by side). Only that forward-looking leg may be inert — every released leg
+stays strictly fail-closed, so a yanked or unresolvable release is still red.
+
+This does not change the governance position: the recommendation below still
+requires governed review, and nothing here promotes anything.
 
 ## 9. Recommendation
 
