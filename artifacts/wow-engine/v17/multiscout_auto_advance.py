@@ -36,10 +36,16 @@ ACTION_ORIGIN = os.environ.get(
 USER_TIMEZONE = os.environ.get("WOW_USER_TIMEZONE", "America/Chicago")
 MAX_PROP_ROWS = 50
 MAX_TEAM_EVENT_ROWS = 100
-MAX_AUTO_ADVANCE_IN_FLIGHT = max(
-    1,
-    min(int(os.environ.get("WOW_AUTO_ADVANCE_IN_FLIGHT", "8") or "8"), 16),
-)
+def _max_auto_advance_in_flight() -> int:
+    raw = os.environ.get("WOW_AUTO_ADVANCE_IN_FLIGHT", "8")
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        value = 8
+    return max(1, min(value, 16))
+
+
+MAX_AUTO_ADVANCE_IN_FLIGHT = _max_auto_advance_in_flight()
 
 SPORT_KEY_MAP = {
     "baseball_mlb": ("MLB", "MLB"),
