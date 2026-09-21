@@ -42,16 +42,16 @@ CONFIGS: dict[str, list[dict[str, Any]]] = {
         _row(row_key="nfl-davante-less", event_id="2026_02_NYG_LA", event_start_time="2026-09-22T00:15:00Z", sport="NFL", league="NFL", player="Davante Adams", stat_type="RECEIVING_YARDS", line=62.5, direction="LESS", opponent="New York Giants"),
     ],
     "MLB": [
-        _row(row_key="mlb-yesavage-more", event_id="MLB:824787", event_start_time="2026-09-21T22:35:00Z", sport="MLB", league="MLB", player="Trey Yesavage", stat_type="PITCHER_STRIKEOUTS", line=4.5, direction="MORE", opponent="Baltimore Orioles"),
-        _row(row_key="mlb-yesavage-less", event_id="MLB:824787", event_start_time="2026-09-21T22:35:00Z", sport="MLB", league="MLB", player="Trey Yesavage", stat_type="PITCHER_STRIKEOUTS", line=4.5, direction="LESS", opponent="Baltimore Orioles"),
-        _row(row_key="mlb-baz-more", event_id="MLB:824787", event_start_time="2026-09-21T22:35:00Z", sport="MLB", league="MLB", player="Shane Baz", stat_type="PITCHER_STRIKEOUTS", line=5.5, direction="MORE", opponent="Toronto Blue Jays"),
-        _row(row_key="mlb-baz-less", event_id="MLB:824787", event_start_time="2026-09-21T22:35:00Z", sport="MLB", league="MLB", player="Shane Baz", stat_type="PITCHER_STRIKEOUTS", line=5.5, direction="LESS", opponent="Toronto Blue Jays"),
+        _row(row_key="mlb-yesavage-more", event_id="MLB:824787", event_start_time="2026-09-21T22:35:00Z", sport="MLB", league="MLB", player="Trey Yesavage", stat_type="PITCHER_STRIKEOUTS", line=4.5, direction="MORE", opponent="BAL"),
+        _row(row_key="mlb-yesavage-less", event_id="MLB:824787", event_start_time="2026-09-21T22:35:00Z", sport="MLB", league="MLB", player="Trey Yesavage", stat_type="PITCHER_STRIKEOUTS", line=4.5, direction="LESS", opponent="BAL"),
+        _row(row_key="mlb-baz-more", event_id="MLB:824787", event_start_time="2026-09-21T22:35:00Z", sport="MLB", league="MLB", player="Shane Baz", stat_type="PITCHER_STRIKEOUTS", line=5.5, direction="MORE", opponent="TOR"),
+        _row(row_key="mlb-baz-less", event_id="MLB:824787", event_start_time="2026-09-21T22:35:00Z", sport="MLB", league="MLB", player="Shane Baz", stat_type="PITCHER_STRIKEOUTS", line=5.5, direction="LESS", opponent="TOR"),
     ],
     "WNBA": [
-        _row(row_key="wnba-stewart-more", event_id="WOW:WNBA:2026-09-21:ATL@NYL", event_start_time="2026-09-22T00:00:00Z", sport="WNBA", league="WNBA", player="Breanna Stewart", stat_type="POINTS", line=20.5, direction="MORE", opponent="Atlanta Dream"),
-        _row(row_key="wnba-stewart-less", event_id="WOW:WNBA:2026-09-21:ATL@NYL", event_start_time="2026-09-22T00:00:00Z", sport="WNBA", league="WNBA", player="Breanna Stewart", stat_type="POINTS", line=20.5, direction="LESS", opponent="Atlanta Dream"),
-        _row(row_key="wnba-gray-more", event_id="WOW:WNBA:2026-09-21:ATL@NYL", event_start_time="2026-09-22T00:00:00Z", sport="WNBA", league="WNBA", player="Allisha Gray", stat_type="POINTS", line=18.5, direction="MORE", opponent="New York Liberty"),
-        _row(row_key="wnba-gray-less", event_id="WOW:WNBA:2026-09-21:ATL@NYL", event_start_time="2026-09-22T00:00:00Z", sport="WNBA", league="WNBA", player="Allisha Gray", stat_type="POINTS", line=18.5, direction="LESS", opponent="New York Liberty"),
+        _row(row_key="wnba-stewart-more", event_id="WOW:WNBA:2026-09-21:ATL@NYL", event_start_time="2026-09-22T00:00:00Z", sport="WNBA", league="WNBA", player="Breanna Stewart", stat_type="POINTS", line=20.5, direction="MORE", opponent="ATL"),
+        _row(row_key="wnba-stewart-less", event_id="WOW:WNBA:2026-09-21:ATL@NYL", event_start_time="2026-09-22T00:00:00Z", sport="WNBA", league="WNBA", player="Breanna Stewart", stat_type="POINTS", line=20.5, direction="LESS", opponent="ATL"),
+        _row(row_key="wnba-gray-more", event_id="WOW:WNBA:2026-09-21:ATL@NYL", event_start_time="2026-09-22T00:00:00Z", sport="WNBA", league="WNBA", player="Allisha Gray", stat_type="POINTS", line=18.5, direction="MORE", opponent="NYL"),
+        _row(row_key="wnba-gray-less", event_id="WOW:WNBA:2026-09-21:ATL@NYL", event_start_time="2026-09-22T00:00:00Z", sport="WNBA", league="WNBA", player="Allisha Gray", stat_type="POINTS", line=18.5, direction="LESS", opponent="NYL"),
     ],
 }
 
@@ -176,9 +176,6 @@ def run_stress() -> dict[str, Any]:
         for future in as_completed(pending):
             results.append(future.result())
 
-    # Deterministic replay of one completed request per sport validates durable
-    # receipt reuse. It is valid if the governed response remains complete even
-    # when only a subset of rows needs backend recomputation.
     replay_results = []
     for sport in ("NFL", "MLB", "WNBA"):
         rid = f"{BASE_RUN}-{sport.lower()}-stress-1"
