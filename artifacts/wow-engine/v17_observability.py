@@ -21,6 +21,7 @@ from v17.interactive_pick_parallel import schedule_interactive_pick_parallel_ins
 from v17.interactive_team_event_io import install_interactive_team_event_io
 from v17.interactive_team_event_latency import install_interactive_team_event_latency
 from v17.pick_request_run_control import schedule_pick_request_run_control_install
+from v17.pick_request_run_control_hardening import install_pick_request_run_control_hardening
 from v17.pick_request_state_hooks import install_pick_request_state_hooks
 from v17.pick_request_state_runtime import schedule_pick_request_state_install
 
@@ -54,6 +55,9 @@ def initialize_observability() -> dict[str, Any]:
         # Startup order is correctness-sensitive:
         # 1 hydration/research, 2 bounded parallel rows, 3 durable scorer,
         # 4 read/resume/close run-control routes around the durable scorer.
+        # Exact-once hardening is applied before startup handlers execute so
+        # closed-run seeding and receipt-first recovery are active immediately.
+        install_pick_request_run_control_hardening()
         schedule_interactive_pick_hydration_install(
             _accepted_base.app,
             market_api=_accepted_base.market_api,
