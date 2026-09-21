@@ -1,9 +1,10 @@
 name: wow-v17-render-production-deploy
 
+# IMPORTANT: this workflow is observation-only and intentionally manual.
+# Render checksPass is the sole production deploy authority. An automatic
+# workflow_run observer creates a pending GitHub check on the same main SHA and
+# can deadlock Render checksPass while it waits for all checks to complete.
 on:
-  workflow_run:
-    workflows: ["wow-verify"]
-    types: [completed]
   workflow_dispatch:
 
 permissions:
@@ -15,11 +16,8 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  deploy-production:
-    name: Verify governed backend deploy after required checks
-    # Render checksPass auto-deploy is the sole production deploy authority.
-    # This workflow verifies the protected-main SHA and observes the native
-    # Render deploy; it must never POST a second same-SHA deployment.
+  observe-production:
+    name: Observe governed backend native deploy
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
@@ -37,7 +35,7 @@ jobs:
           test -n "$RENDER_API_KEY"
           test -n "$GH_API_TOKEN"
 
-      - name: Verify required checks and observe current-main native deploy
+      - name: Observe current-main native checksPass deploy
         shell: bash
         run: |
           python - <<'PY'
@@ -48,36 +46,6 @@ jobs:
           import urllib.request
 
           repo = os.environ["GITHUB_REPOSITORY"]
-          event_name = os.environ["GITHUB_EVENT_NAME"]
-          with open(os.environ["GITHUB_EVENT_PATH"], "r", encoding="utf-8") as handle:
-              event = json.load(handle)
-
-          if event_name == "workflow_run":
-              workflow_run = event.get("workflow_run") or {}
-              target_sha = str(workflow_run.get("head_sha") or "")
-              head_branch = str(workflow_run.get("head_branch") or "")
-              conclusion = str(workflow_run.get("conclusion") or "")
-              if head_branch != "main":
-                  print(json.dumps({
-                      "status": "NON_MAIN_NO_DEPLOY_OBSERVATION",
-                      "head_branch": head_branch,
-                      "target_sha": target_sha,
-                      "can_execute": False,
-                  }, sort_keys=True))
-                  raise SystemExit(0)
-              if conclusion != "success":
-                  print(json.dumps({
-                      "status": "UPSTREAM_NOT_SUCCESS_NO_DEPLOY_OBSERVATION",
-                      "conclusion": conclusion,
-                      "target_sha": target_sha,
-                      "can_execute": False,
-                  }, sort_keys=True))
-                  raise SystemExit(0)
-          else:
-              target_sha = str(os.environ.get("GITHUB_SHA") or "")
-          if not target_sha:
-              raise RuntimeError("RENDER_DEPLOY_TARGET_SHA_MISSING")
-
           gh_headers = {
               "Accept": "application/vnd.github+json",
               "Authorization": f"Bearer {os.environ['GH_API_TOKEN']}",
@@ -92,58 +60,42 @@ jobs:
               with urllib.request.urlopen(request, timeout=30) as response:
                   return json.load(response)
 
-          def current_main_sha():
-              branch = github_json("/branches/main")
-              return str(((branch.get("commit") or {}).get("sha")) or "")
+          branch = github_json("/branches/main")
+          target_sha = str(((branch.get("commit") or {}).get("sha")) or "")
+          if not target_sha:
+              raise RuntimeError("RENDER_DEPLOY_TARGET_SHA_MISSING")
 
           required = {
               "WOW additional required regression",
               "WOW governed probability backend",
               "WOW required-three regression",
           }
-          deadline = time.time() + 900
-          while True:
-              checks = github_json(
-                  f"/commits/{urllib.parse.quote(target_sha, safe='')}/check-runs?per_page=100"
-              ).get("check_runs") or []
-              latest = {}
-              for check in checks:
-                  name = str(check.get("name") or "")
-                  if name not in required:
-                      continue
-                  prior = latest.get(name)
-                  if prior is None or int(check.get("id") or 0) > int(prior.get("id") or 0):
-                      latest[name] = check
+          checks = github_json(
+              f"/commits/{urllib.parse.quote(target_sha, safe='')}/check-runs?per_page=100"
+          ).get("check_runs") or []
+          latest = {}
+          for check in checks:
+              name = str(check.get("name") or "")
+              if name not in required:
+                  continue
+              prior = latest.get(name)
+              if prior is None or int(check.get("id") or 0) > int(prior.get("id") or 0):
+                  latest[name] = check
 
-              missing = sorted(required - set(latest))
-              pending = sorted(
-                  name for name, check in latest.items()
-                  if check.get("status") != "completed"
+          missing = sorted(required - set(latest))
+          pending = sorted(
+              name for name, check in latest.items()
+              if check.get("status") != "completed"
+          )
+          failed = sorted(
+              name for name, check in latest.items()
+              if check.get("status") == "completed" and check.get("conclusion") != "success"
+          )
+          if missing or pending or failed:
+              raise RuntimeError(
+                  "RENDER_DEPLOY_REQUIRED_CHECKS_NOT_GREEN:"
+                  + json.dumps({"missing": missing, "pending": pending, "failed": failed}, sort_keys=True)
               )
-              failed = sorted(
-                  name for name, check in latest.items()
-                  if check.get("status") == "completed" and check.get("conclusion") != "success"
-              )
-              if failed:
-                  raise RuntimeError("RENDER_DEPLOY_REQUIRED_CHECK_FAILED:" + ",".join(failed))
-              if not missing and not pending:
-                  break
-              if time.time() >= deadline:
-                  raise RuntimeError(
-                      "RENDER_DEPLOY_REQUIRED_CHECK_TIMEOUT:"
-                      + ",".join(missing + pending)
-                  )
-              time.sleep(15)
-
-          main_sha = current_main_sha()
-          if main_sha != target_sha:
-              print(json.dumps({
-                  "status": "STALE_SHA_NO_DEPLOY_OBSERVATION",
-                  "target_sha": target_sha,
-                  "current_main_sha": main_sha,
-                  "can_execute": False,
-              }, sort_keys=True))
-              raise SystemExit(0)
 
           render_headers = {
               "Accept": "application/json",
@@ -164,8 +116,7 @@ jobs:
                   return raw.get("deploys") or raw.get("items") or []
               return []
 
-          # Observe the native checksPass auto-deploy. Do not POST a deployment.
-          deploy_deadline = time.time() + 900
+          deadline = time.time() + 900
           last_seen = []
           while True:
               matches = []
@@ -181,7 +132,6 @@ jobs:
                   for d in matches[:5]
               ]
               live = next((d for d in matches if str(d.get("status") or "") == "live"), None)
-              active = next((d for d in matches if str(d.get("status") or "") in {"created", "build_in_progress", "update_in_progress"}), None)
               if live is not None:
                   print(json.dumps({
                       "status": "NATIVE_DEPLOY_LIVE",
@@ -192,18 +142,7 @@ jobs:
                       "can_execute": False,
                   }, sort_keys=True))
                   raise SystemExit(0)
-              if active is not None:
-                  print(json.dumps({
-                      "status": "NATIVE_DEPLOY_OBSERVED_IN_PROGRESS",
-                      "commit_sha": target_sha,
-                      "deploy_id": active.get("id"),
-                      "deploy_status": active.get("status"),
-                      "deploy_trigger": active.get("trigger"),
-                      "deploy_count_for_sha": len(matches),
-                      "can_execute": False,
-                  }, sort_keys=True))
-                  raise SystemExit(0)
-              if time.time() >= deploy_deadline:
+              if time.time() >= deadline:
                   raise RuntimeError(
                       "RENDER_NATIVE_DEPLOY_NOT_OBSERVED:" + json.dumps(last_seen, sort_keys=True)
                   )
