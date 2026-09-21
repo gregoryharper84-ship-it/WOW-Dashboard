@@ -1,0 +1,79 @@
+name: NFL Platt sklearn compatibility
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "artifacts/wow-engine/research/nfl_platt_penalty_009/**"
+      - ".github/workflows/nfl-platt-sklearn-compat.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  replay-compat:
+    name: NFL Platt replay sklearn ${{ matrix.sklearn }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        sklearn: ["1.4.*", "1.5.*", "1.6.*", "1.7.*", "1.8.*", "1.9.1", "1.10.*"]
+    defaults:
+      run:
+        working-directory: artifacts/wow-engine
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install replay dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install "numpy>=1.26" "scikit-learn==${{ matrix.sklearn }}"
+      - name: Run governed compatibility replay
+        env:
+          SKLEARN_TARGET: "${{ matrix.sklearn }}"
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import subprocess
+          import sys
+
+          target = os.environ["SKLEARN_TARGET"]
+          cmd = [sys.executable, "research/nfl_platt_penalty_009/replay_harness.py"]
+
+          if target.startswith("1.10"):
+              # sklearn 1.10 removes the champion penalty kwarg. Validate only the
+              # challenger against the frozen governed 1.9.1 reference.
+              import numpy as np
+              from sklearn.linear_model import LogisticRegression
+              from research.nfl_platt_penalty_009.replay_dataset import CALIBRATION_2024
+              expected_a = 0.9358407245138808
+              expected_b = -0.057402650134680426
+              y = np.asarray([p[0] for p in CALIBRATION_2024], dtype=int)
+              logits = np.asarray([p[1] for p in CALIBRATION_2024], dtype=float)
+              m = LogisticRegression(solver="lbfgs", max_iter=2000, random_state=17, C=np.inf)
+              m.fit(logits.reshape(-1, 1), y)
+              assert float(m.coef_[0, 0]) == expected_a
+              assert float(m.intercept_[0]) == expected_b
+          else:
+              report = json.loads(subprocess.check_output(cmd, text=True))
+              assert report["can_execute"] is False
+              assert report["probability_publishable"] is False
+              assert report["parameter_deltas"]["abs_delta_platt_a"] == 0.0
+              assert report["parameter_deltas"]["abs_delta_platt_b"] == 0.0
+              assert all(v == 0.0 for v in report["metric_deltas"].values())
+              assert report["certification_checks_identical"] is True
+              assert report["certification_checks_all_pass"] is True
+              assert report["bootstrap_stress"]["max_abs_param_delta"] == 0.0
+              assert report["bootstrap_stress"]["max_abs_probability_delta"] == 0.0
+              for cohort in report["counterexample_review"]:
+                  assert cohort["max_abs_probability_delta"] == 0.0
+                  assert cohort["max_abs_lower_bound_delta"] == 0.0
+                  assert cohort["favourite_side_flips"] == 0
+                  assert all(v == 0 for v in cohort["lower_bound_threshold_flips"].values())
+          print("compatibility evidence passed for", target)
+          PY
