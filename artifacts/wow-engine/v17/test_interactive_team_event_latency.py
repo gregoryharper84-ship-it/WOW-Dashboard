@@ -16,6 +16,8 @@ _CANONICAL_BARRIER = team_runtime._run_mandatory_scout_research
 
 def _req():
     return SimpleNamespace(
+        requester_host_identity="WOW_CUSTOM_GPT",
+        candidate_family="TEAM_EVENT",
         research_run_id="latency-test",
         event_key="WNBA:test-event",
         sport="WNBA",
