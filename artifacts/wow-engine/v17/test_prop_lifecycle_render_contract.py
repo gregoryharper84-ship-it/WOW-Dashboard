@@ -41,6 +41,9 @@ def test_external_lifecycle_wakeup_is_scheduled_and_uses_short_lived_oidc_only()
     assert "ACTIONS_ID_TOKEN_REQUEST_URL" in text
     assert "ACTIONS_ID_TOKEN_REQUEST_TOKEN" in text
     assert "audience=${WOW_OIDC_AUDIENCE}" in text
+    assert "for attempt in 1 2" in text
+    assert 'oidc_token="$(issue_oidc_token)"' in text
+    assert "--retry-all-errors" not in text
     assert "/v17/prop-lifecycle-autopilot-run" in text
     assert 'WOW_CAN_EXECUTE: "false"' in text
     assert 'WOW_DRY_RUN_ONLY: "true"' in text
