@@ -22,6 +22,11 @@ from pydantic import BaseModel, ConfigDict, Field
 
 import pick_request_runtime_core as pick_runtime
 from v17 import pick_request_state_runtime as state
+from v17.prediction_receipt_lookup_runtime import (
+    PredictionReceiptLookupBatch,
+    PredictionReceiptLookupRow,
+    lookup_prediction_receipts,
+)
 
 CAN_EXECUTE = False
 CONTROL_VERSION = "V17_PICK_REQUEST_RUN_CONTROL_V1"
@@ -31,6 +36,7 @@ _TERMINAL_RUN_PREFIXES = ("STOPPED_", "CLOSED")
 
 _ORIGINAL_BEGIN = state.PickRequestStateStore.begin
 _ORIGINAL_FINALIZE = state.PickRequestStateStore.finalize
+_ORIGINAL_REUSABLE = state.RunContext.reusable_outcome
 _PATCH_INSTALLED = False
 
 
@@ -228,12 +234,30 @@ def _closure_safe_finalize(
     return manifest
 
 
+def _reusable_terminal_outcome(self: state.RunContext, row_key: str) -> dict[str, Any] | None:
+    record = self.rows.get(row_key) or {}
+    outcome = record.get("outcome")
+    if (
+        isinstance(outcome, dict)
+        and int(record.get("stage_seq") or 0) >= state.STAGE_SEQ["RECEIPT_PERSISTED"]
+        and record.get("terminal_status") in {"COMPLETED", "HELD", "REJECTED"}
+        and record.get("prediction_id")
+    ):
+        self.resumed_rows.add(row_key)
+        copied = deepcopy(outcome)
+        copied["resumed_from_durable_receipt"] = True
+        copied["can_execute"] = False
+        return copied
+    return None
+
+
 def install_semantic_identity_patch() -> None:
     global _PATCH_INSTALLED
     if _PATCH_INSTALLED:
         return
     state.PickRequestStateStore.begin = _semantic_begin
     state.PickRequestStateStore.finalize = _closure_safe_finalize
+    state.RunContext.reusable_outcome = _reusable_terminal_outcome
     _PATCH_INSTALLED = True
 
 
@@ -322,7 +346,11 @@ def read_run_state(
         "limit": limit,
         "next_offset": offset + len(page) if offset + len(page) < len(rows) else None,
         "rows": [_public_row(item, include_outcome=include_outcomes) for item in page],
-        "resumable": not _is_closed(run) and any(item.get("terminal_status") == "PENDING" for item in rows),
+        "resumable": not _is_closed(run) and any(
+            item.get("terminal_status") == "PENDING"
+            or (item.get("model_evaluated") is True and int(item.get("stage_seq") or 0) < state.STAGE_SEQ["RECEIPT_PERSISTED"])
+            for item in rows
+        ),
         "can_execute": False,
     }
 
@@ -435,9 +463,92 @@ def _pending_rows(db: Any, request_id: str) -> list[dict[str, Any]]:
     if _is_closed(run):
         raise _closed_error(run, request_id)
     rows = state.PickRequestStateStore(db)._load_all(str(run["run_id"]))
-    pending = [item for item in rows if item.get("terminal_status") == "PENDING"]
+    pending = [
+        item for item in rows
+        if item.get("terminal_status") == "PENDING"
+        or (item.get("model_evaluated") is True and int(item.get("stage_seq") or 0) < state.STAGE_SEQ["RECEIPT_PERSISTED"])
+    ]
     pending.sort(key=lambda item: (str(item.get("created_at") or ""), str(item.get("row_key") or "")))
     return pending
+
+
+def _receipt_preflight(
+    db: Any,
+    request_id: str,
+    records: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], int, dict[str, Any] | None]:
+    if not records:
+        return [], 0, None
+    safe: list[dict[str, Any]] = []
+    recovered = 0
+    by_key = {str(item.get("row_key")): item for item in records}
+    for start in range(0, len(records), 50):
+        chunk = records[start : start + 50]
+        lookup_rows = [
+            PredictionReceiptLookupRow(
+                row_key=str(item.get("row_key")),
+                event_id=str(item.get("event_id")),
+                sport=str(item.get("sport")),
+                player=str(item.get("player")),
+                stat_type=str(item.get("stat_type")),
+                line=float(item.get("exact_line")),
+                direction=str(item.get("direction")),
+            )
+            for item in chunk
+        ]
+        result = lookup_prediction_receipts(
+            db, PredictionReceiptLookupBatch(request_id=request_id, rows=lookup_rows)
+        )
+        for outcome in result.get("rows") or []:
+            key = str(outcome.get("row_key"))
+            record = by_key[key]
+            status = str(outcome.get("status") or "")
+            if status == "NOT_FOUND":
+                safe.append(record)
+                continue
+            if status != "MATCHED" or int(outcome.get("match_count") or 0) != 1:
+                return safe, recovered, {
+                    "code": outcome.get("code") or "RUN_RECEIPT_PREFLIGHT_BLOCKED",
+                    "row_key": key,
+                    "receipt_status": status,
+                    "can_execute": False,
+                }
+            match = (outcome.get("matches") or [None])[0]
+            if not isinstance(match, dict) or match.get("is_immutable_pregame") is not True:
+                return safe, recovered, {
+                    "code": "RUN_RECEIPT_NOT_PROVEN_IMMUTABLE_PREGAME",
+                    "row_key": key,
+                    "can_execute": False,
+                }
+            durable_outcome = record.get("outcome")
+            if not isinstance(durable_outcome, dict):
+                return safe, recovered, {
+                    "code": "RUN_RECEIPT_MATCHED_OUTCOME_UNAVAILABLE",
+                    "row_key": key,
+                    "can_execute": False,
+                }
+            terminal_status = str(record.get("terminal_status") or "PENDING")
+            if terminal_status == "PENDING":
+                terminal_status = str(durable_outcome.get("terminal_status") or "PENDING")
+            if terminal_status == "PENDING":
+                return safe, recovered, {
+                    "code": "RUN_RECEIPT_MATCHED_TERMINAL_STATUS_UNRESOLVED",
+                    "row_key": key,
+                    "can_execute": False,
+                }
+            prediction_id = match.get("governed_prediction_id")
+            migrated = dict(record)
+            migrated["prediction_id"] = prediction_id
+            migrated["terminal_status"] = terminal_status
+            migrated["current_stage"] = "RECEIPT_PERSISTED"
+            migrated["stage_seq"] = state.STAGE_SEQ["RECEIPT_PERSISTED"]
+            migrated["durable_status"] = state._durable_status(migrated)
+            migrated["updated_at"] = state._now()
+            migrated["can_execute"] = False
+            db.table(state.ROW_TABLE).upsert(migrated, on_conflict="run_id,row_key").execute()
+            safe.append(migrated)
+            recovered += 1
+    return safe, recovered, None
 
 
 def run_resumable(
@@ -451,10 +562,12 @@ def run_resumable(
     pending = _pending_rows(db, request.request_id)
     max_rows = request.batch_size * request.max_batches
     selected = pending[:max_rows]
+    selected, receipt_recovered, stopped = _receipt_preflight(db, request.request_id, selected)
     batch_receipts: list[dict[str, Any]] = []
-    stopped: dict[str, Any] | None = None
 
     for start in range(0, len(selected), request.batch_size):
+        if stopped:
+            break
         records = selected[start : start + request.batch_size]
         rows: list[pick_runtime.PickRequestRow] = []
         for record in records:
@@ -478,17 +591,31 @@ def run_resumable(
                 ),
                 model_identity,
             )
+            reconciliation_pass = result.get("reconciliation_pass") is True
             batch_receipts.append(
                 {
                     "rows_in": len(rows),
                     "run_controller_status": result.get("run_controller_status"),
-                    "reconciliation_pass": result.get("reconciliation_pass"),
+                    "reconciliation_pass": reconciliation_pass,
                     "can_execute": False,
                 }
             )
+            if not reconciliation_pass:
+                stopped = {
+                    "code": "RUN_BATCH_RECONCILIATION_FAILED",
+                    "can_execute": False,
+                }
+                break
         except HTTPException as exc:
             detail = exc.detail if isinstance(exc.detail, dict) else {"code": "RUN_BATCH_FAILED", "detail": str(exc.detail)}
             stopped = {**detail, "http_status": exc.status_code, "can_execute": False}
+            break
+        except Exception as exc:
+            stopped = {
+                "code": "RUN_SERVER_SCORER_EXCEPTION",
+                "error_type": type(exc).__name__,
+                "can_execute": False,
+            }
             break
 
     state_view = read_run_state(db, request.request_id, offset=0, limit=1)
@@ -502,6 +629,7 @@ def run_resumable(
         "rows_attempted_this_call": sum(item["rows_in"] for item in batch_receipts),
         "batches_completed_this_call": len(batch_receipts),
         "pending_rows": len(remaining),
+        "receipt_recovered_this_call": receipt_recovered,
         "stopped": stopped,
         "batch_receipts": batch_receipts,
         "next_action": "RESUME_SAME_REQUEST_ID" if remaining and not stopped else ("INSPECT_TYPED_STOP" if stopped else "RUN_TERMINAL"),
