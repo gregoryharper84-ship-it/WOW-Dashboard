@@ -20,7 +20,7 @@ from v17.interactive_pick_hydration import schedule_interactive_pick_hydration_i
 from v17.interactive_pick_parallel import schedule_interactive_pick_parallel_install
 from v17.interactive_team_event_io import install_interactive_team_event_io
 from v17.interactive_team_event_latency import install_interactive_team_event_latency
-from v17.pick_request_durable_job_queue import install_durable_pick_job_queue
+from v17.pick_request_durable_job_queue_installer import schedule_durable_pick_job_queue
 from v17.pick_request_run_control import schedule_pick_request_run_control_install
 from v17.pick_request_run_control_hardening import install_pick_request_run_control_hardening
 from v17.pick_request_state_hooks import install_pick_request_state_hooks
@@ -55,7 +55,7 @@ def initialize_observability() -> dict[str, Any]:
         install_pick_request_state_hooks()
         # Startup order is correctness-sensitive:
         # 1 hydration/research, 2 bounded parallel rows, 3 durable scorer,
-        # 4 run-control routes, 5 DB-leased worker independent of Action lifetime.
+        # 4 run-control routes, 5 route-scoped DB-leased worker installation.
         install_pick_request_run_control_hardening()
         schedule_interactive_pick_hydration_install(
             _accepted_base.app,
@@ -73,7 +73,7 @@ def initialize_observability() -> dict[str, Any]:
             _accepted_base.app,
             db_client_fn=_accepted_base.market_api.prod.get_client,
         )
-        install_durable_pick_job_queue(
+        schedule_durable_pick_job_queue(
             _accepted_base.app,
             db_client_fn=_accepted_base.market_api.prod.get_client,
         )
