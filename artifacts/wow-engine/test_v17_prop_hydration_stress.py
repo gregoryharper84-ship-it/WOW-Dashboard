@@ -1,210 +1,210 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from threading import Lock
 from types import SimpleNamespace
-import time
 
 import pytest
 
 import nfl_prop_auto_hydration as nfl
 import prop_auto_hydration_router as router
 from prop_auto_hydration import PropAutoHydrationError
-from pick_request_runtime_core import PickRequestBatch, PickRequestRow
 import v17.interactive_pick_hydration as interactive
 
 
-def _market_api():
-    base_api = SimpleNamespace(
-        _controlling_specialist_provider=lambda sport, stat: {
-            "controlling_specialist": "WOW_PROP_SPECIALIST"
-        }
-    )
-    prod = SimpleNamespace(
-        base_api=base_api,
-        PROP_CAPABILITY_KEY="PROP",
-        _runtime_capability=lambda _key: {"capability_status": "AVAILABLE"},
-    )
-    return SimpleNamespace(
-        prod=prod,
-        _prop_route_artifact=lambda sport, stat: {
-            "ok": True,
-            "code": "PROP_CERTIFIED_MODEL_ARTIFACT_READY",
-        },
-    )
-
-
-def _evidence(*, player: str, event_id: str, opponent: str = "IND") -> dict:
+def _raw_evidence(*, role_status: dict | None = None) -> dict:
     captured = datetime.now(timezone.utc) - timedelta(minutes=5)
     return {
         "captured_at": captured.isoformat(),
-        "game_log": [200.0 + i for i in range(10)],
-        "box_score_log": [{"game": i + 1} for i in range(10)],
-        "role_status": {
-            "status": "ACTIVE_CURRENT_ESPN_ROSTER",
-            "canonical_event_id": event_id,
-            "provider_event_ids": {"ESPN": "401872945"},
-            "identity_binding_status": "PASS",
-            "opponent": opponent,
-            "player": player,
-        },
+        "game_log": [1.0] * 10,
+        "box_score_log": [{"date": f"2026-09-{day:02d}"} for day in range(1, 11)],
+        "role_status": role_status or {"status": "READY"},
         "role_timestamp": captured.isoformat(),
         "opportunity_ledger": {"status": "READY"},
-        "source_timestamps": {"STRESS_FIXTURE": captured.isoformat()},
+        "source_timestamps": {"TEST_SOURCE": captured.isoformat()},
         "evidence_version": "PROP_EVIDENCE_V1",
-        "rate_provenance": "STRESS_FIXTURE",
+        "rate_provenance": "TEST_ONLY",
     }
 
 
 def _row(
-    index: int,
     *,
     player: str,
-    event_id: str = "WOW:NFL:2026-09-21:TEST",
-    opponent: str = "IND",
-    direction: str = "MORE",
-    line: float = 221.5,
-) -> PickRequestRow:
-    return PickRequestRow(
-        row_key=f"stress-{index}",
+    event_id: str,
+    direction: str,
+    opponent: str = "KC",
+    stat_type: str = "PASSING_YARDS",
+) -> interactive.PickRequestRow:
+    return interactive.PickRequestRow(
         event_id=event_id,
         event_start_time="2030-09-21T00:20:00+00:00",
         sport="NFL",
         player=player,
-        stat_type="PASSING_YARDS",
-        line=line,
+        stat_type=stat_type,
+        line=250.5,
         direction=direction,
-        source_type="PASTED_BOARD",
-        platform="STRESS",
         opponent=opponent,
     )
 
 
-def test_50_rows_25_unique_identities_collapse_to_25_fetches(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("WOW_INTERACTIVE_PROP_HYDRATION_WORKERS", "8")
-    calls: list[str] = []
-    lock = Lock()
+def test_fifty_row_pressure_deduplicates_to_twenty_five_identity_fetches(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[str, str]] = []
 
     def hydrate(**kwargs):
-        with lock:
-            calls.append(str(kwargs["player"]))
-        time.sleep(0.003)
-        return _evidence(
-            player=str(kwargs["player"]),
-            event_id=str(kwargs["canonical_event_id"]),
-            opponent=str(kwargs.get("opponent") or "IND"),
+        calls.append((kwargs["player"], kwargs["canonical_event_id"]))
+        return _raw_evidence(
+            role_status={
+                "status": "ACTIVE_CURRENT_ESPN_ROSTER",
+                "team": "IND",
+                "opponent": "KC",
+                "event_id": f"espn:{kwargs['player']}",
+                "canonical_event_id": kwargs["canonical_event_id"],
+                "provider_event_ids": {"ESPN": f"espn:{kwargs['player']}"},
+                "identity_binding_status": "PASS",
+            }
         )
 
-    monkeypatch.setattr(interactive, "auto_hydrate_prop_evidence", hydrate)
-    rows: list[PickRequestRow] = []
-    for i in range(25):
-        player = f"Stress Player {i:02d}"
-        rows.append(_row(i * 2, player=player, direction="MORE", line=220.5 + i))
-        rows.append(_row(i * 2 + 1, player=player, direction="LESS", line=220.5 + i))
+    monkeypatch.setattr(interactive.pick_runtime, "auto_hydrate_prop_evidence", hydrate)
+    rows: list[interactive.PickRequestRow] = []
+    for index in range(25):
+        player = f"Pressure Player {index:02d}"
+        event_id = f"WOW:NFL:2030:EVENT:{index:02d}"
+        rows.extend(
+            [
+                _row(player=player, event_id=event_id, direction="MORE"),
+                _row(player=player, event_id=event_id, direction="LESS"),
+            ]
+        )
 
-    batch = PickRequestBatch(request_id="stress-50", response_mode="COMPACT", rows=rows)
-    result = interactive.prehydrate_batch(batch, market_api=_market_api())
+    batch = interactive.PickRequestBatch(request_id="stress-50", rows=rows)
+    prefetched, errors, receipt = interactive.prehydrate_pick_batch(batch, max_workers=8)
 
+    assert len(rows) == 50
+    assert len(prefetched) == 50
+    assert errors == {}
     assert len(calls) == 25
-    assert len(set(calls)) == 25
-    assert all(row.evidence is not None for row in result.rows)
-    for i in range(0, 50, 2):
-        assert result.rows[i].evidence == result.rows[i + 1].evidence
+    assert receipt["unique_fetches"] == 25
+    assert receipt["successful_fetches"] == 25
+    assert receipt["prefetched_rows"] == 25
+    assert receipt["reused_rows"] == 25
+    assert receipt["failed_fetches"] == 0
+    assert receipt["workers"] == 8
+    assert receipt["can_execute"] is False
 
 
-def test_50_row_partial_failure_isolated_to_failed_identity_groups(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("WOW_INTERACTIVE_PROP_HYDRATION_WORKERS", "8")
+def test_partial_failure_isolated_to_one_identity_group(monkeypatch: pytest.MonkeyPatch) -> None:
+    failing_player = "Pressure Player 07"
 
     def hydrate(**kwargs):
-        player = str(kwargs["player"])
-        ordinal = int(player.rsplit(" ", 1)[-1])
-        if ordinal % 5 == 0:
-            raise PropAutoHydrationError("STRESS_INJECTED_FAILURE", "intentional stress fault")
-        return _evidence(
-            player=player,
-            event_id=str(kwargs["canonical_event_id"]),
-            opponent=str(kwargs.get("opponent") or "IND"),
+        if kwargs["player"] == failing_player:
+            raise PropAutoHydrationError("NFL_PROP_SOURCE_UNAVAILABLE", "injected provider failure")
+        return _raw_evidence(
+            role_status={
+                "status": "ACTIVE_CURRENT_ESPN_ROSTER",
+                "team": "IND",
+                "opponent": "KC",
+                "event_id": f"espn:{kwargs['player']}",
+                "canonical_event_id": kwargs["canonical_event_id"],
+                "provider_event_ids": {"ESPN": f"espn:{kwargs['player']}"},
+                "identity_binding_status": "PASS",
+            }
         )
 
-    monkeypatch.setattr(interactive, "auto_hydrate_prop_evidence", hydrate)
-    rows: list[PickRequestRow] = []
-    for i in range(25):
-        player = f"Stress Player {i}"
-        rows.extend([
-            _row(i * 2, player=player, direction="MORE"),
-            _row(i * 2 + 1, player=player, direction="LESS"),
-        ])
+    monkeypatch.setattr(interactive.pick_runtime, "auto_hydrate_prop_evidence", hydrate)
+    rows: list[interactive.PickRequestRow] = []
+    for index in range(10):
+        player = f"Pressure Player {index:02d}"
+        event_id = f"WOW:NFL:2030:EVENT:{index:02d}"
+        rows.extend(
+            [
+                _row(player=player, event_id=event_id, direction="MORE"),
+                _row(player=player, event_id=event_id, direction="LESS"),
+            ]
+        )
 
-    result = interactive.prehydrate_batch(
-        PickRequestBatch(request_id="stress-partial", rows=rows),
-        market_api=_market_api(),
-    )
+    batch = interactive.PickRequestBatch(request_id="stress-partial", rows=rows)
+    prefetched, errors, receipt = interactive.prehydrate_pick_batch(batch, max_workers=8)
 
-    hydrated = sum(row.evidence is not None for row in result.rows)
-    untouched = sum(row.evidence is None for row in result.rows)
-    assert hydrated == 40
-    assert untouched == 10
+    assert len(prefetched) == 18
+    assert set(errors) == {"row-014", "row-015"}
+    assert all(error.code == "NFL_PROP_SOURCE_UNAVAILABLE" for error in errors.values())
+    assert receipt["unique_fetches"] == 10
+    assert receipt["successful_fetches"] == 9
+    assert receipt["failed_fetches"] == 1
+    assert receipt["failure_codes"] == {"NFL_PROP_SOURCE_UNAVAILABLE": 1}
+    assert receipt["false_global_failure_count"] == 0
 
 
-def test_same_player_same_start_different_canonical_events_never_share_evidence(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("WOW_INTERACTIVE_PROP_HYDRATION_WORKERS", "4")
+def test_same_player_and_start_with_different_canonical_events_never_share_evidence(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[str] = []
 
     def hydrate(**kwargs):
-        event_id = str(kwargs["canonical_event_id"])
+        event_id = kwargs["canonical_event_id"]
         calls.append(event_id)
-        return _evidence(player=str(kwargs["player"]), event_id=event_id)
+        return _raw_evidence(
+            role_status={
+                "status": "ACTIVE_CURRENT_ESPN_ROSTER",
+                "team": "IND",
+                "opponent": "KC",
+                "event_id": "espn-alias",
+                "canonical_event_id": event_id,
+                "provider_event_ids": {"ESPN": "espn-alias"},
+                "identity_binding_status": "PASS",
+            }
+        )
 
-    monkeypatch.setattr(interactive, "auto_hydrate_prop_evidence", hydrate)
+    monkeypatch.setattr(interactive.pick_runtime, "auto_hydrate_prop_evidence", hydrate)
     rows = [
-        _row(1, player="Patrick Mahomes", event_id="WOW:NFL:A"),
-        _row(2, player="Patrick Mahomes", event_id="WOW:NFL:B"),
+        _row(player="Same Player", event_id="WOW:NFL:EVENT:A", direction="MORE"),
+        _row(player="Same Player", event_id="WOW:NFL:EVENT:B", direction="LESS"),
     ]
-    result = interactive.prehydrate_batch(PickRequestBatch(rows=rows), market_api=_market_api())
+    batch = interactive.PickRequestBatch(request_id="stress-canonical-split", rows=rows)
+    prefetched, errors, receipt = interactive.prehydrate_pick_batch(batch, max_workers=8)
 
-    assert sorted(calls) == ["WOW:NFL:A", "WOW:NFL:B"]
-    assert result.rows[0].evidence.role_status["canonical_event_id"] == "WOW:NFL:A"
-    assert result.rows[1].evidence.role_status["canonical_event_id"] == "WOW:NFL:B"
+    assert errors == {}
+    assert calls == ["WOW:NFL:EVENT:A", "WOW:NFL:EVENT:B"]
+    assert prefetched[0].evidence.role_status["canonical_event_id"] == "WOW:NFL:EVENT:A"
+    assert prefetched[1].evidence.role_status["canonical_event_id"] == "WOW:NFL:EVENT:B"
+    assert receipt["unique_fetches"] == 2
+    assert receipt["reused_rows"] == 0
 
 
-def test_opponent_alias_variants_all_bind_to_same_official_nfl_event(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize(
+    "alias",
+    ["IND", "Indianapolis Colts", "Colts", "Indianapolis"],
+)
+def test_nfl_opponent_alias_matrix_accepts_equivalent_identity(monkeypatch: pytest.MonkeyPatch, alias: str) -> None:
     monkeypatch.setattr(
         router._nfl,
         "hydrate_nfl_prop_evidence",
         lambda **_kwargs: {
-            **_evidence(player="Patrick Mahomes", event_id="UNBOUND", opponent="IND"),
+            **_raw_evidence(),
             "role_status": {
                 "status": "ACTIVE_CURRENT_ESPN_ROSTER",
                 "team": "KC",
                 "opponent": "IND",
                 "event_id": "401872945",
             },
-            "hydration_provider": router.NFL_PROVIDER,
         },
     )
 
-    aliases = ["IND", "Indianapolis Colts", "Colts", "Indianapolis"]
-    for alias in aliases:
-        result = router.auto_hydrate_prop_evidence(
-            sport="NFL",
-            player="Patrick Mahomes",
-            stat_type="PASSING_YARDS",
-            event_start_time="2030-09-21T00:20:00+00:00",
-            opponent=alias,
-            canonical_event_id="WOW:NFL:2030:IND@KC",
-        )
-        role = result["role_status"]
-        assert role["canonical_event_id"] == "WOW:NFL:2030:IND@KC"
-        assert role["provider_event_ids"] == {"ESPN": "401872945"}
-        assert role["identity_binding_status"] == "PASS"
+    result = router.auto_hydrate_prop_evidence(
+        sport="NFL",
+        player="Patrick Mahomes",
+        stat_type="PASSING_YARDS",
+        event_start_time="2030-09-21T00:20:00+00:00",
+        opponent=alias,
+        canonical_event_id="WOW:NFL:2030:IND@KC",
+    )
+    assert result["role_status"]["canonical_event_id"] == "WOW:NFL:2030:IND@KC"
+    assert result["role_status"]["provider_event_ids"]["ESPN"] == "401872945"
 
 
-def test_wrong_opponent_still_fails_closed_under_alias_pressure(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_nfl_wrong_opponent_alias_still_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         router._nfl,
         "hydrate_nfl_prop_evidence",
         lambda **_kwargs: {
-            **_evidence(player="Patrick Mahomes", event_id="UNBOUND", opponent="IND"),
+            **_raw_evidence(),
             "role_status": {
                 "status": "ACTIVE_CURRENT_ESPN_ROSTER",
                 "team": "KC",
@@ -240,11 +240,13 @@ def _colts_chiefs_event(*, state: str = "pre") -> dict:
     return {
         "id": "401872945",
         "date": "2026-09-21T00:20:00Z",
+        "season": {"year": 2026},
+        "week": {"number": 2},
         "status": {"type": {"state": state, "completed": state == "post"}},
         "competitions": [{
             "competitors": [
-                {"team": {"abbreviation": "KC"}},
-                {"team": {"abbreviation": "IND"}},
+                {"homeAway": "home", "team": {"abbreviation": "KC"}},
+                {"homeAway": "away", "team": {"abbreviation": "IND"}},
             ]
         }],
     }
@@ -265,7 +267,18 @@ def test_colts_chiefs_utc_rollover_survives_100_replays_and_duplicate_aliases() 
             opponent="Indianapolis Colts",
             http_get=http_get,
         )
-        assert result == {"event_id": "401872945", "team": "KC", "opponent": "IND"}
+        assert result == {
+            "event_id": "401872945",
+            "team": "KC",
+            "opponent": "IND",
+            "provider_season": 2026,
+            "provider_week": 2,
+            "provider_home_team": "KC",
+            "provider_away_team": "IND",
+            "canonical_home_team": "KC",
+            "canonical_away_team": "IND",
+            "verified_canonical_event_id": "2026_02_IND_KC",
+        }
 
 
 def test_multiple_distinct_matching_provider_events_fail_closed() -> None:
