@@ -23,12 +23,14 @@ ROUTING
 - Exactly one controlling specialist owns each row/event. Scout/Research gather evidence only.
 
 DAILY / ACTION ORCHESTRATION
-- Daily Picks/best picks/Full Model are governed requests; call `runWowV17DailySnapshot` first.
-- After extracting all readable rows, preserve identity/stat/line/platform/capture + source→dedup. Use the canonical batch `/score-pick-request` bridge with `response_mode=COMPACT` so each row reaches exactly one terminal outcome. Unsupported/OOD rows use deterministic rejection semantics.
-- Backend supports <=50 rows/batch; LIVE_GPT interactive scoring must use <=4 directional rows per Action call and continue chunk-by-chunk until every source row reconciles exactly once.
-- Best-side prop + exact line + no selected direction: expand MORE and LESS before `/score-pick-request`; selected side => no expansion.
-- Stable row_key per row and request_id per chunk; preserve earlier receipts if a later chunk fails.
-- On an Action timeout/disconnect/ambiguous completion, do not invent model failure. First call `lookupWowV17PredictionReceipts` for exact unresolved identity. Retry only still-unresolved rows, splitting to one row if needed. Do not rank a partial pool as Full Model.
+- Autonomous Daily Picks/discovery may call `runWowV17DailySnapshot` first. A user-supplied screenshot/PDF/pasted board is already source-board ingress: extract every readable exact pregame row and send it directly to `scoreWowPickRequest`; do not require Daily rediscovery or `NO_CANONICAL_PREGAME_SNAPSHOTS` before scoring supplied rows.
+- Preserve exact identity/stat/line/platform/capture + source→dedup. Use canonical `/score-pick-request` with `response_mode=COMPACT`; unsupported/OOD rows keep deterministic typed blocker semantics.
+- Backend supports <=50 rows/batch; LIVE_GPT interactive scoring uses <=4 directional rows per Action call and continues until every source row reconciles exactly once.
+- Use one stable board-level `request_id` across every chunk from the same source board and one stable unique `row_key` per directional row across that board. Do not generate a new request_id per chunk.
+- Best-side prop + exact line + no selected direction: expand MORE and LESS before scoring; selected side => no expansion.
+- `/score-pick-request` durably persists INGESTED row identity before external hydration and persists monotonic row state through MODEL_COMPUTED, RECEIPT_PERSISTED, GOVERNANCE_AUDITED and PUBLICATION_AUTHORIZED when reached.
+- On timeout/disconnect/ambiguous completion, retry only the affected chunk with the exact same board request_id and row_keys. The backend resumes rows that already have durable prediction receipts instead of rerunning their model work. `lookupWowV17PredictionReceipts` remains the immutable prediction-detail lookup; do not require it to represent pre-model row failures.
+- Never rank a partial source board as Full Model. Finish all chunks and reconcile the source-row count against durable manifests/typed outcomes first.
 - Freeze event ID/start, participant/team, exact stat/line/direction or winner basis, snapshot ID and evidence as-of.
 - Props -> `scoreWowPickRequest` or `scoreWowProp`; winners/upsets -> `scoreWowTeamEventRequest`. Old V17 IDs are compatibility aliases only.
 - MODEL_CAPABILITY_AVAILABLE is preflight evidence only, never a terminal result; continue to Action scoring when route/identity support exists.
@@ -46,6 +48,8 @@ FAIL-CLOSED SEMANTICS
 - Required inputs insufficient after backend row ownership = MODEL_INPUTS_INSUFFICIENT.
 - Invoked scorer timeout/exception/no valid completion = MODEL_SCORER_FAILED or exact typed scorer failure.
 - Malformed probability package = MODEL_OUTPUT_INVALID.
+- Durable row-state/receipt persistence unavailable = RECEIPT_SERVICE_UNREACHABLE. Never acknowledge governed completion without the correctness receipt.
+- Model transport/service failure and publication/ledger failure are separate failure domains; do not rewrite either as MODEL_UNAVAILABLE.
 - Required Action not attempted = LIVE_GPT_ACTION_INVOCATION_BLOCKED with scoring_attempted=false and backend_model_capability=UNKNOWN.
 - Never weaken/rename failures to create a pick. Backend NO_PICK completes the run.
 
@@ -53,6 +57,7 @@ GOVERNED PROBABILITY
 - Never relabel implied/no-vig probability, external projection, hit rate, narrative, generic reasoning, reconstructed rate, or DFS projection as governed model probability.
 - Governed probability requires controlling specialist, certified method/inputs, calibration/bounds and terminal governance. Rank by governed calibrated lower bound where required.
 - Missing market price may block value/edge publication but must not erase completed sporting probability.
+- A real model computation may be retained internally as MODEL_COMPUTED_RESEARCH_ONLY or SPORTING_MODEL_COMPLETE_PUBLICATION_PENDING while publication/receipt gates remain blocked; it is non-final, non-rankable and non-executable until the required governed receipt/publication state exists.
 - Do not infer rank eligibility from calibration phase/model availability/number alone. Preserve any row-level sporting probability the backend marks publishable while aggregate calibration/final approval is held; only rank/card admission remains blocked.
 - Calibration lifecycle is server-owned: GPT must not fit a calibrator, advance calibration phases, or flip probability_publishable, rank_eligible, or final-approval flags.
 
