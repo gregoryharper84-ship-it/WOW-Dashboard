@@ -50,7 +50,7 @@ UNREGISTERED_PROVIDER = "UNREGISTERED_PROP_HYDRATION_PROVIDER"
 # The canonical scorer historically called the router without event_id/opponent.
 # A request-scoped map lets the facade preserve the exact row identity without
 # mutating the old core call signature. Explicit function arguments always win.
-_REQUEST_IDENTITIES: ContextVar[dict[tuple[str, str, str], dict[str, Optional[str]]]] = ContextVar(
+_REQUEST_IDENTITIES: ContextVar[dict[tuple[str, str, str], dict[str, Any]]] = ContextVar(
     "wow_prop_hydration_request_identities",
     default={},
 )
@@ -82,7 +82,7 @@ def hydration_request_context(rows: Iterable[Any]) -> Iterator[None]:
     This is acquisition plumbing only. It carries no probability, model,
     calibration, market, ranking, or execution authority.
     """
-    identities: dict[tuple[str, str, str], dict[str, Optional[str]]] = {}
+    identities: dict[tuple[str, str, str], dict[str, Any]] = {}
     for row in rows:
         key = _row_key(
             getattr(row, "sport", None),
@@ -91,12 +91,38 @@ def hydration_request_context(rows: Iterable[Any]) -> Iterator[None]:
         )
         event_id = str(getattr(row, "event_id", None) or "").strip() or None
         opponent = str(getattr(row, "opponent", None) or "").strip() or None
+        candidate = {
+            "canonical_event_id": event_id,
+            "opponent": opponent,
+            "identity_ambiguous": False,
+            "conflicting_event_ids": [],
+        }
         existing = identities.get(key)
-        if existing is not None and existing != {"canonical_event_id": event_id, "opponent": opponent}:
-            # Ambiguous same-player/same-start identities must not be guessed.
-            identities[key] = {"canonical_event_id": None, "opponent": None}
+        conflicts = bool(
+            existing is not None
+            and (
+                existing.get("identity_ambiguous") is True
+                or existing.get("canonical_event_id") != event_id
+                or existing.get("opponent") != opponent
+            )
+        )
+        if conflicts:
+            # Never downgrade a caller-supplied canonical conflict into
+            # PROVIDER_IDENTITY_ONLY during the legacy core fallback. Preserve a
+            # typed ambiguity marker so the fallback fails closed before fetch.
+            prior_ids = list(existing.get("conflicting_event_ids") or []) if existing else []
+            if existing and existing.get("canonical_event_id"):
+                prior_ids.append(str(existing["canonical_event_id"]))
+            if event_id:
+                prior_ids.append(event_id)
+            identities[key] = {
+                "canonical_event_id": None,
+                "opponent": None,
+                "identity_ambiguous": True,
+                "conflicting_event_ids": sorted(set(prior_ids)),
+            }
         else:
-            identities[key] = {"canonical_event_id": event_id, "opponent": opponent}
+            identities[key] = candidate
     token = _REQUEST_IDENTITIES.set(identities)
     try:
         yield
@@ -113,7 +139,20 @@ def _context_identity(
     opponent: Optional[str],
 ) -> tuple[Optional[str], Optional[str]]:
     inherited = _REQUEST_IDENTITIES.get().get(_row_key(sport, player, event_start_time), {})
-    canonical = str(canonical_event_id or inherited.get("canonical_event_id") or "").strip() or None
+    explicit_canonical = str(canonical_event_id or "").strip() or None
+    if inherited.get("identity_ambiguous") is True and explicit_canonical is None:
+        raise PropAutoHydrationError(
+            "PROP_EVENT_IDENTITY_CONFLICT",
+            "request context contains conflicting canonical event identities for the same player/start time",
+            detail={
+                "sport": str(sport or "").strip().upper(),
+                "player": player,
+                "event_start_time": event_start_time,
+                "conflicting_event_ids": list(inherited.get("conflicting_event_ids") or []),
+                "identity_binding_status": "AMBIGUOUS_CANONICAL_EVENT",
+            },
+        )
+    canonical = str(explicit_canonical or inherited.get("canonical_event_id") or "").strip() or None
     requested_opponent = str(opponent or inherited.get("opponent") or "").strip() or None
     return canonical, requested_opponent
 
