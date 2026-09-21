@@ -24,13 +24,13 @@ DAILY / ACTION ORCHESTRATION
 - Daily may call `runWowV17DailySnapshot`; supplied boards go directly to governed prop scoring after exact pregame extraction.
 - Normal interactive batches use `scoreWowPickRequest` with `response_mode=COMPACT`, one stable board request_id and one stable unique row_key per directional row.
 - LIVE_GPT interactive scoring must use <=4 directional rows per Action call and continue chunk-by-chunk until every source row reconciles exactly once.
-- Large boards use `runWowV17ResumablePickRequest`: freeze the full manifest first, then backend-score through canonical `/score-pick-request` in <=50-row batches. Resume by request_id alone; never reconstruct persisted identity from chat memory.
-- `getWowV17PickRequestRunState` recovers durable identity/stage/receipt state. Closed runs are non-resumable without an explicit governed reopen path.
+- Large boards use `runWowV17ResumablePickRequest`: freeze the full manifest and enqueue a durable DB-leased job. The Action returns without waiting for scoring; poll `getWowV17PickRequestRunState`. The worker uses canonical `/score-pick-request` in <=50-row batches. Resume by request_id alone; never reconstruct persisted identity from chat memory.
+- `getWowV17PickRequestRunState` recovers durable identity/stage/receipt/job state. Closed runs are non-resumable without an explicit governed reopen path.
 - Use `closeWowV17PickRequestRun` for typed terminal orchestration closure. Closed run status must never silently revert to RUNNING.
 - Identity uses semantic UTC time: equivalent ISO forms (Z vs +00:00) match; real event/player/stat/line/direction changes conflict.
 - Best-side prop + exact line + no selected direction: expand MORE and LESS before `/score-pick-request`; selected side => no expansion.
 - Persist INGESTED before external hydration, then IDENTITY_VERIFIED, MODEL_INPUTS_READY, MODEL_COMPUTED, RECEIPT_PERSISTED, GOVERNANCE_AUDITED and PUBLICATION_AUTHORIZED when reached.
-- On an Action timeout/disconnect/ambiguous completion, do not invent model failure. First call `lookupWowV17PredictionReceipts` for exact immutable prediction detail when available. Retry only still-unresolved rows with the same board request_id/row_keys. For large runs also read durable run state before any retry.
+- On an Action timeout/disconnect/ambiguous completion, do not invent model failure. First call `lookupWowV17PredictionReceipts` for exact immutable prediction detail when available. Retry only still-unresolved rows with the same board request_id/row_keys. For large runs read durable run state; do not re-enqueue a RUNNING job.
 - Do not rank a partial pool as Full Model. Finish every source row and reconcile exact counts/typed outcomes first.
 - Freeze event/start, participant/team, exact stat/line/direction or winner basis, snapshot ID and evidence as-of.
 - Props -> `scoreWowPickRequest`/`runWowV17ResumablePickRequest`; winners/upsets -> `scoreWowTeamEventRequest`.
