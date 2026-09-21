@@ -18,6 +18,8 @@ from v17.action_invocation_telemetry import install_action_invocation_middleware
 from v17.interactive_latency_telemetry import install_interactive_latency_middleware
 from v17.interactive_pick_hydration import schedule_interactive_pick_hydration_install
 from v17.interactive_pick_parallel import schedule_interactive_pick_parallel_install
+from v17.interactive_team_event_io import install_interactive_team_event_io
+from v17.interactive_team_event_latency import install_interactive_team_event_latency
 from v17.pick_request_state_hooks import install_pick_request_state_hooks
 from v17.pick_request_state_runtime import schedule_pick_request_state_install
 
@@ -34,17 +36,31 @@ def initialize_observability() -> dict[str, Any]:
     install_multisport_team_event_bridges()
     install_universal_team_event_governance()
 
+    # Team/event Scout and lane routing remain ordered. Only the five independent
+    # Research workers are overlapped, using the same canonical envelopes,
+    # workers, reconciler and typed failure contract. This is intentionally
+    # installed after bridge registration so every registered sport observes the
+    # same bounded barrier implementation.
+    try:
+        install_interactive_team_event_latency()
+    except Exception:
+        # Latency optimization must never make the governed API unavailable.
+        # The canonical serial barrier remains fail-closed if installation fails.
+        pass
+
     # Install non-secret total-wall-time telemetry, certification-independent
     # Action invocation receipts, bounded external pre-hydration, bounded
-    # independent-row scoring, and the correctness-critical durable pick-request
-    # state wrapper. The canonical single-row scorer still owns fitted inference,
-    # calibration/bounds, persistence and terminal reduction; the interactive
-    # wrapper only overlaps independent rows. Global registry/runtime functions
-    # are deliberately left untouched so tests, diagnostics, and fail-closed
-    # capability refreshes always observe current state.
+    # independent-row scoring, reusable TEAM_EVENT transport clients, bounded
+    # external MLB evidence, and the correctness-critical durable pick-request
+    # state wrapper. The canonical scorer still owns fitted inference,
+    # calibration/bounds, persistence and terminal reduction; transport wrappers
+    # never create or modify probability authority.
     try:
         import api_prod_market_acceptance as _accepted_base
 
+        install_interactive_team_event_io(
+            event_api=_accepted_base.market_api.prod.event_api,
+        )
         install_interactive_latency_middleware(_accepted_base.app)
         install_action_invocation_middleware(
             _accepted_base.app,
