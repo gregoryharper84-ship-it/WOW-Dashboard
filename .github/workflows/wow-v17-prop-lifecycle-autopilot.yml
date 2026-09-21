@@ -61,22 +61,29 @@ jobs:
           case "$ACTIONS_ID_TOKEN_REQUEST_URL" in
             *\?*) separator='&' ;;
           esac
-          oidc_json="$(curl --silent --show-error --fail --connect-timeout 15 --max-time 30 \
-            --header "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
-            "${ACTIONS_ID_TOKEN_REQUEST_URL}${separator}audience=${WOW_OIDC_AUDIENCE}")"
-          oidc_token="$(python -c 'import json,sys; value=json.load(sys.stdin).get("value"); assert isinstance(value,str) and value.strip(); print(value.strip())' <<<"${oidc_json}")"
-          unset oidc_json
+
+          issue_oidc_token() {
+            local oidc_json
+            oidc_json="$(curl --silent --show-error --fail --connect-timeout 15 --max-time 30 \
+              --header "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+              "${ACTIONS_ID_TOKEN_REQUEST_URL}${separator}audience=${WOW_OIDC_AUDIENCE}")"
+            python -c 'import json,sys; value=json.load(sys.stdin).get("value"); assert isinstance(value,str) and value.strip(); print(value.strip())' <<<"${oidc_json}"
+          }
 
           # On a main push Render deploys only after protected checks pass. Poll the
           # new NBA control route so this job cannot accidentally register against
-          # the previous runtime. 404/503 during rollout are expected and retried.
+          # the previous runtime. GitHub OIDC tokens are intentionally short-lived,
+          # so mint a fresh token for every probe instead of reusing one across a
+          # potentially multi-minute Render rollout.
           ready=0
           for attempt in $(seq 1 60); do
+            oidc_token="$(issue_oidc_token)"
             code="$(curl --silent --show-error --connect-timeout 10 --max-time 30 \
               --output /tmp/wow-nba-scalar-register.json --write-out '%{http_code}' \
               --request POST --header "Authorization: Bearer ${oidc_token}" \
               --header 'Content-Type: application/json' \
               "${WOW_SERVICE_URL}/internal/v17/nba-scalar-candidates/derive" || true)"
+            unset oidc_token
             if [ "${code}" -ge 200 ] && [ "${code}" -lt 300 ]; then
               ready=1
               break
@@ -89,6 +96,7 @@ jobs:
             exit 1
           fi
 
+          oidc_token="$(issue_oidc_token)"
           wnba_code="$(curl --silent --show-error --fail --connect-timeout 15 --max-time 120 \
             --output /tmp/wow-wnba-composite-register.json --write-out '%{http_code}' \
             --request POST --header "Authorization: Bearer ${oidc_token}" \
