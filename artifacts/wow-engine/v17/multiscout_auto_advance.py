@@ -19,6 +19,7 @@ complete.  can_execute is false throughout.
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import os
 from datetime import datetime, timezone
@@ -35,6 +36,10 @@ ACTION_ORIGIN = os.environ.get(
 USER_TIMEZONE = os.environ.get("WOW_USER_TIMEZONE", "America/Chicago")
 MAX_PROP_ROWS = 50
 MAX_TEAM_EVENT_ROWS = 100
+MAX_AUTO_ADVANCE_IN_FLIGHT = max(
+    1,
+    min(int(os.environ.get("WOW_AUTO_ADVANCE_IN_FLIGHT", "8") or "8"), 16),
+)
 
 SPORT_KEY_MAP = {
     "baseball_mlb": ("MLB", "MLB"),
@@ -307,12 +312,69 @@ def _post_json(origin: str, path: str, token: str, payload: dict[str, Any], time
         }
 
 
+def _dispatch_batches(
+    lane: str,
+    path: str,
+    batches: list[dict[str, Any]],
+    *,
+    token: str,
+    origin: str,
+    post_fn: Any,
+    max_in_flight: int,
+    progress_fn: Any | None = None,
+) -> list[dict[str, Any]]:
+    """Dispatch bounded concurrent batches while preserving deterministic receipt order."""
+    if not batches:
+        return []
+    worker_count = max(1, min(int(max_in_flight), len(batches), 16))
+    receipts: list[dict[str, Any] | None] = [None] * len(batches)
+
+    def invoke(index: int, batch: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+        receipt = post_fn(origin, path, token, batch)
+        result = dict(receipt) if isinstance(receipt, dict) else {
+            "ok": False,
+            "http_status": None,
+            "body": {"code": "AUTO_ADVANCE_INVALID_RECEIPT"},
+            "can_execute": False,
+        }
+        result["batch_key"] = str(
+            batch.get("request_id") or f"{lane}:{index + 1}"
+        )
+        result["batch_index"] = index + 1
+        result["can_execute"] = False
+        return index, result
+
+    with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix=f"wow-{lane}") as executor:
+        futures = {
+            executor.submit(invoke, index, batch): index
+            for index, batch in enumerate(batches)
+        }
+        completed = 0
+        for future in as_completed(futures):
+            index, receipt = future.result()
+            receipts[index] = receipt
+            completed += 1
+            if progress_fn is not None:
+                progress_fn(
+                    lane=lane,
+                    batch_key=receipt["batch_key"],
+                    batch_index=index + 1,
+                    completed_batches=completed,
+                    total_batches=len(batches),
+                    receipt=receipt,
+                )
+
+    return [receipt for receipt in receipts if receipt is not None]
+
+
 def execute_auto_advance(
     handoff: dict[str, Any],
     *,
     token: str | None,
     origin: str = ACTION_ORIGIN,
     post_fn: Any = _post_json,
+    max_in_flight: int = MAX_AUTO_ADVANCE_IN_FLIGHT,
+    progress_fn: Any | None = None,
 ) -> dict[str, Any]:
     try:
         dispatch = build_dispatch(handoff)
@@ -345,14 +407,26 @@ def execute_auto_advance(
             "team_event_receipts": [],
         }
 
-    prop_receipts = [
-        post_fn(origin, "/score-pick-request", token, batch)
-        for batch in dispatch["prop_batches"]
-    ]
-    team_receipts = [
-        post_fn(origin, "/score-team-event-request", token, batch)
-        for batch in dispatch["team_event_batches"]
-    ]
+    prop_receipts = _dispatch_batches(
+        "props",
+        "/score-pick-request",
+        dispatch["prop_batches"],
+        token=token,
+        origin=origin,
+        post_fn=post_fn,
+        max_in_flight=max_in_flight,
+        progress_fn=progress_fn,
+    )
+    team_receipts = _dispatch_batches(
+        "team_events",
+        "/score-team-event-request",
+        dispatch["team_event_batches"],
+        token=token,
+        origin=origin,
+        post_fn=post_fn,
+        max_in_flight=max_in_flight,
+        progress_fn=progress_fn,
+    )
     calls = [*prop_receipts, *team_receipts]
     transport_ok = all(receipt.get("ok") is True for receipt in calls)
 
