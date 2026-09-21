@@ -57,7 +57,10 @@ services:
       - key: WOW_PROP_EVIDENCE_ACQUISITION_FORWARD_DAYS
         value: "2"
       - key: WOW_PROP_LIFECYCLE_AUTOPILOT_ENABLED
-        value: "1"
+        # GitHub's protected-main OIDC workflow is the single scheduler. The
+        # endpoint remains installed, but a second in-process cycle must not
+        # overlap the externally audited universal cycle.
+        value: "0"
       - key: WOW_PROP_LIFECYCLE_AUTOPILOT_INTERVAL_SECONDS
         value: "900"
       - key: WOW_PROP_LIFECYCLE_AUTOPILOT_MAX_SNAPSHOTS_PER_ROUTE
