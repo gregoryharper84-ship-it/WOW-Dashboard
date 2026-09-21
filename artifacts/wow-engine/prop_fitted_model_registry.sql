@@ -21,8 +21,11 @@ create table if not exists public.wow_prop_fitted_model_artifacts (
     artifact_checksum text not null,
     artifact_format text not null,
     artifact_payload jsonb not null,
-    supported_line_min numeric not null,
-    supported_line_max numeric not null,
+    -- Candidate-only artifacts may intentionally have no exact-line support yet.
+    -- Null bounds must never be interpreted as support and are allowed only for
+    -- CANDIDATE lifecycle rows by wow_prop_fitted_line_range below.
+    supported_line_min numeric,
+    supported_line_max numeric,
     training_rows integer not null,
     validation_metrics jsonb not null default '{}'::jsonb,
     promoted boolean not null default false,
@@ -31,7 +34,27 @@ create table if not exists public.wow_prop_fitted_model_artifacts (
     can_execute boolean not null default false,
     constraint wow_prop_fitted_provider_identity check (provider_identity = 'WOW_PROP_FITTED_MODEL_V1'),
     constraint wow_prop_fitted_lifecycle check (lifecycle_state in ('CANDIDATE','SHADOW','PROSPECTIVE_CERTIFIED','CHAMPION','RETIRED')),
-    constraint wow_prop_fitted_line_range check (supported_line_min >= 0 and supported_line_max >= supported_line_min),
+    constraint wow_prop_fitted_line_range check (
+        (
+            lifecycle_state = 'CANDIDATE'
+            and (
+                (supported_line_min is null and supported_line_max is null)
+                or (
+                    supported_line_min is not null
+                    and supported_line_max is not null
+                    and supported_line_min >= 0
+                    and supported_line_max >= supported_line_min
+                )
+            )
+        )
+        or (
+            lifecycle_state <> 'CANDIDATE'
+            and supported_line_min is not null
+            and supported_line_max is not null
+            and supported_line_min >= 0
+            and supported_line_max >= supported_line_min
+        )
+    ),
     constraint wow_prop_fitted_training_rows check (training_rows > 0),
     constraint wow_prop_fitted_payload_object check (jsonb_typeof(artifact_payload) = 'object'),
     constraint wow_prop_fitted_metrics_object check (jsonb_typeof(validation_metrics) = 'object'),
