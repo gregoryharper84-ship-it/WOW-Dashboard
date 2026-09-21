@@ -8,7 +8,7 @@ import v17.multisport_team_event_bridges as multisport_bridges
 import v17.team_event_bridge_runtime as bridge_runtime
 import v17.team_event_request_runtime as base_runtime
 from v17.llp_governed_package_scoring import PASS, validate_governed_scoring_package
-from v17.multisport_team_event_governance import FINAL_APPROVED, reduce_multisport_team_event
+from v17.multisport_team_event_governance import MODEL_QUALIFIED_HOLD, reduce_multisport_team_event
 from v17.multisport_team_event_models import (
     MODEL_SPECS,
     ModelInputsInsufficient,
@@ -19,7 +19,10 @@ from v17.multisport_team_event_models import (
     score_wnba_team_event,
 )
 from v17.team_event_capability_manifest import CERTIFIED_TEAM_EVENT_SPORTS
-from v17.team_event_model_registry_audit import CERTIFIED, certification_state
+from v17.team_event_model_registry_audit import (
+    CANDIDATE_REGISTERED_UNCERTIFIED,
+    certification_state,
+)
 from v17.team_event_request_runtime import TeamEventRequest
 
 
@@ -238,7 +241,7 @@ def test_soccer_history_backed_calibration_preserves_three_state_sum():
     assert validate_governed_scoring_package(calibrated).status == PASS
 
 
-def test_exact_runtime_registration_activates_certification_without_mutating_static_catalog():
+def test_exact_runtime_registration_remains_uncertified_without_fitted_artifact_receipt():
     previous_registry = dict(bridge_runtime.TEAM_EVENT_BRIDGES)
     previous_installed = multisport_bridges._INSTALLED
     try:
@@ -255,12 +258,13 @@ def test_exact_runtime_registration_activates_certification_without_mutating_sta
         health = bridge_runtime.team_event_bridge_health()
         for sport in ("WNBA", "NHL", "SOCCER", "TENNIS", "MMA"):
             status, certification_id = certification_state(sport, registered=True)
-            assert status == CERTIFIED
-            assert certification_id == multisport_bridges.RUNTIME_CERTIFICATIONS[sport]
+            assert status == CANDIDATE_REGISTERED_UNCERTIFIED
+            assert certification_id is None
             assert health[sport]["registered_capability"] is True
-            assert health[sport]["certification_status"] == CERTIFIED
-            assert health[sport]["certification_id"] == certification_id
+            assert health[sport]["certification_status"] == CANDIDATE_REGISTERED_UNCERTIFIED
+            assert health[sport]["certification_id"] is None
             assert health[sport]["scorer_resolvable"] is True
+            assert health[sport]["model_artifact_present"] is False
             assert health[sport]["can_execute"] is False
             assert sport not in CERTIFIED_TEAM_EVENT_SPORTS
     finally:
@@ -269,7 +273,7 @@ def test_exact_runtime_registration_activates_certification_without_mutating_sta
         multisport_bridges._INSTALLED = previous_installed
 
 
-def test_governance_requires_both_exact_registration_and_history_backed_calibration():
+def test_governance_requires_fitted_artifact_certification_not_registration_plus_calibration():
     previous_registry = dict(bridge_runtime.TEAM_EVENT_BRIDGES)
     previous_installed = multisport_bridges._INSTALLED
     try:
@@ -287,14 +291,17 @@ def test_governance_requires_both_exact_registration_and_history_backed_calibrat
         multisport_bridges.install_multisport_team_event_bridges()
         still_uncalibrated = reduce_multisport_team_event(request, raw)
         assert still_uncalibrated["status"] == "HOLD"
+        assert "TEAM_EVENT_SPECIALIST_ARTIFACT_NOT_CERTIFIED" in still_uncalibrated["blockers"]
         assert "CALIBRATION_HISTORY_NOT_PROVEN" in still_uncalibrated["blockers"]
 
         calibrated = multisport_bridges._apply_governed_calibration(request, raw)
         after = reduce_multisport_team_event(request, calibrated)
-        assert after["status"] == "PASS"
-        assert after["terminal_label"] == FINAL_APPROVED
-        assert after["probability_publishable"] is True
-        assert after["rank_eligible"] is True
+        assert after["status"] == "HOLD"
+        assert after["terminal_label"] == MODEL_QUALIFIED_HOLD
+        assert "TEAM_EVENT_SPECIALIST_ARTIFACT_NOT_CERTIFIED" in after["blockers"]
+        assert "CALIBRATION_HISTORY_NOT_PROVEN" not in after["blockers"]
+        assert after["probability_publishable"] is False
+        assert after["rank_eligible"] is False
         assert after["can_execute"] is False
     finally:
         bridge_runtime.TEAM_EVENT_BRIDGES.clear()
@@ -302,7 +309,7 @@ def test_governance_requires_both_exact_registration_and_history_backed_calibrat
         multisport_bridges._INSTALLED = previous_installed
 
 
-def test_full_wnba_bridge_reaches_official_publication_only_with_calibration(monkeypatch):
+def test_full_wnba_bridge_stays_hold_without_fitted_artifact_certification(monkeypatch):
     previous_registry = dict(bridge_runtime.TEAM_EVENT_BRIDGES)
     previous_installed = multisport_bridges._INSTALLED
     try:
@@ -318,10 +325,11 @@ def test_full_wnba_bridge_reaches_official_publication_only_with_calibration(mon
         result = multisport_bridges.score_wnba_team_event_request(
             _req("WNBA"), event_api=None
         )
-        assert result["terminal_label"] == FINAL_APPROVED
-        assert result["probability_publishable"] is True
-        assert result["rank_eligible"] is True
-        assert result["official_publication_guard"]["official_publication_allowed"] is True
+        assert result["terminal_label"] == MODEL_QUALIFIED_HOLD
+        assert result["probability_publishable"] is False
+        assert result["rank_eligible"] is False
+        assert result["official_publication_guard"]["official_publication_allowed"] is False
+        assert "TEAM_EVENT_SPECIALIST_ARTIFACT_NOT_CERTIFIED" in result["blockers"]
         assert result["calibration_history_present"] is True
         assert result["can_execute"] is False
     finally:
