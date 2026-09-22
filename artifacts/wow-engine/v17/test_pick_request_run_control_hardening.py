@@ -109,6 +109,49 @@ def _row() -> PickRequestRow:
     )
 
 
+def _pending_record(request_id: str = "pending-resume") -> dict:
+    return {
+        "run_id": state._run_id(request_id),
+        "row_key": "PP-013::MORE",
+        "event_id": "401872947",
+        "event_start_time": "2026-09-22T00:15:00+00:00",
+        "sport": "NFL",
+        "player": "Matthew Stafford",
+        "stat_type": "PASSING_YARDS",
+        "exact_line": 238.5,
+        "direction": "MORE",
+        "source_type": "NORMALIZED",
+        "platform": "PRIZEPICKS",
+        "current_stage": "INGESTED",
+        "stage_seq": state.STAGE_SEQ["INGESTED"],
+        "terminal_status": "PENDING",
+        "terminal_code": None,
+        "model_evaluated": False,
+        "probability_publishable": False,
+        "rank_eligible": False,
+        "prediction_id": None,
+        "can_execute": False,
+    }
+
+
+def test_hardening_keeps_exact_durable_pending_row_scorer_eligible():
+    db = _DB()
+    record = _pending_record()
+    db.tables[state.ROW_TABLE] = [record]
+    db.tables["wow_predictions"] = []
+
+    retryable, recovered, blocker = hardening._receipt_preflight_without_rescore(
+        db, "pending-resume", [record]
+    )
+
+    assert blocker is None
+    assert recovered == 0
+    assert [item["row_key"] for item in retryable] == ["PP-013::MORE"]
+    assert retryable[0]["terminal_status"] == "PENDING"
+    assert retryable[0]["prediction_id"] is None
+    assert retryable[0]["can_execute"] is False
+
+
 def test_receipt_recovery_removes_row_from_retry_set_and_finishes_governance():
     db = _DB()
     run_id = state._run_id("receipt-recovery")

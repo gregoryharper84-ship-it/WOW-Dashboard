@@ -139,7 +139,14 @@ def hydrate_mlb_1ip_evidence(*, player: str, event_start_time: str, http_get: Ca
     if event_start <= captured:
         raise PropAutoHydrationError("EVENT_ALREADY_STARTED", "1IP hydration is pregame only")
 
-    pitcher_id, official_name = _resolve_player_id(player, http_get=http_get)
+    # Pass the target event time through the shared resolver so ambiguous or
+    # newly promoted MLB identities can be disambiguated against the official
+    # probable-pitcher schedule before failing closed.
+    pitcher_id, official_name = _resolve_player_id(
+        player,
+        http_get=http_get,
+        event_start=event_start,
+    )
     sched = _schedule_context(pitcher_id, event_start=event_start, http_get=http_get)
     current_game_pk = _int(sched.get("official_game_pk"))
     pitcher_side = str(sched.get("side") or "").upper()

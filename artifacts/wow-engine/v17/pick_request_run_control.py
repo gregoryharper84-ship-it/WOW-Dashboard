@@ -472,6 +472,23 @@ def _pending_rows(db: Any, request_id: str) -> list[dict[str, Any]]:
     return pending
 
 
+def _durable_pending_resume_is_safe(
+    outcome: dict[str, Any],
+    *,
+    request_id: str,
+    row_key: str,
+) -> bool:
+    resume = outcome.get("resume") if isinstance(outcome.get("resume"), dict) else {}
+    return (
+        outcome.get("status") == "UNRESOLVED"
+        and outcome.get("code") == "DURABLE_ROW_PENDING_SAFE_TO_RESUME"
+        and outcome.get("retry_allowed") is True
+        and str(resume.get("request_id") or "") == str(request_id)
+        and str(resume.get("row_key") or "") == str(row_key)
+        and resume.get("contract") == "REUSE_EXACT_BOARD_REQUEST_ID_AND_ROW_KEY"
+    )
+
+
 def _receipt_preflight(
     db: Any,
     request_id: str,
@@ -503,7 +520,11 @@ def _receipt_preflight(
             key = str(outcome.get("row_key"))
             record = by_key[key]
             status = str(outcome.get("status") or "")
-            if status == "NOT_FOUND":
+            if status == "NOT_FOUND" or _durable_pending_resume_is_safe(
+                outcome,
+                request_id=request_id,
+                row_key=key,
+            ):
                 safe.append(record)
                 continue
             if status != "MATCHED" or int(outcome.get("match_count") or 0) != 1:
