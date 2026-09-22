@@ -38,7 +38,9 @@ def initialize_observability() -> dict[str, Any]:
     from v17.sep21_orchestration_integrity_repair import (
         install_sep21_orchestration_integrity_repairs,
     )
+    from v17.scout_internal_service_auth import install_scout_internal_service_auth
 
+    install_scout_internal_service_auth()
     install_team_event_bridge_runtime()
     install_multisport_team_event_bridges()
     install_universal_team_event_governance()
