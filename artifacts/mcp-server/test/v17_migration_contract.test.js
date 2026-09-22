@@ -124,7 +124,7 @@ test("Daily row detail substitutes run_id and forwards only bounded query fields
   let observedUrl;
   const fetchImpl = async (url) => {
     observedUrl = url;
-    return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    return new Response(JSON.stringify({ ok: true, can_execute: false }), { status: 200 });
   };
   await invokeV17Operation(
     "readWowV17DailySnapshotRowDetail",
@@ -134,25 +134,81 @@ test("Daily row detail substitutes run_id and forwards only bounded query fields
   assert.equal(observedUrl, "https://backend.example/v17/daily-snapshot-run/run%2Fabc/rows?offset=5&limit=10");
 });
 
-test("upstream typed failures are preserved and never rewritten to MODEL_UNAVAILABLE", async () => {
-  const fetchImpl = async () => new Response(
-    JSON.stringify({ status: "MODEL_SCORER_FAILED", blocker: "SCORER_EXCEPTION" }),
-    { status: 422 },
-  );
+test("all core governed model failures survive non-2xx responses without gateway relabeling", async () => {
+  for (const status of [
+    "MODEL_UNAVAILABLE",
+    "MODEL_INPUTS_INSUFFICIENT",
+    "MODEL_SCORER_FAILED",
+    "MODEL_OUTPUT_INVALID",
+  ]) {
+    const fetchImpl = async () => new Response(
+      JSON.stringify({ status, blocker: `${status}_DETAIL`, scoring_attempted: status !== "MODEL_UNAVAILABLE", can_execute: false }),
+      { status: 422, headers: { "content-type": "application/json" } },
+    );
 
-  await assert.rejects(
-    invokeV17Operation(
+    const result = await invokeV17Operation(
       "scoreWowPickRequest",
       { request_id: "req-1", rows: [{ row_key: "row-1" }] },
       { fetchImpl, backendKey: "secret", baseUrl: "https://backend.example" },
-    ),
-    (error) => {
-      assert.ok(error instanceof V17GatewayError);
-      assert.equal(error.code, "UPSTREAM_TYPED_FAILURE");
-      assert.equal(error.details.upstream_payload.status, "MODEL_SCORER_FAILED");
-      assert.equal(JSON.stringify(error.details).includes("MODEL_UNAVAILABLE"), false);
-      return true;
-    },
+    );
+
+    assert.equal(result.status, status);
+    assert.equal(result.blocker, `${status}_DETAIL`);
+    assert.equal(Object.prototype.hasOwnProperty.call(result, "gateway_status"), false);
+    assert.equal(result.can_execute, false);
+    assert.equal(result.mcp_gateway.can_execute, false);
+  }
+});
+
+test("later market failure cannot erase an already valid sporting probability", async () => {
+  const fetchImpl = async () => new Response(
+    JSON.stringify({
+      status: "MARKET_DATA_UNAVAILABLE",
+      sporting_probability: 0.631,
+      probability_publishable: true,
+      rank_eligible: false,
+      blockers: ["MARKET_DATA_UNAVAILABLE"],
+      can_execute: false,
+    }),
+    { status: 409, headers: { "content-type": "application/json" } },
+  );
+
+  const result = await invokeV17Operation(
+    "scoreWowV17TeamEventFromWowHost",
+    { event_key: "acceptance" },
+    { fetchImpl, backendKey: "secret", baseUrl: "https://backend.example" },
+  );
+
+  assert.equal(result.status, "MARKET_DATA_UNAVAILABLE");
+  assert.equal(result.sporting_probability, 0.631);
+  assert.equal(result.probability_publishable, true);
+  assert.equal(result.rank_eligible, false);
+});
+
+test("non-governed upstream HTTP failures stay transport-layer failures", async () => {
+  const fetchImpl = async () => new Response("bad gateway", { status: 502 });
+  await assert.rejects(
+    invokeV17Operation("getWowV17Capabilities", {}, { fetchImpl, backendKey: "secret", baseUrl: "https://backend.example" }),
+    (error) => error instanceof V17GatewayError && error.code === "UPSTREAM_HTTP_FAILURE",
+  );
+});
+
+test("backend authentication failure remains distinct from model failure", async () => {
+  const fetchImpl = async () => new Response(JSON.stringify({ detail: "unauthorized" }), { status: 401 });
+  await assert.rejects(
+    invokeV17Operation("getWowV17Capabilities", {}, { fetchImpl, backendKey: "bad", baseUrl: "https://backend.example" }),
+    (error) => error instanceof V17GatewayError && error.code === "BACKEND_AUTH_FAILED",
+  );
+});
+
+test("upstream can_execute=true fails closed instead of being relayed", async () => {
+  const fetchImpl = async () => new Response(
+    JSON.stringify({ ok: true, nested: { can_execute: true } }),
+    { status: 200, headers: { "content-type": "application/json" } },
+  );
+  await assert.rejects(
+    invokeV17Operation("getWowV17Governance", {}, { fetchImpl, backendKey: "secret", baseUrl: "https://backend.example" }),
+    (error) => error instanceof V17GatewayError && error.code === "MCP_GOVERNANCE_VIOLATION",
   );
 });
 
@@ -184,7 +240,7 @@ test("missing backend credential fails closed", async () => {
 });
 
 test("gateway decoration preserves backend payload and adds only safety metadata", () => {
-  const out = decorateGatewayResult("getWowV17BackendHealth", { ok: true, runtime_generation: "V17_ACTIVE" });
+  const out = decorateGatewayResult("getWowV17BackendHealth", { ok: true, runtime_generation: "V17_ACTIVE", can_execute: false });
   assert.equal(out.ok, true);
   assert.equal(out.runtime_generation, "V17_ACTIVE");
   assert.equal(out.mcp_gateway.terminal_authority, "V17_TERMINAL_REDUCER");
@@ -194,6 +250,7 @@ test("gateway decoration preserves backend payload and adds only safety metadata
 test("error payload remains typed and non-executable", () => {
   const out = errorPayload(new V17GatewayError("ACTION_TRANSPORT_FAILURE", "network failed"), "scoreWowPickRequest");
   assert.equal(out.gateway_status, "ACTION_TRANSPORT_FAILURE");
+  assert.equal(out.can_execute, false);
   assert.equal(out.mcp_gateway.can_execute, false);
 });
 
