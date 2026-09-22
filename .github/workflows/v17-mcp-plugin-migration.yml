@@ -53,6 +53,7 @@ jobs:
           node --check artifacts/mcp-server/src/v17_stdio.js
           node --check artifacts/mcp-server/src/v17_http.js
           node --check artifacts/mcp-server/test/v17_migration_contract.test.js
+          node --check artifacts/mcp-server/test/v17_http_integration.test.js
 
       - name: Run V17 migration contract tests
         run: pnpm --filter @workspace/mcp-server test:v17
