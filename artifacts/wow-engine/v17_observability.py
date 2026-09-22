@@ -31,10 +31,19 @@ def initialize_observability() -> dict[str, Any]:
     from v17.team_event_bridge_runtime import install_team_event_bridge_runtime
     from v17.multisport_team_event_bridges import install_multisport_team_event_bridges
     from v17.universal_team_event_governance import install_universal_team_event_governance
+    from v17.team_event_sport_parity import (
+        install_cross_sport_discovery_evidence_handoff,
+        install_team_event_sport_parity,
+    )
 
     install_team_event_bridge_runtime()
     install_multisport_team_event_bridges()
     install_universal_team_event_governance()
+    # Parity must be the outer orchestration wrapper: every cataloged sport gets
+    # the same discovery/evidence/model/governance accounting shape, while the
+    # exact sport bridge keeps ownership of its fitted probability and inputs.
+    install_team_event_sport_parity()
+    install_cross_sport_discovery_evidence_handoff()
 
     try:
         install_interactive_team_event_latency()
