@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "node --watch --env-file=../../.env src/index.js 2>/dev/null || node --watch src/index.js",
     "start": "node src/index.js",
+    "start:v17": "node src/v17_http.js",
     "v17:stdio": "node src/v17_stdio.js",
     "v17:http": "node src/v17_http.js",
     "test:v17": "node --test test/v17_migration_contract.test.js test/v17_http_integration.test.js",
