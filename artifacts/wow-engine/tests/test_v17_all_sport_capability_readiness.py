@@ -7,12 +7,13 @@ from v17.team_event_capability_manifest import EXPECTED_TEAM_EVENT_SPORTS
 REQUEST_DEPENDENT = {"WNBA", "NHL", "SOCCER", "TENNIS", "MMA"}
 
 
-def _health(*, registered=True, scorer=True, artifact=True, certification="CERTIFIED"):
+def _health(*, registered=True, scorer=True, artifact=True, certification="CERTIFIED", **extra):
     return {
         "registered": registered,
         "scorer_resolvable": scorer,
         "model_artifact_present": artifact,
         "certification_status": certification,
+        **extra,
     }
 
 
@@ -33,6 +34,7 @@ def test_multisport_certification_does_not_overstate_autonomous_readiness():
         assert row["request_scoring_path_ready"] is True
         assert row["model_capability_ready"] is False
         assert row["operational_readiness_status"] == "CERTIFIED_REQUEST_DEPENDENT"
+        assert row["operational_certification_status"] == "CERTIFIED_DEPENDENCIES_UNBOUND"
         assert "SERVER_CALIBRATION_ARTIFACT_NOT_BOUND" in row["readiness_blockers"]
         assert "BACKEND_SPORT_EVIDENCE_HYDRATOR_NOT_BOUND" in row["readiness_blockers"]
         assert row["calibration_dependency_satisfied"] is False
@@ -62,15 +64,39 @@ def test_unregistered_sports_are_truthfully_unavailable_not_fake_ready():
         assert row["can_execute"] is False
 
 
-def test_nfl_stays_fail_closed_until_certification_is_active():
+def test_nfl_stays_fail_closed_until_live_champion_is_proven():
     row = _readiness(
         "NFL",
         _health(certification="CANDIDATE_REGISTERED_UNCERTIFIED"),
     )
     assert row["model_capability_ready"] is False
     assert row["request_scoring_path_ready"] is False
-    assert "TEAM_EVENT_CERTIFICATION_NOT_ACTIVE" in row["readiness_blockers"]
-    assert row["calibration_mode"] == "BRIDGE_OWNED"
+    assert "NFL_ACTIVE_PROMOTED_CHAMPION_NOT_PROVEN" in row["readiness_blockers"]
+    assert row["calibration_mode"] == "BRIDGE_OWNED_CHAMPION"
+    assert row["can_execute"] is False
+
+
+def test_nfl_live_champion_can_prove_operational_readiness_without_static_promotion():
+    row = _readiness(
+        "NFL",
+        _health(
+            certification="CANDIDATE_REGISTERED_UNCERTIFIED",
+            runtime_artifact_certification_status="PASS",
+            runtime_artifact_certification_code="NFL_ACTIVE_PROMOTED_CHAMPION_PROVEN",
+            runtime_model_artifact_version="NFL_EVENT_LOGREG_PLATT_V1_TEST",
+            runtime_calibration_version="NFL_PLATT_TIME_SPLIT_V1_TEST",
+            runtime_calibration_training_n=285,
+        ),
+    )
+    assert row["certification_identity_status"] == "CANDIDATE_REGISTERED_UNCERTIFIED"
+    assert row["runtime_artifact_certification_status"] == "PASS"
+    assert row["operational_certification_status"] == "CERTIFIED_OPERATIONAL"
+    assert row["operational_readiness_status"] == "READY"
+    assert row["model_capability_ready"] is True
+    assert row["request_scoring_path_ready"] is True
+    assert row["calibration_dependency_satisfied"] is True
+    assert row["hydration_dependency_satisfied"] is True
+    assert row["readiness_blockers"] == []
     assert row["can_execute"] is False
 
 
