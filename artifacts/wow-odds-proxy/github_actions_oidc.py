@@ -2,11 +2,16 @@
 
 This internal automation credential is accepted only from GitHub's issuer for
 the exact WOW-Dashboard workflow on protected main. Existing bearer-key auth
-remains supported for Custom GPT/other clients. This verifier is read-only and
-cannot authorize wager execution.
+remains supported for Custom GPT/other clients. A separate optional
+WOW_ODDS_PROXY_INTERNAL_KEY is accepted for Render-to-Render acquisition so the
+production engine can authenticate without rotating or exposing the existing
+Custom GPT bearer. This verifier is read-only and cannot authorize wager
+execution.
 """
 from __future__ import annotations
 
+import os
+import secrets
 from typing import Any
 
 import jwt
@@ -24,7 +29,7 @@ ALLOWED_EVENTS = frozenset({"push", "schedule", "workflow_dispatch"})
 
 
 class GitHubOIDCValidationError(ValueError):
-    """Raised when an OIDC token cannot satisfy the exact Scout trust policy."""
+    """Raised when an automation token cannot satisfy the exact Scout trust policy."""
 
 
 def validate_github_actions_claims(claims: dict[str, Any]) -> dict[str, Any]:
@@ -46,9 +51,27 @@ def validate_github_actions_claims(claims: dict[str, Any]) -> dict[str, Any]:
     return dict(claims)
 
 
+def _internal_service_auth(token: str) -> dict[str, Any] | None:
+    configured = os.environ.get("WOW_ODDS_PROXY_INTERNAL_KEY")
+    if not configured or not isinstance(token, str):
+        return None
+    if not secrets.compare_digest(token, configured):
+        return None
+    return {
+        "auth_mode": "RENDER_INTERNAL_SERVICE_BEARER",
+        "audience": "wow-odds-proxy",
+        "can_execute": False,
+    }
+
+
 def verify_github_actions_oidc(token: str, *, jwk_client: PyJWKClient | None = None) -> dict[str, Any]:
     if not isinstance(token, str) or not token.strip():
         raise GitHubOIDCValidationError("GITHUB_OIDC_TOKEN_MISSING")
+
+    internal = _internal_service_auth(token)
+    if internal is not None:
+        return internal
+
     try:
         client = jwk_client or PyJWKClient(JWKS_URL, cache_keys=True)
         signing_key = client.get_signing_key_from_jwt(token)
