@@ -150,9 +150,6 @@ def compose_active_runtime() -> bool:
         install_market_prior_ingress_repair,
         install_rundown_v2_auth_repair,
     )
-    from v17.sep21_orchestration_integrity_repair import (
-        install_sep21_orchestration_integrity_repairs,
-    )
     from v17 import team_event_request_runtime as team_runtime
 
     rundown_auth_ok = install_rundown_v2_auth_repair()
@@ -168,7 +165,6 @@ def compose_active_runtime() -> bool:
     full_board_overlay_ok = install_cross_sport_full_board_overlay()
 
     market_api = sys.modules.get("api_prod_market")
-    sep21_repairs = install_sep21_orchestration_integrity_repairs(market_api=market_api)
     numerical_ok = False
     mlb_event_bridge_deferred = False
     runtime_acceptance_ok = False
@@ -210,7 +206,6 @@ def compose_active_runtime() -> bool:
         rundown_auth_ok or market_prior_ok
         or prop_ok or lineup_ok or rehydration_ok or rundown_llp_ok or numerical_ok
         or full_board_overlay_ok
-        or any(sep21_repairs.values())
         or mlb_event_bridge_deferred or runtime_acceptance_ok or daily_snapshot_oidc_ok
         or full_board_runtime_ok or fallback_provider_health_ok
         or getattr(market_api, "_v17_certified_numerical_bridge_installed", False)

@@ -17,10 +17,9 @@ failures remain blocking. can_execute is always false.
 from __future__ import annotations
 
 from math import isfinite
-from typing import Any
+from typing import Any, Iterable
 
 CAN_EXECUTE = False
-RUN_INVALID_EVIDENCE_BINDING = "RUN_INVALID_EVIDENCE_BINDING"
 _SUPPORTED_HANDOFF_INTENTS = frozenset({
     "WINNER",
     "BEST_SIDE",
@@ -128,12 +127,10 @@ def _annotate_schema_mismatch(
 
     out = dict(result)
     typed = [f"V17_HANDOFF_SCHEMA_MISMATCH:{reason}" for reason in mismatches]
-    out["blockers"] = sorted(set([*(out.get("blockers") or []), RUN_INVALID_EVIDENCE_BINDING, *typed]))
-    out["run_validity_status"] = RUN_INVALID_EVIDENCE_BINDING
+    out["blockers"] = sorted(set([*(out.get("blockers") or []), *typed]))
     out["evidence_handoff_schema_mismatch"] = {
         "status": "FAIL",
         "code": "V17_HANDOFF_SCHEMA_MISMATCH",
-        "run_invalid_code": RUN_INVALID_EVIDENCE_BINDING,
         "contradictions": mismatches,
         "rank_eligible": False,
         "probability_publishable": False,
@@ -141,9 +138,6 @@ def _annotate_schema_mismatch(
     }
     # Diagnostic only. Never use a contradiction detector to bypass the normal
     # probability-audit, governor, final-refresh, or terminal-reducer chain.
-    # The already-computed sporting package may remain visible for diagnosis,
-    # but the run cannot masquerade as an ordinary no-pick while producer and
-    # consumer schemas contradict one another.
     out["rank_eligible"] = False
     out["probability_publishable"] = False
     out["can_execute"] = False
@@ -192,6 +186,5 @@ def install_evidence_handoff_rank_fix(*, preservation: Any) -> bool:
 
 
 __all__ = [
-    "RUN_INVALID_EVIDENCE_BINDING",
     "install_evidence_handoff_rank_fix",
 ]
