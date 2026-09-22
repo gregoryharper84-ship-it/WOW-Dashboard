@@ -107,17 +107,26 @@ class TestLLPV171ShadowScorecard(unittest.TestCase):
         self.assertFalse(comparison.can_execute)
 
     def test_full_evaluation_is_advisory_only(self):
-        report = evaluate_shadow_rankings(_fixture(), min_cohort_rows=1)
+        report = evaluate_shadow_rankings(_fixture(), min_cohort_events=1)
         self.assertEqual(report["status"], "PASS")
         self.assertEqual(report["baseline_lambda"], 1.0)
         self.assertEqual(report["lambda_grid"], [0.0, 0.25, 1.0])
+        self.assertEqual(report["graded_unique_slate_event_n"], 4)
         self.assertFalse(report["automatic_promotion_allowed"])
         self.assertFalse(report["production_mutation_allowed"])
         self.assertFalse(report["can_execute"])
         self.assertIn("MLB", report["by_sport"])
+        self.assertIn("FAVORITE", report["by_market_role"])
+        self.assertIn("CLEAR", report["by_governance_class"])
+
+    def test_lambda_and_side_copies_do_not_inflate_cohort_eligibility(self):
+        self.assertEqual(len(_fixture()), 24)
+        report = evaluate_shadow_rankings(_fixture(), min_cohort_events=5)
+        self.assertEqual(report["graded_unique_slate_event_n"], 4)
+        self.assertNotIn("MLB", report["by_sport"])
 
     def test_no_rows_returns_empty_non_promoting_report(self):
-        report = evaluate_shadow_rankings([], min_cohort_rows=1)
+        report = evaluate_shadow_rankings([], min_cohort_events=1)
         self.assertEqual(report["status"], "NO_GRADED_SHADOW_ROWS")
         self.assertFalse(report["automatic_promotion_allowed"])
         self.assertFalse(report["can_execute"])
