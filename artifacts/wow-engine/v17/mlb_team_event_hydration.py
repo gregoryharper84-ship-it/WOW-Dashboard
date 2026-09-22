@@ -4,8 +4,11 @@ Direct team/event ingress prefers the canonical MLB forward-shadow ledger for
 venue/starter identity. Provider discovery ids are not automatically MLB
 canonical event ids, so the resolver first tries the supplied id and then, only
 when that exact lookup is empty, performs a bounded server-owned identity join
-on slate date + participants + scheduled start. The fallback must resolve to
-exactly one canonical MLB event before any request id is rewritten.
+on slate date + participants + scheduled start. If the requested future slate
+has not yet been captured by the current-day cron, the resolver invokes the
+existing governed MLB forward-shadow capture for that exact requested date and
+retries canonical identity once. The fallback must resolve to exactly one
+canonical MLB event before any request id is rewritten.
 
 When the canonical ledger has no usable snapshot (or is missing only the
 scorer's venue/starter fields), the request may supply a complete, explicitly
@@ -37,11 +40,6 @@ _CANONICAL_SELECT = (
     "snapshot_timestamp,feature_hydration_status"
 )
 
-# Provider event feeds frequently use city-only or nickname-only MLB participant
-# labels while the canonical forward ledger stores full club names. Identity
-# resolution must compare MLB-scoped aliases rather than raw display strings.
-# This map is intentionally league-scoped so shared names such as Rangers,
-# Giants, Cardinals, and Royals cannot collide with another sport.
 _MLB_TEAM_ALIASES: dict[str, str] = {
     "yankees": "NYY", "new york yankees": "NYY", "nyy": "NYY",
     "red sox": "BOS", "boston red sox": "BOS", "boston": "BOS", "bos": "BOS",
@@ -111,13 +109,7 @@ def _mlb_team_key(value: Any) -> str:
 
 
 def _team_match_strength(canonical_value: Any, provider_value: Any) -> int:
-    """Return 2 for exact MLB alias identity, 1 for safe ambiguous-city compatibility.
-
-    City-only labels such as New York, Chicago, and Los Angeles are never enough
-    by themselves to choose a club. They may participate in a canonical join only
-    when the opposite side is an exact alias match and start/slate identity makes
-    the final official event unique.
-    """
+    """2=exact MLB alias; 1=ambiguous city compatible only with other proof."""
     canonical_key = _mlb_team_key(canonical_value)
     provider_key = _mlb_team_key(provider_value)
     if canonical_key and provider_key and canonical_key == provider_key:
@@ -125,10 +117,7 @@ def _team_match_strength(canonical_value: Any, provider_value: Any) -> int:
 
     provider_text = _normalized_team_text(provider_value)
     canonical_text = _normalized_team_text(canonical_value)
-    if (
-        provider_text in _AMBIGUOUS_CITY_LABELS
-        and canonical_text.startswith(provider_text + " ")
-    ):
+    if provider_text in _AMBIGUOUS_CITY_LABELS and canonical_text.startswith(provider_text + " "):
         return 1
     return 0
 
@@ -142,13 +131,11 @@ def _caller_fallback(req: Any, *, blocker_code: str) -> dict[str, Any] | None:
     missing = [name for name in _CALLER_REQUIRED_FIELDS if not str(caller.get(name) or "").strip()]
     if missing:
         return None
-
     source_snapshot_id = str(getattr(req, "source_snapshot_id", "") or "").strip()
     snapshot_time = _aware(getattr(req, "latest_material_update_timestamp", None))
     now = datetime.now(timezone.utc)
     if not source_snapshot_id or snapshot_time is None or snapshot_time > now:
         return None
-
     evidence = {
         **caller,
         "venue": str(caller["venue"]).strip(),
@@ -180,62 +167,67 @@ def _usable_rows(rows: list[dict[str, Any]], *, now: datetime) -> list[tuple[dat
         row = dict(raw)
         snap_time = _aware(row.get("snapshot_timestamp"))
         event_start = _aware(row.get("event_start_time"))
-        if snap_time is None or event_start is None:
-            continue
-        if snap_time > now:
+        if snap_time is None or event_start is None or snap_time > now:
             continue
         usable.append((snap_time, event_start, row))
     return usable
 
 
-def _identity_join_rows(req: Any, *, client: Any, now: datetime) -> dict[str, Any]:
-    """Resolve a provider event id to exactly one server-owned MLB identity.
-
-    The provider id itself is ignored here. The join is deliberately bounded to
-    the requested slate and requires both participants plus start-time agreement.
-    An ambiguous city-only side is allowed only when the opposite side is an
-    exact MLB alias match; the final official event still must be unique.
-    Multiple snapshots of the same official event collapse to the newest one;
-    multiple *event ids* remain ambiguous and fail closed.
-    """
-    requested_start = _aware(getattr(req, "event_start_time_utc", None))
-    requested_slate_date = str(getattr(req, "requested_slate_date", "") or "").strip()
-    if requested_start is None or not requested_slate_date:
-        return {
-            "ok": False,
-            "code": "MLB_TEAM_EVENT_CANONICAL_SNAPSHOT_UNAVAILABLE",
-            "missing_fields": list(_REQUIRED_CANONICAL_FIELDS),
-        }
-
+def _capture_requested_slate(req: Any, *, client: Any) -> dict[str, Any]:
+    """Use the existing governed forward-shadow collector for the requested date."""
+    slate_date = str(getattr(req, "requested_slate_date", "") or "").strip()
+    if not slate_date:
+        return {"ok": False, "code": "MLB_TEAM_EVENT_REQUESTED_SLATE_DATE_MISSING"}
     try:
-        rows = (
-            client
-            .table("wow_mlb_forward_shadow_events")
-            .select(_CANONICAL_SELECT)
-            .eq("official_date", requested_slate_date)
-            .eq("feature_hydration_status", "PASS")
-            .order("snapshot_timestamp", desc=True)
-            .limit(128)
+        specs = (
+            client.table("wow_mlb_v2d_frozen_spec")
+            .select("spec_id,status,created_at")
+            .eq("status", "RESEARCH_FROZEN")
+            .order("created_at", desc=True)
+            .limit(1)
             .execute()
             .data
             or []
         )
+        if not specs:
+            return {"ok": False, "code": "MLB_TEAM_EVENT_FROZEN_SPEC_UNAVAILABLE"}
+        payload = client.rpc(
+            "wow_mlb_capture_forward_shadow_schedule",
+            {"p_spec_id": str(specs[0]["spec_id"]), "p_slate_date": slate_date},
+        ).execute().data
     except Exception as exc:
         return {
             "ok": False,
-            "code": "MLB_TEAM_EVENT_CANONICAL_QUERY_FAILED",
+            "code": "MLB_TEAM_EVENT_CANONICAL_ACQUISITION_FAILED",
             "error_type": type(exc).__name__,
-            "missing_fields": [],
         }
+    return {
+        "ok": True,
+        "code": "MLB_TEAM_EVENT_CANONICAL_ACQUISITION_ATTEMPTED",
+        "capture": payload if isinstance(payload, dict) else {"status": "UNKNOWN"},
+        "can_execute": False,
+    }
+
+
+def _identity_join_rows(req: Any, *, client: Any, now: datetime) -> dict[str, Any]:
+    requested_start = _aware(getattr(req, "event_start_time_utc", None))
+    requested_slate_date = str(getattr(req, "requested_slate_date", "") or "").strip()
+    if requested_start is None or not requested_slate_date:
+        return {"ok": False, "code": "MLB_TEAM_EVENT_CANONICAL_SNAPSHOT_UNAVAILABLE", "missing_fields": list(_REQUIRED_CANONICAL_FIELDS)}
+    try:
+        rows = (
+            client.table("wow_mlb_forward_shadow_events").select(_CANONICAL_SELECT)
+            .eq("official_date", requested_slate_date).eq("feature_hydration_status", "PASS")
+            .order("snapshot_timestamp", desc=True).limit(128).execute().data or []
+        )
+    except Exception as exc:
+        return {"ok": False, "code": "MLB_TEAM_EVENT_CANONICAL_QUERY_FAILED", "error_type": type(exc).__name__, "missing_fields": []}
 
     matches_by_id: dict[str, tuple[datetime, datetime, dict[str, Any]]] = {}
     for snap_time, event_start, row in _usable_rows(list(rows), now=now):
         home_strength = _team_match_strength(row.get("home_team"), getattr(req, "home_team", None))
         away_strength = _team_match_strength(row.get("away_team"), getattr(req, "away_team", None))
-        if home_strength == 0 or away_strength == 0:
-            continue
-        if max(home_strength, away_strength) < 2:
-            # Never resolve a matchup from two ambiguous city-only labels.
+        if home_strength == 0 or away_strength == 0 or max(home_strength, away_strength) < 2:
             continue
         if abs((requested_start - event_start).total_seconds()) > _IDENTITY_START_TOLERANCE_SECONDS:
             continue
@@ -247,28 +239,11 @@ def _identity_join_rows(req: Any, *, client: Any, now: datetime) -> dict[str, An
             matches_by_id[canonical_id] = (snap_time, event_start, row)
 
     if not matches_by_id:
-        return {
-            "ok": False,
-            "code": "MLB_TEAM_EVENT_CANONICAL_SNAPSHOT_UNAVAILABLE",
-            "missing_fields": list(_REQUIRED_CANONICAL_FIELDS),
-        }
+        return {"ok": False, "code": "MLB_TEAM_EVENT_CANONICAL_SNAPSHOT_UNAVAILABLE", "missing_fields": list(_REQUIRED_CANONICAL_FIELDS)}
     if len(matches_by_id) > 1:
-        return {
-            "ok": False,
-            "code": "MLB_TEAM_EVENT_CANONICAL_IDENTITY_AMBIGUOUS",
-            "identity_mismatches": ["official_event_id"],
-            "candidate_count": len(matches_by_id),
-            "missing_fields": [],
-        }
-
+        return {"ok": False, "code": "MLB_TEAM_EVENT_CANONICAL_IDENTITY_AMBIGUOUS", "identity_mismatches": ["official_event_id"], "candidate_count": len(matches_by_id), "missing_fields": []}
     snap_time, event_start, row = next(iter(matches_by_id.values()))
-    return {
-        "ok": True,
-        "snap_time": snap_time,
-        "event_start": event_start,
-        "row": row,
-        "identity_resolution": "PARTICIPANTS_START_SLATE",
-    }
+    return {"ok": True, "snap_time": snap_time, "event_start": event_start, "row": row, "identity_resolution": "PARTICIPANTS_START_SLATE"}
 
 
 def resolve_mlb_team_event_evidence(req: Any, *, event_api: Any) -> dict[str, Any]:
@@ -276,36 +251,29 @@ def resolve_mlb_team_event_evidence(req: Any, *, event_api: Any) -> dict[str, An
     if not callable(get_client):
         fallback = _caller_fallback(req, blocker_code="MLB_TEAM_EVENT_CANONICAL_CLIENT_UNAVAILABLE")
         return fallback or {"ok": False, "code": "MLB_TEAM_EVENT_CANONICAL_CLIENT_UNAVAILABLE", "missing_fields": []}
-
     try:
         client = get_client()
         rows = (
-            client
-            .table("wow_mlb_forward_shadow_events")
-            .select(_CANONICAL_SELECT)
-            .eq("official_event_id", str(req.official_event_id))
-            .eq("feature_hydration_status", "PASS")
-            .order("snapshot_timestamp", desc=True)
-            .limit(8)
-            .execute()
-            .data
-            or []
+            client.table("wow_mlb_forward_shadow_events").select(_CANONICAL_SELECT)
+            .eq("official_event_id", str(req.official_event_id)).eq("feature_hydration_status", "PASS")
+            .order("snapshot_timestamp", desc=True).limit(8).execute().data or []
         )
     except Exception as exc:
         fallback = _caller_fallback(req, blocker_code="MLB_TEAM_EVENT_CANONICAL_QUERY_FAILED")
-        return fallback or {
-            "ok": False,
-            "code": "MLB_TEAM_EVENT_CANONICAL_QUERY_FAILED",
-            "error_type": type(exc).__name__,
-            "missing_fields": [],
-        }
+        return fallback or {"ok": False, "code": "MLB_TEAM_EVENT_CANONICAL_QUERY_FAILED", "error_type": type(exc).__name__, "missing_fields": []}
 
     now = datetime.now(timezone.utc)
     usable = _usable_rows(list(rows), now=now)
     identity_resolution = "EXACT_OFFICIAL_EVENT_ID"
+    acquisition: dict[str, Any] | None = None
     if not usable:
         joined = _identity_join_rows(req, client=client, now=now)
+        if joined.get("ok") is not True and joined.get("code") == "MLB_TEAM_EVENT_CANONICAL_SNAPSHOT_UNAVAILABLE":
+            acquisition = _capture_requested_slate(req, client=client)
+            joined = _identity_join_rows(req, client=client, now=datetime.now(timezone.utc))
         if joined.get("ok") is not True:
+            if acquisition is not None:
+                joined = {**joined, "canonical_acquisition": acquisition}
             fallback = _caller_fallback(req, blocker_code=str(joined.get("code") or "MLB_TEAM_EVENT_CANONICAL_SNAPSHOT_UNAVAILABLE"))
             return fallback or joined
         usable = [(joined["snap_time"], joined["event_start"], joined["row"])]
@@ -315,12 +283,7 @@ def resolve_mlb_team_event_evidence(req: Any, *, event_api: Any) -> dict[str, An
     snap_time, event_start, row = usable[0]
     requested_start = _aware(req.event_start_time_utc)
     if requested_start is None or abs((requested_start - event_start).total_seconds()) > _IDENTITY_START_TOLERANCE_SECONDS:
-        return {
-            "ok": False,
-            "code": "MLB_TEAM_EVENT_CANONICAL_IDENTITY_MISMATCH",
-            "identity_mismatches": ["event_start_time_utc"],
-            "missing_fields": [],
-        }
+        return {"ok": False, "code": "MLB_TEAM_EVENT_CANONICAL_IDENTITY_MISMATCH", "identity_mismatches": ["event_start_time_utc"], "missing_fields": []}
 
     identity_mismatches = []
     if _team_match_strength(row.get("home_team"), req.home_team) == 0:
@@ -328,21 +291,12 @@ def resolve_mlb_team_event_evidence(req: Any, *, event_api: Any) -> dict[str, An
     if _team_match_strength(row.get("away_team"), req.away_team) == 0:
         identity_mismatches.append("away_team")
     if identity_mismatches:
-        return {
-            "ok": False,
-            "code": "MLB_TEAM_EVENT_CANONICAL_IDENTITY_MISMATCH",
-            "identity_mismatches": identity_mismatches,
-            "missing_fields": [],
-        }
+        return {"ok": False, "code": "MLB_TEAM_EVENT_CANONICAL_IDENTITY_MISMATCH", "identity_mismatches": identity_mismatches, "missing_fields": []}
 
     missing = [name for name in _REQUIRED_CANONICAL_FIELDS if not str(row.get(name) or "").strip()]
     if missing:
         fallback = _caller_fallback(req, blocker_code="MLB_TEAM_EVENT_CANONICAL_SNAPSHOT_INCOMPLETE")
-        return fallback or {
-            "ok": False,
-            "code": "MLB_TEAM_EVENT_CANONICAL_SNAPSHOT_INCOMPLETE",
-            "missing_fields": missing,
-        }
+        return fallback or {"ok": False, "code": "MLB_TEAM_EVENT_CANONICAL_SNAPSHOT_INCOMPLETE", "missing_fields": missing}
 
     canonical = {
         "venue": row["venue_name"],
@@ -354,7 +308,6 @@ def resolve_mlb_team_event_evidence(req: Any, *, event_api: Any) -> dict[str, An
         "home_lineup_status": "PROJECTED",
         "away_lineup_status": "PROJECTED",
     }
-
     caller = dict(getattr(req, "sport_specific_evidence", None) or {})
     contradictions = []
     for key, value in canonical.items():
@@ -362,12 +315,7 @@ def resolve_mlb_team_event_evidence(req: Any, *, event_api: Any) -> dict[str, An
         if value not in (None, "") and supplied not in (None, "") and not _same_text(supplied, value):
             contradictions.append(key)
     if contradictions:
-        return {
-            "ok": False,
-            "code": "MLB_TEAM_EVENT_CALLER_EVIDENCE_CONTRADICTS_CANONICAL",
-            "identity_mismatches": contradictions,
-            "missing_fields": [],
-        }
+        return {"ok": False, "code": "MLB_TEAM_EVENT_CALLER_EVIDENCE_CONTRADICTS_CANONICAL", "identity_mismatches": contradictions, "missing_fields": []}
 
     return {
         "ok": True,
@@ -380,5 +328,6 @@ def resolve_mlb_team_event_evidence(req: Any, *, event_api: Any) -> dict[str, An
         "caller_source_snapshot_id": str(req.source_snapshot_id),
         "evidence_authority": "CANONICAL_MLB_LEDGER",
         "canonical_identity_resolution": identity_resolution,
+        "canonical_acquisition": acquisition,
         "can_execute": False,
     }
