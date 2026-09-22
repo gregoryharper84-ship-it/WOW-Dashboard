@@ -32,7 +32,11 @@ async function runAcceptance() {
     { capabilities: {} },
   );
   const transport = new StreamableHTTPClientTransport(remoteUrl, {
-    authProvider: { token: async () => token },
+    requestInit: {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    },
   });
 
   try {
