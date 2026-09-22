@@ -41,6 +41,7 @@ def initialize_observability() -> dict[str, Any]:
     from v17.cross_sport_acquisition_fairness import (
         install_cross_sport_acquisition_fairness,
     )
+    from v17.cross_sport_resilience_overlay import install_cross_sport_resilience
     from v17.scout_internal_service_auth import install_scout_internal_service_auth
 
     install_scout_internal_service_auth()
@@ -57,6 +58,10 @@ def initialize_observability() -> dict[str, Any]:
     # not spend another configured sport's discovery budget. This installer is
     # orchestration-only and leaves model/calibration/reducer ownership intact.
     install_cross_sport_acquisition_fairness()
+    # Resilience stays outside probability ownership: schedule discovery can use
+    # research-only ESPN identity, scorer work is bounded/fair across sports, and
+    # all unscored discovered rows remain explicit typed terminal holds.
+    install_cross_sport_resilience()
 
     try:
         install_interactive_team_event_latency()
