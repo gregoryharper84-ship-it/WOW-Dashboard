@@ -1,13 +1,13 @@
 """Fail-closed operational readiness overlay for every V17 team/event sport.
 
 Registration/certification identity is not the same as an autonomously usable
-production probability lane.  This overlay keeps those concepts separate so a
+production probability lane. This overlay keeps those concepts separate so a
 bridge cannot advertise ``model_capability_ready=true`` merely because its
 adapter imports and its specialist identity is certified while required runtime
 dependencies (for example calibration or backend hydration) are still external.
 
 The overlay does not change any fitted model, calibration coefficient, sporting
-probability, ranking rule, or terminal authority.  It only makes capability
+probability, ranking rule, or terminal authority. It only makes capability
 health truthful and same-shaped across the full twelve-sport catalog.
 """
 from __future__ import annotations
@@ -23,12 +23,6 @@ CAN_EXECUTE = False
 READINESS_CONTRACT_VERSION = "V17_TEAM_EVENT_OPERATIONAL_READINESS_V1"
 TERMINAL_AUTHORITY = "V17_TERMINAL_REDUCER"
 
-# MLB/NFL own hydration/calibration inside their exact sport publication chains.
-# The five multisport bridges can score only when the request supplies the fitted
-# sporting evidence and a matching certified calibration artifact.  Until a
-# server-owned hydrator/artifact registry is bound, they are request-dependent,
-# not autonomous production-ready lanes.
-_BRIDGE_OWNED_DEPENDENCIES = frozenset({"MLB", "NFL"})
 _REQUEST_DEPENDENT_MULTISPORT = frozenset(
     {"WNBA", "NHL", "SOCCER", "TENNIS", "MMA"}
 )
@@ -50,7 +44,7 @@ _HYDRATION_MODE = {
 
 _CALIBRATION_MODE = {
     "MLB": "BRIDGE_OWNED",
-    "NFL": "BRIDGE_OWNED",
+    "NFL": "BRIDGE_OWNED_CHAMPION",
     "WNBA": "REQUEST_SUPPLIED_CERTIFIED_ARTIFACT",
     "NHL": "REQUEST_SUPPLIED_CERTIFIED_ARTIFACT",
     "SOCCER": "REQUEST_SUPPLIED_CERTIFIED_ARTIFACT",
@@ -64,6 +58,44 @@ _CALIBRATION_MODE = {
 }
 
 
+def _nfl_runtime_champion_probe() -> dict[str, Any]:
+    """Prove the exact live NFL champion and calibrator through its own loader.
+
+    The NFL loader already enforces one active/promoted champion, matching model
+    family/version, active promoted PASS calibrator and artifact integrity. Health
+    reuses that authority rather than duplicating or weakening its certification
+    contract. Any unavailable DB/runtime condition fails closed.
+    """
+    try:
+        import api_prod_market_acceptance as production_base
+        from nfl_event_model_v17 import load_champion_model
+
+        get_client = getattr(getattr(production_base, "market_api", None), "prod", None)
+        get_client = getattr(get_client, "get_client", None)
+        if not callable(get_client):
+            raise RuntimeError("NFL_READINESS_DB_CLIENT_UNAVAILABLE")
+        champion = load_champion_model(get_client())
+        return {
+            "runtime_artifact_certification_status": "PASS",
+            "runtime_artifact_certification_code": "NFL_ACTIVE_PROMOTED_CHAMPION_PROVEN",
+            "runtime_model_artifact_version": champion.model_artifact_version,
+            "runtime_calibration_version": champion.calibration_version,
+            "runtime_calibration_training_n": champion.calibration_training_n,
+            "runtime_dependency_probe_error": None,
+            "can_execute": False,
+        }
+    except Exception as exc:  # noqa: BLE001 - health must fail closed
+        return {
+            "runtime_artifact_certification_status": "UNPROVEN",
+            "runtime_artifact_certification_code": "NFL_ACTIVE_PROMOTED_CHAMPION_NOT_PROVEN",
+            "runtime_model_artifact_version": None,
+            "runtime_calibration_version": None,
+            "runtime_calibration_training_n": None,
+            "runtime_dependency_probe_error": type(exc).__name__,
+            "can_execute": False,
+        }
+
+
 def _readiness(
     sport: str,
     health: Mapping[str, Any],
@@ -73,6 +105,13 @@ def _readiness(
     scorer = bool(health.get("scorer_resolvable"))
     model_artifact = bool(health.get("model_artifact_present"))
     certification = str(health.get("certification_status") or "NOT_CERTIFIED")
+    runtime_artifact_certified = (
+        str(health.get("runtime_artifact_certification_status") or "") == "PASS"
+    )
+
+    effective_certified = certification == "CERTIFIED" or (
+        normalized == "NFL" and runtime_artifact_certified
+    )
 
     blockers: list[str] = []
     if not registered:
@@ -81,26 +120,28 @@ def _readiness(
         blockers.append("TEAM_EVENT_SCORER_NOT_RESOLVABLE")
     if registered and not model_artifact:
         blockers.append("TEAM_EVENT_MODEL_ARTIFACT_NOT_RESOLVABLE")
-    if certification != "CERTIFIED":
+    if normalized == "NFL" and not runtime_artifact_certified:
+        blockers.append("NFL_ACTIVE_PROMOTED_CHAMPION_NOT_PROVEN")
+    elif not effective_certified:
         blockers.append("TEAM_EVENT_CERTIFICATION_NOT_ACTIVE")
 
     request_scoring_path_ready = bool(
-        registered
-        and scorer
-        and model_artifact
-        and certification == "CERTIFIED"
+        registered and scorer and model_artifact and effective_certified
     )
 
     calibration_mode = _CALIBRATION_MODE.get(normalized, "UNAVAILABLE")
     hydration_mode = _HYDRATION_MODE.get(normalized, "UNASSIGNED")
-    calibration_dependency_satisfied = normalized in _BRIDGE_OWNED_DEPENDENCIES
-    hydration_dependency_satisfied = normalized in _BRIDGE_OWNED_DEPENDENCIES
+    calibration_dependency_satisfied = normalized == "MLB" or (
+        normalized == "NFL" and runtime_artifact_certified
+    )
+    hydration_dependency_satisfied = normalized in {"MLB", "NFL"} and (
+        normalized != "NFL" or runtime_artifact_certified
+    )
 
     if normalized in _REQUEST_DEPENDENT_MULTISPORT and request_scoring_path_ready:
-        # The request schema can carry sport_specific_evidence, so these exact
-        # models remain invokable when the caller supplies certified evidence.
-        # But /health must not claim autonomous readiness until the backend owns
-        # both dependencies itself.
+        # These exact scorers can be invoked when the request supplies valid
+        # sporting evidence and a matching calibration artifact, but production
+        # health must not call them autonomous until server ownership is bound.
         blockers.extend(
             [
                 "SERVER_CALIBRATION_ARTIFACT_NOT_BOUND",
@@ -124,11 +165,16 @@ def _readiness(
 
     return {
         "readiness_contract_version": READINESS_CONTRACT_VERSION,
-        # Keep the repository/identity certification visible while publishing a
-        # separate operational certification state.  This prevents the health
-        # surface from implying that identity certification alone means the lane
-        # can autonomously complete a governed probability package.
         "certification_identity_status": certification,
+        "runtime_artifact_certification_status": str(
+            health.get("runtime_artifact_certification_status") or "NOT_APPLICABLE"
+        ),
+        "runtime_artifact_certification_code": health.get(
+            "runtime_artifact_certification_code"
+        ),
+        "runtime_model_artifact_version": health.get("runtime_model_artifact_version"),
+        "runtime_calibration_version": health.get("runtime_calibration_version"),
+        "runtime_calibration_training_n": health.get("runtime_calibration_training_n"),
         "operational_certification_status": operational_certification,
         "operational_readiness_status": operational_status,
         "model_capability_ready": autonomous_ready,
@@ -156,12 +202,7 @@ def install_all_sport_capability_readiness() -> dict[str, Any]:
     import v17.team_event_sport_parity as parity
 
     if getattr(bridges, "_v17_all_sport_capability_readiness_installed", False):
-        current = bridges.team_event_bridge_health()
-        return {
-            "status": "ALREADY_INSTALLED",
-            "team_event_bridges": current,
-            "can_execute": False,
-        }
+        return {"status": "ALREADY_INSTALLED", "can_execute": False}
 
     original_health = bridges.team_event_bridge_health
     original_state_for = parity._state_for
@@ -171,6 +212,8 @@ def install_all_sport_capability_readiness() -> dict[str, Any]:
         out: dict[str, dict[str, Any]] = {}
         for sport in EXPECTED_TEAM_EVENT_SPORTS:
             row = dict(base.get(sport) or {})
+            if sport == "NFL" and row.get("registered"):
+                row.update(_nfl_runtime_champion_probe())
             row.update(_readiness(sport, row))
             out[sport] = row
         for sport, value in base.items():
@@ -193,6 +236,9 @@ def install_all_sport_capability_readiness() -> dict[str, Any]:
                 "request_scoring_path_ready": readiness["request_scoring_path_ready"],
                 "certification_identity_status": readiness[
                     "certification_identity_status"
+                ],
+                "runtime_artifact_certification_status": readiness[
+                    "runtime_artifact_certification_status"
                 ],
                 "operational_certification_status": readiness[
                     "operational_certification_status"
@@ -222,7 +268,6 @@ def install_all_sport_capability_readiness() -> dict[str, Any]:
 
     return {
         "status": "INSTALLED",
-        "team_event_bridges": readiness_health(),
         "global_terminal_authority": TERMINAL_AUTHORITY,
         "can_execute": False,
     }
