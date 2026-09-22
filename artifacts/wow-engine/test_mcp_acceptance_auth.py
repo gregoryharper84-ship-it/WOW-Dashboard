@@ -34,6 +34,10 @@ def _auth():
     return build_action_auth_dependency(_primary_auth)
 
 
+def test_wrapped_dependency_preserves_canonical_action_auth_identity():
+    assert _auth().__name__ == "_require_action_api_key"
+
+
 def test_primary_action_key_is_unchanged_when_acceptance_is_disabled(monkeypatch):
     monkeypatch.delenv("WOW_MCP_ACCEPTANCE_AUTH_ENABLED", raising=False)
     monkeypatch.delenv("WOW_MCP_ACCEPTANCE_API_KEY", raising=False)
