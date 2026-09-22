@@ -219,7 +219,7 @@ def sharpapi_rows_to_odds_api_v4(rows: Any, *, sport_key: str | None = None) -> 
                 ],
             }
             for key, book in books.items()
-            if book["markets"]
+            if any(market["outcomes"] for market in book["markets"].values())
         ]
         if event["bookmakers"]:
             built.append(event)
