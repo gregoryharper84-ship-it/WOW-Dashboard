@@ -84,7 +84,7 @@ def classify_shadow_reasons(source: Mapping[str, Any]) -> tuple[tuple[str, ...],
 
 def _side_value(source: Mapping[str, Any], side: str, suffix: str) -> Any:
     prefix = "home" if side == "HOME" else "away"
-    return source.get(f"{prefix}_{suffix}")
+    return source.get(f"calibrated_{prefix}_{suffix}")
 
 
 def _favorite_role(source: Mapping[str, Any], side: str, selection: str) -> str | None:
@@ -109,9 +109,9 @@ def event_prediction_side_rows(source: Mapping[str, Any]) -> list[dict[str, Any]
     for side in ("HOME", "AWAY"):
         selection = _text(source.get("home_team" if side == "HOME" else "away_team"))
         opponent = _text(source.get("away_team" if side == "HOME" else "home_team"))
-        probability = _side_value(source, side, "calibrated_probability")
-        lower = _side_value(source, side, "calibrated_lower_bound")
-        upper = _side_value(source, side, "calibrated_upper_bound")
+        probability = _side_value(source, side, "probability")
+        lower = _side_value(source, side, "lower_bound")
+        upper = _side_value(source, side, "upper_bound")
         if selection is None or probability is None or lower is None:
             continue
         market_probability = source.get(
