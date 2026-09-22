@@ -1,6 +1,6 @@
 # WOW V17 Actions -> MCP/Plugin Migration
 
-Status: `IMPLEMENTATION / ACCEPTANCE_PENDING`
+Status: `IMPLEMENTATION / LIVE_ACCEPTANCE_PARTIAL`
 
 Change class: **Class B** probability-adjacent integration infrastructure. This package does not alter sporting-model mathematics, fitted artifacts, coefficients, calibration, lower bounds, qualification thresholds, model ownership, or terminal reduction.
 
@@ -20,12 +20,17 @@ Change class: **Class B** probability-adjacent integration infrastructure. This 
 ```text
 ChatGPT / WOW Plugin
         |
-        | OAuth 2.1 + PKCE in the final production integration
+        | OAuth 2.1 + Authorization Code/PKCE
+        | standard identity scopes: openid email
         v
 WOW V17 MCP gateway
         |
+        | signed-token validation:
+        | issuer + audience + exp/nbf + subject + client_id
+        | V17 authorization: wow_mcp_permissions JWT claim
+        |
         | Authorization: Bearer $WOW_ACTION_API_KEY
-        | credential remains server-side only
+        | backend credential remains server-side only
         v
 wow-governed-probability-engine.onrender.com
         |
@@ -45,24 +50,24 @@ The pre-existing `src/index.js` server remains a legacy WOW Data Hub compatibili
 
 The migration preserves the existing Action operation IDs:
 
-| MCP tool | Backend route | State |
-| --- | --- | --- |
-| `getWowV17BackendHealth` | `GET /health` | read-only |
-| `getWowV17Governance` | `GET /governance` | read-only |
-| `getWowV17HostContract` | `GET /v17/host-contract` | read-only |
-| `getWowV17DetailedEvidenceContract` | `GET /v17/detailed-evidence-contract` | read-only |
-| `getWowV17Capabilities` | `GET /v17/capabilities` | read-only |
-| `getWowV17RundownMarketHealth` | `GET /v17/market-health/rundown` | read-only |
-| `getWowV17OddsApiMarketHealth` | `GET /v17/market-health/odds-api` | read-only |
-| `getWowV17CompactEspnDiscovery` | `GET /v17/discovery/espn-compact` | read-only |
-| `scoreWowPickRequest` | `POST /score-pick-request` | stateful |
-| `scoreWowProp` | `POST /score-prop` | stateful |
-| `runWowV17DailySnapshot` | `POST /v17/daily-snapshot-run` | stateful |
-| `readWowV17DailySnapshotRowDetail` | `GET /v17/daily-snapshot-run/{run_id}/rows` | read-only |
-| `scoreWowV17TeamEventFromWowHost` | `POST /score-team-event` | stateful |
-| `lookupWowV17PredictionReceipts` | `POST /v17/prediction-receipts/lookup` | read-only |
-| `recordWowV17Recommendations` | `POST /record-recommendations` | stateful |
-| `settleWowV17Recommendations` | `POST /settle-recommendations` | stateful |
+| MCP tool | Backend route | Required V17 permission | State |
+| --- | --- | --- | --- |
+| `getWowV17BackendHealth` | `GET /health` | `wow.runtime.read` | read-only |
+| `getWowV17Governance` | `GET /governance` | `wow.governance.read` | read-only |
+| `getWowV17HostContract` | `GET /v17/host-contract` | `wow.governance.read` | read-only |
+| `getWowV17DetailedEvidenceContract` | `GET /v17/detailed-evidence-contract` | `wow.evidence.read` | read-only |
+| `getWowV17Capabilities` | `GET /v17/capabilities` | `wow.governance.read` | read-only |
+| `getWowV17RundownMarketHealth` | `GET /v17/market-health/rundown` | `wow.evidence.read` | read-only |
+| `getWowV17OddsApiMarketHealth` | `GET /v17/market-health/odds-api` | `wow.evidence.read` | read-only |
+| `getWowV17CompactEspnDiscovery` | `GET /v17/discovery/espn-compact` | `wow.evidence.read` | read-only |
+| `scoreWowPickRequest` | `POST /score-pick-request` | `wow.predictions.score` | stateful |
+| `scoreWowProp` | `POST /score-prop` | `wow.predictions.score` | stateful |
+| `runWowV17DailySnapshot` | `POST /v17/daily-snapshot-run` | `wow.daily.run` | stateful |
+| `readWowV17DailySnapshotRowDetail` | `GET /v17/daily-snapshot-run/{run_id}/rows` | `wow.predictions.read` | read-only |
+| `scoreWowV17TeamEventFromWowHost` | `POST /score-team-event` | `wow.predictions.score` | stateful |
+| `lookupWowV17PredictionReceipts` | `POST /v17/prediction-receipts/lookup` | `wow.predictions.read` | read-only |
+| `recordWowV17Recommendations` | `POST /record-recommendations` | `wow.recommendations.write` | stateful |
+| `settleWowV17Recommendations` | `POST /settle-recommendations` | `wow.settlements.write` | stateful |
 
 There is deliberately no tool for placing, approving, modifying, routing, canceling, or executing a wager or market order.
 
@@ -88,7 +93,7 @@ pnpm --filter @workspace/mcp-server test:v17
 pnpm --filter @workspace/mcp-server v17:stdio
 ```
 
-### Remote Streamable HTTP acceptance
+### Remote shared-token acceptance
 
 ```bash
 WOW_ACTION_API_KEY='server-side-only' \
@@ -97,18 +102,48 @@ WOW_MCP_SHARED_TOKEN='acceptance-token' \
 pnpm --filter @workspace/mcp-server v17:http
 ```
 
+### OAuth production candidate
+
+```bash
+WOW_ACTION_API_KEY='server-side-only' \
+WOW_MCP_AUTH_MODE=oauth \
+WOW_MCP_PUBLIC_URL='https://candidate.example' \
+WOW_MCP_OAUTH_ISSUER='https://PROJECT.supabase.co/auth/v1' \
+WOW_MCP_OAUTH_RESOURCE='https://candidate.example/mcp' \
+WOW_MCP_OAUTH_JWKS_URL='https://PROJECT.supabase.co/auth/v1/.well-known/jwks.json' \
+WOW_MCP_OAUTH_SCOPES='openid email' \
+WOW_MCP_OAUTH_ALLOWED_SUBJECTS='approved-user-uuid' \
+WOW_MCP_OAUTH_PERMISSION_CLAIM='wow_mcp_permissions' \
+pnpm --filter @workspace/mcp-server v17:http
+```
+
 Endpoints:
 
 - `GET /healthz` - gateway health only; never exposes secret values
+- `GET /.well-known/oauth-protected-resource` - OAuth protected-resource metadata
+- `GET /.well-known/oauth-protected-resource/mcp` - path-aware OAuth protected-resource metadata for `/mcp`
 - `/mcp` - MCP Streamable HTTP transport
 
 `WOW_MCP_AUTH_MODE=disabled` is for isolated CI/protocol tests only and must not be used on an internet-accessible service.
 
 ## Authentication promotion boundary
 
-The shared-token mode is an **acceptance scaffold**, not the final ChatGPT production authentication design.
+The shared-token mode is an **acceptance scaffold**, not the final ChatGPT production authentication design. The production candidate uses OAuth resource-server validation and fails closed if its OAuth configuration is incomplete.
 
-Before the production WOW GPT is migrated, the remote MCP gateway must be bound as an OAuth 2.1 protected resource suitable for ChatGPT, including Authorization Code + PKCE, protected-resource metadata, authorization-server metadata, issuer/audience/expiry validation, and least-privilege scope enforcement. The proposed scopes are:
+The gateway validates all of the following before accepting an OAuth MCP request:
+
+- asymmetric JWT signature from the configured JWKS (`RS256` or `ES256` only);
+- exact authorization-server issuer;
+- exact MCP resource in `aud`;
+- `exp` and optional `nbf`;
+- stable `sub` on an explicit server-side subject allowlist;
+- non-empty OAuth `client_id`;
+- operation-specific V17 permission from the signed `wow_mcp_permissions` claim;
+- the same OAuth principal for the lifetime of one MCP session.
+
+### Supabase scope limitation
+
+Supabase Auth currently supports standard OAuth/OIDC identity scopes such as `openid`, `email`, `profile`, and `phone`; it does **not** support arbitrary custom OAuth scopes for the V17 permission names. Therefore the strings below are **permissions, not advertised OAuth scopes**:
 
 ```text
 wow.runtime.read
@@ -121,7 +156,29 @@ wow.recommendations.write
 wow.settlements.write
 ```
 
+The intended Supabase integration is:
+
+1. enable the Supabase OAuth 2.1 server;
+2. use Authorization Code + PKCE and the standard `openid email` identity scopes;
+3. enable a Custom Access Token Hook that changes OAuth-client tokens only;
+4. for an explicitly authorized user subject, set `aud` to the exact MCP resource and add the least-privilege `wow_mcp_permissions` signed claim;
+5. leave ordinary non-OAuth application tokens unchanged;
+6. keep gateway-side subject, audience, client, signature, lifetime, and permission validation enabled.
+
+The gateway advertises only scopes the authorization server actually supports. It never labels `wow.*` permissions as OAuth scopes.
+
 `WOW_ACTION_API_KEY` must remain a secret on the MCP server and must never be returned to ChatGPT, committed to GitHub, placed in a Skill file, or written into logs.
+
+## Current promotion blockers
+
+The code path is intentionally separable from account-level configuration. As of the current migration work:
+
+- the canonical WOW Supabase project's OAuth server is not yet enabled;
+- the Auth/OAuth toggle and Custom Access Token Hook activation require account/dashboard configuration not exposed by the current engineering connector;
+- a fresh immutable Render candidate must receive `WOW_ACTION_API_KEY` through server-side secret configuration before backend-authenticated live scoring can be accepted;
+- the target ChatGPT workspace must support every required stateful/write MCP operation.
+
+These are promotion blockers, not reasons to weaken authentication or bypass V17 governance.
 
 ## Acceptance gates before production GPT migration
 
@@ -129,7 +186,7 @@ All gates are mandatory:
 
 1. CI proves the MCP package loads and exposes exactly the 16 governed operation IDs above.
 2. Streamable HTTP `/mcp` initializes successfully on the deployed candidate gateway.
-3. Auth fails closed for anonymous/invalid callers and OAuth scope enforcement is verified.
+3. Anonymous/invalid OAuth callers fail closed; protected-resource metadata, issuer, audience, lifetime, subject, client, session binding, and signed V17 permission enforcement are verified.
 4. `getWowV17BackendHealth` reaches the production backend and returns `can_execute=false`.
 5. A known valid one-row prop scores through `scoreWowPickRequest` and its immutable receipt is recovered by `lookupWowV17PredictionReceipts`.
 6. A four-row board reconciles one terminal result per input row with stable row identities and no duplicate prediction receipt.
