@@ -41,7 +41,7 @@ create table if not exists public.wow_llp_v17_1_shadow_observations (
     can_execute boolean not null default false check (can_execute = false),
     terminal_authority text not null default 'V17_TERMINAL_REDUCER' check (terminal_authority = 'V17_TERMINAL_REDUCER'),
     created_at timestamptz not null default now(),
-    unique (prediction_id, lambda_penalty, shadow_schema_version),
+    unique (prediction_id, selection, lambda_penalty, shadow_schema_version),
     check (calibrated_lower_bound <= calibrated_probability),
     check (calibrated_upper_bound is null or calibrated_probability <= calibrated_upper_bound),
     check (lower_bound_width = calibrated_probability - calibrated_lower_bound),
