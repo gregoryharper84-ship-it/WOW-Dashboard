@@ -1,10 +1,10 @@
-"""Sport-scoped V17 governance diagnostics.
+"""Sport-scoped V17 governance diagnostics for team/event and prop lanes.
 
 The legacy compatibility route exposes a static global
 ``probability_publishable=false``. That is not a row publication decision and
 must not hide healthy registered sport routes. This overlay reports route state
 for every cataloged sport while leaving actual row publication exclusively to
-the sport scorer + V17_TERMINAL_REDUCER.
+the exact scorer + V17_TERMINAL_REDUCER.
 """
 from __future__ import annotations
 
@@ -24,6 +24,7 @@ def install_team_event_governance_parity_route(*, market_api: Any) -> bool:
 
     import v17.team_event_bridge_runtime as bridges
     from v17.team_event_sport_parity import parity_health
+    from v17.prop_sport_parity import prop_sport_parity_summary
 
     existing = [
         route
@@ -39,9 +40,10 @@ def install_team_event_governance_parity_route(*, market_api: Any) -> bool:
         base = dict(prod.governance())
         bridge_health = bridges.team_event_bridge_health()
         sport_parity = parity_health(bridge_health)
+        prop_parity = prop_sport_parity_summary()
 
         # Capability diagnostics only. A route being ready means it may attempt
-        # a governed score; it does not make any event row publishable.
+        # a governed score; it does not make any event/prop row publishable.
         ready_sports = [
             sport
             for sport, state in sport_parity.items()
@@ -65,6 +67,15 @@ def install_team_event_governance_parity_route(*, market_api: Any) -> bool:
             "registered_sport_names": sorted(registered_sports),
             "model_capability_ready_sport_names": sorted(ready_sports),
             "row_publication_requires_terminal_reducer": True,
+        }
+        base["prop_sport_parity"] = prop_parity
+        base["cross_lane_sport_parity"] = {
+            "team_event_cataloged_sports": len(sport_parity),
+            "prop_cataloged_sports": prop_parity["cataloged_sports"],
+            "same_canonical_sport_universe": set(sport_parity) == set(prop_parity["sports"]),
+            "capability_equality_not_fabricated": True,
+            "row_publication_requires_terminal_reducer": True,
+            "can_execute": False,
         }
         base["global_terminal_authority"] = "V17_TERMINAL_REDUCER"
         base["can_execute"] = False
