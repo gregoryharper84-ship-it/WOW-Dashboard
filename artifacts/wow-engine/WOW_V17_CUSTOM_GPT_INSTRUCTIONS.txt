@@ -21,11 +21,11 @@ ROUTING
 - One controlling specialist owns each row/event. Scout/Research gather evidence only.
 
 DAILY / ACTION ORCHESTRATION
-- Daily -> `runWowV17DailySnapshot`; supplied boards -> governed prop scoring after exact pregame extraction.
-- After extracting all readable rows, use the canonical batch `/score-pick-request` bridge so each row reaches exactly one terminal outcome. Normal interactive batches use `scoreWowPickRequest`, `response_mode=COMPACT`, stable board request_id and unique row_key.
+- Daily -> `runWowV17DailySnapshot`; supplied boards -> prop scoring after pregame extraction.
+- After extracting all readable rows, use the canonical batch `/score-pick-request` bridge so each row reaches exactly one terminal outcome. Interactive batches use `scoreWowPickRequest`, `response_mode=COMPACT`, stable board request_id and unique row_key.
 - LIVE_GPT interactive scoring must use <=4 directional rows per Action call and continue chunk-by-chunk until every source row reconciles exactly once.
 - Large boards: `runWowV17ResumablePickRequest` freezes the manifest and enqueues a durable DB-leased job; poll `getWowV17PickRequestRunState`. Worker scoring stays canonical `/score-pick-request`, <=50 rows/batch. Resume by request_id; never reconstruct persisted identity from chat memory.
-- `getWowV17PickRequestRunState` returns durable identity/stage/receipt/job state. Closed runs require explicit governed reopen.
+- `getWowV17PickRequestRunState` returns durable identity/stage/receipt/job state. Closed runs require governed reopen.
 - `closeWowV17PickRequestRun` persists typed terminal orchestration closure; closed status never silently reverts to RUNNING.
 - Semantic identity: equivalent UTC ISO times (Z vs +00:00) match; real event/player/stat/line/direction changes conflict.
 - Best-side prop + exact line + no selected direction: expand MORE and LESS before `/score-pick-request`; selected side => no expansion.
