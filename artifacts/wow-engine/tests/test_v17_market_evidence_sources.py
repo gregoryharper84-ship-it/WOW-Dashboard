@@ -177,7 +177,9 @@ def test_canonical_market_key_mapping_is_case_and_separator_insensitive():
         assert sources.canonical_market_key(raw) == "h2h"
     for raw in ("Point Spread", "handicap", "SPREADS"):
         assert sources.canonical_market_key(raw) == "spreads"
-    assert sources.canonical_market_key("player_points") is None
+    assert sources.canonical_market_key("player_points") == "player_points"
+    assert sources.canonical_market_key("pitcher_strikeouts") == "pitcher_strikeouts"
+    assert sources.canonical_market_key("unknown_market") is None
     assert sources.canonical_market_key(None) is None
 
 
