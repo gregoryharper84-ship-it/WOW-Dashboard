@@ -17,9 +17,10 @@ failures remain blocking. can_execute is always false.
 from __future__ import annotations
 
 from math import isfinite
-from typing import Any, Iterable
+from typing import Any
 
 CAN_EXECUTE = False
+RUN_INVALID_EVIDENCE_BINDING = "RUN_INVALID_EVIDENCE_BINDING"
 _SUPPORTED_HANDOFF_INTENTS = frozenset({
     "WINNER",
     "BEST_SIDE",
@@ -39,6 +40,7 @@ _MISSING_REASON_FIELDS: dict[str, tuple[str, ...]] = {
     ),
     "LARGEST_FAVORITE_LOSS_PATH_MISSING": ("largest_favorite_loss_path",),
     "UNDERDOG_UPSET_PATH_MISSING": ("underdog_upset_path_json",),
+    "OFFICIAL_EVENT_ID_EVIDENCE_MISSING": ("official_event_id",),
 }
 
 
@@ -95,17 +97,23 @@ def _schema_mismatches(
     model_result: dict[str, Any],
     downstream: Any,
 ) -> list[str]:
-    """Detect only high-confidence present-upstream/missing-downstream contradictions.
+    """Detect high-confidence present-upstream/missing-downstream contradictions.
 
-    Calibration mismatch is deliberately excluded: a populated training-N field is
-    not proof that it matches the canonical registry row. A real calibration
-    provenance mismatch must remain a blocker.
+    Calibration mismatch is deliberately excluded: a populated training-N field
+    alone is not proof that it matches the canonical registry row. A real
+    calibration provenance mismatch remains a blocker.
     """
     reasons = _collect_reason_codes(downstream)
     mismatches: list[str] = []
 
     for reason, fields in _MISSING_REASON_FIELDS.items():
-        if reason in reasons and all(_present(model_result.get(field)) for field in fields):
+        values = []
+        for field in fields:
+            if field == "official_event_id":
+                values.append(getattr(req, field, None) or model_result.get(field))
+            else:
+                values.append(model_result.get(field))
+        if reason in reasons and all(_present(value) for value in values):
             mismatches.append(reason)
 
     if "HOME_LINEUP_NOT_CALLED" in reasons and _lineup_confirmed(req, model_result, "home"):
@@ -127,10 +135,14 @@ def _annotate_schema_mismatch(
 
     out = dict(result)
     typed = [f"V17_HANDOFF_SCHEMA_MISMATCH:{reason}" for reason in mismatches]
-    out["blockers"] = sorted(set([*(out.get("blockers") or []), *typed]))
+    out["blockers"] = sorted(
+        set([*(out.get("blockers") or []), RUN_INVALID_EVIDENCE_BINDING, *typed])
+    )
+    out["run_validity_status"] = RUN_INVALID_EVIDENCE_BINDING
     out["evidence_handoff_schema_mismatch"] = {
         "status": "FAIL",
         "code": "V17_HANDOFF_SCHEMA_MISMATCH",
+        "run_invalid_code": RUN_INVALID_EVIDENCE_BINDING,
         "contradictions": mismatches,
         "rank_eligible": False,
         "probability_publishable": False,
@@ -186,5 +198,7 @@ def install_evidence_handoff_rank_fix(*, preservation: Any) -> bool:
 
 
 __all__ = [
+    "RUN_INVALID_EVIDENCE_BINDING",
+    "_annotate_schema_mismatch",
     "install_evidence_handoff_rank_fix",
 ]
