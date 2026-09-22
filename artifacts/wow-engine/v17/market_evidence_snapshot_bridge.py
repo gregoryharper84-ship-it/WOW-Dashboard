@@ -207,6 +207,84 @@ def _attach_rows(candidate: dict[str, Any], rows: list[dict[str, Any]], *, lane:
     return {"attached": attached, "stale": len(stale), "historical": len(historical)}
 
 
+
+def _seed_prop_candidates(model: dict[str, Any], events: list[dict[str, Any]], *, generated_at: Any, now: datetime) -> dict[str, int]:
+    """Seed research-only prop identities from fresh, unambiguous provider rows.
+
+    This creates discovery candidates only. It never creates probability authority.
+    A row must carry an explicit prop market key, participant description, exact
+    numeric line, supported MORE/LESS direction, and fresh/aging evidence.
+    """
+    props = [dict(row) for row in model.get("prop_candidates", []) or [] if isinstance(row, dict)]
+    seen: set[tuple[str, str, str, float, str]] = set()
+    for candidate in props:
+        evidence = _existing_rows(candidate)
+        if not evidence:
+            continue
+        row = evidence[0]
+        try:
+            line = float(row.get("point"))
+        except (TypeError, ValueError):
+            continue
+        seen.add((
+            str(candidate.get("official_event_id") or ""),
+            str(row.get("market_key") or ""),
+            _norm(row.get("description")),
+            line,
+            str(row.get("outcome_name") or "").upper(),
+        ))
+
+    seeded = rejected = stale = 0
+    for event in events:
+        event_rows = _event_rows(event, generated_at=generated_at, now=now)
+        for row in event_rows:
+            market_key = str(row.get("market_key") or "")
+            if not is_prop_market(market_key):
+                continue
+            participant = str(row.get("description") or "").strip()
+            direction = str(row.get("outcome_name") or "").strip().upper()
+            point = row.get("point")
+            if row.get("freshness_state") not in {hardening.FRESH, hardening.AGING}:
+                stale += 1
+                continue
+            if not participant or direction not in {"OVER", "UNDER", "MORE", "LESS"} or isinstance(point, bool) or not isinstance(point, (int, float)):
+                rejected += 1
+                continue
+            event_id = str(event.get("id") or "").strip()
+            sport_key = str(event.get("sport_key") or "").strip()
+            start = event.get("commence_time")
+            home = str(event.get("home_team") or "").strip()
+            away = str(event.get("away_team") or "").strip()
+            if not event_id or not sport_key or _aware(start) is None or not home or not away:
+                rejected += 1
+                continue
+            key = (event_id, market_key, _norm(participant), float(point), direction)
+            if key in seen:
+                continue
+            seen.add(key)
+            props.append({
+                "official_event_id": event_id,
+                "sport_key": sport_key,
+                "commence_time": start,
+                "home_team": home,
+                "away_team": away,
+                "route": "WOW_PROP_LANE",
+                "controlling_specialist_route": "WOW_PROP_LANE",
+                "discovery_status": "DISCOVERY_ONLY",
+                "research_ceiling": "RESEARCH_INTEREST",
+                "probability_authority": False,
+                "market_evidence": row,
+                "market_evidence_status": "AVAILABLE",
+                "snapshot_seeded": True,
+                "canonicalization_required": True,
+                "contrarian_review_required": True,
+                "can_execute": False,
+            })
+            seeded += 1
+    model["prop_candidates"] = props
+    return {"seeded": seeded, "rejected": rejected, "stale": stale}
+
+
 def attach_snapshot_evidence(
     handoff: dict[str, Any],
     snapshot: dict[str, Any],
@@ -234,6 +312,15 @@ def attach_snapshot_evidence(
 
     events = [event for event in snapshot.get("events", []) or [] if isinstance(event, dict)]
     generated_at = snapshot.get("generated_at")
+    seed_result = _seed_prop_candidates(model, events, generated_at=generated_at, now=now)
+    # Rebuild candidate refs after seeding so sibling providers can enrich the
+    # newly-created prop identities during this same bridge pass.
+    lanes["prop_candidates"] = [dict(row) for row in model.get("prop_candidates", []) or [] if isinstance(row, dict)]
+    candidate_refs = [
+        (lane, idx, row)
+        for lane, rows in lanes.items()
+        for idx, row in enumerate(rows)
+    ]
     matched_events = 0
     ambiguous_events = 0
     unmatched_events = 0
@@ -271,6 +358,9 @@ def attach_snapshot_evidence(
         "snapshot_status": snapshot.get("status"),
         "snapshot_rows": (snapshot.get("reconciliation") or {}).get("captured_rows", len(events)),
         "snapshot_events": len(events),
+        "prop_candidates_seeded": seed_result["seeded"],
+        "prop_seed_rows_rejected": seed_result["rejected"],
+        "prop_seed_rows_stale_quarantined": seed_result["stale"],
         "matched_events": matched_events,
         "ambiguous_events": ambiguous_events,
         "unmatched_events": unmatched_events,
