@@ -20,6 +20,7 @@ This file is the repository source of truth for governed typed failure/status co
 | `DISCOVERED_ROW_MISSING_TERMINAL_DISPOSITION` | row reconciliation | A discovered candidate reached publication without exactly one terminal disposition. The row must remain visible and the run is incomplete. | No |
 | `FULL_BOARD_DISCOVERY_ROW_MISSING_CANDIDATE_ID` | row reconciliation | Discovery emitted a row without a stable candidate identity. | No |
 | `FULL_BOARD_FINAL_ROW_MISSING_CANDIDATE_ID` | row reconciliation | Final-stage output cannot be mapped back to a discovered candidate. | No |
+| `RUN_INVALID_EVIDENCE_BINDING` | evidence handoff / terminal reduction | A successful upstream sporting package contains required evidence while downstream governance reports the same evidence as missing/NOT_CALLED. The sporting package is preserved for diagnosis, but the run is invalid until the producer→consumer binding is repaired/replayed. | No |
 | `PROBABILITY_PACKAGE_NOT_VALID` | publication chain | Governing numeric probability package validation has not passed. | No |
 | `DYNAMIC_CALIBRATION_NOT_COMPLETE` | publication chain | Governed dynamic calibration has not completed. | No |
 | `PROBABILITY_AUDIT_NOT_COMPLETE` | publication chain | Probability audit has not passed after model/calibration completion. | No |
