@@ -34,6 +34,7 @@ def test_protected_workflow_ref_stays_pinned_to_nightly_multiscout_main():
     "workflow_ref,expected_suffix",
     [
         (oidc.DAILY_SNAPSHOT_WORKFLOW_REF, "/.github/workflows/wow-v17-daily-snapshot.yml@refs/heads/main"),
+        (oidc.TEAM_EVENT_RECOVERABLE_REFRESH_WORKFLOW_REF, "/.github/workflows/wow-v17-team-event-recoverable-refresh.yml@refs/heads/main"),
         (oidc.NFL_FORWARD_SHADOW_WORKFLOW_REF, "/.github/workflows/wow-v17-nfl-forward-shadow.yml@refs/heads/main"),
         (oidc.LLP_SHADOW_OBSERVER_WORKFLOW_REF, "/.github/workflows/wow-v17-llp-shadow-observer.yml@refs/heads/main"),
         (oidc.BASKETBALL_MODEL_MAINTENANCE_WORKFLOW_REF, "/.github/workflows/wow-v17-basketball-model-maintenance.yml@refs/heads/main"),
@@ -59,6 +60,7 @@ def test_workflow_allowlist_contains_only_known_internal_workflows():
     assert oidc.ALLOWED_WORKFLOW_REFS == frozenset({
         oidc.WORKFLOW_REF,
         oidc.DAILY_SNAPSHOT_WORKFLOW_REF,
+        oidc.TEAM_EVENT_RECOVERABLE_REFRESH_WORKFLOW_REF,
         oidc.NFL_FORWARD_SHADOW_WORKFLOW_REF,
         oidc.LLP_SHADOW_OBSERVER_WORKFLOW_REF,
         oidc.BASKETBALL_MODEL_MAINTENANCE_WORKFLOW_REF,
@@ -96,6 +98,7 @@ def test_oidc_claim_identity_mismatch_fails_closed(field, bad):
     [
         oidc.WORKFLOW_REF,
         oidc.DAILY_SNAPSHOT_WORKFLOW_REF,
+        oidc.TEAM_EVENT_RECOVERABLE_REFRESH_WORKFLOW_REF,
         oidc.NFL_FORWARD_SHADOW_WORKFLOW_REF,
         oidc.LLP_SHADOW_OBSERVER_WORKFLOW_REF,
         oidc.BASKETBALL_MODEL_MAINTENANCE_WORKFLOW_REF,

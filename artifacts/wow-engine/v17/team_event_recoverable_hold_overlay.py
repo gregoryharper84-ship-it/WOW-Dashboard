@@ -1,13 +1,14 @@
 """Cross-sport recoverable-hold semantics for V17 team/event scoring.
 
-A missing pregame input is not the same thing as a dead candidate.  This overlay
+A missing pregame input is not the same thing as a dead candidate. This overlay
 adds explicit retry/hold metadata to typed MODEL_INPUTS_INSUFFICIENT failures
 without inventing a probability or weakening terminal governance.
 
-It deliberately does *not* claim that a durable server-side watcher exists yet;
-that remains a separate infrastructure capability.  ``candidate_removed`` is
-false for recoverable pregame input gaps so the same immutable event identity can
-be refreshed later.
+Recoverable MONEYLINE holds are now bound to the governed hourly canonical-slate
+refresh controller. The controller re-enters the normal server-owned Daily
+hydration/scoring/governance path; it is not a second scorer and it never creates
+an executable wager. ``candidate_removed`` stays false so the canonical event can
+be refreshed when required pregame evidence becomes available.
 """
 from __future__ import annotations
 
@@ -17,6 +18,10 @@ from fastapi import HTTPException
 
 CAN_EXECUTE = False
 MODEL_INPUTS_INSUFFICIENT = "MODEL_INPUTS_INSUFFICIENT"
+DURABLE_RETRY_WATCHER_BOUND = True
+RETRY_WATCHER_MODE = "HOURLY_CANONICAL_FULL_SLATE_REFRESH"
+RETRY_WATCHER_WORKFLOW = "wow-v17-team-event-recoverable-refresh.yml"
+RETRY_WATCHER_CADENCE_MINUTES = 60
 
 _STATUS_FIELDS = {
     "home_lineup_status",
@@ -71,7 +76,10 @@ def _typed_hold(detail: dict[str, Any]) -> dict[str, Any]:
             "candidate_removed": False,
             "retry_required": True,
             "retry_trigger": retry_trigger,
-            "durable_retry_watcher_bound": False,
+            "durable_retry_watcher_bound": DURABLE_RETRY_WATCHER_BOUND,
+            "retry_watcher_mode": RETRY_WATCHER_MODE,
+            "retry_watcher_workflow": RETRY_WATCHER_WORKFLOW,
+            "retry_watcher_cadence_minutes": RETRY_WATCHER_CADENCE_MINUTES,
             "probability_package_present": bool(
                 out.get("model_probability") is not None
                 or out.get("calibrated_probability") is not None
@@ -126,5 +134,9 @@ def install_team_event_recoverable_hold_overlay() -> bool:
 
 __all__ = [
     "CAN_EXECUTE",
+    "DURABLE_RETRY_WATCHER_BOUND",
+    "RETRY_WATCHER_CADENCE_MINUTES",
+    "RETRY_WATCHER_MODE",
+    "RETRY_WATCHER_WORKFLOW",
     "install_team_event_recoverable_hold_overlay",
 ]
