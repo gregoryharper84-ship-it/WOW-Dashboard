@@ -30,7 +30,7 @@ def fair_discover_winner_slate(
     requested_slate_date: str,
     requested_timezone: str,
     fetch_sport_events: Callable[..., Iterable[Mapping[str, Any]]],
-    supported_sports: Iterable[str],
+    supported_sports: Iterable[str] | None = None,
     discovery_targets: Mapping[str, tuple[Any, ...]] | None = None,
     include_regime_variants: bool = False,
     now: Any = None,
@@ -47,7 +47,14 @@ def fair_discover_winner_slate(
     from v17 import cross_sport_winner_discovery as discovery
     from v17 import rundown_sport_registry as registry
 
-    families = tuple(str(family).upper() for family in supported_sports)
+    families = tuple(
+        str(family).upper()
+        for family in (
+            discovery.SUPPORTED_DISCOVERY_SPORTS
+            if supported_sports is None
+            else supported_sports
+        )
+    )
     targets = dict(
         discovery_targets
         if discovery_targets is not None
