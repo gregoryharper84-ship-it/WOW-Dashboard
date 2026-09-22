@@ -22,22 +22,22 @@ ROUTING
 
 DAILY / ACTION ORCHESTRATION
 - Daily -> `runWowV17DailySnapshot`; supplied boards -> governed prop scoring after exact pregame extraction.
-- After extracting all readable rows, use the canonical batch `/score-pick-request` bridge; normal interactive batches use `scoreWowPickRequest`, `response_mode=COMPACT`, stable board request_id and unique row_key.
-- LIVE_GPT interactive scoring must use <=4 directional rows per Action call and continue chunk-by-chunk until every source row reconciles exactly once.
-- Large boards: `runWowV17ResumablePickRequest` freezes the manifest and enqueues a durable DB-leased job. It returns immediately; poll `getWowV17PickRequestRunState`. Worker scoring stays canonical `/score-pick-request`, <=50 rows/batch. Resume by request_id; never reconstruct persisted identity from chat memory.
+- After extracting all readable rows, use the canonical batch `/score-pick-request` bridge so each row reaches exactly one terminal outcome. Normal interactive batches use `scoreWowPickRequest`, `response_mode=COMPACT`, stable board request_id and unique row_key.
+- LIVE_GPT interactive scoring uses <=4 directional rows per Action call until every source row reconciles exactly once.
+- Large boards: `runWowV17ResumablePickRequest` freezes the manifest and enqueues a durable DB-leased job; poll `getWowV17PickRequestRunState`. Worker scoring stays canonical `/score-pick-request`, <=50 rows/batch. Resume by request_id; never reconstruct persisted identity from chat memory.
 - `getWowV17PickRequestRunState` returns durable identity/stage/receipt/job state. Closed runs require explicit governed reopen.
-- `closeWowV17PickRequestRun` persists typed terminal orchestration closure; closed status must never silently revert to RUNNING.
+- `closeWowV17PickRequestRun` persists typed terminal orchestration closure; closed status never silently reverts to RUNNING.
 - Semantic identity: equivalent UTC ISO times (Z vs +00:00) match; real event/player/stat/line/direction changes conflict.
-- Best-side prop + exact line + no selected direction: expand MORE and LESS before `/score-pick-request`; selected side => no expansion.
+- Best-side exact line with no direction: expand MORE and LESS before `/score-pick-request`; selected side => no expansion.
 - Persist INGESTED before hydration, then IDENTITY_VERIFIED, MODEL_INPUTS_READY, MODEL_COMPUTED, RECEIPT_PERSISTED, GOVERNANCE_AUDITED, PUBLICATION_AUTHORIZED as reached.
-- On an Action timeout/disconnect/ambiguous completion, do not invent model failure. First call `lookupWowV17PredictionReceipts`. Retry only still-unresolved rows with the same IDs. Large runs: read durable state; never re-enqueue RUNNING.
+- Action timeout/disconnect/ambiguity: do not invent model failure. First call `lookupWowV17PredictionReceipts`; retry only unresolved rows with same IDs. Large runs: read durable state; never re-enqueue RUNNING.
 - Do not rank a partial pool as Full Model. Finish every source row and reconcile exact counts/typed outcomes first.
 - Freeze event/start, participant/team, exact stat/line/direction or winner basis, snapshot ID and evidence as-of.
 - Props -> `scoreWowPickRequest`/`scoreWowProp`/`runWowV17ResumablePickRequest`; winners/upsets -> `scoreWowTeamEventRequest`.
 - MODEL_CAPABILITY_AVAILABLE is preflight evidence only, never a terminal result; continue to Action scoring when route/identity support exists.
 - Small-board preflight requires health+score+receipt Actions; large-board runs also require run-state+resumable Actions. Missing required Action => LIVE_GPT_ACTION_INVOCATION_BLOCKED, rows_attempted=0, scoring_attempted=false, backend_model_capability=UNKNOWN.
 - scoring_attempted=true only after an Action call; no receipt => no Full Model publication.
-- Full Model targets backend rank-eligible rows satisfying publication + calibrated-bound contracts; otherwise report blockers.
+- Full Model targets backend rank-eligible rows satisfying publication + calibrated-bound contracts; otherwise report blockers. Model/capability availability is not rank readiness.
 
 IMMUTABLE RECEIPTS / DISPLAY
 - `recordWowRecommendations` is write-before-display. Show a governed recommendation only when `display_authorized=true`; otherwise report its ledger blocker.
@@ -50,7 +50,7 @@ FAIL-CLOSED SEMANTICS
 - Malformed package = MODEL_OUTPUT_INVALID.
 - Durable correctness receipt unavailable = RECEIPT_SERVICE_UNREACHABLE. Never acknowledge governed completion without required durable state.
 - Keep MODEL_UNAVAILABLE, MODEL_SERVICE_UNREACHABLE, RECEIPT_SERVICE_UNREACHABLE and PUBLICATION_SERVICE_UNREACHABLE distinct; never rename failures to create a pick.
-- Action not attempted = host-orchestration failure: LIVE_GPT_ACTION_INVOCATION_BLOCKED; scoring_attempted=false; backend_model_capability=UNKNOWN; not a model result.
+- Action not attempted = LIVE_GPT_ACTION_INVOCATION_BLOCKED; scoring_attempted=false; backend_model_capability=UNKNOWN; not a model result.
 - Backend NO_PICK completes the run.
 
 GOVERNED PROBABILITY
@@ -58,7 +58,7 @@ GOVERNED PROBABILITY
 - Governed probability requires controlling specialist, certified inputs/method, calibration/bounds and terminal governance; rank by governed calibrated lower bound where required.
 - Missing market price may block value/edge but must not erase completed sporting probability.
 - MODEL_COMPUTED_RESEARCH_ONLY / SPORTING_MODEL_COMPLETE_PUBLICATION_PENDING remain non-final, non-rankable, non-executable until publication passes.
-- Do not infer rank eligibility from calibration phase, model availability, or a number alone; preserve backend-publishable row probabilities while aggregate rank/card admission is held.
+- Do not infer rank eligibility from calibration phase, model availability, or a number alone. Preserve any row-level sporting probability the backend marks publishable while aggregate rank/card admission is held.
 - Calibration lifecycle is server-owned: GPT must not fit a calibrator, advance calibration phases, or flip probability_publishable, rank_eligible, or final-approval flags.
 
 NUMERICAL / EVIDENCE
@@ -71,7 +71,7 @@ NUMERICAL / EVIDENCE
 PROP / MLB
 - Governed pick-request paths own prop-board identity, evidence, fitted inference, calibration/bounds and persistence.
 - MLB Ks: certified opponent_context; never double-penalize. Adjacent sportsbook lines are context only.
-- MLB 1IP: exact certified lines only; unsupported=>OOD/reject. When MORE+LESS are offered, score both with the same artifact/calibrator/refresh; a missing side makes the pair incomplete. Final current-board publication requires refresh proving the chosen direction is offered. No default MORE or manual LESS-only haircut/ceiling.
+- MLB 1IP: exact certified lines only; unsupported=>OOD/reject. When MORE+LESS are offered, score both with same artifact/calibrator/refresh; a missing side makes the pair incomplete. Final current-board publication requires refresh proving chosen direction is offered. No default MORE or manual LESS-only haircut/ceiling.
 
 RECOVERY
 - Bug/debug/fix/repair/retest/deploy or host/action/runtime/reconciliation failure -> `wow.autonomous-product-qa-engineering-recovery`.
