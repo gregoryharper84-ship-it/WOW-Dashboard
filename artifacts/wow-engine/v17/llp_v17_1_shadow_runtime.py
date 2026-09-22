@@ -67,15 +67,21 @@ def _codes(*values: Any) -> tuple[str, ...]:
 
 
 def classify_shadow_reasons(source: Mapping[str, Any]) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    """Map only already-registered reason codes into hard/soft shadow classes."""
+    """Partition backend reasons conservatively without minting replacement codes.
+
+    Only explicitly recognized V17 soft uncertainty codes may remain soft. Every
+    other native blocker/reason is preserved verbatim as hard for shadow
+    admission. This prevents a newly introduced production blocker from being
+    accidentally weakened merely because the challenger has not learned it yet.
+    """
     reasons = _codes(
         source.get("blockers"),
         source.get("terminal_reasons"),
         source.get("rank_eligibility_reasons"),
         source.get("data_gaps"),
     )
-    hard = [code for code in reasons if code in HARD_BLOCK_CODES]
     soft = [code for code in reasons if code in SOFT_UNCERTAINTY_CODES]
+    hard = [code for code in reasons if code not in SOFT_UNCERTAINTY_CODES]
     if source.get("probability_invalidated") is True or source.get("rerun_required") is True:
         if "STALE_PROBABILITY_AFTER_MATERIAL_UPDATE" not in hard:
             hard.append("STALE_PROBABILITY_AFTER_MATERIAL_UPDATE")
@@ -85,6 +91,16 @@ def classify_shadow_reasons(source: Mapping[str, Any]) -> tuple[tuple[str, ...],
 def _side_value(source: Mapping[str, Any], side: str, suffix: str) -> Any:
     prefix = "home" if side == "HOME" else "away"
     return source.get(f"calibrated_{prefix}_{suffix}")
+
+
+def _market_no_vig_probability(source: Mapping[str, Any], side: str) -> Any:
+    """Use market data for divergence only when the stored prior is typed no-vig."""
+    quality = str(source.get("market_prior_quality") or "").strip().upper()
+    if quality != "MULTIBOOK_NO_VIG":
+        return None
+    return source.get(
+        "market_prior_home_probability" if side == "HOME" else "market_prior_away_probability"
+    )
 
 
 def _favorite_role(source: Mapping[str, Any], side: str, selection: str) -> str | None:
@@ -114,9 +130,6 @@ def event_prediction_side_rows(source: Mapping[str, Any]) -> list[dict[str, Any]
         upper = _side_value(source, side, "upper_bound")
         if selection is None or probability is None or lower is None:
             continue
-        market_probability = source.get(
-            "market_prior_home_probability" if side == "HOME" else "market_prior_away_probability"
-        )
         rows.append(
             {
                 "prediction_id": prediction_id,
@@ -137,7 +150,7 @@ def event_prediction_side_rows(source: Mapping[str, Any]) -> list[dict[str, Any]
                 "calibrated_probability": probability,
                 "calibrated_lower_bound": lower,
                 "calibrated_upper_bound": upper,
-                "market_no_vig_probability": market_probability,
+                "market_no_vig_probability": _market_no_vig_probability(source, side),
                 "hard_blockers": hard,
                 "soft_uncertainties": soft,
             }
@@ -181,7 +194,7 @@ def _event_prediction_select_fields() -> str:
         "sport,league,home_team,away_team,controlling_specialist,model_artifact_id,model_timestamp,"
         "calibrated_home_probability,calibrated_home_lower_bound,calibrated_home_upper_bound,"
         "calibrated_away_probability,calibrated_away_lower_bound,calibrated_away_upper_bound,"
-        "market_prior_home_probability,market_prior_away_probability,favorite_side,selected_market_role,"
+        "market_prior_home_probability,market_prior_away_probability,market_prior_quality,favorite_side,selected_market_role,"
         "blockers,terminal_reasons,rank_eligibility_reasons,data_gaps,probability_invalidated,rerun_required,"
         "probability_publishable,rank_eligible,terminal_label,can_execute"
     )
