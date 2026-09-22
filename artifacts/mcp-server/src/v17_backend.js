@@ -51,13 +51,54 @@ function buildQuery(args, names = []) {
   return text ? `?${text}` : "";
 }
 
+function isPlainObject(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
 async function readResponseBody(response) {
   const text = await response.text();
-  if (!text) return {};
+  if (!text) return { payload: {}, wasJson: true };
   try {
-    return JSON.parse(text);
+    return { payload: JSON.parse(text), wasJson: true };
   } catch {
-    return { raw_text: text };
+    return { payload: { raw_text: text }, wasJson: false };
+  }
+}
+
+function hasGovernedMarkers(payload) {
+  if (!isPlainObject(payload)) return false;
+  return [
+    "status",
+    "code",
+    "blocker",
+    "blockers",
+    "rank_eligible",
+    "probability_publishable",
+    "scoring_attempted",
+    "prediction_id",
+    "can_execute",
+  ].some((key) => Object.prototype.hasOwnProperty.call(payload, key));
+}
+
+export function assertNoExecutionAuthority(payload) {
+  const queue = [payload];
+  while (queue.length) {
+    const current = queue.shift();
+    if (isPlainObject(current)) {
+      if (current.can_execute === true) {
+        throw new V17GatewayError(
+          "MCP_GOVERNANCE_VIOLATION",
+          "Upstream attempted to grant execution authority; the MCP gateway failed closed.",
+        );
+      }
+      for (const value of Object.values(current)) {
+        if (isPlainObject(value) || Array.isArray(value)) queue.push(value);
+      }
+    } else if (Array.isArray(current)) {
+      for (const value of current) {
+        if (isPlainObject(value) || Array.isArray(value)) queue.push(value);
+      }
+    }
   }
 }
 
@@ -73,6 +114,7 @@ function gatewayMeta(operationName) {
 }
 
 export function decorateGatewayResult(operationName, payload) {
+  assertNoExecutionAuthority(payload);
   if (payload && typeof payload === "object" && !Array.isArray(payload)) {
     return { ...payload, mcp_gateway: gatewayMeta(operationName) };
   }
@@ -134,11 +176,23 @@ export async function invokeV17Operation(operationName, args = {}, options = {})
     );
   }
 
-  const payload = await readResponseBody(response);
-  if (!response.ok) {
+  const { payload, wasJson } = await readResponseBody(response);
+
+  if (response.status === 401 || response.status === 403) {
     throw new V17GatewayError(
-      "UPSTREAM_TYPED_FAILURE",
-      `WOW V17 backend returned HTTP ${response.status}. Preserve the backend failure payload; do not rewrite it as MODEL_UNAVAILABLE.`,
+      "BACKEND_AUTH_FAILED",
+      `WOW V17 backend rejected the server-held credential with HTTP ${response.status}.`,
+      { operation_id: operationName, upstream_status: response.status },
+    );
+  }
+
+  if (!response.ok) {
+    if (wasJson && hasGovernedMarkers(payload)) {
+      return decorateGatewayResult(operationName, payload);
+    }
+    throw new V17GatewayError(
+      "UPSTREAM_HTTP_FAILURE",
+      `WOW V17 backend returned non-governed HTTP ${response.status}.`,
       {
         operation_id: operationName,
         upstream_status: response.status,
@@ -157,6 +211,7 @@ export function errorPayload(error, operationName) {
       gateway_status: error.code,
       message: error.message,
       details: error.details,
+      can_execute: false,
       mcp_gateway: gatewayMeta(operationName),
     };
   }
@@ -164,6 +219,7 @@ export function errorPayload(error, operationName) {
     ok: false,
     gateway_status: "MCP_GATEWAY_INTERNAL_ERROR",
     message: error?.message || String(error),
+    can_execute: false,
     mcp_gateway: gatewayMeta(operationName),
   };
 }
