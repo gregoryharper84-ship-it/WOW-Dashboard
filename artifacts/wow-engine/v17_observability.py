@@ -24,6 +24,9 @@ from v17.pick_request_durable_job_queue_installer import schedule_durable_pick_j
 from v17.pick_request_run_control import schedule_pick_request_run_control_install
 from v17.pick_request_run_control_hardening import install_pick_request_run_control_hardening
 from v17.pick_request_state_hooks import install_pick_request_state_hooks
+from v17.pick_request_state_reliability_patch import (
+    install_pick_request_state_reliability_patch,
+)
 from v17.pick_request_state_runtime import schedule_pick_request_state_install
 
 
@@ -99,6 +102,9 @@ def initialize_observability() -> dict[str, Any]:
             _accepted_base.app,
             db_client_fn=_accepted_base.market_api.prod.get_client,
         )
+        # Install orchestration-only state guards before lifecycle hooks and the
+        # durable route wrapper can observe any request.
+        install_pick_request_state_reliability_patch()
         install_pick_request_state_hooks()
         # Startup order is correctness-sensitive:
         # 1 hydration/research, 2 bounded parallel rows, 3 durable scorer,
