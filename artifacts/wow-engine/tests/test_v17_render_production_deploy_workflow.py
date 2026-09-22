@@ -27,30 +27,33 @@ def test_render_deploy_gate_waits_for_protected_main_required_checks():
         assert check_name in text
 
 
-def test_render_deploy_gate_has_no_second_deploy_authority_or_betting_secrets():
+def test_render_deploy_handoff_uses_control_plane_only_after_governance_gate():
     text = _workflow_text()
 
-    assert "RENDER_API_KEY" not in text
-    assert "WOW_RENDER_SERVICE_ID" not in text
+    assert 'RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}' in text
+    assert 'WOW_RENDER_SERVICE_ID: "srv-da7sa9gu01pc73brt80g"' in text
     assert "WOW_ACTION_API_KEY" not in text
     assert "SUPABASE_SERVICE_ROLE_KEY" not in text
     assert 'WOW_CAN_EXECUTE: "false"' in text
     assert 'WOW_DRY_RUN_ONLY: "true"' in text
-    assert '"can_execute": False' in text
-    assert '"deploy_authority": "RENDER_CHECKSPASS"' in text
-    assert 'method="POST"' not in text
-    assert "clearCache" not in text
+    assert '"can_execute":False' in text or '"can_execute": False' in text
+    assert '"deploy_authority":"GOVERNED_RENDER_API_HANDOFF"' in text
+    assert 'render_json(\n                  "POST"' in text
+    assert '{"clearCache":"do_not_clear"}' in text
 
 
-def test_render_deploy_gate_finishes_before_native_checkspass_deploy():
+def test_render_deploy_handoff_is_idempotent_and_exact_sha_verified():
     text = _workflow_text()
 
-    assert "CHECKSPASS_DEPLOY_GATE_RELEASED" in text
-    assert "/deploys?limit=20" not in text
-    assert "NATIVE_DEPLOY_LIVE" not in text
-    assert "NATIVE_DEPLOY_OBSERVED_IN_PROGRESS" not in text
-    assert "deploy_deadline" not in text
-    assert "time.sleep(15)" in text  # required-check polling only
+    assert "/deploys?limit=20" in text
+    assert "commit_sha(deploy) == target_sha" in text
+    assert "EXACT_SHA_ALREADY_LIVE" in text
+    assert "EXACT_SHA_RENDER_DEPLOY_LIVE" in text
+    assert "RENDER_DEPLOY_WRONG_SHA" in text
+    assert "RENDER_TARGET_DEPLOY_TERMINAL_FAILURE" in text
+    assert "DEPLOY_SUPERSEDED_BY_NEW_MAIN" in text
+    assert "deploy_deadline = time.time() + 900" in text
+    assert "time.sleep(10)" in text
 
 
 def test_daily_snapshot_has_deploy_handoff_runway_and_network_retries():
