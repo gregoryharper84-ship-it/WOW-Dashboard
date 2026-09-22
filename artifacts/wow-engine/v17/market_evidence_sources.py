@@ -77,6 +77,14 @@ ODDS_API_SPORT_KEYS = (
 # provider-native market name (the FIX-C/FIX-D failure class).
 CANONICAL_MARKET_KEYS = ("h2h", "spreads", "totals")
 
+# Provider-normalized player/stat markets are discovery identities, not probability
+# authority. Preserve an explicit provider key only when it is structurally a
+# player/scalar prop; never guess a stat from free text.
+_PROP_MARKET_PREFIXES = (
+    "player_", "pitcher_", "batter_", "passing_", "rushing_", "receiving_",
+    "goalie_", "shots_", "saves_", "aces_", "double_faults_",
+)
+
 _PROVIDER_MARKET_CANONICAL: dict[str, str] = {
     "h2h": "h2h",
     "moneyline": "h2h",
@@ -96,7 +104,12 @@ _PROVIDER_MARKET_CANONICAL: dict[str, str] = {
 def canonical_market_key(raw: Any) -> str | None:
     """Translate a provider market label into a canonical WOW market key."""
     token = str(raw or "").strip().lower().replace("-", "_").replace(" ", "_")
-    return _PROVIDER_MARKET_CANONICAL.get(token)
+    canonical = _PROVIDER_MARKET_CANONICAL.get(token)
+    if canonical:
+        return canonical
+    if token and any(token.startswith(prefix) for prefix in _PROP_MARKET_PREFIXES):
+        return token
+    return None
 
 
 @dataclass(frozen=True)
