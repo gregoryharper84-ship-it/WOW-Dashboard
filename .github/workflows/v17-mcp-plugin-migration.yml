@@ -1,0 +1,104 @@
+name: v17-mcp-plugin-migration
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "artifacts/mcp-server/**"
+      - "artifacts/wow-engine/v17/openapi.wow-betting-engine.v17.yaml"
+      - ".github/workflows/v17-mcp-plugin-migration.yml"
+  push:
+    branches: [main]
+    paths:
+      - "artifacts/mcp-server/**"
+      - "artifacts/wow-engine/v17/openapi.wow-betting-engine.v17.yaml"
+      - ".github/workflows/v17-mcp-plugin-migration.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v17-mcp-plugin-migration-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  contract-and-transport:
+    name: V17 MCP contract and transport
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Enable pnpm through Corepack
+        run: |
+          corepack enable
+          corepack prepare pnpm@10.17.1 --activate
+          pnpm --version
+
+      - name: Install MCP package from frozen workspace lockfile
+        run: pnpm install --frozen-lockfile --filter @workspace/mcp-server...
+
+      - name: Run V17 migration contract tests
+        run: pnpm --filter @workspace/mcp-server test:v17
+
+      - name: Smoke Streamable HTTP gateway health
+        env:
+          WOW_MCP_AUTH_MODE: disabled
+          WOW_ACTION_API_KEY: ci-placeholder-never-sent
+          PORT: "31337"
+        run: |
+          pnpm --filter @workspace/mcp-server v17:http > "$RUNNER_TEMP/v17-mcp-http.log" 2>&1 &
+          PID=$!
+          trap 'kill "$PID" 2>/dev/null || true; cat "$RUNNER_TEMP/v17-mcp-http.log" || true' EXIT
+          for attempt in $(seq 1 20); do
+            if curl --fail --silent http://127.0.0.1:31337/healthz > "$RUNNER_TEMP/v17-mcp-health.json"; then
+              break
+            fi
+            sleep 0.5
+          done
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          payload = json.loads(Path(os.environ["RUNNER_TEMP"]).joinpath("v17-mcp-health.json").read_text())
+          assert payload["ok"] is True
+          assert payload["service"] == "wow-v17-mcp"
+          assert payload["transport"] == "streamable-http"
+          assert payload["terminal_authority"] == "V17_TERMINAL_REDUCER"
+          assert payload["can_execute"] is False
+          assert payload["backend_key_present"] is True
+          PY
+          kill "$PID" 2>/dev/null || true
+          wait "$PID" 2>/dev/null || true
+          trap - EXIT
+
+      - name: Enforce migration safety surface
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          contract = Path("artifacts/mcp-server/src/v17_contract.js").read_text()
+          backend = Path("artifacts/mcp-server/src/v17_backend.js").read_text()
+          http = Path("artifacts/mcp-server/src/v17_http.js").read_text()
+
+          assert 'CAN_EXECUTE = false' in contract
+          assert 'TERMINAL_AUTHORITY = "V17_TERMINAL_REDUCER"' in contract
+          assert 'WOW_ACTION_API_KEY' in backend
+          assert 'Authorization: `Bearer ${key}`' in backend
+          assert 'lookupWowV17PredictionReceipts' in backend
+          assert 'MODEL_UNAVAILABLE' in backend  # only in the explicit "do not rewrite" guard text
+          assert 'OAuth 2.1 must be bound before production ChatGPT migration' in http
+
+          forbidden_tools = [
+              "place_bet", "submit_entry", "execute_trade", "sportsbook_bet",
+              "kalshi_place_order", "create_order", "fill_order",
+          ]
+          for tool in forbidden_tools:
+              assert f'name: "{tool}"' not in contract
+          PY
