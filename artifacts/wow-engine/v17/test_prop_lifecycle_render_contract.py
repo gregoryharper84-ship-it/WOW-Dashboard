@@ -3,14 +3,17 @@ from pathlib import Path
 import yaml
 
 
-def test_render_enables_continuous_prop_evidence_and_lifecycle_without_execution():
+def test_render_keeps_heavy_prop_evidence_sweep_off_interactive_web_process():
     repo_root = Path(__file__).resolve().parents[3]
     render = yaml.safe_load((repo_root / "render.yaml").read_text())
     services = {item["name"]: item for item in render["services"]}
     service = services["wow-governed-probability-engine"]
     env = {item["key"]: item for item in service["envVars"]}
 
-    assert env["WOW_PROP_EVIDENCE_ACQUISITION_ENABLED"]["value"] == "1"
+    # The autonomous producer is forward-cohort evidence only and has repeatedly
+    # consumed enough time/resources to destabilize the 512-MB Action web host.
+    # Canonical user-board scoring remains installed and hydrates its own rows.
+    assert env["WOW_PROP_EVIDENCE_ACQUISITION_ENABLED"]["value"] == "0"
     assert int(env["WOW_PROP_EVIDENCE_ACQUISITION_INTERVAL_SECONDS"]["value"]) >= 300
     assert int(env["WOW_PROP_EVIDENCE_ACQUISITION_FORWARD_DAYS"]["value"]) >= 2
     assert env["WOW_PROP_LIFECYCLE_AUTOPILOT_ENABLED"]["value"] == "0"
@@ -21,7 +24,7 @@ def test_render_enables_continuous_prop_evidence_and_lifecycle_without_execution
     assert env["WOW_DRY_RUN_ONLY"]["value"] == "true"
 
 
-def test_worker_remains_non_executing_even_though_web_autopilot_is_enabled():
+def test_worker_remains_non_executing_even_though_web_autopilot_is_installed():
     repo_root = Path(__file__).resolve().parents[3]
     render = yaml.safe_load((repo_root / "render.yaml").read_text())
     services = {item["name"]: item for item in render["services"]}

@@ -49,7 +49,11 @@ services:
       - key: WOW_V17_ACTIVE
         value: "1"
       - key: WOW_PROP_EVIDENCE_ACQUISITION_ENABLED
-        value: "1"
+        # Keep the multi-minute autonomous MLB evidence sweep out of the
+        # 512-MB interactive web process. It is forward-cohort evidence only;
+        # user-supplied boards continue through canonical score-pick-request
+        # hydration. Re-enable only on an isolated governed worker/runtime.
+        value: "0"
       - key: WOW_PROP_EVIDENCE_ACQUISITION_INTERVAL_SECONDS
         value: "1800"
       - key: WOW_PROP_EVIDENCE_ACQUISITION_MAX_CANDIDATES
