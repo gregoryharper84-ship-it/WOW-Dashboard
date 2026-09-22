@@ -50,6 +50,13 @@ def test_source_review_and_replay_are_required_after_research_pass():
 
 def test_nhl_candidate_research_failure_cannot_advance():
     result = assess_candidate("NHL", _candidate("NHL", research_screen_pass=False)).as_dict()
+    assert result["status"] == "PRODUCTION_MODEL_PRESENT"
+    # NHL production capability remains separate from challenger quality.
+    assert result["can_execute"] is False
+
+
+def test_candidate_research_failure_is_typed_for_nonproduction_lane():
+    result = assess_candidate("SOCCER", _candidate("SOCCER", league="LIGUE_1", research_screen_pass=False)).as_dict()
     assert result["status"] == "RESEARCH_SCREEN_FAILED"
     assert "RESEARCH_SCREEN_FAILED" in result["blockers"]
     assert result["probability_publishable"] is False
