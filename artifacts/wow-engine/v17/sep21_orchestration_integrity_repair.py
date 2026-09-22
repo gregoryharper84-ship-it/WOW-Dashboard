@@ -16,11 +16,14 @@ Repairs:
 4. /governance reports route/capability publication readiness from live governed
    state instead of the stale static global false flag. This is diagnostic only;
    per-row rank eligibility remains owned by V17_TERMINAL_REDUCER.
+5. Render-to-Render Scout acquisition may use a separate internal odds-proxy
+   credential without rotating the existing Custom GPT/Action credential.
 
 can_execute remains false throughout.
 """
 from __future__ import annotations
 
+import os
 from contextvars import ContextVar
 from typing import Any
 
@@ -30,6 +33,19 @@ RUN_INVALID_EVIDENCE_BINDING = "RUN_INVALID_EVIDENCE_BINDING"
 _DAILY_CONTEXT: ContextVar[dict[str, Any] | None] = ContextVar(
     "wow_v17_sep21_daily_context", default=None
 )
+
+
+def install_internal_proxy_client_auth() -> bool:
+    """Expose only the dedicated internal key to existing read-only Scout client code."""
+    internal = os.environ.get("WOW_ODDS_PROXY_INTERNAL_KEY")
+    if not internal:
+        return False
+    # nightly_multiscout.proxy_get reads WOW_ODDS_PROXY_ACTION_KEY dynamically.
+    # Populate it only when the existing client credential is absent, so no
+    # configured Action key is replaced or logged.
+    if not os.environ.get("WOW_ODDS_PROXY_ACTION_KEY"):
+        os.environ["WOW_ODDS_PROXY_ACTION_KEY"] = internal
+    return True
 
 
 def install_daily_current_acquisition_repair() -> bool:
@@ -238,6 +254,7 @@ def install_governance_publication_diagnostics_repair(*, market_api: Any) -> boo
 
 def install_sep21_orchestration_integrity_repairs(*, market_api: Any | None = None) -> dict[str, bool]:
     result = {
+        "internal_proxy_client_auth": install_internal_proxy_client_auth(),
         "daily_current_acquisition": install_daily_current_acquisition_repair(),
         "rundown_quota_circuit": install_rundown_quota_circuit_repair(),
         "governance_publication_diagnostics": False,
@@ -253,6 +270,7 @@ __all__ = [
     "RUN_INVALID_EVIDENCE_BINDING",
     "install_daily_current_acquisition_repair",
     "install_governance_publication_diagnostics_repair",
+    "install_internal_proxy_client_auth",
     "install_rundown_quota_circuit_repair",
     "install_sep21_orchestration_integrity_repairs",
 ]
