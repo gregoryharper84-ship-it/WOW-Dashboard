@@ -38,6 +38,7 @@ on:
       - "artifacts/wow-engine/test_v17_team_state_challenger_training.py"
       - "artifacts/wow-engine/test_v17_team_state_scoped_maintenance.py"
       - "artifacts/wow-engine/test_v17_github_oidc.py"
+      - "artifacts/wow-engine/test_v17_maintenance_terminal_truth.py"
   pull_request:
     paths:
       - ".github/workflows/wow-v17-first-six-model-maintenance.yml"
@@ -60,6 +61,7 @@ on:
       - "artifacts/wow-engine/test_v17_team_state_scoped_maintenance.py"
       - "artifacts/wow-engine/test_v17_first_six_certification.py"
       - "artifacts/wow-engine/test_v17_first_six_source_contracts.py"
+      - "artifacts/wow-engine/test_v17_maintenance_terminal_truth.py"
 
 permissions:
   contents: read
@@ -99,6 +101,7 @@ jobs:
           test_v17_team_state_challenger_training.py
           test_v17_team_state_scoped_maintenance.py
           test_v17_github_oidc.py
+          test_v17_maintenance_terminal_truth.py
 
   maintain:
     name: Advance first-six candidate evidence
@@ -208,8 +211,6 @@ jobs:
                       time.sleep(10 * (attempt + 1))
               return transport_block(name, last_code, last_detail)
 
-          # Gate route readiness on the fast local NFL scope before invoking
-          # source-heavy scopes. Every retry mints a fresh short-lived OIDC token.
           nfl = post_bounded(
               "TEAM_STATE_NFL",
               "/internal/v17/team-state-challenger-maintenance/NFL",
@@ -243,9 +244,6 @@ jobs:
               assert all(row.get("can_execute") is False for row in payload["rows"]), payload
               assert all(row.get("probability_publishable") is False for row in payload["rows"]), payload
 
-          # Preserve completed evidence when one external source is unavailable.
-          # Retry only typed transport/source HTTP failures; missing credentials,
-          # schema failures, and research/model-quality failures stay hard holds.
           ancillary_results = {}
           for name, path in ancillary_endpoints:
               payload = post_bounded(name, path, attempts=3, timeout=180)
@@ -263,6 +261,15 @@ jobs:
               scope for scope, payload in team_state_results.items()
               if payload.get("program") != program
           ]
+          blocked_ancillary = {
+              name: {
+                  "status": payload.get("status"),
+                  "code": payload.get("code"),
+                  "blockers": payload.get("blockers"),
+              }
+              for name, payload in ancillary_results.items()
+              if payload.get("status") == "BLOCKED"
+          }
           print(json.dumps({
               "checkpoint": {
                   "TEAM_STATE": "SCOPED_MAINTENANCE_COMPLETED",
@@ -272,9 +279,12 @@ jobs:
                   "team_state_candidate_rows_blocked": scope_blocked,
                   "team_state_transport_blocked_scopes": transport_blocked_scopes,
                   "ancillary_statuses": {name: payload.get("status") for name, payload in ancillary_results.items()},
+                  "blocked_ancillary": blocked_ancillary,
                   "can_execute": False,
               },
               "team_state": team_state_results,
               "ancillary": ancillary_results,
           }, sort_keys=True))
+          if blocked_ancillary:
+              raise RuntimeError("FIRST_SIX_ANCILLARY_MAINTENANCE_BLOCKED:" + json.dumps(blocked_ancillary, sort_keys=True))
           PY

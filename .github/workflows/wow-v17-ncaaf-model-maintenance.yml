@@ -27,6 +27,7 @@ on:
       - "artifacts/wow-engine/test_ncaaf_logistic_adapter.py"
       - "artifacts/wow-engine/test_v17_capability_build_registry.py"
       - "artifacts/wow-engine/test_v17_github_oidc.py"
+      - "artifacts/wow-engine/test_v17_maintenance_terminal_truth.py"
   pull_request:
     paths:
       - ".github/workflows/wow-v17-ncaaf-model-maintenance.yml"
@@ -48,6 +49,7 @@ on:
       - "artifacts/wow-engine/test_ncaaf_logistic_adapter.py"
       - "artifacts/wow-engine/test_v17_capability_build_registry.py"
       - "artifacts/wow-engine/test_v17_github_oidc.py"
+      - "artifacts/wow-engine/test_v17_maintenance_terminal_truth.py"
 
 permissions:
   contents: read
@@ -82,6 +84,7 @@ jobs:
           test_ncaaf_logistic_adapter.py
           test_v17_capability_build_registry.py
           test_v17_github_oidc.py
+          test_v17_maintenance_terminal_truth.py
 
   maintain:
     name: Advance NCAAF research candidate evidence
@@ -155,4 +158,10 @@ jobs:
               "blockers": payload.get("blockers"),
               "can_execute": False,
           }, sort_keys=True))
+          if payload.get("status") == "BLOCKED":
+              raise RuntimeError("NCAAF_MAINTENANCE_BLOCKED:" + json.dumps({
+                  "status": payload.get("status"),
+                  "training_blocker": (payload.get("training_blocker") or {}).get("code"),
+                  "blockers": payload.get("blockers"),
+              }, sort_keys=True))
           PY
