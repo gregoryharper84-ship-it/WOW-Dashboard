@@ -49,11 +49,13 @@ jobs:
         run: |
           node --check artifacts/mcp-server/src/v17_contract.js
           node --check artifacts/mcp-server/src/v17_backend.js
+          node --check artifacts/mcp-server/src/v17_oauth.js
           node --check artifacts/mcp-server/src/v17_server.js
           node --check artifacts/mcp-server/src/v17_stdio.js
           node --check artifacts/mcp-server/src/v17_http.js
           node --check artifacts/mcp-server/test/v17_migration_contract.test.js
           node --check artifacts/mcp-server/test/v17_http_integration.test.js
+          node --check artifacts/mcp-server/test/v17_oauth.test.js
 
       - name: Run V17 migration contract tests
         run: pnpm --filter @workspace/mcp-server test:v17
@@ -95,8 +97,11 @@ jobs:
           from pathlib import Path
           contract = Path("artifacts/mcp-server/src/v17_contract.js").read_text()
           backend = Path("artifacts/mcp-server/src/v17_backend.js").read_text()
+          oauth = Path("artifacts/mcp-server/src/v17_oauth.js").read_text()
+          server = Path("artifacts/mcp-server/src/v17_server.js").read_text()
           http = Path("artifacts/mcp-server/src/v17_http.js").read_text()
           tests = Path("artifacts/mcp-server/test/v17_migration_contract.test.js").read_text()
+          oauth_tests = Path("artifacts/mcp-server/test/v17_oauth.test.js").read_text()
 
           assert 'CAN_EXECUTE = false' in contract
           assert 'TERMINAL_AUTHORITY = "V17_TERMINAL_REDUCER"' in contract
@@ -109,7 +114,17 @@ jobs:
           assert 'MODEL_INPUTS_INSUFFICIENT' in tests
           assert 'MODEL_SCORER_FAILED' in tests
           assert 'MODEL_OUTPUT_INVALID' in tests
-          assert 'OAuth 2.1 must be bound before production ChatGPT migration' in http
+
+          assert 'DEFAULT_OAUTH_IDENTITY_SCOPES = Object.freeze(["openid", "email"])' in oauth
+          assert 'WOW_MCP_OAUTH_ALLOWED_SUBJECTS' in oauth
+          assert 'MCP_OAUTH_AUDIENCE_MISMATCH' in oauth
+          assert 'wow_mcp_permissions' in oauth
+          assert 'securitySchemes' in server
+          assert 'mcp/www_authenticate' in server
+          assert '/.well-known/oauth-protected-resource/mcp' in http
+          assert 'verifyOAuthAccessToken' in http
+          assert 'MCP_SESSION_PRINCIPAL_MISMATCH' in http
+          assert 'metadata.scopes_supported.some((scope) => scope.startsWith("wow."))' in oauth_tests
 
           forbidden_tools = [
               "place_bet", "submit_entry", "execute_trade", "sportsbook_bet",
