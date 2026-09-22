@@ -37,11 +37,22 @@ def test_merge_is_head_sha_pinned_and_nonterminal_state_is_deferred():
     assert '--match-head-commit "$HEAD_SHA"' in text
     assert 'state="CI_REWORK"' in text
     assert 'state="CI_WAIT"' in text
+    assert 'state="SCOPE_REWORK"' in text
     assert "Preserve nonterminal Morning-Green state without poisoning main deploy checks" in text
     assert "durable closure evidence has been persisted" in text
     assert 'echo "deferred=true"' in text
     assert "successful workflow termination is forbidden" not in text
-    assert "steps.gates.outputs.ready == 'true' && steps.scope.outcome == 'success'" in text
+    assert 'echo "approved=false"' in text
+    assert 'echo "approved=true"' in text
+    assert "steps.gates.outputs.ready == 'true' && steps.scope.outputs.approved == 'true'" in text
+
+
+def test_scope_rejection_is_machine_readable_not_a_failed_workflow_step():
+    text = _text()
+    assert "Morning-Green autonomous merge denied by diff-scope guard; preserving SCOPE_REWORK without failing protected main." in text
+    assert 'echo "guard_exit_code=$rc"' in text
+    assert 'exit "$rc"' not in text
+    assert "SCOPE_APPROVED: ${{ steps.scope.outputs.approved }}" in text
 
 
 def test_bot_merge_explicitly_resumes_main_required_checks():
