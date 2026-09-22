@@ -180,8 +180,11 @@ def sharpapi_rows_to_odds_api_v4(rows: Any, *, sport_key: str | None = None) -> 
                 bucket["last_update"] = updated
             outcome: dict[str, Any] = {"name": str(selection), "price": price}
             point = _first_number(row, ("line", "point", "handicap", "spread", "total"))
-            if point is not None and market_key in {"spreads", "totals"}:
+            if point is not None and (market_key in {"spreads", "totals"} or sources.canonical_market_key(market_key) == market_key):
                 outcome["point"] = point
+            description = row.get("description") or row.get("player") or row.get("participant") or row.get("athlete")
+            if description and market_key not in {"h2h", "spreads", "totals"}:
+                outcome["description"] = str(description)
             if not any(
                 o.get("name") == outcome["name"] and o.get("point") == outcome.get("point")
                 for o in bucket["outcomes"]
@@ -381,8 +384,11 @@ def rundown_v2_event_to_odds_api_v4(raw: Any, *, sport_key: str | None = None) -
                     bucket = book["markets"].setdefault(market_key, {"last_update": updated, "outcomes": []})
                     outcome: dict[str, Any] = {"name": str(selection), "price": price}
                     point = _line_point(line, container)
-                    if point is not None and market_key in {"spreads", "totals"}:
+                    if point is not None and (market_key in {"spreads", "totals"} or sources.canonical_market_key(market_key) == market_key):
                         outcome["point"] = point
+                    description = participant.get("description") or participant.get("player") or participant.get("name")
+                    if description and market_key not in {"h2h", "spreads", "totals"}:
+                        outcome["description"] = str(description)
                     if not any(
                         o.get("name") == outcome["name"] and o.get("point") == outcome.get("point")
                         for o in bucket["outcomes"]
