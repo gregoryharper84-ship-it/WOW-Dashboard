@@ -35,6 +35,7 @@ def _event_row() -> dict:
         "calibrated_away_upper_bound": 0.48,
         "market_prior_home_probability": 0.56,
         "market_prior_away_probability": 0.44,
+        "market_prior_quality": "MULTIBOOK_NO_VIG",
         "favorite_side": "HOME",
         "blockers": [],
         "terminal_reasons": [],
@@ -58,21 +59,29 @@ class TestLLPV171ShadowRuntime(unittest.TestCase):
         self.assertEqual(away["market_role"], "UNDERDOG")
         self.assertAlmostEqual(home["calibrated_probability"], 0.64)
         self.assertAlmostEqual(away["calibrated_probability"], 0.36)
+        self.assertAlmostEqual(home["market_no_vig_probability"], 0.56)
+        self.assertAlmostEqual(away["market_no_vig_probability"], 0.44)
 
-    def test_registered_reasons_are_split_hard_and_soft(self):
+    def test_only_explicit_soft_reasons_are_soft(self):
         source = _event_row()
         source["blockers"] = ["EVENT_ALREADY_STARTED", "LINEUP_UNCERTAINTY", "UNREGISTERED_NOTE"]
         hard, soft = classify_shadow_reasons(source)
         self.assertIn("EVENT_ALREADY_STARTED", hard)
+        self.assertIn("UNREGISTERED_NOTE", hard)
         self.assertIn("LINEUP_UNCERTAINTY", soft)
-        self.assertNotIn("UNREGISTERED_NOTE", hard)
-        self.assertNotIn("UNREGISTERED_NOTE", soft)
+        self.assertNotIn("LINEUP_UNCERTAINTY", hard)
 
     def test_invalidated_probability_is_hard_blocked(self):
         source = _event_row()
         source["probability_invalidated"] = True
         hard, _ = classify_shadow_reasons(source)
         self.assertIn("STALE_PROBABILITY_AFTER_MATERIAL_UPDATE", hard)
+
+    def test_untyped_market_prior_is_not_used_as_no_vig_diagnostic(self):
+        source = _event_row()
+        source["market_prior_quality"] = "RAW_BOOK_PRICE"
+        rows = event_prediction_side_rows(source)
+        self.assertTrue(all(row["market_no_vig_probability"] is None for row in rows))
 
     def test_lambda_grid_materializes_selection_specific_rows(self):
         rows = materialize_event_prediction_shadows(
@@ -87,6 +96,7 @@ class TestLLPV171ShadowRuntime(unittest.TestCase):
         self.assertTrue(any("::TOR::0.2500::" in value for value in ids))
         self.assertTrue(all(row["can_execute"] is False for row in rows))
         self.assertTrue(all(row["production_policy_mutated"] is False for row in rows))
+        self.assertTrue(all(row["market_prior_weight"] == 0.0 for row in rows))
 
     def test_default_grid_is_five_lambdas_per_side(self):
         rows = materialize_event_prediction_shadows(_event_row(), observed_at="2026-09-21T22:10:00Z")
