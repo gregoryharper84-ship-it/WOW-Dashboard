@@ -15,6 +15,7 @@ class _Query:
         self.mode = "select"
         self.payload = None
         self.filters = {}
+        self.limit_n = None
 
     def select(self, *_args, **_kwargs):
         self.mode = "select"
@@ -22,6 +23,13 @@ class _Query:
 
     def eq(self, key, value):
         self.filters[key] = value
+        return self
+
+    def order(self, *_args, **_kwargs):
+        return self
+
+    def limit(self, value):
+        self.limit_n = int(value)
         return self
 
     def upsert(self, payload, **_kwargs):
@@ -32,9 +40,10 @@ class _Query:
     def execute(self):
         rows = self.db.tables.setdefault(self.table, [])
         if self.mode == "select":
-            return SimpleNamespace(
-                data=[dict(row) for row in rows if all(row.get(k) == v for k, v in self.filters.items())]
-            )
+            data = [dict(row) for row in rows if all(row.get(k) == v for k, v in self.filters.items())]
+            if self.limit_n is not None:
+                data = data[: self.limit_n]
+            return SimpleNamespace(data=data)
         payloads = self.payload if isinstance(self.payload, list) else [self.payload]
         for raw in payloads:
             item = dict(raw)
