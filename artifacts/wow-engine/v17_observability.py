@@ -38,6 +38,9 @@ def initialize_observability() -> dict[str, Any]:
     from v17.sep21_orchestration_integrity_repair import (
         install_sep21_orchestration_integrity_repairs,
     )
+    from v17.cross_sport_acquisition_fairness import (
+        install_cross_sport_acquisition_fairness,
+    )
     from v17.scout_internal_service_auth import install_scout_internal_service_auth
 
     install_scout_internal_service_auth()
@@ -50,6 +53,10 @@ def initialize_observability() -> dict[str, Any]:
     install_team_event_sport_parity()
     install_cross_sport_discovery_evidence_handoff()
     install_sep21_orchestration_integrity_repairs()
+    # Acquisition opportunity is also a parity requirement: one slow family may
+    # not spend another configured sport's discovery budget. This installer is
+    # orchestration-only and leaves model/calibration/reducer ownership intact.
+    install_cross_sport_acquisition_fairness()
 
     try:
         install_interactive_team_event_latency()
