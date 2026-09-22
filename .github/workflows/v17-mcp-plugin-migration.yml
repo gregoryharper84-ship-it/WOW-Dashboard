@@ -45,6 +45,15 @@ jobs:
       - name: Install MCP package from frozen workspace lockfile
         run: pnpm install --frozen-lockfile --filter @workspace/mcp-server...
 
+      - name: Syntax-check V17 gateway modules
+        run: |
+          node --check artifacts/mcp-server/src/v17_contract.js
+          node --check artifacts/mcp-server/src/v17_backend.js
+          node --check artifacts/mcp-server/src/v17_server.js
+          node --check artifacts/mcp-server/src/v17_stdio.js
+          node --check artifacts/mcp-server/src/v17_http.js
+          node --check artifacts/mcp-server/test/v17_migration_contract.test.js
+
       - name: Run V17 migration contract tests
         run: pnpm --filter @workspace/mcp-server test:v17
 
