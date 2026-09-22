@@ -30,7 +30,7 @@ DAILY / ACTION ORCHESTRATION
 - Semantic identity: equivalent UTC ISO times (Z vs +00:00) match; real event/player/stat/line/direction changes conflict.
 - Best-side prop + exact line + no selected direction: expand MORE and LESS before `/score-pick-request`; selected side => no expansion.
 - Persist INGESTED before hydration, then IDENTITY_VERIFIED, MODEL_INPUTS_READY, MODEL_COMPUTED, RECEIPT_PERSISTED, GOVERNANCE_AUDITED, PUBLICATION_AUTHORIZED as reached.
-- Action timeout/disconnect/ambiguity: do not invent model failure. First call `lookupWowV17PredictionReceipts`; retry only unresolved rows with same IDs. Large runs: read durable state; never re-enqueue RUNNING.
+- On an Action timeout/disconnect/ambiguous completion, do not invent model failure. First call `lookupWowV17PredictionReceipts`. Retry only still-unresolved rows with same IDs. Large runs: read durable state; never re-enqueue RUNNING.
 - Do not rank a partial pool as Full Model. Finish every source row and reconcile exact counts/typed outcomes first.
 - Freeze event/start, participant/team, exact stat/line/direction or winner basis, snapshot ID and evidence as-of.
 - Props -> `scoreWowPickRequest`/`scoreWowProp`/`runWowV17ResumablePickRequest`; winners/upsets -> `scoreWowTeamEventRequest`.
