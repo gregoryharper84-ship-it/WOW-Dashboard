@@ -30,6 +30,12 @@ from v17.pick_request_state_runtime import schedule_pick_request_state_install
 def initialize_observability() -> dict[str, Any]:
     from v17.team_event_bridge_runtime import install_team_event_bridge_runtime
     from v17.multisport_team_event_bridges import install_multisport_team_event_bridges
+    from v17.all_sport_capability_readiness import (
+        install_all_sport_capability_readiness,
+    )
+    from v17.team_event_recoverable_hold_overlay import (
+        install_team_event_recoverable_hold_overlay,
+    )
     from v17.universal_team_event_governance import install_universal_team_event_governance
     from v17.team_event_sport_parity import (
         install_cross_sport_discovery_evidence_handoff,
@@ -47,6 +53,14 @@ def initialize_observability() -> dict[str, Any]:
     install_scout_internal_service_auth()
     install_team_event_bridge_runtime()
     install_multisport_team_event_bridges()
+    # Registration/certification identity is not enough to advertise a fully
+    # autonomous production lane. Bind the same operational readiness contract
+    # across all twelve sports before parity captures bridge health.
+    install_all_sport_capability_readiness()
+    # Recoverable pregame input gaps remain durable candidate states rather than
+    # being described as dead/removed rows. This adds metadata only; it never
+    # manufactures a probability package or rank eligibility.
+    install_team_event_recoverable_hold_overlay()
     install_universal_team_event_governance()
     # Parity must be the outer orchestration wrapper: every cataloged sport gets
     # the same discovery/evidence/model/governance accounting shape, while the
