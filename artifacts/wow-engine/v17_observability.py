@@ -20,14 +20,14 @@ from v17.interactive_pick_hydration import schedule_interactive_pick_hydration_i
 from v17.interactive_pick_parallel import schedule_interactive_pick_parallel_install
 from v17.interactive_team_event_io import install_interactive_team_event_io
 from v17.interactive_team_event_latency import install_interactive_team_event_latency
+from v17.pick_request_durable_job_queue_installer import schedule_durable_pick_job_queue
+from v17.pick_request_run_control import schedule_pick_request_run_control_install
+from v17.pick_request_run_control_hardening import install_pick_request_run_control_hardening
 from v17.pick_request_state_hooks import install_pick_request_state_hooks
 from v17.pick_request_state_runtime import schedule_pick_request_state_install
 
 
 def initialize_observability() -> dict[str, Any]:
-    # Runtime bridge registration is not telemetry. It is intentionally done
-    # before the optional Sentry branch so /health and /score-team-event expose
-    # the same authoritative production registry even when Sentry is disabled.
     from v17.team_event_bridge_runtime import install_team_event_bridge_runtime
     from v17.multisport_team_event_bridges import install_multisport_team_event_bridges
     from v17.universal_team_event_governance import install_universal_team_event_governance
@@ -36,25 +36,11 @@ def initialize_observability() -> dict[str, Any]:
     install_multisport_team_event_bridges()
     install_universal_team_event_governance()
 
-    # Team/event Scout and lane routing remain ordered. Only the five independent
-    # Research workers are overlapped, using the same canonical envelopes,
-    # workers, reconciler and typed failure contract. This is intentionally
-    # installed after bridge registration so every registered sport observes the
-    # same bounded barrier implementation.
     try:
         install_interactive_team_event_latency()
     except Exception:
-        # Latency optimization must never make the governed API unavailable.
-        # The canonical serial barrier remains fail-closed if installation fails.
         pass
 
-    # Install non-secret total-wall-time telemetry, certification-independent
-    # Action invocation receipts, bounded external pre-hydration, bounded
-    # independent-row scoring, reusable TEAM_EVENT transport clients, bounded
-    # external MLB evidence, and the correctness-critical durable pick-request
-    # state wrapper. The canonical scorer still owns fitted inference,
-    # calibration/bounds, persistence and terminal reduction; transport wrappers
-    # never create or modify probability authority.
     try:
         import api_prod_market_acceptance as _accepted_base
 
@@ -67,10 +53,10 @@ def initialize_observability() -> dict[str, Any]:
             db_client_fn=_accepted_base.market_api.prod.get_client,
         )
         install_pick_request_state_hooks()
-        # Startup handlers execute in registration order:
-        #   1. hydration/research wrapper,
-        #   2. bounded row-parallel wrapper,
-        #   3. durable state wrapper (outermost).
+        # Startup order is correctness-sensitive:
+        # 1 hydration/research, 2 bounded parallel rows, 3 durable scorer,
+        # 4 run-control routes, 5 route-scoped DB-leased worker installation.
+        install_pick_request_run_control_hardening()
         schedule_interactive_pick_hydration_install(
             _accepted_base.app,
             market_api=_accepted_base.market_api,
@@ -83,17 +69,17 @@ def initialize_observability() -> dict[str, Any]:
             _accepted_base.app,
             db_client_fn=_accepted_base.market_api.prod.get_client,
         )
+        schedule_pick_request_run_control_install(
+            _accepted_base.app,
+            db_client_fn=_accepted_base.market_api.prod.get_client,
+        )
+        schedule_durable_pick_job_queue(
+            _accepted_base.app,
+            db_client_fn=_accepted_base.market_api.prod.get_client,
+        )
     except Exception:
-        # Observability/latency optimization must never make the governed API
-        # unavailable; canonical route behavior remains intact on any failure.
-        # Durable state itself remains fail-closed once installed.
         pass
 
-    # Mount the Render-hosted Claude support runtime on the same accepted app.
-    # This is intentionally advisory-only: it has no fitted-model authority,
-    # probability-publication authority, terminal authority, or wager execution.
-    # Installation failure is isolated so Anthropic availability can never make
-    # the governed sports API unavailable.
     try:
         import api_prod_market_acceptance as _accepted_base
         from v17.claude_runtime import install_claude_runtime_routes
@@ -107,10 +93,6 @@ def initialize_observability() -> dict[str, Any]:
     except Exception:
         pass
 
-    # The research evaluation is off by default and independent of telemetry.
-    # It is scheduled here because this initializer runs once in the accepted
-    # production entrypoint before serving starts. Any research-runner defect is
-    # isolated from API startup and can never alter probability publication.
     try:
         from v17.mlb_game_winner_shadow_one_shot import schedule_if_enabled
 

@@ -1,0 +1,144 @@
+openapi: 3.1.0
+info:
+  title: WOW Betting Engine v17 Run Control
+  version: 17.0.1
+  description: >-
+    Companion V17 exact-once run-control Action contract. Orchestration only:
+    it never creates sporting probability or wager execution authority.
+servers:
+  - url: https://wow-governed-probability-engine.onrender.com
+paths:
+  /v17/pick-request-runs/{request_id}:
+    get:
+      operationId: getWowV17PickRequestRunState
+      x-openai-isConsequential: false
+      description: >-
+        Read the durable server-side manifest, worker job, and exact row state.
+        Poll this after enqueue or a transport/session interruption; never
+        reconstruct persisted row identity from chat memory.
+      security: [{actionBearer: []}]
+      parameters:
+        - name: request_id
+          in: path
+          required: true
+          schema: {type: string}
+        - name: offset
+          in: query
+          required: false
+          schema: {type: integer, minimum: 0, default: 0}
+        - name: limit
+          in: query
+          required: false
+          schema: {type: integer, minimum: 1, maximum: 250, default: 100}
+        - name: include_outcomes
+          in: query
+          required: false
+          schema: {type: boolean, default: false}
+      responses:
+        '200': {description: Durable run manifest, worker job, and row state}
+        '401': {description: Authentication failed}
+        '404': {description: Run not found}
+  /v17/pick-request-runs/resumable:
+    post:
+      operationId: runWowV17ResumablePickRequest
+      x-openai-isConsequential: false
+      description: >-
+        Freeze the exact board manifest and enqueue a DB-leased scoring job.
+        The Action returns without waiting for scoring; poll run state by
+        request_id. The worker uses canonical scoring in <=50-row batches.
+      security: [{actionBearer: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ResumablePickRunRequest'}
+      responses:
+        '200': {description: Durable enqueue acknowledgement and current job state}
+        '401': {description: Authentication failed}
+        '409': {description: Closed run or exact identity conflict}
+        '422': {description: Invalid manifest or request}
+        '503': {description: Durable state service unavailable}
+  /v17/pick-request-runs/{request_id}/close:
+    post:
+      operationId: closeWowV17PickRequestRun
+      x-openai-isConsequential: false
+      description: >-
+        Persist a typed terminal orchestration closure. Once closed, the same
+        request_id cannot silently return to RUNNING. This never executes wagers.
+      security: [{actionBearer: []}]
+      parameters:
+        - name: request_id
+          in: path
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ClosePickRunRequest'}
+      responses:
+        '200': {description: Durable closure recorded}
+        '401': {description: Authentication failed}
+        '404': {description: Run not found}
+        '422': {description: Invalid closure code}
+components:
+  securitySchemes:
+    actionBearer:
+      type: http
+      scheme: bearer
+  schemas:
+    ResumablePickRunRequest:
+      type: object
+      additionalProperties: false
+      required: [request_id]
+      properties:
+        request_id: {type: string, minLength: 1}
+        rows:
+          type: array
+          maxItems: 1000
+          default: []
+          items: {$ref: '#/components/schemas/PickRequestRow'}
+        response_mode:
+          type: string
+          enum: [COMPACT, FULL]
+          default: COMPACT
+        batch_size: {type: integer, minimum: 1, maximum: 50, default: 20}
+        max_batches: {type: integer, minimum: 1, maximum: 25, default: 25}
+    ClosePickRunRequest:
+      type: object
+      additionalProperties: false
+      required: [closure_code]
+      properties:
+        closure_code: {type: string, minLength: 1}
+        closure_reason: {type: string, maxLength: 2000, default: ''}
+        reopen_allowed: {type: boolean, default: false}
+        closure_metadata:
+          type: object
+          additionalProperties: true
+          default: {}
+    PickRequestRow:
+      type: object
+      additionalProperties: false
+      required: [event_id, event_start_time, sport, player, stat_type, line, direction]
+      properties:
+        row_key: {type: [string, 'null']}
+        event_id: {type: string}
+        event_start_time: {type: string, format: date-time}
+        sport: {type: string}
+        player: {type: string}
+        stat_type: {type: string}
+        line: {type: number}
+        direction: {type: string, enum: [MORE, LESS]}
+        evidence: {type: [object, 'null'], additionalProperties: true}
+        source_type:
+          type: string
+          enum: [SCREENSHOT, PDF, AUTONOMOUS_DISCOVERY, PASTED_BOARD, NORMALIZED]
+          default: NORMALIZED
+        platform: {type: [string, 'null']}
+        league: {type: [string, 'null']}
+        opponent: {type: [string, 'null']}
+        source_capture_timestamp: {type: [string, 'null'], format: date-time}
+        seed: {type: integer, default: 0}
+        money_lane_status: {type: string, default: PAYOUT_UNRESOLVED}
+        market_side_a: {type: [object, 'null'], additionalProperties: true}
+        market_side_b: {type: [object, 'null'], additionalProperties: true}
