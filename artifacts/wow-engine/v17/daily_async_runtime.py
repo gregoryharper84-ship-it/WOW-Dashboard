@@ -10,6 +10,8 @@ execution authority is added here; can_execute remains false.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
 import os
 from datetime import datetime, timezone
@@ -35,6 +37,7 @@ class AsyncDailySubmitRequest(BaseModel):
     max_props: int = Field(default=6, ge=0, le=12)
     max_team_events: int = Field(default=6, ge=0, le=12)
     response_mode: Literal["COMPACT", "FULL"] = "COMPACT"
+    idempotency_key: str | None = Field(default=None, min_length=8, max_length=128)
 
 
 def _int_env(name: str, default: int, *, minimum: int, maximum: int) -> int:
