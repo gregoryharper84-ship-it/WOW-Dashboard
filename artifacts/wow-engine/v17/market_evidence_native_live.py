@@ -180,13 +180,24 @@ def sharpapi_rows_to_odds_api_v4(rows: Any, *, sport_key: str | None = None) -> 
                 bucket["last_update"] = updated
             outcome: dict[str, Any] = {"name": str(selection), "price": price}
             point = _first_number(row, ("line", "point", "handicap", "spread", "total"))
+            is_prop = market_key not in sources.CANONICAL_MARKET_KEYS
+            description = (
+                row.get("description")
+                or row.get("player_name")
+                or row.get("player")
+                or row.get("athlete_name")
+                or row.get("athlete")
+                or row.get("participant")
+            )
+            if is_prop and (point is None or not description):
+                continue
             if point is not None and (market_key in {"spreads", "totals"} or sources.canonical_market_key(market_key) == market_key):
                 outcome["point"] = point
-            description = row.get("description") or row.get("player") or row.get("participant") or row.get("athlete")
-            if description and market_key not in {"h2h", "spreads", "totals"}:
+            if description and is_prop:
                 outcome["description"] = str(description)
+            signature = (outcome.get("name"), outcome.get("description"), outcome.get("point"))
             if not any(
-                o.get("name") == outcome["name"] and o.get("point") == outcome.get("point")
+                (o.get("name"), o.get("description"), o.get("point")) == signature
                 for o in bucket["outcomes"]
             ):
                 bucket["outcomes"].append(outcome)
