@@ -95,10 +95,10 @@ def shadow_scorecard(
     db: Any,
     *,
     max_grades: int = DEFAULT_MAX_GRADES,
-    min_cohort_rows: int = 30,
+    min_cohort_events: int = 30,
 ) -> dict[str, Any]:
     rows = load_graded_shadow_rows(db, max_grades=max_grades)
-    report = evaluate_shadow_rankings(rows, min_cohort_rows=min_cohort_rows)
+    report = evaluate_shadow_rankings(rows, min_cohort_events=min_cohort_events)
     report["source"] = "WOW_LLP_V17_1_IMMUTABLE_SHADOW_LEDGER"
     report["max_grades"] = max_grades
     report["can_execute"] = CAN_EXECUTE
@@ -122,12 +122,12 @@ def install_llp_v17_1_shadow_scorecard_routes(
     )
     def get_scorecard(
         max_grades: int = Query(default=DEFAULT_MAX_GRADES, ge=1, le=20000),
-        min_cohort_rows: int = Query(default=30, ge=1, le=10000),
+        min_cohort_events: int = Query(default=30, ge=1, le=10000),
     ):
         return shadow_scorecard(
             get_client_fn(),
             max_grades=max_grades,
-            min_cohort_rows=min_cohort_rows,
+            min_cohort_events=min_cohort_events,
         )
 
     app.state.v17_llp_shadow_scorecard_routes_installed = True
