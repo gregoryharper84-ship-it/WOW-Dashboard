@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from math import isfinite, log
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Mapping, Sequence
 
 CAN_EXECUTE = False
 SERVING_MODE = "SHADOW_EVALUATION_ONLY"
@@ -140,6 +140,16 @@ def _width_band(width: float) -> str:
     if width < 0.15:
         return "WIDTH_10_TO_15PP"
     return "WIDTH_GE_15PP"
+
+
+def _unique_event_count(rows: Sequence[Mapping[str, Any]]) -> int:
+    keys: set[tuple[str, str]] = set()
+    for row in rows:
+        slate = _slate_id(row)
+        event = _text(row.get("official_event_id"))
+        if slate and event:
+            keys.add((slate, event))
+    return len(keys)
 
 
 def select_ranked_rows(rows: Sequence[Mapping[str, Any]], *, lambda_penalty: float) -> list[RankedSelection]:
@@ -340,25 +350,51 @@ def _cohort_payload(rows: Sequence[Mapping[str, Any]], lambdas: Sequence[float])
     return {"scorecards": scorecards, "comparisons_to_lower_bound_baseline": comparisons}
 
 
+def _supported_cohorts(
+    grouped: Mapping[str, list[Mapping[str, Any]]],
+    *,
+    lambdas: Sequence[float],
+    min_cohort_events: int,
+) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for key, members in sorted(grouped.items()):
+        event_n = _unique_event_count(members)
+        if event_n < min_cohort_events:
+            continue
+        out[key] = {
+            "raw_row_n": len(members),
+            "unique_slate_event_n": event_n,
+            **_cohort_payload(members, lambdas),
+        }
+    return out
+
+
 def evaluate_shadow_rankings(
     rows: Sequence[Mapping[str, Any]],
     *,
     lambdas: Sequence[float] | None = None,
-    min_cohort_rows: int = 30,
+    min_cohort_events: int = 30,
 ) -> dict[str, Any]:
-    """Evaluate overall and supported sport/league cohorts without promotion."""
-    if min_cohort_rows < 1:
-        raise ShadowScorecardError("INVALID_MIN_COHORT_ROWS")
+    """Evaluate overall and supported cohorts using independent event counts.
+
+    Cohort eligibility is based on unique (slate,event) observations, never raw
+    row count, so two sides times multiple lambda copies cannot inflate n.
+    """
+    if min_cohort_events < 1:
+        raise ShadowScorecardError("INVALID_MIN_COHORT_EVENTS")
     if not rows:
         return {
             "status": "NO_GRADED_SHADOW_ROWS",
             "serving_mode": SERVING_MODE,
             "automatic_promotion_allowed": False,
-            "production_mutated": False,
+            "production_mutation_allowed": False,
             "can_execute": False,
             "overall": {"scorecards": [], "comparisons_to_lower_bound_baseline": []},
             "by_sport": {},
             "by_league": {},
+            "by_market_role": {},
+            "by_governance_class": {},
+            "by_uncertainty_width": {},
         }
 
     resolved_lambdas = sorted(
@@ -368,22 +404,26 @@ def evaluate_shadow_rankings(
 
     by_sport_rows: dict[str, list[Mapping[str, Any]]] = {}
     by_league_rows: dict[str, list[Mapping[str, Any]]] = {}
+    by_market_role_rows: dict[str, list[Mapping[str, Any]]] = {}
+    by_governance_rows: dict[str, list[Mapping[str, Any]]] = {}
+    by_width_rows: dict[str, list[Mapping[str, Any]]] = {}
     for row in rows:
         sport = str(row.get("sport") or "UNKNOWN").upper()
         league = str(row.get("league") or "UNKNOWN").upper()
+        market_role = str(row.get("market_role") or "UNKNOWN").upper()
+        governance = str(row.get("governance_class") or "UNKNOWN").upper()
+        try:
+            p = _probability(row.get("calibrated_probability"), field="calibrated_probability")
+            lb = _probability(row.get("calibrated_lower_bound"), field="calibrated_lower_bound")
+            width = _number(row.get("lower_bound_width", p - lb), field="lower_bound_width")
+            width_band = _width_band(width)
+        except ShadowScorecardError:
+            width_band = "WIDTH_UNKNOWN"
         by_sport_rows.setdefault(sport, []).append(row)
         by_league_rows.setdefault(league, []).append(row)
-
-    by_sport = {
-        key: {"row_n": len(members), **_cohort_payload(members, resolved_lambdas)}
-        for key, members in sorted(by_sport_rows.items())
-        if len(members) >= min_cohort_rows
-    }
-    by_league = {
-        key: {"row_n": len(members), **_cohort_payload(members, resolved_lambdas)}
-        for key, members in sorted(by_league_rows.items())
-        if len(members) >= min_cohort_rows
-    }
+        by_market_role_rows.setdefault(market_role, []).append(row)
+        by_governance_rows.setdefault(governance, []).append(row)
+        by_width_rows.setdefault(width_band, []).append(row)
 
     return {
         "status": "PASS",
@@ -392,10 +432,15 @@ def evaluate_shadow_rankings(
         "production_mutation_allowed": PRODUCTION_MUTATION_ALLOWED,
         "baseline_lambda": BASELINE_LAMBDA,
         "lambda_grid": resolved_lambdas,
-        "graded_row_n": len(rows),
+        "graded_raw_row_n": len(rows),
+        "graded_unique_slate_event_n": _unique_event_count(rows),
+        "min_cohort_events": min_cohort_events,
         "overall": overall,
-        "by_sport": by_sport,
-        "by_league": by_league,
+        "by_sport": _supported_cohorts(by_sport_rows, lambdas=resolved_lambdas, min_cohort_events=min_cohort_events),
+        "by_league": _supported_cohorts(by_league_rows, lambdas=resolved_lambdas, min_cohort_events=min_cohort_events),
+        "by_market_role": _supported_cohorts(by_market_role_rows, lambdas=resolved_lambdas, min_cohort_events=min_cohort_events),
+        "by_governance_class": _supported_cohorts(by_governance_rows, lambdas=resolved_lambdas, min_cohort_events=min_cohort_events),
+        "by_uncertainty_width": _supported_cohorts(by_width_rows, lambdas=resolved_lambdas, min_cohort_events=min_cohort_events),
         "can_execute": CAN_EXECUTE,
     }
 
