@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import fields
 from decimal import Decimal
+import os
 from typing import Any, Callable
 
 from fastapi import Depends, FastAPI, Query
@@ -22,6 +23,7 @@ from v17.core_intelligence import (
     detect_learning_hypotheses,
     summarize_cohort,
 )
+from v17.llp_v17_1_shadow_internal_routes import install_llp_v17_1_shadow_internal_routes
 from v17.postmortem_learning_ledger import signed_distance_to_threshold
 
 PAGE_SIZE = 1000
@@ -309,6 +311,13 @@ def install_core_intelligence_routes(
             get_client_fn(),
             max_outcomes=max_outcomes,
             min_samples=min_samples,
+        )
+
+    if os.getenv("WOW_V17_LLP_SHADOW_AUTOMATION_ACTIVE", "0") == "1":
+        install_llp_v17_1_shadow_internal_routes(
+            app,
+            get_client_fn=get_client_fn,
+            existing_auth_dependency=auth_dependency,
         )
 
     app.state.v17_core_intelligence_routes_installed = True
