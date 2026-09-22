@@ -6,9 +6,10 @@ canonical event ids, so the resolver first tries the supplied id and then, only
 when that exact lookup is empty, performs a bounded server-owned identity join
 on slate date + participants + scheduled start. If the requested future slate
 has not yet been captured by the current-day cron, the resolver invokes the
-existing governed MLB forward-shadow capture for that exact requested date and
-retries canonical identity once. The fallback must resolve to exactly one
-canonical MLB event before any request id is rewritten.
+existing governed MLB forward-shadow capture for that exact requested date,
+runs the existing frozen-feature hydration/scoring loop on the newly captured
+snapshot, and retries canonical identity once. The fallback must resolve to
+exactly one canonical MLB event before any request id is rewritten.
 
 When the canonical ledger has no usable snapshot (or is missing only the
 scorer's venue/starter fields), the request may supply a complete, explicitly
@@ -22,22 +23,12 @@ import re
 from datetime import datetime, timezone
 from typing import Any
 
-
-_REQUIRED_CANONICAL_FIELDS = (
-    "venue_name",
-    "home_probable_pitcher",
-    "away_probable_pitcher",
-)
-_CALLER_REQUIRED_FIELDS = (
-    "venue",
-    "home_starting_pitcher",
-    "away_starting_pitcher",
-)
+_REQUIRED_CANONICAL_FIELDS = ("venue_name", "home_probable_pitcher", "away_probable_pitcher")
+_CALLER_REQUIRED_FIELDS = ("venue", "home_starting_pitcher", "away_starting_pitcher")
 _IDENTITY_START_TOLERANCE_SECONDS = 60
 _CANONICAL_SELECT = (
     "official_event_id,official_date,event_start_time,event_status,home_team,away_team,venue_name,"
-    "home_probable_pitcher,away_probable_pitcher,snapshot_id,"
-    "snapshot_timestamp,feature_hydration_status"
+    "home_probable_pitcher,away_probable_pitcher,snapshot_id,snapshot_timestamp,feature_hydration_status"
 )
 
 _MLB_TEAM_ALIASES: dict[str, str] = {
@@ -90,8 +81,7 @@ def _same_text(left: Any, right: Any) -> bool:
 
 
 def _normalized_team_text(value: Any) -> str:
-    key = re.sub(r"[^a-z0-9 ]+", " ", str(value or "").casefold())
-    return " ".join(key.split())
+    return " ".join(re.sub(r"[^a-z0-9 ]+", " ", str(value or "").casefold()).split())
 
 
 def _mlb_team_key(value: Any) -> str:
@@ -109,12 +99,10 @@ def _mlb_team_key(value: Any) -> str:
 
 
 def _team_match_strength(canonical_value: Any, provider_value: Any) -> int:
-    """2=exact MLB alias; 1=ambiguous city compatible only with other proof."""
     canonical_key = _mlb_team_key(canonical_value)
     provider_key = _mlb_team_key(provider_value)
     if canonical_key and provider_key and canonical_key == provider_key:
         return 2
-
     provider_text = _normalized_team_text(provider_value)
     canonical_text = _normalized_team_text(canonical_value)
     if provider_text in _AMBIGUOUS_CITY_LABELS and canonical_text.startswith(provider_text + " "):
@@ -147,17 +135,14 @@ def _caller_fallback(req: Any, *, blocker_code: str) -> dict[str, Any] | None:
         "away_lineup_status": str(caller.get("away_lineup_status") or "PROJECTED").strip(),
     }
     return {
-        "ok": True,
-        "code": "MLB_TEAM_EVENT_CALLER_EVIDENCE_FALLBACK_READY",
-        "fallback_reason": blocker_code,
-        "evidence": evidence,
+        "ok": True, "code": "MLB_TEAM_EVENT_CALLER_EVIDENCE_FALLBACK_READY",
+        "fallback_reason": blocker_code, "evidence": evidence,
         "canonical_source_snapshot_id": source_snapshot_id,
         "canonical_snapshot_timestamp": snapshot_time.isoformat(),
         "canonical_official_event_id": str(getattr(req, "official_event_id", "") or ""),
         "caller_source_snapshot_id": source_snapshot_id,
         "evidence_authority": "EXPLICIT_REQUEST_FALLBACK",
-        "canonical_identity_resolution": "CALLER_ID_PRESERVED",
-        "can_execute": False,
+        "canonical_identity_resolution": "CALLER_ID_PRESERVED", "can_execute": False,
     }
 
 
@@ -174,37 +159,30 @@ def _usable_rows(rows: list[dict[str, Any]], *, now: datetime) -> list[tuple[dat
 
 
 def _capture_requested_slate(req: Any, *, client: Any) -> dict[str, Any]:
-    """Use the existing governed forward-shadow collector for the requested date."""
+    """Capture + hydrate the requested slate using existing governed SQL functions."""
     slate_date = str(getattr(req, "requested_slate_date", "") or "").strip()
     if not slate_date:
         return {"ok": False, "code": "MLB_TEAM_EVENT_REQUESTED_SLATE_DATE_MISSING"}
     try:
         specs = (
-            client.table("wow_mlb_v2d_frozen_spec")
-            .select("spec_id,status,created_at")
-            .eq("status", "RESEARCH_FROZEN")
-            .order("created_at", desc=True)
-            .limit(1)
-            .execute()
-            .data
-            or []
+            client.table("wow_mlb_v2d_frozen_spec").select("spec_id,status,created_at")
+            .eq("status", "RESEARCH_FROZEN").order("created_at", desc=True).limit(1)
+            .execute().data or []
         )
         if not specs:
             return {"ok": False, "code": "MLB_TEAM_EVENT_FROZEN_SPEC_UNAVAILABLE"}
-        payload = client.rpc(
+        capture = client.rpc(
             "wow_mlb_capture_forward_shadow_schedule",
             {"p_spec_id": str(specs[0]["spec_id"]), "p_slate_date": slate_date},
         ).execute().data
+        hydration = client.rpc("wow_mlb_forward_auto_hydrate_pregame", {}).execute().data
     except Exception as exc:
-        return {
-            "ok": False,
-            "code": "MLB_TEAM_EVENT_CANONICAL_ACQUISITION_FAILED",
-            "error_type": type(exc).__name__,
-        }
+        return {"ok": False, "code": "MLB_TEAM_EVENT_CANONICAL_ACQUISITION_FAILED", "error_type": type(exc).__name__}
     return {
         "ok": True,
         "code": "MLB_TEAM_EVENT_CANONICAL_ACQUISITION_ATTEMPTED",
-        "capture": payload if isinstance(payload, dict) else {"status": "UNKNOWN"},
+        "capture": capture if isinstance(capture, dict) else {"status": "UNKNOWN"},
+        "hydration": hydration if isinstance(hydration, dict) else {"status": "UNKNOWN"},
         "can_execute": False,
     }
 
@@ -222,7 +200,6 @@ def _identity_join_rows(req: Any, *, client: Any, now: datetime) -> dict[str, An
         )
     except Exception as exc:
         return {"ok": False, "code": "MLB_TEAM_EVENT_CANONICAL_QUERY_FAILED", "error_type": type(exc).__name__, "missing_fields": []}
-
     matches_by_id: dict[str, tuple[datetime, datetime, dict[str, Any]]] = {}
     for snap_time, event_start, row in _usable_rows(list(rows), now=now):
         home_strength = _team_match_strength(row.get("home_team"), getattr(req, "home_team", None))
@@ -237,7 +214,6 @@ def _identity_join_rows(req: Any, *, client: Any, now: datetime) -> dict[str, An
         prior = matches_by_id.get(canonical_id)
         if prior is None or snap_time > prior[0]:
             matches_by_id[canonical_id] = (snap_time, event_start, row)
-
     if not matches_by_id:
         return {"ok": False, "code": "MLB_TEAM_EVENT_CANONICAL_SNAPSHOT_UNAVAILABLE", "missing_fields": list(_REQUIRED_CANONICAL_FIELDS)}
     if len(matches_by_id) > 1:
@@ -299,14 +275,10 @@ def resolve_mlb_team_event_evidence(req: Any, *, event_api: Any) -> dict[str, An
         return fallback or {"ok": False, "code": "MLB_TEAM_EVENT_CANONICAL_SNAPSHOT_INCOMPLETE", "missing_fields": missing}
 
     canonical = {
-        "venue": row["venue_name"],
-        "official_event_status": row.get("event_status"),
-        "home_starting_pitcher": row["home_probable_pitcher"],
-        "away_starting_pitcher": row["away_probable_pitcher"],
-        "home_starter_status": "PROBABLE",
-        "away_starter_status": "PROBABLE",
-        "home_lineup_status": "PROJECTED",
-        "away_lineup_status": "PROJECTED",
+        "venue": row["venue_name"], "official_event_status": row.get("event_status"),
+        "home_starting_pitcher": row["home_probable_pitcher"], "away_starting_pitcher": row["away_probable_pitcher"],
+        "home_starter_status": "PROBABLE", "away_starter_status": "PROBABLE",
+        "home_lineup_status": "PROJECTED", "away_lineup_status": "PROJECTED",
     }
     caller = dict(getattr(req, "sport_specific_evidence", None) or {})
     contradictions = []
@@ -318,16 +290,12 @@ def resolve_mlb_team_event_evidence(req: Any, *, event_api: Any) -> dict[str, An
         return {"ok": False, "code": "MLB_TEAM_EVENT_CALLER_EVIDENCE_CONTRADICTS_CANONICAL", "identity_mismatches": contradictions, "missing_fields": []}
 
     return {
-        "ok": True,
-        "code": "MLB_TEAM_EVENT_CANONICAL_EVIDENCE_READY",
-        "evidence": canonical,
+        "ok": True, "code": "MLB_TEAM_EVENT_CANONICAL_EVIDENCE_READY", "evidence": canonical,
         "canonical_official_event_id": str(row["official_event_id"]),
         "canonical_source_snapshot_id": str(row["snapshot_id"]),
         "canonical_snapshot_timestamp": snap_time.isoformat(),
         "caller_official_event_id": str(getattr(req, "official_event_id", "") or ""),
         "caller_source_snapshot_id": str(req.source_snapshot_id),
-        "evidence_authority": "CANONICAL_MLB_LEDGER",
-        "canonical_identity_resolution": identity_resolution,
-        "canonical_acquisition": acquisition,
-        "can_execute": False,
+        "evidence_authority": "CANONICAL_MLB_LEDGER", "canonical_identity_resolution": identity_resolution,
+        "canonical_acquisition": acquisition, "can_execute": False,
     }
