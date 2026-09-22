@@ -41,8 +41,8 @@ def test_external_lifecycle_wakeup_is_scheduled_and_uses_short_lived_oidc_only()
     assert "ACTIONS_ID_TOKEN_REQUEST_URL" in text
     assert "ACTIONS_ID_TOKEN_REQUEST_TOKEN" in text
     assert "audience=${WOW_OIDC_AUDIENCE}" in text
-    assert '"max_snapshots_per_route":5' in text
-    assert '"settlement_limit":50' in text
+    assert '"max_snapshots_per_route":2' in text
+    assert '"settlement_limit":20' in text
     assert "not retrying a possibly still-running POST" in text
     assert "for attempt in 1 2" not in text
     assert "--retry-all-errors" not in text
