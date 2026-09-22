@@ -61,7 +61,6 @@ jobs:
           case "$ACTIONS_ID_TOKEN_REQUEST_URL" in
             *\?*) separator='&' ;;
           esac
-
           issue_oidc_token() {
             local oidc_json
             oidc_json="$(curl --silent --show-error --fail --connect-timeout 15 --max-time 30 \
@@ -69,7 +68,6 @@ jobs:
               "${ACTIONS_ID_TOKEN_REQUEST_URL}${separator}audience=${WOW_OIDC_AUDIENCE}")"
             python -c 'import json,sys; value=json.load(sys.stdin).get("value"); assert isinstance(value,str) and value.strip(); print(value.strip())' <<<"${oidc_json}"
           }
-
           ready=0
           for attempt in $(seq 1 60); do
             oidc_token="$(issue_oidc_token)"
@@ -79,10 +77,7 @@ jobs:
               --header 'Content-Type: application/json' \
               "${WOW_SERVICE_URL}/internal/v17/nba-scalar-candidates/derive" || true)"
             unset oidc_token
-            if [ "${code}" -ge 200 ] && [ "${code}" -lt 300 ]; then
-              ready=1
-              break
-            fi
+            if [ "${code}" -ge 200 ] && [ "${code}" -lt 300 ]; then ready=1; break; fi
             sleep 5
           done
           if [ "${ready}" -ne 1 ]; then
@@ -90,7 +85,6 @@ jobs:
             test -f /tmp/wow-nba-scalar-register.json && head -c 2000 /tmp/wow-nba-scalar-register.json >&2 || true
             exit 1
           fi
-
           oidc_token="$(issue_oidc_token)"
           wnba_code="$(curl --silent --show-error --fail --connect-timeout 15 --max-time 120 \
             --output /tmp/wow-wnba-composite-register.json --write-out '%{http_code}' \
@@ -100,40 +94,23 @@ jobs:
           unset oidc_token
           test "${wnba_code}" -ge 200
           test "${wnba_code}" -lt 300
-
           python - <<'PY'
           import json
           from pathlib import Path
-
           nba = json.loads(Path('/tmp/wow-nba-scalar-register.json').read_text())
           wnba = json.loads(Path('/tmp/wow-wnba-composite-register.json').read_text())
-          if nba.get('status') != 'NBA_SCALAR_CANDIDATE_REGISTRATION_COMPLETE':
-              raise SystemExit(f"unexpected NBA registration status: {nba.get('status')}")
-          if int(nba.get('registered_n') or 0) != 7:
-              raise SystemExit(f"expected 7 NBA candidate routes, got {nba.get('registered_n')}")
-          if wnba.get('status') != 'WNBA_COMPOSITE_CANDIDATE_REGISTRATION_COMPLETE':
-              raise SystemExit(f"unexpected WNBA registration status: {wnba.get('status')}")
-          if int(wnba.get('registered_n') or 0) != 4:
-              raise SystemExit(f"expected 4 WNBA composite routes, got {wnba.get('registered_n')}")
+          if nba.get('status') != 'NBA_SCALAR_CANDIDATE_REGISTRATION_COMPLETE': raise SystemExit(f"unexpected NBA registration status: {nba.get('status')}")
+          if int(nba.get('registered_n') or 0) != 7: raise SystemExit(f"expected 7 NBA candidate routes, got {nba.get('registered_n')}")
+          if wnba.get('status') != 'WNBA_COMPOSITE_CANDIDATE_REGISTRATION_COMPLETE': raise SystemExit(f"unexpected WNBA registration status: {wnba.get('status')}")
+          if int(wnba.get('registered_n') or 0) != 4: raise SystemExit(f"expected 4 WNBA composite routes, got {wnba.get('registered_n')}")
           for payload in (nba, wnba):
-              if payload.get('automatic_certification') is not False:
-                  raise SystemExit('automatic certification must remain disabled')
-              if payload.get('automatic_promotion') is not False:
-                  raise SystemExit('automatic promotion must remain disabled')
-              if payload.get('probability_publishable') is not False:
-                  raise SystemExit('candidate registration cannot publish probability')
-              if payload.get('can_execute') is not False:
-                  raise SystemExit('can_execute invariant failed')
+              if payload.get('automatic_certification') is not False: raise SystemExit('automatic certification must remain disabled')
+              if payload.get('automatic_promotion') is not False: raise SystemExit('automatic promotion must remain disabled')
+              if payload.get('probability_publishable') is not False: raise SystemExit('candidate registration cannot publish probability')
+              if payload.get('can_execute') is not False: raise SystemExit('can_execute invariant failed')
               for row in payload.get('registered') or []:
-                  if row.get('probability_publishable') is not False or row.get('can_execute') is not False:
-                      raise SystemExit('candidate row authority invariant failed')
-          print(json.dumps({
-              'nba_candidate_routes': sorted(r.get('stat_type') for r in nba.get('registered') or []),
-              'wnba_composite_routes': sorted(r.get('stat_type') for r in wnba.get('registered') or []),
-              'automatic_certification': False,
-              'automatic_promotion': False,
-              'can_execute': False,
-          }, sort_keys=True))
+                  if row.get('probability_publishable') is not False or row.get('can_execute') is not False: raise SystemExit('candidate row authority invariant failed')
+          print(json.dumps({'nba_candidate_routes': sorted(r.get('stat_type') for r in nba.get('registered') or []), 'wnba_composite_routes': sorted(r.get('stat_type') for r in wnba.get('registered') or []), 'automatic_certification': False, 'automatic_promotion': False, 'can_execute': False}, sort_keys=True))
           PY
 
       - name: Run bounded universal V17 prop lifecycle cycle
@@ -141,25 +118,17 @@ jobs:
         run: |
           set -euo pipefail
           separator='?'
-          case "$ACTIONS_ID_TOKEN_REQUEST_URL" in
-            *\?*) separator='&' ;;
-          esac
+          case "$ACTIONS_ID_TOKEN_REQUEST_URL" in *\?*) separator='&' ;; esac
           oidc_json="$(curl --silent --show-error --fail --connect-timeout 15 --max-time 30 \
             --header "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
             "${ACTIONS_ID_TOKEN_REQUEST_URL}${separator}audience=${WOW_OIDC_AUDIENCE}")"
           oidc_token="$(python -c 'import json,sys; value=json.load(sys.stdin).get("value"); assert isinstance(value,str) and value.strip(); print(value.strip())' <<<"${oidc_json}")"
           set +e
-          http_code="$(curl \
-            --silent \
-            --show-error \
-            --connect-timeout 30 \
-            --max-time 300 \
-            --output /tmp/wow-prop-lifecycle.json \
-            --write-out '%{http_code}' \
-            --request POST \
-            --header "Authorization: Bearer ${oidc_token}" \
+          http_code="$(curl --silent --show-error --connect-timeout 30 --max-time 300 \
+            --output /tmp/wow-prop-lifecycle.json --write-out '%{http_code}' \
+            --request POST --header "Authorization: Bearer ${oidc_token}" \
             --header 'Content-Type: application/json' \
-            --data '{"routes":[],"max_snapshots_per_route":5,"settlement_limit":50,"persist_health":true}' \
+            --data '{"routes":[],"max_snapshots_per_route":2,"settlement_limit":20,"persist_health":true}' \
             "${WOW_SERVICE_URL}/v17/prop-lifecycle-autopilot-run")"
           curl_rc=$?
           set -e
@@ -177,33 +146,15 @@ jobs:
           python - <<'PY'
           import json
           from pathlib import Path
-
           payload = json.loads(Path('/tmp/wow-prop-lifecycle.json').read_text())
-          if payload.get('can_execute') is not False:
-              raise SystemExit('can_execute invariant failed')
-          if payload.get('automatic_certification') is not False:
-              raise SystemExit('automatic certification must remain disabled')
-          if payload.get('automatic_promotion') is not False:
-              raise SystemExit('automatic promotion must remain disabled')
-          if payload.get('artifact_isolation_enforced') is not True:
-              raise SystemExit('artifact isolation proof missing')
+          if payload.get('can_execute') is not False: raise SystemExit('can_execute invariant failed')
+          if payload.get('automatic_certification') is not False: raise SystemExit('automatic certification must remain disabled')
+          if payload.get('automatic_promotion') is not False: raise SystemExit('automatic promotion must remain disabled')
+          if payload.get('artifact_isolation_enforced') is not True: raise SystemExit('artifact isolation proof missing')
           run_status = payload.get('run_status')
-          if run_status not in {'COMPLETED', 'COMPLETED_WITH_STAGE_BLOCKERS'}:
-              raise SystemExit(f'unexpected lifecycle run status: {run_status}')
+          if run_status not in {'COMPLETED', 'COMPLETED_WITH_STAGE_BLOCKERS'}: raise SystemExit(f'unexpected lifecycle run status: {run_status}')
           dashboard = payload.get('dashboard') or {}
           kpi = dashboard.get('kpi') or {}
-          if int(kpi.get('improperly_promoted_route_n') or 0) != 0:
-              raise SystemExit('improperly promoted route detected')
-          print(json.dumps({
-              'run_status': run_status,
-              'cycle_id': payload.get('cycle_id'),
-              'routes_requested': payload.get('routes_requested'),
-              'failed_stages': payload.get('failed_stages') or [],
-              'production_registered_n': kpi.get('production_registered_n'),
-              'artifact_forward_prediction_n': kpi.get('artifact_forward_prediction_n'),
-              'artifact_forward_settled_n': kpi.get('artifact_forward_settled_n'),
-              'artifact_eligible_n': kpi.get('artifact_eligible_n'),
-              'improperly_promoted_route_n': kpi.get('improperly_promoted_route_n'),
-              'can_execute': False,
-          }, sort_keys=True))
+          if int(kpi.get('improperly_promoted_route_n') or 0) != 0: raise SystemExit('improperly promoted route detected')
+          print(json.dumps({'run_status': run_status, 'cycle_id': payload.get('cycle_id'), 'routes_requested': payload.get('routes_requested'), 'failed_stages': payload.get('failed_stages') or [], 'production_registered_n': kpi.get('production_registered_n'), 'artifact_forward_prediction_n': kpi.get('artifact_forward_prediction_n'), 'artifact_forward_settled_n': kpi.get('artifact_forward_settled_n'), 'artifact_eligible_n': kpi.get('artifact_eligible_n'), 'improperly_promoted_route_n': kpi.get('improperly_promoted_route_n'), 'can_execute': False}, sort_keys=True))
           PY
