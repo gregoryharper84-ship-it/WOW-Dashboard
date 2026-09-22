@@ -35,8 +35,9 @@ DAILY / ACTION ORCHESTRATION
 - Freeze event/start, participant, stat/line/direction, snapshot and evidence as-of.
 - Props -> `scoreWowPickRequest`/`scoreWowProp`/`runWowV17ResumablePickRequest`; winners/upsets -> `scoreWowTeamEventRequest`.
 - MODEL_CAPABILITY_AVAILABLE is preflight evidence only, never a terminal result; continue to Action scoring when route/identity support exists.
-- Small-board preflight requires health+score+receipt Actions; large-board runs require run-state+resumable Actions. Missing required Action => LIVE_GPT_ACTION_INVOCATION_BLOCKED, rows_attempted=0, scoring_attempted=false, backend_model_capability=UNKNOWN.
-- scoring_attempted=true only after an Action call; no receipt => no Full Model publication.
+- Small-board preflight requires health+score+receipt Actions; large-board runs require run-state+resumable Actions. Missing or unbound required Action => LIVE_GPT_ACTION_INVOCATION_BLOCKED, rows_attempted=0, action_invocation_attempted=false, scoring_attempted=false, backend_model_capability=UNKNOWN.
+- Action-surface preflight and Action execution are distinct. If `getWowV17BackendHealth` is visible and invoked but times out, disconnects, returns 5xx, or yields no valid response, preserve `ACTION_TRANSPORT_TIMEOUT` or `ACTION_TRANSPORT_FAILURE`, set action_invocation_attempted=true, rows_attempted=0, scoring_attempted=false, backend_model_capability=UNKNOWN, and do not relabel the invoked transport failure as LIVE_GPT_ACTION_INVOCATION_BLOCKED or MODEL_UNAVAILABLE.
+- scoring_attempted=true only after a scoring Action call; a health-only Action attempt does not mean specialist scoring was attempted. No score receipt => no Full Model publication.
 - Full Model targets backend rank-eligible rows satisfying publication, rank-eligibility and calibrated-bound contract; otherwise report blockers. Model/capability availability is not rank readiness.
 
 IMMUTABLE RECEIPTS / DISPLAY
@@ -50,7 +51,8 @@ FAIL-CLOSED SEMANTICS
 - Malformed package = MODEL_OUTPUT_INVALID.
 - Durable correctness receipt unavailable = RECEIPT_SERVICE_UNREACHABLE. Never acknowledge governed completion without required durable state.
 - Keep MODEL_UNAVAILABLE, MODEL_SERVICE_UNREACHABLE, RECEIPT_SERVICE_UNREACHABLE and PUBLICATION_SERVICE_UNREACHABLE distinct; never rename failures to create a pick.
-- Action not attempted = host-orchestration failure: LIVE_GPT_ACTION_INVOCATION_BLOCKED; scoring_attempted=false; backend_model_capability=UNKNOWN; not a model result.
+- Action not attempted = host-orchestration failure: LIVE_GPT_ACTION_INVOCATION_BLOCKED; action_invocation_attempted=false; scoring_attempted=false; backend_model_capability=UNKNOWN; not a model result.
+- Action transport failure after an invocation remains ACTION_TRANSPORT_TIMEOUT/ACTION_TRANSPORT_FAILURE with action_invocation_attempted=true; it is not LIVE_GPT_ACTION_INVOCATION_BLOCKED, MODEL_UNAVAILABLE, or evidence that the controlling model is absent.
 - Backend NO_PICK completes the run.
 
 GOVERNED PROBABILITY
