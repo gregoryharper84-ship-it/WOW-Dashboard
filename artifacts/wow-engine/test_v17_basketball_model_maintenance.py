@@ -34,24 +34,67 @@ def test_maintenance_updates_shadow_evidence_without_promotion(monkeypatch):
 
     assert result["status"] == "COMPLETE"
     assert result["rows_updated"] == 2
+    assert result["rows_fresh_acquisition_degraded"] == 0
     assert result["automatic_certification"] is False
     assert result["automatic_promotion"] is False
     assert result["probability_publishable"] is False
     assert result["can_execute"] is False
     assert all(row["status"] == "SHADOW_EVIDENCE_UPDATED" for row in result["rows"])
+    assert all(row["hydration_status"] == "FRESH_ACQUISITION_UPDATED" for row in result["rows"])
     assert all(row["promotion_attempted"] is False for row in result["rows"])
     assert seen[0][:3] == ("hydrate", "NBA", (2025, 2026))
 
 
-def test_missing_provider_credential_is_typed_blocker(monkeypatch):
-    def fail(*_args, **_kwargs):
+def test_missing_provider_credential_replays_persisted_corpus(monkeypatch):
+    def fail_hydration(*_args, **_kwargs):
         raise maintenance.BasketballHydrationError("BALLDONTLIE_API_KEY unavailable")
 
-    monkeypatch.setattr(maintenance, "hydrate", fail)
-    result = maintenance.run_basketball_model_maintenance(object(), sports=("NBA",), seasons=(2026,))
+    replay_calls = []
+
+    def replay(sport, client=None):
+        replay_calls.append((sport, client))
+        return {
+            "sport": sport,
+            "persisted_status": "SHADOW",
+            "provenance_preflight": {"provenance_complete": True},
+            "freshness_preflight": {"freshness_status": "PASS"},
+            "promotion_attempted": False,
+            "can_execute": False,
+        }
+
+    monkeypatch.setattr(maintenance, "hydrate", fail_hydration)
+    monkeypatch.setattr(maintenance, "run_training_replay", replay)
+    db = object()
+    result = maintenance.run_basketball_model_maintenance(db, sports=("NBA",), seasons=(2026,))
     row = result["rows"][0]
+
+    assert result["status"] == "COMPLETE"
+    assert result["rows_updated"] == 1
+    assert result["rows_fresh_acquisition_degraded"] == 1
+    assert row["status"] == "SHADOW_EVIDENCE_UPDATED"
+    assert row["hydration_status"] == "FRESH_ACQUISITION_BLOCKED_USING_PERSISTED_CORPUS"
+    assert row["hydration_blocker"]["code"] == "BALLDONTLIE_API_KEY unavailable"
+    assert row["hydration_blocker"]["stage"] == "FRESH_SOURCE_HYDRATION"
+    assert replay_calls == [("NBA", db)]
+    assert row["probability_publishable"] is False
+    assert row["can_execute"] is False
+
+
+def test_hydration_and_persisted_replay_failure_remain_blocked(monkeypatch):
+    def fail_hydration(*_args, **_kwargs):
+        raise maintenance.BasketballHydrationError("BALLDONTLIE_API_KEY unavailable")
+
+    def fail_replay(*_args, **_kwargs):
+        raise RuntimeError("WNBA_TRAINING_CORPUS_EMPTY")
+
+    monkeypatch.setattr(maintenance, "hydrate", fail_hydration)
+    monkeypatch.setattr(maintenance, "run_training_replay", fail_replay)
+    result = maintenance.run_basketball_model_maintenance(object(), sports=("WNBA",), seasons=(2026,))
+    row = result["rows"][0]
+
     assert result["status"] == "BLOCKED"
-    assert row["code"] == "BALLDONTLIE_API_KEY unavailable"
+    assert row["code"] == "WNBA_TRAINING_CORPUS_EMPTY"
+    assert row["hydration_blocker"]["code"] == "BALLDONTLIE_API_KEY unavailable"
     assert row["probability_publishable"] is False
     assert row["can_execute"] is False
 

@@ -29,6 +29,25 @@ class Snapshot:
         self.blocker_codes = list(blocker_codes)
 
 
+def _feature_report(complete_rows: int):
+    return {
+        "status": "COMPLETE" if complete_rows else "BLOCKED",
+        "games_seen": complete_rows,
+        "evidence_rows_seen": complete_rows * 29,
+        "features_persisted": complete_rows,
+        "features_existing": 0,
+        "complete_feature_rows": complete_rows,
+        "blocked_games": 0,
+        "blocker_counts": {},
+        "blocker_samples": [],
+        "feature_schema_version": "NCAAF_FEATURES_V1",
+        "compiler_version": "NCAAF_EVIDENCE_FEATURE_COMPILER_V1",
+        "market_features_used": False,
+        "probability_publishable": False,
+        "can_execute": False,
+    }
+
+
 def _install_successful_acquisition(monkeypatch, *, complete_rows: int):
     monkeypatch.setattr(maintenance.CFBDClient, "from_environment", classmethod(lambda cls: object()))
     monkeypatch.setattr(maintenance, "hydrate_cfbd_season", lambda *args, **kwargs: [Snapshot()])
@@ -37,34 +56,47 @@ def _install_successful_acquisition(monkeypatch, *, complete_rows: int):
     monkeypatch.setattr(
         maintenance,
         "materialize_complete_training_features",
-        lambda db: {
-            "status": "COMPLETE" if complete_rows else "BLOCKED",
-            "games_seen": complete_rows,
-            "evidence_rows_seen": complete_rows * 29,
-            "features_persisted": complete_rows,
-            "features_existing": 0,
-            "complete_feature_rows": complete_rows,
-            "blocked_games": 0,
-            "blocker_counts": {},
-            "blocker_samples": [],
-            "feature_schema_version": "NCAAF_FEATURES_V1",
-            "compiler_version": "NCAAF_EVIDENCE_FEATURE_COMPILER_V1",
-            "market_features_used": False,
-            "probability_publishable": False,
-            "can_execute": False,
-        },
+        lambda db: _feature_report(complete_rows),
     )
 
 
-def test_missing_cfbd_configuration_fails_closed_before_any_model_work(monkeypatch):
+def test_missing_cfbd_configuration_uses_governed_persisted_corpus(monkeypatch):
     def unavailable(_cls):
         raise CFBDUnavailable("CFBD_API_KEY_MISSING", "missing")
 
+    fallback_calls = []
+
+    def fallback(_db, *, training_code_sha):
+        fallback_calls.append(training_code_sha)
+        return {
+            "ok": True,
+            "code": "NCAAF_RESULT_FORM_CANDIDATE_PERSISTED",
+            "model_artifact_version": "result-form-v1",
+            "feature_schema_version": "NCAAF_RESULT_FORM_PRIOR_V1",
+            "eligible_rows": 1200,
+            "metrics": {"research_screen_pass": True},
+            "research_screen_pass": True,
+            "lifecycle_state": "CANDIDATE",
+            "automatic_certification": False,
+            "automatic_promotion": False,
+            "probability_publishable": False,
+            "can_execute": False,
+        }
+
     monkeypatch.setattr(maintenance.CFBDClient, "from_environment", classmethod(unavailable))
-    result = maintenance.run_ncaaf_model_maintenance(DummyDB(), seasons=[2026], weeks=[1])
-    assert result["status"] == "BLOCKED"
-    assert result["code"] == "CFBD_API_KEY_MISSING"
-    assert result["blocked_stage"] == "CFBD_ACQUISITION"
+    monkeypatch.setattr(maintenance, "materialize_complete_training_features", lambda db: _feature_report(0))
+    monkeypatch.setattr(maintenance, "train_result_form_candidate", fallback)
+    result = maintenance.run_ncaaf_model_maintenance(
+        DummyDB(), seasons=[2026], weeks=[1], training_code_sha="a" * 40
+    )
+
+    assert result["status"] == "CANDIDATE_EVIDENCE_UPDATED"
+    assert result["fresh_acquisition_complete"] is False
+    assert result["maintenance_degraded"] is True
+    assert "CFBD_API_KEY_MISSING" in result["blockers"]
+    assert result["acquisition"][0]["status"] == "BLOCKED_USING_PERSISTED_CORPUS"
+    assert result["candidate_lane"] == "RESULT_FORM_PRIOR_V1"
+    assert fallback_calls == ["a" * 40]
     assert result["automatic_certification"] is False
     assert result["automatic_promotion"] is False
     assert result["probability_publishable"] is False

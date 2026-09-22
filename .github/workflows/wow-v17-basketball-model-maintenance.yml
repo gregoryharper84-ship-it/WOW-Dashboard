@@ -17,6 +17,7 @@ on:
       - "artifacts/wow-engine/v17/basketball_model_maintenance.py"
       - "artifacts/wow-engine/team_event_request_runtime.py"
       - "artifacts/wow-engine/test_v17_basketball_model_maintenance.py"
+      - "artifacts/wow-engine/test_v17_basketball_hydration_fallback.py"
       - "artifacts/wow-engine/test_v17_github_oidc.py"
   pull_request:
     paths:
@@ -29,6 +30,7 @@ on:
       - "artifacts/wow-engine/v17/basketball_model_maintenance.py"
       - "artifacts/wow-engine/team_event_request_runtime.py"
       - "artifacts/wow-engine/test_v17_basketball_model_maintenance.py"
+      - "artifacts/wow-engine/test_v17_basketball_hydration_fallback.py"
       - "artifacts/wow-engine/test_v17_github_oidc.py"
 
 permissions:
@@ -58,6 +60,7 @@ jobs:
         run: >-
           python -m pytest -q
           test_v17_basketball_model_maintenance.py
+          test_v17_basketball_hydration_fallback.py
           test_basketball_training_replay_boundaries.py
           test_basketball_team_event_specialist.py
           test_v17_github_oidc.py
@@ -129,6 +132,7 @@ jobs:
               "status": payload.get("status"),
               "rows_updated": payload.get("rows_updated"),
               "rows_blocked": payload.get("rows_blocked"),
+              "rows_fresh_acquisition_degraded": payload.get("rows_fresh_acquisition_degraded"),
               "can_execute": False,
           }, sort_keys=True))
           PY

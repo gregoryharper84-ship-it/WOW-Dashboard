@@ -1,9 +1,13 @@
 """Governed NCAAF data -> feature -> candidate-model maintenance lane.
 
-The rich NCAAF feature lane remains preferred. When its historical pregame
-inputs are genuinely unavailable, maintenance may fit a separately identified
-result/form baseline using only settled prior games. The fallback never fills
-missing rich features, never uses market prices, and remains CANDIDATE-only.
+The rich NCAAF feature lane remains preferred. When fresh CFBD acquisition is
+unavailable, maintenance may continue from the already-persisted governed corpus
+and fit the separately identified result/form baseline. Fresh acquisition
+failure is retained as typed degradation; it is never hidden or converted into
+production readiness.
+
+The fallback never fills missing rich features, never uses market prices, and
+remains CANDIDATE-only.
 """
 from __future__ import annotations
 
@@ -57,44 +61,83 @@ def run_ncaaf_model_maintenance(
     if not season_values or not week_values:
         return _blocked("NCAAF_MAINTENANCE_RANGE_EMPTY", stage="CONFIGURATION")
 
-    try:
-        cfbd = CFBDClient.from_environment()
-    except CFBDUnavailable as exc:
-        return _blocked(exc.code, stage="CFBD_ACQUISITION")
-
     acquisition: list[dict[str, Any]] = []
     source_snapshot_n = source_persisted_n = 0
     training_game_candidate_n = training_game_persisted_n = 0
     acquisition_blockers: set[str] = set()
-    for season in season_values:
-        try:
-            snapshots = hydrate_cfbd_season(
-                cfbd, season=season, weeks=week_values, rating_families=("elo",), classification="fbs"
-            )
-            persisted_n = persist_source_snapshots(db, snapshots)
-            games = materialize_training_games(db, snapshots)
-        except CFBDUnavailable as exc:
-            return _blocked(exc.code, stage="CFBD_ACQUISITION", detail={"season": season})
-        except Exception as exc:  # noqa: BLE001
-            return _blocked(
-                "NCAAF_HISTORY_HYDRATION_FAILED", stage="CFBD_ACQUISITION",
-                detail={"season": season, "error_type": type(exc).__name__},
-            )
-        source_snapshot_n += len(snapshots)
-        source_persisted_n += int(persisted_n)
-        training_game_candidate_n += int(games.candidate_rows)
-        training_game_persisted_n += int(games.persisted_rows)
-        acquisition_blockers.update(code for snap in snapshots for code in snap.blocker_codes)
-        acquisition_blockers.update(games.blocker_codes)
+    fresh_acquisition_complete = True
+
+    try:
+        cfbd: CFBDClient | None = CFBDClient.from_environment()
+    except CFBDUnavailable as exc:
+        # Fresh acquisition is desirable but not allowed to erase the already
+        # persisted corpus. Continue to feature compilation/candidate training;
+        # those stages have their own provenance/sample gates and remain the
+        # authority on whether stored evidence is usable.
+        cfbd = None
+        fresh_acquisition_complete = False
+        acquisition_blockers.add(exc.code)
         acquisition.append({
-            "season": season, "source_snapshot_n": len(snapshots),
-            "source_snapshot_persisted_n": persisted_n, "training_games": asdict(games),
+            "status": "BLOCKED_USING_PERSISTED_CORPUS",
+            "code": exc.code,
+            "blocked_stage": "CFBD_ACQUISITION",
+            "can_execute": False,
         })
+
+    if cfbd is not None:
+        for season in season_values:
+            try:
+                snapshots = hydrate_cfbd_season(
+                    cfbd, season=season, weeks=week_values, rating_families=("elo",), classification="fbs"
+                )
+                persisted_n = persist_source_snapshots(db, snapshots)
+                games = materialize_training_games(db, snapshots)
+            except CFBDUnavailable as exc:
+                fresh_acquisition_complete = False
+                acquisition_blockers.add(exc.code)
+                acquisition.append({
+                    "season": season,
+                    "status": "BLOCKED_USING_PERSISTED_CORPUS",
+                    "code": exc.code,
+                    "blocked_stage": "CFBD_ACQUISITION",
+                    "can_execute": False,
+                })
+                break
+            except Exception as exc:  # noqa: BLE001
+                fresh_acquisition_complete = False
+                acquisition_blockers.add("NCAAF_HISTORY_HYDRATION_FAILED")
+                acquisition.append({
+                    "season": season,
+                    "status": "BLOCKED_USING_PERSISTED_CORPUS",
+                    "code": "NCAAF_HISTORY_HYDRATION_FAILED",
+                    "blocked_stage": "CFBD_ACQUISITION",
+                    "error_type": type(exc).__name__,
+                    "can_execute": False,
+                })
+                break
+            source_snapshot_n += len(snapshots)
+            source_persisted_n += int(persisted_n)
+            training_game_candidate_n += int(games.candidate_rows)
+            training_game_persisted_n += int(games.persisted_rows)
+            acquisition_blockers.update(code for snap in snapshots for code in snap.blocker_codes)
+            acquisition_blockers.update(games.blocker_codes)
+            acquisition.append({
+                "season": season, "status": "UPDATED", "source_snapshot_n": len(snapshots),
+                "source_snapshot_persisted_n": persisted_n, "training_games": asdict(games),
+            })
 
     try:
         feature_report = materialize_complete_training_features(db)
     except Exception as exc:  # noqa: BLE001
-        return _blocked("NCAAF_FEATURE_COMPILATION_FAILED", stage="FEATURE_COMPILATION", detail={"error_type": type(exc).__name__})
+        return _blocked(
+            "NCAAF_FEATURE_COMPILATION_FAILED",
+            stage="FEATURE_COMPILATION",
+            detail={
+                "error_type": type(exc).__name__,
+                "fresh_acquisition_complete": fresh_acquisition_complete,
+                "acquisition_blockers": sorted(acquisition_blockers),
+            },
+        )
 
     complete_n = int(feature_report.get("complete_feature_rows") or 0)
     effective_sha = str(training_code_sha or os.getenv("RENDER_GIT_COMMIT") or "").strip()
@@ -128,7 +171,10 @@ def run_ncaaf_model_maintenance(
     return {
         "status": status, "generated_at": datetime.now(timezone.utc).isoformat(),
         "seasons": list(season_values), "weeks": [min(week_values), max(week_values)],
-        "acquisition": acquisition, "source_snapshot_n": source_snapshot_n,
+        "acquisition": acquisition,
+        "fresh_acquisition_complete": fresh_acquisition_complete,
+        "maintenance_degraded": not fresh_acquisition_complete,
+        "source_snapshot_n": source_snapshot_n,
         "source_snapshot_persisted_n": source_persisted_n,
         "training_game_candidate_n": training_game_candidate_n,
         "training_game_persisted_n": training_game_persisted_n,
