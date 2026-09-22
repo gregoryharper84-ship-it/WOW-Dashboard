@@ -103,8 +103,14 @@ def _readiness(
     normalized = str(sport or "").upper()
     registered = bool(health.get("registered"))
     scorer = bool(health.get("scorer_resolvable"))
-    model_artifact = bool(health.get("model_artifact_present"))
     certification = str(health.get("certification_status") or "NOT_CERTIFIED")
+    # Older parity callers intentionally provide only the historic three-field
+    # capability shape. Preserve MLB's already-certified artifact semantics when
+    # that field is omitted, while a present explicit false still fails closed.
+    if "model_artifact_present" in health:
+        model_artifact = bool(health.get("model_artifact_present"))
+    else:
+        model_artifact = bool(normalized == "MLB" and certification == "CERTIFIED")
     runtime_artifact_certified = (
         str(health.get("runtime_artifact_certification_status") or "") == "PASS"
     )
