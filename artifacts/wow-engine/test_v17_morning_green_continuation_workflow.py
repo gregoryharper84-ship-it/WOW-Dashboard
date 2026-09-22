@@ -32,13 +32,16 @@ def test_exact_three_protected_checks_are_reverified():
     assert 'ready=true' in text
 
 
-def test_merge_is_head_sha_pinned_and_failure_is_nonterminal():
+def test_merge_is_head_sha_pinned_and_nonterminal_state_stays_fail_closed_without_poisoning_default_branch():
     text = _text()
     assert '--match-head-commit "$HEAD_SHA"' in text
     assert 'state="CI_REWORK"' in text
     assert 'state="CI_WAIT"' in text
-    assert "successful workflow termination is forbidden" in text
-    assert "exit 1" in text
+    assert 'state="SCOPE_REWORK"' in text
+    assert "continue-on-error: true" in text
+    assert "Record nonterminal incident state" in text
+    assert "autonomous merge remains blocked" in text
+    assert "successful workflow termination is forbidden" not in text
 
 
 def test_bot_merge_explicitly_resumes_main_required_checks():
