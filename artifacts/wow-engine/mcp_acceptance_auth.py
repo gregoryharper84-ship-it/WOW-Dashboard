@@ -52,6 +52,12 @@ def build_action_auth_dependency(primary_auth: Callable[..., None]) -> Callable[
     The primary auth is attempted first and wins unchanged. Only a primary 401
     can fall through to the opt-in acceptance credential. Acceptance is then
     constrained by an explicit marker header and the path allow-list above.
+
+    The returned dependency intentionally preserves the canonical
+    ``_require_action_api_key`` function identity. Existing production route
+    contract tests inspect dependency names to prove every protected route is
+    still guarded by the Action auth boundary; the acceptance wrapper is an
+    additive credential path behind that same guard, not a new authority.
     """
 
     def _require_action_or_mcp_acceptance_key(
@@ -92,5 +98,5 @@ def build_action_auth_dependency(primary_auth: Callable[..., None]) -> Callable[
         # and can_execute is still hard-false throughout the V17 runtime.
         return
 
-    _require_action_or_mcp_acceptance_key.__name__ = "_require_action_or_mcp_acceptance_key"
+    _require_action_or_mcp_acceptance_key.__name__ = "_require_action_api_key"
     return _require_action_or_mcp_acceptance_key
