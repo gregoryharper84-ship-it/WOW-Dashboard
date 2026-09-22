@@ -1,7 +1,7 @@
 from pathlib import Path
 from types import SimpleNamespace
 
-from v17.mlb_team_event_hydration import _same_mlb_team
+from v17.mlb_team_event_hydration import _same_mlb_team, _team_match_strength
 from v17.sep16_evidence_handoff_rank_fix import (
     RUN_INVALID_EVIDENCE_BINDING,
     _annotate_schema_mismatch,
@@ -16,6 +16,17 @@ def test_mlb_provider_city_aliases_match_canonical_club_names():
     assert _same_mlb_team("Minnesota", "Minnesota Twins")
     assert _same_mlb_team("Los Angeles Dodgers", "LA Dodgers")
     assert not _same_mlb_team("San Francisco", "Minnesota Twins")
+
+
+def test_ambiguous_city_only_labels_are_compatible_but_not_exact_aliases():
+    assert _team_match_strength("New York Yankees", "New York") == 1
+    assert _team_match_strength("New York Mets", "New York") == 1
+    assert _team_match_strength("Chicago Cubs", "Chicago") == 1
+    assert _team_match_strength("Chicago White Sox", "Chicago") == 1
+    assert _team_match_strength("Los Angeles Dodgers", "Los Angeles") == 1
+    assert _team_match_strength("Los Angeles Angels", "Los Angeles") == 1
+    assert _team_match_strength("Tampa Bay Rays", "Tampa Bay") == 2
+    assert _team_match_strength("Minnesota Twins", "Minnesota") == 2
 
 
 def test_evidence_binding_contradiction_is_typed_run_invalid_without_erasing_model_package():
