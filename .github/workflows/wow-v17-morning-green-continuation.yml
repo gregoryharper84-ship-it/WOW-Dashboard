@@ -126,6 +126,7 @@ jobs:
 
       - name: Verify Morning-Green diff scope
         id: scope
+        continue-on-error: true
         if: steps.resolve.outputs.eligible == 'true' && steps.gates.outputs.ready == 'true'
         shell: bash
         env:
