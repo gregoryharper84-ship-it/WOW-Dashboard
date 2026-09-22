@@ -46,10 +46,31 @@ def _int_env(name: str, default: int, *, minimum: int, maximum: int) -> int:
 
 
 def _submit(db: Any, req: AsyncDailySubmitRequest) -> str:
+    payload = req.model_dump(mode="json", exclude={"idempotency_key"})
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    request_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    idempotency_key = req.idempotency_key
+
+    if idempotency_key:
+        existing = (
+            db.table(TABLE)
+            .select("run_id,request_hash")
+            .eq("idempotency_key", idempotency_key)
+            .limit(1)
+            .execute().data
+            or []
+        )
+        if existing:
+            row = existing[0]
+            if not isinstance(row, dict) or row.get("request_hash") != request_hash:
+                raise ValueError("DAILY_ASYNC_IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_REQUEST")
+            return str(row["run_id"])
+
     run_id = f"v17-daily-async-{uuid4()}"
-    payload = req.model_dump(mode="json")
     db.table(TABLE).insert({
         "run_id": run_id,
+        "idempotency_key": idempotency_key,
+        "request_hash": request_hash,
         "request_payload": payload,
         "run_status": "QUEUED",
         "can_execute": False,
