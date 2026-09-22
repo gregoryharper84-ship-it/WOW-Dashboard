@@ -137,7 +137,7 @@ def build_shadow_observation(
         divergence_status = diagnostic.status
         market_prior_weight = diagnostic.market_prior_weight
 
-    observation_id = f"{prediction_id}::{lambda_penalty:.4f}::{SHADOW_SCHEMA_VERSION}"
+    observation_id = f"{prediction_id}::{selection}::{lambda_penalty:.4f}::{SHADOW_SCHEMA_VERSION}"
     return ShadowObservation(
         shadow_schema_version=SHADOW_SCHEMA_VERSION,
         observation_id=observation_id,
