@@ -19,6 +19,7 @@ from v17.core_intelligence_event_runtime import install_core_intelligence_event_
 from v17.core_intelligence_runtime import install_core_intelligence_routes
 from v17.core_intelligence_shadow_runtime import install_shadow_lab_routes
 from v17.llp_v17_1_shadow_runtime import install_llp_v17_1_shadow_routes
+from v17.llp_v17_1_shadow_scorecard_runtime import install_llp_v17_1_shadow_scorecard_routes
 # Import through the V17 preservation shim so downstream LLP governance holds
 # cannot erase a completed fitted sporting probability. The shim preserves all
 # rank/publication/terminal gates and can_execute=false.
@@ -83,6 +84,13 @@ install_shadow_lab_routes(
 # side-specific challenger evidence only and cannot alter production scoring,
 # calibration, ranking, terminal authority, or execution posture.
 install_llp_v17_1_shadow_routes(
+    app,
+    auth_dependency=_core_intelligence_auth,
+    get_client_fn=v16._db_client,
+)
+# Evaluation is read-only over the immutable shadow/grade ledgers. It compares
+# ranking objectives and cohorts but cannot auto-promote a challenger.
+install_llp_v17_1_shadow_scorecard_routes(
     app,
     auth_dependency=_core_intelligence_auth,
     get_client_fn=v16._db_client,
