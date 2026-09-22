@@ -124,8 +124,11 @@ def build_shadow_observation(
     )
     ranking = score_candidate(candidate, lambda_penalty=lambda_penalty)
 
+    raw_upper = governed_row.get("calibrated_upper_bound")
+    upper_bound = None if raw_upper is None else float(raw_upper)
     divergence_value = None
     divergence_status = None
+    normalized_market_probability = None
     market_prior_weight = 0.0
     if market_no_vig_probability is not None:
         diagnostic = market_divergence_diagnostic(
@@ -133,6 +136,7 @@ def build_shadow_observation(
             market_no_vig_probability,
             threshold=divergence_threshold,
         )
+        normalized_market_probability = diagnostic.market_no_vig_probability
         divergence_value = diagnostic.signed_divergence
         divergence_status = diagnostic.status
         market_prior_weight = diagnostic.market_prior_weight
@@ -159,7 +163,7 @@ def build_shadow_observation(
         observed_at=observed_at or _utc_now_iso(),
         calibrated_probability=ranking.calibrated_probability,
         calibrated_lower_bound=ranking.calibrated_lower_bound,
-        calibrated_upper_bound=governed_row.get("calibrated_upper_bound"),
+        calibrated_upper_bound=upper_bound,
         lower_bound_width=ranking.uncertainty_width_to_lower,
         point_rank_score=ranking.winner_likelihood_score,
         lower_bound_rank_score=ranking.confidence_floor_score,
@@ -169,7 +173,7 @@ def build_shadow_observation(
         hard_blockers=hard,
         soft_uncertainties=soft,
         rank_eligible_shadow=ranking.rank_eligible_shadow,
-        market_no_vig_probability=market_no_vig_probability,
+        market_no_vig_probability=normalized_market_probability,
         market_divergence=divergence_value,
         market_divergence_status=divergence_status,
         market_prior_weight=market_prior_weight,
