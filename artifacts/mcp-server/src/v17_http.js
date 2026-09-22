@@ -1,16 +1,27 @@
 import http from "node:http";
-import { randomUUID, timingSafeEqual } from "node:crypto";
+import { randomUUID } from "node:crypto";
 
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 
 import { CAN_EXECUTE, TERMINAL_AUTHORITY } from "./v17_contract.js";
+import {
+  assertOAuthConfig,
+  buildOAuthChallenge,
+  createOAuthConfig,
+  parseBearerToken,
+  protectedResourceMetadata,
+  secureTokenEqual,
+  sharedTokenAuthContext,
+  verifyOAuthAccessToken,
+} from "./v17_oauth.js";
 import { createV17McpServer } from "./v17_server.js";
 
 const PORT = Number(process.env.PORT || "3000");
 const AUTH_MODE = (process.env.WOW_MCP_AUTH_MODE || "shared-token").toLowerCase();
 const SHARED_TOKEN = process.env.WOW_MCP_SHARED_TOKEN || "";
 const MAX_BODY_BYTES = Number(process.env.WOW_MCP_MAX_BODY_BYTES || String(2 * 1024 * 1024));
+const OAUTH_CONFIG = createOAuthConfig();
 
 const sessions = new Map();
 
@@ -25,41 +36,79 @@ function json(res, status, payload, extraHeaders = {}) {
   res.end(body);
 }
 
-function secureEqual(a, b) {
-  const aa = Buffer.from(a || "");
-  const bb = Buffer.from(b || "");
-  if (aa.length !== bb.length || aa.length === 0) return false;
-  return timingSafeEqual(aa, bb);
+function oauthChallengeHeaders(error = "invalid_token", description = "Valid OAuth authorization is required.") {
+  return { "WWW-Authenticate": buildOAuthChallenge(OAUTH_CONFIG, { error, description }) };
 }
 
-function authorize(req, res) {
-  if (AUTH_MODE === "disabled") return true;
-  if (AUTH_MODE !== "shared-token") {
-    json(res, 503, {
-      error: "MCP_AUTH_MODE_UNSUPPORTED",
-      message: "This migration gateway currently supports shared-token acceptance testing only. OAuth 2.1 must be bound before production ChatGPT migration.",
-    });
-    return false;
+async function authorize(req, res) {
+  if (AUTH_MODE === "disabled") return sharedTokenAuthContext("disabled");
+
+  if (AUTH_MODE === "shared-token") {
+    if (!SHARED_TOKEN) {
+      json(res, 503, {
+        error: "MCP_AUTH_NOT_CONFIGURED",
+        message: "WOW_MCP_SHARED_TOKEN is not configured. The gateway fails closed rather than exposing private/stateful V17 tools anonymously.",
+      });
+      return null;
+    }
+    const token = parseBearerToken(req.headers.authorization);
+    if (!secureTokenEqual(token, SHARED_TOKEN)) {
+      json(
+        res,
+        401,
+        { error: "MCP_AUTH_REQUIRED", message: "Valid MCP gateway authorization is required." },
+        { "WWW-Authenticate": 'Bearer realm="wow-v17-mcp"' },
+      );
+      return null;
+    }
+    return sharedTokenAuthContext("shared-token");
   }
-  if (!SHARED_TOKEN) {
-    json(res, 503, {
-      error: "MCP_AUTH_NOT_CONFIGURED",
-      message: "WOW_MCP_SHARED_TOKEN is not configured. The gateway fails closed rather than exposing private/stateful V17 tools anonymously.",
-    });
-    return false;
+
+  if (AUTH_MODE === "oauth") {
+    try {
+      assertOAuthConfig(OAUTH_CONFIG);
+    } catch (error) {
+      json(res, 503, {
+        error: error?.code || "MCP_OAUTH_NOT_CONFIGURED",
+        message: "OAuth resource-server configuration is incomplete; the gateway is failing closed.",
+        missing: Array.isArray(error?.missing) ? error.missing : [],
+      });
+      return null;
+    }
+
+    const token = parseBearerToken(req.headers.authorization);
+    if (!token) {
+      json(
+        res,
+        401,
+        { error: "MCP_OAUTH_REQUIRED", message: "OAuth authorization is required for this MCP resource." },
+        oauthChallengeHeaders("invalid_token", "OAuth authorization is required for this MCP resource."),
+      );
+      return null;
+    }
+
+    try {
+      return await verifyOAuthAccessToken(token, OAUTH_CONFIG);
+    } catch (error) {
+      json(
+        res,
+        401,
+        {
+          error: "MCP_OAUTH_TOKEN_REJECTED",
+          oauth_error: error?.code || "MCP_OAUTH_TOKEN_INVALID",
+          message: "OAuth access token failed resource-server validation.",
+        },
+        oauthChallengeHeaders("invalid_token", "OAuth access token failed resource-server validation."),
+      );
+      return null;
+    }
   }
-  const header = String(req.headers.authorization || "");
-  const token = header.startsWith("Bearer ") ? header.slice(7) : "";
-  if (!secureEqual(token, SHARED_TOKEN)) {
-    json(
-      res,
-      401,
-      { error: "MCP_AUTH_REQUIRED", message: "Valid MCP gateway authorization is required." },
-      { "WWW-Authenticate": 'Bearer realm="wow-v17-mcp"' },
-    );
-    return false;
-  }
-  return true;
+
+  json(res, 503, {
+    error: "MCP_AUTH_MODE_UNSUPPORTED",
+    message: `Unsupported WOW_MCP_AUTH_MODE '${AUTH_MODE}'.`,
+  });
+  return null;
 }
 
 async function readJsonBody(req) {
@@ -79,13 +128,23 @@ async function readJsonBody(req) {
   return JSON.parse(text);
 }
 
-async function createSession() {
+async function createSession(authContext) {
   let transport;
-  const server = createV17McpServer();
+  const authRef = { current: authContext };
+  const server = createV17McpServer({
+    authMode: AUTH_MODE,
+    auth: authRef,
+    oauthConfig: OAUTH_CONFIG,
+  });
   transport = new StreamableHTTPServerTransport({
     sessionIdGenerator: () => randomUUID(),
     onsessioninitialized: (sessionId) => {
-      sessions.set(sessionId, { transport, server });
+      sessions.set(sessionId, {
+        transport,
+        server,
+        authRef,
+        principalKey: authContext.principalKey,
+      });
     },
   });
   transport.onclose = () => {
@@ -96,10 +155,22 @@ async function createSession() {
 }
 
 async function handleMcp(req, res) {
-  if (!authorize(req, res)) return;
+  const authContext = await authorize(req, res);
+  if (!authContext) return;
 
   const sessionId = String(req.headers["mcp-session-id"] || "");
   const existing = sessionId ? sessions.get(sessionId) : null;
+
+  if (existing && existing.principalKey !== authContext.principalKey) {
+    const headers = AUTH_MODE === "oauth"
+      ? oauthChallengeHeaders("invalid_token", "MCP session identity does not match the authenticated OAuth principal.")
+      : { "WWW-Authenticate": 'Bearer realm="wow-v17-mcp"' };
+    return json(res, 401, {
+      error: "MCP_SESSION_PRINCIPAL_MISMATCH",
+      message: "MCP session identity does not match the authenticated principal.",
+    }, headers);
+  }
+  if (existing?.authRef) existing.authRef.current = authContext;
 
   if (req.method === "POST") {
     let body;
@@ -115,7 +186,7 @@ async function handleMcp(req, res) {
 
     let transport = existing?.transport;
     if (!transport && !sessionId && isInitializeRequest(body)) {
-      transport = await createSession();
+      transport = await createSession(authContext);
     }
     if (!transport) {
       return json(res, 400, {
@@ -142,10 +213,34 @@ async function handleMcp(req, res) {
   res.end();
 }
 
+function oauthMetadata(res) {
+  try {
+    return json(res, 200, protectedResourceMetadata(OAUTH_CONFIG));
+  } catch (error) {
+    return json(res, 503, {
+      error: error?.code || "MCP_OAUTH_NOT_CONFIGURED",
+      message: "OAuth protected-resource metadata is not configured.",
+    });
+  }
+}
+
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+    if (
+      req.method === "GET"
+      && (url.pathname === "/.well-known/oauth-protected-resource" || url.pathname === "/.well-known/oauth-protected-resource/mcp")
+    ) {
+      return oauthMetadata(res);
+    }
     if (url.pathname === "/healthz" && req.method === "GET") {
+      let oauthMetadataReady = false;
+      if (AUTH_MODE === "oauth") {
+        try {
+          assertOAuthConfig(OAUTH_CONFIG);
+          oauthMetadataReady = true;
+        } catch {}
+      }
       return json(res, 200, {
         ok: true,
         service: "wow-v17-mcp",
@@ -154,6 +249,7 @@ const server = http.createServer(async (req, res) => {
         can_execute: CAN_EXECUTE,
         auth_mode: AUTH_MODE,
         backend_key_present: Boolean(process.env.WOW_ACTION_API_KEY),
+        oauth_metadata_ready: oauthMetadataReady,
       });
     }
     if (url.pathname === "/mcp") return await handleMcp(req, res);
