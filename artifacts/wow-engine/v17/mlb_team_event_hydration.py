@@ -15,6 +15,7 @@ narrative for fitted-model inputs.
 """
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from typing import Any
 
@@ -36,6 +37,44 @@ _CANONICAL_SELECT = (
     "snapshot_timestamp,feature_hydration_status"
 )
 
+# Provider event feeds frequently use city-only or nickname-only MLB participant
+# labels while the canonical forward ledger stores full club names. Identity
+# resolution must compare MLB-scoped aliases rather than raw display strings.
+# This map is intentionally league-scoped so shared names such as Rangers,
+# Giants, Cardinals, and Royals cannot collide with another sport.
+_MLB_TEAM_ALIASES: dict[str, str] = {
+    "yankees": "NYY", "new york yankees": "NYY", "nyy": "NYY",
+    "red sox": "BOS", "boston red sox": "BOS", "boston": "BOS", "bos": "BOS",
+    "blue jays": "TOR", "toronto blue jays": "TOR", "toronto": "TOR", "tor": "TOR",
+    "orioles": "BAL", "baltimore orioles": "BAL", "baltimore": "BAL", "bal": "BAL",
+    "rays": "TB", "tampa bay rays": "TB", "tampa bay": "TB", "tb": "TB",
+    "white sox": "CWS", "chicago white sox": "CWS", "cws": "CWS",
+    "guardians": "CLE", "cleveland guardians": "CLE", "cleveland": "CLE", "cle": "CLE",
+    "tigers": "DET", "detroit tigers": "DET", "detroit": "DET", "det": "DET",
+    "royals": "KC", "kansas city royals": "KC", "kansas city": "KC", "kc": "KC",
+    "twins": "MIN", "minnesota twins": "MIN", "minnesota": "MIN", "min": "MIN",
+    "astros": "HOU", "houston astros": "HOU", "houston": "HOU", "hou": "HOU",
+    "angels": "LAA", "los angeles angels": "LAA", "la angels": "LAA", "laa": "LAA",
+    "athletics": "ATH", "oakland athletics": "ATH", "oakland": "ATH", "ath": "ATH", "oak": "ATH",
+    "mariners": "SEA", "seattle mariners": "SEA", "seattle": "SEA", "sea": "SEA",
+    "rangers": "TEX", "texas rangers": "TEX", "texas": "TEX", "tex": "TEX",
+    "braves": "ATL", "atlanta braves": "ATL", "atlanta": "ATL", "atl": "ATL",
+    "marlins": "MIA", "miami marlins": "MIA", "miami": "MIA", "mia": "MIA",
+    "mets": "NYM", "new york mets": "NYM", "nym": "NYM",
+    "phillies": "PHI", "philadelphia phillies": "PHI", "philadelphia": "PHI", "phi": "PHI",
+    "nationals": "WSH", "washington nationals": "WSH", "washington": "WSH", "wsh": "WSH",
+    "cubs": "CHC", "chicago cubs": "CHC", "chc": "CHC",
+    "reds": "CIN", "cincinnati reds": "CIN", "cincinnati": "CIN", "cin": "CIN",
+    "brewers": "MIL", "milwaukee brewers": "MIL", "milwaukee": "MIL", "mil": "MIL",
+    "pirates": "PIT", "pittsburgh pirates": "PIT", "pittsburgh": "PIT", "pit": "PIT",
+    "cardinals": "STL", "st louis cardinals": "STL", "st. louis cardinals": "STL", "st louis": "STL", "st. louis": "STL", "stl": "STL",
+    "diamondbacks": "ARI", "arizona diamondbacks": "ARI", "arizona": "ARI", "ari": "ARI",
+    "rockies": "COL", "colorado rockies": "COL", "colorado": "COL", "col": "COL",
+    "dodgers": "LAD", "los angeles dodgers": "LAD", "la dodgers": "LAD", "lad": "LAD",
+    "padres": "SD", "san diego padres": "SD", "san diego": "SD", "sd": "SD",
+    "giants": "SF", "san francisco giants": "SF", "san francisco": "SF", "sf": "SF",
+}
+
 
 def _aware(value: Any) -> datetime | None:
     try:
@@ -49,6 +88,27 @@ def _aware(value: Any) -> datetime | None:
 
 def _same_text(left: Any, right: Any) -> bool:
     return " ".join(str(left or "").casefold().split()) == " ".join(str(right or "").casefold().split())
+
+
+def _mlb_team_key(value: Any) -> str:
+    key = re.sub(r"[^a-z0-9 ]+", " ", str(value or "").casefold())
+    key = " ".join(key.split())
+    if not key:
+        return ""
+    exact = _MLB_TEAM_ALIASES.get(key)
+    if exact:
+        return exact
+    best: tuple[int, str] | None = None
+    for alias, canonical in _MLB_TEAM_ALIASES.items():
+        if alias in key and (best is None or len(alias) > best[0]):
+            best = (len(alias), canonical)
+    return best[1] if best else key
+
+
+def _same_mlb_team(left: Any, right: Any) -> bool:
+    left_key = _mlb_team_key(left)
+    right_key = _mlb_team_key(right)
+    return bool(left_key and right_key and left_key == right_key)
 
 
 def _caller_fallback(req: Any, *, blocker_code: str) -> dict[str, Any] | None:
@@ -113,9 +173,6 @@ def _identity_join_rows(req: Any, *, client: Any, now: datetime) -> dict[str, An
     requested_start = _aware(getattr(req, "event_start_time_utc", None))
     requested_slate_date = str(getattr(req, "requested_slate_date", "") or "").strip()
     if requested_start is None or not requested_slate_date:
-        # Keep the pre-existing no-canonical-row contract when the caller does not
-        # provide enough bounded identity to attempt a provider-id join. This lets
-        # legacy caller-evidence fallback retain its exact blocker semantics.
         return {
             "ok": False,
             "code": "MLB_TEAM_EVENT_CANONICAL_SNAPSHOT_UNAVAILABLE",
@@ -145,9 +202,9 @@ def _identity_join_rows(req: Any, *, client: Any, now: datetime) -> dict[str, An
 
     matches_by_id: dict[str, tuple[datetime, datetime, dict[str, Any]]] = {}
     for snap_time, event_start, row in _usable_rows(list(rows), now=now):
-        if not _same_text(row.get("home_team"), getattr(req, "home_team", None)):
+        if not _same_mlb_team(row.get("home_team"), getattr(req, "home_team", None)):
             continue
-        if not _same_text(row.get("away_team"), getattr(req, "away_team", None)):
+        if not _same_mlb_team(row.get("away_team"), getattr(req, "away_team", None)):
             continue
         if abs((requested_start - event_start).total_seconds()) > _IDENTITY_START_TOLERANCE_SECONDS:
             continue
@@ -235,9 +292,9 @@ def resolve_mlb_team_event_evidence(req: Any, *, event_api: Any) -> dict[str, An
         }
 
     identity_mismatches = []
-    if not _same_text(row.get("home_team"), req.home_team):
+    if not _same_mlb_team(row.get("home_team"), req.home_team):
         identity_mismatches.append("home_team")
-    if not _same_text(row.get("away_team"), req.away_team):
+    if not _same_mlb_team(row.get("away_team"), req.away_team):
         identity_mismatches.append("away_team")
     if identity_mismatches:
         return {
