@@ -52,8 +52,8 @@ jobs:
           node --check artifacts/mcp-server/src/v17_server.js
           node --check artifacts/mcp-server/src/v17_stdio.js
           node --check artifacts/mcp-server/src/v17_http.js
-          node --check artifacts/mcp-server/test/v17_migration_contract.test.js
-          node --check artifacts/mcp-server/test/v17_http_integration.test.js
+          node --check artifacts/mcp-server/src/v17_remote_acceptance.js
+          for file in artifacts/mcp-server/test/v17_*.test.js; do node --check "$file"; done
 
       - name: Run V17 migration contract tests
         run: pnpm --filter @workspace/mcp-server test:v17
@@ -96,15 +96,24 @@ jobs:
           contract = Path("artifacts/mcp-server/src/v17_contract.js").read_text()
           backend = Path("artifacts/mcp-server/src/v17_backend.js").read_text()
           http = Path("artifacts/mcp-server/src/v17_http.js").read_text()
+          remote = Path("artifacts/mcp-server/src/v17_remote_acceptance.js").read_text()
           tests = Path("artifacts/mcp-server/test/v17_migration_contract.test.js").read_text()
+          public_tests = Path("artifacts/mcp-server/test/v17_public_backend_reads.test.js").read_text()
 
           assert 'CAN_EXECUTE = false' in contract
           assert 'TERMINAL_AUTHORITY = "V17_TERMINAL_REDUCER"' in contract
           assert 'WOW_ACTION_API_KEY' in backend
-          assert 'Authorization: `Bearer ${key}`' in backend
+          assert 'headers.Authorization = `Bearer ${key}`' in backend
+          assert 'PUBLIC_UNAUTHENTICATED_OPERATIONS' in backend
+          assert 'getWowV17BackendHealth' in backend
+          assert 'getWowV17Governance' in backend
           assert 'lookupWowV17PredictionReceipts' in backend
           assert 'MCP_GOVERNANCE_VIOLATION' in backend
           assert 'UPSTREAM_TYPED_FAILURE' not in backend
+          assert 'protected backend operations still fail closed without WOW_ACTION_API_KEY' in public_tests
+          assert 'WOW_MCP_AUTH_TOKEN' in remote
+          assert 'REMOTE_MCP_PUBLIC_READS_VERIFIED' in remote
+          assert 'BACKEND_AUTH_NOT_CONFIGURED' in remote
           assert 'MODEL_UNAVAILABLE' in tests
           assert 'MODEL_INPUTS_INSUFFICIENT' in tests
           assert 'MODEL_SCORER_FAILED' in tests

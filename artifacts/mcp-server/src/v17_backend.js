@@ -5,6 +5,11 @@ import {
   V17_OPERATIONS,
 } from "./v17_contract.js";
 
+const PUBLIC_UNAUTHENTICATED_OPERATIONS = new Set([
+  "getWowV17BackendHealth",
+  "getWowV17Governance",
+]);
+
 export class V17GatewayError extends Error {
   constructor(code, message, details = {}) {
     super(message);
@@ -128,7 +133,8 @@ export async function invokeV17Operation(operationName, args = {}, options = {})
   }
 
   const key = options.backendKey ?? backendKey();
-  if (!key) {
+  const authRequired = !PUBLIC_UNAUTHENTICATED_OPERATIONS.has(operationName);
+  if (!key && authRequired) {
     throw new V17GatewayError(
       "BACKEND_AUTH_NOT_CONFIGURED",
       "WOW_ACTION_API_KEY is not configured on the MCP gateway. The backend credential must remain server-side.",
@@ -140,9 +146,9 @@ export async function invokeV17Operation(operationName, args = {}, options = {})
   const url = `${options.baseUrl || baseUrl()}${path}${query}`;
   const headers = {
     Accept: "application/json",
-    Authorization: `Bearer ${key}`,
     "User-Agent": "wow-v17-mcp-gateway/1.0",
   };
+  if (key) headers.Authorization = `Bearer ${key}`;
 
   const request = {
     method: operation.method,
