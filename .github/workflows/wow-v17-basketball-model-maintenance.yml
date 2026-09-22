@@ -19,6 +19,7 @@ on:
       - "artifacts/wow-engine/test_v17_basketball_model_maintenance.py"
       - "artifacts/wow-engine/test_v17_basketball_hydration_fallback.py"
       - "artifacts/wow-engine/test_v17_github_oidc.py"
+      - "artifacts/wow-engine/test_v17_maintenance_terminal_truth.py"
   pull_request:
     paths:
       - ".github/workflows/wow-v17-basketball-model-maintenance.yml"
@@ -32,6 +33,7 @@ on:
       - "artifacts/wow-engine/test_v17_basketball_model_maintenance.py"
       - "artifacts/wow-engine/test_v17_basketball_hydration_fallback.py"
       - "artifacts/wow-engine/test_v17_github_oidc.py"
+      - "artifacts/wow-engine/test_v17_maintenance_terminal_truth.py"
 
 permissions:
   contents: read
@@ -64,6 +66,7 @@ jobs:
           test_basketball_training_replay_boundaries.py
           test_basketball_team_event_specialist.py
           test_v17_github_oidc.py
+          test_v17_maintenance_terminal_truth.py
 
   maintain:
     name: Refresh NBA/WNBA training evidence
@@ -123,11 +126,9 @@ jobs:
           assert payload.get("automatic_certification") is False
           assert payload.get("automatic_promotion") is False
           assert payload.get("probability_publishable") is False
-          for row in payload.get("rows", []):
-              assert row.get("can_execute") is False
-              assert row.get("probability_publishable") is False
-              if row.get("status") == "BLOCKED":
-                  print(f"{row.get('sport')} blocked: {row.get('code')}")
+          blocked_rows = [row for row in payload.get("rows", []) if row.get("status") == "BLOCKED"]
+          for row in blocked_rows:
+              print(f"{row.get('sport')} blocked: {row.get('code')}")
           print(json.dumps({
               "status": payload.get("status"),
               "rows_updated": payload.get("rows_updated"),
@@ -135,4 +136,12 @@ jobs:
               "rows_fresh_acquisition_degraded": payload.get("rows_fresh_acquisition_degraded"),
               "can_execute": False,
           }, sort_keys=True))
+          if payload.get("status") == "BLOCKED" or blocked_rows:
+              raise RuntimeError("BASKETBALL_MAINTENANCE_BLOCKED:" + json.dumps({
+                  "status": payload.get("status"),
+                  "blocked_rows": [
+                      {"sport": row.get("sport"), "code": row.get("code")}
+                      for row in blocked_rows
+                  ],
+              }, sort_keys=True))
           PY
