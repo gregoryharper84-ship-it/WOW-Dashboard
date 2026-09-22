@@ -18,6 +18,7 @@ from v17.core_intelligence_compounding_routes import install_compounding_intelli
 from v17.core_intelligence_event_runtime import install_core_intelligence_event_routes
 from v17.core_intelligence_runtime import install_core_intelligence_routes
 from v17.core_intelligence_shadow_runtime import install_shadow_lab_routes
+from v17.llp_v17_1_shadow_runtime import install_llp_v17_1_shadow_routes
 # Import through the V17 preservation shim so downstream LLP governance holds
 # cannot erase a completed fitted sporting probability. The shim preserves all
 # rank/publication/terminal gates and can_execute=false.
@@ -74,6 +75,14 @@ install_compounding_intelligence_routes_read_only(
     get_client_fn=v16._db_client,
 )
 install_shadow_lab_routes(
+    app,
+    auth_dependency=_core_intelligence_auth,
+    get_client_fn=v16._db_client,
+)
+# LLP V17.1 shadow capture/grade is deliberately out-of-band. It persists
+# side-specific challenger evidence only and cannot alter production scoring,
+# calibration, ranking, terminal authority, or execution posture.
+install_llp_v17_1_shadow_routes(
     app,
     auth_dependency=_core_intelligence_auth,
     get_client_fn=v16._db_client,
