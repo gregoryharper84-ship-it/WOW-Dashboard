@@ -1,8 +1,8 @@
 """Scoped secondary authentication for WOW V17 MCP acceptance.
 
-The production Action bearer remains authoritative and unchanged.  This module
+The production Action bearer remains authoritative and unchanged. This module
 adds an opt-in, independently rotatable acceptance bearer only for the exact
-backend paths represented by the V17 MCP replacement surface.  The acceptance
+backend paths represented by the V17 MCP replacement surface. The acceptance
 credential never grants wager/order execution authority and is inert unless
 WOW_MCP_ACCEPTANCE_AUTH_ENABLED=1 and WOW_MCP_ACCEPTANCE_API_KEY is configured.
 """
@@ -49,8 +49,8 @@ def _acceptance_path_allowed(path: str) -> bool:
 def build_action_auth_dependency(primary_auth: Callable[..., None]) -> Callable[..., None]:
     """Wrap the existing production Action auth without changing its semantics.
 
-    The primary auth is attempted first and wins unchanged.  Only a primary 401
-    can fall through to the opt-in acceptance credential.  Acceptance is then
+    The primary auth is attempted first and wins unchanged. Only a primary 401
+    can fall through to the opt-in acceptance credential. Acceptance is then
     constrained by an explicit marker header and the path allow-list above.
     """
 
@@ -59,26 +59,28 @@ def build_action_auth_dependency(primary_auth: Callable[..., None]) -> Callable[
         authorization: Optional[str] = Header(default=None),
         x_wow_mcp_acceptance: Optional[str] = Header(default=None, alias="X-WOW-MCP-Acceptance"),
     ) -> None:
+        primary_failure: HTTPException | None = None
         try:
             primary_auth(authorization)
             return
-        except HTTPException as primary_error:
-            if primary_error.status_code != 401:
+        except HTTPException as exc:
+            if exc.status_code != 401:
                 raise
+            primary_failure = exc
 
         if os.getenv("WOW_MCP_ACCEPTANCE_AUTH_ENABLED", "0") != "1":
-            raise primary_error
+            raise primary_failure
 
         acceptance_key = os.getenv("WOW_MCP_ACCEPTANCE_API_KEY")
         if not acceptance_key:
-            raise primary_error
+            raise primary_failure
 
         if not authorization or not authorization.startswith("Bearer "):
-            raise primary_error
+            raise primary_failure
 
         supplied_key = authorization[len("Bearer "):]
         if not secrets.compare_digest(supplied_key, acceptance_key):
-            raise primary_error
+            raise primary_failure
 
         if x_wow_mcp_acceptance != ACCEPTANCE_MARKER:
             raise HTTPException(status_code=403, detail="MCP acceptance marker required.")
@@ -86,7 +88,7 @@ def build_action_auth_dependency(primary_auth: Callable[..., None]) -> Callable[
         if not _acceptance_path_allowed(request.url.path):
             raise HTTPException(status_code=403, detail="MCP acceptance credential is not authorized for this path.")
 
-        # Authentication only.  Execution authority remains governed elsewhere
+        # Authentication only. Execution authority remains governed elsewhere
         # and can_execute is still hard-false throughout the V17 runtime.
         return
 
