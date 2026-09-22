@@ -74,6 +74,7 @@ _MLB_TEAM_ALIASES: dict[str, str] = {
     "padres": "SD", "san diego padres": "SD", "san diego": "SD", "sd": "SD",
     "giants": "SF", "san francisco giants": "SF", "san francisco": "SF", "sf": "SF",
 }
+_AMBIGUOUS_CITY_LABELS = frozenset({"new york", "chicago", "los angeles"})
 
 
 def _aware(value: Any) -> datetime | None:
@@ -90,9 +91,13 @@ def _same_text(left: Any, right: Any) -> bool:
     return " ".join(str(left or "").casefold().split()) == " ".join(str(right or "").casefold().split())
 
 
-def _mlb_team_key(value: Any) -> str:
+def _normalized_team_text(value: Any) -> str:
     key = re.sub(r"[^a-z0-9 ]+", " ", str(value or "").casefold())
-    key = " ".join(key.split())
+    return " ".join(key.split())
+
+
+def _mlb_team_key(value: Any) -> str:
+    key = _normalized_team_text(value)
     if not key:
         return ""
     exact = _MLB_TEAM_ALIASES.get(key)
@@ -105,10 +110,31 @@ def _mlb_team_key(value: Any) -> str:
     return best[1] if best else key
 
 
+def _team_match_strength(canonical_value: Any, provider_value: Any) -> int:
+    """Return 2 for exact MLB alias identity, 1 for safe ambiguous-city compatibility.
+
+    City-only labels such as New York, Chicago, and Los Angeles are never enough
+    by themselves to choose a club. They may participate in a canonical join only
+    when the opposite side is an exact alias match and start/slate identity makes
+    the final official event unique.
+    """
+    canonical_key = _mlb_team_key(canonical_value)
+    provider_key = _mlb_team_key(provider_value)
+    if canonical_key and provider_key and canonical_key == provider_key:
+        return 2
+
+    provider_text = _normalized_team_text(provider_value)
+    canonical_text = _normalized_team_text(canonical_value)
+    if (
+        provider_text in _AMBIGUOUS_CITY_LABELS
+        and canonical_text.startswith(provider_text + " ")
+    ):
+        return 1
+    return 0
+
+
 def _same_mlb_team(left: Any, right: Any) -> bool:
-    left_key = _mlb_team_key(left)
-    right_key = _mlb_team_key(right)
-    return bool(left_key and right_key and left_key == right_key)
+    return _team_match_strength(left, right) > 0
 
 
 def _caller_fallback(req: Any, *, blocker_code: str) -> dict[str, Any] | None:
@@ -167,6 +193,8 @@ def _identity_join_rows(req: Any, *, client: Any, now: datetime) -> dict[str, An
 
     The provider id itself is ignored here. The join is deliberately bounded to
     the requested slate and requires both participants plus start-time agreement.
+    An ambiguous city-only side is allowed only when the opposite side is an
+    exact MLB alias match; the final official event still must be unique.
     Multiple snapshots of the same official event collapse to the newest one;
     multiple *event ids* remain ambiguous and fail closed.
     """
@@ -202,9 +230,12 @@ def _identity_join_rows(req: Any, *, client: Any, now: datetime) -> dict[str, An
 
     matches_by_id: dict[str, tuple[datetime, datetime, dict[str, Any]]] = {}
     for snap_time, event_start, row in _usable_rows(list(rows), now=now):
-        if not _same_mlb_team(row.get("home_team"), getattr(req, "home_team", None)):
+        home_strength = _team_match_strength(row.get("home_team"), getattr(req, "home_team", None))
+        away_strength = _team_match_strength(row.get("away_team"), getattr(req, "away_team", None))
+        if home_strength == 0 or away_strength == 0:
             continue
-        if not _same_mlb_team(row.get("away_team"), getattr(req, "away_team", None)):
+        if max(home_strength, away_strength) < 2:
+            # Never resolve a matchup from two ambiguous city-only labels.
             continue
         if abs((requested_start - event_start).total_seconds()) > _IDENTITY_START_TOLERANCE_SECONDS:
             continue
@@ -292,9 +323,9 @@ def resolve_mlb_team_event_evidence(req: Any, *, event_api: Any) -> dict[str, An
         }
 
     identity_mismatches = []
-    if not _same_mlb_team(row.get("home_team"), req.home_team):
+    if _team_match_strength(row.get("home_team"), req.home_team) == 0:
         identity_mismatches.append("home_team")
-    if not _same_mlb_team(row.get("away_team"), req.away_team):
+    if _team_match_strength(row.get("away_team"), req.away_team) == 0:
         identity_mismatches.append("away_team")
     if identity_mismatches:
         return {
