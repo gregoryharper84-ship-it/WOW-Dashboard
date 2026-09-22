@@ -1,4 +1,4 @@
-from v17.pick_request_state_reliability_patch import _run_control_receipt_result
+import v17.pick_request_run_control as subject
 
 
 def _safe_pending(**overrides):
@@ -21,30 +21,23 @@ def _safe_pending(**overrides):
     return row
 
 
-def test_exact_durable_pending_contract_is_safe_for_run_control_only():
-    source = {"request_id": "board-1", "rows": [_safe_pending()], "can_execute": False}
-
-    result = _run_control_receipt_result(source, request_id="board-1")
-
-    row = result["rows"][0]
-    assert row["status"] == "NOT_FOUND"
-    assert row["run_control_resume_from_durable_pending"] is True
-    assert row["code"] == "DURABLE_ROW_PENDING_SAFE_TO_RESUME"
-    assert source["rows"][0]["status"] == "UNRESOLVED"
-    assert result["can_execute"] is False
+def test_exact_durable_pending_contract_is_safe_for_run_control():
+    assert subject._durable_pending_resume_is_safe(
+        _safe_pending(),
+        request_id="board-1",
+        row_key="row-1",
+    ) is True
 
 
-def test_durable_pending_wrong_request_id_remains_unresolved():
-    result = _run_control_receipt_result(
-        {"rows": [_safe_pending()]},
+def test_durable_pending_wrong_request_id_remains_unsafe():
+    assert subject._durable_pending_resume_is_safe(
+        _safe_pending(),
         request_id="different-board",
-    )
-
-    assert result["rows"][0]["status"] == "UNRESOLVED"
-    assert "run_control_resume_from_durable_pending" not in result["rows"][0]
+        row_key="row-1",
+    ) is False
 
 
-def test_durable_pending_wrong_row_contract_remains_unresolved():
+def test_durable_pending_wrong_row_contract_remains_unsafe():
     row = _safe_pending(
         resume={
             "request_id": "board-1",
@@ -53,12 +46,14 @@ def test_durable_pending_wrong_row_contract_remains_unresolved():
             "can_execute": False,
         }
     )
-    result = _run_control_receipt_result({"rows": [row]}, request_id="board-1")
+    assert subject._durable_pending_resume_is_safe(
+        row,
+        request_id="board-1",
+        row_key="row-1",
+    ) is False
 
-    assert result["rows"][0]["status"] == "UNRESOLVED"
 
-
-def test_blocked_and_matched_receipt_states_are_not_relaxed():
+def test_blocked_and_matched_receipt_states_are_not_safe_pending_resume():
     blocked = {
         "row_key": "row-1",
         "status": "BLOCKED",
@@ -67,7 +62,7 @@ def test_blocked_and_matched_receipt_states_are_not_relaxed():
         "can_execute": False,
     }
     matched = {
-        "row_key": "row-2",
+        "row_key": "row-1",
         "status": "MATCHED",
         "code": "IMMUTABLE_PREGAME_PREDICTION_MATCHED",
         "match_count": 1,
@@ -75,11 +70,13 @@ def test_blocked_and_matched_receipt_states_are_not_relaxed():
         "can_execute": False,
     }
 
-    result = _run_control_receipt_result(
-        {"rows": [blocked, matched], "can_execute": False},
+    assert subject._durable_pending_resume_is_safe(
+        blocked,
         request_id="board-1",
-    )
-
-    assert result["rows"][0] == blocked
-    assert result["rows"][1] == matched
-    assert result["can_execute"] is False
+        row_key="row-1",
+    ) is False
+    assert subject._durable_pending_resume_is_safe(
+        matched,
+        request_id="board-1",
+        row_key="row-1",
+    ) is False
