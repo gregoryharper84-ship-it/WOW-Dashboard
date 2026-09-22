@@ -52,6 +52,12 @@ class ShadowObservation:
     selection: str
     opponent_or_field: str | None
     scheduled_start_utc: str | None
+    requested_slate_date: str | None
+    research_run_id: str | None
+    scan_stage: str | None
+    market_role: str | None
+    controlling_specialist: str | None
+    model_artifact_id: str | None
     model_timestamp: str
     observed_at: str
     calibrated_probability: float
@@ -142,7 +148,13 @@ def build_shadow_observation(
         league=_text(governed_row.get("league")),
         selection=selection,
         opponent_or_field=_text(governed_row.get("opponent_or_field")) or _text(governed_row.get("opponent")),
-        scheduled_start_utc=_text(governed_row.get("scheduled_start_utc")),
+        scheduled_start_utc=_text(governed_row.get("scheduled_start_utc")) or _text(governed_row.get("event_start_time")),
+        requested_slate_date=_text(governed_row.get("requested_slate_date")),
+        research_run_id=_text(governed_row.get("research_run_id")),
+        scan_stage=_text(governed_row.get("scan_stage")),
+        market_role=_text(governed_row.get("market_role")) or _text(governed_row.get("selected_market_role")),
+        controlling_specialist=_text(governed_row.get("controlling_specialist")),
+        model_artifact_id=_text(governed_row.get("model_artifact_id")) or _text(governed_row.get("model_artifact_version")),
         model_timestamp=model_timestamp,
         observed_at=observed_at or _utc_now_iso(),
         calibrated_probability=ranking.calibrated_probability,
