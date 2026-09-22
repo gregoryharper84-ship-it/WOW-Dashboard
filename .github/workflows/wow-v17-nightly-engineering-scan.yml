@@ -14,7 +14,11 @@ on:
       - ".agents/skills/wow-engineering-*/**"
       - "artifacts/wow-engine/v17/nightly_engineering_team_contract.py"
       - "artifacts/wow-engine/v17/nightly_incident_records.py"
+      - "artifacts/wow-engine/v17/season_readiness.py"
+      - "artifacts/wow-engine/v17/season-readiness-registry.json"
+      - "artifacts/wow-engine/v17/season-readiness-state.json"
       - "artifacts/wow-engine/test_nightly_engineering_team_contract.py"
+      - "artifacts/wow-engine/test_season_readiness.py"
       - "artifacts/wow-engine/v17/incident-ledger.json"
       - "artifacts/wow-engine/v17/postmortems/**"
       - "artifacts/wow-engine/v17/engineering-fixes/**"
@@ -56,6 +60,17 @@ jobs:
         run: |
           python v17/nightly_engineering_team_contract.py self-check
           python -m pytest -q test_nightly_engineering_team_contract.py
+
+      - name: Build season-aware continuous-improvement board
+        run: |
+          mkdir -p "$RUNNER_TEMP/wow-nightly"
+          python v17/season_readiness.py validate
+          python -m pytest -q test_season_readiness.py
+          python v17/season_readiness.py board \
+            --date "$(date -u +%Y-%m-%d)" \
+            --json-out "$RUNNER_TEMP/wow-nightly/season-readiness.json" \
+            --markdown-out "$RUNNER_TEMP/wow-nightly/season-readiness.md"
+          cat "$RUNNER_TEMP/wow-nightly/season-readiness.md" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Run governed probability backend regression suite
         run: python -m pytest -q
@@ -141,11 +156,14 @@ jobs:
             echo "- Postmortems: artifacts/wow-engine/v17/postmortems/"
             echo "- Engineering fixes: artifacts/wow-engine/v17/engineering-fixes/"
             echo "- Team contract: artifacts/wow-engine/v17/nightly_engineering_team_contract.py"
+            echo "- Season readiness controller: artifacts/wow-engine/v17/season_readiness.py"
+            echo "- Season calendar registry: artifacts/wow-engine/v17/season-readiness-registry.json"
             echo "- can_execute: false"
             echo
             echo "This workflow is the deterministic detector/acceptance layer."
             echo "The scheduled wrapper is .agents/skills/wow-nightly-engineering-autopilot/SKILL.md."
             echo "Every actionable defect is delegated to wow.autonomous-product-qa-engineering-recovery."
+            echo "Continuous-improvement priority is season-aware and must not modify probability behavior without governed evidence/promotion."
             echo "The enforced lifecycle is Reporter -> Research/Triage -> Engineering -> Independent Review -> QA -> Release/Observability -> Reporter closure."
             echo "Protected V17 contract changes require System Architect review."
           } | tee "$RUNNER_TEMP/wow-nightly-summary.md"
@@ -158,5 +176,6 @@ jobs:
           path: |
             ${{ runner.temp }}/wow-nightly-summary.md
             ${{ runner.temp }}/wow-nightly/*.json
+            ${{ runner.temp }}/wow-nightly/*.md
           if-no-files-found: warn
           retention-days: 14

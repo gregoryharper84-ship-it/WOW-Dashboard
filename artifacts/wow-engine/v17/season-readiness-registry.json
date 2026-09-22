@@ -1,0 +1,163 @@
+{
+  "version": "1.0",
+  "updated_at": "2026-09-22",
+  "sports": {
+    "MLB": {
+      "engine": "WOW_PROP_ENGINE+LLP_TEAM_EVENT_ENGINE",
+      "season": "2026",
+      "calendar_kind": "bounded",
+      "regular_season_start": "2026-03-25",
+      "regular_season_end": "2026-09-27",
+      "postseason_start": "2026-09-29",
+      "championship_start": "2026-10-23",
+      "postseason_end": "2026-10-31",
+      "calendar_valid_through": "2026-10-31",
+      "preseason_days": 35,
+      "opening_ramp_days": 14,
+      "stretch_run_days": 35,
+      "postseason_prep_days": 14,
+      "readiness_milestones_days": [90, 60, 30, 14, 7, 3, 1],
+      "calendar_sources": [
+        {"url": "https://www.mlb.com/news/when-is-mlb-opening-day-2026-date-times-matchups", "verified_at": "2026-09-22"},
+        {"url": "https://www.mlb.com/press-release/press-release-mlb-announces-2026-regular-season-schedule", "verified_at": "2026-09-22"},
+        {"url": "https://www.mlb.com/news/2026-mlb-playoff-and-world-series-schedule", "verified_at": "2026-09-22"}
+      ]
+    },
+    "NFL": {
+      "engine": "LLP_TEAM_EVENT_ENGINE+WOW_PROP_ENGINE",
+      "season": "2026",
+      "calendar_kind": "bounded",
+      "regular_season_start": "2026-09-09",
+      "regular_season_end": "2027-01-10",
+      "postseason_start": "2027-01-16",
+      "championship_start": "2027-01-31",
+      "postseason_end": "2027-02-14",
+      "calendar_valid_through": "2027-02-14",
+      "preseason_days": 35,
+      "opening_ramp_days": 14,
+      "stretch_run_days": 35,
+      "postseason_prep_days": 21,
+      "readiness_milestones_days": [90, 60, 30, 14, 7, 3, 1],
+      "calendar_sources": [
+        {"url": "https://www.nfl.com/news/2026-27-national-football-league-important-dates", "verified_at": "2026-09-22"}
+      ]
+    },
+    "NBA": {
+      "engine": "LLP_TEAM_EVENT_ENGINE+WOW_PROP_ENGINE",
+      "season": "2026-27",
+      "calendar_kind": "bounded",
+      "regular_season_start": "2026-10-20",
+      "regular_season_end": "2027-04-11",
+      "postseason_start": "2027-04-13",
+      "calendar_valid_through": "2027-04-16",
+      "preseason_days": 30,
+      "opening_ramp_days": 14,
+      "stretch_run_days": 35,
+      "postseason_prep_days": 21,
+      "readiness_milestones_days": [90, 60, 30, 14, 7, 3, 1],
+      "calendar_sources": [
+        {"url": "https://www.nba.com/news/2026-27-schedule-announced", "verified_at": "2026-09-22"},
+        {"url": "https://www.nba.com/news/key-dates", "verified_at": "2026-09-22"}
+      ]
+    },
+    "NHL": {
+      "engine": "LLP_TEAM_EVENT_ENGINE+WOW_PROP_ENGINE",
+      "season": "2026-27",
+      "calendar_kind": "bounded",
+      "regular_season_start": "2026-09-29",
+      "regular_season_end": "2027-04-10",
+      "calendar_valid_through": "2027-04-10",
+      "preseason_days": 30,
+      "opening_ramp_days": 14,
+      "stretch_run_days": 35,
+      "postseason_prep_days": 21,
+      "readiness_milestones_days": [90, 60, 30, 14, 7, 3, 1],
+      "calendar_sources": [
+        {"url": "https://www.nhl.com/news/2026-2027-preseason-nhl-schedule-to-begin-september-19-2026", "verified_at": "2026-09-22"},
+        {"url": "https://www.nhl.com/news/nhl-announces-2026-27-regular-season-schedule", "verified_at": "2026-09-22"}
+      ]
+    },
+    "WNBA": {
+      "engine": "LLP_TEAM_EVENT_ENGINE+WOW_PROP_ENGINE",
+      "season": "2026",
+      "calendar_kind": "bounded",
+      "regular_season_start": "2026-05-08",
+      "regular_season_end": "2026-09-24",
+      "postseason_start": "2026-09-27",
+      "championship_start": "2026-10-17",
+      "postseason_end": "2026-10-31",
+      "calendar_valid_through": "2026-10-31",
+      "preseason_days": 28,
+      "opening_ramp_days": 14,
+      "stretch_run_days": 28,
+      "postseason_prep_days": 14,
+      "readiness_milestones_days": [90, 60, 30, 14, 7, 3, 1],
+      "calendar_sources": [
+        {"url": "https://www.wnba.com/news/2026-schedule-release", "verified_at": "2026-09-22"},
+        {"url": "https://www.wnba.com/keydates", "verified_at": "2026-09-22"},
+        {"url": "https://www.wnba.com/news/2026-wnba-postseason-faq", "verified_at": "2026-09-22"}
+      ]
+    },
+    "NCAAF": {
+      "engine": "LLP_TEAM_EVENT_ENGINE+WOW_PROP_ENGINE",
+      "season": "2026-27",
+      "calendar_kind": "bounded",
+      "regular_season_start": "2026-08-27",
+      "regular_season_end": "2026-12-06",
+      "postseason_start": "2026-12-18",
+      "championship_start": "2027-01-25",
+      "postseason_end": "2027-01-25",
+      "calendar_valid_through": "2027-01-25",
+      "preseason_days": 35,
+      "opening_ramp_days": 14,
+      "stretch_run_days": 28,
+      "postseason_prep_days": 21,
+      "readiness_milestones_days": [90, 60, 30, 14, 7, 3, 1],
+      "calendar_sources": [
+        {"url": "https://www.ncaa.com/news/football/article/2026-08-24/college-football-schedule-when-does-2026-college-football-season-start", "verified_at": "2026-09-22"},
+        {"url": "https://www.ncaa.com/news/football/article/2026-08-04/2026-27-college-football-playoff-schedule-dates-tv-channel-sites", "verified_at": "2026-09-22"}
+      ]
+    },
+    "SOCCER": {
+      "engine": "LLP_TEAM_EVENT_ENGINE+WOW_PROP_ENGINE",
+      "season": "competition-specific",
+      "calendar_kind": "competition_driven",
+      "adapter": "SOCCER_COMPETITION_CALENDAR_ADAPTER",
+      "readiness_milestones_days": [90, 60, 30, 14, 7, 3, 1],
+      "calendar_sources": [
+        {"url": "https://www.fifa.com/", "verified_at": "2026-09-22"}
+      ]
+    },
+    "TENNIS": {
+      "engine": "LLP_TEAM_EVENT_ENGINE+WOW_PROP_ENGINE",
+      "season": "tour-event-specific",
+      "calendar_kind": "competition_driven",
+      "adapter": "TENNIS_TOUR_CALENDAR_ADAPTER",
+      "readiness_milestones_days": [30, 14, 7, 3, 1],
+      "calendar_sources": [
+        {"url": "https://www.atptour.com/en/tournaments", "verified_at": "2026-09-22"},
+        {"url": "https://www.wtatennis.com/tournaments", "verified_at": "2026-09-22"}
+      ]
+    },
+    "MMA": {
+      "engine": "LLP_TEAM_EVENT_ENGINE+WOW_PROP_ENGINE",
+      "season": "event-specific",
+      "calendar_kind": "competition_driven",
+      "adapter": "MMA_EVENT_CALENDAR_ADAPTER",
+      "readiness_milestones_days": [30, 14, 7, 3, 1],
+      "calendar_sources": [
+        {"url": "https://www.ufc.com/events", "verified_at": "2026-09-22"}
+      ]
+    },
+    "GOLF": {
+      "engine": "LLP_TEAM_EVENT_ENGINE+WOW_PROP_ENGINE",
+      "season": "tour-event-specific",
+      "calendar_kind": "competition_driven",
+      "adapter": "GOLF_TOUR_CALENDAR_ADAPTER",
+      "readiness_milestones_days": [30, 14, 7, 3, 1],
+      "calendar_sources": [
+        {"url": "https://www.pgatour.com/schedule", "verified_at": "2026-09-22"}
+      ]
+    }
+  }
+}
