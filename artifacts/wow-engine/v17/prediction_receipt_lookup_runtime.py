@@ -1,7 +1,8 @@
 """Read-only lookup for exact immutable V17 pregame prediction receipts.
 
-This endpoint exists for postmortem attribution. It never creates, edits,
-upgrades, or repairs a prediction and never derives probability from settlement.
+This endpoint exists for postmortem attribution and exact-once recovery. It never
+creates, edits, upgrades, or repairs a prediction and never derives probability
+from settlement.
 
 Fail-closed rules:
 - prediction_id is preferred;
@@ -9,18 +10,25 @@ Fail-closed rules:
 - without prediction_id, exact event/player/stat/line/direction is required;
 - ambiguous matches are never guessed;
 - only rows proving a persisted pregame lock are marked immutable;
+- if the prediction ledger has no receipt, an exact request_id + row_key may be
+  reconciled against the durable pick-request row ledger;
+- durable PENDING state permits resume only with the same request_id + row_key;
+- durable terminal/model-complete state is reported but never fabricated into a
+  prediction receipt;
 - can_execute is always false.
 """
 from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Any, Optional
+import uuid
 
 from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
 
 PREDICTION_TABLE = "wow_predictions"
+ROW_STATE_TABLE = "wow_pick_request_row_states"
 _REQUIRED_FALLBACK_IDENTITY = ("event_id", "player", "stat_type", "line", "direction")
 _SELECT_FIELDS = ",".join(
     [
@@ -52,6 +60,31 @@ _SELECT_FIELDS = ",".join(
         "money_lane_status",
         "data_gaps",
         "blockers",
+    ]
+)
+_STATE_SELECT_FIELDS = ",".join(
+    [
+        "run_id",
+        "row_key",
+        "event_id",
+        "event_start_time",
+        "sport",
+        "player",
+        "stat_type",
+        "exact_line",
+        "direction",
+        "current_stage",
+        "stage_seq",
+        "terminal_status",
+        "terminal_code",
+        "failure_domain",
+        "durable_status",
+        "model_evaluated",
+        "probability_publishable",
+        "rank_eligible",
+        "prediction_id",
+        "can_execute",
+        "updated_at",
     ]
 )
 
@@ -216,11 +249,176 @@ def _receipt(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _run_id(request_id: str) -> str:
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"wow-pick-request:{request_id}"))
+
+
+def _durable_identity_conflicts(
+    state_row: dict[str, Any], request: PredictionReceiptLookupRow
+) -> list[str]:
+    conflicts: list[str] = []
+    field_map = {
+        "event_id": "event_id",
+        "sport": "sport",
+        "player": "player",
+        "stat_type": "stat_type",
+        "line": "exact_line",
+        "direction": "direction",
+    }
+    for request_field, state_field in field_map.items():
+        if not _has_value(request, request_field):
+            continue
+        requested = getattr(request, request_field)
+        persisted = state_row.get(state_field)
+        if request_field == "line":
+            try:
+                agrees = float(persisted) == float(requested)
+            except (TypeError, ValueError):
+                agrees = False
+        else:
+            agrees = _canonical_text(request_field, persisted) == _canonical_text(request_field, requested)
+        if not agrees:
+            conflicts.append(request_field)
+
+    event_start = _aware(state_row.get("event_start_time"))
+    event_start_min = _aware(request.event_start_min)
+    event_start_max = _aware(request.event_start_max)
+    if request.event_start_min and (event_start is None or event_start_min is None or event_start < event_start_min):
+        conflicts.append("event_start_min")
+    if request.event_start_max and (event_start is None or event_start_max is None or event_start >= event_start_max):
+        conflicts.append("event_start_max")
+    return conflicts
+
+
+def _durable_state_for(
+    db: Any,
+    *,
+    request_id: str | None,
+    row_key: str,
+) -> list[dict[str, Any]]:
+    if not _text(request_id) or not _text(row_key):
+        return []
+    result = (
+        db.table(ROW_STATE_TABLE)
+        .select(_STATE_SELECT_FIELDS)
+        .eq("run_id", _run_id(_text(request_id)))
+        .eq("row_key", _text(row_key))
+        .limit(2)
+        .execute()
+    )
+    return [dict(row) for row in (getattr(result, "data", None) or []) if isinstance(row, dict)]
+
+
+def _durable_recovery_outcome(
+    db: Any,
+    *,
+    request_id: str | None,
+    requested: PredictionReceiptLookupRow,
+    row_key: str,
+) -> dict[str, Any] | None:
+    if not _text(request_id) or not _text(row_key):
+        return None
+    try:
+        rows = _durable_state_for(db, request_id=request_id, row_key=row_key)
+    except Exception as exc:
+        return {
+            "row_key": row_key,
+            "status": "BLOCKED",
+            "code": "DURABLE_ROW_LOOKUP_FAILED",
+            "error_type": type(exc).__name__,
+            "matches": [],
+            "can_execute": False,
+        }
+    if not rows:
+        return None
+    if len(rows) > 1:
+        return {
+            "row_key": row_key,
+            "status": "BLOCKED",
+            "code": "DURABLE_ROW_STATE_AMBIGUOUS",
+            "match_count": len(rows),
+            "matches": [],
+            "can_execute": False,
+        }
+
+    state_row = rows[0]
+    conflicts = _durable_identity_conflicts(state_row, requested)
+    if conflicts:
+        return {
+            "row_key": row_key,
+            "status": "BLOCKED",
+            "code": "DURABLE_ROW_IDENTITY_CONFLICT",
+            "detail": {"conflicting_fields": conflicts},
+            "matches": [],
+            "can_execute": False,
+        }
+
+    if _text(state_row.get("prediction_id")):
+        return {
+            "row_key": row_key,
+            "status": "BLOCKED",
+            "code": "PREDICTION_RECEIPT_INTEGRITY_MISMATCH",
+            "detail": {
+                "durable_prediction_id": _text(state_row.get("prediction_id")),
+                "durable_status": state_row.get("durable_status"),
+            },
+            "matches": [],
+            "retry_allowed": False,
+            "durable_row_state": state_row,
+            "can_execute": False,
+        }
+
+    terminal_status = _text(state_row.get("terminal_status")).upper() or "PENDING"
+    model_evaluated = state_row.get("model_evaluated") is True
+    resume = {
+        "request_id": _text(request_id),
+        "row_key": row_key,
+        "contract": "REUSE_EXACT_BOARD_REQUEST_ID_AND_ROW_KEY",
+        "can_execute": False,
+    }
+
+    if terminal_status == "PENDING":
+        return {
+            "row_key": row_key,
+            "status": "UNRESOLVED",
+            "code": "DURABLE_ROW_PENDING_SAFE_TO_RESUME",
+            "match_count": 0,
+            "matches": [],
+            "retry_allowed": True,
+            "resume": resume,
+            "durable_row_state": state_row,
+            "can_execute": False,
+        }
+
+    if model_evaluated:
+        return {
+            "row_key": row_key,
+            "status": "DURABLE_MODEL_COMPLETE",
+            "code": "DURABLE_MODEL_COMPLETE_NO_PREDICTION_RECEIPT",
+            "match_count": 0,
+            "matches": [],
+            "retry_allowed": False,
+            "durable_row_state": state_row,
+            "can_execute": False,
+        }
+
+    return {
+        "row_key": row_key,
+        "status": "DURABLE_TERMINAL",
+        "code": "DURABLE_TERMINAL_NO_PREDICTION_RECEIPT",
+        "match_count": 0,
+        "matches": [],
+        "retry_allowed": False,
+        "durable_row_state": state_row,
+        "can_execute": False,
+    }
+
+
 def lookup_prediction_receipts(
     db: Any, batch: PredictionReceiptLookupBatch
 ) -> dict[str, Any]:
     outcomes: list[dict[str, Any]] = []
-    matched = ambiguous = not_found = blocked = 0
+    matched = ambiguous = not_found = blocked = unresolved = durable_terminal = 0
 
     for index, requested in enumerate(batch.rows):
         row_key = requested.row_key or f"row-{index + 1}"
@@ -278,6 +476,22 @@ def lookup_prediction_receipts(
 
         receipts = [_receipt(dict(row)) for row in rows]
         if not receipts:
+            durable = _durable_recovery_outcome(
+                db,
+                request_id=batch.request_id,
+                requested=requested,
+                row_key=row_key,
+            )
+            if durable is not None:
+                status = durable.get("status")
+                if status == "UNRESOLVED":
+                    unresolved += 1
+                elif status in {"DURABLE_MODEL_COMPLETE", "DURABLE_TERMINAL"}:
+                    durable_terminal += 1
+                else:
+                    blocked += 1
+                outcomes.append(durable)
+                continue
             not_found += 1
             status = "NOT_FOUND"
             code = "IMMUTABLE_PREGAME_PREDICTION_NOT_FOUND"
@@ -305,6 +519,7 @@ def lookup_prediction_receipts(
             }
         )
 
+    accounted = matched + ambiguous + not_found + blocked + unresolved + durable_terminal
     return {
         "request_id": batch.request_id,
         "rows_in": len(batch.rows),
@@ -312,7 +527,9 @@ def lookup_prediction_receipts(
         "rows_ambiguous": ambiguous,
         "rows_not_found": not_found,
         "rows_blocked": blocked,
-        "reconciliation_pass": matched + ambiguous + not_found + blocked == len(batch.rows),
+        "rows_unresolved": unresolved,
+        "rows_durable_terminal": durable_terminal,
+        "reconciliation_pass": accounted == len(batch.rows),
         "rows": outcomes,
         "can_execute": False,
     }
