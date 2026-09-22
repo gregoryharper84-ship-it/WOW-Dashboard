@@ -22,10 +22,11 @@ from fastapi import Depends, FastAPI, Header, HTTPException
 
 import api as base_api
 import api_g11 as event_api
+from mcp_acceptance_auth import build_action_auth_dependency
 from wolfram_arithmetic_auditor import readiness as wolfram_arithmetic_readiness
 
 ScorePropRequest = base_api.ScorePropRequest
-_require_action_api_key = base_api._require_action_api_key
+_require_action_api_key = build_action_auth_dependency(base_api._require_action_api_key)
 get_client = base_api.get_client
 
 PROP_CAPABILITY_KEY = "PROP_PROBABILITY"
