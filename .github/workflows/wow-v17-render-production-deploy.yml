@@ -16,17 +16,19 @@ concurrency:
 
 jobs:
   deploy-production:
-    name: Release native checksPass deploy after required checks
-    # Render checksPass auto-deploy is the sole production deploy authority.
-    # This check must finish after validating the protected-main gates; it must
-    # not wait for Render, otherwise Render can wait on this in-progress check
-    # and both sides deadlock.
+    name: Deploy exact protected-main SHA to Render
+    # The protected GitHub checks remain the release gate. After they pass,
+    # this controller performs one explicit Render control-plane handoff and
+    # verifies that the exact current-main SHA reaches live. This avoids the
+    # native checksPass listener silently missing an otherwise valid release.
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     env:
       WOW_CAN_EXECUTE: "false"
       WOW_DRY_RUN_ONLY: "true"
       GH_API_TOKEN: ${{ github.token }}
+      RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+      WOW_RENDER_SERVICE_ID: "srv-da7sa9gu01pc73brt80g"
     steps:
       - name: Assert deployment governance
         shell: bash
@@ -34,19 +36,25 @@ jobs:
           test "$WOW_CAN_EXECUTE" = "false"
           test "$WOW_DRY_RUN_ONLY" = "true"
           test -n "$GH_API_TOKEN"
+          test -n "$RENDER_API_KEY"
+          test -n "$WOW_RENDER_SERVICE_ID"
 
-      - name: Verify protected-main required checks and release native deploy gate
+      - name: Verify protected-main gates and deploy exact SHA
         shell: bash
         run: |
           python - <<'PY'
           import json
           import os
           import time
+          import urllib.error
           import urllib.parse
           import urllib.request
 
           repo = os.environ["GITHUB_REPOSITORY"]
           event_name = os.environ["GITHUB_EVENT_NAME"]
+          render_service_id = os.environ["WOW_RENDER_SERVICE_ID"]
+          render_api_key = os.environ["RENDER_API_KEY"]
+
           with open(os.environ["GITHUB_EVENT_PATH"], "r", encoding="utf-8") as handle:
               event = json.load(handle)
 
@@ -56,24 +64,24 @@ jobs:
               head_branch = str(workflow_run.get("head_branch") or "")
               conclusion = str(workflow_run.get("conclusion") or "")
               if head_branch != "main":
-                  print(json.dumps({"status":"NON_MAIN_NO_DEPLOY_RELEASE","target_sha":target_sha,"can_execute":False}, sort_keys=True))
+                  print(json.dumps({"status":"NON_MAIN_NO_DEPLOY","target_sha":target_sha,"can_execute":False}, sort_keys=True))
                   raise SystemExit(0)
               if conclusion != "success":
-                  print(json.dumps({"status":"UPSTREAM_NOT_SUCCESS_NO_DEPLOY_RELEASE","target_sha":target_sha,"can_execute":False}, sort_keys=True))
+                  print(json.dumps({"status":"UPSTREAM_NOT_SUCCESS_NO_DEPLOY","target_sha":target_sha,"can_execute":False}, sort_keys=True))
                   raise SystemExit(0)
           else:
               target_sha = str(os.environ.get("GITHUB_SHA") or "")
           if not target_sha:
               raise RuntimeError("RENDER_DEPLOY_TARGET_SHA_MISSING")
 
-          headers = {
+          github_headers = {
               "Accept": "application/vnd.github+json",
               "Authorization": f"Bearer {os.environ['GH_API_TOKEN']}",
               "X-GitHub-Api-Version": "2022-11-28",
           }
 
           def github_json(path):
-              request = urllib.request.Request(f"https://api.github.com/repos/{repo}{path}", headers=headers)
+              request = urllib.request.Request(f"https://api.github.com/repos/{repo}{path}", headers=github_headers)
               with urllib.request.urlopen(request, timeout=30) as response:
                   return json.load(response)
 
@@ -82,7 +90,7 @@ jobs:
               "WOW governed probability backend",
               "WOW required-three regression",
           }
-          deadline = time.time() + 900
+          check_deadline = time.time() + 900
           while True:
               checks = github_json(f"/commits/{urllib.parse.quote(target_sha, safe='')}/check-runs?per_page=100").get("check_runs") or []
               latest = {}
@@ -95,25 +103,155 @@ jobs:
                       latest[name] = check
               missing = sorted(required - set(latest))
               pending = sorted(name for name, check in latest.items() if check.get("status") != "completed")
-              failed = sorted(name for name, check in latest.items() if check.get("status") == "completed" and check.get("conclusion") != "success")
+              failed = sorted(
+                  name
+                  for name, check in latest.items()
+                  if check.get("status") == "completed" and check.get("conclusion") != "success"
+              )
               if failed:
                   raise RuntimeError("RENDER_DEPLOY_REQUIRED_CHECK_FAILED:" + ",".join(failed))
               if not missing and not pending:
                   break
-              if time.time() >= deadline:
+              if time.time() >= check_deadline:
                   raise RuntimeError("RENDER_DEPLOY_REQUIRED_CHECK_TIMEOUT:" + ",".join(missing + pending))
               time.sleep(15)
 
           main_sha = str(((github_json("/branches/main").get("commit") or {}).get("sha")) or "")
           if main_sha != target_sha:
-              print(json.dumps({"status":"STALE_SHA_NO_DEPLOY_RELEASE","target_sha":target_sha,"current_main_sha":main_sha,"can_execute":False}, sort_keys=True))
+              print(json.dumps({
+                  "status":"STALE_SHA_NO_DEPLOY",
+                  "target_sha":target_sha,
+                  "current_main_sha":main_sha,
+                  "can_execute":False,
+              }, sort_keys=True))
               raise SystemExit(0)
 
-          print(json.dumps({
-              "status": "CHECKSPASS_DEPLOY_GATE_RELEASED",
-              "commit_sha": target_sha,
-              "required_checks": sorted(required),
-              "deploy_authority": "RENDER_CHECKSPASS",
-              "can_execute": False,
-          }, sort_keys=True))
+          render_headers = {
+              "Accept": "application/json",
+              "Authorization": f"Bearer {render_api_key}",
+          }
+          render_base = "https://api.render.com/v1"
+          service_path = urllib.parse.quote(render_service_id, safe="")
+
+          def render_json(method, path, payload=None):
+              body = None
+              headers = dict(render_headers)
+              if payload is not None:
+                  body = json.dumps(payload).encode("utf-8")
+                  headers["Content-Type"] = "application/json"
+              request = urllib.request.Request(
+                  f"{render_base}{path}",
+                  data=body,
+                  headers=headers,
+                  method=method,
+              )
+              try:
+                  with urllib.request.urlopen(request, timeout=30) as response:
+                      raw = response.read()
+              except urllib.error.HTTPError as exc:
+                  raise RuntimeError(f"RENDER_DEPLOY_API_HTTP_{exc.code}") from exc
+              except (urllib.error.URLError, TimeoutError) as exc:
+                  raise RuntimeError("RENDER_DEPLOY_API_UNREACHABLE") from exc
+              if not raw:
+                  return None
+              try:
+                  return json.loads(raw.decode("utf-8"))
+              except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                  raise RuntimeError("RENDER_DEPLOY_API_INVALID_JSON") from exc
+
+          def list_deploys():
+              data = render_json("GET", f"/services/{service_path}/deploys?limit=20")
+              if isinstance(data, list):
+                  return data
+              if isinstance(data, dict) and isinstance(data.get("deploys"), list):
+                  return data["deploys"]
+              raise RuntimeError("RENDER_DEPLOY_LIST_INVALID")
+
+          def commit_sha(deploy):
+              commit = deploy.get("commit") if isinstance(deploy, dict) else None
+              return str((commit or {}).get("id") or "")
+
+          def exact_target_deploys():
+              return [deploy for deploy in list_deploys() if commit_sha(deploy) == target_sha]
+
+          existing = exact_target_deploys()
+          for deploy in existing:
+              if str(deploy.get("status") or "") == "live":
+                  print(json.dumps({
+                      "status":"EXACT_SHA_ALREADY_LIVE",
+                      "commit_sha":target_sha,
+                      "deploy_id":str(deploy.get("id") or ""),
+                      "deploy_authority":"GOVERNED_RENDER_API_HANDOFF",
+                      "required_checks":sorted(required),
+                      "can_execute":False,
+                  }, sort_keys=True))
+                  raise SystemExit(0)
+
+          terminal_failures = {
+              "build_failed",
+              "update_failed",
+              "pre_deploy_failed",
+              "deactivated",
+              "canceled",
+              "cancelled",
+          }
+          active = None
+          for deploy in existing:
+              status = str(deploy.get("status") or "")
+              if status in terminal_failures:
+                  raise RuntimeError(f"RENDER_TARGET_DEPLOY_TERMINAL_FAILURE:{status}")
+              if status:
+                  active = deploy
+                  break
+
+          if active is None:
+              created = render_json(
+                  "POST",
+                  f"/services/{service_path}/deploys",
+                  {"clearCache":"do_not_clear"},
+              )
+              if not isinstance(created, dict) or not created.get("id"):
+                  raise RuntimeError("RENDER_DEPLOY_CREATE_INVALID")
+              deploy_id = str(created["id"])
+              created_sha = commit_sha(created)
+              if created_sha and created_sha != target_sha:
+                  raise RuntimeError(f"RENDER_DEPLOY_WRONG_SHA:{created_sha}")
+          else:
+              deploy_id = str(active.get("id") or "")
+              if not deploy_id:
+                  raise RuntimeError("RENDER_ACTIVE_DEPLOY_ID_MISSING")
+
+          deploy_deadline = time.time() + 900
+          while True:
+              matching = exact_target_deploys()
+              target = next((deploy for deploy in matching if str(deploy.get("id") or "") == deploy_id), None)
+              if target is None and matching:
+                  target = matching[0]
+              if target is not None:
+                  status = str(target.get("status") or "")
+                  if status == "live":
+                      print(json.dumps({
+                          "status":"EXACT_SHA_RENDER_DEPLOY_LIVE",
+                          "commit_sha":target_sha,
+                          "deploy_id":str(target.get("id") or deploy_id),
+                          "deploy_authority":"GOVERNED_RENDER_API_HANDOFF",
+                          "required_checks":sorted(required),
+                          "can_execute":False,
+                      }, sort_keys=True))
+                      break
+                  if status in terminal_failures:
+                      raise RuntimeError(f"RENDER_TARGET_DEPLOY_TERMINAL_FAILURE:{status}")
+              current_main_sha = str(((github_json("/branches/main").get("commit") or {}).get("sha")) or "")
+              if current_main_sha != target_sha:
+                  print(json.dumps({
+                      "status":"DEPLOY_SUPERSEDED_BY_NEW_MAIN",
+                      "target_sha":target_sha,
+                      "current_main_sha":current_main_sha,
+                      "deploy_id":deploy_id,
+                      "can_execute":False,
+                  }, sort_keys=True))
+                  raise SystemExit(0)
+              if time.time() >= deploy_deadline:
+                  raise RuntimeError("RENDER_EXACT_SHA_DEPLOY_TIMEOUT")
+              time.sleep(10)
           PY
