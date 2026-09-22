@@ -1,0 +1,87 @@
+name: wow-v17-mcp-remote-acceptance
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/wow-v17-mcp-remote-acceptance.yml"
+      - "artifacts/mcp-server/src/v17_remote_acceptance.js"
+      - "artifacts/mcp-server/src/v17_backend.js"
+      - "artifacts/mcp-server/src/v17_contract.js"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wow-v17-mcp-remote-acceptance
+  cancel-in-progress: false
+
+jobs:
+  remote-acceptance:
+    name: WOW V17 MCP remote acceptance
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+      WOW_MCP_REMOTE_URL: https://wow-v17-mcp-acceptance-main.onrender.com/mcp
+      WOW_MCP_ACCEPTANCE_SERVICE_ID: srv-dapfrkrbc2fs73fjjsig
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Enable pnpm through Corepack
+        run: |
+          corepack enable
+          corepack prepare pnpm@10.17.1 --activate
+          pnpm --version
+
+      - name: Install MCP package from frozen workspace lockfile
+        run: pnpm install --frozen-lockfile --filter @workspace/mcp-server...
+
+      - name: Retrieve and mask isolated MCP ingress token from Render
+        shell: bash
+        run: |
+          test -n "$RENDER_API_KEY"
+          python - <<'PY'
+          import json
+          import os
+          from urllib.parse import quote
+          from urllib.request import Request, urlopen
+
+          service_id = os.environ["WOW_MCP_ACCEPTANCE_SERVICE_ID"]
+          api_key = os.environ["RENDER_API_KEY"]
+          url = (
+              "https://api.render.com/v1/services/"
+              + quote(service_id, safe="")
+              + "/env-vars/WOW_MCP_SHARED_TOKEN"
+          )
+          request = Request(
+              url,
+              headers={
+                  "Accept": "application/json",
+                  "Authorization": f"Bearer {api_key}",
+              },
+          )
+          with urlopen(request, timeout=30) as response:  # nosec B310: fixed HTTPS Render API origin
+              payload = json.loads(response.read().decode("utf-8"))
+          token = payload.get("value") if isinstance(payload, dict) else None
+          if not isinstance(token, str) or not token:
+              raise SystemExit("MCP_ACCEPTANCE_TOKEN_UNAVAILABLE")
+          print(f"::add-mask::{token}")
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as handle:
+              handle.write("WOW_MCP_AUTH_TOKEN=" + token + "\n")
+          PY
+
+      - name: Run authenticated remote MCP acceptance
+        run: pnpm --filter @workspace/mcp-server acceptance:remote:v17
+
+      - name: Record non-execution invariant
+        run: |
+          echo "WOW_V17_MCP_REMOTE_ACCEPTANCE_COMPLETE can_execute=false terminal_authority=V17_TERMINAL_REDUCER"
