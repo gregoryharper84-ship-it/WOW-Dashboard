@@ -138,7 +138,7 @@ export async function invokeV17Operation(operationName, args = {}, options = {})
   if (!response.ok) {
     throw new V17GatewayError(
       "UPSTREAM_TYPED_FAILURE",
-      `WOW V17 backend returned HTTP ${response.status}. Preserve the backend failure payload; do not rewrite it as MODEL_UNAVAILABLE.",
+      `WOW V17 backend returned HTTP ${response.status}. Preserve the backend failure payload; do not rewrite it as MODEL_UNAVAILABLE.`,
       {
         operation_id: operationName,
         upstream_status: response.status,
