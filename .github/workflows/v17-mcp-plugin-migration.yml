@@ -114,6 +114,9 @@ jobs:
           assert 'WOW_MCP_AUTH_TOKEN' in remote
           assert 'REMOTE_MCP_PUBLIC_READS_VERIFIED' in remote
           assert 'BACKEND_AUTH_NOT_CONFIGURED' in remote
+          assert 'requestInit' in remote
+          assert 'Authorization: `Bearer ${token}`' in remote
+          assert 'authProvider' not in remote
           assert 'MODEL_UNAVAILABLE' in tests
           assert 'MODEL_INPUTS_INSUFFICIENT' in tests
           assert 'MODEL_SCORER_FAILED' in tests
