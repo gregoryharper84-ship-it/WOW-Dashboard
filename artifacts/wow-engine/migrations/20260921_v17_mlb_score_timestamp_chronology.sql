@@ -11,6 +11,7 @@
 -- Use wall-clock time for future fitted-score timestamps. No historical score
 -- receipt is rewritten. No model weights, probabilities, calibration values,
 -- qualification thresholds, terminal authority, or execution controls change.
+-- can_execute=false remains invariant; this migration creates no execution path.
 
 alter table public.wow_mlb_forward_score_snapshots
   alter column model_timestamp set default clock_timestamp();
