@@ -37,11 +37,23 @@ def test_merge_is_head_sha_pinned_and_nonterminal_state_is_deferred():
     assert '--match-head-commit "$HEAD_SHA"' in text
     assert 'state="CI_REWORK"' in text
     assert 'state="CI_WAIT"' in text
+    assert 'state="SCOPE_REWORK"' in text
     assert "Preserve nonterminal Morning-Green state without poisoning main deploy checks" in text
     assert "durable closure evidence has been persisted" in text
     assert 'echo "deferred=true"' in text
     assert "successful workflow termination is forbidden" not in text
     assert "steps.gates.outputs.ready == 'true' && steps.scope.outcome == 'success'" in text
+
+
+def test_scope_guard_failure_is_captured_without_failing_continuation_transport():
+    text = _text()
+    scope_start = text.index("- name: Verify Morning-Green diff scope")
+    closure_start = text.index("- name: Persist machine-readable closure state")
+    scope_block = text[scope_start:closure_start]
+    assert "continue-on-error: true" in scope_block
+    assert 'exit "$rc"' in scope_block
+    assert 'steps.scope.outcome != \'success\'' in text
+    assert 'SCOPE_OUTCOME: ${{ steps.scope.outcome }}' in text
 
 
 def test_bot_merge_explicitly_resumes_main_required_checks():
