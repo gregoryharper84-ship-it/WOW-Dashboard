@@ -9,6 +9,7 @@ const PUBLIC_UNAUTHENTICATED_OPERATIONS = new Set([
   "getWowV17BackendHealth",
   "getWowV17Governance",
 ]);
+const ACCEPTANCE_BACKEND_MARKER = "V17_MCP_ACCEPTANCE_ONLY";
 
 export class V17GatewayError extends Error {
   constructor(code, message, details = {}) {
@@ -23,7 +24,12 @@ function baseUrl() {
   return (process.env.WOW_V17_BACKEND_URL || BACKEND_DEFAULT).replace(/\/$/, "");
 }
 
-function backendKey() {
+function backendCredentialMode() {
+  return (process.env.WOW_MCP_BACKEND_CREDENTIAL_MODE || "action").trim().toLowerCase();
+}
+
+function backendKey(mode = backendCredentialMode()) {
+  if (mode === "acceptance") return process.env.WOW_MCP_ACCEPTANCE_API_KEY || "";
   return process.env.WOW_ACTION_API_KEY || "";
 }
 
@@ -132,12 +138,21 @@ export async function invokeV17Operation(operationName, args = {}, options = {})
     throw new V17GatewayError("MCP_TOOL_NOT_REGISTERED", `Unknown WOW V17 MCP operation: ${operationName}`);
   }
 
-  const key = options.backendKey ?? backendKey();
+  const credentialMode = options.backendCredentialMode ?? backendCredentialMode();
+  if (!new Set(["action", "acceptance"]).has(credentialMode)) {
+    throw new V17GatewayError(
+      "BACKEND_AUTH_MODE_INVALID",
+      `Unsupported backend credential mode: ${credentialMode}`,
+    );
+  }
+  const key = options.backendKey ?? backendKey(credentialMode);
   const authRequired = !PUBLIC_UNAUTHENTICATED_OPERATIONS.has(operationName);
   if (!key && authRequired) {
     throw new V17GatewayError(
       "BACKEND_AUTH_NOT_CONFIGURED",
-      "WOW_ACTION_API_KEY is not configured on the MCP gateway. The backend credential must remain server-side.",
+      credentialMode === "acceptance"
+        ? "WOW_MCP_ACCEPTANCE_API_KEY is not configured on the MCP gateway. The acceptance credential must remain server-side."
+        : "WOW_ACTION_API_KEY is not configured on the MCP gateway. The backend credential must remain server-side.",
     );
   }
 
@@ -148,7 +163,12 @@ export async function invokeV17Operation(operationName, args = {}, options = {})
     Accept: "application/json",
     "User-Agent": "wow-v17-mcp-gateway/1.0",
   };
-  if (key) headers.Authorization = `Bearer ${key}`;
+  if (key) {
+    headers.Authorization = `Bearer ${key}`;
+    if (credentialMode === "acceptance") {
+      headers["X-WOW-MCP-Acceptance"] = ACCEPTANCE_BACKEND_MARKER;
+    }
+  }
 
   const request = {
     method: operation.method,
