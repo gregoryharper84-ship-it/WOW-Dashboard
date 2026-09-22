@@ -10,6 +10,7 @@ import { createV17McpServer } from "./v17_server.js";
 const PORT = Number(process.env.PORT || "3000");
 const AUTH_MODE = (process.env.WOW_MCP_AUTH_MODE || "shared-token").toLowerCase();
 const SHARED_TOKEN = process.env.WOW_MCP_SHARED_TOKEN || "";
+const BACKEND_CREDENTIAL_MODE = (process.env.WOW_MCP_BACKEND_CREDENTIAL_MODE || "action").toLowerCase();
 const MAX_BODY_BYTES = Number(process.env.WOW_MCP_MAX_BODY_BYTES || String(2 * 1024 * 1024));
 
 const sessions = new Map();
@@ -146,6 +147,9 @@ const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
     if (url.pathname === "/healthz" && req.method === "GET") {
+      const backendKeyPresent = BACKEND_CREDENTIAL_MODE === "acceptance"
+        ? Boolean(process.env.WOW_MCP_ACCEPTANCE_API_KEY)
+        : Boolean(process.env.WOW_ACTION_API_KEY);
       return json(res, 200, {
         ok: true,
         service: "wow-v17-mcp",
@@ -153,7 +157,8 @@ const server = http.createServer(async (req, res) => {
         terminal_authority: TERMINAL_AUTHORITY,
         can_execute: CAN_EXECUTE,
         auth_mode: AUTH_MODE,
-        backend_key_present: Boolean(process.env.WOW_ACTION_API_KEY),
+        backend_credential_mode: BACKEND_CREDENTIAL_MODE,
+        backend_key_present: backendKeyPresent,
       });
     }
     if (url.pathname === "/mcp") return await handleMcp(req, res);
