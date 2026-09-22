@@ -27,6 +27,41 @@ from prop_auto_hydration import PropAutoHydrationError
 CAN_EXECUTE = False
 REFRESH_DELAY_SECONDS = 300
 MLB_1IP_STAT_TYPE = "1ST_INNING_PITCHES_THROWN"
+_EXACT_BOARD_SOURCE_TYPES = {
+    "SCREENSHOT",
+    "PDF",
+    "PASTED_BOARD",
+    "AUTONOMOUS_DISCOVERY",
+}
+
+
+def _exact_market_evidence_present(row: Any) -> bool:
+    """Return whether this row itself proves an exact board market identity.
+
+    Market identity and payout/value resolution are distinct V17 objective
+    lanes. A captured PrizePicks-style board can prove player/stat/line/side
+    even when the money lane remains PAYOUT_UNRESOLVED. Conversely, a normalized
+    row with no platform/source provenance must not be upgraded merely because a
+    payout state exists.
+    """
+    if getattr(row, "market_side_a", None) or getattr(row, "market_side_b", None):
+        return True
+    source_type = str(getattr(row, "source_type", "") or "").strip().upper()
+    platform = str(getattr(row, "platform", "") or "").strip()
+    player = str(getattr(row, "player", "") or "").strip()
+    event_id = str(getattr(row, "event_id", "") or "").strip()
+    direction = str(getattr(row, "direction", "") or "").strip().upper()
+    try:
+        float(getattr(row, "line"))
+    except (TypeError, ValueError):
+        return False
+    return bool(
+        source_type in _EXACT_BOARD_SOURCE_TYPES
+        and platform
+        and player
+        and event_id
+        and direction in {"MORE", "LESS"}
+    )
 
 
 def _acquisition_failure(
@@ -288,7 +323,7 @@ def score_mlb_1ip_ingress(
     assert artifact is not None
 
     money_lane_status = str(row.money_lane_status or "").strip().upper()
-    market_evidence_present = money_lane_status not in {"", "PAYOUT_UNRESOLVED"}
+    market_evidence_present = _exact_market_evidence_present(row)
 
     try:
         result = score_mlb_1ip_empirical(
@@ -319,6 +354,15 @@ def score_mlb_1ip_ingress(
             acquisition=acquisition,
         )
     result["scout_research_barrier"] = barrier_detail
+
+    # Exact market identity from the board does not resolve payout/value. Keep
+    # that blocker in the MONEY lane rather than falsely reporting the market
+    # itself as unavailable.
+    if money_lane_status in {"", "PAYOUT_UNRESOLVED"}:
+        result["blockers"] = list(dict.fromkeys([
+            *(result.get("blockers") or []),
+            "PAYOUT_UNRESOLVED",
+        ]))
 
     if not result["model_evaluated"]:
         return terminal(

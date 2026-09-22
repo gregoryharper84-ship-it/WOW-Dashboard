@@ -5,9 +5,9 @@ pipeline remain untouched. This patch is installed before run-control routes are
 mounted and tightens exact-once recovery in two places:
 
 1. a durably closed request_id rejects manifest reseeding before any row mutation;
-2. an immutable receipt recovered after a lost response is removed from the
-   retry set, then advanced through the same durable governance stages that the
-   normal finalizer would have reached from its already-persisted outcome.
+2. immutable receipts recovered after a lost response are removed from the
+   retry set, while exact durable PENDING rows with the same request_id + row_key
+   resume contract remain scorer-eligible exactly once.
 
 can_execute remains false unconditionally.
 """
@@ -41,10 +41,12 @@ def _receipt_preflight_without_rescore(
     request_id: str,
     records: list[dict[str, Any]],
 ) -> tuple[list[dict[str, Any]], int, dict[str, Any] | None]:
-    """Return only rows proven NOT_FOUND as scorer-eligible.
+    """Return only rows proven safe for one scorer invocation.
 
-    MATCHED immutable receipts are reconciled into durable state and deliberately
-    omitted from the returned retry list. Ambiguous, non-immutable, or
+    NOT_FOUND rows and exact durable PENDING rows carrying the same request_id,
+    row_key, and explicit resume contract are scorer-eligible. MATCHED immutable
+    receipts are reconciled into durable state and deliberately omitted from the
+    returned retry list. Ambiguous, non-immutable, identity-mismatched, or
     ledger/outcome-inconsistent states fail closed.
     """
     if not records:
@@ -78,7 +80,11 @@ def _receipt_preflight_without_rescore(
             record = by_key[key]
             status = str(outcome.get("status") or "")
 
-            if status == "NOT_FOUND":
+            if status == "NOT_FOUND" or control._durable_pending_resume_is_safe(
+                outcome,
+                request_id=request_id,
+                row_key=key,
+            ):
                 retryable.append(record)
                 continue
 
