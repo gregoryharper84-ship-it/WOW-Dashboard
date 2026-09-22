@@ -24,7 +24,7 @@ create table if not exists public.wow_v17_daily_async_runs (
     check (run_status <> 'COMPLETED' or completed_at is not null)
 );
 
-create index if not exists wow_v17_daily_async_runs_claim_idx
+create unique index if not exists wow_v17_daily_async_runs_idempotency_key_uidx\n    on public.wow_v17_daily_async_runs (idempotency_key)\n    where idempotency_key is not null;\n\ncreate index if not exists wow_v17_daily_async_runs_claim_idx
     on public.wow_v17_daily_async_runs (run_status, submitted_at)
     where run_status in ('QUEUED','RUNNING');
 
