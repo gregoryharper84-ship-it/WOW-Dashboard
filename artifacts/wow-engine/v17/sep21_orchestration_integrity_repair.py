@@ -17,8 +17,17 @@ _DAILY_CONTEXT: ContextVar[dict[str, Any] | None] = ContextVar(
 
 
 def install_daily_current_acquisition_repair() -> bool:
-    """Prevent historical canonical props from masquerading as current acquisition."""
+    """Acquire now, then separately account for existing canonical slate rows.
+
+    The old flow could score persisted canonical rows while reporting zero current
+    acquisition. A tempting repair is to keep only current producer receipts, but
+    that would incorrectly erase valid NFL/WNBA/user-board rows because today's
+    autonomous Daily producer is MLB-specific. Instead, force the producer once,
+    keep the full requested-date canonical manifest, and explicitly partition the
+    accounting into current-run receipt-backed rows vs preexisting canonical rows.
+    """
     from v17 import daily_snapshot_runtime as daily
+    from v17.prop_sport_parity import prop_sport_parity_summary
 
     if getattr(daily, "_v17_sep21_current_acquisition_repair_installed", False):
         return True
@@ -41,26 +50,11 @@ def install_daily_current_acquisition_repair() -> bool:
             calls = int(context.get("manifest_calls") or 0)
             context["manifest_calls"] = calls + 1
             if calls == 0:
-                # Force the already-governed producer once for this run. This is
-                # a current-run policy, not a claim that the persisted lane is empty.
+                # Force the existing governed producer once even when same-slate
+                # canonical rows already exist. The second read returns the full
+                # cross-sport canonical slate; nothing is silently discarded.
                 return []
-
-        rows = original_manifest(*args, **kwargs)
-        context = _DAILY_CONTEXT.get()
-        if context is None or not context.get("force_current_acquisition"):
-            return rows
-
-        acquisition = context.get("acquisition")
-        if not isinstance(acquisition, dict):
-            return []
-        current_ids = daily._receipt_snapshot_ids(acquisition)
-        if not current_ids:
-            # No receipt proof means no current-run canonical substitution.
-            return []
-        return [
-            row for row in rows
-            if str(row.get("source_snapshot_id") or "") in current_ids
-        ]
+        return original_manifest(*args, **kwargs)
 
     def binding_aware_classify(payload: Any) -> str:
         if isinstance(payload, dict):
@@ -75,7 +69,11 @@ def install_daily_current_acquisition_repair() -> bool:
         lanes = set(getattr(req, "lanes", []) or [])
         force = "PROPS" in lanes and int(getattr(req, "max_props", 0) or 0) > 0
         if not force:
-            return original_run(req, db=db, market_api=market_api, event_api=event_api)
+            response = original_run(req, db=db, market_api=market_api, event_api=event_api)
+            if "PROPS" in lanes and isinstance(response, dict):
+                response["prop_sport_parity"] = prop_sport_parity_summary()
+                response["can_execute"] = False
+            return response
 
         requested_mode = str(getattr(req, "response_mode", "COMPACT") or "COMPACT").upper()
         full_req = req.model_copy(update={"response_mode": "FULL"})
@@ -94,18 +92,33 @@ def install_daily_current_acquisition_repair() -> bool:
         lane = (response.get("lane_reconciliation") or {}).get("PROPS")
         if isinstance(acquisition, dict) and isinstance(lane, dict):
             counts = daily._acquisition_counts(acquisition)
-            lane["discovered_count"] = counts["lane_discovered_raw"]
-            lane["duplicate_source_instance_count"] = int(
-                acquisition.get("duplicate_source_instances") or 0
-            )
-            lane["acquisition_accounting_scope"] = "CURRENT_RUN_ONLY"
-            lane["historical_manifest_substitution"] = False
+            handoff = lane.get("handoff_reconciliation") or {}
+            canonical_rows = int(handoff.get("canonical_rows") or lane.get("manifest_count") or 0)
+            current_rows = int(handoff.get("canonical_rows_from_current_acquisition") or 0)
+            preexisting_rows = max(canonical_rows - current_rows, 0)
+
+            # Current producer counts and canonical slate counts are separate
+            # populations. Never call preexisting NFL/WNBA/user-board rows
+            # "duplicates" of this producer run.
+            lane["current_run_discovered_raw"] = counts["lane_discovered_raw"]
+            lane["current_run_snapshot_write_succeeded"] = counts["lane_snapshot_write_succeeded"]
+            lane["current_run_snapshot_write_failed"] = counts["lane_snapshot_write_failed"]
+            lane["current_run_persisted_candidates"] = counts["persisted_candidates"]
             lane["current_acquisition_receipt_count"] = len(
                 daily._receipt_snapshot_ids(acquisition)
             )
+            lane["current_acquisition_canonical_rows"] = current_rows
+            lane["preexisting_canonical_slate_rows"] = preexisting_rows
+            lane["canonical_rows_total"] = canonical_rows
+            lane["acquisition_accounting_scope"] = (
+                "CURRENT_RUN_PRODUCER_AND_PREEXISTING_CANONICAL_SLATE_SEPARATED"
+            )
+            lane["preexisting_canonical_rows_included"] = preexisting_rows > 0
+            lane["historical_manifest_substitution"] = False
 
         response["current_acquisition_required"] = True
         response["historical_manifest_substitution"] = False
+        response["prop_sport_parity"] = prop_sport_parity_summary()
         response["can_execute"] = False
         if requested_mode == "FULL":
             response["response_mode"] = "FULL"
