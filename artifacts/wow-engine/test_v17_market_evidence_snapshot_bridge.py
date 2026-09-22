@@ -255,3 +255,37 @@ def test_prop_without_existing_player_market_identity_is_not_inferred_from_team_
     candidate = result["model_handoff"]["prop_candidates"][0]
     assert candidate["market_evidence"] == []
     assert result["market_evidence_snapshot_bridge"]["evidence_rows_attached"] == 0
+
+def test_snapshot_can_seed_fresh_exact_prop_when_primary_feed_has_zero_props():
+    handoff = _handoff()
+    event = _event("RUNDOWN", "book-a", -120)
+    event["bookmakers"][0]["markets"].append({
+        "key": "pitcher_strikeouts",
+        "last_update": "2026-09-14T19:59:00Z",
+        "outcomes": [
+            {"name": "Over", "description": "Example Pitcher", "price": -115, "point": 5.5},
+            {"name": "Under", "description": "Example Pitcher", "price": -105, "point": 5.5},
+        ],
+    })
+    result = attach_snapshot_evidence(handoff, _snapshot([event]), now=NOW)
+    props = result["model_handoff"]["prop_candidates"]
+    assert len(props) == 2
+    assert {p["market_evidence"]["outcome_name"] for p in props} == {"Over", "Under"}
+    assert all(p["route"] == "WOW_PROP_LANE" for p in props)
+    assert all(p["research_ceiling"] == "RESEARCH_INTEREST" for p in props)
+    assert all(p["probability_authority"] is False for p in props)
+    assert all(p["can_execute"] is False for p in props)
+    assert result["market_evidence_snapshot_bridge"]["prop_candidates_seeded"] == 2
+
+
+def test_snapshot_never_seeds_stale_or_identity_incomplete_prop():
+    handoff = _handoff()
+    event = _event("RUNDOWN", "book-a", -120, updated="2026-09-14T19:30:00Z")
+    event["bookmakers"][0]["markets"].append({
+        "key": "pitcher_strikeouts",
+        "last_update": "2026-09-14T19:30:00Z",
+        "outcomes": [{"name": "Over", "description": "Example Pitcher", "price": -115, "point": 5.5}],
+    })
+    result = attach_snapshot_evidence(handoff, _snapshot([event]), now=NOW)
+    assert result["model_handoff"]["prop_candidates"] == []
+    assert result["market_evidence_snapshot_bridge"]["prop_seed_rows_stale_quarantined"] >= 1

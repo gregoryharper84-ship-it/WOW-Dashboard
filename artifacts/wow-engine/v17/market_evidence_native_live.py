@@ -180,10 +180,24 @@ def sharpapi_rows_to_odds_api_v4(rows: Any, *, sport_key: str | None = None) -> 
                 bucket["last_update"] = updated
             outcome: dict[str, Any] = {"name": str(selection), "price": price}
             point = _first_number(row, ("line", "point", "handicap", "spread", "total"))
-            if point is not None and market_key in {"spreads", "totals"}:
+            is_prop = market_key not in sources.CANONICAL_MARKET_KEYS
+            description = (
+                row.get("description")
+                or row.get("player_name")
+                or row.get("player")
+                or row.get("athlete_name")
+                or row.get("athlete")
+                or row.get("participant")
+            )
+            if is_prop and (point is None or not description):
+                continue
+            if point is not None and (market_key in {"spreads", "totals"} or sources.canonical_market_key(market_key) == market_key):
                 outcome["point"] = point
+            if description and is_prop:
+                outcome["description"] = str(description)
+            signature = (outcome.get("name"), outcome.get("description"), outcome.get("point"))
             if not any(
-                o.get("name") == outcome["name"] and o.get("point") == outcome.get("point")
+                (o.get("name"), o.get("description"), o.get("point")) == signature
                 for o in bucket["outcomes"]
             ):
                 bucket["outcomes"].append(outcome)
@@ -205,7 +219,7 @@ def sharpapi_rows_to_odds_api_v4(rows: Any, *, sport_key: str | None = None) -> 
                 ],
             }
             for key, book in books.items()
-            if book["markets"]
+            if any(market["outcomes"] for market in book["markets"].values())
         ]
         if event["bookmakers"]:
             built.append(event)
@@ -381,8 +395,11 @@ def rundown_v2_event_to_odds_api_v4(raw: Any, *, sport_key: str | None = None) -
                     bucket = book["markets"].setdefault(market_key, {"last_update": updated, "outcomes": []})
                     outcome: dict[str, Any] = {"name": str(selection), "price": price}
                     point = _line_point(line, container)
-                    if point is not None and market_key in {"spreads", "totals"}:
+                    if point is not None and (market_key in {"spreads", "totals"} or sources.canonical_market_key(market_key) == market_key):
                         outcome["point"] = point
+                    description = participant.get("description") or participant.get("player") or participant.get("name")
+                    if description and market_key not in {"h2h", "spreads", "totals"}:
+                        outcome["description"] = str(description)
                     if not any(
                         o.get("name") == outcome["name"] and o.get("point") == outcome.get("point")
                         for o in bucket["outcomes"]

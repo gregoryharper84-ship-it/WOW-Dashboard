@@ -48,6 +48,52 @@ def test_sharpapi_observed_field_names_translate_without_provider_probability():
     assert "0.574" not in dumped
 
 
+def test_sharpapi_native_prop_preserves_player_identity_and_distinct_same_line_players():
+    base = {
+        "event_id": "sharp-prop-1",
+        "event_start_time": "2026-09-14T23:05:00Z",
+        "home_team": "Golden State Warriors",
+        "away_team": "Los Angeles Lakers",
+        "league": "NBA",
+        "market_type": "player_points",
+        "selection": "Over",
+        "sportsbook": "pinnacle",
+        "odds_american": -110,
+        "line": 24.5,
+        "timestamp": "2026-09-14T19:00:00Z",
+    }
+    rows = [
+        {**base, "player_name": "Stephen Curry"},
+        {**base, "player_name": "Jimmy Butler"},
+    ]
+    events = live.sharpapi_rows_to_odds_api_v4(rows, sport_key="basketball_nba")
+    assert len(events) == 1
+    outcomes = events[0]["bookmakers"][0]["markets"][0]["outcomes"]
+    assert {(o["name"], o["description"], o["point"]) for o in outcomes} == {
+        ("Over", "Stephen Curry", 24.5),
+        ("Over", "Jimmy Butler", 24.5),
+    }
+
+
+def test_sharpapi_native_prop_fails_closed_without_player_or_exact_line():
+    base = {
+        "event_id": "sharp-prop-2",
+        "event_start_time": "2026-09-14T23:05:00Z",
+        "home_team": "Golden State Warriors",
+        "away_team": "Los Angeles Lakers",
+        "league": "NBA",
+        "market_type": "player_points",
+        "selection": "Over",
+        "sportsbook": "pinnacle",
+        "odds_american": -110,
+        "line": 24.5,
+        "player_name": "Stephen Curry",
+        "timestamp": "2026-09-14T19:00:00Z",
+    }
+    assert live.sharpapi_rows_to_odds_api_v4([{**base, "player_name": None}], sport_key="basketball_nba") == []
+    assert live.sharpapi_rows_to_odds_api_v4([{**base, "line": None}], sport_key="basketball_nba") == []
+
+
 def _rundown_live_event():
     return {
         "event_id": "rd-live-1",

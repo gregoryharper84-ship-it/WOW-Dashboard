@@ -77,6 +77,14 @@ ODDS_API_SPORT_KEYS = (
 # provider-native market name (the FIX-C/FIX-D failure class).
 CANONICAL_MARKET_KEYS = ("h2h", "spreads", "totals")
 
+# Provider-normalized player/stat markets are discovery identities, not probability
+# authority. Preserve an explicit provider key only when it is structurally a
+# player/scalar prop; never guess a stat from free text.
+_PROP_MARKET_PREFIXES = (
+    "player_", "pitcher_", "batter_", "passing_", "rushing_", "receiving_",
+    "goalie_", "shots_", "saves_", "aces_", "double_faults_",
+)
+
 _PROVIDER_MARKET_CANONICAL: dict[str, str] = {
     "h2h": "h2h",
     "moneyline": "h2h",
@@ -96,7 +104,12 @@ _PROVIDER_MARKET_CANONICAL: dict[str, str] = {
 def canonical_market_key(raw: Any) -> str | None:
     """Translate a provider market label into a canonical WOW market key."""
     token = str(raw or "").strip().lower().replace("-", "_").replace(" ", "_")
-    return _PROVIDER_MARKET_CANONICAL.get(token)
+    canonical = _PROVIDER_MARKET_CANONICAL.get(token)
+    if canonical:
+        return canonical
+    if token and any(token.startswith(prefix) for prefix in _PROP_MARKET_PREFIXES):
+        return token
+    return None
 
 
 @dataclass(frozen=True)
@@ -423,6 +436,8 @@ def coerce_odds_api_v4_event(raw: Any) -> dict[str, Any] | None:
             if market_key is None:
                 continue
             outcomes = [o for o in (_clean_outcome(x) for x in market.get("outcomes") or []) if o]
+            if market_key not in CANONICAL_MARKET_KEYS:
+                outcomes = [o for o in outcomes if o.get("description") and "point" in o]
             if not outcomes:
                 continue
             markets.append({
@@ -925,7 +940,8 @@ def sharpapi_rows_to_odds_api_v4(rows: Any, *, sport_key: str | None = None) -> 
     ``rows`` is a flat sequence of sportsbook/event/market/selection records.
     They are grouped event -> sportsbook -> canonical market -> outcomes. Rows
     missing an event identity, a recognised market, a selection or a price are
-    dropped rather than defaulted.
+    dropped rather than defaulted. Explicit prop markets additionally require
+    an exact line and participant identity before leaving this adapter.
     """
     if not isinstance(rows, list):
         return []
@@ -942,6 +958,7 @@ def sharpapi_rows_to_odds_api_v4(rows: Any, *, sport_key: str | None = None) -> 
         market_key = canonical_market_key(_sharpapi_first(row, ("market", "market_type", "market_key", "bet_type")))
         if market_key is None:
             continue
+        is_prop = market_key not in CANONICAL_MARKET_KEYS
         selection = _sharpapi_first(row, ("selection", "outcome", "side", "name", "team", "runner"))
         if isinstance(selection, dict):
             selection = _sharpapi_first(selection, ("name", "team", "label"))
@@ -964,6 +981,16 @@ def sharpapi_rows_to_odds_api_v4(rows: Any, *, sport_key: str | None = None) -> 
             price = _number(_sharpapi_first(priced, ("odds", "price", "american_odds", "american", "moneyline")))
             if price is None:
                 continue
+            point = _number(_sharpapi_first(priced, ("line", "point", "handicap", "spread", "total")))
+            description = _sharpapi_first(
+                priced,
+                ("description", "player_name", "player", "athlete_name", "athlete", "participant"),
+            )
+            if isinstance(description, dict):
+                description = _sharpapi_first(description, ("name", "full_name", "label"))
+            if is_prop and (point is None or not description):
+                continue
+
             book = record["books"].setdefault(f"sharpapi_{_norm(book_name)}", {
                 "title": book_name,
                 "last_update": _sharpapi_first(priced, ("last_update", "updated_at", "timestamp", "observed_at")),
@@ -971,10 +998,15 @@ def sharpapi_rows_to_odds_api_v4(rows: Any, *, sport_key: str | None = None) -> 
             })
             bucket = book["markets"].setdefault(market_key, {"last_update": book["last_update"], "outcomes": []})
             outcome: dict[str, Any] = {"name": str(selection), "price": price}
-            point = _number(_sharpapi_first(priced, ("line", "point", "handicap", "spread", "total")))
             if point is not None:
                 outcome["point"] = point
-            if not any(o["name"] == outcome["name"] and o.get("point") == outcome.get("point") for o in bucket["outcomes"]):
+            if is_prop:
+                outcome["description"] = str(description)
+            signature = (outcome["name"], outcome.get("description"), outcome.get("point"))
+            if not any(
+                (o.get("name"), o.get("description"), o.get("point")) == signature
+                for o in bucket["outcomes"]
+            ):
                 bucket["outcomes"].append(outcome)
 
     built: list[dict[str, Any]] = []
@@ -993,8 +1025,10 @@ def sharpapi_rows_to_odds_api_v4(rows: Any, *, sport_key: str | None = None) -> 
                 ],
             }
             for key, book in books.items()
+            if book["markets"]
         ]
-        built.append(record)
+        if record["bookmakers"]:
+            built.append(record)
     return built
 
 
