@@ -169,6 +169,7 @@ def compose_active_runtime() -> bool:
     mlb_event_bridge_deferred = False
     runtime_acceptance_ok = False
     daily_snapshot_oidc_ok = False
+    daily_async_ok = False
     full_board_runtime_ok = False
     fallback_provider_health_ok = False
     if market_api is not None:
@@ -188,11 +189,20 @@ def compose_active_runtime() -> bool:
                 app=app,
                 market_api=market_api,
             )
-            auth_dependency = getattr(
-                getattr(market_api, "prod", None),
-                "_require_action_api_key",
-                None,
-            )
+            prod = getattr(market_api, "prod", None)
+            auth_dependency = getattr(prod, "_require_action_api_key", None)
+            db_client_fn = getattr(prod, "get_client", None)
+            event_api = getattr(prod, "event_api", None)
+            if callable(auth_dependency) and callable(db_client_fn) and event_api is not None:
+                from v17.daily_async_runtime import install_daily_async_routes
+
+                daily_async_ok = install_daily_async_routes(
+                    app,
+                    auth_callable=auth_dependency,
+                    db_client_fn=db_client_fn,
+                    market_api=market_api,
+                    event_api=event_api,
+                )
             full_board_runtime_ok = install_full_board_runtime_routes(
                 app,
                 auth_dependency=auth_dependency,
@@ -207,6 +217,7 @@ def compose_active_runtime() -> bool:
         or prop_ok or lineup_ok or rehydration_ok or rundown_llp_ok or numerical_ok
         or full_board_overlay_ok
         or mlb_event_bridge_deferred or runtime_acceptance_ok or daily_snapshot_oidc_ok
+        or daily_async_ok
         or full_board_runtime_ok or fallback_provider_health_ok
         or getattr(market_api, "_v17_certified_numerical_bridge_installed", False)
         or getattr(market_api, "_v17_mlb_event_bridge_repair_installed", False)
