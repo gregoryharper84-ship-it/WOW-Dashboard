@@ -54,7 +54,7 @@ def test_non_input_failure_is_not_rewritten_as_recoverable_hold():
     assert _typed_hold(original) == original
 
 
-def test_recoverable_hold_does_not_claim_durable_watcher_exists():
+def test_recoverable_hold_is_bound_to_governed_hourly_refresh():
     detail = _typed_hold(
         {
             "code": "MODEL_INPUTS_INSUFFICIENT",
@@ -62,7 +62,10 @@ def test_recoverable_hold_does_not_claim_durable_watcher_exists():
         }
     )
     assert detail["retry_required"] is True
-    assert detail["durable_retry_watcher_bound"] is False
+    assert detail["durable_retry_watcher_bound"] is True
+    assert detail["retry_watcher_mode"] == "HOURLY_CANONICAL_FULL_SLATE_REFRESH"
+    assert detail["retry_watcher_workflow"] == "wow-v17-team-event-recoverable-refresh.yml"
+    assert detail["retry_watcher_cadence_minutes"] == 60
     assert detail["probability_publishable"] is False
     assert detail["rank_eligible"] is False
     assert detail["can_execute"] is False
