@@ -32,13 +32,16 @@ def test_exact_three_protected_checks_are_reverified():
     assert 'ready=true' in text
 
 
-def test_merge_is_head_sha_pinned_and_failure_is_nonterminal():
+def test_merge_is_head_sha_pinned_and_nonterminal_state_is_deferred():
     text = _text()
     assert '--match-head-commit "$HEAD_SHA"' in text
     assert 'state="CI_REWORK"' in text
     assert 'state="CI_WAIT"' in text
-    assert "successful workflow termination is forbidden" in text
-    assert "exit 1" in text
+    assert "Preserve nonterminal Morning-Green state without poisoning main deploy checks" in text
+    assert "durable closure evidence has been persisted" in text
+    assert 'echo "deferred=true"' in text
+    assert "successful workflow termination is forbidden" not in text
+    assert "steps.gates.outputs.ready == 'true' && steps.scope.outcome == 'success'" in text
 
 
 def test_bot_merge_explicitly_resumes_main_required_checks():
