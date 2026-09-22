@@ -6,7 +6,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def test_daily_repair_forces_current_acquisition_without_dropping_existing_sports():
     source = (ROOT / "v17" / "sep21_orchestration_integrity_repair.py").read_text()
-    assert 'context["force_current_acquisition"]' in source
+    assert '"force_current_acquisition": True' in source
+    assert 'context.get("force_current_acquisition")' in source
     assert 'return original_manifest(*args, **kwargs)' in source
     assert 'daily._receipt_snapshot_ids(acquisition)' in source
     assert '"historical_manifest_substitution"] = False' in source
