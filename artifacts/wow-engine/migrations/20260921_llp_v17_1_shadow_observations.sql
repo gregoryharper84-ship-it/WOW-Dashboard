@@ -44,9 +44,15 @@ create table if not exists public.wow_llp_v17_1_shadow_observations (
     unique (prediction_id, selection, lambda_penalty, shadow_schema_version),
     check (calibrated_lower_bound <= calibrated_probability),
     check (calibrated_upper_bound is null or calibrated_probability <= calibrated_upper_bound),
-    check (lower_bound_width = calibrated_probability - calibrated_lower_bound),
-    check (point_rank_score = calibrated_probability),
-    check (lower_bound_rank_score = calibrated_lower_bound),
+    constraint wow_llp_v17_1_shadow_lower_width_consistent check (
+        abs(lower_bound_width - (calibrated_probability - calibrated_lower_bound)) <= 0.000000001
+    ),
+    constraint wow_llp_v17_1_shadow_point_score_consistent check (
+        abs(point_rank_score - calibrated_probability) <= 0.000000001
+    ),
+    constraint wow_llp_v17_1_shadow_lower_score_consistent check (
+        abs(lower_bound_rank_score - calibrated_lower_bound) <= 0.000000001
+    ),
     check (uncertainty_adjusted_score >= calibrated_lower_bound and uncertainty_adjusted_score <= calibrated_probability)
 );
 
