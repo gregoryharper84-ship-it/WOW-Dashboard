@@ -62,17 +62,27 @@ def odds_proxy_feed(
     started = now or datetime.now(timezone.utc)
     end = started + timedelta(hours=horizon_hours())
     offered: dict[str, tuple[str, ...]] | None = dict(sport_keys) if sport_keys is not None else None
+    offered_error: str | None = None
 
     def _offered_keys() -> dict[str, tuple[str, ...]]:
-        """Families mapped to the sport keys the proxy currently advertises."""
-        nonlocal offered
+        """Families mapped to the sport keys the proxy currently advertises.
+
+        A failed catalog lookup is deterministic for this feed instance/run.
+        Memoize its typed failure so later sport families do not repeatedly hit
+        the same failing ``/sports`` endpoint and amplify a provider quota or
+        outage. Independent feeds in ``union_feed`` still get their own chance.
+        """
+        nonlocal offered, offered_error
         if offered is not None:
             return offered
+        if offered_error is not None:
+            raise discovery.DiscoveryFeedError(offered_error)
         listing = proxy_get("/odds-api/v4/sports", {"all": "true"})
         if not getattr(listing, "ok", False):
-            raise discovery.DiscoveryFeedError(
-                str(getattr(listing, "code", None) or "SPORT_INVENTORY_UNAVAILABLE")
+            offered_error = str(
+                getattr(listing, "code", None) or "SPORT_INVENTORY_UNAVAILABLE"
             )
+            raise discovery.DiscoveryFeedError(offered_error)
         mapping: dict[str, list[str]] = {}
         for row in getattr(listing, "data", None) or []:
             if not isinstance(row, Mapping) or not row.get("key"):
