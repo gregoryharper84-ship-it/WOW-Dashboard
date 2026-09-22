@@ -111,15 +111,25 @@ def _readiness(
     autonomous_ready = bool(request_scoring_path_ready and not blockers)
     if autonomous_ready:
         operational_status = "READY"
+        operational_certification = "CERTIFIED_OPERATIONAL"
     elif request_scoring_path_ready and normalized in _REQUEST_DEPENDENT_MULTISPORT:
         operational_status = "CERTIFIED_REQUEST_DEPENDENT"
+        operational_certification = "CERTIFIED_DEPENDENCIES_UNBOUND"
     elif registered:
         operational_status = "REGISTERED_NOT_READY"
+        operational_certification = certification
     else:
         operational_status = "UNAVAILABLE"
+        operational_certification = certification
 
     return {
         "readiness_contract_version": READINESS_CONTRACT_VERSION,
+        # Keep the repository/identity certification visible while publishing a
+        # separate operational certification state.  This prevents the health
+        # surface from implying that identity certification alone means the lane
+        # can autonomously complete a governed probability package.
+        "certification_identity_status": certification,
+        "operational_certification_status": operational_certification,
         "operational_readiness_status": operational_status,
         "model_capability_ready": autonomous_ready,
         "request_scoring_path_ready": request_scoring_path_ready,
@@ -181,6 +191,12 @@ def install_all_sport_capability_readiness() -> dict[str, Any]:
             {
                 "model_capability_ready": readiness["model_capability_ready"],
                 "request_scoring_path_ready": readiness["request_scoring_path_ready"],
+                "certification_identity_status": readiness[
+                    "certification_identity_status"
+                ],
+                "operational_certification_status": readiness[
+                    "operational_certification_status"
+                ],
                 "operational_readiness_status": readiness["operational_readiness_status"],
                 "readiness_blockers": readiness["readiness_blockers"],
                 "calibration_dependency_satisfied": readiness[
