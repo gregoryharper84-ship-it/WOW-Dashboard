@@ -242,3 +242,4 @@ def test_event_level_authority_conflict_is_rejected_fail_closed(monkeypatch, tmp
     assert result.ok is False
     assert result.code == "MARKET_EVIDENCE_NO_ROWS"
     assert "SNAPSHOT:MARKET_EVIDENCE_SNAPSHOT_AUTHORITY_INVALID" in result.schema_probe["provider_codes"]
+
