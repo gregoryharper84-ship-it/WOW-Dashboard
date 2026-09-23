@@ -11,6 +11,10 @@ from v17.llp_v17_1_shadow_internal_routes import (
     PRODUCTION_MUTATION_ALLOWED,
     install_llp_v17_1_shadow_internal_routes,
 )
+from v17.llp_v17_1_shadow_status_route import (
+    install_llp_shadow_status_route,
+    shadow_automation_status,
+)
 
 
 def _paths(app: FastAPI) -> set[str]:
@@ -77,7 +81,72 @@ def test_core_intelligence_mounts_shadow_automation_only_when_enabled(monkeypatc
     assert seen[0]["auth"] is auth
 
 
-def test_scheduled_workflow_is_shadow_only_and_main_oidc_scoped():
+def test_shadow_status_reports_core_intelligence_configured_off(monkeypatch):
+    monkeypatch.delenv("WOW_V17_CORE_INTELLIGENCE_ACTIVE", raising=False)
+    monkeypatch.setenv("WOW_V17_LLP_SHADOW_AUTOMATION_ACTIVE", "1")
+    status = shadow_automation_status(FastAPI())
+    assert status["status"] == "INACTIVE_CORE_INTELLIGENCE_DISABLED"
+    assert status["routes_expected"] is False
+    assert status["routes_present"] is False
+    assert status["can_execute"] is False
+
+
+def test_shadow_status_reports_shadow_automation_configured_off(monkeypatch):
+    monkeypatch.setenv("WOW_V17_CORE_INTELLIGENCE_ACTIVE", "1")
+    monkeypatch.delenv("WOW_V17_LLP_SHADOW_AUTOMATION_ACTIVE", raising=False)
+    status = shadow_automation_status(FastAPI())
+    assert status["status"] == "INACTIVE_SHADOW_AUTOMATION_DISABLED"
+    assert status["routes_expected"] is False
+    assert status["can_execute"] is False
+
+
+def test_shadow_status_fails_when_configured_active_routes_are_missing(monkeypatch):
+    monkeypatch.setenv("WOW_V17_CORE_INTELLIGENCE_ACTIVE", "1")
+    monkeypatch.setenv("WOW_V17_LLP_SHADOW_AUTOMATION_ACTIVE", "1")
+    status = shadow_automation_status(FastAPI())
+    assert status["status"] == "MISCONFIGURED_ROUTE_MISSING"
+    assert status["routes_expected"] is True
+    assert status["routes_present"] is False
+    assert sorted(status["missing_routes"]) == [
+        "/internal/v17/llp/shadow/capture",
+        "/internal/v17/llp/shadow/grade",
+        "/internal/v17/llp/shadow/scorecard",
+    ]
+    assert status["can_execute"] is False
+
+
+def test_shadow_status_is_active_only_when_configured_and_routes_exist(monkeypatch):
+    monkeypatch.setenv("WOW_V17_CORE_INTELLIGENCE_ACTIVE", "1")
+    monkeypatch.setenv("WOW_V17_LLP_SHADOW_AUTOMATION_ACTIVE", "1")
+    app = FastAPI()
+    install_llp_v17_1_shadow_internal_routes(
+        app,
+        get_client_fn=lambda: object(),
+        existing_auth_dependency=lambda authorization=None: None,
+    )
+    status = shadow_automation_status(app)
+    assert status["status"] == "ACTIVE"
+    assert status["routes_expected"] is True
+    assert status["routes_present"] is True
+    assert status["missing_routes"] == []
+    assert status["automatic_promotion_allowed"] is False
+    assert status["production_mutation_allowed"] is False
+    assert status["can_execute"] is False
+
+
+def test_status_route_mounts_independently_of_shadow_runtime_flags(monkeypatch):
+    monkeypatch.delenv("WOW_V17_CORE_INTELLIGENCE_ACTIVE", raising=False)
+    monkeypatch.delenv("WOW_V17_LLP_SHADOW_AUTOMATION_ACTIVE", raising=False)
+    app = FastAPI()
+    assert install_llp_shadow_status_route(
+        app,
+        existing_auth_dependency=lambda authorization=None: None,
+    ) is True
+    assert "/internal/v17/llp/shadow/status" in _paths(app)
+    assert "/internal/v17/llp/shadow/capture" not in _paths(app)
+
+
+def test_scheduled_workflow_is_shadow_only_main_oidc_scoped_and_activation_aware():
     repo_root = Path(__file__).resolve().parents[3]
     workflow = (repo_root / ".github" / "workflows" / "wow-v17-llp-shadow-observer.yml").read_text(
         encoding="utf-8"
@@ -88,9 +157,13 @@ def test_scheduled_workflow_is_shadow_only_and_main_oidc_scoped():
     assert 'WOW_CAN_EXECUTE: "false"' in workflow
     assert 'WOW_DRY_RUN_ONLY: "true"' in workflow
     assert 'WOW_AUTOMATIC_PROMOTION: "false"' in workflow
+    assert "/internal/v17/llp/shadow/status" in workflow
     assert "/internal/v17/llp/shadow/capture" in workflow
     assert "/internal/v17/llp/shadow/grade" in workflow
     assert "/internal/v17/llp/shadow/scorecard" in workflow
+    assert "COMPLETED_SHADOW_AUTOMATION_INACTIVE" in workflow
+    assert "MISCONFIGURED_ROUTE_MISSING" not in workflow  # server state, not a client-side guess
+    assert 'activation_status == "ACTIVE"' in workflow
     assert '"automatic_promotion_allowed": False' in workflow
     assert '"production_mutation_allowed": False' in workflow
     assert '"can_execute": False' in workflow
