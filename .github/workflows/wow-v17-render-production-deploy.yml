@@ -162,10 +162,19 @@ jobs:
           def list_deploys():
               data = render_json("GET", f"/services/{service_path}/deploys?limit=20")
               if isinstance(data, list):
-                  return data
-              if isinstance(data, dict) and isinstance(data.get("deploys"), list):
-                  return data["deploys"]
-              raise RuntimeError("RENDER_DEPLOY_LIST_INVALID")
+                  items = data
+              elif isinstance(data, dict) and isinstance(data.get("deploys"), list):
+                  items = data["deploys"]
+              else:
+                  raise RuntimeError("RENDER_DEPLOY_LIST_INVALID")
+
+              deploys = []
+              for item in items:
+                  if isinstance(item, dict) and isinstance(item.get("deploy"), dict):
+                      deploys.append(item["deploy"])
+                  elif isinstance(item, dict):
+                      deploys.append(item)
+              return deploys
 
           def commit_sha(deploy):
               commit = deploy.get("commit") if isinstance(deploy, dict) else None

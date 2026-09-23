@@ -67,6 +67,15 @@ def test_render_deploy_handoff_reconciles_successful_create_without_top_level_id
     assert "target = matching[0]" in text
 
 
+def test_render_deploy_list_unwraps_render_pagination_entries():
+    text = _workflow_text()
+
+    assert 'isinstance(item.get("deploy"), dict)' in text
+    assert 'deploys.append(item["deploy"])' in text
+    assert "elif isinstance(item, dict):" in text
+    assert "deploys.append(item)" in text
+
+
 def test_daily_snapshot_has_deploy_handoff_runway_and_network_retries():
     repo_root = Path(__file__).resolve().parents[3]
     text = (repo_root / ".github" / "workflows" / "wow-v17-daily-snapshot.yml").read_text(
