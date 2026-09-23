@@ -66,6 +66,19 @@ The migration preserves the existing Action operation IDs:
 
 There is deliberately no tool for placing, approving, modifying, routing, canceling, or executing a wager or market order.
 
+The existing `V17_OPERATIONS` map remains the sole MCP operation-permission map:
+
+```text
+wow.runtime.read
+wow.governance.read
+wow.evidence.read
+wow.predictions.read
+wow.predictions.score
+wow.daily.run
+wow.recommendations.write
+wow.settlements.write
+```
+
 ## Exact-once / receipt recovery
 
 For board scoring, the caller must keep `request_id` stable for the board and `row_key` stable and unique per directional row.
@@ -100,6 +113,8 @@ pnpm --filter @workspace/mcp-server v17:http
 Endpoints:
 
 - `GET /healthz` - gateway health only; never exposes secret values
+- `GET /.well-known/oauth-protected-resource` - OAuth protected-resource metadata when configured
+- `GET /.well-known/oauth-protected-resource/mcp` - path-specific protected-resource metadata for `/mcp`
 - `/mcp` - MCP Streamable HTTP transport
 
 `WOW_MCP_AUTH_MODE=disabled` is for isolated CI/protocol tests only and must not be used on an internet-accessible service.
@@ -108,18 +123,28 @@ Endpoints:
 
 The shared-token mode is an **acceptance scaffold**, not the final ChatGPT production authentication design.
 
-Before the production WOW GPT is migrated, the remote MCP gateway must be bound as an OAuth 2.1 protected resource suitable for ChatGPT, including Authorization Code + PKCE, protected-resource metadata, authorization-server metadata, issuer/audience/expiry validation, and least-privilege scope enforcement. The proposed scopes are:
+Before the production WOW GPT is migrated, the remote MCP gateway must be bound as an OAuth 2.1 protected resource suitable for ChatGPT, including Authorization Code + PKCE, protected-resource metadata, authorization-server metadata, asymmetric JWT validation, issuer/audience/expiry validation, explicit OAuth client allowlisting, and least-privilege operation authorization.
 
-```text
-wow.runtime.read
-wow.governance.read
-wow.evidence.read
-wow.predictions.read
-wow.predictions.score
-wow.daily.run
-wow.recommendations.write
-wow.settlements.write
-```
+The gateway supports `WOW_MCP_AUTH_MODE=oauth` as the protected-resource side of that design. It validates RS256/ES256 access-token signatures against the configured JWKS, binds MCP sessions to the authenticated subject/client pair, and maps each `tools/call` request to the existing `V17_OPERATIONS[*].scope` permission.
+
+### Supabase OAuth provider note
+
+Supabase Auth can act as an OAuth 2.1 / OIDC authorization server and supports Authorization Code + PKCE, dynamic client registration, discovery, and JWKS. As of this implementation, Supabase's OAuth server supports the standard OIDC scopes (`openid`, `email`, `profile`, `phone`) but does **not** support arbitrary custom OAuth scopes.
+
+That provider limitation must not silently weaken WOW authorization. When Supabase is the authorization server:
+
+- standard OIDC scopes are used only for OAuth/OIDC identity data;
+- WOW operation authorization is carried in the signed server-controlled `app_metadata.wow_permissions` access-token claim;
+- the claim is populated only for explicitly approved OAuth `client_id` values by the reviewed Custom Access Token Hook candidate;
+- an unknown or disabled client receives an empty WOW permission set and therefore fails closed;
+- the MCP gateway also honors native `scope` / `scp` permission claims if a future authorization server supports the WOW permission names directly;
+- `user_metadata` is never used for authorization.
+
+The reviewed Supabase claim candidate is stored at:
+
+`artifacts/wow-engine/v17/sql/20260922_v17_mcp_oauth_permission_claim.sql`
+
+Creating that database function alone does not activate it. Supabase Auth Hook configuration and OAuth client approval are separate promotion actions.
 
 `WOW_ACTION_API_KEY` must remain a secret on the MCP server and must never be returned to ChatGPT, committed to GitHub, placed in a Skill file, or written into logs.
 
@@ -129,7 +154,7 @@ All gates are mandatory:
 
 1. CI proves the MCP package loads and exposes exactly the 16 governed operation IDs above.
 2. Streamable HTTP `/mcp` initializes successfully on the deployed candidate gateway.
-3. Auth fails closed for anonymous/invalid callers and OAuth scope enforcement is verified.
+3. Auth fails closed for anonymous/invalid callers; OAuth JWT issuer/audience/expiry/client validation and least-privilege WOW operation authorization are verified. If the authorization server supports native custom scopes, verify those scopes directly. If it does not, verify the signed server-controlled permission claim and do not misrepresent standard OIDC scopes as WOW authorization.
 4. `getWowV17BackendHealth` reaches the production backend and returns `can_execute=false`.
 5. A known valid one-row prop scores through `scoreWowPickRequest` and its immutable receipt is recovered by `lookupWowV17PredictionReceipts`.
 6. A four-row board reconciles one terminal result per input row with stable row identities and no duplicate prediction receipt.
@@ -146,6 +171,6 @@ All gates are mandatory:
 
 ## Deployment rule
 
-Do **not** replace or migrate the production WOW GPT merely because this code merges. Code merge, remote gateway deployment, plugin installation, and production GPT migration are separate promotion stages.
+Do **not** replace or migrate the production WOW GPT merely because this code merges. Code merge, remote gateway deployment, OAuth provider provisioning, plugin installation, and production GPT migration are separate promotion stages.
 
 A candidate gateway may be deployed for acceptance once CI is green and its backend credential and authentication boundary are safely provisioned. Production GPT migration remains blocked until the full acceptance matrix above is complete.
