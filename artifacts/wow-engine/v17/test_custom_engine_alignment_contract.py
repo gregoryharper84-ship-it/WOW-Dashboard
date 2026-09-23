@@ -86,16 +86,47 @@ def test_legacy_replit_cannot_be_primary_v17_route():
     assert c["backward_compatible_v16_routes_preserved"] is True
 
 
-def test_render_deployment_attestation_matches_recorded_live_state():
-    backend = _contract()["backend_contract"]
+def test_render_deployment_pointer_is_governed_by_typed_exact_receipts():
+    contract = _contract()
+    backend = contract["backend_contract"]
+    pointer = backend["deployment_pointer_contract"]
+
     assert backend["current_render_service"] == "wow-governed-probability-engine"
     assert backend["current_render_service_id"] == "srv-da7sa9gu01pc73brt80g"
-    assert backend["current_deployed_sha"] == "2d430886dc003b942cf9ca9d0251963cfc88d858"
-    assert backend["current_render_deploy_id"] == "dep-daoib7rbc2fs73e4vco0"
+    assert "current_deployed_sha" not in backend
+    assert "current_render_deploy_id" not in backend
     assert backend["auto_deploy"] is True
     assert backend["auto_deploy_trigger"] == "checksPass"
     assert backend["openapi_introspection_blocks_live_editor_sync"] is False
-    assert "RECONCILE_BACKEND_DEPLOYMENT_POINTER_FROM_EXACT_RENDER_RECEIPT" in _contract()["remaining_repository_reconciliation"]
+
+    assert pointer["authority"] == "LATEST_SUCCESSFUL_GITHUB_DEPLOYMENT_ATTESTATION_FROM_EXACT_RENDER_RECEIPT"
+    assert pointer["environment"] == "wow-v17-render-production-attestation"
+    assert pointer["task"] == "wow-v17-render-receipt-pointer"
+    assert set(pointer["advancing_receipt_statuses"]) == {
+        "EXACT_SHA_RENDER_DEPLOY_LIVE",
+        "EXACT_SHA_ALREADY_LIVE",
+    }
+    assert set(pointer["non_advancing_receipt_statuses"]) == {
+        "NON_MAIN_NO_DEPLOY",
+        "STALE_SHA_NO_DEPLOY",
+        "UPSTREAM_NOT_SUCCESS_NO_DEPLOY",
+        "DEPLOY_SUPERSEDED_BY_NEW_MAIN",
+    }
+    assert pointer["green_workflow_alone_advances_pointer"] is False
+    assert pointer["direct_protected_main_mutation"] is False
+    assert pointer["can_execute"] is False
+
+    bootstrap = pointer["bootstrap_exact_receipt"]
+    assert bootstrap["receipt_status"] == "EXACT_SHA_RENDER_DEPLOY_LIVE"
+    assert bootstrap["commit_sha"] == "7f13238683774b8fa4e95c743de3497d1e0be26b"
+    assert bootstrap["render_deploy_id"] == "dep-daq3gd8u01pc73fllam0"
+    assert bootstrap["deploy_authority"] == "GOVERNED_RENDER_API_HANDOFF"
+    assert bootstrap["workflow_run_id"] == "35916975478"
+    assert bootstrap["workflow_job_id"] == "107370876748"
+    assert bootstrap["can_execute"] is False
+
+    assert "RECONCILE_BACKEND_DEPLOYMENT_POINTER_FROM_EXACT_RENDER_RECEIPT" not in contract["remaining_repository_reconciliation"]
+    assert "R20_RENDER_DEPLOYMENT_POINTER_GOVERNED_BY_TYPED_EXACT_RECEIPT" in contract["resolved_phase_a_findings"]
 
 
 def test_v17_active_backend_uses_existing_governed_team_event_adapter_without_fake_models():
