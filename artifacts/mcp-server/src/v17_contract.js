@@ -298,8 +298,8 @@ export const V17_TOOLS = [
     inputSchema: {
       type: "object",
       additionalProperties: true,
-      required: ["records"],
-      properties: { records: { type: "array", items: { type: "object", additionalProperties: true } } },
+      required: ["rows"],
+      properties: { rows: { type: "array", items: { type: "object", additionalProperties: true } } },
     },
   }),
   tool({
@@ -310,8 +310,8 @@ export const V17_TOOLS = [
     inputSchema: {
       type: "object",
       additionalProperties: true,
-      required: ["records"],
-      properties: { records: { type: "array", items: { type: "object", additionalProperties: true } } },
+      required: ["rows"],
+      properties: { rows: { type: "array", items: { type: "object", additionalProperties: true } } },
     },
   }),
 ];
