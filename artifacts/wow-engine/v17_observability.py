@@ -51,6 +51,9 @@ def initialize_observability() -> dict[str, Any]:
         install_cross_sport_acquisition_fairness,
     )
     from v17.cross_sport_resilience_overlay import install_cross_sport_resilience
+    from v17.quota_aware_degraded_discovery import (
+        install_quota_aware_degraded_discovery,
+    )
     from v17.scout_internal_service_auth import install_scout_internal_service_auth
 
     install_scout_internal_service_auth()
@@ -79,6 +82,10 @@ def initialize_observability() -> dict[str, Any]:
     # research-only ESPN identity, scorer work is bounded/fair across sports, and
     # all unscored discovered rows remain explicit typed terminal holds.
     install_cross_sport_resilience()
+    # Quota-aware acquisition must be outermost: it meters the final paid-source
+    # surfaces, reuses the existing free schedule-first path, and preserves public
+    # scoreboard IDs as aliases until canonical identity is independently proven.
+    install_quota_aware_degraded_discovery()
 
     try:
         install_interactive_team_event_latency()
