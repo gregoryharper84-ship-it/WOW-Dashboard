@@ -52,6 +52,7 @@ jobs:
           node --check artifacts/mcp-server/src/v17_server.js
           node --check artifacts/mcp-server/src/v17_stdio.js
           node --check artifacts/mcp-server/src/v17_http.js
+          node --check artifacts/mcp-server/src/v17_oauth.js
           node --check artifacts/mcp-server/src/v17_remote_acceptance.js
           for file in artifacts/mcp-server/test/v17_*.test.js; do node --check "$file"; done
 
@@ -96,6 +97,7 @@ jobs:
           contract = Path("artifacts/mcp-server/src/v17_contract.js").read_text()
           backend = Path("artifacts/mcp-server/src/v17_backend.js").read_text()
           http = Path("artifacts/mcp-server/src/v17_http.js").read_text()
+          oauth = Path("artifacts/mcp-server/src/v17_oauth.js").read_text()
           remote = Path("artifacts/mcp-server/src/v17_remote_acceptance.js").read_text()
           tests = Path("artifacts/mcp-server/test/v17_migration_contract.test.js").read_text()
           public_tests = Path("artifacts/mcp-server/test/v17_public_backend_reads.test.js").read_text()
@@ -121,7 +123,16 @@ jobs:
           assert 'MODEL_INPUTS_INSUFFICIENT' in tests
           assert 'MODEL_SCORER_FAILED' in tests
           assert 'MODEL_OUTPUT_INVALID' in tests
-          assert 'OAuth 2.1 must be bound before production ChatGPT migration' in http
+
+          # OAuth is now a protected-resource implementation rather than a TODO.
+          assert 'AUTH_MODE === "oauth"' in http
+          assert 'verifyOAuthAccessToken' in http
+          assert 'oauth-protected-resource' in http
+          assert 'WOW_MCP_OAUTH_ALLOWED_CLIENT_IDS' in oauth
+          assert 'MCP_OAUTH_PERMISSION_DENIED' in oauth
+          assert 'MCP_OAUTH_CLIENT_NOT_ALLOWED' in oauth
+          assert 'WOW_PERMISSION_SET' in oauth
+          assert 'user_metadata' not in oauth
 
           forbidden_tools = [
               "place_bet", "submit_entry", "execute_trade", "sportsbook_bet",
