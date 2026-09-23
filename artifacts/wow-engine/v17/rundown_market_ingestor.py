@@ -1,19 +1,18 @@
 """Quota-aware TheRundown market-data ingestor for WOW V17.
 
-This service boundary owns reference-catalog refresh and append-only market quote
-collection. It is intentionally outside every fitted sporting-probability path.
-The collector never creates model probabilities, never alters probability rank,
-and never executes a wager.
+This boundary owns provider-catalog refresh and append-only quote collection.
+It is outside every fitted sporting-probability path: no model probability,
+probability ranking, terminal authority, or execution behavior lives here.
 
 Acquisition policy:
 - discover sports / markets / affiliates from provider catalogs;
 - bootstrap with the narrowest filtered REST snapshot;
 - stay in SNAPSHOT mode when plan delay is missing, invalid, or positive;
-- mark DELTA as the *next eligible mode* only when the bootstrap response
-  explicitly reports X-Data-Delay-Seconds: 0 and supplies a valid positive
+- mark DELTA as the next eligible mode only when the bootstrap response
+  explicitly reports X-Data-Delay-Seconds: 0 and a valid positive
   meta.delta_last_id cursor;
-- WebSocket is not auto-enabled here; it remains an explicit entitlement/runtime
-  deployment decision with REST reconciliation.
+- WebSocket is never auto-enabled; it remains an explicit entitlement/runtime
+  choice with REST reconciliation.
 """
 from __future__ import annotations
 
@@ -198,6 +197,34 @@ def _catalog_row(raw: dict[str, Any], catalog_type: str, *, refreshed_at: str) -
     }
 
 
+def _resolve_sport_id(sport_key: str, *, opener: Callable[..., Any] | None = None) -> TransportResult:
+    """Resolve sport IDs through this collector's own V2 header-auth transport."""
+    response = _request_json("/api/v2/sports", opener=opener)
+    if not response.ok:
+        return response
+    matches: list[str] = []
+    for item in _catalog_items(response.data, "SPORT"):
+        if _sport_canonical_key(item.get("sport_name") or item.get("name")) != str(sport_key):
+            continue
+        provider_id = item.get("sport_id") or item.get("id")
+        if provider_id is not None:
+            matches.append(str(provider_id))
+    matches = sorted(set(matches))
+    if len(matches) != 1:
+        return TransportResult(
+            False,
+            code="MARKET_EVIDENCE_UNSUPPORTED_SPORT" if not matches else "MARKET_EVIDENCE_SPORT_ID_AMBIGUOUS",
+            observed_at=response.observed_at,
+        )
+    return TransportResult(
+        True,
+        data=matches[0],
+        status=response.status,
+        code="MARKET_EVIDENCE_SPORT_ID_RESOLVED",
+        observed_at=response.observed_at,
+    )
+
+
 def refresh_catalogs(
     client: Any,
     *,
@@ -275,7 +302,7 @@ def collect_snapshot(
             "can_execute": False,
         }
 
-    resolved = sources.rundown_sport_id(sport_key, opener=opener)
+    resolved = _resolve_sport_id(sport_key, opener=opener)
     if not resolved.ok or resolved.data is None:
         return {
             "status": "BLOCKED",
