@@ -6,6 +6,8 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 WORKER = ROOT / ".github/workflows/wow-v17-claude-engineering-worker.yml"
 RELEASE = ROOT / ".github/workflows/wow-v17-release-production-verification-agent.yml"
+RELEASE_RESUME = ROOT / ".github/workflows/wow-v17-release-resume-agent.yml"
+PUSH_HANDOFF = ROOT / ".github/workflows/wow-v17-engineering-push-handoff.yml"
 FRONTIER = ROOT / ".github/workflows/wow-v17-frontier-intelligence-agent.yml"
 
 
@@ -45,6 +47,25 @@ def test_release_agent_cannot_merge_or_deploy() -> None:
     assert "can_execute=false" in text
 
 
+def test_release_resume_agent_owns_unfinished_release_verification() -> None:
+    text = RELEASE_RESUME.read_text()
+    assert "RELEASE_OBSERVABILITY_AGENT" in text
+    assert "DEPLOYED_PENDING_VERIFY" in text
+    assert "MERGED_PENDING_DEPLOY" in text
+    assert "PR_CREATED" in text
+    assert "return PENDING instead of manufacturing closure" in text
+    assert "can_execute=false" in text
+
+
+def test_push_origin_nightly_scan_has_a_valid_worker_handoff() -> None:
+    text = PUSH_HANDOFF.read_text()
+    assert 'workflows: ["wow-v17-nightly-engineering-scan"]' in text
+    assert "github.event.workflow_run.event == 'push'" in text
+    assert "github.event.workflow_run.conclusion != 'cancelled'" in text
+    assert "gh workflow run wow-v17-claude-engineering-worker.yml" in text
+    assert "can_execute: false" in text
+
+
 def test_frontier_agent_is_reliability_preempted_and_experiment_only() -> None:
     text = FRONTIER.read_text()
     assert "FRONTIER_INTELLIGENCE_AGENT" in text
@@ -57,4 +78,6 @@ def test_frontier_agent_is_reliability_preempted_and_experiment_only() -> None:
 def test_workflows_parse_as_yaml() -> None:
     assert _load(WORKER)["name"] == "wow-v17-claude-engineering-worker"
     assert _load(RELEASE)["name"] == "wow-v17-release-production-verification-agent"
+    assert _load(RELEASE_RESUME)["name"] == "wow-v17-release-resume-agent"
+    assert _load(PUSH_HANDOFF)["name"] == "wow-v17-engineering-push-handoff"
     assert _load(FRONTIER)["name"] == "wow-v17-frontier-intelligence-agent"
