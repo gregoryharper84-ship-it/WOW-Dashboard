@@ -111,9 +111,6 @@ def _discovery_rows(rows: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
     for row in rows:
         candidate_id = _candidate_id(row)
         if not candidate_id:
-            # The base cross-sport contract already requires an event key. Keep a
-            # deterministic invalid identity so reconciliation exposes the defect
-            # instead of silently losing the row.
             candidate_id = f"UNRESOLVED:{len(out)}"
         out.append({
             "candidate_id": candidate_id,
@@ -185,13 +182,7 @@ def _publication_audit_for_row(row: Mapping[str, Any]) -> dict[str, Any] | None:
 
 
 def _safe_score_wrapper(score_row: Callable[..., Any]) -> Callable[..., Mapping[str, Any]]:
-    """Convert scorer completion failures into row-level V17 typed results.
-
-    The base cross-sport router already maps returned typed codes into its exact
-    terminal buckets, but an exception or malformed return could escape before
-    that mapping and abort the whole board. Full Board requires a terminal row
-    even in those cases.
-    """
+    """Convert scorer completion failures into row-level V17 typed results."""
     def safe_score(*args: Any, **kwargs: Any) -> Mapping[str, Any]:
         try:
             result = score_row(*args, **kwargs)
@@ -332,6 +323,9 @@ def install_cross_sport_full_board_overlay() -> bool:
 
     def wrapped(*args: Any, **kwargs: Any) -> dict[str, Any]:
         call_kwargs = dict(kwargs)
+        # Full-board means all configured competition regimes, not only the
+        # regular-season provider id. Explicit callers can still override this.
+        call_kwargs.setdefault("include_regime_variants", True)
         score_row = call_kwargs.get("score_row")
         if callable(score_row):
             call_kwargs["score_row"] = _safe_score_wrapper(score_row)
