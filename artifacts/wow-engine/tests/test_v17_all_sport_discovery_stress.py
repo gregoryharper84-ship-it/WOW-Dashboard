@@ -120,24 +120,29 @@ def test_full_catalog_routing_stress_preserves_typed_failures_and_reconciles(mon
     def row_index(event) -> int:
         return int(str(event.official_event_id).rsplit("-", 1)[-1])
 
+    def scenario(event) -> int:
+        # Mix target identity with row identity so resolution filtering cannot
+        # accidentally eliminate an entire typed scorer-failure bucket.
+        return (int(event.provider_sport_id or 0) + row_index(event)) % 6
+
     def resolve_model(event):
-        index = row_index(event)
-        if index % 6 == 0:
+        case = scenario(event)
+        if case == 0:
             return None
-        if index % 6 == 1:
+        if case == 1:
             raise RuntimeError("synthetic registry-resolution failure")
         return model
 
-    typed_codes = (
-        MODEL_INPUTS_INSUFFICIENT,
-        MODEL_SCORER_FAILED,
-        MODEL_OUTPUT_INVALID,
-        "MODEL_QUALIFIED_HOLD",
-    )
+    typed_codes = {
+        2: MODEL_INPUTS_INSUFFICIENT,
+        3: MODEL_SCORER_FAILED,
+        4: MODEL_OUTPUT_INVALID,
+        5: "MODEL_QUALIFIED_HOLD",
+    }
 
     def score_row(event, resolved_model):
         assert resolved_model is model
-        code = typed_codes[row_index(event) % len(typed_codes)]
+        code = typed_codes[scenario(event)]
         return {
             "code": code,
             "model_invoked": True,
