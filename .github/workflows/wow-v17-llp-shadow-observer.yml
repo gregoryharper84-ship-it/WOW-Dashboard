@@ -14,6 +14,7 @@ on:
       - "artifacts/wow-engine/github_actions_oidc.py"
       - "artifacts/wow-engine/v17/core_intelligence_runtime.py"
       - "artifacts/wow-engine/v17/llp_v17_1_shadow_internal_routes.py"
+      - "artifacts/wow-engine/v17/llp_v17_1_shadow_status_route.py"
       - "artifacts/wow-engine/v17/llp_v17_1_shadow_runtime.py"
       - "artifacts/wow-engine/v17/llp_v17_1_shadow_scorecard.py"
       - "artifacts/wow-engine/v17/llp_v17_1_shadow_scorecard_runtime.py"
@@ -25,6 +26,7 @@ on:
       - "artifacts/wow-engine/github_actions_oidc.py"
       - "artifacts/wow-engine/v17/core_intelligence_runtime.py"
       - "artifacts/wow-engine/v17/llp_v17_1_shadow_internal_routes.py"
+      - "artifacts/wow-engine/v17/llp_v17_1_shadow_status_route.py"
       - "artifacts/wow-engine/v17/llp_v17_1_shadow_runtime.py"
       - "artifacts/wow-engine/v17/llp_v17_1_shadow_scorecard.py"
       - "artifacts/wow-engine/v17/llp_v17_1_shadow_scorecard_runtime.py"
@@ -121,6 +123,29 @@ jobs:
               with urllib.request.urlopen(request, timeout=timeout) as response:
                   return json.load(response)
 
+          activation = call("/internal/v17/llp/shadow/status", method="GET")
+          assert activation.get("can_execute") is False, activation
+          assert activation.get("automatic_promotion_allowed") is False, activation
+          assert activation.get("production_mutation_allowed") is False, activation
+
+          activation_status = str(activation.get("status") or "")
+          if activation_status.startswith("INACTIVE_"):
+              print(json.dumps({
+                  "status": "COMPLETED_SHADOW_AUTOMATION_INACTIVE",
+                  "activation_status": activation_status,
+                  "core_intelligence_configured": activation.get("core_intelligence_configured"),
+                  "shadow_automation_configured": activation.get("shadow_automation_configured"),
+                  "routes_expected": activation.get("routes_expected"),
+                  "automatic_promotion_allowed": False,
+                  "production_mutation_allowed": False,
+                  "can_execute": False,
+              }, sort_keys=True))
+              raise SystemExit(0)
+
+          assert activation_status == "ACTIVE", activation
+          assert activation.get("routes_present") is True, activation
+          assert activation.get("missing_routes") == [], activation
+
           capture = call("/internal/v17/llp/shadow/capture?max_predictions=1000")
           grade = call("/internal/v17/llp/shadow/grade?max_outcomes=2000")
           scorecard = call(
@@ -138,6 +163,8 @@ jobs:
           assert scorecard.get("status") in {"PASS", "NO_GRADED_SHADOW_ROWS"}
 
           print(json.dumps({
+              "status": "COMPLETED_SHADOW_AUTOMATION_ACTIVE",
+              "activation_status": activation_status,
               "capture_source_predictions": capture.get("source_prediction_n"),
               "capture_shadow_observations": capture.get("shadow_observation_n"),
               "grade_candidates": grade.get("candidate_n"),
