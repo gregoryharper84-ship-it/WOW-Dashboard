@@ -15,6 +15,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from v17.diagnostic_singleflight import BurstSingleFlight
+
 CAN_EXECUTE = False
 COMPACT_PROFILE = "V17_GOVERNANCE_ACTION_SAFE_V1"
 DETAIL_PATH = "/v17/governance-detail"
@@ -214,11 +216,29 @@ def install_team_event_governance_parity_route(*, market_api: Any) -> bool:
     for route in existing:
         app.router.routes.remove(route)
 
-    def _full_payload() -> dict[str, Any]:
+    diagnostic_singleflight: BurstSingleFlight[
+        tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]
+    ] = BurstSingleFlight()
+
+    def _probe_diagnostics() -> tuple[
+        dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]
+    ]:
         base = dict(prod.governance())
         bridge_health = bridges.team_event_bridge_health()
         sport_parity = parity_health(bridge_health)
         prop_parity = prop_sport_parity_summary()
+        return base, bridge_health, sport_parity, prop_parity
+
+    def _diagnostics() -> tuple[
+        dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]
+    ]:
+        # Overlapping requests share only the exact in-flight snapshot. A call
+        # that begins after completion probes again; no optimistic TTL exists.
+        return diagnostic_singleflight.run(_probe_diagnostics)
+
+    def _full_payload() -> dict[str, Any]:
+        base, bridge_health, sport_parity, prop_parity = _diagnostics()
+        base = dict(base)
 
         ready_sports = [
             sport
@@ -259,10 +279,7 @@ def install_team_event_governance_parity_route(*, market_api: Any) -> bool:
 
     @app.get("/governance", operation_id="getWowV17Governance")
     def governance_parity():
-        base = dict(prod.governance())
-        bridge_health = bridges.team_event_bridge_health()
-        sport_parity = parity_health(bridge_health)
-        prop_parity = prop_sport_parity_summary()
+        base, bridge_health, sport_parity, prop_parity = _diagnostics()
         return _compact_governance_payload(
             base=base,
             bridge_health=bridge_health,
