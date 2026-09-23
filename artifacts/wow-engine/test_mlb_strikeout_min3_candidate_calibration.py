@@ -74,7 +74,7 @@ def test_three_start_history_produces_normalized_distribution_and_valid_calibrat
     }
 
     distribution = mlb_pitcher_so_failure_path_nb_v1_adapter(artifact, request, features)
-    assert abs(sum(distribution.pmf.values()) - 1.0) < 1e-9
+    assert abs(sum(distribution.support.values()) - 1.0) < 1e-9
     line_probs = derive_line_probabilities(distribution, 4.5)
     inference = CertifiedInference(artifact=artifact, distribution=distribution)
     calibrated = mlb_pitcher_so_precalibration_shrinkage_adapter(
