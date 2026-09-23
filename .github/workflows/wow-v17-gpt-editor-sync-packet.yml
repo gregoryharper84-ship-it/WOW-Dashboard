@@ -1,0 +1,48 @@
+name: wow-v17-gpt-editor-sync-packet
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "artifacts/wow-engine/WOW_V17_CUSTOM_GPT_INSTRUCTIONS.txt"
+      - "artifacts/wow-engine/WOW_V17_CUSTOM_GPT_PRIZEPICKS_SKILL_ADDENDUM.txt"
+      - "artifacts/wow-engine/v17/openapi.wow-betting-engine.v17.yaml"
+      - "artifacts/wow-engine/v17/build_gpt_editor_sync_packet.py"
+      - "artifacts/wow-engine/v17/test_gpt_editor_sync_packet.py"
+      - ".github/workflows/wow-v17-gpt-editor-sync-packet.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  packet:
+    name: Build deterministic GPT editor sync packet
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      WOW_CAN_EXECUTE: "false"
+      WOW_DRY_RUN_ONLY: "true"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Assert governance invariants
+        run: |
+          test "$WOW_CAN_EXECUTE" = "false"
+          test "$WOW_DRY_RUN_ONLY" = "true"
+      - name: Build editor sync packet and manifest
+        run: |
+          python artifacts/wow-engine/v17/build_gpt_editor_sync_packet.py \
+            --output-dir "$RUNNER_TEMP/wow-gpt-editor-sync"
+      - name: Verify packet contract
+        run: |
+          python -m pip install --disable-pip-version-check pytest
+          python -m pytest artifacts/wow-engine/v17/test_gpt_editor_sync_packet.py \
+            --confcutdir=artifacts/wow-engine/v17 -q
+      - name: Upload sync packet
+        uses: actions/upload-artifact@v4
+        with:
+          name: wow-v17-gpt-editor-sync-packet
+          path: ${{ runner.temp }}/wow-gpt-editor-sync/
+          if-no-files-found: error
