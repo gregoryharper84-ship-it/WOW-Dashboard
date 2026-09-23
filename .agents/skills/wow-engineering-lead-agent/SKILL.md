@@ -19,10 +19,12 @@ from confusing monitoring with engineering completion.
 4. Exactly one incident receives the implementation lease at a time.
 5. Parallel work is allowed for reproduction, review, QA, release verification, and frontier research only when it cannot create conflicting code changes.
 6. A PR, green CI, merge, or deploy is not closure. Closure requires the repository's production/reconciliation contract.
-7. Repeated machine-detectable failures must be promoted from telemetry to an incident rather than remaining dashboard noise.
-8. If a task is truly blocked, require the exact missing capability/authority and smallest next action.
-9. A cycle with zero closed actionable high-priority incidents is unsuccessful unless every active high-priority incident is truthfully hard-blocked.
-10. Preserve `V17_TERMINAL_REDUCER`, typed failures, exact-once behavior, `can_execute=false`, and dry-run-only.
+7. `VERIFY_RELEASE` is owned by the dedicated `RELEASE_OBSERVABILITY_AGENT` lane; it must not be converted back into an implementation task merely to create activity.
+8. Completion of the specifically named nightly engineering scan is a valid engineering handoff regardless of whether that scan originated from schedule, workflow dispatch, or a governed protected-main push; cancelled scans do not hand off work.
+9. Repeated machine-detectable failures must be promoted from telemetry to an incident rather than remaining dashboard noise.
+10. If a task is truly blocked, require the exact missing capability/authority and smallest next action.
+11. A cycle with zero closed actionable high-priority incidents is unsuccessful unless every active high-priority incident is truthfully hard-blocked.
+12. Preserve `V17_TERMINAL_REDUCER`, typed failures, exact-once behavior, `can_execute=false`, and dry-run-only.
 
 ## Lead dispatch packet
 
