@@ -1,0 +1,108 @@
+name: wow-v17-release-production-verification-agent
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Engineering PR number to verify
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  checks: read
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: wow-v17-release-production-verification-${{ github.event.pull_request.number || inputs.pr_number }}
+  cancel-in-progress: false
+
+jobs:
+  release-verification:
+    name: Release / Production Verification agent
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.pull_request.merged == true &&
+       startsWith(github.event.pull_request.head.ref, 'claude/engineering/'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Resolve PR number
+        id: pr
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            echo "number=${{ inputs.pr_number }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "number=${{ github.event.pull_request.number }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout protected main
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Capture deterministic release evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/wow-engine/v17/.release-evidence
+          gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
+            --json number,title,state,mergedAt,mergeCommit,headRefName,baseRefName,url \
+            > artifacts/wow-engine/v17/.release-evidence/pr.json
+          git rev-parse HEAD > artifacts/wow-engine/v17/.release-evidence/main-sha.txt
+          gh run list --repo "$GITHUB_REPOSITORY" --branch main --limit 30 \
+            --json databaseId,name,headSha,status,conclusion,url \
+            > artifacts/wow-engine/v17/.release-evidence/runs.json
+          curl --fail --show-error --silent --retry 3 --retry-all-errors --max-time 30 \
+            https://wow-governed-probability-engine.onrender.com/health/live \
+            > artifacts/wow-engine/v17/.release-evidence/health-live.json
+          curl --fail --show-error --silent --retry 3 --retry-all-errors --max-time 30 \
+            https://wow-governed-probability-engine.onrender.com/governance \
+            > artifacts/wow-engine/v17/.release-evidence/governance.json
+
+      - name: Release / Production Verification agent
+        id: release_agent
+        uses: ./.github/actions/wow-claude-agent
+        with:
+          oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            You are the independent WOW V17 RELEASE_OBSERVABILITY_AGENT.
+            Read CLAUDE.md, .agents/skills/wow-engineering-release-observability-agent/SKILL.md,
+            the merged PR, and artifacts/wow-engine/v17/.release-evidence/**.
+            Verify protected main, required CI, production liveness/governance, exact merged-SHA
+            evidence when observable, and whether production acceptance is truly complete.
+            Do not edit, merge, deploy, or change sporting probability behavior. If exact
+            production SHA cannot be independently proven, return PENDING. Preserve can_execute=false.
+          claude_args: >-
+            --max-turns 65
+            --allowedTools "Read,Glob,Grep,Bash(git log *),Bash(gh run list *),Bash(gh run view *),Bash(gh pr view *),Bash(curl *)"
+            --json-schema '{"type":"object","properties":{"status":{"type":"string","enum":["PRODUCTION_VERIFIED","PENDING","BLOCKED_WITH_EXACT_REASON"]},"main_sha":{"type":"string"},"production_sha":{"type":"string"},"acceptance":{"type":"string"},"reconciliation":{"type":"string"},"blocker":{"type":"string"},"next_action":{"type":"string"}},"required":["status","main_sha","production_sha","acceptance","reconciliation","blocker","next_action"],"additionalProperties":false}'
+
+      - name: Publish release verification receipt
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+          RESULT: ${{ steps.release_agent.outputs.structured_output }}
+        run: |
+          set -euo pipefail
+          body="$RUNNER_TEMP/release-comment.md"
+          {
+            echo "## Release / Production Verification Agent"
+            echo
+            echo '```json'
+            echo "$RESULT"
+            echo '```'
+            echo
+            echo "\`can_execute=false\`"
+          } > "$body"
+          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$body"
+          cat "$body" >> "$GITHUB_STEP_SUMMARY"
