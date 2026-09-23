@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import importlib.util
 import math
+import sys
 from pathlib import Path
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "evaluate_mlb_pitcher_strikeouts_low_start.py"
 spec = importlib.util.spec_from_file_location("mlb_low_start_replay", SCRIPT)
 module = importlib.util.module_from_spec(spec)
 assert spec and spec.loader
+sys.modules[spec.name] = module
 spec.loader.exec_module(module)
 
 
@@ -47,3 +49,5 @@ def test_report_is_read_only_governance_artifact():
     assert '"can_execute": False' in source
     assert "sportsbook" in source.lower()
     assert "production_hydration_min_starts" in source
+    assert "candidate_3_to_9" in source
+    assert "one_to_two_holdout" in source
