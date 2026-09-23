@@ -39,6 +39,12 @@ def test_worker_denies_policy_changing_implementation_lease() -> None:
     assert "No Class C change is authorized" in text
 
 
+def test_qa_agent_requires_actual_implementation_change() -> None:
+    text = WORKER.read_text()
+    guarded_condition = "steps.impl.outputs.changed == 'true' && steps.regression.outputs.status == '0'"
+    assert text.count(guarded_condition) == 2
+
+
 def test_release_agent_cannot_merge_or_deploy() -> None:
     text = RELEASE.read_text()
     assert "RELEASE_OBSERVABILITY_AGENT" in text

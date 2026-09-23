@@ -258,7 +258,7 @@ jobs:
 
       - name: QA Verification agent
         id: qa_agent
-        if: steps.regression.outputs.status == '0'
+        if: steps.impl.outputs.changed == 'true' && steps.regression.outputs.status == '0'
         uses: ./.github/actions/wow-claude-agent
         with:
           oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -277,7 +277,7 @@ jobs:
 
       - name: Normalize QA
         id: qa
-        if: steps.regression.outputs.status == '0'
+        if: steps.impl.outputs.changed == 'true' && steps.regression.outputs.status == '0'
         env:
           RESULT: ${{ steps.qa_agent.outputs.structured_output }}
         run: echo "decision=$(jq -r '.decision' <<<"$RESULT")" >> "$GITHUB_OUTPUT"
