@@ -42,11 +42,11 @@ class BurstSingleFlight(Generic[T]):
                     succeeded, value = cast(tuple[bool, object], self._outcome)
                     if succeeded:
                         return cast(T, value)
-                    raise cast(BaseException, value)
+                    raise cast(Exception, value)
 
             try:
                 result = probe()
-            except BaseException as exc:
+            except Exception as exc:
                 with self._state_lock:
                     self._generation += 1
                     self._outcome = (False, exc)
