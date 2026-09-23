@@ -8,7 +8,7 @@ dependencies (for example calibration or backend hydration) are still external.
 
 The overlay does not change any fitted model, calibration coefficient, sporting
 probability, ranking rule, or terminal authority. It only makes capability
-health truthful and same-shaped across the full twelve-sport catalog.
+health truthful and same-shaped across the full catalog.
 """
 from __future__ import annotations
 
@@ -40,6 +40,7 @@ _HYDRATION_MODE = {
     "NCAAB": "MODEL_DEVELOPMENT_LANE",
     "PGA": "MODEL_DEVELOPMENT_LANE",
     "BOXING": "MODEL_DEVELOPMENT_LANE",
+    "CRICKET": "MODEL_DEVELOPMENT_LANE",
 }
 
 _CALIBRATION_MODE = {
@@ -55,6 +56,7 @@ _CALIBRATION_MODE = {
     "NCAAB": "UNAVAILABLE",
     "PGA": "UNAVAILABLE",
     "BOXING": "UNAVAILABLE",
+    "CRICKET": "UNAVAILABLE",
 }
 
 
@@ -104,9 +106,6 @@ def _readiness(
     registered = bool(health.get("registered"))
     scorer = bool(health.get("scorer_resolvable"))
     certification = str(health.get("certification_status") or "NOT_CERTIFIED")
-    # Older parity callers intentionally provide only the historic three-field
-    # capability shape. Preserve MLB's already-certified artifact semantics when
-    # that field is omitted, while a present explicit false still fails closed.
     if "model_artifact_present" in health:
         model_artifact = bool(health.get("model_artifact_present"))
     else:
@@ -145,9 +144,6 @@ def _readiness(
     )
 
     if normalized in _REQUEST_DEPENDENT_MULTISPORT and request_scoring_path_ready:
-        # These exact scorers can be invoked when the request supplies valid
-        # sporting evidence and a matching calibration artifact, but production
-        # health must not call them autonomous until server ownership is bound.
         blockers.extend(
             [
                 "SERVER_CALIBRATION_ARTIFACT_NOT_BOUND",
