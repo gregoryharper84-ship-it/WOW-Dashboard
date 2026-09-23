@@ -1,24 +1,17 @@
 """Authoritative TheRundown sport-ID map for cross-sport discovery.
 
-Source: WOW-PATCH-2026-09-14-NFL-CERTIFICATION-AND-AUTHORITATIVE-DISCOVERY-MAP,
-validated against the live TheRundown sport registry on 2026-09-14.
-
-These are provider-verified identifiers, not inferred names. The previous
-discovery configuration guessed at provider sport *keys* for tennis, golf and
-boxing; a guessed key is indistinguishable at runtime from a sport the provider
-genuinely does not carry, which is how "no events" and "we never asked" became
-the same answer. Everything here is either a verified id or an explicit absence.
+The map contains provider-verified identifiers, not inferred names. Discovery
+coverage is deliberately independent from fitted-model coverage: registering a
+provider sport id makes that sport discoverable; it does not certify a sporting
+probability model or make a row rank eligible.
 
 Two separations are load-bearing:
 
-1. **Family vs competition.** ``SOCCER`` is one governed family spanning twelve
-   competitions. The family is what the model registry is keyed on; the exact
-   competition is preserved per row and never collapsed into EPL.
-
-2. **Regular season vs regime variant.** Preseason, playoffs, spring training
-   and summer league have their own provider ids. They are discoverable, but a
-   fitted regular-season model may not score them unless its own artifact and
-   calibration contract declare that regime.
+1. Family vs competition. ``SOCCER`` is one governed family spanning multiple
+   competitions. The exact competition is preserved per row.
+2. Regular season vs regime variant. Preseason, playoffs, spring training and
+   summer league have their own provider ids and never inherit a regular-season
+   fitted model by default.
 
 Nothing here creates model capability or execution authority.
 """
@@ -32,8 +25,8 @@ from typing import Any
 CAN_EXECUTE = False
 
 PROVIDER = "RUNDOWN"
-REGISTRY_SOURCE = "WOW-PATCH-2026-09-14-NFL-CERTIFICATION-AND-AUTHORITATIVE-DISCOVERY-MAP"
-REGISTRY_VERIFIED_ON = "2026-09-14"
+REGISTRY_SOURCE = "RUNDOWN_LIVE_PROVIDER_CATALOG"
+REGISTRY_VERIFIED_ON = "2026-09-23"
 
 REGULAR_SEASON = "REGULAR_SEASON"
 PRESEASON = "PRESEASON"
@@ -64,7 +57,7 @@ class ProviderSport:
         }
 
 
-# Verified regular-season sports.
+# Verified regular-season / competition sports.
 REGULAR_SEASON_SPORTS: tuple[ProviderSport, ...] = (
     ProviderSport(1, "NCAAF", "NCAAF", "NCAA Football"),
     ProviderSport(2, "NFL", "NFL", "NFL"),
@@ -84,6 +77,8 @@ REGULAR_SEASON_SPORTS: tuple[ProviderSport, ...] = (
     ProviderSport(17, "SOCCER", "UEFAEURO", "UEFAEURO"),
     ProviderSport(18, "SOCCER", "FIFA", "FIFA"),
     ProviderSport(19, "SOCCER", "JPN1", "JPN1"),
+    # Verified from public.wow_market_provider_catalog on 2026-09-23.
+    ProviderSport(21, "CRICKET", "T20", "T20"),
     ProviderSport(33, "SOCCER", "UEFAEUROPA", "UEFA Europa League"),
     ProviderSport(34, "SOCCER", "LIGAMX", "Liga MX"),
     ProviderSport(38, "TENNIS", "ATP", "ATP"),
@@ -105,12 +100,10 @@ REGIME_VARIANT_SPORTS: tuple[ProviderSport, ...] = (
 )
 
 ALL_SPORTS: tuple[ProviderSport, ...] = (*REGULAR_SEASON_SPORTS, *REGIME_VARIANT_SPORTS)
-
 _BY_ID: dict[int, ProviderSport] = {sport.sport_id: sport for sport in ALL_SPORTS}
 
-# Families LLP declares but the current provider registry does not carry. This
-# is an explicit absence, never an empty result: boxing has no TheRundown sport
-# id, so a boxing slate was never queried and must not read as "no fights today".
+# Families declared by LLP that TheRundown does not currently carry. This is an
+# explicit acquisition-state distinction from a configured query returning zero.
 FAMILIES_WITHOUT_PROVIDER_FEED: frozenset[str] = frozenset({"BOXING"})
 
 NO_CONFIGURED_DISCOVERY_FEED = "NO_CONFIGURED_DISCOVERY_FEED"
@@ -123,7 +116,6 @@ def _regular_season_map() -> dict[str, tuple[int, ...]]:
     return {family: tuple(ids) for family, ids in mapping.items()}
 
 
-#: Family -> verified regular-season provider sport ids.
 FAMILY_SPORT_IDS: dict[str, tuple[int, ...]] = _regular_season_map()
 
 
@@ -134,16 +126,14 @@ def _regime_map() -> dict[str, tuple[int, ...]]:
     return {family: tuple(ids) for family, ids in mapping.items()}
 
 
-#: Family -> verified regime-variant provider sport ids (held separately).
 FAMILY_REGIME_SPORT_IDS: dict[str, tuple[int, ...]] = _regime_map()
 
 
 def _configured_override() -> dict[str, tuple[int, ...]] | None:
     """Operator override for the discovery id set, as JSON.
 
-    Exists so a provider-side registry change can be applied without a code
-    release. It can only restrict or re-point *verified* ids; an id the registry
-    does not know is rejected rather than guessed at.
+    Overrides can only select provider ids already verified in this registry.
+    Unknown ids are rejected rather than guessed.
     """
     raw = os.environ.get("WOW_RUNDOWN_DISCOVERY_SPORT_IDS_JSON", "").strip()
     if not raw:
@@ -171,11 +161,7 @@ def _configured_override() -> dict[str, tuple[int, ...]] | None:
 
 
 def discovery_sport_ids(family: str, *, include_regime_variants: bool = False) -> tuple[int, ...]:
-    """Verified provider sport ids to query for one LLP family.
-
-    An empty tuple means the provider carries no id for this family — a
-    configuration answer, not an empty slate.
-    """
+    """Verified provider sport ids to query for one LLP family."""
     key = str(family or "").strip().upper()
     override = _configured_override()
     if override is not None and key in override:
@@ -204,7 +190,7 @@ def league_for_sport_id(sport_id: Any) -> str | None:
 
 
 def regime_for_sport_id(sport_id: Any) -> str:
-    """Regime for a provider id.  An unknown id is never assumed regular season."""
+    """Regime for a provider id. An unknown id is never assumed regular season."""
     sport = provider_sport(sport_id)
     return sport.regime if sport else "UNKNOWN_REGIME"
 
