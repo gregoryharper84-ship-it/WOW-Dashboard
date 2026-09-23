@@ -15,7 +15,7 @@ import {
 } from "../src/v17_oauth.js";
 
 const ISSUER = "https://project.example/auth/v1";
-const AUDIENCE = "authenticated";
+const AUDIENCE = "https://mcp.example/mcp";
 const CLIENT_ID = "wow-chatgpt-client";
 const NOW = 1_800_000_000;
 
@@ -61,7 +61,7 @@ function verifyOptions(overrides = {}) {
   };
 }
 
-test("OAuth JWT validation verifies signature, issuer, audience, expiry, and client allowlist", async () => {
+test("OAuth JWT validation verifies signature, issuer, protected-resource audience, expiry, and client allowlist", async () => {
   const context = await verifyOAuthAccessToken(token(), verifyOptions());
   assert.equal(context.mode, "oauth");
   assert.equal(context.subject, "user-1");
@@ -70,9 +70,9 @@ test("OAuth JWT validation verifies signature, issuer, audience, expiry, and cli
   assert.equal(context.permissions.has("wow.predictions.score"), true);
 });
 
-test("OAuth JWT validation fails closed for audience, expiry, and client mismatches", async () => {
+test("OAuth JWT validation rejects generic Supabase audience, expiry, and client mismatches", async () => {
   await assert.rejects(
-    verifyOAuthAccessToken(token({ aud: "wrong" }), verifyOptions()),
+    verifyOAuthAccessToken(token({ aud: "authenticated" }), verifyOptions()),
     (error) => error instanceof V17OAuthError && error.code === "MCP_OAUTH_AUDIENCE_INVALID",
   );
   await assert.rejects(
@@ -85,9 +85,13 @@ test("OAuth JWT validation fails closed for audience, expiry, and client mismatc
   );
 });
 
-test("OAuth mode refuses to run without an explicit client allowlist", async () => {
+test("OAuth mode refuses to run without explicit resource audience or client allowlist", async () => {
   await assert.rejects(
     verifyOAuthAccessToken(token(), verifyOptions({ allowedClientIds: new Set() })),
+    (error) => error instanceof V17OAuthError && error.code === "MCP_OAUTH_NOT_CONFIGURED" && error.status === 503,
+  );
+  await assert.rejects(
+    verifyOAuthAccessToken(token(), verifyOptions({ audience: "" })),
     (error) => error instanceof V17OAuthError && error.code === "MCP_OAUTH_NOT_CONFIGURED" && error.status === 503,
   );
 });
@@ -168,26 +172,28 @@ test("MCP OAuth sessions are bound to the issuing Supabase session as well as us
   );
 });
 
-test("protected-resource metadata advertises the OAuth issuer without pretending Supabase supports WOW custom scopes", () => {
+test("protected-resource metadata advertises the exact audience-bound MCP resource", () => {
   const metadata = buildProtectedResourceMetadata({
-    resourceUrl: "https://mcp.example/mcp",
+    resourceUrl: AUDIENCE,
     authorizationServers: [ISSUER],
     scopesSupported: ["openid", "email", "profile"],
   });
-  assert.equal(metadata.resource, "https://mcp.example/mcp");
+  assert.equal(metadata.resource, AUDIENCE);
   assert.deepEqual(metadata.authorization_servers, [ISSUER]);
   assert.deepEqual(metadata.scopes_supported, ["openid", "email", "profile"]);
   assert.equal(metadata.wow_permissions_supported.includes("wow.predictions.score"), true);
   assert.equal(WOW_PERMISSION_SET.includes("wow.settlements.write"), true);
 });
 
-test("OAuth config derives Supabase-style JWKS and keeps client allowlist explicit", () => {
+test("OAuth config derives Supabase-style JWKS and audience from protected resource", () => {
   const config = oauthConfig({
     WOW_MCP_OAUTH_ISSUER: ISSUER,
+    WOW_MCP_OAUTH_RESOURCE_URL: AUDIENCE,
     WOW_MCP_OAUTH_ALLOWED_CLIENT_IDS: `${CLIENT_ID}, second-client`,
   });
   assert.equal(config.jwksUrl, `${ISSUER}/.well-known/jwks.json`);
-  assert.equal(config.audience, "authenticated");
+  assert.equal(config.resourceUrl, AUDIENCE);
+  assert.equal(config.audience, AUDIENCE);
   assert.deepEqual(config.authorizationServers, [ISSUER]);
   assert.equal(config.allowedClientIds.has(CLIENT_ID), true);
   assert.equal(config.allowedClientIds.has("second-client"), true);
