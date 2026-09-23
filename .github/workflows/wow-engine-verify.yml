@@ -152,12 +152,7 @@ jobs:
           assert isinstance(render, dict)
           services = render.get("services", [])
           by_name = {item["name"]: item for item in services}
-          assert set(by_name) == {"wow-jobs", "wow-governed-probability-engine", "wow-agent-worker"}
-
-          queue = by_name["wow-jobs"]
-          assert queue["type"] == "keyvalue"
-          assert queue["maxmemoryPolicy"] == "noeviction"
-          assert queue["ipAllowList"] == []
+          assert set(by_name) == {"wow-governed-probability-engine"}
 
           service = by_name["wow-governed-probability-engine"]
           assert service["type"] == "web"
@@ -175,15 +170,28 @@ jobs:
           assert set(secret_vars) == {"SUPABASE_URL", "SUPABASE_SERVICE_KEY", "WOW_ACTION_API_KEY"}
           assert all(item.get("sync") is False for item in secret_vars.values())
           service_env_by_key = {item["key"]: item for item in service["envVars"]}
+          assert "REDIS_URL" not in service_env_by_key
           assert service_env_by_key["WOW_CAN_EXECUTE"]["value"] == "false"
           assert service_env_by_key["WOW_DRY_RUN_ONLY"]["value"] == "true"
           assert service_env_by_key["WOLFRAM_ALPHA_APP_ID"]["sync"] is False
           assert service_env_by_key["WOW_WOLFRAM_ARITHMETIC_AUDIT_ENABLED"]["value"] == "1"
           assert service_env_by_key["WOW_WOLFRAM_TIMEOUT_SECONDS"]["value"] == "5"
 
-          worker = by_name["wow-agent-worker"]
+          phase2 = yaml.safe_load(Path("../../render.agent-runtime-phase2.example.yaml").read_text())
+          assert isinstance(phase2, dict)
+          phase2_by_name = {item["name"]: item for item in phase2.get("services", [])}
+          assert set(phase2_by_name) == {"wow-jobs", "wow-agent-worker"}
+
+          queue = phase2_by_name["wow-jobs"]
+          assert queue["type"] == "keyvalue"
+          assert queue["plan"] == "starter"
+          assert queue["maxmemoryPolicy"] == "noeviction"
+          assert queue["ipAllowList"] == []
+
+          worker = phase2_by_name["wow-agent-worker"]
           assert worker["type"] == "worker"
           assert worker["runtime"] == "python"
+          assert worker["plan"] == "starter"
           assert worker["rootDir"] == "artifacts/wow-engine"
           assert worker["autoDeployTrigger"] == "off"
           assert "agent_runtime.celery_app:celery_app" in worker["startCommand"]
