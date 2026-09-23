@@ -1,0 +1,39 @@
+name: wow-v17-engineering-push-handoff
+
+on:
+  workflow_run:
+    workflows: ["wow-v17-nightly-engineering-scan"]
+    types: [completed]
+
+permissions:
+  actions: write
+  contents: read
+
+concurrency:
+  group: wow-v17-engineering-push-handoff-${{ github.event.workflow_run.id }}
+  cancel-in-progress: false
+
+jobs:
+  dispatch-worker:
+    name: Dispatch multi-agent engineering worker after push-origin scan
+    if: >-
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.conclusion != 'cancelled'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch governed engineering team
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh workflow run wow-v17-claude-engineering-worker.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref main
+          {
+            echo "# WOW V17 engineering push handoff"
+            echo "- source_run: ${{ github.event.workflow_run.id }}"
+            echo "- source_event: ${{ github.event.workflow_run.event }}"
+            echo "- source_conclusion: ${{ github.event.workflow_run.conclusion }}"
+            echo "- dispatched: wow-v17-claude-engineering-worker.yml"
+            echo "- can_execute: false"
+          } >> "$GITHUB_STEP_SUMMARY"
