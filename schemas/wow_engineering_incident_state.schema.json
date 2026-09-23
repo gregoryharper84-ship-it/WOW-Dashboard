@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wow.local/schemas/wow_engineering_incident_state.schema.json",
+  "title": "WOW Engineering Incident State",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "incident_id",
+    "engine_identity",
+    "severity",
+    "lifecycle_stage",
+    "expected_behavior",
+    "observed_behavior",
+    "next_action",
+    "updated_at"
+  ],
+  "properties": {
+    "incident_id": {"type": "string", "minLength": 1},
+    "engine_identity": {"type": "string", "enum": ["WOW_BETTING_ENGINE", "LLP_TEAM_BETTING_ENGINE", "WOW_PLATFORM"]},
+    "severity": {"type": "string", "enum": ["R0", "R1", "R2", "R3"]},
+    "priority": {"type": "integer", "minimum": 0},
+    "request_id": {"type": ["string", "null"]},
+    "run_id": {"type": ["string", "null"]},
+    "research_run_id": {"type": ["string", "null"]},
+    "typed_failure": {"type": ["string", "null"]},
+    "expected_behavior": {"type": "string", "minLength": 1},
+    "observed_behavior": {"type": "string", "minLength": 1},
+    "reproduction_evidence": {"type": "array", "items": {"type": "string"}},
+    "root_cause": {"type": ["string", "null"]},
+    "first_failing_stage": {"type": ["string", "null"]},
+    "lifecycle_stage": {
+      "type": "string",
+      "enum": [
+        "DETECTED", "REPRODUCING", "ROOT_CAUSE_PROVEN", "IMPLEMENTING", "TESTING",
+        "REVIEWING", "READY_TO_RELEASE", "DEPLOYING", "VERIFYING_PRODUCTION", "TERMINAL"
+      ]
+    },
+    "implementation_lease": {
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["owner", "incident_id", "acquired_at", "expires_at"],
+          "properties": {
+            "owner": {"const": "implementation"},
+            "incident_id": {"type": "string"},
+            "acquired_at": {"type": "string", "format": "date-time"},
+            "expires_at": {"type": "string", "format": "date-time"}
+          }
+        }
+      ]
+    },
+    "last_verified_commit": {"type": ["string", "null"]},
+    "last_verified_deploy": {"type": ["string", "null"]},
+    "last_verified_run": {"type": ["string", "null"]},
+    "next_action": {"type": "string", "minLength": 1},
+    "terminal_outcome": {
+      "type": ["string", "null"],
+      "enum": [null, "FIXED_AND_VERIFIED", "PR_CREATED", "EXPERIMENT_CREATED", "DUPLICATE", "NOT_REPRODUCIBLE", "BLOCKED_WITH_EXACT_REASON", "DEFERRED_WITH_JUSTIFICATION"]
+    },
+    "updated_at": {"type": "string", "format": "date-time"}
+  }
+}
