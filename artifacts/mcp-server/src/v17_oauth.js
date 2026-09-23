@@ -2,7 +2,6 @@ import { createPublicKey, verify as verifySignature } from "node:crypto";
 
 import { V17_OPERATIONS } from "./v17_contract.js";
 
-const DEFAULT_AUDIENCE = "authenticated";
 const DEFAULT_CLOCK_SKEW_SECONDS = 30;
 const DEFAULT_JWKS_CACHE_MS = 5 * 60 * 1000;
 const SUPPORTED_ALGORITHMS = new Set(["RS256", "ES256"]);
@@ -156,13 +155,15 @@ function verifyJwtSignature({ header, signingInput, signature }, jwk) {
 
 export function oauthConfig(env = process.env) {
   const issuer = String(env.WOW_MCP_OAUTH_ISSUER || "").replace(/\/$/, "");
-  const audience = String(env.WOW_MCP_OAUTH_AUDIENCE || DEFAULT_AUDIENCE);
+  const resourceUrl = String(env.WOW_MCP_OAUTH_RESOURCE_URL || "").replace(/\/$/, "");
+  // Production OAuth must use an audience restricted to this protected resource.
+  // Never silently accept Supabase's generic `authenticated` audience.
+  const audience = String(env.WOW_MCP_OAUTH_AUDIENCE || resourceUrl).replace(/\/$/, "");
   const jwksUrl = String(env.WOW_MCP_OAUTH_JWKS_URL || (issuer ? `${issuer}/.well-known/jwks.json` : ""));
   const authorizationServers = splitCsv(env.WOW_MCP_OAUTH_AUTHORIZATION_SERVERS || issuer);
   const allowedClientIds = new Set(splitCsv(env.WOW_MCP_OAUTH_ALLOWED_CLIENT_IDS));
   const permissionClaim = String(env.WOW_MCP_OAUTH_PERMISSION_CLAIM || "app_metadata.wow_permissions");
   const scopesSupported = splitCsv(env.WOW_MCP_OAUTH_SCOPES_SUPPORTED || "openid,email,profile");
-  const resourceUrl = String(env.WOW_MCP_OAUTH_RESOURCE_URL || "").replace(/\/$/, "");
 
   return {
     issuer,
@@ -178,7 +179,7 @@ export function oauthConfig(env = process.env) {
 
 export async function verifyOAuthAccessToken(token, {
   issuer,
-  audience = DEFAULT_AUDIENCE,
+  audience,
   jwksUrl,
   allowedClientIds = new Set(),
   permissionClaim = "app_metadata.wow_permissions",
@@ -187,10 +188,10 @@ export async function verifyOAuthAccessToken(token, {
   fetchImpl = fetch,
   jwks = null,
 } = {}) {
-  if (!issuer || !jwksUrl || !(allowedClientIds instanceof Set) || allowedClientIds.size === 0) {
+  if (!issuer || !audience || !jwksUrl || !(allowedClientIds instanceof Set) || allowedClientIds.size === 0) {
     throw new V17OAuthError(
       "MCP_OAUTH_NOT_CONFIGURED",
-      "OAuth mode requires issuer, JWKS, and an explicit allowed client allowlist.",
+      "OAuth mode requires issuer, protected-resource audience, JWKS, and an explicit allowed client allowlist.",
       { status: 503 },
     );
   }
@@ -218,7 +219,7 @@ export async function verifyOAuthAccessToken(token, {
     throw new V17OAuthError("MCP_OAUTH_ISSUER_INVALID", "OAuth access token issuer is not trusted.");
   }
   if (!audienceMatches(payload?.aud, audience)) {
-    throw new V17OAuthError("MCP_OAUTH_AUDIENCE_INVALID", "OAuth access token audience is not valid for WOW MCP.");
+    throw new V17OAuthError("MCP_OAUTH_AUDIENCE_INVALID", "OAuth access token was not minted for the WOW MCP protected resource.");
   }
   if (!Number.isFinite(payload?.exp) || nowSeconds >= payload.exp + clockSkewSeconds) {
     throw new V17OAuthError("MCP_OAUTH_TOKEN_EXPIRED", "OAuth access token is expired or missing expiration.");
