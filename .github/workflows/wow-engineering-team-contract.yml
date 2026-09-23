@@ -1,0 +1,40 @@
+name: WOW Engineering Team Contract
+
+on:
+  pull_request:
+    paths:
+      - "config/wow_engineering_team.json"
+      - "schemas/wow_engineering_incident_state.schema.json"
+      - "schemas/wow_frontier_radar_item.schema.json"
+      - "wow_engineering/**"
+      - "scripts/validate_wow_engineering_team.py"
+      - "tests/test_wow_engineering_team_controller.py"
+      - ".github/workflows/wow-engineering-team-contract.yml"
+  push:
+    branches: [main]
+    paths:
+      - "config/wow_engineering_team.json"
+      - "schemas/wow_engineering_incident_state.schema.json"
+      - "schemas/wow_frontier_radar_item.schema.json"
+      - "wow_engineering/**"
+      - "scripts/validate_wow_engineering_team.py"
+      - "tests/test_wow_engineering_team_controller.py"
+      - ".github/workflows/wow-engineering-team-contract.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Validate team governance registry
+        run: python scripts/validate_wow_engineering_team.py
+      - name: Install test dependency
+        run: python -m pip install pytest
+      - name: Run team-controller tests
+        run: python -m pytest -q tests/test_wow_engineering_team_controller.py
