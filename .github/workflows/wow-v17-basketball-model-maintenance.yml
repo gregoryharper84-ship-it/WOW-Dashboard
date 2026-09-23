@@ -15,9 +15,13 @@ on:
       - "artifacts/wow-engine/basketball_specialist_pipeline.py"
       - "artifacts/wow-engine/basketball_team_event_specialist.py"
       - "artifacts/wow-engine/v17/basketball_model_maintenance.py"
+      - "artifacts/wow-engine/v17/team_state_challenger_training.py"
+      - "artifacts/wow-engine/v17/team_state_scoped_maintenance.py"
       - "artifacts/wow-engine/team_event_request_runtime.py"
       - "artifacts/wow-engine/test_v17_basketball_model_maintenance.py"
       - "artifacts/wow-engine/test_v17_basketball_hydration_fallback.py"
+      - "artifacts/wow-engine/test_v17_team_state_challenger_training.py"
+      - "artifacts/wow-engine/test_v17_team_state_scoped_maintenance.py"
       - "artifacts/wow-engine/test_v17_github_oidc.py"
       - "artifacts/wow-engine/test_v17_maintenance_terminal_truth.py"
   pull_request:
@@ -29,9 +33,13 @@ on:
       - "artifacts/wow-engine/basketball_specialist_pipeline.py"
       - "artifacts/wow-engine/basketball_team_event_specialist.py"
       - "artifacts/wow-engine/v17/basketball_model_maintenance.py"
+      - "artifacts/wow-engine/v17/team_state_challenger_training.py"
+      - "artifacts/wow-engine/v17/team_state_scoped_maintenance.py"
       - "artifacts/wow-engine/team_event_request_runtime.py"
       - "artifacts/wow-engine/test_v17_basketball_model_maintenance.py"
       - "artifacts/wow-engine/test_v17_basketball_hydration_fallback.py"
+      - "artifacts/wow-engine/test_v17_team_state_challenger_training.py"
+      - "artifacts/wow-engine/test_v17_team_state_scoped_maintenance.py"
       - "artifacts/wow-engine/test_v17_github_oidc.py"
       - "artifacts/wow-engine/test_v17_maintenance_terminal_truth.py"
 
@@ -65,15 +73,17 @@ jobs:
           test_v17_basketball_hydration_fallback.py
           test_basketball_training_replay_boundaries.py
           test_basketball_team_event_specialist.py
+          test_v17_team_state_challenger_training.py
+          test_v17_team_state_scoped_maintenance.py
           test_v17_github_oidc.py
           test_v17_maintenance_terminal_truth.py
 
   maintain:
-    name: Refresh NBA/WNBA training evidence
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    name: Hydrate basketball then fit NBA/WNBA challengers
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
     needs: verify
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 45
     permissions:
       contents: read
       id-token: write
@@ -90,58 +100,75 @@ jobs:
           test -n "$ACTIONS_ID_TOKEN_REQUEST_URL"
           test -n "$ACTIONS_ID_TOKEN_REQUEST_TOKEN"
 
-      - name: Run governed basketball model maintenance
+      - name: Hydrate first, then regenerate NBA/WNBA challengers
         shell: bash
         run: |
           python - <<'PY'
-          import json
-          import os
-          import urllib.parse
-          import urllib.request
+          import json, os, time, urllib.error, urllib.parse, urllib.request
 
-          oidc_url = os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"]
-          separator = "&" if "?" in oidc_url else "?"
-          oidc_url += separator + urllib.parse.urlencode({"audience": "wow-v17-multiscout"})
-          oidc_request = urllib.request.Request(
-              oidc_url,
-              headers={"Authorization": f"Bearer {os.environ['ACTIONS_ID_TOKEN_REQUEST_TOKEN']}"},
-          )
-          with urllib.request.urlopen(oidc_request, timeout=20) as response:
-              oidc_token = json.load(response)["value"]
+          origin = os.environ["WOW_ACTION_ORIGIN"].rstrip("/")
 
-          endpoint = os.environ["WOW_ACTION_ORIGIN"].rstrip("/") + "/internal/v17/basketball-model-maintenance"
-          request = urllib.request.Request(
-              endpoint,
-              data=b"",
-              method="POST",
-              headers={
-                  "Authorization": f"Bearer {oidc_token}",
-                  "Content-Type": "application/json",
-              },
-          )
-          with urllib.request.urlopen(request, timeout=600) as response:
-              payload = json.load(response)
+          def token():
+              url = os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"]
+              url += ("&" if "?" in url else "?") + urllib.parse.urlencode({"audience":"wow-v17-multiscout"})
+              req = urllib.request.Request(url, headers={"Authorization":f"Bearer {os.environ['ACTIONS_ID_TOKEN_REQUEST_TOKEN']}"})
+              with urllib.request.urlopen(req, timeout=20) as response:
+                  return json.load(response)["value"]
 
-          assert payload.get("can_execute") is False
-          assert payload.get("automatic_certification") is False
-          assert payload.get("automatic_promotion") is False
-          assert payload.get("probability_publishable") is False
-          blocked_rows = [row for row in payload.get("rows", []) if row.get("status") == "BLOCKED"]
-          for row in blocked_rows:
-              print(f"{row.get('sport')} blocked: {row.get('code')}")
+          def post(path, *, attempts=24, timeout=900):
+              last = None
+              for attempt in range(attempts):
+                  req = urllib.request.Request(
+                      origin + path,
+                      data=b"",
+                      method="POST",
+                      headers={"Authorization":f"Bearer {token()}","Content-Type":"application/json"},
+                  )
+                  try:
+                      with urllib.request.urlopen(req, timeout=timeout) as response:
+                          return json.load(response)
+                  except urllib.error.HTTPError as exc:
+                      body = exc.read().decode("utf-8", errors="replace")
+                      if exc.code in {401, 403}:
+                          raise RuntimeError(f"AUTH_HTTP_{exc.code}:{body[:400]}") from exc
+                      last = (exc.code, body[:400])
+                      if exc.code not in {404, 429, 502, 503, 504}:
+                          raise
+                  except (urllib.error.URLError, TimeoutError) as exc:
+                      last = (type(exc).__name__, str(exc)[:300])
+                  if attempt + 1 < attempts:
+                      time.sleep(min(10 * (attempt + 1), 30))
+              raise RuntimeError(f"ENDPOINT_NOT_READY:{path}:{last}")
+
+          basketball = post("/internal/v17/basketball-model-maintenance")
+          assert basketball.get("can_execute") is False, basketball
+          assert basketball.get("probability_publishable") is False, basketball
+          assert basketball.get("automatic_certification") is False, basketball
+          assert basketball.get("automatic_promotion") is False, basketball
+          blocked_rows = [row for row in basketball.get("rows", []) if row.get("status") == "BLOCKED"]
+          if basketball.get("status") == "BLOCKED" or blocked_rows:
+              raise RuntimeError("BASKETBALL_PREHYDRATE_BLOCKED:" + json.dumps({
+                  "status": basketball.get("status"),
+                  "blocked_rows": [{"sport": row.get("sport"), "code": row.get("code")} for row in blocked_rows],
+              }, sort_keys=True))
+
+          challengers = {}
+          for sport in ("NBA", "WNBA"):
+              payload = post(f"/internal/v17/team-state-challenger-maintenance/{sport}", attempts=8, timeout=300)
+              assert payload.get("can_execute") is False, payload
+              assert payload.get("probability_publishable") is False, payload
+              assert payload.get("automatic_certification") is False, payload
+              assert payload.get("automatic_promotion") is False, payload
+              if payload.get("status") == "BLOCKED":
+                  raise RuntimeError(f"{sport}_CHALLENGER_BLOCKED:" + json.dumps(payload, sort_keys=True))
+              challengers[sport] = payload
+
           print(json.dumps({
-              "status": payload.get("status"),
-              "rows_updated": payload.get("rows_updated"),
-              "rows_blocked": payload.get("rows_blocked"),
-              "rows_fresh_acquisition_degraded": payload.get("rows_fresh_acquisition_degraded"),
+              "ordering": "BASKETBALL_HYDRATION_AND_REPLAY_BEFORE_TEAM_STATE_CHALLENGER",
+              "basketball_status": basketball.get("status"),
+              "rows_updated": basketball.get("rows_updated"),
+              "rows_fresh_acquisition_degraded": basketball.get("rows_fresh_acquisition_degraded"),
+              "challenger_statuses": {k:v.get("status") for k,v in challengers.items()},
               "can_execute": False,
           }, sort_keys=True))
-          if payload.get("status") == "BLOCKED" or blocked_rows:
-              raise RuntimeError("BASKETBALL_MAINTENANCE_BLOCKED:" + json.dumps({
-                  "status": payload.get("status"),
-                  "blocked_rows": [
-                      {"sport": row.get("sport"), "code": row.get("code")}
-                      for row in blocked_rows
-                  ],
-              }, sort_keys=True))
           PY
