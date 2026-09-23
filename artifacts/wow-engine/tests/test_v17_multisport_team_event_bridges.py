@@ -8,6 +8,10 @@ import v17.multisport_team_event_bridges as multisport_bridges
 import v17.team_event_bridge_runtime as bridge_runtime
 import v17.team_event_request_runtime as base_runtime
 from v17.llp_governed_package_scoring import PASS, validate_governed_scoring_package
+from v17.multisport_team_event_calibration import (
+    CalibrationArtifactInvalid,
+    validate_binary_artifact,
+)
 from v17.multisport_team_event_governance import FINAL_APPROVED, reduce_multisport_team_event
 from v17.multisport_team_event_models import (
     MODEL_SPECS,
@@ -55,8 +59,29 @@ def _calibration_artifact(sport: str) -> dict:
                 "AWAY": {"platt_a": 1.02, "platt_b": 0.00, "residual_quantile_90": 0.10},
             },
         }
+    quality = {}
+    if sport in {"WNBA", "NHL"}:
+        quality = {
+            "quantitative_quality_status": "PASS",
+            "quality_policy_version": "V17_TEAM_EVENT_PROBABILITY_QUALITY_V1",
+            "quality_policy_hash": "c" * 64,
+            "log_loss": 0.58,
+            "ece": 0.04,
+            "calibration_intercept": 0.01,
+            "calibration_slope": 1.02,
+            "max_calibration_bin_gap": 0.08,
+            "quality_checks": {
+                "brier_pass": True,
+                "log_loss_pass": True,
+                "ece_pass": True,
+                "calibration_intercept_pass": True,
+                "calibration_slope_pass": True,
+                "max_calibration_bin_gap_pass": True,
+            },
+        }
     return {
         **common,
+        **quality,
         "artifact_type": "BINARY_PLATT_CALIBRATOR",
         "platt_a": 1.03,
         "platt_b": -0.01,
@@ -212,6 +237,29 @@ def test_mma_without_history_is_inputs_insufficient_not_model_unavailable():
         score_mma_team_event(_req("MMA", evidence=evidence))
     assert exc.value.code == "MODEL_INPUTS_INSUFFICIENT"
     assert "fight_history" in exc.value.missing_fields
+
+
+def test_wnba_nhl_pass_label_without_quantitative_quality_receipt_fails_closed():
+    for sport in ("WNBA", "NHL"):
+        artifact = _calibration_artifact(sport)
+        for key in (
+            "quantitative_quality_status",
+            "quality_policy_version",
+            "quality_policy_hash",
+            "log_loss",
+            "ece",
+            "calibration_intercept",
+            "calibration_slope",
+            "max_calibration_bin_gap",
+            "quality_checks",
+        ):
+            artifact.pop(key)
+        assert artifact["health_status"] == "PASS"
+        assert artifact["certification_status"] == "PASS"
+        with pytest.raises(CalibrationArtifactInvalid) as exc:
+            validate_binary_artifact(artifact, sport)
+        assert "CALIBRATION_QUANTITATIVE_QUALITY_NOT_PASS" in exc.value.blockers
+        assert "CALIBRATION_QUALITY_CHECKS_MISSING" in exc.value.blockers
 
 
 def test_history_backed_calibration_replaces_provisional_bounds_and_validates_package():
