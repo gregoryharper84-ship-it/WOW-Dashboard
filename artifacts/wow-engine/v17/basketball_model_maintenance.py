@@ -39,6 +39,7 @@ def _blocked(
     code: str,
     *,
     error_type: str | None = None,
+    hydration: dict[str, Any] | None = None,
     hydration_blocker: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     lane = development_lane(sport)
@@ -53,6 +54,8 @@ def _blocked(
     }
     if error_type:
         payload["error_type"] = error_type
+    if hydration is not None:
+        payload["hydration"] = hydration
     if hydration_blocker:
         payload["hydration_blocker"] = hydration_blocker
     return payload
@@ -124,6 +127,7 @@ def run_basketball_model_maintenance(
                     sport,
                     str(exc) or "BASKETBALL_TRAINING_REPLAY_BLOCKED",
                     error_type=type(exc).__name__,
+                    hydration=hydration,
                     hydration_blocker=hydration_blocker,
                 )
             )
@@ -133,6 +137,7 @@ def run_basketball_model_maintenance(
                     sport,
                     "BASKETBALL_MODEL_MAINTENANCE_FAILED",
                     error_type=type(exc).__name__,
+                    hydration=hydration,
                     hydration_blocker=hydration_blocker,
                 )
             )
