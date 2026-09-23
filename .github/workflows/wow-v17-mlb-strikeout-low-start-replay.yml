@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - "artifacts/wow-engine/scripts/evaluate_mlb_pitcher_strikeouts_low_start.py"
+      - "artifacts/wow-engine/scripts/evaluate_mlb_pitcher_strikeouts_min3_candidate.py"
       - "artifacts/wow-engine/v17/test_mlb_strikeout_low_start_replay_contract.py"
       - "artifacts/wow-engine/data/mlb_pitcher_starts_2024_2025_regular_season.csv"
       - "artifacts/wow-engine/data/mlb_team_batting_by_game_2024_2025_regular_season.csv"
@@ -35,13 +36,18 @@ jobs:
         run: |
           python artifacts/wow-engine/scripts/evaluate_mlb_pitcher_strikeouts_low_start.py \
             --output "$RUNNER_TEMP/mlb-strikeout-low-start-replay.json"
+          python artifacts/wow-engine/scripts/evaluate_mlb_pitcher_strikeouts_min3_candidate.py \
+            --output "$RUNNER_TEMP/mlb-strikeout-min3-candidate.json"
       - name: Run replay contract tests
         run: |
           python -m pip install --disable-pip-version-check pytest
           python -m pytest artifacts/wow-engine/v17/test_mlb_strikeout_low_start_replay_contract.py -q
       - name: Upload replay evidence
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: mlb-strikeout-low-start-replay
-          path: ${{ runner.temp }}/mlb-strikeout-low-start-replay.json
+          path: |
+            ${{ runner.temp }}/mlb-strikeout-low-start-replay.json
+            ${{ runner.temp }}/mlb-strikeout-min3-candidate.json
           if-no-files-found: error
