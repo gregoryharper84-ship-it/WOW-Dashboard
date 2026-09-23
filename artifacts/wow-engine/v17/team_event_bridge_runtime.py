@@ -35,6 +35,7 @@ from v17.team_event_capability_manifest import (
     normalize_team_event_sport,
 )
 from v17.rundown_sport_registry import REGULAR_SEASON
+from v17.team_event_feature_consumption import build_feature_consumption_receipt
 from v17.team_event_model_registry_audit import (
     certification_state,
     probe_sport,
@@ -58,6 +59,12 @@ class TeamEventBridgeRegistration:
     required_inputs: tuple[str, ...]
     scorer: BridgeScorer
     standard_package_validation: bool = True
+    # Feature-consumption metadata is observational only.  A bridge must declare
+    # an exact schema/role map before a receipt can become complete; absent
+    # declarations remain visible as UNDECLARED rather than being inferred.
+    feature_schema_version: str | None = None
+    feature_roles: Mapping[str, str] | None = None
+    critical_features: tuple[str, ...] = ()
     # Season regimes this fitted artifact is contracted to score. Defaults to
     # regular season only: a regular-season model has no calibration evidence
     # for preseason, playoff, spring-training or summer-league play and must not
@@ -83,12 +90,17 @@ def register_team_event_bridge(
     scorer: BridgeScorer,
     required_inputs: tuple[str, ...] | None = None,
     standard_package_validation: bool = True,
+    feature_schema_version: str | None = None,
+    feature_roles: Mapping[str, str] | None = None,
+    critical_features: tuple[str, ...] | None = None,
     supported_regimes: tuple[str, ...] | None = None,
 ) -> TeamEventBridgeRegistration:
     """Register one exact bridge; callers must already own certification proof.
 
     Registration is capability, never certification: it makes a sport routable,
     and says nothing about whether its model is certified for publication.
+    Feature-consumption declarations are audit metadata only and never alter
+    probability, calibration, ranking or terminal authority.
     """
     normalized = normalize_team_event_sport(sport)
     registration = TeamEventBridgeRegistration(
@@ -98,6 +110,11 @@ def register_team_event_bridge(
         required_inputs=tuple(required_inputs or TEAM_EVENT_INPUT_CONTRACTS.get(normalized, ())),
         scorer=scorer,
         standard_package_validation=standard_package_validation,
+        feature_schema_version=(
+            str(feature_schema_version).strip() if feature_schema_version else None
+        ),
+        feature_roles=dict(feature_roles) if feature_roles is not None else None,
+        critical_features=tuple(critical_features or ()),
         supported_regimes=tuple(supported_regimes or (REGULAR_SEASON,)),
         can_execute=False,
     )
@@ -206,6 +223,35 @@ def _validate_standard_bridge_output(req: Any, result: dict[str, Any]) -> dict[s
     return out
 
 
+def _attach_feature_consumption_receipt(
+    req: Any,
+    registration: TeamEventBridgeRegistration,
+    result: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Attach observational feature-consumption metadata without gating scoring.
+
+    This intentionally does not fail a currently valid score when older scorers
+    have not yet declared a feature schema or explicit consumed_feature_ids.  The
+    receipt records those gaps as UNDECLARED / UNVERIFIED so rollout can proceed
+    without inventing consumption evidence or changing champion probabilities.
+    """
+    out = dict(result)
+    receipt = build_feature_consumption_receipt(
+        req=req,
+        sport=registration.sport,
+        controlling_specialist=registration.controlling_specialist,
+        required_inputs=registration.required_inputs,
+        result=out,
+        feature_schema_version=registration.feature_schema_version,
+        declared_feature_roles=registration.feature_roles,
+        critical_features=registration.critical_features,
+    )
+    out["feature_consumption_receipt_id"] = receipt["feature_consumption_receipt_id"]
+    out["feature_consumption_receipt"] = receipt
+    out["can_execute"] = False
+    return out
+
+
 def score_registered_team_event_request(
     req: Any,
     *,
@@ -274,10 +320,11 @@ def score_registered_team_event_request(
         )
 
     if registration.standard_package_validation:
-        return _validate_standard_bridge_output(req, result)
-    result = dict(result)
-    result["can_execute"] = False
-    return result
+        result = _validate_standard_bridge_output(req, result)
+    else:
+        result = dict(result)
+        result["can_execute"] = False
+    return _attach_feature_consumption_receipt(req, registration, result)
 
 
 def team_event_bridge_health() -> dict[str, dict[str, Any]]:
@@ -314,7 +361,21 @@ def team_event_bridge_health() -> dict[str, dict[str, Any]]:
                 registration.controlling_specialist if registered else None
             ),
             "adapter": registration.adapter_name if registered else None,
-            "required_inputs": list(TEAM_EVENT_INPUT_CONTRACTS.get(sport, ())),
+            "required_inputs": list(
+                registration.required_inputs
+                if registered
+                else TEAM_EVENT_INPUT_CONTRACTS.get(sport, ())
+            ),
+            "feature_consumption_receipt_enabled": registered,
+            "feature_schema_version": (
+                registration.feature_schema_version if registered else None
+            ),
+            "feature_role_contract_declared": bool(
+                registered and registration.feature_roles
+            ),
+            "critical_features": list(
+                registration.critical_features if registered else ()
+            ),
             "discovery_supported": sport in EXPECTED_TEAM_EVENT_SPORTS,
             "reason_if_unavailable": None if registered else probe.notes,
             "probability_publishable": False,
