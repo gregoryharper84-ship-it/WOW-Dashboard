@@ -92,6 +92,21 @@ def _lineup_confirmed(req: Any, model_result: dict[str, Any], side: str) -> bool
     return isinstance(lineup, dict) and str(lineup.get("status") or "").upper() == "CONFIRMED"
 
 
+def _handoff_completed(result: dict[str, Any]) -> bool | None:
+    """Return whether an attempted evidence handoff completed authoritatively.
+
+    ``None`` means this result did not expose a handoff receipt. A concrete HOLD
+    or failure is not a schema contradiction: downstream evidence is expected to
+    remain incomplete when the authoritative hydrator deliberately failed closed
+    first (for example, while official lineups are not yet confirmed).
+    """
+    repair = result.get("evidence_handoff_repair")
+    if not isinstance(repair, dict):
+        return None
+    status = str(repair.get("status") or "").strip().upper()
+    return status in {"PASS", "COMPLETE"}
+
+
 def _schema_mismatches(
     req: Any,
     model_result: dict[str, Any],
@@ -129,6 +144,13 @@ def _annotate_schema_mismatch(
     model_result: dict[str, Any],
     result: dict[str, Any],
 ) -> dict[str, Any]:
+    # A failed/held canonical handoff is already the exact typed boundary. Do not
+    # replace it with a synthetic present-upstream/missing-downstream mismatch;
+    # no downstream evidence was promised when hydration itself did not complete.
+    handoff_completed = _handoff_completed(result)
+    if handoff_completed is False:
+        return result
+
     mismatches = _schema_mismatches(req, model_result, result)
     if not mismatches:
         return result
