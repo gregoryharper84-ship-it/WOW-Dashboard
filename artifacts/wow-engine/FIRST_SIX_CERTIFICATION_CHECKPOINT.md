@@ -41,3 +41,5 @@ No workflow, migration, candidate, specialist, or route may set `can_execute=tru
 ## Production run trigger
 
 Prepared after merge `ab6eb8cc911802ab82423db2ebf569fb59cad119`. This one-line checkpoint mutation exists only to trigger the governed protected-main first-six maintenance workflow after the exact implementation is confirmed live on Render. It does not alter model semantics, certification thresholds, publication authority, or `can_execute=false`.
+
+Calibration challenger V2 is live at `c7cdb33e9e9f5c0c5aeae9b10371920bccffe913`; rerun all first-six maintenance lanes so Tennis and every binary team-state candidate are regenerated under the forward-only calibrator-selection contract before any certification review.
