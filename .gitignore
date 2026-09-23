@@ -54,6 +54,10 @@ __pycache__/
 .venv/
 .pytest_cache/
 
+# Ephemeral WOW multi-agent handoff / release-verification evidence.
+/artifacts/wow-engine/v17/.agent-handoff/
+/artifacts/wow-engine/v17/.release-evidence/
+
 # Build-time release provenance is generated inside the deployment build.
 /artifacts/flask-scoring-api/runtime_build_info.json
 

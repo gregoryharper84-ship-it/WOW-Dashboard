@@ -1,0 +1,112 @@
+name: WOW Claude Agent Runner
+description: Run one independent Claude Code agent with OAuth/API-key fallback.
+
+inputs:
+  oauth_token:
+    description: Claude Code OAuth token
+    required: false
+  api_key:
+    description: Anthropic API key
+    required: false
+  prompt:
+    description: Agent prompt
+    required: true
+  claude_args:
+    description: Claude Code CLI arguments including tool allowlist and JSON schema
+    required: true
+  base_branch:
+    description: Base branch
+    required: false
+    default: main
+  branch_prefix:
+    description: Branch prefix used if the agent writes
+    required: false
+    default: claude/engineering/
+
+outputs:
+  structured_output:
+    description: Structured JSON output from the agent
+    value: ${{ steps.normalize.outputs.structured_output }}
+  branch_name:
+    description: Branch name returned by Claude Code action
+    value: ${{ steps.normalize.outputs.branch_name }}
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve authentication
+      id: auth
+      shell: bash
+      env:
+        OAUTH_TOKEN: ${{ inputs.oauth_token }}
+        API_KEY: ${{ inputs.api_key }}
+      run: |
+        set -euo pipefail
+        if [ -n "${OAUTH_TOKEN:-}" ]; then
+          echo "mode=oauth" >> "$GITHUB_OUTPUT"
+        elif [ -n "${API_KEY:-}" ]; then
+          echo "mode=api" >> "$GITHUB_OUTPUT"
+        else
+          echo "::error::Claude authentication is missing."
+          exit 1
+        fi
+
+    - name: Run agent with OAuth
+      id: oauth
+      if: steps.auth.outputs.mode == 'oauth'
+      uses: anthropics/claude-code-action@v1
+      with:
+        claude_code_oauth_token: ${{ inputs.oauth_token }}
+        prompt: ${{ inputs.prompt }}
+        base_branch: ${{ inputs.base_branch }}
+        branch_prefix: ${{ inputs.branch_prefix }}
+        allowed_bots: "github-actions[bot]"
+        additional_permissions: |
+          actions: read
+          checks: read
+        claude_args: ${{ inputs.claude_args }}
+        display_report: "false"
+        show_full_output: "false"
+
+    - name: Run agent with API key
+      id: api
+      if: steps.auth.outputs.mode == 'api'
+      uses: anthropics/claude-code-action@v1
+      with:
+        anthropic_api_key: ${{ inputs.api_key }}
+        prompt: ${{ inputs.prompt }}
+        base_branch: ${{ inputs.base_branch }}
+        branch_prefix: ${{ inputs.branch_prefix }}
+        allowed_bots: "github-actions[bot]"
+        additional_permissions: |
+          actions: read
+          checks: read
+        claude_args: ${{ inputs.claude_args }}
+        display_report: "false"
+        show_full_output: "false"
+
+    - name: Normalize result
+      id: normalize
+      shell: bash
+      env:
+        OAUTH_RESULT: ${{ steps.oauth.outputs.structured_output }}
+        API_RESULT: ${{ steps.api.outputs.structured_output }}
+        OAUTH_BRANCH: ${{ steps.oauth.outputs.branch_name }}
+        API_BRANCH: ${{ steps.api.outputs.branch_name }}
+      run: |
+        set -euo pipefail
+        result="${OAUTH_RESULT:-}"
+        branch="${OAUTH_BRANCH:-}"
+        if [ -z "$result" ]; then result="${API_RESULT:-}"; fi
+        if [ -z "$branch" ]; then branch="${API_BRANCH:-}"; fi
+        if [ -z "$result" ]; then
+          echo "::error::Agent completed without required structured output."
+          exit 1
+        fi
+        jq -e . >/dev/null <<<"$result"
+        {
+          echo "structured_output<<EOF"
+          echo "$result"
+          echo "EOF"
+          echo "branch_name=$branch"
+        } >> "$GITHUB_OUTPUT"
