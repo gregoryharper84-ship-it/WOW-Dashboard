@@ -137,7 +137,7 @@ begin
   select jsonb_object_agg(player_name, raw_probability order by player_name)
     into v_player_probabilities
   from tmp_mlb_doubles_player_fit;
-  if v_player_probabilities is null or jsonb_object_length(v_player_probabilities) < 500 then
+  if v_player_probabilities is null or (select count(*) from jsonb_object_keys(v_player_probabilities)) < 500 then
     raise exception 'MLB_DOUBLES_PLAYER_FIT_INSUFFICIENT';
   end if;
 
