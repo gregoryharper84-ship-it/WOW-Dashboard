@@ -89,10 +89,14 @@ export function extractOAuthPermissions(payload, claimPath = "app_metadata.wow_p
   return permissions;
 }
 
-async function readJwks(jwksUrl, { fetchImpl = fetch, cacheMs = DEFAULT_JWKS_CACHE_MS } = {}) {
+async function readJwks(jwksUrl, {
+  fetchImpl = fetch,
+  cacheMs = DEFAULT_JWKS_CACHE_MS,
+  force = false,
+} = {}) {
   const now = Date.now();
   const cached = jwksCache.get(jwksUrl);
-  if (cached && now - cached.fetchedAt < cacheMs) return cached.jwks;
+  if (!force && cached && now - cached.fetchedAt < cacheMs) return cached.jwks;
 
   let response;
   try {
@@ -120,6 +124,10 @@ async function readJwks(jwksUrl, { fetchImpl = fetch, cacheMs = DEFAULT_JWKS_CAC
   }
   jwksCache.set(jwksUrl, { fetchedAt: now, jwks });
   return jwks;
+}
+
+function findSigningKey(keySet, kid) {
+  return keySet?.keys?.find((key) => key.kid === kid && (!key.use || key.use === "sig"));
 }
 
 function verifyJwtSignature({ header, signingInput, signature }, jwk) {
@@ -193,8 +201,14 @@ export async function verifyOAuthAccessToken(token, {
     throw new V17OAuthError("MCP_OAUTH_TOKEN_HEADER_INVALID", "OAuth access token must use an allowed asymmetric algorithm and key id.");
   }
 
-  const keySet = jwks || await readJwks(jwksUrl, { fetchImpl });
-  const signingKey = keySet.keys?.find((key) => key.kid === header.kid && (!key.use || key.use === "sig"));
+  let keySet = jwks || await readJwks(jwksUrl, { fetchImpl });
+  let signingKey = findSigningKey(keySet, header.kid);
+  if (!signingKey && !jwks) {
+    // Key rotation can produce a valid token before the local JWKS TTL expires.
+    // Refetch once on an unknown kid, then fail closed if the key is still absent.
+    keySet = await readJwks(jwksUrl, { fetchImpl, force: true });
+    signingKey = findSigningKey(keySet, header.kid);
+  }
   if (!signingKey) {
     throw new V17OAuthError("MCP_OAUTH_SIGNING_KEY_NOT_FOUND", "OAuth access token signing key is not present in JWKS.");
   }
@@ -267,7 +281,7 @@ export function assertOAuthPermissions(authContext, requiredPermissions) {
 
 export function oauthSessionFingerprint(authContext) {
   if (authContext?.mode !== "oauth") return authContext?.mode || "unknown";
-  return `oauth:${authContext.subject}:${authContext.clientId}`;
+  return `oauth:${authContext.subject}:${authContext.clientId}:${authContext.sessionId || "no-session"}`;
 }
 
 export function buildProtectedResourceMetadata({ resourceUrl, authorizationServers, scopesSupported = [] } = {}) {
