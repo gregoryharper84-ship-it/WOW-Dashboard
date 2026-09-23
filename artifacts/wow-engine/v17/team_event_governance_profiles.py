@@ -58,6 +58,7 @@ _PROFILES: dict[str, TeamEventGovernanceProfile] = {
     "PGA": TeamEventGovernanceProfile("PGA", "FIELD_OR_HEAD_TO_HEAD", "TOURNAMENT_OR_H2H_WITHDRAWAL_DQ_RULES", TEAM_EVENT_INPUT_CONTRACTS["PGA"]),
     "MMA": TeamEventGovernanceProfile("MMA", "FIGHTER_A_FIGHTER_B_DRAW_NC", "OFFICIAL_FIGHT_RESULT_WITH_DRAW_NO_CONTEST_RULES", TEAM_EVENT_INPUT_CONTRACTS["MMA"]),
     "BOXING": TeamEventGovernanceProfile("BOXING", "FIGHTER_A_FIGHTER_B_DRAW_NC", "OFFICIAL_FIGHT_RESULT_WITH_DRAW_NO_CONTEST_RULES", TEAM_EVENT_INPUT_CONTRACTS["BOXING"]),
+    "CRICKET": TeamEventGovernanceProfile("CRICKET", "TEAM_A_TEAM_B_TIE_NO_RESULT", "T20_MATCH_WINNER_WITH_EXPLICIT_TIE_NO_RESULT_RULES", TEAM_EVENT_INPUT_CONTRACTS["CRICKET"]),
 }
 
 if set(_PROFILES) != set(EXPECTED_TEAM_EVENT_SPORTS):
@@ -73,13 +74,7 @@ def governance_profile(sport: str, league: str | None = None) -> TeamEventGovern
 
 
 def governance_profile_preflight(req: Any) -> dict[str, Any]:
-    """Resolve governance metadata without replacing specialist validation.
-
-    The exact registered sport bridge remains authoritative for capability,
-    identity/evidence completeness, scorer failures, and output validation. An
-    unknown profile is therefore DEFERred to that bridge so the existing typed
-    MODEL_UNAVAILABLE semantics are preserved.
-    """
+    """Resolve governance metadata without replacing specialist validation."""
     sport = normalize_team_event_identity(getattr(req, "sport", ""), getattr(req, "league", None))
     profile = _PROFILES.get(sport)
     if profile is None:

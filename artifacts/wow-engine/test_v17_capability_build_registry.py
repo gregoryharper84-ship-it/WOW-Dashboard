@@ -34,10 +34,10 @@ def test_current_known_build_states_are_explicit():
     assert capability_build_plan("WNBA").status == "CURRENT_DATA_PENDING"
     assert capability_build_plan("NCAAF").status == "EVIDENCE_CORPUS_PENDING"
     assert capability_build_plan("NHL").status == "EVIDENCE_CORPUS_PENDING"
-    for sport in ("NCAAB", "SOCCER", "TENNIS", "PGA", "MMA", "BOXING"):
+    for sport in ("NCAAB", "SOCCER", "TENNIS", "PGA", "MMA", "BOXING", "CRICKET"):
         assert capability_build_plan(sport).status == "FITTED_SPECIALIST_PENDING"
 
 
 def test_unknown_sport_cannot_be_silently_classified():
     with pytest.raises(KeyError, match="V17_BUILD_CLASSIFICATION_UNKNOWN"):
-        capability_build_plan("CRICKET")
+        capability_build_plan("LACROSSE")

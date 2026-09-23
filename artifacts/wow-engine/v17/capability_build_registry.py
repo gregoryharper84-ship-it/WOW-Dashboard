@@ -41,8 +41,6 @@ class CapabilityBuildPlan:
     can_execute: bool = False
 
 
-# D0 is reserved for deterministic identity/routing/settlement contracts and is
-# therefore not the controlling probability class for any modeled winner lane.
 TEAM_EVENT_BUILD_REGISTRY: dict[str, CapabilityBuildPlan] = {
     "MLB": CapabilityBuildPlan("MLB", "D1", ("A1",), "CERTIFIED", True, False, False, False, False),
     "NFL": CapabilityBuildPlan("NFL", "D1", ("A1",), "FORWARD_EVIDENCE_PENDING", True, False, False, False, False),
@@ -50,15 +48,13 @@ TEAM_EVENT_BUILD_REGISTRY: dict[str, CapabilityBuildPlan] = {
     "WNBA": CapabilityBuildPlan("WNBA", "D1", ("A1",), "CURRENT_DATA_PENDING", True, False, False, False, False),
     "NCAAF": CapabilityBuildPlan("NCAAF", "D1", ("A1", "A2"), "EVIDENCE_CORPUS_PENDING", True, False, False, False, False),
     "NCAAB": CapabilityBuildPlan("NCAAB", "D1", ("A1",), "FITTED_SPECIALIST_PENDING", True, False, False, False, False),
-    # Phase 3 now has a real NHL fitted-candidate implementation. It remains
-    # non-publishable while the governed corpus/source review and prospective
-    # evidence are built, so this is not a certification claim.
     "NHL": CapabilityBuildPlan("NHL", "D1", ("A1",), "EVIDENCE_CORPUS_PENDING", True, False, False, False, False),
     "SOCCER": CapabilityBuildPlan("SOCCER", "D1", ("A1", "A2"), "FITTED_SPECIALIST_PENDING", True, False, False, False, False),
     "TENNIS": CapabilityBuildPlan("TENNIS", "D1", ("A1",), "FITTED_SPECIALIST_PENDING", True, False, False, False, False),
     "PGA": CapabilityBuildPlan("PGA", "D1", ("A1", "A2"), "FITTED_SPECIALIST_PENDING", True, False, False, False, False),
     "MMA": CapabilityBuildPlan("MMA", "D1", ("A1", "A2"), "FITTED_SPECIALIST_PENDING", True, False, False, False, False),
     "BOXING": CapabilityBuildPlan("BOXING", "D1", ("A1", "A2"), "FITTED_SPECIALIST_PENDING", True, False, False, False, False),
+    "CRICKET": CapabilityBuildPlan("CRICKET", "D1", ("A1", "A2"), "FITTED_SPECIALIST_PENDING", True, False, False, False, False),
 }
 
 

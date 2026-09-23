@@ -2,11 +2,12 @@ from v17.prop_sport_parity import prop_sport_parity, prop_sport_parity_summary
 from v17.team_event_capability_manifest import EXPECTED_TEAM_EVENT_SPORTS
 
 
-def test_prop_parity_accounts_for_all_twelve_canonical_sports():
+def test_prop_parity_accounts_for_all_canonical_sports():
     rows = prop_sport_parity()
     assert set(rows) == set(EXPECTED_TEAM_EVENT_SPORTS)
-    assert len(rows) == 12
+    assert len(rows) == 13
     assert rows["PGA"]["manifest_sport"] == "GOLF"
+    assert rows["CRICKET"]["declared_lane_count"] == 0
 
 
 def test_prop_parity_distinguishes_row_hydration_from_autonomous_discovery():

@@ -32,6 +32,7 @@ EXPECTED_TEAM_EVENT_SPORTS = (
     "PGA",
     "MMA",
     "BOXING",
+    "CRICKET",
 )
 
 TEAM_EVENT_INPUT_CONTRACTS: dict[str, tuple[str, ...]] = {
@@ -156,6 +157,18 @@ TEAM_EVENT_INPUT_CONTRACTS: dict[str, tuple[str, ...]] = {
         "no_contest_draw_outcome_space",
         "settlement_basis",
     ),
+    "CRICKET": (
+        "official_event_id",
+        "home_team",
+        "away_team",
+        "match_format",
+        "venue",
+        "team_strength_inputs",
+        "player_availability",
+        "pitch_weather_conditions",
+        "tie_no_result_settlement_rules",
+        "settlement_basis",
+    ),
 }
 
 # Static certification remains deliberately narrow. It records unconditional
@@ -219,6 +232,10 @@ def normalize_team_event_sport(value: str) -> str:
         "MIXED MARTIAL ARTS": "MMA",
         "MIXED_MARTIAL_ARTS": "MMA",
         "BOX": "BOXING",
+        "T20": "CRICKET",
+        "T20 CRICKET": "CRICKET",
+        "T20_CRICKET": "CRICKET",
+        "CRICKET/T20": "CRICKET",
     }
     return aliases.get(sport, sport)
 

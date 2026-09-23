@@ -65,13 +65,6 @@ def odds_proxy_feed(
     offered_error: str | None = None
 
     def _offered_keys() -> dict[str, tuple[str, ...]]:
-        """Families mapped to the sport keys the proxy currently advertises.
-
-        A failed catalog lookup is deterministic for this feed instance/run.
-        Memoize its typed failure so later sport families do not repeatedly hit
-        the same failing ``/sports`` endpoint and amplify a provider quota or
-        outage. Independent feeds in ``union_feed`` still get their own chance.
-        """
         nonlocal offered, offered_error
         if offered is not None:
             return offered
@@ -119,9 +112,8 @@ def odds_proxy_feed(
     return fetch
 
 
-# Proxy sport keys are provider-owned strings. Rather than guessing one per
-# family, match the keys the proxy reports against the family's own prefix and
-# league token, so a key we have never seen simply does not match.
+# Proxy sport keys are provider-owned strings. Match only advertised keys against
+# known family prefixes; a key we have never seen is not invented by this layer.
 _PROXY_KEY_FAMILY_TOKENS: dict[str, tuple[str, ...]] = {
     "MLB": ("baseball_mlb",),
     "NFL": ("americanfootball_nfl",),
@@ -135,6 +127,7 @@ _PROXY_KEY_FAMILY_TOKENS: dict[str, tuple[str, ...]] = {
     "TENNIS": ("tennis_",),
     "PGA": ("golf_",),
     "BOXING": ("boxing_",),
+    "CRICKET": ("cricket_",),
 }
 
 
@@ -152,12 +145,7 @@ def rundown_board_feed(
     slate_date: str,
     opener: Any = None,
 ) -> Callable[..., Iterable[Mapping[str, Any]]]:
-    """Discovery over TheRundown's current board, addressed by verified sport id.
-
-    The provider sport id comes from the authoritative registry, so a family the
-    provider does not carry is never approximated by a guessed key — it simply
-    has no target to query.
-    """
+    """Discovery over TheRundown's current board, addressed by verified sport id."""
 
     def fetch(family: str, target: Any = None) -> list[Mapping[str, Any]]:
         sport_id = getattr(target, "sport_id", None)
@@ -220,8 +208,6 @@ def union_feed(
                 seen.add(key)
                 rows.append(row)
         if not succeeded and failures:
-            # Every feed refused. Surface the first provider code so the caller
-            # can classify the acquisition status instead of guessing.
             raise discovery.DiscoveryFeedError(failures[0])
         return rows
 
