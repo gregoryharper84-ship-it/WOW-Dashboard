@@ -210,12 +210,19 @@ jobs:
                   f"/services/{service_path}/deploys",
                   {"clearCache":"do_not_clear"},
               )
-              if not isinstance(created, dict) or not created.get("id"):
-                  raise RuntimeError("RENDER_DEPLOY_CREATE_INVALID")
-              deploy_id = str(created["id"])
-              created_sha = commit_sha(created)
-              if created_sha and created_sha != target_sha:
-                  raise RuntimeError(f"RENDER_DEPLOY_WRONG_SHA:{created_sha}")
+              created_deploy = created
+              if isinstance(created, dict) and isinstance(created.get("deploy"), dict):
+                  created_deploy = created["deploy"]
+              if isinstance(created_deploy, dict) and created_deploy.get("id"):
+                  deploy_id = str(created_deploy["id"])
+                  created_sha = commit_sha(created_deploy)
+                  if created_sha and created_sha != target_sha:
+                      raise RuntimeError(f"RENDER_DEPLOY_WRONG_SHA:{created_sha}")
+              else:
+                  # A successful Render POST can be acknowledged without a top-level
+                  # deploy object. Reconcile the exact target SHA from Render's
+                  # authoritative deploy list instead of reporting a false failure.
+                  deploy_id = ""
           else:
               deploy_id = str(active.get("id") or "")
               if not deploy_id:
