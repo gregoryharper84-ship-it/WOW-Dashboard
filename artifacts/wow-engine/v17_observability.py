@@ -33,6 +33,7 @@ from v17.pick_request_state_runtime import schedule_pick_request_state_install
 def initialize_observability() -> dict[str, Any]:
     from v17.team_event_bridge_runtime import install_team_event_bridge_runtime
     from v17.multisport_team_event_bridges import install_multisport_team_event_bridges
+    from v17.ncaaf_team_event_candidate_hold import install_ncaaf_team_event_candidate_hold
     from v17.all_sport_capability_readiness import (
         install_all_sport_capability_readiness,
     )
@@ -56,6 +57,12 @@ def initialize_observability() -> dict[str, Any]:
     install_scout_internal_service_auth()
     install_team_event_bridge_runtime()
     install_multisport_team_event_bridges()
+    # NCAAF has a fitted research-candidate pipeline but intentionally no
+    # certified production bridge. Refine only the generic adapter-absence
+    # failure into typed source-review/history/certification holds when a real
+    # governed candidate exists. This never registers the candidate as a
+    # production scorer and never creates a probability package.
+    install_ncaaf_team_event_candidate_hold()
     # Registration/certification identity is not enough to advertise a fully
     # autonomous production lane. Bind the same operational readiness contract
     # across all twelve sports before parity captures bridge health.
