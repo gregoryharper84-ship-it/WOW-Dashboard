@@ -93,7 +93,7 @@ The separate dynamic team-state challenger also fails its research screen:
 - calibrated log loss `0.71967` vs baseline `0.69298`;
 - ECE `0.13338` > screen limit `0.10`.
 
-Correct disposition: preserve the existing NFL champion/research boundary, accumulate prospective evidence, and reject the weaker challenger. NFL still needs explicit final-pregame ledger, event-uncertainty semantics, dominance diagnostics and calibration intercept/slope evidence before full quality parity is established.
+Correct disposition: preserve the existing NFL champion/research boundary, accumulate prospective evidence, and reject the weaker challenger. NFL still needs explicit final-pregame ledger, event-uncertainty semantics, dominance diagnostics and calibration intercept/slope evidence before full quality parity is established. The cross-sport quality overlay therefore must not reinterpret NFL's ordinary lane health as complete MLB-equivalent quality evidence.
 
 ### NCAAF / CFB
 
@@ -160,15 +160,26 @@ The current D1 team-state challenger **fails**:
 - calibrated log loss `0.69936` vs baseline `0.68664`;
 - ECE `0.12852` > `0.10` screen limit.
 
-The shared WNBA request-dependent calibration contract also accepts a provided `health_status=PASS` flag without independently requiring the full MLB-quality metric set. The new parity overlay prevents that label from being mistaken for quantitative quality certification.
+The shared request-dependent calibration path previously accepted an artifact that merely declared `health_status=PASS` and `certification_status=PASS`, provided its basic fields were numerically well formed. PR #783 now fail-closes WNBA binary calibration unless the artifact also carries:
+
+- `quantitative_quality_status=PASS`;
+- a versioned + SHA-256 identified quality policy;
+- log loss;
+- ECE;
+- calibration intercept;
+- calibration slope;
+- maximum calibration-bin gap;
+- explicit passed checks for Brier, log loss, ECE, intercept, slope and max-bin gap.
+
+A legacy PASS-labeled artifact without this receipt raises `CalibrationArtifactInvalid` and is mapped by the bridge to typed `MODEL_INPUTS_INSUFFICIENT`, preserving the original scorer/error semantics. It is **not** converted to `MODEL_UNAVAILABLE`.
 
 The same basketball hydration repair used for NBA applies to WNBA, but fresh data alone does not make the failing challenger acceptable.
 
-Correct disposition: **challenger rejected / model improvement required**, with current production authority unchanged and fail closed where server-owned calibrated probability evidence is absent.
+Correct disposition: **challenger rejected / model improvement required**, and the request-dependent publication path is now explicitly blocked from treating an unquantified PASS label as certification evidence.
 
 ### NHL
 
-Contrary to the initial production-table inventory, NHL has substantial D1 research evidence:
+NHL has substantial D1 research evidence:
 
 - source events: **6,560**;
 - D1 training rows: **6,128**;
@@ -190,7 +201,9 @@ Latest `NHL_REGULAR_SEASON_LOGISTIC_V1` candidate:
 
 This is exactly why parity cannot mean merely checking ECE or forcing certification: the calibration mapping degrades proper scores.
 
-Correct disposition: **challenger rejected / calibration and model-resolution experiment required**. Preserve current non-publishable state.
+PR #783 applies the same strict quantitative binary-calibration receipt contract to NHL as WNBA. A simple PASS label cannot make an NHL package publication/rank eligible without the required quantitative metrics/checks.
+
+Correct disposition: **challenger rejected / calibration and model-resolution experiment required**. Preserve current non-publishable candidate state.
 
 ## Repair in PR #783
 
@@ -200,8 +213,7 @@ The overlay:
 
 - never computes a sporting probability;
 - never promotes a model;
-- never changes rank eligibility;
-- never changes calibration coefficients;
+- never changes a coefficient;
 - exposes exact parity blockers instead of manufacturing capability;
 - normalizes `CFB -> NCAAF`;
 - requires Brier, log loss, ECE, calibration intercept/slope and maximum bin gap rather than trusting a PASS label;
@@ -211,7 +223,12 @@ The overlay:
 - requires dominance/margin diagnostics and untouched temporal evidence;
 - preserves `V17_TERMINAL_REDUCER` and `can_execute=false`.
 
-The same PR also repairs the NBA/WNBA historical hydration path so a successful-but-empty/no-op primary provider response can fall back to newer public settled evidence without weakening provenance or corpus freshness requirements. Targeted basketball-maintenance CI is green.
+The PR additionally contains two active Class B reliability/governance repairs:
+
+1. **NBA/WNBA historical acquisition recovery** — BallDontLie HTTP-success-but-empty/no-op evidence can fall back to newer ESPN settled rows without weakening provenance or the 400-day training-corpus freshness guard. Successful hydration receipts are preserved even when replay subsequently blocks.
+2. **WNBA/NHL quantitative calibration enforcement** — request-supplied calibration artifacts cannot become governed solely from stored PASS labels. Missing quantitative evidence fails closed with typed `MODEL_INPUTS_INSUFFICIENT` blockers.
+
+No new WNBA/NHL probability coefficients or calibration mapping are generated by this enforcement patch; it only raises the evidence required before an existing mapping may be treated as governed.
 
 ## Model-development work still required
 
@@ -226,7 +243,8 @@ No sport may borrow MLB coefficients, probabilities, thresholds or distribution 
 ## Terminal status
 
 - Cross-sport governance parity slice: **PR_CREATED (#783)**.
-- NBA/WNBA acquisition defect: **PR_CREATED (#783), targeted CI verified**.
+- NBA/WNBA acquisition defect: **PR_CREATED (#783), targeted CI verified on the hydration/maintenance repair**.
+- WNBA/NHL PASS-label calibration defect: **PR_CREATED (#783), typed fail-closed tests added; full PR CI required**.
 - NBA D1 challenger: **EXPERIMENT_CREATED / PASSING RESEARCH SCREEN / NOT CERTIFIED**.
 - NCAAF D1 challenger: **EXPERIMENT_CREATED / PASSING RESEARCH SCREEN / NOT CERTIFIED**.
 - NFL dynamic challenger: **EXPERIMENT_CREATED / RESEARCH SCREEN FAILED**; incumbent lane remains fail closed on insufficient forward evidence.
