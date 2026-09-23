@@ -43,6 +43,7 @@ _HYDRATION_OWNER = {
     "NCAAB": "MODEL_DEVELOPMENT_LANE",
     "PGA": "MODEL_DEVELOPMENT_LANE",
     "BOXING": "MODEL_DEVELOPMENT_LANE",
+    "CRICKET": "MODEL_DEVELOPMENT_LANE",
 }
 
 # Discovery providers may already carry certified sporting fields in a nested
