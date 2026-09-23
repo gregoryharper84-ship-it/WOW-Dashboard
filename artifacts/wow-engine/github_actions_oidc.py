@@ -14,7 +14,7 @@ import secrets
 from typing import Any
 
 import jwt
-from fastapi import Depends, Header, HTTPException
+from fastapi import Depends, Header, HTTPException, Request
 from jwt import PyJWKClient
 
 ISSUER = "https://token.actions.githubusercontent.com"
@@ -146,20 +146,35 @@ def authorize_action_key_or_multiscout_oidc(authorization: str | None) -> str:
 
 
 def scout_route_auth_dependency(existing_auth_dependency: Any) -> Any:
-    """Return a FastAPI dependency preserving the caller's existing auth seam."""
+    """Return a FastAPI dependency preserving the caller's existing auth seam.
+
+    ``authorization`` remains the first positional argument because several
+    tests and compatibility callers invoke the returned dependency directly.
+    FastAPI also injects the current request and the MCP acceptance marker so a
+    request-aware wrapped dependency can receive them without the OIDC layer
+    discarding security context.
+    """
     existing_fn = getattr(existing_auth_dependency, "dependency", None)
     if existing_fn is None and callable(existing_auth_dependency):
         existing_fn = existing_auth_dependency
 
-    def _combined(authorization: str | None = Header(default=None)) -> None:
+    def _combined(
+        authorization: str | None = Header(default=None),
+        request: Request = None,
+        x_wow_mcp_acceptance: str | None = Header(default=None, alias="X-WOW-MCP-Acceptance"),
+    ) -> None:
         prior_error: HTTPException | None = None
         if callable(existing_fn):
             try:
                 params = inspect.signature(existing_fn).parameters
+                call_kwargs: dict[str, Any] = {}
                 if "authorization" in params:
-                    existing_fn(authorization)
-                else:
-                    existing_fn()
+                    call_kwargs["authorization"] = authorization
+                if "request" in params:
+                    call_kwargs["request"] = request
+                if "x_wow_mcp_acceptance" in params:
+                    call_kwargs["x_wow_mcp_acceptance"] = x_wow_mcp_acceptance
+                existing_fn(**call_kwargs)
                 return
             except HTTPException as exc:
                 prior_error = exc
