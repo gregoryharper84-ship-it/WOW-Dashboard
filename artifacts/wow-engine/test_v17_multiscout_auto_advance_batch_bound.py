@@ -43,6 +43,7 @@ def _handoff(event_count: int = 32) -> dict:
 def test_oidc_nightly_path_bounds_large_team_event_slates():
     assert oidc.TEAM_EVENT_BATCH_ROWS == 8
     assert core.MAX_TEAM_EVENT_ROWS == 8
+    assert oidc.OIDC_MAX_IN_FLIGHT == 2
 
     dispatch = core.build_dispatch(_handoff())
     batches = dispatch["team_event_batches"]
