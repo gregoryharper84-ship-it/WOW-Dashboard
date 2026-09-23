@@ -1,9 +1,14 @@
 """Fail-closed probability-quality parity contract for governed team/event lanes.
 
 Equal treatment means the same evidence/governance standard, not the same model
-mathematics.  This overlay does not compute or alter sporting probabilities.  It
+mathematics. This overlay does not compute or alter sporting probabilities. It
 adds a same-shaped quality contract for MLB, NFL, NCAAF/CFB, NBA, WNBA and NHL so
 missing capability/evidence stays explicit instead of being mistaken for parity.
+
+Request-supplied calibration metadata can be useful evidence, but it is not
+server-owned calibration authority. MLB-equivalent parity therefore requires an
+independently bound calibration artifact/dependency in addition to quantitative
+calibration metrics.
 """
 from __future__ import annotations
 
@@ -12,13 +17,14 @@ from typing import Any, Mapping
 CAN_EXECUTE = False
 AUTOMATIC_PROMOTION = False
 TERMINAL_AUTHORITY = "V17_TERMINAL_REDUCER"
-QUALITY_PARITY_VERSION = "V17_TEAM_EVENT_PROBABILITY_QUALITY_PARITY_V1"
+QUALITY_PARITY_VERSION = "V17_TEAM_EVENT_PROBABILITY_QUALITY_PARITY_V2"
 
 TARGET_SPORTS = ("MLB", "NFL", "NCAAF", "NBA", "WNBA", "NHL")
 ALIASES = {"CFB": "NCAAF", "COLLEGE_FOOTBALL": "NCAAF"}
 
 REQUIRED_DIMENSIONS = (
     "exact_fitted_specialist",
+    "server_owned_calibration_artifact",
     "quantitative_calibration_health",
     "cohort_reliability_separate",
     "event_specific_uncertainty",
@@ -55,7 +61,7 @@ def assess_probability_quality_evidence(
 ) -> dict[str, Any]:
     """Return parity state without manufacturing missing model capability.
 
-    `evidence` is metadata/health evidence only.  It is never allowed to supply a
+    `evidence` is metadata/health evidence only. It is never allowed to supply a
     probability and cannot promote a sporting model.
     """
     normalized = normalize_quality_sport(sport)
@@ -76,10 +82,12 @@ def assess_probability_quality_evidence(
     row = dict(evidence or {})
     blockers: list[str] = []
 
-    # Model capability comes first.  No calibration or generic probability can
+    # Model capability comes first. No calibration or generic probability can
     # compensate for a missing exact fitted specialist.
     if not _truthy(row, "exact_fitted_specialist"):
         blockers.append("QUALITY_PARITY_EXACT_FITTED_SPECIALIST_UNPROVEN")
+    if not _truthy(row, "server_owned_calibration_artifact"):
+        blockers.append("QUALITY_PARITY_SERVER_OWNED_CALIBRATION_UNPROVEN")
 
     metrics = row.get("calibration_metrics")
     if not isinstance(metrics, Mapping):
@@ -145,18 +153,21 @@ def readiness_quality_evidence(sport: str, health: Mapping[str, Any]) -> dict[st
     """Translate existing route/readiness health into conservative parity evidence.
 
     This adapter intentionally does not infer calibration quality from a route,
-    registration, or artifact PASS label.  Missing quantitative/ledger evidence
-    remains blocked until the sport-specific lifecycle proves it.
+    registration, request artifact or stored PASS label. Missing quantitative,
+    server-owned calibration, or ledger evidence remains blocked until the
+    sport-specific lifecycle proves it.
     """
     normalized = normalize_quality_sport(sport)
     model_proven = bool(
         health.get("model_artifact_dependency_satisfied")
         and health.get("request_scoring_path_ready")
     )
+    server_calibration = bool(health.get("calibration_artifact_dependency_satisfied"))
     quantitative = bool(health.get("probability_quality_quantitative_pass"))
     metrics = health.get("probability_quality_metrics")
     return {
         "exact_fitted_specialist": model_proven,
+        "server_owned_calibration_artifact": server_calibration,
         "calibration_metrics": metrics if isinstance(metrics, Mapping) else None,
         "calibration_health_status": health.get("probability_quality_calibration_status"),
         "calibration_health_quantitative": quantitative,
