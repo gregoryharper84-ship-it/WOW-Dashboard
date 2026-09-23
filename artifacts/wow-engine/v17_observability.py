@@ -97,12 +97,20 @@ def initialize_observability() -> dict[str, Any]:
         from v17.diagnostic_probe_load_shedding import (
             install_diagnostic_probe_load_shedding,
         )
+        from v17.llp_v17_1_shadow_status_route import install_llp_shadow_status_route
         from v17.team_event_governance_parity_route import (
             install_team_event_governance_parity_route,
         )
 
         install_team_event_governance_parity_route(
             market_api=_accepted_base.market_api,
+        )
+        # This status route is independent of optional Core Intelligence route
+        # mounting so scheduled shadow automation can distinguish configured-off
+        # from a configured-active route regression.
+        install_llp_shadow_status_route(
+            _accepted_base.app,
+            existing_auth_dependency=_accepted_base.market_api.prod._require_action_api_key,
         )
         # Install after the authoritative governance route so the wrapper captures
         # the final diagnostic business logic rather than a lower-layer route.
