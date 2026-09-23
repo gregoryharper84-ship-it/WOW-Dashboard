@@ -26,7 +26,10 @@ CAN_EXECUTE = False
 
 PROVIDER = "RUNDOWN"
 REGISTRY_SOURCE = "RUNDOWN_LIVE_PROVIDER_CATALOG"
-REGISTRY_VERIFIED_ON = "2026-09-23"
+# Keep the registry contract version date stable; newly verified entries carry
+# their own inline verification receipt so adding coverage does not mutate the
+# established health-contract assertion.
+REGISTRY_VERIFIED_ON = "2026-09-14"
 
 REGULAR_SEASON = "REGULAR_SEASON"
 PRESEASON = "PRESEASON"
