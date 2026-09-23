@@ -18,6 +18,7 @@ from typing import Any, Callable, Mapping
 
 from fastapi import HTTPException
 
+from nfl_event_model_contract import CONTROLLING_SPECIALIST as NFL_CONTROLLING_SPECIALIST
 import v17.team_event_request_runtime as _base_runtime
 from v17.llp_governed_package_scoring import (
     MODEL_INPUTS_INSUFFICIENT,
@@ -485,9 +486,6 @@ def _install_health_overlay() -> None:
     )
 
 
-NFL_OUTRIGHT_WIN_SPECIALIST = "NFL_OUTRIGHT_WIN_FITTED_MODEL_V1"
-
-
 def _register_nfl_bridge_if_available() -> bool:
     """Register the NFL bridge when its implementation chain actually imports.
 
@@ -513,7 +511,7 @@ def _register_nfl_bridge_if_available() -> bool:
     register_team_event_bridge(
         "NFL",
         adapter_name="V17_NFL_TEAM_EVENT_BRIDGE",
-        controlling_specialist=NFL_OUTRIGHT_WIN_SPECIALIST,
+        controlling_specialist=NFL_CONTROLLING_SPECIALIST,
         scorer=scorer,
         required_inputs=TEAM_EVENT_INPUT_CONTRACTS["NFL"],
         # The NFL publication chain owns its own canonical acquisition, input
