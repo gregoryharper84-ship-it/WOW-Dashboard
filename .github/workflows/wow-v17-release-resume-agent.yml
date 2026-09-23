@@ -1,0 +1,97 @@
+name: wow-v17-release-resume-agent
+
+on:
+  schedule:
+    - cron: "37 * * * *"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  checks: read
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: wow-v17-release-resume-agent
+  cancel-in-progress: false
+
+jobs:
+  release-resume:
+    name: Resume unfinished release verification
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout protected main
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Select priority release incident
+        id: priority
+        shell: bash
+        run: |
+          set -euo pipefail
+          result=$(python artifacts/wow-engine/v17/engineering_agent_team.py priority)
+          state=$(jq -r '.state' <<<"$result")
+          incident=$(jq -r '.incident_id // ""' <<<"$result")
+          case "$state" in
+            DEPLOYED_PENDING_VERIFY|MERGED_PENDING_DEPLOY|PR_CREATED)
+              release_pending=true
+              ;;
+            *)
+              release_pending=false
+              ;;
+          esac
+          echo "release_pending=$release_pending" >> "$GITHUB_OUTPUT"
+          echo "incident=$incident" >> "$GITHUB_OUTPUT"
+          echo "state=$state" >> "$GITHUB_OUTPUT"
+          printf '%s\n' "$result" > "$RUNNER_TEMP/priority.json"
+
+      - name: Release / Production Verification agent
+        id: release_agent
+        if: steps.priority.outputs.release_pending == 'true'
+        uses: ./.github/actions/wow-claude-agent
+        with:
+          oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            You are the independent WOW V17 RELEASE_OBSERVABILITY_AGENT.
+            Read CLAUDE.md, .agents/skills/wow-engineering-release-observability-agent/SKILL.md,
+            artifacts/wow-engine/v17/incident-ledger.json, current protected-main CI evidence,
+            and the highest-priority incident selected by engineering_agent_team.py.
+            Resume only release/production verification for that incident. Do not implement code,
+            merge, deploy, or change sporting probability behavior. Verify as much as public/runtime
+            evidence permits: exact protected main, required CI, production liveness/governance,
+            deploy/acceptance evidence, and reconciliation evidence. If exact production SHA or
+            required durable state cannot be proven, return PENDING instead of manufacturing closure.
+            Preserve V17_TERMINAL_REDUCER, typed failures, exact-once semantics, and can_execute=false.
+          claude_args: >-
+            --max-turns 70
+            --allowedTools "Read,Glob,Grep,Bash(python artifacts/wow-engine/v17/engineering_agent_team.py *),Bash(git log *),Bash(gh run list *),Bash(gh run view *),Bash(gh pr list *),Bash(gh pr view *),Bash(curl *)"
+            --json-schema '{"type":"object","properties":{"incident_id":{"type":"string"},"status":{"type":"string","enum":["PRODUCTION_VERIFIED","PENDING","BLOCKED_WITH_EXACT_REASON"]},"main_sha":{"type":"string"},"production_sha":{"type":"string"},"acceptance":{"type":"string"},"reconciliation":{"type":"string"},"blocker":{"type":"string"},"next_action":{"type":"string"}},"required":["incident_id","status","main_sha","production_sha","acceptance","reconciliation","blocker","next_action"],"additionalProperties":false}'
+
+      - name: Publish release-resume receipt
+        if: always()
+        env:
+          RESULT: ${{ steps.release_agent.outputs.structured_output }}
+        run: |
+          {
+            echo "# WOW V17 Release Resume Agent"
+            echo "- incident: ${{ steps.priority.outputs.incident || 'NONE' }}"
+            echo "- selected_state: ${{ steps.priority.outputs.state || 'NONE' }}"
+            echo "- release_pending: ${{ steps.priority.outputs.release_pending || 'false' }}"
+            if [ -n "${RESULT:-}" ]; then
+              echo
+              echo '```json'
+              echo "$RESULT"
+              echo '```'
+            fi
+            echo "- can_execute: false"
+          } >> "$GITHUB_STEP_SUMMARY"
