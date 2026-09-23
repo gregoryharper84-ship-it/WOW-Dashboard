@@ -1,7 +1,8 @@
 """Hydrate real NBA/WNBA settled team games into V17 research stores.
 
 Primary source: BallDontLie when its credential/path is available.
-Fallback source: ESPN public scoreboard, used only for settled games newer than
+First fallback: Sportsdataverse's open-licensed ESPN schedule releases.
+Second fallback: ESPN public scoreboard, used only for settled games newer than
 the currently persisted corpus. The monotonic-date fallback rule prevents a
 provider switch from duplicating older BallDontLie rows under different IDs.
 
@@ -11,13 +12,17 @@ execution. can_execute=False unconditional.
 from __future__ import annotations
 
 import argparse
+import csv
 from datetime import date, datetime, timezone
 import hashlib
+import io
 import json
 import os
 from typing import Any, Callable, Iterable
 
 import requests
+
+from v17.model_source_entitlements import source_readiness
 
 can_execute: bool = False
 
@@ -29,9 +34,22 @@ ESPN_BASE_URLS = {
     "NBA": "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard",
     "WNBA": "https://site.api.espn.com/apis/site/v2/sports/basketball/wnba/scoreboard",
 }
+SPORTSDATAVERSE_RELEASE_URLS = {
+    "NBA": "https://github.com/sportsdataverse/sportsdataverse-data/releases/download/espn_nba_schedules/nba_schedule_{year}.csv",
+    "WNBA": "https://github.com/sportsdataverse/sportsdataverse-data/releases/download/espn_wnba_schedules/wnba_schedule_{year}.csv",
+}
 TABLES = {
     "NBA": "wow_nba_training_games",
     "WNBA": "wow_wnba_training_games",
+}
+SPORTSDATAVERSE_REQUIRED_COLUMNS = {
+    "game_id",
+    "game_date",
+    "home_id",
+    "away_id",
+    "home_score",
+    "away_score",
+    "status_type_completed",
 }
 
 
@@ -84,6 +102,51 @@ def fetch_games(sport: str, season: int, *, max_pages: int = 100) -> list[dict[s
             break
         params = {**params, "cursor": cursor}
     return rows
+
+
+def fetch_sportsdataverse_games(
+    sport: str,
+    season: int,
+    *,
+    session: Any = requests,
+    timeout: int = 60,
+) -> list[dict[str, Any]]:
+    """Open-licensed Sportsdataverse schedule/result fallback.
+
+    The source registry remains the authority on whether this dataset is valid
+    for fitted-model development. Availability of the GitHub asset alone is not
+    enough to authorize training use.
+    """
+    normalized = sport.upper().strip()
+    if normalized not in SPORTSDATAVERSE_RELEASE_URLS:
+        raise BasketballHydrationError(f"unsupported sport {normalized}")
+    readiness = source_readiness("SPORTSDATAVERSE_ESPN")
+    if not readiness.ready_for_candidate_training:
+        blockers = ",".join(readiness.blockers) or "UNKNOWN"
+        raise BasketballHydrationError(f"SPORTSDATAVERSE_ESPN_SOURCE_NOT_READY:{blockers}")
+    year = int(season)
+    url = SPORTSDATAVERSE_RELEASE_URLS[normalized].format(year=year)
+    try:
+        response = session.get(
+            url,
+            headers={"Accept": "text/csv", "User-Agent": "WOW-V17-Basketball-Research/1.0"},
+            timeout=timeout,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise BasketballHydrationError("SPORTSDATAVERSE_ESPN_REQUEST_FAILED") from exc
+    if response.status_code == 429:
+        raise BasketballHydrationError("SPORTSDATAVERSE_ESPN_RATE_LIMITED")
+    if response.status_code != 200:
+        raise BasketballHydrationError(f"SPORTSDATAVERSE_ESPN_HTTP_{response.status_code}")
+    text = str(response.text or "").lstrip("\ufeff")
+    reader = csv.DictReader(io.StringIO(text))
+    fieldnames = {str(value or "").strip() for value in (reader.fieldnames or [])}
+    missing = sorted(SPORTSDATAVERSE_REQUIRED_COLUMNS - fieldnames)
+    if missing:
+        raise BasketballHydrationError(
+            "SPORTSDATAVERSE_ESPN_SCHEMA_DRIFT:" + ",".join(missing)
+        )
+    return [dict(row) for row in reader]
 
 
 def fetch_espn_games(sport: str, season: int) -> list[dict[str, Any]]:
@@ -146,6 +209,57 @@ def normalize_game(raw: dict[str, Any], sport: str, retrieved_at: str) -> dict[s
         "home_win": int(hs) > int(aws),
         "source_provider": "BALLDONTLIE",
         "source_endpoint": BASE_URLS[sport],
+        "source_retrieved_at": retrieved_at,
+        "source_payload_sha256": payload_sha,
+        "settled": True,
+        "updated_at": retrieved_at,
+    }
+
+
+def normalize_sportsdataverse_game(
+    raw: dict[str, Any],
+    sport: str,
+    retrieved_at: str,
+) -> dict[str, Any] | None:
+    completed = str(raw.get("status_type_completed") or "").strip().lower() in {"1", "true", "yes"}
+    status_text = " ".join(
+        str(raw.get(key) or "")
+        for key in ("status_type_name", "status_type_state", "status_type_description")
+    ).lower()
+    if not completed and not any(token in status_text for token in ("final", "complete", "post")):
+        return None
+    event_id = str(raw.get("game_id") or raw.get("id") or "").strip()
+    date_text = str(raw.get("game_date") or raw.get("date") or "")[:10]
+    home_id = str(raw.get("home_id") or "").strip()
+    away_id = str(raw.get("away_id") or "").strip()
+    try:
+        home_score = int(float(str(raw.get("home_score"))))
+        away_score = int(float(str(raw.get("away_score"))))
+    except (TypeError, ValueError):
+        return None
+    if not event_id or not date_text or not home_id or not away_id or home_score == away_score:
+        return None
+    normalized = sport.upper().strip()
+    try:
+        year = int(date_text[:4])
+    except ValueError:
+        return None
+    source_url = SPORTSDATAVERSE_RELEASE_URLS[normalized].format(year=year)
+    payload_sha = hashlib.sha256(
+        json.dumps(raw, sort_keys=True, separators=(",", ":"), default=str).encode()
+    ).hexdigest()
+    return {
+        "game_id": f"espn-{event_id}",
+        "season": int(float(str(raw.get("season") or year))),
+        "game_date": date_text,
+        "status": str(raw.get("status_type_description") or raw.get("status_type_name") or "Final"),
+        "home_team_id": f"espn-{home_id}",
+        "away_team_id": f"espn-{away_id}",
+        "home_score": home_score,
+        "away_score": away_score,
+        "home_win": home_score > away_score,
+        "source_provider": "SPORTSDATAVERSE_ESPN",
+        "source_endpoint": source_url,
         "source_retrieved_at": retrieved_at,
         "source_payload_sha256": payload_sha,
         "settled": True,
@@ -257,6 +371,7 @@ def hydrate(sport: str, seasons: Iterable[int], client=None) -> dict[str, Any]:
         normalizer: Callable[[dict[str, Any], str, str], dict[str, Any] | None]
         provider: str
         primary_error: BasketballHydrationError | None = None
+        sportsdataverse_error: BasketballHydrationError | None = None
         try:
             raw = fetch_games(sport, year)
             normalizer = normalize_game
@@ -264,29 +379,38 @@ def hydrate(sport: str, seasons: Iterable[int], client=None) -> dict[str, Any]:
         except BasketballHydrationError as exc:
             primary_error = exc
             try:
-                raw = fetch_espn_games(sport, year)
-            except BasketballHydrationError as fallback_exc:
-                raise BasketballHydrationError(
-                    f"BASKETBALL_FRESH_SOURCE_UNAVAILABLE primary={str(primary_error)} fallback={str(fallback_exc)}"
-                ) from fallback_exc
-            normalizer = normalize_espn_game
-            provider = "ESPN_SCOREBOARD"
+                raw = fetch_sportsdataverse_games(sport, year)
+                normalizer = normalize_sportsdataverse_game
+                provider = "SPORTSDATAVERSE_ESPN"
+            except BasketballHydrationError as source_exc:
+                sportsdataverse_error = source_exc
+                try:
+                    raw = fetch_espn_games(sport, year)
+                except BasketballHydrationError as fallback_exc:
+                    raise BasketballHydrationError(
+                        "BASKETBALL_FRESH_SOURCE_UNAVAILABLE "
+                        f"primary={str(primary_error)} "
+                        f"sportsdataverse={str(sportsdataverse_error)} "
+                        f"espn={str(fallback_exc)}"
+                    ) from fallback_exc
+                normalizer = normalize_espn_game
+                provider = "ESPN_SCOREBOARD"
             fallback_reasons[year] = str(primary_error)
 
         total_raw += len(raw)
-        normalized = [r for g in raw if (r := normalizer(g, sport, retrieved_at)) is not None]
-        if provider == "ESPN_SCOREBOARD" and latest_before is not None:
+        normalized_rows = [r for g in raw if (r := normalizer(g, sport, retrieved_at)) is not None]
+        if provider != "BALLDONTLIE" and latest_before is not None:
             # Provider IDs are not globally comparable. Restrict fallback writes
             # to rows newer than the existing corpus so old BDL rows cannot be
-            # duplicated under ESPN IDs.
-            normalized = [
-                row for row in normalized
+            # duplicated under ESPN-derived IDs.
+            normalized_rows = [
+                row for row in normalized_rows
                 if date.fromisoformat(str(row["game_date"])[:10]) > latest_before
             ]
-        per_season[year] = len(normalized)
+        per_season[year] = len(normalized_rows)
         source_by_season[year] = provider
-        total_settled += len(normalized)
-        _persist_rows(client, sport, normalized)
+        total_settled += len(normalized_rows)
+        _persist_rows(client, sport, normalized_rows)
 
     latest_after = _latest_persisted_game_date(client, sport)
     return {
