@@ -24,7 +24,7 @@ create table if not exists public.wow_market_price_observations (
 
     affiliate_id text not null,
     sportsbook text not null,
-    american_odds numeric not null,
+    american_odds numeric,
     decimal_odds numeric,
 
     -- Freshness is based on the provider's quote timestamp. fetched_at is
@@ -34,6 +34,8 @@ create table if not exists public.wow_market_price_observations (
     snapshot_kind text not null,
     is_live boolean not null default false,
     is_main_line boolean not null default false,
+    is_available boolean not null default true,
+    closed_at timestamptz,
 
     raw_payload jsonb not null default '{}'::jsonb,
     prediction_authority boolean not null default false,
@@ -46,7 +48,10 @@ create table if not exists public.wow_market_price_observations (
     constraint wow_market_price_observations_book_nonempty check (btrim(sportsbook) <> ''),
     constraint wow_market_price_observations_no_prediction_authority check (prediction_authority = false),
     constraint wow_market_price_observations_no_execution check (can_execute = false),
-    constraint wow_market_price_observations_decimal_valid check (decimal_odds is null or decimal_odds > 1.0)
+    constraint wow_market_price_observations_decimal_valid check (decimal_odds is null or decimal_odds > 1.0),
+    constraint wow_market_price_observations_available_price check (
+        is_available = false or american_odds is not null
+    )
 );
 
 create index if not exists wow_market_price_event_history_idx
@@ -58,6 +63,10 @@ create index if not exists wow_market_price_sport_fetch_idx
 
 create index if not exists wow_market_price_event_start_idx
     on public.wow_market_price_observations (event_start_utc, provider_event_id);
+
+create index if not exists wow_market_price_available_idx
+    on public.wow_market_price_observations
+    (provider_event_id, market_id, is_available, price_updated_at desc nulls last);
 
 create table if not exists public.wow_market_feed_sync_state (
     feed_key text primary key,
@@ -140,9 +149,11 @@ create policy wow_market_catalog_service_role
     with check (can_execute = false);
 
 comment on table public.wow_market_price_observations is
-    'Append-only provider market quotes. Evidence only; never sporting probability authority.';
+    'Append-only provider market quotes and off-board transitions. Evidence only; never sporting probability authority.';
 comment on column public.wow_market_price_observations.price_updated_at is
     'Provider quote timestamp used for freshness. fetched_at must not substitute for this value.';
+comment on column public.wow_market_price_observations.is_available is
+    'False for closed/off-board provider observations, including TheRundown 0.0001 sentinel rows.';
 comment on table public.wow_market_feed_sync_state is
     'Collector recovery/entitlement state. DELTA is permitted only after runtime confirms zero delay and a valid cursor.';
 comment on table public.wow_market_provider_catalog is
