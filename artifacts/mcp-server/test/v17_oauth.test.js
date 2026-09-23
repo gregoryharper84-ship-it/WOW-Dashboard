@@ -9,6 +9,7 @@ import {
   buildProtectedResourceMetadata,
   extractOAuthPermissions,
   oauthConfig,
+  oauthSessionFingerprint,
   requiredPermissionsForMcpBody,
   verifyOAuthAccessToken,
 } from "../src/v17_oauth.js";
@@ -28,8 +29,8 @@ function encodeJson(value) {
   return Buffer.from(JSON.stringify(value), "utf8").toString("base64url");
 }
 
-function token(overrides = {}) {
-  const header = encodeJson({ alg: "RS256", typ: "JWT", kid: "test-key" });
+function token(overrides = {}, { signingKey = privateKey, kid = "test-key" } = {}) {
+  const header = encodeJson({ alg: "RS256", typ: "JWT", kid });
   const payload = encodeJson({
     iss: ISSUER,
     aud: AUDIENCE,
@@ -44,7 +45,7 @@ function token(overrides = {}) {
     ...overrides,
   });
   const signingInput = `${header}.${payload}`;
-  const signature = sign("RSA-SHA256", Buffer.from(signingInput, "ascii"), privateKey).toString("base64url");
+  const signature = sign("RSA-SHA256", Buffer.from(signingInput, "ascii"), signingKey).toString("base64url");
   return `${signingInput}.${signature}`;
 }
 
@@ -91,6 +92,32 @@ test("OAuth mode refuses to run without an explicit client allowlist", async () 
   );
 });
 
+test("unknown JWT kid forces one JWKS refresh so signing-key rotation does not depend on cache expiry", async () => {
+  const rotated = generateKeyPairSync("rsa", { modulusLength: 2048 });
+  const rotatedJwk = rotated.publicKey.export({ format: "jwk" });
+  const staleJwks = jwks;
+  const refreshedJwks = {
+    keys: [{ ...rotatedJwk, kid: "rotated-key", alg: "RS256", use: "sig" }],
+  };
+  const calls = [];
+  const fetchImpl = async (url) => {
+    calls.push(url);
+    const body = calls.length === 1 ? staleJwks : refreshedJwks;
+    return new Response(JSON.stringify(body), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+  const rotatedToken = token({}, { signingKey: rotated.privateKey, kid: "rotated-key" });
+  const context = await verifyOAuthAccessToken(rotatedToken, verifyOptions({
+    jwks: null,
+    jwksUrl: `${ISSUER}/rotation-test-${Date.now()}/.well-known/jwks.json`,
+    fetchImpl,
+  }));
+  assert.equal(context.clientId, CLIENT_ID);
+  assert.equal(calls.length, 2);
+});
+
 test("signed WOW permission claim and native OAuth scope claims are both recognized", () => {
   const permissions = extractOAuthPermissions({
     scope: "openid wow.runtime.read",
@@ -126,6 +153,18 @@ test("missing operation permission returns a typed 403 without changing executio
       && error.code === "MCP_OAUTH_PERMISSION_DENIED"
       && error.status === 403
       && error.details.required_permissions[0] === "wow.predictions.score",
+  );
+});
+
+test("MCP OAuth sessions are bound to the issuing Supabase session as well as user and client", () => {
+  const base = { mode: "oauth", subject: "user-1", clientId: CLIENT_ID };
+  assert.notEqual(
+    oauthSessionFingerprint({ ...base, sessionId: "session-a" }),
+    oauthSessionFingerprint({ ...base, sessionId: "session-b" }),
+  );
+  assert.equal(
+    oauthSessionFingerprint({ ...base, sessionId: "session-a" }),
+    `oauth:user-1:${CLIENT_ID}:session-a`,
   );
 });
 
