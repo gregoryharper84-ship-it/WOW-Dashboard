@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wow.local/schemas/wow_frontier_radar_item.schema.json",
+  "title": "WOW Frontier Radar Item",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "radar_id",
+    "discovered_at",
+    "lane",
+    "title",
+    "source_url",
+    "provenance",
+    "affected_area",
+    "opportunity",
+    "evidence_quality",
+    "change_class",
+    "disposition",
+    "production_change_allowed"
+  ],
+  "properties": {
+    "radar_id": {"type": "string", "minLength": 1},
+    "discovered_at": {"type": "string", "format": "date-time"},
+    "lane": {"type": "string", "enum": ["AI_FRONTIER", "SPORTS_INTELLIGENCE"]},
+    "title": {"type": "string", "minLength": 1},
+    "source_url": {"type": "string", "format": "uri"},
+    "provenance": {"type": "string", "minLength": 1},
+    "affected_area": {"type": "string", "minLength": 1},
+    "sport": {"type": ["string", "null"]},
+    "opportunity": {"type": "string", "minLength": 1},
+    "benefit_categories": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"type": "string", "enum": ["ACCURACY", "CALIBRATION", "COVERAGE", "RELIABILITY", "LATENCY", "COST", "OBSERVABILITY", "OPERATOR_UX"]}
+    },
+    "evidence_quality": {"type": "string", "enum": ["LOW", "MEDIUM", "HIGH"]},
+    "change_class": {"type": "string", "enum": ["A", "B", "C"]},
+    "governance_constraints": {"type": "array", "items": {"type": "string"}},
+    "experiment_required": {"type": "boolean"},
+    "disposition": {"type": "string", "enum": ["ADOPT", "TRIAL", "ASSESS", "WATCH", "REJECT", "DUPLICATE"]},
+    "production_change_allowed": {"const": false},
+    "duplicate_of": {"type": ["string", "null"]},
+    "notes": {"type": ["string", "null"]}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"change_class": {"const": "C"}}},
+      "then": {"properties": {"experiment_required": {"const": true}}}
+    },
+    {
+      "if": {"properties": {"disposition": {"const": "DUPLICATE"}}},
+      "then": {"required": ["duplicate_of"]}
+    }
+  ]
+}
