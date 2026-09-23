@@ -8,6 +8,9 @@ on:
       - "artifacts/mcp-server/src/v17_remote_acceptance.js"
       - "artifacts/mcp-server/src/v17_backend.js"
       - "artifacts/mcp-server/src/v17_contract.js"
+      - "artifacts/mcp-server/src/v17_server.js"
+      - "artifacts/mcp-server/src/v17_http.js"
+      - "artifacts/mcp-server/src/v17_oauth.js"
   workflow_dispatch:
 
 permissions:
