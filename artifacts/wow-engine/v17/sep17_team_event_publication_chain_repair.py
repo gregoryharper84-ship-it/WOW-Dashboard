@@ -80,6 +80,51 @@ def _model_contract_ready(req: Any, model_result: dict[str, Any], team_runtime: 
     return not blockers, sorted(set(blockers))
 
 
+def _authoritative_value(nested: dict[str, Any], output: dict[str, Any], nested_key: str, output_key: str) -> Any:
+    """Prefer a concrete nested governance value over duplicated stale telemetry."""
+    value = nested.get(nested_key)
+    if value not in (None, "", "NOT_PROVEN", "NOT_CALLED", "UNKNOWN"):
+        return value
+    return output.get(output_key)
+
+
+def _reconcile_governance_stage_state(output: dict[str, Any]) -> dict[str, Any]:
+    """Mirror authoritative nested governance into duplicated top-level stage state.
+
+    This is serialization reconciliation only. It does not change the nested
+    governance result, terminal label, probability publication, or rank
+    eligibility. A completed stage may be true while the row is still held by a
+    later stage such as final refresh.
+    """
+    governance = output.get("llp_governance")
+    if not isinstance(governance, dict):
+        return output
+
+    out = dict(output)
+    audit = _authoritative_value(
+        governance, out, "probability_audit_result", "llp_probability_audit_result"
+    )
+    decision = _authoritative_value(governance, out, "event_decision", "llp_event_decision")
+    mutex = _authoritative_value(governance, out, "event_mutex_status", "event_mutex_status")
+
+    if audit not in (None, ""):
+        out["llp_probability_audit_result"] = audit
+        out["probability_audit_passed"] = str(audit).upper() in {"PASS", "PASS_PROBABILITY_AUDIT"}
+    if decision not in (None, ""):
+        out["llp_event_decision"] = decision
+    if mutex not in (None, ""):
+        out["event_mutex_status"] = mutex
+
+    decision_proven = str(decision or "").upper() not in {
+        "", "NOT_PROVEN", "NOT_CALLED", "UNKNOWN"
+    }
+    out["event_governor_complete"] = bool(
+        str(mutex or "").upper() == "PASS" and decision_proven
+    )
+    out["can_execute"] = False
+    return out
+
+
 def install_team_event_publication_chain_repair(*, preservation: Any, team_runtime: Any) -> bool:
     """Install the probability-only model/publication boundary repair.
 
@@ -127,7 +172,7 @@ def install_team_event_publication_chain_repair(*, preservation: Any, team_runti
         if not isinstance(result, dict):
             return result
 
-        out = dict(result)
+        out = _reconcile_governance_stage_state(dict(result))
         out["probability_only_model_publication_repair"] = {
             "status": "APPLIED" if applied else "NOT_APPLIED",
             "intent": str(getattr(req, "decision_intent", "") or "").upper(),
