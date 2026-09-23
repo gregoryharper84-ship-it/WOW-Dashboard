@@ -1,0 +1,20 @@
+name: WOW Frontier Intelligence Worker
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  contract-only:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify frontier intelligence remains non-promoting
+        shell: bash
+        run: |
+          python scripts/validate_wow_engineering_team.py
+          echo "Frontier worker is enabled but no external-research provider is configured in this workflow yet."
+          echo "No production/model mutation will be attempted."
