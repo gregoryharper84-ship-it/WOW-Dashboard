@@ -86,7 +86,7 @@ def test_legacy_replit_cannot_be_primary_v17_route():
     assert c["backward_compatible_v16_routes_preserved"] is True
 
 
-def test_render_deployment_attestation_matches_current_live_state():
+def test_render_deployment_attestation_matches_recorded_live_state():
     backend = _contract()["backend_contract"]
     assert backend["current_render_service"] == "wow-governed-probability-engine"
     assert backend["current_render_service_id"] == "srv-da7sa9gu01pc73brt80g"
@@ -95,6 +95,7 @@ def test_render_deployment_attestation_matches_current_live_state():
     assert backend["auto_deploy"] is True
     assert backend["auto_deploy_trigger"] == "checksPass"
     assert backend["openapi_introspection_blocks_live_editor_sync"] is False
+    assert "RECONCILE_BACKEND_DEPLOYMENT_POINTER_FROM_EXACT_RENDER_RECEIPT" in _contract()["remaining_repository_reconciliation"]
 
 
 def test_v17_active_backend_uses_existing_governed_team_event_adapter_without_fake_models():
@@ -119,7 +120,7 @@ def test_v16_is_legacy_compatibility_not_current_generation():
     assert "scoreWowTeamEventRequest" in legacy["pick_request"]["operations"]
 
 
-def test_wow_editor_update_is_recorded_but_live_action_acceptance_stays_fail_closed():
+def test_wow_editor_resync_is_required_and_live_action_acceptance_stays_fail_closed():
     c = _contract()
     attest = c["editor_attestation"]
     wow = attest["WOW_BETTING_ENGINE"]
@@ -127,24 +128,26 @@ def test_wow_editor_update_is_recorded_but_live_action_acceptance_stays_fail_clo
 
     assert wow["required"] is True
     assert llp["required"] is True
-    assert wow["status"] == "EDITOR_UPDATED__LIVE_ACTION_ACCEPTANCE_REQUIRED"
+    assert wow["status"] == "RESYNC_REQUIRED_AFTER_PR766__LIVE_ACTION_ACCEPTANCE_REQUIRED"
     assert wow["historical_status"] == "LIVE_EDITOR_SYNC_VERIFIED"
     assert wow["historical_verified_at"] == "2026-09-16"
     assert wow["editor_update_reported_at"] == "2026-09-20T22:14:47Z"
     assert wow["editor_update_evidence"] == "USER_REPORTED_IN_CHAT"
     assert wow["instructions_blob_sha"] is None
-    assert wow["repository_instruction_parity"] == "USER_REPORTED_IMPORTED_AND_UPDATED__ACTION_ACCEPTANCE_PENDING"
+    assert wow["repository_instruction_parity"] == "RESYNC_REQUIRED_AFTER_PR766"
+    assert wow["live_host_addendum"] == "WOW_V17_CUSTOM_GPT_PRIZEPICKS_SKILL_ADDENDUM.txt"
     assert wow["action_schema"] == "v17/openapi.wow-betting-engine.v17.yaml"
     assert wow["canonical_prop_operation"] == "scoreWowPickRequest"
     assert wow["legacy_prop_operation_alias"] == "scoreWowV17PickRequest"
     assert wow["bearer_auth_changed"] is False
     assert wow["verified_after_reload"] is False
     assert wow["live_action_acceptance_verified"] is False
+    assert wow["multipage_prizepicks_acceptance_verified"] is False
     assert wow["live"] is True
     assert wow["historical_health_acceptance_status"] == "PASS"
     assert wow["historical_health_acceptance_runtime"] == "V17_ACTIVE"
     assert wow["health_acceptance_can_execute"] is False
     assert llp["status"] == "LIVE_EDITOR_SYNC_VERIFIED"
-    assert c["remaining_external_sync"] == ["WOW_BETTING_ENGINE_LIVE_ACTION_ACCEPTANCE_AFTER_EDITOR_UPDATE"]
+    assert c["remaining_external_sync"] == ["WOW_BETTING_ENGINE_EDITOR_RESYNC_AFTER_PR766_AND_LIVE_ACTION_ACCEPTANCE"]
     assert c["activation"]["v17_cutover_allowed"] is True
     assert c["activation"]["can_execute"] is False
