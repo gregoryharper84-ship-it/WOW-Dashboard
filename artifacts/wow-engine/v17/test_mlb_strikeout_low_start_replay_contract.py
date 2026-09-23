@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "evaluate_mlb_pitcher_strikeouts_low_start.py"
+CANDIDATE_SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "evaluate_mlb_pitcher_strikeouts_min3_candidate.py"
 spec = importlib.util.spec_from_file_location("mlb_low_start_replay", SCRIPT)
 module = importlib.util.module_from_spec(spec)
 assert spec and spec.loader
@@ -44,10 +45,14 @@ def test_shrinkage_strengthens_with_more_history():
 
 def test_report_is_read_only_governance_artifact():
     source = SCRIPT.read_text(encoding="utf-8")
+    candidate_source = CANDIDATE_SCRIPT.read_text(encoding="utf-8")
     assert '"classification": "CLASS_C_CHALLENGER_ONLY"' in source
     assert '"production_change": False' in source
     assert '"can_execute": False' in source
     assert "sportsbook" in source.lower()
     assert "production_hydration_min_starts" in source
-    assert "candidate_3_to_9" in source
-    assert "one_to_two_holdout" in source
+    assert '"classification": "CLASS_C_CHALLENGER_ONLY"' in candidate_source
+    assert '"candidate_3_to_9"' in candidate_source
+    assert '"one_to_two_holdout"' in candidate_source
+    assert '"candidate_min_prior_starts": 3' in candidate_source
+    assert "separate governed Class C PR" in candidate_source
