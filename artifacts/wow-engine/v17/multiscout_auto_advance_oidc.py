@@ -45,24 +45,50 @@ def _team_event_batch_rows() -> int:
     return max(1, min(value, 50))
 
 
+# Live run 35874396361 proved that eight concurrent long-running governed scorer
+# requests can overload the single production web-service path: seven requests
+# returned HTTP 200 while five sibling batches timed out. Keep the ordinary
+# Action-key bridge unchanged and bound only the OIDC Nightly caller so Scout
+# cannot create its own avoidable thundering herd against the governed backend.
+def _oidc_max_in_flight() -> int:
+    raw = os.environ.get("WOW_AUTO_ADVANCE_OIDC_IN_FLIGHT", "2")
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        value = 2
+    return max(1, min(value, 4))
+
+
 TEAM_EVENT_BATCH_ROWS = _team_event_batch_rows()
+OIDC_MAX_IN_FLIGHT = _oidc_max_in_flight()
 auto_advance.MAX_TEAM_EVENT_ROWS = TEAM_EVENT_BATCH_ROWS
 _TRANSIENT_HTTP_STATUSES = frozenset({502, 503, 504})
 _TRANSIENT_RETRY_BACKOFF_SECONDS = (1.0, 3.0)
 
 
 def _repeat_safe_transient_retry(path: str, payload: dict[str, Any]) -> bool:
-    """Retry only the batch shape with a proven repeat-safe persistence contract.
+    """Return whether the exact request can be safely repeated after transport loss.
 
-    MLB team/event governance upserts by frozen research/event/settlement identity,
-    so a lost 502/503/504 response can be retried without manufacturing a second
-    sporting thesis. NFL currently writes immutable prediction rows, so mixed or
-    non-MLB batches remain fail-closed until they have an explicit idempotency key.
+    Prop scoring has a durable resume contract keyed by the exact request_id and
+    stable row_key values, so a lost response can be retried without duplicating
+    completed rows. MLB team/event governance upserts by frozen
+    research/event/settlement identity, so that lane is also repeat-safe.
+
+    Other team/event sports can write immutable prediction rows and therefore
+    remain fail-closed until they expose an equivalent idempotency contract.
     """
-    if path != "/score-team-event-request":
-        return False
     rows = payload.get("rows")
     if not isinstance(rows, list) or not rows:
+        return False
+
+    if path == "/score-pick-request":
+        request_id = str(payload.get("request_id") or "").strip()
+        return bool(request_id) and all(
+            isinstance(row, dict) and bool(str(row.get("row_key") or "").strip())
+            for row in rows
+        )
+
+    if path != "/score-team-event-request":
         return False
     return all(
         isinstance(row, dict)
@@ -74,8 +100,18 @@ def _repeat_safe_transient_retry(path: str, payload: dict[str, Any]) -> bool:
     )
 
 
+def _transient_receipt(receipt: dict[str, Any]) -> bool:
+    if receipt.get("http_status") in _TRANSIENT_HTTP_STATUSES:
+        return True
+    body = receipt.get("body") if isinstance(receipt.get("body"), dict) else {}
+    return (
+        receipt.get("http_status") is None
+        and body.get("code") == "AUTO_ADVANCE_TRANSPORT_FAILURE"
+    )
+
+
 def _refreshing_oidc_post(initial_token: str) -> Callable[..., dict[str, Any]]:
-    """Refresh OIDC on 401 and retry repeat-safe transient MLB gateway failures."""
+    """Refresh OIDC on 401 and retry only repeat-safe transient requests."""
     state = {"token": initial_token}
     refresh_lock = Lock()
 
@@ -102,10 +138,11 @@ def _refreshing_oidc_post(initial_token: str) -> Callable[..., dict[str, Any]]:
     def post(origin: str, path: str, _token: str, payload: dict[str, Any], timeout: int = 120) -> dict[str, Any]:
         receipt = authorized_post(origin, path, payload, timeout)
         first_status = receipt.get("http_status")
+        first_body = receipt.get("body") if isinstance(receipt.get("body"), dict) else {}
         retry_count = 0
         if _repeat_safe_transient_retry(path, payload):
             for delay in _TRANSIENT_RETRY_BACKOFF_SECONDS:
-                if receipt.get("http_status") not in _TRANSIENT_HTTP_STATUSES:
+                if not _transient_receipt(receipt):
                     break
                 time.sleep(delay)
                 retry_count += 1
@@ -114,6 +151,7 @@ def _refreshing_oidc_post(initial_token: str) -> Callable[..., dict[str, Any]]:
             receipt = dict(receipt)
             receipt["transient_retry_count"] = retry_count
             receipt["initial_http_status"] = first_status
+            receipt["initial_transport_code"] = first_body.get("code")
             receipt["repeat_safe_retry"] = True
             receipt["can_execute"] = False
         return receipt
@@ -213,6 +251,7 @@ def main() -> int:
             token=token,
             origin=ACTION_ORIGIN,
             post_fn=_refreshing_oidc_post(token),
+            max_in_flight=OIDC_MAX_IN_FLIGHT,
             progress_fn=progress_fn,
         )
     if dispatch_handoff is not handoff:
