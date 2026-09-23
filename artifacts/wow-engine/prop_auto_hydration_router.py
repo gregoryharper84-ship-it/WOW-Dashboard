@@ -33,6 +33,7 @@ from v17.mlb_pitcher_fantasy_score_hydration import (
     STAT_TYPE as MLB_PITCHER_FANTASY_SCORE_STAT,
     hydrate_mlb_pitcher_fantasy_score_evidence,
 )
+from v17.mlb_team_event_hydration import _mlb_team_key as _canonical_mlb_team_key
 from v17.wnba_composite_auto_hydration import (
     COMPONENT_COLUMNS as WNBA_COMPOSITE_COLUMNS,
     PROVIDER_ID as WNBA_COMPOSITE_PROVIDER,
@@ -65,6 +66,13 @@ def _identity_key(value: Any) -> str:
     text = "".join(ch for ch in text if not unicodedata.combining(ch))
     text = re.sub(r"[^A-Za-z0-9]+", " ", text).strip().casefold()
     return " ".join(text.split())
+
+
+def _opponent_identity_key(sport: Any, value: Any) -> str:
+    normalized_sport = str(sport or "").strip().upper()
+    if normalized_sport == "MLB":
+        return str(_canonical_mlb_team_key(value) or "").strip().casefold()
+    return _identity_key(value)
 
 
 def _row_key(sport: Any, player: Any, event_start_time: Any) -> tuple[str, str, str]:
@@ -103,7 +111,8 @@ def hydration_request_context(rows: Iterable[Any]) -> Iterator[None]:
             and (
                 existing.get("identity_ambiguous") is True
                 or existing.get("canonical_event_id") != event_id
-                or existing.get("opponent") != opponent
+                or _opponent_identity_key(key[0], existing.get("opponent"))
+                != _opponent_identity_key(key[0], opponent)
             )
         )
         if conflicts:
@@ -230,13 +239,13 @@ def _opponent_keys(sport: str, role_status: Mapping[str, Any]) -> set[str]:
         role_status.get("opponent_tricode"),
         role_status.get("opponent_name"),
     }
-    keys = {_identity_key(value) for value in values if str(value or "").strip()}
+    keys = {_opponent_identity_key(sport, value) for value in values if str(value or "").strip()}
     if sport == "NFL":
         abbreviation = str(role_status.get("opponent") or "").strip().upper()
         aliases = _NFL_TEAM_ALIASES.get(abbreviation, ())
-        keys.update(_identity_key(value) for value in aliases)
+        keys.update(_opponent_identity_key(sport, value) for value in aliases)
         if abbreviation:
-            keys.add(_identity_key(abbreviation))
+            keys.add(_opponent_identity_key(sport, abbreviation))
     return {key for key in keys if key}
 
 
@@ -248,7 +257,7 @@ def _validate_requested_opponent(
 ) -> None:
     if not requested_opponent:
         return
-    requested = _identity_key(requested_opponent)
+    requested = _opponent_identity_key(sport, requested_opponent)
     allowed = _opponent_keys(sport, role_status)
     if requested and requested in allowed:
         return
