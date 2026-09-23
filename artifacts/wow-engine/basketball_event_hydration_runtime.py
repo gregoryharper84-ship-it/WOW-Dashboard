@@ -5,6 +5,11 @@ Fallback source: ESPN public scoreboard, used only for settled games newer than
 the currently persisted corpus. The monotonic-date fallback rule prevents a
 provider switch from duplicating older BallDontLie rows under different IDs.
 
+A transport-successful primary response is not considered fresh evidence merely
+because it returned HTTP 200. If it yields no usable settled rows capable of
+advancing the persisted corpus, hydration attempts the public fallback before
+allowing maintenance to reach the training-freshness gate.
+
 Research/training only. No scoring, publication, recommendation, wager, or
 execution. can_execute=False unconditional.
 """
@@ -239,6 +244,41 @@ def _persist_rows(client: Any, sport: str, rows: list[dict[str, Any]]) -> None:
         client.table(TABLES[sport]).upsert(rows[offset:offset + 250], on_conflict="game_id").execute()
 
 
+def _newer_rows(rows: list[dict[str, Any]], latest_before: date | None) -> list[dict[str, Any]]:
+    if latest_before is None:
+        return rows
+    return [
+        row
+        for row in rows
+        if date.fromisoformat(str(row["game_date"])[:10]) > latest_before
+    ]
+
+
+def _fetch_fallback(
+    sport: str,
+    year: int,
+    retrieved_at: str,
+    latest_before: date | None,
+    *,
+    reason: str,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    try:
+        raw = fetch_espn_games(sport, year)
+    except BasketballHydrationError as fallback_exc:
+        raise BasketballHydrationError(
+            f"BASKETBALL_FRESH_SOURCE_UNAVAILABLE primary={reason} fallback={str(fallback_exc)}"
+        ) from fallback_exc
+    normalized = [
+        row
+        for game in raw
+        if (row := normalize_espn_game(game, sport, retrieved_at)) is not None
+    ]
+    # Provider IDs are not globally comparable. Restrict fallback writes to
+    # rows newer than the existing corpus so historical BDL rows cannot be
+    # duplicated under ESPN IDs.
+    return raw, _newer_rows(normalized, latest_before)
+
+
 def hydrate(sport: str, seasons: Iterable[int], client=None) -> dict[str, Any]:
     sport = sport.upper().strip()
     if sport not in TABLES:
@@ -253,36 +293,52 @@ def hydrate(sport: str, seasons: Iterable[int], client=None) -> dict[str, Any]:
 
     for season in seasons:
         year = int(season)
-        raw: list[dict[str, Any]]
-        normalizer: Callable[[dict[str, Any], str, str], dict[str, Any] | None]
-        provider: str
-        primary_error: BasketballHydrationError | None = None
+        provider = "BALLDONTLIE"
+        primary_reason: str | None = None
         try:
-            raw = fetch_games(sport, year)
-            normalizer = normalize_game
-            provider = "BALLDONTLIE"
+            primary_raw = fetch_games(sport, year)
+            primary_normalized = [
+                row
+                for game in primary_raw
+                if (row := normalize_game(game, sport, retrieved_at)) is not None
+            ]
+            primary_newer = _newer_rows(primary_normalized, latest_before)
+            # HTTP 200 with an empty/no-op body is acquisition degradation, not
+            # proof that current-season evidence is complete. This was the gap
+            # that let maintenance remain stale while never invoking fallback.
+            if not primary_raw:
+                primary_reason = "BALLDONTLIE_EMPTY_RESPONSE"
+            elif not primary_normalized:
+                primary_reason = "BALLDONTLIE_NO_SETTLED_ROWS"
+            elif latest_before is not None and year > latest_before.year and not primary_newer:
+                primary_reason = "BALLDONTLIE_NO_NEWER_SETTLED_ROWS"
+
+            if primary_reason is None:
+                raw = primary_raw
+                normalized = primary_normalized
+            else:
+                raw, normalized = _fetch_fallback(
+                    sport,
+                    year,
+                    retrieved_at,
+                    latest_before,
+                    reason=primary_reason,
+                )
+                provider = "ESPN_SCOREBOARD"
+                fallback_reasons[year] = primary_reason
         except BasketballHydrationError as exc:
-            primary_error = exc
-            try:
-                raw = fetch_espn_games(sport, year)
-            except BasketballHydrationError as fallback_exc:
-                raise BasketballHydrationError(
-                    f"BASKETBALL_FRESH_SOURCE_UNAVAILABLE primary={str(primary_error)} fallback={str(fallback_exc)}"
-                ) from fallback_exc
-            normalizer = normalize_espn_game
+            primary_reason = str(exc)
+            raw, normalized = _fetch_fallback(
+                sport,
+                year,
+                retrieved_at,
+                latest_before,
+                reason=primary_reason,
+            )
             provider = "ESPN_SCOREBOARD"
-            fallback_reasons[year] = str(primary_error)
+            fallback_reasons[year] = primary_reason
 
         total_raw += len(raw)
-        normalized = [r for g in raw if (r := normalizer(g, sport, retrieved_at)) is not None]
-        if provider == "ESPN_SCOREBOARD" and latest_before is not None:
-            # Provider IDs are not globally comparable. Restrict fallback writes
-            # to rows newer than the existing corpus so old BDL rows cannot be
-            # duplicated under ESPN IDs.
-            normalized = [
-                row for row in normalized
-                if date.fromisoformat(str(row["game_date"])[:10]) > latest_before
-            ]
         per_season[year] = len(normalized)
         source_by_season[year] = provider
         total_settled += len(normalized)
