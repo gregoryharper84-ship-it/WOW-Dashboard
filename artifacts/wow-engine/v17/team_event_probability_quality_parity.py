@@ -7,7 +7,7 @@ missing capability/evidence stays explicit instead of being mistaken for parity.
 
 Request-supplied calibration metadata can be useful evidence, but it is not
 server-owned calibration authority. MLB-equivalent parity therefore requires an
-independently bound calibration artifact/dependency in addition to quantitative
+independently bound calibration dependency in addition to quantitative
 calibration metrics.
 """
 from __future__ import annotations
@@ -162,7 +162,10 @@ def readiness_quality_evidence(sport: str, health: Mapping[str, Any]) -> dict[st
         health.get("model_artifact_dependency_satisfied")
         and health.get("request_scoring_path_ready")
     )
-    server_calibration = bool(health.get("calibration_artifact_dependency_satisfied"))
+    # `all_sport_capability_readiness` owns this exact field. It is true only
+    # when calibration is independently bound by the runtime (currently MLB and
+    # a proven NFL champion), and false for request-supplied/unavailable lanes.
+    server_calibration = bool(health.get("calibration_dependency_satisfied"))
     quantitative = bool(health.get("probability_quality_quantitative_pass"))
     metrics = health.get("probability_quality_metrics")
     return {
