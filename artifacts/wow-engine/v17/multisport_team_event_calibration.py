@@ -1,19 +1,14 @@
 """Fitted calibration artifact contract for V17 multisport team/event models.
 
-The new sport adapters may produce a raw sporting probability, but official
+The sport adapters may produce a raw sporting probability, but official
 publication requires calibration history. This module validates and applies a
-pre-fitted Platt calibration artifact; it never derives calibration from market
-prices and never creates execution authority.
+pre-fitted calibration artifact; it never derives calibration from market prices
+and never creates execution authority.
 
-Binary artifact shape (WNBA/NHL/TENNIS/MMA):
-    artifact_type=BINARY_PLATT_CALIBRATOR
-    sport, calibration_method, calibration_version, training_n
-    platt_a, platt_b, residual_quantile_90
-    brier_score, calibration_error, source_data_hash, split_hash
-    fit_end, health_status=PASS, certification_status=PASS
-
-Soccer uses MULTICLASS_PLATT_CALIBRATOR with one coefficient/residual record per
-HOME/DRAW/AWAY outcome. Calibrated outcome probabilities are renormalized to 1.
+WNBA/NHL are held to the MLB-equivalent probability-quality evidence shape: a
+plain stored ``health_status=PASS`` is not quantitative proof. Their binary
+artifacts must also carry proper-score/calibration diagnostics and explicit
+passed checks tied to a versioned/hash-identified quality policy.
 """
 from __future__ import annotations
 
@@ -27,6 +22,15 @@ CAN_EXECUTE = False
 MIN_CALIBRATION_N = 30
 BINARY_ARTIFACT_TYPE = "BINARY_PLATT_CALIBRATOR"
 MULTICLASS_ARTIFACT_TYPE = "MULTICLASS_PLATT_CALIBRATOR"
+STRICT_BINARY_QUALITY_SPORTS = frozenset({"WNBA", "NHL"})
+REQUIRED_BINARY_QUALITY_CHECKS = (
+    "brier_pass",
+    "log_loss_pass",
+    "ece_pass",
+    "calibration_intercept_pass",
+    "calibration_slope_pass",
+    "max_calibration_bin_gap_pass",
+)
 
 
 class CalibrationArtifactInvalid(ValueError):
@@ -116,8 +120,49 @@ def _common_blockers(artifact: Mapping[str, Any], sport: str) -> list[str]:
     return blockers
 
 
+def _quantitative_binary_quality_blockers(
+    artifact: Mapping[str, Any], sport: str
+) -> list[str]:
+    if sport.upper() not in STRICT_BINARY_QUALITY_SPORTS:
+        return []
+    blockers: list[str] = []
+    if str(artifact.get("quantitative_quality_status") or "").upper() != "PASS":
+        blockers.append("CALIBRATION_QUANTITATIVE_QUALITY_NOT_PASS")
+    if not str(artifact.get("quality_policy_version") or "").strip():
+        blockers.append("CALIBRATION_QUALITY_POLICY_VERSION_MISSING")
+    if not _hash64(artifact.get("quality_policy_hash")):
+        blockers.append("CALIBRATION_QUALITY_POLICY_HASH_INVALID")
+
+    bounded_metrics = (
+        ("log_loss", "CALIBRATION_LOG_LOSS_INVALID", False),
+        ("ece", "CALIBRATION_ECE_INVALID", True),
+        ("max_calibration_bin_gap", "CALIBRATION_MAX_BIN_GAP_INVALID", True),
+    )
+    for key, code, unit_interval in bounded_metrics:
+        value = _num(artifact.get(key))
+        if value is None or value < 0.0 or (unit_interval and value > 1.0):
+            blockers.append(code)
+
+    intercept = _num(artifact.get("calibration_intercept"))
+    if intercept is None:
+        blockers.append("CALIBRATION_INTERCEPT_INVALID")
+    slope = _num(artifact.get("calibration_slope"))
+    if slope is None or slope <= 0.0:
+        blockers.append("CALIBRATION_SLOPE_INVALID")
+
+    checks = artifact.get("quality_checks")
+    if not isinstance(checks, Mapping):
+        blockers.append("CALIBRATION_QUALITY_CHECKS_MISSING")
+    else:
+        for key in REQUIRED_BINARY_QUALITY_CHECKS:
+            if checks.get(key) is not True:
+                blockers.append(f"CALIBRATION_QUALITY_CHECK_NOT_PASS:{key}")
+    return blockers
+
+
 def validate_binary_artifact(artifact: Mapping[str, Any], sport: str) -> dict[str, Any]:
     blockers = _common_blockers(artifact, sport)
+    blockers.extend(_quantitative_binary_quality_blockers(artifact, sport))
     if str(artifact.get("artifact_type") or "") != BINARY_ARTIFACT_TYPE:
         blockers.append("BINARY_CALIBRATION_ARTIFACT_TYPE_INVALID")
     a = _num(artifact.get("platt_a"))
@@ -162,7 +207,7 @@ def apply_binary_artifact(raw_probability: float, artifact: Mapping[str, Any], s
         float(valid["platt_a"]),
         float(valid["platt_b"]),
     )
-    return {
+    payload = {
         "calibrated_probability": calibrated,
         "historical_residual_quantile_90": float(valid["residual_quantile_90"]),
         "calibration_method": str(valid["calibration_method"]),
@@ -175,6 +220,21 @@ def apply_binary_artifact(raw_probability: float, artifact: Mapping[str, Any], s
         "calibration_fit_end": str(valid["fit_end"]),
         "calibration_health_status": "PASS",
     }
+    if sport.upper() in STRICT_BINARY_QUALITY_SPORTS:
+        payload.update(
+            {
+                "calibration_log_loss": float(valid["log_loss"]),
+                "calibration_ece": float(valid["ece"]),
+                "calibration_intercept": float(valid["calibration_intercept"]),
+                "calibration_slope": float(valid["calibration_slope"]),
+                "calibration_max_bin_gap": float(valid["max_calibration_bin_gap"]),
+                "calibration_quantitative_quality_status": "PASS",
+                "calibration_quality_policy_version": str(valid["quality_policy_version"]),
+                "calibration_quality_policy_hash": str(valid["quality_policy_hash"]),
+                "calibration_quality_checks": dict(valid["quality_checks"]),
+            }
+        )
+    return payload
 
 
 def apply_multiclass_artifact(raw: Mapping[str, float], artifact: Mapping[str, Any]) -> dict[str, Any]:
@@ -220,6 +280,8 @@ __all__ = [
     "CalibrationArtifactInvalid",
     "MIN_CALIBRATION_N",
     "MULTICLASS_ARTIFACT_TYPE",
+    "REQUIRED_BINARY_QUALITY_CHECKS",
+    "STRICT_BINARY_QUALITY_SPORTS",
     "apply_binary_artifact",
     "apply_multiclass_artifact",
     "artifact_fingerprint",
