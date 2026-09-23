@@ -35,6 +35,7 @@ def test_best_price_is_not_sporting_probability_and_no_vig_is_same_book_pairing(
     current = features["current"]
     assert current["best_price"]["home"]["american_odds"] == -125
     assert current["best_executable_breakeven_probability"]["home"] == pytest.approx(125 / 225)
+    assert current["best_price_age_seconds"]["home"] == pytest.approx(5.0)
     assert current["book_count"] == 2
     assert current["consensus_no_vig_probability"]["home"] != pytest.approx(125 / 225)
     assert features["movement_from_open_pp"]["home"] is not None
