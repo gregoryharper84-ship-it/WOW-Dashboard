@@ -2,13 +2,15 @@
 
 Primary source: BallDontLie when its credential/path is available.
 Fallback source: ESPN public scoreboard, used only for settled games newer than
-the currently persisted corpus. The monotonic-date fallback rule prevents a
-provider switch from duplicating older BallDontLie rows under different IDs.
+the currently persisted corpus. Provider identities are not globally comparable,
+so once a corpus exists all providers are append-only past the persisted latest
+settled date; a provider recovery cannot backfill the same historical game under
+a second provider-specific ID.
 
 A transport-successful primary response is not considered fresh evidence merely
-because it returned HTTP 200. If it yields no usable settled rows capable of
-advancing the persisted corpus, hydration attempts the public fallback before
-allowing maintenance to reach the training-freshness gate.
+because it returned HTTP 200. If the current/latest season yields no usable
+settled rows capable of advancing the persisted corpus, hydration attempts the
+public fallback before allowing maintenance to reach the training-freshness gate.
 
 Research/training only. No scoring, publication, recommendation, wager, or
 execution. can_execute=False unconditional.
@@ -20,7 +22,7 @@ from datetime import date, datetime, timezone
 import hashlib
 import json
 import os
-from typing import Any, Callable, Iterable
+from typing import Any, Iterable
 
 import requests
 
@@ -273,9 +275,6 @@ def _fetch_fallback(
         for game in raw
         if (row := normalize_espn_game(game, sport, retrieved_at)) is not None
     ]
-    # Provider IDs are not globally comparable. Restrict fallback writes to
-    # rows newer than the existing corpus so historical BDL rows cannot be
-    # duplicated under ESPN IDs.
     return raw, _newer_rows(normalized, latest_before)
 
 
@@ -303,19 +302,22 @@ def hydrate(sport: str, seasons: Iterable[int], client=None) -> dict[str, Any]:
                 if (row := normalize_game(game, sport, retrieved_at)) is not None
             ]
             primary_newer = _newer_rows(primary_normalized, latest_before)
-            # HTTP 200 with an empty/no-op body is acquisition degradation, not
-            # proof that current-season evidence is complete. This was the gap
-            # that let maintenance remain stale while never invoking fallback.
-            if not primary_raw:
+            needs_freshness_probe = latest_before is None or year >= latest_before.year
+
+            # Old seasons at/before an already persisted frontier are intentionally
+            # no-op: probing fallback there would only create cross-provider
+            # historical duplicates. The current/latest season must demonstrate
+            # advancement or try the independent fallback source.
+            if needs_freshness_probe and not primary_raw:
                 primary_reason = "BALLDONTLIE_EMPTY_RESPONSE"
-            elif not primary_normalized:
+            elif needs_freshness_probe and not primary_normalized:
                 primary_reason = "BALLDONTLIE_NO_SETTLED_ROWS"
-            elif latest_before is not None and year > latest_before.year and not primary_newer:
+            elif needs_freshness_probe and latest_before is not None and not primary_newer:
                 primary_reason = "BALLDONTLIE_NO_NEWER_SETTLED_ROWS"
 
             if primary_reason is None:
                 raw = primary_raw
-                normalized = primary_normalized
+                normalized = primary_newer if latest_before is not None else primary_normalized
             else:
                 raw, normalized = _fetch_fallback(
                     sport,
@@ -328,15 +330,22 @@ def hydrate(sport: str, seasons: Iterable[int], client=None) -> dict[str, Any]:
                 fallback_reasons[year] = primary_reason
         except BasketballHydrationError as exc:
             primary_reason = str(exc)
-            raw, normalized = _fetch_fallback(
-                sport,
-                year,
-                retrieved_at,
-                latest_before,
-                reason=primary_reason,
-            )
-            provider = "ESPN_SCOREBOARD"
-            fallback_reasons[year] = primary_reason
+            if latest_before is not None and year < latest_before.year:
+                # Historical acquisition degradation cannot make a current corpus
+                # less valid. Do not switch providers for an already-covered old
+                # season because provider-specific IDs are not canonical IDs.
+                raw = []
+                normalized = []
+            else:
+                raw, normalized = _fetch_fallback(
+                    sport,
+                    year,
+                    retrieved_at,
+                    latest_before,
+                    reason=primary_reason,
+                )
+                provider = "ESPN_SCOREBOARD"
+                fallback_reasons[year] = primary_reason
 
         total_raw += len(raw)
         per_season[year] = len(normalized)
