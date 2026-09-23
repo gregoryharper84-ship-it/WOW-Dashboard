@@ -164,13 +164,13 @@ jobs:
           branch="$ACTION_BRANCH"
           rm -rf artifacts/wow-engine/v17/.agent-handoff
           if [ "$changed" = "true" ] && [ -z "$branch" ]; then
-            git diff --quiet --exit-code && { echo "::error::No implementation diff."; exit 1; }
+            git diff --quiet --exit-code && { echo "::error::Claude reported changes but returned neither a branch nor a working-tree diff."; exit 1; }
             branch="claude/engineering/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git switch -c "$branch"
             git add --all
-            git commit -m "Claude Engineering: $incident"
+            git commit -m "Claude Engineering: ${incident:-nightly-repair}"
             git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
             git push --set-upstream origin "$branch"
           fi
