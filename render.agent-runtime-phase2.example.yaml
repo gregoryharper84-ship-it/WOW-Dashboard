@@ -1,0 +1,48 @@
+# APPROVAL-GATED EXAMPLE ONLY — not the active Render Blueprint.
+# Do not link/sync this file or copy these resources into render.yaml until
+# paid persistent queue + worker provisioning has explicit approval.
+services:
+  - type: keyvalue
+    name: wow-jobs
+    plan: starter
+    region: oregon
+    maxmemoryPolicy: noeviction
+    ipAllowList: []
+
+  - type: worker
+    name: wow-agent-worker
+    runtime: python
+    plan: starter
+    region: oregon
+    rootDir: artifacts/wow-engine
+    buildCommand: pip install -r requirements.txt
+    startCommand: celery -A agent_runtime.celery_app:celery_app worker --loglevel=INFO --concurrency=2
+    autoDeployTrigger: "off"
+    maxShutdownDelaySeconds: 120
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.11
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_KEY
+        sync: false
+      - key: balldontlie
+        sync: false
+      - key: WOLFRAM_ALPHA_APP_ID
+        sync: false
+      - key: WOW_WOLFRAM_ARITHMETIC_AUDIT_ENABLED
+        value: "1"
+      - key: WOW_WOLFRAM_TIMEOUT_SECONDS
+        value: "5"
+      - key: WOW_CAN_EXECUTE
+        value: "false"
+      - key: WOW_DRY_RUN_ONLY
+        value: "true"
+      - key: SENTRY_DSN
+        sync: false
+      - key: SENTRY_TRACES_SAMPLE_RATE
+        value: "0.05"
+      - key: WOW_ENVIRONMENT
+        value: "production"
+      # When Phase 2 is explicitly approved, bind REDIS_URL to the approved
+      # queue as part of the same governed rollout for both web + worker.
