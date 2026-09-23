@@ -17,6 +17,8 @@ CAN_EXECUTE = False
 PROVIDER = "RUNDOWN"
 TABLE = "wow_market_price_observations"
 SYNC_TABLE = "wow_market_feed_sync_state"
+CATALOG_TABLE = "wow_market_provider_catalog"
+OFF_BOARD_SENTINEL = 0.0001
 
 
 def _number(value: Any) -> float | None:
@@ -63,12 +65,17 @@ def _price_entries(prices: Any) -> list[tuple[str, dict[str, Any]]]:
     return rows
 
 
-def _american_price(container: dict[str, Any]) -> float | None:
+def _price_state(container: dict[str, Any]) -> tuple[float | None, bool]:
+    """Return (American price, available) while preserving the off-board sentinel."""
     for key in ("price", "american", "american_odds", "odds_american", "odds"):
         value = _number(container.get(key))
-        if value is not None and value != 0:
-            return value
-    return None
+        if value is None:
+            continue
+        if abs(value - OFF_BOARD_SENTINEL) < 1e-9:
+            return None, False
+        if value != 0:
+            return value, True
+    return None, False
 
 
 def _line_value(line: dict[str, Any], container: dict[str, Any]) -> float | None:
@@ -127,8 +134,11 @@ def price_observations_from_rundown_event(
                 line_id = line.get("line_id") or line.get("id")
                 selection = line.get("selection") or line.get("name") or line.get("side") or participant_name
                 for affiliate_id, container in _price_entries(line.get("prices")):
-                    american = _american_price(container)
-                    if american is None:
+                    american, available = _price_state(container)
+                    closed_at = _iso(container.get("closed_at") or line.get("closed_at"))
+                    if closed_at is not None:
+                        available = False
+                    if american is None and available:
                         continue
                     updated = _iso(
                         container.get("updated_at")
@@ -156,6 +166,8 @@ def price_observations_from_rundown_event(
                         affiliate_id,
                         updated,
                         american,
+                        available,
+                        closed_at,
                         bool(is_live),
                     ]
                     rows.append(
@@ -176,12 +188,14 @@ def price_observations_from_rundown_event(
                             "affiliate_id": str(affiliate_id),
                             "sportsbook": str(sportsbook),
                             "american_odds": american,
-                            "decimal_odds": american_to_decimal(american),
+                            "decimal_odds": american_to_decimal(american) if american is not None else None,
                             "price_updated_at": updated,
                             "fetched_at": fetched,
                             "snapshot_kind": str(snapshot_kind).upper(),
                             "is_live": bool(is_live),
                             "is_main_line": bool(line.get("is_main_line") or container.get("is_main_line")),
+                            "is_available": bool(available),
+                            "closed_at": closed_at,
                             "raw_payload": {
                                 "market_id": market_id,
                                 "participant_id": participant_id,
@@ -189,6 +203,8 @@ def price_observations_from_rundown_event(
                                 "selection": selection,
                                 "affiliate_id": affiliate_id,
                                 "price": american,
+                                "available": available,
+                                "closed_at": closed_at,
                                 "updated_at": updated,
                             },
                             "prediction_authority": False,
@@ -214,11 +230,30 @@ def persist_sync_state(client: Any, state: dict[str, Any]) -> None:
     client.table(SYNC_TABLE).upsert(payload, on_conflict="feed_key").execute()
 
 
+def persist_catalog_rows(client: Any, rows: list[dict[str, Any]]) -> int:
+    if not rows:
+        return 0
+    safe_rows = []
+    for row in rows:
+        payload = dict(row)
+        payload["provider"] = PROVIDER
+        payload["can_execute"] = False
+        safe_rows.append(payload)
+    client.table(CATALOG_TABLE).upsert(
+        safe_rows,
+        on_conflict="provider,catalog_type,provider_id",
+    ).execute()
+    return len(safe_rows)
+
+
 __all__ = [
     "CAN_EXECUTE",
+    "CATALOG_TABLE",
+    "OFF_BOARD_SENTINEL",
     "PROVIDER",
     "SYNC_TABLE",
     "TABLE",
+    "persist_catalog_rows",
     "persist_observations",
     "persist_sync_state",
     "price_observations_from_rundown_event",
