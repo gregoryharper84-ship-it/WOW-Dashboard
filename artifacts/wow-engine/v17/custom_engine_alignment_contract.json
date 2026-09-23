@@ -16,7 +16,26 @@
   "backend_contract": {
     "canonical_runtime": "RENDER_SUPABASE_GOVERNED_CORE", "legacy_replit_primary_routing_allowed": false, "direct_vendor_actions_terminal_authority": false, "direct_vendor_actions_require_provenance_and_freshness": true,
     "current_render_service": "wow-governed-probability-engine", "current_render_service_id": "srv-da7sa9gu01pc73brt80g", "production_entrypoint": "api_ncaaf_acceptance:app",
-    "current_deployed_sha": "2d430886dc003b942cf9ca9d0251963cfc88d858", "current_render_deploy_id": "dep-daoib7rbc2fs73e4vco0", "auto_deploy": true, "auto_deploy_trigger": "checksPass",
+    "deployment_pointer_contract": {
+      "authority": "LATEST_SUCCESSFUL_GITHUB_DEPLOYMENT_ATTESTATION_FROM_EXACT_RENDER_RECEIPT",
+      "environment": "wow-v17-render-production-attestation",
+      "task": "wow-v17-render-receipt-pointer",
+      "advancing_receipt_statuses": ["EXACT_SHA_RENDER_DEPLOY_LIVE", "EXACT_SHA_ALREADY_LIVE"],
+      "non_advancing_receipt_statuses": ["NON_MAIN_NO_DEPLOY", "STALE_SHA_NO_DEPLOY", "UPSTREAM_NOT_SUCCESS_NO_DEPLOY", "DEPLOY_SUPERSEDED_BY_NEW_MAIN"],
+      "green_workflow_alone_advances_pointer": false,
+      "direct_protected_main_mutation": false,
+      "can_execute": false,
+      "bootstrap_exact_receipt": {
+        "receipt_status": "EXACT_SHA_RENDER_DEPLOY_LIVE",
+        "commit_sha": "7f13238683774b8fa4e95c743de3497d1e0be26b",
+        "render_deploy_id": "dep-daq3gd8u01pc73fllam0",
+        "deploy_authority": "GOVERNED_RENDER_API_HANDOFF",
+        "workflow_run_id": "35916975478",
+        "workflow_job_id": "107370876748",
+        "can_execute": false
+      }
+    },
+    "auto_deploy": true, "auto_deploy_trigger": "checksPass",
     "v17_activation_flag": "WOW_V17_ACTIVE=1", "kalshi_weather_activation_flag": "WOW_KALSHI_WEATHER_V2_ACTIVE=1", "wolfram_arithmetic_audit_flag": "WOW_WOLFRAM_ARITHMETIC_AUDIT_ENABLED=1", "wolfram_app_id_server_side_only": true, "backward_compatible_v16_routes_preserved": true,
     "openapi_introspection_status": "VERIFIED_COMPLETE_V17_ROUTE_SURFACE", "openapi_introspection_blocker": null, "openapi_introspection_verified_by": "tests/test_v17_production_activation.py::test_v17_active_production_openapi_generates_and_exposes_mounted_action_routes", "openapi_introspection_verified_main_sha": "bc5b87e1153dbb6f0cabdb3afe1d0180c7f39dda", "openapi_introspection_blocks_live_editor_sync": false
   },
@@ -36,7 +55,7 @@
     "LLP_TEAM_BETTING_ENGINE": {"required": true, "status": "LIVE_EDITOR_SYNC_VERIFIED", "note": "Previously verified V17 editor sync remains authoritative; PR #766 changes only the WOW PrizePicks host contract."},
     "KALSHI_WEATHER_MARKET_EXPERT": {"required": false, "status": "IN_PROCESS_SPECIALIST_NO_EXTERNAL_EDITOR_SYNC_REQUIRED", "note": "Weather is mounted inside the canonical Render/Supabase governed runtime and is not an independent global-terminal Custom GPT host."}
   },
-  "resolved_phase_a_findings": ["R01_RENDER_DEPLOY_SHA_PARITY", "R02_GENERIC_TEAM_EVENT_INGRESS_IMPLEMENTED", "R03_HOST_LOCAL_LABELS_AUDIT_ONLY", "R04_CANONICAL_HOST_IDENTITIES_MACHINE_ENFORCED", "R05_LEGACY_REPLIT_PRIMARY_ROUTING_PROHIBITED", "R06_RECOMMENDATION_LEDGER_ROUTE_PARITY", "R07_ADDITIVE_PRODUCTION_ACTIVATION_WITH_ATOMIC_FLAG_ROLLBACK", "R08_SCOUT_RESEARCH_BARRIER_ENFORCED", "R09_EVENT_GATE_FUNCTION_MIGRATION_CAPTURED", "R10_OWNER_AUTHORIZED_V17_BACKEND_CUTOVER", "R11_MAIN_BRANCH_MACHINE_PROTECTION_VERIFIED", "R12_HISTORICAL_LIVE_CUSTOM_GPT_EDITOR_SYNC_VERIFIED_2026-09-16", "R13_KALSHI_WEATHER_SINGLE_GLOBAL_TERMINAL_ALIGNMENT", "R14_KALSHI_WEATHER_IMMUTABLE_PREPUBLICATION_GATE", "R15_KALSHI_WEATHER_V17_HOST_ROUTING", "R16_KALSHI_WEATHER_MARKET_EDGE_RECONCILIATION", "R17_KALSHI_WEATHER_LIVE_RENDER_ATTESTATION", "R18_POST_PR617_EDITOR_UPDATE_USER_REPORTED_2026-09-20", "R19_OPENAPI_INTROSPECTION_FORWARD_REFERENCE_REPAIRED_AND_REGRESSION_VERIFIED"],
+  "resolved_phase_a_findings": ["R01_RENDER_DEPLOY_SHA_PARITY", "R02_GENERIC_TEAM_EVENT_INGRESS_IMPLEMENTED", "R03_HOST_LOCAL_LABELS_AUDIT_ONLY", "R04_CANONICAL_HOST_IDENTITIES_MACHINE_ENFORCED", "R05_LEGACY_REPLIT_PRIMARY_ROUTING_PROHIBITED", "R06_RECOMMENDATION_LEDGER_ROUTE_PARITY", "R07_ADDITIVE_PRODUCTION_ACTIVATION_WITH_ATOMIC_FLAG_ROLLBACK", "R08_SCOUT_RESEARCH_BARRIER_ENFORCED", "R09_EVENT_GATE_FUNCTION_MIGRATION_CAPTURED", "R10_OWNER_AUTHORIZED_V17_BACKEND_CUTOVER", "R11_MAIN_BRANCH_MACHINE_PROTECTION_VERIFIED", "R12_HISTORICAL_LIVE_CUSTOM_GPT_EDITOR_SYNC_VERIFIED_2026-09-16", "R13_KALSHI_WEATHER_SINGLE_GLOBAL_TERMINAL_ALIGNMENT", "R14_KALSHI_WEATHER_IMMUTABLE_PREPUBLICATION_GATE", "R15_KALSHI_WEATHER_V17_HOST_ROUTING", "R16_KALSHI_WEATHER_MARKET_EDGE_RECONCILIATION", "R17_KALSHI_WEATHER_LIVE_RENDER_ATTESTATION", "R18_POST_PR617_EDITOR_UPDATE_USER_REPORTED_2026-09-20", "R19_OPENAPI_INTROSPECTION_FORWARD_REFERENCE_REPAIRED_AND_REGRESSION_VERIFIED", "R20_RENDER_DEPLOYMENT_POINTER_GOVERNED_BY_TYPED_EXACT_RECEIPT"],
   "remaining_external_sync": ["WOW_BETTING_ENGINE_EDITOR_RESYNC_AFTER_PR766_AND_LIVE_ACTION_ACCEPTANCE"],
-  "remaining_repository_reconciliation": ["CAPTURE_EXACT_LIVE_EDITOR_TEXT_HASH_WHEN_EXPORT_IS_AVAILABLE", "RECONCILE_BACKEND_DEPLOYMENT_POINTER_FROM_EXACT_RENDER_RECEIPT"]
+  "remaining_repository_reconciliation": ["CAPTURE_EXACT_LIVE_EDITOR_TEXT_HASH_WHEN_EXPORT_IS_AVAILABLE"]
 }
