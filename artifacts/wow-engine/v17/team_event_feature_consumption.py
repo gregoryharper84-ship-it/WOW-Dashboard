@@ -1,13 +1,15 @@
 """V17 team/event feature-consumption governance foundation.
 
-This module is observability-only.  It does not calculate, adjust, calibrate, rank,
-or substitute sporting probability.  Its job is to make the distinction between
+This module is observability-only. It does not calculate, adjust, calibrate, rank,
+or substitute sporting probability. Its job is to make the distinction between
 an input being present and a scorer proving that the input was numerically
 consumed explicit and machine-readable.
 
 A receipt must never infer consumption from research prose, market availability,
-or generic model knowledge.  If the scorer does not emit explicit consumed
-feature identifiers, the receipt reports UNVERIFIED rather than claiming use.
+or generic model knowledge. If the scorer does not emit explicit
+``consumed_feature_ids``, the receipt reports UNVERIFIED rather than claiming
+use. Versioned runtime feature contracts may add internally derived model
+features to the expected universe, but they still cannot prove consumption.
 
 can_execute=False is unconditional.
 """
@@ -20,9 +22,6 @@ from typing import Any, Mapping, Sequence
 
 CAN_EXECUTE = False
 
-# Canonical roles from the MoneyLine feature-governance handoff.  CONTRACT_ONLY
-# and UNDECLARED apply to request/governance fields that are not yet registered as
-# numerical model features; they cannot be mistaken for MODEL_PRIMARY inputs.
 CANONICAL_FEATURE_ROLES = frozenset(
     {
         "MODEL_PRIMARY",
@@ -54,9 +53,6 @@ FEATURE_VALUE_STATES = frozenset(
 CONSUMPTION_STATES = frozenset({"CONSUMED", "REJECTED", "NOT_VERIFIED"})
 CONSUMPTION_VERIFICATION_STATES = frozenset({"VERIFIED", "UNVERIFIED"})
 
-# Request-contract fields are important for identity / settlement but are not
-# sporting-model features.  Marking them CONTRACT_ONLY prevents accidental
-# promotion to probability inputs while still auditing their availability.
 CONTRACT_ONLY_FIELDS = frozenset(
     {
         "official_event_id",
@@ -116,7 +112,7 @@ def _request_value(req: Any, feature_id: str) -> Any:
     return _evidence(req).get(feature_id)
 
 
-def _feature_meta(req: Any, feature_id: str) -> Mapping[str, Any]:
+def _request_feature_meta(req: Any, feature_id: str) -> Mapping[str, Any]:
     evidence = _evidence(req)
     raw = evidence.get(feature_id)
     if isinstance(raw, Mapping):
@@ -129,10 +125,30 @@ def _feature_meta(req: Any, feature_id: str) -> Mapping[str, Any]:
     return {}
 
 
-def _explicit_value_state(req: Any, feature_id: str, available: bool) -> str:
+def _result_feature_observation(result: Mapping[str, Any], feature_id: str) -> Mapping[str, Any]:
+    observations = result.get("feature_observations")
+    if not isinstance(observations, Mapping):
+        return {}
+    candidate = observations.get(feature_id)
+    return candidate if isinstance(candidate, Mapping) else {}
+
+
+def _value_state(req: Any, result: Mapping[str, Any], feature_id: str) -> str:
+    observation = _result_feature_observation(result, feature_id)
+    token = str(
+        observation.get("value_status")
+        or observation.get("quality_status")
+        or observation.get("missingness_status")
+        or ""
+    ).strip().upper()
+    if token in FEATURE_VALUE_STATES:
+        return token
+
+    value = _request_value(req, feature_id)
+    available = value not in (None, "", [], {})
     if not available:
         return "MISSING"
-    meta = _feature_meta(req, feature_id)
+    meta = _request_feature_meta(req, feature_id)
     for key in ("quality_status", "value_status", "missingness_status"):
         token = str(meta.get(key) or "").strip().upper()
         if token in FEATURE_VALUE_STATES:
@@ -143,8 +159,12 @@ def _explicit_value_state(req: Any, feature_id: str, available: bool) -> str:
     return "AVAILABLE"
 
 
-def _explicit_freshness(req: Any, feature_id: str) -> str:
-    meta = _feature_meta(req, feature_id)
+def _freshness(req: Any, result: Mapping[str, Any], feature_id: str) -> str:
+    observation = _result_feature_observation(result, feature_id)
+    token = str(observation.get("freshness_status") or "").strip().upper()
+    if token:
+        return token
+    meta = _request_feature_meta(req, feature_id)
     token = str(meta.get("freshness_status") or "").strip().upper()
     if token:
         return token
@@ -157,17 +177,18 @@ def _explicit_freshness(req: Any, feature_id: str) -> str:
     return "UNKNOWN"
 
 
-def _explicit_provenance(req: Any, feature_id: str) -> dict[str, Any]:
-    meta = _feature_meta(req, feature_id)
+def _provenance(req: Any, result: Mapping[str, Any], feature_id: str) -> dict[str, Any]:
+    observation = _result_feature_observation(result, feature_id)
+    meta = _request_feature_meta(req, feature_id)
     evidence = _evidence(req)
     provenance = evidence.get("feature_provenance")
     provenance_entry = provenance.get(feature_id) if isinstance(provenance, Mapping) else None
     provenance_map = provenance_entry if isinstance(provenance_entry, Mapping) else {}
     return {
-        "source": meta.get("source") or provenance_map.get("source"),
-        "source_timestamp": meta.get("source_timestamp") or provenance_map.get("source_timestamp"),
-        "observed_at": meta.get("observed_at") or provenance_map.get("observed_at"),
-        "provenance_id": meta.get("provenance_id") or provenance_map.get("provenance_id"),
+        "source": observation.get("source") or meta.get("source") or provenance_map.get("source"),
+        "source_timestamp": observation.get("source_timestamp") or meta.get("source_timestamp") or provenance_map.get("source_timestamp"),
+        "observed_at": observation.get("observed_at") or meta.get("observed_at") or provenance_map.get("observed_at"),
+        "provenance_id": observation.get("provenance_id") or meta.get("provenance_id") or provenance_map.get("provenance_id"),
     }
 
 
@@ -187,9 +208,32 @@ def _result_ids(result: Mapping[str, Any], key: str) -> tuple[str, ...]:
     return _string_ids(result.get(key))
 
 
+def _runtime_feature_contract(sport: str) -> Any | None:
+    """Load the runtime-only feature contract lazily to avoid an import cycle.
+
+    Development-only schemas must never become live receipt expectations merely
+    because their code imports successfully.
+    """
+    try:
+        from v17.team_event_feature_contract_registry import (  # local import by design
+            RUNTIME_CONTRACT,
+            feature_contract_for_sport,
+        )
+
+        contract = feature_contract_for_sport(str(sport or "").upper().strip())
+        if contract.schema_state == RUNTIME_CONTRACT:
+            return contract
+    except (ImportError, KeyError, ValueError):
+        return None
+    return None
+
+
 def _feature_role(
     feature_id: str,
     declared_roles: Mapping[str, str],
+    *,
+    request_inputs: frozenset[str],
+    runtime_model_features: frozenset[str],
 ) -> str:
     declared = str(declared_roles.get(feature_id) or "").strip().upper()
     if declared in FEATURE_ROLES:
@@ -198,7 +242,24 @@ def _feature_role(
         return "CONTRACT_ONLY"
     if feature_id == "calibration_artifact":
         return "CALIBRATION_CONTEXT"
+    # Once an exact runtime model vector is declared, request-level bridge fields
+    # outside that vector are governance/evidence contract fields, not hidden
+    # numerical model inputs. This prevents them from being silently promoted.
+    if runtime_model_features and feature_id in request_inputs and feature_id not in runtime_model_features:
+        return "CONTRACT_ONLY"
     return "UNDECLARED"
+
+
+def _expected_source(feature_id: str, request_inputs: frozenset[str], runtime_model_features: frozenset[str]) -> str:
+    in_request = feature_id in request_inputs
+    in_model = feature_id in runtime_model_features
+    if in_request and in_model:
+        return "REQUEST_AND_MODEL_FEATURE_CONTRACT"
+    if in_model:
+        return "MODEL_FEATURE_CONTRACT"
+    if in_request:
+        return "REQUEST_CONTRACT"
+    return "DECLARED_ROLE_ONLY"
 
 
 def build_feature_consumption_receipt(
@@ -215,13 +276,49 @@ def build_feature_consumption_receipt(
     """Build a non-invasive audit receipt for one successful score package.
 
     Consumption is verified only from the scorer's explicit
-    ``consumed_feature_ids`` list.  Presence in the request, a model-component
-    name, or a required-input declaration is not treated as proof of numerical
-    use.
+    ``consumed_feature_ids`` list. Request presence, a model-component name,
+    registry membership, or a required-input declaration is never proof of
+    numerical use.
     """
-    role_map = dict(declared_feature_roles or {})
-    expected = tuple(dict.fromkeys(str(v).strip() for v in required_inputs if str(v or "").strip()))
-    critical = frozenset(str(v).strip() for v in (critical_features or ()) if str(v or "").strip())
+    explicit_roles = dict(declared_feature_roles or {})
+    runtime_contract = _runtime_feature_contract(sport)
+    runtime_features = tuple(
+        feature.feature_id for feature in (runtime_contract.features if runtime_contract else ())
+    )
+    runtime_model_features = frozenset(runtime_features)
+    runtime_roles = {
+        feature.feature_id: feature.role
+        for feature in (runtime_contract.features if runtime_contract else ())
+    }
+    role_map = {**runtime_roles, **explicit_roles}
+
+    request_expected = tuple(
+        dict.fromkeys(str(v).strip() for v in required_inputs if str(v or "").strip())
+    )
+    request_inputs = frozenset(request_expected)
+    expected = tuple(
+        dict.fromkeys(
+            [
+                *request_expected,
+                *runtime_features,
+                *(str(v).strip() for v in explicit_roles if str(v or "").strip()),
+            ]
+        )
+    )
+
+    registry_critical = {
+        feature.feature_id
+        for feature in (runtime_contract.features if runtime_contract else ())
+        if feature.critical
+    }
+    critical = frozenset(
+        registry_critical
+        | {
+            str(v).strip()
+            for v in (critical_features or ())
+            if str(v or "").strip()
+        }
+    )
     consumed = frozenset(_result_ids(result, "consumed_feature_ids"))
     rejected = frozenset(_result_ids(result, "rejected_feature_ids"))
     consumption_verified = "consumed_feature_ids" in result and isinstance(
@@ -235,12 +332,11 @@ def build_feature_consumption_receipt(
     rejected_count = 0
     consumed_count = 0
 
+    unavailable_states = {"MISSING", "NOT_APPLICABLE", "UNSUPPORTED"}
     for feature_id in expected:
-        value = _request_value(req, feature_id)
-        available = value not in (None, "", [], {})
-        value_state = _explicit_value_state(req, feature_id, available)
-        freshness = _explicit_freshness(req, feature_id)
-        if available:
+        value_state = _value_state(req, result, feature_id)
+        freshness = _freshness(req, result, feature_id)
+        if value_state not in unavailable_states:
             available_count += 1
         if value_state == "MISSING":
             missing_count += 1
@@ -256,11 +352,19 @@ def build_feature_consumption_receipt(
         else:
             consumption_status = "NOT_VERIFIED"
 
-        provenance = _explicit_provenance(req, feature_id)
+        provenance = _provenance(req, result, feature_id)
         feature_details.append(
             {
                 "feature_id": feature_id,
-                "role": _feature_role(feature_id, role_map),
+                "role": _feature_role(
+                    feature_id,
+                    role_map,
+                    request_inputs=request_inputs,
+                    runtime_model_features=runtime_model_features,
+                ),
+                "expected_source": _expected_source(
+                    feature_id, request_inputs, runtime_model_features
+                ),
                 "required": True,
                 "critical": feature_id in critical,
                 "value_status": value_state,
@@ -272,26 +376,42 @@ def build_feature_consumption_receipt(
 
     unexpected_consumed = sorted(consumed.difference(expected))
     unexpected_rejected = sorted(rejected.difference(expected))
+    consumed_but_unavailable = sorted(
+        detail["feature_id"]
+        for detail in feature_details
+        if detail["consumption_status"] == "CONSUMED"
+        and detail["value_status"] in unavailable_states
+    )
     schema = str(
         feature_schema_version
         or result.get("feature_schema_version")
+        or (runtime_contract.schema_version if runtime_contract else None)
         or "UNDECLARED"
     ).strip()
     verification_status = "VERIFIED" if consumption_verified else "UNVERIFIED"
     role_contract_complete = all(
-        detail["role"] != "UNDECLARED"
-        for detail in feature_details
+        detail["role"] != "UNDECLARED" for detail in feature_details
     )
     provenance_complete = all(
-        detail["value_status"] != "AVAILABLE"
-        or bool(detail.get("provenance_id") or detail.get("source"))
+        detail["value_status"] not in unavailable_states
+        and bool(detail.get("provenance_id") or detail.get("source"))
         for detail in feature_details
         if detail["role"] in CANONICAL_FEATURE_ROLES
+    )
+    critical_consumption_complete = all(
+        detail["consumption_status"] == "CONSUMED"
+        for detail in feature_details
+        if detail["critical"]
     )
     receipt_complete = bool(
         schema != "UNDECLARED"
         and verification_status == "VERIFIED"
         and role_contract_complete
+        and provenance_complete
+        and critical_consumption_complete
+        and not unexpected_consumed
+        and not unexpected_rejected
+        and not consumed_but_unavailable
     )
 
     prediction_id = str(result.get("prediction_id") or result.get("candidate_id") or "").strip()
@@ -319,6 +439,8 @@ def build_feature_consumption_receipt(
         "model_artifact_version": model_version or None,
         "feature_schema_version": schema,
         "features_expected": len(expected),
+        "request_contract_features_expected": len(request_inputs),
+        "model_features_expected": len(runtime_model_features),
         "features_available": available_count,
         "features_consumed": consumed_count,
         "features_missing": missing_count,
@@ -327,9 +449,11 @@ def build_feature_consumption_receipt(
         "consumption_verification_status": verification_status,
         "role_contract_complete": role_contract_complete,
         "provenance_complete": provenance_complete,
+        "critical_consumption_complete": critical_consumption_complete,
         "receipt_complete": receipt_complete,
         "unexpected_consumed_feature_ids": unexpected_consumed,
         "unexpected_rejected_feature_ids": unexpected_rejected,
+        "consumed_but_unavailable_feature_ids": consumed_but_unavailable,
         "critical_features": {
             detail["feature_id"]: detail["consumption_status"]
             for detail in feature_details
