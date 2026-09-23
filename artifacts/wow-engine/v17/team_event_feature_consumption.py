@@ -115,13 +115,18 @@ def _request_value(req: Any, feature_id: str) -> Any:
 def _request_feature_meta(req: Any, feature_id: str) -> Mapping[str, Any]:
     evidence = _evidence(req)
     raw = evidence.get(feature_id)
+    metadata = evidence.get("feature_metadata")
+    candidate = metadata.get(feature_id) if isinstance(metadata, Mapping) else None
+
+    if isinstance(raw, Mapping) and isinstance(candidate, Mapping):
+        # A mapping-valued feature (for example a calibration artifact) is the
+        # feature payload, not a substitute for its separate provenance record.
+        # Preserve both and let explicit feature_metadata win on audit keys.
+        return {**raw, **candidate}
+    if isinstance(candidate, Mapping):
+        return candidate
     if isinstance(raw, Mapping):
         return raw
-    metadata = evidence.get("feature_metadata")
-    if isinstance(metadata, Mapping):
-        candidate = metadata.get(feature_id)
-        if isinstance(candidate, Mapping):
-            return candidate
     return {}
 
 
