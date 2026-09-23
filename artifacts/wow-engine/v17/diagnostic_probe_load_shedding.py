@@ -35,7 +35,7 @@ class ProbeBusy(RuntimeError):
 class _Flight:
     event: Event = field(default_factory=Event)
     result: Any = None
-    error: BaseException | None = None
+    error: Exception | None = None
 
 
 class SingleFlightProbe:
@@ -59,13 +59,16 @@ class SingleFlightProbe:
         if leader:
             try:
                 flight.result = loader()
-            except BaseException as exc:  # preserve exact original failure semantics
+            except Exception as exc:  # preserve exact original application failure
                 flight.error = exc
             finally:
+                # Signal completion while the in-flight marker is still protected
+                # by the same lock. A new caller therefore cannot start a second
+                # backing probe in the completion handoff window.
                 with self._lock:
+                    flight.event.set()
                     if self._inflight is flight:
                         self._inflight = None
-                flight.event.set()
 
             if flight.error is not None:
                 raise flight.error
