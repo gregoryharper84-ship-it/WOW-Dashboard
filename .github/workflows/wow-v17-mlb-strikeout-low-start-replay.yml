@@ -41,7 +41,8 @@ jobs:
       - name: Run replay contract tests
         run: |
           python -m pip install --disable-pip-version-check pytest
-          python -m pytest artifacts/wow-engine/v17/test_mlb_strikeout_low_start_replay_contract.py -q
+          python -m pytest artifacts/wow-engine/v17/test_mlb_strikeout_low_start_replay_contract.py \
+            --confcutdir=artifacts/wow-engine/v17 -q
       - name: Upload replay evidence
         if: always()
         uses: actions/upload-artifact@v4
