@@ -4,6 +4,13 @@ Sport-specific lanes own feature semantics, source provenance, identity, regime,
 and artifacts. This module owns only the deterministic statistical lifecycle:
 chronological train -> calibration -> untouched test, with no automatic
 certification or probability publication.
+
+Calibration V2 is deliberately challenger-only.  A calibrator is selected using
+only the chronological calibration block; the untouched test block never
+participates in calibrator choice.  Identity calibration is a valid candidate
+when empirical binning degrades forward calibration evidence.  This prevents a
+calibrator from being forced merely to satisfy a pipeline shape while preserving
+the existing research screen on the untouched test set.
 """
 from __future__ import annotations
 
@@ -20,7 +27,10 @@ from sklearn.preprocessing import StandardScaler
 
 CAN_EXECUTE = False
 PROBABILITY_PUBLISHABLE = False
-CALIBRATION_METHOD = "EMPIRICAL_WILSON_BINS_V1"
+CALIBRATION_METHOD = "FORWARD_SELECTED_IDENTITY_OR_EMPIRICAL_WILSON_V2"
+EMPIRICAL_CALIBRATION_METHOD = "EMPIRICAL_WILSON_BINS_V1"
+IDENTITY_CALIBRATION_METHOD = "IDENTITY_RAW_PROBABILITY_V1"
+CALIBRATOR_SELECTION_VERSION = "FORWARD_CALIBRATION_SELECTION_V2"
 
 
 class BinaryCandidateError(RuntimeError):
@@ -141,14 +151,27 @@ def _fit_calibrator(probabilities: np.ndarray, outcomes: np.ndarray, *, max_bins
             "wilson_upper": upper,
         })
     return {
-        "method": CALIBRATION_METHOD,
+        "method": EMPIRICAL_CALIBRATION_METHOD,
         "training_n": int(len(probabilities)),
         "binning": "CHRONOLOGICAL_CALIBRATION_BLOCK_EQUAL_COUNT",
         "bins": bins,
     }
 
 
+def _identity_calibrator(training_n: int, *, selection: Mapping[str, object]) -> dict[str, object]:
+    return {
+        "method": IDENTITY_CALIBRATION_METHOD,
+        "training_n": int(training_n),
+        "selection_version": CALIBRATOR_SELECTION_VERSION,
+        "selection": dict(selection),
+        "bins": [],
+    }
+
+
 def _map_calibrator(probabilities: np.ndarray, calibrator: Mapping[str, object]) -> np.ndarray:
+    method = str(calibrator.get("method") or "")
+    if method == IDENTITY_CALIBRATION_METHOD:
+        return np.clip(np.asarray(probabilities, dtype=float), 1e-6, 1.0 - 1e-6)
     bins = list(calibrator.get("bins") or [])
     if not bins:
         raise BinaryCandidateError("BINARY_CALIBRATOR_EMPTY", "no bins")
@@ -158,6 +181,71 @@ def _map_calibrator(probabilities: np.ndarray, calibrator: Mapping[str, object])
         idx = int(np.argmin(np.abs(centers - float(value))))
         mapped.append(float(bins[idx]["calibrated_probability"]))
     return np.clip(np.asarray(mapped, dtype=float), 1e-6, 1.0 - 1e-6)
+
+
+def _calibration_metrics(probabilities: np.ndarray, outcomes: np.ndarray) -> tuple[float, float]:
+    clipped = np.clip(np.asarray(probabilities, dtype=float), 1e-6, 1.0 - 1e-6)
+    return (
+        float(brier_score_loss(outcomes, clipped)),
+        float(log_loss(outcomes, clipped, labels=[0, 1])),
+    )
+
+
+def _select_calibrator(probabilities: np.ndarray, outcomes: np.ndarray) -> dict[str, object]:
+    """Select identity vs empirical bins without touching the held-out test block.
+
+    The calibration block is itself split chronologically.  Empirical bins are
+    fit on the earlier sub-block and compared with the raw identity mapping on
+    the later selection sub-block.  Only when empirical calibration is no worse
+    on both proper scores is it refit on the complete calibration block.
+    """
+    n = int(len(probabilities))
+    if n < 50:
+        raise BinaryCandidateError("BINARY_CALIBRATION_SAMPLE_INSUFFICIENT", str(n))
+
+    selection_fit_n = max(50, int(n * 0.60))
+    selection_eval_n = n - selection_fit_n
+    if selection_eval_n < 20:
+        selection_fit_n = n - 20
+        selection_eval_n = 20
+    if selection_fit_n < 50:
+        selection = {
+            "decision": "IDENTITY",
+            "reason": "FORWARD_SELECTION_SAMPLE_INSUFFICIENT",
+            "fit_n": max(0, selection_fit_n),
+            "evaluation_n": max(0, selection_eval_n),
+        }
+        return _identity_calibrator(n, selection=selection)
+
+    fit_p = probabilities[:selection_fit_n]
+    fit_y = outcomes[:selection_fit_n]
+    eval_p = probabilities[selection_fit_n:]
+    eval_y = outcomes[selection_fit_n:]
+    empirical_selection = _fit_calibrator(fit_p, fit_y)
+    empirical_eval = _map_calibrator(eval_p, empirical_selection)
+    identity_brier, identity_log_loss = _calibration_metrics(eval_p, eval_y)
+    empirical_brier, empirical_log_loss = _calibration_metrics(empirical_eval, eval_y)
+    empirical_selected = (
+        empirical_brier <= identity_brier + 1e-12
+        and empirical_log_loss <= identity_log_loss + 1e-12
+    )
+    selection = {
+        "decision": "EMPIRICAL_WILSON" if empirical_selected else "IDENTITY",
+        "reason": "FORWARD_PROPER_SCORE_COMPARISON",
+        "fit_n": selection_fit_n,
+        "evaluation_n": selection_eval_n,
+        "identity_brier": identity_brier,
+        "identity_log_loss": identity_log_loss,
+        "empirical_brier": empirical_brier,
+        "empirical_log_loss": empirical_log_loss,
+        "test_block_used_for_selection": False,
+    }
+    if not empirical_selected:
+        return _identity_calibrator(n, selection=selection)
+    selected = _fit_calibrator(probabilities, outcomes)
+    selected["selection_version"] = CALIBRATOR_SELECTION_VERSION
+    selected["selection"] = selection
+    return selected
 
 
 def _ece(probabilities: np.ndarray, outcomes: np.ndarray, *, bins: int = 10) -> float:
@@ -235,7 +323,7 @@ def train_binary_candidate(
     model.fit(scaler.transform(X_train), y_train)
     p_cal_raw = model.predict_proba(scaler.transform(X_cal))[:, 1]
     p_test_raw = model.predict_proba(scaler.transform(X_test))[:, 1]
-    calibrator = _fit_calibrator(p_cal_raw, y_cal)
+    calibrator = _select_calibrator(p_cal_raw, y_cal)
     p_test_cal = _map_calibrator(p_test_raw, calibrator)
     prevalence = float(np.mean(y_train))
     baseline = np.full(len(y_test), prevalence, dtype=float)
@@ -261,8 +349,8 @@ def train_binary_candidate(
     research_pass = (
         raw_brier < baseline_brier
         and raw_ll <= baseline_ll
-        and cal_brier <= raw_brier
-        and cal_ll <= raw_ll
+        and cal_brier <= raw_brier + 1e-12
+        and cal_ll <= raw_ll + 1e-12
     )
     artifact = {
         "model_family": family,
@@ -275,6 +363,7 @@ def train_binary_candidate(
         "train_end_index": train_end,
         "calibration_end_index": cal_end,
         "split_policy": "CHRONOLOGICAL_60_20_20",
+        "calibrator_selection_version": CALIBRATOR_SELECTION_VERSION,
     }
     return BinaryCandidate(
         model_family=family,
@@ -297,6 +386,9 @@ __all__ = [
     "BinaryCandidateMetrics",
     "BinaryTrainingRow",
     "CALIBRATION_METHOD",
+    "CALIBRATOR_SELECTION_VERSION",
+    "EMPIRICAL_CALIBRATION_METHOD",
+    "IDENTITY_CALIBRATION_METHOD",
     "CAN_EXECUTE",
     "PROBABILITY_PUBLISHABLE",
     "train_binary_candidate",
