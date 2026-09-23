@@ -140,28 +140,29 @@ jobs:
                       time.sleep(min(10 * (attempt + 1), 30))
               raise RuntimeError(f"ENDPOINT_NOT_READY:{path}:{last}")
 
-          basketball = post("/internal/v17/basketball-model-maintenance")
-          assert basketball.get("can_execute") is False, basketball
-          assert basketball.get("probability_publishable") is False, basketball
-          assert basketball.get("automatic_certification") is False, basketball
-          assert basketball.get("automatic_promotion") is False, basketball
-          blocked_rows = [row for row in basketball.get("rows", []) if row.get("status") == "BLOCKED"]
-          if basketball.get("status") == "BLOCKED" or blocked_rows:
+          payload = post("/internal/v17/basketball-model-maintenance")
+          assert payload.get("can_execute") is False, payload
+          assert payload.get("probability_publishable") is False, payload
+          assert payload.get("automatic_certification") is False, payload
+          assert payload.get("automatic_promotion") is False, payload
+          blocked_rows = [row for row in payload.get("rows", []) if row.get("status") == "BLOCKED"]
+          if payload.get("status") == "BLOCKED" or blocked_rows:
               raise RuntimeError("BASKETBALL_PREHYDRATE_BLOCKED:" + json.dumps({
-                  "status": basketball.get("status"),
+                  "status": payload.get("status"),
                   "blocked_rows": [{"sport": row.get("sport"), "code": row.get("code")} for row in blocked_rows],
               }, sort_keys=True))
+          basketball = payload
 
           challengers = {}
           for sport in ("NBA", "WNBA"):
-              payload = post(f"/internal/v17/team-state-challenger-maintenance/{sport}", attempts=8, timeout=300)
-              assert payload.get("can_execute") is False, payload
-              assert payload.get("probability_publishable") is False, payload
-              assert payload.get("automatic_certification") is False, payload
-              assert payload.get("automatic_promotion") is False, payload
-              if payload.get("status") == "BLOCKED":
-                  raise RuntimeError(f"{sport}_CHALLENGER_BLOCKED:" + json.dumps(payload, sort_keys=True))
-              challengers[sport] = payload
+              challenger_payload = post(f"/internal/v17/team-state-challenger-maintenance/{sport}", attempts=8, timeout=300)
+              assert challenger_payload.get("can_execute") is False, challenger_payload
+              assert challenger_payload.get("probability_publishable") is False, challenger_payload
+              assert challenger_payload.get("automatic_certification") is False, challenger_payload
+              assert challenger_payload.get("automatic_promotion") is False, challenger_payload
+              if challenger_payload.get("status") == "BLOCKED":
+                  raise RuntimeError(f"{sport}_CHALLENGER_BLOCKED:" + json.dumps(challenger_payload, sort_keys=True))
+              challengers[sport] = challenger_payload
 
           print(json.dumps({
               "ordering": "BASKETBALL_HYDRATION_AND_REPLAY_BEFORE_TEAM_STATE_CHALLENGER",
