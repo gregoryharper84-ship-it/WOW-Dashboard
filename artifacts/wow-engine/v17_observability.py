@@ -36,6 +36,9 @@ def initialize_observability() -> dict[str, Any]:
     from v17.all_sport_capability_readiness import (
         install_all_sport_capability_readiness,
     )
+    from v17.team_event_probability_quality_parity import (
+        install_probability_quality_parity_overlay,
+    )
     from v17.team_event_recoverable_hold_overlay import (
         install_team_event_recoverable_hold_overlay,
     )
@@ -63,6 +66,12 @@ def initialize_observability() -> dict[str, Any]:
     # autonomous production lane. Bind the same operational readiness contract
     # across all twelve sports before parity captures bridge health.
     install_all_sport_capability_readiness()
+    # Probability-quality parity is stricter than route parity. MLB, NFL,
+    # NCAAF/CFB, NBA, WNBA and NHL expose the same evidence requirements for
+    # quantitative calibration, uncertainty semantics, immutable grading and
+    # temporal challenger validation. This metadata-only overlay cannot alter
+    # a fitted probability, rank eligibility or terminal authority.
+    install_probability_quality_parity_overlay()
     # Recoverable pregame input gaps remain durable candidate states rather than
     # being described as dead/removed rows. This adds metadata only; it never
     # manufactures a probability package or rank eligibility.
