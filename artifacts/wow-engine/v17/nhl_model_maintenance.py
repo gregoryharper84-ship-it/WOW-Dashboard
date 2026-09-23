@@ -3,6 +3,9 @@
 This route may acquire official settled NHL results, reconstruct strictly prior-game
 features, fit a research CANDIDATE, and persist immutable candidate evidence. It
 cannot certify, promote, activate, publish, rank, or execute a wager.
+
+Maintenance is intentionally replayable after candidate-lifecycle changes so a
+protected-main merge can regenerate evidence against the exact deployed code SHA.
 """
 from __future__ import annotations
 
