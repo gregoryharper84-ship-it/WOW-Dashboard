@@ -324,6 +324,36 @@ def _load_history(db: Any) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     return games, summaries
 
 
+def _prediction_feature_row(
+    *,
+    db: Any,
+    evidence: dict[str, Any],
+    canonical_game_id: str,
+    canonical_home_team: str,
+    canonical_away_team: str,
+) -> dict[str, Any]:
+    games, summaries = _load_history(db)
+    return build_prediction_feature_row(
+        training_games=games,
+        team_summaries=summaries,
+        game_id=canonical_game_id,
+        season=int(evidence["season"]),
+        week=int(evidence["week"]),
+        gameday=str(evidence["gameday"]),
+        home_team=canonical_home_team,
+        away_team=canonical_away_team,
+        schedule_content_sha256=str(evidence["schedule_content_sha256"]),
+    )
+
+
+def _history_counts(feature_row: dict[str, Any]) -> tuple[int, int]:
+    features = feature_row["features"]
+    return (
+        int(features["home_season_prior_games"]),
+        int(features["away_season_prior_games"]),
+    )
+
+
 def score_nfl_team_event(req: Any, *, db: Any) -> dict[str, Any]:
     evidence = dict(req.sport_specific_evidence or {})
     required = (
@@ -344,17 +374,12 @@ def score_nfl_team_event(req: Any, *, db: Any) -> dict[str, Any]:
     canonical_away_team = str(evidence["canonical_away_team"])
 
     try:
-        games, summaries = _load_history(db)
-        feature_row = build_prediction_feature_row(
-            training_games=games,
-            team_summaries=summaries,
-            game_id=canonical_game_id,
-            season=int(evidence["season"]),
-            week=int(evidence["week"]),
-            gameday=str(evidence["gameday"]),
-            home_team=canonical_home_team,
-            away_team=canonical_away_team,
-            schedule_content_sha256=str(evidence["schedule_content_sha256"]),
+        feature_row = _prediction_feature_row(
+            db=db,
+            evidence=evidence,
+            canonical_game_id=canonical_game_id,
+            canonical_home_team=canonical_home_team,
+            canonical_away_team=canonical_away_team,
         )
     except NFLModelInputsInsufficient:
         raise
@@ -363,10 +388,42 @@ def score_nfl_team_event(req: Any, *, db: Any) -> dict[str, Any]:
 
     home_required = int(evidence.get("required_home_season_prior_games") or 0)
     away_required = int(evidence.get("required_away_season_prior_games") or 0)
-    home_seen = int(feature_row["features"]["home_season_prior_games"])
-    away_seen = int(feature_row["features"]["away_season_prior_games"])
+    home_seen, away_seen = _history_counts(feature_row)
+
+    # The schedule ledger can refresh before nflverse PBP.  Repair only the
+    # under-count case, then recompute the identical feature row and retain the
+    # exact history-count gate.  Over-counts remain immediately fail-closed.
+    if (
+        (home_seen < home_required or away_seen < away_required)
+        and home_seen <= home_required
+        and away_seen <= away_required
+    ):
+        try:
+            from v17.nfl_current_season_summary_refresh import refresh_current_season_summaries
+
+            refresh_current_season_summaries(db, season=int(evidence["season"]))
+            feature_row = _prediction_feature_row(
+                db=db,
+                evidence=evidence,
+                canonical_game_id=canonical_game_id,
+                canonical_home_team=canonical_home_team,
+                canonical_away_team=canonical_away_team,
+            )
+            home_seen, away_seen = _history_counts(feature_row)
+        except NFLModelInputsInsufficient:
+            raise
+        except Exception as exc:
+            raise NFLModelInputsInsufficient(
+                "NFL_CURRENT_SEASON_HISTORY_REFRESH_FAILED:"
+                f"{type(exc).__name__}:HOME={home_seen}/{home_required}:"
+                f"AWAY={away_seen}/{away_required}"
+            ) from exc
+
     if home_seen != home_required or away_seen != away_required:
-        raise NFLModelInputsInsufficient(f"NFL_CURRENT_SEASON_HISTORY_STALE:HOME={home_seen}/{home_required}:AWAY={away_seen}/{away_required}")
+        raise NFLModelInputsInsufficient(
+            f"NFL_CURRENT_SEASON_HISTORY_STALE:HOME={home_seen}/{home_required}:"
+            f"AWAY={away_seen}/{away_required}"
+        )
 
     try:
         model = load_champion_model(db)
