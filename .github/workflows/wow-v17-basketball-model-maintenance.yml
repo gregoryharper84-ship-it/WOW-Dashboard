@@ -147,7 +147,7 @@ jobs:
           assert payload.get("automatic_promotion") is False, payload
           blocked_rows = [row for row in payload.get("rows", []) if row.get("status") == "BLOCKED"]
           if payload.get("status") == "BLOCKED" or blocked_rows:
-              raise RuntimeError("BASKETBALL_PREHYDRATE_BLOCKED:" + json.dumps({
+              raise RuntimeError("BASKETBALL_MAINTENANCE_BLOCKED:" + json.dumps({
                   "status": payload.get("status"),
                   "blocked_rows": [{"sport": row.get("sport"), "code": row.get("code")} for row in blocked_rows],
               }, sort_keys=True))
