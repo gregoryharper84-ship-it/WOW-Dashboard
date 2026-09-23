@@ -158,8 +158,8 @@ def test_auto_advance_oidc_wrapper_uses_minted_token(monkeypatch, tmp_path):
     monkeypatch.setattr(advance_oidc, "mint_github_actions_oidc", lambda force=True: "fresh-oidc")
     seen = []
 
-    def fake_execute(payload, *, token, origin, post_fn=None, progress_fn=None):
-        seen.append((token, origin, payload["run_id"], post_fn, progress_fn))
+    def fake_execute(payload, *, token, origin, post_fn=None, max_in_flight=None, progress_fn=None):
+        seen.append((token, origin, payload["run_id"], post_fn, progress_fn, max_in_flight))
         return {
             "status": "AUTO_ADVANCE_COMPLETE",
             "code": "AUTO_ADVANCE_RECONCILED",
@@ -174,6 +174,7 @@ def test_auto_advance_oidc_wrapper_uses_minted_token(monkeypatch, tmp_path):
     assert seen[0][0] == "fresh-oidc"
     assert callable(seen[0][3])
     assert callable(seen[0][4])
+    assert seen[0][5] == advance_oidc.OIDC_MAX_IN_FLIGHT == 2
     assert json.loads(output.read_text())["can_execute"] is False
 
 
