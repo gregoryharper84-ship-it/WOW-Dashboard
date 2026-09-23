@@ -87,6 +87,9 @@ def initialize_observability() -> dict[str, Any]:
 
     try:
         import api_prod_market_acceptance as _accepted_base
+        from v17.diagnostic_probe_load_shedding import (
+            install_diagnostic_probe_load_shedding,
+        )
         from v17.team_event_governance_parity_route import (
             install_team_event_governance_parity_route,
         )
@@ -94,6 +97,9 @@ def initialize_observability() -> dict[str, Any]:
         install_team_event_governance_parity_route(
             market_api=_accepted_base.market_api,
         )
+        # Install after the authoritative governance route so the wrapper captures
+        # the final diagnostic business logic rather than a lower-layer route.
+        install_diagnostic_probe_load_shedding(_accepted_base.app)
         install_interactive_team_event_io(
             event_api=_accepted_base.market_api.prod.event_api,
         )
