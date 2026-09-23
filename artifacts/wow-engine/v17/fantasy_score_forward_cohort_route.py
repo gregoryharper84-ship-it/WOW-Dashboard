@@ -1,4 +1,4 @@
-"""Authenticated V17 route for Fantasy Score and basketball research candidates.
+"""Authenticated V17 route for Fantasy Score and other research candidates.
 
 The forward collector remains available for batch/backfill capture. This installer
 also places narrow evidence-only scorers in front of the already-composed production
@@ -21,6 +21,10 @@ from v17.fantasy_score_forward_cohort_runtime import (
     run_fantasy_score_forward_cohort,
 )
 from v17.fantasy_score_forward_cohort_schema_repair import install_fantasy_score_forward_schema_repair
+from v17.mlb_player_doubles_candidate_bridge import (
+    is_mlb_player_doubles_candidate_request,
+    score_mlb_player_doubles_candidate_research,
+)
 from v17.nba_scalar_candidate_bridge import is_nba_scalar_candidate_request, score_nba_scalar_candidate_research
 from v17.nba_scalar_candidate_registry import install_nba_scalar_candidate_registration_route
 from v17.wnba_composite_candidate_bridge import (
@@ -63,6 +67,10 @@ def install_fantasy_score_candidate_runtime_bridge(
         x_wow_model_identity: Optional[str] = None,
     ) -> dict[str, Any]:
         model_identity = market_api.prod._reject_llp_prop_identity(x_wow_model_identity)
+        if is_mlb_player_doubles_candidate_request(req):
+            if _certified_route_available(req):
+                return captured_score_prop(req, x_wow_model_identity)
+            return score_mlb_player_doubles_candidate_research(market_api, req, model_identity=model_identity)
         if is_fantasy_score_request(req):
             if _certified_route_available(req):
                 return captured_score_prop(req, x_wow_model_identity)
