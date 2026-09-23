@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def test_all_expected_sports_are_explicitly_accounted_for():
     health = parity_health({})
     assert set(health) == set(EXPECTED_TEAM_EVENT_SPORTS)
-    assert len(health) == 12
+    assert len(health) == 13
 
 
 def test_parity_contract_never_relaxes_terminal_or_market_authority():
