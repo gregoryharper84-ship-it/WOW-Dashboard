@@ -99,6 +99,38 @@ def test_hydration_and_persisted_replay_failure_remain_blocked(monkeypatch):
     assert row["can_execute"] is False
 
 
+def test_successful_noop_hydration_receipt_survives_stale_replay_block(monkeypatch):
+    hydration_receipt = {
+        "sport": "NBA",
+        "settled_rows": 0,
+        "latest_game_date_before": "2023-04-02",
+        "latest_game_date_after": "2023-04-02",
+        "source_by_season": {"2026": "BALLDONTLIE"},
+        "can_execute": False,
+    }
+
+    monkeypatch.setattr(maintenance, "hydrate", lambda *_args, **_kwargs: hydration_receipt)
+    monkeypatch.setattr(
+        maintenance,
+        "run_training_replay",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("NBA_TRAINING_CORPUS_STALE latest=2023-04-02 age_days=1270 max_age_days=400")
+        ),
+    )
+
+    result = maintenance.run_basketball_model_maintenance(
+        object(), sports=("NBA",), seasons=(2026,)
+    )
+    row = result["rows"][0]
+
+    assert result["status"] == "BLOCKED"
+    assert row["code"].startswith("NBA_TRAINING_CORPUS_STALE")
+    assert row["hydration"] == hydration_receipt
+    assert row.get("hydration_blocker") is None
+    assert row["probability_publishable"] is False
+    assert row["can_execute"] is False
+
+
 def test_maintenance_route_is_internal_and_auth_wrapped(monkeypatch):
     app = FastAPI()
     monkeypatch.setattr(maintenance, "scout_route_auth_dependency", lambda dep: dep)
