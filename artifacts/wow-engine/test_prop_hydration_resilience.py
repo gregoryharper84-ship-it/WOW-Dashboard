@@ -159,13 +159,14 @@ def test_repeated_provider_rows_do_not_manufacture_cross_season_l10():
             return _Response({'stats': [{'splits': splits}]})
         raise AssertionError(url)
 
-    with pytest.raises(hydration.PropAutoHydrationError) as exc:
-        hydration.auto_hydrate_prop_evidence(
-            sport='MLB', player='Test Pitcher', stat_type='PITCHER_STRIKEOUTS',
-            event_start_time=event_start.isoformat(), http_get=duplicate_history_get, now=now,
-        )
-    assert exc.value.code == 'MLB_RECENT_STARTS_INSUFFICIENT'
-    assert exc.value.detail['starts_found'] == 9
+    evidence = hydration.auto_hydrate_prop_evidence(
+        sport='MLB', player='Test Pitcher', stat_type='PITCHER_STRIKEOUTS',
+        event_start_time=event_start.isoformat(), http_get=duplicate_history_get, now=now,
+    )
+    # Repeated rows from older season queries must not manufacture a tenth start.
+    assert len(evidence['game_log']) == 9
+    assert len(evidence['box_score_log']) == 9
+    assert evidence['opportunity_ledger']['regular_season_prior_starts'] == 9
 
 
 def test_truly_thin_cross_season_history_still_fails_closed():
@@ -177,9 +178,11 @@ def test_truly_thin_cross_season_history_still_fails_closed():
             player='Test Pitcher',
             stat_type='PITCHER_STRIKEOUTS',
             event_start_time=event_start.isoformat(),
-            http_get=_history_get(event_start, {2026: 4, 2025: 3, 2024: 2}),
+            http_get=_history_get(event_start, {2026: 1, 2025: 1, 2024: 0}),
             now=now,
         )
     assert exc.value.code == 'MLB_RECENT_STARTS_INSUFFICIENT'
-    assert exc.value.detail['starts_found'] == 9
+    assert exc.value.detail['starts_found'] == 2
+    assert exc.value.detail['required'] == 3
+    assert exc.value.detail['history_window_max'] == 10
     assert exc.value.detail['seasons_queried'] == [2026, 2025, 2024]
