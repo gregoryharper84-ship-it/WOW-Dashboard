@@ -70,14 +70,15 @@ def _valid_package(candidate_id: str = "candidate-1"):
     }
 
 
-def _register(sport: str, scorer):
+def _register(sport: str, scorer, **kwargs):
     return register_team_event_bridge(
         sport,
         adapter_name=f"TEST_{sport}_ADAPTER",
         controlling_specialist=f"TEST_{sport}_SPECIALIST",
         scorer=scorer,
-        required_inputs=TEAM_EVENT_INPUT_CONTRACTS[sport],
-        standard_package_validation=True,
+        required_inputs=kwargs.pop("required_inputs", TEAM_EVENT_INPUT_CONTRACTS[sport]),
+        standard_package_validation=kwargs.pop("standard_package_validation", True),
+        **kwargs,
     )
 
 
@@ -94,9 +95,12 @@ def test_health_separates_catalog_support_from_registered_model_support():
     health = team_event_bridge_health()
 
     assert health["MLB"]["status"] == "UP"
+    assert health["MLB"]["feature_consumption_receipt_enabled"] is True
+    assert health["MLB"]["feature_schema_version"] is None
     for sport in ("NFL", "NBA", "NCAAF", "NCAAB", "SOCCER", "TENNIS", "PGA"):
         assert health[sport]["status"] == "MODEL_UNAVAILABLE"
         assert health[sport]["registered"] is False
+        assert health[sport]["feature_consumption_receipt_enabled"] is False
         assert health[sport]["discovery_supported"] is True
         assert health[sport]["can_execute"] is False
 
@@ -162,6 +166,66 @@ def test_complete_registered_model_package_is_rank_eligible(sport):
     assert result["calibrated_lower_bound"] == 0.66
     assert result["rank_eligible"] is True
     assert result["probability_publishable"] is True
+    assert result["feature_consumption_receipt_id"]
+    assert result["feature_consumption_receipt"]["consumption_verification_status"] == "UNVERIFIED"
+    assert result["feature_consumption_receipt"]["receipt_complete"] is False
+    assert result["can_execute"] is False
+
+
+def test_declared_feature_receipt_does_not_change_probability_or_publication():
+    request = SimpleNamespace(
+        requester_host_identity="WOW_BETTING_ENGINE",
+        candidate_family="TEAM_EVENT",
+        sport="WNBA",
+        league="WNBA",
+        official_event_id="event-feature-1",
+        home_team="Alpha",
+        away_team="Beta",
+        sport_specific_evidence={
+            "home_win_pct": 0.62,
+            "away_win_pct": 0.48,
+            "calibration_artifact": {"artifact_id": "cal-1"},
+            "feature_provenance": {
+                "home_win_pct": {"source": "strength-store", "provenance_id": "h"},
+                "away_win_pct": {"source": "strength-store", "provenance_id": "a"},
+                "calibration_artifact": {"source": "calibration-registry", "provenance_id": "c"},
+            },
+        },
+    )
+
+    def scorer(*args, **kwargs):
+        package = _valid_package("feature-declared")
+        package["consumed_feature_ids"] = ["home_win_pct", "away_win_pct"]
+        return package
+
+    _register(
+        "WNBA",
+        scorer,
+        required_inputs=(
+            "official_event_id",
+            "home_win_pct",
+            "away_win_pct",
+            "calibration_artifact",
+        ),
+        feature_schema_version="WNBA_TEST_FEATURES_V1",
+        feature_roles={
+            "home_win_pct": "MODEL_PRIMARY",
+            "away_win_pct": "MODEL_PRIMARY",
+        },
+        critical_features=("home_win_pct", "away_win_pct"),
+    )
+    result = _score(request)
+    receipt = result["feature_consumption_receipt"]
+
+    assert result["calibrated_probability"] == 0.72
+    assert result["calibrated_lower_bound"] == 0.66
+    assert result["calibrated_upper_bound"] == 0.78
+    assert result["rank_eligible"] is True
+    assert result["probability_publishable"] is True
+    assert receipt["feature_schema_version"] == "WNBA_TEST_FEATURES_V1"
+    assert receipt["features_consumed"] == 2
+    assert receipt["consumption_verification_status"] == "VERIFIED"
+    assert receipt["receipt_complete"] is True
     assert result["can_execute"] is False
 
 
@@ -184,6 +248,7 @@ def test_market_failure_does_not_erase_valid_sporting_probability(sport):
     assert result["probability_publishable"] is True
     assert result["market_gate"] == "DATA_UNOBTAINABLE"
     assert result["edge_publication_status"] == "BLOCKED"
+    assert result["feature_consumption_receipt_id"]
     assert result["can_execute"] is False
 
 
