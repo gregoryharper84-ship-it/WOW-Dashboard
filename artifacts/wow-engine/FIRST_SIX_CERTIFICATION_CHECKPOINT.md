@@ -41,3 +41,5 @@ No workflow, migration, candidate, specialist, or route may set `can_execute=tru
 ## Production run trigger
 
 Prepared after merge `ab6eb8cc911802ab82423db2ebf569fb59cad119`. This checkpoint mutation is a governed trigger for protected-main first-six maintenance after the binary calibration challenger in PR #763 became part of `main`. The rerun must regenerate fresh lane evidence with the no-test-leakage forward calibrator selection before any certification or promotion review. It does not alter model semantics, certification thresholds, publication authority, or `can_execute=false`.
+
+Trigger receipt: base main `468f6455b80e9ad11e3d50e645239855ead5180b`; the merge commit for this receipt must contain `[RUN_FIRST_SIX]` so the existing protected-main maintenance workflow executes.
