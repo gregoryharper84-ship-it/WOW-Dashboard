@@ -21,7 +21,7 @@ Ownership does not create model capability. Runtime capability remains `UNAVAILA
 The rich `NCAAF_FEATURES_V1` route remains preferred. When genuine historical QB/injury/OL/weather evidence is unavailable, V17 does not synthesize it. The separately identified `NCAAF_RESULT_FORM_PRIOR_V1` candidate reconstructs only prior settled team results, point differential, workload/rest, and neutral-site context. It is candidate evidence only.
 
 ### NBA / WNBA
-Existing basketball maintenance hydrates current settled team games, performs deterministic provenance replay, fits league-isolated logistic specialists, and applies chronological Platt calibration. A successful maintenance run persists SHADOW evidence; explicit replay/promotion remains required.
+Existing basketball maintenance hydrates current settled team games, performs deterministic provenance replay, fits league-isolated logistic specialists, and applies chronological calibration. A successful maintenance run persists SHADOW evidence; explicit replay/promotion remains required.
 
 ### NCAAB
 `NCAAB_TEAM_FORM_PRIOR_V1` uses SportsDataverse men's college basketball team-box release assets under CC BY 4.0. Current-game box statistics are outcomes; all features are reconstructed strictly from prior games. Market prices are not features.
@@ -40,4 +40,4 @@ No workflow, migration, candidate, specialist, or route may set `can_execute=tru
 
 ## Production run trigger
 
-Prepared after merge `ab6eb8cc911802ab82423db2ebf569fb59cad119`. This one-line checkpoint mutation exists only to trigger the governed protected-main first-six maintenance workflow after the exact implementation is confirmed live on Render. It does not alter model semantics, certification thresholds, publication authority, or `can_execute=false`.
+Prepared after merge `ab6eb8cc911802ab82423db2ebf569fb59cad119`. This checkpoint mutation is a governed trigger for protected-main first-six maintenance after the binary calibration challenger in PR #763 became part of `main`. The rerun must regenerate fresh lane evidence with the no-test-leakage forward calibrator selection before any certification or promotion review. It does not alter model semantics, certification thresholds, publication authority, or `can_execute=false`.
