@@ -164,7 +164,7 @@ jobs:
           assert service["runtime"] == "python"
           assert service["plan"] == "free"
           assert service["rootDir"] == "artifacts/wow-engine"
-          assert service["healthCheckPath"] == "/health"
+          assert service["healthCheckPath"] == "/health/live"
           assert service["startCommand"] == "uvicorn api_ncaaf_acceptance:app --host 0.0.0.0 --port $PORT"
           assert service["autoDeployTrigger"] == "checksPass"
           secret_vars = {
