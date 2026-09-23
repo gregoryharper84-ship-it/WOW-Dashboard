@@ -121,6 +121,80 @@ def test_hydrate_falls_back_when_primary_does_not_advance_stale_corpus(monkeypat
     assert [row["game_id"] for row in persisted] == ["espn-new"]
 
 
+def test_hydrate_same_year_noop_primary_still_checks_fallback(monkeypatch):
+    monkeypatch.setattr(
+        hydration,
+        "fetch_games",
+        lambda *_args, **_kwargs: [_bdl_event(event_id="same", game_date="2026-09-20")],
+    )
+    monkeypatch.setattr(
+        hydration,
+        "fetch_espn_games",
+        lambda sport, season: [_espn_event(event_id="new", game_date="2026-09-21")],
+    )
+    latest_calls = iter([date(2026, 9, 20), date(2026, 9, 21)])
+    monkeypatch.setattr(hydration, "_latest_persisted_game_date", lambda client, sport: next(latest_calls))
+    persisted = []
+    monkeypatch.setattr(hydration, "_persist_rows", lambda client, sport, rows: persisted.extend(rows))
+
+    result = hydration.hydrate("NBA", [2026], client=object())
+
+    assert result["source_by_season"][2026] == "ESPN_SCOREBOARD"
+    assert result["fallback_reasons"][2026] == "BALLDONTLIE_NO_NEWER_SETTLED_ROWS"
+    assert [row["game_id"] for row in persisted] == ["espn-new"]
+
+
+def test_recovered_primary_does_not_backfill_provider_duplicate_history(monkeypatch):
+    monkeypatch.setattr(
+        hydration,
+        "fetch_games",
+        lambda *_args, **_kwargs: [_bdl_event(event_id="historical-bdl", game_date="2025-05-01")],
+    )
+    fallback_called = []
+    monkeypatch.setattr(
+        hydration,
+        "fetch_espn_games",
+        lambda *_args, **_kwargs: fallback_called.append(True) or [],
+    )
+    latest_calls = iter([date(2026, 9, 20), date(2026, 9, 20)])
+    monkeypatch.setattr(hydration, "_latest_persisted_game_date", lambda client, sport: next(latest_calls))
+    persisted = []
+    monkeypatch.setattr(hydration, "_persist_rows", lambda client, sport, rows: persisted.extend(rows))
+
+    result = hydration.hydrate("NBA", [2025], client=object())
+
+    assert result["source_by_season"][2025] == "BALLDONTLIE"
+    assert result["settled_rows"] == 0
+    assert persisted == []
+    assert fallback_called == []
+
+
+def test_old_season_primary_failure_does_not_switch_provider_and_duplicate_history(monkeypatch):
+    monkeypatch.setattr(
+        hydration,
+        "fetch_games",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            hydration.BasketballHydrationError("BALLDONTLIE_AUTH_FAILED")
+        ),
+    )
+    fallback_called = []
+    monkeypatch.setattr(
+        hydration,
+        "fetch_espn_games",
+        lambda *_args, **_kwargs: fallback_called.append(True) or [],
+    )
+    latest_calls = iter([date(2026, 9, 20), date(2026, 9, 20)])
+    monkeypatch.setattr(hydration, "_latest_persisted_game_date", lambda client, sport: next(latest_calls))
+    persisted = []
+    monkeypatch.setattr(hydration, "_persist_rows", lambda client, sport, rows: persisted.extend(rows))
+
+    result = hydration.hydrate("NBA", [2025], client=object())
+
+    assert result["settled_rows"] == 0
+    assert persisted == []
+    assert fallback_called == []
+
+
 def test_hydrate_fails_closed_when_primary_and_fallback_are_unavailable(monkeypatch):
     monkeypatch.setattr(
         hydration,
