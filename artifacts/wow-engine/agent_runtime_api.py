@@ -28,6 +28,7 @@ from agent_runtime import idempotency, repository, schemas
 from agent_runtime.orchestrator import Orchestrator
 from agent_runtime.state_machine import RUN_TERMINAL_STATES
 from ml_research_readiness import get_ml_research_readiness
+from v17.diagnostic_singleflight import BurstSingleFlight
 
 GOVERNANCE_VERSION = "WOW-AGENT-RUNTIME-V1-PHASE1"
 
@@ -41,6 +42,8 @@ _JOB_STATUS_TO_MANIFEST_BUCKET = {
     "BLOCKED": "blocked", "TIMED_OUT": "timed_out",
 }
 
+_READINESS_SINGLEFLIGHT: BurstSingleFlight[dict[str, Any]] = BurstSingleFlight()
+
 
 @app.get("/health/live")
 def health_live() -> dict[str, Any]:
@@ -48,11 +51,12 @@ def health_live() -> dict[str, Any]:
     return {"status": "ok", "can_execute": False}
 
 
-@app.get("/health/ready")
-def health_ready() -> dict[str, Any]:
-    """Database, queue, and code<->DB worker-registry parity — packet
-    section 9. All three fail closed: an unreachable dependency or a
-    registry mismatch means not ready, never a partial or optimistic pass."""
+def _probe_readiness() -> dict[str, Any]:
+    """Perform one exact fail-closed dependency probe.
+
+    Burst coalescing happens outside this function. Every non-overlapping caller
+    still executes a fresh probe, so no optimistic TTL cache is introduced.
+    """
     client = None
     try:
         client = get_client()
@@ -79,14 +83,26 @@ def health_ready() -> dict[str, Any]:
         queue_ok = False
 
     ready = database_ok and queue_ok and registry_ok
-    body = {
+    return {
         "status": "ok" if ready else "not_ready",
         "database": "ok" if database_ok else "unreachable",
         "queue": "ok" if queue_ok else "unreachable",
         "worker_registry": "ok" if registry_ok else "mismatch_or_unreachable",
         "can_execute": False,
     }
-    if not ready:
+
+
+@app.get("/health/ready")
+def health_ready() -> dict[str, Any]:
+    """Database, queue, and code<->DB worker-registry parity — packet section 9.
+
+    Concurrent callers share the exact same in-flight dependency result so a
+    health-check burst cannot multiply Supabase/Redis probes. Calls that begin
+    after that probe completed always perform a fresh check. Fail-closed status
+    semantics are unchanged.
+    """
+    body = _READINESS_SINGLEFLIGHT.run(_probe_readiness)
+    if body["status"] != "ok":
         raise HTTPException(status_code=503, detail=body)
     return body
 
