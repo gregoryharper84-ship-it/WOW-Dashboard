@@ -4,7 +4,14 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from v17.binary_candidate_lifecycle import BinaryCandidateError, BinaryTrainingRow, train_binary_candidate
+from v17.binary_candidate_lifecycle import (
+    CALIBRATOR_SELECTION_VERSION,
+    EMPIRICAL_CALIBRATION_METHOD,
+    IDENTITY_CALIBRATION_METHOD,
+    BinaryCandidateError,
+    BinaryTrainingRow,
+    train_binary_candidate,
+)
 
 
 BASE = datetime(2020, 1, 1, tzinfo=timezone.utc)
@@ -37,15 +44,33 @@ def test_chronological_train_calibration_test_produces_candidate_only():
     assert candidate.metrics.calibration_n == 80
     assert candidate.metrics.test_n == 80
     # Research-screen status is a measured outcome, never a fixture assumption.
-    # A candidate that does not improve after calibration must remain a candidate
-    # rather than having the gate weakened merely to make a test pass.
     assert isinstance(candidate.research_screen_pass, bool)
     assert candidate.automatic_certification is False
     assert candidate.automatic_promotion is False
     assert candidate.probability_publishable is False
     assert candidate.can_execute is False
-    assert candidate.calibrator_payload["method"] == "EMPIRICAL_WILSON_BINS_V1"
-    assert all("wilson_lower" in row for row in candidate.calibrator_payload["bins"])
+    assert candidate.calibrator_payload["method"] in {
+        EMPIRICAL_CALIBRATION_METHOD,
+        IDENTITY_CALIBRATION_METHOD,
+    }
+    assert candidate.calibrator_payload["selection_version"] == CALIBRATOR_SELECTION_VERSION
+    selection = candidate.calibrator_payload["selection"]
+    assert selection["test_block_used_for_selection"] is False
+    if candidate.calibrator_payload["method"] == EMPIRICAL_CALIBRATION_METHOD:
+        assert all("wilson_lower" in row for row in candidate.calibrator_payload["bins"])
+    else:
+        assert candidate.calibrator_payload["bins"] == []
+
+
+def test_calibrator_selection_never_uses_test_block_and_identity_is_valid_mapping():
+    candidate = train_binary_candidate(rows(600), model_family="TEST_BINARY_V2", feature_names=FEATURES)
+    selection = candidate.calibrator_payload["selection"]
+    assert selection["test_block_used_for_selection"] is False
+    assert selection["fit_n"] + selection["evaluation_n"] == candidate.metrics.calibration_n
+    # The untouched test still owns the research screen after selection.
+    if candidate.calibrator_payload["method"] == IDENTITY_CALIBRATION_METHOD:
+        assert candidate.metrics.calibrated_brier == pytest.approx(candidate.metrics.raw_brier)
+        assert candidate.metrics.calibrated_log_loss == pytest.approx(candidate.metrics.raw_log_loss)
 
 
 def test_unsorted_rows_fail_closed():
