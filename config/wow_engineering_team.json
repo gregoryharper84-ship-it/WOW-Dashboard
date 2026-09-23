@@ -1,0 +1,92 @@
+{
+  "schema_version": "1.0",
+  "team_id": "WOW_V17_ENGINEERING_TEAM",
+  "runtime_generation": "V17_ACTIVE",
+  "terminal_authority": "V17_TERMINAL_REDUCER",
+  "can_execute": false,
+  "dry_run_only": true,
+  "single_implementation_lease_per_incident": true,
+  "r0_r1_preempts_improvement": true,
+  "roles": [
+    {
+      "id": "engineering_lead",
+      "name": "Engineering Lead / Incident Commander",
+      "kind": "ORCHESTRATOR",
+      "may_modify_code": false,
+      "may_promote_probability_behavior": false,
+      "responsibilities": ["priority_queue", "deduplication", "implementation_leases", "handoffs", "terminal_outcomes"]
+    },
+    {
+      "id": "root_cause",
+      "name": "Reproduction & Root-Cause Agent",
+      "kind": "RESEARCH_AGENT",
+      "may_modify_code": false,
+      "may_promote_probability_behavior": false,
+      "responsibilities": ["reproduction", "evidence_correlation", "first_failing_stage", "root_cause_packet"]
+    },
+    {
+      "id": "implementation",
+      "name": "Implementation Agent",
+      "kind": "CODING_AGENT",
+      "may_modify_code": true,
+      "requires_implementation_lease": true,
+      "may_promote_probability_behavior": false,
+      "responsibilities": ["minimal_fix", "targeted_tests", "regression_repairs"]
+    },
+    {
+      "id": "adversarial_review",
+      "name": "Adversarial Test & Review Agent",
+      "kind": "REVIEW_AGENT",
+      "may_modify_code": false,
+      "may_promote_probability_behavior": false,
+      "responsibilities": ["independent_review", "adjacent_lane_tests", "governance_invariants", "regression_detection"]
+    },
+    {
+      "id": "release_verification",
+      "name": "Release & Production Verification Agent",
+      "kind": "RELEASE_AGENT",
+      "may_modify_code": false,
+      "may_promote_probability_behavior": false,
+      "responsibilities": ["protected_ci", "exact_sha_merge", "deploy_reconciliation", "production_acceptance", "terminal_closure"]
+    },
+    {
+      "id": "frontier_intelligence",
+      "name": "Frontier Intelligence & Continuous Improvement Agent",
+      "kind": "RESEARCH_AGENT",
+      "may_modify_code": false,
+      "may_promote_probability_behavior": false,
+      "lanes": ["AI_FRONTIER", "SPORTS_INTELLIGENCE"],
+      "responsibilities": ["external_discovery", "technology_radar", "opportunity_scoring", "experiment_proposals", "duplicate_filtering"]
+    },
+    {
+      "id": "challenger",
+      "name": "Experiment / Challenger Agent",
+      "kind": "EXPERIMENT_AGENT",
+      "may_modify_code": true,
+      "requires_experiment_scope": true,
+      "may_promote_probability_behavior": false,
+      "responsibilities": ["challenger_implementation", "historical_replay", "counterexample_review", "holdout_validation", "regression", "recommendation"]
+    }
+  ],
+  "allowed_terminal_outcomes": [
+    "FIXED_AND_VERIFIED",
+    "PR_CREATED",
+    "EXPERIMENT_CREATED",
+    "DUPLICATE",
+    "NOT_REPRODUCIBLE",
+    "BLOCKED_WITH_EXACT_REASON",
+    "DEFERRED_WITH_JUSTIFICATION"
+  ],
+  "technology_radar_dispositions": ["ADOPT", "TRIAL", "ASSESS", "WATCH", "REJECT", "DUPLICATE"],
+  "class_c_required_path": [
+    "DISCOVER",
+    "HYPOTHESIS",
+    "CHALLENGER",
+    "HISTORICAL_REPLAY",
+    "COUNTEREXAMPLE_REVIEW",
+    "HOLDOUT_OR_FORWARD_VALIDATION",
+    "REGRESSION",
+    "RECOMMENDATION",
+    "GOVERNED_REVIEW"
+  ]
+}
