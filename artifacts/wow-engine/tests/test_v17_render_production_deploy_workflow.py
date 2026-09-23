@@ -76,6 +76,34 @@ def test_render_deploy_list_unwraps_render_pagination_entries():
     assert "deploys.append(item)" in text
 
 
+def test_render_deploy_receipt_is_durable_and_pointer_reconciler_is_governed():
+    text = _workflow_text()
+
+    assert "deployments: write" in text
+    assert "wow-v17-render-deploy-receipt.json" in text
+    assert "def emit_receipt(payload):" in text
+    assert 'body["workflow_run_id"]' in text
+    assert 'body["workflow_run_attempt"]' in text
+    assert "Reconcile exact Render receipt to durable deployment pointer" in text
+    assert "python artifacts/wow-engine/v17/render_deployment_pointer.py" in text
+    assert "actions/checkout@v4" in text
+    assert "ref: main" in text
+
+
+def test_render_deploy_no_deploy_paths_emit_typed_receipts_before_exit():
+    text = _workflow_text()
+
+    for status in (
+        "NON_MAIN_NO_DEPLOY",
+        "UPSTREAM_NOT_SUCCESS_NO_DEPLOY",
+        "STALE_SHA_NO_DEPLOY",
+        "DEPLOY_SUPERSEDED_BY_NEW_MAIN",
+    ):
+        marker = f'"status":"{status}"'
+        assert marker in text
+        assert text.index("emit_receipt({", text.index(marker) - 40) < text.index("raise SystemExit(0)", text.index(marker))
+
+
 def test_daily_snapshot_has_deploy_handoff_runway_and_network_retries():
     repo_root = Path(__file__).resolve().parents[3]
     text = (repo_root / ".github" / "workflows" / "wow-v17-daily-snapshot.yml").read_text(

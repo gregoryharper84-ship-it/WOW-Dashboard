@@ -9,6 +9,7 @@ on:
 permissions:
   contents: read
   checks: read
+  deployments: write
 
 concurrency:
   group: wow-v17-render-production-deploy
@@ -54,6 +55,18 @@ jobs:
           event_name = os.environ["GITHUB_EVENT_NAME"]
           render_service_id = os.environ["WOW_RENDER_SERVICE_ID"]
           render_api_key = os.environ["RENDER_API_KEY"]
+          receipt_path = os.path.join(os.environ["RUNNER_TEMP"], "wow-v17-render-deploy-receipt.json")
+
+          def emit_receipt(payload):
+              body = dict(payload)
+              body.setdefault("can_execute", False)
+              body["workflow_run_id"] = str(os.environ.get("GITHUB_RUN_ID") or "")
+              body["workflow_run_attempt"] = str(os.environ.get("GITHUB_RUN_ATTEMPT") or "")
+              with open(receipt_path, "w", encoding="utf-8") as handle:
+                  json.dump(body, handle, sort_keys=True)
+                  handle.write("\n")
+              print(json.dumps(body, sort_keys=True))
+              return body
 
           with open(os.environ["GITHUB_EVENT_PATH"], "r", encoding="utf-8") as handle:
               event = json.load(handle)
@@ -64,10 +77,10 @@ jobs:
               head_branch = str(workflow_run.get("head_branch") or "")
               conclusion = str(workflow_run.get("conclusion") or "")
               if head_branch != "main":
-                  print(json.dumps({"status":"NON_MAIN_NO_DEPLOY","target_sha":target_sha,"can_execute":False}, sort_keys=True))
+                  emit_receipt({"status":"NON_MAIN_NO_DEPLOY","target_sha":target_sha,"can_execute":False})
                   raise SystemExit(0)
               if conclusion != "success":
-                  print(json.dumps({"status":"UPSTREAM_NOT_SUCCESS_NO_DEPLOY","target_sha":target_sha,"can_execute":False}, sort_keys=True))
+                  emit_receipt({"status":"UPSTREAM_NOT_SUCCESS_NO_DEPLOY","target_sha":target_sha,"can_execute":False})
                   raise SystemExit(0)
           else:
               target_sha = str(os.environ.get("GITHUB_SHA") or "")
@@ -118,12 +131,12 @@ jobs:
 
           main_sha = str(((github_json("/branches/main").get("commit") or {}).get("sha")) or "")
           if main_sha != target_sha:
-              print(json.dumps({
+              emit_receipt({
                   "status":"STALE_SHA_NO_DEPLOY",
                   "target_sha":target_sha,
                   "current_main_sha":main_sha,
                   "can_execute":False,
-              }, sort_keys=True))
+              })
               raise SystemExit(0)
 
           render_headers = {
@@ -186,14 +199,14 @@ jobs:
           existing = exact_target_deploys()
           for deploy in existing:
               if str(deploy.get("status") or "") == "live":
-                  print(json.dumps({
+                  emit_receipt({
                       "status":"EXACT_SHA_ALREADY_LIVE",
                       "commit_sha":target_sha,
                       "deploy_id":str(deploy.get("id") or ""),
                       "deploy_authority":"GOVERNED_RENDER_API_HANDOFF",
                       "required_checks":sorted(required),
                       "can_execute":False,
-                  }, sort_keys=True))
+                  })
                   raise SystemExit(0)
 
           terminal_failures = {
@@ -246,28 +259,40 @@ jobs:
               if target is not None:
                   status = str(target.get("status") or "")
                   if status == "live":
-                      print(json.dumps({
+                      emit_receipt({
                           "status":"EXACT_SHA_RENDER_DEPLOY_LIVE",
                           "commit_sha":target_sha,
                           "deploy_id":str(target.get("id") or deploy_id),
                           "deploy_authority":"GOVERNED_RENDER_API_HANDOFF",
                           "required_checks":sorted(required),
                           "can_execute":False,
-                      }, sort_keys=True))
+                      })
                       break
                   if status in terminal_failures:
                       raise RuntimeError(f"RENDER_TARGET_DEPLOY_TERMINAL_FAILURE:{status}")
               current_main_sha = str(((github_json("/branches/main").get("commit") or {}).get("sha")) or "")
               if current_main_sha != target_sha:
-                  print(json.dumps({
+                  emit_receipt({
                       "status":"DEPLOY_SUPERSEDED_BY_NEW_MAIN",
                       "target_sha":target_sha,
                       "current_main_sha":current_main_sha,
                       "deploy_id":deploy_id,
                       "can_execute":False,
-                  }, sort_keys=True))
+                  })
                   raise SystemExit(0)
               if time.time() >= deploy_deadline:
                   raise RuntimeError("RENDER_EXACT_SHA_DEPLOY_TIMEOUT")
               time.sleep(10)
           PY
+
+      - name: Checkout deployment-pointer reconciler
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+
+      - name: Reconcile exact Render receipt to durable deployment pointer
+        shell: bash
+        run: |
+          python artifacts/wow-engine/v17/render_deployment_pointer.py \
+            "$RUNNER_TEMP/wow-v17-render-deploy-receipt.json"
