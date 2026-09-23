@@ -10,6 +10,7 @@ from typing import Any, Callable
 
 from fastapi import HTTPException
 
+from nfl_event_features_p2 import FEATURE_ORDER as NFL_FEATURE_ORDER, FEATURE_SCHEMA_VERSION as NFL_FEATURE_SCHEMA_VERSION
 from nfl_event_model_v17 import (
     NFLModelInputsInsufficient,
     NFLModelOutputInvalid,
@@ -104,6 +105,35 @@ def _nfl_envelope(base: Any, req: Any) -> Any:
         "weather_source": "NOT_USED_BY_NFL_FITTED_V1",
     }
     return replace(envelope, **updates)
+
+
+def _attach_nfl_feature_consumption_metadata(model_result: dict[str, Any]) -> dict[str, Any]:
+    """Attach scorer-proven feature consumption without changing model outputs.
+
+    The certified scorer rejects schema/order mismatches before returning a
+    probability. We still fail closed here: if the returned schema or immutable
+    feature-row hash is absent, do not claim consumption and let the receipt stay
+    UNVERIFIED.
+    """
+    out = dict(model_result)
+    if str(out.get("feature_schema_version") or "") != NFL_FEATURE_SCHEMA_VERSION:
+        return out
+    feature_row_hash = str(out.get("feature_row_hash") or "").strip()
+    if not feature_row_hash:
+        return out
+
+    out["consumed_feature_ids"] = list(NFL_FEATURE_ORDER)
+    out["feature_observations"] = {
+        feature_id: {
+            "value_status": "AVAILABLE",
+            "freshness_status": "UNKNOWN",
+            "source": "NFL_CANONICAL_PREGAME_FEATURE_ROW",
+            "provenance_id": feature_row_hash,
+        }
+        for feature_id in NFL_FEATURE_ORDER
+    }
+    out["can_execute"] = False
+    return out
 
 
 def _govern(base: Any, req: Any, route: Any, model_result: dict[str, Any], envelope: Any, *, db: Any) -> dict[str, Any]:
@@ -241,6 +271,7 @@ def score_nfl_team_event_request(
             if promotion.get("status") == "CERTIFICATION_BLOCKED":
                 raise NFLModelUnavailable("NFL_MODEL_CERTIFICATION_BLOCKED")
         result = score_nfl_team_event(effective_req, db=db)
+        result = _attach_nfl_feature_consumption_metadata(result)
         envelope = _nfl_envelope(team_event_module, effective_req)
         governed = _govern(team_event_module, effective_req, route, result, envelope, db=db)
     except (NFLModelUnavailable, NFLModelInputsInsufficient, NFLModelOutputInvalid, NFLModelScorerFailed) as exc:
