@@ -139,7 +139,7 @@ def compose_active_runtime() -> bool:
     from v17.projected_lineup_scenario_modeling import install_projected_lineup_semantics
     from v17.projected_lineup_probability_rehydration import install_projected_lineup_score_rehydration
     from v17.numerical_engine_production_bridge import install_production_bridges
-    from v17.llp_rundown_market_bridge import install_llp_rundown_market_bridge
+    from v17.llp_rundown_value_bridge import install_llp_rundown_value_bridge
     from v17.rundown_credential_diagnostic import log_rundown_credential_status
     from v17.runtime_acceptance_probe import install_runtime_acceptance_probe
     from v17.sep15_runtime_contract_repairs import (
@@ -161,7 +161,7 @@ def compose_active_runtime() -> bool:
     prop_ok = install_prop_response_semantics()
     lineup_ok = install_projected_lineup_semantics()
     rehydration_ok = install_projected_lineup_score_rehydration(team_runtime)
-    rundown_llp_ok = install_llp_rundown_market_bridge(team_runtime)
+    rundown_llp_ok = install_llp_rundown_value_bridge(team_runtime)
 
     market_api = sys.modules.get("api_prod_market")
     numerical_ok = False
@@ -194,7 +194,7 @@ def compose_active_runtime() -> bool:
         or mlb_event_bridge_deferred or runtime_acceptance_ok or daily_snapshot_oidc_ok
         or getattr(market_api, "_v17_certified_numerical_bridge_installed", False)
         or getattr(market_api, "_v17_mlb_event_bridge_repair_installed", False)
-        or getattr(team_runtime, "_v17_llp_rundown_market_bridge_installed", False)
+        or getattr(team_runtime, "_v17_llp_rundown_value_bridge_installed", False)
         or getattr(team_runtime, "_v17_sep15_market_prior_ingress_repair_installed", False)
     )
 
