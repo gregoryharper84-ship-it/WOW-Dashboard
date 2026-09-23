@@ -1,0 +1,40 @@
+name: WOW Frontier Intelligence
+
+on:
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Validate governed team configuration
+        run: python scripts/validate_wow_engineering_team.py
+      - name: Emit continuous-improvement contract
+        run: |
+          cat <<'EOF'
+          WOW Frontier Intelligence contract:
+          - lanes: AI_FRONTIER + SPORTS_INTELLIGENCE
+          - research/evidence only unless routed into governed experiment lifecycle
+          - no direct production probability changes
+          - no sportsbook implied probability substitution
+          - Class C -> challenger/replay/counterexample/holdout/regression/recommendation/governed review
+          - R0/R1 reliability preempts experiment execution capacity
+          - can_execute=false
+          - V17_TERMINAL_REDUCER remains sole terminal authority
+          EOF
+
+  frontier-research:
+    needs: guard
+    if: ${{ vars.WOW_FRONTIER_INTELLIGENCE_ENABLED == 'true' }}
+    uses: ./.github/workflows/wow-frontier-intelligence-worker.yml
+    secrets: inherit
