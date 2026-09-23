@@ -14,6 +14,7 @@ from v17.team_event_probability_quality_parity import (
 def _complete_evidence():
     return {
         "exact_fitted_specialist": True,
+        "server_owned_calibration_artifact": True,
         "calibration_metrics": {
             "brier": 0.20,
             "log_loss": 0.58,
@@ -67,6 +68,14 @@ def test_pass_label_without_quantitative_metrics_fails_closed():
     assert result["status"] == "QUALITY_EVIDENCE_INCOMPLETE"
     assert "QUALITY_PARITY_CALIBRATION_METRICS_MISSING" in result["blockers"]
     assert "QUALITY_PARITY_CALIBRATION_PASS_NOT_QUANTITATIVE" in result["blockers"]
+
+
+def test_request_supplied_calibration_cannot_substitute_for_server_owned_authority():
+    evidence = _complete_evidence()
+    evidence["server_owned_calibration_artifact"] = False
+    result = assess_probability_quality_evidence("WNBA", evidence)
+    assert result["status"] == "QUALITY_EVIDENCE_INCOMPLETE"
+    assert "QUALITY_PARITY_SERVER_OWNED_CALIBRATION_UNPROVEN" in result["blockers"]
 
 
 def test_missing_exact_sport_model_is_not_hidden_by_other_evidence():
@@ -138,6 +147,7 @@ def test_health_overlay_does_not_confuse_route_readiness_with_quality_parity(mon
     assert receipt["can_execute"] is False
     assert health["WNBA"]["probability_quality_parity_status"] == "QUALITY_EVIDENCE_INCOMPLETE"
     assert "QUALITY_PARITY_CALIBRATION_METRICS_MISSING" in health["WNBA"]["probability_quality_parity_blockers"]
+    assert "QUALITY_PARITY_SERVER_OWNED_CALIBRATION_UNPROVEN" in health["WNBA"]["probability_quality_parity_blockers"]
     assert health["NBA"]["probability_quality_parity_status"] == "MODEL_CAPABILITY_UNPROVEN"
     assert "QUALITY_PARITY_EXACT_FITTED_SPECIALIST_UNPROVEN" in health["NBA"]["probability_quality_parity_blockers"]
     assert health["WNBA"]["probability_quality_required_metrics"] == list(REQUIRED_CALIBRATION_METRICS)
