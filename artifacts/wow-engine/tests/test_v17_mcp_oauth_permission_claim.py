@@ -51,6 +51,17 @@ def test_oauth_permission_allowlist_matches_governed_v17_operations():
         assert f"'{permission}'" in sql
 
 
+def test_approved_oauth_client_is_bound_to_exact_https_resource_audience():
+    sql = _sql()
+    assert "resource_audience text" in sql
+    assert "chk_wow_mcp_oauth_resource_audience_when_enabled" in sql
+    assert "resource_audience ~ '^https://[^[:space:]]+$'" in sql
+    assert "jsonb_set(claims, '{aud}', to_jsonb(protected_resource_audience), true)" in sql
+    assert "if protected_resource_audience is not null then" in sql
+    # The hook must not stamp a generic Supabase audience onto approved MCP tokens.
+    assert "to_jsonb('authenticated'" not in sql
+
+
 def test_oauth_hook_does_not_create_execution_authority():
     sql = _sql()
     forbidden_permissions = {
