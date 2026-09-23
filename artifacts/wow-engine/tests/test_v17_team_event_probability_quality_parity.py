@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import v17.team_event_bridge_runtime as bridge_runtime
+import v17.team_event_probability_quality_parity as parity
 from v17.team_event_probability_quality_parity import (
     REQUIRED_CALIBRATION_METRICS,
     REQUIRED_DIMENSIONS,
@@ -104,3 +106,39 @@ def test_can_execute_must_remain_false():
     evidence["can_execute"] = True
     result = assess_probability_quality_evidence("NCAAF", evidence)
     assert "QUALITY_PARITY_CAN_EXECUTE_MUST_BE_FALSE" in result["blockers"]
+
+
+def test_health_overlay_does_not_confuse_route_readiness_with_quality_parity(monkeypatch):
+    base_health = {
+        "WNBA": {
+            "model_artifact_dependency_satisfied": True,
+            "request_scoring_path_ready": True,
+            "certification_status": "CERTIFIED",
+            "can_execute": False,
+        },
+        "NBA": {
+            "model_artifact_dependency_satisfied": False,
+            "request_scoring_path_ready": False,
+            "certification_status": "UNAVAILABLE",
+            "can_execute": False,
+        },
+    }
+    monkeypatch.setattr(bridge_runtime, "team_event_bridge_health", lambda: base_health)
+    monkeypatch.setattr(
+        bridge_runtime,
+        "_v17_probability_quality_parity_installed",
+        False,
+        raising=False,
+    )
+
+    receipt = parity.install_probability_quality_parity_overlay()
+    health = bridge_runtime.team_event_bridge_health()
+
+    assert receipt["status"] == "INSTALLED"
+    assert receipt["can_execute"] is False
+    assert health["WNBA"]["probability_quality_parity_status"] == "QUALITY_EVIDENCE_INCOMPLETE"
+    assert "QUALITY_PARITY_CALIBRATION_METRICS_MISSING" in health["WNBA"]["probability_quality_parity_blockers"]
+    assert health["NBA"]["probability_quality_parity_status"] == "MODEL_CAPABILITY_UNPROVEN"
+    assert "QUALITY_PARITY_EXACT_FITTED_SPECIALIST_UNPROVEN" in health["NBA"]["probability_quality_parity_blockers"]
+    assert health["WNBA"]["probability_quality_required_metrics"] == list(REQUIRED_CALIBRATION_METRICS)
+    assert health["WNBA"]["can_execute"] is False
