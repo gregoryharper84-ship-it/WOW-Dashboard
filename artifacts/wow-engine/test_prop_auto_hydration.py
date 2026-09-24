@@ -72,6 +72,59 @@ def _successful_get(event_start):
     return fake_get, calls
 
 
+def _limited_history_get(event_start, starts):
+    calls = []
+
+    def fake_get(url, *, params, timeout):
+        calls.append((url, params, timeout))
+        if url.endswith("/people/search"):
+            return _Response({"people": [{"id": 123, "fullName": "Test Pitcher"}]})
+        if url.endswith("/schedule"):
+            return _Response(
+                {
+                    "dates": [
+                        {
+                            "games": [
+                                {
+                                    "gamePk": 999,
+                                    "gameDate": event_start.isoformat(),
+                                    "teams": {
+                                        "home": {
+                                            "team": {"name": "Home", "abbreviation": "HOM"},
+                                            "probablePitcher": {"id": 123},
+                                        },
+                                        "away": {"team": {"name": "Away", "abbreviation": "AWY"}},
+                                    },
+                                    "venue": {"name": "Test Park"},
+                                    "status": {"detailedState": "Scheduled"},
+                                }
+                            ]
+                        }
+                    ]
+                }
+            )
+        if url.endswith("/people/123/stats"):
+            splits = []
+            for i in range(starts):
+                splits.append(
+                    {
+                        "date": (event_start.date() - timedelta(days=i + 1)).isoformat(),
+                        "opponent": {"abbreviation": f"O{i}"},
+                        "stat": {
+                            "gamesStarted": 1,
+                            "strikeOuts": 5 + (i % 2),
+                            "inningsPitched": "6.0",
+                            "baseOnBalls": 2,
+                            "earnedRuns": 2,
+                        },
+                    }
+                )
+            return _Response({"stats": [{"splits": splits}]})
+        raise AssertionError(f"unexpected URL: {url}")
+
+    return fake_get, calls
+
+
 def test_supported_mlb_pitcher_strikeout_route_hydrates_exact_l10():
     now = datetime(2026, 8, 29, 15, 0, tzinfo=timezone.utc)
     event_start = now + timedelta(hours=6)
@@ -88,6 +141,8 @@ def test_supported_mlb_pitcher_strikeout_route_hydrates_exact_l10():
         source_label="SCREENSHOT:PRIZEPICKS",
     )
 
+    assert hydration.MIN_STARTS == 10
+    assert hydration.PITCHER_STRIKEOUT_MIN_REQUIRED_STARTS == 3
     assert len(evidence["game_log"]) == 10
     assert len(evidence["box_score_log"]) == 10
     assert evidence["game_log"][0] == 4.0
@@ -99,13 +154,30 @@ def test_supported_mlb_pitcher_strikeout_route_hydrates_exact_l10():
     assert evidence["opportunity_ledger"]["regular_season_prior_starts"] == 10
     assert evidence["evidence_version"] == "PROP_EVIDENCE_V1"
     assert "INPUT_CAPTURE_SCREENSHOT:PRIZEPICKS" in evidence["source_timestamps"]
-    # The first three calls are the required baseline acquisition contract.
-    # Optional opponent-context hydration may make additional official-source
-    # calls, but any failure there must remain neutral/backward-compatible.
     assert len(calls) >= 3
     assert calls[0][0].endswith("/people/search")
     assert calls[1][0].endswith("/schedule")
     assert calls[2][0].endswith("/people/123/stats")
+
+
+def test_three_prior_starts_are_eligible_without_padding_or_l10_truncation_change():
+    now = datetime(2026, 8, 29, 15, 0, tzinfo=timezone.utc)
+    event_start = now + timedelta(hours=6)
+    fake_get, _calls = _limited_history_get(event_start, 3)
+
+    evidence = hydration.auto_hydrate_prop_evidence(
+        sport="MLB",
+        player="Test Pitcher",
+        stat_type="PITCHER_STRIKEOUTS",
+        event_start_time=event_start.isoformat(),
+        http_get=fake_get,
+        now=now,
+    )
+
+    assert len(evidence["game_log"]) == 3
+    assert len(evidence["box_score_log"]) == 3
+    assert evidence["opportunity_ledger"]["regular_season_prior_starts"] == 3
+    assert evidence["opportunity_ledger"]["history_selection"] == "MOST_RECENT_OFFICIAL_STARTS_NO_IMPUTATION"
 
 
 def test_unsupported_route_fails_before_any_external_request():
@@ -191,50 +263,10 @@ def test_missing_official_probable_pitcher_fails_closed():
     assert exc_info.value.code == "MLB_STARTER_STATUS_UNRESOLVED"
 
 
-def test_fewer_than_ten_prior_starts_fails_closed():
+def test_fewer_than_three_prior_starts_fails_closed_with_same_typed_failure():
     now = datetime(2026, 8, 29, 15, 0, tzinfo=timezone.utc)
     event_start = now + timedelta(hours=6)
-
-    def fake_get(url, *, params, timeout):
-        if url.endswith("/people/search"):
-            return _Response({"people": [{"id": 123, "fullName": "Test Pitcher"}]})
-        if url.endswith("/schedule"):
-            return _Response(
-                {
-                    "dates": [
-                        {
-                            "games": [
-                                {
-                                    "gamePk": 999,
-                                    "gameDate": event_start.isoformat(),
-                                    "teams": {
-                                        "home": {
-                                            "team": {"name": "Home"},
-                                            "probablePitcher": {"id": 123},
-                                        },
-                                        "away": {"team": {"name": "Away"}},
-                                    },
-                                }
-                            ]
-                        }
-                    ]
-                }
-            )
-        if url.endswith("/people/123/stats"):
-            splits = []
-            for i in range(9):
-                splits.append(
-                    {
-                        "date": (event_start.date() - timedelta(days=i + 1)).isoformat(),
-                        "stat": {
-                            "gamesStarted": 1,
-                            "strikeOuts": 5,
-                            "inningsPitched": "6.0",
-                        },
-                    }
-                )
-            return _Response({"stats": [{"splits": splits}]})
-        raise AssertionError(f"unexpected URL: {url}")
+    fake_get, _calls = _limited_history_get(event_start, 2)
 
     with pytest.raises(hydration.PropAutoHydrationError) as exc_info:
         hydration.auto_hydrate_prop_evidence(
@@ -247,4 +279,6 @@ def test_fewer_than_ten_prior_starts_fails_closed():
         )
 
     assert exc_info.value.code == "MLB_RECENT_STARTS_INSUFFICIENT"
-    assert exc_info.value.detail["starts_found"] == 9
+    assert exc_info.value.detail["starts_found"] == 2
+    assert exc_info.value.detail["required"] == 3
+    assert exc_info.value.detail["history_window_max"] == 10

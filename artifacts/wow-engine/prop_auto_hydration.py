@@ -24,7 +24,11 @@ AUTO_HYDRATION_PROVIDER = "MLB_STATS_API_OFFICIAL_V1"
 AUTO_HYDRATION_EVIDENCE_VERSION = "PROP_EVIDENCE_V1"
 HTTP_TIMEOUT_SECONDS = 8.0
 HTTP_ATTEMPTS = 2
+# Preserve the incumbent up-to-L10 history window and workload-route contract.
 MIN_STARTS = 10
+# Class C candidate: only the pitcher-strikeout eligibility floor changes.
+# Historical replay in PR #785 supports 3-9 starts while 1-2 remains blocked.
+PITCHER_STRIKEOUT_MIN_REQUIRED_STARTS = 3
 MIN_LINEUP_HITTERS_FOR_OPP_CONTEXT = 6
 MIN_LINEUP_SPLIT_PA = 100
 MIN_HITTER_SPLIT_PA = 10
@@ -259,14 +263,17 @@ def _game_log(
         )
 
     parsed.sort(key=lambda item: item[0], reverse=True)
+    # Preserve incumbent probability behavior for established pitchers: consume
+    # up to the same L10 window. The Class C candidate changes eligibility only.
     recent = [row for _, row in parsed[:MIN_STARTS]]
-    if len(recent) < MIN_STARTS:
+    if len(recent) < PITCHER_STRIKEOUT_MIN_REQUIRED_STARTS:
         raise PropAutoHydrationError(
             "MLB_RECENT_STARTS_INSUFFICIENT",
-            "fewer than ten official regular-season starts were available across the supported history window",
+            "fewer than three official regular-season starts were available across the supported history window",
             detail={
                 "starts_found": len(recent),
-                "required": MIN_STARTS,
+                "required": PITCHER_STRIKEOUT_MIN_REQUIRED_STARTS,
+                "history_window_max": MIN_STARTS,
                 "seasons_queried": seasons_queried,
             },
         )
@@ -522,7 +529,7 @@ def auto_hydrate_prop_evidence(
         },
         "source_timestamps": source_timestamps,
         "evidence_version": AUTO_HYDRATION_EVIDENCE_VERSION,
-        "rate_provenance": "MLB StatsAPI official pitching gameLog; bounded cross-season L10 by recency; outs derived from inningsPitched; no history imputed",
+        "rate_provenance": "MLB StatsAPI official pitching gameLog; bounded cross-season up-to-L10 by recency; outs derived from inningsPitched; no history imputed",
     }
     if opponent_context is not None:
         payload["opponent_context"] = opponent_context
