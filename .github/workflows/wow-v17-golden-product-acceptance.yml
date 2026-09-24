@@ -1,0 +1,108 @@
+name: wow-v17-golden-product-acceptance
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "23 */6 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wow-v17-golden-product-acceptance
+  cancel-in-progress: false
+
+jobs:
+  product-acceptance:
+    name: Independent golden product acceptance
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout protected main
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: artifacts/wow-engine/requirements.txt
+
+      - name: Install governed engine test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r artifacts/wow-engine/requirements.txt
+
+      - name: Run deterministic product-acceptance contract tests
+        run: |
+          python -m pytest -q \
+            artifacts/wow-engine/test_v17_engineering_effectiveness.py \
+            artifacts/wow-engine/tests/test_v17_user_journey_recovery_contract.py
+
+      - name: Read declared golden user-journey health
+        id: health
+        shell: bash
+        run: |
+          set -euo pipefail
+          payload=$(python artifacts/wow-engine/v17/engineering_effectiveness.py health \
+            artifacts/wow-engine/V17_USER_JOURNEY_HEALTH.md)
+          status=$(jq -r '.user_journey_status' <<<"$payload")
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          printf '%s\n' "$payload" | tee "$RUNNER_TEMP/product-health.json"
+
+      - name: Verify production backend liveness without inferring product PASS
+        id: backend
+        shell: bash
+        run: |
+          set -euo pipefail
+          code=$(curl --silent --show-error --location \
+            --connect-timeout 10 --max-time 30 \
+            --output "$RUNNER_TEMP/health-live.json" \
+            --write-out '%{http_code}' \
+            https://wow-governed-probability-engine.onrender.com/health/live || true)
+          if [ "$code" = "200" ]; then
+            echo "status=PASS" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=FAIL" >> "$GITHUB_OUTPUT"
+          fi
+          echo "backend_health_http=$code" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Enforce false-green boundary
+        shell: bash
+        env:
+          PRODUCT_STATUS: ${{ steps.health.outputs.status }}
+          BACKEND_STATUS: ${{ steps.backend.outputs.status }}
+        run: |
+          set -euo pipefail
+          {
+            echo "# WOW V17 Golden Product Acceptance"
+            echo "- repository_declared_user_journey: ${PRODUCT_STATUS}"
+            echo "- backend_liveness: ${BACKEND_STATUS}"
+            echo "- live-host rule: backend/CI success alone can never produce USER_JOURNEY_HEALTH=PASS"
+            echo "- required live-host identity: WOW_BETTING_ENGINE"
+            echo "- required action: scoreWowPickRequest"
+            echo "- terminal_authority: V17_TERMINAL_REDUCER"
+            echo "- can_execute: false"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$PRODUCT_STATUS" != "PASS" ]; then
+            echo "::notice::Golden user journey remains fail-closed. Discretionary model-improvement work must remain preempted."
+          fi
+
+      - name: Record product-acceptance receipt
+        shell: bash
+        env:
+          PRODUCT_STATUS: ${{ steps.health.outputs.status }}
+          BACKEND_STATUS: ${{ steps.backend.outputs.status }}
+        run: |
+          jq -n \
+            --arg product_status "$PRODUCT_STATUS" \
+            --arg backend_status "$BACKEND_STATUS" \
+            --arg sha "$GITHUB_SHA" \
+            '{schema_version:"WOW_V17_GOLDEN_PRODUCT_ACCEPTANCE_V1",sha:$sha,user_journey_status:$product_status,backend_liveness:$backend_status,false_green_forbidden:true,host_identity_required:"WOW_BETTING_ENGINE",action_required:"scoreWowPickRequest",terminal_authority:"V17_TERMINAL_REDUCER",can_execute:false}' \
+            | tee "$RUNNER_TEMP/golden-product-acceptance.json"

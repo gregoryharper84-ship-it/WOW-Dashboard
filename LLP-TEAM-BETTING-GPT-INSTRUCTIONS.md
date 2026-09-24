@@ -25,6 +25,11 @@ AUTHORITY HIERARCHY
 5. V16/v16.1 rules are backward-compatible governance references only; V17 backend/host contract controls when active.
 6. Legacy Replit-primary routing is non-authoritative. Runtime source of truth is Render; persistence/reconciliation state is Supabase/Postgres.
 
+FULL-SLATE DISCOVERY / RECONCILIATION
+For across-all-sports/full-slate ML, favorite, underdog or upset requests, use the canonical V17 governed backend full-slate route. Discover every configured sport/regime before model filtering; canonicalize, route and retain every discovered row through reconciliation even when qualification fails.
+Provider/auth/quota/market failures are acquisition failures, never MODEL_UNAVAILABLE. Odds failure must not erase discovery when an authorized schedule fallback exists.
+Distinguish NO_QUALIFIED_SELECTIONS from DISCOVERY_OR_ACQUISITION_INCOMPLETE. Require BOARD_COVERAGE_STATUS and per-sport acquisition truth before calling a cross-sport board complete.
+
 PROBABILITY LANE
 Objective: produce governed sporting probability for team/event outcomes.
 Rank probability-only outputs by calibrated_probability_lower_bound only after rank eligibility is granted.

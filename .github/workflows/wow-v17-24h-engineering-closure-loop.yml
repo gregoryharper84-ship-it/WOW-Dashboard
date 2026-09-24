@@ -54,6 +54,8 @@ jobs:
           state=$(jq -r '.state // "NONE"' <<<"$priority")
           severity=$(jq -r '.severity // "NONE"' <<<"$priority")
           frontier_allowed=$(jq -r '.frontier_allowed // false' <<<"$priority")
+          product=$(python artifacts/wow-engine/v17/engineering_effectiveness.py health artifacts/wow-engine/V17_USER_JOURNEY_HEALTH.md)
+          product_health=$(jq -r '.user_journey_status // "UNKNOWN"' <<<"$product")
           utc_hour=$((10#$(date -u +%H)))
 
           action="DETECT"
@@ -72,13 +74,19 @@ jobs:
             action="REPAIR"
             target="$incident"
             reason="Highest-priority durable incident still requires engineering closure."
+          elif [ "$product_health" != "PASS" ] && [ $((utc_hour % 6)) -eq 0 ]; then
+            action="VERIFY_PRODUCT"
+            reason="Golden user journey is not PASS; run independent product acceptance before discretionary model research."
+          elif [ "$product_health" != "PASS" ]; then
+            action="DETECT"
+            reason="Golden user journey is not PASS; keep reliability detection active and preempt discretionary model research."
           elif [ -n "$experiment_pr" ]; then
             action="RESUME_EXPERIMENT_PR"
             target="$experiment_pr"
-            reason="A governed model-improvement experiment PR is open; finish or repair it before starting another experiment."
+            reason="Product health is PASS and a governed model-improvement experiment PR is open; finish or repair it before starting another experiment."
           elif [ "$frontier_allowed" = "true" ] && [ $((utc_hour % 6)) -eq 0 ]; then
             action="IMPROVE_MODEL"
-            reason="Reliability queue is clear; execute one governed non-serving model-improvement experiment."
+            reason="Reliability queue and golden user journey are green; execute one governed non-serving model-improvement experiment."
           fi
 
           {
@@ -87,6 +95,7 @@ jobs:
             echo "incident=$incident"
             echo "state=$state"
             echo "severity=$severity"
+            echo "product_health=$product_health"
             echo "reason<<EOF"
             echo "$reason"
             echo "EOF"
@@ -98,8 +107,9 @@ jobs:
             --arg incident "$incident" \
             --arg state "$state" \
             --arg severity "$severity" \
+            --arg product_health "$product_health" \
             --arg reason "$reason" \
-            '{action:$action,target:$target,incident:$incident,state:$state,severity:$severity,reason:$reason,can_execute:false}' \
+            '{action:$action,target:$target,incident:$incident,state:$state,severity:$severity,product_health:$product_health,reason:$reason,can_execute:false}' \
             | tee "$RUNNER_TEMP/wow-24h-decision.json"
 
       - name: Resume autonomous repair PR
@@ -142,6 +152,21 @@ jobs:
             exit 0
           fi
           gh workflow run wow-v17-chatgpt-engineering-worker.yml --repo "$GITHUB_REPOSITORY" --ref main
+
+      - name: Verify golden product acceptance
+        if: steps.decision.outputs.action == 'VERIFY_PRODUCT'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          active=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow wow-v17-golden-product-acceptance.yml --limit 10 \
+            --json status --jq '[.[] | select(.status == "queued" or .status == "in_progress")] | length')
+          if [ "$active" -gt 0 ]; then
+            echo "Golden product acceptance is already active." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          gh workflow run wow-v17-golden-product-acceptance.yml --repo "$GITHUB_REPOSITORY" --ref main
 
       - name: Resume governed model-experiment PR
         if: steps.decision.outputs.action == 'RESUME_EXPERIMENT_PR'
@@ -218,8 +243,10 @@ jobs:
             echo "- target: ${{ steps.decision.outputs.target || 'NONE' }}"
             echo "- incident: ${{ steps.decision.outputs.incident || 'NONE' }}"
             echo "- incident_state: ${{ steps.decision.outputs.state || 'NONE' }}"
+            echo "- product_health: ${{ steps.decision.outputs.product_health || 'UNKNOWN' }}"
             echo "- reason: ${{ steps.decision.outputs.reason || 'NONE' }}"
             echo "- policy: finish existing work before starting new work"
+            echo "- product policy: no discretionary model research while golden user journey is not PASS"
             echo "- model improvement: challenger/experiment only until governed evidence earns promotion"
             echo "- can_execute: false"
           } >> "$GITHUB_STEP_SUMMARY"
