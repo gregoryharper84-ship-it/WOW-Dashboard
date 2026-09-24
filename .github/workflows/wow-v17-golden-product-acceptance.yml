@@ -16,7 +16,7 @@ jobs:
   product-acceptance:
     name: Independent golden product acceptance
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
 
     steps:
       - name: Checkout protected main
@@ -30,10 +30,16 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: "3.11"
+          cache: pip
+          cache-dependency-path: artifacts/wow-engine/requirements.txt
+
+      - name: Install governed engine test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r artifacts/wow-engine/requirements.txt
 
       - name: Run deterministic product-acceptance contract tests
         run: |
-          python -m pip install --quiet pytest
           python -m pytest -q \
             artifacts/wow-engine/test_v17_engineering_effectiveness.py \
             artifacts/wow-engine/tests/test_v17_user_journey_recovery_contract.py
