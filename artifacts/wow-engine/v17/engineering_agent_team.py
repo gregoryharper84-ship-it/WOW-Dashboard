@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-TEAM_VERSION = "2.0"
+TEAM_VERSION = "2.1"
 
 AGENT_ROLES: dict[str, dict[str, Any]] = {
     "ENGINEERING_LEAD_AGENT": {
@@ -53,6 +53,12 @@ AGENT_ROLES: dict[str, dict[str, Any]] = {
     },
     "RELEASE_OBSERVABILITY_AGENT": {
         "mission": "Verify protected main, exact deploy, production acceptance, and reconciliation.",
+        "may_write_code": False,
+        "may_approve_own_work": False,
+        "may_change_probability_behavior": False,
+    },
+    "PRODUCT_ACCEPTANCE_AGENT": {
+        "mission": "Independently verify the real golden user journey without inferring product health from CI or component health.",
         "may_write_code": False,
         "may_approve_own_work": False,
         "may_change_probability_behavior": False,
@@ -184,6 +190,7 @@ def load_ledger(path: str | Path) -> list[dict[str, Any]]:
 
 def self_check() -> dict[str, Any]:
     assert AGENT_ROLES["ENGINEERING_AGENT"]["may_write_code"] is True
+    assert "PRODUCT_ACCEPTANCE_AGENT" in AGENT_ROLES
     for name, role in AGENT_ROLES.items():
         if name != "ENGINEERING_AGENT":
             assert role["may_write_code"] is False

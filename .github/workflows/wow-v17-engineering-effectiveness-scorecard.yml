@@ -1,0 +1,134 @@
+name: wow-v17-engineering-effectiveness-scorecard
+
+on:
+  schedule:
+    - cron: "11 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: wow-v17-engineering-effectiveness-scorecard
+  cancel-in-progress: false
+
+jobs:
+  scorecard:
+    name: Engineering effectiveness and backlog reconciliation
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PYTHONPATH: artifacts/wow-engine
+
+    steps:
+      - name: Checkout protected main
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: artifacts/wow-engine/requirements.txt
+
+      - name: Install governed engine test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r artifacts/wow-engine/requirements.txt
+
+      - name: Read recent and open PR state
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api --paginate --slurp "/repos/${GITHUB_REPOSITORY}/pulls?state=closed&sort=updated&direction=desc&per_page=100" \
+            --jq '[.[][] | select(.merged_at != null) | {number,title,body,created_at,merged_at}]' \
+            > "$RUNNER_TEMP/merged-prs.json"
+          gh api --paginate --slurp "/repos/${GITHUB_REPOSITORY}/pulls?state=open&sort=created&direction=asc&per_page=100" \
+            --jq '[.[][] | {number,title,body,created_at,updated_at}]' \
+            > "$RUNNER_TEMP/open-prs.json"
+
+      - name: Build 72-hour engineering effectiveness scorecard
+        id: score
+        shell: bash
+        run: |
+          set -euo pipefail
+          python artifacts/wow-engine/v17/engineering_effectiveness_scorecard.py \
+            --merged-json "$RUNNER_TEMP/merged-prs.json" \
+            --open-json "$RUNNER_TEMP/open-prs.json" \
+            --window-hours 72 --stale-hours 72 \
+            | tee "$RUNNER_TEMP/effectiveness-scorecard.json"
+
+          merged=$(jq -r '.merged_prs' "$RUNNER_TEMP/effectiveness-scorecard.json")
+          followups=$(jq -r '.followup_or_replacement_prs' "$RUNNER_TEMP/effectiveness-scorecard.json")
+          proxy=$(jq -r '.first_pass_proxy // "N/A"' "$RUNNER_TEMP/effectiveness-scorecard.json")
+          stale=$(jq -r '.stale_open_prs | length' "$RUNNER_TEMP/effectiveness-scorecard.json")
+          {
+            echo "# WOW V17 Engineering Effectiveness"
+            echo "- merged PRs / 72h: $merged"
+            echo "- recognizable follow-up or replacement PRs / 72h: $followups"
+            echo "- first-pass proxy: $proxy"
+            echo "- stale open PRs >=72h: $stale"
+            echo "- metric rule: product acceptance remains authoritative; this scorecard is an engineering-process proxy"
+            echo "- can_execute: false"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Close only explicitly superseded same-repository PRs whose replacement is merged
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mapfile -t candidates < <(jq -r '.explicit_superseded_open_prs[]?' "$RUNNER_TEMP/effectiveness-scorecard.json")
+          for pr_number in "${candidates[@]}"; do
+            target=$(python - "$RUNNER_TEMP/open-prs.json" "$pr_number" <<'PY'
+          import json
+          import sys
+          from v17.engineering_effectiveness_scorecard import superseded_by
+
+          rows = json.load(open(sys.argv[1], encoding="utf-8"))
+          number = int(sys.argv[2])
+          row = next((item for item in rows if int(item["number"]) == number), None)
+          print(superseded_by(row or {}) or "")
+          PY
+            )
+            [ -n "$target" ] || continue
+
+            current=$(gh api "/repos/${GITHUB_REPOSITORY}/pulls/${pr_number}")
+            current_state=$(jq -r '.state // ""' <<<"$current")
+            head_repo=$(jq -r '.head.repo.full_name // ""' <<<"$current")
+            fresh_body=$(jq -r '.body // ""' <<<"$current")
+            if [ "$current_state" != "open" ]; then
+              echo "PR #$pr_number is no longer open; skipping reconciliation." >> "$GITHUB_STEP_SUMMARY"
+              continue
+            fi
+            if [ "$head_repo" != "$GITHUB_REPOSITORY" ]; then
+              echo "PR #$pr_number is not same-repository autonomous work; leaving open." >> "$GITHUB_STEP_SUMMARY"
+              continue
+            fi
+            if ! grep -Eiq "^[[:space:]]*Superseded-By:[[:space:]]*#?${target}[[:space:]]*$" <<<"$fresh_body"; then
+              echo "PR #$pr_number supersession marker changed after snapshot; leaving open." >> "$GITHUB_STEP_SUMMARY"
+              continue
+            fi
+
+            replacement=$(gh api "/repos/${GITHUB_REPOSITORY}/pulls/${target}")
+            merged_at=$(jq -r '.merged_at // ""' <<<"$replacement")
+            if [ -z "$merged_at" ]; then
+              echo "PR #$pr_number declares Superseded-By #$target, but replacement is not merged; leaving open." >> "$GITHUB_STEP_SUMMARY"
+              continue
+            fi
+            gh pr comment "$pr_number" --repo "$GITHUB_REPOSITORY" \
+              --body "Automatic backlog reconciliation: closing as DUPLICATE / SUPERSEDED because explicit marker \`Superseded-By: #${target}\` points to merged PR #${target}."
+            gh pr close "$pr_number" --repo "$GITHUB_REPOSITORY"
+            echo "Closed explicit superseded PR #$pr_number -> merged #$target." >> "$GITHUB_STEP_SUMMARY"
+          done
+
+      - name: Regression-check scorecard semantics
+        run: python -m pytest -q artifacts/wow-engine/test_v17_engineering_effectiveness_scorecard.py
