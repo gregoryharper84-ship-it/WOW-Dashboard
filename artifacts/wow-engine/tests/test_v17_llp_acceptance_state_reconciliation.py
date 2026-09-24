@@ -48,6 +48,74 @@ def test_expected_hydration_hold_is_not_reclassified_as_schema_mismatch():
     assert out["can_execute"] is False
 
 
+def test_projected_lineup_timing_hold_does_not_invent_identity_schema_mismatch_without_receipt():
+    result = {
+        "code": "LINEUP_PROJECTED_PROBABILITY_AVAILABLE",
+        "blockers": ["LINEUP_CONFIRMATION_PENDING"],
+        "llp_governance": {
+            "status": "HOLD",
+            "probability_audit": {
+                "reasons": ["OFFICIAL_EVENT_ID_EVIDENCE_MISSING"],
+            },
+        },
+        "rank_eligible": False,
+        "probability_publishable": False,
+        "can_execute": False,
+    }
+
+    out = _annotate_schema_mismatch(
+        _req(),
+        {"official_event_id": "823410"},
+        result,
+    )
+
+    assert out == result
+    assert "evidence_handoff_schema_mismatch" not in out
+    assert "RUN_INVALID_EVIDENCE_BINDING" not in out["blockers"]
+    assert out["blockers"] == ["LINEUP_CONFIRMATION_PENDING"]
+    assert out["rank_eligible"] is False
+    assert out["probability_publishable"] is False
+    assert out["can_execute"] is False
+
+
+def test_projected_lineup_timing_hold_does_not_hide_unrelated_real_schema_mismatch():
+    result = {
+        "code": "LINEUP_PROJECTED_PROBABILITY_AVAILABLE",
+        "blockers": ["LINEUP_CONFIRMATION_PENDING"],
+        "llp_governance": {
+            "status": "HOLD",
+            "probability_audit": {
+                "reasons": [
+                    "OFFICIAL_EVENT_ID_EVIDENCE_MISSING",
+                    "INDEPENDENT_PROBABILITY_MISSING",
+                ],
+            },
+        },
+        "rank_eligible": False,
+        "probability_publishable": False,
+        "can_execute": False,
+    }
+
+    out = _annotate_schema_mismatch(
+        _req(),
+        {
+            "official_event_id": "823410",
+            "independent_home_probability": 0.54,
+            "independent_away_probability": 0.46,
+        },
+        result,
+    )
+
+    assert out["run_validity_status"] == "RUN_INVALID_EVIDENCE_BINDING"
+    assert out["evidence_handoff_schema_mismatch"]["contradictions"] == [
+        "INDEPENDENT_PROBABILITY_MISSING"
+    ]
+    assert "V17_HANDOFF_SCHEMA_MISMATCH:OFFICIAL_EVENT_ID_EVIDENCE_MISSING" not in out["blockers"]
+    assert out["rank_eligible"] is False
+    assert out["probability_publishable"] is False
+    assert out["can_execute"] is False
+
+
 def test_completed_handoff_still_detects_real_identity_binding_contradiction():
     result = {
         "blockers": [],
