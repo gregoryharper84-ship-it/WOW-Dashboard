@@ -29,11 +29,20 @@ def test_24h_loop_prioritizes_closure_before_new_improvement() -> None:
     repair_pr = text.index('action="RESUME_REPAIR_PR"')
     release = text.index('action="VERIFY_RELEASE"')
     repair = text.index('action="REPAIR"')
-    experiment_wait = text.index('action="EXPERIMENT_WAIT"')
+    experiment = text.index('action="RESUME_EXPERIMENT_PR"')
     improve = text.index('action="IMPROVE_MODEL"')
-    assert repair_pr < release < repair < experiment_wait < improve
+    assert repair_pr < release < repair < experiment < improve
     assert 'utc_hour % 6' in text
     assert "single implementation lease" in text
+
+
+def test_open_experiment_pr_is_actively_advanced_or_repaired() -> None:
+    text = _text(LOOP)
+    assert "Resume governed model-experiment PR" in text
+    assert 'gh pr merge "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --auto --merge' in text
+    assert 'repair_pr="$PR_NUMBER"' in text
+    assert "Failed experiment CI routed to bounded ChatGPT experiment repair." in text
+    assert "Experiment PR escaped non-serving boundary" in text
 
 
 def test_model_improvement_is_non_serving_and_path_guarded() -> None:
@@ -51,11 +60,15 @@ def test_model_improvement_is_non_serving_and_path_guarded() -> None:
     assert "ANTHROPIC" not in text
 
 
-def test_model_experiment_requires_tests_and_adjacent_regression() -> None:
+def test_model_experiment_requires_tests_regression_and_repair_mode() -> None:
     text = _text(EXPERIMENT)
+    assert "repair_pr:" in text
+    assert 'echo "mode=repair"' in text
+    assert "Experiment repair run produced no corrective change." in text
     assert "python -m pytest -q artifacts/wow-engine/v17/experiments" in text
     assert "python -m pytest -q artifacts/wow-engine" in text
     assert 'gh pr merge "$pr_number" --repo "$GITHUB_REPOSITORY" --auto --merge' in text
+    assert 'gh pr merge "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --auto --merge' in text
 
 
 def test_new_workflows_parse_as_yaml() -> None:
