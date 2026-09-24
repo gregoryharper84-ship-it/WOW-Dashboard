@@ -15,13 +15,14 @@ OIDC workflow.
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import json
 import os
 import sys
 import time
 from threading import Lock
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -78,10 +79,27 @@ def _oidc_max_in_flight() -> int:
 TEAM_EVENT_BATCH_ROWS = _team_event_batch_rows()
 PROP_BATCH_ROWS = _prop_batch_rows()
 OIDC_MAX_IN_FLIGHT = _oidc_max_in_flight()
-auto_advance.MAX_TEAM_EVENT_ROWS = TEAM_EVENT_BATCH_ROWS
-auto_advance.MAX_PROP_ROWS = PROP_BATCH_ROWS
 _TRANSIENT_HTTP_STATUSES = frozenset({502, 503, 504})
 _TRANSIENT_RETRY_BACKOFF_SECONDS = (1.0, 3.0)
+
+
+@contextmanager
+def _oidc_batch_bounds() -> Iterator[None]:
+    """Scope Nightly-only batch overrides to one OIDC CLI execution.
+
+    Importing this wrapper must not mutate the ordinary core bridge. The OIDC
+    workflow runs in its own process, so temporarily overriding the existing
+    chunk constants is sufficient and keeps the static Action-key path unchanged.
+    """
+    original_team_event_rows = auto_advance.MAX_TEAM_EVENT_ROWS
+    original_prop_rows = auto_advance.MAX_PROP_ROWS
+    auto_advance.MAX_TEAM_EVENT_ROWS = TEAM_EVENT_BATCH_ROWS
+    auto_advance.MAX_PROP_ROWS = PROP_BATCH_ROWS
+    try:
+        yield
+    finally:
+        auto_advance.MAX_TEAM_EVENT_ROWS = original_team_event_rows
+        auto_advance.MAX_PROP_ROWS = original_prop_rows
 
 
 def _repeat_safe_transient_retry(path: str, payload: dict[str, Any]) -> bool:
@@ -264,14 +282,15 @@ def main() -> int:
     if static_token:
         receipt = execute_auto_advance(dispatch_handoff, token=token, origin=ACTION_ORIGIN, progress_fn=progress_fn)
     else:
-        receipt = execute_auto_advance(
-            dispatch_handoff,
-            token=token,
-            origin=ACTION_ORIGIN,
-            post_fn=_refreshing_oidc_post(token),
-            max_in_flight=OIDC_MAX_IN_FLIGHT,
-            progress_fn=progress_fn,
-        )
+        with _oidc_batch_bounds():
+            receipt = execute_auto_advance(
+                dispatch_handoff,
+                token=token,
+                origin=ACTION_ORIGIN,
+                post_fn=_refreshing_oidc_post(token),
+                max_in_flight=OIDC_MAX_IN_FLIGHT,
+                progress_fn=progress_fn,
+            )
     if dispatch_handoff is not handoff:
         receipt["source_acquisition_status"] = handoff.get("status")
         receipt["source_blocker_count"] = len(handoff.get("source_blockers") or [])
