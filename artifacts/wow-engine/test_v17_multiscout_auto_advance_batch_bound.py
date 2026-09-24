@@ -40,6 +40,43 @@ def _handoff(event_count: int = 32) -> dict:
     }
 
 
+def _prop_handoff(prop_count: int = 23) -> dict:
+    props = []
+    for index in range(prop_count):
+        props.append(
+            {
+                "official_event_id": "event-props",
+                "sport_key": "baseball_mlb",
+                "commence_time": "2026-09-18T00:10:00Z",
+                "market_evidence": {
+                    "description": f"Pitcher {index}",
+                    "outcome_name": "Over",
+                    "point": 4.5,
+                    "market_key": "pitcher_strikeouts",
+                    "market_last_update": "2026-09-17T23:55:00Z",
+                },
+            }
+        )
+    return {
+        "schema_version": "wow.v17.nightly_multiscout.v1",
+        "status": "DISCOVERY_COMPLETE",
+        "generated_at": "2026-09-16T19:00:00Z",
+        "run_id": "wow-scout-prop-batch-bound",
+        "research_run_id": "wow-scout-prop-batch-bound",
+        "model_handoff_ready": True,
+        "model_handoff": {
+            "prop_candidates": props,
+            "team_event_candidates": [],
+        },
+        "governance": {
+            "sportsbook_implied_probability_is_model_probability": False,
+            "scout_consensus_is_model_probability": False,
+            "v17_terminal_reducer_is_terminal_authority": True,
+            "can_execute": False,
+        },
+    }
+
+
 def test_oidc_nightly_path_bounds_large_team_event_slates():
     assert oidc.TEAM_EVENT_BATCH_ROWS == 8
     assert core.MAX_TEAM_EVENT_ROWS == 8
@@ -53,4 +90,21 @@ def test_oidc_nightly_path_bounds_large_team_event_slates():
     assert len(batches) == 8
     assert sum(len(batch["rows"]) for batch in batches) == 64
     assert all(1 <= len(batch["rows"]) <= 8 for batch in batches)
+    assert dispatch["governance"]["can_execute"] is False
+
+
+def test_oidc_nightly_path_bounds_prop_batches_below_proven_transport_timeout_load():
+    assert oidc.PROP_BATCH_ROWS == 10
+    assert core.MAX_PROP_ROWS == 10
+    assert oidc.OIDC_MAX_IN_FLIGHT == 2
+
+    dispatch = core.build_dispatch(_prop_handoff())
+    batches = dispatch["prop_batches"]
+
+    assert dispatch["mapping"]["mapped_prop_rows"] == 23
+    assert dispatch["mapping"]["source_prop_reconciliation_pass"] is True
+    assert len(batches) == 3
+    assert sum(len(batch["rows"]) for batch in batches) == 23
+    assert all(1 <= len(batch["rows"]) <= 10 for batch in batches)
+    assert all(batch["request_id"].startswith("wow-scout-prop-batch-bound:props:") for batch in batches)
     assert dispatch["governance"]["can_execute"] is False
