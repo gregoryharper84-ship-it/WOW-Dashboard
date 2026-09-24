@@ -45,6 +45,22 @@ def _team_event_batch_rows() -> int:
     return max(1, min(value, 50))
 
 
+# Production run 35996201182 sent two prop batches of 50/40 rows into the
+# governed /score-pick-request route. Render completed those requests in roughly
+# 155-209 seconds while the bridge transport timeout is 120 seconds, producing
+# repeat-safe 499/502 retries and zero returned prop rows. Bound only the OIDC
+# Nightly prop batches so the same governed scorer receives smaller requests;
+# no sporting probability, hydration, routing, reconciliation, or terminal
+# semantics change.
+def _prop_batch_rows() -> int:
+    raw = os.environ.get("WOW_AUTO_ADVANCE_PROP_BATCH_ROWS", "10")
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        value = 10
+    return max(1, min(value, 50))
+
+
 # Live run 35874396361 proved that eight concurrent long-running governed scorer
 # requests can overload the single production web-service path: seven requests
 # returned HTTP 200 while five sibling batches timed out. Keep the ordinary
@@ -60,8 +76,10 @@ def _oidc_max_in_flight() -> int:
 
 
 TEAM_EVENT_BATCH_ROWS = _team_event_batch_rows()
+PROP_BATCH_ROWS = _prop_batch_rows()
 OIDC_MAX_IN_FLIGHT = _oidc_max_in_flight()
 auto_advance.MAX_TEAM_EVENT_ROWS = TEAM_EVENT_BATCH_ROWS
+auto_advance.MAX_PROP_ROWS = PROP_BATCH_ROWS
 _TRANSIENT_HTTP_STATUSES = frozenset({502, 503, 504})
 _TRANSIENT_RETRY_BACKOFF_SECONDS = (1.0, 3.0)
 
