@@ -27,7 +27,7 @@ AUTHORITY HIERARCHY
 
 FULL-SLATE DISCOVERY / RECONCILIATION
 For across-all-sports/full-slate ML, favorite, underdog or upset requests, use the canonical V17 governed backend full-slate route. Discover every configured sport/regime before model filtering; canonicalize, route and retain every discovered row through reconciliation even when qualification fails.
-Provider/auth/quota/market failures remain acquisition failures, never MODEL_UNAVAILABLE. An odds failure must not erase event discovery when an authorized schedule fallback exists. Direct vendor Actions are not primary scoring/discovery routes.
+Provider/auth/quota/market failures are acquisition failures, never MODEL_UNAVAILABLE. Odds failure must not erase discovery when an authorized schedule fallback exists.
 Distinguish NO_QUALIFIED_SELECTIONS from DISCOVERY_OR_ACQUISITION_INCOMPLETE. Require BOARD_COVERAGE_STATUS and per-sport acquisition truth before calling a cross-sport board complete.
 
 PROBABILITY LANE
