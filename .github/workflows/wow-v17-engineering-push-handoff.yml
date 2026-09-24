@@ -26,7 +26,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh workflow run wow-v17-claude-engineering-worker.yml \
+          gh workflow run wow-v17-chatgpt-engineering-worker.yml \
             --repo "$GITHUB_REPOSITORY" \
             --ref main
           {
@@ -34,6 +34,7 @@ jobs:
             echo "- source_run: ${{ github.event.workflow_run.id }}"
             echo "- source_event: ${{ github.event.workflow_run.event }}"
             echo "- source_conclusion: ${{ github.event.workflow_run.conclusion }}"
-            echo "- dispatched: wow-v17-claude-engineering-worker.yml"
+            echo "- dispatched: wow-v17-chatgpt-engineering-worker.yml"
+            echo "- provider: OpenAI/ChatGPT"
             echo "- can_execute: false"
           } >> "$GITHUB_STEP_SUMMARY"
