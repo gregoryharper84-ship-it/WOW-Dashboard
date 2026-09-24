@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 import yaml
@@ -12,6 +13,15 @@ IMPACT = ROOT / ".github/workflows/wow-v17-change-impact-gate.yml"
 
 def _text(path: Path) -> str:
     return path.read_text()
+
+
+def _assert_experiment_auto_merge_contract(text: str) -> None:
+    pattern = re.compile(
+        r'gh\s+pr\s+merge\s+"\$PR_NUMBER"\s+'
+        r'--repo\s+"\$GITHUB_REPOSITORY"\s+'
+        r'--auto\s+--merge(?:\s+\|\|\s+true)?'
+    )
+    assert pattern.search(text), "experiment PR must remain on protected GitHub auto-merge"
 
 
 def test_24h_loop_runs_hourly_and_advances_real_work() -> None:
@@ -46,7 +56,6 @@ def test_24h_loop_prioritizes_product_reliability_before_model_improvement() -> 
 
 def test_continuation_selector_never_hands_off_draft_prs() -> None:
     text = _text(LOOP)
-    # Both autonomous repair and experiment selectors must exclude drafts before dispatch.
     assert text.count("select(.draft == false)") >= 2
     assert 'contains("Morning-Green-Autonomous: true")' in text
     assert 'contains("Model-Experiment-Autonomous: true")' in text
@@ -57,7 +66,7 @@ def test_open_experiment_pr_is_actively_advanced_only_after_product_health_pass(
     assert "Resume governed model-experiment PR" in text
     assert 'elif [ -n "$experiment_pr" ]; then' in text
     assert text.index('product_health" != "PASS"') < text.index('elif [ -n "$experiment_pr" ]; then')
-    assert 'gh pr merge "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --auto --merge' in text
+    _assert_experiment_auto_merge_contract(text)
     assert 'repair_pr="$PR_NUMBER"' in text
     assert "Failed experiment CI routed to bounded ChatGPT experiment repair." in text
     assert "Experiment PR escaped non-serving boundary" in text
@@ -107,7 +116,7 @@ def test_model_experiment_requires_tests_regression_and_repair_mode() -> None:
     assert "python -m pytest -q artifacts/wow-engine/v17/experiments" in text
     assert "python -m pytest -q artifacts/wow-engine" in text
     assert 'gh pr merge "$pr_number" --repo "$GITHUB_REPOSITORY" --auto --merge' in text
-    assert 'gh pr merge "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --auto --merge' in text
+    _assert_experiment_auto_merge_contract(_text(LOOP))
 
 
 def test_new_workflows_parse_as_yaml() -> None:
