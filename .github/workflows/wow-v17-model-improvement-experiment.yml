@@ -1,0 +1,204 @@
+name: wow-v17-model-improvement-experiment
+
+on:
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+  issues: read
+  pull-requests: write
+
+concurrency:
+  group: wow-v17-model-improvement-experiment
+  cancel-in-progress: false
+
+jobs:
+  challenger-experiment:
+    name: Build and validate one non-serving model challenger experiment
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout protected main
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: artifacts/wow-engine/requirements.txt
+
+      - name: Install validation dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r artifacts/wow-engine/requirements.txt
+          pip install PyYAML openapi-spec-validator
+
+      - name: Reliability preemption gate
+        id: gate
+        run: |
+          set -euo pipefail
+          python artifacts/wow-engine/v17/engineering_agent_team.py frontier-gate \
+            | tee "$RUNNER_TEMP/model-improvement-gate.json"
+          echo "allowed=$(jq -r '.frontier_allowed' "$RUNNER_TEMP/model-improvement-gate.json")" >> "$GITHUB_OUTPUT"
+
+      - name: Build one governed challenger experiment
+        id: experiment_agent
+        if: steps.gate.outputs.allowed == 'true'
+        uses: ./.github/actions/wow-chatgpt-agent
+        with:
+          openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+          permission_profile: ":workspace"
+          prompt: |
+            You are the WOW V17 MODEL_IMPROVEMENT_EXPERIMENT_AGENT running on OpenAI/ChatGPT tooling only.
+
+            Goal: perform actual evidence-backed model-improvement work, not a narrative status report.
+            Read the current season-readiness evidence, calibration/challenger artifacts, recent
+            model-quality postmortems, and existing tests. Select exactly ONE highest-value model
+            weakness that can be investigated safely with repository data now.
+
+            You may create or edit files ONLY below:
+              artifacts/wow-engine/v17/experiments/
+
+            Create a self-contained non-serving experiment package with:
+            - README.md: sport/model, hypothesis, evidence, counterexamples, temporal split/replay plan,
+              metrics, result, limitations, and recommendation;
+            - executable Python experiment/replay code that imports production code read-only where useful;
+            - deterministic pytest regression/experiment tests;
+            - result.json when the current repository contains enough data to execute the replay now.
+
+            For Class C ideas, this is CHALLENGER/EXPERIMENT ONLY. Never modify a production model,
+            calibration artifact, coefficient, lower-bound rule, qualification threshold, router,
+            registry, serving adapter, or runtime configuration. Never use sportsbook implied probability,
+            recent outcomes alone, external projections, or generic LLM judgment as a substitute probability.
+            Preserve `can_execute=false`, dry-run-only, exact typed failures, and V17_TERMINAL_REDUCER.
+
+            Run the narrowest experiment/tests you create before finishing. If evidence disproves the
+            hypothesis, preserve that negative result; do not manufacture an improvement. A valid negative
+            experiment is still completed learning work.
+          output_schema: '{"type":"object","properties":{"changed":{"type":"boolean"},"experiment_id":{"type":"string"},"sport":{"type":"string"},"model_lane":{"type":"string"},"hypothesis":{"type":"string"},"replay_status":{"type":"string"},"result":{"type":"string"},"recommendation":{"type":"string"},"production_change":{"type":"boolean"}},"required":["changed","experiment_id","sport","model_lane","hypothesis","replay_status","result","recommendation","production_change"],"additionalProperties":false}'
+
+      - name: Enforce experiment-only diff boundary
+        id: scope
+        if: steps.gate.outputs.allowed == 'true' && steps.experiment_agent.outcome == 'success'
+        shell: bash
+        env:
+          RESULT: ${{ steps.experiment_agent.outputs.structured_output }}
+        run: |
+          set -euo pipefail
+          changed=$(jq -r '.changed' <<<"$RESULT")
+          production_change=$(jq -r '.production_change' <<<"$RESULT")
+          if [ "$production_change" != "false" ]; then
+            echo "::error::Model-improvement agent attempted production-change authority."
+            exit 1
+          fi
+          if [ "$changed" != "true" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          mapfile -t files < <(git status --porcelain=v1 | sed -E 's/^.. //')
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "::error::Agent reported changed=true but produced no working-tree changes."
+            exit 1
+          fi
+          for file in "${files[@]}"; do
+            case "$file" in
+              artifacts/wow-engine/v17/experiments/*) ;;
+              *)
+                echo "::error::Experiment escaped non-serving boundary: $file"
+                exit 1
+                ;;
+            esac
+          done
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          printf '%s\n' "${files[@]}" | tee "$RUNNER_TEMP/model-experiment-files.txt"
+
+      - name: Run experiment tests
+        if: steps.scope.outputs.changed == 'true'
+        run: python -m pytest -q artifacts/wow-engine/v17/experiments
+
+      - name: Run adjacent WOW regression
+        if: steps.scope.outputs.changed == 'true'
+        run: python -m pytest -q artifacts/wow-engine
+
+      - name: Commit experiment branch
+        id: commit
+        if: steps.scope.outputs.changed == 'true'
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          RESULT: ${{ steps.experiment_agent.outputs.structured_output }}
+        run: |
+          set -euo pipefail
+          experiment_id=$(jq -r '.experiment_id' <<<"$RESULT")
+          branch="chatgpt/model-improvement/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
+          git add artifacts/wow-engine/v17/experiments
+          git commit -m "Model experiment: ${experiment_id}"
+          git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git push --set-upstream origin "$branch"
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          echo "experiment_id=$experiment_id" >> "$GITHUB_OUTPUT"
+
+      - name: Open governed experiment PR and enable auto-merge
+        if: steps.scope.outputs.changed == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ steps.commit.outputs.branch }}
+          EXPERIMENT_ID: ${{ steps.commit.outputs.experiment_id }}
+          RESULT: ${{ steps.experiment_agent.outputs.structured_output }}
+        run: |
+          set -euo pipefail
+          body="$RUNNER_TEMP/model-experiment-pr.md"
+          {
+            echo "## WOW V17 governed model-improvement experiment"
+            echo
+            echo "Experiment: \`$EXPERIMENT_ID\`"
+            echo
+            echo '```json'
+            echo "$RESULT"
+            echo '```'
+            echo
+            echo "### Governance"
+            echo "- Model-Experiment-Autonomous: true"
+            echo "- Production-Behavior-Change: false"
+            echo "- Class-C-Promotion: false"
+            echo "- Changed files are mechanically restricted to \`artifacts/wow-engine/v17/experiments/**\`."
+            echo "- Production champions remain unchanged until governed replay/holdout evidence earns separate promotion review."
+            echo "- can_execute=false"
+          } > "$body"
+          pr_url=$(gh pr create --repo "$GITHUB_REPOSITORY" --base main --head "$BRANCH" \
+            --title "Model experiment: $EXPERIMENT_ID" --body-file "$body")
+          pr_number=${pr_url##*/}
+          gh pr merge "$pr_number" --repo "$GITHUB_REPOSITORY" --auto --merge
+          echo "Experiment PR #$pr_number created with auto-merge after protected checks." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Record experiment receipt
+        if: always()
+        env:
+          RESULT: ${{ steps.experiment_agent.outputs.structured_output }}
+        run: |
+          {
+            echo "# WOW V17 Model Improvement Experiment"
+            echo "- reliability_gate: ${{ steps.gate.outputs.allowed || 'false' }}"
+            echo "- changed: ${{ steps.scope.outputs.changed || 'false' }}"
+            echo "- provider: OpenAI/ChatGPT"
+            echo "- experiment_status: EXPERIMENT_CREATED when a guarded branch/PR is emitted"
+            if [ -n "${RESULT:-}" ]; then
+              echo '```json'
+              echo "$RESULT"
+              echo '```'
+            fi
+            echo "- production_change: false"
+            echo "- can_execute: false"
+          } >> "$GITHUB_STEP_SUMMARY"
