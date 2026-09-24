@@ -28,14 +28,33 @@ DATABASE_MIGRATION_VERIFICATION = "DATABASE_MIGRATION_VERIFICATION"
 PROBABILITY_BEHAVIOR_REVIEW = "PROBABILITY_BEHAVIOR_REVIEW"
 
 
+# Runtime markers deliberately include historical failure boundaries that caused
+# same-day follow-up repairs (#803 and #807/#808). A gate that does not recognize
+# those paths would not address the defect class it exists to prevent.
 _RUNTIME_MARKERS = (
     "api_ncaaf_acceptance.py",
     "/runtime.py",
     "_runtime.py",
-    "team_event_bridge",
-    "prop_auto_hydration",
-    "interactive_pick_parallel",
+    "bridge",
+    "handoff",
+    "hydration",
+    "multiscout",
+    "auto_advance",
+    "reconciliation",
     "final_refresh",
+    "production_acceptance",
+    "rank_fix",
+)
+_WORKFLOW_FULL_SLATE_MARKERS = (
+    "nightly-multiscout",
+    "full-slate",
+    "scout-persist",
+)
+_WORKFLOW_RELEASE_MARKERS = (
+    "release-production",
+    "release-resume",
+    "deploy",
+    "render",
 )
 _EDITOR_MARKERS = (
     "WOW_V17_CUSTOM_GPT_INSTRUCTIONS.txt",
@@ -79,16 +98,21 @@ def classify_change_impact(paths: Iterable[str]) -> dict[str, Any]:
 
     for path in normalized:
         lower = path.lower()
+        is_workflow = path.startswith(".github/workflows/") or path.startswith(".github/actions/")
 
-        if path.startswith(".github/workflows/") or path.startswith(".github/actions/"):
+        if is_workflow:
             add(WORKFLOW_HANDOFF_ACCEPTANCE, path, "automation/handoff surface changed")
+            if any(marker in lower for marker in _WORKFLOW_FULL_SLATE_MARKERS):
+                add(FULL_SLATE_PRODUCTION_ACCEPTANCE, path, "full-slate/Scout orchestration changed")
+            if any(marker in lower for marker in _WORKFLOW_RELEASE_MARKERS):
+                add(EXACT_SHA_RENDER_VERIFICATION, path, "release/deployment orchestration changed")
 
-        if path.startswith("artifacts/wow-engine/") and any(marker in path for marker in _RUNTIME_MARKERS):
+        if path.startswith("artifacts/wow-engine/") and any(marker in lower for marker in _RUNTIME_MARKERS):
             add(FULL_SLATE_PRODUCTION_ACCEPTANCE, path, "governed runtime/handoff surface changed")
             add(EXACT_SHA_RENDER_VERIFICATION, path, "production runtime artifact may change")
             add(GOLDEN_BACKEND_ACCEPTANCE, path, "backend user-journey boundary may change")
 
-        if any(marker in path for marker in _EDITOR_MARKERS):
+        if any(marker.lower() in lower for marker in _EDITOR_MARKERS):
             add(GPT_EDITOR_SYNC_ACCEPTANCE, path, "live host/editor contract changed")
             add(GOLDEN_LIVE_HOST_ACCEPTANCE, path, "live ChatGPT host parity must be reproven")
 
