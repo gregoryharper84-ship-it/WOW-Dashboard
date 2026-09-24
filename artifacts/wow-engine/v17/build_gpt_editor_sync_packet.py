@@ -6,6 +6,11 @@ The canonical host instructions are therefore required to stay below a 7,500-byt
 safety ceiling, leaving margin under the product limit. The PrizePicks live-host
 addendum is packaged separately as a Knowledge file.
 
+The Custom GPT editor permits only one custom Action set per domain. Therefore
+all production WOW operations, including durable run-control orchestration, must
+be exposed through the single canonical Action schema for the Render domain.
+The standalone run-control schema remains a repository reference contract only.
+
 The repository remains authoritative for canonical host instructions, the
 PrizePicks addendum, and Action schema. This utility never reads or emits
 WOW_ACTION_API_KEY or any other credential. It cannot update the live GPT editor
@@ -35,6 +40,9 @@ REQUIRED_OPERATIONS = (
     "getWowV17BackendHealth",
     "scoreWowPickRequest",
     "lookupWowV17PredictionReceipts",
+    "getWowV17PickRequestRunState",
+    "runWowV17ResumablePickRequest",
+    "closeWowV17PickRequestRun",
 )
 REQUIRED_PRIZEPICKS_TOKENS = (
     "SOURCE_PAGE_UNREADABLE:<page_number>",
@@ -54,6 +62,7 @@ REQUIRED_EDITOR_TOKENS = (
     "V17_TERMINAL_REDUCER",
     "can_execute=false",
     "WOW_V17_GOVERNANCE_KNOWLEDGE.txt",
+    "Run-control operations are merged into the canonical Action schema",
 )
 
 
@@ -120,6 +129,9 @@ def build_packet() -> tuple[bytes, dict]:
         "prizepicks_knowledge_output_file": PRIZEPICKS_KNOWLEDGE_FILENAME,
         "action_schema_path": str(ACTION_SCHEMA.relative_to(ROOT)),
         "action_schema_sha256": _sha256(schema),
+        "action_schema_installation_surface": "SINGLE_CUSTOM_ACTION_DOMAIN",
+        "action_schema_domain": "wow-governed-probability-engine.onrender.com",
+        "run_control_installation_surface": "MERGED_INTO_CANONICAL_ACTION_SCHEMA",
         "editor_instruction_packet_sha256": _sha256(packet),
         "combined_editor_packet_sha256": _sha256(packet),
         "required_operations": list(REQUIRED_OPERATIONS),
@@ -130,10 +142,13 @@ def build_packet() -> tuple[bytes, dict]:
         "acceptance_required": [
             "PASTE_CANONICAL_INSTRUCTIONS_INTO_INSTRUCTIONS_FIELD",
             "ATTACH_PRIZEPICKS_ADDENDUM_AS_KNOWLEDGE_FILE",
+            "IMPORT_SINGLE_CANONICAL_ACTION_SCHEMA_WITH_19_OPERATIONS",
+            "PRESERVE_EXISTING_WOW_ACTION_API_KEY_BEARER_AUTH",
             "SAVE_AND_RELOAD_PRODUCTION_WOW_BETTING_ENGINE_EDITOR",
             "FRESH_CHAT_GET_WOW_V17_BACKEND_HEALTH",
             "FRESH_CHAT_SCORE_WOW_PICK_REQUEST",
             "FRESH_CHAT_LOOKUP_WOW_V17_PREDICTION_RECEIPTS",
+            "FRESH_CHAT_VERIFY_RUN_CONTROL_OPERATIONS_VISIBLE",
             "FRESH_CHAT_MULTIPAGE_PRIZEPICKS_CANARY",
             "CONFIRM_CAN_EXECUTE_FALSE",
         ],
