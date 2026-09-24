@@ -1,0 +1,179 @@
+name: wow-v17-24h-engineering-closure-loop
+
+on:
+  schedule:
+    - cron: "47 * * * *"
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+  issues: read
+  pull-requests: read
+
+concurrency:
+  group: wow-v17-24h-engineering-closure-loop
+  cancel-in-progress: false
+
+jobs:
+  advance-one-stage:
+    name: Advance highest-priority WOW work
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout protected main
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Resolve next concrete action
+        id: decision
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          repair_pr=$(gh api --paginate "/repos/${GITHUB_REPOSITORY}/pulls?state=open&base=main&per_page=100" \
+            --jq '[.[] | select(.head.repo.full_name == env.GITHUB_REPOSITORY) | select((.body // "") | contains("Morning-Green-Autonomous: true"))] | sort_by(.created_at) | first | .number // empty')
+          experiment_pr=$(gh api --paginate "/repos/${GITHUB_REPOSITORY}/pulls?state=open&base=main&per_page=100" \
+            --jq '[.[] | select(.head.repo.full_name == env.GITHUB_REPOSITORY) | select((.body // "") | contains("Model-Experiment-Autonomous: true"))] | sort_by(.created_at) | first | .number // empty')
+
+          priority=$(python artifacts/wow-engine/v17/engineering_agent_team.py priority)
+          incident=$(jq -r '.incident_id // ""' <<<"$priority")
+          state=$(jq -r '.state // "NONE"' <<<"$priority")
+          severity=$(jq -r '.severity // "NONE"' <<<"$priority")
+          frontier_allowed=$(jq -r '.frontier_allowed // false' <<<"$priority")
+          utc_hour=$((10#$(date -u +%H)))
+
+          action="DETECT"
+          target=""
+          reason="No unfinished reliability item; run deterministic detector."
+
+          if [ -n "$repair_pr" ]; then
+            action="RESUME_REPAIR_PR"
+            target="$repair_pr"
+            reason="An autonomous repair PR is open; finish its CI/merge lifecycle before starting new work."
+          elif [ "$state" = "DEPLOYED_PENDING_VERIFY" ] || [ "$state" = "MERGED_PENDING_DEPLOY" ] || [ "$state" = "PR_CREATED" ]; then
+            action="VERIFY_RELEASE"
+            target="$incident"
+            reason="Highest-priority incident is in release/production verification."
+          elif [ -n "$incident" ]; then
+            action="REPAIR"
+            target="$incident"
+            reason="Highest-priority durable incident still requires engineering closure."
+          elif [ -n "$experiment_pr" ]; then
+            action="EXPERIMENT_WAIT"
+            target="$experiment_pr"
+            reason="A governed model-improvement experiment PR is already open; do not create competing experiment work."
+          elif [ "$frontier_allowed" = "true" ] && [ $((utc_hour % 6)) -eq 0 ]; then
+            action="IMPROVE_MODEL"
+            reason="Reliability queue is clear; execute one governed non-serving model-improvement experiment."
+          fi
+
+          {
+            echo "action=$action"
+            echo "target=$target"
+            echo "incident=$incident"
+            echo "state=$state"
+            echo "severity=$severity"
+            echo "reason<<EOF"
+            echo "$reason"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+          jq -n \
+            --arg action "$action" \
+            --arg target "$target" \
+            --arg incident "$incident" \
+            --arg state "$state" \
+            --arg severity "$severity" \
+            --arg reason "$reason" \
+            '{action:$action,target:$target,incident:$incident,state:$state,severity:$severity,reason:$reason,can_execute:false}' \
+            | tee "$RUNNER_TEMP/wow-24h-decision.json"
+
+      - name: Resume autonomous repair PR
+        if: steps.decision.outputs.action == 'RESUME_REPAIR_PR'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.decision.outputs.target }}
+        run: |
+          set -euo pipefail
+          gh workflow run wow-v17-morning-green-continuation.yml \
+            --repo "$GITHUB_REPOSITORY" --ref main -f pr_number="$PR_NUMBER"
+
+      - name: Resume release verification
+        if: steps.decision.outputs.action == 'VERIFY_RELEASE'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh workflow run wow-v17-release-resume-agent.yml --repo "$GITHUB_REPOSITORY" --ref main
+
+      - name: Dispatch engineering repair
+        if: steps.decision.outputs.action == 'REPAIR'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          active=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow wow-v17-chatgpt-engineering-worker.yml --limit 10 \
+            --json status,createdAt --jq '[.[] | select(.status == "queued" or .status == "in_progress")] | length')
+          if [ "$active" -gt 0 ]; then
+            echo "An engineering worker is already active; preserving the single implementation lease." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          gh workflow run wow-v17-chatgpt-engineering-worker.yml --repo "$GITHUB_REPOSITORY" --ref main
+
+      - name: Execute governed model-improvement experiment
+        if: steps.decision.outputs.action == 'IMPROVE_MODEL'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          active=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow wow-v17-model-improvement-experiment.yml --limit 10 \
+            --json status --jq '[.[] | select(.status == "queued" or .status == "in_progress")] | length')
+          if [ "$active" -gt 0 ]; then
+            echo "A governed model-improvement experiment is already active." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          gh workflow run wow-v17-model-improvement-experiment.yml --repo "$GITHUB_REPOSITORY" --ref main
+
+      - name: Run deterministic detection / acceptance pulse
+        if: steps.decision.outputs.action == 'DETECT'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          active=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow wow-v17-nightly-engineering-scan.yml --limit 10 \
+            --json status --jq '[.[] | select(.status == "queued" or .status == "in_progress")] | length')
+          if [ "$active" -eq 0 ]; then
+            gh workflow run wow-v17-nightly-engineering-scan.yml --repo "$GITHUB_REPOSITORY" --ref main
+          fi
+
+      - name: Record 24-hour loop receipt
+        if: always()
+        run: |
+          {
+            echo "# WOW V17 24-Hour Completion Loop"
+            echo "- action: ${{ steps.decision.outputs.action || 'UNRESOLVED' }}"
+            echo "- target: ${{ steps.decision.outputs.target || 'NONE' }}"
+            echo "- incident: ${{ steps.decision.outputs.incident || 'NONE' }}"
+            echo "- incident_state: ${{ steps.decision.outputs.state || 'NONE' }}"
+            echo "- reason: ${{ steps.decision.outputs.reason || 'NONE' }}"
+            echo "- policy: finish existing work before starting new work"
+            echo "- model improvement: challenger/experiment only until governed evidence earns promotion"
+            echo "- can_execute: false"
+          } >> "$GITHUB_STEP_SUMMARY"
