@@ -1,0 +1,357 @@
+name: wow-v17-chatgpt-engineering-worker
+
+on:
+  schedule:
+    - cron: "17 * * * *"
+  workflow_run:
+    workflows: ["wow-v17-nightly-engineering-scan"]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  checks: read
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: wow-v17-chatgpt-engineering-worker
+  cancel-in-progress: false
+
+jobs:
+  multi-agent-engineering:
+    name: WOW V17 ChatGPT engineering team
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'schedule' ||
+      (github.event.workflow_run.event == 'schedule' && github.event.workflow_run.conclusion != 'cancelled') ||
+      (github.event.workflow_run.event == 'workflow_dispatch' && github.event.workflow_run.conclusion != 'cancelled')
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout protected main
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: artifacts/wow-engine/requirements.txt
+
+      - name: Install validation dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r artifacts/wow-engine/requirements.txt
+          pip install PyYAML openapi-spec-validator
+          python artifacts/wow-engine/v17/engineering_agent_team.py self-check
+
+      - name: Verify OpenAI authentication
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${OPENAI_API_KEY:-}" ]; then
+            echo "::error::OPENAI_API_KEY is required for the ChatGPT engineering worker."
+            exit 1
+          fi
+
+      - name: Engineering Lead agent
+        id: lead_agent
+        uses: ./.github/actions/wow-chatgpt-agent
+        with:
+          openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+          permission_profile: ":read-only"
+          prompt: |
+            You are the independent WOW V17 ENGINEERING_LEAD_AGENT running on OpenAI/ChatGPT tooling only.
+            Read the repository governance, .agents/skills/wow-engineering-lead-agent/SKILL.md,
+            artifacts/wow-engine/v17/incident-ledger.json, and current local CI/PR evidence.
+            Run `python artifacts/wow-engine/v17/engineering_agent_team.py priority`.
+            Select exactly one durable actionable incident or NO_ACTION. Do not edit files.
+            You own priority only; do not diagnose, implement, approve, merge, deploy, or
+            change sporting probability behavior. Preserve can_execute=false.
+          output_schema: '{"type":"object","properties":{"action":{"type":"string","enum":["REPAIR","VERIFY_RELEASE","NO_ACTION"]},"incident_id":{"type":"string"},"severity":{"type":"string"},"current_state":{"type":"string"},"reason":{"type":"string"},"frontier_allowed":{"type":"boolean"}},"required":["action","incident_id","severity","current_state","reason","frontier_allowed"],"additionalProperties":false}'
+
+      - name: Normalize Lead dispatch
+        id: lead
+        shell: bash
+        env:
+          RESULT: ${{ steps.lead_agent.outputs.structured_output }}
+        run: |
+          set -euo pipefail
+          echo "action=$(jq -r '.action' <<<"$RESULT")" >> "$GITHUB_OUTPUT"
+          echo "incident=$(jq -r '.incident_id' <<<"$RESULT")" >> "$GITHUB_OUTPUT"
+          mkdir -p artifacts/wow-engine/v17/.agent-handoff
+          printf '%s\n' "$RESULT" > artifacts/wow-engine/v17/.agent-handoff/lead.json
+
+      - name: Research / Root-Cause Triage agent
+        id: triage_agent
+        if: steps.lead.outputs.action == 'REPAIR'
+        uses: ./.github/actions/wow-chatgpt-agent
+        with:
+          openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+          permission_profile: ":read-only"
+          prompt: |
+            You are the independent WOW V17 RESEARCH_TRIAGE_AGENT running on OpenAI/ChatGPT tooling only.
+            Read .agents/skills/wow-engineering-research-triage-agent/SKILL.md and
+            artifacts/wow-engine/v17/.agent-handoff/lead.json.
+            Reproduce the selected defect, isolate the first failing stage, distinguish symptom
+            from root cause, define objective acceptance criteria and the smallest fix boundary.
+            Do not edit files. Preserve typed failures, V17 terminal authority, exact-once
+            semantics, and can_execute=false. Never substitute market evidence for model probability.
+          output_schema: '{"type":"object","properties":{"incident_id":{"type":"string"},"repairable":{"type":"boolean"},"reproduction_status":{"type":"string"},"root_cause":{"type":"string"},"risk_class":{"type":"string","enum":["R0","R1","R2-restorative","R2-repair-policy","R3","NONE"]},"acceptance_criteria":{"type":"array","items":{"type":"string"}},"recommended_fix_boundary":{"type":"string"},"hard_boundary":{"type":"string"}},"required":["incident_id","repairable","reproduction_status","root_cause","risk_class","acceptance_criteria","recommended_fix_boundary","hard_boundary"],"additionalProperties":false}'
+
+      - name: Normalize Triage packet
+        id: triage
+        if: steps.lead.outputs.action == 'REPAIR'
+        shell: bash
+        env:
+          RESULT: ${{ steps.triage_agent.outputs.structured_output }}
+        run: |
+          set -euo pipefail
+          echo "repairable=$(jq -r '.repairable' <<<"$RESULT")" >> "$GITHUB_OUTPUT"
+          echo "risk=$(jq -r '.risk_class' <<<"$RESULT")" >> "$GITHUB_OUTPUT"
+          echo "incident=$(jq -r '.incident_id' <<<"$RESULT")" >> "$GITHUB_OUTPUT"
+          printf '%s\n' "$RESULT" > artifacts/wow-engine/v17/.agent-handoff/triage.json
+
+      - name: Deny policy-changing implementation lease
+        if: steps.lead.outputs.action == 'REPAIR' && (steps.triage.outputs.risk == 'R2-repair-policy' || steps.triage.outputs.risk == 'R3')
+        run: echo "Governed hard boundary; implementation lease denied." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Implementation agent
+        id: implementation_agent
+        if: >-
+          steps.triage.outputs.repairable == 'true' &&
+          (steps.triage.outputs.risk == 'R0' ||
+           steps.triage.outputs.risk == 'R1' ||
+           steps.triage.outputs.risk == 'R2-restorative')
+        uses: ./.github/actions/wow-chatgpt-agent
+        with:
+          openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+          permission_profile: ":workspace"
+          prompt: |
+            You are the WOW V17 ENGINEERING_AGENT running on OpenAI/ChatGPT tooling only and hold the single implementation lease.
+            Read .agents/skills/wow-engineering-implementation-agent/SKILL.md,
+            .agents/skills/wow-replit-patch-governor/SKILL.md, and
+            artifacts/wow-engine/v17/.agent-handoff/triage.json.
+            Implement only the proven root cause and acceptance criteria. Do not diagnose a
+            different incident, edit .github/workflows/**, or touch .agent-handoff/**.
+            Run the narrowest reproduction first, then relevant regressions, and rework bounded failures.
+            Preserve can_execute=false, DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS=true,
+            exact typed failures, exact-once behavior, V17_TERMINAL_REDUCER, and all probability governance.
+            No Class C change is authorized.
+          output_schema: '{"type":"object","properties":{"changed":{"type":"boolean"},"incident_id":{"type":"string"},"risk_class":{"type":"string","enum":["R0","R1","R2-restorative","R2-repair-policy","R3","NONE"]},"summary":{"type":"string"},"tests":{"type":"string"},"hard_boundary":{"type":"string"}},"required":["changed","incident_id","risk_class","summary","tests","hard_boundary"],"additionalProperties":false}'
+
+      - name: Normalize Implementation result
+        id: impl
+        if: steps.implementation_agent.outcome == 'success'
+        shell: bash
+        env:
+          RESULT: ${{ steps.implementation_agent.outputs.structured_output }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          changed=$(jq -r '.changed' <<<"$RESULT")
+          risk=$(jq -r '.risk_class' <<<"$RESULT")
+          incident=$(jq -r '.incident_id' <<<"$RESULT")
+          branch=""
+          rm -rf artifacts/wow-engine/v17/.agent-handoff
+          if [ "$changed" = "true" ]; then
+            git diff --quiet --exit-code && { echo "::error::ChatGPT reported changes but returned no working-tree diff."; exit 1; }
+            branch="chatgpt/engineering/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git switch -c "$branch"
+            git add --all
+            git commit -m "ChatGPT Engineering: ${incident:-nightly-repair}"
+            git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+            git push --set-upstream origin "$branch"
+          fi
+          echo "changed=$changed" >> "$GITHUB_OUTPUT"
+          echo "risk=$risk" >> "$GITHUB_OUTPUT"
+          echo "incident=$incident" >> "$GITHUB_OUTPUT"
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout implementation branch
+        if: steps.impl.outputs.changed == 'true'
+        run: |
+          git fetch origin "${{ steps.impl.outputs.branch }}"
+          git switch "${{ steps.impl.outputs.branch }}"
+
+      - name: Independent Review agent
+        id: review_agent
+        if: steps.impl.outputs.changed == 'true'
+        uses: ./.github/actions/wow-chatgpt-agent
+        with:
+          openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+          permission_profile: ":read-only"
+          prompt: |
+            You are the independent WOW V17 INDEPENDENT_REVIEW_AGENT running on OpenAI/ChatGPT tooling only.
+            Read .agents/skills/wow-engineering-independent-review-agent/SKILL.md.
+            Review the complete current-branch diff against main. You did not write this patch.
+            Do not edit files. Verify root-cause repair, minimal scope, test quality, V17 ownership,
+            typed failures, security, exact-once behavior, terminal authority, and can_execute=false.
+            State whether independent SYSTEM_ARCHITECT_AGENT review is required.
+          output_schema: '{"type":"object","properties":{"decision":{"type":"string","enum":["PASS","REJECT"]},"system_architect_required":{"type":"boolean"},"findings":{"type":"array","items":{"type":"string"}},"residual_risks":{"type":"array","items":{"type":"string"}}},"required":["decision","system_architect_required","findings","residual_risks"],"additionalProperties":false}'
+
+      - name: Normalize Review
+        id: review
+        if: steps.impl.outputs.changed == 'true'
+        env:
+          RESULT: ${{ steps.review_agent.outputs.structured_output }}
+        run: |
+          echo "decision=$(jq -r '.decision' <<<"$RESULT")" >> "$GITHUB_OUTPUT"
+          echo "architect=$(jq -r '.system_architect_required' <<<"$RESULT")" >> "$GITHUB_OUTPUT"
+
+      - name: System Architect agent
+        id: architect_agent
+        if: steps.review.outputs.decision == 'PASS' && steps.review.outputs.architect == 'true'
+        uses: ./.github/actions/wow-chatgpt-agent
+        with:
+          openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+          permission_profile: ":read-only"
+          prompt: |
+            You are the independent WOW V17 SYSTEM_ARCHITECT_AGENT running on OpenAI/ChatGPT tooling only.
+            Read .agents/skills/wow-engineering-system-architect-agent/SKILL.md.
+            Review the current diff for protected-contract changes. Do not edit. Reject hidden
+            ownership changes, probability substitution, terminal-authority drift, typed-failure
+            collapse, unsafe auth/execution changes, or ungoverned Class C behavior.
+          output_schema: '{"type":"object","properties":{"decision":{"type":"string","enum":["PASS","REJECT"]},"findings":{"type":"array","items":{"type":"string"}}},"required":["decision","findings"],"additionalProperties":false}'
+
+      - name: Normalize Architect decision
+        id: architect
+        if: steps.review.outputs.decision == 'PASS'
+        shell: bash
+        env:
+          REQUIRED: ${{ steps.review.outputs.architect }}
+          RESULT: ${{ steps.architect_agent.outputs.structured_output }}
+        run: |
+          if [ "$REQUIRED" = "true" ]; then
+            echo "decision=$(jq -r '.decision' <<<"$RESULT")" >> "$GITHUB_OUTPUT"
+          else
+            echo "decision=NOT_APPLICABLE" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Deterministic QA regression
+        id: regression
+        if: steps.review.outputs.decision == 'PASS' && (steps.architect.outputs.decision == 'PASS' || steps.architect.outputs.decision == 'NOT_APPLICABLE')
+        shell: bash
+        run: |
+          set +e
+          python -m pytest -q artifacts/wow-engine 2>&1 | tee "$RUNNER_TEMP/qa-regression.log"
+          status=${PIPESTATUS[0]}
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: QA Verification agent
+        id: qa_agent
+        if: steps.impl.outputs.changed == 'true' && steps.regression.outputs.status == '0'
+        uses: ./.github/actions/wow-chatgpt-agent
+        with:
+          openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+          permission_profile: ":read-only"
+          prompt: |
+            You are the independent WOW V17 QA_VERIFICATION_AGENT running on OpenAI/ChatGPT tooling only.
+            Read .agents/skills/wow-engineering-qa-verification-agent/SKILL.md.
+            Review the current diff and deterministic regression evidence. You did not implement
+            the patch. Verify acceptance criteria, adjacent-lane safety, exact typed failures,
+            probability/lower-bound integrity when applicable, immutable/exact-once behavior,
+            terminal authority, and can_execute=false. Do not edit files.
+          output_schema: '{"type":"object","properties":{"decision":{"type":"string","enum":["PASS","REJECT"]},"acceptance_status":{"type":"string"},"findings":{"type":"array","items":{"type":"string"}}},"required":["decision","acceptance_status","findings"],"additionalProperties":false}'
+
+      - name: Normalize QA
+        id: qa
+        if: steps.impl.outputs.changed == 'true' && steps.regression.outputs.status == '0'
+        env:
+          RESULT: ${{ steps.qa_agent.outputs.structured_output }}
+        run: echo "decision=$(jq -r '.decision' <<<"$RESULT")" >> "$GITHUB_OUTPUT"
+
+      - name: Open governed engineering PR
+        if: steps.impl.outputs.changed == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ steps.impl.outputs.branch }}
+          INCIDENT: ${{ steps.impl.outputs.incident }}
+          RISK: ${{ steps.impl.outputs.risk }}
+          REVIEW: ${{ steps.review.outputs.decision }}
+          ARCHITECT: ${{ steps.architect.outputs.decision }}
+          REGRESSION: ${{ steps.regression.outputs.status }}
+          QA: ${{ steps.qa.outputs.decision }}
+        run: |
+          set -euo pipefail
+          existing=$(gh pr list --repo "$GITHUB_REPOSITORY" --state open --base main --head "$BRANCH" --json number --jq '.[0].number // empty')
+          [ -n "$existing" ] && { echo "Existing PR #$existing." >> "$GITHUB_STEP_SUMMARY"; exit 0; }
+          compare=$(gh api "/repos/${GITHUB_REPOSITORY}/compare/main...${BRANCH}")
+          mapfile -t files < <(jq -r '.files[].filename' <<<"$compare")
+          gates=FAIL
+          if [ "$REVIEW" = "PASS" ] &&
+             { [ "$ARCHITECT" = "PASS" ] || [ "$ARCHITECT" = "NOT_APPLICABLE" ]; } &&
+             [ "$REGRESSION" = "0" ] && [ "$QA" = "PASS" ]; then
+            gates=PASS
+          fi
+          body="$RUNNER_TEMP/pr.md"
+          {
+            echo "## WOW V17 ChatGPT Engineering repair"
+            echo
+            echo "Incident: \`$INCIDENT\`"
+            echo "Risk: \`$RISK\`"
+            echo "Independent review: \`${REVIEW:-NOT_RUN}\`"
+            echo "System architect: \`${ARCHITECT:-NOT_RUN}\`"
+            echo "Deterministic regression: \`${REGRESSION:-NOT_RUN}\`"
+            echo "QA agent: \`${QA:-NOT_RUN}\`"
+            echo "Pre-PR agent gates: \`$gates\`"
+            echo
+            echo "### Changed files"
+            for file in "${files[@]}"; do echo "- \`$file\`"; done
+            echo
+            echo "### Governance"
+            echo "- OpenAI/ChatGPT tooling only; no Anthropic/Claude runtime dependency"
+            echo "- can_execute=false remains binding"
+            echo "- DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS=true remains binding"
+            echo "- V17_TERMINAL_REDUCER remains sole global terminal authority"
+            echo "- Lead, Triage, Implementation, Review, Architect, and QA are independent agent invocations"
+            if [ "$gates" = "PASS" ] && { [ "$RISK" = "R0" ] || [ "$RISK" = "R1" ] || [ "$RISK" = "R2-restorative" ]; }; then
+              echo
+              echo "Morning-Green-Autonomous: true"
+              echo "Morning-Green-Risk: $RISK"
+              echo "Morning-Green-Acceptance-Workflow: wow-v17-nightly-engineering-scan.yml"
+              echo
+              echo '```morning-green-scope'
+              echo "risk_class: $RISK"
+              echo "allowed_files:"
+              for file in "${files[@]}"; do echo "  - $file"; done
+              echo "protected_files: []"
+              echo '```'
+            fi
+          } > "$body"
+          title="ChatGPT Engineering: ${INCIDENT:-repair}"
+          if [ "$gates" = "PASS" ]; then
+            gh pr create --repo "$GITHUB_REPOSITORY" --base main --head "$BRANCH" --title "$title" --body-file "$body"
+          else
+            gh pr create --repo "$GITHUB_REPOSITORY" --base main --head "$BRANCH" --title "$title" --body-file "$body" --draft
+          fi
+
+      - name: Record team receipt
+        if: always()
+        run: |
+          {
+            echo "# WOW V17 ChatGPT Engineering Team"
+            echo "- UTC: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "- Lead: ${{ steps.lead.outputs.action || 'NOT_RUN' }}"
+            echo "- Incident: ${{ steps.lead.outputs.incident || 'NONE' }}"
+            echo "- Triage repairable: ${{ steps.triage.outputs.repairable || 'NOT_RUN' }}"
+            echo "- Implementation changed: ${{ steps.impl.outputs.changed || 'false' }}"
+            echo "- Review: ${{ steps.review.outputs.decision || 'NOT_RUN' }}"
+            echo "- Architect: ${{ steps.architect.outputs.decision || 'NOT_RUN' }}"
+            echo "- Regression: ${{ steps.regression.outputs.status || 'NOT_RUN' }}"
+            echo "- QA: ${{ steps.qa.outputs.decision || 'NOT_RUN' }}"
+            echo "- provider: OpenAI/ChatGPT"
+            echo "- can_execute: false"
+          } >> "$GITHUB_STEP_SUMMARY"
