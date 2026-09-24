@@ -474,6 +474,27 @@ Ordinary latency, a pending workflow, a failed test, an open PR, a deployment in
 
 If an invocation is forcibly ended by an external execution/runtime limit after the above continuation attempts, `INCOMPLETE_ENGINEERING_RUN` may be emitted only as a truthful non-success state with the exact next executable action. It must never be treated as closure, success, or permission to select new work on the next invocation.
 
+## User-facing update format
+
+Default user-facing engineering updates MUST be concise even when the durable internal engineering receipt remains detailed.
+
+Use exactly this presentation unless the operator explicitly asks for the detailed engineering receipt:
+
+```text
+### <Issue Title>
+Summary: <brief description of the issue>
+What was done: <brief description of the fix, tests, merge/deploy/verification work, or exact work completed>
+Status: COMPLETE | INCOMPLETE
+```
+
+Rules:
+
+- `COMPLETE` means the parent incident is truthfully fixed and verified to the level applicable to that incident.
+- `INCOMPLETE` must include the exact remaining blocker or next executable action in the `What was done` line or immediately after the status.
+- Do not expose the full machine/durable receipt, defect contract, CI bookkeeping, SHA matrix, or governance checklist in routine operator updates unless requested.
+- This is a presentation-layer change only. Durable incident records, CI evidence, exact-head verification, deployment verification, reconciliation evidence, and governance accounting remain mandatory internally.
+- Never simplify away a real blocker, typed failure, or incomplete lane.
+
 ## Anti-report-only rule
 
 For autonomous R0/R1 work, this outcome is prohibited whenever engineering capability remains available:
