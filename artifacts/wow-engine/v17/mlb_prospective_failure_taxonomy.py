@@ -1,13 +1,14 @@
 """Canonical V17 failure taxonomy for the MLB prospective specialist.
 
 The prospective specialist historically used one exception class for multiple
-failure stages.  Classification therefore belongs at the runtime boundary,
-where V17 can preserve the established model failure contract without changing
+failure stages. Classification therefore belongs at the runtime boundary, where
+V17 can preserve the established model failure contract without changing
 sporting probability mathematics.
 
 Unknown exceptions are deliberately classified as MODEL_SCORER_FAILED, never as
-MODEL_UNAVAILABLE.  MODEL_UNAVAILABLE is reserved for an explicitly recognized
-absence/unavailability of the governed fitted capability/artifact/calibration.
+MODEL_UNAVAILABLE. MODEL_UNAVAILABLE is reserved for explicitly recognized
+absence/unavailability of the governed fitted capability/artifact. Calibration
+rejections preserve the established MODEL_INPUTS_INSUFFICIENT contract.
 """
 from __future__ import annotations
 
@@ -42,6 +43,11 @@ _INPUT_REASONS = {
     "lineup_platoon_evidence_too_thin",
     "feature_vector_mismatch",
     "simulation_count_below_50000",
+    "prospective_path_requires_held_fitted_baseline",
+}
+
+_CALIBRATION_REASONS = {
+    "calibration_health_not_pass",
 }
 
 _OUTPUT_REASONS = {
@@ -49,22 +55,13 @@ _OUTPUT_REASONS = {
 }
 
 _UNAVAILABLE_REASONS = {
-    "calibration_health_not_pass",
     "prospective_certified_artifact_missing",
     "artifact_lifecycle_not_eligible",
-    "prospective_path_requires_held_fitted_baseline",
 }
 
 _SCORER_REASONS = {
     "immutable_specialist_snapshot_write_failed",
 }
-
-# Rows required to prove the fitted model/calibrator/distribution capability.
-_UNAVAILABLE_ROW_PREFIXES = (
-    "wow_mlb_v2d_calibration_health:required_row_missing",
-    "wow_mlb_v2d_intercept_calibration:required_row_missing",
-    "wow_mlb_v2b_distribution_state:required_row_missing",
-)
 
 # Event/score identity rows are inputs for an otherwise selected specialist.
 _INPUT_ROW_PREFIXES = (
@@ -72,9 +69,29 @@ _INPUT_ROW_PREFIXES = (
     "wow_mlb_forward_shadow_events:required_row_missing",
 )
 
+# V17 already treats calibration rejection as an input/certification gate rather
+# than true fitted-capability absence. Preserve that contract here.
+_CALIBRATION_ROW_PREFIXES = (
+    "wow_mlb_v2d_calibration_health:required_row_missing",
+    "wow_mlb_v2d_intercept_calibration:required_row_missing",
+)
+
+# Fitted distribution state is part of the required model artifact capability.
+_UNAVAILABLE_ROW_PREFIXES = (
+    "wow_mlb_v2b_distribution_state:required_row_missing",
+)
+
 
 def classify_mlb_prospective_failure(exc: BaseException) -> MLBProspectiveFailure:
     reason = str(exc).strip() or type(exc).__name__
+
+    if reason in _CALIBRATION_REASONS or reason.startswith(_CALIBRATION_ROW_PREFIXES):
+        return MLBProspectiveFailure(
+            code=MODEL_INPUTS_INSUFFICIENT,
+            status_code=422,
+            blocker_code="CALIBRATION_ARTIFACT_INVALID_OR_UNAVAILABLE",
+            reason=reason,
+        )
 
     if reason in _INPUT_REASONS or reason.startswith(_INPUT_ROW_PREFIXES):
         return MLBProspectiveFailure(
