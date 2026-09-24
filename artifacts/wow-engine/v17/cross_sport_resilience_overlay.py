@@ -33,11 +33,12 @@ CAN_EXECUTE = False
 RESILIENCE_CONTRACT_VERSION = "V17_CROSS_SPORT_RESILIENCE_V1"
 MODEL_INVOCATION_BUDGET_REACHED = "MODEL_INVOCATION_BUDGET_REACHED"
 
-# MLB already has a canonical server-owned lane. Using a second schedule identity
-# there would duplicate the same fixture under a different provider id, so the
-# schedule-first repair targets the team sports that otherwise depend on market
-# provider availability for discovery.
+# ESPN is schedule identity only. Include MLB as a resilient discovery fallback:
+# canonical reconciliation owns de-duplication, while excluding MLB here made
+# full-slate discovery depend on a paid market provider even when a free schedule
+# inventory was available.
 _ESPN_FAMILY_KEYS: dict[str, str] = {
+    "MLB": "baseball_mlb",
     "NFL": "americanfootball_nfl",
     "NCAAF": "americanfootball_ncaaf",
     "NBA": "basketball_nba",

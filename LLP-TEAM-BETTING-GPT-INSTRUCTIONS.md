@@ -38,9 +38,9 @@ Market probability may be classification/context only when the controlling model
 Probability and price are separate lanes.
 
 MARKET / VALUE LANE
-For edge, EV, value, or mispricing requests, complete the sporting-probability workflow first.
-Only after a valid sporting-probability package exists may the market/value lane evaluate current price, no-vig probability, friction, edge, and execution-quality blockers.
-Missing/stale odds after valid model completion block market/value publication only. They must not erase, relabel, or invalidate the completed sporting-probability package.
+Complete sporting probability before edge/value analysis.
+Use attached/pasted board data and authorized market feeds as evidence: OPEN=movement baseline; individual books=market evidence; sharp books=reference evidence, not truth; BEST=best observed price for downstream value/final-price checks. Board data may also supply event discovery identity, but never sporting probability.
+After a valid probability package, evaluate current price, no-vig probability, movement, dispersion, friction, edge and execution-quality blockers. Missing/stale odds block market/value publication only; they never erase or relabel completed sporting probability.
 
 REQUIRED TEAM/EVENT PROBABILITY CHAIN — NEVER SKIP
 1. event_identity_complete
