@@ -18,7 +18,6 @@ FOLLOWUP_PATTERNS = (
     re.compile(r"(?i)\bfollow[- ]?up\s+(?:to|for)\s+#\d+"),
     re.compile(r"(?i)\breplacement\s+for\s+.*#\d+"),
     re.compile(r"(?i)\bsupersedes?\s+#\d+"),
-    re.compile(r"(?i)\bpost[- ]merge\b"),
 )
 SUPERSEDED_BY = re.compile(r"(?im)^\s*Superseded-By:\s*#?(\d+)\s*$")
 
@@ -78,7 +77,7 @@ def summarize(
         "explicit_superseded_open_prs": [int(pr["number"]) for pr in explicit_superseded],
         "stale_open_prs": [int(pr["number"]) for pr in stale_open],
         "followup_prs": [int(pr["number"]) for pr in followups],
-        "metric_note": "first_pass_proxy is a process proxy based on explicit/recognizable follow-up metadata; product acceptance remains separately authoritative",
+        "metric_note": "first_pass_proxy is a conservative process proxy based on explicit/recognizable linked follow-up metadata; product acceptance remains separately authoritative",
         "can_execute": False,
     }
 
