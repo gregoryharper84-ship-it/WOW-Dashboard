@@ -10,6 +10,7 @@ def test_followup_detection_uses_explicit_or_recognizable_repair_metadata() -> N
     assert is_followup({"title": "fix", "body": "Followup-Of: #800"}) is True
     assert is_followup({"title": "fix", "body": "Replacement for stale #792"}) is True
     assert is_followup({"title": "fix", "body": "ordinary independent repair"}) is False
+    assert is_followup({"title": "fix", "body": "Run post-merge acceptance after deploy."}) is False
 
 
 def test_superseded_by_requires_explicit_machine_marker() -> None:
