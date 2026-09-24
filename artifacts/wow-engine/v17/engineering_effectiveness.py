@@ -141,7 +141,16 @@ def evaluate_golden_user_journey(receipt: dict[str, Any]) -> dict[str, Any]:
     if receipt.get("can_execute") is not False:
         blockers.append("FAIL_GOVERNANCE:CAN_EXECUTE_MUST_BE_FALSE")
 
-    governed_rows = int(receipt.get("valid_governed_row_count") or 0)
+    raw_governed_rows = receipt.get("valid_governed_row_count", 0)
+    try:
+        governed_rows = int(raw_governed_rows)
+    except (TypeError, ValueError):
+        governed_rows = 0
+        blockers.append("FAIL_GOVERNED_SCORING:VALID_GOVERNED_ROW_COUNT_INVALID")
+    if governed_rows < 0:
+        governed_rows = 0
+        blockers.append("FAIL_GOVERNED_SCORING:VALID_GOVERNED_ROW_COUNT_INVALID")
+
     explicit_empty = receipt.get("empty_slate_proven") is True
     if governed_rows < 1 and not explicit_empty:
         blockers.append("FAIL_GOVERNED_SCORING:NO_VALID_GOVERNED_ROW_OR_PROVEN_EMPTY_SLATE")
