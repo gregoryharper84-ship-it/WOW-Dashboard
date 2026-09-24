@@ -18,6 +18,7 @@ from typing import Any, Callable
 
 from fastapi import HTTPException
 
+from v17.mlb_prospective_failure_taxonomy import classify_mlb_prospective_failure
 from v17.mlb_team_event_hydration import resolve_mlb_team_event_evidence
 from v17.team_event_capability_manifest import team_event_capability
 
@@ -493,6 +494,7 @@ def score_event_v17_bridge(
             client=resolution["client"],
         )
     except Exception as exc:
+        failure = classify_mlb_prospective_failure(exc)
         audit = _stage_audit(
             event_identity_complete=True,
             sport_model_selected=True,
@@ -502,12 +504,12 @@ def score_event_v17_bridge(
             source_snapshot_id=str(resolution.get("source_snapshot_id") or ""),
             source_snapshot_timestamp=str(resolution.get("source_snapshot_timestamp") or "") or None,
         )
-        _raise_failure(503, _failure_detail(
-            "MODEL_SCORER_FAILED",
-            "EVENT_MODEL_BRIDGE_UNAVAILABLE",
+        _raise_failure(failure.status_code, _failure_detail(
+            failure.code,
+            failure.blocker_code,
             audit=audit,
             error_type=type(exc).__name__,
-            scorer_error_code=str(exc)[:160] or type(exc).__name__,
+            scorer_error_code=failure.reason,
         ))
 
     if not isinstance(result, dict):
