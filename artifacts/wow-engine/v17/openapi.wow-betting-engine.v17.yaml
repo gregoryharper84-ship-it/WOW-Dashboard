@@ -281,7 +281,7 @@ paths:
           required: false
           schema: {type: boolean, default: false}
       responses:
-        '200': {description: Durable run manifest, worker job, and row state}
+        '200': {description: "Durable run manifest, worker job, and row state"}
         '401': {description: Authentication failed}
         '404': {description: Run not found}
   /v17/pick-request-runs/resumable:
