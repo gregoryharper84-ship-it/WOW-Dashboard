@@ -195,3 +195,77 @@ def test_durable_state_identity_conflict_is_blocked():
     assert row["status"] == "BLOCKED"
     assert row["code"] == "DURABLE_ROW_IDENTITY_CONFLICT"
     assert row["detail"]["conflicting_fields"] == ["line"]
+
+
+def test_durable_state_accepts_nfl_board_stat_alias_for_same_canonical_stat():
+    request_id = "PP-20260924-NFL-BOARD"
+    state = _state(
+        request_id,
+        row_key="love_pass_yards_more",
+        event_id="401999001",
+        sport="NFL",
+        player="Jordan Love",
+        stat_type="PASSING_YARDS",
+        exact_line=231.5,
+        direction="MORE",
+    )
+    batch = PredictionReceiptLookupBatch.model_validate(
+        {
+            "request_id": request_id,
+            "rows": [
+                _lookup_row(
+                    row_key="love_pass_yards_more",
+                    event_id="401999001",
+                    sport="NFL",
+                    player="Jordan Love",
+                    stat_type="PASS YARDS",
+                    line=231.5,
+                    direction="MORE",
+                )
+            ],
+        }
+    )
+
+    result = lookup_prediction_receipts(_Db(states=[state]), batch)
+
+    row = result["rows"][0]
+    assert row["status"] == "UNRESOLVED"
+    assert row["code"] == "DURABLE_ROW_PENDING_SAFE_TO_RESUME"
+    assert row["retry_allowed"] is True
+
+
+def test_durable_state_still_blocks_genuinely_different_nfl_stat():
+    request_id = "PP-20260924-NFL-BOARD"
+    state = _state(
+        request_id,
+        row_key="love_stat_conflict",
+        event_id="401999001",
+        sport="NFL",
+        player="Jordan Love",
+        stat_type="PASSING_YARDS",
+        exact_line=231.5,
+        direction="MORE",
+    )
+    batch = PredictionReceiptLookupBatch.model_validate(
+        {
+            "request_id": request_id,
+            "rows": [
+                _lookup_row(
+                    row_key="love_stat_conflict",
+                    event_id="401999001",
+                    sport="NFL",
+                    player="Jordan Love",
+                    stat_type="RUSH YARDS",
+                    line=231.5,
+                    direction="MORE",
+                )
+            ],
+        }
+    )
+
+    result = lookup_prediction_receipts(_Db(states=[state]), batch)
+
+    row = result["rows"][0]
+    assert row["status"] == "BLOCKED"
+    assert row["code"] == "DURABLE_ROW_IDENTITY_CONFLICT"
+    assert row["detail"]["conflicting_fields"] == ["stat_type"]
