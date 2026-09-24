@@ -3,6 +3,8 @@ name: wow-v17-24h-engineering-closure-loop
 on:
   schedule:
     - cron: "47 * * * *"
+  push:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
