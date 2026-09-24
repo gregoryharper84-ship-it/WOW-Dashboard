@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: read
+  issues: write
   pull-requests: write
 
 concurrency:
@@ -47,11 +48,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh api "/repos/${GITHUB_REPOSITORY}/pulls?state=closed&sort=updated&direction=desc&per_page=100" \
-            --jq '[.[] | select(.merged_at != null) | {number,title,body,created_at,merged_at}]' \
+          gh api --paginate --slurp "/repos/${GITHUB_REPOSITORY}/pulls?state=closed&sort=updated&direction=desc&per_page=100" \
+            --jq '[.[][] | select(.merged_at != null) | {number,title,body,created_at,merged_at}]' \
             > "$RUNNER_TEMP/merged-prs.json"
-          gh api "/repos/${GITHUB_REPOSITORY}/pulls?state=open&sort=created&direction=asc&per_page=100" \
-            --jq '[.[] | {number,title,body,created_at,updated_at}]' \
+          gh api --paginate --slurp "/repos/${GITHUB_REPOSITORY}/pulls?state=open&sort=created&direction=asc&per_page=100" \
+            --jq '[.[][] | {number,title,body,created_at,updated_at}]' \
             > "$RUNNER_TEMP/open-prs.json"
 
       - name: Build 72-hour engineering effectiveness scorecard
