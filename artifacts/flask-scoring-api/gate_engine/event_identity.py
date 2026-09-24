@@ -98,7 +98,7 @@ def build_event_key_from_row(row: dict[str, Any]) -> str:
 
     Field resolution order (first non-None wins):
       league              → row["league"] | row["sport"]
-      official_event_id   → row["official_event_id"] | row["event_id"] | row["espn_event_id"]
+      official_event_id   → row["official_event_id"] only; provider aliases are never promoted
       scheduled_start_utc → row["scheduled_start_utc"] | row["game_start_time"] | row["slate_date"]
       participants        → row["participants"] |
                             [row["home_team"], row["away_team"]] |
@@ -106,11 +106,10 @@ def build_event_key_from_row(row: dict[str, Any]) -> str:
       settlement_market   → row["settlement_market"] | row["market"]
     """
     league = row.get("league") or row.get("sport")
-    official_event_id = (
-        row.get("official_event_id")
-        or row.get("event_id")
-        or row.get("espn_event_id")
-    )
+    # Canonical identity must already be resolved by the identity-producing layer.
+    # Provider-local aliases such as ESPN ids remain aliases and must never be
+    # promoted into official_event_id merely because canonical identity is absent.
+    official_event_id = row.get("official_event_id")
     scheduled_start_utc = (
         row.get("scheduled_start_utc")
         or row.get("game_start_time")

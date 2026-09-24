@@ -348,21 +348,34 @@ def _target_event(
 
 def _cached_nflverse_rows(season: int, *, http_get: Callable[..., Any], now_ts: float) -> tuple[list[dict[str, str]], str]:
     use_cache = http_get is httpx.get
+    url = NFLVERSE_URL.format(season=season)
+
     if use_cache:
+        # Single-flight the expensive live download + CSV parse.  The prior
+        # implementation released the lock before I/O, so parallel interactive
+        # rows could download and materialize the same season file multiple
+        # times at once.  That amplified latency and memory inside the 512-MB
+        # web process without adding any evidence or probability authority.
         with _CACHE_LOCK:
             cached = _CSV_CACHE.get(season)
             if cached and now_ts - cached[0] < CACHE_TTL_SECONDS:
                 return cached[1], cached[2]
-    url = NFLVERSE_URL.format(season=season)
+
+            content = _request(url, http_get=http_get, json_expected=False)
+            digest = __import__("hashlib").sha256(content).hexdigest()
+            text = content.decode("utf-8-sig")
+            rows = list(csv.DictReader(io.StringIO(text)))
+            if not rows:
+                raise NFLPropHydrationError("NFL_PROP_HISTORY_EMPTY", f"nflverse season {season} was empty")
+            _CSV_CACHE[season] = (now_ts, rows, digest)
+            return rows, digest
+
     content = _request(url, http_get=http_get, json_expected=False)
     digest = __import__("hashlib").sha256(content).hexdigest()
     text = content.decode("utf-8-sig")
     rows = list(csv.DictReader(io.StringIO(text)))
     if not rows:
         raise NFLPropHydrationError("NFL_PROP_HISTORY_EMPTY", f"nflverse season {season} was empty")
-    if use_cache:
-        with _CACHE_LOCK:
-            _CSV_CACHE[season] = (now_ts, rows, digest)
     return rows, digest
 
 
