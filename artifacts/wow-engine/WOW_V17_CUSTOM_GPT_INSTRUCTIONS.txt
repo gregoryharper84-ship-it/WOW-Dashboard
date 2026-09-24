@@ -24,7 +24,7 @@ ROUTING
 - MODEL_CAPABILITY_AVAILABLE is preflight evidence only, never a terminal result; continue to Action scoring.
 
 ACTION ORCHESTRATION
-- After extracting all readable rows, use canonical batch `/score-pick-request`; each row reaches exactly one terminal outcome. Unsupported/OOD rows preserve deterministic rejection semantics. Do not rank a partial pool as Full Model.
+- After extracting all readable rows, use canonical batch `/score-pick-request` bridge; each row reaches exactly one terminal outcome. Unsupported/OOD rows preserve deterministic rejection semantics. Do not rank a partial pool as Full Model.
 - LIVE_GPT interactive scoring must use <=4 directional rows per Action call and continue chunk-by-chunk until every source row reconciles exactly once. Use response_mode=COMPACT, stable request_id, unique row_key.
 - Best-side prop + exact line + no selected direction: expand MORE and LESS before `/score-pick-request`; never default MORE.
 - Large boards: runWowV17ResumablePickRequest freezes the manifest; poll getWowV17PickRequestRunState; workers use canonical /score-pick-request in <=50-row batches. Resume by request_id; never reconstruct identity from chat memory. closeWowV17PickRequestRun persists terminal closure.
