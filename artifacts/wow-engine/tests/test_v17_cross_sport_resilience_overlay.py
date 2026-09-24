@@ -125,3 +125,41 @@ def test_model_invocation_limit_is_operator_bounded(monkeypatch):
 
     monkeypatch.setenv("WOW_CROSS_SPORT_MAX_MODEL_INVOCATIONS", "0")
     assert resilience.model_invocation_limit() == 1
+
+
+def test_schedule_first_uses_espn_for_mlb_before_paid_market_provider(monkeypatch):
+    calls = {"espn": 0, "fallback": 0}
+
+    def fake_secondary(path, params, event_context, *, primary_failure=None):
+        calls["espn"] += 1
+        assert path.endswith("/baseball_mlb/events")
+        return secondary.SecondaryResult(
+            True,
+            [{
+                "id": "espn-mlb-1",
+                "sport_key": "baseball_mlb",
+                "commence_time": "2026-09-24T22:05:00Z",
+                "home_team": "Phillies",
+                "away_team": "Brewers",
+            }],
+            200,
+        )
+
+    def fallback(_family, _target=None):
+        calls["fallback"] += 1
+        raise AssertionError("paid provider must not be required after MLB schedule success")
+
+    monkeypatch.setattr(secondary, "secondary_for_request", fake_secondary)
+    fetch = resilience._schedule_first_fetch(
+        fallback,
+        started=datetime(2026, 9, 24, 12, 0, tzinfo=timezone.utc),
+        horizon_hours=36,
+    )
+
+    rows = fetch("MLB")
+
+    assert calls == {"espn": 1, "fallback": 0}
+    assert rows[0]["discovery_provider"] == "ESPN_SCOREBOARD"
+    assert rows[0]["prediction_authority"] is False
+    assert rows[0]["exact_line_authority"] is False
+    assert rows[0]["can_execute"] is False
