@@ -1,13 +1,18 @@
-"""TheRundown -> LLP team/event market-context bridge.
+"""TheRundown -> LLP team/event post-score market-context bridge.
 
-TheRundown is evidence, never the controlling sporting-probability model. This
-bridge refreshes the team/event request's existing market-prior contract before
-LLP scoring so favorite/underdog/upset classification and any *certified* fitted
-model market-prior component can consume current cross-book context.
+TheRundown is evidence, never the controlling sporting-probability model.  The
+active V17 bridge deliberately strips market prior from the MLB fitted-scorer
+request, lets the sporting specialist return first, and only then resolves the
+cross-book winner market before downstream governance/value interpretation.
+
+This preserves the existing post-model favorite/underdog/upset and value lanes
+without permitting sportsbook evidence to enter the sporting model path.
 
 Invariants:
 - exactly one sport-specific LLP fitted specialist owns sporting probability;
 - TheRundown implied/no-vig values are market evidence, not governed probability;
+- no caller or TheRundown market prior reaches the MLB fitted scorer;
+- TheRundown acquisition occurs only after the fitted scorer returns;
 - provider failure cannot become MODEL_UNAVAILABLE or erase a completed sporting
   probability;
 - material favorite-role disagreement blocks market-relative ranking, not the
@@ -26,6 +31,7 @@ from v17 import market_evidence_sources as sources
 
 CAN_EXECUTE = False
 BRIDGE_SOURCE = "RUNDOWN_MARKET_EVIDENCE"
+POST_SCORE_TIMING = "POST_SPORTING_SCORE_PRE_DOWNSTREAM_MARKET_GOVERNANCE"
 _BRIDGE_LOCK = RLock()
 
 _SPORT_KEYS = {
@@ -140,9 +146,6 @@ def _market_from_event(req: Any, event: dict[str, Any]) -> dict[str, Any]:
             if stamp:
                 timestamps.append(str(stamp))
 
-    # Mixed two-way/three-way source observations are a market-definition
-    # conflict, not permission to discard the draw and manufacture a binary
-    # prior from whichever book happened to omit it.
     if three_way:
         return {
             "status": "THREE_WAY_MARKET_UNSUPPORTED_FOR_BINARY_PRIOR",
@@ -194,9 +197,6 @@ def resolve_rundown_market_context(req: Any, *, opener: Any = None) -> dict[str,
             "prediction_authority": False,
             "can_execute": False,
         }
-    # One shared sport/date snapshot per research run. Scoring a 12-game board
-    # used to mean 12 identical provider requests; the snapshot layer collapses
-    # them, so every row in one run also reads the same market timestamp.
     result = live.get_sport_date_odds_snapshot(
         sport_key,
         str(getattr(req, "requested_slate_date", "")),
@@ -254,36 +254,119 @@ def _as_market_prior(context: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
+def _envelope_market_data(context: dict[str, Any]) -> dict[str, Any] | None:
+    """Translate an exact post-score context into the existing envelope contract."""
+    prior = _as_market_prior(context)
+    if prior is None:
+        return None
+    return {
+        "status": "EXACT_LINE",
+        "snapshot_id": prior["snapshot_id"],
+        "timestamp": prior["timestamp"],
+        "source": prior["source"],
+        "book_count": prior["book_count"],
+        "market_role": "OUTRIGHT_WINNER",
+        "market_role_status": "ACTIVE",
+        "no_vig_probability": prior["home_probability"],
+        "prior_probability": prior["home_probability"],
+    }
+
+
+def _without_model_market_prior(model_request: Any) -> Any:
+    """Return the same typed scorer request with market_prior cleared."""
+    model_copy = getattr(model_request, "model_copy", None)
+    if callable(model_copy):
+        return model_copy(update={"market_prior": None})
+    copy = getattr(model_request, "copy", None)
+    if callable(copy):
+        try:
+            return copy(update={"market_prior": None})
+        except TypeError:
+            pass
+    # Fail closed rather than mutating an unknown request object in place.  The
+    # installer only patches production paths whose typed request supports copy.
+    raise TypeError("POST_SCORE_MARKET_MODEL_REQUEST_NOT_COPYABLE")
+
+
 def install_llp_rundown_market_bridge(team_event_module: Any) -> bool:
-    """Wrap LLP team/event scoring with a pre-score TheRundown market refresh."""
+    """Install a post-score market bridge around LLP team/event scoring.
+
+    On the production MLB runtime we patch two narrow internal seams under the
+    existing process lock for the duration of one call:
+    1. ``_mlb_request`` clears market_prior from the typed fitted-model request;
+    2. ``_build_team_event_envelope`` resolves TheRundown only after score_event
+       has returned, then gives downstream governance the exact market context.
+
+    Generic/other wrappers that do not expose those seams resolve market context
+    only after their scorer returns.  No path injects TheRundown into a sporting
+    model request.
+    """
     if getattr(team_event_module, "_v17_llp_rundown_market_bridge_installed", False):
         return True
     original = getattr(team_event_module, "score_team_event_request", None)
     if not callable(original):
         return False
 
+    original_mlb_request = getattr(team_event_module, "_mlb_request", None)
+    original_build_envelope = getattr(team_event_module, "_build_team_event_envelope", None)
+    production_seams = callable(original_mlb_request) and callable(original_build_envelope)
+
     def score_with_rundown(req: Any, *, event_api: Any, canonical_hydration_required: bool = False):
         with _BRIDGE_LOCK:
             caller_prior = dict(getattr(req, "market_prior", None) or {})
             caller_favorite = _favorite_from_prior(req, caller_prior)
-            context = resolve_rundown_market_context(req)
+            holder: dict[str, Any] = {}
+
+            def resolve_once(envelope_req: Any = req) -> dict[str, Any]:
+                context = holder.get("context")
+                if isinstance(context, dict):
+                    return context
+                context = resolve_rundown_market_context(envelope_req)
+                holder["context"] = context
+                return context
+
+            if production_seams:
+                def _mlb_request_without_market(model_req: Any, model_event_api: Any) -> Any:
+                    typed = original_mlb_request(model_req, model_event_api)
+                    holder["model_market_prior_stripped"] = True
+                    return _without_model_market_prior(typed)
+
+                def _build_envelope_after_score(envelope_req: Any, *args: Any, **kwargs: Any) -> Any:
+                    # Base runtime invokes this only after event_api.score_event
+                    # has returned, so provider acquisition is now post-score.
+                    context = resolve_once(envelope_req)
+                    market_data = _envelope_market_data(context)
+                    if market_data is not None:
+                        kwargs["market_data"] = market_data
+                    return original_build_envelope(envelope_req, *args, **kwargs)
+
+                team_event_module._mlb_request = _mlb_request_without_market
+                team_event_module._build_team_event_envelope = _build_envelope_after_score
+
+            try:
+                result = original(
+                    req,
+                    event_api=event_api,
+                    canonical_hydration_required=canonical_hydration_required,
+                )
+            finally:
+                if production_seams:
+                    team_event_module._mlb_request = original_mlb_request
+                    team_event_module._build_team_event_envelope = original_build_envelope
+
+            if not isinstance(result, dict):
+                return result
+
+            context = resolve_once(req)
             rundown_prior = _as_market_prior(context)
             rundown_favorite = context.get("favorite") if rundown_prior else None
             conflict = bool(caller_favorite and rundown_favorite and caller_favorite != rundown_favorite)
 
+            # Preserve the historical downstream request contract for wrappers
+            # such as upset interpretation, but only after the sporting scorer
+            # and its governed probability package have completed.
             if rundown_prior is not None:
-                # Mutate the request object intentionally so the outer LLP
-                # probability-preservation/upset wrapper sees the same refreshed
-                # market context after the base scorer returns.
                 req.market_prior = rundown_prior
-
-            result = original(
-                req,
-                event_api=event_api,
-                canonical_hydration_required=canonical_hydration_required,
-            )
-            if not isinstance(result, dict):
-                return result
 
             out = dict(result)
             out["llp_rundown_market_evidence"] = {
@@ -292,6 +375,8 @@ def install_llp_rundown_market_bridge(team_event_module: Any) -> bool:
                 "caller_favorite": caller_favorite,
                 "rundown_favorite": rundown_favorite,
                 "favorite_status_conflict": conflict,
+                "market_context_timing": POST_SCORE_TIMING,
+                "model_market_prior_stripped": bool(holder.get("model_market_prior_stripped", production_seams)),
                 "probability_mutated_by_bridge": False,
                 "can_execute": False,
             }
@@ -301,8 +386,6 @@ def install_llp_rundown_market_bridge(team_event_module: Any) -> bool:
                 out["rank_eligible"] = False
                 out["blockers"] = sorted(set([*(out.get("blockers") or []), "FAVORITE_STATUS_CONFLICT"]))
                 out["market_role_status"] = "SOURCE_CONFLICT"
-                # Sporting probability is deliberately preserved. The conflict
-                # blocks market-relative publication/ranking only.
             out["can_execute"] = False
             return out
 
@@ -315,6 +398,7 @@ def install_llp_rundown_market_bridge(team_event_module: Any) -> bool:
 __all__ = [
     "BRIDGE_SOURCE",
     "CAN_EXECUTE",
+    "POST_SCORE_TIMING",
     "enabled",
     "install_llp_rundown_market_bridge",
     "resolve_rundown_market_context",
