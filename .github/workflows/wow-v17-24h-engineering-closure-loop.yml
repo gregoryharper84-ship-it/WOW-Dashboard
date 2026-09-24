@@ -7,9 +7,9 @@ on:
 
 permissions:
   actions: write
-  contents: read
+  contents: write
   issues: read
-  pull-requests: read
+  pull-requests: write
 
 concurrency:
   group: wow-v17-24h-engineering-closure-loop
@@ -71,9 +71,9 @@ jobs:
             target="$incident"
             reason="Highest-priority durable incident still requires engineering closure."
           elif [ -n "$experiment_pr" ]; then
-            action="EXPERIMENT_WAIT"
+            action="RESUME_EXPERIMENT_PR"
             target="$experiment_pr"
-            reason="A governed model-improvement experiment PR is already open; do not create competing experiment work."
+            reason="A governed model-improvement experiment PR is open; finish or repair it before starting another experiment."
           elif [ "$frontier_allowed" = "true" ] && [ $((utc_hour % 6)) -eq 0 ]; then
             action="IMPROVE_MODEL"
             reason="Reliability queue is clear; execute one governed non-serving model-improvement experiment."
@@ -118,6 +118,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          active=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow wow-v17-release-resume-agent.yml --limit 10 \
+            --json status --jq '[.[] | select(.status == "queued" or .status == "in_progress")] | length')
+          if [ "$active" -gt 0 ]; then
+            echo "Release verification is already active." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
           gh workflow run wow-v17-release-resume-agent.yml --repo "$GITHUB_REPOSITORY" --ref main
 
       - name: Dispatch engineering repair
@@ -128,12 +134,50 @@ jobs:
         run: |
           set -euo pipefail
           active=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow wow-v17-chatgpt-engineering-worker.yml --limit 10 \
-            --json status,createdAt --jq '[.[] | select(.status == "queued" or .status == "in_progress")] | length')
+            --json status --jq '[.[] | select(.status == "queued" or .status == "in_progress")] | length')
           if [ "$active" -gt 0 ]; then
             echo "An engineering worker is already active; preserving the single implementation lease." >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
           gh workflow run wow-v17-chatgpt-engineering-worker.yml --repo "$GITHUB_REPOSITORY" --ref main
+
+      - name: Resume governed model-experiment PR
+        if: steps.decision.outputs.action == 'RESUME_EXPERIMENT_PR'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.decision.outputs.target }}
+        run: |
+          set -euo pipefail
+          pr=$(gh api "/repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}")
+          head_sha=$(jq -r '.head.sha' <<<"$pr")
+          head_repo=$(jq -r '.head.repo.full_name // ""' <<<"$pr")
+          body=$(jq -r '.body // ""' <<<"$pr")
+          [ "$head_repo" = "$GITHUB_REPOSITORY" ] || { echo "::error::Experiment PR must be same-repository."; exit 1; }
+          grep -Fq 'Model-Experiment-Autonomous: true' <<<"$body" || { echo "::error::Missing experiment marker."; exit 1; }
+          grep -Fq 'Production-Behavior-Change: false' <<<"$body" || { echo "::error::Experiment PR claims production behavior change."; exit 1; }
+
+          mapfile -t files < <(gh api --paginate "/repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/files?per_page=100" --jq '.[].filename')
+          for file in "${files[@]}"; do
+            case "$file" in
+              artifacts/wow-engine/v17/experiments/*) ;;
+              *) echo "::error::Experiment PR escaped non-serving boundary: $file"; exit 1 ;;
+            esac
+          done
+
+          gh pr merge "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --auto --merge || true
+          checks=$(gh api --paginate "/repos/${GITHUB_REPOSITORY}/commits/${head_sha}/check-runs?per_page=100" -H 'Accept: application/vnd.github+json' --jq '.check_runs')
+          failed=$(jq '[.[] | select(.status == "completed") | select(.conclusion != "success" and .conclusion != "neutral" and .conclusion != "skipped")] | length' <<<"$checks")
+          if [ "$failed" -gt 0 ]; then
+            active=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow wow-v17-model-improvement-experiment.yml --limit 10 \
+              --json status --jq '[.[] | select(.status == "queued" or .status == "in_progress")] | length')
+            if [ "$active" -eq 0 ]; then
+              gh workflow run wow-v17-model-improvement-experiment.yml --repo "$GITHUB_REPOSITORY" --ref main -f repair_pr="$PR_NUMBER"
+              echo "Failed experiment CI routed to bounded ChatGPT experiment repair." >> "$GITHUB_STEP_SUMMARY"
+            fi
+          else
+            echo "Experiment PR remains on protected auto-merge; no failed checks detected." >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Execute governed model-improvement experiment
         if: steps.decision.outputs.action == 'IMPROVE_MODEL'
