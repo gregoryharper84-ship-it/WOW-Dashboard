@@ -1,13 +1,16 @@
 """Build the deterministic WOW_BETTING_ENGINE live-editor synchronization packet.
 
-The repository is authoritative for the canonical host instructions, PrizePicks
-host addendum, and Action schema. This utility packages those exact bytes and a
-SHA-256 manifest so the external ChatGPT Custom GPT editor save/reload can be
-attested without guessing which repository revision was installed.
+The Custom GPT Instructions field is limited to 8,000 characters. The canonical
+host instructions already satisfy that editor limit and are installed there
+verbatim. The PrizePicks live-host addendum is packaged separately as a Knowledge
+file so the full governance contract is preserved without creating an editor-
+invalid combined paste.
 
-This utility never reads or emits WOW_ACTION_API_KEY or any other credential.
-It cannot update the live GPT editor by itself and therefore never marks live
-editor parity VERIFIED. can_execute is always false.
+The repository remains authoritative for canonical host instructions, the
+PrizePicks addendum, and Action schema. This utility never reads or emits
+WOW_ACTION_API_KEY or any other credential. It cannot update the live GPT editor
+by itself and therefore never marks live editor parity VERIFIED. can_execute is
+always false.
 """
 from __future__ import annotations
 
@@ -23,6 +26,9 @@ ENGINE = ROOT / "artifacts" / "wow-engine"
 INSTRUCTIONS = ENGINE / "WOW_V17_CUSTOM_GPT_INSTRUCTIONS.txt"
 PRIZEPICKS_ADDENDUM = ENGINE / "WOW_V17_CUSTOM_GPT_PRIZEPICKS_SKILL_ADDENDUM.txt"
 ACTION_SCHEMA = ENGINE / "v17" / "openapi.wow-betting-engine.v17.yaml"
+
+EDITOR_INSTRUCTION_CHAR_LIMIT = 8000
+PRIZEPICKS_KNOWLEDGE_FILENAME = "WOW_V17_PRIZEPICKS_HOST_CONTRACT_KNOWLEDGE.txt"
 
 REQUIRED_OPERATIONS = (
     "getWowV17BackendHealth",
@@ -40,6 +46,13 @@ REQUIRED_PRIZEPICKS_TOKENS = (
     "Offer",
     "Available side(s)",
     "Current/live note",
+)
+REQUIRED_EDITOR_TOKENS = (
+    "custom_gpt_identity=WOW_BETTING_ENGINE",
+    "runtime_generation=V17_ACTIVE",
+    "V17_TERMINAL_REDUCER",
+    "can_execute=false",
+    "WOW_V17_GOVERNANCE_KNOWLEDGE.txt",
 )
 
 
@@ -64,36 +77,43 @@ def build_packet() -> tuple[bytes, dict]:
     addendum = PRIZEPICKS_ADDENDUM.read_bytes()
     schema = ACTION_SCHEMA.read_bytes()
 
-    schema_text = schema.decode("utf-8")
+    instructions_text = instructions.decode("utf-8")
     addendum_text = addendum.decode("utf-8")
+    schema_text = schema.decode("utf-8")
+
+    if len(instructions_text) > EDITOR_INSTRUCTION_CHAR_LIMIT:
+        raise RuntimeError(
+            f"GPT_EDITOR_INSTRUCTION_LIMIT_EXCEEDED:{len(instructions_text)}>{EDITOR_INSTRUCTION_CHAR_LIMIT}"
+        )
+
+    missing_editor_tokens = [token for token in REQUIRED_EDITOR_TOKENS if token not in instructions_text]
     missing_operations = [name for name in REQUIRED_OPERATIONS if name not in schema_text]
     missing_addendum_tokens = [token for token in REQUIRED_PRIZEPICKS_TOKENS if token not in addendum_text]
+    if missing_editor_tokens:
+        raise RuntimeError("GPT_EDITOR_SYNC_INSTRUCTION_CONTRACT_MISSING:" + ",".join(missing_editor_tokens))
     if missing_operations:
         raise RuntimeError("GPT_EDITOR_SYNC_SCHEMA_OPERATION_MISSING:" + ",".join(missing_operations))
     if missing_addendum_tokens:
         raise RuntimeError("GPT_EDITOR_SYNC_ADDENDUM_CONTRACT_MISSING:" + ",".join(missing_addendum_tokens))
 
-    packet = (
-        b"WOW_BETTING_ENGINE V17 LIVE EDITOR SYNC PACKET\n"
-        b"================================================\n\n"
-        b"[CANONICAL HOST INSTRUCTIONS -- paste into the live GPT Instructions field]\n\n"
-        + instructions.rstrip()
-        + b"\n\n[PRIZEPICKS LIVE-HOST ADDENDUM -- append immediately after the canonical instructions]\n\n"
-        + addendum.rstrip()
-        + b"\n"
-    )
+    packet = instructions.rstrip() + b"\n"
     manifest = {
-        "contract": "WOW_V17_GPT_EDITOR_SYNC_PACKET_V1",
+        "contract": "WOW_V17_GPT_EDITOR_SYNC_PACKET_V2",
         "custom_gpt_identity": "WOW_BETTING_ENGINE",
         "runtime_generation": "V17_ACTIVE",
         "terminal_authority": "V17_TERMINAL_REDUCER",
         "repository_sha": _repository_sha(),
         "canonical_instructions_path": str(INSTRUCTIONS.relative_to(ROOT)),
         "canonical_instructions_sha256": _sha256(instructions),
+        "editor_instruction_char_count": len(instructions_text),
+        "editor_instruction_char_limit": EDITOR_INSTRUCTION_CHAR_LIMIT,
         "prizepicks_addendum_path": str(PRIZEPICKS_ADDENDUM.relative_to(ROOT)),
         "prizepicks_addendum_sha256": _sha256(addendum),
+        "prizepicks_addendum_installation_surface": "KNOWLEDGE_FILE",
+        "prizepicks_knowledge_output_file": PRIZEPICKS_KNOWLEDGE_FILENAME,
         "action_schema_path": str(ACTION_SCHEMA.relative_to(ROOT)),
         "action_schema_sha256": _sha256(schema),
+        "editor_instruction_packet_sha256": _sha256(packet),
         "combined_editor_packet_sha256": _sha256(packet),
         "required_operations": list(REQUIRED_OPERATIONS),
         "required_prizepicks_tokens": list(REQUIRED_PRIZEPICKS_TOKENS),
@@ -101,6 +121,8 @@ def build_packet() -> tuple[bytes, dict]:
         "editor_update_required": True,
         "live_editor_verified": False,
         "acceptance_required": [
+            "PASTE_CANONICAL_INSTRUCTIONS_INTO_INSTRUCTIONS_FIELD",
+            "ATTACH_PRIZEPICKS_ADDENDUM_AS_KNOWLEDGE_FILE",
             "SAVE_AND_RELOAD_PRODUCTION_WOW_BETTING_ENGINE_EDITOR",
             "FRESH_CHAT_GET_WOW_V17_BACKEND_HEALTH",
             "FRESH_CHAT_SCORE_WOW_PICK_REQUEST",
@@ -120,8 +142,10 @@ def main() -> None:
     args.output_dir.mkdir(parents=True, exist_ok=True)
     packet, manifest = build_packet()
     packet_path = args.output_dir / "WOW_V17_GPT_EDITOR_SYNC_PACKET.txt"
+    knowledge_path = args.output_dir / PRIZEPICKS_KNOWLEDGE_FILENAME
     manifest_path = args.output_dir / "WOW_V17_GPT_EDITOR_SYNC_MANIFEST.json"
     packet_path.write_bytes(packet)
+    knowledge_path.write_bytes(PRIZEPICKS_ADDENDUM.read_bytes())
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(json.dumps(manifest, sort_keys=True))
 
