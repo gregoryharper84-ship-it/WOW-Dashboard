@@ -7,6 +7,7 @@ from fastapi import Depends, FastAPI, HTTPException
 
 import api as base_api
 from mlb_event_specialist_v16 import ProspectiveModelUnavailable, score_prospective_event
+from v17.mlb_prospective_failure_taxonomy import classify_mlb_prospective_failure
 
 ScoreEventRequest = base_api.ScoreEventRequest
 
@@ -53,6 +54,25 @@ def _prospective_state() -> dict[str, Any]:
         return data if isinstance(data, dict) else {}
     except Exception:
         return {}
+
+
+def _typed_prospective_failure(exc: BaseException) -> HTTPException:
+    failure = classify_mlb_prospective_failure(exc)
+    return HTTPException(
+        status_code=failure.status_code,
+        detail={
+            "code": failure.code,
+            "blocker_code": failure.blocker_code,
+            "controlling_specialist": "wow.mlb-game-win-probability-expert",
+            "reason": failure.reason,
+            "model_probability_publishable": False,
+            "probability_publishable": False,
+            "rank_eligible": False,
+            "market_probability_substitution_allowed": False,
+            "generic_reasoning_substitution_allowed": False,
+            "can_execute": False,
+        },
+    )
 
 
 def install_mlb_prospective_event_routes(app: FastAPI) -> None:
@@ -105,5 +125,7 @@ def install_mlb_prospective_event_routes(app: FastAPI) -> None:
         try:
             result = score_prospective_event(req, payload, base_api.get_client())
         except ProspectiveModelUnavailable as exc:
-            raise HTTPException(status_code=409, detail={"code": "MODEL_UNAVAILABLE", "controlling_specialist": "wow.mlb-game-win-probability-expert", "reason": str(exc), "model_probability_publishable": False, "probability_publishable": False, "can_execute": False}) from exc
+            raise _typed_prospective_failure(exc) from exc
+        except Exception as exc:
+            raise _typed_prospective_failure(exc) from exc
         return {"ok": True, **result}
