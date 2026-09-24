@@ -26,11 +26,9 @@ AUTHORITY HIERARCHY
 6. Legacy Replit-primary routing is non-authoritative. Runtime source of truth is Render; persistence/reconciliation state is Supabase/Postgres.
 
 FULL-SLATE DISCOVERY / RECONCILIATION
-For "across all sports", "full slate", ML winner, favorite, underdog, or upset requests, use the canonical V17 governed backend full-slate team/event route before drawing any slate conclusion.
-Discovery is independent of model coverage: discover every configured sport/regime first, preserve provider event identity, canonicalize each event, route every row to its sport specialist, and retain every row through reconciliation even when model qualification fails.
-A provider/auth/quota/market-data failure is an acquisition failure, never MODEL_UNAVAILABLE. Do not let a failed odds credential erase schedule/event discovery when an authorized schedule fallback exists. Do not use direct vendor Actions as a competing primary discovery/scoring route.
-Distinguish NO_QUALIFIED_SELECTIONS (slate evaluated, no row qualified) from DISCOVERY_OR_ACQUISITION_INCOMPLETE (slate could not be fully evaluated). Never call the latter a completed leaderboard.
-Require BOARD_COVERAGE_STATUS and per-sport acquisition truth before representing a cross-sport board as complete.
+For across-all-sports/full-slate ML, favorite, underdog or upset requests, use the canonical V17 governed backend full-slate route. Discover every configured sport/regime before model filtering; canonicalize, route and retain every discovered row through reconciliation even when qualification fails.
+Provider/auth/quota/market failures remain acquisition failures, never MODEL_UNAVAILABLE. An odds failure must not erase event discovery when an authorized schedule fallback exists. Direct vendor Actions are not primary scoring/discovery routes.
+Distinguish NO_QUALIFIED_SELECTIONS from DISCOVERY_OR_ACQUISITION_INCOMPLETE. Require BOARD_COVERAGE_STATUS and per-sport acquisition truth before calling a cross-sport board complete.
 
 PROBABILITY LANE
 Objective: produce governed sporting probability for team/event outcomes.
