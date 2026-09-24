@@ -80,7 +80,7 @@ jobs:
             echo "- can_execute: false"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Close only explicitly superseded PRs whose replacement is merged
+      - name: Close only explicitly superseded same-repository PRs whose replacement is merged
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -100,6 +100,24 @@ jobs:
           PY
             )
             [ -n "$target" ] || continue
+
+            current=$(gh api "/repos/${GITHUB_REPOSITORY}/pulls/${pr_number}")
+            current_state=$(jq -r '.state // ""' <<<"$current")
+            head_repo=$(jq -r '.head.repo.full_name // ""' <<<"$current")
+            fresh_body=$(jq -r '.body // ""' <<<"$current")
+            if [ "$current_state" != "open" ]; then
+              echo "PR #$pr_number is no longer open; skipping reconciliation." >> "$GITHUB_STEP_SUMMARY"
+              continue
+            fi
+            if [ "$head_repo" != "$GITHUB_REPOSITORY" ]; then
+              echo "PR #$pr_number is not same-repository autonomous work; leaving open." >> "$GITHUB_STEP_SUMMARY"
+              continue
+            fi
+            if ! grep -Eiq "^[[:space:]]*Superseded-By:[[:space:]]*#?${target}[[:space:]]*$" <<<"$fresh_body"; then
+              echo "PR #$pr_number supersession marker changed after snapshot; leaving open." >> "$GITHUB_STEP_SUMMARY"
+              continue
+            fi
+
             replacement=$(gh api "/repos/${GITHUB_REPOSITORY}/pulls/${target}")
             merged_at=$(jq -r '.merged_at // ""' <<<"$replacement")
             if [ -z "$merged_at" ]; then
