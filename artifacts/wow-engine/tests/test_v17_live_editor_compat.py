@@ -15,7 +15,9 @@ def _schema():
 
 def test_live_gpt_instructions_fit_editor_limit_and_preserve_controls():
     text = INSTRUCTIONS.read_text(encoding="utf-8")
+    encoded = text.encode("utf-8")
     assert len(text) <= 8000
+    assert len(encoded) <= 7500
     assert "WOW_V17_GOVERNANCE_KNOWLEDGE.txt" in text
     assert "can_execute=false" in text
     assert "V17_TERMINAL_REDUCER" in text
@@ -52,8 +54,6 @@ def test_live_gpt_large_prop_pools_chunk_and_recover_immutable_receipts():
     assert "Retry only still-unresolved rows" in text
     assert "Do not rank a partial pool as Full Model" in text
 
-    # The backend remains capable of larger non-interactive batches; this is a
-    # host-orchestration latency bound, not a weakening of the API schema.
     batch = _schema()["components"]["schemas"]["PickRequestBatch"]
     assert batch["properties"]["rows"]["maxItems"] == 50
     response_mode = batch["properties"]["response_mode"]
