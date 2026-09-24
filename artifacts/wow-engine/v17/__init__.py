@@ -61,12 +61,19 @@ def _defer_mlb_event_bridge_install(*, market_api, team_runtime) -> bool:
     @app.on_event("startup")
     async def install_mlb_event_bridge_after_imports():
         from v17.mlb_event_bridge_repair import install_mlb_event_bridge_repair
+        from v17.mlb_feature_contract_binding import install_mlb_feature_contract_binding
         from v17.sep15_runtime_contract_repairs import install_post_mlb_bridge_repairs
 
-        installed = install_mlb_event_bridge_repair(
-            market_api=market_api,
-            team_event_module=team_runtime,
-        )
+        # Feature-contract binding must exist before the bridge resolves the MLB
+        # scorer. If it cannot be installed, fail closed by withholding the bridge
+        # rather than running an unbound fitted feature vector.
+        feature_binding_installed = install_mlb_feature_contract_binding()
+        installed = False
+        if feature_binding_installed:
+            installed = install_mlb_event_bridge_repair(
+                market_api=market_api,
+                team_event_module=team_runtime,
+            )
         post_repair_installed = False
         if installed:
             post_repair_installed = install_post_mlb_bridge_repairs(
@@ -102,6 +109,10 @@ def _defer_mlb_event_bridge_install(*, market_api, team_runtime) -> bool:
                 team_runtime=team_runtime,
             )
 
+        if not feature_binding_installed:
+            _MLB_BRIDGE_ACCEPTANCE_LOGGER.error(
+                "V17_MLB_FEATURE_CONTRACT_BINDING=FAIL bridge_withheld=true can_execute=false"
+            )
         if installed and not post_repair_installed:
             _MLB_BRIDGE_ACCEPTANCE_LOGGER.error(
                 "V17_SEP15_MLB_POST_BRIDGE_REPAIR=FAIL can_execute=false"
