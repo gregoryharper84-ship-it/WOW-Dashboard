@@ -40,9 +40,7 @@ runs:
         fi
         runner_group="$(id -gn)"
         sudo usermod -a -G "$runner_group" wow-codex
-        chmod -R g+rX "$GITHUB_WORKSPACE"
-        find "$GITHUB_WORKSPACE" -type d -exec chmod g+w {} +
-        find "$GITHUB_WORKSPACE" -type f -path '*/.git/*' -exec chmod g+w {} + || true
+        chmod -R g+rwX "$GITHUB_WORKSPACE"
         sudo -u wow-codex git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
     - name: Run governed OpenAI agent
