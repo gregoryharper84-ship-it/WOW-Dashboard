@@ -77,34 +77,42 @@ def _prop_handoff(prop_count: int = 23) -> dict:
     }
 
 
-def test_oidc_nightly_path_bounds_large_team_event_slates():
+def test_oidc_nightly_path_bounds_large_team_event_slates_without_leaking_to_core():
     assert oidc.TEAM_EVENT_BATCH_ROWS == 8
-    assert core.MAX_TEAM_EVENT_ROWS == 8
     assert oidc.OIDC_MAX_IN_FLIGHT == 2
+    original_team_event_rows = core.MAX_TEAM_EVENT_ROWS
 
-    dispatch = core.build_dispatch(_handoff())
-    batches = dispatch["team_event_batches"]
+    with oidc._oidc_batch_bounds():
+        assert core.MAX_TEAM_EVENT_ROWS == 8
+        dispatch = core.build_dispatch(_handoff())
+        batches = dispatch["team_event_batches"]
 
-    assert dispatch["mapping"]["mapped_team_events"] == 32
-    assert dispatch["mapping"]["downstream_team_objective_rows"] == 64
-    assert len(batches) == 8
-    assert sum(len(batch["rows"]) for batch in batches) == 64
-    assert all(1 <= len(batch["rows"]) <= 8 for batch in batches)
-    assert dispatch["governance"]["can_execute"] is False
+        assert dispatch["mapping"]["mapped_team_events"] == 32
+        assert dispatch["mapping"]["downstream_team_objective_rows"] == 64
+        assert len(batches) == 8
+        assert sum(len(batch["rows"]) for batch in batches) == 64
+        assert all(1 <= len(batch["rows"]) <= 8 for batch in batches)
+        assert dispatch["governance"]["can_execute"] is False
+
+    assert core.MAX_TEAM_EVENT_ROWS == original_team_event_rows
 
 
-def test_oidc_nightly_path_bounds_prop_batches_below_proven_transport_timeout_load():
+def test_oidc_nightly_path_bounds_prop_batches_below_proven_transport_timeout_load_without_leaking_to_core():
     assert oidc.PROP_BATCH_ROWS == 10
-    assert core.MAX_PROP_ROWS == 10
     assert oidc.OIDC_MAX_IN_FLIGHT == 2
+    original_prop_rows = core.MAX_PROP_ROWS
 
-    dispatch = core.build_dispatch(_prop_handoff())
-    batches = dispatch["prop_batches"]
+    with oidc._oidc_batch_bounds():
+        assert core.MAX_PROP_ROWS == 10
+        dispatch = core.build_dispatch(_prop_handoff())
+        batches = dispatch["prop_batches"]
 
-    assert dispatch["mapping"]["mapped_prop_rows"] == 23
-    assert dispatch["mapping"]["source_prop_reconciliation_pass"] is True
-    assert len(batches) == 3
-    assert sum(len(batch["rows"]) for batch in batches) == 23
-    assert all(1 <= len(batch["rows"]) <= 10 for batch in batches)
-    assert all(batch["request_id"].startswith("wow-scout-prop-batch-bound:props:") for batch in batches)
-    assert dispatch["governance"]["can_execute"] is False
+        assert dispatch["mapping"]["mapped_prop_rows"] == 23
+        assert dispatch["mapping"]["source_prop_reconciliation_pass"] is True
+        assert len(batches) == 3
+        assert sum(len(batch["rows"]) for batch in batches) == 23
+        assert all(1 <= len(batch["rows"]) <= 10 for batch in batches)
+        assert all(batch["request_id"].startswith("wow-scout-prop-batch-bound:props:") for batch in batches)
+        assert dispatch["governance"]["can_execute"] is False
+
+    assert core.MAX_PROP_ROWS == original_prop_rows
