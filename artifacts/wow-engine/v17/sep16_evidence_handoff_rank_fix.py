@@ -28,6 +28,10 @@ _SUPPORTED_HANDOFF_INTENTS = frozenset({
     "UNDERDOG",
     "UPSET",
 })
+_EXPECTED_PRE_CONFIRMATION_REASONS = frozenset({
+    "LINEUP_CONFIRMATION_PENDING",
+    "OFFICIAL_LINEUP_NOT_CONFIRMED",
+})
 
 _MISSING_REASON_FIELDS: dict[str, tuple[str, ...]] = {
     "INDEPENDENT_PROBABILITY_MISSING": (
@@ -117,11 +121,21 @@ def _schema_mismatches(
     Calibration mismatch is deliberately excluded: a populated training-N field
     alone is not proof that it matches the canonical registry row. A real
     calibration provenance mismatch remains a blocker.
+
+    Projected-lineup rows are allowed to retain an OFFICIAL_EVENT_ID evidence
+    audit hold before the canonical lineup hydrator completes. The event identity
+    itself is still present upstream, but the evidence ledger row is intentionally
+    not promised until official-lineup confirmation. That timing hold must not be
+    reclassified as a producer/consumer schema contradiction. Other mismatches
+    remain fully diagnostic while the lineup is projected.
     """
     reasons = _collect_reason_codes(downstream)
     mismatches: list[str] = []
+    pre_confirmation_hold = bool(reasons.intersection(_EXPECTED_PRE_CONFIRMATION_REASONS))
 
     for reason, fields in _MISSING_REASON_FIELDS.items():
+        if reason == "OFFICIAL_EVENT_ID_EVIDENCE_MISSING" and pre_confirmation_hold:
+            continue
         values = []
         for field in fields:
             if field == "official_event_id":
