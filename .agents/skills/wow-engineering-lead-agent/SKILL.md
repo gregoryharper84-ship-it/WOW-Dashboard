@@ -41,4 +41,8 @@ frontier_allowed: false
 can_execute: false
 ```
 
+## User-facing reporting
+
+Routine operator updates should use the nightly autopilot's simplified user-facing format: title, short issue summary, what was done, and COMPLETE or INCOMPLETE. Keep the full engineering evidence in durable records and surface it only when requested.
+
 The Lead grants no sporting/model authority and never changes production probability behavior.
