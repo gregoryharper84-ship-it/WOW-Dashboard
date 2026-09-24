@@ -29,16 +29,18 @@ def test_packet_matches_canonical_repository_bytes_and_stays_fail_closed():
     assert manifest["live_editor_verified"] is False
     assert manifest["can_execute"] is False
     assert manifest["terminal_authority"] == "V17_TERMINAL_REDUCER"
-    assert manifest["contract"] == "WOW_V17_GPT_EDITOR_SYNC_PACKET_V2"
+    assert manifest["contract"] == "WOW_V17_GPT_EDITOR_SYNC_PACKET_V3"
 
 
-def test_editor_packet_fits_custom_gpt_limit_and_addendum_moves_to_knowledge():
+def test_editor_packet_has_safe_utf8_margin_and_addendum_moves_to_knowledge():
     packet, manifest = module.build_packet()
     text = packet.decode("utf-8")
     addendum_text = module.PRIZEPICKS_ADDENDUM.read_text(encoding="utf-8")
 
     assert len(text) <= module.EDITOR_INSTRUCTION_CHAR_LIMIT == 8000
+    assert len(packet) <= module.EDITOR_INSTRUCTION_BYTE_SAFETY_LIMIT == 7500
     assert manifest["editor_instruction_char_count"] <= manifest["editor_instruction_char_limit"] == 8000
+    assert manifest["editor_instruction_byte_count"] <= manifest["editor_instruction_byte_safety_limit"] == 7500
     assert manifest["prizepicks_addendum_installation_surface"] == "KNOWLEDGE_FILE"
     assert manifest["prizepicks_knowledge_output_file"] == module.PRIZEPICKS_KNOWLEDGE_FILENAME
     assert "ATTACH_PRIZEPICKS_ADDENDUM_AS_KNOWLEDGE_FILE" in manifest["acceptance_required"]
@@ -49,7 +51,6 @@ def test_editor_packet_fits_custom_gpt_limit_and_addendum_moves_to_knowledge():
         assert token in addendum_text
         assert token in manifest["required_prizepicks_tokens"]
 
-    # The source addendum must not be appended to the live Instructions field.
     assert "PRIZEPICKS BOARD-TO-SLIPS — V17 LIVE HOST ADDENDUM" not in text
 
 
