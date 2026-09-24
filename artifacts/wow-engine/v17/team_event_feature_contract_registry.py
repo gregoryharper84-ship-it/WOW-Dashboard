@@ -3,11 +3,11 @@
 This module is an audit surface only. It does not score, hydrate, calibrate,
 register, certify, rank, promote, or publish a sporting probability.
 
-A declared feature contract says only that repository model/training code proves
-that a named feature belongs to a versioned numerical model vector. It does not
-prove that a live prediction consumed the feature. Live numerical consumption
-remains UNVERIFIED until the scorer emits explicit ``consumed_feature_ids`` and
-the Feature Consumption Receipt verifies them.
+A declared feature contract says only that repository model/training evidence
+proves that a named feature belongs to a versioned numerical model vector. It
+does not prove that a live prediction consumed the feature. Live numerical
+consumption remains UNVERIFIED until the scorer emits explicit
+``consumed_feature_ids`` and the Feature Consumption Receipt verifies them.
 
 Development-only schemas are intentionally separated from runtime contracts so
 schema existence cannot self-promote model authority.
@@ -17,6 +17,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from v17.mlb_event_feature_contract import (
+    FEATURE_ORDER as MLB_FEATURE_ORDER,
+    FEATURE_SCHEMA_VERSION as MLB_FEATURE_SCHEMA_VERSION,
+    MODEL_ARTIFACT_VERSION as MLB_MODEL_ARTIFACT_VERSION,
+    MODEL_FAMILY as MLB_MODEL_FAMILY,
+)
 from v17.team_event_capability_manifest import EXPECTED_TEAM_EVENT_SPORTS
 from v17.team_event_feature_consumption import FEATURE_ROLES
 
@@ -190,6 +196,18 @@ def _primary_features(names: tuple[str, ...]) -> tuple[DeclaredFeature, ...]:
 
 
 _EXPLICIT_CONTRACTS: dict[str, SportFeatureContract] = {
+    "MLB": SportFeatureContract(
+        sport="MLB",
+        schema_state=RUNTIME_CONTRACT,
+        schema_version=MLB_FEATURE_SCHEMA_VERSION,
+        model_family=MLB_MODEL_FAMILY,
+        schema_source="v17/mlb_event_feature_contract.py:FEATURE_ORDER",
+        model_consumption_source=(
+            "persisted_certified_trainer:"
+            f"{MLB_MODEL_ARTIFACT_VERSION}:wow_mlb_v2b_run_trainer_state.feature_names+beta"
+        ),
+        features=_primary_features(MLB_FEATURE_ORDER),
+    ),
     "NFL": SportFeatureContract(
         sport="NFL",
         schema_state=RUNTIME_CONTRACT,
