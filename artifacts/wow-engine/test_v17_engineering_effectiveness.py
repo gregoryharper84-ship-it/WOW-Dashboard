@@ -34,6 +34,35 @@ def test_change_impact_runtime_requires_adjacent_production_gates() -> None:
     assert impact["can_execute"] is False
 
 
+def test_change_impact_replays_historical_handoff_and_multiscout_followups() -> None:
+    # These are the exact production-adjacent path families behind #803 and
+    # #807/#808. They must never regress to BASE_REGRESSION-only classification.
+    impact = classify_change_impact(
+        [
+            "artifacts/wow-engine/v17/multiscout_auto_advance_oidc.py",
+            "artifacts/wow-engine/v17/sep16_evidence_handoff_rank_fix.py",
+        ]
+    )
+    gates = set(impact["required_gates"])
+    assert FULL_SLATE_PRODUCTION_ACCEPTANCE in gates
+    assert EXACT_SHA_RENDER_VERIFICATION in gates
+    assert GOLDEN_BACKEND_ACCEPTANCE in gates
+
+
+def test_change_impact_multiscout_workflow_requires_full_slate_acceptance() -> None:
+    impact = classify_change_impact([".github/workflows/wow-v17-nightly-multiscout.yml"])
+    gates = set(impact["required_gates"])
+    assert WORKFLOW_HANDOFF_ACCEPTANCE in gates
+    assert FULL_SLATE_PRODUCTION_ACCEPTANCE in gates
+
+
+def test_change_impact_release_workflow_requires_exact_sha_verification() -> None:
+    impact = classify_change_impact([".github/workflows/wow-v17-release-resume-agent.yml"])
+    gates = set(impact["required_gates"])
+    assert WORKFLOW_HANDOFF_ACCEPTANCE in gates
+    assert EXACT_SHA_RENDER_VERIFICATION in gates
+
+
 def test_change_impact_editor_change_requires_live_host_reacceptance() -> None:
     impact = classify_change_impact(["artifacts/wow-engine/WOW_V17_CUSTOM_GPT_INSTRUCTIONS.txt"])
     gates = set(impact["required_gates"])
