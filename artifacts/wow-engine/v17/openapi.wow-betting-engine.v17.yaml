@@ -254,12 +254,114 @@ paths:
       responses:
         '200': {description: Linked recommendation settlement recorded}
         '409': {description: Settlement timing or integrity blocked}
+  /v17/pick-request-runs/{request_id}:
+    get:
+      operationId: getWowV17PickRequestRunState
+      x-openai-isConsequential: false
+      description: >-
+        Read the durable server-side manifest, worker job, and exact row state.
+        Poll this after enqueue or a transport/session interruption; never
+        reconstruct persisted row identity from chat memory.
+      security: [{actionBearer: []}]
+      parameters:
+        - name: request_id
+          in: path
+          required: true
+          schema: {type: string}
+        - name: offset
+          in: query
+          required: false
+          schema: {type: integer, minimum: 0, default: 0}
+        - name: limit
+          in: query
+          required: false
+          schema: {type: integer, minimum: 1, maximum: 250, default: 100}
+        - name: include_outcomes
+          in: query
+          required: false
+          schema: {type: boolean, default: false}
+      responses:
+        '200': {description: "Durable run manifest, worker job, and row state"}
+        '401': {description: Authentication failed}
+        '404': {description: Run not found}
+  /v17/pick-request-runs/resumable:
+    post:
+      operationId: runWowV17ResumablePickRequest
+      x-openai-isConsequential: false
+      description: >-
+        Freeze the exact board manifest and enqueue a DB-leased scoring job.
+        The Action returns without waiting for scoring; poll run state by
+        request_id. The worker uses canonical scoring in <=50-row batches.
+      security: [{actionBearer: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ResumablePickRunRequest'}
+      responses:
+        '200': {description: Durable enqueue acknowledgement and current job state}
+        '401': {description: Authentication failed}
+        '409': {description: Closed run or exact identity conflict}
+        '422': {description: Invalid manifest or request}
+        '503': {description: Durable state service unavailable}
+  /v17/pick-request-runs/{request_id}/close:
+    post:
+      operationId: closeWowV17PickRequestRun
+      x-openai-isConsequential: false
+      description: >-
+        Persist a typed terminal orchestration closure. Once closed, the same
+        request_id cannot silently return to RUNNING. This never executes wagers.
+      security: [{actionBearer: []}]
+      parameters:
+        - name: request_id
+          in: path
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ClosePickRunRequest'}
+      responses:
+        '200': {description: Durable closure recorded}
+        '401': {description: Authentication failed}
+        '404': {description: Run not found}
+        '422': {description: Invalid closure code}
 components:
   securitySchemes:
     actionBearer:
       type: http
       scheme: bearer
   schemas:
+    ResumablePickRunRequest:
+      type: object
+      additionalProperties: false
+      required: [request_id]
+      properties:
+        request_id: {type: string, minLength: 1}
+        rows:
+          type: array
+          maxItems: 1000
+          default: []
+          items: {$ref: '#/components/schemas/PickRequestRow'}
+        response_mode:
+          type: string
+          enum: [COMPACT, FULL]
+          default: COMPACT
+        batch_size: {type: integer, minimum: 1, maximum: 50, default: 20}
+        max_batches: {type: integer, minimum: 1, maximum: 25, default: 25}
+    ClosePickRunRequest:
+      type: object
+      additionalProperties: false
+      required: [closure_code]
+      properties:
+        closure_code: {type: string, minLength: 1}
+        closure_reason: {type: string, maxLength: 2000, default: ''}
+        reopen_allowed: {type: boolean, default: false}
+        closure_metadata:
+          type: object
+          additionalProperties: true
+          default: {}
     ScorePropRequest:
       type: object
       additionalProperties: true

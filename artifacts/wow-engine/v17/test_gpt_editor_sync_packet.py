@@ -29,16 +29,18 @@ def test_packet_matches_canonical_repository_bytes_and_stays_fail_closed():
     assert manifest["live_editor_verified"] is False
     assert manifest["can_execute"] is False
     assert manifest["terminal_authority"] == "V17_TERMINAL_REDUCER"
-    assert manifest["contract"] == "WOW_V17_GPT_EDITOR_SYNC_PACKET_V2"
+    assert manifest["contract"] == "WOW_V17_GPT_EDITOR_SYNC_PACKET_V3"
 
 
-def test_editor_packet_fits_custom_gpt_limit_and_addendum_moves_to_knowledge():
+def test_editor_packet_has_safe_utf8_margin_and_addendum_moves_to_knowledge():
     packet, manifest = module.build_packet()
     text = packet.decode("utf-8")
     addendum_text = module.PRIZEPICKS_ADDENDUM.read_text(encoding="utf-8")
 
     assert len(text) <= module.EDITOR_INSTRUCTION_CHAR_LIMIT == 8000
+    assert len(packet) <= module.EDITOR_INSTRUCTION_BYTE_SAFETY_LIMIT == 7500
     assert manifest["editor_instruction_char_count"] <= manifest["editor_instruction_char_limit"] == 8000
+    assert manifest["editor_instruction_byte_count"] <= manifest["editor_instruction_byte_safety_limit"] == 7500
     assert manifest["prizepicks_addendum_installation_surface"] == "KNOWLEDGE_FILE"
     assert manifest["prizepicks_knowledge_output_file"] == module.PRIZEPICKS_KNOWLEDGE_FILENAME
     assert "ATTACH_PRIZEPICKS_ADDENDUM_AS_KNOWLEDGE_FILE" in manifest["acceptance_required"]
@@ -49,11 +51,10 @@ def test_editor_packet_fits_custom_gpt_limit_and_addendum_moves_to_knowledge():
         assert token in addendum_text
         assert token in manifest["required_prizepicks_tokens"]
 
-    # The source addendum must not be appended to the live Instructions field.
     assert "PRIZEPICKS BOARD-TO-SLIPS — V17 LIVE HOST ADDENDUM" not in text
 
 
-def test_packet_contains_required_action_contract_without_secrets():
+def test_packet_contains_single_domain_action_contract_without_secrets():
     packet, manifest = module.build_packet()
     text = packet.decode("utf-8")
     schema_text = module.ACTION_SCHEMA.read_text(encoding="utf-8")
@@ -61,6 +62,14 @@ def test_packet_contains_required_action_contract_without_secrets():
     for operation in module.REQUIRED_OPERATIONS:
         assert operation in schema_text
         assert operation in manifest["required_operations"]
+
+    # Dependency-free check for the dedicated sync workflow. Full YAML/OpenAPI
+    # validation runs in the protected backend regression suite.
+    assert schema_text.count("operationId:") == 19
+    assert manifest["action_schema_installation_surface"] == "SINGLE_CUSTOM_ACTION_DOMAIN"
+    assert manifest["action_schema_domain"] == "wow-governed-probability-engine.onrender.com"
+    assert manifest["run_control_installation_surface"] == "MERGED_INTO_CANONICAL_ACTION_SCHEMA"
+    assert "IMPORT_SINGLE_CANONICAL_ACTION_SCHEMA_WITH_19_OPERATIONS" in manifest["acceptance_required"]
 
     assert "WOW_ACTION_API_KEY=" not in text
     assert "Bearer sk-" not in text

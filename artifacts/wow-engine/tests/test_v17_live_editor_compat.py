@@ -15,7 +15,9 @@ def _schema():
 
 def test_live_gpt_instructions_fit_editor_limit_and_preserve_controls():
     text = INSTRUCTIONS.read_text(encoding="utf-8")
+    encoded = text.encode("utf-8")
     assert len(text) <= 8000
+    assert len(encoded) <= 7500
     assert "WOW_V17_GOVERNANCE_KNOWLEDGE.txt" in text
     assert "can_execute=false" in text
     assert "V17_TERMINAL_REDUCER" in text
@@ -27,6 +29,7 @@ def test_live_gpt_instructions_fit_editor_limit_and_preserve_controls():
     assert "lookupWowV17PredictionReceipts" in text
     assert "display_authorized=true" in text
     assert "Canonical Action schema: v17/openapi.wow-betting-engine.v17.yaml" in text
+    assert "Run-control operations are merged into the canonical Action schema" in text
     assert "openapi.custom-gpt.template.yaml" not in text
     assert "openapi.pick-request-action.yaml" not in text
     assert "LIVE_GPT_EDITOR_SYNC=VERIFIED" in text
@@ -52,8 +55,6 @@ def test_live_gpt_large_prop_pools_chunk_and_recover_immutable_receipts():
     assert "Retry only still-unresolved rows" in text
     assert "Do not rank a partial pool as Full Model" in text
 
-    # The backend remains capable of larger non-interactive batches; this is a
-    # host-orchestration latency bound, not a weakening of the API schema.
     batch = _schema()["components"]["schemas"]["PickRequestBatch"]
     assert batch["properties"]["rows"]["maxItems"] == 50
     response_mode = batch["properties"]["response_mode"]
@@ -85,6 +86,23 @@ def test_action_schema_preserves_v17_boundary():
     assert document["components"]["securitySchemes"]["actionBearer"]["scheme"] == "bearer"
 
 
+def test_live_editor_schema_is_single_domain_and_exposes_all_19_operations():
+    document = _schema()
+    assert document["servers"] == [{"url": "https://wow-governed-probability-engine.onrender.com"}]
+    operations = {
+        operation["operationId"]
+        for methods in document["paths"].values()
+        for operation in methods.values()
+        if isinstance(operation, dict) and "operationId" in operation
+    }
+    assert len(operations) == 19
+    assert {
+        "getWowV17PickRequestRunState",
+        "runWowV17ResumablePickRequest",
+        "closeWowV17PickRequestRun",
+    }.issubset(operations)
+
+
 def test_live_editor_schema_exposes_full_board_diagnostics_with_bearer_auth():
     paths = _schema()["paths"]
     expected = {
@@ -92,9 +110,19 @@ def test_live_editor_schema_exposes_full_board_diagnostics_with_bearer_auth():
         "/v17/market-health/rundown": "getWowV17RundownMarketHealth",
         "/v17/market-health/odds-api": "getWowV17OddsApiMarketHealth",
         "/v17/discovery/espn-compact": "getWowV17CompactEspnDiscovery",
+        "/v17/pick-request-runs/{request_id}": "getWowV17PickRequestRunState",
     }
     for path, operation_id in expected.items():
         operation = paths[path]["get"]
+        assert operation["operationId"] == operation_id
+        assert operation["security"] == [{"actionBearer": []}]
+        assert operation["x-openai-isConsequential"] is False
+
+    for path, operation_id in {
+        "/v17/pick-request-runs/resumable": "runWowV17ResumablePickRequest",
+        "/v17/pick-request-runs/{request_id}/close": "closeWowV17PickRequestRun",
+    }.items():
+        operation = paths[path]["post"]
         assert operation["operationId"] == operation_id
         assert operation["security"] == [{"actionBearer": []}]
         assert operation["x-openai-isConsequential"] is False

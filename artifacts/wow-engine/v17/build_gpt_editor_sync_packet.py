@@ -1,10 +1,15 @@
 """Build the deterministic WOW_BETTING_ENGINE live-editor synchronization packet.
 
-The Custom GPT Instructions field is limited to 8,000 characters. The canonical
-host instructions already satisfy that editor limit and are installed there
-verbatim. The PrizePicks live-host addendum is packaged separately as a Knowledge
-file so the full governance contract is preserved without creating an editor-
-invalid combined paste.
+The Custom GPT Instructions field is documented as an 8,000-character surface,
+but the live editor can reject text at the boundary after UTF-8/normalization.
+The canonical host instructions are therefore required to stay below a 7,500-byte
+safety ceiling, leaving margin under the product limit. The PrizePicks live-host
+addendum is packaged separately as a Knowledge file.
+
+The Custom GPT editor permits only one custom Action set per domain. Therefore
+all production WOW operations, including durable run-control orchestration, must
+be exposed through the single canonical Action schema for the Render domain.
+The standalone run-control schema remains a repository reference contract only.
 
 The repository remains authoritative for canonical host instructions, the
 PrizePicks addendum, and Action schema. This utility never reads or emits
@@ -28,12 +33,16 @@ PRIZEPICKS_ADDENDUM = ENGINE / "WOW_V17_CUSTOM_GPT_PRIZEPICKS_SKILL_ADDENDUM.txt
 ACTION_SCHEMA = ENGINE / "v17" / "openapi.wow-betting-engine.v17.yaml"
 
 EDITOR_INSTRUCTION_CHAR_LIMIT = 8000
+EDITOR_INSTRUCTION_BYTE_SAFETY_LIMIT = 7500
 PRIZEPICKS_KNOWLEDGE_FILENAME = "WOW_V17_PRIZEPICKS_HOST_CONTRACT_KNOWLEDGE.txt"
 
 REQUIRED_OPERATIONS = (
     "getWowV17BackendHealth",
     "scoreWowPickRequest",
     "lookupWowV17PredictionReceipts",
+    "getWowV17PickRequestRunState",
+    "runWowV17ResumablePickRequest",
+    "closeWowV17PickRequestRun",
 )
 REQUIRED_PRIZEPICKS_TOKENS = (
     "SOURCE_PAGE_UNREADABLE:<page_number>",
@@ -53,6 +62,7 @@ REQUIRED_EDITOR_TOKENS = (
     "V17_TERMINAL_REDUCER",
     "can_execute=false",
     "WOW_V17_GOVERNANCE_KNOWLEDGE.txt",
+    "Run-control operations are merged into the canonical Action schema",
 )
 
 
@@ -83,7 +93,11 @@ def build_packet() -> tuple[bytes, dict]:
 
     if len(instructions_text) > EDITOR_INSTRUCTION_CHAR_LIMIT:
         raise RuntimeError(
-            f"GPT_EDITOR_INSTRUCTION_LIMIT_EXCEEDED:{len(instructions_text)}>{EDITOR_INSTRUCTION_CHAR_LIMIT}"
+            f"GPT_EDITOR_INSTRUCTION_CHAR_LIMIT_EXCEEDED:{len(instructions_text)}>{EDITOR_INSTRUCTION_CHAR_LIMIT}"
+        )
+    if len(instructions) > EDITOR_INSTRUCTION_BYTE_SAFETY_LIMIT:
+        raise RuntimeError(
+            f"GPT_EDITOR_INSTRUCTION_BYTE_MARGIN_EXCEEDED:{len(instructions)}>{EDITOR_INSTRUCTION_BYTE_SAFETY_LIMIT}"
         )
 
     missing_editor_tokens = [token for token in REQUIRED_EDITOR_TOKENS if token not in instructions_text]
@@ -98,7 +112,7 @@ def build_packet() -> tuple[bytes, dict]:
 
     packet = instructions.rstrip() + b"\n"
     manifest = {
-        "contract": "WOW_V17_GPT_EDITOR_SYNC_PACKET_V2",
+        "contract": "WOW_V17_GPT_EDITOR_SYNC_PACKET_V3",
         "custom_gpt_identity": "WOW_BETTING_ENGINE",
         "runtime_generation": "V17_ACTIVE",
         "terminal_authority": "V17_TERMINAL_REDUCER",
@@ -107,12 +121,17 @@ def build_packet() -> tuple[bytes, dict]:
         "canonical_instructions_sha256": _sha256(instructions),
         "editor_instruction_char_count": len(instructions_text),
         "editor_instruction_char_limit": EDITOR_INSTRUCTION_CHAR_LIMIT,
+        "editor_instruction_byte_count": len(instructions),
+        "editor_instruction_byte_safety_limit": EDITOR_INSTRUCTION_BYTE_SAFETY_LIMIT,
         "prizepicks_addendum_path": str(PRIZEPICKS_ADDENDUM.relative_to(ROOT)),
         "prizepicks_addendum_sha256": _sha256(addendum),
         "prizepicks_addendum_installation_surface": "KNOWLEDGE_FILE",
         "prizepicks_knowledge_output_file": PRIZEPICKS_KNOWLEDGE_FILENAME,
         "action_schema_path": str(ACTION_SCHEMA.relative_to(ROOT)),
         "action_schema_sha256": _sha256(schema),
+        "action_schema_installation_surface": "SINGLE_CUSTOM_ACTION_DOMAIN",
+        "action_schema_domain": "wow-governed-probability-engine.onrender.com",
+        "run_control_installation_surface": "MERGED_INTO_CANONICAL_ACTION_SCHEMA",
         "editor_instruction_packet_sha256": _sha256(packet),
         "combined_editor_packet_sha256": _sha256(packet),
         "required_operations": list(REQUIRED_OPERATIONS),
@@ -123,10 +142,13 @@ def build_packet() -> tuple[bytes, dict]:
         "acceptance_required": [
             "PASTE_CANONICAL_INSTRUCTIONS_INTO_INSTRUCTIONS_FIELD",
             "ATTACH_PRIZEPICKS_ADDENDUM_AS_KNOWLEDGE_FILE",
+            "IMPORT_SINGLE_CANONICAL_ACTION_SCHEMA_WITH_19_OPERATIONS",
+            "PRESERVE_EXISTING_WOW_ACTION_API_KEY_BEARER_AUTH",
             "SAVE_AND_RELOAD_PRODUCTION_WOW_BETTING_ENGINE_EDITOR",
             "FRESH_CHAT_GET_WOW_V17_BACKEND_HEALTH",
             "FRESH_CHAT_SCORE_WOW_PICK_REQUEST",
             "FRESH_CHAT_LOOKUP_WOW_V17_PREDICTION_RECEIPTS",
+            "FRESH_CHAT_VERIFY_RUN_CONTROL_OPERATIONS_VISIBLE",
             "FRESH_CHAT_MULTIPAGE_PRIZEPICKS_CANARY",
             "CONFIRM_CAN_EXECUTE_FALSE",
         ],
