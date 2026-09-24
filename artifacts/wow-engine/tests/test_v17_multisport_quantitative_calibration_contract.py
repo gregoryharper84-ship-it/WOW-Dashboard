@@ -113,7 +113,7 @@ def test_quantitative_calibration_failure_preserves_typed_inputs_insufficient():
 
     assert http_error.status_code == 422
     assert http_error.detail["code"] == MODEL_INPUTS_INSUFFICIENT
-    assert http_error.detail["blocker"] == "CALIBRATION_ARTIFACT_INVALID_OR_UNAVAILABLE"
+    assert http_error.detail["blockers"] == ["CALIBRATION_ARTIFACT_INVALID_OR_UNAVAILABLE"]
     assert http_error.detail["calibration_blockers"] == [
         "CALIBRATION_QUANTITATIVE_QUALITY_NOT_PASS",
         "CALIBRATION_SLOPE_INVALID",
