@@ -5,6 +5,8 @@ import importlib.util
 import sys
 from pathlib import Path
 
+import yaml
+
 SCRIPT = Path(__file__).resolve().parent / "build_gpt_editor_sync_packet.py"
 spec = importlib.util.spec_from_file_location("gpt_editor_sync_packet", SCRIPT)
 module = importlib.util.module_from_spec(spec)
@@ -54,14 +56,27 @@ def test_editor_packet_has_safe_utf8_margin_and_addendum_moves_to_knowledge():
     assert "PRIZEPICKS BOARD-TO-SLIPS — V17 LIVE HOST ADDENDUM" not in text
 
 
-def test_packet_contains_required_action_contract_without_secrets():
+def test_packet_contains_single_domain_action_contract_without_secrets():
     packet, manifest = module.build_packet()
     text = packet.decode("utf-8")
     schema_text = module.ACTION_SCHEMA.read_text(encoding="utf-8")
+    schema = yaml.safe_load(schema_text)
 
     for operation in module.REQUIRED_OPERATIONS:
         assert operation in schema_text
         assert operation in manifest["required_operations"]
+
+    operations = {
+        operation["operationId"]
+        for methods in schema["paths"].values()
+        for operation in methods.values()
+        if isinstance(operation, dict) and "operationId" in operation
+    }
+    assert len(operations) == 19
+    assert manifest["action_schema_installation_surface"] == "SINGLE_CUSTOM_ACTION_DOMAIN"
+    assert manifest["action_schema_domain"] == "wow-governed-probability-engine.onrender.com"
+    assert manifest["run_control_installation_surface"] == "MERGED_INTO_CANONICAL_ACTION_SCHEMA"
+    assert "IMPORT_SINGLE_CANONICAL_ACTION_SCHEMA_WITH_19_OPERATIONS" in manifest["acceptance_required"]
 
     assert "WOW_ACTION_API_KEY=" not in text
     assert "Bearer sk-" not in text
