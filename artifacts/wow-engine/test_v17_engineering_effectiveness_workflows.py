@@ -24,6 +24,9 @@ def test_scorecard_closes_only_explicit_supersession_after_merged_replacement() 
     assert "explicit_superseded_open_prs" in text
     assert "Superseded-By:" in text
     assert "replacement is not merged; leaving open" in text
+    assert 'head_repo=$(jq -r' in text
+    assert 'if [ "$head_repo" != "$GITHUB_REPOSITORY" ]; then' in text
+    assert "supersession marker changed after snapshot; leaving open" in text
     assert 'gh pr close "$pr_number"' in text
     assert "can_execute: false" in text
 
