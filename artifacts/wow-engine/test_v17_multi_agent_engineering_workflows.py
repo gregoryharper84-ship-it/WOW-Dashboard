@@ -8,8 +8,14 @@ WORKER = ROOT / ".github/workflows/wow-v17-chatgpt-engineering-worker.yml"
 RELEASE = ROOT / ".github/workflows/wow-v17-release-production-verification-agent.yml"
 RELEASE_RESUME = ROOT / ".github/workflows/wow-v17-release-resume-agent.yml"
 PUSH_HANDOFF = ROOT / ".github/workflows/wow-v17-engineering-push-handoff.yml"
+DISPATCH_BRIDGE = ROOT / ".github/workflows/wow-v17-chatgpt-engineering-dispatch-bridge.yml"
 FRONTIER = ROOT / ".github/workflows/wow-v17-frontier-intelligence-agent.yml"
 CHATGPT_ACTION = ROOT / ".github/actions/wow-chatgpt-agent/action.yml"
+LEGACY_CLAUDE_PATHS = (
+    ROOT / ".github/workflows/wow-v17-claude-engineering-worker.yml",
+    ROOT / ".github/workflows/wow-v17-claude-engineering-dispatch-bridge.yml",
+    ROOT / ".github/actions/wow-claude-agent/action.yml",
+)
 
 
 def _load(path: Path) -> dict:
@@ -93,9 +99,17 @@ def test_active_agent_workflows_are_openai_chatgpt_only() -> None:
 
     action = CHATGPT_ACTION.read_text()
     assert "openai/codex-action@v1" in action
-    assert 'permission_profile' in action
-    assert 'safety-strategy: unprivileged-user' in action
+    assert "permission_profile" in action
+    assert "safety-strategy: unprivileged-user" in action
     assert 'allow-bots: "true"' in action
+
+
+def test_legacy_claude_engineering_entrypoints_are_removed() -> None:
+    for path in LEGACY_CLAUDE_PATHS:
+        assert not path.exists()
+    bridge = DISPATCH_BRIDGE.read_text()
+    assert "wow-v17-chatgpt-engineering-worker.yml" in bridge
+    assert "OpenAI/ChatGPT" in bridge
 
 
 def test_workflows_parse_as_yaml() -> None:
@@ -103,5 +117,6 @@ def test_workflows_parse_as_yaml() -> None:
     assert _load(RELEASE)["name"] == "wow-v17-release-production-verification-agent"
     assert _load(RELEASE_RESUME)["name"] == "wow-v17-release-resume-agent"
     assert _load(PUSH_HANDOFF)["name"] == "wow-v17-engineering-push-handoff"
+    assert _load(DISPATCH_BRIDGE)["name"] == "wow-v17-chatgpt-engineering-dispatch-bridge"
     assert _load(FRONTIER)["name"] == "wow-v17-frontier-intelligence-agent"
     assert _load(CHATGPT_ACTION)["name"] == "WOW ChatGPT Agent Runner"
