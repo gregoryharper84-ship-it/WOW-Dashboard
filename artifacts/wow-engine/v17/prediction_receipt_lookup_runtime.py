@@ -26,6 +26,8 @@ import uuid
 from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
+import pick_request_runtime_core as pick_runtime
+
 
 PREDICTION_TABLE = "wow_predictions"
 ROW_STATE_TABLE = "wow_pick_request_row_states"
@@ -129,10 +131,16 @@ def _text(value: Any) -> str:
     return " ".join(str(value or "").strip().split())
 
 
-def _canonical_text(field: str, value: Any) -> str:
+def _canonical_text(field: str, value: Any, *, sport: Any = None) -> str:
     text = _text(value)
-    if field in {"sport", "stat_type", "direction"}:
-        return text.upper()
+    if field == "stat_type":
+        normalized = "_".join(text.upper().replace("-", " ").split())
+        sport_key = "_".join(_text(sport).upper().replace("-", " ").split())
+        if sport_key:
+            return pick_runtime._canonical_stat(sport_key, normalized)
+        return normalized
+    if field in {"sport", "direction"}:
+        return "_".join(text.upper().replace("-", " ").split())
     return text
 
 
@@ -220,7 +228,7 @@ def _identity_conflicts(
             except (TypeError, ValueError):
                 agrees = False
         else:
-            agrees = _canonical_text(field, persisted) == _canonical_text(field, requested)
+            agrees = _canonical_text(field, persisted, sport=row.get("sport")) == _canonical_text(field, requested, sport=request.sport or row.get("sport"))
         if not agrees:
             conflicts.append(field)
 
@@ -276,7 +284,7 @@ def _durable_identity_conflicts(
             except (TypeError, ValueError):
                 agrees = False
         else:
-            agrees = _canonical_text(request_field, persisted) == _canonical_text(request_field, requested)
+            agrees = _canonical_text(request_field, persisted, sport=state_row.get("sport")) == _canonical_text(request_field, requested, sport=request.sport or state_row.get("sport"))
         if not agrees:
             conflicts.append(request_field)
 
