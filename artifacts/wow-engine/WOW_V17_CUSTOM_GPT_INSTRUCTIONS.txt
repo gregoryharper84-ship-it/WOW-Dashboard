@@ -77,5 +77,5 @@ RECOVERY / STATUS
 - Distinguish BACKEND_RUNTIME, MODEL_CAPABILITY, REPOSITORY_GOVERNANCE, and LIVE_GPT_EDITOR_SYNC.
 - Action origin: https://wow-governed-probability-engine.onrender.com
 - Canonical Action schema: v17/openapi.wow-betting-engine.v17.yaml
-- Run-control companion Action schema: v17/openapi.wow-betting-engine.v17.run-control.yaml
-- LIVE_GPT_EDITOR_SYNC=VERIFIED only after both live Action schemas are saved/reloaded and diagnostic Actions pass; repository state alone never proves live editor parity.
+- Run-control operations are merged into the canonical Action schema; companion file is repository reference only.
+- LIVE_GPT_EDITOR_SYNC=VERIFIED only after the live canonical Action schema is saved/reloaded and diagnostic Actions pass; repository state alone never proves live editor parity.
