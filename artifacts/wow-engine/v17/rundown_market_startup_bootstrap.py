@@ -1,16 +1,16 @@
-"""Idempotent one-shot TheRundown market-data bootstrap for V17 production.
+"""TheRundown market-data bootstrap and bounded history installer for V17.
 
-This startup hook exists only to safely initialize/validate the market-data
-backbone using the already-secured production service credentials. It never
-runs unless explicitly enabled and never creates a recurring polling loop.
+The bootstrap remains idempotent and one-shot. An independent history task may
+also be installed when ``WOW_RUNDOWN_MARKET_HISTORY_ENABLED=true``; that task is
+moneyline-only, multi-book, quota-bounded, and evidence-only.
 
-Modes:
-- OFF: no-op (default)
+Bootstrap modes:
+- OFF: no one-shot bootstrap (default)
 - CATALOGS_ONLY: refresh provider reference catalogs once for a bootstrap token
 - SNAPSHOT_ONCE: execute exactly one filtered snapshot for a bootstrap token
 
-The bootstrap is evidence-only. It never changes sporting probability, ranking,
-terminal governance, or execution authority. ``can_execute`` remains false.
+Neither path changes sporting probability, ranking, terminal governance, or
+execution authority. ``can_execute`` remains false.
 """
 from __future__ import annotations
 
@@ -20,6 +20,7 @@ import os
 from datetime import datetime, timezone
 from typing import Any, Callable
 
+from v17 import rundown_market_history as history
 from v17 import rundown_market_ingestor as ingestor
 from v17 import rundown_market_ledger as ledger
 
@@ -175,9 +176,10 @@ def install_rundown_market_startup_bootstrap(
     *,
     db_client_fn: Callable[[], Any] | None,
 ) -> bool:
-    """Install a non-blocking startup task for an explicitly enabled one-shot run."""
+    """Install enabled one-shot bootstrap and/or recurring history tasks."""
     mode = _mode()
-    if mode == "OFF":
+    history_enabled = history.enabled()
+    if mode == "OFF" and not history_enabled:
         return False
     if mode not in _ALLOWED_MODES or not callable(db_client_fn):
         return False
@@ -189,7 +191,7 @@ def install_rundown_market_startup_bootstrap(
 
     @app.on_event("startup")
     async def _run_rundown_market_bootstrap_after_startup():
-        async def _run():
+        async def _run_bootstrap_task():
             await asyncio.sleep(5.0)
             try:
                 result = await asyncio.to_thread(lambda: run_bootstrap(db_client_fn()))
@@ -209,9 +211,23 @@ def install_rundown_market_startup_bootstrap(
                 result.get("datapoints"),
             )
 
-        task = asyncio.create_task(_run())
-        task_set.add(task)
-        task.add_done_callback(task_set.discard)
+        if mode != "OFF":
+            task = asyncio.create_task(_run_bootstrap_task())
+            task_set.add(task)
+            task.add_done_callback(task_set.discard)
+
+        if history_enabled:
+            history_task = asyncio.create_task(history.run_history_loop(db_client_fn, logger=LOGGER))
+            task_set.add(history_task)
+            history_task.add_done_callback(task_set.discard)
+            LOGGER.info(
+                "RUNDOWN_MARKET_HISTORY=INSTALLED interval=%s max_calls=%s max_datapoints=%s books=%s sports=%s can_execute=false",
+                history.interval_seconds(),
+                history.max_calls_per_day(),
+                history.max_datapoints_per_day(),
+                len(history.configured_books()),
+                len(history.configured_sports()),
+            )
 
     app.state.v17_rundown_market_bootstrap_installed = True
     return True
