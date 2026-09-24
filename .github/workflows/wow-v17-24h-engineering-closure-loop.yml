@@ -45,9 +45,9 @@ jobs:
           set -euo pipefail
 
           repair_pr=$(gh api --paginate "/repos/${GITHUB_REPOSITORY}/pulls?state=open&base=main&per_page=100" \
-            --jq '[.[] | select(.head.repo.full_name == env.GITHUB_REPOSITORY) | select((.body // "") | contains("Morning-Green-Autonomous: true"))] | sort_by(.created_at) | first | .number // empty')
+            --jq '[.[] | select(.draft == false) | select(.head.repo.full_name == env.GITHUB_REPOSITORY) | select((.body // "") | contains("Morning-Green-Autonomous: true"))] | sort_by(.created_at) | first | .number // empty')
           experiment_pr=$(gh api --paginate "/repos/${GITHUB_REPOSITORY}/pulls?state=open&base=main&per_page=100" \
-            --jq '[.[] | select(.head.repo.full_name == env.GITHUB_REPOSITORY) | select((.body // "") | contains("Model-Experiment-Autonomous: true"))] | sort_by(.created_at) | first | .number // empty')
+            --jq '[.[] | select(.draft == false) | select(.head.repo.full_name == env.GITHUB_REPOSITORY) | select((.body // "") | contains("Model-Experiment-Autonomous: true"))] | sort_by(.created_at) | first | .number // empty')
 
           priority=$(python artifacts/wow-engine/v17/engineering_agent_team.py priority)
           incident=$(jq -r '.incident_id // ""' <<<"$priority")

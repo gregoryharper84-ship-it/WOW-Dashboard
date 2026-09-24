@@ -38,6 +38,14 @@ def test_24h_loop_prioritizes_closure_before_new_improvement() -> None:
     assert "single implementation lease" in text
 
 
+def test_continuation_selector_never_hands_off_draft_prs() -> None:
+    text = _text(LOOP)
+    # Both autonomous repair and experiment selectors must exclude drafts before dispatch.
+    assert text.count("select(.draft == false)") >= 2
+    assert 'contains("Morning-Green-Autonomous: true")' in text
+    assert 'contains("Model-Experiment-Autonomous: true")' in text
+
+
 def test_open_experiment_pr_is_actively_advanced_or_repaired() -> None:
     text = _text(LOOP)
     assert "Resume governed model-experiment PR" in text
