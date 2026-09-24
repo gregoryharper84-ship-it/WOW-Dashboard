@@ -1,4 +1,4 @@
-name: wow-v17-claude-engineering-worker
+name: wow-v17-chatgpt-engineering-worker
 
 on:
   schedule:
@@ -14,15 +14,14 @@ permissions:
   contents: write
   pull-requests: write
   issues: write
-  id-token: write
 
 concurrency:
-  group: wow-v17-claude-engineering-worker
+  group: wow-v17-chatgpt-engineering-worker
   cancel-in-progress: false
 
 jobs:
   multi-agent-engineering:
-    name: WOW V17 multi-agent engineering team
+    name: WOW V17 ChatGPT engineering team
     if: >-
       github.event_name == 'workflow_dispatch' ||
       github.event_name == 'schedule' ||
@@ -53,24 +52,31 @@ jobs:
           pip install PyYAML openapi-spec-validator
           python artifacts/wow-engine/v17/engineering_agent_team.py self-check
 
+      - name: Verify OpenAI authentication
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${OPENAI_API_KEY:-}" ]; then
+            echo "::error::OPENAI_API_KEY is required for the ChatGPT engineering worker."
+            exit 1
+          fi
+
       - name: Engineering Lead agent
         id: lead_agent
-        uses: ./.github/actions/wow-claude-agent
+        uses: ./.github/actions/wow-chatgpt-agent
         with:
-          oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+          permission_profile: ":read-only"
           prompt: |
-            You are the independent WOW V17 ENGINEERING_LEAD_AGENT.
-            Read CLAUDE.md, .agents/skills/wow-engineering-lead-agent/SKILL.md,
-            artifacts/wow-engine/v17/incident-ledger.json, and current CI/PR evidence.
+            You are the independent WOW V17 ENGINEERING_LEAD_AGENT running on OpenAI/ChatGPT tooling only.
+            Read the repository governance, .agents/skills/wow-engineering-lead-agent/SKILL.md,
+            artifacts/wow-engine/v17/incident-ledger.json, and current local CI/PR evidence.
             Run `python artifacts/wow-engine/v17/engineering_agent_team.py priority`.
             Select exactly one durable actionable incident or NO_ACTION. Do not edit files.
             You own priority only; do not diagnose, implement, approve, merge, deploy, or
             change sporting probability behavior. Preserve can_execute=false.
-          claude_args: >-
-            --max-turns 45
-            --allowedTools "Read,Glob,Grep,Bash(python artifacts/wow-engine/v17/engineering_agent_team.py *),Bash(git status),Bash(git log *),Bash(gh run list *),Bash(gh run view *),Bash(gh pr list *),Bash(gh pr view *)"
-            --json-schema '{"type":"object","properties":{"action":{"type":"string","enum":["REPAIR","VERIFY_RELEASE","NO_ACTION"]},"incident_id":{"type":"string"},"severity":{"type":"string"},"current_state":{"type":"string"},"reason":{"type":"string"},"frontier_allowed":{"type":"boolean"}},"required":["action","incident_id","severity","current_state","reason","frontier_allowed"],"additionalProperties":false}'
+          output_schema: '{"type":"object","properties":{"action":{"type":"string","enum":["REPAIR","VERIFY_RELEASE","NO_ACTION"]},"incident_id":{"type":"string"},"severity":{"type":"string"},"current_state":{"type":"string"},"reason":{"type":"string"},"frontier_allowed":{"type":"boolean"}},"required":["action","incident_id","severity","current_state","reason","frontier_allowed"],"additionalProperties":false}'
 
       - name: Normalize Lead dispatch
         id: lead
@@ -87,22 +93,19 @@ jobs:
       - name: Research / Root-Cause Triage agent
         id: triage_agent
         if: steps.lead.outputs.action == 'REPAIR'
-        uses: ./.github/actions/wow-claude-agent
+        uses: ./.github/actions/wow-chatgpt-agent
         with:
-          oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+          permission_profile: ":read-only"
           prompt: |
-            You are the independent WOW V17 RESEARCH_TRIAGE_AGENT.
-            Read CLAUDE.md, .agents/skills/wow-engineering-research-triage-agent/SKILL.md,
-            and artifacts/wow-engine/v17/.agent-handoff/lead.json.
+            You are the independent WOW V17 RESEARCH_TRIAGE_AGENT running on OpenAI/ChatGPT tooling only.
+            Read .agents/skills/wow-engineering-research-triage-agent/SKILL.md and
+            artifacts/wow-engine/v17/.agent-handoff/lead.json.
             Reproduce the selected defect, isolate the first failing stage, distinguish symptom
             from root cause, define objective acceptance criteria and the smallest fix boundary.
             Do not edit files. Preserve typed failures, V17 terminal authority, exact-once
             semantics, and can_execute=false. Never substitute market evidence for model probability.
-          claude_args: >-
-            --max-turns 110
-            --allowedTools "Read,Glob,Grep,Bash(python -m pytest *),Bash(python artifacts/wow-engine/v17/nightly_incident_records.py *),Bash(git status),Bash(git diff *),Bash(git log *),Bash(gh run list *),Bash(gh run view *),Bash(gh pr list *),Bash(gh pr view *)"
-            --json-schema '{"type":"object","properties":{"incident_id":{"type":"string"},"repairable":{"type":"boolean"},"reproduction_status":{"type":"string"},"root_cause":{"type":"string"},"risk_class":{"type":"string","enum":["R0","R1","R2-restorative","R2-repair-policy","R3","NONE"]},"acceptance_criteria":{"type":"array","items":{"type":"string"}},"recommended_fix_boundary":{"type":"string"},"hard_boundary":{"type":"string"}},"required":["incident_id","repairable","reproduction_status","root_cause","risk_class","acceptance_criteria","recommended_fix_boundary","hard_boundary"],"additionalProperties":false}'
+          output_schema: '{"type":"object","properties":{"incident_id":{"type":"string"},"repairable":{"type":"boolean"},"reproduction_status":{"type":"string"},"root_cause":{"type":"string"},"risk_class":{"type":"string","enum":["R0","R1","R2-restorative","R2-repair-policy","R3","NONE"]},"acceptance_criteria":{"type":"array","items":{"type":"string"}},"recommended_fix_boundary":{"type":"string"},"hard_boundary":{"type":"string"}},"required":["incident_id","repairable","reproduction_status","root_cause","risk_class","acceptance_criteria","recommended_fix_boundary","hard_boundary"],"additionalProperties":false}'
 
       - name: Normalize Triage packet
         id: triage
@@ -128,25 +131,22 @@ jobs:
           (steps.triage.outputs.risk == 'R0' ||
            steps.triage.outputs.risk == 'R1' ||
            steps.triage.outputs.risk == 'R2-restorative')
-        uses: ./.github/actions/wow-claude-agent
+        uses: ./.github/actions/wow-chatgpt-agent
         with:
-          oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          branch_prefix: claude/engineering/
+          openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+          permission_profile: ":workspace"
           prompt: |
-            You are the WOW V17 ENGINEERING_AGENT and hold the single implementation lease.
-            Read CLAUDE.md, .agents/skills/wow-engineering-implementation-agent/SKILL.md,
+            You are the WOW V17 ENGINEERING_AGENT running on OpenAI/ChatGPT tooling only and hold the single implementation lease.
+            Read .agents/skills/wow-engineering-implementation-agent/SKILL.md,
             .agents/skills/wow-replit-patch-governor/SKILL.md, and
             artifacts/wow-engine/v17/.agent-handoff/triage.json.
             Implement only the proven root cause and acceptance criteria. Do not diagnose a
             different incident, edit .github/workflows/**, or touch .agent-handoff/**.
-            Run targeted tests then relevant regressions and rework bounded failures.
-            Preserve can_execute=false, dry-run-only, exact typed failures, exact-once behavior,
-            V17_TERMINAL_REDUCER, and all probability governance. No Class C change is authorized.
-          claude_args: >-
-            --max-turns 240
-            --allowedTools "Edit,Read,Write,Glob,Grep,Bash(python -m pytest *),Bash(python artifacts/wow-engine/v17/nightly_incident_records.py *),Bash(python artifacts/wow-engine/v17/nightly_engineering_team_contract.py *),Bash(python artifacts/wow-engine/v17/engineering_agent_team.py *),Bash(git status),Bash(git diff *),Bash(git log *),Bash(gh run list *),Bash(gh run view *),Bash(gh pr list *),Bash(gh pr view *)"
-            --json-schema '{"type":"object","properties":{"changed":{"type":"boolean"},"incident_id":{"type":"string"},"risk_class":{"type":"string","enum":["R0","R1","R2-restorative","R2-repair-policy","R3","NONE"]},"summary":{"type":"string"},"tests":{"type":"string"},"hard_boundary":{"type":"string"}},"required":["changed","incident_id","risk_class","summary","tests","hard_boundary"],"additionalProperties":false}'
+            Run the narrowest reproduction first, then relevant regressions, and rework bounded failures.
+            Preserve can_execute=false, DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS=true,
+            exact typed failures, exact-once behavior, V17_TERMINAL_REDUCER, and all probability governance.
+            No Class C change is authorized.
+          output_schema: '{"type":"object","properties":{"changed":{"type":"boolean"},"incident_id":{"type":"string"},"risk_class":{"type":"string","enum":["R0","R1","R2-restorative","R2-repair-policy","R3","NONE"]},"summary":{"type":"string"},"tests":{"type":"string"},"hard_boundary":{"type":"string"}},"required":["changed","incident_id","risk_class","summary","tests","hard_boundary"],"additionalProperties":false}'
 
       - name: Normalize Implementation result
         id: impl
@@ -154,23 +154,22 @@ jobs:
         shell: bash
         env:
           RESULT: ${{ steps.implementation_agent.outputs.structured_output }}
-          ACTION_BRANCH: ${{ steps.implementation_agent.outputs.branch_name }}
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           changed=$(jq -r '.changed' <<<"$RESULT")
           risk=$(jq -r '.risk_class' <<<"$RESULT")
           incident=$(jq -r '.incident_id' <<<"$RESULT")
-          branch="$ACTION_BRANCH"
+          branch=""
           rm -rf artifacts/wow-engine/v17/.agent-handoff
-          if [ "$changed" = "true" ] && [ -z "$branch" ]; then
-            git diff --quiet --exit-code && { echo "::error::Claude reported changes but returned neither a branch nor a working-tree diff."; exit 1; }
-            branch="claude/engineering/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          if [ "$changed" = "true" ]; then
+            git diff --quiet --exit-code && { echo "::error::ChatGPT reported changes but returned no working-tree diff."; exit 1; }
+            branch="chatgpt/engineering/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git switch -c "$branch"
             git add --all
-            git commit -m "Claude Engineering: ${incident:-nightly-repair}"
+            git commit -m "ChatGPT Engineering: ${incident:-nightly-repair}"
             git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
             git push --set-upstream origin "$branch"
           fi
@@ -188,21 +187,18 @@ jobs:
       - name: Independent Review agent
         id: review_agent
         if: steps.impl.outputs.changed == 'true'
-        uses: ./.github/actions/wow-claude-agent
+        uses: ./.github/actions/wow-chatgpt-agent
         with:
-          oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+          permission_profile: ":read-only"
           prompt: |
-            You are the independent WOW V17 INDEPENDENT_REVIEW_AGENT.
-            Read CLAUDE.md and .agents/skills/wow-engineering-independent-review-agent/SKILL.md.
+            You are the independent WOW V17 INDEPENDENT_REVIEW_AGENT running on OpenAI/ChatGPT tooling only.
+            Read .agents/skills/wow-engineering-independent-review-agent/SKILL.md.
             Review the complete current-branch diff against main. You did not write this patch.
             Do not edit files. Verify root-cause repair, minimal scope, test quality, V17 ownership,
             typed failures, security, exact-once behavior, terminal authority, and can_execute=false.
             State whether independent SYSTEM_ARCHITECT_AGENT review is required.
-          claude_args: >-
-            --max-turns 75
-            --allowedTools "Read,Glob,Grep,Bash(git status),Bash(git diff *),Bash(git log *),Bash(python -m pytest *)"
-            --json-schema '{"type":"object","properties":{"decision":{"type":"string","enum":["PASS","REJECT"]},"system_architect_required":{"type":"boolean"},"findings":{"type":"array","items":{"type":"string"}},"residual_risks":{"type":"array","items":{"type":"string"}}},"required":["decision","system_architect_required","findings","residual_risks"],"additionalProperties":false}'
+          output_schema: '{"type":"object","properties":{"decision":{"type":"string","enum":["PASS","REJECT"]},"system_architect_required":{"type":"boolean"},"findings":{"type":"array","items":{"type":"string"}},"residual_risks":{"type":"array","items":{"type":"string"}}},"required":["decision","system_architect_required","findings","residual_risks"],"additionalProperties":false}'
 
       - name: Normalize Review
         id: review
@@ -216,20 +212,17 @@ jobs:
       - name: System Architect agent
         id: architect_agent
         if: steps.review.outputs.decision == 'PASS' && steps.review.outputs.architect == 'true'
-        uses: ./.github/actions/wow-claude-agent
+        uses: ./.github/actions/wow-chatgpt-agent
         with:
-          oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+          permission_profile: ":read-only"
           prompt: |
-            You are the independent WOW V17 SYSTEM_ARCHITECT_AGENT.
-            Read CLAUDE.md and .agents/skills/wow-engineering-system-architect-agent/SKILL.md.
+            You are the independent WOW V17 SYSTEM_ARCHITECT_AGENT running on OpenAI/ChatGPT tooling only.
+            Read .agents/skills/wow-engineering-system-architect-agent/SKILL.md.
             Review the current diff for protected-contract changes. Do not edit. Reject hidden
             ownership changes, probability substitution, terminal-authority drift, typed-failure
             collapse, unsafe auth/execution changes, or ungoverned Class C behavior.
-          claude_args: >-
-            --max-turns 60
-            --allowedTools "Read,Glob,Grep,Bash(git diff *),Bash(git log *)"
-            --json-schema '{"type":"object","properties":{"decision":{"type":"string","enum":["PASS","REJECT"]},"findings":{"type":"array","items":{"type":"string"}}},"required":["decision","findings"],"additionalProperties":false}'
+          output_schema: '{"type":"object","properties":{"decision":{"type":"string","enum":["PASS","REJECT"]},"findings":{"type":"array","items":{"type":"string"}}},"required":["decision","findings"],"additionalProperties":false}'
 
       - name: Normalize Architect decision
         id: architect
@@ -259,21 +252,18 @@ jobs:
       - name: QA Verification agent
         id: qa_agent
         if: steps.impl.outputs.changed == 'true' && steps.regression.outputs.status == '0'
-        uses: ./.github/actions/wow-claude-agent
+        uses: ./.github/actions/wow-chatgpt-agent
         with:
-          oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+          permission_profile: ":read-only"
           prompt: |
-            You are the independent WOW V17 QA_VERIFICATION_AGENT.
-            Read CLAUDE.md and .agents/skills/wow-engineering-qa-verification-agent/SKILL.md.
+            You are the independent WOW V17 QA_VERIFICATION_AGENT running on OpenAI/ChatGPT tooling only.
+            Read .agents/skills/wow-engineering-qa-verification-agent/SKILL.md.
             Review the current diff and deterministic regression evidence. You did not implement
             the patch. Verify acceptance criteria, adjacent-lane safety, exact typed failures,
             probability/lower-bound integrity when applicable, immutable/exact-once behavior,
             terminal authority, and can_execute=false. Do not edit files.
-          claude_args: >-
-            --max-turns 75
-            --allowedTools "Read,Glob,Grep,Bash(git diff *),Bash(git log *),Bash(python -m pytest *)"
-            --json-schema '{"type":"object","properties":{"decision":{"type":"string","enum":["PASS","REJECT"]},"acceptance_status":{"type":"string"},"findings":{"type":"array","items":{"type":"string"}}},"required":["decision","acceptance_status","findings"],"additionalProperties":false}'
+          output_schema: '{"type":"object","properties":{"decision":{"type":"string","enum":["PASS","REJECT"]},"acceptance_status":{"type":"string"},"findings":{"type":"array","items":{"type":"string"}}},"required":["decision","acceptance_status","findings"],"additionalProperties":false}'
 
       - name: Normalize QA
         id: qa
@@ -308,7 +298,7 @@ jobs:
           fi
           body="$RUNNER_TEMP/pr.md"
           {
-            echo "## WOW V17 Multi-Agent Engineering repair"
+            echo "## WOW V17 ChatGPT Engineering repair"
             echo
             echo "Incident: \`$INCIDENT\`"
             echo "Risk: \`$RISK\`"
@@ -322,6 +312,7 @@ jobs:
             for file in "${files[@]}"; do echo "- \`$file\`"; done
             echo
             echo "### Governance"
+            echo "- OpenAI/ChatGPT tooling only; no Anthropic/Claude runtime dependency"
             echo "- can_execute=false remains binding"
             echo "- DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS=true remains binding"
             echo "- V17_TERMINAL_REDUCER remains sole global terminal authority"
@@ -340,7 +331,7 @@ jobs:
               echo '```'
             fi
           } > "$body"
-          title="Multi-Agent Engineering: ${INCIDENT:-repair}"
+          title="ChatGPT Engineering: ${INCIDENT:-repair}"
           if [ "$gates" = "PASS" ]; then
             gh pr create --repo "$GITHUB_REPOSITORY" --base main --head "$BRANCH" --title "$title" --body-file "$body"
           else
@@ -351,7 +342,7 @@ jobs:
         if: always()
         run: |
           {
-            echo "# WOW V17 Multi-Agent Engineering Team"
+            echo "# WOW V17 ChatGPT Engineering Team"
             echo "- UTC: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
             echo "- Lead: ${{ steps.lead.outputs.action || 'NOT_RUN' }}"
             echo "- Incident: ${{ steps.lead.outputs.incident || 'NONE' }}"
@@ -361,5 +352,6 @@ jobs:
             echo "- Architect: ${{ steps.architect.outputs.decision || 'NOT_RUN' }}"
             echo "- Regression: ${{ steps.regression.outputs.status || 'NOT_RUN' }}"
             echo "- QA: ${{ steps.qa.outputs.decision || 'NOT_RUN' }}"
+            echo "- provider: OpenAI/ChatGPT"
             echo "- can_execute: false"
           } >> "$GITHUB_STEP_SUMMARY"

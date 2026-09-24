@@ -1,0 +1,76 @@
+name: WOW ChatGPT Agent Runner
+description: Run one governed OpenAI Codex/ChatGPT engineering agent with structured output.
+
+inputs:
+  openai_api_key:
+    description: OpenAI API key used by the official OpenAI Codex action
+    required: true
+  prompt:
+    description: Agent prompt
+    required: true
+  output_schema:
+    description: JSON schema for the required structured final message
+    required: true
+  permission_profile:
+    description: OpenAI Codex permission profile
+    required: false
+    default: ":read-only"
+  codex_args:
+    description: Additional safe Codex CLI arguments
+    required: false
+    default: ""
+
+outputs:
+  structured_output:
+    description: Structured JSON output from the OpenAI agent
+    value: ${{ steps.normalize.outputs.structured_output }}
+  branch_name:
+    description: Reserved compatibility output; branch creation is owned by the workflow
+    value: ${{ steps.normalize.outputs.branch_name }}
+
+runs:
+  using: composite
+  steps:
+    - name: Prepare unprivileged OpenAI agent user
+      shell: bash
+      run: |
+        set -euo pipefail
+        if ! id -u wow-codex >/dev/null 2>&1; then
+          sudo useradd --create-home --shell /bin/bash wow-codex
+        fi
+        runner_group="$(id -gn)"
+        sudo usermod -a -G "$runner_group" wow-codex
+        chmod -R g+rwX "$GITHUB_WORKSPACE"
+        sudo -u wow-codex git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+    - name: Run governed OpenAI agent
+      id: codex
+      uses: openai/codex-action@v1
+      with:
+        openai-api-key: ${{ inputs.openai_api_key }}
+        prompt: ${{ inputs.prompt }}
+        output-schema: ${{ inputs.output_schema }}
+        permission-profile: ${{ inputs.permission_profile }}
+        codex-args: ${{ inputs.codex_args }}
+        safety-strategy: unprivileged-user
+        codex-user: wow-codex
+        allow-bots: "true"
+
+    - name: Normalize OpenAI result
+      id: normalize
+      shell: bash
+      env:
+        RESULT: ${{ steps.codex.outputs.final-message }}
+      run: |
+        set -euo pipefail
+        if [ -z "${RESULT:-}" ]; then
+          echo "::error::OpenAI agent completed without required structured output."
+          exit 1
+        fi
+        jq -e . >/dev/null <<<"$RESULT"
+        {
+          echo "structured_output<<EOF"
+          echo "$RESULT"
+          echo "EOF"
+          echo "branch_name="
+        } >> "$GITHUB_OUTPUT"

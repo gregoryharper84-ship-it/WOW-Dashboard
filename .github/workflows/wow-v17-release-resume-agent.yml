@@ -57,13 +57,13 @@ jobs:
       - name: Release / Production Verification agent
         id: release_agent
         if: steps.priority.outputs.release_pending == 'true'
-        uses: ./.github/actions/wow-claude-agent
+        uses: ./.github/actions/wow-chatgpt-agent
         with:
-          oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+          permission_profile: ":read-only"
           prompt: |
-            You are the independent WOW V17 RELEASE_OBSERVABILITY_AGENT.
-            Read CLAUDE.md, .agents/skills/wow-engineering-release-observability-agent/SKILL.md,
+            You are the independent WOW V17 RELEASE_OBSERVABILITY_AGENT running on OpenAI/ChatGPT tooling only.
+            Read .agents/skills/wow-engineering-release-observability-agent/SKILL.md,
             artifacts/wow-engine/v17/incident-ledger.json, current protected-main CI evidence,
             and the highest-priority incident selected by engineering_agent_team.py.
             Resume only release/production verification for that incident. Do not implement code,
@@ -72,10 +72,7 @@ jobs:
             deploy/acceptance evidence, and reconciliation evidence. If exact production SHA or
             required durable state cannot be proven, return PENDING instead of manufacturing closure.
             Preserve V17_TERMINAL_REDUCER, typed failures, exact-once semantics, and can_execute=false.
-          claude_args: >-
-            --max-turns 70
-            --allowedTools "Read,Glob,Grep,Bash(python artifacts/wow-engine/v17/engineering_agent_team.py *),Bash(git log *),Bash(gh run list *),Bash(gh run view *),Bash(gh pr list *),Bash(gh pr view *),Bash(curl *)"
-            --json-schema '{"type":"object","properties":{"incident_id":{"type":"string"},"status":{"type":"string","enum":["PRODUCTION_VERIFIED","PENDING","BLOCKED_WITH_EXACT_REASON"]},"main_sha":{"type":"string"},"production_sha":{"type":"string"},"acceptance":{"type":"string"},"reconciliation":{"type":"string"},"blocker":{"type":"string"},"next_action":{"type":"string"}},"required":["incident_id","status","main_sha","production_sha","acceptance","reconciliation","blocker","next_action"],"additionalProperties":false}'
+          output_schema: '{"type":"object","properties":{"incident_id":{"type":"string"},"status":{"type":"string","enum":["PRODUCTION_VERIFIED","PENDING","BLOCKED_WITH_EXACT_REASON"]},"main_sha":{"type":"string"},"production_sha":{"type":"string"},"acceptance":{"type":"string"},"reconciliation":{"type":"string"},"blocker":{"type":"string"},"next_action":{"type":"string"}},"required":["incident_id","status","main_sha","production_sha","acceptance","reconciliation","blocker","next_action"],"additionalProperties":false}'
 
       - name: Publish release-resume receipt
         if: always()
@@ -87,6 +84,7 @@ jobs:
             echo "- incident: ${{ steps.priority.outputs.incident || 'NONE' }}"
             echo "- selected_state: ${{ steps.priority.outputs.state || 'NONE' }}"
             echo "- release_pending: ${{ steps.priority.outputs.release_pending || 'false' }}"
+            echo "- provider: OpenAI/ChatGPT"
             if [ -n "${RESULT:-}" ]; then
               echo
               echo '```json'

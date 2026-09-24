@@ -42,23 +42,21 @@ jobs:
       - name: Frontier Intelligence agent
         id: frontier_agent
         if: steps.gate.outputs.allowed == 'true'
-        uses: ./.github/actions/wow-claude-agent
+        uses: ./.github/actions/wow-chatgpt-agent
         with:
-          oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+          permission_profile: ":read-only"
+          codex_args: "--search"
           prompt: |
-            You are the WOW FRONTIER_INTELLIGENCE_AGENT.
-            Read CLAUDE.md, .agents/skills/wow-frontier-intelligence-agent/SKILL.md,
+            You are the WOW FRONTIER_INTELLIGENCE_AGENT running on OpenAI/ChatGPT tooling only.
+            Read .agents/skills/wow-frontier-intelligence-agent/SKILL.md,
             artifacts/wow-engine/v17/incident-ledger.json, and season-readiness evidence.
             Search the current web for material developments from the last 30 days in BOTH
             AI/agent engineering and sports betting/sports analytics/data/modeling. Compare them
             with actual WOW weaknesses and existing capabilities. Return at most ONE highest-value
             net-new opportunity. Do not edit the repository. Market information remains evidence
             only. Any Class C idea is challenger-only. production_change must be false.
-          claude_args: >-
-            --max-turns 90
-            --allowedTools "Read,Glob,Grep,WebSearch,WebFetch,Bash(python artifacts/wow-engine/v17/engineering_agent_team.py *)"
-            --json-schema '{"type":"object","properties":{"found":{"type":"boolean"},"fingerprint":{"type":"string"},"title":{"type":"string"},"domain":{"type":"string","enum":["AI","SPORTS_DATA","SPORTS_MODELING","AGENT_INFRA","OBSERVABILITY","OTHER"]},"radar_status":{"type":"string","enum":["ADOPT","TRIAL","ASSESS","WATCH","REJECT","DUPLICATE"]},"source_date":{"type":"string"},"evidence":{"type":"array","items":{"type":"string"}},"wow_problem_or_opportunity":{"type":"string"},"hypothesis":{"type":"string"},"expected_benefit":{"type":"string"},"risk_class":{"type":"string","enum":["A","B","C"]},"validation_plan":{"type":"array","items":{"type":"string"}},"counterexamples_to_test":{"type":"array","items":{"type":"string"}},"production_change":{"type":"boolean"}},"required":["found","fingerprint","title","domain","radar_status","source_date","evidence","wow_problem_or_opportunity","hypothesis","expected_benefit","risk_class","validation_plan","counterexamples_to_test","production_change"],"additionalProperties":false}'
+          output_schema: '{"type":"object","properties":{"found":{"type":"boolean"},"fingerprint":{"type":"string"},"title":{"type":"string"},"domain":{"type":"string","enum":["AI","SPORTS_DATA","SPORTS_MODELING","AGENT_INFRA","OBSERVABILITY","OTHER"]},"radar_status":{"type":"string","enum":["ADOPT","TRIAL","ASSESS","WATCH","REJECT","DUPLICATE"]},"source_date":{"type":"string"},"evidence":{"type":"array","items":{"type":"string"}},"wow_problem_or_opportunity":{"type":"string"},"hypothesis":{"type":"string"},"expected_benefit":{"type":"string"},"risk_class":{"type":"string","enum":["A","B","C"]},"validation_plan":{"type":"array","items":{"type":"string"}},"counterexamples_to_test":{"type":"array","items":{"type":"string"}},"production_change":{"type":"boolean"}},"required":["found","fingerprint","title","domain","radar_status","source_date","evidence","wow_problem_or_opportunity","hypothesis","expected_benefit","risk_class","validation_plan","counterexamples_to_test","production_change"],"additionalProperties":false}'
 
       - name: Validate and persist frontier opportunity
         if: steps.gate.outputs.allowed == 'true'
@@ -92,6 +90,7 @@ jobs:
             echo '```'
             echo
             echo "### Governance"
+            echo "- OpenAI/ChatGPT tooling only; no Anthropic/Claude runtime dependency."
             echo "- Experiment/research candidate only; not a production model change."
             echo "- Class C requires challenger, replay, counterexample review, holdout/forward validation, regression, and governed promotion."
             echo "- can_execute=false"

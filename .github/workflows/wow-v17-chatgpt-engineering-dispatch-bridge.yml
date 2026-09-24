@@ -1,4 +1,4 @@
-name: wow-v17-claude-engineering-dispatch-bridge
+name: wow-v17-chatgpt-engineering-dispatch-bridge
 
 on:
   issues:
@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   dispatch:
-    name: Dispatch fresh Claude Engineering run
+    name: Dispatch fresh ChatGPT Engineering run
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'issues' &&
@@ -30,22 +30,23 @@ jobs:
           set -euo pipefail
           gh api \
             --method POST \
-            "/repos/${GITHUB_REPOSITORY}/actions/workflows/wow-v17-claude-engineering-worker.yml/dispatches" \
+            "/repos/${GITHUB_REPOSITORY}/actions/workflows/wow-v17-chatgpt-engineering-worker.yml/dispatches" \
             -f ref=main
 
           sleep 3
           latest=$(gh run list \
             --repo "$GITHUB_REPOSITORY" \
-            --workflow wow-v17-claude-engineering-worker.yml \
+            --workflow wow-v17-chatgpt-engineering-worker.yml \
             --event workflow_dispatch \
             --limit 1 \
             --json databaseId,headSha,status,conclusion,url,createdAt)
 
           {
-            echo "# Claude Engineering dispatch bridge"
+            echo "# ChatGPT Engineering dispatch bridge"
             echo
             echo "- control issue: #542"
             echo "- requested ref: main"
+            echo "- provider: OpenAI/ChatGPT"
             echo "- can_execute: false (worker contract unchanged)"
             echo "- newest workflow_dispatch run:"
             echo '```json'
