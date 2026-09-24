@@ -6,9 +6,10 @@ Historical verification date: 2026-09-16
 Post-PR617 editor update reported: 2026-09-20
 PR654 repository repair merged: 2026-09-21
 PR766 host-contract repair: 2026-09-23
-Current reconciliation date: 2026-09-23
+Editor 8k installation repair: 2026-09-24
+Current reconciliation date: 2026-09-24
 
-This record preserves the last fully verified live `WOW_BETTING_ENGINE` editor acceptance while separately recording later repository changes. The 2026-09-20 editor save predates PR #654 and PR #766, so it cannot prove current instruction parity. Full current verification requires the latest canonical host instructions and PrizePicks live-host addendum to be saved/reloaded in the production WOW editor, followed by authenticated Action and multi-page source-ingestion acceptance from a fresh production WOW chat.
+This record preserves the last fully verified live `WOW_BETTING_ENGINE` editor acceptance while separately recording later repository changes. The 2026-09-20 editor save predates later host-contract changes, so it cannot prove current instruction parity.
 
 ## Historical live editor identity and safety
 
@@ -23,18 +24,15 @@ DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS = true
 
 WOW owns player/scalar props. Team/event winner/favorite/underdog/upset objectives route to `LLP_TEAM_BETTING_ENGINE`. Scout/Research remain evidence-only. Exactly one controlling fitted specialist owns each row/event.
 
-## Historical verified acceptance
-
-On 2026-09-16 the live editor was saved, reloaded, and a real Action health invocation succeeded. The live Action reached the production Render origin with Bearer authentication and preserved `can_execute=false`.
-
-On 2026-09-20 a later schema/editor update was user-confirmed: `scoreWowPickRequest` was visible, the production Action origin remained configured, Bearer configuration was preserved, the GPT update was saved, and a fresh chat was opened. That remains historical configuration evidence only because later repository host contracts changed.
-
 ## Current canonical repository contract
 
 ```text
 schema = artifacts/wow-engine/v17/openapi.wow-betting-engine.v17.yaml
+run_control_schema = artifacts/wow-engine/v17/openapi.wow-betting-engine.v17.run-control.yaml
 instructions = artifacts/wow-engine/WOW_V17_CUSTOM_GPT_INSTRUCTIONS.txt
-prizepicks_addendum = artifacts/wow-engine/WOW_V17_CUSTOM_GPT_PRIZEPICKS_SKILL_ADDENDUM.txt
+prizepicks_addendum_source = artifacts/wow-engine/WOW_V17_CUSTOM_GPT_PRIZEPICKS_SKILL_ADDENDUM.txt
+prizepicks_addendum_installation_surface = KNOWLEDGE_FILE
+editor_instruction_limit = 8000 characters
 server = https://wow-governed-probability-engine.onrender.com
 auth = API Key / Bearer using existing WOW_ACTION_API_KEY
 /score-prop operationId = scoreWowProp
@@ -43,15 +41,16 @@ auth = API Key / Bearer using existing WOW_ACTION_API_KEY
 can_execute = false
 ```
 
-PR #654 requires a fail-fast Action-surface preflight before large-board row preparation. PR #766 additionally requires complete multi-page PrizePicks source reconciliation before scoring/ranking: every page must be inspected, an initially unreadable page must receive the available page-level render/screenshot fallback, unresolved pages remain typed `SOURCE_PAGE_UNREADABLE:<page_number>`, and the host may not claim full-board/zero-omission completion while unknown rows can remain.
+The canonical instructions file is the only repository text pasted into the Custom GPT Instructions field and must remain <=8,000 characters. The PrizePicks addendum is attached as Knowledge instead of being appended to the Instructions field. The deterministic sync builder now fails closed if the instructions exceed the editor limit and emits the addendum separately as `WOW_V17_PRIZEPICKS_HOST_CONTRACT_KNOWLEDGE.txt`.
 
-The PrizePicks table contract also requires distinct `Player`, `Matchup`, `PrizePicks line`, `Offer`, `Available side(s)`, and `Current/live note` columns.
+This installation split changes only editor packaging. It does not weaken or alter V17 routing, sporting-model authority, probability mathematics, calibration, publication governance, typed failures, terminal authority, or execution posture.
+
+PR #654 requires fail-fast Action-surface preflight before large-board row preparation. PR #766 requires complete multi-page PrizePicks source reconciliation before scoring/ranking: every page must be inspected, an initially unreadable page must receive page-level render/screenshot fallback, unresolved pages remain typed `SOURCE_PAGE_UNREADABLE:<page_number>`, and the host may not claim full-board/zero-omission completion while unknown rows can remain. The PrizePicks table contract also requires distinct `Player`, `Matchup`, `PrizePicks line`, `Offer`, `Available side(s)`, and `Current/live note` columns.
 
 ## Current live-editor status
 
 ```text
 LIVE_GPT_EDITOR_SYNC = RESYNC_REQUIRED_AFTER_PR766__LIVE_ACTION_ACCEPTANCE_REQUIRED
-REPOSITORY_GOVERNANCE = CURRENT_MAIN_AFTER_PR766_WHEN_MERGED
 BACKEND_RUNTIME = separately verified production state
 MODEL_CAPABILITY = route-specific separate state
 can_execute = false
@@ -61,7 +60,14 @@ Repository state, CI success, and backend health do not prove that a production 
 
 ## Acceptance required to re-attest VERIFIED
 
-A new live editor attestation may set `LIVE_GPT_EDITOR_SYNC=VERIFIED` only after all of the following are observed after saving/reloading the current canonical instructions plus PR #766 PrizePicks addendum and opening a fresh WOW chat:
+A new live editor attestation may set `LIVE_GPT_EDITOR_SYNC=VERIFIED` only after all of the following are observed after:
+
+1. pasting the current canonical instructions into the Instructions field;
+2. attaching the current PrizePicks addendum as Knowledge;
+3. saving/reloading both canonical Action schemas with existing Bearer auth preserved; and
+4. opening a fresh WOW chat.
+
+Fresh-chat acceptance must prove:
 
 1. `getWowV17BackendHealth` is visible and a live `/health` Action invocation reaches the production Render backend;
 2. Bearer auth succeeds using the existing `WOW_ACTION_API_KEY` without exposing or replacing it;
@@ -72,4 +78,4 @@ A new live editor attestation may set `LIVE_GPT_EDITOR_SYNC=VERIFIED` only after
 7. required V17 diagnostic Actions remain callable; and
 8. `can_execute=false` remains true.
 
-Until then, preserve the 2026-09-16 verification and 2026-09-20 update only as historical evidence. Do not represent current live Action binding, PR #766 editor parity, or the multi-page PrizePicks contract as complete.
+Until then, preserve the historical verification only as historical evidence. Do not represent current live Action binding, current editor parity, or the multi-page PrizePicks contract as complete.

@@ -1,25 +1,29 @@
 # WOW V17 Custom GPT editor synchronization
 
-Updated: 2026-09-23
+Updated: 2026-09-24
 
 Status: **RESYNC_REQUIRED_AFTER_PR766__LIVE_ACTION_ACCEPTANCE_REQUIRED**
 
-The production `WOW_BETTING_ENGINE` editor was historically saved/reloaded and Action-tested on 2026-09-16, and a later editor/schema update was user-confirmed on 2026-09-20. Those facts remain valid historical evidence. They do **not** prove current parity because repository host instructions changed afterward (including PR #654), and PR #766 changes the live PrizePicks host addendum again.
+The production `WOW_BETTING_ENGINE` editor was historically saved/reloaded and Action-tested on 2026-09-16, and a later editor/schema update was user-confirmed on 2026-09-20. Those facts remain historical evidence only; later repository host-contract changes still require a fresh live-editor resync and acceptance.
 
 ## Current repository contract
 
 - Canonical Action schema: `artifacts/wow-engine/v17/openapi.wow-betting-engine.v17.yaml`.
 - Canonical host instructions: `artifacts/wow-engine/WOW_V17_CUSTOM_GPT_INSTRUCTIONS.txt`.
 - PrizePicks live-host addendum: `artifacts/wow-engine/WOW_V17_CUSTOM_GPT_PRIZEPICKS_SKILL_ADDENDUM.txt`.
+- Custom GPT Instructions field hard limit: **8,000 characters**.
+- The canonical host-instructions file must fit that limit and is pasted into the Instructions field verbatim.
+- The PrizePicks addendum is installed as a **Knowledge file**, not appended to the Instructions field.
+- The deterministic editor-sync builder must fail if the canonical Instructions field exceeds 8,000 characters and must package the PrizePicks addendum separately as `WOW_V17_PRIZEPICKS_HOST_CONTRACT_KNOWLEDGE.txt`.
 - Canonical prop operations:
   - `/score-prop` -> `scoreWowProp`
   - `/score-pick-request` -> `scoreWowPickRequest`
 - Authentication remains API Key -> Bearer using the existing `WOW_ACTION_API_KEY`.
 - `can_execute=false`, dry-run-only behavior, and `V17_TERMINAL_REDUCER` authority remain binding.
 
-## PR #766 host-contract change
+## PR #766 host-contract behavior
 
-PR #766 makes multi-page PrizePicks ingestion fail closed instead of silently degrading to page 1. The live host must now:
+The PrizePicks Knowledge contract requires the live host to:
 
 - enumerate and inspect every page of an attached multi-page PDF before scoring/ranking;
 - retry a blank, clipped, or illegible page through the available page-level render/screenshot path before declaring it unreadable;
@@ -28,20 +32,17 @@ PR #766 makes multi-page PrizePicks ingestion fail closed instead of silently de
 - treat unreadable source pages as source-ingestion blockers, not `MODEL_UNAVAILABLE`; and
 - render distinct `Player`, `Matchup`, `PrizePicks line`, `Offer`, `Available side(s)`, and `Current/live note` columns.
 
-Repository merge/CI does not itself update the OpenAI Custom GPT editor. Therefore current live editor parity must remain fail closed until the PR #766 host contract is saved/reloaded and accepted from a fresh production WOW chat.
-
-## Historical live editor evidence
-
-Historical facts only:
-
-- 2026-09-16: live editor save/reload plus authenticated Action health acceptance succeeded;
-- 2026-09-20: canonical schema update was user-confirmed, `scoreWowPickRequest` was visible, the production Render origin remained configured, Bearer configuration was preserved, the GPT was saved, and a fresh chat was opened.
-
-Neither historical event proves parity with repository changes made after 2026-09-20.
+Repository merge/CI does not itself update the OpenAI Custom GPT editor. Current live editor parity therefore remains fail closed until the canonical instructions are saved, the PrizePicks addendum is attached as Knowledge, the Action schemas are saved/reloaded, and acceptance succeeds from a fresh production WOW chat.
 
 ## Acceptance required to re-attest VERIFIED
 
-After PR #766 is merged, the production WOW editor must be saved/reloaded with the current canonical instructions plus PrizePicks addendum, then a fresh production chat must prove:
+The production WOW editor must be saved/reloaded with:
+
+1. `WOW_V17_CUSTOM_GPT_INSTRUCTIONS.txt` in the Instructions field;
+2. the PrizePicks addendum attached as Knowledge (`WOW_V17_PRIZEPICKS_HOST_CONTRACT_KNOWLEDGE.txt` from the sync artifact, or the byte-identical canonical addendum source);
+3. the canonical primary Action schema and run-control companion schema with existing Bearer authentication preserved.
+
+Then a fresh production WOW chat must prove:
 
 1. `getWowV17BackendHealth` is visible and `/health` reaches the production Render backend;
 2. Bearer authentication succeeds without exposing or replacing `WOW_ACTION_API_KEY`;
