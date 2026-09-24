@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from v17.engineering_agent_team import AGENT_ROLES
 from v17.engineering_effectiveness import (
     BASE_REGRESSION,
     DATABASE_MIGRATION_VERIFICATION,
@@ -105,6 +106,35 @@ def test_golden_journey_accepts_only_explicitly_proven_empty_slate() -> None:
     }
     assert evaluate_golden_user_journey({**base, "empty_slate_proven": True})["status"] == "PASS"
     assert evaluate_golden_user_journey({**base, "empty_slate_proven": False})["status"] != "PASS"
+
+
+def test_golden_journey_malformed_row_count_fails_closed_without_throwing() -> None:
+    result = evaluate_golden_user_journey(
+        {
+            "host_identity": "WOW_BETTING_ENGINE",
+            "live_editor_verified": True,
+            "action_invoked": True,
+            "inventory_accounted": True,
+            "source_ingestion_complete": True,
+            "all_rows_reconciled": True,
+            "governed_scoring_accounted": True,
+            "response_handoff_complete": True,
+            "terminal_authority": "V17_TERMINAL_REDUCER",
+            "can_execute": False,
+            "valid_governed_row_count": "not-a-number",
+            "empty_slate_proven": False,
+        }
+    )
+    assert result["status"] != "PASS"
+    assert "FAIL_GOVERNED_SCORING:VALID_GOVERNED_ROW_COUNT_INVALID" in result["blockers"]
+    assert result["valid_governed_row_count"] == 0
+
+
+def test_product_acceptance_agent_is_independent_and_non_mutating() -> None:
+    role = AGENT_ROLES["PRODUCT_ACCEPTANCE_AGENT"]
+    assert role["may_write_code"] is False
+    assert role["may_approve_own_work"] is False
+    assert role["may_change_probability_behavior"] is False
 
 
 def test_repository_user_journey_health_fail_closed_and_blocks_model_research() -> None:
