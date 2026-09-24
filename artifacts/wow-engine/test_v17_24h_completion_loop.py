@@ -15,6 +15,8 @@ def _text(path: Path) -> str:
 def test_24h_loop_runs_hourly_and_advances_real_work() -> None:
     text = _text(LOOP)
     assert 'cron: "47 * * * *"' in text
+    assert "push:" in text
+    assert "branches: [main]" in text
     assert "wow-v17-morning-green-continuation.yml" in text
     assert "wow-v17-release-resume-agent.yml" in text
     assert "wow-v17-chatgpt-engineering-worker.yml" in text
