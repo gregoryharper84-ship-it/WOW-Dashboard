@@ -1,0 +1,202 @@
+name: wow-v17-engineering-specialist-support
+
+on:
+  schedule:
+    - cron: "32 * * * *"
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "Optional autonomous repair PR to support"
+        required: false
+        type: string
+      incident_id:
+        description: "Optional durable incident id"
+        required: false
+        type: string
+      wait_state:
+        description: "Optional explicit wait state"
+        required: false
+        type: string
+
+permissions:
+  actions: read
+  checks: read
+  contents: read
+  issues: read
+  pull-requests: read
+
+concurrency:
+  group: wow-v17-engineering-specialist-support
+  cancel-in-progress: false
+
+jobs:
+  support-active-closure:
+    name: Advance same-incident specialist evidence
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout protected main
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Verify engineering controller
+        run: python artifacts/wow-engine/v17/engineering_agent_team.py self-check
+
+      - name: Verify OpenAI authentication
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${OPENAI_API_KEY:-}" ]; then
+            echo "::error::OPENAI_API_KEY is required for specialist support."
+            exit 1
+          fi
+
+      - name: Resolve one support target
+        id: target
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_PR: ${{ inputs.pr_number || '' }}
+          INPUT_INCIDENT: ${{ inputs.incident_id || '' }}
+          INPUT_WAIT: ${{ inputs.wait_state || '' }}
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/wow-engine/v17/.agent-handoff
+
+          pr_number="$INPUT_PR"
+          incident="$INPUT_INCIDENT"
+          wait_state="$INPUT_WAIT"
+          typed_failure=""
+          subsystem=""
+          head_sha=""
+          check_state="NOT_APPLICABLE"
+          action="NO_ACTION"
+
+          if [ -z "$pr_number" ]; then
+            pr_number=$(gh api --paginate "/repos/${GITHUB_REPOSITORY}/pulls?state=open&base=main&per_page=100" \
+              --jq '[.[] | select(.draft == false) | select(.head.repo.full_name == env.GITHUB_REPOSITORY) | select((.body // "") | contains("Morning-Green-Autonomous: true"))] | sort_by(.created_at) | first | .number // empty')
+          fi
+
+          if [ -n "$pr_number" ]; then
+            action="SUPPORT_PR"
+            pr=$(gh api "/repos/${GITHUB_REPOSITORY}/pulls/${pr_number}")
+            head_sha=$(jq -r '.head.sha' <<<"$pr")
+            if [ -z "$incident" ]; then
+              incident=$(jq -r '.body // ""' <<<"$pr" | sed -n 's/^Incident: `\([^`]*\)`.*/\1/p' | head -n 1)
+            fi
+            [ -n "$incident" ] || incident="PR-${pr_number}"
+
+            checks=$(gh api --paginate "/repos/${GITHUB_REPOSITORY}/commits/${head_sha}/check-runs?per_page=100" \
+              -H 'Accept: application/vnd.github+json' --jq '.check_runs')
+            pending=$(jq '[.[] | select(.status != "completed")] | length' <<<"$checks")
+            failed=$(jq '[.[] | select(.status == "completed") | select(.conclusion != "success" and .conclusion != "neutral" and .conclusion != "skipped")] | length' <<<"$checks")
+            total=$(jq 'length' <<<"$checks")
+
+            if [ -z "$wait_state" ]; then
+              if [ "$pending" -gt 0 ] || [ "$total" -eq 0 ]; then
+                wait_state="CI_PENDING"
+              elif [ "$failed" -gt 0 ]; then
+                wait_state="EXTERNAL_WAIT"
+              else
+                wait_state="MERGE_PENDING"
+              fi
+            fi
+            check_state=$(jq -c '[.[] | {name,status,conclusion}]' <<<"$checks")
+          else
+            priority=$(python artifacts/wow-engine/v17/engineering_agent_team.py priority)
+            incident=$(jq -r '.incident_id // ""' <<<"$priority")
+            state=$(jq -r '.state // "NONE"' <<<"$priority")
+            if [ -n "$incident" ] && { [ "$state" = "DEPLOYED_PENDING_VERIFY" ] || [ "$state" = "MERGED_PENDING_DEPLOY" ] || [ "$state" = "PR_CREATED" ]; }; then
+              action="SUPPORT_RELEASE"
+              if [ -z "$wait_state" ]; then
+                if [ "$state" = "PR_CREATED" ]; then wait_state="CI_PENDING"; else wait_state="DEPLOYMENT_PENDING"; fi
+              fi
+            fi
+          fi
+
+          if [ "$action" != "NO_ACTION" ]; then
+            ledger_record=$(jq -c --arg id "$incident" '.records[]? | select((.postmortem_id // .incident_id // "") == $id)' artifacts/wow-engine/v17/incident-ledger.json | head -n 1 || true)
+            if [ -n "$ledger_record" ]; then
+              typed_failure=$(jq -r '.typed_failure // ""' <<<"$ledger_record")
+              subsystem=$(jq -r '.primary_subsystem // ""' <<<"$ledger_record")
+            fi
+          fi
+
+          jq -n \
+            --arg action "$action" \
+            --arg incident "$incident" \
+            --arg pr_number "$pr_number" \
+            --arg head_sha "$head_sha" \
+            --arg wait_state "$wait_state" \
+            --arg typed_failure "$typed_failure" \
+            --arg subsystem "$subsystem" \
+            --arg check_state "$check_state" \
+            '{action:$action,incident_id:$incident,pr_number:$pr_number,head_sha:$head_sha,wait_state:$wait_state,typed_failure:$typed_failure,primary_subsystem:$subsystem,check_state:$check_state,implementation_lease:false,support_only:true,can_execute:false}' \
+            | tee artifacts/wow-engine/v17/.agent-handoff/support-context.json
+
+          echo "action=$action" >> "$GITHUB_OUTPUT"
+          echo "incident=$incident" >> "$GITHUB_OUTPUT"
+          echo "wait_state=$wait_state" >> "$GITHUB_OUTPUT"
+          echo "typed_failure=$typed_failure" >> "$GITHUB_OUTPUT"
+          echo "subsystem=$subsystem" >> "$GITHUB_OUTPUT"
+
+      - name: Route specialist subagent
+        id: route
+        if: steps.target.outputs.action != 'NO_ACTION'
+        shell: bash
+        env:
+          WAIT_STATE: ${{ steps.target.outputs.wait_state }}
+          TYPED_FAILURE: ${{ steps.target.outputs.typed_failure }}
+          SUBSYSTEM: ${{ steps.target.outputs.subsystem }}
+        run: |
+          set -euo pipefail
+          route=$(python artifacts/wow-engine/v17/engineering_agent_team.py support-route \
+            --wait-state "$WAIT_STATE" \
+            --typed-failure "$TYPED_FAILURE" \
+            --subsystem "$SUBSYSTEM")
+          echo "subagent=$(jq -r '.subagent' <<<"$route")" >> "$GITHUB_OUTPUT"
+          printf '%s\n' "$route" > artifacts/wow-engine/v17/.agent-handoff/specialist-route.json
+
+      - name: Specialist support subagent
+        id: specialist
+        if: steps.target.outputs.action != 'NO_ACTION'
+        uses: ./.github/actions/wow-chatgpt-agent
+        with:
+          openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+          permission_profile: ":read-only"
+          prompt: |
+            You are the independent WOW V17 ${{ steps.route.outputs.subagent }} operating in SUPPORT-ONLY mode.
+            Read .agents/skills/wow-engineering-specialist-subagents/SKILL.md,
+            artifacts/wow-engine/v17/.agent-handoff/support-context.json, and
+            artifacts/wow-engine/v17/.agent-handoff/specialist-route.json.
+            Advance only the same parent closure journey. Inspect repository evidence relevant to
+            your specialist lane, identify what can be prepared or verified while the primary stage
+            is externally waiting, and return the next non-conflicting action. Do not edit files,
+            do not create a second implementation stream, do not approve your own work, do not
+            publish sporting probability, and preserve can_execute=false and V17_TERMINAL_REDUCER.
+          output_schema: '{"type":"object","properties":{"incident_id":{"type":"string"},"subagent":{"type":"string"},"evidence_verified":{"type":"array","items":{"type":"string"}},"current_wait_boundary":{"type":"string"},"adjacent_risks":{"type":"array","items":{"type":"string"}},"next_non_conflicting_action":{"type":"string"},"hard_boundary":{"type":"string"}},"required":["incident_id","subagent","evidence_verified","current_wait_boundary","adjacent_risks","next_non_conflicting_action","hard_boundary"],"additionalProperties":false}'
+
+      - name: Record specialist support receipt
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "# WOW V17 Engineering Specialist Support"
+            echo "- action: ${{ steps.target.outputs.action || 'NO_ACTION' }}"
+            echo "- incident: ${{ steps.target.outputs.incident || 'NONE' }}"
+            echo "- wait_state: ${{ steps.target.outputs.wait_state || 'NONE' }}"
+            echo "- specialist: ${{ steps.route.outputs.subagent || 'NOT_RUN' }}"
+            echo "- support_only: true"
+            echo "- implementation_lease: false"
+            echo "- can_execute: false"
+          } >> "$GITHUB_STEP_SUMMARY"
