@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from types import SimpleNamespace
 
 from v17 import thesportsdb_free_discovery as free
 
@@ -53,9 +52,14 @@ def test_normalize_keeps_provider_id_alias_only_and_never_invents_official_ident
     assert row["can_execute"] is False
 
 
-def test_missing_provider_timestamp_does_not_invent_timezone_or_instant():
+def test_clock_only_provider_time_does_not_invent_timezone_or_instant():
     row = free.normalize_event(
-        _event(strTimestamp=None, dateEvent="2026-09-25", strTime="19:30:00"),
+        _event(
+            strTimestamp=None,
+            strTime=None,
+            strEventTime="19:30:00",
+            dateEvent="2026-09-25",
+        ),
         requested_sport="Soccer",
     )
     assert row is not None
