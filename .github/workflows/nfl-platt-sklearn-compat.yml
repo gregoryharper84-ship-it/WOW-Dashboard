@@ -1,0 +1,143 @@
+name: NFL Platt sklearn compatibility
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "artifacts/wow-engine/research/nfl_platt_penalty_009/**"
+      - ".github/workflows/nfl-platt-sklearn-compat.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  replay-compat:
+    name: NFL Platt replay sklearn ${{ matrix.sklearn }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        # unreleased_ok marks a FORWARD-LOOKING leg: a version that may not be
+        # published yet. Only those legs may report "not yet published" instead
+        # of failing. Every released leg stays strictly fail-closed, so a yanked
+        # or unresolvable release is still red.
+        include:
+          - sklearn: "1.4.*"
+          - sklearn: "1.5.*"
+          - sklearn: "1.6.*"
+          - sklearn: "1.7.*"
+          - sklearn: "1.8.*"
+          - sklearn: "1.9.1"
+          - sklearn: "1.10.*"
+            unreleased_ok: "true"
+    defaults:
+      run:
+        working-directory: artifacts/wow-engine
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install replay dependencies
+        id: deps
+        env:
+          SKLEARN_TARGET: "${{ matrix.sklearn }}"
+          UNRELEASED_OK: "${{ matrix.unreleased_ok }}"
+        run: |
+          python -m pip install --upgrade pip
+          set +e
+          install_log="$(pip install "numpy>=1.26" "scikit-learn==${SKLEARN_TARGET}" 2>&1)"
+          install_code=$?
+          set -e
+          printf '%s\n' "$install_log"
+
+          if [ "$install_code" -eq 0 ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Only an explicitly forward-looking leg may be inert, and only when the
+          # distribution genuinely does not exist yet. Any other install failure
+          # (resolver conflict, network, yanked release) stays a hard failure.
+          if [ "$UNRELEASED_OK" = "true" ] && \
+             printf '%s' "$install_log" | grep -q "No matching distribution found for scikit-learn"; then
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "scikit-learn ${SKLEARN_TARGET} is not published yet; this forward-compatibility leg is inert and will start enforcing automatically once that release ships." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          exit "$install_code"
+
+      - name: Run governed compatibility replay
+        if: steps.deps.outputs.available == 'true'
+        env:
+          SKLEARN_TARGET: "${{ matrix.sklearn }}"
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import subprocess
+          import sys
+
+          sys.path.insert(0, os.getcwd())
+
+          target = os.environ["SKLEARN_TARGET"]
+          cmd = [sys.executable, "research/nfl_platt_penalty_009/replay_harness.py"]
+
+          if target.startswith("1.10"):
+              # sklearn 1.10 removes the champion penalty kwarg, so champion and
+              # challenger cannot be fitted side by side in one interpreter.
+              # Validate the challenger against the frozen governed 1.9.1 Platt
+              # reference instead.
+              #
+              # This is a CROSS-VERSION comparison, so exact float equality is not
+              # a sound expectation: a different solver/BLAS build can shift the
+              # last bits without any change in regularization. The tolerance is
+              # deliberately two orders of magnitude tighter than the ~1e-8 that a
+              # genuine regularization difference produces (see RECOMMENDATION.md,
+              # negative control: C=1e6 differs at ~1e-8).
+              import numpy as np
+              from sklearn.linear_model import LogisticRegression
+              from research.nfl_platt_penalty_009.replay_dataset import CALIBRATION_2024
+
+              expected_a = 0.9358407245138808
+              expected_b = -0.057402650134680426
+              tolerance = 1e-10
+
+              y = np.asarray([p[0] for p in CALIBRATION_2024], dtype=int)
+              logits = np.asarray([p[1] for p in CALIBRATION_2024], dtype=float)
+              m = LogisticRegression(solver="lbfgs", max_iter=2000, random_state=17, C=np.inf)
+              m.fit(logits.reshape(-1, 1), y)
+
+              delta_a = abs(float(m.coef_[0, 0]) - expected_a)
+              delta_b = abs(float(m.intercept_[0]) - expected_b)
+              assert delta_a <= tolerance, f"platt_a drifted from governed reference: {delta_a:.3e} > {tolerance:.0e}"
+              assert delta_b <= tolerance, f"platt_b drifted from governed reference: {delta_b:.3e} > {tolerance:.0e}"
+              print(f"challenger vs frozen 1.9.1 reference: delta_a={delta_a:.3e} delta_b={delta_b:.3e}")
+          else:
+              report = json.loads(subprocess.check_output(cmd, text=True))
+              assert report["can_execute"] is False
+              assert report["probability_publishable"] is False
+              assert report["parameter_deltas"]["abs_delta_platt_a"] == 0.0
+              assert report["parameter_deltas"]["abs_delta_platt_b"] == 0.0
+              assert all(v == 0.0 for v in report["metric_deltas"].values())
+              assert report["certification_checks_identical"] is True
+              assert report["certification_checks_all_pass"] is True
+              assert report["bootstrap_stress"]["max_abs_param_delta"] == 0.0
+              assert report["bootstrap_stress"]["max_abs_probability_delta"] == 0.0
+              for cohort in report["counterexample_review"]:
+                  assert cohort["max_abs_probability_delta"] == 0.0
+                  assert cohort["max_abs_lower_bound_delta"] == 0.0
+                  assert cohort["favourite_side_flips"] == 0
+                  assert all(v == 0 for v in cohort["lower_bound_threshold_flips"].values())
+          print("compatibility evidence passed for", target)
+          PY
+
+      - name: Record inert forward-compatibility leg
+        if: steps.deps.outputs.available != 'true'
+        env:
+          SKLEARN_TARGET: "${{ matrix.sklearn }}"
+        run: |
+          echo "SKIPPED: scikit-learn ${SKLEARN_TARGET} is not published yet. No compatibility claim is made for it."
