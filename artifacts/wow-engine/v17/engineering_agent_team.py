@@ -98,6 +98,16 @@ REQUIRED_CLOSURE_FIELDS = {
     "acceptance_criteria", "regression_guard",
 }
 
+CAPABILITY_DIMENSIONS = (
+    "discovery_supported",
+    "canonicalization_supported",
+    "hydration_supported",
+    "fitted_specialist_registered",
+    "artifact_certified",
+    "calibration_valid",
+    "production_enabled",
+)
+
 FAILURE_OWNERS = {
     "DISCOVERY_FAILURE": "acquisition",
     "PROVIDER_FAILURE": "acquisition",
@@ -225,6 +235,31 @@ def route_failure(typed_failure: str) -> str:
     return FAILURE_OWNERS[key]
 
 
+
+def validate_capability_matrix(matrix: dict[str, Any]) -> list[str]:
+    """Require explicit sport x market capability truth; never infer support."""
+    errors: list[str] = []
+    for key, row in sorted(matrix.items()):
+        if not isinstance(row, dict):
+            errors.append(f"{key}: capability row must be an object")
+            continue
+        missing = [d for d in CAPABILITY_DIMENSIONS if d not in row]
+        if missing:
+            errors.append(f"{key}: missing capability dimensions: {', '.join(missing)}")
+            continue
+        for dim in CAPABILITY_DIMENSIONS:
+            if not isinstance(row[dim], bool):
+                errors.append(f"{key}: {dim} must be boolean")
+        if row.get("production_enabled") and not all(
+            row.get(d) is True for d in (
+                "discovery_supported", "canonicalization_supported",
+                "hydration_supported", "fitted_specialist_registered",
+                "artifact_certified", "calibration_valid",
+            )
+        ):
+            errors.append(f"{key}: production_enabled requires every upstream capability")
+    return errors
+
 def validate_frontier_candidate(candidate: dict[str, Any]) -> list[str]:
     errors: list[str] = []
     radar = str(candidate.get("radar_status") or "").upper()
@@ -265,6 +300,7 @@ def self_check() -> dict[str, Any]:
     assert route_failure("ACTION_TRANSPORT_FAILURE") == "transport"
     assert route_failure("MODEL_UNAVAILABLE") == "model-capability"
     assert USER_CRITICAL_JOURNEYS == ("ALL_SPORTS_PROPS", "ALL_SPORTS_ML_WINNERS", "ALL_SPORTS_UPSETS")
+    assert validate_capability_matrix({"NFL:ML": {d: True for d in CAPABILITY_DIMENSIONS}}) == []
     assert closure_wip([{"severity": "P0", "state": "OPEN"}])["new_product_work_allowed"] is False
     return {
         "team_version": TEAM_VERSION,
