@@ -6,9 +6,11 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 LOOP = ROOT / ".github/workflows/wow-v17-24h-engineering-closure-loop.yml"
+WORKER = ROOT / ".github/workflows/wow-v17-chatgpt-engineering-worker.yml"
 EXPERIMENT = ROOT / ".github/workflows/wow-v17-model-improvement-experiment.yml"
 PRODUCT = ROOT / ".github/workflows/wow-v17-golden-product-acceptance.yml"
 IMPACT = ROOT / ".github/workflows/wow-v17-change-impact-gate.yml"
+SPECIALISTS = ROOT / ".agents/skills/wow-engineering-specialist-subagents/SKILL.md"
 
 
 def _text(path: Path) -> str:
@@ -122,6 +124,7 @@ def test_model_experiment_requires_tests_regression_and_repair_mode() -> None:
 
 def test_new_workflows_parse_as_yaml() -> None:
     assert yaml.safe_load(LOOP.read_text())["name"] == "wow-v17-24h-engineering-closure-loop"
+    assert yaml.safe_load(WORKER.read_text())["name"] == "wow-v17-chatgpt-engineering-worker"
     assert yaml.safe_load(EXPERIMENT.read_text())["name"] == "wow-v17-model-improvement-experiment"
     assert yaml.safe_load(PRODUCT.read_text())["name"] == "wow-v17-golden-product-acceptance"
     assert yaml.safe_load(IMPACT.read_text())["name"] == "wow-v17-change-impact-gate"
@@ -129,7 +132,7 @@ def test_new_workflows_parse_as_yaml() -> None:
 
 def test_closure_controller_has_hard_wip_and_golden_journeys() -> None:
     team = _text(ROOT / "artifacts/wow-engine/v17/engineering_agent_team.py")
-    assert 'TEAM_VERSION = "3.0"' in team
+    assert 'TEAM_VERSION = "4.0"' in team
     assert "MAX_ACTIVE_PRODUCT_RECOVERY = 1" in team
     assert "MAX_ACTIVE_SUPPORTING_INVESTIGATION = 1" in team
     assert "ALL_SPORTS_PROPS" in team
@@ -137,6 +140,22 @@ def test_closure_controller_has_hard_wip_and_golden_journeys() -> None:
     assert "ALL_SPORTS_UPSETS" in team
     assert "validate_closure_record" in team
     assert "closure_wip" in team
+    assert "SPECIALIST_SUBAGENTS" in team
+    assert "select_support_subagent" in team
+
+
+def test_engineering_worker_invokes_specialist_before_implementation() -> None:
+    text = _text(WORKER)
+    route = text.index("Route specialist subagent")
+    specialist = text.index("Specialist diagnostic subagent")
+    implementation = text.index("Implementation agent")
+    assert route < specialist < implementation
+    assert "engineering_agent_team.py support-route" in text
+    assert "wow-engineering-specialist-subagents/SKILL.md" in text
+    assert "hypothesis == 'CONFIRMED'" in text
+    assert "hypothesis == 'NARROWED'" in text
+    assert "single implementation lease" in text
+    assert SPECIALISTS.exists()
 
 
 def test_failure_router_preserves_typed_failure_ownership() -> None:
