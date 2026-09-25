@@ -398,6 +398,11 @@ def _cross_sport_moneyline_rows(
         fetch_sport_events=feed,
         resolve_model=resolve_model,
         score_row=score,
+        # "Across all sports" must inventory active regime variants too.
+        # Without this, September discovery silently omitted NHL preseason
+        # (and analogous NFL/NBA/MLB variants) and could make the slate appear
+        # MLB-only even though the provider registry contained those events.
+        include_regime_variants=True,
     )
     rows = [
         _terminal_row(

@@ -131,3 +131,15 @@ def test_cricket_parity_and_readiness_fail_closed_with_no_bridge_or_artifact():
     assert "TEAM_EVENT_BRIDGE_NOT_REGISTERED" in readiness["readiness_blockers"]
     assert "TEAM_EVENT_CERTIFICATION_NOT_ACTIVE" in readiness["readiness_blockers"]
     assert readiness["can_execute"] is False
+
+
+def test_daily_cross_sport_scan_requests_regime_variants():
+    """Regression: all-sports ML discovery must not silently omit preseason/playoff boards."""
+    from pathlib import Path
+
+    runtime = Path(__file__).parents[1] / "v17" / "daily_snapshot_runtime.py"
+    source = runtime.read_text(encoding="utf-8")
+    anchor = "scan = discovery.run_cross_sport_winner_scan("
+    start = source.index(anchor)
+    call = source[start : source.index("    )", start) + 5]
+    assert "include_regime_variants=True" in call
