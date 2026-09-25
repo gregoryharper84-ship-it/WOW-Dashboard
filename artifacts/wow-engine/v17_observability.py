@@ -54,6 +54,7 @@ def initialize_observability() -> dict[str, Any]:
     from v17.quota_aware_degraded_discovery import (
         install_quota_aware_degraded_discovery,
     )
+    from v17.free_first_soccer_discovery import install_free_first_soccer_discovery
     from v17.scout_internal_service_auth import install_scout_internal_service_auth
 
     install_scout_internal_service_auth()
@@ -86,6 +87,10 @@ def initialize_observability() -> dict[str, Any]:
     # surfaces, reuses the existing free schedule-first path, and preserves public
     # scoreboard IDs as aliases until canonical identity is independently proven.
     install_quota_aware_degraded_discovery()
+    # Extend that final acquisition surface for multi-competition Soccer targets.
+    # This remains discovery-only: public rows have no probability/exact-line
+    # authority and unverified public competition slugs fall through unchanged.
+    install_free_first_soccer_discovery()
 
     try:
         install_interactive_team_event_latency()
