@@ -21,6 +21,38 @@ from v17 import rundown_sport_registry as registry
 
 CAN_EXECUTE = False
 
+# TheRundown bills returned price rows. Cross-sport discovery needs only a
+# bounded current board, not the provider's full odds universe. These defaults
+# are the provider's documented core pregame markets/books as of 2026-09-25 and
+# remain operator-overridable so provider catalog changes never require a model
+# or probability-path edit.
+_DEFAULT_RUNDOWN_DISCOVERY_MARKET_IDS: tuple[str, ...] = ("1", "2", "3")
+_DEFAULT_RUNDOWN_DISCOVERY_AFFILIATE_IDS: tuple[str, ...] = ("3", "19", "23")
+
+
+def _csv_env(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    values = tuple(item.strip() for item in raw.split(",") if item.strip())
+    return values or default
+
+
+def rundown_discovery_market_ids() -> tuple[str, ...]:
+    """Provider market IDs used only to bound event-board acquisition cost."""
+    return _csv_env(
+        "WOW_RUNDOWN_DISCOVERY_MARKET_IDS",
+        _DEFAULT_RUNDOWN_DISCOVERY_MARKET_IDS,
+    )
+
+
+def rundown_discovery_affiliate_ids() -> tuple[str, ...]:
+    """Provider affiliate IDs used only to bound event-board acquisition cost."""
+    return _csv_env(
+        "WOW_RUNDOWN_DISCOVERY_AFFILIATE_IDS",
+        _DEFAULT_RUNDOWN_DISCOVERY_AFFILIATE_IDS,
+    )
+
 
 def enabled() -> bool:
     return os.environ.get("WOW_V17_CROSS_SPORT_ML_DISCOVERY", "true").strip().lower() in {"1", "true"}
@@ -145,7 +177,14 @@ def rundown_board_feed(
     slate_date: str,
     opener: Any = None,
 ) -> Callable[..., Iterable[Mapping[str, Any]]]:
-    """Discovery over TheRundown's current board, addressed by verified sport id."""
+    """Discovery over a quota-bounded TheRundown current board.
+
+    This path needs event identity only. The shared native adapter still parses
+    a real provider odds snapshot, but the request is deliberately constrained
+    to provider-documented core pregame main lines and a small affiliate set.
+    That preserves discovery semantics while preventing a full market/book
+    snapshot from consuming the account allowance merely to enumerate events.
+    """
 
     def fetch(family: str, target: Any = None) -> list[Mapping[str, Any]]:
         sport_id = getattr(target, "sport_id", None)
@@ -157,6 +196,10 @@ def rundown_board_feed(
             capability="events",
             opener=opener,
             sport_id=sport_id,
+            market_ids=rundown_discovery_market_ids(),
+            affiliate_ids=rundown_discovery_affiliate_ids(),
+            main_line=True,
+            hide_closed=True,
         )
         if not result.ok:
             raise discovery.DiscoveryFeedError(str(result.code or "RUNDOWN_DISCOVERY_FAILED"))
@@ -220,5 +263,7 @@ __all__ = [
     "horizon_hours",
     "odds_proxy_feed",
     "rundown_board_feed",
+    "rundown_discovery_affiliate_ids",
+    "rundown_discovery_market_ids",
     "union_feed",
 ]
