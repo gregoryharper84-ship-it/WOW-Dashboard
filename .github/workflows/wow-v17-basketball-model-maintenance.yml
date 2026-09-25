@@ -10,16 +10,21 @@ on:
     paths:
       - ".github/workflows/wow-v17-basketball-model-maintenance.yml"
       - "artifacts/wow-engine/github_actions_oidc.py"
+      - "artifacts/wow-engine/migrations/20260925_v17_d1_certification_evidence_receipts.sql"
       - "artifacts/wow-engine/basketball_event_hydration_runtime.py"
       - "artifacts/wow-engine/basketball_training_replay.py"
       - "artifacts/wow-engine/basketball_specialist_pipeline.py"
       - "artifacts/wow-engine/basketball_team_event_specialist.py"
       - "artifacts/wow-engine/v17/basketball_model_maintenance.py"
+      - "artifacts/wow-engine/v17/wnba_team_event_certification_evidence.py"
+      - "artifacts/wow-engine/v17/team_event_certification_replay.py"
       - "artifacts/wow-engine/v17/team_state_challenger_training.py"
       - "artifacts/wow-engine/v17/team_state_scoped_maintenance.py"
       - "artifacts/wow-engine/team_event_request_runtime.py"
       - "artifacts/wow-engine/test_v17_basketball_model_maintenance.py"
       - "artifacts/wow-engine/test_v17_basketball_hydration_fallback.py"
+      - "artifacts/wow-engine/test_v17_wnba_team_event_certification_evidence.py"
+      - "artifacts/wow-engine/test_v17_team_event_certification_receipts.py"
       - "artifacts/wow-engine/test_v17_team_state_challenger_training.py"
       - "artifacts/wow-engine/test_v17_team_state_scoped_maintenance.py"
       - "artifacts/wow-engine/test_v17_github_oidc.py"
@@ -28,16 +33,21 @@ on:
     paths:
       - ".github/workflows/wow-v17-basketball-model-maintenance.yml"
       - "artifacts/wow-engine/github_actions_oidc.py"
+      - "artifacts/wow-engine/migrations/20260925_v17_d1_certification_evidence_receipts.sql"
       - "artifacts/wow-engine/basketball_event_hydration_runtime.py"
       - "artifacts/wow-engine/basketball_training_replay.py"
       - "artifacts/wow-engine/basketball_specialist_pipeline.py"
       - "artifacts/wow-engine/basketball_team_event_specialist.py"
       - "artifacts/wow-engine/v17/basketball_model_maintenance.py"
+      - "artifacts/wow-engine/v17/wnba_team_event_certification_evidence.py"
+      - "artifacts/wow-engine/v17/team_event_certification_replay.py"
       - "artifacts/wow-engine/v17/team_state_challenger_training.py"
       - "artifacts/wow-engine/v17/team_state_scoped_maintenance.py"
       - "artifacts/wow-engine/team_event_request_runtime.py"
       - "artifacts/wow-engine/test_v17_basketball_model_maintenance.py"
       - "artifacts/wow-engine/test_v17_basketball_hydration_fallback.py"
+      - "artifacts/wow-engine/test_v17_wnba_team_event_certification_evidence.py"
+      - "artifacts/wow-engine/test_v17_team_event_certification_receipts.py"
       - "artifacts/wow-engine/test_v17_team_state_challenger_training.py"
       - "artifacts/wow-engine/test_v17_team_state_scoped_maintenance.py"
       - "artifacts/wow-engine/test_v17_github_oidc.py"
@@ -73,6 +83,8 @@ jobs:
           test_v17_basketball_hydration_fallback.py
           test_basketball_training_replay_boundaries.py
           test_basketball_team_event_specialist.py
+          test_v17_wnba_team_event_certification_evidence.py
+          test_v17_team_event_certification_receipts.py
           test_v17_team_state_challenger_training.py
           test_v17_team_state_scoped_maintenance.py
           test_v17_github_oidc.py
