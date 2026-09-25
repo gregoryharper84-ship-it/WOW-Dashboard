@@ -10,6 +10,11 @@ stages. A temporary/missing acquisition provider must not prevent replay of an
 already persisted, provenance-complete, fresh corpus. Acquisition degradation is
 retained as typed metadata and never converted into model readiness.
 
+WNBA maintenance also runs the independent candidate-bound certification
+evidence verifier after the fresh team-state challenger has been maintained by
+the first-six workflow.  That verifier can write a non-promoting evidence
+receipt; it cannot certify, activate, publish, rank, or execute.
+
 It never promotes or activates an artifact, never publishes a betting
 probability, and never enables execution.
 """
@@ -24,6 +29,7 @@ from basketball_event_hydration_runtime import BasketballHydrationError, hydrate
 from basketball_training_replay import run_training_replay
 from github_actions_oidc import scout_route_auth_dependency
 from v17.team_event_model_development_manifest import development_lane
+from v17.wnba_team_event_certification_evidence import run_wnba_team_event_certification_evidence
 
 CAN_EXECUTE = False
 SUPPORTED_SPORTS = ("NBA", "WNBA")
@@ -70,6 +76,23 @@ def _hydration_blocker(exc: Exception) -> dict[str, Any]:
     }
 
 
+def _wnba_certification_evidence(db: Any) -> dict[str, Any]:
+    try:
+        return run_wnba_team_event_certification_evidence(db)
+    except Exception as exc:  # noqa: BLE001 - evidence failure remains typed/non-promoting
+        return {
+            "status": "BLOCKED",
+            "code": "WNBA_CERTIFICATION_EVIDENCE_VERIFIER_FAILED",
+            "error_type": type(exc).__name__,
+            "source_review_pass": False,
+            "replay_evidence_pass": False,
+            "automatic_certification": False,
+            "automatic_promotion": False,
+            "probability_publishable": False,
+            "can_execute": False,
+        }
+
+
 def run_basketball_model_maintenance(
     db: Any,
     *,
@@ -101,6 +124,7 @@ def run_basketball_model_maintenance(
         try:
             replay = run_training_replay(sport, client=db)
             lane = development_lane(sport)
+            certification_evidence = _wnba_certification_evidence(db) if sport == "WNBA" else None
             row: dict[str, Any] = {
                 "sport": sport,
                 "status": "SHADOW_EVIDENCE_UPDATED",
@@ -112,6 +136,7 @@ def run_basketball_model_maintenance(
                 ),
                 "hydration_blocker": hydration_blocker,
                 "training_replay": replay,
+                "certification_evidence": certification_evidence,
                 "model_development": lane.as_dict() if lane is not None else None,
                 "promotion_attempted": False,
                 "probability_publishable": False,
@@ -142,6 +167,14 @@ def run_basketball_model_maintenance(
         row.get("hydration_status") == "FRESH_ACQUISITION_BLOCKED_USING_PERSISTED_CORPUS"
         for row in results
     )
+    wnba_evidence = next(
+        (
+            row.get("certification_evidence")
+            for row in results
+            if row.get("sport") == "WNBA" and row.get("certification_evidence") is not None
+        ),
+        None,
+    )
     return {
         "status": "COMPLETE" if updated == len(results) else ("PARTIAL" if updated else "BLOCKED"),
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -150,6 +183,7 @@ def run_basketball_model_maintenance(
         "rows_updated": updated,
         "rows_blocked": len(results) - updated,
         "rows_fresh_acquisition_degraded": degraded,
+        "wnba_certification_evidence_status": None if wnba_evidence is None else wnba_evidence.get("status"),
         "automatic_certification": False,
         "automatic_promotion": False,
         "probability_publishable": False,
