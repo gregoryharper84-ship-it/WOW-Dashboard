@@ -65,6 +65,7 @@ def test_validate_probe_response_rejects_numeric_probability_leak():
 
 def test_live_probe_authenticates_more_and_less_and_logs_only_sanitized_metadata(monkeypatch, caplog):
     calls = []
+    attempts = {"MORE": 0, "LESS": 0}
 
     class FakeClient:
         def __init__(self, *args, **kwargs):
@@ -78,6 +79,10 @@ def test_live_probe_authenticates_more_and_less_and_logs_only_sanitized_metadata
 
         async def post(self, url, headers, json):
             calls.append((url, headers, json))
+            direction = json["direction"]
+            attempts[direction] += 1
+            if attempts[direction] == 1:
+                return _response({"detail": {"code": "STARTING"}}, status=503)
             return _response(
                 {
                     "detail": {
@@ -101,7 +106,7 @@ def test_live_probe_authenticates_more_and_less_and_logs_only_sanitized_metadata
     caplog.set_level(logging.WARNING, logger="wow.prop.acceptance")
     asyncio.run(acceptance._run_prop_live_self_acceptance())
 
-    assert [call[2]["direction"] for call in calls] == ["MORE", "LESS"]
+    assert [call[2]["direction"] for call in calls] == ["MORE", "MORE", "LESS", "LESS"]
     assert all(call[1]["Authorization"] == "Bearer super-secret-test-key" for call in calls)
     assert all(call[1]["X-WOW-Model-Identity"] == "WOW_BETTING_ENGINE" for call in calls)
     assert all(call[1]["X-WOW-Caller-Class"] == "SELF_ACCEPTANCE" for call in calls)
@@ -109,7 +114,13 @@ def test_live_probe_authenticates_more_and_less_and_logs_only_sanitized_metadata
     request_ids = [call[1]["X-WOW-Request-ID"] for call in calls]
     assert len(set(request_ids)) == 2
     assert all(str(uuid.UUID(request_id)) == request_id for request_id in request_ids)
+    more_ids = {call[1]["X-WOW-Request-ID"] for call in calls if call[2]["direction"] == "MORE"}
+    less_ids = {call[1]["X-WOW-Request-ID"] for call in calls if call[2]["direction"] == "LESS"}
+    assert len(more_ids) == len(less_ids) == 1
+    assert more_ids.isdisjoint(less_ids)
     assert "super-secret-test-key" not in caplog.text
+    assert "WOW Live Self Acceptance" not in caplog.text
+    assert "WOW:PROP:LIVE:SELF_ACCEPTANCE:NO_EVIDENCE" not in caplog.text
     assert "directions=MORE,LESS" in caplog.text
     assert "zero_probability_leak=true" in caplog.text
     assert "settlement_math=PROVEN" in caplog.text
