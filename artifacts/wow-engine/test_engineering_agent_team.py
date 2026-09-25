@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from v17.engineering_agent_team import (
     AGENT_ROLES,
+    SPECIALIST_SUBAGENTS,
     reliability_blocks_frontier,
     select_priority_incident,
+    select_support_subagent,
     validate_frontier_candidate,
 )
 
@@ -12,6 +14,14 @@ def test_only_implementation_agent_can_write_code() -> None:
     writers = {name for name, role in AGENT_ROLES.items() if role["may_write_code"]}
     assert writers == {"ENGINEERING_AGENT"}
     assert all(role["may_change_probability_behavior"] is False for role in AGENT_ROLES.values())
+
+
+def test_specialist_subagents_are_support_only_and_read_only() -> None:
+    assert SPECIALIST_SUBAGENTS
+    assert all(role["support_only"] is True for role in SPECIALIST_SUBAGENTS.values())
+    assert all(role["may_write_code"] is False for role in SPECIALIST_SUBAGENTS.values())
+    assert all(role["may_approve_own_work"] is False for role in SPECIALIST_SUBAGENTS.values())
+    assert all(role["may_change_probability_behavior"] is False for role in SPECIALIST_SUBAGENTS.values())
 
 
 def test_p0_p1_reliability_blocks_frontier_work() -> None:
@@ -48,6 +58,39 @@ def test_priority_prefers_p0_over_p1() -> None:
         ]
     )
     assert decision.incident_id == "PM-P0"
+
+
+def test_specialist_routing_preserves_exact_failure_ownership() -> None:
+    assert select_support_subagent(
+        {"typed_failure": "ACTION_TRANSPORT_FAILURE"}
+    ).subagent == "RUNTIME_TRANSPORT_SUBAGENT"
+    assert select_support_subagent(
+        {"typed_failure": "PERSISTENCE_FAILURE"}
+    ).subagent == "DATA_PERSISTENCE_SUBAGENT"
+    assert select_support_subagent(
+        {"typed_failure": "CANONICAL_IDENTITY_FAILURE"}
+    ).subagent == "ACQUISITION_IDENTITY_SUBAGENT"
+    assert select_support_subagent(
+        {"typed_failure": "MODEL_UNAVAILABLE"}
+    ).subagent == "MODEL_CAPABILITY_GOVERNANCE_SUBAGENT"
+
+
+def test_waiting_stage_gets_non_conflicting_support_instead_of_idle() -> None:
+    ci = select_support_subagent({"wait_state": "CI_PENDING"})
+    assert ci.subagent == "CI_REPOSITORY_SUBAGENT"
+    assert ci.implementation_lease is False
+    assert ci.support_only is True
+
+    deploy = select_support_subagent({"wait_state": "DEPLOYMENT_PENDING"})
+    assert deploy.subagent == "RUNTIME_TRANSPORT_SUBAGENT"
+    assert deploy.implementation_lease is False
+
+
+def test_unknown_support_route_fails_safe_to_regression_lane() -> None:
+    decision = select_support_subagent({"primary_subsystem": "UNKNOWN"})
+    assert decision.subagent == "REGRESSION_SAFETY_SUBAGENT"
+    assert decision.implementation_lease is False
+    assert decision.support_only is True
 
 
 def test_frontier_candidate_cannot_directly_change_production() -> None:
