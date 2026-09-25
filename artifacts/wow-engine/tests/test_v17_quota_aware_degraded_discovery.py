@@ -74,6 +74,32 @@ def test_public_schedule_success_consumes_zero_paid_odds_calls(monkeypatch):
     assert context["paid_provider_calls_succeeded"] == 0
 
 
+def test_odds_api_event_feed_stamps_alias_and_removes_canonical_identity_keys():
+    row = feed._odds_api_alias_row(
+        {
+            "id": "odds-event-123",
+            "home_team": "Home",
+            "away_team": "Away",
+            "commence_time": "2026-09-25T23:00:00Z",
+        },
+        sport_key="soccer_usa_mls",
+    )
+    assert row["provider_event_id"] == "odds-event-123"
+    assert row["provider_event_id_type"] == "THE_ODDS_API_EVENT_ALIAS"
+    assert row["canonical_identity_status"] == "ALIAS_ONLY_UNRESOLVED"
+    assert row["discovery_provider"] == "ODDS_API_EVENTS"
+    assert row["source_provider"] == "ODDS_API_EVENTS"
+    assert row["provider_sport_key"] == "soccer_usa_mls"
+    assert row["research_only"] is True
+    assert row["prediction_authority"] is False
+    assert row["exact_line_authority"] is False
+    assert row["can_execute"] is False
+    assert "id" not in row
+    assert "event_id" not in row
+    assert "official_event_id" not in row
+    assert "event_uuid" not in row
+
+
 def test_rundown_quota_exhaustion_trips_one_scan_circuit(monkeypatch):
     calls = []
 
@@ -172,6 +198,38 @@ def test_public_scoreboard_id_remains_provider_alias_not_official_identity():
     assert out.provider_sport_id is None
     assert out.raw["provider_event_id"] == "123"
     assert out.raw["official_event_id"] is None
+    assert out.raw["canonical_identity_status"] == "ALIAS_ONLY_UNRESOLVED"
+
+
+def test_odds_api_id_remains_provider_alias_not_official_identity_or_rundown_target():
+    event = discovery.DiscoveredEvent(
+        sport="SOCCER",
+        league="MLS",
+        sport_key="soccer_usa_mls",
+        official_event_id="odds-event-123",
+        home_team="Home",
+        away_team="Away",
+        commence_time_utc="2026-09-25T23:00:00Z",
+        event_status="PREGAME",
+        source="DISCOVERY_FEED",
+        provider="RUNDOWN",
+        provider_sport_id=10,
+        raw={"provider_event_id": "odds-event-123"},
+    )
+    out = quota._normalize_public_alias(
+        {
+            "provider_event_id": "odds-event-123",
+            "discovery_provider": "ODDS_API_EVENTS",
+        },
+        event,
+    )
+
+    assert out.official_event_id is None
+    assert out.provider == "ODDS_API_EVENTS"
+    assert out.provider_sport_id is None
+    assert out.raw["provider_event_id"] == "odds-event-123"
+    assert out.raw["official_event_id"] is None
+    assert out.raw["canonical_identity_status"] == "ALIAS_ONLY_UNRESOLVED"
 
 
 def test_coverage_truth_never_calls_partial_board_complete():

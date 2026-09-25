@@ -69,6 +69,28 @@ def _iso(value: datetime) -> str:
     return value.replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
+def _odds_api_alias_row(raw: Mapping[str, Any], *, sport_key: str) -> dict[str, Any]:
+    """Stamp one zero-credit Odds API event as alias-only discovery evidence."""
+    row = dict(raw)
+    alias = row.get("id") or row.get("event_id") or row.get("event_uuid")
+    row["provider_event_id"] = alias
+    row["provider_event_id_type"] = "THE_ODDS_API_EVENT_ALIAS"
+    row["canonical_identity_status"] = "ALIAS_ONLY_UNRESOLVED"
+    row["provider_sport_key"] = sport_key
+    row["discovery_provider"] = "ODDS_API_EVENTS"
+    row["source_provider"] = "ODDS_API_EVENTS"
+    row["research_only"] = True
+    row["prediction_authority"] = False
+    row["exact_line_authority"] = False
+    row["can_execute"] = False
+    # Provider event IDs are useful aliases, but they are not WOW/league
+    # canonical IDs. Remove every key the canonical normalizer considers an
+    # official identity so the alias cannot be promoted by accident.
+    for key in ("id", "event_id", "official_event_id", "event_uuid"):
+        row.pop(key, None)
+    return row
+
+
 def odds_proxy_feed(
     *,
     proxy_get: Callable[..., Any] | None = None,
@@ -83,7 +105,8 @@ def odds_proxy_feed(
     not carry contributes nothing here, and TheRundown feed covers it instead.
 
     The proxy's ``/events`` route is an event listing, not an odds snapshot, and
-    is used here only as one.
+    is used here only as one. Provider event IDs remain aliases until a separate
+    canonical resolver proves identity.
     """
     if proxy_get is None:
         from v17.nightly_multiscout import proxy_get as default_proxy_get
@@ -136,7 +159,9 @@ def odds_proxy_feed(
                     str(getattr(result, "code", None) or "EVENT_DISCOVERY_FAILED")
                 )
             rows.extend(
-                row for row in (getattr(result, "data", None) or []) if isinstance(row, Mapping)
+                _odds_api_alias_row(row, sport_key=sport_key)
+                for row in (getattr(result, "data", None) or [])
+                if isinstance(row, Mapping)
             )
         return rows
 
