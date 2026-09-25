@@ -66,6 +66,7 @@ on:
       - "artifacts/wow-engine/test_agent_runtime_v17_model_failures.py"
       - "artifacts/wow-engine/test_v17_github_oidc.py"
       - "artifacts/wow-engine/test_v17_multiscout_oidc_runtime.py"
+      - "artifacts/wow-engine/test_v17_multiscout_auto_advance_batch_bound.py"
       - "artifacts/wow-engine/test_v17_scout_brain_edge_chunking.py"
       - "artifacts/wow-engine/test_v17_scout_source_degradation.py"
       - "artifacts/wow-engine/test_v17_scout_board_refresh_fail_closed.py"
@@ -108,6 +109,7 @@ jobs:
           test_agent_runtime_v17_model_failures.py
           test_v17_github_oidc.py
           test_v17_multiscout_oidc_runtime.py
+          test_v17_multiscout_auto_advance_batch_bound.py
           test_v17_scout_brain_edge_chunking.py
           test_v17_scout_source_degradation.py
           test_v17_scout_board_refresh_fail_closed.py
@@ -207,6 +209,10 @@ jobs:
       WOW_SCOUT_HORIZON_HOURS: "36"
       WOW_SCOUT_REQUEST_DELAY_MS: "75"
       WOW_SCOUT_MARKET_CHUNK_SIZE: "10"
+      # Run 36149885893 proved 8 team/event objective rows can exceed the
+      # governed backend's 120s transport window under Nightly load. Keep
+      # this OIDC-only batch bound below that observed timeout class.
+      WOW_AUTO_ADVANCE_TEAM_EVENT_BATCH_ROWS: "4"
       WOW_CAN_EXECUTE: "false"
       WOW_DRY_RUN_ONLY: "true"
       WOW_MARKET_EVIDENCE_ENABLED: "true"
