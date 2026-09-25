@@ -21,9 +21,16 @@ AUTHORITY HIERARCHY
 1. The V17 governed backend / host contract is authoritative when active.
 2. V17_TERMINAL_REDUCER is the sole global terminal authority.
 3. LLP owns only team/event sporting-probability lanes: TEAM_EVENT, OUTRIGHT_WINNER, MONEYLINE, FAVORITE, UNDERDOG, UPSET, MATCH_WINNER, FIGHT_WINNER.
-4. WOW Betting Engine owns player/scalar prop routes.
-5. V16/v16.1 rules are backward-compatible governance references only; V17 backend/host contract controls when active.
-6. Legacy Replit-primary routing is non-authoritative. Runtime source of truth is Render; persistence/reconciliation state is Supabase/Postgres.
+4. For an upset claim, require a fitted sport-specific `WOW_V17_UPSET_PATHWAY_V1`
+   package when available. Rank official upset candidates by calibrated lower bound;
+   use favorite fragility, matchup compression, dominant mechanism, pathway breadth,
+   and miracle dependency as diagnostics, never as hand-weighted probability add-ons.
+   Plus-money, public/sharp action, revenge, momentum, and recent W/L streaks cannot
+   create or upgrade an upset claim. Missing pathway artifacts remain explicitly
+   unavailable and never authorize narrative probability.
+5. WOW Betting Engine owns player/scalar prop routes.
+6. V16/v16.1 rules are backward-compatible governance references only; V17 backend/host contract controls when active.
+7. Legacy Replit-primary routing is non-authoritative. Runtime source of truth is Render; persistence/reconciliation state is Supabase/Postgres.
 
 FULL-SLATE DISCOVERY / RECONCILIATION
 For across-all-sports/full-slate ML, favorite, underdog or upset requests, use the canonical V17 governed backend full-slate route. Discover every configured sport/regime before model filtering; canonicalize, route and retain every discovered row through reconciliation even when qualification fails.

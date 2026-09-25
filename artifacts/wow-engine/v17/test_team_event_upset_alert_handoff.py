@@ -114,3 +114,13 @@ def test_market_tie_does_not_invent_a_favorite():
     annotated = _attach_upset_alert(_req(home_market=0.50, away_market=0.50), _result())
     assert annotated["upset_alert_status"] == "UPSET_ALERT_UNAVAILABLE"
     assert annotated["upset_alert"]["reason_codes"] == ["MARKET_FAVORITE_TIE_UNRESOLVED"]
+
+
+def test_missing_fitted_pathway_is_explicitly_unavailable_without_changing_probability():
+    annotated = _attach_upset_alert(_req(), _result())
+    assert annotated["upset_pathway_model"]["status"] == "UNAVAILABLE"
+    assert annotated["upset_pathway_model"]["reason_codes"] == [
+        "SPORT_SPECIFIC_FITTED_PATHWAY_ARTIFACT_NOT_EMITTED"
+    ]
+    assert annotated["upset_candidate_model_probability"] == .54
+    assert "UPSET_PATHWAY_MODEL_NOT_AVAILABLE" in annotated["upset_alert"]["reason_codes"]

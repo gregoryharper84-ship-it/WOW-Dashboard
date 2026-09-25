@@ -33,6 +33,11 @@ from fastapi import FastAPI
 from v17 import team_event_request_runtime as _base
 from v17.projected_lineup_scenario_modeling import projected_probability_hold
 from v17.team_event_upset_alert import evaluate_favorite_upset_alert
+from v17.upset_pathway_model import (
+    UpsetPathwayInvalid,
+    unavailable_pathway,
+    validate_and_aggregate_upset_pathways,
+)
 
 _original_hold = _base._llp_governance_hold
 _original_run_mlb_llp_governance = _base._run_mlb_llp_governance
@@ -349,6 +354,25 @@ def _attach_upset_alert(req: Any, result: dict[str, Any]) -> dict[str, Any]:
     if any(out.get(field) is None for field in _UPSET_ALERT_NUMERIC_FIELDS):
         return _unavailable_upset_alert(out, "GOVERNED_COMPLETE_OUTCOME_SPACE_UNAVAILABLE")
 
+    pathway_input = out.get("upset_pathway_package")
+    if isinstance(pathway_input, dict):
+        raw_underdog_field = (
+            "raw_away_probability"
+            if market_favorite.casefold() == str(req.home_team).casefold()
+            else "raw_home_probability"
+        )
+        try:
+            out["upset_pathway_model"] = validate_and_aggregate_upset_pathways(
+                pathway_input,
+                governed_raw_underdog_probability=out.get(raw_underdog_field),
+            )
+        except UpsetPathwayInvalid as exc:
+            out["upset_pathway_model"] = unavailable_pathway(str(exc))
+    elif "upset_pathway_model" not in out:
+        out["upset_pathway_model"] = unavailable_pathway(
+            "SPORT_SPECIFIC_FITTED_PATHWAY_ARTIFACT_NOT_EMITTED"
+        )
+
     try:
         alert = evaluate_favorite_upset_alert(
             sport=str(getattr(req, "sport", "MLB") or "MLB"),
@@ -374,6 +398,7 @@ def _attach_upset_alert(req: Any, result: dict[str, Any]) -> dict[str, Any]:
             ),
             largest_favorite_loss_path=out.get("largest_favorite_loss_path"),
             underdog_upset_path=out.get("underdog_upset_path_json", out.get("underdog_upset_path")),
+            upset_pathway_model=out.get("upset_pathway_model"),
         )
     except (KeyError, TypeError, ValueError):
         return _unavailable_upset_alert(out, "GOVERNED_UPSET_ALERT_PACKAGE_INVALID")
