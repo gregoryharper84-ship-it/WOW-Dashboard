@@ -1,8 +1,8 @@
 """Read-only credential proxy for The Odds API v4.
 
 Security properties:
-- The vendor ``ODDS_API_KEY`` is read only from the server environment and is
-  never accepted from a caller, returned in a response, or written to logs.
+- The vendor Odds API credentials are read only from the server environment and
+  are never accepted from a caller, returned in a response, or written to logs.
 - Ordinary callers authenticate with ``WOW_ODDS_PROXY_ACTION_KEY`` via Bearer.
   The exact protected-main WOW Multi-Scout GitHub workflow may alternatively
   authenticate with a short-lived GitHub OIDC token whose issuer, audience,
@@ -36,6 +36,12 @@ QUOTA_HEADERS = ("x-requests-remaining", "x-requests-used", "x-requests-last")
 CORE_EVENT_MARKETS = frozenset({"h2h", "spreads", "totals"})
 MARKET_INVENTORY_FALLBACK_HEADER = "x-wow-market-inventory-fallback"
 EVENT_ODDS_FALLBACK_HEADER = "x-wow-event-odds-fallback"
+ODDS_API_KEY_ENVS = (
+    "ODDS_API_PAID_KEY",
+    "ODDS_API_KEY_100K",
+    "ODDS_API_FREE_KEY",
+    "ODDS_API_KEY",
+)
 # Degradation is reported in the body as well as the header: acquisition clients
 # read the JSON payload, so a header-only signal is silently discarded and a
 # core-markets-only response is indistinguishable from a slate with no props.
@@ -93,11 +99,29 @@ def _require_proxy_action_key(authorization: Optional[str] = Header(default=None
         ) from exc
 
 
+def _vendor_keys() -> tuple[tuple[str, str], ...]:
+    """Return configured Odds API aliases in governed priority order.
+
+    Values are de-duplicated and never exposed. This mirrors the key ladder used
+    elsewhere in WOW so a stale/exhausted legacy key cannot strand zero-credit
+    sports/events discovery while another configured alias remains healthy.
+    """
+    keys: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for env_name in ODDS_API_KEY_ENVS:
+        raw = os.environ.get(env_name)
+        value = raw.strip() if raw and raw.strip() else ""
+        if value and value not in seen:
+            seen.add(value)
+            keys.append((env_name, value))
+    return tuple(keys)
+
+
 def _vendor_key() -> str:
-    key = os.environ.get("ODDS_API_KEY")
-    if not key:
+    keys = _vendor_keys()
+    if not keys:
         raise HTTPException(status_code=503, detail={"code": "ODDS_API_KEY_UNCONFIGURED", "can_execute": False})
-    return key
+    return keys[0][1]
 
 
 def _clean_params(**values) -> dict[str, str]:
@@ -131,8 +155,7 @@ def _safe_upstream_message(response: httpx.Response) -> Optional[str]:
     for field in ("message", "error", "detail"):
         value = payload.get(field)
         if isinstance(value, str):
-            vendor_key = os.environ.get("ODDS_API_KEY")
-            if vendor_key:
+            for _source, vendor_key in _vendor_keys():
                 value = value.replace(vendor_key, "[REDACTED]")
             return value[:500]
     return None
@@ -152,12 +175,25 @@ def _upstream_error_response(response: httpx.Response, code: str = "ODDS_API_UPS
 
 
 def _proxy_get(upstream_path: str, params: dict[str, str]) -> JSONResponse:
-    upstream_params = dict(params)
-    upstream_params["apiKey"] = _vendor_key()
-    try:
-        response = _http_get(f"{ODDS_API_BASE}{upstream_path}", upstream_params)
-    except (httpx.TimeoutException, httpx.NetworkError, httpx.RequestError):
-        raise HTTPException(status_code=502, detail={"code": "ODDS_API_UPSTREAM_UNREACHABLE", "can_execute": False})
+    keys = _vendor_keys()
+    if not keys:
+        raise HTTPException(status_code=503, detail={"code": "ODDS_API_KEY_UNCONFIGURED", "can_execute": False})
+
+    response: httpx.Response | None = None
+    for index, (_source, vendor_key) in enumerate(keys):
+        upstream_params = dict(params)
+        upstream_params["apiKey"] = vendor_key
+        try:
+            response = _http_get(f"{ODDS_API_BASE}{upstream_path}", upstream_params)
+        except (httpx.TimeoutException, httpx.NetworkError, httpx.RequestError):
+            raise HTTPException(status_code=502, detail={"code": "ODDS_API_UPSTREAM_UNREACHABLE", "can_execute": False})
+
+        has_next = index + 1 < len(keys)
+        if response.status_code in {401, 429} and has_next:
+            continue
+        break
+
+    assert response is not None
     headers = _quota_headers(response)
     try:
         payload = response.json()
@@ -253,7 +289,8 @@ def health():
     return {
         "status": "ok", "service": "WOW_ODDS_API_CREDENTIAL_PROXY", "compute_provider": "RENDER",
         "vendor": "THE_ODDS_API_V4", "read_only": True,
-        "vendor_key_configured": bool(os.environ.get("ODDS_API_KEY")),
+        "vendor_key_configured": bool(_vendor_keys()),
+        "vendor_key_alias_count": len(_vendor_keys()),
         "caller_bearer_auth_configured": bool(os.environ.get("WOW_ODDS_PROXY_ACTION_KEY")),
         "github_multiscout_oidc_enabled": True,
         "market_inventory_core_fallback_enabled": True,
