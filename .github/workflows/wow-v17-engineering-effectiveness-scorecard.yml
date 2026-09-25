@@ -48,12 +48,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh api --paginate --slurp "/repos/${GITHUB_REPOSITORY}/pulls?state=closed&sort=updated&direction=desc&per_page=100" \
-            --jq '[.[][] | select(.merged_at != null) | {number,title,body,created_at,merged_at}]' \
-            > "$RUNNER_TEMP/merged-prs.json"
-          gh api --paginate --slurp "/repos/${GITHUB_REPOSITORY}/pulls?state=open&sort=created&direction=asc&per_page=100" \
-            --jq '[.[][] | {number,title,body,created_at,updated_at}]' \
-            > "$RUNNER_TEMP/open-prs.json"
+          gh api --paginate "/repos/${GITHUB_REPOSITORY}/pulls?state=closed&sort=updated&direction=desc&per_page=100" \
+            --jq '.[] | select(.merged_at != null) | {number,title,body,created_at,merged_at}' \
+            | jq -s '.' > "$RUNNER_TEMP/merged-prs.json"
+          gh api --paginate "/repos/${GITHUB_REPOSITORY}/pulls?state=open&sort=created&direction=asc&per_page=100" \
+            --jq '.[] | {number,title,body,created_at,updated_at}' \
+            | jq -s '.' > "$RUNNER_TEMP/open-prs.json"
+          jq -e 'type == "array"' "$RUNNER_TEMP/merged-prs.json" >/dev/null
+          jq -e 'type == "array"' "$RUNNER_TEMP/open-prs.json" >/dev/null
 
       - name: Build 72-hour engineering effectiveness scorecard
         id: score
