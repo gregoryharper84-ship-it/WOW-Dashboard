@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-TEAM_VERSION = "2.1"
+TEAM_VERSION = "3.0"
 
 AGENT_ROLES: dict[str, dict[str, Any]] = {
     "ENGINEERING_LEAD_AGENT": {
@@ -88,6 +88,27 @@ TERMINAL_ISSUE_STATES = {
 
 SEVERITY_WEIGHT = {"P0": 0, "P1": 1, "P2": 2, "P3": 3, "P4": 4}
 ACTIVE_RELEASE_STATES = {"DEPLOYED_PENDING_VERIFY", "MERGED_PENDING_DEPLOY", "PR_CREATED"}
+USER_CRITICAL_JOURNEYS = ("ALL_SPORTS_PROPS", "ALL_SPORTS_ML_WINNERS", "ALL_SPORTS_UPSETS")
+MAX_ACTIVE_PRODUCT_RECOVERY = 1
+MAX_ACTIVE_SUPPORTING_INVESTIGATION = 1
+
+REQUIRED_CLOSURE_FIELDS = {
+    "expected_behavior", "observed_behavior", "reproduction", "evidence",
+    "affected_component", "environment", "severity", "change_class",
+    "acceptance_criteria", "regression_guard",
+}
+
+FAILURE_OWNERS = {
+    "DISCOVERY_FAILURE": "acquisition",
+    "PROVIDER_FAILURE": "acquisition",
+    "CANONICAL_IDENTITY_FAILURE": "identity",
+    "HYDRATION_FAILURE": "hydration",
+    "MODEL_INPUTS_INSUFFICIENT": "specialist-inputs",
+    "MODEL_UNAVAILABLE": "model-capability",
+    "SCORER_FAILURE": "scoring",
+    "ACTION_TRANSPORT_FAILURE": "transport",
+    "PERSISTENCE_FAILURE": "persistence",
+}
 FRONTIER_RADAR = {"ADOPT", "TRIAL", "ASSESS", "WATCH", "REJECT", "DUPLICATE"}
 
 
@@ -161,6 +182,49 @@ def select_priority_incident(records: list[dict[str, Any]]) -> PriorityDecision:
     )
 
 
+
+def validate_closure_record(record: dict[str, Any]) -> list[str]:
+    """Enforce one durable closure unit instead of disconnected progress markers."""
+    errors: list[str] = []
+    missing = sorted(k for k in REQUIRED_CLOSURE_FIELDS if not record.get(k))
+    if missing:
+        errors.append("missing closure fields: " + ", ".join(missing))
+    journey = str(record.get("user_journey") or "")
+    if journey and journey not in USER_CRITICAL_JOURNEYS:
+        errors.append(f"unknown user_journey: {journey}")
+    failure = str(record.get("typed_failure") or "")
+    if failure and failure not in FAILURE_OWNERS:
+        errors.append(f"unowned typed_failure: {failure}")
+    if record.get("can_execute") is not False:
+        errors.append("closure record must set can_execute=false")
+    if record.get("terminal_authority") != "V17_TERMINAL_REDUCER":
+        errors.append("closure record must preserve V17_TERMINAL_REDUCER")
+    return errors
+
+
+def closure_wip(records: list[dict[str, Any]]) -> dict[str, Any]:
+    """Hard WIP gate: one product recovery plus one supporting investigation."""
+    active = [r for r in records if is_actionable(r)]
+    product = [r for r in active if str(r.get("severity") or "").upper() in {"P0", "P1"}]
+    supporting = [r for r in active if r not in product]
+    return {
+        "product_recovery_active": len(product),
+        "supporting_investigation_active": len(supporting),
+        "product_recovery_limit": MAX_ACTIVE_PRODUCT_RECOVERY,
+        "supporting_investigation_limit": MAX_ACTIVE_SUPPORTING_INVESTIGATION,
+        "new_product_work_allowed": len(product) < MAX_ACTIVE_PRODUCT_RECOVERY,
+        "new_supporting_work_allowed": len(supporting) < MAX_ACTIVE_SUPPORTING_INVESTIGATION,
+    }
+
+
+def route_failure(typed_failure: str) -> str:
+    """Return the owning layer without collapsing failures into MODEL_UNAVAILABLE."""
+    key = str(typed_failure or "").upper()
+    if key not in FAILURE_OWNERS:
+        raise ValueError(f"unowned typed failure: {key!r}")
+    return FAILURE_OWNERS[key]
+
+
 def validate_frontier_candidate(candidate: dict[str, Any]) -> list[str]:
     errors: list[str] = []
     radar = str(candidate.get("radar_status") or "").upper()
@@ -198,6 +262,10 @@ def self_check() -> dict[str, Any]:
         assert role["may_approve_own_work"] is False
     assert reliability_blocks_frontier([{"severity": "P1", "state": "OPEN"}])
     assert not reliability_blocks_frontier([{"severity": "P2", "state": "OPEN"}])
+    assert route_failure("ACTION_TRANSPORT_FAILURE") == "transport"
+    assert route_failure("MODEL_UNAVAILABLE") == "model-capability"
+    assert USER_CRITICAL_JOURNEYS == ("ALL_SPORTS_PROPS", "ALL_SPORTS_ML_WINNERS", "ALL_SPORTS_UPSETS")
+    assert closure_wip([{"severity": "P0", "state": "OPEN"}])["new_product_work_allowed"] is False
     return {
         "team_version": TEAM_VERSION,
         "agent_roles": sorted(AGENT_ROLES),
