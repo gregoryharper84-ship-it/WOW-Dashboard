@@ -13,7 +13,7 @@ def _target(*, sport_id=3, league="MLB"):
     return SimpleNamespace(sport_id=sport_id, league=league)
 
 
-def test_rundown_discovery_snapshot_is_bounded_to_core_main_lines(monkeypatch):
+def test_rundown_discovery_snapshot_is_bounded_to_moneyline_main_lines(monkeypatch):
     calls = []
 
     def fake_snapshot(sport_key, date, **kwargs):
@@ -30,10 +30,71 @@ def test_rundown_discovery_snapshot_is_bounded_to_core_main_lines(monkeypatch):
     assert date == "2026-09-25"
     assert kwargs["capability"] == "events"
     assert kwargs["sport_id"] == 3
-    assert kwargs["market_ids"] == ("1", "2", "3")
+    assert kwargs["market_ids"] == ("1",)
     assert kwargs["affiliate_ids"] == ("3", "19", "23")
     assert kwargs["main_line"] is True
     assert kwargs["hide_closed"] is True
+
+
+def test_rundown_discovery_moneyline_filter_applies_to_non_mlb_targets(monkeypatch):
+    calls = []
+
+    def fake_snapshot(sport_key, date, **kwargs):
+        calls.append((sport_key, date, kwargs))
+        return SimpleNamespace(ok=True, data=[], code=None)
+
+    monkeypatch.setattr(live, "get_sport_date_odds_snapshot", fake_snapshot)
+    fetch = feed.rundown_board_feed(slate_date="2026-09-25")
+
+    fetch("NCAAF", _target(sport_id=1, league="NCAAF"))
+    fetch("NHL", _target(sport_id=6, league="NHL"))
+    fetch("SOCCER", _target(sport_id=10, league="SOCCER"))
+    fetch("TENNIS", _target(sport_id=38, league="TENNIS"))
+    fetch("MMA", _target(sport_id=7, league="MMA"))
+
+    assert [call[2]["market_ids"] for call in calls] == [("1",)] * 5
+    assert [call[2]["main_line"] for call in calls] == [True] * 5
+    assert [call[2]["hide_closed"] for call in calls] == [True] * 5
+
+
+def test_soccer_moneyline_market_one_preserves_draw_participant():
+    raw = {
+        "event_id": "soccer-1",
+        "event_date": "2026-09-25T20:00:00Z",
+        "teams_normalized": [
+            {"name": "Home FC", "is_home": True, "is_away": False},
+            {"name": "Away FC", "is_home": False, "is_away": True},
+        ],
+        "markets": [
+            {
+                "market_id": 1,
+                "name": "moneyline",
+                "participants": [
+                    {
+                        "name": "Home FC",
+                        "type": "home",
+                        "lines": [{"prices": {"3": {"affiliate_name": "Pinnacle", "price": 120}}}],
+                    },
+                    {
+                        "name": "Draw",
+                        "type": "draw",
+                        "lines": [{"prices": {"3": {"affiliate_name": "Pinnacle", "price": 225}}}],
+                    },
+                    {
+                        "name": "Away FC",
+                        "type": "away",
+                        "lines": [{"prices": {"3": {"affiliate_name": "Pinnacle", "price": 210}}}],
+                    },
+                ],
+            }
+        ],
+    }
+
+    event = live.rundown_v2_event_to_odds_api_v4(raw, sport_key="SOCCER")
+
+    assert event is not None
+    outcomes = event["bookmakers"][0]["markets"][0]["outcomes"]
+    assert {outcome["name"] for outcome in outcomes} == {"Home FC", "Draw", "Away FC"}
 
 
 def test_rundown_discovery_filters_are_operator_overridable(monkeypatch):
@@ -48,7 +109,7 @@ def test_empty_override_does_not_accidentally_unbound_snapshot(monkeypatch):
     monkeypatch.setenv("WOW_RUNDOWN_DISCOVERY_MARKET_IDS", " , ")
     monkeypatch.setenv("WOW_RUNDOWN_DISCOVERY_AFFILIATE_IDS", "")
 
-    assert feed.rundown_discovery_market_ids() == ("1", "2", "3")
+    assert feed.rundown_discovery_market_ids() == ("1",)
     assert feed.rundown_discovery_affiliate_ids() == ("3", "19", "23")
 
 
