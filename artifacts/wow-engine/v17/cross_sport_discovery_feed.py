@@ -20,6 +20,7 @@ from v17 import market_evidence_native_live as live
 from v17 import rundown_sport_registry as registry
 
 CAN_EXECUTE = False
+ODDS_API_DISCOVERY_DISABLED = "ODDS_API_DISCOVERY_DISABLED"
 
 # TheRundown bills returned price rows. Cross-sport winner discovery needs only
 # the moneyline/H2H board, not spreads, totals, props, or the provider's full
@@ -55,6 +56,19 @@ def rundown_discovery_affiliate_ids() -> tuple[str, ...]:
 
 def enabled() -> bool:
     return os.environ.get("WOW_V17_CROSS_SPORT_ML_DISCOVERY", "true").strip().lower() in {"1", "true"}
+
+
+def odds_api_enabled() -> bool:
+    """Whether The Odds API may participate in cross-sport event discovery.
+
+    This controls discovery only. Disabling it must not disable the cross-sport
+    lane: schedule-first/public sources and the remaining configured feeds keep
+    running through the existing resilient union.
+    """
+    return os.environ.get("WOW_CROSS_SPORT_ODDS_API_ENABLED", "true").strip().lower() in {
+        "1",
+        "true",
+    }
 
 
 def horizon_hours() -> int:
@@ -107,7 +121,19 @@ def odds_proxy_feed(
     The proxy's ``/events`` route is an event listing, not an odds snapshot, and
     is used here only as one. Provider event IDs remain aliases until a separate
     canonical resolver proves identity.
+
+    When ``WOW_CROSS_SPORT_ODDS_API_ENABLED`` is false, this adapter fails typed
+    before importing or calling the proxy. The union/resilience layers then use
+    the other configured discovery sources; the cross-sport lane itself remains
+    enabled.
     """
+    if not odds_api_enabled():
+        def disabled_fetch(_family: str, _target: Any = None) -> list[Mapping[str, Any]]:
+            raise discovery.DiscoveryFeedError(ODDS_API_DISCOVERY_DISABLED)
+
+        setattr(disabled_fetch, "_wow_odds_api_enabled", False)
+        return disabled_fetch
+
     if proxy_get is None:
         from v17.nightly_multiscout import proxy_get as default_proxy_get
 
@@ -165,6 +191,7 @@ def odds_proxy_feed(
             )
         return rows
 
+    setattr(fetch, "_wow_odds_api_enabled", True)
     return fetch
 
 
@@ -284,8 +311,10 @@ def union_feed(
 
 __all__ = [
     "CAN_EXECUTE",
+    "ODDS_API_DISCOVERY_DISABLED",
     "enabled",
     "horizon_hours",
+    "odds_api_enabled",
     "odds_proxy_feed",
     "rundown_board_feed",
     "rundown_discovery_affiliate_ids",
