@@ -42,6 +42,11 @@ _INPUT_REASONS = {
     "batting_order_incomplete",
     "lineup_platoon_evidence_too_thin",
     "feature_vector_mismatch",
+    "feature_snapshot_contract_query_failed",
+    "feature_snapshot_contract_ambiguous",
+    "feature_contract_mismatch",
+    "feature_contract_digest_mismatch",
+    "feature_vector_invalid",
     "simulation_count_below_50000",
     "prospective_path_requires_held_fitted_baseline",
 }

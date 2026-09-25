@@ -202,7 +202,13 @@ def install_interactive_mlb_evidence_fetch() -> bool:
 def install_interactive_team_event_io(*, event_api: Any) -> bool:
     db_ok = install_interactive_event_api_client_reuse(event_api)
     mlb_ok = install_interactive_mlb_evidence_fetch()
-    return bool(db_ok and mlb_ok)
+    # Install contract binding *after* the I/O wrapper so its saved incumbent
+    # scorer preserves the bounded/cached StatsAPI behavior.  This adds only
+    # score-time schema validation and audit receipts; probability math is unchanged.
+    from v17.mlb_feature_contract_binding import install_mlb_feature_contract_binding
+
+    feature_contract_ok = install_mlb_feature_contract_binding()
+    return bool(db_ok and mlb_ok and feature_contract_ok)
 
 
 __all__ = [
