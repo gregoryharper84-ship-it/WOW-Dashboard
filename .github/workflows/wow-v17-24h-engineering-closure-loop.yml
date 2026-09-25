@@ -74,12 +74,9 @@ jobs:
             action="REPAIR"
             target="$incident"
             reason="Highest-priority durable incident still requires engineering closure."
-          elif [ "$product_health" != "PASS" ] && [ $((utc_hour % 6)) -eq 0 ]; then
+          elif [ "$product_health" != "PASS" ]; then
             action="VERIFY_PRODUCT"
             reason="Golden user journey is not PASS; run independent product acceptance before discretionary model research."
-          elif [ "$product_health" != "PASS" ]; then
-            action="DETECT"
-            reason="Golden user journey is not PASS; keep reliability detection active and preempt discretionary model research."
           elif [ -n "$experiment_pr" ]; then
             action="RESUME_EXPERIMENT_PR"
             target="$experiment_pr"
