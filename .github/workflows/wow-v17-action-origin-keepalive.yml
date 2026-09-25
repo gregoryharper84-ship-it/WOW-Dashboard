@@ -1,0 +1,37 @@
+name: wow-v17-action-origin-keepalive
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "*/10 * * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wow-v17-action-origin-keepalive
+  cancel-in-progress: true
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Keep V17 Action origin warm
+        shell: bash
+        run: |
+          set -euo pipefail
+          url="https://wow-governed-probability-engine.onrender.com/health/live"
+          code="$(curl \
+            --silent \
+            --show-error \
+            --location \
+            --connect-timeout 10 \
+            --max-time 45 \
+            --retry 2 \
+            --retry-all-errors \
+            --output "$RUNNER_TEMP/wow-v17-health-live.json" \
+            --write-out '%{http_code}' \
+            "$url")"
+          test "$code" = "200"
+          echo "V17 Action origin keepalive PASS ($code)"
