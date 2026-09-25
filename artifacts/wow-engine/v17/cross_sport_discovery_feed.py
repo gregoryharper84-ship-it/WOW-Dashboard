@@ -21,12 +21,11 @@ from v17 import rundown_sport_registry as registry
 
 CAN_EXECUTE = False
 
-# TheRundown bills returned price rows. Cross-sport discovery needs only a
-# bounded current board, not the provider's full odds universe. These defaults
-# are the provider's documented core pregame markets/books as of 2026-09-25 and
-# remain operator-overridable so provider catalog changes never require a model
-# or probability-path edit.
-_DEFAULT_RUNDOWN_DISCOVERY_MARKET_IDS: tuple[str, ...] = ("1", "2", "3")
+# TheRundown bills returned price rows. Cross-sport winner discovery needs only
+# the moneyline/H2H board, not spreads, totals, props, or the provider's full
+# odds universe. Keep the default to market id 1 only; operators may override it
+# explicitly if a future discovery contract requires another provider market.
+_DEFAULT_RUNDOWN_DISCOVERY_MARKET_IDS: tuple[str, ...] = ("1",)
 _DEFAULT_RUNDOWN_DISCOVERY_AFFILIATE_IDS: tuple[str, ...] = ("3", "19", "23")
 
 
@@ -179,11 +178,12 @@ def rundown_board_feed(
 ) -> Callable[..., Iterable[Mapping[str, Any]]]:
     """Discovery over a quota-bounded TheRundown current board.
 
-    This path needs event identity only. The shared native adapter still parses
-    a real provider odds snapshot, but the request is deliberately constrained
-    to provider-documented core pregame main lines and a small affiliate set.
-    That preserves discovery semantics while preventing a full market/book
-    snapshot from consuming the account allowance merely to enumerate events.
+    This path needs winner-event identity only. The shared native adapter still
+    parses a real provider odds snapshot, but the request is deliberately
+    constrained to H2H/moneyline main lines and a small affiliate set. That
+    preserves discovery semantics while preventing spreads, totals, props, or a
+    full market/book snapshot from consuming the allowance merely to enumerate
+    winner candidates.
     """
 
     def fetch(family: str, target: Any = None) -> list[Mapping[str, Any]]:
