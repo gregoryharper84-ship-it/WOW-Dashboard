@@ -43,3 +43,21 @@ No workflow, migration, candidate, specialist, or route may set `can_execute=tru
 Prepared after merge `ab6eb8cc911802ab82423db2ebf569fb59cad119`. This checkpoint mutation is a governed trigger for protected-main first-six maintenance after the binary calibration challenger in PR #763 became part of `main`. The rerun must regenerate fresh lane evidence with the no-test-leakage forward calibrator selection before any certification or promotion review. It does not alter model semantics, certification thresholds, publication authority, or `can_execute=false`.
 
 Trigger receipt: base main `468f6455b80e9ad11e3d50e645239855ead5180b`; the merge commit for this receipt must contain `[RUN_FIRST_SIX]` so the existing protected-main maintenance workflow executes.
+
+## Multisport mastery activation — 2026-09-25
+
+Master engineering record: issue #845.
+
+This activation expands the operational objective from first-six evidence maintenance to MLB-level engineering maturity for NFL, WNBA, NBA, NCAAF, and NCAAB while preserving sport-specific mathematics and existing V17 authority boundaries. MLB remains the lifecycle reference implementation; it is not a coefficient/model template for other sports.
+
+The existing maintenance workflow already includes team-state challenger scopes for `NFL`, `MLB`, `NBA`, `WNBA`, `NCAAF`, and `NCAAB`, plus ancillary candidate maintenance for basketball, NCAAF, and NCAAB. This trigger requests a fresh governed evidence cycle through that existing path.
+
+This activation is evidence generation only. It MUST NOT:
+- auto-certify or auto-promote a candidate;
+- publish a candidate sporting probability;
+- substitute sportsbook/market probability or generic reasoning;
+- change `V17_TERMINAL_REDUCER` authority;
+- change `can_execute=false`;
+- place, modify, approve, route, cancel, or execute a wager or market order.
+
+Priority order for engineering closure is NFL -> WNBA -> NBA -> NCAAF -> NCAAB, with every discovered defect routed through the mandatory engineering team handoff contract and every Class C probability change remaining challenger-only until replay, counterexample review, holdout/forward validation, regression, and governed promotion review are complete.
