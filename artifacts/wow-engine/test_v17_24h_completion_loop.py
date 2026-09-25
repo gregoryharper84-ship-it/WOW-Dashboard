@@ -50,7 +50,8 @@ def test_24h_loop_prioritizes_product_reliability_before_model_improvement() -> 
     assert repair_pr < release < repair < product < experiment < improve
     assert 'product_health" != "PASS"' in text
     assert "no discretionary model research while golden user journey is not PASS" in text
-    assert 'utc_hour % 6' in text
+    assert 'elif [ "$product_health" != "PASS" ]; then' in text
+    assert 'Golden user journey is not PASS; run independent product acceptance before discretionary model research.' in text
     assert "single implementation lease" in text
 
 
@@ -124,3 +125,38 @@ def test_new_workflows_parse_as_yaml() -> None:
     assert yaml.safe_load(EXPERIMENT.read_text())["name"] == "wow-v17-model-improvement-experiment"
     assert yaml.safe_load(PRODUCT.read_text())["name"] == "wow-v17-golden-product-acceptance"
     assert yaml.safe_load(IMPACT.read_text())["name"] == "wow-v17-change-impact-gate"
+
+
+def test_closure_controller_has_hard_wip_and_golden_journeys() -> None:
+    team = _text(ROOT / "artifacts/wow-engine/v17/engineering_agent_team.py")
+    assert 'TEAM_VERSION = "3.0"' in team
+    assert "MAX_ACTIVE_PRODUCT_RECOVERY = 1" in team
+    assert "MAX_ACTIVE_SUPPORTING_INVESTIGATION = 1" in team
+    assert "ALL_SPORTS_PROPS" in team
+    assert "ALL_SPORTS_ML_WINNERS" in team
+    assert "ALL_SPORTS_UPSETS" in team
+    assert "validate_closure_record" in team
+    assert "closure_wip" in team
+
+
+def test_failure_router_preserves_typed_failure_ownership() -> None:
+    team = _text(ROOT / "artifacts/wow-engine/v17/engineering_agent_team.py")
+    for failure in (
+        "DISCOVERY_FAILURE", "PROVIDER_FAILURE", "CANONICAL_IDENTITY_FAILURE",
+        "HYDRATION_FAILURE", "MODEL_INPUTS_INSUFFICIENT", "MODEL_UNAVAILABLE",
+        "SCORER_FAILURE", "ACTION_TRANSPORT_FAILURE", "PERSISTENCE_FAILURE",
+    ):
+        assert failure in team
+    assert 'route_failure("ACTION_TRANSPORT_FAILURE") == "transport"' in team
+    assert 'route_failure("MODEL_UNAVAILABLE") == "model-capability"' in team
+
+
+def test_capability_matrix_is_explicit_and_fail_closed() -> None:
+    team = _text(ROOT / "artifacts/wow-engine/v17/engineering_agent_team.py")
+    for dimension in (
+        "discovery_supported", "canonicalization_supported", "hydration_supported",
+        "fitted_specialist_registered", "artifact_certified", "calibration_valid",
+        "production_enabled",
+    ):
+        assert dimension in team
+    assert "production_enabled requires every upstream capability" in team
