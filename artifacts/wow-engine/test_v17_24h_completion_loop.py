@@ -7,6 +7,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 LOOP = ROOT / ".github/workflows/wow-v17-24h-engineering-closure-loop.yml"
 WORKER = ROOT / ".github/workflows/wow-v17-chatgpt-engineering-worker.yml"
+SUPPORT = ROOT / ".github/workflows/wow-v17-engineering-specialist-support.yml"
 EXPERIMENT = ROOT / ".github/workflows/wow-v17-model-improvement-experiment.yml"
 PRODUCT = ROOT / ".github/workflows/wow-v17-golden-product-acceptance.yml"
 IMPACT = ROOT / ".github/workflows/wow-v17-change-impact-gate.yml"
@@ -125,6 +126,7 @@ def test_model_experiment_requires_tests_regression_and_repair_mode() -> None:
 def test_new_workflows_parse_as_yaml() -> None:
     assert yaml.safe_load(LOOP.read_text())["name"] == "wow-v17-24h-engineering-closure-loop"
     assert yaml.safe_load(WORKER.read_text())["name"] == "wow-v17-chatgpt-engineering-worker"
+    assert yaml.safe_load(SUPPORT.read_text())["name"] == "wow-v17-engineering-specialist-support"
     assert yaml.safe_load(EXPERIMENT.read_text())["name"] == "wow-v17-model-improvement-experiment"
     assert yaml.safe_load(PRODUCT.read_text())["name"] == "wow-v17-golden-product-acceptance"
     assert yaml.safe_load(IMPACT.read_text())["name"] == "wow-v17-change-impact-gate"
@@ -156,6 +158,24 @@ def test_engineering_worker_invokes_specialist_before_implementation() -> None:
     assert "hypothesis == 'NARROWED'" in text
     assert "single implementation lease" in text
     assert SPECIALISTS.exists()
+
+
+def test_specialist_support_workflow_keeps_external_waits_productive() -> None:
+    text = _text(SUPPORT)
+    assert 'cron: "32 * * * *"' in text
+    assert "wow-v17-engineering-specialist-support" in text
+    assert "support-route" in text
+    assert "CI_PENDING" in text
+    assert "MERGE_PENDING" in text
+    assert "DEPLOYMENT_PENDING" in text
+    assert "EXTERNAL_WAIT" in text
+    assert "permission_profile: \":read-only\"" in text
+    assert "support_only:true" in text.replace(" ", "")
+    assert "implementation_lease:false" in text.replace(" ", "")
+    assert "contents: read" in text
+    assert "pull-requests: read" in text
+    assert "contents: write" not in text
+    assert "pull-requests: write" not in text
 
 
 def test_failure_router_preserves_typed_failure_ownership() -> None:
