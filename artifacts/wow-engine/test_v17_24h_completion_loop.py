@@ -50,7 +50,8 @@ def test_24h_loop_prioritizes_product_reliability_before_model_improvement() -> 
     assert repair_pr < release < repair < product < experiment < improve
     assert 'product_health" != "PASS"' in text
     assert "no discretionary model research while golden user journey is not PASS" in text
-    assert 'utc_hour % 6' in text
+    assert 'elif [ "$product_health" != "PASS" ]; then' in text
+    assert 'Golden user journey is not PASS; run independent product acceptance before discretionary model research.' in text
     assert "single implementation lease" in text
 
 
