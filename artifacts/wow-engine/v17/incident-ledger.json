@@ -109,6 +109,22 @@
           "note": "PRIMARY (DAILY_RESPONSE_SERIALIZATION_TOO_LARGE) and CRITICAL (TERMINAL_REDUCER_UPGRADE) items independently verified in production; four secondary items (1IP capability manifest drift, zero-row reason, scoring_attempted split, infrastructure_blocked semantics) are deployed but not yet independently observed."
         }
       }
+    },
+    {
+      "postmortem_id": "PM-2026-09-23-001",
+      "title": "LLP shadow observer 404s because Core Intelligence production activation was never flipped",
+      "severity": "P1",
+      "domain": "deployment / Render topology / Core Intelligence route mounting",
+      "state": "BLOCKED_HARD_BOUNDARY",
+      "postmortem_path": "artifacts/wow-engine/v17/postmortems/PM-2026-09-23-001__llp-shadow-observer-core-intelligence-inactive.md",
+      "engineering_fix_ids": [],
+      "created_utc": "2026-09-23T00:00:00Z",
+      "updated_utc": "2026-09-23T00:00:00Z",
+      "engineering_fixes": {},
+      "stop_reason": "PRODUCTION_DATABASE_STATE_VERIFICATION_UNAVAILABLE",
+      "first_blocked_operation": "setting WOW_V17_CORE_INTELLIGENCE_ACTIVE=1 / WOW_V17_LLP_SHADOW_AUTOMATION_ACTIVE=1 on the live Render service without independently confirming migrations/20260920_v17_core_intelligence_access_hardening.sql (RLS/grants/TRUNCATE guard) is applied to the canonical Supabase project",
+      "missing_capability_or_authority": "no Supabase/database access and no production network egress from this worker's execution environment",
+      "smallest_next_action": "owner verifies the hardening migration is applied and RLS/grants are correct, then sets both env vars on the live Render service (or merges the render.yaml addition documented in the postmortem)"
     }
   ]
 }
