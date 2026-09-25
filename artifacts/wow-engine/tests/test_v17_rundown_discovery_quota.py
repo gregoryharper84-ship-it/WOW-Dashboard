@@ -57,6 +57,46 @@ def test_rundown_discovery_moneyline_filter_applies_to_non_mlb_targets(monkeypat
     assert [call[2]["hide_closed"] for call in calls] == [True] * 5
 
 
+def test_soccer_moneyline_market_one_preserves_draw_participant():
+    raw = {
+        "event_id": "soccer-1",
+        "event_date": "2026-09-25T20:00:00Z",
+        "teams_normalized": [
+            {"name": "Home FC", "is_home": True, "is_away": False},
+            {"name": "Away FC", "is_home": False, "is_away": True},
+        ],
+        "markets": [
+            {
+                "market_id": 1,
+                "name": "moneyline",
+                "participants": [
+                    {
+                        "name": "Home FC",
+                        "type": "home",
+                        "lines": [{"prices": {"3": {"affiliate_name": "Pinnacle", "price": 120}}}],
+                    },
+                    {
+                        "name": "Draw",
+                        "type": "draw",
+                        "lines": [{"prices": {"3": {"affiliate_name": "Pinnacle", "price": 225}}}],
+                    },
+                    {
+                        "name": "Away FC",
+                        "type": "away",
+                        "lines": [{"prices": {"3": {"affiliate_name": "Pinnacle", "price": 210}}}],
+                    },
+                ],
+            }
+        ],
+    }
+
+    event = live.rundown_v2_event_to_odds_api_v4(raw, sport_key="SOCCER")
+
+    assert event is not None
+    outcomes = event["bookmakers"][0]["markets"][0]["outcomes"]
+    assert {outcome["name"] for outcome in outcomes} == {"Home FC", "Draw", "Away FC"}
+
+
 def test_rundown_discovery_filters_are_operator_overridable(monkeypatch):
     monkeypatch.setenv("WOW_RUNDOWN_DISCOVERY_MARKET_IDS", "1, 7")
     monkeypatch.setenv("WOW_RUNDOWN_DISCOVERY_AFFILIATE_IDS", "19")
