@@ -5,7 +5,7 @@ calibration, market consensus, rank eligibility, or execution authority.
 
 It extends the existing schedule-first resilience layer with per-scan paid-call
 accounting, definitive provider circuit breakers, explicit coverage truth, and a
-strict provider-alias boundary for public scoreboard identities.
+strict provider-alias boundary for public/free discovery identities.
 """
 from __future__ import annotations
 
@@ -27,6 +27,7 @@ DISABLED_BY_POLICY = "DISABLED_BY_POLICY"
 # A generic 429 is deliberately not a run-long circuit: provider-specific retry
 # policy owns burst throttling. Only definitive quota/auth/policy evidence trips.
 _CIRCUIT_STATES = frozenset({QUOTA_EXHAUSTED, AUTH_FAILURE, DISABLED_BY_POLICY})
+_ALIAS_ONLY_DISCOVERY_PROVIDERS = frozenset({"ESPN_SCOREBOARD", "ODDS_API_EVENTS"})
 _SCAN_CONTEXT: ContextVar[dict[str, Any] | None] = ContextVar(
     "wow_v17_quota_aware_discovery_context", default=None
 )
@@ -245,18 +246,19 @@ def _quota_aware_rundown_factory(*args: Any, **kwargs: Any):
 
 
 def _normalize_public_alias(raw: Mapping[str, Any], event: Any):
-    """A public scoreboard provider ID is an alias, never canonical official identity."""
+    """Free/public provider IDs remain aliases, never canonical official identity."""
     provider = str(raw.get("discovery_provider") or raw.get("source_provider") or "").upper()
-    if provider != "ESPN_SCOREBOARD":
+    if provider not in _ALIAS_ONLY_DISCOVERY_PROVIDERS:
         return event
     alias = raw.get("provider_event_id") or raw.get("_wow_secondary_event_id") or raw.get("id")
     updated_raw = dict(getattr(event, "raw", {}) or {})
     updated_raw["provider_event_id"] = alias
     updated_raw["official_event_id"] = None
+    updated_raw["canonical_identity_status"] = "ALIAS_ONLY_UNRESOLVED"
     return replace(
         event,
         official_event_id=None,
-        provider="ESPN_SCOREBOARD",
+        provider=provider,
         provider_sport_id=None,
         raw=updated_raw,
     )
