@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-TEAM_VERSION = "3.0"
+TEAM_VERSION = "4.0"
 
 AGENT_ROLES: dict[str, dict[str, Any]] = {
     "ENGINEERING_LEAD_AGENT": {
@@ -77,6 +77,58 @@ AGENT_ROLES: dict[str, dict[str, Any]] = {
     },
 }
 
+SPECIALIST_SUBAGENTS: dict[str, dict[str, Any]] = {
+    "CI_REPOSITORY_SUBAGENT": {
+        "mission": "Inspect exact-head CI, workflow triggers, branch state, protected checks, and merge readiness.",
+        "support_only": True,
+        "may_write_code": False,
+        "may_approve_own_work": False,
+        "may_change_probability_behavior": False,
+    },
+    "RUNTIME_TRANSPORT_SUBAGENT": {
+        "mission": "Inspect Action transport, HTTP/runtime behavior, cold starts, middleware, deploy state, and production request flow.",
+        "support_only": True,
+        "may_write_code": False,
+        "may_approve_own_work": False,
+        "may_change_probability_behavior": False,
+    },
+    "ACQUISITION_IDENTITY_SUBAGENT": {
+        "mission": "Inspect provider acquisition, governed fallback, freshness, canonical identity, aliases, hydration boundaries, and reconciliation loss.",
+        "support_only": True,
+        "may_write_code": False,
+        "may_approve_own_work": False,
+        "may_change_probability_behavior": False,
+    },
+    "DATA_PERSISTENCE_SUBAGENT": {
+        "mission": "Inspect immutable prediction writes, receipts, exact-once behavior, persistence/reconciliation evidence, and durable row integrity.",
+        "support_only": True,
+        "may_write_code": False,
+        "may_approve_own_work": False,
+        "may_change_probability_behavior": False,
+    },
+    "MODEL_CAPABILITY_GOVERNANCE_SUBAGENT": {
+        "mission": "Inspect fitted specialist registration, artifact certification, model-input availability, calibration state, and typed scorer boundaries without changing model math.",
+        "support_only": True,
+        "may_write_code": False,
+        "may_approve_own_work": False,
+        "may_change_probability_behavior": False,
+    },
+    "SECURITY_BOUNDARY_SUBAGENT": {
+        "mission": "Inspect auth, secret availability, permission, RLS, and safety boundaries without exposing, rotating, or weakening credentials or policy.",
+        "support_only": True,
+        "may_write_code": False,
+        "may_approve_own_work": False,
+        "may_change_probability_behavior": False,
+    },
+    "REGRESSION_SAFETY_SUBAGENT": {
+        "mission": "Inspect adjacent-lane risk, regression coverage, rollback readiness, counterexamples, and acceptance-harness completeness.",
+        "support_only": True,
+        "may_write_code": False,
+        "may_approve_own_work": False,
+        "may_change_probability_behavior": False,
+    },
+}
+
 TERMINAL_ISSUE_STATES = {
     "VERIFIED_CLOSED",
     "FIXED_AND_VERIFIED",
@@ -119,6 +171,56 @@ FAILURE_OWNERS = {
     "ACTION_TRANSPORT_FAILURE": "transport",
     "PERSISTENCE_FAILURE": "persistence",
 }
+
+SUBAGENT_BY_FAILURE_OWNER = {
+    "acquisition": "ACQUISITION_IDENTITY_SUBAGENT",
+    "identity": "ACQUISITION_IDENTITY_SUBAGENT",
+    "hydration": "ACQUISITION_IDENTITY_SUBAGENT",
+    "specialist-inputs": "MODEL_CAPABILITY_GOVERNANCE_SUBAGENT",
+    "model-capability": "MODEL_CAPABILITY_GOVERNANCE_SUBAGENT",
+    "scoring": "MODEL_CAPABILITY_GOVERNANCE_SUBAGENT",
+    "transport": "RUNTIME_TRANSPORT_SUBAGENT",
+    "persistence": "DATA_PERSISTENCE_SUBAGENT",
+}
+
+SUBAGENT_BY_SUBSYSTEM = {
+    "DEPLOYMENT_RUNTIME": "RUNTIME_TRANSPORT_SUBAGENT",
+    "WOW_HOST_ORCHESTRATION": "RUNTIME_TRANSPORT_SUBAGENT",
+    "SLATE_IDENTITY": "ACQUISITION_IDENTITY_SUBAGENT",
+    "PERSISTENCE_POSTMORTEM": "DATA_PERSISTENCE_SUBAGENT",
+    "WOW_PROP_ENGINE": "MODEL_CAPABILITY_GOVERNANCE_SUBAGENT",
+    "LLP_TEAM_EVENT_ENGINE": "MODEL_CAPABILITY_GOVERNANCE_SUBAGENT",
+    "DYNAMIC_CALIBRATION": "MODEL_CAPABILITY_GOVERNANCE_SUBAGENT",
+    "SECURITY_CREDENTIAL": "SECURITY_BOUNDARY_SUBAGENT",
+}
+
+WAIT_STATE_SUPPORT = {
+    "CI_PENDING": (
+        "CI_REPOSITORY_SUBAGENT",
+        "Verify exact-head trigger/check coverage and prepare the next protected CI action.",
+    ),
+    "REVIEW_PENDING": (
+        "REGRESSION_SAFETY_SUBAGENT",
+        "Inspect adjacent-lane risks, rollback, and acceptance coverage while review is external.",
+    ),
+    "MERGE_PENDING": (
+        "CI_REPOSITORY_SUBAGENT",
+        "Verify exact-head freshness, branch protection, and protected auto-merge eligibility.",
+    ),
+    "DEPLOYMENT_PENDING": (
+        "RUNTIME_TRANSPORT_SUBAGENT",
+        "Prepare exact-SHA runtime probes and production acceptance evidence.",
+    ),
+    "PROVIDER_WAIT": (
+        "ACQUISITION_IDENTITY_SUBAGENT",
+        "Exercise governed fallback, freshness, canonicalization, and exhaustion evidence.",
+    ),
+    "EXTERNAL_WAIT": (
+        "REGRESSION_SAFETY_SUBAGENT",
+        "Advance non-conflicting regression, rollback, and acceptance preparation on the same incident.",
+    ),
+}
+
 FRONTIER_RADAR = {"ADOPT", "TRIAL", "ASSESS", "WATCH", "REJECT", "DUPLICATE"}
 
 
@@ -137,6 +239,23 @@ class PriorityDecision:
             "state": self.state,
             "reason": self.reason,
             "frontier_allowed": self.frontier_allowed,
+        }
+
+
+@dataclass(frozen=True)
+class SupportDecision:
+    subagent: str
+    reason: str
+    implementation_lease: bool = False
+    support_only: bool = True
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "subagent": self.subagent,
+            "reason": self.reason,
+            "implementation_lease": self.implementation_lease,
+            "support_only": self.support_only,
+            "can_execute": False,
         }
 
 
@@ -192,7 +311,6 @@ def select_priority_incident(records: list[dict[str, Any]]) -> PriorityDecision:
     )
 
 
-
 def validate_closure_record(record: dict[str, Any]) -> list[str]:
     """Enforce one durable closure unit instead of disconnected progress markers."""
     errors: list[str] = []
@@ -235,6 +353,40 @@ def route_failure(typed_failure: str) -> str:
     return FAILURE_OWNERS[key]
 
 
+def select_support_subagent(record: dict[str, Any]) -> SupportDecision:
+    """Assign exactly one read-only specialist to the active parent incident.
+
+    The specialist never owns the parent incident, never receives the implementation
+    lease, and may only advance evidence, adjacent-risk, fallback, CI, or release
+    preparation for the same closure journey.
+    """
+    wait_state = str(record.get("wait_state") or "").upper()
+    if wait_state in WAIT_STATE_SUPPORT:
+        subagent, reason = WAIT_STATE_SUPPORT[wait_state]
+        return SupportDecision(subagent=subagent, reason=reason)
+
+    failure = str(record.get("typed_failure") or "").upper()
+    if failure in FAILURE_OWNERS:
+        owner = FAILURE_OWNERS[failure]
+        subagent = SUBAGENT_BY_FAILURE_OWNER[owner]
+        return SupportDecision(
+            subagent=subagent,
+            reason=f"Typed failure {failure} is owned by {owner}; route specialist evidence there.",
+        )
+
+    subsystem = str(record.get("primary_subsystem") or record.get("affected_component") or "").upper()
+    if subsystem in SUBAGENT_BY_SUBSYSTEM:
+        subagent = SUBAGENT_BY_SUBSYSTEM[subsystem]
+        return SupportDecision(
+            subagent=subagent,
+            reason=f"Primary subsystem {subsystem} maps to its specialist support lane.",
+        )
+
+    return SupportDecision(
+        subagent="REGRESSION_SAFETY_SUBAGENT",
+        reason="No narrower specialist mapping exists; use regression/acceptance safety support without widening scope.",
+    )
+
 
 def validate_capability_matrix(matrix: dict[str, Any]) -> list[str]:
     """Require explicit sport x market capability truth; never infer support."""
@@ -259,6 +411,7 @@ def validate_capability_matrix(matrix: dict[str, Any]) -> list[str]:
         ):
             errors.append(f"{key}: production_enabled requires every upstream capability")
     return errors
+
 
 def validate_frontier_candidate(candidate: dict[str, Any]) -> list[str]:
     errors: list[str] = []
@@ -295,16 +448,25 @@ def self_check() -> dict[str, Any]:
             assert role["may_write_code"] is False
         assert role["may_change_probability_behavior"] is False
         assert role["may_approve_own_work"] is False
+    for subagent in SPECIALIST_SUBAGENTS.values():
+        assert subagent["support_only"] is True
+        assert subagent["may_write_code"] is False
+        assert subagent["may_change_probability_behavior"] is False
+        assert subagent["may_approve_own_work"] is False
     assert reliability_blocks_frontier([{"severity": "P1", "state": "OPEN"}])
     assert not reliability_blocks_frontier([{"severity": "P2", "state": "OPEN"}])
     assert route_failure("ACTION_TRANSPORT_FAILURE") == "transport"
     assert route_failure("MODEL_UNAVAILABLE") == "model-capability"
+    assert select_support_subagent({"typed_failure": "ACTION_TRANSPORT_FAILURE"}).subagent == "RUNTIME_TRANSPORT_SUBAGENT"
+    assert select_support_subagent({"typed_failure": "PERSISTENCE_FAILURE"}).subagent == "DATA_PERSISTENCE_SUBAGENT"
+    assert select_support_subagent({"wait_state": "CI_PENDING"}).subagent == "CI_REPOSITORY_SUBAGENT"
     assert USER_CRITICAL_JOURNEYS == ("ALL_SPORTS_PROPS", "ALL_SPORTS_ML_WINNERS", "ALL_SPORTS_UPSETS")
     assert validate_capability_matrix({"NFL:ML": {d: True for d in CAPABILITY_DIMENSIONS}}) == []
     assert closure_wip([{"severity": "P0", "state": "OPEN"}])["new_product_work_allowed"] is False
     return {
         "team_version": TEAM_VERSION,
         "agent_roles": sorted(AGENT_ROLES),
+        "specialist_subagents": sorted(SPECIALIST_SUBAGENTS),
         "frontier_radar": sorted(FRONTIER_RADAR),
         "can_execute": False,
         "terminal_authority": "V17_TERMINAL_REDUCER",
@@ -313,12 +475,26 @@ def self_check() -> dict[str, Any]:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=["self-check", "priority", "frontier-gate"])
+    parser.add_argument("command", choices=["self-check", "priority", "frontier-gate", "support-route"])
     parser.add_argument("--ledger", default=str(Path(__file__).with_name("incident-ledger.json")))
+    parser.add_argument("--typed-failure", default="")
+    parser.add_argument("--subsystem", default="")
+    parser.add_argument("--wait-state", default="")
     args = parser.parse_args()
 
     if args.command == "self-check":
         print(json.dumps(self_check(), indent=2, sort_keys=True))
+        return
+
+    if args.command == "support-route":
+        decision = select_support_subagent(
+            {
+                "typed_failure": args.typed_failure,
+                "primary_subsystem": args.subsystem,
+                "wait_state": args.wait_state,
+            }
+        )
+        print(json.dumps(decision.as_dict(), indent=2, sort_keys=True))
         return
 
     records = load_ledger(args.ledger)
