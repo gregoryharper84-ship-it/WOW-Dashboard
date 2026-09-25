@@ -1,7 +1,7 @@
 -- V17 candidate-bound certification evidence receipts.
 --
 -- This table records independent source-review + deterministic replay evidence
--- for an exact D1 candidate.  A receipt is evidence only: it cannot promote,
+-- for an exact D1 candidate. A receipt is evidence only: it cannot promote,
 -- activate, publish, rank, or execute a sporting probability.
 
 create table if not exists public.wow_d1_certification_evidence_receipts (
@@ -30,8 +30,23 @@ create index if not exists wow_d1_cert_evidence_lane_created_idx
 
 alter table public.wow_d1_certification_evidence_receipts enable row level security;
 
+create or replace function public.wow_d1_certification_evidence_receipts_immutable()
+returns trigger
+language plpgsql
+as $$
+begin
+  raise exception 'wow_d1_certification_evidence_receipts is immutable';
+end;
+$$;
+
+drop trigger if exists wow_d1_certification_evidence_receipts_immutable_guard
+  on public.wow_d1_certification_evidence_receipts;
+create trigger wow_d1_certification_evidence_receipts_immutable_guard
+before update or delete on public.wow_d1_certification_evidence_receipts
+for each row execute function public.wow_d1_certification_evidence_receipts_immutable();
+
 comment on table public.wow_d1_certification_evidence_receipts is
-  'Append-only-style V17 evidence receipts binding independent source/replay verification to one exact D1 candidate. PASS evidence does not certify, promote, publish, rank, or execute.';
+  'Immutable V17 evidence receipts binding independent source/replay verification to one exact D1 candidate. PASS evidence does not certify, promote, publish, rank, or execute.';
 comment on column public.wow_d1_certification_evidence_receipts.source_review_pass is
   'True only when the verifier proved the exact candidate training source is entitled/reviewed and every inspected persisted row passed provenance and temporal-integrity checks.';
 comment on column public.wow_d1_certification_evidence_receipts.replay_evidence_pass is
