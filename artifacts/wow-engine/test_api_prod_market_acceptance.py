@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import uuid
 
 import httpx
 
@@ -103,6 +104,11 @@ def test_live_probe_authenticates_more_and_less_and_logs_only_sanitized_metadata
     assert [call[2]["direction"] for call in calls] == ["MORE", "LESS"]
     assert all(call[1]["Authorization"] == "Bearer super-secret-test-key" for call in calls)
     assert all(call[1]["X-WOW-Model-Identity"] == "WOW_BETTING_ENGINE" for call in calls)
+    assert all(call[1]["X-WOW-Caller-Class"] == "SELF_ACCEPTANCE" for call in calls)
+    assert all(call[1]["X-WOW-Rows-In"] == "1" for call in calls)
+    request_ids = [call[1]["X-WOW-Request-ID"] for call in calls]
+    assert len(set(request_ids)) == 2
+    assert all(str(uuid.UUID(request_id)) == request_id for request_id in request_ids)
     assert "super-secret-test-key" not in caplog.text
     assert "directions=MORE,LESS" in caplog.text
     assert "zero_probability_leak=true" in caplog.text

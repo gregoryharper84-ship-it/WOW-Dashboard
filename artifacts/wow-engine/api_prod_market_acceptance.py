@@ -297,6 +297,10 @@ async def _run_prop_live_self_acceptance() -> None:
 
     url = f"http://127.0.0.1:{port}/score-prop"
     for direction in ("MORE", "LESS"):
+        # Correlate startup probes without persisting their body. Reuse one
+        # non-secret ID across retries so a transient startup failure remains
+        # one logical self-acceptance invocation in telemetry.
+        request_id = str(uuid.uuid4())
         last_status: int | None = None
         last_code = "NO_RESPONSE"
         last_leaks: list[str] = []
@@ -311,6 +315,9 @@ async def _run_prop_live_self_acceptance() -> None:
                         headers={
                             "Authorization": f"Bearer {key}",
                             "X-WOW-Model-Identity": "WOW_BETTING_ENGINE",
+                            "X-WOW-Caller-Class": "SELF_ACCEPTANCE",
+                            "X-WOW-Request-ID": request_id,
+                            "X-WOW-Rows-In": "1",
                         },
                         json=_probe_payload(direction),
                     )
