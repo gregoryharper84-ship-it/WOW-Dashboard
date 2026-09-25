@@ -43,13 +43,11 @@ def _text(value: Any) -> str | None:
 
 
 def _commence_time(raw: Mapping[str, Any]) -> str | None:
-    """Return only provider-supplied timestamp values; never invent a timezone."""
-    timestamp = _text(raw.get("strTimestamp") or raw.get("strEventTime"))
-    if timestamp:
-        return timestamp
-    # dateEvent + strTime often lacks an independently verified timezone. Keep
-    # the date visible for reconciliation but fail closed on an instant.
-    return None
+    """Return only a provider-supplied absolute timestamp; never invent a timezone."""
+    # TheSportsDB also exposes clock-only fields such as strTime/strEventTime.
+    # Those do not establish an instant without a verified timezone, so only
+    # strTimestamp is eligible for WOW commence_time here.
+    return _text(raw.get("strTimestamp"))
 
 
 def normalize_event(raw: Mapping[str, Any], *, requested_sport: str) -> dict[str, Any] | None:
@@ -73,7 +71,7 @@ def normalize_event(raw: Mapping[str, Any], *, requested_sport: str) -> dict[str
         "away_team": away,
         "commence_time": commence,
         "provider_date": _text(raw.get("dateEvent")),
-        "provider_time": _text(raw.get("strTime")),
+        "provider_time": _text(raw.get("strTime") or raw.get("strEventTime")),
         "status": _text(raw.get("strStatus")) or "UNKNOWN",
         "league": _text(raw.get("strLeague")),
         "provider_league_id": _text(raw.get("idLeague")),
