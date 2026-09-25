@@ -103,9 +103,11 @@ jobs:
             artifacts/wow-engine/v17/.agent-handoff/lead.json.
             Reproduce the selected defect, isolate the first failing stage, distinguish symptom
             from root cause, define objective acceptance criteria and the smallest fix boundary.
-            Do not edit files. Preserve typed failures, V17 terminal authority, exact-once
-            semantics, and can_execute=false. Never substitute market evidence for model probability.
-          output_schema: '{"type":"object","properties":{"incident_id":{"type":"string"},"repairable":{"type":"boolean"},"reproduction_status":{"type":"string"},"root_cause":{"type":"string"},"risk_class":{"type":"string","enum":["R0","R1","R2-restorative","R2-repair-policy","R3","NONE"]},"acceptance_criteria":{"type":"array","items":{"type":"string"}},"recommended_fix_boundary":{"type":"string"},"hard_boundary":{"type":"string"}},"required":["incident_id","repairable","reproduction_status","root_cause","risk_class","acceptance_criteria","recommended_fix_boundary","hard_boundary"],"additionalProperties":false}'
+            Return the primary engineering subsystem and preserve the exact typed failure when one
+            applies; use NONE only when no typed failure applies. Do not edit files. Preserve typed
+            failures, V17 terminal authority, exact-once semantics, and can_execute=false. Never
+            substitute market evidence for model probability.
+          output_schema: '{"type":"object","properties":{"incident_id":{"type":"string"},"repairable":{"type":"boolean"},"reproduction_status":{"type":"string"},"root_cause":{"type":"string"},"risk_class":{"type":"string","enum":["R0","R1","R2-restorative","R2-repair-policy","R3","NONE"]},"primary_subsystem":{"type":"string"},"typed_failure":{"type":"string"},"acceptance_criteria":{"type":"array","items":{"type":"string"}},"recommended_fix_boundary":{"type":"string"},"hard_boundary":{"type":"string"}},"required":["incident_id","repairable","reproduction_status","root_cause","risk_class","primary_subsystem","typed_failure","acceptance_criteria","recommended_fix_boundary","hard_boundary"],"additionalProperties":false}'
 
       - name: Normalize Triage packet
         id: triage
@@ -115,10 +117,68 @@ jobs:
           RESULT: ${{ steps.triage_agent.outputs.structured_output }}
         run: |
           set -euo pipefail
-          echo "repairable=$(jq -r '.repairable' <<<"$RESULT")" >> "$GITHUB_OUTPUT"
-          echo "risk=$(jq -r '.risk_class' <<<"$RESULT")" >> "$GITHUB_OUTPUT"
-          echo "incident=$(jq -r '.incident_id' <<<"$RESULT")" >> "$GITHUB_OUTPUT"
+          repairable=$(jq -r '.repairable' <<<"$RESULT")
+          risk=$(jq -r '.risk_class' <<<"$RESULT")
+          incident=$(jq -r '.incident_id' <<<"$RESULT")
+          subsystem=$(jq -r '.primary_subsystem // "UNKNOWN"' <<<"$RESULT")
+          failure=$(jq -r '.typed_failure // "NONE"' <<<"$RESULT")
+          echo "repairable=$repairable" >> "$GITHUB_OUTPUT"
+          echo "risk=$risk" >> "$GITHUB_OUTPUT"
+          echo "incident=$incident" >> "$GITHUB_OUTPUT"
+          echo "subsystem=$subsystem" >> "$GITHUB_OUTPUT"
+          echo "failure=$failure" >> "$GITHUB_OUTPUT"
           printf '%s\n' "$RESULT" > artifacts/wow-engine/v17/.agent-handoff/triage.json
+
+      - name: Route specialist subagent
+        id: specialist_route
+        if: steps.lead.outputs.action == 'REPAIR'
+        shell: bash
+        env:
+          TYPED_FAILURE: ${{ steps.triage.outputs.failure }}
+          PRIMARY_SUBSYSTEM: ${{ steps.triage.outputs.subsystem }}
+        run: |
+          set -euo pipefail
+          route=$(python artifacts/wow-engine/v17/engineering_agent_team.py support-route \
+            --typed-failure "$TYPED_FAILURE" \
+            --subsystem "$PRIMARY_SUBSYSTEM")
+          subagent=$(jq -r '.subagent' <<<"$route")
+          reason=$(jq -r '.reason' <<<"$route")
+          echo "subagent=$subagent" >> "$GITHUB_OUTPUT"
+          echo "reason<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$reason" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+          printf '%s\n' "$route" > artifacts/wow-engine/v17/.agent-handoff/specialist-route.json
+
+      - name: Specialist diagnostic subagent
+        id: specialist_agent
+        if: steps.lead.outputs.action == 'REPAIR'
+        uses: ./.github/actions/wow-chatgpt-agent
+        with:
+          openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+          permission_profile: ":read-only"
+          prompt: |
+            You are the independent WOW V17 ${{ steps.specialist_route.outputs.subagent }}.
+            Read .agents/skills/wow-engineering-specialist-subagents/SKILL.md,
+            artifacts/wow-engine/v17/.agent-handoff/triage.json, and
+            artifacts/wow-engine/v17/.agent-handoff/specialist-route.json.
+            Stay on the same parent incident. Verify or challenge the triage hypothesis from your
+            specialist lane, identify the first failing boundary, collect concrete evidence, inspect
+            adjacent risks, and recommend the narrowest tests and next non-conflicting action.
+            Do not edit files, do not claim parent ownership, do not approve implementation, do not
+            change sporting probability behavior, and preserve can_execute=false.
+          output_schema: '{"type":"object","properties":{"incident_id":{"type":"string"},"subagent":{"type":"string"},"hypothesis_status":{"type":"string","enum":["CONFIRMED","NARROWED","REJECTED","INCONCLUSIVE"]},"evidence_verified":{"type":"array","items":{"type":"string"}},"first_failing_boundary":{"type":"string"},"adjacent_risks":{"type":"array","items":{"type":"string"}},"recommended_tests":{"type":"array","items":{"type":"string"}},"next_non_conflicting_action":{"type":"string"},"hard_boundary":{"type":"string"}},"required":["incident_id","subagent","hypothesis_status","evidence_verified","first_failing_boundary","adjacent_risks","recommended_tests","next_non_conflicting_action","hard_boundary"],"additionalProperties":false}'
+
+      - name: Normalize specialist packet
+        id: specialist
+        if: steps.lead.outputs.action == 'REPAIR'
+        shell: bash
+        env:
+          RESULT: ${{ steps.specialist_agent.outputs.structured_output }}
+        run: |
+          set -euo pipefail
+          echo "hypothesis=$(jq -r '.hypothesis_status' <<<"$RESULT")" >> "$GITHUB_OUTPUT"
+          echo "subagent=$(jq -r '.subagent' <<<"$RESULT")" >> "$GITHUB_OUTPUT"
+          printf '%s\n' "$RESULT" > artifacts/wow-engine/v17/.agent-handoff/specialist.json
 
       - name: Deny policy-changing implementation lease
         if: steps.lead.outputs.action == 'REPAIR' && (steps.triage.outputs.risk == 'R2-repair-policy' || steps.triage.outputs.risk == 'R3')
@@ -128,6 +188,8 @@ jobs:
         id: implementation_agent
         if: >-
           steps.triage.outputs.repairable == 'true' &&
+          (steps.specialist.outputs.hypothesis == 'CONFIRMED' ||
+           steps.specialist.outputs.hypothesis == 'NARROWED') &&
           (steps.triage.outputs.risk == 'R0' ||
            steps.triage.outputs.risk == 'R1' ||
            steps.triage.outputs.risk == 'R2-restorative')
@@ -138,14 +200,16 @@ jobs:
           prompt: |
             You are the WOW V17 ENGINEERING_AGENT running on OpenAI/ChatGPT tooling only and hold the single implementation lease.
             Read .agents/skills/wow-engineering-implementation-agent/SKILL.md,
-            .agents/skills/wow-replit-patch-governor/SKILL.md, and
-            artifacts/wow-engine/v17/.agent-handoff/triage.json.
-            Implement only the proven root cause and acceptance criteria. Do not diagnose a
-            different incident, edit .github/workflows/**, or touch .agent-handoff/**.
-            Run the narrowest reproduction first, then relevant regressions, and rework bounded failures.
-            Preserve can_execute=false, DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS=true,
-            exact typed failures, exact-once behavior, V17_TERMINAL_REDUCER, and all probability governance.
-            No Class C change is authorized.
+            .agents/skills/wow-replit-patch-governor/SKILL.md,
+            artifacts/wow-engine/v17/.agent-handoff/triage.json, and
+            artifacts/wow-engine/v17/.agent-handoff/specialist.json.
+            Treat the specialist packet as independent evidence that narrows the same parent incident;
+            it does not authorize scope expansion. Implement only the proven root cause and acceptance
+            criteria. Do not diagnose a different incident, edit .github/workflows/**, or touch
+            .agent-handoff/**. Run the narrowest reproduction first, then relevant regressions, and
+            rework bounded failures. Preserve can_execute=false,
+            DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS=true, exact typed failures, exact-once
+            behavior, V17_TERMINAL_REDUCER, and all probability governance. No Class C change is authorized.
           output_schema: '{"type":"object","properties":{"changed":{"type":"boolean"},"incident_id":{"type":"string"},"risk_class":{"type":"string","enum":["R0","R1","R2-restorative","R2-repair-policy","R3","NONE"]},"summary":{"type":"string"},"tests":{"type":"string"},"hard_boundary":{"type":"string"}},"required":["changed","incident_id","risk_class","summary","tests","hard_boundary"],"additionalProperties":false}'
 
       - name: Normalize Implementation result
@@ -316,7 +380,7 @@ jobs:
             echo "- can_execute=false remains binding"
             echo "- DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS=true remains binding"
             echo "- V17_TERMINAL_REDUCER remains sole global terminal authority"
-            echo "- Lead, Triage, Implementation, Review, Architect, and QA are independent agent invocations"
+            echo "- Lead, Triage, Specialist, Implementation, Review, Architect, and QA are independent agent invocations"
             if [ "$gates" = "PASS" ] && { [ "$RISK" = "R0" ] || [ "$RISK" = "R1" ] || [ "$RISK" = "R2-restorative" ]; }; then
               echo
               echo "Morning-Green-Autonomous: true"
@@ -347,6 +411,8 @@ jobs:
             echo "- Lead: ${{ steps.lead.outputs.action || 'NOT_RUN' }}"
             echo "- Incident: ${{ steps.lead.outputs.incident || 'NONE' }}"
             echo "- Triage repairable: ${{ steps.triage.outputs.repairable || 'NOT_RUN' }}"
+            echo "- Specialist: ${{ steps.specialist.outputs.subagent || 'NOT_RUN' }}"
+            echo "- Specialist hypothesis: ${{ steps.specialist.outputs.hypothesis || 'NOT_RUN' }}"
             echo "- Implementation changed: ${{ steps.impl.outputs.changed || 'false' }}"
             echo "- Review: ${{ steps.review.outputs.decision || 'NOT_RUN' }}"
             echo "- Architect: ${{ steps.architect.outputs.decision || 'NOT_RUN' }}"
