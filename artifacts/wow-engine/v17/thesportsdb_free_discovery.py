@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Mapping
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -26,6 +27,7 @@ SOURCE_CLASS = "FREE_OFFICIAL_API_DISCOVERY"
 BASE_URL = "https://www.thesportsdb.com/api/v1/json/123"
 USER_AGENT = "WOW-V17-Scout-Research/1.0 (schedule-discovery; contact=repo-owner)"
 TIMEOUT_SECONDS = 10.0
+DOCUMENTED_FREE_SCHEDULE_DAY_LIMIT = 3
 
 
 @dataclass(frozen=True)
@@ -34,6 +36,8 @@ class FreeDiscoveryResult:
     rows: tuple[dict[str, Any], ...] = ()
     code: str = "THESPORTSDB_DISCOVERY_OK"
     http_status: int | None = None
+    coverage_complete: bool = False
+    documented_free_response_limit: int = DOCUMENTED_FREE_SCHEDULE_DAY_LIMIT
     can_execute: bool = False
 
 
@@ -43,11 +47,24 @@ def _text(value: Any) -> str | None:
 
 
 def _commence_time(raw: Mapping[str, Any]) -> str | None:
-    """Return only a provider-supplied absolute timestamp; never invent a timezone."""
-    # TheSportsDB also exposes clock-only fields such as strTime/strEventTime.
-    # Those do not establish an instant without a verified timezone, so only
-    # strTimestamp is eligible for WOW commence_time here.
-    return _text(raw.get("strTimestamp"))
+    """Return only a provider-supplied timezone-aware timestamp.
+
+    The live free endpoint can emit a naive ``strTimestamp`` such as
+    ``2026-09-25T16:00:00``. That is not a globally ordered instant. Preserve it
+    only in provider fields; do not promote it to WOW ``commence_time`` unless
+    the provider explicitly supplies ``Z`` or an offset.
+    """
+    timestamp = _text(raw.get("strTimestamp"))
+    if not timestamp:
+        return None
+    candidate = timestamp[:-1] + "+00:00" if timestamp.endswith("Z") else timestamp
+    try:
+        parsed = datetime.fromisoformat(candidate)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        return None
+    return timestamp
 
 
 def normalize_event(raw: Mapping[str, Any], *, requested_sport: str) -> dict[str, Any] | None:
@@ -70,6 +87,7 @@ def normalize_event(raw: Mapping[str, Any], *, requested_sport: str) -> dict[str
         "home_team": home,
         "away_team": away,
         "commence_time": commence,
+        "provider_timestamp": _text(raw.get("strTimestamp")),
         "provider_date": _text(raw.get("dateEvent")),
         "provider_time": _text(raw.get("strTime") or raw.get("strEventTime")),
         "status": _text(raw.get("strStatus")) or "UNKNOWN",
@@ -113,10 +131,10 @@ def fetch_day(
 ) -> FreeDiscoveryResult:
     """Fetch one documented V1 Schedule Day request from the official API.
 
-    This challenger intentionally performs no retry fanout. Free-tier response
-    limits mean a successful response proves only the rows returned, never full
-    board coverage. Production promotion therefore requires a separate coverage
-    experiment and canonical-identity resolver.
+    This challenger intentionally performs no retry fanout. The documented free
+    Schedule Day response limit is three events, so even HTTP 200 must remain
+    ``coverage_complete=False``. Production promotion requires a source/route
+    that proves complete competition coverage plus canonical identity.
     """
     params: dict[str, str] = {"d": str(slate_date), "s": str(sport)}
     if league_id:
@@ -142,6 +160,7 @@ def fetch_day(
 __all__ = [
     "BASE_URL",
     "CAN_EXECUTE",
+    "DOCUMENTED_FREE_SCHEDULE_DAY_LIMIT",
     "EXACT_LINE_AUTHORITY",
     "FreeDiscoveryResult",
     "PREDICTION_AUTHORITY",
