@@ -148,3 +148,14 @@ def test_failure_router_preserves_typed_failure_ownership() -> None:
         assert failure in team
     assert 'route_failure("ACTION_TRANSPORT_FAILURE") == "transport"' in team
     assert 'route_failure("MODEL_UNAVAILABLE") == "model-capability"' in team
+
+
+def test_capability_matrix_is_explicit_and_fail_closed() -> None:
+    team = _text(ROOT / "artifacts/wow-engine/v17/engineering_agent_team.py")
+    for dimension in (
+        "discovery_supported", "canonicalization_supported", "hydration_supported",
+        "fitted_specialist_registered", "artifact_certified", "calibration_valid",
+        "production_enabled",
+    ):
+        assert dimension in team
+    assert "production_enabled requires every upstream capability" in team
