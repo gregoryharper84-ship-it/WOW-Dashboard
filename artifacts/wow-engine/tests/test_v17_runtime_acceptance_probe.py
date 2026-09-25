@@ -4,6 +4,7 @@ from v17 import market_evidence_native_live as live
 from v17 import market_evidence_sources as sources
 from v17 import runtime_acceptance_probe as probe
 from v17 import rundown_credential_diagnostic as credential
+from v17 import rundown_provider_health as provider_health
 from v17.sep15_runtime_contract_repairs import sanitize_model_market_prior
 
 
@@ -82,10 +83,109 @@ def test_rundown_acceptance_exposes_counts_not_odds_or_payload(monkeypatch):
     assert out["secret_value_exposed"] is False
     assert out["prediction_authority"] is False
     assert out["can_execute"] is False
+    assert "provider_health_status" not in out
     assert "data" not in out
     assert "bookmakers" not in out
     assert "odds" not in out
     assert "prices" not in out
+
+
+def test_rundown_403_catalog_rejection_is_localized_as_auth_failure(monkeypatch):
+    fake = sources.MarketEvidenceResult(
+        False,
+        "RUNDOWN",
+        "events",
+        status=403,
+        code="RUNDOWN_HTTP_403",
+    )
+    monkeypatch.setattr(live, "get_sport_date_odds_snapshot", lambda *_args, **_kwargs: fake)
+    monkeypatch.setattr(
+        credential,
+        "rundown_credential_status",
+        lambda: {"configured": True, "secret_value_exposed": False},
+    )
+    monkeypatch.setattr(
+        provider_health,
+        "probe_rundown_provider_health",
+        lambda **_kwargs: {
+            "status": "BLOCKED",
+            "catalog_access": {
+                "market_acquisition_status": "AUTH_FAILED",
+                "provider_code": "RUNDOWN_HTTP_403",
+                "http_status": 403,
+                "auth_ok": False,
+            },
+            "event_access": {
+                "market_acquisition_status": "NOT_ATTEMPTED",
+                "provider_code": None,
+                "http_status": None,
+                "auth_ok": None,
+            },
+            "secret": "must-never-be-forwarded",
+        },
+    )
+
+    out = probe._rundown_acceptance()
+    assert out["status"] == "FAIL"
+    assert out["code"] == "RUNDOWN_HTTP_403"
+    assert out["provider_health_status"] == "BLOCKED"
+    assert out["catalog_access_status"] == "AUTH_FAILED"
+    assert out["catalog_provider_code"] == "RUNDOWN_HTTP_403"
+    assert out["catalog_http_status"] == 403
+    assert out["catalog_auth_ok"] is False
+    assert out["event_access_status"] == "NOT_ATTEMPTED"
+    assert out["event_http_status"] is None
+    assert "secret" not in out
+    assert out["secret_value_exposed"] is False
+    assert out["can_execute"] is False
+
+
+def test_rundown_403_after_catalog_pass_localizes_event_entitlement_boundary(monkeypatch):
+    fake = sources.MarketEvidenceResult(
+        False,
+        "RUNDOWN",
+        "events",
+        status=403,
+        code="RUNDOWN_HTTP_403",
+    )
+    monkeypatch.setattr(live, "get_sport_date_odds_snapshot", lambda *_args, **_kwargs: fake)
+    monkeypatch.setattr(
+        credential,
+        "rundown_credential_status",
+        lambda: {"configured": True, "secret_value_exposed": False},
+    )
+    monkeypatch.setattr(
+        provider_health,
+        "probe_rundown_provider_health",
+        lambda **_kwargs: {
+            "status": "BLOCKED",
+            "catalog_access": {
+                "market_acquisition_status": "PASS",
+                "provider_code": "MARKET_EVIDENCE_FETCH_OK",
+                "http_status": 200,
+                "auth_ok": True,
+            },
+            "event_access": {
+                "market_acquisition_status": "AUTH_FAILED",
+                "provider_code": "RUNDOWN_HTTP_403",
+                "http_status": 403,
+                "auth_ok": False,
+            },
+        },
+    )
+
+    out = probe._rundown_acceptance()
+    assert out["status"] == "FAIL"
+    assert out["catalog_access_status"] == "PASS"
+    assert out["catalog_http_status"] == 200
+    assert out["catalog_auth_ok"] is True
+    assert out["event_access_status"] == "AUTH_FAILED"
+    assert out["event_provider_code"] == "RUNDOWN_HTTP_403"
+    assert out["event_http_status"] == 403
+    assert out["event_auth_ok"] is False
+    assert out["secret_value_exposed"] is False
+    assert out["prediction_authority"] is False
+    assert out["can_execute"] is False
 
 
 def test_market_prior_acceptance_verifies_ingress_without_exposing_values():

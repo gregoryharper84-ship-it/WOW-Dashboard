@@ -69,11 +69,30 @@ def _moneyline_event_count(events: Any) -> int:
     return count
 
 
+def _safe_provider_health_fields(health: Any) -> dict[str, Any]:
+    """Expose only value-free auth/access metadata from the strict provider probe."""
+    payload = health if isinstance(health, dict) else {}
+    catalog = payload.get("catalog_access") if isinstance(payload.get("catalog_access"), dict) else {}
+    event = payload.get("event_access") if isinstance(payload.get("event_access"), dict) else {}
+    return {
+        "provider_health_status": payload.get("status"),
+        "catalog_access_status": catalog.get("market_acquisition_status"),
+        "catalog_provider_code": catalog.get("provider_code"),
+        "catalog_http_status": catalog.get("http_status"),
+        "catalog_auth_ok": catalog.get("auth_ok"),
+        "event_access_status": event.get("market_acquisition_status"),
+        "event_provider_code": event.get("provider_code"),
+        "event_http_status": event.get("http_status"),
+        "event_auth_ok": event.get("auth_ok"),
+    }
+
+
 def _rundown_acceptance() -> dict[str, Any]:
-    """Exercise the same authenticated TheRundown snapshot path used by LLP."""
+    """Exercise the authenticated moneyline path and localize auth/entitlement failures."""
     from v17 import market_evidence_native_live as live
     from v17 import market_evidence_sources as sources
     from v17.rundown_credential_diagnostic import rundown_credential_status
+    from v17.rundown_provider_health import probe_rundown_provider_health
 
     credential = rundown_credential_status()
     slate_date = datetime.now(timezone.utc).date().isoformat()
@@ -103,6 +122,27 @@ def _rundown_acceptance() -> dict[str, Any]:
     events_returned = len(result.data) if isinstance(result.data, list) else 0
     moneyline_events = _moneyline_event_count(result.data)
     passed = bool(result.ok and events_returned > 0 and moneyline_events > 0)
+
+    provider_health: dict[str, Any] = {}
+    # A bare 401/403 from the odds snapshot cannot distinguish a rejected
+    # credential from a valid credential that lacks event/plan entitlement.
+    # Only on that failure class, run the strict catalog -> events diagnostic.
+    # The response is reduced to booleans/status codes below; no provider body,
+    # price, participant, or credential value is ever returned.
+    if not result.ok and result.status in {401, 403}:
+        try:
+            provider_health = _safe_provider_health_fields(
+                probe_rundown_provider_health(
+                    sport_key="baseball_mlb",
+                    date=slate_date,
+                )
+            )
+        except Exception as exc:  # diagnostic failure must stay typed and secret-free
+            provider_health = {
+                "provider_health_status": "DIAGNOSTIC_FAILED",
+                "provider_health_error_type": type(exc).__name__,
+            }
+
     return {
         **_base_result("PASS" if passed else "FAIL", "RUNDOWN_LIVE_BOARD_VERIFIED" if passed else str(result.code or "RUNDOWN_LIVE_BOARD_UNVERIFIED")),
         "credential_configured": bool(credential.get("configured")),
@@ -113,6 +153,7 @@ def _rundown_acceptance() -> dict[str, Any]:
         "snapshot_retrieved": bool(result.ok),
         "events_returned": events_returned,
         "moneyline_events_returned": moneyline_events,
+        **provider_health,
     }
 
 
