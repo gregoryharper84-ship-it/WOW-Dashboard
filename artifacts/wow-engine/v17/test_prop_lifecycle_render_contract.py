@@ -24,12 +24,18 @@ def test_render_keeps_heavy_prop_evidence_sweep_off_interactive_web_process():
     assert env["WOW_DRY_RUN_ONLY"]["value"] == "true"
 
 
-def test_worker_remains_non_executing_even_though_web_autopilot_is_installed():
+def test_approval_gated_worker_remains_non_executing_outside_active_blueprint():
     repo_root = Path(__file__).resolve().parents[3]
-    render = yaml.safe_load((repo_root / "render.yaml").read_text())
-    services = {item["name"]: item for item in render["services"]}
+    active = yaml.safe_load((repo_root / "render.yaml").read_text())
+    active_services = {item["name"]: item for item in active["services"]}
+    assert "wow-agent-worker" not in active_services
+    assert "wow-jobs" not in active_services
+
+    phase2 = yaml.safe_load((repo_root / "render.agent-runtime-phase2.example.yaml").read_text())
+    services = {item["name"]: item for item in phase2["services"]}
     worker = services["wow-agent-worker"]
     env = {item["key"]: item for item in worker["envVars"]}
+    assert worker["autoDeployTrigger"] == "off"
     assert env["WOW_CAN_EXECUTE"]["value"] == "false"
     assert env["WOW_DRY_RUN_ONLY"]["value"] == "true"
 

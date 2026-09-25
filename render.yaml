@@ -1,16 +1,8 @@
+# ACTIVE production Blueprint only.
+# Dormant / approval-gated Agent Runtime Phase 2 resources live in
+# render.agent-runtime-phase2.example.yaml and must not be added here until
+# their paid Render resources are explicitly approved.
 services:
-  # WOW Agent Runtime V1 Phase 2 (packet section 17 / PR #33's topology,
-  # ported to public.wow_agent_* during the convergence pass). Definition
-  # only — not provisioned. Creating a paid persistent Key Value instance
-  # and the background worker requires explicit approval; see the
-  # convergence report for what's outstanding before this can be applied.
-  - type: keyvalue
-    name: wow-jobs
-    plan: starter
-    region: oregon
-    maxmemoryPolicy: noeviction
-    ipAllowList: []
-
   - type: web
     name: wow-governed-probability-engine
     runtime: python
@@ -105,49 +97,3 @@ services:
         value: "0.05"
       - key: WOW_ENVIRONMENT
         value: "production"
-      - key: REDIS_URL
-        fromService:
-          name: wow-jobs
-          type: keyvalue
-          property: connectionString
-
-  - type: worker
-    name: wow-agent-worker
-    runtime: python
-    plan: starter
-    region: oregon
-    rootDir: artifacts/wow-engine
-    buildCommand: pip install -r requirements.txt
-    startCommand: celery -A agent_runtime.celery_app:celery_app worker --loglevel=INFO --concurrency=2
-    autoDeployTrigger: "off"
-    maxShutdownDelaySeconds: 120
-    envVars:
-      - key: PYTHON_VERSION
-        value: 3.11.11
-      - key: SUPABASE_URL
-        sync: false
-      - key: SUPABASE_SERVICE_KEY
-        sync: false
-      - key: balldontlie
-        sync: false
-      - key: WOLFRAM_ALPHA_APP_ID
-        sync: false
-      - key: WOW_WOLFRAM_ARITHMETIC_AUDIT_ENABLED
-        value: "1"
-      - key: WOW_WOLFRAM_TIMEOUT_SECONDS
-        value: "5"
-      - key: WOW_CAN_EXECUTE
-        value: "false"
-      - key: WOW_DRY_RUN_ONLY
-        value: "true"
-      - key: SENTRY_DSN
-        sync: false
-      - key: SENTRY_TRACES_SAMPLE_RATE
-        value: "0.05"
-      - key: WOW_ENVIRONMENT
-        value: "production"
-      - key: REDIS_URL
-        fromService:
-          name: wow-jobs
-          type: keyvalue
-          property: connectionString
