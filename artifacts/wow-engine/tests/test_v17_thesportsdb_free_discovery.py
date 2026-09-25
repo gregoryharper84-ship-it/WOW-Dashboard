@@ -68,7 +68,26 @@ def test_clock_only_provider_time_does_not_invent_timezone_or_instant():
     assert row["provider_time"] == "19:30:00"
 
 
-def test_fetch_day_uses_documented_official_api_and_optional_league_filter():
+def test_naive_provider_timestamp_is_retained_only_as_provider_value():
+    row = free.normalize_event(
+        _event(strTimestamp="2026-09-25T16:00:00"),
+        requested_sport="Soccer",
+    )
+    assert row is not None
+    assert row["commence_time"] is None
+    assert row["provider_timestamp"] == "2026-09-25T16:00:00"
+
+
+def test_zulu_provider_timestamp_is_an_absolute_instant():
+    row = free.normalize_event(
+        _event(strTimestamp="2026-09-25T16:00:00Z"),
+        requested_sport="Soccer",
+    )
+    assert row is not None
+    assert row["commence_time"] == "2026-09-25T16:00:00Z"
+
+
+def test_fetch_day_uses_documented_official_api_and_never_claims_complete_free_coverage():
     observed = {}
 
     def opener(request, timeout):
@@ -86,6 +105,8 @@ def test_fetch_day_uses_documented_official_api_and_optional_league_filter():
     assert result.ok is True
     assert result.http_status == 200
     assert len(result.rows) == 1
+    assert result.coverage_complete is False
+    assert result.documented_free_response_limit == 3
     assert observed["url"].startswith(f"{free.BASE_URL}/eventsday.php?")
     assert "d=2026-09-25" in observed["url"]
     assert "s=Soccer" in observed["url"]
@@ -109,4 +130,5 @@ def test_payload_shape_failure_and_transport_failure_fail_closed():
     assert result.ok is False
     assert result.code == "THESPORTSDB_TimeoutError"
     assert result.rows == ()
+    assert result.coverage_complete is False
     assert result.can_execute is False
