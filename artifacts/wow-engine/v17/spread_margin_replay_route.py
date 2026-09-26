@@ -1,8 +1,9 @@
-"""OIDC-protected, read-only historical replay surface for spread challengers.
+"""OIDC-protected, research-only spread challenger surfaces.
 
-This route is research-only Class C evidence infrastructure. It does not mutate
-training data, register a serving specialist, publish a probability, or execute
-any wager/market action.
+The replay route is read-only Class C evidence infrastructure. The market
+evidence route may append sportsbook spread observations to the dedicated
+market-evidence ledger, but it cannot mutate sporting probabilities, register a
+serving specialist, publish a probability, or execute any wager/market action.
 """
 from __future__ import annotations
 
@@ -14,6 +15,11 @@ from pydantic import BaseModel, ConfigDict, Field
 from github_actions_oidc import scout_route_auth_dependency
 from v17.spread_margin_challenger import SpreadChallengerUnavailable
 from v17.spread_margin_replay import run_historical_replay
+from v17.spread_market_evidence import (
+    DEFAULT_BOOKS,
+    SpreadMarketEvidenceError,
+    collect_spread_snapshot,
+)
 
 CAN_EXECUTE = False
 DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS = True
@@ -34,6 +40,13 @@ class SpreadMarginReplayRequest(BaseModel):
     ridge_alpha: float = Field(default=4.0, gt=0.0, le=100.0)
 
 
+class SpreadMarketEvidenceRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    sport: ReplaySport
+    slate_date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    books: list[str] = Field(default_factory=lambda: list(DEFAULT_BOOKS), min_length=2, max_length=5)
+
+
 def _governance_fields() -> dict[str, Any]:
     return {
         "automatic_certification": AUTOMATIC_CERTIFICATION,
@@ -44,6 +57,20 @@ def _governance_fields() -> dict[str, Any]:
         "global_terminal_reducer": GLOBAL_TERMINAL_REDUCER,
         "dry_run_only_no_live_trading_no_market_orders": DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS,
         "can_execute": CAN_EXECUTE,
+    }
+
+
+def _evidence_governance_fields(*, rows_written: int = 0) -> dict[str, Any]:
+    return {
+        "automatic_certification": False,
+        "automatic_promotion": False,
+        "probability_publishable": False,
+        "evidence_database_mutated": rows_written > 0,
+        "production_probability_database_mutated": False,
+        "production_registry_mutated": False,
+        "global_terminal_reducer": GLOBAL_TERMINAL_REDUCER,
+        "dry_run_only_no_live_trading_no_market_orders": DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS,
+        "can_execute": False,
     }
 
 
@@ -102,18 +129,65 @@ def execute_spread_margin_replay(db: Any, request: SpreadMarginReplayRequest) ->
     }
 
 
-def install_spread_margin_replay_route(app: FastAPI, *, auth_dependency: Any, db_client_fn: Any) -> None:
-    path = "/internal/v17/spread-margin-replay"
-    if any(getattr(route, "path", None) == path for route in app.router.routes):
-        return
+def execute_spread_market_evidence_collection(db: Any, request: SpreadMarketEvidenceRequest) -> dict[str, Any]:
+    """Collect one bounded current main-line spread snapshot into evidence only."""
+    try:
+        result = collect_spread_snapshot(
+            db,
+            sport=request.sport,
+            slate_date=request.slate_date,
+            books=request.books,
+        )
+    except SpreadMarketEvidenceError as exc:
+        return {
+            "status": "BLOCKED",
+            "code": exc.code,
+            "sport": request.sport,
+            "slate_date": request.slate_date,
+            "detail": str(exc),
+            **_evidence_governance_fields(),
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "status": "BLOCKED",
+            "code": "SPREAD_MARKET_EVIDENCE_RUNTIME_FAILED",
+            "sport": request.sport,
+            "slate_date": request.slate_date,
+            "error_type": type(exc).__name__,
+            **_evidence_governance_fields(),
+        }
 
-    @app.post(
-        path,
-        dependencies=[scout_route_auth_dependency(auth_dependency)],
-        operation_id="runWowV17SpreadMarginReplay",
-    )
-    def run_replay(request: SpreadMarginReplayRequest) -> dict[str, Any]:
-        return execute_spread_margin_replay(db_client_fn(), request)
+    rows_written = int(result.get("rows_written") or 0)
+    return {
+        "status": "EVIDENCE_CAPTURED" if rows_written > 0 else "EVIDENCE_EMPTY",
+        "code": "SPREAD_MARKET_EVIDENCE_CAPTURED" if rows_written > 0 else "SPREAD_MARKET_EVIDENCE_EMPTY",
+        **result,
+        **_evidence_governance_fields(rows_written=rows_written),
+    }
+
+
+def install_spread_margin_replay_route(app: FastAPI, *, auth_dependency: Any, db_client_fn: Any) -> None:
+    replay_path = "/internal/v17/spread-margin-replay"
+    evidence_path = "/internal/v17/spread-market-evidence"
+    existing = {getattr(route, "path", None) for route in app.router.routes}
+
+    if replay_path not in existing:
+        @app.post(
+            replay_path,
+            dependencies=[scout_route_auth_dependency(auth_dependency)],
+            operation_id="runWowV17SpreadMarginReplay",
+        )
+        def run_replay(request: SpreadMarginReplayRequest) -> dict[str, Any]:
+            return execute_spread_margin_replay(db_client_fn(), request)
+
+    if evidence_path not in existing:
+        @app.post(
+            evidence_path,
+            dependencies=[scout_route_auth_dependency(auth_dependency)],
+            operation_id="collectWowV17SpreadMarketEvidence",
+        )
+        def collect_evidence(request: SpreadMarketEvidenceRequest) -> dict[str, Any]:
+            return execute_spread_market_evidence_collection(db_client_fn(), request)
 
 
 __all__ = [
@@ -126,6 +200,8 @@ __all__ = [
     "PROBABILITY_PUBLISHABLE",
     "PRODUCTION_REGISTRY_MUTATED",
     "SpreadMarginReplayRequest",
+    "SpreadMarketEvidenceRequest",
     "execute_spread_margin_replay",
+    "execute_spread_market_evidence_collection",
     "install_spread_margin_replay_route",
 ]
