@@ -195,7 +195,7 @@ def bind_exact_home_spreads(
                 continue
             side = str(row.get("participant_type") or "").strip().lower()
             participant = _team_token(normalized_sport, row.get("participant_name") or row.get("selection"))
-            if side != "home" and participant != home:
+            if side != "home" or participant != home:
                 continue
             if row.get("is_available") is False and str(row.get("snapshot_kind") or "").upper() not in {"OPEN", "CLOSE"}:
                 continue
