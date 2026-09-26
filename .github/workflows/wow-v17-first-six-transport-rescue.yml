@@ -1,6 +1,8 @@
 name: wow-v17-first-six-transport-rescue
 
 on:
+  schedule:
+    - cron: "40 14 * * *"
   workflow_dispatch:
   push:
     branches: [main]
@@ -14,6 +16,7 @@ on:
       - "artifacts/wow-engine/v17/team_state_runner_rescue.py"
       - "artifacts/wow-engine/v17/first_six_open_data_maintenance.py"
       - "artifacts/wow-engine/test_v17_source_heavy_runner_rescue.py"
+      - "artifacts/wow-engine/test_v17_team_state_transport_isolation.py"
 
 permissions:
   contents: read
@@ -47,6 +50,7 @@ jobs:
           - SOCCER_BUNDESLIGA
           - SOCCER_LALIGA
           - SOCCER_SERIE_A
+          - SOCCER_LIGUE_1
     steps:
       - uses: actions/checkout@v4
 
@@ -217,6 +221,7 @@ jobs:
               'automatic_certification',
               'automatic_promotion',
               'can_execute',
+              'SOCCER_LIGUE_1',
           ]
           missing = [item for item in required if item not in text]
           assert not missing, missing
