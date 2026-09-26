@@ -19,7 +19,7 @@ def test_live_host_uses_single_domain_canonical_action_with_run_control_merged()
         for operation in methods.values()
         if isinstance(operation, dict) and "operationId" in operation
     }
-    assert len(primary_ops) == 19
+    assert len(primary_ops) == 20
 
     for operation in (
         "getWowV17PickRequestRunState",
@@ -29,5 +29,12 @@ def test_live_host_uses_single_domain_canonical_action_with_run_control_merged()
         assert operation in instructions
         assert operation in primary_ops
         assert operation in str(companion)
+
+    assert "scoreWowV17SpreadForwardShadow" in primary_ops
+    spread = primary["paths"]["/internal/v17/spread-forward-shadow"]["post"]
+    assert spread["operationId"] == "scoreWowV17SpreadForwardShadow"
+    assert spread["security"] == [{"actionBearer": []}]
+    assert spread["x-openai-isConsequential"] is False
+    assert primary["components"]["schemas"]["SpreadForwardShadowRequest"]["properties"]["sport"]["enum"] == ["NCAAF"]
 
     assert "can_execute=false" in instructions

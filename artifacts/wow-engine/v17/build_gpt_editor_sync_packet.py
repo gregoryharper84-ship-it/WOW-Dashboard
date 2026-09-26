@@ -35,6 +35,7 @@ ACTION_SCHEMA = ENGINE / "v17" / "openapi.wow-betting-engine.v17.yaml"
 EDITOR_INSTRUCTION_CHAR_LIMIT = 8000
 EDITOR_INSTRUCTION_BYTE_SAFETY_LIMIT = 7500
 PRIZEPICKS_KNOWLEDGE_FILENAME = "WOW_V17_PRIZEPICKS_HOST_CONTRACT_KNOWLEDGE.txt"
+REQUIRED_OPERATION_COUNT = 20
 
 REQUIRED_OPERATIONS = (
     "getWowV17BackendHealth",
@@ -43,6 +44,7 @@ REQUIRED_OPERATIONS = (
     "getWowV17PickRequestRunState",
     "runWowV17ResumablePickRequest",
     "closeWowV17PickRequestRun",
+    "scoreWowV17SpreadForwardShadow",
 )
 REQUIRED_PRIZEPICKS_TOKENS = (
     "SOURCE_PAGE_UNREADABLE:<page_number>",
@@ -103,10 +105,15 @@ def build_packet() -> tuple[bytes, dict]:
     missing_editor_tokens = [token for token in REQUIRED_EDITOR_TOKENS if token not in instructions_text]
     missing_operations = [name for name in REQUIRED_OPERATIONS if name not in schema_text]
     missing_addendum_tokens = [token for token in REQUIRED_PRIZEPICKS_TOKENS if token not in addendum_text]
+    operation_count = schema_text.count("operationId:")
     if missing_editor_tokens:
         raise RuntimeError("GPT_EDITOR_SYNC_INSTRUCTION_CONTRACT_MISSING:" + ",".join(missing_editor_tokens))
     if missing_operations:
         raise RuntimeError("GPT_EDITOR_SYNC_SCHEMA_OPERATION_MISSING:" + ",".join(missing_operations))
+    if operation_count != REQUIRED_OPERATION_COUNT:
+        raise RuntimeError(
+            f"GPT_EDITOR_SYNC_SCHEMA_OPERATION_COUNT_MISMATCH:{operation_count}!={REQUIRED_OPERATION_COUNT}"
+        )
     if missing_addendum_tokens:
         raise RuntimeError("GPT_EDITOR_SYNC_ADDENDUM_CONTRACT_MISSING:" + ",".join(missing_addendum_tokens))
 
@@ -131,6 +138,7 @@ def build_packet() -> tuple[bytes, dict]:
         "action_schema_sha256": _sha256(schema),
         "action_schema_installation_surface": "SINGLE_CUSTOM_ACTION_DOMAIN",
         "action_schema_domain": "wow-governed-probability-engine.onrender.com",
+        "action_operation_count": operation_count,
         "run_control_installation_surface": "MERGED_INTO_CANONICAL_ACTION_SCHEMA",
         "editor_instruction_packet_sha256": _sha256(packet),
         "combined_editor_packet_sha256": _sha256(packet),
@@ -142,13 +150,14 @@ def build_packet() -> tuple[bytes, dict]:
         "acceptance_required": [
             "PASTE_CANONICAL_INSTRUCTIONS_INTO_INSTRUCTIONS_FIELD",
             "ATTACH_PRIZEPICKS_ADDENDUM_AS_KNOWLEDGE_FILE",
-            "IMPORT_SINGLE_CANONICAL_ACTION_SCHEMA_WITH_19_OPERATIONS",
+            "IMPORT_SINGLE_CANONICAL_ACTION_SCHEMA_WITH_20_OPERATIONS",
             "PRESERVE_EXISTING_WOW_ACTION_API_KEY_BEARER_AUTH",
             "SAVE_AND_RELOAD_PRODUCTION_WOW_BETTING_ENGINE_EDITOR",
             "FRESH_CHAT_GET_WOW_V17_BACKEND_HEALTH",
             "FRESH_CHAT_SCORE_WOW_PICK_REQUEST",
             "FRESH_CHAT_LOOKUP_WOW_V17_PREDICTION_RECEIPTS",
             "FRESH_CHAT_VERIFY_RUN_CONTROL_OPERATIONS_VISIBLE",
+            "FRESH_CHAT_SCORE_WOW_V17_SPREAD_FORWARD_SHADOW",
             "FRESH_CHAT_MULTIPAGE_PRIZEPICKS_CANARY",
             "CONFIRM_CAN_EXECUTE_FALSE",
         ],
