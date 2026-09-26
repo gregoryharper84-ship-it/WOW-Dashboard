@@ -42,6 +42,20 @@ def test_games_request_is_read_only_and_bearer_authenticated(monkeypatch):
     assert cfbd.CAN_EXECUTE is False
 
 
+def test_http_error_preserves_typed_code_and_safe_status(monkeypatch):
+    def fake_get(url, params, headers, timeout):
+        return SimpleNamespace(status_code=429)
+
+    monkeypatch.setattr(cfbd.httpx, "get", fake_get)
+    client = cfbd.CFBDClient(api_key="secret")
+    with pytest.raises(cfbd.CFBDUnavailable) as exc:
+        client.games(year=2026, week=4, classification="fbs")
+
+    assert exc.value.code == "CFBD_HTTP_ERROR"
+    assert exc.value.http_status == 429
+    assert "secret" not in str(exc.value)
+
+
 def test_player_game_stats_uses_documented_read_only_route(monkeypatch):
     captured = {}
 
