@@ -54,6 +54,18 @@ jobs:
           echo "state=$state" >> "$GITHUB_OUTPUT"
           printf '%s\n' "$result" > "$RUNNER_TEMP/priority.json"
 
+      - name: Verify OpenAI authentication
+        if: steps.priority.outputs.release_pending == 'true'
+        shell: bash
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${OPENAI_API_KEY:-}" ]; then
+            echo "::error::OPENAI_API_KEY is required for the release verification agent."
+            exit 1
+          fi
+
       - name: Release / Production Verification agent
         id: release_agent
         if: steps.priority.outputs.release_pending == 'true'
