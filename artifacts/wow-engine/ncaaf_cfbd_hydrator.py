@@ -115,6 +115,134 @@ def hydrate_cfbd_season(
     return snapshots
 
 
+def hydrate_cfbd_player_stats_season(
+    client: CFBDClient,
+    *,
+    season: int,
+    weeks: Iterable[int],
+    classification: Optional[str] = "fbs",
+    season_type: Optional[str] = "both",
+) -> list[SourceSnapshot]:
+    """Fetch immutable raw player box-score snapshots for one NCAAF season.
+
+    This is the first governed input for the NCAAF player-prop build. The rows
+    remain raw sporting outcomes; they are not features, fitted-model inputs,
+    calibrators, probabilities, or publication authority.
+    """
+    requested_at = _utc_now()
+    normalized_weeks = sorted({int(w) for w in weeks})
+    if not normalized_weeks or any(w < 0 or w > 30 for w in normalized_weeks):
+        raise ValueError("weeks must contain valid NCAAF week numbers")
+
+    snapshots: list[SourceSnapshot] = []
+    for week in normalized_weeks:
+        response = client.player_game_stats(
+            year=int(season),
+            week=week,
+            classification=classification,
+            season_type=season_type,
+        )
+        snapshots.append(_snapshot(response, season=int(season), week=week, requested_at=requested_at))
+    return snapshots
+
+
+def profile_cfbd_player_stats(snapshots: Iterable[SourceSnapshot]) -> dict[str, Any]:
+    """Validate/profile CFBD's nested player-box-score shape without fitting it.
+
+    The profile intentionally emits only schema names and aggregate counts. It
+    does not expose player-level data and does not map provider stat labels onto
+    canonical WOW prop routes until the source shape has been observed and
+    reviewed.
+    """
+    category_types: dict[str, set[str]] = {}
+    source_snapshot_n = game_n = team_n = athlete_stat_n = participant_id_n = 0
+    malformed_n = 0
+    participant_ids: set[str] = set()
+
+    for snapshot in snapshots:
+        if snapshot.endpoint != "/games/players":
+            malformed_n += 1
+            continue
+        source_snapshot_n += 1
+        for game in snapshot.response_rows:
+            if not isinstance(game, Mapping) or str(game.get("id") or "").strip() == "":
+                malformed_n += 1
+                continue
+            teams = game.get("teams")
+            if not isinstance(teams, list):
+                malformed_n += 1
+                continue
+            game_n += 1
+            for team in teams:
+                if not isinstance(team, Mapping) or not str(team.get("team") or "").strip():
+                    malformed_n += 1
+                    continue
+                categories = team.get("categories")
+                if not isinstance(categories, list):
+                    malformed_n += 1
+                    continue
+                team_n += 1
+                for category in categories:
+                    if not isinstance(category, Mapping):
+                        malformed_n += 1
+                        continue
+                    category_name = str(category.get("name") or "").strip()
+                    types = category.get("types")
+                    if not category_name or not isinstance(types, list):
+                        malformed_n += 1
+                        continue
+                    bucket = category_types.setdefault(category_name, set())
+                    for stat_type in types:
+                        if not isinstance(stat_type, Mapping):
+                            malformed_n += 1
+                            continue
+                        type_name = str(stat_type.get("name") or "").strip()
+                        athletes = stat_type.get("athletes")
+                        if not type_name or not isinstance(athletes, list):
+                            malformed_n += 1
+                            continue
+                        bucket.add(type_name)
+                        for athlete in athletes:
+                            if not isinstance(athlete, Mapping):
+                                malformed_n += 1
+                                continue
+                            athlete_id = str(athlete.get("id") or "").strip()
+                            stat = athlete.get("stat")
+                            if not athlete_id or stat is None or str(stat).strip() == "":
+                                malformed_n += 1
+                                continue
+                            athlete_stat_n += 1
+                            participant_ids.add(athlete_id)
+
+    participant_id_n = len(participant_ids)
+    if malformed_n:
+        status = "BLOCKED"
+        blocker = "NCAAF_PROP_PLAYER_STATS_SCHEMA_INVALID"
+    elif athlete_stat_n <= 0:
+        status = "BLOCKED"
+        blocker = "NCAAF_PROP_PLAYER_STATS_EMPTY"
+    else:
+        status = "READY_FOR_NORMALIZATION"
+        blocker = None
+
+    return {
+        "status": status,
+        "blocker": blocker,
+        "source_snapshot_n": source_snapshot_n,
+        "game_n": game_n,
+        "team_n": team_n,
+        "participant_id_n": participant_id_n,
+        "athlete_stat_n": athlete_stat_n,
+        "malformed_n": malformed_n,
+        "category_types": {name: sorted(values) for name, values in sorted(category_types.items())},
+        "source_provider": "CFBD",
+        "source_endpoint": "/games/players",
+        "evidence_domain": "SPORTING",
+        "probability_publishable": False,
+        "can_execute": False,
+    }
+
+
 def persist_source_snapshots(supabase_client: Any, snapshots: Iterable[SourceSnapshot]) -> int:
     """Persist staged raw observations using a service-role Supabase client.
 

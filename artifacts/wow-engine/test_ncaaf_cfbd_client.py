@@ -42,6 +42,36 @@ def test_games_request_is_read_only_and_bearer_authenticated(monkeypatch):
     assert cfbd.CAN_EXECUTE is False
 
 
+def test_player_game_stats_uses_documented_read_only_route(monkeypatch):
+    captured = {}
+
+    def fake_get(url, params, headers, timeout):
+        captured.update(url=url, params=params, headers=headers, timeout=timeout)
+        return SimpleNamespace(status_code=200, json=lambda: [{"id": 401, "teams": []}])
+
+    monkeypatch.setattr(cfbd.httpx, "get", fake_get)
+    client = cfbd.CFBDClient(api_key="secret")
+    response = client.player_game_stats(year=2025, week=3)
+
+    assert captured["url"] == "https://api.collegefootballdata.com/games/players"
+    assert captured["headers"] == {"Authorization": "Bearer secret"}
+    assert captured["params"] == {
+        "year": 2025,
+        "week": 3,
+        "classification": "fbs",
+        "seasonType": "both",
+    }
+    assert response.endpoint == "/games/players"
+    assert response.rows[0]["id"] == 401
+    assert cfbd.CAN_EXECUTE is False
+
+
+def test_player_game_stats_requires_bounded_year_scope():
+    client = cfbd.CFBDClient(api_key="secret")
+    with pytest.raises(ValueError):
+        client.player_game_stats(year=2025)
+
+
 def test_elo_week_is_supported_but_other_ratings_do_not_invent_week(monkeypatch):
     calls = []
 
