@@ -4,10 +4,11 @@ info:
   version: 17.0.0
   description: >-
     PRODUCTION SOURCE CONTRACT. LLP Team Betting Engine owns team/game/event
-    winner, favorite, underdog and upset intelligence. It has no player-prop
-    scoring operation. Shared market, portfolio and global terminal authority
-    remain in the WOW governed core. Install this schema in the live LLP Custom
-    GPT editor when editor access is available. can_execute is always false.
+    winner, favorite, underdog, upset and governed point-spread intelligence.
+    It has no player-prop scoring operation. Shared market, portfolio and global
+    terminal authority remain in the WOW governed core. Install this schema in
+    the live LLP Custom GPT editor when editor access is available.
+    can_execute is always false.
 servers:
   - url: https://wow-governed-probability-engine.onrender.com
 paths:
@@ -36,10 +37,12 @@ paths:
       operationId: scoreLlpV17TeamEvent
       x-openai-isConsequential: false
       description: >-
-        Canonical team/event scoring ingress. The request identity is fixed to
-        LLP_TEAM_BETTING_ENGINE. A sport without an actually registered fitted
-        team/event model and adapter fails closed as MODEL_UNAVAILABLE. Market
-        implied probability and generic reasoning may not substitute.
+        Canonical outright-winner team/event scoring ingress. The request
+        identity is fixed to LLP_TEAM_BETTING_ENGINE. A sport without an
+        actually registered fitted team/event model and adapter fails closed as
+        MODEL_UNAVAILABLE. Market implied probability and generic reasoning may
+        not substitute. Point-spread scoring uses the distinct spread shadow
+        operation while that lane remains uncertified.
       security: [{actionBearer: []}]
       requestBody:
         required: true
@@ -51,6 +54,26 @@ paths:
         '401': {description: Authentication failed}
         '409': {description: Controlling model/capability unavailable}
         '422': {description: Event/evidence/host contract invalid}
+  /internal/v17/spread-forward-shadow:
+    post:
+      operationId: scoreLlpV17SpreadForwardShadow
+      x-openai-isConsequential: false
+      description: >-
+        Research-only NCAAF exact-line spread forward shadow owned by the LLP
+        team/event lane. This surface does not certify, promote, publish, rank
+        as production, or execute a spread probability. The exact spread is a
+        post-fit threshold only; no moneyline-to-spread or market-probability
+        substitution is allowed.
+      security: [{actionBearer: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SpreadForwardShadowRequest'}
+      responses:
+        '200': {description: Research-only fitted spread challenger shadow result or typed blocker}
+        '401': {description: Authentication failed}
+        '422': {description: Invalid NCAAF exact-line shadow request}
   /record-recommendations:
     post:
       operationId: recordLlpV17Recommendations
@@ -83,6 +106,18 @@ components:
       type: http
       scheme: bearer
   schemas:
+    SpreadForwardShadowRequest:
+      type: object
+      additionalProperties: false
+      required: [sport, event_id, event_start_time, home_team, away_team, home_spread, season]
+      properties:
+        sport: {type: string, enum: [NCAAF]}
+        event_id: {type: string, minLength: 1, maxLength: 128}
+        event_start_time: {type: string, format: date-time}
+        home_team: {type: string, minLength: 1, maxLength: 160}
+        away_team: {type: string, minLength: 1, maxLength: 160}
+        home_spread: {type: number, exclusiveMinimum: -100, exclusiveMaximum: 100}
+        season: {type: integer, minimum: 2000, maximum: 2100}
     RecommendationBatch:
       type: object
       additionalProperties: true
