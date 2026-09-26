@@ -18,7 +18,7 @@ concurrency:
 jobs:
   closure:
     name: NCAAF ML governed closure evidence
-    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, 'NCAAF ML closure bootstrap')
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -36,7 +36,7 @@ jobs:
           test "$WOW_CAN_EXECUTE" = "false"
           test "$WOW_DRY_RUN_ONLY" = "true"
 
-      - name: Refresh settled NCAAF game history
+      - name: Refresh history and verify immutable NCAAF candidate
         shell: bash
         run: |
           python - <<'PY'
@@ -76,17 +76,22 @@ jobs:
           assert maintenance.get("automatic_certification") is False
           assert maintenance.get("automatic_promotion") is False
           assert maintenance.get("probability_publishable") is False
-          if maintenance.get("fresh_acquisition_complete") is not True:
-              raise RuntimeError("NCAAF_FRESH_ACQUISITION_NOT_COMPLETE:" + json.dumps(maintenance.get("blockers"), sort_keys=True))
+          fresh_acquisition_complete = maintenance.get("fresh_acquisition_complete") is True
+          maintenance_blockers = maintenance.get("blockers") or []
           print(json.dumps({
               "maintenance_status": maintenance.get("status"),
-              "fresh_acquisition_complete": maintenance.get("fresh_acquisition_complete"),
+              "fresh_acquisition_complete": fresh_acquisition_complete,
+              "maintenance_degraded": maintenance.get("maintenance_degraded"),
               "source_snapshot_n": maintenance.get("source_snapshot_n"),
               "training_game_persisted_n": maintenance.get("training_game_persisted_n"),
-              "blockers": maintenance.get("blockers"),
+              "blockers": maintenance_blockers,
               "can_execute": False,
           }, sort_keys=True))
 
+          # Candidate-bound certification is a deterministic verification of the
+          # already persisted immutable artifact/rows. A transient fresh-provider
+          # blocker must not prevent source review/replay evidence from being
+          # produced, but it still blocks full current-history closure below.
           evidence = post(f"/internal/v17/team-event-certification-evidence/{os.environ['NCAAF_CANDIDATE_ID']}")
           assert evidence.get("can_execute") is False
           assert evidence.get("automatic_certification") is False
@@ -119,4 +124,10 @@ jobs:
               "blockers": lane.get("blockers"),
               "can_execute": False,
           }, sort_keys=True))
+
+          if not fresh_acquisition_complete:
+              raise RuntimeError(
+                  "NCAAF_CURRENT_HISTORY_REFRESH_BLOCKED:"
+                  + json.dumps(maintenance_blockers, sort_keys=True)
+              )
           PY
