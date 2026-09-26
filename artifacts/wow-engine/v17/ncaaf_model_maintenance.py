@@ -36,11 +36,68 @@ from v17.team_event_model_development_manifest import development_lane
 
 CAN_EXECUTE = False
 PROBABILITY_PUBLISHABLE = False
+MIN_HISTORICAL_GAMES_PER_SEASON = 500
 
 
 def default_seasons(now: datetime | None = None) -> tuple[int, ...]:
     current = (now or datetime.now(timezone.utc)).year
     return tuple(range(current - 4, current + 1))
+
+
+def _default_season_plan(
+    db: Any,
+    *,
+    now: datetime | None = None,
+) -> tuple[tuple[int, ...], dict[str, Any]]:
+    """Choose bootstrap vs current-season refresh from the governed ledger.
+
+    The provider is never consulted to make this decision. Four materially
+    populated completed seasons mean routine maintenance only needs the current
+    season; sparse/unknown ledgers fail safe to the existing five-season
+    bootstrap. Explicit ``seasons=`` remains authoritative in the caller.
+    """
+    current = (now or datetime.now(timezone.utc)).year
+    bootstrap = default_seasons(now)
+    historical = bootstrap[:-1]
+    counts: dict[str, int] = {}
+    try:
+        for season in historical:
+            result = (
+                db.table("wow_ncaaf_training_games")
+                .select("training_game_id", count="exact")
+                .eq("season", int(season))
+                .limit(1)
+                .execute()
+            )
+            counts[str(season)] = int(getattr(result, "count", 0) or 0)
+    except Exception as exc:  # noqa: BLE001
+        return bootstrap, {
+            "mode": "BOOTSTRAP_FIVE_SEASON",
+            "reason": "HISTORICAL_CORPUS_INSPECTION_UNAVAILABLE",
+            "historical_season_counts": counts,
+            "error_type": type(exc).__name__,
+            "can_execute": False,
+        }
+
+    complete = all(
+        counts.get(str(season), 0) >= MIN_HISTORICAL_GAMES_PER_SEASON
+        for season in historical
+    )
+    if complete:
+        return (current,), {
+            "mode": "CURRENT_SEASON_REFRESH",
+            "reason": "HISTORICAL_BOOTSTRAP_ALREADY_PERSISTED",
+            "historical_season_counts": counts,
+            "minimum_games_per_historical_season": MIN_HISTORICAL_GAMES_PER_SEASON,
+            "can_execute": False,
+        }
+    return bootstrap, {
+        "mode": "BOOTSTRAP_FIVE_SEASON",
+        "reason": "HISTORICAL_CORPUS_INSUFFICIENT",
+        "historical_season_counts": counts,
+        "minimum_games_per_historical_season": MIN_HISTORICAL_GAMES_PER_SEASON,
+        "can_execute": False,
+    }
 
 
 def _blocked(code: str, *, stage: str, detail: Any = None) -> dict[str, Any]:
@@ -72,7 +129,16 @@ def run_ncaaf_model_maintenance(
     weeks: Iterable[int] = range(1, 21),
     training_code_sha: str | None = None,
 ) -> dict[str, Any]:
-    season_values = tuple(sorted({int(v) for v in (seasons or default_seasons())}))
+    if seasons is None:
+        season_values, acquisition_plan = _default_season_plan(db)
+    else:
+        season_values = tuple(sorted({int(v) for v in seasons}))
+        acquisition_plan = {
+            "mode": "EXPLICIT_SEASON_RANGE",
+            "reason": "CALLER_SUPPLIED_SEASONS",
+            "seasons": list(season_values),
+            "can_execute": False,
+        }
     week_values = tuple(sorted({int(v) for v in weeks}))
     if not season_values or not week_values:
         return _blocked("NCAAF_MAINTENANCE_RANGE_EMPTY", stage="CONFIGURATION")
@@ -195,6 +261,7 @@ def run_ncaaf_model_maintenance(
     return {
         "status": status, "generated_at": datetime.now(timezone.utc).isoformat(),
         "seasons": list(season_values), "weeks": [min(week_values), max(week_values)],
+        "acquisition_plan": acquisition_plan,
         "acquisition": acquisition,
         "fresh_acquisition_complete": fresh_acquisition_complete,
         "maintenance_degraded": not fresh_acquisition_complete,
@@ -242,4 +309,10 @@ def install_ncaaf_model_maintenance_route(app: FastAPI, *, auth_dependency: Any,
         return run_ncaaf_model_maintenance(db_client_fn())
 
 
-__all__ = ["CAN_EXECUTE", "default_seasons", "install_ncaaf_model_maintenance_route", "run_ncaaf_model_maintenance"]
+__all__ = [
+    "CAN_EXECUTE",
+    "MIN_HISTORICAL_GAMES_PER_SEASON",
+    "default_seasons",
+    "install_ncaaf_model_maintenance_route",
+    "run_ncaaf_model_maintenance",
+]
