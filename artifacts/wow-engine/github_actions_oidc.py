@@ -67,6 +67,9 @@ FIRST_SIX_TRANSPORT_RESCUE_WORKFLOW_REF = (
 MLB_1IP_LINE_EXPANSION_MAINTENANCE_WORKFLOW_REF = (
     f"{REPOSITORY}/.github/workflows/wow-v17-mlb-1ip-line-expansion-maintenance.yml@{REF}"
 )
+SPREAD_MARGIN_REPLAY_WORKFLOW_REF = (
+    f"{REPOSITORY}/.github/workflows/wow-v17-spread-margin-replay.yml@{REF}"
+)
 ALLOWED_WORKFLOW_REFS = frozenset({
     WORKFLOW_REF,
     DAILY_SNAPSHOT_WORKFLOW_REF,
@@ -82,6 +85,7 @@ ALLOWED_WORKFLOW_REFS = frozenset({
     FIRST_SIX_MODEL_MAINTENANCE_WORKFLOW_REF,
     FIRST_SIX_TRANSPORT_RESCUE_WORKFLOW_REF,
     MLB_1IP_LINE_EXPANSION_MAINTENANCE_WORKFLOW_REF,
+    SPREAD_MARGIN_REPLAY_WORKFLOW_REF,
 })
 # Live scoring canaries are kept separate from the long-lived automation set so
 # their trust boundary stays explicit and independently reviewable.
@@ -203,6 +207,7 @@ __all__ = [
     "FIRST_SIX_TRANSPORT_RESCUE_WORKFLOW_REF",
     "LLP_SHADOW_OBSERVER_WORKFLOW_REF",
     "MLB_1IP_LINE_EXPANSION_MAINTENANCE_WORKFLOW_REF",
+    "SPREAD_MARGIN_REPLAY_WORKFLOW_REF",
     "GitHubOIDCValidationError",
     "NCAAF_MODEL_MAINTENANCE_WORKFLOW_REF",
     "NFL_FORWARD_SHADOW_WORKFLOW_REF",
