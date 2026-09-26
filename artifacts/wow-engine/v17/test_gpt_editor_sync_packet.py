@@ -5,7 +5,10 @@ import importlib.util
 import sys
 from pathlib import Path
 
+import yaml
+
 SCRIPT = Path(__file__).resolve().parent / "build_gpt_editor_sync_packet.py"
+SCHEMA = Path(__file__).resolve().parent / "openapi.wow-betting-engine.v17.yaml"
 spec = importlib.util.spec_from_file_location("gpt_editor_sync_packet", SCRIPT)
 module = importlib.util.module_from_spec(spec)
 assert spec and spec.loader
@@ -63,17 +66,50 @@ def test_packet_contains_single_domain_action_contract_without_secrets():
         assert operation in schema_text
         assert operation in manifest["required_operations"]
 
-    # Dependency-free check for the dedicated sync workflow. Full YAML/OpenAPI
+    # Dependency-free count check for the dedicated sync workflow. Full YAML/OpenAPI
     # validation runs in the protected backend regression suite.
-    assert schema_text.count("operationId:") == 19
+    assert schema_text.count("operationId:") == module.REQUIRED_OPERATION_COUNT == 20
+    assert manifest["action_operation_count"] == 20
     assert manifest["action_schema_installation_surface"] == "SINGLE_CUSTOM_ACTION_DOMAIN"
     assert manifest["action_schema_domain"] == "wow-governed-probability-engine.onrender.com"
     assert manifest["run_control_installation_surface"] == "MERGED_INTO_CANONICAL_ACTION_SCHEMA"
-    assert "IMPORT_SINGLE_CANONICAL_ACTION_SCHEMA_WITH_19_OPERATIONS" in manifest["acceptance_required"]
+    assert "IMPORT_SINGLE_CANONICAL_ACTION_SCHEMA_WITH_20_OPERATIONS" in manifest["acceptance_required"]
+    assert "FRESH_CHAT_SCORE_WOW_V17_SPREAD_FORWARD_SHADOW" in manifest["acceptance_required"]
 
     assert "WOW_ACTION_API_KEY=" not in text
     assert "Bearer sk-" not in text
     assert "API_KEY_TO_BEARER_EXISTING_WOW_ACTION_API_KEY__SECRET_NOT_INCLUDED" == manifest["authentication_contract"]
+
+
+def test_spread_forward_shadow_action_is_closed_ncaaf_only_and_research_only():
+    schema = yaml.safe_load(SCHEMA.read_text(encoding="utf-8"))
+    route = schema["paths"]["/internal/v17/spread-forward-shadow"]["post"]
+
+    assert route["operationId"] == "scoreWowV17SpreadForwardShadow"
+    assert route["security"] == [{"actionBearer": []}]
+    assert route["x-openai-isConsequential"] is False
+    assert "Research-only" in route["description"]
+    assert route["requestBody"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/SpreadForwardShadowRequest"
+    }
+
+    request = schema["components"]["schemas"]["SpreadForwardShadowRequest"]
+    assert request["additionalProperties"] is False
+    assert request["required"] == [
+        "sport",
+        "event_id",
+        "event_start_time",
+        "home_team",
+        "away_team",
+        "home_spread",
+        "season",
+    ]
+    assert request["properties"]["sport"]["enum"] == ["NCAAF"]
+    assert request["properties"]["event_start_time"]["format"] == "date-time"
+    assert request["properties"]["home_spread"]["exclusiveMinimum"] == -100
+    assert request["properties"]["home_spread"]["exclusiveMaximum"] == 100
+    assert request["properties"]["season"]["minimum"] == 2000
+    assert request["properties"]["season"]["maximum"] == 2100
 
 
 def test_packet_is_deterministic_for_same_repository_content():
