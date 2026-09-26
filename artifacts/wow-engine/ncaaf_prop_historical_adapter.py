@@ -185,6 +185,15 @@ def _parse_integer_stat(value: Any, *, field_name: str) -> float:
     return number
 
 
+def _parse_nonnegative_integer_stat(value: Any, *, field_name: str) -> float:
+    number = _parse_integer_stat(value, field_name=field_name)
+    if number < 0:
+        raise NCAAFPropHistoricalAdapterError(
+            "NCAAF_PROP_STAT_COUNT_INVALID", f"{field_name}:{str(value).strip()}"
+        )
+    return number
+
+
 def _parse_completions_attempts(value: Any) -> tuple[float, float]:
     text = str(value or "").strip()
     pieces = text.split("/")
@@ -364,10 +373,10 @@ def normalize_player_game(
                             _emit(outcomes, seen, game=game, player_id=player_id, team=team, opponent=opponent, stat_type="RUSHING_YARDS", actual_value=_parse_integer_stat(raw_value, field_name="rushing:YDS"), source_snapshot=source_snapshot)
                     elif category_name == "rushing" and type_name in {"CAR", "ATT"}:
                         if "RUSH_ATTEMPTS" in requested:
-                            _emit(outcomes, seen, game=game, player_id=player_id, team=team, opponent=opponent, stat_type="RUSH_ATTEMPTS", actual_value=_parse_integer_stat(raw_value, field_name="rushing:CAR"), source_snapshot=source_snapshot)
+                            _emit(outcomes, seen, game=game, player_id=player_id, team=team, opponent=opponent, stat_type="RUSH_ATTEMPTS", actual_value=_parse_nonnegative_integer_stat(raw_value, field_name="rushing:CAR"), source_snapshot=source_snapshot)
                     elif category_name == "receiving" and type_name in {"REC", "RECEPTIONS"}:
                         if "RECEPTIONS" in requested:
-                            _emit(outcomes, seen, game=game, player_id=player_id, team=team, opponent=opponent, stat_type="RECEPTIONS", actual_value=_parse_integer_stat(raw_value, field_name="receiving:REC"), source_snapshot=source_snapshot)
+                            _emit(outcomes, seen, game=game, player_id=player_id, team=team, opponent=opponent, stat_type="RECEPTIONS", actual_value=_parse_nonnegative_integer_stat(raw_value, field_name="receiving:REC"), source_snapshot=source_snapshot)
                     elif category_name == "receiving" and type_name in {"YDS", "YARDS"}:
                         if "RECEIVING_YARDS" in requested:
                             _emit(outcomes, seen, game=game, player_id=player_id, team=team, opponent=opponent, stat_type="RECEIVING_YARDS", actual_value=_parse_integer_stat(raw_value, field_name="receiving:YDS"), source_snapshot=source_snapshot)
@@ -383,11 +392,14 @@ def normalize_player_stats_corpus(
 ) -> tuple[NormalizedPlayerGameOutcome, ...]:
     schedule_index = build_schedule_index(game_snapshots)
     requested = _requested_types(stat_types)
-    output: list[NormalizedPlayerGameOutcome] = []
-    seen_games: set[tuple[str, str]] = set()
+    latest_by_game: dict[
+        str, tuple[datetime, str, SourceSnapshot, Mapping[str, Any]]
+    ] = {}
+
     for snapshot in player_snapshots:
         if snapshot.endpoint != "/games/players" or snapshot.acquisition_status != "AVAILABLE":
             continue
+        retrieved_at = _snapshot_retrieved_at(snapshot)
         for raw_game in snapshot.response_rows:
             if not isinstance(raw_game, Mapping):
                 raise NCAAFPropHistoricalAdapterError(
@@ -396,18 +408,31 @@ def normalize_player_stats_corpus(
             game_id = _required_text(
                 raw_game.get("id"), "NCAAF_PROP_PLAYER_GAME_IDENTITY_INVALID", "id"
             )
-            duplicate_key = (game_id, snapshot.payload_sha256)
-            if duplicate_key in seen_games:
-                continue
-            seen_games.add(duplicate_key)
-            output.extend(
-                normalize_player_game(
+            previous = latest_by_game.get(game_id)
+            if previous is None or retrieved_at > previous[0]:
+                latest_by_game[game_id] = (
+                    retrieved_at,
+                    snapshot.payload_sha256,
+                    snapshot,
                     raw_game,
-                    source_snapshot=snapshot,
-                    schedule_index=schedule_index,
-                    stat_types=requested,
                 )
+                continue
+            if retrieved_at == previous[0] and snapshot.payload_sha256 != previous[1]:
+                raise NCAAFPropHistoricalAdapterError(
+                    "NCAAF_PROP_PLAYER_GAME_REVISION_CONFLICT", game_id
+                )
+
+    output: list[NormalizedPlayerGameOutcome] = []
+    for game_id in sorted(latest_by_game):
+        _, _, snapshot, raw_game = latest_by_game[game_id]
+        output.extend(
+            normalize_player_game(
+                raw_game,
+                source_snapshot=snapshot,
+                schedule_index=schedule_index,
+                stat_types=requested,
             )
+        )
     return tuple(output)
 
 
