@@ -1,12 +1,12 @@
 """Read-only historical replay adapter for the V17 spread-margin challenger.
 
 This adapter consumes existing governed historical feature/game tables and emits
-research receipts.  It performs no schema mutation, model registration,
+research receipts. It performs no schema mutation, model registration,
 probability publication, or production serving change.
 """
 from __future__ import annotations
 
-from datetime import datetime, time, timedelta, timezone
+from datetime import datetime, time, timezone
 from hashlib import sha256
 import json
 import os
@@ -16,12 +16,13 @@ from v17.spread_margin_challenger import (
     CAN_EXECUTE,
     MarginTrainingRow,
     SpreadChallengerUnavailable,
+    build_dynamic_margin_rows,
     research_receipt,
     train_margin_distribution_candidate,
 )
 
 PAGE_SIZE = 1000
-SUPPORTED_REPLAY_SPORTS = ("NFL", "NBA", "WNBA")
+SUPPORTED_REPLAY_SPORTS = ("NFL", "NBA", "WNBA", "NCAAF")
 
 
 def _hash(payload: Any) -> str:
@@ -41,12 +42,6 @@ def _date_end_utc(value: Any) -> str:
     raw = str(value or "").strip()
     day = datetime.fromisoformat(raw[:10]).date()
     return datetime.combine(day, time(23, 59, 59), tzinfo=timezone.utc).isoformat()
-
-
-def _date_start_utc(value: Any) -> str:
-    raw = str(value or "").strip()
-    day = datetime.fromisoformat(raw[:10]).date()
-    return datetime.combine(day, time(0, 0, 0), tzinfo=timezone.utc).isoformat()
 
 
 def _numeric_features(payload: Mapping[str, Any]) -> dict[str, float]:
@@ -135,6 +130,43 @@ def adapt_basketball_rows(sport: str, feature_rows: Sequence[Mapping[str, Any]],
     return out
 
 
+def adapt_ncaaf_rows(game_rows: Sequence[Mapping[str, Any]], *, min_prior_games: int = 5) -> list[MarginTrainingRow]:
+    """Reconstruct leakage-safe NCAAF team-state rows from settled prior results.
+
+    NCAAF currently has settled governed training games but no populated
+    `wow_ncaaf_training_features` rows. This adapter therefore uses the same
+    prior-only V17 team-state feature builder used by the challenger itself,
+    rather than inventing advanced features or falling back to market inputs.
+    """
+    events: list[dict[str, Any]] = []
+    for row in game_rows:
+        if not row.get("official_event_id") or not row.get("event_start_time"):
+            continue
+        if row.get("home_points") is None or row.get("away_points") is None:
+            continue
+        events.append({
+            "event_id": str(row["official_event_id"]),
+            "event_start_time": str(row["event_start_time"]),
+            "season": row.get("season"),
+            "home_team": str(row.get("home_team") or ""),
+            "away_team": str(row.get("away_team") or ""),
+            "home_score": int(row["home_points"]),
+            "away_score": int(row["away_points"]),
+            "source_manifest": {
+                "result_source": row.get("result_source"),
+                "result_source_timestamp": row.get("result_source_timestamp"),
+                "training_game_id": row.get("training_game_id"),
+                "market_features_used": False,
+                "moneyline_probability_used": False,
+                "spread_line_used_as_feature": False,
+            },
+        })
+    if not events:
+        raise SpreadChallengerUnavailable("SPREAD_REPLAY_GAMES_EMPTY", "NCAAF settled training games are unavailable")
+    rows, _ = build_dynamic_margin_rows(events, sport="NCAAF", min_prior_games=min_prior_games)
+    return rows
+
+
 def _paged_select(client: Any, table: str, fields: str, *, filters: Sequence[tuple[str, str, Any]] = (), order: str) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     offset = 0
@@ -177,10 +209,12 @@ def load_replay_rows(client: Any, *, sport: str) -> list[MarginTrainingRow]:
         )
         return adapt_basketball_rows(sport, features, games)
     if sport == "NCAAF":
-        raise SpreadChallengerUnavailable(
-            "SPREAD_REPLAY_FEATURES_UNAVAILABLE",
-            "NCAAF settled training games exist but governed persisted training-feature rows are not available for spread replay",
+        games = _paged_select(
+            client, "wow_ncaaf_training_games",
+            "training_game_id,official_event_id,season,event_start_time,home_team,away_team,home_points,away_points,result_source,result_source_timestamp,can_execute",
+            order="event_start_time",
         )
+        return adapt_ncaaf_rows(games)
     if sport == "NCAAB":
         raise SpreadChallengerUnavailable(
             "SPREAD_REPLAY_DATASET_UNAVAILABLE",
@@ -206,6 +240,6 @@ def run_historical_replay(*, sport: str, client: Any | None = None, min_rows: in
 
 
 __all__ = [
-    "PAGE_SIZE", "SUPPORTED_REPLAY_SPORTS", "adapt_basketball_rows", "adapt_nfl_rows",
+    "PAGE_SIZE", "SUPPORTED_REPLAY_SPORTS", "adapt_basketball_rows", "adapt_ncaaf_rows", "adapt_nfl_rows",
     "load_replay_rows", "run_historical_replay",
 ]
