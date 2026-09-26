@@ -24,6 +24,20 @@ def test_unknown_endpoint_is_rejected():
     assert exc.value.code == "CFBD_ENDPOINT_NOT_ALLOWLISTED"
 
 
+def test_http_failure_preserves_status_without_response_body(monkeypatch):
+    def fake_get(url, params, headers, timeout):
+        return SimpleNamespace(status_code=429)
+
+    monkeypatch.setattr(cfbd.httpx, "get", fake_get)
+    client = cfbd.CFBDClient(api_key="secret")
+    with pytest.raises(cfbd.CFBDUnavailable) as exc:
+        client.player_game_stats(year=2023, week=1)
+
+    assert exc.value.code == "CFBD_HTTP_429"
+    assert str(exc.value) == "CFBD returned HTTP 429 for /games/players."
+    assert "secret" not in str(exc.value)
+
+
 def test_games_request_is_read_only_and_bearer_authenticated(monkeypatch):
     captured = {}
 
