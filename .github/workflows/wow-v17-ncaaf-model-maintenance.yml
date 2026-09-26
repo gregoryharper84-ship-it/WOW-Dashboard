@@ -12,6 +12,7 @@ on:
       - "artifacts/wow-engine/github_actions_oidc.py"
       - "artifacts/wow-engine/ncaaf_cfbd_client.py"
       - "artifacts/wow-engine/ncaaf_cfbd_hydrator.py"
+      - "artifacts/wow-engine/ncaaf_prop_historical_adapter.py"
       - "artifacts/wow-engine/ncaaf_training_materializer.py"
       - "artifacts/wow-engine/ncaaf_evidence_ingestion.py"
       - "artifacts/wow-engine/ncaaf_feature_compiler.py"
@@ -25,6 +26,7 @@ on:
       - "artifacts/wow-engine/team_event_request_runtime.py"
       - "artifacts/wow-engine/test_ncaaf_cfbd_client.py"
       - "artifacts/wow-engine/test_ncaaf_cfbd_hydrator.py"
+      - "artifacts/wow-engine/test_ncaaf_prop_historical_adapter.py"
       - "artifacts/wow-engine/test_ncaaf_feature_compiler.py"
       - "artifacts/wow-engine/test_v17_ncaaf_model_maintenance.py"
       - "artifacts/wow-engine/test_v17_ncaaf_prop_history_maintenance.py"
@@ -38,6 +40,7 @@ on:
       - "artifacts/wow-engine/github_actions_oidc.py"
       - "artifacts/wow-engine/ncaaf_cfbd_client.py"
       - "artifacts/wow-engine/ncaaf_cfbd_hydrator.py"
+      - "artifacts/wow-engine/ncaaf_prop_historical_adapter.py"
       - "artifacts/wow-engine/ncaaf_training_materializer.py"
       - "artifacts/wow-engine/ncaaf_evidence_ingestion.py"
       - "artifacts/wow-engine/ncaaf_feature_compiler.py"
@@ -51,6 +54,7 @@ on:
       - "artifacts/wow-engine/team_event_request_runtime.py"
       - "artifacts/wow-engine/test_ncaaf_cfbd_client.py"
       - "artifacts/wow-engine/test_ncaaf_cfbd_hydrator.py"
+      - "artifacts/wow-engine/test_ncaaf_prop_historical_adapter.py"
       - "artifacts/wow-engine/test_ncaaf_feature_compiler.py"
       - "artifacts/wow-engine/test_v17_ncaaf_model_maintenance.py"
       - "artifacts/wow-engine/test_v17_ncaaf_prop_history_maintenance.py"
@@ -87,6 +91,7 @@ jobs:
           python -m pytest -q
           test_ncaaf_cfbd_client.py
           test_ncaaf_cfbd_hydrator.py
+          test_ncaaf_prop_historical_adapter.py
           test_v17_ncaaf_prop_history_maintenance.py
           test_ncaaf_feature_compiler.py
           test_v17_ncaaf_model_maintenance.py
@@ -98,7 +103,7 @@ jobs:
 
   maintain:
     name: Advance NCAAF research candidate evidence
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.event_name == 'push'
     needs: verify
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -177,6 +182,7 @@ jobs:
           PY
 
       - name: Run governed NCAAF model maintenance
+        if: github.event_name != 'push'
         shell: bash
         run: |
           python - <<'PY'
