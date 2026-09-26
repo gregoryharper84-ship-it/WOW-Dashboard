@@ -157,6 +157,7 @@ def score_mlb_1ip_empirical(
         "calibrated_probability": scored["selected_probability"],
         "calibrated_probability_lower_bound": scored["lower_bound"],
         "calibrated_probability_upper_bound": scored["upper_bound"],
+        "calibration_status": "PASS",
         "calibration_method": calibration_method,
         "certified_supported_lines": list(supported_lines),
         "terminal_label": "MODEL_QUALIFIED_HOLD",
