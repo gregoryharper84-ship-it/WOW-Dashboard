@@ -202,15 +202,24 @@ def _quota_aware_odds_proxy_factory(*args: Any, **kwargs: Any):
     paid_fetch = original_paid_factory(*args, proxy_get=metered_proxy_get, **kwargs)
     started = kwargs.get("now") or datetime.now(timezone.utc)
 
-    def fetch(family: str, target: Any = None) -> list[Mapping[str, Any]]:
+    def fetch(family: str, target: Any = None):
         public_ok, public_rows, _ = _public_schedule_fetch(
             family, started=started, horizon_hours=feed.horizon_hours()
         )
         if public_ok:
-            return list(public_rows)
-        return list(paid_fetch(family, target) or ())
+            return discovery.AcquisitionFeedResult(
+                rows=tuple(public_rows),
+                provider_status=discovery.PROVIDER_SUCCEEDED,
+                fallback_status=discovery.FALLBACK_NOT_ATTEMPTED,
+                exhaustion_status=discovery.PATHS_NOT_EXHAUSTED,
+                primary_path_id=discovery.PATH_ESPN_SCOREBOARD,
+                primary_path_state=discovery.succeeded_path_state(public_rows),
+                fallback_path_state=discovery.PATH_NOT_ATTEMPTED,
+            )
+        return paid_fetch(family, target)
 
     setattr(fetch, "_wow_schedule_first", True)
+    setattr(fetch, "_wow_acquisition_path_id", discovery.PATH_ESPN_SCOREBOARD)
     setattr(fetch, "_wow_quota_aware_provider", "ODDS_PROXY")
     setattr(fetch, "_wow_quota_aware_contract_version", CONTRACT_VERSION)
     return fetch
@@ -225,12 +234,23 @@ def _quota_aware_rundown_factory(*args: Any, **kwargs: Any):
         raise RuntimeError("QUOTA_AWARE_RUNDOWN_ORIGINAL_UNAVAILABLE")
     base_fetch = original_factory(*args, **kwargs)
 
-    def fetch(family: str, target: Any = None) -> list[Mapping[str, Any]]:
+    def fetch(family: str, target: Any = None):
         context, state, blocked = _before_paid_call("RUNDOWN")
         if blocked:
-            raise discovery.DiscoveryFeedError(blocked)
+            acquisition = discovery.AcquisitionFeedResult(
+                rows=(),
+                provider_status=discovery.PROVIDER_FAILED,
+                fallback_status=discovery.FALLBACK_NOT_APPLICABLE,
+                exhaustion_status=discovery.PROVIDER_PATHS_EXHAUSTED,
+                blocker_code=blocked,
+                primary_blocker_code=str(state.get("reason_code") or blocked),
+                primary_path_id=discovery.PATH_RUNDOWN,
+                primary_path_state=discovery.PATH_CIRCUIT_OPEN_PRIOR_FAILURE,
+                fallback_path_state=discovery.PATH_NOT_APPLICABLE,
+            )
+            raise discovery.DiscoveryFeedError(blocked, acquisition=acquisition)
         try:
-            rows = list(base_fetch(family, target) or ())
+            result = base_fetch(family, target)
         except discovery.DiscoveryFeedError as exc:
             _paid_failure(context, state, exc.code)
             raise
@@ -238,9 +258,10 @@ def _quota_aware_rundown_factory(*args: Any, **kwargs: Any):
             _paid_failure(context, state, type(exc).__name__)
             raise
         _paid_success(context, state)
-        return rows
+        return result
 
     setattr(fetch, "_wow_quota_aware_provider", "RUNDOWN")
+    setattr(fetch, "_wow_acquisition_path_id", discovery.PATH_RUNDOWN)
     setattr(fetch, "_wow_quota_aware_contract_version", CONTRACT_VERSION)
     return fetch
 

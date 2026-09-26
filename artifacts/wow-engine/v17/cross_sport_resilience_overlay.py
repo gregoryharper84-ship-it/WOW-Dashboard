@@ -92,6 +92,27 @@ def _iso(value: datetime) -> str:
     return value.replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
+def _downstream_path_id(result: Any, discovery: Any, default: str | None = None) -> str | None:
+    """Name a multi-path downstream as the governed union, not one hidden child."""
+    if result is None:
+        return default
+    if result.fallback_path_id:
+        return discovery.PATH_GOVERNED_FALLBACK_UNION
+    return result.primary_path_id or default
+
+
+def _downstream_terminal_blocker(result: Any, default: str | None = None) -> str | None:
+    """Retain the deepest typed fallback failure when a composite path exhausts."""
+    if result is None:
+        return default
+    return (
+        result.fallback_blocker_code
+        or result.primary_blocker_code
+        or result.blocker_code
+        or default
+    )
+
+
 def _round_robin_events(events: Iterable[Any]) -> list[Any]:
     """Interleave sport families while preserving within-sport provider order."""
     queues: dict[str, deque[Any]] = defaultdict(deque)
@@ -161,6 +182,9 @@ def _schedule_first_fetch(
                     provider_status=discovery.PROVIDER_SUCCEEDED,
                     fallback_status=discovery.FALLBACK_NOT_ATTEMPTED,
                     exhaustion_status=discovery.PATHS_NOT_EXHAUSTED,
+                    primary_path_id=discovery.PATH_ESPN_SCOREBOARD,
+                    primary_path_state=discovery.succeeded_path_state(rows),
+                    fallback_path_state=discovery.PATH_NOT_ATTEMPTED,
                 )
             primary_code = str(getattr(result, "code", None) or "ESPN_SCHEDULE_UNAVAILABLE")
             try:
@@ -174,10 +198,31 @@ def _schedule_first_fetch(
                     exhaustion_status=discovery.PROVIDER_PATHS_EXHAUSTED,
                     blocker_code=exc.code,
                     primary_blocker_code=primary_code,
-                    fallback_blocker_code=(
-                        downstream_acquisition.blocker_code
+                    fallback_blocker_code=_downstream_terminal_blocker(
+                        downstream_acquisition, exc.code
+                    ),
+                    primary_path_id=discovery.PATH_ESPN_SCOREBOARD,
+                    primary_path_state=discovery.PATH_FAILED,
+                    fallback_path_id=_downstream_path_id(
+                        downstream_acquisition, discovery
+                    ),
+                    fallback_path_state=(
+                        downstream_acquisition.primary_path_state
                         if downstream_acquisition is not None
-                        else exc.code
+                        and downstream_acquisition.primary_path_state
+                        else discovery.PATH_FAILED
+                    ),
+                    fallback_upstream_status=(
+                        downstream_acquisition.primary_upstream_status
+                        if downstream_acquisition is not None else None
+                    ),
+                    fallback_content_type_class=(
+                        downstream_acquisition.primary_content_type_class
+                        if downstream_acquisition is not None else None
+                    ),
+                    fallback_provider_alias=(
+                        downstream_acquisition.primary_provider_alias
+                        if downstream_acquisition is not None else None
                     ),
                 )
                 raise discovery.DiscoveryFeedError(exc.code, acquisition=combined) from exc
@@ -191,6 +236,9 @@ def _schedule_first_fetch(
                     blocker_code=fallback_code,
                     primary_blocker_code=primary_code,
                     fallback_blocker_code=fallback_code,
+                    primary_path_id=discovery.PATH_ESPN_SCOREBOARD,
+                    primary_path_state=discovery.PATH_FAILED,
+                    fallback_path_state=discovery.PATH_FAILED,
                 )
                 raise discovery.DiscoveryFeedError(
                     fallback_code, acquisition=combined
@@ -219,6 +267,29 @@ def _schedule_first_fetch(
                     blocker_code=fallback_code,
                     primary_blocker_code=primary_code,
                     fallback_blocker_code=fallback_code,
+                    primary_path_id=discovery.PATH_ESPN_SCOREBOARD,
+                    primary_path_state=discovery.PATH_FAILED,
+                    fallback_path_id=_downstream_path_id(
+                        downstream_result, discovery
+                    ),
+                    fallback_path_state=(
+                        downstream_result.primary_path_state
+                        if downstream_result is not None
+                        and downstream_result.primary_path_state
+                        else discovery.PATH_FAILED
+                    ),
+                    fallback_upstream_status=(
+                        downstream_result.primary_upstream_status
+                        if downstream_result is not None else None
+                    ),
+                    fallback_content_type_class=(
+                        downstream_result.primary_content_type_class
+                        if downstream_result is not None else None
+                    ),
+                    fallback_provider_alias=(
+                        downstream_result.primary_provider_alias
+                        if downstream_result is not None else None
+                    ),
                 )
                 raise discovery.DiscoveryFeedError(
                     fallback_code, acquisition=combined
@@ -230,13 +301,33 @@ def _schedule_first_fetch(
                 exhaustion_status=discovery.PATHS_NOT_EXHAUSTED,
                 blocker_code=primary_code,
                 primary_blocker_code=primary_code,
-                fallback_blocker_code=(
-                    downstream_result.blocker_code if downstream_result else None
+                fallback_blocker_code=_downstream_terminal_blocker(downstream_result),
+                primary_path_id=discovery.PATH_ESPN_SCOREBOARD,
+                primary_path_state=discovery.PATH_FAILED,
+                fallback_path_id=_downstream_path_id(downstream_result, discovery),
+                fallback_path_state=(
+                    downstream_result.primary_path_state
+                    if downstream_result is not None
+                    and downstream_result.primary_path_state
+                    else discovery.succeeded_path_state(downstream_rows)
+                ),
+                fallback_upstream_status=(
+                    downstream_result.primary_upstream_status
+                    if downstream_result is not None else None
+                ),
+                fallback_content_type_class=(
+                    downstream_result.primary_content_type_class
+                    if downstream_result is not None else None
+                ),
+                fallback_provider_alias=(
+                    downstream_result.primary_provider_alias
+                    if downstream_result is not None else None
                 ),
             )
         return original_fetch(family, target)
 
     setattr(fetch, "_wow_schedule_first", True)
+    setattr(fetch, "_wow_acquisition_path_id", discovery.PATH_ESPN_SCOREBOARD)
     setattr(fetch, "_wow_resilience_contract_version", RESILIENCE_CONTRACT_VERSION)
     return fetch
 
@@ -260,11 +351,15 @@ def _resilient_union_feed(
                     first_result = first(family, target)
                     if isinstance(first_result, discovery.AcquisitionFeedResult):
                         return first_result
+                    first_rows = tuple(first_result or ())
                     return discovery.AcquisitionFeedResult(
-                        rows=tuple(first_result or ()),
+                        rows=first_rows,
                         provider_status=discovery.PROVIDER_SUCCEEDED,
                         fallback_status=discovery.FALLBACK_NOT_ATTEMPTED,
                         exhaustion_status=discovery.PATHS_NOT_EXHAUSTED,
+                        primary_path_id=discovery.PATH_ESPN_SCOREBOARD,
+                        primary_path_state=discovery.succeeded_path_state(first_rows),
+                        fallback_path_state=discovery.PATH_NOT_ATTEMPTED,
                     )
                 except Exception as primary_exc:
                     if fallback_union is None:
@@ -285,17 +380,51 @@ def _resilient_union_feed(
                                 if primary_acquisition is not None
                                 else getattr(primary_exc, "code", type(primary_exc).__name__)
                             ),
-                            fallback_blocker_code=(
-                                fallback_acquisition.blocker_code
+                            fallback_blocker_code=_downstream_terminal_blocker(
+                                fallback_acquisition, fallback_exc.code
+                            ),
+                            primary_path_id=discovery.PATH_ESPN_SCOREBOARD,
+                            primary_path_state=(
+                                primary_acquisition.primary_path_state
+                                if primary_acquisition is not None
+                                and primary_acquisition.primary_path_state
+                                else discovery.PATH_FAILED
+                            ),
+                            fallback_path_id=_downstream_path_id(
+                                fallback_acquisition,
+                                discovery,
+                                getattr(fallback_union, "_wow_acquisition_path_id", None),
+                            ),
+                            fallback_path_state=(
+                                fallback_acquisition.primary_path_state
                                 if fallback_acquisition is not None
-                                else fallback_exc.code
+                                and fallback_acquisition.primary_path_state
+                                else discovery.PATH_FAILED
+                            ),
+                            fallback_upstream_status=(
+                                fallback_acquisition.primary_upstream_status
+                                if fallback_acquisition is not None else None
+                            ),
+                            fallback_content_type_class=(
+                                fallback_acquisition.primary_content_type_class
+                                if fallback_acquisition is not None else None
+                            ),
+                            fallback_provider_alias=(
+                                fallback_acquisition.primary_provider_alias
+                                if fallback_acquisition is not None else None
                             ),
                         )
                         raise discovery.DiscoveryFeedError(
                             fallback_exc.code, acquisition=combined
                         ) from fallback_exc
+                    fallback_result = (
+                        fallback
+                        if isinstance(fallback, discovery.AcquisitionFeedResult)
+                        else None
+                    )
+                    fallback_rows = tuple(fallback or ())
                     return discovery.AcquisitionFeedResult(
-                        rows=tuple(fallback or ()),
+                        rows=fallback_rows,
                         provider_status=discovery.PROVIDER_FAILED,
                         fallback_status=discovery.FALLBACK_SUCCEEDED,
                         exhaustion_status=discovery.PATHS_NOT_EXHAUSTED,
@@ -305,12 +434,44 @@ def _resilient_union_feed(
                         primary_blocker_code=(
                             primary_acquisition.primary_blocker_code
                             if primary_acquisition is not None
-                            else getattr(primary_exc, "code", type(primary_exc).__name__)
+                                else getattr(primary_exc, "code", type(primary_exc).__name__)
+                        ),
+                        fallback_blocker_code=_downstream_terminal_blocker(fallback_result),
+                        primary_path_id=discovery.PATH_ESPN_SCOREBOARD,
+                        primary_path_state=(
+                            primary_acquisition.primary_path_state
+                            if primary_acquisition is not None
+                            and primary_acquisition.primary_path_state
+                            else discovery.PATH_FAILED
+                        ),
+                        fallback_path_id=_downstream_path_id(
+                            fallback_result,
+                            discovery,
+                            getattr(fallback_union, "_wow_acquisition_path_id", None),
+                        ),
+                        fallback_path_state=(
+                            fallback_result.primary_path_state
+                            if fallback_result is not None
+                            and fallback_result.primary_path_state
+                            else discovery.succeeded_path_state(fallback_rows)
+                        ),
+                        fallback_upstream_status=(
+                            fallback_result.primary_upstream_status
+                            if fallback_result is not None else None
+                        ),
+                        fallback_content_type_class=(
+                            fallback_result.primary_content_type_class
+                            if fallback_result is not None else None
+                        ),
+                        fallback_provider_alias=(
+                            fallback_result.primary_provider_alias
+                            if fallback_result is not None else None
                         ),
                     )
         return normal_union(family, target)
 
     setattr(fetch, "_wow_resilience_contract_version", RESILIENCE_CONTRACT_VERSION)
+    setattr(fetch, "_wow_acquisition_path_id", discovery.PATH_GOVERNED_FALLBACK_UNION)
     return fetch
 
 

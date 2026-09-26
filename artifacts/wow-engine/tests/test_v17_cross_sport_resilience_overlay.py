@@ -63,6 +63,26 @@ def test_schedule_first_uses_espn_identity_without_market_fallback(monkeypatch):
     assert rows[0]["prediction_authority"] is False
     assert rows[0]["exact_line_authority"] is False
     assert rows[0]["can_execute"] is False
+    assert rows.primary_path_state == discovery.PATH_SUCCEEDED_WITH_ROWS
+
+
+def test_schedule_first_distinguishes_healthy_empty_from_failure(monkeypatch):
+    monkeypatch.setattr(
+        secondary,
+        "secondary_for_request",
+        lambda *_args, **_kwargs: secondary.SecondaryResult(True, [], 200),
+    )
+    fetch = resilience._schedule_first_fetch(
+        lambda *_args: pytest.fail("fallback must not run after a healthy empty schedule"),
+        started=datetime(2026, 9, 22, 12, 0, tzinfo=timezone.utc),
+        horizon_hours=36,
+    )
+
+    result = fetch("NFL")
+
+    assert result.rows == ()
+    assert result.primary_path_state == discovery.PATH_SUCCEEDED_EMPTY
+    assert result.provider_status == discovery.PROVIDER_SUCCEEDED
 
 
 def test_schedule_first_falls_back_once_when_espn_is_unavailable(monkeypatch):
@@ -92,6 +112,9 @@ def test_schedule_first_falls_back_once_when_espn_is_unavailable(monkeypatch):
     assert rows.fallback_status == discovery.FALLBACK_SUCCEEDED
     assert rows.exhaustion_status == discovery.PATHS_NOT_EXHAUSTED
     assert rows.primary_blocker_code == "ESPN_HTTP_503"
+    assert rows.primary_path_id == discovery.PATH_ESPN_SCOREBOARD
+    assert rows.primary_path_state == discovery.PATH_FAILED
+    assert rows.fallback_path_state == discovery.PATH_SUCCEEDED_WITH_ROWS
 
 
 def test_schedule_first_preserves_exhaustion_when_espn_and_downstream_fail(monkeypatch):
@@ -122,6 +145,9 @@ def test_schedule_first_preserves_exhaustion_when_espn_and_downstream_fail(monke
     assert acquisition.exhaustion_status == discovery.PROVIDER_PATHS_EXHAUSTED
     assert acquisition.primary_blocker_code == "ESPN_HTTP_503"
     assert acquisition.fallback_blocker_code == "ODDS_API_QUOTA_EXHAUSTED"
+    assert acquisition.primary_path_id == discovery.PATH_ESPN_SCOREBOARD
+    assert acquisition.primary_path_state == discovery.PATH_FAILED
+    assert acquisition.fallback_path_state == discovery.PATH_FAILED
     assert calls == {"espn": 1, "fallback": 1}
 
 
@@ -142,10 +168,14 @@ def test_resilient_union_preserves_schedule_failure_and_downstream_recovery(monk
         started=datetime(2026, 9, 22, 12, 0, tzinfo=timezone.utc),
         horizon_hours=36,
     )
+    def rundown_recovered(*_args):
+        return [{"id": "rundown-recovered"}]
+
+    setattr(rundown_recovered, "_wow_acquisition_path_id", discovery.PATH_RUNDOWN)
     union = resilience._resilient_union_feed(
         discovery_feed.union_feed,
         schedule_first,
-        lambda *_args: [{"id": "rundown-recovered"}],
+        rundown_recovered,
     )
 
     result = union("NFL")
@@ -154,6 +184,10 @@ def test_resilient_union_preserves_schedule_failure_and_downstream_recovery(monk
     assert result.fallback_status == discovery.FALLBACK_SUCCEEDED
     assert result.exhaustion_status == discovery.PATHS_NOT_EXHAUSTED
     assert result.primary_blocker_code == "ESPN_HTTP_503"
+    assert result.primary_path_id == discovery.PATH_ESPN_SCOREBOARD
+    assert result.primary_path_state == discovery.PATH_FAILED
+    assert result.fallback_path_id == discovery.PATH_RUNDOWN
+    assert result.fallback_path_state == discovery.PATH_SUCCEEDED_WITH_ROWS
 
 
 def test_resilient_union_preserves_exhaustion_across_every_downstream_path(monkeypatch):
@@ -190,6 +224,9 @@ def test_resilient_union_preserves_exhaustion_across_every_downstream_path(monke
     assert acquisition.exhaustion_status == discovery.PROVIDER_PATHS_EXHAUSTED
     assert acquisition.primary_blocker_code == "ESPN_HTTP_503"
     assert acquisition.fallback_blocker_code == "RUNDOWN_AUTH_FAILED"
+    assert acquisition.primary_path_id == discovery.PATH_ESPN_SCOREBOARD
+    assert acquisition.primary_path_state == discovery.PATH_FAILED
+    assert acquisition.fallback_path_state == discovery.PATH_FAILED
 
 
 def test_unsupported_family_never_calls_espn(monkeypatch):

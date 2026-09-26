@@ -247,7 +247,15 @@ def install_refreshable_oidc_proxy_auth() -> None:
             "primary_reason_code": final.code,
             "primary_http_status": final.status,
         }
-        return scout.FetchResult(False, data=diagnostic, status=final.status, code=final.code)
+        return scout.FetchResult(
+            False,
+            data=diagnostic,
+            status=final.status,
+            code=final.code,
+            upstream_status=final.upstream_status,
+            content_type_class=final.content_type_class,
+            provider_alias=final.provider_alias,
+        )
 
     scout.proxy_get = _proxy_get
     scout.bookmaker_rows = _bookmaker_rows

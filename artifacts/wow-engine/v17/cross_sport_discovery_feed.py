@@ -12,6 +12,7 @@ registry answers afterwards.
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Iterable, Mapping
 
@@ -28,6 +29,55 @@ ODDS_API_DISCOVERY_DISABLED = "ODDS_API_DISCOVERY_DISABLED"
 # explicitly if a future discovery contract requires another provider market.
 _DEFAULT_RUNDOWN_DISCOVERY_MARKET_IDS: tuple[str, ...] = ("1",)
 _DEFAULT_RUNDOWN_DISCOVERY_AFFILIATE_IDS: tuple[str, ...] = ("3", "19", "23")
+_ODDS_CONTENT_TYPE_CLASSES = frozenset({
+    "JSON", "TEXT_HTML", "TEXT_PLAIN", "OTHER", "EMPTY",
+})
+_ODDS_PROVIDER_ALIASES = frozenset({
+    "ODDS_API_PAID_KEY", "ODDS_API_KEY_100K", "ODDS_API_FREE_KEY", "ODDS_API_KEY",
+})
+
+
+def _closed_diagnostic(value: Any, allowed: frozenset[str]) -> str | None:
+    token = str(value or "").strip().upper()
+    return token if token in allowed else None
+
+
+def _upstream_status(value: Any) -> int | None:
+    return (
+        int(value)
+        if isinstance(value, int)
+        and not isinstance(value, bool)
+        and 100 <= value <= 599
+        else None
+    )
+
+
+def _odds_failure_result(
+    result: Any,
+    code: str,
+    *,
+    path_state: str = discovery.PATH_FAILED,
+) -> discovery.AcquisitionFeedResult:
+    if "CIRCUIT_OPEN:" in str(code).upper():
+        path_state = discovery.PATH_CIRCUIT_OPEN_PRIOR_FAILURE
+    return discovery.AcquisitionFeedResult(
+        rows=(),
+        provider_status=discovery.PROVIDER_FAILED,
+        fallback_status=discovery.FALLBACK_NOT_APPLICABLE,
+        exhaustion_status=discovery.PROVIDER_PATHS_EXHAUSTED,
+        blocker_code=code,
+        primary_blocker_code=code,
+        primary_path_id=discovery.PATH_ODDS_PROXY,
+        primary_path_state=path_state,
+        fallback_path_state=discovery.PATH_NOT_APPLICABLE,
+        primary_upstream_status=_upstream_status(getattr(result, "upstream_status", None)),
+        primary_content_type_class=_closed_diagnostic(
+            getattr(result, "content_type_class", None), _ODDS_CONTENT_TYPE_CLASSES
+        ),
+        primary_provider_alias=_closed_diagnostic(
+            getattr(result, "provider_alias", None), _ODDS_PROVIDER_ALIASES
+        ),
+    )
 
 
 def _csv_env(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
@@ -129,9 +179,23 @@ def odds_proxy_feed(
     """
     if not odds_api_enabled():
         def disabled_fetch(_family: str, _target: Any = None) -> list[Mapping[str, Any]]:
-            raise discovery.DiscoveryFeedError(ODDS_API_DISCOVERY_DISABLED)
+            acquisition = discovery.AcquisitionFeedResult(
+                rows=(),
+                provider_status=discovery.PROVIDER_NOT_ATTEMPTED,
+                fallback_status=discovery.FALLBACK_NOT_APPLICABLE,
+                exhaustion_status=discovery.PROVIDER_PATHS_EXHAUSTED,
+                blocker_code=ODDS_API_DISCOVERY_DISABLED,
+                primary_blocker_code=ODDS_API_DISCOVERY_DISABLED,
+                primary_path_id=discovery.PATH_ODDS_PROXY,
+                primary_path_state=discovery.PATH_NOT_ATTEMPTED,
+                fallback_path_state=discovery.PATH_NOT_APPLICABLE,
+            )
+            raise discovery.DiscoveryFeedError(
+                ODDS_API_DISCOVERY_DISABLED, acquisition=acquisition
+            )
 
         setattr(disabled_fetch, "_wow_odds_api_enabled", False)
+        setattr(disabled_fetch, "_wow_acquisition_path_id", discovery.PATH_ODDS_PROXY)
         return disabled_fetch
 
     if proxy_get is None:
@@ -142,20 +206,29 @@ def odds_proxy_feed(
     started = now or datetime.now(timezone.utc)
     end = started + timedelta(hours=horizon_hours())
     offered: dict[str, tuple[str, ...]] | None = dict(sport_keys) if sport_keys is not None else None
-    offered_error: str | None = None
+    offered_error: tuple[str, discovery.AcquisitionFeedResult] | None = None
 
     def _offered_keys() -> dict[str, tuple[str, ...]]:
         nonlocal offered, offered_error
         if offered is not None:
             return offered
         if offered_error is not None:
-            raise discovery.DiscoveryFeedError(offered_error)
+            code, acquisition = offered_error
+            raise discovery.DiscoveryFeedError(
+                code,
+                acquisition=replace(
+                    acquisition,
+                    primary_path_state=discovery.PATH_CIRCUIT_OPEN_PRIOR_FAILURE,
+                ),
+            )
         listing = proxy_get("/odds-api/v4/sports", {"all": "true"})
         if not getattr(listing, "ok", False):
-            offered_error = str(
+            code = str(
                 getattr(listing, "code", None) or "SPORT_INVENTORY_UNAVAILABLE"
             )
-            raise discovery.DiscoveryFeedError(offered_error)
+            acquisition = _odds_failure_result(listing, code)
+            offered_error = (code, acquisition)
+            raise discovery.DiscoveryFeedError(code, acquisition=acquisition)
         mapping: dict[str, list[str]] = {}
         for row in getattr(listing, "data", None) or []:
             if not isinstance(row, Mapping) or not row.get("key"):
@@ -168,7 +241,7 @@ def odds_proxy_feed(
         offered = {family: tuple(keys) for family, keys in mapping.items()}
         return offered
 
-    def fetch(family: str, target: Any = None) -> list[Mapping[str, Any]]:
+    def fetch(family: str, target: Any = None) -> discovery.AcquisitionFeedResult:
         keys = _offered_keys().get(str(family).upper(), ())
         rows: list[Mapping[str, Any]] = []
         for sport_key in keys:
@@ -181,17 +254,27 @@ def odds_proxy_feed(
                 },
             )
             if not getattr(result, "ok", False):
+                code = str(getattr(result, "code", None) or "EVENT_DISCOVERY_FAILED")
                 raise discovery.DiscoveryFeedError(
-                    str(getattr(result, "code", None) or "EVENT_DISCOVERY_FAILED")
+                    code, acquisition=_odds_failure_result(result, code)
                 )
             rows.extend(
                 _odds_api_alias_row(row, sport_key=sport_key)
                 for row in (getattr(result, "data", None) or [])
                 if isinstance(row, Mapping)
             )
-        return rows
+        return discovery.AcquisitionFeedResult(
+            rows=tuple(rows),
+            provider_status=discovery.PROVIDER_SUCCEEDED,
+            fallback_status=discovery.FALLBACK_NOT_APPLICABLE,
+            exhaustion_status=discovery.PATHS_NOT_EXHAUSTED,
+            primary_path_id=discovery.PATH_ODDS_PROXY,
+            primary_path_state=discovery.succeeded_path_state(rows),
+            fallback_path_state=discovery.PATH_NOT_APPLICABLE,
+        )
 
     setattr(fetch, "_wow_odds_api_enabled", True)
+    setattr(fetch, "_wow_acquisition_path_id", discovery.PATH_ODDS_PROXY)
     return fetch
 
 
@@ -238,10 +321,22 @@ def rundown_board_feed(
     winner candidates.
     """
 
-    def fetch(family: str, target: Any = None) -> list[Mapping[str, Any]]:
+    def fetch(family: str, target: Any = None) -> discovery.AcquisitionFeedResult:
         sport_id = getattr(target, "sport_id", None)
         if sport_id is None:
-            raise discovery.DiscoveryFeedError(registry.NO_CONFIGURED_DISCOVERY_FEED)
+            code = registry.NO_CONFIGURED_DISCOVERY_FEED
+            acquisition = discovery.AcquisitionFeedResult(
+                rows=(),
+                provider_status=discovery.PROVIDER_NOT_ATTEMPTED,
+                fallback_status=discovery.FALLBACK_NOT_APPLICABLE,
+                exhaustion_status=discovery.NO_CONFIGURED_PATH,
+                blocker_code=code,
+                primary_blocker_code=code,
+                primary_path_id=discovery.PATH_RUNDOWN,
+                primary_path_state=discovery.PATH_NOT_ATTEMPTED,
+                fallback_path_state=discovery.PATH_NOT_APPLICABLE,
+            )
+            raise discovery.DiscoveryFeedError(code, acquisition=acquisition)
         result = live.get_sport_date_odds_snapshot(
             getattr(target, "league", None) or family,
             slate_date,
@@ -254,9 +349,30 @@ def rundown_board_feed(
             hide_closed=True,
         )
         if not result.ok:
-            raise discovery.DiscoveryFeedError(str(result.code or "RUNDOWN_DISCOVERY_FAILED"))
-        return [row for row in (result.data or []) if isinstance(row, Mapping)]
+            code = str(result.code or "RUNDOWN_DISCOVERY_FAILED")
+            acquisition = discovery.AcquisitionFeedResult(
+                rows=(),
+                provider_status=discovery.PROVIDER_FAILED,
+                fallback_status=discovery.FALLBACK_NOT_APPLICABLE,
+                exhaustion_status=discovery.PROVIDER_PATHS_EXHAUSTED,
+                blocker_code=code,
+                primary_blocker_code=code,
+                primary_path_id=discovery.PATH_RUNDOWN,
+                primary_path_state=discovery.PATH_FAILED,
+                fallback_path_state=discovery.PATH_NOT_APPLICABLE,
+            )
+            raise discovery.DiscoveryFeedError(code, acquisition=acquisition)
+        return discovery.AcquisitionFeedResult(
+            rows=tuple(row for row in (result.data or []) if isinstance(row, Mapping)),
+            provider_status=discovery.PROVIDER_SUCCEEDED,
+            fallback_status=discovery.FALLBACK_NOT_APPLICABLE,
+            exhaustion_status=discovery.PATHS_NOT_EXHAUSTED,
+            primary_path_id=discovery.PATH_RUNDOWN,
+            primary_path_state=discovery.succeeded_path_state(result.data or ()),
+            fallback_path_state=discovery.PATH_NOT_APPLICABLE,
+        )
 
+    setattr(fetch, "_wow_acquisition_path_id", discovery.PATH_RUNDOWN)
     return fetch
 
 
@@ -270,27 +386,41 @@ def union_feed(
     still tell "could not look" from "nothing there".
     """
 
-    def fetch(family: str, target: Any = None) -> list[Mapping[str, Any]]:
+    def fetch(family: str, target: Any = None) -> discovery.AcquisitionFeedResult:
         rows: list[Mapping[str, Any]] = []
         seen: set[tuple[str, str, str]] = set()
         failures: list[str] = []
         path_failures: list[str | None] = []
         path_succeeded: list[bool] = []
+        path_row_counts: list[int] = []
+        acquisitions: list[discovery.AcquisitionFeedResult | None] = []
+        path_ids: list[str | None] = []
         for feed in feeds:
+            path_ids.append(getattr(feed, "_wow_acquisition_path_id", None))
             try:
-                produced = list(feed(family, target) or ())
+                outcome = feed(family, target)
+                acquisition = (
+                    outcome if isinstance(outcome, discovery.AcquisitionFeedResult) else None
+                )
+                produced = list(outcome or ())
             except discovery.DiscoveryFeedError as exc:
                 failures.append(exc.code)
                 path_succeeded.append(False)
+                path_row_counts.append(0)
                 path_failures.append(exc.code)
+                acquisitions.append(exc.acquisition)
                 continue
             except Exception as exc:  # noqa: BLE001 - one feed's defect is not the board's
-                failures.append(f"{type(exc).__name__}:{exc}")
+                failures.append(type(exc).__name__)
                 path_succeeded.append(False)
+                path_row_counts.append(0)
                 path_failures.append(type(exc).__name__)
+                acquisitions.append(None)
                 continue
             path_succeeded.append(True)
+            path_row_counts.append(len(produced))
             path_failures.append(None)
+            acquisitions.append(acquisition)
             for row in produced:
                 if not isinstance(row, Mapping):
                     continue
@@ -311,6 +441,48 @@ def union_feed(
         primary_succeeded = bool(path_succeeded and path_succeeded[0])
         fallback_attempted = len(path_succeeded) > 1
         fallback_succeeded = any(path_succeeded[1:])
+        primary_acquisition = acquisitions[0] if acquisitions else None
+        fallback_acquisition = next(
+            (item for item in acquisitions[1:] if item is not None), None
+        )
+        fallback_path_ids = {
+            (
+                item.primary_path_id
+                if item is not None and item.primary_path_id
+                else path_ids[index]
+            )
+            for index, item in enumerate(acquisitions[1:], start=1)
+            if (
+                (item is not None and item.primary_path_id)
+                or path_ids[index]
+            )
+        }
+        fallback_path_id = (
+            next(iter(fallback_path_ids))
+            if len(fallback_path_ids) == 1
+            else discovery.PATH_GOVERNED_FALLBACK_UNION
+            if fallback_path_ids
+            else None
+        )
+        primary_blocker_code = (
+            primary_acquisition.primary_blocker_code
+            if primary_acquisition is not None
+            and primary_acquisition.primary_blocker_code
+            else path_failures[0] if path_failures else None
+        )
+        fallback_blocker_code = next(
+            (
+                acquisition.primary_blocker_code
+                if acquisition is not None and acquisition.primary_blocker_code
+                else path_failures[index]
+                for index, acquisition in enumerate(acquisitions[1:], start=1)
+                if (
+                    (acquisition is not None and acquisition.primary_blocker_code)
+                    or path_failures[index]
+                )
+            ),
+            None,
+        )
         result = discovery.AcquisitionFeedResult(
             rows=tuple(rows),
             provider_status=(
@@ -329,15 +501,67 @@ def union_feed(
                 else discovery.PROVIDER_PATHS_EXHAUSTED
             ),
             blocker_code=failures[0] if failures else None,
-            primary_blocker_code=(path_failures[0] if path_failures else None),
-            fallback_blocker_code=next(
-                (code for code in path_failures[1:] if code), None
+            primary_blocker_code=primary_blocker_code,
+            fallback_blocker_code=fallback_blocker_code,
+            primary_path_id=(
+                primary_acquisition.primary_path_id
+                if primary_acquisition is not None and primary_acquisition.primary_path_id
+                else path_ids[0] if path_ids else None
+            ),
+            primary_path_state=(
+                primary_acquisition.primary_path_state
+                if primary_acquisition is not None and primary_acquisition.primary_path_state
+                else discovery.succeeded_path_state(range(path_row_counts[0]))
+                if primary_succeeded
+                else discovery.PATH_FAILED
+            ),
+            fallback_path_id=fallback_path_id,
+            fallback_path_state=(
+                discovery.PATH_NOT_APPLICABLE
+                if not fallback_attempted
+                else discovery.succeeded_path_state(
+                    range(sum(path_row_counts[1:]))
+                )
+                if fallback_succeeded
+                else (
+                    fallback_acquisition.primary_path_state
+                    if fallback_acquisition is not None
+                    and fallback_acquisition.primary_path_state
+                    == discovery.PATH_CIRCUIT_OPEN_PRIOR_FAILURE
+                    and len(path_succeeded[1:]) == 1
+                    else discovery.PATH_FAILED
+                )
+            ),
+            primary_upstream_status=(
+                primary_acquisition.primary_upstream_status
+                if primary_acquisition is not None else None
+            ),
+            primary_content_type_class=(
+                primary_acquisition.primary_content_type_class
+                if primary_acquisition is not None else None
+            ),
+            primary_provider_alias=(
+                primary_acquisition.primary_provider_alias
+                if primary_acquisition is not None else None
+            ),
+            fallback_upstream_status=(
+                fallback_acquisition.primary_upstream_status
+                if fallback_acquisition is not None else None
+            ),
+            fallback_content_type_class=(
+                fallback_acquisition.primary_content_type_class
+                if fallback_acquisition is not None else None
+            ),
+            fallback_provider_alias=(
+                fallback_acquisition.primary_provider_alias
+                if fallback_acquisition is not None else None
             ),
         )
         if not any(path_succeeded) and failures:
             raise discovery.DiscoveryFeedError(failures[0], acquisition=result)
         return result
 
+    setattr(fetch, "_wow_acquisition_path_id", discovery.PATH_GOVERNED_FALLBACK_UNION)
     return fetch
 
 

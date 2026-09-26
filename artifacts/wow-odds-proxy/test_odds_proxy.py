@@ -1,3 +1,4 @@
+import json
 import os
 
 import httpx
@@ -177,6 +178,69 @@ def test_upstream_error_is_sanitized_and_vendor_key_redacted(monkeypatch, config
     assert "[REDACTED]" in response.text
     assert response.json()["code"] == "ODDS_API_UPSTREAM_ERROR"
     assert response.json()["can_execute"] is False
+
+
+@pytest.mark.parametrize("branch", ["proxy", "featured", "markets", "odds"])
+def test_non_json_diagnostics_are_closed_secret_safe_and_single_call(
+    monkeypatch, configured, branch
+):
+    monkeypatch.setenv("ODDS_API_PAID_KEY", "paid-secret-value")
+    monkeypatch.setenv("ODDS_API_FREE_KEY", "fallback-secret-value")
+    calls = []
+
+    def fake_get(url, params):
+        calls.append((url, dict(params)))
+        return FakeResponse(
+            200,
+            ValueError(
+                "<html>paid-secret-value https://vendor.invalid/?apiKey=paid-secret-value</html>"
+            ),
+            {"content-type": "text/html; boundary=provider-controlled-secret"},
+        )
+
+    monkeypatch.setattr(api, "_http_get", fake_get)
+    client = TestClient(api.app)
+    if branch == "proxy":
+        response = api._proxy_get("/sports", {})
+        body = json.loads(response.body)
+    elif branch == "featured":
+        response = api._featured_sport_odds_fallback(
+            "baseball_mlb",
+            "abc123",
+            {"markets": "h2h", "regions": "us"},
+            response_header=api.EVENT_ODDS_FALLBACK_HEADER,
+        )
+        body = json.loads(response.body)
+    elif branch == "markets":
+        response = client.get(
+            "/odds-api/v4/sports/baseball_mlb/events/abc123/markets",
+            params={"regions": "us"},
+            headers=configured,
+        )
+        body = response.json()
+    else:
+        response = client.get(
+            "/odds-api/v4/sports/baseball_mlb/events/abc123/odds",
+            params={"markets": "h2h", "regions": "us"},
+            headers=configured,
+        )
+        body = response.json()
+
+    assert response.status_code == 502
+    assert body == {
+        "ok": False,
+        "code": "ODDS_API_UPSTREAM_NON_JSON",
+        "upstream_status": 200,
+        "content_type_class": "TEXT_HTML",
+        "provider_alias": "ODDS_API_PAID_KEY",
+        "can_execute": False,
+    }
+    assert len(calls) == 1
+    serialized = json.dumps(body)
+    assert "paid-secret-value" not in serialized
+    assert "fallback-secret-value" not in serialized
+    assert "vendor.invalid" not in serialized
+    assert "<html>" not in serialized
 
 
 def test_missing_vendor_key_fails_closed(monkeypatch):

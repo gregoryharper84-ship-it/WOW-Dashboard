@@ -84,6 +84,37 @@ PATHS_NOT_EXHAUSTED = "PATHS_NOT_EXHAUSTED"
 PROVIDER_PATHS_EXHAUSTED = "PROVIDER_PATHS_EXHAUSTED"
 NO_CONFIGURED_PATH = "NO_CONFIGURED_PATH"
 
+PATH_ESPN_SCOREBOARD = "ESPN_SCOREBOARD"
+PATH_ODDS_PROXY = "ODDS_PROXY"
+PATH_RUNDOWN = "RUNDOWN"
+PATH_GOVERNED_FALLBACK_UNION = "GOVERNED_FALLBACK_UNION"
+ACQUISITION_PATH_IDS = (
+    PATH_ESPN_SCOREBOARD,
+    PATH_ODDS_PROXY,
+    PATH_RUNDOWN,
+    PATH_GOVERNED_FALLBACK_UNION,
+)
+
+PATH_SUCCEEDED_EMPTY = "SUCCEEDED_EMPTY"
+PATH_SUCCEEDED_WITH_ROWS = "SUCCEEDED_WITH_ROWS"
+PATH_FAILED = "FAILED_TYPED"
+PATH_NOT_ATTEMPTED = "NOT_ATTEMPTED"
+PATH_NOT_APPLICABLE = "NOT_APPLICABLE"
+PATH_CIRCUIT_OPEN_PRIOR_FAILURE = "CIRCUIT_OPEN_FROM_PRIOR_TYPED_FAILURE"
+ACQUISITION_PATH_STATES = (
+    PATH_SUCCEEDED_EMPTY,
+    PATH_SUCCEEDED_WITH_ROWS,
+    PATH_FAILED,
+    PATH_NOT_ATTEMPTED,
+    PATH_NOT_APPLICABLE,
+    PATH_CIRCUIT_OPEN_PRIOR_FAILURE,
+)
+
+
+def succeeded_path_state(rows: Iterable[Any]) -> str:
+    """Distinguish a healthy empty answer from a healthy answer with rows."""
+    return PATH_SUCCEEDED_WITH_ROWS if bool(rows) else PATH_SUCCEEDED_EMPTY
+
 
 @dataclass(frozen=True)
 class AcquisitionFeedResult:
@@ -101,6 +132,16 @@ class AcquisitionFeedResult:
     blocker_code: str | None = None
     primary_blocker_code: str | None = None
     fallback_blocker_code: str | None = None
+    primary_path_id: str | None = None
+    primary_path_state: str | None = None
+    fallback_path_id: str | None = None
+    fallback_path_state: str | None = None
+    primary_upstream_status: int | None = None
+    primary_content_type_class: str | None = None
+    primary_provider_alias: str | None = None
+    fallback_upstream_status: int | None = None
+    fallback_content_type_class: str | None = None
+    fallback_provider_alias: str | None = None
 
     def __iter__(self):
         return iter(self.rows)
@@ -111,6 +152,23 @@ class AcquisitionFeedResult:
     def __getitem__(self, index: int):
         return self.rows[index]
 
+    def detail_fields(self) -> dict[str, Any]:
+        """Return only typed observability fields for target-level persistence."""
+        return {
+            "primary_path_id": self.primary_path_id,
+            "primary_path_state": self.primary_path_state,
+            "primary_blocker_code": self.primary_blocker_code,
+            "fallback_path_id": self.fallback_path_id,
+            "fallback_path_state": self.fallback_path_state,
+            "fallback_blocker_code": self.fallback_blocker_code,
+            "primary_upstream_status": self.primary_upstream_status,
+            "primary_content_type_class": self.primary_content_type_class,
+            "primary_provider_alias": self.primary_provider_alias,
+            "fallback_upstream_status": self.fallback_upstream_status,
+            "fallback_content_type_class": self.fallback_content_type_class,
+            "fallback_provider_alias": self.fallback_provider_alias,
+        }
+
 
 class DiscoveryFeedError(RuntimeError):
     """A feed failure that carries the provider's own typed reason code."""
@@ -119,6 +177,30 @@ class DiscoveryFeedError(RuntimeError):
         super().__init__(str(code))
         self.code = str(code)
         self.acquisition = acquisition
+
+
+def acquisition_observability_fields(
+    acquisition: AcquisitionFeedResult | None,
+    *,
+    default_primary_state: str,
+) -> dict[str, Any]:
+    """Normalize optional feed provenance into the durable detail shape."""
+    if acquisition is not None:
+        return acquisition.detail_fields()
+    return {
+        "primary_path_id": None,
+        "primary_path_state": default_primary_state,
+        "primary_blocker_code": None,
+        "fallback_path_id": None,
+        "fallback_path_state": PATH_NOT_APPLICABLE,
+        "fallback_blocker_code": None,
+        "primary_upstream_status": None,
+        "primary_content_type_class": None,
+        "primary_provider_alias": None,
+        "fallback_upstream_status": None,
+        "fallback_content_type_class": None,
+        "fallback_provider_alias": None,
+    }
 
 
 def classify_acquisition_failure(code: Any) -> str:
@@ -558,6 +640,9 @@ def discover_winner_slate(
                     "events_returned": 0,
                     "duplicate_rows_suppressed": 0,
                     "blocker_code": NO_CONFIGURED_DISCOVERY_FEED,
+                    **acquisition_observability_fields(
+                        None, default_primary_state=PATH_NOT_APPLICABLE
+                    ),
                     "can_execute": False,
                 }
             )
@@ -597,6 +682,9 @@ def discover_winner_slate(
                         "events_returned": 0,
                         "duplicate_rows_suppressed": 0,
                         "blocker_code": DISCOVERY_BUDGET_EXHAUSTED,
+                        **acquisition_observability_fields(
+                            None, default_primary_state=PATH_NOT_ATTEMPTED
+                        ),
                         "can_execute": False,
                     }
                 )
@@ -617,6 +705,9 @@ def discover_winner_slate(
                         "events_returned": 0,
                         "duplicate_rows_suppressed": 0,
                         "blocker_code": DISCOVERY_BUDGET_EXHAUSTED,
+                        **acquisition_observability_fields(
+                            None, default_primary_state=PATH_NOT_ATTEMPTED
+                        ),
                         "can_execute": False,
                     }
                 )
@@ -671,6 +762,9 @@ def discover_winner_slate(
                         "events_returned": 0,
                         "duplicate_rows_suppressed": 0,
                         "blocker_code": str(exc.code),
+                        **acquisition_observability_fields(
+                            acquisition, default_primary_state=PATH_FAILED
+                        ),
                         "can_execute": False,
                     }
                 )
@@ -696,6 +790,9 @@ def discover_winner_slate(
                         "events_returned": 0,
                         "duplicate_rows_suppressed": 0,
                         "blocker_code": type(exc).__name__,
+                        **acquisition_observability_fields(
+                            None, default_primary_state=PATH_FAILED
+                        ),
                         "can_execute": False,
                     }
                 )
@@ -740,6 +837,10 @@ def discover_winner_slate(
                     "events_returned": target_returned,
                     "duplicate_rows_suppressed": target_duplicates,
                     "blocker_code": blocker_code,
+                    **acquisition_observability_fields(
+                        fetched if isinstance(fetched, AcquisitionFeedResult) else None,
+                        default_primary_state=succeeded_path_state(rows),
+                    ),
                     "can_execute": False,
                 }
             )
