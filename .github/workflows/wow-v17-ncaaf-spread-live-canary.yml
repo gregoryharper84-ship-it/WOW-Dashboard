@@ -1,0 +1,92 @@
+name: wow-v17-ncaaf-spread-live-canary
+
+on:
+  push:
+    branches:
+      - canary/v17-ncaaf-spread-20260926
+    paths:
+      - ".github/workflows/wow-v17-ncaaf-spread-live-canary.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  capture:
+    name: Capture current NCAAF spread evidence
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      WOW_ACTION_ORIGIN: https://wow-governed-probability-engine.onrender.com
+      WOW_ACTION_API_KEY: ${{ secrets.WOW_ACTION_API_KEY }}
+      WOW_CAN_EXECUTE: "false"
+      WOW_DRY_RUN_ONLY: "true"
+    steps:
+      - name: Assert canary governance and Action auth
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$WOW_CAN_EXECUTE" = "false"
+          test "$WOW_DRY_RUN_ONLY" = "true"
+          if [ -z "${WOW_ACTION_API_KEY:-}" ]; then
+            echo "::error::WOW_ACTION_API_KEY is required for spread canary."
+            exit 1
+          fi
+      - name: Capture exact spread evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import datetime
+          import json
+          import os
+          import urllib.error
+          import urllib.request
+          from zoneinfo import ZoneInfo
+
+          origin = os.environ["WOW_ACTION_ORIGIN"].rstrip("/")
+          endpoint = origin + "/internal/v17/spread-market-evidence"
+          slate_date = datetime.datetime.now(ZoneInfo("America/Chicago")).date().isoformat()
+          body = json.dumps({"sport": "NCAAF", "slate_date": slate_date}, sort_keys=True).encode()
+          request = urllib.request.Request(
+              endpoint,
+              data=body,
+              method="POST",
+              headers={
+                  "Authorization": f"Bearer {os.environ['WOW_ACTION_API_KEY']}",
+                  "Content-Type": "application/json",
+              },
+          )
+          try:
+              with urllib.request.urlopen(request, timeout=180) as response:
+                  status = response.status
+                  payload = json.load(response)
+          except urllib.error.HTTPError as exc:
+              status = exc.code
+              raw = exc.read().decode("utf-8", errors="replace")
+              try:
+                  payload = json.loads(raw)
+              except json.JSONDecodeError:
+                  payload = {"raw": raw[:1000]}
+          safe = {
+              "http_status": status,
+              "status": payload.get("status"),
+              "code": payload.get("code"),
+              "sport": payload.get("sport"),
+              "slate_date": payload.get("slate_date"),
+              "rows_written": payload.get("rows_written"),
+              "datapoints": payload.get("datapoints"),
+              "provider_collection_status": payload.get("provider_collection_status"),
+              "reason_code": payload.get("reason_code"),
+              "probability_publishable": payload.get("probability_publishable"),
+              "production_registry_mutated": payload.get("production_registry_mutated"),
+              "can_execute": payload.get("can_execute"),
+          }
+          print(json.dumps(safe, sort_keys=True))
+          if status != 200:
+              raise SystemExit(f"SPREAD_CANARY_EVIDENCE_HTTP_{status}")
+          if payload.get("status") not in {"EVIDENCE_CAPTURED", "EVIDENCE_EMPTY"}:
+              raise SystemExit("SPREAD_CANARY_EVIDENCE_BLOCKED:" + str(payload.get("code")))
+          assert payload.get("probability_publishable") is False
+          assert payload.get("production_registry_mutated") is False
+          assert payload.get("can_execute") is False
+          PY
