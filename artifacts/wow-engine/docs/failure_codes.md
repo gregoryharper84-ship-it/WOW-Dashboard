@@ -39,6 +39,28 @@ This file is the repository source of truth for governed typed failure/status co
 | `CALIBRATION_FIT_END_INVALID_OR_FUTURE_LEAKAGE` | multisport terminal calibration | Calibration fit cutoff is invalid or occurs after the immutable model timestamp. | No |
 | `CALIBRATION_MODEL_FAMILY_MISMATCH` | multisport calibration | Calibration artifact targets a different model family than the controlling specialist package. Surfaced as `MODEL_INPUTS_INSUFFICIENT`. | No |
 | `CALIBRATION_MODEL_VERSION_MISMATCH` | multisport calibration | Calibration artifact targets a different model version than the controlling specialist package. Surfaced as `MODEL_INPUTS_INSUFFICIENT`. | No |
+| `TEAM_EVENT_SPECIALIST_ARTIFACT_NOT_CERTIFIED` | fitted team/event certification | No current immutable certification receipt proves the exact sport/league fitted artifact. A registered/importable bridge or caller-supplied calibrator is not sufficient. | No |
+| `TEAM_EVENT_SPECIALIST_CERTIFICATION_REVOKED` | fitted team/event certification | The latest immutable certification receipt explicitly revokes the prior sport/league specialist certification. | No |
+| `TEAM_EVENT_CERTIFICATION_REGISTRY_UNAVAILABLE` | fitted team/event certification registry | The service-role certification-registry RPC could not be read. Infrastructure/registry failure; never rewrite to `MODEL_UNAVAILABLE`. | No |
+| `TEAM_EVENT_CERTIFICATION_REGISTRY_INVALID_RESPONSE` | fitted team/event certification registry | The certification registry returned an unusable response shape. | No |
+| `TEAM_EVENT_INDEPENDENT_VERIFICATION_NOT_PASS` | fitted team/event independent verification | The exact fitted artifact/calibration pair has not passed the required independent numerical verification. | No |
+| `TEAM_EVENT_SPECIALIST_NOT_CERTIFIED` | fitted team/event certification | A proof record exists, but its state is not `CERTIFIED`. | No |
+| `TEAM_EVENT_PROBABILITY_PACKAGE_INVALID` | common fitted-specialist package | The common sport-specialist probability envelope is not an object. | No |
+| `TEAM_EVENT_PROBABILITY_PACKAGE_NOT_VALID` | common fitted-specialist package | The controlling specialist did not mark its governed package valid after sport-specific validation. | No |
+| `TEAM_EVENT_CERTIFICATION_SPORT_MISMATCH` | common fitted-specialist package | Package sport does not match the immutable certification receipt. | No |
+| `TEAM_EVENT_CERTIFICATION_SPECIALIST_MISMATCH` | common fitted-specialist package | Package controlling-specialist identity does not match certification. | No |
+| `TEAM_EVENT_CERTIFICATION_MODEL_VERSION_MISMATCH` | common fitted-specialist package | Package model version differs from the certified model version. | No |
+| `TEAM_EVENT_CERTIFICATION_ARTIFACT_MISMATCH` | common fitted-specialist package | Package artifact identity differs from the certified artifact. | No |
+| `TEAM_EVENT_CERTIFICATION_CALIBRATION_MISMATCH` | common fitted-specialist package | Package calibration method differs from the certified calibration contract. | No |
+| `RAW_PROBABILITY_INVALID` | common fitted-specialist package | Raw probability is missing, non-numeric, non-finite, or outside `[0,1]`. | No |
+| `CALIBRATED_PROBABILITY_INVALID` | common fitted-specialist package | Calibrated probability is missing, non-numeric, non-finite, or outside `[0,1]`. | No |
+| `CALIBRATED_LOWER_BOUND_INVALID` | common fitted-specialist package | Governed lower bound is missing, non-numeric, non-finite, or outside `[0,1]`. | No |
+| `CALIBRATED_UPPER_BOUND_INVALID` | common fitted-specialist package | Governed upper bound is missing, non-numeric, non-finite, or outside `[0,1]`. | No |
+| `CALIBRATED_BOUNDS_ORDER_INVALID` | common fitted-specialist package | Bounds violate `lower_bound <= calibrated_probability <= upper_bound`. | No |
+| `MODEL_TIMESTAMP_INVALID` | common fitted-specialist freshness | Model timestamp is missing, malformed, or timezone-naive. | No |
+| `LATEST_MATERIAL_UPDATE_TIMESTAMP_INVALID` | common fitted-specialist freshness | Latest-material-update timestamp is missing, malformed, or timezone-naive. | No |
+| `MODEL_STALE_AFTER_MATERIAL_UPDATE` | common fitted-specialist freshness | `model_timestamp < latest_material_update_timestamp`; exact rerun required before publication. | No |
+| `CAN_EXECUTE_MUST_BE_FALSE` | global safety | Certification/package attempted to set `can_execute` to anything other than false. | No |
 | `RUNDOWN_SPORT_ID_UNRESOLVED` | TheRundown acquisition | Catalog access succeeded but the target sport could not be resolved to the provider sport ID. | Does not decide sporting rank |
 | `CATALOG_ACCESS_REQUIRED_FIRST` | TheRundown health | Strict provider health did not attempt event access because catalog authentication/access failed first. | Does not decide sporting rank |
 | `DATE_MUST_BE_YYYY_MM_DD` | diagnostic API | Invalid date supplied to a bounded health/discovery diagnostic route. | N/A |
@@ -47,6 +69,10 @@ This file is the repository source of truth for governed typed failure/status co
 ## Multisport calibration artifact detail blockers
 
 The following detail blockers remain underneath the registered `MODEL_INPUTS_INSUFFICIENT` / `CALIBRATION_ARTIFACT_INVALID_OR_UNAVAILABLE` class and must never be rewritten to `MODEL_UNAVAILABLE`: `CALIBRATION_ARTIFACT_MISSING`, `CALIBRATION_ARTIFACT_SPORT_MISMATCH`, `CALIBRATION_CERTIFICATION_NOT_PASS`, `CALIBRATION_TRAINING_N_INSUFFICIENT`, `CALIBRATION_METHOD_MISSING`, `CALIBRATION_VERSION_MISSING`, `CALIBRATION_SOURCE_DATA_HASH_INVALID`, `CALIBRATION_SPLIT_HASH_INVALID`, `CALIBRATION_FIT_END_INVALID`, `CALIBRATION_BRIER_INVALID`, `CALIBRATION_ERROR_INVALID`, `BINARY_CALIBRATION_ARTIFACT_TYPE_INVALID`, `MULTICLASS_CALIBRATION_ARTIFACT_TYPE_INVALID`, `PLATT_COEFFICIENTS_INVALID`, `CALIBRATION_RESIDUAL_QUANTILE_INVALID`, and the outcome-specific soccer calibration record/coefficient/residual blockers.
+
+## Fitted team/event certification detail blockers
+
+The following proof-validation details remain underneath `TEAM_EVENT_SPECIALIST_ARTIFACT_NOT_CERTIFIED`, `TEAM_EVENT_INDEPENDENT_VERIFICATION_NOT_PASS`, or the registered common package class and must not be rewritten to `MODEL_UNAVAILABLE`: `TEAM_EVENT_CERTIFICATION_INVALID`, `TEAM_EVENT_CERTIFICATION_FIELD_MISSING`, `TEAM_EVENT_CERTIFICATION_HASH_INVALID`, `TEAM_EVENT_CERTIFICATION_TIMESTAMP_INVALID`, `TEAM_EVENT_CERTIFICATION_CAN_EXECUTE_FORBIDDEN`, `TEAM_EVENT_CERTIFICATION_SPORT_UNSUPPORTED`.
 
 ## Existing provider/discovery statuses preserved by V17
 
