@@ -14,9 +14,9 @@ def _candidate():
         "training_dataset_hash": "a" * 64,
         "artifact_checksum": "b" * 64,
         "feature_schema_version": "schema-v1",
-        "training_rows": 2,
-        "calibration_rows": 4,
-        "test_rows": 4,
+        "training_rows": 20,
+        "calibration_rows": 50,
+        "test_rows": 30,
         "lifecycle_state": "CANDIDATE",
         "promoted": False,
         "active": False,
@@ -33,21 +33,22 @@ def _candidate():
         },
         "calibrator_payload": {
             "method": "IDENTITY_RAW_PROBABILITY_V1",
-            "training_n": 4,
+            "training_n": 50,
             "bins": [],
         },
     }
 
 
 def _rows():
-    values = [-1.5, 1.5, -1.0, -0.5, 0.5, 1.0, -1.2, -0.2, 0.8, 1.2]
-    outcomes = [False, True, False, False, True, True, False, False, True, True]
+    values = np.linspace(-2.5, 2.5, 100)
+    # Mostly align outcomes with the fitted direction while retaining misses.
+    outcomes = [(value + (0.55 if i % 11 == 0 else 0.0)) > 0 for i, value in enumerate(values)]
     return [
         {
-            "official_event_id": f"event-{i}",
-            "event_start_time": f"2026-01-{i + 1:02d}T00:00:00+00:00",
-            "features": {"x": x},
-            "outcome_json": {"home_win": y},
+            "official_event_id": f"event-{i:03d}",
+            "event_start_time": f"2026-01-01T{i % 24:02d}:{i % 60:02d}:00+00:00",
+            "features": {"x": float(x)},
+            "outcome_json": {"home_win": bool(y)},
             "market_features_used": False,
             "can_execute": False,
         }
@@ -55,7 +56,7 @@ def _rows():
     ]
 
 
-def test_bound_challenger_is_non_serving_and_uses_untouched_test(monkeypatch):
+def test_bound_challenger_is_non_serving_event_dynamic_and_uses_untouched_test(monkeypatch):
     candidate = _candidate()
     rows = _rows()
     monkeypatch.setattr(challenger, "_exact_candidate", lambda db, candidate_id: candidate)
@@ -74,11 +75,19 @@ def test_bound_challenger_is_non_serving_and_uses_untouched_test(monkeypatch):
     result = challenger.run_ncaaf_publication_bound_challenger(object(), "candidate-1")
 
     assert result["status"] == "EXPERIMENT_COMPLETE"
-    assert result["split"] == {"train_n": 2, "calibration_n": 4, "untouched_test_n": 4}
-    assert result["untouched_test"]["n"] == 4
-    assert 0.0 < result["calibration_residual_quantile_90"] < 1.0
-    assert 0.005 <= result["historical_base_width"] <= 0.40
-    assert result["recommendation_state"] == "GOVERNED_REVIEW_REQUIRED"
+    assert result["split"] == {"train_n": 20, "calibration_n": 50, "untouched_test_n": 30}
+    assert result["untouched_test"]["n"] == 30
+    assert result["bound_method"] == challenger.BOUND_METHOD
+    assert 0.015 <= result["calibration_error_margin"] <= 0.08
+    widths = result["dynamic_width_summary"]
+    assert widths["min"] < widths["max"]
+    assert result["review_checks"]["event_dynamic_width_nonconstant"] is True
+    assert result["recommendation_state"] in {
+        "CHALLENGER_PASS_GOVERNED_REVIEW_REQUIRED",
+        "CHALLENGER_FAIL_REVIEW_REQUIRED",
+    }
+    assert result["final_refresh_contract"]["material_or_unresolved_change_action"] == "MODEL_QUALIFIED_HOLD"
+    assert result["final_refresh_contract"]["manual_probability_adjustment_allowed"] is False
     assert result["automatic_certification"] is False
     assert result["automatic_promotion"] is False
     assert result["probability_publishable"] is False
@@ -91,10 +100,29 @@ def test_bound_challenger_is_non_serving_and_uses_untouched_test(monkeypatch):
 
 def test_artifact_scoring_matches_standardized_logistic():
     candidate = _candidate()
-    rows = _rows()[:2]
+    rows = [
+        {"features": {"x": -1.5}, "market_features_used": False, "can_execute": False},
+        {"features": {"x": 1.5}, "market_features_used": False, "can_execute": False},
+    ]
     probabilities = challenger._artifact_probabilities(candidate, rows)
     expected = np.asarray([1.0 / (1.0 + np.exp(1.5)), 1.0 / (1.0 + np.exp(-1.5))])
     assert np.allclose(probabilities, expected, atol=1e-12, rtol=0.0)
+
+
+def test_event_bounds_vary_with_leverage():
+    candidate = _candidate()
+    rows = _rows()
+    probabilities, logits, design = challenger._artifact_design(candidate, rows)
+    covariance, _rank = challenger._parameter_covariance(design[:20], probabilities[:20])
+    lower, upper, se = challenger._event_bounds(
+        logits=logits,
+        design=design,
+        covariance=covariance,
+        calibration_margin=0.02,
+    )
+    assert np.all(lower < probabilities)
+    assert np.all(upper > probabilities)
+    assert float(np.max(se) - np.min(se)) > 0.0
 
 
 def test_counterexample_bins_report_lower_bound_reliability():
@@ -125,6 +153,27 @@ def test_candidate_must_remain_inert(monkeypatch):
     with pytest.raises(challenger.NCAAFPublicationBoundExperimentError) as exc:
         challenger._exact_candidate(DB(), "candidate-1")
     assert exc.value.code == "NCAAF_BOUND_CANDIDATE_INERTNESS_VIOLATION"
+
+
+def test_non_identity_calibrator_fails_closed(monkeypatch):
+    candidate = _candidate()
+    candidate["calibrator_payload"]["method"] = "EMPIRICAL_WILSON_BINS_V1"
+
+    class Result:
+        data = [candidate]
+
+    class Query:
+        def select(self, *args, **kwargs): return self
+        def eq(self, *args, **kwargs): return self
+        def limit(self, *args, **kwargs): return self
+        def execute(self): return Result()
+
+    class DB:
+        def table(self, *args, **kwargs): return Query()
+
+    with pytest.raises(challenger.NCAAFPublicationBoundExperimentError) as exc:
+        challenger._exact_candidate(DB(), "candidate-1")
+    assert exc.value.code == "NCAAF_BOUND_CALIBRATOR_UNSUPPORTED"
 
 
 def test_source_replay_receipt_is_mandatory(monkeypatch):
