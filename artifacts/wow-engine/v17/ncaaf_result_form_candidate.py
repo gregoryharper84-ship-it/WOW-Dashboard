@@ -140,6 +140,7 @@ def _persist_training_rows(client: Any, rows: list[BinaryTrainingRow], meta: lis
         client.table("wow_d1_training_rows").upsert(
             payloads[offset:offset + 250],
             on_conflict="sport,official_event_id,feature_schema_version,source_manifest_sha256",
+            ignore_duplicates=True,
         ).execute()
 
 
