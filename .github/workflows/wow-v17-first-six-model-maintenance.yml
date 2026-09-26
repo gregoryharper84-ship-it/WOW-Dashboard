@@ -11,6 +11,7 @@ on:
       - "artifacts/wow-engine/FIRST_SIX_CERTIFICATION_CHECKPOINT.md"
       - "artifacts/wow-engine/LLP_TEAM_STATE_ACCURACY_V1.md"
       - "artifacts/wow-engine/github_actions_oidc.py"
+      - "artifacts/wow-engine/migrations/20260925_v17_d1_certification_evidence_receipts.sql"
       - "artifacts/wow-engine/v17/model_source_entitlements.py"
       - "artifacts/wow-engine/v17/team_event_certification_replay.py"
       - "artifacts/wow-engine/v17/team_event_specialist_ownership.py"
@@ -26,11 +27,14 @@ on:
       - "artifacts/wow-engine/v17/tennis_valuebet_candidate.py"
       - "artifacts/wow-engine/v17/first_six_open_data_maintenance.py"
       - "artifacts/wow-engine/v17/basketball_model_maintenance.py"
+      - "artifacts/wow-engine/v17/wnba_team_event_certification_evidence.py"
       - "artifacts/wow-engine/basketball_event_hydration_runtime.py"
       - "artifacts/wow-engine/basketball_training_replay.py"
       - "artifacts/wow-engine/basketball_specialist_pipeline.py"
       - "artifacts/wow-engine/test_v17_model_source_entitlements.py"
       - "artifacts/wow-engine/test_v17_team_event_certification_replay.py"
+      - "artifacts/wow-engine/test_v17_team_event_certification_receipts.py"
+      - "artifacts/wow-engine/test_v17_wnba_team_event_certification_evidence.py"
       - "artifacts/wow-engine/test_v17_first_six_workflow_retry_contract.py"
       - "artifacts/wow-engine/test_v17_first_six_certification.py"
       - "artifacts/wow-engine/test_v17_first_six_source_contracts.py"
@@ -43,6 +47,7 @@ on:
     paths:
       - ".github/workflows/wow-v17-first-six-model-maintenance.yml"
       - "artifacts/wow-engine/LLP_TEAM_STATE_ACCURACY_V1.md"
+      - "artifacts/wow-engine/migrations/20260925_v17_d1_certification_evidence_receipts.sql"
       - "artifacts/wow-engine/v17/model_source_entitlements.py"
       - "artifacts/wow-engine/v17/team_event_certification_replay.py"
       - "artifacts/wow-engine/v17/team_state_intelligence.py"
@@ -53,8 +58,12 @@ on:
       - "artifacts/wow-engine/v17/soccer_openfootball_candidate.py"
       - "artifacts/wow-engine/v17/tennis_valuebet_candidate.py"
       - "artifacts/wow-engine/v17/first_six_open_data_maintenance.py"
+      - "artifacts/wow-engine/v17/basketball_model_maintenance.py"
+      - "artifacts/wow-engine/v17/wnba_team_event_certification_evidence.py"
       - "artifacts/wow-engine/test_v17_model_source_entitlements.py"
       - "artifacts/wow-engine/test_v17_team_event_certification_replay.py"
+      - "artifacts/wow-engine/test_v17_team_event_certification_receipts.py"
+      - "artifacts/wow-engine/test_v17_wnba_team_event_certification_evidence.py"
       - "artifacts/wow-engine/test_v17_first_six_workflow_retry_contract.py"
       - "artifacts/wow-engine/test_v17_team_state_intelligence.py"
       - "artifacts/wow-engine/test_v17_team_state_challenger_training.py"
@@ -91,6 +100,8 @@ jobs:
           python -m pytest -q
           test_v17_model_source_entitlements.py
           test_v17_team_event_certification_replay.py
+          test_v17_team_event_certification_receipts.py
+          test_v17_wnba_team_event_certification_evidence.py
           test_v17_first_six_workflow_retry_contract.py
           test_v17_first_six_certification.py
           test_v17_first_six_source_contracts.py
