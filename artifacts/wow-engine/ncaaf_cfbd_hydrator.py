@@ -64,6 +64,35 @@ def _snapshot(response: CFBDResponse, *, season: int, week: Optional[int], reque
     )
 
 
+def _blocked_optional_rating_snapshot(
+    *,
+    family: str,
+    season: int,
+    week: Optional[int],
+    requested_at: datetime,
+    code: str,
+) -> SourceSnapshot:
+    normalized = str(family or "").strip().lower()
+    params: dict[str, Any] = {"year": int(season)}
+    if normalized == "elo" and week is not None:
+        params["week"] = int(week)
+    return SourceSnapshot(
+        provider="CFBD",
+        endpoint=f"/ratings/{normalized}",
+        season=int(season),
+        week=week,
+        requested_at=requested_at.astimezone(timezone.utc).isoformat(),
+        retrieved_at=_utc_now().isoformat(),
+        request_params=params,
+        response_rows=[],
+        response_row_count=0,
+        payload_sha256=_canonical_hash([]),
+        acquisition_status="BLOCKED_OPTIONAL_RATING",
+        blocker_codes=[str(code or "CFBD_RATING_ACQUISITION_FAILED")],
+        can_execute=False,
+    )
+
+
 def hydrate_cfbd_season(
     client: CFBDClient,
     *,
@@ -71,12 +100,15 @@ def hydrate_cfbd_season(
     weeks: Iterable[int],
     rating_families: Iterable[str] = ("elo",),
     classification: Optional[str] = "fbs",
+    allow_optional_rating_failures: bool = False,
 ) -> list[SourceSnapshot]:
     """Fetch one season into auditable raw source snapshots.
 
-    Games are fetched per week. Rating families are fetched only through the
-    client's allowlist. Provider failure is explicit and aborts the run rather
-    than returning partial model-ready evidence.
+    ``/games`` is always mandatory. Rating families are optional only when the
+    caller explicitly enables ``allow_optional_rating_failures``. In that mode,
+    a rating-provider failure is preserved as a blocked source snapshot while
+    valid game snapshots continue through persistence. This does not fill or
+    synthesize rating evidence and cannot make a model publishable.
     """
     requested_at = _utc_now()
     snapshots: list[SourceSnapshot] = []
@@ -84,33 +116,65 @@ def hydrate_cfbd_season(
     if not normalized_weeks or any(w < 0 or w > 30 for w in normalized_weeks):
         raise ValueError("weeks must contain valid NCAAF week numbers")
 
-    try:
-        for week in normalized_weeks:
-            games = client.games(year=season, week=week, classification=classification)
-            snapshots.append(_snapshot(games, season=season, week=week, requested_at=requested_at))
-
-            for family in rating_families:
-                normalized = str(family).strip().lower()
-                # Only Elo is week-addressable in the current narrow client.
-                # Other families are acquired once per season below so we do
-                # not pretend a full-season retrospective value was known in an
-                # earlier week.
-                if normalized == "elo":
-                    rating = client.ratings(normalized, year=season, week=week)
-                    snapshots.append(_snapshot(rating, season=season, week=week, requested_at=requested_at))
+    for week in normalized_weeks:
+        # Settled game identity/result history is required. Any /games provider
+        # failure remains fail-closed even when optional rating degradation is
+        # permitted by the caller.
+        games = client.games(year=season, week=week, classification=classification)
+        snapshots.append(_snapshot(games, season=season, week=week, requested_at=requested_at))
 
         for family in rating_families:
             normalized = str(family).strip().lower()
+            # Only Elo is week-addressable in the current narrow client.
+            # Other families are acquired once per season below so we do not
+            # pretend a full-season retrospective value was known earlier.
             if normalized != "elo":
-                rating = client.ratings(normalized, year=season)
-                snap = _snapshot(rating, season=season, week=None, requested_at=requested_at)
+                continue
+            try:
+                rating = client.ratings(normalized, year=season, week=week)
+            except CFBDUnavailable as exc:
+                if not allow_optional_rating_failures:
+                    raise
                 snapshots.append(
-                    SourceSnapshot(
-                        **{**asdict(snap), "blocker_codes": [*snap.blocker_codes, "RETROSPECTIVE_RATING_NOT_PREGAME_FEATURE"]}
+                    _blocked_optional_rating_snapshot(
+                        family=normalized,
+                        season=season,
+                        week=week,
+                        requested_at=requested_at,
+                        code=exc.code,
                     )
                 )
-    except CFBDUnavailable:
-        raise
+            else:
+                snapshots.append(_snapshot(rating, season=season, week=week, requested_at=requested_at))
+
+    for family in rating_families:
+        normalized = str(family).strip().lower()
+        if normalized == "elo":
+            continue
+        try:
+            rating = client.ratings(normalized, year=season)
+        except CFBDUnavailable as exc:
+            if not allow_optional_rating_failures:
+                raise
+            snapshots.append(
+                _blocked_optional_rating_snapshot(
+                    family=normalized,
+                    season=season,
+                    week=None,
+                    requested_at=requested_at,
+                    code=exc.code,
+                )
+            )
+            continue
+        snap = _snapshot(rating, season=season, week=None, requested_at=requested_at)
+        snapshots.append(
+            SourceSnapshot(
+                **{
+                    **asdict(snap),
+                    "blocker_codes": [*snap.blocker_codes, "RETROSPECTIVE_RATING_NOT_PREGAME_FEATURE"],
+                }
+            )
+        )
 
     return snapshots
 
