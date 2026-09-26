@@ -99,7 +99,7 @@ def test_forward_shadow_uses_fixed_challenger_and_line_only_as_threshold(monkeyp
     rows = [_training_row(start)]
     artifact = _artifact()
     seen = {}
-    monkeypatch.setattr(shadow, "load_replay_rows", lambda *_args, **_kwargs: rows)
+    monkeypatch.setattr(shadow, "load_ncaaf_persisted_replay_rows", lambda *_args, **_kwargs: rows)
 
     def fit(fit_rows, *, sport, min_rows, ridge_alpha):
         seen.update({"rows": fit_rows, "sport": sport, "min_rows": min_rows, "ridge_alpha": ridge_alpha})
@@ -161,13 +161,32 @@ def test_forward_shadow_blocks_target_at_or_before_training_cutoff(monkeypatch):
         features={"x": 1.0},
         source_manifest_sha256="sha",
     )
-    monkeypatch.setattr(shadow, "load_replay_rows", lambda *_args, **_kwargs: [leaked])
+    monkeypatch.setattr(shadow, "load_ncaaf_persisted_replay_rows", lambda *_args, **_kwargs: [leaked])
     with pytest.raises(SpreadChallengerUnavailable) as exc:
         shadow.run_ncaaf_forward_shadow(
             object(), event_id="e", event_start_time=start.isoformat(), home_team="A", away_team="B",
             home_spread=-3.5, season=2026,
         )
     assert exc.value.code == "SPREAD_FORWARD_TARGET_NOT_AFTER_TRAINING_CUTOFF"
+
+
+def test_forward_shadow_propagates_typed_immutable_row_blocker(monkeypatch):
+    start = datetime(2026, 9, 26, 19, 0, tzinfo=timezone.utc)
+
+    def blocked(_client):
+        raise SpreadChallengerUnavailable(
+            "SPREAD_REPLAY_PERSISTED_NCAAF_FEATURES_STALE",
+            "immutable rows are stale",
+        )
+
+    monkeypatch.setattr(shadow, "load_ncaaf_persisted_replay_rows", blocked)
+    with pytest.raises(SpreadChallengerUnavailable) as exc:
+        shadow.run_ncaaf_forward_shadow(
+            object(), event_id="e", event_start_time=start.isoformat(), home_team="A", away_team="B",
+            home_spread=-3.5, season=2026,
+        )
+    assert exc.value.code == "SPREAD_REPLAY_PERSISTED_NCAAF_FEATURES_STALE"
+    assert exc.value.code != "MODEL_UNAVAILABLE"
 
 
 def test_forward_shadow_requires_matching_season():

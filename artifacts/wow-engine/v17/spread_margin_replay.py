@@ -14,15 +14,19 @@ from typing import Any, Mapping, Sequence
 
 from v17.spread_margin_challenger import (
     CAN_EXECUTE,
+    MODEL_PROGRAM,
     MarginTrainingRow,
     SpreadChallengerUnavailable,
     build_dynamic_margin_rows,
     research_receipt,
     train_margin_distribution_candidate,
 )
+from v17.team_state_intelligence import FEATURE_FAMILY_VERSION
 
 PAGE_SIZE = 1000
 SUPPORTED_REPLAY_SPORTS = ("NFL", "NBA", "WNBA", "NCAAF")
+NCAAF_PERSISTED_FEATURE_MODEL_FAMILY = "NCAAF_DYNAMIC_TEAM_STATE_LOGIT_V2"
+NCAAF_PERSISTED_FEATURE_SCHEMA_VERSION = "NCAAF_DYNAMIC_TEAM_STATE_FEATURES_V2"
 
 
 def _hash(payload: Any) -> str:
@@ -42,6 +46,13 @@ def _date_end_utc(value: Any) -> str:
     raw = str(value or "").strip()
     day = datetime.fromisoformat(raw[:10]).date()
     return datetime.combine(day, time(23, 59, 59), tzinfo=timezone.utc).isoformat()
+
+
+def _dt(value: Any) -> datetime:
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    parsed = datetime.fromisoformat(str(value or "").strip().replace("Z", "+00:00"))
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
 def _numeric_features(payload: Mapping[str, Any]) -> dict[str, float]:
@@ -130,14 +141,7 @@ def adapt_basketball_rows(sport: str, feature_rows: Sequence[Mapping[str, Any]],
     return out
 
 
-def adapt_ncaaf_rows(game_rows: Sequence[Mapping[str, Any]], *, min_prior_games: int = 5) -> list[MarginTrainingRow]:
-    """Reconstruct leakage-safe NCAAF team-state rows from settled prior results.
-
-    NCAAF currently has settled governed training games but no populated
-    `wow_ncaaf_training_features` rows. This adapter therefore uses the same
-    prior-only V17 team-state feature builder used by the challenger itself,
-    rather than inventing advanced features or falling back to market inputs.
-    """
+def _ncaaf_events_from_games(game_rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
     for row in game_rows:
         if not row.get("official_event_id") or not row.get("event_start_time"):
@@ -161,10 +165,162 @@ def adapt_ncaaf_rows(game_rows: Sequence[Mapping[str, Any]], *, min_prior_games:
                 "spread_line_used_as_feature": False,
             },
         })
+    return events
+
+
+def adapt_ncaaf_rows(game_rows: Sequence[Mapping[str, Any]], *, min_prior_games: int = 5) -> list[MarginTrainingRow]:
+    """Reconstruct leakage-safe NCAAF team-state rows from settled prior results.
+
+    This remains the independent historical-replay reference path. Interactive
+    forward scoring uses the immutable persisted dynamic-team-state rows through
+    ``load_ncaaf_persisted_replay_rows`` so one current-game request does not
+    reconstruct the full historical feature corpus in the shared web process.
+    """
+    events = _ncaaf_events_from_games(game_rows)
     if not events:
         raise SpreadChallengerUnavailable("SPREAD_REPLAY_GAMES_EMPTY", "NCAAF settled training games are unavailable")
     rows, _ = build_dynamic_margin_rows(events, sport="NCAAF", min_prior_games=min_prior_games)
     return rows
+
+
+def _ncaaf_raw_event_id(value: Any) -> str:
+    event_id = str(value or "").strip()
+    if event_id.upper().startswith("NCAAF:"):
+        event_id = event_id.split(":", 1)[1].strip()
+    return event_id
+
+
+def adapt_ncaaf_persisted_rows(
+    feature_rows: Sequence[Mapping[str, Any]],
+    game_rows: Sequence[Mapping[str, Any]],
+) -> list[MarginTrainingRow]:
+    """Bind immutable dynamic team-state features to settled NCAAF margins.
+
+    The persisted rows were built by the same ``build_team_state`` ->
+    ``paired_matchup_features`` family used by the spread challenger.  This
+    adapter validates that provenance and reconstructs the *spread* source
+    manifest hash so the resulting training rows retain the same dataset
+    identity as the legacy on-demand reconstruction path.
+    """
+    if not feature_rows:
+        raise SpreadChallengerUnavailable(
+            "SPREAD_REPLAY_PERSISTED_NCAAF_FEATURES_EMPTY",
+            "immutable NCAAF dynamic team-state training rows are unavailable",
+        )
+
+    events = _ncaaf_events_from_games(game_rows)
+    games = {str(event["event_id"]): event for event in events}
+    if not games:
+        raise SpreadChallengerUnavailable(
+            "SPREAD_REPLAY_GAMES_EMPTY",
+            "NCAAF settled training games are unavailable",
+        )
+
+    seen: set[str] = set()
+    out: list[MarginTrainingRow] = []
+    for feature in feature_rows:
+        if str(feature.get("model_family") or "") != NCAAF_PERSISTED_FEATURE_MODEL_FAMILY:
+            raise SpreadChallengerUnavailable(
+                "SPREAD_REPLAY_PERSISTED_NCAAF_MODEL_FAMILY_MISMATCH",
+                "persisted NCAAF feature row model family does not match the governed dynamic team-state family",
+            )
+        if str(feature.get("feature_schema_version") or "") != NCAAF_PERSISTED_FEATURE_SCHEMA_VERSION:
+            raise SpreadChallengerUnavailable(
+                "SPREAD_REPLAY_PERSISTED_NCAAF_FEATURE_SCHEMA_MISMATCH",
+                "persisted NCAAF feature row schema does not match the governed dynamic team-state schema",
+            )
+        if feature.get("market_features_used") is not False:
+            raise SpreadChallengerUnavailable(
+                "SPREAD_REPLAY_PERSISTED_NCAAF_MARKET_FEATURE_VIOLATION",
+                "persisted NCAAF feature row must be market-free",
+            )
+        if feature.get("can_execute") is not False:
+            raise SpreadChallengerUnavailable(
+                "SPREAD_REPLAY_PERSISTED_NCAAF_EXECUTION_VIOLATION",
+                "persisted NCAAF feature row must preserve can_execute=false",
+            )
+
+        event_id = _ncaaf_raw_event_id(feature.get("official_event_id"))
+        if not event_id:
+            raise SpreadChallengerUnavailable(
+                "SPREAD_REPLAY_PERSISTED_NCAAF_EVENT_ID_MISSING",
+                "persisted NCAAF feature row is missing official event identity",
+            )
+        if event_id in seen:
+            raise SpreadChallengerUnavailable(
+                "SPREAD_REPLAY_PERSISTED_NCAAF_EVENT_DUPLICATE",
+                f"duplicate persisted NCAAF feature row for event {event_id}",
+            )
+        seen.add(event_id)
+
+        game = games.get(event_id)
+        if game is None:
+            raise SpreadChallengerUnavailable(
+                "SPREAD_REPLAY_PERSISTED_NCAAF_GAME_MISSING",
+                f"settled NCAAF game is missing for persisted feature event {event_id}",
+            )
+
+        event_start = _dt(game["event_start_time"])
+        persisted_start = _dt(feature.get("event_start_time"))
+        if persisted_start != event_start:
+            raise SpreadChallengerUnavailable(
+                "SPREAD_REPLAY_PERSISTED_NCAAF_EVENT_TIME_MISMATCH",
+                f"persisted feature kickoff does not match settled game for {event_id}",
+            )
+        feature_as_of = _dt(feature.get("feature_as_of"))
+        if feature_as_of >= event_start:
+            raise SpreadChallengerUnavailable(
+                "SPREAD_FEATURE_LEAKAGE",
+                f"persisted feature_as_of must precede event start: {event_id}",
+            )
+
+        raw_features = dict(feature.get("features") or {})
+        features = _numeric_features(raw_features)
+        if len(features) != len(raw_features):
+            raise SpreadChallengerUnavailable(
+                "SPREAD_REPLAY_PERSISTED_NCAAF_FEATURES_MALFORMED",
+                f"persisted NCAAF feature row contains non-numeric values: {event_id}",
+            )
+
+        persisted_manifest = dict(feature.get("source_manifest") or {})
+        if str(persisted_manifest.get("feature_family_version") or "") != FEATURE_FAMILY_VERSION:
+            raise SpreadChallengerUnavailable(
+                "SPREAD_REPLAY_PERSISTED_NCAAF_FEATURE_FAMILY_MISMATCH",
+                f"persisted NCAAF feature family is not {FEATURE_FAMILY_VERSION}: {event_id}",
+            )
+        try:
+            home_prior_events = int(persisted_manifest["home_prior_events"])
+            away_prior_events = int(persisted_manifest["away_prior_events"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise SpreadChallengerUnavailable(
+                "SPREAD_REPLAY_PERSISTED_NCAAF_PRIOR_AUDIT_MISSING",
+                f"persisted NCAAF feature row lacks prior-event audit counts: {event_id}",
+            ) from exc
+
+        spread_manifest = {
+            "program": MODEL_PROGRAM,
+            "sport": "NCAAF",
+            "feature_family_version": FEATURE_FAMILY_VERSION,
+            "event_id": event_id,
+            "feature_as_of": feature_as_of.isoformat(),
+            "home_prior_events": home_prior_events,
+            "away_prior_events": away_prior_events,
+            "market_features_used": False,
+            "moneyline_probability_used": False,
+            "spread_line_used_as_feature": False,
+            "manual_probability_adjustments": False,
+            "source_manifest": dict(game.get("source_manifest") or {}),
+        }
+        out.append(MarginTrainingRow(
+            event_id=event_id,
+            event_start_time=event_start.isoformat(),
+            feature_as_of=feature_as_of.isoformat(),
+            margin=int(game["home_score"]) - int(game["away_score"]),
+            features=features,
+            source_manifest_sha256=_hash(spread_manifest),
+        ))
+
+    return sorted(out, key=lambda row: (_dt(row.event_start_time), row.event_id))
 
 
 def _paged_select(client: Any, table: str, fields: str, *, filters: Sequence[tuple[str, str, Any]] = (), order: str) -> list[dict[str, Any]]:
@@ -179,6 +335,48 @@ def _paged_select(client: Any, table: str, fields: str, *, filters: Sequence[tup
         if len(batch) < PAGE_SIZE:
             return rows
         offset += PAGE_SIZE
+
+
+def _load_ncaaf_game_rows(client: Any) -> list[dict[str, Any]]:
+    return _paged_select(
+        client,
+        "wow_ncaaf_training_games",
+        "training_game_id,official_event_id,season,event_start_time,home_team,away_team,home_points,away_points,result_source,result_source_timestamp,can_execute",
+        order="event_start_time",
+    )
+
+
+def load_ncaaf_persisted_replay_rows(client: Any) -> list[MarginTrainingRow]:
+    """Load the immutable NCAAF team-state corpus for interactive spread scoring.
+
+    This path intentionally has no expensive reconstruction fallback. If the
+    governed immutable feature ledger is absent or inconsistent, the forward
+    shadow fails closed with a spread-specific typed blocker instead of putting
+    the shared web process back on the source-heavy reconstruction path.
+    """
+    features = _paged_select(
+        client,
+        "wow_d1_training_rows",
+        "official_event_id,event_start_time,feature_as_of,feature_schema_version,model_family,features,source_manifest,market_features_used,can_execute",
+        filters=(
+            ("eq", "sport", "NCAAF"),
+            ("eq", "model_family", NCAAF_PERSISTED_FEATURE_MODEL_FAMILY),
+            ("eq", "feature_schema_version", NCAAF_PERSISTED_FEATURE_SCHEMA_VERSION),
+        ),
+        order="event_start_time",
+    )
+    games = _load_ncaaf_game_rows(client)
+    rows = adapt_ncaaf_persisted_rows(features, games)
+
+    latest_feature = max(_dt(row.event_start_time) for row in rows)
+    settled_events = _ncaaf_events_from_games(games)
+    latest_settled = max(_dt(row["event_start_time"]) for row in settled_events)
+    if latest_feature != latest_settled:
+        raise SpreadChallengerUnavailable(
+            "SPREAD_REPLAY_PERSISTED_NCAAF_FEATURES_STALE",
+            "immutable NCAAF dynamic team-state rows lag the latest settled training game",
+        )
+    return rows
 
 
 def load_replay_rows(client: Any, *, sport: str) -> list[MarginTrainingRow]:
@@ -209,12 +407,7 @@ def load_replay_rows(client: Any, *, sport: str) -> list[MarginTrainingRow]:
         )
         return adapt_basketball_rows(sport, features, games)
     if sport == "NCAAF":
-        games = _paged_select(
-            client, "wow_ncaaf_training_games",
-            "training_game_id,official_event_id,season,event_start_time,home_team,away_team,home_points,away_points,result_source,result_source_timestamp,can_execute",
-            order="event_start_time",
-        )
-        return adapt_ncaaf_rows(games)
+        return adapt_ncaaf_rows(_load_ncaaf_game_rows(client))
     if sport == "NCAAB":
         raise SpreadChallengerUnavailable(
             "SPREAD_REPLAY_DATASET_UNAVAILABLE",
@@ -240,6 +433,15 @@ def run_historical_replay(*, sport: str, client: Any | None = None, min_rows: in
 
 
 __all__ = [
-    "PAGE_SIZE", "SUPPORTED_REPLAY_SPORTS", "adapt_basketball_rows", "adapt_ncaaf_rows", "adapt_nfl_rows",
-    "load_replay_rows", "run_historical_replay",
+    "NCAAF_PERSISTED_FEATURE_MODEL_FAMILY",
+    "NCAAF_PERSISTED_FEATURE_SCHEMA_VERSION",
+    "PAGE_SIZE",
+    "SUPPORTED_REPLAY_SPORTS",
+    "adapt_basketball_rows",
+    "adapt_ncaaf_persisted_rows",
+    "adapt_ncaaf_rows",
+    "adapt_nfl_rows",
+    "load_ncaaf_persisted_replay_rows",
+    "load_replay_rows",
+    "run_historical_replay",
 ]

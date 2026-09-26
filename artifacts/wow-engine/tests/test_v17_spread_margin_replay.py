@@ -5,7 +5,16 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from v17.spread_margin_challenger import SpreadChallengerUnavailable
-from v17.spread_margin_replay import adapt_basketball_rows, adapt_ncaaf_rows, adapt_nfl_rows, load_replay_rows
+from v17.spread_margin_replay import (
+    NCAAF_PERSISTED_FEATURE_MODEL_FAMILY,
+    NCAAF_PERSISTED_FEATURE_SCHEMA_VERSION,
+    adapt_basketball_rows,
+    adapt_ncaaf_persisted_rows,
+    adapt_ncaaf_rows,
+    adapt_nfl_rows,
+    load_replay_rows,
+)
+from v17.team_state_intelligence import FEATURE_FAMILY_VERSION
 
 
 def test_nfl_adapter_uses_only_pregame_numeric_features_and_settled_margin():
@@ -56,7 +65,7 @@ def test_basketball_adapter_uses_feature_payload_and_no_market_fields():
     assert datetime.fromisoformat(row.feature_as_of) < datetime.fromisoformat(row.event_start_time)
 
 
-def test_ncaaf_adapter_reconstructs_prior_only_team_state_without_market_inputs():
+def _ncaaf_games():
     base = datetime(2024, 8, 24, 18, 0, tzinfo=timezone.utc)
     games = []
     for i in range(12):
@@ -74,7 +83,11 @@ def test_ncaaf_adapter_reconstructs_prior_only_team_state_without_market_inputs(
             "result_source_timestamp": (base + timedelta(days=7 * i, hours=4)).isoformat(),
             "can_execute": False,
         })
-    rows = adapt_ncaaf_rows(games, min_prior_games=2)
+    return games
+
+
+def test_ncaaf_adapter_reconstructs_prior_only_team_state_without_market_inputs():
+    rows = adapt_ncaaf_rows(_ncaaf_games(), min_prior_games=2)
     assert rows
     for row in rows:
         assert datetime.fromisoformat(row.feature_as_of) < datetime.fromisoformat(row.event_start_time)
@@ -83,6 +96,58 @@ def test_ncaaf_adapter_reconstructs_prior_only_team_state_without_market_inputs(
         assert "spread" not in keys
         assert "moneyline" not in keys
         assert "probability" not in keys
+
+
+def test_ncaaf_persisted_adapter_is_exactly_equivalent_to_reference_reconstruction():
+    games = _ncaaf_games()
+    reference = adapt_ncaaf_rows(games, min_prior_games=2)
+    persisted = []
+    for row in reference:
+        index = int(row.event_id.rsplit("-", 1)[1])
+        persisted.append({
+            "official_event_id": f"NCAAF:{row.event_id}",
+            "event_start_time": row.event_start_time,
+            "feature_as_of": row.feature_as_of,
+            "feature_schema_version": NCAAF_PERSISTED_FEATURE_SCHEMA_VERSION,
+            "model_family": NCAAF_PERSISTED_FEATURE_MODEL_FAMILY,
+            "features": dict(row.features),
+            "source_manifest": {
+                "feature_family_version": FEATURE_FAMILY_VERSION,
+                "home_prior_events": index,
+                "away_prior_events": index,
+            },
+            "market_features_used": False,
+            "can_execute": False,
+        })
+
+    fast = adapt_ncaaf_persisted_rows(persisted, games)
+    assert fast == reference
+
+
+def test_ncaaf_persisted_adapter_fails_closed_on_market_feature_violation():
+    games = _ncaaf_games()
+    reference = adapt_ncaaf_rows(games, min_prior_games=2)
+    row = reference[0]
+    index = int(row.event_id.rsplit("-", 1)[1])
+    persisted = [{
+        "official_event_id": f"NCAAF:{row.event_id}",
+        "event_start_time": row.event_start_time,
+        "feature_as_of": row.feature_as_of,
+        "feature_schema_version": NCAAF_PERSISTED_FEATURE_SCHEMA_VERSION,
+        "model_family": NCAAF_PERSISTED_FEATURE_MODEL_FAMILY,
+        "features": dict(row.features),
+        "source_manifest": {
+            "feature_family_version": FEATURE_FAMILY_VERSION,
+            "home_prior_events": index,
+            "away_prior_events": index,
+        },
+        "market_features_used": True,
+        "can_execute": False,
+    }]
+    with pytest.raises(SpreadChallengerUnavailable) as exc:
+        adapt_ncaaf_persisted_rows(persisted, games)
+    assert exc.value.code == "SPREAD_REPLAY_PERSISTED_NCAAF_MARKET_FEATURE_VIOLATION"
+    assert exc.value.code != "MODEL_UNAVAILABLE"
 
 
 def test_ncaab_replay_is_typed_dataset_unavailable():
