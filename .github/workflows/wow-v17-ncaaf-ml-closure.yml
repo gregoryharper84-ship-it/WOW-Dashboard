@@ -1,0 +1,122 @@
+name: wow-v17-ncaaf-ml-closure
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/wow-v17-ncaaf-ml-closure.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wow-v17-ncaaf-ml-closure
+  cancel-in-progress: false
+
+jobs:
+  closure:
+    name: NCAAF ML governed closure evidence
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, 'NCAAF ML closure bootstrap')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      WOW_ACTION_ORIGIN: https://wow-governed-probability-engine.onrender.com
+      WOW_CAN_EXECUTE: "false"
+      WOW_DRY_RUN_ONLY: "true"
+      NCAAF_CANDIDATE_ID: "87f4a425-7ae6-44fd-84a0-56aaf145d6af"
+    steps:
+      - name: Assert governance
+        shell: bash
+        run: |
+          test "$WOW_CAN_EXECUTE" = "false"
+          test "$WOW_DRY_RUN_ONLY" = "true"
+
+      - name: Refresh settled NCAAF game history
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, os, time, urllib.parse, urllib.request, urllib.error
+
+          def oidc_token():
+              url = os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"]
+              sep = "&" if "?" in url else "?"
+              url += sep + urllib.parse.urlencode({"audience": "wow-v17-multiscout"})
+              req = urllib.request.Request(url, headers={"Authorization": f"Bearer {os.environ['ACTIONS_ID_TOKEN_REQUEST_TOKEN']}"})
+              with urllib.request.urlopen(req, timeout=20) as r:
+                  return json.load(r)["value"]
+
+          def post(path, *, attempts=12):
+              last = None
+              for i in range(attempts):
+                  token = oidc_token()
+                  req = urllib.request.Request(
+                      os.environ["WOW_ACTION_ORIGIN"].rstrip("/") + path,
+                      data=b"", method="POST",
+                      headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                  )
+                  try:
+                      with urllib.request.urlopen(req, timeout=1200) as r:
+                          return json.load(r)
+                  except urllib.error.HTTPError as exc:
+                      last = f"HTTP {exc.code}: {exc.read().decode('utf-8', errors='replace')[:500]}"
+                      if exc.code not in (404, 409, 502, 503):
+                          raise
+                  except Exception as exc:
+                      last = f"{type(exc).__name__}:{exc}"
+                  time.sleep(min(20, 3 + i * 2))
+              raise RuntimeError(f"route unavailable after retries: {path}: {last}")
+
+          maintenance = post("/internal/v17/ncaaf-model-maintenance")
+          assert maintenance.get("can_execute") is False
+          assert maintenance.get("automatic_certification") is False
+          assert maintenance.get("automatic_promotion") is False
+          assert maintenance.get("probability_publishable") is False
+          if maintenance.get("fresh_acquisition_complete") is not True:
+              raise RuntimeError("NCAAF_FRESH_ACQUISITION_NOT_COMPLETE:" + json.dumps(maintenance.get("blockers"), sort_keys=True))
+          print(json.dumps({
+              "maintenance_status": maintenance.get("status"),
+              "fresh_acquisition_complete": maintenance.get("fresh_acquisition_complete"),
+              "source_snapshot_n": maintenance.get("source_snapshot_n"),
+              "training_game_persisted_n": maintenance.get("training_game_persisted_n"),
+              "blockers": maintenance.get("blockers"),
+              "can_execute": False,
+          }, sort_keys=True))
+
+          evidence = post(f"/internal/v17/team-event-certification-evidence/{os.environ['NCAAF_CANDIDATE_ID']}")
+          assert evidence.get("can_execute") is False
+          assert evidence.get("automatic_certification") is False
+          assert evidence.get("automatic_promotion") is False
+          assert evidence.get("probability_publishable") is False
+          if evidence.get("status") != "CERTIFICATION_EVIDENCE_PASS":
+              raise RuntimeError("NCAAF_CERTIFICATION_EVIDENCE_FAILED:" + json.dumps(evidence, sort_keys=True))
+          if evidence.get("source_review_status") != "PASS" or evidence.get("replay_status") != "PASS":
+              raise RuntimeError("NCAAF_CERTIFICATION_EVIDENCE_NOT_PASS:" + json.dumps(evidence, sort_keys=True))
+          print(json.dumps({
+              "candidate_id": evidence.get("candidate_id"),
+              "evidence_status": evidence.get("status"),
+              "source_review_status": evidence.get("source_review_status"),
+              "replay_status": evidence.get("replay_status"),
+              "receipt_id": evidence.get("receipt_id"),
+              "evidence_sha256": evidence.get("evidence_sha256"),
+              "can_execute": False,
+          }, sort_keys=True))
+
+          replay = post("/internal/v17/team-event-certification-replay")
+          assert replay.get("can_execute") is False
+          ncaaf = next(row for row in replay.get("sports", []) if row.get("sport") == "NCAAF")
+          lanes = ncaaf.get("lanes") or []
+          lane = next(row for row in lanes if row.get("candidate_id") == os.environ["NCAAF_CANDIDATE_ID"])
+          if lane.get("status") != "CERTIFICATION_REPLAY_PASS" or lane.get("candidate_bound_evidence_pass") is not True:
+              raise RuntimeError("NCAAF_CERTIFICATION_REPLAY_NOT_PASS:" + json.dumps(lane, sort_keys=True))
+          print(json.dumps({
+              "certification_replay_status": lane.get("status"),
+              "candidate_bound_evidence_pass": lane.get("candidate_bound_evidence_pass"),
+              "blockers": lane.get("blockers"),
+              "can_execute": False,
+          }, sort_keys=True))
+          PY
