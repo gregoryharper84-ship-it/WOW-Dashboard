@@ -87,10 +87,24 @@ def test_a_genuinely_infrastructure_caused_terminal_still_reports_as_such():
     assert decision.terminal_cause == "INFRASTRUCTURE"
 
 
-def test_market_blocked_hold_remains_infrastructure_caused():
+def test_market_blocked_completed_model_preserves_model_supported_terminal_cause():
     decision = reduce_prop_terminal(
         proposed_label="MODEL_QUALIFIED_HOLD", blockers=["PAYOUT_UNRESOLVED"], model_evaluated=True
     )
+    assert decision.terminal_label == "MODEL_QUALIFIED_HOLD"
+    assert decision.verdict_class == "MARKET_BLOCKED"
+    assert decision.model_evaluated is True
+    assert decision.pick_rejected is False
+    assert decision.infrastructure_blocked is False
+    assert decision.terminal_cause == "MODEL_SUPPORTED"
+    assert decision.concurrent_infrastructure_blockers == ("PAYOUT_UNRESOLVED",)
+
+
+def test_market_blocker_before_model_evaluation_remains_infrastructure_caused():
+    decision = reduce_prop_terminal(
+        proposed_label="MODEL_QUALIFIED_HOLD", blockers=["PAYOUT_UNRESOLVED"], model_evaluated=False
+    )
+    assert decision.terminal_label == "MODEL_INPUTS_INSUFFICIENT"
     assert decision.verdict_class == "MARKET_BLOCKED"
     assert decision.infrastructure_blocked is True
     assert decision.terminal_cause == "INFRASTRUCTURE"
