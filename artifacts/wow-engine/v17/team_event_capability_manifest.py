@@ -1,10 +1,14 @@
-"""Machine-readable V17 team/event certified model coverage.
+"""Machine-readable V17 team/event specialist coverage and input contracts.
 
 This manifest describes intended cross-sport team/event coverage and the exact
 minimum input families each bridge must own. A sport becomes production-capable
-only when an exact specialist artifact, governed evidence contract, numerical
-verification, calibration/bounds path, runtime bridge registration, and terminal
-governance path are all active.
+only when an exact fitted specialist artifact, governed evidence contract,
+independent numerical verification, calibration/bounds path, runtime bridge
+registration, and terminal-governance path are all active.
+
+Specialist identity declarations are not certification. Importability,
+registration, numerical output, or a matching specialist name cannot promote a
+sport without an immutable governed certification receipt.
 """
 from __future__ import annotations
 
@@ -172,21 +176,29 @@ TEAM_EVENT_INPUT_CONTRACTS: dict[str, tuple[str, ...]] = {
 }
 
 # Static certification remains deliberately narrow. It records unconditional
-# repository certification and cannot be expanded merely because code imports.
+# repository certification and cannot be expanded merely because code imports or
+# a bridge is registered.
 CERTIFIED_TEAM_EVENT_SPORTS: dict[str, str] = {
     "MLB": MLB_GAME_WIN_PROBABILITY_EXPERT,
 }
 
-# These identities are eligible for runtime certification only when the exact
-# live bridge is registered with the matching controlling specialist. A dummy or
-# generic registration does not satisfy this contract and cannot self-promote.
-ACTIVATABLE_TEAM_EVENT_CERTIFICATIONS: dict[str, str] = {
+# Declared specialist identities are routing/development identities only. They do
+# NOT indicate that the corresponding fitted artifact has passed certification.
+# A production promotion must be backed by the immutable V17 team/event
+# certification registry and its independent-verification receipt.
+DECLARED_TEAM_EVENT_SPECIALIST_IDENTITIES: dict[str, str] = {
     "WNBA": WNBA_GAME_WIN_PROBABILITY_EXPERT,
     "NHL": NHL_GAME_WIN_PROBABILITY_EXPERT,
     "SOCCER": SOCCER_1X2_WIN_PROBABILITY_EXPERT,
     "TENNIS": TENNIS_MATCH_WIN_PROBABILITY_EXPERT,
     "MMA": MMA_FIGHT_WIN_PROBABILITY_EXPERT,
 }
+
+# Backward-compatible alias for code that still consumes the historical name.
+# It is intentionally non-authoritative for certification.
+ACTIVATABLE_TEAM_EVENT_CERTIFICATIONS: dict[str, str] = dict(
+    DECLARED_TEAM_EVENT_SPECIALIST_IDENTITIES
+)
 
 KNOWN_UNCERTIFIED_TEAM_EVENT_SPORTS = frozenset(
     sport
@@ -277,6 +289,7 @@ __all__ = [
     "ACTIVATABLE_TEAM_EVENT_CERTIFICATIONS",
     "CAN_EXECUTE",
     "CERTIFIED_TEAM_EVENT_SPORTS",
+    "DECLARED_TEAM_EVENT_SPECIALIST_IDENTITIES",
     "EXPECTED_TEAM_EVENT_SPORTS",
     "KNOWN_UNCERTIFIED_TEAM_EVENT_SPORTS",
     "MLB_GAME_WIN_PROBABILITY_EXPERT",
