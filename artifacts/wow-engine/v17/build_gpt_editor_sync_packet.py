@@ -39,6 +39,7 @@ PRIZEPICKS_KNOWLEDGE_FILENAME = "WOW_V17_PRIZEPICKS_HOST_CONTRACT_KNOWLEDGE.txt"
 REQUIRED_OPERATIONS = (
     "getWowV17BackendHealth",
     "scoreWowPickRequest",
+    "scoreWowV17SpreadForwardShadow",
     "lookupWowV17PredictionReceipts",
     "getWowV17PickRequestRunState",
     "runWowV17ResumablePickRequest",

@@ -68,3 +68,15 @@ can_execute = false
 ```
 
 Do not report `VERIFIED`, and do not downgrade editor/session synchronization failures into sporting-model failures such as `MODEL_UNAVAILABLE`, `MODEL_INPUTS_INSUFFICIENT`, `MODEL_SCORER_FAILED`, or `MODEL_OUTPUT_INVALID`.
+
+## NCAAF spread forward-shadow Action contract
+
+Repository canonical schema now includes `scoreWowV17SpreadForwardShadow` on
+`POST /internal/v17/spread-forward-shadow`. The operation is NCAAF-only,
+research/shadow-only, `probability_publishable=false`, and `can_execute=false`.
+The existing team-event Action remains `OUTRIGHT_WINNER` only.
+
+`LIVE_CUSTOM_GPT_EDITOR_SYNC = EXTERNAL_SYNC_REQUIRED` until the canonical schema
+is saved/reloaded in the production WOW Custom GPT editor and a fresh production
+chat proves the new operation with Bearer auth. Repository merge or Render deploy
+does not by itself establish live editor parity.
