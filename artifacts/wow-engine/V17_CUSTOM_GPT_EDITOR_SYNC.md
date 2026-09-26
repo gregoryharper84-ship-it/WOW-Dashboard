@@ -2,9 +2,9 @@
 
 Updated: 2026-09-26
 
-Status: **RESYNC_REQUIRED_AFTER_ISSUE871_ACTION_SCHEMA_UPDATE__LIVE_ACTION_ACCEPTANCE_REQUIRED**
+Status: **RESYNC_REQUIRED_AFTER_PR766__LIVE_ACTION_ACCEPTANCE_REQUIRED**
 
-The production `WOW_BETTING_ENGINE` editor was historically saved/reloaded and Action-tested on 2026-09-16, and a later editor/schema update was user-confirmed on 2026-09-20. Those facts remain historical evidence only; later repository host-contract and Action-contract changes require a fresh live-editor resync and acceptance.
+The production `WOW_BETTING_ENGINE` editor was historically saved/reloaded and Action-tested on 2026-09-16, and a later editor/schema update was user-confirmed on 2026-09-20. Those facts remain historical evidence only; later repository host-contract and Action-contract changes require a fresh live-editor resync and acceptance. The stable machine-consumed resync status token is intentionally retained while issue #871 extends the Action surface.
 
 ## Current repository contract
 
@@ -66,7 +66,7 @@ Then a fresh production WOW chat must prove:
 Until those checks are observed, report:
 
 ```text
-LIVE_GPT_EDITOR_SYNC = RESYNC_REQUIRED_AFTER_ISSUE871_ACTION_SCHEMA_UPDATE__LIVE_ACTION_ACCEPTANCE_REQUIRED
+LIVE_GPT_EDITOR_SYNC = RESYNC_REQUIRED_AFTER_PR766__LIVE_ACTION_ACCEPTANCE_REQUIRED
 USER_JOURNEY_HEALTH = FAIL
 can_execute = false
 ```
