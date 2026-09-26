@@ -70,9 +70,10 @@ class CFBDClient:
         except Exception as exc:
             raise CFBDUnavailable("CFBD_REQUEST_FAILED", "CFBD read-only request failed.") from exc
         if response.status_code != 200:
+            status_code = int(response.status_code)
             raise CFBDUnavailable(
-                "CFBD_HTTP_ERROR",
-                f"CFBD returned HTTP {response.status_code} for {endpoint}.",
+                f"CFBD_HTTP_{status_code}",
+                f"CFBD returned HTTP {status_code} for {endpoint}.",
             )
         try:
             payload = response.json()
