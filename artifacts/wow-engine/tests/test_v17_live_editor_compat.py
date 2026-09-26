@@ -86,7 +86,7 @@ def test_action_schema_preserves_v17_boundary():
     assert document["components"]["securitySchemes"]["actionBearer"]["scheme"] == "bearer"
 
 
-def test_live_editor_schema_is_single_domain_and_exposes_all_19_operations():
+def test_live_editor_schema_is_single_domain_and_exposes_all_20_operations():
     document = _schema()
     assert document["servers"] == [{"url": "https://wow-governed-probability-engine.onrender.com"}]
     operations = {
@@ -95,12 +95,32 @@ def test_live_editor_schema_is_single_domain_and_exposes_all_19_operations():
         for operation in methods.values()
         if isinstance(operation, dict) and "operationId" in operation
     }
-    assert len(operations) == 19
+    assert len(operations) == 20
     assert {
         "getWowV17PickRequestRunState",
         "runWowV17ResumablePickRequest",
         "closeWowV17PickRequestRun",
+        "scoreWowV17SpreadForwardShadow",
     }.issubset(operations)
+
+    spread = document["paths"]["/internal/v17/spread-forward-shadow"]["post"]
+    assert spread["operationId"] == "scoreWowV17SpreadForwardShadow"
+    assert spread["security"] == [{"actionBearer": []}]
+    assert spread["x-openai-isConsequential"] is False
+    assert "Research-only" in spread["description"]
+
+    request = document["components"]["schemas"]["SpreadForwardShadowRequest"]
+    assert request["additionalProperties"] is False
+    assert request["properties"]["sport"]["enum"] == ["NCAAF"]
+    assert set(request["required"]) == {
+        "sport",
+        "event_id",
+        "event_start_time",
+        "home_team",
+        "away_team",
+        "home_spread",
+        "season",
+    }
 
 
 def test_live_editor_schema_exposes_full_board_diagnostics_with_bearer_auth():
