@@ -10,8 +10,9 @@ model unavailability.
 The helper preserves the mandatory Scout -> Research barrier before the
 controlling 1IP specialist, and queues provisional-lineup results for automatic
 final refresh. Missing refresh-queue infrastructure may hold scheduling but may
-not erase an already-computed sporting probability. can_execute is always
-false.
+not erase an already-computed sporting probability. Market/payout readiness is
+a separate downstream objective lane and likewise may not erase a completed
+sporting probability. can_execute is always false.
 """
 from __future__ import annotations
 
@@ -27,6 +28,9 @@ from prop_auto_hydration import PropAutoHydrationError
 CAN_EXECUTE = False
 REFRESH_DELAY_SECONDS = 300
 MLB_1IP_STAT_TYPE = "1ST_INNING_PITCHES_THROWN"
+MLB_1IP_LANE_STATUS = "FULL_MODEL_GOVERNED"
+MLB_1IP_FULL_MODEL_ELIGIBLE = True
+TEST_ONLY_QUARANTINE_REMOVED = True
 _EXACT_BOARD_SOURCE_TYPES = {
     "SCREENSHOT",
     "PDF",
@@ -358,7 +362,8 @@ def score_mlb_1ip_ingress(
     # Exact market identity from the board does not resolve payout/value. Keep
     # that blocker in the MONEY lane rather than falsely reporting the market
     # itself as unavailable.
-    if money_lane_status in {"", "PAYOUT_UNRESOLVED"}:
+    payout_unresolved = money_lane_status in {"", "PAYOUT_UNRESOLVED"}
+    if payout_unresolved:
         result["blockers"] = list(dict.fromkeys([
             *(result.get("blockers") or []),
             "PAYOUT_UNRESOLVED",
@@ -393,6 +398,18 @@ def score_mlb_1ip_ingress(
                 "FINAL_REFRESH_QUEUE_PERSISTENCE_UNAVAILABLE"
             ]
 
+    probability_publishable = bool(result.get("probability_publishable"))
+    market_unavailable = (not market_evidence_present) or payout_unresolved
+    result["probability_status"] = "PASS" if probability_publishable else "HOLD"
+    result["market_edge_status"] = "DATA_UNOBTAINABLE" if market_unavailable else "NOT_EVALUATED"
+    result["money_ev_status"] = "DATA_UNOBTAINABLE" if payout_unresolved else "NOT_EVALUATED"
+    result["portfolio_or_slip_status"] = "HOLD"
+    result["final_ceiling"] = result.get("terminal_ceiling") or result.get("terminal_label") or "MODEL_QUALIFIED_HOLD"
+    result["mlb_1ip_lane_status"] = MLB_1IP_LANE_STATUS
+    result["full_model_eligible"] = MLB_1IP_FULL_MODEL_ELIGIBLE
+    result["test_only_quarantine_removed"] = TEST_ONLY_QUARANTINE_REMOVED
+    result["gatekeeper_continuation"] = True
+
     decision = reduce_terminal(
         proposed_label=result["terminal_label"],
         blockers=result["blockers"],
@@ -414,6 +431,15 @@ def score_mlb_1ip_ingress(
         "concurrent_infrastructure_blockers": list(decision.concurrent_infrastructure_blockers),
         "acquisition": acquisition,
         "result": result,
-        "probability_publishable": False,
+        "probability_status": result["probability_status"],
+        "market_edge_status": result["market_edge_status"],
+        "money_ev_status": result["money_ev_status"],
+        "portfolio_or_slip_status": result["portfolio_or_slip_status"],
+        "final_ceiling": result["final_ceiling"],
+        "mlb_1ip_lane_status": MLB_1IP_LANE_STATUS,
+        "full_model_eligible": MLB_1IP_FULL_MODEL_ELIGIBLE,
+        "test_only_quarantine_removed": TEST_ONLY_QUARANTINE_REMOVED,
+        "gatekeeper_continuation": True,
+        "probability_publishable": probability_publishable,
         "can_execute": False,
     }
