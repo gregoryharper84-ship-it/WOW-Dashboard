@@ -89,8 +89,22 @@ def run_ncaaf_model_maintenance(
         for season in season_values:
             try:
                 snapshots = hydrate_cfbd_season(
-                    cfbd, season=season, weeks=week_values, rating_families=("elo",), classification="fbs"
+                    cfbd,
+                    season=season,
+                    weeks=week_values,
+                    rating_families=("elo",),
+                    classification="fbs",
+                    allow_optional_rating_failures=True,
                 )
+                snapshot_blockers = {
+                    str(code)
+                    for snapshot in snapshots
+                    for code in snapshot.blocker_codes
+                    if str(code or "").strip()
+                }
+                if snapshot_blockers:
+                    fresh_acquisition_complete = False
+                    acquisition_blockers.update(snapshot_blockers)
                 persisted_n = persist_source_snapshots(db, snapshots)
                 games = materialize_training_games(db, snapshots)
             except CFBDUnavailable as exc:
@@ -123,8 +137,12 @@ def run_ncaaf_model_maintenance(
             acquisition_blockers.update(code for snap in snapshots for code in snap.blocker_codes)
             acquisition_blockers.update(games.blocker_codes)
             acquisition.append({
-                "season": season, "status": "UPDATED", "source_snapshot_n": len(snapshots),
-                "source_snapshot_persisted_n": persisted_n, "training_games": asdict(games),
+                "season": season,
+                "status": "UPDATED_WITH_DEGRADATION" if snapshot_blockers else "UPDATED",
+                "source_snapshot_n": len(snapshots),
+                "source_snapshot_persisted_n": persisted_n,
+                "training_games": asdict(games),
+                "blockers": sorted(snapshot_blockers),
             })
 
     try:
