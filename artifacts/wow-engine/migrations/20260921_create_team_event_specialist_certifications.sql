@@ -47,7 +47,7 @@ create unique index if not exists uq_wow_team_event_certification_model_receipt
     );
 
 alter table public.wow_team_event_specialist_certifications enable row level security;
-revoke all on public.wow_team_event_specialist_certifications from public, anon, authenticated;
+revoke all privileges on public.wow_team_event_specialist_certifications from public, anon, authenticated, service_role;
 grant select, insert on public.wow_team_event_specialist_certifications to service_role;
 
 create trigger wow_team_event_specialist_certifications_immutable
