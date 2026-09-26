@@ -24,6 +24,7 @@ from ncaaf_cfbd_client import CFBDClient, CFBDUnavailable
 from ncaaf_cfbd_hydrator import hydrate_cfbd_season, persist_source_snapshots
 from ncaaf_training_materializer import materialize_training_games
 from ncaaf_feature_compiler import materialize_complete_training_features
+from v17.candidate_certification_evidence import install_candidate_certification_evidence_route
 from v17.first_six_open_data_maintenance import install_first_six_open_data_maintenance_routes
 from v17.ncaaf_prop_history_maintenance import install_ncaaf_prop_history_maintenance_route
 from v17.ncaaf_result_form_candidate import NCAAFResultFormUnavailable, train_and_persist as train_result_form_candidate
@@ -72,10 +73,6 @@ def run_ncaaf_model_maintenance(
     try:
         cfbd: CFBDClient | None = CFBDClient.from_environment()
     except CFBDUnavailable as exc:
-        # Fresh acquisition is desirable but not allowed to erase the already
-        # persisted corpus. Continue to feature compilation/candidate training;
-        # those stages have their own provenance/sample gates and remain the
-        # authority on whether stored evidence is usable.
         cfbd = None
         fresh_acquisition_complete = False
         acquisition_blockers.add(exc.code)
@@ -89,10 +86,6 @@ def run_ncaaf_model_maintenance(
     if cfbd is not None:
         for season in season_values:
             try:
-                # This maintenance lane materializes settled game history only.
-                # The active NCAAF team-state candidate is prior-results-only and
-                # does not consume CFBD rating families, so a ratings entitlement
-                # must not block fresh /games acquisition.
                 snapshots = hydrate_cfbd_season(
                     cfbd, season=season, weeks=week_values, rating_families=(), classification="fbs"
                 )
@@ -109,7 +102,7 @@ def run_ncaaf_model_maintenance(
                     "can_execute": False,
                 })
                 break
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 fresh_acquisition_complete = False
                 acquisition_blockers.add("NCAAF_HISTORY_HYDRATION_FAILED")
                 acquisition.append({
@@ -134,7 +127,7 @@ def run_ncaaf_model_maintenance(
 
     try:
         feature_report = materialize_complete_training_features(db)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return _blocked(
             "NCAAF_FEATURE_COMPILATION_FAILED",
             stage="FEATURE_COMPILATION",
@@ -158,17 +151,15 @@ def run_ncaaf_model_maintenance(
             training = train_and_persist_candidate(db, training_code_sha=effective_sha)
         except NCAAFTrainingRunnerUnavailable as exc:
             training_blocker = {"code": exc.code, "stage": "CANDIDATE_TRAINING", "detail": str(exc)}
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             training_blocker = {"code": "NCAAF_CANDIDATE_TRAINING_FAILED", "stage": "CANDIDATE_TRAINING", "detail": type(exc).__name__}
     else:
-        # Never back-fill unavailable rich evidence. Train a separately named,
-        # prior-results-only candidate whose feature contract is auditable.
         candidate_lane = "RESULT_FORM_PRIOR_V1"
         try:
             training = train_result_form_candidate(db, training_code_sha=effective_sha)
         except NCAAFResultFormUnavailable as exc:
             training_blocker = {"code": exc.code, "stage": "RESULT_FORM_CANDIDATE_TRAINING", "detail": str(exc)}
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             training_blocker = {"code": "NCAAF_RESULT_FORM_CANDIDATE_TRAINING_FAILED", "stage": "RESULT_FORM_CANDIDATE_TRAINING", "detail": type(exc).__name__}
 
     status = "CANDIDATE_EVIDENCE_UPDATED" if training and training.get("ok") is True else "BLOCKED"
@@ -194,13 +185,14 @@ def run_ncaaf_model_maintenance(
 
 
 def install_ncaaf_model_maintenance_route(app: FastAPI, *, auth_dependency: Any, db_client_fn: Any) -> None:
-    # Compose candidate-only maintenance and read-only certification surfaces
-    # behind the same strict auth. None of these routes can promote/certify.
     install_ncaaf_prop_history_maintenance_route(
         app, auth_dependency=auth_dependency, db_client_fn=db_client_fn
     )
     install_nhl_model_maintenance_route(app, auth_dependency=auth_dependency, db_client_fn=db_client_fn)
     install_first_six_open_data_maintenance_routes(
+        app, auth_dependency=auth_dependency, db_client_fn=db_client_fn
+    )
+    install_candidate_certification_evidence_route(
         app, auth_dependency=auth_dependency, db_client_fn=db_client_fn
     )
     install_team_event_certification_replay_route(
