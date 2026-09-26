@@ -9,8 +9,11 @@ import logging
 import os
 import socket
 import threading
+import time
+from datetime import timedelta
 
-from v17.engineering_auditor import EngineeringAuditStore, utcnow
+from v17.engineering_auditor import EngineeringAuditStore, parse_timestamp, utcnow
+from v17.engineering_auditor_github import bootstrap_open_github_work, reconcile_github_updates
 
 _logger = logging.getLogger("wow.v17.engineering_auditor")
 _STOP = threading.Event()
@@ -34,11 +37,30 @@ def _interval_seconds() -> int:
     return min(max(value, 5), 300)
 
 
+def _github_interval_seconds() -> int:
+    try:
+        value = int(os.getenv("WOW_ENGINEERING_AUDITOR_GITHUB_INTERVAL_SECONDS", "300"))
+    except ValueError:
+        value = 300
+    # Two unauthenticated public GitHub requests per pass. Five minutes keeps
+    # normal use well below the public 60-request/hour/IP budget.
+    return min(max(value, 180), 1800)
+
+
 def run_engineering_auditor_loop(stop_event: threading.Event = _STOP) -> None:
     """Reconcile on startup, then remain alive and enforce persisted deadlines."""
     instance_id = f"{socket.gethostname()}:{os.getpid()}"
+    seen_workflow_runs: set[str] = set()
+    last_github_sync = utcnow() - timedelta(minutes=10)
     try:
         store = EngineeringAuditStore(_db_client())
+        prior_health = store.health()
+        prior_event_at = prior_health.get("last_event_processed_at")
+        if prior_event_at:
+            try:
+                last_github_sync = parse_timestamp(str(prior_event_at))
+            except (TypeError, ValueError):
+                pass
         now = utcnow()
         store.touch_runtime(
             instance_id=instance_id,
@@ -49,18 +71,42 @@ def run_engineering_auditor_loop(stop_event: threading.Event = _STOP) -> None:
         )
         backlog_n = store.reconcile_backlog(now=now)
         opened = store.reconcile_due(now=now)
-        store.refresh_runtime_counts(now=now)
+        github_open_n = 0
+        github_update_n = 0
+        github_health_n = 0
+        github_error: str | None = None
+        try:
+            github_open_n = bootstrap_open_github_work(store)
+            github_receipt = reconcile_github_updates(
+                store,
+                since=last_github_sync,
+                seen_workflow_runs=seen_workflow_runs,
+            )
+            github_update_n = github_receipt["github_work_events"]
+            github_health_n = github_receipt["code_health_events"]
+            last_github_sync = utcnow()
+        except Exception as exc:
+            github_error = f"GITHUB_AUDIT_{type(exc).__name__.upper()}"
+            _logger.warning(
+                "WOW_ENGINEERING_AUDITOR github_startup_reconcile=DEGRADED error_type=%s can_execute=false",
+                type(exc).__name__,
+            )
+        store.refresh_runtime_counts(now=utcnow())
         store.touch_runtime(
             instance_id=instance_id,
-            status="RUNNING",
-            last_heartbeat_at=now,
-            last_reconcile_at=now,
-            last_error_code="CLEAR",
+            status="DEGRADED" if github_error else "RUNNING",
+            last_heartbeat_at=utcnow(),
+            last_reconcile_at=utcnow(),
+            last_error_code=github_error or "CLEAR",
         )
         _logger.warning(
-            "WOW_ENGINEERING_AUDITOR status=RUNNING startup_reconciled=%s startup_findings=%s terminal_authority=V17_TERMINAL_REDUCER can_execute=false",
+            "WOW_ENGINEERING_AUDITOR status=%s startup_backlog=%s startup_findings=%s github_open=%s github_updates=%s code_health=%s terminal_authority=V17_TERMINAL_REDUCER can_execute=false",
+            "DEGRADED" if github_error else "RUNNING",
             backlog_n,
             len(opened),
+            github_open_n,
+            github_update_n,
+            github_health_n,
         )
     except Exception as exc:
         _logger.exception(
@@ -69,20 +115,41 @@ def run_engineering_auditor_loop(stop_event: threading.Event = _STOP) -> None:
         )
         return
 
+    next_github_poll = time.monotonic() + _github_interval_seconds()
     while not stop_event.wait(_interval_seconds()):
         now = utcnow()
+        error_code = "CLEAR"
+        status = "RUNNING"
         try:
             # The process is continuously resident. This maximum sleep merely
-            # bounds detection latency for deadlines inserted by event ingress;
-            # no external scheduler or Celery beat participates.
+            # bounds detection latency for persisted deadlines; no external
+            # scheduler or Celery beat participates.
             store.reconcile_backlog(now=now)
             store.reconcile_due(now=now)
+            if time.monotonic() >= next_github_poll:
+                try:
+                    reconcile_github_updates(
+                        store,
+                        since=last_github_sync,
+                        seen_workflow_runs=seen_workflow_runs,
+                    )
+                    last_github_sync = now
+                except Exception as exc:
+                    status = "DEGRADED"
+                    error_code = f"GITHUB_AUDIT_{type(exc).__name__.upper()}"
+                    _logger.warning(
+                        "WOW_ENGINEERING_AUDITOR github_reconcile=DEGRADED error_type=%s can_execute=false",
+                        type(exc).__name__,
+                    )
+                finally:
+                    next_github_poll = time.monotonic() + _github_interval_seconds()
             store.refresh_runtime_counts(now=now)
             store.touch_runtime(
                 instance_id=instance_id,
-                status="RUNNING",
+                status=status,
                 last_heartbeat_at=now,
-                last_error_code="CLEAR",
+                last_reconcile_at=now,
+                last_error_code=error_code,
             )
         except Exception as exc:
             _logger.exception(
