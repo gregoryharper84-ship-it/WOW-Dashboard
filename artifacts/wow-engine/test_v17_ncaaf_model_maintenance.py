@@ -60,6 +60,41 @@ def _install_successful_acquisition(monkeypatch, *, complete_rows: int):
     )
 
 
+def test_moneyline_maintenance_acquires_games_without_unused_rating_families(monkeypatch):
+    captured = []
+    monkeypatch.setattr(maintenance.CFBDClient, "from_environment", classmethod(lambda cls: object()))
+
+    def hydrate(*args, **kwargs):
+        captured.append(kwargs)
+        return [Snapshot()]
+
+    monkeypatch.setattr(maintenance, "hydrate_cfbd_season", hydrate)
+    monkeypatch.setattr(maintenance, "persist_source_snapshots", lambda db, rows: len(rows))
+    monkeypatch.setattr(maintenance, "materialize_training_games", lambda db, rows: FakeGames())
+    monkeypatch.setattr(maintenance, "materialize_complete_training_features", lambda db: _feature_report(0))
+    monkeypatch.setattr(
+        maintenance,
+        "train_result_form_candidate",
+        lambda db, *, training_code_sha: {
+            "ok": True,
+            "lifecycle_state": "CANDIDATE",
+            "probability_publishable": False,
+            "can_execute": False,
+        },
+    )
+
+    result = maintenance.run_ncaaf_model_maintenance(
+        DummyDB(), seasons=[2026], weeks=[1], training_code_sha="a" * 40
+    )
+
+    assert len(captured) == 1
+    assert captured[0]["rating_families"] == ()
+    assert captured[0]["classification"] == "fbs"
+    assert result["fresh_acquisition_complete"] is True
+    assert result["maintenance_degraded"] is False
+    assert result["can_execute"] is False
+
+
 def test_missing_cfbd_configuration_uses_governed_persisted_corpus(monkeypatch):
     def unavailable(_cls):
         raise CFBDUnavailable("CFBD_API_KEY_MISSING", "missing")
