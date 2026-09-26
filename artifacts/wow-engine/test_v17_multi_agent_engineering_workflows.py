@@ -70,6 +70,14 @@ def test_release_resume_agent_owns_unfinished_release_verification() -> None:
     assert "can_execute=false" in text
 
 
+def test_release_resume_agent_fails_closed_on_missing_openai_auth() -> None:
+    text = RELEASE_RESUME.read_text()
+    assert "Verify OpenAI authentication" in text
+    assert "OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}" in text
+    assert "OPENAI_API_KEY is required for the release verification agent." in text
+    assert "if: steps.priority.outputs.release_pending == 'true'" in text
+
+
 def test_push_origin_nightly_scan_has_a_valid_worker_handoff() -> None:
     text = PUSH_HANDOFF.read_text()
     assert 'workflows: ["wow-v17-nightly-engineering-scan"]' in text
