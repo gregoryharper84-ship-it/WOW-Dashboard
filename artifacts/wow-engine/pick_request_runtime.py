@@ -29,7 +29,10 @@ here as a backward-compatible alias of the backend fact for existing consumers.
 
 No model, evidence, line, calibration, ranking, or terminal-reducer behavior is
 weakened here. Portfolio/card governance remains a downstream objective and can
-never mutate sporting probability. ``can_execute=false`` remains binding.
+never mutate sporting probability. An explicit downstream money-evaluation hold
+blocks card/final-money admission without suppressing independent portfolio or
+dependence analysis, sporting publication, or probability ranking.
+``can_execute=false`` remains binding.
 """
 from __future__ import annotations
 
@@ -213,11 +216,12 @@ def _apply_portfolio_governance(
 ) -> None:
     """Fail closed for card admission without mutating sporting probability.
 
-    Portfolio/dependence governance remains separate from sporting probability,
-    but a row may not cross into downstream card construction merely because it
-    completed model scoring. The authoritative row-level ``rank_eligible`` and
-    ``probability_publishable`` flags must both be true, the terminal row must
-    remain completed/non-rejected, and portfolio governance itself must pass.
+    Portfolio/dependence governance remains separate from sporting probability
+    and separate from payout economics. Rank/publication/terminal failures can
+    block portfolio continuation as before. A completed row that explicitly
+    reports ``downstream_money_evaluation_allowed=false`` receives a card-only
+    hold: portfolio/dependence analysis may still run, while EV/money/card/final
+    approval remains blocked.
 
     The emitted card-admission receipt binds the governed prediction id to the
     exact event/player/stat/line/direction sent through ``/score-pick-request``.
@@ -251,21 +255,26 @@ def _apply_portfolio_governance(
                 "direction": leg.get("direction"),
                 "rank_eligible": outcome.get("rank_eligible") is True,
                 "probability_publishable": outcome.get("probability_publishable") is True,
+                "money_evaluation_allowed": outcome.get("downstream_money_evaluation_allowed") is True,
                 "portfolio_eligible": False,
                 "can_execute": False,
             }
         return
 
     for leg, outcome in scored_legs:
-        upstream_blockers: list[str] = []
+        portfolio_upstream_blockers: list[str] = []
         if outcome.get("rank_eligible") is not True:
-            upstream_blockers.append("CARD_ADMISSION:RANK_INELIGIBLE")
+            portfolio_upstream_blockers.append("CARD_ADMISSION:RANK_INELIGIBLE")
         if outcome.get("probability_publishable") is not True:
-            upstream_blockers.append("CARD_ADMISSION:PROBABILITY_NOT_PUBLISHABLE")
+            portfolio_upstream_blockers.append("CARD_ADMISSION:PROBABILITY_NOT_PUBLISHABLE")
         if outcome.get("terminal_status") != "COMPLETED":
-            upstream_blockers.append("CARD_ADMISSION:TERMINAL_NOT_COMPLETED")
+            portfolio_upstream_blockers.append("CARD_ADMISSION:TERMINAL_NOT_COMPLETED")
         if outcome.get("pick_rejected") is True:
-            upstream_blockers.append("CARD_ADMISSION:TERMINAL_REJECTED")
+            portfolio_upstream_blockers.append("CARD_ADMISSION:TERMINAL_REJECTED")
+
+        card_only_blockers: list[str] = []
+        if outcome.get("downstream_money_evaluation_allowed") is False:
+            card_only_blockers.append("CARD_ADMISSION:MONEY_EVALUATION_HELD")
 
         governance = outcome.get("portfolio_governance")
         if not isinstance(governance, dict):
@@ -284,17 +293,22 @@ def _apply_portfolio_governance(
         if not portfolio_allowed and not portfolio_blockers:
             portfolio_blockers.append("CARD_ADMISSION:PORTFOLIO_NOT_QUALIFIED")
 
-        card_blockers = list(dict.fromkeys([*upstream_blockers, *portfolio_blockers]))
-        if upstream_blockers:
+        if portfolio_upstream_blockers:
             outcome["downstream_portfolio_evaluation_allowed"] = False
             governance["status"] = "BLOCKED"
             governance["portfolio_qualification"] = "HELD_FOR_UPSTREAM_ELIGIBILITY"
             governance["card_admission_blocked"] = True
-            governance["blockers"] = list(dict.fromkeys([*portfolio_blockers, *upstream_blockers]))
+            governance["blockers"] = list(dict.fromkeys([*portfolio_blockers, *portfolio_upstream_blockers]))
             governance["sporting_probability_mutated"] = False
             governance["can_execute"] = False
             portfolio_allowed = False
+            portfolio_blockers = list(governance["blockers"])
 
+        card_blockers = list(dict.fromkeys([
+            *portfolio_upstream_blockers,
+            *card_only_blockers,
+            *portfolio_blockers,
+        ]))
         outcome["card_admission_eligible"] = bool(not card_blockers and portfolio_allowed)
         outcome["card_admission_blockers"] = card_blockers
         outcome["card_admission_receipt"] = {
@@ -306,6 +320,7 @@ def _apply_portfolio_governance(
             "direction": leg.get("direction"),
             "rank_eligible": outcome.get("rank_eligible") is True,
             "probability_publishable": outcome.get("probability_publishable") is True,
+            "money_evaluation_allowed": outcome.get("downstream_money_evaluation_allowed") is True,
             "portfolio_eligible": portfolio_allowed,
             "can_execute": False,
         }

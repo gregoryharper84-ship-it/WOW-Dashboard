@@ -38,7 +38,7 @@ def _batters(n=4):
     ]
 
 
-def test_official_lineup_empirical_specialist_returns_probability_package():
+def test_official_lineup_empirical_specialist_returns_publishable_probability_package():
     result = score_mlb_1ip_empirical(
         artifact_record=_artifact(),
         starter_status="CONFIRMED",
@@ -56,11 +56,30 @@ def test_official_lineup_empirical_specialist_returns_probability_package():
     assert result["calibration_method"] == "MLB_1IP_EMPIRICAL_TEMPORAL_CAL_V1"
     assert result["certified_supported_lines"] == VALIDATED_LINES
     assert result["final_refresh_required"] is False
-    assert result["probability_publishable"] is False
+    assert result["probability_status"] == "PASS"
+    assert result["probability_publishable"] is True
     assert result["can_execute"] is False
 
 
-def test_projected_lineup_empirical_specialist_stays_hold_and_requires_refresh():
+def test_missing_market_evidence_preserves_completed_sporting_probability():
+    result = score_mlb_1ip_empirical(
+        artifact_record=_artifact(),
+        starter_status="CONFIRMED",
+        official_lineup_status="CONFIRMED",
+        projected_top_four=[],
+        line_value=15.5,
+        side="MORE",
+        market_evidence_present=False,
+    )
+    assert result["model_evaluated"] is True
+    assert result["probability_status"] == "PASS"
+    assert result["probability_publishable"] is True
+    assert result["terminal_label"] == "MODEL_QUALIFIED_HOLD"
+    assert "MARKET_DATA_UNAVAILABLE" in result["blockers"]
+    assert result["can_execute"] is False
+
+
+def test_projected_lineup_empirical_specialist_stays_hold_requires_refresh_and_keeps_probability():
     result = score_mlb_1ip_empirical(
         artifact_record=_artifact(),
         starter_status="CONFIRMED",
@@ -73,12 +92,30 @@ def test_projected_lineup_empirical_specialist_stays_hold_and_requires_refresh()
     assert result["lineup_evidence_state"] == "PROJECTED_OR_RECONSTRUCTED"
     assert result["terminal_label"] == "MODEL_QUALIFIED_HOLD"
     assert result["final_refresh_required"] is True
+    assert result["probability_publishable"] is True
+    assert result["can_execute"] is False
+
+
+def test_unresolved_starter_still_rejects_before_probability_publication():
+    result = score_mlb_1ip_empirical(
+        artifact_record=_artifact(),
+        starter_status="TBD",
+        official_lineup_status="TBD",
+        projected_top_four=_batters(4),
+        line_value=15.5,
+        side="MORE",
+    )
+    assert result["model_evaluated"] is False
+    assert result["terminal_label"] == "REJECT_DATA_QUALITY"
     assert result["probability_publishable"] is False
+    assert "STARTER_NOT_CONFIRMED" in result["blockers"]
+    assert result["can_execute"] is False
 
 
 def test_empirical_specialist_blocks_line_outside_validated_grid_without_probability():
-    # 16.5 is inside the old min/max range but was not in the certified shadow
-    # line grid. It must fail closed rather than silently interpolate authority.
+    # 16.5 is inside this fixture's old min/max range but was not in this
+    # artifact's certified line grid. It must fail closed rather than silently
+    # interpolate authority. Expanded artifacts are tested separately.
     result = score_mlb_1ip_empirical(
         artifact_record=_artifact(),
         starter_status="CONFIRMED",

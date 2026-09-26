@@ -1,8 +1,8 @@
 """Integration tests for the governed MLB 1IP pick-request path.
 
-The tests provide a hypothetical certified empirical artifact only to prove
-orchestration. Production remains gated until a real independently reviewed
-artifact is promoted in the governed registry.
+The tests provide a deterministic certified empirical artifact fixture to prove
+orchestration and objective separation. Production artifact lifecycle remains
+owned by the governed registry; this fixture does not bypass it.
 """
 from datetime import datetime, timedelta, timezone
 
@@ -126,7 +126,11 @@ def test_lineup_tbd_with_projected_top_four_reaches_empirical_specialist(monkeyp
     assert row["result"]["model_family"] == "MLB_1IP_CONDITIONAL_TOTAL_PITCH_PMF_V1"
     assert row["result"]["calibration_method"] == "MLB_1IP_EMPIRICAL_TEMPORAL_CAL_V1"
     assert row["result"]["calibrated_probability_lower_bound"] <= row["result"]["calibrated_probability"]
-    assert row["result"]["probability_publishable"] is False
+    assert row["result"]["probability_publishable"] is True
+    assert row["probability_publishable"] is True
+    assert row["downstream_money_evaluation_allowed"] is False
+    assert row["card_admission_eligible"] is False
+    assert "CARD_ADMISSION:MONEY_EVALUATION_HELD" in row["card_admission_blockers"]
     assert row["result"]["scout_research_barrier"]["stages"]
 
 
@@ -156,7 +160,11 @@ def test_missing_market_evidence_does_not_erase_a_completed_1ip_row(monkeypatch)
     assert row["model_evaluated"] is True
     assert row["code"] == "MODEL_QUALIFIED_HOLD"
     assert "MARKET_DATA_UNAVAILABLE" in row["result"]["blockers"]
+    assert "PAYOUT_UNRESOLVED" in row["result"]["blockers"]
     assert row["result"]["P_MORE"] is not None
+    assert row["probability_publishable"] is True
+    assert row["downstream_money_evaluation_allowed"] is False
+    assert row["card_admission_eligible"] is False
 
 
 def test_truly_unreconstructable_inputs_return_data_quality_blocker(monkeypatch):
@@ -177,18 +185,22 @@ def test_official_lineup_confirmation_clears_final_refresh_flag(monkeypatch):
     assert refreshed["lineup_evidence_state"] == "OFFICIAL_CONFIRMED"
     assert refreshed["final_refresh_required"] is False
     assert refreshed["model_evaluated"] is True
+    assert refreshed["probability_publishable"] is True
     assert refreshed["result"]["model_artifact_version"] == "MLB_1IP_TEST_ARTIFACT_V1"
 
 
-def test_three_of_four_projection_is_hold_only_and_never_publishable(monkeypatch):
+def test_three_of_four_projection_is_model_runnable_but_keeps_hold_ceiling(monkeypatch):
     three = _lineup_evidence(projected_top_four=_lineup_evidence()["projected_top_four"][:3])
     row = _post(_build(monkeypatch), [_row("r1", lineup_evidence=three)]).json()["rows"][0]
     assert row["terminal_status"] == "COMPLETED"
     assert row["terminal_label"] == "MODEL_QUALIFIED_HOLD"
     assert row["final_refresh_required"] is True
-    assert row["probability_publishable"] is False
+    assert row["probability_publishable"] is True
+    assert row["result"]["probability_publishable"] is True
     assert row["result"]["lineup_evidence_completeness"] == "PARTIAL_SUFFICIENT"
+    assert "PROJECTED_TOP_FOUR_PARTIAL" in row["result"]["blockers"]
     assert row["result"]["calibration_method"] == "MLB_1IP_EMPIRICAL_TEMPORAL_CAL_V1"
+    assert row["final_ceiling"] == "MODEL_QUALIFIED_HOLD"
 
 
 def test_row_reconciliation_is_exact_once_across_mixed_1ip_outcomes(monkeypatch):
@@ -209,13 +221,14 @@ def test_row_reconciliation_is_exact_once_across_mixed_1ip_outcomes(monkeypatch)
 
 def test_can_execute_false_is_invariant_across_1ip_http_responses(monkeypatch):
     client = _build(monkeypatch)
-    for rows in (
-        [_row("r1")],
-        [_row("r1", lineup_evidence=_lineup_evidence(projected_top_four=None))],
-        [_row("r1", lineup_evidence=_lineup_evidence(starter_name_at_capture="A", starter_name="B"))],
-    ):
+    cases = (
+        ([_row("r1")], True),
+        ([_row("r1", lineup_evidence=_lineup_evidence(projected_top_four=None))], False),
+        ([_row("r1", lineup_evidence=_lineup_evidence(starter_name_at_capture="A", starter_name="B"))], False),
+    )
+    for rows, expected_publishable in cases:
         body = _post(client, rows).json()
         assert body["can_execute"] is False
         for row in body["rows"]:
             assert row["can_execute"] is False
-            assert row["probability_publishable"] is False
+            assert row["probability_publishable"] is expected_publishable

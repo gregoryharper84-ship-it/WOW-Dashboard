@@ -18,8 +18,13 @@ def _prop_leg(*, line: float = 12.5, direction: str = "MORE") -> dict:
     }
 
 
-def _prop_outcome(*, rank_eligible: bool = True, probability_publishable: bool = True) -> dict:
-    return {
+def _prop_outcome(
+    *,
+    rank_eligible: bool = True,
+    probability_publishable: bool = True,
+    downstream_money_evaluation_allowed: bool | None = None,
+) -> dict:
+    outcome = {
         "row_key": "kirby-12.5-more",
         "terminal_status": "COMPLETED",
         "terminal_label": "MODEL_QUALIFIED_HOLD",
@@ -35,6 +40,9 @@ def _prop_outcome(*, rank_eligible: bool = True, probability_publishable: bool =
         },
         "can_execute": False,
     }
+    if downstream_money_evaluation_allowed is not None:
+        outcome["downstream_money_evaluation_allowed"] = downstream_money_evaluation_allowed
+    return outcome
 
 
 def test_prop_rank_ineligible_probability_is_preserved_but_card_admission_is_blocked():
@@ -62,6 +70,7 @@ def test_prop_card_receipt_binds_exact_line_direction_and_prediction_id():
     assert receipt["market_stat"] == "FIRST_INNING_PITCHES_THROWN"
     assert receipt["exact_line"] == 12.5
     assert receipt["direction"] == "MORE"
+    assert receipt["money_evaluation_allowed"] is False
     assert receipt["can_execute"] is False
 
 
@@ -72,6 +81,29 @@ def test_prop_publishability_hold_blocks_card_even_when_rank_flag_is_true():
     assert outcome["card_admission_eligible"] is False
     assert "CARD_ADMISSION:PROBABILITY_NOT_PUBLISHABLE" in outcome["card_admission_blockers"]
     assert outcome["downstream_portfolio_evaluation_allowed"] is False
+
+
+def test_prop_money_hold_blocks_card_without_erasing_probability_or_portfolio_analysis():
+    outcome = _prop_outcome(
+        rank_eligible=True,
+        probability_publishable=True,
+        downstream_money_evaluation_allowed=False,
+    )
+    before_probability = outcome["result"]["prediction"]["calibrated_probability"]
+
+    prop_runtime._apply_portfolio_governance("mlb-1ip-payout-hold", [(_prop_leg(), outcome)])
+
+    assert outcome["rank_eligible"] is True
+    assert outcome["probability_publishable"] is True
+    assert outcome["card_admission_eligible"] is False
+    assert "CARD_ADMISSION:MONEY_EVALUATION_HELD" in outcome["card_admission_blockers"]
+    assert outcome["downstream_money_evaluation_allowed"] is False
+    assert outcome["downstream_portfolio_evaluation_allowed"] is True
+    assert outcome["portfolio_governance"]["blockers"] == []
+    assert outcome["result"]["prediction"]["calibrated_probability"] == before_probability
+    assert outcome["card_admission_receipt"]["money_evaluation_allowed"] is False
+    assert outcome["card_admission_receipt"]["portfolio_eligible"] is True
+    assert outcome["can_execute"] is False
 
 
 def _team_row() -> team_runtime.TeamEventRequestRow:
