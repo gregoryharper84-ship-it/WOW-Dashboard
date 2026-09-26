@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import copy
+
 import pytest
 
 from ncaaf_cfbd_hydrator import SourceSnapshot
@@ -181,22 +183,71 @@ def test_premature_player_snapshot_is_rejected():
 
 
 def test_invalid_completion_attempt_pair_fails_closed():
-    passing = PLAYER_GAME["teams"][0]["categories"][0]
-    broken_passing = {
-        **passing,
-        "types": [passing["types"][0], {**passing["types"][1], "athletes": [{"id": "qb-a", "name": "QB A", "stat": "34/33"}]}],
-    }
-    broken_team = {
-        **PLAYER_GAME["teams"][0],
-        "categories": [broken_passing, *PLAYER_GAME["teams"][0]["categories"][1:]],
-    }
-    broken = {**PLAYER_GAME, "teams": [broken_team, PLAYER_GAME["teams"][1]]}
+    broken = copy.deepcopy(PLAYER_GAME)
+    broken["teams"][0]["categories"][0]["types"][1]["athletes"][0]["stat"] = "34/33"
     with pytest.raises(NCAAFPropHistoricalAdapterError) as exc:
         normalize_player_stats_corpus(
             [_snapshot("/games/players", [broken], payload_hash="b" * 64)],
             game_snapshots=[_snapshot("/games", [GAME], payload_hash="a" * 64)],
         )
     assert exc.value.code == "NCAAF_PROP_PASSING_C_ATT_INVALID"
+
+
+def test_negative_count_stat_fails_closed():
+    broken = copy.deepcopy(PLAYER_GAME)
+    broken["teams"][0]["categories"][1]["types"][0]["athletes"][0]["stat"] = "-1"
+    with pytest.raises(NCAAFPropHistoricalAdapterError) as exc:
+        normalize_player_stats_corpus(
+            [_snapshot("/games/players", [broken], payload_hash="b" * 64)],
+            game_snapshots=[_snapshot("/games", [GAME], payload_hash="a" * 64)],
+        )
+    assert exc.value.code == "NCAAF_PROP_STAT_COUNT_INVALID"
+
+
+def test_latest_player_boxscore_revision_is_authoritative():
+    revised = copy.deepcopy(PLAYER_GAME)
+    revised["teams"][0]["categories"][0]["types"][0]["athletes"][0]["stat"] = "305"
+    old = _snapshot(
+        "/games/players",
+        [PLAYER_GAME],
+        payload_hash="b" * 64,
+        retrieved_at="2026-09-20T04:00:00+00:00",
+    )
+    new = _snapshot(
+        "/games/players",
+        [revised],
+        payload_hash="c" * 64,
+        retrieved_at="2026-09-20T05:00:00+00:00",
+    )
+
+    rows = normalize_player_stats_corpus(
+        [old, new],
+        game_snapshots=[_snapshot("/games", [GAME], payload_hash="a" * 64)],
+    )
+
+    assert len(rows) == 14
+    qb_a_pass = next(
+        row
+        for row in rows
+        if row.identity.participant_id == "qb-a" and row.stat_type == "PASSING_YARDS"
+    )
+    assert qb_a_pass.actual_value == 305.0
+    assert qb_a_pass.source_payload_hash == "c" * 64
+
+
+def test_equal_timestamp_conflicting_player_revisions_fail_closed():
+    revised = copy.deepcopy(PLAYER_GAME)
+    revised["teams"][0]["categories"][0]["types"][0]["athletes"][0]["stat"] = "305"
+    timestamp = "2026-09-20T05:00:00+00:00"
+    with pytest.raises(NCAAFPropHistoricalAdapterError) as exc:
+        normalize_player_stats_corpus(
+            [
+                _snapshot("/games/players", [PLAYER_GAME], payload_hash="b" * 64, retrieved_at=timestamp),
+                _snapshot("/games/players", [revised], payload_hash="c" * 64, retrieved_at=timestamp),
+            ],
+            game_snapshots=[_snapshot("/games", [GAME], payload_hash="a" * 64)],
+        )
+    assert exc.value.code == "NCAAF_PROP_PLAYER_GAME_REVISION_CONFLICT"
 
 
 def test_schedule_conflict_fails_closed():
