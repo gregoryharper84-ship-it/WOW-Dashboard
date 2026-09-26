@@ -2,6 +2,27 @@ name: wow-v17-spread-margin-replay
 
 on:
   workflow_dispatch:
+    inputs:
+      collect_spread_evidence:
+        description: "Capture one bounded current spread-evidence slate after replay"
+        required: false
+        type: boolean
+        default: false
+      evidence_sport:
+        description: "Sport for optional spread-evidence capture"
+        required: false
+        type: choice
+        default: NCAAF
+        options:
+          - NFL
+          - NBA
+          - WNBA
+          - NCAAF
+          - NCAAB
+      evidence_slate_date:
+        description: "YYYY-MM-DD; blank uses current America/Chicago date"
+        required: false
+        type: string
   push:
     branches:
       - main
@@ -12,9 +33,15 @@ on:
       - "artifacts/wow-engine/v17/spread_margin_challenger.py"
       - "artifacts/wow-engine/v17/spread_margin_replay.py"
       - "artifacts/wow-engine/v17/spread_margin_replay_route.py"
+      - "artifacts/wow-engine/v17/spread_market_evidence.py"
+      - "artifacts/wow-engine/v17/spread_exact_line_evidence.py"
+      - "artifacts/wow-engine/v17/spread_exact_line_replay.py"
       - "artifacts/wow-engine/tests/test_v17_spread_margin_challenger.py"
       - "artifacts/wow-engine/tests/test_v17_spread_margin_replay.py"
       - "artifacts/wow-engine/tests/test_v17_spread_margin_replay_route.py"
+      - "artifacts/wow-engine/tests/test_v17_spread_market_evidence.py"
+      - "artifacts/wow-engine/tests/test_v17_spread_exact_line_evidence.py"
+      - "artifacts/wow-engine/tests/test_v17_spread_exact_line_replay.py"
   pull_request:
     paths:
       - ".github/workflows/wow-v17-spread-margin-replay.yml"
@@ -23,9 +50,15 @@ on:
       - "artifacts/wow-engine/v17/spread_margin_challenger.py"
       - "artifacts/wow-engine/v17/spread_margin_replay.py"
       - "artifacts/wow-engine/v17/spread_margin_replay_route.py"
+      - "artifacts/wow-engine/v17/spread_market_evidence.py"
+      - "artifacts/wow-engine/v17/spread_exact_line_evidence.py"
+      - "artifacts/wow-engine/v17/spread_exact_line_replay.py"
       - "artifacts/wow-engine/tests/test_v17_spread_margin_challenger.py"
       - "artifacts/wow-engine/tests/test_v17_spread_margin_replay.py"
       - "artifacts/wow-engine/tests/test_v17_spread_margin_replay_route.py"
+      - "artifacts/wow-engine/tests/test_v17_spread_market_evidence.py"
+      - "artifacts/wow-engine/tests/test_v17_spread_exact_line_evidence.py"
+      - "artifacts/wow-engine/tests/test_v17_spread_exact_line_replay.py"
 
 permissions:
   contents: read
@@ -51,7 +84,7 @@ jobs:
           cache-dependency-path: artifacts/wow-engine/requirements.txt
       - name: Install engine dependencies
         run: pip install -r requirements.txt
-      - name: Run spread replay and OIDC regressions
+      - name: Run spread replay, exact-line, evidence and OIDC regressions
         env:
           PYTHONPATH: .
         run: >-
@@ -59,6 +92,9 @@ jobs:
           tests/test_v17_spread_margin_challenger.py
           tests/test_v17_spread_margin_replay.py
           tests/test_v17_spread_margin_replay_route.py
+          tests/test_v17_spread_market_evidence.py
+          tests/test_v17_spread_exact_line_evidence.py
+          tests/test_v17_spread_exact_line_replay.py
           test_v17_github_oidc.py
 
   replay:
@@ -137,9 +173,6 @@ jobs:
                       detail = {"raw": raw[:1000]}
                   return exc.code, detail
 
-          # Main push and Render auto-deploy happen concurrently. Probe with the
-          # intentionally typed NCAAB blocker because it is fast and proves the
-          # new OIDC workflow identity + route are live without running a model.
           ready = None
           for attempt in range(24):
               status, payload = post({"sport": "NCAAB", "min_rows": 300, "ridge_alpha": 4.0}, timeout=60)
@@ -192,6 +225,68 @@ jobs:
               print(json.dumps({sport: summaries[sport]}, sort_keys=True))
 
           OUT.joinpath("summary.json").write_text(json.dumps(summaries, sort_keys=True, indent=2) + "\n")
+          PY
+
+      - name: Optionally capture one bounded spread-evidence slate
+        if: github.event_name == 'workflow_dispatch' && inputs.collect_spread_evidence
+        shell: bash
+        env:
+          EVIDENCE_SPORT: ${{ inputs.evidence_sport }}
+          EVIDENCE_SLATE_DATE: ${{ inputs.evidence_slate_date }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import datetime
+          import json
+          import os
+          import pathlib
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+          from zoneinfo import ZoneInfo
+
+          origin = os.environ["WOW_ACTION_ORIGIN"].rstrip("/")
+          endpoint = origin + "/internal/v17/spread-market-evidence"
+          audience = os.environ["WOW_OIDC_AUDIENCE"]
+          sport = os.environ.get("EVIDENCE_SPORT") or "NCAAF"
+          slate_date = (os.environ.get("EVIDENCE_SLATE_DATE") or "").strip()
+          if not slate_date:
+              slate_date = datetime.datetime.now(ZoneInfo("America/Chicago")).date().isoformat()
+
+          base = os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"]
+          sep = "&" if "?" in base else "?"
+          token_request = urllib.request.Request(
+              base + sep + urllib.parse.urlencode({"audience": audience}),
+              headers={"Authorization": f"Bearer {os.environ['ACTIONS_ID_TOKEN_REQUEST_TOKEN']}"},
+          )
+          with urllib.request.urlopen(token_request, timeout=20) as response:
+              token = json.load(response)["value"]
+
+          body = json.dumps({"sport": sport, "slate_date": slate_date}, sort_keys=True).encode()
+          request = urllib.request.Request(
+              endpoint,
+              data=body,
+              method="POST",
+              headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+          )
+          try:
+              with urllib.request.urlopen(request, timeout=180) as response:
+                  status, payload = response.status, json.load(response)
+          except urllib.error.HTTPError as exc:
+              status = exc.code
+              payload = json.loads(exc.read().decode("utf-8", errors="replace"))
+          out = pathlib.Path("artifacts/wow-engine/artifacts/spread-margin-replay")
+          out.mkdir(parents=True, exist_ok=True)
+          out.joinpath(f"market-evidence-{sport}-{slate_date}.json").write_text(json.dumps(payload, sort_keys=True, indent=2) + "\n")
+          if status != 200:
+              raise RuntimeError(f"SPREAD_MARKET_EVIDENCE_HTTP_{status}")
+          if payload.get("status") not in {"EVIDENCE_CAPTURED", "EVIDENCE_EMPTY"}:
+              raise RuntimeError(f"SPREAD_MARKET_EVIDENCE_BLOCKED:{payload.get('code')}")
+          assert payload.get("probability_publishable") is False
+          assert payload.get("production_probability_database_mutated") is False
+          assert payload.get("production_registry_mutated") is False
+          assert payload.get("can_execute") is False
+          print(json.dumps(payload, sort_keys=True))
           PY
 
       - name: Upload spread replay research receipts
