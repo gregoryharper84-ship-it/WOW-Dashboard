@@ -209,6 +209,24 @@ paths:
         '401': {description: Authentication failed}
         '409': {description: Sport-specific model unavailable or held}
         '422': {description: Host/event/evidence contract invalid}
+  /internal/v17/spread-forward-shadow:
+    post:
+      operationId: scoreWowV17SpreadForwardShadow
+      x-openai-isConsequential: false
+      description: >-
+        Research-only NCAAF exact-line spread forward shadow. This surface does
+        not certify, promote, publish, or execute a spread probability and may
+        not be substituted for the governed moneyline/team-event probability.
+      security: [{actionBearer: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SpreadForwardShadowRequest'}
+      responses:
+        '200': {description: Research-only fitted spread challenger shadow result or typed blocker}
+        '401': {description: Authentication failed}
+        '422': {description: Invalid NCAAF exact-line shadow request}
   /v17/prediction-receipts/lookup:
     post:
       operationId: lookupWowV17PredictionReceipts
@@ -611,6 +629,18 @@ components:
         as_of: {type: [string, 'null'], format: date-time}
         implied_probability: {type: [number, 'null'], minimum: 0, maximum: 1}
         no_vig_probability: {type: [number, 'null'], minimum: 0, maximum: 1}
+    SpreadForwardShadowRequest:
+      type: object
+      additionalProperties: false
+      required: [sport, event_id, event_start_time, home_team, away_team, home_spread, season]
+      properties:
+        sport: {type: string, enum: [NCAAF]}
+        event_id: {type: string, minLength: 1, maxLength: 128}
+        event_start_time: {type: string, format: date-time}
+        home_team: {type: string, minLength: 1, maxLength: 160}
+        away_team: {type: string, minLength: 1, maxLength: 160}
+        home_spread: {type: number, exclusiveMinimum: -100, exclusiveMaximum: 100}
+        season: {type: integer, minimum: 2000, maximum: 2100}
     RecommendationBatch:
       type: object
       additionalProperties: true
