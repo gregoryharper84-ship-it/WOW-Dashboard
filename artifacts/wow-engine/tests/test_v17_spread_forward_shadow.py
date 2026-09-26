@@ -64,19 +64,8 @@ def test_forward_features_fail_closed_on_insufficient_history():
     assert exc.value.code != "MODEL_UNAVAILABLE"
 
 
-def test_forward_shadow_uses_fixed_challenger_and_line_only_as_threshold(monkeypatch):
-    start = datetime(2026, 9, 26, 19, 0, tzinfo=timezone.utc)
-    rows = [
-        MarginTrainingRow(
-            event_id="hist",
-            event_start_time=(start - timedelta(days=2)).isoformat(),
-            feature_as_of=(start - timedelta(days=2, seconds=1)).isoformat(),
-            margin=3,
-            features={"x": 1.0},
-            source_manifest_sha256="sha",
-        )
-    ]
-    artifact = MarginDistributionArtifact(
+def _artifact():
+    return MarginDistributionArtifact(
         sport="NCAAF",
         model_family="NCAAF_SPREAD_MARGIN_RIDGE_EMPIRICAL_V1",
         feature_schema_version="NCAAF_SPREAD_MARGIN_TEAM_STATE_V1",
@@ -92,6 +81,23 @@ def test_forward_shadow_uses_fixed_challenger_and_line_only_as_threshold(monkeyp
         training_dataset_hash="dataset",
         ridge_alpha=4.0,
     )
+
+
+def _training_row(start):
+    return MarginTrainingRow(
+        event_id="hist",
+        event_start_time=(start - timedelta(days=2)).isoformat(),
+        feature_as_of=(start - timedelta(days=2, seconds=1)).isoformat(),
+        margin=3,
+        features={"x": 1.0},
+        source_manifest_sha256="sha",
+    )
+
+
+def test_forward_shadow_uses_fixed_challenger_and_line_only_as_threshold(monkeypatch):
+    start = datetime(2026, 9, 26, 19, 0, tzinfo=timezone.utc)
+    rows = [_training_row(start)]
+    artifact = _artifact()
     seen = {}
     monkeypatch.setattr(shadow, "load_replay_rows", lambda *_args, **_kwargs: rows)
 
@@ -134,6 +140,7 @@ def test_forward_shadow_uses_fixed_challenger_and_line_only_as_threshold(monkeyp
     assert result["p_cover"] == 0.61
     assert result["p_push"] == 0.01
     assert result["p_not_cover"] == 0.38
+    assert result["training_cutoff_event_time"] < result["event_start_time"]
     assert result["spread_line_used_as_feature"] is False
     assert result["market_probability_substitution_used"] is False
     assert result["moneyline_probability_used"] is False
@@ -142,3 +149,39 @@ def test_forward_shadow_uses_fixed_challenger_and_line_only_as_threshold(monkeyp
     assert result["automatic_promotion"] is False
     assert result["can_execute"] is False
     assert result["global_terminal_reducer"] == "V17_TERMINAL_REDUCER"
+
+
+def test_forward_shadow_blocks_target_at_or_before_training_cutoff(monkeypatch):
+    start = datetime(2026, 9, 26, 19, 0, tzinfo=timezone.utc)
+    leaked = MarginTrainingRow(
+        event_id="future-row",
+        event_start_time=(start + timedelta(minutes=1)).isoformat(),
+        feature_as_of=start.isoformat(),
+        margin=1,
+        features={"x": 1.0},
+        source_manifest_sha256="sha",
+    )
+    monkeypatch.setattr(shadow, "load_replay_rows", lambda *_args, **_kwargs: [leaked])
+    with pytest.raises(SpreadChallengerUnavailable) as exc:
+        shadow.run_ncaaf_forward_shadow(
+            object(), event_id="e", event_start_time=start.isoformat(), home_team="A", away_team="B",
+            home_spread=-3.5, season=2026,
+        )
+    assert exc.value.code == "SPREAD_FORWARD_TARGET_NOT_AFTER_TRAINING_CUTOFF"
+
+
+def test_forward_shadow_requires_matching_season():
+    start = datetime(2026, 9, 26, 19, 0, tzinfo=timezone.utc)
+    with pytest.raises(SpreadChallengerUnavailable) as exc:
+        shadow.run_ncaaf_forward_shadow(
+            object(), event_id="e", event_start_time=start.isoformat(), home_team="A", away_team="B",
+            home_spread=-3.5, season=2025,
+        )
+    assert exc.value.code == "SPREAD_FORWARD_SEASON_MISMATCH"
+
+    with pytest.raises(SpreadChallengerUnavailable) as exc:
+        shadow.run_ncaaf_forward_shadow(
+            object(), event_id="e", event_start_time=start.isoformat(), home_team="A", away_team="B",
+            home_spread=-3.5, season=None,
+        )
+    assert exc.value.code == "SPREAD_FORWARD_SEASON_REQUIRED"
