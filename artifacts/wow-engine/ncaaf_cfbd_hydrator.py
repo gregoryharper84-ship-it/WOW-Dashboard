@@ -74,9 +74,15 @@ def hydrate_cfbd_season(
 ) -> list[SourceSnapshot]:
     """Fetch one season into auditable raw source snapshots.
 
-    Games are fetched per week. Rating families are fetched only through the
-    client's allowlist. Provider failure is explicit and aborts the run rather
-    than returning partial model-ready evidence.
+    Games are normally fetched per week so week-addressable rating evidence can
+    share the same temporal acquisition contract. When no rating families are
+    requested, the caller is consuming settled games only; in that mode CFBD's
+    documented season-wide /games query is used once and the raw game rows retain
+    their provider week values. This avoids spending twenty provider calls to
+    retrieve the same season ledger without changing model inputs or authority.
+
+    Provider failure is explicit and aborts the run rather than returning partial
+    model-ready evidence.
     """
     requested_at = _utc_now()
     snapshots: list[SourceSnapshot] = []
@@ -84,13 +90,19 @@ def hydrate_cfbd_season(
     if not normalized_weeks or any(w < 0 or w > 30 for w in normalized_weeks):
         raise ValueError("weeks must contain valid NCAAF week numbers")
 
+    normalized_rating_families = tuple(str(family).strip().lower() for family in rating_families)
+
     try:
+        if not normalized_rating_families:
+            games = client.games(year=season, classification=classification)
+            snapshots.append(_snapshot(games, season=season, week=None, requested_at=requested_at))
+            return snapshots
+
         for week in normalized_weeks:
             games = client.games(year=season, week=week, classification=classification)
             snapshots.append(_snapshot(games, season=season, week=week, requested_at=requested_at))
 
-            for family in rating_families:
-                normalized = str(family).strip().lower()
+            for normalized in normalized_rating_families:
                 # Only Elo is week-addressable in the current narrow client.
                 # Other families are acquired once per season below so we do
                 # not pretend a full-season retrospective value was known in an
@@ -99,8 +111,7 @@ def hydrate_cfbd_season(
                     rating = client.ratings(normalized, year=season, week=week)
                     snapshots.append(_snapshot(rating, season=season, week=week, requested_at=requested_at))
 
-        for family in rating_families:
-            normalized = str(family).strip().lower()
+        for normalized in normalized_rating_families:
             if normalized != "elo":
                 rating = client.ratings(normalized, year=season)
                 snap = _snapshot(rating, season=season, week=None, requested_at=requested_at)
