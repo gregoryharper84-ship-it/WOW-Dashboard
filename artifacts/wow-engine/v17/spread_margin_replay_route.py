@@ -16,6 +16,7 @@ from v17.spread_margin_challenger import SpreadChallengerUnavailable
 from v17.spread_margin_replay import run_historical_replay
 
 CAN_EXECUTE = False
+DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS = True
 AUTOMATIC_CERTIFICATION = False
 AUTOMATIC_PROMOTION = False
 PROBABILITY_PUBLISHABLE = False
@@ -41,6 +42,7 @@ def _governance_fields() -> dict[str, Any]:
         "database_mutated": DATABASE_MUTATED,
         "production_registry_mutated": PRODUCTION_REGISTRY_MUTATED,
         "global_terminal_reducer": GLOBAL_TERMINAL_REDUCER,
+        "dry_run_only_no_live_trading_no_market_orders": DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS,
         "can_execute": CAN_EXECUTE,
     }
 
@@ -119,6 +121,7 @@ __all__ = [
     "AUTOMATIC_PROMOTION",
     "CAN_EXECUTE",
     "DATABASE_MUTATED",
+    "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS",
     "GLOBAL_TERMINAL_REDUCER",
     "PROBABILITY_PUBLISHABLE",
     "PRODUCTION_REGISTRY_MUTATED",
