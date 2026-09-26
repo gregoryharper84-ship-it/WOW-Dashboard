@@ -171,6 +171,11 @@ def test_no_caller_evidence_auto_hydrates_then_runs_research_before_specialist(m
     assert out["refresh_queue"]["status"] == "NOT_REQUIRED"
     assert out["probability_status"] == "PASS"
     assert out["probability_publishable"] is True
+    assert out["rank_eligible"] is True
+    assert out["probability_rank_eligible"] is True
+    assert out["downstream_money_evaluation_allowed"] is False
+    assert out["result"]["probability_qualification"]["rank_eligible"] is True
+    assert out["result"]["probability_qualification"]["downstream_money_evaluation_allowed"] is False
     assert out["money_ev_status"] == "DATA_UNOBTAINABLE"
     assert out["portfolio_or_slip_status"] == "HOLD"
     assert out["final_ceiling"] == "MODEL_QUALIFIED_HOLD"
@@ -196,6 +201,9 @@ def test_exact_promotional_board_with_missing_payout_keeps_probability_and_holds
     assert out["model_evaluated"] is True
     assert out["probability_status"] == "PASS"
     assert out["probability_publishable"] is True
+    assert out["rank_eligible"] is True
+    assert out["probability_rank_eligible"] is True
+    assert out["downstream_money_evaluation_allowed"] is False
     assert out["market_edge_status"] == "DATA_UNOBTAINABLE"
     assert out["money_ev_status"] == "DATA_UNOBTAINABLE"
     assert out["portfolio_or_slip_status"] == "HOLD"
@@ -218,6 +226,7 @@ def test_provisional_auto_hydrated_result_is_queued_but_probability_remains_visi
     assert market_api.client.table_obj.payload["status"] == "WAITING_FOR_OFFICIAL_LINEUP"
     assert market_api.client.table_obj.payload["can_execute"] is False
     assert out["probability_publishable"] is True
+    assert out["downstream_money_evaluation_allowed"] is False
     assert out["final_ceiling"] == "MODEL_QUALIFIED_HOLD"
     assert out["can_execute"] is False
 
@@ -234,6 +243,7 @@ def test_refresh_queue_failure_preserves_completed_sporting_probability(monkeypa
     assert "FINAL_REFRESH_QUEUE_PERSISTENCE_UNAVAILABLE" in out["result"]["blockers"]
     assert out["terminal_label"] == "MODEL_QUALIFIED_HOLD"
     assert out["probability_publishable"] is True
+    assert out["downstream_money_evaluation_allowed"] is False
     assert out["can_execute"] is False
 
 
