@@ -111,6 +111,63 @@ def test_unexpected_runtime_failure_keeps_transport_infrastructure_semantics(mon
     assert payload["can_execute"] is False
 
 
+def test_exact_line_replay_success_is_read_only_and_non_certifying(monkeypatch):
+    monkeypatch.setattr(
+        route,
+        "run_exact_line_replay",
+        lambda **_kwargs: {
+            "status": "EXPERIMENT_CREATED",
+            "model_family": "NFL_SPREAD_MARGIN_RIDGE_EMPIRICAL_V1",
+            "training_dataset_hash": "dataset-hash",
+            "artifact_train_rows": 600,
+            "artifact_calibration_rows": 200,
+            "artifact_test_rows": 200,
+            "exact_line_metrics": {
+                "evaluation_mode": "PROVIDER_BOUND_EXACT_SPREAD",
+                "evidence_row_n": 120,
+                "cover_brier": 0.23,
+                "spread_line_used_as_feature": False,
+                "probability_publishable": False,
+                "can_execute": False,
+            },
+            "binding_audit": {"coverage": 0.6},
+            "synthetic_grid_diagnostic": {"cover_brier": 0.25},
+        },
+    )
+    payload = route.execute_spread_exact_line_replay(
+        object(), route.SpreadMarginReplayRequest(sport="NFL")
+    )
+    assert payload["status"] == "EXPERIMENT_CREATED"
+    assert payload["code"] == "SPREAD_EXACT_LINE_REPLAY_COMPLETE"
+    assert payload["evaluation_mode"] == "PROVIDER_BOUND_EXACT_SPREAD"
+    assert payload["exact_line_metrics"]["evidence_row_n"] == 120
+    assert payload["market_features_used"] is False
+    assert payload["spread_line_used_as_feature"] is False
+    assert payload["database_mutated"] is False
+    assert payload["production_registry_mutated"] is False
+    assert payload["automatic_certification"] is False
+    assert payload["probability_publishable"] is False
+    assert payload["can_execute"] is False
+
+
+def test_exact_line_missing_evidence_is_typed_not_synthetic_fallback(monkeypatch):
+    def blocked(**_kwargs):
+        raise SpreadChallengerUnavailable(
+            "SPREAD_EXACT_LINE_EVIDENCE_UNAVAILABLE",
+            "no provider-bound pregame exact spread lines overlap",
+        )
+
+    monkeypatch.setattr(route, "run_exact_line_replay", blocked)
+    payload = route.execute_spread_exact_line_replay(
+        object(), route.SpreadMarginReplayRequest(sport="NFL")
+    )
+    assert payload["status"] == "BLOCKED"
+    assert payload["code"] == "SPREAD_EXACT_LINE_EVIDENCE_UNAVAILABLE"
+    assert payload["evaluation_mode"] == "PROVIDER_BOUND_EXACT_SPREAD"
+    assert payload["code"] != "MODEL_UNAVAILABLE"
+    assert payload["can_execute"] is False
+
+
 def test_spread_market_evidence_success_only_mutates_evidence_ledger(monkeypatch):
     monkeypatch.setattr(
         route,
@@ -190,10 +247,14 @@ def test_route_installation_is_idempotent_and_has_auth_dependencies():
         db_client_fn=lambda: object(),
     )
     replay = [r for r in app.router.routes if getattr(r, "path", None) == "/internal/v17/spread-margin-replay"]
+    exact = [r for r in app.router.routes if getattr(r, "path", None) == "/internal/v17/spread-exact-line-replay"]
     evidence = [r for r in app.router.routes if getattr(r, "path", None) == "/internal/v17/spread-market-evidence"]
     assert len(replay) == 1
     assert replay[0].operation_id == "runWowV17SpreadMarginReplay"
     assert replay[0].dependant.dependencies
+    assert len(exact) == 1
+    assert exact[0].operation_id == "runWowV17SpreadExactLineReplay"
+    assert exact[0].dependant.dependencies
     assert len(evidence) == 1
     assert evidence[0].operation_id == "collectWowV17SpreadMarketEvidence"
     assert evidence[0].dependant.dependencies
