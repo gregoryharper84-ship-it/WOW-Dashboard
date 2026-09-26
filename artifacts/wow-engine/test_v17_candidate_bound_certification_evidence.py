@@ -115,9 +115,6 @@ class _DB:
 
 def test_verifier_persists_inert_pass_receipt(monkeypatch):
     candidate = _candidate()
-    candidate["training_rows"] = 1
-    candidate["calibration_rows"] = 1
-    candidate["test_rows"] = 1
     candidate["validation_metrics"] = {"train_n": 1, "calibration_n": 1, "test_n": 1, "raw_brier": 0.1}
     manifest = {
         "market_features_used": False,
@@ -164,6 +161,7 @@ def test_verifier_persists_inert_pass_receipt(monkeypatch):
         metrics=SimpleNamespace(train_n=1, calibration_n=1, test_n=1, raw_brier=0.1),
     )
     monkeypatch.setattr(evidence, "train_binary_candidate", lambda *_args, **_kwargs: replay)
+    monkeypatch.setattr(evidence, "asdict", lambda value: dict(value.__dict__))
     candidate["artifact_checksum"] = evidence._hash(candidate["artifact_payload"])
     db = _DB(candidate)
     result = evidence.verify_candidate_certification_evidence(db, candidate["candidate_id"])
