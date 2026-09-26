@@ -4,7 +4,10 @@ on:
   pull_request:
     paths:
       - "artifacts/wow-engine/v17/spread_margin_challenger.py"
+      - "artifacts/wow-engine/v17/spread_margin_replay.py"
+      - "artifacts/wow-engine/scripts/run_spread_margin_challenger_replay.py"
       - "artifacts/wow-engine/tests/test_v17_spread_margin_challenger.py"
+      - "artifacts/wow-engine/tests/test_v17_spread_margin_replay.py"
       - "artifacts/wow-engine/V17_SPREAD_MARGIN_CHALLENGER.md"
       - ".github/workflows/v17-spread-margin-challenger.yml"
   workflow_dispatch:
@@ -30,15 +33,19 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-      - name: Run spread challenger unit and governance regressions
+      - name: Run spread challenger unit, replay, and governance regressions
         env:
           PYTHONPATH: .
-        run: python -m pytest -q tests/test_v17_spread_margin_challenger.py
+        run: |
+          python -m pytest -q \
+            tests/test_v17_spread_margin_challenger.py \
+            tests/test_v17_spread_margin_replay.py
       - name: Prove spread lane remains Class C shadow only
         run: |
           python - <<'PY'
           from pathlib import Path
-          text = Path("v17/spread_margin_challenger.py").read_text()
+          challenger = Path("v17/spread_margin_challenger.py").read_text()
+          replay = Path("v17/spread_margin_replay.py").read_text()
           required = [
               'CAN_EXECUTE = False',
               'AUTOMATIC_CERTIFICATION = False',
@@ -49,7 +56,7 @@ jobs:
               'GLOBAL_TERMINAL_REDUCER = "V17_TERMINAL_REDUCER"',
           ]
           for token in required:
-              assert token in text, token
+              assert token in challenger, token
           forbidden = [
               'CAN_EXECUTE = True',
               'AUTOMATIC_CERTIFICATION = True',
@@ -59,6 +66,8 @@ jobs:
               'MONEYLINE_TO_SPREAD_CONVERSION_ALLOWED = True',
           ]
           for token in forbidden:
-              assert token not in text, token
+              assert token not in challenger, token
+          assert 'database_mutated": False' in replay
+          assert 'production_registry_mutated": False' in replay
           print("spread challenger shadow-only invariant verification passed")
           PY
