@@ -1,9 +1,8 @@
 """Read-only V17 certification replay for team/event model-development lanes.
 
-Certification is lane-specific. A sport with multiple controlling candidate lanes
-(e.g. soccer competitions or tennis tours) must not let the newest artifact in
-one lane erase evidence from another lane. This module never certifies,
-promotes, activates, registers, publishes, ranks, or executes a probability.
+Certification is lane-specific. Production replay consumes exact candidate-bound
+certification evidence receipts. This module never certifies, promotes, activates,
+registers, publishes, ranks, or executes a probability.
 """
 from __future__ import annotations
 
@@ -18,6 +17,7 @@ from v17.team_event_model_development_manifest import development_lane
 
 CAN_EXECUTE = False
 CANDIDATE_TABLE = "wow_d1_candidate_artifacts"
+EVIDENCE_TABLE = "wow_d1_certification_evidence_receipts"
 
 
 @dataclass(frozen=True)
@@ -33,6 +33,7 @@ class CertificationReplayResult:
     league: str | None = None
     model_family: str | None = None
     lane_id: str | None = None
+    candidate_bound_evidence_pass: bool = False
     automatic_certification: bool = False
     automatic_promotion: bool = False
     probability_publishable: bool = False
@@ -50,6 +51,7 @@ class CertificationReplayResult:
             "model_artifact_version": self.model_artifact_version,
             "research_screen_pass": self.research_screen_pass,
             "source_review_status": self.source_review_status,
+            "candidate_bound_evidence_pass": self.candidate_bound_evidence_pass,
             "next_gate": self.next_gate,
             "automatic_certification": False,
             "automatic_promotion": False,
@@ -69,6 +71,28 @@ def _lane_identity(row: Mapping[str, Any]) -> tuple[str, str, str]:
 def _lane_id(row: Mapping[str, Any]) -> str:
     sport, league, family = _lane_identity(row)
     return f"{sport}:{league}:{family}" if family else f"{sport}:{league}"
+
+
+def _evidence_identity(row: Mapping[str, Any]) -> tuple[str, str, str, str]:
+    return (
+        str(row.get("candidate_id") or "").strip().lower(),
+        str(row.get("model_artifact_version") or "").strip(),
+        str(row.get("training_dataset_hash") or "").strip().lower(),
+        str(row.get("artifact_checksum") or "").strip().lower(),
+    )
+
+
+def _candidate_bound_passes(receipts: Sequence[Mapping[str, Any]]) -> set[tuple[str, str, str, str]]:
+    passes: set[tuple[str, str, str, str]] = set()
+    for row in receipts:
+        if str(row.get("source_review_status") or "").strip().upper() != "PASS":
+            continue
+        if str(row.get("replay_status") or "").strip().upper() != "PASS":
+            continue
+        identity = _evidence_identity(row)
+        if identity[0] and identity[1] and len(identity[2]) == 64 and len(identity[3]) == 64:
+            passes.add(identity)
+    return passes
 
 
 def _latest_by_lane(rows: Sequence[Mapping[str, Any]]) -> dict[tuple[str, str, str], dict[str, Any]]:
@@ -109,6 +133,8 @@ def assess_candidate(
     candidate: Mapping[str, Any] | None,
     *,
     replay_evidence_pass: bool = False,
+    source_review_evidence_pass: bool = False,
+    candidate_bound_evidence_pass: bool = False,
 ) -> CertificationReplayResult:
     normalized = str(sport or "").strip().upper()
     lane = development_lane(normalized)
@@ -130,6 +156,7 @@ def assess_candidate(
             league=league,
             model_family=model_family,
             lane_id=lane_id,
+            candidate_bound_evidence_pass=candidate_bound_evidence_pass,
         )
 
     if lane is not None and lane.status == "BUILD_REQUIRED":
@@ -175,7 +202,7 @@ def assess_candidate(
     source_review = str(candidate.get("source_review_status") or "REQUIRED").strip().upper()
     if source_review == "FAIL":
         blockers.append("SOURCE_REVIEW_FAILED")
-    elif source_review != "PASS":
+    elif source_review != "PASS" and not source_review_evidence_pass:
         blockers.append("SOURCE_REVIEW_REQUIRED")
 
     if not replay_evidence_pass:
@@ -204,6 +231,7 @@ def assess_candidate(
         league=league,
         model_family=model_family,
         lane_id=lane_id,
+        candidate_bound_evidence_pass=candidate_bound_evidence_pass,
     )
 
 
@@ -225,6 +253,7 @@ def _aggregate_candidate_sport(sport: str, lane_rows: list[dict[str, Any]]) -> d
         "lane_count": len(lane_rows),
         "research_pass_lane_count": sum(row.get("research_screen_pass") is True for row in lane_rows),
         "replay_pass_lane_count": sum(row.get("status") == "CERTIFICATION_REPLAY_PASS" for row in lane_rows),
+        "candidate_bound_evidence_pass_lane_count": sum(row.get("candidate_bound_evidence_pass") is True for row in lane_rows),
         "lanes": lane_rows,
         "next_gate": best.get("next_gate"),
         "automatic_certification": False,
@@ -237,10 +266,12 @@ def _aggregate_candidate_sport(sport: str, lane_rows: list[dict[str, Any]]) -> d
 def build_certification_report(
     rows: Sequence[Mapping[str, Any]],
     *,
+    certification_evidence_receipts: Sequence[Mapping[str, Any]] | None = None,
     replay_evidence_by_lane: Mapping[str, bool] | None = None,
     replay_evidence_by_sport: Mapping[str, bool] | None = None,
 ) -> dict[str, Any]:
     latest = _latest_by_lane(rows)
+    exact_passes = _candidate_bound_passes(certification_evidence_receipts or [])
     lane_evidence = {str(k).upper(): bool(v) for k, v in (replay_evidence_by_lane or {}).items()}
     sport_evidence = {str(k).upper(): bool(v) for k, v in (replay_evidence_by_sport or {}).items()}
     all_lane_results: list[dict[str, Any]] = []
@@ -263,8 +294,15 @@ def build_certification_report(
         lane_rows: list[dict[str, Any]] = []
         for candidate in sorted(sport_candidates, key=lambda row: _lane_id(row)):
             lid = _lane_id(candidate)
-            replay_pass = lane_evidence.get(lid.upper(), sport_evidence.get(sport, False))
-            assessed = assess_candidate(sport, candidate, replay_evidence_pass=replay_pass).as_dict()
+            exact_pass = _evidence_identity(candidate) in exact_passes
+            helper_replay_pass = lane_evidence.get(lid.upper(), sport_evidence.get(sport, False))
+            assessed = assess_candidate(
+                sport,
+                candidate,
+                replay_evidence_pass=exact_pass or helper_replay_pass,
+                source_review_evidence_pass=exact_pass,
+                candidate_bound_evidence_pass=exact_pass,
+            ).as_dict()
             lane_rows.append(assessed)
             all_lane_results.append(assessed)
         sport_results.append(_aggregate_candidate_sport(sport, lane_rows))
@@ -279,6 +317,7 @@ def build_certification_report(
             "production_model_present": sum(1 for row in sport_results if row["status"] == "PRODUCTION_MODEL_PRESENT"),
             "sports_with_replay_pass_lane": sum(1 for row in sport_results if row["status"] == "CERTIFICATION_REPLAY_PASS"),
             "research_pass_candidate_lanes": sum(row.get("research_screen_pass") is True for row in all_lane_results),
+            "candidate_bound_evidence_pass_lanes": sum(row.get("candidate_bound_evidence_pass") is True for row in all_lane_results),
             "blocked_candidate_lanes": sum(row.get("status") != "CERTIFICATION_REPLAY_PASS" for row in all_lane_results),
         },
         "automatic_certification": False,
@@ -301,7 +340,22 @@ def run_certification_replay(db: Any) -> dict[str, Any]:
         .limit(2000)
         .execute()
     )
-    return build_certification_report(list(getattr(result, "data", None) or []))
+    rows = list(getattr(result, "data", None) or [])
+    try:
+        evidence_result = (
+            db.table(EVIDENCE_TABLE)
+            .select(
+                "candidate_id,model_artifact_version,training_dataset_hash,artifact_checksum,"
+                "source_review_status,replay_status,created_at"
+            )
+            .order("created_at", desc=True)
+            .limit(4000)
+            .execute()
+        )
+        receipts = list(getattr(evidence_result, "data", None) or [])
+    except Exception:
+        receipts = []
+    return build_certification_report(rows, certification_evidence_receipts=receipts)
 
 
 def install_team_event_certification_replay_route(
