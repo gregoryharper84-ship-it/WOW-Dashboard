@@ -26,6 +26,64 @@ from v17.prediction_receipt_lookup_runtime import (
 CAN_EXECUTE = False
 _INSTALLED = False
 _ORIGINAL_SEED_MANIFEST = control._seed_manifest
+_RECEIPT_GAP_HOLD_CODE = "RUN_RECEIPT_MATCHED_OUTCOME_RECOVERED_HOLD"
+
+
+def _refresh_run_manifest_counts(db: Any, request_id: str) -> None:
+    """Make run-level counters reflect the persisted row ledger immediately.
+
+    Manifest seeding happens before scorer completion, so relying on finalization
+    leaves pending/unresolved counters at their database defaults during a live
+    durable run. The row ledger is authoritative; this helper only reconciles the
+    aggregate run receipt to that already-persisted state.
+    """
+    run_id = state._run_id(request_id)
+    run = control._run_row(db, run_id)
+    if not run:
+        return
+
+    rows = state.PickRequestStateStore(db)._load_all(run_id)
+    completed = sum(item.get("terminal_status") == "COMPLETED" for item in rows)
+    held = sum(item.get("terminal_status") == "HELD" for item in rows)
+    rejected = sum(item.get("terminal_status") == "REJECTED" for item in rows)
+    pending = sum(item.get("terminal_status") == "PENDING" for item in rows)
+    unresolved = sum(
+        item.get("terminal_status") == "PENDING"
+        or (
+            item.get("model_evaluated") is True
+            and int(item.get("stage_seq") or 0)
+            < state.STAGE_SEQ["RECEIPT_PERSISTED"]
+        )
+        for item in rows
+    )
+
+    refreshed = dict(run)
+    if not control._is_closed(run):
+        if pending:
+            run_status = "RUNNING"
+        elif completed == len(rows) and rows:
+            run_status = "COMPLETE"
+        elif completed:
+            run_status = "DEGRADED"
+        elif rows:
+            run_status = "BLOCKED"
+        else:
+            run_status = str(run.get("run_status") or "RUNNING")
+        refreshed["run_status"] = run_status
+
+    refreshed.update(
+        {
+            "total_rows": len(rows),
+            "completed_rows": completed,
+            "held_rows": held,
+            "rejected_rows": rejected,
+            "pending_rows": pending,
+            "unresolved_rows": unresolved,
+            "updated_at": state._now(),
+            "can_execute": False,
+        }
+    )
+    db.table(state.RUN_TABLE).upsert(refreshed, on_conflict="run_id").execute()
 
 
 def _closed_safe_seed_manifest(db: Any, request: control.ResumablePickRunRequest) -> None:
@@ -34,6 +92,70 @@ def _closed_safe_seed_manifest(db: Any, request: control.ResumablePickRunRequest
     if control._is_closed(existing_run):
         raise control._closed_error(existing_run or {}, request.request_id)
     _ORIGINAL_SEED_MANIFEST(db, request)
+    _refresh_run_manifest_counts(db, request.request_id)
+
+
+def _recover_missing_outcome_as_hold(
+    db: Any,
+    request_id: str,
+    record: dict[str, Any],
+    match: dict[str, Any],
+) -> dict[str, Any]:
+    """Reconcile an immutable receipt without fabricating missing governance.
+
+    A persisted immutable pregame prediction proves the canonical scorer already
+    created a prediction, so re-scoring would violate exact-once safety. If the
+    companion row outcome was lost, preserve that receipt identity but fail the
+    row closed as a non-publishable/non-rankable orchestration HOLD. The original
+    immutable probability remains available through the prediction ledger.
+    """
+    key = str(record.get("row_key") or "")
+    prediction_id = match.get("governed_prediction_id")
+    prediction = match.get("prediction") if isinstance(match.get("prediction"), dict) else {}
+    source_snapshot_id = prediction.get("source_snapshot_id")
+
+    recovered_outcome = {
+        "row_key": key,
+        "terminal_status": "HELD",
+        "code": _RECEIPT_GAP_HOLD_CODE,
+        "model_evaluated": True,
+        "probability_publishable": False,
+        "rank_eligible": False,
+        "prediction_id": prediction_id,
+        "source_snapshot_id": source_snapshot_id,
+        "infrastructure_blocked": True,
+        "detail": {
+            "failure_domain": "RECEIPT_SERVICE_UNREACHABLE",
+            "recovery_reason": "IMMUTABLE_PREGAME_RECEIPT_PRESENT_DURABLE_OUTCOME_MISSING",
+            "request_id": request_id,
+            "row_key": key,
+        },
+        "can_execute": False,
+    }
+
+    migrated = dict(record)
+    migrated.update(
+        {
+            "prediction_id": prediction_id,
+            "terminal_status": "HELD",
+            "terminal_code": _RECEIPT_GAP_HOLD_CODE,
+            "failure_domain": "RECEIPT_SERVICE_UNREACHABLE",
+            "model_evaluated": True,
+            "probability_publishable": False,
+            "rank_eligible": False,
+            "source_snapshot_id": source_snapshot_id or record.get("source_snapshot_id"),
+            "outcome": recovered_outcome,
+            "current_stage": "RECEIPT_PERSISTED",
+            "stage_seq": state.STAGE_SEQ["RECEIPT_PERSISTED"],
+            "updated_at": state._now(),
+            "can_execute": False,
+        }
+    )
+    migrated["durable_status"] = state._durable_status(migrated)
+    db.table(state.ROW_TABLE).upsert(
+        migrated, on_conflict="run_id,row_key"
+    ).execute()
+    return migrated
 
 
 def _receipt_preflight_without_rescore(
@@ -46,8 +168,10 @@ def _receipt_preflight_without_rescore(
     NOT_FOUND rows and exact durable PENDING rows carrying the same request_id,
     row_key, and explicit resume contract are scorer-eligible. MATCHED immutable
     receipts are reconciled into durable state and deliberately omitted from the
-    returned retry list. Ambiguous, non-immutable, identity-mismatched, or
-    ledger/outcome-inconsistent states fail closed.
+    returned retry list. Ambiguous, non-immutable, identity-mismatched states
+    fail closed. A matched immutable receipt whose companion row outcome was lost
+    is recovered conservatively as a non-rankable HOLD rather than re-scored or
+    allowed to stop unrelated board rows.
     """
     if not records:
         return [], 0, None
@@ -106,11 +230,14 @@ def _receipt_preflight_without_rescore(
 
             durable_outcome = record.get("outcome")
             if not isinstance(durable_outcome, dict):
-                return retryable, recovered, {
-                    "code": "RUN_RECEIPT_MATCHED_OUTCOME_UNAVAILABLE",
-                    "row_key": key,
-                    "can_execute": False,
-                }
+                _recover_missing_outcome_as_hold(
+                    db,
+                    request_id,
+                    record,
+                    match,
+                )
+                recovered += 1
+                continue
 
             terminal_status = str(record.get("terminal_status") or "PENDING")
             if terminal_status == "PENDING":
@@ -150,6 +277,8 @@ def _receipt_preflight_without_rescore(
             recovered += 1
             # Critical: do NOT append the recovered row to retryable.
 
+    if recovered:
+        _refresh_run_manifest_counts(db, request_id)
     return retryable, recovered, None
 
 
