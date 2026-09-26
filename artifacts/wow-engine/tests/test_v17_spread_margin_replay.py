@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from v17.spread_margin_challenger import SpreadChallengerUnavailable
-from v17.spread_margin_replay import adapt_basketball_rows, adapt_nfl_rows, load_replay_rows
+from v17.spread_margin_replay import adapt_basketball_rows, adapt_ncaaf_rows, adapt_nfl_rows, load_replay_rows
 
 
 def test_nfl_adapter_uses_only_pregame_numeric_features_and_settled_margin():
@@ -56,13 +56,33 @@ def test_basketball_adapter_uses_feature_payload_and_no_market_fields():
     assert datetime.fromisoformat(row.feature_as_of) < datetime.fromisoformat(row.event_start_time)
 
 
-def test_ncaaf_replay_is_typed_unavailable_not_generic_model_unavailable():
-    class NeverUsedClient:
-        pass
-
-    with pytest.raises(SpreadChallengerUnavailable) as exc:
-        load_replay_rows(NeverUsedClient(), sport="NCAAF")
-    assert exc.value.code == "SPREAD_REPLAY_FEATURES_UNAVAILABLE"
+def test_ncaaf_adapter_reconstructs_prior_only_team_state_without_market_inputs():
+    base = datetime(2024, 8, 24, 18, 0, tzinfo=timezone.utc)
+    games = []
+    for i in range(12):
+        home, away = (("A", "B") if i % 2 == 0 else ("B", "A"))
+        games.append({
+            "training_game_id": f"tg-{i}",
+            "official_event_id": f"ncaaf-{i}",
+            "season": 2024,
+            "event_start_time": (base + timedelta(days=7 * i)).isoformat(),
+            "home_team": home,
+            "away_team": away,
+            "home_points": 24 + (i % 6),
+            "away_points": 17 + ((i * 3) % 8),
+            "result_source": "fixture",
+            "result_source_timestamp": (base + timedelta(days=7 * i, hours=4)).isoformat(),
+            "can_execute": False,
+        })
+    rows = adapt_ncaaf_rows(games, min_prior_games=2)
+    assert rows
+    for row in rows:
+        assert datetime.fromisoformat(row.feature_as_of) < datetime.fromisoformat(row.event_start_time)
+        keys = " ".join(row.features).lower()
+        assert "market" not in keys
+        assert "spread" not in keys
+        assert "moneyline" not in keys
+        assert "probability" not in keys
 
 
 def test_ncaab_replay_is_typed_dataset_unavailable():
