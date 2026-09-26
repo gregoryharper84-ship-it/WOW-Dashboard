@@ -94,19 +94,18 @@ def _training_row(start):
     )
 
 
-def test_forward_shadow_uses_fixed_challenger_and_line_only_as_threshold(monkeypatch):
+def test_forward_shadow_uses_exact_artifact_fit_and_line_only_as_threshold(monkeypatch):
     start = datetime(2026, 9, 26, 19, 0, tzinfo=timezone.utc)
     rows = [_training_row(start)]
     artifact = _artifact()
     seen = {}
-    monkeypatch.setattr(shadow, "load_ncaaf_persisted_replay_rows", lambda *_args, **_kwargs: rows)
+    monkeypatch.setattr(shadow, "load_ncaaf_forward_context", lambda *_args, **_kwargs: (rows, [{"event_id": "old"}]))
 
     def fit(fit_rows, *, sport, min_rows, ridge_alpha):
         seen.update({"rows": fit_rows, "sport": sport, "min_rows": min_rows, "ridge_alpha": ridge_alpha})
-        return artifact, {"margin_mae": 10.0, "cover_brier": 0.22, "cover_log_loss": 0.65, "cover_ece": 0.04}
+        return artifact
 
-    monkeypatch.setattr(shadow, "train_margin_distribution_candidate", fit)
-    monkeypatch.setattr(shadow, "load_ncaaf_settled_events", lambda _client: [{"event_id": "old"}])
+    monkeypatch.setattr(shadow, "fit_margin_distribution_artifact", fit)
     monkeypatch.setattr(
         shadow,
         "build_forward_matchup_features",
@@ -141,6 +140,8 @@ def test_forward_shadow_uses_fixed_challenger_and_line_only_as_threshold(monkeyp
     assert result["p_push"] == 0.01
     assert result["p_not_cover"] == 0.38
     assert result["training_cutoff_event_time"] < result["event_start_time"]
+    assert result["historical_replay_diagnostic"]["status"] == "NOT_RECOMPUTED_ON_FORWARD_PATH"
+    assert result["historical_replay_diagnostic"]["margin_mae"] is None
     assert result["spread_line_used_as_feature"] is False
     assert result["market_probability_substitution_used"] is False
     assert result["moneyline_probability_used"] is False
@@ -161,7 +162,7 @@ def test_forward_shadow_blocks_target_at_or_before_training_cutoff(monkeypatch):
         features={"x": 1.0},
         source_manifest_sha256="sha",
     )
-    monkeypatch.setattr(shadow, "load_ncaaf_persisted_replay_rows", lambda *_args, **_kwargs: [leaked])
+    monkeypatch.setattr(shadow, "load_ncaaf_forward_context", lambda *_args, **_kwargs: ([leaked], []))
     with pytest.raises(SpreadChallengerUnavailable) as exc:
         shadow.run_ncaaf_forward_shadow(
             object(), event_id="e", event_start_time=start.isoformat(), home_team="A", away_team="B",
@@ -179,7 +180,7 @@ def test_forward_shadow_propagates_typed_immutable_row_blocker(monkeypatch):
             "immutable rows are stale",
         )
 
-    monkeypatch.setattr(shadow, "load_ncaaf_persisted_replay_rows", blocked)
+    monkeypatch.setattr(shadow, "load_ncaaf_forward_context", blocked)
     with pytest.raises(SpreadChallengerUnavailable) as exc:
         shadow.run_ncaaf_forward_shadow(
             object(), event_id="e", event_start_time=start.isoformat(), home_team="A", away_team="B",
@@ -187,6 +188,44 @@ def test_forward_shadow_propagates_typed_immutable_row_blocker(monkeypatch):
         )
     assert exc.value.code == "SPREAD_REPLAY_PERSISTED_NCAAF_FEATURES_STALE"
     assert exc.value.code != "MODEL_UNAVAILABLE"
+
+
+def test_forward_context_loads_game_corpus_once_and_reuses_it(monkeypatch):
+    start = datetime(2026, 9, 26, 19, 0, tzinfo=timezone.utc)
+    row = _training_row(start)
+    calls = {"features": 0, "games": 0, "adapt": 0, "events": 0}
+    feature_rows = [{"official_event_id": "NCAAF:hist"}]
+    game_rows = [{"official_event_id": "hist"}]
+    settled = [{"event_id": "hist", "event_start_time": row.event_start_time}]
+
+    def load_features(_client):
+        calls["features"] += 1
+        return feature_rows
+
+    def load_games(_client):
+        calls["games"] += 1
+        return game_rows
+
+    def adapt(features, games):
+        calls["adapt"] += 1
+        assert features is feature_rows
+        assert games is game_rows
+        return [row]
+
+    def events(games):
+        calls["events"] += 1
+        assert games is game_rows
+        return settled
+
+    monkeypatch.setattr(shadow, "_load_ncaaf_persisted_feature_rows", load_features)
+    monkeypatch.setattr(shadow, "_load_ncaaf_persisted_game_rows", load_games)
+    monkeypatch.setattr(shadow, "adapt_ncaaf_persisted_rows", adapt)
+    monkeypatch.setattr(shadow, "_ncaaf_events_from_games", events)
+
+    replay_rows, settled_events = shadow.load_ncaaf_forward_context(object())
+    assert replay_rows == [row]
+    assert settled_events is settled
+    assert calls == {"features": 1, "games": 1, "adapt": 1, "events": 1}
 
 
 def test_forward_shadow_requires_matching_season():
