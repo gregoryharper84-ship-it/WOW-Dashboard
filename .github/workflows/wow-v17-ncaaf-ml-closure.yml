@@ -80,6 +80,8 @@ jobs:
           maintenance_blockers = maintenance.get("blockers") or []
           print(json.dumps({
               "maintenance_status": maintenance.get("status"),
+              "seasons": maintenance.get("seasons"),
+              "acquisition_plan": maintenance.get("acquisition_plan"),
               "fresh_acquisition_complete": fresh_acquisition_complete,
               "maintenance_degraded": maintenance.get("maintenance_degraded"),
               "source_snapshot_n": maintenance.get("source_snapshot_n"),
