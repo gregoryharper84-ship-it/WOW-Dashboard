@@ -140,6 +140,7 @@ def _persist_training_rows(client: Any, rows: list[BinaryTrainingRow], meta: lis
         client.table("wow_d1_training_rows").upsert(
             payloads[offset:offset + 250],
             on_conflict="sport,official_event_id,feature_schema_version,source_manifest_sha256",
+            ignore_duplicates=True,
         ).execute()
 
 
@@ -174,7 +175,7 @@ def train_and_persist(client: Any, *, training_code_sha: str) -> dict[str, Any]:
         "lifecycle_state": "CANDIDATE", "promoted": False, "active": False,
         "automatic_certification": False, "automatic_promotion": False,
         "probability_publishable": False, "can_execute": False,
-    }, on_conflict="model_artifact_version").execute()
+    }, on_conflict="model_artifact_version", ignore_duplicates=True).execute()
     return {
         "ok": True, "code": "NCAAF_RESULT_FORM_CANDIDATE_PERSISTED",
         "model_artifact_version": version, "feature_schema_version": FEATURE_SCHEMA_VERSION,
