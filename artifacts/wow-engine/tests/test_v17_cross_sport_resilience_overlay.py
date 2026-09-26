@@ -3,7 +3,11 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
+import pytest
+
 from v17 import cross_sport_resilience_overlay as resilience
+from v17 import cross_sport_discovery_feed as discovery_feed
+from v17 import cross_sport_winner_discovery as discovery
 from v17 import scout_secondary_source as secondary
 
 
@@ -83,6 +87,109 @@ def test_schedule_first_falls_back_once_when_espn_is_unavailable(monkeypatch):
 
     assert rows[0]["id"] == "provider-1"
     assert calls == {"espn": 1, "fallback": 1}
+    assert isinstance(rows, discovery.AcquisitionFeedResult)
+    assert rows.provider_status == discovery.PROVIDER_FAILED
+    assert rows.fallback_status == discovery.FALLBACK_SUCCEEDED
+    assert rows.exhaustion_status == discovery.PATHS_NOT_EXHAUSTED
+    assert rows.primary_blocker_code == "ESPN_HTTP_503"
+
+
+def test_schedule_first_preserves_exhaustion_when_espn_and_downstream_fail(monkeypatch):
+    calls = {"espn": 0, "fallback": 0}
+
+    def fake_secondary(*_args, **_kwargs):
+        calls["espn"] += 1
+        return secondary.SecondaryResult(False, status=503, code="ESPN_HTTP_503")
+
+    def fallback(_family, _target=None):
+        calls["fallback"] += 1
+        raise discovery.DiscoveryFeedError("ODDS_API_QUOTA_EXHAUSTED")
+
+    monkeypatch.setattr(secondary, "secondary_for_request", fake_secondary)
+    fetch = resilience._schedule_first_fetch(
+        fallback,
+        started=datetime(2026, 9, 22, 12, 0, tzinfo=timezone.utc),
+        horizon_hours=36,
+    )
+
+    with pytest.raises(discovery.DiscoveryFeedError) as exc:
+        fetch("NFL")
+
+    acquisition = exc.value.acquisition
+    assert acquisition is not None
+    assert acquisition.provider_status == discovery.PROVIDER_FAILED
+    assert acquisition.fallback_status == discovery.FALLBACK_FAILED
+    assert acquisition.exhaustion_status == discovery.PROVIDER_PATHS_EXHAUSTED
+    assert acquisition.primary_blocker_code == "ESPN_HTTP_503"
+    assert acquisition.fallback_blocker_code == "ODDS_API_QUOTA_EXHAUSTED"
+    assert calls == {"espn": 1, "fallback": 1}
+
+
+def test_resilient_union_preserves_schedule_failure_and_downstream_recovery(monkeypatch):
+    monkeypatch.setattr(
+        secondary,
+        "secondary_for_request",
+        lambda *_args, **_kwargs: secondary.SecondaryResult(
+            False, status=503, code="ESPN_HTTP_503"
+        ),
+    )
+
+    def odds_failed(_family, _target=None):
+        raise discovery.DiscoveryFeedError("ODDS_API_QUOTA_EXHAUSTED")
+
+    schedule_first = resilience._schedule_first_fetch(
+        odds_failed,
+        started=datetime(2026, 9, 22, 12, 0, tzinfo=timezone.utc),
+        horizon_hours=36,
+    )
+    union = resilience._resilient_union_feed(
+        discovery_feed.union_feed,
+        schedule_first,
+        lambda *_args: [{"id": "rundown-recovered"}],
+    )
+
+    result = union("NFL")
+    assert result[0]["id"] == "rundown-recovered"
+    assert result.provider_status == discovery.PROVIDER_FAILED
+    assert result.fallback_status == discovery.FALLBACK_SUCCEEDED
+    assert result.exhaustion_status == discovery.PATHS_NOT_EXHAUSTED
+    assert result.primary_blocker_code == "ESPN_HTTP_503"
+
+
+def test_resilient_union_preserves_exhaustion_across_every_downstream_path(monkeypatch):
+    monkeypatch.setattr(
+        secondary,
+        "secondary_for_request",
+        lambda *_args, **_kwargs: secondary.SecondaryResult(
+            False, status=503, code="ESPN_HTTP_503"
+        ),
+    )
+
+    def odds_failed(_family, _target=None):
+        raise discovery.DiscoveryFeedError("ODDS_API_QUOTA_EXHAUSTED")
+
+    def rundown_failed(_family, _target=None):
+        raise discovery.DiscoveryFeedError("RUNDOWN_AUTH_FAILED")
+
+    schedule_first = resilience._schedule_first_fetch(
+        odds_failed,
+        started=datetime(2026, 9, 22, 12, 0, tzinfo=timezone.utc),
+        horizon_hours=36,
+    )
+    union = resilience._resilient_union_feed(
+        discovery_feed.union_feed, schedule_first, rundown_failed
+    )
+
+    with pytest.raises(discovery.DiscoveryFeedError) as exc:
+        union("NFL")
+
+    acquisition = exc.value.acquisition
+    assert acquisition is not None
+    assert acquisition.provider_status == discovery.PROVIDER_FAILED
+    assert acquisition.fallback_status == discovery.FALLBACK_FAILED
+    assert acquisition.exhaustion_status == discovery.PROVIDER_PATHS_EXHAUSTED
+    assert acquisition.primary_blocker_code == "ESPN_HTTP_503"
+    assert acquisition.fallback_blocker_code == "RUNDOWN_AUTH_FAILED"
 
 
 def test_unsupported_family_never_calls_espn(monkeypatch):

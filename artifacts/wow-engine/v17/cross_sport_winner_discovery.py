@@ -72,13 +72,53 @@ ACQUISITION_STATUSES = (
     DISCOVERY_BUDGET_EXHAUSTED,
 )
 
+PROVIDER_SUCCEEDED = "PROVIDER_SUCCEEDED"
+PROVIDER_FAILED = "PROVIDER_FAILED"
+PROVIDER_NOT_ATTEMPTED = "PROVIDER_NOT_ATTEMPTED"
+FALLBACK_NOT_REPORTED = "FALLBACK_NOT_REPORTED_BY_COMPOSITE_FEED"
+FALLBACK_NOT_APPLICABLE = "FALLBACK_NOT_APPLICABLE"
+FALLBACK_NOT_ATTEMPTED = "FALLBACK_NOT_ATTEMPTED"
+FALLBACK_SUCCEEDED = "FALLBACK_SUCCEEDED"
+FALLBACK_FAILED = "FALLBACK_FAILED"
+PATHS_NOT_EXHAUSTED = "PATHS_NOT_EXHAUSTED"
+PROVIDER_PATHS_EXHAUSTED = "PROVIDER_PATHS_EXHAUSTED"
+NO_CONFIGURED_PATH = "NO_CONFIGURED_PATH"
+
+
+@dataclass(frozen=True)
+class AcquisitionFeedResult:
+    """Rows plus sanitized path-level acquisition provenance.
+
+    It behaves as a sequence for compatibility with existing discovery callers,
+    while preserving whether the primary and governed fallback paths actually
+    succeeded. No provider payload or numeric authority is carried here.
+    """
+
+    rows: tuple[Mapping[str, Any], ...]
+    provider_status: str
+    fallback_status: str
+    exhaustion_status: str
+    blocker_code: str | None = None
+    primary_blocker_code: str | None = None
+    fallback_blocker_code: str | None = None
+
+    def __iter__(self):
+        return iter(self.rows)
+
+    def __len__(self) -> int:
+        return len(self.rows)
+
+    def __getitem__(self, index: int):
+        return self.rows[index]
+
 
 class DiscoveryFeedError(RuntimeError):
     """A feed failure that carries the provider's own typed reason code."""
 
-    def __init__(self, code: str):
+    def __init__(self, code: str, *, acquisition: AcquisitionFeedResult | None = None):
         super().__init__(str(code))
         self.code = str(code)
+        self.acquisition = acquisition
 
 
 def classify_acquisition_failure(code: Any) -> str:
@@ -121,6 +161,18 @@ class DiscoveryTarget:
     def label(self) -> str:
         return str(self.sport_id) if self.sport_id is not None else str(self.sport_key or "")
 
+    @property
+    def target_key(self) -> str:
+        """Stable non-secret identity for one configured acquisition target."""
+        return "|".join(
+            (
+                str(self.provider or "").upper(),
+                str(self.label),
+                str(self.league or "").upper(),
+                str(self.regime or "").upper(),
+            )
+        )
+
     def as_dict(self) -> dict[str, Any]:
         return {
             "family": self.family,
@@ -129,6 +181,7 @@ class DiscoveryTarget:
             "sport_key": self.sport_key,
             "league": self.league,
             "regime": self.regime,
+            "target_key": self.target_key,
         }
 
 
@@ -368,6 +421,14 @@ class DiscoveryInventory:
     source_blockers: list[dict[str, Any]] = field(default_factory=list)
     # One row per family describing what the acquisition attempt actually did.
     acquisition_audit: list[dict[str, Any]] = field(default_factory=list)
+    # One bounded, sanitized terminal row per configured target. These rows are
+    # persisted independently of event rows; they never contain provider
+    # payloads, prices, probabilities, participant names, or other PII.
+    acquisition_details: list[dict[str, Any]] = field(default_factory=list)
+    # Independently derived from configured targets before any provider call.
+    # The persistence boundary reconciles this set against generated and stored
+    # detail identities; detail rows cannot declare their own completeness.
+    expected_acquisition_targets: list[dict[str, str]] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -379,6 +440,8 @@ class DiscoveryInventory:
             "events_discovered": len(self.events),
             "source_blockers": list(self.source_blockers),
             "acquisition_audit": list(self.acquisition_audit),
+            "acquisition_details_count": len(self.acquisition_details),
+            "acquisition_targets_expected": len(self.expected_acquisition_targets),
             "discovery_independent_of_model_registry": True,
             "can_execute": False,
         }
@@ -419,6 +482,7 @@ def discover_winner_slate(
     and there was nothing" are three different answers and are recorded as such.
     ``NO_EVENTS_RETURNED`` is only ever used after a configured query succeeded.
     """
+    supported_sports = tuple(supported_sports)
     targets = dict(
         discovery_targets
         if discovery_targets is not None
@@ -430,6 +494,20 @@ def discover_winner_slate(
         requested_slate_date=requested_slate_date,
         requested_timezone=requested_timezone,
     )
+    for family in supported_sports:
+        family_targets = tuple(targets.get(family) or ())
+        if family_targets:
+            inventory.expected_acquisition_targets.extend(
+                {"family": str(family).upper(), "target_key": target.target_key}
+                for target in family_targets
+            )
+        else:
+            inventory.expected_acquisition_targets.append(
+                {
+                    "family": str(family).upper(),
+                    "target_key": NO_CONFIGURED_DISCOVERY_FEED,
+                }
+            )
     budget = discovery_budget_seconds() if budget_seconds is None else float(budget_seconds)
     deadline = monotonic() + budget
 
@@ -440,6 +518,7 @@ def discover_winner_slate(
         returned = 0
         succeeded = False
         failures: list[str] = []
+        budget_exhausted = False
 
         if not family_targets:
             # Never queried, because nothing is configured to query. This must
@@ -463,9 +542,29 @@ def discover_winner_slate(
                     "status": NO_CONFIGURED_DISCOVERY_FEED,
                 }
             )
+            inventory.acquisition_details.append(
+                {
+                    "family": family,
+                    "target_key": NO_CONFIGURED_DISCOVERY_FEED,
+                    "provider": registry.PROVIDER,
+                    "league": None,
+                    "regime": None,
+                    "provider_sport_id": None,
+                    "sport_key": None,
+                    "final_state": NO_CONFIGURED_DISCOVERY_FEED,
+                    "provider_status": PROVIDER_NOT_ATTEMPTED,
+                    "fallback_status": FALLBACK_NOT_APPLICABLE,
+                    "exhaustion_status": NO_CONFIGURED_PATH,
+                    "events_returned": 0,
+                    "duplicate_rows_suppressed": 0,
+                    "blocker_code": NO_CONFIGURED_DISCOVERY_FEED,
+                    "can_execute": False,
+                }
+            )
             continue
 
         if monotonic() >= deadline:
+            budget_exhausted = True
             inventory.acquisition_audit.append(
                 {
                     "family": family,
@@ -487,23 +586,92 @@ def discover_winner_slate(
                     "budget_seconds": budget,
                 }
             )
+            for target in family_targets:
+                inventory.acquisition_details.append(
+                    {
+                        **target.as_dict(),
+                        "final_state": DISCOVERY_BUDGET_EXHAUSTED,
+                        "provider_status": PROVIDER_NOT_ATTEMPTED,
+                        "fallback_status": FALLBACK_NOT_REPORTED,
+                        "exhaustion_status": DISCOVERY_BUDGET_EXHAUSTED,
+                        "events_returned": 0,
+                        "duplicate_rows_suppressed": 0,
+                        "blocker_code": DISCOVERY_BUDGET_EXHAUSTED,
+                        "can_execute": False,
+                    }
+                )
             continue
 
         seen_identities: set[tuple[str, str, str]] = set()
         duplicates = 0
         for target in family_targets:
+            if monotonic() >= deadline:
+                budget_exhausted = True
+                inventory.acquisition_details.append(
+                    {
+                        **target.as_dict(),
+                        "final_state": DISCOVERY_BUDGET_EXHAUSTED,
+                        "provider_status": PROVIDER_NOT_ATTEMPTED,
+                        "fallback_status": FALLBACK_NOT_REPORTED,
+                        "exhaustion_status": DISCOVERY_BUDGET_EXHAUSTED,
+                        "events_returned": 0,
+                        "duplicate_rows_suppressed": 0,
+                        "blocker_code": DISCOVERY_BUDGET_EXHAUSTED,
+                        "can_execute": False,
+                    }
+                )
+                continue
             attempted.append(target.sport_id if target.sport_id is not None else target.sport_key)
             try:
-                rows = list(fetch_sport_events(family, target) or ())
+                fetched = fetch_sport_events(family, target)
+                if isinstance(fetched, AcquisitionFeedResult):
+                    rows = list(fetched.rows)
+                    provider_status = fetched.provider_status
+                    fallback_status = fetched.fallback_status
+                    exhaustion_status = fetched.exhaustion_status
+                    blocker_code = fetched.blocker_code
+                else:
+                    rows = list(fetched or ())
+                    provider_status = PROVIDER_SUCCEEDED
+                    fallback_status = FALLBACK_NOT_APPLICABLE
+                    exhaustion_status = PATHS_NOT_EXHAUSTED
+                    blocker_code = None
             except DiscoveryFeedError as exc:
                 failures.append(exc.code)
+                failure_status = classify_acquisition_failure(exc.code)
+                acquisition = exc.acquisition
                 inventory.source_blockers.append(
                     {
                         "scope": "target",
                         "sport": family,
                         **target.as_dict(),
-                        "status": classify_acquisition_failure(exc.code),
+                        "status": failure_status,
                         "reason_code": exc.code,
+                    }
+                )
+                inventory.acquisition_details.append(
+                    {
+                        **target.as_dict(),
+                        "final_state": failure_status,
+                        "provider_status": (
+                            acquisition.provider_status
+                            if acquisition is not None
+                            else PROVIDER_FAILED
+                        ),
+                        "fallback_status": (
+                            acquisition.fallback_status
+                            if acquisition is not None
+                            else FALLBACK_NOT_APPLICABLE
+                        ),
+                        "exhaustion_status": (
+                            acquisition.exhaustion_status
+                            if acquisition is not None
+                            else PROVIDER_PATHS_EXHAUSTED
+                        ),
+                        "events_returned": 0,
+                        "duplicate_rows_suppressed": 0,
+                        "blocker_code": str(exc.code),
+                        "can_execute": False,
                     }
                 )
                 continue
@@ -518,9 +686,24 @@ def discover_winner_slate(
                         "error_type": type(exc).__name__,
                     }
                 )
+                inventory.acquisition_details.append(
+                    {
+                        **target.as_dict(),
+                        "final_state": PROVIDER_REQUEST_FAILED,
+                        "provider_status": PROVIDER_FAILED,
+                        "fallback_status": FALLBACK_NOT_REPORTED,
+                        "exhaustion_status": PROVIDER_PATHS_EXHAUSTED,
+                        "events_returned": 0,
+                        "duplicate_rows_suppressed": 0,
+                        "blocker_code": type(exc).__name__,
+                        "can_execute": False,
+                    }
+                )
                 continue
 
             succeeded = True
+            target_returned = 0
+            target_duplicates = 0
             for raw in rows:
                 if not isinstance(raw, Mapping):
                     continue
@@ -540,10 +723,26 @@ def discover_winner_slate(
                 identity = _dedupe_identity(event)
                 if identity in seen_identities:
                     duplicates += 1
+                    target_duplicates += 1
                     continue
                 seen_identities.add(identity)
                 inventory.events.append(event)
                 returned += 1
+                target_returned += 1
+
+            inventory.acquisition_details.append(
+                {
+                    **target.as_dict(),
+                    "final_state": EVENTS_RETURNED if target_returned else NO_EVENTS_RETURNED,
+                    "provider_status": provider_status,
+                    "fallback_status": fallback_status,
+                    "exhaustion_status": exhaustion_status,
+                    "events_returned": target_returned,
+                    "duplicate_rows_suppressed": target_duplicates,
+                    "blocker_code": blocker_code,
+                    "can_execute": False,
+                }
+            )
 
         if returned:
             status = EVENTS_RETURNED
@@ -554,6 +753,9 @@ def discover_winner_slate(
             # only case where an empty slate is a real answer.
             status = NO_EVENTS_RETURNED
             blocker = None
+        elif budget_exhausted and not failures:
+            status = DISCOVERY_BUDGET_EXHAUSTED
+            blocker = DISCOVERY_BUDGET_EXHAUSTED
         else:
             status = classify_acquisition_failure(failures[0] if failures else None)
             blocker = failures[0] if failures else status
@@ -820,6 +1022,10 @@ def run_cross_sport_winner_scan(
         "discovery": inventory.as_dict(),
         "rows": [row.as_dict() for row in rows],
         "reconciliation": reconcile(inventory, rows),
+        # Internal handoff to the Daily persistence boundary. The Daily runtime
+        # persists then removes this list before either FULL or COMPACT output.
+        "acquisition_details": list(inventory.acquisition_details),
+        "expected_acquisition_targets": list(inventory.expected_acquisition_targets),
         # Acquisition counters attributable to this run, so a board with missing
         # rows can be read against what the provider lane actually did.
         "market_evidence_counters": observability.run_delta(counters_before),
@@ -831,6 +1037,7 @@ __all__ = [
     "ACQUISITION_STATUSES",
     "ALL_BUCKETS",
     "DISCOVERY_BUDGET_EXHAUSTED",
+    "AcquisitionFeedResult",
     "DiscoveryFeedError",
     "DiscoveryTarget",
     "EVENTS_RETURNED",

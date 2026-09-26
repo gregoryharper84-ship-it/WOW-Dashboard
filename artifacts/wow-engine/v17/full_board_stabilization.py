@@ -239,6 +239,72 @@ def lineup_pending_status(
     }
 
 
+def _legacy_final_refresh(row: Mapping[str, Any]) -> tuple[bool | None, str | None]:
+    """Read only explicit legacy refresh proof; event state is never proof."""
+    values: list[bool] = []
+    if "final_refresh_passed" in row:
+        values.append(row.get("final_refresh_passed") is True)
+    if "final_refresh_status" in row:
+        values.append(_upper(row.get("final_refresh_status")) in {"PASS", "COMPLETE"})
+    if not values:
+        return None, None
+    if len(set(values)) > 1:
+        return False, "FINAL_REFRESH_EVIDENCE_CONFLICT"
+    return values[0], None if values[0] else "FINAL_REFRESH_NOT_COMPLETE"
+
+
+def _final_refresh_state(row: Mapping[str, Any]) -> tuple[bool, str | None]:
+    """Resolve canonical nested refresh proof, failing closed on ambiguity.
+
+    ``llp_governance.final_refresh`` is authoritative when present. Top-level
+    legacy proof is consulted only when that nested key is absent, and a
+    PREGAME/SCHEDULED event state never substitutes for an actual refresh.
+    """
+    governance_present = "llp_governance" in row
+    governance = row.get("llp_governance")
+    if governance_present and not isinstance(governance, Mapping):
+        return False, "LLP_GOVERNANCE_MALFORMED"
+
+    if isinstance(governance, Mapping) and "final_refresh" in governance:
+        refresh = governance.get("final_refresh")
+        if not isinstance(refresh, Mapping):
+            return False, "FINAL_REFRESH_EVIDENCE_MALFORMED"
+        status = _upper(refresh.get("final_refresh_status") or refresh.get("status"))
+        blockers = refresh.get("reasons") or refresh.get("blockers") or []
+        if (
+            not status
+            or "can_execute" not in refresh
+            or not isinstance(blockers, (list, tuple))
+            or (
+                "probability_invalidated" in refresh
+                and not isinstance(refresh.get("probability_invalidated"), bool)
+            )
+            or (
+                "rerun_required" in refresh
+                and not isinstance(refresh.get("rerun_required"), bool)
+            )
+        ):
+            return False, "FINAL_REFRESH_EVIDENCE_MALFORMED"
+        nested_ok = bool(
+            status in {"PASS", "COMPLETE"}
+            and not blockers
+            and refresh.get("probability_invalidated") is not True
+            and refresh.get("rerun_required") is not True
+            and refresh.get("can_execute") is False
+        )
+        legacy, legacy_blocker = _legacy_final_refresh(row)
+        if legacy_blocker == "FINAL_REFRESH_EVIDENCE_CONFLICT":
+            return False, legacy_blocker
+        if legacy is not None and legacy != nested_ok:
+            return False, "FINAL_REFRESH_EVIDENCE_CONFLICT"
+        return nested_ok, None if nested_ok else "FINAL_REFRESH_NOT_COMPLETE"
+
+    legacy, blocker = _legacy_final_refresh(row)
+    if legacy is None:
+        return False, "FINAL_REFRESH_NOT_COMPLETE"
+    return legacy, blocker
+
+
 def publication_chain_audit(row: Mapping[str, Any]) -> PublicationChainAudit:
     """Explain the first failed sporting-publication stage without guessing.
 
@@ -263,11 +329,7 @@ def publication_chain_audit(row: Mapping[str, Any]) -> PublicationChainAudit:
         row.get("event_governor_complete") is True
         or _upper(row.get("event_mutex_status")) == "PASS"
     )
-    final_refresh_ok = bool(
-        row.get("final_refresh_passed") is True
-        or _upper(row.get("final_refresh_status")) in {"PASS", "COMPLETE"}
-        or _upper(row.get("official_event_status")) in {"PREGAME", "SCHEDULED"}
-    )
+    final_refresh_ok, final_refresh_blocker = _final_refresh_state(row)
     terminal_ok = bool(
         _upper(row.get("global_terminal_authority") or row.get("terminal_authority"))
         in {GLOBAL_TERMINAL_AUTHORITY, ""}
@@ -296,7 +358,7 @@ def publication_chain_audit(row: Mapping[str, Any]) -> PublicationChainAudit:
         "probability_audit_passed": "PROBABILITY_AUDIT_NOT_COMPLETE",
         "event_governor_complete": "EVENT_GOVERNOR_NOT_COMPLETE",
         "numerical_bounds_present": "CALIBRATED_PROBABILITY_OR_LOWER_BOUND_MISSING",
-        "final_refresh_passed": "FINAL_REFRESH_NOT_COMPLETE",
+        "final_refresh_passed": final_refresh_blocker or "FINAL_REFRESH_NOT_COMPLETE",
         "terminal_authority_preserved": "TERMINAL_AUTHORITY_OR_EXECUTION_INVARIANT_NOT_PROVEN",
     }
     first = next((blocker_by_stage[name] for name, ok in stages.items() if not ok), None)

@@ -20,14 +20,22 @@ class Query:
     def eq(self, *_): return self
     def order(self, *_, **__): return self
     def limit(self, *_): return self
-    def upsert(self, *_args, **_kwargs): return self
+    def upsert(self, payload, *_args, **_kwargs):
+        self.data[:] = [dict(row) for row in payload]
+        return self
+    def range(self, start, end):
+        self.data = self.data[int(start):int(end) + 1]
+        return self
     def execute(self): return Result(self.data)
 
 
 class DB:
+    def __init__(self): self.acquisition_rows = []
     def table(self, name):
         if name == "wow_prop_evidence_snapshots":
             return Query([{"source_snapshot_id":"snap-prop","event_id":"p1","event_start_time":FUTURE,"sport":"MLB","player":"P","stat_type":"strikeouts","line":4.5,"hydration_status":"PASS","blockers":[]}])
+        if name == "wow_v17_daily_run_acquisition_detail":
+            return Query(self.acquisition_rows)
         return Query([{"official_event_id":"1","official_date":SLATE_DATE,"event_start_time":FUTURE,"home_team":"Home","away_team":"Away","venue_name":"Park","home_probable_pitcher":"H","away_probable_pitcher":"A","snapshot_id":"snap-event","snapshot_timestamp":FUTURE,"feature_hydration_status":"PASS"}])
 
 
@@ -70,6 +78,23 @@ def governed_team_result():
 
 def test_daily_snapshot_returns_one_terminal_receipt_per_selected_row(monkeypatch):
     monkeypatch.setattr("v17.daily_snapshot_runtime.score_team_event_request", lambda *_args, **_kwargs: governed_team_result())
+    # Keep this row/terminal contract test independent of the process-global
+    # production installer that can force a fresh provider acquisition when the
+    # full governed suite is collected in one interpreter.
+    monkeypatch.setattr(
+        "v17.daily_snapshot_runtime.acquire_daily_prop_snapshots",
+        lambda **_: {
+            "status": "COMPLETED",
+            "attempted": 0,
+            "persisted": 0,
+            "snapshot_write_succeeded": 0,
+            "snapshot_write_failed": 0,
+            "explicit_prewrite_exclusions": 0,
+            "receipts": [],
+            "blockers": [],
+            "can_execute": False,
+        },
+    )
     result=run_daily_snapshot(DailySnapshotRequest(requested_slate_date=SLATE_DATE,requested_timezone="America/Chicago",response_mode="FULL"),db=DB(),market_api=Market(),event_api=Event())
     assert result["run_status"]=="COMPLETED"
     assert len(result["rows"])==2

@@ -35,9 +35,12 @@ from typing import Any
 CAN_EXECUTE = False
 
 DAILY_ROW_DETAIL_TABLE = "wow_v17_daily_run_row_detail"
+DAILY_ACQUISITION_DETAIL_TABLE = "wow_v17_daily_run_acquisition_detail"
 
 DETAIL_PERSISTENCE_UNAVAILABLE = "DAILY_ROW_DETAIL_PERSISTENCE_UNAVAILABLE"
 DETAIL_RETRIEVAL_UNAVAILABLE = "DAILY_ROW_DETAIL_RETRIEVAL_UNAVAILABLE"
+ACQUISITION_DETAIL_PERSISTENCE_UNAVAILABLE = "CROSS_SPORT_ACQUISITION_DETAIL_PERSISTENCE_UNAVAILABLE"
+ACQUISITION_DETAIL_RETRIEVAL_UNAVAILABLE = "CROSS_SPORT_ACQUISITION_DETAIL_RETRIEVAL_UNAVAILABLE"
 
 # Compact-mode budgets. Complete row evidence remains in persisted detail and
 # FULL mode remains available for internal audit; trimming applies to the normal
@@ -50,6 +53,8 @@ MAX_COMPACT_AUDIT_ITEMS = 4
 
 DETAIL_PAGE_DEFAULT_LIMIT = 5
 DETAIL_PAGE_MAX_LIMIT = 25
+ACQUISITION_DETAIL_PAGE_DEFAULT_LIMIT = 25
+ACQUISITION_DETAIL_PAGE_MAX_LIMIT = 100
 
 _COMPACT_DIRECTION_FIELDS = (
     "terminal_label",
@@ -299,6 +304,12 @@ def compact_cross_sport_discovery_audit(audit: dict[str, Any]) -> dict[str, Any]
     counters = audit.get("market_evidence_counters")
     if isinstance(counters, dict):
         compact["market_evidence_counters"] = dict(counters)
+    persistence = audit.get("acquisition_detail_persistence")
+    if isinstance(persistence, dict):
+        compact["acquisition_detail_persistence"] = dict(persistence)
+    reference = audit.get("acquisition_detail_ref")
+    if isinstance(reference, dict):
+        compact["acquisition_detail_ref"] = dict(reference)
     return compact
 
 
@@ -544,13 +555,290 @@ def read_row_detail_page(db: Any, *, run_id: str, offset: int = 0, limit: int = 
     }
 
 
+def _bounded_text(value: Any, *, maximum: int = 128) -> str | None:
+    """Bound persisted acquisition metadata without accepting arbitrary payloads."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text[:maximum] if text else None
+
+
+def _bounded_code(value: Any) -> str | None:
+    """Persist a typed code, never an exception/provider message."""
+    text = _bounded_text(value, maximum=128)
+    if not text:
+        return None
+    token = text.split(":", 1)[0].strip().upper()
+    sanitized = "".join(char if char.isalnum() or char in {"_", "-", "."} else "_" for char in token)
+    return sanitized[:96] or None
+
+
+def acquisition_detail_reference(
+    *, run_id: str, detail_available: bool, details_count: int
+) -> dict[str, Any]:
+    return {
+        "run_id": run_id,
+        "detail_available": bool(detail_available),
+        "details_count": max(0, int(details_count)),
+        "details_inlined": False,
+        "retrieval_operation_id": "readWowV17DailySnapshotAcquisitionDetail",
+        "path": "/v17/daily-snapshot-run/{run_id}/acquisition-details",
+        "default_limit": ACQUISITION_DETAIL_PAGE_DEFAULT_LIMIT,
+        "max_limit": ACQUISITION_DETAIL_PAGE_MAX_LIMIT,
+        "can_execute": False,
+    }
+
+
+def persist_acquisition_detail(
+    db: Any,
+    *,
+    run_id: str,
+    details: list[dict[str, Any]],
+    expected_targets: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Persist sanitized target outcomes independently of event-row detail.
+
+    Only this explicit allowlist crosses the persistence boundary. Provider raw
+    payloads, prices, probabilities, participant identity, and error messages
+    are never copied into the acquisition-detail store.
+    """
+    expected_keys = {
+        (str(row.get("family") or "").strip().upper(), str(row.get("target_key") or "").strip())
+        for row in expected_targets
+        if isinstance(row, dict)
+    }
+    if not expected_targets or any(not all(identity) for identity in expected_keys):
+        return {
+            "status": "EXPECTED_TARGETS_INVALID",
+            "detail_available": False,
+            "details_expected": len(expected_targets),
+            "details_persisted": 0,
+            "board_completeness": False,
+            "blockers": ["CROSS_SPORT_ACQUISITION_EXPECTED_TARGETS_INVALID"],
+            "can_execute": False,
+        }
+    if len(expected_keys) != len(expected_targets):
+        return {
+            "status": "EXPECTED_TARGETS_INVALID",
+            "detail_available": False,
+            "details_expected": len(expected_targets),
+            "details_persisted": 0,
+            "board_completeness": False,
+            "blockers": ["CROSS_SPORT_ACQUISITION_EXPECTED_TARGETS_DUPLICATE"],
+            "can_execute": False,
+        }
+    if not details:
+        return {
+            "status": "NO_DETAILS",
+            "detail_available": False,
+            "details_expected": 0,
+            "details_persisted": 0,
+            "board_completeness": False,
+            "blockers": ["CROSS_SPORT_ACQUISITION_DETAIL_MISSING"],
+            "can_execute": False,
+        }
+
+    captured_at = datetime.now(timezone.utc).isoformat()
+    payload: list[dict[str, Any]] = []
+    seen_keys: set[tuple[str, str]] = set()
+    for detail in details:
+        family = _bounded_text(detail.get("family"), maximum=32)
+        target_key = _bounded_text(detail.get("target_key"), maximum=256)
+        if not family or not target_key:
+            return {
+                "status": "INVALID_DETAIL",
+                "detail_available": False,
+                "details_expected": len(details),
+                "details_persisted": 0,
+                "board_completeness": False,
+                "blockers": ["CROSS_SPORT_ACQUISITION_DETAIL_IDENTITY_INVALID"],
+                "can_execute": False,
+            }
+        identity = (family.upper(), target_key)
+        if identity in seen_keys:
+            return {
+                "status": "INVALID_DETAIL",
+                "detail_available": False,
+                "details_expected": len(details),
+                "details_persisted": 0,
+                "board_completeness": False,
+                "blockers": ["CROSS_SPORT_ACQUISITION_DETAIL_DUPLICATE_IDENTITY"],
+                "can_execute": False,
+            }
+        seen_keys.add(identity)
+        provider_sport_id = detail.get("provider_sport_id")
+        final_state = _bounded_text(detail.get("final_state"), maximum=96)
+        provider_status = _bounded_text(detail.get("provider_status"), maximum=96)
+        fallback_status = _bounded_text(detail.get("fallback_status"), maximum=96)
+        exhaustion_status = _bounded_text(detail.get("exhaustion_status"), maximum=96)
+        if not all((final_state, provider_status, fallback_status, exhaustion_status)):
+            return {
+                "status": "INVALID_DETAIL",
+                "detail_available": False,
+                "details_expected": len(details),
+                "details_persisted": 0,
+                "board_completeness": False,
+                "blockers": ["CROSS_SPORT_ACQUISITION_DETAIL_STATE_INVALID"],
+                "can_execute": False,
+            }
+        payload.append(
+            {
+                "run_id": run_id,
+                "family": family.upper(),
+                "target_key": target_key,
+                "provider": _bounded_text(detail.get("provider"), maximum=64),
+                "league": _bounded_text(detail.get("league"), maximum=64),
+                "regime": _bounded_text(detail.get("regime"), maximum=64),
+                "provider_sport_id": int(provider_sport_id) if isinstance(provider_sport_id, int) else None,
+                "sport_key": _bounded_text(detail.get("sport_key"), maximum=128),
+                "final_state": final_state,
+                "provider_status": provider_status,
+                "fallback_status": fallback_status,
+                "exhaustion_status": exhaustion_status,
+                "events_returned": max(0, int(detail.get("events_returned") or 0)),
+                "duplicate_rows_suppressed": max(
+                    0, int(detail.get("duplicate_rows_suppressed") or 0)
+                ),
+                "blocker_code": _bounded_code(detail.get("blocker_code")),
+                "captured_at": captured_at,
+                "can_execute": False,
+            }
+        )
+    if seen_keys != expected_keys:
+        return {
+            "status": "TARGET_SET_MISMATCH",
+            "detail_available": False,
+            "details_expected": len(expected_keys),
+            "details_persisted": 0,
+            "board_completeness": False,
+            "blockers": ["CROSS_SPORT_ACQUISITION_TARGET_SET_MISMATCH"],
+            "missing_target_count": len(expected_keys - seen_keys),
+            "extra_target_count": len(seen_keys - expected_keys),
+            "can_execute": False,
+        }
+    try:
+        db.table(DAILY_ACQUISITION_DETAIL_TABLE).upsert(
+            payload, on_conflict="run_id,family,target_key"
+        ).execute()
+        query = (
+            db.table(DAILY_ACQUISITION_DETAIL_TABLE)
+            .select("family,target_key")
+            .eq("run_id", run_id)
+            .order("family")
+            .order("target_key")
+        )
+        ranged = getattr(query, "range", None)
+        stored_rows = (
+            ranged(0, len(expected_keys)).execute().data
+            if callable(ranged)
+            else query.limit(len(expected_keys) + 1).execute().data
+        ) or []
+    except Exception as exc:
+        return {
+            "status": "PERSISTENCE_UNAVAILABLE",
+            "detail_available": False,
+            "details_expected": len(payload),
+            "details_persisted": 0,
+            "board_completeness": False,
+            "blockers": [f"{ACQUISITION_DETAIL_PERSISTENCE_UNAVAILABLE}:{type(exc).__name__}"],
+            "can_execute": False,
+        }
+    stored_keys = {
+        (str(row.get("family") or "").strip().upper(), str(row.get("target_key") or "").strip())
+        for row in stored_rows
+        if isinstance(row, dict)
+    }
+    if stored_keys != expected_keys:
+        return {
+            "status": "PERSISTENCE_RECONCILIATION_FAILED",
+            "detail_available": False,
+            "details_expected": len(expected_keys),
+            "details_persisted": len(stored_keys & expected_keys),
+            "board_completeness": False,
+            "blockers": ["CROSS_SPORT_ACQUISITION_PERSISTED_TARGET_SET_MISMATCH"],
+            "missing_target_count": len(expected_keys - stored_keys),
+            "extra_target_count": len(stored_keys - expected_keys),
+            "can_execute": False,
+        }
+    return {
+        "status": "PERSISTED",
+        "detail_available": True,
+        "details_expected": len(payload),
+        "details_persisted": len(payload),
+        "board_completeness": True,
+        "blockers": [],
+        "can_execute": False,
+    }
+
+
+def read_acquisition_detail_page(
+    db: Any,
+    *,
+    run_id: str,
+    offset: int = 0,
+    limit: int = ACQUISITION_DETAIL_PAGE_DEFAULT_LIMIT,
+) -> dict[str, Any]:
+    """Read a bounded page of sanitized per-target acquisition outcomes."""
+    bounded_limit = max(1, min(int(limit), ACQUISITION_DETAIL_PAGE_MAX_LIMIT))
+    bounded_offset = max(0, int(offset))
+    fields = (
+        "run_id,family,target_key,provider,league,regime,provider_sport_id,"
+        "sport_key,final_state,provider_status,fallback_status,exhaustion_status,"
+        "events_returned,duplicate_rows_suppressed,blocker_code,captured_at"
+    )
+    try:
+        query = (
+            db.table(DAILY_ACQUISITION_DETAIL_TABLE)
+            .select(fields)
+            .eq("run_id", run_id)
+            .order("family")
+            .order("target_key")
+        )
+        ranged = getattr(query, "range", None)
+        if callable(ranged):
+            rows = ranged(bounded_offset, bounded_offset + bounded_limit - 1).execute().data or []
+        else:
+            rows = (query.limit(bounded_offset + bounded_limit).execute().data or [
+            ])[bounded_offset:bounded_offset + bounded_limit]
+    except Exception as exc:
+        return {
+            "run_id": run_id,
+            "terminal": True,
+            "status": "ACQUISITION_DETAIL_UNAVAILABLE",
+            "rows": [],
+            "offset": bounded_offset,
+            "limit": bounded_limit,
+            "returned": 0,
+            "blockers": [f"{ACQUISITION_DETAIL_RETRIEVAL_UNAVAILABLE}:{type(exc).__name__}"],
+            "can_execute": False,
+        }
+    page = [dict(row) for row in rows]
+    return {
+        "run_id": run_id,
+        "terminal": True,
+        "status": "OK" if page else "NO_ROWS_FOR_PAGE",
+        "rows": page,
+        "offset": bounded_offset,
+        "limit": bounded_limit,
+        "returned": len(page),
+        "next_offset": bounded_offset + len(page) if len(page) == bounded_limit else None,
+        "blockers": [],
+        "can_execute": False,
+    }
+
+
 def serialized_byte_size(payload: Any) -> int:
     """Transport size of a response, used by the response-size regression test."""
     return len(json.dumps(payload, default=str).encode("utf-8"))
 
 
 __all__ = [
+    "ACQUISITION_DETAIL_PAGE_DEFAULT_LIMIT",
+    "ACQUISITION_DETAIL_PAGE_MAX_LIMIT",
+    "ACQUISITION_DETAIL_PERSISTENCE_UNAVAILABLE",
+    "ACQUISITION_DETAIL_RETRIEVAL_UNAVAILABLE",
     "CAN_EXECUTE",
+    "DAILY_ACQUISITION_DETAIL_TABLE",
     "DAILY_ROW_DETAIL_TABLE",
     "DETAIL_PAGE_DEFAULT_LIMIT",
     "DETAIL_PAGE_MAX_LIMIT",
@@ -559,6 +847,7 @@ __all__ = [
     "MAX_COMPACT_AUDIT_ITEMS",
     "MAX_COMPACT_BLOCKERS",
     "MAX_COMPACT_IDENTITY_ITEMS",
+    "acquisition_detail_reference",
     "compact_acquisition",
     "compact_cross_sport_discovery_audit",
     "compact_direction",
@@ -567,7 +856,9 @@ __all__ = [
     "compact_moneyline_result",
     "compact_response",
     "compact_row",
+    "persist_acquisition_detail",
     "persist_row_detail",
+    "read_acquisition_detail_page",
     "read_row_detail_page",
     "serialized_byte_size",
 ]

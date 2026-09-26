@@ -24,10 +24,15 @@ from v17 import cross_sport_winner_discovery as discovery
 from v17 import team_event_bridge_runtime as bridge_runtime
 from v17.daily_prop_acquisition import acquire_daily_prop_snapshots
 from v17.daily_response_contract import (
+    ACQUISITION_DETAIL_PAGE_DEFAULT_LIMIT,
+    ACQUISITION_DETAIL_PAGE_MAX_LIMIT,
     DETAIL_PAGE_DEFAULT_LIMIT,
     DETAIL_PAGE_MAX_LIMIT,
+    acquisition_detail_reference,
     compact_response,
+    persist_acquisition_detail,
     persist_row_detail,
+    read_acquisition_detail_page,
     read_row_detail_page,
 )
 from v17.daily_terminal_reduction import (
@@ -550,6 +555,42 @@ def run_daily_snapshot(req: DailySnapshotRequest, *, db: Any, market_api: Any, e
             blockers.append(f"CROSS_SPORT_DISCOVERY_FAILED:{type(exc).__name__}")
         if produced is not None:
             cross_sport_rows, cross_sport_audit = produced
+            cross_sport_audit = dict(cross_sport_audit)
+            acquisition_details = [
+                dict(detail)
+                for detail in (cross_sport_audit.pop("acquisition_details", []) or [])
+                if isinstance(detail, dict)
+            ]
+            expected_acquisition_targets = [
+                dict(target)
+                for target in (
+                    cross_sport_audit.pop("expected_acquisition_targets", []) or []
+                )
+                if isinstance(target, dict)
+            ]
+            acquisition_persistence = persist_acquisition_detail(
+                db,
+                run_id=run_id,
+                details=acquisition_details,
+                expected_targets=expected_acquisition_targets,
+            )
+            acquisition_ref = acquisition_detail_reference(
+                run_id=run_id,
+                detail_available=bool(acquisition_persistence.get("detail_available")),
+                details_count=int(acquisition_persistence.get("details_expected") or 0),
+            )
+            cross_sport_audit["acquisition_detail_persistence"] = acquisition_persistence
+            cross_sport_audit["acquisition_detail_ref"] = acquisition_ref
+            reconciliation = dict(cross_sport_audit.get("reconciliation") or {})
+            if acquisition_persistence.get("board_completeness") is True:
+                reconciliation["acquisition_detail_reconciliation"] = "PASS"
+                reconciliation["board_completeness"] = "PASS"
+            else:
+                reconciliation["acquisition_detail_reconciliation"] = "BLOCKED"
+                reconciliation["board_completeness"] = "BLOCKED"
+                blockers.extend(acquisition_persistence.get("blockers") or [])
+            reconciliation["can_execute"] = False
+            cross_sport_audit["reconciliation"] = reconciliation
             rows.extend(cross_sport_rows)
             if cross_sport_audit["reconciliation"]["row_reconciliation"] != "PASS":
                 blockers.append("RUN_INVALID_CROSS_SPORT_ROW_RECONCILIATION")
@@ -699,4 +740,22 @@ def install_daily_snapshot_route(app: FastAPI, *, auth_dependency: Any, db_clien
             run_id=run_id,
             offset=offset,
             limit=min(limit, DETAIL_PAGE_MAX_LIMIT),
+        )
+
+    @app.get(
+        "/v17/daily-snapshot-run/{run_id}/acquisition-details",
+        dependencies=[auth_dependency],
+        operation_id="readWowV17DailySnapshotAcquisitionDetail",
+    )
+    def daily_snapshot_acquisition_detail(
+        run_id: str,
+        offset: int = 0,
+        limit: int = ACQUISITION_DETAIL_PAGE_DEFAULT_LIMIT,
+    ):
+        """Page sanitized target-level acquisition outcomes for one Daily run."""
+        return read_acquisition_detail_page(
+            db_client_fn(),
+            run_id=run_id,
+            offset=offset,
+            limit=min(limit, ACQUISITION_DETAIL_PAGE_MAX_LIMIT),
         )
