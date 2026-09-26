@@ -346,15 +346,19 @@ def _load_ncaaf_game_rows(client: Any) -> list[dict[str, Any]]:
     )
 
 
-def load_ncaaf_persisted_replay_rows(client: Any) -> list[MarginTrainingRow]:
-    """Load the immutable NCAAF team-state corpus for interactive spread scoring.
+def _load_ncaaf_persisted_game_rows(client: Any) -> list[dict[str, Any]]:
+    """Load settled-game inputs with stable pagination for persisted shadow scoring."""
+    return _paged_select(
+        client,
+        "wow_ncaaf_training_games",
+        "training_game_id,official_event_id,season,event_start_time,home_team,away_team,home_points,away_points,result_source,result_source_timestamp,can_execute",
+        order="official_event_id",
+    )
 
-    This path intentionally has no expensive reconstruction fallback. If the
-    governed immutable feature ledger is absent or inconsistent, the forward
-    shadow fails closed with a spread-specific typed blocker instead of putting
-    the shared web process back on the source-heavy reconstruction path.
-    """
-    features = _paged_select(
+
+def _load_ncaaf_persisted_feature_rows(client: Any) -> list[dict[str, Any]]:
+    """Load immutable dynamic-team-state rows using their unique event identity."""
+    return _paged_select(
         client,
         "wow_d1_training_rows",
         "official_event_id,event_start_time,feature_as_of,feature_schema_version,model_family,features,source_manifest,market_features_used,can_execute",
@@ -363,9 +367,20 @@ def load_ncaaf_persisted_replay_rows(client: Any) -> list[MarginTrainingRow]:
             ("eq", "model_family", NCAAF_PERSISTED_FEATURE_MODEL_FAMILY),
             ("eq", "feature_schema_version", NCAAF_PERSISTED_FEATURE_SCHEMA_VERSION),
         ),
-        order="event_start_time",
+        order="official_event_id",
     )
-    games = _load_ncaaf_game_rows(client)
+
+
+def load_ncaaf_persisted_replay_rows(client: Any) -> list[MarginTrainingRow]:
+    """Load the immutable NCAAF team-state corpus for interactive spread scoring.
+
+    This path intentionally has no expensive reconstruction fallback. If the
+    governed immutable feature ledger is absent or inconsistent, the forward
+    shadow fails closed with a spread-specific typed blocker instead of putting
+    the shared web process back on the source-heavy reconstruction path.
+    """
+    features = _load_ncaaf_persisted_feature_rows(client)
+    games = _load_ncaaf_persisted_game_rows(client)
     rows = adapt_ncaaf_persisted_rows(features, games)
 
     latest_feature = max(_dt(row.event_start_time) for row in rows)
