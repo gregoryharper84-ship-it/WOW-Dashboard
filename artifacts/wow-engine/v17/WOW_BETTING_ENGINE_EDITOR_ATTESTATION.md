@@ -1,6 +1,6 @@
 # WOW Betting Engine - V17 Custom GPT editor attestation
 
-Status: `RESYNC_REQUIRED_AFTER_PR766__LIVE_ACTION_ACCEPTANCE_REQUIRED`
+Status: `RESYNC_REQUIRED_AFTER_ISSUE871_ACTION_SCHEMA_UPDATE__LIVE_ACTION_ACCEPTANCE_REQUIRED`
 
 Historical verification date: 2026-09-16
 Post-PR617 editor update reported: 2026-09-20
@@ -8,9 +8,10 @@ PR654 repository repair merged: 2026-09-21
 PR766 host-contract repair: 2026-09-23
 Editor 8k installation repair: 2026-09-24
 Single-domain Action-set constraint confirmed: 2026-09-24
-Current reconciliation date: 2026-09-24
+Issue #871 Action-contract expansion prepared: 2026-09-26
+Current reconciliation date: 2026-09-26
 
-This record preserves the last fully verified live `WOW_BETTING_ENGINE` editor acceptance while separately recording later repository changes. The 2026-09-20 editor save predates later host-contract changes, so it cannot prove current instruction parity.
+This record preserves the last fully verified live `WOW_BETTING_ENGINE` editor acceptance while separately recording later repository changes. The 2026-09-20 editor save predates later host-contract and Action-contract changes, so it cannot prove current instruction or Action parity.
 
 ## Historical live editor identity and safety
 
@@ -30,7 +31,7 @@ WOW owns player/scalar props. Team/event winner/favorite/underdog/upset objectiv
 ```text
 schema = artifacts/wow-engine/v17/openapi.wow-betting-engine.v17.yaml
 run_control_reference_schema = artifacts/wow-engine/v17/openapi.wow-betting-engine.v17.run-control.yaml
-live_action_layout = SINGLE_DOMAIN_SINGLE_ACTION_SET_19_OPERATIONS
+live_action_layout = SINGLE_DOMAIN_SINGLE_ACTION_SET_20_OPERATIONS
 instructions = artifacts/wow-engine/WOW_V17_CUSTOM_GPT_INSTRUCTIONS.txt
 prizepicks_addendum_source = artifacts/wow-engine/WOW_V17_CUSTOM_GPT_PRIZEPICKS_SKILL_ADDENDUM.txt
 prizepicks_addendum_installation_surface = KNOWLEDGE_FILE
@@ -44,12 +45,15 @@ auth = API Key / Bearer using existing WOW_ACTION_API_KEY
 /v17/pick-request-runs/{request_id} operationId = getWowV17PickRequestRunState
 /v17/pick-request-runs/resumable operationId = runWowV17ResumablePickRequest
 /v17/pick-request-runs/{request_id}/close operationId = closeWowV17PickRequestRun
+/internal/v17/spread-forward-shadow operationId = scoreWowV17SpreadForwardShadow
 can_execute = false
 ```
 
-The Custom GPT editor rejects duplicate Action domains. Therefore the production WOW Render domain must be represented by exactly one installed Action group. The three run-control operations are merged into the canonical primary schema for live-editor installation; the standalone run-control schema remains a repository/reference contract only.
+The Custom GPT editor rejects duplicate Action domains. Therefore the production WOW Render domain must be represented by exactly one installed Action group. The three run-control operations and the research-only NCAAF spread forward-shadow operation are merged into the canonical primary schema for live-editor installation; the standalone run-control schema remains a repository/reference contract only.
 
-The canonical instructions file is the only repository text pasted into the Custom GPT Instructions field and must remain <=8,000 characters and <=7,500 UTF-8 bytes. The PrizePicks addendum is attached as Knowledge instead of being appended to the Instructions field. The deterministic sync builder fails closed when those limits or the required 19-operation Action surface are violated.
+The canonical instructions file is the only repository text pasted into the Custom GPT Instructions field and must remain <=8,000 characters and <=7,500 UTF-8 bytes. The PrizePicks addendum is attached as Knowledge instead of being appended to the Instructions field. The deterministic sync builder fails closed when those limits, any required Action operation, or the exact 20-operation Action surface are violated.
+
+The spread forward-shadow Action is a Class-B interface exposure to an existing research-only backend route. Its request contract is closed to `NCAAF` and requires event identity, event time, home/away teams, exact home spread, and season. It does not certify, promote, publish, or execute a spread probability.
 
 This installation layout changes only editor packaging/orchestration exposure. It does not weaken or alter V17 routing, sporting-model authority, probability mathematics, calibration, publication governance, typed failures, terminal authority, or execution posture.
 
@@ -58,7 +62,7 @@ PR #654 requires fail-fast Action-surface preflight before large-board row prepa
 ## Current live-editor status
 
 ```text
-LIVE_GPT_EDITOR_SYNC = RESYNC_REQUIRED_AFTER_PR766__LIVE_ACTION_ACCEPTANCE_REQUIRED
+LIVE_GPT_EDITOR_SYNC = RESYNC_REQUIRED_AFTER_ISSUE871_ACTION_SCHEMA_UPDATE__LIVE_ACTION_ACCEPTANCE_REQUIRED
 BACKEND_RUNTIME = separately verified production state
 MODEL_CAPABILITY = route-specific separate state
 can_execute = false
@@ -72,7 +76,7 @@ A new live editor attestation may set `LIVE_GPT_EDITOR_SYNC=VERIFIED` only after
 
 1. pasting the current canonical instructions into the Instructions field;
 2. attaching the current PrizePicks addendum as Knowledge;
-3. importing the single canonical 19-operation WOW Action schema for the Render domain with existing Bearer auth preserved; and
+3. importing the single canonical 20-operation WOW Action schema for the Render domain with existing Bearer auth preserved; and
 4. opening a fresh WOW chat after save/reload.
 
 Fresh-chat acceptance must prove:
@@ -82,9 +86,10 @@ Fresh-chat acceptance must prove:
 3. `scoreWowPickRequest` is visible, callable, and returns a typed governed response/receipt for a known pregame directional row;
 4. `lookupWowV17PredictionReceipts` is visible, callable, and recovers that exact immutable receipt;
 5. `getWowV17PickRequestRunState`, `runWowV17ResumablePickRequest`, and `closeWowV17PickRequestRun` are visible on the same WOW Action group;
-6. a multi-page PrizePicks PDF is inspected page by page and cannot silently degrade to page 1 if a later page initially fails to render;
-7. if a page remains unreadable after fallback, `SOURCE_PAGE_UNREADABLE:<page_number>` plus page reconciliation is preserved and no false `omitted rows = 0` claim appears;
-8. required V17 diagnostic Actions remain callable; and
-9. `can_execute=false` remains true.
+6. `scoreWowV17SpreadForwardShadow` is visible on that same Action group and a valid NCAAF exact-line request reaches the backend while remaining non-publishable, non-promoting, and non-executable;
+7. a multi-page PrizePicks PDF is inspected page by page and cannot silently degrade to page 1 if a later page initially fails to render;
+8. if a page remains unreadable after fallback, `SOURCE_PAGE_UNREADABLE:<page_number>` plus page reconciliation is preserved and no false `omitted rows = 0` claim appears;
+9. required V17 diagnostic Actions remain callable; and
+10. `can_execute=false` remains true.
 
 Until then, preserve the historical verification only as historical evidence. Do not represent current live Action binding, current editor parity, or the multi-page PrizePicks contract as complete.
