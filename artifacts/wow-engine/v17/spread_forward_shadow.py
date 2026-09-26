@@ -1,6 +1,6 @@
 """Current-slate NCAAF point-spread forward shadow scoring.
 
-This is a Class C challenger serving surface.  It re-fits the existing governed
+This is a Class C challenger serving surface. It re-fits the existing governed
 NCAAF spread-margin challenger from the same read-only historical corpus used by
 historical replay, constructs the target matchup from settled prior sporting
 results only, and applies the requested spread solely as a post-fit threshold.
@@ -173,7 +173,18 @@ def run_ncaaf_forward_shadow(
     home_spread: float,
     season: int | None = None,
 ) -> dict[str, Any]:
-    """Return research-only exact-line cover distribution for one NCAAF event."""
+    """Return research-only exact-line cover distribution for one future NCAAF event."""
+    target_start = _dt(event_start_time)
+    if season is None:
+        raise SpreadChallengerUnavailable(
+            "SPREAD_FORWARD_SEASON_REQUIRED",
+            "season is required for current-slate spread shadow scoring",
+        )
+    if int(season) != int(target_start.year):
+        raise SpreadChallengerUnavailable(
+            "SPREAD_FORWARD_SEASON_MISMATCH",
+            "season must match the target event calendar year",
+        )
     try:
         line = float(home_spread)
     except (TypeError, ValueError) as exc:
@@ -182,6 +193,18 @@ def run_ncaaf_forward_shadow(
         raise SpreadChallengerUnavailable("SPREAD_FORWARD_LINE_INVALID", "home_spread is outside supported sanity bounds")
 
     replay_rows = load_replay_rows(client, sport=SPORT)
+    if not replay_rows:
+        raise SpreadChallengerUnavailable(
+            "SPREAD_FORWARD_TRAINING_UNAVAILABLE",
+            "NCAAF spread replay rows are unavailable",
+        )
+    latest_training_event = max(_dt(row.event_start_time) for row in replay_rows)
+    if latest_training_event >= target_start:
+        raise SpreadChallengerUnavailable(
+            "SPREAD_FORWARD_TARGET_NOT_AFTER_TRAINING_CUTOFF",
+            "forward-shadow target must be later than every fitted/replay sporting row",
+        )
+
     artifact, replay_metrics = train_margin_distribution_candidate(
         replay_rows,
         sport=SPORT,
@@ -196,7 +219,7 @@ def run_ncaaf_forward_shadow(
             "event_start_time": str(event_start_time),
             "home_team": str(home_team),
             "away_team": str(away_team),
-            "season": season,
+            "season": int(season),
         },
     )
     if tuple(sorted(features)) != tuple(artifact.feature_names):
@@ -212,6 +235,7 @@ def run_ncaaf_forward_shadow(
         "sport": SPORT,
         "event_id": str(event_id),
         "event_start_time": str(event_start_time),
+        "season": int(season),
         "home_team": str(home_team),
         "away_team": str(away_team),
         "home_spread": line,
@@ -222,6 +246,7 @@ def run_ncaaf_forward_shadow(
         "artifact_train_rows": artifact.train_rows,
         "artifact_calibration_rows": artifact.calibration_rows,
         "artifact_test_rows": artifact.test_rows,
+        "training_cutoff_event_time": latest_training_event.isoformat(),
         "predicted_home_margin_center": scored["predicted_home_margin_center"],
         "p_cover": scored["p_cover"],
         "p_push": scored["p_push"],
