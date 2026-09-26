@@ -11,7 +11,7 @@ Terminal authority: `V17_TERMINAL_REDUCER`
 
 Add point-spread probability modeling to WOW without weakening V17 probability governance.
 
-The spread lane predicts a **sporting scoring-margin distribution**.  An exact spread is then evaluated as a threshold on that fitted distribution.  The bookmaker line is not a training feature and the model never derives spread probability from moneyline probability, implied odds, external projections, narrative judgment, or generic LLM reasoning.
+The spread lane predicts a **sporting scoring-margin distribution**. An exact spread is then evaluated as a threshold on that fitted distribution. The bookmaker line is not a training feature and the model never derives spread probability from moneyline probability, implied odds, external projections, narrative judgment, or generic LLM reasoning.
 
 For signed home spread `s` and home scoring margin `m = home_score - away_score`:
 
@@ -21,7 +21,7 @@ For signed home spread `s` and home scoring margin `m = home_score - away_score`
 
 ## Why margin distribution instead of ATS classification
 
-A direct `cover / no-cover` classifier is tied to a particular posted line and invites market leakage.  Modeling the underlying margin lets one governed fitted artifact answer many exact lines while keeping the line outside the feature vector.
+A direct `cover / no-cover` classifier is tied to a particular posted line and invites market leakage. Modeling the underlying margin lets one governed fitted artifact answer many exact lines while keeping the line outside the feature vector.
 
 Example conceptually:
 
@@ -33,7 +33,7 @@ Example conceptually:
 
 ### 1. Leakage-safe sporting features
 
-`spread_margin_challenger.py` can build dynamic pregame rows from the existing V17 team-state intelligence feature family.  Historical replay can also consume existing governed pregame feature tables when those tables already represent frozen pregame state.
+`spread_margin_challenger.py` can build dynamic pregame rows from the existing V17 team-state intelligence feature family. Historical replay can also consume existing governed pregame feature tables when those tables already represent frozen pregame state.
 
 Every row carries:
 
@@ -67,7 +67,7 @@ Initial challenger family:
 
 `<SPORT>_SPREAD_MARGIN_RIDGE_EMPIRICAL_V1`
 
-The first version uses standardized ridge regression for the expected home scoring margin.  It is deliberately simple and auditable; sophistication must be earned by replay evidence rather than introduced speculatively.
+The first version uses standardized ridge regression for the expected home scoring margin. It is deliberately simple and auditable; sophistication must be earned by replay evidence rather than introduced speculatively.
 
 ### 4. Residual distribution
 
@@ -95,7 +95,7 @@ The probability triplet is regression-tested to normalize to 1.0.
 
 ### 5. Evaluation
 
-The untouched chronological test partition is evaluated over sport-specific synthetic line grids.  Synthetic lines are evaluation thresholds only; they are not model features.
+The untouched chronological test partition is evaluated over sport-specific synthetic line grids. Synthetic lines are evaluation thresholds only; they are not model features.
 
 Required metrics:
 
@@ -116,7 +116,7 @@ Additional certification work must add season/regime, playoffs, overtime-sensiti
 
 ## Sport ownership
 
-Infrastructure may be shared.  Fitted artifacts may not be shared across sports.
+Infrastructure may be shared. Fitted artifacts may not be shared across sports.
 
 Initial families:
 
@@ -128,7 +128,7 @@ Initial families:
 
 Each sport must independently earn replay, calibration, counterexample, holdout, and forward-shadow evidence before any serving registration.
 
-MLB run lines are intentionally excluded from this first shared spread family.  Baseball run distributions require a sport-specific design rather than pretending a football/basketball margin model transfers unchanged.
+MLB run lines are intentionally excluded from this first shared spread family. Baseball run distributions require a sport-specific design rather than pretending a football/basketball margin model transfers unchanged.
 
 ## Current historical-data readiness
 
@@ -136,13 +136,15 @@ Validation-project inspection on 2026-09-25 found:
 
 | Sport | Settled/training games | Persisted pregame feature rows | Replay state |
 |---|---:|---:|---|
-| NFL | 1,457 | 1,438 | READY FOR CHALLENGER REPLAY |
-| NBA | 8,919 | 8,747 | READY FOR CHALLENGER REPLAY |
-| WNBA | 2,211 | 2,122 | READY FOR CHALLENGER REPLAY |
-| NCAAF | 3,844 | 0 | `SPREAD_REPLAY_FEATURES_UNAVAILABLE` |
+| NFL | 1,457 | 1,438 | READY — persisted governed pregame features |
+| NBA | 8,919 | 8,747 | READY — persisted governed pregame features |
+| WNBA | 2,211 | 2,122 | READY — persisted governed pregame features |
+| NCAAF | 3,844 | 0 | READY FOR BASELINE REPLAY — reconstruct prior-only V17 team-state features from settled games |
 | NCAAB | no dedicated training table found | no dedicated feature table found | `SPREAD_REPLAY_DATASET_UNAVAILABLE` |
 
-Those NCAAF/NCAAB states must remain typed blockers.  They must not become `MODEL_UNAVAILABLE`, inferred probabilities, moneyline conversions, or generic estimates.
+NCAAF therefore has two distinct facts that must remain visible: its existing advanced persisted training-feature table is empty, but its governed settled game history is sufficient for a leakage-safe **baseline** spread challenger using the shared V17 prior-only team-state feature builder. That baseline is not a substitute for richer NCAAF feature development and does not imply certification.
+
+NCAAB remains a typed dataset blocker. It must not become `MODEL_UNAVAILABLE`, an inferred probability, a moneyline conversion, or a generic estimate.
 
 ## Replay interface
 
@@ -155,11 +157,12 @@ PYTHONPATH=. python scripts/run_spread_margin_challenger_replay.py \
   --output /tmp/nfl-spread-replay.json
 ```
 
-Supported first-pass live-data replay sports: `NFL`, `NBA`, `WNBA`.
+Supported first-pass historical replay sports: `NFL`, `NBA`, `WNBA`, `NCAAF`.
 
 The replay adapter:
 
-- reads existing governed training and pregame-feature tables;
+- reads existing governed training and pregame-feature tables where available;
+- reconstructs NCAAF baseline features exclusively from prior settled results when persisted advanced features are unavailable;
 - performs no DDL;
 - performs no inserts/updates/deletes;
 - does not register the challenger as a serving specialist;
@@ -186,7 +189,7 @@ Required sequence:
 12. governed certification decision;
 13. only after certification: separate production-registration change.
 
-A production-serving change would require its own review and acceptance work.  This experiment does not contain one.
+A production-serving change would require its own review and acceptance work. This experiment does not contain one.
 
 ## Governance invariants
 
