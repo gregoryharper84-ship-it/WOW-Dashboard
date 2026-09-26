@@ -5,8 +5,6 @@ import importlib.util
 import sys
 from pathlib import Path
 
-import yaml
-
 SCRIPT = Path(__file__).resolve().parent / "build_gpt_editor_sync_packet.py"
 SCHEMA = Path(__file__).resolve().parent / "openapi.wow-betting-engine.v17.yaml"
 spec = importlib.util.spec_from_file_location("gpt_editor_sync_packet", SCRIPT)
@@ -66,7 +64,7 @@ def test_packet_contains_single_domain_action_contract_without_secrets():
         assert operation in schema_text
         assert operation in manifest["required_operations"]
 
-    # Dependency-free count check for the dedicated sync workflow. Full YAML/OpenAPI
+    # Keep this dedicated sync workflow dependency-free. Full YAML/OpenAPI
     # validation runs in the protected backend regression suite.
     assert schema_text.count("operationId:") == module.REQUIRED_OPERATION_COUNT == 20
     assert manifest["action_operation_count"] == 20
@@ -82,34 +80,31 @@ def test_packet_contains_single_domain_action_contract_without_secrets():
 
 
 def test_spread_forward_shadow_action_is_closed_ncaaf_only_and_research_only():
-    schema = yaml.safe_load(SCHEMA.read_text(encoding="utf-8"))
-    route = schema["paths"]["/internal/v17/spread-forward-shadow"]["post"]
+    schema_text = SCHEMA.read_text(encoding="utf-8")
 
-    assert route["operationId"] == "scoreWowV17SpreadForwardShadow"
-    assert route["security"] == [{"actionBearer": []}]
-    assert route["x-openai-isConsequential"] is False
-    assert "Research-only" in route["description"]
-    assert route["requestBody"]["content"]["application/json"]["schema"] == {
-        "$ref": "#/components/schemas/SpreadForwardShadowRequest"
-    }
+    route_start = schema_text.index("  /internal/v17/spread-forward-shadow:\n")
+    route_end = schema_text.index("  /v17/prediction-receipts/lookup:\n", route_start)
+    route = schema_text[route_start:route_end]
 
-    request = schema["components"]["schemas"]["SpreadForwardShadowRequest"]
-    assert request["additionalProperties"] is False
-    assert request["required"] == [
-        "sport",
-        "event_id",
-        "event_start_time",
-        "home_team",
-        "away_team",
-        "home_spread",
-        "season",
-    ]
-    assert request["properties"]["sport"]["enum"] == ["NCAAF"]
-    assert request["properties"]["event_start_time"]["format"] == "date-time"
-    assert request["properties"]["home_spread"]["exclusiveMinimum"] == -100
-    assert request["properties"]["home_spread"]["exclusiveMaximum"] == 100
-    assert request["properties"]["season"]["minimum"] == 2000
-    assert request["properties"]["season"]["maximum"] == 2100
+    assert "operationId: scoreWowV17SpreadForwardShadow" in route
+    assert "x-openai-isConsequential: false" in route
+    assert "Research-only NCAAF exact-line spread forward shadow" in route
+    assert "security: [{actionBearer: []}]" in route
+    assert "schema: {$ref: '#/components/schemas/SpreadForwardShadowRequest'}" in route
+
+    request_start = schema_text.index("    SpreadForwardShadowRequest:\n")
+    request_end = schema_text.index("    RecommendationBatch:\n", request_start)
+    request = schema_text[request_start:request_end]
+
+    assert "additionalProperties: false" in request
+    assert (
+        "required: [sport, event_id, event_start_time, home_team, away_team, home_spread, season]"
+        in request
+    )
+    assert "sport: {type: string, enum: [NCAAF]}" in request
+    assert "event_start_time: {type: string, format: date-time}" in request
+    assert "home_spread: {type: number, exclusiveMinimum: -100, exclusiveMaximum: 100}" in request
+    assert "season: {type: integer, minimum: 2000, maximum: 2100}" in request
 
 
 def test_packet_is_deterministic_for_same_repository_content():
