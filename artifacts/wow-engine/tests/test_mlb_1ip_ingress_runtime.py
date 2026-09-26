@@ -11,10 +11,10 @@ VALIDATED_LINES = [11.5, 13.5, 15.5, 17.5, 19.5, 21.5]
 class _Decision:
     terminal_label = "MODEL_QUALIFIED_HOLD"
     pick_rejected = False
-    verdict_class = "MODEL_SUPPORTED_HOLD"
+    verdict_class = "MARKET_BLOCKED"
     infrastructure_blocked = False
     terminal_cause = "MODEL_SUPPORTED"
-    concurrent_infrastructure_blockers = ()
+    concurrent_infrastructure_blockers = ("PAYOUT_UNRESOLVED",)
 
 
 class _Table:
@@ -78,8 +78,8 @@ class _MarketAPI:
         return dict(self._artifact)
 
 
-def _row(evidence=None):
-    return SimpleNamespace(
+def _row(evidence=None, **overrides):
+    values = dict(
         event_id="777",
         event_start_time="2099-09-01T20:00:00+00:00",
         player="Test Pitcher",
@@ -88,8 +88,12 @@ def _row(evidence=None):
         source_type="NORMALIZED",
         platform=None,
         money_lane_status="PAYOUT_UNRESOLVED",
+        market_side_a=None,
+        market_side_b=None,
         evidence=evidence,
     )
+    values.update(overrides)
+    return SimpleNamespace(**values)
 
 
 def _terminal(row_key, status, code, *, detail=None, acquisition=None, **kwargs):
@@ -165,11 +169,42 @@ def test_no_caller_evidence_auto_hydrates_then_runs_research_before_specialist(m
     assert out["result"]["model_family"] == "MLB_1IP_CONDITIONAL_TOTAL_PITCH_PMF_V1"
     assert out["final_refresh_required"] is False
     assert out["refresh_queue"]["status"] == "NOT_REQUIRED"
-    assert out["probability_publishable"] is False
+    assert out["probability_status"] == "PASS"
+    assert out["probability_publishable"] is True
+    assert out["money_ev_status"] == "DATA_UNOBTAINABLE"
+    assert out["portfolio_or_slip_status"] == "HOLD"
+    assert out["final_ceiling"] == "MODEL_QUALIFIED_HOLD"
+    assert out["mlb_1ip_lane_status"] == "FULL_MODEL_GOVERNED"
+    assert out["full_model_eligible"] is True
+    assert out["test_only_quarantine_removed"] is True
+    assert out["gatekeeper_continuation"] is True
     assert out["can_execute"] is False
 
 
-def test_provisional_auto_hydrated_result_is_queued(monkeypatch):
+def test_exact_promotional_board_with_missing_payout_keeps_probability_and_holds_money(monkeypatch):
+    monkeypatch.setattr(ingress, "hydrate_mlb_1ip_evidence", lambda **kwargs: _hydrated(lineup_status="CONFIRMED"))
+    row = _row(
+        source_type="SCREENSHOT",
+        platform="PrizePicks",
+        market_side_a={"line_modifier": "GOBLIN", "line": 15.5},
+        money_lane_status="PAYOUT_UNRESOLVED",
+    )
+    out = ingress.score_mlb_1ip_ingress(
+        row=row, row_key="promo-1", market_api=_MarketAPI(), request_id="req-promo",
+        run_research=lambda **kwargs: (True, {"stages": []}), terminal=_terminal, reduce_terminal=_reduce,
+    )
+    assert out["model_evaluated"] is True
+    assert out["probability_status"] == "PASS"
+    assert out["probability_publishable"] is True
+    assert out["market_edge_status"] == "DATA_UNOBTAINABLE"
+    assert out["money_ev_status"] == "DATA_UNOBTAINABLE"
+    assert out["portfolio_or_slip_status"] == "HOLD"
+    assert out["final_ceiling"] == "MODEL_QUALIFIED_HOLD"
+    assert "PAYOUT_UNRESOLVED" in out["result"]["blockers"]
+    assert out["can_execute"] is False
+
+
+def test_provisional_auto_hydrated_result_is_queued_but_probability_remains_visible(monkeypatch):
     monkeypatch.setattr(ingress, "hydrate_mlb_1ip_evidence", lambda **kwargs: _hydrated(lineup_status="TBD"))
     market_api = _MarketAPI()
     out = ingress.score_mlb_1ip_ingress(
@@ -182,6 +217,9 @@ def test_provisional_auto_hydrated_result_is_queued(monkeypatch):
     assert out["refresh_queue"]["queue_id"] == "queue-1"
     assert market_api.client.table_obj.payload["status"] == "WAITING_FOR_OFFICIAL_LINEUP"
     assert market_api.client.table_obj.payload["can_execute"] is False
+    assert out["probability_publishable"] is True
+    assert out["final_ceiling"] == "MODEL_QUALIFIED_HOLD"
+    assert out["can_execute"] is False
 
 
 def test_refresh_queue_failure_preserves_completed_sporting_probability(monkeypatch):
@@ -195,6 +233,50 @@ def test_refresh_queue_failure_preserves_completed_sporting_probability(monkeypa
     assert out["refresh_queue"]["status"] == "PERSISTENCE_UNAVAILABLE"
     assert "FINAL_REFRESH_QUEUE_PERSISTENCE_UNAVAILABLE" in out["result"]["blockers"]
     assert out["terminal_label"] == "MODEL_QUALIFIED_HOLD"
+    assert out["probability_publishable"] is True
+    assert out["can_execute"] is False
+
+
+def test_prior_sample_insufficient_still_rejects_without_sporting_probability(monkeypatch):
+    from prop_auto_hydration import PropAutoHydrationError
+
+    def fail(**kwargs):
+        raise PropAutoHydrationError(
+            "MLB_1IP_PRIOR_SAMPLE_INSUFFICIENT",
+            "insufficient official first-inning play-by-play",
+            detail={"starts": 2},
+        )
+
+    monkeypatch.setattr(ingress, "hydrate_mlb_1ip_evidence", fail)
+    out = ingress.score_mlb_1ip_ingress(
+        row=_row(), row_key="prior-low", market_api=_MarketAPI(), request_id="req-low",
+        run_research=lambda **kwargs: (_ for _ in ()).throw(AssertionError("research must not run")),
+        terminal=_terminal, reduce_terminal=_reduce,
+    )
+    assert out["code"] == "MLB_1IP_PRIOR_SAMPLE_INSUFFICIENT"
+    assert out["terminal_label"] == "REJECT_DATA_QUALITY"
+    assert out["probability_publishable"] is False
+    assert out["can_execute"] is False
+
+
+def test_event_already_started_never_retroactively_publishes(monkeypatch):
+    from prop_auto_hydration import PropAutoHydrationError
+
+    def fail(**kwargs):
+        raise PropAutoHydrationError(
+            "EVENT_ALREADY_STARTED",
+            "event is no longer pregame",
+            detail={"event_id": "777"},
+        )
+
+    monkeypatch.setattr(ingress, "hydrate_mlb_1ip_evidence", fail)
+    out = ingress.score_mlb_1ip_ingress(
+        row=_row(), row_key="started", market_api=_MarketAPI(), request_id="req-started",
+        run_research=lambda **kwargs: (_ for _ in ()).throw(AssertionError("research must not run")),
+        terminal=_terminal, reduce_terminal=_reduce,
+    )
+    assert out["code"] == "EVENT_ALREADY_STARTED"
+    assert out["terminal_label"] == "NO_PLAY"
     assert out["probability_publishable"] is False
     assert out["can_execute"] is False
 
