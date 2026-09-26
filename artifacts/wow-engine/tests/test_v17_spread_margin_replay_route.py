@@ -64,6 +64,7 @@ def test_success_receipt_is_compact_shadow_only_and_non_executable(monkeypatch):
     assert payload["probability_publishable"] is False
     assert payload["database_mutated"] is False
     assert payload["production_registry_mutated"] is False
+    assert payload["dry_run_only_no_live_trading_no_market_orders"] is True
     assert payload["can_execute"] is False
     assert payload["global_terminal_reducer"] == "V17_TERMINAL_REDUCER"
     assert payload["market_features_used"] is False
@@ -88,6 +89,7 @@ def test_typed_dataset_blocker_is_preserved_not_model_unavailable(monkeypatch):
     assert payload["code"] == "SPREAD_REPLAY_DATASET_UNAVAILABLE"
     assert payload["code"] != "MODEL_UNAVAILABLE"
     assert payload["probability_publishable"] is False
+    assert payload["dry_run_only_no_live_trading_no_market_orders"] is True
     assert payload["can_execute"] is False
 
 
@@ -104,6 +106,7 @@ def test_unexpected_runtime_failure_keeps_transport_infrastructure_semantics(mon
     assert payload["code"] != "MODEL_UNAVAILABLE"
     assert payload["error_type"] == "RuntimeError"
     assert "database transport failed" not in str(payload)
+    assert payload["dry_run_only_no_live_trading_no_market_orders"] is True
     assert payload["can_execute"] is False
 
 
@@ -134,6 +137,7 @@ def test_route_installation_is_idempotent_and_has_auth_dependency():
 
 def test_governance_constants_are_fail_closed():
     assert route.CAN_EXECUTE is False
+    assert route.DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS is True
     assert route.AUTOMATIC_CERTIFICATION is False
     assert route.AUTOMATIC_PROMOTION is False
     assert route.PROBABILITY_PUBLISHABLE is False
