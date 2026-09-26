@@ -109,6 +109,172 @@
           "note": "PRIMARY (DAILY_RESPONSE_SERIALIZATION_TOO_LARGE) and CRITICAL (TERMINAL_REDUCER_UPGRADE) items independently verified in production; four secondary items (1IP capability manifest drift, zero-row reason, scoring_attempted split, infrastructure_blocked semantics) are deployed but not yet independently observed."
         }
       }
+    },
+    {
+      "postmortem_id": "PM-2026-09-25-001",
+      "title": "Prop self-acceptance telemetry correlation",
+      "severity": "P1",
+      "domain": "WOW host orchestration / Action invocation telemetry",
+      "state": "VERIFIED_CLOSED",
+      "postmortem_path": "artifacts/wow-engine/v17/postmortems/PM-2026-09-25-001__prop-self-acceptance-telemetry-correlation.md",
+      "engineering_fix_ids": [
+        "FIX-2026-09-25-001"
+      ],
+      "created_utc": "2026-09-25T16:03:57Z",
+      "updated_utc": "2026-09-25T19:31:23Z",
+      "team_contract_version": "1.0",
+      "primary_subsystem": "WOW_HOST_ORCHESTRATION",
+      "secondary_subsystems": [],
+      "reported_by": "runtime",
+      "workflow_stage": "REPORTER_CLOSURE",
+      "current_owner": "REPORTER_AGENT",
+      "reproduction_status": "REPRODUCED",
+      "root_cause_status": "CONFIRMED",
+      "acceptance_criteria": [
+        "Startup prop self-acceptance calls are classified SELF_ACCEPTANCE.",
+        "Each MORE/LESS logical probe carries one non-secret UUID request ID reused across retries, with distinct IDs between directions.",
+        "Every probe reports rows_in=1 without request-body capture or secret leakage.",
+        "Targeted, neighboring telemetry, scope, and protected exact-head CI pass with can_execute=false and V17 terminal authority unchanged.",
+        "The deployed Render SHA is the merge commit or a verified descendant with ancestry proof, and fresh SELF_ACCEPTANCE receipts show populated correlation before Reporter closure."
+      ],
+      "handoff_history": [
+        {
+          "from_stage": "REPORTER_INTAKE",
+          "from_role": "REPORTER_AGENT",
+          "to_stage": "RESEARCH_TRIAGE",
+          "to_role": "RESEARCH_TRIAGE_AGENT",
+          "timestamp_utc": "2026-09-25T16:03:57Z",
+          "evidence": "REPORTER_AGENT (/root/reporter_agent) -> RESEARCH_TRIAGE_AGENT (/root/research_triage_agent): PM-2026-09-25-001 intake/dedup complete; repeated /score-prop 422 receipts had request_id/rows_in null; transport reached app; isolate caller/middleware/route/persistence before edit. Historical handoff timestamp unavailable; reconstructed from the automation transcript at record creation."
+        },
+        {
+          "from_stage": "RESEARCH_TRIAGE",
+          "from_role": "RESEARCH_TRIAGE_AGENT",
+          "to_stage": "ENGINEERING",
+          "to_role": "ENGINEERING_AGENT",
+          "timestamp_utc": "2026-09-25T16:03:57Z",
+          "evidence": "RESEARCH_TRIAGE_AGENT (/root/research_triage_agent) -> ENGINEERING_AGENT (/root/engineering_agent): Reproduced attribution defect: paired 422s were api_prod_market_acceptance startup self-tests expecting PROP_EVIDENCE_SNAPSHOT_NOT_FOUND; omitted correlation headers caused ACTION_API_KEY/null fields; supported-current-board failure status INSUFFICIENT_EVIDENCE; bounded fix tags SELF_ACCEPTANCE/request ID/rows=1. Historical handoff timestamp unavailable; reconstructed from the automation transcript at record creation."
+        },
+        {
+          "from_stage": "ENGINEERING",
+          "from_role": "ENGINEERING_AGENT",
+          "to_stage": "INDEPENDENT_REVIEW",
+          "to_role": "INDEPENDENT_REVIEW_AGENT",
+          "timestamp_utc": "2026-09-25T16:03:57Z",
+          "evidence": "ENGINEERING_AGENT (/root/engineering_agent) -> INDEPENDENT_REVIEW_AGENT (/root/independent_review_agent): PR #835 exact head d4101dc6... two-file repair; targeted 4 pass, adjacent 10 pass. Historical handoff timestamp unavailable; reconstructed from automation transcript at record creation."
+        },
+        {
+          "from_stage": "INDEPENDENT_REVIEW",
+          "from_role": "INDEPENDENT_REVIEW_AGENT",
+          "to_stage": "ENGINEERING",
+          "to_role": "ENGINEERING_AGENT",
+          "timestamp_utc": "2026-09-25T16:03:57Z",
+          "evidence": "INDEPENDENT_REVIEW_AGENT (/root/independent_review_agent) -> ENGINEERING_AGENT (/root/engineering_agent): REJECT_TO_ENGINEERING: add deterministic retry-stability test and reconcile R1 markers. SYSTEM_ARCHITECT_AGENT (/root/system_architect_agent): PASS_WITH_BOUNDED_CONDITIONS; R1; existing headers/schema suffice; no middleware fallback/body capture/auth/response/probability/terminal/schema change. Historical handoff timestamps unavailable; reconstructed from automation transcript at record creation."
+        },
+        {
+          "from_stage": "ENGINEERING",
+          "from_role": "ENGINEERING_AGENT",
+          "to_stage": "INDEPENDENT_REVIEW",
+          "to_role": "INDEPENDENT_REVIEW_AGENT",
+          "timestamp_utc": "2026-09-25T16:03:57Z",
+          "evidence": "ENGINEERING_AGENT (/root/engineering_agent) -> INDEPENDENT_REVIEW_AGENT (/root/independent_review_agent): Rework head fd97086e... retry coverage added; targeted+adjacent 10 pass; scope/risk reconciled R1. Historical handoff timestamp unavailable; reconstructed from automation transcript at record creation."
+        },
+        {
+          "from_stage": "INDEPENDENT_REVIEW",
+          "from_role": "INDEPENDENT_REVIEW_AGENT",
+          "to_stage": "QA_VERIFICATION",
+          "to_role": "QA_VERIFICATION_AGENT",
+          "timestamp_utc": "2026-09-25T16:03:57Z",
+          "evidence": "INDEPENDENT_REVIEW_AGENT (/root/independent_review_agent) -> QA_VERIFICATION_AGENT (/root/qa_verification_agent): PASS exact head fd97086e... scope/architecture/governance/security PASS; no findings. SYSTEM_ARCHITECT_AGENT (/root/system_architect_agent): PASS_WITH_BOUNDED_CONDITIONS, R1. Historical handoff timestamps unavailable; reconstructed from automation transcript at record creation."
+        },
+        {
+          "from_stage": "QA_VERIFICATION",
+          "from_role": "QA_VERIFICATION_AGENT",
+          "to_stage": "RELEASE_OBSERVABILITY",
+          "to_role": "RELEASE_OBSERVABILITY_AGENT",
+          "timestamp_utc": "2026-09-25T16:03:57Z",
+          "evidence": "QA_VERIFICATION_AGENT (/root/qa_verification_agent) -> RELEASE_OBSERVABILITY_AGENT (/root/release_observability_agent): QA PASS exact head fd97086e... targeted+adjacent 10 pass, neighbor 10 pass, scope 17 pass; exact-head CI 36151711699/36151711694/36151711710 success; invariants PASS. Historical handoff timestamp unavailable; reconstructed from automation transcript at record creation."
+        },
+        {
+          "from_stage": "RELEASE_OBSERVABILITY",
+          "from_role": "RELEASE_OBSERVABILITY_AGENT",
+          "to_stage": "REPORTER_CLOSURE",
+          "to_role": "REPORTER_AGENT",
+          "timestamp_utc": "2026-09-25T19:31:23Z",
+          "evidence": "RELEASE_OBSERVABILITY_AGENT (/root/release_observability_agent) -> REPORTER_AGENT (/root/reporter_agent): production verification PASS. Merge 10084e5039ae8a91cf54586388795ef74b497d93 is a verified ancestor of deployed SHA 4ec2bed8c9a7860815529b8af38d88f9cc7317ff; Render deployment dep-darbv1btqb8s73et67i0; workflow/job 36174638442/108202153305; pointer 6667702080; health, governance, and original replay PASS; SELF_ACCEPTANCE receipts a3d76169-5103-4ff9-bdd1-eee2bc18fd22 and 32145dad-57c9-4682-abaf-1f1476cddb20 verified."
+        }
+      ],
+      "review": {
+        "status": "PASS",
+        "system_architect_status": "PASS",
+        "evidence": "INDEPENDENT_REVIEW_AGENT (/root/independent_review_agent) -> QA_VERIFICATION_AGENT (/root/qa_verification_agent): PASS exact head fd97086e... scope/architecture/governance/security PASS; no findings. SYSTEM_ARCHITECT_AGENT (/root/system_architect_agent): PASS_WITH_BOUNDED_CONDITIONS, R1. Historical handoff timestamps unavailable; reconstructed from automation transcript at record creation."
+      },
+      "qa": {
+        "status": "PASS",
+        "evidence": "QA_VERIFICATION_AGENT (/root/qa_verification_agent) -> RELEASE_OBSERVABILITY_AGENT (/root/release_observability_agent): QA PASS exact head fd97086e... targeted+adjacent 10 pass, neighbor 10 pass, scope 17 pass; exact-head CI 36151711699/36151711694/36151711710 success; invariants PASS. Historical handoff timestamp unavailable; reconstructed from automation transcript at record creation."
+      },
+      "release": {
+        "status": "PRODUCTION_VERIFIED",
+        "production_verified": true,
+        "evidence": "RELEASE_OBSERVABILITY_AGENT (/root/release_observability_agent) -> REPORTER_AGENT (/root/reporter_agent): production verification PASS. Merge 10084e5039ae8a91cf54586388795ef74b497d93 is a verified ancestor of deployed SHA 4ec2bed8c9a7860815529b8af38d88f9cc7317ff; Render deployment dep-darbv1btqb8s73et67i0; workflow/job 36174638442/108202153305; pointer 6667702080; health, governance, and original replay PASS; SELF_ACCEPTANCE receipts a3d76169-5103-4ff9-bdd1-eee2bc18fd22 and 32145dad-57c9-4682-abaf-1f1476cddb20 verified.",
+        "merge_commit": "10084e5039ae8a91cf54586388795ef74b497d93",
+        "deployed_commit": "4ec2bed8c9a7860815529b8af38d88f9cc7317ff",
+        "deployment_id": "dep-darbv1btqb8s73et67i0",
+        "workflow_run_id": 36174638442,
+        "workflow_job_id": 108202153305,
+        "deployment_pointer": 6667702080,
+        "production_receipt_ids": [
+          "a3d76169-5103-4ff9-bdd1-eee2bc18fd22",
+          "32145dad-57c9-4682-abaf-1f1476cddb20"
+        ],
+        "health_governance_probe": "PASS",
+        "production_replay": "PASS",
+        "verified_utc": "2026-09-25T19:31:23Z"
+      },
+      "reporter_closure": {
+        "status": "FIXED_VERIFIED",
+        "evidence": "REPORTER_AGENT (/root/reporter_agent): production verification packet complete at 2026-09-25T19:31:23Z; exact deployed descendant ancestry, Render deployment, workflow/job, pointer, health/governance/replay, and both correlated SELF_ACCEPTANCE receipts PASS. PM-2026-09-25-001 is FIXED_VERIFIED.",
+        "closed_utc": "2026-09-25T19:31:23Z"
+      },
+      "learning": {
+        "failure_category": "OBSERVABILITY_CORRELATION",
+        "why_existing_tests_missed_it": "The startup probe test verified auth and fail-closed semantics but did not assert invocation-ledger caller classification, request correlation, row count, or retry identity stability.",
+        "regression_test_added": "test_live_probe_authenticates_more_and_less_and_logs_only_sanitized_metadata now forces transient retries and verifies stable SELF_ACCEPTANCE correlation without secret/body leakage.",
+        "architecture_lesson": "Internal callers sharing the Action credential must identify themselves with existing correlation headers; bearer authentication alone is not caller identity.",
+        "preventive_control": "Require every internal Action client to emit existing caller-class, nonsecret request-ID, and rows-in headers with deterministic retry-stability and no-body-capture coverage.",
+        "similar_code_paths_reviewed": [
+          "artifacts/wow-engine/v17/multisport_prop_live_canary.py",
+          "artifacts/wow-engine/v17/action_invocation_telemetry.py"
+        ],
+        "recurrence_of": null
+      },
+      "risk_class": "R1",
+      "protected_contracts_touched": [],
+      "root_cause": "The startup self-acceptance client authenticated with the production Action key but omitted the existing X-WOW-Caller-Class, X-WOW-Request-ID, and X-WOW-Rows-In telemetry headers, so intentional fail-closed 422 probes were persisted as ACTION_API_KEY with null correlation.",
+      "root_cause_confidence": "HIGH",
+      "engineering_fixes": {
+        "FIX-2026-09-25-001": {
+          "title": "Correlate prop self-acceptance telemetry",
+          "risk": "R1",
+          "state": "VERIFIED_CLOSED",
+          "path": "artifacts/wow-engine/v17/engineering-fixes/FIX-2026-09-25-001__correlate-prop-self-acceptance-telemetry.md",
+          "created_utc": "2026-09-25T16:04:11Z",
+          "updated_utc": "2026-09-25T19:31:23Z",
+          "implementation_owner": "ENGINEERING_AGENT",
+          "review_status": "PASS",
+          "qa_status": "PASS",
+          "release_status": "PRODUCTION_VERIFIED",
+          "pull_request": 835,
+          "pr_head_sha": "fd97086e77dfc0be9ebe18132617d4cf7d3a35d9",
+          "merge_commit": "10084e5039ae8a91cf54586388795ef74b497d93",
+          "implementation_commits": [
+            "d4101dc6d79693ac8e19444ddf63cafaa22de7b2",
+            "fd97086e77dfc0be9ebe18132617d4cf7d3a35d9"
+          ],
+          "production_deploy": "dep-darbv1btqb8s73et67i0",
+          "rollback": "Revert merge commit 10084e5039ae8a91cf54586388795ef74b497d93."
+        }
+      }
     }
-  ]
+  ],
+  "updated_utc": "2026-09-25T19:31:23Z"
 }
