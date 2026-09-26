@@ -125,6 +125,29 @@ jobs:
               "can_execute": False,
           }, sort_keys=True))
 
+          bounds = post(
+              f"/internal/v17/experiments/ncaaf-publication-bound/{os.environ['NCAAF_CANDIDATE_ID']}"
+          )
+          assert bounds.get("can_execute") is False
+          assert bounds.get("automatic_certification") is False
+          assert bounds.get("automatic_promotion") is False
+          assert bounds.get("probability_publishable") is False
+          assert bounds.get("rank_eligible") is False
+          assert bounds.get("database_mutated") is False
+          assert bounds.get("production_registry_mutated") is False
+          if bounds.get("status") != "EXPERIMENT_COMPLETE":
+              raise RuntimeError("NCAAF_PUBLICATION_BOUND_EXPERIMENT_BLOCKED:" + json.dumps(bounds, sort_keys=True))
+          print(json.dumps({
+              "publication_bound_experiment_status": bounds.get("status"),
+              "experiment_version": bounds.get("experiment_version"),
+              "experiment_sha256": bounds.get("experiment_sha256"),
+              "bound_method": bounds.get("bound_method"),
+              "historical_base_width": bounds.get("historical_base_width"),
+              "untouched_test": bounds.get("untouched_test"),
+              "recommendation_state": bounds.get("recommendation_state"),
+              "can_execute": False,
+          }, sort_keys=True))
+
           if not fresh_acquisition_complete:
               raise RuntimeError(
                   "NCAAF_CURRENT_HISTORY_REFRESH_BLOCKED:"
