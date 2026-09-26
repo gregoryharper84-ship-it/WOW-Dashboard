@@ -116,3 +116,16 @@ def test_oidc_nightly_path_bounds_prop_batches_below_proven_transport_timeout_lo
         assert dispatch["governance"]["can_execute"] is False
 
     assert core.MAX_PROP_ROWS == original_prop_rows
+
+
+def test_nightly_workflow_pins_team_event_batch_rows_to_four():
+    from pathlib import Path
+
+    workflow = (
+        Path(__file__).resolve().parents[2]
+        / ".github"
+        / "workflows"
+        / "wow-v17-nightly-multiscout.yml"
+    ).read_text(encoding="utf-8")
+
+    assert 'WOW_AUTO_ADVANCE_TEAM_EVENT_BATCH_ROWS: "4"' in workflow
