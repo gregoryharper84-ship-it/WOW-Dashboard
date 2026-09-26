@@ -4,6 +4,11 @@ MODEL_UNAVAILABLE is reserved for an absent controlling fitted capability/artifa
 Input/evidence deficiencies, scorer failures, and malformed model packages retain
 separate typed terminals. This reducer never promotes a research row or mutates
 sporting probability.
+
+A downstream market/payout blocker may coexist with a completed sporting model.
+Once ``model_evaluated`` is true, that blocker holds market/value/card objectives
+without becoming the cause of the sporting-probability terminal. This preserves
+objective separation while retaining the blocker for downstream reconciliation.
 """
 from __future__ import annotations
 
@@ -98,5 +103,13 @@ def reduce_prop_terminal(*, proposed_label: str, blockers: Iterable[str] = (), m
         # concurrent rather than as the cause.
         return PropTerminalDecision(label, "MODEL_REJECTED", True, True, False, bs, CAUSE_MODEL_JUDGMENT, concurrent_market)
     if bset & MARKET_BLOCKERS:
-        return PropTerminalDecision(label if model_evaluated else "MODEL_INPUTS_INSUFFICIENT", "MARKET_BLOCKED", model_evaluated, False, True, bs, CAUSE_INFRASTRUCTURE, concurrent_market)
+        if model_evaluated:
+            # Market/payout readiness is downstream of a completed sporting
+            # probability. Preserve the model's terminal and record the market
+            # hold without classifying the sporting terminal as infrastructure-
+            # caused. Consumers can hold edge/EV/card objectives via
+            # verdict_class + blockers while still publishing/ranking the valid
+            # sporting probability.
+            return PropTerminalDecision(label, "MARKET_BLOCKED", True, False, False, bs, CAUSE_MODEL_SUPPORTED, concurrent_market)
+        return PropTerminalDecision("MODEL_INPUTS_INSUFFICIENT", "MARKET_BLOCKED", False, False, True, bs, CAUSE_INFRASTRUCTURE, concurrent_market)
     return PropTerminalDecision(label, "MODEL_SUPPORTED" if model_evaluated else "UNEVALUATED", model_evaluated, False, False, bs, CAUSE_MODEL_SUPPORTED if model_evaluated else CAUSE_UNEVALUATED, concurrent_market)
