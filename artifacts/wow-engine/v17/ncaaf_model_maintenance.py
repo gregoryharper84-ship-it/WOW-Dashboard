@@ -52,6 +52,18 @@ def _blocked(code: str, *, stage: str, detail: Any = None) -> dict[str, Any]:
     }
 
 
+def _cfbd_failure(exc: CFBDUnavailable) -> tuple[list[str], dict[str, Any]]:
+    blockers = [str(exc.code)]
+    http_status = getattr(exc, "http_status", None)
+    if http_status is not None:
+        blockers.append(f"CFBD_HTTP_STATUS_{int(http_status)}")
+    detail = {
+        "code": str(exc.code),
+        "http_status": int(http_status) if http_status is not None else None,
+    }
+    return blockers, detail
+
+
 def run_ncaaf_model_maintenance(
     db: Any,
     *,
@@ -79,11 +91,13 @@ def run_ncaaf_model_maintenance(
         # authority on whether stored evidence is usable.
         cfbd = None
         fresh_acquisition_complete = False
-        acquisition_blockers.add(exc.code)
+        typed_blockers, safe_detail = _cfbd_failure(exc)
+        acquisition_blockers.update(typed_blockers)
         acquisition.append({
             "status": "BLOCKED_USING_PERSISTED_CORPUS",
             "code": exc.code,
             "blocked_stage": "CFBD_ACQUISITION",
+            **safe_detail,
             "can_execute": False,
         })
 
@@ -101,12 +115,14 @@ def run_ncaaf_model_maintenance(
                 games = materialize_training_games(db, snapshots)
             except CFBDUnavailable as exc:
                 fresh_acquisition_complete = False
-                acquisition_blockers.add(exc.code)
+                typed_blockers, safe_detail = _cfbd_failure(exc)
+                acquisition_blockers.update(typed_blockers)
                 acquisition.append({
                     "season": season,
                     "status": "BLOCKED_USING_PERSISTED_CORPUS",
                     "code": exc.code,
                     "blocked_stage": "CFBD_ACQUISITION",
+                    **safe_detail,
                     "can_execute": False,
                 })
                 break
