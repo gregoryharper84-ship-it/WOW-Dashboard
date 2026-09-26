@@ -65,11 +65,13 @@ def test_packet_contains_single_domain_action_contract_without_secrets():
 
     # Dependency-free check for the dedicated sync workflow. Full YAML/OpenAPI
     # validation runs in the protected backend regression suite.
-    assert schema_text.count("operationId:") == 19
+    assert schema_text.count("operationId:") == module.CANONICAL_ACTION_OPERATION_COUNT == 20
+    assert manifest["action_schema_operation_count"] == 20
     assert manifest["action_schema_installation_surface"] == "SINGLE_CUSTOM_ACTION_DOMAIN"
     assert manifest["action_schema_domain"] == "wow-governed-probability-engine.onrender.com"
     assert manifest["run_control_installation_surface"] == "MERGED_INTO_CANONICAL_ACTION_SCHEMA"
-    assert "IMPORT_SINGLE_CANONICAL_ACTION_SCHEMA_WITH_19_OPERATIONS" in manifest["acceptance_required"]
+    assert "IMPORT_SINGLE_CANONICAL_ACTION_SCHEMA_WITH_20_OPERATIONS" in manifest["acceptance_required"]
+    assert "FRESH_CHAT_SCORE_WOW_V17_SPREAD_FORWARD_SHADOW" in manifest["acceptance_required"]
 
     assert "WOW_ACTION_API_KEY=" not in text
     assert "Bearer sk-" not in text

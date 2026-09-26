@@ -34,11 +34,13 @@ ACTION_SCHEMA = ENGINE / "v17" / "openapi.wow-betting-engine.v17.yaml"
 
 EDITOR_INSTRUCTION_CHAR_LIMIT = 8000
 EDITOR_INSTRUCTION_BYTE_SAFETY_LIMIT = 7500
+CANONICAL_ACTION_OPERATION_COUNT = 20
 PRIZEPICKS_KNOWLEDGE_FILENAME = "WOW_V17_PRIZEPICKS_HOST_CONTRACT_KNOWLEDGE.txt"
 
 REQUIRED_OPERATIONS = (
     "getWowV17BackendHealth",
     "scoreWowPickRequest",
+    "scoreWowV17SpreadForwardShadow",
     "lookupWowV17PredictionReceipts",
     "getWowV17PickRequestRunState",
     "runWowV17ResumablePickRequest",
@@ -99,6 +101,11 @@ def build_packet() -> tuple[bytes, dict]:
         raise RuntimeError(
             f"GPT_EDITOR_INSTRUCTION_BYTE_MARGIN_EXCEEDED:{len(instructions)}>{EDITOR_INSTRUCTION_BYTE_SAFETY_LIMIT}"
         )
+    operation_count = schema_text.count("operationId:")
+    if operation_count != CANONICAL_ACTION_OPERATION_COUNT:
+        raise RuntimeError(
+            f"GPT_EDITOR_SYNC_SCHEMA_OPERATION_COUNT_INVALID:{operation_count}!={CANONICAL_ACTION_OPERATION_COUNT}"
+        )
 
     missing_editor_tokens = [token for token in REQUIRED_EDITOR_TOKENS if token not in instructions_text]
     missing_operations = [name for name in REQUIRED_OPERATIONS if name not in schema_text]
@@ -129,6 +136,7 @@ def build_packet() -> tuple[bytes, dict]:
         "prizepicks_knowledge_output_file": PRIZEPICKS_KNOWLEDGE_FILENAME,
         "action_schema_path": str(ACTION_SCHEMA.relative_to(ROOT)),
         "action_schema_sha256": _sha256(schema),
+        "action_schema_operation_count": operation_count,
         "action_schema_installation_surface": "SINGLE_CUSTOM_ACTION_DOMAIN",
         "action_schema_domain": "wow-governed-probability-engine.onrender.com",
         "run_control_installation_surface": "MERGED_INTO_CANONICAL_ACTION_SCHEMA",
@@ -142,11 +150,12 @@ def build_packet() -> tuple[bytes, dict]:
         "acceptance_required": [
             "PASTE_CANONICAL_INSTRUCTIONS_INTO_INSTRUCTIONS_FIELD",
             "ATTACH_PRIZEPICKS_ADDENDUM_AS_KNOWLEDGE_FILE",
-            "IMPORT_SINGLE_CANONICAL_ACTION_SCHEMA_WITH_19_OPERATIONS",
+            "IMPORT_SINGLE_CANONICAL_ACTION_SCHEMA_WITH_20_OPERATIONS",
             "PRESERVE_EXISTING_WOW_ACTION_API_KEY_BEARER_AUTH",
             "SAVE_AND_RELOAD_PRODUCTION_WOW_BETTING_ENGINE_EDITOR",
             "FRESH_CHAT_GET_WOW_V17_BACKEND_HEALTH",
             "FRESH_CHAT_SCORE_WOW_PICK_REQUEST",
+            "FRESH_CHAT_SCORE_WOW_V17_SPREAD_FORWARD_SHADOW",
             "FRESH_CHAT_LOOKUP_WOW_V17_PREDICTION_RECEIPTS",
             "FRESH_CHAT_VERIFY_RUN_CONTROL_OPERATIONS_VISIBLE",
             "FRESH_CHAT_MULTIPAGE_PRIZEPICKS_CANARY",

@@ -228,7 +228,7 @@ jobs:
           PY
 
       - name: Optionally capture one bounded spread-evidence slate
-        if: github.event_name == 'workflow_dispatch' && inputs.collect_spread_evidence
+        if: (github.event_name == 'workflow_dispatch' && inputs.collect_spread_evidence) || (github.event_name == 'push' && contains(github.event.head_commit.message, '#871'))
         shell: bash
         env:
           EVIDENCE_SPORT: ${{ inputs.evidence_sport }}
