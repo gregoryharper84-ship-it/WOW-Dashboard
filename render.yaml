@@ -136,6 +136,12 @@ services:
         value: "1"
       - key: WOW_WOLFRAM_TIMEOUT_SECONDS
         value: "5"
+      - key: WOW_ENGINEERING_AUDITOR_ENABLED
+        value: "1"
+      - key: WOW_ENGINEERING_AUDITOR_MAX_SLEEP_SECONDS
+        value: "30"
+      - key: WOW_ENGINEERING_AUDITOR_GITHUB_INTERVAL_SECONDS
+        value: "300"
       - key: WOW_CAN_EXECUTE
         value: "false"
       - key: WOW_DRY_RUN_ONLY
