@@ -43,6 +43,9 @@ NFL_PROP_LIVE_CANARY_WORKFLOW_REF = (
 SPREAD_FORWARD_PRODUCTION_CANARY_WORKFLOW_REF = (
     f"{REPOSITORY}/.github/workflows/wow-v17-spread-forward-production-canary.yml@{REF}"
 )
+NCAAF_FORWARD_VALIDATION_WORKFLOW_REF = (
+    f"{REPOSITORY}/.github/workflows/wow-v17-ncaaf-forward-validation.yml@{REF}"
+)
 BASKETBALL_MODEL_MAINTENANCE_WORKFLOW_REF = (
     f"{REPOSITORY}/.github/workflows/wow-v17-basketball-model-maintenance.yml@{REF}"
 )
@@ -94,11 +97,12 @@ ALLOWED_WORKFLOW_REFS = frozenset({
     MLB_1IP_LINE_EXPANSION_MAINTENANCE_WORKFLOW_REF,
     SPREAD_MARGIN_REPLAY_WORKFLOW_REF,
 })
-# Live scoring canaries are kept separate from the long-lived automation set so
-# their trust boundary stays explicit and independently reviewable.
+# Live scoring/evidence canaries are kept separate from the long-lived automation
+# set so their trust boundary stays explicit and independently reviewable.
 LIVE_CANARY_WORKFLOW_REFS = frozenset({
     NFL_PROP_LIVE_CANARY_WORKFLOW_REF,
     SPREAD_FORWARD_PRODUCTION_CANARY_WORKFLOW_REF,
+    NCAAF_FORWARD_VALIDATION_WORKFLOW_REF,
 })
 ALLOWED_EVENTS = frozenset({"push", "schedule", "workflow_dispatch"})
 
@@ -222,6 +226,7 @@ __all__ = [
     "MLB_1IP_LINE_EXPANSION_MAINTENANCE_WORKFLOW_REF",
     "SPREAD_MARGIN_REPLAY_WORKFLOW_REF",
     "SPREAD_FORWARD_PRODUCTION_CANARY_WORKFLOW_REF",
+    "NCAAF_FORWARD_VALIDATION_WORKFLOW_REF",
     "GitHubOIDCValidationError",
     "NCAAF_MODEL_MAINTENANCE_WORKFLOW_REF",
     "NCAAF_ML_CLOSURE_WORKFLOW_REF",
