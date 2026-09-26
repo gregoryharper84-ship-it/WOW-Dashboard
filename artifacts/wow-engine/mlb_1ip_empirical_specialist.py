@@ -3,6 +3,12 @@
 The specialist supports both the existing aggregate empirical artifact and the
 new player-conditioned BF-mixture artifact. Registry lifecycle state remains the
 serving authority: this module does not promote artifacts or mutate the registry.
+
+Sporting-probability publication is intentionally independent of market/payout
+readiness. Once the certified artifact returns a valid calibrated package, the
+probability remains publishable for probability-only output. Missing market or
+payout evidence is carried as a downstream blocker and may hold edge/EV/card
+qualification, but it must not erase the sporting probability.
 """
 from __future__ import annotations
 
@@ -157,6 +163,7 @@ def score_mlb_1ip_empirical(
         "terminal_ceiling": "MODEL_QUALIFIED_HOLD",
         "final_refresh_required": state != "OFFICIAL_CONFIRMED",
         "blockers": blockers,
-        "probability_publishable": False,
+        "probability_status": "PASS",
+        "probability_publishable": True,
         "can_execute": False,
     }
