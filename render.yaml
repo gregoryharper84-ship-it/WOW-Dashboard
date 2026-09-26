@@ -48,6 +48,15 @@ services:
         value: "1"
       - key: WOW_V17_ACTIVE
         value: "1"
+      - key: WOW_INTERACTIVE_PROP_HYDRATION_WORKERS
+        # The production web service is limited to 512 MiB. Keep interactive
+        # evidence hydration serial so nested request-local pools cannot multiply
+        # memory while the canonical scorer remains unchanged.
+        value: "1"
+      - key: WOW_INTERACTIVE_PROP_RESEARCH_WORKERS
+        value: "1"
+      - key: WOW_INTERACTIVE_PROP_SCORE_WORKERS
+        value: "1"
       - key: WOW_PROP_EVIDENCE_ACQUISITION_ENABLED
         # Keep the multi-minute autonomous MLB evidence sweep out of the
         # 512-MB interactive web process. It is forward-cohort evidence only;
