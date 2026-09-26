@@ -90,8 +90,12 @@ def run_ncaaf_model_maintenance(
     if cfbd is not None:
         for season in season_values:
             try:
+                # This maintenance lane materializes settled game history only.
+                # The active NCAAF team-state candidate is prior-results-only and
+                # does not consume CFBD rating families, so a ratings entitlement
+                # must not block fresh /games acquisition.
                 snapshots = hydrate_cfbd_season(
-                    cfbd, season=season, weeks=week_values, rating_families=("elo",), classification="fbs"
+                    cfbd, season=season, weeks=week_values, rating_families=(), classification="fbs"
                 )
                 persisted_n = persist_source_snapshots(db, snapshots)
                 games = materialize_training_games(db, snapshots)
