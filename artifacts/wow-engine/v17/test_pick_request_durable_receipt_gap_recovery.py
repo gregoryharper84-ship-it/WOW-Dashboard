@@ -107,14 +107,20 @@ def _run(request_id: str) -> dict:
     }
 
 
-def _pending_row(request_id: str, *, row_key: str = "MLBK-001-LESS") -> dict:
+def _pending_row(
+    request_id: str,
+    *,
+    row_key: str,
+    event_id: str,
+    player: str,
+) -> dict:
     return {
         "run_id": state._run_id(request_id),
         "row_key": row_key,
-        "event_id": "PP-20260926-NYM-WSH",
-        "event_start_time": "2026-09-26T16:35:00+00:00",
+        "event_id": event_id,
+        "event_start_time": "2026-09-26T20:35:00+00:00",
         "sport": "MLB",
-        "player": "Connelly Early",
+        "player": player,
         "stat_type": "PITCHER_STRIKEOUTS",
         "exact_line": 3.0,
         "direction": "LESS",
@@ -136,15 +142,15 @@ def _pending_row(request_id: str, *, row_key: str = "MLBK-001-LESS") -> dict:
     }
 
 
-def _immutable_prediction() -> dict:
+def _immutable_prediction(*, event_id: str, player: str) -> dict:
     return {
         "prediction_id": "97968f99-5996-5fd3-b024-924532d9eebc",
-        "created_at": "2026-09-26T16:19:05+00:00",
-        "event_id": "PP-20260926-NYM-WSH",
-        "event_start_time": "2026-09-26T16:35:00+00:00",
-        "model_timestamp": "2026-09-26T16:18:58+00:00",
-        "locked_at": "2026-09-26T16:19:05+00:00",
-        "player": "Connelly Early",
+        "created_at": "2026-09-26T19:19:05+00:00",
+        "event_id": event_id,
+        "event_start_time": "2026-09-26T20:35:00+00:00",
+        "model_timestamp": "2026-09-26T19:18:58+00:00",
+        "locked_at": "2026-09-26T19:19:05+00:00",
+        "player": player,
         "team": "NYM",
         "opponent": "WSH",
         "sport": "MLB",
@@ -161,8 +167,6 @@ def _immutable_prediction() -> dict:
         "calibration_status": "PASS",
         "calibration_method": "TEST",
         "calibration_version": "TEST",
-        # Even if the immutable prediction itself was publishable, the recovered
-        # row must stay fail-closed because the companion governed outcome is lost.
         "probability_publishable": True,
         "probability_ceiling": "NO_LOW_PROBABILITY",
         "money_lane_status": "PAYOUT_UNRESOLVED",
@@ -175,8 +179,18 @@ def test_refresh_run_manifest_counts_exposes_seeded_pending_rows():
     request_id = "board-seed-truth"
     db = _DB()
     db.tables[state.RUN_TABLE] = [_run(request_id)]
-    first = _pending_row(request_id, row_key="ROW-1")
-    second = _pending_row(request_id, row_key="ROW-2")
+    first = _pending_row(
+        request_id,
+        row_key="ROW-1",
+        event_id="EVENT-1",
+        player="Pitcher One",
+    )
+    second = _pending_row(
+        request_id,
+        row_key="ROW-2",
+        event_id="EVENT-2",
+        player="Pitcher Two",
+    )
     db.tables[state.ROW_TABLE] = [first, second]
 
     hardening._refresh_run_manifest_counts(db, request_id)
@@ -191,40 +205,83 @@ def test_refresh_run_manifest_counts_exposes_seeded_pending_rows():
     assert run["can_execute"] is False
 
 
-def test_immutable_receipt_with_missing_outcome_recovers_to_nonrankable_hold():
-    request_id = "receipt-gap"
+def test_receipt_gap_is_deferred_while_other_scorer_safe_rows_continue():
+    request_id = "receipt-gap-with-safe-work"
     db = _DB()
     db.tables[state.RUN_TABLE] = [_run(request_id)]
-    record = _pending_row(request_id)
-    db.tables[state.ROW_TABLE] = [record]
-    db.tables["wow_predictions"] = [_immutable_prediction()]
+    gap = _pending_row(
+        request_id,
+        row_key="GAP",
+        event_id="EVENT-GAP",
+        player="Receipt Gap Pitcher",
+    )
+    safe = _pending_row(
+        request_id,
+        row_key="SAFE",
+        event_id="EVENT-SAFE",
+        player="Safe Pitcher",
+    )
+    db.tables[state.ROW_TABLE] = [gap, safe]
+    db.tables["wow_predictions"] = [
+        _immutable_prediction(event_id="EVENT-GAP", player="Receipt Gap Pitcher")
+    ]
 
     retryable, recovered, blocker = hardening._receipt_preflight_without_rescore(
         db,
         request_id,
-        [record],
+        [gap, safe],
     )
 
     assert blocker is None
+    assert recovered == 0
+    assert [item["row_key"] for item in retryable] == ["SAFE"]
+
+    persisted_gap = next(
+        row for row in db.tables[state.ROW_TABLE] if row["row_key"] == "GAP"
+    )
+    assert persisted_gap["terminal_status"] == "PENDING"
+    assert persisted_gap["current_stage"] == "INGESTED"
+    assert persisted_gap["prediction_id"] is None
+    assert persisted_gap["outcome"] is None
+    assert persisted_gap["probability_publishable"] is False
+    assert persisted_gap["rank_eligible"] is False
+    assert persisted_gap["can_execute"] is False
+
+
+def test_receipt_gap_returns_original_typed_blocker_when_no_safe_work_remains():
+    request_id = "receipt-gap-only"
+    db = _DB()
+    db.tables[state.RUN_TABLE] = [_run(request_id)]
+    gap = _pending_row(
+        request_id,
+        row_key="GAP",
+        event_id="EVENT-GAP",
+        player="Receipt Gap Pitcher",
+    )
+    db.tables[state.ROW_TABLE] = [gap]
+    db.tables["wow_predictions"] = [
+        _immutable_prediction(event_id="EVENT-GAP", player="Receipt Gap Pitcher")
+    ]
+
+    retryable, recovered, blocker = hardening._receipt_preflight_without_rescore(
+        db,
+        request_id,
+        [gap],
+    )
+
     assert retryable == []
-    assert recovered == 1
+    assert recovered == 0
+    assert blocker == {
+        "code": "RUN_RECEIPT_MATCHED_OUTCOME_UNAVAILABLE",
+        "row_key": "GAP",
+        "receipt_status": "MATCHED",
+        "deferred_until_retryable_rows_complete": True,
+        "can_execute": False,
+    }
 
-    persisted = db.tables[state.ROW_TABLE][0]
-    assert persisted["prediction_id"] == "97968f99-5996-5fd3-b024-924532d9eebc"
-    assert persisted["terminal_status"] == "HELD"
-    assert persisted["terminal_code"] == "RUN_RECEIPT_MATCHED_OUTCOME_RECOVERED_HOLD"
-    assert persisted["current_stage"] == "RECEIPT_PERSISTED"
-    assert persisted["stage_seq"] == state.STAGE_SEQ["RECEIPT_PERSISTED"]
-    assert persisted["model_evaluated"] is True
-    assert persisted["probability_publishable"] is False
-    assert persisted["rank_eligible"] is False
-    assert persisted["outcome"]["probability_publishable"] is False
-    assert persisted["outcome"]["rank_eligible"] is False
-    assert persisted["can_execute"] is False
-
-    run = db.tables[state.RUN_TABLE][0]
-    assert run["pending_rows"] == 0
-    assert run["unresolved_rows"] == 0
-    assert run["held_rows"] == 1
-    assert run["run_status"] == "BLOCKED"
-    assert run["can_execute"] is False
+    persisted_gap = db.tables[state.ROW_TABLE][0]
+    assert persisted_gap["terminal_status"] == "PENDING"
+    assert persisted_gap["current_stage"] == "INGESTED"
+    assert persisted_gap["prediction_id"] is None
+    assert persisted_gap["outcome"] is None
+    assert persisted_gap["can_execute"] is False
