@@ -24,6 +24,8 @@ on:
       - "artifacts/wow-engine/team_event_request_runtime.py"
       - "artifacts/wow-engine/test_ncaaf_feature_compiler.py"
       - "artifacts/wow-engine/test_v17_ncaaf_model_maintenance.py"
+      - "artifacts/wow-engine/test_ncaaf_cfbd_hydrator.py"
+      - "artifacts/wow-engine/test_v17_ncaaf_optional_rating_degradation.py"
       - "artifacts/wow-engine/test_ncaaf_logistic_adapter.py"
       - "artifacts/wow-engine/test_v17_capability_build_registry.py"
       - "artifacts/wow-engine/test_v17_github_oidc.py"
@@ -46,6 +48,8 @@ on:
       - "artifacts/wow-engine/team_event_request_runtime.py"
       - "artifacts/wow-engine/test_ncaaf_feature_compiler.py"
       - "artifacts/wow-engine/test_v17_ncaaf_model_maintenance.py"
+      - "artifacts/wow-engine/test_ncaaf_cfbd_hydrator.py"
+      - "artifacts/wow-engine/test_v17_ncaaf_optional_rating_degradation.py"
       - "artifacts/wow-engine/test_ncaaf_logistic_adapter.py"
       - "artifacts/wow-engine/test_v17_capability_build_registry.py"
       - "artifacts/wow-engine/test_v17_github_oidc.py"
@@ -80,6 +84,7 @@ jobs:
           test_ncaaf_feature_compiler.py
           test_v17_ncaaf_model_maintenance.py
           test_ncaaf_cfbd_hydrator.py
+          test_v17_ncaaf_optional_rating_degradation.py
           test_ncaaf_candidate_training_runner.py
           test_ncaaf_logistic_adapter.py
           test_v17_capability_build_registry.py
