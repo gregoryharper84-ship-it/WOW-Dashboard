@@ -154,6 +154,7 @@ jobs:
           OUT.joinpath("NCAAB.json").write_text(json.dumps(ready, sort_keys=True, indent=2) + "\n")
           assert ready.get("status") == "BLOCKED"
           assert ready.get("probability_publishable") is False
+          assert ready.get("dry_run_only_no_live_trading_no_market_orders") is True
           assert ready.get("can_execute") is False
 
           summaries = {"NCAAB": ready}
@@ -169,6 +170,7 @@ jobs:
               assert payload.get("probability_publishable") is False
               assert payload.get("database_mutated") is False
               assert payload.get("production_registry_mutated") is False
+              assert payload.get("dry_run_only_no_live_trading_no_market_orders") is True
               assert payload.get("can_execute") is False
               assert payload.get("global_terminal_reducer") == "V17_TERMINAL_REDUCER"
               assert payload.get("market_features_used") is False
@@ -183,6 +185,7 @@ jobs:
                   "candidate": payload.get("candidate"),
                   "artifact_checksum": payload.get("artifact_checksum"),
                   "metrics": metrics,
+                  "dry_run_only_no_live_trading_no_market_orders": True,
                   "probability_publishable": False,
                   "can_execute": False,
               }
