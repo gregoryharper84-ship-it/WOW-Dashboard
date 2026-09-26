@@ -125,7 +125,9 @@ def _schedule_first_fetch(
 
     end = started + timedelta(hours=horizon_hours)
 
-    def fetch(family: str, target: Any = None) -> list[Mapping[str, Any]]:
+    from v17 import cross_sport_winner_discovery as discovery
+
+    def fetch(family: str, target: Any = None):
         normalized = str(family or "").upper()
         sport_key = _ESPN_FAMILY_KEYS.get(normalized)
         if sport_key:
@@ -154,10 +156,160 @@ def _schedule_first_fetch(
                     rows.append(row)
                 # An empty successful scoreboard response is a real schedule
                 # answer; do not spend sportsbook quota proving the same zero.
-                return rows
-        return list(original_fetch(family, target) or ())
+                return discovery.AcquisitionFeedResult(
+                    rows=tuple(rows),
+                    provider_status=discovery.PROVIDER_SUCCEEDED,
+                    fallback_status=discovery.FALLBACK_NOT_ATTEMPTED,
+                    exhaustion_status=discovery.PATHS_NOT_EXHAUSTED,
+                )
+            primary_code = str(getattr(result, "code", None) or "ESPN_SCHEDULE_UNAVAILABLE")
+            try:
+                downstream = original_fetch(family, target)
+            except discovery.DiscoveryFeedError as exc:
+                downstream_acquisition = exc.acquisition
+                combined = discovery.AcquisitionFeedResult(
+                    rows=(),
+                    provider_status=discovery.PROVIDER_FAILED,
+                    fallback_status=discovery.FALLBACK_FAILED,
+                    exhaustion_status=discovery.PROVIDER_PATHS_EXHAUSTED,
+                    blocker_code=exc.code,
+                    primary_blocker_code=primary_code,
+                    fallback_blocker_code=(
+                        downstream_acquisition.blocker_code
+                        if downstream_acquisition is not None
+                        else exc.code
+                    ),
+                )
+                raise discovery.DiscoveryFeedError(exc.code, acquisition=combined) from exc
+            except Exception as exc:  # noqa: BLE001 - typed acquisition evidence
+                fallback_code = type(exc).__name__
+                combined = discovery.AcquisitionFeedResult(
+                    rows=(),
+                    provider_status=discovery.PROVIDER_FAILED,
+                    fallback_status=discovery.FALLBACK_FAILED,
+                    exhaustion_status=discovery.PROVIDER_PATHS_EXHAUSTED,
+                    blocker_code=fallback_code,
+                    primary_blocker_code=primary_code,
+                    fallback_blocker_code=fallback_code,
+                )
+                raise discovery.DiscoveryFeedError(
+                    fallback_code, acquisition=combined
+                ) from exc
+
+            downstream_rows = tuple(downstream or ())
+            downstream_result = (
+                downstream
+                if isinstance(downstream, discovery.AcquisitionFeedResult)
+                else None
+            )
+            downstream_succeeded = bool(
+                downstream_result is None
+                or downstream_result.exhaustion_status
+                != discovery.PROVIDER_PATHS_EXHAUSTED
+            )
+            if not downstream_succeeded:
+                fallback_code = (
+                    downstream_result.blocker_code or "DOWNSTREAM_PATHS_EXHAUSTED"
+                )
+                combined = discovery.AcquisitionFeedResult(
+                    rows=(),
+                    provider_status=discovery.PROVIDER_FAILED,
+                    fallback_status=discovery.FALLBACK_FAILED,
+                    exhaustion_status=discovery.PROVIDER_PATHS_EXHAUSTED,
+                    blocker_code=fallback_code,
+                    primary_blocker_code=primary_code,
+                    fallback_blocker_code=fallback_code,
+                )
+                raise discovery.DiscoveryFeedError(
+                    fallback_code, acquisition=combined
+                )
+            return discovery.AcquisitionFeedResult(
+                rows=downstream_rows,
+                provider_status=discovery.PROVIDER_FAILED,
+                fallback_status=discovery.FALLBACK_SUCCEEDED,
+                exhaustion_status=discovery.PATHS_NOT_EXHAUSTED,
+                blocker_code=primary_code,
+                primary_blocker_code=primary_code,
+                fallback_blocker_code=(
+                    downstream_result.blocker_code if downstream_result else None
+                ),
+            )
+        return original_fetch(family, target)
 
     setattr(fetch, "_wow_schedule_first", True)
+    setattr(fetch, "_wow_resilience_contract_version", RESILIENCE_CONTRACT_VERSION)
+    return fetch
+
+
+def _resilient_union_feed(
+    original_union_feed: Callable[..., Callable[..., Iterable[Mapping[str, Any]]]],
+    *feeds: Callable[..., Iterable[Mapping[str, Any]]],
+):
+    """Preserve schedule-primary and every downstream fallback outcome."""
+    from v17 import cross_sport_winner_discovery as discovery
+
+    normal_union = original_union_feed(*feeds)
+    fallback_union = original_union_feed(*feeds[1:]) if len(feeds) > 1 else None
+
+    def fetch(family: str, target: Any = None):
+        normalized = str(family or "").upper()
+        if normalized in _ESPN_FAMILY_KEYS and feeds:
+            first = feeds[0]
+            if getattr(first, "_wow_schedule_first", False):
+                try:
+                    first_result = first(family, target)
+                    if isinstance(first_result, discovery.AcquisitionFeedResult):
+                        return first_result
+                    return discovery.AcquisitionFeedResult(
+                        rows=tuple(first_result or ()),
+                        provider_status=discovery.PROVIDER_SUCCEEDED,
+                        fallback_status=discovery.FALLBACK_NOT_ATTEMPTED,
+                        exhaustion_status=discovery.PATHS_NOT_EXHAUSTED,
+                    )
+                except Exception as primary_exc:
+                    if fallback_union is None:
+                        raise
+                    primary_acquisition = getattr(primary_exc, "acquisition", None)
+                    try:
+                        fallback = fallback_union(family, target)
+                    except discovery.DiscoveryFeedError as fallback_exc:
+                        fallback_acquisition = fallback_exc.acquisition
+                        combined = discovery.AcquisitionFeedResult(
+                            rows=(),
+                            provider_status=discovery.PROVIDER_FAILED,
+                            fallback_status=discovery.FALLBACK_FAILED,
+                            exhaustion_status=discovery.PROVIDER_PATHS_EXHAUSTED,
+                            blocker_code=fallback_exc.code,
+                            primary_blocker_code=(
+                                primary_acquisition.primary_blocker_code
+                                if primary_acquisition is not None
+                                else getattr(primary_exc, "code", type(primary_exc).__name__)
+                            ),
+                            fallback_blocker_code=(
+                                fallback_acquisition.blocker_code
+                                if fallback_acquisition is not None
+                                else fallback_exc.code
+                            ),
+                        )
+                        raise discovery.DiscoveryFeedError(
+                            fallback_exc.code, acquisition=combined
+                        ) from fallback_exc
+                    return discovery.AcquisitionFeedResult(
+                        rows=tuple(fallback or ()),
+                        provider_status=discovery.PROVIDER_FAILED,
+                        fallback_status=discovery.FALLBACK_SUCCEEDED,
+                        exhaustion_status=discovery.PATHS_NOT_EXHAUSTED,
+                        blocker_code=getattr(
+                            primary_exc, "code", type(primary_exc).__name__
+                        ),
+                        primary_blocker_code=(
+                            primary_acquisition.primary_blocker_code
+                            if primary_acquisition is not None
+                            else getattr(primary_exc, "code", type(primary_exc).__name__)
+                        ),
+                    )
+        return normal_union(family, target)
+
     setattr(fetch, "_wow_resilience_contract_version", RESILIENCE_CONTRACT_VERSION)
     return fetch
 
@@ -193,29 +345,7 @@ def install_cross_sport_resilience() -> dict[str, Any]:
         )
 
     def resilient_union_feed(*feeds: Callable[..., Iterable[Mapping[str, Any]]]):
-        normal_union = original_union_feed(*feeds)
-        fallback_union = original_union_feed(*feeds[1:]) if len(feeds) > 1 else None
-
-        def fetch(family: str, target: Any = None) -> list[Mapping[str, Any]]:
-            normalized = str(family or "").upper()
-            # The first cross-sport feed is the schedule-first adapter above. For
-            # supported team sports, a successful schedule response is sufficient
-            # to answer "what events exist" and should not trigger a second market
-            # provider call. If it raises, continue with the remaining feeds but
-            # never call the failed first feed a second time.
-            if normalized in _ESPN_FAMILY_KEYS and feeds:
-                first = feeds[0]
-                if getattr(first, "_wow_schedule_first", False):
-                    try:
-                        return list(first(family, target) or ())
-                    except Exception:
-                        if fallback_union is not None:
-                            return list(fallback_union(family, target) or ())
-                        raise
-            return list(normal_union(family, target) or ())
-
-        setattr(fetch, "_wow_resilience_contract_version", RESILIENCE_CONTRACT_VERSION)
-        return fetch
+        return _resilient_union_feed(original_union_feed, *feeds)
 
     def resilient_normalize(raw: Mapping[str, Any], *args: Any, **kwargs: Any):
         event = original_normalize(raw, *args, **kwargs)

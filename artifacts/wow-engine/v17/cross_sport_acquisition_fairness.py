@@ -73,6 +73,20 @@ def fair_discover_winner_slate(
         requested_slate_date=requested_slate_date,
         requested_timezone=requested_timezone,
     )
+    for family in families:
+        family_targets = tuple(targets.get(family) or ())
+        if family_targets:
+            inventory.expected_acquisition_targets.extend(
+                {"family": family, "target_key": target.target_key}
+                for target in family_targets
+            )
+        else:
+            inventory.expected_acquisition_targets.append(
+                {
+                    "family": family,
+                    "target_key": discovery.NO_CONFIGURED_DISCOVERY_FEED,
+                }
+            )
 
     for family in families:
         inventory.sports_queried.append(family)
@@ -104,6 +118,25 @@ def fair_discover_winner_slate(
                     "status": discovery.NO_CONFIGURED_DISCOVERY_FEED,
                 }
             )
+            inventory.acquisition_details.append(
+                {
+                    "family": family,
+                    "target_key": discovery.NO_CONFIGURED_DISCOVERY_FEED,
+                    "provider": registry.PROVIDER,
+                    "league": None,
+                    "regime": None,
+                    "provider_sport_id": None,
+                    "sport_key": None,
+                    "final_state": discovery.NO_CONFIGURED_DISCOVERY_FEED,
+                    "provider_status": discovery.PROVIDER_NOT_ATTEMPTED,
+                    "fallback_status": discovery.FALLBACK_NOT_APPLICABLE,
+                    "exhaustion_status": discovery.NO_CONFIGURED_PATH,
+                    "events_returned": 0,
+                    "duplicate_rows_suppressed": 0,
+                    "blocker_code": discovery.NO_CONFIGURED_DISCOVERY_FEED,
+                    "can_execute": False,
+                }
+            )
             continue
 
         attempted: list[Any] = []
@@ -129,16 +162,55 @@ def fair_discover_winner_slate(
             )
             attempted.append(target_id)
             try:
-                rows = list(fetch_sport_events(family, target) or ())
+                fetched = fetch_sport_events(family, target)
+                if isinstance(fetched, discovery.AcquisitionFeedResult):
+                    rows = list(fetched.rows)
+                    provider_status = fetched.provider_status
+                    fallback_status = fetched.fallback_status
+                    exhaustion_status = fetched.exhaustion_status
+                    blocker_code = fetched.blocker_code
+                else:
+                    rows = list(fetched or ())
+                    provider_status = discovery.PROVIDER_SUCCEEDED
+                    fallback_status = discovery.FALLBACK_NOT_APPLICABLE
+                    exhaustion_status = discovery.PATHS_NOT_EXHAUSTED
+                    blocker_code = None
             except discovery.DiscoveryFeedError as exc:
                 failures.append(exc.code)
+                acquisition = exc.acquisition
+                failure_status = discovery.classify_acquisition_failure(exc.code)
                 inventory.source_blockers.append(
                     {
                         "scope": "target",
                         "sport": family,
                         **target.as_dict(),
-                        "status": discovery.classify_acquisition_failure(exc.code),
+                        "status": failure_status,
                         "reason_code": exc.code,
+                    }
+                )
+                inventory.acquisition_details.append(
+                    {
+                        **target.as_dict(),
+                        "final_state": failure_status,
+                        "provider_status": (
+                            acquisition.provider_status
+                            if acquisition is not None
+                            else discovery.PROVIDER_FAILED
+                        ),
+                        "fallback_status": (
+                            acquisition.fallback_status
+                            if acquisition is not None
+                            else discovery.FALLBACK_NOT_APPLICABLE
+                        ),
+                        "exhaustion_status": (
+                            acquisition.exhaustion_status
+                            if acquisition is not None
+                            else discovery.PROVIDER_PATHS_EXHAUSTED
+                        ),
+                        "events_returned": 0,
+                        "duplicate_rows_suppressed": 0,
+                        "blocker_code": exc.code,
+                        "can_execute": False,
                     }
                 )
                 continue
@@ -153,9 +225,24 @@ def fair_discover_winner_slate(
                         "error_type": type(exc).__name__,
                     }
                 )
+                inventory.acquisition_details.append(
+                    {
+                        **target.as_dict(),
+                        "final_state": discovery.PROVIDER_REQUEST_FAILED,
+                        "provider_status": discovery.PROVIDER_FAILED,
+                        "fallback_status": discovery.FALLBACK_NOT_APPLICABLE,
+                        "exhaustion_status": discovery.PROVIDER_PATHS_EXHAUSTED,
+                        "events_returned": 0,
+                        "duplicate_rows_suppressed": 0,
+                        "blocker_code": type(exc).__name__,
+                        "can_execute": False,
+                    }
+                )
                 continue
 
             succeeded = True
+            target_returned = 0
+            target_duplicates = 0
             for raw in rows:
                 if not isinstance(raw, Mapping):
                     continue
@@ -170,10 +257,29 @@ def fair_discover_winner_slate(
                 identity = discovery._dedupe_identity(event)
                 if identity in seen_identities:
                     duplicates += 1
+                    target_duplicates += 1
                     continue
                 seen_identities.add(identity)
                 inventory.events.append(event)
                 returned += 1
+                target_returned += 1
+            inventory.acquisition_details.append(
+                {
+                    **target.as_dict(),
+                    "final_state": (
+                        discovery.EVENTS_RETURNED
+                        if target_returned
+                        else discovery.NO_EVENTS_RETURNED
+                    ),
+                    "provider_status": provider_status,
+                    "fallback_status": fallback_status,
+                    "exhaustion_status": exhaustion_status,
+                    "events_returned": target_returned,
+                    "duplicate_rows_suppressed": target_duplicates,
+                    "blocker_code": blocker_code,
+                    "can_execute": False,
+                }
+            )
 
         remaining = max(len(family_targets) - len(attempted), 0)
         coverage_complete = remaining == 0
@@ -192,6 +298,20 @@ def fair_discover_winner_slate(
                     "fairness_contract_version": FAIRNESS_CONTRACT_VERSION,
                 }
             )
+            for target in family_targets[len(attempted):]:
+                inventory.acquisition_details.append(
+                    {
+                        **target.as_dict(),
+                        "final_state": discovery.DISCOVERY_BUDGET_EXHAUSTED,
+                        "provider_status": discovery.PROVIDER_NOT_ATTEMPTED,
+                        "fallback_status": discovery.FALLBACK_NOT_ATTEMPTED,
+                        "exhaustion_status": discovery.DISCOVERY_BUDGET_EXHAUSTED,
+                        "events_returned": 0,
+                        "duplicate_rows_suppressed": 0,
+                        "blocker_code": discovery.DISCOVERY_BUDGET_EXHAUSTED,
+                        "can_execute": False,
+                    }
+                )
 
         if returned:
             status = discovery.EVENTS_RETURNED
