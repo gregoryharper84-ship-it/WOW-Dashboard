@@ -21,6 +21,8 @@ on:
       - "artifacts/wow-engine/ncaaf_logistic_adapter.py"
       - "artifacts/wow-engine/v17/ncaaf_model_maintenance.py"
       - "artifacts/wow-engine/v17/ncaaf_prop_history_maintenance.py"
+      - "artifacts/wow-engine/v17/candidate_certification_evidence.py"
+      - "artifacts/wow-engine/v17/team_event_certification_replay.py"
       - "artifacts/wow-engine/v17/capability_build_registry.py"
       - "artifacts/wow-engine/team_event_request_runtime.py"
       - "artifacts/wow-engine/test_ncaaf_cfbd_client.py"
@@ -28,6 +30,7 @@ on:
       - "artifacts/wow-engine/test_ncaaf_feature_compiler.py"
       - "artifacts/wow-engine/test_v17_ncaaf_model_maintenance.py"
       - "artifacts/wow-engine/test_v17_ncaaf_prop_history_maintenance.py"
+      - "artifacts/wow-engine/test_v17_candidate_bound_certification_evidence.py"
       - "artifacts/wow-engine/test_ncaaf_logistic_adapter.py"
       - "artifacts/wow-engine/test_v17_capability_build_registry.py"
       - "artifacts/wow-engine/test_v17_github_oidc.py"
@@ -47,6 +50,8 @@ on:
       - "artifacts/wow-engine/ncaaf_logistic_adapter.py"
       - "artifacts/wow-engine/v17/ncaaf_model_maintenance.py"
       - "artifacts/wow-engine/v17/ncaaf_prop_history_maintenance.py"
+      - "artifacts/wow-engine/v17/candidate_certification_evidence.py"
+      - "artifacts/wow-engine/v17/team_event_certification_replay.py"
       - "artifacts/wow-engine/v17/capability_build_registry.py"
       - "artifacts/wow-engine/team_event_request_runtime.py"
       - "artifacts/wow-engine/test_ncaaf_cfbd_client.py"
@@ -54,6 +59,7 @@ on:
       - "artifacts/wow-engine/test_ncaaf_feature_compiler.py"
       - "artifacts/wow-engine/test_v17_ncaaf_model_maintenance.py"
       - "artifacts/wow-engine/test_v17_ncaaf_prop_history_maintenance.py"
+      - "artifacts/wow-engine/test_v17_candidate_bound_certification_evidence.py"
       - "artifacts/wow-engine/test_ncaaf_logistic_adapter.py"
       - "artifacts/wow-engine/test_v17_capability_build_registry.py"
       - "artifacts/wow-engine/test_v17_github_oidc.py"
@@ -91,6 +97,7 @@ jobs:
           test_ncaaf_feature_compiler.py
           test_v17_ncaaf_model_maintenance.py
           test_ncaaf_candidate_training_runner.py
+          test_v17_candidate_bound_certification_evidence.py
           test_ncaaf_logistic_adapter.py
           test_v17_capability_build_registry.py
           test_v17_github_oidc.py
@@ -98,7 +105,7 @@ jobs:
 
   maintain:
     name: Advance NCAAF research candidate evidence
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.event_name == 'push'
     needs: verify
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -119,6 +126,7 @@ jobs:
           test -n "$ACTIONS_ID_TOKEN_REQUEST_TOKEN"
 
       - name: Acquire governed NCAAF player-prop history
+        if: github.event_name != 'push'
         shell: bash
         run: |
           python - <<'PY'
@@ -177,6 +185,7 @@ jobs:
           PY
 
       - name: Run governed NCAAF model maintenance
+        if: github.event_name != 'push'
         shell: bash
         run: |
           python - <<'PY'
@@ -232,4 +241,90 @@ jobs:
                   "training_blocker": (payload.get("training_blocker") or {}).get("code"),
                   "blockers": payload.get("blockers"),
               }, sort_keys=True))
+          PY
+
+      - name: Verify exact NCAAF candidate source and deterministic replay evidence
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import urllib.parse
+          import urllib.request
+
+          def oidc_token():
+              url = os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"]
+              separator = "&" if "?" in url else "?"
+              url += separator + urllib.parse.urlencode({"audience": "wow-v17-multiscout"})
+              request = urllib.request.Request(
+                  url,
+                  headers={"Authorization": f"Bearer {os.environ['ACTIONS_ID_TOKEN_REQUEST_TOKEN']}"},
+              )
+              with urllib.request.urlopen(request, timeout=20) as response:
+                  return json.load(response)["value"]
+
+          token = oidc_token()
+          origin = os.environ["WOW_ACTION_ORIGIN"].rstrip("/")
+
+          def post(path, timeout=1200):
+              request = urllib.request.Request(
+                  origin + path,
+                  data=b"",
+                  method="POST",
+                  headers={
+                      "Authorization": f"Bearer {token}",
+                      "Content-Type": "application/json",
+                  },
+              )
+              with urllib.request.urlopen(request, timeout=timeout) as response:
+                  return json.load(response)
+
+          replay = post("/internal/v17/team-event-certification-replay", timeout=120)
+          ncaaf = next((row for row in replay.get("sports", []) if row.get("sport") == "NCAAF"), None)
+          if not ncaaf:
+              raise RuntimeError("NCAAF_CERTIFICATION_REPLAY_LANE_MISSING")
+          lanes = [
+              row for row in (ncaaf.get("lanes") or [])
+              if row.get("model_family") == "NCAAF_DYNAMIC_TEAM_STATE_LOGIT_V2"
+              and row.get("research_screen_pass") is True
+              and row.get("candidate_id")
+          ]
+          if len(lanes) != 1:
+              raise RuntimeError("NCAAF_EXACT_RESEARCH_CANDIDATE_AMBIGUOUS:" + json.dumps(lanes, sort_keys=True))
+          candidate = lanes[0]
+          candidate_id = str(candidate["candidate_id"])
+
+          proof = post(
+              "/internal/v17/team-event-certification-evidence/" + urllib.parse.quote(candidate_id, safe=""),
+              timeout=1200,
+          )
+          assert proof.get("can_execute") is False
+          assert proof.get("automatic_certification") is False
+          assert proof.get("automatic_promotion") is False
+          assert proof.get("probability_publishable") is False
+          if proof.get("status") != "CERTIFICATION_EVIDENCE_PASS":
+              raise RuntimeError("NCAAF_CERTIFICATION_EVIDENCE_FAILED:" + json.dumps(proof, sort_keys=True))
+
+          replay_after = post("/internal/v17/team-event-certification-replay", timeout=120)
+          ncaaf_after = next(row for row in replay_after.get("sports", []) if row.get("sport") == "NCAAF")
+          exact_lane = next(
+              (row for row in (ncaaf_after.get("lanes") or []) if str(row.get("candidate_id")) == candidate_id),
+              None,
+          )
+          if not exact_lane or exact_lane.get("candidate_bound_evidence_pass") is not True:
+              raise RuntimeError("NCAAF_CERTIFICATION_EVIDENCE_NOT_BOUND:" + json.dumps(ncaaf_after, sort_keys=True))
+          if exact_lane.get("status") != "CERTIFICATION_REPLAY_PASS":
+              raise RuntimeError("NCAAF_CERTIFICATION_REPLAY_NOT_PASS:" + json.dumps(exact_lane, sort_keys=True))
+          assert exact_lane.get("probability_publishable") is False
+          assert exact_lane.get("can_execute") is False
+          print(json.dumps({
+              "status": proof.get("status"),
+              "candidate_id": candidate_id,
+              "receipt_id": proof.get("receipt_id"),
+              "source_review_status": proof.get("source_review_status"),
+              "replay_status": proof.get("replay_status"),
+              "candidate_bound_evidence_pass": True,
+              "probability_publishable": False,
+              "can_execute": False,
+          }, sort_keys=True))
           PY
