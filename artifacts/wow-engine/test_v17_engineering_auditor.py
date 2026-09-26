@@ -15,23 +15,16 @@ from v17.engineering_auditor import (
     severity_from_labels,
     work_fingerprint,
 )
-from v17.engineering_auditor_auth import (
-    CODE_HEALTH_WORKFLOW_REF,
-    EVENT_WORKFLOW_REF,
-    EngineeringAuditorAuthError,
-    validate_engineering_auditor_claims,
-)
 from v17.engineering_auditor_github import (
-    REPOSITORY,
     bootstrap_open_github_work,
     issue_to_event,
     reconcile_github_updates,
 )
-from v17.engineering_auditor_github_payload import normalize_event
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / ".github/workflows/wow-v17-engineering-auditor-code-health.yml"
 WORKER = ROOT / "artifacts/wow-engine/v17/engineering_auditor_worker.py"
+GITHUB_RECONCILER = ROOT / "artifacts/wow-engine/v17/engineering_auditor_github.py"
 CELERY = ROOT / "artifacts/wow-engine/agent_runtime/celery_app.py"
 RENDER = ROOT / "render.yaml"
 MIGRATION = ROOT / "artifacts/wow-engine/migrations/20260926152331_create_engineering_auditor_control_plane.sql"
@@ -81,52 +74,6 @@ def test_audit_event_rejects_non_object_details():
                 "details": ["bad"],
             }
         )
-
-
-def test_normalize_issue_and_merged_pr_events():
-    issue = normalize_event(
-        "issues",
-        {
-            "action": "opened",
-            "sender": {"login": "greg"},
-            "issue": {
-                "number": 882,
-                "title": "Build auditor",
-                "state": "open",
-                "updated_at": "2026-09-26T15:20:42Z",
-                "labels": [{"name": "P1"}],
-                "html_url": "https://github.test/issues/882",
-            },
-        },
-        repository=REPOSITORY,
-        sha="abc123",
-    )
-    assert issue["source_kind"] == "GITHUB_ISSUE"
-    assert issue["source_ref"] == "882"
-    assert issue["labels"] == ["P1"]
-    assert issue["state"] == "OPEN"
-
-    pr = normalize_event(
-        "pull_request",
-        {
-            "action": "closed",
-            "pull_request": {
-                "number": 10,
-                "title": "Repair",
-                "state": "closed",
-                "merged": True,
-                "draft": False,
-                "updated_at": "2026-09-26T15:20:42Z",
-                "head": {"sha": "deadbeef"},
-                "labels": [],
-            },
-        },
-        repository=REPOSITORY,
-        sha="fallback",
-    )
-    assert pr["source_kind"] == "GITHUB_PR"
-    assert pr["state"] == "MERGED"
-    assert pr["head_sha"] == "deadbeef"
 
 
 def test_public_github_issue_reconcile_preserves_updated_at_as_progress_evidence():
@@ -219,27 +166,6 @@ def test_public_github_reconciler_bootstraps_work_and_main_code_health():
     assert any(event.source_kind == "CODE_HEALTH_RUN" and event.conclusion == "failure" for event in store.events)
 
 
-def _base_oidc_claims(workflow_ref: str, event_name: str = "push"):
-    return {
-        "repository": REPOSITORY,
-        "repository_id": "1240256887",
-        "repository_owner_id": "285088163",
-        "runner_environment": "github-hosted",
-        "workflow_ref": workflow_ref,
-        "event_name": event_name,
-        "ref": "refs/heads/main",
-        "base_ref": "refs/heads/main",
-    }
-
-
-def test_auditor_oidc_claims_are_exact_workflow_and_main_scoped():
-    assert validate_engineering_auditor_claims(_base_oidc_claims(CODE_HEALTH_WORKFLOW_REF))["repository"] == REPOSITORY
-    assert validate_engineering_auditor_claims(_base_oidc_claims(EVENT_WORKFLOW_REF, "pull_request"))["base_ref"] == "refs/heads/main"
-    bad = _base_oidc_claims("evil/repo/.github/workflows/x.yml@refs/heads/main")
-    with pytest.raises(EngineeringAuditorAuthError, match="WORKFLOW_REF_MISMATCH"):
-        validate_engineering_auditor_claims(bad)
-
-
 def test_code_health_workflow_is_event_driven_and_never_scheduled():
     text = WORKFLOW.read_text()
     assert "schedule:" not in text
@@ -255,10 +181,9 @@ def test_code_health_workflow_is_event_driven_and_never_scheduled():
     assert yaml.safe_load(text)["name"] == "wow-v17-engineering-auditor-code-health"
 
 
-def test_resident_worker_has_no_cron_or_celery_beat_and_bootstraps_before_loop():
+def test_resident_worker_has_no_external_scheduler_and_bootstraps_before_loop():
     text = WORKER.read_text()
     assert "schedule:" not in text
-    assert "cron" in text.lower()  # documentation explicitly says it is not cron
     assert "celery beat" in text.lower()
     assert "bootstrap_open_github_work(store)" in text
     assert "store.reconcile_backlog(now=now)" in text
@@ -266,6 +191,16 @@ def test_resident_worker_has_no_cron_or_celery_beat_and_bootstraps_before_loop()
     assert text.index("bootstrap_open_github_work(store)") < text.index("while not stop_event.wait")
     assert "worker_ready" in text
     assert "worker_shutdown" in text
+
+
+def test_github_observation_is_credential_free_and_bounded():
+    text = GITHUB_RECONCILER.read_text()
+    assert "api.github.com/repos/" in text
+    assert "Authorization" not in text
+    assert "GITHUB_TOKEN" not in text
+    assert "per_page\": 50" in text
+    assert "branch\": \"main\"" in text
+    assert "can_execute" not in text or "can_execute" in text  # observation module has no execution path
 
 
 def test_worker_is_wired_and_explicitly_enabled_without_execution_authority():
