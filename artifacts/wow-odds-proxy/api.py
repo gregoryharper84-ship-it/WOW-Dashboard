@@ -50,6 +50,18 @@ SOURCE_DEGRADATION_CODES = {
     MARKET_INVENTORY_FALLBACK_HEADER: "MARKET_INVENTORY_CORE_MARKETS_ONLY_FALLBACK",
     EVENT_ODDS_FALLBACK_HEADER: "EVENT_ODDS_FEATURED_MARKETS_ONLY_FALLBACK",
 }
+CONTENT_TYPE_JSON = "JSON"
+CONTENT_TYPE_HTML = "TEXT_HTML"
+CONTENT_TYPE_TEXT = "TEXT_PLAIN"
+CONTENT_TYPE_OTHER = "OTHER"
+CONTENT_TYPE_MISSING = "EMPTY"
+CONTENT_TYPE_CLASSES = frozenset({
+    CONTENT_TYPE_JSON,
+    CONTENT_TYPE_HTML,
+    CONTENT_TYPE_TEXT,
+    CONTENT_TYPE_OTHER,
+    CONTENT_TYPE_MISSING,
+})
 # A 401/403 on an event-scoped endpoint is an account entitlement answer, not a
 # permanent fact. Re-probe after the window so a plan change or a transient
 # rejection cannot disable prop inventory for the lifetime of the process.
@@ -124,6 +136,13 @@ def _vendor_key() -> str:
     return keys[0][1]
 
 
+def _vendor_key_entry() -> tuple[str, str]:
+    keys = _vendor_keys()
+    if not keys:
+        raise HTTPException(status_code=503, detail={"code": "ODDS_API_KEY_UNCONFIGURED", "can_execute": False})
+    return keys[0]
+
+
 def _clean_params(**values) -> dict[str, str]:
     params: dict[str, str] = {}
     for key, value in values.items():
@@ -143,6 +162,36 @@ def _http_get(url: str, params: dict[str, str]) -> httpx.Response:
 
 def _quota_headers(response: httpx.Response) -> dict[str, str]:
     return {header: response.headers[header] for header in QUOTA_HEADERS if header in response.headers}
+
+
+def _content_type_class(response: httpx.Response) -> str:
+    """Classify Content-Type without persisting its raw, provider-controlled value."""
+    raw = str(response.headers.get("content-type") or "").split(";", 1)[0].strip().lower()
+    if not raw:
+        return CONTENT_TYPE_MISSING
+    if raw == "application/json" or raw.endswith("+json"):
+        return CONTENT_TYPE_JSON
+    if raw == "text/html":
+        return CONTENT_TYPE_HTML
+    if raw == "text/plain":
+        return CONTENT_TYPE_TEXT
+    return CONTENT_TYPE_OTHER
+
+
+def _non_json_response(response: httpx.Response, *, provider_alias: str) -> JSONResponse:
+    """Return only closed, nonsecret diagnostics for a non-JSON upstream body."""
+    return JSONResponse(
+        content={
+            "ok": False,
+            "code": "ODDS_API_UPSTREAM_NON_JSON",
+            "upstream_status": int(response.status_code),
+            "content_type_class": _content_type_class(response),
+            "provider_alias": provider_alias,
+            "can_execute": False,
+        },
+        status_code=502,
+        headers=_quota_headers(response),
+    )
 
 
 def _safe_upstream_message(response: httpx.Response) -> Optional[str]:
@@ -180,7 +229,9 @@ def _proxy_get(upstream_path: str, params: dict[str, str]) -> JSONResponse:
         raise HTTPException(status_code=503, detail={"code": "ODDS_API_KEY_UNCONFIGURED", "can_execute": False})
 
     response: httpx.Response | None = None
-    for index, (_source, vendor_key) in enumerate(keys):
+    selected_alias = keys[0][0]
+    for index, (source, vendor_key) in enumerate(keys):
+        selected_alias = source
         upstream_params = dict(params)
         upstream_params["apiKey"] = vendor_key
         try:
@@ -198,7 +249,7 @@ def _proxy_get(upstream_path: str, params: dict[str, str]) -> JSONResponse:
     try:
         payload = response.json()
     except ValueError:
-        raise HTTPException(status_code=502, detail={"code": "ODDS_API_UPSTREAM_NON_JSON", "can_execute": False})
+        return _non_json_response(response, provider_alias=selected_alias)
     if 200 <= response.status_code < 300:
         return JSONResponse(content=payload, status_code=response.status_code, headers=headers)
     return _upstream_error_response(response)
@@ -235,7 +286,8 @@ def _featured_sport_odds_fallback(
 
     allowed_keys = {"markets", "regions", "bookmakers", "dateFormat", "oddsFormat", "includeLinks", "includeSids"}
     fallback_params = {k: v for k, v in params.items() if k in allowed_keys}
-    fallback_params["apiKey"] = _vendor_key()
+    provider_alias, vendor_key = _vendor_key_entry()
+    fallback_params["apiKey"] = vendor_key
     try:
         response = _http_get(f"{ODDS_API_BASE}/sports/{sport}/odds", fallback_params)
     except (httpx.TimeoutException, httpx.NetworkError, httpx.RequestError):
@@ -243,7 +295,7 @@ def _featured_sport_odds_fallback(
     try:
         payload = response.json()
     except ValueError:
-        raise HTTPException(status_code=502, detail={"code": "ODDS_API_UPSTREAM_NON_JSON", "can_execute": False})
+        return _non_json_response(response, provider_alias=provider_alias)
     if not (200 <= response.status_code < 300):
         return _upstream_error_response(response, code="ODDS_API_FEATURED_ODDS_FALLBACK_ERROR")
     if not isinstance(payload, list):
@@ -331,7 +383,8 @@ def get_event_markets(
         return _core_market_inventory_fallback(sport, event_id, params)
 
     upstream_params = dict(params)
-    upstream_params["apiKey"] = _vendor_key()
+    provider_alias, vendor_key = _vendor_key_entry()
+    upstream_params["apiKey"] = vendor_key
     try:
         response = _http_get(f"{ODDS_API_BASE}/sports/{sport}/events/{event_id}/markets", upstream_params)
     except (httpx.TimeoutException, httpx.NetworkError, httpx.RequestError):
@@ -339,7 +392,7 @@ def get_event_markets(
     try:
         payload = response.json()
     except ValueError:
-        raise HTTPException(status_code=502, detail={"code": "ODDS_API_UPSTREAM_NON_JSON", "can_execute": False})
+        return _non_json_response(response, provider_alias=provider_alias)
     if 200 <= response.status_code < 300:
         return JSONResponse(content=payload, status_code=response.status_code, headers=_quota_headers(response))
     if response.status_code in {401, 403}:
@@ -375,7 +428,8 @@ def get_event_odds(
         )
 
     upstream_params = dict(params)
-    upstream_params["apiKey"] = _vendor_key()
+    provider_alias, vendor_key = _vendor_key_entry()
+    upstream_params["apiKey"] = vendor_key
     try:
         response = _http_get(f"{ODDS_API_BASE}/sports/{sport}/events/{event_id}/odds", upstream_params)
     except (httpx.TimeoutException, httpx.NetworkError, httpx.RequestError):
@@ -383,7 +437,7 @@ def get_event_odds(
     try:
         payload = response.json()
     except ValueError:
-        raise HTTPException(status_code=502, detail={"code": "ODDS_API_UPSTREAM_NON_JSON", "can_execute": False})
+        return _non_json_response(response, provider_alias=provider_alias)
     if 200 <= response.status_code < 300:
         return JSONResponse(content=payload, status_code=response.status_code, headers=_quota_headers(response))
 

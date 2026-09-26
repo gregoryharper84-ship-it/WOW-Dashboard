@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import copy
+import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -137,6 +139,18 @@ def test_acquisition_persistence_is_idempotent_sanitized_and_bounded():
         "events_returned": 2,
         "duplicate_rows_suppressed": 0,
         "blocker_code": "HTTP_401:secret=value",
+        "primary_path_id": "ODDS_PROXY",
+        "primary_path_state": "FAILED_TYPED",
+        "primary_blocker_code": "ODDS_API_UPSTREAM_NON_JSON:do-not-persist",
+        "fallback_path_id": "RUNDOWN",
+        "fallback_path_state": "SUCCEEDED_WITH_ROWS",
+        "fallback_blocker_code": None,
+        "primary_upstream_status": 200,
+        "primary_content_type_class": "TEXT_HTML",
+        "primary_provider_alias": "ODDS_API_PAID_KEY",
+        "fallback_upstream_status": None,
+        "fallback_content_type_class": None,
+        "fallback_provider_alias": None,
         "raw_payload": {"secret": "must-not-persist"},
         "price": -120,
         "probability": 0.72,
@@ -157,6 +171,12 @@ def test_acquisition_persistence_is_idempotent_sanitized_and_bounded():
     stored = next(iter(db.acquisition_rows.values()))
     assert not {"raw_payload", "price", "probability", "participant_name"}.intersection(stored)
     assert stored["blocker_code"] == "HTTP_401"
+    assert stored["primary_blocker_code"] == "ODDS_API_UPSTREAM_NON_JSON"
+    assert stored["primary_path_id"] == "ODDS_PROXY"
+    assert stored["primary_path_state"] == "FAILED_TYPED"
+    assert stored["primary_upstream_status"] == 200
+    assert stored["primary_content_type_class"] == "TEXT_HTML"
+    assert stored["primary_provider_alias"] == "ODDS_API_PAID_KEY"
     assert "secret" not in repr(stored)
     assert stored["can_execute"] is False
 
@@ -164,6 +184,40 @@ def test_acquisition_persistence_is_idempotent_sanitized_and_bounded():
     assert page["limit"] == 100
     assert page["returned"] == 1
     assert page["can_execute"] is False
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("primary_path_id", "https://provider.invalid/secret"),
+        ("primary_path_state", "provider said secret=value"),
+        ("primary_content_type_class", "text/html; apiKey=secret"),
+        ("primary_provider_alias", "actual-secret-value"),
+        ("primary_upstream_status", "200<script>"),
+        ("primary_upstream_status", True),
+    ],
+)
+def test_acquisition_persistence_rejects_non_allowlisted_observability(field, value):
+    detail = {
+        "family": "MLB",
+        "target_key": "TEST_PROVIDER|1|MLB|REGULAR_SEASON",
+        "final_state": "PROVIDER_SCHEMA_FAILURE",
+        "provider_status": "PROVIDER_FAILED",
+        "fallback_status": "FALLBACK_NOT_APPLICABLE",
+        "exhaustion_status": "PROVIDER_PATHS_EXHAUSTED",
+        "events_returned": 0,
+        field: value,
+        "can_execute": False,
+    }
+    result = persist_acquisition_detail(
+        _DB(),
+        run_id="run-invalid-observability",
+        details=[detail],
+        expected_targets=[{"family": "MLB", "target_key": detail["target_key"]}],
+    )
+    assert result["status"] == "INVALID_DETAIL"
+    assert result["board_completeness"] is False
+    assert result["blockers"] == ["CROSS_SPORT_ACQUISITION_DETAIL_OBSERVABILITY_INVALID"]
 
 
 def test_union_provenance_primary_failure_fallback_success_and_all_paths_fail():
@@ -349,6 +403,39 @@ def test_acquisition_persistence_failure_blocks_completeness_not_probability(mon
     assert payload["rows"][0]["probability_publishable"] is True
 
 
+def test_acquisition_observability_preserves_four_completed_mlb_rows_byte_for_byte(monkeypatch):
+    probabilities = (0.611, 0.622, 0.633, 0.644)
+    rows = []
+    for index, probability in enumerate(probabilities, start=1):
+        row = _completed_moneyline_row()
+        row["identity"] = {"sport": "MLB", "official_event_id": f"mlb-{index}"}
+        row["result"]["calibrated_probability"] = probability
+        row["result"]["calibrated_lower_bound"] = probability - 0.05
+        rows.append(row)
+    before = json.dumps(rows, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    monkeypatch.setattr(
+        runtime,
+        "_cross_sport_moneyline_rows",
+        lambda *_args, **_kwargs: (copy.deepcopy(rows), _scan_packet()),
+    )
+
+    payload = runtime.run_daily_snapshot(
+        runtime.DailySnapshotRequest(
+            requested_slate_date=(datetime.now(timezone.utc) + timedelta(days=1)).date().isoformat(),
+            requested_timezone="UTC",
+            lanes=["MONEYLINE"],
+            response_mode="FULL",
+        ),
+        db=_DB(),
+        market_api=object(),
+        event_api=object(),
+    )
+
+    after = json.dumps(payload["rows"], sort_keys=True, separators=(",", ":"), allow_nan=False)
+    assert after == before
+    assert [row["result"]["calibrated_probability"] for row in payload["rows"]] == list(probabilities)
+
+
 def _audit_row(**overrides):
     row = {
         "probability_package_valid": True,
@@ -423,3 +510,22 @@ def test_sql_store_is_rls_fail_closed_and_contains_no_numeric_authority_columns(
     assert "can_execute = false" in lowered
     assert " calibrated_probability " not in lowered
     assert " price " not in lowered
+
+
+def test_observability_migration_is_additive_closed_and_reversible():
+    sql = Path("v17/sql/20260926_v17_acquisition_path_observability.sql").read_text()
+    lowered = sql.lower()
+    assert "alter table public.wow_v17_daily_run_acquisition_detail" in lowered
+    assert "add column if not exists primary_path_id" in lowered
+    assert "circuit_open_from_prior_typed_failure" in lowered
+    assert "succeeded_empty" in lowered
+    assert "succeeded_with_rows" in lowered
+    assert "odds_api_paid_key" in lowered
+    assert "drop column if exists primary_path_id" in lowered
+    assert "enable row level security" not in lowered
+    assert "create policy" not in lowered
+    assert "can_execute" not in {
+        line.strip().split()[5]
+        for line in lowered.splitlines()
+        if line.strip().startswith("add column if not exists")
+    }

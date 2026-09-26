@@ -1,4 +1,7 @@
+import io
+import json
 from types import SimpleNamespace
+from urllib.error import HTTPError
 
 from v17 import nightly_multiscout as scout
 from v17 import nightly_multiscout_oidc as scout_oidc
@@ -9,6 +12,35 @@ def test_required_basketball_coverage_is_explicit():
     assert scout.MANDATORY_SPORT_FAMILIES["basketball_nba"] == "NBA"
     assert scout.MANDATORY_SPORT_FAMILIES["basketball_ncaab"] == "NCAAMB"
     assert scout.MANDATORY_SPORT_FAMILIES["basketball_wnba"] == "WNBA"
+
+
+def test_proxy_non_json_diagnostics_cross_client_boundary_without_raw_body(monkeypatch):
+    monkeypatch.setenv("WOW_ODDS_PROXY_ACTION_KEY", "caller-secret")
+    body = json.dumps({
+        "ok": False,
+        "code": "ODDS_API_UPSTREAM_NON_JSON",
+        "upstream_status": 200,
+        "content_type_class": "TEXT_HTML",
+        "provider_alias": "ODDS_API_PAID_KEY",
+        "raw_body": "<html>vendor-secret https://provider.invalid</html>",
+        "can_execute": False,
+    }).encode()
+
+    def fail(_request, timeout):
+        assert timeout == 25
+        raise HTTPError("https://proxy.invalid", 502, "bad gateway", {}, io.BytesIO(body))
+
+    monkeypatch.setattr(scout, "urlopen", fail)
+    result = scout.proxy_get("/odds-api/v4/sports", {"all": "true"})
+
+    assert result.ok is False
+    assert result.code == "ODDS_API_UPSTREAM_NON_JSON"
+    assert result.upstream_status == 200
+    assert result.content_type_class == "TEXT_HTML"
+    assert result.provider_alias == "ODDS_API_PAID_KEY"
+    assert "raw_body" not in result.__dict__
+    assert "vendor-secret" not in repr(result)
+    assert "provider.invalid" not in repr(result)
 
 
 def test_game_script_library_covers_upset_and_basketball_regimes():

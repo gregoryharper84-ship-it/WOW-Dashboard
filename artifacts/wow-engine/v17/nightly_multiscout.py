@@ -33,6 +33,19 @@ TERMINAL_SOURCE_HTTP_STATUSES = {401, 403, 429}
 # prop candidates and no blocker, which is indistinguishable from a slate that
 # genuinely has no props.
 SOURCE_DEGRADATION_FIELD = "wow_source_degradation"
+ODDS_PROVIDER_ALIASES = frozenset({
+    "ODDS_API_PAID_KEY",
+    "ODDS_API_KEY_100K",
+    "ODDS_API_FREE_KEY",
+    "ODDS_API_KEY",
+})
+ODDS_CONTENT_TYPE_CLASSES = frozenset({
+    "JSON",
+    "TEXT_HTML",
+    "TEXT_PLAIN",
+    "OTHER",
+    "EMPTY",
+})
 
 MANDATORY_SPORT_FAMILIES = {
     "basketball_nba": "NBA",
@@ -112,6 +125,31 @@ class FetchResult:
     data: Any = None
     status: int | None = None
     code: str | None = None
+    upstream_status: int | None = None
+    content_type_class: str | None = None
+    provider_alias: str | None = None
+
+
+def _safe_odds_diagnostics(payload: Any) -> dict[str, Any]:
+    """Accept only the proxy's closed, nonsecret diagnostic vocabulary."""
+    if not isinstance(payload, dict):
+        return {}
+    upstream_status = payload.get("upstream_status")
+    content_type_class = str(payload.get("content_type_class") or "").upper()
+    provider_alias = str(payload.get("provider_alias") or "").upper()
+    return {
+        "upstream_status": (
+            int(upstream_status)
+            if isinstance(upstream_status, int)
+            and not isinstance(upstream_status, bool)
+            and 100 <= upstream_status <= 599
+            else None
+        ),
+        "content_type_class": (
+            content_type_class if content_type_class in ODDS_CONTENT_TYPE_CLASSES else None
+        ),
+        "provider_alias": provider_alias if provider_alias in ODDS_PROVIDER_ALIASES else None,
+    }
 
 
 def proxy_get(path: str, params: dict[str, Any] | None = None) -> FetchResult:
@@ -125,6 +163,8 @@ def proxy_get(path: str, params: dict[str, Any] | None = None) -> FetchResult:
         with urlopen(req, timeout=25) as response:
             return FetchResult(True, json.loads(response.read().decode("utf-8")), response.status)
     except HTTPError as exc:
+        payload: Any = None
+        detail: Any = None
         try:
             payload = json.loads(exc.read().decode("utf-8"))
             detail = payload.get("detail") if isinstance(payload, dict) else None
@@ -132,7 +172,14 @@ def proxy_get(path: str, params: dict[str, Any] | None = None) -> FetchResult:
             code = payload.get("code") or detail.get("code")
         except Exception:
             code = None
-        return FetchResult(False, status=exc.code, code=code or f"HTTP_{exc.code}")
+        diagnostics_source = detail if isinstance(detail, dict) and detail else payload
+        diagnostics = _safe_odds_diagnostics(diagnostics_source)
+        return FetchResult(
+            False,
+            status=exc.code,
+            code=code or f"HTTP_{exc.code}",
+            **diagnostics,
+        )
     except (URLError, TimeoutError, json.JSONDecodeError) as exc:
         return FetchResult(False, code=type(exc).__name__)
 

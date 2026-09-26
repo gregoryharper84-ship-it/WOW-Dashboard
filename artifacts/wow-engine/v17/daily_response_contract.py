@@ -56,6 +56,34 @@ DETAIL_PAGE_MAX_LIMIT = 25
 ACQUISITION_DETAIL_PAGE_DEFAULT_LIMIT = 25
 ACQUISITION_DETAIL_PAGE_MAX_LIMIT = 100
 
+_ACQUISITION_PATH_IDS = frozenset({
+    "ESPN_SCOREBOARD",
+    "ODDS_PROXY",
+    "RUNDOWN",
+    "GOVERNED_FALLBACK_UNION",
+})
+_ACQUISITION_PATH_STATES = frozenset({
+    "SUCCEEDED_EMPTY",
+    "SUCCEEDED_WITH_ROWS",
+    "FAILED_TYPED",
+    "NOT_ATTEMPTED",
+    "NOT_APPLICABLE",
+    "CIRCUIT_OPEN_FROM_PRIOR_TYPED_FAILURE",
+})
+_ODDS_CONTENT_TYPE_CLASSES = frozenset({
+    "JSON",
+    "TEXT_HTML",
+    "TEXT_PLAIN",
+    "OTHER",
+    "EMPTY",
+})
+_ODDS_PROVIDER_ALIASES = frozenset({
+    "ODDS_API_PAID_KEY",
+    "ODDS_API_KEY_100K",
+    "ODDS_API_FREE_KEY",
+    "ODDS_API_KEY",
+})
+
 _COMPACT_DIRECTION_FIELDS = (
     "terminal_label",
     "verdict_class",
@@ -573,6 +601,21 @@ def _bounded_code(value: Any) -> str | None:
     return sanitized[:96] or None
 
 
+def _allowlisted_optional(value: Any, allowed: frozenset[str]) -> tuple[str | None, bool]:
+    if value is None or value == "":
+        return None, True
+    token = str(value).strip().upper()
+    return (token, True) if token in allowed else (None, False)
+
+
+def _optional_upstream_status(value: Any) -> tuple[int | None, bool]:
+    if value is None:
+        return None, True
+    if isinstance(value, int) and not isinstance(value, bool) and 100 <= value <= 599:
+        return int(value), True
+    return None, False
+
+
 def acquisition_detail_reference(
     *, run_id: str, detail_available: bool, details_count: int
 ) -> dict[str, Any]:
@@ -681,6 +724,57 @@ def persist_acquisition_detail(
                 "blockers": ["CROSS_SPORT_ACQUISITION_DETAIL_STATE_INVALID"],
                 "can_execute": False,
             }
+        primary_path_id, primary_path_id_ok = _allowlisted_optional(
+            detail.get("primary_path_id"), _ACQUISITION_PATH_IDS
+        )
+        fallback_path_id, fallback_path_id_ok = _allowlisted_optional(
+            detail.get("fallback_path_id"), _ACQUISITION_PATH_IDS
+        )
+        primary_path_state, primary_path_state_ok = _allowlisted_optional(
+            detail.get("primary_path_state"), _ACQUISITION_PATH_STATES
+        )
+        fallback_path_state, fallback_path_state_ok = _allowlisted_optional(
+            detail.get("fallback_path_state"), _ACQUISITION_PATH_STATES
+        )
+        primary_content_type, primary_content_type_ok = _allowlisted_optional(
+            detail.get("primary_content_type_class"), _ODDS_CONTENT_TYPE_CLASSES
+        )
+        fallback_content_type, fallback_content_type_ok = _allowlisted_optional(
+            detail.get("fallback_content_type_class"), _ODDS_CONTENT_TYPE_CLASSES
+        )
+        primary_alias, primary_alias_ok = _allowlisted_optional(
+            detail.get("primary_provider_alias"), _ODDS_PROVIDER_ALIASES
+        )
+        fallback_alias, fallback_alias_ok = _allowlisted_optional(
+            detail.get("fallback_provider_alias"), _ODDS_PROVIDER_ALIASES
+        )
+        primary_upstream_status, primary_upstream_status_ok = _optional_upstream_status(
+            detail.get("primary_upstream_status")
+        )
+        fallback_upstream_status, fallback_upstream_status_ok = _optional_upstream_status(
+            detail.get("fallback_upstream_status")
+        )
+        if not all((
+            primary_path_id_ok,
+            fallback_path_id_ok,
+            primary_path_state_ok,
+            fallback_path_state_ok,
+            primary_content_type_ok,
+            fallback_content_type_ok,
+            primary_alias_ok,
+            fallback_alias_ok,
+            primary_upstream_status_ok,
+            fallback_upstream_status_ok,
+        )):
+            return {
+                "status": "INVALID_DETAIL",
+                "detail_available": False,
+                "details_expected": len(details),
+                "details_persisted": 0,
+                "board_completeness": False,
+                "blockers": ["CROSS_SPORT_ACQUISITION_DETAIL_OBSERVABILITY_INVALID"],
+                "can_execute": False,
+            }
         payload.append(
             {
                 "run_id": run_id,
@@ -700,6 +794,18 @@ def persist_acquisition_detail(
                     0, int(detail.get("duplicate_rows_suppressed") or 0)
                 ),
                 "blocker_code": _bounded_code(detail.get("blocker_code")),
+                "primary_path_id": primary_path_id,
+                "primary_path_state": primary_path_state,
+                "primary_blocker_code": _bounded_code(detail.get("primary_blocker_code")),
+                "fallback_path_id": fallback_path_id,
+                "fallback_path_state": fallback_path_state,
+                "fallback_blocker_code": _bounded_code(detail.get("fallback_blocker_code")),
+                "primary_upstream_status": primary_upstream_status,
+                "primary_content_type_class": primary_content_type,
+                "primary_provider_alias": primary_alias,
+                "fallback_upstream_status": fallback_upstream_status,
+                "fallback_content_type_class": fallback_content_type,
+                "fallback_provider_alias": fallback_alias,
                 "captured_at": captured_at,
                 "can_execute": False,
             }
@@ -784,7 +890,12 @@ def read_acquisition_detail_page(
     fields = (
         "run_id,family,target_key,provider,league,regime,provider_sport_id,"
         "sport_key,final_state,provider_status,fallback_status,exhaustion_status,"
-        "events_returned,duplicate_rows_suppressed,blocker_code,captured_at"
+        "events_returned,duplicate_rows_suppressed,blocker_code,"
+        "primary_path_id,primary_path_state,primary_blocker_code,"
+        "fallback_path_id,fallback_path_state,fallback_blocker_code,"
+        "primary_upstream_status,primary_content_type_class,primary_provider_alias,"
+        "fallback_upstream_status,fallback_content_type_class,fallback_provider_alias,"
+        "captured_at"
     )
     try:
         query = (

@@ -32,9 +32,24 @@ def test_catalog_circuit_does_not_block_independent_union_feed():
     def proxy_get(path, params=None):
         nonlocal primary_calls
         primary_calls += 1
-        return SimpleNamespace(ok=False, code="ODDS_PROVIDER_NON_JSON", data=None)
+        return SimpleNamespace(
+            ok=False,
+            code="ODDS_API_UPSTREAM_NON_JSON",
+            data=None,
+            upstream_status=200,
+            content_type_class="TEXT_HTML",
+            provider_alias="ODDS_API_PAID_KEY",
+        )
 
-    primary = feed.odds_proxy_feed(proxy_get=proxy_get)
+    # Other full-suite tests install the resilience/quota overlays globally.
+    # Exercise the raw catalog adapter deterministically so wrapper order cannot
+    # rewrite which path this focused test is proving.
+    odds_factory = getattr(
+        discovery,
+        "_v17_cross_sport_resilience_original_odds_proxy_feed",
+        feed.odds_proxy_feed,
+    )
+    primary = odds_factory(proxy_get=proxy_get)
 
     def secondary(family, target=None):
         secondary_calls.append(family)
@@ -56,3 +71,11 @@ def test_catalog_circuit_does_not_block_independent_union_feed():
     assert secondary_calls == ["MLB", "NFL"]
     assert [row["id"] for row in mlb_rows] == ["secondary-mlb"]
     assert [row["id"] for row in nfl_rows] == ["secondary-nfl"]
+    assert mlb_rows.primary_path_id == discovery.PATH_ODDS_PROXY
+    assert mlb_rows.primary_path_state == discovery.PATH_FAILED
+    assert mlb_rows.primary_blocker_code == "ODDS_API_UPSTREAM_NON_JSON"
+    assert mlb_rows.primary_upstream_status == 200
+    assert mlb_rows.primary_content_type_class == "TEXT_HTML"
+    assert mlb_rows.primary_provider_alias == "ODDS_API_PAID_KEY"
+    assert nfl_rows.primary_path_state == discovery.PATH_CIRCUIT_OPEN_PRIOR_FAILURE
+    assert nfl_rows.fallback_path_state == discovery.PATH_SUCCEEDED_WITH_ROWS

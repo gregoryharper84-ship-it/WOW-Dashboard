@@ -129,6 +129,10 @@ def test_rundown_quota_exhaustion_trips_one_scan_circuit(monkeypatch):
 
     assert first.value.code == "RUNDOWN_QUOTA_EXHAUSTED"
     assert second.value.code.startswith("RUNDOWN_CIRCUIT_OPEN:")
+    assert second.value.acquisition.primary_path_state == (
+        discovery.PATH_CIRCUIT_OPEN_PRIOR_FAILURE
+    )
+    assert second.value.acquisition.primary_blocker_code == "RUNDOWN_QUOTA_EXHAUSTED"
     assert calls == [1]
     assert context["paid_provider_calls_attempted"] == 1
     assert context["paid_provider_calls_blocked_by_quota_policy"] == 1

@@ -134,6 +134,9 @@ def fair_discover_winner_slate(
                     "events_returned": 0,
                     "duplicate_rows_suppressed": 0,
                     "blocker_code": discovery.NO_CONFIGURED_DISCOVERY_FEED,
+                    **discovery.acquisition_observability_fields(
+                        None, default_primary_state=discovery.PATH_NOT_APPLICABLE
+                    ),
                     "can_execute": False,
                 }
             )
@@ -210,6 +213,9 @@ def fair_discover_winner_slate(
                         "events_returned": 0,
                         "duplicate_rows_suppressed": 0,
                         "blocker_code": exc.code,
+                        **discovery.acquisition_observability_fields(
+                            acquisition, default_primary_state=discovery.PATH_FAILED
+                        ),
                         "can_execute": False,
                     }
                 )
@@ -235,6 +241,9 @@ def fair_discover_winner_slate(
                         "events_returned": 0,
                         "duplicate_rows_suppressed": 0,
                         "blocker_code": type(exc).__name__,
+                        **discovery.acquisition_observability_fields(
+                            None, default_primary_state=discovery.PATH_FAILED
+                        ),
                         "can_execute": False,
                     }
                 )
@@ -277,6 +286,12 @@ def fair_discover_winner_slate(
                     "events_returned": target_returned,
                     "duplicate_rows_suppressed": target_duplicates,
                     "blocker_code": blocker_code,
+                    **discovery.acquisition_observability_fields(
+                        fetched
+                        if isinstance(fetched, discovery.AcquisitionFeedResult)
+                        else None,
+                        default_primary_state=discovery.succeeded_path_state(rows),
+                    ),
                     "can_execute": False,
                 }
             )
@@ -309,6 +324,9 @@ def fair_discover_winner_slate(
                         "events_returned": 0,
                         "duplicate_rows_suppressed": 0,
                         "blocker_code": discovery.DISCOVERY_BUDGET_EXHAUSTED,
+                        **discovery.acquisition_observability_fields(
+                            None, default_primary_state=discovery.PATH_NOT_ATTEMPTED
+                        ),
                         "can_execute": False,
                     }
                 )
