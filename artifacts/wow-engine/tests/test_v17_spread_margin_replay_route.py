@@ -6,6 +6,7 @@ import pytest
 
 import v17.spread_margin_replay_route as route
 from v17.spread_margin_challenger import SpreadChallengerUnavailable
+from v17.spread_market_evidence import SpreadMarketEvidenceError
 
 
 def _success_result():
@@ -110,14 +111,73 @@ def test_unexpected_runtime_failure_keeps_transport_infrastructure_semantics(mon
     assert payload["can_execute"] is False
 
 
+def test_spread_market_evidence_success_only_mutates_evidence_ledger(monkeypatch):
+    monkeypatch.setattr(
+        route,
+        "collect_spread_snapshot",
+        lambda *_args, **_kwargs: {
+            "status": "COMPLETE",
+            "sport": "NCAAF",
+            "sport_key": "americanfootball_ncaaf",
+            "slate_date": "2026-09-26",
+            "canonical_market_key": "spreads",
+            "market_ids": ["2"],
+            "book_names": ["Pinnacle", "Draftkings", "Fanduel"],
+            "rows_written": 18,
+            "datapoints": 18,
+            "market_probability_substitution_used": False,
+            "spread_line_used_as_feature": False,
+            "moneyline_to_spread_conversion_used": False,
+            "prediction_authority": False,
+            "probability_publishable": False,
+            "automatic_certification": False,
+            "automatic_promotion": False,
+            "can_execute": False,
+        },
+    )
+    payload = route.execute_spread_market_evidence_collection(
+        object(),
+        route.SpreadMarketEvidenceRequest(sport="NCAAF", slate_date="2026-09-26"),
+    )
+    assert payload["status"] == "EVIDENCE_CAPTURED"
+    assert payload["code"] == "SPREAD_MARKET_EVIDENCE_CAPTURED"
+    assert payload["rows_written"] == 18
+    assert payload["evidence_database_mutated"] is True
+    assert payload["production_probability_database_mutated"] is False
+    assert payload["production_registry_mutated"] is False
+    assert payload["probability_publishable"] is False
+    assert payload["spread_line_used_as_feature"] is False
+    assert payload["can_execute"] is False
+
+
+def test_spread_market_evidence_typed_failure_is_preserved(monkeypatch):
+    def blocked(*_args, **_kwargs):
+        raise SpreadMarketEvidenceError("RUNDOWN_QUOTA_EXHAUSTED", "quota exhausted")
+
+    monkeypatch.setattr(route, "collect_spread_snapshot", blocked)
+    payload = route.execute_spread_market_evidence_collection(
+        object(), route.SpreadMarketEvidenceRequest(sport="NFL", slate_date="2026-09-27")
+    )
+    assert payload["status"] == "BLOCKED"
+    assert payload["code"] == "RUNDOWN_QUOTA_EXHAUSTED"
+    assert payload["code"] != "MODEL_UNAVAILABLE"
+    assert payload["evidence_database_mutated"] is False
+    assert payload["production_probability_database_mutated"] is False
+    assert payload["can_execute"] is False
+
+
 def test_request_schema_is_closed_and_sport_allowlisted():
     with pytest.raises(ValidationError):
         route.SpreadMarginReplayRequest(sport="MLB")
     with pytest.raises(ValidationError):
         route.SpreadMarginReplayRequest(sport="NFL", unexpected=True)
+    with pytest.raises(ValidationError):
+        route.SpreadMarketEvidenceRequest(sport="MLB", slate_date="2026-09-27")
+    with pytest.raises(ValidationError):
+        route.SpreadMarketEvidenceRequest(sport="NFL", slate_date="09/27/2026")
 
 
-def test_route_installation_is_idempotent_and_has_auth_dependency():
+def test_route_installation_is_idempotent_and_has_auth_dependencies():
     app = FastAPI()
     route.install_spread_margin_replay_route(
         app,
@@ -129,10 +189,14 @@ def test_route_installation_is_idempotent_and_has_auth_dependency():
         auth_dependency=Depends(lambda: None),
         db_client_fn=lambda: object(),
     )
-    matches = [r for r in app.router.routes if getattr(r, "path", None) == "/internal/v17/spread-margin-replay"]
-    assert len(matches) == 1
-    assert matches[0].operation_id == "runWowV17SpreadMarginReplay"
-    assert matches[0].dependant.dependencies
+    replay = [r for r in app.router.routes if getattr(r, "path", None) == "/internal/v17/spread-margin-replay"]
+    evidence = [r for r in app.router.routes if getattr(r, "path", None) == "/internal/v17/spread-market-evidence"]
+    assert len(replay) == 1
+    assert replay[0].operation_id == "runWowV17SpreadMarginReplay"
+    assert replay[0].dependant.dependencies
+    assert len(evidence) == 1
+    assert evidence[0].operation_id == "collectWowV17SpreadMarketEvidence"
+    assert evidence[0].dependant.dependencies
 
 
 def test_governance_constants_are_fail_closed():
