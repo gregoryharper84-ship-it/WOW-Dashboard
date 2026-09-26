@@ -25,6 +25,7 @@ from ncaaf_cfbd_hydrator import hydrate_cfbd_season, persist_source_snapshots
 from ncaaf_training_materializer import materialize_training_games
 from ncaaf_feature_compiler import materialize_complete_training_features
 from v17.candidate_certification_evidence import install_candidate_certification_evidence_route
+from v17.experiments.ncaaf_publication_bound_route import install_ncaaf_publication_bound_challenger_route
 from v17.first_six_open_data_maintenance import install_first_six_open_data_maintenance_routes
 from v17.ncaaf_prop_history_maintenance import install_ncaaf_prop_history_maintenance_route
 from v17.ncaaf_result_form_candidate import NCAAFResultFormUnavailable, train_and_persist as train_result_form_candidate
@@ -211,8 +212,8 @@ def run_ncaaf_model_maintenance(
 
 
 def install_ncaaf_model_maintenance_route(app: FastAPI, *, auth_dependency: Any, db_client_fn: Any) -> None:
-    # Compose candidate-only maintenance and read-only certification surfaces
-    # behind the same strict auth. None of these routes can promote/certify.
+    # Compose candidate-only maintenance and read-only certification/experiment
+    # surfaces behind the same strict auth. None can promote/certify.
     install_ncaaf_prop_history_maintenance_route(
         app, auth_dependency=auth_dependency, db_client_fn=db_client_fn
     )
@@ -227,6 +228,9 @@ def install_ncaaf_model_maintenance_route(app: FastAPI, *, auth_dependency: Any,
         app, auth_dependency=auth_dependency, db_client_fn=db_client_fn
     )
     install_spread_margin_replay_route(
+        app, auth_dependency=auth_dependency, db_client_fn=db_client_fn
+    )
+    install_ncaaf_publication_bound_challenger_route(
         app, auth_dependency=auth_dependency, db_client_fn=db_client_fn
     )
     path = "/internal/v17/ncaaf-model-maintenance"
