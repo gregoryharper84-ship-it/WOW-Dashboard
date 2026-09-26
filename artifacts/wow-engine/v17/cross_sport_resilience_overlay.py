@@ -92,25 +92,52 @@ def _iso(value: datetime) -> str:
     return value.replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
-def _downstream_path_id(result: Any, discovery: Any, default: str | None = None) -> str | None:
-    """Name a multi-path downstream as the governed union, not one hidden child."""
+def _downstream_terminal_projection(
+    result: Any,
+    discovery: Any,
+    *,
+    default_path_id: str | None = None,
+    default_state: str | None = None,
+    default_blocker: str | None = None,
+) -> dict[str, Any]:
+    """Flatten one downstream outcome without mixing provenance layers.
+
+    A nested governed union is represented by one outer fallback slot.  Its
+    terminal member is the nested fallback when present; otherwise it is the
+    nested primary.  Selecting every projected field from that same member
+    prevents an outer record from pairing a Rundown blocker with Odds API state
+    or diagnostics.  It also preserves a terminal circuit-open state.
+    """
     if result is None:
-        return default
+        return {
+            "path_id": default_path_id,
+            "path_state": default_state,
+            "blocker_code": default_blocker,
+            "upstream_status": None,
+            "content_type_class": None,
+            "provider_alias": None,
+        }
+
     if result.fallback_path_id:
-        return discovery.PATH_GOVERNED_FALLBACK_UNION
-    return result.primary_path_id or default
+        return {
+            "path_id": discovery.PATH_GOVERNED_FALLBACK_UNION,
+            "path_state": result.fallback_path_state or default_state,
+            "blocker_code": result.fallback_blocker_code,
+            "upstream_status": result.fallback_upstream_status,
+            "content_type_class": result.fallback_content_type_class,
+            "provider_alias": result.fallback_provider_alias,
+        }
 
-
-def _downstream_terminal_blocker(result: Any, default: str | None = None) -> str | None:
-    """Retain the deepest typed fallback failure when a composite path exhausts."""
-    if result is None:
-        return default
-    return (
-        result.fallback_blocker_code
-        or result.primary_blocker_code
-        or result.blocker_code
-        or default
-    )
+    return {
+        "path_id": result.primary_path_id or default_path_id,
+        "path_state": result.primary_path_state or default_state,
+        "blocker_code": (
+            result.primary_blocker_code or result.blocker_code or default_blocker
+        ),
+        "upstream_status": result.primary_upstream_status,
+        "content_type_class": result.primary_content_type_class,
+        "provider_alias": result.primary_provider_alias,
+    }
 
 
 def _round_robin_events(events: Iterable[Any]) -> list[Any]:
@@ -191,6 +218,12 @@ def _schedule_first_fetch(
                 downstream = original_fetch(family, target)
             except discovery.DiscoveryFeedError as exc:
                 downstream_acquisition = exc.acquisition
+                projected = _downstream_terminal_projection(
+                    downstream_acquisition,
+                    discovery,
+                    default_state=discovery.PATH_FAILED,
+                    default_blocker=exc.code,
+                )
                 combined = discovery.AcquisitionFeedResult(
                     rows=(),
                     provider_status=discovery.PROVIDER_FAILED,
@@ -198,32 +231,14 @@ def _schedule_first_fetch(
                     exhaustion_status=discovery.PROVIDER_PATHS_EXHAUSTED,
                     blocker_code=exc.code,
                     primary_blocker_code=primary_code,
-                    fallback_blocker_code=_downstream_terminal_blocker(
-                        downstream_acquisition, exc.code
-                    ),
+                    fallback_blocker_code=projected["blocker_code"],
                     primary_path_id=discovery.PATH_ESPN_SCOREBOARD,
                     primary_path_state=discovery.PATH_FAILED,
-                    fallback_path_id=_downstream_path_id(
-                        downstream_acquisition, discovery
-                    ),
-                    fallback_path_state=(
-                        downstream_acquisition.primary_path_state
-                        if downstream_acquisition is not None
-                        and downstream_acquisition.primary_path_state
-                        else discovery.PATH_FAILED
-                    ),
-                    fallback_upstream_status=(
-                        downstream_acquisition.primary_upstream_status
-                        if downstream_acquisition is not None else None
-                    ),
-                    fallback_content_type_class=(
-                        downstream_acquisition.primary_content_type_class
-                        if downstream_acquisition is not None else None
-                    ),
-                    fallback_provider_alias=(
-                        downstream_acquisition.primary_provider_alias
-                        if downstream_acquisition is not None else None
-                    ),
+                    fallback_path_id=projected["path_id"],
+                    fallback_path_state=projected["path_state"],
+                    fallback_upstream_status=projected["upstream_status"],
+                    fallback_content_type_class=projected["content_type_class"],
+                    fallback_provider_alias=projected["provider_alias"],
                 )
                 raise discovery.DiscoveryFeedError(exc.code, acquisition=combined) from exc
             except Exception as exc:  # noqa: BLE001 - typed acquisition evidence
@@ -259,6 +274,12 @@ def _schedule_first_fetch(
                 fallback_code = (
                     downstream_result.blocker_code or "DOWNSTREAM_PATHS_EXHAUSTED"
                 )
+                projected = _downstream_terminal_projection(
+                    downstream_result,
+                    discovery,
+                    default_state=discovery.PATH_FAILED,
+                    default_blocker=fallback_code,
+                )
                 combined = discovery.AcquisitionFeedResult(
                     rows=(),
                     provider_status=discovery.PROVIDER_FAILED,
@@ -266,34 +287,23 @@ def _schedule_first_fetch(
                     exhaustion_status=discovery.PROVIDER_PATHS_EXHAUSTED,
                     blocker_code=fallback_code,
                     primary_blocker_code=primary_code,
-                    fallback_blocker_code=fallback_code,
+                    fallback_blocker_code=projected["blocker_code"],
                     primary_path_id=discovery.PATH_ESPN_SCOREBOARD,
                     primary_path_state=discovery.PATH_FAILED,
-                    fallback_path_id=_downstream_path_id(
-                        downstream_result, discovery
-                    ),
-                    fallback_path_state=(
-                        downstream_result.primary_path_state
-                        if downstream_result is not None
-                        and downstream_result.primary_path_state
-                        else discovery.PATH_FAILED
-                    ),
-                    fallback_upstream_status=(
-                        downstream_result.primary_upstream_status
-                        if downstream_result is not None else None
-                    ),
-                    fallback_content_type_class=(
-                        downstream_result.primary_content_type_class
-                        if downstream_result is not None else None
-                    ),
-                    fallback_provider_alias=(
-                        downstream_result.primary_provider_alias
-                        if downstream_result is not None else None
-                    ),
+                    fallback_path_id=projected["path_id"],
+                    fallback_path_state=projected["path_state"],
+                    fallback_upstream_status=projected["upstream_status"],
+                    fallback_content_type_class=projected["content_type_class"],
+                    fallback_provider_alias=projected["provider_alias"],
                 )
                 raise discovery.DiscoveryFeedError(
                     fallback_code, acquisition=combined
                 )
+            projected = _downstream_terminal_projection(
+                downstream_result,
+                discovery,
+                default_state=discovery.succeeded_path_state(downstream_rows),
+            )
             return discovery.AcquisitionFeedResult(
                 rows=downstream_rows,
                 provider_status=discovery.PROVIDER_FAILED,
@@ -301,28 +311,14 @@ def _schedule_first_fetch(
                 exhaustion_status=discovery.PATHS_NOT_EXHAUSTED,
                 blocker_code=primary_code,
                 primary_blocker_code=primary_code,
-                fallback_blocker_code=_downstream_terminal_blocker(downstream_result),
+                fallback_blocker_code=projected["blocker_code"],
                 primary_path_id=discovery.PATH_ESPN_SCOREBOARD,
                 primary_path_state=discovery.PATH_FAILED,
-                fallback_path_id=_downstream_path_id(downstream_result, discovery),
-                fallback_path_state=(
-                    downstream_result.primary_path_state
-                    if downstream_result is not None
-                    and downstream_result.primary_path_state
-                    else discovery.succeeded_path_state(downstream_rows)
-                ),
-                fallback_upstream_status=(
-                    downstream_result.primary_upstream_status
-                    if downstream_result is not None else None
-                ),
-                fallback_content_type_class=(
-                    downstream_result.primary_content_type_class
-                    if downstream_result is not None else None
-                ),
-                fallback_provider_alias=(
-                    downstream_result.primary_provider_alias
-                    if downstream_result is not None else None
-                ),
+                fallback_path_id=projected["path_id"],
+                fallback_path_state=projected["path_state"],
+                fallback_upstream_status=projected["upstream_status"],
+                fallback_content_type_class=projected["content_type_class"],
+                fallback_provider_alias=projected["provider_alias"],
             )
         return original_fetch(family, target)
 
@@ -369,6 +365,15 @@ def _resilient_union_feed(
                         fallback = fallback_union(family, target)
                     except discovery.DiscoveryFeedError as fallback_exc:
                         fallback_acquisition = fallback_exc.acquisition
+                        projected = _downstream_terminal_projection(
+                            fallback_acquisition,
+                            discovery,
+                            default_path_id=getattr(
+                                fallback_union, "_wow_acquisition_path_id", None
+                            ),
+                            default_state=discovery.PATH_FAILED,
+                            default_blocker=fallback_exc.code,
+                        )
                         combined = discovery.AcquisitionFeedResult(
                             rows=(),
                             provider_status=discovery.PROVIDER_FAILED,
@@ -380,9 +385,7 @@ def _resilient_union_feed(
                                 if primary_acquisition is not None
                                 else getattr(primary_exc, "code", type(primary_exc).__name__)
                             ),
-                            fallback_blocker_code=_downstream_terminal_blocker(
-                                fallback_acquisition, fallback_exc.code
-                            ),
+                            fallback_blocker_code=projected["blocker_code"],
                             primary_path_id=discovery.PATH_ESPN_SCOREBOARD,
                             primary_path_state=(
                                 primary_acquisition.primary_path_state
@@ -390,29 +393,11 @@ def _resilient_union_feed(
                                 and primary_acquisition.primary_path_state
                                 else discovery.PATH_FAILED
                             ),
-                            fallback_path_id=_downstream_path_id(
-                                fallback_acquisition,
-                                discovery,
-                                getattr(fallback_union, "_wow_acquisition_path_id", None),
-                            ),
-                            fallback_path_state=(
-                                fallback_acquisition.primary_path_state
-                                if fallback_acquisition is not None
-                                and fallback_acquisition.primary_path_state
-                                else discovery.PATH_FAILED
-                            ),
-                            fallback_upstream_status=(
-                                fallback_acquisition.primary_upstream_status
-                                if fallback_acquisition is not None else None
-                            ),
-                            fallback_content_type_class=(
-                                fallback_acquisition.primary_content_type_class
-                                if fallback_acquisition is not None else None
-                            ),
-                            fallback_provider_alias=(
-                                fallback_acquisition.primary_provider_alias
-                                if fallback_acquisition is not None else None
-                            ),
+                            fallback_path_id=projected["path_id"],
+                            fallback_path_state=projected["path_state"],
+                            fallback_upstream_status=projected["upstream_status"],
+                            fallback_content_type_class=projected["content_type_class"],
+                            fallback_provider_alias=projected["provider_alias"],
                         )
                         raise discovery.DiscoveryFeedError(
                             fallback_exc.code, acquisition=combined
@@ -423,6 +408,14 @@ def _resilient_union_feed(
                         else None
                     )
                     fallback_rows = tuple(fallback or ())
+                    projected = _downstream_terminal_projection(
+                        fallback_result,
+                        discovery,
+                        default_path_id=getattr(
+                            fallback_union, "_wow_acquisition_path_id", None
+                        ),
+                        default_state=discovery.succeeded_path_state(fallback_rows),
+                    )
                     return discovery.AcquisitionFeedResult(
                         rows=fallback_rows,
                         provider_status=discovery.PROVIDER_FAILED,
@@ -436,7 +429,7 @@ def _resilient_union_feed(
                             if primary_acquisition is not None
                                 else getattr(primary_exc, "code", type(primary_exc).__name__)
                         ),
-                        fallback_blocker_code=_downstream_terminal_blocker(fallback_result),
+                        fallback_blocker_code=projected["blocker_code"],
                         primary_path_id=discovery.PATH_ESPN_SCOREBOARD,
                         primary_path_state=(
                             primary_acquisition.primary_path_state
@@ -444,29 +437,11 @@ def _resilient_union_feed(
                             and primary_acquisition.primary_path_state
                             else discovery.PATH_FAILED
                         ),
-                        fallback_path_id=_downstream_path_id(
-                            fallback_result,
-                            discovery,
-                            getattr(fallback_union, "_wow_acquisition_path_id", None),
-                        ),
-                        fallback_path_state=(
-                            fallback_result.primary_path_state
-                            if fallback_result is not None
-                            and fallback_result.primary_path_state
-                            else discovery.succeeded_path_state(fallback_rows)
-                        ),
-                        fallback_upstream_status=(
-                            fallback_result.primary_upstream_status
-                            if fallback_result is not None else None
-                        ),
-                        fallback_content_type_class=(
-                            fallback_result.primary_content_type_class
-                            if fallback_result is not None else None
-                        ),
-                        fallback_provider_alias=(
-                            fallback_result.primary_provider_alias
-                            if fallback_result is not None else None
-                        ),
+                        fallback_path_id=projected["path_id"],
+                        fallback_path_state=projected["path_state"],
+                        fallback_upstream_status=projected["upstream_status"],
+                        fallback_content_type_class=projected["content_type_class"],
+                        fallback_provider_alias=projected["provider_alias"],
                     )
         return normal_union(family, target)
 

@@ -151,6 +151,145 @@ def test_schedule_first_preserves_exhaustion_when_espn_and_downstream_fail(monke
     assert calls == {"espn": 1, "fallback": 1}
 
 
+def test_schedule_first_projects_nested_union_terminal_rundown_success(monkeypatch):
+    monkeypatch.setattr(
+        secondary,
+        "secondary_for_request",
+        lambda *_args, **_kwargs: secondary.SecondaryResult(
+            False, status=503, code="ESPN_HTTP_503"
+        ),
+    )
+
+    def downstream(_family, _target=None):
+        row = {"id": "rundown-recovered"}
+        return discovery.AcquisitionFeedResult(
+            rows=(row,),
+            provider_status=discovery.PROVIDER_FAILED,
+            fallback_status=discovery.FALLBACK_SUCCEEDED,
+            exhaustion_status=discovery.PATHS_NOT_EXHAUSTED,
+            blocker_code="ODDS_API_UPSTREAM_NON_JSON",
+            primary_blocker_code="ODDS_API_UPSTREAM_NON_JSON",
+            primary_path_id=discovery.PATH_ODDS_PROXY,
+            primary_path_state=discovery.PATH_FAILED,
+            fallback_path_id=discovery.PATH_RUNDOWN,
+            fallback_path_state=discovery.PATH_SUCCEEDED_WITH_ROWS,
+            primary_upstream_status=200,
+            primary_content_type_class="TEXT_HTML",
+            primary_provider_alias="ODDS_API_PAID_KEY",
+        )
+
+    result = resilience._schedule_first_fetch(
+        downstream,
+        started=datetime(2026, 9, 22, 12, 0, tzinfo=timezone.utc),
+        horizon_hours=36,
+    )("NFL")
+
+    assert result.fallback_path_id == discovery.PATH_GOVERNED_FALLBACK_UNION
+    assert result.fallback_path_state == discovery.PATH_SUCCEEDED_WITH_ROWS
+    assert result.fallback_blocker_code is None
+    assert result.fallback_upstream_status is None
+    assert result.fallback_content_type_class is None
+    assert result.fallback_provider_alias is None
+
+
+def test_schedule_first_projects_nested_union_terminal_rundown_403(monkeypatch):
+    monkeypatch.setattr(
+        secondary,
+        "secondary_for_request",
+        lambda *_args, **_kwargs: secondary.SecondaryResult(
+            False, status=503, code="ESPN_HTTP_503"
+        ),
+    )
+
+    def downstream(_family, _target=None):
+        acquisition = discovery.AcquisitionFeedResult(
+            rows=(),
+            provider_status=discovery.PROVIDER_FAILED,
+            fallback_status=discovery.FALLBACK_FAILED,
+            exhaustion_status=discovery.PROVIDER_PATHS_EXHAUSTED,
+            blocker_code="ODDS_API_UPSTREAM_NON_JSON",
+            primary_blocker_code="ODDS_API_UPSTREAM_NON_JSON",
+            fallback_blocker_code="RUNDOWN_HTTP_403",
+            primary_path_id=discovery.PATH_ODDS_PROXY,
+            primary_path_state=discovery.PATH_FAILED,
+            fallback_path_id=discovery.PATH_RUNDOWN,
+            fallback_path_state=discovery.PATH_FAILED,
+            primary_upstream_status=200,
+            primary_content_type_class="TEXT_HTML",
+            primary_provider_alias="ODDS_API_PAID_KEY",
+        )
+        raise discovery.DiscoveryFeedError(
+            "ODDS_API_UPSTREAM_NON_JSON", acquisition=acquisition
+        )
+
+    fetch = resilience._schedule_first_fetch(
+        downstream,
+        started=datetime(2026, 9, 22, 12, 0, tzinfo=timezone.utc),
+        horizon_hours=36,
+    )
+
+    with pytest.raises(discovery.DiscoveryFeedError) as exc:
+        fetch("NFL")
+
+    result = exc.value.acquisition
+    assert result is not None
+    assert result.fallback_path_id == discovery.PATH_GOVERNED_FALLBACK_UNION
+    assert result.fallback_path_state == discovery.PATH_FAILED
+    assert result.fallback_blocker_code == "RUNDOWN_HTTP_403"
+    assert result.fallback_upstream_status is None
+    assert result.fallback_content_type_class is None
+    assert result.fallback_provider_alias is None
+
+
+def test_schedule_first_preserves_nested_rundown_circuit_original_failure(monkeypatch):
+    monkeypatch.setattr(
+        secondary,
+        "secondary_for_request",
+        lambda *_args, **_kwargs: secondary.SecondaryResult(
+            False, status=503, code="ESPN_HTTP_503"
+        ),
+    )
+
+    def downstream(_family, _target=None):
+        acquisition = discovery.AcquisitionFeedResult(
+            rows=(),
+            provider_status=discovery.PROVIDER_FAILED,
+            fallback_status=discovery.FALLBACK_FAILED,
+            exhaustion_status=discovery.PROVIDER_PATHS_EXHAUSTED,
+            blocker_code="ODDS_API_UPSTREAM_NON_JSON",
+            primary_blocker_code="ODDS_API_UPSTREAM_NON_JSON",
+            fallback_blocker_code="RUNDOWN_HTTP_403",
+            primary_path_id=discovery.PATH_ODDS_PROXY,
+            primary_path_state=discovery.PATH_FAILED,
+            fallback_path_id=discovery.PATH_RUNDOWN,
+            fallback_path_state=discovery.PATH_CIRCUIT_OPEN_PRIOR_FAILURE,
+            primary_upstream_status=200,
+            primary_content_type_class="TEXT_HTML",
+            primary_provider_alias="ODDS_API_PAID_KEY",
+        )
+        raise discovery.DiscoveryFeedError(
+            "ODDS_API_UPSTREAM_NON_JSON", acquisition=acquisition
+        )
+
+    fetch = resilience._schedule_first_fetch(
+        downstream,
+        started=datetime(2026, 9, 22, 12, 0, tzinfo=timezone.utc),
+        horizon_hours=36,
+    )
+
+    with pytest.raises(discovery.DiscoveryFeedError) as exc:
+        fetch("NFL")
+
+    result = exc.value.acquisition
+    assert result is not None
+    assert result.fallback_path_id == discovery.PATH_GOVERNED_FALLBACK_UNION
+    assert result.fallback_path_state == discovery.PATH_CIRCUIT_OPEN_PRIOR_FAILURE
+    assert result.fallback_blocker_code == "RUNDOWN_HTTP_403"
+    assert result.fallback_upstream_status is None
+    assert result.fallback_content_type_class is None
+    assert result.fallback_provider_alias is None
+
+
 def test_resilient_union_preserves_schedule_failure_and_downstream_recovery(monkeypatch):
     monkeypatch.setattr(
         secondary,
