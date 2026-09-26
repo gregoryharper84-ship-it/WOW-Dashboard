@@ -56,6 +56,19 @@ def _blocked(code: str, *, stage: str, detail: Any = None) -> dict[str, Any]:
     }
 
 
+def _cfbd_failure_detail(exc: CFBDUnavailable, **extra: Any) -> dict[str, Any]:
+    """Preserve safe provider diagnostics without exposing body/header/credential data."""
+    http_status = getattr(exc, "http_status", None)
+    detail: dict[str, Any] = {
+        **extra,
+        "provider_error_code": str(exc.code),
+        "http_status": int(http_status) if http_status is not None else None,
+    }
+    if http_status is not None:
+        detail["provider_status_blocker"] = f"CFBD_HTTP_STATUS_{int(http_status)}"
+    return detail
+
+
 def _available_snapshot_keys(db: Any, seasons: tuple[int, ...]) -> set[tuple[int, int]]:
     """Read already-persisted non-empty player snapshots to avoid repeated API pulls."""
     result = (
@@ -168,7 +181,11 @@ def run_ncaaf_prop_history_maintenance(
     try:
         client = CFBDClient.from_environment()
     except CFBDUnavailable as exc:
-        return _blocked(exc.code, stage="CFBD_PLAYER_HISTORY_ACQUISITION")
+        return _blocked(
+            exc.code,
+            stage="CFBD_PLAYER_HISTORY_ACQUISITION",
+            detail=_cfbd_failure_detail(exc),
+        )
 
     all_snapshots = []
     season_receipts: list[dict[str, Any]] = []
@@ -199,11 +216,12 @@ def run_ncaaf_prop_history_maintenance(
             return _blocked(
                 exc.code,
                 stage="CFBD_PLAYER_HISTORY_ACQUISITION",
-                detail={
-                    "season": season,
-                    "completed_seasons": [row["season"] for row in season_receipts],
-                    "persisted_before_block": persisted_total,
-                },
+                detail=_cfbd_failure_detail(
+                    exc,
+                    season=season,
+                    completed_seasons=[row["season"] for row in season_receipts],
+                    persisted_before_block=persisted_total,
+                ),
             )
         except Exception as exc:  # noqa: BLE001
             return _blocked(
