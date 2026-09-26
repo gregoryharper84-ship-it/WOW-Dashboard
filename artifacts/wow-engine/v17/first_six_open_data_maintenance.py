@@ -1,8 +1,12 @@
 """Authenticated candidate-maintenance routes for first-six open-data lanes."""
 from __future__ import annotations
 
+from concurrent.futures import Future
+import ctypes
 from datetime import datetime, timezone
+import gc
 import os
+import threading
 from typing import Any, Callable
 
 from fastapi import FastAPI, HTTPException
@@ -17,6 +21,15 @@ from v17.team_state_scoped_maintenance import run_team_state_scope
 CAN_EXECUTE = False
 
 _TEAM_STATE_SOURCE_HEAVY_SPORTS = {"MLB", "NCAAB", "SOCCER"}
+_TEAM_STATE_RUNNER_ONLY_SCOPES = {
+    "MLB",
+    "NCAAB",
+    "SOCCER_EPL",
+    "SOCCER_BUNDESLIGA",
+    "SOCCER_LALIGA",
+    "SOCCER_SERIE_A",
+    "SOCCER_LIGUE_1",
+}
 _TEAM_STATE_PERSIST_CONTRACTS = {
     "wow_d1_training_rows": {
         "on_conflict": "sport,official_event_id,feature_schema_version,source_manifest_sha256",
@@ -27,6 +40,16 @@ _TEAM_STATE_PERSIST_CONTRACTS = {
         "max_rows": 5,
     },
 }
+
+# Scoped team-state maintenance is deliberately single-flight inside the
+# production Uvicorn process. GitHub callers may disconnect at their own timeout
+# while the synchronous acquisition/fitting work continues server-side. A retry
+# must join that in-flight computation rather than allocate a second copy of the
+# training corpus. Different lightweight scopes are serialized as well so model
+# maintenance cannot multiply memory pressure against interactive scoring.
+_TEAM_STATE_INFLIGHT_LOCK = threading.Lock()
+_TEAM_STATE_EXECUTION_LOCK = threading.Lock()
+_TEAM_STATE_INFLIGHT: dict[tuple[str, str], Future[dict[str, Any]]] = {}
 
 
 def _sha() -> str:
@@ -78,6 +101,85 @@ def _run_team_state_scope(db: Any, scope: str) -> dict[str, Any]:
                 "candidate_rows_updated":0,"candidate_rows_blocked":1,"automatic_certification":False,
                 "automatic_promotion":False,"probability_publishable":False,"can_execute":False}
     return {**result,"automatic_certification":False,"automatic_promotion":False,"probability_publishable":False,"can_execute":False}
+
+
+def _runner_only_team_state_block(scope: str) -> dict[str, Any]:
+    normalized = str(scope or "").strip().upper()
+    code = "TEAM_STATE_SOURCE_HEAVY_RUNNER_REQUIRED"
+    return {
+        "status": "BLOCKED",
+        "program": "LLP_DYNAMIC_TEAM_STATE_CHALLENGER_V1",
+        "scope": normalized,
+        "code": code,
+        "rows": [{
+            "sport": normalized,
+            "status": "BLOCKED",
+            "code": code,
+            "runner_isolation_required": True,
+            "automatic_certification": False,
+            "automatic_promotion": False,
+            "probability_publishable": False,
+            "can_execute": False,
+        }],
+        "candidate_rows_updated": 0,
+        "candidate_rows_blocked": 1,
+        "runner_isolation_required": True,
+        "automatic_certification": False,
+        "automatic_promotion": False,
+        "probability_publishable": False,
+        "can_execute": False,
+    }
+
+
+def _release_process_memory() -> None:
+    """Best-effort reclamation after in-process candidate maintenance.
+
+    Python GC releases unreachable training objects. On glibc hosts malloc_trim
+    additionally returns free arenas to the OS so Render's RSS budget reflects
+    the completed workload. Failure to trim is intentionally non-fatal.
+    """
+    gc.collect()
+    try:
+        malloc_trim = getattr(ctypes.CDLL(None), "malloc_trim", None)
+        if malloc_trim is not None:
+            malloc_trim.argtypes = [ctypes.c_size_t]
+            malloc_trim.restype = ctypes.c_int
+            malloc_trim(0)
+    except Exception:
+        pass
+
+
+def _run_team_state_scope_singleflight(db_client_fn: Callable[[], Any], scope: str) -> dict[str, Any]:
+    normalized = str(scope or "").strip().upper()
+    if normalized in _TEAM_STATE_RUNNER_ONLY_SCOPES:
+        return _runner_only_team_state_block(normalized)
+
+    sha = _sha()
+    key = (sha, normalized)
+    with _TEAM_STATE_INFLIGHT_LOCK:
+        future = _TEAM_STATE_INFLIGHT.get(key)
+        owner = future is None
+        if owner:
+            future = Future()
+            _TEAM_STATE_INFLIGHT[key] = future
+
+    assert future is not None
+    if not owner:
+        return future.result()
+
+    try:
+        with _TEAM_STATE_EXECUTION_LOCK:
+            result = _run_team_state_scope(db_client_fn(), normalized)
+            _release_process_memory()
+        future.set_result(result)
+        return result
+    except BaseException as exc:
+        future.set_exception(exc)
+        raise
+    finally:
+        with _TEAM_STATE_INFLIGHT_LOCK:
+            if _TEAM_STATE_INFLIGHT.get(key) is future:
+                del _TEAM_STATE_INFLIGHT[key]
 
 
 def _persist_team_state_batch(db: Any, payload: dict[str, Any]) -> dict[str, Any]:
@@ -183,7 +285,7 @@ def install_first_six_open_data_maintenance_routes(app: FastAPI, *, auth_depende
     if "/internal/v17/team-state-challenger-maintenance/{scope}" not in routes:
         @app.post("/internal/v17/team-state-challenger-maintenance/{scope}",dependencies=[dependency],operation_id="runWowV17TeamStateChallengerMaintenanceScope")
         def run_team_state_challenger_maintenance_scope(scope: str) -> dict[str, Any]:
-            return _run_team_state_scope(db_client_fn(), scope)
+            return _run_team_state_scope_singleflight(db_client_fn, scope)
 
     if "/internal/v17/team-state-challenger-persist-batch" not in routes:
         @app.post("/internal/v17/team-state-challenger-persist-batch",dependencies=[dependency],operation_id="persistWowV17TeamStateChallengerBatch")

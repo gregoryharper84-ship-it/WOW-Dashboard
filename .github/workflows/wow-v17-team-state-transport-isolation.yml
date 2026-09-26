@@ -1,0 +1,61 @@
+name: wow-v17-team-state-transport-isolation
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/wow-v17-team-state-transport-isolation.yml"
+      - ".github/workflows/wow-v17-first-six-transport-rescue.yml"
+      - "artifacts/wow-engine/v17/first_six_open_data_maintenance.py"
+      - "artifacts/wow-engine/v17/team_state_runner_rescue.py"
+      - "artifacts/wow-engine/test_v17_team_state_transport_isolation.py"
+      - "artifacts/wow-engine/test_v17_source_heavy_runner_rescue.py"
+      - "artifacts/wow-engine/test_v17_team_state_scoped_maintenance.py"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/wow-v17-team-state-transport-isolation.yml"
+      - ".github/workflows/wow-v17-first-six-transport-rescue.yml"
+      - "artifacts/wow-engine/v17/first_six_open_data_maintenance.py"
+      - "artifacts/wow-engine/v17/team_state_runner_rescue.py"
+      - "artifacts/wow-engine/test_v17_team_state_transport_isolation.py"
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify maintenance transport isolation
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: artifacts/wow-engine
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: artifacts/wow-engine/requirements.txt
+      - name: Install engine dependencies
+        run: pip install -r requirements.txt
+      - name: Run focused transport-isolation regressions
+        run: >-
+          python -m pytest -q
+          test_v17_team_state_transport_isolation.py
+          test_v17_source_heavy_runner_rescue.py
+          test_v17_team_state_scoped_maintenance.py
+          test_v17_maintenance_terminal_truth.py
+      - name: Assert governance invariants remain closed
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          route = Path('v17/first_six_open_data_maintenance.py').read_text()
+          runner = Path('v17/team_state_runner_rescue.py').read_text()
+          assert 'TEAM_STATE_SOURCE_HEAVY_RUNNER_REQUIRED' in route
+          assert '_TEAM_STATE_EXECUTION_LOCK' in route
+          assert '_TEAM_STATE_INFLIGHT' in route
+          assert 'SOCCER_LIGUE_1' in runner
+          for text in (route, runner):
+              assert 'CAN_EXECUTE = False' in text
+          PY
