@@ -1,6 +1,6 @@
 # WOW Betting Engine - V17 Custom GPT editor attestation
 
-Status: `RESYNC_REQUIRED_AFTER_ISSUE871_ACTION_SCHEMA_UPDATE__LIVE_ACTION_ACCEPTANCE_REQUIRED`
+Status: `RESYNC_REQUIRED_AFTER_PR766__LIVE_ACTION_ACCEPTANCE_REQUIRED`
 
 Historical verification date: 2026-09-16
 Post-PR617 editor update reported: 2026-09-20
@@ -11,7 +11,7 @@ Single-domain Action-set constraint confirmed: 2026-09-24
 Issue #871 Action-contract expansion prepared: 2026-09-26
 Current reconciliation date: 2026-09-26
 
-This record preserves the last fully verified live `WOW_BETTING_ENGINE` editor acceptance while separately recording later repository changes. The 2026-09-20 editor save predates later host-contract and Action-contract changes, so it cannot prove current instruction or Action parity.
+This record preserves the last fully verified live `WOW_BETTING_ENGINE` editor acceptance while separately recording later repository changes. The 2026-09-20 editor save predates later host-contract and Action-contract changes, so it cannot prove current instruction or Action parity. The stable machine-consumed resync status token is intentionally retained while issue #871 extends the Action surface.
 
 ## Historical live editor identity and safety
 
@@ -62,7 +62,7 @@ PR #654 requires fail-fast Action-surface preflight before large-board row prepa
 ## Current live-editor status
 
 ```text
-LIVE_GPT_EDITOR_SYNC = RESYNC_REQUIRED_AFTER_ISSUE871_ACTION_SCHEMA_UPDATE__LIVE_ACTION_ACCEPTANCE_REQUIRED
+LIVE_GPT_EDITOR_SYNC = RESYNC_REQUIRED_AFTER_PR766__LIVE_ACTION_ACCEPTANCE_REQUIRED
 BACKEND_RUNTIME = separately verified production state
 MODEL_CAPABILITY = route-specific separate state
 can_execute = false
