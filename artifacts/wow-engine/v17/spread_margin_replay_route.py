@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from github_actions_oidc import scout_route_auth_dependency
 from v17.spread_exact_line_replay import run_exact_line_replay
+from v17.spread_forward_shadow import run_ncaaf_forward_shadow
 from v17.spread_margin_challenger import SpreadChallengerUnavailable
 from v17.spread_margin_replay import run_historical_replay
 from v17.spread_market_evidence import (
@@ -46,6 +47,17 @@ class SpreadMarketEvidenceRequest(BaseModel):
     sport: ReplaySport
     slate_date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
     books: list[str] = Field(default_factory=lambda: list(DEFAULT_BOOKS), min_length=2, max_length=5)
+
+
+class SpreadForwardShadowRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    sport: Literal["NCAAF"] = "NCAAF"
+    event_id: str = Field(min_length=1, max_length=128)
+    event_start_time: str = Field(min_length=10, max_length=64)
+    home_team: str = Field(min_length=1, max_length=160)
+    away_team: str = Field(min_length=1, max_length=160)
+    home_spread: float = Field(gt=-100.0, lt=100.0)
+    season: int | None = Field(default=None, ge=2000, le=2100)
 
 
 def _governance_fields() -> dict[str, Any]:
@@ -215,10 +227,44 @@ def execute_spread_market_evidence_collection(db: Any, request: SpreadMarketEvid
     }
 
 
+def execute_spread_forward_shadow(db: Any, request: SpreadForwardShadowRequest) -> dict[str, Any]:
+    """Score one current NCAAF exact spread through the fitted challenger only."""
+    try:
+        result = run_ncaaf_forward_shadow(
+            db,
+            event_id=request.event_id,
+            event_start_time=request.event_start_time,
+            home_team=request.home_team,
+            away_team=request.away_team,
+            home_spread=request.home_spread,
+            season=request.season,
+        )
+    except SpreadChallengerUnavailable as exc:
+        return {
+            "status": "BLOCKED",
+            "code": exc.code,
+            "sport": request.sport,
+            "event_id": request.event_id,
+            "detail": str(exc),
+            **_governance_fields(),
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "status": "BLOCKED",
+            "code": "SPREAD_FORWARD_SHADOW_RUNTIME_FAILED",
+            "sport": request.sport,
+            "event_id": request.event_id,
+            "error_type": type(exc).__name__,
+            **_governance_fields(),
+        }
+    return {**result, **_governance_fields()}
+
+
 def install_spread_margin_replay_route(app: FastAPI, *, auth_dependency: Any, db_client_fn: Any) -> None:
     replay_path = "/internal/v17/spread-margin-replay"
     exact_path = "/internal/v17/spread-exact-line-replay"
     evidence_path = "/internal/v17/spread-market-evidence"
+    forward_path = "/internal/v17/spread-forward-shadow"
     existing = {getattr(route, "path", None) for route in app.router.routes}
 
     if replay_path not in existing:
@@ -248,6 +294,15 @@ def install_spread_margin_replay_route(app: FastAPI, *, auth_dependency: Any, db
         def collect_evidence(request: SpreadMarketEvidenceRequest) -> dict[str, Any]:
             return execute_spread_market_evidence_collection(db_client_fn(), request)
 
+    if forward_path not in existing:
+        @app.post(
+            forward_path,
+            dependencies=[scout_route_auth_dependency(auth_dependency)],
+            operation_id="scoreWowV17SpreadForwardShadow",
+        )
+        def score_forward_shadow(request: SpreadForwardShadowRequest) -> dict[str, Any]:
+            return execute_spread_forward_shadow(db_client_fn(), request)
+
 
 __all__ = [
     "AUTOMATIC_CERTIFICATION",
@@ -258,9 +313,11 @@ __all__ = [
     "GLOBAL_TERMINAL_REDUCER",
     "PROBABILITY_PUBLISHABLE",
     "PRODUCTION_REGISTRY_MUTATED",
+    "SpreadForwardShadowRequest",
     "SpreadMarginReplayRequest",
     "SpreadMarketEvidenceRequest",
     "execute_spread_exact_line_replay",
+    "execute_spread_forward_shadow",
     "execute_spread_margin_replay",
     "execute_spread_market_evidence_collection",
     "install_spread_margin_replay_route",
