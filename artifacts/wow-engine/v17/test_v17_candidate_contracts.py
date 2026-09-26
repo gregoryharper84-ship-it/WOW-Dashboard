@@ -7,6 +7,7 @@ import api_v17_candidate
 HERE = Path(__file__).parent
 WOW_SCHEMA = HERE / "openapi.wow-betting-engine.v17.yaml"
 LLP_SCHEMA = HERE / "openapi.llp-team-engine.v17.yaml"
+LLP_INSTRUCTIONS = HERE.parent / "LLP_V17_CUSTOM_GPT_INSTRUCTIONS.txt"
 
 
 def _operations(text: str) -> set[str]:
@@ -64,15 +65,42 @@ def test_wow_action_has_prop_and_team_event_delegation():
     assert "LLP_TEAM_BETTING_ENGINE" in text
 
 
-def test_llp_action_has_team_event_but_no_prop_scoring_operation():
+def test_llp_action_has_team_event_and_spread_but_no_prop_scoring_operation():
     text = LLP_SCHEMA.read_text()
     ops = _operations(text)
+    assert len(ops) == 7
     assert "scoreLlpV17TeamEvent" in ops
+    assert "scoreLlpV17SpreadForwardShadow" in ops
     assert "recordLlpV17Recommendations" in ops
     assert "settleLlpV17Recommendations" in ops
     assert not any("Prop" in op for op in ops)
     assert "/score-prop" not in text
     assert "LLP_TEAM_BETTING_ENGINE" in text
+
+    route = text[text.index("  /internal/v17/spread-forward-shadow:"):text.index("  /record-recommendations:")]
+    assert "operationId: scoreLlpV17SpreadForwardShadow" in route
+    assert "security: [{actionBearer: []}]" in route
+    assert "Research-only NCAAF exact-line spread forward shadow" in route
+    assert "no moneyline-to-spread" in route
+
+    request = text[text.index("    SpreadForwardShadowRequest:"):text.index("    RecommendationBatch:")]
+    assert "additionalProperties: false" in request
+    assert "required: [sport, event_id, event_start_time, home_team, away_team, home_spread, season]" in request
+    assert "sport: {type: string, enum: [NCAAF]}" in request
+
+    team_request = text[text.index("    LlpTeamEventRequest:"):]
+    assert "market_family: {type: string, enum: [OUTRIGHT_WINNER]}" in team_request
+
+
+def test_llp_instructions_fit_editor_limit_and_preserve_spread_governance():
+    text = LLP_INSTRUCTIONS.read_text()
+    assert len(text) <= 8000
+    assert len(text.encode("utf-8")) <= 7500
+    assert "POINT_SPREAD" in text
+    assert "scoreLlpV17SpreadForwardShadow" in text
+    assert "never a moneyline conversion" in text
+    assert "spread line never used as a training feature" in text
+    assert "can_execute=false always." in text
 
 
 def test_host_contract_requires_bearer_auth_in_both_production_schemas():
