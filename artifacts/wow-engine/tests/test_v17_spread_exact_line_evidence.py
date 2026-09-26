@@ -99,6 +99,32 @@ def test_binder_fails_closed_on_ambiguous_provider_event_identity():
     assert audit["blocker_counts"]["SPREAD_EVENT_IDENTITY_AMBIGUOUS"] == 1
 
 
+def test_binder_rejects_mismatched_participant_even_when_row_claims_home_side():
+    start = datetime(2026, 9, 27, 19, 0, tzinfo=timezone.utc)
+    rows = _market_rows(start)
+    poisoned = {
+        **rows[0],
+        "participant_type": "home",
+        "participant_name": "Philadelphia Eagles",
+        "selection": "Philadelphia Eagles",
+        "line_value": 9.5,
+        "price_updated_at": (start - timedelta(minutes=5)).isoformat(),
+        "fetched_at": (start - timedelta(minutes=5)).isoformat(),
+    }
+    evidence, audit = bind_exact_home_spreads(
+        sport="NFL",
+        event_identities=[{
+            "event_id": "event-1",
+            "event_start_time": start.isoformat(),
+            "home_team": "DAL",
+            "away_team": "PHI",
+        }],
+        market_rows=rows + [poisoned],
+    )
+    assert evidence["event-1"].home_spread == -3.5
+    assert audit["bound_event_n"] == 1
+
+
 def test_exact_line_evaluation_uses_provider_line_only_as_threshold():
     start = datetime(2026, 9, 27, 19, 0, tzinfo=timezone.utc)
     rows = [_row("e1", start, 7), _row("e2", start + timedelta(days=1), -3)]
