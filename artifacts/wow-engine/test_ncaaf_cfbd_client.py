@@ -47,13 +47,80 @@ def test_http_error_preserves_typed_code_and_safe_status(monkeypatch):
         return SimpleNamespace(status_code=429)
 
     monkeypatch.setattr(cfbd.httpx, "get", fake_get)
-    client = cfbd.CFBDClient(api_key="secret")
+    client = cfbd.CFBDClient(api_key="secret", sleep_fn=lambda _: None)
     with pytest.raises(cfbd.CFBDUnavailable) as exc:
         client.games(year=2026, week=4, classification="fbs")
 
     assert exc.value.code == "CFBD_HTTP_ERROR"
     assert exc.value.http_status == 429
+    assert exc.value.retry_after_seconds is None
+    assert exc.value.rate_limit_retries == 0
     assert "secret" not in str(exc.value)
+
+
+def test_429_with_bounded_retry_after_recovers(monkeypatch):
+    calls = []
+    sleeps = []
+
+    def fake_get(url, params, headers, timeout):
+        calls.append((url, params))
+        if len(calls) == 1:
+            return SimpleNamespace(status_code=429, headers={"Retry-After": "0.25"})
+        return SimpleNamespace(
+            status_code=200,
+            headers={},
+            json=lambda: [{"id": 7, "homeTeam": "A", "awayTeam": "B"}],
+        )
+
+    monkeypatch.setattr(cfbd.httpx, "get", fake_get)
+    client = cfbd.CFBDClient(api_key="secret", sleep_fn=sleeps.append)
+    response = client.games(year=2026, classification="fbs")
+
+    assert len(calls) == 2
+    assert sleeps == [0.25]
+    assert response.rows[0]["id"] == 7
+
+
+def test_429_retry_is_bounded_and_preserves_final_retry_receipt(monkeypatch):
+    calls = []
+    sleeps = []
+
+    def fake_get(url, params, headers, timeout):
+        calls.append(url)
+        return SimpleNamespace(status_code=429, headers={"Retry-After": "1"})
+
+    monkeypatch.setattr(cfbd.httpx, "get", fake_get)
+    client = cfbd.CFBDClient(
+        api_key="secret",
+        max_rate_limit_retries=2,
+        sleep_fn=sleeps.append,
+    )
+    with pytest.raises(cfbd.CFBDUnavailable) as exc:
+        client.games(year=2026, classification="fbs")
+
+    assert len(calls) == 3
+    assert sleeps == [1.0, 1.0]
+    assert exc.value.http_status == 429
+    assert exc.value.retry_after_seconds == 1.0
+    assert exc.value.rate_limit_retries == 2
+
+
+def test_429_without_or_excessive_retry_after_fails_without_guessing(monkeypatch):
+    calls = []
+
+    def fake_get(url, params, headers, timeout):
+        calls.append(url)
+        return SimpleNamespace(status_code=429, headers={"Retry-After": "3600"})
+
+    monkeypatch.setattr(cfbd.httpx, "get", fake_get)
+    client = cfbd.CFBDClient(api_key="secret", sleep_fn=lambda _: pytest.fail("must not sleep"))
+    with pytest.raises(cfbd.CFBDUnavailable) as exc:
+        client.games(year=2026, classification="fbs")
+
+    assert len(calls) == 1
+    assert exc.value.http_status == 429
+    assert exc.value.retry_after_seconds is None
+    assert exc.value.rate_limit_retries == 0
 
 
 def test_player_game_stats_uses_documented_read_only_route(monkeypatch):
