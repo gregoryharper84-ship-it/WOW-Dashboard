@@ -205,10 +205,12 @@ def execute_spread_market_evidence_collection(db: Any, request: SpreadMarketEvid
         }
 
     rows_written = int(result.get("rows_written") or 0)
+    provider_status = result.get("status")
     return {
+        **result,
+        "provider_collection_status": provider_status,
         "status": "EVIDENCE_CAPTURED" if rows_written > 0 else "EVIDENCE_EMPTY",
         "code": "SPREAD_MARKET_EVIDENCE_CAPTURED" if rows_written > 0 else "SPREAD_MARKET_EVIDENCE_EMPTY",
-        **result,
         **_evidence_governance_fields(rows_written=rows_written),
     }
 
