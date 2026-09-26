@@ -274,17 +274,23 @@ def union_feed(
         rows: list[Mapping[str, Any]] = []
         seen: set[tuple[str, str, str]] = set()
         failures: list[str] = []
-        succeeded = False
+        path_failures: list[str | None] = []
+        path_succeeded: list[bool] = []
         for feed in feeds:
             try:
                 produced = list(feed(family, target) or ())
             except discovery.DiscoveryFeedError as exc:
                 failures.append(exc.code)
+                path_succeeded.append(False)
+                path_failures.append(exc.code)
                 continue
             except Exception as exc:  # noqa: BLE001 - one feed's defect is not the board's
                 failures.append(f"{type(exc).__name__}:{exc}")
+                path_succeeded.append(False)
+                path_failures.append(type(exc).__name__)
                 continue
-            succeeded = True
+            path_succeeded.append(True)
+            path_failures.append(None)
             for row in produced:
                 if not isinstance(row, Mapping):
                     continue
@@ -302,9 +308,35 @@ def union_feed(
                     continue
                 seen.add(key)
                 rows.append(row)
-        if not succeeded and failures:
-            raise discovery.DiscoveryFeedError(failures[0])
-        return rows
+        primary_succeeded = bool(path_succeeded and path_succeeded[0])
+        fallback_attempted = len(path_succeeded) > 1
+        fallback_succeeded = any(path_succeeded[1:])
+        result = discovery.AcquisitionFeedResult(
+            rows=tuple(rows),
+            provider_status=(
+                discovery.PROVIDER_SUCCEEDED if primary_succeeded else discovery.PROVIDER_FAILED
+            ),
+            fallback_status=(
+                discovery.FALLBACK_NOT_APPLICABLE
+                if not fallback_attempted
+                else discovery.FALLBACK_SUCCEEDED
+                if fallback_succeeded
+                else discovery.FALLBACK_FAILED
+            ),
+            exhaustion_status=(
+                discovery.PATHS_NOT_EXHAUSTED
+                if any(path_succeeded)
+                else discovery.PROVIDER_PATHS_EXHAUSTED
+            ),
+            blocker_code=failures[0] if failures else None,
+            primary_blocker_code=(path_failures[0] if path_failures else None),
+            fallback_blocker_code=next(
+                (code for code in path_failures[1:] if code), None
+            ),
+        )
+        if not any(path_succeeded) and failures:
+            raise discovery.DiscoveryFeedError(failures[0], acquisition=result)
+        return result
 
     return fetch
 
