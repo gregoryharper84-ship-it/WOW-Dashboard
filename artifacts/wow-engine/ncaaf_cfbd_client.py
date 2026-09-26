@@ -30,9 +30,10 @@ _ALLOWED_ENDPOINTS = {
 
 
 class CFBDUnavailable(RuntimeError):
-    def __init__(self, code: str, message: str):
+    def __init__(self, code: str, message: str, *, http_status: int | None = None):
         super().__init__(message)
         self.code = code
+        self.http_status = int(http_status) if http_status is not None else None
 
 
 @dataclass(frozen=True)
@@ -73,6 +74,7 @@ class CFBDClient:
             raise CFBDUnavailable(
                 "CFBD_HTTP_ERROR",
                 f"CFBD returned HTTP {response.status_code} for {endpoint}.",
+                http_status=response.status_code,
             )
         try:
             payload = response.json()
