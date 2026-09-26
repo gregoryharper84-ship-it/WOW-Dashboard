@@ -20,10 +20,14 @@ on:
       - "artifacts/wow-engine/ncaaf_trainer.py"
       - "artifacts/wow-engine/ncaaf_logistic_adapter.py"
       - "artifacts/wow-engine/v17/ncaaf_model_maintenance.py"
+      - "artifacts/wow-engine/v17/ncaaf_prop_history_maintenance.py"
       - "artifacts/wow-engine/v17/capability_build_registry.py"
       - "artifacts/wow-engine/team_event_request_runtime.py"
+      - "artifacts/wow-engine/test_ncaaf_cfbd_client.py"
+      - "artifacts/wow-engine/test_ncaaf_cfbd_hydrator.py"
       - "artifacts/wow-engine/test_ncaaf_feature_compiler.py"
       - "artifacts/wow-engine/test_v17_ncaaf_model_maintenance.py"
+      - "artifacts/wow-engine/test_v17_ncaaf_prop_history_maintenance.py"
       - "artifacts/wow-engine/test_ncaaf_logistic_adapter.py"
       - "artifacts/wow-engine/test_v17_capability_build_registry.py"
       - "artifacts/wow-engine/test_v17_github_oidc.py"
@@ -42,10 +46,14 @@ on:
       - "artifacts/wow-engine/ncaaf_trainer.py"
       - "artifacts/wow-engine/ncaaf_logistic_adapter.py"
       - "artifacts/wow-engine/v17/ncaaf_model_maintenance.py"
+      - "artifacts/wow-engine/v17/ncaaf_prop_history_maintenance.py"
       - "artifacts/wow-engine/v17/capability_build_registry.py"
       - "artifacts/wow-engine/team_event_request_runtime.py"
+      - "artifacts/wow-engine/test_ncaaf_cfbd_client.py"
+      - "artifacts/wow-engine/test_ncaaf_cfbd_hydrator.py"
       - "artifacts/wow-engine/test_ncaaf_feature_compiler.py"
       - "artifacts/wow-engine/test_v17_ncaaf_model_maintenance.py"
+      - "artifacts/wow-engine/test_v17_ncaaf_prop_history_maintenance.py"
       - "artifacts/wow-engine/test_ncaaf_logistic_adapter.py"
       - "artifacts/wow-engine/test_v17_capability_build_registry.py"
       - "artifacts/wow-engine/test_v17_github_oidc.py"
@@ -77,9 +85,11 @@ jobs:
       - name: Run NCAAF model-development regressions
         run: >-
           python -m pytest -q
+          test_ncaaf_cfbd_client.py
+          test_ncaaf_cfbd_hydrator.py
+          test_v17_ncaaf_prop_history_maintenance.py
           test_ncaaf_feature_compiler.py
           test_v17_ncaaf_model_maintenance.py
-          test_ncaaf_cfbd_hydrator.py
           test_ncaaf_candidate_training_runner.py
           test_ncaaf_logistic_adapter.py
           test_v17_capability_build_registry.py
@@ -107,6 +117,64 @@ jobs:
           test "$WOW_DRY_RUN_ONLY" = "true"
           test -n "$ACTIONS_ID_TOKEN_REQUEST_URL"
           test -n "$ACTIONS_ID_TOKEN_REQUEST_TOKEN"
+
+      - name: Acquire governed NCAAF player-prop history
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import urllib.parse
+          import urllib.request
+
+          oidc_url = os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"]
+          separator = "&" if "?" in oidc_url else "?"
+          oidc_url += separator + urllib.parse.urlencode({"audience": "wow-v17-multiscout"})
+          oidc_request = urllib.request.Request(
+              oidc_url,
+              headers={"Authorization": f"Bearer {os.environ['ACTIONS_ID_TOKEN_REQUEST_TOKEN']}"},
+          )
+          with urllib.request.urlopen(oidc_request, timeout=20) as response:
+              oidc_token = json.load(response)["value"]
+
+          endpoint = os.environ["WOW_ACTION_ORIGIN"].rstrip("/") + "/internal/v17/ncaaf-prop-history-maintenance"
+          request = urllib.request.Request(
+              endpoint,
+              data=b"",
+              method="POST",
+              headers={
+                  "Authorization": f"Bearer {oidc_token}",
+                  "Content-Type": "application/json",
+              },
+          )
+          with urllib.request.urlopen(request, timeout=1200) as response:
+              payload = json.load(response)
+
+          assert payload.get("can_execute") is False
+          assert payload.get("automatic_certification") is False
+          assert payload.get("automatic_promotion") is False
+          assert payload.get("probability_publishable") is False
+          assert payload.get("model_build_ready") is False
+          profile = payload.get("player_stat_profile") or {}
+          print(json.dumps({
+              "status": payload.get("status"),
+              "source_snapshot_n": payload.get("source_snapshot_n"),
+              "source_snapshot_persisted_n": payload.get("source_snapshot_persisted_n"),
+              "schema_status": profile.get("status"),
+              "game_n": profile.get("game_n"),
+              "participant_id_n": profile.get("participant_id_n"),
+              "athlete_stat_n": profile.get("athlete_stat_n"),
+              "category_types": profile.get("category_types"),
+              "next_gate": payload.get("next_gate"),
+              "can_execute": False,
+          }, sort_keys=True))
+          if payload.get("status") == "BLOCKED":
+              raise RuntimeError("NCAAF_PROP_HISTORY_BLOCKED:" + json.dumps({
+                  "code": payload.get("code"),
+                  "blocked_stage": payload.get("blocked_stage"),
+                  "detail": payload.get("detail"),
+              }, sort_keys=True))
+          PY
 
       - name: Run governed NCAAF model maintenance
         shell: bash

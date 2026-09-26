@@ -20,6 +20,7 @@ CAN_EXECUTE = False
 
 _ALLOWED_ENDPOINTS = {
     "/games",
+    "/games/players",
     "/ratings/core",
     "/ratings/sp",
     "/ratings/srs",
@@ -87,6 +88,43 @@ class CFBDClient:
         return self.get(
             "/games",
             params={"year": year, "week": week, "classification": classification},
+        )
+
+    def player_game_stats(
+        self,
+        *,
+        year: int,
+        week: Optional[int] = None,
+        team: Optional[str] = None,
+        conference: Optional[str] = None,
+        classification: Optional[str] = "fbs",
+        season_type: Optional[str] = "both",
+        category: Optional[str] = None,
+    ) -> CFBDResponse:
+        """Fetch settled player box-score statistics through CFBD's documented route.
+
+        CFBD requires a week, team, or conference when filtering by year. WOW's
+        historical maintenance uses weekly FBS pulls so each request has a bounded,
+        auditable sporting scope. This method only acquires source data; it grants
+        no model capability or probability authority.
+        """
+        if year < 2000 or year > 2100:
+            raise ValueError("year is outside supported research bounds")
+        if week is None and not str(team or "").strip() and not str(conference or "").strip():
+            raise ValueError("CFBD player stats require week, team, or conference when year is supplied")
+        if week is not None and (int(week) < 0 or int(week) > 30):
+            raise ValueError("week is outside supported NCAAF bounds")
+        return self.get(
+            "/games/players",
+            params={
+                "year": year,
+                "week": week,
+                "team": team,
+                "conference": conference,
+                "classification": classification,
+                "seasonType": season_type,
+                "category": category,
+            },
         )
 
     def ratings(self, family: str, *, year: int, week: Optional[int] = None) -> CFBDResponse:
