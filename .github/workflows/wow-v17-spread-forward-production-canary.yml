@@ -1,0 +1,142 @@
+name: wow-v17-spread-forward-production-canary
+
+on:
+  workflow_run:
+    workflows: ["wow-v17-render-production-deploy"]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wow-v17-spread-forward-production-canary
+  cancel-in-progress: false
+
+jobs:
+  canary:
+    name: Verify production NCAAF spread forward shadow
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      WOW_ACTION_ORIGIN: https://wow-governed-probability-engine.onrender.com
+      WOW_OIDC_AUDIENCE: wow-v17-multiscout
+      WOW_CAN_EXECUTE: "false"
+      WOW_DRY_RUN_ONLY: "true"
+    steps:
+      - name: Assert research-only governance and OIDC context
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$WOW_CAN_EXECUTE" = "false"
+          test "$WOW_DRY_RUN_ONLY" = "true"
+          test -n "$ACTIONS_ID_TOKEN_REQUEST_URL"
+          test -n "$ACTIONS_ID_TOKEN_REQUEST_TOKEN"
+
+      - name: Execute bounded production spread-forward canary
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import datetime
+          import json
+          import os
+          import time
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+
+          origin = os.environ["WOW_ACTION_ORIGIN"].rstrip("/")
+          endpoint = origin + "/internal/v17/spread-forward-shadow"
+          audience = os.environ["WOW_OIDC_AUDIENCE"]
+          target = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=14)
+          target = target.replace(hour=18, minute=0, second=0, microsecond=0)
+          payload = {
+              "event_id": f"WOW-CANARY-NCAAF-{target:%Y%m%d}",
+              "event_start_time": target.isoformat(),
+              "home_team": "Nebraska",
+              "away_team": "Michigan State",
+              "home_spread": 0.0,
+              "season": target.year,
+          }
+
+          def fresh_oidc():
+              base = os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"]
+              sep = "&" if "?" in base else "?"
+              request = urllib.request.Request(
+                  base + sep + urllib.parse.urlencode({"audience": audience}),
+                  headers={"Authorization": f"Bearer {os.environ['ACTIONS_ID_TOKEN_REQUEST_TOKEN']}"},
+              )
+              with urllib.request.urlopen(request, timeout=20) as response:
+                  return json.load(response)["value"]
+
+          body = json.dumps(payload, sort_keys=True).encode()
+          request = urllib.request.Request(
+              endpoint,
+              data=body,
+              method="POST",
+              headers={
+                  "Authorization": f"Bearer {fresh_oidc()}",
+                  "Content-Type": "application/json",
+              },
+          )
+          started = time.monotonic()
+          try:
+              with urllib.request.urlopen(request, timeout=60) as response:
+                  status = response.status
+                  result = json.load(response)
+          except urllib.error.HTTPError as exc:
+              raw = exc.read().decode("utf-8", errors="replace")
+              raise RuntimeError(f"SPREAD_FORWARD_CANARY_HTTP_{exc.code}:{raw[:1000]}") from exc
+          elapsed = time.monotonic() - started
+
+          assert status == 200, (status, result)
+          assert result.get("status") == "EXPERIMENT_CREATED", result
+          assert result.get("code") == "SPREAD_FORWARD_SHADOW_COMPLETE", result
+          assert result.get("sport") == "NCAAF", result
+          assert result.get("automatic_certification") is False, result
+          assert result.get("automatic_promotion") is False, result
+          assert result.get("probability_publishable") is False, result
+          assert result.get("market_features_used") is False, result
+          assert result.get("spread_line_used_as_feature") is False, result
+          assert result.get("market_probability_substitution_used") is False, result
+          assert result.get("moneyline_probability_used") is False, result
+          assert result.get("dry_run_only_no_live_trading_no_market_orders") is True, result
+          assert result.get("can_execute") is False, result
+          assert result.get("global_terminal_reducer") == "V17_TERMINAL_REDUCER", result
+          assert result.get("training_cutoff_event_time") < result.get("event_start_time"), result
+
+          parts = [result.get("p_cover"), result.get("p_push"), result.get("p_not_cover")]
+          assert all(isinstance(value, (int, float)) for value in parts), parts
+          assert all(0.0 <= value <= 1.0 for value in parts), parts
+          assert abs(sum(parts) - 1.0) <= 1e-9, parts
+          assert elapsed <= 60.0, elapsed
+
+          receipt = {
+              "status": "PASS",
+              "code": "SPREAD_FORWARD_PRODUCTION_CANARY_PASS",
+              "elapsed_seconds": round(elapsed, 3),
+              "event_id": result.get("event_id"),
+              "training_dataset_hash": result.get("training_dataset_hash"),
+              "artifact_train_rows": result.get("artifact_train_rows"),
+              "artifact_calibration_rows": result.get("artifact_calibration_rows"),
+              "artifact_test_rows": result.get("artifact_test_rows"),
+              "probability_publishable": False,
+              "automatic_certification": False,
+              "automatic_promotion": False,
+              "global_terminal_reducer": "V17_TERMINAL_REDUCER",
+              "can_execute": False,
+          }
+          print(json.dumps(receipt, sort_keys=True))
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as handle:
+              handle.write("# V17 NCAAF Spread Forward Production Canary\n\n")
+              handle.write("```json\n")
+              handle.write(json.dumps(receipt, sort_keys=True, indent=2))
+              handle.write("\n```\n")
+          PY
