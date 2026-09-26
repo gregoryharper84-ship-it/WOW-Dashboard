@@ -87,7 +87,7 @@ def _blocked_optional_rating_snapshot(
         response_rows=[],
         response_row_count=0,
         payload_sha256=_canonical_hash([]),
-        acquisition_status="BLOCKED_OPTIONAL_RATING",
+        acquisition_status="BLOCKED",
         blocker_codes=[str(code or "CFBD_RATING_ACQUISITION_FAILED")],
         can_execute=False,
     )
