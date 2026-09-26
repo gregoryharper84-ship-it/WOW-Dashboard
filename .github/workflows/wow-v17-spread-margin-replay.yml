@@ -1,0 +1,201 @@
+name: wow-v17-spread-margin-replay
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/wow-v17-spread-margin-replay.yml"
+      - "artifacts/wow-engine/github_actions_oidc.py"
+      - "artifacts/wow-engine/v17/ncaaf_model_maintenance.py"
+      - "artifacts/wow-engine/v17/spread_margin_challenger.py"
+      - "artifacts/wow-engine/v17/spread_margin_replay.py"
+      - "artifacts/wow-engine/v17/spread_margin_replay_route.py"
+      - "artifacts/wow-engine/tests/test_v17_spread_margin_challenger.py"
+      - "artifacts/wow-engine/tests/test_v17_spread_margin_replay.py"
+      - "artifacts/wow-engine/tests/test_v17_spread_margin_replay_route.py"
+  pull_request:
+    paths:
+      - ".github/workflows/wow-v17-spread-margin-replay.yml"
+      - "artifacts/wow-engine/github_actions_oidc.py"
+      - "artifacts/wow-engine/v17/ncaaf_model_maintenance.py"
+      - "artifacts/wow-engine/v17/spread_margin_challenger.py"
+      - "artifacts/wow-engine/v17/spread_margin_replay.py"
+      - "artifacts/wow-engine/v17/spread_margin_replay_route.py"
+      - "artifacts/wow-engine/tests/test_v17_spread_margin_challenger.py"
+      - "artifacts/wow-engine/tests/test_v17_spread_margin_replay.py"
+      - "artifacts/wow-engine/tests/test_v17_spread_margin_replay_route.py"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wow-v17-spread-margin-replay-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Verify spread replay contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: artifacts/wow-engine
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: artifacts/wow-engine/requirements.txt
+      - name: Install engine dependencies
+        run: pip install -r requirements.txt
+      - name: Run spread replay and OIDC regressions
+        env:
+          PYTHONPATH: .
+        run: >-
+          python -m pytest -q
+          tests/test_v17_spread_margin_challenger.py
+          tests/test_v17_spread_margin_replay.py
+          tests/test_v17_spread_margin_replay_route.py
+          test_v17_github_oidc.py
+
+  replay:
+    name: Execute governed spread historical replay
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      WOW_ACTION_ORIGIN: https://wow-governed-probability-engine.onrender.com
+      WOW_OIDC_AUDIENCE: wow-v17-multiscout
+      WOW_CAN_EXECUTE: "false"
+      WOW_DRY_RUN_ONLY: "true"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Assert research-only governance and OIDC context
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$WOW_CAN_EXECUTE" = "false"
+          test "$WOW_DRY_RUN_ONLY" = "true"
+          test -n "$ACTIONS_ID_TOKEN_REQUEST_URL"
+          test -n "$ACTIONS_ID_TOKEN_REQUEST_TOKEN"
+
+      - name: Wait for protected replay route and execute historical replays
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/wow-engine/artifacts/spread-margin-replay
+          python - <<'PY'
+          import json
+          import os
+          import pathlib
+          import time
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+
+          ORIGIN = os.environ["WOW_ACTION_ORIGIN"].rstrip("/")
+          ENDPOINT = ORIGIN + "/internal/v17/spread-margin-replay"
+          AUDIENCE = os.environ["WOW_OIDC_AUDIENCE"]
+          OUT = pathlib.Path("artifacts/wow-engine/artifacts/spread-margin-replay")
+
+          def fresh_oidc():
+              base = os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"]
+              sep = "&" if "?" in base else "?"
+              request = urllib.request.Request(
+                  base + sep + urllib.parse.urlencode({"audience": AUDIENCE}),
+                  headers={"Authorization": f"Bearer {os.environ['ACTIONS_ID_TOKEN_REQUEST_TOKEN']}"},
+              )
+              with urllib.request.urlopen(request, timeout=20) as response:
+                  return json.load(response)["value"]
+
+          def post(payload, timeout=1200):
+              body = json.dumps(payload, sort_keys=True).encode()
+              request = urllib.request.Request(
+                  ENDPOINT,
+                  data=body,
+                  method="POST",
+                  headers={
+                      "Authorization": f"Bearer {fresh_oidc()}",
+                      "Content-Type": "application/json",
+                  },
+              )
+              try:
+                  with urllib.request.urlopen(request, timeout=timeout) as response:
+                      return response.status, json.load(response)
+              except urllib.error.HTTPError as exc:
+                  raw = exc.read().decode("utf-8", errors="replace")
+                  try:
+                      detail = json.loads(raw)
+                  except json.JSONDecodeError:
+                      detail = {"raw": raw[:1000]}
+                  return exc.code, detail
+
+          # Main push and Render auto-deploy happen concurrently. Probe with the
+          # intentionally typed NCAAB blocker because it is fast and proves the
+          # new OIDC workflow identity + route are live without running a model.
+          ready = None
+          for attempt in range(24):
+              status, payload = post({"sport": "NCAAB", "min_rows": 300, "ridge_alpha": 4.0}, timeout=60)
+              if status == 200 and payload.get("code") == "SPREAD_REPLAY_DATASET_UNAVAILABLE":
+                  ready = payload
+                  break
+              if status not in (401, 404, 502, 503):
+                  raise RuntimeError(f"SPREAD_REPLAY_ROUTE_UNEXPECTED:{status}:{json.dumps(payload, sort_keys=True)[:1000]}")
+              time.sleep(30)
+          if ready is None:
+              raise RuntimeError("SPREAD_REPLAY_ROUTE_NOT_READY_AFTER_BOUNDED_WAIT")
+          OUT.joinpath("NCAAB.json").write_text(json.dumps(ready, sort_keys=True, indent=2) + "\n")
+          assert ready.get("status") == "BLOCKED"
+          assert ready.get("probability_publishable") is False
+          assert ready.get("can_execute") is False
+
+          summaries = {"NCAAB": ready}
+          for sport in ("NFL", "WNBA", "NBA", "NCAAF"):
+              status, payload = post({"sport": sport, "min_rows": 300, "ridge_alpha": 4.0})
+              OUT.joinpath(f"{sport}.json").write_text(json.dumps(payload, sort_keys=True, indent=2) + "\n")
+              if status != 200:
+                  raise RuntimeError(f"{sport}_SPREAD_REPLAY_HTTP_{status}:{json.dumps(payload, sort_keys=True)[:1000]}")
+              assert payload.get("status") == "EXPERIMENT_CREATED", payload
+              assert payload.get("code") == "SPREAD_HISTORICAL_REPLAY_COMPLETE", payload
+              assert payload.get("automatic_certification") is False
+              assert payload.get("automatic_promotion") is False
+              assert payload.get("probability_publishable") is False
+              assert payload.get("database_mutated") is False
+              assert payload.get("production_registry_mutated") is False
+              assert payload.get("can_execute") is False
+              assert payload.get("global_terminal_reducer") == "V17_TERMINAL_REDUCER"
+              assert payload.get("market_features_used") is False
+              assert payload.get("moneyline_probability_used") is False
+              assert payload.get("spread_line_used_as_feature") is False
+              metrics = payload.get("metrics") or {}
+              for key in ("margin_mae", "margin_rmse", "three_way_brier", "cover_brier", "cover_log_loss", "cover_ece"):
+                  assert isinstance(metrics.get(key), (int, float)), (sport, key, metrics.get(key))
+              summaries[sport] = {
+                  "status": payload.get("status"),
+                  "historical_row_count": payload.get("historical_row_count"),
+                  "candidate": payload.get("candidate"),
+                  "artifact_checksum": payload.get("artifact_checksum"),
+                  "metrics": metrics,
+                  "probability_publishable": False,
+                  "can_execute": False,
+              }
+              print(json.dumps({sport: summaries[sport]}, sort_keys=True))
+
+          OUT.joinpath("summary.json").write_text(json.dumps(summaries, sort_keys=True, indent=2) + "\n")
+          PY
+
+      - name: Upload spread replay research receipts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wow-v17-spread-margin-replay-${{ github.run_id }}
+          path: artifacts/wow-engine/artifacts/spread-margin-replay/*.json
+          if-no-files-found: warn
+          retention-days: 30
