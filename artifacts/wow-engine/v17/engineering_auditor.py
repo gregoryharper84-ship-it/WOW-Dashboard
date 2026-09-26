@@ -184,7 +184,10 @@ class EngineeringAuditStore:
         meaningful_progress = existing is None or comparable != (existing.get("state_payload") or {})
         if existing and not meaningful_progress:
             progress_at = parse_timestamp(str(existing["last_meaningful_progress_at"]))
-        due_at = next_audit_at(progress_at, severity, draft=event.draft)
+            existing_due = existing.get("next_audit_at")
+            due_at = parse_timestamp(str(existing_due)) if existing_due else next_audit_at(progress_at, severity, draft=event.draft)
+        else:
+            due_at = next_audit_at(progress_at, severity, draft=event.draft)
         payload = {
             "fingerprint": fingerprint,
             "source_system": "GITHUB",
@@ -218,19 +221,20 @@ class EngineeringAuditStore:
             self.resolve_finding("STALE_WORK", fingerprint, resolution="SOURCE_REACHED_TERMINAL_STATE", now=now)
         elif meaningful_progress:
             self.resolve_finding("STALE_WORK", fingerprint, resolution="MEANINGFUL_PROGRESS_RESUMED", now=now)
-        self._log_event(
-            "ENGINEERING_AUDITOR_WORK_EVENT",
-            {
-                "event_name": event.event_name,
-                "action": event.action,
-                "source_kind": event.source_kind,
-                "source_ref": event.source_ref,
-                "work_fingerprint": fingerprint,
-                "meaningful_progress": meaningful_progress,
-                "state": payload["state"],
-                "can_execute": False,
-            },
-        )
+        if meaningful_progress or terminal:
+            self._log_event(
+                "ENGINEERING_AUDITOR_WORK_EVENT",
+                {
+                    "event_name": event.event_name,
+                    "action": event.action,
+                    "source_kind": event.source_kind,
+                    "source_ref": event.source_ref,
+                    "work_fingerprint": fingerprint,
+                    "meaningful_progress": meaningful_progress,
+                    "state": payload["state"],
+                    "can_execute": False,
+                },
+            )
         self.touch_runtime(last_event_processed_at=now)
         return work_item
 
@@ -349,6 +353,7 @@ class EngineeringAuditStore:
             fingerprint = str(item.get("fingerprint") or "")
             if not fingerprint:
                 continue
+            severity = str(item.get("severity") or "P3")
             evidence = {
                 "source_system": item.get("source_system"),
                 "source_kind": item.get("source_kind"),
@@ -363,13 +368,19 @@ class EngineeringAuditStore:
                 self.open_finding(
                     "STALE_WORK",
                     component=fingerprint,
-                    severity=str(item.get("severity") or "P3"),
+                    severity=severity,
                     source_ref=str(item.get("source_ref") or "") or None,
                     evidence=evidence,
                     work_item_id=str(item.get("work_item_id") or "") or None,
                     now=now,
                 )
             )
+            # Do not hammer the same stale item every resident-loop tick. The
+            # open finding remains durable; re-verify on the item's SLA unless
+            # a source event reports meaningful progress sooner.
+            self.client.table("wow_engineering_audit_work_items").update(
+                {"next_audit_at": iso(next_audit_at(now, severity)), "updated_at": iso(now)}
+            ).eq("fingerprint", fingerprint).execute()
         self.touch_runtime(last_reconcile_at=now)
         self.refresh_runtime_counts(now=now)
         return opened
@@ -395,12 +406,14 @@ class EngineeringAuditStore:
             changed = existing is None or comparable != (existing.get("state_payload") or {})
             if existing and not changed:
                 progress_at = parse_timestamp(str(existing["last_meaningful_progress_at"]))
+                existing_due = existing.get("next_audit_at")
+                due_at = parse_timestamp(str(existing_due)) if existing_due else next_audit_at(progress_at, severity)
             else:
                 opened_at = row.get("opened_at")
                 progress_at = parse_timestamp(str(opened_at)) if opened_at else now
                 if existing:
                     progress_at = now
-            due_at = next_audit_at(progress_at, severity)
+                due_at = next_audit_at(progress_at, severity)
             payload = {
                 "fingerprint": fingerprint,
                 "source_system": "SUPABASE",
