@@ -96,11 +96,11 @@ def test_llp_instructions_fit_editor_limit_and_preserve_spread_governance():
     text = LLP_INSTRUCTIONS.read_text()
     assert len(text) <= 8000
     assert len(text.encode("utf-8")) <= 7500
-    assert "POINT_SPREAD" in text
+    assert "point spreads" in text
     assert "scoreLlpV17SpreadForwardShadow" in text
-    assert "never a moneyline conversion" in text
-    assert "spread line never used as a training feature" in text
-    assert "can_execute=false always." in text
+    assert "no ML->spread or market-probability substitution" in text
+    assert "exact spread as post-fit threshold only" in text
+    assert "can_execute=false" in text
 
 
 def test_host_contract_requires_bearer_auth_in_both_production_schemas():
