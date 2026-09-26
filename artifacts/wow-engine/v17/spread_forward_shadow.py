@@ -22,13 +22,19 @@ from v17.spread_margin_challenger import (
     PROBABILITY_PUBLISHABLE,
     RUNTIME_GENERATION,
     SPORT_CONFIG,
+    MarginTrainingRow,
     SpreadChallengerUnavailable,
     _append_history,
     _dt,
     score_home_spread,
-    train_margin_distribution_candidate,
 )
-from v17.spread_margin_replay import _paged_select, load_ncaaf_persisted_replay_rows
+from v17.spread_margin_forward_fit import fit_margin_distribution_artifact
+from v17.spread_margin_replay import (
+    _load_ncaaf_persisted_feature_rows,
+    _load_ncaaf_persisted_game_rows,
+    _ncaaf_events_from_games,
+    adapt_ncaaf_persisted_rows,
+)
 from v17.team_state_intelligence import FEATURE_FAMILY_VERSION, build_team_state, paired_matchup_features
 
 SPORT = "NCAAF"
@@ -38,41 +44,47 @@ RIDGE_ALPHA = 4.0
 
 
 def load_ncaaf_settled_events(client: Any) -> list[dict[str, Any]]:
-    rows = _paged_select(
-        client,
-        "wow_ncaaf_training_games",
-        "training_game_id,official_event_id,season,event_start_time,home_team,away_team,home_points,away_points,result_source,result_source_timestamp,can_execute",
-        order="event_start_time",
-    )
-    events: list[dict[str, Any]] = []
-    for row in rows:
-        if not row.get("official_event_id") or not row.get("event_start_time"):
-            continue
-        if row.get("home_points") is None or row.get("away_points") is None:
-            continue
-        events.append({
-            "event_id": str(row["official_event_id"]),
-            "event_start_time": str(row["event_start_time"]),
-            "season": row.get("season"),
-            "home_team": str(row.get("home_team") or ""),
-            "away_team": str(row.get("away_team") or ""),
-            "home_score": int(row["home_points"]),
-            "away_score": int(row["away_points"]),
-            "source_manifest": {
-                "result_source": row.get("result_source"),
-                "result_source_timestamp": row.get("result_source_timestamp"),
-                "training_game_id": row.get("training_game_id"),
-                "market_features_used": False,
-                "moneyline_probability_used": False,
-                "spread_line_used_as_feature": False,
-            },
-        })
+    """Load settled NCAAF sporting history with stable event-id pagination."""
+    events = _ncaaf_events_from_games(_load_ncaaf_persisted_game_rows(client))
     if not events:
         raise SpreadChallengerUnavailable(
             "SPREAD_FORWARD_HISTORY_UNAVAILABLE",
             "NCAAF settled sporting history is unavailable for forward shadow scoring",
         )
     return events
+
+
+def load_ncaaf_forward_context(client: Any) -> tuple[list[MarginTrainingRow], list[dict[str, Any]]]:
+    """Load immutable training rows and settled matchup history once.
+
+    The pre-#919 path loaded the entire NCAAF settled-game table once while
+    binding immutable training features and then loaded it again to construct
+    the target matchup.  This context preserves the same integrity/staleness
+    checks while reusing the already-loaded settled corpus.
+    """
+    feature_rows = _load_ncaaf_persisted_feature_rows(client)
+    game_rows = _load_ncaaf_persisted_game_rows(client)
+    replay_rows = adapt_ncaaf_persisted_rows(feature_rows, game_rows)
+    settled_events = _ncaaf_events_from_games(game_rows)
+    if not replay_rows:
+        raise SpreadChallengerUnavailable(
+            "SPREAD_FORWARD_TRAINING_UNAVAILABLE",
+            "NCAAF spread replay rows are unavailable",
+        )
+    if not settled_events:
+        raise SpreadChallengerUnavailable(
+            "SPREAD_FORWARD_HISTORY_UNAVAILABLE",
+            "NCAAF settled sporting history is unavailable for forward shadow scoring",
+        )
+
+    latest_feature = max(_dt(row.event_start_time) for row in replay_rows)
+    latest_settled = max(_dt(row["event_start_time"]) for row in settled_events)
+    if latest_feature != latest_settled:
+        raise SpreadChallengerUnavailable(
+            "SPREAD_REPLAY_PERSISTED_NCAAF_FEATURES_STALE",
+            "immutable NCAAF dynamic team-state rows lag the latest settled training game",
+        )
+    return replay_rows, settled_events
 
 
 def build_forward_matchup_features(
@@ -192,12 +204,7 @@ def run_ncaaf_forward_shadow(
     if not (-100.0 < line < 100.0):
         raise SpreadChallengerUnavailable("SPREAD_FORWARD_LINE_INVALID", "home_spread is outside supported sanity bounds")
 
-    replay_rows = load_ncaaf_persisted_replay_rows(client)
-    if not replay_rows:
-        raise SpreadChallengerUnavailable(
-            "SPREAD_FORWARD_TRAINING_UNAVAILABLE",
-            "NCAAF spread replay rows are unavailable",
-        )
+    replay_rows, settled = load_ncaaf_forward_context(client)
     latest_training_event = max(_dt(row.event_start_time) for row in replay_rows)
     if latest_training_event >= target_start:
         raise SpreadChallengerUnavailable(
@@ -205,13 +212,12 @@ def run_ncaaf_forward_shadow(
             "forward-shadow target must be later than every fitted/replay sporting row",
         )
 
-    artifact, replay_metrics = train_margin_distribution_candidate(
+    artifact = fit_margin_distribution_artifact(
         replay_rows,
         sport=SPORT,
         min_rows=MIN_TRAIN_ROWS,
         ridge_alpha=RIDGE_ALPHA,
     )
-    settled = load_ncaaf_settled_events(client)
     features, feature_audit = build_forward_matchup_features(
         settled,
         target_event={
@@ -256,10 +262,12 @@ def run_ncaaf_forward_shadow(
         "distribution_sample_n": scored["distribution_sample_n"],
         "feature_audit": feature_audit,
         "historical_replay_diagnostic": {
-            "margin_mae": replay_metrics.get("margin_mae"),
-            "cover_brier": replay_metrics.get("cover_brier"),
-            "cover_log_loss": replay_metrics.get("cover_log_loss"),
-            "cover_ece": replay_metrics.get("cover_ece"),
+            "status": "NOT_RECOMPUTED_ON_FORWARD_PATH",
+            "reason": "FULL_GRID_DIAGNOSTICS_REMAIN_IN_GOVERNED_HISTORICAL_REPLAY",
+            "margin_mae": None,
+            "cover_brier": None,
+            "cover_log_loss": None,
+            "cover_ece": None,
         },
         "evaluation_state": "FORWARD_SHADOW_UNCERTIFIED",
         "market_features_used": False,
@@ -282,6 +290,7 @@ __all__ = [
     "RIDGE_ALPHA",
     "SPORT",
     "build_forward_matchup_features",
+    "load_ncaaf_forward_context",
     "load_ncaaf_settled_events",
     "run_ncaaf_forward_shadow",
 ]
