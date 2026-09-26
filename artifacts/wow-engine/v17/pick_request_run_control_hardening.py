@@ -28,12 +28,70 @@ _INSTALLED = False
 _ORIGINAL_SEED_MANIFEST = control._seed_manifest
 
 
+def _refresh_run_manifest_counts(db: Any, request_id: str) -> None:
+    """Make run-level counters reflect the persisted row ledger immediately.
+
+    Manifest seeding happens before scorer completion, so relying on finalization
+    leaves pending/unresolved counters at their database defaults during a live
+    durable run. The row ledger is authoritative; this helper only reconciles the
+    aggregate run receipt to that already-persisted state.
+    """
+    run_id = state._run_id(request_id)
+    run = control._run_row(db, run_id)
+    if not run:
+        return
+
+    rows = state.PickRequestStateStore(db)._load_all(run_id)
+    completed = sum(item.get("terminal_status") == "COMPLETED" for item in rows)
+    held = sum(item.get("terminal_status") == "HELD" for item in rows)
+    rejected = sum(item.get("terminal_status") == "REJECTED" for item in rows)
+    pending = sum(item.get("terminal_status") == "PENDING" for item in rows)
+    unresolved = sum(
+        item.get("terminal_status") == "PENDING"
+        or (
+            item.get("model_evaluated") is True
+            and int(item.get("stage_seq") or 0)
+            < state.STAGE_SEQ["RECEIPT_PERSISTED"]
+        )
+        for item in rows
+    )
+
+    refreshed = dict(run)
+    if not control._is_closed(run):
+        if pending:
+            run_status = "RUNNING"
+        elif completed == len(rows) and rows:
+            run_status = "COMPLETE"
+        elif completed:
+            run_status = "DEGRADED"
+        elif rows:
+            run_status = "BLOCKED"
+        else:
+            run_status = str(run.get("run_status") or "RUNNING")
+        refreshed["run_status"] = run_status
+
+    refreshed.update(
+        {
+            "total_rows": len(rows),
+            "completed_rows": completed,
+            "held_rows": held,
+            "rejected_rows": rejected,
+            "pending_rows": pending,
+            "unresolved_rows": unresolved,
+            "updated_at": state._now(),
+            "can_execute": False,
+        }
+    )
+    db.table(state.RUN_TABLE).upsert(refreshed, on_conflict="run_id").execute()
+
+
 def _closed_safe_seed_manifest(db: Any, request: control.ResumablePickRunRequest) -> None:
     run_id = state._run_id(request.request_id)
     existing_run = control._run_row(db, run_id)
     if control._is_closed(existing_run):
         raise control._closed_error(existing_run or {}, request.request_id)
     _ORIGINAL_SEED_MANIFEST(db, request)
+    _refresh_run_manifest_counts(db, request.request_id)
 
 
 def _receipt_preflight_without_rescore(
@@ -45,15 +103,21 @@ def _receipt_preflight_without_rescore(
 
     NOT_FOUND rows and exact durable PENDING rows carrying the same request_id,
     row_key, and explicit resume contract are scorer-eligible. MATCHED immutable
-    receipts are reconciled into durable state and deliberately omitted from the
-    returned retry list. Ambiguous, non-immutable, identity-mismatched, or
-    ledger/outcome-inconsistent states fail closed.
+    receipts with a complete durable outcome are reconciled into durable state and
+    deliberately omitted from the returned retry list.
+
+    If a unique immutable receipt exists but its companion durable outcome is
+    missing, exact-once safety forbids re-scoring and the missing governance state
+    forbids inventing a terminal result. That row is therefore deferred while
+    other retry-safe rows in the selected batch continue. The original typed
+    blocker is returned only when no scorer-safe work remains in that batch.
     """
     if not records:
         return [], 0, None
 
     retryable: list[dict[str, Any]] = []
     recovered = 0
+    deferred_blocker: dict[str, Any] | None = None
     by_key = {str(item.get("row_key")): item for item in records}
 
     for start in range(0, len(records), 50):
@@ -106,11 +170,16 @@ def _receipt_preflight_without_rescore(
 
             durable_outcome = record.get("outcome")
             if not isinstance(durable_outcome, dict):
-                return retryable, recovered, {
-                    "code": "RUN_RECEIPT_MATCHED_OUTCOME_UNAVAILABLE",
-                    "row_key": key,
-                    "can_execute": False,
-                }
+                if deferred_blocker is None:
+                    deferred_blocker = {
+                        "code": "RUN_RECEIPT_MATCHED_OUTCOME_UNAVAILABLE",
+                        "row_key": key,
+                        "receipt_status": "MATCHED",
+                        "deferred_until_retryable_rows_complete": True,
+                        "can_execute": False,
+                    }
+                # Do not mutate terminal state and do not re-score this row.
+                continue
 
             terminal_status = str(record.get("terminal_status") or "PENDING")
             if terminal_status == "PENDING":
@@ -150,7 +219,11 @@ def _receipt_preflight_without_rescore(
             recovered += 1
             # Critical: do NOT append the recovered row to retryable.
 
-    return retryable, recovered, None
+    if recovered:
+        _refresh_run_manifest_counts(db, request_id)
+    if retryable:
+        return retryable, recovered, None
+    return retryable, recovered, deferred_blocker
 
 
 def install_pick_request_run_control_hardening() -> None:
