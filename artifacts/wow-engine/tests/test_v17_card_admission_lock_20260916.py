@@ -83,7 +83,7 @@ def test_prop_publishability_hold_blocks_card_even_when_rank_flag_is_true():
     assert outcome["downstream_portfolio_evaluation_allowed"] is False
 
 
-def test_prop_money_hold_blocks_card_without_erasing_ranked_sporting_probability():
+def test_prop_money_hold_blocks_card_without_erasing_probability_or_portfolio_analysis():
     outcome = _prop_outcome(
         rank_eligible=True,
         probability_publishable=True,
@@ -98,9 +98,11 @@ def test_prop_money_hold_blocks_card_without_erasing_ranked_sporting_probability
     assert outcome["card_admission_eligible"] is False
     assert "CARD_ADMISSION:MONEY_EVALUATION_HELD" in outcome["card_admission_blockers"]
     assert outcome["downstream_money_evaluation_allowed"] is False
-    assert outcome["downstream_portfolio_evaluation_allowed"] is False
+    assert outcome["downstream_portfolio_evaluation_allowed"] is True
+    assert outcome["portfolio_governance"]["blockers"] == []
     assert outcome["result"]["prediction"]["calibrated_probability"] == before_probability
     assert outcome["card_admission_receipt"]["money_evaluation_allowed"] is False
+    assert outcome["card_admission_receipt"]["portfolio_eligible"] is True
     assert outcome["can_execute"] is False
 
 
