@@ -46,6 +46,7 @@ def test_protected_workflow_ref_stays_pinned_to_nightly_multiscout_main():
         (oidc.FIRST_SIX_MODEL_MAINTENANCE_WORKFLOW_REF, "/.github/workflows/wow-v17-first-six-model-maintenance.yml@refs/heads/main"),
         (oidc.FIRST_SIX_TRANSPORT_RESCUE_WORKFLOW_REF, "/.github/workflows/wow-v17-first-six-transport-rescue.yml@refs/heads/main"),
         (oidc.MLB_1IP_LINE_EXPANSION_MAINTENANCE_WORKFLOW_REF, "/.github/workflows/wow-v17-mlb-1ip-line-expansion-maintenance.yml@refs/heads/main"),
+        (oidc.SPREAD_MARGIN_REPLAY_WORKFLOW_REF, "/.github/workflows/wow-v17-spread-margin-replay.yml@refs/heads/main"),
     ],
 )
 def test_internal_workflow_is_explicitly_pinned_and_accepted(workflow_ref, expected_suffix):
@@ -72,6 +73,7 @@ def test_workflow_allowlist_contains_only_known_internal_workflows():
         oidc.FIRST_SIX_MODEL_MAINTENANCE_WORKFLOW_REF,
         oidc.FIRST_SIX_TRANSPORT_RESCUE_WORKFLOW_REF,
         oidc.MLB_1IP_LINE_EXPANSION_MAINTENANCE_WORKFLOW_REF,
+        oidc.SPREAD_MARGIN_REPLAY_WORKFLOW_REF,
     })
 
 
@@ -110,6 +112,7 @@ def test_oidc_claim_identity_mismatch_fails_closed(field, bad):
         oidc.FIRST_SIX_MODEL_MAINTENANCE_WORKFLOW_REF,
         oidc.FIRST_SIX_TRANSPORT_RESCUE_WORKFLOW_REF,
         oidc.MLB_1IP_LINE_EXPANSION_MAINTENANCE_WORKFLOW_REF,
+        oidc.SPREAD_MARGIN_REPLAY_WORKFLOW_REF,
     ],
 )
 def test_pull_request_oidc_is_never_authorized_for_internal_workflows(workflow_ref):
