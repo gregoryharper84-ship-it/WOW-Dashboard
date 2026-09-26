@@ -1,9 +1,9 @@
 """Current-slate NCAAF point-spread forward shadow scoring.
 
 This is a Class C challenger serving surface. It re-fits the existing governed
-NCAAF spread-margin challenger from the same read-only historical corpus used by
-historical replay, constructs the target matchup from settled prior sporting
-results only, and applies the requested spread solely as a post-fit threshold.
+NCAAF spread-margin challenger from immutable prior-only team-state training
+rows, constructs the target matchup from settled prior sporting results only,
+and applies the requested spread solely as a post-fit threshold.
 
 It cannot certify, promote, publish, rank as production, or execute a wager.
 """
@@ -28,7 +28,7 @@ from v17.spread_margin_challenger import (
     score_home_spread,
     train_margin_distribution_candidate,
 )
-from v17.spread_margin_replay import _paged_select, load_replay_rows
+from v17.spread_margin_replay import _paged_select, load_ncaaf_persisted_replay_rows
 from v17.team_state_intelligence import FEATURE_FAMILY_VERSION, build_team_state, paired_matchup_features
 
 SPORT = "NCAAF"
@@ -192,7 +192,7 @@ def run_ncaaf_forward_shadow(
     if not (-100.0 < line < 100.0):
         raise SpreadChallengerUnavailable("SPREAD_FORWARD_LINE_INVALID", "home_spread is outside supported sanity bounds")
 
-    replay_rows = load_replay_rows(client, sport=SPORT)
+    replay_rows = load_ncaaf_persisted_replay_rows(client)
     if not replay_rows:
         raise SpreadChallengerUnavailable(
             "SPREAD_FORWARD_TRAINING_UNAVAILABLE",
