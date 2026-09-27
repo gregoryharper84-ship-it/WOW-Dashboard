@@ -32,6 +32,8 @@ def test_fully_governed_team_event_is_officially_publishable():
     assert decision["official_publication_allowed"] is True
     assert decision["probability_publishable"] is True
     assert decision["rank_eligible"] is True
+    assert decision["publication_lane"] == "WINNER"
+    assert decision["probability_tier"] == "WINNER_WATCH"
     assert decision["can_execute"] is False
 
 
@@ -65,3 +67,78 @@ def test_wrong_terminal_authority_fails_closed():
     decision = evaluate_team_event_official_publication(row)
     assert decision["official_publication_allowed"] is False
     assert "TEAM_EVENT_TERMINAL_AUTHORITY_NOT_PROVEN" in decision["blockers"]
+
+
+def test_minnesota_regression_best_side_cannot_publish_as_clean_winner():
+    """MIN 52.39%, LB 42.91% must not leak from BEST_SIDE into winner publication."""
+    row = governed_result()
+    row.update({
+        "candidate_family": "OUTRIGHT_WINNER",
+        "decision_intent": "BEST_SIDE",
+        "calibrated_probability": 0.5239,
+        "calibrated_lower_bound": 0.4291,
+        "market_role": "UNDERDOG",
+    })
+    decision = evaluate_team_event_official_publication(row)
+    assert decision["status"] == "HELD"
+    assert decision["official_publication_allowed"] is False
+    assert decision["publication_lane"] == "WINNER"
+    assert decision["probability_tier"] == "WINNER_REJECT"
+    assert "TEAM_EVENT_UNDERDOG_ON_WINNER_LANE" in decision["blockers"]
+    assert "TEAM_EVENT_WINNER_LOWER_BOUND_BELOW_WATCH_FLOOR" in decision["blockers"]
+    assert decision["can_execute"] is False
+
+
+def test_home_away_only_best_side_package_uses_same_selected_lower_bound_as_batch_dispatcher():
+    row = governed_result()
+    row.pop("calibrated_probability")
+    row.pop("calibrated_lower_bound")
+    row.update({
+        "candidate_family": "TEAM_EVENT",
+        "decision_intent": "WINNER",
+        "calibrated_home_probability": 0.5239,
+        "calibrated_home_lower_bound": 0.4291,
+        "calibrated_away_probability": 0.4761,
+        "calibrated_away_lower_bound": 0.4010,
+    })
+
+    decision = evaluate_team_event_official_publication(row)
+
+    assert decision["status"] == "HELD"
+    assert decision["selected_calibrated_probability"] == 0.5239
+    assert decision["selected_calibrated_lower_bound"] == 0.4291
+    assert decision["probability_tier"] == "WINNER_REJECT"
+    assert "TEAM_EVENT_WINNER_LOWER_BOUND_BELOW_WATCH_FLOOR" in decision["blockers"]
+    assert decision["can_execute"] is False
+
+
+def test_minnesota_probability_fits_explicit_verified_upset_lane_only():
+    """The same governed probability may be classified as a qualified upset, not a winner."""
+    row = governed_result()
+    row.update({
+        "candidate_family": "UPSET",
+        "decision_intent": "UPSET",
+        "calibrated_probability": 0.5239,
+        "calibrated_lower_bound": 0.4291,
+        "market_role": "UNDERDOG",
+        "underdog_verified": True,
+    })
+    decision = evaluate_team_event_official_publication(row)
+    assert decision["status"] == "PASS"
+    assert decision["official_publication_allowed"] is True
+    assert decision["publication_lane"] == "UPSET"
+    assert decision["probability_tier"] == "QUALIFIED_UPSET_PROFILE"
+    assert decision["can_execute"] is False
+
+
+def test_upset_lane_requires_verified_underdog_status():
+    row = governed_result()
+    row.update({
+        "candidate_family": "UPSET",
+        "decision_intent": "UPSET",
+        "calibrated_probability": 0.51,
+        "calibrated_lower_bound": 0.44,
+    })
+    decision = evaluate_team_event_official_publication(row)
+    assert decision["official_publication_allowed"] is False
+    assert "TEAM_EVENT_UPSET_UNDERDOG_STATUS_NOT_VERIFIED" in decision["blockers"]

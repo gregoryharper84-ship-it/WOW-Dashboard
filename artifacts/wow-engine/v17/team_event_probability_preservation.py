@@ -32,6 +32,7 @@ from fastapi import FastAPI
 
 from v17 import team_event_request_runtime as _base
 from v17.projected_lineup_scenario_modeling import projected_probability_hold
+from v17.team_event_official_publication_guard import evaluate_team_event_official_publication
 from v17.team_event_upset_alert import evaluate_favorite_upset_alert
 
 _original_hold = _base._llp_governance_hold
@@ -118,6 +119,40 @@ def _annotate_probability_visibility(result: dict[str, Any]) -> dict[str, Any]:
     else:
         visibility = "BLOCKED_UNSCORED"
     out["probability_visibility_status"] = visibility
+    out["can_execute"] = False
+    return out
+
+
+def _apply_official_publication_guard(req: Any, result: dict[str, Any]) -> dict[str, Any]:
+    """Fail closed at the MLB publication boundary while preserving model output.
+
+    The controlling model package remains visible. This helper only removes
+    leaderboard/publication eligibility when the canonical official-publication
+    guard finds a lane/tier/governance blocker. It does not rewrite probability,
+    terminal authority, or execution state.
+    """
+    out = dict(result)
+    if out.get("probability_publishable") is not True or out.get("rank_eligible") is not True:
+        out["can_execute"] = False
+        return out
+
+    publication_input = dict(out)
+    publication_input["decision_intent"] = str(
+        getattr(req, "decision_intent", publication_input.get("decision_intent") or "BEST_SIDE")
+    ).upper()
+    decision = evaluate_team_event_official_publication(publication_input)
+    out["official_publication_guard"] = decision
+    out["publication_lane"] = decision.get("publication_lane")
+    out["probability_tier"] = decision.get("probability_tier")
+    out["publication_governance_status"] = decision.get("status")
+
+    if decision.get("official_publication_allowed") is not True:
+        out["probability_publishable"] = False
+        out["rank_eligible"] = False
+        out["blockers"] = sorted(set([
+            *(str(value) for value in (out.get("blockers") or [])),
+            *(str(value) for value in (decision.get("blockers") or [])),
+        ]))
     out["can_execute"] = False
     return out
 
@@ -412,6 +447,7 @@ def score_team_event_request(
                 canonical_hydration_required=canonical_hydration_required,
             )
             result = _attach_upset_alert(req, result)
+            result = _apply_official_publication_guard(req, result)
             return _annotate_probability_visibility(result)
         finally:
             _base._llp_governance_hold = previous_hold
