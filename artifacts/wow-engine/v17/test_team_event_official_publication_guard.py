@@ -89,6 +89,29 @@ def test_minnesota_regression_best_side_cannot_publish_as_clean_winner():
     assert decision["can_execute"] is False
 
 
+def test_home_away_only_best_side_package_uses_same_selected_lower_bound_as_batch_dispatcher():
+    row = governed_result()
+    row.pop("calibrated_probability")
+    row.pop("calibrated_lower_bound")
+    row.update({
+        "candidate_family": "TEAM_EVENT",
+        "decision_intent": "WINNER",
+        "calibrated_home_probability": 0.5239,
+        "calibrated_home_lower_bound": 0.4291,
+        "calibrated_away_probability": 0.4761,
+        "calibrated_away_lower_bound": 0.4010,
+    })
+
+    decision = evaluate_team_event_official_publication(row)
+
+    assert decision["status"] == "HELD"
+    assert decision["selected_calibrated_probability"] == 0.5239
+    assert decision["selected_calibrated_lower_bound"] == 0.4291
+    assert decision["probability_tier"] == "WINNER_REJECT"
+    assert "TEAM_EVENT_WINNER_LOWER_BOUND_BELOW_WATCH_FLOOR" in decision["blockers"]
+    assert decision["can_execute"] is False
+
+
 def test_minnesota_probability_fits_explicit_verified_upset_lane_only():
     """The same governed probability may be classified as a qualified upset, not a winner."""
     row = governed_result()
