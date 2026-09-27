@@ -57,6 +57,11 @@ services:
         value: "1"
       - key: WOW_INTERACTIVE_PROP_SCORE_WORKERS
         value: "1"
+      - key: WOW_INTERACTIVE_PROP_REQUEST_WORKERS
+        # Bound the whole score-pick-request path, including durable-worker
+        # callbacks, so overlapping long HTTP requests cannot multiply the
+        # request-local serial work and push the 512 MiB process into restart.
+        value: "1"
       - key: WOW_PROP_EVIDENCE_ACQUISITION_ENABLED
         # Keep the multi-minute autonomous MLB evidence sweep out of the
         # 512-MB interactive web process. It is forward-cohort evidence only;
