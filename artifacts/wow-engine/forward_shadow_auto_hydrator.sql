@@ -11,6 +11,10 @@
 -- The currently frozen forward feature builder is explicitly 2026-specific
 -- (its schedule-source subject is "2026"). This orchestrator therefore blocks
 -- any other season instead of silently generalizing the feature contract.
+--
+-- Capture intentionally deduplicates unchanged pregame identity and may reuse
+-- the same canonical snapshot throughout a slate day. Keep a bounded 24-hour
+-- source-snapshot window rather than assuming every cron pass creates a row.
 
 create or replace function public.wow_mlb_forward_auto_hydrate_pregame()
 returns jsonb
@@ -43,7 +47,7 @@ begin
   select s.snapshot_id, s.slate_date
   into v_snapshot_id, v_slate_date
   from public.wow_mlb_forward_shadow_source_snapshots s
-  where s.captured_at >= clock_timestamp() - interval '2 hours'
+  where s.captured_at >= clock_timestamp() - interval '24 hours'
     and exists (
       select 1
       from public.wow_mlb_forward_shadow_events se
