@@ -20,6 +20,7 @@ from v17.interactive_pick_hydration import schedule_interactive_pick_hydration_i
 from v17.interactive_pick_parallel import schedule_interactive_pick_parallel_install
 from v17.interactive_team_event_io import install_interactive_team_event_io
 from v17.interactive_team_event_latency import install_interactive_team_event_latency
+from v17.nfl_prop_memory_safety import install_nfl_prop_memory_safety
 from v17.pick_request_durable_job_queue_installer import schedule_durable_pick_job_queue
 from v17.pick_request_run_control import schedule_pick_request_run_control_install
 from v17.pick_request_run_control_hardening import install_pick_request_run_control_hardening
@@ -86,6 +87,13 @@ def initialize_observability() -> dict[str, Any]:
     # surfaces, reuses the existing free schedule-first path, and preserves public
     # scoreboard IDs as aliases until canonical identity is independently proven.
     install_quota_aware_degraded_discovery()
+
+    try:
+        # Install before any interactive prop request can retain the heavyweight
+        # full-season list[dict] nflverse cache in the 512 MiB web process.
+        install_nfl_prop_memory_safety()
+    except Exception:
+        pass
 
     try:
         install_interactive_team_event_latency()
