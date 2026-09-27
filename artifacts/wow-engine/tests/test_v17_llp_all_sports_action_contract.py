@@ -53,6 +53,13 @@ def test_llp_editor_sources_require_scan_before_shortlist_and_budget_completion(
         assert "partial shortlist" in text or "before ranking or shortlisting" in text
 
 
+def test_llp_editor_separates_research_rows_from_governed_ranked_shortlist():
+    text = EDITOR_INSTRUCTIONS.read_text()
+    assert "official-publication PASS" in text
+    assert "research/shadow/held rows stay separate and unranked" in text
+    assert "rank_eligible=true" in text
+
+
 def test_authority_instruction_block_remains_pasteable():
     text = AUTHORITY_INSTRUCTIONS.read_text()
     pasteable = text.split("```", 2)[1]
