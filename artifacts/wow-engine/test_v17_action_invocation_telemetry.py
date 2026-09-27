@@ -1,26 +1,58 @@
 import base64
 import json
 import logging
+import threading
 import time
 
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from v17.action_invocation_telemetry import (
+    RECORD_RECEIPT_RPC,
+    RECORD_RECOVERY_RPC,
     RECOVERY_TABLE,
+    RECONCILE_RECOVERY_RPC,
     TABLE,
+    _configure_transport_timeouts,
     install_action_invocation_middleware,
 )
 
 
-class _Table:
-    def __init__(self, sink): self.sink, self.payload = sink, None
-    def insert(self, payload): self.payload = dict(payload); return self
-    def execute(self): self.sink.append(self.payload); return type("Result", (), {"data": [self.payload]})()
-
 class _DB:
-    def __init__(self, sink): self.sink = sink
-    def table(self, name): assert name == TABLE; return _Table(self.sink)
+    def __init__(self, sink):
+        self.sink = sink
+        self.recovery = {}
+
+    def rpc(self, name, params):
+        return _RPC(self, name, params)
+
+
+class _RPC:
+    def __init__(self, db, name, params):
+        self.db, self.name, self.params = db, name, params
+
+    def execute(self):
+        if self.name == RECONCILE_RECOVERY_RPC:
+            stale = [key for key in self.db.recovery if any(row["invocation_id"] == key for row in self.db.sink)]
+            for key in stale[: self.params["p_limit"]]:
+                self.db.recovery.pop(key, None)
+            return type("Result", (), {"data": {"rows_deleted": len(stale)}})()
+        receipt = dict(self.params["p_receipt"])
+        invocation_id = receipt["invocation_id"]
+        if self.name == RECORD_RECEIPT_RPC:
+            if not any(row["invocation_id"] == invocation_id for row in self.db.sink):
+                self.db.sink.append(receipt)
+            self.db.recovery.pop(invocation_id, None)
+            return type("Result", (), {"data": {"status": "INSERTED"}})()
+        if self.name == RECORD_RECOVERY_RPC:
+            if any(row["invocation_id"] == invocation_id for row in self.db.sink):
+                self.db.recovery.pop(invocation_id, None)
+                status = "RECONCILED"
+            else:
+                self.db.recovery[invocation_id] = dict(self.params)
+                status = self.params["p_state"]
+            return type("Result", (), {"data": {"status": status}})()
+        raise AssertionError(self.name)
 
 def _unsigned_jwt(payload):
     header = base64.urlsafe_b64encode(json.dumps({"alg":"none"}).encode()).decode().rstrip("=")
@@ -60,7 +92,7 @@ def test_action_invocation_telemetry_records_success_failure_and_caller_class_wi
 
 def test_action_invocation_telemetry_persistence_failure_never_changes_action_response(caplog):
     class _BrokenDB:
-        def table(self,_name): raise RuntimeError("db unavailable")
+        def rpc(self, _name, _params): raise TimeoutError("db unavailable")
     app=FastAPI(); install_action_invocation_middleware(app,db_client_fn=lambda:_BrokenDB())
     @app.post("/score-pick-request")
     def score_pick_request(): return {"ok":True,"can_execute":False}
@@ -71,6 +103,7 @@ def test_action_invocation_telemetry_persistence_failure_never_changes_action_re
             deadline=time.monotonic()+3.5
             while not any("WOW_V17_ACTION_INVOCATION_PERSISTENCE_FAILED" in r.getMessage() for r in caplog.records) and time.monotonic()<deadline: time.sleep(0.01)
             assert any("WOW_V17_ACTION_INVOCATION_PERSISTENCE_FAILED" in r.getMessage() for r in caplog.records)
+            assert any("typed_failure=PERSISTENCE_FAILURE" in r.getMessage() for r in caplog.records)
 
 
 def test_action_invocation_telemetry_owns_tasks_until_completion():
@@ -91,17 +124,16 @@ def test_action_invocation_telemetry_owns_tasks_until_completion():
 
 
 def test_action_invocation_telemetry_shutdown_drains_pending_receipt():
-    import threading
     release = threading.Event()
     receipts = []
-    class _SlowTable(_Table):
+    class _SlowRPC(_RPC):
         def execute(self):
-            release.wait(0.5)
+            if self.name == RECORD_RECEIPT_RPC:
+                release.wait(0.5)
             return super().execute()
     class _SlowDB(_DB):
-        def table(self, name):
-            assert name == TABLE
-            return _SlowTable(self.sink)
+        def rpc(self, name, params):
+            return _SlowRPC(self, name, params)
     app = FastAPI()
     install_action_invocation_middleware(app, db_client_fn=lambda: _SlowDB(receipts))
     @app.post("/score-pick-request")
@@ -122,68 +154,60 @@ class _FlakyReceiptDB:
         self.receipts = []
         self.recovery = {}
         self.recovery_history = []
+        self.calls = []
 
-    def table(self, name):
-        if name == TABLE:
-            return _FlakyPrimaryTable(self)
-        if name == RECOVERY_TABLE:
-            return _RecoveryTable(self)
-        raise AssertionError(name)
+    def rpc(self, name, params):
+        self.calls.append(name)
+        return _FlakyRPC(self, name, params)
 
 
-class _FlakyPrimaryTable:
-    def __init__(self, db):
-        self.db = db
-        self.payload = None
-
-    def upsert(self, payload, on_conflict=None):
-        assert on_conflict == "invocation_id"
-        self.payload = dict(payload)
-        return self
+class _FlakyRPC:
+    def __init__(self, db, name, params):
+        self.db, self.name, self.params = db, name, params
 
     def execute(self):
-        self.db.primary_attempts += 1
-        if self.db.primary_attempts <= self.db.fail_primary_attempts:
-            raise TimeoutError("simulated receipt timeout")
-        self.db.receipts[:] = [
-            row for row in self.db.receipts
-            if row["invocation_id"] != self.payload["invocation_id"]
-        ]
-        self.db.receipts.append(self.payload)
-        return type("Result", (), {"data": [self.payload]})()
+        if self.name == RECONCILE_RECOVERY_RPC:
+            stale = [key for key in self.db.recovery if any(row["invocation_id"] == key for row in self.db.receipts)]
+            for key in stale[: self.params["p_limit"]]:
+                self.db.recovery.pop(key, None)
+            return type("Result", (), {"data": {"rows_deleted": len(stale)}})()
 
+        receipt = dict(self.params["p_receipt"])
+        invocation_id = receipt["invocation_id"]
+        if self.name == RECORD_RECEIPT_RPC:
+            self.db.primary_attempts += 1
+            if self.db.primary_attempts <= self.db.fail_primary_attempts:
+                raise TimeoutError("simulated transport receipt timeout")
+            if not any(row["invocation_id"] == invocation_id for row in self.db.receipts):
+                self.db.receipts.append(receipt)
+            self.db.recovery.pop(invocation_id, None)
+            return type("Result", (), {"data": {"status": "INSERTED"}})()
 
-class _RecoveryTable:
-    def __init__(self, db):
-        self.db = db
-        self.mode = None
-        self.payload = None
-        self.key = None
-
-    def upsert(self, payload, on_conflict=None):
-        assert on_conflict == "invocation_id"
-        self.mode = "upsert"
-        self.payload = dict(payload)
-        return self
-
-    def delete(self):
-        self.mode = "delete"
-        return self
-
-    def eq(self, key, value):
-        assert key == "invocation_id"
-        self.key = value
-        return self
-
-    def execute(self):
-        if self.mode == "upsert":
-            self.db.recovery[self.payload["invocation_id"]] = dict(self.payload)
-            self.db.recovery_history.append(dict(self.payload))
-            return type("Result", (), {"data": [self.payload]})()
-        if self.mode == "delete":
-            self.db.recovery.pop(self.key, None)
-            return type("Result", (), {"data": []})()
-        raise AssertionError(self.mode)
+        if self.name == RECORD_RECOVERY_RPC:
+            if any(row["invocation_id"] == invocation_id for row in self.db.receipts):
+                self.db.recovery.pop(invocation_id, None)
+                status = "RECONCILED"
+            else:
+                previous = self.db.recovery.get(invocation_id)
+                state = self.params["p_state"]
+                if previous and previous["state"] == "DEAD_LETTER":
+                    state = "DEAD_LETTER"
+                payload = {
+                    "invocation_id": invocation_id,
+                    "attempt_count": max(
+                        int((previous or {}).get("attempt_count", 0)),
+                        self.params["p_attempt_count"],
+                    ),
+                    "state": state,
+                    "last_error_type": self.params["p_error_type"],
+                    "receipt": receipt,
+                    "can_execute": False,
+                }
+                self.db.recovery[invocation_id] = payload
+                self.db.recovery_history.append(dict(payload))
+                status = state
+            return type("Result", (), {"data": {"status": status}})()
+        raise AssertionError(self.name)
 
 
 def test_receipt_timeout_queues_then_recovers_idempotently():
@@ -231,3 +255,126 @@ def test_receipt_retry_exhaustion_is_durable_dead_letter():
     assert recovery["attempt_count"] == 3
     assert recovery["receipt"]["request_id"] == "dead-letter-me"
     assert recovery["can_execute"] is False
+
+
+def test_transport_timeout_is_owned_by_postgrest_http_client():
+    class _Session:
+        timeout = None
+    class _Postgrest:
+        session = _Session()
+    class _TransportDB:
+        postgrest = _Postgrest()
+
+    db = _configure_transport_timeouts(_TransportDB())
+    timeout = db.postgrest.session.timeout
+    assert timeout.connect == 2.0
+    assert timeout.read == 5.0
+    assert timeout.write == 5.0
+    assert timeout.pool == 2.0
+
+
+def test_ambiguous_late_primary_completion_never_overlaps_retry(monkeypatch):
+    """A late commit may report timeout; recovery must observe primary and stop."""
+    monkeypatch.setattr(
+        "v17.action_invocation_telemetry._RETRY_DELAYS_SECONDS", (0.0, 0.0)
+    )
+
+    class _AmbiguousDB(_FlakyReceiptDB):
+        def __init__(self):
+            super().__init__(fail_primary_attempts=0)
+            self.active = 0
+            self.max_active = 0
+            self.lock = threading.Lock()
+
+        def rpc(self, name, params):
+            if name == RECORD_RECEIPT_RPC:
+                return _AmbiguousRPC(self, name, params)
+            return super().rpc(name, params)
+
+    class _AmbiguousRPC(_FlakyRPC):
+        def execute(self):
+            with self.db.lock:
+                self.db.active += 1
+                self.db.max_active = max(self.db.max_active, self.db.active)
+            try:
+                self.db.primary_attempts += 1
+                receipt = dict(self.params["p_receipt"])
+                if self.db.primary_attempts == 1:
+                    # Commit succeeds, but the response is lost. Recovery then
+                    # observes the canonical row and returns RECONCILED.
+                    time.sleep(0.05)
+                    self.db.receipts.append(receipt)
+                    raise TimeoutError("response lost after database commit")
+                raise AssertionError("primary retry must not occur after RECONCILED")
+            finally:
+                with self.db.lock:
+                    self.db.active -= 1
+
+    db = _AmbiguousDB()
+    app = FastAPI()
+    install_action_invocation_middleware(app, db_client_fn=lambda: db)
+    @app.post("/score-prop")
+    def score_prop(): return {"ok": True, "can_execute": False}
+
+    with TestClient(app) as client:
+        assert client.post("/score-prop", headers={"X-WOW-Request-ID": "late-commit"}).status_code == 200
+        deadline = time.monotonic() + 2.0
+        while app.state.wow_action_invocation_tasks and time.monotonic() < deadline:
+            time.sleep(0.01)
+
+    assert db.primary_attempts == 1
+    assert db.max_active == 1
+    assert len(db.receipts) == 1
+    assert db.receipts[0]["request_id"] == "late-commit"
+    assert db.recovery == {}
+
+
+def test_recovery_state_is_monotonic_and_primary_receipt_wins():
+    db = _FlakyReceiptDB(fail_primary_attempts=99)
+    receipt = {
+        "invocation_id": "d66d28e4-3e19-42af-aaf5-57cb9cdf35f1",
+        "route": "/score-prop",
+        "http_status": 503,
+        "can_execute": False,
+    }
+    db.rpc(RECORD_RECOVERY_RPC, {
+        "p_receipt": receipt, "p_attempt_count": 3,
+        "p_error_type": "ReadTimeout", "p_state": "DEAD_LETTER",
+    }).execute()
+    db.rpc(RECORD_RECOVERY_RPC, {
+        "p_receipt": receipt, "p_attempt_count": 1,
+        "p_error_type": "LatePending", "p_state": "PENDING",
+    }).execute()
+    assert db.recovery[receipt["invocation_id"]]["state"] == "DEAD_LETTER"
+    assert db.recovery[receipt["invocation_id"]]["attempt_count"] == 3
+
+    db.fail_primary_attempts = 0
+    db.rpc(RECORD_RECEIPT_RPC, {"p_receipt": receipt}).execute()
+    assert len(db.receipts) == 1
+    assert receipt["invocation_id"] not in db.recovery
+
+def test_stale_recovery_reconciliation_is_repeat_idempotent():
+    db = _DB([])
+    invocation_id = "76364c64-c2ef-4c8a-876c-a3323990eac1"
+    receipt = {"invocation_id": invocation_id, "can_execute": False}
+    db.sink.append(dict(receipt))
+    db.recovery[invocation_id] = {"state": "PENDING"}
+    first = db.rpc(RECONCILE_RECOVERY_RPC, {"p_limit": 100}).execute().data
+    second = db.rpc(RECONCILE_RECOVERY_RPC, {"p_limit": 100}).execute().data
+    assert first["rows_deleted"] == 1
+    assert second["rows_deleted"] == 0
+    assert db.sink == [receipt]
+
+
+def test_atomic_receipt_migration_preserves_security_and_immutability():
+    from pathlib import Path
+
+    sql = Path("migrations/20260927_action_invocation_receipt_atomic_recovery.sql").read_text()
+    assert sql.count("security definer") == 3
+    assert sql.count("set search_path = pg_catalog, public") == 3
+    assert sql.count("pg_advisory_xact_lock") == 3
+    assert "on conflict (invocation_id) do nothing" in sql
+    assert "state = case" in sql and "'DEAD_LETTER'" in sql
+    assert "to service_role" in sql
+    assert "from public, anon, authenticated" in sql
+    assert "can_execute', false" in sql

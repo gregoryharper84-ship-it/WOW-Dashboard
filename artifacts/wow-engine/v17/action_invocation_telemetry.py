@@ -10,18 +10,17 @@ Telemetry failure is isolated from request handling and can never change scoring
 terminal semantics, or ``can_execute=false``.
 
 Receipt persistence is idempotent and recoverable. Each invocation receives a
-server-generated UUID before persistence. If the primary receipt write fails or
-its completion is ambiguous, the same safe receipt is queued in the server-only
-Supabase recovery table, retried with the same UUID, and promoted to
-``DEAD_LETTER`` only after bounded retry exhaustion. This keeps telemetry off the
-Action response critical path while preventing a transient insert timeout from
-silently changing a successfully completed invocation into "no proof exists".
+server-generated UUID before persistence. Atomic, service-role-only database
+RPCs serialize the primary receipt and recovery row with the same transaction
+advisory lock. The HTTP transport owns its connect/read/write/pool deadlines;
+Python never abandons a still-running write thread and starts an overlapping
+retry. This keeps telemetry off the Action response critical path while
+preventing ambiguous late commits from regressing durable recovery state.
 """
 from __future__ import annotations
 
 import asyncio
 import base64
-from datetime import datetime, timezone
 import json
 import logging
 from time import perf_counter
@@ -31,7 +30,10 @@ from uuid import uuid4
 
 # Persistence is always off the scoring response critical path. A finite bound
 # prevents degraded PostgREST calls from owning background tasks forever.
-_PERSIST_TIMEOUT_SECONDS = 5.0
+_TRANSPORT_CONNECT_TIMEOUT_SECONDS = 2.0
+_TRANSPORT_READ_TIMEOUT_SECONDS = 5.0
+_TRANSPORT_WRITE_TIMEOUT_SECONDS = 5.0
+_TRANSPORT_POOL_TIMEOUT_SECONDS = 2.0
 _SHUTDOWN_DRAIN_SECONDS = 12.0
 _MAX_IN_FLIGHT_WARNING = 32
 _MAX_PERSIST_ATTEMPTS = 3
@@ -41,6 +43,9 @@ _RETRY_DELAYS_SECONDS = (0.25, 1.0)
 LOGGER = logging.getLogger("wow.v17.action_invocation")
 TABLE = "wow_action_invocation_receipts"
 RECOVERY_TABLE = "wow_action_invocation_receipt_recovery"
+RECORD_RECEIPT_RPC = "wow_record_action_invocation_receipt"
+RECORD_RECOVERY_RPC = "wow_record_action_invocation_receipt_recovery"
+RECONCILE_RECOVERY_RPC = "wow_reconcile_action_invocation_receipt_recovery"
 CAN_EXECUTE = False
 _GITHUB_OIDC_ISSUER = "https://token.actions.githubusercontent.com"
 
@@ -125,57 +130,100 @@ def _request_id(headers: Any) -> str | None:
     return value[:256] or None
 
 
-def _upsert_receipt(db_client_fn: Callable[[], Any], receipt: dict[str, Any]) -> None:
-    """Idempotently persist one invocation using its server-generated UUID."""
-    table = db_client_fn().table(TABLE)
-    upsert = getattr(table, "upsert", None)
-    if callable(upsert):
-        upsert(receipt, on_conflict="invocation_id").execute()
-        return
-    # Compatibility seam for simple test doubles. Production Supabase clients
-    # expose upsert; the explicit UUID still makes duplicate completion visible.
-    table.insert(receipt).execute()
+def _configure_transport_timeouts(db: Any) -> Any:
+    """Apply deadlines to the synchronous PostgREST HTTP transport.
+
+    ``asyncio.wait_for(asyncio.to_thread(...))`` only stops waiting; it cannot
+    stop the in-flight sync request. The Supabase client exposes its httpx
+    transport through ``postgrest.session``. Setting the timeout there makes
+    the transport terminate before control returns, so the next retry cannot
+    overlap the prior write. Lightweight test doubles need no HTTP transport.
+    """
+    postgrest = getattr(db, "postgrest", None)
+    session = getattr(postgrest, "session", None)
+    if session is None or not hasattr(session, "timeout"):
+        return db
+    try:
+        import httpx
+    except ImportError:  # pragma: no cover - supabase-py depends on httpx
+        return db
+    session.timeout = httpx.Timeout(
+        connect=_TRANSPORT_CONNECT_TIMEOUT_SECONDS,
+        read=_TRANSPORT_READ_TIMEOUT_SECONDS,
+        write=_TRANSPORT_WRITE_TIMEOUT_SECONDS,
+        pool=_TRANSPORT_POOL_TIMEOUT_SECONDS,
+    )
+    return db
 
 
-def _upsert_recovery(
+def _execute_rpc(
+    db_client_fn: Callable[[], Any],
+    name: str,
+    params: dict[str, Any],
+) -> Any:
+    db = _configure_transport_timeouts(db_client_fn())
+    return db.rpc(name, params).execute()
+
+
+def _rpc_status(result: Any) -> str | None:
+    """Extract one authoritative durable status from a Supabase RPC result."""
+    data = getattr(result, "data", None)
+    if isinstance(data, list) and len(data) == 1:
+        data = data[0]
+    if not isinstance(data, dict):
+        return None
+    value = str(data.get("status") or "").strip().upper()
+    return value or None
+
+
+def _record_receipt(db_client_fn: Callable[[], Any], receipt: dict[str, Any]) -> None:
+    """Atomically insert immutable primary receipt and clear stale recovery."""
+    _execute_rpc(db_client_fn, RECORD_RECEIPT_RPC, {"p_receipt": receipt})
+
+
+def _record_recovery(
     db_client_fn: Callable[[], Any],
     receipt: dict[str, Any],
     *,
     attempt_count: int,
     error_type: str,
     state: str,
-) -> None:
-    now = datetime.now(timezone.utc).isoformat()
-    payload = {
-        "invocation_id": receipt["invocation_id"],
-        "updated_at": now,
-        "attempt_count": attempt_count,
-        "state": state,
-        "last_error_type": error_type[:128],
-        "receipt": receipt,
-        "can_execute": False,
-    }
-    table = db_client_fn().table(RECOVERY_TABLE)
-    upsert = getattr(table, "upsert", None)
-    if callable(upsert):
-        upsert(payload, on_conflict="invocation_id").execute()
-        return
-    table.insert(payload).execute()
-
-
-def _delete_recovery(db_client_fn: Callable[[], Any], invocation_id: str) -> None:
-    table = db_client_fn().table(RECOVERY_TABLE)
-    delete = getattr(table, "delete", None)
-    if not callable(delete):
-        return
-    delete().eq("invocation_id", invocation_id).execute()
-
-
-async def _bounded_thread_call(fn: Callable[..., None], *args: Any, **kwargs: Any) -> None:
-    await asyncio.wait_for(
-        asyncio.to_thread(fn, *args, **kwargs),
-        timeout=_PERSIST_TIMEOUT_SECONDS,
+) -> str | None:
+    result = _execute_rpc(
+        db_client_fn,
+        RECORD_RECOVERY_RPC,
+        {
+            "p_receipt": receipt,
+            "p_attempt_count": attempt_count,
+            "p_error_type": error_type[:128],
+            "p_state": state,
+        },
     )
+    return _rpc_status(result)
+
+
+async def _transport_bounded_thread_call(
+    fn: Callable[..., Any], *args: Any, **kwargs: Any
+) -> Any:
+    """Await the sync call to completion; its HTTP transport owns the timeout."""
+    return await asyncio.to_thread(fn, *args, **kwargs)
+
+
+async def _reconcile_stale_recovery(db_client_fn: Callable[[], Any]) -> None:
+    """Delete bounded stale recovery rows whose immutable primary already won."""
+    try:
+        await _transport_bounded_thread_call(
+            _execute_rpc,
+            db_client_fn,
+            RECONCILE_RECOVERY_RPC,
+            {"p_limit": 100},
+        )
+    except Exception as exc:  # noqa: BLE001 - telemetry cannot block startup
+        LOGGER.warning(
+            "WOW_V17_ACTION_INVOCATION_RECOVERY_RECONCILE_FAILED "
+            "typed_failure=PERSISTENCE_FAILURE error=%s can_execute=false",
+            type(exc).__name__,
+        )
 
 
 async def _persist_with_recovery(
@@ -184,61 +232,64 @@ async def _persist_with_recovery(
 ) -> None:
     """Persist one receipt with idempotent retry and durable recovery state."""
     last_exc: Exception | None = None
+    terminal_recovery_state: str | None = None
     for attempt in range(1, _MAX_PERSIST_ATTEMPTS + 1):
         try:
-            await _bounded_thread_call(_upsert_receipt, db_client_fn, receipt)
-            if attempt > 1:
-                try:
-                    await _bounded_thread_call(
-                        _delete_recovery,
-                        db_client_fn,
-                        str(receipt["invocation_id"]),
-                    )
-                except Exception as cleanup_exc:  # queue row is safe if stale
-                    LOGGER.warning(
-                        "WOW_V17_ACTION_INVOCATION_RECOVERY_CLEANUP_FAILED "
-                        "route=%s invocation_id=%s error=%s can_execute=false",
-                        receipt.get("route"),
-                        receipt.get("invocation_id"),
-                        type(cleanup_exc).__name__,
-                    )
+            await _transport_bounded_thread_call(
+                _record_receipt, db_client_fn, receipt
+            )
             return
         except Exception as exc:  # noqa: BLE001 - persistence is fail-open
             last_exc = exc
             terminal_attempt = attempt >= _MAX_PERSIST_ATTEMPTS
-            state = "DEAD_LETTER" if terminal_attempt else "PENDING"
+            requested_state = "DEAD_LETTER" if terminal_attempt else "PENDING"
+            durable_state: str | None = None
             try:
-                await _bounded_thread_call(
-                    _upsert_recovery,
+                durable_state = await _transport_bounded_thread_call(
+                    _record_recovery,
                     db_client_fn,
                     receipt,
                     attempt_count=attempt,
                     error_type=type(exc).__name__,
-                    state=state,
+                    state=requested_state,
                 )
             except Exception as queue_exc:  # noqa: BLE001
                 LOGGER.warning(
                     "WOW_V17_ACTION_INVOCATION_RECOVERY_QUEUE_FAILED "
-                    "route=%s invocation_id=%s attempt=%s state=%s error=%s "
-                    "can_execute=false",
+                    "route=%s invocation_id=%s attempt=%s requested_state=%s "
+                    "durable_state=UNCONFIRMED error=%s "
+                    "typed_failure=PERSISTENCE_FAILURE can_execute=false",
                     receipt.get("route"),
                     receipt.get("invocation_id"),
                     attempt,
-                    state,
+                    requested_state,
                     type(queue_exc).__name__,
                 )
-            if not terminal_attempt:
-                await asyncio.sleep(_RETRY_DELAYS_SECONDS[attempt - 1])
 
+            # The primary receipt is authoritative. A transport timeout can occur
+            # after the database commit; the recovery RPC uses the same advisory
+            # lock and reports RECONCILED when it observes that canonical row.
+            # In that case persistence succeeded durably, even on attempt 3.
+            if durable_state == "RECONCILED":
+                return
+
+            if terminal_attempt:
+                terminal_recovery_state = durable_state
+                break
+            await asyncio.sleep(_RETRY_DELAYS_SECONDS[attempt - 1])
+
+    recovery_state = terminal_recovery_state or "UNCONFIRMED"
     LOGGER.warning(
         "WOW_V17_ACTION_INVOCATION_PERSISTENCE_FAILED "
         "route=%s status_code=%s invocation_id=%s attempts=%s error=%s "
-        "recovery_state=DEAD_LETTER can_execute=false",
+        "recovery_state=%s typed_failure=PERSISTENCE_FAILURE "
+        "can_execute=false",
         receipt.get("route"),
         receipt.get("http_status"),
         receipt.get("invocation_id"),
         _MAX_PERSIST_ATTEMPTS,
         type(last_exc).__name__ if last_exc is not None else "UNKNOWN",
+        recovery_state,
     )
 
 
@@ -262,8 +313,15 @@ def install_action_invocation_middleware(
             done.exception()
         except Exception:
             LOGGER.exception(
-                "WOW_V17_ACTION_INVOCATION_TASK_FAILED can_execute=false"
+                "WOW_V17_ACTION_INVOCATION_TASK_FAILED "
+                "typed_failure=PERSISTENCE_FAILURE can_execute=false"
             )
+
+    @app.on_event("startup")
+    async def _start_action_invocation_reconciliation() -> None:
+        task = asyncio.create_task(_reconcile_stale_recovery(db_client_fn))
+        tasks.add(task)
+        task.add_done_callback(_task_done)
 
     @app.on_event("shutdown")
     async def _drain_action_invocation_tasks() -> None:
@@ -329,7 +387,10 @@ def install_action_invocation_middleware(
 
 __all__ = [
     "CAN_EXECUTE",
+    "RECORD_RECEIPT_RPC",
+    "RECORD_RECOVERY_RPC",
     "RECOVERY_TABLE",
+    "RECONCILE_RECOVERY_RPC",
     "ROUTE_OPERATION_IDS",
     "TABLE",
     "install_action_invocation_middleware",
