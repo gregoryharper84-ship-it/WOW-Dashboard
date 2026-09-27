@@ -32,6 +32,49 @@ paths:
       responses:
         '200': {description: Canonical v17 host/lane alignment contract}
         '401': {description: Authentication failed}
+  /v17/daily-snapshot-run:
+    post:
+      operationId: runLlpV17FullSlate
+      x-openai-isConsequential: false
+      description: >-
+        Canonical governed all-sports outright-winner board scan for LLP. This
+        Action is MONEYLINE-only, retains every discovered row through typed
+        reconciliation, and never substitutes provider or market probability for
+        a fitted specialist. Use this before ranking an across-all-sports request.
+      security: [{actionBearer: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/LlpFullSlateRequest'}
+      responses:
+        '200': {description: Full governed Daily moneyline receipt including held rows and cross-sport reconciliation}
+        '401': {description: Authentication failed}
+        '422': {description: Invalid full-slate request}
+  /v17/daily-snapshot-run/{run_id}/rows:
+    get:
+      operationId: readLlpV17FullSlateRows
+      x-openai-isConsequential: false
+      description: >-
+        Read a bounded page of persisted full per-row evidence for the governed
+        all-sports Daily run. Read-only; can_execute remains false.
+      security: [{actionBearer: []}]
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema: {type: string}
+        - name: offset
+          in: query
+          required: false
+          schema: {type: integer, minimum: 0, default: 0}
+        - name: limit
+          in: query
+          required: false
+          schema: {type: integer, minimum: 1, maximum: 25, default: 5}
+      responses:
+        '200': {description: One page of full all-sports row evidence}
+        '401': {description: Authentication failed}
   /score-team-event:
     post:
       operationId: scoreLlpV17TeamEvent
@@ -106,6 +149,21 @@ components:
       type: http
       scheme: bearer
   schemas:
+    LlpFullSlateRequest:
+      type: object
+      additionalProperties: false
+      required: [requested_slate_date, requested_timezone, lanes, max_props, max_team_events, response_mode]
+      properties:
+        requested_slate_date: {type: string, format: date}
+        requested_timezone: {type: string, minLength: 1, maxLength: 64}
+        lanes:
+          type: array
+          minItems: 1
+          maxItems: 1
+          items: {type: string, enum: [MONEYLINE]}
+        max_props: {type: integer, enum: [0]}
+        max_team_events: {type: integer, minimum: 1, maximum: 12}
+        response_mode: {type: string, enum: [FULL]}
     SpreadForwardShadowRequest:
       type: object
       additionalProperties: false
