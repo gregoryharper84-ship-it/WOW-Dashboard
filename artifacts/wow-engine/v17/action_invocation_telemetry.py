@@ -165,6 +165,17 @@ def _execute_rpc(
     return db.rpc(name, params).execute()
 
 
+def _rpc_status(result: Any) -> str | None:
+    """Extract one authoritative durable status from a Supabase RPC result."""
+    data = getattr(result, "data", None)
+    if isinstance(data, list) and len(data) == 1:
+        data = data[0]
+    if not isinstance(data, dict):
+        return None
+    value = str(data.get("status") or "").strip().upper()
+    return value or None
+
+
 def _record_receipt(db_client_fn: Callable[[], Any], receipt: dict[str, Any]) -> None:
     """Atomically insert immutable primary receipt and clear stale recovery."""
     _execute_rpc(db_client_fn, RECORD_RECEIPT_RPC, {"p_receipt": receipt})
@@ -177,8 +188,8 @@ def _record_recovery(
     attempt_count: int,
     error_type: str,
     state: str,
-) -> None:
-    _execute_rpc(
+) -> str | None:
+    result = _execute_rpc(
         db_client_fn,
         RECORD_RECOVERY_RPC,
         {
@@ -188,13 +199,14 @@ def _record_recovery(
             "p_state": state,
         },
     )
+    return _rpc_status(result)
 
 
 async def _transport_bounded_thread_call(
-    fn: Callable[..., None], *args: Any, **kwargs: Any
-) -> None:
+    fn: Callable[..., Any], *args: Any, **kwargs: Any
+) -> Any:
     """Await the sync call to completion; its HTTP transport owns the timeout."""
-    await asyncio.to_thread(fn, *args, **kwargs)
+    return await asyncio.to_thread(fn, *args, **kwargs)
 
 
 async def _reconcile_stale_recovery(db_client_fn: Callable[[], Any]) -> None:
@@ -220,6 +232,7 @@ async def _persist_with_recovery(
 ) -> None:
     """Persist one receipt with idempotent retry and durable recovery state."""
     last_exc: Exception | None = None
+    terminal_recovery_state: str | None = None
     for attempt in range(1, _MAX_PERSIST_ATTEMPTS + 1):
         try:
             await _transport_bounded_thread_call(
@@ -229,40 +242,54 @@ async def _persist_with_recovery(
         except Exception as exc:  # noqa: BLE001 - persistence is fail-open
             last_exc = exc
             terminal_attempt = attempt >= _MAX_PERSIST_ATTEMPTS
-            state = "DEAD_LETTER" if terminal_attempt else "PENDING"
+            requested_state = "DEAD_LETTER" if terminal_attempt else "PENDING"
+            durable_state: str | None = None
             try:
-                await _transport_bounded_thread_call(
+                durable_state = await _transport_bounded_thread_call(
                     _record_recovery,
                     db_client_fn,
                     receipt,
                     attempt_count=attempt,
                     error_type=type(exc).__name__,
-                    state=state,
+                    state=requested_state,
                 )
             except Exception as queue_exc:  # noqa: BLE001
                 LOGGER.warning(
                     "WOW_V17_ACTION_INVOCATION_RECOVERY_QUEUE_FAILED "
-                    "route=%s invocation_id=%s attempt=%s state=%s error=%s "
+                    "route=%s invocation_id=%s attempt=%s requested_state=%s "
+                    "durable_state=UNCONFIRMED error=%s "
                     "typed_failure=PERSISTENCE_FAILURE can_execute=false",
                     receipt.get("route"),
                     receipt.get("invocation_id"),
                     attempt,
-                    state,
+                    requested_state,
                     type(queue_exc).__name__,
                 )
-            if not terminal_attempt:
-                await asyncio.sleep(_RETRY_DELAYS_SECONDS[attempt - 1])
 
+            # The primary receipt is authoritative. A transport timeout can occur
+            # after the database commit; the recovery RPC uses the same advisory
+            # lock and reports RECONCILED when it observes that canonical row.
+            # In that case persistence succeeded durably, even on attempt 3.
+            if durable_state == "RECONCILED":
+                return
+
+            if terminal_attempt:
+                terminal_recovery_state = durable_state
+                break
+            await asyncio.sleep(_RETRY_DELAYS_SECONDS[attempt - 1])
+
+    recovery_state = terminal_recovery_state or "UNCONFIRMED"
     LOGGER.warning(
         "WOW_V17_ACTION_INVOCATION_PERSISTENCE_FAILED "
         "route=%s status_code=%s invocation_id=%s attempts=%s error=%s "
-        "recovery_state=DEAD_LETTER typed_failure=PERSISTENCE_FAILURE "
+        "recovery_state=%s typed_failure=PERSISTENCE_FAILURE "
         "can_execute=false",
         receipt.get("route"),
         receipt.get("http_status"),
         receipt.get("invocation_id"),
         _MAX_PERSIST_ATTEMPTS,
         type(last_exc).__name__ if last_exc is not None else "UNKNOWN",
+        recovery_state,
     )
 
 
