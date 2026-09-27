@@ -154,6 +154,26 @@ def initialize_observability() -> dict[str, Any]:
     except Exception:
         pass
 
+    # Install after the existing Pick Request startup schedulers so the NFL
+    # identity boundary captures the final durable/run-controlled route.  The
+    # semantic patches themselves are probability-neutral and are installed now,
+    # before api_ncaaf_acceptance mounts the Pick Request/receipt routes.
+    try:
+        import api_prod_market_acceptance as _accepted_base
+        from v17.nfl_prop_boundary_integrity import (
+            install_nfl_prop_boundary_integrity,
+        )
+
+        install_nfl_prop_boundary_integrity(
+            _accepted_base.app,
+            market_api=_accepted_base.market_api,
+            auth_dependency=Depends(
+                _accepted_base.market_api.prod._require_action_api_key
+            ),
+        )
+    except Exception:
+        pass
+
     try:
         import api_prod_market_acceptance as _accepted_base
         from v17.claude_runtime import install_claude_runtime_routes
