@@ -7,9 +7,15 @@ all eight certified half-point lines, and asks one additional publication gate:
 for every exact line and BOTH directions, is the empirical hit rate at least as
 large as the mean calibrated lower bound produced by the unchanged scorer?
 
-The gate is deliberately strict and has no fitted/tuned tolerance. If any
-line/direction fails, production publication remains blocked and the evidence
-must be reviewed before any Class-C bound-method challenger is considered.
+The existing exact-line validation gates retain their original scope: the 14.5
+and 16.5 expansion lines are still the only expansion-gated lines. The six
+already-certified lines are scored as sentinels here so this publication replay
+does not invent a new retrospective AUC-admission rule for them.
+
+The publication lower-bound gate is deliberately strict and has no fitted/tuned
+tolerance. If any line/direction fails, production publication remains blocked
+and the evidence must be reviewed before any Class-C bound-method challenger is
+considered.
 """
 from __future__ import annotations
 
@@ -23,6 +29,8 @@ from typing import Any
 from scripts import validate_mlb_1ip_line_expansion_2026 as base
 
 CERTIFIED_LINES = (11.5, 13.5, 14.5, 15.5, 16.5, 17.5, 19.5, 21.5)
+EXPANSION_LINES = (14.5, 16.5)
+PREVIOUSLY_CERTIFIED_SENTINEL_LINES = (11.5, 13.5, 15.5, 17.5, 19.5, 21.5)
 DIRECTIONS = ("MORE", "LESS")
 EPSILON = 1e-12
 PURPOSE = "MLB_1IP_PUBLICATION_READINESS_LOWER_BOUND_REPLAY_2026"
@@ -94,7 +102,10 @@ def validate_publication_packet(
     failures: list[str] = []
     line_results: dict[str, Any] = {}
 
-    source_lines = tuple(float(value) for value in source_report.get("validation_lineage", {}).get("validation_lines", []))
+    source_lines = tuple(
+        float(value)
+        for value in source_report.get("validation_lineage", {}).get("validation_lines", [])
+    )
     if source_lines != CERTIFIED_LINES:
         failures.append("MLB_1IP_PUBLICATION_EXACT_LINE_SET_MISMATCH")
     if source_report.get("validation_passed") is not True:
@@ -141,6 +152,8 @@ def validate_publication_packet(
         "validation_type": "UNTOUCHED_2026_CHRONOLOGICAL_EXACT_LINE_DIRECTION_LOWER_BOUND",
         "certified_lines": list(CERTIFIED_LINES),
         "directions": list(DIRECTIONS),
+        "source_expansion_gate_lines": list(EXPANSION_LINES),
+        "source_sentinel_lines": list(PREVIOUSLY_CERTIFIED_SENTINEL_LINES),
         "sample_policy": source_report.get("sample_policy"),
         "cutoff_date": source_report.get("cutoff_date"),
         "games_attempted": source_report.get("games_attempted"),
@@ -169,11 +182,11 @@ def main() -> None:
     replay_dir = out_dir / "source-replay"
     replay_dir.mkdir(parents=True, exist_ok=True)
 
-    # Reuse the existing independently reviewed replay implementation, but run
-    # it across the complete currently certified line set. No scorer math or
-    # validation threshold is changed.
-    base.EXPANSION_LINES = CERTIFIED_LINES
-    base.SENTINEL_LINES = ()
+    # Reuse the independently reviewed exact-line replay implementation. Preserve
+    # its original admission scope (14.5/16.5 expansion only), but score all eight
+    # certified lines so the publication lower-bound audit has complete coverage.
+    base.EXPANSION_LINES = EXPANSION_LINES
+    base.SENTINEL_LINES = PREVIOUSLY_CERTIFIED_SENTINEL_LINES
     base.VALIDATION_LINES = CERTIFIED_LINES
     os.environ["MLB_1IP_LINE_EXPANSION_OUT"] = str(replay_dir)
     base.main()
