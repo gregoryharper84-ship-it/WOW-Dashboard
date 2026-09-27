@@ -155,24 +155,35 @@ def initialize_observability() -> dict[str, Any]:
         pass
 
     # Install after the existing Pick Request startup schedulers so the NFL
-    # identity boundary captures the final durable/run-controlled route. The
-    # capability overlay extends the already-exposed /v17/capabilities Action
-    # with exact stat-level runtime truth; no new Action operation is required.
+    # identity boundary captures the final durable/run-controlled route. Keep the
+    # canonical sport-aware hydration router untouched: true canonical/opponent
+    # conflicts retain PROP_EVENT_IDENTITY_CONFLICT, while only the new display-ID
+    # resolver emits PROP_EVENT_IDENTITY_UNRESOLVED. The capability overlay extends
+    # the already-exposed /v17/capabilities Action without adding an operation.
     try:
         import api_prod_market_acceptance as _accepted_base
         from v17.nfl_prop_boundary_integrity import (
-            install_nfl_prop_boundary_integrity,
+            install_boundary_read_routes,
+            schedule_final_score_boundary_wrapper,
+        )
+        from v17.nfl_prop_runtime_semantics import (
+            install_nfl_prop_runtime_semantics,
         )
         from v17.nfl_prop_capability_overlay import (
             install_nfl_prop_capability_overlay,
         )
 
-        install_nfl_prop_boundary_integrity(
+        install_nfl_prop_runtime_semantics()
+        install_boundary_read_routes(
             _accepted_base.app,
             market_api=_accepted_base.market_api,
             auth_dependency=Depends(
                 _accepted_base.market_api.prod._require_action_api_key
             ),
+        )
+        schedule_final_score_boundary_wrapper(
+            _accepted_base.app,
+            market_api=_accepted_base.market_api,
         )
         install_nfl_prop_capability_overlay(_accepted_base.market_api)
     except Exception:
