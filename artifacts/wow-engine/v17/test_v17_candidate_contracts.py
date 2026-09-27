@@ -68,7 +68,9 @@ def test_wow_action_has_prop_and_team_event_delegation():
 def test_llp_action_has_team_event_and_spread_but_no_prop_scoring_operation():
     text = LLP_SCHEMA.read_text()
     ops = _operations(text)
-    assert len(ops) == 7
+    assert len(ops) == 9
+    assert "runLlpV17FullSlate" in ops
+    assert "readLlpV17FullSlateRows" in ops
     assert "scoreLlpV17TeamEvent" in ops
     assert "scoreLlpV17SpreadForwardShadow" in ops
     assert "recordLlpV17Recommendations" in ops
@@ -76,6 +78,11 @@ def test_llp_action_has_team_event_and_spread_but_no_prop_scoring_operation():
     assert not any("Prop" in op for op in ops)
     assert "/score-prop" not in text
     assert "LLP_TEAM_BETTING_ENGINE" in text
+
+    full_slate_route = text[text.index("  /v17/daily-snapshot-run:"):text.index("  /score-team-event:")]
+    assert "operationId: runLlpV17FullSlate" in full_slate_route
+    assert "items: {type: string, enum: [MONEYLINE]}" in text
+    assert "max_props: {type: integer, enum: [0]}" in text
 
     route = text[text.index("  /internal/v17/spread-forward-shadow:"):text.index("  /record-recommendations:")]
     assert "operationId: scoreLlpV17SpreadForwardShadow" in route
