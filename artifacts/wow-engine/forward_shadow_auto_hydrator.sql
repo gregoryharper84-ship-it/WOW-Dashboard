@@ -90,7 +90,8 @@ begin
     );
   end if;
 
-  if v_detailed_state not in ('Scheduled','Pre-Game','Delayed Start','Warmup') then
+  if v_detailed_state not in ('Scheduled','Pre-Game','Delayed Start','Warmup')
+     and v_detailed_state not like 'Delayed Start%' then
     return jsonb_build_object(
       'status','HOLD','code','EVENT_PREGAME_STATUS_UNPROVEN','pregame',false,
       'official_abstract_state',v_abstract_state,
