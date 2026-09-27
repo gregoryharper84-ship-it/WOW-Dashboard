@@ -2,7 +2,9 @@
 --
 -- Purpose: close the orchestration gap between a newly captured forward-shadow
 -- slate snapshot and the existing research-only frozen-model scorer. The job
--- operates only on the freshest snapshot that still has pregame events.
+-- operates only on the freshest snapshot that still has authoritative pregame
+-- events. Scheduled time is not sufficient because weather/delay states can
+-- remain pregame after the nominal first-pitch time.
 -- Missing probable starters, sources, feature components, or scorer evidence
 -- remain delayed/blocked. This migration never authorizes probability
 -- publication or execution and does not alter the separate production-readiness
@@ -47,7 +49,8 @@ begin
     select 1
     from public.wow_mlb_forward_shadow_events se
     where se.snapshot_id = s.snapshot_id
-      and se.event_start_time > clock_timestamp()
+      and se.event_status in ('Scheduled','Pre-Game','Warmup','Delayed Start')
+      and se.event_start_time > clock_timestamp() - interval '6 hours'
   )
   order by s.captured_at desc
   limit 1;
@@ -131,7 +134,8 @@ begin
   update public.wow_mlb_forward_shadow_events
   set feature_hydration_status='DELAYED_STARTER_UNRESOLVED'
   where snapshot_id=v_snapshot_id
-    and event_start_time > clock_timestamp()
+    and event_status in ('Scheduled','Pre-Game','Warmup','Delayed Start')
+    and event_start_time > clock_timestamp() - interval '6 hours'
     and coalesce(feature_hydration_status,'NOT_STARTED') <> 'PASS'
     and (home_probable_pitcher_id is null or away_probable_pitcher_id is null);
   get diagnostics v_delayed = row_count;
@@ -141,7 +145,8 @@ begin
            feature_hydration_status, model_score_status
     from public.wow_mlb_forward_shadow_events
     where snapshot_id=v_snapshot_id
-      and event_start_time > clock_timestamp()
+      and event_status in ('Scheduled','Pre-Game','Warmup','Delayed Start')
+      and event_start_time > clock_timestamp() - interval '6 hours'
       and home_probable_pitcher_id is not null
       and away_probable_pitcher_id is not null
       and (
