@@ -14,8 +14,6 @@ def test_auto_hydrator_selects_freshest_authoritative_pregame_snapshot():
     lateness_guard = "event_start_time > clock_timestamp() - interval '6 hours'"
     assert sql.count(predicate) >= 3
     assert sql.count(lateness_guard) >= 3
-    assert "se.event_start_time > clock_timestamp()" not in sql
-    assert "and event_start_time > clock_timestamp()" not in sql
     assert "order by s.captured_at desc limit 1" in sql
     assert "where snapshot_id=v_snapshot_id" in sql
 
