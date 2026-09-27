@@ -23,7 +23,8 @@ def test_migration_uses_authoritative_pregame_status_allowlist():
 def test_migration_keeps_blank_status_future_time_as_bounded_fallback_only():
     sql = _normalized()
     assert "btrim(coalesce(se.event_status,'')) = '' and se.event_start_time > clock_timestamp()" in sql
-    assert "s.captured_at >= clock_timestamp() - interval '2 hours'" in sql
+    assert "s.captured_at >= clock_timestamp() - interval '24 hours'" in sql
+    assert "deduplicates unchanged pregame identity" in sql
 
 
 def test_migration_preserves_shadow_only_governance():
