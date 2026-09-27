@@ -165,9 +165,10 @@ def _usable_rows(rows: list[dict[str, Any]], *, now: datetime) -> list[tuple[dat
 
 
 def _raw_identity_diagnosis(req: Any, *, client: Any, now: datetime) -> dict[str, Any] | None:
-    """Describe a matching canonical row without treating it as score-ready.
+    """Describe the newest matching canonical row without treating it as score-ready.
 
-    This is diagnostic only. A raw row never bypasses the PASS hydration barrier.
+    This is diagnostic only. A raw row never bypasses the PASS hydration barrier,
+    and a newer raw row always takes precedence over an older PASS snapshot.
     """
     requested_start = _aware(getattr(req, "event_start_time_utc", None))
     requested_slate_date = str(getattr(req, "requested_slate_date", "") or "").strip()
@@ -242,10 +243,7 @@ def _raw_identity_diagnosis(req: Any, *, client: Any, now: datetime) -> dict[str
             "missing_fields": [],
             "can_execute": False,
         }
-    if by_id:
-        row = next(iter(by_id.values()))
-    else:
-        row = candidates[0]
+    row = next(iter(by_id.values())) if by_id else candidates[0]
 
     event_start = _aware(row.get("event_start_time"))
     identity_mismatches: list[str] = []
@@ -265,6 +263,10 @@ def _raw_identity_diagnosis(req: Any, *, client: Any, now: datetime) -> dict[str
         }
 
     missing = [name for name in _REQUIRED_CANONICAL_FIELDS if not str(row.get(name) or "").strip()]
+    snapshot_time = _aware(row.get("snapshot_timestamp"))
+    if snapshot_time is None or snapshot_time > now:
+        if "snapshot_timestamp" not in missing:
+            missing.append("snapshot_timestamp")
     if missing:
         return {
             "ok": False,
@@ -287,7 +289,7 @@ def _raw_identity_diagnosis(req: Any, *, client: Any, now: datetime) -> dict[str
             "feature_hydration_status": hydration_status,
             "canonical_official_event_id": str(row.get("official_event_id") or ""),
             "canonical_source_snapshot_id": str(row.get("snapshot_id") or ""),
-            "canonical_snapshot_timestamp": str(row.get("snapshot_timestamp") or ""),
+            "canonical_snapshot_timestamp": snapshot_time.isoformat(),
             "canonical_identity_resolution": identity_resolution,
             "can_execute": False,
         }
@@ -365,6 +367,29 @@ def resolve_mlb_team_event_evidence(req: Any, *, event_api: Any) -> dict[str, An
         return fallback or {"ok": False, "code": "MLB_TEAM_EVENT_CANONICAL_CLIENT_UNAVAILABLE", "missing_fields": []}
     try:
         client = get_client()
+    except Exception as exc:
+        fallback = _caller_fallback(req, blocker_code="MLB_TEAM_EVENT_CANONICAL_QUERY_FAILED")
+        return fallback or {"ok": False, "code": "MLB_TEAM_EVENT_CANONICAL_QUERY_FAILED", "error_type": type(exc).__name__, "missing_fields": []}
+
+    now = datetime.now(timezone.utc)
+    acquisition: dict[str, Any] | None = None
+
+    latest_diagnostic = _raw_identity_diagnosis(req, client=client, now=now)
+    if latest_diagnostic is not None:
+        if latest_diagnostic.get("code") in {
+            "MLB_TEAM_EVENT_HYDRATION_NOT_READY",
+            "MLB_TEAM_EVENT_CANONICAL_SNAPSHOT_INCOMPLETE",
+        }:
+            acquisition = _capture_requested_slate(req, client=client)
+            latest_diagnostic = _raw_identity_diagnosis(
+                req, client=client, now=datetime.now(timezone.utc)
+            )
+            if latest_diagnostic is not None:
+                return {**latest_diagnostic, "canonical_acquisition": acquisition}
+        else:
+            return latest_diagnostic
+
+    try:
         rows = (
             client.table("wow_mlb_forward_shadow_events").select(_CANONICAL_SELECT)
             .eq("official_event_id", str(req.official_event_id)).eq("feature_hydration_status", "PASS")
@@ -377,11 +402,11 @@ def resolve_mlb_team_event_evidence(req: Any, *, event_api: Any) -> dict[str, An
     now = datetime.now(timezone.utc)
     usable = _usable_rows(list(rows), now=now)
     identity_resolution = "EXACT_OFFICIAL_EVENT_ID"
-    acquisition: dict[str, Any] | None = None
     if not usable:
         joined = _identity_join_rows(req, client=client, now=now)
         if joined.get("ok") is not True and joined.get("code") == "MLB_TEAM_EVENT_CANONICAL_SNAPSHOT_UNAVAILABLE":
-            acquisition = _capture_requested_slate(req, client=client)
+            if acquisition is None:
+                acquisition = _capture_requested_slate(req, client=client)
             joined = _identity_join_rows(req, client=client, now=datetime.now(timezone.utc))
         if joined.get("ok") is not True:
             diagnostic = _raw_identity_diagnosis(req, client=client, now=datetime.now(timezone.utc))
