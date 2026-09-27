@@ -55,7 +55,7 @@ def test_llp_editor_sources_require_scan_before_shortlist_and_budget_completion(
 
 def test_llp_editor_separates_research_rows_from_governed_ranked_shortlist():
     text = EDITOR_INSTRUCTIONS.read_text()
-    assert "official-publication PASS" in text
+    assert "probability_publishable=true" in text
     assert "research/shadow/held rows stay separate and unranked" in text
     assert "rank_eligible=true" in text
 
