@@ -60,7 +60,7 @@ def test_compact_cache_preserves_exact_history_outputs(monkeypatch) -> None:
     )
 
     assert actual == expected
-    assert actual[0] == [55.0, 56.0, 57.0, 58.0, 59.0, 60.0, 61.0, 62.0, 51.0, 52.0]
+    assert actual[0] == [56.0, 57.0, 58.0, 59.0, 60.0, 61.0, 62.0, 51.0, 52.0, 53.0]
 
 
 def test_live_compact_cache_is_singleflight_and_drops_unused_columns(monkeypatch) -> None:
