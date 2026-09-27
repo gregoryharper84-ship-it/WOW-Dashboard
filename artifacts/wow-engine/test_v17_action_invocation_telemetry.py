@@ -274,7 +274,7 @@ def test_transport_timeout_is_owned_by_postgrest_http_client():
 
 
 def test_ambiguous_late_primary_completion_never_overlaps_retry(monkeypatch):
-    """A late commit may report timeout, but attempt N+1 starts only after N ends."""
+    """A late commit may report timeout; recovery must observe primary and stop."""
     monkeypatch.setattr(
         "v17.action_invocation_telemetry._RETRY_DELAYS_SECONDS", (0.0, 0.0)
     )
@@ -299,17 +299,13 @@ def test_ambiguous_late_primary_completion_never_overlaps_retry(monkeypatch):
             try:
                 self.db.primary_attempts += 1
                 receipt = dict(self.params["p_receipt"])
-                invocation_id = receipt["invocation_id"]
                 if self.db.primary_attempts == 1:
-                    # Longer than the removed application-level deadline in the
-                    # regression fixture: commit, then surface ambiguous timeout.
+                    # Commit succeeds, but the response is lost. Recovery then
+                    # observes the canonical row and returns RECONCILED.
                     time.sleep(0.05)
                     self.db.receipts.append(receipt)
                     raise TimeoutError("response lost after database commit")
-                # Immutable primary: retry cannot rewrite the first receipt.
-                assert self.db.receipts[0] == receipt
-                self.db.recovery.pop(invocation_id, None)
-                return type("Result", (), {"data": {"status": "ALREADY_PRESENT"}})()
+                raise AssertionError("primary retry must not occur after RECONCILED")
             finally:
                 with self.db.lock:
                     self.db.active -= 1
@@ -326,7 +322,7 @@ def test_ambiguous_late_primary_completion_never_overlaps_retry(monkeypatch):
         while app.state.wow_action_invocation_tasks and time.monotonic() < deadline:
             time.sleep(0.01)
 
-    assert db.primary_attempts == 2
+    assert db.primary_attempts == 1
     assert db.max_active == 1
     assert len(db.receipts) == 1
     assert db.receipts[0]["request_id"] == "late-commit"
@@ -356,7 +352,6 @@ def test_recovery_state_is_monotonic_and_primary_receipt_wins():
     db.rpc(RECORD_RECEIPT_RPC, {"p_receipt": receipt}).execute()
     assert len(db.receipts) == 1
     assert receipt["invocation_id"] not in db.recovery
-
 
 def test_stale_recovery_reconciliation_is_repeat_idempotent():
     db = _DB([])
