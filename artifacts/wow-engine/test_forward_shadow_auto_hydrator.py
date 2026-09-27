@@ -8,11 +8,23 @@ def _sql() -> str:
     return " ".join(SQL_PATH.read_text().split()).lower()
 
 
-def test_auto_hydrator_selects_only_freshest_still_pregame_snapshot():
+def test_auto_hydrator_selects_only_fresh_authoritatively_pregame_snapshot():
     sql = _sql()
-    assert "se.event_start_time > clock_timestamp()" in sql
+    assert "s.captured_at >= clock_timestamp() - interval '2 hours'" in sql
+    assert "'scheduled','pre-game','pregame','delayed start','warmup'" in sql
+    assert "btrim(coalesce(se.event_status,'')) = '' and se.event_start_time > clock_timestamp()" in sql
     assert "order by s.captured_at desc limit 1" in sql
     assert "where snapshot_id=v_snapshot_id" in sql
+
+
+def test_auto_hydrator_keeps_delayed_and_pregame_rows_after_nominal_start():
+    sql = _sql()
+    assert sql.count("'delayed start'") >= 3
+    assert sql.count("'pre-game'") >= 3
+    assert sql.count("'warmup'") >= 3
+    assert "'in progress'" not in sql
+    assert "'final'" not in sql
+    assert "'game over'" not in sql
 
 
 def test_auto_hydrator_freezes_required_2026_prior_day_schedule_context():
