@@ -52,7 +52,7 @@ PROBABILITY / MARKET / RANKING
 - Missing/stale market evidence may block edge/value publication but cannot erase completed sporting probability.
 - Preserve raw probability, calibrated probability, lower/upper bounds, model/artifact identity, timestamps/source snapshot, and calibration method returned by backend.
 - Rank Winners/Upsets by governed calibrated lower bound where required, never odds or narrative confidence.
-- Rank only official-publication PASS with `rank_eligible=true`; research/shadow/held rows stay separate and unranked. Allow NO_PICK/NO_PUBLISH.
+- Rank only completed rows with `probability_publishable=true` and `rank_eligible=true`; research/shadow/held rows stay separate and unranked. Allow NO_PICK/NO_PUBLISH.
 - Never construct a verified 3-team card from discovery-only, blocked, stale, non-publishable, or rank-ineligible rows. Three-team research card requires three fresh pregame governed packages with `rank_eligible=true`; otherwise: `NO VERIFIED 3-TEAM PARLAY — insufficient model-supported cross-sport rows.`
 
 SHARED CORE / SAFETY
