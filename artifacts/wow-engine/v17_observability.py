@@ -155,13 +155,16 @@ def initialize_observability() -> dict[str, Any]:
         pass
 
     # Install after the existing Pick Request startup schedulers so the NFL
-    # identity boundary captures the final durable/run-controlled route.  The
-    # semantic patches themselves are probability-neutral and are installed now,
-    # before api_ncaaf_acceptance mounts the Pick Request/receipt routes.
+    # identity boundary captures the final durable/run-controlled route. The
+    # capability overlay extends the already-exposed /v17/capabilities Action
+    # with exact stat-level runtime truth; no new Action operation is required.
     try:
         import api_prod_market_acceptance as _accepted_base
         from v17.nfl_prop_boundary_integrity import (
             install_nfl_prop_boundary_integrity,
+        )
+        from v17.nfl_prop_capability_overlay import (
+            install_nfl_prop_capability_overlay,
         )
 
         install_nfl_prop_boundary_integrity(
@@ -171,6 +174,7 @@ def initialize_observability() -> dict[str, Any]:
                 _accepted_base.market_api.prod._require_action_api_key
             ),
         )
+        install_nfl_prop_capability_overlay(_accepted_base.market_api)
     except Exception:
         pass
 
