@@ -8,8 +8,6 @@ otherwise registered exact NFL route could incorrectly fail as MODEL_UNAVAILABLE
 This wrapper changes identity/routing labels only. It does not change fitted model
 math, calibration, probability values, publication gates, or execution authority.
 """
-from __future__ import annotations
-
 import inspect
 from typing import Any, Optional
 
