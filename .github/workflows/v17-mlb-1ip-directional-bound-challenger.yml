@@ -1,0 +1,100 @@
+name: v17-mlb-1ip-directional-bound-challenger
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/v17-mlb-1ip-directional-bound-challenger.yml"
+      - "artifacts/wow-engine/mlb_1ip_empirical_pmf.py"
+      - "artifacts/wow-engine/mlb_1ip_player_conditioned.py"
+      - "artifacts/wow-engine/scripts/validate_mlb_1ip_line_expansion_2026.py"
+      - "artifacts/wow-engine/scripts/validate_mlb_1ip_directional_bound_challenger_2026.py"
+      - "artifacts/wow-engine/research-fixtures/mlb_1ip_player_conditioning_dev_bundle_20260914.json"
+  push:
+    branches:
+      - engineering/mlb-1ip-directional-bound-challenger-942
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v17-mlb-1ip-directional-bound-challenger-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate-challenger:
+    name: Validate MLB 1IP directional lower-bound challenger
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    defaults:
+      run:
+        working-directory: artifacts/wow-engine
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: artifacts/wow-engine/requirements.txt
+      - name: Install engine dependencies
+        run: pip install -r requirements.txt
+      - name: Compile unchanged scorer and challenger
+        run: >-
+          python -m py_compile
+          mlb_1ip_empirical_pmf.py
+          mlb_1ip_player_conditioned.py
+          scripts/validate_mlb_1ip_line_expansion_2026.py
+          scripts/validate_mlb_1ip_directional_bound_challenger_2026.py
+      - name: Run chronological calibration-to-holdout challenger replay
+        env:
+          PYTHONPATH: .
+          MLB_1IP_BOUND_CHALLENGER_OUT: /tmp/mlb-1ip-directional-bound-challenger
+        run: python scripts/validate_mlb_1ip_directional_bound_challenger_2026.py
+      - name: Assert Class-C fail-closed contract
+        if: success()
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p = Path('/tmp/mlb-1ip-directional-bound-challenger/directional_bound_challenger_report.json')
+          report = json.loads(p.read_text())
+          assert report['validation_passed'] is True
+          assert report['change_class'] == 'CLASS_C_CHALLENGER_ONLY'
+          assert report['model_payload_changed'] is False
+          assert report['point_probability_math_changed'] is False
+          assert report['bound_method_changed'] is True
+          assert report['production_registry_mutated'] is False
+          assert report['production_manifest_mutated'] is False
+          assert report['probability_publishable'] is False
+          assert report['rank_eligible'] is False
+          assert report['automatic_certification'] is False
+          assert report['automatic_promotion'] is False
+          assert report['can_execute'] is False
+          assert report['validation_failures'] == []
+          assert report['certified_lines'] == [11.5,13.5,14.5,15.5,16.5,17.5,19.5,21.5]
+          assert report['directions'] == ['MORE','LESS']
+          for line in map(str, report['certified_lines']):
+              for direction in report['directions']:
+                  row = report['results'][line][direction]
+                  assert row['calibration']['n'] >= 250
+                  assert row['holdout']['n'] >= 250
+                  assert row['holdout']['challenger_conservative'] is True
+                  assert row['holdout']['point_probability_changed'] is False
+          PY
+      - name: Run adjacent 1IP regressions
+        env:
+          PYTHONPATH: .
+        run: >-
+          python -m pytest -q
+          tests/test_mlb_1ip_player_conditioned.py
+          tests/test_mlb_1ip_exact_line_expansion.py
+          test_v17_mlb_1ip_line_expansion_maintenance.py
+          v17/test_prop_capability_manifest.py
+      - name: Upload challenger evidence packet
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mlb-1ip-directional-bound-challenger-${{ github.sha }}
+          path: /tmp/mlb-1ip-directional-bound-challenger
+          if-no-files-found: warn
+          retention-days: 30
