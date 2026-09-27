@@ -15,6 +15,102 @@
 -- Capture intentionally deduplicates unchanged pregame identity and may reuse
 -- the same canonical snapshot throughout a slate day. Keep a bounded 24-hour
 -- source-snapshot window rather than assuming every cron pass creates a row.
+-- For events whose nominal start has passed, never trust the stored status
+-- alone: re-check the official MLB live feed and prove that gameplay has not
+-- begun before feature hydration/scoring may continue.
+
+create or replace function public.wow_mlb_current_pregame_status(
+  p_official_event_id text
+)
+returns jsonb
+language plpgsql
+set search_path to ''
+as $function$
+declare
+  v_resp extensions.http_response;
+  v_body jsonb;
+  v_fetched_at timestamptz;
+  v_abstract_state text;
+  v_detailed_state text;
+  v_pitch_n integer := 0;
+  v_completed_play_n integer := 0;
+begin
+  if nullif(btrim(coalesce(p_official_event_id,'')),'') is null then
+    return jsonb_build_object(
+      'status','BLOCKED','code','OFFICIAL_EVENT_ID_MISSING',
+      'pregame',false,'can_execute',false
+    );
+  end if;
+
+  begin
+    v_resp := extensions.http_get(
+      format('https://statsapi.mlb.com/api/v1.1/game/%s/feed/live',p_official_event_id)::varchar
+    );
+  exception when others then
+    return jsonb_build_object(
+      'status','BLOCKED','code','OFFICIAL_MLB_LIVE_FEED_UNAVAILABLE',
+      'error_type',sqlstate,'pregame',false,'can_execute',false
+    );
+  end;
+
+  if v_resp.status <> 200 then
+    return jsonb_build_object(
+      'status','BLOCKED','code','OFFICIAL_MLB_LIVE_FEED_UNAVAILABLE',
+      'http_status',v_resp.status,'pregame',false,'can_execute',false
+    );
+  end if;
+
+  v_body := v_resp.content::jsonb;
+  v_fetched_at := clock_timestamp();
+  v_abstract_state := coalesce(v_body#>>'{gameData,status,abstractGameState}','');
+  v_detailed_state := coalesce(v_body#>>'{gameData,status,detailedState}','');
+
+  select count(*) into v_pitch_n
+  from jsonb_array_elements(coalesce(v_body#>'{liveData,plays,allPlays}','[]'::jsonb)) p
+  cross join lateral jsonb_array_elements(coalesce(p#>'{playEvents}','[]'::jsonb)) pe
+  where coalesce(nullif(pe->>'isPitch','')::boolean,false);
+
+  select count(*) into v_completed_play_n
+  from jsonb_array_elements(coalesce(v_body#>'{liveData,plays,allPlays}','[]'::jsonb)) p
+  where coalesce(nullif(p#>>'{about,isComplete}','')::boolean,false)
+    and coalesce(p#>>'{result,event}','') <> 'Game Advisory';
+
+  if v_pitch_n > 0
+     or v_completed_play_n > 0
+     or v_abstract_state in ('Live','Final')
+     or v_detailed_state in (
+       'In Progress','Final','Game Over','Postponed','Cancelled','Canceled','Suspended'
+     ) then
+    return jsonb_build_object(
+      'status','HOLD','code','EVENT_NOT_PREGAME','pregame',false,
+      'official_abstract_state',v_abstract_state,
+      'official_detailed_state',v_detailed_state,
+      'pitch_events',v_pitch_n,'completed_plays',v_completed_play_n,
+      'fetched_at',v_fetched_at,'can_execute',false
+    );
+  end if;
+
+  if v_detailed_state not in ('Scheduled','Pre-Game','Delayed Start','Warmup') then
+    return jsonb_build_object(
+      'status','HOLD','code','EVENT_PREGAME_STATUS_UNPROVEN','pregame',false,
+      'official_abstract_state',v_abstract_state,
+      'official_detailed_state',v_detailed_state,
+      'fetched_at',v_fetched_at,'can_execute',false
+    );
+  end if;
+
+  return jsonb_build_object(
+    'status','PASS','code','MLB_OFFICIAL_PREGAME_STATUS_PASS','pregame',true,
+    'official_abstract_state',v_abstract_state,
+    'official_detailed_state',v_detailed_state,
+    'pitch_events',v_pitch_n,'completed_plays',v_completed_play_n,
+    'fetched_at',v_fetched_at,'can_execute',false
+  );
+end;
+$function$;
+
+revoke all on function public.wow_mlb_current_pregame_status(text) from public, anon, authenticated;
+grant execute on function public.wow_mlb_current_pregame_status(text) to service_role;
 
 create or replace function public.wow_mlb_forward_auto_hydrate_pregame()
 returns jsonb
@@ -32,6 +128,7 @@ declare
   v_workload_pass integer := 0;
   v_workload jsonb;
   e record;
+  v_current_status jsonb;
   v_cache jsonb;
   v_home jsonb;
   v_away jsonb;
@@ -158,7 +255,7 @@ begin
   get diagnostics v_delayed = row_count;
 
   for e in
-    select shadow_event_id, official_event_id, event_start_time,
+    select shadow_event_id, official_event_id, event_start_time,event_status,
            feature_hydration_status, model_score_status
     from public.wow_mlb_forward_shadow_events
     where snapshot_id=v_snapshot_id
@@ -181,6 +278,21 @@ begin
   loop
     v_considered := v_considered + 1;
     begin
+      if e.event_start_time <= clock_timestamp() then
+        v_current_status := public.wow_mlb_current_pregame_status(e.official_event_id);
+        if coalesce(v_current_status->>'status','') <> 'PASS'
+           or coalesce((v_current_status->>'pregame')::boolean,false) is not true then
+          v_blocked := v_blocked + 1;
+          v_results := v_results || jsonb_build_array(jsonb_build_object(
+            'official_event_id',e.official_event_id,
+            'status','CURRENT_STATUS_BLOCKED',
+            'reason',coalesce(v_current_status->>'code','MLB_CURRENT_PREGAME_STATUS_UNAVAILABLE'),
+            'official_detailed_state',v_current_status->>'official_detailed_state'
+          ));
+          continue;
+        end if;
+      end if;
+
       if coalesce(e.feature_hydration_status,'NOT_STARTED') <> 'PASS' then
         v_cache := public.wow_mlb_forward_cache_event_inputs(e.shadow_event_id);
         if coalesce(v_cache->>'status','') <> 'CACHED' then
