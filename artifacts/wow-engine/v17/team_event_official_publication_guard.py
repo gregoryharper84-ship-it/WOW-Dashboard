@@ -58,11 +58,13 @@ def _probability(value: Any) -> float | None:
 
 
 def _selected_calibrated_package(payload: dict[str, Any]) -> tuple[float | None, float | None]:
-    """Return the selected outcome's point estimate/lower bound when available.
+    """Return the outcome package the existing BEST_SIDE publication would use.
 
-    The scalar selected/generic package is authoritative at publication time.
-    Home/away pairs are intentionally not guessed here because doing so could
-    silently select an outcome at the publication boundary.
+    Prefer an explicitly selected scalar package. When the scorer exposes only a
+    complete home/away package, mirror the existing batch dispatcher's selection
+    rule (higher calibrated lower bound). This does not create a probability; it
+    ensures the publication guard sees the same governed outcome downstream code
+    would otherwise select.
     """
     for probability_key, lower_key in (
         ("selected_calibrated_probability", "selected_calibrated_lower_bound"),
@@ -73,6 +75,17 @@ def _selected_calibrated_package(payload: dict[str, Any]) -> tuple[float | None,
         lower = _probability(payload.get(lower_key))
         if probability is not None and lower is not None and lower <= probability:
             return probability, lower
+
+    home_probability = _probability(payload.get("calibrated_home_probability"))
+    home_lower = _probability(payload.get("calibrated_home_lower_bound"))
+    away_probability = _probability(payload.get("calibrated_away_probability"))
+    away_lower = _probability(payload.get("calibrated_away_lower_bound"))
+    complete = all(value is not None for value in (home_probability, home_lower, away_probability, away_lower))
+    if complete:
+        assert home_probability is not None and home_lower is not None
+        assert away_probability is not None and away_lower is not None
+        if home_lower <= home_probability and away_lower <= away_probability:
+            return (home_probability, home_lower) if home_lower >= away_lower else (away_probability, away_lower)
     return None, None
 
 
@@ -158,8 +171,6 @@ def _moneyline_publication_blockers(payload: dict[str, Any]) -> tuple[list[str],
     point, lower = _selected_calibrated_package(payload)
     tier = _upset_tier(lower) if lane == "UPSET" else _winner_tier(lower)
 
-    # Do not invent a selected outcome from only home/away values. Existing
-    # calibrated-package validation below still handles malformed packages.
     if point is None or lower is None:
         return blockers, {
             "lane": lane,
