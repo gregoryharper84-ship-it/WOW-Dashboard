@@ -1,8 +1,8 @@
 """Research-only MLB exact run-line shadow scoring.
 
 This lane reuses the existing governed MLB nine-inning run-distribution inputs and
-failure-regime mixture.  The requested run line is applied only after final-score
-samples exist.  Games tied after nine are resolved with the separately reviewed
+failure-regime mixture. The requested run line is applied only after final-score
+samples exist. Games tied after nine are resolved with the separately reviewed
 2024 extra-inning final-margin challenger; moneyline probability is never converted
 into run-line probability.
 """
@@ -45,12 +45,8 @@ GLOBAL_TERMINAL_REDUCER = "V17_TERMINAL_REDUCER"
 DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS = True
 RUN_LINE_MODEL_FAMILY = "MLB_V16_V2D_RUN_LINE_SHADOW_V1"
 EXTRA_MARGIN_MODEL_FAMILY = "MLB_EXTRA_INNING_FINAL_MARGIN_EMPIRICAL_V1"
+ELIGIBLE_SCORE_STATUSES = frozenset({"PASS", "SHADOW_SCORED_PREGAME"})
 
-# Frozen research artifact from the governed 2024 extra-inning cohort reviewed in
-# PR #930.  The cohort contains 207 games: 105 HOME winners and 102 AWAY winners.
-# The digest intentionally identifies the frozen aggregate artifact receipt rather
-# than pretending to be a row-level source hash while the live data plane is not a
-# serving dependency for this Class-C challenger.
 _FROZEN_2024_HOME_HIST = ((1, 98), (2, 6), (4, 1))
 _FROZEN_2024_AWAY_HIST = ((1, 56), (2, 23), (3, 7), (4, 7), (5, 5), (6, 3), (7, 1))
 _FROZEN_2024_RECEIPT = {
@@ -88,7 +84,6 @@ def frozen_2024_extra_inning_margin_artifact() -> ExtraInningMarginArtifact:
 def score_final_run_line_samples(
     home_runs: Iterable[int], away_runs: Iterable[int], *, home_run_line: float
 ) -> dict[str, float | int]:
-    """Score an exact signed home run line from already-final score samples."""
     home = [int(value) for value in home_runs]
     away = [int(value) for value in away_runs]
     if not home or len(home) != len(away):
@@ -133,13 +128,7 @@ def _simulate_nine_inning_samples(
     seed: int,
     simulation_count: int,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Mirror the production MLB failure-mixture simulator through nine innings.
-
-    This deliberately copies the random-draw order and coefficients from
-    ``mlb_event_specialist_v16._simulate`` through ``home_runs9/away_runs9``.
-    It does not determine winners and therefore cannot alter the controlling
-    moneyline specialist.
-    """
+    """Mirror MLB V16/V2D failure-mixture random draws through nine innings."""
     if int(simulation_count) < MIN_SIMULATIONS:
         raise MLBRunLineShadowUnavailable(
             "MLB_RUN_LINE_SIMULATION_COUNT_INSUFFICIENT",
@@ -147,14 +136,12 @@ def _simulate_nine_inning_samples(
         )
     n = int(simulation_count)
     rng = np.random.default_rng(int(seed))
-
     home_sp_p = _starter_failure_probability(away_features)
     away_sp_p = _starter_failure_probability(home_features)
     home_bp_p = _bullpen_failure_probability(away_features)
     away_bp_p = _bullpen_failure_probability(home_features)
     home_def_p = _defense_failure_probability(away_features)
     away_def_p = _defense_failure_probability(home_features)
-
     home_sp_fail = rng.random(n) < home_sp_p
     away_sp_fail = rng.random(n) < away_sp_p
     home_bp_fail = rng.random(n) < home_bp_p
@@ -162,15 +149,11 @@ def _simulate_nine_inning_samples(
     home_def_fail = rng.random(n) < home_def_p
     away_def_fail = rng.random(n) < away_def_p
     weather_disrupt = rng.random(n) < weather.disruption_probability
-
     shared_sigma = 0.045 + 0.10 * weather.disruption_probability
-    shared_env = rng.lognormal(
-        mean=-0.5 * shared_sigma**2, sigma=shared_sigma, size=n
-    )
+    shared_env = rng.lognormal(mean=-0.5 * shared_sigma**2, sigma=shared_sigma, size=n)
     shared_env *= np.where(
         weather_disrupt, rng.choice(np.asarray([0.84, 1.18]), size=n), 1.0
     )
-
     home_mu_vec = np.full(n, float(home_mu) * lineup_home.ratio * weather.factor) * shared_env
     away_mu_vec = np.full(n, float(away_mu) * lineup_away.ratio * weather.factor) * shared_env
     home_mu_vec *= (
@@ -212,10 +195,11 @@ def _score_snapshot_identity(db: Any, score_snapshot_id: str) -> dict[str, Any]:
             "MLB_RUN_LINE_EXECUTION_INVARIANT_VIOLATION",
             "MLB run-line score snapshot must preserve can_execute=false",
         )
-    if str(score.get("score_status") or "") != "PASS":
+    score_status = str(score.get("score_status") or "")
+    if score_status not in ELIGIBLE_SCORE_STATUSES:
         raise MLBRunLineShadowUnavailable(
-            "MLB_RUN_LINE_SCORE_SNAPSHOT_NOT_PASS",
-            "MLB run-line requires a governed PASS score snapshot",
+            "MLB_RUN_LINE_SCORE_SNAPSHOT_NOT_PREGAME_SCORED",
+            "MLB run-line requires a governed pregame-scored snapshot",
         )
     if not score.get("shadow_event_id"):
         raise MLBRunLineShadowUnavailable(
@@ -233,13 +217,11 @@ def run_mlb_run_line_forward_shadow(
     simulation_count: int = MIN_SIMULATIONS,
     stats_fetcher: Callable[[list[int], int], dict[int, dict[str, Any]]] = _fetch_player_stats,
 ) -> dict[str, Any]:
-    """Score a governed, research-only MLB exact run line from pregame evidence."""
     line = float(home_run_line)
     if not (-10.0 < line < 10.0):
         raise MLBRunLineShadowUnavailable(
             "MLB_RUN_LINE_INVALID", "home run line is outside supported sanity bounds"
         )
-
     score_identity = _score_snapshot_identity(db, str(score_snapshot_id))
     bridge = {
         "score_snapshot_id": str(score_snapshot_id),
@@ -251,7 +233,6 @@ def run_mlb_run_line_forward_shadow(
         raise MLBRunLineShadowUnavailable(
             "MLB_RUN_LINE_GOVERNED_EVIDENCE_UNAVAILABLE", str(exc)
         ) from exc
-
     score = evidence["score"]
     event = evidence["event"]
     lineup = evidence["lineup"]
@@ -266,7 +247,6 @@ def run_mlb_run_line_forward_shadow(
             "MLB_RUN_LINE_EXTRA_INNING_WIN_EVIDENCE_UNAVAILABLE",
             "extra-inning winner evidence is unavailable",
         )
-
     feed = _parse_feed(lineup["raw_body"])
     home_order = [int(x) for x in lineup.get("home_batting_order") or []]
     away_order = [int(x) for x in lineup.get("away_batting_order") or []]
@@ -274,19 +254,12 @@ def run_mlb_run_line_forward_shadow(
     player_stats = stats_fetcher(home_order + away_order, season)
     home_starter_hand = _starter_hand(feed, event.get("home_probable_pitcher_id"))
     away_starter_hand = _starter_hand(feed, event.get("away_probable_pitcher_id"))
-    home_lineup = _lineup_adjustment(
-        home_order, away_starter_hand, player_stats
-    )
-    away_lineup = _lineup_adjustment(
-        away_order, home_starter_hand, player_stats
-    )
+    home_lineup = _lineup_adjustment(home_order, away_starter_hand, player_stats)
+    away_lineup = _lineup_adjustment(away_order, home_starter_hand, player_stats)
     weather = _weather_context(feed)
     home_features = _feature_map(evidence["features"]["HOME"])
     away_features = _feature_map(evidence["features"]["AWAY"])
-
-    seed = _seed_for_event(
-        str(score_identity["shadow_event_id"]), str(score_snapshot_id)
-    )
+    seed = _seed_for_event(str(score_identity["shadow_event_id"]), str(score_snapshot_id))
     home_runs9, away_runs9 = _simulate_nine_inning_samples(
         home_mu=float(score["home_mu"]),
         away_mu=float(score["away_mu"]),
@@ -305,21 +278,17 @@ def run_mlb_run_line_forward_shadow(
     home_final, away_final = resolve_tied_nine_inning_samples(
         home_runs9=home_runs9.tolist(),
         away_runs9=away_runs9.tolist(),
-        extra_inning_home_win_probability=float(
-            dist["extra_inning_home_win_probability"]
-        ),
+        extra_inning_home_win_probability=float(dist["extra_inning_home_win_probability"]),
         artifact=artifact,
         seed=seed ^ 0x5A17E11,
     )
-    scored = score_final_run_line_samples(
-        home_final, away_final, home_run_line=line
-    )
-
+    scored = score_final_run_line_samples(home_final, away_final, home_run_line=line)
     return {
         "status": "EXPERIMENT_CREATED",
         "code": "MLB_RUN_LINE_FORWARD_SHADOW_COMPLETE",
         "sport": "MLB",
         "score_snapshot_id": str(score_snapshot_id),
+        "score_snapshot_status": str(score_identity.get("score_status") or ""),
         "shadow_event_id": str(score_identity["shadow_event_id"]),
         "distribution_id": str(score.get("distribution_id") or ""),
         "distribution_model_version": str(dist.get("model_version") or ""),
@@ -331,9 +300,7 @@ def run_mlb_run_line_forward_shadow(
         "home_run_line": line,
         **scored,
         "tie_after_9_probability": ties_after_9 / int(simulation_count),
-        "extra_inning_home_win_probability": float(
-            dist["extra_inning_home_win_probability"]
-        ),
+        "extra_inning_home_win_probability": float(dist["extra_inning_home_win_probability"]),
         "projected_final_runs_home": float(np.mean(home_final)),
         "projected_final_runs_away": float(np.mean(away_final)),
         "simulation_seed": int(seed),
@@ -354,7 +321,6 @@ def run_mlb_run_line_forward_shadow(
 def run_mlb_run_line_shadow_preflight(
     db: Any, *, score_snapshot_id: str, home_run_line: float
 ) -> dict[str, Any]:
-    """Compatibility preflight retained for callers that only need readiness truth."""
     score = _score_snapshot_identity(db, str(score_snapshot_id))
     dist_rows = (
         db.table("wow_mlb_v2b_distribution_state")
@@ -380,6 +346,7 @@ def run_mlb_run_line_shadow_preflight(
         "code": "MLB_RUN_LINE_FORWARD_SHADOW_READY",
         "sport": "MLB",
         "score_snapshot_id": str(score_snapshot_id),
+        "score_snapshot_status": str(score.get("score_status") or ""),
         "distribution_id": dist.get("distribution_id"),
         "distribution_model_version": dist.get("model_version"),
         "extra_inning_margin_model_family": EXTRA_MARGIN_MODEL_FAMILY,
@@ -400,6 +367,7 @@ def run_mlb_run_line_shadow_preflight(
 
 
 __all__ = [
+    "ELIGIBLE_SCORE_STATUSES",
     "MLBRunLineShadowUnavailable",
     "frozen_2024_extra_inning_margin_artifact",
     "run_mlb_run_line_forward_shadow",
