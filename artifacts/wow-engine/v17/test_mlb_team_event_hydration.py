@@ -10,13 +10,30 @@ class _Result:
 
 class _Query:
     def __init__(self, rows):
-        self.rows = rows
+        self.rows = list(rows)
+        self.filters = []
+        self.max_rows = None
 
     def select(self, *_a, **_k): return self
-    def eq(self, *_a, **_k): return self
+
+    def eq(self, field, value):
+        self.filters.append((field, value))
+        return self
+
     def order(self, *_a, **_k): return self
-    def limit(self, *_a, **_k): return self
-    def execute(self): return _Result(self.rows)
+
+    def limit(self, value, *_a, **_k):
+        self.max_rows = value
+        return self
+
+    def execute(self):
+        rows = [
+            row for row in self.rows
+            if all(row.get(field) == value for field, value in self.filters)
+        ]
+        if self.max_rows is not None:
+            rows = rows[: self.max_rows]
+        return _Result(rows)
 
 
 class _Db:
@@ -97,6 +114,57 @@ def test_event_identity_mismatch_fails_closed():
     assert result["ok"] is False
     assert result["code"] == "MLB_TEAM_EVENT_CANONICAL_IDENTITY_MISMATCH"
     assert "home_team" in result["identity_mismatches"]
+
+
+def test_hydration_not_ready_is_not_mislabeled_as_missing_venue_or_starters():
+    result = resolve_mlb_team_event_evidence(
+        _req(), event_api=_Api([_row(feature_hydration_status="NOT_STARTED")])
+    )
+    assert result["ok"] is False
+    assert result["code"] == "MLB_TEAM_EVENT_HYDRATION_NOT_READY"
+    assert result["feature_hydration_status"] == "NOT_STARTED"
+    assert result["missing_fields"] == []
+    assert result["canonical_official_event_id"] == "823983"
+    assert result["can_execute"] is False
+
+
+def test_hydration_barrier_cannot_be_bypassed_by_complete_caller_evidence():
+    req = _req(
+        latest_material_update_timestamp="2026-09-02T22:32:00Z",
+        sport_specific_evidence={
+            "venue": "Angel Stadium",
+            "home_starting_pitcher": "Reid Detmers",
+            "away_starting_pitcher": "Cam Schlittler",
+        },
+    )
+    result = resolve_mlb_team_event_evidence(
+        req, event_api=_Api([_row(feature_hydration_status="NOT_STARTED")])
+    )
+    assert result["ok"] is False
+    assert result["code"] == "MLB_TEAM_EVENT_HYDRATION_NOT_READY"
+    assert result["can_execute"] is False
+
+
+def test_true_raw_canonical_field_absence_reports_precise_missing_fields():
+    result = resolve_mlb_team_event_evidence(
+        _req(),
+        event_api=_Api([_row(feature_hydration_status="NOT_STARTED", venue_name=None)]),
+    )
+    assert result["ok"] is False
+    assert result["code"] == "MLB_TEAM_EVENT_CANONICAL_SNAPSHOT_INCOMPLETE"
+    assert result["missing_fields"] == ["venue_name"]
+    assert result["can_execute"] is False
+
+
+def test_missing_raw_snapshot_timestamp_is_diagnosed_before_model_invocation():
+    result = resolve_mlb_team_event_evidence(
+        _req(),
+        event_api=_Api([_row(feature_hydration_status="NOT_STARTED", snapshot_timestamp=None)]),
+    )
+    assert result["ok"] is False
+    assert result["code"] == "MLB_TEAM_EVENT_CANONICAL_SNAPSHOT_INCOMPLETE"
+    assert result["missing_fields"] == ["snapshot_timestamp"]
+    assert result["can_execute"] is False
 
 
 def test_missing_canonical_snapshot_does_not_fall_back_to_caller_evidence():
