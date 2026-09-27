@@ -1,4 +1,4 @@
-"""OIDC-protected, research-only spread challenger surfaces."""
+"""OIDC-protected, research-only spread and run-line challenger surfaces."""
 from __future__ import annotations
 
 from typing import Any, Literal
@@ -7,6 +7,10 @@ from fastapi import FastAPI
 from pydantic import BaseModel, ConfigDict, Field
 
 from github_actions_oidc import scout_route_auth_dependency
+from v17.mlb_run_line_shadow import (
+    MLBRunLineShadowUnavailable,
+    run_mlb_run_line_forward_shadow,
+)
 from v17.spread_exact_line_replay import run_exact_line_replay
 from v17.spread_forward_shadow import run_ncaaf_forward_shadow
 from v17.spread_forward_shadow_leagues import run_nfl_forward_shadow, run_wnba_forward_shadow
@@ -68,6 +72,13 @@ class WNBASpreadForwardShadowRequest(BaseModel):
     home_team_id: str = Field(pattern=r"^espn-.+$", max_length=128)
     away_team_id: str = Field(pattern=r"^espn-.+$", max_length=128)
     home_spread: float = Field(gt=-20.0, lt=20.0)
+
+
+class MLBRunLineForwardShadowRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    sport: Literal["MLB"] = "MLB"
+    score_snapshot_id: str = Field(min_length=1, max_length=128)
+    home_run_line: float = Field(gt=-10.0, lt=10.0)
 
 
 def _governance_fields() -> dict[str, Any]:
@@ -167,6 +178,20 @@ def execute_wnba_spread_forward_shadow(db: Any, request: WNBASpreadForwardShadow
     return _execute_forward("WNBA", request.event_id, lambda: run_wnba_forward_shadow(db, event_id=request.event_id, event_start_time=request.event_start_time, home_team_id=request.home_team_id, away_team_id=request.away_team_id, home_spread=request.home_spread))
 
 
+def execute_mlb_run_line_forward_shadow(db: Any, request: MLBRunLineForwardShadowRequest) -> dict[str, Any]:
+    try:
+        result = run_mlb_run_line_forward_shadow(
+            db,
+            score_snapshot_id=request.score_snapshot_id,
+            home_run_line=request.home_run_line,
+        )
+    except MLBRunLineShadowUnavailable as exc:
+        return {"status": "BLOCKED", "code": exc.code, "sport": "MLB", "score_snapshot_id": request.score_snapshot_id, "detail": str(exc), **_governance_fields()}
+    except Exception as exc:  # noqa: BLE001
+        return {"status": "BLOCKED", "code": "MLB_RUN_LINE_FORWARD_SHADOW_RUNTIME_FAILED", "sport": "MLB", "score_snapshot_id": request.score_snapshot_id, "error_type": type(exc).__name__, **_governance_fields()}
+    return {**result, **_governance_fields()}
+
+
 def install_spread_margin_replay_route(app: FastAPI, *, auth_dependency: Any, db_client_fn: Any) -> None:
     paths = {getattr(route, "path", None) for route in app.router.routes}
     auth = [scout_route_auth_dependency(auth_dependency)]
@@ -194,14 +219,18 @@ def install_spread_margin_replay_route(app: FastAPI, *, auth_dependency: Any, db
         @app.post("/internal/v17/wnba-spread-forward-shadow", dependencies=auth, operation_id="scoreWowV17WNBASpreadForwardShadow")
         def score_wnba_forward_shadow(request: WNBASpreadForwardShadowRequest) -> dict[str, Any]:
             return execute_wnba_spread_forward_shadow(db_client_fn(), request)
+    if "/internal/v17/mlb-run-line-forward-shadow" not in paths:
+        @app.post("/internal/v17/mlb-run-line-forward-shadow", dependencies=auth, operation_id="scoreWowV17MLBRunLineForwardShadow")
+        def score_mlb_run_line_forward_shadow(request: MLBRunLineForwardShadowRequest) -> dict[str, Any]:
+            return execute_mlb_run_line_forward_shadow(db_client_fn(), request)
 
 
 __all__ = [
     "AUTOMATIC_CERTIFICATION", "AUTOMATIC_PROMOTION", "CAN_EXECUTE", "DATABASE_MUTATED",
     "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS", "GLOBAL_TERMINAL_REDUCER", "PROBABILITY_PUBLISHABLE",
     "PRODUCTION_REGISTRY_MUTATED", "SpreadForwardShadowRequest", "NFLSpreadForwardShadowRequest",
-    "WNBASpreadForwardShadowRequest", "SpreadMarginReplayRequest", "SpreadMarketEvidenceRequest",
+    "WNBASpreadForwardShadowRequest", "MLBRunLineForwardShadowRequest", "SpreadMarginReplayRequest", "SpreadMarketEvidenceRequest",
     "execute_spread_exact_line_replay", "execute_spread_forward_shadow", "execute_nfl_spread_forward_shadow",
-    "execute_wnba_spread_forward_shadow", "execute_spread_margin_replay", "execute_spread_market_evidence_collection",
+    "execute_wnba_spread_forward_shadow", "execute_mlb_run_line_forward_shadow", "execute_spread_margin_replay", "execute_spread_market_evidence_collection",
     "install_spread_margin_replay_route",
 ]
