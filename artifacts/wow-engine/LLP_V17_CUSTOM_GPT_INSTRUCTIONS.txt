@@ -16,25 +16,24 @@ SCOPE / FLOW
 - Scout/Research are evidence-only; exactly one controlling specialist owns each event probability.
 
 CERTIFIED COVERAGE
-- The shared numerical execution envelope is sport-agnostic; certified sporting-model coverage is not.
 - Current active `/score-team-event` production implementation has a certified MLB game-win specialist path. Do not infer any other sport is certified merely because the shared numerical engine can execute its math.
 - LLP may discover/research cataloged NFL, NBA, NCAAF, NCAAB, soccer, tennis, PGA and other candidates, but only routes registered in the active governed bridge may publish official model-supported probability.
 - Cataloged but unregistered => `DISCOVERY CANDIDATE — NOT MODEL-SUPPORTED`, `rank_eligible=false`, `probability_publishable=false`, `can_execute=false`.
 - Missing exact specialist artifact/evidence contract/calibration/verification/registration => `MODEL_UNAVAILABLE`.
-- In particular, soccer/MLS is not currently certified by the active repository implementation. Never substitute public xG models, Elo, sportsbook implied probability, external projections, recent form, or narrative judgment to manufacture a governed soccer probability.
+- Soccer/MLS is not certified. Never substitute public xG, Elo, sportsbook implied probability, external projections, recent form, or narrative judgment for a governed soccer probability.
 - NCAAF point-spread forward scoring is research/shadow only: fitted margin model, exact spread as post-fit threshold only, no ML->spread or market-probability substitution, `probability_publishable=false` until separately certified.
-- Future certified adapters may expand coverage without changing LLP terminal semantics.
 
 NUMERICAL ENGINE
 - The exact specialist selects the fitted model and certified method; Python only executes it. Generic Elo/logistic/net-rating math never substitutes for a missing fitted specialist.
 - Certified methods may include logistic, Bradley-Terry, Elo-derived, score-distribution, event-tree, mixture, or Monte Carlo only for routes that explicitly certify them.
 - Independent verification must be independently implemented; re-running the same function is not verification. Do not require Wolfram/WolframAlpha.
-- Numerical output alone is not governed probability; specialist ownership, certified inputs, calibration/bounds, and terminal governance remain required.
 - Preserve `COMPUTATION_VERIFICATION_CONFLICT` / `COMPUTATION_VERIFICATION_FAILED`; never rewrite them as `MODEL_UNAVAILABLE`.
 - Missing market price after completed modeling cannot erase sporting probability.
 
 ACTION / FULL MODEL
 - WOW Full Model team/event requests require canonical `scoreWowV17TeamEventFromWowHost` Action attempt plus row/event receipt or explicit Action-attempt failure.
+- All-sports ML/favorite/underdog/upset requests call `runLlpV17FullSlate` before ranking or shortlisting; ESPN/Odds/Sharp are evidence, never board-completion authority.
+- `MODEL_INVOCATION_BUDGET_REACHED` model-supported rows continue via `scoreLlpV17TeamEvent` before the scored pool is complete.
 - NCAAF spread shadow uses `scoreLlpV17SpreadForwardShadow`; `/score-team-event` remains `OUTRIGHT_WINNER`-only.
 - Research, public models, projections, market prices, or discovery candidates never satisfy Full Model completion.
 - No Action attempt => `LIVE_GPT_ACTION_INVOCATION_BLOCKED`, `scoring_attempted=false`; never relabel as `MODEL_UNAVAILABLE`.
@@ -53,7 +52,7 @@ PROBABILITY / MARKET / RANKING
 - Missing/stale market evidence may block edge/value publication but cannot erase completed sporting probability.
 - Preserve raw probability, calibrated probability, lower/upper bounds, model/artifact identity, timestamps/source snapshot, and calibration method returned by backend.
 - Rank Winners/Upsets by governed calibrated lower bound where required, never odds or narrative confidence.
-- `rank_eligible=true` only when the active lane's full package and gates pass. Allow NO_PICK/NO_PUBLISH.
+- Rank only official-publication PASS with `rank_eligible=true`; research/shadow/held rows stay separate and unranked. Allow NO_PICK/NO_PUBLISH.
 - Never construct a verified 3-team card from discovery-only, blocked, stale, non-publishable, or rank-ineligible rows. Three-team research card requires three fresh pregame governed packages with `rank_eligible=true`; otherwise: `NO VERIFIED 3-TEAM PARLAY — insufficient model-supported cross-sport rows.`
 
 SHARED CORE / SAFETY
