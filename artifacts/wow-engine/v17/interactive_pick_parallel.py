@@ -7,9 +7,12 @@ as the only row authority while running independent rows concurrently in
 bounded single-row FULL calls, then reapplies the canonical cross-row portfolio
 layer before compacting the response.
 
-The wrapper never retries a completed row, never changes a sporting probability,
-and never authorizes execution. FULL/debug requests keep the historical serial
-path. ``can_execute=false`` is asserted at every merge boundary.
+The production web process also uses a process-wide request admission gate so
+separate long-running HTTP requests cannot multiply request-local hydration and
+scoring memory. The wrapper never retries a completed row, never changes a
+sporting probability, and never authorizes execution. FULL/debug requests keep
+the historical canonical scorer path. ``can_execute=false`` is asserted at
+every merge boundary.
 """
 from __future__ import annotations
 
@@ -18,6 +21,8 @@ from copy import deepcopy
 import inspect
 import logging
 import os
+from threading import BoundedSemaphore
+from time import monotonic
 from typing import Any, Optional
 
 from fastapi import Header
@@ -31,6 +36,8 @@ _LOG = logging.getLogger("wow.v17.interactive.parallel")
 _STATE_KEY = "_wow_v17_interactive_parallel_installed"
 _DEFAULT_SCORE_WORKERS = 2
 _MAX_SCORE_WORKERS = 4
+_DEFAULT_REQUEST_WORKERS = 1
+_MAX_REQUEST_WORKERS = 4
 
 
 def _score_worker_count() -> int:
@@ -40,6 +47,15 @@ def _score_worker_count() -> int:
     except (TypeError, ValueError):
         value = _DEFAULT_SCORE_WORKERS
     return max(1, min(value, _MAX_SCORE_WORKERS))
+
+
+def _request_worker_count() -> int:
+    raw = os.getenv("WOW_INTERACTIVE_PROP_REQUEST_WORKERS", str(_DEFAULT_REQUEST_WORKERS))
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        value = _DEFAULT_REQUEST_WORKERS
+    return max(1, min(value, _MAX_REQUEST_WORKERS))
 
 
 def _row_key(row: Any, index: int) -> str:
@@ -187,6 +203,8 @@ def install_interactive_pick_parallel_wrapper(app: Any, *, market_api: Any) -> b
     captured_endpoint = captured_route.endpoint
     dependencies = list(getattr(captured_route, "dependencies", []) or [])
     operation_id = getattr(captured_route, "operation_id", None) or "scoreWowPickRequest"
+    request_workers = _request_worker_count()
+    request_gate = BoundedSemaphore(request_workers)
 
     app.router.routes[:] = [route for route in app.router.routes if route is not captured_route]
 
@@ -202,49 +220,58 @@ def install_interactive_pick_parallel_wrapper(app: Any, *, market_api: Any) -> b
             alias="X-WOW-Model-Identity",
         ),
     ) -> dict[str, Any]:
-        workers = _score_worker_count()
-        if str(batch.response_mode or "FULL").upper() != "COMPACT" or len(batch.rows) <= 1 or workers <= 1:
-            response = _invoke_captured_endpoint(captured_endpoint, batch, x_wow_model_identity)
-            if isinstance(response, dict):
-                response["can_execute"] = False
-            return response
+        wait_started = monotonic()
+        with request_gate:
+            waited_ms = (monotonic() - wait_started) * 1000.0
+            _LOG.warning(
+                "WOW_V17_INTERACTIVE_ADMISSION status=ACQUIRED request_id=%s request_workers=%s wait_ms=%.3f can_execute=false",
+                batch.request_id,
+                request_workers,
+                waited_ms,
+            )
+            workers = _score_worker_count()
+            if str(batch.response_mode or "FULL").upper() != "COMPACT" or len(batch.rows) <= 1 or workers <= 1:
+                response = _invoke_captured_endpoint(captured_endpoint, batch, x_wow_model_identity)
+                if isinstance(response, dict):
+                    response["can_execute"] = False
+                return response
 
-        prepared = prehydrate_batch(batch, market_api=market_api)
-        results: dict[int, dict[str, Any]] = {}
-        max_workers = min(workers, len(prepared.rows))
-        with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="wow-v17-prop-score") as pool:
-            pending = {
-                pool.submit(
-                    _invoke_captured_endpoint,
-                    captured_endpoint,
-                    _single_row_batch(prepared, row),
-                    x_wow_model_identity,
-                ): (index, row)
+            prepared = prehydrate_batch(batch, market_api=market_api)
+            results: dict[int, dict[str, Any]] = {}
+            max_workers = min(workers, len(prepared.rows))
+            with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="wow-v17-prop-score") as pool:
+                pending = {
+                    pool.submit(
+                        _invoke_captured_endpoint,
+                        captured_endpoint,
+                        _single_row_batch(prepared, row),
+                        x_wow_model_identity,
+                    ): (index, row)
+                    for index, row in enumerate(prepared.rows)
+                }
+                for future in as_completed(pending):
+                    index, row = pending[future]
+                    try:
+                        results[index] = _extract_single_outcome(row, index, future.result())
+                    except Exception as exc:
+                        results[index] = _unexpected_row_failure(row, index, exc)
+
+            outcomes = [
+                results.get(index)
+                or _unexpected_row_failure(row, index, RuntimeError("ROW_RESULT_MISSING"))
                 for index, row in enumerate(prepared.rows)
-            }
-            for future in as_completed(pending):
-                index, row = pending[future]
-                try:
-                    results[index] = _extract_single_outcome(row, index, future.result())
-                except Exception as exc:
-                    results[index] = _unexpected_row_failure(row, index, exc)
-
-        outcomes = [
-            results.get(index)
-            or _unexpected_row_failure(row, index, RuntimeError("ROW_RESULT_MISSING"))
-            for index, row in enumerate(prepared.rows)
-        ]
-        merged = _merge_compact_response(prepared, outcomes, workers=max_workers)
-        _LOG.warning(
-            "WOW_V17_INTERACTIVE_SCORING status=PARALLEL rows_in=%s workers=%s completed=%s held=%s rejected=%s reconciliation=%s can_execute=false",
-            merged.get("rows_in"),
-            max_workers,
-            merged.get("rows_completed"),
-            merged.get("rows_held"),
-            merged.get("rows_rejected"),
-            str(merged.get("reconciliation_pass") is True).lower(),
-        )
-        return merged
+            ]
+            merged = _merge_compact_response(prepared, outcomes, workers=max_workers)
+            _LOG.warning(
+                "WOW_V17_INTERACTIVE_SCORING status=PARALLEL rows_in=%s workers=%s completed=%s held=%s rejected=%s reconciliation=%s can_execute=false",
+                merged.get("rows_in"),
+                max_workers,
+                merged.get("rows_completed"),
+                merged.get("rows_held"),
+                merged.get("rows_rejected"),
+                str(merged.get("reconciliation_pass") is True).lower(),
+            )
+            return merged
 
     setattr(score_pick_request_parallel, _STATE_KEY, True)
     setattr(app.state, _STATE_KEY, True)
@@ -260,9 +287,10 @@ def schedule_interactive_pick_parallel_install(app: Any, *, market_api: Any) -> 
     async def _install_interactive_pick_parallel() -> None:
         installed = install_interactive_pick_parallel_wrapper(app, market_api=market_api)
         _LOG.warning(
-            "WOW_V17_INTERACTIVE_SCORING status=%s workers=%s can_execute=false",
+            "WOW_V17_INTERACTIVE_SCORING status=%s workers=%s request_workers=%s can_execute=false",
             "INSTALLED" if installed else "NOT_INSTALLED",
             _score_worker_count(),
+            _request_worker_count(),
         )
 
     setattr(app.state, scheduled_key, True)
