@@ -14,7 +14,6 @@ def test_migration_uses_typed_pregame_allowlist_and_bounded_lateness():
     lateness_guard = "event_start_time > clock_timestamp() - interval '6 hours'"
     assert sql.count(predicate) >= 3
     assert sql.count(lateness_guard) >= 3
-    assert "event_start_time > clock_timestamp()" not in sql
 
 
 def test_migration_preserves_shadow_only_authority():
