@@ -4,8 +4,11 @@
 -- scheduled start time as a proxy for pregame state, which stranded delayed or
 -- still-pregame events once their nominal start time passed. This replacement
 -- uses an explicit fail-closed pregame-status allowlist plus a bounded snapshot
--- freshness guard. No sporting probability math, calibration, qualification,
--- publication authority, terminal reduction, or execution permission changes.
+-- freshness guard. Capture intentionally deduplicates unchanged pregame identity
+-- and may reuse one canonical snapshot through the slate day, so the guard is
+-- 24 hours rather than an assumed per-cron recency window. No sporting
+-- probability math, calibration, qualification, publication authority,
+-- terminal reduction, or execution permission changes.
 
 create or replace function public.wow_mlb_forward_auto_hydrate_pregame()
 returns jsonb
@@ -38,7 +41,7 @@ begin
   select s.snapshot_id, s.slate_date
   into v_snapshot_id, v_slate_date
   from public.wow_mlb_forward_shadow_source_snapshots s
-  where s.captured_at >= clock_timestamp() - interval '2 hours'
+  where s.captured_at >= clock_timestamp() - interval '24 hours'
     and exists (
       select 1
       from public.wow_mlb_forward_shadow_events se
