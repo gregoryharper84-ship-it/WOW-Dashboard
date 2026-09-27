@@ -98,6 +98,9 @@ def initialize_observability() -> dict[str, Any]:
             install_diagnostic_probe_load_shedding,
         )
         from v17.llp_v17_1_shadow_status_route import install_llp_shadow_status_route
+        from v17.nfl_prop_identity_boundary import (
+            schedule_nfl_prop_identity_boundary,
+        )
         from v17.team_event_governance_parity_route import (
             install_team_event_governance_parity_route,
         )
@@ -127,15 +130,23 @@ def initialize_observability() -> dict[str, Any]:
         # durable route wrapper can observe any request.
         install_pick_request_state_reliability_patch()
         install_pick_request_state_hooks()
-        # Startup order is correctness-sensitive:
-        # 1 hydration/research, 2 bounded parallel rows, 3 durable scorer,
-        # 4 run-control routes, 5 route-scoped DB-leased worker installation.
         install_pick_request_run_control_hardening()
+        # Startup order is correctness-sensitive:
+        # 1 hydration/research, 2 bounded parallel rows,
+        # 3 NFL display/provider identity -> canonical identity,
+        # 4 durable state, 5 run-control, 6 route-scoped DB-leased worker.
+        # The identity layer must be INSIDE state/run-control so an unresolved
+        # display ID is durably recorded as a pre-scorer terminal at INGESTED,
+        # while still being OUTSIDE scoring so no specialist can run first.
         schedule_interactive_pick_hydration_install(
             _accepted_base.app,
             market_api=_accepted_base.market_api,
         )
         schedule_interactive_pick_parallel_install(
+            _accepted_base.app,
+            market_api=_accepted_base.market_api,
+        )
+        schedule_nfl_prop_identity_boundary(
             _accepted_base.app,
             market_api=_accepted_base.market_api,
         )
@@ -154,18 +165,14 @@ def initialize_observability() -> dict[str, Any]:
     except Exception:
         pass
 
-    # Install after the existing Pick Request startup schedulers so the NFL
-    # identity boundary captures the final durable/run-controlled route. Keep the
-    # canonical sport-aware hydration router untouched: true canonical/opponent
-    # conflicts retain PROP_EVENT_IDENTITY_CONFLICT, while only the new display-ID
-    # resolver emits PROP_EVENT_IDENTITY_UNRESOLVED. The capability overlay extends
-    # the already-exposed /v17/capabilities Action without adding an operation.
+    # Keep the canonical sport-aware hydration router untouched: true canonical
+    # or opponent conflicts retain PROP_EVENT_IDENTITY_CONFLICT. Only the new
+    # pre-scorer display/provider resolution boundary emits
+    # PROP_EVENT_IDENTITY_UNRESOLVED. Exact lane capability is exposed through the
+    # already-existing /v17/capabilities Action; no new Action operation is added.
     try:
         import api_prod_market_acceptance as _accepted_base
-        from v17.nfl_prop_boundary_integrity import (
-            install_boundary_read_routes,
-            schedule_final_score_boundary_wrapper,
-        )
+        from v17.nfl_prop_boundary_integrity import install_boundary_read_routes
         from v17.nfl_prop_runtime_semantics import (
             install_nfl_prop_runtime_semantics,
         )
@@ -180,10 +187,6 @@ def initialize_observability() -> dict[str, Any]:
             auth_dependency=Depends(
                 _accepted_base.market_api.prod._require_action_api_key
             ),
-        )
-        schedule_final_score_boundary_wrapper(
-            _accepted_base.app,
-            market_api=_accepted_base.market_api,
         )
         install_nfl_prop_capability_overlay(_accepted_base.market_api)
     except Exception:
