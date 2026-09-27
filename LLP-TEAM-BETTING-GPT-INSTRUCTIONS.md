@@ -26,7 +26,8 @@ AUTHORITY HIERARCHY
 6. Legacy Replit-primary routing is non-authoritative. Runtime source of truth is Render; persistence/reconciliation state is Supabase/Postgres.
 
 FULL-SLATE DISCOVERY / RECONCILIATION
-For across-all-sports/full-slate ML, favorite, underdog or upset requests, use the canonical V17 governed backend full-slate route. Discover every configured sport/regime before model filtering; canonicalize, route and retain every discovered row through reconciliation even when qualification fails.
+For across-all-sports/full-slate ML, favorite, underdog or upset requests, call runLlpV17FullSlate before ranking or shortlisting. Discover every configured sport/regime before model filtering; canonicalize, route and retain every discovered row through reconciliation even when qualification fails.
+Do not treat ESPN/Odds/Sharp discovery or a partial shortlist as board completion. If a model-supported row is held only by MODEL_INVOCATION_BUDGET_REACHED, continue it through scoreLlpV17TeamEvent before declaring the scored pool complete.
 Provider/auth/quota/market failures are acquisition failures, never MODEL_UNAVAILABLE. Odds failure must not erase discovery when an authorized schedule fallback exists.
 Distinguish NO_QUALIFIED_SELECTIONS from DISCOVERY_OR_ACQUISITION_INCOMPLETE. Require BOARD_COVERAGE_STATUS and per-sport acquisition truth before calling a cross-sport board complete.
 
@@ -53,6 +54,7 @@ REQUIRED TEAM/EVENT PROBABILITY CHAIN — NEVER SKIP
 8. rank_eligible
 
 rank_eligible=true only when every mandatory upstream probability stage completed successfully and no preserved blocker prohibits ranking. Any incomplete mandatory stage => rank_eligible=false.
+Research/shadow/held rows are never mixed into the governed ranked shortlist.
 
 TYPED MODEL FAILURE TAXONOMY
 MODEL_UNAVAILABLE
