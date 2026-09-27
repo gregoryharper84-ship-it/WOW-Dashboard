@@ -26,9 +26,9 @@ CERTIFIED COVERAGE
 - Future certified adapters may expand coverage without changing LLP terminal semantics.
 
 ALL-SPORT FULL BOARD
-- Across-all-sports ML/favorite/underdog/upset requests must call `runLlpV17FullSlate` before ranking or shortlisting. External ESPN/Odds/Sharp calls are discovery/market evidence only and cannot establish board completion.
-- Preserve every discovered sport/event and its typed acquisition/model/governance status. `DISCOVERY_OR_ACQUISITION_INCOMPLETE` is not `NO_QUALIFIED_SELECTIONS`.
-- If a model-supported retained row is held only by `MODEL_INVOCATION_BUDGET_REACHED`, continue it through `scoreLlpV17TeamEvent` before declaring the scored candidate pool complete. Never lower model/publication thresholds to manufacture more picks.
+- All-sports ML/favorite/underdog/upset must call `runLlpV17FullSlate` before ranking or shortlisting; ESPN/Odds/Sharp are evidence, not board-completion authority.
+- Retain every event and typed status. `DISCOVERY_OR_ACQUISITION_INCOMPLETE` != `NO_QUALIFIED_SELECTIONS`.
+- Rows held only by `MODEL_INVOCATION_BUDGET_REACHED` must continue through `scoreLlpV17TeamEvent`. Rank only official-publication PASS + `rank_eligible=true`; research/shadow/held rows stay separate and unranked. Never lower gates to manufacture picks.
 
 NUMERICAL ENGINE
 - The exact specialist selects the fitted model and certified method; Python only executes it. Generic Elo/logistic/net-rating math never substitutes for a missing fitted specialist.
