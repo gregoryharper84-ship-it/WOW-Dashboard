@@ -23,7 +23,13 @@ import re
 from datetime import datetime, timezone
 from typing import Any
 
-_REQUIRED_CANONICAL_FIELDS = ("venue_name", "home_probable_pitcher", "away_probable_pitcher")
+_REQUIRED_CANONICAL_FIELDS = (
+    "venue_name",
+    "home_probable_pitcher",
+    "away_probable_pitcher",
+    "snapshot_id",
+    "snapshot_timestamp",
+)
 _CALLER_REQUIRED_FIELDS = ("venue", "home_starting_pitcher", "away_starting_pitcher")
 _IDENTITY_START_TOLERANCE_SECONDS = 60
 _CANONICAL_SELECT = (
@@ -158,6 +164,136 @@ def _usable_rows(rows: list[dict[str, Any]], *, now: datetime) -> list[tuple[dat
     return usable
 
 
+def _raw_identity_diagnosis(req: Any, *, client: Any, now: datetime) -> dict[str, Any] | None:
+    """Describe a matching canonical row without treating it as score-ready.
+
+    This is diagnostic only. A raw row never bypasses the PASS hydration barrier.
+    """
+    requested_start = _aware(getattr(req, "event_start_time_utc", None))
+    requested_slate_date = str(getattr(req, "requested_slate_date", "") or "").strip()
+    if requested_start is None:
+        return None
+
+    try:
+        exact_rows = (
+            client.table("wow_mlb_forward_shadow_events").select(_CANONICAL_SELECT)
+            .eq("official_event_id", str(getattr(req, "official_event_id", "") or ""))
+            .order("snapshot_timestamp", desc=True).limit(8).execute().data or []
+        )
+    except Exception as exc:
+        return {
+            "ok": False,
+            "code": "MLB_TEAM_EVENT_CANONICAL_QUERY_FAILED",
+            "error_type": type(exc).__name__,
+            "missing_fields": [],
+            "can_execute": False,
+        }
+
+    candidates = [dict(row) for row in exact_rows]
+    identity_resolution = "EXACT_OFFICIAL_EVENT_ID"
+    if not candidates and requested_slate_date:
+        try:
+            slate_rows = (
+                client.table("wow_mlb_forward_shadow_events").select(_CANONICAL_SELECT)
+                .eq("official_date", requested_slate_date)
+                .order("snapshot_timestamp", desc=True).limit(128).execute().data or []
+            )
+        except Exception as exc:
+            return {
+                "ok": False,
+                "code": "MLB_TEAM_EVENT_CANONICAL_QUERY_FAILED",
+                "error_type": type(exc).__name__,
+                "missing_fields": [],
+                "can_execute": False,
+            }
+        candidates = []
+        for raw in slate_rows:
+            row = dict(raw)
+            event_start = _aware(row.get("event_start_time"))
+            if event_start is None or abs((requested_start - event_start).total_seconds()) > _IDENTITY_START_TOLERANCE_SECONDS:
+                continue
+            home_strength = _team_match_strength(row.get("home_team"), getattr(req, "home_team", None))
+            away_strength = _team_match_strength(row.get("away_team"), getattr(req, "away_team", None))
+            if home_strength == 0 or away_strength == 0 or max(home_strength, away_strength) < 2:
+                continue
+            candidates.append(row)
+        identity_resolution = "PARTICIPANTS_START_SLATE"
+
+    if not candidates:
+        return None
+
+    by_id: dict[str, dict[str, Any]] = {}
+    for row in candidates:
+        canonical_id = str(row.get("official_event_id") or "").strip()
+        if not canonical_id:
+            continue
+        prior = by_id.get(canonical_id)
+        current_ts = _aware(row.get("snapshot_timestamp"))
+        prior_ts = _aware(prior.get("snapshot_timestamp")) if prior else None
+        if prior is None or (current_ts is not None and (prior_ts is None or current_ts > prior_ts)):
+            by_id[canonical_id] = row
+
+    if len(by_id) > 1:
+        return {
+            "ok": False,
+            "code": "MLB_TEAM_EVENT_CANONICAL_IDENTITY_AMBIGUOUS",
+            "identity_mismatches": ["official_event_id"],
+            "candidate_count": len(by_id),
+            "missing_fields": [],
+            "can_execute": False,
+        }
+    if by_id:
+        row = next(iter(by_id.values()))
+    else:
+        row = candidates[0]
+
+    event_start = _aware(row.get("event_start_time"))
+    identity_mismatches: list[str] = []
+    if event_start is None or abs((requested_start - event_start).total_seconds()) > _IDENTITY_START_TOLERANCE_SECONDS:
+        identity_mismatches.append("event_start_time_utc")
+    if _team_match_strength(row.get("home_team"), getattr(req, "home_team", None)) == 0:
+        identity_mismatches.append("home_team")
+    if _team_match_strength(row.get("away_team"), getattr(req, "away_team", None)) == 0:
+        identity_mismatches.append("away_team")
+    if identity_mismatches:
+        return {
+            "ok": False,
+            "code": "MLB_TEAM_EVENT_CANONICAL_IDENTITY_MISMATCH",
+            "identity_mismatches": identity_mismatches,
+            "missing_fields": [],
+            "can_execute": False,
+        }
+
+    missing = [name for name in _REQUIRED_CANONICAL_FIELDS if not str(row.get(name) or "").strip()]
+    if missing:
+        return {
+            "ok": False,
+            "code": "MLB_TEAM_EVENT_CANONICAL_SNAPSHOT_INCOMPLETE",
+            "missing_fields": missing,
+            "feature_hydration_status": str(row.get("feature_hydration_status") or "NOT_STARTED"),
+            "canonical_official_event_id": str(row.get("official_event_id") or ""),
+            "canonical_source_snapshot_id": str(row.get("snapshot_id") or ""),
+            "canonical_snapshot_timestamp": str(row.get("snapshot_timestamp") or ""),
+            "canonical_identity_resolution": identity_resolution,
+            "can_execute": False,
+        }
+
+    hydration_status = str(row.get("feature_hydration_status") or "NOT_STARTED").strip() or "NOT_STARTED"
+    if hydration_status != "PASS":
+        return {
+            "ok": False,
+            "code": "MLB_TEAM_EVENT_HYDRATION_NOT_READY",
+            "missing_fields": ["feature_hydration_status"],
+            "feature_hydration_status": hydration_status,
+            "canonical_official_event_id": str(row.get("official_event_id") or ""),
+            "canonical_source_snapshot_id": str(row.get("snapshot_id") or ""),
+            "canonical_snapshot_timestamp": str(row.get("snapshot_timestamp") or ""),
+            "canonical_identity_resolution": identity_resolution,
+            "can_execute": False,
+        }
+    return None
+
+
 def _capture_requested_slate(req: Any, *, client: Any) -> dict[str, Any]:
     """Capture + hydrate the requested slate using existing governed SQL functions."""
     slate_date = str(getattr(req, "requested_slate_date", "") or "").strip()
@@ -248,6 +384,11 @@ def resolve_mlb_team_event_evidence(req: Any, *, event_api: Any) -> dict[str, An
             acquisition = _capture_requested_slate(req, client=client)
             joined = _identity_join_rows(req, client=client, now=datetime.now(timezone.utc))
         if joined.get("ok") is not True:
+            diagnostic = _raw_identity_diagnosis(req, client=client, now=datetime.now(timezone.utc))
+            if diagnostic is not None:
+                if acquisition is not None:
+                    diagnostic = {**diagnostic, "canonical_acquisition": acquisition}
+                return diagnostic
             if acquisition is not None:
                 joined = {**joined, "canonical_acquisition": acquisition}
             fallback = _caller_fallback(req, blocker_code=str(joined.get("code") or "MLB_TEAM_EVENT_CANONICAL_SNAPSHOT_UNAVAILABLE"))
