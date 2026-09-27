@@ -165,6 +165,9 @@ def test_verified_delayed_mlb_override_is_exact_and_restored(monkeypatch):
         }
 
     monkeypatch.setattr(repair._base, "score_team_event_request", _fake_base)
+    monkeypatch.setattr(repair, "_attach_upset_alert", lambda _req, result: result)
+    monkeypatch.setattr(repair, "_apply_official_publication_guard", lambda _req, result: result)
+
     result = repair.score_team_event_request(
         req,
         event_api=api,
