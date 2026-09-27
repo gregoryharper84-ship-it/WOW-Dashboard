@@ -36,16 +36,19 @@ def test_confirmation_requires_official_live_feed_and_nine_player_orders():
     assert "official_lineup_team_id_mismatch" in sql
 
 
-def test_lineup_timestamp_is_post_fetch_and_must_remain_pregame():
+def test_delayed_lineup_confirmation_uses_fresh_official_state_not_scheduled_clock():
     text = _raw()
     fetch_pos = text.index("r := extensions.http_get")
     capture_pos = text.index("v_capture_at := clock_timestamp()", fetch_pos)
-    started_pos = text.index("event_started_during_lineup_fetch", capture_pos)
-    assert fetch_pos < capture_pos < started_pos
-    assert "if v_capture_at >= e.event_start_time" in text
+    status_pos = text.index("v_detailed_state :=", capture_pos)
+    assert fetch_pos < capture_pos < status_pos
+    assert "if clock_timestamp() >= e.event_start_time" not in text
+    assert "if v_capture_at >= e.event_start_time" not in text
+    assert "'delayed start'" in text
+    assert "official_pregame_status_unproven" in text
 
 
-def test_confirmation_blocks_actual_gameplay_even_before_scheduled_time():
+def test_confirmation_blocks_actual_gameplay_and_terminal_states():
     sql = _sql()
     assert "livedata,plays,allplays" in sql
     assert "ispitch" in sql
@@ -53,9 +56,18 @@ def test_confirmation_blocks_actual_gameplay_even_before_scheduled_time():
     assert "game advisory" in sql
     assert "v_pitch_n > 0" in sql
     assert "v_completed_play_n > 0" in sql
+    assert "'in progress','game over','final','postponed','cancelled','canceled','suspended'" in sql
     assert "official_gameplay_already_started" in sql
     assert "official_pitch_events_at_capture" in sql
     assert "official_completed_plays_at_capture" in sql
+
+
+def test_auto_lineup_poll_includes_authoritative_delayed_state_with_bounded_snapshot_age():
+    sql = _sql()
+    assert "s.captured_at >= clock_timestamp() - interval '24 hours'" in sql
+    assert "'scheduled','pre-game','pregame','delayed start','warmup'" in sql
+    assert "and event_start_time > clock_timestamp()" not in sql
+    assert "feature_hydration_status='pass'" in sql
 
 
 def test_lineup_identity_is_order_based_not_raw_response_based():
