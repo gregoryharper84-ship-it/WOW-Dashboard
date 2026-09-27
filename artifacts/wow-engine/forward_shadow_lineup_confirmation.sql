@@ -2,11 +2,11 @@
 --
 -- Adds timestamped official batting-order provenance to the research-only
 -- forward-shadow lane. A lineup is CONFIRMED only when the official MLB live
--- feed exposes exactly nine unique batting-order player IDs for both teams,
--- the response is received strictly before the scheduled event start, and the
--- official feed proves no real gameplay has begun. Pregame Game Advisory /
--- warmup events are tolerated; any recorded pitch or completed non-advisory
--- play blocks confirmation.
+-- feed exposes exactly nine unique batting-order player IDs for both teams and
+-- the official feed proves no real gameplay has begun. Pregame Game Advisory /
+-- warmup events and official delayed starts are tolerated; any recorded pitch,
+-- completed non-advisory play, live/final/cancelled/postponed/suspended state,
+-- or unrecognized state blocks confirmation.
 --
 -- Repeated identical confirmations are idempotent. A material batting-order
 -- change creates a new immutable lineup snapshot and re-scores through the
@@ -47,7 +47,6 @@ create index if not exists idx_wow_mlb_forward_lineup_event_time
 alter table public.wow_mlb_forward_shadow_events
   add column if not exists lineup_snapshot_id uuid,
   add column if not exists lineup_confirmed_at timestamptz;
-
 do $ddl$
 begin
   if not exists (
@@ -120,16 +119,16 @@ begin
   for update;
   if not found then raise exception 'shadow event not found'; end if;
 
-  if clock_timestamp() >= e.event_start_time then
+  v_url := format('https://statsapi.mlb.com/api/v1.1/game/%s/feed/live',e.official_event_id);
+  begin
+    r := extensions.http_get(v_url::varchar);
+  exception when others then
     return jsonb_build_object(
-      'status','BLOCKED','reason','EVENT_NOT_PREGAME',
-      'shadow_event_id',p_shadow_event_id,
+      'status','BLOCKED','reason','OFFICIAL_LINEUP_SOURCE_UNAVAILABLE',
+      'error_type',sqlstate,'shadow_event_id',p_shadow_event_id,
       'probability_publishable',false,'can_execute',false
     );
-  end if;
-
-  v_url := format('https://statsapi.mlb.com/api/v1.1/game/%s/feed/live',e.official_event_id);
-  r := extensions.http_get(v_url::varchar);
+  end;
   if r.status <> 200 then
     return jsonb_build_object(
       'status','BLOCKED','reason','OFFICIAL_LINEUP_SOURCE_HTTP_ERROR',
@@ -140,16 +139,8 @@ begin
 
   v_body := r.content::jsonb;
   v_capture_at := clock_timestamp();
-  if v_capture_at >= e.event_start_time then
-    return jsonb_build_object(
-      'status','BLOCKED','reason','EVENT_STARTED_DURING_LINEUP_FETCH',
-      'shadow_event_id',p_shadow_event_id,
-      'probability_publishable',false,'can_execute',false
-    );
-  end if;
-
-  v_abstract_state := v_body#>>'{gameData,status,abstractGameState}';
-  v_detailed_state := v_body#>>'{gameData,status,detailedState}';
+  v_abstract_state := coalesce(v_body#>>'{gameData,status,abstractGameState}','');
+  v_detailed_state := coalesce(v_body#>>'{gameData,status,detailedState}','');
 
   select count(*) into v_pitch_n
   from jsonb_array_elements(coalesce(v_body#>'{liveData,plays,allPlays}','[]'::jsonb)) p
@@ -163,13 +154,25 @@ begin
 
   if v_pitch_n > 0
      or v_completed_play_n > 0
-     or coalesce(v_abstract_state,'')='Final'
-     or coalesce(v_detailed_state,'') in ('In Progress','Game Over','Final') then
+     or v_abstract_state in ('Live','Final')
+     or v_detailed_state in (
+       'In Progress','Game Over','Final','Postponed','Cancelled','Canceled','Suspended'
+     ) then
     return jsonb_build_object(
       'status','BLOCKED','reason','OFFICIAL_GAMEPLAY_ALREADY_STARTED',
       'official_abstract_state',v_abstract_state,
       'official_detailed_state',v_detailed_state,
       'pitch_events',v_pitch_n,'completed_plays',v_completed_play_n,
+      'shadow_event_id',p_shadow_event_id,
+      'probability_publishable',false,'can_execute',false
+    );
+  end if;
+
+  if v_detailed_state not in ('Scheduled','Pre-Game','Delayed Start','Warmup') then
+    return jsonb_build_object(
+      'status','BLOCKED','reason','OFFICIAL_PREGAME_STATUS_UNPROVEN',
+      'official_abstract_state',v_abstract_state,
+      'official_detailed_state',v_detailed_state,
       'shadow_event_id',p_shadow_event_id,
       'probability_publishable',false,'can_execute',false
     );
@@ -314,11 +317,14 @@ declare
 begin
   select s.snapshot_id into v_snapshot_id
   from public.wow_mlb_forward_shadow_source_snapshots s
-  where exists (
-    select 1 from public.wow_mlb_forward_shadow_events se
-    where se.snapshot_id=s.snapshot_id
-      and se.event_start_time > clock_timestamp()
-  )
+  where s.captured_at >= clock_timestamp() - interval '24 hours'
+    and exists (
+      select 1 from public.wow_mlb_forward_shadow_events se
+      where se.snapshot_id=s.snapshot_id
+        and lower(btrim(coalesce(se.event_status,''))) in (
+          'scheduled','pre-game','pregame','delayed start','warmup'
+        )
+    )
   order by s.captured_at desc
   limit 1;
 
@@ -333,7 +339,9 @@ begin
     select shadow_event_id,official_event_id,event_start_time,lineup_status
     from public.wow_mlb_forward_shadow_events
     where snapshot_id=v_snapshot_id
-      and event_start_time > clock_timestamp()
+      and lower(btrim(coalesce(event_status,''))) in (
+        'scheduled','pre-game','pregame','delayed start','warmup'
+      )
       and feature_hydration_status='PASS'
     order by event_start_time,official_event_id
   loop
@@ -379,7 +387,9 @@ $function$;
 
 -- Poll every five minutes, one minute after each regular hydration slot. Calls
 -- before hydration simply skip non-PASS events; repeated confirmed lineups are
--- identity-idempotent and do not create another score snapshot.
+-- identity-idempotent and do not create another score snapshot. The official
+-- live feed inside wow_mlb_forward_confirm_lineup is authoritative for whether
+-- a delayed event remains safely pregame.
 select cron.schedule(
   'wow-mlb-forward-shadow-auto-lineup',
   '1,6,11,16,21,26,31,36,41,46,51,56 * * * *',
