@@ -10,7 +10,8 @@ def _sql() -> str:
 
 def test_auto_hydrator_selects_only_fresh_authoritatively_pregame_snapshot():
     sql = _sql()
-    assert "s.captured_at >= clock_timestamp() - interval '2 hours'" in sql
+    assert "s.captured_at >= clock_timestamp() - interval '24 hours'" in sql
+    assert "unchanged pregame identity" in sql
     assert "'scheduled','pre-game','pregame','delayed start','warmup'" in sql
     assert "btrim(coalesce(se.event_status,'')) = '' and se.event_start_time > clock_timestamp()" in sql
     assert "order by s.captured_at desc limit 1" in sql
