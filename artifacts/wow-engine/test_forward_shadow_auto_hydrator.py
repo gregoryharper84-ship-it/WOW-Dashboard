@@ -8,11 +8,22 @@ def _sql() -> str:
     return " ".join(SQL_PATH.read_text().split()).lower()
 
 
-def test_auto_hydrator_selects_only_freshest_still_pregame_snapshot():
+def test_auto_hydrator_selects_freshest_authoritative_pregame_snapshot():
     sql = _sql()
-    assert "se.event_start_time > clock_timestamp()" in sql
+    predicate = "event_status in ('scheduled','pre-game','warmup','delayed start')"
+    lateness_guard = "event_start_time > clock_timestamp() - interval '6 hours'"
+    assert sql.count(predicate) >= 3
+    assert sql.count(lateness_guard) >= 3
     assert "order by s.captured_at desc limit 1" in sql
     assert "where snapshot_id=v_snapshot_id" in sql
+
+
+def test_auto_hydrator_pregame_allowlist_excludes_non_pregame_states():
+    sql = _sql()
+    predicate = "event_status in ('scheduled','pre-game','warmup','delayed start')"
+    assert predicate in sql
+    for status in ("final", "live", "in progress", "postponed", "cancelled"):
+        assert status not in predicate
 
 
 def test_auto_hydrator_freezes_required_2026_prior_day_schedule_context():

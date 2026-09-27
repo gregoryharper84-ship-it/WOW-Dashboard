@@ -1,18 +1,6 @@
--- WOW MLB forward-shadow automatic pregame hydration/scoring loop — 2026-08-28
---
--- Purpose: close the orchestration gap between a newly captured forward-shadow
--- slate snapshot and the existing research-only frozen-model scorer. The job
--- operates only on the freshest snapshot that still has authoritative pregame
--- events. Scheduled time is not sufficient because weather/delay states can
--- remain pregame after the nominal first-pitch time.
--- Missing probable starters, sources, feature components, or scorer evidence
--- remain delayed/blocked. This migration never authorizes probability
--- publication or execution and does not alter the separate production-readiness
--- ratification latch.
---
--- The currently frozen forward feature builder is explicitly 2026-specific
--- (its schedule-source subject is "2026"). This orchestrator therefore blocks
--- any other season instead of silently generalizing the feature contract.
+-- V17 MLB delayed-pregame hydration repair.
+-- Class B orchestration only: no fitted probability, calibration, publication,
+-- terminal-authority, or execution behavior is changed.
 
 create or replace function public.wow_mlb_forward_auto_hydrate_pregame()
 returns jsonb
@@ -74,10 +62,6 @@ begin
     );
   end if;
 
-  -- The 38-feature builder needs a timestamped regular-season schedule
-  -- context for prior team/park history. Freeze only completed history through
-  -- the day before the target slate, matching the two already-proven live
-  -- shadow snapshots and excluding current-day/future schedule state.
   if not exists (
     select 1
     from public.wow_mlb_forward_aux_snapshots
@@ -241,9 +225,3 @@ begin
   );
 end;
 $function$;
-
-select cron.schedule(
-  'wow-mlb-forward-shadow-auto-hydrate',
-  '5,20,35,50 * * * *',
-  $$select public.wow_mlb_forward_auto_hydrate_pregame();$$
-);
