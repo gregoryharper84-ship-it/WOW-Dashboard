@@ -57,6 +57,10 @@ services:
         value: "1"
       - key: WOW_INTERACTIVE_PROP_SCORE_WORKERS
         value: "1"
+      - key: WOW_INTERACTIVE_TEAM_EVENT_RESEARCH_WORKERS
+        # NFL prop identity/preflight calls enter the team-event research barrier.
+        # Keep that independent worker pool serial on the same 512 MiB process.
+        value: "1"
       - key: WOW_PROP_EVIDENCE_ACQUISITION_ENABLED
         # Keep the multi-minute autonomous MLB evidence sweep out of the
         # 512-MB interactive web process. It is forward-cohort evidence only;
