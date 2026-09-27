@@ -2,11 +2,11 @@
 --
 -- Purpose: close the orchestration gap between a newly captured forward-shadow
 -- slate snapshot and the existing research-only frozen-model scorer. The job
--- operates only on the freshest snapshot that still has pregame events.
--- Missing probable starters, sources, feature components, or scorer evidence
--- remain delayed/blocked. This migration never authorizes probability
--- publication or execution and does not alter the separate production-readiness
--- ratification latch.
+-- operates only on the freshest snapshot that still has an authoritative
+-- pregame state. Missing probable starters, sources, feature components, or
+-- scorer evidence remain delayed/blocked. This migration never authorizes
+-- probability publication or execution and does not alter the separate
+-- production-readiness ratification latch.
 --
 -- The currently frozen forward feature builder is explicitly 2026-specific
 -- (its schedule-source subject is "2026"). This orchestrator therefore blocks
@@ -43,12 +43,21 @@ begin
   select s.snapshot_id, s.slate_date
   into v_snapshot_id, v_slate_date
   from public.wow_mlb_forward_shadow_source_snapshots s
-  where exists (
-    select 1
-    from public.wow_mlb_forward_shadow_events se
-    where se.snapshot_id = s.snapshot_id
-      and se.event_start_time > clock_timestamp()
-  )
+  where s.captured_at >= clock_timestamp() - interval '2 hours'
+    and exists (
+      select 1
+      from public.wow_mlb_forward_shadow_events se
+      where se.snapshot_id = s.snapshot_id
+        and (
+          lower(btrim(coalesce(se.event_status,''))) in (
+            'scheduled','pre-game','pregame','delayed start','warmup'
+          )
+          or (
+            btrim(coalesce(se.event_status,'')) = ''
+            and se.event_start_time > clock_timestamp()
+          )
+        )
+    )
   order by s.captured_at desc
   limit 1;
 
@@ -131,7 +140,15 @@ begin
   update public.wow_mlb_forward_shadow_events
   set feature_hydration_status='DELAYED_STARTER_UNRESOLVED'
   where snapshot_id=v_snapshot_id
-    and event_start_time > clock_timestamp()
+    and (
+      lower(btrim(coalesce(event_status,''))) in (
+        'scheduled','pre-game','pregame','delayed start','warmup'
+      )
+      or (
+        btrim(coalesce(event_status,'')) = ''
+        and event_start_time > clock_timestamp()
+      )
+    )
     and coalesce(feature_hydration_status,'NOT_STARTED') <> 'PASS'
     and (home_probable_pitcher_id is null or away_probable_pitcher_id is null);
   get diagnostics v_delayed = row_count;
@@ -141,7 +158,15 @@ begin
            feature_hydration_status, model_score_status
     from public.wow_mlb_forward_shadow_events
     where snapshot_id=v_snapshot_id
-      and event_start_time > clock_timestamp()
+      and (
+        lower(btrim(coalesce(event_status,''))) in (
+          'scheduled','pre-game','pregame','delayed start','warmup'
+        )
+        or (
+          btrim(coalesce(event_status,'')) = ''
+          and event_start_time > clock_timestamp()
+        )
+      )
       and home_probable_pitcher_id is not null
       and away_probable_pitcher_id is not null
       and (
