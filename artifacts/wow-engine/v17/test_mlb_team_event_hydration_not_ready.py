@@ -121,6 +121,28 @@ def test_unhydrated_canonical_row_cannot_be_bypassed_by_complete_caller_evidence
     assert result["can_execute"] is False
 
 
+def test_newer_unhydrated_snapshot_blocks_older_pass_snapshot():
+    older_pass = _row(
+        snapshot_id="older-pass",
+        snapshot_timestamp="2026-09-27T18:00:00Z",
+        feature_hydration_status="PASS",
+    )
+    newer_not_ready = _row(
+        snapshot_id="newer-not-ready",
+        snapshot_timestamp="2026-09-27T18:15:00Z",
+        feature_hydration_status="NOT_STARTED",
+    )
+
+    result = resolve_mlb_team_event_evidence(
+        _req(), event_api=_Api([older_pass, newer_not_ready])
+    )
+
+    assert result["ok"] is False
+    assert result["code"] == "MLB_TEAM_EVENT_HYDRATION_NOT_READY"
+    assert result["canonical_source_snapshot_id"] == "newer-not-ready"
+    assert result["can_execute"] is False
+
+
 def test_missing_snapshot_timestamp_is_reported_as_true_canonical_incompleteness():
     result = resolve_mlb_team_event_evidence(
         _req(), event_api=_Api([_row(snapshot_timestamp=None)])
