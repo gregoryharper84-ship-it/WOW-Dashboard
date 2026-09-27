@@ -15,6 +15,9 @@ Repairs coupled orchestration defects without relaxing governance:
    interpretation layer after a complete calibrated sporting package exists.
 7. Valid model probabilities remain visible even when official publication or
    leaderboard eligibility is held; publication gates never become visibility gates.
+8. An MLB game delayed past its nominal start may traverse the generic ingress
+   clock gate only after the server obtains fresh official proof that no gameplay
+   has begun. Other sports and unverified MLB states keep the original gate.
 
 Market-relative FAVORITE/UNDERDOG/UPSET requests remain on the existing market
 consensus path. The upset alert uses market context only to identify which outcome
@@ -24,11 +27,12 @@ bypassed, and wager execution remains impossible.
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from math import isfinite
 from threading import RLock
 from typing import Any
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 
 from v17 import team_event_request_runtime as _base
 from v17.projected_lineup_scenario_modeling import projected_probability_hold
@@ -428,6 +432,91 @@ def _attach_upset_alert(req: Any, result: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _aware_instant(value: Any) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if parsed.utcoffset() is None:
+        return None
+    return parsed.astimezone(timezone.utc)
+
+
+def _delayed_mlb_pregame_preflight(
+    req: Any,
+    *,
+    event_api: Any,
+    canonical_hydration_required: bool,
+) -> dict[str, Any] | None:
+    """Allow an elapsed MLB clock only after fresh official pregame proof.
+
+    This helper never changes sporting probability behavior. It only replaces a
+    scheduled-time proxy with an official status/gameplay check for the exact MLB
+    request. If the status source is unavailable or gameplay has begun, fail
+    closed before the fitted model is invoked.
+    """
+    if not canonical_hydration_required:
+        return None
+    if _base.normalize_team_event_sport(req.sport, req.league) != "MLB":
+        return None
+
+    event_start = _aware_instant(getattr(req, "event_start_time_utc", None))
+    if event_start is None or event_start > datetime.now(timezone.utc):
+        return None
+
+    get_client = getattr(event_api, "get_client", None)
+    if not callable(get_client):
+        raise HTTPException(
+            status_code=422,
+            detail=_base._augment_detail({
+                "code": "MLB_TEAM_EVENT_CURRENT_STATUS_UNAVAILABLE",
+                "blocker_code": "MLB_TEAM_EVENT_CANONICAL_CLIENT_UNAVAILABLE",
+                "failure_class": "RUN_INVALID_ACQUISITION_INCOMPLETE",
+                "sport_model_invoked": False,
+                "probability_publishable": False,
+            }, req),
+        )
+
+    try:
+        result = get_client().rpc(
+            "wow_mlb_current_pregame_status",
+            {"p_official_event_id": str(req.official_event_id)},
+        ).execute()
+        status = getattr(result, "data", None)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=_base._augment_detail({
+                "code": "MLB_TEAM_EVENT_CURRENT_STATUS_UNAVAILABLE",
+                "blocker_code": "OFFICIAL_MLB_LIVE_FEED_UNAVAILABLE",
+                "failure_class": "RUN_INVALID_ACQUISITION_INCOMPLETE",
+                "error_type": type(exc).__name__,
+                "sport_model_invoked": False,
+                "probability_publishable": False,
+            }, req),
+        ) from exc
+
+    if not isinstance(status, dict) or status.get("status") != "PASS" or status.get("pregame") is not True:
+        blocker = str((status or {}).get("code") or "MLB_CURRENT_PREGAME_STATUS_UNAVAILABLE")
+        raise HTTPException(
+            status_code=422,
+            detail=_base._augment_detail({
+                "code": (
+                    "MLB_TEAM_EVENT_EVENT_NOT_PREGAME"
+                    if blocker == "EVENT_NOT_PREGAME"
+                    else "MLB_TEAM_EVENT_CURRENT_STATUS_UNAVAILABLE"
+                ),
+                "blocker_code": blocker,
+                "failure_class": "RUN_INVALID_ACQUISITION_INCOMPLETE",
+                "official_abstract_state": (status or {}).get("official_abstract_state"),
+                "official_detailed_state": (status or {}).get("official_detailed_state"),
+                "sport_model_invoked": False,
+                "probability_publishable": False,
+            }, req),
+        )
+    return status
+
+
 def score_team_event_request(
     req: Any,
     *,
@@ -438,6 +527,21 @@ def score_team_event_request(
     with _repair_lock:
         previous_hold = _base._llp_governance_hold
         previous_governance = _base._run_mlb_llp_governance
+        previous_aware_future = _base._aware_future
+        delayed_status = _delayed_mlb_pregame_preflight(
+            req,
+            event_api=event_api,
+            canonical_hydration_required=canonical_hydration_required,
+        )
+        if delayed_status is not None:
+            validated_start = str(req.event_start_time_utc)
+
+            def _scoped_aware_future(value: str) -> bool:
+                if str(value) == validated_start:
+                    return True
+                return previous_aware_future(value)
+
+            _base._aware_future = _scoped_aware_future
         _base._llp_governance_hold = _preserve_completed_probability_hold
         _base._run_mlb_llp_governance = _run_mlb_llp_governance_with_evidence_handoff
         try:
@@ -448,8 +552,11 @@ def score_team_event_request(
             )
             result = _attach_upset_alert(req, result)
             result = _apply_official_publication_guard(req, result)
+            if delayed_status is not None:
+                result["official_delayed_pregame_status"] = delayed_status
             return _annotate_probability_visibility(result)
         finally:
+            _base._aware_future = previous_aware_future
             _base._llp_governance_hold = previous_hold
             _base._run_mlb_llp_governance = previous_governance
 
