@@ -1,6 +1,7 @@
 from fastapi import Depends, FastAPI
 
 from v17 import spread_margin_replay_route as route
+from v17.mlb_run_line_shadow import MLBRunLineShadowUnavailable
 from v17.spread_margin_challenger import SpreadChallengerUnavailable
 
 
@@ -56,6 +57,54 @@ def test_forward_shadow_route_preserves_typed_failure(monkeypatch):
     assert payload["can_execute"] is False
 
 
+def test_mlb_run_line_route_success_is_research_only(monkeypatch):
+    monkeypatch.setattr(
+        route,
+        "run_mlb_run_line_forward_shadow",
+        lambda *_args, **_kwargs: {
+            "status": "EXPERIMENT_CREATED",
+            "code": "MLB_RUN_LINE_FORWARD_SHADOW_COMPLETE",
+            "sport": "MLB",
+            "score_snapshot_id": "s1",
+            "p_cover": .54,
+            "p_push": 0.0,
+            "p_not_cover": .46,
+            "moneyline_probability_used": False,
+            "run_line_used_as_feature": False,
+            "probability_publishable": False,
+            "can_execute": False,
+        },
+    )
+    request = route.MLBRunLineForwardShadowRequest(
+        sport="MLB", score_snapshot_id="s1", home_run_line=-1.5
+    )
+    payload = route.execute_mlb_run_line_forward_shadow(object(), request)
+    assert payload["status"] == "EXPERIMENT_CREATED"
+    assert payload["code"] == "MLB_RUN_LINE_FORWARD_SHADOW_COMPLETE"
+    assert payload["moneyline_probability_used"] is False
+    assert payload["automatic_certification"] is False
+    assert payload["automatic_promotion"] is False
+    assert payload["probability_publishable"] is False
+    assert payload["can_execute"] is False
+
+
+def test_mlb_run_line_route_preserves_typed_failure(monkeypatch):
+    def blocked(*_args, **_kwargs):
+        raise MLBRunLineShadowUnavailable(
+            "MLB_RUN_LINE_GOVERNED_EVIDENCE_UNAVAILABLE", "missing pregame evidence"
+        )
+
+    monkeypatch.setattr(route, "run_mlb_run_line_forward_shadow", blocked)
+    request = route.MLBRunLineForwardShadowRequest(
+        sport="MLB", score_snapshot_id="s1", home_run_line=-1.5
+    )
+    payload = route.execute_mlb_run_line_forward_shadow(object(), request)
+    assert payload["status"] == "BLOCKED"
+    assert payload["code"] == "MLB_RUN_LINE_GOVERNED_EVIDENCE_UNAVAILABLE"
+    assert payload["code"] != "MODEL_UNAVAILABLE"
+    assert payload["can_execute"] is False
+
+
 def test_route_is_mounted_once_and_auth_protected():
     app = FastAPI()
     route.install_spread_margin_replay_route(
@@ -68,7 +117,14 @@ def test_route_is_mounted_once_and_auth_protected():
         auth_dependency=Depends(lambda: None),
         db_client_fn=lambda: object(),
     )
-    matches = [r for r in app.router.routes if getattr(r, "path", None) == "/internal/v17/spread-forward-shadow"]
-    assert len(matches) == 1
-    assert matches[0].operation_id == "scoreWowV17SpreadForwardShadow"
-    assert matches[0].dependant.dependencies
+    expected = {
+        "/internal/v17/spread-forward-shadow": "scoreWowV17SpreadForwardShadow",
+        "/internal/v17/nfl-spread-forward-shadow": "scoreWowV17NFLSpreadForwardShadow",
+        "/internal/v17/wnba-spread-forward-shadow": "scoreWowV17WNBASpreadForwardShadow",
+        "/internal/v17/mlb-run-line-forward-shadow": "scoreWowV17MLBRunLineForwardShadow",
+    }
+    for path, operation_id in expected.items():
+        matches = [r for r in app.router.routes if getattr(r, "path", None) == path]
+        assert len(matches) == 1
+        assert matches[0].operation_id == operation_id
+        assert matches[0].dependant.dependencies
