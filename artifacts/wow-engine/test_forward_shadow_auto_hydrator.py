@@ -18,14 +18,34 @@ def test_auto_hydrator_selects_only_fresh_authoritatively_pregame_snapshot():
     assert "where snapshot_id=v_snapshot_id" in sql
 
 
+def test_auto_hydrator_rechecks_official_status_after_nominal_start():
+    sql = _sql()
+    assert "create or replace function public.wow_mlb_current_pregame_status" in sql
+    assert "https://statsapi.mlb.com/api/v1.1/game/%s/feed/live" in sql
+    assert "e.event_start_time <= clock_timestamp()" in sql
+    assert "public.wow_mlb_current_pregame_status(e.official_event_id)" in sql
+    assert "current_status_blocked" in sql
+    assert "event_not_pregame" in sql
+    assert "event_pregame_status_unproven" in sql
+    assert "pitch_events" in sql
+    assert "completed_plays" in sql
+
+
+def test_current_status_helper_is_server_only_and_execution_disabled():
+    sql = _sql()
+    assert "revoke all on function public.wow_mlb_current_pregame_status(text) from public, anon, authenticated" in sql
+    assert "grant execute on function public.wow_mlb_current_pregame_status(text) to service_role" in sql
+    assert "'can_execute',false" in sql
+
+
 def test_auto_hydrator_keeps_delayed_and_pregame_rows_after_nominal_start():
     sql = _sql()
-    assert sql.count("'delayed start'") >= 3
-    assert sql.count("'pre-game'") >= 3
-    assert sql.count("'warmup'") >= 3
-    assert "'in progress'" not in sql
-    assert "'final'" not in sql
-    assert "'game over'" not in sql
+    assert sql.count("'delayed start'") >= 4
+    assert sql.count("'pre-game'") >= 4
+    assert sql.count("'warmup'") >= 4
+    assert "'in progress'" in sql
+    assert "'final'" in sql
+    assert "'game over'" in sql
 
 
 def test_auto_hydrator_freezes_required_2026_prior_day_schedule_context():
