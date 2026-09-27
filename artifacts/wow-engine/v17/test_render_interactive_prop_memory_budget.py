@@ -22,6 +22,7 @@ def test_free_production_web_service_serializes_interactive_prop_work() -> None:
     assert env["WOW_INTERACTIVE_PROP_HYDRATION_WORKERS"] == "1"
     assert env["WOW_INTERACTIVE_PROP_RESEARCH_WORKERS"] == "1"
     assert env["WOW_INTERACTIVE_PROP_SCORE_WORKERS"] == "1"
+    assert env["WOW_INTERACTIVE_PROP_REQUEST_WORKERS"] == "1"
 
 
 def test_memory_budget_does_not_weaken_v17_execution_guards() -> None:
@@ -40,5 +41,8 @@ def test_serial_budget_uses_existing_runtime_controls_only() -> None:
     assert 'WOW_INTERACTIVE_PROP_HYDRATION_WORKERS' in hydration
     assert 'WOW_INTERACTIVE_PROP_RESEARCH_WORKERS' in hydration
     assert 'WOW_INTERACTIVE_PROP_SCORE_WORKERS' in scoring
+    assert 'WOW_INTERACTIVE_PROP_REQUEST_WORKERS' in scoring
+    assert 'BoundedSemaphore' in scoring
+    assert 'with request_gate:' in scoring
     assert 'return max(1' in hydration
     assert 'return max(1' in scoring
