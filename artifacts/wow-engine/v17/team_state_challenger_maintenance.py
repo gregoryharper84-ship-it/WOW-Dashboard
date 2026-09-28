@@ -124,7 +124,7 @@ def _mlb_official_events(seasons: Sequence[int]=(2023,2024,2025,2026)) -> list[d
         if response.status_code != 200: raise TeamStateMaintenanceUnavailable("MLB_STATSAPI_FAILED",f"{response.status_code}:{season}")
         digest=sha256(response.content).hexdigest()
         for date_row in (response.json().get("dates") or []):
-            for game in date_row.get("games") or []):
+            for game in date_row.get("games") or []:
                 if str(((game.get("status") or {}).get("abstractGameState") or "")).upper() != "FINAL": continue
                 teams=game.get("teams") or {}; h=teams.get("home") or {}; a=teams.get("away") or {}
                 home=str(((h.get("team") or {}).get("id") or "")); away=str(((a.get("team") or {}).get("id") or "")); gid=str(game.get("gamePk") or "")
