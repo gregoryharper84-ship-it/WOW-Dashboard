@@ -10,18 +10,23 @@ The runtime repairs here are deliberately narrow:
   specialist ran;
 - pre-scorer durable terminal rows return an explicit no-prediction receipt state;
 - the final direct /score-prop boundary canonicalizes known stat aliases before
-  exact specialist/artifact routing, matching Pick Request behavior.
+  exact specialist/artifact routing, matching Pick Request behavior; and
+- duplicate exact-name ESPN NFL athlete results are disambiguated only through
+  the already-known target event/team before evidence hydration.
 """
 from __future__ import annotations
 
 from v17 import interactive_pick_parallel
 from v17 import nfl_prop_boundary_integrity as boundary
+from v17.nfl_prop_event_aware_player_identity import install_nfl_event_aware_player_identity
 from v17.prop_stat_alias_boundary import schedule_score_prop_alias_boundary
 
 _PATCH_FLAG = "_wow_nfl_prop_runtime_semantics_installed"
 
 
 def install_nfl_prop_runtime_semantics() -> bool:
+    install_nfl_event_aware_player_identity()
+
     if not getattr(interactive_pick_parallel, _PATCH_FLAG, False):
         interactive_pick_parallel._unexpected_row_failure = boundary._typed_parallel_failure
         boundary._install_receipt_semantics()
