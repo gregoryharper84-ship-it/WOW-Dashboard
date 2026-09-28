@@ -10,6 +10,7 @@ create or replace function public.wow_v17_acquisition_attempts_valid(payload jso
 returns boolean
 language plpgsql
 immutable
+set search_path = pg_catalog
 as $$
 declare
     attempt jsonb;
