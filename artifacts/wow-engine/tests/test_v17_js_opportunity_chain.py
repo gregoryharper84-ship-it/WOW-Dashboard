@@ -11,10 +11,13 @@ from v17.js_style.opportunity_chain import (
 def _base(**extra):
     row = {
         "direction": "LESS",
+        "period": "FULL_GAME",
         "exact_line": 3.0,
         "role_adjusted_median": 2.0,
         "robust_dispersion": 1.0,
         "capture_phase": "PREGAME",
+        "captured_at": "2026-09-28T16:00:00Z",
+        "event_start_time": "2026-09-28T17:00:00Z",
         "upstream_team_dependency": 0.9,
         "player_role_dependency": 0.8,
         "possession_dependency": 0.9,
@@ -31,11 +34,13 @@ def test_less_opportunity_chain_is_research_only_and_non_authoritative():
     assert result["threshold_burden_robust"] == pytest.approx(1.0)
     assert result["opportunity_chain_burden"] > 0.0
     assert result["archetype"] == "JS_OPPORTUNITY_CHAIN_LESS"
+    assert result["period"] == "FULL_GAME"
     assert result["research_only"] is True
     assert result["js_probability_authority"] is False
     assert result["probability_publishable"] is False
     assert result["rank_eligible"] is False
     assert result["can_execute"] is False
+    assert result["pregame_training_eligible"] is True
 
 
 def test_more_floor_and_less_ceiling_are_direction_neutral_mirrors():
@@ -76,6 +81,7 @@ def test_live_capture_with_known_pregame_pick_but_no_pregame_feature_snapshot_is
             captured_at="2026-09-28T18:00:00Z",
             event_start_time="2026-09-28T17:00:00Z",
             original_selection_time="2026-09-28T16:30:00Z",
+            feature_snapshot_time=None,
             capture_phase="LIVE",
         )
     )
@@ -124,6 +130,26 @@ def test_high_self_generation_reduces_chain_dependency():
     low_self_generation = build_opportunity_chain_features(_base(stat_self_generation_score=0.0))
     high_self_generation = build_opportunity_chain_features(_base(stat_self_generation_score=1.0))
     assert low_self_generation["opportunity_chain_dependency"] > high_self_generation["opportunity_chain_dependency"]
+
+
+def test_missing_event_start_fails_closed_for_pregame_training():
+    result = build_opportunity_chain_features(_base(event_start_time=None))
+    assert result["pregame_training_eligible"] is False
+    assert result["research_state"] == "JS_EVENT_START_UNAVAILABLE"
+
+
+def test_missing_dependency_is_not_silently_defaulted():
+    row = _base()
+    row.pop("possession_dependency")
+    with pytest.raises(JsOpportunityChainError, match="possession_dependency"):
+        build_opportunity_chain_features(row)
+
+
+def test_period_is_required():
+    row = _base()
+    row.pop("period")
+    with pytest.raises(JsOpportunityChainError, match="period"):
+        build_opportunity_chain_features(row)
 
 
 def test_invalid_dispersion_fails_closed():
