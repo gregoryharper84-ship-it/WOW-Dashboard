@@ -28,8 +28,18 @@ def _claims(workflow_ref: str, event_name: str = "schedule") -> dict[str, str]:
 )
 def test_prop_evidence_workflow_is_exact_main_pinned_and_authorized(workflow_ref: str, suffix: str):
     assert workflow_ref.endswith(suffix)
-    assert workflow_ref in oidc.ALLOWED_WORKFLOW_REFS
+    assert workflow_ref in oidc.PROP_EVIDENCE_WORKFLOW_REFS
+    assert workflow_ref not in oidc.ALLOWED_WORKFLOW_REFS
     assert oidc.validate_github_actions_claims(_claims(workflow_ref))["workflow_ref"] == workflow_ref
+
+
+def test_prop_evidence_trust_set_contains_only_the_four_expected_workflows():
+    assert oidc.PROP_EVIDENCE_WORKFLOW_REFS == frozenset({
+        oidc.NFL_PROP_FORWARD_EVIDENCE_WORKFLOW_REF,
+        oidc.MLB_PROP_FORWARD_EVIDENCE_WORKFLOW_REF,
+        oidc.WNBA_PROP_FORWARD_EVIDENCE_WORKFLOW_REF,
+        oidc.PRIORITY_PROP_LIFECYCLE_WORKFLOW_REF,
+    })
 
 
 def test_priority_prop_lifecycle_push_is_authorized_for_post_merge_acceptance():
