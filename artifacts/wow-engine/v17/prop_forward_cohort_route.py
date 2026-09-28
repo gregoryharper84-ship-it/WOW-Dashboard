@@ -30,9 +30,14 @@ from v17.prop_universal_forward_evidence import (
 )
 import v17.prop_universal_forward_schema_repair  # align with live Supabase snapshot schema
 # Explicit research-only candidate lifecycle extensions. Importing these patches the
-# shared module objects used above; neither module grants publication/certification.
+# shared module objects used above; none grants publication/certification authority.
 import v17.basketball_candidate_forward_overlay  # noqa: F401
 import v17.wnba_composite_settlement_overlay  # noqa: F401
+# NBA scalar/composite candidate evidence uses official schedule/roster/game-log
+# hydration and exact official postgame box-score settlement. Both remain research
+# only and cannot promote or publish the fitted candidate artifacts.
+import v17.nba_prop_hydration_overlay  # noqa: F401
+import v17.nba_prop_settlement_overlay  # noqa: F401
 # Exact MLB 1IP event-tree settlement is evidence plumbing only. It removes the
 # settlement blocker without changing the fitted model or publication authority.
 import v17.mlb_1ip_exact_settlement_overlay  # noqa: F401
