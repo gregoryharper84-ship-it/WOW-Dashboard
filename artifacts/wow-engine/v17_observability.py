@@ -52,6 +52,7 @@ def initialize_observability() -> dict[str, Any]:
         install_cross_sport_acquisition_fairness,
     )
     from v17.cross_sport_resilience_overlay import install_cross_sport_resilience
+    from v17.full_slate_exact_once import install_full_slate_exact_once
     from v17.quota_aware_degraded_discovery import (
         install_quota_aware_degraded_discovery,
     )
@@ -83,6 +84,10 @@ def initialize_observability() -> dict[str, Any]:
     # research-only ESPN identity, scorer work is bounded/fair across sports, and
     # all unscored discovered rows remain explicit typed terminal holds.
     install_cross_sport_resilience()
+    # For FULL moneyline runs the model-invocation ceiling is a per-batch safety
+    # limit, never a terminal slate cap. Exhaust the immutable discovered board
+    # through sequential bounded batches before publication/reconciliation.
+    install_full_slate_exact_once()
     # Quota-aware acquisition must be outermost: it meters the final paid-source
     # surfaces, reuses the existing free schedule-first path, and preserves public
     # scoreboard IDs as aliases until canonical identity is independently proven.
