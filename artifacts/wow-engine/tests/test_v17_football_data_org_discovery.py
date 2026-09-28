@@ -156,7 +156,7 @@ def test_exact_horizon_filters_date_boundary_rows(monkeypatch):
                     },
                     {
                         "id": 2,
-                        "utcDate": "2026-09-28T23:59:59Z",
+                        "utcDate": "2026-09-29T00:00:01Z",
                         "status": "SCHEDULED",
                         "homeTeam": {"name": "After"},
                         "awayTeam": {"name": "Window"},
