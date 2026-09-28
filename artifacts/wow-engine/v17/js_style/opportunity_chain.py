@@ -31,6 +31,39 @@ _DEPENDENCY_FIELDS = (
     "minutes_dependency",
 )
 
+_SOCCER_CHAIN_TEMPLATES: dict[str, dict[str, Any]] = {
+    "GOALKEEPER_SAVES": {
+        "source": "OPPONENT_ATTACK_VOLUME",
+        "steps": [
+            "opponent_possession",
+            "opponent_attacks",
+            "opponent_shots",
+            "opponent_shots_on_target",
+            "saveable_shots",
+            "goalkeeper_saves",
+        ],
+    },
+    "PASSES_ATTEMPTED": {
+        "source": "TEAM_POSSESSION_VOLUME",
+        "steps": [
+            "team_possession",
+            "player_touches",
+            "buildup_involvement",
+            "pass_attempts",
+        ],
+    },
+    "SHOTS": {
+        "source": "TEAM_ATTACK_VOLUME",
+        "steps": [
+            "team_possession",
+            "final_third_entries",
+            "player_touches",
+            "shooting_opportunities",
+            "shots",
+        ],
+    },
+}
+
 
 class JsOpportunityChainError(ValueError):
     """Typed validation error for JS research evidence."""
@@ -73,6 +106,45 @@ def _parse_time(value: Any, *, field: str) -> datetime | None:
     if parsed.tzinfo is None:
         raise JsOpportunityChainError(f"{field} must be timezone-aware")
     return parsed.astimezone(timezone.utc)
+
+
+def _canonical_stat_key(stat_type: str) -> str:
+    compact = "_".join(stat_type.replace("+", " ").replace("-", " ").split())
+    if "SAVE" in compact and ("GOALIE" in compact or "GOALKEEPER" in compact or compact == "SAVES"):
+        return "GOALKEEPER_SAVES"
+    if "PASS" in compact and "ATTEMPT" in compact:
+        return "PASSES_ATTEMPTED"
+    if "SHOT" in compact:
+        return "SHOTS"
+    return compact
+
+
+def _opportunity_chain_descriptor(*, sport: str, stat_type: str) -> dict[str, Any]:
+    if sport != "SOCCER":
+        return {
+            "opportunity_chain_template_status": "UNCLASSIFIED",
+            "opportunity_chain_source": "UNCLASSIFIED",
+            "opportunity_chain_depth": 0,
+            "opportunity_chain_steps": [],
+        }
+
+    key = _canonical_stat_key(stat_type)
+    template = _SOCCER_CHAIN_TEMPLATES.get(key)
+    if template is None:
+        return {
+            "opportunity_chain_template_status": "UNCLASSIFIED",
+            "opportunity_chain_source": "UNCLASSIFIED",
+            "opportunity_chain_depth": 0,
+            "opportunity_chain_steps": [],
+        }
+
+    steps = list(template["steps"])
+    return {
+        "opportunity_chain_template_status": "KNOWN_SOCCER_TEMPLATE",
+        "opportunity_chain_source": template["source"],
+        "opportunity_chain_depth": len(steps),
+        "opportunity_chain_steps": steps,
+    }
 
 
 def _capture_state(evidence: Mapping[str, Any]) -> dict[str, Any]:
@@ -189,6 +261,8 @@ def build_opportunity_chain_features(evidence: Mapping[str, Any]) -> dict[str, A
     upstream dependency inputs plus inverse self-generation. It is not a hit rate,
     probability, confidence, calibration input, or rank authority.
     """
+    sport = _required_text(evidence.get("sport"), field="sport")
+    stat_type = _required_text(evidence.get("stat_type"), field="stat_type")
     direction = str(evidence.get("direction") or "").strip().upper()
     if direction not in {"MORE", "LESS"}:
         raise JsOpportunityChainError("direction must be MORE or LESS")
@@ -235,6 +309,7 @@ def build_opportunity_chain_features(evidence: Mapping[str, Any]) -> dict[str, A
         archetype = "JS_OPPORTUNITY_CHAIN_COUNTEREVIDENCE"
 
     capture = _capture_state(evidence)
+    descriptor = _opportunity_chain_descriptor(sport=sport, stat_type=stat_type)
 
     return {
         "js_style_version": WOW_JS_STYLE_INTELLIGENCE_V17,
@@ -245,6 +320,8 @@ def build_opportunity_chain_features(evidence: Mapping[str, Any]) -> dict[str, A
         "probability_publishable": False,
         "rank_eligible": False,
         "can_execute": False,
+        "sport": sport,
+        "stat_type": stat_type,
         "direction": direction,
         "period": period,
         "exact_line": line,
@@ -255,6 +332,7 @@ def build_opportunity_chain_features(evidence: Mapping[str, Any]) -> dict[str, A
         "opportunity_chain_burden": opportunity_chain_burden,
         "stat_self_generation_score": self_generation,
         "archetype": archetype,
+        **descriptor,
         **dependencies,
         **capture,
     }
