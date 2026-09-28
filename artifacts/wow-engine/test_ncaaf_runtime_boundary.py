@@ -1,4 +1,8 @@
+# Protected-check refresh: non-behavioral test-file touch after branch-governance update.
+import asyncio
+import logging
 from pathlib import Path
+import time
 
 import pytest
 from fastapi import HTTPException
@@ -50,3 +54,82 @@ def test_readiness_and_hydration_routes_are_authenticated():
     assert "dependencies=[_auth]" in source
     assert "probability_publishable\": False" in source
     assert "can_execute\": False" in source
+
+
+def test_startup_handler_only_schedules_readiness_audit(monkeypatch):
+    scheduled = []
+
+    class _DummyTask:
+        def add_done_callback(self, _callback):
+            return None
+
+        def __hash__(self):
+            return id(self)
+
+    def fake_create_task(coro):
+        scheduled.append(coro)
+        coro.close()
+        return _DummyTask()
+
+    monkeypatch.setattr(api.asyncio, "create_task", fake_create_task)
+    monkeypatch.setattr(
+        api,
+        "ncaaf_readiness",
+        lambda: (_ for _ in ()).throw(AssertionError("startup must not call readiness synchronously")),
+    )
+    api._background_tasks.clear()
+
+    started = time.monotonic()
+    asyncio.run(api.log_ncaaf_startup_readiness())
+    elapsed = time.monotonic() - started
+
+    assert len(scheduled) == 1
+    assert elapsed < 0.1
+    assert len(api._background_tasks) == 1
+    api._background_tasks.clear()
+
+
+def test_background_readiness_timeout_emits_degraded_receipt(monkeypatch, caplog):
+    monkeypatch.setattr(api, "_NCAAF_STARTUP_READINESS_TIMEOUT_SECONDS", 0.01)
+
+    def slow_readiness():
+        time.sleep(0.05)
+        return {"can_execute": False}
+
+    monkeypatch.setattr(api, "ncaaf_readiness", slow_readiness)
+    with caplog.at_level(logging.ERROR, logger="wow.ncaaf.readiness"):
+        asyncio.run(api._run_ncaaf_startup_readiness_audit())
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("assessment=DEGRADED" in message for message in messages)
+    assert any("code=NCAAF_READINESS_TIMEOUT" in message for message in messages)
+    assert any("probability_publishable=false" in message for message in messages)
+    assert any("can_execute=false" in message for message in messages)
+
+
+def test_background_readiness_preserves_responsive_payload_semantics(monkeypatch):
+    state = {
+        "cfbd_configured": True,
+        "historical_source_snapshot_n": 1,
+        "training_game_n": 2,
+        "training_feature_n": 3,
+        "evidence_provider_n": 4,
+        "pregame_evidence_n": 5,
+        "forward_shadow_n": 6,
+        "artifact_status": "ARTIFACT_STATUS",
+        "calibrator_status": "CALIBRATOR_STATUS",
+        "ncaaf_controlling_model": "MODEL_UNAVAILABLE",
+        "ncaaf_trust_state": "NCAAF_TEST_ONLY",
+        "blockers": ["BLOCKER"],
+        "probability_publishable": False,
+        "can_execute": False,
+    }
+    emitted = []
+    monkeypatch.setattr(api, "ncaaf_readiness", lambda: dict(state))
+    monkeypatch.setattr(api, "_emit_ncaaf_readiness_state", lambda payload: emitted.append(payload))
+
+    asyncio.run(api._run_ncaaf_startup_readiness_audit())
+
+    assert emitted == [state]
+    assert emitted[0]["probability_publishable"] is False
+    assert emitted[0]["can_execute"] is False

@@ -51,6 +51,7 @@ _core_intelligence_logger = logging.getLogger("wow.v17.core_intelligence.activat
 _kalshi_weather_logger = logging.getLogger("wow.kalshi_weather_v2.activation")
 _mlb_1ip_refresh_logger = logging.getLogger("wow.mlb.1ip.final_refresh")
 _background_tasks: set[asyncio.Task] = set()
+_NCAAF_STARTUP_READINESS_TIMEOUT_SECONDS = 12.0
 _original_market_score_prop = base.market_api.score_prop
 V17_ACTIVE = os.getenv("WOW_V17_ACTIVE", "0") == "1"
 V17_CORE_INTELLIGENCE_ACTIVE = os.getenv("WOW_V17_CORE_INTELLIGENCE_ACTIVE", "0") == "1"
@@ -310,31 +311,51 @@ def get_ncaaf_readiness():
     return ncaaf_readiness()
 
 
-@app.on_event("startup")
-async def log_ncaaf_startup_readiness():
-    """Emit non-secret, non-probability readiness evidence after each deploy."""
+def _emit_ncaaf_readiness_state(state: dict) -> None:
+    _logger.warning(
+        "WOW_NCAAF_READINESS cfbd_configured=%s source_n=%s game_n=%s feature_n=%s evidence_provider_n=%s pregame_evidence_n=%s forward_shadow_n=%s artifact_status=%s calibrator_status=%s controlling_model=%s trust_state=%s blockers=%s probability_publishable=false can_execute=false",
+        state["cfbd_configured"],
+        state["historical_source_snapshot_n"],
+        state["training_game_n"],
+        state["training_feature_n"],
+        state["evidence_provider_n"],
+        state["pregame_evidence_n"],
+        state["forward_shadow_n"],
+        state["artifact_status"],
+        state["calibrator_status"],
+        state["ncaaf_controlling_model"],
+        state["ncaaf_trust_state"],
+        ",".join(state["blockers"]),
+    )
+
+
+async def _run_ncaaf_startup_readiness_audit() -> None:
+    """Run read-only readiness outside the startup critical path with a bound."""
     try:
-        state = ncaaf_readiness()
-        _logger.warning(
-            "WOW_NCAAF_READINESS cfbd_configured=%s source_n=%s game_n=%s feature_n=%s evidence_provider_n=%s pregame_evidence_n=%s forward_shadow_n=%s artifact_status=%s calibrator_status=%s controlling_model=%s trust_state=%s blockers=%s probability_publishable=false can_execute=false",
-            state["cfbd_configured"],
-            state["historical_source_snapshot_n"],
-            state["training_game_n"],
-            state["training_feature_n"],
-            state["evidence_provider_n"],
-            state["pregame_evidence_n"],
-            state["forward_shadow_n"],
-            state["artifact_status"],
-            state["calibrator_status"],
-            state["ncaaf_controlling_model"],
-            state["ncaaf_trust_state"],
-            ",".join(state["blockers"]),
+        state = await asyncio.wait_for(
+            asyncio.to_thread(ncaaf_readiness),
+            timeout=_NCAAF_STARTUP_READINESS_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        _logger.error(
+            "WOW_NCAAF_READINESS assessment=DEGRADED code=NCAAF_READINESS_TIMEOUT timeout_seconds=%s probability_publishable=false can_execute=false",
+            _NCAAF_STARTUP_READINESS_TIMEOUT_SECONDS,
         )
     except Exception as exc:
         _logger.error(
             "WOW_NCAAF_READINESS assessment=UNAVAILABLE error_type=%s probability_publishable=false can_execute=false",
             type(exc).__name__,
         )
+    else:
+        _emit_ncaaf_readiness_state(state)
+
+
+@app.on_event("startup")
+async def log_ncaaf_startup_readiness():
+    """Schedule non-secret readiness evidence without delaying port binding."""
+    task = asyncio.create_task(_run_ncaaf_startup_readiness_audit())
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
 
 
 @app.on_event("startup")
