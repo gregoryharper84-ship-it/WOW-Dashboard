@@ -106,6 +106,28 @@ def _stats_headers() -> dict[str, str]:
     }
 
 
+def _cdn_headers() -> dict[str, str]:
+    """Browser-like public headers for the official WNBA CDN schedule.
+
+    Production evidence on 2026-09-27 showed the CDN returning a successful
+    non-JSON body when called with only User-Agent/Accept. Keep this boundary on
+    the same official source and mirror the browser request context instead of
+    introducing a lower-authority fallback provider.
+    """
+    return {
+        "Host": "cdn.wnba.com",
+        "User-Agent": _stats_headers()["User-Agent"],
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.5",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Connection": "keep-alive",
+        "Origin": "https://www.wnba.com",
+        "Referer": "https://www.wnba.com/",
+        "Pragma": "no-cache",
+        "Cache-Control": "no-cache",
+    }
+
+
 def _request(
     url: str,
     *,
@@ -189,7 +211,7 @@ def _schedule(event_start: datetime, *, http_get: Callable[..., Any]) -> dict[st
     payload = _request(
         WNBA_SCHEDULE_URL,
         http_get=http_get,
-        headers={"User-Agent": _stats_headers()["User-Agent"], "Accept": "application/json"},
+        headers=_cdn_headers(),
     )
     league = payload.get("leagueSchedule")
     blocks = league.get("gameDates") if isinstance(league, Mapping) else None
