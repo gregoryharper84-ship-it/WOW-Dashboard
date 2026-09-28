@@ -1,10 +1,10 @@
-"""Server-owned V17 Daily prop acquisition for certified MLB routes.
+"""Server-owned V17 Daily prop acquisition for certified MLB pitcher routes.
 
 Daily must not treat an empty canonical prop snapshot table as proof that the
-slate has no prop candidates. For MLB pitcher strikeouts, the backend already
-has an official probable-pitcher schedule source and an automatic evidence
-hydrator. This module uses those existing producing layers to seed exact,
-immutable candidate snapshots before Daily selects rows.
+slate has no prop candidates. The backend already has an official probable-
+pitcher schedule source plus governed hydration for the certified pitcher
+strikeout/workload routes. This module seeds exact immutable candidate snapshots
+before Daily selects rows.
 
 Every attempted candidate receives a deterministic acquisition receipt. Snapshot
 write success/failure is therefore observable and reconcilable by Daily; a
@@ -12,7 +12,7 @@ persisted count can never silently disappear before canonical readback.
 
 No sportsbook line is invented. When no exact external line feed is available,
 we derive only half-point candidate lines from the player's prior-ten official
-strikeout median for forward calibration/discovery. Those rows are explicitly
+stat median for forward calibration/discovery. Those rows are explicitly
 source_type=AUTONOMOUS_DISCOVERY and remain non-executable. User-supplied
 screenshot/PDF rows continue to use /score-pick-request with their exact visible
 line and are never replaced by these autonomous candidates.
@@ -31,7 +31,15 @@ from prop_auto_hydration import MLB_STATS_API_BASE, PropAutoHydrationError
 from prop_auto_hydration_router import auto_hydrate_prop_evidence
 
 SPORT = "MLB"
+# Retain the historical primary constant for downstream compatibility while the
+# acquisition producer now covers every already-certified pitcher workload lane.
 STAT_TYPE = "PITCHER_STRIKEOUTS"
+STAT_TYPES = (
+    "PITCHER_STRIKEOUTS",
+    "PITCHING_OUTS",
+    "STRIKES_THROWN",
+    "BALLS_THROWN",
+)
 SOURCE_TYPE = "AUTONOMOUS_DISCOVERY"
 PLATFORM = "MLB_STATS_API_OFFICIAL_V1"
 
@@ -104,14 +112,14 @@ def _candidate_line(game_log: list[float]) -> float:
     return float(int(center) + 0.5)
 
 
-def _base_receipt(candidate: dict[str, Any]) -> dict[str, Any]:
+def _base_receipt(candidate: dict[str, Any], stat_type: str = STAT_TYPE) -> dict[str, Any]:
     return {
         "event_id": candidate.get("event_id"),
         "event_start_time": candidate.get("event_start_time"),
         "sport": SPORT,
         "player": candidate.get("player"),
         "opponent": candidate.get("opponent"),
-        "stat_type": STAT_TYPE,
+        "stat_type": stat_type,
         "line": None,
         "side": "MORE",
         "source_type": SOURCE_TYPE,
@@ -132,6 +140,12 @@ def acquire_daily_prop_snapshots(
     now: datetime | None = None,
     http_get: Any = httpx.get,
 ) -> dict[str, Any]:
+    """Persist a bounded set of certified MLB pitcher-route discovery snapshots.
+
+    ``max_candidates`` remains a hard row-attempt ceiling. Expanding the producer
+    from one route to four therefore cannot multiply an existing Daily or
+    scheduler budget unexpectedly.
+    """
     now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     result: dict[str, Any] = {
         "status": "COMPLETED",
@@ -146,6 +160,7 @@ def acquire_daily_prop_snapshots(
         "blockers": [],
         "candidate_source": "MLB_OFFICIAL_PROBABLE_PITCHERS",
         "line_source": "PRIOR10_MEDIAN_HALF_POINT_DISCOVERY_ONLY",
+        "stat_types": list(STAT_TYPES),
         "can_execute": False,
     }
     if max_candidates <= 0:
@@ -158,74 +173,81 @@ def acquire_daily_prop_snapshots(
         return result
 
     candidates = _schedule_pitchers(schedule, requested_date=requested_date, requested_timezone=requested_timezone, now=now)
-    for candidate in candidates[:max_candidates]:
-        result["attempted"] += 1
-        receipt = _base_receipt(candidate)
-        result["receipts"].append(receipt)
-        try:
-            raw = auto_hydrate_prop_evidence(
-                sport=SPORT,
-                player=candidate["player"],
-                stat_type=STAT_TYPE,
-                event_start_time=candidate["event_start_time"],
-                http_get=http_get,
-                now=now,
-                source_capture_timestamp=now.isoformat(),
-                source_label="V17_DAILY_AUTONOMOUS_DISCOVERY",
-                opponent=candidate.get("opponent"),
-                canonical_event_id=candidate["event_id"],
-            )
-            evidence = RawPropEvidence.model_validate(raw)
-            line = _candidate_line(evidence.game_log)
-            row = PickRequestRow(
-                row_key=f"daily:{candidate['event_id']}:{candidate['player']}:{line}",
-                event_id=candidate["event_id"],
-                event_start_time=candidate["event_start_time"],
-                sport=SPORT,
-                player=candidate["player"],
-                stat_type=STAT_TYPE,
-                line=line,
-                direction="MORE",
-                evidence=evidence,
-                source_type=SOURCE_TYPE,
-                platform=PLATFORM,
-                opponent=candidate.get("opponent"),
-                source_capture_timestamp=now.isoformat(),
-            )
-            normalized = _validate_evidence(row, STAT_TYPE)
-            snapshot_id, _fingerprint, snapshot = _snapshot_payload(row, normalized)
-            snapshot["source_snapshot_id"] = snapshot_id
-            result["hydrated"] += 1
-            receipt.update({
-                "line": line,
-                "source_snapshot_id": snapshot_id,
-                "write_status": "SNAPSHOT_WRITE_PENDING",
-            })
+    stop = False
+    for candidate in candidates:
+        for stat_type in STAT_TYPES:
+            if result["attempted"] >= max_candidates:
+                stop = True
+                break
+            result["attempted"] += 1
+            receipt = _base_receipt(candidate, stat_type)
+            result["receipts"].append(receipt)
             try:
-                db.table("wow_prop_evidence_snapshots").upsert(snapshot, on_conflict="source_snapshot_id").execute()
-            except Exception as exc:
-                result["snapshot_write_failed"] += 1
+                raw = auto_hydrate_prop_evidence(
+                    sport=SPORT,
+                    player=candidate["player"],
+                    stat_type=stat_type,
+                    event_start_time=candidate["event_start_time"],
+                    http_get=http_get,
+                    now=now,
+                    source_capture_timestamp=now.isoformat(),
+                    source_label="V17_DAILY_AUTONOMOUS_DISCOVERY",
+                    opponent=candidate.get("opponent"),
+                    canonical_event_id=candidate["event_id"],
+                )
+                evidence = RawPropEvidence.model_validate(raw)
+                line = _candidate_line(evidence.game_log)
+                row = PickRequestRow(
+                    row_key=f"daily:{candidate['event_id']}:{candidate['player']}:{stat_type}:{line}",
+                    event_id=candidate["event_id"],
+                    event_start_time=candidate["event_start_time"],
+                    sport=SPORT,
+                    player=candidate["player"],
+                    stat_type=stat_type,
+                    line=line,
+                    direction="MORE",
+                    evidence=evidence,
+                    source_type=SOURCE_TYPE,
+                    platform=PLATFORM,
+                    opponent=candidate.get("opponent"),
+                    source_capture_timestamp=now.isoformat(),
+                )
+                normalized = _validate_evidence(row, stat_type)
+                snapshot_id, _fingerprint, snapshot = _snapshot_payload(row, normalized)
+                snapshot["source_snapshot_id"] = snapshot_id
+                result["hydrated"] += 1
+                receipt.update({
+                    "line": line,
+                    "source_snapshot_id": snapshot_id,
+                    "write_status": "SNAPSHOT_WRITE_PENDING",
+                })
+                try:
+                    db.table("wow_prop_evidence_snapshots").upsert(snapshot, on_conflict="source_snapshot_id").execute()
+                except Exception as exc:
+                    result["snapshot_write_failed"] += 1
+                    result["held"] += 1
+                    receipt["write_status"] = "SNAPSHOT_WRITE_FAILED"
+                    receipt["terminal_reason"] = f"PROP_SNAPSHOT_WRITE_FAILED:{type(exc).__name__}"
+                    result["blockers"].append(f"{candidate['player']}:{stat_type}:{receipt['terminal_reason']}")
+                    continue
+                result["snapshot_write_succeeded"] += 1
+                result["persisted"] += 1
+                receipt["write_status"] = "SNAPSHOT_WRITE_SUCCEEDED"
+                receipt["terminal_reason"] = "PERSISTED_AWAITING_CANONICAL_READBACK"
+            except PropAutoHydrationError as exc:
+                result["explicit_prewrite_exclusions"] += 1
                 result["held"] += 1
-                receipt["write_status"] = "SNAPSHOT_WRITE_FAILED"
-                receipt["terminal_reason"] = f"PROP_SNAPSHOT_WRITE_FAILED:{type(exc).__name__}"
-                result["blockers"].append(f"{candidate['player']}:{receipt['terminal_reason']}")
-                continue
-            result["snapshot_write_succeeded"] += 1
-            result["persisted"] += 1
-            receipt["write_status"] = "SNAPSHOT_WRITE_SUCCEEDED"
-            receipt["terminal_reason"] = "PERSISTED_AWAITING_CANONICAL_READBACK"
-        except PropAutoHydrationError as exc:
-            result["explicit_prewrite_exclusions"] += 1
-            result["held"] += 1
-            receipt["write_status"] = "PREWRITE_EXCLUDED"
-            receipt["terminal_reason"] = exc.code
-            result["blockers"].append(f"{candidate['player']}:{exc.code}")
-        except Exception as exc:
-            result["explicit_prewrite_exclusions"] += 1
-            result["held"] += 1
-            receipt["write_status"] = "PREWRITE_EXCLUDED"
-            receipt["terminal_reason"] = f"PROP_DAILY_ACQUISITION_ERROR:{type(exc).__name__}"
-            result["blockers"].append(f"{candidate['player']}:{receipt['terminal_reason']}")
+                receipt["write_status"] = "PREWRITE_EXCLUDED"
+                receipt["terminal_reason"] = exc.code
+                result["blockers"].append(f"{candidate['player']}:{stat_type}:{exc.code}")
+            except Exception as exc:
+                result["explicit_prewrite_exclusions"] += 1
+                result["held"] += 1
+                receipt["write_status"] = "PREWRITE_EXCLUDED"
+                receipt["terminal_reason"] = f"PROP_DAILY_ACQUISITION_ERROR:{type(exc).__name__}"
+                result["blockers"].append(f"{candidate['player']}:{stat_type}:{receipt['terminal_reason']}")
+        if stop:
+            break
 
     result["blockers"] = list(dict.fromkeys(result["blockers"]))
     if result["snapshot_write_failed"] > 0 and result["snapshot_write_succeeded"] == 0:
