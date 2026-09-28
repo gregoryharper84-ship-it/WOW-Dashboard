@@ -36,7 +36,7 @@ EXPANSION_LINES = (14.5, 16.5)
 SENTINEL_LINES = (11.5, 13.5, 15.5, 17.5, 19.5, 21.5)
 DIRECTIONS = ("MORE", "LESS")
 CALIBRATION_GAMES = 300
-HOLDOUT_GAMES = 400
+MIN_HOLDOUT_GAMES = 250
 MIN_ROWS_PER_DIRECTION = 250
 Z_ONE_SIDED_95 = 1.6448536269514722
 EPSILON = 1e-12
@@ -77,13 +77,18 @@ def _partition_games(assignments: list[dict[str, Any]]) -> tuple[set[int], set[i
         {(str(row["event_time"]), int(row["game_pk"])) for row in assignments},
         key=lambda item: (item[0], item[1]),
     )
-    need = CALIBRATION_GAMES + HOLDOUT_GAMES
-    if len(ordered) < need:
+    minimum_required = CALIBRATION_GAMES + MIN_HOLDOUT_GAMES
+    if len(ordered) < minimum_required:
         raise RuntimeError(
-            f"MLB_1IP_CHALLENGER_GAME_SAMPLE_INSUFFICIENT n={len(ordered)} need={need}"
+            "MLB_1IP_CHALLENGER_GAME_SAMPLE_INSUFFICIENT "
+            f"n={len(ordered)} need_at_least={minimum_required}"
         )
     calibration = {pk for _, pk in ordered[:CALIBRATION_GAMES]}
-    holdout = {pk for _, pk in ordered[CALIBRATION_GAMES:need]}
+    # Use every chronologically later unique game as the untouched holdout. The
+    # source replay currently yields fewer than the originally assumed 700 unique
+    # games because multiple player rows can belong to the same game. The holdout
+    # size is therefore determined only by source availability, never outcomes.
+    holdout = {pk for _, pk in ordered[CALIBRATION_GAMES:]}
     if calibration & holdout:
         raise RuntimeError("MLB_1IP_CHALLENGER_GAME_PARTITION_OVERLAP")
     return calibration, holdout
@@ -207,6 +212,7 @@ def main() -> None:
         "certified_lines": list(CERTIFIED_LINES),
         "directions": list(DIRECTIONS),
         "correction_method": "LINE_DIRECTION_EMPIRICAL_WILSON95_ONE_SIDED_CONSERVATISM_V1",
+        "holdout_selection": "ALL_CHRONOLOGICALLY_LATER_UNIQUE_GAMES_AFTER_FIXED_300_GAME_CALIBRATION",
     }
     lineage["challenger_lineage_hash"] = _sha(lineage)
 
@@ -214,8 +220,9 @@ def main() -> None:
         "purpose": PURPOSE,
         "change_class": "CLASS_C_CHALLENGER_ONLY",
         "challenger_method": "LINE_DIRECTION_EMPIRICAL_WILSON95_ONE_SIDED_CONSERVATISM_V1",
-        "calibration_games": CALIBRATION_GAMES,
-        "holdout_games": HOLDOUT_GAMES,
+        "calibration_games": len(calibration_games),
+        "holdout_games": len(holdout_games),
+        "minimum_holdout_games": MIN_HOLDOUT_GAMES,
         "certified_lines": list(CERTIFIED_LINES),
         "directions": list(DIRECTIONS),
         "results": results,
