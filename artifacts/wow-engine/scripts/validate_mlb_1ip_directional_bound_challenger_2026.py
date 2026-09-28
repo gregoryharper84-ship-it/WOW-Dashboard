@@ -73,8 +73,21 @@ def _direction_values(row: dict[str, Any], direction: str) -> tuple[int, float, 
 
 
 def _partition_games(assignments: list[dict[str, Any]]) -> tuple[set[int], set[int]]:
+    # Canonicalize to exactly one chronological timestamp per game before slicing.
+    # Some source rows can repeat the same game_pk with a slightly different
+    # event_time representation. Partition authority is game-level, so counting
+    # (event_time, game_pk) pairs can silently shrink the unique calibration set
+    # after converting the slice back to game_pks.
+    earliest_event_time_by_game: dict[int, str] = {}
+    for row in assignments:
+        game_pk = int(row["game_pk"])
+        event_time = str(row["event_time"])
+        prior = earliest_event_time_by_game.get(game_pk)
+        if prior is None or event_time < prior:
+            earliest_event_time_by_game[game_pk] = event_time
+
     ordered = sorted(
-        {(str(row["event_time"]), int(row["game_pk"])) for row in assignments},
+        ((event_time, game_pk) for game_pk, event_time in earliest_event_time_by_game.items()),
         key=lambda item: (item[0], item[1]),
     )
     minimum_required = CALIBRATION_GAMES + MIN_HOLDOUT_GAMES
@@ -84,11 +97,17 @@ def _partition_games(assignments: list[dict[str, Any]]) -> tuple[set[int], set[i
             f"n={len(ordered)} need_at_least={minimum_required}"
         )
     calibration = {pk for _, pk in ordered[:CALIBRATION_GAMES]}
-    # Use every chronologically later unique game as the untouched holdout. The
-    # source replay currently yields fewer than the originally assumed 700 unique
-    # games because multiple player rows can belong to the same game. The holdout
-    # size is therefore determined only by source availability, never outcomes.
     holdout = {pk for _, pk in ordered[CALIBRATION_GAMES:]}
+    if len(calibration) != CALIBRATION_GAMES:
+        raise RuntimeError(
+            "MLB_1IP_CHALLENGER_CALIBRATION_PARTITION_SIZE_MISMATCH "
+            f"n={len(calibration)} expected={CALIBRATION_GAMES}"
+        )
+    if len(holdout) < MIN_HOLDOUT_GAMES:
+        raise RuntimeError(
+            "MLB_1IP_CHALLENGER_HOLDOUT_PARTITION_SIZE_MISMATCH "
+            f"n={len(holdout)} need_at_least={MIN_HOLDOUT_GAMES}"
+        )
     if calibration & holdout:
         raise RuntimeError("MLB_1IP_CHALLENGER_GAME_PARTITION_OVERLAP")
     return calibration, holdout
