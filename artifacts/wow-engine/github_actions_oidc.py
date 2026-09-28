@@ -43,6 +43,9 @@ NFL_PROP_LIVE_CANARY_WORKFLOW_REF = (
 SPREAD_FORWARD_PRODUCTION_CANARY_WORKFLOW_REF = (
     f"{REPOSITORY}/.github/workflows/wow-v17-spread-forward-production-canary.yml@{REF}"
 )
+SPREAD_CERTIFICATION_REPLAY_WORKFLOW_REF = (
+    f"{REPOSITORY}/.github/workflows/wow-v17-spread-certification-replay.yml@{REF}"
+)
 NCAAF_FORWARD_VALIDATION_WORKFLOW_REF = (
     f"{REPOSITORY}/.github/workflows/wow-v17-ncaaf-forward-validation.yml@{REF}"
 )
@@ -122,6 +125,7 @@ PROP_EVIDENCE_WORKFLOW_REFS = frozenset({
 LIVE_CANARY_WORKFLOW_REFS = frozenset({
     NFL_PROP_LIVE_CANARY_WORKFLOW_REF,
     SPREAD_FORWARD_PRODUCTION_CANARY_WORKFLOW_REF,
+    SPREAD_CERTIFICATION_REPLAY_WORKFLOW_REF,
     NCAAF_FORWARD_VALIDATION_WORKFLOW_REF,
 })
 ALLOWED_EVENTS = frozenset({"push", "schedule", "workflow_dispatch"})
@@ -151,7 +155,10 @@ def validate_github_actions_claims(claims: dict[str, Any]) -> dict[str, Any]:
     ):
         raise GitHubOIDCValidationError("GITHUB_OIDC_WORKFLOW_REF_MISMATCH")
     event_name = str(claims.get("event_name") or "")
-    if workflow_ref == SPREAD_FORWARD_PRODUCTION_CANARY_WORKFLOW_REF:
+    if workflow_ref in {
+        SPREAD_FORWARD_PRODUCTION_CANARY_WORKFLOW_REF,
+        SPREAD_CERTIFICATION_REPLAY_WORKFLOW_REF,
+    }:
         if event_name != "workflow_run":
             raise GitHubOIDCValidationError("GITHUB_OIDC_EVENT_NOT_ALLOWED")
     elif event_name not in ALLOWED_EVENTS:
@@ -252,6 +259,7 @@ __all__ = [
     "MLB_PROP_FORWARD_EVIDENCE_WORKFLOW_REF",
     "SPREAD_MARGIN_REPLAY_WORKFLOW_REF",
     "SPREAD_FORWARD_PRODUCTION_CANARY_WORKFLOW_REF",
+    "SPREAD_CERTIFICATION_REPLAY_WORKFLOW_REF",
     "NCAAF_FORWARD_VALIDATION_WORKFLOW_REF",
     "GitHubOIDCValidationError",
     "NCAAF_MODEL_MAINTENANCE_WORKFLOW_REF",

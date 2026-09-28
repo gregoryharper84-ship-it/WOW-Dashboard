@@ -1,0 +1,144 @@
+name: wow-v17-spread-certification-replay
+
+on:
+  workflow_run:
+    workflows: ["wow-v17-render-production-deploy"]
+    types: [completed]
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: wow-v17-spread-certification-replay
+  cancel-in-progress: false
+
+jobs:
+  replay:
+    name: Execute NFL WNBA historical close-proxy replay
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      WOW_ACTION_ORIGIN: https://wow-governed-probability-engine.onrender.com
+      WOW_OIDC_AUDIENCE: wow-v17-multiscout
+      WOW_CAN_EXECUTE: "false"
+      WOW_DRY_RUN_ONLY: "true"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Assert research-only governance
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$WOW_CAN_EXECUTE" = "false"
+          test "$WOW_DRY_RUN_ONLY" = "true"
+          test -n "$ACTIONS_ID_TOKEN_REQUEST_URL"
+          test -n "$ACTIONS_ID_TOKEN_REQUEST_TOKEN"
+
+      - name: Execute bounded certification evidence replays
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/wow-engine/artifacts/spread-certification-replay
+          python - <<'PY'
+          import json
+          import os
+          import pathlib
+          import time
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+
+          origin = os.environ["WOW_ACTION_ORIGIN"].rstrip("/")
+          endpoint = origin + "/internal/v17/spread-certification-replay"
+          audience = os.environ["WOW_OIDC_AUDIENCE"]
+          out = pathlib.Path("artifacts/wow-engine/artifacts/spread-certification-replay")
+
+          def fresh_oidc():
+              base = os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"]
+              sep = "&" if "?" in base else "?"
+              request = urllib.request.Request(
+                  base + sep + urllib.parse.urlencode({"audience": audience}),
+                  headers={"Authorization": f"Bearer {os.environ['ACTIONS_ID_TOKEN_REQUEST_TOKEN']}"},
+              )
+              with urllib.request.urlopen(request, timeout=20) as response:
+                  return json.load(response)["value"]
+
+          def post(sport, timeout=1200):
+              request = urllib.request.Request(
+                  endpoint,
+                  data=json.dumps({"sport": sport, "min_rows": 300, "ridge_alpha": 4.0}, sort_keys=True).encode(),
+                  method="POST",
+                  headers={
+                      "Authorization": f"Bearer {fresh_oidc()}",
+                      "Content-Type": "application/json",
+                  },
+              )
+              try:
+                  with urllib.request.urlopen(request, timeout=timeout) as response:
+                      return response.status, json.load(response)
+              except urllib.error.HTTPError as exc:
+                  raw = exc.read().decode("utf-8", errors="replace")
+                  try:
+                      payload = json.loads(raw)
+                  except json.JSONDecodeError:
+                      payload = {"raw": raw[:1000]}
+                  return exc.code, payload
+
+          # Wait only for the newly deployed route; never turn route readiness
+          # into model certification authority.
+          route_ready = False
+          for _attempt in range(24):
+              status, payload = post("NFL", timeout=1200)
+              if status == 200:
+                  route_ready = True
+                  out.joinpath("NFL.json").write_text(json.dumps(payload, sort_keys=True, indent=2) + "\n")
+                  break
+              if status not in (401, 404, 502, 503):
+                  out.joinpath("NFL.json").write_text(json.dumps(payload, sort_keys=True, indent=2) + "\n")
+                  raise RuntimeError(f"NFL_SPREAD_CERTIFICATION_REPLAY_HTTP_{status}:{payload.get('code')}")
+              time.sleep(20)
+          if not route_ready:
+              raise RuntimeError("SPREAD_CERTIFICATION_REPLAY_ROUTE_NOT_READY_AFTER_BOUNDED_WAIT")
+
+          summaries = {}
+          nfl = json.loads(out.joinpath("NFL.json").read_text())
+          summaries["NFL"] = nfl
+          for sport in ("WNBA",):
+              status, payload = post(sport)
+              out.joinpath(f"{sport}.json").write_text(json.dumps(payload, sort_keys=True, indent=2) + "\n")
+              if status != 200:
+                  raise RuntimeError(f"{sport}_SPREAD_CERTIFICATION_REPLAY_HTTP_{status}:{payload.get('code')}")
+              summaries[sport] = payload
+
+          for sport, payload in summaries.items():
+              # A typed evidence blocker is an allowed research result; an
+              # automatic promotion or execution flag is never allowed.
+              assert payload.get("status") in {"EXPERIMENT_CREATED", "BLOCKED"}, (sport, payload)
+              assert payload.get("probability_publishable") is False, (sport, payload)
+              assert payload.get("rank_eligible") is False, (sport, payload)
+              assert payload.get("automatic_certification") is False, (sport, payload)
+              assert payload.get("automatic_promotion") is False, (sport, payload)
+              assert payload.get("production_registry_mutated") is False, (sport, payload)
+              assert payload.get("can_execute") is False, (sport, payload)
+              assert payload.get("global_terminal_reducer") == "V17_TERMINAL_REDUCER", (sport, payload)
+              if payload.get("status") == "EXPERIMENT_CREATED":
+                  metrics = payload.get("exact_line_metrics") or {}
+                  for key in ("evidence_row_n", "exact_line_coverage", "cover_brier", "cover_log_loss", "cover_ece", "three_way_brier"):
+                      assert isinstance(metrics.get(key), (int, float)), (sport, key, metrics.get(key))
+              print(json.dumps({sport: payload}, sort_keys=True))
+
+          out.joinpath("summary.json").write_text(json.dumps(summaries, sort_keys=True, indent=2) + "\n")
+          PY
+
+      - name: Upload certification replay receipts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wow-v17-spread-certification-replay-${{ github.run_id }}
+          path: artifacts/wow-engine/artifacts/spread-certification-replay/*.json
+          if-no-files-found: warn
+          retention-days: 30
