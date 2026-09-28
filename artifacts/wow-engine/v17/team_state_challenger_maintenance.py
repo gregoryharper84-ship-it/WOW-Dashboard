@@ -89,7 +89,7 @@ def _nfl_events(client: Any) -> list[dict[str,Any]]:
     games=_paginate(client.table("wow_nfl_training_games").select(
         "game_id,season,week,gameday,home_team,away_team,home_score,away_score,schedule_content_sha256").order("gameday").order("game_id"))
     summaries=_paginate(client.table("wow_nfl_game_team_summaries").select(
-        "game_id,team,offensive_plays,offensive_epa_sum,offensive_epa_mean,defensive_epa_mean,qb_gsis_ids,pbp_content_sha256").order("game_id").order("team"))
+        "game_id,team,offensive_plays,offensive_epa_sum,offensive_epa_mean,defensive_epa_mean,turnovers,sacks_allowed,special_teams_epa_sum,qb_gsis_ids,pbp_content_sha256").order("game_id").order("team"))
     by_game: dict[str,dict[str,dict[str,Any]]]={}
     for r in summaries: by_game.setdefault(str(r.get("game_id")),{})[str(r.get("team"))]=r
     out=[]
@@ -100,8 +100,12 @@ def _nfl_events(client: Any) -> list[dict[str,Any]]:
         hepa,aepa=float(h.get("offensive_epa_sum") or 0),float(a.get("offensive_epa_sum") or 0)
         hplays,aplays=float(h.get("offensive_plays") or 0),float(a.get("offensive_plays") or 0)
         out.append({"event_id":f"NFL:{gid}","event_start_time":f"{g['gameday']}T12:00:00+00:00","season":int(g.get("season") or 0),
+                    "week":int(g.get("week") or 0),
                     "home_team":home,"away_team":away,"home_score":float(g.get("home_score") or 0),"away_score":float(g.get("away_score") or 0),
                     "home_process_margin":hepa-aepa,"away_process_margin":aepa-hepa,
+                    "home_turnovers":float(h.get("turnovers") or 0),"away_turnovers":float(a.get("turnovers") or 0),
+                    "home_sacks_allowed":float(h.get("sacks_allowed") or 0),"away_sacks_allowed":float(a.get("sacks_allowed") or 0),
+                    "home_special_teams_epa":float(h.get("special_teams_epa_sum") or 0),"away_special_teams_epa":float(a.get("special_teams_epa_sum") or 0),
                     "home_attack_style_index":float(h.get("offensive_epa_mean") or 0),"away_attack_style_index":float(a.get("offensive_epa_mean") or 0),
                     "home_defense_style_index":-float(h.get("defensive_epa_mean") or 0),"away_defense_style_index":-float(a.get("defensive_epa_mean") or 0),
                     "home_pace_or_tempo_index":hplays/70 if hplays else 0,"away_pace_or_tempo_index":aplays/70 if aplays else 0,
@@ -120,7 +124,7 @@ def _mlb_official_events(seasons: Sequence[int]=(2023,2024,2025,2026)) -> list[d
         if response.status_code != 200: raise TeamStateMaintenanceUnavailable("MLB_STATSAPI_FAILED",f"{response.status_code}:{season}")
         digest=sha256(response.content).hexdigest()
         for date_row in (response.json().get("dates") or []):
-            for game in date_row.get("games") or []:
+            for game in date_row.get("games") or []):
                 if str(((game.get("status") or {}).get("abstractGameState") or "")).upper() != "FINAL": continue
                 teams=game.get("teams") or {}; h=teams.get("home") or {}; a=teams.get("away") or {}
                 home=str(((h.get("team") or {}).get("id") or "")); away=str(((a.get("team") or {}).get("id") or "")); gid=str(game.get("gamePk") or "")
