@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   replay:
-    name: Execute NFL WNBA historical close-proxy replay
+    name: Execute MLB NFL WNBA historical close-proxy replay
     if: >-
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.head_branch == 'main'
@@ -47,10 +47,14 @@ jobs:
           import json
           import os
           import pathlib
+          import sys
           import time
           import urllib.error
           import urllib.parse
           import urllib.request
+
+          sys.path.insert(0, str(pathlib.Path("artifacts/wow-engine").resolve()))
+          from v17.spread_certification_decision import build_spread_certification_decision_packet
 
           origin = os.environ["WOW_ACTION_ORIGIN"].rstrip("/")
           endpoint = origin + "/internal/v17/spread-certification-replay"
@@ -107,13 +111,14 @@ jobs:
           summaries = {}
           nfl = json.loads(out.joinpath("NFL.json").read_text())
           summaries["NFL"] = nfl
-          for sport in ("WNBA",):
+          for sport in ("WNBA", "MLB"):
               status, payload = post(sport)
               out.joinpath(f"{sport}.json").write_text(json.dumps(payload, sort_keys=True, indent=2) + "\n")
               if status != 200:
                   raise RuntimeError(f"{sport}_SPREAD_CERTIFICATION_REPLAY_HTTP_{status}:{payload.get('code')}")
               summaries[sport] = payload
 
+          decisions = {}
           for sport, payload in summaries.items():
               # A typed evidence blocker is an allowed research result; an
               # automatic promotion or execution flag is never allowed.
@@ -129,9 +134,39 @@ jobs:
                   metrics = payload.get("exact_line_metrics") or {}
                   for key in ("evidence_row_n", "exact_line_coverage", "cover_brier", "cover_log_loss", "cover_ece", "three_way_brier"):
                       assert isinstance(metrics.get(key), (int, float)), (sport, key, metrics.get(key))
-              print(json.dumps({sport: payload}, sort_keys=True))
+              if sport == "MLB":
+                  assert payload.get("status") == "BLOCKED", payload
+                  assert payload.get("code") == "MLB_RUN_LINE_HISTORICAL_SAME_FAMILY_STATE_UNAVAILABLE", payload
+                  metrics = payload.get("exact_line_metrics") or {}
+                  assert metrics.get("evidence_row_n") == 0, payload
+                  assert metrics.get("exact_line_coverage") == 0.0, payload
+                  assert payload.get("lookahead_reconstruction_allowed") is False, payload
+
+              # Build the governed terminal decision packet without inventing a
+              # ratified numerical policy, a missing forward receipt, or an
+              # independent review. Those absences must remain explicit blockers.
+              decision = build_spread_certification_decision_packet(
+                  sport=sport,
+                  historical_receipt=payload,
+                  forward_receipt={},
+                  review_evidence={},
+                  policy=None,
+              )
+              decision["historical_replay_code"] = payload.get("code")
+              decision["forward_receipt_status"] = "NOT_BOUND_IN_CERTIFICATION_REPLAY"
+              decision["independent_review_status"] = "PENDING_EXTERNAL_INDEPENDENT_REVIEW"
+              assert decision.get("status") == "REMAIN_SHADOW_MORE_EVIDENCE_REQUIRED", (sport, decision)
+              assert decision.get("publication_decision") == "REMAIN_SHADOW", (sport, decision)
+              assert "SPREAD_CERTIFICATION:POLICY_UNRATIFIED" in decision.get("blockers", []), (sport, decision)
+              assert decision.get("probability_publishable") is False, (sport, decision)
+              assert decision.get("rank_eligible") is False, (sport, decision)
+              assert decision.get("can_execute") is False, (sport, decision)
+              decisions[sport] = decision
+              out.joinpath(f"{sport}-decision.json").write_text(json.dumps(decision, sort_keys=True, indent=2) + "\n")
+              print(json.dumps({sport: payload, "decision": decision}, sort_keys=True))
 
           out.joinpath("summary.json").write_text(json.dumps(summaries, sort_keys=True, indent=2) + "\n")
+          out.joinpath("decisions.json").write_text(json.dumps(decisions, sort_keys=True, indent=2) + "\n")
           PY
 
       - name: Upload certification replay receipts

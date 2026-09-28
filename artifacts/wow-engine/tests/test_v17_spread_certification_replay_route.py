@@ -3,7 +3,6 @@ from __future__ import annotations
 from fastapi import Depends, FastAPI
 
 import v17.spread_certification_replay_route as route
-from v17.spread_margin_challenger import SpreadChallengerUnavailable
 
 
 def test_execute_nfl_certification_replay_preserves_nonpublication(monkeypatch):
@@ -34,18 +33,56 @@ def test_execute_nfl_certification_replay_preserves_nonpublication(monkeypatch):
     assert result["can_execute"] is False
 
 
-def test_execute_wnba_typed_failure_remains_blocked(monkeypatch):
-    def broken(**_kwargs):
-        raise SpreadChallengerUnavailable("SPREAD_ESPN_SUMMARY_LINE_UNAVAILABLE", "no usable close proxy")
-
-    monkeypatch.setattr(route, "run_wnba_espn_close_proxy_replay", broken)
+def test_execute_wnba_emits_bounded_batch_acquisition_blocker():
     result = route.execute_spread_certification_replay(
         object(),
         route.SpreadCertificationReplayRequest(sport="WNBA"),
     )
     assert result["status"] == "BLOCKED"
-    assert result["code"] == "SPREAD_ESPN_SUMMARY_LINE_UNAVAILABLE"
+    assert result["code"] == "WNBA_SPREAD_HISTORICAL_CLOSE_PROXY_BATCH_ACQUISITION_REQUIRED"
+    assert result["evidence_class"] == "ESPN_HISTORICAL_CLOSE_PROXY"
+    assert result["exact_line_metrics"]["evidence_row_n"] == 0
+    assert result["exact_line_metrics"]["exact_line_coverage"] == 0.0
+    assert result["binding_audit"]["acquisition_mode"] == "BATCH_ARTIFACT_REQUIRED"
+    assert result["binding_audit"]["bound_event_n"] == 0
+    assert result["binding_audit"]["coverage"] == 0.0
+    assert result["binding_audit"]["live_card_receipt_eligible"] is False
+    assert "WNBA_SPREAD_HISTORICAL_CLOSE_PROXY_BATCH_ARTIFACT_UNAVAILABLE" in result["blockers"]
+    assert result["market_features_used"] is False
+    assert result["spread_line_used_as_feature"] is False
+    assert result["market_probability_substitution_used"] is False
+    assert result["moneyline_probability_used"] is False
     assert result["probability_publishable"] is False
+    assert result["rank_eligible"] is False
+    assert result["automatic_certification"] is False
+    assert result["automatic_promotion"] is False
+    assert result["production_registry_mutated"] is False
+    assert result["can_execute"] is False
+
+
+def test_execute_mlb_emits_audited_same_family_blocker():
+    result = route.execute_spread_certification_replay(
+        object(),
+        route.SpreadCertificationReplayRequest(sport="MLB"),
+    )
+    assert result["status"] == "BLOCKED"
+    assert result["code"] == "MLB_RUN_LINE_HISTORICAL_SAME_FAMILY_STATE_UNAVAILABLE"
+    assert result["model_family"] == "MLB_V16_V2D_RUN_LINE_SHADOW_V1"
+    assert result["evidence_class"] == "ESPN_HISTORICAL_RUN_LINE_CLOSE_PROXY"
+    assert result["exact_line_metrics"]["evidence_row_n"] == 0
+    assert result["exact_line_metrics"]["exact_line_coverage"] == 0.0
+    assert "MLB_RUN_LINE_HISTORICAL_SAME_FAMILY_MODEL_STATE_UNAVAILABLE" in result["blockers"]
+    assert "MLB_RUN_LINE_CANONICAL_EVENT_CROSSWALK_UNAVAILABLE" in result["blockers"]
+    assert result["lookahead_reconstruction_allowed"] is False
+    assert result["market_features_used"] is False
+    assert result["spread_line_used_as_feature"] is False
+    assert result["market_probability_substitution_used"] is False
+    assert result["moneyline_probability_used"] is False
+    assert result["probability_publishable"] is False
+    assert result["rank_eligible"] is False
+    assert result["automatic_certification"] is False
+    assert result["automatic_promotion"] is False
+    assert result["production_registry_mutated"] is False
     assert result["can_execute"] is False
 
 
