@@ -52,8 +52,29 @@ jobs:
           test -n "$ACTIONS_ID_TOKEN_REQUEST_URL"
           test -n "$ACTIONS_ID_TOKEN_REQUEST_TOKEN"
 
+      - name: Wake runtime before non-idempotent lifecycle work
+        shell: bash
+        run: |
+          set -euo pipefail
+          ready=0
+          for attempt in $(seq 1 60); do
+            code="$(curl --silent --show-error --connect-timeout 5 --max-time 10 \
+              --output /tmp/wow-live.json --write-out '%{http_code}' \
+              "${WOW_SERVICE_URL}/health/live" || true)"
+            if [ "${code}" -ge 200 ] && [ "${code}" -lt 300 ]; then
+              ready=1
+              break
+            fi
+            sleep 5
+          done
+          if [ "${ready}" -ne 1 ]; then
+            echo 'WOW runtime did not become live before lifecycle work.' >&2
+            test -f /tmp/wow-live.json && head -c 2000 /tmp/wow-live.json >&2 || true
+            exit 1
+          fi
+
       - name: Register exact basketball research candidates after runtime deploy
-        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         shell: bash
         run: |
           set -euo pipefail
