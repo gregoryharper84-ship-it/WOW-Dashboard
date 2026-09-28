@@ -58,8 +58,23 @@ def _odds_failure_result(
     *,
     path_state: str = discovery.PATH_FAILED,
 ) -> discovery.AcquisitionFeedResult:
+    originating_blocker = None
     if "CIRCUIT_OPEN:" in str(code).upper():
         path_state = discovery.PATH_CIRCUIT_OPEN_PRIOR_FAILURE
+        originating_blocker = discovery.circuit_originating_blocker(code)
+    attempt = discovery.acquisition_attempt(
+        path_id=discovery.PATH_ODDS_PROXY,
+        path_state=path_state,
+        blocker_code=code,
+        originating_blocker_code=originating_blocker,
+        upstream_status=_upstream_status(getattr(result, "upstream_status", None)),
+        content_type_class=_closed_diagnostic(
+            getattr(result, "content_type_class", None), _ODDS_CONTENT_TYPE_CLASSES
+        ),
+        credential_alias=_closed_diagnostic(
+            getattr(result, "provider_alias", None), _ODDS_PROVIDER_ALIASES
+        ),
+    )
     return discovery.AcquisitionFeedResult(
         rows=(),
         provider_status=discovery.PROVIDER_FAILED,
@@ -77,6 +92,7 @@ def _odds_failure_result(
         primary_provider_alias=_closed_diagnostic(
             getattr(result, "provider_alias", None), _ODDS_PROVIDER_ALIASES
         ),
+        attempts=(attempt,),
     )
 
 
@@ -189,6 +205,13 @@ def odds_proxy_feed(
                 primary_path_id=discovery.PATH_ODDS_PROXY,
                 primary_path_state=discovery.PATH_NOT_ATTEMPTED,
                 fallback_path_state=discovery.PATH_NOT_APPLICABLE,
+                attempts=(
+                    discovery.acquisition_attempt(
+                        path_id=discovery.PATH_ODDS_PROXY,
+                        path_state=discovery.PATH_NOT_ATTEMPTED,
+                        blocker_code=ODDS_API_DISCOVERY_DISABLED,
+                    ),
+                ),
             )
             raise discovery.DiscoveryFeedError(
                 ODDS_API_DISCOVERY_DISABLED, acquisition=acquisition
@@ -214,11 +237,20 @@ def odds_proxy_feed(
             return offered
         if offered_error is not None:
             code, acquisition = offered_error
+            circuit_attempt = discovery.acquisition_attempt(
+                path_id=discovery.PATH_ODDS_PROXY,
+                path_state=discovery.PATH_CIRCUIT_OPEN_PRIOR_FAILURE,
+                blocker_code="ODDS_PROXY_CIRCUIT_OPEN",
+                originating_blocker_code=code,
+                upstream_status=acquisition.primary_upstream_status,
+                content_type_class=acquisition.primary_content_type_class,
+                credential_alias=acquisition.primary_provider_alias,
+            )
             raise discovery.DiscoveryFeedError(
                 code,
                 acquisition=replace(
                     acquisition,
-                    primary_path_state=discovery.PATH_CIRCUIT_OPEN_PRIOR_FAILURE,
+                    attempts=(circuit_attempt,),
                 ),
             )
         listing = proxy_get("/odds-api/v4/sports", {"all": "true"})
@@ -271,6 +303,12 @@ def odds_proxy_feed(
             primary_path_id=discovery.PATH_ODDS_PROXY,
             primary_path_state=discovery.succeeded_path_state(rows),
             fallback_path_state=discovery.PATH_NOT_APPLICABLE,
+            attempts=(
+                discovery.acquisition_attempt(
+                    path_id=discovery.PATH_ODDS_PROXY,
+                    path_state=discovery.succeeded_path_state(rows),
+                ),
+            ),
         )
 
     setattr(fetch, "_wow_odds_api_enabled", True)
@@ -335,6 +373,13 @@ def rundown_board_feed(
                 primary_path_id=discovery.PATH_RUNDOWN,
                 primary_path_state=discovery.PATH_NOT_ATTEMPTED,
                 fallback_path_state=discovery.PATH_NOT_APPLICABLE,
+                attempts=(
+                    discovery.acquisition_attempt(
+                        path_id=discovery.PATH_RUNDOWN,
+                        path_state=discovery.PATH_NOT_ATTEMPTED,
+                        blocker_code=code,
+                    ),
+                ),
             )
             raise discovery.DiscoveryFeedError(code, acquisition=acquisition)
         result = live.get_sport_date_odds_snapshot(
@@ -360,6 +405,17 @@ def rundown_board_feed(
                 primary_path_id=discovery.PATH_RUNDOWN,
                 primary_path_state=discovery.PATH_FAILED,
                 fallback_path_state=discovery.PATH_NOT_APPLICABLE,
+                attempts=(
+                    discovery.acquisition_attempt(
+                        path_id=discovery.PATH_RUNDOWN,
+                        path_state=discovery.PATH_FAILED,
+                        blocker_code=code,
+                        upstream_status=_upstream_status(
+                            getattr(result, "upstream_status", None)
+                            or getattr(result, "status", None)
+                        ),
+                    ),
+                ),
             )
             raise discovery.DiscoveryFeedError(code, acquisition=acquisition)
         return discovery.AcquisitionFeedResult(
@@ -370,6 +426,16 @@ def rundown_board_feed(
             primary_path_id=discovery.PATH_RUNDOWN,
             primary_path_state=discovery.succeeded_path_state(result.data or ()),
             fallback_path_state=discovery.PATH_NOT_APPLICABLE,
+            attempts=(
+                discovery.acquisition_attempt(
+                    path_id=discovery.PATH_RUNDOWN,
+                    path_state=discovery.succeeded_path_state(result.data or ()),
+                    upstream_status=_upstream_status(
+                        getattr(result, "upstream_status", None)
+                        or getattr(result, "status", None)
+                    ),
+                ),
+            ),
         )
 
     setattr(fetch, "_wow_acquisition_path_id", discovery.PATH_RUNDOWN)
@@ -555,6 +621,13 @@ def union_feed(
             fallback_provider_alias=(
                 fallback_acquisition.primary_provider_alias
                 if fallback_acquisition is not None else None
+            ),
+            attempts=discovery.ordered_acquisition_attempts(
+                *(
+                    acquisition.attempts
+                    for acquisition in acquisitions
+                    if acquisition is not None and acquisition.attempts
+                )
             ),
         )
         if not any(path_succeeded) and failures:

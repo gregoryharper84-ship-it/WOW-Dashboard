@@ -27,7 +27,7 @@ import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from time import monotonic
-from typing import Any, Callable, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping, Sequence
 from zoneinfo import ZoneInfo
 
 from v17 import market_evidence_observability as observability
@@ -110,6 +110,163 @@ ACQUISITION_PATH_STATES = (
     PATH_CIRCUIT_OPEN_PRIOR_FAILURE,
 )
 
+MAX_ACQUISITION_ATTEMPTS = 3
+ACQUISITION_ATTEMPT_PATH_IDS = (
+    PATH_ESPN_SCOREBOARD,
+    PATH_ODDS_PROXY,
+    PATH_RUNDOWN,
+)
+ACQUISITION_ATTEMPT_CONTENT_TYPE_CLASSES = (
+    "JSON",
+    "TEXT_HTML",
+    "TEXT_PLAIN",
+    "OTHER",
+    "EMPTY",
+)
+ACQUISITION_ATTEMPT_CREDENTIAL_ALIASES = (
+    "ODDS_API_PAID_KEY",
+    "ODDS_API_KEY_100K",
+    "ODDS_API_FREE_KEY",
+    "ODDS_API_KEY",
+)
+
+
+def typed_blocker_code(value: Any) -> str | None:
+    """Return one bounded typed token, never raw provider text.
+
+    Provider circuit codes use ``TYPE:ORIGIN``.  The caller records the origin
+    separately, so this function intentionally retains only the typed prefix.
+    """
+    if value is None:
+        return None
+    token = str(value).strip().split(":", 1)[0].upper()
+    sanitized = "".join(
+        char if char.isalnum() or char in {"_", "-", "."} else "_"
+        for char in token
+    )
+    return sanitized[:96] or None
+
+
+def circuit_originating_blocker(value: Any) -> str | None:
+    """Extract only the typed originating code from a circuit marker."""
+    text = str(value or "").strip()
+    if "CIRCUIT_OPEN:" not in text.upper():
+        return None
+    return typed_blocker_code(text.split(":", 1)[1])
+
+
+@dataclass(frozen=True)
+class AcquisitionAttempt:
+    """One actual acquisition-layer attempt in immutable execution order."""
+
+    ordinal: int
+    path_id: str
+    path_state: str
+    blocker_code: str | None = None
+    originating_blocker_code: str | None = None
+    upstream_status: int | None = None
+    content_type_class: str | None = None
+    credential_alias: str | None = None
+
+    def __post_init__(self) -> None:
+        if (
+            isinstance(self.ordinal, bool)
+            or not isinstance(self.ordinal, int)
+            or not 1 <= self.ordinal <= MAX_ACQUISITION_ATTEMPTS
+        ):
+            raise ValueError("ACQUISITION_ATTEMPT_ORDINAL_INVALID")
+        if self.path_id not in ACQUISITION_ATTEMPT_PATH_IDS:
+            raise ValueError("ACQUISITION_ATTEMPT_PATH_INVALID")
+        if self.path_state not in ACQUISITION_PATH_STATES:
+            raise ValueError("ACQUISITION_ATTEMPT_STATE_INVALID")
+        for code in (self.blocker_code, self.originating_blocker_code):
+            if code is not None and typed_blocker_code(code) != code:
+                raise ValueError("ACQUISITION_ATTEMPT_CODE_INVALID")
+        if self.path_state == PATH_CIRCUIT_OPEN_PRIOR_FAILURE:
+            if not self.originating_blocker_code:
+                raise ValueError("ACQUISITION_ATTEMPT_CIRCUIT_ORIGIN_REQUIRED")
+        elif self.originating_blocker_code is not None:
+            raise ValueError("ACQUISITION_ATTEMPT_CIRCUIT_ORIGIN_NOT_APPLICABLE")
+        if self.upstream_status is not None and (
+            isinstance(self.upstream_status, bool)
+            or not isinstance(self.upstream_status, int)
+            or not 100 <= self.upstream_status <= 599
+        ):
+            raise ValueError("ACQUISITION_ATTEMPT_HTTP_STATUS_INVALID")
+        if (
+            self.content_type_class is not None
+            and self.content_type_class not in ACQUISITION_ATTEMPT_CONTENT_TYPE_CLASSES
+        ):
+            raise ValueError("ACQUISITION_ATTEMPT_CONTENT_TYPE_INVALID")
+        if (
+            self.credential_alias is not None
+            and self.credential_alias not in ACQUISITION_ATTEMPT_CREDENTIAL_ALIASES
+        ):
+            raise ValueError("ACQUISITION_ATTEMPT_CREDENTIAL_ALIAS_INVALID")
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "ordinal": self.ordinal,
+            "path_id": self.path_id,
+            "path_state": self.path_state,
+            "blocker_code": self.blocker_code,
+            "originating_blocker_code": self.originating_blocker_code,
+            "upstream_status": self.upstream_status,
+            "content_type_class": self.content_type_class,
+            "credential_alias": self.credential_alias,
+        }
+
+
+def acquisition_attempt(
+    *,
+    path_id: str,
+    path_state: str,
+    blocker_code: Any = None,
+    originating_blocker_code: Any = None,
+    upstream_status: int | None = None,
+    content_type_class: str | None = None,
+    credential_alias: str | None = None,
+) -> AcquisitionAttempt:
+    """Create one sanitized attempt owned by the layer that actually ran."""
+    return AcquisitionAttempt(
+        ordinal=1,
+        path_id=path_id,
+        path_state=path_state,
+        blocker_code=typed_blocker_code(blocker_code),
+        originating_blocker_code=typed_blocker_code(originating_blocker_code),
+        upstream_status=upstream_status,
+        content_type_class=content_type_class,
+        credential_alias=credential_alias,
+    )
+
+
+def ordered_acquisition_attempts(
+    *attempt_groups: Sequence[AcquisitionAttempt],
+) -> tuple[AcquisitionAttempt, ...]:
+    """Combine actual-layer attempts and assign immutable contiguous ordinals."""
+    flattened = [attempt for group in attempt_groups for attempt in tuple(group)]
+    if len(flattened) > MAX_ACQUISITION_ATTEMPTS:
+        raise ValueError("ACQUISITION_ATTEMPTS_BOUND_EXCEEDED")
+    path_ids = [attempt.path_id for attempt in flattened]
+    if len(path_ids) != len(set(path_ids)):
+        raise ValueError("ACQUISITION_ATTEMPT_PATH_DUPLICATED")
+    ranks = {path_id: index for index, path_id in enumerate(ACQUISITION_ATTEMPT_PATH_IDS)}
+    if path_ids != sorted(path_ids, key=ranks.__getitem__):
+        raise ValueError("ACQUISITION_ATTEMPT_ORDER_INVALID")
+    return tuple(
+        AcquisitionAttempt(
+            ordinal=index,
+            path_id=attempt.path_id,
+            path_state=attempt.path_state,
+            blocker_code=attempt.blocker_code,
+            originating_blocker_code=attempt.originating_blocker_code,
+            upstream_status=attempt.upstream_status,
+            content_type_class=attempt.content_type_class,
+            credential_alias=attempt.credential_alias,
+        )
+        for index, attempt in enumerate(flattened, start=1)
+    )
+
 
 def succeeded_path_state(rows: Iterable[Any]) -> str:
     """Distinguish a healthy empty answer from a healthy answer with rows."""
@@ -142,6 +299,43 @@ class AcquisitionFeedResult:
     fallback_upstream_status: int | None = None
     fallback_content_type_class: str | None = None
     fallback_provider_alias: str | None = None
+    attempts: tuple[AcquisitionAttempt, ...] = ()
+
+    def __post_init__(self) -> None:
+        attempts = ordered_acquisition_attempts(self.attempts)
+        object.__setattr__(self, "attempts", attempts)
+        if not attempts:
+            return
+        primary = attempts[0]
+        fallback = attempts[-1] if len(attempts) > 1 else None
+        object.__setattr__(self, "primary_path_id", primary.path_id)
+        object.__setattr__(self, "primary_path_state", primary.path_state)
+        object.__setattr__(
+            self,
+            "primary_blocker_code",
+            primary.originating_blocker_code or primary.blocker_code,
+        )
+        object.__setattr__(self, "primary_upstream_status", primary.upstream_status)
+        object.__setattr__(self, "primary_content_type_class", primary.content_type_class)
+        object.__setattr__(self, "primary_provider_alias", primary.credential_alias)
+        # A one-attempt result can be wrapping a legacy downstream adapter that
+        # has not yet emitted ordered evidence. Preserve its explicitly supplied
+        # compatibility fallback scalars; persistence will fail closed rather
+        # than claiming the partial attempt list is complete. Two/three-attempt
+        # results are fully projectable from ordered truth.
+        if fallback is not None:
+            object.__setattr__(self, "fallback_path_id", fallback.path_id)
+            object.__setattr__(self, "fallback_path_state", fallback.path_state)
+            object.__setattr__(
+                self,
+                "fallback_blocker_code",
+                fallback.originating_blocker_code or fallback.blocker_code,
+            )
+            object.__setattr__(self, "fallback_upstream_status", fallback.upstream_status)
+            object.__setattr__(
+                self, "fallback_content_type_class", fallback.content_type_class
+            )
+            object.__setattr__(self, "fallback_provider_alias", fallback.credential_alias)
 
     def __iter__(self):
         return iter(self.rows)
@@ -167,6 +361,7 @@ class AcquisitionFeedResult:
             "fallback_upstream_status": self.fallback_upstream_status,
             "fallback_content_type_class": self.fallback_content_type_class,
             "fallback_provider_alias": self.fallback_provider_alias,
+            "attempts": [attempt.as_dict() for attempt in self.attempts],
         }
 
 

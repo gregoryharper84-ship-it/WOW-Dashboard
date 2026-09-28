@@ -92,6 +92,23 @@ def _iso(value: datetime) -> str:
     return value.replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
+def _espn_attempt(discovery: Any, result: Any, *, state: str, code: Any = None):
+    """Create the ESPN-owned attempt without copying response text or payloads."""
+    status = getattr(result, "status", None)
+    return discovery.acquisition_attempt(
+        path_id=discovery.PATH_ESPN_SCOREBOARD,
+        path_state=state,
+        blocker_code=code,
+        upstream_status=(
+            int(status)
+            if isinstance(status, int)
+            and not isinstance(status, bool)
+            and 100 <= status <= 599
+            else None
+        ),
+    )
+
+
 def _downstream_terminal_projection(
     result: Any,
     discovery: Any,
@@ -212,8 +229,21 @@ def _schedule_first_fetch(
                     primary_path_id=discovery.PATH_ESPN_SCOREBOARD,
                     primary_path_state=discovery.succeeded_path_state(rows),
                     fallback_path_state=discovery.PATH_NOT_ATTEMPTED,
+                    attempts=(
+                        _espn_attempt(
+                            discovery,
+                            result,
+                            state=discovery.succeeded_path_state(rows),
+                        ),
+                    ),
                 )
             primary_code = str(getattr(result, "code", None) or "ESPN_SCHEDULE_UNAVAILABLE")
+            primary_attempt = _espn_attempt(
+                discovery,
+                result,
+                state=discovery.PATH_FAILED,
+                code=primary_code,
+            )
             try:
                 downstream = original_fetch(family, target)
             except discovery.DiscoveryFeedError as exc:
@@ -239,6 +269,12 @@ def _schedule_first_fetch(
                     fallback_upstream_status=projected["upstream_status"],
                     fallback_content_type_class=projected["content_type_class"],
                     fallback_provider_alias=projected["provider_alias"],
+                    attempts=discovery.ordered_acquisition_attempts(
+                        (primary_attempt,),
+                        downstream_acquisition.attempts
+                        if downstream_acquisition is not None
+                        else (),
+                    ),
                 )
                 raise discovery.DiscoveryFeedError(exc.code, acquisition=combined) from exc
             except Exception as exc:  # noqa: BLE001 - typed acquisition evidence
@@ -254,6 +290,7 @@ def _schedule_first_fetch(
                     primary_path_id=discovery.PATH_ESPN_SCOREBOARD,
                     primary_path_state=discovery.PATH_FAILED,
                     fallback_path_state=discovery.PATH_FAILED,
+                    attempts=(primary_attempt,),
                 )
                 raise discovery.DiscoveryFeedError(
                     fallback_code, acquisition=combined
@@ -295,6 +332,9 @@ def _schedule_first_fetch(
                     fallback_upstream_status=projected["upstream_status"],
                     fallback_content_type_class=projected["content_type_class"],
                     fallback_provider_alias=projected["provider_alias"],
+                    attempts=discovery.ordered_acquisition_attempts(
+                        (primary_attempt,), downstream_result.attempts
+                    ),
                 )
                 raise discovery.DiscoveryFeedError(
                     fallback_code, acquisition=combined
@@ -319,6 +359,10 @@ def _schedule_first_fetch(
                 fallback_upstream_status=projected["upstream_status"],
                 fallback_content_type_class=projected["content_type_class"],
                 fallback_provider_alias=projected["provider_alias"],
+                attempts=discovery.ordered_acquisition_attempts(
+                    (primary_attempt,),
+                    downstream_result.attempts if downstream_result is not None else (),
+                ),
             )
         return original_fetch(family, target)
 
@@ -356,6 +400,12 @@ def _resilient_union_feed(
                         primary_path_id=discovery.PATH_ESPN_SCOREBOARD,
                         primary_path_state=discovery.succeeded_path_state(first_rows),
                         fallback_path_state=discovery.PATH_NOT_ATTEMPTED,
+                        attempts=(
+                            discovery.acquisition_attempt(
+                                path_id=discovery.PATH_ESPN_SCOREBOARD,
+                                path_state=discovery.succeeded_path_state(first_rows),
+                            ),
+                        ),
                     )
                 except Exception as primary_exc:
                     if fallback_union is None:
@@ -398,6 +448,14 @@ def _resilient_union_feed(
                             fallback_upstream_status=projected["upstream_status"],
                             fallback_content_type_class=projected["content_type_class"],
                             fallback_provider_alias=projected["provider_alias"],
+                            attempts=discovery.ordered_acquisition_attempts(
+                                primary_acquisition.attempts
+                                if primary_acquisition is not None
+                                else (),
+                                fallback_acquisition.attempts
+                                if fallback_acquisition is not None
+                                else (),
+                            ),
                         )
                         raise discovery.DiscoveryFeedError(
                             fallback_exc.code, acquisition=combined
@@ -442,6 +500,14 @@ def _resilient_union_feed(
                         fallback_upstream_status=projected["upstream_status"],
                         fallback_content_type_class=projected["content_type_class"],
                         fallback_provider_alias=projected["provider_alias"],
+                        attempts=discovery.ordered_acquisition_attempts(
+                            primary_acquisition.attempts
+                            if primary_acquisition is not None
+                            else (),
+                            fallback_result.attempts
+                            if fallback_result is not None
+                            else (),
+                        ),
                     )
         return normal_union(family, target)
 

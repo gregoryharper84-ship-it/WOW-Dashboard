@@ -9,6 +9,7 @@ from v17 import cross_sport_resilience_overlay as resilience
 from v17 import cross_sport_discovery_feed as discovery_feed
 from v17 import cross_sport_winner_discovery as discovery
 from v17 import scout_secondary_source as secondary
+from v17 import quota_aware_degraded_discovery as quota
 
 
 def test_round_robin_prevents_one_sport_from_consuming_front_of_queue():
@@ -446,3 +447,193 @@ def test_schedule_first_uses_espn_for_mlb_before_paid_market_provider(monkeypatc
     assert rows[0]["prediction_authority"] is False
     assert rows[0]["exact_line_authority"] is False
     assert rows[0]["can_execute"] is False
+
+
+def _failed_attempt_result(path_id, code, *, state=discovery.PATH_FAILED):
+    origin = code if state == discovery.PATH_CIRCUIT_OPEN_PRIOR_FAILURE else None
+    return discovery.AcquisitionFeedResult(
+        rows=(),
+        provider_status=discovery.PROVIDER_FAILED,
+        fallback_status=discovery.FALLBACK_NOT_APPLICABLE,
+        exhaustion_status=discovery.PROVIDER_PATHS_EXHAUSTED,
+        blocker_code=code,
+        primary_blocker_code=code,
+        attempts=(
+            discovery.acquisition_attempt(
+                path_id=path_id,
+                path_state=state,
+                blocker_code=code,
+                originating_blocker_code=origin,
+            ),
+        ),
+    )
+
+
+def test_ordered_attempts_preserve_full_installed_three_hop_and_circuit_origin(monkeypatch):
+    calls = {"odds": 0, "rundown": 0}
+
+    def original_odds_factory(*_args, **_kwargs):
+        def fetch(_family, _target=None):
+            calls["odds"] += 1
+            acquisition = _failed_attempt_result(
+                discovery.PATH_ODDS_PROXY, "ODDS_HTTP_429"
+            )
+            raise discovery.DiscoveryFeedError("ODDS_HTTP_429", acquisition=acquisition)
+        return fetch
+
+    def original_rundown_factory(*_args, **_kwargs):
+        def fetch(_family, _target=None):
+            calls["rundown"] += 1
+            acquisition = _failed_attempt_result(
+                discovery.PATH_RUNDOWN, "RUNDOWN_HTTP_403"
+            )
+            raise discovery.DiscoveryFeedError("RUNDOWN_HTTP_403", acquisition=acquisition)
+        return fetch
+
+    monkeypatch.setattr(
+        discovery,
+        "_v17_cross_sport_resilience_original_odds_proxy_feed",
+        original_odds_factory,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        discovery_feed,
+        "_v17_quota_aware_original_rundown_board_feed",
+        original_rundown_factory,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        quota,
+        "_public_schedule_fetch",
+        lambda *_args, **_kwargs: (False, [], "ESPN_HTTP_503"),
+    )
+    context = quota._new_context()
+    token = quota._SCAN_CONTEXT.set(context)
+    try:
+        odds = quota._quota_aware_odds_proxy_factory()
+        rundown = quota._quota_aware_rundown_factory(slate_date="2026-09-27")
+        installed = resilience._resilient_union_feed(
+            discovery_feed.union_feed, odds, rundown
+        )
+        with pytest.raises(discovery.DiscoveryFeedError) as first:
+            installed("NFL")
+        with pytest.raises(discovery.DiscoveryFeedError) as second:
+            installed("NCAAF")
+    finally:
+        quota._SCAN_CONTEXT.reset(token)
+
+    first_attempts = first.value.acquisition.attempts
+    assert [item.path_id for item in first_attempts] == [
+        discovery.PATH_ESPN_SCOREBOARD,
+        discovery.PATH_ODDS_PROXY,
+        discovery.PATH_RUNDOWN,
+    ]
+    assert [item.ordinal for item in first_attempts] == [1, 2, 3]
+    assert [item.blocker_code for item in first_attempts] == [
+        "ESPN_HTTP_503",
+        "ODDS_HTTP_429",
+        "RUNDOWN_HTTP_403",
+    ]
+    second_rundown = second.value.acquisition.attempts[-1]
+    assert second_rundown.path_state == discovery.PATH_CIRCUIT_OPEN_PRIOR_FAILURE
+    assert second_rundown.blocker_code == "RUNDOWN_CIRCUIT_OPEN"
+    assert second_rundown.originating_blocker_code == "RUNDOWN_HTTP_403"
+    assert calls == {"odds": 2, "rundown": 1}
+
+
+@pytest.mark.parametrize("public_rows", [[], [{"id": "espn-nfl-1"}]])
+def test_quota_wrapper_espn_success_or_empty_uses_zero_paid_calls(monkeypatch, public_rows):
+    paid_calls = []
+
+    def paid_factory(*_args, **_kwargs):
+        def fetch(*_fetch_args):
+            paid_calls.append(1)
+            raise AssertionError("paid path must not run after a healthy ESPN answer")
+        return fetch
+
+    monkeypatch.setattr(
+        discovery,
+        "_v17_cross_sport_resilience_original_odds_proxy_feed",
+        paid_factory,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        quota,
+        "_public_schedule_fetch",
+        lambda *_args, **_kwargs: (True, list(public_rows), None),
+    )
+    result = quota._quota_aware_odds_proxy_factory()("NFL")
+    assert paid_calls == []
+    assert [attempt.path_id for attempt in result.attempts] == [
+        discovery.PATH_ESPN_SCOREBOARD
+    ]
+    assert result.attempts[0].path_state == discovery.succeeded_path_state(public_rows)
+
+
+def test_quota_wrapper_unsupported_family_records_only_actual_odds_layer(monkeypatch):
+    def paid_factory(*_args, **_kwargs):
+        def fetch(*_fetch_args):
+            return discovery.AcquisitionFeedResult(
+                rows=(),
+                provider_status=discovery.PROVIDER_SUCCEEDED,
+                fallback_status=discovery.FALLBACK_NOT_APPLICABLE,
+                exhaustion_status=discovery.PATHS_NOT_EXHAUSTED,
+                attempts=(
+                    discovery.acquisition_attempt(
+                        path_id=discovery.PATH_ODDS_PROXY,
+                        path_state=discovery.PATH_SUCCEEDED_EMPTY,
+                    ),
+                ),
+            )
+        return fetch
+
+    monkeypatch.setattr(
+        discovery,
+        "_v17_cross_sport_resilience_original_odds_proxy_feed",
+        paid_factory,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        quota,
+        "_public_schedule_fetch",
+        lambda *_args, **_kwargs: (
+            False,
+            [],
+            "PUBLIC_DISCOVERY_UNSUPPORTED_FOR_FAMILY",
+        ),
+    )
+    result = quota._quota_aware_odds_proxy_factory()("SOCCER")
+    assert [attempt.path_id for attempt in result.attempts] == [
+        discovery.PATH_ODDS_PROXY
+    ]
+
+
+def test_ordered_attempts_preserve_odds_failure_then_rundown_success():
+    def odds(_family, _target=None):
+        acquisition = _failed_attempt_result(
+            discovery.PATH_ODDS_PROXY, "ODDS_HTTP_429"
+        )
+        raise discovery.DiscoveryFeedError("ODDS_HTTP_429", acquisition=acquisition)
+
+    def rundown(_family, _target=None):
+        return discovery.AcquisitionFeedResult(
+            rows=({"id": "rundown-1"},),
+            provider_status=discovery.PROVIDER_SUCCEEDED,
+            fallback_status=discovery.FALLBACK_NOT_APPLICABLE,
+            exhaustion_status=discovery.PATHS_NOT_EXHAUSTED,
+            attempts=(
+                discovery.acquisition_attempt(
+                    path_id=discovery.PATH_RUNDOWN,
+                    path_state=discovery.PATH_SUCCEEDED_WITH_ROWS,
+                ),
+            ),
+        )
+
+    result = discovery_feed.union_feed(odds, rundown)("SOCCER")
+    assert [attempt.path_id for attempt in result.attempts] == [
+        discovery.PATH_ODDS_PROXY,
+        discovery.PATH_RUNDOWN,
+    ]
+    assert result.primary_path_id == discovery.PATH_ODDS_PROXY
+    assert result.fallback_path_id == discovery.PATH_RUNDOWN
+    assert result.fallback_path_state == discovery.PATH_SUCCEEDED_WITH_ROWS
