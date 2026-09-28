@@ -44,6 +44,16 @@ def test_llp_schema_exposes_full_slate_row_detail_readback():
     assert operation["x-openai-isConsequential"] is False
 
 
+def test_llp_operation_descriptions_fit_custom_gpt_editor_limit():
+    for path_item in _schema()["paths"].values():
+        for method, operation in path_item.items():
+            if method.lower() not in {"get", "post", "put", "patch", "delete"}:
+                continue
+            description = operation.get("description")
+            if description is not None:
+                assert len(description) <= 300
+
+
 def test_llp_editor_sources_require_scan_before_shortlist_and_budget_completion():
     for path in (AUTHORITY_INSTRUCTIONS, EDITOR_INSTRUCTIONS):
         text = path.read_text()
