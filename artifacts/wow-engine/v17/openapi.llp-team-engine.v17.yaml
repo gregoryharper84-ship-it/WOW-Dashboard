@@ -80,12 +80,10 @@ paths:
       operationId: scoreLlpV17TeamEvent
       x-openai-isConsequential: false
       description: >-
-        Canonical outright-winner team/event scoring ingress. The request
-        identity is fixed to LLP_TEAM_BETTING_ENGINE. A sport without an
-        actually registered fitted team/event model and adapter fails closed as
-        MODEL_UNAVAILABLE. Market implied probability and generic reasoning may
-        not substitute. Point-spread scoring uses the distinct spread shadow
-        operation while that lane remains uncertified.
+        Canonical outright-winner team/event scoring ingress for
+        LLP_TEAM_BETTING_ENGINE. Unregistered fitted routes fail closed as
+        MODEL_UNAVAILABLE; no market/generic probability substitution. Spread
+        scoring remains separate.
       security: [{actionBearer: []}]
       requestBody:
         required: true
@@ -102,11 +100,9 @@ paths:
       operationId: scoreLlpV17SpreadForwardShadow
       x-openai-isConsequential: false
       description: >-
-        Research-only NCAAF exact-line spread forward shadow owned by the LLP
-        team/event lane. This surface does not certify, promote, publish, rank
-        as production, or execute a spread probability. The exact spread is a
-        post-fit threshold only; no moneyline-to-spread or market-probability
-        substitution is allowed.
+        Research-only NCAAF exact-line spread forward shadow. Does not certify,
+        promote, publish, rank, or execute. Exact spread is a post-fit threshold
+        only; no moneyline-to-spread or market-probability substitution.
       security: [{actionBearer: []}]
       requestBody:
         required: true
