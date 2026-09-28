@@ -8,7 +8,7 @@ class DummyClient:
 
 def test_supported_scopes_include_team_sports_and_each_soccer_competition():
     scopes = set(scoped.supported_scopes())
-    assert {"NFL", "MLB", "NBA", "WNBA", "NCAAF", "NCAAB"} <= scopes
+    assert {"NFL", "NFL_EVENT_V2", "MLB", "NBA", "WNBA", "NCAAF", "NCAAB"} <= scopes
     assert {f"SOCCER_{name}" for name in scoped.COMPETITIONS} <= scopes
 
 
@@ -46,6 +46,39 @@ def test_scoped_maintenance_runs_only_requested_lane(monkeypatch):
     assert result["rows"][0]["status"] == "CANDIDATE_EVIDENCE_UPDATED"
     assert result["probability_publishable"] is False
     assert result["can_execute"] is False
+
+
+def test_nfl_event_v2_scope_uses_research_only_context_challenger(monkeypatch):
+    from v17 import nfl_event_context_challenger as challenger
+
+    monkeypatch.setattr(maintenance, "_nfl_events", lambda client: [{"event_id": "fixture"}])
+    # team_state_scoped_maintenance imported the function directly.
+    monkeypatch.setattr(scoped, "_nfl_events", lambda client: [{"event_id": "fixture"}])
+
+    calls = []
+
+    def fake_train(client, *, events, training_code_sha):
+        calls.append((client, events, training_code_sha))
+        return {
+            "sport": "NFL",
+            "model_family": "NFL_EVENT_CONTEXT_LOGIT_V2",
+            "probability_publishable": False,
+            "automatic_certification": False,
+            "automatic_promotion": False,
+            "can_execute": False,
+        }
+
+    monkeypatch.setattr(challenger, "train_and_persist", fake_train)
+    result = scoped.run_team_state_scope(
+        DummyClient(), scope="nfl_event_v2", training_code_sha="abcdef123456"
+    )
+
+    assert len(calls) == 1
+    assert calls[0][1] == [{"event_id": "fixture"}]
+    assert result["scope"] == "NFL_EVENT_V2"
+    assert result["rows"][0]["model_family"] == "NFL_EVENT_CONTEXT_LOGIT_V2"
+    assert result["rows"][0]["probability_publishable"] is False
+    assert result["rows"][0]["can_execute"] is False
 
 
 def test_unknown_scope_fails_closed_without_calling_training(monkeypatch):

@@ -34,6 +34,7 @@ CAN_EXECUTE = False
 def supported_scopes() -> tuple[str, ...]:
     return (
         "NFL",
+        "NFL_EVENT_V2",
         "MLB",
         "NBA",
         "WNBA",
@@ -49,6 +50,14 @@ def _job(client: Any, scope: str, code: str) -> Callable[[], dict[str, Any]] | N
         return lambda: train_binary_challenger(
             client, sport="NFL", league="NFL", events=_nfl_events(client),
             expected_season_games=17, training_code_sha=code, min_rows=300,
+        )
+    if scope == "NFL_EVENT_V2":
+        from v17.nfl_event_context_challenger import train_and_persist
+
+        return lambda: train_and_persist(
+            client,
+            events=_nfl_events(client),
+            training_code_sha=code,
         )
     if scope == "MLB":
         return lambda: train_binary_challenger(
