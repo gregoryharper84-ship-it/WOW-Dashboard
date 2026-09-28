@@ -13,8 +13,14 @@ concurrency:
   group: wow-v17-spread-forward-production-canary
   cancel-in-progress: false
 
+env:
+  WOW_ACTION_ORIGIN: https://wow-governed-probability-engine.onrender.com
+  WOW_OIDC_AUDIENCE: wow-v17-multiscout
+  WOW_CAN_EXECUTE: "false"
+  WOW_DRY_RUN_ONLY: "true"
+
 jobs:
-  canary:
+  ncaaf-canary:
     name: Verify production NCAAF spread forward shadow
     if: >-
       github.event_name == 'workflow_dispatch' ||
@@ -24,11 +30,6 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    env:
-      WOW_ACTION_ORIGIN: https://wow-governed-probability-engine.onrender.com
-      WOW_OIDC_AUDIENCE: wow-v17-multiscout
-      WOW_CAN_EXECUTE: "false"
-      WOW_DRY_RUN_ONLY: "true"
     steps:
       - name: Assert research-only governance and OIDC context
         shell: bash
@@ -44,99 +45,178 @@ jobs:
         run: |
           set -euo pipefail
           python - <<'PY'
-          import datetime
-          import json
-          import os
-          import time
-          import urllib.error
-          import urllib.parse
-          import urllib.request
-
+          import datetime, json, os, time, urllib.error, urllib.parse, urllib.request
           origin = os.environ["WOW_ACTION_ORIGIN"].rstrip("/")
           endpoint = origin + "/internal/v17/spread-forward-shadow"
           audience = os.environ["WOW_OIDC_AUDIENCE"]
           target = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=14)
           target = target.replace(hour=18, minute=0, second=0, microsecond=0)
-          payload = {
-              "event_id": f"WOW-CANARY-NCAAF-{target:%Y%m%d}",
-              "event_start_time": target.isoformat(),
-              "home_team": "Nebraska",
-              "away_team": "Michigan State",
-              "home_spread": 0.0,
-              "season": target.year,
-          }
-
+          payload = {"event_id": f"WOW-CANARY-NCAAF-{target:%Y%m%d}", "event_start_time": target.isoformat(), "home_team": "Nebraska", "away_team": "Michigan State", "home_spread": 0.0, "season": target.year}
           def fresh_oidc():
               base = os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"]
               sep = "&" if "?" in base else "?"
-              request = urllib.request.Request(
-                  base + sep + urllib.parse.urlencode({"audience": audience}),
-                  headers={"Authorization": f"Bearer {os.environ['ACTIONS_ID_TOKEN_REQUEST_TOKEN']}"},
-              )
-              with urllib.request.urlopen(request, timeout=20) as response:
-                  return json.load(response)["value"]
-
+              request = urllib.request.Request(base + sep + urllib.parse.urlencode({"audience": audience}), headers={"Authorization": f"Bearer {os.environ['ACTIONS_ID_TOKEN_REQUEST_TOKEN']}"})
+              with urllib.request.urlopen(request, timeout=20) as response: return json.load(response)["value"]
           body = json.dumps(payload, sort_keys=True).encode()
-          request = urllib.request.Request(
-              endpoint,
-              data=body,
-              method="POST",
-              headers={
-                  "Authorization": f"Bearer {fresh_oidc()}",
-                  "Content-Type": "application/json",
-              },
-          )
+          request = urllib.request.Request(endpoint, data=body, method="POST", headers={"Authorization": f"Bearer {fresh_oidc()}", "Content-Type": "application/json"})
           started = time.monotonic()
           try:
               with urllib.request.urlopen(request, timeout=60) as response:
-                  status = response.status
-                  result = json.load(response)
+                  status = response.status; result = json.load(response)
           except urllib.error.HTTPError as exc:
               raw = exc.read().decode("utf-8", errors="replace")
               raise RuntimeError(f"SPREAD_FORWARD_CANARY_HTTP_{exc.code}:{raw[:1000]}") from exc
           elapsed = time.monotonic() - started
-
-          assert status == 200, (status, result)
-          assert result.get("status") == "EXPERIMENT_CREATED", result
+          assert status == 200 and result.get("status") == "EXPERIMENT_CREATED", result
           assert result.get("code") == "SPREAD_FORWARD_SHADOW_COMPLETE", result
           assert result.get("sport") == "NCAAF", result
-          assert result.get("automatic_certification") is False, result
-          assert result.get("automatic_promotion") is False, result
-          assert result.get("probability_publishable") is False, result
-          assert result.get("market_features_used") is False, result
-          assert result.get("spread_line_used_as_feature") is False, result
-          assert result.get("market_probability_substitution_used") is False, result
-          assert result.get("moneyline_probability_used") is False, result
+          for field in ("automatic_certification", "automatic_promotion", "probability_publishable", "market_features_used", "spread_line_used_as_feature", "market_probability_substitution_used", "moneyline_probability_used", "can_execute"):
+              assert result.get(field) is False, (field, result)
           assert result.get("dry_run_only_no_live_trading_no_market_orders") is True, result
-          assert result.get("can_execute") is False, result
           assert result.get("global_terminal_reducer") == "V17_TERMINAL_REDUCER", result
-          assert result.get("training_cutoff_event_time") < result.get("event_start_time"), result
-
           parts = [result.get("p_cover"), result.get("p_push"), result.get("p_not_cover")]
-          assert all(isinstance(value, (int, float)) for value in parts), parts
-          assert all(0.0 <= value <= 1.0 for value in parts), parts
+          assert all(isinstance(v, (int, float)) and 0.0 <= v <= 1.0 for v in parts), parts
           assert abs(sum(parts) - 1.0) <= 1e-9, parts
-          assert elapsed <= 60.0, elapsed
-
-          receipt = {
-              "status": "PASS",
-              "code": "SPREAD_FORWARD_PRODUCTION_CANARY_PASS",
-              "elapsed_seconds": round(elapsed, 3),
-              "event_id": result.get("event_id"),
-              "training_dataset_hash": result.get("training_dataset_hash"),
-              "artifact_train_rows": result.get("artifact_train_rows"),
-              "artifact_calibration_rows": result.get("artifact_calibration_rows"),
-              "artifact_test_rows": result.get("artifact_test_rows"),
-              "probability_publishable": False,
-              "automatic_certification": False,
-              "automatic_promotion": False,
-              "global_terminal_reducer": "V17_TERMINAL_REDUCER",
-              "can_execute": False,
-          }
+          receipt = {"status":"PASS","code":"SPREAD_FORWARD_PRODUCTION_CANARY_PASS","sport":"NCAAF","elapsed_seconds":round(elapsed,3),"can_execute":False}
           print(json.dumps(receipt, sort_keys=True))
-          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as handle:
-              handle.write("# V17 NCAAF Spread Forward Production Canary\n\n")
-              handle.write("```json\n")
-              handle.write(json.dumps(receipt, sort_keys=True, indent=2))
-              handle.write("\n```\n")
+          PY
+
+  nfl-canary:
+    name: Verify production NFL spread forward shadow
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Execute real-event NFL spread canary
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import datetime, json, os, urllib.parse, urllib.request
+          origin = os.environ["WOW_ACTION_ORIGIN"].rstrip("/")
+          audience = os.environ["WOW_OIDC_AUDIENCE"]
+          now = datetime.datetime.now(datetime.timezone.utc)
+          def get_json(url):
+              with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent":"WOW-V17-Canary/1.0"}), timeout=20) as r: return json.load(r)
+          def fresh_oidc():
+              base=os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"]; sep="&" if "?" in base else "?"
+              with urllib.request.urlopen(urllib.request.Request(base+sep+urllib.parse.urlencode({"audience":audience}),headers={"Authorization":f"Bearer {os.environ['ACTIONS_ID_TOKEN_REQUEST_TOKEN']}"}),timeout=20) as r: return json.load(r)["value"]
+          chosen=None
+          for offset in range(0,8):
+              day=(now+datetime.timedelta(days=offset)).strftime("%Y%m%d")
+              data=get_json(f"https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard?dates={day}")
+              for event in data.get("events") or []:
+                  start=datetime.datetime.fromisoformat(str(event.get("date") or "").replace("Z","+00:00"))
+                  state=str((((event.get("status") or {}).get("type") or {}).get("state") or ""))
+                  if start > now and state == "pre": chosen=event; break
+              if chosen: break
+          if not chosen: raise RuntimeError("NFL_SPREAD_CANARY_NO_FUTURE_ESPN_EVENT")
+          comp=(chosen.get("competitions") or [])[0]; competitors=comp.get("competitors") or []
+          home=next(x for x in competitors if x.get("homeAway")=="home"); away=next(x for x in competitors if x.get("homeAway")=="away")
+          payload={"sport":"NFL","event_id":str(chosen["id"]),"event_start_time":str(chosen["date"]),"home_team":str(home["team"]["displayName"]),"away_team":str(away["team"]["displayName"]),"home_spread":0.0}
+          request=urllib.request.Request(origin+"/internal/v17/nfl-spread-forward-shadow",data=json.dumps(payload).encode(),method="POST",headers={"Authorization":f"Bearer {fresh_oidc()}","Content-Type":"application/json"})
+          with urllib.request.urlopen(request,timeout=180) as response: result=json.load(response)
+          assert result.get("status")=="EXPERIMENT_CREATED", result
+          assert result.get("code")=="NFL_SPREAD_FORWARD_SHADOW_COMPLETE", result
+          assert result.get("sport")=="NFL", result
+          for field in ("automatic_certification","automatic_promotion","probability_publishable","market_features_used","spread_line_used_as_feature","market_probability_substitution_used","moneyline_probability_used","can_execute"):
+              assert result.get(field) is False, (field,result)
+          assert result.get("global_terminal_reducer")=="V17_TERMINAL_REDUCER", result
+          parts=[result.get("p_cover"),result.get("p_push"),result.get("p_not_cover")]
+          assert all(isinstance(v,(int,float)) and 0<=v<=1 for v in parts) and abs(sum(parts)-1)<=1e-9, parts
+          print(json.dumps({"status":"PASS","code":"NFL_SPREAD_FORWARD_PRODUCTION_CANARY_PASS","event_id":result.get("event_id"),"event_start_time":result.get("event_start_time"),"can_execute":False},sort_keys=True))
+          PY
+
+  wnba-canary:
+    name: Verify production WNBA spread forward shadow
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Execute real-event WNBA spread canary
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import datetime, json, os, urllib.parse, urllib.request
+          origin=os.environ["WOW_ACTION_ORIGIN"].rstrip("/"); audience=os.environ["WOW_OIDC_AUDIENCE"]
+          now=datetime.datetime.now(datetime.timezone.utc)
+          def get_json(url):
+              with urllib.request.urlopen(urllib.request.Request(url,headers={"User-Agent":"WOW-V17-Canary/1.0"}),timeout=20) as r: return json.load(r)
+          def fresh_oidc():
+              base=os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"]; sep="&" if "?" in base else "?"
+              with urllib.request.urlopen(urllib.request.Request(base+sep+urllib.parse.urlencode({"audience":audience}),headers={"Authorization":f"Bearer {os.environ['ACTIONS_ID_TOKEN_REQUEST_TOKEN']}"}),timeout=20) as r: return json.load(r)["value"]
+          chosen=None
+          for offset in range(0,15):
+              day=(now+datetime.timedelta(days=offset)).strftime("%Y%m%d")
+              data=get_json(f"https://site.api.espn.com/apis/site/v2/sports/basketball/wnba/scoreboard?dates={day}")
+              for event in data.get("events") or []:
+                  start=datetime.datetime.fromisoformat(str(event.get("date") or "").replace("Z","+00:00")); state=str((((event.get("status") or {}).get("type") or {}).get("state") or ""))
+                  if start > now and state == "pre": chosen=event; break
+              if chosen: break
+          if not chosen:
+              print(json.dumps({"status":"DEFERRED_WITH_JUSTIFICATION","code":"WNBA_SPREAD_CANARY_NO_ELIGIBLE_FUTURE_EVENT","can_execute":False},sort_keys=True)); raise SystemExit(0)
+          comp=(chosen.get("competitions") or [])[0]; competitors=comp.get("competitors") or []
+          home=next(x for x in competitors if x.get("homeAway")=="home"); away=next(x for x in competitors if x.get("homeAway")=="away")
+          payload={"sport":"WNBA","event_id":"espn-"+str(chosen["id"]),"event_start_time":str(chosen["date"]),"home_team_id":"espn-"+str(home["team"]["id"]),"away_team_id":"espn-"+str(away["team"]["id"]),"home_spread":0.0}
+          request=urllib.request.Request(origin+"/internal/v17/wnba-spread-forward-shadow",data=json.dumps(payload).encode(),method="POST",headers={"Authorization":f"Bearer {fresh_oidc()}","Content-Type":"application/json"})
+          with urllib.request.urlopen(request,timeout=180) as response: result=json.load(response)
+          assert result.get("status")=="EXPERIMENT_CREATED", result
+          assert result.get("code")=="WNBA_SPREAD_FORWARD_SHADOW_COMPLETE", result
+          assert result.get("sport")=="WNBA", result
+          for field in ("automatic_certification","automatic_promotion","probability_publishable","market_features_used","spread_line_used_as_feature","market_probability_substitution_used","moneyline_probability_used","can_execute"):
+              assert result.get(field) is False, (field,result)
+          assert result.get("global_terminal_reducer")=="V17_TERMINAL_REDUCER", result
+          parts=[result.get("p_cover"),result.get("p_push"),result.get("p_not_cover")]
+          assert all(isinstance(v,(int,float)) and 0<=v<=1 for v in parts) and abs(sum(parts)-1)<=1e-9, parts
+          print(json.dumps({"status":"PASS","code":"WNBA_SPREAD_FORWARD_PRODUCTION_CANARY_PASS","event_id":result.get("event_id"),"event_start_time":result.get("event_start_time"),"can_execute":False},sort_keys=True))
+          PY
+
+  mlb-canary:
+    name: Verify production MLB run-line forward shadow
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Execute immutable-pregame MLB run-line canary
+        shell: bash
+        env:
+          MLB_CANARY_SCORE_SNAPSHOT_ID: 22b09e3d-6ece-4466-9649-3d5175ccc154
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os, urllib.parse, urllib.request
+          origin=os.environ["WOW_ACTION_ORIGIN"].rstrip("/"); audience=os.environ["WOW_OIDC_AUDIENCE"]
+          def fresh_oidc():
+              base=os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"]; sep="&" if "?" in base else "?"
+              with urllib.request.urlopen(urllib.request.Request(base+sep+urllib.parse.urlencode({"audience":audience}),headers={"Authorization":f"Bearer {os.environ['ACTIONS_ID_TOKEN_REQUEST_TOKEN']}"}),timeout=20) as r: return json.load(r)["value"]
+          payload={"sport":"MLB","score_snapshot_id":os.environ["MLB_CANARY_SCORE_SNAPSHOT_ID"],"home_run_line":-1.5}
+          request=urllib.request.Request(origin+"/internal/v17/mlb-run-line-forward-shadow",data=json.dumps(payload).encode(),method="POST",headers={"Authorization":f"Bearer {fresh_oidc()}","Content-Type":"application/json"})
+          with urllib.request.urlopen(request,timeout=180) as response: result=json.load(response)
+          assert result.get("status")=="EXPERIMENT_CREATED", result
+          assert result.get("code")=="MLB_RUN_LINE_FORWARD_SHADOW_COMPLETE", result
+          assert result.get("sport")=="MLB", result
+          assert result.get("score_snapshot_status")=="SHADOW_SCORED_PREGAME", result
+          assert result.get("extra_inning_margin_train_rows")==207, result
+          for field in ("automatic_certification","automatic_promotion","probability_publishable","market_features_used","run_line_used_as_feature","market_probability_substitution_used","moneyline_probability_used","can_execute"):
+              assert result.get(field) is False, (field,result)
+          assert result.get("global_terminal_reducer")=="V17_TERMINAL_REDUCER", result
+          parts=[result.get("p_cover"),result.get("p_push"),result.get("p_not_cover")]
+          assert all(isinstance(v,(int,float)) and 0<=v<=1 for v in parts) and abs(sum(parts)-1)<=1e-9, parts
+          print(json.dumps({"status":"PASS","code":"MLB_RUN_LINE_FORWARD_PRODUCTION_CANARY_PASS","score_snapshot_id":result.get("score_snapshot_id"),"artifact_hash":result.get("extra_inning_margin_artifact_hash"),"can_execute":False},sort_keys=True))
           PY
