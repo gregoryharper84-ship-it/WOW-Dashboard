@@ -6,8 +6,10 @@ activated, non-promoted CANDIDATE/SHADOW artifacts. Genuine artifact absence is
 refined through the V17 capability manifest; transport, registry, RPC, scorer,
 and malformed-response failures are never rewritten.
 
-The module also composes the WNBA composite candidate control-plane route. These
-research routes can never certify, promote, publish, rank, price, or execute.
+The module also composes the WNBA composite candidate control-plane route and
+the bounded WNBA core-component forward-evidence acquisition route. These
+research/evidence routes can never certify, promote, publish, rank, price, or
+execute.
 """
 from __future__ import annotations
 
@@ -17,6 +19,7 @@ import pick_request_runtime_core as _runtime_core
 from v17.nba_scalar_candidate_bridge import candidate_preflight as _nba_scalar_candidate_preflight
 from v17.wnba_composite_candidate_bridge import candidate_preflight as _wnba_composite_candidate_preflight
 from v17.prop_capability_manifest import prop_capability as _prop_capability, runtime_prop_stat_aliases
+from v17.wnba_prop_evidence_control_plane import install_wnba_prop_forward_evidence_route
 
 RESEARCH_ROUTES = {
     ("NFL", "FANTASY_SCORE"): "wow.nfl-dfs-fantasy-score-expert",
@@ -195,6 +198,11 @@ def _install_wnba_composite_registration_overlay() -> None:
     def combined(app: Any, *, auth_dependency: Any, db_client_fn: Any) -> None:
         original(app, auth_dependency=auth_dependency, db_client_fn=db_client_fn)
         install_wnba_composite_candidate_registration_route(
+            app,
+            auth_dependency=auth_dependency,
+            db_client_fn=db_client_fn,
+        )
+        install_wnba_prop_forward_evidence_route(
             app,
             auth_dependency=auth_dependency,
             db_client_fn=db_client_fn,

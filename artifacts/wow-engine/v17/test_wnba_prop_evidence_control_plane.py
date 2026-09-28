@@ -1,0 +1,194 @@
+from __future__ import annotations
+
+from datetime import datetime, timezone
+
+import pytest
+
+from v17 import wnba_prop_evidence_control_plane as subject
+
+NOW = datetime(2026, 9, 28, 15, 0, tzinfo=timezone.utc)
+EVENT = datetime(2026, 9, 28, 23, 0, tzinfo=timezone.utc)
+
+
+class _Result:
+    def __init__(self, data):
+        self.data = data
+
+
+class _Query:
+    def __init__(self, db, mode):
+        self.db = db
+        self.mode = mode
+        self.filters = {}
+        self.pending = None
+
+    def select(self, *_args, **_kwargs):
+        return self
+
+    def eq(self, key, value):
+        self.filters[key] = value
+        return self
+
+    def limit(self, _n):
+        return self
+
+    def upsert(self, row, on_conflict=None):
+        self.pending = dict(row)
+        self.db.upserts.append((self.pending, on_conflict))
+        return self
+
+    def execute(self):
+        if self.pending is not None:
+            return _Result([self.pending])
+        identity = (
+            self.filters.get("event_id"),
+            self.filters.get("sport"),
+            self.filters.get("player"),
+            self.filters.get("stat_type"),
+        )
+        return _Result([{"source_snapshot_id": "existing"}] if identity in self.db.existing else [])
+
+
+class _DB:
+    def __init__(self, existing=None):
+        self.existing = set(existing or [])
+        self.upserts = []
+
+    def table(self, name):
+        assert name == "wow_prop_evidence_snapshots"
+        return _Query(self, name)
+
+
+def _players():
+    return [
+        {
+            "event_id": "WNBA:game-1",
+            "official_game_id": "game-1",
+            "event_start_time": EVENT.isoformat(),
+            "player": "Alpha Guard",
+            "player_id": "1001",
+            "team": "AAA",
+            "opponent": "BBB",
+        },
+        {
+            "event_id": "WNBA:game-1",
+            "official_game_id": "game-1",
+            "event_start_time": EVENT.isoformat(),
+            "player": "Beta Forward",
+            "player_id": "2001",
+            "team": "BBB",
+            "opponent": "AAA",
+        },
+    ]
+
+
+def _raw():
+    return {
+        "captured_at": NOW.isoformat(),
+        "game_log": [float(i) for i in range(10)],
+        "box_score_log": [{"game": i} for i in range(10)],
+        "role_status": {"status": "ACTIVE", "team_tricode": "AAA", "opponent_tricode": "BBB"},
+        "role_timestamp": NOW.isoformat(),
+        "opportunity_ledger": {"status": "READY", "availability_gate": "PASS"},
+        "source_timestamps": {"WNBA_OFFICIAL": NOW.isoformat()},
+        "evidence_version": "PROP_EVIDENCE_V1",
+        "rate_provenance": "WNBA_OFFICIAL_STATS_CDN_INJURY_V1",
+    }
+
+
+def _install_common(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(subject.acquisition, "_request_schedule", lambda **_kwargs: {"leagueSchedule": {"gameDates": []}})
+    monkeypatch.setattr(subject.acquisition, "_schedule_players", lambda *_args, **_kwargs: _players())
+    monkeypatch.setattr(subject.acquisition, "auto_hydrate_prop_evidence", lambda **_kwargs: _raw())
+    monkeypatch.setattr(subject.acquisition, "_validate_evidence", lambda row, stat: row.evidence.model_dump())
+    monkeypatch.setattr(
+        subject.acquisition,
+        "_snapshot_payload",
+        lambda row, normalized: (
+            f"snapshot-{row.player}-{row.stat_type}",
+            "fingerprint",
+            {
+                "source_snapshot_id": f"snapshot-{row.player}-{row.stat_type}",
+                "event_id": row.event_id,
+                "event_start_time": row.event_start_time,
+                "sport": row.sport,
+                "player": row.player,
+                "stat_type": row.stat_type,
+                "line": row.line,
+            },
+        ),
+    )
+
+
+def test_rotating_window_is_bounded_and_reports_next_offset(monkeypatch: pytest.MonkeyPatch):
+    _install_common(monkeypatch)
+    req = subject.WNBAForwardEvidenceRequest(
+        requested_date="2026-09-28",
+        candidate_offset=2,
+        max_candidates=3,
+    )
+    db = _DB()
+    result = subject.acquire_wnba_forward_evidence_batch(
+        req,
+        db=db,
+        now=NOW,
+        http_get=lambda *_a, **_k: object(),
+    )
+    assert result["total_candidates"] == 8
+    assert result["window_candidate_n"] == 3
+    assert result["attempted"] == 3
+    assert result["persisted"] == 3
+    assert result["next_offset"] == 5
+    assert result["probability_publishable"] is False
+    assert result["automatic_certification"] is False
+    assert result["automatic_promotion"] is False
+    assert result["can_execute"] is False
+
+
+def test_existing_exact_player_event_stat_is_skipped_without_hydration(monkeypatch: pytest.MonkeyPatch):
+    _install_common(monkeypatch)
+    calls = []
+    monkeypatch.setattr(
+        subject.acquisition,
+        "auto_hydrate_prop_evidence",
+        lambda **kwargs: calls.append(kwargs) or _raw(),
+    )
+    existing = {
+        ("WNBA:game-1", "WNBA", "Alpha Guard", "POINTS"),
+        ("WNBA:game-1", "WNBA", "Alpha Guard", "REBOUNDS"),
+    }
+    db = _DB(existing=existing)
+    req = subject.WNBAForwardEvidenceRequest(
+        requested_date="2026-09-28",
+        candidate_offset=0,
+        max_candidates=4,
+    )
+    result = subject.acquire_wnba_forward_evidence_batch(req, db=db, now=NOW, http_get=lambda *_a, **_k: object())
+    assert result["attempted"] == 4
+    assert result["already_captured"] == 2
+    assert result["persisted"] == 2
+    assert len(calls) == 2
+
+
+def test_true_hydration_blocker_stays_row_scoped(monkeypatch: pytest.MonkeyPatch):
+    _install_common(monkeypatch)
+
+    def hydrate(**kwargs):
+        if kwargs["stat_type"] == "ASSISTS":
+            raise subject.PropAutoHydrationError("WNBA_PLAYER_AVAILABILITY_NOT_CLEAR", "held")
+        return _raw()
+
+    monkeypatch.setattr(subject.acquisition, "auto_hydrate_prop_evidence", hydrate)
+    db = _DB()
+    req = subject.WNBAForwardEvidenceRequest(
+        requested_date="2026-09-28",
+        candidate_offset=0,
+        max_candidates=4,
+    )
+    result = subject.acquire_wnba_forward_evidence_batch(req, db=db, now=NOW, http_get=lambda *_a, **_k: object())
+    assert result["attempted"] == 4
+    assert result["persisted"] == 3
+    assert result["held"] == 1
+    assert result["status"] == "COMPLETED_WITH_ROW_BLOCKERS"
+    assert any("WNBA_PLAYER_AVAILABILITY_NOT_CLEAR" in blocker for blocker in result["blockers"])
+    assert result["can_execute"] is False
