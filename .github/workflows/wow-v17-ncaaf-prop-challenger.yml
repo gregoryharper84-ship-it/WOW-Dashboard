@@ -1,0 +1,51 @@
+name: wow-v17-ncaaf-prop-challenger
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/wow-v17-ncaaf-prop-challenger.yml"
+      - "artifacts/wow-engine/v17/ncaaf_prop_challenger.py"
+      - "artifacts/wow-engine/test_v17_ncaaf_prop_challenger.py"
+      - "artifacts/wow-engine/ncaaf_prop_historical_adapter.py"
+      - "artifacts/wow-engine/ncaaf_cfbd_hydrator.py"
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/wow-v17-ncaaf-prop-challenger.yml"
+      - "artifacts/wow-engine/v17/ncaaf_prop_challenger.py"
+      - "artifacts/wow-engine/test_v17_ncaaf_prop_challenger.py"
+      - "artifacts/wow-engine/ncaaf_prop_historical_adapter.py"
+      - "artifacts/wow-engine/ncaaf_cfbd_hydrator.py"
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify NCAAF prop challenger experiment
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: artifacts/wow-engine
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: artifacts/wow-engine/requirements.txt
+      - name: Install engine dependencies
+        run: pip install -r requirements.txt
+      - name: Run challenger and historical-adapter regressions
+        run: >-
+          python -m pytest -q
+          test_v17_ncaaf_prop_challenger.py
+          test_ncaaf_prop_historical_adapter.py
+      - name: Assert source-level non-promotion guard
+        shell: bash
+        run: |
+          grep -q 'PROBABILITY_PUBLISHABLE = False' v17/ncaaf_prop_challenger.py
+          grep -q 'AUTOMATIC_CERTIFICATION = False' v17/ncaaf_prop_challenger.py
+          grep -q 'AUTOMATIC_PROMOTION = False' v17/ncaaf_prop_challenger.py
+          grep -q '"lifecycle_state": "CANDIDATE"' v17/ncaaf_prop_challenger.py
