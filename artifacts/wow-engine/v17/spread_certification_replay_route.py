@@ -11,6 +11,7 @@ from fastapi import FastAPI
 from pydantic import BaseModel, ConfigDict, Field
 
 from github_actions_oidc import scout_route_auth_dependency
+from v17.mlb_run_line_shadow import RUN_LINE_MODEL_FAMILY
 from v17.spread_certification_replay import run_nflverse_close_proxy_replay
 from v17.spread_espn_close_proxy_source import run_wnba_espn_close_proxy_replay
 from v17.spread_margin_challenger import SpreadChallengerUnavailable
@@ -25,7 +26,7 @@ GLOBAL_TERMINAL_REDUCER = "V17_TERMINAL_REDUCER"
 
 class SpreadCertificationReplayRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    sport: Literal["NFL", "WNBA"]
+    sport: Literal["MLB", "NFL", "WNBA"]
     min_rows: int = Field(default=300, ge=100, le=25000)
     ridge_alpha: float = Field(default=4.0, gt=0.0, le=100.0)
 
@@ -42,10 +43,59 @@ def _governance() -> dict[str, Any]:
     }
 
 
+def _mlb_historical_replay_blocker() -> dict[str, Any]:
+    """Emit the audited MLB terminal blocker instead of unsafe retrospective scoring.
+
+    The active MLB run-line family is built from immutable forward pregame score
+    snapshots and post-simulation exact run-line thresholding.  The repository does
+    not yet contain a proven frozen historical pregame state for this exact family,
+    nor a governed historical ESPN-event crosswalk suitable for binding the public
+    run-line close proxy. Reconstructing those inputs after outcomes are known would
+    create look-ahead risk, so certification replay fails closed with zero eligible
+    historical coverage.
+    """
+    return {
+        "status": "BLOCKED",
+        "code": "MLB_RUN_LINE_HISTORICAL_SAME_FAMILY_STATE_UNAVAILABLE",
+        "sport": "MLB",
+        "detail": (
+            "current MLB run-line certification replay requires frozen historical "
+            "pregame state from the active run-line family plus a governed canonical "
+            "event crosswalk before ESPN run-line close proxies can be bound"
+        ),
+        "model_family": RUN_LINE_MODEL_FAMILY,
+        "evidence_class": "ESPN_HISTORICAL_RUN_LINE_CLOSE_PROXY",
+        "evidence_scope": "HISTORICAL_CLOSE_PROXY_CERTIFICATION_REPLAY_ONLY",
+        "exact_line_metrics": {
+            "evidence_row_n": 0,
+            "eligible_historical_model_state_n": 0,
+            "bound_exact_line_n": 0,
+            "exact_line_coverage": 0.0,
+        },
+        "blockers": [
+            "MLB_RUN_LINE_HISTORICAL_SAME_FAMILY_MODEL_STATE_UNAVAILABLE",
+            "MLB_RUN_LINE_CANONICAL_EVENT_CROSSWALK_UNAVAILABLE",
+        ],
+        "required_next_evidence": [
+            "frozen pregame score-distribution state proven compatible with the active run-line model family",
+            "governed canonical MLB event to ESPN event crosswalk frozen before historical line binding",
+            "exact historical run-line proxy bound only after model state is frozen",
+        ],
+        "market_features_used": False,
+        "spread_line_used_as_feature": False,
+        "market_probability_substitution_used": False,
+        "moneyline_probability_used": False,
+        "lookahead_reconstruction_allowed": False,
+        **_governance(),
+    }
+
+
 def execute_spread_certification_replay(
     db: Any,
     request: SpreadCertificationReplayRequest,
 ) -> dict[str, Any]:
+    if request.sport == "MLB":
+        return _mlb_historical_replay_blocker()
     try:
         if request.sport == "NFL":
             result = run_nflverse_close_proxy_replay(
