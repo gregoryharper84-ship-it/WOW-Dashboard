@@ -3,7 +3,7 @@
 This overlay adds settlement evidence only for the four NFL routes that already
 have fitted specialists. It reuses the existing NFL evidence contract:
 
-* ESPN NFL scoreboard identity proves the exact provider event is final; and
+* ESPN NFL scoreboard identity proves the exact provider event and teams are final;
 * the canonical nflverse weekly player-stat row used by the fitted NFL prop
   pipeline supplies the exact postgame stat value.
 
@@ -44,6 +44,26 @@ def _route_status(key: tuple[str, str]) -> tuple[str, str | None, str | None]:
     return _ORIGINAL_ROUTE_STATUS(key)
 
 
+def _espn_event_sides(event: Mapping[str, Any]) -> dict[str, str]:
+    competitions = event.get("competitions")
+    if not isinstance(competitions, list) or len(competitions) != 1:
+        return {}
+    competition = competitions[0]
+    competitors = competition.get("competitors") if isinstance(competition, Mapping) else None
+    if not isinstance(competitors, list):
+        return {}
+    sides: dict[str, str] = {}
+    for competitor in competitors:
+        if not isinstance(competitor, Mapping):
+            continue
+        side = str(competitor.get("homeAway") or "").strip().lower()
+        team = competitor.get("team") if isinstance(competitor.get("team"), Mapping) else {}
+        abbreviation = str(team.get("abbreviation") or "").strip().upper()
+        if side in {"home", "away"} and abbreviation:
+            sides[side] = abbreviation
+    return sides
+
+
 def _nfl_event_finality(
     *,
     role: Mapping[str, Any],
@@ -51,10 +71,20 @@ def _nfl_event_finality(
     http_get: Callable[..., Any],
 ) -> dict[str, Any]:
     provider_event_id = str(role.get("event_id") or "").strip()
+    expected_sides = {
+        "home": str(role.get("provider_home_team") or "").strip().upper(),
+        "away": str(role.get("provider_away_team") or "").strip().upper(),
+    }
     if not provider_event_id:
         return {
             "status": "IDENTITY_UNRESOLVED",
             "blocker": "NFL_ESPN_EVENT_ID_REQUIRED",
+            "can_execute": False,
+        }
+    if not all(expected_sides.values()) or expected_sides["home"] == expected_sides["away"]:
+        return {
+            "status": "IDENTITY_UNRESOLVED",
+            "blocker": "NFL_PROVIDER_TEAM_IDENTITY_REQUIRED",
             "can_execute": False,
         }
 
@@ -87,6 +117,7 @@ def _nfl_event_finality(
     if len(matches) != 1:
         return {
             "status": "OFFICIAL_EVENT_ID_MISMATCH",
+            "blocker": "NFL_PROVIDER_EVENT_ID_NOT_EXACTLY_RESOLVED",
             "provider_event_id": provider_event_id,
             "queried_dates": queried_dates,
             "match_n": len(matches),
@@ -94,6 +125,17 @@ def _nfl_event_finality(
         }
 
     event = matches[provider_event_id]
+    observed_sides = _espn_event_sides(event)
+    if observed_sides != expected_sides:
+        return {
+            "status": "OFFICIAL_EVENT_ID_MISMATCH",
+            "blocker": "NFL_PROVIDER_EVENT_TEAM_IDENTITY_CONFLICT",
+            "provider_event_id": provider_event_id,
+            "expected_sides": expected_sides,
+            "observed_sides": observed_sides,
+            "can_execute": False,
+        }
+
     status = event.get("status") if isinstance(event.get("status"), Mapping) else {}
     status_type = status.get("type") if isinstance(status.get("type"), Mapping) else {}
     if status_type.get("completed") is not True:
@@ -106,6 +148,7 @@ def _nfl_event_finality(
     return {
         "status": "FINAL",
         "provider_event_id": provider_event_id,
+        "provider_sides": observed_sides,
         "can_execute": False,
     }
 
@@ -138,8 +181,6 @@ def _nfl_stat_value(
             if value is not None
         }
         touchdown_count = sum(components.values())
-        # The fitted ANYTIME_TD specialist is Bernoulli. Preserve that exact
-        # target semantics even when a player scores more than one touchdown.
         return (1.0 if touchdown_count > 0.0 else 0.0), components
     return None, None
 
@@ -313,24 +354,15 @@ def run_exact_route_settlement(
 
         if key in settlement.MLB_SUPPORTED:
             result = settlement.settle_mlb_scalar(
-                prediction,
-                snapshot,
-                http_get=http_get,
-                now=now,
+                prediction, snapshot, http_get=http_get, now=now
             )
         elif key in settlement.WNBA_SUPPORTED:
             result = settlement.settle_wnba_scalar(
-                prediction,
-                snapshot,
-                http_get=http_get,
-                now=now,
+                prediction, snapshot, http_get=http_get, now=now
             )
         elif key in NFL_SUPPORTED:
             result = settle_nfl_scalar(
-                prediction,
-                snapshot,
-                http_get=http_get,
-                now=now,
+                prediction, snapshot, http_get=http_get, now=now
             )
         else:
             result = {
@@ -348,9 +380,7 @@ def run_exact_route_settlement(
         })
 
     settled = sum(
-        1
-        for row in results
-        if str(row.get("status") or "").startswith("SETTLED")
+        1 for row in results if str(row.get("status") or "").startswith("SETTLED")
     )
     held = len(results) - settled
     route_dispositions = []
@@ -400,9 +430,6 @@ def install() -> None:
     settlement.run_exact_route_settlement = run_exact_route_settlement
     scope_guard.run_exact_route_settlement = run_exact_route_settlement
 
-    # These modules import the runner by value. Replace only that reference if
-    # they are already loaded so every production entry point sees the same
-    # immutable-forward settlement implementation.
     for module_name in (
         "v17.prop_lifecycle_autopilot",
         "v17.prop_forward_cohort_route",
