@@ -99,14 +99,18 @@ def test_forward_shadow_uses_fixed_challenger_and_line_only_as_threshold(monkeyp
     rows = [_training_row(start)]
     artifact = _artifact()
     seen = {}
-    monkeypatch.setattr(shadow, "load_ncaaf_persisted_replay_rows", lambda *_args, **_kwargs: rows)
+    shadow._clear_forward_context_cache()
+    monkeypatch.setattr(
+        shadow,
+        "load_ncaaf_forward_context",
+        lambda *_args, **_kwargs: (rows, [{"event_id": "old"}]),
+    )
 
     def fit(fit_rows, *, sport, min_rows, ridge_alpha):
         seen.update({"rows": fit_rows, "sport": sport, "min_rows": min_rows, "ridge_alpha": ridge_alpha})
-        return artifact, {"margin_mae": 10.0, "cover_brier": 0.22, "cover_log_loss": 0.65, "cover_ece": 0.04}
+        return artifact
 
-    monkeypatch.setattr(shadow, "train_margin_distribution_candidate", fit)
-    monkeypatch.setattr(shadow, "load_ncaaf_settled_events", lambda _client: [{"event_id": "old"}])
+    monkeypatch.setattr(shadow, "fit_margin_distribution_artifact", fit)
     monkeypatch.setattr(
         shadow,
         "build_forward_matchup_features",
@@ -141,6 +145,7 @@ def test_forward_shadow_uses_fixed_challenger_and_line_only_as_threshold(monkeyp
     assert result["p_push"] == 0.01
     assert result["p_not_cover"] == 0.38
     assert result["training_cutoff_event_time"] < result["event_start_time"]
+    assert result["forward_context_cache"]["status"] == "MISS_REBUILT"
     assert result["spread_line_used_as_feature"] is False
     assert result["market_probability_substitution_used"] is False
     assert result["moneyline_probability_used"] is False
@@ -161,7 +166,13 @@ def test_forward_shadow_blocks_target_at_or_before_training_cutoff(monkeypatch):
         features={"x": 1.0},
         source_manifest_sha256="sha",
     )
-    monkeypatch.setattr(shadow, "load_ncaaf_persisted_replay_rows", lambda *_args, **_kwargs: [leaked])
+    shadow._clear_forward_context_cache()
+    monkeypatch.setattr(
+        shadow,
+        "load_ncaaf_forward_context",
+        lambda *_args, **_kwargs: ([leaked], [{"event_id": "future"}]),
+    )
+    monkeypatch.setattr(shadow, "fit_margin_distribution_artifact", lambda *_args, **_kwargs: _artifact())
     with pytest.raises(SpreadChallengerUnavailable) as exc:
         shadow.run_ncaaf_forward_shadow(
             object(), event_id="e", event_start_time=start.isoformat(), home_team="A", away_team="B",
@@ -179,7 +190,8 @@ def test_forward_shadow_propagates_typed_immutable_row_blocker(monkeypatch):
             "immutable rows are stale",
         )
 
-    monkeypatch.setattr(shadow, "load_ncaaf_persisted_replay_rows", blocked)
+    shadow._clear_forward_context_cache()
+    monkeypatch.setattr(shadow, "load_ncaaf_forward_context", blocked)
     with pytest.raises(SpreadChallengerUnavailable) as exc:
         shadow.run_ncaaf_forward_shadow(
             object(), event_id="e", event_start_time=start.isoformat(), home_team="A", away_team="B",
