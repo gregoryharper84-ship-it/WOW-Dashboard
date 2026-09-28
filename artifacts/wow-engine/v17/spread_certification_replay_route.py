@@ -13,7 +13,6 @@ from pydantic import BaseModel, ConfigDict, Field
 from github_actions_oidc import scout_route_auth_dependency
 from v17.mlb_run_line_shadow import RUN_LINE_MODEL_FAMILY
 from v17.spread_certification_replay import run_nflverse_close_proxy_replay
-from v17.spread_espn_close_proxy_source import run_wnba_espn_close_proxy_replay
 from v17.spread_margin_challenger import SpreadChallengerUnavailable
 
 CAN_EXECUTE = False
@@ -47,7 +46,7 @@ def _mlb_historical_replay_blocker() -> dict[str, Any]:
     """Emit the audited MLB terminal blocker instead of unsafe retrospective scoring.
 
     The active MLB run-line family is built from immutable forward pregame score
-    snapshots and post-simulation exact run-line thresholding.  The repository does
+    snapshots and post-simulation exact run-line thresholding. The repository does
     not yet contain a proven frozen historical pregame state for this exact family,
     nor a governed historical ESPN-event crosswalk suitable for binding the public
     run-line close proxy. Reconstructing those inputs after outcomes are known would
@@ -90,25 +89,73 @@ def _mlb_historical_replay_blocker() -> dict[str, Any]:
     }
 
 
+def _wnba_historical_replay_blocker() -> dict[str, Any]:
+    """Fail closed before an unbounded per-event ESPN summary replay can proxy-timeout.
+
+    WNBA close proxies are sourced from one ESPN final-summary request per held-out
+    event. Running the entire held-out set inside one synchronous protected request
+    can exceed the production proxy budget. Certification must therefore use a
+    bounded resumable/batched acquisition artifact first; zero exact-line rows are
+    admitted by this synchronous route until that artifact exists.
+    """
+    return {
+        "status": "BLOCKED",
+        "code": "WNBA_SPREAD_HISTORICAL_CLOSE_PROXY_BATCH_ACQUISITION_REQUIRED",
+        "sport": "WNBA",
+        "detail": (
+            "full held-out WNBA ESPN final-summary close-proxy acquisition requires "
+            "a bounded resumable batch artifact; synchronous per-event acquisition is "
+            "intentionally not treated as certification evidence"
+        ),
+        "evidence_class": "ESPN_HISTORICAL_CLOSE_PROXY",
+        "evidence_scope": "HISTORICAL_CLOSE_PROXY_CERTIFICATION_REPLAY_ONLY",
+        "exact_line_metrics": {
+            "evidence_row_n": 0,
+            "bound_exact_line_n": 0,
+            "exact_line_coverage": 0.0,
+        },
+        "binding_audit": {
+            "acquisition_mode": "BATCH_ARTIFACT_REQUIRED",
+            "bound_event_n": 0,
+            "coverage": 0.0,
+            "source_provider": "ESPN_FINAL_SUMMARY_PICKCENTER",
+            "source_quote_timestamp_state": "HISTORICAL_FINAL_SUMMARY_CLOSE_PROXY_TIMESTAMP_UNAVAILABLE",
+            "historical_certification_evidence_only": True,
+            "live_card_receipt_eligible": False,
+            "clv_evidence": False,
+            "probability_publishable": False,
+            "can_execute": False,
+        },
+        "blockers": [
+            "WNBA_SPREAD_HISTORICAL_CLOSE_PROXY_BATCH_ARTIFACT_UNAVAILABLE",
+        ],
+        "required_next_evidence": [
+            "bounded resumable ESPN final-summary acquisition over the untouched WNBA holdout",
+            "frozen aggregate payload hash and exact event/team identity audit",
+            "exact-line calibration metrics computed only after the batch artifact is complete",
+        ],
+        "market_features_used": False,
+        "spread_line_used_as_feature": False,
+        "market_probability_substitution_used": False,
+        "moneyline_probability_used": False,
+        **_governance(),
+    }
+
+
 def execute_spread_certification_replay(
     db: Any,
     request: SpreadCertificationReplayRequest,
 ) -> dict[str, Any]:
     if request.sport == "MLB":
         return _mlb_historical_replay_blocker()
+    if request.sport == "WNBA":
+        return _wnba_historical_replay_blocker()
     try:
-        if request.sport == "NFL":
-            result = run_nflverse_close_proxy_replay(
-                client=db,
-                min_rows=request.min_rows,
-                ridge_alpha=request.ridge_alpha,
-            )
-        else:
-            result = run_wnba_espn_close_proxy_replay(
-                client=db,
-                min_rows=request.min_rows,
-                ridge_alpha=request.ridge_alpha,
-            )
+        result = run_nflverse_close_proxy_replay(
+            client=db,
+            min_rows=request.min_rows,
+            ridge_alpha=request.ridge_alpha,
+        )
     except SpreadChallengerUnavailable as exc:
         return {
             "status": "BLOCKED",
