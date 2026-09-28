@@ -30,7 +30,7 @@ def test_tennis_contract_ignores_odds_uses_real_delimiter_and_separates_tours():
     assert tennis._completed_score("W/O") is False
 
 
-def test_first_six_workflow_never_runs_maintenance_from_pull_request_and_push_is_marker_gated():
+def test_first_six_workflow_never_runs_maintenance_from_pull_request_and_main_push_is_path_scoped():
     repo_root = Path(__file__).resolve().parents[2]
     text = (repo_root / ".github" / "workflows" / "wow-v17-first-six-model-maintenance.yml").read_text()
     assert "pull_request:" in text
@@ -38,6 +38,8 @@ def test_first_six_workflow_never_runs_maintenance_from_pull_request_and_push_is
     assert "github.event_name == 'workflow_dispatch'" in text
     assert "github.event_name == 'push'" in text
     assert "github.ref == 'refs/heads/main'" in text
-    assert "contains(github.event.head_commit.message, '[RUN_FIRST_SIX]')" in text
+    assert "contains(github.event.head_commit.message, '[RUN_FIRST_SIX]')" not in text
+    assert "paths:" in text
+    assert '"artifacts/wow-engine/v17/team_state_challenger_maintenance.py"' in text
     assert 'WOW_CAN_EXECUTE: "false"' in text
     assert 'WOW_DRY_RUN_ONLY: "true"' in text

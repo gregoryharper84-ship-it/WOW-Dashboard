@@ -113,7 +113,7 @@ jobs:
     if: >-
       github.event_name == 'schedule' ||
       github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[RUN_FIRST_SIX]'))
+      (github.event_name == 'push' && github.ref == 'refs/heads/main')
     needs: verify
     runs-on: ubuntu-latest
     timeout-minutes: 90
