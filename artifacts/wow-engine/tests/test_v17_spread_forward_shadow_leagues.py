@@ -25,14 +25,12 @@ def _wnba_games():
 def _margin_row(index: int) -> MarginTrainingRow:
     start = datetime(2024, 1, 1, tzinfo=timezone.utc) + timedelta(days=index)
     return MarginTrainingRow(
-        sport="NFL",
         event_id=f"g{index}",
         event_start_time=start.isoformat(),
         feature_as_of=(start - timedelta(hours=1)).isoformat(),
-        home_team="H",
-        away_team="A",
-        home_margin=float((index % 13) - 6),
+        margin=int((index % 13) - 6),
         features={"a": float(index % 5), "b": float((index * 3) % 7)},
+        source_manifest_sha256=f"sha-{index:04d}",
     )
 
 
