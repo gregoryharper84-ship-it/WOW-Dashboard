@@ -1,13 +1,12 @@
 """Governed research-only NFL event-context challenger.
 
-This candidate exists to test a proved V1 early-season defect: the production
-recent-8 feature window blends prior-season games directly into current-season
-form (75% prior-season at Week 3 in the historical frozen feature ledger).
+This candidate tests a proved V1 early-season defect: the production recent-8
+window blends prior-season games directly into current-season form (75% prior
+season at Week 3 in the frozen historical feature ledger).
 
-The challenger never applies a home-underdog bonus and never consumes market
-prices.  Current-season and previous-season state are separate fitted inputs with
-explicit availability/share fields.  Every feature is reconstructed strictly
-from events before the target event.
+No sportsbook/market probability is consumed and no home-underdog bonus is
+applied. Current-season and previous-season state are separate fitted inputs.
+Every feature is reconstructed strictly from events before the target event.
 
 Candidate only: no certification, promotion, probability publication, or wager
 execution authority.
@@ -15,7 +14,7 @@ execution authority.
 from __future__ import annotations
 
 from dataclasses import asdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 import json
 from statistics import mean
@@ -36,7 +35,6 @@ from v17.team_state_challenger_training import (
 CAN_EXECUTE = False
 MODEL_FAMILY = "NFL_EVENT_CONTEXT_LOGIT_V2"
 FEATURE_SCHEMA_VERSION = "NFL_EVENT_CONTEXT_FEATURES_V2"
-SOURCE_POLICY_ID = "NFL_SEPARATED_SEASON_PRIOR_ONLY_V1"
 CURRENT_SEASON_REFERENCE_GAMES = 8.0
 PREVIOUS_SEASON_GAMES = 8
 MIN_TOTAL_PRIOR_GAMES = 4
@@ -74,15 +72,13 @@ def _dt(value: Any) -> datetime:
     if isinstance(value, datetime):
         parsed = value
     else:
-        raw = str(value or "").strip().replace("Z", "+00:00")
-        parsed = datetime.fromisoformat(raw)
+        parsed = datetime.fromisoformat(str(value or "").strip().replace("Z", "+00:00"))
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
 def _hash(value: Any) -> str:
-    return sha256(
-        json.dumps(value, sort_keys=True, separators=(",", ":"), default=str).encode()
-    ).hexdigest()
+    payload = json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+    return sha256(payload.encode()).hexdigest()
 
 
 def _avg(rows: Sequence[Mapping[str, Any]], field: str) -> float:
@@ -112,50 +108,47 @@ def _side_metrics(
 ) -> dict[str, float]:
     prior = [row for row in history if _dt(row["event_time"]) < target_time]
     current = [row for row in prior if int(row.get("season") or -1) == season]
-    previous = [row for row in prior if int(row.get("season") or -1) == season - 1][
-        -PREVIOUS_SEASON_GAMES:
-    ]
+    previous = [
+        row for row in prior if int(row.get("season") or -1) == season - 1
+    ][-PREVIOUS_SEASON_GAMES:]
     recent3 = current[-3:]
 
     season_n = len(current)
     current_share = min(season_n, int(CURRENT_SEASON_REFERENCE_GAMES)) / CURRENT_SEASON_REFERENCE_GAMES
     last_time = _dt(prior[-1]["event_time"]) if prior else target_time
-    rest_days = max(0.0, min(21.0, (target_time - last_time).total_seconds() / 86400.0))
+    rest_days = max(
+        0.0,
+        min(21.0, (target_time - last_time).total_seconds() / 86400.0),
+    )
 
     if len(prior) >= 2:
         qb_continuity = _jaccard(
             list(prior[-1].get("qb_ids") or []),
             list(prior[-2].get("qb_ids") or []),
         )
-        qb_continuity_available = 1.0
     else:
         qb_continuity = 0.0
-        qb_continuity_available = 0.0
 
     return {
         "total_prior_games": float(len(prior)),
-        "season_games": float(season_n),
-        "current_season_available": float(season_n > 0),
         "current_season_share": float(current_share),
         "season_win_rate": _win_rate(current),
         "season_point_diff": _avg(current, "point_diff"),
         "season_process_margin": _avg(current, "process_margin"),
-        "season_schedule_adjusted_point_diff": _avg(current, "schedule_adjusted_point_diff"),
-        # Lower turnovers/sacks allowed are better, so the edge helper reverses
-        # these two features at matchup assembly time.
+        "season_schedule_adjusted_point_diff": _avg(
+            current, "schedule_adjusted_point_diff"
+        ),
         "season_turnover_rate": _avg(current, "turnovers"),
         "season_sack_allowed_rate": _avg(current, "sacks_allowed"),
         "season_special_teams": _avg(current, "special_teams_epa"),
         "recent3_point_diff": _avg(recent3, "point_diff"),
         "recent3_process_margin": _avg(recent3, "process_margin"),
-        "previous_season_available": float(bool(previous)),
         "previous_season_win_rate": _win_rate(previous),
         "previous_season_point_diff": _avg(previous, "point_diff"),
         "previous_season_process_margin": _avg(previous, "process_margin"),
         "previous_season_turnover_rate": _avg(previous, "turnovers"),
         "previous_season_sack_allowed_rate": _avg(previous, "sacks_allowed"),
         "qb_continuity": qb_continuity,
-        "qb_continuity_available": qb_continuity_available,
         "rest_days": rest_days,
     }
 
@@ -164,7 +157,9 @@ def _edge(home: Mapping[str, float], away: Mapping[str, float], field: str) -> f
     return float(home[field] - away[field])
 
 
-def _reverse_edge(home: Mapping[str, float], away: Mapping[str, float], field: str) -> float:
+def _reverse_edge(
+    home: Mapping[str, float], away: Mapping[str, float], field: str
+) -> float:
     return float(away[field] - home[field])
 
 
@@ -183,17 +178,36 @@ def _feature_map(
         "season_win_rate_edge": _edge(home, away, "season_win_rate"),
         "season_point_diff_edge": _edge(home, away, "season_point_diff"),
         "season_process_margin_edge": _edge(home, away, "season_process_margin"),
-        "season_schedule_adjusted_point_diff_edge": _edge(home, away, "season_schedule_adjusted_point_diff"),
-        "season_turnover_rate_edge": _reverse_edge(home, away, "season_turnover_rate"),
-        "season_sack_allowed_rate_edge": _reverse_edge(home, away, "season_sack_allowed_rate"),
+        "season_schedule_adjusted_point_diff_edge": _edge(
+            home, away, "season_schedule_adjusted_point_diff"
+        ),
+        # Lower turnover and sack-allowed rates are favorable.
+        "season_turnover_rate_edge": _reverse_edge(
+            home, away, "season_turnover_rate"
+        ),
+        "season_sack_allowed_rate_edge": _reverse_edge(
+            home, away, "season_sack_allowed_rate"
+        ),
         "season_special_teams_edge": _edge(home, away, "season_special_teams"),
         "recent3_point_diff_edge": _edge(home, away, "recent3_point_diff"),
-        "recent3_process_margin_edge": _edge(home, away, "recent3_process_margin"),
-        "previous_season_win_rate_edge": _edge(home, away, "previous_season_win_rate"),
-        "previous_season_point_diff_edge": _edge(home, away, "previous_season_point_diff"),
-        "previous_season_process_margin_edge": _edge(home, away, "previous_season_process_margin"),
-        "previous_season_turnover_rate_edge": _reverse_edge(home, away, "previous_season_turnover_rate"),
-        "previous_season_sack_allowed_rate_edge": _reverse_edge(home, away, "previous_season_sack_allowed_rate"),
+        "recent3_process_margin_edge": _edge(
+            home, away, "recent3_process_margin"
+        ),
+        "previous_season_win_rate_edge": _edge(
+            home, away, "previous_season_win_rate"
+        ),
+        "previous_season_point_diff_edge": _edge(
+            home, away, "previous_season_point_diff"
+        ),
+        "previous_season_process_margin_edge": _edge(
+            home, away, "previous_season_process_margin"
+        ),
+        "previous_season_turnover_rate_edge": _reverse_edge(
+            home, away, "previous_season_turnover_rate"
+        ),
+        "previous_season_sack_allowed_rate_edge": _reverse_edge(
+            home, away, "previous_season_sack_allowed_rate"
+        ),
         "qb_continuity_edge": _edge(home, away, "qb_continuity"),
         "home_qb_continuity": float(home["qb_continuity"]),
         "away_qb_continuity": float(away["qb_continuity"]),
@@ -204,17 +218,18 @@ def _feature_map(
     return {name: float(features[name]) for name in FEATURE_ORDER}
 
 
-def build_rows(events: Sequence[Mapping[str, Any]]) -> tuple[list[BinaryTrainingRow], list[dict[str, Any]]]:
-    """Build strictly-prior NFL rows with separated season state.
-
-    Opponent adjustment is computed when each historical result is appended,
-    using only the opponent state that existed before that historical game.
-    """
+def build_rows(
+    events: Sequence[Mapping[str, Any]],
+) -> tuple[list[BinaryTrainingRow], list[dict[str, Any]]]:
+    """Build strictly-prior NFL rows with separated current/previous seasons."""
     history: dict[str, list[dict[str, Any]]] = {}
     rows: list[BinaryTrainingRow] = []
     metadata: list[dict[str, Any]] = []
 
-    ordered = sorted(events, key=lambda row: (_dt(row["event_start_time"]), str(row["event_id"])))
+    ordered = sorted(
+        events,
+        key=lambda row: (_dt(row["event_start_time"]), str(row["event_id"])),
+    )
     for event in ordered:
         start = _dt(event["event_start_time"])
         season = int(event.get("season") or 0)
@@ -228,11 +243,13 @@ def build_rows(events: Sequence[Mapping[str, Any]]) -> tuple[list[BinaryTraining
         away_history = history.get(away_team, [])
         hm = _side_metrics(home_history, season=season, target_time=start)
         am = _side_metrics(away_history, season=season, target_time=start)
+        home_score = float(event.get("home_score") or 0.0)
+        away_score = float(event.get("away_score") or 0.0)
 
         if (
             hm["total_prior_games"] >= MIN_TOTAL_PRIOR_GAMES
             and am["total_prior_games"] >= MIN_TOTAL_PRIOR_GAMES
-            and float(event.get("home_score")) != float(event.get("away_score"))
+            and home_score != away_score
         ):
             features = _feature_map(week=week, home=hm, away=am)
             manifest = {
@@ -244,38 +261,25 @@ def build_rows(events: Sequence[Mapping[str, Any]]) -> tuple[list[BinaryTraining
                 "v1_recent8_blend_reused": False,
                 "market_features_used": False,
                 "manual_probability_adjustments": False,
+                # Target-game QB participation is postgame evidence and is never
+                # used. Continuity comes only from the two strictly prior games.
                 "target_game_participant_ids_used": False,
             }
-            manifest_hash = _hash(manifest)
             rows.append(
                 BinaryTrainingRow(
                     event_id=str(event["event_id"]),
                     event_start_time=start.isoformat(),
-                    feature_as_of=(start.replace(microsecond=0)).isoformat().replace("+00:00", "Z")[:-1] + "Z" if False else (start.timestamp() - 1).__str__(),
-                    positive_outcome=float(event["home_score"]) > float(event["away_score"]),
+                    feature_as_of=(start - timedelta(seconds=1)).isoformat(),
+                    positive_outcome=home_score > away_score,
                     features=features,
-                    source_manifest_sha256=manifest_hash,
+                    source_manifest_sha256=_hash(manifest),
                 )
-            )
-            # BinaryTrainingRow requires an ISO feature_as_of. Replace the
-            # temporary scalar deterministically below to avoid local-time math.
-            rows[-1] = BinaryTrainingRow(
-                event_id=rows[-1].event_id,
-                event_start_time=rows[-1].event_start_time,
-                feature_as_of=datetime.fromtimestamp(start.timestamp() - 1, tz=timezone.utc).isoformat(),
-                positive_outcome=rows[-1].positive_outcome,
-                features=rows[-1].features,
-                source_manifest_sha256=rows[-1].source_manifest_sha256,
             )
             metadata.append({"source_manifest": manifest})
 
-        # Pre-game opponent-strength proxy for the event being appended. It is
-        # computed before either target result enters history.
+        # Opponent strength is frozen before the target result is appended.
         home_prior_strength = float(hm["season_point_diff"])
         away_prior_strength = float(am["season_point_diff"])
-        home_score = float(event.get("home_score") or 0.0)
-        away_score = float(event.get("away_score") or 0.0)
-
         history.setdefault(home_team, []).append(
             {
                 "event_time": start.isoformat(),
@@ -283,10 +287,14 @@ def build_rows(events: Sequence[Mapping[str, Any]]) -> tuple[list[BinaryTraining
                 "won": home_score > away_score,
                 "point_diff": home_score - away_score,
                 "process_margin": float(event.get("home_process_margin") or 0.0),
-                "schedule_adjusted_point_diff": (home_score - away_score) + away_prior_strength,
+                "schedule_adjusted_point_diff": (
+                    home_score - away_score + away_prior_strength
+                ),
                 "turnovers": float(event.get("home_turnovers") or 0.0),
                 "sacks_allowed": float(event.get("home_sacks_allowed") or 0.0),
-                "special_teams_epa": float(event.get("home_special_teams_epa") or 0.0),
+                "special_teams_epa": float(
+                    event.get("home_special_teams_epa") or 0.0
+                ),
                 "qb_ids": list(event.get("home_history_lineup_ids") or []),
             }
         )
@@ -297,20 +305,31 @@ def build_rows(events: Sequence[Mapping[str, Any]]) -> tuple[list[BinaryTraining
                 "won": away_score > home_score,
                 "point_diff": away_score - home_score,
                 "process_margin": float(event.get("away_process_margin") or 0.0),
-                "schedule_adjusted_point_diff": (away_score - home_score) + home_prior_strength,
+                "schedule_adjusted_point_diff": (
+                    away_score - home_score + home_prior_strength
+                ),
                 "turnovers": float(event.get("away_turnovers") or 0.0),
                 "sacks_allowed": float(event.get("away_sacks_allowed") or 0.0),
-                "special_teams_epa": float(event.get("away_special_teams_epa") or 0.0),
+                "special_teams_epa": float(
+                    event.get("away_special_teams_epa") or 0.0
+                ),
                 "qb_ids": list(event.get("away_history_lineup_ids") or []),
             }
         )
 
     if not rows:
-        raise TeamStateChallengerUnavailable("NFL_EVENT_CONTEXT_ROWS_EMPTY", "no leakage-safe rows")
+        raise TeamStateChallengerUnavailable(
+            "NFL_EVENT_CONTEXT_ROWS_EMPTY", "no leakage-safe rows"
+        )
     return rows, metadata
 
 
-def train_and_persist(client: Any, *, events: Sequence[Mapping[str, Any]], training_code_sha: str) -> dict[str, Any]:
+def train_and_persist(
+    client: Any,
+    *,
+    events: Sequence[Mapping[str, Any]],
+    training_code_sha: str,
+) -> dict[str, Any]:
     rows, metadata = build_rows(events)
     try:
         candidate = train_binary_candidate(
