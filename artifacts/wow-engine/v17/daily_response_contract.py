@@ -83,6 +83,21 @@ _ODDS_PROVIDER_ALIASES = frozenset({
     "ODDS_API_FREE_KEY",
     "ODDS_API_KEY",
 })
+_ORDERED_ACQUISITION_PATH_IDS = (
+    "ESPN_SCOREBOARD",
+    "ODDS_PROXY",
+    "RUNDOWN",
+)
+_ACQUISITION_ATTEMPT_FIELDS = frozenset({
+    "ordinal",
+    "path_id",
+    "path_state",
+    "blocker_code",
+    "originating_blocker_code",
+    "upstream_status",
+    "content_type_class",
+    "credential_alias",
+})
 
 _COMPACT_DIRECTION_FIELDS = (
     "terminal_label",
@@ -616,6 +631,62 @@ def _optional_upstream_status(value: Any) -> tuple[int | None, bool]:
     return None, False
 
 
+def _validated_acquisition_attempts(value: Any) -> tuple[list[dict[str, Any]] | None, bool]:
+    """Validate the closed max-three ordered attempt contract for persistence."""
+    if value is None:
+        return None, True
+    if not isinstance(value, (list, tuple)) or len(value) > 3:
+        return None, False
+    normalized: list[dict[str, Any]] = []
+    seen_paths: set[str] = set()
+    path_rank = {path: index for index, path in enumerate(_ORDERED_ACQUISITION_PATH_IDS)}
+    prior_rank = -1
+    for expected_ordinal, raw in enumerate(value, start=1):
+        if not isinstance(raw, dict) or set(raw) != _ACQUISITION_ATTEMPT_FIELDS:
+            return None, False
+        ordinal = raw.get("ordinal")
+        path_id = str(raw.get("path_id") or "").strip().upper()
+        path_state = str(raw.get("path_state") or "").strip().upper()
+        blocker_code = raw.get("blocker_code")
+        origin_code = raw.get("originating_blocker_code")
+        if ordinal != expected_ordinal or path_id not in path_rank:
+            return None, False
+        if path_id in seen_paths or path_rank[path_id] <= prior_rank:
+            return None, False
+        if path_state not in _ACQUISITION_PATH_STATES:
+            return None, False
+        for code in (blocker_code, origin_code):
+            if code is not None and _bounded_code(code) != code:
+                return None, False
+        if path_state == "CIRCUIT_OPEN_FROM_PRIOR_TYPED_FAILURE":
+            if not origin_code:
+                return None, False
+        elif origin_code is not None:
+            return None, False
+        upstream_status, upstream_ok = _optional_upstream_status(raw.get("upstream_status"))
+        content_type, content_ok = _allowlisted_optional(
+            raw.get("content_type_class"), _ODDS_CONTENT_TYPE_CLASSES
+        )
+        credential_alias, alias_ok = _allowlisted_optional(
+            raw.get("credential_alias"), _ODDS_PROVIDER_ALIASES
+        )
+        if not all((upstream_ok, content_ok, alias_ok)):
+            return None, False
+        normalized.append({
+            "ordinal": expected_ordinal,
+            "path_id": path_id,
+            "path_state": path_state,
+            "blocker_code": blocker_code,
+            "originating_blocker_code": origin_code,
+            "upstream_status": upstream_status,
+            "content_type_class": content_type,
+            "credential_alias": credential_alias,
+        })
+        seen_paths.add(path_id)
+        prior_rank = path_rank[path_id]
+    return normalized, True
+
+
 def acquisition_detail_reference(
     *, run_id: str, detail_available: bool, details_count: int
 ) -> dict[str, Any]:
@@ -754,6 +825,11 @@ def persist_acquisition_detail(
         fallback_upstream_status, fallback_upstream_status_ok = _optional_upstream_status(
             detail.get("fallback_upstream_status")
         )
+        primary_blocker_code = _bounded_code(detail.get("primary_blocker_code"))
+        fallback_blocker_code = _bounded_code(detail.get("fallback_blocker_code"))
+        acquisition_attempts, acquisition_attempts_ok = _validated_acquisition_attempts(
+            detail.get("attempts")
+        )
         if not all((
             primary_path_id_ok,
             fallback_path_id_ok,
@@ -765,6 +841,7 @@ def persist_acquisition_detail(
             fallback_alias_ok,
             primary_upstream_status_ok,
             fallback_upstream_status_ok,
+            acquisition_attempts_ok,
         )):
             return {
                 "status": "INVALID_DETAIL",
@@ -775,6 +852,63 @@ def persist_acquisition_detail(
                 "blockers": ["CROSS_SPORT_ACQUISITION_DETAIL_OBSERVABILITY_INVALID"],
                 "can_execute": False,
             }
+        if acquisition_attempts:
+            first_attempt = acquisition_attempts[0]
+            last_attempt = acquisition_attempts[-1] if len(acquisition_attempts) > 1 else None
+            projected = {
+                "primary_path_id": first_attempt["path_id"],
+                "primary_path_state": first_attempt["path_state"],
+                "primary_blocker_code": (
+                    first_attempt["originating_blocker_code"]
+                    or first_attempt["blocker_code"]
+                ),
+                "primary_upstream_status": first_attempt["upstream_status"],
+                "primary_content_type_class": first_attempt["content_type_class"],
+                "primary_provider_alias": first_attempt["credential_alias"],
+                "fallback_path_id": last_attempt["path_id"] if last_attempt else None,
+                "fallback_path_state": (
+                    last_attempt["path_state"] if last_attempt else "NOT_APPLICABLE"
+                ),
+                "fallback_blocker_code": (
+                    (
+                        last_attempt["originating_blocker_code"]
+                        or last_attempt["blocker_code"]
+                    )
+                    if last_attempt
+                    else None
+                ),
+                "fallback_upstream_status": last_attempt["upstream_status"] if last_attempt else None,
+                "fallback_content_type_class": (
+                    last_attempt["content_type_class"] if last_attempt else None
+                ),
+                "fallback_provider_alias": (
+                    last_attempt["credential_alias"] if last_attempt else None
+                ),
+            }
+            for field_name, projected_value in projected.items():
+                supplied = detail.get(field_name)
+                if supplied not in (None, "") and supplied != projected_value:
+                    return {
+                        "status": "INVALID_DETAIL",
+                        "detail_available": False,
+                        "details_expected": len(details),
+                        "details_persisted": 0,
+                        "board_completeness": False,
+                        "blockers": ["CROSS_SPORT_ACQUISITION_DETAIL_PROJECTION_CONTRADICTION"],
+                        "can_execute": False,
+                    }
+            primary_path_id = projected["primary_path_id"]
+            primary_path_state = projected["primary_path_state"]
+            primary_content_type = projected["primary_content_type_class"]
+            primary_alias = projected["primary_provider_alias"]
+            primary_upstream_status = projected["primary_upstream_status"]
+            primary_blocker_code = projected["primary_blocker_code"]
+            fallback_path_id = projected["fallback_path_id"]
+            fallback_path_state = projected["fallback_path_state"]
+            fallback_content_type = projected["fallback_content_type_class"]
+            fallback_alias = projected["fallback_provider_alias"]
+            fallback_upstream_status = projected["fallback_upstream_status"]
+            fallback_blocker_code = projected["fallback_blocker_code"]
         payload.append(
             {
                 "run_id": run_id,
@@ -796,16 +930,17 @@ def persist_acquisition_detail(
                 "blocker_code": _bounded_code(detail.get("blocker_code")),
                 "primary_path_id": primary_path_id,
                 "primary_path_state": primary_path_state,
-                "primary_blocker_code": _bounded_code(detail.get("primary_blocker_code")),
+                "primary_blocker_code": primary_blocker_code,
                 "fallback_path_id": fallback_path_id,
                 "fallback_path_state": fallback_path_state,
-                "fallback_blocker_code": _bounded_code(detail.get("fallback_blocker_code")),
+                "fallback_blocker_code": fallback_blocker_code,
                 "primary_upstream_status": primary_upstream_status,
                 "primary_content_type_class": primary_content_type,
                 "primary_provider_alias": primary_alias,
                 "fallback_upstream_status": fallback_upstream_status,
                 "fallback_content_type_class": fallback_content_type,
                 "fallback_provider_alias": fallback_alias,
+                "acquisition_attempts": acquisition_attempts,
                 "captured_at": captured_at,
                 "can_execute": False,
             }
@@ -895,6 +1030,7 @@ def read_acquisition_detail_page(
         "fallback_path_id,fallback_path_state,fallback_blocker_code,"
         "primary_upstream_status,primary_content_type_class,primary_provider_alias,"
         "fallback_upstream_status,fallback_content_type_class,fallback_provider_alias,"
+        "acquisition_attempts,"
         "captured_at"
     )
     try:

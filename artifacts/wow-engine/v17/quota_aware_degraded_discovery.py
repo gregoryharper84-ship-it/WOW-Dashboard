@@ -203,7 +203,7 @@ def _quota_aware_odds_proxy_factory(*args: Any, **kwargs: Any):
     started = kwargs.get("now") or datetime.now(timezone.utc)
 
     def fetch(family: str, target: Any = None):
-        public_ok, public_rows, _ = _public_schedule_fetch(
+        public_ok, public_rows, public_code = _public_schedule_fetch(
             family, started=started, horizon_hours=feed.horizon_hours()
         )
         if public_ok:
@@ -215,8 +215,53 @@ def _quota_aware_odds_proxy_factory(*args: Any, **kwargs: Any):
                 primary_path_id=discovery.PATH_ESPN_SCOREBOARD,
                 primary_path_state=discovery.succeeded_path_state(public_rows),
                 fallback_path_state=discovery.PATH_NOT_ATTEMPTED,
+                attempts=(
+                    discovery.acquisition_attempt(
+                        path_id=discovery.PATH_ESPN_SCOREBOARD,
+                        path_state=discovery.succeeded_path_state(public_rows),
+                    ),
+                ),
             )
-        return paid_fetch(family, target)
+        public_supported = public_code != "PUBLIC_DISCOVERY_UNSUPPORTED_FOR_FAMILY"
+        public_attempts = (
+            (
+                discovery.acquisition_attempt(
+                    path_id=discovery.PATH_ESPN_SCOREBOARD,
+                    path_state=discovery.PATH_FAILED,
+                    blocker_code=public_code,
+                ),
+            )
+            if public_supported
+            else ()
+        )
+        try:
+            paid_result = paid_fetch(family, target)
+        except discovery.DiscoveryFeedError as exc:
+            paid_acquisition = exc.acquisition
+            if not public_attempts or paid_acquisition is None:
+                raise
+            combined = replace(
+                paid_acquisition,
+                provider_status=discovery.PROVIDER_FAILED,
+                fallback_status=discovery.FALLBACK_FAILED,
+                primary_blocker_code=public_code,
+                attempts=discovery.ordered_acquisition_attempts(
+                    public_attempts, paid_acquisition.attempts
+                ),
+            )
+            raise discovery.DiscoveryFeedError(exc.code, acquisition=combined) from exc
+        if not public_attempts or not isinstance(paid_result, discovery.AcquisitionFeedResult):
+            return paid_result
+        return replace(
+            paid_result,
+            provider_status=discovery.PROVIDER_FAILED,
+            fallback_status=discovery.FALLBACK_SUCCEEDED,
+            blocker_code=public_code,
+            primary_blocker_code=public_code,
+            attempts=discovery.ordered_acquisition_attempts(
+                public_attempts, paid_result.attempts
+            ),
+        )
 
     setattr(fetch, "_wow_schedule_first", True)
     setattr(fetch, "_wow_acquisition_path_id", discovery.PATH_ESPN_SCOREBOARD)
@@ -237,6 +282,7 @@ def _quota_aware_rundown_factory(*args: Any, **kwargs: Any):
     def fetch(family: str, target: Any = None):
         context, state, blocked = _before_paid_call("RUNDOWN")
         if blocked:
+            origin = str(state.get("reason_code") or "")
             acquisition = discovery.AcquisitionFeedResult(
                 rows=(),
                 provider_status=discovery.PROVIDER_FAILED,
@@ -247,6 +293,14 @@ def _quota_aware_rundown_factory(*args: Any, **kwargs: Any):
                 primary_path_id=discovery.PATH_RUNDOWN,
                 primary_path_state=discovery.PATH_CIRCUIT_OPEN_PRIOR_FAILURE,
                 fallback_path_state=discovery.PATH_NOT_APPLICABLE,
+                attempts=(
+                    discovery.acquisition_attempt(
+                        path_id=discovery.PATH_RUNDOWN,
+                        path_state=discovery.PATH_CIRCUIT_OPEN_PRIOR_FAILURE,
+                        blocker_code=blocked,
+                        originating_blocker_code=origin,
+                    ),
+                ),
             )
             raise discovery.DiscoveryFeedError(blocked, acquisition=acquisition)
         try:

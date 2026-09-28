@@ -529,3 +529,150 @@ def test_observability_migration_is_additive_closed_and_reversible():
         for line in lowered.splitlines()
         if line.strip().startswith("add column if not exists")
     }
+
+
+def _ordered_detail():
+    attempts = discovery.ordered_acquisition_attempts(
+        (
+            discovery.acquisition_attempt(
+                path_id=discovery.PATH_ESPN_SCOREBOARD,
+                path_state=discovery.PATH_FAILED,
+                blocker_code="ESPN_HTTP_503",
+                upstream_status=503,
+            ),
+        ),
+        (
+            discovery.acquisition_attempt(
+                path_id=discovery.PATH_ODDS_PROXY,
+                path_state=discovery.PATH_FAILED,
+                blocker_code="ODDS_HTTP_429",
+                upstream_status=429,
+                content_type_class="JSON",
+                credential_alias="ODDS_API_PAID_KEY",
+            ),
+        ),
+        (
+            discovery.acquisition_attempt(
+                path_id=discovery.PATH_RUNDOWN,
+                path_state=discovery.PATH_CIRCUIT_OPEN_PRIOR_FAILURE,
+                blocker_code="RUNDOWN_CIRCUIT_OPEN",
+                originating_blocker_code="RUNDOWN_HTTP_403",
+            ),
+        ),
+    )
+    acquisition = discovery.AcquisitionFeedResult(
+        rows=(),
+        provider_status=discovery.PROVIDER_FAILED,
+        fallback_status=discovery.FALLBACK_FAILED,
+        exhaustion_status=discovery.PROVIDER_PATHS_EXHAUSTED,
+        blocker_code="ODDS_HTTP_429",
+        attempts=attempts,
+    )
+    return {
+        "family": "NFL",
+        "target_key": "RUNDOWN|2|NFL|REGULAR_SEASON",
+        "provider": "RUNDOWN",
+        "league": "NFL",
+        "regime": "REGULAR_SEASON",
+        "provider_sport_id": 2,
+        "sport_key": None,
+        "final_state": discovery.PROVIDER_RATE_LIMITED,
+        "provider_status": acquisition.provider_status,
+        "fallback_status": acquisition.fallback_status,
+        "exhaustion_status": acquisition.exhaustion_status,
+        "events_returned": 0,
+        "duplicate_rows_suppressed": 0,
+        "blocker_code": acquisition.blocker_code,
+        **acquisition.detail_fields(),
+        "can_execute": False,
+    }
+
+
+def test_ordered_attempts_persist_and_read_back_without_forbidden_fields():
+    db = _DB()
+    detail = _ordered_detail()
+    expected = [{"family": "NFL", "target_key": detail["target_key"]}]
+    result = persist_acquisition_detail(
+        db, run_id="ordered-run", details=[detail], expected_targets=expected
+    )
+    assert result["status"] == "PERSISTED"
+    stored = next(iter(db.acquisition_rows.values()))
+    assert [row["path_id"] for row in stored["acquisition_attempts"]] == [
+        "ESPN_SCOREBOARD",
+        "ODDS_PROXY",
+        "RUNDOWN",
+    ]
+    assert stored["acquisition_attempts"][-1]["originating_blocker_code"] == (
+        "RUNDOWN_HTTP_403"
+    )
+    assert stored["primary_path_id"] == "ESPN_SCOREBOARD"
+    assert stored["fallback_path_id"] == "RUNDOWN"
+    assert stored["fallback_blocker_code"] == "RUNDOWN_HTTP_403"
+    forbidden = {"url", "headers", "message", "body", "payload", "secret", "price", "probability"}
+    assert not forbidden.intersection(repr(stored).lower())
+    page = read_acquisition_detail_page(
+        db, run_id="ordered-run", offset=0, limit=1
+    )
+    assert page["rows"][0]["acquisition_attempts"] == stored["acquisition_attempts"]
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda detail: detail["attempts"].append(dict(detail["attempts"][-1], ordinal=4)),
+        lambda detail: detail["attempts"][0].update({"url": "https://provider.invalid"}),
+        lambda detail: detail["attempts"][0].update({"blocker_code": "secret=value"}),
+        lambda detail: detail["attempts"].reverse(),
+        lambda detail: detail["attempts"][-1].update({"originating_blocker_code": None}),
+        lambda detail: detail.update({"primary_path_id": "ODDS_PROXY"}),
+    ],
+)
+def test_ordered_attempt_persistence_fails_closed_on_invalid_evidence(mutate):
+    detail = copy.deepcopy(_ordered_detail())
+    mutate(detail)
+    result = persist_acquisition_detail(
+        _DB(),
+        run_id="invalid-ordered-run",
+        details=[detail],
+        expected_targets=[{"family": "NFL", "target_key": detail["target_key"]}],
+    )
+    assert result["status"] == "INVALID_DETAIL"
+    assert result["board_completeness"] is False
+    assert result["details_persisted"] == 0
+
+
+def test_legacy_detail_without_ordered_attempts_remains_readable():
+    detail = _ordered_detail()
+    detail.pop("attempts")
+    detail["primary_path_id"] = "ODDS_PROXY"
+    detail["primary_path_state"] = "FAILED_TYPED"
+    detail["primary_blocker_code"] = "ODDS_HTTP_429"
+    detail["fallback_path_id"] = "RUNDOWN"
+    detail["fallback_path_state"] = "FAILED_TYPED"
+    detail["fallback_blocker_code"] = "RUNDOWN_HTTP_403"
+    db = _DB()
+    result = persist_acquisition_detail(
+        db,
+        run_id="legacy-run",
+        details=[detail],
+        expected_targets=[{"family": "NFL", "target_key": detail["target_key"]}],
+    )
+    assert result["status"] == "PERSISTED"
+    page = read_acquisition_detail_page(db, run_id="legacy-run")
+    assert page["rows"][0]["acquisition_attempts"] is None
+    assert page["rows"][0]["primary_path_id"] == "ODDS_PROXY"
+
+
+def test_ordered_attempt_migration_is_additive_bounded_and_retains_old_rows():
+    sql = Path("v17/sql/20260927_v17_ordered_acquisition_attempts.sql").read_text()
+    lowered = sql.lower()
+    assert "add column if not exists acquisition_attempts jsonb" in lowered
+    assert "jsonb_array_length(payload) > 3" in lowered
+    assert "espn_scoreboard" in lowered
+    assert "odds_proxy" in lowered
+    assert "rundown" in lowered
+    assert "originating_blocker_code" in lowered
+    assert "existing rows remain readable" in lowered
+    assert "revert the application commit and retain this" in lowered
+    assert "drop column" not in lowered
+    assert "create policy" not in lowered
