@@ -18,6 +18,7 @@ on:
       - "artifacts/wow-engine/v17/team_state_challenger_training.py"
       - "artifacts/wow-engine/v17/team_state_challenger_maintenance.py"
       - "artifacts/wow-engine/v17/team_state_scoped_maintenance.py"
+      - "artifacts/wow-engine/v17/nfl_event_context_challenger.py"
       - "artifacts/wow-engine/v17/ncaaf_result_form_candidate.py"
       - "artifacts/wow-engine/v17/ncaaf_model_maintenance.py"
       - "artifacts/wow-engine/v17/multiclass_candidate_lifecycle.py"
@@ -37,6 +38,7 @@ on:
       - "artifacts/wow-engine/test_v17_team_state_intelligence.py"
       - "artifacts/wow-engine/test_v17_team_state_challenger_training.py"
       - "artifacts/wow-engine/test_v17_team_state_scoped_maintenance.py"
+      - "artifacts/wow-engine/test_v17_nfl_event_context_challenger.py"
       - "artifacts/wow-engine/test_v17_github_oidc.py"
       - "artifacts/wow-engine/test_v17_maintenance_terminal_truth.py"
   pull_request:
@@ -49,6 +51,7 @@ on:
       - "artifacts/wow-engine/v17/team_state_challenger_training.py"
       - "artifacts/wow-engine/v17/team_state_challenger_maintenance.py"
       - "artifacts/wow-engine/v17/team_state_scoped_maintenance.py"
+      - "artifacts/wow-engine/v17/nfl_event_context_challenger.py"
       - "artifacts/wow-engine/v17/ncaab_sportsdataverse_candidate.py"
       - "artifacts/wow-engine/v17/soccer_openfootball_candidate.py"
       - "artifacts/wow-engine/v17/tennis_valuebet_candidate.py"
@@ -59,6 +62,7 @@ on:
       - "artifacts/wow-engine/test_v17_team_state_intelligence.py"
       - "artifacts/wow-engine/test_v17_team_state_challenger_training.py"
       - "artifacts/wow-engine/test_v17_team_state_scoped_maintenance.py"
+      - "artifacts/wow-engine/test_v17_nfl_event_context_challenger.py"
       - "artifacts/wow-engine/test_v17_first_six_certification.py"
       - "artifacts/wow-engine/test_v17_first_six_source_contracts.py"
       - "artifacts/wow-engine/test_v17_maintenance_terminal_truth.py"
@@ -100,6 +104,7 @@ jobs:
           test_v17_team_state_intelligence.py
           test_v17_team_state_challenger_training.py
           test_v17_team_state_scoped_maintenance.py
+          test_v17_nfl_event_context_challenger.py
           test_v17_github_oidc.py
           test_v17_maintenance_terminal_truth.py
 
@@ -137,7 +142,7 @@ jobs:
           origin = os.environ["WOW_ACTION_ORIGIN"].rstrip("/")
           program = "LLP_DYNAMIC_TEAM_STATE_CHALLENGER_V1"
           team_state_scopes = [
-              "NFL", "NBA", "WNBA", "NCAAF", "MLB", "NCAAB",
+              "NFL", "NFL_EVENT_V2", "NBA", "WNBA", "NCAAF", "MLB", "NCAAB",
               "SOCCER_EPL", "SOCCER_BUNDESLIGA", "SOCCER_LALIGA",
               "SOCCER_SERIE_A", "SOCCER_LIGUE_1",
           ]
