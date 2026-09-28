@@ -3,14 +3,14 @@
 This overlay adds settlement evidence only for the four NFL routes that already
 have fitted specialists. It reuses the existing NFL evidence contract:
 
-* ESPN NFL scoreboard identity is used only to prove the exact provider event is
-  final; and
+* ESPN NFL scoreboard identity proves the exact provider event is final; and
 * the canonical nflverse weekly player-stat row used by the fitted NFL prop
   pipeline supplies the exact postgame stat value.
 
-The overlay never substitutes a sportsbook result, never treats a missing/late
-canonical row as zero or DNP, and never certifies, promotes, publishes, ranks, or
-executes a probability. Unsupported NFL prop categories remain fail-closed.
+Settlement remains restricted to immutable forward-evidence predictions. Missing
+or late canonical rows stay typed holds; they are never converted to zero, DNP,
+HIT, or MISS. The overlay never changes model math, calibration, certification,
+publication, ranking, promotion, registration, or execution authority.
 ``can_execute`` is always false.
 """
 from __future__ import annotations
@@ -23,7 +23,8 @@ import httpx
 
 import nfl_prop_auto_hydration as nfl_hydration
 import v17.prop_exact_route_settlement as settlement
-from v17.prop_universal_forward_evidence import EVIDENCE_SOURCE_KIND, route_key, route_token
+import v17.prop_exact_route_settlement_scope_guard as scope_guard
+from v17.prop_universal_forward_evidence import route_key, route_token
 
 
 NFL_SUPPORTED = frozenset({
@@ -35,7 +36,6 @@ NFL_SUPPORTED = frozenset({
 NFL_SETTLEMENT_SOURCE = "NFL_CANONICAL_NFLVERSE_PLAYER_STATS"
 _PATCH_MARKER = "_wow_nfl_exact_prop_settlement_overlay"
 _ORIGINAL_ROUTE_STATUS = settlement._route_status
-_ORIGINAL_RUNNER = settlement.run_exact_route_settlement
 
 
 def _route_status(key: tuple[str, str]) -> tuple[str, str | None, str | None]:
@@ -114,7 +114,10 @@ def _nfl_row_name(row: Mapping[str, Any]) -> str:
     return str(row.get("player_display_name") or row.get("player_name") or "")
 
 
-def _nfl_stat_value(row: Mapping[str, Any], stat_type: str) -> tuple[float | None, dict[str, float] | None]:
+def _nfl_stat_value(
+    row: Mapping[str, Any],
+    stat_type: str,
+) -> tuple[float | None, dict[str, float] | None]:
     if stat_type == "PASSING_YARDS":
         return settlement._finite_number(row.get("passing_yards")), None
     if stat_type == "RUSHING_YARDS":
@@ -129,8 +132,15 @@ def _nfl_stat_value(row: Mapping[str, Any], stat_type: str) -> tuple[float | Non
         }
         if any(value is None for value in raw_components.values()):
             return None, None
-        components = {key: float(value) for key, value in raw_components.items() if value is not None}
-        return float(sum(components.values())), components
+        components = {
+            key: float(value)
+            for key, value in raw_components.items()
+            if value is not None
+        }
+        touchdown_count = sum(components.values())
+        # The fitted ANYTIME_TD specialist is Bernoulli. Preserve that exact
+        # target semantics even when a player scores more than one touchdown.
+        return (1.0 if touchdown_count > 0.0 else 0.0), components
     return None, None
 
 
@@ -158,7 +168,11 @@ def settle_nfl_scalar(
             "can_execute": False,
         }
 
-    finality = _nfl_event_finality(role=role, event_start=event_start, http_get=http_get)
+    finality = _nfl_event_finality(
+        role=role,
+        event_start=event_start,
+        http_get=http_get,
+    )
     if finality.get("status") != "FINAL":
         return finality
 
@@ -191,9 +205,10 @@ def settle_nfl_scalar(
             "can_execute": False,
         }
 
+    expected_name = nfl_hydration._name_key(player_name)
     matches = [
         row for row in game_rows
-        if settlement._name_key(_nfl_row_name(row)) == settlement._name_key(player_name)
+        if nfl_hydration._name_key(_nfl_row_name(row)) == expected_name
     ]
     if not matches:
         return {
@@ -220,6 +235,7 @@ def settle_nfl_scalar(
             "blocker": "NFL_STAT_SETTLEMENT_UNSUPPORTED",
             "can_execute": False,
         }
+
     actual, components = _nfl_stat_value(matches[0], stat_type)
     if actual is None:
         return {
@@ -244,66 +260,34 @@ def settle_nfl_scalar(
     }
     if components is not None:
         result["settlement_components"] = components
-        result["touchdown_settlement_method"] = "RUSHING_PLUS_RECEIVING_PLUS_SPECIAL_TEAMS_TDS"
+        result["touchdown_settlement_method"] = (
+            "BERNOULLI_ANY_TOUCHDOWN_FROM_CANONICAL_TD_COMPONENTS"
+        )
     return result
 
 
-def _is_immutable_forward(row: Mapping[str, Any]) -> bool:
-    start = settlement._aware(row.get("event_start_time"))
-    model_ts = settlement._aware(row.get("model_timestamp"))
-    locked = settlement._aware(row.get("locked_at"))
-    return bool(
-        row.get("source_snapshot_id")
-        and str(row.get("evidence_source_kind") or "") == EVIDENCE_SOURCE_KIND
-        and start is not None
-        and model_ts is not None
-        and locked is not None
-        and model_ts < start
-        and locked < start
-    )
-
-
-def _eligible_nfl_forward_predictions(
-    db: Any,
+def run_exact_route_settlement(
+    req: settlement.ExactRouteSettlementRequest,
     *,
-    requested_routes: set[tuple[str, str]],
-    now: datetime,
-) -> list[dict[str, Any]]:
-    rows = settlement._paginate(
-        "wow_predictions.select_nfl_exact_route_forward_settlement_candidates",
-        lambda: db.table("wow_predictions")
-        .select(
-            "prediction_id,source_snapshot_id,event_id,event_start_time,model_timestamp,locked_at,"
-            "player,sport,stat_type,line,direction,model_family,model_artifact_version,"
-            "model_artifact_checksum,primary_failure_path,evidence_source_kind"
-        )
-        .eq("model_provider_identity", settlement.PROVIDER)
-        .lt("event_start_time", now.isoformat())
-        .order("event_start_time"),
-    )
-    return [
-        dict(row) for row in rows
-        if route_key(row.get("sport"), row.get("stat_type")) in requested_routes
-        and _is_immutable_forward(row)
-    ]
-
-
-def _run_nfl_settlement(
-    *,
-    requested_routes: list[tuple[str, str]],
-    limit: int,
     db: Any,
-    http_get: Callable[..., Any],
-    now: datetime,
+    http_get: Callable[..., Any] = httpx.get,
+    now: datetime | None = None,
 ) -> dict[str, Any]:
-    requested = set(requested_routes) & set(NFL_SUPPORTED)
-    predictions = _eligible_nfl_forward_predictions(db, requested_routes=requested, now=now)
+    """Settle one globally bounded immutable-forward batch across all routes."""
+    now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    requested_routes = settlement._parse_routes(req.routes)
+    supported_requested = set(requested_routes) & set(settlement.SUPPORTED_SETTLEMENT_ROUTES)
+    predictions = scope_guard._eligible_forward_predictions(
+        db,
+        requested_routes=supported_requested,
+        now=now,
+    )
     ids = [str(row["prediction_id"]) for row in predictions if row.get("prediction_id")]
     existing = settlement._existing_outcomes(db, ids) if ids else set()
     pending = [
         row for row in predictions
         if str(row.get("prediction_id")) not in existing
-    ][:limit]
+    ][: req.limit]
     snapshot_ids = [
         str(row["source_snapshot_id"])
         for row in pending
@@ -314,7 +298,8 @@ def _run_nfl_settlement(
     results: list[dict[str, Any]] = []
     for prediction in pending:
         prediction_id = str(prediction.get("prediction_id") or "")
-        snapshot = snapshot_map.get(str(prediction.get("source_snapshot_id") or ""))
+        snapshot_id = str(prediction.get("source_snapshot_id") or "")
+        snapshot = snapshot_map.get(snapshot_id)
         key = route_key(prediction.get("sport"), prediction.get("stat_type"))
         if not snapshot:
             results.append({
@@ -325,55 +310,49 @@ def _run_nfl_settlement(
                 "can_execute": False,
             })
             continue
-        result = settle_nfl_scalar(prediction, snapshot, http_get=http_get, now=now)
+
+        if key in settlement.MLB_SUPPORTED:
+            result = settlement.settle_mlb_scalar(
+                prediction,
+                snapshot,
+                http_get=http_get,
+                now=now,
+            )
+        elif key in settlement.WNBA_SUPPORTED:
+            result = settlement.settle_wnba_scalar(
+                prediction,
+                snapshot,
+                http_get=http_get,
+                now=now,
+            )
+        elif key in NFL_SUPPORTED:
+            result = settle_nfl_scalar(
+                prediction,
+                snapshot,
+                http_get=http_get,
+                now=now,
+            )
+        else:
+            result = {
+                "status": "EXACT_ROUTE_SETTLEMENT_ADAPTER_REQUIRED",
+                "can_execute": False,
+            }
+
         outcome = result.get("outcome") if isinstance(result.get("outcome"), dict) else None
         if outcome is not None:
             settlement._persist_outcome(db, outcome)
-        results.append({"prediction_id": prediction_id, "route": route_token(*key), **result})
-
-    settled = sum(1 for row in results if str(row.get("status") or "").startswith("SETTLED"))
-    return {
-        "eligible": len(predictions),
-        "pending": len(pending),
-        "settled": settled,
-        "held": len(results) - settled,
-        "results": results,
-    }
-
-
-def run_exact_route_settlement(
-    req: settlement.ExactRouteSettlementRequest,
-    *,
-    db: Any,
-    http_get: Callable[..., Any] = httpx.get,
-    now: datetime | None = None,
-) -> dict[str, Any]:
-    now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
-    requested_routes = settlement._parse_routes(req.routes)
-    nfl_routes = [key for key in requested_routes if key in NFL_SUPPORTED]
-    non_nfl_routes = [key for key in requested_routes if key not in NFL_SUPPORTED]
-
-    if non_nfl_routes:
-        base_req = req.model_copy(update={
-            "routes": [route_token(*key) for key in non_nfl_routes],
+        results.append({
+            "prediction_id": prediction_id,
+            "route": route_token(*key),
+            **result,
         })
-        base = _ORIGINAL_RUNNER(base_req, db=db, http_get=http_get, now=now)
-    else:
-        base = {
-            "pending_predictions_considered": 0,
-            "settled_or_voided": 0,
-            "held": 0,
-            "results": [],
-        }
 
-    nfl = _run_nfl_settlement(
-        requested_routes=nfl_routes,
-        limit=req.limit,
-        db=db,
-        http_get=http_get,
-        now=now,
-    ) if nfl_routes else {"eligible": 0, "pending": 0, "settled": 0, "held": 0, "results": []}
-
+    settled = sum(
+        1
+        for row in results
+        if str(row.get("status") or "").startswith("SETTLED")
+    )
+    held = len(results) - settled
     route_dispositions = []
     for key in requested_routes:
         status, source, blocker = settlement._route_status(key)
@@ -386,37 +365,32 @@ def run_exact_route_settlement(
             "can_execute": False,
         })
 
-    output = {
+    return {
         "terminal": True,
         "run_status": "COMPLETED",
         "requested_routes": len(requested_routes),
-        "supported_settlement_routes_requested": len(
-            set(requested_routes) & set(settlement.SUPPORTED_SETTLEMENT_ROUTES)
-        ),
-        "pending_predictions_considered": int(base.get("pending_predictions_considered") or 0) + nfl["pending"],
-        "settled_or_voided": int(base.get("settled_or_voided") or 0) + nfl["settled"],
-        "held": int(base.get("held") or 0) + nfl["held"],
-        "results": list(base.get("results") or []) + nfl["results"],
+        "supported_settlement_routes_requested": len(supported_requested),
+        "forward_evidence_predictions_eligible": len(predictions),
+        "pending_predictions_considered": len(pending),
+        "settled_or_voided": settled,
+        "held": held,
+        "results": results,
         "route_dispositions": route_dispositions,
         "full_settlement_inventory": settlement.build_settlement_inventory(),
-        "nfl_forward_evidence_predictions_eligible": nfl["eligible"],
-        "nfl_settlement_scope": "IMMUTABLE_FORWARD_EVIDENCE_ONLY",
+        "settlement_scope": "IMMUTABLE_FORWARD_EVIDENCE_ONLY",
+        "ordinary_prediction_rows_excluded": True,
         "calibration_performed": False,
         "certification_performed": False,
         "promotion_performed": False,
         "production_registration_performed": False,
         "can_execute": False,
     }
-    if "settlement_scope" in base:
-        output["settlement_scope"] = base["settlement_scope"]
-    if "ordinary_prediction_rows_excluded" in base:
-        output["ordinary_prediction_rows_excluded"] = base["ordinary_prediction_rows_excluded"]
-    return output
 
 
 def install() -> None:
     if getattr(settlement, _PATCH_MARKER, False):
         return
+
     settlement.NFL_SUPPORTED = NFL_SUPPORTED
     settlement.SUPPORTED_SETTLEMENT_ROUTES = frozenset(
         set(settlement.SUPPORTED_SETTLEMENT_ROUTES) | set(NFL_SUPPORTED)
@@ -424,13 +398,14 @@ def install() -> None:
     settlement._route_status = _route_status
     settlement.settle_nfl_scalar = settle_nfl_scalar
     settlement.run_exact_route_settlement = run_exact_route_settlement
+    scope_guard.run_exact_route_settlement = run_exact_route_settlement
 
-    # These modules import the runner by value. If they are already loaded at
-    # startup composition time, update those references to the governed overlay.
+    # These modules import the runner by value. Replace only that reference if
+    # they are already loaded so every production entry point sees the same
+    # immutable-forward settlement implementation.
     for module_name in (
         "v17.prop_lifecycle_autopilot",
         "v17.prop_forward_cohort_route",
-        "v17.prop_exact_route_settlement_scope_guard",
     ):
         module = sys.modules.get(module_name)
         if module is not None:
