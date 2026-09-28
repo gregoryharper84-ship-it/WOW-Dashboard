@@ -1,10 +1,10 @@
 from datetime import datetime, timedelta, timezone
 
+import v17.mlb_1ip_exact_settlement_overlay  # noqa: F401 - runtime settlement contract
 from v17.cross_sport_certification_inventory import CERTIFICATION_SPORTS
 from v17.prop_exact_route_settlement import (
     EXACT_SETTLEMENT_ADAPTER_REQUIRED,
     FANTASY_COMPONENT_SETTLEMENT_REQUIRED,
-    SEPARATE_SETTLEMENT_REQUIRED,
     SETTLEMENT_READY,
     WNBA_SUPPORTED,
     build_settlement_inventory,
@@ -82,7 +82,9 @@ def test_inventory_accounts_for_every_required_sport_and_keeps_special_contracts
     assert wnba_points["status"] == SETTLEMENT_READY
 
     one_ip = next(row for row in rows if row["sport"] == "MLB" and row["stat_type"] == "1ST_INNING_PITCHES_THROWN")
-    assert one_ip["status"] == SEPARATE_SETTLEMENT_REQUIRED
+    assert one_ip["status"] == SETTLEMENT_READY
+    assert one_ip["official_source"] == "MLB_STATS_API_OFFICIAL_GAME_FEED"
+    assert one_ip["blocker"] is None
 
     nba_fs = next(row for row in rows if row["sport"] == "NBA" and row["stat_type"] == "FANTASY_SCORE")
     assert nba_fs["status"] == FANTASY_COMPONENT_SETTLEMENT_REQUIRED

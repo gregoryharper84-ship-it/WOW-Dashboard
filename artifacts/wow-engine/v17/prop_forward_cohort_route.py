@@ -33,6 +33,9 @@ import v17.prop_universal_forward_schema_repair  # align with live Supabase snap
 # shared module objects used above; neither module grants publication/certification.
 import v17.basketball_candidate_forward_overlay  # noqa: F401
 import v17.wnba_composite_settlement_overlay  # noqa: F401
+# Exact MLB 1IP event-tree settlement is evidence plumbing only. It removes the
+# settlement blocker without changing the fitted model or publication authority.
+import v17.mlb_1ip_exact_settlement_overlay  # noqa: F401
 # Exact NFL postgame settlement is evidence plumbing only. It does not alter the
 # fitted specialists, calibration, certification, publication, or execution gates.
 import v17.nfl_prop_settlement_overlay  # noqa: F401
