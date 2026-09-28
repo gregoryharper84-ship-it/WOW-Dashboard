@@ -24,7 +24,7 @@ class _Response:
         return self._payload
 
 
-def _scoreboard(*, final=True):
+def _scoreboard(*, final=True, home="SF", away="ARI"):
     return {
         "events": [
             {
@@ -35,6 +35,14 @@ def _scoreboard(*, final=True):
                         "state": "post" if final else "in",
                     }
                 },
+                "competitions": [
+                    {
+                        "competitors": [
+                            {"homeAway": "home", "team": {"abbreviation": home}},
+                            {"homeAway": "away", "team": {"abbreviation": away}},
+                        ]
+                    }
+                ],
             }
         ]
     }
@@ -76,12 +84,12 @@ def _prediction(stat_type, *, line=100.5, direction="MORE"):
     }
 
 
-def _get_factory(*, final=True, csv_text=None, calls=None):
+def _get_factory(*, final=True, csv_text=None, calls=None, home="SF", away="ARI"):
     def get(url, **_kwargs):
         if calls is not None:
             calls.append(url)
         if "scoreboard" in url:
-            return _Response(payload=_scoreboard(final=final))
+            return _Response(payload=_scoreboard(final=final, home=home, away=away))
         return _Response(text=csv_text if csv_text is not None else _csv())
     return get
 
@@ -108,8 +116,6 @@ def test_nfl_exact_fitted_routes_extract_canonical_postgame_stats():
         "PASSING_YARDS": (287.0, 250.5),
         "RUSHING_YARDS": (12.0, 10.5),
         "RECEIVING_YARDS": (64.0, 60.5),
-        # ANYTIME_TD is the fitted Bernoulli target: two touchdowns still settle
-        # the modeled route as 1.0 (scored at least once), not as a count of 2.
         "ANYTIME_TD": (1.0, 0.5),
     }
     for stat_type, (expected, line) in cases.items():
@@ -155,6 +161,21 @@ def test_nfl_does_not_settle_until_exact_espn_event_is_final():
     assert result["status"] == "NOT_FINAL"
     assert "outcome" not in result
     assert all("stats_player_week" not in url for url in calls)
+    assert result["can_execute"] is False
+
+
+def test_nfl_event_id_cannot_cross_grade_different_teams():
+    result = nfl_overlay.settle_nfl_scalar(
+        _prediction("PASSING_YARDS"),
+        _snapshot(),
+        http_get=_get_factory(home="TB", away="MIN"),
+        now=NOW,
+    )
+    assert result["status"] == "OFFICIAL_EVENT_ID_MISMATCH"
+    assert result["blocker"] == "NFL_PROVIDER_EVENT_TEAM_IDENTITY_CONFLICT"
+    assert result["expected_sides"] == {"home": "SF", "away": "ARI"}
+    assert result["observed_sides"] == {"home": "TB", "away": "MIN"}
+    assert "outcome" not in result
     assert result["can_execute"] is False
 
 
