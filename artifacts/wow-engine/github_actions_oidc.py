@@ -67,6 +67,18 @@ PROP_ACTION_WORKFLOW_REF = (
 PROP_LIFECYCLE_AUTOPILOT_WORKFLOW_REF = (
     f"{REPOSITORY}/.github/workflows/wow-v17-prop-lifecycle-autopilot.yml@{REF}"
 )
+NFL_PROP_FORWARD_EVIDENCE_WORKFLOW_REF = (
+    f"{REPOSITORY}/.github/workflows/wow-v17-nfl-prop-forward-evidence.yml@{REF}"
+)
+MLB_PROP_FORWARD_EVIDENCE_WORKFLOW_REF = (
+    f"{REPOSITORY}/.github/workflows/wow-v17-mlb-prop-forward-evidence.yml@{REF}"
+)
+WNBA_PROP_FORWARD_EVIDENCE_WORKFLOW_REF = (
+    f"{REPOSITORY}/.github/workflows/wow-v17-wnba-prop-forward-evidence.yml@{REF}"
+)
+PRIORITY_PROP_LIFECYCLE_WORKFLOW_REF = (
+    f"{REPOSITORY}/.github/workflows/wow-v17-priority-prop-lifecycle.yml@{REF}"
+)
 FIRST_SIX_MODEL_MAINTENANCE_WORKFLOW_REF = (
     f"{REPOSITORY}/.github/workflows/wow-v17-first-six-model-maintenance.yml@{REF}"
 )
@@ -97,6 +109,14 @@ ALLOWED_WORKFLOW_REFS = frozenset({
     MLB_1IP_LINE_EXPANSION_MAINTENANCE_WORKFLOW_REF,
     SPREAD_MARGIN_REPLAY_WORKFLOW_REF,
 })
+# Forward-evidence producers and the bounded priority lifecycle are isolated from
+# the older automation set so their protected-main trust surface is explicit.
+PROP_EVIDENCE_WORKFLOW_REFS = frozenset({
+    NFL_PROP_FORWARD_EVIDENCE_WORKFLOW_REF,
+    MLB_PROP_FORWARD_EVIDENCE_WORKFLOW_REF,
+    WNBA_PROP_FORWARD_EVIDENCE_WORKFLOW_REF,
+    PRIORITY_PROP_LIFECYCLE_WORKFLOW_REF,
+})
 # Live scoring/evidence canaries are kept separate from the long-lived automation
 # set so their trust boundary stays explicit and independently reviewable.
 LIVE_CANARY_WORKFLOW_REFS = frozenset({
@@ -124,7 +144,11 @@ def validate_github_actions_claims(claims: dict[str, Any]) -> dict[str, Any]:
         if actual != expected:
             raise GitHubOIDCValidationError(f"GITHUB_OIDC_{field.upper()}_MISMATCH")
     workflow_ref = str(claims.get("workflow_ref") or "")
-    if workflow_ref not in ALLOWED_WORKFLOW_REFS and workflow_ref not in LIVE_CANARY_WORKFLOW_REFS:
+    if (
+        workflow_ref not in ALLOWED_WORKFLOW_REFS
+        and workflow_ref not in PROP_EVIDENCE_WORKFLOW_REFS
+        and workflow_ref not in LIVE_CANARY_WORKFLOW_REFS
+    ):
         raise GitHubOIDCValidationError("GITHUB_OIDC_WORKFLOW_REF_MISMATCH")
     event_name = str(claims.get("event_name") or "")
     if workflow_ref == SPREAD_FORWARD_PRODUCTION_CANARY_WORKFLOW_REF:
@@ -215,6 +239,7 @@ def scout_route_auth_dependency(existing_auth_dependency: Any) -> Any:
 
 __all__ = [
     "ALLOWED_WORKFLOW_REFS",
+    "PROP_EVIDENCE_WORKFLOW_REFS",
     "LIVE_CANARY_WORKFLOW_REFS",
     "AUDIENCE",
     "BASKETBALL_MODEL_MAINTENANCE_WORKFLOW_REF",
@@ -224,6 +249,7 @@ __all__ = [
     "FIRST_SIX_TRANSPORT_RESCUE_WORKFLOW_REF",
     "LLP_SHADOW_OBSERVER_WORKFLOW_REF",
     "MLB_1IP_LINE_EXPANSION_MAINTENANCE_WORKFLOW_REF",
+    "MLB_PROP_FORWARD_EVIDENCE_WORKFLOW_REF",
     "SPREAD_MARGIN_REPLAY_WORKFLOW_REF",
     "SPREAD_FORWARD_PRODUCTION_CANARY_WORKFLOW_REF",
     "NCAAF_FORWARD_VALIDATION_WORKFLOW_REF",
@@ -231,11 +257,14 @@ __all__ = [
     "NCAAF_MODEL_MAINTENANCE_WORKFLOW_REF",
     "NCAAF_ML_CLOSURE_WORKFLOW_REF",
     "NFL_FORWARD_SHADOW_WORKFLOW_REF",
+    "NFL_PROP_FORWARD_EVIDENCE_WORKFLOW_REF",
     "NFL_PROP_LIVE_CANARY_WORKFLOW_REF",
     "NHL_MODEL_MAINTENANCE_WORKFLOW_REF",
+    "PRIORITY_PROP_LIFECYCLE_WORKFLOW_REF",
     "PROP_ACTION_WORKFLOW_REF",
     "PROP_LIFECYCLE_AUTOPILOT_WORKFLOW_REF",
     "WNBA_PROP_CANDIDATE_WORKFLOW_REF",
+    "WNBA_PROP_FORWARD_EVIDENCE_WORKFLOW_REF",
     "WORKFLOW_REF",
     "authorize_action_key_or_multiscout_oidc",
     "scout_route_auth_dependency",
