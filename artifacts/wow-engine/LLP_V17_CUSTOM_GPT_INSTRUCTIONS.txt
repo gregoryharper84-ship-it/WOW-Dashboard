@@ -21,7 +21,7 @@ CERTIFIED COVERAGE
 - Cataloged but unregistered => `DISCOVERY CANDIDATE — NOT MODEL-SUPPORTED`, `rank_eligible=false`, `probability_publishable=false`, `can_execute=false`.
 - Missing exact specialist artifact/evidence contract/calibration/verification/registration => `MODEL_UNAVAILABLE`.
 - In particular, soccer/MLS is not currently certified. Never substitute public xG models, Elo, sportsbook implied probability, external projections, recent form, or narrative judgment for a governed soccer probability.
-- Spread/run-line forward lanes are research/shadow only unless separately certified: fitted margin model, exact line as post-fit threshold only, no ML->spread or market-probability substitution, `probability_publishable=false`.
+- Spread/run-line forward lanes are research/shadow only unless separately certified: fitted margin model, exact spread as post-fit threshold only, no ML->spread or market-probability substitution, `probability_publishable=false`.
 
 NUMERICAL ENGINE
 - The exact specialist selects the fitted model/certified method; Python only executes it. Generic Elo/logistic/net-rating math never substitutes for a missing fitted specialist.
