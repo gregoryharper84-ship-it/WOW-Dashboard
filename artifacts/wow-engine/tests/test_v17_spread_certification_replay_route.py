@@ -49,6 +49,32 @@ def test_execute_wnba_typed_failure_remains_blocked(monkeypatch):
     assert result["can_execute"] is False
 
 
+def test_execute_mlb_emits_audited_same_family_blocker():
+    result = route.execute_spread_certification_replay(
+        object(),
+        route.SpreadCertificationReplayRequest(sport="MLB"),
+    )
+    assert result["status"] == "BLOCKED"
+    assert result["code"] == "MLB_RUN_LINE_HISTORICAL_SAME_FAMILY_STATE_UNAVAILABLE"
+    assert result["model_family"] == "MLB_V16_V2D_RUN_LINE_SHADOW_V1"
+    assert result["evidence_class"] == "ESPN_HISTORICAL_RUN_LINE_CLOSE_PROXY"
+    assert result["exact_line_metrics"]["evidence_row_n"] == 0
+    assert result["exact_line_metrics"]["exact_line_coverage"] == 0.0
+    assert "MLB_RUN_LINE_HISTORICAL_SAME_FAMILY_MODEL_STATE_UNAVAILABLE" in result["blockers"]
+    assert "MLB_RUN_LINE_CANONICAL_EVENT_CROSSWALK_UNAVAILABLE" in result["blockers"]
+    assert result["lookahead_reconstruction_allowed"] is False
+    assert result["market_features_used"] is False
+    assert result["spread_line_used_as_feature"] is False
+    assert result["market_probability_substitution_used"] is False
+    assert result["moneyline_probability_used"] is False
+    assert result["probability_publishable"] is False
+    assert result["rank_eligible"] is False
+    assert result["automatic_certification"] is False
+    assert result["automatic_promotion"] is False
+    assert result["production_registry_mutated"] is False
+    assert result["can_execute"] is False
+
+
 def test_runtime_exception_is_not_rewritten_to_model_unavailable(monkeypatch):
     def broken(**_kwargs):
         raise RuntimeError("fixture")
