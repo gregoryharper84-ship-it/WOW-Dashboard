@@ -53,6 +53,13 @@ def _unit_interval(value: Any, *, field: str) -> float:
     return out
 
 
+def _required_text(value: Any, *, field: str) -> str:
+    text = str(value or "").strip().upper()
+    if not text:
+        raise JsOpportunityChainError(f"{field} is required")
+    return text
+
+
 def _parse_time(value: Any, *, field: str) -> datetime | None:
     if value in (None, ""):
         return None
@@ -107,6 +114,14 @@ def _capture_state(evidence: Mapping[str, Any]) -> dict[str, Any]:
         "feature_snapshot_proven_pregame": feature_snapshot_proven_pregame,
     }
 
+    if event_start is None:
+        return {
+            **common,
+            "capture_phase": derived,
+            "pregame_training_eligible": False,
+            "research_state": "JS_EVENT_START_UNAVAILABLE",
+        }
+
     if derived == LIVE:
         if not selection_proven_pregame:
             return {
@@ -144,7 +159,7 @@ def _capture_state(evidence: Mapping[str, Any]) -> dict[str, Any]:
             "research_state": "JS_CAPTURE_PHASE_UNKNOWN",
         }
 
-    if event_start is not None and not feature_snapshot_proven_pregame:
+    if not feature_snapshot_proven_pregame:
         return {
             **common,
             "capture_phase": PREGAME,
@@ -178,6 +193,7 @@ def build_opportunity_chain_features(evidence: Mapping[str, Any]) -> dict[str, A
     if direction not in {"MORE", "LESS"}:
         raise JsOpportunityChainError("direction must be MORE or LESS")
 
+    period = _required_text(evidence.get("period"), field="period")
     line = _finite(evidence.get("exact_line"), field="exact_line")
     role_median = _finite(evidence.get("role_adjusted_median"), field="role_adjusted_median")
     dispersion = _finite(evidence.get("robust_dispersion"), field="robust_dispersion")
@@ -185,11 +201,11 @@ def build_opportunity_chain_features(evidence: Mapping[str, Any]) -> dict[str, A
         raise JsOpportunityChainError("robust_dispersion must be > 0")
 
     dependencies = {
-        field: _unit_interval(evidence.get(field, 0.0), field=field)
+        field: _unit_interval(evidence.get(field), field=field)
         for field in _DEPENDENCY_FIELDS
     }
     self_generation = _unit_interval(
-        evidence.get("stat_self_generation_score", 0.5),
+        evidence.get("stat_self_generation_score"),
         field="stat_self_generation_score",
     )
 
@@ -230,6 +246,7 @@ def build_opportunity_chain_features(evidence: Mapping[str, Any]) -> dict[str, A
         "rank_eligible": False,
         "can_execute": False,
         "direction": direction,
+        "period": period,
         "exact_line": line,
         "role_adjusted_median": role_median,
         "robust_dispersion": dispersion,
