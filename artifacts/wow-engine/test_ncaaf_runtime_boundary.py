@@ -1,3 +1,4 @@
+# Protected-check refresh: non-behavioral test-file touch after branch-governance update.
 import asyncio
 import logging
 from pathlib import Path
