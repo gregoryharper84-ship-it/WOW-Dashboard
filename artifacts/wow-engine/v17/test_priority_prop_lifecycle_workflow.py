@@ -17,7 +17,7 @@ def test_priority_prop_lifecycle_is_bounded_fail_closed_and_sport_scoped():
     assert '--max-time 210' in text
     assert 'seed_date "${today}"' in text
     assert 'seed_date "${tomorrow}"' in text
-    assert 'candidate_offset\\":0' in text
+    assert 'candidate_offset":0' in text
     assert 'WOW_CAN_EXECUTE: "false"' in text
     assert 'WOW_DRY_RUN_ONLY: "true"' in text
     assert "automatic_certification" in text
@@ -46,7 +46,7 @@ def test_priority_workflow_seeds_before_each_sport_lifecycle_without_replacing_u
 
     assert priority.index('seed_date "${today}"') < priority.index('lifecycle_body=')
     assert priority.index('seed_date "${tomorrow}"') < priority.index('lifecycle_body=')
-    assert 'routes\\":[]' in universal
-    assert 'routes\\":[]' not in priority
+    assert 'routes":[]' in universal
+    assert 'routes":[]' not in priority
     assert 'name: wow-v17-prop-lifecycle-autopilot' in universal
     assert 'name: wow-v17-priority-prop-lifecycle' in priority
