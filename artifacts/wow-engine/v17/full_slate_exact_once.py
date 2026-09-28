@@ -1,17 +1,17 @@
 """Exact-once continuation for governed V17 FULL moneyline slates.
 
-The cross-sport resilience layer intentionally bounds model invocations.  That
+The cross-sport resilience layer intentionally bounds model invocations. That
 limit is a *batch* safety control, not permission to publish a partial FULL
-slate.  This overlay keeps compact/canary behavior unchanged while exhausting a
+slate. This overlay keeps compact/canary behavior unchanged while exhausting a
 FULL MONEYLINE discovery inventory through sequential bounded batches.
 
 No sporting probability, calibration, ranking threshold, terminal authority,
-or execution posture is changed.  ``can_execute`` remains false.
+or execution posture is changed. ``can_execute`` remains false.
 """
 from __future__ import annotations
 
 from contextvars import ContextVar
-from typing import Any, Callable, Iterable
+from typing import Any, Callable
 
 CAN_EXECUTE = False
 CONTRACT_VERSION = "V17_FULL_SLATE_EXACT_ONCE_V1"
@@ -24,10 +24,7 @@ _FULL_SLATE_CONTINUATION_ACTIVE: ContextVar[bool] = ContextVar(
 
 def _is_full_moneyline_request(req: Any) -> bool:
     response_mode = str(getattr(req, "response_mode", "") or "").upper()
-    lanes = {
-        str(value).upper()
-        for value in (getattr(req, "lanes", None) or ())
-    }
+    lanes = {str(value).upper() for value in (getattr(req, "lanes", None) or ())}
     return response_mode == "FULL" and "MONEYLINE" in lanes
 
 
@@ -40,9 +37,9 @@ def _route_full_slate_in_batches(
 ) -> list[Any]:
     """Route one immutable discovery inventory in sequential bounded batches.
 
-    Discovery is performed once upstream.  We only partition the already-frozen
+    Discovery is performed once upstream. We only partition the already-frozen
     inventory, so provider identity and acquisition evidence are not re-fetched
-    between continuation batches.  Each discovered event is presented to the
+    between continuation batches. Each discovered event is presented to the
     canonical router exactly once in this call.
     """
     from v17 import cross_sport_resilience_overlay as resilience
@@ -67,10 +64,11 @@ def _route_full_slate_in_batches(
             inventory.events = batch
 
             # The resilience wrapper otherwise inherits Daily's *remaining total*
-            # request budget.  For FULL-slate continuation that would turn a
+            # request budget. For FULL-slate continuation that would turn a
             # 12-row safety bound into a terminal slate cap (and can become zero
-            # after the canonical MLB lane).  Override it only for this batch.
-            token = resilience._REQUEST_MODEL_INVOCATION_LIMIT.set(bounded_batch)
+            # after the canonical MLB lane). Override it only for this batch,
+            # using the exact batch cardinality so the receipt remains truthful.
+            token = resilience._REQUEST_MODEL_INVOCATION_LIMIT.set(len(batch))
             try:
                 batch_rows = original_route(inventory, *args, **kwargs)
             finally:
