@@ -19,7 +19,16 @@ def test_scheduled_prop_lifecycle_skips_heavy_candidate_reregistration():
     assert "/internal/v17/nba-scalar-candidates/derive" in registration
     assert "/internal/v17/wnba-composite-candidate/derive" in registration
 
+    wake = text.split("- name: Wake runtime before non-idempotent lifecycle work", 1)[1].split(
+        "- name: Register exact basketball research candidates after runtime deploy",
+        1,
+    )[0]
+    assert "/health/live" in wake
+    assert "for attempt in $(seq 1 60)" in wake
+    assert "--request POST" not in wake
+
     lifecycle = text.split("- name: Run bounded universal V17 prop lifecycle cycle", 1)[1]
+    assert text.index("/health/live") < text.index("/v17/prop-lifecycle-autopilot-run")
     assert "/v17/prop-lifecycle-autopilot-run" in lifecycle
     assert 'WOW_CAN_EXECUTE: "false"' in text
     assert 'WOW_DRY_RUN_ONLY: "true"' in text
