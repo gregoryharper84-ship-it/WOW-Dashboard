@@ -108,7 +108,9 @@ def test_nfl_exact_fitted_routes_extract_canonical_postgame_stats():
         "PASSING_YARDS": (287.0, 250.5),
         "RUSHING_YARDS": (12.0, 10.5),
         "RECEIVING_YARDS": (64.0, 60.5),
-        "ANYTIME_TD": (2.0, 0.5),
+        # ANYTIME_TD is the fitted Bernoulli target: two touchdowns still settle
+        # the modeled route as 1.0 (scored at least once), not as a count of 2.
+        "ANYTIME_TD": (1.0, 0.5),
     }
     for stat_type, (expected, line) in cases.items():
         result = nfl_overlay.settle_nfl_scalar(
@@ -136,7 +138,10 @@ def test_nfl_exact_fitted_routes_extract_canonical_postgame_stats():
         "receiving_tds": 1.0,
         "special_teams_tds": 0.0,
     }
-    assert td["touchdown_settlement_method"] == "RUSHING_PLUS_RECEIVING_PLUS_SPECIAL_TEAMS_TDS"
+    assert td["outcome"]["actual_stat"] == 1.0
+    assert td["touchdown_settlement_method"] == (
+        "BERNOULLI_ANY_TOUCHDOWN_FROM_CANONICAL_TD_COMPONENTS"
+    )
 
 
 def test_nfl_does_not_settle_until_exact_espn_event_is_final():
