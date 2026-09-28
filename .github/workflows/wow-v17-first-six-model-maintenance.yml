@@ -72,7 +72,7 @@ permissions:
 
 concurrency:
   group: wow-v17-first-six-model-maintenance
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   verify:
@@ -141,11 +141,6 @@ jobs:
 
           origin = os.environ["WOW_ACTION_ORIGIN"].rstrip("/")
           program = "LLP_DYNAMIC_TEAM_STATE_CHALLENGER_V1"
-          team_state_scopes = [
-              "NFL", "NFL_EVENT_V2", "NBA", "WNBA", "NCAAF", "MLB", "NCAAB",
-              "SOCCER_EPL", "SOCCER_BUNDESLIGA", "SOCCER_LALIGA",
-              "SOCCER_SERIE_A", "SOCCER_LIGUE_1",
-          ]
           ancillary_endpoints = [
               ("BASKETBALL", "/internal/v17/basketball-model-maintenance"),
               ("NCAAF", "/internal/v17/ncaaf-model-maintenance"),
@@ -216,17 +211,22 @@ jobs:
                       time.sleep(10 * (attempt + 1))
               return transport_block(name, last_code, last_detail)
 
-          nfl = post_bounded(
-              "TEAM_STATE_NFL",
-              "/internal/v17/team-state-challenger-maintenance/NFL",
-              attempts=36,
+          nfl_event_v2 = post_bounded(
+              "TEAM_STATE_NFL_EVENT_V2",
+              "/internal/v17/team-state-challenger-maintenance/NFL_EVENT_V2",
+              attempts=3,
               timeout=180,
           )
-          assert nfl.get("program") == program, nfl
-          assert isinstance(nfl.get("rows"), list) and nfl.get("rows"), nfl
+          assert nfl_event_v2.get("program") == program, nfl_event_v2
+          assert isinstance(nfl_event_v2.get("rows"), list) and nfl_event_v2.get("rows"), nfl_event_v2
 
-          team_state_results = {"NFL": nfl}
-          for scope in team_state_scopes[1:]:
+          team_state_results = {"NFL_EVENT_V2": nfl_event_v2}
+          team_state_scopes = [
+              "NFL", "NBA", "WNBA", "NCAAF", "MLB", "NCAAB",
+              "SOCCER_EPL", "SOCCER_BUNDESLIGA", "SOCCER_LALIGA",
+              "SOCCER_SERIE_A", "SOCCER_LIGUE_1",
+          ]
+          for scope in team_state_scopes:
               payload = post_bounded(
                   f"TEAM_STATE_{scope}",
                   f"/internal/v17/team-state-challenger-maintenance/{scope}",

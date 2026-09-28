@@ -3,7 +3,7 @@ from pathlib import Path
 
 def _workflow_text() -> str:
     repo_root = Path(__file__).resolve().parents[2]
-    return (repo_root / ".github/workflows/wow-v17-first-six-model-maintenance.yml").read_text()
+    return (repo_root / ".github/workflows" / "wow-v17-first-six-model-maintenance.yml").read_text()
 
 
 def test_source_heavy_maintenance_retries_transient_http_and_application_blocks():
@@ -41,3 +41,14 @@ def test_model_quality_and_missing_credentials_are_not_marked_retryable():
     assert "CREDENTIAL" not in retry_section
     assert "RESEARCH_SCREEN_FAILED" not in retry_section
     assert "SCHEMA" not in retry_section
+
+
+def test_nfl_event_v2_is_not_blocked_behind_legacy_nfl_retry_loop():
+    text = _workflow_text()
+    v2_call = '"/internal/v17/team-state-challenger-maintenance/NFL_EVENT_V2"'
+    legacy_scope = '"NFL", "NBA", "WNBA", "NCAAF", "MLB", "NCAAB"'
+    assert v2_call in text
+    assert legacy_scope in text
+    assert text.index(v2_call) < text.index(legacy_scope)
+    assert "attempts=36" not in text
+    assert "cancel-in-progress: true" in text
