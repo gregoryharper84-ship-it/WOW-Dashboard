@@ -113,6 +113,60 @@ paths:
         '200': {description: Research-only fitted spread challenger shadow result or typed blocker}
         '401': {description: Authentication failed}
         '422': {description: Invalid NCAAF exact-line shadow request}
+  /internal/v17/nfl-spread-forward-shadow:
+    post:
+      operationId: scoreLlpV17NFLSpreadForwardShadow
+      x-openai-isConsequential: false
+      description: >-
+        Research-only NFL exact-line spread forward shadow using a fitted margin
+        distribution. Does not certify, promote, publish, rank, or execute. Exact
+        spread is a post-fit threshold; no market-probability substitution.
+      security: [{actionBearer: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/NFLSpreadForwardShadowRequest'}
+      responses:
+        '200': {description: Research-only NFL fitted spread shadow result or typed blocker}
+        '401': {description: Authentication failed}
+        '422': {description: Invalid NFL exact-line shadow request}
+  /internal/v17/wnba-spread-forward-shadow:
+    post:
+      operationId: scoreLlpV17WNBASpreadForwardShadow
+      x-openai-isConsequential: false
+      description: >-
+        Research-only WNBA exact-line spread forward shadow using verified ESPN
+        event/team identity and a fitted margin distribution. Does not certify,
+        promote, publish, rank, or execute; no market-probability substitution.
+      security: [{actionBearer: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/WNBASpreadForwardShadowRequest'}
+      responses:
+        '200': {description: Research-only WNBA fitted spread shadow result or typed blocker}
+        '401': {description: Authentication failed}
+        '422': {description: Invalid WNBA exact-line shadow request}
+  /internal/v17/mlb-run-line-forward-shadow:
+    post:
+      operationId: scoreLlpV17MLBRunLineForwardShadow
+      x-openai-isConsequential: false
+      description: >-
+        Research-only MLB exact run-line forward shadow using an immutable
+        pregame score snapshot and fitted margin distribution. Does not certify,
+        promote, publish, rank, or execute; no market-probability substitution.
+      security: [{actionBearer: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/MLBRunLineForwardShadowRequest'}
+      responses:
+        '200': {description: Research-only MLB fitted run-line shadow result or typed blocker}
+        '401': {description: Authentication failed}
+        '422': {description: Invalid MLB exact run-line shadow request}
   /record-recommendations:
     post:
       operationId: recordLlpV17Recommendations
@@ -172,6 +226,36 @@ components:
         away_team: {type: string, minLength: 1, maxLength: 160}
         home_spread: {type: number, exclusiveMinimum: -100, exclusiveMaximum: 100}
         season: {type: integer, minimum: 2000, maximum: 2100}
+    NFLSpreadForwardShadowRequest:
+      type: object
+      additionalProperties: false
+      required: [sport, event_id, event_start_time, home_team, away_team, home_spread]
+      properties:
+        sport: {type: string, enum: [NFL]}
+        event_id: {type: string, minLength: 1, maxLength: 128}
+        event_start_time: {type: string, format: date-time}
+        home_team: {type: string, minLength: 1, maxLength: 160}
+        away_team: {type: string, minLength: 1, maxLength: 160}
+        home_spread: {type: number, exclusiveMinimum: -30, exclusiveMaximum: 30}
+    WNBASpreadForwardShadowRequest:
+      type: object
+      additionalProperties: false
+      required: [sport, event_id, event_start_time, home_team_id, away_team_id, home_spread]
+      properties:
+        sport: {type: string, enum: [WNBA]}
+        event_id: {type: string, pattern: '^espn-.+$', maxLength: 128}
+        event_start_time: {type: string, format: date-time}
+        home_team_id: {type: string, pattern: '^espn-.+$', maxLength: 128}
+        away_team_id: {type: string, pattern: '^espn-.+$', maxLength: 128}
+        home_spread: {type: number, exclusiveMinimum: -20, exclusiveMaximum: 20}
+    MLBRunLineForwardShadowRequest:
+      type: object
+      additionalProperties: false
+      required: [sport, score_snapshot_id, home_run_line]
+      properties:
+        sport: {type: string, enum: [MLB]}
+        score_snapshot_id: {type: string, minLength: 1, maxLength: 128}
+        home_run_line: {type: number, exclusiveMinimum: -10, exclusiveMaximum: 10}
     RecommendationBatch:
       type: object
       additionalProperties: true
