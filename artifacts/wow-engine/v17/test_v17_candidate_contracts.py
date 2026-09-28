@@ -65,14 +65,17 @@ def test_wow_action_has_prop_and_team_event_delegation():
     assert "LLP_TEAM_BETTING_ENGINE" in text
 
 
-def test_llp_action_has_team_event_and_spread_but_no_prop_scoring_operation():
+def test_llp_action_has_team_event_and_line_shadows_but_no_prop_scoring_operation():
     text = LLP_SCHEMA.read_text()
     ops = _operations(text)
-    assert len(ops) == 9
+    assert len(ops) == 12
     assert "runLlpV17FullSlate" in ops
     assert "readLlpV17FullSlateRows" in ops
     assert "scoreLlpV17TeamEvent" in ops
     assert "scoreLlpV17SpreadForwardShadow" in ops
+    assert "scoreLlpV17NFLSpreadForwardShadow" in ops
+    assert "scoreLlpV17WNBASpreadForwardShadow" in ops
+    assert "scoreLlpV17MLBRunLineForwardShadow" in ops
     assert "recordLlpV17Recommendations" in ops
     assert "settleLlpV17Recommendations" in ops
     assert not any("Prop" in op for op in ops)
@@ -86,14 +89,34 @@ def test_llp_action_has_team_event_and_spread_but_no_prop_scoring_operation():
 
     route = text[text.index("  /internal/v17/spread-forward-shadow:"):text.index("  /record-recommendations:")]
     assert "operationId: scoreLlpV17SpreadForwardShadow" in route
-    assert "security: [{actionBearer: []}]" in route
+    assert "operationId: scoreLlpV17NFLSpreadForwardShadow" in route
+    assert "operationId: scoreLlpV17WNBASpreadForwardShadow" in route
+    assert "operationId: scoreLlpV17MLBRunLineForwardShadow" in route
+    assert route.count("security: [{actionBearer: []}]") == 4
     assert "Research-only NCAAF exact-line spread forward shadow" in route
+    assert "Research-only NFL exact-line spread forward shadow" in route
+    assert "Research-only WNBA exact-line spread forward shadow" in route
+    assert "Research-only MLB exact run-line forward shadow" in route
     assert "no moneyline-to-spread" in route
+    assert "no market-probability substitution" in route
 
-    request = text[text.index("    SpreadForwardShadowRequest:"):text.index("    RecommendationBatch:")]
-    assert "additionalProperties: false" in request
-    assert "required: [sport, event_id, event_start_time, home_team, away_team, home_spread, season]" in request
-    assert "sport: {type: string, enum: [NCAAF]}" in request
+    ncaaf_request = text[text.index("    SpreadForwardShadowRequest:"):text.index("    NFLSpreadForwardShadowRequest:")]
+    assert "additionalProperties: false" in ncaaf_request
+    assert "required: [sport, event_id, event_start_time, home_team, away_team, home_spread, season]" in ncaaf_request
+    assert "sport: {type: string, enum: [NCAAF]}" in ncaaf_request
+
+    nfl_request = text[text.index("    NFLSpreadForwardShadowRequest:"):text.index("    WNBASpreadForwardShadowRequest:")]
+    assert "required: [sport, event_id, event_start_time, home_team, away_team, home_spread]" in nfl_request
+    assert "sport: {type: string, enum: [NFL]}" in nfl_request
+
+    wnba_request = text[text.index("    WNBASpreadForwardShadowRequest:"):text.index("    MLBRunLineForwardShadowRequest:")]
+    assert "required: [sport, event_id, event_start_time, home_team_id, away_team_id, home_spread]" in wnba_request
+    assert "sport: {type: string, enum: [WNBA]}" in wnba_request
+    assert "pattern: '^espn-.+$'" in wnba_request
+
+    mlb_request = text[text.index("    MLBRunLineForwardShadowRequest:"):text.index("    RecommendationBatch:")]
+    assert "required: [sport, score_snapshot_id, home_run_line]" in mlb_request
+    assert "sport: {type: string, enum: [MLB]}" in mlb_request
 
     team_request = text[text.index("    LlpTeamEventRequest:"):]
     assert "market_family: {type: string, enum: [OUTRIGHT_WINNER]}" in team_request
