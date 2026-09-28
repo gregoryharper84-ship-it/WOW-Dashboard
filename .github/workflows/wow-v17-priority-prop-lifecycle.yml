@@ -4,6 +4,15 @@ on:
   schedule:
     - cron: "7 * * * *"
   workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/wow-v17-priority-prop-lifecycle.yml"
+      - "artifacts/wow-engine/v17/nfl_prop_evidence_control_plane.py"
+      - "artifacts/wow-engine/v17/mlb_prop_evidence_control_plane.py"
+      - "artifacts/wow-engine/v17/wnba_prop_evidence_control_plane.py"
+      - "artifacts/wow-engine/v17/fantasy_score_pick_request_bridge.py"
 
 permissions:
   contents: read
@@ -16,12 +25,33 @@ concurrency:
 jobs:
   priority-lifecycle:
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 11
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include:
+          - sport: NFL
+            producer_path: /internal/v17/nfl-prop-forward-evidence/acquire
+            max_candidates: 64
+            routes_json: '["NFL:PASSING_YARDS","NFL:RUSHING_YARDS","NFL:RECEIVING_YARDS","NFL:ANYTIME_TD"]'
+          - sport: MLB
+            producer_path: /internal/v17/mlb-prop-forward-evidence/acquire
+            max_candidates: 48
+            routes_json: '["MLB:PITCHER_STRIKEOUTS","MLB:PITCHING_OUTS","MLB:STRIKES_THROWN","MLB:BALLS_THROWN"]'
+          - sport: WNBA
+            producer_path: /internal/v17/wnba-prop-forward-evidence/acquire
+            max_candidates: 96
+            routes_json: '["WNBA:POINTS","WNBA:REBOUNDS","WNBA:ASSISTS","WNBA:THREE_POINTERS_MADE"]'
     env:
       WOW_SERVICE_URL: https://wow-governed-probability-engine.onrender.com
       WOW_OIDC_AUDIENCE: wow-v17-multiscout
       WOW_CAN_EXECUTE: "false"
       WOW_DRY_RUN_ONLY: "true"
+      SPORT: ${{ matrix.sport }}
+      PRODUCER_PATH: ${{ matrix.producer_path }}
+      MAX_CANDIDATES: ${{ matrix.max_candidates }}
+      ROUTES_JSON: ${{ matrix.routes_json }}
     steps:
       - name: Assert fail-closed context
         shell: bash
@@ -32,12 +62,13 @@ jobs:
           test -n "$ACTIONS_ID_TOKEN_REQUEST_URL"
           test -n "$ACTIONS_ID_TOKEN_REQUEST_TOKEN"
 
-      - name: Run bounded sport-scoped lifecycle batches
+      - name: Seed bounded priority evidence then run sport lifecycle
         shell: bash
         run: |
           set -euo pipefail
           separator='?'
           case "$ACTIONS_ID_TOKEN_REQUEST_URL" in *\?*) separator='&' ;; esac
+
           issue_oidc_token() {
             local token_json
             token_json="$(curl --silent --show-error --fail --connect-timeout 15 --max-time 30 \
@@ -54,29 +85,89 @@ jobs:
             exit 1
           fi
 
-          run_batch() {
-            local sport="$1"
-            local routes_json="$2"
+          seed_date() {
+            local slate_date="$1"
             local body
-            body="$(printf '{"routes":%s,"max_snapshots_per_route":2,"settlement_limit":20,"persist_health":true}' "${routes_json}")"
+            case "${SPORT}" in
+              NFL)
+                body="$(printf '{"requested_date":"%s","candidate_offset":0,"max_candidates":%s}' "${slate_date}" "${MAX_CANDIDATES}")"
+                ;;
+              MLB|WNBA)
+                body="$(printf '{"requested_date":"%s","requested_timezone":"America/Chicago","candidate_offset":0,"max_candidates":%s}' "${slate_date}" "${MAX_CANDIDATES}")"
+                ;;
+              *)
+                echo "Unsupported priority sport ${SPORT}." >&2
+                return 1
+                ;;
+            esac
+
             local oidc_token
             oidc_token="$(issue_oidc_token)"
             set +e
             local http_code
-            http_code="$(curl --silent --show-error --connect-timeout 20 --max-time 210 \
-              --output "/tmp/${sport}-priority-lifecycle.json" --write-out '%{http_code}' \
+            http_code="$(curl --silent --show-error --connect-timeout 20 --max-time 150 \
+              --output "/tmp/${SPORT}-evidence-${slate_date}.json" --write-out '%{http_code}' \
               --request POST --header "Authorization: Bearer ${oidc_token}" \
               --header 'Content-Type: application/json' --data "${body}" \
-              "${WOW_SERVICE_URL}/v17/prop-lifecycle-autopilot-run")"
+              "${WOW_SERVICE_URL}${PRODUCER_PATH}")"
             local curl_rc=$?
             set -e
             unset oidc_token
             if [ "${curl_rc}" -ne 0 ] || [ "${http_code}" -lt 200 ] || [ "${http_code}" -ge 300 ]; then
-              echo "${sport} priority lifecycle failed (curl_rc=${curl_rc}, HTTP ${http_code:-000})." >&2
-              test -f "/tmp/${sport}-priority-lifecycle.json" && head -c 2000 "/tmp/${sport}-priority-lifecycle.json" >&2 || true
+              echo "${SPORT} evidence producer failed for ${slate_date} (curl_rc=${curl_rc}, HTTP ${http_code:-000})." >&2
+              test -f "/tmp/${SPORT}-evidence-${slate_date}.json" && head -c 2000 "/tmp/${SPORT}-evidence-${slate_date}.json" >&2 || true
               return 1
             fi
-            SPORT="${sport}" python - <<'PY'
+
+            SPORT_NAME="${SPORT}" SLATE_DATE="${slate_date}" python - <<'PY'
+          import json, os
+          from pathlib import Path
+          sport=os.environ['SPORT_NAME']
+          slate=os.environ['SLATE_DATE']
+          payload=json.loads(Path(f'/tmp/{sport}-evidence-{slate}.json').read_text())
+          for key in ('can_execute','automatic_certification','automatic_promotion','probability_publishable'):
+              if payload.get(key) is not False:
+                  raise SystemExit(f'{sport}: {key} must remain false')
+          if payload.get('status') in {'DATA_UNOBTAINABLE','RUN_INVALID_PROP_SNAPSHOT_WRITE_FAILURE'}:
+              raise SystemExit(f"{sport}: evidence production failed: {payload.get('status')} blockers={payload.get('blockers')}")
+          print(json.dumps({
+              'sport': sport,
+              'requested_date': slate,
+              'status': payload.get('status'),
+              'total_candidates': payload.get('total_candidates'),
+              'attempted': payload.get('attempted'),
+              'already_captured': payload.get('already_captured'),
+              'hydrated': payload.get('hydrated'),
+              'persisted': payload.get('persisted'),
+              'held': payload.get('held'),
+              'can_execute': False,
+          }, sort_keys=True))
+          PY
+          }
+
+          today="$(TZ=America/Chicago date +%F)"
+          tomorrow="$(TZ=America/Chicago date -d '+1 day' +%F)"
+          seed_date "${today}"
+          seed_date "${tomorrow}"
+
+          lifecycle_body="$(printf '{"routes":%s,"max_snapshots_per_route":2,"settlement_limit":20,"persist_health":true}' "${ROUTES_JSON}")"
+          oidc_token="$(issue_oidc_token)"
+          set +e
+          http_code="$(curl --silent --show-error --connect-timeout 20 --max-time 210 \
+            --output "/tmp/${SPORT}-priority-lifecycle.json" --write-out '%{http_code}' \
+            --request POST --header "Authorization: Bearer ${oidc_token}" \
+            --header 'Content-Type: application/json' --data "${lifecycle_body}" \
+            "${WOW_SERVICE_URL}/v17/prop-lifecycle-autopilot-run")"
+          curl_rc=$?
+          set -e
+          unset oidc_token
+          if [ "${curl_rc}" -ne 0 ] || [ "${http_code}" -lt 200 ] || [ "${http_code}" -ge 300 ]; then
+            echo "${SPORT} priority lifecycle failed (curl_rc=${curl_rc}, HTTP ${http_code:-000})." >&2
+            test -f "/tmp/${SPORT}-priority-lifecycle.json" && head -c 2000 "/tmp/${SPORT}-priority-lifecycle.json" >&2 || true
+            exit 1
+          fi
+
+          python - <<'PY'
           import json, os
           from pathlib import Path
           sport=os.environ['SPORT']
@@ -106,8 +197,3 @@ jobs:
               'can_execute':False,
           }, sort_keys=True))
           PY
-          }
-
-          run_batch NFL '["NFL:PASSING_YARDS","NFL:RUSHING_YARDS","NFL:RECEIVING_YARDS","NFL:ANYTIME_TD"]'
-          run_batch MLB '["MLB:PITCHER_STRIKEOUTS","MLB:PITCHING_OUTS","MLB:STRIKES_THROWN","MLB:BALLS_THROWN"]'
-          run_batch WNBA '["WNBA:POINTS","WNBA:REBOUNDS","WNBA:ASSISTS","WNBA:THREE_POINTERS_MADE"]'
