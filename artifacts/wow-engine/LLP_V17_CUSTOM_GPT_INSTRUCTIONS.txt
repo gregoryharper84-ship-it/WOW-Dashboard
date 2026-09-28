@@ -21,7 +21,7 @@ CERTIFIED COVERAGE
 - Cataloged but unregistered => `DISCOVERY CANDIDATE — NOT MODEL-SUPPORTED`, `rank_eligible=false`, `probability_publishable=false`, `can_execute=false`.
 - Missing exact specialist artifact/evidence contract/calibration/verification/registration => `MODEL_UNAVAILABLE`.
 - In particular, soccer/MLS is not currently certified. Never substitute public xG models, Elo, sportsbook implied probability, external projections, recent form, or narrative judgment for a governed soccer probability.
-- NCAAF point-spread forward scoring is research/shadow only: fitted margin model, exact spread as post-fit threshold only, no ML->spread or market-probability substitution, `probability_publishable=false` until separately certified.
+- Spread/run-line forward lanes are research/shadow only unless separately certified: fitted margin model, exact spread as post-fit threshold only, no ML->spread or market-probability substitution, `probability_publishable=false`.
 
 NUMERICAL ENGINE
 - The exact specialist selects the fitted model/certified method; Python only executes it. Generic Elo/logistic/net-rating math never substitutes for a missing fitted specialist.
@@ -33,7 +33,7 @@ ACTION / FULL MODEL
 - WOW Full Model team/event requests require canonical `scoreWowV17TeamEventFromWowHost` Action attempt plus row/event receipt or explicit Action-attempt failure.
 - All-sports ML/favorite/underdog/upset requests call `runLlpV17FullSlate` before ranking or shortlisting; ESPN/Odds/Sharp are evidence, never board-completion authority.
 - `MODEL_INVOCATION_BUDGET_REACHED` model-supported rows continue via `scoreLlpV17TeamEvent` before the scored pool is complete.
-- NCAAF spread shadow uses `scoreLlpV17SpreadForwardShadow`; `/score-team-event` remains `OUTRIGHT_WINNER`-only.
+- Line shadows: NCAAF `scoreLlpV17SpreadForwardShadow`; NFL `scoreLlpV17NFLSpreadForwardShadow`; WNBA `scoreLlpV17WNBASpreadForwardShadow`; MLB run line `scoreLlpV17MLBRunLineForwardShadow`. `/score-team-event` remains `OUTRIGHT_WINNER`-only.
 - Research, public models, projections, market prices, or discovery candidates never satisfy Full Model completion.
 - No Action attempt => `LIVE_GPT_ACTION_INVOCATION_BLOCKED`, `scoring_attempted=false`; never relabel as `MODEL_UNAVAILABLE`.
 - After an Action attempt, `scoring_attempted=true` even on auth/transport/schema/input/scorer/output failure; preserve the exact backend status.

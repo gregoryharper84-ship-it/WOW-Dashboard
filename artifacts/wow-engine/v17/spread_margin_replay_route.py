@@ -12,6 +12,10 @@ from v17.mlb_run_line_shadow import (
     run_mlb_run_line_forward_shadow,
 )
 from v17.spread_exact_line_replay import run_exact_line_replay
+from v17.spread_forward_auto_canary import (
+    run_nfl_spread_auto_canary,
+    run_wnba_spread_auto_canary,
+)
 from v17.spread_forward_shadow import run_ncaaf_forward_shadow
 from v17.spread_forward_shadow_leagues import run_nfl_forward_shadow, run_wnba_forward_shadow
 from v17.spread_margin_challenger import SpreadChallengerUnavailable
@@ -166,6 +170,16 @@ def _execute_forward(sport: str, event_id: str, fn: Any) -> dict[str, Any]:
     return {**result, **_governance_fields()}
 
 
+def _execute_auto_canary(sport: str, fn: Any) -> dict[str, Any]:
+    try:
+        result = fn()
+    except SpreadChallengerUnavailable as exc:
+        return {"status": "BLOCKED", "code": exc.code, "sport": sport, "detail": str(exc), "identity_acquisition_location": "BACKEND_RUNTIME", **_governance_fields()}
+    except Exception as exc:  # noqa: BLE001
+        return {"status": "BLOCKED", "code": f"{sport}_SPREAD_AUTO_CANARY_RUNTIME_FAILED", "sport": sport, "error_type": type(exc).__name__, "identity_acquisition_location": "BACKEND_RUNTIME", **_governance_fields()}
+    return {**result, **_governance_fields()}
+
+
 def execute_spread_forward_shadow(db: Any, request: SpreadForwardShadowRequest) -> dict[str, Any]:
     return _execute_forward("NCAAF", request.event_id, lambda: run_ncaaf_forward_shadow(db, event_id=request.event_id, event_start_time=request.event_start_time, home_team=request.home_team, away_team=request.away_team, home_spread=request.home_spread, season=request.season))
 
@@ -176,6 +190,14 @@ def execute_nfl_spread_forward_shadow(db: Any, request: NFLSpreadForwardShadowRe
 
 def execute_wnba_spread_forward_shadow(db: Any, request: WNBASpreadForwardShadowRequest) -> dict[str, Any]:
     return _execute_forward("WNBA", request.event_id, lambda: run_wnba_forward_shadow(db, event_id=request.event_id, event_start_time=request.event_start_time, home_team_id=request.home_team_id, away_team_id=request.away_team_id, home_spread=request.home_spread))
+
+
+def execute_nfl_spread_auto_canary(db: Any) -> dict[str, Any]:
+    return _execute_auto_canary("NFL", lambda: run_nfl_spread_auto_canary(db))
+
+
+def execute_wnba_spread_auto_canary(db: Any) -> dict[str, Any]:
+    return _execute_auto_canary("WNBA", lambda: run_wnba_spread_auto_canary(db))
 
 
 def execute_mlb_run_line_forward_shadow(db: Any, request: MLBRunLineForwardShadowRequest) -> dict[str, Any]:
@@ -219,6 +241,14 @@ def install_spread_margin_replay_route(app: FastAPI, *, auth_dependency: Any, db
         @app.post("/internal/v17/wnba-spread-forward-shadow", dependencies=auth, operation_id="scoreWowV17WNBASpreadForwardShadow")
         def score_wnba_forward_shadow(request: WNBASpreadForwardShadowRequest) -> dict[str, Any]:
             return execute_wnba_spread_forward_shadow(db_client_fn(), request)
+    if "/internal/v17/nfl-spread-forward-auto-canary" not in paths:
+        @app.post("/internal/v17/nfl-spread-forward-auto-canary", dependencies=auth, operation_id="runWowV17NFLSpreadForwardAutoCanary")
+        def run_nfl_auto_canary() -> dict[str, Any]:
+            return execute_nfl_spread_auto_canary(db_client_fn())
+    if "/internal/v17/wnba-spread-forward-auto-canary" not in paths:
+        @app.post("/internal/v17/wnba-spread-forward-auto-canary", dependencies=auth, operation_id="runWowV17WNBASpreadForwardAutoCanary")
+        def run_wnba_auto_canary() -> dict[str, Any]:
+            return execute_wnba_spread_auto_canary(db_client_fn())
     if "/internal/v17/mlb-run-line-forward-shadow" not in paths:
         @app.post("/internal/v17/mlb-run-line-forward-shadow", dependencies=auth, operation_id="scoreWowV17MLBRunLineForwardShadow")
         def score_mlb_run_line_forward_shadow(request: MLBRunLineForwardShadowRequest) -> dict[str, Any]:
@@ -231,6 +261,7 @@ __all__ = [
     "PRODUCTION_REGISTRY_MUTATED", "SpreadForwardShadowRequest", "NFLSpreadForwardShadowRequest",
     "WNBASpreadForwardShadowRequest", "MLBRunLineForwardShadowRequest", "SpreadMarginReplayRequest", "SpreadMarketEvidenceRequest",
     "execute_spread_exact_line_replay", "execute_spread_forward_shadow", "execute_nfl_spread_forward_shadow",
-    "execute_wnba_spread_forward_shadow", "execute_mlb_run_line_forward_shadow", "execute_spread_margin_replay", "execute_spread_market_evidence_collection",
+    "execute_wnba_spread_forward_shadow", "execute_nfl_spread_auto_canary", "execute_wnba_spread_auto_canary",
+    "execute_mlb_run_line_forward_shadow", "execute_spread_margin_replay", "execute_spread_market_evidence_collection",
     "install_spread_margin_replay_route",
 ]
