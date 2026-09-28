@@ -10,6 +10,7 @@ from fastapi import FastAPI
 
 import v17.prop_forward_cohort_thesis_dedupe  # installs statistical-independence guard
 import v17.fantasy_score_forward_cohort_thesis_dedupe as fantasy_thesis_dedupe
+import v17.prop_lifecycle_artifact_identity_overlay as lifecycle_identity_overlay
 from v17.fantasy_score_forward_cohort_route import install_fantasy_score_forward_cohort_route
 from v17.phase_a_row_publication import install_phase_a_row_publication
 from v17.prop_action_canary_capture import install_prop_action_canary_capture
@@ -97,6 +98,7 @@ def install_prop_forward_cohort_route(
     cohort_market_api = ForwardCohortMarketAdapter(market_api)
     _install_scheduler(app, db_client_fn=db_client_fn, market_api=cohort_market_api)
 
+    lifecycle_identity_overlay.install()
     install_prop_lifecycle_autopilot(
         app,
         auth_dependency=auth_dependency,
