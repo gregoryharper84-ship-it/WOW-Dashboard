@@ -56,6 +56,8 @@ event_identity_complete
 
 An invoked Action timeout, disconnect, 5xx response, or missing valid terminal response remains `ACTION_TRANSPORT_TIMEOUT` or `ACTION_TRANSPORT_FAILURE`. Preserve `action_invocation_attempted=true`. Do not relabel Action/HTTP transport failure as `DISCOVERY_OR_ACQUISITION_INCOMPLETE`, `MODEL_SCORER_FAILED`, or `MODEL_UNAVAILABLE`.
 
+Transport failure does not terminate board discovery. Continue authorized official/free discovery and reconciliation for rows reachable without the failed Action; retain every discovered row; report `BOARD_COVERAGE_STATUS=PARTIAL_OR_UNPROVEN`; leave `sport_model_selected`, `sport_model_invoked`, and downstream model stages `NOT_ESTABLISHED` unless a terminal backend receipt proves them. Official LLP picks remain blocked until governed scoring succeeds.
+
 For ambiguous stateful scoring completion, recover the immutable prediction receipt before retrying. Retry only unresolved work with the same stable IDs. A transport failure proves neither model absence nor acquisition failure, and the row remains `rank_eligible=false` until a terminal scoring receipt exists.
 
 ## Typed model failure taxonomy
