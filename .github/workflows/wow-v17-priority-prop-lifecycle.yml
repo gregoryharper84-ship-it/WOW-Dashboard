@@ -4,17 +4,9 @@ on:
   schedule:
     - cron: "7 * * * *"
   workflow_dispatch:
-  push:
-    branches:
-      - main
-    paths:
-      - ".github/workflows/wow-v17-priority-prop-lifecycle.yml"
-      - "artifacts/wow-engine/v17/prop_priority_lifecycle_runtime.py"
-      - "artifacts/wow-engine/v17/prop_forward_cohort_route.py"
-      - "artifacts/wow-engine/v17/nfl_prop_evidence_control_plane.py"
-      - "artifacts/wow-engine/v17/mlb_prop_evidence_control_plane.py"
-      - "artifacts/wow-engine/v17/wnba_prop_evidence_control_plane.py"
-      - "artifacts/wow-engine/v17/fantasy_score_pick_request_bridge.py"
+  workflow_run:
+    workflows: ["wow-v17-render-production-deploy"]
+    types: [completed]
 
 permissions:
   contents: read
@@ -26,6 +18,9 @@ concurrency:
 
 jobs:
   priority-lifecycle:
+    if: >-
+      github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main')
     runs-on: ubuntu-latest
     timeout-minutes: 11
     strategy:
