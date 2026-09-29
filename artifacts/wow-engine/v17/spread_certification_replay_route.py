@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from github_actions_oidc import scout_route_auth_dependency
 from v17.mlb_run_line_shadow import RUN_LINE_MODEL_FAMILY
 from v17.nfl_spread_context_challenger import run_nfl_context_v2_close_proxy_replay
+from v17.nfl_spread_scale_calibrated_challenger import run_nfl_context_v3_scale_calibrated_replay
 from v17.spread_certification_replay import run_nflverse_close_proxy_replay
 from v17.spread_margin_challenger import SpreadChallengerUnavailable
 
@@ -27,7 +28,7 @@ GLOBAL_TERMINAL_REDUCER = "V17_TERMINAL_REDUCER"
 class SpreadCertificationReplayRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     sport: Literal["MLB", "NFL", "WNBA"]
-    variant: Literal["V1", "NFL_CONTEXT_V2"] = "V1"
+    variant: Literal["V1", "NFL_CONTEXT_V2", "NFL_CONTEXT_V3_SCALE_CAL"] = "V1"
     min_rows: int = Field(default=300, ge=100, le=25000)
     ridge_alpha: float = Field(default=4.0, gt=0.0, le=100.0)
 
@@ -125,7 +126,7 @@ def _wnba_historical_replay_blocker() -> dict[str, Any]:
 
 
 def execute_spread_certification_replay(db: Any, request: SpreadCertificationReplayRequest) -> dict[str, Any]:
-    if request.variant == "NFL_CONTEXT_V2" and request.sport != "NFL":
+    if request.variant in {"NFL_CONTEXT_V2", "NFL_CONTEXT_V3_SCALE_CAL"} and request.sport != "NFL":
         return {
             "status": "BLOCKED",
             "code": "SPREAD_CERTIFICATION_VARIANT_SPORT_MISMATCH",
@@ -139,7 +140,9 @@ def execute_spread_certification_replay(db: Any, request: SpreadCertificationRep
     if request.sport == "WNBA":
         return _wnba_historical_replay_blocker()
     try:
-        if request.variant == "NFL_CONTEXT_V2":
+        if request.variant == "NFL_CONTEXT_V3_SCALE_CAL":
+            result = run_nfl_context_v3_scale_calibrated_replay(client=db, ridge_alpha=request.ridge_alpha)
+        elif request.variant == "NFL_CONTEXT_V2":
             result = run_nfl_context_v2_close_proxy_replay(client=db, ridge_alpha=request.ridge_alpha)
         else:
             result = run_nflverse_close_proxy_replay(
