@@ -13,11 +13,14 @@ def test_priority_prop_lifecycle_is_bounded_fail_closed_and_sport_scoped():
     assert '/internal/v17/nfl-prop-forward-evidence/acquire' in text
     assert '/internal/v17/mlb-prop-forward-evidence/acquire' in text
     assert '/internal/v17/wnba-prop-forward-evidence/acquire' in text
-    assert '--max-time 150' in text
+    assert text.count('max_candidates: 8') == 3
+    assert '--max-time 120' in text
     assert '--max-time 210' in text
     assert 'seed_date "${today}"' in text
     assert 'seed_date "${tomorrow}"' in text
     assert 'candidate_offset":0' in text
+    assert 'seed_failures=0' in text
+    assert 'lifecycle will still consume any durable rows' in text
     assert 'WOW_CAN_EXECUTE: "false"' in text
     assert 'WOW_DRY_RUN_ONLY: "true"' in text
     assert "automatic_certification" in text
@@ -52,13 +55,15 @@ def test_priority_workflow_cold_start_health_preflight_is_bounded_and_retryable(
     assert text.index("wait_for_live\n") < text.index('seed_date "${today}"')
 
 
-def test_priority_workflow_seeds_before_each_sport_lifecycle_without_replacing_universal_contract():
+def test_priority_workflow_reaches_lifecycle_even_when_seed_transport_is_ambiguous():
     repo_root = Path(__file__).resolve().parents[3]
     priority = (repo_root / ".github" / "workflows" / "wow-v17-priority-prop-lifecycle.yml").read_text()
     universal = (repo_root / ".github" / "workflows" / "wow-v17-prop-lifecycle-autopilot.yml").read_text()
 
-    assert priority.index('seed_date "${today}"') < priority.index('lifecycle_body=')
-    assert priority.index('seed_date "${tomorrow}"') < priority.index('lifecycle_body=')
+    assert priority.index('seed_failures=0') < priority.index('lifecycle_body=')
+    assert priority.index('if ! seed_date "${today}"') < priority.index('lifecycle_body=')
+    assert priority.index('if ! seed_date "${tomorrow}"') < priority.index('lifecycle_body=')
+    assert priority.index('lifecycle_body=') < priority.index('if [ "${seed_failures}" -ne 0 ]')
     assert 'routes":[]' in universal
     assert 'routes":[]' not in priority
     assert 'name: wow-v17-prop-lifecycle-autopilot' in universal
