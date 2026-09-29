@@ -123,6 +123,26 @@ def test_both_official_schedule_transports_fail_closed_with_typed_source_error()
     assert excinfo.value.code == "WNBA_OFFICIAL_SOURCE_UNAVAILABLE"
     assert excinfo.value.detail["primary_source"] == fallback.CDN_PROVIDER
     assert excinfo.value.detail["fallback_source"] == fallback.WEB_PROVIDER
+    assert "RuntimeError:HTTP_502" in excinfo.value.detail["fallback_errors"]
+
+
+def test_parse_failure_preserves_typed_code_without_remote_body_text():
+    malformed_html = "<html><body><a href='/game/lva-vs-ind-1042600122'></a></body></html>"
+
+    def fetcher(url, **kwargs):
+        if url == wnba.WNBA_SCHEDULE_URL:
+            return FakeResponse(payload=ValueError("remote body detail must not leak"))
+        return FakeResponse(content=malformed_html.encode("utf-8"))
+
+    with pytest.raises(wnba.WNBAPropHydrationError) as excinfo:
+        fallback.request_with_official_web_fallback(
+            wnba.WNBA_SCHEDULE_URL,
+            http_get=fetcher,
+            headers=wnba._cdn_headers(),
+        )
+    errors = excinfo.value.detail["fallback_errors"]
+    assert errors == ["WNBAPropHydrationError:WNBA_OFFICIAL_SCHEDULE_WEB_PARSE_EMPTY"]
+    assert "remote body detail must not leak" not in str(excinfo.value.detail)
 
 
 def test_fallback_provenance_replaces_legacy_cdn_label_without_changing_governance():
