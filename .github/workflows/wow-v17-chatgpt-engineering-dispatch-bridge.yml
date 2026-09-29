@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   dispatch:
-    name: Dispatch fresh ChatGPT Engineering run
+    name: Dispatch provider-aware Engineering run
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'issues' &&
@@ -22,7 +22,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Dispatch worker on protected main
+      - name: Dispatch provider control plane on protected main
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -30,25 +30,25 @@ jobs:
           set -euo pipefail
           gh api \
             --method POST \
-            "/repos/${GITHUB_REPOSITORY}/actions/workflows/wow-v17-chatgpt-engineering-worker.yml/dispatches" \
+            "/repos/${GITHUB_REPOSITORY}/actions/workflows/wow-v17-engineering-provider-dispatcher.yml/dispatches" \
             -f ref=main
 
           sleep 3
           latest=$(gh run list \
             --repo "$GITHUB_REPOSITORY" \
-            --workflow wow-v17-chatgpt-engineering-worker.yml \
+            --workflow wow-v17-engineering-provider-dispatcher.yml \
             --event workflow_dispatch \
             --limit 1 \
             --json databaseId,headSha,status,conclusion,url,createdAt)
 
           {
-            echo "# ChatGPT Engineering dispatch bridge"
+            echo "# WOW V17 Engineering dispatch bridge"
             echo
             echo "- control issue: #542"
             echo "- requested ref: main"
-            echo "- provider: OpenAI/ChatGPT"
-            echo "- can_execute: false (worker contract unchanged)"
-            echo "- newest workflow_dispatch run:"
+            echo "- provider selection: OpenAI primary / Anthropic fallback / deterministic survival"
+            echo "- can_execute: false"
+            echo "- newest provider-dispatch run:"
             echo '```json'
             echo "$latest"
             echo '```'

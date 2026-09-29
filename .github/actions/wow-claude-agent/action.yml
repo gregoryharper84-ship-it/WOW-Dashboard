@@ -1,0 +1,87 @@
+name: WOW Claude Agent Runner
+description: Governed Anthropic/Claude Code runner for WOW V17 engineering fallback.
+
+inputs:
+  anthropic_api_key:
+    description: Anthropic API key for fallback engineering.
+    required: false
+  claude_code_oauth_token:
+    description: Claude Code OAuth token fallback authentication.
+    required: false
+  permission_profile:
+    description: :read-only or :workspace
+    required: false
+    default: ":read-only"
+  prompt:
+    description: Agent prompt.
+    required: true
+  output_schema:
+    description: JSON schema for structured output.
+    required: true
+
+outputs:
+  structured_output:
+    description: Structured JSON output from Claude Code.
+    value: ${{ steps.claude_oauth.outputs.structured_output || steps.claude_api.outputs.structured_output }}
+  conclusion:
+    description: Provider execution conclusion.
+    value: ${{ steps.claude_oauth.outputs.conclusion || steps.claude_api.outputs.conclusion }}
+
+runs:
+  using: composite
+  steps:
+    - name: Configure governed Claude tool lease
+      id: config
+      shell: bash
+      env:
+        PROFILE: ${{ inputs.permission_profile }}
+        OUTPUT_SCHEMA: ${{ inputs.output_schema }}
+      run: |
+        set -euo pipefail
+        if [ "$PROFILE" = ":workspace" ]; then
+          turns=40
+          tools='Edit,Read,Write,Glob,Grep,Bash(python -m pytest:*),Bash(python artifacts/wow-engine/v17/nightly_incident_records.py:*),Bash(python artifacts/wow-engine/v17/nightly_engineering_team_contract.py:*),Bash(python artifacts/wow-engine/v17/engineering_agent_team.py:*),Bash(git status),Bash(git diff:*),Bash(git log:*)'
+        else
+          turns=24
+          tools='Read,Glob,Grep,Bash(python -m pytest:*),Bash(python artifacts/wow-engine/v17/engineering_agent_team.py:*),Bash(git status),Bash(git diff:*),Bash(git log:*)'
+        fi
+        {
+          echo 'claude_args<<EOF'
+          echo "--max-turns $turns"
+          echo "--allowedTools \"$tools\""
+          printf '%s\n' "--json-schema '$OUTPUT_SCHEMA'"
+          echo 'EOF'
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Run governed Claude agent with OAuth
+      id: claude_oauth
+      if: inputs.claude_code_oauth_token != ''
+      uses: anthropics/claude-code-base-action@beta
+      with:
+        claude_code_oauth_token: ${{ inputs.claude_code_oauth_token }}
+        prompt: ${{ inputs.prompt }}
+        claude_args: ${{ steps.config.outputs.claude_args }}
+        show_full_output: "false"
+
+    - name: Run governed Claude agent with API key
+      id: claude_api
+      if: inputs.claude_code_oauth_token == '' && inputs.anthropic_api_key != ''
+      uses: anthropics/claude-code-base-action@beta
+      with:
+        anthropic_api_key: ${{ inputs.anthropic_api_key }}
+        prompt: ${{ inputs.prompt }}
+        claude_args: ${{ steps.config.outputs.claude_args }}
+        show_full_output: "false"
+
+    - name: Verify provider result exists
+      if: always()
+      shell: bash
+      env:
+        OAUTH_RESULT: ${{ steps.claude_oauth.outputs.structured_output }}
+        API_RESULT: ${{ steps.claude_api.outputs.structured_output }}
+      run: |
+        set -euo pipefail
+        if [ -z "${OAUTH_RESULT:-}" ] && [ -z "${API_RESULT:-}" ]; then
+          echo "::error::Claude fallback produced no structured result."
+          exit 1
+        fi

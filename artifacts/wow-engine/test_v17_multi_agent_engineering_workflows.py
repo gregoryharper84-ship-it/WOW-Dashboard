@@ -5,12 +5,15 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKER = ROOT / ".github/workflows/wow-v17-chatgpt-engineering-worker.yml"
+CLAUDE_WORKER = ROOT / ".github/workflows/wow-v17-claude-engineering-worker.yml"
+PROVIDER_DISPATCHER = ROOT / ".github/workflows/wow-v17-engineering-provider-dispatcher.yml"
 RELEASE = ROOT / ".github/workflows/wow-v17-release-production-verification-agent.yml"
 RELEASE_RESUME = ROOT / ".github/workflows/wow-v17-release-resume-agent.yml"
 PUSH_HANDOFF = ROOT / ".github/workflows/wow-v17-engineering-push-handoff.yml"
 DISPATCH_BRIDGE = ROOT / ".github/workflows/wow-v17-chatgpt-engineering-dispatch-bridge.yml"
 FRONTIER = ROOT / ".github/workflows/wow-v17-frontier-intelligence-agent.yml"
 CHATGPT_ACTION = ROOT / ".github/actions/wow-chatgpt-agent/action.yml"
+CLAUDE_ACTION = ROOT / ".github/actions/wow-claude-agent/action.yml"
 CODEX_ENGINEERING_SKILLS = (
     ROOT / ".agents/skills/wow-engineering-reporter-agent/SKILL.md",
     ROOT / ".agents/skills/wow-engineering-lead-agent/SKILL.md",
@@ -21,11 +24,6 @@ CODEX_ENGINEERING_SKILLS = (
     ROOT / ".agents/skills/wow-engineering-system-architect-agent/SKILL.md",
     ROOT / ".agents/skills/wow-engineering-qa-verification-agent/SKILL.md",
     ROOT / ".agents/skills/wow-engineering-release-observability-agent/SKILL.md",
-)
-LEGACY_CLAUDE_PATHS = (
-    ROOT / ".github/workflows/wow-v17-claude-engineering-worker.yml",
-    ROOT / ".github/workflows/wow-v17-claude-engineering-dispatch-bridge.yml",
-    ROOT / ".github/actions/wow-claude-agent/action.yml",
 )
 
 
@@ -59,18 +57,37 @@ def test_multi_agent_worker_has_independent_reliability_roles() -> None:
     assert "Pre-PR agent gates" in text
 
 
-def test_worker_denies_policy_changing_implementation_lease() -> None:
-    text = WORKER.read_text()
-    assert "R2-repair-policy" in text
-    assert "R3" in text
-    assert "implementation lease denied" in text
+def test_claude_fallback_has_same_independent_reliability_roles() -> None:
+    text = CLAUDE_WORKER.read_text()
+    for identity in (
+        "ENGINEERING_LEAD_AGENT",
+        "RESEARCH_TRIAGE_AGENT",
+        "ENGINEERING_AGENT",
+        "INDEPENDENT_REVIEW_AGENT",
+        "SYSTEM_ARCHITECT_AGENT",
+        "QA_VERIFICATION_AGENT",
+    ):
+        assert identity in text
+    assert "single implementation lease" in text
+    assert "Morning-Green-Autonomous: true" in text
+    assert "Pre-PR agent gates" in text
     assert "No Class C change is authorized" in text
+    assert "can_execute=false" in text
+
+
+def test_worker_denies_policy_changing_implementation_lease() -> None:
+    for path in (WORKER, CLAUDE_WORKER):
+        text = path.read_text()
+        assert "R2-repair-policy" in text
+        assert "R3" in text
+        assert "implementation lease denied" in text
+        assert "No Class C change is authorized" in text
 
 
 def test_qa_agent_requires_actual_implementation_change() -> None:
-    text = WORKER.read_text()
     guarded_condition = "steps.impl.outputs.changed == 'true' && steps.regression.outputs.status == '0'"
-    assert text.count(guarded_condition) == 2
+    assert WORKER.read_text().count(guarded_condition) == 2
+    assert CLAUDE_WORKER.read_text().count(guarded_condition) == 2
 
 
 def test_release_agent_cannot_merge_or_deploy() -> None:
@@ -91,12 +108,13 @@ def test_release_resume_agent_owns_unfinished_release_verification() -> None:
     assert "can_execute=false" in text
 
 
-def test_push_origin_nightly_scan_has_a_valid_worker_handoff() -> None:
+def test_push_origin_nightly_scan_has_provider_aware_handoff() -> None:
     text = PUSH_HANDOFF.read_text()
     assert 'workflows: ["wow-v17-nightly-engineering-scan"]' in text
     assert "github.event.workflow_run.event == 'push'" in text
     assert "github.event.workflow_run.conclusion != 'cancelled'" in text
-    assert "gh workflow run wow-v17-chatgpt-engineering-worker.yml" in text
+    assert "gh workflow run wow-v17-engineering-provider-dispatcher.yml" in text
+    assert "OpenAI primary / Anthropic fallback / deterministic survival" in text
     assert "can_execute: false" in text
 
 
@@ -109,7 +127,7 @@ def test_frontier_agent_is_reliability_preempted_and_experiment_only() -> None:
     assert "can_execute=false" in text
 
 
-def test_active_agent_workflows_are_openai_chatgpt_only() -> None:
+def test_primary_openai_agent_workflows_remain_openai_only() -> None:
     for path in (WORKER, RELEASE, RELEASE_RESUME, FRONTIER):
         text = path.read_text()
         assert "wow-chatgpt-agent" in text
@@ -123,6 +141,32 @@ def test_active_agent_workflows_are_openai_chatgpt_only() -> None:
     assert "permission_profile" in action
     assert "safety-strategy: unprivileged-user" in action
     assert 'allow-bots: "true"' in action
+
+
+def test_claude_runtime_is_isolated_to_fallback_worker() -> None:
+    worker = CLAUDE_WORKER.read_text()
+    action = CLAUDE_ACTION.read_text()
+    dispatcher = PROVIDER_DISPATCHER.read_text()
+    assert "wow-claude-agent" in worker
+    assert "ANTHROPIC_API_KEY" in worker
+    assert "CLAUDE_CODE_OAUTH_TOKEN" in worker
+    assert "anthropics/claude-code-base-action@beta" in action
+    assert "OPENAI_API_KEY" not in worker
+    assert "OPENAI_API_KEY" in dispatcher
+    assert "ANTHROPIC_API_KEY" in dispatcher
+
+
+def test_provider_dispatcher_has_typed_failover_and_survival() -> None:
+    text = PROVIDER_DISPATCHER.read_text()
+    assert "OPENAI_API_QUOTA_EXCEEDED" not in text
+    assert "engineering_provider_failover.py classify" in text
+    assert "engineering_provider_failover.py circuit-breaker" in text
+    assert "wow-v17-chatgpt-engineering-worker.yml" in text
+    assert "wow-v17-claude-engineering-worker.yml" in text
+    assert "Deterministic survival checks" in text
+    assert "Surface degraded provider state" in text
+    assert "V17_TERMINAL_REDUCER" in text
+    assert "can_execute: false" in text
 
 
 def test_chatgpt_action_uses_explicit_schema_file_for_unprivileged_codex() -> None:
@@ -142,19 +186,21 @@ def test_active_codex_engineering_skills_have_valid_frontmatter() -> None:
         assert isinstance(description, str) and description.strip()
 
 
-def test_legacy_claude_engineering_entrypoints_are_removed() -> None:
-    for path in LEGACY_CLAUDE_PATHS:
-        assert not path.exists()
+def test_control_issue_bridge_uses_provider_dispatcher() -> None:
     bridge = DISPATCH_BRIDGE.read_text()
-    assert "wow-v17-chatgpt-engineering-worker.yml" in bridge
-    assert "OpenAI/ChatGPT" in bridge
+    assert "wow-v17-engineering-provider-dispatcher.yml" in bridge
+    assert "OpenAI primary / Anthropic fallback / deterministic survival" in bridge
+    assert "can_execute: false" in bridge
 
 
 def test_workflows_parse_as_yaml() -> None:
     assert _load(WORKER)["name"] == "wow-v17-chatgpt-engineering-worker"
+    assert _load(CLAUDE_WORKER)["name"] == "wow-v17-claude-engineering-worker"
+    assert _load(PROVIDER_DISPATCHER)["name"] == "wow-v17-engineering-provider-dispatcher"
     assert _load(RELEASE)["name"] == "wow-v17-release-production-verification-agent"
     assert _load(RELEASE_RESUME)["name"] == "wow-v17-release-resume-agent"
     assert _load(PUSH_HANDOFF)["name"] == "wow-v17-engineering-push-handoff"
     assert _load(DISPATCH_BRIDGE)["name"] == "wow-v17-chatgpt-engineering-dispatch-bridge"
     assert _load(FRONTIER)["name"] == "wow-v17-frontier-intelligence-agent"
     assert _load(CHATGPT_ACTION)["name"] == "WOW ChatGPT Agent Runner"
+    assert _load(CLAUDE_ACTION)["name"] == "WOW Claude Agent Runner"
