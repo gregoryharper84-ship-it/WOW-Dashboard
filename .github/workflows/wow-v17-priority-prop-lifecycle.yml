@@ -62,7 +62,7 @@ jobs:
           test -n "$ACTIONS_ID_TOKEN_REQUEST_URL"
           test -n "$ACTIONS_ID_TOKEN_REQUEST_TOKEN"
 
-      - name: Seed bounded priority evidence then run sport lifecycle
+      - name: Seed bounded priority evidence then run exact-route lifecycle
         shell: bash
         run: |
           set -euo pipefail
@@ -161,48 +161,51 @@ jobs:
           PY
           }
 
-          today="$(TZ=America/Chicago date +%F)"
-          tomorrow="$(TZ=America/Chicago date -d '+1 day' +%F)"
-          seed_failures=0
-          if ! seed_date "${today}"; then seed_failures=$((seed_failures + 1)); fi
-          if ! seed_date "${tomorrow}"; then seed_failures=$((seed_failures + 1)); fi
+          run_route_lifecycle() {
+            local route="$1"
+            local route_slug body oidc_token http_code curl_rc
+            route_slug="$(printf '%s' "${route}" | tr ':/' '__')"
+            body="$(ROUTE="${route}" python -c 'import json,os; print(json.dumps({"routes":[os.environ["ROUTE"]],"max_snapshots_per_route":1,"settlement_limit":5,"persist_health":True},separators=(",",":")))')"
 
-          lifecycle_body="$(printf '{"routes":%s,"max_snapshots_per_route":2,"settlement_limit":20,"persist_health":true}' "${ROUTES_JSON}")"
-          oidc_token="$(issue_oidc_token)"
-          set +e
-          http_code="$(curl --silent --show-error --connect-timeout 20 --max-time 210 \
-            --output "/tmp/${SPORT}-priority-lifecycle.json" --write-out '%{http_code}' \
-            --request POST --header "Authorization: Bearer ${oidc_token}" \
-            --header 'Content-Type: application/json' --data "${lifecycle_body}" \
-            "${WOW_SERVICE_URL}/v17/prop-lifecycle-autopilot-run")"
-          curl_rc=$?
-          set -e
-          unset oidc_token
-          if [ "${curl_rc}" -ne 0 ] || [ "${http_code}" -lt 200 ] || [ "${http_code}" -ge 300 ]; then
-            echo "${SPORT} priority lifecycle failed (curl_rc=${curl_rc}, HTTP ${http_code:-000})." >&2
-            test -f "/tmp/${SPORT}-priority-lifecycle.json" && head -c 2000 "/tmp/${SPORT}-priority-lifecycle.json" >&2 || true
-            exit 1
-          fi
+            wait_for_live
+            oidc_token="$(issue_oidc_token)"
+            set +e
+            http_code="$(curl --silent --show-error --connect-timeout 15 --max-time 75 \
+              --output "/tmp/${SPORT}-${route_slug}-lifecycle.json" --write-out '%{http_code}' \
+              --request POST --header "Authorization: Bearer ${oidc_token}" \
+              --header 'Content-Type: application/json' --data "${body}" \
+              "${WOW_SERVICE_URL}/v17/prop-lifecycle-autopilot-run")"
+            curl_rc=$?
+            set -e
+            unset oidc_token
+            if [ "${curl_rc}" -ne 0 ] || [ "${http_code}" -lt 200 ] || [ "${http_code}" -ge 300 ]; then
+              echo "${SPORT} exact-route lifecycle failed route=${route} curl_rc=${curl_rc} HTTP=${http_code:-000}." >&2
+              test -f "/tmp/${SPORT}-${route_slug}-lifecycle.json" && head -c 2000 "/tmp/${SPORT}-${route_slug}-lifecycle.json" >&2 || true
+              return 1
+            fi
 
-          python - <<'PY'
+            SPORT_NAME="${SPORT}" ROUTE_NAME="${route}" ROUTE_SLUG="${route_slug}" python - <<'PY'
           import json, os
           from pathlib import Path
-          sport=os.environ['SPORT']
-          payload=json.loads(Path(f'/tmp/{sport}-priority-lifecycle.json').read_text())
-          if payload.get('can_execute') is not False: raise SystemExit(f'{sport}: can_execute invariant failed')
-          if payload.get('automatic_certification') is not False: raise SystemExit(f'{sport}: automatic certification must remain disabled')
-          if payload.get('automatic_promotion') is not False: raise SystemExit(f'{sport}: automatic promotion must remain disabled')
-          if payload.get('artifact_isolation_enforced') is not True: raise SystemExit(f'{sport}: artifact isolation proof missing')
+          sport=os.environ['SPORT_NAME']
+          route=os.environ['ROUTE_NAME']
+          slug=os.environ['ROUTE_SLUG']
+          payload=json.loads(Path(f'/tmp/{sport}-{slug}-lifecycle.json').read_text())
+          if payload.get('can_execute') is not False: raise SystemExit(f'{route}: can_execute invariant failed')
+          if payload.get('automatic_certification') is not False: raise SystemExit(f'{route}: automatic certification must remain disabled')
+          if payload.get('automatic_promotion') is not False: raise SystemExit(f'{route}: automatic promotion must remain disabled')
+          if payload.get('artifact_isolation_enforced') is not True: raise SystemExit(f'{route}: artifact isolation proof missing')
           if payload.get('run_status') not in {'COMPLETED','COMPLETED_WITH_STAGE_BLOCKERS'}:
-              raise SystemExit(f"{sport}: unexpected lifecycle status {payload.get('run_status')}")
+              raise SystemExit(f"{route}: unexpected lifecycle status {payload.get('run_status')}")
           requested=int(payload.get('routes_requested') or 0)
-          if requested != 4: raise SystemExit(f'{sport}: expected 4 core routes, got {requested}')
+          if requested != 1: raise SystemExit(f'{route}: expected 1 exact route, got {requested}')
           dashboard=payload.get('dashboard') or {}
           kpi=dashboard.get('kpi') or {}
           if int(kpi.get('improperly_promoted_route_n') or 0) != 0:
-              raise SystemExit(f'{sport}: improperly promoted route detected')
+              raise SystemExit(f'{route}: improperly promoted route detected')
           print(json.dumps({
               'sport':sport,
+              'route':route,
               'run_status':payload.get('run_status'),
               'cycle_id':payload.get('cycle_id'),
               'routes_requested':requested,
@@ -214,7 +217,27 @@ jobs:
               'can_execute':False,
           }, sort_keys=True))
           PY
+          }
 
+          today="$(TZ=America/Chicago date +%F)"
+          tomorrow="$(TZ=America/Chicago date -d '+1 day' +%F)"
+          seed_failures=0
+          if ! seed_date "${today}"; then seed_failures=$((seed_failures + 1)); fi
+          if ! seed_date "${tomorrow}"; then seed_failures=$((seed_failures + 1)); fi
+
+          mapfile -t lifecycle_routes < <(python -c 'import json,os; [print(v) for v in json.loads(os.environ["ROUTES_JSON"])]')
+          lifecycle_failures=0
+          for route in "${lifecycle_routes[@]}"; do
+            if ! run_route_lifecycle "${route}"; then
+              lifecycle_failures=$((lifecycle_failures + 1))
+            fi
+            sleep 3
+          done
+
+          if [ "${lifecycle_failures}" -ne 0 ]; then
+            echo "${SPORT} exact-route lifecycle completed with ${lifecycle_failures} route transport or typed failure(s)." >&2
+            exit 1
+          fi
           if [ "${seed_failures}" -ne 0 ]; then
             echo "${SPORT} lifecycle completed, but ${seed_failures} evidence seed call(s) had transport or typed failures." >&2
             exit 1
