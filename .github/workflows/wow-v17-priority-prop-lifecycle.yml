@@ -146,13 +146,14 @@ jobs:
               if payload.get(key) is not False:
                   raise SystemExit(f'{sport}: {key} must remain false')
           if payload.get('status') in {'DATA_UNOBTAINABLE','RUN_INVALID_PROP_SNAPSHOT_WRITE_FAILURE'}:
-              raise SystemExit(f"{sport}: evidence production failed: {payload.get('status')} blockers={payload.get('blockers')}")
+              raise SystemExit(f"{sport}: evidence production failed: {payload.get('status')} blockers={payload.get('blockers')} source_diagnostics={payload.get('source_diagnostics')}")
           print(json.dumps({
               'sport':sport,'requested_date':slate,'status':payload.get('status'),
               'total_candidates':payload.get('total_candidates'),'attempted':payload.get('attempted'),
               'already_captured':payload.get('already_captured'),'hydrated':payload.get('hydrated'),
               'persisted':payload.get('persisted'),'held':payload.get('held'),
-              'next_offset':payload.get('next_offset'),'can_execute':False,
+              'next_offset':payload.get('next_offset'),'source_diagnostics':payload.get('source_diagnostics') or [],
+              'can_execute':False,
           }, sort_keys=True))
           PY
           }

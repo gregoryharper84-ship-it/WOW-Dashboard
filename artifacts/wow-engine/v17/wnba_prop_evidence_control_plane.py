@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Any, Callable
+from urllib.parse import urlsplit
 
 import httpx
 from fastapi import FastAPI
@@ -46,6 +47,30 @@ def _cached_http_get(http_get: Callable[..., Any]) -> Callable[..., Any]:
         return cache[key]
 
     return get
+
+
+def _source_diagnostic(exc: Exception) -> dict[str, Any] | None:
+    """Return a secret-safe source receipt for typed WNBA acquisition failures."""
+    code = str(getattr(exc, "code", "") or "").strip()
+    detail = getattr(exc, "detail", None)
+    if code != "WNBA_OFFICIAL_SOURCE_UNAVAILABLE" or not isinstance(detail, dict):
+        return None
+    raw_url = str(detail.get("url") or "").strip()
+    parsed = urlsplit(raw_url) if raw_url else None
+    raw_errors = detail.get("errors") if isinstance(detail.get("errors"), list) else []
+    error_kinds: list[str] = []
+    for raw in raw_errors:
+        kind = str(raw).split(":", 1)[0].strip()
+        if kind and kind not in error_kinds:
+            error_kinds.append(kind)
+    attempts = detail.get("attempts")
+    return {
+        "code": code,
+        "host": parsed.netloc if parsed else None,
+        "path": parsed.path if parsed else None,
+        "attempts": int(attempts) if isinstance(attempts, int) else None,
+        "error_kinds": error_kinds,
+    }
 
 
 def _existing_snapshot(db: Any, candidate: dict[str, Any], stat_type: str) -> bool:
@@ -96,6 +121,7 @@ def acquire_wnba_forward_evidence_batch(
         "snapshot_write_failed": 0,
         "next_offset": None,
         "blockers": [],
+        "source_diagnostics": [],
         "probability_publishable": False,
         "automatic_certification": False,
         "automatic_promotion": False,
@@ -113,6 +139,9 @@ def acquire_wnba_forward_evidence_batch(
     except Exception as exc:
         result["status"] = "DATA_UNOBTAINABLE"
         result["blockers"] = [getattr(exc, "code", f"WNBA_FORWARD_DISCOVERY_FAILED:{type(exc).__name__}")]
+        diagnostic = _source_diagnostic(exc)
+        if diagnostic is not None:
+            result["source_diagnostics"] = [diagnostic]
         return result
 
     flattened = _flatten(players)
@@ -182,6 +211,9 @@ def acquire_wnba_forward_evidence_batch(
             result["blockers"].append(
                 f"{candidate['player']}:{stat_type}:{getattr(exc, 'code', type(exc).__name__)}"
             )
+            diagnostic = _source_diagnostic(exc)
+            if diagnostic is not None and diagnostic not in result["source_diagnostics"]:
+                result["source_diagnostics"].append(diagnostic)
         except Exception as exc:
             result["held"] += 1
             result["snapshot_write_failed"] += 1
