@@ -15,7 +15,7 @@ def test_priority_prop_lifecycle_is_bounded_fail_closed_and_sport_scoped():
     assert '/internal/v17/wnba-prop-forward-evidence/acquire' in text
     assert text.count('max_candidates: 8') == 3
     assert '--max-time 120' in text
-    assert '--max-time 210' in text
+    assert '--max-time 75' in text
     assert 'seed_date "${today}"' in text
     assert 'seed_date "${tomorrow}"' in text
     assert 'candidate_offset":0' in text
@@ -62,11 +62,29 @@ def test_priority_workflow_reaches_lifecycle_even_when_seed_transport_is_ambiguo
     priority = (repo_root / ".github" / "workflows" / "wow-v17-priority-prop-lifecycle.yml").read_text()
     universal = (repo_root / ".github" / "workflows" / "wow-v17-prop-lifecycle-autopilot.yml").read_text()
 
-    assert priority.index('seed_failures=0') < priority.index('lifecycle_body=')
-    assert priority.index('if ! seed_date "${today}"') < priority.index('lifecycle_body=')
-    assert priority.index('if ! seed_date "${tomorrow}"') < priority.index('lifecycle_body=')
-    assert priority.index('lifecycle_body=') < priority.index('if [ "${seed_failures}" -ne 0 ]')
+    assert priority.index('seed_failures=0') < priority.index('mapfile -t lifecycle_routes')
+    assert priority.index('if ! seed_date "${today}"') < priority.index('mapfile -t lifecycle_routes')
+    assert priority.index('if ! seed_date "${tomorrow}"') < priority.index('mapfile -t lifecycle_routes')
+    assert priority.index('mapfile -t lifecycle_routes') < priority.index('if [ "${seed_failures}" -ne 0 ]')
     assert 'routes":[]' in universal
     assert 'routes":[]' not in priority
     assert 'name: wow-v17-prop-lifecycle-autopilot' in universal
     assert 'name: wow-v17-priority-prop-lifecycle' in priority
+
+
+def test_priority_workflow_isolates_each_exact_route_and_continues_after_route_failure():
+    repo_root = Path(__file__).resolve().parents[3]
+    text = (repo_root / ".github" / "workflows" / "wow-v17-priority-prop-lifecycle.yml").read_text()
+
+    assert 'run_route_lifecycle()' in text
+    assert '"routes":[os.environ["ROUTE"]]' in text
+    assert '"max_snapshots_per_route":1' in text
+    assert '"settlement_limit":5' in text
+    assert 'if requested != 1' in text
+    assert 'lifecycle_failures=0' in text
+    assert 'for route in "${lifecycle_routes[@]}"' in text
+    assert 'if ! run_route_lifecycle "${route}"' in text
+    assert 'lifecycle_failures=$((lifecycle_failures + 1))' in text
+    assert 'sleep 3' in text
+    assert 'exact-route lifecycle completed with ${lifecycle_failures} route transport or typed failure(s)' in text
+    assert text.index('if ! run_route_lifecycle "${route}"') < text.index('if [ "${lifecycle_failures}" -ne 0 ]')
