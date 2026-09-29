@@ -77,13 +77,28 @@ jobs:
             python -c 'import json,sys; value=json.load(sys.stdin).get("value"); assert isinstance(value,str) and value.strip(); print(value.strip())' <<<"${token_json}"
           }
 
-          health_code="$(curl --silent --show-error --connect-timeout 10 --max-time 20 \
-            --output /tmp/wow-live.json --write-out '%{http_code}' \
-            "${WOW_SERVICE_URL}/health/live" || true)"
-          if [ "${health_code}" -lt 200 ] || [ "${health_code}" -ge 300 ]; then
-            echo "WOW runtime is not live (HTTP ${health_code:-000})." >&2
-            exit 1
-          fi
+          wait_for_live() {
+            local attempt health_code curl_rc
+            for attempt in 1 2 3; do
+              set +e
+              health_code="$(curl --silent --show-error --connect-timeout 10 --max-time 20 \
+                --output /tmp/wow-live.json --write-out '%{http_code}' \
+                "${WOW_SERVICE_URL}/health/live")"
+              curl_rc=$?
+              set -e
+              if [ "${curl_rc}" -eq 0 ] && [ "${health_code}" -ge 200 ] && [ "${health_code}" -lt 300 ]; then
+                return 0
+              fi
+              echo "WOW runtime health attempt ${attempt}/3 unavailable (curl_rc=${curl_rc}, HTTP ${health_code:-000}); bounded cold-start retry." >&2
+              if [ "${attempt}" -lt 3 ]; then
+                sleep "$((attempt * 5))"
+              fi
+            done
+            echo "WOW_RUNTIME_HEALTH_UNAVAILABLE_AFTER_BOUNDED_COLD_START_RETRIES" >&2
+            return 1
+          }
+
+          wait_for_live
 
           seed_date() {
             local slate_date="$1"
