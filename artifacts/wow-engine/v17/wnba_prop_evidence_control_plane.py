@@ -11,7 +11,7 @@ price, or execution authority is granted. ``can_execute=false`` always.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 from urllib.parse import urlsplit
 
 import httpx
@@ -30,8 +30,19 @@ class WNBAForwardEvidenceRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     requested_date: str
     requested_timezone: str = "America/Chicago"
-    candidate_offset: int = Field(default=0, ge=0, le=2000)
+    candidate_offset: int = Field(default=48, ge=0, le=2000)
     max_candidates: int = Field(default=48, ge=1, le=96)
+
+
+class _PinnedJsonResponse:
+    status_code = 200
+    content = b"{}"
+
+    def __init__(self, payload: Mapping[str, Any]):
+        self._payload = dict(payload)
+
+    def json(self) -> dict[str, Any]:
+        return dict(self._payload)
 
 
 def _cached_http_get(http_get: Callable[..., Any]) -> Callable[..., Any]:
@@ -41,9 +52,65 @@ def _cached_http_get(http_get: Callable[..., Any]) -> Callable[..., Any]:
         params_key = tuple(sorted((str(k), str(v)) for k, v in dict(params or {}).items()))
         headers_key = tuple(sorted((str(k).lower(), str(v)) for k, v in dict(headers or {}).items()))
         key = (str(url), params_key, headers_key)
-        if key not in cache:
-            cache[key] = http_get(url, params=params, headers=headers, **kwargs)
-        return cache[key]
+        if key in cache:
+            return cache[key]
+        response = http_get(url, params=params, headers=headers, **kwargs)
+        # Do not freeze a successful-but-non-JSON WNBA API/CDN response into the
+        # request-local retry cache. The governed hydrator owns typed retry/fail-close.
+        if str(url) == acquisition.wnba.WNBA_SCHEDULE_URL or str(url).startswith(acquisition.wnba.WNBA_STATS_BASE):
+            try:
+                payload = response.json()
+            except Exception:
+                return response
+            if not isinstance(payload, Mapping):
+                return response
+        cache[key] = response
+        return response
+
+    return get
+
+
+def _minimal_schedule_headers() -> dict[str, str]:
+    return {
+        "User-Agent": acquisition.wnba._stats_headers()["User-Agent"],
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+
+
+def _request_schedule_with_same_source_fallback(
+    *, http_get: Callable[..., Any]
+) -> tuple[dict[str, Any], str]:
+    """Retry the identical official CDN schedule with a minimal public header set."""
+    try:
+        return acquisition._request_schedule(http_get=http_get), "BROWSER_CONTEXT"
+    except acquisition.wnba.WNBAPropHydrationError as exc:
+        detail = exc.detail if isinstance(exc.detail, dict) else {}
+        if (
+            exc.code != "WNBA_OFFICIAL_SOURCE_UNAVAILABLE"
+            or str(detail.get("url") or "") != acquisition.wnba.WNBA_SCHEDULE_URL
+        ):
+            raise
+    payload = acquisition.wnba._request(
+        acquisition.wnba.WNBA_SCHEDULE_URL,
+        http_get=http_get,
+        headers=_minimal_schedule_headers(),
+    )
+    if not isinstance(payload, Mapping):
+        raise TypeError("WNBA schedule response was not an object")
+    return dict(payload), "MINIMAL_OFFICIAL_CDN_FALLBACK"
+
+
+def _pin_schedule_payload(
+    http_get: Callable[..., Any], schedule: Mapping[str, Any]
+) -> Callable[..., Any]:
+    """Reuse the exact acquired schedule for row hydration without another CDN hop."""
+    pinned = _PinnedJsonResponse(schedule)
+
+    def get(url: str, params=None, headers=None, **kwargs: Any) -> Any:
+        if str(url) == acquisition.wnba.WNBA_SCHEDULE_URL:
+            return pinned
+        return http_get(url, params=params, headers=headers, **kwargs)
 
     return get
 
@@ -102,7 +169,6 @@ def acquire_wnba_forward_evidence_batch(
     http_get: Callable[..., Any] = httpx.get,
 ) -> dict[str, Any]:
     now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
-    cached_get = _cached_http_get(http_get)
     result: dict[str, Any] = {
         "status": "COMPLETED",
         "sport": "WNBA",
@@ -121,19 +187,27 @@ def acquire_wnba_forward_evidence_batch(
         "next_offset": None,
         "blockers": [],
         "source_diagnostics": [],
+        "source_transport_mode": None,
         "probability_publishable": False,
         "automatic_certification": False,
         "automatic_promotion": False,
         "can_execute": False,
     }
     try:
-        schedule = acquisition._request_schedule(http_get=cached_get)
+        # Schedule acquisition deliberately bypasses request-local response caching
+        # so each typed retry is a real network attempt. If Render receives a
+        # successful non-JSON body under browser-context headers, retry the same
+        # official CDN URL with the minimal public contract used by the source.
+        schedule, transport_mode = _request_schedule_with_same_source_fallback(http_get=http_get)
+        result["source_transport_mode"] = transport_mode
+        cached_get = _cached_http_get(http_get)
+        hydration_get = _pin_schedule_payload(cached_get, schedule)
         players = acquisition._schedule_players(
             schedule,
             requested_date=req.requested_date,
             requested_timezone=req.requested_timezone,
             now=now,
-            http_get=cached_get,
+            http_get=hydration_get,
         )
     except Exception as exc:
         result["status"] = "DATA_UNOBTAINABLE"
@@ -168,9 +242,9 @@ def acquire_wnba_forward_evidence_batch(
             raw = acquisition.auto_hydrate_prop_evidence(
                 sport="WNBA",
                 player=str(candidate["player"]),
-                stat_type=stat_type,
+                stat_type=str(stat_type),
                 event_start_time=str(candidate["event_start_time"]),
-                http_get=cached_get,
+                http_get=hydration_get,
                 now=now,
                 source_capture_timestamp=now.isoformat(),
                 source_label="V17_WNBA_OIDC_FORWARD_DISCOVERY",
