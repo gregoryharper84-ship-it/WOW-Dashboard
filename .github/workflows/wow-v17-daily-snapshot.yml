@@ -188,3 +188,117 @@ jobs:
           }
           print(json.dumps(summary, sort_keys=True))
           PY
+
+  nfl-full-slate-exact-once-acceptance:
+    name: Verify NFL >12 FULL moneyline exact-once production path
+    if: github.event_name == 'push'
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      WOW_ACTION_ORIGIN: https://wow-governed-probability-engine.onrender.com
+      WOW_USER_TIMEZONE: America/Chicago
+      WOW_NFL_ACCEPTANCE_SLATE_DATE: "2026-10-04"
+      WOW_CAN_EXECUTE: "false"
+      WOW_DRY_RUN_ONLY: "true"
+    steps:
+      - name: Assert production acceptance governance
+        shell: bash
+        run: |
+          test "$WOW_CAN_EXECUTE" = "false"
+          test "$WOW_DRY_RUN_ONLY" = "true"
+          test -n "$ACTIONS_ID_TOKEN_REQUEST_URL"
+          test -n "$ACTIONS_ID_TOKEN_REQUEST_TOKEN"
+
+      - name: Run future NFL full-slate exact-once acceptance
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import urllib.parse
+          import urllib.request
+
+          def fresh_oidc_token():
+              base = os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"]
+              separator = "&" if "?" in base else "?"
+              url = base + separator + urllib.parse.urlencode({"audience": "wow-v17-multiscout"})
+              req = urllib.request.Request(
+                  url,
+                  headers={"Authorization": f"Bearer {os.environ['ACTIONS_ID_TOKEN_REQUEST_TOKEN']}"},
+              )
+              with urllib.request.urlopen(req, timeout=20) as response:
+                  return json.load(response)["value"]
+
+          payload = {
+              "requested_slate_date": os.environ["WOW_NFL_ACCEPTANCE_SLATE_DATE"],
+              "requested_timezone": os.environ["WOW_USER_TIMEZONE"],
+              "lanes": ["MONEYLINE"],
+              "max_props": 0,
+              "max_team_events": 32,
+              "response_mode": "FULL",
+          }
+          endpoint = os.environ["WOW_ACTION_ORIGIN"].rstrip("/") + "/internal/v17/daily-snapshot"
+          request = urllib.request.Request(
+              endpoint,
+              data=json.dumps(payload).encode("utf-8"),
+              method="POST",
+              headers={
+                  "Authorization": f"Bearer {fresh_oidc_token()}",
+                  "Content-Type": "application/json",
+              },
+          )
+          with urllib.request.urlopen(request, timeout=900) as response:
+              result = json.load(response)
+
+          assert isinstance(result, dict), result
+          assert not str(result.get("run_status") or "").startswith("RUN_INVALID"), result
+          assert result.get("can_execute") is False, result
+          assert result.get("global_terminal_authority") == "V17_TERMINAL_REDUCER", result
+          assert result.get("automation_auth") == "GITHUB_ACTIONS_OIDC", result
+
+          reconciliation = result.get("reconciliation") or {}
+          assert reconciliation.get("balanced") is True, reconciliation
+          cross = result.get("cross_sport_discovery_audit") or {}
+          cross_reconciliation = cross.get("reconciliation") or {}
+          assert cross_reconciliation.get("row_reconciliation") == "PASS", cross_reconciliation
+          assert cross_reconciliation.get("events_accounted") == cross_reconciliation.get("events_discovered"), cross_reconciliation
+
+          rows = [row for row in (result.get("rows") or []) if row.get("lane") == "MONEYLINE"]
+          nfl_rows = [row for row in rows if str((row.get("identity") or {}).get("sport") or "").upper() == "NFL"]
+          if len(nfl_rows) <= 12:
+              raise AssertionError(f"NFL_FULL_SLATE_ACCEPTANCE_REQUIRES_GT12_ROWS:{len(nfl_rows)}")
+
+          identities = []
+          budget_rows = []
+          for row in nfl_rows:
+              identity = row.get("identity") or {}
+              event_id = identity.get("official_event_id") or identity.get("event_id") or identity.get("id")
+              if not event_id:
+                  raise AssertionError("NFL_FULL_SLATE_EVENT_ID_MISSING")
+              identities.append(str(event_id))
+              if "MODEL_INVOCATION_BUDGET_REACHED" in json.dumps(row.get("result") or {}, sort_keys=True):
+                  budget_rows.append(str(event_id))
+              assert row.get("can_execute") is False, row
+
+          assert len(identities) == len(set(identities)), identities
+          assert not budget_rows, budget_rows
+
+          print(json.dumps({
+              "status": "PASS",
+              "code": "NFL_FULL_SLATE_EXACT_ONCE_PRODUCTION_ACCEPTANCE_PASS",
+              "run_id": result.get("run_id"),
+              "requested_slate_date": result.get("requested_slate_date"),
+              "nfl_rows": len(nfl_rows),
+              "unique_nfl_event_ids": len(set(identities)),
+              "model_invocation_budget_terminal_rows": 0,
+              "events_discovered": cross_reconciliation.get("events_discovered"),
+              "events_accounted": cross_reconciliation.get("events_accounted"),
+              "row_reconciliation": cross_reconciliation.get("row_reconciliation"),
+              "global_terminal_authority": result.get("global_terminal_authority"),
+              "can_execute": False,
+          }, sort_keys=True))
+          PY
