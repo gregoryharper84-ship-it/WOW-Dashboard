@@ -1,12 +1,13 @@
-"""Official WNBA schedule-web fallback for V17 prop hydration.
+"""Official WNBA schedule transports for V17 prop hydration.
 
 The public WNBA CDN schedule endpoint intermittently returns an HTTP-success
-non-JSON body on the production Render path. This adapter keeps the evidence
-boundary league-owned: it tries the same official CDN with the caller/browser
-contract, then retries that identical official CDN with a minimal public request
-contract, and only then parses the server-rendered official wnba.com schedule
-page into the exact minimal ScheduleLeagueV2 shape consumed by the existing
-hydrator.
+non-JSON body on the production Render path, while the server-rendered official
+schedule page can arrive there without parseable game tiles. This adapter keeps
+the evidence boundary league-owned: a governed GitHub OIDC lifecycle may supply
+the same official CDN payload as a request-scoped transport bridge; otherwise
+callers try the official CDN with the caller/browser contract, retry that same
+CDN with a minimal public request contract, and only then parse the official
+wnba.com schedule page.
 
 No third-party schedule, market data, probability, calibration, certification,
 publication, ranking, promotion, or execution authority is introduced.
@@ -14,13 +15,15 @@ publication, ranking, promotion, or execution authority is introduced.
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
 from contextvars import ContextVar
+from copy import deepcopy
 from html import unescape
 from html.parser import HTMLParser
 import json
 import re
 import time
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Iterator, Mapping
 
 import wnba_prop_auto_hydration as wnba
 
@@ -28,6 +31,7 @@ CAN_EXECUTE = False
 SCHEDULE_PAGE_URL = "https://www.wnba.com/schedule?month=all"
 CDN_PROVIDER = "WNBA_CDN_SCHEDULE_CURRENT"
 WEB_PROVIDER = "WNBA_OFFICIAL_SCHEDULE_WEB_SSR"
+OIDC_BRIDGE_PROVIDER = "WNBA_CDN_SCHEDULE_GITHUB_OIDC_BRIDGE"
 
 _ORIGINAL_REQUEST = wnba._request
 _ORIGINAL_HYDRATE = wnba.hydrate_wnba_prop_evidence
@@ -35,6 +39,10 @@ _INSTALLED = False
 _SCHEDULE_SOURCE: ContextVar[tuple[str, str]] = ContextVar(
     "wow_wnba_schedule_source",
     default=(CDN_PROVIDER, wnba.WNBA_SCHEDULE_URL),
+)
+_OFFICIAL_SCHEDULE_OVERRIDE: ContextVar[dict[str, Any] | None] = ContextVar(
+    "wow_wnba_official_schedule_override",
+    default=None,
 )
 # Current official game links are slugged (for example
 # /game/lva-vs-ind-1042600122); retain support for the historical bare-id form.
@@ -138,6 +146,73 @@ def _retry(call: Callable[[], Any]) -> tuple[Any | None, list[str]]:
             if attempt < wnba.HTTP_ATTEMPTS:
                 time.sleep(0.05)
     return None, errors
+
+
+def _validate_official_schedule_payload(payload: Any) -> dict[str, Any]:
+    """Validate the minimal immutable identity contract for an OIDC-bridged schedule."""
+    if not isinstance(payload, Mapping):
+        raise wnba.WNBAPropHydrationError(
+            "WNBA_OIDC_SCHEDULE_PAYLOAD_INVALID",
+            "OIDC official schedule bridge payload was not an object",
+        )
+    league = payload.get("leagueSchedule")
+    blocks = league.get("gameDates") if isinstance(league, Mapping) else None
+    if not isinstance(blocks, list) or not blocks:
+        raise wnba.WNBAPropHydrationError(
+            "WNBA_OIDC_SCHEDULE_PAYLOAD_INVALID",
+            "OIDC official schedule bridge was missing leagueSchedule.gameDates",
+        )
+
+    valid_game_found = False
+    for block in blocks:
+        games = block.get("games") if isinstance(block, Mapping) else None
+        if not isinstance(games, list):
+            continue
+        for game in games:
+            if not isinstance(game, Mapping):
+                continue
+            game_id = str(game.get("gameId") or game.get("gameID") or "").strip()
+            start = str(game.get("gameDateTimeUTC") or game.get("gameDateUTC") or "").strip()
+            home = game.get("homeTeam")
+            away = game.get("awayTeam")
+            if (
+                game_id
+                and start
+                and isinstance(home, Mapping)
+                and isinstance(away, Mapping)
+                and str(home.get("teamId") or "").strip()
+                and str(away.get("teamId") or "").strip()
+            ):
+                valid_game_found = True
+                break
+        if valid_game_found:
+            break
+    if not valid_game_found:
+        raise wnba.WNBAPropHydrationError(
+            "WNBA_OIDC_SCHEDULE_PAYLOAD_INVALID",
+            "OIDC official schedule bridge contained no exact game/team identities",
+        )
+    return deepcopy(dict(payload))
+
+
+@contextmanager
+def official_schedule_override(
+    payload: Any,
+    *,
+    provider: str,
+) -> Iterator[dict[str, Any]]:
+    """Install a validated official schedule for exactly one OIDC request context."""
+    if str(provider or "").strip() != OIDC_BRIDGE_PROVIDER:
+        raise wnba.WNBAPropHydrationError(
+            "WNBA_OIDC_SCHEDULE_PROVIDER_INVALID",
+            "OIDC schedule bridge provider was not the governed official-CDN bridge",
+        )
+    validated = _validate_official_schedule_payload(payload)
+    token = _OFFICIAL_SCHEDULE_OVERRIDE.set(validated)
+    try:
+        yield validated
+    finally:
+        _OFFICIAL_SCHEDULE_OVERRIDE.reset(token)
 
 
 def _find_team_registry(node: Any, output: dict[str, dict[str, str]]) -> None:
@@ -310,6 +385,11 @@ def request_with_official_web_fallback(
             expect_json=expect_json,
         )
 
+    override = _OFFICIAL_SCHEDULE_OVERRIDE.get()
+    if override is not None:
+        _SCHEDULE_SOURCE.set((OIDC_BRIDGE_PROVIDER, wnba.WNBA_SCHEDULE_URL))
+        return deepcopy(override)
+
     # Stage 1: preserve the existing caller/browser official-CDN contract.
     payload, primary_errors = _retry(
         lambda: _request_json_once(
@@ -323,8 +403,7 @@ def request_with_official_web_fallback(
         return payload
 
     # Stage 2: retry the identical official CDN without the browser/stats-only
-    # request fields. This restores the same-source recovery stage that existed
-    # before the SSR fallback was layered in. No authority/source substitution.
+    # request fields. This preserves #1032's same-source recovery stage.
     payload, minimal_errors = _retry(
         lambda: _request_json_once(
             wnba.WNBA_SCHEDULE_URL,
@@ -409,10 +488,12 @@ install()
 __all__ = [
     "CAN_EXECUTE",
     "CDN_PROVIDER",
+    "OIDC_BRIDGE_PROVIDER",
     "SCHEDULE_PAGE_URL",
     "WEB_PROVIDER",
     "hydrate_with_official_schedule_fallback",
     "install",
+    "official_schedule_override",
     "parse_official_schedule_page",
     "request_with_official_web_fallback",
 ]
