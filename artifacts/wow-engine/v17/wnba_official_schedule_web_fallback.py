@@ -1,7 +1,7 @@
 """Official WNBA schedule-web fallback for V17 prop hydration.
 
 The legacy public WNBA CDN schedule endpoint intermittently returns an HTTP-success
-non-JSON body or 502.  This adapter keeps the evidence boundary league-owned: it
+non-JSON body or 502. This adapter keeps the evidence boundary league-owned: it
 tries the existing CDN JSON contract first, then parses the server-rendered
 official wnba.com schedule page into the exact minimal ScheduleLeagueV2 shape
 consumed by the existing hydrator.
@@ -40,6 +40,10 @@ _NEXT_DATA = re.compile(
     r"<script[^>]*\bid=[\"']__NEXT_DATA__[\"'][^>]*>(.*?)</script>",
     re.IGNORECASE | re.DOTALL,
 )
+_VOID_TAGS = frozenset({
+    "area", "base", "br", "col", "embed", "hr", "img", "input",
+    "link", "meta", "param", "source", "track", "wbr",
+})
 
 
 def _web_headers() -> dict[str, str]:
@@ -150,7 +154,9 @@ class _GameTileParser(HTMLParser):
         self.games: list[dict[str, Any]] = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        self.depth += 1
+        is_void = tag in _VOID_TAGS
+        if not is_void:
+            self.depth += 1
         values = {str(key): value for key, value in attrs}
         if self.current is None and tag == "a":
             match = _GAME_HREF.search(str(values.get("href") or ""))
@@ -186,7 +192,14 @@ class _GameTileParser(HTMLParser):
                 str(values["aria-label"]).split()
             )
 
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        self.handle_starttag(tag, attrs)
+        if tag not in _VOID_TAGS:
+            self.handle_endtag(tag)
+
     def handle_endtag(self, tag: str) -> None:
+        if tag in _VOID_TAGS:
+            return
         if (
             self.current is not None
             and tag == "div"
@@ -315,9 +328,7 @@ def _apply_schedule_provenance(result: dict[str, Any], provider: str, url: str) 
     if isinstance(role, dict):
         role["schedule_source_provider"] = provider
         role["schedule_source_url"] = url
-        role["source"] = (
-            f"{provider} + WNBA Stats roster + official WNBA injury report"
-        )
+        role["source"] = f"{provider} + WNBA Stats roster + official WNBA injury report"
     result["rate_provenance"] = (
         "Official WNBA LeagueGameLog player rows; current event/team from "
         f"{provider}; roster from CommonTeamRoster; availability from official "
