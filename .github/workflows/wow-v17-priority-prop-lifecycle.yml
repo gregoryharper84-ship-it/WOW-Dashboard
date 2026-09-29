@@ -116,27 +116,129 @@ jobs:
             fi
           }
 
+          post_oidc_json_file() {
+            local path="$1"
+            local request_file="$2"
+            local output="$3"
+            local max_time="$4"
+            local oidc_token http_code curl_rc
+            oidc_token="$(issue_oidc_token)"
+            set +e
+            http_code="$(curl --silent --show-error --connect-timeout 20 --max-time "${max_time}" \
+              --output "${output}" --write-out '%{http_code}' \
+              --request POST --header "Authorization: Bearer ${oidc_token}" \
+              --header 'Content-Type: application/json' --data-binary "@${request_file}" \
+              "${WOW_SERVICE_URL}${path}")"
+            curl_rc=$?
+            set -e
+            unset oidc_token
+            if [ "${curl_rc}" -ne 0 ] || [ "${http_code}" -lt 200 ] || [ "${http_code}" -ge 300 ]; then
+              echo "${SPORT} ${path} transport failed (curl_rc=${curl_rc}, HTTP ${http_code:-000})." >&2
+              test -f "${output}" && head -c 2000 "${output}" >&2 || true
+              return 1
+            fi
+          }
+
           wait_for_live
+
+          wnba_bridge_ready=1
+          wnba_schedule_file=/tmp/wnba-official-schedule.json
+          if [ "${SPORT}" = "WNBA" ]; then
+            set +e
+            curl --silent --show-error --fail --location --compressed \
+              --connect-timeout 15 --max-time 30 \
+              --header 'Accept: application/json, text/plain, */*' \
+              --header 'Origin: https://www.wnba.com' \
+              --header 'Referer: https://www.wnba.com/' \
+              --user-agent 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36' \
+              --output "${wnba_schedule_file}" \
+              'https://cdn.wnba.com/static/json/staticData/scheduleLeagueV2.json'
+            wnba_curl_rc=$?
+            set -e
+            if [ "${wnba_curl_rc}" -ne 0 ]; then
+              echo "WNBA_OIDC_OFFICIAL_SCHEDULE_FETCH_FAILED:curl_rc=${wnba_curl_rc}" >&2
+              wnba_bridge_ready=0
+            elif ! WNBA_SCHEDULE_FILE="${wnba_schedule_file}" python - <<'PY'
+          import json, os
+          from pathlib import Path
+          path=Path(os.environ['WNBA_SCHEDULE_FILE'])
+          payload=json.loads(path.read_text())
+          league=payload.get('leagueSchedule') if isinstance(payload,dict) else None
+          blocks=league.get('gameDates') if isinstance(league,dict) else None
+          if not isinstance(blocks,list) or not blocks:
+              raise SystemExit('WNBA_OIDC_SCHEDULE_PAYLOAD_INVALID:leagueSchedule.gameDates')
+          valid=False
+          for block in blocks:
+              games=block.get('games') if isinstance(block,dict) else None
+              if not isinstance(games,list): continue
+              for game in games:
+                  if not isinstance(game,dict): continue
+                  home=game.get('homeTeam'); away=game.get('awayTeam')
+                  if ((game.get('gameId') or game.get('gameID')) and
+                      (game.get('gameDateTimeUTC') or game.get('gameDateUTC')) and
+                      isinstance(home,dict) and isinstance(away,dict) and
+                      home.get('teamId') and away.get('teamId')):
+                      valid=True; break
+              if valid: break
+          if not valid:
+              raise SystemExit('WNBA_OIDC_SCHEDULE_PAYLOAD_INVALID:no_exact_game_identity')
+          print(json.dumps({'provider':'WNBA_CDN_SCHEDULE_GITHUB_OIDC_BRIDGE','game_date_blocks':len(blocks),'can_execute':False},sort_keys=True))
+          PY
+            then
+              echo "WNBA_OIDC_OFFICIAL_SCHEDULE_VALIDATION_FAILED" >&2
+              wnba_bridge_ready=0
+            fi
+          fi
 
           seed_date() {
             local slate_date="$1"
-            local body
+            local body request_file
             case "${SPORT}" in
               NFL)
                 body="$(printf '{"requested_date":"%s","candidate_offset":0,"max_candidates":%s}' "${slate_date}" "${MAX_CANDIDATES}")"
+                if ! post_oidc_json "${PRODUCER_PATH}" "${body}" "/tmp/${SPORT}-evidence-${slate_date}.json" 120; then
+                  echo "${SPORT} evidence producer transport was ambiguous for ${slate_date}; durable settlement/audit will still inspect persisted rows." >&2
+                  return 1
+                fi
                 ;;
-              MLB|WNBA)
+              MLB)
                 body="$(printf '{"requested_date":"%s","requested_timezone":"America/Chicago","candidate_offset":0,"max_candidates":%s}' "${slate_date}" "${MAX_CANDIDATES}")"
+                if ! post_oidc_json "${PRODUCER_PATH}" "${body}" "/tmp/${SPORT}-evidence-${slate_date}.json" 120; then
+                  echo "${SPORT} evidence producer transport was ambiguous for ${slate_date}; durable settlement/audit will still inspect persisted rows." >&2
+                  return 1
+                fi
+                ;;
+              WNBA)
+                if [ "${wnba_bridge_ready}" -ne 1 ]; then
+                  echo "WNBA_OIDC_OFFICIAL_SCHEDULE_BRIDGE_UNAVAILABLE" >&2
+                  return 1
+                fi
+                request_file="/tmp/${SPORT}-request-${slate_date}.json"
+                SLATE_DATE="${slate_date}" MAX_CANDIDATES_VALUE="${MAX_CANDIDATES}" \
+                  WNBA_SCHEDULE_FILE="${wnba_schedule_file}" REQUEST_FILE="${request_file}" python - <<'PY'
+          import json, os
+          from pathlib import Path
+          schedule=json.loads(Path(os.environ['WNBA_SCHEDULE_FILE']).read_text())
+          body={
+              'requested_date':os.environ['SLATE_DATE'],
+              'requested_timezone':'America/Chicago',
+              'candidate_offset':0,
+              'max_candidates':int(os.environ['MAX_CANDIDATES_VALUE']),
+              'official_schedule_provider':'WNBA_CDN_SCHEDULE_GITHUB_OIDC_BRIDGE',
+              'official_schedule':schedule,
+          }
+          Path(os.environ['REQUEST_FILE']).write_text(json.dumps(body,separators=(',',':')))
+          PY
+                if ! post_oidc_json_file "${PRODUCER_PATH}" "${request_file}" "/tmp/${SPORT}-evidence-${slate_date}.json" 120; then
+                  echo "${SPORT} evidence producer transport was ambiguous for ${slate_date}; durable settlement/audit will still inspect persisted rows." >&2
+                  return 1
+                fi
                 ;;
               *)
                 echo "Unsupported priority sport ${SPORT}." >&2
                 return 1
                 ;;
             esac
-            if ! post_oidc_json "${PRODUCER_PATH}" "${body}" "/tmp/${SPORT}-evidence-${slate_date}.json" 120; then
-              echo "${SPORT} evidence producer transport was ambiguous for ${slate_date}; durable settlement/audit will still inspect persisted rows." >&2
-              return 1
-            fi
             SPORT_NAME="${SPORT}" SLATE_DATE="${slate_date}" python - <<'PY'
           import json, os
           from pathlib import Path
@@ -153,6 +255,7 @@ jobs:
               'already_captured':payload.get('already_captured'),'hydrated':payload.get('hydrated'),
               'persisted':payload.get('persisted'),'held':payload.get('held'),
               'next_offset':payload.get('next_offset'),'source_diagnostics':payload.get('source_diagnostics') or [],
+              'schedule_source_provider':payload.get('schedule_source_provider'),
               'can_execute':False,
           }, sort_keys=True))
           PY
