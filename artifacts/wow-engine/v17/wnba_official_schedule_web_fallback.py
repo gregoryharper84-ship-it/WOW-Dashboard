@@ -100,13 +100,25 @@ def _request_html_once(url: str, *, http_get: Callable[..., Any]) -> str:
     return text
 
 
+def _error_receipt(exc: Exception) -> str:
+    """Preserve only exception type plus a stable typed code when available."""
+    code = str(getattr(exc, "code", "") or "").strip()
+    if re.fullmatch(r"[A-Z][A-Z0-9_]+", code):
+        return f"{type(exc).__name__}:{code}"
+    text = str(exc)
+    token = text.split(":", 1)[0].strip()
+    if re.fullmatch(r"[A-Z][A-Z0-9_]+", token):
+        return f"{type(exc).__name__}:{token}"
+    return type(exc).__name__
+
+
 def _retry(call: Callable[[], Any]) -> tuple[Any | None, list[str]]:
     errors: list[str] = []
     for attempt in range(1, wnba.HTTP_ATTEMPTS + 1):
         try:
             return call(), errors
         except Exception as exc:
-            errors.append(f"{type(exc).__name__}:{exc}")
+            errors.append(_error_receipt(exc))
             if attempt < wnba.HTTP_ATTEMPTS:
                 time.sleep(0.05)
     return None, errors
@@ -302,7 +314,7 @@ def request_with_official_web_fallback(
             _SCHEDULE_SOURCE.set((WEB_PROVIDER, SCHEDULE_PAGE_URL))
             return payload
         except Exception as exc:
-            fallback_errors.append(f"{type(exc).__name__}:{exc}")
+            fallback_errors.append(_error_receipt(exc))
 
     raise wnba.WNBAPropHydrationError(
         "WNBA_OFFICIAL_SOURCE_UNAVAILABLE",
