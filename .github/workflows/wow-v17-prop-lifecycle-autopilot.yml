@@ -1,8 +1,6 @@
 name: wow-v17-prop-lifecycle-autopilot
 
 on:
-  schedule:
-    - cron: "*/15 * * * *"
   workflow_dispatch:
   push:
     branches:
