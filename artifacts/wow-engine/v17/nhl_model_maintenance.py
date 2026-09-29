@@ -16,7 +16,6 @@ from typing import Any, Iterable
 from fastapi import FastAPI
 
 from github_actions_oidc import scout_route_auth_dependency
-from nhl_candidate_pipeline import NHLCandidateError, build_candidate
 from v17.d1_bulk_candidate_registry import persist_candidate_package_bulk
 from v17.d1_candidate_registry import D1RegistryError
 
@@ -65,6 +64,11 @@ def run_nhl_model_maintenance(
     training_code_sha: str | None = None,
     session: Any = None,
 ) -> dict[str, Any]:
+    # nhl_candidate_pipeline imports the binary candidate lifecycle/scikit-learn.
+    # Keep that research-training stack off production route construction and
+    # load it only when the maintenance endpoint is actually invoked.
+    from nhl_candidate_pipeline import NHLCandidateError, build_candidate
+
     years = tuple(sorted({int(v) for v in (start_years or default_start_years())}))
     if not years:
         return _blocked("NHL_MAINTENANCE_RANGE_EMPTY", stage="CONFIGURATION")
