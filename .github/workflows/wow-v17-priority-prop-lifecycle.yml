@@ -156,7 +156,7 @@ jobs:
             wnba_curl_rc=$?
             set -e
             if [ "${wnba_curl_rc}" -ne 0 ]; then
-              echo "WNBA_OIDC_OFFICIAL_SCHEDULE_FETCH_FAILED:curl_rc=${wnba_curl_rc}" >&2
+              echo "WNBA_OIDC_OFFICIAL_SCHEDULE_FETCH_FAILED:curl_rc=${wnba_curl_rc}; falling back to backend governed identity recovery." >&2
               wnba_bridge_ready=0
             elif ! WNBA_SCHEDULE_FILE="${wnba_schedule_file}" python - <<'PY'
           import json, os
@@ -185,7 +185,7 @@ jobs:
           print(json.dumps({'provider':'WNBA_CDN_SCHEDULE_GITHUB_OIDC_BRIDGE','game_date_blocks':len(blocks),'can_execute':False},sort_keys=True))
           PY
             then
-              echo "WNBA_OIDC_OFFICIAL_SCHEDULE_VALIDATION_FAILED" >&2
+              echo "WNBA_OIDC_OFFICIAL_SCHEDULE_VALIDATION_FAILED; falling back to backend governed identity recovery." >&2
               wnba_bridge_ready=0
             fi
           fi
@@ -209,13 +209,10 @@ jobs:
                 fi
                 ;;
               WNBA)
-                if [ "${wnba_bridge_ready}" -ne 1 ]; then
-                  echo "WNBA_OIDC_OFFICIAL_SCHEDULE_BRIDGE_UNAVAILABLE" >&2
-                  return 1
-                fi
-                request_file="/tmp/${SPORT}-request-${slate_date}.json"
-                SLATE_DATE="${slate_date}" MAX_CANDIDATES_VALUE="${MAX_CANDIDATES}" \
-                  WNBA_SCHEDULE_FILE="${wnba_schedule_file}" REQUEST_FILE="${request_file}" python - <<'PY'
+                if [ "${wnba_bridge_ready}" -eq 1 ]; then
+                  request_file="/tmp/${SPORT}-request-${slate_date}.json"
+                  SLATE_DATE="${slate_date}" MAX_CANDIDATES_VALUE="${MAX_CANDIDATES}" \
+                    WNBA_SCHEDULE_FILE="${wnba_schedule_file}" REQUEST_FILE="${request_file}" python - <<'PY'
           import json, os
           from pathlib import Path
           schedule=json.loads(Path(os.environ['WNBA_SCHEDULE_FILE']).read_text())
@@ -229,9 +226,16 @@ jobs:
           }
           Path(os.environ['REQUEST_FILE']).write_text(json.dumps(body,separators=(',',':')))
           PY
-                if ! post_oidc_json_file "${PRODUCER_PATH}" "${request_file}" "/tmp/${SPORT}-evidence-${slate_date}.json" 120; then
-                  echo "${SPORT} evidence producer transport was ambiguous for ${slate_date}; durable settlement/audit will still inspect persisted rows." >&2
-                  return 1
+                  if ! post_oidc_json_file "${PRODUCER_PATH}" "${request_file}" "/tmp/${SPORT}-evidence-${slate_date}.json" 120; then
+                    echo "${SPORT} evidence producer transport was ambiguous for ${slate_date}; durable settlement/audit will still inspect persisted rows." >&2
+                    return 1
+                  fi
+                else
+                  body="$(printf '{"requested_date":"%s","requested_timezone":"America/Chicago","candidate_offset":0,"max_candidates":%s}' "${slate_date}" "${MAX_CANDIDATES}")"
+                  if ! post_oidc_json "${PRODUCER_PATH}" "${body}" "/tmp/${SPORT}-evidence-${slate_date}.json" 120; then
+                    echo "${SPORT} backend identity-recovery transport was ambiguous for ${slate_date}; durable settlement/audit will still inspect persisted rows." >&2
+                    return 1
+                  fi
                 fi
                 ;;
               *)
