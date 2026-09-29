@@ -9,6 +9,8 @@ on:
       - main
     paths:
       - ".github/workflows/wow-v17-priority-prop-lifecycle.yml"
+      - "artifacts/wow-engine/v17/prop_priority_lifecycle_runtime.py"
+      - "artifacts/wow-engine/v17/prop_forward_cohort_route.py"
       - "artifacts/wow-engine/v17/nfl_prop_evidence_control_plane.py"
       - "artifacts/wow-engine/v17/mlb_prop_evidence_control_plane.py"
       - "artifacts/wow-engine/v17/wnba_prop_evidence_control_plane.py"
@@ -62,7 +64,7 @@ jobs:
           test -n "$ACTIONS_ID_TOKEN_REQUEST_URL"
           test -n "$ACTIONS_ID_TOKEN_REQUEST_TOKEN"
 
-      - name: Seed bounded priority evidence then run sport lifecycle
+      - name: Seed evidence, settle exact outcomes, and persist durable lifecycle audit
         shell: bash
         run: |
           set -euo pipefail
@@ -90,12 +92,33 @@ jobs:
                 return 0
               fi
               echo "WOW runtime health attempt ${attempt}/3 unavailable (curl_rc=${curl_rc}, HTTP ${health_code:-000}); bounded cold-start retry." >&2
-              if [ "${attempt}" -lt 3 ]; then
-                sleep "$((attempt * 5))"
-              fi
+              if [ "${attempt}" -lt 3 ]; then sleep "$((attempt * 5))"; fi
             done
             echo "WOW_RUNTIME_HEALTH_UNAVAILABLE_AFTER_BOUNDED_COLD_START_RETRIES" >&2
             return 1
+          }
+
+          post_oidc_json() {
+            local path="$1"
+            local body="$2"
+            local output="$3"
+            local max_time="$4"
+            local oidc_token http_code curl_rc
+            oidc_token="$(issue_oidc_token)"
+            set +e
+            http_code="$(curl --silent --show-error --connect-timeout 20 --max-time "${max_time}" \
+              --output "${output}" --write-out '%{http_code}' \
+              --request POST --header "Authorization: Bearer ${oidc_token}" \
+              --header 'Content-Type: application/json' --data "${body}" \
+              "${WOW_SERVICE_URL}${path}")"
+            curl_rc=$?
+            set -e
+            unset oidc_token
+            if [ "${curl_rc}" -ne 0 ] || [ "${http_code}" -lt 200 ] || [ "${http_code}" -ge 300 ]; then
+              echo "${SPORT} ${path} transport failed (curl_rc=${curl_rc}, HTTP ${http_code:-000})." >&2
+              test -f "${output}" && head -c 2000 "${output}" >&2 || true
+              return 1
+            fi
           }
 
           wait_for_live
@@ -115,30 +138,14 @@ jobs:
                 return 1
                 ;;
             esac
-
-            local oidc_token
-            oidc_token="$(issue_oidc_token)"
-            set +e
-            local http_code
-            http_code="$(curl --silent --show-error --connect-timeout 20 --max-time 120 \
-              --output "/tmp/${SPORT}-evidence-${slate_date}.json" --write-out '%{http_code}' \
-              --request POST --header "Authorization: Bearer ${oidc_token}" \
-              --header 'Content-Type: application/json' --data "${body}" \
-              "${WOW_SERVICE_URL}${PRODUCER_PATH}")"
-            local curl_rc=$?
-            set -e
-            unset oidc_token
-            if [ "${curl_rc}" -ne 0 ] || [ "${http_code}" -lt 200 ] || [ "${http_code}" -ge 300 ]; then
-              echo "${SPORT} evidence producer transport was ambiguous for ${slate_date} (curl_rc=${curl_rc}, HTTP ${http_code:-000}); lifecycle will still consume any durable rows." >&2
-              test -f "/tmp/${SPORT}-evidence-${slate_date}.json" && head -c 2000 "/tmp/${SPORT}-evidence-${slate_date}.json" >&2 || true
+            if ! post_oidc_json "${PRODUCER_PATH}" "${body}" "/tmp/${SPORT}-evidence-${slate_date}.json" 120; then
+              echo "${SPORT} evidence producer transport was ambiguous for ${slate_date}; durable settlement/audit will still inspect persisted rows." >&2
               return 1
             fi
-
             SPORT_NAME="${SPORT}" SLATE_DATE="${slate_date}" python - <<'PY'
           import json, os
           from pathlib import Path
-          sport=os.environ['SPORT_NAME']
-          slate=os.environ['SLATE_DATE']
+          sport=os.environ['SPORT_NAME']; slate=os.environ['SLATE_DATE']
           payload=json.loads(Path(f'/tmp/{sport}-evidence-{slate}.json').read_text())
           for key in ('can_execute','automatic_certification','automatic_promotion','probability_publishable'):
               if payload.get(key) is not False:
@@ -146,17 +153,11 @@ jobs:
           if payload.get('status') in {'DATA_UNOBTAINABLE','RUN_INVALID_PROP_SNAPSHOT_WRITE_FAILURE'}:
               raise SystemExit(f"{sport}: evidence production failed: {payload.get('status')} blockers={payload.get('blockers')}")
           print(json.dumps({
-              'sport': sport,
-              'requested_date': slate,
-              'status': payload.get('status'),
-              'total_candidates': payload.get('total_candidates'),
-              'attempted': payload.get('attempted'),
-              'already_captured': payload.get('already_captured'),
-              'hydrated': payload.get('hydrated'),
-              'persisted': payload.get('persisted'),
-              'held': payload.get('held'),
-              'next_offset': payload.get('next_offset'),
-              'can_execute': False,
+              'sport':sport,'requested_date':slate,'status':payload.get('status'),
+              'total_candidates':payload.get('total_candidates'),'attempted':payload.get('attempted'),
+              'already_captured':payload.get('already_captured'),'hydrated':payload.get('hydrated'),
+              'persisted':payload.get('persisted'),'held':payload.get('held'),
+              'next_offset':payload.get('next_offset'),'can_execute':False,
           }, sort_keys=True))
           PY
           }
@@ -167,55 +168,59 @@ jobs:
           if ! seed_date "${today}"; then seed_failures=$((seed_failures + 1)); fi
           if ! seed_date "${tomorrow}"; then seed_failures=$((seed_failures + 1)); fi
 
-          lifecycle_body="$(printf '{"routes":%s,"max_snapshots_per_route":2,"settlement_limit":20,"persist_health":true}' "${ROUTES_JSON}")"
-          oidc_token="$(issue_oidc_token)"
-          set +e
-          http_code="$(curl --silent --show-error --connect-timeout 20 --max-time 210 \
-            --output "/tmp/${SPORT}-priority-lifecycle.json" --write-out '%{http_code}' \
-            --request POST --header "Authorization: Bearer ${oidc_token}" \
-            --header 'Content-Type: application/json' --data "${lifecycle_body}" \
-            "${WOW_SERVICE_URL}/v17/prop-lifecycle-autopilot-run")"
-          curl_rc=$?
-          set -e
-          unset oidc_token
-          if [ "${curl_rc}" -ne 0 ] || [ "${http_code}" -lt 200 ] || [ "${http_code}" -ge 300 ]; then
-            echo "${SPORT} priority lifecycle failed (curl_rc=${curl_rc}, HTTP ${http_code:-000})." >&2
-            test -f "/tmp/${SPORT}-priority-lifecycle.json" && head -c 2000 "/tmp/${SPORT}-priority-lifecycle.json" >&2 || true
-            exit 1
+          settlement_failures=0
+          settlement_body="$(printf '{"routes":%s,"limit":20}' "${ROUTES_JSON}")"
+          if ! post_oidc_json "/v17/prop-priority-settlement-run" "${settlement_body}" "/tmp/${SPORT}-priority-settlement.json" 120; then
+            settlement_failures=1
+          else
+            python - <<'PY'
+          import json, os
+          from pathlib import Path
+          sport=os.environ['SPORT']; payload=json.loads(Path(f'/tmp/{sport}-priority-settlement.json').read_text())
+          if payload.get('can_execute') is not False: raise SystemExit(f'{sport}: settlement can_execute invariant failed')
+          if payload.get('automatic_certification') is not False: raise SystemExit(f'{sport}: settlement automatic certification must remain disabled')
+          if payload.get('automatic_promotion') is not False: raise SystemExit(f'{sport}: settlement automatic promotion must remain disabled')
+          print(json.dumps({
+              'sport':sport,'settlement_considered':payload.get('considered'),
+              'settled':payload.get('settled'),'held':payload.get('held'),'can_execute':False,
+          }, sort_keys=True))
+          PY
           fi
+
+          audit_body="$(printf '{"routes":%s}' "${ROUTES_JSON}")"
+          post_oidc_json "/v17/prop-priority-durable-audit-run" "${audit_body}" "/tmp/${SPORT}-priority-audit.json" 120
 
           python - <<'PY'
           import json, os
           from pathlib import Path
-          sport=os.environ['SPORT']
-          payload=json.loads(Path(f'/tmp/{sport}-priority-lifecycle.json').read_text())
-          if payload.get('can_execute') is not False: raise SystemExit(f'{sport}: can_execute invariant failed')
+          sport=os.environ['SPORT']; payload=json.loads(Path(f'/tmp/{sport}-priority-audit.json').read_text())
+          if payload.get('can_execute') is not False: raise SystemExit(f'{sport}: audit can_execute invariant failed')
           if payload.get('automatic_certification') is not False: raise SystemExit(f'{sport}: automatic certification must remain disabled')
           if payload.get('automatic_promotion') is not False: raise SystemExit(f'{sport}: automatic promotion must remain disabled')
           if payload.get('artifact_isolation_enforced') is not True: raise SystemExit(f'{sport}: artifact isolation proof missing')
           if payload.get('run_status') not in {'COMPLETED','COMPLETED_WITH_STAGE_BLOCKERS'}:
-              raise SystemExit(f"{sport}: unexpected lifecycle status {payload.get('run_status')}")
+              raise SystemExit(f"{sport}: unexpected durable audit status {payload.get('run_status')}")
           requested=int(payload.get('routes_requested') or 0)
           if requested != 4: raise SystemExit(f'{sport}: expected 4 core routes, got {requested}')
-          dashboard=payload.get('dashboard') or {}
-          kpi=dashboard.get('kpi') or {}
+          persistence=payload.get('health_persistence') or {}
+          if persistence.get('status') != 'PASS' or int(persistence.get('persisted_n') or 0) <= 0:
+              raise SystemExit(f'{sport}: lifecycle health persistence failed: {persistence}')
+          kpi=(payload.get('dashboard') or {}).get('kpi') or {}
           if int(kpi.get('improperly_promoted_route_n') or 0) != 0:
               raise SystemExit(f'{sport}: improperly promoted route detected')
           print(json.dumps({
-              'sport':sport,
-              'run_status':payload.get('run_status'),
-              'cycle_id':payload.get('cycle_id'),
-              'routes_requested':requested,
-              'failed_stages':payload.get('failed_stages') or [],
+              'sport':sport,'run_status':payload.get('run_status'),'cycle_id':payload.get('cycle_id'),
+              'routes_requested':requested,'failed_stages':payload.get('failed_stages') or [],
               'artifact_forward_prediction_n':kpi.get('artifact_forward_prediction_n'),
               'artifact_forward_settled_n':kpi.get('artifact_forward_settled_n'),
               'artifact_eligible_n':kpi.get('artifact_eligible_n'),
+              'calibrator_review_packet_ready_n':kpi.get('calibrator_review_packet_ready_n'),
               'improperly_promoted_route_n':kpi.get('improperly_promoted_route_n'),
-              'can_execute':False,
+              'persisted_health_n':persistence.get('persisted_n'),'can_execute':False,
           }, sort_keys=True))
           PY
 
-          if [ "${seed_failures}" -ne 0 ]; then
-            echo "${SPORT} lifecycle completed, but ${seed_failures} evidence seed call(s) had transport or typed failures." >&2
+          if [ "${seed_failures}" -ne 0 ] || [ "${settlement_failures}" -ne 0 ]; then
+            echo "${SPORT} durable audit persisted, but seed_failures=${seed_failures} settlement_failures=${settlement_failures}." >&2
             exit 1
           fi
