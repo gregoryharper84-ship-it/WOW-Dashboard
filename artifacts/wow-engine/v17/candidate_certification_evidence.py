@@ -10,7 +10,6 @@ from typing import Any, Mapping
 
 from fastapi import FastAPI
 from github_actions_oidc import scout_route_auth_dependency
-from v17.binary_candidate_lifecycle import BinaryTrainingRow, train_binary_candidate
 from v17.model_source_entitlements import SOURCES, source_readiness
 
 CAN_EXECUTE = False
@@ -101,6 +100,10 @@ def _persist(db: Any, candidate: Mapping[str, Any], source_pass: bool, replay_pa
 
 
 def verify_candidate_certification_evidence(db: Any, candidate_id: str) -> dict[str, Any]:
+    # Deterministic replay imports the binary training lifecycle (and sklearn).
+    # Keep that research dependency off the production application import path.
+    from v17.binary_candidate_lifecycle import BinaryTrainingRow, train_binary_candidate
+
     result = db.table("wow_d1_candidate_artifacts").select("*").eq("candidate_id", candidate_id).limit(2).execute()
     candidates = [dict(row) for row in (getattr(result, "data", None) or [])]
     if len(candidates) != 1:

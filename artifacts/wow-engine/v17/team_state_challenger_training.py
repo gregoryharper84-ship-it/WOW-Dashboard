@@ -11,8 +11,6 @@ from hashlib import sha256
 import json
 from typing import Any, Mapping, Sequence
 
-from v17.binary_candidate_lifecycle import BinaryCandidateError, BinaryTrainingRow, train_binary_candidate
-from v17.multiclass_candidate_lifecycle import MulticlassCandidateError, MulticlassTrainingRow, train_multiclass_candidate
 from v17.team_state_intelligence import FEATURE_FAMILY_VERSION, build_team_state, champion_challenger_metrics, paired_matchup_features
 
 CAN_EXECUTE = False
@@ -43,12 +41,12 @@ def evaluate_binary_research_screen(metrics: Any) -> dict[str, Any]:
 
     The generic binary lifecycle intentionally has a conservative cross-program
     screen that requires the raw model to beat prevalence and calibration to
-    improve both raw metrics.  Team-state challengers are a narrower program:
+    improve both raw metrics. Team-state challengers are a narrower program:
     only the calibrated artifact can ever advance to replay/certification, so
     its research screen should answer whether that final artifact adds signal
     beyond prevalence while remaining acceptably calibrated.
 
-    Passing this screen grants candidate-review eligibility only.  It does not
+    Passing this screen grants candidate-review eligibility only. It does not
     certify, promote, publish, register a bridge, or change can_execute=false.
     """
     calibrated_brier = float(metrics.calibrated_brier)
@@ -157,6 +155,10 @@ def _states(history: dict[str, list[dict[str, Any]]], event: Mapping[str, Any], 
 
 def build_dynamic_binary_rows(events: Sequence[Mapping[str, Any]], *, expected_season_games: int | None,
                               min_prior_games: int = 5):
+    # Candidate lifecycle owns sklearn; import it only when training rows are
+    # actually requested, never while production routes are being constructed.
+    from v17.binary_candidate_lifecycle import BinaryTrainingRow
+
     history: dict[str,list[dict[str,Any]]] = {}; rows=[]; metadata=[]; names=None
     for event in sorted(events, key=lambda r: (_dt(r["event_start_time"]), str(r["event_id"]))):
         start=_dt(event["event_start_time"]); home,away=str(event["home_team"]),str(event["away_team"])
@@ -182,6 +184,8 @@ def build_dynamic_binary_rows(events: Sequence[Mapping[str, Any]], *, expected_s
 
 def build_dynamic_multiclass_rows(events: Sequence[Mapping[str, Any]], *, expected_season_games: int | None,
                                   min_prior_games: int = 5):
+    from v17.multiclass_candidate_lifecycle import MulticlassTrainingRow
+
     history: dict[str,list[dict[str,Any]]] = {}; rows=[]; metadata=[]; names=None
     for event in sorted(events, key=lambda r: (_dt(r["event_start_time"]),str(r["event_id"]))):
         start=_dt(event["event_start_time"]); home,away=str(event["home_team"]),str(event["away_team"])
@@ -239,6 +243,8 @@ def _persist_artifact(client: Any, *, sport: str, league: str, family: str, sche
 
 def train_binary_challenger(client: Any, *, sport: str, league: str, events: Sequence[Mapping[str,Any]],
                             expected_season_games: int | None, training_code_sha: str, min_rows: int = 300) -> dict[str,Any]:
+    from v17.binary_candidate_lifecycle import BinaryCandidateError, train_binary_candidate
+
     rows,metadata,names=build_dynamic_binary_rows(events,expected_season_games=expected_season_games)
     family=f"{sport}_DYNAMIC_TEAM_STATE_LOGIT_V2"; schema=f"{sport}_DYNAMIC_TEAM_STATE_FEATURES_V2"
     try: candidate=train_binary_candidate(rows,model_family=family,feature_names=names,min_rows=min_rows)
@@ -261,6 +267,8 @@ def train_binary_challenger(client: Any, *, sport: str, league: str, events: Seq
 
 def train_multiclass_challenger(client: Any, *, sport: str, league: str, events: Sequence[Mapping[str,Any]],
                                 expected_season_games: int | None, training_code_sha: str, min_rows: int = 500) -> dict[str,Any]:
+    from v17.multiclass_candidate_lifecycle import MulticlassCandidateError, train_multiclass_candidate
+
     rows,metadata,names=build_dynamic_multiclass_rows(events,expected_season_games=expected_season_games)
     family=f"{sport}_{league}_DYNAMIC_TEAM_STATE_1X2_V2"; schema=f"{sport}_{league}_DYNAMIC_TEAM_STATE_FEATURES_V2"
     try: candidate=train_multiclass_candidate(rows,model_family=family,feature_names=names,expected_classes=("HOME","DRAW","AWAY"),min_rows=min_rows)

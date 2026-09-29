@@ -15,8 +15,6 @@ import json
 import math
 from typing import Any, Mapping
 
-from v17.binary_candidate_lifecycle import BinaryCandidateError, BinaryTrainingRow, train_binary_candidate
-
 CAN_EXECUTE = False
 SPORT = LEAGUE = "NCAAF"
 MARKET_FAMILY = "OUTRIGHT_WINNER"
@@ -83,6 +81,10 @@ def _summary(history: list[dict[str, Any]], event_start: datetime):
 
 
 def build_training_rows(games: list[dict[str, Any]]) -> tuple[list[BinaryTrainingRow], list[dict[str, Any]]]:
+    # The binary lifecycle imports scikit-learn. Defer it until this maintenance
+    # function is actually invoked so production route construction stays light.
+    from v17.binary_candidate_lifecycle import BinaryTrainingRow
+
     ordered = sorted(games, key=lambda row: (_dt(row.get("event_start_time")), str(row.get("official_event_id") or "")))
     history: dict[str, list[dict[str, Any]]] = defaultdict(list)
     rows: list[BinaryTrainingRow] = []
@@ -145,6 +147,8 @@ def _persist_training_rows(client: Any, rows: list[BinaryTrainingRow], meta: lis
 
 
 def train_and_persist(client: Any, *, training_code_sha: str) -> dict[str, Any]:
+    from v17.binary_candidate_lifecycle import BinaryCandidateError, train_binary_candidate
+
     code_sha = str(training_code_sha or "").strip().lower()
     if len(code_sha) < 7:
         raise NCAAFResultFormUnavailable("NCAAF_RESULT_FORM_CODE_SHA_REQUIRED", "training code SHA required")
