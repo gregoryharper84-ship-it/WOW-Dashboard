@@ -8,7 +8,8 @@ import v17.spread_forward_auto_canary as canary
 from v17.spread_margin_challenger import SpreadChallengerUnavailable
 
 
-NOW = datetime(2026, 9, 28, 16, 0, tzinfo=timezone.utc)
+# After the Sept. 28 fixture kickoff so the Oct. 4 fixture is the first future game.
+NOW = datetime(2026, 9, 29, 6, 0, tzinfo=timezone.utc)
 
 
 class FakeResponse:
@@ -20,7 +21,7 @@ class FakeResponse:
         return self._payload
 
 
-def _event(*, event_id="401999999", start="2026-09-29T00:00:00Z"):
+def _event(*, event_id="401999999", start="2026-09-29T12:00:00Z"):
     return {
         "id": event_id,
         "date": start,
