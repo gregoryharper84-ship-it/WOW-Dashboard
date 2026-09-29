@@ -5,8 +5,11 @@ disabled. GitHub's governed OIDC lifecycle workflow can invoke this route in
 small rotating batches instead. The route only persists immutable pregame
 snapshots for the already-fitted WNBA component routes.
 
-No probability, calibration, certification, promotion, publication, ranking,
-price, or execution authority is granted. ``can_execute=false`` always.
+When Render cannot obtain a usable body from the league-owned schedule endpoints,
+the same OIDC workflow may transport the official WNBA CDN schedule payload into
+this protected request. The payload is revalidated and request-scoped; it grants
+no probability, calibration, certification, promotion, publication, ranking,
+price, or execution authority. ``can_execute=false`` always.
 """
 from __future__ import annotations
 
@@ -21,7 +24,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from github_actions_oidc import scout_route_auth_dependency
 from prop_auto_hydration import PropAutoHydrationError
-import v17.wnba_official_schedule_web_fallback  # noqa: F401 - installs official-only transport fallback
+import v17.wnba_official_schedule_web_fallback  # noqa: F401 - preserve install-order contract
+from v17 import wnba_official_schedule_web_fallback as schedule_transport
 from v17 import wnba_prop_evidence_acquisition as acquisition
 
 CAN_EXECUTE = False
@@ -34,6 +38,8 @@ class WNBAForwardEvidenceRequest(BaseModel):
     requested_timezone: str = "America/Chicago"
     candidate_offset: int = Field(default=0, ge=0, le=2000)
     max_candidates: int = Field(default=48, ge=1, le=96)
+    official_schedule_provider: str | None = None
+    official_schedule: dict[str, Any] | None = None
 
 
 def _cached_http_get(http_get: Callable[..., Any]) -> Callable[..., Any]:
@@ -73,7 +79,6 @@ def _source_diagnostic(exc: Exception) -> dict[str, Any] | None:
     if code != "WNBA_OFFICIAL_SOURCE_UNAVAILABLE" or not isinstance(detail, dict):
         return None
 
-    # Legacy one-source failures retain the exact existing receipt contract.
     raw_url = str(detail.get("url") or "").strip()
     if raw_url:
         parsed = urlsplit(raw_url)
@@ -88,11 +93,6 @@ def _source_diagnostic(exc: Exception) -> dict[str, Any] | None:
             "error_kinds": error_kinds,
         }
 
-    # The official schedule failover introduced by #1019 carries two separate
-    # error lists. Preserve both boundaries so production replay can distinguish
-    # CDN transport failure from official-web fetch/parse failure. Hosts/paths are
-    # fixed public league-owned constants; response text and query strings are
-    # intentionally excluded from the receipt.
     primary_errors = detail.get("primary_errors") if isinstance(detail.get("primary_errors"), list) else []
     fallback_errors = detail.get("fallback_errors") if isinstance(detail.get("fallback_errors"), list) else []
     if primary_errors or fallback_errors or detail.get("primary_source") or detail.get("fallback_source"):
@@ -124,6 +124,33 @@ def _source_diagnostic(exc: Exception) -> dict[str, Any] | None:
     return {"code": code, "host": None, "path": None, "attempts": None, "error_kinds": []}
 
 
+def _result_shell(req: WNBAForwardEvidenceRequest) -> dict[str, Any]:
+    return {
+        "status": "COMPLETED",
+        "sport": "WNBA",
+        "requested_date": req.requested_date,
+        "requested_timezone": req.requested_timezone,
+        "candidate_offset": req.candidate_offset,
+        "max_candidates": req.max_candidates,
+        "total_candidates": 0,
+        "window_candidate_n": 0,
+        "attempted": 0,
+        "already_captured": 0,
+        "hydrated": 0,
+        "persisted": 0,
+        "held": 0,
+        "snapshot_write_failed": 0,
+        "next_offset": None,
+        "blockers": [],
+        "source_diagnostics": [],
+        "schedule_source_provider": None,
+        "probability_publishable": False,
+        "automatic_certification": False,
+        "automatic_promotion": False,
+        "can_execute": False,
+    }
+
+
 def _existing_snapshot(db: Any, candidate: dict[str, Any], stat_type: str) -> bool:
     result = (
         db.table("wow_prop_evidence_snapshots")
@@ -153,31 +180,42 @@ def acquire_wnba_forward_evidence_batch(
     now: datetime | None = None,
     http_get: Callable[..., Any] = httpx.get,
 ) -> dict[str, Any]:
+    bridge_requested = req.official_schedule is not None or req.official_schedule_provider is not None
+    if bridge_requested:
+        result = _result_shell(req)
+        if req.official_schedule is None or req.official_schedule_provider is None:
+            result["status"] = "DATA_UNOBTAINABLE"
+            result["blockers"] = ["WNBA_OIDC_SCHEDULE_BRIDGE_INCOMPLETE"]
+            result["source_diagnostics"] = [{"code": "WNBA_OIDC_SCHEDULE_BRIDGE_INCOMPLETE"}]
+            return result
+        try:
+            with schedule_transport.official_schedule_override(
+                req.official_schedule,
+                provider=req.official_schedule_provider,
+            ):
+                nested = req.model_copy(
+                    update={"official_schedule": None, "official_schedule_provider": None}
+                )
+                bridged = acquire_wnba_forward_evidence_batch(
+                    nested,
+                    db=db,
+                    now=now,
+                    http_get=http_get,
+                )
+                bridged["schedule_source_provider"] = schedule_transport.OIDC_BRIDGE_PROVIDER
+                return bridged
+        except acquisition.wnba.WNBAPropHydrationError as exc:
+            code = str(getattr(exc, "code", "") or "WNBA_OIDC_SCHEDULE_BRIDGE_INVALID")
+            result["status"] = "DATA_UNOBTAINABLE"
+            result["blockers"] = [code]
+            result["source_diagnostics"] = [
+                {"code": code, "provider": str(req.official_schedule_provider or "")}
+            ]
+            return result
+
     now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     cached_get = _cached_http_get(http_get)
-    result: dict[str, Any] = {
-        "status": "COMPLETED",
-        "sport": "WNBA",
-        "requested_date": req.requested_date,
-        "requested_timezone": req.requested_timezone,
-        "candidate_offset": req.candidate_offset,
-        "max_candidates": req.max_candidates,
-        "total_candidates": 0,
-        "window_candidate_n": 0,
-        "attempted": 0,
-        "already_captured": 0,
-        "hydrated": 0,
-        "persisted": 0,
-        "held": 0,
-        "snapshot_write_failed": 0,
-        "next_offset": None,
-        "blockers": [],
-        "source_diagnostics": [],
-        "probability_publishable": False,
-        "automatic_certification": False,
-        "automatic_promotion": False,
-        "can_execute": False,
-    }
+    result = _result_shell(req)
     try:
         schedule = acquisition._request_schedule(http_get=cached_get)
         players = acquisition._schedule_players(
