@@ -124,9 +124,10 @@ def test_both_official_schedule_transports_fail_closed_with_typed_source_error()
     assert excinfo.value.detail["primary_source"] == fallback.CDN_PROVIDER
     assert excinfo.value.detail["fallback_source"] == fallback.WEB_PROVIDER
     assert "RuntimeError:HTTP_502" in excinfo.value.detail["fallback_errors"]
+    assert excinfo.value.detail["fallback_diagnostic"] == {}
 
 
-def test_parse_failure_preserves_typed_code_without_remote_body_text():
+def test_parse_failure_preserves_typed_code_and_safe_structural_diagnostic_without_remote_body_text():
     malformed_html = "<html><body><a href='/game/lva-vs-ind-1042600122'></a></body></html>"
 
     def fetcher(url, **kwargs):
@@ -142,7 +143,29 @@ def test_parse_failure_preserves_typed_code_without_remote_body_text():
         )
     errors = excinfo.value.detail["fallback_errors"]
     assert errors == ["WNBAPropHydrationError:WNBA_OFFICIAL_SCHEDULE_WEB_PARSE_EMPTY"]
+    diagnostic = excinfo.value.detail["fallback_diagnostic"]
+    assert diagnostic == {
+        "html_length": len(malformed_html),
+        "game_href_match_n": 1,
+        "next_data_present": False,
+        "registry_team_n": 0,
+        "parsed_tile_n": 1,
+        "datetime_attr_n": 0,
+        "logo_team_id_match_n": 0,
+        "team_away_token_n": 0,
+        "team_home_token_n": 0,
+        "missing_game_id_n": 0,
+        "missing_datetime_n": 1,
+        "missing_away_team_id_n": 1,
+        "missing_home_team_id_n": 0,
+        "registry_miss_away_n": 0,
+        "registry_miss_home_n": 0,
+        "display_mismatch_away_n": 0,
+        "display_mismatch_home_n": 0,
+    }
+    assert all(isinstance(value, (bool, int)) for value in diagnostic.values())
     assert "remote body detail must not leak" not in str(excinfo.value.detail)
+    assert malformed_html not in str(excinfo.value.detail)
 
 
 def test_fallback_provenance_replaces_legacy_cdn_label_without_changing_governance():
