@@ -30,7 +30,7 @@ class WNBAForwardEvidenceRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     requested_date: str
     requested_timezone: str = "America/Chicago"
-    candidate_offset: int = Field(default=48, ge=0, le=2000)
+    candidate_offset: int = Field(default=0, ge=0, le=2000)
     max_candidates: int = Field(default=48, ge=1, le=96)
 
 
