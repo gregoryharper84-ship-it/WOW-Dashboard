@@ -23,6 +23,18 @@ CAN_EXECUTE = False
 PROBABILITY_PUBLISHABLE = False
 
 
+def build_candidate(*args: Any, **kwargs: Any) -> dict[str, Any]:
+    """Lazy compatibility seam for NHL candidate construction.
+
+    Existing maintenance tests and callers monkeypatch this module-level symbol.
+    Keep that seam while deferring the scientific training stack until an actual
+    maintenance invocation.
+    """
+    from nhl_candidate_pipeline import build_candidate as implementation
+
+    return implementation(*args, **kwargs)
+
+
 def default_start_years(now: datetime | None = None) -> tuple[int, ...]:
     current = (now or datetime.now(timezone.utc)).year
     # On Sep 15, 2026 the 2026-27 regular season has not produced settled
@@ -64,10 +76,9 @@ def run_nhl_model_maintenance(
     training_code_sha: str | None = None,
     session: Any = None,
 ) -> dict[str, Any]:
-    # nhl_candidate_pipeline imports the binary candidate lifecycle/scikit-learn.
-    # Keep that research-training stack off production route construction and
-    # load it only when the maintenance endpoint is actually invoked.
-    from nhl_candidate_pipeline import NHLCandidateError, build_candidate
+    # The exception type lives beside the fitted-training code. Load only when
+    # maintenance is actually invoked; production route construction stays light.
+    from nhl_candidate_pipeline import NHLCandidateError
 
     years = tuple(sorted({int(v) for v in (start_years or default_start_years())}))
     if not years:
@@ -145,6 +156,7 @@ def install_nhl_model_maintenance_route(
 
 __all__ = [
     "CAN_EXECUTE",
+    "build_candidate",
     "default_start_years",
     "install_nhl_model_maintenance_route",
     "run_nhl_model_maintenance",
