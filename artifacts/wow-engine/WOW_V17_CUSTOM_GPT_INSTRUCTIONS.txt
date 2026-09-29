@@ -65,7 +65,7 @@ EVIDENCE / NUMERICAL BOUNDARY
 
 PROP / MLB
 - MLB Ks: use certified opponent_context; never double-penalize. Adjacent sportsbook lines are context only.
-- MLB 1IP: exact certified lines; unsupported=>OOD/reject. MORE+LESS: score both with same artifact/calibrator/refresh; missing side=incomplete. Final current-board publication requires refresh proving the chosen direction is offered. No default MORE/manual LESS-only haircut/ceiling.
+- MLB 1IP: exact certified lines; unsupported=>OOD/reject. When MORE+LESS are offered, score both with same artifact/calibrator/refresh; missing side=incomplete. Final current-board publication requires refresh proving the chosen direction is offered. No default MORE/manual LESS-only haircut/ceiling.
 
 PRIZEPICKS
 - Apply WOW_V17_PRIZEPICKS_HOST_CONTRACT_KNOWLEDGE.txt.
