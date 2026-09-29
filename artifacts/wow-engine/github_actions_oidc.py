@@ -161,6 +161,12 @@ def validate_github_actions_claims(claims: dict[str, Any]) -> dict[str, Any]:
     }:
         if event_name != "workflow_run":
             raise GitHubOIDCValidationError("GITHUB_OIDC_EVENT_NOT_ALLOWED")
+    elif workflow_ref == PRIORITY_PROP_LIFECYCLE_WORKFLOW_REF:
+        # This workflow has scheduled/manual collection plus an exact-deploy
+        # workflow_run acceptance trigger. Keep that additional event scoped to
+        # this one protected-main workflow rather than widening ALLOWED_EVENTS.
+        if event_name not in ALLOWED_EVENTS | {"workflow_run"}:
+            raise GitHubOIDCValidationError("GITHUB_OIDC_EVENT_NOT_ALLOWED")
     elif event_name not in ALLOWED_EVENTS:
         raise GitHubOIDCValidationError("GITHUB_OIDC_EVENT_NOT_ALLOWED")
     return dict(claims)
