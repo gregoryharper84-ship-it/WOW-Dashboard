@@ -24,6 +24,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from github_actions_oidc import scout_route_auth_dependency
 from prop_auto_hydration import PropAutoHydrationError
+import v17.wnba_official_schedule_web_fallback  # noqa: F401 - preserve install-order contract
 from v17 import wnba_official_schedule_web_fallback as schedule_transport
 from v17 import wnba_prop_evidence_acquisition as acquisition
 
@@ -78,7 +79,6 @@ def _source_diagnostic(exc: Exception) -> dict[str, Any] | None:
     if code != "WNBA_OFFICIAL_SOURCE_UNAVAILABLE" or not isinstance(detail, dict):
         return None
 
-    # Legacy one-source failures retain the exact existing receipt contract.
     raw_url = str(detail.get("url") or "").strip()
     if raw_url:
         parsed = urlsplit(raw_url)
@@ -180,9 +180,6 @@ def acquire_wnba_forward_evidence_batch(
     now: datetime | None = None,
     http_get: Callable[..., Any] = httpx.get,
 ) -> dict[str, Any]:
-    # Bridge recursion installs one request-scoped immutable schedule snapshot for
-    # both discovery and the nested hydrator's own _schedule() calls. Clearing the
-    # fields in the nested request guarantees the recursion executes exactly once.
     bridge_requested = req.official_schedule is not None or req.official_schedule_provider is not None
     if bridge_requested:
         result = _result_shell(req)
