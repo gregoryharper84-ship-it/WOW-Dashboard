@@ -214,16 +214,21 @@ def test_official_source_failure_preserves_typed_blocker_and_safe_source_receipt
         http_get=lambda *_a, **_k: object(),
     )
     assert result["status"] == "DATA_UNOBTAINABLE"
-    assert result["blockers"] == ["WNBA_OFFICIAL_SOURCE_UNAVAILABLE"]
-    assert result["source_diagnostics"] == [
-        {
-            "code": "WNBA_OFFICIAL_SOURCE_UNAVAILABLE",
-            "host": "stats.wnba.com",
-            "path": "/stats/leaguegamelog",
-            "attempts": 2,
-            "error_kinds": ["RuntimeError", "ValueError"],
-        }
+    assert result["blockers"] == [
+        "WNBA_OFFICIAL_SOURCE_UNAVAILABLE",
+        "WNBA_STATS_SCOREBOARD_V3_UNAVAILABLE",
     ]
+    assert result["source_diagnostics"][0] == {
+        "code": "WNBA_OFFICIAL_SOURCE_UNAVAILABLE",
+        "host": "stats.wnba.com",
+        "path": "/stats/leaguegamelog",
+        "attempts": 2,
+        "error_kinds": ["RuntimeError", "ValueError"],
+    }
+    assert result["source_diagnostics"][1] == {
+        "code": "WNBA_STATS_SCOREBOARD_V3_UNAVAILABLE",
+        "provider": subject.STATS_SCOREBOARD_PROVIDER,
+    }
     assert "must-not-leak" not in str(result)
     assert result["can_execute"] is False
 
@@ -253,7 +258,10 @@ def test_dual_official_schedule_failure_preserves_each_safe_source_boundary(monk
         http_get=lambda *_a, **_k: object(),
     )
     assert result["status"] == "DATA_UNOBTAINABLE"
-    assert result["blockers"] == ["WNBA_OFFICIAL_SOURCE_UNAVAILABLE"]
+    assert result["blockers"] == [
+        "WNBA_OFFICIAL_SOURCE_UNAVAILABLE",
+        "WNBA_STATS_SCOREBOARD_V3_UNAVAILABLE",
+    ]
     diagnostic = result["source_diagnostics"][0]
     assert diagnostic["code"] == "WNBA_OFFICIAL_SOURCE_UNAVAILABLE"
     assert diagnostic["sources"] == [
@@ -274,6 +282,10 @@ def test_dual_official_schedule_failure_preserves_each_safe_source_boundary(monk
             "error_codes": ["WNBA_OFFICIAL_SCHEDULE_WEB_PARSE_EMPTY", "HTTP_403"],
         },
     ]
+    assert result["source_diagnostics"][1] == {
+        "code": "WNBA_STATS_SCOREBOARD_V3_UNAVAILABLE",
+        "provider": subject.STATS_SCOREBOARD_PROVIDER,
+    }
     assert "Expecting value" not in str(result)
     assert "line 1 column 1" not in str(result)
     assert result["can_execute"] is False
