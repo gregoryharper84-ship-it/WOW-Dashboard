@@ -16,12 +16,23 @@ from typing import Any, Iterable
 from fastapi import FastAPI
 
 from github_actions_oidc import scout_route_auth_dependency
-from nhl_candidate_pipeline import NHLCandidateError, build_candidate
 from v17.d1_bulk_candidate_registry import persist_candidate_package_bulk
 from v17.d1_candidate_registry import D1RegistryError
 
 CAN_EXECUTE = False
 PROBABILITY_PUBLISHABLE = False
+
+
+def build_candidate(*args: Any, **kwargs: Any) -> dict[str, Any]:
+    """Lazy compatibility seam for NHL candidate construction.
+
+    Existing maintenance tests and callers monkeypatch this module-level symbol.
+    Keep that seam while deferring the scientific training stack until an actual
+    maintenance invocation.
+    """
+    from nhl_candidate_pipeline import build_candidate as implementation
+
+    return implementation(*args, **kwargs)
 
 
 def default_start_years(now: datetime | None = None) -> tuple[int, ...]:
@@ -65,6 +76,10 @@ def run_nhl_model_maintenance(
     training_code_sha: str | None = None,
     session: Any = None,
 ) -> dict[str, Any]:
+    # The exception type lives beside the fitted-training code. Load only when
+    # maintenance is actually invoked; production route construction stays light.
+    from nhl_candidate_pipeline import NHLCandidateError
+
     years = tuple(sorted({int(v) for v in (start_years or default_start_years())}))
     if not years:
         return _blocked("NHL_MAINTENANCE_RANGE_EMPTY", stage="CONFIGURATION")
@@ -141,6 +156,7 @@ def install_nhl_model_maintenance_route(
 
 __all__ = [
     "CAN_EXECUTE",
+    "build_candidate",
     "default_start_years",
     "install_nhl_model_maintenance_route",
     "run_nhl_model_maintenance",
