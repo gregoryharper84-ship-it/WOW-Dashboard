@@ -67,3 +67,8 @@ def test_llp_ambiguous_stateful_transport_requires_receipt_recovery_before_retry
         in LLP_INSTRUCTIONS
     )
     assert "can_execute=false always" in LLP_INSTRUCTIONS
+
+
+def test_llp_pasteable_authority_block_stays_under_editor_limit():
+    authority_block = LLP_INSTRUCTIONS.split("```", 2)[1]
+    assert len(authority_block) < 8000
