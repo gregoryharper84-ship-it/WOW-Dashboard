@@ -19,6 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from github_actions_oidc import scout_route_auth_dependency
 from prop_auto_hydration import PropAutoHydrationError
+import v17.wnba_official_schedule_web_fallback  # noqa: F401 - installs official-only transport fallback
 from v17 import wnba_prop_evidence_acquisition as acquisition
 
 CAN_EXECUTE = False
