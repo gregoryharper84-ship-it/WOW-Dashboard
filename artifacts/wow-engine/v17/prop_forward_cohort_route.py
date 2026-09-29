@@ -39,6 +39,9 @@ import v17.mlb_1ip_exact_settlement_overlay  # noqa: F401
 # Exact NFL postgame settlement is evidence plumbing only. It does not alter the
 # fitted specialists, calibration, certification, publication, or execution gates.
 import v17.nfl_prop_settlement_overlay  # noqa: F401
+# Import after settlement overlays so the priority route sees the active exact
+# settlement implementation through the shared settlement module object.
+from v17.prop_priority_lifecycle_runtime import install_priority_prop_lifecycle_runtime
 
 
 _LOGGER = logging.getLogger("wow.v17.prop_forward_cohort")
@@ -110,6 +113,11 @@ def install_prop_forward_cohort_route(
         auth_dependency=auth_dependency,
         db_client_fn=db_client_fn,
         market_api=cohort_market_api,
+    )
+    install_priority_prop_lifecycle_runtime(
+        app,
+        auth_dependency=auth_dependency,
+        db_client_fn=db_client_fn,
     )
 
     install_prop_action_canary_capture(app, db_client_fn=db_client_fn)

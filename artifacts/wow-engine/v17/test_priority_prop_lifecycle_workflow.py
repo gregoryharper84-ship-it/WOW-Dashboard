@@ -9,19 +9,20 @@ def test_priority_prop_lifecycle_is_bounded_fail_closed_and_sport_scoped():
     assert 'push:' in text
     assert 'max-parallel: 1' in text
     assert 'id-token: write' in text
-    assert '/v17/prop-lifecycle-autopilot-run' in text
+    assert '/v17/prop-lifecycle-autopilot-run' not in text
+    assert '/v17/prop-priority-settlement-run' in text
+    assert '/v17/prop-priority-durable-audit-run' in text
     assert '/internal/v17/nfl-prop-forward-evidence/acquire' in text
     assert '/internal/v17/mlb-prop-forward-evidence/acquire' in text
     assert '/internal/v17/wnba-prop-forward-evidence/acquire' in text
     assert text.count('max_candidates: 8') == 3
-    assert '--max-time 120' in text
-    assert '--max-time 210' in text
+    assert 'post_oidc_json' in text
     assert 'seed_date "${today}"' in text
     assert 'seed_date "${tomorrow}"' in text
     assert 'candidate_offset":0' in text
-    assert 'next_offset' in text
     assert 'seed_failures=0' in text
-    assert 'lifecycle will still consume any durable rows' in text
+    assert 'settlement_failures=0' in text
+    assert 'persisted_health_n' in text
     assert 'WOW_CAN_EXECUTE: "false"' in text
     assert 'WOW_DRY_RUN_ONLY: "true"' in text
     assert "automatic_certification" in text
@@ -57,16 +58,18 @@ def test_priority_workflow_release_handoff_health_preflight_is_bounded_and_retry
     assert text.index("wait_for_live\n") < text.index('if ! seed_date "${today}"')
 
 
-def test_priority_workflow_reaches_lifecycle_even_when_seed_transport_is_ambiguous():
+def test_priority_workflow_consumes_durable_rows_after_ambiguous_seed_or_settlement_transport():
     repo_root = Path(__file__).resolve().parents[3]
     priority = (repo_root / ".github" / "workflows" / "wow-v17-priority-prop-lifecycle.yml").read_text()
     universal = (repo_root / ".github" / "workflows" / "wow-v17-prop-lifecycle-autopilot.yml").read_text()
 
-    assert priority.index('seed_failures=0') < priority.index('lifecycle_body=')
-    assert priority.index('if ! seed_date "${today}"') < priority.index('lifecycle_body=')
-    assert priority.index('if ! seed_date "${tomorrow}"') < priority.index('lifecycle_body=')
-    assert priority.index('lifecycle_body=') < priority.index('if [ "${seed_failures}" -ne 0 ]')
+    seed = priority.index('seed_failures=0')
+    settlement = priority.index('settlement_failures=0')
+    audit = priority.index('audit_body=')
+    terminal_failure = priority.index('if [ "${seed_failures}" -ne 0 ] || [ "${settlement_failures}" -ne 0 ]')
+    assert seed < settlement < audit < terminal_failure
+    assert 'durable settlement/audit will still inspect persisted rows' in priority
+    assert 'health_persistence' in priority
     assert 'routes":[]' in universal
-    assert 'routes":[]' not in priority
     assert 'name: wow-v17-prop-lifecycle-autopilot' in universal
     assert 'name: wow-v17-priority-prop-lifecycle' in priority
