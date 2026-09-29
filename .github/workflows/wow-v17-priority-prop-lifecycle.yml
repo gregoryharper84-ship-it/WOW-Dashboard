@@ -33,15 +33,15 @@ jobs:
         include:
           - sport: NFL
             producer_path: /internal/v17/nfl-prop-forward-evidence/acquire
-            max_candidates: 64
+            max_candidates: 8
             routes_json: '["NFL:PASSING_YARDS","NFL:RUSHING_YARDS","NFL:RECEIVING_YARDS","NFL:ANYTIME_TD"]'
           - sport: MLB
             producer_path: /internal/v17/mlb-prop-forward-evidence/acquire
-            max_candidates: 48
+            max_candidates: 8
             routes_json: '["MLB:PITCHER_STRIKEOUTS","MLB:PITCHING_OUTS","MLB:STRIKES_THROWN","MLB:BALLS_THROWN"]'
           - sport: WNBA
             producer_path: /internal/v17/wnba-prop-forward-evidence/acquire
-            max_candidates: 96
+            max_candidates: 8
             routes_json: '["WNBA:POINTS","WNBA:REBOUNDS","WNBA:ASSISTS","WNBA:THREE_POINTERS_MADE"]'
     env:
       WOW_SERVICE_URL: https://wow-governed-probability-engine.onrender.com
@@ -77,13 +77,28 @@ jobs:
             python -c 'import json,sys; value=json.load(sys.stdin).get("value"); assert isinstance(value,str) and value.strip(); print(value.strip())' <<<"${token_json}"
           }
 
-          health_code="$(curl --silent --show-error --connect-timeout 10 --max-time 20 \
-            --output /tmp/wow-live.json --write-out '%{http_code}' \
-            "${WOW_SERVICE_URL}/health/live" || true)"
-          if [ "${health_code}" -lt 200 ] || [ "${health_code}" -ge 300 ]; then
-            echo "WOW runtime is not live (HTTP ${health_code:-000})." >&2
-            exit 1
-          fi
+          wait_for_live() {
+            local attempt health_code curl_rc
+            for attempt in 1 2 3; do
+              set +e
+              health_code="$(curl --silent --show-error --connect-timeout 10 --max-time 20 \
+                --output /tmp/wow-live.json --write-out '%{http_code}' \
+                "${WOW_SERVICE_URL}/health/live")"
+              curl_rc=$?
+              set -e
+              if [ "${curl_rc}" -eq 0 ] && [ "${health_code}" -ge 200 ] && [ "${health_code}" -lt 300 ]; then
+                return 0
+              fi
+              echo "WOW runtime health attempt ${attempt}/3 unavailable (curl_rc=${curl_rc}, HTTP ${health_code:-000}); bounded cold-start retry." >&2
+              if [ "${attempt}" -lt 3 ]; then
+                sleep "$((attempt * 5))"
+              fi
+            done
+            echo "WOW_RUNTIME_HEALTH_UNAVAILABLE_AFTER_BOUNDED_COLD_START_RETRIES" >&2
+            return 1
+          }
+
+          wait_for_live
 
           seed_date() {
             local slate_date="$1"
@@ -105,7 +120,7 @@ jobs:
             oidc_token="$(issue_oidc_token)"
             set +e
             local http_code
-            http_code="$(curl --silent --show-error --connect-timeout 20 --max-time 150 \
+            http_code="$(curl --silent --show-error --connect-timeout 20 --max-time 120 \
               --output "/tmp/${SPORT}-evidence-${slate_date}.json" --write-out '%{http_code}' \
               --request POST --header "Authorization: Bearer ${oidc_token}" \
               --header 'Content-Type: application/json' --data "${body}" \
@@ -114,7 +129,7 @@ jobs:
             set -e
             unset oidc_token
             if [ "${curl_rc}" -ne 0 ] || [ "${http_code}" -lt 200 ] || [ "${http_code}" -ge 300 ]; then
-              echo "${SPORT} evidence producer failed for ${slate_date} (curl_rc=${curl_rc}, HTTP ${http_code:-000})." >&2
+              echo "${SPORT} evidence producer transport was ambiguous for ${slate_date} (curl_rc=${curl_rc}, HTTP ${http_code:-000}); lifecycle will still consume any durable rows." >&2
               test -f "/tmp/${SPORT}-evidence-${slate_date}.json" && head -c 2000 "/tmp/${SPORT}-evidence-${slate_date}.json" >&2 || true
               return 1
             fi
@@ -140,6 +155,7 @@ jobs:
               'hydrated': payload.get('hydrated'),
               'persisted': payload.get('persisted'),
               'held': payload.get('held'),
+              'next_offset': payload.get('next_offset'),
               'can_execute': False,
           }, sort_keys=True))
           PY
@@ -147,8 +163,9 @@ jobs:
 
           today="$(TZ=America/Chicago date +%F)"
           tomorrow="$(TZ=America/Chicago date -d '+1 day' +%F)"
-          seed_date "${today}"
-          seed_date "${tomorrow}"
+          seed_failures=0
+          if ! seed_date "${today}"; then seed_failures=$((seed_failures + 1)); fi
+          if ! seed_date "${tomorrow}"; then seed_failures=$((seed_failures + 1)); fi
 
           lifecycle_body="$(printf '{"routes":%s,"max_snapshots_per_route":2,"settlement_limit":20,"persist_health":true}' "${ROUTES_JSON}")"
           oidc_token="$(issue_oidc_token)"
@@ -197,3 +214,8 @@ jobs:
               'can_execute':False,
           }, sort_keys=True))
           PY
+
+          if [ "${seed_failures}" -ne 0 ]; then
+            echo "${SPORT} lifecycle completed, but ${seed_failures} evidence seed call(s) had transport or typed failures." >&2
+            exit 1
+          fi
