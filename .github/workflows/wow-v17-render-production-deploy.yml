@@ -296,3 +296,29 @@ jobs:
         run: |
           python artifacts/wow-engine/v17/render_deployment_pointer.py \
             "$RUNNER_TEMP/wow-v17-render-deploy-receipt.json"
+
+      - name: Fail closed when no exact deployment advanced
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          receipt_path = os.path.join(os.environ["RUNNER_TEMP"], "wow-v17-render-deploy-receipt.json")
+          with open(receipt_path, "r", encoding="utf-8") as handle:
+              receipt = json.load(handle)
+          status = str(receipt.get("status") or "")
+          advancing = {"EXACT_SHA_RENDER_DEPLOY_LIVE", "EXACT_SHA_ALREADY_LIVE"}
+          non_advancing = {
+              "NON_MAIN_NO_DEPLOY",
+              "UPSTREAM_NOT_SUCCESS_NO_DEPLOY",
+              "STALE_SHA_NO_DEPLOY",
+              "DEPLOY_SUPERSEDED_BY_NEW_MAIN",
+          }
+          if status in advancing:
+              print(json.dumps({"status":"EXACT_DEPLOY_ACCEPTED_FOR_CANARIES","source_receipt_status":status,"can_execute":False}, sort_keys=True))
+              raise SystemExit(0)
+          if status in non_advancing:
+              print(json.dumps({"status":"POST_DEPLOY_CANARIES_BLOCKED","source_receipt_status":status,"can_execute":False}, sort_keys=True))
+              raise SystemExit(1)
+          raise RuntimeError(f"RENDER_DEPLOY_RECEIPT_STATUS_UNRECOGNIZED:{status or 'MISSING'}")
+          PY
