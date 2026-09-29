@@ -34,7 +34,9 @@ _SCHEDULE_SOURCE: ContextVar[tuple[str, str]] = ContextVar(
     "wow_wnba_schedule_source",
     default=(CDN_PROVIDER, wnba.WNBA_SCHEDULE_URL),
 )
-_GAME_HREF = re.compile(r"/game/(\d+)(?:[/?#]|$)")
+# Current official game links are slugged (for example
+# /game/lva-vs-ind-1042600122); retain support for the historical bare-id form.
+_GAME_HREF = re.compile(r"/game/(?:[^/?#]*-)?(\d{10})(?:[/?#]|$)")
 _LOGO_TEAM_ID = re.compile(r"/logos/wnba/(\d+)/")
 _NEXT_DATA = re.compile(
     r"<script[^>]*\bid=[\"']__NEXT_DATA__[\"'][^>]*>(.*?)</script>",
