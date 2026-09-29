@@ -226,3 +226,54 @@ def test_official_source_failure_preserves_typed_blocker_and_safe_source_receipt
     ]
     assert "must-not-leak" not in str(result)
     assert result["can_execute"] is False
+
+
+def test_dual_official_schedule_failure_preserves_each_safe_source_boundary(monkeypatch: pytest.MonkeyPatch):
+    exc = subject.acquisition.wnba.WNBAPropHydrationError(
+        "WNBA_OFFICIAL_SOURCE_UNAVAILABLE",
+        "both official schedule transports failed",
+        detail={
+            "primary_source": "WNBA_CDN_SCHEDULE_CURRENT",
+            "fallback_source": "WNBA_OFFICIAL_SCHEDULE_WEB_SSR",
+            "primary_errors": [
+                "JSONDecodeError:Expecting value: line 1 column 1",
+                "RuntimeError:HTTP_502",
+            ],
+            "fallback_errors": [
+                "WNBAPropHydrationError:WNBA_OFFICIAL_SCHEDULE_WEB_PARSE_EMPTY",
+                "RuntimeError:HTTP_403",
+            ],
+        },
+    )
+    monkeypatch.setattr(subject.acquisition, "_request_schedule", lambda **_kwargs: (_ for _ in ()).throw(exc))
+    result = subject.acquire_wnba_forward_evidence_batch(
+        subject.WNBAForwardEvidenceRequest(requested_date="2026-09-28", max_candidates=1),
+        db=_DB(),
+        now=NOW,
+        http_get=lambda *_a, **_k: object(),
+    )
+    assert result["status"] == "DATA_UNOBTAINABLE"
+    assert result["blockers"] == ["WNBA_OFFICIAL_SOURCE_UNAVAILABLE"]
+    diagnostic = result["source_diagnostics"][0]
+    assert diagnostic["code"] == "WNBA_OFFICIAL_SOURCE_UNAVAILABLE"
+    assert diagnostic["sources"] == [
+        {
+            "provider": "WNBA_CDN_SCHEDULE_CURRENT",
+            "host": "cdn.wnba.com",
+            "path": "/static/json/staticData/scheduleLeagueV2.json",
+            "attempts": 2,
+            "error_kinds": ["JSONDecodeError", "RuntimeError"],
+            "error_codes": ["HTTP_502"],
+        },
+        {
+            "provider": "WNBA_OFFICIAL_SCHEDULE_WEB_SSR",
+            "host": "www.wnba.com",
+            "path": "/schedule",
+            "attempts": 2,
+            "error_kinds": ["WNBAPropHydrationError", "RuntimeError"],
+            "error_codes": ["WNBA_OFFICIAL_SCHEDULE_WEB_PARSE_EMPTY", "HTTP_403"],
+        },
+    ]
+    assert "Expecting value" not in str(result)
+    assert "line 1 column 1" not in str(result)
+    assert result["can_execute"] is False
