@@ -78,7 +78,7 @@ def test_bare_numeric_game_url_remains_supported():
     assert game["gameId"] == "1042600122"
 
 
-def test_cdn_non_json_fails_over_only_to_official_wnba_schedule_page():
+def test_cdn_non_json_exhausts_same_source_recovery_before_official_web_fallback():
     calls = []
 
     def fetcher(url, **kwargs):
@@ -96,8 +96,18 @@ def test_cdn_non_json_fails_over_only_to_official_wnba_schedule_page():
     )
     game = payload["leagueSchedule"]["gameDates"][0]["games"][0]
     assert game["gameId"] == "1042600122"
-    assert [url for url, _kwargs in calls].count(wnba.WNBA_SCHEDULE_URL) == wnba.HTTP_ATTEMPTS
-    assert fallback.SCHEDULE_PAGE_URL in [url for url, _kwargs in calls]
+
+    cdn_calls = [kwargs for url, kwargs in calls if url == wnba.WNBA_SCHEDULE_URL]
+    assert len(cdn_calls) == wnba.HTTP_ATTEMPTS * 2
+    browser_calls = cdn_calls[:wnba.HTTP_ATTEMPTS]
+    minimal_calls = cdn_calls[wnba.HTTP_ATTEMPTS:]
+    assert all(call["headers"].get("Host") == "cdn.wnba.com" for call in browser_calls)
+    assert all("Host" not in call["headers"] for call in minimal_calls)
+    assert all("Origin" not in call["headers"] for call in minimal_calls)
+    assert all("Referer" not in call["headers"] for call in minimal_calls)
+    assert all("Accept-Encoding" not in call["headers"] for call in minimal_calls)
+
+    assert [url for url, _kwargs in calls][-1] == fallback.SCHEDULE_PAGE_URL
     assert all(
         url in {wnba.WNBA_SCHEDULE_URL, fallback.SCHEDULE_PAGE_URL}
         for url, _kwargs in calls
@@ -123,6 +133,7 @@ def test_both_official_schedule_transports_fail_closed_with_typed_source_error()
     assert excinfo.value.code == "WNBA_OFFICIAL_SOURCE_UNAVAILABLE"
     assert excinfo.value.detail["primary_source"] == fallback.CDN_PROVIDER
     assert excinfo.value.detail["fallback_source"] == fallback.WEB_PROVIDER
+    assert len(excinfo.value.detail["primary_minimal_errors"]) == wnba.HTTP_ATTEMPTS
     assert "RuntimeError:HTTP_502" in excinfo.value.detail["fallback_errors"]
 
 
