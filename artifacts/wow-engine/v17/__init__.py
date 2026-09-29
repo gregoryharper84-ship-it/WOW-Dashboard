@@ -135,6 +135,9 @@ def _defer_mlb_event_bridge_install(*, market_api, team_runtime) -> bool:
 def compose_active_runtime() -> bool:
     if os.getenv("WOW_V17_ACTIVE", "0") != "1":
         return False
+    from v17.acquisition_detail_projection_repair import (
+        install_acquisition_detail_projection_repair,
+    )
     from v17.daily_snapshot_oidc_bridge import install_daily_snapshot_oidc_bridge
     from v17.fallback_provider_routes import install_fallback_provider_health_routes
     from v17.full_board_overlay import install_cross_sport_full_board_overlay
@@ -154,6 +157,7 @@ def compose_active_runtime() -> bool:
     )
     from v17 import team_event_request_runtime as team_runtime
 
+    acquisition_projection_ok = install_acquisition_detail_projection_repair()
     rundown_auth_ok = install_rundown_v2_auth_repair()
     market_prior_ok = install_market_prior_ingress_repair(team_runtime)
 
@@ -221,7 +225,8 @@ def compose_active_runtime() -> bool:
             )
 
     return bool(
-        rundown_auth_ok or market_prior_ok
+        acquisition_projection_ok
+        or rundown_auth_ok or market_prior_ok
         or prop_ok or lineup_ok or rehydration_ok or rundown_llp_ok or rundown_value_shadow_ok or numerical_ok
         or full_board_overlay_ok
         or mlb_event_bridge_deferred or runtime_acceptance_ok or daily_snapshot_oidc_ok
