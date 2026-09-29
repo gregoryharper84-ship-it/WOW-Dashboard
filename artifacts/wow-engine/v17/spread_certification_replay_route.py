@@ -12,10 +12,6 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from github_actions_oidc import scout_route_auth_dependency
 from v17.mlb_run_line_shadow import RUN_LINE_MODEL_FAMILY
-from v17.nfl_spread_context_challenger import run_nfl_context_v2_close_proxy_replay
-from v17.nfl_spread_scale_calibrated_challenger import run_nfl_context_v3_scale_calibrated_replay
-from v17.spread_certification_replay import run_nflverse_close_proxy_replay
-from v17.spread_margin_challenger import SpreadChallengerUnavailable
 
 CAN_EXECUTE = False
 PROBABILITY_PUBLISHABLE = False
@@ -23,6 +19,29 @@ AUTOMATIC_CERTIFICATION = False
 AUTOMATIC_PROMOTION = False
 PRODUCTION_REGISTRY_MUTATED = False
 GLOBAL_TERMINAL_REDUCER = "V17_TERMINAL_REDUCER"
+
+
+# Preserve route-level adapter/monkeypatch seams while deferring the scientific
+# replay/challenger stack until an NFL certification replay is actually invoked.
+def run_nfl_context_v2_close_proxy_replay(*args: Any, **kwargs: Any) -> Any:
+    from v17.nfl_spread_context_challenger import (
+        run_nfl_context_v2_close_proxy_replay as implementation,
+    )
+    return implementation(*args, **kwargs)
+
+
+def run_nfl_context_v3_scale_calibrated_replay(*args: Any, **kwargs: Any) -> Any:
+    from v17.nfl_spread_scale_calibrated_challenger import (
+        run_nfl_context_v3_scale_calibrated_replay as implementation,
+    )
+    return implementation(*args, **kwargs)
+
+
+def run_nflverse_close_proxy_replay(*args: Any, **kwargs: Any) -> Any:
+    from v17.spread_certification_replay import (
+        run_nflverse_close_proxy_replay as implementation,
+    )
+    return implementation(*args, **kwargs)
 
 
 class SpreadCertificationReplayRequest(BaseModel):
@@ -139,6 +158,10 @@ def execute_spread_certification_replay(db: Any, request: SpreadCertificationRep
         return _mlb_historical_replay_blocker()
     if request.sport == "WNBA":
         return _wnba_historical_replay_blocker()
+
+    # Typed challenger failure ownership is needed only on the NFL replay path.
+    from v17.spread_margin_challenger import SpreadChallengerUnavailable
+
     try:
         if request.variant == "NFL_CONTEXT_V3_SCALE_CAL":
             result = run_nfl_context_v3_scale_calibrated_replay(client=db, ridge_alpha=request.ridge_alpha)

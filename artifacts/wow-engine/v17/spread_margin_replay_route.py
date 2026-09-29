@@ -11,15 +11,6 @@ from v17.mlb_run_line_shadow import (
     MLBRunLineShadowUnavailable,
     run_mlb_run_line_forward_shadow,
 )
-from v17.spread_exact_line_replay import run_exact_line_replay
-from v17.spread_forward_auto_canary import (
-    run_nfl_spread_auto_canary,
-    run_wnba_spread_auto_canary,
-)
-from v17.spread_forward_shadow import run_ncaaf_forward_shadow
-from v17.spread_forward_shadow_leagues import run_nfl_forward_shadow, run_wnba_forward_shadow
-from v17.spread_margin_challenger import SpreadChallengerUnavailable
-from v17.spread_margin_replay import run_historical_replay
 from v17.spread_market_evidence import DEFAULT_BOOKS, SpreadMarketEvidenceError, collect_spread_snapshot
 
 CAN_EXECUTE = False
@@ -31,6 +22,43 @@ DATABASE_MUTATED = False
 PRODUCTION_REGISTRY_MUTATED = False
 GLOBAL_TERMINAL_REDUCER = "V17_TERMINAL_REDUCER"
 ReplaySport = Literal["NFL", "NBA", "WNBA", "NCAAF", "NCAAB"]
+
+
+# Preserve the route module's long-standing monkeypatch/adapter seams without
+# importing the scientific challenger stack during web-process construction.
+def run_historical_replay(*args: Any, **kwargs: Any) -> Any:
+    from v17.spread_margin_replay import run_historical_replay as implementation
+    return implementation(*args, **kwargs)
+
+
+def run_exact_line_replay(*args: Any, **kwargs: Any) -> Any:
+    from v17.spread_exact_line_replay import run_exact_line_replay as implementation
+    return implementation(*args, **kwargs)
+
+
+def run_ncaaf_forward_shadow(*args: Any, **kwargs: Any) -> Any:
+    from v17.spread_forward_shadow import run_ncaaf_forward_shadow as implementation
+    return implementation(*args, **kwargs)
+
+
+def run_nfl_forward_shadow(*args: Any, **kwargs: Any) -> Any:
+    from v17.spread_forward_shadow_leagues import run_nfl_forward_shadow as implementation
+    return implementation(*args, **kwargs)
+
+
+def run_wnba_forward_shadow(*args: Any, **kwargs: Any) -> Any:
+    from v17.spread_forward_shadow_leagues import run_wnba_forward_shadow as implementation
+    return implementation(*args, **kwargs)
+
+
+def run_nfl_spread_auto_canary(*args: Any, **kwargs: Any) -> Any:
+    from v17.spread_forward_auto_canary import run_nfl_spread_auto_canary as implementation
+    return implementation(*args, **kwargs)
+
+
+def run_wnba_spread_auto_canary(*args: Any, **kwargs: Any) -> Any:
+    from v17.spread_forward_auto_canary import run_wnba_spread_auto_canary as implementation
+    return implementation(*args, **kwargs)
 
 
 class SpreadMarginReplayRequest(BaseModel):
@@ -113,6 +141,8 @@ def _evidence_governance_fields(*, rows_written: int = 0) -> dict[str, Any]:
 
 
 def execute_spread_margin_replay(db: Any, request: SpreadMarginReplayRequest) -> dict[str, Any]:
+    from v17.spread_margin_challenger import SpreadChallengerUnavailable
+
     try:
         result = run_historical_replay(sport=request.sport, client=db, min_rows=request.min_rows, ridge_alpha=request.ridge_alpha)
     except SpreadChallengerUnavailable as exc:
@@ -133,6 +163,8 @@ def execute_spread_margin_replay(db: Any, request: SpreadMarginReplayRequest) ->
 
 
 def execute_spread_exact_line_replay(db: Any, request: SpreadMarginReplayRequest) -> dict[str, Any]:
+    from v17.spread_margin_challenger import SpreadChallengerUnavailable
+
     try:
         result = run_exact_line_replay(sport=request.sport, client=db, min_rows=request.min_rows, ridge_alpha=request.ridge_alpha)
     except SpreadChallengerUnavailable as exc:
@@ -161,6 +193,8 @@ def execute_spread_market_evidence_collection(db: Any, request: SpreadMarketEvid
 
 
 def _execute_forward(sport: str, event_id: str, fn: Any) -> dict[str, Any]:
+    from v17.spread_margin_challenger import SpreadChallengerUnavailable
+
     try:
         result = fn()
     except SpreadChallengerUnavailable as exc:
@@ -171,6 +205,8 @@ def _execute_forward(sport: str, event_id: str, fn: Any) -> dict[str, Any]:
 
 
 def _execute_auto_canary(sport: str, fn: Any) -> dict[str, Any]:
+    from v17.spread_margin_challenger import SpreadChallengerUnavailable
+
     try:
         result = fn()
     except SpreadChallengerUnavailable as exc:

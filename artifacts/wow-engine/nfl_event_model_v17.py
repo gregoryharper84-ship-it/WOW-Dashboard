@@ -16,9 +16,6 @@ from pathlib import Path
 from typing import Any, Iterable
 
 import numpy as np
-from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import brier_score_loss, log_loss, roc_auc_score
-from sklearn.preprocessing import StandardScaler
 
 from nfl_event_features_p2 import FEATURE_ORDER, FEATURE_SCHEMA_VERSION
 
@@ -187,6 +184,13 @@ def _xy(rows: list[dict[str, Any]]) -> tuple[np.ndarray, np.ndarray]:
 
 
 def fit_candidate(rows: list[dict[str, Any]], *, training_code_sha: str) -> dict[str, Any]:
+    # Scikit-learn is a training/certification dependency, not an inference
+    # dependency. Keep it off the web-process import path so health and governed
+    # scoring routes can bind before optional model maintenance is requested.
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.metrics import brier_score_loss, log_loss, roc_auc_score
+    from sklearn.preprocessing import StandardScaler
+
     train, calibration, validation = _split(rows)
     if len(train) < MIN_TRAIN_N or len(calibration) < MIN_CALIBRATION_N or len(validation) < MIN_VALIDATION_N:
         raise NFLModelInputsInsufficient(

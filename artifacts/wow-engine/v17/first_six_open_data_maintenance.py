@@ -12,11 +12,6 @@ from typing import Any, Callable
 from fastapi import FastAPI, HTTPException
 
 from github_actions_oidc import scout_route_auth_dependency
-from v17.ncaab_sportsdataverse_candidate import NCAABCandidateUnavailable, train_and_persist as train_ncaab
-from v17.soccer_openfootball_candidate import SoccerCandidateUnavailable, train_all as train_soccer
-from v17.tennis_valuebet_candidate import TennisCandidateUnavailable, train_all as train_tennis
-from v17.team_state_challenger_maintenance import run_all_team_state_challengers
-from v17.team_state_scoped_maintenance import run_team_state_scope
 
 CAN_EXECUTE = False
 
@@ -56,15 +51,21 @@ def _sha() -> str:
     return str(os.getenv("RENDER_GIT_COMMIT") or os.getenv("GIT_COMMIT_SHA") or "").strip().lower()
 
 
-def _run(name: str, fn: Callable[..., dict[str, Any]], db: Any) -> dict[str, Any]:
+def _run(
+    name: str,
+    fn: Callable[..., dict[str, Any]],
+    db: Any,
+    *,
+    candidate_errors: tuple[type[BaseException], ...] = (),
+) -> dict[str, Any]:
     sha = _sha()
     if len(sha) < 7:
         return {"status":"BLOCKED","code":f"{name}_TRAINING_CODE_SHA_UNAVAILABLE",
                 "automatic_certification":False,"automatic_promotion":False,"probability_publishable":False,"can_execute":False}
     try:
         result = fn(db, training_code_sha=sha)
-    except (NCAABCandidateUnavailable, SoccerCandidateUnavailable, TennisCandidateUnavailable) as exc:
-        return {"status":"BLOCKED","code":exc.code,"detail":str(exc),"automatic_certification":False,
+    except candidate_errors as exc:
+        return {"status":"BLOCKED","code":getattr(exc, "code", f"{name}_CANDIDATE_UNAVAILABLE"),"detail":str(exc),"automatic_certification":False,
                 "automatic_promotion":False,"probability_publishable":False,"can_execute":False}
     except Exception as exc:
         return {"status":"BLOCKED","code":f"{name}_CANDIDATE_MAINTENANCE_FAILED","detail":{"error_type":type(exc).__name__},
@@ -74,6 +75,8 @@ def _run(name: str, fn: Callable[..., dict[str, Any]], db: Any) -> dict[str, Any
 
 
 def _run_team_state(db: Any) -> dict[str, Any]:
+    from v17.team_state_challenger_maintenance import run_all_team_state_challengers
+
     sha = _sha()
     if len(sha) < 7:
         return {"status":"BLOCKED","code":"TEAM_STATE_TRAINING_CODE_SHA_UNAVAILABLE","automatic_certification":False,
@@ -87,6 +90,8 @@ def _run_team_state(db: Any) -> dict[str, Any]:
 
 
 def _run_team_state_scope(db: Any, scope: str) -> dict[str, Any]:
+    from v17.team_state_scoped_maintenance import run_team_state_scope
+
     sha = _sha()
     if len(sha) < 7:
         return {"status":"BLOCKED","program":"LLP_DYNAMIC_TEAM_STATE_CHALLENGER_V1","scope":str(scope or "").upper(),
@@ -186,7 +191,7 @@ def _persist_team_state_batch(db: Any, payload: dict[str, Any]) -> dict[str, Any
     """Persist only governed team-state training/artifact upsert batches.
 
     Source-heavy public acquisition and fitting may run on a protected GitHub
-    runner, but database authority stays on the backend.  This endpoint is not a
+    runner, but database authority stays on the backend. This endpoint is not a
     generic table writer: it permits only the two team-state evidence tables,
     exact conflict contracts, bounded batches, and fail-closed candidate flags.
     """
@@ -265,17 +270,20 @@ def install_first_six_open_data_maintenance_routes(app: FastAPI, *, auth_depende
     if "/internal/v17/ncaab-model-maintenance" not in routes:
         @app.post("/internal/v17/ncaab-model-maintenance",dependencies=[dependency],operation_id="runWowV17NcaabModelMaintenance")
         def run_ncaab_maintenance() -> dict[str, Any]:
-            return _run("NCAAB",train_ncaab,db_client_fn())
+            from v17.ncaab_sportsdataverse_candidate import NCAABCandidateUnavailable, train_and_persist as train_ncaab
+            return _run("NCAAB",train_ncaab,db_client_fn(),candidate_errors=(NCAABCandidateUnavailable,))
 
     if "/internal/v17/soccer-model-maintenance" not in routes:
         @app.post("/internal/v17/soccer-model-maintenance",dependencies=[dependency],operation_id="runWowV17SoccerModelMaintenance")
         def run_soccer_maintenance() -> dict[str, Any]:
-            return _run("SOCCER",train_soccer,db_client_fn())
+            from v17.soccer_openfootball_candidate import SoccerCandidateUnavailable, train_all as train_soccer
+            return _run("SOCCER",train_soccer,db_client_fn(),candidate_errors=(SoccerCandidateUnavailable,))
 
     if "/internal/v17/tennis-model-maintenance" not in routes:
         @app.post("/internal/v17/tennis-model-maintenance",dependencies=[dependency],operation_id="runWowV17TennisModelMaintenance")
         def run_tennis_maintenance() -> dict[str, Any]:
-            return _run("TENNIS",train_tennis,db_client_fn())
+            from v17.tennis_valuebet_candidate import TennisCandidateUnavailable, train_all as train_tennis
+            return _run("TENNIS",train_tennis,db_client_fn(),candidate_errors=(TennisCandidateUnavailable,))
 
     if "/internal/v17/team-state-challenger-maintenance" not in routes:
         @app.post("/internal/v17/team-state-challenger-maintenance",dependencies=[dependency],operation_id="runWowV17TeamStateChallengerMaintenance")

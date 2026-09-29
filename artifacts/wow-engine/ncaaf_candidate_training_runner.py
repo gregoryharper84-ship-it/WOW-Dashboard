@@ -11,10 +11,6 @@ from hashlib import sha256
 import json
 from typing import Any, Mapping
 
-from ncaaf_feature_transform import model_features_from_snapshot
-from ncaaf_three_way_trainer import train_calibrate_test, candidate_clears_research_screen
-from ncaaf_trainer import TrainingRow, NCAAFTrainingError
-
 CAN_EXECUTE = False
 PROBABILITY_PUBLISHABLE = False
 PROVIDER_IDENTITY = "WOW_NCAAF_FITTED_MODEL_V1"
@@ -49,6 +45,11 @@ def _paged(client: Any, table: str, columns: str, *, page_size: int = 1000) -> l
 
 
 def load_training_rows(client: Any) -> tuple[list[TrainingRow], list[dict[str, Any]]]:
+    # The transform/trainer modules pull in scikit-learn. They are maintenance
+    # dependencies only and must not delay production web-process readiness.
+    from ncaaf_feature_transform import model_features_from_snapshot
+    from ncaaf_trainer import TrainingRow
+
     games = _paged(
         client,
         "wow_ncaaf_training_games",
@@ -106,6 +107,9 @@ def _canonical_hash(payload: Mapping[str, Any]) -> str:
 
 
 def train_and_persist_candidate(client: Any, *, training_code_sha: str) -> dict[str, Any]:
+    from ncaaf_three_way_trainer import candidate_clears_research_screen, train_calibrate_test
+    from ncaaf_trainer import NCAAFTrainingError
+
     if not isinstance(training_code_sha, str) or len(training_code_sha.strip()) < 7:
         raise NCAAFTrainingRunnerUnavailable("NCAAF_TRAINING_CODE_SHA_REQUIRED", "auditable training code SHA is required")
     rows, metadata = load_training_rows(client)
