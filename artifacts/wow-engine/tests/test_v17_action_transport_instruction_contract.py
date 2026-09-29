@@ -5,7 +5,7 @@ INSTRUCTIONS = (
     Path(__file__).parents[1] / "WOW_V17_CUSTOM_GPT_INSTRUCTIONS.txt"
 ).read_text()
 LLP_INSTRUCTIONS = (
-    Path(__file__).parents[2] / "LLP-TEAM-BETTING-GPT-INSTRUCTIONS.md"
+    Path(__file__).parents[3] / "LLP-TEAM-BETTING-GPT-INSTRUCTIONS.md"
 ).read_text()
 
 
