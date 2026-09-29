@@ -34,12 +34,14 @@ def test_worker_remains_non_executing_even_though_web_autopilot_is_installed():
     assert env["WOW_DRY_RUN_ONLY"]["value"] == "true"
 
 
-def test_external_lifecycle_wakeup_is_scheduled_and_uses_short_lived_oidc_only():
+def test_external_universal_lifecycle_is_explicit_and_uses_short_lived_oidc_only():
     repo_root = Path(__file__).resolve().parents[3]
     path = repo_root / ".github" / "workflows" / "wow-v17-prop-lifecycle-autopilot.yml"
     text = path.read_text(encoding="utf-8")
 
-    assert 'cron: "*/15 * * * *"' in text
+    assert "schedule:" not in text
+    assert "workflow_dispatch:" in text
+    assert "push:" in text
     assert "id-token: write" in text
     assert "ACTIONS_ID_TOKEN_REQUEST_URL" in text
     assert "ACTIONS_ID_TOKEN_REQUEST_TOKEN" in text
@@ -56,12 +58,21 @@ def test_external_lifecycle_wakeup_is_scheduled_and_uses_short_lived_oidc_only()
     assert "pull_request:" not in text
 
 
-def test_external_oidc_workflow_is_the_only_lifecycle_scheduler():
+def test_bounded_priority_workflow_is_only_recurring_prop_lifecycle_scheduler():
     repo_root = Path(__file__).resolve().parents[3]
     render = yaml.safe_load((repo_root / "render.yaml").read_text())
     service = next(item for item in render["services"] if item["name"] == "wow-governed-probability-engine")
     env = {item["key"]: item for item in service["envVars"]}
 
     assert env["WOW_PROP_LIFECYCLE_AUTOPILOT_ENABLED"]["value"] == "0"
-    workflow = (repo_root / ".github" / "workflows" / "wow-v17-prop-lifecycle-autopilot.yml").read_text()
-    assert "/v17/prop-lifecycle-autopilot-run" in workflow
+
+    universal = (repo_root / ".github" / "workflows" / "wow-v17-prop-lifecycle-autopilot.yml").read_text()
+    assert "schedule:" not in universal
+    assert "/v17/prop-lifecycle-autopilot-run" in universal
+
+    priority = (repo_root / ".github" / "workflows" / "wow-v17-priority-prop-lifecycle.yml").read_text()
+    assert 'cron: "7 * * * *"' in priority
+    assert "max-parallel: 1" in priority
+    assert "/v17/prop-lifecycle-autopilot-run" not in priority
+    assert "/v17/prop-priority-settlement-run" in priority
+    assert "/v17/prop-priority-durable-audit-run" in priority
