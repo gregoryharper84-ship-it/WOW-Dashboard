@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from github_actions_oidc import scout_route_auth_dependency
 from v17.mlb_run_line_shadow import RUN_LINE_MODEL_FAMILY
+from v17.nfl_spread_context_challenger import run_nfl_context_v2_close_proxy_replay
 from v17.spread_certification_replay import run_nflverse_close_proxy_replay
 from v17.spread_margin_challenger import SpreadChallengerUnavailable
 
@@ -26,6 +27,7 @@ GLOBAL_TERMINAL_REDUCER = "V17_TERMINAL_REDUCER"
 class SpreadCertificationReplayRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     sport: Literal["MLB", "NFL", "WNBA"]
+    variant: Literal["V1", "NFL_CONTEXT_V2"] = "V1"
     min_rows: int = Field(default=300, ge=100, le=25000)
     ridge_alpha: float = Field(default=4.0, gt=0.0, le=100.0)
 
@@ -43,16 +45,6 @@ def _governance() -> dict[str, Any]:
 
 
 def _mlb_historical_replay_blocker() -> dict[str, Any]:
-    """Emit the audited MLB terminal blocker instead of unsafe retrospective scoring.
-
-    The active MLB run-line family is built from immutable forward pregame score
-    snapshots and post-simulation exact run-line thresholding. The repository does
-    not yet contain a proven frozen historical pregame state for this exact family,
-    nor a governed historical ESPN-event crosswalk suitable for binding the public
-    run-line close proxy. Reconstructing those inputs after outcomes are known would
-    create look-ahead risk, so certification replay fails closed with zero eligible
-    historical coverage.
-    """
     return {
         "status": "BLOCKED",
         "code": "MLB_RUN_LINE_HISTORICAL_SAME_FAMILY_STATE_UNAVAILABLE",
@@ -90,14 +82,6 @@ def _mlb_historical_replay_blocker() -> dict[str, Any]:
 
 
 def _wnba_historical_replay_blocker() -> dict[str, Any]:
-    """Fail closed before an unbounded per-event ESPN summary replay can proxy-timeout.
-
-    WNBA close proxies are sourced from one ESPN final-summary request per held-out
-    event. Running the entire held-out set inside one synchronous protected request
-    can exceed the production proxy budget. Certification must therefore use a
-    bounded resumable/batched acquisition artifact first; zero exact-line rows are
-    admitted by this synchronous route until that artifact exists.
-    """
     return {
         "status": "BLOCKED",
         "code": "WNBA_SPREAD_HISTORICAL_CLOSE_PROXY_BATCH_ACQUISITION_REQUIRED",
@@ -126,9 +110,7 @@ def _wnba_historical_replay_blocker() -> dict[str, Any]:
             "probability_publishable": False,
             "can_execute": False,
         },
-        "blockers": [
-            "WNBA_SPREAD_HISTORICAL_CLOSE_PROXY_BATCH_ARTIFACT_UNAVAILABLE",
-        ],
+        "blockers": ["WNBA_SPREAD_HISTORICAL_CLOSE_PROXY_BATCH_ARTIFACT_UNAVAILABLE"],
         "required_next_evidence": [
             "bounded resumable ESPN final-summary acquisition over the untouched WNBA holdout",
             "frozen aggregate payload hash and exact event/team identity audit",
@@ -142,25 +124,35 @@ def _wnba_historical_replay_blocker() -> dict[str, Any]:
     }
 
 
-def execute_spread_certification_replay(
-    db: Any,
-    request: SpreadCertificationReplayRequest,
-) -> dict[str, Any]:
+def execute_spread_certification_replay(db: Any, request: SpreadCertificationReplayRequest) -> dict[str, Any]:
+    if request.variant == "NFL_CONTEXT_V2" and request.sport != "NFL":
+        return {
+            "status": "BLOCKED",
+            "code": "SPREAD_CERTIFICATION_VARIANT_SPORT_MISMATCH",
+            "sport": request.sport,
+            "variant": request.variant,
+            "evidence_scope": "HISTORICAL_CLOSE_PROXY_CERTIFICATION_REPLAY_ONLY",
+            **_governance(),
+        }
     if request.sport == "MLB":
         return _mlb_historical_replay_blocker()
     if request.sport == "WNBA":
         return _wnba_historical_replay_blocker()
     try:
-        result = run_nflverse_close_proxy_replay(
-            client=db,
-            min_rows=request.min_rows,
-            ridge_alpha=request.ridge_alpha,
-        )
+        if request.variant == "NFL_CONTEXT_V2":
+            result = run_nfl_context_v2_close_proxy_replay(client=db, ridge_alpha=request.ridge_alpha)
+        else:
+            result = run_nflverse_close_proxy_replay(
+                client=db,
+                min_rows=request.min_rows,
+                ridge_alpha=request.ridge_alpha,
+            )
     except SpreadChallengerUnavailable as exc:
         return {
             "status": "BLOCKED",
             "code": exc.code,
             "sport": request.sport,
+            "variant": request.variant,
             "detail": str(exc),
             "evidence_scope": "HISTORICAL_CLOSE_PROXY_CERTIFICATION_REPLAY_ONLY",
             **_governance(),
@@ -170,23 +162,20 @@ def execute_spread_certification_replay(
             "status": "BLOCKED",
             "code": "SPREAD_CERTIFICATION_REPLAY_RUNTIME_FAILED",
             "sport": request.sport,
+            "variant": request.variant,
             "error_type": type(exc).__name__,
             "evidence_scope": "HISTORICAL_CLOSE_PROXY_CERTIFICATION_REPLAY_ONLY",
             **_governance(),
         }
     return {
         **result,
+        "variant": request.variant,
         "evidence_scope": "HISTORICAL_CLOSE_PROXY_CERTIFICATION_REPLAY_ONLY",
         **_governance(),
     }
 
 
-def install_spread_certification_replay_route(
-    app: FastAPI,
-    *,
-    auth_dependency: Any,
-    db_client_fn: Any,
-) -> None:
+def install_spread_certification_replay_route(app: FastAPI, *, auth_dependency: Any, db_client_fn: Any) -> None:
     path = "/internal/v17/spread-certification-replay"
     if any(getattr(route, "path", None) == path for route in app.router.routes):
         return
