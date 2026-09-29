@@ -1,10 +1,12 @@
 """Official WNBA schedule-web fallback for V17 prop hydration.
 
-The legacy public WNBA CDN schedule endpoint intermittently returns an HTTP-success
-non-JSON body or 502. This adapter keeps the evidence boundary league-owned: it
-tries the existing CDN JSON contract first, then parses the server-rendered
-official wnba.com schedule page into the exact minimal ScheduleLeagueV2 shape
-consumed by the existing hydrator.
+The public WNBA CDN schedule endpoint intermittently returns an HTTP-success
+non-JSON body on the production Render path. This adapter keeps the evidence
+boundary league-owned: it tries the same official CDN with the caller/browser
+contract, then retries that identical official CDN with a minimal public request
+contract, and only then parses the server-rendered official wnba.com schedule
+page into the exact minimal ScheduleLeagueV2 shape consumed by the existing
+hydrator.
 
 No third-party schedule, market data, probability, calibration, certification,
 publication, ranking, promotion, or execution authority is introduced.
@@ -59,6 +61,20 @@ def _web_headers() -> dict[str, str]:
         "Referer": "https://www.wnba.com/",
         "Pragma": "no-cache",
         "Cache-Control": "no-cache",
+    }
+
+
+def _minimal_cdn_headers() -> dict[str, str]:
+    """Minimal public contract for the same official WNBA CDN schedule.
+
+    Do not carry the stats/browser-only Host, Origin, Referer, cache, or Brotli
+    negotiation fields into this recovery attempt. The current public schedule
+    resource is unauthenticated and is expected to return JSON without them.
+    """
+    return {
+        "User-Agent": wnba._stats_headers()["User-Agent"],
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
     }
 
 
@@ -294,6 +310,7 @@ def request_with_official_web_fallback(
             expect_json=expect_json,
         )
 
+    # Stage 1: preserve the existing caller/browser official-CDN contract.
     payload, primary_errors = _retry(
         lambda: _request_json_once(
             wnba.WNBA_SCHEDULE_URL,
@@ -305,6 +322,21 @@ def request_with_official_web_fallback(
         _SCHEDULE_SOURCE.set((CDN_PROVIDER, wnba.WNBA_SCHEDULE_URL))
         return payload
 
+    # Stage 2: retry the identical official CDN without the browser/stats-only
+    # request fields. This restores the same-source recovery stage that existed
+    # before the SSR fallback was layered in. No authority/source substitution.
+    payload, minimal_errors = _retry(
+        lambda: _request_json_once(
+            wnba.WNBA_SCHEDULE_URL,
+            http_get=http_get,
+            headers=_minimal_cdn_headers(),
+        )
+    )
+    if payload is not None:
+        _SCHEDULE_SOURCE.set((CDN_PROVIDER, wnba.WNBA_SCHEDULE_URL))
+        return payload
+
+    # Stage 3: official wnba.com SSR remains the final league-owned fallback.
     html, fallback_errors = _retry(
         lambda: _request_html_once(SCHEDULE_PAGE_URL, http_get=http_get)
     )
@@ -318,11 +350,12 @@ def request_with_official_web_fallback(
 
     raise wnba.WNBAPropHydrationError(
         "WNBA_OFFICIAL_SOURCE_UNAVAILABLE",
-        "both official WNBA schedule transports were unavailable or invalid",
+        "all official WNBA schedule transports were unavailable or invalid",
         detail={
             "primary_source": CDN_PROVIDER,
             "fallback_source": WEB_PROVIDER,
             "primary_errors": primary_errors[-4:],
+            "primary_minimal_errors": minimal_errors[-4:],
             "fallback_errors": fallback_errors[-4:],
         },
     )
