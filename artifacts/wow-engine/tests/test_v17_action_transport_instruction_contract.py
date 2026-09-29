@@ -73,6 +73,18 @@ def test_llp_ambiguous_stateful_transport_requires_receipt_recovery_before_retry
     assert "can_execute=false always" in LLP_INSTRUCTIONS
 
 
+def test_team_event_transport_failure_continues_degraded_discovery():
+    for text in (INSTRUCTIONS, LLP_INSTRUCTIONS, LLP_OVERLAY):
+        assert "PARTIAL_OR_UNPROVEN" in text
+        assert "NOT_ESTABLISHED" in text
+        assert "governed scoring succeeds" in text
+    assert "official/free discovery" in INSTRUCTIONS
+    assert "official/free discovery" in LLP_INSTRUCTIONS
+    assert "official/free discovery" in LLP_OVERLAY
+    assert "Transport does not terminate discovery" in LLP_INSTRUCTIONS
+    assert "Transport failure does not terminate board discovery" in LLP_OVERLAY
+
+
 def test_llp_authority_overlay_matches_transport_boundary():
     assert "## Typed transport failure boundary" in LLP_OVERLAY
     assert "`ACTION_TRANSPORT_TIMEOUT` or `ACTION_TRANSPORT_FAILURE`" in LLP_OVERLAY
