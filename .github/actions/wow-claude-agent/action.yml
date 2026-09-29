@@ -22,10 +22,10 @@ inputs:
 outputs:
   structured_output:
     description: Structured JSON output from Claude Code.
-    value: ${{ steps.claude_oauth.outputs.structured_output || steps.claude_api.outputs.structured_output }}
+    value: ${{ steps.claude_api.outputs.structured_output || steps.claude_oauth.outputs.structured_output }}
   conclusion:
     description: Provider execution conclusion.
-    value: ${{ steps.claude_oauth.outputs.conclusion || steps.claude_api.outputs.conclusion }}
+    value: ${{ steps.claude_api.outputs.conclusion || steps.claude_oauth.outputs.conclusion }}
 
 runs:
   using: composite
@@ -53,22 +53,22 @@ runs:
           echo 'EOF'
         } >> "$GITHUB_OUTPUT"
 
-    - name: Run governed Claude agent with OAuth
-      id: claude_oauth
-      if: inputs.claude_code_oauth_token != ''
-      uses: anthropics/claude-code-base-action@beta
+    - name: Run governed Claude agent with API key
+      id: claude_api
+      if: inputs.anthropic_api_key != ''
+      uses: anthropics/claude-code-base-action@16bc61eeac6dfaad1e3617aee9aefa59fce7c9be
       with:
-        claude_code_oauth_token: ${{ inputs.claude_code_oauth_token }}
+        anthropic_api_key: ${{ inputs.anthropic_api_key }}
         prompt: ${{ inputs.prompt }}
         claude_args: ${{ steps.config.outputs.claude_args }}
         show_full_output: "false"
 
-    - name: Run governed Claude agent with API key
-      id: claude_api
-      if: inputs.claude_code_oauth_token == '' && inputs.anthropic_api_key != ''
-      uses: anthropics/claude-code-base-action@beta
+    - name: Run governed Claude agent with OAuth
+      id: claude_oauth
+      if: inputs.anthropic_api_key == '' && inputs.claude_code_oauth_token != ''
+      uses: anthropics/claude-code-base-action@16bc61eeac6dfaad1e3617aee9aefa59fce7c9be
       with:
-        anthropic_api_key: ${{ inputs.anthropic_api_key }}
+        claude_code_oauth_token: ${{ inputs.claude_code_oauth_token }}
         prompt: ${{ inputs.prompt }}
         claude_args: ${{ steps.config.outputs.claude_args }}
         show_full_output: "false"
@@ -77,11 +77,11 @@ runs:
       if: always()
       shell: bash
       env:
-        OAUTH_RESULT: ${{ steps.claude_oauth.outputs.structured_output }}
         API_RESULT: ${{ steps.claude_api.outputs.structured_output }}
+        OAUTH_RESULT: ${{ steps.claude_oauth.outputs.structured_output }}
       run: |
         set -euo pipefail
-        if [ -z "${OAUTH_RESULT:-}" ] && [ -z "${API_RESULT:-}" ]; then
+        if [ -z "${API_RESULT:-}" ] && [ -z "${OAUTH_RESULT:-}" ]; then
           echo "::error::Claude fallback produced no structured result."
           exit 1
         fi

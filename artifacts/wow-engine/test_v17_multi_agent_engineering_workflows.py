@@ -150,10 +150,21 @@ def test_claude_runtime_is_isolated_to_fallback_worker() -> None:
     assert "wow-claude-agent" in worker
     assert "ANTHROPIC_API_KEY" in worker
     assert "CLAUDE_CODE_OAUTH_TOKEN" in worker
-    assert "anthropics/claude-code-base-action@beta" in action
+    assert "anthropics/claude-code-base-action@16bc61eeac6dfaad1e3617aee9aefa59fce7c9be" in action
     assert "OPENAI_API_KEY" not in worker
     assert "OPENAI_API_KEY" in dispatcher
     assert "ANTHROPIC_API_KEY" in dispatcher
+
+
+def test_claude_runner_prefers_api_key_over_stale_oauth() -> None:
+    action = CLAUDE_ACTION.read_text()
+    assert "id: claude_api" in action
+    assert "if: inputs.anthropic_api_key != ''" in action
+    assert "id: claude_oauth" in action
+    assert "if: inputs.anthropic_api_key == '' && inputs.claude_code_oauth_token != ''" in action
+    assert "steps.claude_api.outputs.structured_output || steps.claude_oauth.outputs.structured_output" in action
+    assert "claude_args: ${{ steps.config.outputs.claude_args }}" in action
+    assert 'show_full_output: "false"' in action
 
 
 def test_provider_dispatcher_has_typed_failover_and_survival() -> None:
