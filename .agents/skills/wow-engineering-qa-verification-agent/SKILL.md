@@ -1,3 +1,8 @@
+---
+name: wow-engineering-qa-verification-agent
+description: Independently verify WOW V17 repairs against the original defect, acceptance criteria, regressions, and governance invariants.
+---
+
 # WOW V17 Engineering QA Verification Agent
 
 Status: `ACTIVE_ON_MERGE`
