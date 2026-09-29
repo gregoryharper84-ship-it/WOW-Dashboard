@@ -71,10 +71,10 @@ jobs:
               with urllib.request.urlopen(request, timeout=20) as response:
                   return json.load(response)["value"]
 
-          def post(sport, timeout=1200):
+          def post(sport, timeout=1200, variant="V1"):
               request = urllib.request.Request(
                   endpoint,
-                  data=json.dumps({"sport": sport, "min_rows": 300, "ridge_alpha": 4.0}, sort_keys=True).encode(),
+                  data=json.dumps({"sport": sport, "variant": variant, "min_rows": 300, "ridge_alpha": 4.0}, sort_keys=True).encode(),
                   method="POST",
                   headers={
                       "Authorization": f"Bearer {fresh_oidc()}",
@@ -92,8 +92,6 @@ jobs:
                       payload = {"raw": raw[:1000]}
                   return exc.code, payload
 
-          # Wait only for the newly deployed route; never turn route readiness
-          # into model certification authority.
           route_ready = False
           for _attempt in range(24):
               status, payload = post("NFL", timeout=1200)
@@ -108,9 +106,30 @@ jobs:
           if not route_ready:
               raise RuntimeError("SPREAD_CERTIFICATION_REPLAY_ROUTE_NOT_READY_AFTER_BOUNDED_WAIT")
 
-          summaries = {}
-          nfl = json.loads(out.joinpath("NFL.json").read_text())
-          summaries["NFL"] = nfl
+          # V2 is an additive Class-C research receipt. It never replaces the V1
+          # certification replay or creates automatic promotion authority.
+          status, nfl_v2 = post("NFL", timeout=1200, variant="NFL_CONTEXT_V2")
+          out.joinpath("NFL_CONTEXT_V2.json").write_text(json.dumps(nfl_v2, sort_keys=True, indent=2) + "\n")
+          if status != 200:
+              raise RuntimeError(f"NFL_SPREAD_CONTEXT_V2_HTTP_{status}:{nfl_v2.get('code')}")
+          assert nfl_v2.get("status") in {"EXPERIMENT_CREATED", "BLOCKED"}, nfl_v2
+          assert nfl_v2.get("variant") == "NFL_CONTEXT_V2", nfl_v2
+          assert nfl_v2.get("probability_publishable") is False, nfl_v2
+          assert nfl_v2.get("rank_eligible") is False, nfl_v2
+          assert nfl_v2.get("automatic_certification") is False, nfl_v2
+          assert nfl_v2.get("automatic_promotion") is False, nfl_v2
+          assert nfl_v2.get("can_execute") is False, nfl_v2
+          assert nfl_v2.get("global_terminal_reducer") == "V17_TERMINAL_REDUCER", nfl_v2
+          if nfl_v2.get("status") == "EXPERIMENT_CREATED":
+              v2_metrics = nfl_v2.get("exact_line_metrics") or {}
+              for key in ("evidence_row_n", "exact_line_coverage", "cover_brier", "cover_log_loss", "cover_ece", "three_way_brier"):
+                  assert isinstance(v2_metrics.get(key), (int, float)), (key, v2_metrics.get(key))
+              assert nfl_v2.get("market_features_used") is False, nfl_v2
+              assert nfl_v2.get("spread_line_used_as_feature") is False, nfl_v2
+              assert nfl_v2.get("separated_current_previous_season") is True, nfl_v2
+              assert nfl_v2.get("v1_recent8_blend_reused") is False, nfl_v2
+
+          summaries = {"NFL": json.loads(out.joinpath("NFL.json").read_text())}
           for sport in ("WNBA", "MLB"):
               status, payload = post(sport)
               out.joinpath(f"{sport}.json").write_text(json.dumps(payload, sort_keys=True, indent=2) + "\n")
@@ -120,8 +139,6 @@ jobs:
 
           decisions = {}
           for sport, payload in summaries.items():
-              # A typed evidence blocker is an allowed research result; an
-              # automatic promotion or execution flag is never allowed.
               assert payload.get("status") in {"EXPERIMENT_CREATED", "BLOCKED"}, (sport, payload)
               assert payload.get("probability_publishable") is False, (sport, payload)
               assert payload.get("rank_eligible") is False, (sport, payload)
@@ -142,9 +159,6 @@ jobs:
                   assert metrics.get("exact_line_coverage") == 0.0, payload
                   assert payload.get("lookahead_reconstruction_allowed") is False, payload
 
-              # Build the governed terminal decision packet without inventing a
-              # ratified numerical policy, a missing forward receipt, or an
-              # independent review. Those absences must remain explicit blockers.
               decision = build_spread_certification_decision_packet(
                   sport=sport,
                   historical_receipt=payload,
@@ -165,7 +179,8 @@ jobs:
               out.joinpath(f"{sport}-decision.json").write_text(json.dumps(decision, sort_keys=True, indent=2) + "\n")
               print(json.dumps({sport: payload, "decision": decision}, sort_keys=True))
 
-          out.joinpath("summary.json").write_text(json.dumps(summaries, sort_keys=True, indent=2) + "\n")
+          print(json.dumps({"NFL_CONTEXT_V2": nfl_v2}, sort_keys=True))
+          out.joinpath("summary.json").write_text(json.dumps({**summaries, "NFL_CONTEXT_V2": nfl_v2}, sort_keys=True, indent=2) + "\n")
           out.joinpath("decisions.json").write_text(json.dumps(decisions, sort_keys=True, indent=2) + "\n")
           PY
 
