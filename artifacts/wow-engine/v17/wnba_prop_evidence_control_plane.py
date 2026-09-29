@@ -6,11 +6,11 @@ small rotating batches instead. The route only persists immutable pregame
 snapshots for the already-fitted WNBA component routes.
 
 When the WNBA CDN / public schedule page cannot provide a usable schedule body,
-this control plane may recover the exact slate from the league-owned WNBA Stats
-Scoreboard V3 endpoint for the requested date. That recovery supplies event and
-team identity only; player history, roster, availability, fitted probability,
-calibration and publication authority remain unchanged. The existing OIDC bridge
-continues to be accepted when it carries a validated official schedule payload.
+this control plane may recover event identity from league-owned WNBA/NBA
+scoreboard transports. Recovery supplies event and team identity only; player
+history, roster, availability, fitted probability, calibration and publication
+authority remain unchanged. The existing OIDC bridge continues to be accepted
+when it carries a validated official schedule payload.
 
 No probability, calibration, certification, promotion, publication, ranking,
 price, or execution authority is introduced. ``can_execute=false`` always.
@@ -37,6 +37,10 @@ CAN_EXECUTE = False
 ROUTE_PATH = "/internal/v17/wnba-prop-forward-evidence/acquire"
 STATS_SCOREBOARD_PROVIDER = "WNBA_STATS_SCOREBOARD_V3_RENDER_RECOVERY"
 STATS_SCOREBOARD_URL = f"{acquisition.wnba.WNBA_STATS_BASE}/scoreboardv3"
+LIVEDATA_SCOREBOARD_PROVIDER = "WNBA_LIVEDATA_SCOREBOARD_10_RENDER_RECOVERY"
+LIVEDATA_SCOREBOARD_URL = (
+    "https://cdn.nba.com/static/json/liveData/scoreboard/todaysScoreboard_10.json"
+)
 
 
 class WNBAForwardEvidenceRequest(BaseModel):
@@ -157,13 +161,12 @@ def _scoreboard_team(node: Any) -> dict[str, Any]:
             "WNBA_STATS_SCOREBOARD_V3_GAME_IDENTITY_INVALID",
             "WNBA Stats scoreboard teamId was missing",
         )
-    team = {
+    return {
         "teamId": team_id,
         "teamTricode": str(node.get("teamTricode") or node.get("teamTriCode") or "").strip().upper(),
         "teamCity": str(node.get("teamCity") or "").strip(),
         "teamName": str(node.get("teamName") or "").strip(),
     }
-    return team
 
 
 def _scoreboard_schedule_for_date(
@@ -247,6 +250,134 @@ def _scoreboard_schedule_for_date(
     }
 
 
+def _livedata_team(node: Any) -> dict[str, Any]:
+    """Copy only official team identity fields; never copy odds or game-market fields."""
+    if not isinstance(node, Mapping):
+        raise acquisition.wnba.WNBAPropHydrationError(
+            "WNBA_LIVEDATA_SCOREBOARD_GAME_IDENTITY_INVALID",
+            "WNBA liveData scoreboard team identity was missing",
+        )
+    team_id = str(node.get("teamId") or "").strip()
+    if not team_id:
+        raise acquisition.wnba.WNBAPropHydrationError(
+            "WNBA_LIVEDATA_SCOREBOARD_GAME_IDENTITY_INVALID",
+            "WNBA liveData scoreboard teamId was missing",
+        )
+    return {
+        "teamId": team_id,
+        "teamTricode": str(node.get("teamTricode") or node.get("teamTriCode") or "").strip().upper(),
+        "teamCity": str(node.get("teamCity") or "").strip(),
+        "teamName": str(node.get("teamName") or "").strip(),
+    }
+
+
+def _livedata_schedule_for_date(
+    requested_date: str,
+    *,
+    http_get: Callable[..., Any],
+) -> dict[str, Any]:
+    """Normalize the official WNBA liveData *today* scoreboard, fail-closed by date."""
+    try:
+        payload = acquisition.wnba._request(
+            LIVEDATA_SCOREBOARD_URL,
+            http_get=http_get,
+            headers={
+                "Accept": "application/json, text/plain, */*",
+                "Origin": "https://www.wnba.com",
+                "Referer": "https://www.wnba.com/",
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                ),
+            },
+        )
+    except Exception as exc:
+        raise acquisition.wnba.WNBAPropHydrationError(
+            "WNBA_LIVEDATA_SCOREBOARD_UNAVAILABLE",
+            "WNBA liveData scoreboard request failed",
+            detail={"source": LIVEDATA_SCOREBOARD_PROVIDER, "url": LIVEDATA_SCOREBOARD_URL},
+        ) from exc
+
+    scoreboard = payload.get("scoreboard") if isinstance(payload, Mapping) else None
+    if not isinstance(scoreboard, Mapping):
+        raise acquisition.wnba.WNBAPropHydrationError(
+            "WNBA_LIVEDATA_SCOREBOARD_INVALID",
+            "WNBA liveData response was missing scoreboard",
+            detail={"source": LIVEDATA_SCOREBOARD_PROVIDER, "url": LIVEDATA_SCOREBOARD_URL},
+        )
+    source_date = str(scoreboard.get("gameDate") or "").strip()[:10]
+    if source_date != requested_date:
+        raise acquisition.wnba.WNBAPropHydrationError(
+            "WNBA_LIVEDATA_SCOREBOARD_DATE_MISMATCH",
+            "WNBA liveData scoreboard does not represent the requested slate date",
+            detail={
+                "source": LIVEDATA_SCOREBOARD_PROVIDER,
+                "url": LIVEDATA_SCOREBOARD_URL,
+                "requested_date": requested_date,
+                "source_date": source_date,
+            },
+        )
+    raw_games = scoreboard.get("games")
+    if not isinstance(raw_games, list):
+        raise acquisition.wnba.WNBAPropHydrationError(
+            "WNBA_LIVEDATA_SCOREBOARD_INVALID",
+            "WNBA liveData response was missing scoreboard.games",
+            detail={"source": LIVEDATA_SCOREBOARD_PROVIDER, "url": LIVEDATA_SCOREBOARD_URL},
+        )
+
+    games: list[dict[str, Any]] = []
+    for raw in raw_games:
+        if not isinstance(raw, Mapping):
+            continue
+        game_id = str(raw.get("gameId") or raw.get("gameID") or "").strip()
+        start = str(
+            raw.get("gameTimeUTC")
+            or raw.get("gameDateTimeUTC")
+            or raw.get("gameDateUTC")
+            or ""
+        ).strip()
+        if not game_id or not start:
+            raise acquisition.wnba.WNBAPropHydrationError(
+                "WNBA_LIVEDATA_SCOREBOARD_GAME_IDENTITY_INVALID",
+                "WNBA liveData gameId or UTC start time was missing",
+                detail={"source": LIVEDATA_SCOREBOARD_PROVIDER, "url": LIVEDATA_SCOREBOARD_URL},
+            )
+        try:
+            status = int(raw.get("gameStatus") or 0)
+        except (TypeError, ValueError) as exc:
+            raise acquisition.wnba.WNBAPropHydrationError(
+                "WNBA_LIVEDATA_SCOREBOARD_GAME_IDENTITY_INVALID",
+                "WNBA liveData game status was invalid",
+                detail={"source": LIVEDATA_SCOREBOARD_PROVIDER, "url": LIVEDATA_SCOREBOARD_URL},
+            ) from exc
+        # Whitelist only schedule identity. Fields such as pbOdds are deliberately ignored.
+        games.append(
+            {
+                "gameId": game_id,
+                "gameDateTimeUTC": start,
+                "gameDateUTC": start,
+                "gameStatus": status,
+                "gameStatusText": str(raw.get("gameStatusText") or "").strip(),
+                "homeTeam": _livedata_team(raw.get("homeTeam")),
+                "awayTeam": _livedata_team(raw.get("awayTeam")),
+            }
+        )
+
+    return {
+        "leagueSchedule": {
+            "gameDates": ([{"gameDate": requested_date, "games": games}] if games else [])
+        },
+        "wowScheduleProvenance": {
+            "provider": LIVEDATA_SCOREBOARD_PROVIDER,
+            "url": LIVEDATA_SCOREBOARD_URL,
+            "game_n": len(games),
+            "market_features_used": False,
+            "probability_authority": False,
+            "can_execute": False,
+        },
+    }
+
+
 def _schedule_replay_get(
     base_get: Callable[..., Any],
     schedule: Mapping[str, Any],
@@ -259,29 +390,40 @@ def _schedule_replay_get(
     return get
 
 
-def _apply_scoreboard_provenance(raw: dict[str, Any]) -> dict[str, Any]:
-    """Correct provenance after schedule replay so CDN success is never implied."""
+def _apply_recovery_provenance(
+    raw: dict[str, Any],
+    *,
+    provider: str,
+    url: str,
+) -> dict[str, Any]:
+    """Correct provenance after schedule replay so a failed primary source is never implied."""
     captured = str(raw.get("captured_at") or "")
     sources = dict(raw.get("source_timestamps") or {})
     sources.pop(getattr(schedule_transport, "CDN_PROVIDER", "WNBA_CDN_SCHEDULE_CURRENT"), None)
     if captured:
-        sources[STATS_SCOREBOARD_PROVIDER] = captured
+        sources[provider] = captured
     raw["source_timestamps"] = sources
-    raw["schedule_source_provider"] = STATS_SCOREBOARD_PROVIDER
-    raw["schedule_source_url"] = STATS_SCOREBOARD_URL
+    raw["schedule_source_provider"] = provider
+    raw["schedule_source_url"] = url
     role = raw.get("role_status")
     if isinstance(role, dict):
-        role["schedule_source_provider"] = STATS_SCOREBOARD_PROVIDER
-        role["schedule_source_url"] = STATS_SCOREBOARD_URL
-        role["source"] = (
-            f"{STATS_SCOREBOARD_PROVIDER} + WNBA Stats roster + official WNBA injury report"
-        )
+        role["schedule_source_provider"] = provider
+        role["schedule_source_url"] = url
+        role["source"] = f"{provider} + WNBA Stats roster + official WNBA injury report"
     raw["rate_provenance"] = (
         "Official WNBA LeagueGameLog player rows; current event/team from "
-        f"{STATS_SCOREBOARD_PROVIDER}; roster from CommonTeamRoster; availability "
-        "from official WNBA injury-report PDF"
+        f"{provider}; roster from CommonTeamRoster; availability from official WNBA injury-report PDF"
     )
     return raw
+
+
+def _apply_scoreboard_provenance(raw: dict[str, Any]) -> dict[str, Any]:
+    """Compatibility wrapper for the Stats Scoreboard V3 recovery provenance."""
+    return _apply_recovery_provenance(
+        raw,
+        provider=STATS_SCOREBOARD_PROVIDER,
+        url=STATS_SCOREBOARD_URL,
+    )
 
 
 def _result_shell(req: WNBAForwardEvidenceRequest) -> dict[str, Any]:
@@ -333,6 +475,24 @@ def _flatten(players: list[dict[str, Any]]) -> list[tuple[dict[str, Any], str]]:
     ]
 
 
+def _recovered_players(
+    schedule: Mapping[str, Any],
+    *,
+    req: WNBAForwardEvidenceRequest,
+    now: datetime,
+    cached_get: Callable[..., Any],
+) -> tuple[list[dict[str, Any]], Callable[..., Any]]:
+    evidence_http_get = _schedule_replay_get(cached_get, schedule)
+    players = acquisition._schedule_players(
+        schedule,
+        requested_date=req.requested_date,
+        requested_timezone=req.requested_timezone,
+        now=now,
+        http_get=evidence_http_get,
+    )
+    return players, evidence_http_get
+
+
 def acquire_wnba_forward_evidence_batch(
     req: WNBAForwardEvidenceRequest,
     *,
@@ -376,7 +536,8 @@ def acquire_wnba_forward_evidence_batch(
     now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     cached_get = _cached_http_get(http_get)
     evidence_http_get = cached_get
-    recovered_from_scoreboard = False
+    recovered_provider: str | None = None
+    recovered_url: str | None = None
     result = _result_shell(req)
     try:
         schedule = acquisition._request_schedule(http_get=cached_get)
@@ -400,23 +561,21 @@ def acquire_wnba_forward_evidence_batch(
             return result
 
         official_diagnostic = _source_diagnostic(exc)
+        if official_diagnostic is not None:
+            result["source_diagnostics"].append(official_diagnostic)
+
+        stats_recovery_code: str | None = None
         try:
-            schedule = _scoreboard_schedule_for_date(
-                req.requested_date,
-                http_get=cached_get,
-            )
-            evidence_http_get = _schedule_replay_get(cached_get, schedule)
-            players = acquisition._schedule_players(
+            schedule = _scoreboard_schedule_for_date(req.requested_date, http_get=cached_get)
+            players, evidence_http_get = _recovered_players(
                 schedule,
-                requested_date=req.requested_date,
-                requested_timezone=req.requested_timezone,
+                req=req,
                 now=now,
-                http_get=evidence_http_get,
+                cached_get=cached_get,
             )
-            recovered_from_scoreboard = True
-            result["schedule_source_provider"] = STATS_SCOREBOARD_PROVIDER
-            if official_diagnostic is not None:
-                result["source_diagnostics"].append(official_diagnostic)
+            recovered_provider = STATS_SCOREBOARD_PROVIDER
+            recovered_url = STATS_SCOREBOARD_URL
+            result["schedule_source_provider"] = recovered_provider
             result["source_diagnostics"].append(
                 {
                     "code": "WNBA_STATS_SCOREBOARD_V3_RECOVERY_USED",
@@ -428,19 +587,50 @@ def acquire_wnba_forward_evidence_batch(
                     ),
                 }
             )
-        except Exception as recovery_exc:
-            recovery_code = str(
-                getattr(recovery_exc, "code", "")
-                or f"WNBA_STATS_SCOREBOARD_V3_RECOVERY_FAILED:{type(recovery_exc).__name__}"
+        except Exception as stats_exc:
+            stats_recovery_code = str(
+                getattr(stats_exc, "code", "")
+                or f"WNBA_STATS_SCOREBOARD_V3_RECOVERY_FAILED:{type(stats_exc).__name__}"
             )
-            result["status"] = "DATA_UNOBTAINABLE"
-            result["blockers"] = [code, recovery_code]
-            if official_diagnostic is not None:
-                result["source_diagnostics"].append(official_diagnostic)
             result["source_diagnostics"].append(
-                {"code": recovery_code, "provider": STATS_SCOREBOARD_PROVIDER}
+                {"code": stats_recovery_code, "provider": STATS_SCOREBOARD_PROVIDER}
             )
-            return result
+            try:
+                schedule = _livedata_schedule_for_date(req.requested_date, http_get=cached_get)
+                players, evidence_http_get = _recovered_players(
+                    schedule,
+                    req=req,
+                    now=now,
+                    cached_get=cached_get,
+                )
+                recovered_provider = LIVEDATA_SCOREBOARD_PROVIDER
+                recovered_url = LIVEDATA_SCOREBOARD_URL
+                result["schedule_source_provider"] = recovered_provider
+                result["source_diagnostics"].append(
+                    {
+                        "code": "WNBA_LIVEDATA_SCOREBOARD_RECOVERY_USED",
+                        "provider": LIVEDATA_SCOREBOARD_PROVIDER,
+                        "game_n": sum(
+                            len(block.get("games") or [])
+                            for block in schedule.get("leagueSchedule", {}).get("gameDates", [])
+                            if isinstance(block, Mapping)
+                        ),
+                        "market_features_used": False,
+                    }
+                )
+            except Exception as live_exc:
+                live_code = str(
+                    getattr(live_exc, "code", "")
+                    or f"WNBA_LIVEDATA_SCOREBOARD_RECOVERY_FAILED:{type(live_exc).__name__}"
+                )
+                result["status"] = "DATA_UNOBTAINABLE"
+                # Preserve the pre-existing typed blocker contract while exposing the
+                # additional official-source failure in the safe diagnostics receipt.
+                result["blockers"] = [code, stats_recovery_code]
+                result["source_diagnostics"].append(
+                    {"code": live_code, "provider": LIVEDATA_SCOREBOARD_PROVIDER}
+                )
+                return result
 
     flattened = _flatten(players)
     result["total_candidates"] = len(flattened)
@@ -476,8 +666,12 @@ def acquire_wnba_forward_evidence_batch(
                 opponent=candidate.get("opponent"),
                 canonical_event_id=str(candidate["event_id"]),
             )
-            if recovered_from_scoreboard:
-                raw = _apply_scoreboard_provenance(dict(raw))
+            if recovered_provider and recovered_url:
+                raw = _apply_recovery_provenance(
+                    dict(raw),
+                    provider=recovered_provider,
+                    url=recovered_url,
+                )
             evidence = acquisition.RawPropEvidence.model_validate(raw)
             line = acquisition._candidate_line(evidence.game_log)
             row = acquisition.PickRequestRow(
@@ -549,6 +743,8 @@ def install_wnba_prop_forward_evidence_route(
 
 __all__ = [
     "CAN_EXECUTE",
+    "LIVEDATA_SCOREBOARD_PROVIDER",
+    "LIVEDATA_SCOREBOARD_URL",
     "ROUTE_PATH",
     "STATS_SCOREBOARD_PROVIDER",
     "STATS_SCOREBOARD_URL",
