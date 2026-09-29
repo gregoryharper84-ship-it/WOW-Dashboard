@@ -35,6 +35,23 @@ HTML = f"""
 </body></html>
 """
 
+LIVE_CSS_MODULE_HTML = f"""
+<html><body>
+<script id="__NEXT_DATA__" type="application/json">{json.dumps(NEXT_DATA)}</script>
+<a class="_GameTile__game_7rsre_30" href="https://www.wnba.com/game/1042600122">
+  <time datetime="2026-09-29T22:30:00Z">6:30 PM</time>
+  <div class="_GameTile__team_7rsre_60 _GameTile__team--away_7rsre_75">
+    <img src="https://cdn.wnba.com/logos/wnba/1611661319/primary/L/logo.svg">
+    <p class="_TeamName__name_1jlxy_11" aria-label="Las Vegas Aces">Las Vegas Aces</p>
+  </div>
+  <div class="_GameTile__team_7rsre_60 _GameTile__team--home_7rsre_78">
+    <img src="https://cdn.wnba.com/logos/wnba/1611661325/primary/L/logo.svg">
+    <p class="_TeamName__name_1jlxy_11" aria-label="Indiana Fever">Indiana Fever</p>
+  </div>
+</a>
+</body></html>
+"""
+
 
 class FakeResponse:
     def __init__(self, *, status_code=200, payload=None, content=b""):
@@ -71,6 +88,32 @@ def test_parses_server_rendered_official_game_with_exact_team_registry_and_void_
     assert payload["wowScheduleProvenance"]["provider"] == fallback.WEB_PROVIDER
 
 
+def test_parses_live_css_module_team_roles_and_bare_game_id():
+    payload = fallback.parse_official_schedule_page(LIVE_CSS_MODULE_HTML)
+    games = payload["leagueSchedule"]["gameDates"][0]["games"]
+    assert len(games) == 1
+    game = games[0]
+    assert game["gameId"] == "1042600122"
+    assert game["gameDateTimeUTC"] == "2026-09-29T22:30:00Z"
+    assert game["awayTeam"]["teamId"] == "1611661319"
+    assert game["awayTeam"]["teamTricode"] == "LVA"
+    assert game["homeTeam"]["teamId"] == "1611661325"
+    assert game["homeTeam"]["teamTricode"] == "IND"
+
+
+def test_similar_non_wnba_team_role_classes_remain_fail_closed():
+    ambiguous = LIVE_CSS_MODULE_HTML.replace(
+        "_GameTile__team--away_7rsre_75",
+        "_OtherTile__team--away_7rsre_75",
+    ).replace(
+        "_GameTile__team--home_7rsre_78",
+        "_OtherTile__team--home_7rsre_78",
+    )
+    with pytest.raises(wnba.WNBAPropHydrationError) as excinfo:
+        fallback.parse_official_schedule_page(ambiguous)
+    assert excinfo.value.code == "WNBA_OFFICIAL_SCHEDULE_WEB_PARSE_EMPTY"
+
+
 def test_bare_numeric_game_url_remains_supported():
     bare = HTML.replace("/game/lva-vs-ind-1042600122", "/game/1042600122")
     payload = fallback.parse_official_schedule_page(bare)
@@ -86,7 +129,7 @@ def test_cdn_non_json_fails_over_only_to_official_wnba_schedule_page():
         if url == wnba.WNBA_SCHEDULE_URL:
             return FakeResponse(payload=ValueError("Expecting value"))
         if url == fallback.SCHEDULE_PAGE_URL:
-            return FakeResponse(content=HTML.encode("utf-8"))
+            return FakeResponse(content=LIVE_CSS_MODULE_HTML.encode("utf-8"))
         raise AssertionError(f"unexpected source: {url}")
 
     payload = fallback.request_with_official_web_fallback(
