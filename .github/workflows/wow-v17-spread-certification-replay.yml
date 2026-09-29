@@ -129,6 +129,31 @@ jobs:
               assert nfl_v2.get("separated_current_previous_season") is True, nfl_v2
               assert nfl_v2.get("v1_recent8_blend_reused") is False, nfl_v2
 
+          # V3 is one narrow Class-C calibration experiment. The residual scale is
+          # selected on 2024 only; 2025 remains terminal untouched validation.
+          status, nfl_v3 = post("NFL", timeout=1200, variant="NFL_CONTEXT_V3_SCALE_CAL")
+          out.joinpath("NFL_CONTEXT_V3_SCALE_CAL.json").write_text(json.dumps(nfl_v3, sort_keys=True, indent=2) + "\n")
+          if status != 200:
+              raise RuntimeError(f"NFL_SPREAD_CONTEXT_V3_HTTP_{status}:{nfl_v3.get('code')}")
+          assert nfl_v3.get("status") in {"EXPERIMENT_CREATED", "BLOCKED"}, nfl_v3
+          assert nfl_v3.get("variant") == "NFL_CONTEXT_V3_SCALE_CAL", nfl_v3
+          assert nfl_v3.get("probability_publishable") is False, nfl_v3
+          assert nfl_v3.get("rank_eligible") is False, nfl_v3
+          assert nfl_v3.get("automatic_certification") is False, nfl_v3
+          assert nfl_v3.get("automatic_promotion") is False, nfl_v3
+          assert nfl_v3.get("can_execute") is False, nfl_v3
+          assert nfl_v3.get("global_terminal_reducer") == "V17_TERMINAL_REDUCER", nfl_v3
+          if nfl_v3.get("status") == "EXPERIMENT_CREATED":
+              v3_metrics = nfl_v3.get("exact_line_metrics") or {}
+              for key in ("evidence_row_n", "exact_line_coverage", "cover_brier", "cover_log_loss", "cover_ece", "three_way_brier"):
+                  assert isinstance(v3_metrics.get(key), (int, float)), (key, v3_metrics.get(key))
+              assert nfl_v3.get("validation_season_used_for_scale_selection") is False, nfl_v3
+              assert nfl_v3.get("market_features_used") is False, nfl_v3
+              assert nfl_v3.get("spread_line_used_as_margin_model_feature") is False, nfl_v3
+              assert nfl_v3.get("moneyline_probability_used") is False, nfl_v3
+              assert nfl_v3.get("manual_probability_adjustments_used") is False, nfl_v3
+              assert nfl_v3.get("dry_run_only_no_live_trading_no_market_orders") is True, nfl_v3
+
           summaries = {"NFL": json.loads(out.joinpath("NFL.json").read_text())}
           for sport in ("WNBA", "MLB"):
               status, payload = post(sport)
@@ -179,8 +204,8 @@ jobs:
               out.joinpath(f"{sport}-decision.json").write_text(json.dumps(decision, sort_keys=True, indent=2) + "\n")
               print(json.dumps({sport: payload, "decision": decision}, sort_keys=True))
 
-          print(json.dumps({"NFL_CONTEXT_V2": nfl_v2}, sort_keys=True))
-          out.joinpath("summary.json").write_text(json.dumps({**summaries, "NFL_CONTEXT_V2": nfl_v2}, sort_keys=True, indent=2) + "\n")
+          print(json.dumps({"NFL_CONTEXT_V2": nfl_v2, "NFL_CONTEXT_V3_SCALE_CAL": nfl_v3}, sort_keys=True))
+          out.joinpath("summary.json").write_text(json.dumps({**summaries, "NFL_CONTEXT_V2": nfl_v2, "NFL_CONTEXT_V3_SCALE_CAL": nfl_v3}, sort_keys=True, indent=2) + "\n")
           out.joinpath("decisions.json").write_text(json.dumps(decisions, sort_keys=True, indent=2) + "\n")
           PY
 
