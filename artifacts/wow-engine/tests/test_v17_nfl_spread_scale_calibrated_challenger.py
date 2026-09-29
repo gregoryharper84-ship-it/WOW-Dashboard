@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import math
 
+import numpy as np
+
 from v17.nfl_spread_scale_calibrated_challenger import (
     AUTOMATIC_CERTIFICATION,
     AUTOMATIC_PROMOTION,
@@ -14,6 +16,7 @@ from v17.nfl_spread_scale_calibrated_challenger import (
     PROBABILITY_PUBLISHABLE,
     RANK_ELIGIBLE,
     SCALE_GRID,
+    _empirical_crps,
     _scaled_artifact,
 )
 from v17.spread_certification_replay_route import SpreadCertificationReplayRequest, execute_spread_certification_replay
@@ -42,7 +45,7 @@ def _artifact() -> MarginDistributionArtifact:
 def test_v3_is_research_only_and_preserves_market_independence_contract():
     assert MODEL_FAMILY == "NFL_SPREAD_CONTEXT_RIDGE_SCALE_CALIBRATED_V3"
     assert FEATURE_SCHEMA_VERSION == "NFL_SPREAD_CONTEXT_FEATURES_V2"
-    assert CALIBRATION_METHOD == "GLOBAL_RESIDUAL_SCALE_SELECTED_ON_2024_ONLY"
+    assert CALIBRATION_METHOD == "SPORTING_MARGIN_CRPS_RESIDUAL_SCALE_2024_CHRONO_SPLIT"
     assert 1.0 in SCALE_GRID
     assert CAN_EXECUTE is False
     assert DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS is True
@@ -63,6 +66,13 @@ def test_residual_scale_changes_dispersion_not_mean_and_changes_artifact_identit
     assert scaled.training_dataset_hash != base.training_dataset_hash
     assert scaled.coefficients == base.coefficients
     assert scaled.intercept == base.intercept
+
+
+def test_empirical_crps_rewards_distribution_closer_to_observed_margin():
+    actual = 10.0
+    close = np.asarray([8.0, 10.0, 12.0])
+    wide = np.asarray([-10.0, 10.0, 30.0])
+    assert _empirical_crps(close, actual) < _empirical_crps(wide, actual)
 
 
 def test_v3_variant_fails_closed_outside_nfl():
