@@ -26,6 +26,25 @@ from v17 import wnba_prop_evidence_acquisition as acquisition
 
 CAN_EXECUTE = False
 ROUTE_PATH = "/internal/v17/wnba-prop-forward-evidence/acquire"
+_SAFE_PARSER_DIAGNOSTIC_KEYS = frozenset({
+    "html_length",
+    "game_href_match_n",
+    "next_data_present",
+    "registry_team_n",
+    "parsed_tile_n",
+    "datetime_attr_n",
+    "logo_team_id_match_n",
+    "team_away_token_n",
+    "team_home_token_n",
+    "missing_game_id_n",
+    "missing_datetime_n",
+    "missing_away_team_id_n",
+    "missing_home_team_id_n",
+    "registry_miss_away_n",
+    "registry_miss_home_n",
+    "display_mismatch_away_n",
+    "display_mismatch_home_n",
+})
 
 
 class WNBAForwardEvidenceRequest(BaseModel):
@@ -66,6 +85,20 @@ def _safe_error_summary(raw_errors: list[Any]) -> tuple[list[str], list[str]]:
     return error_kinds, error_codes
 
 
+def _safe_parser_diagnostic(raw: Any) -> dict[str, int | bool]:
+    """Pass through only approved scalar parser structure metrics."""
+    if not isinstance(raw, dict):
+        return {}
+    output: dict[str, int | bool] = {}
+    for key in _SAFE_PARSER_DIAGNOSTIC_KEYS:
+        value = raw.get(key)
+        if isinstance(value, bool):
+            output[key] = value
+        elif isinstance(value, int) and not isinstance(value, bool):
+            output[key] = max(0, value)
+    return output
+
+
 def _source_diagnostic(exc: Exception) -> dict[str, Any] | None:
     """Return a secret-safe source receipt for typed WNBA acquisition failures."""
     code = str(getattr(exc, "code", "") or "").strip()
@@ -99,6 +132,17 @@ def _source_diagnostic(exc: Exception) -> dict[str, Any] | None:
         attempts = int(getattr(acquisition.wnba, "HTTP_ATTEMPTS", 0) or 0) or None
         primary_kinds, primary_codes = _safe_error_summary(primary_errors)
         fallback_kinds, fallback_codes = _safe_error_summary(fallback_errors)
+        fallback_source: dict[str, Any] = {
+            "provider": str(detail.get("fallback_source") or "WNBA_OFFICIAL_SCHEDULE_WEB_SSR"),
+            "host": "www.wnba.com",
+            "path": "/schedule",
+            "attempts": attempts,
+            "error_kinds": fallback_kinds,
+            "error_codes": fallback_codes,
+        }
+        parser_diagnostic = _safe_parser_diagnostic(detail.get("fallback_diagnostic"))
+        if parser_diagnostic:
+            fallback_source["parser_diagnostic"] = parser_diagnostic
         return {
             "code": code,
             "sources": [
@@ -110,14 +154,7 @@ def _source_diagnostic(exc: Exception) -> dict[str, Any] | None:
                     "error_kinds": primary_kinds,
                     "error_codes": primary_codes,
                 },
-                {
-                    "provider": str(detail.get("fallback_source") or "WNBA_OFFICIAL_SCHEDULE_WEB_SSR"),
-                    "host": "www.wnba.com",
-                    "path": "/schedule",
-                    "attempts": attempts,
-                    "error_kinds": fallback_kinds,
-                    "error_codes": fallback_codes,
-                },
+                fallback_source,
             ],
         }
 
