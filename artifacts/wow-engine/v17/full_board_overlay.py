@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from typing import Any, Callable, Mapping
 
+from fastapi import HTTPException
+
 from v17.full_board_stabilization import capability_matrix, publication_chain_audit, reconcile_full_board
 
 CAN_EXECUTE = False
@@ -181,11 +183,42 @@ def _publication_audit_for_row(row: Mapping[str, Any]) -> dict[str, Any] | None:
     return publication_chain_audit(merged).as_dict()
 
 
+def _typed_http_failure(exc: HTTPException) -> Mapping[str, Any] | None:
+    """Preserve an upstream structured V17 failure instead of relabeling it."""
+    detail = exc.detail
+    if not isinstance(detail, Mapping):
+        return None
+    code = str(detail.get("code") or "").strip()
+    if not code:
+        return None
+    payload = dict(detail)
+    payload["code"] = code
+    payload["model_status"] = str(payload.get("model_status") or code)
+    payload["probability_publishable"] = False
+    payload["rank_eligible"] = False
+    payload["can_execute"] = False
+    return payload
+
+
 def _safe_score_wrapper(score_row: Callable[..., Any]) -> Callable[..., Mapping[str, Any]]:
     """Convert scorer completion failures into row-level V17 typed results."""
     def safe_score(*args: Any, **kwargs: Any) -> Mapping[str, Any]:
         try:
             result = score_row(*args, **kwargs)
+        except HTTPException as exc:
+            typed = _typed_http_failure(exc)
+            if typed is not None:
+                return typed
+            return {
+                "code": "MODEL_SCORER_FAILED",
+                "model_status": "MODEL_SCORER_FAILED",
+                "scorer_status": "UNTYPED_HTTP_EXCEPTION",
+                "error_type": type(exc).__name__,
+                "model_invoked": True,
+                "probability_publishable": False,
+                "rank_eligible": False,
+                "can_execute": False,
+            }
         except Exception as exc:  # noqa: BLE001 - exact row fails closed
             return {
                 "code": "MODEL_SCORER_FAILED",
