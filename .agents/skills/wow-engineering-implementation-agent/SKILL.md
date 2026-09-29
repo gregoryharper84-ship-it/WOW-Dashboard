@@ -1,3 +1,8 @@
+---
+name: wow-engineering-implementation-agent
+description: Implement the smallest governed WOW V17 repair after root cause and acceptance criteria are confirmed.
+---
+
 # WOW V17 Engineering Implementation Agent
 
 Status: `ACTIVE_ON_MERGE`

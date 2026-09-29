@@ -1,3 +1,8 @@
+---
+name: wow-engineering-specialist-subagents
+description: Route one bounded specialist evidence lane for the active WOW V17 engineering incident.
+---
+
 # WOW V17 Engineering Specialist Subagents
 
 Status: `ACTIVE_ON_MERGE`

@@ -11,6 +11,17 @@ PUSH_HANDOFF = ROOT / ".github/workflows/wow-v17-engineering-push-handoff.yml"
 DISPATCH_BRIDGE = ROOT / ".github/workflows/wow-v17-chatgpt-engineering-dispatch-bridge.yml"
 FRONTIER = ROOT / ".github/workflows/wow-v17-frontier-intelligence-agent.yml"
 CHATGPT_ACTION = ROOT / ".github/actions/wow-chatgpt-agent/action.yml"
+CODEX_ENGINEERING_SKILLS = (
+    ROOT / ".agents/skills/wow-engineering-reporter-agent/SKILL.md",
+    ROOT / ".agents/skills/wow-engineering-lead-agent/SKILL.md",
+    ROOT / ".agents/skills/wow-engineering-research-triage-agent/SKILL.md",
+    ROOT / ".agents/skills/wow-engineering-specialist-subagents/SKILL.md",
+    ROOT / ".agents/skills/wow-engineering-implementation-agent/SKILL.md",
+    ROOT / ".agents/skills/wow-engineering-independent-review-agent/SKILL.md",
+    ROOT / ".agents/skills/wow-engineering-system-architect-agent/SKILL.md",
+    ROOT / ".agents/skills/wow-engineering-qa-verification-agent/SKILL.md",
+    ROOT / ".agents/skills/wow-engineering-release-observability-agent/SKILL.md",
+)
 LEGACY_CLAUDE_PATHS = (
     ROOT / ".github/workflows/wow-v17-claude-engineering-worker.yml",
     ROOT / ".github/workflows/wow-v17-claude-engineering-dispatch-bridge.yml",
@@ -20,6 +31,16 @@ LEGACY_CLAUDE_PATHS = (
 
 def _load(path: Path) -> dict:
     return yaml.safe_load(path.read_text())
+
+
+def _skill_frontmatter(path: Path) -> dict:
+    text = path.read_text()
+    assert text.startswith("---\n"), f"{path} is missing YAML frontmatter"
+    parts = text.split("---", 2)
+    assert len(parts) == 3, f"{path} has malformed YAML frontmatter"
+    metadata = yaml.safe_load(parts[1])
+    assert isinstance(metadata, dict), f"{path} frontmatter is not a mapping"
+    return metadata
 
 
 def test_multi_agent_worker_has_independent_reliability_roles() -> None:
@@ -111,6 +132,14 @@ def test_chatgpt_action_uses_explicit_schema_file_for_unprivileged_codex() -> No
     assert "output-schema: ${{ inputs.output_schema }}" not in action
     assert 'chmod 0644 "$schema_file"' in action
     assert "Clean up structured output schema" in action
+
+
+def test_active_codex_engineering_skills_have_valid_frontmatter() -> None:
+    for path in CODEX_ENGINEERING_SKILLS:
+        metadata = _skill_frontmatter(path)
+        assert metadata.get("name") == path.parent.name
+        description = metadata.get("description")
+        assert isinstance(description, str) and description.strip()
 
 
 def test_legacy_claude_engineering_entrypoints_are_removed() -> None:

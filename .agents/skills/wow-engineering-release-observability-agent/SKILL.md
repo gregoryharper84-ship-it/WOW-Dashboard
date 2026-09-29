@@ -1,3 +1,8 @@
+---
+name: wow-engineering-release-observability-agent
+description: Verify that approved WOW V17 repairs are actually deployed and eliminate the original production defect.
+---
+
 # WOW V17 Engineering Release & Observability Agent
 
 Status: `ACTIVE_ON_MERGE`

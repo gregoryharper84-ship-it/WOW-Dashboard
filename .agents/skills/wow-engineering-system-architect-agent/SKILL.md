@@ -1,3 +1,8 @@
+---
+name: wow-engineering-system-architect-agent
+description: Independently protect WOW V17 cross-cutting architecture and governed contracts during engineering repairs.
+---
+
 # WOW V17 Engineering System Architect Agent
 
 Status: `ACTIVE_ON_MERGE`
