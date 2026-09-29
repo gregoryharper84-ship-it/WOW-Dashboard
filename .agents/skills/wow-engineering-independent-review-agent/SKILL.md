@@ -1,3 +1,8 @@
+---
+name: wow-engineering-independent-review-agent
+description: Independently review WOW V17 repairs for correctness, minimal scope, governance, security, and regression risk.
+---
+
 # WOW V17 Independent Engineering Review Agent
 
 Status: `ACTIVE_ON_MERGE`
