@@ -39,11 +39,37 @@ def test_importing_ncaaf_maintenance_runner_does_not_eagerly_load_sklearn() -> N
     assert completed.returncode == 0, completed.stderr or completed.stdout
 
 
+def test_production_route_construction_does_not_eagerly_load_sklearn() -> None:
+    modules = [
+        "v17.first_six_open_data_maintenance",
+        "v17.candidate_certification_evidence",
+        "v17.team_state_challenger_training",
+        "v17.spread_margin_replay_route",
+    ]
+    probe = (
+        "import sys; "
+        f"mods={modules!r}; "
+        "[__import__(name) for name in mods]; "
+        "assert 'sklearn' not in sys.modules, "
+        "'production route construction eagerly loaded sklearn training dependencies'"
+    )
+    completed = _run_probe(probe)
+    assert completed.returncode == 0, completed.stderr or completed.stdout
+
+
 def test_runtime_modules_remain_non_executable() -> None:
     completed = _run_probe(
         "import nfl_event_model_v17 as nfl; "
         "import ncaaf_candidate_training_runner as ncaaf; "
+        "import v17.first_six_open_data_maintenance as first_six; "
+        "import v17.candidate_certification_evidence as evidence; "
+        "import v17.team_state_challenger_training as team_state; "
+        "import v17.spread_margin_replay_route as spread; "
         "assert nfl.CAN_EXECUTE is False; "
-        "assert ncaaf.CAN_EXECUTE is False"
+        "assert ncaaf.CAN_EXECUTE is False; "
+        "assert first_six.CAN_EXECUTE is False; "
+        "assert evidence.CAN_EXECUTE is False; "
+        "assert team_state.CAN_EXECUTE is False; "
+        "assert spread.CAN_EXECUTE is False"
     )
     assert completed.returncode == 0, completed.stderr or completed.stdout
