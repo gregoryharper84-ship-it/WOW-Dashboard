@@ -24,6 +24,43 @@ GLOBAL_TERMINAL_REDUCER = "V17_TERMINAL_REDUCER"
 ReplaySport = Literal["NFL", "NBA", "WNBA", "NCAAF", "NCAAB"]
 
 
+# Preserve the route module's long-standing monkeypatch/adapter seams without
+# importing the scientific challenger stack during web-process construction.
+def run_historical_replay(*args: Any, **kwargs: Any) -> Any:
+    from v17.spread_margin_replay import run_historical_replay as implementation
+    return implementation(*args, **kwargs)
+
+
+def run_exact_line_replay(*args: Any, **kwargs: Any) -> Any:
+    from v17.spread_exact_line_replay import run_exact_line_replay as implementation
+    return implementation(*args, **kwargs)
+
+
+def run_ncaaf_forward_shadow(*args: Any, **kwargs: Any) -> Any:
+    from v17.spread_forward_shadow import run_ncaaf_forward_shadow as implementation
+    return implementation(*args, **kwargs)
+
+
+def run_nfl_forward_shadow(*args: Any, **kwargs: Any) -> Any:
+    from v17.spread_forward_shadow_leagues import run_nfl_forward_shadow as implementation
+    return implementation(*args, **kwargs)
+
+
+def run_wnba_forward_shadow(*args: Any, **kwargs: Any) -> Any:
+    from v17.spread_forward_shadow_leagues import run_wnba_forward_shadow as implementation
+    return implementation(*args, **kwargs)
+
+
+def run_nfl_spread_auto_canary(*args: Any, **kwargs: Any) -> Any:
+    from v17.spread_forward_auto_canary import run_nfl_spread_auto_canary as implementation
+    return implementation(*args, **kwargs)
+
+
+def run_wnba_spread_auto_canary(*args: Any, **kwargs: Any) -> Any:
+    from v17.spread_forward_auto_canary import run_wnba_spread_auto_canary as implementation
+    return implementation(*args, **kwargs)
+
+
 class SpreadMarginReplayRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     sport: ReplaySport
@@ -104,10 +141,7 @@ def _evidence_governance_fields(*, rows_written: int = 0) -> dict[str, Any]:
 
 
 def execute_spread_margin_replay(db: Any, request: SpreadMarginReplayRequest) -> dict[str, Any]:
-    # Historical spread model fitting is a research dependency. Defer its
-    # scientific stack until this internal endpoint is actually invoked.
     from v17.spread_margin_challenger import SpreadChallengerUnavailable
-    from v17.spread_margin_replay import run_historical_replay
 
     try:
         result = run_historical_replay(sport=request.sport, client=db, min_rows=request.min_rows, ridge_alpha=request.ridge_alpha)
@@ -129,7 +163,6 @@ def execute_spread_margin_replay(db: Any, request: SpreadMarginReplayRequest) ->
 
 
 def execute_spread_exact_line_replay(db: Any, request: SpreadMarginReplayRequest) -> dict[str, Any]:
-    from v17.spread_exact_line_replay import run_exact_line_replay
     from v17.spread_margin_challenger import SpreadChallengerUnavailable
 
     try:
@@ -184,32 +217,22 @@ def _execute_auto_canary(sport: str, fn: Any) -> dict[str, Any]:
 
 
 def execute_spread_forward_shadow(db: Any, request: SpreadForwardShadowRequest) -> dict[str, Any]:
-    from v17.spread_forward_shadow import run_ncaaf_forward_shadow
-
     return _execute_forward("NCAAF", request.event_id, lambda: run_ncaaf_forward_shadow(db, event_id=request.event_id, event_start_time=request.event_start_time, home_team=request.home_team, away_team=request.away_team, home_spread=request.home_spread, season=request.season))
 
 
 def execute_nfl_spread_forward_shadow(db: Any, request: NFLSpreadForwardShadowRequest) -> dict[str, Any]:
-    from v17.spread_forward_shadow_leagues import run_nfl_forward_shadow
-
     return _execute_forward("NFL", request.event_id, lambda: run_nfl_forward_shadow(db, event_id=request.event_id, event_start_time=request.event_start_time, home_team=request.home_team, away_team=request.away_team, home_spread=request.home_spread))
 
 
 def execute_wnba_spread_forward_shadow(db: Any, request: WNBASpreadForwardShadowRequest) -> dict[str, Any]:
-    from v17.spread_forward_shadow_leagues import run_wnba_forward_shadow
-
     return _execute_forward("WNBA", request.event_id, lambda: run_wnba_forward_shadow(db, event_id=request.event_id, event_start_time=request.event_start_time, home_team_id=request.home_team_id, away_team_id=request.away_team_id, home_spread=request.home_spread))
 
 
 def execute_nfl_spread_auto_canary(db: Any) -> dict[str, Any]:
-    from v17.spread_forward_auto_canary import run_nfl_spread_auto_canary
-
     return _execute_auto_canary("NFL", lambda: run_nfl_spread_auto_canary(db))
 
 
 def execute_wnba_spread_auto_canary(db: Any) -> dict[str, Any]:
-    from v17.spread_forward_auto_canary import run_wnba_spread_auto_canary
-
     return _execute_auto_canary("WNBA", lambda: run_wnba_spread_auto_canary(db))
 
 
