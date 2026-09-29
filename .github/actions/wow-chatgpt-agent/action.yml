@@ -43,13 +43,26 @@ runs:
         chmod -R g+rwX "$GITHUB_WORKSPACE"
         sudo -u wow-codex git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
+    - name: Materialize structured output schema
+      id: schema
+      shell: bash
+      env:
+        OUTPUT_SCHEMA: ${{ inputs.output_schema }}
+      run: |
+        set -euo pipefail
+        schema_file="$(mktemp "/tmp/wow-codex-output-schema.${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}.XXXXXX.json")"
+        printf '%s\n' "$OUTPUT_SCHEMA" > "$schema_file"
+        jq -e . "$schema_file" >/dev/null
+        chmod 0644 "$schema_file"
+        echo "schema_file=$schema_file" >> "$GITHUB_OUTPUT"
+
     - name: Run governed OpenAI agent
       id: codex
       uses: openai/codex-action@v1
       with:
         openai-api-key: ${{ inputs.openai_api_key }}
         prompt: ${{ inputs.prompt }}
-        output-schema: ${{ inputs.output_schema }}
+        output-schema-file: ${{ steps.schema.outputs.schema_file }}
         permission-profile: ${{ inputs.permission_profile }}
         codex-args: ${{ inputs.codex_args }}
         safety-strategy: unprivileged-user
@@ -74,3 +87,13 @@ runs:
           echo "EOF"
           echo "branch_name="
         } >> "$GITHUB_OUTPUT"
+
+    - name: Clean up structured output schema
+      if: always()
+      shell: bash
+      env:
+        SCHEMA_FILE: ${{ steps.schema.outputs.schema_file }}
+      run: |
+        if [ -n "${SCHEMA_FILE:-}" ]; then
+          rm -f -- "$SCHEMA_FILE"
+        fi
