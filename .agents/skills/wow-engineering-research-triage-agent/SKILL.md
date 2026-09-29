@@ -1,3 +1,8 @@
+---
+name: wow-engineering-research-triage-agent
+description: Reproduce, classify, and isolate WOW V17 engineering defects before implementation begins.
+---
+
 # WOW V17 Engineering Research & Triage Agent
 
 Status: `ACTIVE_ON_MERGE`
