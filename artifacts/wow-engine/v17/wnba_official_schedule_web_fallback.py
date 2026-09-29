@@ -157,6 +157,21 @@ def _team_registry(html: str) -> dict[str, dict[str, str]]:
     return output
 
 
+def _team_role(class_value: str) -> str | None:
+    """Resolve only explicit official WNBA game-tile side classes.
+
+    The production site uses CSS-module tokens such as
+    ``_GameTile__team--away_7rsre_75`` while older fixtures used the literal
+    ``team--away`` class. Accept both forms without broad substring matching.
+    """
+    for token in str(class_value or "").split():
+        if token == "team--away" or token.startswith("_GameTile__team--away_"):
+            return "awayTeam"
+        if token == "team--home" or token.startswith("_GameTile__team--home_"):
+            return "homeTeam"
+    return None
+
+
 class _GameTileParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
@@ -190,12 +205,9 @@ class _GameTileParser(HTMLParser):
             self.current["gameDateTimeUTC"] = str(values["datetime"])
             self.current["gameDateUTC"] = str(values["datetime"])
         elif tag == "div":
-            classes = str(values.get("class") or "")
-            if "team--away" in classes:
-                self.side = "awayTeam"
-                self.side_depth = self.depth
-            elif "team--home" in classes:
-                self.side = "homeTeam"
+            role = _team_role(str(values.get("class") or ""))
+            if role is not None:
+                self.side = role
                 self.side_depth = self.depth
         elif self.side and tag == "img":
             match = _LOGO_TEAM_ID.search(str(values.get("src") or ""))
