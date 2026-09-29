@@ -79,9 +79,9 @@ jobs:
 
           wait_for_live() {
             local attempt health_code curl_rc
-            for attempt in 1 2 3; do
+            for attempt in $(seq 1 10); do
               set +e
-              health_code="$(curl --silent --show-error --connect-timeout 10 --max-time 20 \
+              health_code="$(curl --silent --show-error --connect-timeout 3 --max-time 5 \
                 --output /tmp/wow-live.json --write-out '%{http_code}' \
                 "${WOW_SERVICE_URL}/health/live")"
               curl_rc=$?
@@ -89,12 +89,12 @@ jobs:
               if [ "${curl_rc}" -eq 0 ] && [ "${health_code}" -ge 200 ] && [ "${health_code}" -lt 300 ]; then
                 return 0
               fi
-              echo "WOW runtime health attempt ${attempt}/3 unavailable (curl_rc=${curl_rc}, HTTP ${health_code:-000}); bounded cold-start retry." >&2
-              if [ "${attempt}" -lt 3 ]; then
-                sleep "$((attempt * 5))"
+              echo "WOW runtime health attempt ${attempt}/10 unavailable (curl_rc=${curl_rc}, HTTP ${health_code:-000}); bounded release-handoff retry." >&2
+              if [ "${attempt}" -lt 10 ]; then
+                sleep 10
               fi
             done
-            echo "WOW_RUNTIME_HEALTH_UNAVAILABLE_AFTER_BOUNDED_COLD_START_RETRIES" >&2
+            echo "WOW_RUNTIME_HEALTH_UNAVAILABLE_AFTER_BOUNDED_RELEASE_HANDOFF_RETRIES" >&2
             return 1
           }
 
