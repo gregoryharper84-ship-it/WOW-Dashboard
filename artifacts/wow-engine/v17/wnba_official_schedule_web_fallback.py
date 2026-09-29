@@ -42,9 +42,29 @@ _NEXT_DATA = re.compile(
     r"<script[^>]*\bid=[\"']__NEXT_DATA__[\"'][^>]*>(.*?)</script>",
     re.IGNORECASE | re.DOTALL,
 )
+_DATETIME_ATTR = re.compile(r"<time\b[^>]*\bdatetime\s*=", re.IGNORECASE)
 _VOID_TAGS = frozenset({
     "area", "base", "br", "col", "embed", "hr", "img", "input",
     "link", "meta", "param", "source", "track", "wbr",
+})
+_PARSER_DIAGNOSTIC_KEYS = frozenset({
+    "html_length",
+    "game_href_match_n",
+    "next_data_present",
+    "registry_team_n",
+    "parsed_tile_n",
+    "datetime_attr_n",
+    "logo_team_id_match_n",
+    "team_away_token_n",
+    "team_home_token_n",
+    "missing_game_id_n",
+    "missing_datetime_n",
+    "missing_away_team_id_n",
+    "missing_home_team_id_n",
+    "registry_miss_away_n",
+    "registry_miss_home_n",
+    "display_mismatch_away_n",
+    "display_mismatch_home_n",
 })
 
 
@@ -236,19 +256,61 @@ class _GameTileParser(HTMLParser):
         self.depth = max(0, self.depth - 1)
 
 
+def _safe_parser_diagnostic(raw: Any) -> dict[str, int | bool]:
+    if not isinstance(raw, Mapping):
+        return {}
+    output: dict[str, int | bool] = {}
+    for key in _PARSER_DIAGNOSTIC_KEYS:
+        value = raw.get(key)
+        if isinstance(value, bool):
+            output[key] = value
+        elif isinstance(value, int) and not isinstance(value, bool):
+            output[key] = max(0, value)
+    return output
+
+
 def parse_official_schedule_page(html: str) -> dict[str, Any]:
     parser = _GameTileParser()
     parser.feed(html)
     registry = _team_registry(html)
+    diagnostic: dict[str, int | bool] = {
+        "html_length": len(html),
+        "game_href_match_n": len(_GAME_HREF.findall(html)),
+        "next_data_present": bool(_NEXT_DATA.search(html)),
+        "registry_team_n": len(registry),
+        "parsed_tile_n": len(parser.games),
+        "datetime_attr_n": len(_DATETIME_ATTR.findall(html)),
+        "logo_team_id_match_n": len(_LOGO_TEAM_ID.findall(html)),
+        "team_away_token_n": html.count("team--away"),
+        "team_home_token_n": html.count("team--home"),
+        "missing_game_id_n": 0,
+        "missing_datetime_n": 0,
+        "missing_away_team_id_n": 0,
+        "missing_home_team_id_n": 0,
+        "registry_miss_away_n": 0,
+        "registry_miss_home_n": 0,
+        "display_mismatch_away_n": 0,
+        "display_mismatch_home_n": 0,
+    }
     games: list[dict[str, Any]] = []
     for raw in parser.games:
         game = dict(raw)
+        if not game.get("gameId"):
+            diagnostic["missing_game_id_n"] += 1
+        if not game.get("gameDateTimeUTC"):
+            diagnostic["missing_datetime_n"] += 1
         valid = bool(game.get("gameId") and game.get("gameDateTimeUTC"))
         for side in ("awayTeam", "homeTeam"):
             node = dict(game.get(side) or {})
             team_id = str(node.get("teamId") or "").strip()
+            prefix = "away" if side == "awayTeam" else "home"
+            if not team_id:
+                diagnostic[f"missing_{prefix}_team_id_n"] += 1
+                valid = False
+                break
             official = registry.get(team_id)
             if not official:
+                diagnostic[f"registry_miss_{prefix}_n"] += 1
                 valid = False
                 break
             display = str(node.get("displayName") or "").strip()
@@ -256,6 +318,7 @@ def parse_official_schedule_page(html: str) -> dict[str, Any]:
                 [official.get("teamCity", "").strip(), official.get("teamName", "").strip()]
             ).strip()
             if display and wnba._name_key(display) != wnba._name_key(official_full):
+                diagnostic[f"display_mismatch_{prefix}_n"] += 1
                 valid = False
                 break
             game[side] = dict(official)
@@ -265,7 +328,11 @@ def parse_official_schedule_page(html: str) -> dict[str, Any]:
         raise wnba.WNBAPropHydrationError(
             "WNBA_OFFICIAL_SCHEDULE_WEB_PARSE_EMPTY",
             "official WNBA schedule page did not yield exact game/team identities",
-            detail={"source": WEB_PROVIDER, "url": SCHEDULE_PAGE_URL},
+            detail={
+                "source": WEB_PROVIDER,
+                "url": SCHEDULE_PAGE_URL,
+                "parser_diagnostic": _safe_parser_diagnostic(diagnostic),
+            },
         )
     return {
         "leagueSchedule": {"gameDates": [{"games": games}]},
@@ -305,6 +372,7 @@ def request_with_official_web_fallback(
         _SCHEDULE_SOURCE.set((CDN_PROVIDER, wnba.WNBA_SCHEDULE_URL))
         return payload
 
+    fallback_diagnostic: dict[str, int | bool] = {}
     html, fallback_errors = _retry(
         lambda: _request_html_once(SCHEDULE_PAGE_URL, http_get=http_get)
     )
@@ -315,6 +383,9 @@ def request_with_official_web_fallback(
             return payload
         except Exception as exc:
             fallback_errors.append(_error_receipt(exc))
+            detail = getattr(exc, "detail", None)
+            if isinstance(detail, Mapping):
+                fallback_diagnostic = _safe_parser_diagnostic(detail.get("parser_diagnostic"))
 
     raise wnba.WNBAPropHydrationError(
         "WNBA_OFFICIAL_SOURCE_UNAVAILABLE",
@@ -324,6 +395,7 @@ def request_with_official_web_fallback(
             "fallback_source": WEB_PROVIDER,
             "primary_errors": primary_errors[-4:],
             "fallback_errors": fallback_errors[-4:],
+            "fallback_diagnostic": fallback_diagnostic,
         },
     )
 
