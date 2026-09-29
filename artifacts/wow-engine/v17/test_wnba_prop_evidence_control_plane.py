@@ -243,6 +243,16 @@ def test_dual_official_schedule_failure_preserves_each_safe_source_boundary(monk
                 "WNBAPropHydrationError:WNBA_OFFICIAL_SCHEDULE_WEB_PARSE_EMPTY",
                 "RuntimeError:HTTP_403",
             ],
+            "fallback_diagnostic": {
+                "html_length": 123456,
+                "game_href_match_n": 2,
+                "next_data_present": True,
+                "registry_team_n": 13,
+                "parsed_tile_n": 2,
+                "missing_datetime_n": 2,
+                "raw_html": "must-not-leak",
+                "unexpected_string": "must-not-leak",
+            },
         },
     )
     monkeypatch.setattr(subject.acquisition, "_request_schedule", lambda **_kwargs: (_ for _ in ()).throw(exc))
@@ -272,8 +282,17 @@ def test_dual_official_schedule_failure_preserves_each_safe_source_boundary(monk
             "attempts": 2,
             "error_kinds": ["WNBAPropHydrationError", "RuntimeError"],
             "error_codes": ["WNBA_OFFICIAL_SCHEDULE_WEB_PARSE_EMPTY", "HTTP_403"],
+            "parser_diagnostic": {
+                "html_length": 123456,
+                "game_href_match_n": 2,
+                "next_data_present": True,
+                "registry_team_n": 13,
+                "parsed_tile_n": 2,
+                "missing_datetime_n": 2,
+            },
         },
     ]
     assert "Expecting value" not in str(result)
     assert "line 1 column 1" not in str(result)
+    assert "must-not-leak" not in str(result)
     assert result["can_execute"] is False
