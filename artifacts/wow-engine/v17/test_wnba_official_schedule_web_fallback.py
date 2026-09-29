@@ -21,7 +21,7 @@ NEXT_DATA = {
 HTML = f"""
 <html><body>
 <script id="__NEXT_DATA__" type="application/json">{json.dumps(NEXT_DATA)}</script>
-<a class="GameTile" href="https://www.wnba.com/game/1042600122">
+<a class="GameTile" href="https://www.wnba.com/game/lva-vs-ind-1042600122">
   <time datetime="2026-09-29T22:30:00Z">6:30 PM</time>
   <div class="team--away">
     <img src="https://cdn.wnba.com/logos/wnba/1611661319/primary/L/logo.svg">
@@ -69,6 +69,13 @@ def test_parses_server_rendered_official_game_with_exact_team_registry_and_void_
         "teamName": "Fever",
     }
     assert payload["wowScheduleProvenance"]["provider"] == fallback.WEB_PROVIDER
+
+
+def test_bare_numeric_game_url_remains_supported():
+    bare = HTML.replace("/game/lva-vs-ind-1042600122", "/game/1042600122")
+    payload = fallback.parse_official_schedule_page(bare)
+    game = payload["leagueSchedule"]["gameDates"][0]["games"][0]
+    assert game["gameId"] == "1042600122"
 
 
 def test_cdn_non_json_fails_over_only_to_official_wnba_schedule_page():
