@@ -43,15 +43,16 @@ def test_priority_prop_lifecycle_is_bounded_fail_closed_and_sport_scoped():
     assert '"WNBA:THREE_POINTERS_MADE"' in text
 
 
-def test_priority_workflow_cold_start_health_preflight_is_bounded_and_retryable():
+def test_priority_workflow_release_handoff_health_preflight_is_bounded_and_retryable():
     repo_root = Path(__file__).resolve().parents[3]
     text = (repo_root / ".github" / "workflows" / "wow-v17-priority-prop-lifecycle.yml").read_text()
 
     assert "wait_for_live()" in text
-    assert "for attempt in 1 2 3" in text
-    assert '--max-time 20' in text
-    assert 'sleep "$((attempt * 5))"' in text
-    assert "WOW_RUNTIME_HEALTH_UNAVAILABLE_AFTER_BOUNDED_COLD_START_RETRIES" in text
+    assert "for attempt in $(seq 1 10)" in text
+    assert '--connect-timeout 3 --max-time 5' in text
+    assert 'attempt ${attempt}/10' in text
+    assert 'sleep 10' in text
+    assert "WOW_RUNTIME_HEALTH_UNAVAILABLE_AFTER_BOUNDED_RELEASE_HANDOFF_RETRIES" in text
     assert text.index("wait_for_live()") < text.index("seed_date()")
     assert text.index("wait_for_live\n") < text.index('if ! seed_date "${today}"')
 
