@@ -11,6 +11,7 @@ price, or execution authority is granted. ``can_execute=false`` always.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import re
 from typing import Any, Callable
 from urllib.parse import urlsplit
 
@@ -49,28 +50,78 @@ def _cached_http_get(http_get: Callable[..., Any]) -> Callable[..., Any]:
     return get
 
 
+def _safe_error_summary(raw_errors: list[Any]) -> tuple[list[str], list[str]]:
+    """Return type names and typed codes without leaking remote response text."""
+    error_kinds: list[str] = []
+    error_codes: list[str] = []
+    for raw in raw_errors:
+        text = str(raw)
+        kind = text.split(":", 1)[0].strip()
+        if kind and kind not in error_kinds:
+            error_kinds.append(kind)
+        remainder = text.split(":", 1)[1].strip() if ":" in text else ""
+        code = remainder.split(":", 1)[0].strip()
+        if re.fullmatch(r"[A-Z][A-Z0-9_]+", code or "") and code not in error_codes:
+            error_codes.append(code)
+    return error_kinds, error_codes
+
+
 def _source_diagnostic(exc: Exception) -> dict[str, Any] | None:
     """Return a secret-safe source receipt for typed WNBA acquisition failures."""
     code = str(getattr(exc, "code", "") or "").strip()
     detail = getattr(exc, "detail", None)
     if code != "WNBA_OFFICIAL_SOURCE_UNAVAILABLE" or not isinstance(detail, dict):
         return None
+
+    # Legacy one-source failures retain the exact existing receipt contract.
     raw_url = str(detail.get("url") or "").strip()
-    parsed = urlsplit(raw_url) if raw_url else None
-    raw_errors = detail.get("errors") if isinstance(detail.get("errors"), list) else []
-    error_kinds: list[str] = []
-    for raw in raw_errors:
-        kind = str(raw).split(":", 1)[0].strip()
-        if kind and kind not in error_kinds:
-            error_kinds.append(kind)
-    attempts = detail.get("attempts")
-    return {
-        "code": code,
-        "host": parsed.netloc if parsed else None,
-        "path": parsed.path if parsed else None,
-        "attempts": int(attempts) if isinstance(attempts, int) else None,
-        "error_kinds": error_kinds,
-    }
+    if raw_url:
+        parsed = urlsplit(raw_url)
+        raw_errors = detail.get("errors") if isinstance(detail.get("errors"), list) else []
+        error_kinds, _error_codes = _safe_error_summary(raw_errors)
+        attempts = detail.get("attempts")
+        return {
+            "code": code,
+            "host": parsed.netloc,
+            "path": parsed.path,
+            "attempts": int(attempts) if isinstance(attempts, int) else None,
+            "error_kinds": error_kinds,
+        }
+
+    # The official schedule failover introduced by #1019 carries two separate
+    # error lists. Preserve both boundaries so production replay can distinguish
+    # CDN transport failure from official-web fetch/parse failure. Hosts/paths are
+    # fixed public league-owned constants; response text and query strings are
+    # intentionally excluded from the receipt.
+    primary_errors = detail.get("primary_errors") if isinstance(detail.get("primary_errors"), list) else []
+    fallback_errors = detail.get("fallback_errors") if isinstance(detail.get("fallback_errors"), list) else []
+    if primary_errors or fallback_errors or detail.get("primary_source") or detail.get("fallback_source"):
+        attempts = int(getattr(acquisition.wnba, "HTTP_ATTEMPTS", 0) or 0) or None
+        primary_kinds, primary_codes = _safe_error_summary(primary_errors)
+        fallback_kinds, fallback_codes = _safe_error_summary(fallback_errors)
+        return {
+            "code": code,
+            "sources": [
+                {
+                    "provider": str(detail.get("primary_source") or "WNBA_CDN_SCHEDULE_CURRENT"),
+                    "host": "cdn.wnba.com",
+                    "path": "/static/json/staticData/scheduleLeagueV2.json",
+                    "attempts": attempts,
+                    "error_kinds": primary_kinds,
+                    "error_codes": primary_codes,
+                },
+                {
+                    "provider": str(detail.get("fallback_source") or "WNBA_OFFICIAL_SCHEDULE_WEB_SSR"),
+                    "host": "www.wnba.com",
+                    "path": "/schedule",
+                    "attempts": attempts,
+                    "error_kinds": fallback_kinds,
+                    "error_codes": fallback_codes,
+                },
+            ],
+        }
+
+    return {"code": code, "host": None, "path": None, "attempts": None, "error_kinds": []}
 
 
 def _existing_snapshot(db: Any, candidate: dict[str, Any], stat_type: str) -> bool:
