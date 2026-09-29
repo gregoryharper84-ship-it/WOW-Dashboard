@@ -120,6 +120,83 @@ def _install_common(monkeypatch: pytest.MonkeyPatch):
     )
 
 
+def test_request_default_offset_remains_zero():
+    req = subject.WNBAForwardEvidenceRequest(requested_date="2026-09-28")
+    assert req.candidate_offset == 0
+    assert req.max_candidates == 48
+
+
+def test_same_official_cdn_minimal_transport_fallback(monkeypatch: pytest.MonkeyPatch):
+    exc = subject.acquisition.wnba.WNBAPropHydrationError(
+        "WNBA_OFFICIAL_SOURCE_UNAVAILABLE",
+        "non-json",
+        detail={
+            "url": subject.acquisition.wnba.WNBA_SCHEDULE_URL,
+            "attempts": 2,
+            "errors": ["JSONDecodeError:bad"],
+        },
+    )
+    monkeypatch.setattr(
+        subject.acquisition,
+        "_request_schedule",
+        lambda **_kwargs: (_ for _ in ()).throw(exc),
+    )
+    calls = []
+
+    def fallback_request(url, **kwargs):
+        calls.append((url, kwargs))
+        return {"leagueSchedule": {"gameDates": []}}
+
+    monkeypatch.setattr(subject.acquisition.wnba, "_request", fallback_request)
+    payload, mode = subject._request_schedule_with_same_source_fallback(
+        http_get=lambda *_a, **_k: object()
+    )
+
+    assert payload == {"leagueSchedule": {"gameDates": []}}
+    assert mode == "MINIMAL_OFFICIAL_CDN_FALLBACK"
+    assert len(calls) == 1
+    assert calls[0][0] == subject.acquisition.wnba.WNBA_SCHEDULE_URL
+    headers = calls[0][1]["headers"]
+    assert headers["Accept"] == "application/json, text/plain, */*"
+    assert "Host" not in headers
+    assert "Origin" not in headers
+    assert "Referer" not in headers
+    assert "Accept-Encoding" not in headers
+
+
+def test_invalid_json_wnba_response_is_not_frozen_in_request_cache():
+    calls = []
+
+    class BadResponse:
+        status_code = 200
+
+        def json(self):
+            raise ValueError("not-json")
+
+    class GoodResponse:
+        status_code = 200
+
+        def json(self):
+            return {"resultSets": []}
+
+    responses = [BadResponse(), GoodResponse()]
+
+    def raw_get(*_args, **_kwargs):
+        calls.append(1)
+        return responses.pop(0) if responses else GoodResponse()
+
+    cached = subject._cached_http_get(raw_get)
+    url = f"{subject.acquisition.wnba.WNBA_STATS_BASE}/leaguegamelog"
+    first = cached(url, params={"LeagueID": "10"}, headers={"Accept": "application/json"})
+    second = cached(url, params={"LeagueID": "10"}, headers={"Accept": "application/json"})
+    third = cached(url, params={"LeagueID": "10"}, headers={"Accept": "application/json"})
+
+    assert isinstance(first, BadResponse)
+    assert isinstance(second, GoodResponse)
+    assert third is second
+    assert len(calls) == 2
+
+
 def test_rotating_window_is_bounded_and_reports_next_offset(monkeypatch: pytest.MonkeyPatch):
     _install_common(monkeypatch)
     req = subject.WNBAForwardEvidenceRequest(
@@ -140,6 +217,7 @@ def test_rotating_window_is_bounded_and_reports_next_offset(monkeypatch: pytest.
     assert result["persisted"] == 3
     assert result["next_offset"] == 5
     assert result["source_diagnostics"] == []
+    assert result["source_transport_mode"] == "BROWSER_CONTEXT"
     assert result["probability_publishable"] is False
     assert result["automatic_certification"] is False
     assert result["automatic_promotion"] is False
