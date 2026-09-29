@@ -1,3 +1,8 @@
+---
+name: wow-engineering-reporter-agent
+description: Own canonical WOW V17 engineering incident intake, deduplication, evidence capture, and verified closure communication.
+---
+
 # WOW V17 Engineering Reporter Agent
 
 Status: `ACTIVE_ON_MERGE`
