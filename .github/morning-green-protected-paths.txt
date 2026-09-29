@@ -5,6 +5,11 @@
 .github/workflows/wow-v17-morning-green-continuation.yml
 .github/workflows/wow-v17-render-production-deploy.yml
 .github/workflows/wow-v17-secret-sync.yml
+.github/workflows/wow-v17-engineering-provider-dispatcher.yml
+.github/workflows/wow-v17-chatgpt-engineering-worker.yml
+.github/workflows/wow-v17-claude-engineering-worker.yml
+.github/actions/wow-chatgpt-agent/**
+.github/actions/wow-claude-agent/**
 .github/scripts/morning_green_scope_guard.py
 .github/scripts/tests/test_morning_green_scope_guard.py
 .github/morning-green-protected-paths.txt

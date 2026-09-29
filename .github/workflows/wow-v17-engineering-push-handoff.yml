@@ -15,26 +15,27 @@ concurrency:
 
 jobs:
   dispatch-worker:
-    name: Dispatch multi-agent engineering worker after push-origin scan
+    name: Dispatch provider-aware engineering team after push-origin scan
     if: >-
       github.event.workflow_run.event == 'push' &&
       github.event.workflow_run.conclusion != 'cancelled'
     runs-on: ubuntu-latest
     steps:
-      - name: Dispatch governed engineering team
+      - name: Dispatch governed engineering provider control plane
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh workflow run wow-v17-chatgpt-engineering-worker.yml \
+          gh workflow run wow-v17-engineering-provider-dispatcher.yml \
             --repo "$GITHUB_REPOSITORY" \
-            --ref main
+            --ref main \
+            -f reason="PUSH_ORIGIN_NIGHTLY_SCAN:${{ github.event.workflow_run.id }}"
           {
             echo "# WOW V17 engineering push handoff"
             echo "- source_run: ${{ github.event.workflow_run.id }}"
             echo "- source_event: ${{ github.event.workflow_run.event }}"
             echo "- source_conclusion: ${{ github.event.workflow_run.conclusion }}"
-            echo "- dispatched: wow-v17-chatgpt-engineering-worker.yml"
-            echo "- provider: OpenAI/ChatGPT"
+            echo "- dispatched: wow-v17-engineering-provider-dispatcher.yml"
+            echo "- provider policy: OpenAI primary / Anthropic fallback / deterministic survival"
             echo "- can_execute: false"
           } >> "$GITHUB_STEP_SUMMARY"
