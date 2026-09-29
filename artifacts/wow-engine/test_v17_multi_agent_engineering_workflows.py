@@ -12,6 +12,7 @@ DISPATCH_BRIDGE = ROOT / ".github/workflows/wow-v17-chatgpt-engineering-dispatch
 FRONTIER = ROOT / ".github/workflows/wow-v17-frontier-intelligence-agent.yml"
 CHATGPT_ACTION = ROOT / ".github/actions/wow-chatgpt-agent/action.yml"
 CODEX_ENGINEERING_SKILLS = (
+    ROOT / ".agents/skills/wow-engineering-reporter-agent/SKILL.md",
     ROOT / ".agents/skills/wow-engineering-lead-agent/SKILL.md",
     ROOT / ".agents/skills/wow-engineering-research-triage-agent/SKILL.md",
     ROOT / ".agents/skills/wow-engineering-specialist-subagents/SKILL.md",
