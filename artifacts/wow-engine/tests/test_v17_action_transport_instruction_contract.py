@@ -1,11 +1,15 @@
 from pathlib import Path
 
 
+REPO_ROOT = Path(__file__).parents[3]
 INSTRUCTIONS = (
     Path(__file__).parents[1] / "WOW_V17_CUSTOM_GPT_INSTRUCTIONS.txt"
 ).read_text()
 LLP_INSTRUCTIONS = (
-    Path(__file__).parents[3] / "LLP-TEAM-BETTING-GPT-INSTRUCTIONS.md"
+    REPO_ROOT / "LLP-TEAM-BETTING-GPT-INSTRUCTIONS.md"
+).read_text()
+LLP_OVERLAY = (
+    REPO_ROOT / "docs" / "wow" / "LLP-V17-AUTHORITY-OVERLAY-2026-09-10.md"
 ).read_text()
 
 
@@ -67,6 +71,17 @@ def test_llp_ambiguous_stateful_transport_requires_receipt_recovery_before_retry
         in LLP_INSTRUCTIONS
     )
     assert "can_execute=false always" in LLP_INSTRUCTIONS
+
+
+def test_llp_authority_overlay_matches_transport_boundary():
+    assert "## Typed transport failure boundary" in LLP_OVERLAY
+    assert "`ACTION_TRANSPORT_TIMEOUT` or `ACTION_TRANSPORT_FAILURE`" in LLP_OVERLAY
+    assert (
+        "Do not relabel Action/HTTP transport failure as `DISCOVERY_OR_ACQUISITION_INCOMPLETE`, `MODEL_SCORER_FAILED`, or `MODEL_UNAVAILABLE`"
+        in LLP_OVERLAY
+    )
+    assert "A transport failure proves neither model absence nor acquisition failure" in LLP_OVERLAY
+    assert "`can_execute=false` always" in LLP_OVERLAY
 
 
 def test_llp_pasteable_authority_block_stays_under_editor_limit():
