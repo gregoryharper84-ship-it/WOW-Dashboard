@@ -24,14 +24,32 @@ from fastapi import FastAPI
 
 from basketball_event_hydration_runtime import ESPN_BASE_URLS, _espn_competitors
 from github_actions_oidc import scout_route_auth_dependency
+import v17.wnba_official_schedule_web_fallback  # noqa: F401 - preserve install-order contract
+from v17 import wnba_prop_evidence_acquisition as acquisition
 from v17 import wnba_prop_evidence_control_plane_base as _base
 
 CAN_EXECUTE = False
 ROUTE_PATH = _base.ROUTE_PATH
 WNBAForwardEvidenceRequest = _base.WNBAForwardEvidenceRequest
-acquisition = _base.acquisition
 schedule_transport = _base.schedule_transport
 ESPN_IDENTITY_PROVIDER = schedule_transport.ESPN_IDENTITY_BRIDGE_PROVIDER
+
+# Preserve the historical public/private test seam while keeping the stable base
+# implementation as the runtime default. Existing tests and narrow runtime hooks
+# patch ``control._existing_snapshot``; the base delegates through this proxy so
+# those patches still apply without per-request mutation of module globals.
+_ORIGINAL_BASE_EXISTING_SNAPSHOT = _base._existing_snapshot
+
+
+def _existing_snapshot(*args: Any, **kwargs: Any) -> bool:
+    return _ORIGINAL_BASE_EXISTING_SNAPSHOT(*args, **kwargs)
+
+
+def _existing_snapshot_proxy(*args: Any, **kwargs: Any) -> bool:
+    return globals()["_existing_snapshot"](*args, **kwargs)
+
+
+_base._existing_snapshot = _existing_snapshot_proxy
 
 
 def __getattr__(name: str) -> Any:
@@ -353,7 +371,9 @@ def acquire_wnba_forward_evidence_batch(
             getattr(exc, "code", "")
             or f"WNBA_ESPN_IDENTITY_FALLBACK_FAILED:{type(exc).__name__}"
         )
-        result["blockers"] = list(dict.fromkeys(blockers + [fallback_code]))
+        # The original typed official-source failure remains the terminal owner.
+        # Recovery failures are diagnostic context, not a replacement blocker.
+        result["blockers"] = blockers
         result["source_diagnostics"] = official_diagnostics + [
             {"code": fallback_code, "provider": ESPN_IDENTITY_PROVIDER}
         ]
