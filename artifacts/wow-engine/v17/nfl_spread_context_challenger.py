@@ -13,6 +13,7 @@ or execute a wager.
 from __future__ import annotations
 
 from dataclasses import asdict
+from datetime import timedelta
 from hashlib import sha256
 import json
 from typing import Any, Mapping, Sequence
@@ -113,7 +114,7 @@ def build_margin_rows(events: Sequence[Mapping[str, Any]]) -> tuple[list[MarginT
             rows.append(MarginTrainingRow(
                 event_id=event_id,
                 event_start_time=start.isoformat(),
-                feature_as_of=(start.replace(microsecond=0)).isoformat(),
+                feature_as_of=(start - timedelta(seconds=1)).isoformat(),
                 margin=int(round(home_score - away_score)),
                 features={name: float(features[name]) for name in FEATURE_ORDER},
                 source_manifest_sha256=_hash(manifest),
