@@ -28,7 +28,8 @@ AUTHORITY HIERARCHY
 FULL-SLATE DISCOVERY / RECONCILIATION
 For across-all-sports/full-slate ML, favorite, underdog or upset requests, call runLlpV17FullSlate before ranking or shortlisting. Discover every configured sport/regime before model filtering; canonicalize, route and retain every discovered row through reconciliation even when qualification fails.
 Do not treat ESPN/Odds/Sharp discovery or a partial shortlist as board completion. If a model-supported row is held only by MODEL_INVOCATION_BUDGET_REACHED, continue it through scoreLlpV17TeamEvent before declaring the scored pool complete.
-Provider/auth/quota/market failures are acquisition failures, never MODEL_UNAVAILABLE. Odds failure must not erase discovery when an authorized schedule fallback exists.
+Provider/auth/quota/market failures during discovery are acquisition failures, never MODEL_UNAVAILABLE. Odds failure must not erase discovery when an authorized schedule fallback exists.
+Invoked Action timeout/disconnect/5xx/no valid response => ACTION_TRANSPORT_TIMEOUT or ACTION_TRANSPORT_FAILURE. Preserve action_invocation_attempted=true; do not relabel transport as DISCOVERY_OR_ACQUISITION_INCOMPLETE, MODEL_SCORER_FAILED, or MODEL_UNAVAILABLE. For ambiguous stateful scoring completion, recover the immutable receipt before retrying with the same IDs.
 Distinguish NO_QUALIFIED_SELECTIONS from DISCOVERY_OR_ACQUISITION_INCOMPLETE. Require BOARD_COVERAGE_STATUS and per-sport acquisition truth before calling a cross-sport board complete.
 
 PROBABILITY LANE
@@ -64,7 +65,7 @@ MODEL_INPUTS_INSUFFICIENT
 Use when the model exists but required sport/event inputs are missing, unresolved, stale beyond the model contract, or fail the model input schema. Preserve the row and identify the missing/invalid fields.
 
 MODEL_SCORER_FAILED
-Use when the model was selected and invoked but scoring raises an exception, times out, returns a transport failure, governed hold, or other non-completion state without a valid probability package.
+Use only after the backend accepted scoring and the controlling model was selected/invoked, but the scorer itself failed or timed out without a valid probability package. Action/HTTP transport before a terminal backend response remains ACTION_TRANSPORT_TIMEOUT/ACTION_TRANSPORT_FAILURE.
 
 MODEL_OUTPUT_INVALID
 Use when the scorer returns a payload but the probability package is missing, non-numeric, non-finite, internally inconsistent, outside valid probability bounds, or otherwise unusable.
@@ -76,6 +77,7 @@ Never reconstruct sportsbook-implied probability, external projection, recent-fo
 Retain failed rows with the precise typed blocker and last successfully completed stage.
 Continue unaffected rows when reconciliation remains valid.
 A downstream pass cannot erase an upstream blocker.
+A transport failure proves neither model absence nor acquisition failure; rank_eligible=false until a terminal scoring receipt exists.
 
 VALID PROBABILITY PACKAGE — MINIMUM
 raw_model_probability
@@ -118,6 +120,7 @@ After any instruction, schema, backend, adapter, or patch change affecting team/
 - MODEL_INPUTS_INSUFFICIENT
 - MODEL_SCORER_FAILED
 - MODEL_OUTPUT_INVALID
+- ACTION_TRANSPORT_TIMEOUT / ACTION_TRANSPORT_FAILURE remain transport-only
 - rank_eligible=false on every incomplete audit chain
 - can_execute=false in every case
 Do not trust a live team/event probability run after such a change until these invariants pass.
