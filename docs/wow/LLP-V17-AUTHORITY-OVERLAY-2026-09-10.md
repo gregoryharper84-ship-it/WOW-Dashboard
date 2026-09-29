@@ -52,6 +52,12 @@ event_identity_complete
 
 `rank_eligible=true` only when every mandatory upstream stage has completed successfully and no preserved blocker prohibits ranking.
 
+## Typed transport failure boundary
+
+An invoked Action timeout, disconnect, 5xx response, or missing valid terminal response remains `ACTION_TRANSPORT_TIMEOUT` or `ACTION_TRANSPORT_FAILURE`. Preserve `action_invocation_attempted=true`. Do not relabel Action/HTTP transport failure as `DISCOVERY_OR_ACQUISITION_INCOMPLETE`, `MODEL_SCORER_FAILED`, or `MODEL_UNAVAILABLE`.
+
+For ambiguous stateful scoring completion, recover the immutable prediction receipt before retrying. Retry only unresolved work with the same stable IDs. A transport failure proves neither model absence nor acquisition failure, and the row remains `rank_eligible=false` until a terminal scoring receipt exists.
+
 ## Typed model failure taxonomy
 
 ### MODEL_UNAVAILABLE
@@ -61,7 +67,7 @@ Use only when the required controlling sport-specific model/capability is absent
 Use when the model exists but required sport/event inputs are missing, unresolved, stale beyond contract, or fail the model input schema. Preserve the row and identify missing/invalid fields.
 
 ### MODEL_SCORER_FAILED
-Use when the model was selected and invoked but scoring raises an exception, times out, returns a transport failure, governed hold, or another non-completion state without a valid probability package.
+Use only after the backend accepted scoring and the controlling model was selected/invoked, but the scorer itself raises an exception or times out without a valid probability package. Action/HTTP transport before a terminal backend response remains `ACTION_TRANSPORT_TIMEOUT` / `ACTION_TRANSPORT_FAILURE`.
 
 ### MODEL_OUTPUT_INVALID
 Use when the scorer returns a payload but the probability package is missing, non-numeric, non-finite, internally inconsistent, outside valid probability bounds, or otherwise unusable.
@@ -74,6 +80,7 @@ Use when the scorer returns a payload but the probability package is missing, no
 - Continue unaffected rows when reconciliation remains valid.
 - A downstream pass cannot erase an upstream blocker.
 - Never collapse input/scorer/output failures into `MODEL_UNAVAILABLE`.
+- Never collapse invoked Action transport failure into acquisition/model/scorer failure.
 
 ## Minimum valid probability package
 
@@ -132,11 +139,11 @@ Persistence state is not model authority and cannot replace the controlling spor
 
 ## Host instruction addendum
 
-The main WOW Betting Engine must apply this routing rule for team/event probability requests: V17 governed backend and host contract are authoritative when confirmed; probability and price remain separate; typed model failure semantics are preserved; Render is runtime source of truth; Supabase/Postgres is persistence/reconciliation; `can_execute=false` always.
+The main WOW Betting Engine must apply this routing rule for team/event probability requests: V17 governed backend and host contract are authoritative when confirmed; probability and price remain separate; typed transport and model failure semantics are preserved; Render is runtime source of truth; Supabase/Postgres is persistence/reconciliation; `can_execute=false` always.
 
 ## Regression requirement
 
-Before trusting any live team/event probability run after instruction, schema, backend, adapter, or patch changes, verify exact `MODEL_UNAVAILABLE`, `MODEL_INPUTS_INSUFFICIENT`, `MODEL_SCORER_FAILED`, `MODEL_OUTPUT_INVALID`, `rank_eligible=false` on incomplete audit chains, and `can_execute=false` in every case.
+Before trusting any live team/event probability run after instruction, schema, backend, adapter, or patch changes, verify exact `MODEL_UNAVAILABLE`, `MODEL_INPUTS_INSUFFICIENT`, `MODEL_SCORER_FAILED`, `MODEL_OUTPUT_INVALID`, `ACTION_TRANSPORT_TIMEOUT` / `ACTION_TRANSPORT_FAILURE` transport-only semantics, `rank_eligible=false` on incomplete audit chains, and `can_execute=false` in every case.
 
 ## Compatibility statement
 
