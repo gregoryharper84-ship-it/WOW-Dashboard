@@ -104,6 +104,15 @@ def test_active_agent_workflows_are_openai_chatgpt_only() -> None:
     assert 'allow-bots: "true"' in action
 
 
+def test_chatgpt_action_uses_explicit_schema_file_for_unprivileged_codex() -> None:
+    action = CHATGPT_ACTION.read_text()
+    assert "Materialize structured output schema" in action
+    assert "output-schema-file: ${{ steps.schema.outputs.schema_file }}" in action
+    assert "output-schema: ${{ inputs.output_schema }}" not in action
+    assert 'chmod 0644 "$schema_file"' in action
+    assert "Clean up structured output schema" in action
+
+
 def test_legacy_claude_engineering_entrypoints_are_removed() -> None:
     for path in LEGACY_CLAUDE_PATHS:
         assert not path.exists()
