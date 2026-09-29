@@ -8,7 +8,8 @@ import v17.spread_forward_auto_canary as canary
 from v17.spread_margin_challenger import SpreadChallengerUnavailable
 
 
-NOW = datetime(2026, 9, 28, 16, 0, tzinfo=timezone.utc)
+# After the Sept. 28 fixture kickoff so the Oct. 4 fixture is the first future game.
+NOW = datetime(2026, 9, 29, 6, 0, tzinfo=timezone.utc)
 
 
 class FakeResponse:
@@ -20,7 +21,7 @@ class FakeResponse:
         return self._payload
 
 
-def _event(*, event_id="401999999", start="2026-09-29T00:00:00Z"):
+def _event(*, event_id="401999999", start="2026-09-29T12:00:00Z"):
     return {
         "id": event_id,
         "date": start,
@@ -34,27 +35,75 @@ def _event(*, event_id="401999999", start="2026-09-29T00:00:00Z"):
     }
 
 
-def test_discovers_future_nfl_event_from_backend_scoreboard():
-    calls = []
-
-    def fetcher(url, **kwargs):
-        calls.append((url, kwargs))
-        return FakeResponse(200, {"events": [_event()]})
-
-    result = canary.discover_future_espn_event("NFL", fetcher=fetcher, now=NOW)
+def test_discovers_future_nfl_event_from_governed_canonical_schedule(monkeypatch):
+    snapshot = {
+        "snapshot_id": "schedule-snapshot-1",
+        "content_sha256": "abc123",
+    }
+    rows = [
+        {
+            "game_id": "2026_03_ATL_DAL",
+            "gameday": "2026-10-04",
+            "gametime": "13:00",
+            "home_team": "DAL",
+            "away_team": "ATL",
+            "home_score": "",
+            "away_score": "",
+        },
+        {
+            "game_id": "2026_02_GB_CHI",
+            "gameday": "2026-09-28",
+            "gametime": "20:15",
+            "home_team": "CHI",
+            "away_team": "GB",
+            "home_score": "",
+            "away_score": "",
+        },
+    ]
+    monkeypatch.setattr(canary, "_load_latest_schedule_snapshot", lambda _db: (snapshot, rows))
+    result = canary.discover_future_nfl_canonical_event(object(), now=NOW)
     assert result["sport"] == "NFL"
-    assert result["raw_event_id"] == "401999999"
-    assert result["home_team"] == "Dallas Cowboys"
-    assert result["away_team"] == "Atlanta Falcons"
-    assert result["home_team_id"] == "6"
-    assert result["away_team_id"] == "1"
-    assert result["identity_provider"] == "ESPN_SCOREBOARD"
+    assert result["raw_event_id"] == "2026_03_ATL_DAL"
+    assert result["home_team"] == "DAL"
+    assert result["away_team"] == "ATL"
+    assert result["identity_provider"] == "NFL_CANONICAL_SCHEDULE_SNAPSHOT"
     assert result["identity_acquisition_location"] == "BACKEND_RUNTIME"
+    assert result["canonical_source_snapshot_id"] == "schedule-snapshot-1"
+    assert result["schedule_content_sha256"] == "abc123"
     assert result["can_execute"] is False
-    assert calls and calls[0][1]["params"]["dates"] == "20260928"
 
 
-def test_valid_empty_schedule_returns_none():
+def test_nfl_canonical_schedule_skips_scored_rows_and_returns_none_when_no_future(monkeypatch):
+    monkeypatch.setattr(
+        canary,
+        "_load_latest_schedule_snapshot",
+        lambda _db: (
+            {"snapshot_id": "s1", "content_sha256": "h1"},
+            [{
+                "game_id": "2026_03_ATL_DAL",
+                "gameday": "2026-10-04",
+                "gametime": "13:00",
+                "home_team": "DAL",
+                "away_team": "ATL",
+                "home_score": "24",
+                "away_score": "17",
+            }],
+        ),
+    )
+    assert canary.discover_future_nfl_canonical_event(object(), now=NOW) is None
+
+
+def test_nfl_canonical_schedule_failure_is_typed(monkeypatch):
+    def broken(_db):
+        raise RuntimeError("fixture")
+
+    monkeypatch.setattr(canary, "_load_latest_schedule_snapshot", broken)
+    with pytest.raises(SpreadChallengerUnavailable) as exc:
+        canary.discover_future_nfl_canonical_event(object(), now=NOW)
+    assert exc.value.code == "NFL_SPREAD_CANARY_CANONICAL_SCHEDULE_UNAVAILABLE"
+
+
+def test_valid_empty_wnba_schedule_returns_none():
     result = canary.discover_future_espn_event(
         "WNBA",
         fetcher=lambda *_args, **_kwargs: FakeResponse(200, {"events": []}),
@@ -64,31 +113,31 @@ def test_valid_empty_schedule_returns_none():
     assert result is None
 
 
-def test_source_failure_is_typed():
+def test_wnba_source_failure_is_typed():
     with pytest.raises(SpreadChallengerUnavailable) as exc:
         canary.discover_future_espn_event(
-            "NFL",
+            "WNBA",
             fetcher=lambda *_args, **_kwargs: FakeResponse(403, {}),
             now=NOW,
             horizon_days=2,
         )
-    assert exc.value.code == "NFL_SPREAD_CANARY_IDENTITY_SOURCE_UNAVAILABLE"
+    assert exc.value.code == "WNBA_SPREAD_CANARY_IDENTITY_SOURCE_UNAVAILABLE"
 
 
 def test_nfl_auto_canary_invokes_existing_shadow_without_changing_governance(monkeypatch):
     monkeypatch.setattr(
         canary,
-        "discover_future_espn_event",
+        "discover_future_nfl_canonical_event",
         lambda *_args, **_kwargs: {
             "sport": "NFL",
-            "raw_event_id": "401999999",
-            "event_start_time": "2026-09-29T00:00:00+00:00",
-            "home_team": "Dallas Cowboys",
-            "away_team": "Atlanta Falcons",
-            "home_team_id": "6",
-            "away_team_id": "1",
-            "identity_provider": "ESPN_SCOREBOARD",
+            "raw_event_id": "2026_03_ATL_DAL",
+            "event_start_time": "2026-10-04T17:00:00+00:00",
+            "home_team": "DAL",
+            "away_team": "ATL",
+            "identity_provider": "NFL_CANONICAL_SCHEDULE_SNAPSHOT",
             "identity_acquisition_location": "BACKEND_RUNTIME",
+            "canonical_source_snapshot_id": "schedule-snapshot-1",
+            "schedule_content_sha256": "abc123",
             "can_execute": False,
         },
     )
@@ -111,10 +160,10 @@ def test_nfl_auto_canary_invokes_existing_shadow_without_changing_governance(mon
     result = canary.run_nfl_spread_auto_canary(db)
     assert seen == {
         "db": db,
-        "event_id": "401999999",
-        "event_start_time": "2026-09-29T00:00:00+00:00",
-        "home_team": "Dallas Cowboys",
-        "away_team": "Atlanta Falcons",
+        "event_id": "2026_03_ATL_DAL",
+        "event_start_time": "2026-10-04T17:00:00+00:00",
+        "home_team": "DAL",
+        "away_team": "ATL",
         "home_spread": 0.0,
     }
     assert result["status"] == "EXPERIMENT_CREATED"
@@ -123,7 +172,26 @@ def test_nfl_auto_canary_invokes_existing_shadow_without_changing_governance(mon
     assert result["automatic_promotion"] is False
     assert result["can_execute"] is False
     assert result["global_terminal_reducer"] == "V17_TERMINAL_REDUCER"
+    assert result["identity_provider"] == "NFL_CANONICAL_SCHEDULE_SNAPSHOT"
     assert result["identity_acquisition_location"] == "BACKEND_RUNTIME"
+
+
+def test_nfl_no_future_event_is_explicit_defer(monkeypatch):
+    monkeypatch.setattr(canary, "discover_future_nfl_canonical_event", lambda *_args, **_kwargs: None)
+    result = canary.run_nfl_spread_auto_canary(object())
+    assert result == {
+        "status": "DEFERRED_WITH_JUSTIFICATION",
+        "code": "NFL_SPREAD_CANARY_NO_ELIGIBLE_FUTURE_EVENT",
+        "sport": "NFL",
+        "identity_provider": "NFL_CANONICAL_SCHEDULE_SNAPSHOT",
+        "identity_acquisition_location": "BACKEND_RUNTIME",
+        "automatic_certification": False,
+        "automatic_promotion": False,
+        "probability_publishable": False,
+        "global_terminal_reducer": "V17_TERMINAL_REDUCER",
+        "dry_run_only_no_live_trading_no_market_orders": True,
+        "can_execute": False,
+    }
 
 
 def test_wnba_auto_canary_prefixes_exact_espn_identity(monkeypatch):
