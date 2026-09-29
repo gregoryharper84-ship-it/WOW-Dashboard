@@ -28,6 +28,7 @@ def test_priority_prop_lifecycle_is_bounded_fail_closed_and_sport_scoped():
     assert 'seed_failures=0' in text
     assert 'settlement_failures=0' in text
     assert 'persisted_health_n' in text
+    assert 'source_diagnostics' in text
     assert 'WOW_CAN_EXECUTE: "false"' in text
     assert 'WOW_DRY_RUN_ONLY: "true"' in text
     assert "automatic_certification" in text
@@ -75,6 +76,7 @@ def test_priority_workflow_consumes_durable_rows_after_ambiguous_seed_or_settlem
     assert seed < settlement < audit < terminal_failure
     assert 'durable settlement/audit will still inspect persisted rows' in priority
     assert 'health_persistence' in priority
+    assert 'source_diagnostics' in priority
     assert 'routes":[]' in universal
     assert 'name: wow-v17-prop-lifecycle-autopilot' in universal
     assert 'name: wow-v17-priority-prop-lifecycle' in priority

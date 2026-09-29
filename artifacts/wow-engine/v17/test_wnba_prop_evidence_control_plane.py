@@ -139,6 +139,7 @@ def test_rotating_window_is_bounded_and_reports_next_offset(monkeypatch: pytest.
     assert result["attempted"] == 3
     assert result["persisted"] == 3
     assert result["next_offset"] == 5
+    assert result["source_diagnostics"] == []
     assert result["probability_publishable"] is False
     assert result["automatic_certification"] is False
     assert result["automatic_promotion"] is False
@@ -191,4 +192,37 @@ def test_true_hydration_blocker_stays_row_scoped(monkeypatch: pytest.MonkeyPatch
     assert result["held"] == 1
     assert result["status"] == "COMPLETED_WITH_ROW_BLOCKERS"
     assert any("WNBA_PLAYER_AVAILABILITY_NOT_CLEAR" in blocker for blocker in result["blockers"])
+    assert result["source_diagnostics"] == []
+    assert result["can_execute"] is False
+
+
+def test_official_source_failure_preserves_typed_blocker_and_safe_source_receipt(monkeypatch: pytest.MonkeyPatch):
+    exc = subject.acquisition.wnba.WNBAPropHydrationError(
+        "WNBA_OFFICIAL_SOURCE_UNAVAILABLE",
+        "unavailable",
+        detail={
+            "url": "https://stats.wnba.com/stats/leaguegamelog?token=must-not-leak",
+            "attempts": 2,
+            "errors": ["RuntimeError:HTTP_403", "ValueError:invalid json body"],
+        },
+    )
+    monkeypatch.setattr(subject.acquisition, "_request_schedule", lambda **_kwargs: (_ for _ in ()).throw(exc))
+    result = subject.acquire_wnba_forward_evidence_batch(
+        subject.WNBAForwardEvidenceRequest(requested_date="2026-09-28", max_candidates=1),
+        db=_DB(),
+        now=NOW,
+        http_get=lambda *_a, **_k: object(),
+    )
+    assert result["status"] == "DATA_UNOBTAINABLE"
+    assert result["blockers"] == ["WNBA_OFFICIAL_SOURCE_UNAVAILABLE"]
+    assert result["source_diagnostics"] == [
+        {
+            "code": "WNBA_OFFICIAL_SOURCE_UNAVAILABLE",
+            "host": "stats.wnba.com",
+            "path": "/stats/leaguegamelog",
+            "attempts": 2,
+            "error_kinds": ["RuntimeError", "ValueError"],
+        }
+    ]
+    assert "must-not-leak" not in str(result)
     assert result["can_execute"] is False
