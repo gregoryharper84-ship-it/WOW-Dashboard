@@ -45,6 +45,8 @@ def test_production_route_construction_does_not_eagerly_load_sklearn() -> None:
         "v17.candidate_certification_evidence",
         "v17.team_state_challenger_training",
         "v17.spread_margin_replay_route",
+        "v17.spread_certification_replay_route",
+        "v17.ncaaf_model_maintenance",
     ]
     probe = (
         "import sys; "
@@ -65,11 +67,13 @@ def test_runtime_modules_remain_non_executable() -> None:
         "import v17.candidate_certification_evidence as evidence; "
         "import v17.team_state_challenger_training as team_state; "
         "import v17.spread_margin_replay_route as spread; "
+        "import v17.spread_certification_replay_route as spread_cert; "
         "assert nfl.CAN_EXECUTE is False; "
         "assert ncaaf.CAN_EXECUTE is False; "
         "assert first_six.CAN_EXECUTE is False; "
         "assert evidence.CAN_EXECUTE is False; "
         "assert team_state.CAN_EXECUTE is False; "
-        "assert spread.CAN_EXECUTE is False"
+        "assert spread.CAN_EXECUTE is False; "
+        "assert spread_cert.CAN_EXECUTE is False"
     )
     assert completed.returncode == 0, completed.stderr or completed.stdout
