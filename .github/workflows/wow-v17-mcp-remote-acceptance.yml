@@ -32,7 +32,7 @@ jobs:
       WOW_MCP_ACCEPTANCE_SERVICE_ID: srv-dapfrkrbc2fs73fjjsig
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Node 20
         uses: actions/setup-node@v4

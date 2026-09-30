@@ -52,7 +52,7 @@ jobs:
           - SOCCER_SERIE_A
           - SOCCER_LIGUE_1
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
@@ -204,7 +204,7 @@ jobs:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Assert runner-side rescue keeps governance closed
         shell: bash
         run: |

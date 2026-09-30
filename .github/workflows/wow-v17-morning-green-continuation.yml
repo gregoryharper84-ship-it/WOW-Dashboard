@@ -119,7 +119,7 @@ jobs:
 
       - name: Checkout trusted Morning-Green guard from protected main
         if: steps.resolve.outputs.eligible == 'true' && steps.gates.outputs.ready == 'true'
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: main
           persist-credentials: false

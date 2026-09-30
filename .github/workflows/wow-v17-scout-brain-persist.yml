@@ -40,7 +40,7 @@ jobs:
       WOW_SCOUT_PERSIST_REQUEST_BYTES: "262144"
       WOW_SCOUT_PERSIST_EVIDENCE_ROWS: "25"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"

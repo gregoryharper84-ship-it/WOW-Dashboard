@@ -27,7 +27,7 @@ jobs:
       WOW_SCOUT_PERSIST_URL: https://iczfhsmjrrafhvcpmqhr.supabase.co/functions/v1/wow-v17-scout-brain-persist
       WOW_CAN_EXECUTE: "false"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"

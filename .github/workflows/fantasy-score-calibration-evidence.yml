@@ -70,7 +70,7 @@ jobs:
         working-directory: artifacts/wow-engine
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Python 3.11
         uses: actions/setup-python@v5

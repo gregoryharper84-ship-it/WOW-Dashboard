@@ -27,7 +27,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       REQUEST_FILE: artifacts/wow-engine/v17/prop_action_requests/2026-09-15-strikeouts-1ip.json
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Dispatch exact authorized canonical prop workflow
         id: dispatch
