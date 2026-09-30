@@ -4,9 +4,7 @@ on:
   schedule:
     - cron: "7 * * * *"
   workflow_dispatch:
-  workflow_run:
-    workflows: ["wow-v17-render-production-deploy"]
-    types: [completed]
+  workflow_call:
 
 permissions:
   contents: read
@@ -18,9 +16,6 @@ concurrency:
 
 jobs:
   priority-lifecycle:
-    if: >-
-      github.event_name != 'workflow_run' ||
-      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main')
     runs-on: ubuntu-latest
     timeout-minutes: 11
     strategy:
