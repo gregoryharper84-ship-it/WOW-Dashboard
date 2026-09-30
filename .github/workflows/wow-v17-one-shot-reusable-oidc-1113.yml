@@ -1,0 +1,47 @@
+name: wow-v17-one-shot-reusable-oidc-1113
+
+on:
+  push:
+    branches:
+      - engineering/v17-reusable-oidc-1113
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: ${{ !contains(github.event.head_commit.message, 'Apply reusable workflow OIDC compatibility') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: engineering/v17-reusable-oidc-1113
+          fetch-depth: 0
+
+      - name: Apply exact reusable OIDC patch
+        run: python scripts/patch_v17_reusable_oidc_1113.py
+
+      - name: Run focused OIDC regression
+        run: |
+          python -m pip install --quiet pytest PyJWT fastapi cryptography
+          cd artifacts/wow-engine
+          python -m pytest -q \
+            test_v17_spread_certification_replay_oidc_allowlist.py \
+            test_v17_spread_forward_production_canary_oidc_allowlist.py \
+            test_v17_prop_evidence_oidc_allowlist.py
+          cd ../..
+          git diff --check
+
+      - name: Commit bounded compatibility repair
+        run: |
+          git config user.name "WOW Engineering Automation"
+          git config user.email "actions@users.noreply.github.com"
+          git rm scripts/patch_v17_reusable_oidc_1113.py
+          git add \
+            artifacts/wow-engine/github_actions_oidc.py \
+            artifacts/wow-engine/test_v17_spread_certification_replay_oidc_allowlist.py \
+            artifacts/wow-engine/test_v17_spread_forward_production_canary_oidc_allowlist.py \
+            artifacts/wow-engine/test_v17_prop_evidence_oidc_allowlist.py
+          git commit -m "Apply reusable workflow OIDC compatibility (#1113)"
+          git push origin HEAD:engineering/v17-reusable-oidc-1113
