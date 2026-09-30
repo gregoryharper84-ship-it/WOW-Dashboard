@@ -53,6 +53,33 @@ def test_spread_canary_requires_successful_deploy_controller():
     assert "github.event.workflow_run.head_branch == 'main'" in text
 
 
+def test_spread_canary_serializes_runtime_heavy_jobs_without_skipping_after_failure():
+    text = CANARY_WORKFLOW.read_text(encoding="utf-8")
+
+    assert "needs: ncaaf-canary" in text
+    assert "needs: nfl-canary" in text
+    assert "needs: wnba-canary" in text
+    assert text.count("always() &&") == 3
+
+    ncaaf = text.index("  ncaaf-canary:")
+    nfl = text.index("  nfl-canary:")
+    wnba = text.index("  wnba-canary:")
+    mlb = text.index("  mlb-canary:")
+    assert ncaaf < nfl < wnba < mlb
+
+
+def test_wnba_canary_preserves_exact_governed_source_blocker():
+    text = CANARY_WORKFLOW.read_text(encoding="utf-8")
+    wnba = text[text.index("  wnba-canary:"):text.index("  mlb-canary:")]
+
+    assert 'if result.get("status")=="BLOCKED":' in wnba
+    assert 'WNBA_SPREAD_CANARY_IDENTITY_SOURCE_UNAVAILABLE' in wnba
+    assert '"status":"BLOCKED_WITH_EXACT_REASON"' in wnba
+    assert 'raise RuntimeError(f"BLOCKED_WITH_EXACT_REASON:' in wnba
+    assert 'assert detail, result' in wnba
+    assert 'elapsed_seconds' in wnba
+
+
 def test_release_gate_preserves_non_execution_governance():
     text = DEPLOY_WORKFLOW.read_text(encoding="utf-8")
 
