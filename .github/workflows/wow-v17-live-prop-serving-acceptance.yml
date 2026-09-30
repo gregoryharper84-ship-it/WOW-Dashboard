@@ -1,0 +1,157 @@
+name: wow-v17-live-prop-serving-acceptance
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/wow-v17-live-prop-serving-acceptance.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: wow-v17-live-prop-serving-acceptance-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  live-prop-serving:
+    name: Verify live MLB prop serving path
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      WOW_ACTION_ORIGIN: https://wow-governed-probability-engine.onrender.com
+      WOW_CAN_EXECUTE: "false"
+      WOW_DRY_RUN_ONLY: "true"
+    steps:
+      - name: Assert non-execution governance and OIDC context
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$WOW_CAN_EXECUTE" = "false"
+          test "$WOW_DRY_RUN_ONLY" = "true"
+          test -n "$ACTIONS_ID_TOKEN_REQUEST_URL"
+          test -n "$ACTIONS_ID_TOKEN_REQUEST_TOKEN"
+
+      - name: Score persisted September 30 MLB prop evidence through Daily
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import math
+          import os
+          import time
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+
+          def fresh_oidc_token():
+              oidc_url = os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"]
+              separator = "&" if "?" in oidc_url else "?"
+              oidc_url += separator + urllib.parse.urlencode({"audience": "wow-v17-multiscout"})
+              req = urllib.request.Request(
+                  oidc_url,
+                  headers={"Authorization": f"Bearer {os.environ['ACTIONS_ID_TOKEN_REQUEST_TOKEN']}"},
+              )
+              with urllib.request.urlopen(req, timeout=20) as response:
+                  return json.load(response)["value"]
+
+          payload = {
+              "requested_slate_date": "2026-09-30",
+              "requested_timezone": "America/Chicago",
+              "lanes": ["PROPS"],
+              "max_props": 12,
+              "max_team_events": 0,
+              "response_mode": "COMPACT",
+          }
+          endpoint = os.environ["WOW_ACTION_ORIGIN"].rstrip("/") + "/internal/v17/daily-snapshot"
+          body = json.dumps(payload).encode("utf-8")
+          result = None
+          for attempt in range(1, 7):
+              request = urllib.request.Request(
+                  endpoint,
+                  data=body,
+                  method="POST",
+                  headers={
+                      "Authorization": f"Bearer {fresh_oidc_token()}",
+                      "Content-Type": "application/json",
+                  },
+              )
+              try:
+                  with urllib.request.urlopen(request, timeout=240) as response:
+                      result = json.load(response)
+                  break
+              except urllib.error.HTTPError as exc:
+                  if exc.code not in {404, 502, 503, 504} or attempt == 6:
+                      raise
+                  time.sleep(10)
+              except (urllib.error.URLError, TimeoutError):
+                  if attempt == 6:
+                      raise
+                  time.sleep(10)
+
+          if not isinstance(result, dict):
+              raise AssertionError("PROP_ACCEPTANCE_RESPONSE_MISSING")
+          if str(result.get("run_status") or "").startswith("RUN_INVALID"):
+              raise AssertionError(f"PROP_ACCEPTANCE_RUN_INVALID:{result.get('run_status')}")
+          if result.get("can_execute") is not False:
+              raise AssertionError("PROP_ACCEPTANCE_CAN_EXECUTE_INVARIANT_FAILED")
+          if result.get("global_terminal_authority") != "V17_TERMINAL_REDUCER":
+              raise AssertionError("PROP_ACCEPTANCE_TERMINAL_AUTHORITY_MISMATCH")
+          if result.get("automation_auth") != "GITHUB_ACTIONS_OIDC":
+              raise AssertionError("PROP_ACCEPTANCE_OIDC_AUTH_NOT_PROVEN")
+
+          reconciliation = result.get("reconciliation") or {}
+          if reconciliation.get("balanced") is not True:
+              raise AssertionError("PROP_ACCEPTANCE_ROW_RECONCILIATION_FAILED")
+
+          rows = [row for row in (result.get("rows") or []) if row.get("lane") == "PROPS"]
+          if not rows:
+              raise AssertionError(f"PROP_ACCEPTANCE_NO_ROWS:blockers={result.get('blockers') or []}")
+          mlb_rows = [row for row in rows if str((row.get("identity") or {}).get("sport") or "").upper() == "MLB"]
+          if not mlb_rows:
+              raise AssertionError("PROP_ACCEPTANCE_NO_MLB_ROWS")
+
+          modeled_directions = 0
+          scorer_exceptions = []
+          scorer_failed = []
+          for row in mlb_rows:
+              if row.get("can_execute") is not False:
+                  raise AssertionError("PROP_ACCEPTANCE_ROW_CAN_EXECUTE_INVARIANT_FAILED")
+              for direction in row.get("directions") or []:
+                  code = str(direction.get("code") or "")
+                  if code == "PROP_SCORER_EXCEPTION":
+                      scorer_exceptions.append(code)
+                  if code == "MODEL_SCORER_FAILED":
+                      scorer_failed.append(code)
+                  value = direction.get("calibrated_probability")
+                  finite_probability = isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(float(value)) and 0.0 <= float(value) <= 1.0
+                  if direction.get("model_evaluated") is True and finite_probability:
+                      modeled_directions += 1
+
+          if scorer_exceptions:
+              raise AssertionError("PROP_ACCEPTANCE_SCORER_EXCEPTION")
+          if scorer_failed:
+              raise AssertionError("PROP_ACCEPTANCE_MODEL_SCORER_FAILED")
+          if modeled_directions < 1:
+              raise AssertionError("PROP_ACCEPTANCE_NO_MODELED_DIRECTION")
+
+          lane = (result.get("lane_reconciliation") or {}).get("PROPS") or {}
+          summary = {
+              "status": "PASS",
+              "run_id": result.get("run_id"),
+              "run_status": result.get("run_status"),
+              "requested_slate_date": result.get("requested_slate_date"),
+              "prop_rows": len(rows),
+              "mlb_prop_rows": len(mlb_rows),
+              "modeled_directions": modeled_directions,
+              "rows_completed": reconciliation.get("rows_completed"),
+              "rows_held": reconciliation.get("rows_held"),
+              "rows_rejected": reconciliation.get("rows_rejected"),
+              "lane_canonicalized_count": lane.get("canonicalized_count"),
+              "probability_values_logged": False,
+              "global_terminal_authority": "V17_TERMINAL_REDUCER",
+              "can_execute": False,
+          }
+          print(json.dumps(summary, sort_keys=True))
+          PY
