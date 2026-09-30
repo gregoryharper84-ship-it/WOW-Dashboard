@@ -4,8 +4,9 @@ Three proven compatibility shapes can carry summary observability that differs
 from the ordered concrete attempts used by durable persistence:
 
 1. the complete nested ESPN -> (Odds, Rundown) fallback union, where aggregate
-   fallback summary fields can describe the first downstream fallback while
-   persistence projects the final concrete attempt;
+   fallback summary fields can describe the downstream union while persistence
+   projects the final concrete attempt; the concrete trace may validly stop at
+   Odds when that path succeeds, or continue through Rundown when needed;
 2. a healthy schedule-first ESPN result with exactly one real acquisition
    attempt, where aggregate fallback status is correctly NOT_ATTEMPTED but a
    legacy endpoint scalar was stamped PATH_NOT_ATTEMPTED even though no fallback
@@ -27,7 +28,7 @@ import sys
 from typing import Any
 
 CAN_EXECUTE = False
-CONTRACT_VERSION = "V17_ACQUISITION_DETAIL_PROJECTION_REPAIR_V4"
+CONTRACT_VERSION = "V17_ACQUISITION_DETAIL_PROJECTION_REPAIR_V5"
 
 _GOVERNED_FALLBACK_UNION = "GOVERNED_FALLBACK_UNION"
 _NESTED_FALLBACK_ATTEMPT_PATHS = (
@@ -70,20 +71,20 @@ def _supplied_matches_attempt(detail: dict[str, Any], attempt: dict[str, Any]) -
 
 
 def normalize_nested_fallback_union_detail(detail: Any) -> Any:
-    """Normalize only the proven complete ESPN -> Odds -> Rundown union shape."""
+    """Normalize proven complete ESPN -> Odds[/Rundown] union traces."""
     if not isinstance(detail, dict):
         return detail
     if str(detail.get("fallback_path_id") or "").strip().upper() != _GOVERNED_FALLBACK_UNION:
         return detail
 
     attempts = detail.get("attempts")
-    if not isinstance(attempts, (list, tuple)) or len(attempts) != 3:
+    if not isinstance(attempts, (list, tuple)) or len(attempts) not in {2, 3}:
         return detail
     if not all(isinstance(attempt, dict) for attempt in attempts):
         return detail
 
     paths = tuple(str(attempt.get("path_id") or "").strip().upper() for attempt in attempts)
-    if paths != _NESTED_FALLBACK_ATTEMPT_PATHS:
+    if paths != _NESTED_FALLBACK_ATTEMPT_PATHS[: len(attempts)]:
         return detail
 
     first_attempt = attempts[0]

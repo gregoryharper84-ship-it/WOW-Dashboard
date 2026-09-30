@@ -1,0 +1,58 @@
+name: wow-v17-engineering-auditor-code-health
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wow-v17-engineering-auditor-code-health-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  code-health:
+    name: Continuous code-health audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install governed engine dependencies
+        run: python -m pip install -r artifacts/wow-engine/requirements.txt
+
+      - name: Compile V17 engineering control plane
+        run: python -m compileall -q artifacts/wow-engine/v17 artifacts/wow-engine/agent_runtime
+
+      - name: Verify installed Python dependencies
+        run: python -m pip check
+
+      - name: Run engineering-team self-check
+        run: python artifacts/wow-engine/v17/engineering_agent_team.py self-check
+
+      - name: Run continuous-auditor focused tests
+        run: python -m pytest -q artifacts/wow-engine/test_v17_engineering_auditor.py
+
+      - name: Run adjacent engineering closure regressions
+        run: python -m pytest -q artifacts/wow-engine/test_v17_24h_completion_loop.py
+
+      - name: Preserve non-execution governance receipt
+        if: always()
+        run: |
+          {
+            echo "# WOW V17 Continuous Code-Health Audit"
+            echo "- trigger: event-driven only; no schedule or cron"
+            echo "- probability_behavior_change: false"
+            echo "- terminal_authority: V17_TERMINAL_REDUCER"
+            echo "- can_execute: false"
+          } >> "$GITHUB_STEP_SUMMARY"
