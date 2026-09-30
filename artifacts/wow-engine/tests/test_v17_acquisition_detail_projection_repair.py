@@ -5,7 +5,9 @@ import copy
 import pytest
 
 from v17.acquisition_detail_projection_repair import (
+    normalize_acquisition_detail_projection,
     normalize_nested_fallback_union_detail,
+    normalize_public_single_attempt_detail,
 )
 
 
@@ -83,10 +85,6 @@ def _union_detail(paths=("ESPN_SCOREBOARD", "ODDS_PROXY", "RUNDOWN")) -> dict:
         "primary_provider_alias": None,
         "fallback_path_id": "GOVERNED_FALLBACK_UNION",
         "fallback_path_state": "SUCCEEDED_WITH_ROWS",
-        # The aggregate union previously exposed the first downstream fallback's
-        # observability here. Durable projection is defined by the last concrete
-        # fallback attempt, so these values intentionally contradict the terminal
-        # attempt and reproduce the production defect.
         "fallback_blocker_code": "ODDS_API_UPSTREAM_HTTP_401",
         "fallback_upstream_status": 401,
         "fallback_content_type_class": "JSON",
@@ -94,6 +92,35 @@ def _union_detail(paths=("ESPN_SCOREBOARD", "ODDS_PROXY", "RUNDOWN")) -> dict:
         "fallback_status": "SUCCEEDED",
         "exhaustion_status": "PATHS_NOT_EXHAUSTED",
         "attempts": attempts,
+        "can_execute": False,
+    }
+
+
+def _public_single_attempt_detail() -> dict:
+    return {
+        "family": "NFL",
+        "target_key": "PUBLIC|NFL|REGULAR_SEASON",
+        "primary_path_id": "ESPN_SCOREBOARD",
+        "primary_path_state": "SUCCEEDED_WITH_ROWS",
+        "primary_blocker_code": None,
+        "primary_upstream_status": None,
+        "primary_content_type_class": None,
+        "primary_provider_alias": None,
+        "fallback_path_id": None,
+        "fallback_path_state": "NOT_ATTEMPTED",
+        "fallback_blocker_code": None,
+        "fallback_upstream_status": None,
+        "fallback_content_type_class": None,
+        "fallback_provider_alias": None,
+        "fallback_status": "FALLBACK_NOT_ATTEMPTED",
+        "exhaustion_status": "PATHS_NOT_EXHAUSTED",
+        "attempts": [
+            _attempt(
+                "ESPN_SCOREBOARD",
+                1,
+                path_state="SUCCEEDED_WITH_ROWS",
+            )
+        ],
         "can_execute": False,
     }
 
@@ -111,15 +138,12 @@ def test_exact_nested_fallback_union_normalizes_full_terminal_projection():
     assert normalized["primary_upstream_status"] == 200
     assert normalized["primary_content_type_class"] == "JSON"
     assert normalized["primary_provider_alias"] is None
-
     assert normalized["fallback_path_id"] == "RUNDOWN"
     assert normalized["fallback_path_state"] == "SUCCEEDED_WITH_ROWS"
     assert normalized["fallback_blocker_code"] is None
     assert normalized["fallback_upstream_status"] == 200
     assert normalized["fallback_content_type_class"] == "JSON"
     assert normalized["fallback_provider_alias"] == "RUNDOWN_API_KEY"
-
-    # Aggregate outcome and complete ordered provenance remain untouched.
     assert normalized["fallback_status"] == original["fallback_status"]
     assert normalized["exhaustion_status"] == original["exhaustion_status"]
     assert normalized["attempts"] == original["attempts"]
@@ -136,6 +160,40 @@ def test_originating_blocker_wins_over_attempt_blocker_in_projection():
     normalized = normalize_nested_fallback_union_detail(detail)
 
     assert normalized["fallback_blocker_code"] == "RUNDOWN_HTTP_503"
+
+
+def test_public_single_attempt_projects_nonexistent_fallback_as_not_applicable():
+    detail = _public_single_attempt_detail()
+    original = copy.deepcopy(detail)
+
+    normalized = normalize_public_single_attempt_detail(detail)
+
+    assert normalized is not detail
+    assert normalized["fallback_status"] == "FALLBACK_NOT_ATTEMPTED"
+    assert normalized["fallback_path_id"] is None
+    assert normalized["fallback_path_state"] == "NOT_APPLICABLE"
+    assert normalized["fallback_blocker_code"] is None
+    assert normalized["fallback_upstream_status"] is None
+    assert normalized["fallback_content_type_class"] is None
+    assert normalized["fallback_provider_alias"] is None
+    assert normalized["attempts"] == original["attempts"]
+    assert detail == original
+    assert normalized["can_execute"] is False
+
+
+def test_dispatcher_applies_public_single_attempt_repair():
+    normalized = normalize_acquisition_detail_projection(_public_single_attempt_detail())
+    assert normalized["fallback_path_state"] == "NOT_APPLICABLE"
+
+
+def test_non_espn_single_attempt_remains_fail_closed():
+    detail = _public_single_attempt_detail()
+    detail["attempts"][0]["path_id"] = "ODDS_PROXY"
+
+    normalized = normalize_public_single_attempt_detail(detail)
+
+    assert normalized is detail
+    assert normalized["fallback_path_state"] == "NOT_ATTEMPTED"
 
 
 @pytest.mark.parametrize(
@@ -155,7 +213,7 @@ def test_unsupported_union_shapes_remain_unchanged_and_fail_closed_upstream(path
     assert normalized["fallback_path_id"] == "GOVERNED_FALLBACK_UNION"
 
 
-def test_non_union_summary_is_not_rewritten():
+def test_non_union_summary_is_not_rewritten_by_union_normalizer():
     detail = _union_detail()
     detail["fallback_path_id"] = "RUNDOWN"
 
