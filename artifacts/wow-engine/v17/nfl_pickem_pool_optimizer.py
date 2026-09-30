@@ -1,10 +1,16 @@
 """V17 NFL pick'em selection layer downstream of the governed NFL win model.
 
-This module never produces sporting probabilities. It consumes a completed,
-publishable governed NFL probability package and converts the controlling
-specialist's selected participant into a required pick'em choice. Sportsbook
-price, implied probability, pool popularity, and generic reasoning are never
-used to alter the sporting probability or the selected participant.
+This module never produces sporting probabilities. It consumes a completed
+sporting-probability result from the controlling NFL fitted specialist and turns
+that already-selected participant into a required pick'em choice.
+
+Pick'em selection eligibility is intentionally different from betting/publication
+eligibility. A valid completed model result may be held below FINAL_APPROVED by
+market, ledger, or downstream publication governance and still answer the
+pool-only question "which team has the higher governed win probability?". The
+source terminal is preserved verbatim, never upgraded, and ``can_execute`` stays
+false. Typed model failures, stale/withheld output, hard rejection labels, and
+malformed probability packages still fail closed.
 """
 from __future__ import annotations
 
@@ -17,9 +23,7 @@ from v17.llp_governed_package_scoring import (
     MODEL_OUTPUT_INVALID,
     MODEL_SCORER_FAILED,
     MODEL_UNAVAILABLE,
-    PASS,
     STALE_MODEL_OUTPUT,
-    validate_governed_scoring_package,
 )
 
 BRANCH_ID = "NFL_PICKEM_POOL_V1"
@@ -40,6 +44,18 @@ _TYPED_MODEL_FAILURES = frozenset({
     MODEL_SCORER_FAILED,
     MODEL_UNAVAILABLE,
     STALE_MODEL_OUTPUT,
+    "MODEL_ROUTE_UNSUPPORTED",
+    "RUN_INVALID_ACQUISITION_INCOMPLETE",
+})
+
+# These are probability-bearing ladder states, not pick'em approvals. The source
+# state is carried into output unchanged. Stale/reject/purge variants are not in
+# this allow-list and therefore cannot silently become a pool pick.
+_PICKEM_PROBABILITY_BEARING_TERMINALS = frozenset({
+    "MODEL_QUALIFIED_HOLD",
+    "MARKET_VERIFIED_HOLD",
+    "MONEY_QUALIFIED",
+    "FINAL_APPROVED",
 })
 _EPS = 1e-9
 
@@ -72,6 +88,72 @@ def _event_identity(row: Mapping[str, Any]) -> dict[str, str | None]:
     }
 
 
+def _source_snapshot_id(row: Mapping[str, Any]) -> str | None:
+    envelope = row.get("candidate_envelope")
+    envelope = envelope if isinstance(envelope, Mapping) else {}
+    acquisition = row.get("canonical_acquisition")
+    acquisition = acquisition if isinstance(acquisition, Mapping) else {}
+    return _text(
+        row.get("source_snapshot_id")
+        or envelope.get("source_snapshot_id")
+        or acquisition.get("source_snapshot_id")
+    )
+
+
+def _model_timestamp(row: Mapping[str, Any]) -> str | None:
+    return _text(row.get("immutable_model_timestamp") or row.get("model_timestamp"))
+
+
+def _typed_failure(row: Mapping[str, Any]) -> str | None:
+    candidates = (
+        row.get("code"),
+        row.get("terminal_status"),
+        row.get("model_status"),
+        row.get("failure_code"),
+    )
+    for value in candidates:
+        token = str(value or "").strip().upper()
+        if token in _TYPED_MODEL_FAILURES:
+            return token
+    for blocker in row.get("blockers") or ():
+        token = str(blocker or "").strip().upper()
+        if token in _TYPED_MODEL_FAILURES or token.startswith("STALE_MODEL_OUTPUT"):
+            return STALE_MODEL_OUTPUT if token.startswith("STALE_MODEL_OUTPUT") else token
+    return None
+
+
+def _selection_bounds(
+    row: Mapping[str, Any],
+    *,
+    selected: str,
+    home: str,
+) -> tuple[float | None, float | None, list[str]]:
+    side = "home" if selected == home else "away"
+    lower_candidates = [
+        _number(row.get("calibrated_selection_lower_bound")),
+        _number(row.get("rank_calibrated_lower_bound")),
+        _number(row.get("calibrated_lower_bound")),
+        _number(row.get(f"calibrated_{side}_lower_bound")),
+    ]
+    upper_candidates = [
+        _number(row.get("calibrated_selection_upper_bound")),
+        _number(row.get("calibrated_upper_bound")),
+        _number(row.get(f"calibrated_{side}_upper_bound")),
+    ]
+    lowers = [value for value in lower_candidates if value is not None]
+    uppers = [value for value in upper_candidates if value is not None]
+    blockers: list[str] = []
+    if not lowers:
+        blockers.append("PICKEM_CALIBRATED_SELECTION_LOWER_BOUND_REQUIRED")
+    if not uppers:
+        blockers.append("PICKEM_CALIBRATED_SELECTION_UPPER_BOUND_REQUIRED")
+    if lowers and any(not isclose(value, lowers[0], abs_tol=_EPS) for value in lowers[1:]):
+        blockers.append("PICKEM_SELECTION_LOWER_BOUND_ALIAS_MISMATCH")
+    if uppers and any(not isclose(value, uppers[0], abs_tol=_EPS) for value in uppers[1:]):
+        blockers.append("PICKEM_SELECTION_UPPER_BOUND_ALIAS_MISMATCH")
+    return (lowers[0] if lowers else None, uppers[0] if uppers else None, blockers)
+
+
 def confidence_band(probability: float) -> str:
     """Selection-layer label only; never alters the model probability."""
     if probability >= 0.70:
@@ -100,38 +182,41 @@ def _blocked(
     identity: Mapping[str, str | None] | None = None,
 ) -> dict[str, Any]:
     ident = dict(identity or _event_identity(row))
+    source_terminal = _text(row.get("terminal_label"))
     return {
         "branch_id": BRANCH_ID,
         "status": PICKEM_BLOCKED,
         "source_model_status": source_status,
-        "blockers": sorted({_text(v) for v in blockers if _text(v)}),
+        "source_terminal_label": source_terminal,
+        "source_probability_publishable": row.get("probability_publishable") is True,
+        "source_rank_eligible": row.get("rank_eligible") is True,
+        "blockers": sorted({_text(value) for value in blockers if _text(value)}),
         **ident,
         "pool_pick": None,
         "pickem_selection_eligible": False,
         "market_probability_used": False,
         "sportsbook_price_used": False,
         "pool_popularity_used": False,
+        "source_terminal_upgraded": False,
         "can_execute": False,
     }
 
 
 def select_pickem_game(row: Mapping[str, Any]) -> dict[str, Any]:
-    """Convert one governed NFL result into one required pick'em selection.
+    """Convert one completed governed NFL sporting result into one pool pick.
 
     This function is deliberately downstream-only. It does not call a model,
-    construct a probability, compare sportsbook prices, or override the model's
-    selected participant.
+    construct a probability, compare sportsbook prices, or upgrade the source
+    terminal. A modeled hold can answer a pick'em pool question while remaining
+    ineligible for betting publication/ranking.
     """
     identity = _event_identity(row)
-    source_code = _text(row.get("code"))
-    if (
-        source_code in _TYPED_MODEL_FAILURES
-        and row.get("sporting_probability_completed") is not True
-    ):
+    failure = _typed_failure(row)
+    if failure is not None:
         return _blocked(
             row,
-            source_status=source_code,
-            blockers=row.get("blockers") or [source_code],
+            source_status=failure,
+            blockers=row.get("blockers") or [failure],
             identity=identity,
         )
 
@@ -158,34 +243,37 @@ def select_pickem_game(row: Mapping[str, Any]) -> dict[str, Any]:
             identity=identity,
         )
 
-    audit = validate_governed_scoring_package(row)
-    if audit.status != PASS:
-        return _blocked(
-            row,
-            source_status=audit.status,
-            blockers=audit.blockers,
-            identity=identity,
-        )
-
+    source_terminal = str(row.get("terminal_label") or "").strip().upper()
+    sporting_status = str(row.get("sporting_probability_status") or "").strip().upper()
     governance_blockers: list[str] = []
     if row.get("sporting_probability_completed") is not True:
         governance_blockers.append("PICKEM_SPORTING_PROBABILITY_NOT_COMPLETED")
+    if not sporting_status.startswith("COMPLETED"):
+        governance_blockers.append("PICKEM_SPORTING_PROBABILITY_STATUS_NOT_COMPLETED")
     if row.get("probability_fields_withheld") is True:
         governance_blockers.append("PICKEM_PROBABILITY_FIELDS_WITHHELD")
-    if row.get("probability_publishable") is not True:
-        governance_blockers.append("PICKEM_PROBABILITY_NOT_PUBLISHABLE")
-    if row.get("rank_eligible") is not True:
-        governance_blockers.append("PICKEM_SOURCE_ROW_NOT_RANK_ELIGIBLE")
-    if _text(row.get("terminal_label")) != "FINAL_APPROVED":
-        governance_blockers.append("PICKEM_SOURCE_TERMINAL_NOT_FINAL_APPROVED")
+    if row.get("model_probability_available") is False:
+        governance_blockers.append("PICKEM_MODEL_PROBABILITY_NOT_AVAILABLE")
+    if source_terminal not in _PICKEM_PROBABILITY_BEARING_TERMINALS:
+        governance_blockers.append("PICKEM_SOURCE_TERMINAL_NOT_PROBABILITY_BEARING")
     if _text(row.get("global_terminal_authority")) != TERMINAL_AUTHORITY:
         governance_blockers.append("PICKEM_TERMINAL_AUTHORITY_MISMATCH")
     if row.get("can_execute") is not False:
         governance_blockers.append("PICKEM_CAN_EXECUTE_MUST_BE_FALSE")
+    if not _text(row.get("model_version") or row.get("model_artifact_version")):
+        governance_blockers.append("PICKEM_MODEL_VERSION_REQUIRED")
+    if not _model_timestamp(row):
+        governance_blockers.append("PICKEM_MODEL_TIMESTAMP_REQUIRED")
+    if not _text(row.get("calibration_method")):
+        governance_blockers.append("PICKEM_CALIBRATION_METHOD_REQUIRED")
+    if not _text(row.get("calibration_version")):
+        governance_blockers.append("PICKEM_CALIBRATION_VERSION_REQUIRED")
+    if not _source_snapshot_id(row):
+        governance_blockers.append("PICKEM_SOURCE_SNAPSHOT_ID_REQUIRED")
     if governance_blockers:
         return _blocked(
             row,
-            source_status="PICKEM_GOVERNANCE_NOT_FINAL",
+            source_status="PICKEM_GOVERNED_SPORTING_PROBABILITY_NOT_VALID",
             blockers=governance_blockers,
             identity=identity,
         )
@@ -208,7 +296,11 @@ def select_pickem_game(row: Mapping[str, Any]) -> dict[str, Any]:
 
     home_p = _number(row.get("calibrated_home_probability"))
     away_p = _number(row.get("calibrated_away_probability"))
-    selected_p = _number(row.get("calibrated_selection_probability"))
+    selected_p = _number(
+        row.get("calibrated_selection_probability")
+        if row.get("calibrated_selection_probability") is not None
+        else row.get("calibrated_probability")
+    )
     if home_p is None or away_p is None or selected_p is None:
         return _blocked(
             row,
@@ -247,14 +339,25 @@ def select_pickem_game(row: Mapping[str, Any]) -> dict[str, Any]:
             blockers=["PICKEM_SELECTION_MODEL_OUTPUT_MISMATCH"],
             identity=identity,
         )
-    if (
-        audit.calibrated_probability is None
-        or not isclose(selected_p, audit.calibrated_probability, abs_tol=_EPS)
-    ):
+
+    lower, upper, bound_blockers = _selection_bounds(
+        row,
+        selected=selected,
+        home=home,
+    )
+    if bound_blockers:
         return _blocked(
             row,
             source_status=MODEL_OUTPUT_INVALID,
-            blockers=["PICKEM_GOVERNED_PACKAGE_SELECTION_MISMATCH"],
+            blockers=bound_blockers,
+            identity=identity,
+        )
+    assert lower is not None and upper is not None
+    if not (0.0 <= lower <= selected_p <= upper <= 1.0):
+        return _blocked(
+            row,
+            source_status=MODEL_OUTPUT_INVALID,
+            blockers=["PICKEM_CALIBRATED_PROBABILITY_BOUNDS_INVALID"],
             identity=identity,
         )
 
@@ -267,21 +370,27 @@ def select_pickem_game(row: Mapping[str, Any]) -> dict[str, Any]:
         "pool_pick": selected,
         "opponent": opponent,
         "selected_probability": selected_p,
-        "calibrated_lower_bound": audit.calibrated_lower_bound,
-        "calibrated_upper_bound": audit.calibrated_upper_bound,
+        "calibrated_lower_bound": lower,
+        "calibrated_upper_bound": upper,
         "home_probability": home_p,
         "away_probability": away_p,
         "probability_gap": gap,
         "confidence_band": confidence_band(selected_p),
         "selection_volatility_band": selection_volatility_band(gap),
-        "source_prediction_id": audit.identifier,
-        "immutable_model_timestamp": audit.immutable_model_timestamp,
+        "source_prediction_id": _text(row.get("prediction_id") or row.get("event_prediction_id")),
+        "immutable_model_timestamp": _model_timestamp(row),
+        "source_snapshot_id": _source_snapshot_id(row),
+        "source_model_status": _text(row.get("code") or row.get("terminal_status")),
         "source_terminal_label": row.get("terminal_label"),
+        "source_probability_publishable": row.get("probability_publishable") is True,
+        "source_rank_eligible": row.get("rank_eligible") is True,
+        "source_blockers": list(row.get("blockers") or []),
         "controlling_specialist": CONTROLLING_SPECIALIST,
         "pickem_selection_eligible": True,
         "market_probability_used": False,
         "sportsbook_price_used": False,
         "pool_popularity_used": False,
+        "source_terminal_upgraded": False,
         "can_execute": False,
     }
 
@@ -358,6 +467,8 @@ def build_pickem_board(
     else:
         status = PICKEM_BOARD_READY
 
+    picks.sort(key=lambda item: str(item.get("official_event_id") or ""))
+    blocked.sort(key=lambda item: str(item.get("official_event_id") or ""))
     return {
         "branch_id": BRANCH_ID,
         "decision_objective": DECISION_OBJECTIVE,
@@ -373,6 +484,7 @@ def build_pickem_board(
         "market_probability_used": False,
         "sportsbook_price_used": False,
         "pool_popularity_used": False,
+        "source_terminals_preserved": True,
         "can_execute": False,
     }
 
