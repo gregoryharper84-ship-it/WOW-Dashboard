@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 import pytest
 
 import v17.nfl_pickem_runtime as runtime
@@ -93,22 +93,23 @@ def _governed_result(req, *, hold: bool = False):
 
 
 def test_week_runtime_uses_canonical_schedule_scores_all_16_in_bounded_batches(monkeypatch):
+    schedule_rows = _schedule_rows()
     snapshot = {
         "snapshot_id": "nfl-schedule-snapshot",
         "fetched_at": "2026-09-30T12:55:00+00:00",
         "content_sha256": "abc123",
     }
-    monkeypatch.setattr(runtime, "_load_latest_schedule_snapshot", lambda db: (snapshot, _schedule_rows()))
+    monkeypatch.setattr(runtime, "_load_latest_schedule_snapshot", lambda db: (snapshot, schedule_rows))
     monkeypatch.setattr(runtime, "model_invocation_limit", lambda: 12)
 
     calls = []
+    held_event_id = schedule_rows[4]["game_id"]
 
     def scorer(req, *, event_api, canonical_hydration_required=False):
         calls.append((req.official_event_id, canonical_hydration_required))
-        # One downstream governance hold must still remain a required pool pick.
-        return _governed_result(req, hold=len(calls) == 5)
+        return _governed_result(req, hold=str(req.official_event_id) == held_event_id)
 
-    monkeypatch.setattr(runtime, "score_team_event_request", scorer)
+    monkeypatch.setattr(runtime.team_runtime, "score_team_event_request", scorer)
     persisted = {}
 
     def persist(db, *, run_id, rows):
@@ -179,9 +180,7 @@ def test_runtime_preserves_typed_scorer_failure_and_marks_board_incomplete(monke
             )
         return _governed_result(req)
 
-    from fastapi import HTTPException
-
-    monkeypatch.setattr(runtime, "score_team_event_request", scorer)
+    monkeypatch.setattr(runtime.team_runtime, "score_team_event_request", scorer)
     monkeypatch.setattr(
         runtime,
         "persist_row_detail",
