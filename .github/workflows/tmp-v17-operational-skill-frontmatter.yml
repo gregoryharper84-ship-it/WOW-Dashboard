@@ -1,16 +1,16 @@
 name: tmp-v17-operational-skill-frontmatter
 
 on:
-  push:
-    branches:
-      - fix/v17-operational-skill-frontmatter-20260929
+  pull_request:
+    types: [opened]
+    branches: [main]
 
 permissions:
   contents: write
 
 jobs:
   patch:
-    if: github.event.head_commit.message == 'chore: trigger operational skill frontmatter repair'
+    if: github.head_ref == 'fix/v17-operational-skill-frontmatter-20260929'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repair branch
@@ -38,17 +38,24 @@ jobs:
               path = Path(raw_path)
               text = path.read_text()
               name = path.parent.name
-              if text.startswith("---\n"):
-                  continue
-              path.write_text(f"---\nname: {name}\ndescription: {description}\n---\n\n" + text)
+              if not text.startswith("---\n"):
+                  path.write_text(f"---\nname: {name}\ndescription: {description}\n---\n\n" + text)
 
           test_path = Path("artifacts/wow-engine/test_v17_multi_agent_engineering_workflows.py")
           test_text = test_path.read_text()
           if "CODEX_OPERATIONAL_SKILLS = (" not in test_text:
               marker = ")\n\n\ndef _load(path: Path) -> dict:"
               assert marker in test_text
-              operational = ''' )\n\nCODEX_OPERATIONAL_SKILLS = (\n    ROOT / ".agents/skills/wow-autonomous-product-qa-engineering-recovery/SKILL.md",\n    ROOT / ".agents/skills/wow-frontier-intelligence-agent/SKILL.md",\n    ROOT / ".agents/skills/wow-nightly-engineering-autopilot/SKILL.md",\n    ROOT / ".agents/skills/wow-replit-patch-governor/SKILL.md",\n    ROOT / ".agents/skills/wow-season-aware-continuous-improvement/SKILL.md",\n    ROOT / ".agents/skills/wow-v17-nightly-multiscout/SKILL.md",\n)\n\n\ndef _load(path: Path) -> dict:'''
-              operational = operational.replace("'''", "")
+              operational = (
+                  ")\n\nCODEX_OPERATIONAL_SKILLS = (\n"
+                  "    ROOT / \".agents/skills/wow-autonomous-product-qa-engineering-recovery/SKILL.md\",\n"
+                  "    ROOT / \".agents/skills/wow-frontier-intelligence-agent/SKILL.md\",\n"
+                  "    ROOT / \".agents/skills/wow-nightly-engineering-autopilot/SKILL.md\",\n"
+                  "    ROOT / \".agents/skills/wow-replit-patch-governor/SKILL.md\",\n"
+                  "    ROOT / \".agents/skills/wow-season-aware-continuous-improvement/SKILL.md\",\n"
+                  "    ROOT / \".agents/skills/wow-v17-nightly-multiscout/SKILL.md\",\n"
+                  ")\n\n\ndef _load(path: Path) -> dict:"
+              )
               test_text = test_text.replace(marker, operational, 1)
           test_text = test_text.replace(
               "for path in CODEX_ENGINEERING_SKILLS:\n",
