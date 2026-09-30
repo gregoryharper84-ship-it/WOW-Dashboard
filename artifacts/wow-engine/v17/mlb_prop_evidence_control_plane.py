@@ -247,7 +247,20 @@ def acquire_mlb_forward_evidence_batch(
                 canonical_event_id=str(candidate["event_id"]),
             )
             evidence = RawPropEvidence.model_validate(raw)
-            line = _candidate_line(evidence.game_log)
+            if not evidence.game_log:
+                result["held"] += 1
+                result["blockers"].append(
+                    f"{candidate['player']}:{stat_type}:MLB_FORWARD_LINE_DERIVATION_INSUFFICIENT"
+                )
+                continue
+            try:
+                line = _candidate_line(evidence.game_log)
+            except (TypeError, ValueError) as exc:
+                result["held"] += 1
+                result["blockers"].append(
+                    f"{candidate['player']}:{stat_type}:MLB_FORWARD_LINE_DERIVATION_FAILED:{type(exc).__name__}"
+                )
+                continue
             row = PickRequestRow(
                 row_key=(
                     f"mlb-forward:{candidate['official_game_pk']}:{candidate['player']}:"
@@ -270,18 +283,27 @@ def acquire_mlb_forward_evidence_batch(
             snapshot_id, _fingerprint, snapshot = _snapshot_payload(row, normalized)
             snapshot["source_snapshot_id"] = snapshot_id
             result["hydrated"] += 1
+        except PropAutoHydrationError as exc:
+            result["held"] += 1
+            result["blockers"].append(f"{candidate['player']}:{stat_type}:{exc.code}")
+            continue
+        except Exception as exc:
+            result["held"] += 1
+            result["blockers"].append(
+                f"{candidate['player']}:{stat_type}:MLB_FORWARD_EVIDENCE_PROCESSING_ERROR:{type(exc).__name__}"
+            )
+            continue
+
+        try:
             db.table("wow_prop_evidence_snapshots").upsert(
                 snapshot, on_conflict="source_snapshot_id"
             ).execute()
             result["persisted"] += 1
-        except PropAutoHydrationError as exc:
-            result["held"] += 1
-            result["blockers"].append(f"{candidate['player']}:{stat_type}:{exc.code}")
         except Exception as exc:
             result["held"] += 1
             result["snapshot_write_failed"] += 1
             result["blockers"].append(
-                f"{candidate['player']}:{stat_type}:MLB_FORWARD_ACQUISITION_ERROR:{type(exc).__name__}"
+                f"{candidate['player']}:{stat_type}:MLB_PROP_SNAPSHOT_WRITE_FAILED:{type(exc).__name__}"
             )
 
     result["blockers"] = list(dict.fromkeys(result["blockers"]))
