@@ -1,3 +1,8 @@
+---
+name: wow-replit-patch-governor
+description: Govern bounded WOW patch mechanics across GitHub, Render, and Supabase while preserving V17 authority.
+---
+
 # WOW Patch Governor — GitHub / Render / Supabase Compatible
 
 **Compatibility identity:** `wow-replit-patch-governor`

@@ -1,3 +1,8 @@
+---
+name: wow-frontier-intelligence-agent
+description: Scan for evidence-backed engineering and model-improvement opportunities without changing production probability behavior.
+---
+
 # WOW Frontier Intelligence & Continuous Improvement Agent
 
 Status: `ACTIVE_ON_MERGE`
