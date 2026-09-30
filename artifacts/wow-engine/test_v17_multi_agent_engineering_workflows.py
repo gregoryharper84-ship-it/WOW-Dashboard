@@ -108,6 +108,22 @@ def test_release_resume_agent_owns_unfinished_release_verification() -> None:
     assert "can_execute=false" in text
 
 
+def test_release_resume_agent_has_bounded_read_only_provider_fallback() -> None:
+    text = RELEASE_RESUME.read_text()
+    assert "wow-chatgpt-agent" in text
+    assert "wow-claude-agent" in text
+    assert "OPENAI_API_KEY" in text
+    assert "ANTHROPIC_API_KEY" in text
+    assert "CLAUDE_CODE_OAUTH_TOKEN" in text
+    assert "continue-on-error: true" in text
+    assert "steps.release_agent_openai.outcome == 'failure'" in text
+    assert "claude_available" in text
+    assert "Release verification primary failed and no successful read-only fallback receipt was produced." in text
+    assert "contents: read" in text
+    assert "contents: write" not in text
+    assert "pull-requests: write" not in text
+
+
 def test_push_origin_nightly_scan_has_provider_aware_handoff() -> None:
     text = PUSH_HANDOFF.read_text()
     assert 'workflows: ["wow-v17-nightly-engineering-scan"]' in text
@@ -128,7 +144,7 @@ def test_frontier_agent_is_reliability_preempted_and_experiment_only() -> None:
 
 
 def test_primary_openai_agent_workflows_remain_openai_only() -> None:
-    for path in (WORKER, RELEASE, RELEASE_RESUME, FRONTIER):
+    for path in (WORKER, RELEASE, FRONTIER):
         text = path.read_text()
         assert "wow-chatgpt-agent" in text
         assert "OPENAI_API_KEY" in text
