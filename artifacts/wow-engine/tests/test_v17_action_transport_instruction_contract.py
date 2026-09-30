@@ -1,8 +1,15 @@
 from pathlib import Path
 
 
+REPO_ROOT = Path(__file__).parents[3]
 INSTRUCTIONS = (
     Path(__file__).parents[1] / "WOW_V17_CUSTOM_GPT_INSTRUCTIONS.txt"
+).read_text()
+LLP_INSTRUCTIONS = (
+    REPO_ROOT / "LLP-TEAM-BETTING-GPT-INSTRUCTIONS.md"
+).read_text()
+LLP_OVERLAY = (
+    REPO_ROOT / "docs" / "wow" / "LLP-V17-AUTHORITY-OVERLAY-2026-09-10.md"
 ).read_text()
 
 
@@ -39,3 +46,56 @@ def test_transport_failure_remains_non_executable_and_non_model_capability_claim
         "it is not LIVE_GPT_ACTION_INVOCATION_BLOCKED, MODEL_UNAVAILABLE, or evidence that the controlling model is absent"
         in INSTRUCTIONS
     )
+
+
+def test_llp_preserves_action_transport_boundary_before_model_failure_taxonomy():
+    assert "ACTION_TRANSPORT_TIMEOUT or ACTION_TRANSPORT_FAILURE" in LLP_INSTRUCTIONS
+    assert "action_invocation_attempted=true" in LLP_INSTRUCTIONS
+    assert (
+        "do not relabel transport as DISCOVERY_OR_ACQUISITION_INCOMPLETE, MODEL_SCORER_FAILED, or MODEL_UNAVAILABLE"
+        in LLP_INSTRUCTIONS
+    )
+    assert (
+        "Action/HTTP transport before a terminal backend response remains ACTION_TRANSPORT_TIMEOUT/ACTION_TRANSPORT_FAILURE"
+        in LLP_INSTRUCTIONS
+    )
+
+
+def test_llp_ambiguous_stateful_transport_requires_receipt_recovery_before_retry():
+    assert (
+        "recover the immutable receipt before retrying with the same IDs"
+        in LLP_INSTRUCTIONS
+    )
+    assert (
+        "A transport failure proves neither model absence nor acquisition failure"
+        in LLP_INSTRUCTIONS
+    )
+    assert "can_execute=false always" in LLP_INSTRUCTIONS
+
+
+def test_team_event_transport_failure_continues_degraded_discovery():
+    for text in (INSTRUCTIONS, LLP_INSTRUCTIONS, LLP_OVERLAY):
+        assert "PARTIAL_OR_UNPROVEN" in text
+        assert "NOT_ESTABLISHED" in text
+        assert "governed scoring succeeds" in text
+    assert "official/free discovery" in INSTRUCTIONS
+    assert "official/free discovery" in LLP_INSTRUCTIONS
+    assert "official/free discovery" in LLP_OVERLAY
+    assert "Transport does not terminate discovery" in LLP_INSTRUCTIONS
+    assert "Transport failure does not terminate board discovery" in LLP_OVERLAY
+
+
+def test_llp_authority_overlay_matches_transport_boundary():
+    assert "## Typed transport failure boundary" in LLP_OVERLAY
+    assert "`ACTION_TRANSPORT_TIMEOUT` or `ACTION_TRANSPORT_FAILURE`" in LLP_OVERLAY
+    assert (
+        "Do not relabel Action/HTTP transport failure as `DISCOVERY_OR_ACQUISITION_INCOMPLETE`, `MODEL_SCORER_FAILED`, or `MODEL_UNAVAILABLE`"
+        in LLP_OVERLAY
+    )
+    assert "A transport failure proves neither model absence nor acquisition failure" in LLP_OVERLAY
+    assert "`can_execute=false` always" in LLP_OVERLAY
+
+
+def test_llp_pasteable_authority_block_stays_under_editor_limit():
+    authority_block = LLP_INSTRUCTIONS.split("```", 2)[1]
+    assert len(authority_block) < 8000
