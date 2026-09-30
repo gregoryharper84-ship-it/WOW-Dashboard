@@ -26,6 +26,7 @@ def _valid_prop_row(*, calibrated_probability: float, lower_bound: float) -> Pre
         training_dataset_hash="training-dataset",
         training_code_sha="training-code",
         specialist_version="wow.mlb-pitcher-failure-path-expert@1",
+        controlling_specialist="wow.mlb-pitcher-failure-path-expert",
         certification_id="MLB-SO-CERT",
         distribution_type="DISCRETE_PMF",
         probability_more=0.37,
