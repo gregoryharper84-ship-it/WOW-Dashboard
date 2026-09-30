@@ -86,7 +86,7 @@ def test_action_schema_preserves_v17_boundary():
     assert document["components"]["securitySchemes"]["actionBearer"]["scheme"] == "bearer"
 
 
-def test_live_editor_schema_is_single_domain_and_exposes_all_20_operations():
+def test_live_editor_schema_is_single_domain_and_exposes_all_21_operations():
     document = _schema()
     assert document["servers"] == [{"url": "https://wow-governed-probability-engine.onrender.com"}]
     operations = {
@@ -95,12 +95,13 @@ def test_live_editor_schema_is_single_domain_and_exposes_all_20_operations():
         for operation in methods.values()
         if isinstance(operation, dict) and "operationId" in operation
     }
-    assert len(operations) == 20
+    assert len(operations) == 21
     assert {
         "getWowV17PickRequestRunState",
         "runWowV17ResumablePickRequest",
         "closeWowV17PickRequestRun",
         "scoreWowV17SpreadForwardShadow",
+        "runWowV17NFLPickemBoard",
     }.issubset(operations)
 
     spread = document["paths"]["/internal/v17/spread-forward-shadow"]["post"]
