@@ -6,6 +6,17 @@ DEPLOY_WORKFLOW = REPO_ROOT / ".github/workflows/wow-v17-render-production-deplo
 CANARY_WORKFLOW = REPO_ROOT / ".github/workflows/wow-v17-spread-forward-production-canary.yml"
 
 
+def test_deploy_controller_filters_non_main_upstream_runs_before_creation():
+    text = DEPLOY_WORKFLOW.read_text(encoding="utf-8")
+    workflow_run = text.index("workflow_run:")
+    workflow_dispatch = text.index("workflow_dispatch:")
+    trigger = text[workflow_run:workflow_dispatch]
+
+    assert 'workflows: ["wow-verify"]' in trigger
+    assert "types: [completed]" in trigger
+    assert "branches: [main]" in trigger
+
+
 def test_non_advancing_deploy_receipts_fail_controller_after_pointer_reconcile():
     text = DEPLOY_WORKFLOW.read_text(encoding="utf-8")
 
