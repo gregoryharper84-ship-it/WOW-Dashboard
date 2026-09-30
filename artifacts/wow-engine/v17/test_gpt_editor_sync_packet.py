@@ -119,7 +119,7 @@ def test_nfl_pickem_action_is_in_single_canonical_domain_and_non_consequential()
     assert "x-openai-isConsequential: false" in route
     assert "security: [{actionBearer: []}]" in route
     assert "schema: {$ref: '#/components/schemas/NFLPickemBoardRequest'}" in route
-    assert "never grants wager execution authority" in route
+    assert "can_execute remains false" in route
 
     request_start = schema_text.index("    NFLPickemBoardRequest:\n")
     request_end = schema_text.index("    PickRequestBatch:\n", request_start)
