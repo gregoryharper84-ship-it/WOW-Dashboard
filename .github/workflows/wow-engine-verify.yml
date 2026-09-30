@@ -10,17 +10,19 @@ on:
 permissions:
   contents: read
 
-# PR runs may supersede older PR runs. A push to protected main is authoritative
-# for Render checksPass and must always reach a terminal check conclusion.
 concurrency:
   group: wow-engine-verify-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  governed-probability-backend:
-    name: WOW governed probability backend
+  regression-shards:
+    name: WOW governed backend shard / ${{ matrix.shard }}
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
     defaults:
       run:
         working-directory: artifacts/wow-engine
@@ -59,24 +61,86 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: pip
           cache-dependency-path: artifacts/wow-engine/requirements.txt
-
-      - name: Install backend and validation dependencies
+      - name: Install backend validation dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install PyYAML openapi-spec-validator PyJWT
+          python -m pip install -r requirements.txt
+          python -m pip install PyYAML openapi-spec-validator PyJWT
+      - name: Build deterministic isolated shard
+        run: |
+          python scripts/wow_rapid.py shard-files \
+            --root . \
+            --index "${{ matrix.shard }}" \
+            --total 4 \
+            --output "$RUNNER_TEMP/wow-engine-shard.txt"
+          echo "shard ${{ matrix.shard }} file count=$(wc -l < "$RUNNER_TEMP/wow-engine-shard.txt")"
+          cat "$RUNNER_TEMP/wow-engine-shard.txt"
+      - name: Run full-coverage shard
+        run: |
+          mapfile -t tests < "$RUNNER_TEMP/wow-engine-shard.txt"
+          if [ "${#tests[@]}" -eq 0 ]; then
+            echo "No files assigned to shard; fail closed."
+            exit 1
+          fi
+          python -m pytest -q --tb=short -rs "${tests[@]}"
 
-      - name: Run governed probability backend tests
-        run: python -m pytest -q
-
-      - name: Run durable Agent Runtime integration (real Postgres + Redis + PostgREST + Celery)
+  agent-runtime-integration:
+    name: WOW durable Agent Runtime integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: artifacts/wow-engine
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: wow_agent_ci
+          POSTGRES_PASSWORD: wow_agent_ci
+          POSTGRES_DB: wow_agent_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U wow_agent_ci -d wow_agent_ci"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+      postgrest:
+        image: postgrest/postgrest:v12.2.3
+        env:
+          PGRST_DB_URI: postgres://wow_agent_ci:wow_agent_ci@postgres:5432/wow_agent_ci
+          PGRST_DB_SCHEMAS: public
+          PGRST_DB_ANON_ROLE: anon
+          PGRST_JWT_SECRET: wow-agent-runtime-ci-only-jwt-secret-not-a-real-secret-32-bytes
+        ports:
+          - 8001:3000
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: artifacts/wow-engine/requirements.txt
+      - name: Install integration dependencies
+        run: |
+          python -m pip install -r requirements.txt
+          python -m pip install PyJWT
+      - name: Run real Postgres + Redis + PostgREST + Celery integration
         env:
           WOW_AGENT_RUNTIME_INTEGRATION: "1"
           AGENT_RUNTIME_POSTGRES_DSN: postgresql://wow_agent_ci:wow_agent_ci@localhost:5432/wow_agent_ci
@@ -85,21 +149,16 @@ jobs:
           WOW_CAN_EXECUTE: "false"
           WOW_DRY_RUN_ONLY: "true"
         run: |
-          SUPABASE_SERVICE_KEY=$(python -c "
-          import jwt
-          print(jwt.encode({'role': 'service_role'}, 'wow-agent-runtime-ci-only-jwt-secret-not-a-real-secret-32-bytes', algorithm='HS256'))
-          ")
+          SUPABASE_SERVICE_KEY=$(python -c "import jwt; print(jwt.encode({'role': 'service_role'}, 'wow-agent-runtime-ci-only-jwt-secret-not-a-real-secret-32-bytes', algorithm='HS256'))")
           export SUPABASE_SERVICE_KEY
 
           python - <<'PY' > "$RUNNER_TEMP/rest-v1-proxy.log" 2>&1 &
           import http.server
           import urllib.request
           import urllib.error
-
           UPSTREAM = "http://127.0.0.1:8001"
           PREFIX = "/rest/v1"
           PASS_THROUGH_HEADERS = {"host", "content-length", "connection", "transfer-encoding", "server", "date"}
-
           class ProxyHandler(http.server.BaseHTTPRequestHandler):
               def _proxy(self):
                   path = self.path
@@ -120,20 +179,15 @@ jobs:
                           self.send_header(key, value)
                   self.end_headers()
                   self.wfile.write(payload)
-
               do_GET = do_POST = do_PATCH = do_DELETE = do_PUT = do_HEAD = _proxy
-
               def log_message(self, format, *args):
                   pass
-
           http.server.ThreadingHTTPServer(("127.0.0.1", 3000), ProxyHandler).serve_forever()
           PY
           PROXY_PID=$!
-
-          celery -A agent_runtime.celery_app:celery_app worker --loglevel=WARNING --pool=solo --concurrency=1 \
-            > "$RUNNER_TEMP/wow-agent-worker.log" 2>&1 &
+          celery -A agent_runtime.celery_app:celery_app worker --loglevel=WARNING --pool=solo --concurrency=1 > "$RUNNER_TEMP/wow-agent-worker.log" 2>&1 &
           WORKER_PID=$!
-          trap 'kill "$WORKER_PID" "$PROXY_PID" 2>/dev/null || true; echo "--- worker log ---"; cat "$RUNNER_TEMP/wow-agent-worker.log" || true; echo "--- rest/v1 proxy log ---"; cat "$RUNNER_TEMP/rest-v1-proxy.log" || true' EXIT
+          trap 'kill "$WORKER_PID" "$PROXY_PID" 2>/dev/null || true; cat "$RUNNER_TEMP/wow-agent-worker.log" || true; cat "$RUNNER_TEMP/rest-v1-proxy.log" || true' EXIT
           sleep 3
           python -m pytest -q test_agent_runtime_postgres_integration.py
           kill "$WORKER_PID" "$PROXY_PID" 2>/dev/null || true
@@ -141,6 +195,22 @@ jobs:
           wait "$PROXY_PID" 2>/dev/null || true
           trap - EXIT
 
+  release-contracts:
+    name: WOW Render and Action release contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: artifacts/wow-engine
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: artifacts/wow-engine/requirements.txt
+      - name: Install contract dependencies
+        run: python -m pip install PyYAML openapi-spec-validator
       - name: Validate Render, event schema, and Custom GPT Action contracts
         run: |
           python - <<'PY'
@@ -167,11 +237,7 @@ jobs:
           assert service["healthCheckPath"] == "/health/live"
           assert service["startCommand"] == "uvicorn api_ncaaf_acceptance:app --host 0.0.0.0 --port $PORT"
           assert service["autoDeployTrigger"] == "checksPass"
-          secret_vars = {
-              item["key"]: item
-              for item in service["envVars"]
-              if item["key"] in {"SUPABASE_URL", "SUPABASE_SERVICE_KEY", "WOW_ACTION_API_KEY"}
-          }
+          secret_vars = {item["key"]: item for item in service["envVars"] if item["key"] in {"SUPABASE_URL", "SUPABASE_SERVICE_KEY", "WOW_ACTION_API_KEY"}}
           assert set(secret_vars) == {"SUPABASE_URL", "SUPABASE_SERVICE_KEY", "WOW_ACTION_API_KEY"}
           assert all(item.get("sync") is False for item in secret_vars.values())
           service_env_by_key = {item["key"]: item for item in service["envVars"]}
@@ -235,3 +301,23 @@ jobs:
           assert pick_action["servers"][0]["url"] == "https://wow-governed-probability-engine.onrender.com"
           print("release contracts valid")
           PY
+
+  governed-probability-backend:
+    name: WOW governed probability backend
+    if: always()
+    needs: [regression-shards, agent-runtime-integration, release-contracts]
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Aggregate protected governed-backend result
+        env:
+          REGRESSION_RESULT: ${{ needs.regression-shards.result }}
+          INTEGRATION_RESULT: ${{ needs.agent-runtime-integration.result }}
+          CONTRACT_RESULT: ${{ needs.release-contracts.result }}
+        run: |
+          echo "regression=$REGRESSION_RESULT integration=$INTEGRATION_RESULT contracts=$CONTRACT_RESULT"
+          test "$REGRESSION_RESULT" = "success"
+          test "$INTEGRATION_RESULT" = "success"
+          test "$CONTRACT_RESULT" = "success"
+          echo "can_execute=false"
+          echo "terminal_authority=V17_TERMINAL_REDUCER"
