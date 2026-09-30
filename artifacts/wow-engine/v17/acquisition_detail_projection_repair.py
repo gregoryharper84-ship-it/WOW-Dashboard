@@ -1,21 +1,25 @@
 """Repair acquisition-detail projection mismatches for V17.
 
-Two proven compatibility shapes can carry summary observability that differs from
-the ordered concrete attempts used by durable persistence:
+Three proven compatibility shapes can carry summary observability that differs
+from the ordered concrete attempts used by durable persistence:
 
-1. the nested ESPN -> (Odds, Rundown) fallback union, where aggregate fallback
-   summary fields can describe the first downstream fallback while persistence
-   projects the final concrete attempt; and
+1. the complete nested ESPN -> (Odds, Rundown) fallback union, where aggregate
+   fallback summary fields can describe the first downstream fallback while
+   persistence projects the final concrete attempt;
 2. a healthy schedule-first ESPN result with exactly one real acquisition
-   attempt, where the aggregate fallback status is correctly NOT_ATTEMPTED but
-   the legacy endpoint scalar was stamped PATH_NOT_ATTEMPTED even though no
-   fallback attempt exists. Durable endpoint projection correctly represents
-   that nonexistent endpoint as NOT_APPLICABLE.
+   attempt, where aggregate fallback status is correctly NOT_ATTEMPTED but a
+   legacy endpoint scalar was stamped PATH_NOT_ATTEMPTED even though no fallback
+   attempt exists; and
+3. a legacy nested-fallback wrapper with one proven ESPN attempt plus an
+   aggregate GOVERNED_FALLBACK_UNION summary whose downstream adapter did not
+   emit ordered attempts. In that shape the one-item attempt array is partial,
+   not complete. Persist the typed scalar provenance and omit the partial ordered
+   list rather than pretending it is a complete execution trace.
 
 This repair changes acquisition accounting only. It does not alter sporting
 probabilities, calibration, model ownership, qualification, ranking, or
-execution posture. Ordered attempts remain the durable full provenance and all
-unsupported shapes remain fail-closed in the existing persistence validator.
+execution posture. Complete ordered attempts remain durable full provenance and
+all unsupported shapes remain fail-closed in the existing persistence validator.
 """
 from __future__ import annotations
 
@@ -23,7 +27,7 @@ import sys
 from typing import Any
 
 CAN_EXECUTE = False
-CONTRACT_VERSION = "V17_ACQUISITION_DETAIL_PROJECTION_REPAIR_V3"
+CONTRACT_VERSION = "V17_ACQUISITION_DETAIL_PROJECTION_REPAIR_V4"
 
 _GOVERNED_FALLBACK_UNION = "GOVERNED_FALLBACK_UNION"
 _NESTED_FALLBACK_ATTEMPT_PATHS = (
@@ -33,6 +37,13 @@ _NESTED_FALLBACK_ATTEMPT_PATHS = (
 )
 _PUBLIC_SINGLE_ATTEMPT_PATH = "ESPN_SCOREBOARD"
 _FALLBACK_NOT_ATTEMPTED = "FALLBACK_NOT_ATTEMPTED"
+_FALLBACK_ATTEMPTED_STATUSES = frozenset({"FALLBACK_SUCCEEDED", "FALLBACK_FAILED"})
+_AGGREGATE_FALLBACK_STATES = frozenset({
+    "SUCCEEDED_EMPTY",
+    "SUCCEEDED_WITH_ROWS",
+    "FAILED_TYPED",
+    "CIRCUIT_OPEN_FROM_PRIOR_TYPED_FAILURE",
+})
 _PATH_NOT_ATTEMPTED = "NOT_ATTEMPTED"
 _PATH_NOT_APPLICABLE = "NOT_APPLICABLE"
 
@@ -41,8 +52,25 @@ def _attempt_blocker(attempt: dict[str, Any]) -> Any:
     return attempt.get("originating_blocker_code") or attempt.get("blocker_code")
 
 
+def _supplied_matches_attempt(detail: dict[str, Any], attempt: dict[str, Any]) -> bool:
+    """Require every supplied primary scalar to agree with the one proven attempt."""
+    projected = {
+        "primary_path_id": attempt.get("path_id"),
+        "primary_path_state": attempt.get("path_state"),
+        "primary_blocker_code": _attempt_blocker(attempt),
+        "primary_upstream_status": attempt.get("upstream_status"),
+        "primary_content_type_class": attempt.get("content_type_class"),
+        "primary_provider_alias": attempt.get("credential_alias"),
+    }
+    for field_name, projected_value in projected.items():
+        supplied = detail.get(field_name)
+        if supplied not in (None, "") and supplied != projected_value:
+            return False
+    return True
+
+
 def normalize_nested_fallback_union_detail(detail: Any) -> Any:
-    """Normalize only the proven ESPN -> (Odds, Rundown) nested union shape."""
+    """Normalize only the proven complete ESPN -> Odds -> Rundown union shape."""
     if not isinstance(detail, dict):
         return detail
     if str(detail.get("fallback_path_id") or "").strip().upper() != _GOVERNED_FALLBACK_UNION:
@@ -77,6 +105,40 @@ def normalize_nested_fallback_union_detail(detail: Any) -> Any:
             "fallback_provider_alias": last_attempt.get("credential_alias"),
         }
     )
+    return normalized
+
+
+def normalize_partial_nested_fallback_union_detail(detail: Any) -> Any:
+    """Downgrade only a proven partial ESPN+aggregate-union attempt list to scalars.
+
+    The wrapper has one real ordered ESPN attempt and typed aggregate fallback
+    scalars, but no concrete downstream ordered attempts. Keeping the one-item
+    list would falsely claim completeness and contradict the aggregate fallback.
+    Scalar-only persistence is the existing legacy-compatible representation for
+    incomplete ordered provenance.
+    """
+    if not isinstance(detail, dict):
+        return detail
+    if str(detail.get("fallback_path_id") or "").strip().upper() != _GOVERNED_FALLBACK_UNION:
+        return detail
+    if str(detail.get("fallback_status") or "").strip().upper() not in _FALLBACK_ATTEMPTED_STATUSES:
+        return detail
+    if str(detail.get("fallback_path_state") or "").strip().upper() not in _AGGREGATE_FALLBACK_STATES:
+        return detail
+
+    attempts = detail.get("attempts")
+    if not isinstance(attempts, (list, tuple)) or len(attempts) != 1:
+        return detail
+    first_attempt = attempts[0]
+    if not isinstance(first_attempt, dict):
+        return detail
+    if str(first_attempt.get("path_id") or "").strip().upper() != _PUBLIC_SINGLE_ATTEMPT_PATH:
+        return detail
+    if not _supplied_matches_attempt(detail, first_attempt):
+        return detail
+
+    normalized = dict(detail)
+    normalized["attempts"] = None
     return normalized
 
 
@@ -119,6 +181,9 @@ def normalize_public_single_attempt_detail(detail: Any) -> Any:
 def normalize_acquisition_detail_projection(detail: Any) -> Any:
     """Apply only proven projection repairs; leave every other shape untouched."""
     normalized = normalize_nested_fallback_union_detail(detail)
+    if normalized is not detail:
+        return normalized
+    normalized = normalize_partial_nested_fallback_union_detail(detail)
     if normalized is not detail:
         return normalized
     return normalize_public_single_attempt_detail(detail)
@@ -166,5 +231,6 @@ __all__ = [
     "install_acquisition_detail_projection_repair",
     "normalize_acquisition_detail_projection",
     "normalize_nested_fallback_union_detail",
+    "normalize_partial_nested_fallback_union_detail",
     "normalize_public_single_attempt_detail",
 ]
