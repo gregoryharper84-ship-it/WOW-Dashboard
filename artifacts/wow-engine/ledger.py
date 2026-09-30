@@ -100,6 +100,10 @@ class PredictionRow:
     simulation_draws: Optional[int] = None
 
     # Generic discrete-prop model provenance.
+    # V17 requires exactly one controlling fitted specialist for every sporting
+    # probability row. The owner is persisted with the immutable model record,
+    # not reconstructed later from mutable routing state.
+    controlling_specialist: Optional[str] = None
     model_provider_identity: Optional[str] = None
     model_family: Optional[str] = None
     model_artifact_version: Optional[str] = None
@@ -152,6 +156,7 @@ class PredictionRow:
 
 def _validate_discrete_prop_provenance(row: PredictionRow, gaps: list[str]) -> None:
     required_text = {
+        "controlling_specialist": row.controlling_specialist,
         "model_provider_identity": row.model_provider_identity,
         "model_family": row.model_family,
         "model_artifact_version": row.model_artifact_version,
@@ -256,6 +261,7 @@ def _prediction_idempotency_material(row: PredictionRow) -> str:
         row.stat_type,
         repr(float(row.line)),
         row.direction,
+        row.controlling_specialist,
         row.model_provider_identity,
         row.model_family,
         row.model_bundle_fingerprint,

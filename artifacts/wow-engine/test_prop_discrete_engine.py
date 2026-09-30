@@ -127,6 +127,7 @@ def test_discrete_prop_path_publishes_without_fake_pitcher_simulation_fields():
     assert row.regime_probability_sum is None
     assert row.model_provider_identity == "WOW_PROP_FITTED_MODEL_V1"
     assert row.model_artifact_version == "WNBA_POINTS_MODEL_V1"
+    assert row.controlling_specialist == "wow.wnba-player-prop-generative-expert@1"
     assert row.calibration_version == "WNBA_POINTS_CAL_V1"
     assert row.distribution_type == "DISCRETE_PMF"
     assert row.probability_more == pytest.approx(0.55)

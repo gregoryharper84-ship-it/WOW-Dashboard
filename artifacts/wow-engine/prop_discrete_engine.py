@@ -223,6 +223,17 @@ def score_discrete_prop_end_to_end(
     bundle = artifact.bundle
     calibration_parent_cohort = prop_calibration_parent_cohort(request, artifact)
 
+    # The probability row is owned by the exact versioned fitted specialist
+    # bound into the immutable certified artifact that produced the PMF. Route
+    # preflight still independently controls whether the sport/stat lane may
+    # invoke this scorer; persistence must record the actual fitted owner.
+    controlling_specialist = str(bundle.specialist_version or "").strip()
+    if not controlling_specialist:
+        raise PropCalibrationUnavailable(
+            "PROP_CONTROLLING_SPECIALIST_UNAVAILABLE",
+            "Certified prop artifact must identify exactly one fitted specialist before scoring can publish.",
+        )
+
     row = PredictionRow(
         event_id=request.event_id,
         event_start_time=event_start_time,
@@ -259,6 +270,7 @@ def score_discrete_prop_end_to_end(
         calibrated_probability_lower_bound=calibration.lower_bound,
         calibrated_probability_upper_bound=calibration.upper_bound,
         money_lane_status=money_lane_status,
+        controlling_specialist=controlling_specialist,
         model_provider_identity=PROP_PROVIDER_IDENTITY,
         model_family=artifact.model_family,
         model_artifact_version=bundle.model_artifact_version,
