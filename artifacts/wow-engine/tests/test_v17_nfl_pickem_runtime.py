@@ -54,6 +54,13 @@ def _schedule_rows():
     return rows
 
 
+def test_pregame_detection_does_not_treat_numeric_zero_as_missing_score():
+    assert runtime._pregame_schedule_row({"home_score": None, "away_score": None}) is True
+    assert runtime._pregame_schedule_row({"home_score": "", "away_score": ""}) is True
+    assert runtime._pregame_schedule_row({"home_score": 0, "away_score": 0}) is False
+    assert runtime._pregame_schedule_row({"home_score": "0", "away_score": "0"}) is False
+
+
 def _governed_result(req, *, hold: bool = False):
     event_id = str(req.official_event_id)
     index = next(i for i, row in enumerate(_schedule_rows(), 1) if row["game_id"] == event_id)
