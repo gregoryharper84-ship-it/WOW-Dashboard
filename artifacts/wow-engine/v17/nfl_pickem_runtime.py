@@ -70,11 +70,14 @@ def _validate_request(req: NFLPickemBoardRequest) -> tuple[tuple[str, ...], str]
     return dates, timezone_name
 
 
+def _score_missing(value: Any) -> bool:
+    return value is None or (isinstance(value, str) and not value.strip())
+
+
 def _pregame_schedule_row(row: Mapping[str, Any]) -> bool:
-    return (
-        str(row.get("home_score") or "").strip() == ""
-        and str(row.get("away_score") or "").strip() == ""
-    )
+    # Numeric zero is a real score, not an empty pregame value. Treating 0 as
+    # falsy here could otherwise allow a started 0-0 game back into the pool.
+    return _score_missing(row.get("home_score")) and _score_missing(row.get("away_score"))
 
 
 def _canonical_inventory(
