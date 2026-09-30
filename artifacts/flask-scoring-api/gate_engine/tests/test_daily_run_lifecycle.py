@@ -211,13 +211,36 @@ class TestDailyRunLifecycle(unittest.TestCase):
         worker_thread = threading.Thread
 
         def submit():
-            results.append(self._start("concurrent-key"))
+            results.append(
+                lifecycle.start_run(
+                    run_id=None,
+                    idempotency_key="concurrent-key",
+                    sports=["NBA"],
+                    environment="test",
+                    runtime_provenance=None,
+                    session_id="lifecycle-test",
+                    deadline_seconds=30,
+                )
+            )
 
-        threads = [worker_thread(target=submit) for _ in range(2)]
-        for thread in threads:
-            thread.start()
-        for thread in threads:
-            thread.join()
+        # Install the shared mocks once in the parent thread. Applying and
+        # removing patch contexts independently inside both worker threads can
+        # restore shared module attributes out of order and leak mocks into
+        # later tests, which tests unittest.mock rather than lifecycle locking.
+        with (
+            patch("storage.daily_manifest.ensure_tables", return_value=True),
+            patch("storage.daily_manifest.reap_expired_runs", return_value=0),
+            patch("storage.daily_manifest.create_or_get_run", side_effect=self._create_or_get),
+            patch("storage.daily_manifest.claim_run", side_effect=self._claim),
+            patch("storage.daily_manifest.register_executor", return_value=True),
+            patch("storage.daily_manifest.get_run", side_effect=self._get_run),
+            patch.object(lifecycle.subprocess, "Popen", _CapturingPopen),
+        ):
+            threads = [worker_thread(target=submit) for _ in range(2)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
 
         self.assertEqual(len(results), 2)
         self.assertEqual(results[0]["run_id"], results[1]["run_id"])
