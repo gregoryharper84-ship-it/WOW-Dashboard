@@ -21,8 +21,10 @@ _THREAD: threading.Thread | None = None
 
 
 def _db_client():
-    from ledger import get_client
-    return get_client()
+    """Build the worker's service-role Supabase client without a repo-root import."""
+    from supabase import create_client
+
+    return create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_SERVICE_KEY"])
 
 
 def _enabled() -> bool:
