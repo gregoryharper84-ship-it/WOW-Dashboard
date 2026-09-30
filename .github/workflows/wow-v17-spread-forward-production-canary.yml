@@ -1,9 +1,7 @@
 name: wow-v17-spread-forward-production-canary
 
 on:
-  workflow_run:
-    workflows: ["wow-v17-render-production-deploy"]
-    types: [completed]
+  workflow_call:
   workflow_dispatch:
 
 permissions:
@@ -22,9 +20,6 @@ env:
 jobs:
   ncaaf-canary:
     name: Verify production NCAAF spread forward shadow
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -84,10 +79,7 @@ jobs:
   nfl-canary:
     name: Verify production NFL spread forward shadow
     needs: ncaaf-canary
-    if: >-
-      always() &&
-      (github.event_name == 'workflow_dispatch' ||
-       (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main'))
+    if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -135,10 +127,7 @@ jobs:
   wnba-canary:
     name: Verify production WNBA spread forward shadow
     needs: nfl-canary
-    if: >-
-      always() &&
-      (github.event_name == 'workflow_dispatch' ||
-       (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main'))
+    if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -194,10 +183,7 @@ jobs:
   mlb-canary:
     name: Verify production MLB run-line forward shadow
     needs: wnba-canary
-    if: >-
-      always() &&
-      (github.event_name == 'workflow_dispatch' ||
-       (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main'))
+    if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
