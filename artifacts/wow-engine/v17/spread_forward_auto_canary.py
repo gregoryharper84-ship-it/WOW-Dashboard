@@ -139,14 +139,19 @@ def discover_future_espn_event(
     now: datetime | None = None,
     horizon_days: int | None = None,
 ) -> dict[str, Any] | None:
-    """Return the first exact future pregame WNBA ESPN event, or None after valid empty responses."""
+    """Return the first exact future pregame WNBA ESPN event, or None after valid empty responses.
+
+    A transport/protocol failure means the source is unavailable for this pass and
+    must fail over immediately. Retrying the same unavailable source once per date
+    can consume the entire production-canary budget before the governed WNBA Stats
+    fallback is reached.
+    """
     normalized = str(sport).upper()
     if normalized not in ESPN_SCOREBOARDS:
         raise SpreadChallengerUnavailable("SPREAD_CANARY_SPORT_UNSUPPORTED", normalized)
     current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     horizon = int(horizon_days or DEFAULT_HORIZON_DAYS[normalized])
     successful_response = False
-    source_failures: list[str] = []
 
     for offset in range(max(horizon, 1)):
         day = (current + timedelta(days=offset)).strftime("%Y%m%d")
@@ -158,27 +163,30 @@ def discover_future_espn_event(
                 timeout=20,
             )
         except Exception as exc:  # noqa: BLE001 - converted to typed acquisition failure
-            source_failures.append(type(exc).__name__)
-            continue
+            raise SpreadChallengerUnavailable(
+                f"{normalized}_SPREAD_CANARY_IDENTITY_SOURCE_UNAVAILABLE",
+                f"backend ESPN schedule acquisition failed: {type(exc).__name__}",
+            ) from exc
         status = int(getattr(response, "status_code", 0) or 0)
-        if status in {401, 403}:
+        if status != 200:
             raise SpreadChallengerUnavailable(
                 f"{normalized}_SPREAD_CANARY_IDENTITY_SOURCE_UNAVAILABLE",
                 f"backend ESPN schedule acquisition failed: HTTP_{status}",
             )
-        if status != 200:
-            source_failures.append(f"HTTP_{status}")
-            continue
         successful_response = True
         try:
             body = response.json()
         except Exception as exc:  # noqa: BLE001
-            source_failures.append(type(exc).__name__)
-            continue
+            raise SpreadChallengerUnavailable(
+                f"{normalized}_SPREAD_CANARY_IDENTITY_SOURCE_UNAVAILABLE",
+                f"backend ESPN schedule acquisition failed: {type(exc).__name__}",
+            ) from exc
         events = body.get("events") if isinstance(body, dict) else None
         if not isinstance(events, list):
-            source_failures.append("INVALID_EVENT_LIST")
-            continue
+            raise SpreadChallengerUnavailable(
+                f"{normalized}_SPREAD_CANARY_IDENTITY_SOURCE_UNAVAILABLE",
+                "backend ESPN schedule acquisition failed: INVALID_EVENT_LIST",
+            )
         for event in events:
             if not isinstance(event, dict):
                 continue
@@ -217,13 +225,11 @@ def discover_future_espn_event(
                 "identity_acquisition_location": "BACKEND_RUNTIME",
                 "can_execute": False,
             }
-
     if successful_response:
         return None
-    detail = source_failures[-1] if source_failures else "NO_RESPONSE"
     raise SpreadChallengerUnavailable(
         f"{normalized}_SPREAD_CANARY_IDENTITY_SOURCE_UNAVAILABLE",
-        f"backend ESPN schedule acquisition failed: {detail}",
+        "backend ESPN schedule acquisition failed: NO_RESPONSE",
     )
 
 
@@ -233,28 +239,37 @@ def discover_future_wnba_stats_event(
     now: datetime | None = None,
     horizon_days: int | None = None,
 ) -> dict[str, Any] | None:
-    """Return the first future pregame WNBA event from league-owned Stats identity."""
+    """Return the first future pregame WNBA event from league-owned Stats identity.
+
+    Valid empty scoreboards advance through the horizon. A source/protocol failure
+    fails closed immediately so the route returns a governed typed blocker instead
+    of repeating a 20-second failed request for every date.
+    """
     from v17.wnba_prop_evidence_control_plane import _scoreboard_schedule_for_date
     from v17.wnba_team_identity_aliases import espn_team_id_for_wnba_stats_tricode
 
     current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     horizon = int(horizon_days or DEFAULT_HORIZON_DAYS["WNBA"])
     successful_response = False
-    failures: list[str] = []
     candidates: list[tuple[datetime, dict[str, Any]]] = []
     for offset in range(max(horizon, 1)):
         requested_date = (current + timedelta(days=offset)).date().isoformat()
         try:
             schedule = _scoreboard_schedule_for_date(requested_date, http_get=fetcher)
         except Exception as exc:  # noqa: BLE001 - retain typed source boundary
-            failures.append(str(getattr(exc, "code", "") or type(exc).__name__))
-            continue
+            detail = str(getattr(exc, "code", "") or type(exc).__name__)
+            raise SpreadChallengerUnavailable(
+                "WNBA_SPREAD_CANARY_IDENTITY_SOURCE_UNAVAILABLE",
+                f"backend WNBA Stats schedule acquisition failed: {detail}",
+            ) from exc
         successful_response = True
         league = schedule.get("leagueSchedule") if isinstance(schedule, dict) else None
         blocks = league.get("gameDates") if isinstance(league, dict) else None
         if not isinstance(blocks, list):
-            failures.append("WNBA_STATS_SCOREBOARD_V3_INVALID")
-            continue
+            raise SpreadChallengerUnavailable(
+                "WNBA_SPREAD_CANARY_IDENTITY_SOURCE_UNAVAILABLE",
+                "backend WNBA Stats schedule acquisition failed: WNBA_STATS_SCOREBOARD_V3_INVALID",
+            )
         for block in blocks:
             games = block.get("games") if isinstance(block, dict) else None
             if not isinstance(games, list):
@@ -312,10 +327,9 @@ def discover_future_wnba_stats_event(
         return min(candidates, key=lambda item: (item[0], item[1]["raw_event_id"]))[1]
     if successful_response:
         return None
-    detail = failures[-1] if failures else "NO_RESPONSE"
     raise SpreadChallengerUnavailable(
         "WNBA_SPREAD_CANARY_IDENTITY_SOURCE_UNAVAILABLE",
-        f"backend WNBA Stats schedule acquisition failed: {detail}",
+        "backend WNBA Stats schedule acquisition failed: NO_RESPONSE",
     )
 
 
