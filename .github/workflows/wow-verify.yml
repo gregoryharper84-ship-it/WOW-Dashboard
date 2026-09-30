@@ -16,11 +16,18 @@ concurrency:
   group: wow-verify-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+env:
+  DATABASE_URL: postgresql://wow_ci:wow_ci@localhost:5432/wow_test
+  WOW_CI: "1"
+  PYTHONDONTWRITEBYTECODE: "1"
+  ANTHROPIC_API_KEY: "wow-ci-placeholder-not-live"
+  SESSION_SECRET: "wow-ci-attestation-secret-not-live"
+
 jobs:
-  required-three:
-    name: WOW required-three regression
+  required-three-collection:
+    name: WOW required-three collection contract
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: artifacts/flask-scoring-api
@@ -35,44 +42,20 @@ jobs:
           - 5432:5432
         options: >-
           --health-cmd="pg_isready -U wow_ci -d wow_test"
-          --health-interval=10s
+          --health-interval=5s
           --health-timeout=5s
-          --health-retries=5
-    env:
-      DATABASE_URL: postgresql://wow_ci:wow_ci@localhost:5432/wow_test
-      WOW_CI: "1"
-      PYTHONDONTWRITEBYTECODE: "1"
-      MIN_REQUIRED_COLLECTION: "5572"
-      # CI-local, non-functional placeholders. Neither value is a live
-      # credential: ANTHROPIC_API_KEY only needs to be non-empty so the
-      # config-presence gate passes (the Anthropic client itself is mocked
-      # in every test that reaches it); SESSION_SECRET is the server-only
-      # HMAC key gate_engine.runtime_provenance already documents as
-      # acceptable attestation key material (WOW_ATTESTATION_SECRET or
-      # SESSION_SECRET) — CI just never had either configured.
-      ANTHROPIC_API_KEY: "wow-ci-placeholder-not-live"
-      SESSION_SECRET: "wow-ci-attestation-secret-not-live"
+          --health-retries=10
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: pip
           cache-dependency-path: artifacts/flask-scoring-api/requirements.txt
-
       - name: Install dependencies
         run: |
           python -m pip install -r requirements.txt
-          python -m pip install pytest==9.1.1
-          python -m pip install PyYAML==6.0.3
-
-      - name: Dependency consistency diagnostic
-        continue-on-error: true
-        run: python -m pip check
-
+          python -m pip install pytest==9.1.1 PyYAML==6.0.3
       - name: Initialize CI-local database schema
         run: |
           python - <<'PY'
@@ -80,26 +63,22 @@ jobs:
           ensure_table_exists()
           print("wow_session_exposure schema initialized")
           PY
-
-      - name: Collect required-three suite
+      - name: Enforce full required-three collection floor
+        env:
+          MIN_REQUIRED_COLLECTION: "5572"
         run: |
           set +e
-          python -m pytest --collect-only -q \
-            gate_engine/tests \
-            services/tests \
-            tests > "$RUNNER_TEMP/required-three-collection.txt" 2>&1
+          python -m pytest --collect-only -q gate_engine/tests services/tests tests > "$RUNNER_TEMP/required-three-collection.txt" 2>&1
           collection_status=$?
           set -e
           cat "$RUNNER_TEMP/required-three-collection.txt"
           if [ "$collection_status" -ne 0 ]; then
-            echo "pytest collection failed with exit code $collection_status"
             exit "$collection_status"
           fi
           python - "$RUNNER_TEMP/required-three-collection.txt" "$MIN_REQUIRED_COLLECTION" <<'PY'
           import re
           import sys
           from pathlib import Path
-
           text = Path(sys.argv[1]).read_text(errors="replace")
           floor = int(sys.argv[2])
           matches = re.findall(r"([\d,]+)\s+tests?\s+collected", text)
@@ -111,18 +90,21 @@ jobs:
               raise SystemExit(f"Collection floor failed: {count} < {floor}")
           PY
 
-      - name: Run required-three regression
-        run: |
-          python -m pytest \
-            gate_engine/tests \
-            services/tests \
-            tests \
-            -q --tb=short -rs
-
-  additional-required:
-    name: WOW additional required regression
+  required-three-shards:
+    name: WOW required-three shard / ${{ matrix.name }}
+    needs: required-three-collection
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: gate-engine
+            suite: gate_engine/tests
+          - name: services
+            suite: services/tests
+          - name: application
+            suite: tests
     defaults:
       run:
         working-directory: artifacts/flask-scoring-api
@@ -137,41 +119,109 @@ jobs:
           - 5432:5432
         options: >-
           --health-cmd="pg_isready -U wow_ci -d wow_test"
-          --health-interval=10s
+          --health-interval=5s
           --health-timeout=5s
-          --health-retries=5
-    env:
-      DATABASE_URL: postgresql://wow_ci:wow_ci@localhost:5432/wow_test
-      WOW_CI: "1"
-      PYTHONDONTWRITEBYTECODE: "1"
+          --health-retries=10
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: pip
           cache-dependency-path: artifacts/flask-scoring-api/requirements.txt
-
       - name: Install dependencies
         run: |
           python -m pip install -r requirements.txt
-          python -m pip install pytest==9.1.1
-          python -m pip install PyYAML==6.0.3
-
-      - name: Initialize CI-local database schema
+          python -m pip install pytest==9.1.1 PyYAML==6.0.3
+      - name: Dependency consistency diagnostic
+        continue-on-error: true
+        run: python -m pip check
+      - name: Initialize isolated shard database schema
         run: |
           python - <<'PY'
           from gate_engine.pg_session_ledger import ensure_table_exists
           ensure_table_exists()
           print("wow_session_exposure schema initialized")
           PY
+      - name: Run isolated required-three shard
+        run: python -m pytest "${{ matrix.suite }}" -q --tb=short -rs
 
-      - name: Run additive suites
+  required-three:
+    name: WOW required-three regression
+    if: always()
+    needs: [required-three-collection, required-three-shards]
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Aggregate protected required-three result
+        env:
+          COLLECTION_RESULT: ${{ needs.required-three-collection.result }}
+          SHARD_RESULT: ${{ needs.required-three-shards.result }}
         run: |
-          python -m pytest \
-            kalshi_engine/tests \
-            validation/tests \
-            -q --tb=short -rs
+          echo "collection=$COLLECTION_RESULT shards=$SHARD_RESULT"
+          test "$COLLECTION_RESULT" = "success"
+          test "$SHARD_RESULT" = "success"
+
+  additional-shards:
+    name: WOW additional shard / ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: kalshi
+            suite: kalshi_engine/tests
+          - name: validation
+            suite: validation/tests
+    defaults:
+      run:
+        working-directory: artifacts/flask-scoring-api
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: wow_ci
+          POSTGRES_PASSWORD: wow_ci
+          POSTGRES_DB: wow_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U wow_ci -d wow_test"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: artifacts/flask-scoring-api/requirements.txt
+      - name: Install dependencies
+        run: |
+          python -m pip install -r requirements.txt
+          python -m pip install pytest==9.1.1 PyYAML==6.0.3
+      - name: Initialize isolated shard database schema
+        run: |
+          python - <<'PY'
+          from gate_engine.pg_session_ledger import ensure_table_exists
+          ensure_table_exists()
+          print("wow_session_exposure schema initialized")
+          PY
+      - name: Run isolated additional regression shard
+        run: python -m pytest "${{ matrix.suite }}" -q --tb=short -rs
+
+  additional-required:
+    name: WOW additional required regression
+    if: always()
+    needs: additional-shards
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Aggregate protected additional result
+        env:
+          SHARD_RESULT: ${{ needs.additional-shards.result }}
+        run: |
+          echo "additional shards=$SHARD_RESULT"
+          test "$SHARD_RESULT" = "success"
