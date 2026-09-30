@@ -1,0 +1,48 @@
+name: wow-v17-post-deploy-verification-orchestrator
+
+on:
+  workflow_run:
+    workflows: ["wow-v17-render-production-deploy"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: wow-v17-post-deploy-verification-orchestrator
+  cancel-in-progress: false
+
+jobs:
+  spread-certification:
+    name: Run spread certification replay
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_branch == 'main')
+    uses: ./.github/workflows/wow-v17-spread-certification-replay.yml
+    secrets: inherit
+
+  priority-props:
+    name: Run priority prop lifecycle
+    needs: spread-certification
+    if: >-
+      always() &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.head_branch == 'main'))
+    uses: ./.github/workflows/wow-v17-priority-prop-lifecycle.yml
+    secrets: inherit
+
+  spread-forward:
+    name: Run spread-forward production canaries
+    needs: priority-props
+    if: >-
+      always() &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.head_branch == 'main'))
+    uses: ./.github/workflows/wow-v17-spread-forward-production-canary.yml
+    secrets: inherit
