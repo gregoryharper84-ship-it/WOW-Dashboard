@@ -24,10 +24,31 @@ jobs:
 
       - name: Run focused orchestration regression
         run: |
-          python -m pip install --quiet pytest
-          python -m pytest -q \
-            artifacts/wow-engine/tests/test_v17_post_deploy_canary_gate.py \
-            artifacts/wow-engine/v17/test_priority_prop_lifecycle_workflow.py
+          python - <<'PY'
+          import runpy
+          from pathlib import Path
+
+          paths = [
+              Path('artifacts/wow-engine/tests/test_v17_post_deploy_canary_gate.py'),
+              Path('artifacts/wow-engine/v17/test_priority_prop_lifecycle_workflow.py'),
+          ]
+          failures = []
+          ran = 0
+          for path in paths:
+              ns = runpy.run_path(str(path))
+              for name, fn in sorted(ns.items()):
+                  if name.startswith('test_') and callable(fn):
+                      ran += 1
+                      try:
+                          fn()
+                          print(f'PASS {path}:{name}')
+                      except Exception as exc:
+                          failures.append((path, name, exc))
+                          print(f'FAIL {path}:{name}: {exc!r}')
+          if failures:
+              raise SystemExit(f'{len(failures)} focused contract tests failed')
+          print(f'FOCUSED_CONTRACT_TESTS_PASSED={ran}')
+          PY
           git diff --check
 
       - name: Commit bounded repair and remove one-shot helper
