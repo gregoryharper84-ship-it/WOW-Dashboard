@@ -14,12 +14,16 @@ The production `WOW_BETTING_ENGINE` editor was historically saved/reloaded and A
 - Custom GPT Instructions field hard limit: **8,000 characters**; repository safety ceiling: **7,500 UTF-8 bytes**.
 - The canonical host-instructions file must satisfy both limits and is pasted into the Instructions field verbatim.
 - The PrizePicks addendum is installed as a **Knowledge file**, not appended to the Instructions field.
-- The deterministic editor-sync builder must fail if the canonical Instructions field exceeds either limit, if the canonical Action operation count is not exactly **21**, or if a required Action operation is missing.
+- The deterministic editor-sync builder must fail if the canonical Instructions field exceeds either limit, if the canonical Action operation count is not exactly **23**, or if a required Action operation is missing.
 - ChatGPT Custom GPT editor constraint observed 2026-09-24: **Action sets cannot have duplicate domains**. Therefore the production WOW Render domain may appear in only one Action group.
-- The canonical live Action schema exposes all **21** WOW operations under `https://wow-governed-probability-engine.onrender.com`, including the three run-control operations:
+- The canonical live Action schema exposes all **23** WOW operations under `https://wow-governed-probability-engine.onrender.com`, including the three run-control operations:
   - `getWowV17PickRequestRunState`
   - `runWowV17ResumablePickRequest`
   - `closeWowV17PickRequestRun`
+- The same single Action group exposes durable Daily full-board transport:
+  - `/v17/daily-snapshot-submit` -> `submitWowV17DailySnapshot`
+  - `/v17/daily-snapshot-run/{run_id}` -> `getWowV17DailySnapshotRun`
+- Full current-board/all-sport scans use durable Daily submit/poll; synchronous Daily remains bounded diagnostic transport.
 - The same single Action group exposes the research-only NCAAF spread forward-shadow operation:
   - `/internal/v17/spread-forward-shadow` -> `scoreWowV17SpreadForwardShadow`
 - The same single Action group now exposes the governed NFL pick'em board operation:
@@ -44,7 +48,7 @@ The PrizePicks Knowledge contract requires the live host to:
 - treat unreadable source pages as source-ingestion blockers, not `MODEL_UNAVAILABLE`; and
 - render distinct `Player`, `Matchup`, `PrizePicks line`, `Offer`, `Available side(s)`, and `Current/live note` columns.
 
-Repository merge/CI does not itself update the OpenAI Custom GPT editor. Current live editor parity therefore remains fail closed until the canonical instructions are saved, the PrizePicks addendum is attached as Knowledge, the single canonical 21-operation Action schema is imported with Bearer authentication, the editor is saved/reloaded, and acceptance succeeds from a fresh production WOW chat.
+Repository merge/CI does not itself update the OpenAI Custom GPT editor. Current live editor parity therefore remains fail closed until the canonical instructions are saved, the PrizePicks addendum is attached as Knowledge, the single canonical 23-operation Action schema is imported with Bearer authentication, the editor is saved/reloaded, and acceptance succeeds from a fresh production WOW chat.
 
 ## Acceptance required to re-attest VERIFIED
 
@@ -52,7 +56,7 @@ The production WOW editor must be saved/reloaded with:
 
 1. `WOW_V17_CUSTOM_GPT_INSTRUCTIONS.txt` in the Instructions field;
 2. the PrizePicks addendum attached as Knowledge (`WOW_V17_PRIZEPICKS_HOST_CONTRACT_KNOWLEDGE.txt` from the sync artifact, or the byte-identical canonical addendum source);
-3. exactly one WOW Action group for `wow-governed-probability-engine.onrender.com`, imported from `openapi.wow-betting-engine.v17.yaml`, exposing all 21 operations with existing Bearer authentication preserved.
+3. exactly one WOW Action group for `wow-governed-probability-engine.onrender.com`, imported from `openapi.wow-betting-engine.v17.yaml`, exposing all 23 operations with existing Bearer authentication preserved.
 
 Then a fresh production WOW chat must prove:
 
@@ -60,12 +64,13 @@ Then a fresh production WOW chat must prove:
 2. Bearer authentication succeeds without exposing or replacing `WOW_ACTION_API_KEY`;
 3. `scoreWowPickRequest` is callable and returns a typed governed response/receipt;
 4. `lookupWowV17PredictionReceipts` is callable and can recover the immutable receipt;
-5. `getWowV17PickRequestRunState`, `runWowV17ResumablePickRequest`, and `closeWowV17PickRequestRun` are visible on the same WOW Action surface;
-6. `scoreWowV17SpreadForwardShadow` is visible on that same Action surface and a valid NCAAF exact-line request reaches the backend without becoming publishable, promotable, or executable;
-7. `runWowV17NFLPickemBoard` is visible on that same Action surface and the Week 4 multi-date request reaches the governed NFL scorer without changing source probability ownership or terminal semantics;
-8. a multi-page PrizePicks attachment follows the page-completeness contract, including typed unreadable-page behavior if applicable;
-9. required V17 diagnostics remain callable; and
-10. `can_execute=false` remains true.
+5. `submitWowV17DailySnapshot` and `getWowV17DailySnapshotRun` are visible; a full-board canary creates a durable run_id and polls it to terminal;
+6. `getWowV17PickRequestRunState`, `runWowV17ResumablePickRequest`, and `closeWowV17PickRequestRun` are visible on the same WOW Action surface;
+7. `scoreWowV17SpreadForwardShadow` is visible on that same Action surface and a valid NCAAF exact-line request reaches the backend without becoming publishable, promotable, or executable;
+8. `runWowV17NFLPickemBoard` is visible on that same Action surface and the Week 4 multi-date request reaches the governed NFL scorer without changing source probability ownership or terminal semantics;
+9. a multi-page PrizePicks attachment follows the page-completeness contract, including typed unreadable-page behavior if applicable;
+10. required V17 diagnostics remain callable; and
+11. `can_execute=false` remains true.
 
 Until those checks are observed, report:
 
