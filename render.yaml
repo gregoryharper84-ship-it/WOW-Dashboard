@@ -116,6 +116,10 @@ services:
         sync: false
       - key: SENTRY_TRACES_SAMPLE_RATE
         value: "0.05"
+      - key: POSTHOG_PROJECT_API_KEY
+        sync: false
+      - key: POSTHOG_HOST
+        value: https://us.i.posthog.com
       - key: WOW_ENVIRONMENT
         value: "production"
       - key: REDIS_URL

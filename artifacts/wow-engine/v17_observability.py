@@ -29,6 +29,7 @@ from v17.pick_request_state_reliability_patch import (
     install_pick_request_state_reliability_patch,
 )
 from v17.pick_request_state_runtime import schedule_pick_request_state_install
+from v17.posthog_observability import initialize_posthog_observability
 
 
 def initialize_observability() -> dict[str, Any]:
@@ -222,6 +223,14 @@ def initialize_observability() -> dict[str, Any]:
         from v17.mlb_game_winner_shadow_one_shot import schedule_if_enabled
 
         schedule_if_enabled()
+    except Exception:
+        pass
+
+    # PostHog is additive error telemetry only. Its initializer is independently
+    # fail-open and its result is intentionally not folded into the longstanding
+    # Sentry return contract consumed by production health/tests.
+    try:
+        initialize_posthog_observability()
     except Exception:
         pass
 
