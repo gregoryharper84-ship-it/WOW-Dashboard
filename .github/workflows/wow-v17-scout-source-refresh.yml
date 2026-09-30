@@ -50,7 +50,7 @@ jobs:
           cat "$RUNNER_TEMP/scout-source-refresh/receipt.json" >> "$GITHUB_STEP_SUMMARY"
       - name: Upload source refresh receipt
         if: steps.credentials.outputs.configured == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: wow-v17-scout-source-refresh-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/scout-source-refresh/receipt.json

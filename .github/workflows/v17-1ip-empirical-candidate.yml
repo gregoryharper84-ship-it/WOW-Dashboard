@@ -38,7 +38,7 @@ jobs:
           MLB_1IP_RESEARCH_OUT: /tmp/mlb-1ip-empirical-candidate
         run: python scripts/build_mlb_1ip_empirical_candidate_packet.py
       - name: Upload immutable candidate packet
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: mlb-1ip-empirical-candidate-${{ github.sha }}
           path: /tmp/mlb-1ip-empirical-candidate

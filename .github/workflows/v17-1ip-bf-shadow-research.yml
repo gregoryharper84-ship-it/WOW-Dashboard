@@ -40,7 +40,7 @@ jobs:
         run: python scripts/build_mlb_1ip_bf_shadow_packet.py
       - name: Upload immutable research packet
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: mlb-1ip-bf-shadow-research-${{ github.sha }}
           path: /tmp/mlb-1ip-bf-shadow

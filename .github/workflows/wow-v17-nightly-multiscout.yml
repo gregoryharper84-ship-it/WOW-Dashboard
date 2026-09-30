@@ -180,7 +180,7 @@ jobs:
             --output "$RUNNER_TEMP/market-acceptance/market-evidence.json"
       - name: Upload acceptance evidence and structural probes
         if: always() && steps.gate.outputs.configured == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: wow-v17-market-evidence-acceptance-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/market-acceptance
@@ -328,7 +328,7 @@ jobs:
           echo "artifact_name=$artifact_name" >> "$GITHUB_OUTPUT"
       - name: Upload early Scout discovery recovery artifact
         if: always() && steps.delivery.outputs.artifact_name != ''
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ steps.delivery.outputs.artifact_name }}-discovery
           path: |
@@ -445,7 +445,7 @@ jobs:
           test -f "$RUNNER_TEMP/wow-multiscout/morning-scout-picks.json"
       - name: Upload governed Scout and downstream receipt artifact
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ steps.delivery.outputs.artifact_name }}
           path: |

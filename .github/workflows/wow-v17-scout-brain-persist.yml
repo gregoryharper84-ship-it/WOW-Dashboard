@@ -111,7 +111,7 @@ jobs:
         run: cat "$RUNNER_TEMP/scout-brain/persistence-receipt.json" >> "$GITHUB_STEP_SUMMARY"
       - name: Upload persistence receipt
         if: steps.artifact.outputs.present == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: wow-v17-scout-brain-persistence-${{ env.SOURCE_RUN_ID }}
           path: ${{ runner.temp }}/scout-brain/persistence-receipt.json

@@ -382,7 +382,7 @@ jobs:
 
       - name: Upload governed prop Action result
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: v17-canonical-prop-action-result
           path: v17_canonical_prop_action_result.json

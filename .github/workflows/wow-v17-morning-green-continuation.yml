@@ -187,7 +187,7 @@ jobs:
 
       - name: Upload closure state evidence
         if: always() && steps.resolve.outputs.eligible == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: wow-v17-closure-state-${{ steps.resolve.outputs.pr_number }}-${{ steps.resolve.outputs.head_sha }}
           path: ${{ runner.temp }}/wow-closure/closure-state.json

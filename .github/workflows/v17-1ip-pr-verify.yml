@@ -38,7 +38,7 @@ jobs:
           python -m pytest -q tests/test_mlb_1ip_production_capability.py tests/test_mlb_1ip_ingress_runtime.py | tee /tmp/v17-1ip-focused.log
       - name: Upload focused test log
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: v17-1ip-focused-test-log
           path: /tmp/v17-1ip-focused.log

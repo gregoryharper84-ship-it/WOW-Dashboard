@@ -170,7 +170,7 @@ jobs:
 
       - name: Upload nightly evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: wow-v17-nightly-engineering-evidence
           path: |

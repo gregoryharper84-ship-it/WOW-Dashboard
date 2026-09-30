@@ -41,7 +41,7 @@ jobs:
           python -m pytest artifacts/wow-engine/v17/test_gpt_editor_sync_packet.py \
             --confcutdir=artifacts/wow-engine/v17 -q
       - name: Upload sync packet
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: wow-v17-gpt-editor-sync-packet
           path: ${{ runner.temp }}/wow-gpt-editor-sync/

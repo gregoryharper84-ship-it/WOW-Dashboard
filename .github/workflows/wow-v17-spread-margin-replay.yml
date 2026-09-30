@@ -291,7 +291,7 @@ jobs:
 
       - name: Upload spread replay research receipts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: wow-v17-spread-margin-replay-${{ github.run_id }}
           path: artifacts/wow-engine/artifacts/spread-margin-replay/*.json
