@@ -172,13 +172,15 @@ def test_claude_runtime_is_isolated_to_fallback_worker() -> None:
     assert "ANTHROPIC_API_KEY" in dispatcher
 
 
-def test_claude_runner_prefers_api_key_over_stale_oauth() -> None:
+def test_claude_runner_prefers_api_key_then_fails_over_to_oauth() -> None:
     action = CLAUDE_ACTION.read_text()
     assert "id: claude_api" in action
     assert "if: inputs.anthropic_api_key != ''" in action
     assert "id: claude_oauth" in action
-    assert "if: inputs.anthropic_api_key == '' && inputs.claude_code_oauth_token != ''" in action
+    assert "if: inputs.claude_code_oauth_token != '' && (inputs.anthropic_api_key == '' || steps.claude_api.outcome == 'failure')" in action
+    assert action.count("continue-on-error: true") >= 2
     assert "steps.claude_api.outputs.structured_output || steps.claude_oauth.outputs.structured_output" in action
+    assert "api_outcome=${API_OUTCOME:-not-run}, oauth_outcome=${OAUTH_OUTCOME:-not-run}" in action
     assert "claude_args: ${{ steps.config.outputs.claude_args }}" in action
     assert 'show_full_output: "false"' in action
 

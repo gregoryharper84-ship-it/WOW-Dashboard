@@ -56,6 +56,7 @@ runs:
     - name: Run governed Claude agent with API key
       id: claude_api
       if: inputs.anthropic_api_key != ''
+      continue-on-error: true
       uses: anthropics/claude-code-base-action@16bc61eeac6dfaad1e3617aee9aefa59fce7c9be
       with:
         anthropic_api_key: ${{ inputs.anthropic_api_key }}
@@ -65,7 +66,8 @@ runs:
 
     - name: Run governed Claude agent with OAuth
       id: claude_oauth
-      if: inputs.anthropic_api_key == '' && inputs.claude_code_oauth_token != ''
+      if: inputs.claude_code_oauth_token != '' && (inputs.anthropic_api_key == '' || steps.claude_api.outcome == 'failure')
+      continue-on-error: true
       uses: anthropics/claude-code-base-action@16bc61eeac6dfaad1e3617aee9aefa59fce7c9be
       with:
         claude_code_oauth_token: ${{ inputs.claude_code_oauth_token }}
@@ -79,9 +81,11 @@ runs:
       env:
         API_RESULT: ${{ steps.claude_api.outputs.structured_output }}
         OAUTH_RESULT: ${{ steps.claude_oauth.outputs.structured_output }}
+        API_OUTCOME: ${{ steps.claude_api.outcome }}
+        OAUTH_OUTCOME: ${{ steps.claude_oauth.outcome }}
       run: |
         set -euo pipefail
         if [ -z "${API_RESULT:-}" ] && [ -z "${OAUTH_RESULT:-}" ]; then
-          echo "::error::Claude fallback produced no structured result."
+          echo "::error::Claude fallback produced no structured result (api_outcome=${API_OUTCOME:-not-run}, oauth_outcome=${OAUTH_OUTCOME:-not-run})."
           exit 1
         fi
