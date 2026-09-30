@@ -1,15 +1,18 @@
 """Backend-owned real-event discovery for NFL/WNBA spread forward canaries.
 
 GitHub-hosted runners must not depend directly on public scoreboard availability.
-NFL discovery is bound to the same frozen canonical schedule snapshot consumed by
-the NFL specialist. WNBA retains server-side ESPN discovery because its canonical
-identity contract is ESPN-backed. Neither path changes fitted model math,
-calibration, certification, publication, promotion, or execution authority.
+NFL discovery is bound to the frozen canonical schedule snapshot consumed by the
+NFL specialist. WNBA prefers ESPN for backward-compatible event aliases, but
+falls back to the league-owned WNBA Stats scoreboard when ESPN is unavailable.
+The fallback maps official team tricodes onto the stable ESPN team identifiers
+used by the governed historical WNBA feature corpus. Neither path changes fitted
+model math, calibration, certification, publication, promotion, or execution
+authority.
 """
 from __future__ import annotations
 
 from datetime import datetime, time, timedelta, timezone
-from typing import Any, Callable, Literal
+from typing import Any, Callable, Literal, Mapping
 from zoneinfo import ZoneInfo
 
 import requests
@@ -17,6 +20,7 @@ import requests
 from v17.nfl_team_event_specialist import _load_latest_schedule_snapshot
 from v17.spread_forward_shadow_leagues import run_nfl_forward_shadow, run_wnba_forward_shadow
 from v17.spread_margin_challenger import SpreadChallengerUnavailable
+from v17.wnba_spread_event_identity import WNBA_STATS_TRICODE_TO_ESPN_ID
 
 CAN_EXECUTE = False
 PROBABILITY_PUBLISHABLE = False
@@ -30,6 +34,7 @@ ESPN_SCOREBOARDS = {
 }
 DEFAULT_HORIZON_DAYS = {"NFL": 14, "WNBA": 15}
 NFL_SCHEDULE_TIMEZONE = ZoneInfo("America/New_York")
+WNBA_SCHEDULE_TIMEZONE = ZoneInfo("America/New_York")
 
 
 def _governance() -> dict[str, Any]:
@@ -220,13 +225,122 @@ def discover_future_espn_event(
     )
 
 
-def _deferred(sport: str) -> dict[str, Any]:
-    provider = "NFL_CANONICAL_SCHEDULE_SNAPSHOT" if sport == "NFL" else "ESPN_SCOREBOARD"
+def _official_schedule_for_date(
+    requested_date: str,
+    *,
+    http_get: Callable[..., Any],
+) -> dict[str, Any]:
+    from v17.wnba_prop_evidence_control_plane import _scoreboard_schedule_for_date
+
+    return _scoreboard_schedule_for_date(requested_date, http_get=http_get)
+
+
+def _official_schedule_games(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
+    league = payload.get("leagueSchedule")
+    dates = league.get("gameDates") if isinstance(league, Mapping) else None
+    if not isinstance(dates, list):
+        return []
+    games: list[dict[str, Any]] = []
+    for date_row in dates:
+        if not isinstance(date_row, Mapping):
+            continue
+        rows = date_row.get("games")
+        if isinstance(rows, list):
+            games.extend(row for row in rows if isinstance(row, dict))
+    return games
+
+
+def _official_team_identity(node: Any) -> tuple[str, str, str]:
+    if not isinstance(node, Mapping):
+        raise SpreadChallengerUnavailable(
+            "WNBA_SPREAD_CANARY_OFFICIAL_TEAM_IDENTITY_INVALID",
+            "official WNBA scoreboard team identity was missing",
+        )
+    tricode = str(node.get("teamTricode") or node.get("teamTriCode") or "").strip().upper()
+    official_id = str(node.get("teamId") or "").strip()
+    espn_id = WNBA_STATS_TRICODE_TO_ESPN_ID.get(tricode)
+    if not tricode or not official_id or not espn_id:
+        raise SpreadChallengerUnavailable(
+            "WNBA_SPREAD_CANARY_OFFICIAL_TEAM_ALIAS_UNAVAILABLE",
+            f"official WNBA team alias could not be mapped: {tricode or 'UNKNOWN'}",
+        )
+    name = " ".join(
+        part for part in (
+            str(node.get("teamCity") or "").strip(),
+            str(node.get("teamName") or "").strip(),
+        ) if part
+    ) or tricode
+    return espn_id, official_id, name
+
+
+def discover_future_wnba_official_event(
+    *,
+    fetcher: Callable[..., Any] = requests.get,
+    now: datetime | None = None,
+    horizon_days: int | None = None,
+) -> dict[str, Any] | None:
+    """Discover a future WNBA event from the league-owned Stats scoreboard."""
+    current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    horizon = int(horizon_days or DEFAULT_HORIZON_DAYS["WNBA"])
+    local_date = current.astimezone(WNBA_SCHEDULE_TIMEZONE).date()
+    successful_response = False
+    failures: list[str] = []
+    candidates: list[tuple[datetime, dict[str, Any]]] = []
+
+    for offset in range(max(horizon, 1)):
+        day = (local_date + timedelta(days=offset)).isoformat()
+        try:
+            payload = _official_schedule_for_date(day, http_get=fetcher)
+        except Exception as exc:  # noqa: BLE001 - converted to typed acquisition failure
+            failures.append(str(getattr(exc, "code", "") or type(exc).__name__))
+            continue
+        successful_response = True
+        for game in _official_schedule_games(payload):
+            game_id = str(game.get("gameId") or game.get("gameID") or "").strip()
+            try:
+                start = _utc(game.get("gameDateTimeUTC") or game.get("gameTimeUTC") or game.get("gameDateUTC"))
+                status = int(game.get("gameStatus") or 0)
+            except (TypeError, ValueError):
+                continue
+            if not game_id or start <= current or status not in {0, 1}:
+                continue
+            home_espn, home_official, home_name = _official_team_identity(game.get("homeTeam"))
+            away_espn, away_official, away_name = _official_team_identity(game.get("awayTeam"))
+            candidates.append((start, {
+                "sport": "WNBA",
+                "raw_event_id": game_id,
+                "event_start_time": start.isoformat(),
+                "home_team": home_name,
+                "away_team": away_name,
+                "home_team_id": home_espn,
+                "away_team_id": away_espn,
+                "home_official_team_id": home_official,
+                "away_official_team_id": away_official,
+                "identity_provider": "WNBA_STATS_SCOREBOARD_V3",
+                "identity_acquisition_location": "BACKEND_RUNTIME",
+                "can_execute": False,
+            }))
+
+    if candidates:
+        return min(candidates, key=lambda item: (item[0], item[1]["raw_event_id"]))[1]
+    if successful_response:
+        return None
+    detail = failures[-1] if failures else "NO_RESPONSE"
+    raise SpreadChallengerUnavailable(
+        "WNBA_SPREAD_CANARY_OFFICIAL_IDENTITY_SOURCE_UNAVAILABLE",
+        f"official WNBA schedule acquisition failed: {detail}",
+    )
+
+
+def _deferred(sport: str, *, provider: str | None = None) -> dict[str, Any]:
+    identity_provider = provider or (
+        "NFL_CANONICAL_SCHEDULE_SNAPSHOT" if sport == "NFL" else "ESPN_SCOREBOARD"
+    )
     return {
         "status": "DEFERRED_WITH_JUSTIFICATION",
         "code": f"{sport}_SPREAD_CANARY_NO_ELIGIBLE_FUTURE_EVENT",
         "sport": sport,
-        "identity_provider": provider,
+        "identity_provider": identity_provider,
         "identity_acquisition_location": "BACKEND_RUNTIME",
         **_governance(),
     }
@@ -260,13 +374,35 @@ def run_nfl_spread_auto_canary(
     }
 
 
-def run_wnba_spread_auto_canary(db: Any, *, fetcher: Callable[..., Any] = requests.get) -> dict[str, Any]:
-    event = discover_future_espn_event("WNBA", fetcher=fetcher)
+def run_wnba_spread_auto_canary(
+    db: Any,
+    *,
+    fetcher: Callable[..., Any] = requests.get,
+) -> dict[str, Any]:
+    provider = "ESPN_SCOREBOARD"
+    try:
+        event = discover_future_espn_event("WNBA", fetcher=fetcher)
+    except SpreadChallengerUnavailable as exc:
+        if exc.code != "WNBA_SPREAD_CANARY_IDENTITY_SOURCE_UNAVAILABLE":
+            raise
+        provider = "WNBA_STATS_SCOREBOARD_V3"
+        event = discover_future_wnba_official_event(fetcher=fetcher)
     if event is None:
-        return _deferred("WNBA")
+        return _deferred("WNBA", provider=provider)
+
+    provider = str(event.get("identity_provider") or provider)
+    if provider == "ESPN_SCOREBOARD":
+        forward_event_id = f"espn-{event['raw_event_id']}"
+    elif provider == "WNBA_STATS_SCOREBOARD_V3":
+        forward_event_id = f"wnba-stats-{event['raw_event_id']}"
+    else:
+        raise SpreadChallengerUnavailable(
+            "WNBA_SPREAD_CANARY_IDENTITY_PROVIDER_INVALID",
+            f"unsupported WNBA identity provider: {provider}",
+        )
     result = run_wnba_forward_shadow(
         db,
-        event_id=f"espn-{event['raw_event_id']}",
+        event_id=forward_event_id,
         event_start_time=event["event_start_time"],
         home_team_id=f"espn-{event['home_team_id']}",
         away_team_id=f"espn-{event['away_team_id']}",
@@ -275,7 +411,7 @@ def run_wnba_spread_auto_canary(db: Any, *, fetcher: Callable[..., Any] = reques
     return {
         **result,
         "canary_identity": event,
-        "identity_provider": "ESPN_SCOREBOARD",
+        "identity_provider": provider,
         "identity_acquisition_location": "BACKEND_RUNTIME",
         **_governance(),
     }
@@ -284,6 +420,7 @@ def run_wnba_spread_auto_canary(db: Any, *, fetcher: Callable[..., Any] = reques
 __all__ = [
     "discover_future_espn_event",
     "discover_future_nfl_canonical_event",
+    "discover_future_wnba_official_event",
     "run_nfl_spread_auto_canary",
     "run_wnba_spread_auto_canary",
 ]
