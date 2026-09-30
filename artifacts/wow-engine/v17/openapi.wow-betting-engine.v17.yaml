@@ -176,11 +176,10 @@ paths:
       operationId: runWowV17NFLPickemBoard
       x-openai-isConsequential: false
       description: >-
-        Build one required NFL pick'em selection per canonical pregame event by
-        consuming the existing governed NFL outright-win specialist. Supports a
-        multi-date NFL week, preserves modeled-hold source terminals, never uses
-        sportsbook price or pool popularity to alter sporting probability, and
-        never grants wager execution authority.
+        Build one required NFL pick'em selection per canonical pregame event from
+        the existing governed NFL outright-win specialist. Supports multi-date
+        weeks and preserves source terminals. Sportsbook price and pool popularity
+        never alter sporting probability; can_execute remains false.
       security: [{actionBearer: []}]
       requestBody:
         required: true
