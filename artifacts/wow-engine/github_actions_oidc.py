@@ -159,13 +159,16 @@ def validate_github_actions_claims(claims: dict[str, Any]) -> dict[str, Any]:
         SPREAD_FORWARD_PRODUCTION_CANARY_WORKFLOW_REF,
         SPREAD_CERTIFICATION_REPLAY_WORKFLOW_REF,
     }:
-        if event_name != "workflow_run":
+        # These exact protected-main workflows may run either as the historical
+        # direct workflow_run path or as reusable workflow_call stages behind
+        # the single post-deploy orchestrator. Do not widen any other workflow.
+        if event_name not in {"workflow_run", "workflow_call"}:
             raise GitHubOIDCValidationError("GITHUB_OIDC_EVENT_NOT_ALLOWED")
     elif workflow_ref == PRIORITY_PROP_LIFECYCLE_WORKFLOW_REF:
         # This workflow has scheduled/manual collection plus an exact-deploy
         # workflow_run acceptance trigger. Keep that additional event scoped to
         # this one protected-main workflow rather than widening ALLOWED_EVENTS.
-        if event_name not in ALLOWED_EVENTS | {"workflow_run"}:
+        if event_name not in ALLOWED_EVENTS | {"workflow_run", "workflow_call"}:
             raise GitHubOIDCValidationError("GITHUB_OIDC_EVENT_NOT_ALLOWED")
     elif event_name not in ALLOWED_EVENTS:
         raise GitHubOIDCValidationError("GITHUB_OIDC_EVENT_NOT_ALLOWED")

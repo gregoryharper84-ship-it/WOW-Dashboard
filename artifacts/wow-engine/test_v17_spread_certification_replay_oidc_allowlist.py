@@ -26,6 +26,11 @@ def test_spread_certification_replay_workflow_run_is_explicitly_authorized():
     assert oidc.validate_github_actions_claims(claims) == claims
 
 
+def test_spread_certification_replay_workflow_call_is_explicitly_authorized():
+    claims = _claims(event_name="workflow_call")
+    assert oidc.validate_github_actions_claims(claims) == claims
+
+
 @pytest.mark.parametrize("event_name", ["push", "schedule", "workflow_dispatch", "pull_request"])
 def test_spread_certification_replay_rejects_other_events(event_name):
     with pytest.raises(oidc.GitHubOIDCValidationError, match="GITHUB_OIDC_EVENT_NOT_ALLOWED"):
