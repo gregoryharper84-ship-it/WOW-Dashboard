@@ -32,18 +32,15 @@ jobs:
           sys.path.insert(0, str(Path('artifacts/wow-engine').resolve()))
           import github_actions_oidc as oidc
 
-          def claims(workflow_ref, event_name, *, ref='refs/heads/main'):
+          def claims(workflow_ref, event_name, *, ref=oidc.REF):
               return {
-                  'iss': oidc.GITHUB_OIDC_ISSUER,
-                  'aud': oidc.DEFAULT_AUDIENCE,
-                  'repository': oidc.GITHUB_REPOSITORY,
-                  'repository_owner': oidc.GITHUB_REPOSITORY_OWNER,
+                  'repository': oidc.REPOSITORY,
+                  'repository_id': oidc.REPOSITORY_ID,
+                  'repository_owner_id': oidc.REPOSITORY_OWNER_ID,
                   'ref': ref,
                   'workflow_ref': workflow_ref,
-                  'job_workflow_ref': workflow_ref,
                   'event_name': event_name,
                   'runner_environment': 'github-hosted',
-                  'sub': f'repo:{oidc.GITHUB_REPOSITORY}:ref:{ref}',
               }
 
           reusable_refs = (
@@ -57,15 +54,14 @@ jobs:
               assert validated['workflow_ref'] == workflow_ref
               print(f'PASS workflow_call exact allowlist: {workflow_ref}')
 
-          # Existing direct protected-main contracts remain valid.
           for workflow_ref in (
               oidc.SPREAD_CERTIFICATION_REPLAY_WORKFLOW_REF,
               oidc.SPREAD_FORWARD_PRODUCTION_CANARY_WORKFLOW_REF,
+              oidc.PRIORITY_PROP_LIFECYCLE_WORKFLOW_REF,
           ):
-              assert oidc.validate_github_actions_claims(claims(workflow_ref, 'workflow_run'))['event_name'] == 'workflow_run'
-          assert oidc.validate_github_actions_claims(claims(oidc.PRIORITY_PROP_LIFECYCLE_WORKFLOW_REF, 'workflow_run'))['event_name'] == 'workflow_run'
+              validated = oidc.validate_github_actions_claims(claims(workflow_ref, 'workflow_run'))
+              assert validated['event_name'] == 'workflow_run'
 
-          # No widening to the three standalone prop-evidence workflows.
           for workflow_ref in (
               oidc.NFL_PROP_FORWARD_EVIDENCE_WORKFLOW_REF,
               oidc.MLB_PROP_FORWARD_EVIDENCE_WORKFLOW_REF,
@@ -79,7 +75,6 @@ jobs:
               else:
                   raise AssertionError(f'workflow_call unexpectedly authorized: {workflow_ref}')
 
-          # Pull requests remain rejected for the three reusable refs.
           for workflow_ref in reusable_refs:
               try:
                   oidc.validate_github_actions_claims(claims(workflow_ref, 'pull_request'))
@@ -88,12 +83,11 @@ jobs:
               else:
                   raise AssertionError(f'pull_request unexpectedly authorized: {workflow_ref}')
 
-          # Exact main pin remains mandatory.
           for workflow_ref in reusable_refs:
               try:
                   oidc.validate_github_actions_claims(claims(workflow_ref, 'workflow_call', ref='refs/heads/not-main'))
-              except oidc.GitHubOIDCValidationError:
-                  pass
+              except oidc.GitHubOIDCValidationError as exc:
+                  assert 'REF_MISMATCH' in str(exc), exc
               else:
                   raise AssertionError(f'non-main reusable workflow unexpectedly authorized: {workflow_ref}')
 
