@@ -15,7 +15,7 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 12
     defaults:
       run:
         working-directory: artifacts/wow-engine
@@ -43,15 +43,11 @@ jobs:
           name: v17-1ip-focused-test-log
           path: /tmp/v17-1ip-focused.log
           if-no-files-found: warn
-      - name: Full WOW engine regression suite
-        shell: bash
+      - name: Record full-suite ownership
         run: |
-          set -o pipefail
-          python -m pytest -q | tee /tmp/v17-1ip-full.log
-      - name: Upload full test log
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: v17-1ip-full-test-log
-          path: /tmp/v17-1ip-full.log
-          if-no-files-found: warn
+          {
+            echo '## Full-suite ownership'
+            echo 'The protected `WOW governed probability backend` workflow owns complete wow-engine regression coverage.'
+            echo 'This specialized workflow intentionally stops after its original focused 1IP tests instead of running the same full suite a second time.'
+            echo '`can_execute=false`'
+          } >> "$GITHUB_STEP_SUMMARY"

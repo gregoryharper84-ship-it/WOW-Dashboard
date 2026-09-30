@@ -1,0 +1,48 @@
+{
+  "schema_version": "1.0",
+  "can_execute": false,
+  "terminal_authority": "V17_TERMINAL_REDUCER",
+  "incidents": {
+    "governance-core": {
+      "description": "Reproduce core V17 governance, typed-failure, immutable receipt, identity, probability-preservation, and reconciliation boundaries.",
+      "pytest": [
+        "tests/test_v17_governance_parity_contract.py",
+        "tests/test_v17_full_board_typed_failure_preservation.py",
+        "tests/test_v17_card_immutable_receipt_gate.py",
+        "tests/test_v17_prop_canonical_identity.py",
+        "tests/test_v17_team_event_probability_preservation.py",
+        "tests/test_v17_top10_model_reconciliation.py"
+      ]
+    },
+    "typed-failure-preservation": {
+      "description": "Reproduce the V17 rule that concrete scorer/input/acquisition failures remain typed and are not collapsed into MODEL_UNAVAILABLE.",
+      "pytest": [
+        "tests/test_v17_full_board_typed_failure_preservation.py"
+      ]
+    },
+    "canonical-prop-identity": {
+      "description": "Reproduce canonical player-prop identity handling without current-market or live-bet behavior.",
+      "pytest": [
+        "tests/test_v17_prop_canonical_identity.py"
+      ]
+    },
+    "immutable-prediction-integrity": {
+      "description": "Reproduce immutable card/prediction receipt gating.",
+      "pytest": [
+        "tests/test_v17_card_immutable_receipt_gate.py"
+      ]
+    },
+    "team-probability-preservation": {
+      "description": "Reproduce fitted team-event probability preservation and no-substitution boundaries.",
+      "pytest": [
+        "tests/test_v17_team_event_probability_preservation.py"
+      ]
+    },
+    "post-deploy-canary-gate": {
+      "description": "Reproduce the deterministic repository contract for post-deploy canary gating.",
+      "pytest": [
+        "tests/test_v17_post_deploy_canary_gate.py"
+      ]
+    }
+  }
+}
