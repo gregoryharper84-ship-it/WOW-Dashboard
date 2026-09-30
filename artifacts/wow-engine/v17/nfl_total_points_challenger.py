@@ -1,18 +1,20 @@
 """Governed Class-C NFL full-game total-points challenger.
 
-This module exists first for the Pick'em Monday-night total-points tiebreaker.
-It is deliberately research-only until historical replay, untouched holdout,
-counterexample review, regression, and governed promotion are complete.
+Initial use case: the Pick'em Monday-night total-points tiebreaker.
 
-Important invariants:
-* target is final sporting points (home_score + away_score), not a book total;
-* sportsbook totals, implied probabilities, moneylines, spreads, consensus and
-  generic LLM estimates are never model features or substitutes;
-* every feature is reconstructed strictly from events before the target event;
-* current-season and previous-season state remain separate inputs;
-* 2021-2023 fit, 2024 model-selection/residual calibration, 2025 untouched
-  validation, and 2026 forward reserve are fixed for V1 research;
-* this module cannot publish betting probabilities or execute a wager.
+The candidate is intentionally parsimonious. It learns only from settled
+sporting data available before kickoff. Sportsbook totals, spreads, moneylines,
+implied probabilities, consensus projections and generic LLM estimates are not
+features and are never substituted for the fitted model.
+
+V1 lifecycle is fixed before looking at the terminal holdout:
+* 2021-2023: fit;
+* 2024: ridge-alpha selection + empirical residual interval calibration;
+* 2025: untouched validation;
+* 2026: forward reserve only.
+
+Nothing in this module can publish a betting probability, rank a wager, or
+execute a wager/order. Promotion is a separate governed decision.
 """
 from __future__ import annotations
 
@@ -21,7 +23,7 @@ from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 import json
 from math import isfinite, sqrt
-from statistics import mean, median
+from statistics import mean
 from typing import Any, Mapping, Sequence
 
 import numpy as np
@@ -37,7 +39,7 @@ RANK_ELIGIBLE = False
 GLOBAL_TERMINAL_REDUCER = "V17_TERMINAL_REDUCER"
 MODEL_PROGRAM = "NFL_TOTAL_POINTS_TIEBREAKER_V1"
 MODEL_FAMILY = "NFL_TOTAL_POINTS_RIDGE_V1"
-FEATURE_SCHEMA_VERSION = "NFL_TOTAL_POINTS_PREGAME_V1"
+FEATURE_SCHEMA_VERSION = "NFL_TOTAL_POINTS_PREGAME_COMPOSITE_V1"
 USE_CASE = "PICKEM_TIEBREAKER_ONLY"
 TRAIN_SEASONS = (2021, 2022, 2023)
 CALIBRATION_SEASON = 2024
@@ -53,34 +55,14 @@ MIN_CALIBRATION_N = 250
 MIN_VALIDATION_N = 250
 
 FEATURE_ORDER = (
-    "week",
+    "naive_projection",
+    "recent_total_environment",
+    "epa_environment",
+    "pace_environment",
+    "turnover_environment",
+    "current_season_share",
+    "rest_environment",
     "early_week_1_4",
-    "home_current_season_share",
-    "away_current_season_share",
-    "home_previous_season_share",
-    "away_previous_season_share",
-    "home_season_points_for",
-    "away_season_points_for",
-    "home_season_points_against",
-    "away_season_points_against",
-    "home_previous_points_for",
-    "away_previous_points_for",
-    "home_previous_points_against",
-    "away_previous_points_against",
-    "home_recent3_game_total",
-    "away_recent3_game_total",
-    "home_season_offensive_epa",
-    "away_season_offensive_epa",
-    "home_season_defensive_epa",
-    "away_season_defensive_epa",
-    "home_season_pace",
-    "away_season_pace",
-    "home_season_turnovers",
-    "away_season_turnovers",
-    "home_season_special_teams_epa",
-    "away_season_special_teams_epa",
-    "home_rest_days",
-    "away_rest_days",
 )
 
 
@@ -140,18 +122,8 @@ def _hash(value: Any) -> str:
 
 
 def _avg(rows: Sequence[Mapping[str, Any]], field: str) -> float:
-    values = [float(row[field]) for row in rows if row.get(field) is not None and isfinite(float(row[field]))]
-    return mean(values) if values else 0.0
-
-
-def _jaccard(left: Sequence[str], right: Sequence[str]) -> float:
-    a = {str(v) for v in left if str(v)}
-    b = {str(v) for v in right if str(v)}
-    if not a and not b:
-        return 1.0
-    if not a or not b:
-        return 0.0
-    return len(a & b) / len(a | b)
+    vals = [float(row[field]) for row in rows if row.get(field) is not None and isfinite(float(row[field]))]
+    return mean(vals) if vals else 0.0
 
 
 def _team_metrics(history: Sequence[Mapping[str, Any]], *, season: int, target_time: datetime) -> dict[str, float]:
@@ -163,11 +135,6 @@ def _team_metrics(history: Sequence[Mapping[str, Any]], *, season: int, target_t
     previous_share = len(previous) / float(PREVIOUS_SEASON_GAMES)
     last_time = _dt(prior[-1]["event_time"]) if prior else target_time
     rest_days = max(0.0, min(21.0, (target_time - last_time).total_seconds() / 86400.0))
-    qb_continuity = 0.0
-    qb_continuity_available = 0.0
-    if len(prior) >= 2:
-        qb_continuity = _jaccard(list(prior[-1].get("qb_ids") or []), list(prior[-2].get("qb_ids") or []))
-        qb_continuity_available = 1.0
     return {
         "total_prior_games": float(len(prior)),
         "current_season_share": float(current_share),
@@ -181,48 +148,11 @@ def _team_metrics(history: Sequence[Mapping[str, Any]], *, season: int, target_t
         "season_defensive_epa": _avg(current, "defensive_epa_mean"),
         "season_pace": _avg(current, "pace"),
         "season_turnovers": _avg(current, "turnovers"),
-        "season_special_teams_epa": _avg(current, "special_teams_epa"),
         "rest_days": float(rest_days),
-        "qb_continuity": float(qb_continuity),
-        "qb_continuity_available": float(qb_continuity_available),
     }
 
 
-def _feature_map(*, week: int, home: Mapping[str, float], away: Mapping[str, float]) -> dict[str, float]:
-    raw = {
-        "week": float(week),
-        "early_week_1_4": float(int(week) <= 4),
-        "home_current_season_share": float(home["current_season_share"]),
-        "away_current_season_share": float(away["current_season_share"]),
-        "home_previous_season_share": float(home["previous_season_share"]),
-        "away_previous_season_share": float(away["previous_season_share"]),
-        "home_season_points_for": float(home["season_points_for"]),
-        "away_season_points_for": float(away["season_points_for"]),
-        "home_season_points_against": float(home["season_points_against"]),
-        "away_season_points_against": float(away["season_points_against"]),
-        "home_previous_points_for": float(home["previous_points_for"]),
-        "away_previous_points_for": float(away["previous_points_for"]),
-        "home_previous_points_against": float(home["previous_points_against"]),
-        "away_previous_points_against": float(away["previous_points_against"]),
-        "home_recent3_game_total": float(home["recent3_game_total"]),
-        "away_recent3_game_total": float(away["recent3_game_total"]),
-        "home_season_offensive_epa": float(home["season_offensive_epa"]),
-        "away_season_offensive_epa": float(away["season_offensive_epa"]),
-        "home_season_defensive_epa": float(home["season_defensive_epa"]),
-        "away_season_defensive_epa": float(away["season_defensive_epa"]),
-        "home_season_pace": float(home["season_pace"]),
-        "away_season_pace": float(away["season_pace"]),
-        "home_season_turnovers": float(home["season_turnovers"]),
-        "away_season_turnovers": float(away["season_turnovers"]),
-        "home_season_special_teams_epa": float(home["season_special_teams_epa"]),
-        "away_season_special_teams_epa": float(away["season_special_teams_epa"]),
-        "home_rest_days": float(home["rest_days"]),
-        "away_rest_days": float(away["rest_days"]),
-    }
-    return {name: float(raw[name]) for name in FEATURE_ORDER}
-
-
-def _blended_metric(metrics: Mapping[str, float], current_field: str, previous_field: str) -> float:
+def _blend(metrics: Mapping[str, float], current_field: str, previous_field: str) -> float:
     current_share = float(metrics["current_season_share"])
     previous_share = float(metrics["previous_season_share"])
     current = float(metrics[current_field])
@@ -233,125 +163,85 @@ def _blended_metric(metrics: Mapping[str, float], current_field: str, previous_f
         return previous
     if previous_share <= 0:
         return current
-    weight = min(1.0, current_share)
-    return weight * current + (1.0 - weight) * previous
+    w = min(1.0, current_share)
+    return w * current + (1.0 - w) * previous
 
 
 def _naive_projection(home: Mapping[str, float], away: Mapping[str, float]) -> float:
-    home_pf = _blended_metric(home, "season_points_for", "previous_points_for")
-    home_pa = _blended_metric(home, "season_points_against", "previous_points_against")
-    away_pf = _blended_metric(away, "season_points_for", "previous_points_for")
-    away_pa = _blended_metric(away, "season_points_against", "previous_points_against")
+    home_pf = _blend(home, "season_points_for", "previous_points_for")
+    home_pa = _blend(home, "season_points_against", "previous_points_against")
+    away_pf = _blend(away, "season_points_for", "previous_points_for")
+    away_pa = _blend(away, "season_points_against", "previous_points_against")
     if max(home_pf, home_pa, away_pf, away_pa) <= 0:
         return 44.0
-    home_points = (home_pf + away_pa) / 2.0
-    away_points = (away_pf + home_pa) / 2.0
-    return float(home_points + away_points)
+    return float((home_pf + away_pa + away_pf + home_pa) / 2.0)
 
 
-def _history_rows(event: Mapping[str, Any], *, home: bool) -> dict[str, Any]:
-    home_score = float(event.get("home_score") or 0.0)
-    away_score = float(event.get("away_score") or 0.0)
-    if home:
-        return {
-            "event_time": _dt(event["event_start_time"]).isoformat(),
-            "season": int(event.get("season") or 0),
-            "points_for": home_score,
-            "points_against": away_score,
-            "game_total": home_score + away_score,
-            "offensive_epa_mean": float(event.get("home_attack_style_index") or 0.0),
-            "defensive_epa_mean": -float(event.get("home_defense_style_index") or 0.0),
-            "pace": float(event.get("home_pace_or_tempo_index") or 0.0),
-            "turnovers": float(event.get("home_turnovers") or 0.0),
-            "special_teams_epa": float(event.get("home_special_teams_epa") or 0.0),
-            "qb_ids": list(event.get("home_history_lineup_ids") or []),
-        }
-    return {
-        "event_time": _dt(event["event_start_time"]).isoformat(),
-        "season": int(event.get("season") or 0),
-        "points_for": away_score,
-        "points_against": home_score,
-        "game_total": home_score + away_score,
-        "offensive_epa_mean": float(event.get("away_attack_style_index") or 0.0),
-        "defensive_epa_mean": -float(event.get("away_defense_style_index") or 0.0),
-        "pace": float(event.get("away_pace_or_tempo_index") or 0.0),
-        "turnovers": float(event.get("away_turnovers") or 0.0),
-        "special_teams_epa": float(event.get("away_special_teams_epa") or 0.0),
-        "qb_ids": list(event.get("away_history_lineup_ids") or []),
+def _feature_map(*, week: int, home: Mapping[str, float], away: Mapping[str, float]) -> dict[str, float]:
+    naive = _naive_projection(home, away)
+    recent_values = [float(home["recent3_game_total"]), float(away["recent3_game_total"])]
+    recent_nonzero = [v for v in recent_values if v > 0]
+    recent = mean(recent_nonzero) if recent_nonzero else naive
+    raw = {
+        "naive_projection": naive,
+        "recent_total_environment": float(recent),
+        "epa_environment": float(home["season_offensive_epa"] + away["season_offensive_epa"] + home["season_defensive_epa"] + away["season_defensive_epa"]),
+        "pace_environment": float(home["season_pace"] + away["season_pace"]),
+        "turnover_environment": float(home["season_turnovers"] + away["season_turnovers"]),
+        "current_season_share": float((home["current_season_share"] + away["current_season_share"]) / 2.0),
+        "rest_environment": float((home["rest_days"] + away["rest_days"]) / 2.0),
+        "early_week_1_4": float(int(week) <= 4),
     }
+    return {name: float(raw[name]) for name in FEATURE_ORDER}
+
+
+def _history_row(event: Mapping[str, Any], *, home: bool) -> dict[str, Any]:
+    hs = float(event.get("home_score") or 0.0)
+    as_ = float(event.get("away_score") or 0.0)
+    if home:
+        return {"event_time": _dt(event["event_start_time"]).isoformat(), "season": int(event.get("season") or 0), "points_for": hs, "points_against": as_, "game_total": hs + as_, "offensive_epa_mean": float(event.get("home_attack_style_index") or 0.0), "defensive_epa_mean": -float(event.get("home_defense_style_index") or 0.0), "pace": float(event.get("home_pace_or_tempo_index") or 0.0), "turnovers": float(event.get("home_turnovers") or 0.0)}
+    return {"event_time": _dt(event["event_start_time"]).isoformat(), "season": int(event.get("season") or 0), "points_for": as_, "points_against": hs, "game_total": hs + as_, "offensive_epa_mean": float(event.get("away_attack_style_index") or 0.0), "defensive_epa_mean": -float(event.get("away_defense_style_index") or 0.0), "pace": float(event.get("away_pace_or_tempo_index") or 0.0), "turnovers": float(event.get("away_turnovers") or 0.0)}
 
 
 def build_rows(events: Sequence[Mapping[str, Any]]) -> tuple[list[TotalPointsTrainingRow], list[dict[str, Any]]]:
-    """Build strictly pregame regular-season total-points rows."""
     history: dict[str, list[dict[str, Any]]] = {}
     rows: list[TotalPointsTrainingRow] = []
     metadata: list[dict[str, Any]] = []
     ordered = sorted(events, key=lambda r: (_dt(r["event_start_time"]), str(r.get("event_id") or "")))
     for event in ordered:
-        game_type = str(event.get("game_type") or "REG").strip().upper()
-        if game_type not in {"REG", "R"}:
+        if str(event.get("game_type") or "REG").strip().upper() not in {"REG", "R"}:
             continue
         start = _dt(event["event_start_time"])
         season = int(event.get("season") or 0)
         week = int(event.get("week") or 0)
-        home_team = str(event.get("home_team") or "").strip().upper()
-        away_team = str(event.get("away_team") or "").strip().upper()
-        if not home_team or not away_team or home_team == away_team or week <= 0:
+        home = str(event.get("home_team") or "").strip().upper()
+        away = str(event.get("away_team") or "").strip().upper()
+        if not home or not away or home == away or week <= 0:
             continue
-        home_score_raw = event.get("home_score")
-        away_score_raw = event.get("away_score")
-        if home_score_raw is None or away_score_raw is None:
+        if event.get("home_score") is None or event.get("away_score") is None:
             continue
-        home_metrics = _team_metrics(history.get(home_team, []), season=season, target_time=start)
-        away_metrics = _team_metrics(history.get(away_team, []), season=season, target_time=start)
-        total_points = float(home_score_raw) + float(away_score_raw)
-        if home_metrics["total_prior_games"] >= MIN_TOTAL_PRIOR_GAMES and away_metrics["total_prior_games"] >= MIN_TOTAL_PRIOR_GAMES:
-            features = _feature_map(week=week, home=home_metrics, away=away_metrics)
+        hm = _team_metrics(history.get(home, []), season=season, target_time=start)
+        am = _team_metrics(history.get(away, []), season=season, target_time=start)
+        if hm["total_prior_games"] >= MIN_TOTAL_PRIOR_GAMES and am["total_prior_games"] >= MIN_TOTAL_PRIOR_GAMES:
+            features = _feature_map(week=week, home=hm, away=am)
             if not all(isfinite(v) for v in features.values()):
                 raise NFLTotalPointsChallengerUnavailable("NFL_TOTAL_POINTS_NONFINITE_FEATURE", str(event.get("event_id")))
-            manifest = {
-                "program": MODEL_PROGRAM,
-                "feature_schema_version": FEATURE_SCHEMA_VERSION,
-                "event_id": str(event.get("event_id") or ""),
-                "season": season,
-                "week": week,
-                "source_manifest": dict(event.get("source_manifest") or {}),
-                "feature_as_of": (start - timedelta(seconds=1)).isoformat(),
-                "sportsbook_total_used": False,
-                "market_probability_used": False,
-                "moneyline_probability_used": False,
-                "spread_used": False,
-                "target_result_used_in_features": False,
-            }
-            rows.append(TotalPointsTrainingRow(
-                event_id=str(event.get("event_id") or ""),
-                event_start_time=start.isoformat(),
-                feature_as_of=(start - timedelta(seconds=1)).isoformat(),
-                season=season,
-                week=week,
-                total_points=total_points,
-                features=features,
-                naive_projection=_naive_projection(home_metrics, away_metrics),
-                source_manifest_sha256=_hash(manifest),
-            ))
+            manifest = {"program": MODEL_PROGRAM, "feature_schema_version": FEATURE_SCHEMA_VERSION, "event_id": str(event.get("event_id") or ""), "season": season, "week": week, "source_manifest": dict(event.get("source_manifest") or {}), "feature_as_of": (start - timedelta(seconds=1)).isoformat(), "sportsbook_total_used": False, "market_probability_used": False, "moneyline_probability_used": False, "spread_used": False, "target_result_used_in_features": False}
+            rows.append(TotalPointsTrainingRow(event_id=str(event.get("event_id") or ""), event_start_time=start.isoformat(), feature_as_of=(start - timedelta(seconds=1)).isoformat(), season=season, week=week, total_points=float(event["home_score"]) + float(event["away_score"]), features=features, naive_projection=float(features["naive_projection"]), source_manifest_sha256=_hash(manifest)))
             metadata.append({"season": season, "week": week, "manifest": manifest})
-        history.setdefault(home_team, []).append(_history_rows(event, home=True))
-        history.setdefault(away_team, []).append(_history_rows(event, home=False))
+        history.setdefault(home, []).append(_history_row(event, home=True))
+        history.setdefault(away, []).append(_history_row(event, home=False))
     if not rows:
         raise NFLTotalPointsChallengerUnavailable("NFL_TOTAL_POINTS_ROWS_EMPTY", "no leakage-safe total-points rows")
     return rows, metadata
 
 
 def _partition(rows: Sequence[TotalPointsTrainingRow]):
-    train = [r for r in rows if r.season in TRAIN_SEASONS]
-    calibration = [r for r in rows if r.season == CALIBRATION_SEASON]
-    validation = [r for r in rows if r.season == VALIDATION_SEASON]
-    reserve = [r for r in rows if r.season == FORWARD_RESERVE_SEASON]
-    return train, calibration, validation, reserve
+    return ([r for r in rows if r.season in TRAIN_SEASONS], [r for r in rows if r.season == CALIBRATION_SEASON], [r for r in rows if r.season == VALIDATION_SEASON], [r for r in rows if r.season == FORWARD_RESERVE_SEASON])
 
 
 def _matrix(rows: Sequence[TotalPointsTrainingRow]):
-    x = np.asarray([[float(r.features[n]) for n in FEATURE_ORDER] for r in rows], dtype=float)
+    x = np.asarray([[float(r.features[name]) for name in FEATURE_ORDER] for r in rows], dtype=float)
     y = np.asarray([float(r.total_points) for r in rows], dtype=float)
     if not np.isfinite(x).all() or not np.isfinite(y).all():
         raise NFLTotalPointsChallengerUnavailable("NFL_TOTAL_POINTS_NONFINITE_INPUT", "matrix contains non-finite values")
@@ -360,173 +250,73 @@ def _matrix(rows: Sequence[TotalPointsTrainingRow]):
 
 def _metrics(actual: np.ndarray, predicted: np.ndarray) -> dict[str, float]:
     residual = actual - predicted
-    abs_error = np.abs(residual)
-    return {
-        "n": float(len(actual)),
-        "mae": float(np.mean(abs_error)),
-        "rmse": float(sqrt(np.mean(np.square(residual)))),
-        "median_absolute_error": float(np.median(abs_error)),
-        "bias_actual_minus_predicted": float(np.mean(residual)),
-        "within_7_points": float(np.mean(abs_error <= 7.0)),
-        "within_10_points": float(np.mean(abs_error <= 10.0)),
-    }
+    ae = np.abs(residual)
+    return {"n": float(len(actual)), "mae": float(np.mean(ae)), "rmse": float(sqrt(np.mean(np.square(residual)))), "median_absolute_error": float(np.median(ae)), "bias_actual_minus_predicted": float(np.mean(residual)), "within_7_points": float(np.mean(ae <= 7.0)), "within_10_points": float(np.mean(ae <= 10.0))}
 
 
 def _worst_errors(rows: Sequence[TotalPointsTrainingRow], predicted: np.ndarray, limit: int = 10) -> list[dict[str, Any]]:
-    ranked = sorted(
-        ({
-            "event_id": row.event_id,
-            "season": row.season,
-            "week": row.week,
-            "actual_total": row.total_points,
-            "projected_total": float(pred),
-            "absolute_error": abs(float(row.total_points) - float(pred)),
-        } for row, pred in zip(rows, predicted)),
-        key=lambda r: (-float(r["absolute_error"]), str(r["event_id"])),
-    )
+    ranked = sorted(({"event_id": row.event_id, "season": row.season, "week": row.week, "actual_total": row.total_points, "projected_total": float(pred), "absolute_error": abs(row.total_points - float(pred))} for row, pred in zip(rows, predicted)), key=lambda r: (-float(r["absolute_error"]), str(r["event_id"])))
     return ranked[:limit]
 
 
-def train_candidate(
-    events: Sequence[Mapping[str, Any]],
-    *,
-    ridge_alpha_grid: Sequence[float] = RIDGE_ALPHA_GRID,
-    min_train_n: int = MIN_TRAIN_N,
-    min_calibration_n: int = MIN_CALIBRATION_N,
-    min_validation_n: int = MIN_VALIDATION_N,
-) -> tuple[TotalPointsArtifact, dict[str, Any]]:
+def train_candidate(events: Sequence[Mapping[str, Any]], *, ridge_alpha_grid: Sequence[float] = RIDGE_ALPHA_GRID, min_train_n: int = MIN_TRAIN_N, min_calibration_n: int = MIN_CALIBRATION_N, min_validation_n: int = MIN_VALIDATION_N) -> tuple[TotalPointsArtifact, dict[str, Any]]:
     rows, _ = build_rows(events)
     train, calibration, validation, reserve = _partition(rows)
     if len(train) < min_train_n or len(calibration) < min_calibration_n or len(validation) < min_validation_n:
-        raise NFLTotalPointsChallengerUnavailable(
-            "NFL_TOTAL_POINTS_SEASON_HOLDOUT_INSUFFICIENT",
-            f"train={len(train)} calibration={len(calibration)} validation={len(validation)}",
-        )
+        raise NFLTotalPointsChallengerUnavailable("NFL_TOTAL_POINTS_SEASON_HOLDOUT_INSUFFICIENT", f"train={len(train)} calibration={len(calibration)} validation={len(validation)}")
     x_train, y_train = _matrix(train)
     x_cal, y_cal = _matrix(calibration)
     x_val, y_val = _matrix(validation)
     scaler = StandardScaler().fit(x_train)
-    z_train = scaler.transform(x_train)
-    z_cal = scaler.transform(x_cal)
-    z_val = scaler.transform(x_val)
-
-    candidate_results: list[dict[str, Any]] = []
-    selected: tuple[float, Ridge, np.ndarray] | None = None
+    z_train, z_cal, z_val = scaler.transform(x_train), scaler.transform(x_cal), scaler.transform(x_val)
+    alpha_results: list[dict[str, Any]] = []
+    selected_alpha: float | None = None
+    selected_model: Ridge | None = None
+    selected_cal_pred: np.ndarray | None = None
+    best_rmse = float("inf")
     for alpha in ridge_alpha_grid:
         if float(alpha) <= 0:
             continue
         model = Ridge(alpha=float(alpha)).fit(z_train, y_train)
         cal_pred = model.predict(z_cal)
-        result = {"alpha": float(alpha), **_metrics(y_cal, cal_pred)}
-        candidate_results.append(result)
-        if selected is None or result["mae"] < next(r["mae"] for r in candidate_results if r["alpha"] == selected[0]) - 1e-12:
-            selected = (float(alpha), model, cal_pred)
-    if selected is None:
+        metrics = _metrics(y_cal, cal_pred)
+        alpha_results.append({"alpha": float(alpha), **metrics})
+        if metrics["rmse"] < best_rmse - 1e-12:
+            best_rmse = metrics["rmse"]
+            selected_alpha, selected_model, selected_cal_pred = float(alpha), model, cal_pred
+    if selected_model is None or selected_cal_pred is None or selected_alpha is None:
         raise NFLTotalPointsChallengerUnavailable("NFL_TOTAL_POINTS_ALPHA_GRID_EMPTY", "no positive ridge alpha")
-    alpha, model, cal_pred = selected
-    val_pred = model.predict(z_val)
-    cal_residuals = np.asarray(y_cal - cal_pred, dtype=float)
+    val_pred = selected_model.predict(z_val)
+    cal_residuals = np.asarray(y_cal - selected_cal_pred, dtype=float)
     if len(cal_residuals) < min_calibration_n or float(np.std(cal_residuals)) <= 1e-9:
         raise NFLTotalPointsChallengerUnavailable("NFL_TOTAL_POINTS_CALIBRATION_RESIDUALS_INVALID", "insufficient residual distribution")
-
+    q10, q50, q90 = (float(np.quantile(cal_residuals, q)) for q in (0.10, 0.50, 0.90))
+    coverage = float(np.mean((y_val >= val_pred + q10) & (y_val <= val_pred + q90)))
     naive_val = np.asarray([float(r.naive_projection) for r in validation], dtype=float)
     train_mean = float(np.mean(y_train))
     mean_val = np.full_like(y_val, train_mean)
-    lower_q = float(np.quantile(cal_residuals, 0.10))
-    upper_q = float(np.quantile(cal_residuals, 0.90))
-    lower = val_pred + lower_q
-    upper = val_pred + upper_q
-    coverage = float(np.mean((y_val >= lower) & (y_val <= upper)))
-
-    artifact = TotalPointsArtifact(
-        sport="NFL",
-        use_case=USE_CASE,
-        model_family=MODEL_FAMILY,
-        feature_schema_version=FEATURE_SCHEMA_VERSION,
-        feature_names=tuple(FEATURE_ORDER),
-        scaler_mean=tuple(float(v) for v in scaler.mean_),
-        scaler_scale=tuple(float(v if abs(v) > 1e-12 else 1.0) for v in scaler.scale_),
-        coefficients=tuple(float(v) for v in model.coef_),
-        intercept=float(model.intercept_),
-        calibration_residuals=tuple(float(v) for v in cal_residuals),
-        ridge_alpha=float(alpha),
-        train_rows=len(train),
-        calibration_rows=len(calibration),
-        validation_rows=len(validation),
-        training_dataset_hash=_hash([asdict(r) for r in train + calibration]),
-    )
+    artifact = TotalPointsArtifact(sport="NFL", use_case=USE_CASE, model_family=MODEL_FAMILY, feature_schema_version=FEATURE_SCHEMA_VERSION, feature_names=tuple(FEATURE_ORDER), scaler_mean=tuple(float(v) for v in scaler.mean_), scaler_scale=tuple(float(v if abs(v) > 1e-12 else 1.0) for v in scaler.scale_), coefficients=tuple(float(v) for v in selected_model.coef_), intercept=float(selected_model.intercept_), calibration_residuals=tuple(float(v) for v in cal_residuals), ridge_alpha=selected_alpha, train_rows=len(train), calibration_rows=len(calibration), validation_rows=len(validation), training_dataset_hash=_hash([asdict(r) for r in train + calibration]))
     validation_metrics = _metrics(y_val, val_pred)
     naive_metrics = _metrics(y_val, naive_val)
     mean_metrics = _metrics(y_val, mean_val)
     early_mask = np.asarray([r.week <= 4 for r in validation], dtype=bool)
     early_metrics = _metrics(y_val[early_mask], val_pred[early_mask]) if bool(np.any(early_mask)) else None
-    research_screen = {
-        "beats_naive_mae": validation_metrics["mae"] < naive_metrics["mae"],
-        "beats_train_mean_mae": validation_metrics["mae"] < mean_metrics["mae"],
-        "absolute_bias_under_2_5": abs(validation_metrics["bias_actual_minus_predicted"]) <= 2.5,
-        "empirical_80_interval_coverage_between_0_70_and_0_90": 0.70 <= coverage <= 0.90,
-    }
-    research_screen["passes"] = all(research_screen.values())
-    receipt = {
-        "status": "EXPERIMENT_CREATED",
-        "code": "NFL_TOTAL_POINTS_V1_HOLDOUT_REPLAY_COMPLETE",
-        "model_program": MODEL_PROGRAM,
-        "model_family": MODEL_FAMILY,
-        "feature_schema_version": FEATURE_SCHEMA_VERSION,
-        "use_case": USE_CASE,
-        "train_rows": len(train),
-        "calibration_rows": len(calibration),
-        "validation_rows": len(validation),
-        "forward_reserve_rows": len(reserve),
-        "ridge_alpha_grid": [float(v) for v in ridge_alpha_grid],
-        "calibration_model_selection": candidate_results,
-        "selected_ridge_alpha": float(alpha),
-        "validation_metrics": validation_metrics,
-        "naive_validation_metrics": naive_metrics,
-        "training_mean_validation_metrics": mean_metrics,
-        "early_week_validation_metrics": early_metrics,
-        "empirical_80_interval_coverage": coverage,
-        "calibration_residual_quantiles": {"q10": lower_q, "q50": float(np.quantile(cal_residuals, 0.50)), "q90": upper_q},
-        "worst_validation_errors": _worst_errors(validation, val_pred),
-        "research_screen": research_screen,
-        "market_features_used": False,
-        "sportsbook_total_used": False,
-        "market_probability_substitution_used": False,
-        "moneyline_probability_used": False,
-        "automatic_certification": False,
-        "automatic_promotion": False,
-        "probability_publishable": False,
-        "rank_eligible": False,
-        "global_terminal_reducer": GLOBAL_TERMINAL_REDUCER,
-        "can_execute": False,
-    }
+    screen = {"beats_naive_mae": validation_metrics["mae"] < naive_metrics["mae"], "beats_training_mean_mae": validation_metrics["mae"] < mean_metrics["mae"], "absolute_bias_under_2_5": abs(validation_metrics["bias_actual_minus_predicted"]) <= 2.5, "empirical_80_interval_coverage_between_0_70_and_0_90": 0.70 <= coverage <= 0.90}
+    screen["passes"] = all(screen.values())
+    receipt = {"status": "EXPERIMENT_CREATED", "code": "NFL_TOTAL_POINTS_V1_HOLDOUT_REPLAY_COMPLETE", "model_program": MODEL_PROGRAM, "model_family": MODEL_FAMILY, "feature_schema_version": FEATURE_SCHEMA_VERSION, "use_case": USE_CASE, "train_rows": len(train), "calibration_rows": len(calibration), "validation_rows": len(validation), "forward_reserve_rows": len(reserve), "ridge_alpha_grid": [float(v) for v in ridge_alpha_grid], "calibration_model_selection": alpha_results, "selected_ridge_alpha": selected_alpha, "validation_metrics": validation_metrics, "naive_validation_metrics": naive_metrics, "training_mean_validation_metrics": mean_metrics, "early_week_validation_metrics": early_metrics, "empirical_80_interval_coverage": coverage, "calibration_residual_quantiles": {"q10": q10, "q50": q50, "q90": q90}, "worst_validation_errors": _worst_errors(validation, val_pred), "research_screen": screen, "market_features_used": False, "sportsbook_total_used": False, "market_probability_substitution_used": False, "moneyline_probability_used": False, "automatic_certification": False, "automatic_promotion": False, "probability_publishable": False, "rank_eligible": False, "global_terminal_reducer": GLOBAL_TERMINAL_REDUCER, "can_execute": False}
     return artifact, receipt
 
 
-def _predict_vector(artifact: TotalPointsArtifact, features: Mapping[str, float]) -> float:
-    raw = np.asarray([float(features[n]) for n in artifact.feature_names], dtype=float)
-    mean_vec = np.asarray(artifact.scaler_mean, dtype=float)
-    scale_vec = np.asarray(artifact.scaler_scale, dtype=float)
-    coef = np.asarray(artifact.coefficients, dtype=float)
-    z = (raw - mean_vec) / scale_vec
-    value = float(artifact.intercept + float(np.dot(z, coef)))
+def _predict(artifact: TotalPointsArtifact, features: Mapping[str, float]) -> float:
+    raw = np.asarray([float(features[name]) for name in artifact.feature_names], dtype=float)
+    z = (raw - np.asarray(artifact.scaler_mean)) / np.asarray(artifact.scaler_scale)
+    value = float(artifact.intercept + np.dot(z, np.asarray(artifact.coefficients)))
     if not isfinite(value):
         raise NFLTotalPointsChallengerUnavailable("NFL_TOTAL_POINTS_PREDICTION_NONFINITE", "projection is non-finite")
     return value
 
 
-def score_tiebreaker(
-    artifact: TotalPointsArtifact,
-    *,
-    historical_events: Sequence[Mapping[str, Any]],
-    event_id: str,
-    event_start_time: Any,
-    season: int,
-    week: int,
-    home_team: str,
-    away_team: str,
-) -> dict[str, Any]:
-    """Score one future Pick'em tiebreaker event from strictly prior sporting data."""
+def score_tiebreaker(artifact: TotalPointsArtifact, *, historical_events: Sequence[Mapping[str, Any]], event_id: str, event_start_time: Any, season: int, week: int, home_team: str, away_team: str) -> dict[str, Any]:
     start = _dt(event_start_time)
     home = str(home_team or "").strip().upper()
     away = str(away_team or "").strip().upper()
@@ -534,8 +324,7 @@ def score_tiebreaker(
         raise NFLTotalPointsChallengerUnavailable("NFL_TOTAL_POINTS_EVENT_IDENTITY_INVALID", str(event_id))
     history: dict[str, list[dict[str, Any]]] = {}
     for event in sorted(historical_events, key=lambda r: (_dt(r["event_start_time"]), str(r.get("event_id") or ""))):
-        event_time = _dt(event["event_start_time"])
-        if event_time >= start:
+        if _dt(event["event_start_time"]) >= start:
             break
         if str(event.get("game_type") or "REG").strip().upper() not in {"REG", "R"}:
             continue
@@ -545,42 +334,18 @@ def score_tiebreaker(
         a = str(event.get("away_team") or "").strip().upper()
         if not h or not a:
             continue
-        history.setdefault(h, []).append(_history_rows(event, home=True))
-        history.setdefault(a, []).append(_history_rows(event, home=False))
+        history.setdefault(h, []).append(_history_row(event, home=True))
+        history.setdefault(a, []).append(_history_row(event, home=False))
     hm = _team_metrics(history.get(home, []), season=int(season), target_time=start)
     am = _team_metrics(history.get(away, []), season=int(season), target_time=start)
     if hm["total_prior_games"] < MIN_TOTAL_PRIOR_GAMES or am["total_prior_games"] < MIN_TOTAL_PRIOR_GAMES:
-        raise NFLTotalPointsChallengerUnavailable(
-            "NFL_TOTAL_POINTS_PREGAME_HISTORY_INSUFFICIENT",
-            f"{away}@{home}: home_prior={hm['total_prior_games']} away_prior={am['total_prior_games']}",
-        )
+        raise NFLTotalPointsChallengerUnavailable("NFL_TOTAL_POINTS_PREGAME_HISTORY_INSUFFICIENT", f"{away}@{home}: home_prior={hm['total_prior_games']} away_prior={am['total_prior_games']}")
     features = _feature_map(week=int(week), home=hm, away=am)
-    projection = _predict_vector(artifact, features)
+    projection = _predict(artifact, features)
     residuals = np.asarray(artifact.calibration_residuals, dtype=float)
     q10 = float(np.quantile(residuals, artifact.interval_lower_quantile))
     q90 = float(np.quantile(residuals, artifact.interval_upper_quantile))
-    return {
-        "status": "MODEL_PROJECTED_HOLD",
-        "code": "NFL_TOTAL_POINTS_TIEBREAKER_PROJECTED",
-        "event_id": str(event_id),
-        "sport": "NFL",
-        "home_team": home,
-        "away_team": away,
-        "season": int(season),
-        "week": int(week),
-        "projected_total_points": projection,
-        "prediction_interval": {"coverage_target": 0.80, "lower": projection + q10, "upper": projection + q90},
-        "model_family": artifact.model_family,
-        "feature_schema_version": artifact.feature_schema_version,
-        "training_dataset_hash": artifact.training_dataset_hash,
-        "ridge_alpha": artifact.ridge_alpha,
-        "sportsbook_total_used": False,
-        "market_probability_used": False,
-        "moneyline_probability_used": False,
-        "probability_publishable": False,
-        "rank_eligible": False,
-        "can_execute": False,
-    }
+    return {"status": "MODEL_PROJECTED_HOLD", "code": "NFL_TOTAL_POINTS_TIEBREAKER_PROJECTED", "event_id": str(event_id), "sport": "NFL", "home_team": home, "away_team": away, "season": int(season), "week": int(week), "projected_total_points": projection, "prediction_interval": {"coverage_target": 0.80, "lower": projection + q10, "upper": projection + q90}, "model_family": artifact.model_family, "feature_schema_version": artifact.feature_schema_version, "training_dataset_hash": artifact.training_dataset_hash, "ridge_alpha": artifact.ridge_alpha, "sportsbook_total_used": False, "market_probability_used": False, "moneyline_probability_used": False, "probability_publishable": False, "rank_eligible": False, "can_execute": False}
 
 
 def artifact_to_json(artifact: TotalPointsArtifact) -> str:
@@ -589,31 +354,12 @@ def artifact_to_json(artifact: TotalPointsArtifact) -> str:
 
 def artifact_from_json(payload: str | bytes) -> TotalPointsArtifact:
     raw = json.loads(payload)
-    raw["feature_names"] = tuple(raw["feature_names"])
-    raw["scaler_mean"] = tuple(raw["scaler_mean"])
-    raw["scaler_scale"] = tuple(raw["scaler_scale"])
-    raw["coefficients"] = tuple(raw["coefficients"])
-    raw["calibration_residuals"] = tuple(raw["calibration_residuals"])
+    for key in ("feature_names", "scaler_mean", "scaler_scale", "coefficients", "calibration_residuals"):
+        raw[key] = tuple(raw[key])
     artifact = TotalPointsArtifact(**raw)
     if artifact.can_execute is not False or artifact.sport != "NFL" or artifact.use_case != USE_CASE:
         raise NFLTotalPointsChallengerUnavailable("NFL_TOTAL_POINTS_ARTIFACT_INVALID", "artifact governance fields invalid")
     return artifact
 
 
-__all__ = [
-    "AUTOMATIC_CERTIFICATION",
-    "AUTOMATIC_PROMOTION",
-    "CAN_EXECUTE",
-    "FEATURE_ORDER",
-    "FEATURE_SCHEMA_VERSION",
-    "MODEL_FAMILY",
-    "MODEL_PROGRAM",
-    "NFLTotalPointsChallengerUnavailable",
-    "TotalPointsArtifact",
-    "TotalPointsTrainingRow",
-    "artifact_from_json",
-    "artifact_to_json",
-    "build_rows",
-    "score_tiebreaker",
-    "train_candidate",
-]
+__all__ = ["AUTOMATIC_CERTIFICATION", "AUTOMATIC_PROMOTION", "CAN_EXECUTE", "FEATURE_ORDER", "FEATURE_SCHEMA_VERSION", "MODEL_FAMILY", "MODEL_PROGRAM", "NFLTotalPointsChallengerUnavailable", "TotalPointsArtifact", "TotalPointsTrainingRow", "artifact_from_json", "artifact_to_json", "build_rows", "score_tiebreaker", "train_candidate"]
