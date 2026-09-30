@@ -130,6 +130,42 @@ paths:
         '401': {description: Authentication failed}
         '409': {description: Governed lane/model capability held}
         '422': {description: Candidate/evidence/model publication contract failed}
+  /v17/daily-snapshot-submit:
+    post:
+      operationId: submitWowV17DailySnapshot
+      x-openai-isConsequential: false
+      description: >-
+        Durable asynchronous Daily submission for current/full-board work. Persists
+        the bounded Daily request and returns a run_id immediately; poll
+        getWowV17DailySnapshotRun until terminal. No wager execution authority.
+      security: [{actionBearer: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/AsyncDailySubmitRequest'}
+      responses:
+        '202': {description: Durable Daily request queued with run_id}
+        '401': {description: Authentication failed}
+        '503': {description: Durable Daily submission persistence unavailable}
+  /v17/daily-snapshot-run/{run_id}:
+    get:
+      operationId: getWowV17DailySnapshotRun
+      x-openai-isConsequential: false
+      description: >-
+        Read durable asynchronous Daily state by run_id. Poll until COMPLETED or
+        FAILED; terminal result preserves the existing governed Daily receipt.
+      security: [{actionBearer: []}]
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        '200': {description: Durable Daily queue/run state and terminal result when available}
+        '401': {description: Authentication failed}
+        '404': {description: Durable Daily run not found}
+        '503': {description: Durable Daily status service unavailable}
   /v17/daily-snapshot-run:
     post:
       operationId: runWowV17DailySnapshot
@@ -416,6 +452,21 @@ components:
         source_snapshot_id: {type: string}
         seed: {type: integer, default: 0}
         evidence: {type: [object, 'null'], additionalProperties: true}
+    AsyncDailySubmitRequest:
+      type: object
+      additionalProperties: false
+      required: [requested_slate_date, requested_timezone]
+      properties:
+        requested_slate_date: {type: string, format: date}
+        requested_timezone: {type: string, minLength: 1, maxLength: 64}
+        lanes:
+          type: array
+          items: {type: string, enum: [PROPS, MONEYLINE]}
+          default: [PROPS, MONEYLINE]
+        max_props: {type: integer, minimum: 0, maximum: 12, default: 6}
+        max_team_events: {type: integer, minimum: 0, maximum: 12, default: 6}
+        response_mode: {type: string, enum: [COMPACT, FULL], default: COMPACT}
+        idempotency_key: {type: [string, 'null'], minLength: 8, maxLength: 128}
     DailySnapshotRequest:
       type: object
       additionalProperties: false

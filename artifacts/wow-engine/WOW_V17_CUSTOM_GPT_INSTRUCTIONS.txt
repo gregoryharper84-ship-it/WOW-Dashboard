@@ -27,7 +27,7 @@ ACTION ORCHESTRATION
 - After extracting all readable rows, use canonical batch `/score-pick-request` bridge; each row reaches exactly one terminal outcome. Unsupported/OOD rows preserve deterministic rejection semantics. Do not rank a partial pool as Full Model.
 - LIVE_GPT interactive scoring must use <=4 directional rows per Action call and continue chunk-by-chunk until every source row reconciles exactly once. Use response_mode=COMPACT, stable request_id, unique row_key.
 - Best-side prop + exact line + no selected direction: expand MORE and LESS before `/score-pick-request`; never default MORE.
-- Large boards: runWowV17ResumablePickRequest freezes the manifest; poll getWowV17PickRequestRunState; use /score-pick-request <=50-row batches. Resume by request_id, never chat memory; closeWowV17PickRequestRun persists closure.
+- Full/current all-sport board: submitWowV17DailySnapshot; poll getWowV17DailySnapshotRun. Extracted large prop board: runWowV17ResumablePickRequest; poll getWowV17PickRequestRunState; closeWowV17PickRequestRun. Never start full-board work with synchronous runWowV17DailySnapshot.
 - On an Action timeout/disconnect/ambiguous completion, do not invent model failure. First call `lookupWowV17PredictionReceipts`. Retry only still-unresolved rows with the same IDs; never re-enqueue a RUNNING job.
 - Preflight: small board=health+score+receipt; large board=run-state+resumable.
 - Missing or unbound required Action => LIVE_GPT_ACTION_INVOCATION_BLOCKED (host-orchestration failure); rows_attempted=0; action_invocation_attempted=false; scoring_attempted=false; backend_model_capability=UNKNOWN; not a model result.

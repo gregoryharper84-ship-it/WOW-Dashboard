@@ -31,7 +31,7 @@ WOW owns player/scalar props. Team/event winner/favorite/underdog/upset objectiv
 ```text
 schema = artifacts/wow-engine/v17/openapi.wow-betting-engine.v17.yaml
 run_control_reference_schema = artifacts/wow-engine/v17/openapi.wow-betting-engine.v17.run-control.yaml
-live_action_layout = SINGLE_DOMAIN_SINGLE_ACTION_SET_20_OPERATIONS
+live_action_layout = SINGLE_DOMAIN_SINGLE_ACTION_SET_23_OPERATIONS
 instructions = artifacts/wow-engine/WOW_V17_CUSTOM_GPT_INSTRUCTIONS.txt
 prizepicks_addendum_source = artifacts/wow-engine/WOW_V17_CUSTOM_GPT_PRIZEPICKS_SKILL_ADDENDUM.txt
 prizepicks_addendum_installation_surface = KNOWLEDGE_FILE
@@ -41,6 +41,8 @@ server = https://wow-governed-probability-engine.onrender.com
 auth = API Key / Bearer using existing WOW_ACTION_API_KEY
 /score-prop operationId = scoreWowProp
 /score-pick-request operationId = scoreWowPickRequest
+/v17/daily-snapshot-submit operationId = submitWowV17DailySnapshot
+/v17/daily-snapshot-run/{run_id} operationId = getWowV17DailySnapshotRun
 /v17/prediction-receipts/lookup operationId = lookupWowV17PredictionReceipts
 /v17/pick-request-runs/{request_id} operationId = getWowV17PickRequestRunState
 /v17/pick-request-runs/resumable operationId = runWowV17ResumablePickRequest
@@ -49,9 +51,9 @@ auth = API Key / Bearer using existing WOW_ACTION_API_KEY
 can_execute = false
 ```
 
-The Custom GPT editor rejects duplicate Action domains. Therefore the production WOW Render domain must be represented by exactly one installed Action group. The three run-control operations and the research-only NCAAF spread forward-shadow operation are merged into the canonical primary schema for live-editor installation; the standalone run-control schema remains a repository/reference contract only.
+The Custom GPT editor rejects duplicate Action domains. Therefore the production WOW Render domain must be represented by exactly one installed Action group. Durable Daily submit/status, run-control, NFL pickem, and research-only spread-shadow operations share the canonical primary schema. Full current-board requests prefer durable Daily submit/poll; the standalone run-control schema remains repository reference only.
 
-The canonical instructions file is the only repository text pasted into the Custom GPT Instructions field and must remain <=8,000 characters and <=7,500 UTF-8 bytes. The PrizePicks addendum is attached as Knowledge instead of being appended to the Instructions field. The deterministic sync builder fails closed when those limits, any required Action operation, or the exact 20-operation Action surface are violated.
+The canonical instructions file is the only repository text pasted into the Custom GPT Instructions field and must remain <=8,000 characters and <=7,500 UTF-8 bytes. The PrizePicks addendum is attached as Knowledge instead of being appended to the Instructions field. The deterministic sync builder fails closed when those limits, any required Action operation, or the exact 23-operation Action surface are violated.
 
 The spread forward-shadow Action is a Class-B interface exposure to an existing research-only backend route. Its request contract is closed to `NCAAF` and requires event identity, event time, home/away teams, exact home spread, and season. It does not certify, promote, publish, or execute a spread probability.
 
@@ -76,7 +78,7 @@ A new live editor attestation may set `LIVE_GPT_EDITOR_SYNC=VERIFIED` only after
 
 1. pasting the current canonical instructions into the Instructions field;
 2. attaching the current PrizePicks addendum as Knowledge;
-3. importing the single canonical 20-operation WOW Action schema for the Render domain with existing Bearer auth preserved; and
+3. importing the single canonical 23-operation WOW Action schema for the Render domain with existing Bearer auth preserved; and
 4. opening a fresh WOW chat after save/reload.
 
 Fresh-chat acceptance must prove:
