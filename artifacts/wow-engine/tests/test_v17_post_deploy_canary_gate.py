@@ -3,7 +3,10 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 DEPLOY_WORKFLOW = REPO_ROOT / ".github/workflows/wow-v17-render-production-deploy.yml"
+ORCHESTRATOR_WORKFLOW = REPO_ROOT / ".github/workflows/wow-v17-post-deploy-verification-orchestrator.yml"
 CANARY_WORKFLOW = REPO_ROOT / ".github/workflows/wow-v17-spread-forward-production-canary.yml"
+CERT_WORKFLOW = REPO_ROOT / ".github/workflows/wow-v17-spread-certification-replay.yml"
+PRIORITY_WORKFLOW = REPO_ROOT / ".github/workflows/wow-v17-priority-prop-lifecycle.yml"
 
 
 def test_deploy_controller_filters_non_main_upstream_runs_before_creation():
@@ -45,12 +48,36 @@ def test_exact_live_deploy_receipts_still_authorize_successful_controller():
     assert "raise SystemExit(0)" in gated
 
 
-def test_spread_canary_requires_successful_deploy_controller():
-    text = CANARY_WORKFLOW.read_text(encoding="utf-8")
+def test_post_deploy_orchestrator_is_only_deploy_consumer_for_heavy_verification():
+    orchestrator = ORCHESTRATOR_WORKFLOW.read_text(encoding="utf-8")
+    cert = CERT_WORKFLOW.read_text(encoding="utf-8")
+    priority = PRIORITY_WORKFLOW.read_text(encoding="utf-8")
+    spread = CANARY_WORKFLOW.read_text(encoding="utf-8")
 
-    assert 'workflows: ["wow-v17-render-production-deploy"]' in text
-    assert "github.event.workflow_run.conclusion == 'success'" in text
-    assert "github.event.workflow_run.head_branch == 'main'" in text
+    assert 'workflows: ["wow-v17-render-production-deploy"]' in orchestrator
+    assert "types: [completed]" in orchestrator
+    assert "branches: [main]" in orchestrator
+    assert "github.event.workflow_run.conclusion == 'success'" in orchestrator
+    assert "github.event.workflow_run.head_branch == 'main'" in orchestrator
+
+    for text in (cert, priority, spread):
+        assert "workflow_call:" in text
+        assert 'workflows: ["wow-v17-render-production-deploy"]' not in text
+
+
+def test_post_deploy_orchestrator_sequences_all_heavy_verification_without_skip():
+    text = ORCHESTRATOR_WORKFLOW.read_text(encoding="utf-8")
+
+    cert = text.index("  spread-certification:")
+    priority = text.index("  priority-props:")
+    spread = text.index("  spread-forward:")
+    assert cert < priority < spread
+    assert "needs: spread-certification" in text
+    assert "needs: priority-props" in text
+    assert text.count("always() &&") == 2
+    assert "uses: ./.github/workflows/wow-v17-spread-certification-replay.yml" in text
+    assert "uses: ./.github/workflows/wow-v17-priority-prop-lifecycle.yml" in text
+    assert "uses: ./.github/workflows/wow-v17-spread-forward-production-canary.yml" in text
 
 
 def test_spread_canary_serializes_runtime_heavy_jobs_without_skipping_after_failure():
@@ -59,7 +86,7 @@ def test_spread_canary_serializes_runtime_heavy_jobs_without_skipping_after_fail
     assert "needs: ncaaf-canary" in text
     assert "needs: nfl-canary" in text
     assert "needs: wnba-canary" in text
-    assert text.count("always() &&") == 3
+    assert text.count("if: always()") == 3
 
     ncaaf = text.index("  ncaaf-canary:")
     nfl = text.index("  nfl-canary:")
