@@ -1,3 +1,8 @@
+---
+name: wow-autonomous-product-qa-engineering-recovery
+description: Run the governed WOW V17 autonomous product QA and engineering recovery lifecycle.
+---
+
 # WOW V17 Autonomous Product QA & Engineering Recovery Team
 
 Status: `ACTIVE_ON_MERGE`

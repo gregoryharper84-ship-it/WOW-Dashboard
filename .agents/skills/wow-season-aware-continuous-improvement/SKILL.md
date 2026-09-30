@@ -1,3 +1,8 @@
+---
+name: wow-season-aware-continuous-improvement
+description: Coordinate season-aware WOW V17 engineering and model-factory improvement planning.
+---
+
 # WOW V17 Season-Aware Continuous Improvement
 
 Status: `ACTIVE_ON_MERGE`
