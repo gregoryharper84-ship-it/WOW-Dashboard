@@ -20,6 +20,7 @@ from ledger import PredictionRow, determine_publishability
 from market import MarketQuote, resolve_market_prior
 from prop_distribution_contract import LineProbabilities, PropInferenceRequest, derive_line_probabilities
 from prop_fitted_provider import CertifiedInference, ResolvedArtifact, infer_certified_distribution
+from v17.prop_capability_manifest import prop_capability
 
 
 PROP_PROVIDER_IDENTITY = "WOW_PROP_FITTED_MODEL_V1"
@@ -223,6 +224,14 @@ def score_discrete_prop_end_to_end(
     bundle = artifact.bundle
     calibration_parent_cohort = prop_calibration_parent_cohort(request, artifact)
 
+    capability = prop_capability(request.sport, request.stat_type)
+    controlling_specialist = capability.controlling_specialist
+    if not isinstance(controlling_specialist, str) or not controlling_specialist.strip():
+        raise PropCalibrationUnavailable(
+            "PROP_CONTROLLING_SPECIALIST_UNAVAILABLE",
+            "Governed prop probability requires exactly one controlling specialist before scoring can publish.",
+        )
+
     row = PredictionRow(
         event_id=request.event_id,
         event_start_time=event_start_time,
@@ -259,6 +268,7 @@ def score_discrete_prop_end_to_end(
         calibrated_probability_lower_bound=calibration.lower_bound,
         calibrated_probability_upper_bound=calibration.upper_bound,
         money_lane_status=money_lane_status,
+        controlling_specialist=controlling_specialist,
         model_provider_identity=PROP_PROVIDER_IDENTITY,
         model_family=artifact.model_family,
         model_artifact_version=bundle.model_artifact_version,
