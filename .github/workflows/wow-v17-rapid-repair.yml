@@ -44,13 +44,33 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
-          python -m pip install PyYAML
+          python -m pip install PyYAML ruff
 
       - name: Validate rapid-repair harness
         run: python -m pytest -q --tb=short tests/test_wow_rapid.py
 
       - name: Compile touched engineering surfaces
         run: python -m compileall -q scripts v17
+
+      - name: Ruff changed Python files for correctness defects
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE="${{ github.event.pull_request.base.sha }}"
+          else
+            BASE="HEAD^"
+          fi
+          git diff --name-only --diff-filter=ACMR "$BASE...HEAD" \
+            | grep '^artifacts/wow-engine/.*\.py$' \
+            | sed 's#^artifacts/wow-engine/##' \
+            > "$RUNNER_TEMP/changed-python.txt" || true
+          if [ -s "$RUNNER_TEMP/changed-python.txt" ]; then
+            mapfile -t python_files < "$RUNNER_TEMP/changed-python.txt"
+            ruff check --select E9,F63,F7,F82 "${python_files[@]}"
+          else
+            echo 'No changed wow-engine Python files to lint.'
+          fi
 
       - name: Select affected tests conservatively
         id: selection
