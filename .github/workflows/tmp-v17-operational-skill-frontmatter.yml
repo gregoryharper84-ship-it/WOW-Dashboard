@@ -1,0 +1,70 @@
+name: tmp-v17-operational-skill-frontmatter
+
+on:
+  push:
+    branches:
+      - fix/v17-operational-skill-frontmatter-20260929
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.event.head_commit.message == 'chore: trigger operational skill frontmatter repair'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repair branch
+        uses: actions/checkout@v6
+        with:
+          ref: fix/v17-operational-skill-frontmatter-20260929
+          fetch-depth: 0
+
+      - name: Add operational skill frontmatter and regression inventory
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          skills = {
+              ".agents/skills/wow-autonomous-product-qa-engineering-recovery/SKILL.md": "Run the governed WOW V17 autonomous product QA and engineering recovery lifecycle.",
+              ".agents/skills/wow-frontier-intelligence-agent/SKILL.md": "Scan for evidence-backed engineering and model-improvement opportunities without changing production probability behavior.",
+              ".agents/skills/wow-nightly-engineering-autopilot/SKILL.md": "Orchestrate the governed WOW V17 nightly repair and verification lifecycle.",
+              ".agents/skills/wow-replit-patch-governor/SKILL.md": "Govern bounded WOW patch mechanics across GitHub, Render, and Supabase while preserving V17 authority.",
+              ".agents/skills/wow-season-aware-continuous-improvement/SKILL.md": "Coordinate season-aware WOW V17 engineering and model-factory improvement planning.",
+              ".agents/skills/wow-v17-nightly-multiscout/SKILL.md": "Run evidence-only multi-scout slate discovery for WOW V17 without publishing sporting probability.",
+          }
+
+          for raw_path, description in skills.items():
+              path = Path(raw_path)
+              text = path.read_text()
+              name = path.parent.name
+              if text.startswith("---\n"):
+                  continue
+              path.write_text(f"---\nname: {name}\ndescription: {description}\n---\n\n" + text)
+
+          test_path = Path("artifacts/wow-engine/test_v17_multi_agent_engineering_workflows.py")
+          test_text = test_path.read_text()
+          if "CODEX_OPERATIONAL_SKILLS = (" not in test_text:
+              marker = ")\n\n\ndef _load(path: Path) -> dict:"
+              assert marker in test_text
+              operational = ''' )\n\nCODEX_OPERATIONAL_SKILLS = (\n    ROOT / ".agents/skills/wow-autonomous-product-qa-engineering-recovery/SKILL.md",\n    ROOT / ".agents/skills/wow-frontier-intelligence-agent/SKILL.md",\n    ROOT / ".agents/skills/wow-nightly-engineering-autopilot/SKILL.md",\n    ROOT / ".agents/skills/wow-replit-patch-governor/SKILL.md",\n    ROOT / ".agents/skills/wow-season-aware-continuous-improvement/SKILL.md",\n    ROOT / ".agents/skills/wow-v17-nightly-multiscout/SKILL.md",\n)\n\n\ndef _load(path: Path) -> dict:'''
+              operational = operational.replace("'''", "")
+              test_text = test_text.replace(marker, operational, 1)
+          test_text = test_text.replace(
+              "for path in CODEX_ENGINEERING_SKILLS:\n",
+              "for path in CODEX_ENGINEERING_SKILLS + CODEX_OPERATIONAL_SKILLS:\n",
+              1,
+          )
+          test_path.write_text(test_text)
+          PY
+
+      - name: Commit bounded metadata repair
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .agents/skills artifacts/wow-engine/test_v17_multi_agent_engineering_workflows.py
+          git diff --cached --check
+          git commit -m "fix(v17): add frontmatter to operational skills"
+          git push origin HEAD:fix/v17-operational-skill-frontmatter-20260929
