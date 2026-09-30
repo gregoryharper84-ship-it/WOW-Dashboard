@@ -1,3 +1,8 @@
+---
+name: wow-v17-nightly-multiscout
+description: Run evidence-only multi-scout slate discovery for WOW V17 without publishing sporting probability.
+---
+
 # WOW V17 Nightly Multi-Scout Discovery Team
 
 Status: ACTIVE_ON_MERGE

@@ -26,6 +26,15 @@ CODEX_ENGINEERING_SKILLS = (
     ROOT / ".agents/skills/wow-engineering-release-observability-agent/SKILL.md",
 )
 
+CODEX_OPERATIONAL_SKILLS = (
+    ROOT / ".agents/skills/wow-autonomous-product-qa-engineering-recovery/SKILL.md",
+    ROOT / ".agents/skills/wow-frontier-intelligence-agent/SKILL.md",
+    ROOT / ".agents/skills/wow-nightly-engineering-autopilot/SKILL.md",
+    ROOT / ".agents/skills/wow-replit-patch-governor/SKILL.md",
+    ROOT / ".agents/skills/wow-season-aware-continuous-improvement/SKILL.md",
+    ROOT / ".agents/skills/wow-v17-nightly-multiscout/SKILL.md",
+)
+
 
 def _load(path: Path) -> dict:
     return yaml.safe_load(path.read_text())
@@ -208,7 +217,7 @@ def test_chatgpt_action_uses_explicit_schema_file_for_unprivileged_codex() -> No
 
 
 def test_active_codex_engineering_skills_have_valid_frontmatter() -> None:
-    for path in CODEX_ENGINEERING_SKILLS:
+    for path in CODEX_ENGINEERING_SKILLS + CODEX_OPERATIONAL_SKILLS:
         metadata = _skill_frontmatter(path)
         assert metadata.get("name") == path.parent.name
         description = metadata.get("description")

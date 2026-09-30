@@ -1,3 +1,8 @@
+---
+name: wow-nightly-engineering-autopilot
+description: Orchestrate the governed WOW V17 nightly repair and verification lifecycle.
+---
+
 # WOW V17 Nightly Engineering Autopilot — Morning-Green Team Wrapper
 
 Status: `ACTIVE_ON_MERGE`
