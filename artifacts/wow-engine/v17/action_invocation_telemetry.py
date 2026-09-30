@@ -49,11 +49,16 @@ RECONCILE_RECOVERY_RPC = "wow_reconcile_action_invocation_receipt_recovery"
 CAN_EXECUTE = False
 _GITHUB_OIDC_ISSUER = "https://token.actions.githubusercontent.com"
 
+_RUN_PREFIX = "/v17/pick-request-runs/"
+_RUN_STATE_ROUTE = "/v17/pick-request-runs/{request_id}"
+_RUN_CLOSE_ROUTE = "/v17/pick-request-runs/{request_id}/close"
+
 ROUTE_OPERATION_IDS = {
     "/score-prop": "scoreWowProp",
     "/score-pick-request": "scoreWowPickRequest",
     "/score-team-event-request": "scoreWowTeamEventRequest",
     "/score-team-event": "scoreWowV17TeamEventFromWowHost",
+    "/v17/pick-request-runs/resumable": "runWowV17ResumablePickRequest",
 }
 
 _EXPLICIT_CALLER_CLASSES = frozenset({
@@ -62,6 +67,29 @@ _EXPLICIT_CALLER_CLASSES = frozenset({
     "SELF_ACCEPTANCE",
     "OTHER",
 })
+
+
+def _route_metadata(path: str) -> tuple[str, str, str | None] | None:
+    """Return normalized route, operation ID, and safe path request ID.
+
+    Run-control state/close routes contain a user-provided request_id in the URL.
+    Persist only the canonical route template while exposing that non-secret ID in
+    the dedicated request_id column. The resumable POST remains body-opaque by
+    design; its request_id is recorded only when the caller supplies the existing
+    non-secret request-ID header.
+    """
+    operation_id = ROUTE_OPERATION_IDS.get(path)
+    if operation_id is not None:
+        return path, operation_id, None
+    if not path.startswith(_RUN_PREFIX):
+        return None
+    suffix = path[len(_RUN_PREFIX):].strip("/")
+    parts = suffix.split("/") if suffix else []
+    if len(parts) == 1 and parts[0] and parts[0] != "resumable":
+        return _RUN_STATE_ROUTE, "getWowV17PickRequestRunState", parts[0][:256]
+    if len(parts) == 2 and parts[0] and parts[1] == "close":
+        return _RUN_CLOSE_ROUTE, "closeWowV17PickRequestRun", parts[0][:256]
+    return None
 
 
 def _auth_scheme(value: str | None) -> str:
@@ -340,9 +368,10 @@ def install_action_invocation_middleware(
     @app.middleware("http")
     async def _action_invocation_probe(request: Any, call_next: Any):
         path = str(getattr(request.url, "path", ""))
-        operation_id = ROUTE_OPERATION_IDS.get(path)
-        if operation_id is None:
+        metadata = _route_metadata(path)
+        if metadata is None:
             return await call_next(request)
+        normalized_route, operation_id, path_request_id = metadata
         started = perf_counter()
         status_code = 500
         try:
@@ -354,14 +383,14 @@ def install_action_invocation_middleware(
             headers = getattr(request, "headers", {})
             receipt = {
                 "invocation_id": str(uuid4()),
-                "route": path,
+                "route": normalized_route,
                 "action_operation_id": operation_id,
                 "http_method": str(getattr(request, "method", "UNKNOWN")).upper(),
                 "http_status": status_code,
                 "auth_scheme": _auth_scheme(headers.get("authorization")),
                 "caller_class": _caller_class(headers, status_code),
                 "caller_user_agent": str(headers.get("user-agent") or "")[:256] or None,
-                "request_id": _request_id(headers),
+                "request_id": _request_id(headers) or path_request_id,
                 "rows_in": _rows_in(headers),
                 "duration_ms": round(duration_ms, 3),
                 "can_execute": False,
@@ -372,7 +401,7 @@ def install_action_invocation_middleware(
                 LOGGER.warning(
                     "WOW_V17_ACTION_INVOCATION_PERSISTENCE_BACKLOG_HIGH "
                     "route=%s status_code=%s in_flight=%s can_execute=false",
-                    path,
+                    normalized_route,
                     status_code,
                     len(tasks),
                 )
