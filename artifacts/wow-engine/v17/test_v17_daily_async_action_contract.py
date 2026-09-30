@@ -1,8 +1,8 @@
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
-SCHEMA = ROOT / "openapi.wow-betting-engine.v17.yaml"
-INSTRUCTIONS = ROOT.parent / "WOW_V17_CUSTOM_GPT_INSTRUCTIONS.txt"
+V17_DIR = Path(__file__).resolve().parent
+SCHEMA = V17_DIR / "openapi.wow-betting-engine.v17.yaml"
+INSTRUCTIONS = V17_DIR.parent / "WOW_V17_CUSTOM_GPT_INSTRUCTIONS.txt"
 
 
 def test_canonical_action_exposes_durable_daily_submit_and_status():
