@@ -6,12 +6,10 @@ def test_priority_prop_lifecycle_is_bounded_fail_closed_and_sport_scoped():
     text = (repo_root / ".github" / "workflows" / "wow-v17-priority-prop-lifecycle.yml").read_text()
 
     assert 'cron: "7 * * * *"' in text
-    assert 'workflow_run:' in text
-    assert 'workflows: ["wow-v17-render-production-deploy"]' in text
-    assert 'types: [completed]' in text
+    assert 'workflow_call:' in text
+    assert 'workflows: ["wow-v17-render-production-deploy"]' not in text
+    assert 'workflow_run:' not in text
     assert '\n  push:\n' not in text
-    assert "github.event.workflow_run.conclusion == 'success'" in text
-    assert "github.event.workflow_run.head_branch == 'main'" in text
     assert 'max-parallel: 1' in text
     assert 'id-token: write' in text
     assert '/v17/prop-lifecycle-autopilot-run' not in text
