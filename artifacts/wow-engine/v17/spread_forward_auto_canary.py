@@ -13,6 +13,7 @@ from datetime import datetime, time, timedelta, timezone
 from typing import Any, Callable, Literal
 from zoneinfo import ZoneInfo
 
+import httpx
 import requests
 
 from v17.nfl_team_event_specialist import _load_latest_schedule_snapshot
@@ -228,7 +229,7 @@ def discover_future_espn_event(
 
 def discover_future_wnba_stats_event(
     *,
-    fetcher: Callable[..., Any] = requests.get,
+    fetcher: Callable[..., Any] = httpx.get,
     now: datetime | None = None,
     horizon_days: int | None = None,
 ) -> dict[str, Any] | None:
@@ -358,13 +359,18 @@ def run_nfl_spread_auto_canary(
     }
 
 
-def run_wnba_spread_auto_canary(db: Any, *, fetcher: Callable[..., Any] = requests.get) -> dict[str, Any]:
+def run_wnba_spread_auto_canary(
+    db: Any,
+    *,
+    fetcher: Callable[..., Any] = requests.get,
+    stats_fetcher: Callable[..., Any] = httpx.get,
+) -> dict[str, Any]:
     try:
         event = discover_future_espn_event("WNBA", fetcher=fetcher)
     except SpreadChallengerUnavailable as exc:
         if exc.code != "WNBA_SPREAD_CANARY_IDENTITY_SOURCE_UNAVAILABLE":
             raise
-        event = discover_future_wnba_stats_event(fetcher=fetcher)
+        event = discover_future_wnba_stats_event(fetcher=stats_fetcher)
     if event is None:
         return _deferred("WNBA")
     provider = str(event.get("identity_provider") or "ESPN_SCOREBOARD")
