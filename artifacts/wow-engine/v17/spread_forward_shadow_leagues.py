@@ -15,6 +15,8 @@ from types import SimpleNamespace
 from typing import Any, Mapping, Sequence
 from zoneinfo import ZoneInfo
 
+import httpx
+
 from basketball_specialist_pipeline import load_games as load_basketball_games
 from basketball_team_event_specialist import MIN_PRIOR_GAMES as BASKETBALL_MIN_PRIOR_GAMES
 from v17.nfl_team_event_specialist import _prediction_feature_row, resolve_nfl_team_event_evidence
@@ -272,6 +274,7 @@ def run_wnba_forward_shadow(
         event_start_time=event_start_time,
         home_team_id=home_team_id,
         away_team_id=away_team_id,
+        fetcher=httpx.get,
     )
     target = _dt(identity["event_start_time"])
     games = load_basketball_games(db, "WNBA")
