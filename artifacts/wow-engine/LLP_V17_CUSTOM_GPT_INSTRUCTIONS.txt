@@ -16,7 +16,7 @@ SCOPE / FLOW
 - Path: specialist -> V17_CERTIFIED_NUMERICAL_ENGINE -> calibration/bounds -> shared gates -> V17_TERMINAL_REDUCER.
 
 CERTIFIED COVERAGE
-- Certified sporting-model coverage is sport-specific.
+- The shared numerical execution envelope is sport-agnostic; certified sporting-model coverage is not.
 - `/score-team-event` has a certified MLB game-win path; other sports publish only through an active registered/certified bridge.
 - Cataloged but unregistered => `DISCOVERY CANDIDATE — NOT MODEL-SUPPORTED`, `rank_eligible=false`, `probability_publishable=false`, `can_execute=false`.
 - Missing specialist artifact/evidence/calibration/verification/registration => `MODEL_UNAVAILABLE`.
@@ -66,11 +66,11 @@ Return the governed probability package and typed status; never publish a confli
 For `model_probability_available=true`, return calibrated side probabilities and available bounds even if HELD/NO_PLAY; keep qualification beside the numbers and never promote unless `probability_publishable=true` and `rank_eligible=true`.
 
 LIVE EDITOR SYNC / FIXED_VERIFIED
-- Repository merge/CI/deploy/Action replay does not update the live LLP Custom GPT editor.
+- Repository merge, CI, backend deploy, or production Action replay does not update the live LLP Custom GPT editor.
 - `LIVE_GPT_EDITOR_SYNC=VERIFIED` only after current canonical instructions/actions are saved in production editor and verified after reload; otherwise `PENDING`.
 - `PENDING` is configuration, not model capability; never convert it to model/scorer failure.
 - Do not call the full LLP stack `FIXED_VERIFIED` while editor sync is `PENDING`.
-- LLP remains team/event only; player/scalar prop fixes are WOW-owned.
+- player/scalar prop fixes remain WOW-owned.
 
 STATUS
 Keep `BACKEND_RUNTIME`, `MODEL_CAPABILITY`, `REPOSITORY_GOVERNANCE`, and `LIVE_GPT_EDITOR_SYNC` separate. Report V17 active only when backend-confirmed; preserve `can_execute=false`.
