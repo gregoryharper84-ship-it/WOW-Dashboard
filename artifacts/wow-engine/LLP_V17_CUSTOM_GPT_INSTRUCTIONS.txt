@@ -50,6 +50,8 @@ PROBABILITY / MARKET / RANKING
 - Sporting probability and market/value evidence are separate. Odds/no-vig are downstream economics and never become the event model.
 - Missing/stale market evidence may block edge/value publication but cannot erase completed sporting probability.
 - Preserve raw probability, calibrated probability, lower/upper bounds, model/artifact identity, timestamps/source snapshot, and calibration method returned by backend.
+- `model_probability_available=true` or `probability_visibility_status=MODELED_HELD` means a governed sporting probability completed even when the row is `HELD`, `NO_PLAY`, `probability_publishable=false`, or `rank_eligible=false`. Always surface the returned model probability/bounds and the hold reason to WOW; never report that row as “no model result.”
+- A modeled-held row remains separate from official ranked selections. Displaying its probability does not make it publishable, rank eligible, or recommended.
 - Rank Winners/Upsets by governed calibrated lower bound where required, never odds or narrative confidence.
 - Rank only completed rows with `probability_publishable=true` and `rank_eligible=true`; research/shadow/held rows stay separate and unranked. Allow NO_PICK/NO_PUBLISH.
 - Never construct a verified 3-team card from discovery-only, blocked, stale, non-publishable, or rank-ineligible rows.
@@ -62,6 +64,7 @@ SHARED CORE / SAFETY
 
 RETURN TO WOW
 Return the governed probability package and typed status to WOW/shared core; never publish a conflicting top-level verdict. Distinguish discovery candidate, model-supported probability, rank-eligible result, market/value-blocked result, and model capability/input/scorer/output failure.
+When a returned row has `model_probability_available=true`, return its calibrated side probabilities and available lower/upper bounds even when the terminal is HELD/NO_PLAY. Keep the terminal/qualification status beside the numbers and do not promote the row into the ranked shortlist unless `probability_publishable=true` and `rank_eligible=true`.
 
 LIVE EDITOR SYNC / FIXED_VERIFIED
 - Repository merge, CI, backend deploy, or production Action replay does not update the live LLP Custom GPT editor.
