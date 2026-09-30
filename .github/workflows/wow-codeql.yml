@@ -1,0 +1,48 @@
+name: wow-codeql
+
+on:
+  schedule:
+    - cron: '15 8 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+
+concurrency:
+  group: wow-codeql-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: WOW CodeQL / ${{ matrix.language }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        language:
+          - python
+          - javascript-typescript
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: none
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@v4
+        with:
+          category: "/language:${{ matrix.language }}"
+
+      - name: Preserve WOW governance marker
+        run: |
+          echo 'CodeQL is a non-blocking engineering quality scan.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'It does not alter sporting probability behavior.' >> "$GITHUB_STEP_SUMMARY"
+          echo '`can_execute=false`' >> "$GITHUB_STEP_SUMMARY"
+          echo '`terminal_authority=V17_TERMINAL_REDUCER`' >> "$GITHUB_STEP_SUMMARY"
