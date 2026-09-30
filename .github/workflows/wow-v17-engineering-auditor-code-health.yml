@@ -41,7 +41,10 @@ jobs:
         run: python artifacts/wow-engine/v17/engineering_agent_team.py self-check
 
       - name: Run continuous-auditor focused tests
-        run: python -m pytest -q artifacts/wow-engine/test_v17_engineering_auditor.py
+        run: >-
+          python -m pytest -q
+          artifacts/wow-engine/test_v17_engineering_auditor.py
+          artifacts/wow-engine/test_v17_engineering_auditor_worker_db_client.py
 
       - name: Run adjacent engineering closure regressions
         run: python -m pytest -q artifacts/wow-engine/test_v17_24h_completion_loop.py
