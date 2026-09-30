@@ -83,9 +83,11 @@ jobs:
 
   nfl-canary:
     name: Verify production NFL spread forward shadow
+    needs: ncaaf-canary
     if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main')
+      always() &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main'))
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -132,9 +134,11 @@ jobs:
 
   wnba-canary:
     name: Verify production WNBA spread forward shadow
+    needs: nfl-canary
     if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main')
+      always() &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main'))
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -146,17 +150,19 @@ jobs:
         run: |
           set -euo pipefail
           python - <<'PY'
-          import json, os, urllib.error, urllib.parse, urllib.request
+          import json, os, time, urllib.error, urllib.parse, urllib.request
           origin=os.environ["WOW_ACTION_ORIGIN"].rstrip("/"); audience=os.environ["WOW_OIDC_AUDIENCE"]
           def fresh_oidc():
               base=os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"]; sep="&" if "?" in base else "?"
               with urllib.request.urlopen(urllib.request.Request(base+sep+urllib.parse.urlencode({"audience":audience}),headers={"Authorization":f"Bearer {os.environ['ACTIONS_ID_TOKEN_REQUEST_TOKEN']}"}),timeout=20) as r: return json.load(r)["value"]
           request=urllib.request.Request(origin+"/internal/v17/wnba-spread-forward-auto-canary",data=b"{}",method="POST",headers={"Authorization":f"Bearer {fresh_oidc()}","Content-Type":"application/json"})
+          started=time.monotonic()
           try:
               with urllib.request.urlopen(request,timeout=180) as response: result=json.load(response)
           except urllib.error.HTTPError as exc:
               raw=exc.read().decode("utf-8",errors="replace")
               raise RuntimeError(f"WNBA_SPREAD_AUTO_CANARY_HTTP_{exc.code}:{raw[:1000]}") from exc
+          elapsed=time.monotonic()-started
           assert result.get("sport")=="WNBA", result
           assert result.get("can_execute") is False, result
           assert result.get("probability_publishable") is False, result
@@ -165,9 +171,16 @@ jobs:
           assert result.get("dry_run_only_no_live_trading_no_market_orders") is True, result
           assert result.get("global_terminal_reducer")=="V17_TERMINAL_REDUCER", result
           assert result.get("identity_acquisition_location")=="BACKEND_RUNTIME", result
+          if result.get("status")=="BLOCKED":
+              assert result.get("code")=="WNBA_SPREAD_CANARY_IDENTITY_SOURCE_UNAVAILABLE", result
+              detail=str(result.get("detail") or "").strip()
+              assert detail, result
+              receipt={"status":"BLOCKED_WITH_EXACT_REASON","code":result.get("code"),"detail":detail,"sport":"WNBA","elapsed_seconds":round(elapsed,3),"can_execute":False}
+              print(json.dumps(receipt,sort_keys=True))
+              raise RuntimeError(f"BLOCKED_WITH_EXACT_REASON:{result.get('code')}:{detail}")
           if result.get("status")=="DEFERRED_WITH_JUSTIFICATION":
               assert result.get("code")=="WNBA_SPREAD_CANARY_NO_ELIGIBLE_FUTURE_EVENT", result
-              print(json.dumps({"status":"DEFERRED_WITH_JUSTIFICATION","code":result.get("code"),"sport":"WNBA","can_execute":False},sort_keys=True))
+              print(json.dumps({"status":"DEFERRED_WITH_JUSTIFICATION","code":result.get("code"),"sport":"WNBA","elapsed_seconds":round(elapsed,3),"can_execute":False},sort_keys=True))
               raise SystemExit(0)
           assert result.get("status")=="EXPERIMENT_CREATED", result
           assert result.get("code")=="WNBA_SPREAD_FORWARD_SHADOW_COMPLETE", result
@@ -175,14 +188,16 @@ jobs:
               assert result.get(field) is False, (field,result)
           parts=[result.get("p_cover"),result.get("p_push"),result.get("p_not_cover")]
           assert all(isinstance(v,(int,float)) and 0<=v<=1 for v in parts) and abs(sum(parts)-1)<=1e-9, parts
-          print(json.dumps({"status":"PASS","code":"WNBA_SPREAD_FORWARD_PRODUCTION_CANARY_PASS","event_id":result.get("event_id"),"event_start_time":result.get("event_start_time"),"identity_acquisition_location":"BACKEND_RUNTIME","can_execute":False},sort_keys=True))
+          print(json.dumps({"status":"PASS","code":"WNBA_SPREAD_FORWARD_PRODUCTION_CANARY_PASS","event_id":result.get("event_id"),"event_start_time":result.get("event_start_time"),"identity_acquisition_location":"BACKEND_RUNTIME","elapsed_seconds":round(elapsed,3),"can_execute":False},sort_keys=True))
           PY
 
   mlb-canary:
     name: Verify production MLB run-line forward shadow
+    needs: wnba-canary
     if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main')
+      always() &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main'))
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
