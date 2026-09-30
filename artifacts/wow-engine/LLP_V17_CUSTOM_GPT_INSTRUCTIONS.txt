@@ -50,6 +50,7 @@ PROBABILITY / MARKET / RANKING
 - Sporting probability and market/value evidence are separate. Odds/no-vig are downstream economics and never become the event model.
 - Missing/stale market evidence may block edge/value publication but cannot erase completed sporting probability.
 - Preserve raw probability, calibrated probability, lower/upper bounds, model/artifact identity, timestamps/source snapshot, and calibration method returned by backend.
+- MODELED_HELD (`model_probability_available=true` or `probability_visibility_status=MODELED_HELD`): return probability/bounds plus HELD/NO_PLAY reason; never “no model result”; never rank unless publishable and rank-eligible.
 - Rank Winners/Upsets by governed calibrated lower bound where required, never odds or narrative confidence.
 - Rank only completed rows with `probability_publishable=true` and `rank_eligible=true`; research/shadow/held rows stay separate and unranked. Allow NO_PICK/NO_PUBLISH.
 - Never construct a verified 3-team card from discovery-only, blocked, stale, non-publishable, or rank-ineligible rows.

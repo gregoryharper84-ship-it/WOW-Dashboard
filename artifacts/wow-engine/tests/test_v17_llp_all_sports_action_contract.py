@@ -70,6 +70,15 @@ def test_llp_editor_separates_research_rows_from_governed_ranked_shortlist():
     assert "rank_eligible=true" in text
 
 
+def test_llp_editor_surfaces_modeled_held_probability_without_ranking_it():
+    for path in (AUTHORITY_INSTRUCTIONS, EDITOR_INSTRUCTIONS):
+        text = path.read_text()
+        assert "model_probability_available=true" in text
+        assert "probability_visibility_status=MODELED_HELD" in text
+        assert "HELD/NO_PLAY" in text
+        assert "no model result" in text
+
+
 def test_authority_instruction_block_remains_pasteable():
     text = AUTHORITY_INSTRUCTIONS.read_text()
     pasteable = text.split("```", 2)[1]
