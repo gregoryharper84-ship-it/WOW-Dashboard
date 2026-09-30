@@ -11,6 +11,10 @@ continuation bound. That bound is not a terminal slate cap: all canonical NFL
 events are attempted in sequential bounded batches. Within each batch the
 registered scorer is invoked concurrently, matching the existing V17 slate
 orchestration pattern without raising any global scorer limit.
+
+The tiebreaker is scored by its own tiebreaker-only sporting specialist. It is
+not an over/under lane and never reuses moneyline probability or sportsbook
+market information.
 """
 from __future__ import annotations
 
@@ -27,12 +31,14 @@ from nflverse_historical_adapter import NFLVerseHistoricalAdapterError, parse_nf
 from v17 import team_event_request_runtime as team_runtime
 from v17.cross_sport_resilience_overlay import model_invocation_limit
 from v17.daily_response_contract import persist_row_detail
-from v17.nfl_pickem_pool_optimizer import (
-    DECISION_OBJECTIVE,
-    build_pickem_board,
-    tiebreaker_capability,
-)
+from v17.nfl_pickem_pool_optimizer import DECISION_OBJECTIVE, build_pickem_board
 from v17.nfl_team_event_specialist import _load_latest_schedule_snapshot
+from v17.nfl_total_points_tiebreaker_specialist import (
+    NFLTotalPointsTiebreakerError,
+    capability as tiebreaker_capability,
+    score_tiebreaker as score_total_tiebreaker,
+)
+from v17.team_state_challenger_maintenance import _paginate
 
 CAN_EXECUTE = False
 RUNTIME_CONTRACT = "V17_NFL_PICKEM_RUNTIME_V1"
@@ -161,6 +167,87 @@ def _canonical_inventory(
     return dict(snapshot), events, blocked
 
 
+def _load_tiebreaker_history(db: Any) -> list[dict[str, Any]]:
+    """Read only settled regular-season sporting outcomes needed by the total model."""
+    rows = _paginate(
+        db.table("wow_nfl_training_games")
+        .select("game_id,season,game_type,week,gameday,home_team,away_team,home_score,away_score")
+        .eq("game_type", "REG")
+        .lte("season", 2026)
+        .order("gameday")
+        .order("game_id")
+    )
+    history: list[dict[str, Any]] = []
+    for raw in rows:
+        if raw.get("home_score") is None or raw.get("away_score") is None:
+            continue
+        history.append({
+            "event_id": str(raw.get("game_id") or ""),
+            "event_start_time": f"{str(raw.get('gameday') or '')[:10]}T00:00:00+00:00",
+            "season": raw.get("season"),
+            "week": raw.get("week"),
+            "game_type": str(raw.get("game_type") or "").upper(),
+            "home_team": str(raw.get("home_team") or "").upper(),
+            "away_team": str(raw.get("away_team") or "").upper(),
+            "home_score": raw.get("home_score"),
+            "away_score": raw.get("away_score"),
+        })
+    return history
+
+
+def _resolve_tiebreaker_event(events: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Use the unique event on the latest requested date; fail closed if ambiguous."""
+    if not events:
+        return None
+    latest_date = max(str(event.get("gameday") or "") for event in events)
+    candidates = [event for event in events if str(event.get("gameday") or "") == latest_date]
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def _score_tiebreaker(db: Any, events: list[dict[str, Any]]) -> dict[str, Any]:
+    capability = tiebreaker_capability()
+    event = _resolve_tiebreaker_event(events)
+    if event is None:
+        return {
+            **capability,
+            "status": "UNAVAILABLE",
+            "blocker": "PICKEM_TIEBREAKER_EVENT_AMBIGUOUS_OR_MISSING",
+            "tiebreaker_publishable": False,
+            "can_execute": False,
+        }
+    try:
+        history = _load_tiebreaker_history(db)
+        return score_total_tiebreaker(
+            history,
+            event_id=str(event["official_event_id"]),
+            event_start_time=str(event["event_start_time_utc"]),
+            season=int(event.get("season") or 0),
+            week=int(event.get("week") or 0),
+            home_team=str(event["home_team"]),
+            away_team=str(event["away_team"]),
+        )
+    except NFLTotalPointsTiebreakerError as exc:
+        return {
+            **capability,
+            "status": "UNAVAILABLE",
+            "blocker": exc.code,
+            "blocker_detail": exc.detail,
+            "event_id": event.get("official_event_id"),
+            "tiebreaker_publishable": False,
+            "can_execute": False,
+        }
+    except Exception as exc:  # noqa: BLE001 - retain a typed total-model failure
+        return {
+            **capability,
+            "status": "UNAVAILABLE",
+            "blocker": "MODEL_SCORER_FAILED",
+            "blocker_detail": f"NFL_TOTAL_POINTS_TIEBREAKER_EXCEPTION:{type(exc).__name__}",
+            "event_id": event.get("official_event_id"),
+            "tiebreaker_publishable": False,
+            "can_execute": False,
+        }
+
+
 def _http_detail(exc: HTTPException) -> dict[str, Any]:
     if isinstance(exc.detail, Mapping):
         return dict(exc.detail)
@@ -201,10 +288,6 @@ def _score_event(
             source_snapshot_id=source_snapshot_id or f"pickem:{event_id}",
             latest_material_update_timestamp=snapshot_timestamp or None,
         )
-        # Dynamic module lookup is intentional: startup overlays install the
-        # authoritative bridge registry after package import. The route therefore
-        # always calls the final registered scorer rather than a stale import-time
-        # function reference.
         result = team_runtime.score_team_event_request(
             request,
             event_api=event_api,
@@ -294,10 +377,16 @@ def run_nfl_pickem_board(
             "run_id": run_id,
             "status": "PICKEM_CANONICAL_DISCOVERY_FAILED",
             "submission_ready": False,
+            "full_sheet_submission_ready": False,
             "requested_slate_dates": list(requested_dates),
             "requested_timezone": timezone_name,
             "blockers": [f"PICKEM_CANONICAL_SCHEDULE_UNAVAILABLE:{type(exc).__name__}"],
-            "tiebreaker": tiebreaker_capability(),
+            "tiebreaker": {
+                **tiebreaker_capability(),
+                "status": "UNAVAILABLE",
+                "blocker": "PICKEM_CANONICAL_DISCOVERY_FAILED",
+                "tiebreaker_publishable": False,
+            },
             "can_execute": False,
         }
 
@@ -358,6 +447,13 @@ def run_nfl_pickem_board(
     board["picks"].sort(key=lambda item: order.get(str(item.get("official_event_id") or ""), 10**9))
     board["blocked"].sort(key=lambda item: order.get(str(item.get("official_event_id") or ""), 10**9))
 
+    tiebreaker = _score_tiebreaker(db, events)
+    tiebreaker_ready = (
+        tiebreaker.get("status") == "TIEBREAKER_MODEL_QUALIFIED"
+        and tiebreaker.get("tiebreaker_publishable") is True
+        and tiebreaker.get("can_execute") is False
+    )
+
     audit_rows = [_audit_row(row) for row in source_rows]
     persistence = persist_row_detail(db, run_id=run_id, rows=audit_rows)
 
@@ -366,6 +462,7 @@ def run_nfl_pickem_board(
         "run_id": run_id,
         "status": board["status"],
         "submission_ready": board["submission_ready"],
+        "full_sheet_submission_ready": bool(board["submission_ready"] and tiebreaker_ready),
         "requested_slate_dates": list(requested_dates),
         "requested_timezone": timezone_name,
         "expected_game_count": int(req.expected_game_count),
@@ -385,7 +482,7 @@ def run_nfl_pickem_board(
             "detail_available": persistence.get("detail_available") is True,
             "can_execute": False,
         },
-        "tiebreaker": tiebreaker_capability(),
+        "tiebreaker": tiebreaker,
         "market_probability_used": False,
         "sportsbook_price_used": False,
         "pool_popularity_used": False,

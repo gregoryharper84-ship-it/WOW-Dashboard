@@ -1,0 +1,73 @@
+{
+  "schema_version": "WOW_NFL_TOTAL_POINTS_TIEBREAKER_ACCEPTANCE_V1",
+  "status": "CLASS_C_REVIEW_REQUIRED",
+  "sport": "NFL",
+  "use_case": "PICKEM_TIEBREAKER_ONLY",
+  "target_event": {
+    "event_key": "2026_04_ATL_NO",
+    "gameday": "2026-10-05",
+    "away_team": "ATL",
+    "home_team": "NO",
+    "week": 4,
+    "season": 2026
+  },
+  "model": {
+    "controlling_specialist": "wow.nfl-total-points-tiebreaker-specialist",
+    "model_family": "NFL_TOTAL_POINTS_SHRUNK_SCORING_V1",
+    "model_artifact_version": "NFL_TOTAL_POINTS_SHRUNK_SCORING_V1_2026",
+    "calibration_version": "NFL_TOTAL_POINTS_2025_RESIDUAL_INTERVAL_V1"
+  },
+  "source_state": {
+    "completed_2026_weeks": [1, 2, 3],
+    "atl_2025_points_for": 22.3529411764706,
+    "atl_2025_points_against": 27.4705882352941,
+    "atl_2026_points_for_through_week3": 26.6666666666667,
+    "atl_2026_points_against_through_week3": 23.6666666666667,
+    "no_2025_points_for": 17.5882352941176,
+    "no_2025_points_against": 23.6470588235294,
+    "no_2026_points_for_through_week3": 19.6666666666667,
+    "no_2026_points_against_through_week3": 28.6666666666667,
+    "current_season_weight": 0.375
+  },
+  "projection": {
+    "projected_total_points": 44.2132352941176,
+    "suggested_integer_tiebreaker": 44,
+    "empirical_interval_80": {
+      "lower": 27.3613302139037,
+      "upper": 61.6222850678733
+    }
+  },
+  "validation": {
+    "validation_2025": {
+      "n": 272,
+      "mae": 10.7302526688637,
+      "rmse": 13.48918044647,
+      "bias_actual_minus_predicted": -0.16315055691137
+    },
+    "forward_2026_weeks_1_3": {
+      "n": 48,
+      "mae": 12.0736825980392,
+      "rmse": 15.4941923855256,
+      "bias_actual_minus_predicted": -0.368872549019609,
+      "interval_coverage": 0.75
+    },
+    "forward_prior_season_league_mean_reference": {
+      "mae": 12.6720281862745,
+      "rmse": 15.6463203733955
+    }
+  },
+  "source_hashes": {
+    "2025_regular_season_sha256": "ef439cb952770a0b626a67024950a3e3807399adefdcccf6bb3e338b26f181fd",
+    "2026_weeks_1_3_sha256": "0a3969b4f2721269394aec318814bb51332a4c967b7fcdbf34f61f307d631f1b"
+  },
+  "governance": {
+    "sportsbook_total_used": false,
+    "market_probability_used": false,
+    "moneyline_probability_used": false,
+    "generic_llm_projection_used": false,
+    "probability_publishable": false,
+    "rank_eligible": false,
+    "can_execute": false,
+    "terminal_authority": "V17_TERMINAL_REDUCER"
+  }
+}
