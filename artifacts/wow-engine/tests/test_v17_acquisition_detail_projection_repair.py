@@ -7,6 +7,7 @@ import pytest
 from v17.acquisition_detail_projection_repair import (
     normalize_acquisition_detail_projection,
     normalize_nested_fallback_union_detail,
+    normalize_partial_nested_fallback_union_detail,
     normalize_public_single_attempt_detail,
 )
 
@@ -96,6 +97,37 @@ def _union_detail(paths=("ESPN_SCOREBOARD", "ODDS_PROXY", "RUNDOWN")) -> dict:
     }
 
 
+def _partial_union_detail() -> dict:
+    return {
+        "family": "NFL",
+        "target_key": "RUNDOWN|2|NFL|REGULAR_SEASON",
+        "primary_path_id": "ESPN_SCOREBOARD",
+        "primary_path_state": "FAILED_TYPED",
+        "primary_blocker_code": "ESPN_HTTP_503",
+        "primary_upstream_status": 503,
+        "primary_content_type_class": None,
+        "primary_provider_alias": None,
+        "fallback_path_id": "GOVERNED_FALLBACK_UNION",
+        "fallback_path_state": "SUCCEEDED_WITH_ROWS",
+        "fallback_blocker_code": None,
+        "fallback_upstream_status": None,
+        "fallback_content_type_class": None,
+        "fallback_provider_alias": None,
+        "fallback_status": "FALLBACK_SUCCEEDED",
+        "exhaustion_status": "PATHS_NOT_EXHAUSTED",
+        "attempts": [
+            _attempt(
+                "ESPN_SCOREBOARD",
+                1,
+                path_state="FAILED_TYPED",
+                blocker_code="ESPN_HTTP_503",
+                upstream_status=503,
+            )
+        ],
+        "can_execute": False,
+    }
+
+
 def _public_single_attempt_detail() -> dict:
     return {
         "family": "NFL",
@@ -160,6 +192,50 @@ def test_originating_blocker_wins_over_attempt_blocker_in_projection():
     normalized = normalize_nested_fallback_union_detail(detail)
 
     assert normalized["fallback_blocker_code"] == "RUNDOWN_HTTP_503"
+
+
+def test_partial_nested_union_drops_only_incomplete_attempt_list_and_keeps_scalars():
+    detail = _partial_union_detail()
+    original = copy.deepcopy(detail)
+
+    normalized = normalize_partial_nested_fallback_union_detail(detail)
+
+    assert normalized is not detail
+    assert normalized["attempts"] is None
+    assert normalized["primary_path_id"] == "ESPN_SCOREBOARD"
+    assert normalized["primary_path_state"] == "FAILED_TYPED"
+    assert normalized["primary_blocker_code"] == "ESPN_HTTP_503"
+    assert normalized["fallback_path_id"] == "GOVERNED_FALLBACK_UNION"
+    assert normalized["fallback_path_state"] == "SUCCEEDED_WITH_ROWS"
+    assert normalized["fallback_status"] == "FALLBACK_SUCCEEDED"
+    assert detail == original
+    assert normalized["can_execute"] is False
+
+
+def test_partial_nested_union_primary_contradiction_stays_fail_closed():
+    detail = _partial_union_detail()
+    detail["primary_upstream_status"] = 500
+
+    normalized = normalize_partial_nested_fallback_union_detail(detail)
+
+    assert normalized is detail
+    assert normalized["attempts"] is not None
+
+
+def test_partial_nested_union_requires_actual_fallback_status():
+    detail = _partial_union_detail()
+    detail["fallback_status"] = "FALLBACK_NOT_ATTEMPTED"
+
+    normalized = normalize_partial_nested_fallback_union_detail(detail)
+
+    assert normalized is detail
+    assert normalized["attempts"] is not None
+
+
+def test_dispatcher_applies_partial_nested_union_repair():
+    normalized = normalize_acquisition_detail_projection(_partial_union_detail())
+    assert normalized["attempts"] is None
+    assert normalized["fallback_path_id"] == "GOVERNED_FALLBACK_UNION"
 
 
 def test_public_single_attempt_projects_nonexistent_fallback_as_not_applicable():
