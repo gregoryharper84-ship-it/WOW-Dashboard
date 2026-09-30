@@ -54,15 +54,54 @@ jobs:
           echo "state=$state" >> "$GITHUB_OUTPUT"
           printf '%s\n' "$result" > "$RUNNER_TEMP/priority.json"
 
-      - name: Release / Production Verification agent
-        id: release_agent
+      - name: Resolve read-only release fallback availability
+        id: provider
         if: steps.priority.outputs.release_pending == 'true'
+        shell: bash
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -n "${ANTHROPIC_API_KEY:-}" ] || [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+            echo "claude_available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "claude_available=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Release / Production Verification agent — OpenAI primary
+        id: release_agent_openai
+        if: steps.priority.outputs.release_pending == 'true'
+        continue-on-error: true
         uses: ./.github/actions/wow-chatgpt-agent
         with:
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
           permission_profile: ":read-only"
           prompt: |
-            You are the independent WOW V17 RELEASE_OBSERVABILITY_AGENT running on OpenAI/ChatGPT tooling only.
+            You are the independent WOW V17 RELEASE_OBSERVABILITY_AGENT running on OpenAI/ChatGPT tooling.
+            Read .agents/skills/wow-engineering-release-observability-agent/SKILL.md,
+            artifacts/wow-engine/v17/incident-ledger.json, current protected-main CI evidence,
+            and the highest-priority incident selected by engineering_agent_team.py.
+            Resume only release/production verification for that incident. Do not implement code,
+            merge, deploy, or change sporting probability behavior. Verify as much as public/runtime
+            evidence permits: exact protected main, required CI, production liveness/governance,
+            deploy/acceptance evidence, and reconciliation evidence. If exact production SHA or
+            required durable state cannot be proven, return PENDING instead of manufacturing closure.
+            Preserve V17_TERMINAL_REDUCER, typed failures, exact-once semantics, and can_execute=false.
+          output_schema: '{"type":"object","properties":{"incident_id":{"type":"string"},"status":{"type":"string","enum":["PRODUCTION_VERIFIED","PENDING","BLOCKED_WITH_EXACT_REASON"]},"main_sha":{"type":"string"},"production_sha":{"type":"string"},"acceptance":{"type":"string"},"reconciliation":{"type":"string"},"blocker":{"type":"string"},"next_action":{"type":"string"}},"required":["incident_id","status","main_sha","production_sha","acceptance","reconciliation","blocker","next_action"],"additionalProperties":false}'
+
+      - name: Release / Production Verification agent — Claude read-only fallback
+        id: release_agent_claude
+        if: steps.priority.outputs.release_pending == 'true' && steps.release_agent_openai.outcome == 'failure' && steps.provider.outputs.claude_available == 'true'
+        continue-on-error: true
+        uses: ./.github/actions/wow-claude-agent
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          permission_profile: ":read-only"
+          prompt: |
+            You are the independent WOW V17 RELEASE_OBSERVABILITY_AGENT running on Anthropic/Claude fallback tooling.
+            The OpenAI primary release-verification step failed before producing a usable verification receipt.
             Read .agents/skills/wow-engineering-release-observability-agent/SKILL.md,
             artifacts/wow-engine/v17/incident-ledger.json, current protected-main CI evidence,
             and the highest-priority incident selected by engineering_agent_team.py.
@@ -77,19 +116,35 @@ jobs:
       - name: Publish release-resume receipt
         if: always()
         env:
-          RESULT: ${{ steps.release_agent.outputs.structured_output }}
+          OPENAI_RESULT: ${{ steps.release_agent_openai.outputs.structured_output }}
+          CLAUDE_RESULT: ${{ steps.release_agent_claude.outputs.structured_output }}
         run: |
+          result="${OPENAI_RESULT:-}"
+          provider="OpenAI/ChatGPT"
+          if [ -z "$result" ] && [ -n "${CLAUDE_RESULT:-}" ]; then
+            result="$CLAUDE_RESULT"
+            provider="Anthropic/Claude fallback"
+          fi
           {
             echo "# WOW V17 Release Resume Agent"
             echo "- incident: ${{ steps.priority.outputs.incident || 'NONE' }}"
             echo "- selected_state: ${{ steps.priority.outputs.state || 'NONE' }}"
             echo "- release_pending: ${{ steps.priority.outputs.release_pending || 'false' }}"
-            echo "- provider: OpenAI/ChatGPT"
-            if [ -n "${RESULT:-}" ]; then
+            echo "- provider: $provider"
+            echo "- OpenAI outcome: ${{ steps.release_agent_openai.outcome || 'not-run' }}"
+            echo "- Claude fallback available: ${{ steps.provider.outputs.claude_available || 'false' }}"
+            echo "- Claude outcome: ${{ steps.release_agent_claude.outcome || 'not-run' }}"
+            if [ -n "$result" ]; then
               echo
               echo '```json'
-              echo "$RESULT"
+              echo "$result"
               echo '```'
             fi
             echo "- can_execute: false"
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Surface release verification provider failure
+        if: always() && steps.priority.outputs.release_pending == 'true' && steps.release_agent_openai.outcome == 'failure' && (steps.provider.outputs.claude_available != 'true' || steps.release_agent_claude.outcome == 'failure')
+        run: |
+          echo "::error::Release verification primary failed and no successful read-only fallback receipt was produced."
+          exit 1
