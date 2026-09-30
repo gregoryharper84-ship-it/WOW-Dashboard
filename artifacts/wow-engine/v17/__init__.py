@@ -177,6 +177,7 @@ def compose_active_runtime() -> bool:
     runtime_acceptance_ok = False
     daily_snapshot_oidc_ok = False
     daily_async_ok = False
+    nfl_pickem_ok = False
     full_board_runtime_ok = False
     fallback_provider_health_ok = False
     rundown_market_bootstrap_ok = False
@@ -207,12 +208,19 @@ def compose_active_runtime() -> bool:
             )
             if callable(auth_dependency) and callable(db_client_fn) and event_api is not None:
                 from v17.daily_async_runtime import install_daily_async_routes
+                from v17.nfl_pickem_runtime import install_nfl_pickem_routes
 
                 daily_async_ok = install_daily_async_routes(
                     app,
                     auth_callable=auth_dependency,
                     db_client_fn=db_client_fn,
                     market_api=market_api,
+                    event_api=event_api,
+                )
+                nfl_pickem_ok = install_nfl_pickem_routes(
+                    app,
+                    auth_dependency=auth_dependency,
+                    db_client_fn=db_client_fn,
                     event_api=event_api,
                 )
             full_board_runtime_ok = install_full_board_runtime_routes(
@@ -229,7 +237,7 @@ def compose_active_runtime() -> bool:
         or prop_ok or lineup_ok or rehydration_ok or rundown_llp_ok or rundown_value_shadow_ok or numerical_ok
         or full_board_overlay_ok
         or mlb_event_bridge_deferred or runtime_acceptance_ok or daily_snapshot_oidc_ok
-        or daily_async_ok or rundown_market_bootstrap_ok
+        or daily_async_ok or nfl_pickem_ok or rundown_market_bootstrap_ok
         or full_board_runtime_ok or fallback_provider_health_ok
         or getattr(market_api, "_v17_certified_numerical_bridge_installed", False)
         or getattr(market_api, "_v17_mlb_event_bridge_repair_installed", False)
