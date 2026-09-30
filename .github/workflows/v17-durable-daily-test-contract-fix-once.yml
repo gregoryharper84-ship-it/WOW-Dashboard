@@ -1,0 +1,71 @@
+name: v17-durable-daily-test-contract-fix-once
+
+on:
+  push:
+    branches:
+      - fix/v17-durable-daily-full-board
+    paths:
+      - .github/workflows/v17-durable-daily-test-contract-fix-once.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/v17-durable-daily-full-board
+          fetch-depth: 0
+      - name: Reconcile 23-operation live-editor test contracts
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          live = Path('artifacts/wow-engine/tests/test_v17_live_editor_compat.py')
+          text = live.read_text(encoding='utf-8')
+          old = '''def test_live_editor_schema_is_single_domain_and_exposes_all_21_operations():
+'''
+          new = '''def test_live_editor_schema_is_single_domain_and_exposes_all_23_operations():
+'''
+          if text.count(old) != 1:
+              raise SystemExit('expected one stale 21-op test name')
+          text = text.replace(old, new, 1)
+          if text.count('    assert len(operations) == 21\n') != 1:
+              raise SystemExit('expected one stale 21-op count')
+          text = text.replace('    assert len(operations) == 21\n', '    assert len(operations) == 23\n', 1)
+          required_anchor = '''        "getWowV17PickRequestRunState",
+'''
+          required_new = '''        "submitWowV17DailySnapshot",
+        "getWowV17DailySnapshotRun",
+        "getWowV17PickRequestRunState",
+'''
+          if text.count(required_anchor) != 1:
+              raise SystemExit('expected one live-editor required-op anchor')
+          text = text.replace(required_anchor, required_new, 1)
+          live.write_text(text, encoding='utf-8')
+
+          focused = Path('artifacts/wow-engine/v17/test_v17_daily_async_action_contract.py')
+          text = focused.read_text(encoding='utf-8')
+          old_paths = '''ROOT = Path(__file__).resolve().parents[1]
+SCHEMA = ROOT / "openapi.wow-betting-engine.v17.yaml"
+INSTRUCTIONS = ROOT.parent / "WOW_V17_CUSTOM_GPT_INSTRUCTIONS.txt"
+'''
+          new_paths = '''V17_DIR = Path(__file__).resolve().parent
+SCHEMA = V17_DIR / "openapi.wow-betting-engine.v17.yaml"
+INSTRUCTIONS = V17_DIR.parent / "WOW_V17_CUSTOM_GPT_INSTRUCTIONS.txt"
+'''
+          if text.count(old_paths) != 1:
+              raise SystemExit('expected one focused-test path block')
+          focused.write_text(text.replace(old_paths, new_paths, 1), encoding='utf-8')
+
+          workflow = Path('.github/workflows/v17-durable-daily-test-contract-fix-once.yml')
+          workflow.unlink()
+          PY
+          git config user.name "WOW Engineering Automation"
+          git config user.email "actions@users.noreply.github.com"
+          git add -A
+          git diff --cached --check
+          git commit -m "Align V17 live-editor tests with 23-operation durable Daily schema"
+          git push origin HEAD:fix/v17-durable-daily-full-board
