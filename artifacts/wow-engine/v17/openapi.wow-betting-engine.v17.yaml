@@ -171,6 +171,26 @@ paths:
       responses:
         '200': {description: One page of full Daily row evidence}
         '401': {description: Authentication failed}
+  /v17/nfl-pickem-board:
+    post:
+      operationId: runWowV17NFLPickemBoard
+      x-openai-isConsequential: false
+      description: >-
+        Build one required NFL pick'em selection per canonical pregame event by
+        consuming the existing governed NFL outright-win specialist. Supports a
+        multi-date NFL week, preserves modeled-hold source terminals, never uses
+        sportsbook price or pool popularity to alter sporting probability, and
+        never grants wager execution authority.
+      security: [{actionBearer: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/NFLPickemBoardRequest'}
+      responses:
+        '200': {description: Governed NFL pick'em board receipt including typed blockers and source-probability receipts}
+        '401': {description: Authentication failed}
+        '422': {description: Invalid pick'em week request}
   /score-pick-request:
     post:
       operationId: scoreWowPickRequest
@@ -414,6 +434,22 @@ components:
           type: string
           enum: [COMPACT, FULL]
           default: COMPACT
+    NFLPickemBoardRequest:
+      type: object
+      additionalProperties: false
+      required: [requested_slate_dates]
+      properties:
+        requested_slate_dates:
+          type: array
+          minItems: 1
+          maxItems: 7
+          items: {type: string, format: date}
+        requested_timezone: {type: string, default: America/Chicago}
+        expected_game_count: {type: integer, minimum: 1, maximum: 32, default: 16}
+        strategy_mode:
+          type: string
+          enum: [MAX_EXPECTED_CORRECT]
+          default: MAX_EXPECTED_CORRECT
     PickRequestBatch:
       type: object
       additionalProperties: false
