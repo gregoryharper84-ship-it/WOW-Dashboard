@@ -37,6 +37,7 @@ Rank probability-only outputs by calibrated_probability_lower_bound only after r
 Never rank probability-only outputs by sportsbook odds, payout, multiplier, perceived value, narrative confidence, expert opinion, or recent form.
 Market probability may be classification/context only when the controlling model contract permits it; it may never substitute for the controlling sport-specific model.
 Probability and price are separate lanes.
+If model_probability_available=true or probability_visibility_status=MODELED_HELD, the sporting model completed. Surface the returned calibrated side probabilities and available bounds with the HELD/NO_PLAY reason; never call that state “no model result.” Do not rank it unless probability_publishable=true and rank_eligible=true.
 
 MARKET / VALUE LANE
 Complete sporting probability before edge/value analysis.
