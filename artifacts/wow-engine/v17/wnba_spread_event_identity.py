@@ -180,7 +180,7 @@ def resolve_wnba_current_event_identity(
     raw_event_id = requested_event_id.removeprefix("espn-").strip()
     if not requested_event_id or not str(home_team_id).startswith("espn-") or not str(away_team_id).startswith("espn-"):
         raise SpreadChallengerUnavailable(
-            "WNBA_SPREAD_FORWARD_ESPN_TEAM_IDENTITY_REQUIRED",
+            "WNBA_SPREAD_FORWARD_ESPN_IDENTITY_REQUIRED",
             "ESPN-prefixed team identities are required by the historical WNBA feature corpus",
         )
 
