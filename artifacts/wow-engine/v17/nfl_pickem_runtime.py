@@ -2,15 +2,19 @@
 
 Discovery is schedule-first and canonical: the route reads the same immutable
 NFLVERSE schedule snapshot used by the NFL team/event specialist, filters only
-requested regular-season dates, and invokes the existing governed NFL scorer for
-every discovered event. It never creates or modifies a sporting probability.
+requested regular-season dates, and invokes the existing registered governed NFL
+scorer for every discovered event. It never creates or modifies a sporting
+probability.
 
 The route uses the existing cross-sport model invocation limit as a per-batch
 continuation bound. That bound is not a terminal slate cap: all canonical NFL
-events are attempted in sequential batches. No global scorer limit is raised.
+events are attempted in sequential bounded batches. Within each batch the
+registered scorer is invoked concurrently, matching the existing V17 slate
+orchestration pattern without raising any global scorer limit.
 """
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from typing import Any, Mapping
 from uuid import uuid4
@@ -20,6 +24,7 @@ from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 from nflverse_historical_adapter import NFLVerseHistoricalAdapterError, parse_nflverse_kickoff
+from v17 import team_event_request_runtime as team_runtime
 from v17.cross_sport_resilience_overlay import model_invocation_limit
 from v17.daily_response_contract import persist_row_detail
 from v17.nfl_pickem_pool_optimizer import (
@@ -28,7 +33,6 @@ from v17.nfl_pickem_pool_optimizer import (
     tiebreaker_capability,
 )
 from v17.nfl_team_event_specialist import _load_latest_schedule_snapshot
-from v17.team_event_probability_preservation import TeamEventRequest, score_team_event_request
 
 CAN_EXECUTE = False
 RUNTIME_CONTRACT = "V17_NFL_PICKEM_RUNTIME_V1"
@@ -176,7 +180,7 @@ def _score_event(
     source_snapshot_id = str(snapshot.get("snapshot_id") or "").strip()
     snapshot_timestamp = str(snapshot.get("fetched_at") or "").strip()
     try:
-        request = TeamEventRequest(
+        request = team_runtime.TeamEventRequest(
             requester_host_identity="WOW_BETTING_ENGINE",
             research_run_id=run_id,
             requested_slate_date=str(event["gameday"]),
@@ -194,7 +198,11 @@ def _score_event(
             source_snapshot_id=source_snapshot_id or f"pickem:{event_id}",
             latest_material_update_timestamp=snapshot_timestamp or None,
         )
-        result = score_team_event_request(
+        # Dynamic module lookup is intentional: startup overlays install the
+        # authoritative bridge registry after package import. The route therefore
+        # always calls the final registered scorer rather than a stale import-time
+        # function reference.
+        result = team_runtime.score_team_event_request(
             request,
             event_api=event_api,
             canonical_hydration_required=True,
@@ -295,16 +303,25 @@ def run_nfl_pickem_board(
     batch_receipts: list[dict[str, Any]] = []
     for batch_index, start in enumerate(range(0, len(events), batch_size), 1):
         batch = events[start : start + batch_size]
-        batch_results = [
-            _score_event(
-                event,
-                run_id=run_id,
-                requested_timezone=timezone_name,
-                snapshot=snapshot,
-                event_api=event_api,
-            )
-            for event in batch
-        ]
+        if batch:
+            with ThreadPoolExecutor(
+                max_workers=min(len(batch), batch_size),
+                thread_name_prefix="wow-v17-nfl-pickem",
+            ) as pool:
+                batch_results = list(
+                    pool.map(
+                        lambda event: _score_event(
+                            event,
+                            run_id=run_id,
+                            requested_timezone=timezone_name,
+                            snapshot=snapshot,
+                            event_api=event_api,
+                        ),
+                        batch,
+                    )
+                )
+        else:
+            batch_results = []
         source_rows.extend(batch_results)
         batch_receipts.append({
             "batch_index": batch_index,
