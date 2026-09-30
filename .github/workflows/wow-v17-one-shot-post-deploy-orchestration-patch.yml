@@ -51,18 +51,64 @@ jobs:
           PY
           git diff --check
 
-      - name: Commit bounded repair and remove one-shot helper
+      - name: Create remote commit object for governed handoff
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
         run: |
-          git config user.name "WOW Engineering Automation"
-          git config user.email "actions@users.noreply.github.com"
-          git rm scripts/patch_v17_post_deploy_orchestration_1087.py
-          git rm .github/workflows/wow-v17-one-shot-post-deploy-orchestration-patch.yml
-          git add \
-            .github/workflows/wow-v17-spread-certification-replay.yml \
-            .github/workflows/wow-v17-priority-prop-lifecycle.yml \
-            .github/workflows/wow-v17-spread-forward-production-canary.yml \
-            .github/workflows/wow-v17-post-deploy-verification-orchestrator.yml \
-            artifacts/wow-engine/tests/test_v17_post_deploy_canary_gate.py \
-            artifacts/wow-engine/v17/test_priority_prop_lifecycle_workflow.py
-          git commit -m "Apply workflow-level post-deploy orchestration (#1108)"
-          git push origin HEAD:engineering/v17-post-deploy-orchestrator-1087
+          python - <<'PY'
+          import json
+          import os
+          import subprocess
+          import urllib.request
+          from pathlib import Path
+
+          repo = os.environ['GH_REPO']
+          token = os.environ['GH_TOKEN']
+          parent = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          base_tree = subprocess.check_output(['git', 'rev-parse', f'{parent}^{{tree}}'], text=True).strip()
+
+          changed = [
+              '.github/workflows/wow-v17-spread-certification-replay.yml',
+              '.github/workflows/wow-v17-priority-prop-lifecycle.yml',
+              '.github/workflows/wow-v17-spread-forward-production-canary.yml',
+              '.github/workflows/wow-v17-post-deploy-verification-orchestrator.yml',
+              'artifacts/wow-engine/tests/test_v17_post_deploy_canary_gate.py',
+              'artifacts/wow-engine/v17/test_priority_prop_lifecycle_workflow.py',
+          ]
+          deleted = [
+              'scripts/patch_v17_post_deploy_orchestration_1087.py',
+              '.github/workflows/wow-v17-one-shot-post-deploy-orchestration-patch.yml',
+          ]
+
+          entries = [
+              {'path': path, 'mode': '100644', 'type': 'blob', 'content': Path(path).read_text(encoding='utf-8')}
+              for path in changed
+          ]
+          entries.extend({'path': path, 'mode': '100644', 'type': 'blob', 'sha': None} for path in deleted)
+
+          def post(path, payload):
+              req = urllib.request.Request(
+                  f'https://api.github.com/repos/{repo}{path}',
+                  data=json.dumps(payload).encode('utf-8'),
+                  headers={
+                      'Authorization': f'Bearer {token}',
+                      'Accept': 'application/vnd.github+json',
+                      'X-GitHub-Api-Version': '2022-11-28',
+                      'Content-Type': 'application/json',
+                  },
+                  method='POST',
+              )
+              with urllib.request.urlopen(req, timeout=30) as resp:
+                  return json.load(resp)
+
+          tree = post('/git/trees', {'base_tree': base_tree, 'tree': entries})
+          commit = post('/git/commits', {
+              'message': 'Apply workflow-level post-deploy orchestration (#1108)',
+              'tree': tree['sha'],
+              'parents': [parent],
+          })
+          print(f"REMOTE_COMMIT_SHA={commit['sha']}")
+          print(f"REMOTE_TREE_SHA={tree['sha']}")
+          print(f"PARENT_SHA={parent}")
+          PY
