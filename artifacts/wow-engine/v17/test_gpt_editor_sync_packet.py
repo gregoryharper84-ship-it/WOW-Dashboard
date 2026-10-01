@@ -66,15 +66,15 @@ def test_packet_contains_single_domain_action_contract_without_secrets():
 
     # Keep this dedicated sync workflow dependency-free. Full YAML/OpenAPI
     # validation runs in the protected backend regression suite.
-    assert schema_text.count("operationId:") == module.REQUIRED_OPERATION_COUNT == 23
-    assert manifest["action_operation_count"] == 23
+    assert schema_text.count("operationId:") == module.REQUIRED_OPERATION_COUNT == 24
+    assert manifest["action_operation_count"] == 24
     assert manifest["action_schema_installation_surface"] == "SINGLE_CUSTOM_ACTION_DOMAIN"
     assert manifest["action_schema_domain"] == "wow-governed-probability-engine.onrender.com"
     assert manifest["run_control_installation_surface"] == "MERGED_INTO_CANONICAL_ACTION_SCHEMA"
-    assert "IMPORT_SINGLE_CANONICAL_ACTION_SCHEMA_WITH_23_OPERATIONS" in manifest["acceptance_required"]
+    assert "IMPORT_SINGLE_CANONICAL_ACTION_SCHEMA_WITH_24_OPERATIONS" in manifest["acceptance_required"]
     assert "FRESH_CHAT_SUBMIT_AND_POLL_DURABLE_WOW_V17_DAILY_SNAPSHOT" in manifest["acceptance_required"]
     assert "FRESH_CHAT_SCORE_WOW_V17_SPREAD_FORWARD_SHADOW" in manifest["acceptance_required"]
-    assert "FRESH_CHAT_RUN_WOW_V17_NFL_PICKEM_BOARD" in manifest["acceptance_required"]
+    assert "FRESH_CHAT_SUBMIT_AND_POLL_DURABLE_WOW_V17_NFL_PICKEM_BOARD" in manifest["acceptance_required"]
 
     assert "WOW_ACTION_API_KEY=" not in text
     assert "Bearer sk-" not in text
@@ -109,26 +109,36 @@ def test_spread_forward_shadow_action_is_closed_ncaaf_only_and_research_only():
     assert "season: {type: integer, minimum: 2000, maximum: 2100}" in request
 
 
-def test_nfl_pickem_action_is_in_single_canonical_domain_and_non_consequential():
+def test_nfl_pickem_action_uses_durable_submit_poll_in_single_canonical_domain():
     schema_text = SCHEMA.read_text(encoding="utf-8")
 
-    route_start = schema_text.index("  /v17/nfl-pickem-board:\n")
-    route_end = schema_text.index("  /score-pick-request:\n", route_start)
-    route = schema_text[route_start:route_end]
+    assert "  /v17/nfl-pickem-board:\n" not in schema_text
 
-    assert "operationId: runWowV17NFLPickemBoard" in route
-    assert "x-openai-isConsequential: false" in route
-    assert "security: [{actionBearer: []}]" in route
-    assert "schema: {$ref: '#/components/schemas/NFLPickemBoardRequest'}" in route
-    assert "can_execute remains false" in route
+    submit_start = schema_text.index("  /v17/nfl-pickem-submit:\n")
+    poll_start = schema_text.index("  /v17/nfl-pickem-run/{run_id}:\n", submit_start)
+    score_start = schema_text.index("  /score-pick-request:\n", poll_start)
+    submit = schema_text[submit_start:poll_start]
+    poll = schema_text[poll_start:score_start]
 
-    request_start = schema_text.index("    NFLPickemBoardRequest:\n")
-    request_end = schema_text.index("    PickRequestBatch:\n", request_start)
+    assert "operationId: submitWowV17NFLPickemBoard" in submit
+    assert "x-openai-isConsequential: false" in submit
+    assert "security: [{actionBearer: []}]" in submit
+    assert "schema: {$ref: '#/components/schemas/AsyncNFLPickemSubmitRequest'}" in submit
+    assert "can_execute remains false" in submit
+
+    assert "operationId: getWowV17NFLPickemRun" in poll
+    assert "x-openai-isConsequential: false" in poll
+    assert "security: [{actionBearer: []}]" in poll
+    assert "name: run_id" in poll
+
+    request_start = schema_text.index("    AsyncNFLPickemSubmitRequest:\n")
+    request_end = schema_text.index("    NFLPickemBoardRequest:\n", request_start)
     request = schema_text[request_start:request_end]
     assert "additionalProperties: false" in request
     assert "required: [requested_slate_dates]" in request
     assert "maxItems: 7" in request
     assert "enum: [MAX_EXPECTED_CORRECT]" in request
+    assert "idempotency_key: {type: [string, 'null'], minLength: 8, maxLength: 128}" in request
 
 
 def test_packet_is_deterministic_for_same_repository_content():
