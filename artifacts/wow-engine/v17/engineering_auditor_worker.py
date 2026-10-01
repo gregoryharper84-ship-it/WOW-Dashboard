@@ -23,9 +23,10 @@ _THREAD: threading.Thread | None = None
 def _db_client():
     """Build the narrowest available persistence client for the auditor.
 
-    Prefer the existing service-role client when both legacy worker secrets are
-    present. Otherwise use the purpose-scoped Edge Function bridge so the
-    resident worker never needs to receive the Supabase service-role key.
+    Preserve the legacy direct service-role path for environments that already
+    have those secrets. The production Render worker instead uses the scorer's
+    hidden engineering-audit bridge so database-admin credentials stay out of
+    the worker environment.
     """
     supabase_url = os.getenv("SUPABASE_URL", "").strip()
     service_key = os.getenv("SUPABASE_SERVICE_KEY", "").strip()
@@ -37,9 +38,9 @@ def _db_client():
     bridge_url = os.getenv("WOW_ENGINEERING_AUDIT_BRIDGE_URL", "").strip()
     bridge_token = os.getenv("WOW_ENGINEERING_AUDIT_BRIDGE_TOKEN", "").strip()
     if bridge_url and bridge_token:
-        from v17.engineering_auditor_rpc_client import EngineeringAuditRpcClient
+        from v17.engineering_auditor_http_client import EngineeringAuditHttpClient
 
-        return EngineeringAuditRpcClient(bridge_url, bridge_token)
+        return EngineeringAuditHttpClient(bridge_url, bridge_token)
 
     missing = []
     if not bridge_url:
