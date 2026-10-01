@@ -40,6 +40,16 @@ class _Game:
     home_probability: float
     away_probability: float
     baseline_pick: str
+    home_lower_bound: float
+    home_upper_bound: float
+    away_lower_bound: float
+    away_upper_bound: float
+    source_terminal_label: str | None
+    source_model_status: str | None
+    source_prediction_id: str | None
+    source_snapshot_id: str | None
+    controlling_specialist: str
+    source_blockers: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -84,6 +94,8 @@ def _parse_games(board: Mapping[str, Any]) -> tuple[list[_Game], list[str]]:
     blockers: list[str] = []
     if board.get("submission_ready") is not True:
         blockers.append("PICKEM_BASELINE_BOARD_NOT_READY")
+    if board.get("source_terminals_preserved") is not True:
+        blockers.append("PICKEM_BASELINE_SOURCE_TERMINALS_NOT_PRESERVED")
     picks = board.get("picks")
     if not isinstance(picks, list) or not picks:
         blockers.append("PICKEM_BASELINE_PICKS_REQUIRED")
@@ -101,6 +113,11 @@ def _parse_games(board: Mapping[str, Any]) -> tuple[list[_Game], list[str]]:
         baseline = _text(raw.get("pool_pick"))
         home_p = _float(raw.get("home_probability"))
         away_p = _float(raw.get("away_probability"))
+        home_lower = _float(raw.get("calibrated_home_lower_bound"))
+        home_upper = _float(raw.get("calibrated_home_upper_bound"))
+        away_lower = _float(raw.get("calibrated_away_lower_bound"))
+        away_upper = _float(raw.get("calibrated_away_upper_bound"))
+        controlling_specialist = _text(raw.get("controlling_specialist"))
         if not event_id or not home or not away or baseline not in {home, away}:
             blockers.append("PICKEM_BASELINE_IDENTITY_INVALID")
             continue
@@ -117,6 +134,23 @@ def _parse_games(board: Mapping[str, Any]) -> tuple[list[_Game], list[str]]:
         if not isclose(home_p + away_p, 1.0, abs_tol=_EPS):
             blockers.append("PICKEM_BASELINE_OUTCOME_SPACE_NOT_NORMALIZED")
             continue
+        if None in {home_lower, home_upper, away_lower, away_upper}:
+            blockers.append("PICKEM_WEEKLY_EQUITY_TWO_SIDED_BOUNDS_REQUIRED")
+            continue
+        assert home_lower is not None and home_upper is not None
+        assert away_lower is not None and away_upper is not None
+        if not (
+            0.0 <= home_lower <= home_p <= home_upper <= 1.0
+            and 0.0 <= away_lower <= away_p <= away_upper <= 1.0
+        ):
+            blockers.append("PICKEM_WEEKLY_EQUITY_TWO_SIDED_BOUNDS_INVALID")
+            continue
+        if not controlling_specialist:
+            blockers.append("PICKEM_WEEKLY_EQUITY_CONTROLLING_SPECIALIST_REQUIRED")
+            continue
+        if raw.get("can_execute") is not False:
+            blockers.append("PICKEM_WEEKLY_EQUITY_CAN_EXECUTE_MUST_BE_FALSE")
+            continue
         max_side = home if home_p >= away_p else away
         if baseline != max_side:
             blockers.append("PICKEM_BASELINE_NOT_MAX_EXPECTED_CORRECT")
@@ -129,6 +163,16 @@ def _parse_games(board: Mapping[str, Any]) -> tuple[list[_Game], list[str]]:
                 home_probability=home_p,
                 away_probability=away_p,
                 baseline_pick=baseline,
+                home_lower_bound=home_lower,
+                home_upper_bound=home_upper,
+                away_lower_bound=away_lower,
+                away_upper_bound=away_upper,
+                source_terminal_label=_text(raw.get("source_terminal_label")),
+                source_model_status=_text(raw.get("source_model_status")),
+                source_prediction_id=_text(raw.get("source_prediction_id")),
+                source_snapshot_id=_text(raw.get("source_snapshot_id")),
+                controlling_specialist=controlling_specialist,
+                source_blockers=tuple(str(value) for value in (raw.get("source_blockers") or [])),
             )
         )
     if len(games) > _MAX_GAMES:
@@ -379,30 +423,63 @@ def optimize_weekly_win_equity(
     differences: list[dict[str, Any]] = []
     picks: list[dict[str, Any]] = []
     share_by_id = {share.event_id: share for share in shares}
-    for game in games:
+    for idx, game in enumerate(games):
         selected = optimized[game.event_id]
-        selected_probability = (
-            game.home_probability if selected == game.home_team else game.away_probability
-        )
+        baseline_selected = baseline[game.event_id]
+        selected_is_home = selected == game.home_team
+        baseline_is_home = baseline_selected == game.home_team
+        selected_probability = game.home_probability if selected_is_home else game.away_probability
+        baseline_probability = game.home_probability if baseline_is_home else game.away_probability
+        selected_lower = game.home_lower_bound if selected_is_home else game.away_lower_bound
+        selected_upper = game.home_upper_bound if selected_is_home else game.away_upper_bound
         share = share_by_id[game.event_id]
-        selected_pool_share = (
-            share.home_pick_share if selected == game.home_team else share.away_pick_share
-        )
+        selected_pool_share = share.home_pick_share if selected_is_home else share.away_pick_share
+        baseline_pool_share = share.home_pick_share if baseline_is_home else share.away_pick_share
+        changed = selected != baseline_selected
+        marginal_equity_gain = 0.0
+        if changed:
+            reverted_mask = best_mask ^ (1 << idx)
+            reverted_equity, _ = _evaluate_mask(
+                reverted_mask,
+                game_count=len(games),
+                masks=masks,
+                outcome_prob=outcome_prob,
+                tie_equity=tie_equity,
+                sole_win=sole_win,
+                popcount=popcount,
+            )
+            marginal_equity_gain = best_equity - reverted_equity
         item = {
             "official_event_id": game.event_id,
             "home_team": game.home_team,
             "away_team": game.away_team,
-            "baseline_pick": baseline[game.event_id],
+            "baseline_pick": baseline_selected,
             "weekly_equity_pick": selected,
-            "selection_changed": selected != baseline[game.event_id],
+            "selection_changed": changed,
+            "decision_reason_code": (
+                "WEEKLY_EQUITY_IMPROVEMENT_WITHIN_SEARCH" if changed else "BASELINE_RETAINED"
+            ),
             "selected_governed_probability": selected_probability,
+            "selected_calibrated_lower_bound": selected_lower,
+            "selected_calibrated_upper_bound": selected_upper,
+            "baseline_governed_probability": baseline_probability,
+            "governed_probability_delta_vs_baseline": selected_probability - baseline_probability,
             "home_governed_probability": game.home_probability,
             "away_governed_probability": game.away_probability,
             "selected_pool_pick_share": selected_pool_share,
+            "baseline_pool_pick_share": baseline_pool_share,
+            "pool_pick_share_delta_vs_baseline": selected_pool_share - baseline_pool_share,
+            "conditional_first_place_equity_gain_if_reverted": marginal_equity_gain,
             "opponent_pick_share_snapshot_id": share.snapshot_id,
             "opponent_pick_share_source": share.source,
             "opponent_pick_share_observed_at": share.observed_at,
             "opponent_pick_share_freshness_status": share.freshness_status,
+            "source_terminal_label": game.source_terminal_label,
+            "source_model_status": game.source_model_status,
+            "source_prediction_id": game.source_prediction_id,
+            "source_snapshot_id": game.source_snapshot_id,
+            "source_blockers": list(game.source_blockers),
+            "controlling_specialist": game.controlling_specialist,
             "sporting_probability_modified": False,
             "pool_popularity_used_as_sporting_probability": False,
             "can_execute": False,
