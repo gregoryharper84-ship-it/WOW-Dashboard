@@ -35,6 +35,12 @@ cost_governance:
   negative_cost_allowed: false
   missing_cost_behavior: omit_metric
 
+activation:
+  code_may_merge_without_exporter: true
+  exporter_configuration_required_for_remote_metrics: true
+  missing_exporter_behavior: opentelemetry_noop
+  missing_cost_receipt_must_not_block_other_metrics: true
+
 hard_boundaries:
   sporting_probability_fields_allowed: false
   wager_or_market_order_fields_allowed: false
