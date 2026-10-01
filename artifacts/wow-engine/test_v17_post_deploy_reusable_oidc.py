@@ -5,7 +5,7 @@ import pytest
 import github_actions_oidc as oidc
 
 
-def _claims(*, job_workflow_ref: str, event_name: str = "workflow_run", **overrides):
+def _claims(*, job_workflow_ref: str, event_name: str = "workflow_call", **overrides):
     claims = {
         "repository": oidc.REPOSITORY,
         "repository_id": oidc.REPOSITORY_ID,
@@ -71,8 +71,8 @@ def test_orchestrator_non_main_reusable_callee_is_rejected():
         )
 
 
-@pytest.mark.parametrize("event_name", ["push", "schedule", "workflow_dispatch", "pull_request"])
-def test_post_deploy_reusable_pairs_accept_only_workflow_run(event_name: str):
+@pytest.mark.parametrize("event_name", ["push", "schedule", "workflow_dispatch", "workflow_run", "pull_request"])
+def test_post_deploy_reusable_pairs_accept_only_workflow_call(event_name: str):
     with pytest.raises(
         oidc.GitHubOIDCValidationError,
         match="GITHUB_OIDC_EVENT_NOT_ALLOWED",
