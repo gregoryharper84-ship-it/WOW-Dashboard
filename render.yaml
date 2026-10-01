@@ -30,6 +30,8 @@ services:
         sync: false
       - key: WOW_ACTION_API_KEY
         sync: false
+      - key: WOW_ENGINEERING_AUDIT_BRIDGE_TOKEN
+        sync: false
       - key: balldontlie
         sync: false
       - key: CLAUDE_CODE_OAUTH_TOKEN
@@ -159,6 +161,10 @@ services:
         value: "30"
       - key: WOW_ENGINEERING_AUDITOR_GITHUB_INTERVAL_SECONDS
         value: "300"
+      - key: WOW_ENGINEERING_AUDIT_BRIDGE_URL
+        value: https://wow-governed-probability-engine.onrender.com/internal/engineering-audit-store
+      - key: WOW_ENGINEERING_AUDIT_BRIDGE_TOKEN
+        sync: false
       - key: WOW_ENGINEERING_LANGGRAPH_ENABLED
         # LangGraph remains fail-closed until a governed checkpoint backend and
         # production worker adapters have been explicitly reviewed and promoted.
