@@ -1,0 +1,55 @@
+[
+  {
+    "fixture_id": "event-identity-conflict",
+    "component": "event_identity",
+    "sport": "NFL",
+    "expected_typed_failure": "PROP_EVENT_IDENTITY_CONFLICT:NFL_CANONICAL_EVENT_ID_MISMATCH",
+    "payload": {
+      "display_event_id": "game-display-uuid",
+      "provider_alias": "401872948",
+      "official_event_id": null
+    }
+  },
+  {
+    "fixture_id": "provider-timeout",
+    "component": "acquisition",
+    "sport": "NFL",
+    "expected_typed_failure": "ACTION_TRANSPORT_FAILURE",
+    "payload": {
+      "provider": "synthetic-provider",
+      "timeout": true,
+      "http_status": null
+    }
+  },
+  {
+    "fixture_id": "malformed-american-odds",
+    "component": "market_data",
+    "sport": "MLB",
+    "expected_typed_failure": "MARKET_DATA_VALIDATION_FAILED",
+    "payload": {
+      "raw_american_odds": "+1500",
+      "comparison_fixture": "+150",
+      "market_status": "OPEN"
+    }
+  },
+  {
+    "fixture_id": "future-information-leakage",
+    "component": "feature_hydration",
+    "sport": "NHL",
+    "expected_typed_failure": "FEATURE_TIME_LEAKAGE_DETECTED",
+    "payload": {
+      "event_start": "2026-10-01T19:00:00Z",
+      "feature_observed_at": "2026-10-01T22:00:00Z"
+    }
+  },
+  {
+    "fixture_id": "missing-calibration-artifact",
+    "component": "calibration",
+    "sport": "NCAAF",
+    "expected_typed_failure": "CALIBRATION_ARTIFACT_MISSING",
+    "payload": {
+      "artifact_id": null,
+      "fallback_probability_allowed": false
+    }
+  }
+]

@@ -1,0 +1,48 @@
+name: WOW Engineering Control Plane
+
+on:
+  pull_request:
+    paths:
+      - 'artifacts/flask-scoring-api/services/wow_engineering_control_plane.py'
+      - 'artifacts/flask-scoring-api/services/wow_engineering_telemetry.py'
+      - 'artifacts/flask-scoring-api/tests/test_wow_engineering_control_plane.py'
+      - 'artifacts/flask-scoring-api/tests/test_wow_engineering_telemetry.py'
+      - 'artifacts/flask-scoring-api/tests/fixtures/wow_engineering_synthetic_incidents.json'
+      - 'artifacts/flask-scoring-api/tests/test_v17_dots_engineering_orchestrator_contract.py'
+      - 'artifacts/flask-scoring-api/requirements.txt'
+      - 'artifacts/wow-engine/WOW_DOTS_ENGINEERING_ORCHESTRATOR.yaml'
+      - 'artifacts/wow-engine/WOW_LANGGRAPH_CONTROL_PLANE_PILOT_ACCEPTANCE_2026-10-01.md'
+      - '.agents/skills/wow-dots-engineering-orchestrator/SKILL.md'
+      - 'docs/wow/engineering/WOW_LANGGRAPH_ENGINEERING_CONTROL_PLANE.md'
+      - '.github/workflows/wow-engineering-control-plane.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  control-plane-regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install narrow control-plane test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install \
+            'langgraph>=1.2.12,<2.0.0' \
+            'langgraph-checkpoint-postgres>=3.1.2,<4.0.0' \
+            'psycopg[binary]>=3.2.0,<4.0.0' \
+            'opentelemetry-api>=1.45.0,<2.0.0' \
+            pytest pyyaml
+      - name: Run LangGraph and V17 orchestration regressions
+        env:
+          LANGGRAPH_STRICT_MSGPACK: 'true'
+        run: |
+          pytest -q \
+            artifacts/flask-scoring-api/tests/test_wow_engineering_control_plane.py \
+            artifacts/flask-scoring-api/tests/test_wow_engineering_telemetry.py \
+            artifacts/flask-scoring-api/tests/test_v17_dots_engineering_orchestrator_contract.py
