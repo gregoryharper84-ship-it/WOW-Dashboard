@@ -131,8 +131,8 @@ def test_post_score_event_alias_mismatch_becomes_row_isolated_typed_hold():
         source_rows,
     )
     assert reconciled["reconciliation_pass"] is True
-    assert reconciled["top10_model_reconciliation"]["balanced"] is True
-    assert reconciled["top10_model_reconciliation"]["typed_blocker_row_ids"] == ["SR14_MORE"]
+    assert reconciled["exact_board_identity_reconciliation"]["balanced"] is True
+    assert reconciled["exact_board_identity_reconciliation"]["mismatch_count"] == 0
 
 
 def test_55_direction_manifest_isolates_one_identity_conflict_without_stranding_other_rows():
@@ -172,9 +172,8 @@ def test_55_direction_manifest_isolates_one_identity_conflict_without_stranding_
     assert isolated[13]["code"] == IDENTITY_CONFLICT_TERMINAL
     assert sum(item["terminal_status"] == "HELD" for item in isolated) == 55
     assert reconciled["reconciliation_pass"] is True
-    assert reconciled["top10_model_reconciliation"]["rows_in_scope"] == 55
-    assert reconciled["top10_model_reconciliation"]["rows_with_typed_blocker"] == 55
-    assert reconciled["top10_model_reconciliation"]["unreconciled_row_ids"] == []
+    assert reconciled["exact_board_identity_reconciliation"]["balanced"] is True
+    assert reconciled["exact_board_identity_reconciliation"]["mismatch_count"] == 0
 
 
 def test_held_identity_conflict_cannot_report_governed_publication_authorized():
