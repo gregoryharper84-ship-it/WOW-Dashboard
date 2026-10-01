@@ -1,2 +1,0 @@
-PR_SCOPE=spread forward fitter transient-memory release
-ISSUE_FAMILY=#1087,#502
