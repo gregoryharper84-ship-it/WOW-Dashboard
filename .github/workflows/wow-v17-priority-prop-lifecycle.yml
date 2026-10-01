@@ -5,6 +5,12 @@ on:
     - cron: "7 * * * *"
   workflow_dispatch:
   workflow_call:
+    inputs:
+      post_deploy_smoke:
+        description: "Use the current-date-only bounded smoke profile for post-deploy verification."
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -40,6 +46,7 @@ jobs:
       WOW_OIDC_AUDIENCE: wow-v17-multiscout
       WOW_CAN_EXECUTE: "false"
       WOW_DRY_RUN_ONLY: "true"
+      POST_DEPLOY_SMOKE: ${{ inputs.post_deploy_smoke && 'true' || 'false' }}
       SPORT: ${{ matrix.sport }}
       PRODUCER_PATH: ${{ matrix.producer_path }}
       MAX_CANDIDATES: ${{ matrix.max_candidates }}
@@ -265,7 +272,9 @@ jobs:
           tomorrow="$(TZ=America/Chicago date -d '+1 day' +%F)"
           seed_failures=0
           if ! seed_date "${today}"; then seed_failures=$((seed_failures + 1)); fi
-          if ! seed_date "${tomorrow}"; then seed_failures=$((seed_failures + 1)); fi
+          if [ "${POST_DEPLOY_SMOKE}" != "true" ]; then
+            if ! seed_date "${tomorrow}"; then seed_failures=$((seed_failures + 1)); fi
+          fi
 
           settlement_failures=0
           settlement_body="$(printf '{"routes":%s,"limit":20}' "${ROUTES_JSON}")"
