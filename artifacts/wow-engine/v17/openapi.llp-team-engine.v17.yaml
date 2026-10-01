@@ -178,7 +178,9 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/RecommendationBatch'}
       responses:
-        '200': {description: Terminal recommendation records persisted}
+        '200': {description: All recommendation rows durably recorded and display authorized}
+        '401': {description: Authentication failed}
+        '422': {description: Invalid or non-pregame recommendation contract}
         '503': {description: Write-before-display not proven}
   /settle-recommendations:
     post:
@@ -189,10 +191,12 @@ paths:
         required: true
         content:
           application/json:
-            schema: {$ref: '#/components/schemas/RecommendationBatch'}
+            schema: {$ref: '#/components/schemas/RecommendationSettlementBatch'}
       responses:
         '200': {description: Linked recommendation settlement recorded}
-        '409': {description: Settlement timing or integrity blocked}
+        '401': {description: Authentication failed}
+        '422': {description: Invalid settlement contract or recommendation record not found}
+        '503': {description: Settlement persistence failed}
 components:
   securitySchemes:
     actionBearer:
@@ -258,12 +262,79 @@ components:
         home_run_line: {type: number, exclusiveMinimum: -10, exclusiveMaximum: 10}
     RecommendationBatch:
       type: object
-      additionalProperties: true
-      required: [records]
+      additionalProperties: false
+      required: [research_run_id, host_identity, model_identity, source_type, rows]
       properties:
-        records:
+        research_run_id: {type: string}
+        request_id: {type: [string, 'null']}
+        host_identity: {type: string}
+        model_identity: {type: string}
+        source_type: {type: string}
+        source_conversation_ref: {type: [string, 'null']}
+        rows:
           type: array
-          items: {type: object, additionalProperties: true}
+          minItems: 1
+          maxItems: 50
+          items:
+            $ref: '#/components/schemas/RecommendationRow'
+    RecommendationRow:
+      type: object
+      additionalProperties: false
+      required: [row_key, sport, event_id, event_start_time, participant, selection, terminal_label]
+      properties:
+        row_key: {type: string}
+        sport: {type: string}
+        league: {type: [string, 'null']}
+        event_id: {type: string}
+        event_start_time: {type: string, format: date-time}
+        participant: {type: string}
+        opponent: {type: [string, 'null']}
+        market_family: {type: string, default: OUTRIGHT_WINNER}
+        selection: {type: string}
+        terminal_label: {type: string}
+        probability_publishable: {type: boolean, default: false}
+        model_probability: {type: [number, 'null'], exclusiveMinimum: 0, exclusiveMaximum: 1}
+        calibrated_probability: {type: [number, 'null'], exclusiveMinimum: 0, exclusiveMaximum: 1}
+        calibrated_probability_lower_bound: {type: [number, 'null'], exclusiveMinimum: 0, exclusiveMaximum: 1}
+        governed_prediction_table: {type: [string, 'null']}
+        governed_prediction_id: {type: [string, 'null'], format: uuid}
+        source_snapshot_id: {type: [string, 'null'], format: uuid}
+        evidence_fingerprint: {type: [string, 'null']}
+        blockers:
+          type: array
+          items: {type: string}
+        display_payload:
+          type: object
+          additionalProperties: true
+    RecommendationSettlementBatch:
+      type: object
+      additionalProperties: false
+      required: [rows]
+      properties:
+        rows:
+          type: array
+          minItems: 1
+          maxItems: 50
+          items:
+            $ref: '#/components/schemas/RecommendationSettlementRow'
+    RecommendationSettlementRow:
+      type: object
+      additionalProperties: false
+      required: [recommendation_record_id, settled_at, settled_result, settlement_source, position_reference, position_structure, underlying_market_count]
+      properties:
+        recommendation_record_id: {type: string, format: uuid}
+        settled_at: {type: string, format: date-time}
+        settled_result: {type: string, enum: [WIN, LOSS, PUSH, VOID]}
+        official_result: {type: [string, 'null']}
+        settlement_source: {type: string}
+        settlement_evidence_ref: {type: [string, 'null']}
+        position_reference: {type: [string, 'null']}
+        position_structure: {type: [string, 'null']}
+        underlying_market_count: {type: [integer, 'null'], minimum: 1}
+        entry_cost: {type: [number, 'null'], minimum: 0}
+        payout: {type: [number, 'null'], minimum: 0}
+        profit_loss: {type: [number, 'null']}
+        displayed_roi: {type: [number, 'null']}
     LlpTeamEventRequest:
       type: object
       additionalProperties: false
