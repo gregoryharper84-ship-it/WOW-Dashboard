@@ -179,6 +179,22 @@ def initialize_observability() -> dict[str, Any]:
     except Exception:
         pass
 
+    # The resident Engineering Auditor uses this hidden bridge only when its
+    # worker does not have Supabase service-role credentials. It is deliberately
+    # outside the GPT/OpenAPI action surface and carries no probability authority.
+    try:
+        import api_prod_market_acceptance as _accepted_base
+        from v17.engineering_auditor_bridge_api import (
+            install_engineering_audit_bridge_routes,
+        )
+
+        install_engineering_audit_bridge_routes(
+            _accepted_base.app,
+            db_client_fn=_accepted_base.market_api.prod.get_client,
+        )
+    except Exception:
+        pass
+
     # Keep the canonical sport-aware hydration router untouched: true canonical
     # or opponent conflicts retain PROP_EVENT_IDENTITY_CONFLICT. Only the new
     # pre-scorer display/provider resolution boundary emits
