@@ -16,24 +16,15 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  spread-certification:
-    name: Run spread certification replay
+  priority-props:
+    name: Run bounded priority prop smoke
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event.workflow_run.conclusion == 'success' &&
        github.event.workflow_run.head_branch == 'main')
-    uses: ./.github/workflows/wow-v17-spread-certification-replay.yml
-    secrets: inherit
-
-  priority-props:
-    name: Run priority prop lifecycle
-    needs: spread-certification
-    if: >-
-      always() &&
-      (github.event_name == 'workflow_dispatch' ||
-       (github.event.workflow_run.conclusion == 'success' &&
-        github.event.workflow_run.head_branch == 'main'))
     uses: ./.github/workflows/wow-v17-priority-prop-lifecycle.yml
+    with:
+      post_deploy_smoke: true
     secrets: inherit
 
   spread-forward:
@@ -45,4 +36,15 @@ jobs:
        (github.event.workflow_run.conclusion == 'success' &&
         github.event.workflow_run.head_branch == 'main'))
     uses: ./.github/workflows/wow-v17-spread-forward-production-canary.yml
+    secrets: inherit
+
+  spread-certification:
+    name: Run spread certification replay
+    needs: spread-forward
+    if: >-
+      always() &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.head_branch == 'main'))
+    uses: ./.github/workflows/wow-v17-spread-certification-replay.yml
     secrets: inherit
