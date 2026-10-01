@@ -1,5 +1,6 @@
 name: wow-v17-ncaaf-ml-closure
 
+# 2026-10-01 operational retrigger: refresh governed NCAAF feature materialization after #1153.
 on:
   workflow_dispatch:
   push:
