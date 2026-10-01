@@ -76,9 +76,6 @@ def _identity_conflict_outcome(
         "original_terminal_status": outcome.get("terminal_status"),
         "original_terminal_code": outcome.get("code"),
         "original_model_evaluated": outcome.get("model_evaluated") is True,
-        # The immutable scorer receipt remains in its own ledger for audit, but
-        # is intentionally not attached as this frozen source row's valid receipt
-        # because its observed identity did not match the source identity.
         "original_prediction_id": prediction_id,
         "scorer_receipt_preserved_for_audit": bool(prediction_id),
         "specialist_scoring_attempted": outcome.get("model_evaluated") is True,
@@ -105,34 +102,19 @@ def _identity_conflict_outcome(
 def _isolate_exact_identity_conflicts(
     source_rows: list[Any], outcomes: list[dict[str, Any]]
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Convert post-score source/canonical mismatches into row-isolated holds.
-
-    The fitted scorer receipt remains immutable in its own ledger and is retained
-    as an audit reference, but the mismatched probability package is removed from
-    the source-row publication/ranking response. Unrelated rows are unchanged and
-    remain eligible for exact-once continuation.
-    """
     probe = enforce_exact_board_identity(
         {"rows": deepcopy(outcomes), "reconciliation_pass": True, "can_execute": False},
         source_rows,
     )
     audit = probe.get("exact_board_identity_reconciliation") or {}
-    mismatches = [
-        dict(item)
-        for item in (audit.get("mismatches") or [])
-        if isinstance(item, dict)
-    ]
+    mismatches = [dict(item) for item in (audit.get("mismatches") or []) if isinstance(item, dict)]
     if not mismatches:
         return outcomes, []
-
     by_key = {str(item.get("row_key") or ""): item for item in mismatches}
-    isolated: list[dict[str, Any]] = []
+    isolated = []
     for outcome in outcomes:
         mismatch = by_key.get(str(outcome.get("row_key") or ""))
-        if mismatch is None:
-            isolated.append(outcome)
-            continue
-        isolated.append(_identity_conflict_outcome(outcome, mismatch))
+        isolated.append(_identity_conflict_outcome(outcome, mismatch) if mismatch else outcome)
     return isolated, mismatches
 
 
@@ -140,17 +122,9 @@ def _durable_status_without_false_publication(record: dict[str, Any]) -> str:
     seq = int(record.get("stage_seq") or 0)
     if record.get("model_evaluated") is True and seq < state.STAGE_SEQ["RECEIPT_PERSISTED"]:
         return "MODEL_COMPUTED_RESEARCH_ONLY"
-    if (
-        record.get("model_evaluated") is True
-        and seq >= state.STAGE_SEQ["RECEIPT_PERSISTED"]
-        and record.get("probability_publishable") is not True
-    ):
+    if record.get("model_evaluated") is True and seq >= state.STAGE_SEQ["RECEIPT_PERSISTED"] and record.get("probability_publishable") is not True:
         return "SPORTING_MODEL_COMPLETE_PUBLICATION_PENDING"
-    if (
-        seq >= state.STAGE_SEQ["PUBLICATION_AUTHORIZED"]
-        and record.get("terminal_status") == "COMPLETED"
-        and record.get("probability_publishable") is True
-    ):
+    if seq >= state.STAGE_SEQ["PUBLICATION_AUTHORIZED"] and record.get("terminal_status") == "COMPLETED" and record.get("probability_publishable") is True:
         return "GOVERNED_PUBLICATION_AUTHORIZED"
     status = str(record.get("terminal_status") or "PENDING")
     code = str(record.get("terminal_code") or "")
@@ -161,7 +135,6 @@ def install_pick_request_state_reliability_patch() -> bool:
     global _INSTALLED
     if _INSTALLED:
         return True
-
     original_begin = state.PickRequestStateStore.begin
     original_advance = state.PickRequestStateStore.advance
     original_merged_response = state._merged_response
@@ -169,83 +142,35 @@ def install_pick_request_state_reliability_patch() -> bool:
     def begin_with_manifest_sync(self: Any, batch: Any) -> Any:
         ctx = original_begin(self, batch)
         rows = self._load_all(ctx.run_id)
-        counts = _manifest_counts(rows)
-        state._exec(
-            self.db.table(state.RUN_TABLE).upsert(
-                {
-                    "run_id": ctx.run_id,
-                    "request_id": ctx.request_id,
-                    "source_kind": "PROP_BOARD",
-                    "run_status": "RUNNING",
-                    **counts,
-                    "resumed_rows": len(ctx.resumed_rows),
-                    "can_execute": False,
-                    "updated_at": state._now(),
-                },
-                on_conflict="run_id",
-            ),
-            operation="SYNC_RUN_MANIFEST_AFTER_BEGIN",
-        )
+        state._exec(self.db.table(state.RUN_TABLE).upsert({"run_id": ctx.run_id, "request_id": ctx.request_id, "source_kind": "PROP_BOARD", "run_status": "RUNNING", **_manifest_counts(rows), "resumed_rows": len(ctx.resumed_rows), "can_execute": False, "updated_at": state._now()}, on_conflict="run_id"), operation="SYNC_RUN_MANIFEST_AFTER_BEGIN")
         return ctx
 
-    def advance_with_receipt_guard(
-        self: Any,
-        ctx: Any,
-        row_key: str,
-        stage: str,
-        *,
-        metadata: dict[str, Any] | None = None,
-    ) -> None:
+    def advance_with_receipt_guard(self: Any, ctx: Any, row_key: str, stage: str, *, metadata: dict[str, Any] | None = None) -> None:
         record = ctx.rows.get(row_key) if hasattr(ctx, "rows") else None
         if isinstance(record, dict) and not _receipt_stage_allowed(record, stage):
-            # A later audit/publication stage cannot imply receipt persistence.
-            # Stay at the highest actually proven stage until prediction_id is
-            # present. The caller may still persist the terminal outcome itself.
             return
         original_advance(self, ctx, row_key, stage, metadata=metadata)
 
     def merged_response_with_identity_isolation(ctx: Any, inner: Any):
-        source_rows = list(ctx.batch.rows)
         outcomes = state._current_full_outcomes(ctx, inner)
-        isolated, mismatches = _isolate_exact_identity_conflicts(source_rows, outcomes)
-        if mismatches:
-            by_key = {str(item.get("row_key") or ""): item for item in isolated}
-            receipt_reference_count = 0
-            for row_key, record in ctx.rows.items():
-                replacement = by_key.get(str(row_key))
-                if replacement is None or replacement.get("code") != IDENTITY_CONFLICT_TERMINAL:
-                    continue
-                detail = replacement.get("detail") if isinstance(replacement.get("detail"), dict) else {}
-                if detail.get("original_prediction_id"):
-                    receipt_reference_count += 1
-                record["outcome"] = deepcopy(replacement)
-                record["terminal_status"] = "HELD"
-                record["terminal_code"] = IDENTITY_CONFLICT_TERMINAL
-                record["model_evaluated"] = False
-                record["probability_publishable"] = False
-                record["rank_eligible"] = False
-                # A mismatched scorer receipt is evidence about what happened,
-                # not a valid receipt for the frozen source identity. Clear the
-                # source-row receipt association and reset its stage before the
-                # terminal hold is finalized.
-                record["prediction_id"] = None
-                record["current_stage"] = "INGESTED"
-                record["stage_seq"] = state.STAGE_SEQ["INGESTED"]
-            adjusted_inner = dict(inner or {})
-            adjusted_inner["rows"] = isolated
-            response, final_outcomes = original_merged_response(ctx, adjusted_inner)
-            response["row_identity_isolation"] = {
-                "status": "APPLIED",
-                "terminal_code": IDENTITY_CONFLICT_TERMINAL,
-                "row_keys": sorted(str(item.get("row_key") or "") for item in mismatches),
-                "mismatch_count": len(mismatches),
-                "scorer_receipt_audit_reference_count": receipt_reference_count,
-                "source_row_receipt_association_preserved": False,
-                "can_execute": False,
-            }
-            response["can_execute"] = False
-            return response, final_outcomes
-        return original_merged_response(ctx, inner)
+        isolated, mismatches = _isolate_exact_identity_conflicts(list(ctx.batch.rows), outcomes)
+        if not mismatches:
+            return original_merged_response(ctx, inner)
+        by_key = {str(item.get("row_key") or ""): item for item in isolated}
+        receipt_reference_count = 0
+        for row_key, record in ctx.rows.items():
+            replacement = by_key.get(str(row_key))
+            if replacement is None or replacement.get("code") != IDENTITY_CONFLICT_TERMINAL:
+                continue
+            detail = replacement.get("detail") if isinstance(replacement.get("detail"), dict) else {}
+            receipt_reference_count += int(bool(detail.get("original_prediction_id")))
+            record.update({"outcome": deepcopy(replacement), "terminal_status": "HELD", "terminal_code": IDENTITY_CONFLICT_TERMINAL, "model_evaluated": False, "probability_publishable": False, "rank_eligible": False, "prediction_id": None, "current_stage": "INGESTED", "stage_seq": state.STAGE_SEQ["INGESTED"]})
+        adjusted_inner = dict(inner or {})
+        adjusted_inner["rows"] = isolated
+        response, final_outcomes = original_merged_response(ctx, adjusted_inner)
+        response["row_identity_isolation"] = {"status": "APPLIED", "terminal_code": IDENTITY_CONFLICT_TERMINAL, "row_keys": sorted(str(item.get("row_key") or "") for item in mismatches), "mismatch_count": len(mismatches), "scorer_receipt_audit_reference_count": receipt_reference_count, "source_row_receipt_association_preserved": False, "can_execute": False}
+        response["can_execute"] = False
+        return response, final_outcomes
 
     state.PickRequestStateStore.begin = begin_with_manifest_sync
     state.PickRequestStateStore.advance = advance_with_receipt_guard
@@ -255,13 +180,4 @@ def install_pick_request_state_reliability_patch() -> bool:
     return True
 
 
-__all__ = [
-    "CAN_EXECUTE",
-    "IDENTITY_CONFLICT_TERMINAL",
-    "_durable_status_without_false_publication",
-    "_identity_conflict_outcome",
-    "_isolate_exact_identity_conflicts",
-    "_manifest_counts",
-    "_receipt_stage_allowed",
-    "install_pick_request_state_reliability_patch",
-]
+__all__ = ["CAN_EXECUTE", "IDENTITY_CONFLICT_TERMINAL", "_durable_status_without_false_publication", "_identity_conflict_outcome", "_isolate_exact_identity_conflicts", "_manifest_counts", "_receipt_stage_allowed", "install_pick_request_state_reliability_patch"]
