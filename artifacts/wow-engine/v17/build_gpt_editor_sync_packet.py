@@ -8,9 +8,9 @@ addendum is packaged separately as a Knowledge file.
 
 The Custom GPT editor permits only one custom Action set per domain. Therefore
 all production WOW operations, including durable run-control orchestration and
-the NFL pick'em board, must be exposed through the single canonical Action schema
-for the Render domain. The standalone run-control schema remains a repository
-reference contract only.
+the durable NFL pick'em submit/poll path, must be exposed through the single
+canonical Action schema for the Render domain. The standalone run-control schema
+remains a repository reference contract only.
 
 The repository remains authoritative for canonical host instructions, the
 PrizePicks addendum, and Action schema. This utility never reads or emits
@@ -36,7 +36,7 @@ ACTION_SCHEMA = ENGINE / "v17" / "openapi.wow-betting-engine.v17.yaml"
 EDITOR_INSTRUCTION_CHAR_LIMIT = 8000
 EDITOR_INSTRUCTION_BYTE_SAFETY_LIMIT = 7500
 PRIZEPICKS_KNOWLEDGE_FILENAME = "WOW_V17_PRIZEPICKS_HOST_CONTRACT_KNOWLEDGE.txt"
-REQUIRED_OPERATION_COUNT = 23
+REQUIRED_OPERATION_COUNT = 24
 
 REQUIRED_OPERATIONS = (
     "getWowV17BackendHealth",
@@ -48,7 +48,8 @@ REQUIRED_OPERATIONS = (
     "runWowV17ResumablePickRequest",
     "closeWowV17PickRequestRun",
     "scoreWowV17SpreadForwardShadow",
-    "runWowV17NFLPickemBoard",
+    "submitWowV17NFLPickemBoard",
+    "getWowV17NFLPickemRun",
 )
 REQUIRED_PRIZEPICKS_TOKENS = (
     "SOURCE_PAGE_UNREADABLE:<page_number>",
@@ -154,7 +155,7 @@ def build_packet() -> tuple[bytes, dict]:
         "acceptance_required": [
             "PASTE_CANONICAL_INSTRUCTIONS_INTO_INSTRUCTIONS_FIELD",
             "ATTACH_PRIZEPICKS_ADDENDUM_AS_KNOWLEDGE_FILE",
-            "IMPORT_SINGLE_CANONICAL_ACTION_SCHEMA_WITH_23_OPERATIONS",
+            "IMPORT_SINGLE_CANONICAL_ACTION_SCHEMA_WITH_24_OPERATIONS",
             "PRESERVE_EXISTING_WOW_ACTION_API_KEY_BEARER_AUTH",
             "SAVE_AND_RELOAD_PRODUCTION_WOW_BETTING_ENGINE_EDITOR",
             "FRESH_CHAT_GET_WOW_V17_BACKEND_HEALTH",
@@ -163,7 +164,7 @@ def build_packet() -> tuple[bytes, dict]:
             "FRESH_CHAT_LOOKUP_WOW_V17_PREDICTION_RECEIPTS",
             "FRESH_CHAT_VERIFY_RUN_CONTROL_OPERATIONS_VISIBLE",
             "FRESH_CHAT_SCORE_WOW_V17_SPREAD_FORWARD_SHADOW",
-            "FRESH_CHAT_RUN_WOW_V17_NFL_PICKEM_BOARD",
+            "FRESH_CHAT_SUBMIT_AND_POLL_DURABLE_WOW_V17_NFL_PICKEM_BOARD",
             "FRESH_CHAT_MULTIPAGE_PRIZEPICKS_CANARY",
             "CONFIRM_CAN_EXECUTE_FALSE",
         ],
