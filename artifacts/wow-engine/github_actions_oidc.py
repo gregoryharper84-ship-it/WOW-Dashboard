@@ -175,19 +175,24 @@ def validate_github_actions_claims(claims: dict[str, Any]) -> dict[str, Any]:
 
     event_name = str(claims.get("event_name") or "")
     if post_deploy_reusable_call:
-        if event_name != "workflow_run":
+        # Reusable jobs invoked by the exact post-deploy orchestrator emit
+        # event_name=workflow_call. Keep that authority pinned to the exact
+        # caller + exact protected-main callee pair above.
+        if event_name != "workflow_call":
             raise GitHubOIDCValidationError("GITHUB_OIDC_EVENT_NOT_ALLOWED")
     elif workflow_ref in {
         SPREAD_FORWARD_PRODUCTION_CANARY_WORKFLOW_REF,
         SPREAD_CERTIFICATION_REPLAY_WORKFLOW_REF,
     }:
-        if event_name != "workflow_run":
+        # These workflows are now reusable/manual only. workflow_call is
+        # accepted solely for the exact protected-main refs in this branch;
+        # workflow_dispatch remains available for governed manual verification.
+        if event_name not in {"workflow_call", "workflow_dispatch"}:
             raise GitHubOIDCValidationError("GITHUB_OIDC_EVENT_NOT_ALLOWED")
     elif workflow_ref == PRIORITY_PROP_LIFECYCLE_WORKFLOW_REF:
-        # This workflow has scheduled/manual collection plus an exact-deploy
-        # workflow_run acceptance trigger. Keep that additional event scoped to
-        # this one protected-main workflow rather than widening ALLOWED_EVENTS.
-        if event_name not in ALLOWED_EVENTS | {"workflow_run"}:
+        # This workflow supports scheduled/manual collection plus exact reusable
+        # post-deploy invocation. Do not widen workflow_call to other workflows.
+        if event_name not in ALLOWED_EVENTS | {"workflow_call"}:
             raise GitHubOIDCValidationError("GITHUB_OIDC_EVENT_NOT_ALLOWED")
     elif event_name not in ALLOWED_EVENTS:
         raise GitHubOIDCValidationError("GITHUB_OIDC_EVENT_NOT_ALLOWED")
