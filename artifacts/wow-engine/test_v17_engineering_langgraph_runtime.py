@@ -96,7 +96,7 @@ def test_checkpoint_secret_is_never_returned(monkeypatch):
 
 def test_resident_worker_installs_both_auditor_and_langgraph_readiness_hooks():
     text = CELERY.read_text()
-    assert "install_engineering_auditor_hooks()" in text
+    assert "install_celery_worker_hooks()" in text
     assert "install_engineering_langgraph_hooks()" in text
     assert "engineering_langgraph_runtime" in text
 
