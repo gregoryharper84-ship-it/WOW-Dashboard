@@ -16,10 +16,7 @@ def test_manifest_counts_preserve_ingested_pending_rows_before_finalize():
         + [{"terminal_status": "REJECTED", "model_evaluated": False, "stage_seq": 0}] * 6
         + [{"terminal_status": "PENDING", "model_evaluated": False, "stage_seq": 0}] * 2
     )
-
-    counts = _manifest_counts(rows)
-
-    assert counts == {
+    assert _manifest_counts(rows) == {
         "total_rows": 18,
         "completed_rows": 6,
         "held_rows": 4,
@@ -30,12 +27,7 @@ def test_manifest_counts_preserve_ingested_pending_rows_before_finalize():
 
 
 def test_governance_audit_cannot_imply_receipt_without_prediction_id():
-    record = {
-        "model_evaluated": True,
-        "stage_seq": 3,
-        "prediction_id": None,
-    }
-
+    record = {"model_evaluated": True, "stage_seq": 3, "prediction_id": None}
     assert _receipt_stage_allowed(record, "MODEL_COMPUTED") is True
     assert _receipt_stage_allowed(record, "RECEIPT_PERSISTED") is False
     assert _receipt_stage_allowed(record, "GOVERNANCE_AUDITED") is False
@@ -48,7 +40,6 @@ def test_receipt_backed_row_can_advance_to_governance_audit():
         "stage_seq": 3,
         "prediction_id": "11111111-1111-1111-1111-111111111111",
     }
-
     assert _receipt_stage_allowed(record, "RECEIPT_PERSISTED") is True
     assert _receipt_stage_allowed(record, "GOVERNANCE_AUDITED") is True
 
@@ -102,9 +93,7 @@ def test_post_score_event_alias_mismatch_becomes_row_isolated_typed_hold():
         _scored("SR14_MORE", "2026_04_PIT_CLE", "Deshaun Watson", "pred-nfl"),
         _scored("SR19_MORE", "PHI-ATL-2026-10-01", "Aaron Nola", "pred-mlb"),
     ]
-
     isolated, mismatches = _isolate_exact_identity_conflicts(source_rows, outcomes)
-
     assert [item["row_key"] for item in mismatches] == ["SR14_MORE"]
     conflict = isolated[0]
     assert conflict["terminal_status"] == "HELD"
@@ -121,14 +110,8 @@ def test_post_score_event_alias_mismatch_becomes_row_isolated_typed_hold():
     assert conflict["detail"]["scorer_receipt_preserved_for_audit"] is True
     assert isolated[1] == outcomes[1]
     assert all(item["can_execute"] is False for item in isolated)
-
     reconciled = enforce_top10_completion(
-        {
-            "rows": isolated,
-            "reconciliation_pass": True,
-            "run_controller_status": "DEGRADED",
-            "can_execute": False,
-        },
+        {"rows": isolated, "reconciliation_pass": True, "run_controller_status": "DEGRADED", "can_execute": False},
         source_rows,
     )
     assert reconciled["reconciliation_pass"] is True
@@ -137,10 +120,7 @@ def test_post_score_event_alias_mismatch_becomes_row_isolated_typed_hold():
 
 
 def test_55_direction_manifest_isolates_one_identity_conflict_without_stranding_other_rows():
-    source_rows = [
-        _source_row(f"SR{i}_MORE", f"EVENT-{i}", f"Player {i}")
-        for i in range(1, 56)
-    ]
+    source_rows = [_source_row(f"SR{i}_MORE", f"EVENT-{i}", f"Player {i}") for i in range(1, 56)]
     outcomes = [
         {
             "row_key": f"SR{i}_MORE",
@@ -153,21 +133,12 @@ def test_55_direction_manifest_isolates_one_identity_conflict_without_stranding_
         }
         for i in range(1, 56)
     ]
-    outcomes[13] = _scored(
-        "SR14_MORE", "CANONICAL-EVENT-14", "Player 14", "pred-14"
-    )
-
+    outcomes[13] = _scored("SR14_MORE", "CANONICAL-EVENT-14", "Player 14", "pred-14")
     isolated, mismatches = _isolate_exact_identity_conflicts(source_rows, outcomes)
     reconciled = enforce_top10_completion(
-        {
-            "rows": isolated,
-            "reconciliation_pass": True,
-            "run_controller_status": "BLOCKED",
-            "can_execute": False,
-        },
+        {"rows": isolated, "reconciliation_pass": True, "run_controller_status": "BLOCKED", "can_execute": False},
         source_rows,
     )
-
     assert len(isolated) == 55
     assert len(mismatches) == 1
     assert isolated[13]["code"] == IDENTITY_CONFLICT_TERMINAL
@@ -187,8 +158,4 @@ def test_held_identity_conflict_cannot_report_governed_publication_authorized():
         "model_evaluated": False,
         "probability_publishable": False,
     }
-
-    assert (
-        _durable_status_without_false_publication(record)
-        == "HELD:PROP_EVENT_IDENTITY_CONFLICT"
-    )
+    assert _durable_status_without_false_publication(record) == "HELD:PROP_EVENT_IDENTITY_CONFLICT"
