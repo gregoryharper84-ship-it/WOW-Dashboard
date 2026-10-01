@@ -30,6 +30,46 @@ control_plane:
   trace_events_required: true
   silent_drop_allowed: false
 
+ticket_queue:
+  change_class: B
+  table: public.wow_engineering_backlog
+  implementation: artifacts/flask-scoring-api/services/wow_engineering_ticket_queue.py
+  migration: artifacts/wow-engine/migrations/20261001224500_engineering_ticket_ttl_parking.sql
+  execution_state_column: queue_status
+  states:
+    - ACTIONABLE
+    - IN_PROGRESS
+    - PARKED
+    - COMPLETED
+    - FAILED
+  parked_reason_column: parked_reason
+  parked_context_column: parked_context
+  parked_until_column: parked_until
+  wake_count_column: wake_count
+  claim_owner_column: claim_owner
+  claimed_at_column: claimed_at
+  claim_rpc: wow_claim_engineering_tickets
+  wake_up_mode: ORCHESTRATOR_POLL_QUERY
+  intended_poll_interval_seconds: 3600
+  external_cron_required: false
+  default_batch_size: 5
+  max_batch_size: 25
+  atomic_claim_required: true
+  row_locking: FOR_UPDATE_SKIP_LOCKED
+  blocker_recheck_before_execution: true
+  cleared_blocker_retains_in_progress_claim: true
+  max_wakes: 6
+  ttl_seconds:
+    api_rate_limit: 900
+    upstream_dependency: 3600
+    awaiting_pr_review: 14400
+  ttl_multiplier: min_wake_count_plus_one_6
+  unknown_reason_default_ttl_seconds: 3600
+  max_wake_terminal: BLOCKED_WITH_EXACT_REASON
+  max_wake_escalation: V17_GOVERNANCE_HUMAN_INTERVENTION
+  probability_authority: NONE
+  can_execute: false
+
 delegation:
   skill: wow-autonomous-product-qa-engineering-recovery
   canonical_workflow:

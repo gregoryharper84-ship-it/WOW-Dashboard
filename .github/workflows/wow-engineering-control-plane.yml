@@ -4,12 +4,15 @@ on:
   pull_request:
     paths:
       - 'artifacts/flask-scoring-api/services/wow_engineering_control_plane.py'
+      - 'artifacts/flask-scoring-api/services/wow_engineering_ticket_queue.py'
       - 'artifacts/flask-scoring-api/services/wow_engineering_telemetry.py'
       - 'artifacts/flask-scoring-api/tests/test_wow_engineering_control_plane.py'
+      - 'artifacts/flask-scoring-api/tests/test_wow_engineering_ticket_queue.py'
       - 'artifacts/flask-scoring-api/tests/test_wow_engineering_telemetry.py'
       - 'artifacts/flask-scoring-api/tests/fixtures/wow_engineering_synthetic_incidents.json'
       - 'artifacts/flask-scoring-api/tests/test_v17_dots_engineering_orchestrator_contract.py'
       - 'artifacts/flask-scoring-api/requirements.txt'
+      - 'artifacts/wow-engine/migrations/20261001224500_engineering_ticket_ttl_parking.sql'
       - 'artifacts/wow-engine/v17/engineering_langgraph_runtime.py'
       - 'artifacts/wow-engine/agent_runtime/celery_app.py'
       - 'artifacts/wow-engine/test_v17_engineering_langgraph_runtime.py'
@@ -51,6 +54,7 @@ jobs:
         run: |
           pytest -q \
             artifacts/flask-scoring-api/tests/test_wow_engineering_control_plane.py \
+            artifacts/flask-scoring-api/tests/test_wow_engineering_ticket_queue.py \
             artifacts/flask-scoring-api/tests/test_wow_engineering_telemetry.py \
             artifacts/flask-scoring-api/tests/test_v17_dots_engineering_orchestrator_contract.py \
             artifacts/wow-engine/test_v17_engineering_langgraph_runtime.py
