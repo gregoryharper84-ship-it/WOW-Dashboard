@@ -1,0 +1,12 @@
+NARROW TEST
+pytest artifacts/wow-engine/tests/test_v17_spread_margin_forward_fit.py -q
+
+ADJACENT REGRESSION
+pytest artifacts/wow-engine/tests/test_v17_spread_forward_shadow.py artifacts/wow-engine/tests/test_v17_spread_forward_shadow_leagues.py artifacts/wow-engine/tests/test_v17_spread_forward_context_cache.py -q
+
+PRODUCTION VERIFICATION AFTER MERGE
+1. confirm exact SHA is live on wow-governed-probability-engine
+2. run serialized NCAAF -> NFL -> WNBA -> MLB spread/run-line canaries
+3. inspect Render CPU/memory and instance continuity across the canary window
+4. require exact typed blockers where a source/model dependency remains unavailable
+5. preserve can_execute=false
