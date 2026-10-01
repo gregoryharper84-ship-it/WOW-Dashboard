@@ -21,10 +21,25 @@ _THREAD: threading.Thread | None = None
 
 
 def _db_client():
-    """Build the worker's service-role Supabase client without a repo-root import."""
+    """Build the worker's service-role Supabase client without a repo-root import.
+
+    WOW historically uses both SUPABASE_SERVICE_ROLE_KEY and
+    SUPABASE_SERVICE_KEY for the same server-side credential. Accept either,
+    preferring the explicit role-named variable, while failing closed when the
+    URL or credential is absent. No secret value is logged.
+    """
     from supabase import create_client
 
-    return create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_SERVICE_KEY"])
+    url = os.getenv("SUPABASE_URL", "").strip()
+    key = (
+        os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
+        or os.getenv("SUPABASE_SERVICE_KEY", "").strip()
+    )
+    if not url:
+        raise RuntimeError("SUPABASE_URL unavailable")
+    if not key:
+        raise RuntimeError("SUPABASE service credential unavailable")
+    return create_client(url, key)
 
 
 def _enabled() -> bool:
