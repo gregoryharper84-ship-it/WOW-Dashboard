@@ -11,11 +11,16 @@ on:
       - 'artifacts/flask-scoring-api/tests/test_v17_dots_engineering_orchestrator_contract.py'
       - 'artifacts/flask-scoring-api/requirements.txt'
       - 'artifacts/wow-engine/v17/engineering_langgraph_runtime.py'
+      - 'artifacts/wow-engine/v17/engineering_auditor_bridge_api.py'
+      - 'artifacts/wow-engine/v17/engineering_auditor_http_client.py'
+      - 'artifacts/wow-engine/v17/engineering_auditor_worker.py'
       - 'artifacts/wow-engine/agent_runtime/celery_app.py'
       - 'artifacts/wow-engine/test_v17_engineering_langgraph_runtime.py'
+      - 'artifacts/wow-engine/test_v17_engineering_auditor_bridge.py'
       - 'artifacts/wow-engine/requirements.txt'
       - 'artifacts/wow-engine/WOW_DOTS_ENGINEERING_ORCHESTRATOR.yaml'
       - 'artifacts/wow-engine/WOW_LANGGRAPH_CONTROL_PLANE_PILOT_ACCEPTANCE_2026-10-01.md'
+      - 'artifacts/wow-engine/v17_observability.py'
       - 'render.yaml'
       - '.agents/skills/wow-dots-engineering-orchestrator/SKILL.md'
       - 'docs/wow/engineering/WOW_LANGGRAPH_ENGINEERING_CONTROL_PLANE.md'
@@ -43,6 +48,9 @@ jobs:
             'psycopg[binary]>=3.2.0,<4.0.0' \
             'opentelemetry-api>=1.45.0,<2.0.0' \
             'celery>=5.4,<6' \
+            'fastapi>=0.110' \
+            'httpx>=0.27' \
+            'requests>=2.32,<3' \
             pytest pyyaml
       - name: Run LangGraph and V17 orchestration regressions
         env:
@@ -53,4 +61,5 @@ jobs:
             artifacts/flask-scoring-api/tests/test_wow_engineering_control_plane.py \
             artifacts/flask-scoring-api/tests/test_wow_engineering_telemetry.py \
             artifacts/flask-scoring-api/tests/test_v17_dots_engineering_orchestrator_contract.py \
-            artifacts/wow-engine/test_v17_engineering_langgraph_runtime.py
+            artifacts/wow-engine/test_v17_engineering_langgraph_runtime.py \
+            artifacts/wow-engine/test_v17_engineering_auditor_bridge.py
