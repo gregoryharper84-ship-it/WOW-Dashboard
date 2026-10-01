@@ -4,7 +4,9 @@ on:
   pull_request:
     paths:
       - 'artifacts/flask-scoring-api/services/wow_engineering_control_plane.py'
+      - 'artifacts/flask-scoring-api/services/wow_engineering_telemetry.py'
       - 'artifacts/flask-scoring-api/tests/test_wow_engineering_control_plane.py'
+      - 'artifacts/flask-scoring-api/tests/test_wow_engineering_telemetry.py'
       - 'artifacts/flask-scoring-api/tests/fixtures/wow_engineering_synthetic_incidents.json'
       - 'artifacts/flask-scoring-api/tests/test_v17_dots_engineering_orchestrator_contract.py'
       - 'artifacts/flask-scoring-api/requirements.txt'
@@ -33,6 +35,7 @@ jobs:
             'langgraph>=1.2.12,<2.0.0' \
             'langgraph-checkpoint-postgres>=3.1.2,<4.0.0' \
             'psycopg[binary]>=3.2.0,<4.0.0' \
+            'opentelemetry-api>=1.45.0,<2.0.0' \
             pytest pyyaml
       - name: Run LangGraph and V17 orchestration regressions
         env:
@@ -40,4 +43,5 @@ jobs:
         run: |
           pytest -q \
             artifacts/flask-scoring-api/tests/test_wow_engineering_control_plane.py \
+            artifacts/flask-scoring-api/tests/test_wow_engineering_telemetry.py \
             artifacts/flask-scoring-api/tests/test_v17_dots_engineering_orchestrator_contract.py
