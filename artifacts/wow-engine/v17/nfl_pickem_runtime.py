@@ -8,9 +8,10 @@ probability.
 
 The route uses the existing cross-sport model invocation limit as a per-batch
 continuation bound. That bound is not a terminal slate cap: all canonical NFL
-events are attempted in sequential bounded batches. Within each batch the
-registered scorer is invoked concurrently, matching the existing V17 slate
-orchestration pattern without raising any global scorer limit.
+events are attempted in sequential bounded batches. NFL Pick'em additionally
+caps concurrent scorer workers below the cross-sport continuation bound so a
+single pool card cannot overload the database/network path used by the governed
+NFL specialist.
 
 The tiebreaker is scored by its own tiebreaker-only sporting specialist. It is
 not an over/under lane and never reuses moneyline probability or sportsbook
@@ -20,6 +21,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
+import os
 from typing import Any, Mapping
 from uuid import uuid4
 from zoneinfo import ZoneInfo
@@ -44,6 +46,8 @@ CAN_EXECUTE = False
 RUNTIME_CONTRACT = "V17_NFL_PICKEM_RUNTIME_V1"
 ROUTE_PATH = "/v17/nfl-pickem-board"
 OPERATION_ID = "runWowV17NFLPickemBoard"
+_DEFAULT_SCORER_CONCURRENCY = 2
+_MAX_SCORER_CONCURRENCY = 4
 
 
 class NFLPickemBoardRequest(BaseModel):
@@ -51,6 +55,20 @@ class NFLPickemBoardRequest(BaseModel):
     requested_timezone: str = "America/Chicago"
     expected_game_count: int = 16
     strategy_mode: str = DECISION_OBJECTIVE
+
+
+def _scorer_concurrency_limit() -> int:
+    """Bound only NFL Pick'em concurrent scorer calls; never the global V17 budget."""
+    try:
+        configured = int(
+            os.environ.get(
+                "WOW_NFL_PICKEM_MAX_CONCURRENT_SCORERS",
+                str(_DEFAULT_SCORER_CONCURRENCY),
+            )
+        )
+    except (TypeError, ValueError):
+        configured = _DEFAULT_SCORER_CONCURRENCY
+    return max(1, min(configured, _MAX_SCORER_CONCURRENCY))
 
 
 def _validate_request(req: NFLPickemBoardRequest) -> tuple[tuple[str, ...], str]:
@@ -295,12 +313,11 @@ def _score_event(
         )
     except HTTPException as exc:
         result = _http_detail(exc)
-    except Exception as exc:  # noqa: BLE001 - invoked scorer failure remains typed
+    except Exception as exc:  # noqa: BLE001 - raw transport/runtime failure is not a fitted-model verdict
         result = {
-            "code": "MODEL_SCORER_FAILED",
-            "blockers": ["PICKEM_TEAM_EVENT_SCORER_EXCEPTION"],
+            "code": "TRANSPORT_FAILURE",
+            "blockers": ["PICKEM_TEAM_EVENT_TRANSPORT_FAILURE"],
             "error_type": type(exc).__name__,
-            "model_invoked": True,
             "probability_publishable": False,
             "rank_eligible": False,
             "can_execute": False,
@@ -391,13 +408,14 @@ def run_nfl_pickem_board(
         }
 
     batch_size = max(1, int(model_invocation_limit()))
+    scorer_concurrency_limit = min(batch_size, _scorer_concurrency_limit())
     source_rows: list[dict[str, Any]] = []
     batch_receipts: list[dict[str, Any]] = []
     for batch_index, start in enumerate(range(0, len(events), batch_size), 1):
         batch = events[start : start + batch_size]
         if batch:
             with ThreadPoolExecutor(
-                max_workers=min(len(batch), batch_size),
+                max_workers=min(len(batch), scorer_concurrency_limit),
                 thread_name_prefix="wow-v17-nfl-pickem",
             ) as pool:
                 batch_results = list(
@@ -418,6 +436,7 @@ def run_nfl_pickem_board(
         batch_receipts.append({
             "batch_index": batch_index,
             "batch_size_limit": batch_size,
+            "scorer_concurrency_limit": scorer_concurrency_limit,
             "events_attempted": len(batch),
             "sporting_probabilities_completed": sum(
                 1 for row in batch_results if row.get("sporting_probability_completed") is True
@@ -471,6 +490,7 @@ def run_nfl_pickem_board(
         "canonical_events_discovered": len(events),
         "canonical_discovery_blockers": discovery_blockers,
         "model_invocation_batch_limit": batch_size,
+        "scorer_concurrency_limit": scorer_concurrency_limit,
         "batch_count": len(batch_receipts),
         "batch_receipts": batch_receipts,
         "board": board,
