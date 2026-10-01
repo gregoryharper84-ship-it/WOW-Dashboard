@@ -21,10 +21,32 @@ _THREAD: threading.Thread | None = None
 
 
 def _db_client():
-    """Build the worker's service-role Supabase client without a repo-root import."""
-    from supabase import create_client
+    """Build the narrowest available persistence client for the auditor.
 
-    return create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_SERVICE_KEY"])
+    Prefer the existing service-role client when both legacy worker secrets are
+    present. Otherwise use the purpose-scoped Edge Function bridge so the
+    resident worker never needs to receive the Supabase service-role key.
+    """
+    supabase_url = os.getenv("SUPABASE_URL", "").strip()
+    service_key = os.getenv("SUPABASE_SERVICE_KEY", "").strip()
+    if supabase_url and service_key:
+        from supabase import create_client
+
+        return create_client(supabase_url, service_key)
+
+    bridge_url = os.getenv("WOW_ENGINEERING_AUDIT_BRIDGE_URL", "").strip()
+    bridge_token = os.getenv("WOW_ENGINEERING_AUDIT_BRIDGE_TOKEN", "").strip()
+    if bridge_url and bridge_token:
+        from v17.engineering_auditor_rpc_client import EngineeringAuditRpcClient
+
+        return EngineeringAuditRpcClient(bridge_url, bridge_token)
+
+    missing = []
+    if not bridge_url:
+        missing.append("WOW_ENGINEERING_AUDIT_BRIDGE_URL")
+    if not bridge_token:
+        missing.append("WOW_ENGINEERING_AUDIT_BRIDGE_TOKEN")
+    raise RuntimeError("ENGINEERING_AUDITOR_PERSISTENCE_CREDENTIALS_MISSING:" + ",".join(missing))
 
 
 def _enabled() -> bool:
