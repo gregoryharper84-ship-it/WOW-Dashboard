@@ -47,6 +47,7 @@ jobs:
           python -m pytest -q
           artifacts/wow-engine/test_v17_engineering_auditor.py
           artifacts/wow-engine/test_v17_engineering_auditor_worker_db_client.py
+          artifacts/wow-engine/test_v17_engineering_auditor_backlog_constraints.py
 
       - name: Run adjacent engineering closure regressions
         run: python -m pytest -q artifacts/wow-engine/test_v17_24h_completion_loop.py
