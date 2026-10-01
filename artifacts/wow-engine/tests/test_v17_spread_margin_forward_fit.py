@@ -9,6 +9,7 @@ from v17.spread_margin_challenger import (
     SpreadChallengerUnavailable,
     train_margin_distribution_candidate,
 )
+import v17.spread_margin_forward_fit as forward_fit
 from v17.spread_margin_forward_fit import fit_margin_distribution_artifact
 
 
@@ -46,6 +47,23 @@ def test_forward_fit_artifact_exactly_matches_full_challenger_train_artifact():
 
     assert forward_artifact == full_artifact
     assert forward_artifact.payload() == full_artifact.payload()
+
+
+def test_forward_fit_releases_transient_working_set_after_artifact_is_frozen(monkeypatch):
+    rows = [_row(i) for i in range(120)]
+    releases: list[str] = []
+    monkeypatch.setattr(forward_fit, "_release_fit_working_set", lambda: releases.append("released"))
+
+    artifact = forward_fit.fit_margin_distribution_artifact(
+        rows,
+        sport="NFL",
+        min_rows=100,
+        ridge_alpha=4.0,
+    )
+
+    assert releases == ["released"]
+    assert artifact.sport == "NFL"
+    assert artifact.model_family == "NFL_SPREAD_MARGIN_RIDGE_EMPIRICAL_V1"
 
 
 def test_forward_fit_preserves_typed_feature_leakage_failure():
