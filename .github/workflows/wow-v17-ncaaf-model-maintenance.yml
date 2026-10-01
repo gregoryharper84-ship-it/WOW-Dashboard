@@ -182,7 +182,7 @@ jobs:
           PY
 
       - name: Run governed NCAAF model maintenance
-        if: github.event_name != 'push'
+        if: always() && github.event_name != 'push'
         shell: bash
         run: |
           python - <<'PY'
