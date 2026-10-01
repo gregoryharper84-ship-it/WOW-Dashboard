@@ -1,0 +1,23 @@
+{
+  "status": "PR_CREATED",
+  "change_class": "B",
+  "failure_family": "SPREAD_FORWARD_RUNTIME_RESOURCE_EXHAUSTION",
+  "production_service": "wow-governed-probability-engine",
+  "observed": {
+    "cpu_limit": 0.15,
+    "memory_peak_bytes_observed": 536571900,
+    "instance_replacements_observed": true,
+    "user_path_effect": "spread scorer/transport failures after earlier production canary pass"
+  },
+  "repair": {
+    "component": "v17/spread_margin_forward_fit.py",
+    "strategy": "drop transient fit references, collect garbage, best-effort malloc_trim after immutable artifact construction",
+    "probability_behavior_changed": false
+  },
+  "governance": {
+    "runtime_generation": "V17_ACTIVE",
+    "terminal_authority": "V17_TERMINAL_REDUCER",
+    "can_execute": false,
+    "dry_run_only_no_live_trading_no_market_orders": true
+  }
+}
