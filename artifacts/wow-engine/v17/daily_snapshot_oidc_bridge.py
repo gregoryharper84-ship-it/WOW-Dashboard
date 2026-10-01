@@ -10,6 +10,8 @@ relax publication gates, or authorize wager execution.
 """
 from __future__ import annotations
 
+import logging
+from time import perf_counter
 from typing import Any, Literal
 
 from fastapi import FastAPI, Header, HTTPException
@@ -24,6 +26,7 @@ from v17 import daily_snapshot_runtime as daily_runtime
 
 INTERNAL_DAILY_SNAPSHOT_ROUTE = "/internal/v17/daily-snapshot"
 INTERNAL_MAX_TEAM_EVENTS = 32
+LOGGER = logging.getLogger("wow.v17.daily_snapshot_latency")
 
 
 class InternalDailySnapshotRequest(BaseModel):
@@ -54,6 +57,16 @@ def _authorize(authorization: str | None) -> str:
         ) from exc
 
 
+def _log_stage(stage: str, started: float, *, status: str) -> None:
+    elapsed_ms = (perf_counter() - started) * 1000.0
+    LOGGER.warning(
+        "WOW_V17_DAILY_SNAPSHOT_STAGE stage=%s status=%s elapsed_ms=%.3f can_execute=false",
+        stage,
+        status,
+        elapsed_ms,
+    )
+
+
 def install_daily_snapshot_oidc_bridge(*, app: FastAPI, market_api: Any) -> bool:
     """Install one internal, OIDC-capable full-slate Daily endpoint.
 
@@ -79,14 +92,43 @@ def install_daily_snapshot_oidc_bridge(*, app: FastAPI, market_api: Any) -> bool
         req: InternalDailySnapshotRequest,
         authorization: str | None = Header(default=None),
     ) -> dict[str, Any]:
-        auth_mode = _authorize(authorization)
-        result = daily_runtime.run_daily_snapshot(
-            req,
-            db=prod.get_client(),
-            market_api=market_api,
-            event_api=event_api,
-        )
+        total_started = perf_counter()
+
+        auth_started = perf_counter()
+        try:
+            auth_mode = _authorize(authorization)
+        except Exception:
+            _log_stage("auth", auth_started, status="ERROR")
+            _log_stage("total", total_started, status="ERROR")
+            raise
+        _log_stage("auth", auth_started, status="PASS")
+
+        db_started = perf_counter()
+        try:
+            db = prod.get_client()
+        except Exception:
+            _log_stage("db-client-create", db_started, status="ERROR")
+            _log_stage("total", total_started, status="ERROR")
+            raise
+        _log_stage("db-client-create", db_started, status="PASS")
+
+        core_started = perf_counter()
+        try:
+            result = daily_runtime.run_daily_snapshot(
+                req,
+                db=db,
+                market_api=market_api,
+                event_api=event_api,
+            )
+        except Exception:
+            _log_stage("daily-snapshot-core", core_started, status="ERROR")
+            _log_stage("total", total_started, status="ERROR")
+            raise
+        _log_stage("daily-snapshot-core", core_started, status="PASS")
+
         if not isinstance(result, dict):
+            _log_stage("output-validation", perf_counter(), status="ERROR")
+            _log_stage("total", total_started, status="ERROR")
             raise HTTPException(
                 status_code=500,
                 detail={
@@ -95,6 +137,7 @@ def install_daily_snapshot_oidc_bridge(*, app: FastAPI, market_api: Any) -> bool
                 },
             )
 
+        _log_stage("total", total_started, status="PASS")
         return {
             **result,
             "automation_auth": auth_mode,
