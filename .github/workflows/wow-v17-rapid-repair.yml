@@ -8,11 +8,13 @@ on:
       - '.github/workflows/wow-v17-rapid-repair.yml'
       - '.github/workflows/wow-engine-verify.yml'
       - '.github/workflows/wow-v17-change-impact-gate.yml'
+      - 'codecov.yml'
   workflow_dispatch:
 
 permissions:
   contents: read
   pull-requests: read
+  id-token: write
 
 concurrency:
   group: wow-v17-rapid-repair-${{ github.event.pull_request.number || github.ref }}
@@ -44,7 +46,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
-          python -m pip install PyYAML ruff
+          python -m pip install PyYAML ruff pytest-cov
 
       - name: Validate rapid-repair harness
         run: python -m pytest -q --tb=short tests/test_wow_rapid.py
@@ -98,7 +100,7 @@ jobs:
             echo '`terminal_authority=V17_TERMINAL_REDUCER`'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Run governance + affected lane
+      - name: Run governance + affected lane with coverage
         shell: bash
         run: |
           set -euo pipefail
@@ -107,7 +109,21 @@ jobs:
             echo 'Affected selector returned no tests; fail closed.'
             exit 1
           fi
-          python -m pytest -q --tb=short -rs "${tests[@]}"
+          python -m pytest -q --tb=short -rs \
+            --cov=. \
+            --cov-report=xml:coverage.xml \
+            --cov-report=term-missing:skip-covered \
+            "${tests[@]}"
+
+      - name: Upload informational patch coverage to Codecov
+        if: always() && hashFiles('artifacts/wow-engine/coverage.xml') != ''
+        uses: codecov/codecov-action@v5
+        with:
+          use_oidc: true
+          fail_ci_if_error: false
+          files: artifacts/wow-engine/coverage.xml
+          flags: rapid-affected
+          name: wow-v17-rapid-affected
 
       - name: Validate change-impact classifier
         shell: bash
