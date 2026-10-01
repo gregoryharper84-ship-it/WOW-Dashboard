@@ -1,4 +1,7 @@
+from pathlib import Path
+
 import pytest
+import yaml
 
 from services.wow_engineering_telemetry import (
     MAX_WAKE_ESCALATIONS_METRIC,
@@ -8,6 +11,10 @@ from services.wow_engineering_telemetry import (
     build_opentelemetry_trace_sink,
     efficiency_ratios,
 )
+
+
+ROOT = Path(__file__).resolve().parents[3]
+TELEMETRY_CONTRACT = ROOT / "artifacts" / "wow-engine" / "WOW_ENGINEERING_AGENTIC_TELEMETRY.yaml"
 
 
 def test_opentelemetry_trace_sink_accepts_governed_engineering_event_without_exporter():
@@ -92,3 +99,18 @@ def test_metric_names_are_stable_for_dashboard_queries():
     assert WAKES_METRIC == "wow.engineering.queue.wakes"
     assert MAX_WAKE_ESCALATIONS_METRIC == "wow.engineering.queue.max_wake_escalations"
     assert RECORDED_COST_METRIC == "wow.engineering.recorded_cost.usd"
+
+
+def test_agentic_telemetry_contract_preserves_governance_and_exact_kpi_formulas():
+    contract = yaml.safe_load(TELEMETRY_CONTRACT.read_text())
+    assert contract["can_execute"] is False
+    assert contract["probability_authority"] == "NONE"
+    assert contract["terminal_authority"] == "V17_TERMINAL_REDUCER"
+    assert contract["cost_governance"]["estimates_allowed"] is False
+    assert contract["cost_governance"]["require_explicit_adapter_receipt"] is True
+    assert contract["operator_kpis"] == {
+        "cost_per_fix_usd": "recorded_cost_usd / fixes",
+        "wake_to_fix_ratio": "wakes / fixes",
+        "max_wake_escalation_rate": "max_wake_escalations / (fixes + max_wake_escalations)",
+        "zero_denominator_behavior": None,
+    }
