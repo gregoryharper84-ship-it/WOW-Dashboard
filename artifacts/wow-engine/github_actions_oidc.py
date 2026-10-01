@@ -46,6 +46,9 @@ SPREAD_FORWARD_PRODUCTION_CANARY_WORKFLOW_REF = (
 SPREAD_CERTIFICATION_REPLAY_WORKFLOW_REF = (
     f"{REPOSITORY}/.github/workflows/wow-v17-spread-certification-replay.yml@{REF}"
 )
+POST_DEPLOY_ORCHESTRATOR_WORKFLOW_REF = (
+    f"{REPOSITORY}/.github/workflows/wow-v17-post-deploy-verification-orchestrator.yml@{REF}"
+)
 NCAAF_FORWARD_VALIDATION_WORKFLOW_REF = (
     f"{REPOSITORY}/.github/workflows/wow-v17-ncaaf-forward-validation.yml@{REF}"
 )
@@ -128,6 +131,14 @@ LIVE_CANARY_WORKFLOW_REFS = frozenset({
     SPREAD_CERTIFICATION_REPLAY_WORKFLOW_REF,
     NCAAF_FORWARD_VALIDATION_WORKFLOW_REF,
 })
+# GitHub reusable workflows retain the caller in workflow_ref and identify the
+# called workflow in job_workflow_ref. Only these exact protected-main callees
+# may inherit authority from the post-deploy orchestrator.
+POST_DEPLOY_REUSABLE_WORKFLOW_REFS = frozenset({
+    SPREAD_CERTIFICATION_REPLAY_WORKFLOW_REF,
+    PRIORITY_PROP_LIFECYCLE_WORKFLOW_REF,
+    SPREAD_FORWARD_PRODUCTION_CANARY_WORKFLOW_REF,
+})
 ALLOWED_EVENTS = frozenset({"push", "schedule", "workflow_dispatch"})
 
 
@@ -147,15 +158,26 @@ def validate_github_actions_claims(claims: dict[str, Any]) -> dict[str, Any]:
         actual = str(claims.get(field) or "")
         if actual != expected:
             raise GitHubOIDCValidationError(f"GITHUB_OIDC_{field.upper()}_MISMATCH")
+
     workflow_ref = str(claims.get("workflow_ref") or "")
-    if (
+    job_workflow_ref = str(claims.get("job_workflow_ref") or "")
+    post_deploy_reusable_call = workflow_ref == POST_DEPLOY_ORCHESTRATOR_WORKFLOW_REF
+
+    if post_deploy_reusable_call:
+        if job_workflow_ref not in POST_DEPLOY_REUSABLE_WORKFLOW_REFS:
+            raise GitHubOIDCValidationError("GITHUB_OIDC_JOB_WORKFLOW_REF_MISMATCH")
+    elif (
         workflow_ref not in ALLOWED_WORKFLOW_REFS
         and workflow_ref not in PROP_EVIDENCE_WORKFLOW_REFS
         and workflow_ref not in LIVE_CANARY_WORKFLOW_REFS
     ):
         raise GitHubOIDCValidationError("GITHUB_OIDC_WORKFLOW_REF_MISMATCH")
+
     event_name = str(claims.get("event_name") or "")
-    if workflow_ref in {
+    if post_deploy_reusable_call:
+        if event_name != "workflow_run":
+            raise GitHubOIDCValidationError("GITHUB_OIDC_EVENT_NOT_ALLOWED")
+    elif workflow_ref in {
         SPREAD_FORWARD_PRODUCTION_CANARY_WORKFLOW_REF,
         SPREAD_CERTIFICATION_REPLAY_WORKFLOW_REF,
     }:
@@ -254,6 +276,7 @@ __all__ = [
     "ALLOWED_WORKFLOW_REFS",
     "PROP_EVIDENCE_WORKFLOW_REFS",
     "LIVE_CANARY_WORKFLOW_REFS",
+    "POST_DEPLOY_REUSABLE_WORKFLOW_REFS",
     "AUDIENCE",
     "BASKETBALL_MODEL_MAINTENANCE_WORKFLOW_REF",
     "DAILY_SNAPSHOT_WORKFLOW_REF",
@@ -263,6 +286,7 @@ __all__ = [
     "LLP_SHADOW_OBSERVER_WORKFLOW_REF",
     "MLB_1IP_LINE_EXPANSION_MAINTENANCE_WORKFLOW_REF",
     "MLB_PROP_FORWARD_EVIDENCE_WORKFLOW_REF",
+    "POST_DEPLOY_ORCHESTRATOR_WORKFLOW_REF",
     "SPREAD_MARGIN_REPLAY_WORKFLOW_REF",
     "SPREAD_FORWARD_PRODUCTION_CANARY_WORKFLOW_REF",
     "SPREAD_CERTIFICATION_REPLAY_WORKFLOW_REF",
