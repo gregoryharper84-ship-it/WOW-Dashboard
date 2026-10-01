@@ -1,8 +1,9 @@
 """Restricted HTTP persistence client for the resident Engineering Auditor.
 
 The worker uses this adapter to reach the scorer's hidden internal audit bridge
-without receiving Supabase service-role credentials. The API surface mirrors
-only the query-chain methods consumed by ``EngineeringAuditStore``.
+without receiving Supabase service-role credentials. Requests are authenticated
+with a short-lived HMAC derived from the private Redis credential already shared
+by the worker and scorer.
 """
 from __future__ import annotations
 
@@ -11,6 +12,8 @@ import os
 from typing import Any
 
 import requests
+
+from v17.engineering_auditor_bridge_auth import signed_headers
 
 
 _ALLOWED_TABLES = frozenset(
@@ -32,22 +35,22 @@ class _BridgeResponse:
 
 
 class EngineeringAuditHttpClient:
-    def __init__(self, endpoint: str, token: str, *, timeout_seconds: float = 20.0):
+    def __init__(self, endpoint: str, redis_url: str, *, timeout_seconds: float = 20.0):
         endpoint = str(endpoint or "").strip()
-        token = str(token or "").strip()
+        redis_url = str(redis_url or "").strip()
         if not endpoint.startswith("https://"):
             raise ValueError("WOW_ENGINEERING_AUDIT_BRIDGE_URL must use https")
-        if not token:
-            raise ValueError("WOW_ENGINEERING_AUDIT_BRIDGE_TOKEN is required")
+        if not redis_url:
+            raise ValueError("REDIS_URL is required for engineering audit bridge authentication")
         self.endpoint = endpoint
-        self._token = token
+        self._redis_url = redis_url
         self.timeout_seconds = float(timeout_seconds)
 
     @classmethod
     def from_env(cls) -> "EngineeringAuditHttpClient":
         return cls(
             os.environ["WOW_ENGINEERING_AUDIT_BRIDGE_URL"],
-            os.environ["WOW_ENGINEERING_AUDIT_BRIDGE_TOKEN"],
+            os.environ["REDIS_URL"],
         )
 
     def table(self, table: str) -> "_TableRequest":
@@ -57,12 +60,13 @@ class EngineeringAuditHttpClient:
         return _TableRequest(self, table)
 
     def _execute(self, request: dict[str, Any]) -> _BridgeResponse:
+        headers = {
+            "content-type": "application/json",
+            **signed_headers(request, self._redis_url),
+        }
         response = requests.post(
             self.endpoint,
-            headers={
-                "content-type": "application/json",
-                "X-WOW-Engineering-Token": self._token,
-            },
+            headers=headers,
             json=request,
             timeout=self.timeout_seconds,
         )
