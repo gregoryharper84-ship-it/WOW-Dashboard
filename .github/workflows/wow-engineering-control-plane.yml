@@ -20,6 +20,7 @@ on:
       - 'artifacts/wow-engine/test_v17_engineering_langgraph_runtime.py'
       - 'artifacts/wow-engine/requirements.txt'
       - 'artifacts/wow-engine/WOW_DOTS_ENGINEERING_ORCHESTRATOR.yaml'
+      - 'artifacts/wow-engine/WOW_ENGINEERING_AGENTIC_TELEMETRY.yaml'
       - 'artifacts/wow-engine/WOW_LANGGRAPH_CONTROL_PLANE_PILOT_ACCEPTANCE_2026-10-01.md'
       - 'render.yaml'
       - '.agents/skills/wow-dots-engineering-orchestrator/SKILL.md'
