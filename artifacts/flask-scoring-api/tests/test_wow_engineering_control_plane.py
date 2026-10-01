@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from dataclasses import replace
 import json
 from pathlib import Path
 
@@ -15,6 +16,7 @@ from services.wow_engineering_control_plane import (
     TERMINAL_AUTHORITY,
     build_engineering_graph,
     invoke_issue,
+    resume_issue,
 )
 
 
@@ -106,7 +108,6 @@ def _graph(adapters):
 def test_class_b_stops_at_pr_without_governed_promotion_authority():
     adapters, calls = _adapters()
     result = invoke_issue(_graph(adapters), _base_issue())
-
     assert result["terminal_status"] == "PR_CREATED"
     assert result["can_execute"] is False
     assert result["terminal_authority"] == TERMINAL_AUTHORITY
@@ -120,7 +121,6 @@ def test_class_b_stops_at_pr_without_governed_promotion_authority():
 def test_diagnostics_and_data_audit_both_complete_before_root_cause():
     adapters, calls = _adapters()
     result = invoke_issue(_graph(adapters), _base_issue(issue_id="WOW-ENG-TEST-PARALLEL"))
-
     assert result["root_cause"] == "canonical identity mismatch"
     assert calls["diagnostics"] == 1
     assert calls["data_audit"] == 1
@@ -134,7 +134,6 @@ def test_diagnostics_and_data_audit_both_complete_before_root_cause():
 def test_sandbox_failure_retries_exactly_three_times_then_blocks():
     adapters, calls = _adapters(sandbox_results=(False, False, False))
     result = invoke_issue(_graph(adapters), _base_issue(issue_id="WOW-ENG-TEST-RETRY"))
-
     assert MAX_REPAIR_ATTEMPTS == 3
     assert calls["engineer"] == 3
     assert calls["sandbox_test"] == 3
@@ -147,7 +146,6 @@ def test_sandbox_failure_retries_exactly_three_times_then_blocks():
 def test_successful_retry_continues_without_repeating_diagnostics():
     adapters, calls = _adapters(sandbox_results=(False, True))
     result = invoke_issue(_graph(adapters), _base_issue(issue_id="WOW-ENG-TEST-REPAIR"))
-
     assert result["terminal_status"] == "PR_CREATED"
     assert calls["engineer"] == 2
     assert calls["sandbox_test"] == 2
@@ -161,7 +159,6 @@ def test_class_c_can_only_terminate_as_experiment_before_release():
         _graph(adapters),
         _base_issue(issue_id="WOW-ENG-TEST-CLASS-C", change_class="C", promotion_authorized=True),
     )
-
     assert result["terminal_status"] == "EXPERIMENT_CREATED"
     assert calls["release"] == 0
     assert calls["production_qa"] == 0
@@ -173,7 +170,6 @@ def test_governed_authorized_release_requires_post_deploy_qa_to_close_fixed():
         _graph(adapters),
         _base_issue(issue_id="WOW-ENG-TEST-RELEASE", change_class="A", promotion_authorized=True),
     )
-
     assert result["terminal_status"] == "FIXED_AND_VERIFIED"
     assert result["qa_status"] == "PASSED"
     assert result["production_verification"] == "VERIFIED"
@@ -186,19 +182,32 @@ def test_missing_root_cause_fails_closed_with_exact_terminal():
     result = invoke_issue(
         _graph(adapters), _base_issue(issue_id="WOW-ENG-TEST-NO-ROOT-CAUSE")
     )
-
     assert result["terminal_status"] == "BLOCKED_WITH_EXACT_REASON"
     assert "root cause was not established" in result["blocker"]
     assert calls["engineer"] == 0
 
 
+def test_triage_can_close_duplicate_without_running_diagnostics():
+    adapters, calls = _adapters()
+
+    def duplicate_triage(state):
+        calls["triage"] += 1
+        return {"triage_disposition": "DUPLICATE"}
+
+    result = invoke_issue(
+        _graph(replace(adapters, triage=duplicate_triage)),
+        _base_issue(issue_id="WOW-ENG-TEST-DUPLICATE"),
+    )
+    assert result["terminal_status"] == "DUPLICATE"
+    assert calls["diagnostics"] == 0
+    assert calls["data_audit"] == 0
+
+
 def test_governance_input_cannot_enable_execution_or_disable_dry_run():
     adapters, _ = _adapters()
     graph = _graph(adapters)
-
     with pytest.raises(ValueError, match="GOVERNANCE_INPUT_REJECTED"):
         invoke_issue(graph, _base_issue(issue_id="WOW-ENG-TEST-EXEC", can_execute=True))
-
     with pytest.raises(ValueError, match="GOVERNANCE_INPUT_REJECTED"):
         invoke_issue(
             graph,
@@ -217,6 +226,77 @@ def test_probability_payload_is_rejected_before_graph_execution():
             _base_issue(issue_id="WOW-ENG-TEST-PROB", model_probability=0.61),
         )
     assert not calls
+
+
+def test_initial_payload_cannot_preseed_internal_terminal_state():
+    adapters, calls = _adapters()
+    with pytest.raises(ValueError, match="INTERNAL_STATE_INJECTION_REJECTED"):
+        invoke_issue(
+            _graph(adapters),
+            _base_issue(
+                issue_id="WOW-ENG-TEST-PRESEEDED-TERMINAL",
+                terminal_status="FIXED_AND_VERIFIED",
+            ),
+        )
+    assert not calls
+
+
+def test_nested_probability_payload_from_worker_is_rejected():
+    adapters, calls = _adapters()
+
+    def unsafe_diagnostics(state):
+        calls["diagnostics"] += 1
+        return {"diagnostics": {"evidence": {"model_probability": 0.61}}}
+
+    with pytest.raises(ValueError, match="PROBABILITY_BOUNDARY_VIOLATION"):
+        invoke_issue(
+            _graph(replace(adapters, diagnostics=unsafe_diagnostics)),
+            _base_issue(issue_id="WOW-ENG-TEST-NESTED-PROB"),
+        )
+
+
+def test_worker_cannot_overwrite_control_plane_authority_fields():
+    adapters, calls = _adapters()
+
+    def unsafe_engineer(state):
+        calls["engineer"] += 1
+        return {"changed_files": ["safe.py"], "can_execute": True}
+
+    with pytest.raises(ValueError, match="ADAPTER_CONTROL_FIELD_REJECTED"):
+        invoke_issue(
+            _graph(replace(adapters, engineer=unsafe_engineer)),
+            _base_issue(issue_id="WOW-ENG-TEST-ADAPTER-CONTROL"),
+        )
+
+
+def test_checkpoint_resume_retries_failed_node_without_replaying_completed_upstream_work():
+    adapters, calls = _adapters()
+    failed_once = {"value": False}
+
+    def flaky_sandbox(state):
+        calls["sandbox_test"] += 1
+        if not failed_once["value"]:
+            failed_once["value"] = True
+            raise RuntimeError("synthetic sandbox transport failure")
+        return {
+            "tests_passed": True,
+            "tests_run": ["pytest synthetic_resume.py -q"],
+            "regression_results": {"resume": "PASS"},
+        }
+
+    graph = _graph(replace(adapters, sandbox_test=flaky_sandbox))
+    issue_id = "WOW-ENG-TEST-DURABLE-RESUME"
+    with pytest.raises(RuntimeError, match="synthetic sandbox transport failure"):
+        invoke_issue(graph, _base_issue(issue_id=issue_id))
+    result = resume_issue(graph, issue_id)
+    assert result["terminal_status"] == "PR_CREATED"
+    assert calls["intake"] == 1
+    assert calls["triage"] == 1
+    assert calls["diagnostics"] == 1
+    assert calls["data_audit"] == 1
+    assert calls["root_cause"] == 1
+    assert calls["engineer"] == 1
+    assert calls["sandbox_test"] == 2
 
 
 def test_synthetic_regression_fixture_pack_covers_initial_failure_classes():
