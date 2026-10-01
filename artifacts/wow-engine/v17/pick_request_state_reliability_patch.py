@@ -76,8 +76,11 @@ def _identity_conflict_outcome(
         "original_terminal_status": outcome.get("terminal_status"),
         "original_terminal_code": outcome.get("code"),
         "original_model_evaluated": outcome.get("model_evaluated") is True,
+        # The immutable scorer receipt remains in its own ledger for audit, but
+        # is intentionally not attached as this frozen source row's valid receipt
+        # because its observed identity did not match the source identity.
         "original_prediction_id": prediction_id,
-        "scorer_receipt_preserved": bool(prediction_id),
+        "scorer_receipt_preserved_for_audit": bool(prediction_id),
         "specialist_scoring_attempted": outcome.get("model_evaluated") is True,
         "specialist_invoked": outcome.get("model_evaluated") is True,
         "can_execute": False,
@@ -94,8 +97,6 @@ def _identity_conflict_outcome(
         "detail": detail,
         "can_execute": False,
     }
-    if prediction_id:
-        isolated["prediction_id"] = prediction_id
     if outcome.get("source_snapshot_id"):
         isolated["source_snapshot_id"] = outcome.get("source_snapshot_id")
     return isolated
@@ -106,10 +107,10 @@ def _isolate_exact_identity_conflicts(
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Convert post-score source/canonical mismatches into row-isolated holds.
 
-    The fitted scorer receipt remains immutable and linked by prediction_id, but
-    the mismatched probability package is removed from the publication/ranking
-    response so it cannot influence portfolio governance. Unrelated rows are
-    unchanged and remain eligible for exact-once continuation.
+    The fitted scorer receipt remains immutable in its own ledger and is retained
+    as an audit reference, but the mismatched probability package is removed from
+    the source-row publication/ranking response. Unrelated rows are unchanged and
+    remain eligible for exact-once continuation.
     """
     probe = enforce_exact_board_identity(
         {"rows": deepcopy(outcomes), "reconciliation_pass": True, "can_execute": False},
@@ -209,24 +210,27 @@ def install_pick_request_state_reliability_patch() -> bool:
         isolated, mismatches = _isolate_exact_identity_conflicts(source_rows, outcomes)
         if mismatches:
             by_key = {str(item.get("row_key") or ""): item for item in isolated}
+            receipt_reference_count = 0
             for row_key, record in ctx.rows.items():
                 replacement = by_key.get(str(row_key))
                 if replacement is None or replacement.get("code") != IDENTITY_CONFLICT_TERMINAL:
                     continue
-                prediction_id = replacement.get("prediction_id") or record.get("prediction_id")
+                detail = replacement.get("detail") if isinstance(replacement.get("detail"), dict) else {}
+                if detail.get("original_prediction_id"):
+                    receipt_reference_count += 1
                 record["outcome"] = deepcopy(replacement)
                 record["terminal_status"] = "HELD"
                 record["terminal_code"] = IDENTITY_CONFLICT_TERMINAL
                 record["model_evaluated"] = False
                 record["probability_publishable"] = False
                 record["rank_eligible"] = False
-                if prediction_id:
-                    record["prediction_id"] = prediction_id
-                    # The immutable scorer receipt exists, and the identity
-                    # rejection itself is a governance decision. Publication is
-                    # not authorized even if an earlier hook advanced too far.
-                    record["current_stage"] = "GOVERNANCE_AUDITED"
-                    record["stage_seq"] = state.STAGE_SEQ["GOVERNANCE_AUDITED"]
+                # A mismatched scorer receipt is evidence about what happened,
+                # not a valid receipt for the frozen source identity. Clear the
+                # source-row receipt association and reset its stage before the
+                # terminal hold is finalized.
+                record["prediction_id"] = None
+                record["current_stage"] = "INGESTED"
+                record["stage_seq"] = state.STAGE_SEQ["INGESTED"]
             adjusted_inner = dict(inner or {})
             adjusted_inner["rows"] = isolated
             response, final_outcomes = original_merged_response(ctx, adjusted_inner)
@@ -235,7 +239,8 @@ def install_pick_request_state_reliability_patch() -> bool:
                 "terminal_code": IDENTITY_CONFLICT_TERMINAL,
                 "row_keys": sorted(str(item.get("row_key") or "") for item in mismatches),
                 "mismatch_count": len(mismatches),
-                "scorer_receipts_preserved": True,
+                "scorer_receipt_audit_reference_count": receipt_reference_count,
+                "source_row_receipt_association_preserved": False,
                 "can_execute": False,
             }
             response["can_execute"] = False
