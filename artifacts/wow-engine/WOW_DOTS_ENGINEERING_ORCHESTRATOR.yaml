@@ -1,4 +1,4 @@
-contract_version: 1
+contract_version: 2
 identity: WOW_DOTS_ENGINEERING_ORCHESTRATOR
 skill_identity: wow.dots-engineering-orchestrator
 status: ACTIVE
@@ -7,6 +7,28 @@ terminal_authority: V17_TERMINAL_REDUCER
 custom_gpt_identity: WOW_BETTING_ENGINE
 can_execute: false
 dry_run_only_no_live_trading_no_market_orders: true
+
+control_plane:
+  framework: LANGGRAPH
+  change_class: B
+  implementation: artifacts/flask-scoring-api/services/wow_engineering_control_plane.py
+  graph_name: WOW_V17_ENGINEERING_CONTROL_PLANE
+  max_repair_attempts: 3
+  parallel_evidence_lanes:
+    - DIAGNOSTICS
+    - DATA_AUDIT
+  join_before_root_cause: true
+  test_checkpointer: InMemorySaver
+  production_checkpointer: PostgresSaver
+  production_checkpoint_env: WOW_ENGINEERING_CHECKPOINT_DB_URI
+  checkpoint_strict_msgpack: true
+  thread_identity: issue_id
+  probability_authority: NONE
+  production_promotion_default: false
+  class_c_release_allowed: false
+  durable_resume_required: true
+  trace_events_required: true
+  silent_drop_allowed: false
 
 delegation:
   skill: wow-autonomous-product-qa-engineering-recovery
@@ -17,6 +39,20 @@ delegation:
     - INDEPENDENT_REVIEW
     - QA_VERIFICATION
     - RELEASE_OBSERVABILITY
+    - REPORTER_CLOSURE
+  langgraph_expansion:
+    - REPORTER_INTAKE
+    - RESEARCH_TRIAGE
+    - DIAGNOSTICS
+    - DATA_AUDIT
+    - ROOT_CAUSE
+    - ENGINEERING
+    - SANDBOX_TEST
+    - V17_GOVERNANCE
+    - INDEPENDENT_REVIEW
+    - GOVERNANCE_GATE
+    - RELEASE_OBSERVABILITY
+    - QA_VERIFICATION
     - REPORTER_CLOSURE
   self_approval_allowed: false
   production_fix_requires_qa: true
@@ -140,7 +176,8 @@ activation:
   repository_build_complete_requires:
     - supervisor_skill_merged
     - machine_readable_contract_merged
-    - regression_tests_green
+    - langgraph_control_plane_merged
+    - langgraph_regression_tests_green
     - pilot_acceptance_receipt_merged
   operational_mode_until_native_access_proven: WORK_SURROGATE
   switch_to_dots_native_changes_only_platform_mode: true
