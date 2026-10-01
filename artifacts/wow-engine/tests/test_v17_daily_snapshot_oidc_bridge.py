@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 import pytest
 from fastapi import FastAPI, HTTPException
 from pydantic import ValidationError
@@ -102,6 +104,44 @@ def test_bridge_installs_once_and_uses_server_owned_runtime(monkeypatch):
     assert result["automation_auth"] == "GITHUB_ACTIONS_OIDC"
     assert result["global_terminal_authority"] == "V17_TERMINAL_REDUCER"
     assert result["probability_publishable"] is False
+    assert result["can_execute"] is False
+
+
+def test_bridge_emits_non_secret_stage_timings(monkeypatch, caplog):
+    app = FastAPI()
+    market_api = _MarketApi()
+    monkeypatch.setattr(
+        bridge,
+        "authorize_action_key_or_multiscout_oidc",
+        lambda authorization: "GITHUB_ACTIONS_OIDC",
+    )
+    monkeypatch.setattr(
+        daily_runtime,
+        "run_daily_snapshot",
+        lambda *args, **kwargs: {
+            "run_id": "v17-daily-timing",
+            "run_status": "COMPLETED",
+            "rows": [],
+            "probability_publishable": False,
+            "can_execute": False,
+        },
+    )
+    bridge.install_daily_snapshot_oidc_bridge(app=app, market_api=market_api)
+    caplog.set_level(logging.WARNING, logger="wow.v17.daily_snapshot_latency")
+
+    req = bridge.InternalDailySnapshotRequest(
+        requested_slate_date="2026-09-15",
+        requested_timezone="America/Chicago",
+    )
+    result = _route(app).endpoint(req, authorization="Bearer secret-value-must-not-log")
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("stage=auth status=PASS" in message for message in messages)
+    assert any("stage=db-client-create status=PASS" in message for message in messages)
+    assert any("stage=daily-snapshot-core status=PASS" in message for message in messages)
+    assert any("stage=total status=PASS" in message for message in messages)
+    assert all("secret-value-must-not-log" not in message for message in messages)
+    assert all("can_execute=false" in message for message in messages)
     assert result["can_execute"] is False
 
 
