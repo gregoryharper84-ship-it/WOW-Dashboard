@@ -65,19 +65,33 @@ def test_post_deploy_orchestrator_is_only_deploy_consumer_for_heavy_verification
         assert 'workflows: ["wow-v17-render-production-deploy"]' not in text
 
 
-def test_post_deploy_orchestrator_sequences_all_heavy_verification_without_skip():
+def test_post_deploy_orchestrator_runs_bounded_smoke_before_memory_heavy_replay():
     text = ORCHESTRATOR_WORKFLOW.read_text(encoding="utf-8")
 
-    cert = text.index("  spread-certification:")
     priority = text.index("  priority-props:")
     spread = text.index("  spread-forward:")
-    assert cert < priority < spread
-    assert "needs: spread-certification" in text
+    cert = text.index("  spread-certification:")
+    assert priority < spread < cert
     assert "needs: priority-props" in text
+    assert "needs: spread-forward" in text
     assert text.count("always() &&") == 2
-    assert "uses: ./.github/workflows/wow-v17-spread-certification-replay.yml" in text
     assert "uses: ./.github/workflows/wow-v17-priority-prop-lifecycle.yml" in text
+    assert "post_deploy_smoke: true" in text
     assert "uses: ./.github/workflows/wow-v17-spread-forward-production-canary.yml" in text
+    assert "uses: ./.github/workflows/wow-v17-spread-certification-replay.yml" in text
+
+
+def test_priority_prop_deploy_smoke_skips_next_day_without_weakening_hourly_default():
+    text = PRIORITY_WORKFLOW.read_text(encoding="utf-8")
+
+    assert "post_deploy_smoke:" in text
+    assert "type: boolean" in text
+    assert "default: false" in text
+    assert "max-parallel: 1" in text
+    assert 'POST_DEPLOY_SMOKE: ${{ inputs.post_deploy_smoke && \'true\' || \'false\' }}' in text
+    assert 'if [ "${POST_DEPLOY_SMOKE}" != "true" ]; then' in text
+    assert 'seed_date "${tomorrow}"' in text
+    assert 'seed_date "${today}"' in text
 
 
 def test_spread_canary_serializes_runtime_heavy_jobs_without_skipping_after_failure():
