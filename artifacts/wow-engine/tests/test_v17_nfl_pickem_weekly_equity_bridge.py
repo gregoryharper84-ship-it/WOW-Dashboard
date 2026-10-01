@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from v17.nfl_pickem_weekly_equity import WEEKLY_EQUITY_BLOCKED, WEEKLY_EQUITY_READY
 from v17.nfl_pickem_weekly_equity_bridge import optimize_weekly_win_equity_from_governed_rows
 
@@ -74,8 +76,8 @@ def test_bridge_uses_full_source_bounds_for_contrarian_selection():
     assert out["status"] == WEEKLY_EQUITY_READY
     assert out["baseline_board_status"] == "PICKEM_BOARD_READY"
     assert out["picks"][0]["weekly_equity_pick"] == "A"
-    assert out["picks"][0]["selected_calibrated_lower_bound"] == 0.36
-    assert out["picks"][0]["selected_calibrated_upper_bound"] == 0.44
+    assert out["picks"][0]["selected_calibrated_lower_bound"] == pytest.approx(0.36)
+    assert out["picks"][0]["selected_calibrated_upper_bound"] == pytest.approx(0.44)
     assert out["weekly_equity_two_sided_bounds_from_governed_source"] is True
     assert out["sporting_probability_modified"] is False
     assert out["can_execute"] is False
