@@ -6,18 +6,33 @@ from v17.nfl_pickem_weekly_equity import (
     optimize_weekly_win_equity,
 )
 
+CONTROLLING_SPECIALIST = "wow.nfl-game-win-probability-expert"
 
-def _board(p: float = 0.60) -> dict:
+
+def _board(probability: float = 0.60) -> dict:
+    away_probability = 1.0 - probability
     return {
         "submission_ready": True,
+        "source_terminals_preserved": True,
         "picks": [
             {
                 "official_event_id": "g1",
                 "home_team": "H",
                 "away_team": "A",
-                "pool_pick": "H" if p >= 0.5 else "A",
-                "home_probability": p,
-                "away_probability": 1.0 - p,
+                "pool_pick": "H" if probability >= 0.5 else "A",
+                "home_probability": probability,
+                "away_probability": away_probability,
+                "calibrated_home_lower_bound": max(0.0, probability - 0.04),
+                "calibrated_home_upper_bound": min(1.0, probability + 0.04),
+                "calibrated_away_lower_bound": max(0.0, away_probability - 0.04),
+                "calibrated_away_upper_bound": min(1.0, away_probability + 0.04),
+                "controlling_specialist": CONTROLLING_SPECIALIST,
+                "source_terminal_label": "FINAL_APPROVED",
+                "source_model_status": "GOVERNED_PROBABILITY_PUBLISHED",
+                "source_prediction_id": "pred-g1",
+                "source_snapshot_id": "snap-g1",
+                "source_blockers": [],
+                "can_execute": False,
             }
         ],
     }
@@ -133,6 +148,7 @@ def test_full_16_game_board_is_bounded_and_terminal():
     pick_shares: list[dict] = []
     for index in range(16):
         probability = 0.52 + (index % 7) * 0.02
+        away_probability = 1.0 - probability
         event_id = f"g{index:02d}"
         picks.append(
             {
@@ -141,7 +157,18 @@ def test_full_16_game_board_is_bounded_and_terminal():
                 "away_team": f"A{index}",
                 "pool_pick": f"H{index}",
                 "home_probability": probability,
-                "away_probability": 1.0 - probability,
+                "away_probability": away_probability,
+                "calibrated_home_lower_bound": max(0.0, probability - 0.04),
+                "calibrated_home_upper_bound": min(1.0, probability + 0.04),
+                "calibrated_away_lower_bound": max(0.0, away_probability - 0.04),
+                "calibrated_away_upper_bound": min(1.0, away_probability + 0.04),
+                "controlling_specialist": CONTROLLING_SPECIALIST,
+                "source_terminal_label": "FINAL_APPROVED",
+                "source_model_status": "GOVERNED_PROBABILITY_PUBLISHED",
+                "source_prediction_id": f"pred-{event_id}",
+                "source_snapshot_id": f"snap-{event_id}",
+                "source_blockers": [],
+                "can_execute": False,
             }
         )
         home_share = 0.20 + (index % 5) * 0.15
@@ -158,7 +185,11 @@ def test_full_16_game_board_is_bounded_and_terminal():
         )
 
     out = optimize_weekly_win_equity(
-        {"submission_ready": True, "picks": picks},
+        {
+            "submission_ready": True,
+            "source_terminals_preserved": True,
+            "picks": picks,
+        },
         pool_entries=32,
         opponent_pick_shares=pick_shares,
         max_candidate_flips=2,
@@ -187,3 +218,23 @@ def test_tie_share_proxy_is_deterministic_and_discloses_tiebreaker_limit():
     assert out1["optimized_first_place_equity"] == out2["optimized_first_place_equity"]
     assert 0.0 <= out1["optimized_first_place_equity"] <= 1.0
     assert out1["tiebreaker_opponent_guess_distribution_modeled"] is False
+
+
+def test_changed_pick_keeps_two_sided_calibration_and_source_provenance():
+    out = optimize_weekly_win_equity(
+        _board(0.60),
+        pool_entries=100,
+        opponent_pick_shares=_shares(0.99),
+        max_candidate_flips=1,
+    )
+    pick = out["picks"][0]
+    assert pick["selection_changed"] is True
+    assert (
+        pick["selected_calibrated_lower_bound"]
+        <= pick["selected_governed_probability"]
+        <= pick["selected_calibrated_upper_bound"]
+    )
+    assert pick["controlling_specialist"] == CONTROLLING_SPECIALIST
+    assert pick["source_terminal_label"] == "FINAL_APPROVED"
+    assert pick["decision_reason_code"] == "WEEKLY_EQUITY_IMPROVEMENT_WITHIN_SEARCH"
+    assert pick["conditional_first_place_equity_gain_if_reverted"] >= 0.0
