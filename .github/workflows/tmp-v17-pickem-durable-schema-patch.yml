@@ -1,0 +1,191 @@
+name: tmp-v17-pickem-durable-schema-patch
+
+on:
+  push:
+    branches:
+      - fix/nfl-pickem-durable-1111
+    paths:
+      - .github/workflows/tmp-v17-pickem-durable-schema-patch.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: fix/nfl-pickem-durable-1111
+          fetch-depth: 0
+
+      - name: Patch canonical durable Pickem Action surface
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          root = Path('.')
+          schema_path = root / 'artifacts/wow-engine/v17/openapi.wow-betting-engine.v17.yaml'
+          text = schema_path.read_text()
+          assert text.count('operationId:') == 23, text.count('operationId:')
+          start = text.index('  /v17/nfl-pickem-board:\n')
+          end = text.index('  /score-pick-request:\n', start)
+          durable = '''  /v17/nfl-pickem-submit:
+            post:
+              operationId: submitWowV17NFLPickemBoard
+              x-openai-isConsequential: false
+              description: >-
+                Durable asynchronous NFL pick'em submission. Persists the bounded
+                week request and returns a run_id immediately; poll
+                getWowV17NFLPickemRun until terminal. The existing governed NFL
+                outright-win specialist remains the sole sporting probability source.
+                Pool popularity never alters sporting probability; can_execute=false.
+              security: [{actionBearer: []}]
+              requestBody:
+                required: true
+                content:
+                  application/json:
+                    schema: {$ref: '#/components/schemas/AsyncNFLPickemSubmitRequest'}
+              responses:
+                '202': {description: Durable NFL pick'em request queued with run_id}
+                '401': {description: Authentication failed}
+                '409': {description: Idempotency key conflict}
+                '422': {description: Invalid pick'em week request}
+                '503': {description: Durable Pick'em submission persistence unavailable}
+          /v17/nfl-pickem-run/{run_id}:
+            get:
+              operationId: getWowV17NFLPickemRun
+              x-openai-isConsequential: false
+              description: >-
+                Read durable NFL pick'em state by run_id. Poll until COMPLETED or
+                FAILED. A terminal result is the existing governed Pick'em board
+                receipt; transport retries do not create sporting probabilities.
+              security: [{actionBearer: []}]
+              parameters:
+                - name: run_id
+                  in: path
+                  required: true
+                  schema: {type: string, minLength: 1}
+              responses:
+                '200': {description: Durable NFL pick'em queue/run state and terminal result when available}
+                '401': {description: Authentication failed}
+                '404': {description: Durable NFL pick'em run not found}
+                '503': {description: Durable NFL pick'em status service unavailable}
+          '''
+          text = text[:start] + durable + text[end:]
+          marker = '    NFLPickemBoardRequest:\n'
+          assert marker in text
+          async_schema = '''    AsyncNFLPickemSubmitRequest:
+              type: object
+              additionalProperties: false
+              required: [requested_slate_dates]
+              properties:
+                requested_slate_dates:
+                  type: array
+                  minItems: 1
+                  maxItems: 7
+                  items: {type: string, format: date}
+                requested_timezone: {type: string, minLength: 1, maxLength: 64, default: America/Chicago}
+                expected_game_count: {type: integer, minimum: 1, maximum: 32, default: 16}
+                strategy_mode: {type: string, enum: [MAX_EXPECTED_CORRECT], default: MAX_EXPECTED_CORRECT}
+                idempotency_key: {type: string, minLength: 8, maxLength: 128}
+          '''
+          text = text.replace(marker, async_schema + marker, 1)
+          assert text.count('operationId:') == 24, text.count('operationId:')
+          assert 'operationId: runWowV17NFLPickemBoard' not in text
+          assert 'operationId: submitWowV17NFLPickemBoard' in text
+          assert 'operationId: getWowV17NFLPickemRun' in text
+          schema_path.write_text(text)
+
+          builder = root / 'artifacts/wow-engine/v17/build_gpt_editor_sync_packet.py'
+          text = builder.read_text()
+          text = text.replace('REQUIRED_OPERATION_COUNT = 23', 'REQUIRED_OPERATION_COUNT = 24')
+          old = '    "runWowV17NFLPickemBoard",\n'
+          assert old in text
+          text = text.replace(
+              old,
+              '    "submitWowV17NFLPickemBoard",\n    "getWowV17NFLPickemRun",\n',
+              1,
+          )
+          text = text.replace(
+              'IMPORT_SINGLE_CANONICAL_ACTION_SCHEMA_WITH_23_OPERATIONS',
+              'IMPORT_SINGLE_CANONICAL_ACTION_SCHEMA_WITH_24_OPERATIONS',
+          )
+          text = text.replace(
+              '"FRESH_CHAT_RUN_WOW_V17_NFL_PICKEM_BOARD",',
+              '"FRESH_CHAT_SUBMIT_AND_POLL_DURABLE_WOW_V17_NFL_PICKEM_BOARD",',
+          )
+          builder.write_text(text)
+
+          instructions = root / 'artifacts/wow-engine/WOW_V17_CUSTOM_GPT_INSTRUCTIONS.txt'
+          text = instructions.read_text()
+          anchor = '- Full/current all-sport board: submitWowV17DailySnapshot; poll getWowV17DailySnapshotRun. Extracted large prop board: runWowV17ResumablePickRequest; poll getWowV17PickRequestRunState; closeWowV17PickRequestRun. Never start full-board work with synchronous runWowV17DailySnapshot.\n'
+          assert anchor in text
+          addition = '- Full NFL Pick’em week: submitWowV17NFLPickemBoard; poll getWowV17NFLPickemRun until terminal. Never start a full Pick’em sheet with synchronous runWowV17NFLPickemBoard.\n'
+          text = text.replace(anchor, anchor + addition, 1)
+          assert len(text.encode('utf-8')) <= 7500, len(text.encode('utf-8'))
+          instructions.write_text(text)
+
+          packet_test = root / 'artifacts/wow-engine/v17/test_gpt_editor_sync_packet.py'
+          text = packet_test.read_text()
+          text = text.replace('== module.REQUIRED_OPERATION_COUNT == 23', '== module.REQUIRED_OPERATION_COUNT == 24')
+          text = text.replace('manifest["action_operation_count"] == 23', 'manifest["action_operation_count"] == 24')
+          text = text.replace('IMPORT_SINGLE_CANONICAL_ACTION_SCHEMA_WITH_23_OPERATIONS', 'IMPORT_SINGLE_CANONICAL_ACTION_SCHEMA_WITH_24_OPERATIONS')
+          text = text.replace(
+              'assert "runWowV17NFLPickemBoard" in schema_text',
+              'assert "submitWowV17NFLPickemBoard" in schema_text\n    assert "getWowV17NFLPickemRun" in schema_text\n    assert "runWowV17NFLPickemBoard" not in schema_text',
+          )
+          packet_test.write_text(text)
+
+          run_control_test = root / 'artifacts/wow-engine/v17/test_pick_request_canonical_schema_run_control.py'
+          text = run_control_test.read_text()
+          text = text.replace('assert len(primary_ops) == 23', 'assert len(primary_ops) == 24')
+          text = text.replace(
+              'assert "runWowV17NFLPickemBoard" in primary_ops',
+              'assert "submitWowV17NFLPickemBoard" in primary_ops\n    assert "getWowV17NFLPickemRun" in primary_ops\n    assert "runWowV17NFLPickemBoard" not in primary_ops',
+          )
+          run_control_test.write_text(text)
+
+          live_editor_test = root / 'artifacts/wow-engine/tests/test_v17_live_editor_compat.py'
+          text = live_editor_test.read_text()
+          text = text.replace(
+              '        "runWowV17NFLPickemBoard",',
+              '        "submitWowV17NFLPickemBoard",\n        "getWowV17NFLPickemRun",',
+          )
+          live_editor_test.write_text(text)
+
+          sync_doc = root / 'artifacts/wow-engine/V17_CUSTOM_GPT_EDITOR_SYNC.md'
+          text = sync_doc.read_text()
+          text = text.replace('exactly **23**', 'exactly **24**')
+          text = text.replace('all **23** WOW operations', 'all **24** WOW operations')
+          text = text.replace('single canonical 23-operation Action schema', 'single canonical 24-operation Action schema')
+          text = text.replace(
+              '- `/v17/nfl-pickem-board` -> `runWowV17NFLPickemBoard`',
+              '- `/v17/nfl-pickem-submit` -> `submitWowV17NFLPickemBoard`\n- `/v17/nfl-pickem-run/{run_id}` -> `getWowV17NFLPickemRun`',
+          )
+          text = text.replace('`runWowV17NFLPickemBoard` consumes', 'The durable NFL Pick’em submit/poll path ultimately consumes')
+          text = text.replace(
+              '`runWowV17NFLPickemBoard` is visible on that same Action surface and the Week 4 multi-date request reaches the governed NFL scorer',
+              '`submitWowV17NFLPickemBoard` and `getWowV17NFLPickemRun` are visible on that same Action surface and the Week 4 multi-date submit/poll request reaches the governed NFL scorer',
+          )
+          sync_doc.write_text(text)
+
+          # Final contract checks before committing.
+          schema_text = schema_path.read_text()
+          assert schema_text.count('operationId:') == 24
+          assert 'submitWowV17NFLPickemBoard' in schema_text
+          assert 'getWowV17NFLPickemRun' in schema_text
+          assert 'runWowV17NFLPickemBoard' not in schema_text
+          assert 'submitWowV17NFLPickemBoard' in instructions.read_text()
+          assert 'getWowV17NFLPickemRun' in instructions.read_text()
+          PY
+
+          rm .github/workflows/tmp-v17-pickem-durable-schema-patch.yml
+
+          git config user.name "WOW Engineering Automation"
+          git config user.email "actions@users.noreply.github.com"
+          git add artifacts/wow-engine .github/workflows/tmp-v17-pickem-durable-schema-patch.yml
+          git commit -m "fix(v17): expose durable Pickem submit-poll Action contract"
+          git push origin HEAD:fix/nfl-pickem-durable-1111
