@@ -112,12 +112,13 @@ def test_post_score_event_alias_mismatch_becomes_row_isolated_typed_hold():
     assert conflict["model_evaluated"] is False
     assert conflict["probability_publishable"] is False
     assert conflict["rank_eligible"] is False
-    assert conflict["prediction_id"] == "pred-nfl"
+    assert "prediction_id" not in conflict
     assert "result" not in conflict
     assert conflict["detail"]["blocker_code"] == "EXACT_BOARD_IDENTITY_MISMATCH"
     assert conflict["detail"]["conflicting_fields"] == ["event_id"]
     assert conflict["detail"]["original_terminal_code"] == "NO_LOW_PROBABILITY"
-    assert conflict["detail"]["scorer_receipt_preserved"] is True
+    assert conflict["detail"]["original_prediction_id"] == "pred-nfl"
+    assert conflict["detail"]["scorer_receipt_preserved_for_audit"] is True
     assert isolated[1] == outcomes[1]
     assert all(item["can_execute"] is False for item in isolated)
 
@@ -170,6 +171,8 @@ def test_55_direction_manifest_isolates_one_identity_conflict_without_stranding_
     assert len(isolated) == 55
     assert len(mismatches) == 1
     assert isolated[13]["code"] == IDENTITY_CONFLICT_TERMINAL
+    assert "prediction_id" not in isolated[13]
+    assert isolated[13]["detail"]["original_prediction_id"] == "pred-14"
     assert sum(item["terminal_status"] == "HELD" for item in isolated) == 55
     assert reconciled["reconciliation_pass"] is True
     assert reconciled["exact_board_identity_reconciliation"]["balanced"] is True
