@@ -1,6 +1,6 @@
 """LangGraph control plane for the WOW V17 engineering repair lifecycle.
 
-This module is engineering orchestration only. It never originates, substitutes,
+Engineering orchestration only: this module never originates, substitutes,
 blends, overrides, publishes, or executes a sporting probability or wager.
 """
 from __future__ import annotations
@@ -43,6 +43,15 @@ TERMINAL_STATUSES: tuple[str, ...] = (
     "DEFERRED_WITH_JUSTIFICATION",
 )
 
+TRIAGE_TERMINALS = frozenset(
+    {
+        "DUPLICATE",
+        "NOT_REPRODUCIBLE",
+        "BLOCKED_WITH_EXACT_REASON",
+        "DEFERRED_WITH_JUSTIFICATION",
+    }
+)
+
 FORBIDDEN_PROBABILITY_FIELDS = frozenset(
     {
         "model_probability",
@@ -56,6 +65,43 @@ FORBIDDEN_PROBABILITY_FIELDS = frozenset(
         "pick_probability",
         "wager",
         "market_order",
+    }
+)
+
+NEW_ISSUE_INTERNAL_FIELDS = frozenset(
+    {
+        "workflow_stage",
+        "terminal_status",
+        "review_status",
+        "governance_status",
+        "governance_violations",
+        "deployment_status",
+        "qa_status",
+        "production_verification",
+        "attempt_count",
+        "max_repair_attempts",
+        "blocker",
+        "smallest_remaining_action",
+        "trace_events",
+    }
+)
+
+ADAPTER_FORBIDDEN_CONTROL_FIELDS = frozenset(
+    {
+        "custom_gpt_identity",
+        "runtime_generation",
+        "terminal_authority",
+        "can_execute",
+        "dry_run_only_no_live_trading_no_market_orders",
+        "probability_authority",
+        "promotion_authorized",
+        "max_repair_attempts",
+        "attempt_count",
+        "workflow_stage",
+        "terminal_status",
+        "trace_events",
+        "governance_status",
+        "governance_violations",
     }
 )
 
@@ -97,6 +143,7 @@ class EngineeringState(TypedDict, total=False):
     qa_status: str
     production_verification: str
     promotion_authorized: bool
+    triage_disposition: TerminalStatus | None
     attempt_count: int
     max_repair_attempts: int
     blocker: str | None
@@ -142,11 +189,44 @@ def _emit(adapters: EngineeringAdapters, event: TraceEvent) -> None:
         adapters.trace_sink(event)
 
 
+def _find_forbidden_probability_paths(value: Any, path: str = "$") -> list[str]:
+    found: list[str] = []
+    if isinstance(value, Mapping):
+        for raw_key, nested in value.items():
+            key = str(raw_key)
+            child_path = f"{path}.{key}"
+            if key in FORBIDDEN_PROBABILITY_FIELDS:
+                found.append(child_path)
+            found.extend(_find_forbidden_probability_paths(nested, child_path))
+    elif isinstance(value, (list, tuple)):
+        for index, nested in enumerate(value):
+            found.extend(_find_forbidden_probability_paths(nested, f"{path}[{index}]"))
+    return found
+
+
 def _assert_no_probability_payload(payload: Mapping[str, Any]) -> None:
-    forbidden = sorted(FORBIDDEN_PROBABILITY_FIELDS.intersection(payload.keys()))
-    if forbidden:
+    forbidden_paths = sorted(set(_find_forbidden_probability_paths(payload)))
+    if forbidden_paths:
         raise ValueError(
             "ENGINEERING_CONTROL_PLANE_PROBABILITY_BOUNDARY_VIOLATION: "
+            + ",".join(forbidden_paths)
+        )
+
+
+def _assert_new_issue_boundary(state: Mapping[str, Any]) -> None:
+    forbidden = sorted(NEW_ISSUE_INTERNAL_FIELDS.intersection(state.keys()))
+    if forbidden:
+        raise ValueError(
+            "ENGINEERING_CONTROL_PLANE_INTERNAL_STATE_INJECTION_REJECTED: "
+            + ",".join(forbidden)
+        )
+
+
+def _assert_adapter_control_boundary(raw: Mapping[str, Any]) -> None:
+    forbidden = sorted(ADAPTER_FORBIDDEN_CONTROL_FIELDS.intersection(raw.keys()))
+    if forbidden:
+        raise ValueError(
+            "ENGINEERING_CONTROL_PLANE_ADAPTER_CONTROL_FIELD_REJECTED: "
             + ",".join(forbidden)
         )
 
@@ -162,6 +242,7 @@ def _handler_update(
     _assert_no_probability_payload(state)
     raw = dict(handler(dict(state)))
     _assert_no_probability_payload(raw)
+    _assert_adapter_control_boundary(raw)
     event = _trace(state, stage, "COMPLETED")
     _emit(adapters, event)
     if set_stage:
@@ -207,6 +288,8 @@ def _invariant_violations(state: EngineeringState) -> list[str]:
         violations.append("change_class must be A, B, or C")
     if int(state.get("max_repair_attempts", 0)) != MAX_REPAIR_ATTEMPTS:
         violations.append(f"max_repair_attempts must equal {MAX_REPAIR_ATTEMPTS}")
+    if int(state.get("attempt_count", 0)) > MAX_REPAIR_ATTEMPTS:
+        violations.append(f"attempt_count may not exceed {MAX_REPAIR_ATTEMPTS}")
     try:
         _assert_no_probability_payload(state)
     except ValueError as exc:
@@ -222,7 +305,7 @@ def _normalize_input(state: EngineeringState) -> dict[str, Any]:
         "can_execute": CAN_EXECUTE,
         "dry_run_only_no_live_trading_no_market_orders": DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS,
         "probability_authority": PROBABILITY_AUTHORITY,
-        "attempt_count": int(state.get("attempt_count", 0)),
+        "attempt_count": 0,
         "max_repair_attempts": MAX_REPAIR_ATTEMPTS,
         "promotion_authorized": bool(state.get("promotion_authorized", False)),
         "trace_events": [],
@@ -230,13 +313,7 @@ def _normalize_input(state: EngineeringState) -> dict[str, Any]:
 
 
 def build_engineering_graph(adapters: EngineeringAdapters, *, checkpointer: Any = None):
-    """Compile the governed WOW engineering graph.
-
-    A production caller should provide a durable checkpointer. Tests may use
-    ``InMemorySaver``. Every invocation should use ``issue_id`` as the LangGraph
-    ``thread_id`` so retries/resumes remain attached to one canonical issue.
-    """
-
+    """Compile the governed WOW engineering graph."""
     builder = StateGraph(EngineeringState)
 
     def intake(state: EngineeringState) -> dict[str, Any]:
@@ -252,12 +329,18 @@ def build_engineering_graph(adapters: EngineeringAdapters, *, checkpointer: Any 
         return {**normalized, **update}
 
     def triage(state: EngineeringState) -> dict[str, Any]:
-        return _handler_update(
+        result = _handler_update(
             state=state,
             stage="RESEARCH_TRIAGE",
             handler=adapters.triage,
             adapters=adapters,
         )
+        disposition = result.get("triage_disposition")
+        if disposition is not None:
+            if disposition not in TRIAGE_TERMINALS:
+                raise ValueError(f"INVALID_TRIAGE_TERMINAL_STATUS:{disposition!r}")
+            result["terminal_status"] = disposition
+        return result
 
     def diagnostics(state: EngineeringState) -> dict[str, Any]:
         return _handler_update(
@@ -309,9 +392,7 @@ def build_engineering_graph(adapters: EngineeringAdapters, *, checkpointer: Any 
         return result
 
     def blocked_after_retries(state: EngineeringState) -> dict[str, Any]:
-        detail = (
-            f"sandbox tests failed after {state.get('attempt_count', 0)} governed repair attempts"
-        )
+        detail = f"sandbox tests failed after {state.get('attempt_count', 0)} governed repair attempts"
         event = _trace(state, "REPAIR_LOOP", "BLOCKED", detail)
         _emit(adapters, event)
         return {
@@ -410,18 +491,6 @@ def build_engineering_graph(adapters: EngineeringAdapters, *, checkpointer: Any 
         _emit(adapters, event)
         return {"workflow_stage": "REPORTER_CLOSURE", "trace_events": [event]}
 
-    def route_after_triage(state: EngineeringState) -> str | list[str]:
-        if state.get("terminal_status"):
-            return "terminal_reducer"
-        return ["diagnostics", "data_audit"]
-
-    def route_after_root_cause(state: EngineeringState) -> str:
-        if state.get("terminal_status"):
-            return "terminal_reducer"
-        if state.get("root_cause"):
-            return "engineer"
-        return "root_cause_blocked"
-
     def root_cause_blocked(state: EngineeringState) -> dict[str, Any]:
         detail = "root cause was not established after diagnostics and data audit"
         event = _trace(state, "ROOT_CAUSE", "BLOCKED", detail)
@@ -432,6 +501,27 @@ def build_engineering_graph(adapters: EngineeringAdapters, *, checkpointer: Any 
             "terminal_status": "BLOCKED_WITH_EXACT_REASON",
             "trace_events": [event],
         }
+
+    def release_blocked(state: EngineeringState) -> dict[str, Any]:
+        detail = f"release did not reach deployed state: {state.get('deployment_status')!r}"
+        event = _trace(state, "RELEASE_OBSERVABILITY", "BLOCKED", detail)
+        _emit(adapters, event)
+        return {
+            "blocker": detail,
+            "smallest_remaining_action": "repair release/deployment failure and verify exact deployed SHA",
+            "terminal_status": "BLOCKED_WITH_EXACT_REASON",
+            "trace_events": [event],
+        }
+
+    def route_after_triage(state: EngineeringState) -> str | list[str]:
+        if state.get("terminal_status"):
+            return "terminal_reducer"
+        return ["diagnostics", "data_audit"]
+
+    def route_after_root_cause(state: EngineeringState) -> str:
+        if state.get("root_cause"):
+            return "engineer"
+        return "root_cause_blocked"
 
     def route_after_test(state: EngineeringState) -> str:
         if state.get("tests_passed"):
@@ -450,17 +540,6 @@ def build_engineering_graph(adapters: EngineeringAdapters, *, checkpointer: Any 
         if state.get("deployment_status") in {"DEPLOYED", "VERIFIED"}:
             return "production_qa"
         return "release_blocked"
-
-    def release_blocked(state: EngineeringState) -> dict[str, Any]:
-        detail = f"release did not reach deployed state: {state.get('deployment_status')!r}"
-        event = _trace(state, "RELEASE_OBSERVABILITY", "BLOCKED", detail)
-        _emit(adapters, event)
-        return {
-            "blocker": detail,
-            "smallest_remaining_action": "repair release/deployment failure and verify exact deployed SHA",
-            "terminal_status": "BLOCKED_WITH_EXACT_REASON",
-            "trace_events": [event],
-        }
 
     builder.add_node("intake", intake)
     builder.add_node("triage", triage)
@@ -490,17 +569,11 @@ def build_engineering_graph(adapters: EngineeringAdapters, *, checkpointer: Any 
             "data_audit": "data_audit",
         },
     )
-    # Triage fans out to two independent evidence lanes. LangGraph waits for
-    # both to finish before entering root-cause synthesis.
     builder.add_edge(["diagnostics", "data_audit"], "root_cause")
     builder.add_conditional_edges(
         "root_cause",
         route_after_root_cause,
-        {
-            "terminal_reducer": "terminal_reducer",
-            "engineer": "engineer",
-            "root_cause_blocked": "root_cause_blocked",
-        },
+        {"engineer": "engineer", "root_cause_blocked": "root_cause_blocked"},
     )
     builder.add_edge("root_cause_blocked", "terminal_reducer")
     builder.add_edge("engineer", "sandbox_test")
@@ -517,10 +590,7 @@ def build_engineering_graph(adapters: EngineeringAdapters, *, checkpointer: Any 
     builder.add_conditional_edges(
         "v17_governance",
         route_after_governance,
-        {
-            "terminal_reducer": "terminal_reducer",
-            "independent_review": "independent_review",
-        },
+        {"terminal_reducer": "terminal_reducer", "independent_review": "independent_review"},
     )
     builder.add_edge("independent_review", "governance_gate")
     builder.add_conditional_edges(
@@ -544,13 +614,22 @@ def build_engineering_graph(adapters: EngineeringAdapters, *, checkpointer: Any 
 
 
 def invoke_issue(graph: Any, issue: EngineeringState) -> EngineeringState:
-    """Invoke/resume one canonical issue using its issue_id as thread identity."""
+    """Start one canonical issue using its issue_id as durable thread identity."""
     issue_id = str(issue.get("issue_id", "")).strip()
     if not issue_id:
         raise ValueError("issue_id is required")
+    _assert_new_issue_boundary(issue)
     _assert_input_governance(issue)
     _assert_no_probability_payload(issue)
     return graph.invoke(issue, {"configurable": {"thread_id": issue_id}})
+
+
+def resume_issue(graph: Any, issue_id: str) -> EngineeringState:
+    """Resume a checkpointed issue without replaying completed upstream nodes."""
+    thread_id = str(issue_id).strip()
+    if not thread_id:
+        raise ValueError("issue_id is required")
+    return graph.invoke(None, {"configurable": {"thread_id": thread_id}})
 
 
 @contextmanager
@@ -558,20 +637,12 @@ def durable_postgres_control_plane(
     adapters: EngineeringAdapters,
     db_uri: str | None = None,
 ):
-    """Yield a production-durable graph backed by PostgreSQL checkpoints.
-
-    The connection string is read from ``WOW_ENGINEERING_CHECKPOINT_DB_URI`` if
-    not supplied. It is never logged or placed into graph state. ``setup()`` is
-    idempotent and runs the LangGraph checkpoint migrations.
-    """
+    """Yield a production-durable graph backed by PostgreSQL checkpoints."""
     uri = db_uri or os.getenv("WOW_ENGINEERING_CHECKPOINT_DB_URI")
     if not uri:
         raise RuntimeError(
             "WOW_ENGINEERING_CHECKPOINT_DB_URI is required for durable mode"
         )
-
-    # LangGraph recommends strict msgpack deserialization for persistent
-    # checkpointers. Preserve an explicit operator override if already set.
     os.environ.setdefault("LANGGRAPH_STRICT_MSGPACK", "true")
     from langgraph.checkpoint.postgres import PostgresSaver
 
