@@ -15,6 +15,7 @@ EventSink = Callable[[Mapping[str, Any]], None]
 FIXES_METRIC = "wow.engineering.fixes"
 WAKES_METRIC = "wow.engineering.queue.wakes"
 REPARKS_METRIC = "wow.engineering.queue.reparks"
+UNBLOCKS_METRIC = "wow.engineering.queue.unblocks"
 MAX_WAKE_ESCALATIONS_METRIC = "wow.engineering.queue.max_wake_escalations"
 RECORDED_COST_METRIC = "wow.engineering.recorded_cost.usd"
 TOOL_CALLS_METRIC = "wow.engineering.agent.tool_calls"
@@ -43,6 +44,7 @@ def efficiency_ratios(
     *,
     fixes: int,
     wakes: int,
+    unblocks: int,
     max_wake_escalations: int,
     recorded_cost_usd: float,
 ) -> dict[str, float | None]:
@@ -50,23 +52,29 @@ def efficiency_ratios(
 
     `recorded_cost_usd` must be actual provider/tool cost supplied by an adapter;
     this module never estimates cost from token counts or model names.
+
+    Max-wake escalation rate is intentionally scoped to parked-ticket terminal
+    outcomes (`unblocks + max_wake_escalations`), not all engineering fixes.
+    Otherwise fixes that never parked would make wake reliability look better
+    than it actually is.
     """
     for name, value in {
         "fixes": fixes,
         "wakes": wakes,
+        "unblocks": unblocks,
         "max_wake_escalations": max_wake_escalations,
         "recorded_cost_usd": recorded_cost_usd,
     }.items():
         if value < 0:
             raise ValueError(f"{name} may not be negative")
 
-    terminal_wake_outcomes = fixes + max_wake_escalations
+    terminal_parked_outcomes = unblocks + max_wake_escalations
     return {
         "cost_per_fix_usd": (recorded_cost_usd / fixes) if fixes else None,
         "wake_to_fix_ratio": (wakes / fixes) if fixes else None,
         "max_wake_escalation_rate": (
-            max_wake_escalations / terminal_wake_outcomes
-            if terminal_wake_outcomes
+            max_wake_escalations / terminal_parked_outcomes
+            if terminal_parked_outcomes
             else None
         ),
     }
@@ -89,6 +97,7 @@ def build_opentelemetry_agentic_telemetry(
     fixes = meter.create_counter(FIXES_METRIC, unit="{fix}")
     wakes = meter.create_counter(WAKES_METRIC, unit="{wake}")
     reparks = meter.create_counter(REPARKS_METRIC, unit="{repark}")
+    unblocks = meter.create_counter(UNBLOCKS_METRIC, unit="{unblock}")
     max_wake_escalations = meter.create_counter(
         MAX_WAKE_ESCALATIONS_METRIC, unit="{escalation}"
     )
@@ -123,6 +132,8 @@ def build_opentelemetry_agentic_telemetry(
             wakes.add(1, attributes=attributes)
         elif event_name == "QUEUE_REPARKED":
             reparks.add(1, attributes=attributes)
+        elif event_name == "QUEUE_UNBLOCKED":
+            unblocks.add(1, attributes=attributes)
         elif event_name == "QUEUE_MAX_WAKE_ESCALATED":
             max_wake_escalations.add(1, attributes=attributes)
 
