@@ -92,6 +92,48 @@ The graph does not replace the sporting terminal reducer. Its terminal labels ar
 - **Class B:** defaults to `PR_CREATED`; production promotion is never inferred.
 - **Class C:** always exits the control plane as `EXPERIMENT_CREATED`. The graph never routes Class C directly to production release.
 
+## Ticket parking and TTL wake-ups
+
+Engineering-ticket parking is a Class B outer-orchestration concern. It uses the existing `public.wow_engineering_backlog` table but keeps its execution state in a separate `queue_status` column so the established lifecycle values in `status` (`OPEN`, `IN_PROGRESS`, `BLOCKED`, `CLOSED`) remain compatible with existing auditor/reporting code.
+
+The execution states are:
+
+- `ACTIONABLE`
+- `IN_PROGRESS`
+- `PARKED`
+- `COMPLETED`
+- `FAILED`
+
+A parked row carries `parked_reason`, `parked_context`, `parked_until`, and `wake_count`. The current TTL policy is:
+
+| parked reason | base TTL |
+|---|---:|
+| `api_rate_limit` | 15 minutes |
+| `upstream_dependency` | 1 hour |
+| `awaiting_pr_review` | 4 hours |
+| unknown reason | 1 hour |
+
+The multiplier is `min(wake_count + 1, 6)`. `awaiting_pr_review`, for example, sleeps 4h, 8h, 12h, 16h, 20h, then 24h. At six wakes the row fails closed as `BLOCKED_WITH_EXACT_REASON` and requires V17 governance/human intervention rather than cycling forever.
+
+Wake-up does **not** require cron and there is no process that flips `PARKED` back to `ACTIONABLE`. The orchestrator's normal polling operation calls `wow_claim_engineering_tickets`, which selects either an actionable row or a parked row whose `parked_until <= CURRENT_TIMESTAMP` and atomically claims it with `FOR UPDATE SKIP LOCKED`.
+
+The claim RPC also writes `queue_status=IN_PROGRESS`, `claim_owner`, and `claimed_at` before its transaction releases row locks. This is stricter than returning a locked row from a short RPC transaction: a returned database row lock disappears at transaction end, while persisted claim ownership prevents a second orchestrator from acquiring the same ticket during the external API checks that follow.
+
+Terminal engineering tickets are excluded even if legacy lifecycle data is inconsistent. Legacy `BLOCKED` rows without a typed parking reason are also not automatically woken; they backfill to queue `FAILED` rather than manufacturing a retry policy.
+
+When a claimed row was previously parked, blocker re-evaluation is mandatory before graph execution:
+
+1. `BLOCKED`: park it again immediately and increment `wake_count`; the next TTL uses the larger multiplier.
+2. `CLEARED`: clear parking metadata and reset `wake_count` to zero.
+3. `FAILED`: close the queue item as `BLOCKED_WITH_EXACT_REASON` with escalation evidence.
+4. Provider/transport failure during the check: re-park the ticket with the original typed blocker and record the check error type in parking context; do not strand the claim or translate the failure into a sporting `MODEL_UNAVAILABLE` state.
+
+A cleared ticket deliberately remains `IN_PROGRESS` under the existing atomic claim while it is handed to LangGraph. Setting it to `ACTIONABLE` and then executing would reopen the exact multi-worker claim race that the queue is designed to prevent.
+
+For `awaiting_pr_review`, the queue adapter stores the provider reference in `parked_context.pr_id`. `APPROVED` by itself remains blocked; `MERGED` clears the blocker. `CHANGES_REQUESTED` also clears the waiting state so the engineering graph can resume remediation. The Git provider adapter is injected and credentials/API payloads never enter queue state.
+
+The intended orchestrator cadence is hourly. That cadence is owned by the orchestrator runtime, not by a database cron, Celery beat schedule, or separate wake-up worker.
+
 ## Tracing
 
 Every node emits a structured trace event containing:
@@ -119,13 +161,14 @@ These are capture/test fixtures only. They are never sporting recommendations or
 
 ## Activation gate
 
-This PR is Class B. Merge/deploy is governed. Repository acceptance requires:
+This implementation is Class B. Merge/deploy is governed. Repository acceptance requires:
 
 1. LangGraph and Postgres-checkpoint dependencies installed.
-2. Control-plane tests green.
+2. Control-plane and TTL queue tests green.
 3. Existing DOTS/V17 orchestrator contract tests remain green.
-4. Independent review confirms no probability behavior changed.
-5. Production checkpoint database role/URI configured through secret management.
-6. Exact deployed SHA verified after any approved deployment.
+4. The queue migration is transactionally validated against the governed Supabase schema before production apply.
+5. Independent review confirms no probability behavior changed.
+6. Production checkpoint database role/URI configured through secret management.
+7. Exact deployed SHA verified after any approved deployment.
 
 Until those gates are satisfied, terminal status for this implementation is `PR_CREATED`, not `FIXED_AND_VERIFIED`.

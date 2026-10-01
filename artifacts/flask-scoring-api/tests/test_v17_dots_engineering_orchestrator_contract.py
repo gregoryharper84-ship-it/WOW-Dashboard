@@ -168,3 +168,28 @@ def test_dots_receipt_contract_preserves_required_operating_evidence() -> None:
     assert "TERMINAL_AUTHORITY=V17_TERMINAL_REDUCER" in receipt
     assert "DOTS_PROBABILITY_AUTHORITY=NONE" in receipt
     assert "DOTS_WAGER_EXECUTION_AUTHORITY=NONE" in receipt
+
+
+def test_dots_ticket_queue_uses_polling_ttl_wakes_without_probability_authority() -> None:
+    contract = _contract()
+    queue = contract["ticket_queue"]
+    assert queue["change_class"] == "B"
+    assert queue["table"] == "public.wow_engineering_backlog"
+    assert queue["states"] == ["ACTIONABLE", "IN_PROGRESS", "PARKED", "COMPLETED", "FAILED"]
+    assert queue["claim_rpc"] == "wow_claim_engineering_tickets"
+    assert queue["wake_up_mode"] == "ORCHESTRATOR_POLL_QUERY"
+    assert queue["intended_poll_interval_seconds"] == 3600
+    assert queue["external_cron_required"] is False
+    assert queue["atomic_claim_required"] is True
+    assert queue["row_locking"] == "FOR_UPDATE_SKIP_LOCKED"
+    assert queue["blocker_recheck_before_execution"] is True
+    assert queue["cleared_blocker_retains_in_progress_claim"] is True
+    assert queue["max_wakes"] == 6
+    assert queue["ttl_seconds"] == {
+        "api_rate_limit": 900,
+        "upstream_dependency": 3600,
+        "awaiting_pr_review": 14400,
+    }
+    assert queue["max_wake_terminal"] == "BLOCKED_WITH_EXACT_REASON"
+    assert queue["probability_authority"] == "NONE"
+    assert queue["can_execute"] is False
