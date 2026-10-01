@@ -74,6 +74,74 @@ def test_posthog_observability_enables_safe_exception_autocapture(monkeypatch):
     ]
 
 
+def test_posthog_incident_capture_uses_allowlisted_failure_fingerprint(monkeypatch):
+    class FakePosthog:
+        instances = []
+
+        def __init__(self, **kwargs):
+            self.captures = []
+            type(self).instances.append(self)
+
+        def capture(self, event, **kwargs):
+            self.captures.append((event, kwargs))
+            return "event-id"
+
+    monkeypatch.setenv("POSTHOG_PROJECT_API_KEY", "test-project-token")
+    monkeypatch.setenv("WOW_ENVIRONMENT", "test")
+    monkeypatch.setenv("WOW_RELEASE_SHA", "deadbeef")
+    monkeypatch.setitem(sys.modules, "posthog", SimpleNamespace(Posthog=FakePosthog))
+    module = _reload_module()
+    module.initialize_posthog_observability()
+
+    result = module.capture_wow_engineering_incident(
+        route="/score-team-event",
+        sport="NFL",
+        market_family="OUTRIGHT_WINNER",
+        scorer_stage="MODEL_INVOKE",
+        terminal_code="NFL_FITTED_SCORER_FAILED",
+        exception_type="RemoteProtocolError",
+        exception_message="authorization=Bearer super-secret-value",
+        specialist="wow.nfl-game-win-probability-expert",
+        model_version="NFL_EVENT_PREGAME_PRIOR_V1",
+        artifact_id="artifact-123",
+        run_id="run-123",
+        deploy_id="dep-123",
+        source_provider="NFLVERSE",
+    )
+
+    assert result["status"] == "CAPTURED"
+    assert result["can_execute"] is False
+    client = FakePosthog.instances[-1]
+    event, payload = client.captures[-1]
+    assert event == "wow engineering incident"
+    properties = payload["properties"]
+    assert properties["wow_failure_fingerprint"] == result["fingerprint"]
+    assert properties["sport"] == "NFL"
+    assert properties["scorer_stage"] == "MODEL_INVOKE"
+    assert properties["terminal_code"] == "NFL_FITTED_SCORER_FAILED"
+    assert properties["terminal_authority"] == "V17_TERMINAL_REDUCER"
+    assert properties["can_execute"] is False
+    assert "exception_message" not in properties
+    assert "super-secret-value" not in repr(properties)
+
+
+def test_posthog_incident_capture_is_inert_when_telemetry_disabled(monkeypatch):
+    monkeypatch.delenv("POSTHOG_PROJECT_API_KEY", raising=False)
+    module = _reload_module()
+
+    result = module.capture_wow_engineering_incident(
+        route="/score-team-event",
+        sport="WNBA",
+        market_family="SPREAD",
+        scorer_stage="DISCOVERY",
+        terminal_code="WNBA_SPREAD_CANARY_IDENTITY_SOURCE_UNAVAILABLE",
+    )
+
+    assert result["status"] == "NOT_CAPTURED_TELEMETRY_DISABLED"
+    assert result["fingerprint"]
+    assert result["can_execute"] is False
+
+
 def test_posthog_observability_initializes_once_per_process(monkeypatch):
     class FakePosthog:
         instances = []
