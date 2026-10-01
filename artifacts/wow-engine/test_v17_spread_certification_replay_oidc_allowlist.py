@@ -13,29 +13,30 @@ def _claims(**overrides):
         "ref": oidc.REF,
         "runner_environment": "github-hosted",
         "workflow_ref": oidc.SPREAD_CERTIFICATION_REPLAY_WORKFLOW_REF,
-        "event_name": "workflow_run",
+        "event_name": "workflow_call",
     }
     claims.update(overrides)
     return claims
 
 
-def test_spread_certification_replay_workflow_run_is_explicitly_authorized():
-    claims = _claims()
+@pytest.mark.parametrize("event_name", ["workflow_call", "workflow_dispatch"])
+def test_spread_certification_replay_current_events_are_explicitly_authorized(event_name: str):
+    claims = _claims(event_name=event_name)
     assert oidc.SPREAD_CERTIFICATION_REPLAY_WORKFLOW_REF in oidc.LIVE_CANARY_WORKFLOW_REFS
     assert oidc.SPREAD_CERTIFICATION_REPLAY_WORKFLOW_REF not in oidc.ALLOWED_WORKFLOW_REFS
     assert oidc.validate_github_actions_claims(claims) == claims
 
 
-@pytest.mark.parametrize("event_name", ["push", "schedule", "workflow_dispatch", "pull_request"])
+@pytest.mark.parametrize("event_name", ["push", "schedule", "workflow_run", "pull_request"])
 def test_spread_certification_replay_rejects_other_events(event_name):
     with pytest.raises(oidc.GitHubOIDCValidationError, match="GITHUB_OIDC_EVENT_NOT_ALLOWED"):
         oidc.validate_github_actions_claims(_claims(event_name=event_name))
 
 
-def test_workflow_run_authority_is_not_broadened_to_long_lived_spread_replay():
+def test_workflow_call_authority_is_not_broadened_to_long_lived_spread_replay():
     with pytest.raises(oidc.GitHubOIDCValidationError, match="GITHUB_OIDC_EVENT_NOT_ALLOWED"):
         oidc.validate_github_actions_claims(
-            _claims(workflow_ref=oidc.SPREAD_MARGIN_REPLAY_WORKFLOW_REF, event_name="workflow_run")
+            _claims(workflow_ref=oidc.SPREAD_MARGIN_REPLAY_WORKFLOW_REF, event_name="workflow_call")
         )
 
 
