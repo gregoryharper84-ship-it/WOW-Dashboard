@@ -1,0 +1,109 @@
+name: one-shot-1150-wow-action-contract
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/one-shot-1150-wow-action-contract.yml
+
+permissions:
+  contents: write
+
+jobs:
+  generate-reviewed-branch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Generate exact #1150 contract delta
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          root = Path('.')
+          schema_path = root / 'artifacts/wow-engine/v17/openapi.wow-betting-engine.v17.yaml'
+          schema = schema_path.read_text(encoding='utf-8')
+          assert 'operationId: scoreWowV17NFLSpreadForwardShadow' not in schema
+          assert 'operationId: scoreWowV17MLBRunLineForwardShadow' not in schema
+
+          route_marker = '  /v17/prediction-receipts/lookup:\n'
+          assert schema.count(route_marker) == 1
+          route_insert = '''  /internal/v17/nfl-spread-forward-shadow:\n    post:\n      operationId: scoreWowV17NFLSpreadForwardShadow\n      x-openai-isConsequential: false\n      description: >-\n        Research-only NFL exact-line spread forward shadow using the existing fitted\n        margin distribution. Does not certify, promote, publish, rank, or execute.\n      security: [{actionBearer: []}]\n      requestBody:\n        required: true\n        content:\n          application/json:\n            schema: {$ref: '#/components/schemas/NFLSpreadForwardShadowRequest'}\n      responses:\n        '200': {description: Research-only NFL fitted spread shadow result or typed blocker}\n        '401': {description: Authentication failed}\n        '422': {description: Invalid NFL exact-line shadow request}\n  /internal/v17/mlb-run-line-forward-shadow:\n    post:\n      operationId: scoreWowV17MLBRunLineForwardShadow\n      x-openai-isConsequential: false\n      description: >-\n        Research-only MLB exact run-line forward shadow using the existing immutable\n        pregame score snapshot path and fitted margin distribution. Does not certify,\n        promote, publish, rank, or execute.\n      security: [{actionBearer: []}]\n      requestBody:\n        required: true\n        content:\n          application/json:\n            schema: {$ref: '#/components/schemas/MLBRunLineForwardShadowRequest'}\n      responses:\n        '200': {description: Research-only MLB fitted run-line shadow result or typed blocker}\n        '401': {description: Authentication failed}\n        '422': {description: Invalid MLB exact run-line shadow request}\n'''
+          schema = schema.replace(route_marker, route_insert + route_marker, 1)
+
+          schema_marker = '    RecommendationBatch:\n'
+          assert schema.count(schema_marker) == 1
+          schema_insert = '''    NFLSpreadForwardShadowRequest:\n      type: object\n      additionalProperties: false\n      required: [sport, event_id, event_start_time, home_team, away_team, home_spread]\n      properties:\n        sport: {type: string, enum: [NFL]}\n        event_id: {type: string, minLength: 1, maxLength: 128}\n        event_start_time: {type: string, format: date-time}\n        home_team: {type: string, minLength: 1, maxLength: 160}\n        away_team: {type: string, minLength: 1, maxLength: 160}\n        home_spread: {type: number, exclusiveMinimum: -30, exclusiveMaximum: 30}\n    MLBRunLineForwardShadowRequest:\n      type: object\n      additionalProperties: false\n      required: [sport, score_snapshot_id, home_run_line]\n      properties:\n        sport: {type: string, enum: [MLB]}\n        score_snapshot_id: {type: string, minLength: 1, maxLength: 128}\n        home_run_line: {type: number, exclusiveMinimum: -10, exclusiveMaximum: 10}\n'''
+          schema = schema.replace(schema_marker, schema_insert + schema_marker, 1)
+          schema_path.write_text(schema, encoding='utf-8')
+
+          sync_path = root / 'artifacts/wow-engine/v17/build_gpt_editor_sync_packet.py'
+          sync = sync_path.read_text(encoding='utf-8')
+          assert 'REQUIRED_OPERATION_COUNT = 24' in sync
+          sync = sync.replace('REQUIRED_OPERATION_COUNT = 24', 'REQUIRED_OPERATION_COUNT = 26', 1)
+          old_ops = '    "scoreWowV17SpreadForwardShadow",\n    "submitWowV17NFLPickemBoard",'
+          assert old_ops in sync
+          sync = sync.replace(old_ops, '    "scoreWowV17SpreadForwardShadow",\n    "scoreWowV17NFLSpreadForwardShadow",\n    "scoreWowV17MLBRunLineForwardShadow",\n    "submitWowV17NFLPickemBoard",', 1)
+          sync = sync.replace('IMPORT_SINGLE_CANONICAL_ACTION_SCHEMA_WITH_24_OPERATIONS', 'IMPORT_SINGLE_CANONICAL_ACTION_SCHEMA_WITH_26_OPERATIONS', 1)
+          needle = '            "FRESH_CHAT_SCORE_WOW_V17_SPREAD_FORWARD_SHADOW",\n'
+          assert needle in sync
+          sync = sync.replace(needle, needle + '            "FRESH_CHAT_SCORE_WOW_V17_NFL_SPREAD_FORWARD_SHADOW",\n            "FRESH_CHAT_SCORE_WOW_V17_MLB_RUN_LINE_FORWARD_SHADOW",\n', 1)
+          sync_path.write_text(sync, encoding='utf-8')
+
+          daily_path = root / 'artifacts/wow-engine/v17/test_v17_daily_async_action_contract.py'
+          daily = daily_path.read_text(encoding='utf-8')
+          assert 'assert text.count("operationId:") == 24' in daily
+          daily = daily.replace('assert text.count("operationId:") == 24', 'assert text.count("operationId:") == 26', 1)
+          daily_path.write_text(daily, encoding='utf-8')
+
+          packet_path = root / 'artifacts/wow-engine/v17/test_gpt_editor_sync_packet.py'
+          packet = packet_path.read_text(encoding='utf-8')
+          packet = packet.replace('module.REQUIRED_OPERATION_COUNT == 24', 'module.REQUIRED_OPERATION_COUNT == 26', 1)
+          packet = packet.replace('manifest["action_operation_count"] == 24', 'manifest["action_operation_count"] == 26', 1)
+          packet = packet.replace('IMPORT_SINGLE_CANONICAL_ACTION_SCHEMA_WITH_24_OPERATIONS', 'IMPORT_SINGLE_CANONICAL_ACTION_SCHEMA_WITH_26_OPERATIONS', 1)
+          acceptance = '    assert "FRESH_CHAT_SCORE_WOW_V17_SPREAD_FORWARD_SHADOW" in manifest["acceptance_required"]\n'
+          assert acceptance in packet
+          packet = packet.replace(acceptance, acceptance + '    assert "FRESH_CHAT_SCORE_WOW_V17_NFL_SPREAD_FORWARD_SHADOW" in manifest["acceptance_required"]\n    assert "FRESH_CHAT_SCORE_WOW_V17_MLB_RUN_LINE_FORWARD_SHADOW" in manifest["acceptance_required"]\n', 1)
+          packet += '''\n\ndef test_wow_action_exposes_existing_nfl_spread_and_mlb_run_line_without_promotion():\n    schema_text = SCHEMA.read_text(encoding="utf-8")\n    assert "operationId: scoreWowV17NFLSpreadForwardShadow" in schema_text\n    assert "schema: {$ref: '#/components/schemas/NFLSpreadForwardShadowRequest'}" in schema_text\n    assert "operationId: scoreWowV17MLBRunLineForwardShadow" in schema_text\n    assert "schema: {$ref: '#/components/schemas/MLBRunLineForwardShadowRequest'}" in schema_text\n    assert "sport: {type: string, enum: [NFL]}" in schema_text\n    assert "sport: {type: string, enum: [MLB]}" in schema_text\n'''
+          packet_path.write_text(packet, encoding='utf-8')
+
+          live_path = root / 'artifacts/wow-engine/tests/test_v17_live_editor_compat.py'
+          live = live_path.read_text(encoding='utf-8')
+          assert 'def test_live_editor_schema_is_single_domain_and_exposes_all_24_operations():' in live
+          live = live.replace('def test_live_editor_schema_is_single_domain_and_exposes_all_24_operations():', 'def test_live_editor_schema_is_single_domain_and_exposes_all_26_operations():', 1)
+          live = live.replace('assert len(operations) == 24', 'assert len(operations) == 26', 1)
+          marker = '        "scoreWowV17SpreadForwardShadow",\n'
+          assert marker in live
+          live = live.replace(marker, marker + '        "scoreWowV17NFLSpreadForwardShadow",\n        "scoreWowV17MLBRunLineForwardShadow",\n', 1)
+          live_path.write_text(live, encoding='utf-8')
+          PY
+      - name: Run focused Action/editor contract regressions
+        shell: bash
+        run: |
+          python -m pip install -q pyyaml pytest
+          pytest -q \
+            artifacts/wow-engine/v17/test_gpt_editor_sync_packet.py \
+            artifacts/wow-engine/v17/test_v17_daily_async_action_contract.py \
+            artifacts/wow-engine/tests/test_v17_live_editor_compat.py
+      - name: Create generated product branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git switch -c engineering/wow-action-spread-exposure-1150-generated
+          git rm .github/workflows/one-shot-1150-wow-action-contract.yml
+          git add \
+            artifacts/wow-engine/v17/openapi.wow-betting-engine.v17.yaml \
+            artifacts/wow-engine/v17/build_gpt_editor_sync_packet.py \
+            artifacts/wow-engine/v17/test_gpt_editor_sync_packet.py \
+            artifacts/wow-engine/v17/test_v17_daily_async_action_contract.py \
+            artifacts/wow-engine/tests/test_v17_live_editor_compat.py
+          git commit -m 'V17: expose NFL spread and MLB run-line WOW Actions (#1150)'
+          git push --force-with-lease origin HEAD:engineering/wow-action-spread-exposure-1150-generated
