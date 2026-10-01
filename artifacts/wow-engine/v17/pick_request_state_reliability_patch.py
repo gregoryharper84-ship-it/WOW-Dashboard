@@ -107,11 +107,15 @@ def _isolate_exact_identity_conflicts(
         source_rows,
     )
     audit = probe.get("exact_board_identity_reconciliation") or {}
-    mismatches = [dict(item) for item in (audit.get("mismatches") or []) if isinstance(item, dict)]
+    mismatches = [
+        dict(item)
+        for item in (audit.get("mismatches") or [])
+        if isinstance(item, dict)
+    ]
     if not mismatches:
         return outcomes, []
     by_key = {str(item.get("row_key") or ""): item for item in mismatches}
-    isolated = []
+    isolated: list[dict[str, Any]] = []
     for outcome in outcomes:
         mismatch = by_key.get(str(outcome.get("row_key") or ""))
         isolated.append(_identity_conflict_outcome(outcome, mismatch) if mismatch else outcome)
@@ -122,9 +126,17 @@ def _durable_status_without_false_publication(record: dict[str, Any]) -> str:
     seq = int(record.get("stage_seq") or 0)
     if record.get("model_evaluated") is True and seq < state.STAGE_SEQ["RECEIPT_PERSISTED"]:
         return "MODEL_COMPUTED_RESEARCH_ONLY"
-    if record.get("model_evaluated") is True and seq >= state.STAGE_SEQ["RECEIPT_PERSISTED"] and record.get("probability_publishable") is not True:
+    if (
+        record.get("model_evaluated") is True
+        and seq >= state.STAGE_SEQ["RECEIPT_PERSISTED"]
+        and record.get("probability_publishable") is not True
+    ):
         return "SPORTING_MODEL_COMPLETE_PUBLICATION_PENDING"
-    if seq >= state.STAGE_SEQ["PUBLICATION_AUTHORIZED"] and record.get("terminal_status") == "COMPLETED" and record.get("probability_publishable") is True:
+    if (
+        seq >= state.STAGE_SEQ["PUBLICATION_AUTHORIZED"]
+        and record.get("terminal_status") == "COMPLETED"
+        and record.get("probability_publishable") is True
+    ):
         return "GOVERNED_PUBLICATION_AUTHORIZED"
     status = str(record.get("terminal_status") or "PENDING")
     code = str(record.get("terminal_code") or "")
@@ -142,10 +154,32 @@ def install_pick_request_state_reliability_patch() -> bool:
     def begin_with_manifest_sync(self: Any, batch: Any) -> Any:
         ctx = original_begin(self, batch)
         rows = self._load_all(ctx.run_id)
-        state._exec(self.db.table(state.RUN_TABLE).upsert({"run_id": ctx.run_id, "request_id": ctx.request_id, "source_kind": "PROP_BOARD", "run_status": "RUNNING", **_manifest_counts(rows), "resumed_rows": len(ctx.resumed_rows), "can_execute": False, "updated_at": state._now()}, on_conflict="run_id"), operation="SYNC_RUN_MANIFEST_AFTER_BEGIN")
+        state._exec(
+            self.db.table(state.RUN_TABLE).upsert(
+                {
+                    "run_id": ctx.run_id,
+                    "request_id": ctx.request_id,
+                    "source_kind": "PROP_BOARD",
+                    "run_status": "RUNNING",
+                    **_manifest_counts(rows),
+                    "resumed_rows": len(ctx.resumed_rows),
+                    "can_execute": False,
+                    "updated_at": state._now(),
+                },
+                on_conflict="run_id",
+            ),
+            operation="SYNC_RUN_MANIFEST_AFTER_BEGIN",
+        )
         return ctx
 
-    def advance_with_receipt_guard(self: Any, ctx: Any, row_key: str, stage: str, *, metadata: dict[str, Any] | None = None) -> None:
+    def advance_with_receipt_guard(
+        self: Any,
+        ctx: Any,
+        row_key: str,
+        stage: str,
+        *,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
         record = ctx.rows.get(row_key) if hasattr(ctx, "rows") else None
         if isinstance(record, dict) and not _receipt_stage_allowed(record, stage):
             return
@@ -164,11 +198,31 @@ def install_pick_request_state_reliability_patch() -> bool:
                 continue
             detail = replacement.get("detail") if isinstance(replacement.get("detail"), dict) else {}
             receipt_reference_count += int(bool(detail.get("original_prediction_id")))
-            record.update({"outcome": deepcopy(replacement), "terminal_status": "HELD", "terminal_code": IDENTITY_CONFLICT_TERMINAL, "model_evaluated": False, "probability_publishable": False, "rank_eligible": False, "prediction_id": None, "current_stage": "INGESTED", "stage_seq": state.STAGE_SEQ["INGESTED"]})
+            record.update(
+                {
+                    "outcome": deepcopy(replacement),
+                    "terminal_status": "HELD",
+                    "terminal_code": IDENTITY_CONFLICT_TERMINAL,
+                    "model_evaluated": False,
+                    "probability_publishable": False,
+                    "rank_eligible": False,
+                    "prediction_id": None,
+                    "current_stage": "INGESTED",
+                    "stage_seq": state.STAGE_SEQ["INGESTED"],
+                }
+            )
         adjusted_inner = dict(inner or {})
         adjusted_inner["rows"] = isolated
         response, final_outcomes = original_merged_response(ctx, adjusted_inner)
-        response["row_identity_isolation"] = {"status": "APPLIED", "terminal_code": IDENTITY_CONFLICT_TERMINAL, "row_keys": sorted(str(item.get("row_key") or "") for item in mismatches), "mismatch_count": len(mismatches), "scorer_receipt_audit_reference_count": receipt_reference_count, "source_row_receipt_association_preserved": False, "can_execute": False}
+        response["row_identity_isolation"] = {
+            "status": "APPLIED",
+            "terminal_code": IDENTITY_CONFLICT_TERMINAL,
+            "row_keys": sorted(str(item.get("row_key") or "") for item in mismatches),
+            "mismatch_count": len(mismatches),
+            "scorer_receipt_audit_reference_count": receipt_reference_count,
+            "source_row_receipt_association_preserved": False,
+            "can_execute": False,
+        }
         response["can_execute"] = False
         return response, final_outcomes
 
@@ -180,4 +234,13 @@ def install_pick_request_state_reliability_patch() -> bool:
     return True
 
 
-__all__ = ["CAN_EXECUTE", "IDENTITY_CONFLICT_TERMINAL", "_durable_status_without_false_publication", "_identity_conflict_outcome", "_isolate_exact_identity_conflicts", "_manifest_counts", "_receipt_stage_allowed", "install_pick_request_state_reliability_patch"]
+__all__ = [
+    "CAN_EXECUTE",
+    "IDENTITY_CONFLICT_TERMINAL",
+    "_durable_status_without_false_publication",
+    "_identity_conflict_outcome",
+    "_isolate_exact_identity_conflicts",
+    "_manifest_counts",
+    "_receipt_stage_allowed",
+    "install_pick_request_state_reliability_patch",
+]
