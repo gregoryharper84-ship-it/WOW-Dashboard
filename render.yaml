@@ -159,6 +159,14 @@ services:
         value: "30"
       - key: WOW_ENGINEERING_AUDITOR_GITHUB_INTERVAL_SECONDS
         value: "300"
+      - key: WOW_ENGINEERING_LANGGRAPH_ENABLED
+        # LangGraph remains fail-closed until a governed checkpoint backend and
+        # production worker adapters have been explicitly reviewed and promoted.
+        value: "0"
+      - key: WOW_ENGINEERING_CHECKPOINT_DB_URI
+        sync: false
+      - key: LANGGRAPH_STRICT_MSGPACK
+        value: "true"
       - key: WOW_CAN_EXECUTE
         value: "false"
       - key: WOW_DRY_RUN_ONLY
