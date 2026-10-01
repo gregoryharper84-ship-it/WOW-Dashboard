@@ -42,15 +42,22 @@ def test_prop_evidence_trust_set_contains_only_the_four_expected_workflows():
     })
 
 
-def test_priority_prop_lifecycle_workflow_run_is_authorized_after_exact_deploy():
-    claims = _claims(oidc.PRIORITY_PROP_LIFECYCLE_WORKFLOW_REF, "workflow_run")
-    assert oidc.validate_github_actions_claims(claims)["event_name"] == "workflow_run"
+def test_priority_prop_lifecycle_workflow_call_is_authorized_for_reuse():
+    claims = _claims(oidc.PRIORITY_PROP_LIFECYCLE_WORKFLOW_REF, "workflow_call")
+    assert oidc.validate_github_actions_claims(claims)["event_name"] == "workflow_call"
 
 
 @pytest.mark.parametrize("event_name", ["push", "schedule", "workflow_dispatch"])
 def test_priority_prop_lifecycle_existing_non_pr_events_remain_authorized(event_name: str):
     claims = _claims(oidc.PRIORITY_PROP_LIFECYCLE_WORKFLOW_REF, event_name)
     assert oidc.validate_github_actions_claims(claims)["event_name"] == event_name
+
+
+def test_priority_prop_lifecycle_legacy_workflow_run_is_not_authorized():
+    with pytest.raises(oidc.GitHubOIDCValidationError, match="EVENT_NOT_ALLOWED"):
+        oidc.validate_github_actions_claims(
+            _claims(oidc.PRIORITY_PROP_LIFECYCLE_WORKFLOW_REF, "workflow_run")
+        )
 
 
 @pytest.mark.parametrize(
@@ -67,14 +74,14 @@ def test_prop_evidence_workflows_never_accept_pull_request_tokens(workflow_ref: 
         oidc.validate_github_actions_claims(_claims(workflow_ref, "pull_request"))
 
 
-def test_other_prop_evidence_workflows_do_not_gain_workflow_run_authority():
+def test_other_prop_evidence_workflows_do_not_gain_workflow_call_authority():
     for workflow_ref in (
         oidc.NFL_PROP_FORWARD_EVIDENCE_WORKFLOW_REF,
         oidc.MLB_PROP_FORWARD_EVIDENCE_WORKFLOW_REF,
         oidc.WNBA_PROP_FORWARD_EVIDENCE_WORKFLOW_REF,
     ):
         with pytest.raises(oidc.GitHubOIDCValidationError, match="EVENT_NOT_ALLOWED"):
-            oidc.validate_github_actions_claims(_claims(workflow_ref, "workflow_run"))
+            oidc.validate_github_actions_claims(_claims(workflow_ref, "workflow_call"))
 
 
 def test_unlisted_prop_workflow_still_fails_closed():
