@@ -29,7 +29,13 @@ _ALLOWED_TABLES = frozenset(
         "wow_engineering_auditor_runtime",
     }
 )
-_ALLOWED_OPERATIONS = frozenset({"select", "insert", "upsert", "update"})
+_ALLOWED_OPERATIONS_BY_TABLE = {
+    "wow_agent_audit_events": frozenset({"select", "insert"}),
+    "wow_engineering_audit_work_items": frozenset({"select", "insert", "upsert", "update"}),
+    "wow_engineering_audit_findings": frozenset({"select", "insert", "upsert", "update"}),
+    "wow_engineering_backlog": frozenset({"select", "insert", "upsert", "update"}),
+    "wow_engineering_auditor_runtime": frozenset({"select", "insert", "upsert", "update"}),
+}
 _ALLOWED_FILTERS = frozenset({"eq", "lte"})
 _IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _FORBIDDEN_FIELDS = frozenset(
@@ -114,6 +120,44 @@ def _require_bridge_token(provided: str | None) -> None:
         raise HTTPException(status_code=401, detail={"code": "ENGINEERING_AUDIT_BRIDGE_UNAUTHORIZED"})
 
 
+def _validate_governed_payload(req: EngineeringAuditBridgeRequest, payload: dict[str, Any]) -> None:
+    operation = req.operation.lower()
+    if req.table == "wow_agent_audit_events":
+        if payload.get("can_execute") is not False:
+            raise HTTPException(status_code=400, detail={"code": "ENGINEERING_AUDIT_CAN_EXECUTE_MUST_BE_FALSE"})
+        return
+
+    if req.table in {
+        "wow_engineering_audit_work_items",
+        "wow_engineering_audit_findings",
+        "wow_engineering_auditor_runtime",
+    }:
+        if operation in {"insert", "upsert"}:
+            if payload.get("can_execute") is not False:
+                raise HTTPException(status_code=400, detail={"code": "ENGINEERING_AUDIT_CAN_EXECUTE_MUST_BE_FALSE"})
+            if payload.get("terminal_authority") != TERMINAL_AUTHORITY:
+                raise HTTPException(status_code=400, detail={"code": "ENGINEERING_AUDIT_TERMINAL_AUTHORITY_MISMATCH"})
+        else:
+            if "can_execute" in payload and payload["can_execute"] is not False:
+                raise HTTPException(status_code=400, detail={"code": "ENGINEERING_AUDIT_CAN_EXECUTE_MUST_BE_FALSE"})
+            if "terminal_authority" in payload and payload["terminal_authority"] != TERMINAL_AUTHORITY:
+                raise HTTPException(status_code=400, detail={"code": "ENGINEERING_AUDIT_TERMINAL_AUTHORITY_MISMATCH"})
+        return
+
+    if req.table == "wow_engineering_backlog":
+        if operation in {"insert", "upsert"}:
+            if payload.get("source") != "ENGINEERING_AUDITOR" or not str(payload.get("ticket_id") or "").startswith("AUDIT-"):
+                raise HTTPException(status_code=403, detail={"code": "ENGINEERING_AUDIT_BACKLOG_WRITE_FORBIDDEN"})
+        else:
+            ticket_filters = [
+                item
+                for item in req.filters
+                if item.operator.lower() == "eq" and item.column == "ticket_id"
+            ]
+            if len(ticket_filters) != 1 or not str(ticket_filters[0].value or "").startswith("AUDIT-"):
+                raise HTTPException(status_code=403, detail={"code": "ENGINEERING_AUDIT_BACKLOG_UPDATE_FORBIDDEN"})
+
+
 def _validate_request(req: EngineeringAuditBridgeRequest) -> None:
     if req.can_execute is not False or req.terminal_authority != TERMINAL_AUTHORITY:
         raise HTTPException(status_code=400, detail={"code": "ENGINEERING_AUDIT_GOVERNANCE_BOUNDARY_REJECTED"})
@@ -121,7 +165,7 @@ def _validate_request(req: EngineeringAuditBridgeRequest) -> None:
         raise HTTPException(status_code=403, detail={"code": "ENGINEERING_AUDIT_TABLE_FORBIDDEN"})
 
     operation = req.operation.lower()
-    if operation not in _ALLOWED_OPERATIONS:
+    if operation not in _ALLOWED_OPERATIONS_BY_TABLE[req.table]:
         raise HTTPException(status_code=403, detail={"code": "ENGINEERING_AUDIT_OPERATION_FORBIDDEN"})
     _validate_columns(req.columns)
 
@@ -144,31 +188,7 @@ def _validate_request(req: EngineeringAuditBridgeRequest) -> None:
                 status_code=400,
                 detail={"code": "ENGINEERING_AUDIT_PROBABILITY_BOUNDARY_VIOLATION", "path": forbidden},
             )
-
-        if req.table == "wow_agent_audit_events":
-            if payload.get("can_execute") is not False:
-                raise HTTPException(status_code=400, detail={"code": "ENGINEERING_AUDIT_CAN_EXECUTE_MUST_BE_FALSE"})
-        elif req.table in {
-            "wow_engineering_audit_work_items",
-            "wow_engineering_audit_findings",
-            "wow_engineering_auditor_runtime",
-        }:
-            if payload.get("can_execute") is not False:
-                raise HTTPException(status_code=400, detail={"code": "ENGINEERING_AUDIT_CAN_EXECUTE_MUST_BE_FALSE"})
-            if payload.get("terminal_authority") != TERMINAL_AUTHORITY:
-                raise HTTPException(status_code=400, detail={"code": "ENGINEERING_AUDIT_TERMINAL_AUTHORITY_MISMATCH"})
-        elif req.table == "wow_engineering_backlog":
-            if operation in {"insert", "upsert"}:
-                if payload.get("source") != "ENGINEERING_AUDITOR" or not str(payload.get("ticket_id") or "").startswith("AUDIT-"):
-                    raise HTTPException(status_code=403, detail={"code": "ENGINEERING_AUDIT_BACKLOG_WRITE_FORBIDDEN"})
-            else:
-                ticket_filters = [
-                    item
-                    for item in req.filters
-                    if item.operator.lower() == "eq" and item.column == "ticket_id"
-                ]
-                if len(ticket_filters) != 1 or not str(ticket_filters[0].value or "").startswith("AUDIT-"):
-                    raise HTTPException(status_code=403, detail={"code": "ENGINEERING_AUDIT_BACKLOG_UPDATE_FORBIDDEN"})
+        _validate_governed_payload(req, payload)
 
     if operation == "upsert":
         keys = [item.strip() for item in str(req.on_conflict or "").split(",") if item.strip()]
