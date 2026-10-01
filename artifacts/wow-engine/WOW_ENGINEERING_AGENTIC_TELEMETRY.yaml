@@ -17,6 +17,7 @@ counters:
   fixes: wow.engineering.fixes
   wakes: wow.engineering.queue.wakes
   reparks: wow.engineering.queue.reparks
+  unblocks: wow.engineering.queue.unblocks
   max_wake_escalations: wow.engineering.queue.max_wake_escalations
   recorded_cost_usd: wow.engineering.recorded_cost.usd
   tool_calls: wow.engineering.agent.tool_calls
@@ -26,7 +27,7 @@ counters:
 operator_kpis:
   cost_per_fix_usd: recorded_cost_usd / fixes
   wake_to_fix_ratio: wakes / fixes
-  max_wake_escalation_rate: max_wake_escalations / (fixes + max_wake_escalations)
+  max_wake_escalation_rate: max_wake_escalations / (unblocks + max_wake_escalations)
   zero_denominator_behavior: null
 
 cost_governance:
