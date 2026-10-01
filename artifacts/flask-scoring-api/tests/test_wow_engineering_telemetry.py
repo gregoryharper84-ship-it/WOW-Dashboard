@@ -6,6 +6,7 @@ import yaml
 from services.wow_engineering_telemetry import (
     MAX_WAKE_ESCALATIONS_METRIC,
     RECORDED_COST_METRIC,
+    UNBLOCKS_METRIC,
     WAKES_METRIC,
     build_opentelemetry_agentic_telemetry,
     build_opentelemetry_trace_sink,
@@ -49,6 +50,12 @@ def test_agentic_telemetry_accepts_trace_queue_and_explicit_usage_without_export
     )
     telemetry.queue_sink(
         {
+            "event_name": "QUEUE_UNBLOCKED",
+            "parked_reason": "awaiting_pr_review",
+        }
+    )
+    telemetry.queue_sink(
+        {
             "event_name": "QUEUE_MAX_WAKE_ESCALATED",
             "parked_reason": "upstream_dependency",
         }
@@ -67,20 +74,33 @@ def test_efficiency_ratios_define_cost_wake_and_escalation_kpis():
     ratios = efficiency_ratios(
         fixes=4,
         wakes=10,
+        unblocks=3,
         max_wake_escalations=1,
         recorded_cost_usd=12.0,
     )
     assert ratios == {
         "cost_per_fix_usd": 3.0,
         "wake_to_fix_ratio": 2.5,
-        "max_wake_escalation_rate": 0.2,
+        "max_wake_escalation_rate": 0.25,
     }
+
+
+def test_non_parked_fixes_do_not_dilute_max_wake_escalation_rate():
+    ratios = efficiency_ratios(
+        fixes=100,
+        wakes=8,
+        unblocks=3,
+        max_wake_escalations=1,
+        recorded_cost_usd=25.0,
+    )
+    assert ratios["max_wake_escalation_rate"] == 0.25
 
 
 def test_efficiency_ratios_fail_closed_when_denominator_is_zero():
     ratios = efficiency_ratios(
         fixes=0,
         wakes=3,
+        unblocks=0,
         max_wake_escalations=0,
         recorded_cost_usd=1.25,
     )
@@ -97,6 +117,7 @@ def test_usage_sink_rejects_negative_or_invented_cost_values():
 
 def test_metric_names_are_stable_for_dashboard_queries():
     assert WAKES_METRIC == "wow.engineering.queue.wakes"
+    assert UNBLOCKS_METRIC == "wow.engineering.queue.unblocks"
     assert MAX_WAKE_ESCALATIONS_METRIC == "wow.engineering.queue.max_wake_escalations"
     assert RECORDED_COST_METRIC == "wow.engineering.recorded_cost.usd"
 
@@ -111,6 +132,6 @@ def test_agentic_telemetry_contract_preserves_governance_and_exact_kpi_formulas(
     assert contract["operator_kpis"] == {
         "cost_per_fix_usd": "recorded_cost_usd / fixes",
         "wake_to_fix_ratio": "wakes / fixes",
-        "max_wake_escalation_rate": "max_wake_escalations / (fixes + max_wake_escalations)",
+        "max_wake_escalation_rate": "max_wake_escalations / (unblocks + max_wake_escalations)",
         "zero_denominator_behavior": None,
     }
