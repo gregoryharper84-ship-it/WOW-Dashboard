@@ -1,0 +1,42 @@
+contract_version: 1
+identity: WOW_ENGINEERING_AGENTIC_TELEMETRY
+status: PROPOSED_CLASS_A
+runtime_generation: V17_ACTIVE
+terminal_authority: V17_TERMINAL_REDUCER
+can_execute: false
+probability_authority: NONE
+
+implementation:
+  telemetry: artifacts/flask-scoring-api/services/wow_engineering_telemetry.py
+  queue_adapter: artifacts/flask-scoring-api/services/wow_engineering_ticket_telemetry.py
+  backend: OPENTELEMETRY_API
+  exporter_owned_by_runtime: true
+  ticket_id_allowed_in_metric_labels: false
+
+counters:
+  fixes: wow.engineering.fixes
+  wakes: wow.engineering.queue.wakes
+  reparks: wow.engineering.queue.reparks
+  max_wake_escalations: wow.engineering.queue.max_wake_escalations
+  recorded_cost_usd: wow.engineering.recorded_cost.usd
+  tool_calls: wow.engineering.agent.tool_calls
+  input_tokens: wow.engineering.agent.input_tokens
+  output_tokens: wow.engineering.agent.output_tokens
+
+operator_kpis:
+  cost_per_fix_usd: recorded_cost_usd / fixes
+  wake_to_fix_ratio: wakes / fixes
+  max_wake_escalation_rate: max_wake_escalations / (fixes + max_wake_escalations)
+  zero_denominator_behavior: null
+
+cost_governance:
+  estimates_allowed: false
+  require_explicit_adapter_receipt: true
+  negative_cost_allowed: false
+  missing_cost_behavior: omit_metric
+
+hard_boundaries:
+  sporting_probability_fields_allowed: false
+  wager_or_market_order_fields_allowed: false
+  changes_queue_state: false
+  changes_model_behavior: false
