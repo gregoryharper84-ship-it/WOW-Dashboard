@@ -58,6 +58,7 @@ def build_queue(manifest: dict[str, Any], issues: list[dict[str, Any]]) -> dict[
                     "incident_id": str(number),
                     "issue_number": number,
                     "title": str(issue.get("title") or ""),
+                    "body": str(issue.get("body") or ""),
                     "severity": str(entry["severity"]).upper(),
                     "priority_rank": int(entry["priority_rank"]),
                     "state": "OPEN",
