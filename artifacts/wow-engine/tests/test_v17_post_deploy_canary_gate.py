@@ -66,6 +66,24 @@ def test_post_deploy_orchestrator_is_only_deploy_consumer_for_heavy_verification
         assert 'workflows: ["wow-v17-render-production-deploy"]' not in text
 
 
+def test_post_deploy_orchestrator_fences_receipt_to_current_exact_sha():
+    text = ORCHESTRATOR_WORKFLOW.read_text(encoding="utf-8")
+
+    # Reproduction: deploy SHA A finishes after main has already advanced to B.
+    # workflow_run checks may use B's workflow definition, but must not run any
+    # production verification against the still-live A deployment.
+    assert text.count("github.event.workflow_run.head_sha == github.sha") == 4
+    for start, end in (
+        ("  priority-props:", "  spread-forward:"),
+        ("  spread-forward:", "  spread-certification:"),
+        ("  spread-certification:", "  golden-full-slate:"),
+    ):
+        section = text[text.index(start):text.index(end)]
+        assert "github.event.workflow_run.head_sha == github.sha" in section
+    golden = text[text.index("  golden-full-slate:"):]
+    assert "github.event.workflow_run.head_sha == github.sha" in golden
+
+
 def test_post_deploy_orchestrator_runs_bounded_smoke_before_memory_heavy_replay():
     text = ORCHESTRATOR_WORKFLOW.read_text(encoding="utf-8")
 
