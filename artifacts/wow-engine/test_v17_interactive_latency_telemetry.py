@@ -53,3 +53,42 @@ def test_interactive_latency_middleware_logs_only_governed_interactive_routes(ca
     assert all("total_ms=" in message for message in governed)
     assert all("can_execute=false" in message for message in governed)
     assert not any("route=/health" in message for message in messages)
+
+
+def test_stage_timer_aggregator_and_bounds(caplog):
+    from v17.interactive_latency_telemetry import AGGREGATOR, LatencyAggregator, stage_timer
+
+    with stage_timer("hydration"):  # no-op outside a request
+        pass
+
+    app = FastAPI()
+    install_interactive_latency_middleware(app)
+
+    @app.post("/score-pick-request")
+    def score_pick_request():
+        with stage_timer("hydration"):
+            pass
+        with stage_timer("not_a_stage"):
+            pass
+        return {"ok": True, "can_execute": False}
+
+    with caplog.at_level(logging.WARNING, logger="wow.v17.interactive_latency"):
+        TestClient(app).post("/score-pick-request", json={"secret": "body-token"})
+    message = caplog.records[-1].getMessage()
+    assert "stage_hydration_ms=" in message
+    assert "not_a_stage" not in message
+    assert "body-token" not in message
+    assert "can_execute=false" in message
+    assert AGGREGATOR.snapshot()["/score-pick-request"]["count"] >= 1
+
+    agg = LatencyAggregator(max_keys=2, max_samples=5)
+    agg.record("a", 1.0)
+    agg.record("b", 1.0)
+    agg.record("c", 1.0)
+    assert set(agg.snapshot()) == {"b", "c"}
+    for i in range(1, 11):
+        agg.record("b", float(i))
+    snap = agg.snapshot()["b"]
+    assert snap["count"] == 5.0
+    assert snap["p50_ms"] == 8.0
+    assert snap["p95_ms"] == 10.0
