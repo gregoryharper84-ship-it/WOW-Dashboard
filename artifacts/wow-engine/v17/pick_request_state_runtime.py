@@ -43,6 +43,7 @@ STAGES = (
     "PUBLICATION_AUTHORIZED",
 )
 STAGE_SEQ = {stage: index for index, stage in enumerate(STAGES)}
+READINESS_EVIDENCE_STAGES = frozenset({"IDENTITY_VERIFIED", "MODEL_INPUTS_READY"})
 
 
 class PickRequestStatePersistenceError(RuntimeError):
@@ -295,6 +296,12 @@ class PickRequestStateStore:
                         "rank_eligible": False,
                         "prediction_id": None,
                         "source_snapshot_id": None,
+                        "identity_verified_explicit": False,
+                        "model_inputs_ready_explicit": False,
+                        "identity_evidence": {},
+                        "hydration_evidence": {},
+                        "specialist_id": None,
+                        "feature_snapshot_id": None,
                         "outcome": None,
                     }
                 )
@@ -395,6 +402,15 @@ class PickRequestStateStore:
             record["current_stage"] = to_stage
             record["stage_seq"] = seq
             self._persist_row(ctx, row_key, operation=f"ADVANCE_{to_stage}")
+            transition_metadata = dict(metadata or {}) if seq == target else {}
+            if to_stage in READINESS_EVIDENCE_STAGES and seq != target:
+                transition_metadata.update(
+                    {
+                        "readiness_evidence_explicit": False,
+                        "synthetic_gap_fill": True,
+                        "gap_fill_reason": "DOWNSTREAM_STAGE_REACHED_WITHOUT_EXPLICIT_READINESS_RECEIPT",
+                    }
+                )
             _exec(
                 self.db.table(TRANSITION_TABLE).upsert(
                     {
@@ -406,7 +422,7 @@ class PickRequestStateStore:
                         "stage_seq": seq,
                         "terminal_status": record.get("terminal_status"),
                         "terminal_code": record.get("terminal_code"),
-                        "metadata": metadata or {},
+                        "metadata": transition_metadata,
                         "can_execute": False,
                     },
                     on_conflict="transition_id",
@@ -414,6 +430,56 @@ class PickRequestStateStore:
                 operation=f"TRANSITION_{to_stage}",
                 row_key=row_key,
             )
+
+    def record_readiness(
+        self,
+        ctx: RunContext,
+        row_key: str,
+        *,
+        identity_evidence: dict[str, Any],
+        hydration_evidence: dict[str, Any],
+        feature_snapshot_id: str | None = None,
+        specialist_id: str | None = None,
+    ) -> None:
+        """Persist explicit proof that reconciliation and hydration actually passed.
+
+        These flags distinguish evidence-backed readiness from historical synthetic
+        gap-fill transitions. They carry no sporting probability or execution authority.
+        """
+        if row_key not in ctx.rows:
+            return
+        record = ctx.rows[row_key]
+        record["identity_verified_explicit"] = True
+        record["identity_evidence"] = deepcopy(identity_evidence)
+        self.advance(
+            ctx,
+            row_key,
+            "IDENTITY_VERIFIED",
+            metadata={
+                "readiness_evidence_explicit": True,
+                "evidence_kind": "IDENTITY",
+                "identity_evidence": deepcopy(identity_evidence),
+            },
+        )
+        record["model_inputs_ready_explicit"] = True
+        record["hydration_evidence"] = deepcopy(hydration_evidence)
+        if feature_snapshot_id:
+            record["feature_snapshot_id"] = str(feature_snapshot_id)
+        if specialist_id:
+            record["specialist_id"] = str(specialist_id)
+        self.advance(
+            ctx,
+            row_key,
+            "MODEL_INPUTS_READY",
+            metadata={
+                "readiness_evidence_explicit": True,
+                "evidence_kind": "HYDRATION",
+                "hydration_evidence": deepcopy(hydration_evidence),
+                "feature_snapshot_id": record.get("feature_snapshot_id"),
+                "specialist_id": record.get("specialist_id"),
+            },
+        )
+        self._persist_row(ctx, row_key, operation="PERSIST_EXPLICIT_READINESS")
 
     def record_outcome(
         self, ctx: RunContext, row_key: str, outcome: dict[str, Any]
@@ -524,16 +590,47 @@ def current_context() -> RunContext | None:
     return _ACTIVE.get()
 
 
-def record_inputs_ready(row: Any) -> None:
+def record_inputs_ready(row: Any, normalized: dict[str, Any] | None = None) -> None:
     ctx = current_context()
     if ctx is None:
         return
     row_key = str(getattr(row, "row_key", None) or "")
     if row_key not in ctx.rows:
         return
-    store = PickRequestStateStore(ctx.db)
-    store.advance(ctx, row_key, "IDENTITY_VERIFIED")
-    store.advance(ctx, row_key, "MODEL_INPUTS_READY")
+    evidence = getattr(row, "evidence", None)
+    role_status = getattr(evidence, "role_status", None) if evidence is not None else None
+    role = role_status if isinstance(role_status, dict) else {}
+    norm = normalized if isinstance(normalized, dict) else {}
+    identity_evidence = {
+        "event_id": str(norm.get("event_id") or getattr(row, "event_id", "") or "").strip(),
+        "sport": str(norm.get("sport") or getattr(row, "sport", "") or "").strip().upper(),
+        "player": str(norm.get("player") or getattr(row, "player", "") or "").strip(),
+        "identity_binding_status": str(role.get("identity_binding_status") or "").strip() or None,
+        "canonical_event_id": str(role.get("canonical_event_id") or "").strip() or None,
+        "verified_canonical_event_id": str(role.get("verified_canonical_event_id") or "").strip() or None,
+        "provider_event_ids": deepcopy(role.get("provider_event_ids"))
+        if isinstance(role.get("provider_event_ids"), dict)
+        else {},
+    }
+    opportunity = getattr(evidence, "opportunity_ledger", None) if evidence is not None else None
+    hydration_evidence = {
+        "captured_at": str(norm.get("captured_at") or "").strip() or None,
+        "role_timestamp": str(norm.get("role_timestamp") or "").strip() or None,
+        "source_timestamps": deepcopy(norm.get("source_timestamps") or {}),
+        "evidence_version": str(getattr(evidence, "evidence_version", "") or "").strip() or None,
+        "rate_provenance": str(getattr(evidence, "rate_provenance", "") or "").strip() or None,
+        "game_log_n": len(getattr(evidence, "game_log", ()) or ()),
+        "box_score_log_n": len(getattr(evidence, "box_score_log", ()) or ()),
+        "opportunity_status": str((opportunity or {}).get("status") or (opportunity or {}).get("gate_label") or "").strip().upper()
+        if isinstance(opportunity, dict)
+        else None,
+    }
+    PickRequestStateStore(ctx.db).record_readiness(
+        ctx,
+        row_key,
+        identity_evidence=identity_evidence,
+        hydration_evidence=hydration_evidence,
+    )
 
 
 def record_model_outcome(outcome: dict[str, Any]) -> None:
@@ -781,6 +878,7 @@ __all__ = [
     "CAN_EXECUTE",
     "PickRequestStatePersistenceError",
     "PickRequestStateStore",
+    "READINESS_EVIDENCE_STAGES",
     "STAGES",
     "current_context",
     "effective_request_id",
