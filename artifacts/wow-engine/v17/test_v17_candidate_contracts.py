@@ -8,6 +8,7 @@ HERE = Path(__file__).parent
 WOW_SCHEMA = HERE / "openapi.wow-betting-engine.v17.yaml"
 LLP_SCHEMA = HERE / "openapi.llp-team-engine.v17.yaml"
 LLP_INSTRUCTIONS = HERE.parent / "LLP_V17_CUSTOM_GPT_INSTRUCTIONS.txt"
+ROOT_LLP_INSTRUCTIONS = HERE.parents[2] / "LLP-TEAM-BETTING-GPT-INSTRUCTIONS.md"
 
 
 def _operations(text: str) -> set[str]:
@@ -131,6 +132,20 @@ def test_llp_instructions_fit_editor_limit_and_preserve_spread_governance():
     assert "no ML->spread or market-probability substitution" in text
     assert "exact spread as post-fit threshold only" in text
     assert "can_execute=false" in text
+
+
+def test_root_llp_authority_block_cannot_drift_from_spread_action_contract():
+    text = ROOT_LLP_INSTRUCTIONS.read_text()
+    blocks = text.split("```")
+    assert len(blocks) >= 3
+    authority_block = blocks[1]
+    assert len(authority_block) <= 8000
+    assert "scoreLlpV17SpreadForwardShadow" in authority_block
+    assert "exact-line acquisition is not completion" in authority_block
+    assert "home_spread,season" in authority_block
+    assert "never infer cover probability from market/ML" in authority_block
+    assert "V17_TERMINAL_REDUCER" in authority_block
+    assert "can_execute=false" in authority_block
 
 
 def test_host_contract_requires_bearer_auth_in_both_production_schemas():
