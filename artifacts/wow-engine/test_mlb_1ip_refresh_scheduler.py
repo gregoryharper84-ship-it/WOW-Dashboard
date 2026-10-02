@@ -22,7 +22,7 @@ def test_refresh_loop_runs_governed_pass_and_preserves_nonexecution(monkeypatch,
 
     async def exercise():
         with pytest.raises(asyncio.CancelledError):
-            await scheduler.run_refresh_loop(db_client_fn=lambda: "db-client", logger=logger, interval_seconds=300)
+            await scheduler.run_refresh_loop(db_client_fn=lambda: "db-client", logger=logger, interval_seconds=300, initial_delay_seconds=0)
 
     with caplog.at_level(logging.INFO):
         asyncio.run(exercise())
@@ -48,7 +48,7 @@ def test_refresh_loop_failure_is_nonfatal_until_cancel(monkeypatch, caplog):
 
     async def exercise():
         with pytest.raises(asyncio.CancelledError):
-            await scheduler.run_refresh_loop(db_client_fn=lambda: "db-client", logger=logger)
+            await scheduler.run_refresh_loop(db_client_fn=lambda: "db-client", logger=logger, initial_delay_seconds=0)
 
     with caplog.at_level(logging.ERROR):
         asyncio.run(exercise())
@@ -56,3 +56,32 @@ def test_refresh_loop_failure_is_nonfatal_until_cancel(monkeypatch, caplog):
     assert calls["n"] == 1
     assert "status=FAILED" in caplog.text
     assert "can_execute=false" in caplog.text
+
+
+def test_refresh_loop_defers_first_database_pass_until_startup_delay(monkeypatch):
+    order = []
+
+    def fake_run_once(*, client):
+        order.append(("run_once", client))
+        return {"seen": 0, "waiting": 0, "rerun_completed": 0, "purged": 0, "expired": 0, "failed": 0}
+
+    async def fake_sleep(seconds):
+        order.append(("sleep", seconds))
+        if len([item for item in order if item[0] == "sleep"]) > 1:
+            raise asyncio.CancelledError
+
+    monkeypatch.setattr(scheduler, "run_once", fake_run_once)
+    monkeypatch.setattr(scheduler.asyncio, "sleep", fake_sleep)
+
+    async def exercise():
+        with pytest.raises(asyncio.CancelledError):
+            await scheduler.run_refresh_loop(
+                db_client_fn=lambda: "db-client",
+                logger=logging.getLogger("test.mlb.1ip.stagger"),
+                interval_seconds=300,
+                initial_delay_seconds=60,
+            )
+
+    asyncio.run(exercise())
+    assert order[0] == ("sleep", 60)
+    assert order[1] == ("run_once", "db-client")
