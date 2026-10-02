@@ -83,6 +83,113 @@ jobs:
           echo "acceleration=$acceleration" >> "$GITHUB_OUTPUT"
           echo "queue_depth=$queue_depth" >> "$GITHUB_OUTPUT"
 
+      - name: Initialize persistent-worker safety state
+        id: safety
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RESTORATION: ${{ steps.dispatch.outputs.restoration }}
+          ACCELERATION: ${{ steps.dispatch.outputs.acceleration }}
+        run: |
+          set -euo pipefail
+          marker='<!-- WOW_DUAL_STREAM_HEARTBEAT -->'
+          comments=$(gh api "/repos/${GITHUB_REPOSITORY}/issues/1138/comments?per_page=100")
+          previous_body=$(jq -r --arg marker "$marker" '[.[] | select(.body | contains($marker))][0].body // ""' <<<"$comments")
+          previous_epoch=$(sed -n 's/^- lease_epoch: \([0-9][0-9]*\)$/\1/p' <<<"$previous_body" | head -1)
+          previous_epoch=${previous_epoch:-0}
+          lease_epoch=$((previous_epoch + 1))
+          worker_id="github-actions:${GITHUB_RUN_ID}:${GITHUB_RUN_ATTEMPT}:anthropic"
+          expires_at=$(date -u -d '+180 minutes' +%Y-%m-%dT%H:%M:%SZ)
+
+          python - "$RUNNER_TEMP/wow-dispatch-queue.json" "$RESTORATION" "$ACCELERATION" "$worker_id" "$lease_epoch" "$expires_at" <<'PY'
+          import json, sys
+          from pathlib import Path
+          from v17.persistent_worker_safety import Lease, build_ticket_context, circuit_mode, CircuitState
+
+          queue_path, restoration, acceleration, worker_id, epoch, expires_at = sys.argv[1:]
+          queue = json.loads(Path(queue_path).read_text())
+          by_id = {str(row["incident_id"]): row for row in queue["records"]}
+          out = Path("artifacts/wow-engine/v17/.agent-handoff")
+          out.mkdir(parents=True, exist_ok=True)
+
+          def write_context(name, incident_id):
+              if not incident_id:
+                  return
+              record = by_id[incident_id]
+              context = build_ticket_context(
+                  {
+                      "incident_id": incident_id,
+                      "severity": record.get("severity"),
+                      "state": record.get("state"),
+                      "defect_contract": record.get("body"),
+                      "reproduction_evidence": [],
+                      "acceptance_criteria": [],
+                      "relevant_paths": [],
+                      "governance_invariants": {
+                          "can_execute": False,
+                          "terminal_authority": "V17_TERMINAL_REDUCER",
+                      },
+                      "same_ticket_attempts": [],
+                      "branch": "",
+                      "commit_sha": "",
+                  },
+                  execution_id=f"{worker_id}:{incident_id}:{epoch}",
+              )
+              (out / name).write_text(json.dumps(context, indent=2, sort_keys=True) + "\n")
+
+          write_context("restoration-context.json", restoration)
+          write_context("acceleration-context.json", acceleration)
+          mode = circuit_mode(CircuitState(
+              total_recent_items=0,
+              systemic_failures=0,
+              rollback_failures=0,
+              provider_failures=0,
+          )).value
+          lease = Lease(restoration or "NONE", worker_id, int(epoch), expires_at)
+          (out / "lease.json").write_text(json.dumps({
+              "work_item_id": lease.work_item_id,
+              "worker_id": lease.worker_id,
+              "lease_epoch": lease.lease_epoch,
+              "expires_at": lease.expires_at,
+              "worker_mode": mode,
+              "can_execute": False,
+              "terminal_authority": "V17_TERMINAL_REDUCER",
+          }, indent=2, sort_keys=True) + "\n")
+          PY
+
+          body=$(cat <<EOF
+          $marker
+          ### WOW V17 dual-stream dispatcher heartbeat
+          - workflow_run_id: $GITHUB_RUN_ID
+          - provider: Anthropic fallback
+          - queue_depth: ${{ steps.dispatch.outputs.queue_depth }}
+          - current_restoration_target: ${RESTORATION:-NONE}
+          - current_acceleration_target: ${ACCELERATION:-NONE}
+          - lease_epoch: $lease_epoch
+          - worker_id: $worker_id
+          - lease_expires_at: $expires_at
+          - worker_mode: RUNNING
+          - restoration_action: CLAIMED
+          - last_acceleration_advancement: CLAIMED
+          - acceleration_next_action: TRIAGE
+          - retry_dlq_state: NONE
+          - safe_hold_state: RUNNING
+          - duplicate_incident_created: false
+          - can_execute: false
+          - terminal_authority: V17_TERMINAL_REDUCER
+          EOF
+          )
+          comment_id=$(jq -r --arg marker "$marker" '[.[] | select(.body | contains($marker))][0].id // empty' <<<"$comments")
+          if [ -n "$comment_id" ]; then
+            gh api --method PATCH "/repos/${GITHUB_REPOSITORY}/issues/comments/$comment_id" -f body="$body" >/dev/null
+          else
+            gh api --method POST "/repos/${GITHUB_REPOSITORY}/issues/1138/comments" -f body="$body" >/dev/null
+          fi
+          echo "lease_epoch=$lease_epoch" >> "$GITHUB_OUTPUT"
+          echo "worker_id=$worker_id" >> "$GITHUB_OUTPUT"
+          echo "expires_at=$expires_at" >> "$GITHUB_OUTPUT"
+          echo "worker_mode=RUNNING" >> "$GITHUB_OUTPUT"
+
       - name: Verify Anthropic authentication
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -106,7 +213,7 @@ jobs:
             OpenAI primary engineering is unavailable for this run because: ${{ inputs.fallback_reason }}.
             Read repository governance, .agents/skills/wow-engineering-lead-agent/SKILL.md,
             artifacts/wow-engine/v17/.agent-handoff/dispatch.json,
-            artifacts/wow-engine/v17/.agent-handoff/dispatch-queue.json, and current local CI/PR evidence.
+            artifacts/wow-engine/v17/.agent-handoff/restoration-context.json, and current local CI/PR evidence.
             The deterministic dispatcher has already selected the restoration target. Use that exact
             restoration incident; do not reprioritize or substitute another issue. If the restoration
             incident is null, return NO_ACTION. Do not edit files. You own restoration dispatch only;
@@ -148,7 +255,7 @@ jobs:
           prompt: |
             You are the independent WOW V17 ACCELERATION_TRIAGE_AGENT running on fallback tooling.
             Read artifacts/wow-engine/v17/.agent-handoff/dispatch.json and
-            artifacts/wow-engine/v17/.agent-handoff/dispatch-queue.json.
+            artifacts/wow-engine/v17/.agent-handoff/acceleration-context.json.
             Work only on the exact acceleration incident selected by the deterministic dispatcher.
             Advance that existing issue with concrete repository evidence: verify its current state,
             narrow its next safe implementation slice, identify tests and exact blockers, and avoid
@@ -267,9 +374,60 @@ jobs:
         if: steps.lead.outputs.action == 'REPAIR' && (steps.triage.outputs.risk == 'R2-repair-policy' || steps.triage.outputs.risk == 'R3')
         run: echo "Governed hard boundary; implementation lease denied." >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Enforce mutation safety gate
+        id: mutation_gate
+        if: >-
+          steps.triage.outputs.repairable == 'true' &&
+          (steps.specialist.outputs.hypothesis == 'CONFIRMED' ||
+           steps.specialist.outputs.hypothesis == 'NARROWED') &&
+          (steps.triage.outputs.risk == 'R0' ||
+           steps.triage.outputs.risk == 'R1' ||
+           steps.triage.outputs.risk == 'R2-restorative')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_INCIDENT: ${{ steps.dispatch.outputs.restoration }}
+          EXPECTED_EPOCH: ${{ steps.safety.outputs.lease_epoch }}
+          EXPECTED_WORKER: ${{ steps.safety.outputs.worker_id }}
+        run: |
+          set -euo pipefail
+          marker='<!-- WOW_DUAL_STREAM_HEARTBEAT -->'
+          comments=$(gh api "/repos/${GITHUB_REPOSITORY}/issues/1138/comments?per_page=100")
+          body=$(jq -r --arg marker "$marker" '[.[] | select(.body | contains($marker))][0].body // ""' <<<"$comments")
+          latest_epoch=$(sed -n 's/^- lease_epoch: \([0-9][0-9]*\)$/\1/p' <<<"$body" | head -1)
+          latest_worker=$(sed -n 's/^- worker_id: \(.*\)$/\1/p' <<<"$body" | head -1)
+          python - "$EXPECTED_INCIDENT" "$EXPECTED_EPOCH" "$EXPECTED_WORKER" "$latest_epoch" "$latest_worker" <<'PY'
+          import json, sys
+          from datetime import datetime, timezone
+          from pathlib import Path
+          from v17.persistent_worker_safety import Lease, lease_allows_mutation
+
+          incident, expected_epoch, expected_worker, latest_epoch, latest_worker = sys.argv[1:]
+          lease_data = json.loads(Path("artifacts/wow-engine/v17/.agent-handoff/lease.json").read_text())
+          if lease_data.get("worker_mode") != "RUNNING":
+              raise SystemExit("SAFE_HOLD: mutation denied")
+          lease = Lease(
+              lease_data["work_item_id"],
+              lease_data["worker_id"],
+              int(lease_data["lease_epoch"]),
+              lease_data["expires_at"],
+          )
+          allowed = lease_allows_mutation(
+              lease,
+              expected_work_item_id=incident,
+              latest_epoch=int(latest_epoch or -1),
+              current_worker_id=latest_worker,
+              now=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+          )
+          if not allowed or str(lease.lease_epoch) != expected_epoch or lease.worker_id != expected_worker:
+              raise SystemExit("LEASE_FENCE_REJECTED: mutation denied")
+          PY
+          echo "allowed=true" >> "$GITHUB_OUTPUT"
+
       - name: Implementation agent
         id: implementation_agent
         if: >-
+          steps.mutation_gate.outputs.allowed == 'true' &&
           steps.triage.outputs.repairable == 'true' &&
           (steps.specialist.outputs.hypothesis == 'CONFIRMED' ||
            steps.specialist.outputs.hypothesis == 'NARROWED') &&
@@ -505,6 +663,10 @@ jobs:
           LEAD_ACTION: ${{ steps.lead.outputs.action }}
           ACCEL_ADVANCEMENT: ${{ steps.acceleration.outputs.advancement }}
           ACCEL_NEXT: ${{ steps.acceleration.outputs.next_action }}
+          LEASE_EPOCH: ${{ steps.safety.outputs.lease_epoch }}
+          WORKER_ID: ${{ steps.safety.outputs.worker_id }}
+          LEASE_EXPIRES_AT: ${{ steps.safety.outputs.expires_at }}
+          WORKER_MODE: ${{ steps.safety.outputs.worker_mode }}
         run: |
           set -euo pipefail
           receipt="$RUNNER_TEMP/wow-dual-stream-receipt.json"
@@ -518,6 +680,10 @@ jobs:
             --arg lead_action "${LEAD_ACTION:-NOT_RUN}" \
             --arg acceleration_advancement "${ACCEL_ADVANCEMENT:-NOT_RUN}" \
             --arg acceleration_next "${ACCEL_NEXT:-NOT_RUN}" \
+            --arg lease_epoch "${LEASE_EPOCH:-0}" \
+            --arg worker_id "${WORKER_ID:-UNKNOWN}" \
+            --arg lease_expires_at "${LEASE_EXPIRES_AT:-UNKNOWN}" \
+            --arg worker_mode "${WORKER_MODE:-SAFE_HOLD}" \
             '{
               utc: $utc,
               workflow_run_id: $run_id,
@@ -528,6 +694,12 @@ jobs:
               restoration_action: $lead_action,
               last_acceleration_advancement: $acceleration_advancement,
               acceleration_next_action: $acceleration_next,
+              lease_epoch: ($lease_epoch | tonumber? // 0),
+              worker_id: $worker_id,
+              lease_expires_at: $lease_expires_at,
+              worker_mode: $worker_mode,
+              retry_dlq_state: "NONE",
+              safe_hold_state: $worker_mode,
               duplicate_incident_created: false,
               can_execute: false,
               terminal_authority: "V17_TERMINAL_REDUCER"
@@ -542,9 +714,15 @@ jobs:
           - queue_depth: ${QUEUE_DEPTH:-0}
           - current_restoration_target: ${RESTORATION:-NONE}
           - current_acceleration_target: ${ACCELERATION:-NONE}
+          - lease_epoch: ${LEASE_EPOCH:-0}
+          - worker_id: ${WORKER_ID:-UNKNOWN}
+          - lease_expires_at: ${LEASE_EXPIRES_AT:-UNKNOWN}
+          - worker_mode: ${WORKER_MODE:-SAFE_HOLD}
           - restoration_action: ${LEAD_ACTION:-NOT_RUN}
           - last_acceleration_advancement: ${ACCEL_ADVANCEMENT:-NOT_RUN}
           - acceleration_next_action: ${ACCEL_NEXT:-NOT_RUN}
+          - retry_dlq_state: NONE
+          - safe_hold_state: ${WORKER_MODE:-SAFE_HOLD}
           - duplicate_incident_created: false
           - can_execute: false
           - terminal_authority: V17_TERMINAL_REDUCER
