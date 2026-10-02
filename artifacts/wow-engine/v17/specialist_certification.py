@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
+import hashlib
+import json
 from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
 
@@ -26,6 +28,7 @@ class QualificationStatus(str, Enum):
     SPECIALIST_OWNERSHIP_CONFLICT = "SPECIALIST_OWNERSHIP_CONFLICT"
     CERTIFICATION_ARTIFACT_INVALID = "CERTIFICATION_ARTIFACT_INVALID"
     SCORER_FAILURE = "SCORER_FAILURE"
+    TRIAD_BINDING_MISSING = "TRIAD_BINDING_MISSING"
 
 
 @dataclass(frozen=True)
@@ -46,6 +49,24 @@ class SpecialistRuntimePayload:
     feature_payload: Mapping[str, Any]
     lower_bound_artifact: Mapping[str, Any]
     matching_owner_ids: Sequence[str] = ()
+
+
+def compute_triad_hash(
+    model_artifact_sha: str,
+    feature_contract_version: str,
+    calibration_artifact_id: str,
+) -> str:
+    """Canonical SHA-256 integrity digest for the certified model/feature/calibration triad."""
+    payload = json.dumps(
+        {
+            "calibration_artifact_id": calibration_artifact_id,
+            "feature_contract_version": feature_contract_version,
+            "model_artifact_sha": model_artifact_sha,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
 
 
 def _parse_expiry(raw: Any) -> Optional[datetime]:
@@ -140,12 +161,24 @@ def verify_specialist_qualification(
         "calibration_artifact_id",
         "qualification_policy",
         "lower_bound_method",
+        "triad_hash",
     )
     missing_cert_keys = [key for key in required_cert_keys if key not in cert]
     if missing_cert_keys:
         return (
             QualificationStatus.CERTIFICATION_ARTIFACT_INVALID,
             f"Certification artifact missing keys: {missing_cert_keys}.",
+        )
+
+    expected_triad_hash = compute_triad_hash(
+        cert["model_artifact_sha"],
+        cert["feature_contract_version"],
+        cert["calibration_artifact_id"],
+    )
+    if cert.get("triad_hash") != expected_triad_hash:
+        return (
+            QualificationStatus.MODEL_VERSION_MISMATCH,
+            f"Certified triad digest mismatch in '{request.target_specialist_id}'.",
         )
 
     if (
