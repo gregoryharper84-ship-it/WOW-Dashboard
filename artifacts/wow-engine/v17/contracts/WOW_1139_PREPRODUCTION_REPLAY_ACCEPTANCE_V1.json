@@ -1,0 +1,8 @@
+{
+  "contract_id": "WOW_1139_PREPRODUCTION_REPLAY_ACCEPTANCE_V1",
+  "required": ["baseline_sha", "patched_sha", "failure_capsule_fixture", "baseline_reproduces_typed_failure", "patched_passes", "adjacent_regressions_pass", "exact_head_verified"],
+  "fail_closed": true,
+  "production_ready_authority": false,
+  "serialized_production_canary_after_pass_only": true,
+  "can_execute": false
+}
