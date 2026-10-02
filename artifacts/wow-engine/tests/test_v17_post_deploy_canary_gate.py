@@ -99,8 +99,10 @@ def test_golden_full_slate_runs_only_as_post_deploy_reusable_acceptance():
     assert "needs: spread-certification" in section
     assert "uses: ./.github/workflows/wow-v17-daily-snapshot.yml" in section
     assert "post_deploy_acceptance: true" in section
+    assert "github.event_name == 'workflow_run'" in section
     assert "github.event.workflow_run.conclusion == 'success'" in section
     assert "github.event.workflow_run.head_branch == 'main'" in section
+    assert "github.event_name == 'workflow_dispatch'" not in section
 
 
 def test_priority_prop_deploy_smoke_skips_next_day_without_weakening_hourly_default():
