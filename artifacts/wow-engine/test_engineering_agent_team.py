@@ -6,6 +6,7 @@ from v17.engineering_agent_team import (
     SPECIALIST_SUBAGENTS,
     is_actionable,
     reliability_blocks_frontier,
+    select_dual_stream_work,
     select_priority_incident,
     select_support_subagent,
     validate_frontier_candidate,
@@ -96,6 +97,110 @@ def test_parked_p0_does_not_starve_next_executable_incident() -> None:
         ]
     )
     assert decision.incident_id == "PM-502"
+
+
+def test_dual_stream_selects_restoration_plus_non_conflicting_acceleration() -> None:
+    decision = select_dual_stream_work(
+        [
+            {
+                "postmortem_id": "PM-960",
+                "severity": "P0",
+                "state": "PR_CREATED",
+                "wait_state": "REVIEW_PENDING",
+                "conflict_keys": ["nfl-full-slate"],
+            },
+            {
+                "postmortem_id": "PM-502",
+                "severity": "P0",
+                "state": "OPEN",
+                "conflict_keys": ["interactive-runtime"],
+            },
+            {
+                "postmortem_id": "PM-1135",
+                "severity": "P2",
+                "state": "OPEN",
+                "work_stream": "ACCELERATION",
+                "conflict_keys": ["engineering-test-harness"],
+            },
+        ]
+    )
+    assert decision.restoration.incident_id == "PM-502"
+    assert decision.acceleration.incident_id == "PM-1135"
+    assert decision.acceleration_blocked_reason is None
+    assert decision.as_dict()["can_execute"] is False
+    assert decision.as_dict()["terminal_authority"] == "V17_TERMINAL_REDUCER"
+
+
+def test_dual_stream_rejects_overlapping_acceleration_owner() -> None:
+    decision = select_dual_stream_work(
+        [
+            {
+                "postmortem_id": "PM-502",
+                "severity": "P0",
+                "state": "OPEN",
+                "production_code_owners": ["wow-host"],
+            },
+            {
+                "postmortem_id": "PM-1136",
+                "severity": "P2",
+                "state": "OPEN",
+                "work_stream": "ACCELERATION",
+                "production_code_owners": ["wow-host"],
+            },
+        ]
+    )
+    assert decision.restoration.incident_id == "PM-502"
+    assert decision.acceleration.incident_id is None
+    assert "WOW-HOST" in (decision.acceleration_blocked_reason or "")
+
+
+def test_dual_stream_fails_closed_when_conflict_metadata_is_missing() -> None:
+    decision = select_dual_stream_work(
+        [
+            {
+                "postmortem_id": "PM-502",
+                "severity": "P0",
+                "state": "OPEN",
+                "conflict_keys": ["interactive-runtime"],
+            },
+            {
+                "postmortem_id": "PM-1137",
+                "severity": "P2",
+                "state": "OPEN",
+                "work_stream": "ACCELERATION",
+            },
+        ]
+    )
+    assert decision.acceleration.incident_id is None
+    assert "fails closed" in (decision.acceleration_blocked_reason or "")
+
+
+def test_dual_stream_skips_conflicting_acceleration_for_next_safe_candidate() -> None:
+    decision = select_dual_stream_work(
+        [
+            {
+                "postmortem_id": "PM-502",
+                "severity": "P0",
+                "state": "OPEN",
+                "conflict_keys": ["interactive-runtime"],
+            },
+            {
+                "postmortem_id": "PM-1135",
+                "severity": "P1",
+                "state": "OPEN",
+                "work_stream": "ACCELERATION",
+                "conflict_keys": ["interactive-runtime"],
+            },
+            {
+                "postmortem_id": "PM-1136",
+                "severity": "P2",
+                "state": "OPEN",
+                "work_stream": "ACCELERATION",
+                "conflict_keys": ["test-harness"],
+            },
+        ]
+    )
+    assert decision.acceleration.incident_id == "PM-1136"
 
 
 def test_specialist_routing_preserves_exact_failure_ownership() -> None:
