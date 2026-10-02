@@ -2,7 +2,7 @@ name: wow-v17-release-production-verification-agent
 
 on:
   pull_request:
-    types: [closed]
+    types: [opened, synchronize, reopened, ready_for_review, closed]
     branches: [main]
   workflow_dispatch:
     inputs:
@@ -24,15 +24,33 @@ concurrency:
 jobs:
   release-verification:
     name: Release / Production Verification agent
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event.pull_request.merged == true &&
-       startsWith(github.event.pull_request.head.ref, 'chatgpt/engineering/'))
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
     steps:
+      - name: Pre-merge required-context contract gate
+        if: github.event_name == 'pull_request' && github.event.action != 'closed'
+        run: |
+          echo "Pre-merge context only. Production verification remains post-merge."
+          echo "can_execute=false"
+
+      - name: Non-release closed-PR context
+        if: >-
+          github.event_name == 'pull_request' &&
+          github.event.action == 'closed' &&
+          (github.event.pull_request.merged != true ||
+           !startsWith(github.event.pull_request.head.ref, 'chatgpt/engineering/'))
+        run: |
+          echo "No governed release-agent execution required for this closed PR under the existing branch contract."
+          echo "can_execute=false"
+
       - name: Resolve PR number
+        if: >-
+          github.event_name == 'workflow_dispatch' ||
+          (github.event_name == 'pull_request' &&
+           github.event.action == 'closed' &&
+           github.event.pull_request.merged == true &&
+           startsWith(github.event.pull_request.head.ref, 'chatgpt/engineering/'))
         id: pr
         run: |
           if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
@@ -42,12 +60,24 @@ jobs:
           fi
 
       - name: Checkout protected main
+        if: >-
+          github.event_name == 'workflow_dispatch' ||
+          (github.event_name == 'pull_request' &&
+           github.event.action == 'closed' &&
+           github.event.pull_request.merged == true &&
+           startsWith(github.event.pull_request.head.ref, 'chatgpt/engineering/'))
         uses: actions/checkout@v6
         with:
           ref: main
           fetch-depth: 0
 
       - name: Capture deterministic release evidence
+        if: >-
+          github.event_name == 'workflow_dispatch' ||
+          (github.event_name == 'pull_request' &&
+           github.event.action == 'closed' &&
+           github.event.pull_request.merged == true &&
+           startsWith(github.event.pull_request.head.ref, 'chatgpt/engineering/'))
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ steps.pr.outputs.number }}
@@ -69,6 +99,12 @@ jobs:
             > artifacts/wow-engine/v17/.release-evidence/governance.json
 
       - name: Release / Production Verification agent
+        if: >-
+          github.event_name == 'workflow_dispatch' ||
+          (github.event_name == 'pull_request' &&
+           github.event.action == 'closed' &&
+           github.event.pull_request.merged == true &&
+           startsWith(github.event.pull_request.head.ref, 'chatgpt/engineering/'))
         id: release_agent
         uses: ./.github/actions/wow-chatgpt-agent
         with:
@@ -85,6 +121,12 @@ jobs:
           output_schema: '{"type":"object","properties":{"status":{"type":"string","enum":["PRODUCTION_VERIFIED","PENDING","BLOCKED_WITH_EXACT_REASON"]},"main_sha":{"type":"string"},"production_sha":{"type":"string"},"acceptance":{"type":"string"},"reconciliation":{"type":"string"},"blocker":{"type":"string"},"next_action":{"type":"string"}},"required":["status","main_sha","production_sha","acceptance","reconciliation","blocker","next_action"],"additionalProperties":false}'
 
       - name: Publish release verification receipt
+        if: >-
+          github.event_name == 'workflow_dispatch' ||
+          (github.event_name == 'pull_request' &&
+           github.event.action == 'closed' &&
+           github.event.pull_request.merged == true &&
+           startsWith(github.event.pull_request.head.ref, 'chatgpt/engineering/'))
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ steps.pr.outputs.number }}
