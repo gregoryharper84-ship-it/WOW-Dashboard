@@ -222,7 +222,7 @@ jobs:
 
           team_state_results = {"NFL_EVENT_V2": nfl_event_v2}
           team_state_scopes = [
-              "NFL", "NBA", "WNBA", "NCAAF", "MLB", "NCAAB",
+              "NCAAF", "NFL", "NBA", "WNBA", "MLB", "NCAAB",
               "SOCCER_EPL", "SOCCER_BUNDESLIGA", "SOCCER_LALIGA",
               "SOCCER_SERIE_A", "SOCCER_LIGUE_1",
           ]
@@ -234,6 +234,7 @@ jobs:
                   timeout=180,
               )
               team_state_results[scope] = payload
+              time.sleep(5)
 
           governed_team_state_payloads = [
               payload for payload in team_state_results.values()
