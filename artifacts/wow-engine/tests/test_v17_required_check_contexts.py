@@ -1,6 +1,6 @@
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[3]
 SPREAD = ROOT / ".github/workflows/wow-v17-spread-forward-shadow.yml"
 RELEASE = ROOT / ".github/workflows/wow-v17-release-production-verification-agent.yml"
 
