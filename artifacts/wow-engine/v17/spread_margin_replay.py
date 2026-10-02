@@ -190,6 +190,32 @@ def _ncaaf_raw_event_id(value: Any) -> str:
     return event_id
 
 
+def _canonical_ncaaf_refresh_manifest(feature: Mapping[str, Any]) -> dict[str, Any]:
+    """Ignore only acquisition refresh time when comparing persisted event rows."""
+    manifest = dict(feature.get("source_manifest") or {})
+    nested = dict(manifest.get("source_manifest") or {})
+    nested.pop("source_timestamp", None)
+    if nested:
+        manifest["source_manifest"] = nested
+    elif "source_manifest" in manifest:
+        manifest["source_manifest"] = {}
+    return manifest
+
+
+def _ncaaf_persisted_event_fingerprint(feature: Mapping[str, Any]) -> str:
+    payload = {
+        "event_start_time": str(feature.get("event_start_time") or ""),
+        "feature_as_of": str(feature.get("feature_as_of") or ""),
+        "feature_schema_version": str(feature.get("feature_schema_version") or ""),
+        "model_family": str(feature.get("model_family") or ""),
+        "features": dict(feature.get("features") or {}),
+        "source_manifest": _canonical_ncaaf_refresh_manifest(feature),
+        "market_features_used": feature.get("market_features_used"),
+        "can_execute": feature.get("can_execute"),
+    }
+    return _hash(payload)
+
+
 def adapt_ncaaf_persisted_rows(
     feature_rows: Sequence[Mapping[str, Any]],
     game_rows: Sequence[Mapping[str, Any]],
@@ -216,7 +242,7 @@ def adapt_ncaaf_persisted_rows(
             "NCAAF settled training games are unavailable",
         )
 
-    seen: set[str] = set()
+    seen: dict[str, str] = {}
     out: list[MarginTrainingRow] = []
     for feature in feature_rows:
         if str(feature.get("model_family") or "") != NCAAF_PERSISTED_FEATURE_MODEL_FAMILY:
@@ -246,12 +272,19 @@ def adapt_ncaaf_persisted_rows(
                 "SPREAD_REPLAY_PERSISTED_NCAAF_EVENT_ID_MISSING",
                 "persisted NCAAF feature row is missing official event identity",
             )
-        if event_id in seen:
+        fingerprint = _ncaaf_persisted_event_fingerprint(feature)
+        prior_fingerprint = seen.get(event_id)
+        if prior_fingerprint is not None:
+            if prior_fingerprint == fingerprint:
+                # The maintenance path can re-ingest the same immutable sporting
+                # feature row with a later acquisition source_timestamp. This is
+                # one event, not an additional training observation.
+                continue
             raise SpreadChallengerUnavailable(
                 "SPREAD_REPLAY_PERSISTED_NCAAF_EVENT_DUPLICATE",
-                f"duplicate persisted NCAAF feature row for event {event_id}",
+                f"conflicting persisted NCAAF feature rows for event {event_id}",
             )
-        seen.add(event_id)
+        seen[event_id] = fingerprint
 
         game = games.get(event_id)
         if game is None:

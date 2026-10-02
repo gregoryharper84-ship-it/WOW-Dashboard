@@ -166,3 +166,90 @@ def test_unknown_replay_sport_fails_closed():
     with pytest.raises(SpreadChallengerUnavailable) as exc:
         load_replay_rows(NeverUsedClient(), sport="CRICKET")
     assert exc.value.code == "SPREAD_REPLAY_SPORT_UNSUPPORTED"
+
+
+def test_ncaaf_persisted_adapter_collapses_refresh_only_duplicate_rows():
+    games = _ncaaf_games()
+    reference = adapt_ncaaf_rows(games, min_prior_games=2)
+    row = reference[0]
+    index = int(row.event_id.rsplit("-", 1)[1])
+    base = {
+        "official_event_id": f"NCAAF:{row.event_id}",
+        "event_start_time": row.event_start_time,
+        "feature_as_of": row.feature_as_of,
+        "feature_schema_version": NCAAF_PERSISTED_FEATURE_SCHEMA_VERSION,
+        "model_family": NCAAF_PERSISTED_FEATURE_MODEL_FAMILY,
+        "features": dict(row.features),
+        "source_manifest": {
+            "program": "LLP_DYNAMIC_TEAM_STATE_CHALLENGER_V1",
+            "feature_family_version": FEATURE_FAMILY_VERSION,
+            "home_prior_events": index,
+            "away_prior_events": index,
+            "source_manifest": {
+                "source": "CFBD:/games",
+                "source_timestamp": "2026-09-15T18:35:53+00:00",
+                "official_event_id": row.event_id,
+            },
+        },
+        "market_features_used": False,
+        "can_execute": False,
+    }
+    refresh = {
+        **base,
+        "source_manifest": {
+            **base["source_manifest"],
+            "source_manifest": {
+                **base["source_manifest"]["source_manifest"],
+                "source_timestamp": "2026-10-01T18:35:38+00:00",
+            },
+        },
+    }
+
+    result = adapt_ncaaf_persisted_rows([base, refresh], games)
+    assert len(result) == 1
+    assert result[0].event_id == row.event_id
+    assert result[0].features == row.features
+
+
+def test_ncaaf_persisted_adapter_rejects_conflicting_duplicate_rows():
+    games = _ncaaf_games()
+    reference = adapt_ncaaf_rows(games, min_prior_games=2)
+    row = reference[0]
+    index = int(row.event_id.rsplit("-", 1)[1])
+    base = {
+        "official_event_id": f"NCAAF:{row.event_id}",
+        "event_start_time": row.event_start_time,
+        "feature_as_of": row.feature_as_of,
+        "feature_schema_version": NCAAF_PERSISTED_FEATURE_SCHEMA_VERSION,
+        "model_family": NCAAF_PERSISTED_FEATURE_MODEL_FAMILY,
+        "features": dict(row.features),
+        "source_manifest": {
+            "program": "LLP_DYNAMIC_TEAM_STATE_CHALLENGER_V1",
+            "feature_family_version": FEATURE_FAMILY_VERSION,
+            "home_prior_events": index,
+            "away_prior_events": index,
+            "source_manifest": {
+                "source": "CFBD:/games",
+                "source_timestamp": "2026-09-15T18:35:53+00:00",
+                "official_event_id": row.event_id,
+            },
+        },
+        "market_features_used": False,
+        "can_execute": False,
+    }
+    conflicting = {
+        **base,
+        "features": {**base["features"], next(iter(base["features"])): 999.0},
+        "source_manifest": {
+            **base["source_manifest"],
+            "source_manifest": {
+                **base["source_manifest"]["source_manifest"],
+                "source_timestamp": "2026-10-01T18:35:38+00:00",
+            },
+        },
+    }
+
+    with pytest.raises(SpreadChallengerUnavailable) as exc:
+        adapt_ncaaf_persisted_rows([base, conflicting], games)
+    assert exc.value.code == "SPREAD_REPLAY_PERSISTED_NCAAF_EVENT_DUPLICATE"
+    assert exc.value.code != "MODEL_UNAVAILABLE"
