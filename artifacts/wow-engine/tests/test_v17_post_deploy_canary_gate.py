@@ -66,6 +66,17 @@ def test_post_deploy_orchestrator_is_only_deploy_consumer_for_heavy_verification
         assert 'workflows: ["wow-v17-render-production-deploy"]' not in text
 
 
+def test_deploy_and_post_deploy_verification_share_one_production_lock():
+    deploy = DEPLOY_WORKFLOW.read_text(encoding="utf-8")
+    orchestrator = ORCHESTRATOR_WORKFLOW.read_text(encoding="utf-8")
+    group = "group: wow-v17-production-deploy-and-verification"
+
+    assert group in deploy
+    assert group in orchestrator
+    assert "cancel-in-progress: false" in deploy
+    assert "cancel-in-progress: false" in orchestrator
+
+
 def test_post_deploy_orchestrator_fences_receipt_to_current_exact_sha():
     text = ORCHESTRATOR_WORKFLOW.read_text(encoding="utf-8")
 
