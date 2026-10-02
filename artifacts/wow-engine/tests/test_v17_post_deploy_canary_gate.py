@@ -75,7 +75,7 @@ def test_post_deploy_orchestrator_runs_bounded_smoke_before_memory_heavy_replay(
     assert priority < spread < cert
     assert "needs: priority-props" in text
     assert "needs: spread-forward" in text
-    assert text.count("always() &&") == 2
+    assert text.count("always() &&") == 3
     assert "uses: ./.github/workflows/wow-v17-priority-prop-lifecycle.yml" in text
     assert "post_deploy_smoke: true" in text
     assert "uses: ./.github/workflows/wow-v17-spread-forward-production-canary.yml" in text
