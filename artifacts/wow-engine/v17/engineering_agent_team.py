@@ -248,6 +248,22 @@ class PriorityDecision:
 
 
 @dataclass(frozen=True)
+class DualStreamDecision:
+    restoration: PriorityDecision
+    acceleration: PriorityDecision
+    acceleration_blocked_reason: str | None
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "restoration": self.restoration.as_dict(),
+            "acceleration": self.acceleration.as_dict(),
+            "acceleration_blocked_reason": self.acceleration_blocked_reason,
+            "can_execute": False,
+            "terminal_authority": "V17_TERMINAL_REDUCER",
+        }
+
+
+@dataclass(frozen=True)
 class SupportDecision:
     subagent: str
     reason: str
@@ -316,6 +332,94 @@ def select_priority_incident(records: list[dict[str, Any]]) -> PriorityDecision:
         state=state,
         reason=f"Highest-priority actionable ledger item: {severity} {state}.",
         frontier_allowed=not reliability_blocks_frontier(actionable),
+    )
+
+
+def _work_stream(record: dict[str, Any]) -> str:
+    return str(record.get("work_stream") or "RESTORATION").upper()
+
+
+def _conflict_keys(record: dict[str, Any]) -> set[str]:
+    keys: set[str] = set()
+    for field in ("conflict_keys", "production_code_owners"):
+        raw = record.get(field) or []
+        if isinstance(raw, str):
+            raw = [raw]
+        if isinstance(raw, list):
+            keys.update(str(value).strip().upper() for value in raw if str(value).strip())
+    for field in ("primary_subsystem", "affected_component"):
+        value = str(record.get(field) or "").strip().upper()
+        if value:
+            keys.add(value)
+    return keys
+
+
+def _records_conflict(restoration: dict[str, Any], acceleration: dict[str, Any]) -> tuple[bool, str]:
+    restoration_keys = _conflict_keys(restoration)
+    acceleration_keys = _conflict_keys(acceleration)
+    if not restoration_keys or not acceleration_keys:
+        return True, "Missing explicit conflict metadata; acceleration fails closed."
+    overlap = restoration_keys & acceleration_keys
+    if overlap:
+        return True, "Overlapping conflict keys: " + ", ".join(sorted(overlap))
+    return False, ""
+
+
+def select_dual_stream_work(records: list[dict[str, Any]]) -> DualStreamDecision:
+    """Select restoration first, then at most one provably non-conflicting acceleration item."""
+    restoration_records = [
+        record for record in records
+        if is_actionable(record) and _work_stream(record) != "ACCELERATION"
+    ]
+    acceleration_records = [
+        record for record in records
+        if is_actionable(record) and _work_stream(record) == "ACCELERATION"
+    ]
+
+    restoration = select_priority_incident(restoration_records)
+    if not acceleration_records:
+        return DualStreamDecision(
+            restoration=restoration,
+            acceleration=select_priority_incident([]),
+            acceleration_blocked_reason=None,
+        )
+
+    if restoration.incident_id is None:
+        return DualStreamDecision(
+            restoration=restoration,
+            acceleration=select_priority_incident(acceleration_records),
+            acceleration_blocked_reason=None,
+        )
+
+    restoration_record = next(
+        record for record in restoration_records if _record_id(record) == restoration.incident_id
+    )
+    ordered_acceleration = sorted(
+        acceleration_records,
+        key=lambda record: (
+            SEVERITY_WEIGHT.get(str(record.get("severity") or "P4").upper(), 99),
+            0 if str(record.get("state") or "OPEN").upper() in ACTIVE_RELEASE_STATES else 1,
+            str(record.get("updated_utc") or record.get("created_utc") or ""),
+            _record_id(record),
+        ),
+    )
+
+    blocked_reasons: list[str] = []
+    for candidate in ordered_acceleration:
+        conflicts, reason = _records_conflict(restoration_record, candidate)
+        if conflicts:
+            blocked_reasons.append(f"{_record_id(candidate)}: {reason}")
+            continue
+        return DualStreamDecision(
+            restoration=restoration,
+            acceleration=select_priority_incident([candidate]),
+            acceleration_blocked_reason=None,
+        )
+
+    return DualStreamDecision(
+        restoration=restoration,
+        acceleration=select_priority_incident([]),
+        acceleration_blocked_reason="; ".join(blocked_reasons) or "No non-conflicting acceleration item.",
     )
 
 
@@ -469,6 +573,14 @@ def self_check() -> dict[str, Any]:
         {"incident_id": "502", "severity": "P0", "state": "OPEN"},
     ]
     assert select_priority_incident(parked_then_executable).incident_id == "502"
+    dual = select_dual_stream_work([
+        {"incident_id": "502", "severity": "P0", "state": "OPEN", "conflict_keys": ["interactive-runtime"]},
+        {"incident_id": "1135", "severity": "P2", "state": "OPEN", "work_stream": "ACCELERATION", "conflict_keys": ["test-harness"]},
+    ])
+    assert dual.restoration.incident_id == "502"
+    assert dual.acceleration.incident_id == "1135"
+    assert dual.as_dict()["can_execute"] is False
+    assert dual.as_dict()["terminal_authority"] == "V17_TERMINAL_REDUCER"
     assert route_failure("ACTION_TRANSPORT_FAILURE") == "transport"
     assert route_failure("MODEL_UNAVAILABLE") == "model-capability"
     assert select_support_subagent({"typed_failure": "ACTION_TRANSPORT_FAILURE"}).subagent == "RUNTIME_TRANSPORT_SUBAGENT"
@@ -489,7 +601,7 @@ def self_check() -> dict[str, Any]:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=["self-check", "priority", "frontier-gate", "support-route"])
+    parser.add_argument("command", choices=["self-check", "priority", "dual-priority", "frontier-gate", "support-route"])
     parser.add_argument("--ledger", default=str(Path(__file__).with_name("incident-ledger.json")))
     parser.add_argument("--typed-failure", default="")
     parser.add_argument("--subsystem", default="")
@@ -514,6 +626,9 @@ def main() -> None:
     records = load_ledger(args.ledger)
     if args.command == "priority":
         print(json.dumps(select_priority_incident(records).as_dict(), indent=2, sort_keys=True))
+        return
+    if args.command == "dual-priority":
+        print(json.dumps(select_dual_stream_work(records).as_dict(), indent=2, sort_keys=True))
         return
     print(json.dumps({"frontier_allowed": not reliability_blocks_frontier(records)}, sort_keys=True))
 
