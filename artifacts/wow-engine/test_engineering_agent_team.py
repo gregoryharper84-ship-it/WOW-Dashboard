@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from v17.engineering_agent_team import (
     AGENT_ROLES,
+    PARKED_WAIT_STATES,
     SPECIALIST_SUBAGENTS,
+    is_actionable,
     reliability_blocks_frontier,
     select_priority_incident,
     select_support_subagent,
@@ -58,6 +60,42 @@ def test_priority_prefers_p0_over_p1() -> None:
         ]
     )
     assert decision.incident_id == "PM-P0"
+
+
+def test_all_non_executable_wait_gates_are_parked() -> None:
+    for wait_state in PARKED_WAIT_STATES:
+        assert is_actionable(
+            {
+                "postmortem_id": f"PM-{wait_state}",
+                "severity": "P0",
+                "state": "PR_CREATED",
+                "wait_state": wait_state,
+            }
+        ) is False
+
+
+def test_parked_p0_does_not_starve_next_executable_incident() -> None:
+    decision = select_priority_incident(
+        [
+            {
+                "postmortem_id": "PM-960",
+                "severity": "P0",
+                "state": "PR_CREATED",
+                "wait_state": "REVIEW_PENDING",
+            },
+            {
+                "postmortem_id": "PM-502",
+                "severity": "P0",
+                "state": "OPEN",
+            },
+            {
+                "postmortem_id": "PM-823",
+                "severity": "P1",
+                "state": "OPEN",
+            },
+        ]
+    )
+    assert decision.incident_id == "PM-502"
 
 
 def test_specialist_routing_preserves_exact_failure_ownership() -> None:
