@@ -239,3 +239,109 @@ def test_distinct_failure_domain_is_stored_without_renaming_terminal_code():
     assert record["terminal_code"] == "MODEL_SCORER_FAILED"
     assert record["failure_domain"] == "MODEL_SERVICE_UNREACHABLE"
     assert record["can_execute"] is False
+
+
+def test_explicit_readiness_records_identity_and_hydration_evidence_without_probability():
+    db = _DB()
+    store = subject.PickRequestStateStore(db)
+    ctx = store.begin(_batch("explicit-readiness", [_row(11)]))
+
+    store.record_readiness(
+        ctx,
+        "board-row-11",
+        identity_evidence={
+            "event_id": "NFL:20260921:11",
+            "player": "Player 11",
+            "identity_binding_status": "PASS",
+        },
+        hydration_evidence={
+            "evidence_version": "V17",
+            "game_log_n": 10,
+            "box_score_log_n": 10,
+            "opportunity_status": "PASS",
+        },
+        feature_snapshot_id="snapshot-11",
+        specialist_id="NFL_RECEIVING_YARDS_V17",
+    )
+
+    record = ctx.rows["board-row-11"]
+    assert record["current_stage"] == "MODEL_INPUTS_READY"
+    assert record["identity_verified_explicit"] is True
+    assert record["model_inputs_ready_explicit"] is True
+    assert record["feature_snapshot_id"] == "snapshot-11"
+    assert record["specialist_id"] == "NFL_RECEIVING_YARDS_V17"
+    assert record["can_execute"] is False
+    assert "probability" not in record["identity_evidence"]
+    assert "probability" not in record["hydration_evidence"]
+
+    transitions = db.tables[subject.TRANSITION_TABLE]
+    identity = next(item for item in transitions if item["to_stage"] == "IDENTITY_VERIFIED")
+    hydration = next(item for item in transitions if item["to_stage"] == "MODEL_INPUTS_READY")
+    assert identity["metadata"]["readiness_evidence_explicit"] is True
+    assert hydration["metadata"]["readiness_evidence_explicit"] is True
+
+
+def test_downstream_stage_gap_fill_is_marked_synthetic_not_explicit_readiness():
+    db = _DB()
+    store = subject.PickRequestStateStore(db)
+    ctx = store.begin(_batch("synthetic-gap-fill", [_row(12)]))
+
+    store.advance(ctx, "board-row-12", "MODEL_COMPUTED")
+
+    record = ctx.rows["board-row-12"]
+    assert record["identity_verified_explicit"] is False
+    assert record["model_inputs_ready_explicit"] is False
+    transitions = db.tables[subject.TRANSITION_TABLE]
+    readiness = [
+        item for item in transitions
+        if item["to_stage"] in subject.READINESS_EVIDENCE_STAGES
+    ]
+    assert len(readiness) == 2
+    assert all(item["metadata"]["readiness_evidence_explicit"] is False for item in readiness)
+    assert all(item["metadata"]["synthetic_gap_fill"] is True for item in readiness)
+    assert all(item["can_execute"] is False for item in readiness)
+
+
+def test_record_inputs_ready_persists_normalized_identity_and_hydration_evidence():
+    db = _DB()
+    store = subject.PickRequestStateStore(db)
+    row = _row(13)
+    row.evidence = SimpleNamespace(
+        role_status={
+            "identity_binding_status": "PASS",
+            "canonical_event_id": "NFL:20260921:13",
+            "verified_canonical_event_id": "NFL:20260921:13",
+            "provider_event_ids": {"ESPN": "401000013"},
+        },
+        opportunity_ledger={"status": "PASS"},
+        evidence_version="V17_TEST",
+        rate_provenance="TEST_ONLY",
+        game_log=list(range(10)),
+        box_score_log=[{"n": i} for i in range(10)],
+    )
+    ctx = store.begin(_batch("record-inputs-ready", [row]))
+    token = subject._ACTIVE.set(ctx)
+    try:
+        subject.record_inputs_ready(
+            row,
+            {
+                "event_id": "NFL:20260921:13",
+                "sport": "NFL",
+                "player": "Player 13",
+                "captured_at": "2026-09-21T12:00:00+00:00",
+                "role_timestamp": "2026-09-21T11:55:00+00:00",
+                "source_timestamps": {"ESPN": "2026-09-21T11:50:00+00:00"},
+            },
+        )
+    finally:
+        subject._ACTIVE.reset(token)
+
+    record = ctx.rows["board-row-13"]
+    assert record["identity_verified_explicit"] is True
+    assert record["model_inputs_ready_explicit"] is True
+    assert record["identity_evidence"]["identity_binding_status"] == "PASS"
+    assert record["identity_evidence"]["provider_event_ids"] == {"ESPN": "401000013"}
+    assert record["hydration_evidence"]["game_log_n"] == 10
+    assert record["hydration_evidence"]["box_score_log_n"] == 10
+    assert record["hydration_evidence"]["opportunity_status"] == "PASS"
+    assert record["can_execute"] is False
