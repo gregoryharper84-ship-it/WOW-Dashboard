@@ -1,0 +1,49 @@
+{
+  "issue": 1136,
+  "scope": "scorer sentinel acceptance contract",
+  "stages": [
+    "DISCOVERY",
+    "IDENTITY",
+    "HYDRATION",
+    "MODEL_REGISTRY",
+    "MODEL_INVOKE",
+    "CALIBRATION_BOUNDS",
+    "PERSISTENCE",
+    "TERMINAL",
+    "USER_PATH"
+  ],
+  "injected_cases": [
+    {
+      "name": "hydration_failure",
+      "stage": "HYDRATION",
+      "expected": "EXACT_TYPED_BLOCKER"
+    },
+    {
+      "name": "scorer_failure",
+      "stage": "MODEL_INVOKE",
+      "expected": "EXACT_TYPED_BLOCKER"
+    },
+    {
+      "name": "persistence_failure",
+      "stage": "PERSISTENCE",
+      "expected": "EXACT_TYPED_BLOCKER"
+    },
+    {
+      "name": "healthy",
+      "expected": "PASS"
+    }
+  ],
+  "priorities": [
+    "NFL_TEAM_EVENT_PICKEM",
+    "MLB_TEAM_EVENT_PROPS",
+    "WNBA_TEAM_EVENT_PROPS_SPREAD",
+    "NHL_WINNER",
+    "NCAAF_TEAM_EVENT_SPREAD"
+  ],
+  "invariants": {
+    "can_execute": false,
+    "terminal_authority": "V17_TERMINAL_REDUCER",
+    "substitute_probability_allowed": false,
+    "publication_allowed": false
+  }
+}
