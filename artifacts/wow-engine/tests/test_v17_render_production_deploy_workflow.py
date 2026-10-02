@@ -111,6 +111,10 @@ def test_daily_snapshot_has_deploy_handoff_runway_and_network_retries():
     )
 
     assert "timeout-minutes: 40" in text
+    assert "workflow_call:" in text
+    assert "post_deploy_acceptance:" in text
+    assert "\n  push:\n" not in text
+    assert "if: inputs.post_deploy_acceptance == true" in text
     assert "max_attempts = 90" in text
     assert "retry_delay_seconds = 20" in text
     assert "except (urllib.error.URLError, TimeoutError):" in text

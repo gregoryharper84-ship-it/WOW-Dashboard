@@ -7,6 +7,7 @@ ORCHESTRATOR_WORKFLOW = REPO_ROOT / ".github/workflows/wow-v17-post-deploy-verif
 CANARY_WORKFLOW = REPO_ROOT / ".github/workflows/wow-v17-spread-forward-production-canary.yml"
 CERT_WORKFLOW = REPO_ROOT / ".github/workflows/wow-v17-spread-certification-replay.yml"
 PRIORITY_WORKFLOW = REPO_ROOT / ".github/workflows/wow-v17-priority-prop-lifecycle.yml"
+DAILY_WORKFLOW = REPO_ROOT / ".github/workflows/wow-v17-daily-snapshot.yml"
 
 
 def test_deploy_controller_filters_non_main_upstream_runs_before_creation():
@@ -74,11 +75,34 @@ def test_post_deploy_orchestrator_runs_bounded_smoke_before_memory_heavy_replay(
     assert priority < spread < cert
     assert "needs: priority-props" in text
     assert "needs: spread-forward" in text
-    assert text.count("always() &&") == 2
+    assert text.count("always() &&") == 3
     assert "uses: ./.github/workflows/wow-v17-priority-prop-lifecycle.yml" in text
     assert "post_deploy_smoke: true" in text
     assert "uses: ./.github/workflows/wow-v17-spread-forward-production-canary.yml" in text
     assert "uses: ./.github/workflows/wow-v17-spread-certification-replay.yml" in text
+
+
+
+def test_golden_full_slate_runs_only_as_post_deploy_reusable_acceptance():
+    orchestrator = ORCHESTRATOR_WORKFLOW.read_text(encoding="utf-8")
+    daily = DAILY_WORKFLOW.read_text(encoding="utf-8")
+
+    assert "workflow_call:" in daily
+    assert "post_deploy_acceptance:" in daily
+    assert "\n  push:\n" not in daily
+    assert "if: inputs.post_deploy_acceptance == true" in daily
+
+    golden = orchestrator.index("  golden-full-slate:")
+    certification = orchestrator.index("  spread-certification:")
+    assert certification < golden
+    section = orchestrator[golden:]
+    assert "needs: spread-certification" in section
+    assert "uses: ./.github/workflows/wow-v17-daily-snapshot.yml" in section
+    assert "post_deploy_acceptance: true" in section
+    assert "github.event_name == 'workflow_run'" in section
+    assert "github.event.workflow_run.conclusion == 'success'" in section
+    assert "github.event.workflow_run.head_branch == 'main'" in section
+    assert "github.event_name == 'workflow_dispatch'" not in section
 
 
 def test_priority_prop_deploy_smoke_skips_next_day_without_weakening_hourly_default():

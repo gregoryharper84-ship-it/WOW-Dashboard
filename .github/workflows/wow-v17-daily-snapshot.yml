@@ -7,17 +7,13 @@ on:
     - cron: "0 17 * * *"
     - cron: "0 23 * * *"
   workflow_dispatch:
-  push:
-    branches:
-      - main
-    paths:
-      - ".github/workflows/wow-v17-daily-snapshot.yml"
-      - "artifacts/wow-engine/github_actions_oidc.py"
-      - "artifacts/wow-engine/v17/daily_snapshot_oidc_bridge.py"
-      - "artifacts/wow-engine/v17/daily_snapshot_runtime.py"
-      - "artifacts/wow-engine/v17/__init__.py"
-      - "artifacts/wow-engine/test_v17_github_oidc.py"
-      - "artifacts/wow-engine/tests/test_v17_daily_snapshot_oidc_bridge.py"
+  workflow_call:
+    inputs:
+      post_deploy_acceptance:
+        description: Run the serialized NFL exact-once production acceptance after exact-SHA deploy
+        required: false
+        type: boolean
+        default: false
   pull_request:
     paths:
       - ".github/workflows/wow-v17-daily-snapshot.yml"
@@ -191,7 +187,7 @@ jobs:
 
   nfl-full-slate-exact-once-acceptance:
     name: Verify NFL >12 FULL moneyline exact-once production path
-    if: github.event_name == 'push'
+    if: inputs.post_deploy_acceptance == true
     needs: daily-snapshot
     runs-on: ubuntu-latest
     timeout-minutes: 30
