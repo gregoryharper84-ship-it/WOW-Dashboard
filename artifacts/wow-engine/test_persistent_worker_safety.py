@@ -1,21 +1,28 @@
 from __future__ import annotations
 
 from v17.persistent_worker_safety import (
+    AttemptReceipt,
     CircuitState,
     Lease,
     MigrationDecision,
+    ProgressDecision,
     RetryAction,
     RetryState,
     RollbackDecision,
     WorkerMode,
+    assess_material_progress,
     build_dlq_receipt,
     build_ticket_context,
     circuit_mode,
+    consecutive_no_progress_count,
     lease_allows_mutation,
     migration_decision,
+    progress_aware_retry_action,
     retry_action,
     rollback_decision,
     safe_hold_receipt,
+    stable_content_hash,
+    stable_failure_fingerprint,
 )
 
 
@@ -187,3 +194,137 @@ def test_context_requires_fresh_execution_identity() -> None:
         assert "execution_id" in str(exc)
     else:
         raise AssertionError("blank execution identity must fail closed")
+
+
+def _attempt(
+    attempt_id: str,
+    *,
+    fingerprint: str = "fp-1",
+    stage: str = "PATCH",
+    boundary: str = "parser",
+    patch_sha: str = "",
+    failing_tests_hash: str = "tests-a",
+    acceptance_pass_count: int = 0,
+    evidence_hash: str = "evidence-a",
+) -> AttemptReceipt:
+    return AttemptReceipt(
+        attempt_id=attempt_id,
+        ticket_id="PM-823",
+        failure_fingerprint=fingerprint,
+        workflow_stage=stage,
+        first_failing_boundary=boundary,
+        typed_failure="ACTION_TRANSPORT_FAILURE",
+        patch_sha=patch_sha,
+        failing_tests_hash=failing_tests_hash,
+        acceptance_pass_count=acceptance_pass_count,
+        evidence_hash=evidence_hash,
+        context_token_count=1200,
+    )
+
+
+def test_failure_fingerprint_ignores_volatile_ids_timestamps_and_line_numbers() -> None:
+    a = stable_failure_fingerprint(
+        error_type="RemoteProtocolError",
+        message="request_id=abc123 failed at 2026-10-02T16:00:00Z",
+        stack_frames=['File "worker.py", line 101', "0xABC123"],
+        typed_failure="ACTION_TRANSPORT_FAILURE",
+        workflow_stage="PATCH",
+        failing_test="test_transport",
+    )
+    b = stable_failure_fingerprint(
+        error_type="RemoteProtocolError",
+        message="request_id=xyz999 failed at 2026-10-02T16:05:00Z",
+        stack_frames=['File "worker.py", line 904', "0xDEF456"],
+        typed_failure="ACTION_TRANSPORT_FAILURE",
+        workflow_stage="PATCH",
+        failing_test="test_transport",
+    )
+    assert a == b
+
+
+def test_failure_fingerprint_changes_for_material_failure_change() -> None:
+    a = stable_failure_fingerprint(
+        error_type="RemoteProtocolError",
+        message="connection closed",
+        typed_failure="ACTION_TRANSPORT_FAILURE",
+        workflow_stage="PATCH",
+    )
+    b = stable_failure_fingerprint(
+        error_type="ValueError",
+        message="invalid canonical event id",
+        typed_failure="CANONICAL_IDENTITY_FAILURE",
+        workflow_stage="PATCH",
+    )
+    assert a != b
+
+
+def test_same_failure_with_stage_advancement_is_progress() -> None:
+    previous = _attempt("1", stage="REPRODUCE")
+    current = _attempt("2", stage="ROOT_CAUSE")
+    assert assess_material_progress(previous, current) == ProgressDecision.PROGRESS
+
+
+def test_acceptance_criterion_advancement_is_progress() -> None:
+    previous = _attempt("1", acceptance_pass_count=1)
+    current = _attempt("2", acceptance_pass_count=2)
+    assert assess_material_progress(previous, current) == ProgressDecision.PROGRESS
+
+
+def test_new_evidence_or_test_boundary_is_progress() -> None:
+    previous = _attempt("1", evidence_hash=stable_content_hash(["trace-a"]))
+    current = _attempt("2", evidence_hash=stable_content_hash(["trace-a", "trace-b"]))
+    assert assess_material_progress(previous, current) == ProgressDecision.PROGRESS
+
+    later = _attempt(
+        "3",
+        evidence_hash=current.evidence_hash,
+        failing_tests_hash=stable_content_hash(["test_transport", "test_identity"]),
+    )
+    assert assess_material_progress(current, later) == ProgressDecision.PROGRESS
+
+
+def test_new_patch_sha_alone_does_not_count_as_progress() -> None:
+    previous = _attempt("1", patch_sha="sha-a")
+    current = _attempt("2", patch_sha="sha-b")
+    assert assess_material_progress(previous, current) == ProgressDecision.NO_PROGRESS
+
+
+def test_repeated_same_failure_without_progress_goes_to_dlq() -> None:
+    history = [
+        _attempt("1", patch_sha="sha-a"),
+        _attempt("2", patch_sha="sha-b"),
+        _attempt("3", patch_sha="sha-c"),
+    ]
+    assert consecutive_no_progress_count(history) == 2
+    assert progress_aware_retry_action(history, no_progress_limit=2, max_attempts=5) == RetryAction.DLQ
+
+
+def test_progress_resets_trailing_stagnation_count() -> None:
+    history = [
+        _attempt("1", stage="REPRODUCE"),
+        _attempt("2", stage="ROOT_CAUSE"),
+        _attempt("3", stage="ROOT_CAUSE", patch_sha="sha-a"),
+    ]
+    assert consecutive_no_progress_count(history) == 1
+    assert progress_aware_retry_action(history, no_progress_limit=2, max_attempts=5) == RetryAction.RETRY
+
+
+def test_different_failure_fingerprint_resets_stagnation_chain() -> None:
+    history = [
+        _attempt("1", fingerprint="fp-a"),
+        _attempt("2", fingerprint="fp-a"),
+        _attempt("3", fingerprint="fp-b"),
+    ]
+    assert consecutive_no_progress_count(history) == 0
+    assert progress_aware_retry_action(history, no_progress_limit=2, max_attempts=5) == RetryAction.RETRY
+
+
+def test_hard_attempt_ceiling_still_prevents_infinite_loop() -> None:
+    history = [
+        _attempt("1", fingerprint="fp-1", stage="REPRODUCE"),
+        _attempt("2", fingerprint="fp-2", stage="ROOT_CAUSE"),
+        _attempt("3", fingerprint="fp-3", stage="PATCH"),
+        _attempt("4", fingerprint="fp-4", stage="NARROW_TEST"),
+        _attempt("5", fingerprint="fp-5", stage="REGRESSION"),
+    ]
+    assert progress_aware_retry_action(history, no_progress_limit=2, max_attempts=5) == RetryAction.DLQ
