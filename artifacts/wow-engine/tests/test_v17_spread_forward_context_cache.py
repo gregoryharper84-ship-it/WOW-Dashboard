@@ -92,6 +92,11 @@ def _install_scoring_stubs(monkeypatch, *, load_delay: float = 0.0):
         }
 
     monkeypatch.setattr(shadow, "load_ncaaf_forward_context", load)
+    monkeypatch.setattr(
+        shadow,
+        "_ncaaf_forward_source_fingerprint",
+        lambda _client: ("hist-1", row.event_start_time, "hist-1", row.event_start_time),
+    )
     monkeypatch.setattr(shadow, "fit_margin_distribution_artifact", fit)
     monkeypatch.setattr(shadow, "build_forward_matchup_features", features)
     monkeypatch.setattr(shadow, "score_home_spread", score)
@@ -169,3 +174,39 @@ def test_cold_build_contention_fails_typed_instead_of_spawning_parallel_load(mon
 
     assert exc.value.code == "SPREAD_FORWARD_CONTEXT_BUILD_BUSY"
     assert exc.value.code != "MODEL_UNAVAILABLE"
+
+
+def test_expired_cache_reuses_exact_fit_when_immutable_source_is_unchanged(monkeypatch):
+    calls = _install_scoring_stubs(monkeypatch)
+    monkeypatch.setattr(shadow, "FORWARD_CONTEXT_CACHE_TTL_SECONDS", 0.0)
+
+    first = _run("game-1")
+    second = _run("game-2")
+
+    assert calls["load"] == 1
+    assert calls["fit"] == 1
+    assert first["training_dataset_hash"] == second["training_dataset_hash"] == "dataset-hash"
+    assert second["forward_context_cache"]["status"] == "HIT_SOURCE_UNCHANGED"
+    assert second["probability_publishable"] is False
+    assert second["can_execute"] is False
+
+
+def test_expired_cache_rebuilds_immediately_when_immutable_source_advances(monkeypatch):
+    calls = _install_scoring_stubs(monkeypatch)
+    monkeypatch.setattr(shadow, "FORWARD_CONTEXT_CACHE_TTL_SECONDS", 0.0)
+    monkeypatch.setattr(
+        shadow,
+        "_ncaaf_forward_source_fingerprint",
+        lambda _client: ("hist-2", "2026-09-21T18:00:00+00:00", "hist-2", "2026-09-21T18:00:00+00:00"),
+    )
+
+    _run("game-1")
+    second = _run("game-2")
+
+    assert calls["load"] == 2
+    assert calls["fit"] == 2
+    assert second["forward_context_cache"]["status"] == "MISS_REBUILT"
+    assert second["probability_publishable"] is False
+    assert second["automatic_certification"] is False
+    assert second["automatic_promotion"] is False
+    assert second["can_execute"] is False
