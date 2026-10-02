@@ -141,13 +141,19 @@ jobs:
 
           origin = os.environ["WOW_ACTION_ORIGIN"].rstrip("/")
           program = "LLP_DYNAMIC_TEAM_STATE_CHALLENGER_V1"
-          ancillary_endpoints = [
-              ("BASKETBALL", "/internal/v17/basketball-model-maintenance"),
-              ("NCAAF", "/internal/v17/ncaaf-model-maintenance"),
-              ("NCAAB", "/internal/v17/ncaab-model-maintenance"),
-              ("SOCCER", "/internal/v17/soccer-model-maintenance"),
-              ("TENNIS", "/internal/v17/tennis-model-maintenance"),
-          ]
+          event_name = os.environ.get("GITHUB_EVENT_NAME", "")
+          push_fast_lane = event_name == "push"
+          ancillary_endpoints = (
+              [("NCAAF", "/internal/v17/ncaaf-model-maintenance")]
+              if push_fast_lane
+              else [
+                  ("BASKETBALL", "/internal/v17/basketball-model-maintenance"),
+                  ("NCAAF", "/internal/v17/ncaaf-model-maintenance"),
+                  ("NCAAB", "/internal/v17/ncaab-model-maintenance"),
+                  ("SOCCER", "/internal/v17/soccer-model-maintenance"),
+                  ("TENNIS", "/internal/v17/tennis-model-maintenance"),
+              ]
+          )
 
           def fresh_oidc_token():
               oidc_url = os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"]
@@ -211,21 +217,27 @@ jobs:
                       time.sleep(10 * (attempt + 1))
               return transport_block(name, last_code, last_detail)
 
-          nfl_event_v2 = post_bounded(
-              "TEAM_STATE_NFL_EVENT_V2",
-              "/internal/v17/team-state-challenger-maintenance/NFL_EVENT_V2",
-              attempts=3,
-              timeout=180,
-          )
-          assert nfl_event_v2.get("program") == program, nfl_event_v2
-          assert isinstance(nfl_event_v2.get("rows"), list) and nfl_event_v2.get("rows"), nfl_event_v2
+          team_state_results = {}
+          if not push_fast_lane:
+              nfl_event_v2 = post_bounded(
+                  "TEAM_STATE_NFL_EVENT_V2",
+                  "/internal/v17/team-state-challenger-maintenance/NFL_EVENT_V2",
+                  attempts=3,
+                  timeout=180,
+              )
+              assert nfl_event_v2.get("program") == program, nfl_event_v2
+              assert isinstance(nfl_event_v2.get("rows"), list) and nfl_event_v2.get("rows"), nfl_event_v2
+              team_state_results["NFL_EVENT_V2"] = nfl_event_v2
 
-          team_state_results = {"NFL_EVENT_V2": nfl_event_v2}
-          team_state_scopes = [
-              "NCAAF", "NFL", "NBA", "WNBA", "MLB", "NCAAB",
-              "SOCCER_EPL", "SOCCER_BUNDESLIGA", "SOCCER_LALIGA",
-              "SOCCER_SERIE_A", "SOCCER_LIGUE_1",
-          ]
+          team_state_scopes = (
+              ["NCAAF"]
+              if push_fast_lane
+              else [
+                  "NCAAF", "NFL", "NBA", "WNBA", "MLB", "NCAAB",
+                  "SOCCER_EPL", "SOCCER_BUNDESLIGA", "SOCCER_LALIGA",
+                  "SOCCER_SERIE_A", "SOCCER_LIGUE_1",
+              ]
+          )
           for scope in team_state_scopes:
               payload = post_bounded(
                   f"TEAM_STATE_{scope}",
