@@ -148,6 +148,7 @@ def test_supported_mlb_pitcher_strikeout_route_hydrates_exact_l10():
     assert evidence["game_log"][0] == 4.0
     assert evidence["box_score_log"][0]["outs"] == 20
     assert evidence["role_status"]["role"] == "STARTING_PITCHER"
+    assert evidence["role_status"]["player_id"] == 123
     assert evidence["role_status"]["official_game_pk"] == 999
     assert evidence["role_status"]["opponent"] == "AWY"
     assert evidence["opportunity_ledger"]["status"] == "READY"
