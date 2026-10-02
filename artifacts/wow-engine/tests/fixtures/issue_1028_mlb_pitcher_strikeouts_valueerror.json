@@ -1,0 +1,27 @@
+{
+  "issue": 1028,
+  "classification": "Class B acquisition/persistence reliability",
+  "source_run": "36612516786",
+  "source_job": "109557244828",
+  "candidate": {
+    "participant": "AJ Blubaugh",
+    "market": "PITCHER_STRIKEOUTS",
+    "observed": "MLB_FORWARD_ACQUISITION_ERROR:ValueError"
+  },
+  "expected": {
+    "row_scope": true,
+    "generic_valueerror_must_not_be_snapshot_write_failure": true,
+    "snapshot_write_failure_only_on_persistence_failure": true
+  },
+  "adjacent_markets": [
+    "PITCHING_OUTS",
+    "STRIKES_THROWN",
+    "BALLS_THROWN"
+  ],
+  "invariants": {
+    "can_execute": false,
+    "terminal_authority": "V17_TERMINAL_REDUCER",
+    "immutable_prediction_integrity": true,
+    "probability_substitution_allowed": false
+  }
+}
