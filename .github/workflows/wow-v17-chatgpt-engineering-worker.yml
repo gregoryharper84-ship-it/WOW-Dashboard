@@ -382,7 +382,6 @@ jobs:
       - name: Enforce mutation safety gate
         id: mutation_gate
         if: >-
-          steps.mutation_gate.outputs.allowed == 'true' &&
           steps.triage.outputs.repairable == 'true' &&
           (steps.specialist.outputs.hypothesis == 'CONFIRMED' ||
            steps.specialist.outputs.hypothesis == 'NARROWED') &&
@@ -433,6 +432,7 @@ jobs:
       - name: Implementation agent
         id: implementation_agent
         if: >-
+          steps.mutation_gate.outputs.allowed == 'true' &&
           steps.triage.outputs.repairable == 'true' &&
           (steps.specialist.outputs.hypothesis == 'CONFIRMED' ||
            steps.specialist.outputs.hypothesis == 'NARROWED') &&
@@ -717,6 +717,8 @@ jobs:
           - restoration_action: ${LEAD_ACTION:-NOT_RUN}
           - last_acceleration_advancement: ${ACCEL_ADVANCEMENT:-NOT_RUN}
           - acceleration_next_action: ${ACCEL_NEXT:-NOT_RUN}
+          - retry_dlq_state: NONE
+          - safe_hold_state: ${WORKER_MODE:-SAFE_HOLD}
           - duplicate_incident_created: false
           - can_execute: false
           - terminal_authority: V17_TERMINAL_REDUCER
