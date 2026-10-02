@@ -11,6 +11,7 @@ from v17.specialist_certification import (
     QualificationStatus,
     QualificationVerificationRequest,
     SpecialistRuntimePayload,
+    compute_triad_hash,
     evaluate_row_publication_gate,
     verify_specialist_qualification,
 )
@@ -53,6 +54,11 @@ def _payload(**overrides):
                 "minimum_validation_rows": 1000,
             },
             "lower_bound_method": "BOOTSTRAP_PERCENTILE_5TH",
+            "triad_hash": compute_triad_hash(
+                "a" * 40,
+                "nfl-spread-features-v3",
+                "cal-7",
+            ),
         },
         calibration_artifact={
             "artifact_id": "cal-7",
@@ -124,3 +130,10 @@ def test_specialist_specific_calibration_policy_is_enforced():
 def test_missing_lower_bound_fails_closed():
     status, _ = verify_specialist_qualification(_request(), _payload(lower_bound_artifact={}))
     assert status == QualificationStatus.LOWER_BOUND_ARTIFACT_MISSING
+
+
+def test_tampered_triad_digest_fails_closed_as_version_mismatch():
+    cert = dict(_payload().certification)
+    cert["triad_hash"] = "0" * 64
+    status, _ = verify_specialist_qualification(_request(), _payload(certification=cert))
+    assert status == QualificationStatus.MODEL_VERSION_MISMATCH
