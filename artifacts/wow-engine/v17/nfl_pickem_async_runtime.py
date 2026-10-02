@@ -189,12 +189,22 @@ async def _worker_loop(
     db_client_fn: Any,
     event_api: Any,
 ) -> None:
-    poll_seconds = _int_env("WOW_V17_NFL_PICKEM_ASYNC_POLL_SECONDS", 2, minimum=1, maximum=30)
+    poll_seconds = _int_env("WOW_V17_NFL_PICKEM_ASYNC_POLL_SECONDS", 30, minimum=1, maximum=120)
+    startup_delay_seconds = _int_env("WOW_V17_NFL_PICKEM_ASYNC_STARTUP_DELAY_SECONDS", 20, minimum=0, maximum=300)
     # A prior real 16-game request required ~299 seconds. Keep the lease above the
     # observed path while still allowing restart recovery well inside one hour.
     lease_seconds = _int_env("WOW_V17_NFL_PICKEM_ASYNC_LEASE_SECONDS", 900, minimum=300, maximum=3600)
     max_attempts = _int_env("WOW_V17_NFL_PICKEM_ASYNC_MAX_ATTEMPTS", 3, minimum=1, maximum=10)
     wake: asyncio.Event = app.state.wow_v17_nfl_pickem_async_wake
+
+    # Stagger restart recovery behind the Daily worker. New submissions still
+    # set the wake event and interrupt this wait immediately.
+    if startup_delay_seconds:
+        try:
+            await asyncio.wait_for(wake.wait(), timeout=float(startup_delay_seconds))
+            wake.clear()
+        except TimeoutError:
+            pass
 
     while True:
         claim: dict[str, Any] | None = None
