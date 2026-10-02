@@ -14,13 +14,15 @@ class _BaseApi:
 
 
 class _Query:
-    def __init__(self, record):
+    def __init__(self, record, calls=None):
         self.record = record
+        self.calls = calls if calls is not None else []
 
     def select(self, *_args, **_kwargs):
         return self
 
-    def eq(self, *_args, **_kwargs):
+    def eq(self, *args, **kwargs):
+        self.calls.append(("eq", args, kwargs))
         return self
 
     def order(self, *_args, **_kwargs):
@@ -34,11 +36,12 @@ class _Query:
 
 
 class _Db:
-    def __init__(self, record):
+    def __init__(self, record, calls=None):
         self.record = record
+        self.calls = calls if calls is not None else []
 
     def table(self, _name):
-        return _Query(self.record)
+        return _Query(self.record, self.calls)
 
 
 class _Prod:
@@ -47,13 +50,14 @@ class _Prod:
 
     def __init__(self, record):
         self.record = record
+        self.calls = []
 
     @staticmethod
     def _runtime_capability(_key):
         return {"capability_status": "AVAILABLE"}
 
     def get_client(self):
-        return _Db(self.record)
+        return _Db(self.record, self.calls)
 
 
 class _Market:
@@ -165,3 +169,22 @@ def test_stale_snapshot_falls_back_to_external_hydration(monkeypatch):
     assert prepared.rows[0].evidence is not None
     assert prepared.rows[1].evidence is prepared.rows[0].evidence
     assert prepared.rows[0].evidence.rate_provenance == "OFFICIAL_TEST"
+
+
+def test_cache_reuse_is_not_invalidated_by_market_line_move(monkeypatch):
+    now = datetime.now(timezone.utc)
+    monkeypatch.setenv("WOW_INTERACTIVE_PROP_EVIDENCE_MAX_AGE_SECONDS", "300")
+    record = _record(now, age_seconds=20)
+    record["line"] = 4.5
+    market = _Market(record)
+    batch = _batch(now)
+    moved = batch.rows[0].model_copy(update={"line": 5.5})
+
+    evidence = subject._cached_evidence(moved, market_api=market)
+
+    assert evidence is not None
+    eq_filters = [call[1] for call in market.prod.calls if call[0] == "eq"]
+    assert ("event_id", "MLB:CACHE:1") in eq_filters
+    assert ("stat_type", "PITCHER_STRIKEOUTS") in eq_filters
+    assert not any(args and args[0] == "line" for args in eq_filters)
+    assert evidence.rate_provenance.startswith("REUSED_IMMUTABLE_SNAPSHOT:")
