@@ -21,7 +21,8 @@ jobs:
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.head_branch == 'main')
+       github.event.workflow_run.head_branch == 'main' &&
+       github.event.workflow_run.head_sha == github.sha)
     uses: ./.github/workflows/wow-v17-priority-prop-lifecycle.yml
     with:
       post_deploy_smoke: true
@@ -34,7 +35,8 @@ jobs:
       always() &&
       (github.event_name == 'workflow_dispatch' ||
        (github.event.workflow_run.conclusion == 'success' &&
-        github.event.workflow_run.head_branch == 'main'))
+        github.event.workflow_run.head_branch == 'main' &&
+        github.event.workflow_run.head_sha == github.sha))
     uses: ./.github/workflows/wow-v17-spread-forward-production-canary.yml
     secrets: inherit
 
@@ -45,7 +47,8 @@ jobs:
       always() &&
       (github.event_name == 'workflow_dispatch' ||
        (github.event.workflow_run.conclusion == 'success' &&
-        github.event.workflow_run.head_branch == 'main'))
+        github.event.workflow_run.head_branch == 'main' &&
+        github.event.workflow_run.head_sha == github.sha))
     uses: ./.github/workflows/wow-v17-spread-certification-replay.yml
     secrets: inherit
 
@@ -56,7 +59,8 @@ jobs:
       always() &&
       github.event_name == 'workflow_run' &&
       github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.head_branch == 'main'
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_sha == github.sha
     uses: ./.github/workflows/wow-v17-daily-snapshot.yml
     with:
       post_deploy_acceptance: true
