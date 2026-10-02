@@ -320,8 +320,9 @@ def select_priority_incident(records: list[dict[str, Any]]) -> PriorityDecision:
         severity = str(record.get("severity") or "P4").upper()
         state = str(record.get("state") or "OPEN").upper()
         release_first = 0 if state in ACTIVE_RELEASE_STATES else 1
+        priority_rank = int(record.get("priority_rank") or 9999)
         updated = str(record.get("updated_utc") or record.get("created_utc") or "")
-        return (SEVERITY_WEIGHT.get(severity, 99), release_first, updated, _record_id(record))
+        return (SEVERITY_WEIGHT.get(severity, 99), release_first, priority_rank, updated, _record_id(record))
 
     chosen = sorted(actionable, key=sort_key)[0]
     severity = str(chosen.get("severity") or "P4").upper()
@@ -399,6 +400,7 @@ def select_dual_stream_work(records: list[dict[str, Any]]) -> DualStreamDecision
         key=lambda record: (
             SEVERITY_WEIGHT.get(str(record.get("severity") or "P4").upper(), 99),
             0 if str(record.get("state") or "OPEN").upper() in ACTIVE_RELEASE_STATES else 1,
+            int(record.get("priority_rank") or 9999),
             str(record.get("updated_utc") or record.get("created_utc") or ""),
             _record_id(record),
         ),
@@ -573,6 +575,11 @@ def self_check() -> dict[str, Any]:
         {"incident_id": "502", "severity": "P0", "state": "OPEN"},
     ]
     assert select_priority_incident(parked_then_executable).incident_id == "502"
+    ranked = [
+        {"incident_id": "960", "severity": "P0", "state": "OPEN", "priority_rank": 2},
+        {"incident_id": "502", "severity": "P0", "state": "OPEN", "priority_rank": 1},
+    ]
+    assert select_priority_incident(ranked).incident_id == "502"
     dual = select_dual_stream_work([
         {"incident_id": "502", "severity": "P0", "state": "OPEN", "conflict_keys": ["interactive-runtime"]},
         {"incident_id": "1135", "severity": "P2", "state": "OPEN", "work_stream": "ACCELERATION", "conflict_keys": ["test-harness"]},
