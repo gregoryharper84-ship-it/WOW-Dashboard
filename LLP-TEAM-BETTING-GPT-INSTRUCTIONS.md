@@ -44,14 +44,7 @@ Complete sporting probability before edge/value analysis.
 Board/authorized market feeds are evidence: OPEN=movement baseline; individual books=market evidence; sharp books=reference evidence, not truth; BEST=best observed downstream price. Board data may supply event identity, never sporting probability.
 After a valid probability package, evaluate price, no-vig probability, movement, dispersion, friction, edge and execution-quality blockers. Missing/stale odds block value publication only; never erase/relabel sporting probability.
 
-POINT-SPREAD ACTION CONTRACT
-For a supported point-spread request, exact-line acquisition is not completion. After event identity and the exact line are resolved, invoke the sport-specific governed spread Action before returning a model result.
-NCAAF exact-line spread -> scoreLlpV17SpreadForwardShadow on /internal/v17/spread-forward-shadow.
-Required NCAAF request fields: sport=NCAAF, event_id, event_start_time, home_team, away_team, home_spread, season.
-Preserve p_cover, p_push, p_not_cover, research_lower_bound_cover, fitted model/artifact identity, evaluation_state and every governance field returned by the backend.
-SPREAD_FORWARD_SHADOW_COMPLETE is a fitted research/shadow completion, not certification or rank eligibility. Preserve probability_publishable=false, automatic_certification=false, automatic_promotion=false and can_execute=false unless a separately governed future contract changes them.
-Do not stop at sportsbook line acquisition, movement analysis, host-health prose, or market evidence when the supported spread Action is available. Do not infer spread probability from ML probability, sportsbook implied probability, ATS trends, recent results, external projections, or generic reasoning.
-If the Action fails, preserve the exact auth/transport/schema/spread-specific typed failure and action_invocation_attempted=true. Do not rewrite an invocation failure as MODEL_UNAVAILABLE unless the fitted spread capability itself is proven absent/unregistered.
+NCAAF SPREAD: exact-line acquisition is not completion. MUST call scoreLlpV17SpreadForwardShadow with sport,event_id,event_start_time,home_team,away_team,home_spread,season. Preserve returned shadow/typed status; never infer cover probability from market/ML.
 
 REQUIRED TEAM/EVENT PROBABILITY CHAIN — NEVER SKIP
 1. event_identity_complete
