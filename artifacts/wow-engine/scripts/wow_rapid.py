@@ -155,6 +155,56 @@ def reproduce_incident(incident: str, manifest: Path, cwd: Path) -> int:
     return _run_pytest(targets, cwd)
 
 
+def _load_bisect_engine():
+    """Load the sibling V17 bisect module when this script is executed directly."""
+    engine_text = str(ENGINE_ROOT)
+    if engine_text not in sys.path:
+        sys.path.insert(0, engine_text)
+    from v17.rapid_regression_bisect import BisectBlocked, run_bisect
+
+    return BisectBlocked, run_bisect
+
+
+def run_regression_bisect(
+    *,
+    repo_root: Path,
+    good_sha: str,
+    bad_sha: str,
+    pytest_targets: Sequence[str],
+    max_commits: int = 64,
+    stability_runs: int = 2,
+    timeout_seconds: int = 180,
+) -> dict:
+    """Run deterministic auto-bisect and always emit a governed engineering receipt."""
+    BisectBlocked, run_bisect = _load_bisect_engine()
+    try:
+        result = run_bisect(
+            repo_root.resolve(),
+            good_sha,
+            bad_sha,
+            pytest_targets,
+            max_commits=max_commits,
+            stability_runs=stability_runs,
+            timeout_seconds=timeout_seconds,
+        )
+    except BisectBlocked as exc:
+        return {
+            "status": "BLOCKED_WITH_EXACT_REASON",
+            "blocker": str(exc),
+            "good_sha": good_sha,
+            "bad_sha": bad_sha,
+            "pytest_targets": list(pytest_targets),
+            "runtime_generation": RUNTIME_GENERATION,
+            "terminal_authority": TERMINAL_AUTHORITY,
+            "can_execute": False,
+        }
+    result = dict(result)
+    result["runtime_generation"] = RUNTIME_GENERATION
+    result["terminal_authority"] = TERMINAL_AUTHORITY
+    result["can_execute"] = False
+    return result
+
+
 def _get_json(url: str, timeout: float) -> dict:
     request = urllib.request.Request(url, headers={"User-Agent": "wow-v17-rapid-verifier/1.0"})
     try:
@@ -198,6 +248,14 @@ def _write_lines(lines: Sequence[str], output: str | None) -> None:
         sys.stdout.write(text)
 
 
+def _write_json(payload: dict, output: str | None) -> None:
+    text = json.dumps(payload, indent=2, sort_keys=True) + "\n"
+    if output:
+        Path(output).write_text(text, encoding="utf-8")
+    else:
+        sys.stdout.write(text)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -218,6 +276,16 @@ def main() -> int:
     repro.add_argument("incident")
     repro.add_argument("--manifest", default=str(ENGINE_ROOT / "tests/fixtures/incidents/manifest.json"))
 
+    bisect = sub.add_parser("bisect", help="Find the first bad SHA from a deterministic pytest reproduction")
+    bisect.add_argument("--good", required=True)
+    bisect.add_argument("--bad", required=True)
+    bisect.add_argument("--target", action="append", dest="targets", required=True)
+    bisect.add_argument("--repo-root", default=str(ENGINE_ROOT.parents[1]))
+    bisect.add_argument("--max-commits", type=int, default=64)
+    bisect.add_argument("--stability-runs", type=int, default=2)
+    bisect.add_argument("--timeout-seconds", type=int, default=180)
+    bisect.add_argument("--output")
+
     verify = sub.add_parser("verify-production", help="Read-only V17 health/governance verification")
     verify.add_argument("--base-url", default=os.getenv("WOW_BASE_URL", "https://wow-governed-probability-engine.onrender.com"))
     verify.add_argument("--timeout", type=float, default=20.0)
@@ -235,6 +303,18 @@ def main() -> int:
         return 0
     if args.command == "repro":
         return reproduce_incident(args.incident, Path(args.manifest), ENGINE_ROOT)
+    if args.command == "bisect":
+        receipt = run_regression_bisect(
+            repo_root=Path(args.repo_root),
+            good_sha=args.good,
+            bad_sha=args.bad,
+            pytest_targets=args.targets,
+            max_commits=args.max_commits,
+            stability_runs=args.stability_runs,
+            timeout_seconds=args.timeout_seconds,
+        )
+        _write_json(receipt, args.output)
+        return 0 if receipt.get("status") == "BISECT_COMPLETE" else 1
     if args.command == "verify-production":
         print(json.dumps(verify_production(args.base_url, args.timeout), indent=2, sort_keys=True))
         return 0
