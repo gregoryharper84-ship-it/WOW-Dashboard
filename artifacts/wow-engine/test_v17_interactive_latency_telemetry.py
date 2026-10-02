@@ -3,7 +3,13 @@ import logging
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from v17.interactive_latency_telemetry import install_interactive_latency_middleware
+from v17.interactive_latency_telemetry import (
+    AGGREGATOR,
+    LatencyAggregator,
+    install_interactive_latency_middleware,
+    set_request_dimensions,
+    stage_timer,
+)
 
 
 def test_interactive_latency_middleware_logs_only_governed_interactive_routes(caplog):
@@ -53,3 +59,44 @@ def test_interactive_latency_middleware_logs_only_governed_interactive_routes(ca
     assert all("total_ms=" in message for message in governed)
     assert all("can_execute=false" in message for message in governed)
     assert not any("route=/health" in message for message in messages)
+
+
+def test_stage_timings_dimensions_and_aggregate_are_recorded(caplog):
+    AGGREGATOR.clear()
+    app = FastAPI()
+    install_interactive_latency_middleware(app)
+
+    @app.post("/score-team-event-request")
+    def team():
+        set_request_dimensions(sport="NBA", row_count=64, batch_size=8)
+        with stage_timer("hydration"):
+            pass
+        with stage_timer("fitted_scoring"):
+            pass
+        return {"ok": True, "can_execute": False}
+
+    with caplog.at_level(logging.WARNING, logger="wow.v17.interactive_latency"):
+        assert TestClient(app).post("/score-team-event-request").status_code == 200
+    message = caplog.records[-1].getMessage()
+    assert "sport=NBA row_count=64 batch_size=8" in message
+    assert "hydration=" in message and "fitted_scoring=" in message
+    assert "can_execute=false" in message
+    snap = AGGREGATOR.snapshot()
+    assert len(snap) == 1 and snap[0]["row_count"] == 64 and snap[0]["can_execute"] is False
+
+
+def test_aggregator_percentiles_and_bounds():
+    agg = LatencyAggregator(max_samples=100, max_keys=2)
+    for v in range(1, 101):
+        agg.record("/r", "NBA", 1, 1, float(v))
+    row = agg.snapshot()[0]
+    assert row["p50_ms"] == 50.0 and row["p95_ms"] == 95.0
+    agg.record("/r", "NFL", 1, 1, 1.0)
+    agg.record("/r", "MLB", 1, 1, 1.0)
+    assert len(agg.snapshot()) == 2
+
+
+def test_stage_helpers_are_noops_outside_a_request():
+    set_request_dimensions(sport="NBA", row_count=1)
+    with stage_timer("discovery"):
+        pass
