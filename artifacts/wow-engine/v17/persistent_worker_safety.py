@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Iterable
+import hashlib
+import json
+import re
+from typing import Any, Iterable, Sequence
 
 
 CAN_EXECUTE = False
@@ -17,6 +20,11 @@ class WorkerMode(str, Enum):
 class RetryAction(str, Enum):
     RETRY = "RETRY"
     DLQ = "DLQ"
+
+
+class ProgressDecision(str, Enum):
+    PROGRESS = "PROGRESS"
+    NO_PROGRESS = "NO_PROGRESS"
 
 
 class RollbackDecision(str, Enum):
@@ -63,6 +71,21 @@ class RetryState:
 
 
 @dataclass(frozen=True)
+class AttemptReceipt:
+    attempt_id: str
+    ticket_id: str
+    failure_fingerprint: str
+    workflow_stage: str
+    first_failing_boundary: str
+    typed_failure: str
+    patch_sha: str
+    failing_tests_hash: str
+    acceptance_pass_count: int
+    evidence_hash: str
+    context_token_count: int = 0
+
+
+@dataclass(frozen=True)
 class CircuitState:
     total_recent_items: int
     systemic_failures: int
@@ -103,6 +126,106 @@ def lease_allows_mutation(
         and bool(str(now).strip())
         and str(now) < claim.expires_at
     )
+
+
+WORKFLOW_STAGE_ORDER = {
+    "DISCOVERED": 0,
+    "REPRODUCE": 1,
+    "ROOT_CAUSE": 2,
+    "PATCH": 3,
+    "NARROW_TEST": 4,
+    "REGRESSION": 5,
+    "REVIEW": 6,
+    "RELEASE": 7,
+    "PRODUCTION_VERIFY": 8,
+}
+
+_VOLATILE_PATTERNS = (
+    (re.compile(r"\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b", re.I), "<uuid>"),
+    (re.compile(r"\b20\d{2}-\d{2}-\d{2}[T ][0-9:.+-]+Z?\b"), "<timestamp>"),
+    (re.compile(r"0x[0-9a-f]+", re.I), "<hex>"),
+    (re.compile(r"\b(?:request|run|trace|correlation)[-_ ]?id[=: ]+[A-Za-z0-9._:-]+", re.I), "request_id=<id>"),
+    (re.compile(r'File "([^"]+)", line \d+'), r'File "\1", line <n>'),
+)
+
+
+def _normalize_failure_text(value: str) -> str:
+    normalized = str(value or "").strip()
+    for pattern, replacement in _VOLATILE_PATTERNS:
+        normalized = pattern.sub(replacement, normalized)
+    return " ".join(normalized.split())
+
+
+def stable_failure_fingerprint(
+    *,
+    error_type: str,
+    message: str,
+    stack_frames: Sequence[str] = (),
+    typed_failure: str = "",
+    workflow_stage: str = "",
+    failing_test: str = "",
+) -> str:
+    """Hash stable failure structure while removing volatile execution identifiers."""
+    payload = {
+        "error_type": _normalize_failure_text(error_type).upper(),
+        "message": _normalize_failure_text(message),
+        "stack_frames": [_normalize_failure_text(frame) for frame in list(stack_frames)[:5]],
+        "typed_failure": _normalize_failure_text(typed_failure).upper(),
+        "workflow_stage": _normalize_failure_text(workflow_stage).upper(),
+        "failing_test": _normalize_failure_text(failing_test),
+    }
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def stable_content_hash(values: Iterable[str]) -> str:
+    canonical = json.dumps(sorted(str(value) for value in values), separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def assess_material_progress(previous: AttemptReceipt, current: AttemptReceipt) -> ProgressDecision:
+    """Use deterministic state changes, not cosmetic patch churn, to recognize progress."""
+    previous_stage = WORKFLOW_STAGE_ORDER.get(previous.workflow_stage.upper(), -1)
+    current_stage = WORKFLOW_STAGE_ORDER.get(current.workflow_stage.upper(), -1)
+    if current_stage > previous_stage:
+        return ProgressDecision.PROGRESS
+    if current.acceptance_pass_count > previous.acceptance_pass_count:
+        return ProgressDecision.PROGRESS
+    if current.first_failing_boundary and current.first_failing_boundary != previous.first_failing_boundary:
+        return ProgressDecision.PROGRESS
+    if current.evidence_hash and current.evidence_hash != previous.evidence_hash:
+        return ProgressDecision.PROGRESS
+    if current.failing_tests_hash and current.failing_tests_hash != previous.failing_tests_hash:
+        return ProgressDecision.PROGRESS
+    return ProgressDecision.NO_PROGRESS
+
+
+def consecutive_no_progress_count(history: Sequence[AttemptReceipt]) -> int:
+    """Count trailing same-fingerprint attempts with no deterministic material progress."""
+    if len(history) < 2:
+        return 0
+    count = 0
+    for previous, current in zip(reversed(history[:-1]), reversed(history[1:])):
+        if current.failure_fingerprint != previous.failure_fingerprint:
+            break
+        if assess_material_progress(previous, current) == ProgressDecision.PROGRESS:
+            break
+        count += 1
+    return count
+
+
+def progress_aware_retry_action(
+    history: Sequence[AttemptReceipt],
+    *,
+    no_progress_limit: int = 2,
+    max_attempts: int = 5,
+) -> RetryAction:
+    """DLQ only after deterministic stagnation or a hard attempt ceiling."""
+    if len(history) >= max_attempts:
+        return RetryAction.DLQ
+    if consecutive_no_progress_count(history) >= no_progress_limit:
+        return RetryAction.DLQ
+    return RetryAction.RETRY
 
 
 def retry_action(
