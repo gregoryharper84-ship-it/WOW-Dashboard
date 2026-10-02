@@ -1,7 +1,10 @@
+import asyncio
+import threading
 from pathlib import Path
 
 from fastapi import FastAPI
 
+import v17.daily_async_runtime as subject
 from v17.daily_async_runtime import (
     AsyncDailySubmitRequest,
     _read,
@@ -124,3 +127,38 @@ def test_completion_requires_current_lease_and_result_payload():
     assert "if p_result_payload is null" in normalized
     assert "result_payload = p_result_payload" in normalized
     assert "status',case when changed = 1 then 'completed' else 'stale_lease' end" in normalized
+
+
+def test_daily_worker_startup_grace_is_interruptible_by_new_work(monkeypatch):
+    claimed = threading.Event()
+    monkeypatch.setenv("WOW_V17_DAILY_ASYNC_STARTUP_DELAY_SECONDS", "300")
+    monkeypatch.setenv("WOW_V17_DAILY_ASYNC_POLL_SECONDS", "30")
+
+    def fake_claim(_db_client_fn, _lease_seconds):
+        claimed.set()
+        return None
+
+    monkeypatch.setattr(subject, "_claim_from_factory", fake_claim)
+    app = FastAPI()
+    app.state.wow_v17_daily_async_wake = asyncio.Event()
+
+    async def exercise():
+        task = asyncio.create_task(
+            subject._worker_loop(
+                app,
+                db_client_fn=lambda: object(),
+                market_api=object(),
+                event_api=object(),
+            )
+        )
+        await asyncio.sleep(0)
+        app.state.wow_v17_daily_async_wake.set()
+        for _ in range(100):
+            if claimed.is_set():
+                break
+            await asyncio.sleep(0.01)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(exercise())
+    assert claimed.is_set()
