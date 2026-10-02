@@ -3,7 +3,13 @@ import logging
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from v17.interactive_latency_telemetry import install_interactive_latency_middleware
+from v17.interactive_latency_telemetry import (
+    install_interactive_latency_middleware,
+    latency_snapshot,
+    reset_latency_samples,
+    stage_timer,
+    tag_request,
+)
 
 
 def test_interactive_latency_middleware_logs_only_governed_interactive_routes(caplog):
@@ -53,3 +59,37 @@ def test_interactive_latency_middleware_logs_only_governed_interactive_routes(ca
     assert all("total_ms=" in message for message in governed)
     assert all("can_execute=false" in message for message in governed)
     assert not any("route=/health" in message for message in messages)
+
+
+def test_interactive_latency_stage_timings_and_percentiles(caplog):
+    reset_latency_samples()
+    app = FastAPI()
+    install_interactive_latency_middleware(app)
+
+    @app.post("/score-pick-request")
+    def score_pick_request():
+        tag_request(sport="NBA", row_count=3, batch_size=3)
+        with stage_timer("hydration"):
+            pass
+        with stage_timer("fitted_scoring"):
+            pass
+        return {"ok": True, "can_execute": False}
+
+    client = TestClient(app)
+    with caplog.at_level(logging.WARNING, logger="wow.v17.interactive_latency"):
+        assert client.post("/score-pick-request", json={"secret": "do-not-log"}).status_code == 200
+
+    message = caplog.records[-1].getMessage()
+    assert "sport=NBA row_count=3 batch_size=3" in message
+    assert "stage_hydration_ms=" in message and "stage_fitted_scoring_ms=" in message
+    assert "can_execute=false" in message
+    assert "do-not-log" not in message
+    snap = {(r["stage"], r["sport"], r["row_count"], r["batch_size"]): r for r in latency_snapshot()}
+    assert ("total", "NBA", 3, 3) in snap and ("hydration", "NBA", 3, 3) in snap
+    assert all(r["can_execute"] is False and r["p95_ms"] >= r["p50_ms"] for r in snap.values())
+
+
+def test_stage_timer_outside_request_is_noop():
+    tag_request(sport="NBA", row_count=1)
+    with stage_timer("hydration"):
+        pass

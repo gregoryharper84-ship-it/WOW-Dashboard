@@ -24,6 +24,7 @@ from fastapi import Header
 
 import pick_request_runtime_core as pick_runtime
 from pick_request_runtime_core import PickRequestBatch
+from v17.interactive_latency_telemetry import stage_timer, tag_request
 from v17.interactive_pick_hydration import prehydrate_batch
 from v17.top10_model_reconciliation import enforce_top10_completion
 
@@ -203,16 +204,25 @@ def install_interactive_pick_parallel_wrapper(app: Any, *, market_api: Any) -> b
         ),
     ) -> dict[str, Any]:
         workers = _score_worker_count()
+        sports = {str(getattr(r, "sport", "")) for r in batch.rows}
+        tag_request(
+            sport=(next(iter(sports)) if len(sports) == 1 else "multi") if sports else None,
+            row_count=len(batch.rows),
+            batch_size=len(batch.rows),
+        )
         if str(batch.response_mode or "FULL").upper() != "COMPACT" or len(batch.rows) <= 1 or workers <= 1:
             response = _invoke_captured_endpoint(captured_endpoint, batch, x_wow_model_identity)
             if isinstance(response, dict):
                 response["can_execute"] = False
             return response
 
-        prepared = prehydrate_batch(batch, market_api=market_api)
+        with stage_timer("hydration"):
+            prepared = prehydrate_batch(batch, market_api=market_api)
         results: dict[int, dict[str, Any]] = {}
         max_workers = min(workers, len(prepared.rows))
-        with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="wow-v17-prop-score") as pool:
+        with stage_timer("fitted_scoring"), ThreadPoolExecutor(
+            max_workers=max_workers, thread_name_prefix="wow-v17-prop-score"
+        ) as pool:
             pending = {
                 pool.submit(
                     _invoke_captured_endpoint,
@@ -234,7 +244,8 @@ def install_interactive_pick_parallel_wrapper(app: Any, *, market_api: Any) -> b
             or _unexpected_row_failure(row, index, RuntimeError("ROW_RESULT_MISSING"))
             for index, row in enumerate(prepared.rows)
         ]
-        merged = _merge_compact_response(prepared, outcomes, workers=max_workers)
+        with stage_timer("reconciliation"):
+            merged = _merge_compact_response(prepared, outcomes, workers=max_workers)
         _LOG.warning(
             "WOW_V17_INTERACTIVE_SCORING status=PARALLEL rows_in=%s workers=%s completed=%s held=%s rejected=%s reconciliation=%s can_execute=false",
             merged.get("rows_in"),
