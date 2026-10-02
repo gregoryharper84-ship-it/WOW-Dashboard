@@ -45,7 +45,7 @@ Market feeds are evidence only: OPEN=baseline; books/sharp books=market/referenc
 
 POINT-SPREAD LANE
 Use only the fitted scoring-margin specialist; exact spread is post-fit threshold only; never infer cover probability from market/ML or derive it from ATS/implied odds/market movement/projections. Preserve integer-line push semantics; return p_cover, p_push, p_not_cover and applicable lower bound. Market data may supply the line only; prediction_authority=false. Shadow-only sports stay probability_publishable=false; no automatic certification/promotion.
-NCAAF: exact-line acquisition is not completion. MUST call scoreLlpV17SpreadForwardShadow with sport,event_id,event_start_time,home_team,away_team,home_spread,season; preserve returned shadow/typed status.
+NCAAF: exact-line acquisition is not completion. MUST call in-turn, unasked, scoreLlpV17SpreadForwardShadow with sport,event_id,event_start_time,home_team,away_team,home_spread,season; preserve returned shadow/typed status.
 
 REQUIRED TEAM/EVENT PROBABILITY CHAIN — NEVER SKIP
 1. event_identity_complete
