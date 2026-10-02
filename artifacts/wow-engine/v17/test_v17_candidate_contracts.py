@@ -141,6 +141,10 @@ def test_root_llp_authority_block_cannot_drift_from_spread_action_contract():
     authority_block = blocks[1]
     assert len(authority_block) <= 8000
     assert "scoreLlpV17SpreadForwardShadow" in authority_block
+    assert "POINT_SPREAD" in authority_block
+    assert "POINT-SPREAD LANE" in authority_block
+    assert "p_cover, p_push, p_not_cover" in authority_block
+    assert "prediction_authority=false" in authority_block
     assert "exact-line acquisition is not completion" in authority_block
     assert "home_spread,season" in authority_block
     assert "never infer cover probability from market/ML" in authority_block
