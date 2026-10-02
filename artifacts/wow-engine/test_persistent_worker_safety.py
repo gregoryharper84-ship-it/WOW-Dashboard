@@ -27,9 +27,11 @@ def test_ticket_context_drops_previous_ticket_and_unknown_state() -> None:
             "acceptance_criteria": ["preserve typed failure"],
             "prior_ticket_chat": "PM-502 database fix",
             "freeform_agent_memory": "carry this forward",
-        }
+        },
+        execution_id="exec-pm823-001",
     )
     assert context["incident_id"] == "PM-823"
+    assert context["execution_id"] == "exec-pm823-001"
     assert "prior_ticket_chat" not in context
     assert "freeform_agent_memory" not in context
     assert context["can_execute"] is False
@@ -39,13 +41,31 @@ def test_ticket_context_drops_previous_ticket_and_unknown_state() -> None:
 def test_stale_lease_epoch_cannot_mutate_after_reassignment() -> None:
     stale = Lease("PM-823", "worker-a", 17, "2026-10-02T16:00:00Z")
     current = Lease("PM-823", "worker-b", 18, "2026-10-02T17:00:00Z")
-    assert lease_allows_mutation(stale, latest_epoch=current.lease_epoch, current_worker_id="worker-a") is False
-    assert lease_allows_mutation(current, latest_epoch=current.lease_epoch, current_worker_id="worker-b") is True
+    assert lease_allows_mutation(
+        stale,
+        expected_work_item_id="PM-823",
+        latest_epoch=current.lease_epoch,
+        current_worker_id="worker-a",
+        now="2026-10-02T15:30:00Z",
+    ) is False
+    assert lease_allows_mutation(
+        current,
+        expected_work_item_id="PM-823",
+        latest_epoch=current.lease_epoch,
+        current_worker_id="worker-b",
+        now="2026-10-02T16:30:00Z",
+    ) is True
 
 
 def test_foreign_worker_cannot_mutate_even_with_current_epoch() -> None:
     claim = Lease("PM-823", "worker-b", 18, "2026-10-02T17:00:00Z")
-    assert lease_allows_mutation(claim, latest_epoch=18, current_worker_id="worker-a") is False
+    assert lease_allows_mutation(
+        claim,
+        expected_work_item_id="PM-823",
+        latest_epoch=18,
+        current_worker_id="worker-a",
+        now="2026-10-02T16:30:00Z",
+    ) is False
 
 
 def test_repeated_no_progress_failure_goes_to_dlq() -> None:
@@ -136,3 +156,34 @@ def test_safe_hold_stops_mutation_but_keeps_observability() -> None:
     assert receipt["mutations_allowed"] is False
     assert receipt["observability_allowed"] is True
     assert receipt["can_execute"] is False
+
+
+def test_expired_lease_cannot_mutate() -> None:
+    claim = Lease("PM-823", "worker-b", 18, "2026-10-02T17:00:00Z")
+    assert lease_allows_mutation(
+        claim,
+        expected_work_item_id="PM-823",
+        latest_epoch=18,
+        current_worker_id="worker-b",
+        now="2026-10-02T17:00:00Z",
+    ) is False
+
+
+def test_wrong_ticket_lease_cannot_mutate() -> None:
+    claim = Lease("PM-823", "worker-b", 18, "2026-10-02T18:00:00Z")
+    assert lease_allows_mutation(
+        claim,
+        expected_work_item_id="PM-502",
+        latest_epoch=18,
+        current_worker_id="worker-b",
+        now="2026-10-02T17:00:00Z",
+    ) is False
+
+
+def test_context_requires_fresh_execution_identity() -> None:
+    try:
+        build_ticket_context({"incident_id": "PM-823"}, execution_id="")
+    except ValueError as exc:
+        assert "execution_id" in str(exc)
+    else:
+        raise AssertionError("blank execution identity must fail closed")
