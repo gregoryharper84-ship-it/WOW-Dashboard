@@ -206,6 +206,7 @@ def hydrate_mlb_pitcher_fantasy_score_evidence(
             "team": schedule["team"],
             "opponent": schedule["opponent"],
             "venue": schedule["venue"],
+            "player_id": player_id,
             "official_game_pk": schedule["official_game_pk"],
             "official_game_date": schedule["official_game_date"],
             "schedule_status": schedule["schedule_status"],
