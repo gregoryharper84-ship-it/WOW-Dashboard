@@ -1,0 +1,15 @@
+{
+  "issue": 1135,
+  "purpose": "failure capsule deterministic acceptance fixture",
+  "can_execute": false,
+  "terminal_authority": "V17_TERMINAL_REDUCER",
+  "expected_typed_failure": "SCORER_FAILURE",
+  "dimensions": ["sport","market_family","specialist","model_family","scorer_stage","runtime_generation"],
+  "redact": ["authorization","cookie","api_key","token","secret","service_role_key","password"],
+  "acceptance": {
+    "duplicate_same_failure_groups": true,
+    "different_stage_does_not_collide": true,
+    "missing_non_secret_evidence_fails_closed": true,
+    "model_unavailable_rewrite_allowed": false
+  }
+}
