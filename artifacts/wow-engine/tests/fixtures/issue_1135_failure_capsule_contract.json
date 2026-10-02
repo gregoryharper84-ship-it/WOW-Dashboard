@@ -1,0 +1,31 @@
+{
+  "issue": 1135,
+  "contract": "FAILURE_CAPSULE",
+  "dedup_keys": [
+    "sport",
+    "market_family",
+    "scorer_stage",
+    "terminal_code",
+    "model_family",
+    "model_version"
+  ],
+  "redact": [
+    "authorization",
+    "cookie",
+    "api_key",
+    "service_role_key",
+    "token",
+    "secret"
+  ],
+  "requirements": {
+    "typed_failure_exact": true,
+    "duplicate_increments_occurrence": true,
+    "stage_or_sport_change_separates": true,
+    "deterministic_replay_or_exact_blocker": true
+  },
+  "governance": {
+    "terminal_authority": "V17_TERMINAL_REDUCER",
+    "can_execute": false,
+    "probability_behavior_change": false
+  }
+}
