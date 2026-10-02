@@ -300,3 +300,48 @@ def test_downstream_stage_gap_fill_is_marked_synthetic_not_explicit_readiness():
     assert all(item["metadata"]["readiness_evidence_explicit"] is False for item in readiness)
     assert all(item["metadata"]["synthetic_gap_fill"] is True for item in readiness)
     assert all(item["can_execute"] is False for item in readiness)
+
+
+def test_record_inputs_ready_persists_normalized_identity_and_hydration_evidence():
+    db = _DB()
+    store = subject.PickRequestStateStore(db)
+    row = _row(13)
+    row.evidence = SimpleNamespace(
+        role_status={
+            "identity_binding_status": "PASS",
+            "canonical_event_id": "NFL:20260921:13",
+            "verified_canonical_event_id": "NFL:20260921:13",
+            "provider_event_ids": {"ESPN": "401000013"},
+        },
+        opportunity_ledger={"status": "PASS"},
+        evidence_version="V17_TEST",
+        rate_provenance="TEST_ONLY",
+        game_log=list(range(10)),
+        box_score_log=[{"n": i} for i in range(10)],
+    )
+    ctx = store.begin(_batch("record-inputs-ready", [row]))
+    token = subject._ACTIVE.set(ctx)
+    try:
+        subject.record_inputs_ready(
+            row,
+            {
+                "event_id": "NFL:20260921:13",
+                "sport": "NFL",
+                "player": "Player 13",
+                "captured_at": "2026-09-21T12:00:00+00:00",
+                "role_timestamp": "2026-09-21T11:55:00+00:00",
+                "source_timestamps": {"ESPN": "2026-09-21T11:50:00+00:00"},
+            },
+        )
+    finally:
+        subject._ACTIVE.reset(token)
+
+    record = ctx.rows["board-row-13"]
+    assert record["identity_verified_explicit"] is True
+    assert record["model_inputs_ready_explicit"] is True
+    assert record["identity_evidence"]["identity_binding_status"] == "PASS"
+    assert record["identity_evidence"]["provider_event_ids"] == {"ESPN": "401000013"}
+    assert record["hydration_evidence"]["game_log_n"] == 10
+    assert record["hydration_evidence"]["box_score_log_n"] == 10
+    assert record["hydration_evidence"]["opportunity_status"] == "PASS"
+    assert record["can_execute"] is False
