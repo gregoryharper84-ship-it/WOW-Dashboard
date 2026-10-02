@@ -56,6 +56,7 @@ import pick_request_runtime_core as pick_runtime
 from pick_request_runtime_core import PickRequestBatch, PickRequestRow, RawPropEvidence, _canonical_stat
 from prop_auto_hydration_router import auto_hydrate_prop_evidence
 from v17.top10_model_reconciliation import enforce_top10_completion
+from v17.entity_alias_gateway import EntityAliasGateway
 
 LOGGER = logging.getLogger("wow.v17.interactive_latency")
 _STATE_KEY = "wow_interactive_pick_hydration_installed"
@@ -292,6 +293,42 @@ def _hydration_key(row: PickRequestRow) -> tuple[str, ...]:
     return (str(row.sport or "").strip().upper(),_canonical_stat(row.sport,row.stat_type)," ".join(str(row.player or "").strip().split()),str(row.event_id or "").strip(),str(row.event_start_time or "").strip(),str(row.source_capture_timestamp or "").strip(),str(row.source_type or "").strip().upper(),str(row.platform or "").strip().upper(),str(row.opponent or "").strip().upper())
 
 
+def _observe_player_identity(row: PickRequestRow, *, market_api: Any) -> None:
+    """Populate the deterministic alias audit path without changing scoring.
+
+    The gateway defaults to SHADOW. Observation failures are telemetry-only here:
+    the incumbent canonical hydration/identity contract remains authoritative
+    until a governed coverage gate explicitly promotes a sport to ENFORCED.
+    """
+    try:
+        db = market_api.prod.get_client()
+        observation = EntityAliasGateway(db).observe_player(
+            source_feed=str(row.platform or row.source_type or "UNKNOWN"),
+            sport=str(row.sport or "").strip().upper(),
+            raw_alias=str(row.player or ""),
+            row_key=str(row.row_key or "") or None,
+            context_payload={
+                "event_id": str(row.event_id or ""),
+                "event_start_time": str(row.event_start_time or ""),
+                "opponent": str(row.opponent or "") or None,
+            },
+        )
+        LOGGER.warning(
+            "WOW_V17_IDENTITY_GATEWAY mode=%s resolved=%s sport=%s row_key=%s can_execute=false",
+            observation.gateway_mode,
+            observation.is_resolved,
+            observation.sport,
+            row.row_key,
+        )
+    except Exception as exc:
+        LOGGER.warning(
+            "WOW_V17_IDENTITY_GATEWAY mode=SHADOW status=OBSERVATION_UNAVAILABLE sport=%s row_key=%s error_type=%s can_execute=false",
+            str(row.sport or "").strip().upper(),
+            row.row_key,
+            type(exc).__name__,
+        )
+
+
 def _cached_evidence(row: PickRequestRow, *, market_api: Any) -> Optional[RawPropEvidence]:
     """Reuse only fresh, exact, already-frozen evidence; miss safely on doubt."""
     max_age = _cache_max_age_seconds()
@@ -389,6 +426,7 @@ def prehydrate_batch(batch: PickRequestBatch, *, market_api: Any) -> PickRequest
     started=perf_counter(); evidence_by_index={}; failure_codes=set(); successful_fetches=0; cache_hits=0; cache_rows=0
     misses={}
     for key,(representative,indices) in groups.items():
+        _observe_player_identity(representative,market_api=market_api)
         evidence=_cached_evidence(representative,market_api=market_api)
         if evidence is None:
             misses[key]=(representative,indices)

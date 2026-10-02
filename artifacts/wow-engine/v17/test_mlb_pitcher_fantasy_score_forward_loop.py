@@ -171,6 +171,7 @@ def test_hydrator_builds_exact_pitcher_fantasy_score_history(monkeypatch):
     assert evidence["game_log"] == [37.0] * 10
     assert evidence["box_score_log"][0]["quality_starts"] == 1
     assert evidence["box_score_log"][0]["wins"] == 1
+    assert evidence["role_status"]["player_id"] == 123
     assert evidence["opportunity_ledger"]["scoring_profile_id"] == hydration.SCORING_PROFILE_ID
     assert evidence["opportunity_ledger"]["status"] == "READY"
 
