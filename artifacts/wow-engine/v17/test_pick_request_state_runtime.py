@@ -239,3 +239,64 @@ def test_distinct_failure_domain_is_stored_without_renaming_terminal_code():
     assert record["terminal_code"] == "MODEL_SCORER_FAILED"
     assert record["failure_domain"] == "MODEL_SERVICE_UNREACHABLE"
     assert record["can_execute"] is False
+
+
+def test_explicit_readiness_records_identity_and_hydration_evidence_without_probability():
+    db = _DB()
+    store = subject.PickRequestStateStore(db)
+    ctx = store.begin(_batch("explicit-readiness", [_row(11)]))
+
+    store.record_readiness(
+        ctx,
+        "board-row-11",
+        identity_evidence={
+            "event_id": "NFL:20260921:11",
+            "player": "Player 11",
+            "identity_binding_status": "PASS",
+        },
+        hydration_evidence={
+            "evidence_version": "V17",
+            "game_log_n": 10,
+            "box_score_log_n": 10,
+            "opportunity_status": "PASS",
+        },
+        feature_snapshot_id="snapshot-11",
+        specialist_id="NFL_RECEIVING_YARDS_V17",
+    )
+
+    record = ctx.rows["board-row-11"]
+    assert record["current_stage"] == "MODEL_INPUTS_READY"
+    assert record["identity_verified_explicit"] is True
+    assert record["model_inputs_ready_explicit"] is True
+    assert record["feature_snapshot_id"] == "snapshot-11"
+    assert record["specialist_id"] == "NFL_RECEIVING_YARDS_V17"
+    assert record["can_execute"] is False
+    assert "probability" not in record["identity_evidence"]
+    assert "probability" not in record["hydration_evidence"]
+
+    transitions = db.tables[subject.TRANSITION_TABLE]
+    identity = next(item for item in transitions if item["to_stage"] == "IDENTITY_VERIFIED")
+    hydration = next(item for item in transitions if item["to_stage"] == "MODEL_INPUTS_READY")
+    assert identity["metadata"]["readiness_evidence_explicit"] is True
+    assert hydration["metadata"]["readiness_evidence_explicit"] is True
+
+
+def test_downstream_stage_gap_fill_is_marked_synthetic_not_explicit_readiness():
+    db = _DB()
+    store = subject.PickRequestStateStore(db)
+    ctx = store.begin(_batch("synthetic-gap-fill", [_row(12)]))
+
+    store.advance(ctx, "board-row-12", "MODEL_COMPUTED")
+
+    record = ctx.rows["board-row-12"]
+    assert record["identity_verified_explicit"] is False
+    assert record["model_inputs_ready_explicit"] is False
+    transitions = db.tables[subject.TRANSITION_TABLE]
+    readiness = [
+        item for item in transitions
+        if item["to_stage"] in subject.READINESS_EVIDENCE_STAGES
+    ]
+    assert len(readiness) == 2
+    assert all(item["metadata"]["readiness_evidence_explicit"] is False for item in readiness)
+    assert all(item["metadata"]["synthetic_gap_fill"] is True for item in readiness)
+    assert all(item["can_execute"] is False for item in readiness)
