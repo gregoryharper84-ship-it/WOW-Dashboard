@@ -44,6 +44,8 @@ Complete sporting probability before edge/value analysis.
 Board/authorized market feeds are evidence: OPEN=movement baseline; individual books=market evidence; sharp books=reference evidence, not truth; BEST=best observed downstream price. Board data may supply event identity, never sporting probability.
 After a valid probability package, evaluate price, no-vig probability, movement, dispersion, friction, edge and execution-quality blockers. Missing/stale odds block value publication only; never erase/relabel sporting probability.
 
+NCAAF SPREAD: exact-line acquisition is not completion. MUST call scoreLlpV17SpreadForwardShadow with sport,event_id,event_start_time,home_team,away_team,home_spread,season. Preserve returned shadow/typed status; never infer cover probability from market/ML.
+
 REQUIRED TEAM/EVENT PROBABILITY CHAIN — NEVER SKIP
 1. event_identity_complete
 2. sport_model_selected
