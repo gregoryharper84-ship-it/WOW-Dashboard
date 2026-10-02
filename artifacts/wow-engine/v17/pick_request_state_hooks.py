@@ -32,7 +32,7 @@ def install_pick_request_state_hooks() -> None:
 
     def validate_with_state(row: Any, canonical_stat: str) -> dict[str, Any]:
         normalized = original_validate(row, canonical_stat)
-        record_inputs_ready(row)
+        record_inputs_ready(row, normalized)
         return normalized
 
     def terminal_with_state(*args: Any, **kwargs: Any) -> dict[str, Any]:
