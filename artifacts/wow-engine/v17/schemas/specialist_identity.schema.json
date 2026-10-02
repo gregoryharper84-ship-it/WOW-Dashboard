@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "V17SpecialistIdentityContract",
+  "type": "object",
+  "required": [
+    "specialist_id",
+    "sport",
+    "market_type",
+    "model_family",
+    "supported_markets",
+    "owner_lane",
+    "required_feature_inputs"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "specialist_id": {"type":"string","pattern":"^[a-z0-9_]+_v[0-9]+$"},
+    "sport": {"type":"string","enum":["NFL","NBA","MLB","NHL","NCAAF","NCAAB","WNBA","SOCCER","TENNIS","PGA","MMA","BOXING"]},
+    "market_type": {"type":"string","minLength":1},
+    "model_family": {"type":"string","minLength":1},
+    "supported_markets": {"type":"array","items":{"type":"string"},"minItems":1,"uniqueItems":true},
+    "owner_lane": {"type":"string","minLength":1},
+    "required_feature_inputs": {"type":"array","items":{"type":"string"},"uniqueItems":true}
+  }
+}
