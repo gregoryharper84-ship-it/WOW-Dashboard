@@ -5,9 +5,11 @@ on:
     paths:
       - 'artifacts/flask-scoring-api/services/wow_engineering_control_plane.py'
       - 'artifacts/flask-scoring-api/services/wow_engineering_ticket_queue.py'
+      - 'artifacts/flask-scoring-api/services/wow_engineering_ticket_telemetry.py'
       - 'artifacts/flask-scoring-api/services/wow_engineering_telemetry.py'
       - 'artifacts/flask-scoring-api/tests/test_wow_engineering_control_plane.py'
       - 'artifacts/flask-scoring-api/tests/test_wow_engineering_ticket_queue.py'
+      - 'artifacts/flask-scoring-api/tests/test_wow_engineering_ticket_telemetry.py'
       - 'artifacts/flask-scoring-api/tests/test_wow_engineering_telemetry.py'
       - 'artifacts/flask-scoring-api/tests/fixtures/wow_engineering_synthetic_incidents.json'
       - 'artifacts/flask-scoring-api/tests/test_v17_dots_engineering_orchestrator_contract.py'
@@ -18,6 +20,7 @@ on:
       - 'artifacts/wow-engine/test_v17_engineering_langgraph_runtime.py'
       - 'artifacts/wow-engine/requirements.txt'
       - 'artifacts/wow-engine/WOW_DOTS_ENGINEERING_ORCHESTRATOR.yaml'
+      - 'artifacts/wow-engine/WOW_ENGINEERING_AGENTIC_TELEMETRY.yaml'
       - 'artifacts/wow-engine/WOW_LANGGRAPH_CONTROL_PLANE_PILOT_ACCEPTANCE_2026-10-01.md'
       - 'render.yaml'
       - '.agents/skills/wow-dots-engineering-orchestrator/SKILL.md'
@@ -55,6 +58,7 @@ jobs:
           pytest -q \
             artifacts/flask-scoring-api/tests/test_wow_engineering_control_plane.py \
             artifacts/flask-scoring-api/tests/test_wow_engineering_ticket_queue.py \
+            artifacts/flask-scoring-api/tests/test_wow_engineering_ticket_telemetry.py \
             artifacts/flask-scoring-api/tests/test_wow_engineering_telemetry.py \
             artifacts/flask-scoring-api/tests/test_v17_dots_engineering_orchestrator_contract.py \
             artifacts/wow-engine/test_v17_engineering_langgraph_runtime.py
