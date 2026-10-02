@@ -101,7 +101,7 @@ jobs:
           worker_id="github-actions:${GITHUB_RUN_ID}:${GITHUB_RUN_ATTEMPT}:anthropic"
           expires_at=$(date -u -d '+180 minutes' +%Y-%m-%dT%H:%M:%SZ)
 
-          python - "$RUNNER_TEMP/wow-dispatch-queue.json" "$RESTORATION" "$ACCELERATION" "$worker_id" "$lease_epoch" "$expires_at" <<'PY'
+          PYTHONPATH=artifacts/wow-engine python - "$RUNNER_TEMP/wow-dispatch-queue.json" "$RESTORATION" "$ACCELERATION" "$worker_id" "$lease_epoch" "$expires_at" <<'PY'
           import json, sys
           from pathlib import Path
           from v17.persistent_worker_safety import Lease, build_ticket_context, circuit_mode, CircuitState
@@ -396,7 +396,7 @@ jobs:
           body=$(jq -r --arg marker "$marker" '[.[] | select(.body | contains($marker))][0].body // ""' <<<"$comments")
           latest_epoch=$(sed -n 's/^- lease_epoch: \([0-9][0-9]*\)$/\1/p' <<<"$body" | head -1)
           latest_worker=$(sed -n 's/^- worker_id: \(.*\)$/\1/p' <<<"$body" | head -1)
-          python - "$EXPECTED_INCIDENT" "$EXPECTED_EPOCH" "$EXPECTED_WORKER" "$latest_epoch" "$latest_worker" <<'PY'
+          PYTHONPATH=artifacts/wow-engine python - "$EXPECTED_INCIDENT" "$EXPECTED_EPOCH" "$EXPECTED_WORKER" "$latest_epoch" "$latest_worker" <<'PY'
           import json, sys
           from datetime import datetime, timezone
           from pathlib import Path
