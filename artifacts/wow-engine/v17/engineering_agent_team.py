@@ -140,6 +140,11 @@ TERMINAL_ISSUE_STATES = {
 
 SEVERITY_WEIGHT = {"P0": 0, "P1": 1, "P2": 2, "P3": 3, "P4": 4}
 ACTIVE_RELEASE_STATES = {"DEPLOYED_PENDING_VERIFY", "MERGED_PENDING_DEPLOY", "PR_CREATED"}
+PARKED_WAIT_STATES = {
+    "REVIEW_PENDING", "APPROVAL_PENDING", "MERGE_AUTHORITY_PENDING",
+    "EXTERNAL_WAIT", "PROVIDER_WAIT", "PERMISSION_WAIT", "SECRET_WAIT",
+    "PLATFORM_LIMITATION",
+}
 USER_CRITICAL_JOURNEYS = ("ALL_SPORTS_PROPS", "ALL_SPORTS_ML_WINNERS", "ALL_SPORTS_UPSETS")
 MAX_ACTIVE_PRODUCT_RECOVERY = 1
 MAX_ACTIVE_SUPPORTING_INVESTIGATION = 1
@@ -266,6 +271,9 @@ def _record_id(record: dict[str, Any]) -> str:
 def is_actionable(record: dict[str, Any]) -> bool:
     state = str(record.get("state") or "OPEN").upper()
     if state in TERMINAL_ISSUE_STATES:
+        return False
+    wait_state = str(record.get("wait_state") or "").upper()
+    if wait_state in PARKED_WAIT_STATES:
         return False
     severity = str(record.get("severity") or "P4").upper()
     return severity in SEVERITY_WEIGHT
@@ -455,6 +463,12 @@ def self_check() -> dict[str, Any]:
         assert subagent["may_approve_own_work"] is False
     assert reliability_blocks_frontier([{"severity": "P1", "state": "OPEN"}])
     assert not reliability_blocks_frontier([{"severity": "P2", "state": "OPEN"}])
+    assert not is_actionable({"severity": "P0", "state": "PR_CREATED", "wait_state": "REVIEW_PENDING"})
+    parked_then_executable = [
+        {"incident_id": "960", "severity": "P0", "state": "PR_CREATED", "wait_state": "REVIEW_PENDING"},
+        {"incident_id": "502", "severity": "P0", "state": "OPEN"},
+    ]
+    assert select_priority_incident(parked_then_executable).incident_id == "502"
     assert route_failure("ACTION_TRANSPORT_FAILURE") == "transport"
     assert route_failure("MODEL_UNAVAILABLE") == "model-capability"
     assert select_support_subagent({"typed_failure": "ACTION_TRANSPORT_FAILURE"}).subagent == "RUNTIME_TRANSPORT_SUBAGENT"
