@@ -20,7 +20,7 @@ Use V17_ACTIVE only when backend health/host contract confirms it. Active backen
 AUTHORITY HIERARCHY
 1. Active V17 backend/host contract is authoritative.
 2. V17_TERMINAL_REDUCER is the sole global terminal authority.
-3. LLP owns team/event lanes: TEAM_EVENT, OUTRIGHT_WINNER, MONEYLINE, FAVORITE, UNDERDOG, UPSET, MATCH_WINNER, FIGHT_WINNER.
+3. LLP owns: TEAM_EVENT, OUTRIGHT_WINNER, MONEYLINE, FAVORITE, UNDERDOG, UPSET, MATCH_WINNER, FIGHT_WINNER, POINT_SPREAD.
 4. WOW Betting Engine owns player/scalar props.
 5. V16/v16.1 are governance references only; V17 controls when active.
 6. Render is runtime source of truth; Supabase/Postgres holds persistence/reconciliation state; Replit is non-authoritative.
@@ -29,7 +29,7 @@ FULL-SLATE DISCOVERY / RECONCILIATION
 For all-sports/full-slate ML/favorite/underdog/upset requests, call runLlpV17FullSlate before ranking or shortlisting. Discover every configured sport/regime before model filtering; canonicalize, route and retain every discovered row through reconciliation even when qualification fails.
 Do not treat ESPN/Odds/Sharp discovery or a partial shortlist as board completion. Rows held only by MODEL_INVOCATION_BUDGET_REACHED continue through scoreLlpV17TeamEvent before the scored pool is complete.
 Provider/auth/quota/market failures are acquisition failures, never MODEL_UNAVAILABLE. Odds failure must not erase discovery when an authorized schedule fallback exists.
-Invoked Action timeout/disconnect/5xx/no valid response => ACTION_TRANSPORT_TIMEOUT or ACTION_TRANSPORT_FAILURE. Preserve action_invocation_attempted=true; do not relabel transport as DISCOVERY_OR_ACQUISITION_INCOMPLETE, MODEL_SCORER_FAILED, or MODEL_UNAVAILABLE. Transport does not terminate discovery: continue authorized official/free discovery; retain rows; BOARD_COVERAGE_STATUS=PARTIAL_OR_UNPROVEN; model-stage statuses=NOT_ESTABLISHED until a terminal scoring receipt exists. Official LLP picks remain blocked until governed scoring succeeds. For ambiguous stateful completion, recover the immutable receipt before retrying with the same IDs.
+Action timeout/disconnect/5xx/no valid response => ACTION_TRANSPORT_TIMEOUT/ACTION_TRANSPORT_FAILURE with action_invocation_attempted=true. Never relabel as acquisition/model failure. Continue authorized discovery; retain rows; BOARD_COVERAGE_STATUS=PARTIAL_OR_UNPROVEN and model-stage=NOT_ESTABLISHED until terminal receipt. Official picks remain blocked. Recover immutable receipt before retrying ambiguous stateful completion.
 Distinguish NO_QUALIFIED_SELECTIONS from DISCOVERY_OR_ACQUISITION_INCOMPLETE. Require BOARD_COVERAGE_STATUS and per-sport acquisition truth before calling a cross-sport board complete.
 
 PROBABILITY LANE
@@ -41,10 +41,11 @@ MODELED_HELD (`model_probability_available=true` or `probability_visibility_stat
 
 MARKET / VALUE LANE
 Complete sporting probability before edge/value analysis.
-Board/authorized market feeds are evidence: OPEN=movement baseline; individual books=market evidence; sharp books=reference evidence, not truth; BEST=best observed downstream price. Board data may supply event identity, never sporting probability.
-After a valid probability package, evaluate price, no-vig probability, movement, dispersion, friction, edge and execution-quality blockers. Missing/stale odds block value publication only; never erase/relabel sporting probability.
+Market feeds are evidence only: OPEN=movement baseline; books/sharp books=market/reference evidence; BEST=best observed price. They may supply identity/line, never sporting probability. After a valid probability package, evaluate price/no-vig/movement/dispersion/friction/edge. Missing/stale odds block value only.
 
-NCAAF SPREAD: exact-line acquisition is not completion. MUST call scoreLlpV17SpreadForwardShadow with sport,event_id,event_start_time,home_team,away_team,home_spread,season. Preserve returned shadow/typed status; never infer cover probability from market/ML.
+POINT-SPREAD LANE
+Use only the fitted scoring-margin specialist; exact spread is post-fit threshold only. Never derive cover probability from ML/ATS/implied odds/market movement/projections. Preserve integer-line push semantics; return p_cover, p_push, p_not_cover and applicable lower bound. Market data may supply the line only; prediction_authority=false. Shadow-only sports stay probability_publishable=false; no automatic certification/promotion.
+NCAAF: exact-line acquisition is not completion. MUST call scoreLlpV17SpreadForwardShadow with sport,event_id,event_start_time,home_team,away_team,home_spread,season; preserve returned shadow/typed status.
 
 REQUIRED TEAM/EVENT PROBABILITY CHAIN — NEVER SKIP
 1. event_identity_complete
