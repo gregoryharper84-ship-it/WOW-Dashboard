@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 from datetime import date, datetime, timezone
 from typing import Any, Literal
 from uuid import uuid4
@@ -176,8 +177,17 @@ def _prop_rows(db: Any, requested_date: str, requested_timezone: str, limit: int
 
 
 def _team_rows(db: Any, requested_date: str, limit: int) -> list[dict[str, Any]]:
-    rows = db.table("wow_mlb_forward_shadow_events").select("official_event_id,official_date,event_start_time,home_team,away_team,venue_name,home_probable_pitcher,away_probable_pitcher,snapshot_id,snapshot_timestamp,feature_hydration_status").eq("official_date", requested_date).eq("feature_hydration_status", "PASS").order("event_start_time").limit(limit).execute().data or []
-    return [dict(row) for row in rows if _future(row.get("event_start_time"))]
+    last_exc: Exception | None = None
+    for attempt in range(3):
+        try:
+            rows = db.table("wow_mlb_forward_shadow_events").select("official_event_id,official_date,event_start_time,home_team,away_team,venue_name,home_probable_pitcher,away_probable_pitcher,snapshot_id,snapshot_timestamp,feature_hydration_status").eq("official_date", requested_date).eq("feature_hydration_status", "PASS").order("event_start_time").limit(limit).execute().data or []
+            return [dict(row) for row in rows if _future(row.get("event_start_time"))]
+        except Exception as exc:
+            last_exc = exc
+            if type(exc).__name__ != "ReadTimeout" or attempt == 2:
+                raise
+            time.sleep(0.5 * (attempt + 1))
+    raise last_exc or RuntimeError("TEAM_EVENT_SNAPSHOT_QUERY_FAILED")
 
 
 def _acquisition_counts(acquisition: dict[str, Any] | None) -> dict[str, int]:
