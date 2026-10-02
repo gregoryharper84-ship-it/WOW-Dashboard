@@ -293,7 +293,12 @@ def _hydration_key(row: PickRequestRow) -> tuple[str, ...]:
 
 
 def _cached_evidence(row: PickRequestRow, *, market_api: Any) -> Optional[RawPropEvidence]:
-    """Reuse only fresh, exact, already-frozen evidence; miss safely on doubt."""
+    """Reuse only fresh, exact entity/stat evidence; miss safely on doubt.
+
+    Hydration evidence is upstream of the betting threshold. A moved line for the
+    same event/player/stat must not force a second provider fetch; the canonical
+    scorer still persists a new line-bound evidence snapshot before evaluation.
+    """
     max_age = _cache_max_age_seconds()
     if max_age <= 0:
         return None
@@ -313,7 +318,6 @@ def _cached_evidence(row: PickRequestRow, *, market_api: Any) -> Optional[RawPro
             .eq("sport", sport)
             .eq("player", player)
             .eq("stat_type", canonical_stat)
-            .eq("line", float(row.line))
             .eq("hydration_status", "PASS")
             .order("captured_at", desc=True)
             .limit(1)
