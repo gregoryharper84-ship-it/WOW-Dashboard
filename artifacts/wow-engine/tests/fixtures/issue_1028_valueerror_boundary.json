@@ -1,0 +1,19 @@
+{
+  "issue": 1028,
+  "incident": "AJ Blubaugh:PITCHER_STRIKEOUTS:MLB_FORWARD_ACQUISITION_ERROR:ValueError",
+  "expected_boundary": {
+    "acquisition_or_input_value_error": "ROW_SCOPED_TYPED_FAILURE",
+    "snapshot_persistence_exception": "RUN_INVALID_PROP_SNAPSHOT_WRITE_FAILURE"
+  },
+  "forbidden_reclassification": {
+    "from": "MLB_FORWARD_ACQUISITION_ERROR:ValueError",
+    "to": "RUN_INVALID_PROP_SNAPSHOT_WRITE_FAILURE"
+  },
+  "adjacent_markets_unchanged": ["PITCHING_OUTS", "STRIKES_THROWN", "BALLS_THROWN"],
+  "invariants": {
+    "terminal_authority": "V17_TERMINAL_REDUCER",
+    "can_execute": false,
+    "immutable_prediction_integrity": true,
+    "probability_substitution_allowed": false
+  }
+}
