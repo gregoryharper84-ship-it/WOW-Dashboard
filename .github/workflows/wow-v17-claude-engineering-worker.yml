@@ -50,6 +50,38 @@ jobs:
           pip install -r artifacts/wow-engine/requirements.txt
           pip install PyYAML openapi-spec-validator
           python artifacts/wow-engine/v17/engineering_agent_team.py self-check
+          python artifacts/wow-engine/v17/engineering_dispatch_queue.py validate \
+            --manifest artifacts/wow-engine/v17/engineering_dispatch_manifest.json
+
+      - name: Build live dual-stream dispatch plan
+        id: dispatch
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/wow-engine/v17/.agent-handoff
+          gh issue list \
+            --repo "$GITHUB_REPOSITORY" \
+            --state open \
+            --limit 200 \
+            --json number,title,body,state,updatedAt \
+            > "$RUNNER_TEMP/wow-open-issues.json"
+          python artifacts/wow-engine/v17/engineering_dispatch_queue.py build \
+            --manifest artifacts/wow-engine/v17/engineering_dispatch_manifest.json \
+            --issues "$RUNNER_TEMP/wow-open-issues.json" \
+            --output "$RUNNER_TEMP/wow-dispatch-queue.json" \
+            > /dev/null
+          decision=$(python artifacts/wow-engine/v17/engineering_agent_team.py dual-priority \
+            --ledger "$RUNNER_TEMP/wow-dispatch-queue.json")
+          cp "$RUNNER_TEMP/wow-dispatch-queue.json" artifacts/wow-engine/v17/.agent-handoff/dispatch-queue.json
+          printf '%s\n' "$decision" > artifacts/wow-engine/v17/.agent-handoff/dispatch.json
+          restoration=$(jq -r '.restoration.incident_id // ""' <<<"$decision")
+          acceleration=$(jq -r '.acceleration.incident_id // ""' <<<"$decision")
+          queue_depth=$(jq -r '.queue_depth // 0' "$RUNNER_TEMP/wow-dispatch-queue.json")
+          echo "restoration=$restoration" >> "$GITHUB_OUTPUT"
+          echo "acceleration=$acceleration" >> "$GITHUB_OUTPUT"
+          echo "queue_depth=$queue_depth" >> "$GITHUB_OUTPUT"
 
       - name: Verify Anthropic authentication
         env:
@@ -73,11 +105,13 @@ jobs:
             You are the independent WOW V17 ENGINEERING_LEAD_AGENT running on Anthropic/Claude fallback tooling.
             OpenAI primary engineering is unavailable for this run because: ${{ inputs.fallback_reason }}.
             Read repository governance, .agents/skills/wow-engineering-lead-agent/SKILL.md,
-            artifacts/wow-engine/v17/incident-ledger.json, and current local CI/PR evidence.
-            Run `python artifacts/wow-engine/v17/engineering_agent_team.py priority`.
-            Select exactly one durable actionable incident or NO_ACTION. Do not edit files.
-            You own priority only; do not diagnose, implement, approve, merge, deploy, or change
-            sporting probability behavior. Preserve can_execute=false and V17_TERMINAL_REDUCER.
+            artifacts/wow-engine/v17/.agent-handoff/dispatch.json,
+            artifacts/wow-engine/v17/.agent-handoff/dispatch-queue.json, and current local CI/PR evidence.
+            The deterministic dispatcher has already selected the restoration target. Use that exact
+            restoration incident; do not reprioritize or substitute another issue. If the restoration
+            incident is null, return NO_ACTION. Do not edit files. You own restoration dispatch only;
+            do not diagnose, implement, approve, merge, deploy, or change sporting probability behavior.
+            Preserve can_execute=false and V17_TERMINAL_REDUCER.
           output_schema: '{"type":"object","properties":{"action":{"type":"string","enum":["REPAIR","VERIFY_RELEASE","NO_ACTION"]},"incident_id":{"type":"string"},"severity":{"type":"string"},"current_state":{"type":"string"},"reason":{"type":"string"},"frontier_allowed":{"type":"boolean"}},"required":["action","incident_id","severity","current_state","reason","frontier_allowed"],"additionalProperties":false}'
 
       - name: Normalize Lead dispatch
@@ -85,12 +119,65 @@ jobs:
         shell: bash
         env:
           RESULT: ${{ steps.lead_agent.outputs.structured_output }}
+          EXPECTED_INCIDENT: ${{ steps.dispatch.outputs.restoration }}
         run: |
           set -euo pipefail
-          echo "action=$(jq -r '.action' <<<"$RESULT")" >> "$GITHUB_OUTPUT"
-          echo "incident=$(jq -r '.incident_id' <<<"$RESULT")" >> "$GITHUB_OUTPUT"
+          action=$(jq -r '.action' <<<"$RESULT")
+          incident=$(jq -r '.incident_id' <<<"$RESULT")
+          if [ -n "${EXPECTED_INCIDENT:-}" ] && [ "$incident" != "$EXPECTED_INCIDENT" ]; then
+            echo "::error::Lead incident $incident does not match deterministic restoration target $EXPECTED_INCIDENT."
+            exit 1
+          fi
+          if [ -z "${EXPECTED_INCIDENT:-}" ] && [ "$action" != "NO_ACTION" ]; then
+            echo "::error::Lead must return NO_ACTION when dispatcher has no restoration target."
+            exit 1
+          fi
+          echo "action=$action" >> "$GITHUB_OUTPUT"
+          echo "incident=$incident" >> "$GITHUB_OUTPUT"
           mkdir -p artifacts/wow-engine/v17/.agent-handoff
           printf '%s\n' "$RESULT" > artifacts/wow-engine/v17/.agent-handoff/lead.json
+
+      - name: Acceleration evidence / triage agent
+        id: acceleration_agent
+        if: steps.dispatch.outputs.acceleration != ''
+        uses: ./.github/actions/wow-claude-agent
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          permission_profile: ":read-only"
+          prompt: |
+            You are the independent WOW V17 ACCELERATION_TRIAGE_AGENT running on fallback tooling.
+            Read artifacts/wow-engine/v17/.agent-handoff/dispatch.json and
+            artifacts/wow-engine/v17/.agent-handoff/dispatch-queue.json.
+            Work only on the exact acceleration incident selected by the deterministic dispatcher.
+            Advance that existing issue with concrete repository evidence: verify its current state,
+            narrow its next safe implementation slice, identify tests and exact blockers, and avoid
+            duplicating any incident or scheduler. Do not edit files, approve work, merge, deploy, or
+            change sporting probability behavior. Preserve V17_TERMINAL_REDUCER and can_execute=false.
+          output_schema: '{"type":"object","properties":{"incident_id":{"type":"string"},"advancement":{"type":"string"},"evidence":{"type":"array","items":{"type":"string"}},"next_action":{"type":"string"},"conflict_keys_verified":{"type":"boolean"},"hard_boundary":{"type":"string"}},"required":["incident_id","advancement","evidence","next_action","conflict_keys_verified","hard_boundary"],"additionalProperties":false}'
+
+      - name: Normalize acceleration handoff
+        id: acceleration
+        if: steps.acceleration_agent.outcome == 'success'
+        shell: bash
+        env:
+          RESULT: ${{ steps.acceleration_agent.outputs.structured_output }}
+          EXPECTED_INCIDENT: ${{ steps.dispatch.outputs.acceleration }}
+        run: |
+          set -euo pipefail
+          incident=$(jq -r '.incident_id' <<<"$RESULT")
+          if [ "$incident" != "${EXPECTED_INCIDENT:-}" ]; then
+            echo "::error::Acceleration incident $incident does not match deterministic target $EXPECTED_INCIDENT."
+            exit 1
+          fi
+          echo "incident=$incident" >> "$GITHUB_OUTPUT"
+          echo "advancement<<EOF" >> "$GITHUB_OUTPUT"
+          jq -r '.advancement' <<<"$RESULT" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+          echo "next_action<<EOF" >> "$GITHUB_OUTPUT"
+          jq -r '.next_action' <<<"$RESULT" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+          printf '%s\n' "$RESULT" > artifacts/wow-engine/v17/.agent-handoff/acceleration.json
 
       - name: Research / Root-Cause Triage agent
         id: triage_agent
@@ -221,7 +308,10 @@ jobs:
           risk=$(jq -r '.risk_class' <<<"$RESULT")
           incident=$(jq -r '.incident_id' <<<"$RESULT")
           branch=""
-          rm -rf artifacts/wow-engine/v17/.agent-handoff
+          rm -f artifacts/wow-engine/v17/.agent-handoff/lead.json \
+            artifacts/wow-engine/v17/.agent-handoff/triage.json \
+            artifacts/wow-engine/v17/.agent-handoff/specialist.json \
+            artifacts/wow-engine/v17/.agent-handoff/specialist-route.json
           if [ "$changed" = "true" ]; then
             git diff --quiet --exit-code && { echo "::error::Claude reported changes but returned no working-tree diff."; exit 1; }
             branch="claude/engineering/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
@@ -404,6 +494,79 @@ jobs:
             gh pr create --repo "$GITHUB_REPOSITORY" --base main --head "$BRANCH" --title "$title" --body-file "$body" --draft
           fi
 
+      - name: Persist dual-stream heartbeat and receipt
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RESTORATION: ${{ steps.dispatch.outputs.restoration }}
+          ACCELERATION: ${{ steps.dispatch.outputs.acceleration }}
+          QUEUE_DEPTH: ${{ steps.dispatch.outputs.queue_depth }}
+          LEAD_ACTION: ${{ steps.lead.outputs.action }}
+          ACCEL_ADVANCEMENT: ${{ steps.acceleration.outputs.advancement }}
+          ACCEL_NEXT: ${{ steps.acceleration.outputs.next_action }}
+        run: |
+          set -euo pipefail
+          receipt="$RUNNER_TEMP/wow-dual-stream-receipt.json"
+          jq -n \
+            --arg utc "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg run_id "$GITHUB_RUN_ID" \
+            --arg provider "anthropic" \
+            --arg restoration "${RESTORATION:-}" \
+            --arg acceleration "${ACCELERATION:-}" \
+            --arg queue_depth "${QUEUE_DEPTH:-0}" \
+            --arg lead_action "${LEAD_ACTION:-NOT_RUN}" \
+            --arg acceleration_advancement "${ACCEL_ADVANCEMENT:-NOT_RUN}" \
+            --arg acceleration_next "${ACCEL_NEXT:-NOT_RUN}" \
+            '{
+              utc: $utc,
+              workflow_run_id: $run_id,
+              provider: $provider,
+              queue_depth: ($queue_depth | tonumber? // 0),
+              current_restoration_target: (if ($restoration | length) > 0 then $restoration else null end),
+              current_acceleration_target: (if ($acceleration | length) > 0 then $acceleration else null end),
+              restoration_action: $lead_action,
+              last_acceleration_advancement: $acceleration_advancement,
+              acceleration_next_action: $acceleration_next,
+              duplicate_incident_created: false,
+              can_execute: false,
+              terminal_authority: "V17_TERMINAL_REDUCER"
+            }' > "$receipt"
+
+          marker='<!-- WOW_DUAL_STREAM_HEARTBEAT -->'
+          body=$(cat <<EOF
+          $marker
+          ### WOW V17 dual-stream dispatcher heartbeat
+          - workflow_run_id: $GITHUB_RUN_ID
+          - provider: Anthropic fallback
+          - queue_depth: ${QUEUE_DEPTH:-0}
+          - current_restoration_target: ${RESTORATION:-NONE}
+          - current_acceleration_target: ${ACCELERATION:-NONE}
+          - restoration_action: ${LEAD_ACTION:-NOT_RUN}
+          - last_acceleration_advancement: ${ACCEL_ADVANCEMENT:-NOT_RUN}
+          - acceleration_next_action: ${ACCEL_NEXT:-NOT_RUN}
+          - duplicate_incident_created: false
+          - can_execute: false
+          - terminal_authority: V17_TERMINAL_REDUCER
+          EOF
+          )
+          comments=$(gh api "/repos/${GITHUB_REPOSITORY}/issues/1138/comments?per_page=100")
+          comment_id=$(jq -r --arg marker "$marker" '[.[] | select(.body | contains($marker))][0].id // empty' <<<"$comments")
+          if [ -n "$comment_id" ]; then
+            gh api --method PATCH "/repos/${GITHUB_REPOSITORY}/issues/comments/$comment_id" -f body="$body" >/dev/null
+          else
+            gh api --method POST "/repos/${GITHUB_REPOSITORY}/issues/1138/comments" -f body="$body" >/dev/null
+          fi
+
+      - name: Upload dual-stream dispatch receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wow-v17-dual-stream-receipt-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: error
+          retention-days: 14
+          path: ${{ runner.temp }}/wow-dual-stream-receipt.json
+
       - name: Record team receipt
         if: always()
         run: |
@@ -412,8 +575,12 @@ jobs:
             echo "- UTC: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
             echo "- fallback_reason: ${{ inputs.fallback_reason }}"
             echo "- parent_run_id: ${{ inputs.parent_run_id }}"
+            echo "- Queue depth: ${{ steps.dispatch.outputs.queue_depth || '0' }}"
+            echo "- Restoration target: ${{ steps.dispatch.outputs.restoration || 'NONE' }}"
+            echo "- Acceleration target: ${{ steps.dispatch.outputs.acceleration || 'NONE' }}"
             echo "- Lead: ${{ steps.lead.outputs.action || 'NOT_RUN' }}"
             echo "- Incident: ${{ steps.lead.outputs.incident || 'NONE' }}"
+            echo "- Acceleration advancement: ${{ steps.acceleration.outputs.advancement || 'NOT_RUN' }}"
             echo "- Triage repairable: ${{ steps.triage.outputs.repairable || 'NOT_RUN' }}"
             echo "- Specialist: ${{ steps.specialist.outputs.subagent || 'NOT_RUN' }}"
             echo "- Specialist hypothesis: ${{ steps.specialist.outputs.hypothesis || 'NOT_RUN' }}"
@@ -423,5 +590,7 @@ jobs:
             echo "- Regression: ${{ steps.regression.outputs.status || 'NOT_RUN' }}"
             echo "- QA: ${{ steps.qa.outputs.decision || 'NOT_RUN' }}"
             echo "- provider: Anthropic/Claude"
+            echo "- duplicate incident created: false"
             echo "- can_execute: false"
+            echo "- terminal_authority: V17_TERMINAL_REDUCER"
           } >> "$GITHUB_STEP_SUMMARY"
