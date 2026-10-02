@@ -1,0 +1,18 @@
+{
+  "issue": 823,
+  "board_coverage_status": "DISCOVERY_OR_ACQUISITION_INCOMPLETE",
+  "can_execute": false,
+  "cases": [
+    {"sport": "MLB", "stage": "acquisition", "expected": "typed_failure_preserved"},
+    {"sport": "WNBA", "stage": "acquisition", "expected": "typed_failure_preserved"},
+    {"sport": "NHL", "stage": "acquisition", "expected": "typed_failure_preserved"},
+    {"sport": "SOCCER", "stage": "discovery", "expected": "explicit_incomplete"},
+    {"sport": "TENNIS", "stage": "discovery", "expected": "explicit_incomplete"},
+    {"sport": "MMA", "stage": "discovery", "expected": "explicit_incomplete"}
+  ],
+  "invariants": {
+    "silent_row_loss_allowed": false,
+    "probability_substitution_allowed": false,
+    "terminal_authority": "V17_TERMINAL_REDUCER"
+  }
+}
