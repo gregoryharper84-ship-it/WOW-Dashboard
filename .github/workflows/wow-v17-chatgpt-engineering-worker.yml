@@ -117,10 +117,21 @@ jobs:
         shell: bash
         env:
           RESULT: ${{ steps.lead_agent.outputs.structured_output }}
+          EXPECTED_INCIDENT: ${{ steps.dispatch.outputs.restoration }}
         run: |
           set -euo pipefail
-          echo "action=$(jq -r '.action' <<<"$RESULT")" >> "$GITHUB_OUTPUT"
-          echo "incident=$(jq -r '.incident_id' <<<"$RESULT")" >> "$GITHUB_OUTPUT"
+          action=$(jq -r '.action' <<<"$RESULT")
+          incident=$(jq -r '.incident_id' <<<"$RESULT")
+          if [ -n "${EXPECTED_INCIDENT:-}" ] && [ "$incident" != "$EXPECTED_INCIDENT" ]; then
+            echo "::error::Lead incident $incident does not match deterministic restoration target $EXPECTED_INCIDENT."
+            exit 1
+          fi
+          if [ -z "${EXPECTED_INCIDENT:-}" ] && [ "$action" != "NO_ACTION" ]; then
+            echo "::error::Lead must return NO_ACTION when dispatcher has no restoration target."
+            exit 1
+          fi
+          echo "action=$action" >> "$GITHUB_OUTPUT"
+          echo "incident=$incident" >> "$GITHUB_OUTPUT"
           mkdir -p artifacts/wow-engine/v17/.agent-handoff
           printf '%s\n' "$RESULT" > artifacts/wow-engine/v17/.agent-handoff/lead.json
 
@@ -148,9 +159,15 @@ jobs:
         shell: bash
         env:
           RESULT: ${{ steps.acceleration_agent.outputs.structured_output }}
+          EXPECTED_INCIDENT: ${{ steps.dispatch.outputs.acceleration }}
         run: |
           set -euo pipefail
-          echo "incident=$(jq -r '.incident_id' <<<"$RESULT")" >> "$GITHUB_OUTPUT"
+          incident=$(jq -r '.incident_id' <<<"$RESULT")
+          if [ "$incident" != "${EXPECTED_INCIDENT:-}" ]; then
+            echo "::error::Acceleration incident $incident does not match deterministic target $EXPECTED_INCIDENT."
+            exit 1
+          fi
+          echo "incident=$incident" >> "$GITHUB_OUTPUT"
           echo "advancement<<EOF" >> "$GITHUB_OUTPUT"
           jq -r '.advancement' <<<"$RESULT" >> "$GITHUB_OUTPUT"
           echo "EOF" >> "$GITHUB_OUTPUT"
