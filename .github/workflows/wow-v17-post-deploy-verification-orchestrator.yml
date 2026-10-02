@@ -54,9 +54,9 @@ jobs:
     needs: spread-certification
     if: >-
       always() &&
-      (github.event_name == 'workflow_dispatch' ||
-       (github.event.workflow_run.conclusion == 'success' &&
-        github.event.workflow_run.head_branch == 'main'))
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'main'
     uses: ./.github/workflows/wow-v17-daily-snapshot.yml
     with:
       post_deploy_acceptance: true
