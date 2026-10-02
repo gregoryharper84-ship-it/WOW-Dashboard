@@ -7,6 +7,8 @@ failures are contained so telemetry cannot take the scoring service down.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import os
 from typing import Any
@@ -94,3 +96,21 @@ def initialize_posthog_observability() -> dict[str, Any]:
         )
 
     return posthog_observability_status()
+
+
+_ENGINEERING_FINGERPRINT_FIELDS = (
+    "sport", "market_family", "specialist", "model_family", "model_version",
+    "route", "terminal_code", "provider_code", "scorer_stage", "runtime_generation",
+)
+
+
+def engineering_failure_fingerprint(properties: dict[str, Any]) -> str:
+    """Return a stable allowlisted fingerprint for incident grouping."""
+    safe = {
+        key: str(properties[key])
+        for key in _ENGINEERING_FINGERPRINT_FIELDS
+        if properties.get(key) not in (None, "")
+    }
+    safe["can_execute"] = False
+    canonical = json.dumps(safe, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:24]
