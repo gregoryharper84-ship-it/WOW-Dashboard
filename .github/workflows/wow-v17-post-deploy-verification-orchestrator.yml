@@ -45,7 +45,7 @@ jobs:
 
   spread-forward:
     name: Run spread-forward production canaries
-    needs: priority-props
+    needs: [golden-full-slate, priority-props]
     if: >-
       always() &&
       (github.event_name == 'workflow_dispatch' ||
@@ -58,7 +58,7 @@ jobs:
 
   spread-certification:
     name: Run spread certification replay
-    needs: spread-forward
+    needs: [golden-full-slate, spread-forward]
     if: >-
       always() &&
       (github.event_name == 'workflow_dispatch' ||
