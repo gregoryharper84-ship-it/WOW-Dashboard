@@ -53,3 +53,35 @@ def test_interactive_latency_middleware_logs_only_governed_interactive_routes(ca
     assert all("total_ms=" in message for message in governed)
     assert all("can_execute=false" in message for message in governed)
     assert not any("route=/health" in message for message in messages)
+
+
+def test_stage_timer_logs_all_stages_without_secrets(caplog):
+    from v17.interactive_latency_telemetry import INTERACTIVE_STAGES, InteractiveStageTimer
+
+    ticks = iter(float(i) for i in range(100))
+    timer = InteractiveStageTimer("/score-team-event-request", clock=lambda: next(ticks))
+    for name in INTERACTIVE_STAGES[:-1]:
+        with timer.stage(name):
+            pass
+    with caplog.at_level(logging.WARNING, logger="wow.v17.interactive_latency"):
+        timer.log(sport="nfl", row_count=64, batch_size=64)
+    message = caplog.records[-1].getMessage()
+    assert all(f"{name}_ms=" in message for name in INTERACTIVE_STAGES)
+    assert "can_execute=false" in message
+    assert "row_count=le_100" in message
+
+
+def test_latency_aggregator_p50_p95_and_bounds():
+    from v17.interactive_latency_telemetry import LatencyAggregator, MAX_SERIES
+
+    agg = LatencyAggregator()
+    assert agg.snapshot() == {}
+    agg.record("/r", 5.0)
+    assert agg.snapshot()[("/r", "unknown", "unknown", "unknown")]["p95_ms"] == 5.0
+    for value in range(1, 101):
+        agg.record("/s", float(value), sport="nba", row_count=64, batch_size=64)
+    stats = agg.snapshot()[("/s", "nba", "le_100", "le_100")]
+    assert (stats["count"], stats["p50_ms"], stats["p95_ms"]) == (100, 50.0, 95.0)
+    for i in range(MAX_SERIES + 10):
+        agg.record(f"/x{i}", 1.0)
+    assert len(agg.snapshot()) <= MAX_SERIES
