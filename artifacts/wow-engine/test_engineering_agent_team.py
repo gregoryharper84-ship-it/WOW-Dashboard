@@ -63,6 +63,16 @@ def test_priority_prefers_p0_over_p1() -> None:
     assert decision.incident_id == "PM-P0"
 
 
+def test_priority_rank_orders_same_severity_active_work() -> None:
+    decision = select_priority_incident(
+        [
+            {"postmortem_id": "PM-LATER", "severity": "P0", "state": "OPEN", "priority_rank": 2},
+            {"postmortem_id": "PM-FIRST", "severity": "P0", "state": "OPEN", "priority_rank": 1},
+        ]
+    )
+    assert decision.incident_id == "PM-FIRST"
+
+
 def test_all_non_executable_wait_gates_are_parked() -> None:
     for wait_state in PARKED_WAIT_STATES:
         assert is_actionable(
