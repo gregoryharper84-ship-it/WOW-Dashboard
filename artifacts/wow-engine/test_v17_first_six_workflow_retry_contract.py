@@ -53,3 +53,13 @@ def test_nfl_event_v2_is_not_blocked_behind_legacy_nfl_retry_loop():
     assert "time.sleep(5)" in text
     assert "attempts=36" not in text
     assert "cancel-in-progress: true" in text
+
+
+def test_push_maintenance_is_ncaaf_only_fast_lane():
+    text = _workflow_text()
+    assert 'push_fast_lane = event_name == "push"' in text
+    assert '["NCAAF"]' in text
+    assert '[("NCAAF", "/internal/v17/ncaaf-model-maintenance")]' in text
+    assert "if not push_fast_lane:" in text
+    assert '"NFL_EVENT_V2"' in text
+    assert "time.sleep(5)" in text
