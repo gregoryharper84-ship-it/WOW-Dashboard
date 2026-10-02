@@ -1,0 +1,25 @@
+{
+  "issue": 1127,
+  "classification": "P0_CLASS_B_ACQUISITION_IDENTITY",
+  "observed": {
+    "terminal": "DATA_UNOBTAINABLE",
+    "blockers": [
+      "WNBA_OFFICIAL_SOURCE_UNAVAILABLE",
+      "WNBA_STATS_SCOREBOARD_V3_UNAVAILABLE"
+    ],
+    "cdn_attempt": "JSONDecodeError",
+    "web_attempt": "WNBA_OFFICIAL_SCHEDULE_WEB_PARSE_EMPTY"
+  },
+  "expected": {
+    "failure_scope": "source_acquisition",
+    "typed_failure_preserved": true,
+    "market_probability_substitution_allowed": false,
+    "canonical_identity_required": true
+  },
+  "governance": {
+    "runtime_generation": "V17_ACTIVE",
+    "terminal_authority": "V17_TERMINAL_REDUCER",
+    "can_execute": false,
+    "dry_run_only": true
+  }
+}
