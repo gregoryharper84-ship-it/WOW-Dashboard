@@ -38,6 +38,8 @@ from v17.spread_margin_challenger import (
 )
 from v17.spread_margin_forward_fit import fit_margin_distribution_artifact
 from v17.spread_margin_replay import (
+    NCAAF_PERSISTED_FEATURE_MODEL_FAMILY,
+    NCAAF_PERSISTED_FEATURE_SCHEMA_VERSION,
     _load_ncaaf_persisted_feature_rows,
     _load_ncaaf_persisted_game_rows,
     _ncaaf_events_from_games,
@@ -61,6 +63,7 @@ class _ForwardContext:
     loaded_at_monotonic: float
     loaded_at_utc: str
     cache_key: tuple[int, int, int, float]
+    source_fingerprint: tuple[str | None, str | None, str | None, str | None]
 
 
 _FORWARD_CONTEXT_LOCK = threading.Lock()
@@ -82,6 +85,65 @@ def _clear_forward_context_cache() -> None:
     global _FORWARD_CONTEXT_CACHE
     with _FORWARD_CONTEXT_LOCK:
         _FORWARD_CONTEXT_CACHE = None
+
+
+def _ncaaf_loaded_source_fingerprint(
+    replay_rows: Sequence[MarginTrainingRow],
+    settled_events: Sequence[Mapping[str, Any]],
+) -> tuple[str | None, str | None, str | None, str | None]:
+    """Derive the same freshness identity from already-loaded immutable rows."""
+    latest_feature = max(
+        replay_rows,
+        key=lambda row: (_dt(row.event_start_time), str(row.event_id)),
+    )
+    dated_games = [row for row in settled_events if row.get("event_start_time") is not None]
+    latest_game = (
+        max(
+            dated_games,
+            key=lambda row: (_dt(row["event_start_time"]), str(row.get("event_id") or "")),
+        )
+        if dated_games
+        else {}
+    )
+    return (
+        str(latest_feature.event_id),
+        str(latest_feature.event_start_time),
+        str(latest_game.get("event_id")) if latest_game.get("event_id") is not None else str(latest_feature.event_id),
+        str(latest_game.get("event_start_time")) if latest_game.get("event_start_time") is not None else str(latest_feature.event_start_time),
+    )
+
+
+def _ncaaf_forward_source_fingerprint(client: Any) -> tuple[str | None, str | None, str | None, str | None]:
+    """Read only the latest immutable feature/game identities used by the forward fit."""
+    feature_rows = (
+        client.table("wow_d1_training_rows")
+        .select("official_event_id,event_start_time")
+        .eq("sport", SPORT)
+        .eq("model_family", NCAAF_PERSISTED_FEATURE_MODEL_FAMILY)
+        .eq("feature_schema_version", NCAAF_PERSISTED_FEATURE_SCHEMA_VERSION)
+        .order("event_start_time", desc=True)
+        .order("official_event_id", desc=True)
+        .limit(1)
+        .execute().data
+        or []
+    )
+    game_rows = (
+        client.table("wow_ncaaf_training_games")
+        .select("official_event_id,event_start_time")
+        .order("event_start_time", desc=True)
+        .order("official_event_id", desc=True)
+        .limit(1)
+        .execute().data
+        or []
+    )
+    feature = feature_rows[0] if feature_rows else {}
+    game = game_rows[0] if game_rows else {}
+    return (
+        str(feature.get("official_event_id")) if feature.get("official_event_id") is not None else None,
+        str(feature.get("event_start_time")) if feature.get("event_start_time") is not None else None,
+        str(game.get("official_event_id")) if game.get("official_event_id") is not None else None,
+        str(game.get("event_start_time")) if game.get("event_start_time") is not None else None,
+    )
 
 
 def load_ncaaf_settled_events(client: Any) -> list[dict[str, Any]]:
@@ -127,9 +189,11 @@ def _cached_forward_context(client: Any) -> tuple[_ForwardContext, str, float]:
 
     Broad board scans previously made every request page thousands of persisted
     rows and re-fit the same immutable artifact. That amplified PostgREST pool
-    pressure and CPU saturation. The cache is research-only, process-local and
-    bounded to five minutes; a process restart or code/config change invalidates
-    it. Concurrent cold callers never trigger parallel full-corpus loads/fits.
+    pressure and CPU saturation. The cache is research-only and process-local.
+    Every five minutes it validates a cheap latest-row fingerprint; unchanged
+    immutable source ledgers reuse the exact fitted artifact, while changed
+    ledgers rebuild immediately. Concurrent cold callers never trigger parallel
+    full-corpus loads/fits.
     """
     global _FORWARD_CONTEXT_CACHE
 
@@ -159,6 +223,22 @@ def _cached_forward_context(client: Any) -> tuple[_ForwardContext, str, float]:
         ):
             return cached, "HIT_AFTER_WAIT", max(0.0, now - cached.loaded_at_monotonic)
 
+        if cached is not None and cached.cache_key == key:
+            fingerprint = _ncaaf_forward_source_fingerprint(client)
+            if fingerprint == cached.source_fingerprint:
+                validated_at = monotonic()
+                refreshed = _ForwardContext(
+                    artifact=cached.artifact,
+                    settled_events=cached.settled_events,
+                    latest_training_event=cached.latest_training_event,
+                    loaded_at_monotonic=validated_at,
+                    loaded_at_utc=datetime.now(timezone.utc).isoformat(),
+                    cache_key=cached.cache_key,
+                    source_fingerprint=cached.source_fingerprint,
+                )
+                _FORWARD_CONTEXT_CACHE = refreshed
+                return refreshed, "HIT_SOURCE_UNCHANGED", 0.0
+
         replay_rows, settled = load_ncaaf_forward_context(client)
         latest_training_event = max(_dt(row.event_start_time) for row in replay_rows)
         artifact = fit_margin_distribution_artifact(
@@ -168,6 +248,7 @@ def _cached_forward_context(client: Any) -> tuple[_ForwardContext, str, float]:
             ridge_alpha=RIDGE_ALPHA,
         )
         loaded_at_monotonic = monotonic()
+        source_fingerprint = _ncaaf_loaded_source_fingerprint(replay_rows, settled)
         context = _ForwardContext(
             artifact=artifact,
             settled_events=tuple(settled),
@@ -175,6 +256,7 @@ def _cached_forward_context(client: Any) -> tuple[_ForwardContext, str, float]:
             loaded_at_monotonic=loaded_at_monotonic,
             loaded_at_utc=datetime.now(timezone.utc).isoformat(),
             cache_key=key,
+            source_fingerprint=source_fingerprint,
         )
         _FORWARD_CONTEXT_CACHE = context
         return context, "MISS_REBUILT", 0.0
@@ -388,6 +470,8 @@ __all__ = [
     "MIN_TRAIN_ROWS",
     "RIDGE_ALPHA",
     "SPORT",
+    "_ncaaf_forward_source_fingerprint",
+    "_ncaaf_loaded_source_fingerprint",
     "build_forward_matchup_features",
     "load_ncaaf_forward_context",
     "load_ncaaf_settled_events",
