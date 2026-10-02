@@ -66,15 +66,51 @@ def test_post_deploy_orchestrator_is_only_deploy_consumer_for_heavy_verification
         assert 'workflows: ["wow-v17-render-production-deploy"]' not in text
 
 
-def test_post_deploy_orchestrator_runs_bounded_smoke_before_memory_heavy_replay():
+def test_deploy_and_post_deploy_verification_share_one_production_lock():
+    deploy = DEPLOY_WORKFLOW.read_text(encoding="utf-8")
+    orchestrator = ORCHESTRATOR_WORKFLOW.read_text(encoding="utf-8")
+    group = "group: wow-v17-production-deploy-and-verification"
+
+    assert group in deploy
+    assert group in orchestrator
+    assert "cancel-in-progress: false" in deploy
+    assert "cancel-in-progress: false" in orchestrator
+
+
+def test_post_deploy_orchestrator_fences_receipt_to_current_exact_sha():
     text = ORCHESTRATOR_WORKFLOW.read_text(encoding="utf-8")
 
+    # Reproduction: deploy SHA A finishes after main has already advanced to B.
+    # workflow_run checks may use B's workflow definition, but must not run any
+    # production verification against the still-live A deployment.
+    assert text.count("github.event.workflow_run.head_sha == github.sha") == 4
+    for start, end in (
+        ("  golden-full-slate:", "  priority-props:"),
+        ("  priority-props:", "  spread-forward:"),
+        ("  spread-forward:", "  spread-certification:"),
+    ):
+        section = text[text.index(start):text.index(end)]
+        assert "github.event.workflow_run.head_sha == github.sha" in section
+    certification = text[text.index("  spread-certification:"):]
+    assert "github.event.workflow_run.head_sha == github.sha" in certification
+
+
+def test_post_deploy_orchestrator_prioritizes_golden_path_before_secondary_verification():
+    text = ORCHESTRATOR_WORKFLOW.read_text(encoding="utf-8")
+
+    golden = text.index("  golden-full-slate:")
     priority = text.index("  priority-props:")
     spread = text.index("  spread-forward:")
     cert = text.index("  spread-certification:")
-    assert priority < spread < cert
-    assert "needs: priority-props" in text
-    assert "needs: spread-forward" in text
+    assert golden < priority < spread < cert
+
+    priority_section = text[priority:spread]
+    spread_section = text[spread:cert]
+    cert_section = text[cert:]
+    assert "needs: golden-full-slate" in priority_section
+    assert "needs: [golden-full-slate, priority-props]" in spread_section
+    assert "needs: [golden-full-slate, spread-forward]" in cert_section
+    assert text.count("needs.golden-full-slate.result == 'success'") == 3
     assert text.count("always() &&") == 3
     assert "uses: ./.github/workflows/wow-v17-priority-prop-lifecycle.yml" in text
     assert "post_deploy_smoke: true" in text
@@ -93,10 +129,10 @@ def test_golden_full_slate_runs_only_as_post_deploy_reusable_acceptance():
     assert "if: inputs.post_deploy_acceptance == true" in daily
 
     golden = orchestrator.index("  golden-full-slate:")
-    certification = orchestrator.index("  spread-certification:")
-    assert certification < golden
-    section = orchestrator[golden:]
-    assert "needs: spread-certification" in section
+    priority = orchestrator.index("  priority-props:")
+    assert golden < priority
+    section = orchestrator[golden:priority]
+    assert "needs:" not in section
     assert "uses: ./.github/workflows/wow-v17-daily-snapshot.yml" in section
     assert "post_deploy_acceptance: true" in section
     assert "github.event_name == 'workflow_run'" in section

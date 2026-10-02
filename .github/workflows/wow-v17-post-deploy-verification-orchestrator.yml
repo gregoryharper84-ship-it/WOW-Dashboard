@@ -12,16 +12,32 @@ permissions:
   id-token: write
 
 concurrency:
-  group: wow-v17-post-deploy-verification-orchestrator
+  group: wow-v17-production-deploy-and-verification
   cancel-in-progress: false
 
 jobs:
+  golden-full-slate:
+    name: Run post-deploy Golden Path full-slate acceptance
+    if: >-
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_sha == github.sha
+    uses: ./.github/workflows/wow-v17-daily-snapshot.yml
+    with:
+      post_deploy_acceptance: true
+    secrets: inherit
+
   priority-props:
     name: Run bounded priority prop smoke
+    needs: golden-full-slate
     if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.head_branch == 'main')
+      always() &&
+      (github.event_name == 'workflow_dispatch' ||
+       (needs.golden-full-slate.result == 'success' &&
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.head_branch == 'main' &&
+        github.event.workflow_run.head_sha == github.sha))
     uses: ./.github/workflows/wow-v17-priority-prop-lifecycle.yml
     with:
       post_deploy_smoke: true
@@ -29,35 +45,26 @@ jobs:
 
   spread-forward:
     name: Run spread-forward production canaries
-    needs: priority-props
+    needs: [golden-full-slate, priority-props]
     if: >-
       always() &&
       (github.event_name == 'workflow_dispatch' ||
-       (github.event.workflow_run.conclusion == 'success' &&
-        github.event.workflow_run.head_branch == 'main'))
+       (needs.golden-full-slate.result == 'success' &&
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.head_branch == 'main' &&
+        github.event.workflow_run.head_sha == github.sha))
     uses: ./.github/workflows/wow-v17-spread-forward-production-canary.yml
     secrets: inherit
 
   spread-certification:
     name: Run spread certification replay
-    needs: spread-forward
+    needs: [golden-full-slate, spread-forward]
     if: >-
       always() &&
       (github.event_name == 'workflow_dispatch' ||
-       (github.event.workflow_run.conclusion == 'success' &&
-        github.event.workflow_run.head_branch == 'main'))
+       (needs.golden-full-slate.result == 'success' &&
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.head_branch == 'main' &&
+        github.event.workflow_run.head_sha == github.sha))
     uses: ./.github/workflows/wow-v17-spread-certification-replay.yml
-    secrets: inherit
-
-  golden-full-slate:
-    name: Run post-deploy Golden Path full-slate acceptance
-    needs: spread-certification
-    if: >-
-      always() &&
-      github.event_name == 'workflow_run' &&
-      github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.head_branch == 'main'
-    uses: ./.github/workflows/wow-v17-daily-snapshot.yml
-    with:
-      post_deploy_acceptance: true
     secrets: inherit
