@@ -1,0 +1,33 @@
+{
+  "contract": "WOW_PREPRODUCTION_REPLAY_SANDBOX_V1",
+  "issue": 1139,
+  "purpose": "Deterministic sanitized Failure Capsule replay before serialized production canary.",
+  "required_inputs": ["baseline_sha", "patched_sha", "fixture_id", "pytest_targets"],
+  "required_evidence": {
+    "baseline": "FAIL_WITH_ORIGINAL_TYPED_FAILURE",
+    "patched": "PASS",
+    "adjacent_regressions": "PASS",
+    "exact_head_sha": true
+  },
+  "fail_closed_blockers": [
+    "CAPSULE_NOT_DETERMINISTIC",
+    "BASELINE_FAILURE_NOT_REPRODUCED",
+    "PATCHED_REPLAY_FAILED",
+    "ADJACENT_REGRESSION_FAILED",
+    "EXACT_HEAD_MISMATCH",
+    "PRODUCTION_SECRET_REQUIRED"
+  ],
+  "production_canary": {
+    "eligible_only_after_sandbox_pass": true,
+    "serialized": true,
+    "sandbox_cannot_mark_route_production_ready": true
+  },
+  "governance": {
+    "custom_gpt_identity": "WOW_BETTING_ENGINE",
+    "runtime_generation": "V17_ACTIVE",
+    "terminal_authority": "V17_TERMINAL_REDUCER",
+    "can_execute": false,
+    "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS": true,
+    "probability_substitution": false
+  }
+}
