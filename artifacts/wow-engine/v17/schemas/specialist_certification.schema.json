@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "V17SpecialistCertificationArtifact",
+  "type": "object",
+  "required": [
+    "certification_id","specialist_id","is_active","certified_at","expires_at",
+    "model_artifact_sha","feature_contract_version","calibration_artifact_id",
+    "qualification_policy","lower_bound_method"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "certification_id":{"type":"string","minLength":1},
+    "specialist_id":{"type":"string","minLength":1},
+    "is_active":{"type":"boolean"},
+    "certified_at":{"type":"string","format":"date-time"},
+    "expires_at":{"type":"string","format":"date-time"},
+    "model_artifact_sha":{"type":"string","pattern":"^[0-9a-f]{40}$"},
+    "feature_contract_version":{"type":"string","minLength":1},
+    "calibration_artifact_id":{"type":"string","minLength":1},
+    "qualification_policy":{
+      "type":"object",
+      "required":["policy_id","max_ece","max_brier","minimum_validation_rows"],
+      "additionalProperties":false,
+      "properties":{
+        "policy_id":{"type":"string","minLength":1},
+        "max_ece":{"type":"number","minimum":0.0,"maximum":1.0},
+        "max_brier":{"type":"number","minimum":0.0,"maximum":1.0},
+        "minimum_validation_rows":{"type":"integer","minimum":1}
+      }
+    },
+    "lower_bound_method":{"type":"string","minLength":1}
+  }
+}
