@@ -511,6 +511,7 @@ def auto_hydrate_prop_evidence(
             "team": schedule["team"],
             "opponent": schedule["opponent"],
             "venue": schedule["venue"],
+            "player_id": player_id,
             "official_game_pk": schedule["official_game_pk"],
             "official_game_date": schedule["official_game_date"],
             "schedule_status": schedule["schedule_status"],
