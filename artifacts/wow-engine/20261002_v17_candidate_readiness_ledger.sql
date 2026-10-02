@@ -92,6 +92,7 @@ LANGUAGE plpgsql
 AS $$
 DECLARE
     v_current_state TEXT;
+    v_transition_allowed BOOLEAN := FALSE;
 BEGIN
     SELECT state
       INTO v_current_state
@@ -118,6 +119,29 @@ BEGIN
         'REJECTED_GOVERNANCE_GATE'
     ) THEN
         RAISE EXCEPTION 'terminal candidate state cannot transition: %', v_current_state;
+    END IF;
+
+    v_transition_allowed := CASE
+        WHEN v_current_state = 'ACQUIRED'
+             AND p_to_state IN ('RECONCILED', 'REJECTED_MALFORMED_OFFER', 'REJECTED_UNRESOLVED_IDENTITY')
+            THEN TRUE
+        WHEN v_current_state = 'RECONCILED'
+             AND p_to_state IN ('HYDRATED', 'REJECTED_FEATURE_UNAVAILABLE')
+            THEN TRUE
+        WHEN v_current_state = 'HYDRATED'
+             AND p_to_state IN ('SPECIALIST_ASSIGNED', 'REJECTED_NO_SPECIALIST')
+            THEN TRUE
+        WHEN v_current_state = 'SPECIALIST_ASSIGNED'
+             AND p_to_state IN ('EVALUATED', 'REJECTED_DOMAIN_EXCEEDED', 'REJECTED_GOVERNANCE_GATE')
+            THEN TRUE
+        WHEN v_current_state = 'EVALUATED'
+             AND p_to_state IN ('QUALIFIED_FOR_REDUCER', 'REJECTED_GOVERNANCE_GATE')
+            THEN TRUE
+        ELSE FALSE
+    END;
+
+    IF NOT v_transition_allowed THEN
+        RAISE EXCEPTION 'illegal candidate transition: % -> %', v_current_state, p_to_state;
     END IF;
 
     INSERT INTO wow_candidate_readiness_transitions (
