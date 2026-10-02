@@ -70,24 +70,38 @@ class CircuitState:
     provider_failures: int
 
 
-def build_ticket_context(record: dict[str, Any]) -> dict[str, Any]:
+def build_ticket_context(record: dict[str, Any], *, execution_id: str) -> dict[str, Any]:
     """Build a fresh, ticket-scoped execution envelope.
 
     Unknown fields are deliberately dropped so prior-ticket conversational state
-    cannot leak through a generic record payload.
+    cannot leak through a generic record payload. The caller must supply a fresh
+    execution_id for each ticket execution.
     """
+    if not str(execution_id).strip():
+        raise ValueError("execution_id is required for isolated ticket context")
     context = {key: record[key] for key in sorted(TICKET_CONTEXT_FIELDS) if key in record}
+    context["execution_id"] = str(execution_id)
     context["can_execute"] = CAN_EXECUTE
     context["terminal_authority"] = TERMINAL_AUTHORITY
     return context
 
 
-def lease_allows_mutation(claim: Lease, latest_epoch: int, current_worker_id: str) -> bool:
-    """Reject stale or foreign workers after a claim has been reassigned."""
+def lease_allows_mutation(
+    claim: Lease,
+    *,
+    expected_work_item_id: str,
+    latest_epoch: int,
+    current_worker_id: str,
+    now: str,
+) -> bool:
+    """Reject expired, stale, foreign, or wrong-ticket workers before mutation."""
     return (
-        claim.lease_epoch == latest_epoch
+        claim.work_item_id == expected_work_item_id
+        and claim.lease_epoch == latest_epoch
         and claim.worker_id == current_worker_id
         and claim.lease_epoch >= 0
+        and bool(str(now).strip())
+        and str(now) < claim.expires_at
     )
 
 
