@@ -15,6 +15,8 @@ from typing import Optional
 
 from fastapi import Depends, Header, HTTPException
 
+from github_actions_oidc import scout_route_auth_dependency
+
 import api_prod_market_acceptance as base
 import calibration_publication_api as lane_patch
 from kalshi_weather_v2.routes import install_kalshi_weather_v2_routes
@@ -46,6 +48,7 @@ from v17_observability import initialize_observability
 OBSERVABILITY = initialize_observability()
 app = base.app
 _auth = Depends(base.market_api.prod._require_action_api_key)
+_spread_forward_auth = scout_route_auth_dependency(_auth)
 _logger = logging.getLogger("wow.ncaaf.readiness")
 _v17_logger = logging.getLogger("wow.v17.activation")
 _core_intelligence_logger = logging.getLogger("wow.v17.core_intelligence.activation")
@@ -402,7 +405,7 @@ async def _run_ncaaf_startup_readiness_audit() -> None:
 
 @app.get(
     "/internal/v17/spread-forward-warm-status",
-    dependencies=[_auth],
+    dependencies=[_spread_forward_auth],
     operation_id="getWowV17SpreadForwardWarmStatus",
 )
 def get_ncaaf_spread_forward_warm_status():
