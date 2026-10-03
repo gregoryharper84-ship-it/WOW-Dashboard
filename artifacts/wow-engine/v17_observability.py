@@ -28,7 +28,7 @@ from v17.pick_request_state_hooks import install_pick_request_state_hooks
 from v17.pick_request_state_reliability_patch import (
     install_pick_request_state_reliability_patch,
 )
-from v17.pick_request_state_runtime import schedule_pick_request_state_install
+from v17.pick_request_state_runtime import schedule_pick_request_state_install\nfrom v17.scout_handoff_queue_installer import schedule_scout_handoff_queue
 from v17.posthog_observability import initialize_posthog_observability
 
 
@@ -173,6 +173,13 @@ def initialize_observability() -> dict[str, Any]:
             db_client_fn=_accepted_base.market_api.prod.get_client,
         )
         schedule_durable_pick_job_queue(
+            _accepted_base.app,
+            db_client_fn=_accepted_base.market_api.prod.get_client,
+        )
+        # Feature-gated while #1237 Supabase data-plane acceptance remains open.
+        # When enabled, Scout enqueue closes quickly and background workers call
+        # the existing canonical specialist endpoints row-by-row.
+        schedule_scout_handoff_queue(
             _accepted_base.app,
             db_client_fn=_accepted_base.market_api.prod.get_client,
         )
