@@ -67,7 +67,22 @@ def test_exact_head_receipt_passes_for_each_governed_provider(workflow_name, bra
         expected_head_sha="abc123",
         expected_head_ref=branch,
         expected_workflow_run_id="12345",
+        expected_workflow_name=workflow_name,
     )
+
+
+def test_receipt_workflow_name_must_match_producing_workflow():
+    verifier = _load_verifier()
+    receipt = _receipt(workflow_name="wow-v17-claude-engineering-worker", branch="claude/engineering/12345-1")
+    with pytest.raises(verifier.GovernanceReceiptError, match="receipt workflow name does not match producing workflow"):
+        verifier.verify_receipt(
+            receipt,
+            expected_repository="owner/repo",
+            expected_head_sha="abc123",
+            expected_head_ref="claude/engineering/12345-1",
+            expected_workflow_run_id="12345",
+            expected_workflow_name="wow-v17-chatgpt-engineering-worker",
+        )
 
 
 def test_untrusted_workflow_identity_fails_closed():
@@ -154,6 +169,9 @@ def test_workflows_use_trusted_exact_head_artifact_not_pr_body_as_authority():
     assert "wow-v17-chatgpt-engineering-worker.yml" in gate
     assert "wow-v17-claude-engineering-worker.yml" in gate
     assert '[ "$event" = "workflow_dispatch" ]' in gate
+    assert 'id: workflow' in gate
+    assert 'echo "name=$name" >> "$GITHUB_OUTPUT"' in gate
+    assert '--workflow-name "$WORKFLOW_NAME"' in gate
 
     assert "Verify trusted exact-head governance receipt" in morning_green
     assert '[ "$head_branch" != "main" ]' in morning_green
@@ -161,5 +179,6 @@ def test_workflows_use_trusted_exact_head_artifact_not_pr_body_as_authority():
     assert "wow-v17-chatgpt-engineering-worker.yml" in morning_green
     assert "wow-v17-claude-engineering-worker.yml" in morning_green
     assert '[ "$event" = "workflow_dispatch" ] && trusted_worker=true' in morning_green
+    assert '--workflow-name "$name"' in morning_green
     assert "steps.governance.outputs.approved == 'true'" in morning_green
     assert "GOVERNANCE_REWORK" in morning_green
