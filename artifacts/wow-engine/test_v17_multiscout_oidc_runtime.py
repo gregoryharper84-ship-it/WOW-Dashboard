@@ -267,3 +267,13 @@ def test_auto_advance_progress_writer_is_atomic_and_fail_closed(tmp_path):
     assert data["completed_batches"][0]["ok"] is True
     assert data["can_execute"] is False
     assert not output.with_suffix(output.suffix + ".tmp").exists()
+
+
+def test_multiscout_workflow_triggers_on_p0_evidence_transport_changes():
+    workflow = Path(__file__).resolve().parents[2] / ".github" / "workflows" / "wow-v17-nightly-multiscout.yml"
+    text = workflow.read_text(encoding="utf-8")
+    for path in (
+        "artifacts/wow-engine/v17/market_evidence_snapshot_bridge.py",
+        "artifacts/wow-engine/v17/scout_brain_transport_sanitizer.py",
+    ):
+        assert text.count(f'- "{path}"') == 2
