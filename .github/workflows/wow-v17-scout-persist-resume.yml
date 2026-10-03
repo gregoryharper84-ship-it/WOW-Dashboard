@@ -35,7 +35,13 @@ jobs:
         run: |
           set -euo pipefail
           source_run_id=""
+          # Automatic recovery replays only when persistence evidence is still
+          # missing. An explicit workflow_dispatch is the governed escape hatch
+          # for deliberately re-exercising a recovered source on current code.
           force_replay="false"
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            force_replay="true"
+          fi
 
           if [ -n "$TARGET_SHA" ]; then
             for _ in $(seq 1 4); do
@@ -48,13 +54,14 @@ jobs:
             done
 
             # Merge/configuration SHAs commonly have no Multi-Scout run of their
-            # own. That is not a valid reason to report recovery success without
-            # exercising the persistence path. Fall back to the newest completed
-            # non-PR main run and force a fresh replay through current main.
+            # own. Fall back to the newest recoverable non-PR main source, but
+            # do not force an identical replay merely because main advanced.
+            # If that source still lacks a persistence receipt, later steps
+            # dispatch recovery automatically. Manual workflow_dispatch may
+            # still force a deliberate current-code replay.
             if [ -z "$source_run_id" ]; then
               source_run_id=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/workflows/wow-v17-nightly-multiscout.yml/runs?branch=main&status=completed&per_page=20" \
                 --jq '[.workflow_runs[] | select(.event != "pull_request" and .conclusion != "cancelled")] | first | .id // ""')
-              force_replay="true"
             fi
           else
             source_run_id=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/workflows/wow-v17-nightly-multiscout.yml/runs?branch=main&status=completed&per_page=20" \
@@ -69,9 +76,9 @@ jobs:
           echo "run_id=$source_run_id" >> "$GITHUB_OUTPUT"
           echo "force_replay=$force_replay" >> "$GITHUB_OUTPUT"
           if [ "$force_replay" = "true" ]; then
-            echo "No Multi-Scout run existed for target SHA ${TARGET_SHA}; forcing a fresh replay of recoverable source run ${source_run_id} through current main." >> "$GITHUB_STEP_SUMMARY"
+            echo "Manual resume requested; forcing a fresh replay of recoverable source run ${source_run_id} through current main." >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "Resolved Multi-Scout source run: $source_run_id" >> "$GITHUB_STEP_SUMMARY"
+            echo "Resolved recoverable Multi-Scout source run: $source_run_id. Automatic recovery will replay only if no persistence receipt exists." >> "$GITHUB_STEP_SUMMARY"
           fi
 
       - name: Verify recoverable discovery artifact exists
