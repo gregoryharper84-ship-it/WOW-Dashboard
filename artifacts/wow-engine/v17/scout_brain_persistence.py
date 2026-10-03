@@ -119,6 +119,14 @@ def _persist_source_provenance(cur: Any, candidate_id: str, row: dict[str, Any])
               source_code=excluded.source_code, source_http_status=excluded.source_http_status,
               payload=excluded.payload, payload_hash=excluded.payload_hash,
               prediction_authority=false, can_execute=false
+            where wow_scout.source_snapshots.observed_at is distinct from excluded.observed_at
+               or wow_scout.source_snapshots.source_status is distinct from excluded.source_status
+               or wow_scout.source_snapshots.source_code is distinct from excluded.source_code
+               or wow_scout.source_snapshots.source_http_status is distinct from excluded.source_http_status
+               or wow_scout.source_snapshots.payload is distinct from excluded.payload
+               or wow_scout.source_snapshots.payload_hash is distinct from excluded.payload_hash
+               or wow_scout.source_snapshots.prediction_authority is distinct from false
+               or wow_scout.source_snapshots.can_execute is distinct from false
         """, (snapshot_id,provider,sport,source_class,observed_at,source_status,source_code,source_http_status,payload,payload_hash))
         snapshots += 1
         provider_entities = {
@@ -137,6 +145,11 @@ def _persist_source_provenance(cur: Any, candidate_id: str, row: dict[str, Any])
               link_status='LINKED', link_reason='DIRECT_CANDIDATE_MARKET_EVIDENCE',
               provider_entities=excluded.provider_entities,
               prediction_authority=false, can_execute=false, linked_at=now()
+            where wow_scout.candidate_source_links.link_status is distinct from excluded.link_status
+               or wow_scout.candidate_source_links.link_reason is distinct from excluded.link_reason
+               or wow_scout.candidate_source_links.provider_entities is distinct from excluded.provider_entities
+               or wow_scout.candidate_source_links.prediction_authority is distinct from false
+               or wow_scout.candidate_source_links.can_execute is distinct from false
         """, (candidate_id,snapshot_id,json.dumps(provider_entities)))
         links += 1
     return snapshots, links

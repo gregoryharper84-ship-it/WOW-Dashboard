@@ -62,3 +62,34 @@ def test_candidate_source_link_replay_avoids_timestamp_only_rewrites():
         in block
     )
     assert "wow_scout.candidate_source_links.can_execute is distinct from false" in block
+
+
+DIRECT_PERSISTENCE = Path(__file__).resolve().parent / "v17" / "scout_brain_persistence.py"
+
+
+def test_candidate_metadata_is_written_only_on_first_evidence_slice():
+    text = EDGE_FUNCTION.read_text(encoding="utf-8")
+
+    marker = "Candidate metadata is slice-independent."
+    block = text.split(marker, 1)[1].split("if (evidences.length)", 1)[0]
+
+    assert "if (isFirstSlice(row)) {" in block
+    assert "insert into wow_scout.candidates" in block
+    assert "counts.changed += insertedRows[0]?.inserted ? 1 : 0;" in block
+
+
+def test_direct_persistence_matches_edge_write_avoidance():
+    text = DIRECT_PERSISTENCE.read_text(encoding="utf-8")
+
+    assert (
+        "where wow_scout.source_snapshots.observed_at is distinct from excluded.observed_at"
+        in text
+    )
+    assert (
+        "where wow_scout.candidate_source_links.link_status is distinct from excluded.link_status"
+        in text
+    )
+    assert (
+        "wow_scout.candidate_source_links.provider_entities is distinct from excluded.provider_entities"
+        in text
+    )
