@@ -27,7 +27,7 @@ permissions:
   issues: write
 
 concurrency:
-  group: wow-v17-chatgpt-engineering-worker-${{ inputs.lease_group || 'GLOBAL' }}
+  group: wow-v17-engineering-domain-${{ inputs.lease_group || 'GLOBAL' }}
   cancel-in-progress: false
 
 jobs:
@@ -140,12 +140,12 @@ jobs:
           worker_id="github-actions:${GITHUB_RUN_ID}:${GITHUB_RUN_ATTEMPT}"
           expires_at=$(date -u -d '+180 minutes' +%Y-%m-%dT%H:%M:%SZ)
 
-          PYTHONPATH=artifacts/wow-engine python - "$RUNNER_TEMP/wow-dispatch-queue.json" "$RESTORATION" "$ACCELERATION" "$worker_id" "$lease_epoch" "$expires_at" <<'PY'
+          PYTHONPATH=artifacts/wow-engine python - "$RUNNER_TEMP/wow-dispatch-queue.json" "$RESTORATION" "$ACCELERATION" "$worker_id" "$lease_epoch" "$expires_at" "$LEASE_GROUP" <<'PY'
           import json, sys
           from pathlib import Path
           from v17.persistent_worker_safety import Lease, build_ticket_context, circuit_mode, CircuitState
 
-          queue_path, restoration, acceleration, worker_id, epoch, expires_at = sys.argv[1:]
+          queue_path, restoration, acceleration, worker_id, epoch, expires_at, lease_group = sys.argv[1:]
           queue = json.loads(Path(queue_path).read_text())
           by_id = {str(row["incident_id"]): row for row in queue["records"]}
           out = Path("artifacts/wow-engine/v17/.agent-handoff")
@@ -192,7 +192,7 @@ jobs:
               "lease_epoch": lease.lease_epoch,
               "expires_at": lease.expires_at,
               "worker_mode": mode,
-              "lease_group": "${LEASE_GROUP:-GLOBAL}",
+              "lease_group": lease_group or "GLOBAL",
               "can_execute": False,
               "terminal_authority": "V17_TERMINAL_REDUCER",
           }, indent=2, sort_keys=True) + "\n")
