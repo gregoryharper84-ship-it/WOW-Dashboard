@@ -27,10 +27,10 @@ def test_effective_reconciler_schedule_does_not_collide_with_mlb_maintenance():
     assert _minutes(stale).isdisjoint(_minutes(hydrate))
     assert len(_minutes(stale)) == 4
     for minute in _minutes(stale):
-        prior_hydrate = max(h for h in _minutes(hydrate) if h < minute)
-        next_capture = min(c for c in _minutes(capture) if c > minute)
-        assert minute - prior_hydrate >= 6
-        assert next_capture - minute >= 6
+        minutes_since_hydrate = min((minute - h) % 60 for h in _minutes(hydrate))
+        minutes_until_capture = min((c - minute) % 60 for c in _minutes(capture))
+        assert minutes_since_hydrate >= 6
+        assert minutes_until_capture >= 6
 
 
 def test_cron_stagger_preserves_reconciler_semantics_and_safety():
