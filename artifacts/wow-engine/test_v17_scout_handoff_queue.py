@@ -323,11 +323,11 @@ def test_run_summary_has_exact_rows_in_completed_held_rejected_identity():
         {"candidate_id": "b", "source_run_id": "r", "research_run_id": "rr", "target_lane": "LLP_TEAM_BETTING_ENGINE", "research_priority": "MEDIUM", "current_state": "HANDOFF_BLOCKED", "terminal": True},
     ]
     events = [
-        {"candidate_id": "a", "target_lane": "WOW_PROP_LANE", "state": "DISCOVERED", "code": "SCOUT_CANDIDATE_DISCOVERED"},
-        {"candidate_id": "a", "target_lane": "WOW_PROP_LANE", "state": "MODEL_EVALUATED", "code": "SPECIALIST_MODEL_EVALUATED"},
-        {"candidate_id": "a", "target_lane": "WOW_PROP_LANE", "state": "V17_QUALIFIED", "code": "V17_GOVERNED_ADMISSION_PROVEN"},
-        {"candidate_id": "b", "target_lane": "LLP_TEAM_BETTING_ENGINE", "state": "DISCOVERED", "code": "SCOUT_CANDIDATE_DISCOVERED"},
-        {"candidate_id": "b", "target_lane": "LLP_TEAM_BETTING_ENGINE", "state": "HANDOFF_BLOCKED", "code": "TEAM_EVENT_IDENTITY_INCOMPLETE"},
+        {"candidate_id": "a", "source_run_id": "r", "target_lane": "WOW_PROP_LANE", "state": "DISCOVERED", "code": "SCOUT_CANDIDATE_DISCOVERED"},
+        {"candidate_id": "a", "source_run_id": "r", "target_lane": "WOW_PROP_LANE", "state": "MODEL_EVALUATED", "code": "SPECIALIST_MODEL_EVALUATED"},
+        {"candidate_id": "a", "source_run_id": "r", "target_lane": "WOW_PROP_LANE", "state": "V17_QUALIFIED", "code": "V17_GOVERNED_ADMISSION_PROVEN"},
+        {"candidate_id": "b", "source_run_id": "r", "target_lane": "LLP_TEAM_BETTING_ENGINE", "state": "DISCOVERED", "code": "SCOUT_CANDIDATE_DISCOVERED"},
+        {"candidate_id": "b", "source_run_id": "r", "target_lane": "LLP_TEAM_BETTING_ENGINE", "state": "HANDOFF_BLOCKED", "code": "TEAM_EVENT_IDENTITY_INCOMPLETE"},
     ]
     summary = read_run_summary(_SummaryDB(jobs, events), "r")
     assert summary["rows_in"] == 2
