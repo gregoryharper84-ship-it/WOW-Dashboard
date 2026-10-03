@@ -33,6 +33,28 @@ def _row_count(value: Any) -> int:
     return 0
 
 
+def _active_evidence_rows(row: dict[str, Any]) -> list[dict[str, Any]]:
+    value = row.get("market_evidence")
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, dict) and item]
+    if isinstance(value, dict) and value:
+        return [value]
+    return []
+
+
+def _validate_active_evidence(rows: list[dict[str, Any]]) -> None:
+    """Fail closed if stale/unknown evidence escaped into the active lane."""
+    for evidence in rows:
+        if (
+            evidence.get("freshness_state") not in {"FRESH", "AGING"}
+            or evidence.get("research_usable") is not True
+            or evidence.get("current_market_evidence") is not True
+            or evidence.get("prediction_authority") is not False
+            or evidence.get("can_execute") is not False
+        ):
+            raise RuntimeError("SCOUT_ACTIVE_MARKET_EVIDENCE_FRESHNESS_INVALID")
+
+
 def sanitize_handoff(handoff: dict[str, Any]) -> dict[str, int]:
     """Remove diagnostic evidence payloads from persistence transport metadata.
 
@@ -48,6 +70,7 @@ def sanitize_handoff(handoff: dict[str, Any]) -> dict[str, int]:
 
     counts = {field: 0 for field in DIAGNOSTIC_EVIDENCE_FIELDS}
     counts["candidates"] = 0
+    counts["active_market_evidence"] = 0
 
     for lane in CANDIDATE_LANES:
         rows = model.get(lane)
@@ -58,6 +81,9 @@ def sanitize_handoff(handoff: dict[str, Any]) -> dict[str, int]:
                 continue
             if row.get("can_execute") is not False:
                 raise RuntimeError("SCOUT_HANDOFF_GOVERNANCE_INVALID")
+            active_rows = _active_evidence_rows(row)
+            _validate_active_evidence(active_rows)
+            counts["active_market_evidence"] += len(active_rows)
             counts["candidates"] += 1
             for field in DIAGNOSTIC_EVIDENCE_FIELDS:
                 counts[field] += _row_count(row.pop(field, None))
