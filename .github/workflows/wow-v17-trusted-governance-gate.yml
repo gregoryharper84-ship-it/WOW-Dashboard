@@ -70,6 +70,8 @@ jobs:
             status=$(jq -r '.status // ""' <<<"$run_json")
             conclusion=$(jq -r '.conclusion // ""' <<<"$run_json")
             event=$(jq -r '.event // ""' <<<"$run_json")
+            head_branch=$(jq -r '.head_branch // ""' <<<"$run_json")
+            head_repo=$(jq -r '.head_repository.full_name // ""' <<<"$run_json")
 
             [ "$name" = "wow-v17-chatgpt-engineering-worker" ] || {
               echo "GOVERNANCE_WORKFLOW_IDENTITY_MISMATCH: unexpected workflow name $name" >&2
@@ -77,6 +79,14 @@ jobs:
             }
             [ "$path" = ".github/workflows/wow-v17-chatgpt-engineering-worker.yml" ] || {
               echo "GOVERNANCE_WORKFLOW_PATH_MISMATCH: unexpected workflow path $path" >&2
+              exit 1
+            }
+            [ "$head_branch" = "main" ] || {
+              echo "GOVERNANCE_WORKFLOW_REF_MISMATCH: trusted worker must run from protected main, got $head_branch" >&2
+              exit 1
+            }
+            [ "$head_repo" = "$GITHUB_REPOSITORY" ] || {
+              echo "GOVERNANCE_WORKFLOW_REPOSITORY_MISMATCH: trusted worker came from $head_repo" >&2
               exit 1
             }
             case "$event" in
