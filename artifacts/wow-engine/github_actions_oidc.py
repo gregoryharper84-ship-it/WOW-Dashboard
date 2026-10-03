@@ -19,6 +19,7 @@ from jwt import PyJWKClient
 
 ISSUER = "https://token.actions.githubusercontent.com"
 JWKS_URL = f"{ISSUER}/.well-known/jwks"
+_GITHUB_JWKS_CLIENT = PyJWKClient(JWKS_URL, cache_keys=True)
 AUDIENCE = "wow-v17-multiscout"
 REPOSITORY = "gregoryharper84-ship-it/WOW-Dashboard"
 REPOSITORY_ID = "1240256887"
@@ -198,7 +199,7 @@ def verify_github_actions_oidc(token: str, *, jwk_client: PyJWKClient | None = N
     if not isinstance(token, str) or not token.strip():
         raise GitHubOIDCValidationError("GITHUB_OIDC_TOKEN_MISSING")
     try:
-        client = jwk_client or PyJWKClient(JWKS_URL, cache_keys=True)
+        client = jwk_client or _GITHUB_JWKS_CLIENT
         signing_key = client.get_signing_key_from_jwt(token)
         claims = jwt.decode(
             token,

@@ -183,3 +183,30 @@ def test_secret_sync_workflow_is_protected_main_only_and_never_pr_exposed():
     assert "WOW_GITHUB_SECRET_SYNC_TOKEN: ${{ secrets.WOW_GITHUB_SECRET_SYNC_TOKEN }}" in workflow
     assert 'WOW_CAN_EXECUTE: "false"' in workflow
     assert 'WOW_DRY_RUN_ONLY: "true"' in workflow
+
+
+
+def test_oidc_reuses_process_jwks_client_without_reconstructing(monkeypatch):
+    seen_tokens = []
+
+    class _SigningKey:
+        key = object()
+
+    class _CachedClient:
+        def get_signing_key_from_jwt(self, token):
+            seen_tokens.append(token)
+            return _SigningKey()
+
+    monkeypatch.setattr(oidc, "_GITHUB_JWKS_CLIENT", _CachedClient())
+    monkeypatch.setattr(
+        oidc,
+        "PyJWKClient",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("verify must reuse process JWKS client")
+        ),
+    )
+    monkeypatch.setattr(oidc.jwt, "decode", lambda *_args, **_kwargs: _claims())
+
+    assert oidc.verify_github_actions_oidc("token-1")["repository"] == oidc.REPOSITORY
+    assert oidc.verify_github_actions_oidc("token-2")["repository"] == oidc.REPOSITORY
+    assert seen_tokens == ["token-1", "token-2"]
