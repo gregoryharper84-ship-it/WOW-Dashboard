@@ -40,8 +40,10 @@ from v17.spread_margin_forward_fit import fit_margin_distribution_artifact
 from v17.spread_margin_replay import (
     NCAAF_PERSISTED_FEATURE_MODEL_FAMILY,
     NCAAF_PERSISTED_FEATURE_SCHEMA_VERSION,
+    _execute_read_with_retry,
     _load_ncaaf_persisted_feature_rows,
     _load_ncaaf_persisted_game_rows,
+    NCAAF_PERSISTED_READ_TIMEOUT_RETRIES,
     _ncaaf_events_from_games,
     adapt_ncaaf_persisted_rows,
 )
@@ -116,24 +118,28 @@ def _ncaaf_loaded_source_fingerprint(
 def _ncaaf_forward_source_fingerprint(client: Any) -> tuple[str | None, str | None, str | None, str | None]:
     """Read only the latest immutable feature/game identities used by the forward fit."""
     feature_rows = (
-        client.table("wow_d1_training_rows")
-        .select("official_event_id,event_start_time")
-        .eq("sport", SPORT)
-        .eq("model_family", NCAAF_PERSISTED_FEATURE_MODEL_FAMILY)
-        .eq("feature_schema_version", NCAAF_PERSISTED_FEATURE_SCHEMA_VERSION)
-        .order("event_start_time", desc=True)
-        .order("official_event_id", desc=True)
-        .limit(1)
-        .execute().data
+        _execute_read_with_retry(
+            lambda: client.table("wow_d1_training_rows")
+            .select("official_event_id,event_start_time")
+            .eq("sport", SPORT)
+            .eq("model_family", NCAAF_PERSISTED_FEATURE_MODEL_FAMILY)
+            .eq("feature_schema_version", NCAAF_PERSISTED_FEATURE_SCHEMA_VERSION)
+            .order("event_start_time", desc=True)
+            .order("official_event_id", desc=True)
+            .limit(1),
+            retries=NCAAF_PERSISTED_READ_TIMEOUT_RETRIES,
+        ).data
         or []
     )
     game_rows = (
-        client.table("wow_ncaaf_training_games")
-        .select("official_event_id,event_start_time")
-        .order("event_start_time", desc=True)
-        .order("official_event_id", desc=True)
-        .limit(1)
-        .execute().data
+        _execute_read_with_retry(
+            lambda: client.table("wow_ncaaf_training_games")
+            .select("official_event_id,event_start_time")
+            .order("event_start_time", desc=True)
+            .order("official_event_id", desc=True)
+            .limit(1),
+            retries=NCAAF_PERSISTED_READ_TIMEOUT_RETRIES,
+        ).data
         or []
     )
     feature = feature_rows[0] if feature_rows else {}
