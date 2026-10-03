@@ -76,6 +76,7 @@ on:
       - "artifacts/wow-engine/test_v17_multiscout_auto_advance.py"
       - "artifacts/wow-engine/test_v17_scout_handoff_queue.py"
       - "artifacts/wow-engine/test_v17_scout_handoff_queue_migration.py"
+      - "artifacts/wow-engine/test_v17_scout_handoff_queue_postgres.py"
       - "artifacts/wow-engine/test_v17_morning_scout_report.py"
       - "artifacts/wow-engine/test_agent_runtime_v17_model_failures.py"
       - "artifacts/wow-engine/test_v17_github_oidc.py"
@@ -99,6 +100,20 @@ jobs:
   verify:
     name: Verify Multi-Scout contract
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      WOW_SCOUT_QUEUE_TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
     defaults:
       run:
         working-directory: artifacts/wow-engine
@@ -120,6 +135,7 @@ jobs:
           test_v17_multiscout_auto_advance.py
           test_v17_scout_handoff_queue.py
           test_v17_scout_handoff_queue_migration.py
+          test_v17_scout_handoff_queue_postgres.py
           test_v17_morning_scout_report.py
           test_agent_runtime_v17_model_failures.py
           test_v17_github_oidc.py
