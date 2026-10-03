@@ -53,3 +53,34 @@ def test_interactive_latency_middleware_logs_only_governed_interactive_routes(ca
     assert all("total_ms=" in message for message in governed)
     assert all("can_execute=false" in message for message in governed)
     assert not any("route=/health" in message for message in messages)
+
+
+def test_stage_timer_logs_on_exception_and_records_percentiles(caplog):
+    import pytest
+    from v17.interactive_latency_telemetry import RECORDER, stage_timer
+
+    RECORDER.clear()
+    with caplog.at_level(logging.WARNING, logger="wow.v17.interactive_stage"):
+        with pytest.raises(ValueError):
+            with stage_timer("/score-pick-request", "persistence"):
+                raise ValueError("boom")
+    message = caplog.records[-1].getMessage()
+    assert "stage=persistence" in message
+    assert "stage_ms=" in message
+    assert "can_execute=false" in message
+    assert RECORDER.percentiles("/score-pick-request|persistence")["count"] == 1
+
+
+def test_latency_recorder_percentiles_and_bounds():
+    from v17.interactive_latency_telemetry import LatencyRecorder
+
+    rec = LatencyRecorder(max_samples=100, max_keys=2)
+    for v in range(1, 101):
+        rec.record("a", v)
+    assert rec.percentiles("a") == {"count": 100, "p50_ms": 50, "p95_ms": 95}
+    rec.record("b", 1)
+    rec.record("c", 1)  # beyond max_keys: dropped
+    assert rec.percentiles("c") is None
+    for v in range(1000):
+        rec.record("a", v)
+    assert rec.percentiles("a")["count"] == 100
