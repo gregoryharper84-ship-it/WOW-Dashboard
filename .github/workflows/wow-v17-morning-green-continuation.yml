@@ -191,10 +191,19 @@ jobs:
           path=$(jq -r '.path // ""' <<<"$run_json")
           status=$(jq -r '.status // ""' <<<"$run_json")
           conclusion=$(jq -r '.conclusion // ""' <<<"$run_json")
+          event=$(jq -r '.event // ""' <<<"$run_json")
           head_branch=$(jq -r '.head_branch // ""' <<<"$run_json")
           head_repo=$(jq -r '.head_repository.full_name // ""' <<<"$run_json")
-          if [ "$name" != "wow-v17-chatgpt-engineering-worker" ] ||
-             [ "$path" != ".github/workflows/wow-v17-chatgpt-engineering-worker.yml" ] ||
+          trusted_worker=false
+          case "$name|$path" in
+            "wow-v17-chatgpt-engineering-worker|.github/workflows/wow-v17-chatgpt-engineering-worker.yml")
+              case "$event" in schedule|workflow_run|workflow_dispatch) trusted_worker=true ;; esac
+              ;;
+            "wow-v17-claude-engineering-worker|.github/workflows/wow-v17-claude-engineering-worker.yml")
+              [ "$event" = "workflow_dispatch" ] && trusted_worker=true
+              ;;
+          esac
+          if [ "$trusted_worker" != "true" ] ||
              [ "$head_branch" != "main" ] ||
              [ "$head_repo" != "$GITHUB_REPOSITORY" ] ||
              [ "$status" != "completed" ] ||
