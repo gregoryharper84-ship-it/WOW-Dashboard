@@ -944,6 +944,7 @@ jobs:
           WORKER_ID: ${{ steps.safety.outputs.worker_id }}
           LEASE_EXPIRES_AT: ${{ steps.safety.outputs.expires_at }}
           WORKER_MODE: ${{ steps.safety.outputs.worker_mode }}
+          LEASE_GROUP: ${{ steps.dispatch.outputs.lease_group }}
         run: |
           set -euo pipefail
           receipt="$RUNNER_TEMP/wow-dual-stream-receipt.json"
@@ -960,6 +961,7 @@ jobs:
             --arg worker_id "${WORKER_ID:-UNKNOWN}" \
             --arg lease_expires_at "${LEASE_EXPIRES_AT:-UNKNOWN}" \
             --arg worker_mode "${WORKER_MODE:-SAFE_HOLD}" \
+            --arg lease_group "${LEASE_GROUP:-GLOBAL}" \
             '{
               utc: $utc,
               workflow_run_id: $run_id,
@@ -973,6 +975,7 @@ jobs:
               worker_id: $worker_id,
               lease_expires_at: $lease_expires_at,
               worker_mode: $worker_mode,
+              lease_group: $lease_group,
               retry_dlq_state: "NONE",
               safe_hold_state: $worker_mode,
               duplicate_incident_created: false,
@@ -980,7 +983,7 @@ jobs:
               terminal_authority: "V17_TERMINAL_REDUCER"
             }' > "$receipt"
 
-          marker='<!-- WOW_DUAL_STREAM_HEARTBEAT -->'
+          marker="<!-- WOW_DUAL_STREAM_HEARTBEAT:${LEASE_GROUP:-GLOBAL} -->"
           body=$(cat <<EOF
           $marker
           ### WOW V17 dual-stream dispatcher heartbeat
@@ -988,6 +991,7 @@ jobs:
           - queue_depth: ${QUEUE_DEPTH:-0}
           - current_restoration_target: ${RESTORATION:-NONE}
           - current_acceleration_target: ${ACCELERATION:-NONE}
+          - lease_group: ${LEASE_GROUP:-GLOBAL}
           - lease_epoch: ${LEASE_EPOCH:-0}
           - worker_id: ${WORKER_ID:-UNKNOWN}
           - lease_expires_at: ${LEASE_EXPIRES_AT:-UNKNOWN}
