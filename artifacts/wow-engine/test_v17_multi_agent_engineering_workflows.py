@@ -107,6 +107,22 @@ def test_worker_full_regression_runs_from_wow_engine_root() -> None:
         assert "python -m pytest -q artifacts/wow-engine" not in text
 
 
+def test_both_engineering_providers_emit_exact_head_governance_receipts() -> None:
+    expected_names = {
+        WORKER: "wow-v17-chatgpt-engineering-worker",
+        CLAUDE_WORKER: "wow-v17-claude-engineering-worker",
+    }
+    for path, workflow_name in expected_names.items():
+        text = path.read_text()
+        assert "Write exact-head governance receipt" in text
+        assert "Upload exact-head governance receipt" in text
+        assert 'echo "head_sha=$head_sha" >> "$GITHUB_OUTPUT"' in text
+        assert "wow-v17-engineering-governance-${{ steps.impl.outputs.head_sha }}" in text
+        assert f'--arg workflow_name "{workflow_name}"' in text
+        assert 'terminal_authority: "V17_TERMINAL_REDUCER"' in text
+        assert "can_execute: false" in text
+
+
 def test_release_agent_cannot_merge_or_deploy() -> None:
     text = RELEASE.read_text()
     assert "RELEASE_OBSERVABILITY_AGENT" in text
