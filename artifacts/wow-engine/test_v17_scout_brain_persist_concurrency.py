@@ -9,12 +9,12 @@ WORKFLOW = (
 )
 
 
-def test_persist_workflow_serializes_writers_for_the_same_source_run():
+def test_persist_workflow_serializes_all_writers_globally():
     text = WORKFLOW.read_text(encoding="utf-8")
 
     identity = "${{ inputs.run_id || github.event.workflow_run.id }}"
     assert "concurrency:" in text
-    assert f"group: wow-v17-scout-brain-persist-{identity}" in text
+    assert "group: wow-v17-scout-brain-persist-global" in text
     assert "cancel-in-progress: false" in text
     assert f"SOURCE_RUN_ID: {identity}" in text
 
