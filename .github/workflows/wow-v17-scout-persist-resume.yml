@@ -48,13 +48,14 @@ jobs:
             done
 
             # Merge/configuration SHAs commonly have no Multi-Scout run of their
-            # own. That is not a valid reason to report recovery success without
-            # exercising the persistence path. Fall back to the newest completed
-            # non-PR main run and force a fresh replay through current main.
+            # own. Fall back to the newest completed non-PR main run, but do not
+            # force-replay an already receipted source merely because an unrelated
+            # main SHA changed. Missing receipts still enter the normal recovery
+            # path below.
             if [ -z "$source_run_id" ]; then
               source_run_id=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/workflows/wow-v17-nightly-multiscout.yml/runs?branch=main&status=completed&per_page=20" \
                 --jq '[.workflow_runs[] | select(.event != "pull_request" and .conclusion != "cancelled")] | first | .id // ""')
-              force_replay="true"
+              force_replay="false"
             fi
           else
             source_run_id=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/workflows/wow-v17-nightly-multiscout.yml/runs?branch=main&status=completed&per_page=20" \
@@ -69,7 +70,7 @@ jobs:
           echo "run_id=$source_run_id" >> "$GITHUB_OUTPUT"
           echo "force_replay=$force_replay" >> "$GITHUB_OUTPUT"
           if [ "$force_replay" = "true" ]; then
-            echo "No Multi-Scout run existed for target SHA ${TARGET_SHA}; forcing a fresh replay of recoverable source run ${source_run_id} through current main." >> "$GITHUB_STEP_SUMMARY"
+            echo "No Multi-Scout run existed for target SHA ${TARGET_SHA}; using recoverable source run ${source_run_id} without forcing a duplicate replay." >> "$GITHUB_STEP_SUMMARY"
           else
             echo "Resolved Multi-Scout source run: $source_run_id" >> "$GITHUB_STEP_SUMMARY"
           fi
