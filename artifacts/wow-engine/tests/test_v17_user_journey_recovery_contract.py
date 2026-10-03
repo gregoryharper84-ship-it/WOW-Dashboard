@@ -58,6 +58,10 @@ def test_merge_sha_without_scout_run_reuses_recoverable_source_without_forcing_r
     assert "Automatic recovery will replay only if no persistence receipt exists." in workflow
     assert "Check for existing persistence receipt" in workflow
     assert "no scheduled replay needed" in workflow
+    assert "SCOUT_PERSISTENCE_RECOVERY_COOLDOWN_ACTIVE" in workflow
+    assert "BLOCKED_WITH_EXACT_REASON: SCOUT_PERSISTENCE_RECOVERY_COOLDOWN_ACTIVE" in workflow
+    assert "date -u -d '30 minutes ago' +%s" in workflow
+    assert "steps.writer.outputs.cooldown != 'true'" in workflow
     assert "Capture persistence receipt baseline" in workflow
     assert "BASELINE_COUNT" in workflow
     assert 'receipt_count" -gt "$BASELINE_COUNT' in workflow
