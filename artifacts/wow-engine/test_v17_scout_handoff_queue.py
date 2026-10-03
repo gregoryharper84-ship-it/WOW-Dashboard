@@ -260,3 +260,27 @@ def test_existing_research_red_team_quarantine_blocks_before_specialist_queue():
     assert prop.blocked_code == "SCOUT_RED_TEAM_QUARANTINED"
     assert prop.blocked_detail["research_status"] == "QUARANTINED"
     assert prop.can_execute is False
+
+
+def test_repeat_safe_prop_transient_failure_dead_letters_after_retry_budget_exhausted():
+    db = _DB()
+
+    def prop_score(batch, x_wow_model_identity=None):
+        raise HTTPException(status_code=503, detail={"code": "PROVIDER_UNAVAILABLE"})
+
+    job = _prop_job()
+    job["attempt_count"] = 3
+    result = process_claimed_job(
+        db,
+        job,
+        worker_id="worker-1",
+        prop_score_fn=prop_score,
+        team_score_fn=lambda *args, **kwargs: None,
+    )
+    assert result["current_state"] == "HANDOFF_BLOCKED"
+    name, params = db.calls[-1]
+    assert name == "wow_block_scout_handoff_job"
+    assert params["p_error_code"] == "SCOUT_HANDOFF_RETRY_EXHAUSTED"
+    assert params["p_error_detail"]["original_error_code"] == "PROVIDER_UNAVAILABLE"
+    assert params["p_error_detail"]["retry_budget"] == 3
+    assert params["p_error_detail"]["attempt_count"] == 3
