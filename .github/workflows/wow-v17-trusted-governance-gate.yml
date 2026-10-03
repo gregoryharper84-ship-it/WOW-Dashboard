@@ -1,0 +1,132 @@
+name: wow-v17-trusted-governance-gate
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
+    branches: [main]
+
+permissions:
+  actions: read
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: wow-v17-trusted-governance-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
+  cancel-in-progress: true
+
+jobs:
+  trusted-governance:
+    name: Trusted exact-head engineering governance
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+    steps:
+      - name: Checkout verifier from protected main
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Resolve trusted exact-head governance artifact
+        id: artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          artifact_name="wow-v17-engineering-governance-${PR_HEAD_SHA}"
+          artifact_id=""
+          run_id=""
+
+          for _ in $(seq 1 30); do
+            artifacts=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/artifacts?name=${artifact_name}&per_page=20")
+            artifact_id=$(jq -r '[.artifacts[] | select(.expired == false)] | sort_by(.created_at) | reverse | first | .id // ""' <<<"$artifacts")
+            run_id=$(jq -r '[.artifacts[] | select(.expired == false)] | sort_by(.created_at) | reverse | first | .workflow_run.id // ""' <<<"$artifacts")
+            if [ -n "$artifact_id" ] && [ -n "$run_id" ]; then
+              break
+            fi
+            sleep 10
+          done
+
+          if [ -z "$artifact_id" ] || [ -z "$run_id" ]; then
+            echo "GOVERNANCE_RECEIPT_MISSING: no trusted artifact exists for exact PR head ${PR_HEAD_SHA}." >&2
+            exit 1
+          fi
+
+          echo "artifact_id=$artifact_id" >> "$GITHUB_OUTPUT"
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+
+      - name: Verify trusted workflow identity and completion
+        shell: bash
+        env:
+          RUN_ID: ${{ steps.artifact.outputs.run_id }}
+        run: |
+          set -euo pipefail
+          for _ in $(seq 1 30); do
+            run_json=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}")
+            name=$(jq -r '.name // ""' <<<"$run_json")
+            path=$(jq -r '.path // ""' <<<"$run_json")
+            status=$(jq -r '.status // ""' <<<"$run_json")
+            conclusion=$(jq -r '.conclusion // ""' <<<"$run_json")
+            event=$(jq -r '.event // ""' <<<"$run_json")
+
+            [ "$name" = "wow-v17-chatgpt-engineering-worker" ] || {
+              echo "GOVERNANCE_WORKFLOW_IDENTITY_MISMATCH: unexpected workflow name $name" >&2
+              exit 1
+            }
+            [ "$path" = ".github/workflows/wow-v17-chatgpt-engineering-worker.yml" ] || {
+              echo "GOVERNANCE_WORKFLOW_PATH_MISMATCH: unexpected workflow path $path" >&2
+              exit 1
+            }
+            case "$event" in
+              schedule|workflow_run|workflow_dispatch) ;;
+              *)
+                echo "GOVERNANCE_WORKFLOW_EVENT_MISMATCH: unexpected workflow event $event" >&2
+                exit 1
+                ;;
+            esac
+
+            if [ "$status" = "completed" ]; then
+              [ "$conclusion" = "success" ] || {
+                echo "GOVERNANCE_WORKFLOW_NOT_SUCCESSFUL: run ${RUN_ID} concluded $conclusion" >&2
+                exit 1
+              }
+              exit 0
+            fi
+            sleep 10
+          done
+
+          echo "GOVERNANCE_WORKFLOW_INCOMPLETE: trusted worker run ${RUN_ID} did not complete within the bounded gate window." >&2
+          exit 1
+
+      - name: Download and verify exact-head receipt
+        shell: bash
+        env:
+          ARTIFACT_ID: ${{ steps.artifact.outputs.artifact_id }}
+          RUN_ID: ${{ steps.artifact.outputs.run_id }}
+        run: |
+          set -euo pipefail
+          zip_path="$RUNNER_TEMP/governance.zip"
+          receipt="$RUNNER_TEMP/wow-engineering-governance-receipt.json"
+          checksum="$RUNNER_TEMP/wow-engineering-governance-receipt.sha256"
+
+          gh api "/repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}/zip" > "$zip_path"
+          unzip -p "$zip_path" wow-engineering-governance-receipt.json > "$receipt"
+          unzip -p "$zip_path" wow-engineering-governance-receipt.sha256 > "$checksum"
+
+          expected=$(tr -d '[:space:]' < "$checksum")
+          actual=$(sha256sum "$receipt" | awk '{print $1}')
+          [ -n "$expected" ] && [ "$expected" = "$actual" ] || {
+            echo "GOVERNANCE_RECEIPT_CHECKSUM_MISMATCH" >&2
+            exit 1
+          }
+
+          python .github/scripts/verify_engineering_governance_receipt.py \
+            --receipt "$receipt" \
+            --repository "$GITHUB_REPOSITORY" \
+            --head-sha "$PR_HEAD_SHA" \
+            --head-ref "$PR_HEAD_REF" \
+            --workflow-run-id "$RUN_ID"
+
+          echo "Trusted exact-head governance receipt verified. can_execute=false." >> "$GITHUB_STEP_SUMMARY"
