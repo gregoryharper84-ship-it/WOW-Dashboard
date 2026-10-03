@@ -524,34 +524,63 @@ def read_run_summary(db: Any, source_run_id: str, *, include_receipts: bool = Fa
         .execute()
     )
     rows = [dict(row) for row in (getattr(result, "data", None) or [])]
+    event_result = (
+        db.table("wow_scout_handoff_state_events")
+        .select("candidate_id,target_lane,state,code,created_at")
+        .eq("source_run_id", source_run_id)
+        .order("created_at")
+        .execute()
+    )
+    events = [dict(row) for row in (getattr(event_result, "data", None) or [])]
+
     counts: dict[str, int] = {}
     lane_counts: dict[str, dict[str, int]] = {}
+    priority_counts: dict[str, dict[str, int]] = {}
     for row in rows:
         state = str(row.get("current_state") or "UNKNOWN")
         lane = str(row.get("target_lane") or "UNKNOWN")
+        priority = str(row.get("research_priority") or "UNRANKED")
         counts[state] = counts.get(state, 0) + 1
         lane_counts.setdefault(lane, {})
         lane_counts[lane][state] = lane_counts[lane].get(state, 0) + 1
+        priority_counts.setdefault(priority, {})
+        priority_counts[priority][state] = priority_counts[priority].get(state, 0) + 1
+
+    reached: dict[str, set[str]] = {}
+    for event in events:
+        candidate_id = str(event.get("candidate_id") or "")
+        state = str(event.get("state") or "")
+        if candidate_id and state:
+            reached.setdefault(state, set()).add(candidate_id)
 
     terminal = bool(rows) and all(bool(row.get("terminal")) for row in rows)
-    evaluated = counts.get("MODEL_EVALUATED", 0) + counts.get("V17_QUALIFIED", 0)
+    evaluated = len(reached.get("MODEL_EVALUATED", set()))
+    blocked = counts.get("HANDOFF_BLOCKED", 0)
+    accounted = evaluated + blocked
     summary = {
         "schema_version": "wow.v17.scout-handoff-run.v1",
         "source_run_id": source_run_id,
         "research_run_id": rows[0].get("research_run_id") if rows else None,
         "status": "COMPLETE" if terminal else ("IN_PROGRESS" if rows else "NOT_FOUND"),
         "candidate_jobs": len(rows),
+        "discovered": len(reached.get("DISCOVERED", set())),
+        "research_interest": len(reached.get("RESEARCH_INTEREST", set())),
+        "red_team_passed": len(reached.get("RED_TEAM_PASSED", set())),
+        "specialist_handoff_queued": len(reached.get("SPECIALIST_HANDOFF_QUEUED", set())),
+        "specialist_processing_seen": len(reached.get("SPECIALIST_PROCESSING", set())),
         "model_evaluated": evaluated,
-        "v17_qualified": counts.get("V17_QUALIFIED", 0),
-        "handoff_blocked": counts.get("HANDOFF_BLOCKED", 0),
+        "v17_qualified": len(reached.get("V17_QUALIFIED", set())),
+        "handoff_blocked": blocked,
         "state_counts": counts,
         "lane_state_counts": lane_counts,
-        "reconciliation_pass": terminal and sum(counts.values()) == len(rows),
-        "untracked_rows": 0 if rows else None,
+        "priority_state_counts": priority_counts,
+        "reconciliation_pass": terminal and accounted == len(rows),
+        "untracked_rows": max(0, len(rows) - accounted) if rows else None,
         "can_execute": False,
     }
     if include_receipts:
         summary["jobs"] = rows
+        summary["state_events"] = events
     return summary
 
 
