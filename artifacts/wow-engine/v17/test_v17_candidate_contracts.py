@@ -1,6 +1,7 @@
 import os
 from pathlib import Path
 
+import yaml
 import api_v17_candidate
 
 
@@ -201,3 +202,25 @@ def test_only_mlb_remains_certified():
     from v17.team_event_capability_manifest import CERTIFIED_TEAM_EVENT_SPORTS
 
     assert set(CERTIFIED_TEAM_EVENT_SPORTS) == {"MLB"}
+
+def test_llp_supabase_gateway_diagnostic_contract_is_narrow():
+    diagnostic = yaml.safe_load(
+        (HERE / "openapi.llp-team-engine.v17.supabase-gateway-diagnostic.yaml").read_text()
+    )
+    assert diagnostic["servers"] == [{
+        "url": "https://iczfhsmjrrafhvcpmqhr.supabase.co/functions/v1/wow-llp-action-gateway"
+    }]
+    assert set(diagnostic["paths"]) == {
+        "/health",
+        "/internal/v17/spread-forward-shadow",
+    }
+    spread = diagnostic["paths"]["/internal/v17/spread-forward-shadow"]["post"]
+    assert spread["operationId"] == "scoreLlpV17SpreadForwardShadow"
+    assert spread["security"] == [{"actionBearer": []}]
+    schema = diagnostic["components"]["schemas"]["SpreadForwardShadowRequest"]
+    assert schema["properties"]["sport"]["const"] == "NCAAF"
+    assert set(schema["required"]) == {
+        "sport", "event_id", "event_start_time", "home_team",
+        "away_team", "home_spread", "season",
+    }
+
