@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import importlib.util
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -76,6 +78,24 @@ def test_existing_pr_certifier_is_protected_main_read_only_and_same_repo_only():
     assert data["name"] == "wow-v17-existing-pr-governance-review"
 
 
+def test_existing_pr_ci_selector_compiles_and_matches_exact_workflow_path():
+    jq = shutil.which("jq")
+    if jq is None:
+        pytest.skip("jq is required by the GitHub Actions runner contract")
+
+    selector = '[.[] | select(.name == $name and .path == $path)] | sort_by(.created_at) | reverse | first | "\\(.status)|\\(.conclusion // "")"'
+    payload = '[{"name":"wow-verify","path":".github/workflows/wow-verify.yml","created_at":"2026-10-03T16:00:00Z","status":"completed","conclusion":"success"}]'
+    proc = subprocess.run(
+        [jq, "-r", "--arg", "name", "wow-verify", "--arg", "path", ".github/workflows/wow-verify.yml", selector],
+        input=payload,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip() == "completed|success"
+
+
 def test_existing_pr_certifier_waits_for_exact_head_ci_and_denies_r3():
     text = WORKFLOW.read_text(encoding="utf-8")
     for required in ("wow-verify", "wow-engine-verify", "wow-v17-rapid-repair", "wow-v17-change-impact-gate", "wow-v17-engineering-auditor-code-health", "wow-v17-spread-forward-shadow", "wow-v17-release-production-verification-agent"):
@@ -89,6 +109,8 @@ def test_existing_pr_certifier_waits_for_exact_head_ci_and_denies_r3():
     assert ".github/workflows/wow-v17-trusted-governance-gate.yml" in text
     assert ".github/scripts/verify_existing_pr_governance_receipt.py" in text
     assert 'select(.name == $name and .path == $path)' in text
+    assert '\\(.conclusion // "")' in text
+    assert '\\(.conclusion // \\"\\")' not in text
 
 
 def test_existing_pr_certifier_runs_separate_read_only_governance_roles():
