@@ -105,8 +105,10 @@ jobs:
               terminal_authority:"V17_TERMINAL_REDUCER"
             }')
           else
+            jq '.records |= map(select(.severity != "P0" or .execution_lane != "RAPID"))' \
+              "$RUNNER_TEMP/wow-dispatch-queue.json" > "$RUNNER_TEMP/wow-standard-dispatch-queue.json"
             decision=$(python artifacts/wow-engine/v17/engineering_agent_team.py dual-priority \
-              --ledger "$RUNNER_TEMP/wow-dispatch-queue.json")
+              --ledger "$RUNNER_TEMP/wow-standard-dispatch-queue.json")
           fi
           cp "$RUNNER_TEMP/wow-dispatch-queue.json" artifacts/wow-engine/v17/.agent-handoff/dispatch-queue.json
           printf '%s\n' "$decision" > artifacts/wow-engine/v17/.agent-handoff/dispatch.json
@@ -190,6 +192,7 @@ jobs:
               "lease_epoch": lease.lease_epoch,
               "expires_at": lease.expires_at,
               "worker_mode": mode,
+              "lease_group": "${LEASE_GROUP:-GLOBAL}",
               "can_execute": False,
               "terminal_authority": "V17_TERMINAL_REDUCER",
           }, indent=2, sort_keys=True) + "\n")
