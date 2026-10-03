@@ -23,6 +23,9 @@ import time
 from threading import Lock
 from pathlib import Path
 from typing import Any, Callable, Iterator
+from urllib.error import HTTPError, URLError
+from urllib.parse import quote
+from urllib.request import Request, urlopen
 
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -78,6 +81,81 @@ def _oidc_max_in_flight() -> int:
 
 TEAM_EVENT_BATCH_ROWS = _team_event_batch_rows()
 PROP_BATCH_ROWS = _prop_batch_rows()
+
+
+def _async_handoff_enabled() -> bool:
+    return str(os.environ.get("WOW_SCOUT_ASYNC_HANDOFF_ENABLED") or "false").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+
+
+def _get_json(origin: str, path: str, token: str, *, timeout: int = 30) -> dict[str, Any]:
+    req = Request(
+        f"{origin.rstrip('/')}{path}",
+        headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+        method="GET",
+    )
+    try:
+        with urlopen(req, timeout=timeout) as response:
+            body = json.loads(response.read().decode("utf-8"))
+    except HTTPError as exc:
+        try:
+            detail = json.loads(exc.read().decode("utf-8"))
+        except Exception:
+            detail = {}
+        return {"ok": False, "http_status": exc.code, "body": detail, "can_execute": False}
+    except (URLError, TimeoutError, json.JSONDecodeError) as exc:
+        return {"ok": False, "code": "SCOUT_ASYNC_STATUS_TRANSPORT_FAILED", "error_type": type(exc).__name__, "can_execute": False}
+    return {"ok": True, "http_status": 200, "body": body, "can_execute": False}
+
+
+def _execute_async_handoff(handoff: dict[str, Any], token: str, *, origin: str) -> dict[str, Any]:
+    # The server accepts the RAW handoff and rebuilds its deterministic plan;
+    # callers cannot self-assert RED_TEAM_PASSED.
+    post = _refreshing_oidc_post(token)
+    enqueue = post(origin, "/v17/scout-handoff-runs", token, handoff, timeout=120)
+    body = enqueue.get("body") if isinstance(enqueue, dict) else None
+    if not isinstance(body, dict) or body.get("can_execute") is not False:
+        return {
+            "schema_version": "wow.v17.scout-handoff-run.v1",
+            "status": "BLOCKED_BACKEND_HANDOFF",
+            "code": "SCOUT_ASYNC_ENQUEUE_FAILED",
+            "source_run_id": handoff.get("run_id"),
+            "research_run_id": handoff.get("research_run_id"),
+            "enqueue_receipt": enqueue,
+            "can_execute": False,
+        }
+
+    source_run_id = str(body.get("source_run_id") or handoff.get("run_id") or "")
+    deadline = time.monotonic() + max(5, min(int(os.environ.get("WOW_SCOUT_ASYNC_RECONCILE_SECONDS", "45")), 120))
+    latest: dict[str, Any] = {
+        "schema_version": "wow.v17.scout-handoff-run.v1",
+        "status": "IN_PROGRESS",
+        "source_run_id": source_run_id,
+        "research_run_id": body.get("research_run_id") or handoff.get("research_run_id"),
+        "can_execute": False,
+    }
+    while time.monotonic() < deadline and source_run_id:
+        status = _get_json(
+            origin,
+            f"/v17/scout-handoff-runs/{quote(source_run_id, safe='')}?include_receipts=true",
+            token,
+            timeout=30,
+        )
+        status_body = status.get("body") if isinstance(status, dict) else None
+        if isinstance(status_body, dict) and status_body.get("can_execute") is False:
+            latest = dict(status_body)
+            latest["enqueue_receipt"] = body
+            if latest.get("status") == "COMPLETE":
+                break
+        time.sleep(2)
+
+    latest.setdefault("schema_version", "wow.v17.scout-handoff-run.v1")
+    latest.setdefault("source_run_id", source_run_id)
+    latest.setdefault("research_run_id", handoff.get("research_run_id"))
+    latest["source_acquisition_status"] = handoff.get("status")
+    latest["can_execute"] = False
+    return latest
 OIDC_MAX_IN_FLIGHT = _oidc_max_in_flight()
 _TRANSIENT_HTTP_STATUSES = frozenset({502, 503, 504})
 _TRANSIENT_RETRY_BACKOFF_SECONDS = (1.0, 3.0)
@@ -279,7 +357,9 @@ def main() -> int:
             print(json.dumps({"status": receipt["status"], "code": receipt["code"], "can_execute": False}))
             return 3
 
-    if static_token:
+    if _async_handoff_enabled():
+        receipt = _execute_async_handoff(handoff, token, origin=ACTION_ORIGIN)
+    elif static_token:
         receipt = execute_auto_advance(dispatch_handoff, token=token, origin=ACTION_ORIGIN, progress_fn=progress_fn)
     else:
         with _oidc_batch_bounds():
@@ -304,7 +384,12 @@ def main() -> int:
         "source_acquisition_status": receipt.get("source_acquisition_status"),
         "can_execute": False,
     }))
-    return 0 if str(receipt.get("status") or "").startswith("AUTO_ADVANCE_COMPLETE") else 3
+    status = str(receipt.get("status") or "")
+    if _async_handoff_enabled():
+        # Durable enqueue is success even if the bounded reconciliation read is
+        # still IN_PROGRESS; publication remains fail-closed until the ledger is COMPLETE.
+        return 0 if status in {"COMPLETE", "IN_PROGRESS"} else 3
+    return 0 if status.startswith("AUTO_ADVANCE_COMPLETE") else 3
 
 
 if __name__ == "__main__":
