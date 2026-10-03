@@ -254,26 +254,31 @@ async function persistCandidates(tx: any, runId: string, candidates: Row[]): Pro
     const contradictory = asList(row.contradictory_evidence).map(str);
     const thesis = nullableStr(row.research_thesis || row.thesis);
 
-    const insertedRows = await tx`
-      insert into wow_scout.candidates
-        (candidate_id,sport_key,scout_team,market_type,selection,event_id,canonical_event_id,commence_time,home_team,away_team,
-         controlling_specialist,research_status,research_priority_score,thesis,edge_classes,contradictory_evidence,red_team_flags,
-         data_completeness,source_freshness_score,probability,can_execute,updated_at)
-      values (${cid},${sport},${team},${marketType},${selection},${nullableStr(row.official_event_id)},${nullableStr(row.canonical_event_id)},${nullableStr(row.commence_time)},${nullableStr(row.home_team)},${nullableStr(row.away_team)},
-         ${route},${status},${score},${thesis},${edgeClasses}::text[],${contradictory}::text[],${redFlags}::text[],
-         ${row.data_completeness == null ? null : Number(row.data_completeness)},${row.source_freshness_score == null ? null : Number(row.source_freshness_score)},null,false,now())
-      on conflict (candidate_id) do update set
-         scout_team=excluded.scout_team, selection=excluded.selection, commence_time=excluded.commence_time,
-         home_team=excluded.home_team, away_team=excluded.away_team, controlling_specialist=excluded.controlling_specialist,
-         research_status=excluded.research_status, research_priority_score=excluded.research_priority_score,
-         thesis=coalesce(excluded.thesis,wow_scout.candidates.thesis), edge_classes=excluded.edge_classes,
-         contradictory_evidence=excluded.contradictory_evidence, red_team_flags=excluded.red_team_flags,
-         data_completeness=excluded.data_completeness, source_freshness_score=excluded.source_freshness_score,
-         probability=null, can_execute=false, updated_at=now()
-      returning (xmax = 0) as inserted
-    `;
-    // Counted once per candidate, on its first slice, not once per slice.
-    if (isFirstSlice(row)) counts.changed += insertedRows[0]?.inserted ? 1 : 0;
+    // Candidate metadata is slice-independent. Persist it exactly once, on
+    // the first slice, rather than rewriting the same row for every evidence
+    // chunk. A large event can span 100+ APPEND slices, so repeating this
+    // upsert creates pure heap/WAL amplification with no semantic benefit.
+    if (isFirstSlice(row)) {
+      const insertedRows = await tx`
+        insert into wow_scout.candidates
+          (candidate_id,sport_key,scout_team,market_type,selection,event_id,canonical_event_id,commence_time,home_team,away_team,
+           controlling_specialist,research_status,research_priority_score,thesis,edge_classes,contradictory_evidence,red_team_flags,
+           data_completeness,source_freshness_score,probability,can_execute,updated_at)
+        values (${cid},${sport},${team},${marketType},${selection},${nullableStr(row.official_event_id)},${nullableStr(row.canonical_event_id)},${nullableStr(row.commence_time)},${nullableStr(row.home_team)},${nullableStr(row.away_team)},
+           ${route},${status},${score},${thesis},${edgeClasses}::text[],${contradictory}::text[],${redFlags}::text[],
+           ${row.data_completeness == null ? null : Number(row.data_completeness)},${row.source_freshness_score == null ? null : Number(row.source_freshness_score)},null,false,now())
+        on conflict (candidate_id) do update set
+           scout_team=excluded.scout_team, selection=excluded.selection, commence_time=excluded.commence_time,
+           home_team=excluded.home_team, away_team=excluded.away_team, controlling_specialist=excluded.controlling_specialist,
+           research_status=excluded.research_status, research_priority_score=excluded.research_priority_score,
+           thesis=coalesce(excluded.thesis,wow_scout.candidates.thesis), edge_classes=excluded.edge_classes,
+           contradictory_evidence=excluded.contradictory_evidence, red_team_flags=excluded.red_team_flags,
+           data_completeness=excluded.data_completeness, source_freshness_score=excluded.source_freshness_score,
+           probability=null, can_execute=false, updated_at=now()
+        returning (xmax = 0) as inserted
+      `;
+      counts.changed += insertedRows[0]?.inserted ? 1 : 0;
+    }
 
     if (evidences.length) {
       const stage = stageFor(row);
