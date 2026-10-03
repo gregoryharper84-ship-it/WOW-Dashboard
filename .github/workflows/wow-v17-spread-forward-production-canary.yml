@@ -111,7 +111,6 @@ jobs:
   nfl-canary:
     name: Verify production NFL spread forward shadow
     needs: ncaaf-canary
-    if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -159,7 +158,6 @@ jobs:
   wnba-canary:
     name: Verify production WNBA spread forward shadow
     needs: nfl-canary
-    if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -215,7 +213,6 @@ jobs:
   mlb-canary:
     name: Verify production MLB run-line forward shadow
     needs: wnba-canary
-    if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
