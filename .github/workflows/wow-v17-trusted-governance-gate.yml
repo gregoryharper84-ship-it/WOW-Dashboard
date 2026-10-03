@@ -73,14 +73,27 @@ jobs:
             head_branch=$(jq -r '.head_branch // ""' <<<"$run_json")
             head_repo=$(jq -r '.head_repository.full_name // ""' <<<"$run_json")
 
-            [ "$name" = "wow-v17-chatgpt-engineering-worker" ] || {
-              echo "GOVERNANCE_WORKFLOW_IDENTITY_MISMATCH: unexpected workflow name $name" >&2
-              exit 1
-            }
-            [ "$path" = ".github/workflows/wow-v17-chatgpt-engineering-worker.yml" ] || {
-              echo "GOVERNANCE_WORKFLOW_PATH_MISMATCH: unexpected workflow path $path" >&2
-              exit 1
-            }
+            case "$name|$path" in
+              "wow-v17-chatgpt-engineering-worker|.github/workflows/wow-v17-chatgpt-engineering-worker.yml")
+                case "$event" in
+                  schedule|workflow_run|workflow_dispatch) ;;
+                  *)
+                    echo "GOVERNANCE_WORKFLOW_EVENT_MISMATCH: unexpected ChatGPT worker event $event" >&2
+                    exit 1
+                    ;;
+                esac
+                ;;
+              "wow-v17-claude-engineering-worker|.github/workflows/wow-v17-claude-engineering-worker.yml")
+                [ "$event" = "workflow_dispatch" ] || {
+                  echo "GOVERNANCE_WORKFLOW_EVENT_MISMATCH: unexpected Claude worker event $event" >&2
+                  exit 1
+                }
+                ;;
+              *)
+                echo "GOVERNANCE_WORKFLOW_IDENTITY_MISMATCH: untrusted workflow $name at $path" >&2
+                exit 1
+                ;;
+            esac
             [ "$head_branch" = "main" ] || {
               echo "GOVERNANCE_WORKFLOW_REF_MISMATCH: trusted worker must run from protected main, got $head_branch" >&2
               exit 1
@@ -89,13 +102,6 @@ jobs:
               echo "GOVERNANCE_WORKFLOW_REPOSITORY_MISMATCH: trusted worker came from $head_repo" >&2
               exit 1
             }
-            case "$event" in
-              schedule|workflow_run|workflow_dispatch) ;;
-              *)
-                echo "GOVERNANCE_WORKFLOW_EVENT_MISMATCH: unexpected workflow event $event" >&2
-                exit 1
-                ;;
-            esac
 
             if [ "$status" = "completed" ]; then
               [ "$conclusion" = "success" ] || {
