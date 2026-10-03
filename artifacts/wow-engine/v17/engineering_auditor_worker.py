@@ -64,72 +64,115 @@ def _github_interval_seconds() -> int:
     return min(max(value, 180), 1800)
 
 
+def _startup_retry_delay_seconds(attempt: int) -> int:
+    """Return bounded exponential backoff for transient auditor startup failures."""
+    try:
+        base = int(os.getenv("WOW_ENGINEERING_AUDITOR_STARTUP_RETRY_BASE_SECONDS", "5"))
+    except ValueError:
+        base = 5
+    try:
+        maximum = int(os.getenv("WOW_ENGINEERING_AUDITOR_STARTUP_RETRY_MAX_SECONDS", "300"))
+    except ValueError:
+        maximum = 300
+    base = min(max(base, 5), 60)
+    maximum = min(max(maximum, base), 900)
+    exponent = min(max(attempt - 1, 0), 6)
+    return min(maximum, base * (2**exponent))
+
+
+def _hard_startup_configuration_error(exc: Exception) -> bool:
+    """Missing secure runtime configuration is not a transient data-plane outage."""
+    if not isinstance(exc, RuntimeError):
+        return False
+    return str(exc) in {
+        "SUPABASE_URL unavailable",
+        "SUPABASE service credential unavailable",
+    }
+
+
 def run_engineering_auditor_loop(stop_event: threading.Event = _STOP) -> None:
     """Reconcile on startup, then remain alive and enforce persisted deadlines."""
     instance_id = f"{socket.gethostname()}:{os.getpid()}"
     seen_workflow_runs: set[str] = set()
     last_github_sync = utcnow() - timedelta(minutes=10)
-    try:
-        store = EngineeringAuditStore(_db_client())
-        prior_health = store.health()
-        prior_event_at = prior_health.get("last_event_processed_at")
-        if prior_event_at:
-            try:
-                last_github_sync = parse_timestamp(str(prior_event_at))
-            except (TypeError, ValueError):
-                pass
-        now = utcnow()
-        store.touch_runtime(
-            instance_id=instance_id,
-            status="STARTING",
-            started_at=now,
-            last_heartbeat_at=now,
-            last_error_code="CLEAR",
-        )
-        backlog_n = store.reconcile_backlog(now=now)
-        opened = store.reconcile_due(now=now)
-        github_open_n = 0
-        github_update_n = 0
-        github_health_n = 0
-        github_error: str | None = None
+    startup_attempt = 0
+    while not stop_event.is_set():
         try:
-            github_open_n = bootstrap_open_github_work(store)
-            github_receipt = reconcile_github_updates(
-                store,
-                since=last_github_sync,
-                seen_workflow_runs=seen_workflow_runs,
+            store = EngineeringAuditStore(_db_client())
+            prior_health = store.health()
+            prior_event_at = prior_health.get("last_event_processed_at")
+            if prior_event_at:
+                try:
+                    last_github_sync = parse_timestamp(str(prior_event_at))
+                except (TypeError, ValueError):
+                    pass
+            now = utcnow()
+            store.touch_runtime(
+                instance_id=instance_id,
+                status="STARTING",
+                started_at=now,
+                last_heartbeat_at=now,
+                last_error_code="CLEAR",
             )
-            github_update_n = github_receipt["github_work_events"]
-            github_health_n = github_receipt["code_health_events"]
-            last_github_sync = utcnow()
-        except Exception as exc:
-            github_error = f"GITHUB_AUDIT_{type(exc).__name__.upper()}"
+            backlog_n = store.reconcile_backlog(now=now)
+            opened = store.reconcile_due(now=now)
+            github_open_n = 0
+            github_update_n = 0
+            github_health_n = 0
+            github_error: str | None = None
+            try:
+                github_open_n = bootstrap_open_github_work(store)
+                github_receipt = reconcile_github_updates(
+                    store,
+                    since=last_github_sync,
+                    seen_workflow_runs=seen_workflow_runs,
+                )
+                github_update_n = github_receipt["github_work_events"]
+                github_health_n = github_receipt["code_health_events"]
+                last_github_sync = utcnow()
+            except Exception as exc:
+                github_error = f"GITHUB_AUDIT_{type(exc).__name__.upper()}"
+                _logger.warning(
+                    "WOW_ENGINEERING_AUDITOR github_startup_reconcile=DEGRADED error_type=%s can_execute=false",
+                    type(exc).__name__,
+                )
+            store.refresh_runtime_counts(now=utcnow())
+            store.touch_runtime(
+                instance_id=instance_id,
+                status="DEGRADED" if github_error else "RUNNING",
+                last_heartbeat_at=utcnow(),
+                last_reconcile_at=utcnow(),
+                last_error_code=github_error or "CLEAR",
+            )
             _logger.warning(
-                "WOW_ENGINEERING_AUDITOR github_startup_reconcile=DEGRADED error_type=%s can_execute=false",
-                type(exc).__name__,
+                "WOW_ENGINEERING_AUDITOR status=%s startup_attempt=%s startup_backlog=%s startup_findings=%s github_open=%s github_updates=%s code_health=%s terminal_authority=V17_TERMINAL_REDUCER can_execute=false",
+                "DEGRADED" if github_error else "RUNNING",
+                startup_attempt + 1,
+                backlog_n,
+                len(opened),
+                github_open_n,
+                github_update_n,
+                github_health_n,
             )
-        store.refresh_runtime_counts(now=utcnow())
-        store.touch_runtime(
-            instance_id=instance_id,
-            status="DEGRADED" if github_error else "RUNNING",
-            last_heartbeat_at=utcnow(),
-            last_reconcile_at=utcnow(),
-            last_error_code=github_error or "CLEAR",
-        )
-        _logger.warning(
-            "WOW_ENGINEERING_AUDITOR status=%s startup_backlog=%s startup_findings=%s github_open=%s github_updates=%s code_health=%s terminal_authority=V17_TERMINAL_REDUCER can_execute=false",
-            "DEGRADED" if github_error else "RUNNING",
-            backlog_n,
-            len(opened),
-            github_open_n,
-            github_update_n,
-            github_health_n,
-        )
-    except Exception as exc:
-        _logger.exception(
-            "WOW_ENGINEERING_AUDITOR startup failed error_type=%s can_execute=false",
-            type(exc).__name__,
-        )
+            break
+        except Exception as exc:
+            startup_attempt += 1
+            if _hard_startup_configuration_error(exc):
+                _logger.exception(
+                    "WOW_ENGINEERING_AUDITOR startup blocked error_type=%s retryable=false can_execute=false",
+                    type(exc).__name__,
+                )
+                return
+            retry_seconds = _startup_retry_delay_seconds(startup_attempt)
+            _logger.exception(
+                "WOW_ENGINEERING_AUDITOR startup failed error_type=%s retryable=true attempt=%s retry_in_seconds=%s can_execute=false",
+                type(exc).__name__,
+                startup_attempt,
+                retry_seconds,
+            )
+            if stop_event.wait(retry_seconds):
+                return
+    else:
         return
 
     next_github_poll = time.monotonic() + _github_interval_seconds()
