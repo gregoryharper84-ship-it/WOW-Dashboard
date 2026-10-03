@@ -2,7 +2,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-MIGRATION = ROOT / "migrations" / "20261002_smooth_wow_cron_load.sql"
+MIGRATION = ROOT / "migrations" / "20261003022500_smooth_wow_cron_load.sql"
 
 SCHEDULES = {
     "ncaaf_close": {0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55},
