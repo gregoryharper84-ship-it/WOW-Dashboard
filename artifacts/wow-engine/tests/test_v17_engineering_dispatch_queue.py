@@ -14,8 +14,8 @@ def _manifest():
         "can_execute": False,
         "terminal_authority": "V17_TERMINAL_REDUCER",
         "restoration": [
-            {"issue_number": 502, "severity": "P0", "priority_rank": 1, "execution_lane": "RAPID", "conflict_keys": ["interactive-runtime"]},
-            {"issue_number": 960, "severity": "P0", "priority_rank": 2, "execution_lane": "RAPID", "conflict_keys": ["nfl-full-slate"]},
+            {"issue_number": 502, "severity": "P0", "priority_rank": 1, "execution_lane": "RAPID", "rapid_stream": "C", "lease_group": "P0_STREAM_C", "conflict_keys": ["interactive-runtime"]},
+            {"issue_number": 960, "severity": "P0", "priority_rank": 2, "execution_lane": "RAPID", "rapid_stream": "B", "lease_group": "P0_STREAM_B", "conflict_keys": ["nfl-full-slate"]},
         ],
         "acceleration": [
             {"issue_number": 1135, "severity": "P1", "priority_rank": 1, "execution_lane": "STANDARD", "conflict_keys": ["failure-capsule"]},
@@ -33,6 +33,8 @@ def test_build_queue_uses_github_open_state_and_preserves_stream_metadata():
     assert [row["incident_id"] for row in queue["records"]] == ["502", "1135"]
     assert queue["records"][0]["work_stream"] == "RESTORATION"
     assert queue["records"][0]["execution_lane"] == "RAPID"
+    assert queue["records"][0]["rapid_stream"] == "C"
+    assert queue["records"][0]["lease_group"] == "P0_STREAM_C"
     assert queue["records"][1]["work_stream"] == "ACCELERATION"
     assert queue["records"][1]["conflict_keys"] == ["FAILURE-CAPSULE"]
     assert queue["can_execute"] is False
@@ -101,6 +103,8 @@ def test_all_active_p0_incidents_are_in_rapid_lane():
     for issue_id in active:
         assert by_id[issue_id]["severity"] == "P0"
         assert by_id[issue_id]["execution_lane"] == "RAPID"
+        assert by_id[issue_id]["rapid_stream"]
+        assert by_id[issue_id]["lease_group"]
 
     issues = [
         {"number": issue_id, "title": f"P0 {issue_id}", "state": "OPEN", "updatedAt": "2026-10-03T14:00:00Z"}
@@ -110,3 +114,10 @@ def test_all_active_p0_incidents_are_in_rapid_lane():
     assert queue["rapid_p0_count"] == len(active)
     assert all(row["execution_lane"] == "RAPID" for row in queue["records"])
     assert select_dual_stream_work(queue["records"]).restoration.incident_id == "1247"
+
+
+def test_p0_requires_stream_and_lease_metadata():
+    manifest = _manifest()
+    manifest["restoration"][0].pop("rapid_stream")
+    with pytest.raises(ValueError, match="requires rapid_stream and lease_group"):
+        build_queue(manifest, [])
