@@ -143,13 +143,13 @@ def test_spread_canary_waits_for_db_free_warm_readiness_before_scoring():
     assert 'warm.get("probability_publishable") is False' in ncaaf
 
 
-def test_spread_canary_serializes_runtime_heavy_jobs_without_skipping_after_failure():
+def test_spread_canary_serializes_and_stops_downstream_after_failure():
     text = CANARY_WORKFLOW.read_text(encoding="utf-8")
 
     assert "needs: ncaaf-canary" in text
     assert "needs: nfl-canary" in text
     assert "needs: wnba-canary" in text
-    assert text.count("if: always()") == 3
+    assert "if: always()" not in text
 
     ncaaf = text.index("  ncaaf-canary:")
     nfl = text.index("  nfl-canary:")
