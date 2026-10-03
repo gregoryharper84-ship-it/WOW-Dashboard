@@ -194,7 +194,7 @@ async def _worker_loop(
     lease_seconds = _int_env("WOW_V17_DAILY_ASYNC_LEASE_SECONDS", 900, minimum=60, maximum=3600)
     max_attempts = _int_env("WOW_V17_DAILY_ASYNC_MAX_ATTEMPTS", 3, minimum=1, maximum=10)
     initial_delay_seconds = _int_env(
-        "WOW_V17_DAILY_ASYNC_INITIAL_DELAY_SECONDS", 5, minimum=0, maximum=300
+        "WOW_V17_DAILY_ASYNC_INITIAL_DELAY_SECONDS", 10, minimum=0, maximum=300
     )
     wake: asyncio.Event = app.state.wow_v17_daily_async_wake
 
