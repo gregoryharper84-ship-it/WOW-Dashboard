@@ -113,6 +113,20 @@ def test_existing_pr_certifier_waits_for_exact_head_ci_and_denies_r3():
     assert '\\(.conclusion // \\"\\")' not in text
 
 
+def test_candidate_change_is_deterministic_not_agent_authored():
+    text = WORKFLOW.read_text(encoding="utf-8")
+    assert "EXISTING_PR_CANDIDATE_DIFF_EMPTY" in text
+    assert 'echo "candidate_changed=true" >> "$GITHUB_OUTPUT"' in text
+    assert "CANDIDATE_CHANGED: ${{ steps.target.outputs.candidate_changed }}" in text
+    assert 'echo "changed=$CANDIDATE_CHANGED" >> "$GITHUB_OUTPUT"' in text
+    assert "Return changed=true only if the diff contains substantive implementation/test changes." not in text
+    assert '"changed":{"type":"boolean"}' not in text
+    assert "EXISTING_PR_LEAD_INCIDENT_MISMATCH" in text
+    assert "EXISTING_PR_TRIAGE_INCIDENT_MISMATCH" in text
+    assert "EXISTING_PR_ENGINEERING_INCIDENT_MISMATCH" in text
+    assert "EXISTING_PR_CANDIDATE_CHANGE_FACT_MISSING" in text
+
+
 def test_existing_pr_certifier_runs_separate_read_only_governance_roles():
     text = WORKFLOW.read_text(encoding="utf-8")
     for role in ("ENGINEERING_LEAD_AGENT", "RESEARCH_TRIAGE_AGENT", "ENGINEERING_AGENT", "INDEPENDENT_REVIEW_AGENT", "SYSTEM_ARCHITECT_AGENT", "QA_VERIFICATION_AGENT"):

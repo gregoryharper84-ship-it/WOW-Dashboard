@@ -90,6 +90,10 @@ jobs:
 
           gh issue view "$incident" --repo "$GITHUB_REPOSITORY" --json number,title,body,state,url > ".governance-review-evidence/incident.json"
           gh pr diff "$pr_number" --repo "$GITHUB_REPOSITORY" > ".governance-review-evidence/candidate.diff"
+          [ -s ".governance-review-evidence/candidate.diff" ] || {
+            echo "EXISTING_PR_CANDIDATE_DIFF_EMPTY" >&2
+            exit 1
+          }
           printf '%s\n' "$pr_json" > ".governance-review-evidence/pr.json"
           gh api --paginate "/repos/${GITHUB_REPOSITORY}/pulls/${pr_number}/files?per_page=100" --jq '.[].filename' > ".governance-review-evidence/files.txt"
           while IFS= read -r changed_path; do
@@ -106,6 +110,7 @@ jobs:
           echo "head_sha=$head_sha" >> "$GITHUB_OUTPUT"
           echo "head_ref=$head_ref" >> "$GITHUB_OUTPUT"
           echo "draft=$draft" >> "$GITHUB_OUTPUT"
+          echo "candidate_changed=true" >> "$GITHUB_OUTPUT"
 
       - name: Verify exact-head deterministic CI
         id: regression
@@ -174,11 +179,17 @@ jobs:
         shell: bash
         env:
           RESULT: ${{ steps.lead_agent.outputs.structured_output }}
+          EXPECTED_INCIDENT: ${{ steps.target.outputs.incident }}
         run: |
           set -euo pipefail
+          incident=$(jq -r '.incident_id' <<<"$RESULT")
+          [ "$incident" = "$EXPECTED_INCIDENT" ] || {
+            echo "EXISTING_PR_LEAD_INCIDENT_MISMATCH:$incident:$EXPECTED_INCIDENT" >&2
+            exit 1
+          }
           printf '%s\n' "$RESULT" > ".governance-review-evidence/lead.json"
           echo "decision=$(jq -r '.decision' <<<"$RESULT")" >> "$GITHUB_OUTPUT"
-          echo "incident=$(jq -r '.incident_id' <<<"$RESULT")" >> "$GITHUB_OUTPUT"
+          echo "incident=$incident" >> "$GITHUB_OUTPUT"
 
       - name: Research and Triage certification agent
         id: triage_agent
@@ -204,11 +215,17 @@ jobs:
         shell: bash
         env:
           RESULT: ${{ steps.triage_agent.outputs.structured_output }}
+          EXPECTED_INCIDENT: ${{ steps.target.outputs.incident }}
         run: |
           set -euo pipefail
+          incident=$(jq -r '.incident_id' <<<"$RESULT")
+          [ "$incident" = "$EXPECTED_INCIDENT" ] || {
+            echo "EXISTING_PR_TRIAGE_INCIDENT_MISMATCH:$incident:$EXPECTED_INCIDENT" >&2
+            exit 1
+          }
           printf '%s\n' "$RESULT" > ".governance-review-evidence/triage.json"
           echo "repairable=$(jq -r '.repairable' <<<"$RESULT")" >> "$GITHUB_OUTPUT"
-          echo "incident=$(jq -r '.incident_id' <<<"$RESULT")" >> "$GITHUB_OUTPUT"
+          echo "incident=$incident" >> "$GITHUB_OUTPUT"
           echo "risk=$(jq -r '.risk_class' <<<"$RESULT")" >> "$GITHUB_OUTPUT"
           [ "$(jq -r '.risk_class' <<<"$RESULT")" != "R3" ] || { echo "EXISTING_PR_R3_CERTIFICATION_DENIED" >&2; exit 1; }
 
@@ -228,8 +245,9 @@ jobs:
             Audit whether the existing candidate is the smallest complete implementation of the
             confirmed triage packet, includes appropriate regression protection, and preserves
             exact typed failures, one-specialist ownership, can_execute=false and terminal authority.
-            Return changed=true only if the diff contains substantive implementation/test changes.
-          output_schema: '{"type":"object","properties":{"decision":{"type":"string","enum":["PASS","REJECT"]},"changed":{"type":"boolean"},"incident_id":{"type":"string"},"summary":{"type":"string"},"findings":{"type":"array","items":{"type":"string"}}},"required":["decision","changed","incident_id","summary","findings"],"additionalProperties":false}'
+            The workflow has already deterministically proven the candidate diff is non-empty; do not
+            reinterpret whether a change exists. Return only the audit decision and findings.
+          output_schema: '{"type":"object","properties":{"decision":{"type":"string","enum":["PASS","REJECT"]},"incident_id":{"type":"string"},"summary":{"type":"string"},"findings":{"type":"array","items":{"type":"string"}}},"required":["decision","incident_id","summary","findings"],"additionalProperties":false}'
 
       - name: Persist Engineering audit
         id: engineering
@@ -237,12 +255,23 @@ jobs:
         shell: bash
         env:
           RESULT: ${{ steps.engineering_agent.outputs.structured_output }}
+          EXPECTED_INCIDENT: ${{ steps.target.outputs.incident }}
+          CANDIDATE_CHANGED: ${{ steps.target.outputs.candidate_changed }}
         run: |
           set -euo pipefail
+          incident=$(jq -r '.incident_id' <<<"$RESULT")
+          [ "$incident" = "$EXPECTED_INCIDENT" ] || {
+            echo "EXISTING_PR_ENGINEERING_INCIDENT_MISMATCH:$incident:$EXPECTED_INCIDENT" >&2
+            exit 1
+          }
+          [ "$CANDIDATE_CHANGED" = "true" ] || {
+            echo "EXISTING_PR_CANDIDATE_CHANGE_FACT_MISSING" >&2
+            exit 1
+          }
           printf '%s\n' "$RESULT" > ".governance-review-evidence/engineering.json"
           echo "decision=$(jq -r '.decision' <<<"$RESULT")" >> "$GITHUB_OUTPUT"
-          echo "changed=$(jq -r '.changed' <<<"$RESULT")" >> "$GITHUB_OUTPUT"
-          echo "incident=$(jq -r '.incident_id' <<<"$RESULT")" >> "$GITHUB_OUTPUT"
+          echo "changed=$CANDIDATE_CHANGED" >> "$GITHUB_OUTPUT"
+          echo "incident=$incident" >> "$GITHUB_OUTPUT"
 
       - name: Independent Review agent
         id: review_agent
