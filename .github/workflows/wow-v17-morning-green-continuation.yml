@@ -191,8 +191,12 @@ jobs:
           path=$(jq -r '.path // ""' <<<"$run_json")
           status=$(jq -r '.status // ""' <<<"$run_json")
           conclusion=$(jq -r '.conclusion // ""' <<<"$run_json")
+          head_branch=$(jq -r '.head_branch // ""' <<<"$run_json")
+          head_repo=$(jq -r '.head_repository.full_name // ""' <<<"$run_json")
           if [ "$name" != "wow-v17-chatgpt-engineering-worker" ] ||
              [ "$path" != ".github/workflows/wow-v17-chatgpt-engineering-worker.yml" ] ||
+             [ "$head_branch" != "main" ] ||
+             [ "$head_repo" != "$GITHUB_REPOSITORY" ] ||
              [ "$status" != "completed" ] ||
              [ "$conclusion" != "success" ]; then
             echo "GOVERNANCE_WORKFLOW_UNTRUSTED_OR_INCOMPLETE: autonomous merge denied for run ${run_id}." >> "$GITHUB_STEP_SUMMARY"
