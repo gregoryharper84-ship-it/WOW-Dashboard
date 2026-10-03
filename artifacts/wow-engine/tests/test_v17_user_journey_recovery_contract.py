@@ -47,16 +47,16 @@ def test_prizepicks_source_ingestion_failure_is_typed_separately_from_model_capa
     assert "never claim `omitted rows = 0`" in editor
 
 
-def test_merge_sha_without_scout_run_forces_current_main_persistence_replay():
+def test_merge_sha_without_scout_run_reuses_receipted_source_without_forced_replay():
     workflow = PERSIST_RESUME.read_text(encoding="utf-8")
 
     assert 'echo "skip=true"' not in workflow
     assert "persistence is not applicable to this workflow_run event" not in workflow
-    assert 'force_replay="true"' in workflow
-    assert "Capture persistence receipt baseline" in workflow
-    assert "BASELINE_COUNT" in workflow
-    assert 'receipt_count" -gt "$BASELINE_COUNT' in workflow
-    assert "current-main replay acceptance remains open" in workflow
+    assert 'force_replay="true"' not in workflow
+    assert workflow.count('force_replay="false"') >= 2
+    assert "Check for existing persistence receipt" in workflow
+    assert "Persistence receipt already exists for source run" in workflow
+    assert "Missing receipts still enter the normal recovery" in workflow
     assert "No completed recoverable Multi-Scout run found; fail closed." in workflow
 
 
