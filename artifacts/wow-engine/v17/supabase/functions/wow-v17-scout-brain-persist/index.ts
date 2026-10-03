@@ -275,6 +275,22 @@ async function persistCandidates(tx: any, runId: string, candidates: Row[]): Pro
            contradictory_evidence=excluded.contradictory_evidence, red_team_flags=excluded.red_team_flags,
            data_completeness=excluded.data_completeness, source_freshness_score=excluded.source_freshness_score,
            probability=null, can_execute=false, updated_at=now()
+        where wow_scout.candidates.scout_team is distinct from excluded.scout_team
+           or wow_scout.candidates.selection is distinct from excluded.selection
+           or wow_scout.candidates.commence_time is distinct from excluded.commence_time
+           or wow_scout.candidates.home_team is distinct from excluded.home_team
+           or wow_scout.candidates.away_team is distinct from excluded.away_team
+           or wow_scout.candidates.controlling_specialist is distinct from excluded.controlling_specialist
+           or wow_scout.candidates.research_status is distinct from excluded.research_status
+           or wow_scout.candidates.research_priority_score is distinct from excluded.research_priority_score
+           or wow_scout.candidates.thesis is distinct from coalesce(excluded.thesis,wow_scout.candidates.thesis)
+           or wow_scout.candidates.edge_classes is distinct from excluded.edge_classes
+           or wow_scout.candidates.contradictory_evidence is distinct from excluded.contradictory_evidence
+           or wow_scout.candidates.red_team_flags is distinct from excluded.red_team_flags
+           or wow_scout.candidates.data_completeness is distinct from excluded.data_completeness
+           or wow_scout.candidates.source_freshness_score is distinct from excluded.source_freshness_score
+           or wow_scout.candidates.probability is not null
+           or wow_scout.candidates.can_execute is distinct from false
         returning (xmax = 0) as inserted
       `;
       counts.changed += insertedRows[0]?.inserted ? 1 : 0;
@@ -284,7 +300,7 @@ async function persistCandidates(tx: any, runId: string, candidates: Row[]): Pro
       const stage = stageFor(row);
       const sourceStatus = str(row.market_evidence_status || "AVAILABLE");
       const obsName: string[] = [], obsText: string[] = [], obsValue: string[] = [], obsChecksum: string[] = [];
-      const snapId: string[] = [], snapProvider: string[] = [], snapClass: string[] = [], snapObserved: string[] = [];
+      const snapId: string[] = [], snapProvider: string[] = [], snapClass: string[] = [], snapObserved: (string | null)[] = [];
       const snapCode: (string | null)[] = [], snapHttp: (number | null)[] = [], snapPayload: string[] = [], snapHash: string[] = [];
       const linkSnapId: string[] = [], linkEntities: string[] = [];
 
@@ -299,7 +315,10 @@ async function persistCandidates(tx: any, runId: string, candidates: Row[]): Pro
         snapId.push(snapshot.id);
         snapProvider.push(snapshot.provider);
         snapClass.push(str(e.source_class || e.source_tier || "SPORTSBOOK_FEED"));
-        snapObserved.push(nullableStr(e.market_last_update || e.bookmaker_last_update || e.captured_at) || new Date().toISOString());
+        // No wall-clock fallback: evidence without a timestamp keeps the stored
+        // row's observed_at (or now() on first insert) via the statement below,
+        // so an identical replay stays a no-op.
+        snapObserved.push(nullableStr(e.market_last_update || e.bookmaker_last_update || e.captured_at));
         snapCode.push(nullableStr(e.source_code || e.primary_source_failure));
         snapHttp.push(e.source_http_status == null ? null : Number(e.source_http_status));
         snapPayload.push(snapshot.payload);
@@ -328,7 +347,8 @@ async function persistCandidates(tx: any, runId: string, candidates: Row[]): Pro
       await tx`
         insert into wow_scout.source_snapshots
           (snapshot_id,provider,sport_key,capability,source_class,observed_at,source_status,source_code,source_http_status,payload,payload_hash,prediction_authority,can_execute)
-        select id,provider,${sport},'MARKET_EVIDENCE',cls,observed::timestamptz,${sourceStatus},code,http,payload::jsonb,hash,false,false
+        select id,provider,${sport},'MARKET_EVIDENCE',cls,
+               coalesce(observed::timestamptz,(select x.observed_at from wow_scout.source_snapshots x where x.snapshot_id = s.id),now()),${sourceStatus},code,http,payload::jsonb,hash,false,false
         from unnest(${snapId}::text[],${snapProvider}::text[],${snapClass}::text[],${snapObserved}::text[],${snapCode}::text[],${snapHttp}::int[],${snapPayload}::text[],${snapHash}::text[])
              as s(id,provider,cls,observed,code,http,payload,hash)
         on conflict (snapshot_id) do update set
