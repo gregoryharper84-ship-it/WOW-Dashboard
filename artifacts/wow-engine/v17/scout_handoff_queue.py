@@ -20,7 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 import pick_request_runtime_core as pick_runtime
 import team_event_request_runtime as team_runtime
-from v17.multiscout_auto_advance import build_dispatch
+from v17.multiscout_auto_advance import build_dispatch\nfrom v17.scout_research_promotion import evaluate_candidate
 
 CAN_EXECUTE = False
 WORKER_VERSION = "V17_SCOUT_DURABLE_HANDOFF_V1"
@@ -109,6 +109,32 @@ def _red_team_hygiene(
     return True, None, None
 
 
+def _research_gate(candidate: dict[str, Any] | None) -> tuple[str, str, dict[str, Any] | None]:
+    if not isinstance(candidate, dict):
+        return "UNRANKED", "HANDOFF_BLOCKED", {"code": "SCOUT_RESEARCH_CANDIDATE_MISSING"}
+    evaluation = evaluate_candidate(candidate)
+    status = str(evaluation.get("research_status") or "WATCH")
+    priority = {
+        "RESEARCH_INTEREST_HIGH": "HIGH",
+        "RESEARCH_INTEREST_MEDIUM": "MEDIUM",
+        "RESEARCH_INTEREST_LOW": "LOW",
+    }.get(status, "UNRANKED")
+    red = evaluation.get("red_team") if isinstance(evaluation.get("red_team"), dict) else {}
+    if str(red.get("status") or "").upper() != "PASSED":
+        return priority, "HANDOFF_BLOCKED", {
+            "code": "SCOUT_RED_TEAM_QUARANTINED",
+            "research_status": status,
+            "research_reason": evaluation.get("research_reason"),
+            "red_team_flags": list(red.get("flags") or []),
+        }
+    return priority, "RED_TEAM_PASSED", {
+        "research_status": status,
+        "research_reason": evaluation.get("research_reason"),
+        "data_completeness": evaluation.get("data_completeness"),
+        "source_freshness_score": evaluation.get("source_freshness_score"),
+    }
+
+
 def _raw_candidate_priority(
     handoff: dict[str, Any], lane: str, source_index: int | None
 ) -> str:
@@ -138,15 +164,37 @@ def build_handoff_plan(handoff: dict[str, Any]) -> ScoutHandoffPlan:
     research_run_id = str(dispatch["research_run_id"])
     candidates: list[ScoutCandidateEnvelope] = []
 
+    raw_model_handoff = handoff.get("model_handoff") if isinstance(handoff.get("model_handoff"), dict) else {}
+    raw_props = raw_model_handoff.get("prop_candidates") if isinstance(raw_model_handoff.get("prop_candidates"), list) else []
+    raw_teams = raw_model_handoff.get("team_event_candidates") if isinstance(raw_model_handoff.get("team_event_candidates"), list) else []
+
     for batch in dispatch["prop_batches"]:
         for row in batch["rows"]:
             payload = dict(row)
             candidate_id = _stable_id(source_run_id, "PROP", payload)
             target_lane = "WOW_PROP_LANE"
             route = "/score-pick-request"
+            source_index = None
+            try:
+                source_index = int(str(payload.get("row_key") or "").rsplit("-", 1)[-1])
+            except (TypeError, ValueError):
+                pass
+            raw_candidate = raw_props[source_index - 1] if source_index and source_index <= len(raw_props) else None
+            priority, research_gate, research_detail = _research_gate(raw_candidate)
             passed, code, detail = _red_team_hygiene(
                 target_lane=target_lane, target_route=route, request_payload=payload
             )
+            blocked_code = None
+            blocked_detail = None
+            red_team_status = "RED_TEAM_PASSED"
+            if research_gate != "RED_TEAM_PASSED":
+                red_team_status = "HANDOFF_BLOCKED"
+                blocked_code = str((research_detail or {}).get("code") or "SCOUT_RED_TEAM_QUARANTINED")
+                blocked_detail = research_detail
+            elif not passed:
+                red_team_status = "HANDOFF_BLOCKED"
+                blocked_code = code
+                blocked_detail = detail
             candidates.append(
                 ScoutCandidateEnvelope(
                     source_run_id=source_run_id,
@@ -156,11 +204,26 @@ def build_handoff_plan(handoff: dict[str, Any]) -> ScoutHandoffPlan:
                     target_route=route,
                     request_id=f"{research_run_id}:scout:{candidate_id}",
                     request_payload=payload,
-                    red_team_status="RED_TEAM_PASSED" if passed else "HANDOFF_BLOCKED",
-                    blocked_code=code,
-                    blocked_detail=detail,
+                    research_priority=priority,
+                    red_team_status=red_team_status,
+                    blocked_code=blocked_code,
+                    blocked_detail=blocked_detail or research_detail,
                 )
             )
+
+    raw_team_by_event: dict[str, dict[str, Any]] = {}
+    for raw in raw_teams:
+        if not isinstance(raw, dict):
+            continue
+        event_id = str(raw.get("official_event_id") or "").strip()
+        sport_key = str(raw.get("sport_key") or "").strip().lower()
+        sport = {
+            "baseball_mlb": "MLB", "basketball_nba": "NBA", "basketball_wnba": "WNBA",
+            "basketball_ncaab": "NCAAB", "americanfootball_nfl": "NFL",
+            "americanfootball_ncaaf": "NCAAF", "icehockey_nhl": "NHL",
+        }.get(sport_key, sport_key.upper())
+        if event_id and sport:
+            raw_team_by_event[f"{sport}:{event_id}"] = raw
 
     for batch in dispatch["team_event_batches"]:
         for row in batch["rows"]:
@@ -173,9 +236,22 @@ def build_handoff_plan(handoff: dict[str, Any]) -> ScoutHandoffPlan:
             )
             target_lane = "LLP_TEAM_BETTING_ENGINE"
             route = "/score-team-event-request"
+            raw_candidate = raw_team_by_event.get(str(payload.get("event_key") or ""))
+            priority, research_gate, research_detail = _research_gate(raw_candidate)
             passed, code, detail = _red_team_hygiene(
                 target_lane=target_lane, target_route=route, request_payload=payload
             )
+            blocked_code = None
+            blocked_detail = None
+            red_team_status = "RED_TEAM_PASSED"
+            if research_gate != "RED_TEAM_PASSED":
+                red_team_status = "HANDOFF_BLOCKED"
+                blocked_code = str((research_detail or {}).get("code") or "SCOUT_RED_TEAM_QUARANTINED")
+                blocked_detail = research_detail
+            elif not passed:
+                red_team_status = "HANDOFF_BLOCKED"
+                blocked_code = code
+                blocked_detail = detail
             candidates.append(
                 ScoutCandidateEnvelope(
                     source_run_id=source_run_id,
@@ -185,9 +261,10 @@ def build_handoff_plan(handoff: dict[str, Any]) -> ScoutHandoffPlan:
                     target_route=route,
                     request_id=f"{research_run_id}:scout:{candidate_id}",
                     request_payload=payload,
-                    red_team_status="RED_TEAM_PASSED" if passed else "HANDOFF_BLOCKED",
-                    blocked_code=code,
-                    blocked_detail=detail,
+                    research_priority=priority,
+                    red_team_status=red_team_status,
+                    blocked_code=blocked_code,
+                    blocked_detail=blocked_detail or research_detail,
                 )
             )
 
