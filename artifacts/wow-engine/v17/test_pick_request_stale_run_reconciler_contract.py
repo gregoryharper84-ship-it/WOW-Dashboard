@@ -53,7 +53,7 @@ def test_reconciler_runs_periodically_without_duplicate_cron_jobs():
     sql = _sql()
     assert "cron.unschedule" in sql
     assert "wow-v17-reconcile-stale-pick-runs" in sql
-    assert "'*/5 * * * *'" in sql
+    assert "'3,8,13,18,23,28,33,38,43,48,53,58 * * * *'" in sql
     assert "wow_reconcile_stale_pick_request_runs(3600)" in sql
     assert "if p_stale_after_seconds < 300" in sql
 
