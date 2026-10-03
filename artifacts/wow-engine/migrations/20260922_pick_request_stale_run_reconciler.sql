@@ -223,7 +223,7 @@ begin
 
     perform cron.schedule(
         'wow-v17-reconcile-stale-pick-runs',
-        '3,8,13,18,23,28,33,38,43,48,53,58 * * * *',
+        '*/5 * * * *',
         'select public.wow_reconcile_stale_pick_request_runs(3600);'
     );
 end;
