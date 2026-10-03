@@ -47,12 +47,17 @@ def test_prizepicks_source_ingestion_failure_is_typed_separately_from_model_capa
     assert "never claim `omitted rows = 0`" in editor
 
 
-def test_merge_sha_without_scout_run_forces_current_main_persistence_replay():
+def test_merge_sha_without_scout_run_reuses_recoverable_source_without_forcing_replay():
     workflow = PERSIST_RESUME.read_text(encoding="utf-8")
 
     assert 'echo "skip=true"' not in workflow
     assert "persistence is not applicable to this workflow_run event" not in workflow
+    assert 'if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then' in workflow
     assert 'force_replay="true"' in workflow
+    assert "do not force an identical replay merely because main advanced" in workflow
+    assert "Automatic recovery will replay only if no persistence receipt exists." in workflow
+    assert "Check for existing persistence receipt" in workflow
+    assert "no scheduled replay needed" in workflow
     assert "Capture persistence receipt baseline" in workflow
     assert "BASELINE_COUNT" in workflow
     assert 'receipt_count" -gt "$BASELINE_COUNT' in workflow
