@@ -478,7 +478,17 @@ def process_claimed_job(
                 },
             )
         block_code = code
-        if not direct_block and not _retry_safe(job):
+        if not direct_block and _retry_safe(job) and attempt >= budget:
+            block_code = "SCOUT_HANDOFF_RETRY_EXHAUSTED"
+            detail = {
+                **detail,
+                "original_error_code": code,
+                "http_status": http_status,
+                "retry_safe": True,
+                "retry_budget": budget,
+                "attempt_count": attempt,
+            }
+        elif not direct_block and not _retry_safe(job):
             block_code = "SCOUT_HANDOFF_AMBIGUOUS_RETRY_PROHIBITED"
             detail = {
                 **detail,
