@@ -1,6 +1,6 @@
 name: wow-v17-engineering-provider-dispatcher
 run-name: >-
-  WOW V17 provider lease=${{ inputs.lease_group || 'GLOBAL' }} incident=${{ inputs.target_incident || 'AUTO' }}
+  WOW V17 provider source=${{ github.event.workflow_run.display_title || 'manual' }} lease=${{ inputs.lease_group || 'GLOBAL' }} incident=${{ inputs.target_incident || 'AUTO' }}
 
 on:
   workflow_run:
