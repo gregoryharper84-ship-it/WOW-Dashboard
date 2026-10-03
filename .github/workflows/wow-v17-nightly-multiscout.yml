@@ -226,6 +226,7 @@ jobs:
       WOW_CAN_EXECUTE: "false"
       WOW_DRY_RUN_ONLY: "true"
       WOW_MARKET_EVIDENCE_ENABLED: "true"
+      WOW_SCOUT_ASYNC_HANDOFF_ENABLED: ${{ vars.WOW_SCOUT_ASYNC_HANDOFF_ENABLED || 'false' }}
       RUNDOWN_API_KEY: ${{ secrets.RUNDOWN_API_KEY }}
       SHARPAPI_API_KEY: ${{ secrets.SHARPAPI_API_KEY }}
     steps:
@@ -377,7 +378,11 @@ jobs:
           assert receipt.get("source_run_id") == handoff.get("run_id")
           assert receipt.get("research_run_id") == handoff.get("research_run_id")
           status = str(receipt.get("status") or "")
-          assert status in {"AUTO_ADVANCE_COMPLETE", "AUTO_ADVANCE_COMPLETE_WITH_BLOCKERS", "BLOCKED_BACKEND_HANDOFF", "BLOCKED_RECONCILIATION", "BLOCKED_INVALID_SCOUT_HANDOFF"}
+          assert status in {
+              "AUTO_ADVANCE_COMPLETE", "AUTO_ADVANCE_COMPLETE_WITH_BLOCKERS",
+              "BLOCKED_BACKEND_HANDOFF", "BLOCKED_RECONCILIATION", "BLOCKED_INVALID_SCOUT_HANDOFF",
+              "COMPLETE", "IN_PROGRESS",
+          }
           print(f"governed auto-advance status={status} code={receipt.get('code')}")
           PY
       - name: Write human-readable Scout summary
@@ -403,8 +408,16 @@ jobs:
           books = data.get("sportsbook_coverage", {}).get("bookmakers_seen", [])
           delivery = data.get("delivery", {})
           recon = data.get("reconciliation", {})
-          advance_recon = receipt.get("reconciliation", {})
-          mapping = receipt.get("mapping", {})
+          durable = receipt.get("schema_version") == "wow.v17.scout-handoff-run.v1"
+          advance_recon = (
+              {
+                  "completed_downstream_rows": receipt.get("model_evaluated", 0),
+                  "blocked_downstream_rows": receipt.get("handoff_blocked", 0),
+                  "response_reconciliation_pass": receipt.get("reconciliation_pass", False),
+              }
+              if durable else receipt.get("reconciliation", {})
+          )
+          mapping = (receipt.get("enqueue_receipt") or {}).get("mapping", {}) if durable else receipt.get("mapping", {})
           scout_team_ids = sorted({r.get("scout_team_id") for lane in ("team_event_candidates", "prop_candidates") for r in h.get(lane, []) if r.get("scout_team_id")})
           lines = [
               "# WOW V17 Nightly Multi-Scout",
