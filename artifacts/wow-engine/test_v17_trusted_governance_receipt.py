@@ -172,6 +172,12 @@ def test_workflows_use_trusted_exact_head_artifact_not_pr_body_as_authority():
     assert 'id: workflow' in gate
     assert 'echo "name=$name" >> "$GITHUB_OUTPUT"' in gate
     assert '--workflow-name "$WORKFLOW_NAME"' in gate
+    identity_step = gate.split("- name: Verify trusted workflow identity and completion", 1)[1].split(
+        "- name: Download and verify exact-head receipt", 1
+    )[0]
+    receipt_step = gate.split("- name: Download and verify exact-head receipt", 1)[1]
+    assert "WORKFLOW_NAME:" not in identity_step
+    assert "WORKFLOW_NAME: ${{ steps.workflow.outputs.name }}" in receipt_step
 
     assert "Verify trusted exact-head governance receipt" in morning_green
     assert '[ "$head_branch" != "main" ]' in morning_green
