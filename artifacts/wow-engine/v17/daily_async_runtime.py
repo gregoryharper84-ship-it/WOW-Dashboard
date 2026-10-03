@@ -50,6 +50,13 @@ def _int_env(name: str, default: int, *, minimum: int, maximum: int) -> int:
     return max(minimum, min(value, maximum))
 
 
+def _idle_wait_seconds(poll_seconds: int, failure_streak: int, max_backoff_seconds: int) -> float:
+    if failure_streak <= 0:
+        return float(poll_seconds)
+    exponent = min(int(failure_streak), 3)
+    return float(min(max_backoff_seconds, poll_seconds * (2 ** exponent)))
+
+
 def _submit(db: Any, req: AsyncDailySubmitRequest) -> str:
     payload = req.model_dump(mode="json", exclude={"idempotency_key"})
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
