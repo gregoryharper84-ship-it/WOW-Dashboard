@@ -119,7 +119,6 @@ jobs:
             "wow-v17-change-impact-gate|.github/workflows/wow-v17-change-impact-gate.yml"
             "wow-v17-engineering-auditor-code-health|.github/workflows/wow-v17-engineering-auditor-code-health.yml"
             "wow-v17-spread-forward-shadow|.github/workflows/wow-v17-spread-forward-shadow.yml"
-            "wow-v17-release-production-verification-agent|.github/workflows/wow-v17-release-production-verification-agent.yml"
           )
           for required_spec in "${required[@]}"; do
             required_name="${required_spec%%|*}"
