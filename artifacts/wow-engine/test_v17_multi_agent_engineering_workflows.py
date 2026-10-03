@@ -27,6 +27,7 @@ CODEX_ENGINEERING_SKILLS = (
 )
 
 CODEX_OPERATIONAL_SKILLS = (
+    ROOT / ".agents/skills/wow-engineering-auditor/SKILL.md",
     ROOT / ".agents/skills/wow-autonomous-product-qa-engineering-recovery/SKILL.md",
     ROOT / ".agents/skills/wow-frontier-intelligence-agent/SKILL.md",
     ROOT / ".agents/skills/wow-nightly-engineering-autopilot/SKILL.md",
