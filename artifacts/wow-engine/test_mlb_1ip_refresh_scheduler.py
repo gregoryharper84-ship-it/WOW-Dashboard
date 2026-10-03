@@ -22,7 +22,7 @@ def test_refresh_loop_runs_governed_pass_and_preserves_nonexecution(monkeypatch,
 
     async def exercise():
         with pytest.raises(asyncio.CancelledError):
-            await scheduler.run_refresh_loop(db_client_fn=lambda: "db-client", logger=logger, interval_seconds=300)
+            await scheduler.run_refresh_loop(db_client_fn=lambda: "db-client", logger=logger, interval_seconds=300, initial_delay_seconds=0)
 
     with caplog.at_level(logging.INFO):
         asyncio.run(exercise())
@@ -48,7 +48,7 @@ def test_refresh_loop_failure_is_nonfatal_until_cancel(monkeypatch, caplog):
 
     async def exercise():
         with pytest.raises(asyncio.CancelledError):
-            await scheduler.run_refresh_loop(db_client_fn=lambda: "db-client", logger=logger)
+            await scheduler.run_refresh_loop(db_client_fn=lambda: "db-client", logger=logger, initial_delay_seconds=0)
 
     with caplog.at_level(logging.ERROR):
         asyncio.run(exercise())
@@ -56,3 +56,33 @@ def test_refresh_loop_failure_is_nonfatal_until_cancel(monkeypatch, caplog):
     assert calls["n"] == 1
     assert "status=FAILED" in caplog.text
     assert "can_execute=false" in caplog.text
+
+
+def test_refresh_loop_staggers_first_database_access(monkeypatch):
+    calls = []
+    sleeps = []
+
+    def fake_run_once(*, client):
+        calls.append(client)
+        return {}
+
+    async def stop_on_initial_delay(seconds):
+        sleeps.append(seconds)
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(scheduler, "run_once", fake_run_once)
+    monkeypatch.setattr(scheduler.asyncio, "sleep", stop_on_initial_delay)
+    logger = logging.getLogger("test.mlb.1ip.startup-delay")
+
+    async def exercise():
+        with pytest.raises(asyncio.CancelledError):
+            await scheduler.run_refresh_loop(
+                db_client_fn=lambda: "db-client",
+                logger=logger,
+                interval_seconds=300,
+                initial_delay_seconds=30,
+            )
+
+    asyncio.run(exercise())
+    assert sleeps == [30.0]
+    assert calls == []
