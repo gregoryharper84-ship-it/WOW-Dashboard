@@ -342,6 +342,11 @@ async function persistCandidates(tx: any, runId: string, candidates: Row[]): Pro
         on conflict (candidate_id,snapshot_id) do update set
           link_status='LINKED', link_reason='DIRECT_CANDIDATE_MARKET_EVIDENCE', provider_entities=excluded.provider_entities,
           prediction_authority=false, can_execute=false, linked_at=now()
+        where wow_scout.candidate_source_links.link_status is distinct from excluded.link_status
+           or wow_scout.candidate_source_links.link_reason is distinct from excluded.link_reason
+           or wow_scout.candidate_source_links.provider_entities is distinct from excluded.provider_entities
+           or wow_scout.candidate_source_links.prediction_authority is distinct from excluded.prediction_authority
+           or wow_scout.candidate_source_links.can_execute is distinct from excluded.can_execute
       `;
       counts.candidateSourceLinks += evidences.length;
     }
