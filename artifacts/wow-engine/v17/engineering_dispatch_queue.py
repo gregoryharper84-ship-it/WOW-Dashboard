@@ -33,6 +33,11 @@ def _validate_manifest(manifest: dict[str, Any]) -> None:
                 raise ValueError(f"invalid severity for issue {number}")
             if int(entry.get("priority_rank") or 0) < 1:
                 raise ValueError(f"priority_rank must be >= 1 for issue {number}")
+            lane = str(entry.get("execution_lane") or "STANDARD").upper()
+            if lane not in {"RAPID", "STANDARD"}:
+                raise ValueError(f"invalid execution_lane for issue {number}: {lane}")
+            if str(entry.get("severity") or "").upper() == "P0" and lane != "RAPID":
+                raise ValueError(f"P0 issue {number} must use RAPID execution_lane")
             keys = entry.get("conflict_keys")
             if not isinstance(keys, list) or not [k for k in keys if str(k).strip()]:
                 raise ValueError(f"explicit conflict_keys required for issue {number}")
@@ -61,6 +66,7 @@ def build_queue(manifest: dict[str, Any], issues: list[dict[str, Any]]) -> dict[
                     "body": str(issue.get("body") or ""),
                     "severity": str(entry["severity"]).upper(),
                     "priority_rank": int(entry["priority_rank"]),
+                    "execution_lane": str(entry.get("execution_lane") or "STANDARD").upper(),
                     "state": "OPEN",
                     "work_stream": work_stream,
                     "conflict_keys": [str(k).strip().upper() for k in entry["conflict_keys"] if str(k).strip()],
@@ -71,11 +77,16 @@ def build_queue(manifest: dict[str, Any], issues: list[dict[str, Any]]) -> dict[
                 }
             )
 
+    rapid_p0_count = sum(
+        1 for record in records
+        if record["severity"] == "P0" and record["execution_lane"] == "RAPID"
+    )
     return {
         "schema_version": "1.0",
         "source": "GITHUB_ACTIVE_EXECUTION_BOARD",
         "records": records,
         "queue_depth": len(records),
+        "rapid_p0_count": rapid_p0_count,
         "can_execute": False,
         "terminal_authority": "V17_TERMINAL_REDUCER",
     }
