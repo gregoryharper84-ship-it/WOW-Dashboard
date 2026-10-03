@@ -45,3 +45,20 @@ def test_batch_enqueue_is_one_database_rpc_surface_not_per_candidate_http():
     assert "wow_enqueue_scout_handoff_job(" in sql
     assert "'candidate_jobs', v_total" in sql
     assert "'handoff_blocked', v_blocked" in sql
+
+
+def test_claim_reclaims_only_expired_processing_lease_and_records_recovery():
+    sql = _sql()
+    assert "j.current_state='SPECIALIST_PROCESSING'" in sql
+    assert "j.lease_expires_at is not null" in sql
+    assert "j.lease_expires_at <= now()" in sql
+    assert "SPECIALIST_LEASE_RECLAIMED" in sql
+    assert "previous_worker_id" in sql
+
+
+def test_database_revalidates_probability_and_red_team_envelopes():
+    sql = _sql()
+    assert "SCOUT_PROBABILITY_AUTHORITY_VIOLATION" in sql
+    assert "SCOUT_HANDOFF_RED_TEAM_RULE_UNVERIFIED" in sql
+    assert "SCOUT_HANDOFF_RED_TEAM_ENVELOPE_CONTRADICTORY" in sql
+    assert "SCOUT_HANDOFF_BLOCK_CODE_REQUIRED" in sql
