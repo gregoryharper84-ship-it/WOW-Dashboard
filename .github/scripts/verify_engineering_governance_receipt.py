@@ -33,9 +33,15 @@ def verify_receipt(
     expected_head_sha: str,
     expected_head_ref: str,
     expected_workflow_run_id: str | None = None,
+    expected_workflow_name: str | None = None,
 ) -> None:
     _require(receipt.get("receipt_schema_version") == 1, "receipt schema version is not supported")
     _require(receipt.get("workflow_name") in ALLOWED_WORKFLOW_NAMES, "receipt workflow identity mismatch")
+    if expected_workflow_name is not None:
+        _require(
+            receipt.get("workflow_name") == expected_workflow_name,
+            "receipt workflow name does not match producing workflow",
+        )
     _require(receipt.get("repository") == expected_repository, "receipt repository mismatch")
     if expected_workflow_run_id is not None:
         _require(
@@ -88,6 +94,7 @@ def main() -> int:
     parser.add_argument("--head-sha", required=True)
     parser.add_argument("--head-ref", required=True)
     parser.add_argument("--workflow-run-id")
+    parser.add_argument("--workflow-name")
     args = parser.parse_args()
 
     receipt = json.loads(Path(args.receipt).read_text(encoding="utf-8"))
@@ -98,6 +105,7 @@ def main() -> int:
             expected_head_sha=args.head_sha,
             expected_head_ref=args.head_ref,
             expected_workflow_run_id=args.workflow_run_id,
+            expected_workflow_name=args.workflow_name,
         )
     except GovernanceReceiptError as exc:
         print(json.dumps({"status": "BLOCKED", "reason": str(exc)}, sort_keys=True))
