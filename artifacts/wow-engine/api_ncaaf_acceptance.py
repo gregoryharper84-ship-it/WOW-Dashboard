@@ -94,7 +94,13 @@ def _spread_forward_warm_error_code(exc: Exception) -> str:
 def _spread_forward_warm_failure_is_transient(exc: Exception) -> bool:
     return (
         type(exc).__name__ == "ReadTimeout"
-        or _spread_forward_warm_error_code(exc) == "PGRST002"
+        or _spread_forward_warm_error_code(exc) in {
+            "PGRST002",
+            "SPREAD_FORWARD_SERVING_CACHE_BUILD_PENDING",
+            "SPREAD_FORWARD_SERVING_CACHE_BUILD_IN_PROGRESS",
+            "SPREAD_FORWARD_SERVING_CACHE_REDIS_UNAVAILABLE",
+            "SPREAD_FORWARD_SERVING_CACHE_SOURCE_RETRYABLE",
+        }
     )
 
 
@@ -102,7 +108,7 @@ _set_spread_forward_warm_state(
     "PENDING",
     "SPREAD_FORWARD_CONTEXT_WARM_PENDING",
     attempt=0,
-    max_attempts=3,
+    max_attempts=5,
 )
 _original_market_score_prop = base.market_api.score_prop
 V17_ACTIVE = os.getenv("WOW_V17_ACTIVE", "0") == "1"
@@ -418,7 +424,7 @@ def get_ncaaf_spread_forward_warm_status():
                 "PENDING",
                 "SPREAD_FORWARD_CONTEXT_WARM_PENDING",
                 attempt=0,
-                max_attempts=3,
+                max_attempts=5,
             ),
         )
     )
@@ -431,8 +437,21 @@ async def _warm_ncaaf_spread_forward_context_after_startup() -> None:
     except ValueError:
         startup_delay_seconds = 60
     startup_delay_seconds = max(0, min(startup_delay_seconds, 300))
-    retry_delays = (0.0, 15.0, 30.0)
+    retry_delays = (0.0, 15.0, 30.0, 45.0, 45.0)
     max_attempts = len(retry_delays)
+
+    if os.getenv("WOW_NCAAF_SPREAD_FORWARD_SERVING_CACHE_REQUIRED", "0").strip().lower() in {"1", "true", "yes", "on"}:
+        try:
+            from v17.spread_forward_serving_cache import dispatch_build
+            dispatch_build()
+            _spread_forward_logger.warning(
+                "WOW_NCAAF_SPREAD_FORWARD_CACHE_BUILD status=DISPATCHED can_execute=false"
+            )
+        except Exception as exc:  # noqa: BLE001
+            _spread_forward_logger.error(
+                "WOW_NCAAF_SPREAD_FORWARD_CACHE_BUILD status=DISPATCH_FAILED error_type=%s can_execute=false",
+                type(exc).__name__,
+            )
 
     _set_spread_forward_warm_state(
         "DELAYED" if startup_delay_seconds else "PENDING",

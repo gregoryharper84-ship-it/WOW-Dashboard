@@ -48,6 +48,10 @@ services:
         value: "1"
       - key: WOW_V17_ACTIVE
         value: "1"
+      - key: WOW_NCAAF_SPREAD_FORWARD_SERVING_CACHE_REQUIRED
+        # Heavy NCAAF spread fitting runs on wow-agent-worker. The free web
+        # process may only load a fingerprint-validated persistent serving cache.
+        value: "1"
       - key: WOW_INTERACTIVE_PROP_HYDRATION_WORKERS
         # The production web service is limited to 512 MiB. Keep interactive
         # evidence hydration serial so nested request-local pools cannot multiply
