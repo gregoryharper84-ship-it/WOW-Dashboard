@@ -223,7 +223,6 @@ jobs:
         if: steps.route.outputs.action == 'DISPATCH' && steps.route.outputs.provider == 'openai'
         env:
           GH_TOKEN: ${{ github.token }}
-        env:
           TARGET_INCIDENT: ${{ steps.route.outputs.target_incident }}
           LEASE_GROUP: ${{ steps.route.outputs.lease_group }}
         run: |
