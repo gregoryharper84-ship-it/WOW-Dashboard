@@ -471,7 +471,17 @@ async def schedule_v17_synthetic_self_acceptance():
         return
 
     async def _run_after_startup():
-        await asyncio.sleep(5.0)
+        try:
+            delay_seconds = int(os.getenv("WOW_V17_SYNTHETIC_ACCEPTANCE_DELAY_SECONDS", "240"))
+        except ValueError:
+            delay_seconds = 240
+        delay_seconds = max(0, min(delay_seconds, 600))
+        if delay_seconds:
+            _v17_logger.warning(
+                "WOW_V17_SYNTHETIC_ACCEPTANCE status=DELAYED seconds=%s can_execute=false",
+                delay_seconds,
+            )
+            await asyncio.sleep(float(delay_seconds))
         await run_v17_synthetic_self_acceptance(_v17_logger)
 
     task = asyncio.create_task(_run_after_startup())
