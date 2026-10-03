@@ -90,6 +90,7 @@ jobs:
 
           gh issue view "$incident" --repo "$GITHUB_REPOSITORY" --json number,title,body,state,url > ".governance-review-evidence/incident.json"
           gh pr diff "$pr_number" --repo "$GITHUB_REPOSITORY" > ".governance-review-evidence/candidate.diff"
+          [ -s ".governance-review-evidence/candidate.diff" ] || { echo "EXISTING_PR_EMPTY_CANDIDATE_DIFF" >&2; exit 1; }
           printf '%s\n' "$pr_json" > ".governance-review-evidence/pr.json"
           gh api --paginate "/repos/${GITHUB_REPOSITORY}/pulls/${pr_number}/files?per_page=100" --jq '.[].filename' > ".governance-review-evidence/files.txt"
           while IFS= read -r changed_path; do
@@ -106,6 +107,7 @@ jobs:
           echo "head_sha=$head_sha" >> "$GITHUB_OUTPUT"
           echo "head_ref=$head_ref" >> "$GITHUB_OUTPUT"
           echo "draft=$draft" >> "$GITHUB_OUTPUT"
+          echo "candidate_changed=true" >> "$GITHUB_OUTPUT"
 
       - name: Verify exact-head deterministic CI
         id: regression
@@ -228,8 +230,9 @@ jobs:
             Audit whether the existing candidate is the smallest complete implementation of the
             confirmed triage packet, includes appropriate regression protection, and preserves
             exact typed failures, one-specialist ownership, can_execute=false and terminal authority.
-            Return changed=true only if the diff contains substantive implementation/test changes.
-          output_schema: '{"type":"object","properties":{"decision":{"type":"string","enum":["PASS","REJECT"]},"changed":{"type":"boolean"},"incident_id":{"type":"string"},"summary":{"type":"string"},"findings":{"type":"array","items":{"type":"string"}}},"required":["decision","changed","incident_id","summary","findings"],"additionalProperties":false}'
+            The candidate-change fact is determined deterministically by the workflow. Return only whether
+            the existing candidate passes or fails the engineering audit; do not report whether you changed files.
+          output_schema: '{"type":"object","properties":{"decision":{"type":"string","enum":["PASS","REJECT"]},"incident_id":{"type":"string"},"summary":{"type":"string"},"findings":{"type":"array","items":{"type":"string"}}},"required":["decision","incident_id","summary","findings"],"additionalProperties":false}'
 
       - name: Persist Engineering audit
         id: engineering
@@ -241,12 +244,11 @@ jobs:
           set -euo pipefail
           printf '%s\n' "$RESULT" > ".governance-review-evidence/engineering.json"
           echo "decision=$(jq -r '.decision' <<<"$RESULT")" >> "$GITHUB_OUTPUT"
-          echo "changed=$(jq -r '.changed' <<<"$RESULT")" >> "$GITHUB_OUTPUT"
           echo "incident=$(jq -r '.incident_id' <<<"$RESULT")" >> "$GITHUB_OUTPUT"
 
       - name: Independent Review agent
         id: review_agent
-        if: steps.engineering.outputs.decision == 'PASS' && steps.engineering.outputs.changed == 'true'
+        if: steps.engineering.outputs.decision == 'PASS' && steps.target.outputs.candidate_changed == 'true'
         uses: ./.github/actions/wow-claude-agent
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -262,7 +264,7 @@ jobs:
 
       - name: Persist Independent Review
         id: review
-        if: steps.engineering.outputs.decision == 'PASS' && steps.engineering.outputs.changed == 'true'
+        if: steps.engineering.outputs.decision == 'PASS' && steps.target.outputs.candidate_changed == 'true'
         shell: bash
         env:
           RESULT: ${{ steps.review_agent.outputs.structured_output }}
@@ -346,7 +348,7 @@ jobs:
           TRIAGE_REPAIRABLE: ${{ steps.triage.outputs.repairable }}
           TRIAGE_INCIDENT: ${{ steps.triage.outputs.incident }}
           ENGINEERING_DECISION: ${{ steps.engineering.outputs.decision }}
-          ENGINEERING_CHANGED: ${{ steps.engineering.outputs.changed }}
+          ENGINEERING_CHANGED: ${{ steps.target.outputs.candidate_changed }}
           ENGINEERING_INCIDENT: ${{ steps.engineering.outputs.incident }}
           REVIEW_DECISION: ${{ steps.review.outputs.decision }}
           ARCHITECT_DECISION: ${{ steps.architect.outputs.decision }}
