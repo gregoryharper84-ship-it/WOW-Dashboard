@@ -466,6 +466,7 @@ jobs:
           risk=$(jq -r '.risk_class' <<<"$RESULT")
           incident=$(jq -r '.incident_id' <<<"$RESULT")
           branch=""
+          head_sha=""
           rm -f artifacts/wow-engine/v17/.agent-handoff/lead.json \
             artifacts/wow-engine/v17/.agent-handoff/triage.json \
             artifacts/wow-engine/v17/.agent-handoff/specialist.json \
@@ -480,11 +481,13 @@ jobs:
             git commit -m "Claude Engineering: ${incident:-fallback-repair}"
             git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
             git push --set-upstream origin "$branch"
+            head_sha=$(git rev-parse HEAD)
           fi
           echo "changed=$changed" >> "$GITHUB_OUTPUT"
           echo "risk=$risk" >> "$GITHUB_OUTPUT"
           echo "incident=$incident" >> "$GITHUB_OUTPUT"
           echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          echo "head_sha=$head_sha" >> "$GITHUB_OUTPUT"
 
       - name: Checkout implementation branch
         if: steps.impl.outputs.changed == 'true'
@@ -583,6 +586,104 @@ jobs:
         env:
           RESULT: ${{ steps.qa_agent.outputs.structured_output }}
         run: echo "decision=$(jq -r '.decision' <<<"$RESULT")" >> "$GITHUB_OUTPUT"
+
+
+      - name: Write exact-head governance receipt
+        if: steps.impl.outputs.changed == 'true'
+        shell: bash
+        env:
+          IMPLEMENTATION_BRANCH: ${{ steps.impl.outputs.branch }}
+          IMPLEMENTATION_HEAD_SHA: ${{ steps.impl.outputs.head_sha }}
+          INCIDENT: ${{ steps.impl.outputs.incident }}
+          RISK: ${{ steps.impl.outputs.risk }}
+          LEAD_ACTION: ${{ steps.lead.outputs.action }}
+          TRIAGE_REPAIRABLE: ${{ steps.triage.outputs.repairable }}
+          TRIAGE_INCIDENT: ${{ steps.triage.outputs.incident }}
+          SPECIALIST: ${{ steps.specialist.outputs.subagent }}
+          REVIEW_DECISION: ${{ steps.review.outputs.decision }}
+          ARCHITECT_DECISION: ${{ steps.architect.outputs.decision }}
+          REGRESSION_STATUS: ${{ steps.regression.outputs.status }}
+          QA_DECISION: ${{ steps.qa.outputs.decision }}
+        run: |
+          set -euo pipefail
+          governance_complete=false
+          if [ -n "${IMPLEMENTATION_HEAD_SHA:-}" ] &&
+             [ -n "${IMPLEMENTATION_BRANCH:-}" ] &&
+             [ -n "${INCIDENT:-}" ] &&
+             [ "${LEAD_ACTION:-}" = "REPAIR" ] &&
+             [ "${TRIAGE_REPAIRABLE:-}" = "true" ] &&
+             [ "${TRIAGE_INCIDENT:-}" = "${INCIDENT:-}" ] &&
+             [ "${REVIEW_DECISION:-}" = "PASS" ] &&
+             { [ "${ARCHITECT_DECISION:-}" = "PASS" ] || [ "${ARCHITECT_DECISION:-}" = "NOT_APPLICABLE" ]; } &&
+             [ "${REGRESSION_STATUS:-}" = "0" ] &&
+             [ "${QA_DECISION:-}" = "PASS" ]; then
+            governance_complete=true
+          fi
+
+          receipt="$RUNNER_TEMP/wow-engineering-governance-receipt.json"
+          jq -n \
+            --arg schema_version "1" \
+            --arg workflow_name "wow-v17-claude-engineering-worker" \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg workflow_run_id "$GITHUB_RUN_ID" \
+            --arg workflow_run_attempt "$GITHUB_RUN_ATTEMPT" \
+            --arg utc "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg branch "${IMPLEMENTATION_BRANCH:-}" \
+            --arg head_sha "${IMPLEMENTATION_HEAD_SHA:-}" \
+            --arg incident "${INCIDENT:-}" \
+            --arg risk "${RISK:-}" \
+            --arg lead_action "${LEAD_ACTION:-NOT_RUN}" \
+            --arg triage_repairable "${TRIAGE_REPAIRABLE:-false}" \
+            --arg triage_incident "${TRIAGE_INCIDENT:-}" \
+            --arg specialist "${SPECIALIST:-NOT_RUN}" \
+            --arg review "${REVIEW_DECISION:-NOT_RUN}" \
+            --arg architect "${ARCHITECT_DECISION:-NOT_RUN}" \
+            --arg regression "${REGRESSION_STATUS:-NOT_RUN}" \
+            --arg qa "${QA_DECISION:-NOT_RUN}" \
+            --argjson governance_complete "$governance_complete" \
+            '{
+              receipt_schema_version: ($schema_version | tonumber),
+              workflow_name: $workflow_name,
+              repository: $repository,
+              workflow_run_id: $workflow_run_id,
+              workflow_run_attempt: $workflow_run_attempt,
+              created_at_utc: $utc,
+              implementation: {
+                changed: true,
+                branch: $branch,
+                head_sha: $head_sha,
+                incident_id: $incident,
+                risk_class: $risk
+              },
+              handoff: {
+                lead_dispatch: {decision: $lead_action},
+                triage: {
+                  repairable: ($triage_repairable == "true"),
+                  incident_id: $triage_incident
+                },
+                specialist: {name: $specialist},
+                engineering: {changed: true, incident_id: $incident},
+                independent_review: {decision: $review},
+                system_architect: {decision: $architect},
+                deterministic_regression: {status: $regression},
+                qa: {decision: $qa}
+              },
+              governance_complete: $governance_complete,
+              terminal_authority: "V17_TERMINAL_REDUCER",
+              can_execute: false
+            }' > "$receipt"
+          sha256sum "$receipt" | awk '{print $1}' > "$RUNNER_TEMP/wow-engineering-governance-receipt.sha256"
+
+      - name: Upload exact-head governance receipt
+        if: steps.impl.outputs.changed == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: wow-v17-engineering-governance-${{ steps.impl.outputs.head_sha }}
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            ${{ runner.temp }}/wow-engineering-governance-receipt.json
+            ${{ runner.temp }}/wow-engineering-governance-receipt.sha256
 
       - name: Open governed engineering PR
         if: steps.impl.outputs.changed == 'true'
