@@ -46,10 +46,9 @@ def test_candidate_source_link_replay_skips_unchanged_conflicts():
 
 def test_resume_does_not_force_replay_for_unrelated_main_sha():
     text = RESUME_WORKFLOW.read_text(encoding="utf-8")
-    fallback = text.split(
-        "# Merge/configuration SHAs commonly have no Multi-Scout run of their", 1
-    )[1].split("if [ -z \"$source_run_id\" ]; then", 1)[1].split("fi", 1)[0]
 
-    assert 'force_replay="true"' not in fallback
-    assert 'force_replay="false"' in fallback
-    assert "without forcing a duplicate replay" in text
+    # An unrelated main SHA may resolve to the newest recoverable Scout source,
+    # but recovery must never turn that fallback into an unconditional replay.
+    assert 'force_replay="true"' not in text
+    assert text.count('force_replay="false"') >= 2
+    assert "Missing receipts still enter the normal recovery" in text
