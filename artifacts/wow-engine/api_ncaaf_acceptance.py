@@ -380,7 +380,7 @@ async def _warm_ncaaf_spread_forward_context_after_startup() -> None:
                 len(retry_delays),
                 type(exc).__name__,
             )
-            if attempt < len(retry_delays):
+            if type(exc).__name__ == "ReadTimeout" and attempt < len(retry_delays):
                 continue
             return
         _spread_forward_logger.warning(
