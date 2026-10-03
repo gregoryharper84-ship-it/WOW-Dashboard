@@ -1,0 +1,2 @@
+[functions.wow-llp-action-gateway]
+verify_jwt = false
