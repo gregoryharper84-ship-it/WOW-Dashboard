@@ -249,7 +249,7 @@ def test_llp_supabase_gateway_covers_only_canonical_action_routes():
     }
     for route in canonical_routes:
         assert route.replace("/", "\\/") in source
-    assert r"^\\/v17\\/daily-snapshot-run\\/[^/]+\\/rows$" in source
+    assert r"^\/v17\/daily-snapshot-run\/[^/]+\/rows$" in source
     assert "LLP_GATEWAY_PATH_NOT_ALLOWED" in source
     assert "LLP_GATEWAY_METHOD_NOT_ALLOWED" in source
     assert "LLP_GATEWAY_AUTH_REQUIRED" in source
