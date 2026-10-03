@@ -27,6 +27,8 @@ TABLE = "wow_v17_daily_async_runs"
 _WORKER_STATE_KEY = "wow_v17_daily_async_worker_installed"
 _ROUTE_STATE_KEY = "wow_v17_daily_async_routes_installed"
 CAN_EXECUTE = False
+DEFAULT_IDLE_POLL_SECONDS = 30
+DEFAULT_DB_FAILURE_BACKOFF_MAX_SECONDS = 120
 
 
 class AsyncDailySubmitRequest(BaseModel):
@@ -190,9 +192,10 @@ async def _worker_loop(
     market_api: Any,
     event_api: Any,
 ) -> None:
-    poll_seconds = _int_env("WOW_V17_DAILY_ASYNC_POLL_SECONDS", 2, minimum=1, maximum=30)
+    poll_seconds = _int_env("WOW_V17_DAILY_ASYNC_POLL_SECONDS", DEFAULT_IDLE_POLL_SECONDS, minimum=5, maximum=300)
     lease_seconds = _int_env("WOW_V17_DAILY_ASYNC_LEASE_SECONDS", 900, minimum=60, maximum=3600)
     max_attempts = _int_env("WOW_V17_DAILY_ASYNC_MAX_ATTEMPTS", 3, minimum=1, maximum=10)
+    max_backoff_seconds = _int_env("WOW_V17_DAILY_ASYNC_DB_FAILURE_BACKOFF_MAX_SECONDS", DEFAULT_DB_FAILURE_BACKOFF_MAX_SECONDS, minimum=30, maximum=600)
     initial_delay_seconds = _int_env(
         "WOW_V17_DAILY_ASYNC_INITIAL_DELAY_SECONDS", 10, minimum=0, maximum=300
     )
@@ -205,21 +208,28 @@ async def _worker_loop(
         )
         await asyncio.sleep(float(initial_delay_seconds))
 
+    failure_streak = 0
     while True:
         claim: dict[str, Any] | None = None
         try:
             claim = await asyncio.to_thread(_claim_from_factory, db_client_fn, lease_seconds)
+            failure_streak = 0
         except asyncio.CancelledError:
             raise
         except Exception as exc:
+            failure_streak += 1
+            wait_seconds = _idle_wait_seconds(poll_seconds, failure_streak, max_backoff_seconds)
             LOGGER.warning(
-                "WOW_V17_DAILY_ASYNC_CLAIM_FAILED error=%s can_execute=false",
+                "WOW_V17_DAILY_ASYNC_CLAIM_FAILED error=%s failure_streak=%s backoff_seconds=%s can_execute=false",
                 type(exc).__name__,
+                failure_streak,
+                int(wait_seconds),
             )
 
         if claim is None:
+            wait_seconds = _idle_wait_seconds(poll_seconds, failure_streak, max_backoff_seconds)
             try:
-                await asyncio.wait_for(wake.wait(), timeout=float(poll_seconds))
+                await asyncio.wait_for(wake.wait(), timeout=wait_seconds)
                 wake.clear()
             except TimeoutError:
                 pass
