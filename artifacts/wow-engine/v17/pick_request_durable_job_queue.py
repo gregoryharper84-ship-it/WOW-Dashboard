@@ -31,7 +31,8 @@ JOB_TABLE = "wow_pick_request_jobs"
 WORKER_VERSION = "V17_PICK_REQUEST_DURABLE_JOB_V1"
 MAX_CONSECUTIVE_FAILURES = 5
 LEASE_SECONDS = 1800
-POLL_SECONDS = 2.0
+POLL_SECONDS = 10.0
+DB_FAILURE_BACKOFF_SECONDS = 30.0
 _STATE_KEY = "wow_pick_request_durable_job_queue_installed"
 
 _ORIGINAL_RUN_RESUMABLE = control.run_resumable
@@ -427,7 +428,7 @@ async def _worker_loop(
             raise
         except Exception:
             try:
-                await asyncio.wait_for(stop_event.wait(), timeout=5.0)
+                await asyncio.wait_for(stop_event.wait(), timeout=DB_FAILURE_BACKOFF_SECONDS)
             except asyncio.TimeoutError:
                 pass
 

@@ -48,6 +48,12 @@ services:
         value: "1"
       - key: WOW_V17_ACTIVE
         value: "1"
+      - key: WOW_V17_DAILY_ASYNC_POLL_SECONDS
+        # Submit wakes the worker immediately; idle polling need not hit PostgREST every 2s.
+        value: "30"
+      - key: WOW_V17_NFL_PICKEM_ASYNC_POLL_SECONDS
+        # Submit wakes the worker immediately; idle polling need not hit PostgREST every 2s.
+        value: "30"
       - key: WOW_INTERACTIVE_PROP_HYDRATION_WORKERS
         # The production web service is limited to 512 MiB. Keep interactive
         # evidence hydration serial so nested request-local pools cannot multiply
@@ -156,7 +162,8 @@ services:
       - key: WOW_ENGINEERING_AUDITOR_ENABLED
         value: "1"
       - key: WOW_ENGINEERING_AUDITOR_MAX_SLEEP_SECONDS
-        value: "30"
+        # The resident auditor remains 24/7 while avoiding 30-second DB reconciliation churn.
+        value: "300"
       - key: WOW_ENGINEERING_AUDITOR_GITHUB_INTERVAL_SECONDS
         value: "300"
       - key: WOW_ENGINEERING_LANGGRAPH_ENABLED
