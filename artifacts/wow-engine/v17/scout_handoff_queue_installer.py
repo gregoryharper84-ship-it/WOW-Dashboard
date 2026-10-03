@@ -79,7 +79,13 @@ def install_scout_handoff_routes(
         dependencies=dependencies,
         operation_id="submitWowV17ScoutHandoffRun",
     )
-    def submit_scout_handoff_run(plan: queue.ScoutHandoffPlan) -> dict[str, Any]:
+    def submit_scout_handoff_run(handoff: dict[str, Any]) -> dict[str, Any]:
+        # Never trust a caller-supplied RED_TEAM_PASSED plan. Rebuild the compact
+        # envelopes from the raw Scout evidence on the server so deterministic
+        # research hygiene and forbidden-probability checks are authoritative.
+        if handoff.get("governance", {}).get("can_execute") is not False:
+            raise ValueError("SCOUT_EXECUTION_GOVERNANCE_VIOLATION")
+        plan = queue.build_handoff_plan(handoff)
         if plan.can_execute is not False:
             raise ValueError("SCOUT_EXECUTION_GOVERNANCE_VIOLATION")
         return queue.enqueue_plan(db_client_fn(), plan)
