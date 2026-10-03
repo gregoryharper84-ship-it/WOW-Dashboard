@@ -447,9 +447,10 @@ jobs:
           EXPECTED_INCIDENT: ${{ steps.dispatch.outputs.restoration }}
           EXPECTED_EPOCH: ${{ steps.safety.outputs.lease_epoch }}
           EXPECTED_WORKER: ${{ steps.safety.outputs.worker_id }}
+          LEASE_GROUP: ${{ steps.dispatch.outputs.lease_group }}
         run: |
           set -euo pipefail
-          marker='<!-- WOW_DUAL_STREAM_HEARTBEAT -->'
+          marker="<!-- WOW_DUAL_STREAM_HEARTBEAT:${LEASE_GROUP:-GLOBAL} -->"
           comments=$(gh api "/repos/${GITHUB_REPOSITORY}/issues/1138/comments?per_page=100")
           body=$(jq -r --arg marker "$marker" '[.[] | select(.body | contains($marker))][0].body // ""' <<<"$comments")
           latest_epoch=$(sed -n 's/^- lease_epoch: \([0-9][0-9]*\)$/\1/p' <<<"$body" | head -1)
