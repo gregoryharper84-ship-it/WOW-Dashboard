@@ -567,7 +567,11 @@ def read_run_summary(db: Any, source_run_id: str, *, include_receipts: bool = Fa
     terminal = bool(rows) and all(bool(row.get("terminal")) for row in rows)
     evaluated = len(reached.get("MODEL_EVALUATED", set()))
     blocked = counts.get("HANDOFF_BLOCKED", 0)
-    accounted = evaluated + blocked
+    rows_in = len(rows)
+    rows_completed = evaluated
+    rows_rejected = blocked
+    rows_held = max(0, rows_in - rows_completed - rows_rejected)
+    accounted = rows_completed + rows_held + rows_rejected
     summary = {
         "schema_version": "wow.v17.scout-handoff-run.v1",
         "source_run_id": source_run_id,
@@ -582,11 +586,16 @@ def read_run_summary(db: Any, source_run_id: str, *, include_receipts: bool = Fa
         "model_evaluated": evaluated,
         "v17_qualified": len(reached.get("V17_QUALIFIED", set())),
         "handoff_blocked": blocked,
+        "rows_in": rows_in,
+        "rows_completed": rows_completed,
+        "rows_held": rows_held,
+        "rows_rejected": rows_rejected,
+        "row_accounting_pass": accounted == rows_in,
         "state_counts": counts,
         "lane_state_counts": lane_counts,
         "priority_state_counts": priority_counts,
-        "reconciliation_pass": terminal and accounted == len(rows),
-        "untracked_rows": max(0, len(rows) - accounted) if rows else None,
+        "reconciliation_pass": terminal and accounted == rows_in and rows_held == 0,
+        "untracked_rows": max(0, rows_in - accounted) if rows else None,
         "can_execute": False,
     }
     if include_receipts:
