@@ -56,7 +56,7 @@ def _enqueue(cur, *, source="run-1", candidate="cand-1", payload=None):
           %s,%s,%s,'WOW_PROP_LANE','HIGH','/score-pick-request',%s,%s::jsonb,null,null
         )).*;
         """,
-        (source, source, candidate, f"{source}:{candidate}", Jsonb(payload).dumps(payload)),
+        (source, source, candidate, f"{source}:{candidate}", Jsonb(payload)),
     )
     return cur.fetchone()
 
@@ -131,5 +131,5 @@ def test_batch_rejects_unverified_red_team_pass():
             with pytest.raises(psycopg.errors.RaiseException, match="SCOUT_HANDOFF_RED_TEAM_RULE_UNVERIFIED"):
                 cur.execute(
                     "select public.wow_enqueue_scout_handoff_batch(%s::jsonb)",
-                    (Jsonb(forged).dumps(forged),),
+                    (Jsonb(forged),),
                 )
