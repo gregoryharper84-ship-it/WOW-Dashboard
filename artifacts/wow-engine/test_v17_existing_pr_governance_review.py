@@ -182,6 +182,42 @@ def test_existing_pr_receipt_verifier_accepts_only_exact_certification():
         )
 
 
+
+def test_release_verifier_jq_selectors_compile_and_match():
+    jq = shutil.which("jq")
+    if jq is None:
+        pytest.skip("jq is required by the GitHub Actions runner contract")
+
+    workflow_selector = '[.[] | select(.name == $name and .path == $path)] | sort_by(.created_at) | reverse | first | "\(.status)|\(.conclusion // "")"'
+    workflow_payload = '[{"name":"wow-verify","path":".github/workflows/wow-verify.yml","created_at":"2026-10-03T16:00:00Z","status":"completed","conclusion":"success"}]'
+    workflow_proc = subprocess.run(
+        [jq, "-r", "--arg", "name", "wow-verify", "--arg", "path", ".github/workflows/wow-verify.yml", workflow_selector],
+        input=workflow_payload,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert workflow_proc.returncode == 0, workflow_proc.stderr
+    assert workflow_proc.stdout.strip() == "completed|success"
+
+    gate_selector = '[.[] | select(.name == "Trusted exact-head engineering governance")] | sort_by(.started_at // .created_at) | reverse | first | "\(.status)|\(.conclusion // "")"'
+    gate_payload = '[{"name":"Trusted exact-head engineering governance","started_at":"2026-10-03T16:00:00Z","status":"completed","conclusion":"success"}]'
+    gate_proc = subprocess.run(
+        [jq, "-r", gate_selector],
+        input=gate_payload,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert gate_proc.returncode == 0, gate_proc.stderr
+    assert gate_proc.stdout.strip() == "completed|success"
+
+    release = RELEASE.read_text(encoding="utf-8")
+    assert workflow_selector in release
+    assert gate_selector in release
+    assert r'\(.conclusion // \\"\\"' not in release
+
+
 def test_trusted_consumers_use_dedicated_existing_pr_verifier():
     gate = GATE.read_text(encoding="utf-8")
     morning = MORNING_GREEN.read_text(encoding="utf-8")
