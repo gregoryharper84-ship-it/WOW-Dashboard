@@ -405,8 +405,22 @@ async def schedule_ncaaf_spread_forward_context_warm() -> None:
 
 @app.on_event("startup")
 async def log_ncaaf_startup_readiness():
-    """Schedule non-secret readiness evidence without delaying port binding."""
-    task = asyncio.create_task(_run_ncaaf_startup_readiness_audit())
+    """Schedule non-secret readiness evidence after critical startup work."""
+    async def _delayed_readiness() -> None:
+        try:
+            delay_seconds = int(os.getenv("WOW_NCAAF_READINESS_STARTUP_DELAY_SECONDS", "180"))
+        except ValueError:
+            delay_seconds = 180
+        delay_seconds = max(0, min(delay_seconds, 600))
+        if delay_seconds:
+            _logger.warning(
+                "WOW_NCAAF_READINESS assessment=DELAYED seconds=%s probability_publishable=false can_execute=false",
+                delay_seconds,
+            )
+            await asyncio.sleep(float(delay_seconds))
+        await _run_ncaaf_startup_readiness_audit()
+
+    task = asyncio.create_task(_delayed_readiness())
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)
 
@@ -457,7 +471,17 @@ async def schedule_v17_synthetic_self_acceptance():
         return
 
     async def _run_after_startup():
-        await asyncio.sleep(5.0)
+        try:
+            delay_seconds = int(os.getenv("WOW_V17_SYNTHETIC_ACCEPTANCE_DELAY_SECONDS", "240"))
+        except ValueError:
+            delay_seconds = 240
+        delay_seconds = max(0, min(delay_seconds, 600))
+        if delay_seconds:
+            _v17_logger.warning(
+                "WOW_V17_SYNTHETIC_ACCEPTANCE status=DELAYED seconds=%s can_execute=false",
+                delay_seconds,
+            )
+            await asyncio.sleep(float(delay_seconds))
         await run_v17_synthetic_self_acceptance(_v17_logger)
 
     task = asyncio.create_task(_run_after_startup())

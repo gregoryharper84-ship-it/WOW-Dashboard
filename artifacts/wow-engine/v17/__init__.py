@@ -117,7 +117,17 @@ def _defer_mlb_event_bridge_install(*, market_api, team_runtime) -> bool:
 
         if installed and os.getenv("WOW_V17_MLB_BRIDGE_SELF_ACCEPTANCE", "0") == "1":
             async def _run_after_startup():
-                await asyncio.sleep(5.0)
+                try:
+                    delay_seconds = int(os.getenv("WOW_V17_MLB_BRIDGE_SELF_ACCEPTANCE_DELAY_SECONDS", "210"))
+                except ValueError:
+                    delay_seconds = 210
+                delay_seconds = max(0, min(delay_seconds, 600))
+                if delay_seconds:
+                    _MLB_BRIDGE_ACCEPTANCE_LOGGER.warning(
+                        "WOW_V17_MLB_EVENT_BRIDGE_SELF_ACCEPTANCE status=DELAYED seconds=%s can_execute=false",
+                        delay_seconds,
+                    )
+                    await asyncio.sleep(float(delay_seconds))
                 from v17_mlb_bridge_self_acceptance import run_mlb_event_bridge_self_acceptance
                 await run_mlb_event_bridge_self_acceptance(
                     _MLB_BRIDGE_ACCEPTANCE_LOGGER,

@@ -192,7 +192,18 @@ def install_rundown_market_startup_bootstrap(
     @app.on_event("startup")
     async def _run_rundown_market_bootstrap_after_startup():
         async def _run_bootstrap_task():
-            await asyncio.sleep(5.0)
+            try:
+                delay_seconds = int(os.getenv("WOW_RUNDOWN_MARKET_BOOTSTRAP_INITIAL_DELAY_SECONDS", "240"))
+            except ValueError:
+                delay_seconds = 240
+            delay_seconds = max(0, min(delay_seconds, 600))
+            if delay_seconds:
+                LOGGER.info(
+                    "RUNDOWN_MARKET_BOOTSTRAP=DELAYED mode=%s seconds=%s can_execute=false",
+                    mode,
+                    delay_seconds,
+                )
+                await asyncio.sleep(float(delay_seconds))
             try:
                 result = await asyncio.to_thread(lambda: run_bootstrap(db_client_fn()))
             except Exception as exc:  # noqa: BLE001 - bootstrap must never break service liveness

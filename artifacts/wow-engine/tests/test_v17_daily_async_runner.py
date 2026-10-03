@@ -155,3 +155,12 @@ def test_worker_staggers_first_database_claim_after_startup(monkeypatch):
 
     asyncio.run(exercise())
     assert sleeps == [10.0]
+
+
+def test_idle_worker_uses_slow_poll_and_bounded_db_failure_backoff():
+    assert daily_async_runtime.DEFAULT_IDLE_POLL_SECONDS == 30
+    assert daily_async_runtime.DEFAULT_DB_FAILURE_BACKOFF_MAX_SECONDS == 120
+    assert daily_async_runtime._idle_wait_seconds(30, 0, 120) == 30.0
+    assert daily_async_runtime._idle_wait_seconds(30, 1, 120) == 60.0
+    assert daily_async_runtime._idle_wait_seconds(30, 2, 120) == 120.0
+    assert daily_async_runtime._idle_wait_seconds(30, 5, 120) == 120.0
