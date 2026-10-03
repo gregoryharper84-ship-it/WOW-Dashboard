@@ -119,7 +119,11 @@ def test_workflows_use_trusted_exact_head_artifact_not_pr_body_as_authority():
     assert 'artifact_name="wow-v17-engineering-governance-${PR_HEAD_SHA}"' in gate
     assert "verify_engineering_governance_receipt.py" in gate
     assert "GOVERNANCE_RECEIPT_CHECKSUM_MISMATCH" in gate
+    assert '[ "$head_branch" = "main" ]' in gate
+    assert '[ "$head_repo" = "$GITHUB_REPOSITORY" ]' in gate
 
     assert "Verify trusted exact-head governance receipt" in morning_green
+    assert '[ "$head_branch" != "main" ]' in morning_green
+    assert '[ "$head_repo" != "$GITHUB_REPOSITORY" ]' in morning_green
     assert "steps.governance.outputs.approved == 'true'" in morning_green
     assert "GOVERNANCE_REWORK" in morning_green
