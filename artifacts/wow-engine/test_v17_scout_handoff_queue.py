@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi import HTTPException
 
-from v17.scout_handoff_queue import build_handoff_plan, process_claimed_job
+from v17.scout_handoff_queue import build_handoff_plan, process_claimed_job, read_run_summary
 
 
 def _handoff():
@@ -284,3 +284,56 @@ def test_repeat_safe_prop_transient_failure_dead_letters_after_retry_budget_exha
     assert params["p_error_detail"]["original_error_code"] == "PROVIDER_UNAVAILABLE"
     assert params["p_error_detail"]["retry_budget"] == 3
     assert params["p_error_detail"]["attempt_count"] == 3
+
+
+class _TableQuery:
+    def __init__(self, rows):
+        self.rows = rows
+
+    def select(self, *args, **kwargs):
+        return self
+
+    def eq(self, key, value):
+        self.rows = [row for row in self.rows if row.get(key) == value]
+        return self
+
+    def order(self, *args, **kwargs):
+        return self
+
+    def execute(self):
+        return _Response(self.rows)
+
+
+class _SummaryDB:
+    def __init__(self, jobs, events):
+        self.jobs = jobs
+        self.events = events
+
+    def table(self, name):
+        if name == "wow_scout_handoff_jobs":
+            return _TableQuery([dict(row) for row in self.jobs])
+        if name == "wow_scout_handoff_state_events":
+            return _TableQuery([dict(row) for row in self.events])
+        raise AssertionError(name)
+
+
+def test_run_summary_has_exact_rows_in_completed_held_rejected_identity():
+    jobs = [
+        {"candidate_id": "a", "source_run_id": "r", "research_run_id": "rr", "target_lane": "WOW_PROP_LANE", "research_priority": "HIGH", "current_state": "V17_QUALIFIED", "terminal": True},
+        {"candidate_id": "b", "source_run_id": "r", "research_run_id": "rr", "target_lane": "LLP_TEAM_BETTING_ENGINE", "research_priority": "MEDIUM", "current_state": "HANDOFF_BLOCKED", "terminal": True},
+    ]
+    events = [
+        {"candidate_id": "a", "target_lane": "WOW_PROP_LANE", "state": "DISCOVERED", "code": "SCOUT_CANDIDATE_DISCOVERED"},
+        {"candidate_id": "a", "target_lane": "WOW_PROP_LANE", "state": "MODEL_EVALUATED", "code": "SPECIALIST_MODEL_EVALUATED"},
+        {"candidate_id": "a", "target_lane": "WOW_PROP_LANE", "state": "V17_QUALIFIED", "code": "V17_GOVERNED_ADMISSION_PROVEN"},
+        {"candidate_id": "b", "target_lane": "LLP_TEAM_BETTING_ENGINE", "state": "DISCOVERED", "code": "SCOUT_CANDIDATE_DISCOVERED"},
+        {"candidate_id": "b", "target_lane": "LLP_TEAM_BETTING_ENGINE", "state": "HANDOFF_BLOCKED", "code": "TEAM_EVENT_IDENTITY_INCOMPLETE"},
+    ]
+    summary = read_run_summary(_SummaryDB(jobs, events), "r")
+    assert summary["rows_in"] == 2
+    assert summary["rows_completed"] == 1
+    assert summary["rows_held"] == 0
+    assert summary["rows_rejected"] == 1
+    assert summary["row_accounting_pass"] is True
+    assert summary["reconciliation_pass"] is True
+    assert summary["can_execute"] is False
