@@ -142,6 +142,10 @@ def test_root_llp_authority_block_cannot_drift_from_spread_action_contract():
     authority_block = blocks[1]
     assert len(authority_block) <= 8000
     assert "scoreLlpV17SpreadForwardShadow" in authority_block
+    assert "ACTION_TRANSPORT_* is valid only when an Action tool call actually occurred this turn and failed." in authority_block
+    assert "If no Action call occurred, report NOT_INVOKED; never invent transport failure." in authority_block
+    assert "BEFORE any further web search or prose" in authority_block
+    assert "Never claim it ran unless the Action tool call occurred." in authority_block
     assert "POINT_SPREAD" in authority_block
     assert "POINT-SPREAD LANE" in authority_block
     assert "p_cover, p_push, p_not_cover" in authority_block
