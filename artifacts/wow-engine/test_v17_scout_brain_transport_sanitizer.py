@@ -16,7 +16,15 @@ def _handoff():
                     "can_execute": False,
                     "official_event_id": "evt-1",
                     "route": "LLP_TEAM_BETTING_ENGINE",
-                    "market_evidence": [{"bookmaker": "active", "price": -110}],
+                    "market_evidence": [{
+                        "bookmaker": "active",
+                        "price": -110,
+                        "freshness_state": "FRESH",
+                        "research_usable": True,
+                        "current_market_evidence": True,
+                        "prediction_authority": False,
+                        "can_execute": False,
+                    }],
                     "market_evidence_historical": [{"bookmaker": "old-1"}, {"bookmaker": "old-2"}],
                     "market_evidence_stale": [{"bookmaker": "stale"}],
                     "market_evidence_summary": {"active_rows": 1, "historical_rows": 2, "stale_rows": 1},
@@ -27,7 +35,15 @@ def _handoff():
                     "can_execute": False,
                     "official_event_id": "prop-1",
                     "route": "WOW_PROP_LANE",
-                    "market_evidence": {"bookmaker": "active-prop", "price": -105},
+                    "market_evidence": {
+                        "bookmaker": "active-prop",
+                        "price": -105,
+                        "freshness_state": "AGING",
+                        "research_usable": True,
+                        "current_market_evidence": True,
+                        "prediction_authority": False,
+                        "can_execute": False,
+                    },
                     "market_evidence_historical": [{"bookmaker": "old-prop"}],
                 }
             ],
@@ -53,6 +69,7 @@ def test_transport_sanitizer_removes_only_diagnostic_arrays():
         "market_evidence_historical": 3,
         "market_evidence_stale": 1,
         "candidates": 2,
+        "active_market_evidence": 2,
     }
     assert body["can_execute"] is False
     assert team["can_execute"] is False
@@ -84,4 +101,24 @@ def test_transport_sanitizer_fails_closed_on_candidate_governance():
     body = _handoff()
     body["model_handoff"]["team_event_candidates"][0]["can_execute"] = True
     with pytest.raises(RuntimeError, match="SCOUT_HANDOFF_GOVERNANCE_INVALID"):
+        sanitizer.sanitize_handoff(body)
+
+
+def test_transport_sanitizer_fails_closed_when_stale_or_unclassified_evidence_is_active():
+    body = _handoff()
+    active = body["model_handoff"]["team_event_candidates"][0]["market_evidence"][0]
+    active.pop("freshness_state")
+
+    with pytest.raises(RuntimeError, match="SCOUT_ACTIVE_MARKET_EVIDENCE_FRESHNESS_INVALID"):
+        sanitizer.sanitize_handoff(body)
+
+
+def test_transport_sanitizer_rejects_explicit_stale_evidence_in_active_lane():
+    body = _handoff()
+    active = body["model_handoff"]["team_event_candidates"][0]["market_evidence"][0]
+    active["freshness_state"] = "STALE"
+    active["research_usable"] = False
+    active["current_market_evidence"] = False
+
+    with pytest.raises(RuntimeError, match="SCOUT_ACTIVE_MARKET_EVIDENCE_FRESHNESS_INVALID"):
         sanitizer.sanitize_handoff(body)
