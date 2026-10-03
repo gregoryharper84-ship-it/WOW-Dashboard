@@ -151,6 +151,102 @@ def _append_diagnostic_rows(candidate: dict[str, Any], field: str, rows: list[di
         candidate[field] = existing
 
 
+def _diagnostic_rows(candidate: dict[str, Any], field: str) -> list[dict[str, Any]]:
+    return [dict(row) for row in candidate.get(field, []) or [] if isinstance(row, dict) and row]
+
+
+def _freshness_normalized_row(row: dict[str, Any], *, now: datetime) -> dict[str, Any]:
+    out = dict(row)
+    capability = str(
+        out.get("source_capability")
+        or out.get("source_provider_detail")
+        or ""
+    ).lower()
+    historical = (
+        capability == "openers"
+        or out.get("freshness_state") == hardening.HISTORICAL
+    )
+    captured_at = (
+        out.get("market_last_update")
+        or out.get("bookmaker_last_update")
+        or out.get("captured_at")
+    )
+    freshness = hardening.classify_freshness(
+        captured_at,
+        now=now,
+        max_age_minutes=hardening.DEFAULT_MAX_AGE_MINUTES,
+        historical=historical,
+    )
+    out.update({
+        "captured_at": captured_at,
+        "freshness_state": freshness["state"],
+        "freshness_age_minutes": freshness["age_minutes"],
+        "freshness_max_age_minutes": freshness["max_age_minutes"],
+        "research_usable": freshness["research_usable"],
+        "current_market_evidence": freshness["current_market_evidence"],
+        "prediction_authority": False,
+        "can_execute": False,
+    })
+    return out
+
+
+def _quarantine_stale_existing_evidence(candidate: dict[str, Any], *, now: datetime) -> dict[str, int]:
+    """Reclassify pre-bridge evidence at consumption time.
+
+    Primary Scout discovery may already have populated market_evidence before
+    the snapshot bridge runs. Those rows must obey the same 15-minute freshness
+    contract as newly attached snapshot rows; otherwise stale line ladders remain
+    active indefinitely and are repeatedly persisted as current evidence.
+    """
+    active: list[dict[str, Any]] = []
+    stale: list[dict[str, Any]] = []
+    historical: list[dict[str, Any]] = []
+    for raw in _existing_rows(candidate):
+        row = _freshness_normalized_row(raw, now=now)
+        state = row.get("freshness_state")
+        if state in {hardening.FRESH, hardening.AGING}:
+            active.append(row)
+        elif state == hardening.HISTORICAL:
+            historical.append(row)
+        else:
+            stale.append(row)
+
+    # Preserve the established single-row prop evidence shape when the
+    # candidate entered this bridge with a mapping. Team/event evidence and
+    # multi-row prop evidence remain list-shaped. Quarantining a stale mapping
+    # still leaves an empty active collection.
+    evidence_was_dict = isinstance(candidate.get("market_evidence"), dict)
+    candidate["market_evidence"] = active[0] if evidence_was_dict and len(active) == 1 else active
+    _append_diagnostic_rows(candidate, "market_evidence_stale", stale)
+    _append_diagnostic_rows(candidate, "market_evidence_historical", historical)
+    if stale:
+        _add_blocker(candidate, "MARKET_EVIDENCE_STALE_AT_CONSUMPTION")
+    if historical and not active:
+        _add_blocker(candidate, "MARKET_EVIDENCE_HISTORICAL_ONLY")
+
+    if active:
+        blockers = list(candidate.get("market_evidence_source_blockers") or [])
+        candidate["market_evidence_status"] = "PARTIAL_SOURCE_BLOCKED" if blockers else "AVAILABLE"
+    elif stale or historical:
+        candidate["market_evidence_status"] = "STALE_OR_HISTORICAL_ONLY"
+
+    return {
+        "active": len(active),
+        "stale": len(stale),
+        "historical": len(historical),
+    }
+
+
+def _prop_identity_reference(candidate: dict[str, Any]) -> dict[str, Any] | None:
+    for rows in (
+        _existing_rows(candidate),
+        _diagnostic_rows(candidate, "market_evidence_stale"),
+        _diagnostic_rows(candidate, "market_evidence_historical"),
+    ):
+        if rows:
+            return rows[0]
+    return None
+
 def _add_blocker(candidate: dict[str, Any], blocker: str) -> None:
     blockers = [str(value) for value in candidate.get("market_evidence_source_blockers") or []]
     if blocker not in blockers:
@@ -162,10 +258,9 @@ def _attach_rows(candidate: dict[str, Any], rows: list[dict[str, Any]], *, lane:
     if lane == "team_event_candidates":
         eligible = [row for row in rows if not is_prop_market(str(row.get("market_key") or ""))]
     else:
-        existing = _existing_rows(candidate)
-        if not existing:
+        reference = _prop_identity_reference(candidate)
+        if reference is None:
             return {"attached": 0, "stale": 0, "historical": 0}
-        reference = existing[0]
         ref_market = str(reference.get("market_key") or "")
         ref_description = _norm(reference.get("description") or reference.get("outcome_name"))
         eligible = [
@@ -216,6 +311,12 @@ def _seed_prop_candidates(model: dict[str, Any], events: list[dict[str, Any]], *
     numeric line, supported MORE/LESS direction, and fresh/aging evidence.
     """
     props = [dict(row) for row in model.get("prop_candidates", []) or [] if isinstance(row, dict)]
+    # Existing primary prop candidates own their player/market identity even
+    # when their current evidence is stale. Snapshot rows should enrich that
+    # identity after quarantine, not seed sibling candidates that make the same
+    # event ambiguous. Keep this snapshot separate from props appended below so
+    # a zero-prop primary feed can still seed both Over and Under directions.
+    existing_prop_refs: list[tuple[dict[str, Any], dict[str, Any], float]] = []
     seen: set[tuple[str, str, str, float, str]] = set()
     for candidate in props:
         evidence = _existing_rows(candidate)
@@ -226,10 +327,11 @@ def _seed_prop_candidates(model: dict[str, Any], events: list[dict[str, Any]], *
             line = float(row.get("point"))
         except (TypeError, ValueError):
             continue
+        existing_prop_refs.append((candidate, row, line))
         seen.add((
             str(candidate.get("official_event_id") or ""),
             str(row.get("market_key") or ""),
-            _norm(row.get("description")),
+            _norm(row.get("description") or row.get("outcome_name")),
             line,
             str(row.get("outcome_name") or "").upper(),
         ))
@@ -258,6 +360,29 @@ def _seed_prop_candidates(model: dict[str, Any], events: list[dict[str, Any]], *
             if not event_id or not sport_key or _aware(start) is None or not home or not away:
                 rejected += 1
                 continue
+            # Do not create a second candidate for a prop identity already
+            # supplied by the primary discovery lane. Event IDs can differ by
+            # provider, so use the same governed event reconciliation rule as
+            # attachment, then match market, participant and exact line.
+            existing_identity = False
+            for existing_candidate, existing_evidence, existing_line in existing_prop_refs:
+                if not _same_event(
+                    existing_candidate,
+                    event,
+                    tolerance_minutes=MATCH_TOLERANCE_MINUTES,
+                ):
+                    continue
+                if str(existing_evidence.get("market_key") or "") != market_key:
+                    continue
+                if _norm(existing_evidence.get("description") or existing_evidence.get("outcome_name")) != _norm(participant):
+                    continue
+                if existing_line != float(point):
+                    continue
+                existing_identity = True
+                break
+            if existing_identity:
+                continue
+
             key = (event_id, market_key, _norm(participant), float(point), direction)
             if key in seen:
                 continue
@@ -329,6 +454,17 @@ def attach_snapshot_evidence(
     historical_rows = 0
     candidates_touched: set[tuple[str, int]] = set()
 
+    # Enforce the freshness contract on evidence already present before this
+    # bridge pass. This pre-pass is independent of whether a new snapshot event
+    # matches, so stale primary evidence can never survive merely because a
+    # secondary provider was unavailable.
+    for lane, idx, candidate in candidate_refs:
+        result = _quarantine_stale_existing_evidence(candidate, now=now)
+        stale_rows += result["stale"]
+        historical_rows += result["historical"]
+        if result["stale"] or result["historical"]:
+            candidates_touched.add((lane, idx))
+
     for event in events:
         matches = [
             (lane, idx, candidate)
@@ -349,6 +485,8 @@ def attach_snapshot_evidence(
         historical_rows += result["historical"]
         if result["attached"]:
             matched_events += 1
+            candidates_touched.add((lane, idx))
+        elif result["stale"] or result["historical"]:
             candidates_touched.add((lane, idx))
 
     for lane, rows in lanes.items():
