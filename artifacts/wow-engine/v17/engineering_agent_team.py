@@ -146,7 +146,7 @@ PARKED_WAIT_STATES = {
     "PLATFORM_LIMITATION",
 }
 USER_CRITICAL_JOURNEYS = ("ALL_SPORTS_PROPS", "ALL_SPORTS_ML_WINNERS", "ALL_SPORTS_UPSETS")
-MAX_ACTIVE_PRODUCT_RECOVERY = 1
+MAX_ACTIVE_PRODUCT_RECOVERY = 3
 MAX_ACTIVE_SUPPORTING_INVESTIGATION = 1
 
 REQUIRED_CLOSURE_FIELDS = {
@@ -445,7 +445,7 @@ def validate_closure_record(record: dict[str, Any]) -> list[str]:
 
 
 def closure_wip(records: list[dict[str, Any]]) -> dict[str, Any]:
-    """Hard WIP gate: one product recovery plus one supporting investigation."""
+    """Hard WIP gate: up to three conflict-arbitrated product recoveries plus one supporting investigation."""
     active = [r for r in records if is_actionable(r)]
     product = [r for r in active if str(r.get("severity") or "").upper() in {"P0", "P1"}]
     supporting = [r for r in active if r not in product]
@@ -595,7 +595,11 @@ def self_check() -> dict[str, Any]:
     assert select_support_subagent({"wait_state": "CI_PENDING"}).subagent == "CI_REPOSITORY_SUBAGENT"
     assert USER_CRITICAL_JOURNEYS == ("ALL_SPORTS_PROPS", "ALL_SPORTS_ML_WINNERS", "ALL_SPORTS_UPSETS")
     assert validate_capability_matrix({"NFL:ML": {d: True for d in CAPABILITY_DIMENSIONS}}) == []
-    assert closure_wip([{"severity": "P0", "state": "OPEN"}])["new_product_work_allowed"] is False
+    assert closure_wip([
+        {"severity": "P0", "state": "OPEN"},
+        {"severity": "P0", "state": "OPEN"},
+        {"severity": "P0", "state": "OPEN"},
+    ])["new_product_work_allowed"] is False
     return {
         "team_version": TEAM_VERSION,
         "agent_roles": sorted(AGENT_ROLES),

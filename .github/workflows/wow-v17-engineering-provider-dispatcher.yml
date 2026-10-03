@@ -1,4 +1,6 @@
 name: wow-v17-engineering-provider-dispatcher
+run-name: >-
+  WOW V17 provider source=${{ github.event.workflow_run.display_title || 'manual' }} lease=${{ inputs.lease_group || 'GLOBAL' }} incident=${{ inputs.target_incident || 'AUTO' }}
 
 on:
   workflow_run:
@@ -21,6 +23,14 @@ on:
         description: Optional dispatch reason.
         required: false
         default: MANUAL_ENGINEERING_DISPATCH
+      target_incident:
+        description: Optional exact incident selected by the domain-scoped P0 dispatcher.
+        required: false
+        default: ""
+      lease_group:
+        description: Domain-scoped implementation lease group.
+        required: false
+        default: GLOBAL
 
 permissions:
   actions: write
@@ -30,7 +40,7 @@ permissions:
   issues: read
 
 concurrency:
-  group: wow-v17-engineering-provider-dispatcher
+  group: wow-v17-engineering-provider-dispatcher-${{ inputs.lease_group || 'GLOBAL' }}
   cancel-in-progress: false
 
 jobs:
@@ -60,12 +70,29 @@ jobs:
           SOURCE_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
           FORCE_PROVIDER: ${{ inputs.force_provider }}
           MANUAL_REASON: ${{ inputs.reason }}
+          MANUAL_TARGET_INCIDENT: ${{ inputs.target_incident }}
+          MANUAL_LEASE_GROUP: ${{ inputs.lease_group }}
+          SOURCE_DISPLAY_TITLE: ${{ github.event.workflow_run.display_title }}
         run: |
           set -euo pipefail
           action=NO_ACTION
           provider=none
           reason=NO_ACTION
           parent_run="${SOURCE_RUN_ID:-$GITHUB_RUN_ID}"
+          target_incident="${MANUAL_TARGET_INCIDENT:-}"
+          lease_group="${MANUAL_LEASE_GROUP:-GLOBAL}"
+          if [ "$EVENT_NAME" = "workflow_run" ]; then
+            if [[ "${SOURCE_DISPLAY_TITLE:-}" =~ incident=([0-9]+) ]]; then
+              target_incident="${BASH_REMATCH[1]}"
+            fi
+            if [[ "${SOURCE_DISPLAY_TITLE:-}" =~ lease=([A-Za-z0-9_-]+) ]]; then
+              lease_group="${BASH_REMATCH[1]}"
+            fi
+          fi
+          if [ -n "$target_incident" ] && [ "$lease_group" = "GLOBAL" ]; then
+            echo "TARGET_INCIDENT_REQUIRES_DOMAIN_LEASE:$target_incident" >&2
+            exit 1
+          fi
           receipt="$RUNNER_TEMP/provider-route.json"
 
           classify_run() {
@@ -171,11 +198,15 @@ jobs:
             --arg provider "$provider" \
             --arg reason "$reason" \
             --arg parent_run_id "$parent_run" \
+            --arg target_incident "$target_incident" \
+            --arg lease_group "$lease_group" \
             '{
               action: $action,
               provider: $provider,
               reason: $reason,
               parent_run_id: $parent_run_id,
+              target_incident: $target_incident,
+              lease_group: $lease_group,
               can_execute: false,
               terminal_authority: "V17_TERMINAL_REDUCER"
             }' > "$receipt"
@@ -184,17 +215,23 @@ jobs:
           echo "provider=$provider" >> "$GITHUB_OUTPUT"
           echo "reason=$reason" >> "$GITHUB_OUTPUT"
           echo "parent_run_id=$parent_run" >> "$GITHUB_OUTPUT"
+          echo "target_incident=$target_incident" >> "$GITHUB_OUTPUT"
+          echo "lease_group=$lease_group" >> "$GITHUB_OUTPUT"
           echo "receipt=$receipt" >> "$GITHUB_OUTPUT"
 
       - name: Dispatch OpenAI primary worker
         if: steps.route.outputs.action == 'DISPATCH' && steps.route.outputs.provider == 'openai'
         env:
           GH_TOKEN: ${{ github.token }}
+          TARGET_INCIDENT: ${{ steps.route.outputs.target_incident }}
+          LEASE_GROUP: ${{ steps.route.outputs.lease_group }}
         run: |
           set -euo pipefail
           gh workflow run wow-v17-chatgpt-engineering-worker.yml \
             --repo "$GITHUB_REPOSITORY" \
-            --ref main
+            --ref main \
+            -f target_incident="$TARGET_INCIDENT" \
+            -f lease_group="$LEASE_GROUP"
 
       - name: Dispatch Anthropic fallback worker
         if: steps.route.outputs.action == 'DISPATCH' && steps.route.outputs.provider == 'anthropic'
@@ -202,13 +239,17 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           FALLBACK_REASON: ${{ steps.route.outputs.reason }}
           PARENT_RUN_ID: ${{ steps.route.outputs.parent_run_id }}
+          TARGET_INCIDENT: ${{ steps.route.outputs.target_incident }}
+          LEASE_GROUP: ${{ steps.route.outputs.lease_group }}
         run: |
           set -euo pipefail
           gh workflow run wow-v17-claude-engineering-worker.yml \
             --repo "$GITHUB_REPOSITORY" \
             --ref main \
             -f fallback_reason="$FALLBACK_REASON" \
-            -f parent_run_id="$PARENT_RUN_ID"
+            -f parent_run_id="$PARENT_RUN_ID" \
+            -f target_incident="$TARGET_INCIDENT" \
+            -f lease_group="$LEASE_GROUP"
 
       - name: Deterministic survival checks
         id: survival
@@ -261,6 +302,8 @@ jobs:
             echo "- selected_provider: ${{ steps.route.outputs.provider || 'UNKNOWN' }}"
             echo "- reason: ${{ steps.route.outputs.reason || 'UNKNOWN' }}"
             echo "- parent_run_id: ${{ steps.route.outputs.parent_run_id || 'NONE' }}"
+            echo "- target_incident: ${{ steps.route.outputs.target_incident || 'AUTO' }}"
+            echo "- lease_group: ${{ steps.route.outputs.lease_group || 'GLOBAL' }}"
             echo "- OpenAI primary: wow-v17-chatgpt-engineering-worker"
             echo "- Anthropic fallback: wow-v17-claude-engineering-worker"
             echo "- deterministic survival: ${{ steps.route.outputs.action == 'SURVIVAL' }}"

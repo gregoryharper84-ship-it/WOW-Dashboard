@@ -1,4 +1,6 @@
 name: wow-v17-claude-engineering-worker
+run-name: >-
+  wow-v17-claude-engineering-worker lease=${{ inputs.lease_group || 'GLOBAL' }} incident=${{ inputs.target_incident || 'AUTO' }}
 
 on:
   workflow_dispatch:
@@ -11,6 +13,14 @@ on:
         description: Primary/dispatcher workflow run that caused this fallback.
         required: false
         default: ""
+      target_incident:
+        description: Optional exact P0 incident selected by domain-scoped rapid dispatch.
+        required: false
+        default: ""
+      lease_group:
+        description: Domain-scoped implementation lease group.
+        required: false
+        default: GLOBAL
 
 permissions:
   actions: read
@@ -20,7 +30,7 @@ permissions:
   issues: write
 
 concurrency:
-  group: wow-v17-claude-engineering-worker
+  group: wow-v17-engineering-domain-${{ inputs.lease_group || 'GLOBAL' }}
   cancel-in-progress: false
 
 jobs:
@@ -58,6 +68,8 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          TARGET_INCIDENT: ${{ inputs.target_incident }}
+          REQUESTED_LEASE_GROUP: ${{ inputs.lease_group }}
         run: |
           set -euo pipefail
           mkdir -p artifacts/wow-engine/v17/.agent-handoff
@@ -72,8 +84,30 @@ jobs:
             --issues "$RUNNER_TEMP/wow-open-issues.json" \
             --output "$RUNNER_TEMP/wow-dispatch-queue.json" \
             > /dev/null
-          decision=$(python artifacts/wow-engine/v17/engineering_agent_team.py dual-priority \
-            --ledger "$RUNNER_TEMP/wow-dispatch-queue.json")
+          if [ -n "${TARGET_INCIDENT:-}" ]; then
+            record=$(jq -c --arg id "$TARGET_INCIDENT" '[.records[] | select(.incident_id == $id)] | first // empty' "$RUNNER_TEMP/wow-dispatch-queue.json")
+            [ -n "$record" ] || { echo "TARGET_INCIDENT_NOT_ACTIONABLE:$TARGET_INCIDENT" >&2; exit 1; }
+            severity=$(jq -r '.severity' <<<"$record")
+            lane=$(jq -r '.execution_lane' <<<"$record")
+            lease_group=$(jq -r '.lease_group' <<<"$record")
+            [ "$severity" = "P0" ] && [ "$lane" = "RAPID" ] || { echo "TARGET_INCIDENT_NOT_RAPID_P0:$TARGET_INCIDENT" >&2; exit 1; }
+            [ "$lease_group" = "${REQUESTED_LEASE_GROUP:-GLOBAL}" ] || {
+              echo "TARGET_INCIDENT_LEASE_MISMATCH:$TARGET_INCIDENT:$lease_group:${REQUESTED_LEASE_GROUP:-GLOBAL}" >&2
+              exit 1
+            }
+            decision=$(jq -n --arg id "$TARGET_INCIDENT" --arg severity "$severity" '{
+              restoration:{incident_id:$id,severity:$severity,state:"OPEN",reason:"Domain-scoped exact P0 target.",frontier_allowed:false},
+              acceleration:{incident_id:null,severity:"NONE",state:"NONE",reason:"Disabled for domain-scoped P0 writer.",frontier_allowed:false},
+              acceleration_blocked_reason:"DOMAIN_SCOPED_P0_LEASE",
+              can_execute:false,
+              terminal_authority:"V17_TERMINAL_REDUCER"
+            }')
+          else
+            jq '.records |= map(select(.severity != "P0" or .execution_lane != "RAPID"))' \
+              "$RUNNER_TEMP/wow-dispatch-queue.json" > "$RUNNER_TEMP/wow-standard-dispatch-queue.json"
+            decision=$(python artifacts/wow-engine/v17/engineering_agent_team.py dual-priority \
+              --ledger "$RUNNER_TEMP/wow-standard-dispatch-queue.json")
+          fi
           cp "$RUNNER_TEMP/wow-dispatch-queue.json" artifacts/wow-engine/v17/.agent-handoff/dispatch-queue.json
           printf '%s\n' "$decision" > artifacts/wow-engine/v17/.agent-handoff/dispatch.json
           restoration=$(jq -r '.restoration.incident_id // ""' <<<"$decision")
@@ -81,7 +115,9 @@ jobs:
           queue_depth=$(jq -r '.queue_depth // 0' "$RUNNER_TEMP/wow-dispatch-queue.json")
           echo "restoration=$restoration" >> "$GITHUB_OUTPUT"
           echo "acceleration=$acceleration" >> "$GITHUB_OUTPUT"
+          lease_group=$(jq -r --arg id "$restoration" '[.records[] | select(.incident_id == $id)] | first | .lease_group // "GLOBAL"' "$RUNNER_TEMP/wow-dispatch-queue.json")
           echo "queue_depth=$queue_depth" >> "$GITHUB_OUTPUT"
+          echo "lease_group=$lease_group" >> "$GITHUB_OUTPUT"
 
       - name: Initialize persistent-worker safety state
         id: safety
@@ -90,9 +126,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RESTORATION: ${{ steps.dispatch.outputs.restoration }}
           ACCELERATION: ${{ steps.dispatch.outputs.acceleration }}
+          LEASE_GROUP: ${{ steps.dispatch.outputs.lease_group }}
         run: |
           set -euo pipefail
-          marker='<!-- WOW_DUAL_STREAM_HEARTBEAT -->'
+          marker="<!-- WOW_DUAL_STREAM_HEARTBEAT:${LEASE_GROUP:-GLOBAL} -->"
           comments=$(gh api "/repos/${GITHUB_REPOSITORY}/issues/1138/comments?per_page=100")
           previous_body=$(jq -r --arg marker "$marker" '[.[] | select(.body | contains($marker))][0].body // ""' <<<"$comments")
           previous_epoch=$(sed -n 's/^- lease_epoch: \([0-9][0-9]*\)$/\1/p' <<<"$previous_body" | head -1)
@@ -101,12 +138,12 @@ jobs:
           worker_id="github-actions:${GITHUB_RUN_ID}:${GITHUB_RUN_ATTEMPT}:anthropic"
           expires_at=$(date -u -d '+180 minutes' +%Y-%m-%dT%H:%M:%SZ)
 
-          PYTHONPATH=artifacts/wow-engine python - "$RUNNER_TEMP/wow-dispatch-queue.json" "$RESTORATION" "$ACCELERATION" "$worker_id" "$lease_epoch" "$expires_at" <<'PY'
+          PYTHONPATH=artifacts/wow-engine python - "$RUNNER_TEMP/wow-dispatch-queue.json" "$RESTORATION" "$ACCELERATION" "$worker_id" "$lease_epoch" "$expires_at" "$LEASE_GROUP" <<'PY'
           import json, sys
           from pathlib import Path
           from v17.persistent_worker_safety import Lease, build_ticket_context, circuit_mode, CircuitState
 
-          queue_path, restoration, acceleration, worker_id, epoch, expires_at = sys.argv[1:]
+          queue_path, restoration, acceleration, worker_id, epoch, expires_at, lease_group = sys.argv[1:]
           queue = json.loads(Path(queue_path).read_text())
           by_id = {str(row["incident_id"]): row for row in queue["records"]}
           out = Path("artifacts/wow-engine/v17/.agent-handoff")
@@ -152,6 +189,7 @@ jobs:
               "lease_epoch": lease.lease_epoch,
               "expires_at": lease.expires_at,
               "worker_mode": mode,
+              "lease_group": lease_group or "GLOBAL",
               "can_execute": False,
               "terminal_authority": "V17_TERMINAL_REDUCER",
           }, indent=2, sort_keys=True) + "\n")
@@ -165,6 +203,7 @@ jobs:
           - queue_depth: ${{ steps.dispatch.outputs.queue_depth }}
           - current_restoration_target: ${RESTORATION:-NONE}
           - current_acceleration_target: ${ACCELERATION:-NONE}
+          - lease_group: ${LEASE_GROUP:-GLOBAL}
           - lease_epoch: $lease_epoch
           - worker_id: $worker_id
           - lease_expires_at: $expires_at
@@ -408,9 +447,10 @@ jobs:
           EXPECTED_INCIDENT: ${{ steps.dispatch.outputs.restoration }}
           EXPECTED_EPOCH: ${{ steps.safety.outputs.lease_epoch }}
           EXPECTED_WORKER: ${{ steps.safety.outputs.worker_id }}
+          LEASE_GROUP: ${{ steps.dispatch.outputs.lease_group }}
         run: |
           set -euo pipefail
-          marker='<!-- WOW_DUAL_STREAM_HEARTBEAT -->'
+          marker="<!-- WOW_DUAL_STREAM_HEARTBEAT:${LEASE_GROUP:-GLOBAL} -->"
           comments=$(gh api "/repos/${GITHUB_REPOSITORY}/issues/1138/comments?per_page=100")
           body=$(jq -r --arg marker "$marker" '[.[] | select(.body | contains($marker))][0].body // ""' <<<"$comments")
           latest_epoch=$(sed -n 's/^- lease_epoch: \([0-9][0-9]*\)$/\1/p' <<<"$body" | head -1)
@@ -460,7 +500,7 @@ jobs:
           permission_profile: ":workspace"
           prompt: |
             You are the WOW V17 ENGINEERING_AGENT running on Anthropic/Claude fallback tooling
-            and hold the single implementation lease.
+            and hold the single implementation lease for domain group ${{ steps.dispatch.outputs.lease_group }}.
             Read .agents/skills/wow-engineering-implementation-agent/SKILL.md,
             .agents/skills/wow-replit-patch-governor/SKILL.md,
             artifacts/wow-engine/v17/.agent-handoff/triage.json, and
@@ -808,6 +848,7 @@ jobs:
           WORKER_ID: ${{ steps.safety.outputs.worker_id }}
           LEASE_EXPIRES_AT: ${{ steps.safety.outputs.expires_at }}
           WORKER_MODE: ${{ steps.safety.outputs.worker_mode }}
+          LEASE_GROUP: ${{ steps.dispatch.outputs.lease_group }}
         run: |
           set -euo pipefail
           receipt="$RUNNER_TEMP/wow-dual-stream-receipt.json"
@@ -825,6 +866,7 @@ jobs:
             --arg worker_id "${WORKER_ID:-UNKNOWN}" \
             --arg lease_expires_at "${LEASE_EXPIRES_AT:-UNKNOWN}" \
             --arg worker_mode "${WORKER_MODE:-SAFE_HOLD}" \
+            --arg lease_group "${LEASE_GROUP:-GLOBAL}" \
             '{
               utc: $utc,
               workflow_run_id: $run_id,
@@ -839,6 +881,7 @@ jobs:
               worker_id: $worker_id,
               lease_expires_at: $lease_expires_at,
               worker_mode: $worker_mode,
+              lease_group: $lease_group,
               retry_dlq_state: "NONE",
               safe_hold_state: $worker_mode,
               duplicate_incident_created: false,
@@ -846,7 +889,7 @@ jobs:
               terminal_authority: "V17_TERMINAL_REDUCER"
             }' > "$receipt"
 
-          marker='<!-- WOW_DUAL_STREAM_HEARTBEAT -->'
+          marker="<!-- WOW_DUAL_STREAM_HEARTBEAT:${LEASE_GROUP:-GLOBAL} -->"
           body=$(cat <<EOF
           $marker
           ### WOW V17 dual-stream dispatcher heartbeat
@@ -855,6 +898,7 @@ jobs:
           - queue_depth: ${QUEUE_DEPTH:-0}
           - current_restoration_target: ${RESTORATION:-NONE}
           - current_acceleration_target: ${ACCELERATION:-NONE}
+          - lease_group: ${LEASE_GROUP:-GLOBAL}
           - lease_epoch: ${LEASE_EPOCH:-0}
           - worker_id: ${WORKER_ID:-UNKNOWN}
           - lease_expires_at: ${LEASE_EXPIRES_AT:-UNKNOWN}
