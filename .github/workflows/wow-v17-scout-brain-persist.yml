@@ -17,8 +17,10 @@ permissions:
   contents: read
   id-token: write
 
+# Scout persistence is database-heavy. Keep exactly one writer active across
+# source runs so recovery/manual/native triggers cannot compound Supabase load.
 concurrency:
-  group: wow-v17-scout-brain-persist-${{ inputs.run_id || github.event.workflow_run.id }}
+  group: wow-v17-scout-brain-persist-db-writer
   cancel-in-progress: false
 
 jobs:
