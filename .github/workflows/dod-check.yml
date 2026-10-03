@@ -1,0 +1,84 @@
+name: "Definition of Done Validation"
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+jobs:
+  validate-dod:
+    name: "Validate DoD Checklist"
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      issues: write
+
+    steps:
+      - name: "Check PR Description & Comment Status"
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const body = context.payload.pull_request.body || '';
+            const prNumber = context.payload.pull_request.number;
+            const { owner, repo } = context.repo;
+
+            const requiredChecks = [
+              { pattern: /\[x\]\s*\*\*Acceptance Criteria Verification\*\*/i, label: "Acceptance Criteria Verification" },
+              { pattern: /\[x\]\s*\*\*No In-Flight Scope Injections\*\*/i, label: "No In-Flight Scope Injections (Scope Lock)" },
+              { pattern: /\[x\]\s*\*\*Testing & Coverage\*\*/i, label: "Testing & Coverage" }
+            ];
+
+            const missingChecks = [];
+            for (const check of requiredChecks) {
+              if (!check.pattern.test(body)) {
+                missingChecks.push(check.label);
+              }
+            }
+
+            const BOT_SIGNATURE = '<!-- dod-validation-bot-comment -->';
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner,
+              repo,
+              issue_number: prNumber,
+            });
+
+            const existingComment = comments.find(c => c.body && c.body.includes(BOT_SIGNATURE));
+
+            if (missingChecks.length > 0) {
+              const commentBody = `${BOT_SIGNATURE}\n` +
+                `### ❌ Definition of Done (DoD) Validation Failed\n\n` +
+                `This pull request cannot be merged until all mandatory **Definition of Done** requirements are met.\n\n` +
+                `**Missing or unchecked required items:**\n` +
+                missingChecks.map(item => `- [ ] **${item}**`).join('\n') +
+                `\n\n---\n*Please update the PR description to check off these items once completed.*`;
+
+              if (existingComment) {
+                await github.rest.issues.updateComment({
+                  owner,
+                  repo,
+                  comment_id: existingComment.id,
+                  body: commentBody
+                });
+              } else {
+                await github.rest.issues.createComment({
+                  owner,
+                  repo,
+                  issue_number: prNumber,
+                  body: commentBody
+                });
+              }
+
+              core.setFailed(
+                `PR description violates Definition of Done policy. Missing required items: ${missingChecks.join(', ')}`
+              );
+            } else {
+              if (existingComment) {
+                await github.rest.issues.updateComment({
+                  owner,
+                  repo,
+                  comment_id: existingComment.id,
+                  body: `${BOT_SIGNATURE}\n### ✅ Definition of Done (DoD) Validation Passed\n\nAll mandatory DoD checklist items are checked and verified!`
+                });
+              }
+              console.log("✅ Definition of Done validation passed!");
+            }
