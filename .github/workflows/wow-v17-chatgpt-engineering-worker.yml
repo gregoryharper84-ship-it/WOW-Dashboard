@@ -203,6 +203,21 @@ jobs:
             exit 1
           fi
 
+      - name: Resolve Claude peer availability
+        id: claude_peer_provider
+        shell: bash
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -n "${ANTHROPIC_API_KEY:-}" ] || [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Claude peer analysis unavailable; primary OpenAI engineering path remains active."
+          fi
+
       - name: Engineering Lead agent
         id: lead_agent
         uses: ./.github/actions/wow-chatgpt-agent
@@ -323,6 +338,49 @@ jobs:
           echo "subsystem=$subsystem" >> "$GITHUB_OUTPUT"
           echo "failure=$failure" >> "$GITHUB_OUTPUT"
           printf '%s\n' "$RESULT" > artifacts/wow-engine/v17/.agent-handoff/triage.json
+
+      - name: Claude peer root-cause diagnosis
+        id: claude_peer_agent
+        if: steps.lead.outputs.action == 'REPAIR' && steps.claude_peer_provider.outputs.available == 'true'
+        continue-on-error: true
+        uses: ./.github/actions/wow-claude-agent
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          permission_profile: ":read-only"
+          prompt: |
+            You are the independent WOW V17 CROSS_PROVIDER_PEER_DIAGNOSIS_AGENT running on Anthropic/Claude.
+            Read artifacts/wow-engine/v17/.agent-handoff/dispatch.json,
+            artifacts/wow-engine/v17/.agent-handoff/lead.json, and
+            artifacts/wow-engine/v17/.agent-handoff/triage.json.
+            Analyze only the exact restoration incident already selected by the deterministic dispatcher.
+            Independently verify or challenge the OpenAI triage using concrete repository evidence.
+            Identify the first failing boundary, counterexamples, adjacent risks, and narrow tests.
+            Do not edit files, claim implementation authority, approve a patch, merge, deploy, or change
+            sporting probability behavior. You are advisory evidence only. Preserve exact typed failures,
+            V17_TERMINAL_REDUCER, DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS=true, and can_execute=false.
+          output_schema: '{"type":"object","properties":{"incident_id":{"type":"string"},"verdict":{"type":"string","enum":["CONCUR","NARROW","CHALLENGE","INCONCLUSIVE"]},"first_failing_boundary":{"type":"string"},"counterexamples":{"type":"array","items":{"type":"string"}},"adjacent_risks":{"type":"array","items":{"type":"string"}},"recommended_tests":{"type":"array","items":{"type":"string"}},"hard_boundary":{"type":"string"}},"required":["incident_id","verdict","first_failing_boundary","counterexamples","adjacent_risks","recommended_tests","hard_boundary"],"additionalProperties":false}'
+
+      - name: Normalize Claude peer diagnosis
+        id: claude_peer
+        if: steps.claude_peer_agent.outcome == 'success'
+        shell: bash
+        env:
+          RESULT: ${{ steps.claude_peer_agent.outputs.structured_output }}
+          EXPECTED_INCIDENT: ${{ steps.triage.outputs.incident }}
+        run: |
+          set -euo pipefail
+          incident=$(jq -r '.incident_id' <<<"$RESULT")
+          if [ "$incident" != "${EXPECTED_INCIDENT:-}" ]; then
+            echo "::error::Claude peer diagnosis incident $incident does not match OpenAI triage incident ${EXPECTED_INCIDENT:-NONE}."
+            exit 1
+          fi
+          echo "verdict=$(jq -r '.verdict' <<<"$RESULT")" >> "$GITHUB_OUTPUT"
+          printf '%s\n' "$RESULT" > artifacts/wow-engine/v17/.agent-handoff/claude-peer-diagnosis.json
+
+      - name: Record Claude peer diagnosis degradation
+        if: steps.lead.outputs.action == 'REPAIR' && steps.claude_peer_provider.outputs.available == 'true' && steps.claude_peer_agent.outcome == 'failure'
+        run: echo "::warning::Claude peer diagnosis failed; OpenAI primary repair path continues with deterministic safeguards."
 
       - name: Route specialist subagent
         id: specialist_route
@@ -447,9 +505,10 @@ jobs:
             You are the WOW V17 ENGINEERING_AGENT running on OpenAI/ChatGPT tooling only and hold the single implementation lease.
             Read .agents/skills/wow-engineering-implementation-agent/SKILL.md,
             .agents/skills/wow-replit-patch-governor/SKILL.md,
-            artifacts/wow-engine/v17/.agent-handoff/triage.json, and
-            artifacts/wow-engine/v17/.agent-handoff/specialist.json.
-            Treat the specialist packet as independent evidence that narrows the same parent incident;
+            artifacts/wow-engine/v17/.agent-handoff/triage.json,
+            artifacts/wow-engine/v17/.agent-handoff/specialist.json, and, when present,
+            artifacts/wow-engine/v17/.agent-handoff/claude-peer-diagnosis.json.
+            Treat the specialist and Claude peer packets as independent evidence that narrows the same parent incident;
             it does not authorize scope expansion. Implement only the proven root cause and acceptance
             criteria. Do not diagnose a different incident, edit .github/workflows/**, or touch
             .agent-handoff/**. Run the narrowest reproduction first, then relevant regressions, and
@@ -474,7 +533,8 @@ jobs:
           rm -f artifacts/wow-engine/v17/.agent-handoff/lead.json \
             artifacts/wow-engine/v17/.agent-handoff/triage.json \
             artifacts/wow-engine/v17/.agent-handoff/specialist.json \
-            artifacts/wow-engine/v17/.agent-handoff/specialist-route.json
+            artifacts/wow-engine/v17/.agent-handoff/specialist-route.json \
+            artifacts/wow-engine/v17/.agent-handoff/claude-peer-diagnosis.json
           if [ "$changed" = "true" ]; then
             git diff --quiet --exit-code && { echo "::error::ChatGPT reported changes but returned no working-tree diff."; exit 1; }
             branch="chatgpt/engineering/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
@@ -522,6 +582,39 @@ jobs:
           echo "decision=$(jq -r '.decision' <<<"$RESULT")" >> "$GITHUB_OUTPUT"
           echo "architect=$(jq -r '.system_architect_required' <<<"$RESULT")" >> "$GITHUB_OUTPUT"
 
+      - name: Claude cross-provider adversarial review
+        id: claude_review_agent
+        if: steps.impl.outputs.changed == 'true' && steps.claude_peer_provider.outputs.available == 'true'
+        continue-on-error: true
+        uses: ./.github/actions/wow-claude-agent
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          permission_profile: ":read-only"
+          prompt: |
+            You are the independent WOW V17 CROSS_PROVIDER_ADVERSARIAL_REVIEW_AGENT running on Anthropic/Claude.
+            Review the complete current implementation-branch diff against main. OpenAI authored the patch;
+            you did not. Read .agents/skills/wow-engineering-independent-review-agent/SKILL.md and any available
+            incident handoff evidence. Look specifically for hidden probability substitution, ownership drift,
+            stale-data acceptance, typed-failure collapse, exact-once regressions, unsafe auth/execution changes,
+            untested adjacent lanes, and changes broader than the proven root cause.
+            Do not edit files, approve merge/deploy, or produce sporting probabilities. Preserve
+            V17_TERMINAL_REDUCER, DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS=true, and can_execute=false.
+          output_schema: '{"type":"object","properties":{"decision":{"type":"string","enum":["PASS","REJECT"]},"findings":{"type":"array","items":{"type":"string"}},"residual_risks":{"type":"array","items":{"type":"string"}}},"required":["decision","findings","residual_risks"],"additionalProperties":false}'
+
+      - name: Normalize Claude cross-provider review
+        id: claude_review
+        if: steps.claude_review_agent.outcome == 'success'
+        shell: bash
+        env:
+          RESULT: ${{ steps.claude_review_agent.outputs.structured_output }}
+        run: |
+          echo "decision=$(jq -r '.decision' <<<"$RESULT")" >> "$GITHUB_OUTPUT"
+
+      - name: Record Claude review degradation
+        if: steps.impl.outputs.changed == 'true' && steps.claude_peer_provider.outputs.available == 'true' && steps.claude_review_agent.outcome == 'failure'
+        run: echo "::warning::Claude cross-provider review failed; existing OpenAI review and deterministic regression remain authoritative."
+
       - name: System Architect agent
         id: architect_agent
         if: steps.review.outputs.decision == 'PASS' && steps.review.outputs.architect == 'true'
@@ -553,7 +646,7 @@ jobs:
 
       - name: Deterministic QA regression
         id: regression
-        if: steps.review.outputs.decision == 'PASS' && (steps.architect.outputs.decision == 'PASS' || steps.architect.outputs.decision == 'NOT_APPLICABLE')
+        if: steps.review.outputs.decision == 'PASS' && steps.claude_review.outputs.decision != 'REJECT' && (steps.architect.outputs.decision == 'PASS' || steps.architect.outputs.decision == 'NOT_APPLICABLE')
         shell: bash
         run: |
           set +e
@@ -594,6 +687,7 @@ jobs:
           INCIDENT: ${{ steps.impl.outputs.incident }}
           RISK: ${{ steps.impl.outputs.risk }}
           REVIEW: ${{ steps.review.outputs.decision }}
+          CLAUDE_REVIEW: ${{ steps.claude_review.outputs.decision }}
           ARCHITECT: ${{ steps.architect.outputs.decision }}
           REGRESSION: ${{ steps.regression.outputs.status }}
           QA: ${{ steps.qa.outputs.decision }}
@@ -605,6 +699,7 @@ jobs:
           mapfile -t files < <(jq -r '.files[].filename' <<<"$compare")
           gates=FAIL
           if [ "$REVIEW" = "PASS" ] &&
+             [ "${CLAUDE_REVIEW:-NOT_RUN}" != "REJECT" ] &&
              { [ "$ARCHITECT" = "PASS" ] || [ "$ARCHITECT" = "NOT_APPLICABLE" ]; } &&
              [ "$REGRESSION" = "0" ] && [ "$QA" = "PASS" ]; then
             gates=PASS
@@ -615,7 +710,8 @@ jobs:
             echo
             echo "Incident: \`$INCIDENT\`"
             echo "Risk: \`$RISK\`"
-            echo "Independent review: \`${REVIEW:-NOT_RUN}\`"
+            echo "Independent OpenAI review: \`${REVIEW:-NOT_RUN}\`"
+            echo "Claude cross-provider review: \`${CLAUDE_REVIEW:-NOT_RUN}\`"
             echo "System architect: \`${ARCHITECT:-NOT_RUN}\`"
             echo "Deterministic regression: \`${REGRESSION:-NOT_RUN}\`"
             echo "QA agent: \`${QA:-NOT_RUN}\`"
@@ -625,7 +721,8 @@ jobs:
             for file in "${files[@]}"; do echo "- \`$file\`"; done
             echo
             echo "### Governance"
-            echo "- OpenAI/ChatGPT tooling only; no Anthropic/Claude runtime dependency"
+            echo "- OpenAI/ChatGPT retains the single implementation lease"
+            echo "- Anthropic/Claude is bounded to read-only peer diagnosis and adversarial review on the primary path"
             echo "- can_execute=false remains binding"
             echo "- DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS=true remains binding"
             echo "- V17_TERMINAL_REDUCER remains sole global terminal authority"
@@ -754,10 +851,13 @@ jobs:
             echo "- Incident: ${{ steps.lead.outputs.incident || 'NONE' }}"
             echo "- Acceleration advancement: ${{ steps.acceleration.outputs.advancement || 'NOT_RUN' }}"
             echo "- Triage repairable: ${{ steps.triage.outputs.repairable || 'NOT_RUN' }}"
+            echo "- Claude peer available: ${{ steps.claude_peer_provider.outputs.available || 'false' }}"
+            echo "- Claude peer diagnosis: ${{ steps.claude_peer.outputs.verdict || 'NOT_RUN' }}"
             echo "- Specialist: ${{ steps.specialist.outputs.subagent || 'NOT_RUN' }}"
             echo "- Specialist hypothesis: ${{ steps.specialist.outputs.hypothesis || 'NOT_RUN' }}"
             echo "- Implementation changed: ${{ steps.impl.outputs.changed || 'false' }}"
-            echo "- Review: ${{ steps.review.outputs.decision || 'NOT_RUN' }}"
+            echo "- OpenAI review: ${{ steps.review.outputs.decision || 'NOT_RUN' }}"
+            echo "- Claude cross-provider review: ${{ steps.claude_review.outputs.decision || 'NOT_RUN' }}"
             echo "- Architect: ${{ steps.architect.outputs.decision || 'NOT_RUN' }}"
             echo "- Regression: ${{ steps.regression.outputs.status || 'NOT_RUN' }}"
             echo "- QA: ${{ steps.qa.outputs.decision || 'NOT_RUN' }}"
