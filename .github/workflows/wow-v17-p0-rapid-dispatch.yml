@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   dispatch:
-    name: Dispatch actionable P0 rapid lane
+    name: Dispatch parallel actionable P0 rapid lanes
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -31,7 +31,7 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Resolve actionable rapid P0
+      - name: Resolve conflict-safe P0 streams
         id: rapid
         shell: bash
         env:
@@ -51,58 +51,84 @@ jobs:
             --output "$RUNNER_TEMP/wow-dispatch-queue.json" \
             > /dev/null
 
-          rapid_count=$(jq '[.records[] | select(.severity == "P0" and .execution_lane == "RAPID")] | length' "$RUNNER_TEMP/wow-dispatch-queue.json")
-          top_incident=$(jq -r '[.records[] | select(.severity == "P0" and .execution_lane == "RAPID")] | sort_by(.priority_rank) | .[0].incident_id // ""' "$RUNNER_TEMP/wow-dispatch-queue.json")
+          python artifacts/wow-engine/v17/p0_parallel_dispatch.py \
+            --queue "$RUNNER_TEMP/wow-dispatch-queue.json" \
+            --output "$RUNNER_TEMP/wow-p0-parallel.json" \
+            > /dev/null
 
-          active_count=0
-          for workflow in \
-            wow-v17-engineering-provider-dispatcher.yml \
-            wow-v17-chatgpt-engineering-worker.yml \
-            wow-v17-claude-engineering-worker.yml
-          do
-            count=$(gh run list \
-              --repo "$GITHUB_REPOSITORY" \
-              --workflow "$workflow" \
-              --limit 20 \
-              --json status \
-              --jq '[.[] | select(.status != "completed")] | length')
-            active_count=$((active_count + count))
-          done
+          selected_count=$(jq -r '.selected_count' "$RUNNER_TEMP/wow-p0-parallel.json")
+          echo "selected_count=$selected_count" >> "$GITHUB_OUTPUT"
 
-          dispatch=false
-          if [ "$rapid_count" -gt 0 ] && [ "$active_count" -eq 0 ]; then
-            dispatch=true
-          fi
-
-          echo "rapid_count=$rapid_count" >> "$GITHUB_OUTPUT"
-          echo "top_incident=$top_incident" >> "$GITHUB_OUTPUT"
-          echo "active_count=$active_count" >> "$GITHUB_OUTPUT"
-          echo "dispatch=$dispatch" >> "$GITHUB_OUTPUT"
-
-      - name: Dispatch provider-aware engineering worker
-        if: steps.rapid.outputs.dispatch == 'true'
+      - name: Dispatch idle domain-scoped writers
+        id: dispatch_streams
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          INCIDENT: ${{ steps.rapid.outputs.top_incident }}
         run: |
           set -euo pipefail
-          gh workflow run wow-v17-engineering-provider-dispatcher.yml \
-            --repo "$GITHUB_REPOSITORY" \
-            --ref main \
-            -f force_provider=auto \
-            -f reason="P0_RAPID_LANE:${INCIDENT}"
+          dispatched=()
+          busy=()
 
-      - name: Record rapid-lane receipt
+          while IFS=$'\t' read -r incident stream lease_group; do
+            [ -n "$incident" ] || continue
+            active_count=0
+            for workflow in \
+              wow-v17-engineering-provider-dispatcher.yml \
+              wow-v17-chatgpt-engineering-worker.yml \
+              wow-v17-claude-engineering-worker.yml
+            do
+              count=$(gh run list \
+                --repo "$GITHUB_REPOSITORY" \
+                --workflow "$workflow" \
+                --limit 40 \
+                --json status,displayTitle \
+                --jq "[.[] | select(.status != \"completed\") | select(.displayTitle | contains(\"lease=${lease_group}\"))] | length")
+              active_count=$((active_count + count))
+            done
+
+            if [ "$active_count" -gt 0 ]; then
+              busy+=("${stream}:${incident}:${lease_group}")
+              continue
+            fi
+
+            gh workflow run wow-v17-engineering-provider-dispatcher.yml \
+              --repo "$GITHUB_REPOSITORY" \
+              --ref main \
+              -f force_provider=auto \
+              -f reason="P0_PARALLEL_RAPID:${stream}:${incident}" \
+              -f target_incident="$incident" \
+              -f lease_group="$lease_group"
+            dispatched+=("${stream}:${incident}:${lease_group}")
+          done < <(jq -r '.selected[] | [.incident_id,.rapid_stream,.lease_group] | @tsv' "$RUNNER_TEMP/wow-p0-parallel.json")
+
+          printf '%s\n' "${dispatched[@]:-}" > "$RUNNER_TEMP/dispatched.txt"
+          printf '%s\n' "${busy[@]:-}" > "$RUNNER_TEMP/busy.txt"
+          echo "dispatched_count=${#dispatched[@]}" >> "$GITHUB_OUTPUT"
+          echo "busy_count=${#busy[@]}" >> "$GITHUB_OUTPUT"
+
+      - name: Record parallel rapid-lane receipt
         if: always()
         run: |
           {
-            echo "# WOW V17 P0 Rapid Lane"
-            echo "- rapid_p0_count: ${{ steps.rapid.outputs.rapid_count || '0' }}"
-            echo "- top_incident: ${{ steps.rapid.outputs.top_incident || 'NONE' }}"
-            echo "- active_engineering_runs: ${{ steps.rapid.outputs.active_count || '0' }}"
-            echo "- dispatched: ${{ steps.rapid.outputs.dispatch || 'false' }}"
-            echo "- single_implementation_lease: true"
+            echo "# WOW V17 P0 Parallel Rapid Lane"
+            echo "- selected_streams: ${{ steps.rapid.outputs.selected_count || '0' }}"
+            echo "- dispatched_streams: ${{ steps.dispatch_streams.outputs.dispatched_count || '0' }}"
+            echo "- busy_streams: ${{ steps.dispatch_streams.outputs.busy_count || '0' }}"
+            echo "- max_parallel_writers: 3"
+            echo "- implementation_lease_scope: domain-scoped"
+            echo "- stream_A: Scout/Data Plane (#1237 -> #1250)"
+            echo "- stream_B: State/Scoring (#1189 -> #960)"
+            echo "- stream_C: Runtime/Ingest (#502 -> #1127)"
+            echo "- conflict_arbiter: explicit conflict_keys"
             echo "- can_execute: false"
             echo "- terminal_authority: V17_TERMINAL_REDUCER"
+            echo
+            echo "## Dispatched"
+            cat "$RUNNER_TEMP/dispatched.txt" 2>/dev/null || true
+            echo
+            echo "## Busy"
+            cat "$RUNNER_TEMP/busy.txt" 2>/dev/null || true
+            echo
+            echo "## Selection"
+            cat "$RUNNER_TEMP/wow-p0-parallel.json" 2>/dev/null || true
           } >> "$GITHUB_STEP_SUMMARY"
