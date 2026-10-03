@@ -208,7 +208,7 @@ def test_worker_staggers_first_database_claim_after_startup(monkeypatch):
     def db_must_not_be_touched():
         raise AssertionError("NFL Pick'em database claim occurred before startup delay")
 
-    monkeypatch.setenv("WOW_V17_NFL_PICKEM_ASYNC_INITIAL_DELAY_SECONDS", "15")
+    monkeypatch.setenv("WOW_V17_NFL_PICKEM_ASYNC_INITIAL_DELAY_SECONDS", "20")
     monkeypatch.setattr(pickem_async_runtime.asyncio, "sleep", stop_on_initial_delay)
 
     async def exercise():
