@@ -452,11 +452,18 @@ async def schedule_mlb_1ip_final_refresh():
         interval_seconds = int(os.getenv("WOW_MLB_1IP_FINAL_REFRESH_INTERVAL_SECONDS", "300"))
     except ValueError:
         interval_seconds = 300
+    try:
+        initial_delay_seconds = int(
+            os.getenv("WOW_MLB_1IP_FINAL_REFRESH_INITIAL_DELAY_SECONDS", "30")
+        )
+    except ValueError:
+        initial_delay_seconds = 30
     task = asyncio.create_task(
         run_mlb_1ip_refresh_loop(
             db_client_fn=_db_client,
             logger=_mlb_1ip_refresh_logger,
             interval_seconds=interval_seconds,
+            initial_delay_seconds=initial_delay_seconds,
         )
     )
     _background_tasks.add(task)
