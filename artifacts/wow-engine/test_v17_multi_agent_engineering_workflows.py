@@ -272,6 +272,8 @@ def test_domain_scoped_p0_target_propagates_across_provider_and_workers() -> Non
     assert 'select(.severity != "P0" or .execution_lane != "RAPID")' in claude
     assert "WOW_DUAL_STREAM_HEARTBEAT:${LEASE_GROUP:-GLOBAL}" in openai
     assert "WOW_DUAL_STREAM_HEARTBEAT:${LEASE_GROUP:-GLOBAL}" in claude
+    assert "marker='<!-- WOW_DUAL_STREAM_HEARTBEAT -->'" not in openai
+    assert "marker='<!-- WOW_DUAL_STREAM_HEARTBEAT -->'" not in claude
 
 
 def test_provider_dispatcher_has_typed_failover_and_survival() -> None:
