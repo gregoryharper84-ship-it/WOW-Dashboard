@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from v17.engineering_dispatch_queue import build_queue
+from v17.engineering_agent_team import select_dual_stream_work
 
 
 def _manifest():
@@ -58,5 +59,25 @@ def test_repo_manifest_is_valid_and_never_grants_execution():
     manifest = json.loads(path.read_text())
     queue = build_queue(manifest, [])
     assert queue["records"] == []
+    assert queue["can_execute"] is False
+    assert queue["terminal_authority"] == "V17_TERMINAL_REDUCER"
+
+
+def test_repo_manifest_prioritizes_current_p0_governance_and_persistence_incidents():
+    path = Path(__file__).parents[1] / "v17" / "engineering_dispatch_manifest.json"
+    manifest = json.loads(path.read_text())
+    issues = [
+        {"number": 1247, "title": "governance", "state": "OPEN", "updatedAt": "2026-10-03T13:05:21Z"},
+        {"number": 1237, "title": "persistence", "state": "OPEN", "updatedAt": "2026-10-03T12:00:00Z"},
+        {"number": 502, "title": "older restoration", "state": "OPEN", "updatedAt": "2026-10-02T00:00:00Z"},
+    ]
+    queue = build_queue(manifest, issues)
+    decision = select_dual_stream_work(queue["records"])
+    assert decision.restoration.incident_id == "1247"
+    by_id = {row["incident_id"]: row for row in queue["records"]}
+    assert by_id["1247"]["severity"] == "P0"
+    assert by_id["1247"]["priority_rank"] == 1
+    assert by_id["1237"]["severity"] == "P0"
+    assert by_id["1237"]["priority_rank"] == 2
     assert queue["can_execute"] is False
     assert queue["terminal_authority"] == "V17_TERMINAL_REDUCER"
