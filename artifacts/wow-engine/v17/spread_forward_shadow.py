@@ -352,6 +352,23 @@ def build_forward_matchup_features(
     }
 
 
+
+def warm_ncaaf_forward_context(client: Any) -> dict[str, Any]:
+    """Build or validate the immutable NCAAF forward context before interactive use."""
+    context, cache_status, cache_age_seconds = _cached_forward_context(client)
+    return {
+        "status": "READY",
+        "code": "SPREAD_FORWARD_CONTEXT_READY",
+        "sport": SPORT,
+        "cache_status": cache_status,
+        "cache_age_seconds": round(cache_age_seconds, 3),
+        "training_cutoff_event_time": context.latest_training_event.isoformat(),
+        "probability_publishable": False,
+        "automatic_certification": False,
+        "automatic_promotion": False,
+        "can_execute": False,
+    }
+
 def run_ncaaf_forward_shadow(
     client: Any,
     *,
@@ -476,4 +493,5 @@ __all__ = [
     "load_ncaaf_forward_context",
     "load_ncaaf_settled_events",
     "run_ncaaf_forward_shadow",
+    "warm_ncaaf_forward_context",
 ]

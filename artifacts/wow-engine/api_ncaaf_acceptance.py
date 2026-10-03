@@ -33,6 +33,7 @@ from team_event_request_runtime import install_team_event_request_routes
 from v17.core_intelligence_compounding_routes import install_compounding_intelligence_routes_read_only
 from v17.core_intelligence_event_runtime import install_core_intelligence_event_routes
 from v17.core_intelligence_runtime import install_core_intelligence_routes
+from v17.spread_forward_shadow import warm_ncaaf_forward_context
 from v17.core_intelligence_shadow_runtime import install_shadow_lab_routes
 from v17.team_event_probability_preservation import (
     install_team_event_routes as install_v17_team_event_routes,
@@ -50,6 +51,7 @@ _v17_logger = logging.getLogger("wow.v17.activation")
 _core_intelligence_logger = logging.getLogger("wow.v17.core_intelligence.activation")
 _kalshi_weather_logger = logging.getLogger("wow.kalshi_weather_v2.activation")
 _mlb_1ip_refresh_logger = logging.getLogger("wow.mlb.1ip.final_refresh")
+_spread_forward_logger = logging.getLogger("wow.v17.spread.forward")
 _background_tasks: set[asyncio.Task] = set()
 _NCAAF_STARTUP_READINESS_TIMEOUT_SECONDS = 12.0
 _original_market_score_prop = base.market_api.score_prop
@@ -348,6 +350,35 @@ async def _run_ncaaf_startup_readiness_audit() -> None:
         )
     else:
         _emit_ncaaf_readiness_state(state)
+
+
+
+async def _warm_ncaaf_spread_forward_context_after_startup() -> None:
+    """Warm immutable research context off the request path after each deploy."""
+    try:
+        receipt = await asyncio.to_thread(warm_ncaaf_forward_context, _db_client())
+    except Exception as exc:  # noqa: BLE001
+        _spread_forward_logger.error(
+            "WOW_NCAAF_SPREAD_FORWARD_WARM status=FAILED error_type=%s can_execute=false",
+            type(exc).__name__,
+        )
+        return
+    _spread_forward_logger.warning(
+        "WOW_NCAAF_SPREAD_FORWARD_WARM status=%s code=%s cache_status=%s can_execute=false",
+        receipt.get("status"),
+        receipt.get("code"),
+        receipt.get("cache_status"),
+    )
+
+
+@app.on_event("startup")
+async def schedule_ncaaf_spread_forward_context_warm() -> None:
+    """Prime the cold fitted context without delaying port binding."""
+    if not V17_ACTIVE:
+        return
+    task = asyncio.create_task(_warm_ncaaf_spread_forward_context_after_startup())
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
 
 
 @app.on_event("startup")

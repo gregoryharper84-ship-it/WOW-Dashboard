@@ -210,3 +210,34 @@ def test_expired_cache_rebuilds_immediately_when_immutable_source_advances(monke
     assert second["automatic_certification"] is False
     assert second["automatic_promotion"] is False
     assert second["can_execute"] is False
+
+
+
+def test_explicit_warm_builds_context_without_scoring(monkeypatch):
+    calls = _install_scoring_stubs(monkeypatch)
+
+    receipt = shadow.warm_ncaaf_forward_context(object())
+
+    assert calls == {"load": 1, "fit": 1, "features": 0, "score": 0}
+    assert receipt["status"] == "READY"
+    assert receipt["code"] == "SPREAD_FORWARD_CONTEXT_READY"
+    assert receipt["cache_status"] == "MISS_REBUILT"
+    assert receipt["probability_publishable"] is False
+    assert receipt["automatic_certification"] is False
+    assert receipt["automatic_promotion"] is False
+    assert receipt["can_execute"] is False
+
+
+def test_warm_then_interactive_scoring_reuses_fit(monkeypatch):
+    calls = _install_scoring_stubs(monkeypatch)
+
+    warm = shadow.warm_ncaaf_forward_context(object())
+    scored = _run("game-after-warm")
+
+    assert warm["cache_status"] == "MISS_REBUILT"
+    assert scored["forward_context_cache"]["status"] == "HIT"
+    assert calls["load"] == 1
+    assert calls["fit"] == 1
+    assert calls["features"] == 1
+    assert calls["score"] == 1
+    assert scored["can_execute"] is False
