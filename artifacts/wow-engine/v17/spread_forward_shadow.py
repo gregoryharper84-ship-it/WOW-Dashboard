@@ -16,6 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from time import monotonic
+import os
 import threading
 from typing import Any, Mapping, Sequence
 
@@ -80,6 +81,12 @@ def _forward_context_cache_key() -> tuple[int, int, int, float]:
         int(MIN_TRAIN_ROWS),
         float(RIDGE_ALPHA),
     )
+
+
+def _serving_cache_required() -> bool:
+    return str(os.getenv("WOW_NCAAF_SPREAD_FORWARD_SERVING_CACHE_REQUIRED", "0")).strip().lower() in {
+        "1", "true", "yes", "on"
+    }
 
 
 def _clear_forward_context_cache() -> None:
@@ -193,13 +200,12 @@ def load_ncaaf_forward_context(client: Any) -> tuple[list[MarginTrainingRow], li
 def _cached_forward_context(client: Any) -> tuple[_ForwardContext, str, float]:
     """Return a briefly cached immutable fit/history context with one cold builder.
 
-    Broad board scans previously made every request page thousands of persisted
-    rows and re-fit the same immutable artifact. That amplified PostgREST pool
-    pressure and CPU saturation. The cache is research-only and process-local.
-    Every five minutes it validates a cheap latest-row fingerprint; unchanged
-    immutable source ledgers reuse the exact fitted artifact, while changed
-    ledgers rebuild immediately. Concurrent cold callers never trigger parallel
-    full-corpus loads/fits.
+    Production serving uses a persistent worker-built cache and never fits in the
+    free web process. Offline/test callers retain the historical local-build path
+    unless WOW_NCAAF_SPREAD_FORWARD_SERVING_CACHE_REQUIRED is enabled. Every five
+    minutes the process cache validates a cheap latest-row fingerprint. A missing
+    production cache dispatches the governed agent worker and fails closed with a
+    spread-specific typed blocker rather than re-fitting in the request process.
     """
     global _FORWARD_CONTEXT_CACHE
 
@@ -244,6 +250,44 @@ def _cached_forward_context(client: Any) -> tuple[_ForwardContext, str, float]:
                 )
                 _FORWARD_CONTEXT_CACHE = refreshed
                 return refreshed, "HIT_SOURCE_UNCHANGED", 0.0
+
+        if _serving_cache_required():
+            from v17.spread_forward_serving_cache import dispatch_build, load_ready_context
+
+            try:
+                fingerprint = _ncaaf_forward_source_fingerprint(client)
+            except Exception as exc:
+                upstream_code = str(getattr(exc, "code", "") or "")
+                typed = (
+                    "SPREAD_FORWARD_SERVING_CACHE_SOURCE_RETRYABLE"
+                    if type(exc).__name__ == "ReadTimeout" or upstream_code == "PGRST002"
+                    else "SPREAD_FORWARD_SERVING_CACHE_SOURCE_CHECK_FAILED"
+                )
+                raise SpreadChallengerUnavailable(
+                    typed,
+                    "current NCAAF spread source fingerprint could not be verified",
+                ) from exc
+            try:
+                serving = load_ready_context(fingerprint)
+            except SpreadChallengerUnavailable as exc:
+                if exc.code == "SPREAD_FORWARD_SERVING_CACHE_BUILD_PENDING":
+                    try:
+                        dispatch_build()
+                    except SpreadChallengerUnavailable as dispatch_exc:
+                        raise dispatch_exc
+                raise
+
+            context = _ForwardContext(
+                artifact=serving["artifact"],
+                settled_events=serving["settled_events"],
+                latest_training_event=_dt(serving["latest_training_event"]),
+                loaded_at_monotonic=monotonic(),
+                loaded_at_utc=datetime.now(timezone.utc).isoformat(),
+                cache_key=key,
+                source_fingerprint=tuple(fingerprint),
+            )
+            _FORWARD_CONTEXT_CACHE = context
+            return context, "MISS_WORKER_SERVING_CACHE", 0.0
 
         replay_rows, settled = load_ncaaf_forward_context(client)
         latest_training_event = max(_dt(row.event_start_time) for row in replay_rows)
