@@ -376,9 +376,9 @@ def _execute_read_with_retry(build_query: Any, *, retries: int = 0) -> Any:
             sleep(NCAAF_PERSISTED_READ_TIMEOUT_BACKOFF_SECONDS * attempt)
 
 
-def _paged_select(client: Any, table: str, fields: str, *, filters: Sequence[tuple[str, str, Any]] = (), order: str, read_timeout_retries: int = 0, page_size: int = PAGE_SIZE) -> list[dict[str, Any]]:
+def _paged_select(client: Any, table: str, fields: str, *, filters: Sequence[tuple[str, str, Any]] = (), order: str, read_timeout_retries: int = 0, page_size: int | None = None) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    page_size = max(1, int(page_size))
+    page_size = max(1, int(PAGE_SIZE if page_size is None else page_size))
     offset = 0
     while True:
         def build_query() -> Any:
