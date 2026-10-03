@@ -56,4 +56,4 @@ def test_dispatcher_is_scheduled_once_for_primary_ledgers():
     sql = _sql()
     assert "wow-governed-primary-ledger-auto-grade" in sql
     assert "cron.unschedule" in sql
-    assert "*/15 * * * *" in sql
+    assert "9,24,39,54 * * * *" in sql
