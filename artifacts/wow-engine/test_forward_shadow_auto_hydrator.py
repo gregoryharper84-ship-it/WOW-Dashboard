@@ -64,5 +64,5 @@ def test_auto_hydrator_is_staggered_every_fifteen_minutes():
     sql = _sql()
     assert "select cron.schedule(" in sql
     assert "'wow-mlb-forward-shadow-auto-hydrate'" in sql
-    assert "'5,20,35,50 * * * *'" in sql
+    assert "'4,19,34,49 * * * *'" in sql
     assert "select public.wow_mlb_forward_auto_hydrate_pregame();" in sql
