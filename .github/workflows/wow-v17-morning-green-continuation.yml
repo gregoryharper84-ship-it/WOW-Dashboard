@@ -235,6 +235,7 @@ jobs:
             --head-sha "$HEAD_SHA" \
             --head-ref "$HEAD_REF" \
             --workflow-run-id "$run_id" \
+            --workflow-name "$name" \
             | tee "$RUNNER_TEMP/governance-result.json"
           rc=${PIPESTATUS[0]}
           set -e
