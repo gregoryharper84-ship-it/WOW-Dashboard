@@ -302,7 +302,7 @@ begin
 end;
 $function$;
 
--- Capture finishes ahead of hydration (4,19,34,49) and away from the existing
+-- Capture finishes ahead of hydration (8,23,38,53) and away from the existing
 -- outcome grader (7,22,37,52).
 select cron.schedule(
   'wow-mlb-forward-shadow-auto-capture',

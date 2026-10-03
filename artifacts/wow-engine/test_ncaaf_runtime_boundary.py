@@ -51,6 +51,8 @@ def test_readiness_and_hydration_routes_are_authenticated():
     source = Path("api_ncaaf_acceptance.py").read_text()
     assert '"/internal/ncaaf/readiness"' in source
     assert '"/internal/ncaaf/hydrate-history"' in source
+    assert '"/internal/v17/spread-forward-warm-status"' in source
+    assert "operation_id=\"getWowV17SpreadForwardWarmStatus\"" in source
     assert "dependencies=[_auth]" in source
     assert "probability_publishable\": False" in source
     assert "can_execute\": False" in source
@@ -166,6 +168,14 @@ def test_spread_warm_staggers_then_recovers_from_transient_failures(monkeypatch)
 
     assert attempts == [1, 2, 3]
     assert sleeps == [1.0, 15.0, 30.0]
+    state = api.get_ncaaf_spread_forward_warm_status()
+    assert state["status"] == "READY"
+    assert state["code"] == "SPREAD_FORWARD_CONTEXT_READY"
+    assert state["attempt"] == 3
+    assert state["can_execute"] is False
+    assert state["probability_publishable"] is False
+    assert state["automatic_certification"] is False
+    assert state["automatic_promotion"] is False
 
 
 def test_spread_warm_stops_after_first_success(monkeypatch):
@@ -191,6 +201,10 @@ def test_spread_warm_stops_after_first_success(monkeypatch):
     asyncio.run(api._warm_ncaaf_spread_forward_context_after_startup())
 
     assert sleeps == []
+    state = api.get_ncaaf_spread_forward_warm_status()
+    assert state["status"] == "READY"
+    assert state["attempt"] == 1
+    assert state["can_execute"] is False
 
 
 
@@ -208,3 +222,77 @@ def test_spread_warm_does_not_retry_deterministic_failure(monkeypatch):
     asyncio.run(api._warm_ncaaf_spread_forward_context_after_startup())
 
     assert attempts == [1]
+    state = api.get_ncaaf_spread_forward_warm_status()
+    assert state["status"] == "FAILED"
+    assert state["code"] == "SPREAD_FORWARD_CONTEXT_WARM_FAILED"
+    assert state["error_type"] == "ValueError"
+    assert state["transient"] is False
+    assert state["can_execute"] is False
+
+
+
+def test_spread_warm_retries_exact_postgrest_schema_cache_failure(monkeypatch):
+    attempts = []
+    sleeps = []
+    monkeypatch.setenv("WOW_NCAAF_SPREAD_WARM_STARTUP_DELAY_SECONDS", "0")
+
+    async def fake_sleep(seconds):
+        sleeps.append(float(seconds))
+
+    class APIError(Exception):
+        code = "PGRST002"
+
+    def fake_warm(_client):
+        attempts.append(len(attempts) + 1)
+        if len(attempts) == 1:
+            raise APIError("schema cache unavailable")
+        return {
+            "status": "READY",
+            "code": "SPREAD_FORWARD_CONTEXT_READY",
+            "cache_status": "MISS_REBUILT",
+            "cache_age_seconds": 0.0,
+            "training_cutoff_event_time": "2026-09-30T00:00:00+00:00",
+            "can_execute": False,
+        }
+
+    monkeypatch.setattr(api.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(api, "_db_client", lambda: object())
+    monkeypatch.setattr(api, "warm_ncaaf_forward_context", fake_warm)
+
+    asyncio.run(api._warm_ncaaf_spread_forward_context_after_startup())
+
+    assert attempts == [1, 2]
+    assert sleeps == [15.0]
+    state = api.get_ncaaf_spread_forward_warm_status()
+    assert state["status"] == "READY"
+    assert state["attempt"] == 2
+    assert state["cache_status"] == "MISS_REBUILT"
+    assert state["can_execute"] is False
+
+
+def test_spread_warm_status_read_is_process_local_and_db_free(monkeypatch):
+    monkeypatch.setattr(
+        api,
+        "_db_client",
+        lambda: (_ for _ in ()).throw(AssertionError("warm status must not touch Supabase")),
+    )
+    api._set_spread_forward_warm_state(
+        "WARMING",
+        "SPREAD_FORWARD_CONTEXT_WARMING",
+        attempt=1,
+        max_attempts=3,
+    )
+
+    state = api.get_ncaaf_spread_forward_warm_status()
+
+    assert state == {
+        "status": "WARMING",
+        "code": "SPREAD_FORWARD_CONTEXT_WARMING",
+        "sport": "NCAAF",
+        "probability_publishable": False,
+        "automatic_certification": False,
+        "automatic_promotion": False,
+        "can_execute": False,
+        "attempt": 1,
+        "max_attempts": 3,
+    }

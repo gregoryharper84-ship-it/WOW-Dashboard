@@ -66,16 +66,25 @@ def test_post_deploy_orchestrator_is_only_deploy_consumer_for_heavy_verification
         assert 'workflows: ["wow-v17-render-production-deploy"]' not in text
 
 
-def test_post_deploy_orchestrator_runs_bounded_smoke_before_memory_heavy_replay():
+def test_post_deploy_orchestrator_verifies_spread_before_heavy_smoke():
     text = ORCHESTRATOR_WORKFLOW.read_text(encoding="utf-8")
 
-    priority = text.index("  priority-props:")
     spread = text.index("  spread-forward:")
     cert = text.index("  spread-certification:")
-    assert priority < spread < cert
-    assert "needs: priority-props" in text
-    assert "needs: spread-forward" in text
-    assert text.count("always() &&") == 3
+    priority = text.index("  priority-props:")
+    golden = text.index("  golden-full-slate:")
+    assert spread < cert < priority < golden
+
+    spread_section = text[spread:cert]
+    cert_section = text[cert:priority]
+    priority_section = text[priority:golden]
+    golden_section = text[golden:]
+
+    assert "needs:" not in spread_section
+    assert "needs: spread-forward" in cert_section
+    assert "needs: spread-certification" in priority_section
+    assert "needs: priority-props" in golden_section
+    assert "always() &&" not in text
     assert "uses: ./.github/workflows/wow-v17-priority-prop-lifecycle.yml" in text
     assert "post_deploy_smoke: true" in text
     assert "uses: ./.github/workflows/wow-v17-spread-forward-production-canary.yml" in text
@@ -93,10 +102,10 @@ def test_golden_full_slate_runs_only_as_post_deploy_reusable_acceptance():
     assert "if: inputs.post_deploy_acceptance == true" in daily
 
     golden = orchestrator.index("  golden-full-slate:")
-    certification = orchestrator.index("  spread-certification:")
-    assert certification < golden
+    priority = orchestrator.index("  priority-props:")
+    assert priority < golden
     section = orchestrator[golden:]
-    assert "needs: spread-certification" in section
+    assert "needs: priority-props" in section
     assert "uses: ./.github/workflows/wow-v17-daily-snapshot.yml" in section
     assert "post_deploy_acceptance: true" in section
     assert "github.event_name == 'workflow_run'" in section
@@ -118,13 +127,29 @@ def test_priority_prop_deploy_smoke_skips_next_day_without_weakening_hourly_defa
     assert 'seed_date "${today}"' in text
 
 
-def test_spread_canary_serializes_runtime_heavy_jobs_without_skipping_after_failure():
+def test_spread_canary_waits_for_db_free_warm_readiness_before_scoring():
+    text = CANARY_WORKFLOW.read_text(encoding="utf-8")
+    ncaaf = text[text.index("  ncaaf-canary:"):text.index("  nfl-canary:")]
+
+    warm_status = ncaaf.index("/internal/v17/spread-forward-warm-status")
+    scoring = ncaaf.index("/internal/v17/spread-forward-shadow")
+    assert warm_status < scoring
+    assert "warm_deadline = time.monotonic() + 240.0" in ncaaf
+    assert 'if warm_status == "READY":' in ncaaf
+    assert 'if warm_status == "FAILED":' in ncaaf
+    assert "SPREAD_FORWARD_WARM_FAILED" in ncaaf
+    assert "SPREAD_FORWARD_WARM_NOT_READY_AFTER_BOUNDED_WAIT" in ncaaf
+    assert 'warm.get("can_execute") is False' in ncaaf
+    assert 'warm.get("probability_publishable") is False' in ncaaf
+
+
+def test_spread_canary_serializes_and_stops_downstream_after_failure():
     text = CANARY_WORKFLOW.read_text(encoding="utf-8")
 
     assert "needs: ncaaf-canary" in text
     assert "needs: nfl-canary" in text
     assert "needs: wnba-canary" in text
-    assert text.count("if: always()") == 3
+    assert "if: always()" not in text
 
     ncaaf = text.index("  ncaaf-canary:")
     nfl = text.index("  nfl-canary:")

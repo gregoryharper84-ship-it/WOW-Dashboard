@@ -244,6 +244,6 @@ $function$;
 
 select cron.schedule(
   'wow-mlb-forward-shadow-auto-hydrate',
-  '4,19,34,49 * * * *',
+  '8,23,38,53 * * * *',
   $$select public.wow_mlb_forward_auto_hydrate_pregame();$$
 );
