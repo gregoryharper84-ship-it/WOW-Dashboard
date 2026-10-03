@@ -38,6 +38,11 @@ def _validate_manifest(manifest: dict[str, Any]) -> None:
                 raise ValueError(f"invalid execution_lane for issue {number}: {lane}")
             if str(entry.get("severity") or "").upper() == "P0" and lane != "RAPID":
                 raise ValueError(f"P0 issue {number} must use RAPID execution_lane")
+            if str(entry.get("severity") or "").upper() == "P0":
+                rapid_stream = str(entry.get("rapid_stream") or "").upper()
+                lease_group = str(entry.get("lease_group") or "").upper()
+                if not rapid_stream or not lease_group:
+                    raise ValueError(f"P0 issue {number} requires rapid_stream and lease_group")
             keys = entry.get("conflict_keys")
             if not isinstance(keys, list) or not [k for k in keys if str(k).strip()]:
                 raise ValueError(f"explicit conflict_keys required for issue {number}")
@@ -67,6 +72,8 @@ def build_queue(manifest: dict[str, Any], issues: list[dict[str, Any]]) -> dict[
                     "severity": str(entry["severity"]).upper(),
                     "priority_rank": int(entry["priority_rank"]),
                     "execution_lane": str(entry.get("execution_lane") or "STANDARD").upper(),
+                    "rapid_stream": str(entry.get("rapid_stream") or "").upper(),
+                    "lease_group": str(entry.get("lease_group") or "").upper(),
                     "state": "OPEN",
                     "work_stream": work_stream,
                     "conflict_keys": [str(k).strip().upper() for k in entry["conflict_keys"] if str(k).strip()],
