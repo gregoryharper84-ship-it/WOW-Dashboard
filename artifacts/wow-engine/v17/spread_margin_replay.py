@@ -10,6 +10,7 @@ from datetime import datetime, time, timezone
 from hashlib import sha256
 import json
 import os
+from time import sleep
 from typing import Any, Mapping, Sequence
 
 from v17.spread_margin_challenger import (
@@ -24,6 +25,8 @@ from v17.spread_margin_challenger import (
 from v17.team_state_intelligence import FEATURE_FAMILY_VERSION
 
 PAGE_SIZE = 1000
+NCAAF_PERSISTED_READ_TIMEOUT_RETRIES = 2
+NCAAF_PERSISTED_READ_TIMEOUT_BACKOFF_SECONDS = 0.25
 SUPPORTED_REPLAY_SPORTS = ("NFL", "NBA", "WNBA", "NCAAF")
 NCAAF_PERSISTED_FEATURE_MODEL_FAMILY = "NCAAF_DYNAMIC_TEAM_STATE_LOGIT_V2"
 NCAAF_PERSISTED_FEATURE_SCHEMA_VERSION = "NCAAF_DYNAMIC_TEAM_STATE_FEATURES_V2"
@@ -356,14 +359,34 @@ def adapt_ncaaf_persisted_rows(
     return sorted(out, key=lambda row: (_dt(row.event_start_time), row.event_id))
 
 
-def _paged_select(client: Any, table: str, fields: str, *, filters: Sequence[tuple[str, str, Any]] = (), order: str) -> list[dict[str, Any]]:
+def _is_read_timeout(exc: Exception) -> bool:
+    return type(exc).__name__ == "ReadTimeout"
+
+
+def _execute_read_with_retry(build_query: Any, *, retries: int = 0) -> Any:
+    attempt = 0
+    while True:
+        try:
+            return build_query().execute()
+        except Exception as exc:  # noqa: BLE001
+            if not _is_read_timeout(exc) or attempt >= retries:
+                raise
+            attempt += 1
+            sleep(NCAAF_PERSISTED_READ_TIMEOUT_BACKOFF_SECONDS * attempt)
+
+
+def _paged_select(client: Any, table: str, fields: str, *, filters: Sequence[tuple[str, str, Any]] = (), order: str, read_timeout_retries: int = 0) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     offset = 0
     while True:
-        query = client.table(table).select(fields)
-        for method, column, value in filters:
-            query = getattr(query, method)(column, value)
-        batch = query.order(order).range(offset, offset + PAGE_SIZE - 1).execute().data or []
+        def build_query() -> Any:
+            query = client.table(table).select(fields)
+            for method, column, value in filters:
+                query = getattr(query, method)(column, value)
+            return query.order(order).range(offset, offset + PAGE_SIZE - 1)
+
+        response = _execute_read_with_retry(build_query, retries=read_timeout_retries)
+        batch = response.data or []
         rows.extend(dict(row) for row in batch)
         if len(batch) < PAGE_SIZE:
             return rows
@@ -386,6 +409,7 @@ def _load_ncaaf_persisted_game_rows(client: Any) -> list[dict[str, Any]]:
         "wow_ncaaf_training_games",
         "training_game_id,official_event_id,season,event_start_time,home_team,away_team,home_points,away_points,result_source,result_source_timestamp,can_execute",
         order="official_event_id",
+        read_timeout_retries=NCAAF_PERSISTED_READ_TIMEOUT_RETRIES,
     )
 
 
@@ -401,6 +425,7 @@ def _load_ncaaf_persisted_feature_rows(client: Any) -> list[dict[str, Any]]:
             ("eq", "feature_schema_version", NCAAF_PERSISTED_FEATURE_SCHEMA_VERSION),
         ),
         order="official_event_id",
+        read_timeout_retries=NCAAF_PERSISTED_READ_TIMEOUT_RETRIES,
     )
 
 
