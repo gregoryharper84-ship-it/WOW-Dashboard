@@ -46,7 +46,7 @@ class _FakeClient:
 
 
 def test_persisted_ncaaf_loaders_page_by_unique_official_event_id(monkeypatch):
-    monkeypatch.setattr(replay, "PAGE_SIZE", 2)
+    monkeypatch.setattr(replay, "NCAAF_PERSISTED_PAGE_SIZE", 2)
     same_kickoff = "2023-09-09T16:00:00+00:00"
     games = [
         {"official_event_id": event_id, "event_start_time": same_kickoff}
@@ -148,3 +148,9 @@ def test_read_retry_preserves_non_timeout_failures(monkeypatch):
         pass
     else:
         raise AssertionError("non-ReadTimeout failure must propagate unchanged")
+
+
+
+def test_persisted_ncaaf_loaders_use_smaller_page_budget_than_shared_replay_default():
+    assert replay.NCAAF_PERSISTED_PAGE_SIZE < replay.PAGE_SIZE
+    assert replay.NCAAF_PERSISTED_PAGE_SIZE <= 200
