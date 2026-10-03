@@ -248,3 +248,15 @@ def test_repeat_safe_prop_transient_failure_requeues_with_bounded_retry():
     assert name == "wow_retry_scout_handoff_job"
     assert params["p_error_code"] == "PROVIDER_UNAVAILABLE"
     assert params["p_delay_seconds"] == 15
+
+
+def test_existing_research_red_team_quarantine_blocks_before_specialist_queue():
+    handoff = _handoff()
+    candidate = handoff["model_handoff"]["prop_candidates"][0]
+    candidate["contradictory_evidence"] = ["material contradiction"]
+    plan = build_handoff_plan(handoff)
+    prop = next(row for row in plan.candidates if row.target_lane == "WOW_PROP_LANE")
+    assert prop.red_team_status == "HANDOFF_BLOCKED"
+    assert prop.blocked_code == "SCOUT_RED_TEAM_QUARANTINED"
+    assert prop.blocked_detail["research_status"] == "QUARANTINED"
+    assert prop.can_execute is False
