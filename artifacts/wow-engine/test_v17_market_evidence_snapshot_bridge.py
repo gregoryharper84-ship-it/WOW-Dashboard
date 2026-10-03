@@ -289,3 +289,104 @@ def test_snapshot_never_seeds_stale_or_identity_incomplete_prop():
     result = attach_snapshot_evidence(handoff, _snapshot([event]), now=NOW)
     assert result["model_handoff"]["prop_candidates"] == []
     assert result["market_evidence_snapshot_bridge"]["prop_seed_rows_stale_quarantined"] >= 1
+
+
+def test_preexisting_unclassified_stale_evidence_is_quarantined_even_without_matching_snapshot():
+    handoff = _handoff()
+    candidate = handoff["model_handoff"]["team_event_candidates"][0]
+    candidate["market_evidence"] = [{
+        "bookmaker": "rundown-book",
+        "market_key": "spreads",
+        "outcome_name": "Texas Rangers",
+        "point": -1.5,
+        "price": -110,
+        "market_last_update": "2026-09-14T19:30:00Z",
+        "source_provider": "RUNDOWN_MARKET_EVIDENCE",
+        "source_provider_detail": "events",
+        "prediction_authority": False,
+        "can_execute": False,
+    }]
+    candidate["market_evidence_status"] = "AVAILABLE"
+
+    result = attach_snapshot_evidence(handoff, _snapshot([]), now=NOW)
+    candidate = result["model_handoff"]["team_event_candidates"][0]
+
+    assert candidate["market_evidence"] == []
+    assert len(candidate["market_evidence_stale"]) == 1
+    assert candidate["market_evidence_stale"][0]["freshness_state"] == "STALE"
+    assert candidate["market_evidence_stale"][0]["current_market_evidence"] is False
+    assert candidate["market_evidence_status"] == "STALE_OR_HISTORICAL_ONLY"
+    assert "MARKET_EVIDENCE_STALE_AT_CONSUMPTION" in candidate["market_evidence_source_blockers"]
+    assert result["market_evidence_snapshot_bridge"]["stale_or_unknown_rows_quarantined"] == 1
+    assert result["market_evidence_snapshot_bridge"]["candidates_touched"] == 1
+    assert candidate["probability"] is None
+    assert result["can_execute"] is False
+
+
+def test_preexisting_unclassified_fresh_evidence_is_normalized_and_remains_active():
+    handoff = _handoff()
+    candidate = handoff["model_handoff"]["team_event_candidates"][0]
+    candidate["market_evidence"] = [{
+        "bookmaker": "rundown-book",
+        "market_key": "spreads",
+        "outcome_name": "Texas Rangers",
+        "point": -1.5,
+        "price": -110,
+        "market_last_update": "2026-09-14T19:59:00Z",
+        "source_provider": "RUNDOWN_MARKET_EVIDENCE",
+        "source_provider_detail": "events",
+        "prediction_authority": False,
+        "can_execute": False,
+    }]
+
+    result = attach_snapshot_evidence(handoff, _snapshot([]), now=NOW)
+    candidate = result["model_handoff"]["team_event_candidates"][0]
+
+    assert len(candidate["market_evidence"]) == 1
+    assert candidate["market_evidence"][0]["freshness_state"] == "FRESH"
+    assert candidate["market_evidence"][0]["research_usable"] is True
+    assert candidate["market_evidence"][0]["current_market_evidence"] is True
+    assert candidate["market_evidence"][0]["prediction_authority"] is False
+    assert candidate["market_evidence"][0]["can_execute"] is False
+    assert candidate["probability"] is None
+
+
+def test_stale_prop_identity_can_receive_fresh_replacement_after_quarantine():
+    handoff = _handoff()
+    team = handoff["model_handoff"]["team_event_candidates"].pop()
+    prop = dict(team, route="WOW_PROP_LANE", controlling_specialist_route="WOW_PROP_LANE")
+    prop["market_evidence"] = {
+        "bookmaker": "old-book",
+        "market_key": "pitcher_strikeouts",
+        "description": "Example Pitcher",
+        "outcome_name": "Over",
+        "point": 5.5,
+        "price": -115,
+        "market_last_update": "2026-09-14T19:30:00Z",
+        "source_provider": "RUNDOWN_MARKET_EVIDENCE",
+        "source_provider_detail": "events",
+        "prediction_authority": False,
+        "can_execute": False,
+    }
+    handoff["model_handoff"]["prop_candidates"] = [prop]
+
+    event = _event("RUNDOWN", "fresh-book", -120)
+    event["bookmakers"][0]["markets"].append({
+        "key": "pitcher_strikeouts",
+        "last_update": "2026-09-14T19:59:00Z",
+        "outcomes": [
+            {"name": "Over", "description": "Example Pitcher", "price": -110, "point": 5.5},
+            {"name": "Under", "description": "Example Pitcher", "price": -110, "point": 5.5},
+        ],
+    })
+
+    result = attach_snapshot_evidence(handoff, _snapshot([event]), now=NOW)
+    candidate = result["model_handoff"]["prop_candidates"][0]
+
+    assert len(candidate["market_evidence_stale"]) == 1
+    assert all(row["freshness_state"] in {"FRESH", "AGING"} for row in candidate["market_evidence"])
+    assert any(row["bookmaker"] == "fresh-book" for row in candidate["market_evidence"])
+    assert not any(row["bookmaker"] == "old-book" for row in candidate["market_evidence"])
+    assert candidate["probability"] is None
+    assert all(row["prediction_authority"] is False for row in candidate["market_evidence"])
+    assert all(row["can_execute"] is False for row in candidate["market_evidence"])
