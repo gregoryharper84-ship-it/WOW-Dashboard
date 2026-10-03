@@ -194,7 +194,17 @@ async def _worker_loop(
     # observed path while still allowing restart recovery well inside one hour.
     lease_seconds = _int_env("WOW_V17_NFL_PICKEM_ASYNC_LEASE_SECONDS", 900, minimum=300, maximum=3600)
     max_attempts = _int_env("WOW_V17_NFL_PICKEM_ASYNC_MAX_ATTEMPTS", 3, minimum=1, maximum=10)
+    initial_delay_seconds = _int_env(
+        "WOW_V17_NFL_PICKEM_ASYNC_INITIAL_DELAY_SECONDS", 15, minimum=0, maximum=300
+    )
     wake: asyncio.Event = app.state.wow_v17_nfl_pickem_async_wake
+
+    if initial_delay_seconds:
+        LOGGER.warning(
+            "WOW_V17_NFL_PICKEM_ASYNC_STARTUP_DELAY seconds=%s can_execute=false",
+            initial_delay_seconds,
+        )
+        await asyncio.sleep(float(initial_delay_seconds))
 
     while True:
         claim: dict[str, Any] | None = None
