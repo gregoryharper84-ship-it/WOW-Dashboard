@@ -17,7 +17,7 @@ def test_reconciliation_installs_capture_job_only_when_absent():
 
 def test_reconciliation_installs_hydrator_job_only_when_absent():
     assert "jobname = 'wow-mlb-forward-shadow-auto-hydrate'" in SQL
-    assert "'5,20,35,50 * * * *'" in SQL
+    assert "'4,19,34,49 * * * *'" in SQL
     assert "select public.wow_mlb_forward_auto_hydrate_pregame();" in SQL
 
 
