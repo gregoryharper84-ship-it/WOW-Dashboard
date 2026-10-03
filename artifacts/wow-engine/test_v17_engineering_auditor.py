@@ -231,6 +231,15 @@ def test_auditor_migration_is_service_role_only_and_non_executable():
     assert "wow_event_predictions" not in text
 
 
+def test_auditor_skill_has_valid_frontmatter():
+    text = SKILL.read_text()
+    assert text.startswith("---\n")
+    _, frontmatter, _ = text.split("---", 2)
+    metadata = yaml.safe_load(frontmatter)
+    assert metadata["name"] == "wow-engineering-auditor"
+    assert isinstance(metadata["description"], str) and metadata["description"].strip()
+
+
 def test_auditor_skill_is_independent_and_read_only():
     text = SKILL.read_text()
     assert "CODE_HEALTH_AUDITOR" in text
