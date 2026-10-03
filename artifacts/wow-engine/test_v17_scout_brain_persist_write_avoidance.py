@@ -93,3 +93,35 @@ def test_direct_persistence_matches_edge_write_avoidance():
         "wow_scout.candidate_source_links.provider_entities is distinct from excluded.provider_entities"
         in text
     )
+
+
+def test_timestampless_evidence_has_no_wall_clock_observed_at_fallback():
+    edge = EDGE_FUNCTION.read_text(encoding="utf-8")
+    direct = DIRECT_PERSISTENCE.read_text(encoding="utf-8")
+
+    assert "new Date().toISOString()" not in edge
+    assert "or utc_now()" not in direct
+    keep = "(select x.observed_at from wow_scout.source_snapshots x where x.snapshot_id ="
+    assert "coalesce(observed::timestamptz," + keep in edge
+    assert "coalesce(%s::timestamptz," + keep in direct
+
+
+def test_candidate_upsert_is_guarded_in_edge_and_direct_paths():
+    edge = EDGE_FUNCTION.read_text(encoding="utf-8")
+    direct = DIRECT_PERSISTENCE.read_text(encoding="utf-8")
+
+    for text in (edge, direct):
+        block = text.split("insert into wow_scout.candidates", 1)[1].split("returning (xmax = 0)", 1)[0]
+        guard = block.split("updated_at=now()", 1)[1]
+        for col in (
+            "scout_team", "selection", "commence_time", "home_team", "away_team",
+            "controlling_specialist", "research_status", "research_priority_score",
+            "edge_classes", "contradictory_evidence", "red_team_flags",
+            "data_completeness", "source_freshness_score",
+        ):
+            assert f"wow_scout.candidates.{col} is distinct from excluded.{col}" in guard
+        assert "wow_scout.candidates.thesis is distinct from coalesce(excluded.thesis,wow_scout.candidates.thesis)" in guard
+        assert "wow_scout.candidates.probability is not null" in guard
+        assert "wow_scout.candidates.can_execute is distinct from false" in guard
+
+    assert "inserted_row and inserted_row[0]" in direct
