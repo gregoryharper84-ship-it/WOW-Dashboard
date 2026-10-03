@@ -135,6 +135,7 @@ jobs:
         shell: bash
         env:
           SOURCE_RUN_ID: ${{ steps.source.outputs.run_id }}
+          FORCE_REPLAY: ${{ steps.source.outputs.force_replay }}
         run: |
           set -euo pipefail
           main_sha=$(gh api "/repos/${GITHUB_REPOSITORY}/commits/main" --jq '.sha')
@@ -153,6 +154,15 @@ jobs:
             --arg title "$display_title" --arg sha "$main_sha" \
             '[.workflow_runs[] | select(.display_title == $title and .status == "completed" and .conclusion == "success" and .head_sha == $sha)] | first | .id // ""')
 
+          # Repeated automatic retries against a saturated database make the
+          # incident worse. After a same-source failure, park automatic recovery
+          # for 30 minutes. An explicit workflow_dispatch remains the governed
+          # override when an operator has evidence that the database recovered.
+          cutoff_epoch=$(date -u -d '30 minutes ago' +%s)
+          recent_failed_run_id=$(printf '%s' "$persist_runs" | jq -r \
+            --arg title "$display_title" --argjson cutoff "$cutoff_epoch" \
+            '[.workflow_runs[] | select(.display_title == $title and .status == "completed" and .conclusion == "failure" and .updated_at != null) | select((.updated_at | fromdateiso8601) >= $cutoff)] | first | .id // ""')
+
           echo "main_sha=$main_sha" >> "$GITHUB_OUTPUT"
           if [ -n "$active_run_id" ]; then
             echo "active=true" >> "$GITHUB_OUTPUT"
@@ -170,8 +180,24 @@ jobs:
             echo "replayed=false" >> "$GITHUB_OUTPUT"
           fi
 
+          if [ "$FORCE_REPLAY" != "true" ] && [ -n "$recent_failed_run_id" ]; then
+            echo "cooldown=true" >> "$GITHUB_OUTPUT"
+            echo "recent_failed_run_id=$recent_failed_run_id" >> "$GITHUB_OUTPUT"
+            echo "SCOUT_PERSISTENCE_RECOVERY_COOLDOWN_ACTIVE: same-source persistence run ${recent_failed_run_id} failed within the last 30 minutes; automatic re-dispatch is parked." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "cooldown=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Park automatic Scout persistence recovery during failure cooldown
+        if: steps.writer.outputs.cooldown == 'true'
+        env:
+          SOURCE_RUN_ID: ${{ steps.source.outputs.run_id }}
+          RECENT_FAILED_RUN_ID: ${{ steps.writer.outputs.recent_failed_run_id }}
+        run: |
+          echo "BLOCKED_WITH_EXACT_REASON: SCOUT_PERSISTENCE_RECOVERY_COOLDOWN_ACTIVE source_run_id=${SOURCE_RUN_ID} failed_run_id=${RECENT_FAILED_RUN_ID}" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Explicitly resume Scout persistence
-        if: (steps.source.outputs.force_replay == 'true' || steps.existing.outputs.present != 'true') && steps.writer.outputs.active != 'true' && steps.writer.outputs.replayed != 'true'
+        if: (steps.source.outputs.force_replay == 'true' || steps.existing.outputs.present != 'true') && steps.writer.outputs.active != 'true' && steps.writer.outputs.replayed != 'true' && steps.writer.outputs.cooldown != 'true'
         shell: bash
         env:
           SOURCE_RUN_ID: ${{ steps.source.outputs.run_id }}
@@ -181,6 +207,7 @@ jobs:
           echo "Explicitly dispatched governed Scout persistence for source run ${SOURCE_RUN_ID} on current main." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Verify persistence receipt appears
+        if: steps.writer.outputs.cooldown != 'true'
         shell: bash
         env:
           SOURCE_RUN_ID: ${{ steps.source.outputs.run_id }}
