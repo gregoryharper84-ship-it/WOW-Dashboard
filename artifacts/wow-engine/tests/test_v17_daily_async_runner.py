@@ -154,4 +154,4 @@ def test_worker_staggers_first_database_claim_after_startup(monkeypatch):
             )
 
     asyncio.run(exercise())
-    assert sleeps == [5.0]
+    assert sleeps == [10.0]
