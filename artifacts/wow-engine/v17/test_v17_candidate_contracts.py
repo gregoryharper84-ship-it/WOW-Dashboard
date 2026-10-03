@@ -10,6 +10,8 @@ WOW_SCHEMA = HERE / "openapi.wow-betting-engine.v17.yaml"
 LLP_SCHEMA = HERE / "openapi.llp-team-engine.v17.yaml"
 LLP_INSTRUCTIONS = HERE.parent / "LLP_V17_CUSTOM_GPT_INSTRUCTIONS.txt"
 ROOT_LLP_INSTRUCTIONS = HERE.parents[2] / "LLP-TEAM-BETTING-GPT-INSTRUCTIONS.md"
+LLP_GATEWAY = HERE / "supabase/functions/wow-llp-action-gateway/index.ts"
+LLP_SUPABASE_CONFIG = HERE / "supabase/config.toml"
 
 
 def _operations(text: str) -> set[str]:
@@ -38,12 +40,18 @@ def test_candidate_shadow_app_preserves_governed_compatibility_routes():
     assert "/settle-recommendations" in paths
 
 
-def test_both_v17_action_schemas_are_production_source_contracts_on_same_render_origin():
-    expected = "https://wow-governed-probability-engine.onrender.com"
+def test_v17_action_schemas_preserve_backend_and_llp_gateway_transport_contracts():
+    render_origin = "https://wow-governed-probability-engine.onrender.com"
+    llp_gateway_origin = (
+        "https://iczfhsmjrrafhvcpmqhr.supabase.co/functions/v1/wow-llp-action-gateway"
+    )
     wow = WOW_SCHEMA.read_text()
     llp = LLP_SCHEMA.read_text()
-    assert expected in wow
-    assert expected in llp
+    assert render_origin in wow
+    assert llp_gateway_origin in llp
+    assert "closed Supabase Edge" in llp
+    assert "unchanged\n    governed Render runtime" in llp
+    assert "transport-only" in llp
     assert "REPLACE_WITH_RENDER_SERVICE_HOST" not in wow
     assert "REPLACE_WITH_RENDER_SERVICE_HOST" not in llp
     assert "PRODUCTION SOURCE CONTRACT" in wow
@@ -51,7 +59,7 @@ def test_both_v17_action_schemas_are_production_source_contracts_on_same_render_
     assert "CANDIDATE ONLY" not in wow
     assert "CANDIDATE ONLY" not in llp
     assert "version: 17.0.0" in wow
-    assert "version: 17.0.0" in llp
+    assert "version: 17.0.1-transport-gateway" in llp
 
 
 def test_wow_action_has_prop_and_team_event_delegation():
@@ -223,4 +231,39 @@ def test_llp_supabase_gateway_diagnostic_contract_is_narrow():
         "sport", "event_id", "event_start_time", "home_team",
         "away_team", "home_spread", "season",
     }
+
+def test_llp_supabase_gateway_covers_only_canonical_action_routes():
+    source = LLP_GATEWAY.read_text()
+    canonical_routes = {
+        "/health",
+        "/governance",
+        "/v17/host-contract",
+        "/v17/daily-snapshot-run",
+        "/score-team-event",
+        "/internal/v17/spread-forward-shadow",
+        "/internal/v17/nfl-spread-forward-shadow",
+        "/internal/v17/wnba-spread-forward-shadow",
+        "/internal/v17/mlb-run-line-forward-shadow",
+        "/record-recommendations",
+        "/settle-recommendations",
+    }
+    for route in canonical_routes:
+        assert route.replace("/", "\\/") in source
+    assert r"^\/v17\/daily-snapshot-run\/[^/]+\/rows$" in source
+    assert "LLP_GATEWAY_PATH_NOT_ALLOWED" in source
+    assert "LLP_GATEWAY_METHOD_NOT_ALLOWED" in source
+    assert "LLP_GATEWAY_AUTH_REQUIRED" in source
+    assert 'authorization.startsWith("Bearer ")' in source
+    assert 'headers.set("authorization", authorization)' in source
+    assert "upstream.search = url.search" in source
+    assert "redirect: \"manual\"" in source
+    assert "can_execute: false" in source
+    assert "TARGET + upstreamPath" in source
+    assert "req.headers" not in source.split('headers.set("user-agent"')[1]
+
+
+def test_llp_gateway_supabase_platform_jwt_check_is_disabled_for_wow_bearer():
+    config = LLP_SUPABASE_CONFIG.read_text()
+    assert "[functions.wow-llp-action-gateway]" in config
+    assert "verify_jwt = false" in config
 

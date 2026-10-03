@@ -1,16 +1,20 @@
 openapi: 3.1.0
 info:
   title: LLP Team Betting Engine v17 Action
-  version: 17.0.0
+  version: 17.0.1-transport-gateway
   description: >-
     PRODUCTION SOURCE CONTRACT. LLP Team Betting Engine owns team/game/event
     winner, favorite, underdog, upset and governed point-spread intelligence.
+    Its Custom GPT Action transport enters through the closed Supabase Edge
+    gateway, which forwards only the canonical LLP route set to the unchanged
+    governed Render runtime. The gateway is transport-only and has no sporting
+    probability, calibration, publication, terminal, or execution authority.
     It has no player-prop scoring operation. Shared market, portfolio and global
     terminal authority remain in the WOW governed core. Install this schema in
     the live LLP Custom GPT editor when editor access is available.
     can_execute is always false.
 servers:
-  - url: https://wow-governed-probability-engine.onrender.com
+  - url: https://iczfhsmjrrafhvcpmqhr.supabase.co/functions/v1/wow-llp-action-gateway
 paths:
   /health:
     get:
