@@ -245,6 +245,35 @@ def test_claude_runner_prefers_api_key_then_fails_over_to_oauth() -> None:
     assert 'show_full_output: "false"' in action
 
 
+
+def test_domain_scoped_p0_target_propagates_across_provider_and_workers() -> None:
+    dispatcher = PROVIDER_DISPATCHER.read_text()
+    openai = WORKER.read_text()
+    claude = CLAUDE_WORKER.read_text()
+
+    for text in (dispatcher, openai, claude):
+        assert "target_incident" in text
+        assert "lease_group" in text
+
+    assert '-f target_incident="$TARGET_INCIDENT"' in dispatcher
+    assert '-f lease_group="$LEASE_GROUP"' in dispatcher
+    assert "SOURCE_DISPLAY_TITLE" in dispatcher
+    assert "incident=([0-9]+)" in dispatcher
+    assert "lease=([A-Za-z0-9_-]+)" in dispatcher
+
+    shared_group = "group: wow-v17-engineering-domain-${{ inputs.lease_group || 'GLOBAL' }}"
+    assert shared_group in openai
+    assert shared_group in claude
+    assert "TARGET_INCIDENT_NOT_ACTIONABLE" in openai
+    assert "TARGET_INCIDENT_NOT_ACTIONABLE" in claude
+    assert "TARGET_INCIDENT_LEASE_MISMATCH" in openai
+    assert "TARGET_INCIDENT_LEASE_MISMATCH" in claude
+    assert 'select(.severity != "P0" or .execution_lane != "RAPID")' in openai
+    assert 'select(.severity != "P0" or .execution_lane != "RAPID")' in claude
+    assert "WOW_DUAL_STREAM_HEARTBEAT:${LEASE_GROUP:-GLOBAL}" in openai
+    assert "WOW_DUAL_STREAM_HEARTBEAT:${LEASE_GROUP:-GLOBAL}" in claude
+
+
 def test_provider_dispatcher_has_typed_failover_and_survival() -> None:
     text = PROVIDER_DISPATCHER.read_text()
     assert "OPENAI_API_QUOTA_EXCEEDED" not in text
