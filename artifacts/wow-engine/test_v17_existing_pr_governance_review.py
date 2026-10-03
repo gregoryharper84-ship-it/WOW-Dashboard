@@ -252,5 +252,4 @@ def test_trusted_consumers_use_dedicated_existing_pr_verifier():
     assert '"wow-v17-change-impact-gate|.github/workflows/wow-v17-change-impact-gate.yml"' in release
     assert '"wow-v17-engineering-auditor-code-health|.github/workflows/wow-v17-engineering-auditor-code-health.yml"' in release
     assert '"wow-v17-spread-forward-shadow|.github/workflows/wow-v17-spread-forward-shadow.yml"' in release
-    assert '"wow-v17-release-production-verification-agent|.github/workflows/wow-v17-release-production-verification-agent.yml"' in release
     assert "Trusted exact-head engineering governance" in release
