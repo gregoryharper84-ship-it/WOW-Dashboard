@@ -226,6 +226,7 @@ def main() -> int:
         and result["p95_ms"] <= args.max_p95_ms
         and result["successes"] == result["requests"]
     )
+    result["premerge_soak_replaced"] = bool(result["pass"] and mode == "STAGING_HTTP")
     result["production_soak_replaced"] = False
     result["production_canary_required"] = True
 
