@@ -10,7 +10,10 @@ from typing import Any
 
 
 TERMINAL_AUTHORITY = "V17_TERMINAL_REDUCER"
-WORKFLOW_NAME = "wow-v17-chatgpt-engineering-worker"
+ALLOWED_WORKFLOW_NAMES = {
+    "wow-v17-chatgpt-engineering-worker",
+    "wow-v17-claude-engineering-worker",
+}
 ALLOWED_ARCHITECT_DECISIONS = {"PASS", "NOT_APPLICABLE"}
 
 
@@ -32,7 +35,7 @@ def verify_receipt(
     expected_workflow_run_id: str | None = None,
 ) -> None:
     _require(receipt.get("receipt_schema_version") == 1, "receipt schema version is not supported")
-    _require(receipt.get("workflow_name") == WORKFLOW_NAME, "receipt workflow identity mismatch")
+    _require(receipt.get("workflow_name") in ALLOWED_WORKFLOW_NAMES, "receipt workflow identity mismatch")
     _require(receipt.get("repository") == expected_repository, "receipt repository mismatch")
     if expected_workflow_run_id is not None:
         _require(
