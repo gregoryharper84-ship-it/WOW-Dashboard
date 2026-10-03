@@ -558,9 +558,10 @@ jobs:
         id: regression
         if: steps.review.outputs.decision == 'PASS' && (steps.architect.outputs.decision == 'PASS' || steps.architect.outputs.decision == 'NOT_APPLICABLE')
         shell: bash
+        working-directory: artifacts/wow-engine
         run: |
           set +e
-          python -m pytest -q artifacts/wow-engine 2>&1 | tee "$RUNNER_TEMP/qa-regression.log"
+          python -m pytest -q 2>&1 | tee "$RUNNER_TEMP/qa-regression.log"
           status=${PIPESTATUS[0]}
           echo "status=$status" >> "$GITHUB_OUTPUT"
           exit 0
