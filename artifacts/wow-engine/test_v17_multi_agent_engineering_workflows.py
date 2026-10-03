@@ -152,14 +152,22 @@ def test_frontier_agent_is_reliability_preempted_and_experiment_only() -> None:
     assert "can_execute=false" in text
 
 
-def test_primary_openai_agent_workflows_remain_openai_only() -> None:
-    for path in (WORKER, RELEASE, FRONTIER):
+def test_non_peer_primary_openai_agent_workflows_remain_openai_only() -> None:
+    for path in (RELEASE, FRONTIER):
         text = path.read_text()
         assert "wow-chatgpt-agent" in text
         assert "OPENAI_API_KEY" in text
         assert "wow-claude-agent" not in text
         assert "ANTHROPIC_API_KEY" not in text
         assert "CLAUDE_CODE_OAUTH_TOKEN" not in text
+
+    worker = WORKER.read_text()
+    assert "wow-chatgpt-agent" in worker
+    assert "wow-claude-agent" in worker
+    assert "CROSS_PROVIDER_PEER_DIAGNOSIS_AGENT" in worker
+    assert "CROSS_PROVIDER_ADVERSARIAL_REVIEW_AGENT" in worker
+    assert worker.count('permission_profile: ":workspace"') == 1
+    assert worker.count("uses: ./.github/actions/wow-claude-agent") == 2
 
     action = CHATGPT_ACTION.read_text()
     assert "openai/codex-action@v1" in action
@@ -168,17 +176,36 @@ def test_primary_openai_agent_workflows_remain_openai_only() -> None:
     assert 'allow-bots: "true"' in action
 
 
-def test_claude_runtime_is_isolated_to_fallback_worker() -> None:
-    worker = CLAUDE_WORKER.read_text()
+def test_claude_agent_is_bounded_to_fallback_or_read_only_primary_peer_roles() -> None:
+    fallback_worker = CLAUDE_WORKER.read_text()
+    primary_worker = WORKER.read_text()
     action = CLAUDE_ACTION.read_text()
     dispatcher = PROVIDER_DISPATCHER.read_text()
-    assert "wow-claude-agent" in worker
-    assert "ANTHROPIC_API_KEY" in worker
-    assert "CLAUDE_CODE_OAUTH_TOKEN" in worker
+
+    assert "wow-claude-agent" in fallback_worker
+    assert "ANTHROPIC_API_KEY" in fallback_worker
+    assert "CLAUDE_CODE_OAUTH_TOKEN" in fallback_worker
+    assert "OPENAI_API_KEY" not in fallback_worker
+
+    assert "wow-claude-agent" in primary_worker
+    assert "CROSS_PROVIDER_PEER_DIAGNOSIS_AGENT" in primary_worker
+    assert "CROSS_PROVIDER_ADVERSARIAL_REVIEW_AGENT" in primary_worker
+    assert primary_worker.count("uses: ./.github/actions/wow-claude-agent") == 2
+    assert "steps.claude_review.outputs.decision != 'REJECT'" in primary_worker
+    assert "Claude peer analysis unavailable; primary OpenAI engineering path remains active." in primary_worker
+
     assert "anthropics/claude-code-base-action@16bc61eeac6dfaad1e3617aee9aefa59fce7c9be" in action
-    assert "OPENAI_API_KEY" not in worker
     assert "OPENAI_API_KEY" in dispatcher
     assert "ANTHROPIC_API_KEY" in dispatcher
+
+
+def test_claude_cross_provider_reject_blocks_green_primary_gate() -> None:
+    text = WORKER.read_text()
+    assert "Claude cross-provider adversarial review" in text
+    assert "steps.claude_review.outputs.decision != 'REJECT'" in text
+    assert '[ "${CLAUDE_REVIEW:-NOT_RUN}" != "REJECT" ]' in text
+    assert "OpenAI/ChatGPT retains the single implementation lease" in text
+    assert "Anthropic/Claude is bounded to read-only peer diagnosis and adversarial review on the primary path" in text
 
 
 def test_claude_runner_prefers_api_key_then_fails_over_to_oauth() -> None:
