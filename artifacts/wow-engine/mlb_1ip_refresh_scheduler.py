@@ -26,13 +26,18 @@ async def run_refresh_loop(
     db_client_fn: Callable[[], Any],
     logger: logging.Logger,
     interval_seconds: int = DEFAULT_INTERVAL_SECONDS,
+    initial_delay_seconds: int = 30,
 ) -> None:
     """Run governed MLB 1IP refresh passes until the task is cancelled."""
     interval = max(60, int(interval_seconds))
+    initial_delay = max(0, min(int(initial_delay_seconds), 300))
     logger.warning(
-        "WOW_MLB_1IP_FINAL_REFRESH status=STARTED interval_seconds=%s probability_publishable=false can_execute=false",
+        "WOW_MLB_1IP_FINAL_REFRESH status=STARTED interval_seconds=%s initial_delay_seconds=%s probability_publishable=false can_execute=false",
         interval,
+        initial_delay,
     )
+    if initial_delay:
+        await asyncio.sleep(float(initial_delay))
     if os.getenv("WOW_MLB_1IP_LIVE_SELF_ACCEPTANCE", "0") == "1":
         await run_live_self_acceptance(logger)
     while True:

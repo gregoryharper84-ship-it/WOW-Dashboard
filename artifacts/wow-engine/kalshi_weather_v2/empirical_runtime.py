@@ -140,10 +140,18 @@ def install_empirical_cohort_scheduler(
         except ValueError:
             interval_seconds = 900
         interval_seconds = max(300, interval_seconds)
+        try:
+            initial_delay_seconds = int(
+                os.getenv("WOW_KALSHI_WEATHER_EMPIRICAL_INITIAL_DELAY_SECONDS", "45")
+            )
+        except ValueError:
+            initial_delay_seconds = 45
+        initial_delay_seconds = max(0, min(initial_delay_seconds, 300))
         task = asyncio.create_task(
             _run_bounded_shadow_loop(
                 db_client_fn=db_client_fn,
                 interval_seconds=interval_seconds,
+                initial_delay_seconds=initial_delay_seconds,
             )
         )
         _tasks.add(task)
@@ -154,12 +162,17 @@ async def _run_bounded_shadow_loop(
     *,
     db_client_fn: Callable[[], object],
     interval_seconds: int,
+    initial_delay_seconds: int = 45,
 ) -> None:
+    initial_delay = max(0, min(int(initial_delay_seconds), 300))
     _logger.warning(
-        "WOW_KALSHI_WEATHER_EMPIRICAL_COHORT status=STARTED collection_mode=BOUNDED_ROTATING_CAPTURE_ONLY_SHADOW interval_seconds=%s max_targets=%s probability_publishable=false can_execute=false",
+        "WOW_KALSHI_WEATHER_EMPIRICAL_COHORT status=STARTED collection_mode=BOUNDED_ROTATING_CAPTURE_ONLY_SHADOW interval_seconds=%s initial_delay_seconds=%s max_targets=%s probability_publishable=false can_execute=false",
         interval_seconds,
+        initial_delay,
         os.getenv("WOW_KALSHI_WEATHER_EMPIRICAL_MAX_TARGETS", "1"),
     )
+    if initial_delay:
+        await asyncio.sleep(float(initial_delay))
     while True:
         try:
             result = await asyncio.to_thread(

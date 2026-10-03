@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
 from fastapi import FastAPI
 
+import v17.nfl_pickem_async_runtime as pickem_async_runtime
 import v17.nfl_pickem_runtime as pickem_runtime
 from v17.nfl_pickem_async_runtime import (
     AsyncNFLPickemSubmitRequest,
@@ -192,3 +194,30 @@ def test_completion_requires_current_lease_and_result_payload():
     assert "if p_result_payload is null" in normalized
     assert "result_payload = p_result_payload" in normalized
     assert "status',case when changed = 1 then 'completed' else 'stale_lease' end" in normalized
+
+
+def test_worker_staggers_first_database_claim_after_startup(monkeypatch):
+    app = FastAPI()
+    app.state.wow_v17_nfl_pickem_async_wake = asyncio.Event()
+    sleeps = []
+
+    async def stop_on_initial_delay(seconds):
+        sleeps.append(seconds)
+        raise asyncio.CancelledError
+
+    def db_must_not_be_touched():
+        raise AssertionError("NFL Pick'em database claim occurred before startup delay")
+
+    monkeypatch.setenv("WOW_V17_NFL_PICKEM_ASYNC_INITIAL_DELAY_SECONDS", "20")
+    monkeypatch.setattr(pickem_async_runtime.asyncio, "sleep", stop_on_initial_delay)
+
+    async def exercise():
+        with pytest.raises(asyncio.CancelledError):
+            await pickem_async_runtime._worker_loop(
+                app,
+                db_client_fn=db_must_not_be_touched,
+                event_api=object(),
+            )
+
+    asyncio.run(exercise())
+    assert sleeps == [20.0]
