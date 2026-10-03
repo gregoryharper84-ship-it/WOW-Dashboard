@@ -1,0 +1,72 @@
+openapi: 3.1.0
+info:
+  title: LLP Team Betting Engine v17 Supabase Gateway Diagnostic
+  version: 17.0.0-diagnostic
+  description: >-
+    DIAGNOSTIC ONLY. Alternate-hostname probe for the LLP Custom GPT Action path.
+    Exposes only backend health and the NCAAF spread-forward shadow operation.
+    No probability math, certification, promotion, ranking, or execution changes.
+servers:
+  - url: https://iczfhsmjrrafhvcpmqhr.supabase.co/functions/v1/wow-llp-action-gateway
+paths:
+  /health:
+    get:
+      operationId: getLlpV17BackendHealth
+      x-openai-isConsequential: false
+      responses:
+        '200':
+          description: Backend health state through the Supabase gateway
+  /internal/v17/spread-forward-shadow:
+    post:
+      operationId: scoreLlpV17SpreadForwardShadow
+      x-openai-isConsequential: false
+      security:
+        - actionBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SpreadForwardShadowRequest'
+      responses:
+        '200':
+          description: Research-only fitted spread challenger result or typed blocker
+        '401':
+          description: Authentication failed
+        '422':
+          description: Invalid NCAAF exact-line shadow request
+components:
+  securitySchemes:
+    actionBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: WOW_ACTION_API_KEY
+  schemas:
+    SpreadForwardShadowRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - sport
+        - event_id
+        - event_start_time
+        - home_team
+        - away_team
+        - home_spread
+        - season
+      properties:
+        sport:
+          type: string
+          const: NCAAF
+        event_id:
+          type: string
+        event_start_time:
+          type: string
+          format: date-time
+        home_team:
+          type: string
+        away_team:
+          type: string
+        home_spread:
+          type: number
+        season:
+          type: integer
