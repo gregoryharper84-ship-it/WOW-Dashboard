@@ -148,6 +148,6 @@ $function$;
 
 select cron.schedule(
   'wow-mlb-forward-shadow-auto-grade',
-  '*/15 * * * *',
+  '7,22,37,52 * * * *',
   $$select public.wow_mlb_forward_auto_grade_completed();$$
 );
