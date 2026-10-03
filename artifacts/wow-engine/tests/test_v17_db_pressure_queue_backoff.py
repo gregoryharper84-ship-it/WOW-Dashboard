@@ -33,3 +33,12 @@ def test_durable_pick_worker_reduces_idle_and_failure_poll_pressure():
     assert "timeout=POLL_SECONDS" in queue
     assert "timeout=DB_FAILURE_BACKOFF_SECONDS" in queue
     assert "CAN_EXECUTE = False" in queue
+
+
+def test_render_defaults_keep_low_pressure_settings_source_controlled():
+    render = (HERE.parents[1] / "render.yaml").read_text(encoding="utf-8")
+
+    assert 'key: WOW_V17_DAILY_ASYNC_POLL_SECONDS' in render
+    assert 'key: WOW_V17_NFL_PICKEM_ASYNC_POLL_SECONDS' in render
+    assert 'key: WOW_ENGINEERING_AUDITOR_MAX_SLEEP_SECONDS' in render
+    assert 'value: "300"' in render
