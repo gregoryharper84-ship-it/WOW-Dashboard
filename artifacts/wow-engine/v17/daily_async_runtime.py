@@ -190,7 +190,7 @@ async def _worker_loop(
     market_api: Any,
     event_api: Any,
 ) -> None:
-    poll_seconds = _int_env("WOW_V17_DAILY_ASYNC_POLL_SECONDS", 2, minimum=1, maximum=30)
+    poll_seconds = _int_env("WOW_V17_DAILY_ASYNC_POLL_SECONDS", 30, minimum=5, maximum=60)\n    db_failure_backoff_seconds = _int_env("WOW_V17_DAILY_ASYNC_DB_FAILURE_BACKOFF_SECONDS", 30, minimum=5, maximum=120)
     lease_seconds = _int_env("WOW_V17_DAILY_ASYNC_LEASE_SECONDS", 900, minimum=60, maximum=3600)
     max_attempts = _int_env("WOW_V17_DAILY_ASYNC_MAX_ATTEMPTS", 3, minimum=1, maximum=10)
     wake: asyncio.Event = app.state.wow_v17_daily_async_wake
@@ -209,7 +209,7 @@ async def _worker_loop(
 
         if claim is None:
             try:
-                await asyncio.wait_for(wake.wait(), timeout=float(poll_seconds))
+                timeout = db_failure_backoff_seconds if claim_failed else poll_seconds\n                await asyncio.wait_for(wake.wait(), timeout=float(timeout))
                 wake.clear()
             except TimeoutError:
                 pass
