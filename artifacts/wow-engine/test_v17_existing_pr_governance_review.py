@@ -218,6 +218,21 @@ def test_release_verifier_jq_selectors_compile_and_match():
     assert r'\(.conclusion // \\"\\"' not in release
 
 
+def test_release_verifier_does_not_require_itself_as_prerequisite():
+    release = RELEASE.read_text(encoding="utf-8")
+    required_block = release.split("required=(", 1)[1].split(")", 1)[0]
+    assert "wow-v17-release-production-verification-agent" not in required_block
+    for required in (
+        "wow-verify",
+        "wow-engine-verify",
+        "wow-v17-rapid-repair",
+        "wow-v17-change-impact-gate",
+        "wow-v17-engineering-auditor-code-health",
+        "wow-v17-spread-forward-shadow",
+    ):
+        assert required in required_block
+
+
 def test_trusted_consumers_use_dedicated_existing_pr_verifier():
     gate = GATE.read_text(encoding="utf-8")
     morning = MORNING_GREEN.read_text(encoding="utf-8")
