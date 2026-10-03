@@ -1,0 +1,108 @@
+name: wow-v17-p0-rapid-dispatch
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+  issues: read
+
+concurrency:
+  group: wow-v17-p0-rapid-dispatch
+  cancel-in-progress: true
+
+jobs:
+  dispatch:
+    name: Dispatch actionable P0 rapid lane
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout protected main
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Resolve actionable rapid P0
+        id: rapid
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh issue list \
+            --repo "$GITHUB_REPOSITORY" \
+            --state open \
+            --limit 200 \
+            --json number,title,body,state,updatedAt \
+            > "$RUNNER_TEMP/wow-open-issues.json"
+
+          python artifacts/wow-engine/v17/engineering_dispatch_queue.py build \
+            --manifest artifacts/wow-engine/v17/engineering_dispatch_manifest.json \
+            --issues "$RUNNER_TEMP/wow-open-issues.json" \
+            --output "$RUNNER_TEMP/wow-dispatch-queue.json" \
+            > /dev/null
+
+          rapid_count=$(jq '[.records[] | select(.severity == "P0" and .execution_lane == "RAPID")] | length' "$RUNNER_TEMP/wow-dispatch-queue.json")
+          top_incident=$(jq -r '[.records[] | select(.severity == "P0" and .execution_lane == "RAPID")] | sort_by(.priority_rank) | .[0].incident_id // ""' "$RUNNER_TEMP/wow-dispatch-queue.json")
+
+          active_count=0
+          for workflow in \
+            wow-v17-engineering-provider-dispatcher.yml \
+            wow-v17-chatgpt-engineering-worker.yml \
+            wow-v17-claude-engineering-worker.yml
+          do
+            count=$(gh run list \
+              --repo "$GITHUB_REPOSITORY" \
+              --workflow "$workflow" \
+              --limit 20 \
+              --json status \
+              --jq '[.[] | select(.status != "completed")] | length')
+            active_count=$((active_count + count))
+          done
+
+          dispatch=false
+          if [ "$rapid_count" -gt 0 ] && [ "$active_count" -eq 0 ]; then
+            dispatch=true
+          fi
+
+          echo "rapid_count=$rapid_count" >> "$GITHUB_OUTPUT"
+          echo "top_incident=$top_incident" >> "$GITHUB_OUTPUT"
+          echo "active_count=$active_count" >> "$GITHUB_OUTPUT"
+          echo "dispatch=$dispatch" >> "$GITHUB_OUTPUT"
+
+      - name: Dispatch provider-aware engineering worker
+        if: steps.rapid.outputs.dispatch == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INCIDENT: ${{ steps.rapid.outputs.top_incident }}
+        run: |
+          set -euo pipefail
+          gh workflow run wow-v17-engineering-provider-dispatcher.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref main \
+            -f force_provider=auto \
+            -f reason="P0_RAPID_LANE:${INCIDENT}"
+
+      - name: Record rapid-lane receipt
+        if: always()
+        run: |
+          {
+            echo "# WOW V17 P0 Rapid Lane"
+            echo "- rapid_p0_count: ${{ steps.rapid.outputs.rapid_count || '0' }}"
+            echo "- top_incident: ${{ steps.rapid.outputs.top_incident || 'NONE' }}"
+            echo "- active_engineering_runs: ${{ steps.rapid.outputs.active_count || '0' }}"
+            echo "- dispatched: ${{ steps.rapid.outputs.dispatch || 'false' }}"
+            echo "- single_implementation_lease: true"
+            echo "- can_execute: false"
+            echo "- terminal_authority: V17_TERMINAL_REDUCER"
+          } >> "$GITHUB_STEP_SUMMARY"
