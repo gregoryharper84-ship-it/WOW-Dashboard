@@ -1,0 +1,135 @@
+name: wow-v17-scout-persistence-stress
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Stress target mode.
+        required: true
+        default: simulation
+        type: choice
+        options:
+          - simulation
+          - staging
+      multiplier:
+        description: Load multiplier.
+        required: false
+        default: "10"
+      concurrency:
+        description: Parallel request workers.
+        required: false
+        default: "30"
+      staging_url:
+        description: Explicit non-production Scout persistence endpoint.
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wow-v17-scout-persistence-stress-${{ github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  stress:
+    name: Isolated Scout persistence stress gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout protected main
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Generate representative Scout load
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          rows=[]
+          for candidate in range(219):
+              evidence=[]
+              for i in range(150):
+                  evidence.append({
+                      "bookmaker": f"book-{i % 15}",
+                      "market_key": "h2h" if i % 2 else "spreads",
+                      "outcome_name": f"side-{i % 2}",
+                      "price": -110,
+                      "point": (i % 7) * 0.5,
+                      "link": f"https://example.invalid/{candidate}/{i}",
+                  })
+              rows.append({
+                  "can_execute": False,
+                  "sport_key": "synthetic_stress",
+                  "official_event_id": f"stress-{candidate}",
+                  "route": "LLP_TEAM_BETTING_ENGINE",
+                  "market_evidence": evidence,
+              })
+          Path("stress-input.json").write_text(json.dumps(rows))
+          PY
+
+      - name: Run 10x isolated simulation
+        if: inputs.mode == 'simulation'
+        run: |
+          python artifacts/wow-engine/v17/scout_persistence_stress.py \
+            --input stress-input.json \
+            --multiplier "${{ inputs.multiplier }}" \
+            --concurrency "${{ inputs.concurrency }}" \
+            --output stress-receipt.json
+
+      - name: Validate staging configuration
+        if: inputs.mode == 'staging'
+        env:
+          STAGING_URL: ${{ inputs.staging_url }}
+          ALLOWED_HOST: ${{ vars.WOW_SCOUT_STRESS_ALLOWED_HOST }}
+          STAGING_TOKEN: ${{ secrets.WOW_SCOUT_STRESS_TOKEN }}
+        run: |
+          set -euo pipefail
+          [ -n "$STAGING_URL" ] || { echo "STAGING_URL_REQUIRED" >&2; exit 1; }
+          [ -n "$ALLOWED_HOST" ] || { echo "WOW_SCOUT_STRESS_ALLOWED_HOST_REQUIRED" >&2; exit 1; }
+          [ -n "$STAGING_TOKEN" ] || { echo "WOW_SCOUT_STRESS_TOKEN_REQUIRED" >&2; exit 1; }
+
+      - name: Run 10x staging stress gate
+        if: inputs.mode == 'staging'
+        env:
+          WOW_SCOUT_STRESS_ALLOWED_HOST: ${{ vars.WOW_SCOUT_STRESS_ALLOWED_HOST }}
+          WOW_SCOUT_STRESS_TOKEN: ${{ secrets.WOW_SCOUT_STRESS_TOKEN }}
+        run: |
+          python artifacts/wow-engine/v17/scout_persistence_stress.py \
+            --input stress-input.json \
+            --multiplier "${{ inputs.multiplier }}" \
+            --concurrency "${{ inputs.concurrency }}" \
+            --staging-url "${{ inputs.staging_url }}" \
+            --max-error-rate 0.01 \
+            --max-p95-ms 5000 \
+            --output stress-receipt.json
+
+      - name: Upload stress receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wow-v17-scout-persistence-stress-${{ github.run_id }}
+          path: stress-receipt.json
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Record governance
+        if: always()
+        run: |
+          {
+            echo "# Scout Persistence Stress Gate"
+            echo "- mode: ${{ inputs.mode }}"
+            echo "- multiplier: ${{ inputs.multiplier }}"
+            echo "- concurrency: ${{ inputs.concurrency }}"
+            echo "- production_target_forbidden: true"
+            echo "- production_canary_required: true"
+            echo "- can_execute: false"
+            echo "- terminal_authority: V17_TERMINAL_REDUCER"
+          } >> "$GITHUB_STEP_SUMMARY"
