@@ -5,124 +5,20 @@
   "can_execute": false,
   "terminal_authority": "V17_TERMINAL_REDUCER",
   "restoration": [
-    {
-      "issue_number": 1247,
-      "severity": "P0",
-      "priority_rank": 1,
-      "conflict_keys": [
-        "ENGINEERING_GOVERNANCE",
-        "RELEASE_GOVERNANCE"
-      ]
-    },
-    {
-      "issue_number": 1237,
-      "severity": "P0",
-      "priority_rank": 2,
-      "conflict_keys": [
-        "SCOUT_PERSISTENCE",
-        "SUPABASE_DATA_PLANE"
-      ]
-    },
-    {
-      "issue_number": 502,
-      "severity": "P0",
-      "priority_rank": 3,
-      "conflict_keys": [
-        "WOW_HOST_ORCHESTRATION",
-        "INTERACTIVE_RUNTIME"
-      ]
-    },
-    {
-      "issue_number": 960,
-      "severity": "P0",
-      "priority_rank": 4,
-      "conflict_keys": [
-        "WOW_HOST_ORCHESTRATION",
-        "NFL_FULL_SLATE"
-      ]
-    },
-    {
-      "issue_number": 823,
-      "severity": "P1",
-      "priority_rank": 5,
-      "conflict_keys": [
-        "SPORT_DISCOVERY",
-        "ACQUISITION"
-      ]
-    },
-    {
-      "issue_number": 1127,
-      "severity": "P0",
-      "priority_rank": 6,
-      "conflict_keys": [
-        "SPORT_DISCOVERY",
-        "WNBA_ACQUISITION"
-      ]
-    },
-    {
-      "issue_number": 1028,
-      "severity": "P1",
-      "priority_rank": 7,
-      "conflict_keys": [
-        "MLB_PROP_FORWARD",
-        "PROP_HYDRATION"
-      ]
-    },
-    {
-      "issue_number": 1087,
-      "severity": "P1",
-      "priority_rank": 8,
-      "conflict_keys": [
-        "PRODUCTION_RUNTIME",
-        "DEPLOY_VERIFY"
-      ]
-    },
-    {
-      "issue_number": 1152,
-      "severity": "P1",
-      "priority_rank": 9,
-      "conflict_keys": [
-        "NCAAF_TEAM_STATE",
-        "SPREAD_FORWARD"
-      ]
-    },
-    {
-      "issue_number": 1150,
-      "severity": "P1",
-      "priority_rank": 10,
-      "conflict_keys": [
-        "ACTION_SCHEMA",
-        "TEAM_MARKET_ACTIONS"
-      ]
-    }
+    {"issue_number": 1247, "severity": "P0", "priority_rank": 1, "conflict_keys": ["ENGINEERING_GOVERNANCE", "RELEASE_GOVERNANCE"]},
+    {"issue_number": 1237, "severity": "P0", "priority_rank": 2, "conflict_keys": ["SCOUT_PERSISTENCE", "SUPABASE_DATA_PLANE"]},
+    {"issue_number": 502, "severity": "P0", "priority_rank": 3, "conflict_keys": ["WOW_HOST_ORCHESTRATION", "INTERACTIVE_RUNTIME"]},
+    {"issue_number": 960, "severity": "P0", "priority_rank": 4, "conflict_keys": ["WOW_HOST_ORCHESTRATION", "NFL_FULL_SLATE"]},
+    {"issue_number": 823, "severity": "P1", "priority_rank": 5, "conflict_keys": ["SPORT_DISCOVERY", "ACQUISITION"]},
+    {"issue_number": 1127, "severity": "P0", "priority_rank": 6, "conflict_keys": ["SPORT_DISCOVERY", "WNBA_ACQUISITION"]},
+    {"issue_number": 1028, "severity": "P1", "priority_rank": 7, "conflict_keys": ["MLB_PROP_FORWARD", "PROP_HYDRATION"]},
+    {"issue_number": 1087, "severity": "P1", "priority_rank": 8, "conflict_keys": ["PRODUCTION_RUNTIME", "DEPLOY_VERIFY"]},
+    {"issue_number": 1152, "severity": "P1", "priority_rank": 9, "conflict_keys": ["NCAAF_TEAM_STATE", "SPREAD_FORWARD"]},
+    {"issue_number": 1150, "severity": "P1", "priority_rank": 10, "conflict_keys": ["ACTION_SCHEMA", "TEAM_MARKET_ACTIONS"]}
   ],
   "acceleration": [
-    {
-      "issue_number": 1135,
-      "severity": "P1",
-      "priority_rank": 1,
-      "conflict_keys": [
-        "ENGINEERING_OBSERVABILITY",
-        "FAILURE_CAPSULE"
-      ]
-    },
-    {
-      "issue_number": 1136,
-      "severity": "P2",
-      "priority_rank": 2,
-      "conflict_keys": [
-        "ENGINEERING_OBSERVABILITY",
-        "SPORT_SENTINELS"
-      ]
-    },
-    {
-      "issue_number": 1137,
-      "severity": "P2",
-      "priority_rank": 3,
-      "conflict_keys": [
-        "CI_TEST_TOOLING",
-        "RAPID_REPAIR"
-      ]
-    }
+    {"issue_number": 1135, "severity": "P1", "priority_rank": 1, "conflict_keys": ["ENGINEERING_OBSERVABILITY", "FAILURE_CAPSULE"]},
+    {"issue_number": 1136, "severity": "P2", "priority_rank": 2, "conflict_keys": ["ENGINEERING_OBSERVABILITY", "SPORT_SENTINELS"]},
+    {"issue_number": 1137, "severity": "P2", "priority_rank": 3, "conflict_keys": ["CI_TEST_TOOLING", "RAPID_REPAIR"]}
   ]
 }
