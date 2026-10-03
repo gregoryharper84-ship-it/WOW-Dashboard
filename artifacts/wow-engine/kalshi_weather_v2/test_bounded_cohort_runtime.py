@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 
+import pytest
 import kalshi_weather_v2.bounded_cohort as bounded
 import kalshi_weather_v2.empirical_runtime as runtime
 from kalshi_weather_v2.shadow_cohort import HourlyCohortTarget
@@ -66,3 +68,31 @@ def test_scheduler_can_expand_target_slice_explicitly(monkeypatch):
         "chicago",
         "la-coastal",
     }
+
+
+def test_empirical_loop_staggers_first_cycle(monkeypatch):
+    cycles = []
+    sleeps = []
+
+    def fake_cycle(*, db_client_fn):
+        cycles.append(db_client_fn())
+        raise AssertionError("empirical cycle must not run before startup delay")
+
+    async def stop_on_initial_delay(seconds):
+        sleeps.append(seconds)
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(runtime, "_run_bounded_shadow_cycle", fake_cycle)
+    monkeypatch.setattr(runtime.asyncio, "sleep", stop_on_initial_delay)
+
+    async def exercise():
+        with pytest.raises(asyncio.CancelledError):
+            await runtime._run_bounded_shadow_loop(
+                db_client_fn=lambda: "db-client",
+                interval_seconds=900,
+                initial_delay_seconds=45,
+            )
+
+    asyncio.run(exercise())
+    assert sleeps == [45.0]
+    assert cycles == []
