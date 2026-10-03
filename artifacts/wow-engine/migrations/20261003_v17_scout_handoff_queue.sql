@@ -1,17 +1,17 @@
 -- WOW V17 Scout durable specialist handoff queue.
 -- Class B orchestration only. Scout/market evidence never becomes a sporting
 -- probability here. All rows remain non-executable.
---
--- The queue deliberately reuses the same Postgres lease pattern as the
--- production durable pick-request queue. It is private to service_role.
 
 create table if not exists public.wow_scout_handoff_jobs (
     job_id uuid primary key default gen_random_uuid(),
     source_run_id text not null,
     research_run_id text not null,
     candidate_id text not null,
-    target_lane text not null check (target_lane in ('WOW_PROP_LANE','LLP_TEAM_BETTING_ENGINE')),\n    research_priority text not null default 'UNRANKED' check (research_priority in ('HIGH','MEDIUM','LOW','UNRANKED')),
-    target_route text not null check (target_route in ('/score-pick-request','/score-team-event-request')),
+    target_lane text not null check (target_lane in ('WOW_PROP_LANE','LLP_TEAM_BETTING_ENGINE')),
+    research_priority text not null default 'UNRANKED'
+        check (research_priority in ('HIGH','MEDIUM','LOW','UNRANKED')),
+    target_route text not null
+        check (target_route in ('/score-pick-request','/score-team-event-request')),
     request_id text not null,
     request_payload jsonb not null default '{}'::jsonb,
     current_state text not null check (current_state in (
@@ -57,7 +57,7 @@ create index if not exists wow_scout_handoff_jobs_claim_idx
     where terminal = false;
 
 create index if not exists wow_scout_handoff_jobs_run_idx
-    on public.wow_scout_handoff_jobs(source_run_id, current_state, target_lane);
+    on public.wow_scout_handoff_jobs(source_run_id, research_priority, target_lane, current_state);
 
 create index if not exists wow_scout_handoff_state_events_run_idx
     on public.wow_scout_handoff_state_events(source_run_id, candidate_id, created_at);
@@ -76,6 +76,7 @@ create or replace function public.wow_enqueue_scout_handoff_job(
     p_research_run_id text,
     p_candidate_id text,
     p_target_lane text,
+    p_research_priority text,
     p_target_route text,
     p_request_id text,
     p_request_payload jsonb,
@@ -108,13 +109,23 @@ begin
         then 'SPECIALIST_HANDOFF_QUEUED' else 'HANDOFF_BLOCKED' end;
 
     insert into public.wow_scout_handoff_jobs (
-        source_run_id,research_run_id,candidate_id,target_lane,research_priority,target_route,
-        request_id,request_payload,current_state,terminal,last_error_code,
-        last_error_detail,can_execute
+        source_run_id, research_run_id, candidate_id, target_lane, research_priority,
+        target_route, request_id, request_payload, current_state, terminal,
+        last_error_code, last_error_detail, can_execute
     ) values (
-        p_source_run_id,p_research_run_id,p_candidate_id,p_target_lane,\n        case when p_research_priority in ('HIGH','MEDIUM','LOW') then p_research_priority else 'UNRANKED' end,p_target_route,
-        p_request_id,coalesce(p_request_payload,'{}'::jsonb),v_initial_state,
-        p_blocked_code is not null,p_blocked_code,p_blocked_detail,false
+        p_source_run_id,
+        p_research_run_id,
+        p_candidate_id,
+        p_target_lane,
+        case when p_research_priority in ('HIGH','MEDIUM','LOW') then p_research_priority else 'UNRANKED' end,
+        p_target_route,
+        p_request_id,
+        coalesce(p_request_payload,'{}'::jsonb),
+        v_initial_state,
+        p_blocked_code is not null,
+        p_blocked_code,
+        p_blocked_detail,
+        false
     )
     on conflict (source_run_id,candidate_id,target_lane) do nothing
     returning * into r;
@@ -138,7 +149,7 @@ begin
         insert into public.wow_scout_handoff_state_events
             (job_id,source_run_id,research_run_id,candidate_id,target_lane,state,attempt_count,code,detail,can_execute)
         values
-            (r.job_id,r.source_run_id,r.research_run_id,r.candidate_id,r.target_lane,'RED_TEAM_PASSED',0,'DETERMINISTIC_HANDOFF_HYGIENE_PASS',null,false),
+            (r.job_id,r.source_run_id,r.research_run_id,r.candidate_id,r.target_lane,'RED_TEAM_PASSED',0,'SCOUT_RESEARCH_RED_TEAM_PASSED',null,false),
             (r.job_id,r.source_run_id,r.research_run_id,r.candidate_id,r.target_lane,'SPECIALIST_HANDOFF_QUEUED',0,'SPECIALIST_HANDOFF_ENQUEUED',null,false);
     else
         insert into public.wow_scout_handoff_state_events
@@ -147,6 +158,56 @@ begin
             (r.job_id,r.source_run_id,r.research_run_id,r.candidate_id,r.target_lane,'HANDOFF_BLOCKED',0,p_blocked_code,p_blocked_detail,false);
     end if;
     return r;
+end;
+$$;
+
+create or replace function public.wow_enqueue_scout_handoff_batch(p_jobs jsonb)
+returns jsonb
+language plpgsql
+security invoker
+set search_path = public, pg_temp
+as $$
+declare
+    item jsonb;
+    r public.wow_scout_handoff_jobs%rowtype;
+    v_total integer := 0;
+    v_queued integer := 0;
+    v_blocked integer := 0;
+begin
+    if jsonb_typeof(p_jobs) <> 'array' then
+        raise exception 'SCOUT_HANDOFF_BATCH_ARRAY_REQUIRED';
+    end if;
+
+    for item in select value from jsonb_array_elements(p_jobs)
+    loop
+        r := public.wow_enqueue_scout_handoff_job(
+            item->>'source_run_id',
+            item->>'research_run_id',
+            item->>'candidate_id',
+            item->>'target_lane',
+            item->>'research_priority',
+            item->>'target_route',
+            item->>'request_id',
+            coalesce(item->'request_payload','{}'::jsonb),
+            case when item->>'red_team_status' = 'HANDOFF_BLOCKED'
+                 then coalesce(item->>'blocked_code','SCOUT_HANDOFF_BLOCKED')
+                 else null end,
+            item->'blocked_detail'
+        );
+        v_total := v_total + 1;
+        if r.current_state = 'HANDOFF_BLOCKED' then
+            v_blocked := v_blocked + 1;
+        else
+            v_queued := v_queued + 1;
+        end if;
+    end loop;
+
+    return jsonb_build_object(
+        'candidate_jobs', v_total,
+        'queued', v_queued,
+        'handoff_blocked', v_blocked,
+        'can_execute', false
+    );
 end;
 $$;
 
@@ -315,63 +376,16 @@ begin
 end;
 $$;
 
-create or replace function public.wow_enqueue_scout_handoff_batch(p_jobs jsonb)
-returns jsonb
-language plpgsql
-security invoker
-set search_path = public, pg_temp
-as $
-declare
-    item jsonb;
-    r public.wow_scout_handoff_jobs%rowtype;
-    v_total integer := 0;
-    v_queued integer := 0;
-    v_blocked integer := 0;
-begin
-    if jsonb_typeof(p_jobs) <> 'array' then
-        raise exception 'SCOUT_HANDOFF_BATCH_ARRAY_REQUIRED';
-    end if;
-
-    for item in select value from jsonb_array_elements(p_jobs)
-    loop
-        r := public.wow_enqueue_scout_handoff_job(
-            item->>'source_run_id',
-            item->>'research_run_id',
-            item->>'candidate_id',
-            item->>'target_lane',
-            item->>'target_route',
-            item->>'request_id',
-            coalesce(item->'request_payload','{}'::jsonb),
-            case when item->>'red_team_status' = 'HANDOFF_BLOCKED'
-                 then coalesce(item->>'blocked_code','SCOUT_HANDOFF_BLOCKED')
-                 else null end,
-            item->'blocked_detail'
-        );
-        v_total := v_total + 1;
-        if r.current_state = 'HANDOFF_BLOCKED' then
-            v_blocked := v_blocked + 1;
-        else
-            v_queued := v_queued + 1;
-        end if;
-    end loop;
-
-    return jsonb_build_object(
-        'candidate_jobs', v_total,
-        'queued', v_queued,
-        'handoff_blocked', v_blocked,
-        'can_execute', false
-    );
-end;
-$;
-
 revoke all on function public.wow_enqueue_scout_handoff_job(text,text,text,text,text,text,text,jsonb,text,jsonb) from public, anon, authenticated;
-revoke all on function public.wow_enqueue_scout_handoff_batch(jsonb) from public, anon, authenticated;\nrevoke all on function public.wow_claim_scout_handoff_job(text,integer) from public, anon, authenticated;
+revoke all on function public.wow_enqueue_scout_handoff_batch(jsonb) from public, anon, authenticated;
+revoke all on function public.wow_claim_scout_handoff_job(text,integer) from public, anon, authenticated;
 revoke all on function public.wow_finish_scout_handoff_job(uuid,text,jsonb,boolean) from public, anon, authenticated;
 revoke all on function public.wow_retry_scout_handoff_job(uuid,text,integer,text,jsonb) from public, anon, authenticated;
 revoke all on function public.wow_block_scout_handoff_job(uuid,text,text,jsonb) from public, anon, authenticated;
 
 grant execute on function public.wow_enqueue_scout_handoff_job(text,text,text,text,text,text,text,jsonb,text,jsonb) to service_role;
-grant execute on function public.wow_enqueue_scout_handoff_batch(jsonb) to service_role;\ngrant execute on function public.wow_claim_scout_handoff_job(text,integer) to service_role;
+grant execute on function public.wow_enqueue_scout_handoff_batch(jsonb) to service_role;
+grant execute on function public.wow_claim_scout_handoff_job(text,integer) to service_role;
 grant execute on function public.wow_finish_scout_handoff_job(uuid,text,jsonb,boolean) to service_role;
 grant execute on function public.wow_retry_scout_handoff_job(uuid,text,integer,text,jsonb) to service_role;
 grant execute on function public.wow_block_scout_handoff_job(uuid,text,text,jsonb) to service_role;
