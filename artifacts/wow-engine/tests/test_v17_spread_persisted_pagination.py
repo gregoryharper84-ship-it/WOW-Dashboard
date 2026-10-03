@@ -87,3 +87,64 @@ def test_reference_ncaaf_replay_keeps_chronological_loader_order(monkeypatch):
 
     assert [row["official_event_id"] for row in rows] == ["1", "2"]
     assert set(client.order_log) == {("wow_ncaaf_training_games", "event_start_time")}
+
+
+
+class ReadTimeout(Exception):
+    pass
+
+
+class _FlakyQuery(_FakeQuery):
+    def __init__(self, table, rows, order_log, attempts):
+        super().__init__(table, rows, order_log)
+        self._attempts = attempts
+
+    def execute(self):
+        self._attempts[self._table] = self._attempts.get(self._table, 0) + 1
+        if self._attempts[self._table] == 1:
+            raise ReadTimeout("transient")
+        return super().execute()
+
+
+class _FlakyClient(_FakeClient):
+    def __init__(self, rows_by_table):
+        super().__init__(rows_by_table)
+        self.attempts = {}
+
+    def table(self, name: str):
+        return _FlakyQuery(name, self._rows_by_table[name], self.order_log, self.attempts)
+
+
+def test_persisted_ncaaf_loaders_retry_one_transient_read_timeout(monkeypatch):
+    monkeypatch.setattr(replay, "NCAAF_PERSISTED_READ_TIMEOUT_BACKOFF_SECONDS", 0.0)
+    games = [{"official_event_id": "401", "event_start_time": "2026-09-01T00:00:00+00:00"}]
+    features = [{"official_event_id": "NCAAF:401", "event_start_time": "2026-09-01T00:00:00+00:00"}]
+    client = _FlakyClient({
+        "wow_ncaaf_training_games": games,
+        "wow_d1_training_rows": features,
+    })
+
+    assert replay._load_ncaaf_persisted_game_rows(client) == games
+    assert replay._load_ncaaf_persisted_feature_rows(client) == features
+    assert client.attempts == {
+        "wow_ncaaf_training_games": 2,
+        "wow_d1_training_rows": 2,
+    }
+
+
+def test_read_retry_preserves_non_timeout_failures(monkeypatch):
+    monkeypatch.setattr(replay, "NCAAF_PERSISTED_READ_TIMEOUT_BACKOFF_SECONDS", 0.0)
+
+    class OtherFailure(Exception):
+        pass
+
+    class BrokenQuery:
+        def execute(self):
+            raise OtherFailure("no retry")
+
+    try:
+        replay._execute_read_with_retry(lambda: BrokenQuery(), retries=2)
+    except OtherFailure:
+        pass
+    else:
+        raise AssertionError("non-ReadTimeout failure must propagate unchanged")
