@@ -133,3 +133,78 @@ def test_background_readiness_preserves_responsive_payload_semantics(monkeypatch
     assert emitted == [state]
     assert emitted[0]["probability_publishable"] is False
     assert emitted[0]["can_execute"] is False
+
+
+
+def test_spread_warm_staggers_then_recovers_from_transient_failures(monkeypatch):
+    sleeps = []
+    attempts = []
+    monkeypatch.setenv("WOW_NCAAF_SPREAD_WARM_STARTUP_DELAY_SECONDS", "1")
+
+    async def fake_sleep(seconds):
+        sleeps.append(float(seconds))
+
+    class ReadTimeout(Exception):
+        pass
+
+    def fake_warm(_client):
+        attempts.append(len(attempts) + 1)
+        if len(attempts) < 3:
+            raise ReadTimeout("transient")
+        return {
+            "status": "READY",
+            "code": "SPREAD_FORWARD_CONTEXT_READY",
+            "cache_status": "MISS_REBUILT",
+            "can_execute": False,
+        }
+
+    monkeypatch.setattr(api.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(api, "_db_client", lambda: object())
+    monkeypatch.setattr(api, "warm_ncaaf_forward_context", fake_warm)
+
+    asyncio.run(api._warm_ncaaf_spread_forward_context_after_startup())
+
+    assert attempts == [1, 2, 3]
+    assert sleeps == [1.0, 15.0, 30.0]
+
+
+def test_spread_warm_stops_after_first_success(monkeypatch):
+    sleeps = []
+    monkeypatch.setenv("WOW_NCAAF_SPREAD_WARM_STARTUP_DELAY_SECONDS", "0")
+
+    async def fake_sleep(seconds):
+        sleeps.append(float(seconds))
+
+    monkeypatch.setattr(api.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(api, "_db_client", lambda: object())
+    monkeypatch.setattr(
+        api,
+        "warm_ncaaf_forward_context",
+        lambda _client: {
+            "status": "READY",
+            "code": "SPREAD_FORWARD_CONTEXT_READY",
+            "cache_status": "MISS_REBUILT",
+            "can_execute": False,
+        },
+    )
+
+    asyncio.run(api._warm_ncaaf_spread_forward_context_after_startup())
+
+    assert sleeps == []
+
+
+
+def test_spread_warm_does_not_retry_deterministic_failure(monkeypatch):
+    attempts = []
+    monkeypatch.setenv("WOW_NCAAF_SPREAD_WARM_STARTUP_DELAY_SECONDS", "0")
+
+    def fake_warm(_client):
+        attempts.append(1)
+        raise ValueError("deterministic")
+
+    monkeypatch.setattr(api, "_db_client", lambda: object())
+    monkeypatch.setattr(api, "warm_ncaaf_forward_context", fake_warm)
+
+    asyncio.run(api._warm_ncaaf_spread_forward_context_after_startup())
+
+    assert attempts == [1]

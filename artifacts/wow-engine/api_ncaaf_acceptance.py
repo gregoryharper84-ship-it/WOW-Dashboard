@@ -354,21 +354,43 @@ async def _run_ncaaf_startup_readiness_audit() -> None:
 
 
 async def _warm_ncaaf_spread_forward_context_after_startup() -> None:
-    """Warm immutable research context off the request path after each deploy."""
+    """Warm immutable research context after the shared startup DB consumers settle."""
     try:
-        receipt = await asyncio.to_thread(warm_ncaaf_forward_context, _db_client())
-    except Exception as exc:  # noqa: BLE001
-        _spread_forward_logger.error(
-            "WOW_NCAAF_SPREAD_FORWARD_WARM status=FAILED error_type=%s can_execute=false",
-            type(exc).__name__,
+        startup_delay_seconds = int(os.getenv("WOW_NCAAF_SPREAD_WARM_STARTUP_DELAY_SECONDS", "60"))
+    except ValueError:
+        startup_delay_seconds = 60
+    startup_delay_seconds = max(0, min(startup_delay_seconds, 300))
+    if startup_delay_seconds:
+        _spread_forward_logger.warning(
+            "WOW_NCAAF_SPREAD_FORWARD_WARM status=DELAYED seconds=%s can_execute=false",
+            startup_delay_seconds,
+        )
+        await asyncio.sleep(float(startup_delay_seconds))
+
+    retry_delays = (0.0, 15.0, 30.0)
+    for attempt, retry_delay in enumerate(retry_delays, start=1):
+        if retry_delay:
+            await asyncio.sleep(retry_delay)
+        try:
+            receipt = await asyncio.to_thread(warm_ncaaf_forward_context, _db_client())
+        except Exception as exc:  # noqa: BLE001
+            _spread_forward_logger.error(
+                "WOW_NCAAF_SPREAD_FORWARD_WARM status=FAILED attempt=%s max_attempts=%s error_type=%s can_execute=false",
+                attempt,
+                len(retry_delays),
+                type(exc).__name__,
+            )
+            if type(exc).__name__ == "ReadTimeout" and attempt < len(retry_delays):
+                continue
+            return
+        _spread_forward_logger.warning(
+            "WOW_NCAAF_SPREAD_FORWARD_WARM status=%s code=%s cache_status=%s attempt=%s can_execute=false",
+            receipt.get("status"),
+            receipt.get("code"),
+            receipt.get("cache_status"),
+            attempt,
         )
         return
-    _spread_forward_logger.warning(
-        "WOW_NCAAF_SPREAD_FORWARD_WARM status=%s code=%s cache_status=%s can_execute=false",
-        receipt.get("status"),
-        receipt.get("code"),
-        receipt.get("cache_status"),
-    )
 
 
 @app.on_event("startup")

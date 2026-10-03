@@ -25,6 +25,7 @@ from v17.spread_margin_challenger import (
 from v17.team_state_intelligence import FEATURE_FAMILY_VERSION
 
 PAGE_SIZE = 1000
+NCAAF_PERSISTED_PAGE_SIZE = 200
 NCAAF_PERSISTED_READ_TIMEOUT_RETRIES = 2
 NCAAF_PERSISTED_READ_TIMEOUT_BACKOFF_SECONDS = 0.25
 SUPPORTED_REPLAY_SPORTS = ("NFL", "NBA", "WNBA", "NCAAF")
@@ -375,22 +376,23 @@ def _execute_read_with_retry(build_query: Any, *, retries: int = 0) -> Any:
             sleep(NCAAF_PERSISTED_READ_TIMEOUT_BACKOFF_SECONDS * attempt)
 
 
-def _paged_select(client: Any, table: str, fields: str, *, filters: Sequence[tuple[str, str, Any]] = (), order: str, read_timeout_retries: int = 0) -> list[dict[str, Any]]:
+def _paged_select(client: Any, table: str, fields: str, *, filters: Sequence[tuple[str, str, Any]] = (), order: str, read_timeout_retries: int = 0, page_size: int | None = None) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
+    page_size = max(1, int(PAGE_SIZE if page_size is None else page_size))
     offset = 0
     while True:
         def build_query() -> Any:
             query = client.table(table).select(fields)
             for method, column, value in filters:
                 query = getattr(query, method)(column, value)
-            return query.order(order).range(offset, offset + PAGE_SIZE - 1)
+            return query.order(order).range(offset, offset + page_size - 1)
 
         response = _execute_read_with_retry(build_query, retries=read_timeout_retries)
         batch = response.data or []
         rows.extend(dict(row) for row in batch)
-        if len(batch) < PAGE_SIZE:
+        if len(batch) < page_size:
             return rows
-        offset += PAGE_SIZE
+        offset += page_size
 
 
 def _load_ncaaf_game_rows(client: Any) -> list[dict[str, Any]]:
@@ -410,6 +412,7 @@ def _load_ncaaf_persisted_game_rows(client: Any) -> list[dict[str, Any]]:
         "training_game_id,official_event_id,season,event_start_time,home_team,away_team,home_points,away_points,result_source,result_source_timestamp,can_execute",
         order="official_event_id",
         read_timeout_retries=NCAAF_PERSISTED_READ_TIMEOUT_RETRIES,
+        page_size=NCAAF_PERSISTED_PAGE_SIZE,
     )
 
 
@@ -426,6 +429,7 @@ def _load_ncaaf_persisted_feature_rows(client: Any) -> list[dict[str, Any]]:
         ),
         order="official_event_id",
         read_timeout_retries=NCAAF_PERSISTED_READ_TIMEOUT_RETRIES,
+        page_size=NCAAF_PERSISTED_PAGE_SIZE,
     )
 
 
