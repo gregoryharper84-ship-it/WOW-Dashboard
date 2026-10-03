@@ -427,7 +427,7 @@ async def _worker_loop(
             raise
         except Exception:
             try:
-                await asyncio.wait_for(stop_event.wait(), timeout=5.0)
+                await asyncio.wait_for(stop_event.wait(), timeout=DB_FAILURE_BACKOFF_SECONDS)
             except asyncio.TimeoutError:
                 pass
 
