@@ -99,6 +99,14 @@ def test_qa_agent_requires_actual_implementation_change() -> None:
     assert CLAUDE_WORKER.read_text().count(guarded_condition) == 2
 
 
+def test_worker_full_regression_runs_from_wow_engine_root() -> None:
+    for path in (WORKER, CLAUDE_WORKER):
+        text = path.read_text()
+        assert "working-directory: artifacts/wow-engine" in text
+        assert 'python -m pytest -q 2>&1 | tee "$RUNNER_TEMP/qa-regression.log"' in text
+        assert "python -m pytest -q artifacts/wow-engine" not in text
+
+
 def test_release_agent_cannot_merge_or_deploy() -> None:
     text = RELEASE.read_text()
     assert "RELEASE_OBSERVABILITY_AGENT" in text
