@@ -62,7 +62,6 @@ jobs:
         shell: bash
         env:
           RUN_ID: ${{ steps.artifact.outputs.run_id }}
-          WORKFLOW_NAME: ${{ steps.workflow.outputs.name }}
         run: |
           set -euo pipefail
           for _ in $(seq 1 30); do
@@ -124,6 +123,7 @@ jobs:
         env:
           ARTIFACT_ID: ${{ steps.artifact.outputs.artifact_id }}
           RUN_ID: ${{ steps.artifact.outputs.run_id }}
+          WORKFLOW_NAME: ${{ steps.workflow.outputs.name }}
         run: |
           set -euo pipefail
           zip_path="$RUNNER_TEMP/governance.zip"
