@@ -193,7 +193,17 @@ async def _worker_loop(
     poll_seconds = _int_env("WOW_V17_DAILY_ASYNC_POLL_SECONDS", 2, minimum=1, maximum=30)
     lease_seconds = _int_env("WOW_V17_DAILY_ASYNC_LEASE_SECONDS", 900, minimum=60, maximum=3600)
     max_attempts = _int_env("WOW_V17_DAILY_ASYNC_MAX_ATTEMPTS", 3, minimum=1, maximum=10)
+    initial_delay_seconds = _int_env(
+        "WOW_V17_DAILY_ASYNC_INITIAL_DELAY_SECONDS", 5, minimum=0, maximum=300
+    )
     wake: asyncio.Event = app.state.wow_v17_daily_async_wake
+
+    if initial_delay_seconds:
+        LOGGER.warning(
+            "WOW_V17_DAILY_ASYNC_STARTUP_DELAY seconds=%s can_execute=false",
+            initial_delay_seconds,
+        )
+        await asyncio.sleep(float(initial_delay_seconds))
 
     while True:
         claim: dict[str, Any] | None = None
