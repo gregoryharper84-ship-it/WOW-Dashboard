@@ -28,6 +28,11 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       TARGET_SHA: ${{ github.event.workflow_run.head_sha || '' }}
+      # Global writer serialization may replace an older pending run when a
+      # newer source queues. Recover cancelled source identities oldest-first
+      # from the commit that enabled the global writer.
+      SCOUT_PERSIST_LOSSLESS_RECOVERY_EPOCH: "2026-10-03T04:44:53Z"
+      SCOUT_PERSIST_RECOVERY_MAX_PAGES: "20"
     steps:
       - name: Resolve completed Multi-Scout source run
         id: source
@@ -42,6 +47,59 @@ jobs:
           if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
             force_replay="true"
           fi
+
+          # GitHub Actions keeps at most one pending run in a concurrency
+          # group. The global Scout writer can therefore cancel an older
+          # pending distinct source when a newer source arrives. Cancelled
+          # writer runs retain the source id in their display title, so recover
+          # the oldest unreceipted source before considering newer fallbacks.
+          resolve_oldest_cancelled_without_receipt() {
+            local tmp page page_json count oldest_created source_id receipt_count
+            tmp=$(mktemp)
+            page=1
+
+            while [ "$page" -le "$SCOUT_PERSIST_RECOVERY_MAX_PAGES" ]; do
+              page_json=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/workflows/wow-v17-scout-brain-persist.yml/runs?branch=main&status=cancelled&per_page=100&page=${page}")
+              count=$(printf '%s' "$page_json" | jq '.workflow_runs | length')
+              if [ "$count" -eq 0 ]; then
+                break
+              fi
+
+              printf '%s' "$page_json" | jq -r --arg epoch "$SCOUT_PERSIST_LOSSLESS_RECOVERY_EPOCH" '
+                .workflow_runs[]
+                | select(.created_at >= $epoch)
+                | (.display_title | capture("source=(?<source_id>[0-9]+)")? // empty) as $m
+                | select($m != null)
+                | "\(.created_at)|\($m.source_id)"
+              ' >> "$tmp"
+
+              oldest_created=$(printf '%s' "$page_json" | jq -r '.workflow_runs[-1].created_at // ""')
+              if [ "$count" -lt 100 ] || { [ -n "$oldest_created" ] && [[ "$oldest_created" < "$SCOUT_PERSIST_LOSSLESS_RECOVERY_EPOCH" ]]; }; then
+                break
+              fi
+              page=$((page + 1))
+            done
+
+            if [ "$page" -gt "$SCOUT_PERSIST_RECOVERY_MAX_PAGES" ]; then
+              echo "SCOUT_PERSISTENCE_RECOVERY_SCAN_INCOMPLETE: cancelled-writer history exceeded ${SCOUT_PERSIST_RECOVERY_MAX_PAGES} pages before reaching the lossless-recovery epoch." >> "$GITHUB_STEP_SUMMARY"
+              rm -f "$tmp"
+              return 2
+            fi
+
+            while IFS='|' read -r _ source_id; do
+              [ -n "$source_id" ] || continue
+              receipt_count=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/artifacts?name=wow-v17-scout-brain-persistence-${source_id}&per_page=1" \
+                --jq '[.artifacts[] | select(.expired == false)] | length')
+              if [ "$receipt_count" -eq 0 ]; then
+                printf '%s\n' "$source_id"
+                rm -f "$tmp"
+                return 0
+              fi
+            done < <(sort -u -t '|' -k1,1 -k2,2 "$tmp")
+
+            rm -f "$tmp"
+            return 1
+          }
 
           if [ -n "$TARGET_SHA" ]; then
             for _ in $(seq 1 4); do
@@ -60,12 +118,32 @@ jobs:
             # dispatch recovery automatically. Manual workflow_dispatch may
             # still force a deliberate current-code replay.
             if [ -z "$source_run_id" ]; then
+              if recovered_source=$(resolve_oldest_cancelled_without_receipt); then
+                source_run_id="$recovered_source"
+                echo "Recovering oldest cancelled Scout persistence source ${source_run_id} before the newest fallback source." >> "$GITHUB_STEP_SUMMARY"
+              else
+                recovery_rc=$?
+                if [ "$recovery_rc" -eq 2 ]; then
+                  echo "Lossless Scout persistence recovery scan could not prove completeness; fail closed." >&2
+                  exit 1
+                fi
+                source_run_id=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/workflows/wow-v17-nightly-multiscout.yml/runs?branch=main&status=completed&per_page=20" \
+                  --jq '[.workflow_runs[] | select(.event != "pull_request" and .conclusion != "cancelled")] | first | .id // ""')
+              fi
+            fi
+          else
+            if recovered_source=$(resolve_oldest_cancelled_without_receipt); then
+              source_run_id="$recovered_source"
+              echo "Recovering oldest cancelled Scout persistence source ${source_run_id} before newer sources." >> "$GITHUB_STEP_SUMMARY"
+            else
+              recovery_rc=$?
+              if [ "$recovery_rc" -eq 2 ]; then
+                echo "Lossless Scout persistence recovery scan could not prove completeness; fail closed." >&2
+                exit 1
+              fi
               source_run_id=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/workflows/wow-v17-nightly-multiscout.yml/runs?branch=main&status=completed&per_page=20" \
                 --jq '[.workflow_runs[] | select(.event != "pull_request" and .conclusion != "cancelled")] | first | .id // ""')
             fi
-          else
-            source_run_id=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/workflows/wow-v17-nightly-multiscout.yml/runs?branch=main&status=completed&per_page=20" \
-              --jq '[.workflow_runs[] | select(.event != "pull_request" and .conclusion != "cancelled")] | first | .id // ""')
           fi
 
           if [ -z "$source_run_id" ]; then
