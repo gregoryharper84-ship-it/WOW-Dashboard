@@ -104,7 +104,7 @@ def _persist_source_provenance(cur: Any, candidate_id: str, row: dict[str, Any])
             evidence.get("market_last_update")
             or evidence.get("bookmaker_last_update")
             or evidence.get("captured_at")
-            or utc_now()
+            or None  # no wall-clock fallback: SQL keeps the stored observed_at, or now() on first insert
         )
         source_status = str(row.get("market_evidence_status") or "AVAILABLE")
         source_code = evidence.get("source_code") or evidence.get("primary_source_failure")
@@ -113,7 +113,9 @@ def _persist_source_provenance(cur: Any, candidate_id: str, row: dict[str, Any])
             insert into wow_scout.source_snapshots
             (snapshot_id,provider,sport_key,capability,source_class,observed_at,source_status,source_code,source_http_status,
              payload,payload_hash,prediction_authority,can_execute)
-            values (%s,%s,%s,'MARKET_EVIDENCE',%s,%s,%s,%s,%s,%s::jsonb,%s,false,false)
+            values (%s,%s,%s,'MARKET_EVIDENCE',%s,
+              coalesce(%s::timestamptz,(select x.observed_at from wow_scout.source_snapshots x where x.snapshot_id = %s),now()),
+              %s,%s,%s,%s::jsonb,%s,false,false)
             on conflict (snapshot_id) do update set
               observed_at=excluded.observed_at, source_status=excluded.source_status,
               source_code=excluded.source_code, source_http_status=excluded.source_http_status,
@@ -127,7 +129,7 @@ def _persist_source_provenance(cur: Any, candidate_id: str, row: dict[str, Any])
                or wow_scout.source_snapshots.payload_hash is distinct from excluded.payload_hash
                or wow_scout.source_snapshots.prediction_authority is distinct from false
                or wow_scout.source_snapshots.can_execute is distinct from false
-        """, (snapshot_id,provider,sport,source_class,observed_at,source_status,source_code,source_http_status,payload,payload_hash))
+        """, (snapshot_id,provider,sport,source_class,observed_at,snapshot_id,source_status,source_code,source_http_status,payload,payload_hash))
         snapshots += 1
         provider_entities = {
             "official_event_id": row.get("official_event_id"),
@@ -201,11 +203,28 @@ def persist_handoff(handoff: dict[str, Any], *, research_run_id: str | None = No
                       contradictory_evidence=excluded.contradictory_evidence, red_team_flags=excluded.red_team_flags,
                       data_completeness=excluded.data_completeness, source_freshness_score=excluded.source_freshness_score,
                       probability=null, can_execute=false, updated_at=now()
+                    where wow_scout.candidates.scout_team is distinct from excluded.scout_team
+                       or wow_scout.candidates.selection is distinct from excluded.selection
+                       or wow_scout.candidates.commence_time is distinct from excluded.commence_time
+                       or wow_scout.candidates.home_team is distinct from excluded.home_team
+                       or wow_scout.candidates.away_team is distinct from excluded.away_team
+                       or wow_scout.candidates.controlling_specialist is distinct from excluded.controlling_specialist
+                       or wow_scout.candidates.research_status is distinct from excluded.research_status
+                       or wow_scout.candidates.research_priority_score is distinct from excluded.research_priority_score
+                       or wow_scout.candidates.thesis is distinct from coalesce(excluded.thesis,wow_scout.candidates.thesis)
+                       or wow_scout.candidates.edge_classes is distinct from excluded.edge_classes
+                       or wow_scout.candidates.contradictory_evidence is distinct from excluded.contradictory_evidence
+                       or wow_scout.candidates.red_team_flags is distinct from excluded.red_team_flags
+                       or wow_scout.candidates.data_completeness is distinct from excluded.data_completeness
+                       or wow_scout.candidates.source_freshness_score is distinct from excluded.source_freshness_score
+                       or wow_scout.candidates.probability is not null
+                       or wow_scout.candidates.can_execute is distinct from false
                     returning (xmax = 0) as inserted
                 """, (cid,sport,team,market_type,selection,row.get("official_event_id"),row.get("canonical_event_id"),row.get("commence_time"),
                        row.get("home_team"),row.get("away_team"),route,status,score,thesis,edge_classes,contradictory,red_flags,
                        row.get("data_completeness"),row.get("source_freshness_score")))
-                inserted = bool(cur.fetchone()[0])
+                inserted_row = cur.fetchone()  # None when the guard suppressed an unchanged replay
+                inserted = bool(inserted_row and inserted_row[0])
                 changed += int(inserted)
                 observations = observation_rows(cid, row)
                 for obs in observations:
