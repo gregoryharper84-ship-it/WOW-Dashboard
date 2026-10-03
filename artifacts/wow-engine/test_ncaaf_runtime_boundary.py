@@ -54,6 +54,9 @@ def test_readiness_and_hydration_routes_are_authenticated():
     assert '"/internal/v17/spread-forward-warm-status"' in source
     assert "operation_id=\"getWowV17SpreadForwardWarmStatus\"" in source
     assert "dependencies=[_auth]" in source
+    warm_route = source[source.index('"/internal/v17/spread-forward-warm-status"'):source.index("def get_ncaaf_spread_forward_warm_status")]
+    assert "dependencies=[_spread_forward_auth]" in warm_route
+    assert "_spread_forward_auth = scout_route_auth_dependency(_auth)" in source
     assert "probability_publishable\": False" in source
     assert "can_execute\": False" in source
 
