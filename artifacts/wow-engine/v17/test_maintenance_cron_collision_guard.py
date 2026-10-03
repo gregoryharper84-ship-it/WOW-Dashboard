@@ -3,7 +3,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 RESTORE_MLB = ROOT / "v17" / "sql" / "20260927_restore_mlb_forward_cron_jobs.sql"
-STAGGER_RECONCILER = ROOT / "migrations" / "20261003_stagger_pick_request_reconciler_cron.sql"
+STAGGER_RECONCILER = ROOT / "migrations" / "20261003_retime_stale_reconciler_quiet_window.sql"
 
 
 def _minutes(spec: str) -> set[int]:
@@ -17,7 +17,7 @@ def test_effective_reconciler_schedule_does_not_collide_with_mlb_maintenance():
 
     capture = "2,17,32,47 * * * *"
     hydrate = "5,20,35,50 * * * *"
-    stale = "3,8,13,18,23,28,33,38,43,48,53,58 * * * *"
+    stale = "11,26,41,56 * * * *"
 
     assert capture in mlb
     assert hydrate in mlb
@@ -25,7 +25,12 @@ def test_effective_reconciler_schedule_does_not_collide_with_mlb_maintenance():
 
     assert _minutes(stale).isdisjoint(_minutes(capture))
     assert _minutes(stale).isdisjoint(_minutes(hydrate))
-    assert len(_minutes(stale)) == 12
+    assert len(_minutes(stale)) == 4
+    for minute in _minutes(stale):
+        prior_hydrate = max(h for h in _minutes(hydrate) if h < minute)
+        next_capture = min(c for c in _minutes(capture) if c > minute)
+        assert minute - prior_hydrate >= 6
+        assert next_capture - minute >= 6
 
 
 def test_cron_stagger_preserves_reconciler_semantics_and_safety():
