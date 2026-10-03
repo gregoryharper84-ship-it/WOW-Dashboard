@@ -581,7 +581,7 @@ begin
   end if;
   perform cron.schedule(
     'wow-governed-primary-ledger-auto-grade',
-    '*/15 * * * *',
+    '9,24,39,54 * * * *',
     'select public.wow_governed_auto_grade_predictions();'
   );
 end;
