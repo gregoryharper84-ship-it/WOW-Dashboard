@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from datetime import datetime, timezone
 from typing import Any
 
@@ -360,7 +361,17 @@ def install_runtime_acceptance_probe(*, app: Any, market_api: Any, team_runtime:
             return
 
         async def _run() -> None:
-            await asyncio.sleep(2.0)
+            try:
+                initial_delay_seconds = int(os.getenv("WOW_V17_RUNTIME_ACCEPTANCE_INITIAL_DELAY_SECONDS", "180"))
+            except ValueError:
+                initial_delay_seconds = 180
+            initial_delay_seconds = max(0, min(initial_delay_seconds, 600))
+            if initial_delay_seconds:
+                _LOGGER.info(
+                    "V17_RUNTIME_ACCEPTANCE status=DELAYED seconds=%s can_execute=false",
+                    initial_delay_seconds,
+                )
+                await asyncio.sleep(float(initial_delay_seconds))
             result = await asyncio.to_thread(
                 run_runtime_acceptance_probe,
                 event_api=event_api,
