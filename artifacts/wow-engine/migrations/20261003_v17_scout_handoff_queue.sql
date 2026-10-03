@@ -10,7 +10,7 @@ create table if not exists public.wow_scout_handoff_jobs (
     source_run_id text not null,
     research_run_id text not null,
     candidate_id text not null,
-    target_lane text not null check (target_lane in ('WOW_PROP_LANE','LLP_TEAM_BETTING_ENGINE')),
+    target_lane text not null check (target_lane in ('WOW_PROP_LANE','LLP_TEAM_BETTING_ENGINE')),\n    research_priority text not null default 'UNRANKED' check (research_priority in ('HIGH','MEDIUM','LOW','UNRANKED')),
     target_route text not null check (target_route in ('/score-pick-request','/score-team-event-request')),
     request_id text not null,
     request_payload jsonb not null default '{}'::jsonb,
@@ -108,11 +108,11 @@ begin
         then 'SPECIALIST_HANDOFF_QUEUED' else 'HANDOFF_BLOCKED' end;
 
     insert into public.wow_scout_handoff_jobs (
-        source_run_id,research_run_id,candidate_id,target_lane,target_route,
+        source_run_id,research_run_id,candidate_id,target_lane,research_priority,target_route,
         request_id,request_payload,current_state,terminal,last_error_code,
         last_error_detail,can_execute
     ) values (
-        p_source_run_id,p_research_run_id,p_candidate_id,p_target_lane,p_target_route,
+        p_source_run_id,p_research_run_id,p_candidate_id,p_target_lane,\n        case when p_research_priority in ('HIGH','MEDIUM','LOW') then p_research_priority else 'UNRANKED' end,p_target_route,
         p_request_id,coalesce(p_request_payload,'{}'::jsonb),v_initial_state,
         p_blocked_code is not null,p_blocked_code,p_blocked_detail,false
     )
@@ -364,13 +364,13 @@ begin
 end;
 $;
 
-revoke all on function public.wow_enqueue_scout_handoff_job(text,text,text,text,text,text,jsonb,text,jsonb) from public, anon, authenticated;
+revoke all on function public.wow_enqueue_scout_handoff_job(text,text,text,text,text,text,text,jsonb,text,jsonb) from public, anon, authenticated;
 revoke all on function public.wow_enqueue_scout_handoff_batch(jsonb) from public, anon, authenticated;\nrevoke all on function public.wow_claim_scout_handoff_job(text,integer) from public, anon, authenticated;
 revoke all on function public.wow_finish_scout_handoff_job(uuid,text,jsonb,boolean) from public, anon, authenticated;
 revoke all on function public.wow_retry_scout_handoff_job(uuid,text,integer,text,jsonb) from public, anon, authenticated;
 revoke all on function public.wow_block_scout_handoff_job(uuid,text,text,jsonb) from public, anon, authenticated;
 
-grant execute on function public.wow_enqueue_scout_handoff_job(text,text,text,text,text,text,jsonb,text,jsonb) to service_role;
+grant execute on function public.wow_enqueue_scout_handoff_job(text,text,text,text,text,text,text,jsonb,text,jsonb) to service_role;
 grant execute on function public.wow_enqueue_scout_handoff_batch(jsonb) to service_role;\ngrant execute on function public.wow_claim_scout_handoff_job(text,integer) to service_role;
 grant execute on function public.wow_finish_scout_handoff_job(uuid,text,jsonb,boolean) to service_role;
 grant execute on function public.wow_retry_scout_handoff_job(uuid,text,integer,text,jsonb) to service_role;
