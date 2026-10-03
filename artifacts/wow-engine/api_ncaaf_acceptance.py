@@ -54,6 +54,53 @@ _mlb_1ip_refresh_logger = logging.getLogger("wow.mlb.1ip.final_refresh")
 _spread_forward_logger = logging.getLogger("wow.v17.spread.forward")
 _background_tasks: set[asyncio.Task] = set()
 _NCAAF_STARTUP_READINESS_TIMEOUT_SECONDS = 12.0
+
+
+def _spread_forward_warm_receipt(status: str, code: str, **extra) -> dict:
+    return {
+        "status": status,
+        "code": code,
+        "sport": "NCAAF",
+        "probability_publishable": False,
+        "automatic_certification": False,
+        "automatic_promotion": False,
+        "can_execute": False,
+        **extra,
+    }
+
+
+def _set_spread_forward_warm_state(status: str, code: str, **extra) -> dict:
+    state = _spread_forward_warm_receipt(status, code, **extra)
+    app.state.wow_ncaaf_spread_forward_warm = state
+    return state
+
+
+def _spread_forward_warm_error_code(exc: Exception) -> str:
+    if type(exc).__name__ == "ReadTimeout":
+        return "READ_TIMEOUT"
+    code = getattr(exc, "code", None)
+    if code:
+        return str(code)
+    if getattr(exc, "args", None):
+        first = exc.args[0]
+        if isinstance(first, dict) and first.get("code"):
+            return str(first["code"])
+    return type(exc).__name__
+
+
+def _spread_forward_warm_failure_is_transient(exc: Exception) -> bool:
+    return (
+        type(exc).__name__ == "ReadTimeout"
+        or _spread_forward_warm_error_code(exc) == "PGRST002"
+    )
+
+
+_set_spread_forward_warm_state(
+    "PENDING",
+    "SPREAD_FORWARD_CONTEXT_WARM_PENDING",
+    attempt=0,
+    max_attempts=3,
+)
 _original_market_score_prop = base.market_api.score_prop
 V17_ACTIVE = os.getenv("WOW_V17_ACTIVE", "0") == "1"
 V17_CORE_INTELLIGENCE_ACTIVE = os.getenv("WOW_V17_CORE_INTELLIGENCE_ACTIVE", "0") == "1"
@@ -353,6 +400,27 @@ async def _run_ncaaf_startup_readiness_audit() -> None:
 
 
 
+@app.get(
+    "/internal/v17/spread-forward-warm-status",
+    dependencies=[_auth],
+    operation_id="getWowV17SpreadForwardWarmStatus",
+)
+def get_ncaaf_spread_forward_warm_status():
+    """Return process-local warm state without touching Supabase."""
+    return dict(
+        getattr(
+            app.state,
+            "wow_ncaaf_spread_forward_warm",
+            _spread_forward_warm_receipt(
+                "PENDING",
+                "SPREAD_FORWARD_CONTEXT_WARM_PENDING",
+                attempt=0,
+                max_attempts=3,
+            ),
+        )
+    )
+
+
 async def _warm_ncaaf_spread_forward_context_after_startup() -> None:
     """Warm immutable research context after the shared startup DB consumers settle."""
     try:
@@ -360,6 +428,16 @@ async def _warm_ncaaf_spread_forward_context_after_startup() -> None:
     except ValueError:
         startup_delay_seconds = 60
     startup_delay_seconds = max(0, min(startup_delay_seconds, 300))
+    retry_delays = (0.0, 15.0, 30.0)
+    max_attempts = len(retry_delays)
+
+    _set_spread_forward_warm_state(
+        "DELAYED" if startup_delay_seconds else "PENDING",
+        "SPREAD_FORWARD_CONTEXT_WARM_DELAYED" if startup_delay_seconds else "SPREAD_FORWARD_CONTEXT_WARM_PENDING",
+        attempt=0,
+        max_attempts=max_attempts,
+        delay_seconds=startup_delay_seconds,
+    )
     if startup_delay_seconds:
         _spread_forward_logger.warning(
             "WOW_NCAAF_SPREAD_FORWARD_WARM status=DELAYED seconds=%s can_execute=false",
@@ -367,27 +445,64 @@ async def _warm_ncaaf_spread_forward_context_after_startup() -> None:
         )
         await asyncio.sleep(float(startup_delay_seconds))
 
-    retry_delays = (0.0, 15.0, 30.0)
     for attempt, retry_delay in enumerate(retry_delays, start=1):
         if retry_delay:
+            _set_spread_forward_warm_state(
+                "RETRYING",
+                "SPREAD_FORWARD_CONTEXT_WARM_RETRYING",
+                attempt=attempt,
+                max_attempts=max_attempts,
+                retry_delay_seconds=retry_delay,
+            )
             await asyncio.sleep(retry_delay)
+
+        _set_spread_forward_warm_state(
+            "WARMING",
+            "SPREAD_FORWARD_CONTEXT_WARMING",
+            attempt=attempt,
+            max_attempts=max_attempts,
+        )
         try:
             receipt = await asyncio.to_thread(warm_ncaaf_forward_context, _db_client())
         except Exception as exc:  # noqa: BLE001
-            _spread_forward_logger.error(
-                "WOW_NCAAF_SPREAD_FORWARD_WARM status=FAILED attempt=%s max_attempts=%s error_type=%s can_execute=false",
-                attempt,
-                len(retry_delays),
-                type(exc).__name__,
+            error_code = _spread_forward_warm_error_code(exc)
+            transient = _spread_forward_warm_failure_is_transient(exc)
+            has_retry = transient and attempt < max_attempts
+            _set_spread_forward_warm_state(
+                "RETRYING" if has_retry else "FAILED",
+                "SPREAD_FORWARD_CONTEXT_WARM_RETRYING" if has_retry else "SPREAD_FORWARD_CONTEXT_WARM_FAILED",
+                attempt=attempt,
+                max_attempts=max_attempts,
+                error_type=type(exc).__name__,
+                error_code=error_code,
+                transient=transient,
             )
-            if type(exc).__name__ == "ReadTimeout" and attempt < len(retry_delays):
+            _spread_forward_logger.error(
+                "WOW_NCAAF_SPREAD_FORWARD_WARM status=%s attempt=%s max_attempts=%s error_type=%s error_code=%s can_execute=false",
+                "RETRYING" if has_retry else "FAILED",
+                attempt,
+                max_attempts,
+                type(exc).__name__,
+                error_code,
+            )
+            if has_retry:
                 continue
             return
+
+        ready = _set_spread_forward_warm_state(
+            "READY",
+            "SPREAD_FORWARD_CONTEXT_READY",
+            attempt=attempt,
+            max_attempts=max_attempts,
+            cache_status=receipt.get("cache_status"),
+            cache_age_seconds=receipt.get("cache_age_seconds"),
+            training_cutoff_event_time=receipt.get("training_cutoff_event_time"),
+        )
         _spread_forward_logger.warning(
             "WOW_NCAAF_SPREAD_FORWARD_WARM status=%s code=%s cache_status=%s attempt=%s can_execute=false",
-            receipt.get("status"),
-            receipt.get("code"),
-            receipt.get("cache_status"),
+            ready.get("status"),
+            ready.get("code"),
+            ready.get("cache_status"),
             attempt,
         )
         return
