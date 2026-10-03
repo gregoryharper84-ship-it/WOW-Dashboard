@@ -124,14 +124,14 @@ jobs:
           for required_spec in "${required[@]}"; do
             required_name="${required_spec%%|*}"
             required_path="${required_spec#*|}"
-            match=$(jq -r --arg name "$required_name" --arg path "$required_path" '[.[] | select(.name == $name and .path == $path)] | sort_by(.created_at) | reverse | first | "\(.status)|\(.conclusion // \"\")"' <<<"$runs")
+            match=$(jq -r --arg name "$required_name" --arg path "$required_path" '[.[] | select(.name == $name and .path == $path)] | sort_by(.created_at) | reverse | first | "\(.status)|\(.conclusion // "")"' <<<"$runs")
             [ "$match" = "completed|success" ] || {
               echo "RELEASE_REQUIRED_WORKFLOW_NOT_GREEN: $required_name:$required_path -> ${match:-MISSING}" >&2
               exit 1
             }
           done
           checks=$(gh api --paginate "/repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/check-runs?per_page=100" --jq '.check_runs')
-          gate=$(jq -r '[.[] | select(.name == "Trusted exact-head engineering governance")] | sort_by(.started_at // .created_at) | reverse | first | "\(.status)|\(.conclusion // \"\")"' <<<"$checks")
+          gate=$(jq -r '[.[] | select(.name == "Trusted exact-head engineering governance")] | sort_by(.started_at // .created_at) | reverse | first | "\(.status)|\(.conclusion // "")"' <<<"$checks")
           [ "$gate" = "completed|success" ] || {
             echo "RELEASE_TRUSTED_GOVERNANCE_CHECK_NOT_GREEN: ${gate:-MISSING}" >&2
             exit 1
