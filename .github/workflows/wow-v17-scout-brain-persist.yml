@@ -18,7 +18,10 @@ permissions:
   id-token: write
 
 concurrency:
-  group: wow-v17-scout-brain-persist-${{ inputs.run_id || github.event.workflow_run.id }}
+  # One persistence writer at a time across all source runs. Separate source
+  # identities can touch the same high-volume evidence tables, so per-source
+  # serialization still allowed overlapping write storms during recovery.
+  group: wow-v17-scout-brain-persist-global
   cancel-in-progress: false
 
 jobs:
