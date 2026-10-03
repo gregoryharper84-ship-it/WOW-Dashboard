@@ -3,7 +3,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 RESTORE_MLB = ROOT / "v17" / "sql" / "20260927_restore_mlb_forward_cron_jobs.sql"
-SMOOTH_WOW = ROOT / "migrations" / "20261002_smooth_wow_cron_load.sql"
+SMOOTH_WOW = ROOT / "migrations" / "20261003022500_smooth_wow_cron_load.sql"
 
 
 def _minutes(spec: str) -> set[int]:
