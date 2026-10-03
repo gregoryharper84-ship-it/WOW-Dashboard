@@ -1,23 +1,19 @@
 name: wow-v17-scout-persist-resume
 
+# P0 containment for #1237: while Supabase data-plane reads/writes are timing
+# out, automatic resume/replay is SAFE_HOLD. Manual workflow_dispatch remains
+# available for one bounded, evidence-backed acceptance replay after recovery.
 on:
-  workflow_run:
-    workflows: ["wow-v17-morning-green-continuation"]
-    types: [completed]
-  schedule:
-    - cron: "*/15 * * * *"
   workflow_dispatch:
 
 permissions:
   actions: write
   contents: read
 
-# One global group let a */15 cron tick and a workflow_run trigger contend for
-# the single pending slot, so queued runs cancelled each other. Key the group by
-# trigger source (and, for workflow_run, by the SHA being resumed) so a
-# SHA-specific resume is never cancelled by an unrelated scheduled sweep.
+# Keep manual recovery serialized. Automatic triggers are intentionally absent
+# until #1237 production acceptance proves the Supabase data plane is healthy.
 concurrency:
-  group: wow-v17-scout-persist-resume-${{ github.event_name == 'workflow_run' && format('sha-{0}', github.event.workflow_run.head_sha) || 'scheduled' }}
+  group: wow-v17-scout-persist-resume-manual
   cancel-in-progress: false
 
 jobs:
