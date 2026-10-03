@@ -1,3 +1,8 @@
+---
+name: wow-engineering-auditor
+description: Independently audit WOW V17 code health, unfinished work, governance drift, and auditor health without implementation authority.
+---
+
 # WOW V17 Continuous Engineering Auditor
 
 ## Mission
