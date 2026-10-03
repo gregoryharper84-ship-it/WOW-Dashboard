@@ -315,14 +315,63 @@ begin
 end;
 $$;
 
+create or replace function public.wow_enqueue_scout_handoff_batch(p_jobs jsonb)
+returns jsonb
+language plpgsql
+security invoker
+set search_path = public, pg_temp
+as $
+declare
+    item jsonb;
+    r public.wow_scout_handoff_jobs%rowtype;
+    v_total integer := 0;
+    v_queued integer := 0;
+    v_blocked integer := 0;
+begin
+    if jsonb_typeof(p_jobs) <> 'array' then
+        raise exception 'SCOUT_HANDOFF_BATCH_ARRAY_REQUIRED';
+    end if;
+
+    for item in select value from jsonb_array_elements(p_jobs)
+    loop
+        r := public.wow_enqueue_scout_handoff_job(
+            item->>'source_run_id',
+            item->>'research_run_id',
+            item->>'candidate_id',
+            item->>'target_lane',
+            item->>'target_route',
+            item->>'request_id',
+            coalesce(item->'request_payload','{}'::jsonb),
+            case when item->>'red_team_status' = 'HANDOFF_BLOCKED'
+                 then coalesce(item->>'blocked_code','SCOUT_HANDOFF_BLOCKED')
+                 else null end,
+            item->'blocked_detail'
+        );
+        v_total := v_total + 1;
+        if r.current_state = 'HANDOFF_BLOCKED' then
+            v_blocked := v_blocked + 1;
+        else
+            v_queued := v_queued + 1;
+        end if;
+    end loop;
+
+    return jsonb_build_object(
+        'candidate_jobs', v_total,
+        'queued', v_queued,
+        'handoff_blocked', v_blocked,
+        'can_execute', false
+    );
+end;
+$;
+
 revoke all on function public.wow_enqueue_scout_handoff_job(text,text,text,text,text,text,jsonb,text,jsonb) from public, anon, authenticated;
-revoke all on function public.wow_claim_scout_handoff_job(text,integer) from public, anon, authenticated;
+revoke all on function public.wow_enqueue_scout_handoff_batch(jsonb) from public, anon, authenticated;\nrevoke all on function public.wow_claim_scout_handoff_job(text,integer) from public, anon, authenticated;
 revoke all on function public.wow_finish_scout_handoff_job(uuid,text,jsonb,boolean) from public, anon, authenticated;
 revoke all on function public.wow_retry_scout_handoff_job(uuid,text,integer,text,jsonb) from public, anon, authenticated;
 revoke all on function public.wow_block_scout_handoff_job(uuid,text,text,jsonb) from public, anon, authenticated;
 
 grant execute on function public.wow_enqueue_scout_handoff_job(text,text,text,text,text,text,jsonb,text,jsonb) to service_role;
-grant execute on function public.wow_claim_scout_handoff_job(text,integer) to service_role;
+grant execute on function public.wow_enqueue_scout_handoff_batch(jsonb) to service_role;\ngrant execute on function public.wow_claim_scout_handoff_job(text,integer) to service_role;
 grant execute on function public.wow_finish_scout_handoff_job(uuid,text,jsonb,boolean) to service_role;
 grant execute on function public.wow_retry_scout_handoff_job(uuid,text,integer,text,jsonb) to service_role;
 grant execute on function public.wow_block_scout_handoff_job(uuid,text,text,jsonb) to service_role;
