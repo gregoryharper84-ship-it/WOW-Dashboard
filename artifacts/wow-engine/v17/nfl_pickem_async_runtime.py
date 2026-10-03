@@ -189,7 +189,8 @@ async def _worker_loop(
     db_client_fn: Any,
     event_api: Any,
 ) -> None:
-    poll_seconds = _int_env("WOW_V17_NFL_PICKEM_ASYNC_POLL_SECONDS", 30, minimum=5, maximum=60)\n    db_failure_backoff_seconds = _int_env("WOW_V17_NFL_PICKEM_ASYNC_DB_FAILURE_BACKOFF_SECONDS", 30, minimum=5, maximum=120)
+    poll_seconds = _int_env("WOW_V17_NFL_PICKEM_ASYNC_POLL_SECONDS", 30, minimum=5, maximum=60)
+    db_failure_backoff_seconds = _int_env("WOW_V17_NFL_PICKEM_ASYNC_DB_FAILURE_BACKOFF_SECONDS", 30, minimum=5, maximum=120)
     # A prior real 16-game request required ~299 seconds. Keep the lease above the
     # observed path while still allowing restart recovery well inside one hour.
     lease_seconds = _int_env("WOW_V17_NFL_PICKEM_ASYNC_LEASE_SECONDS", 900, minimum=300, maximum=3600)
@@ -198,11 +199,13 @@ async def _worker_loop(
 
     while True:
         claim: dict[str, Any] | None = None
+        claim_failed = False
         try:
             claim = await asyncio.to_thread(_claim_from_factory, db_client_fn, lease_seconds)
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - queue transport failure remains explicit
+            claim_failed = True
             LOGGER.warning(
                 "WOW_V17_NFL_PICKEM_ASYNC_CLAIM_FAILED error=%s can_execute=false",
                 type(exc).__name__,
@@ -210,7 +213,8 @@ async def _worker_loop(
 
         if claim is None:
             try:
-                timeout = db_failure_backoff_seconds if claim_failed else poll_seconds\n                await asyncio.wait_for(wake.wait(), timeout=float(timeout))
+                timeout = db_failure_backoff_seconds if claim_failed else poll_seconds
+                await asyncio.wait_for(wake.wait(), timeout=float(timeout))
                 wake.clear()
             except TimeoutError:
                 pass
