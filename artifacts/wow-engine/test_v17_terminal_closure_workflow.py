@@ -19,7 +19,7 @@ def test_terminal_closure_workflow_is_valid_and_hourly():
 
 
 def test_terminal_closure_workflow_has_write_authority_only_for_closure_surfaces():
-    data = yaml.safe_load(_text())
+    data = yaml.load(_text(), Loader=yaml.BaseLoader)
     assert data["permissions"] == {
         "actions": "write",
         "checks": "read",
