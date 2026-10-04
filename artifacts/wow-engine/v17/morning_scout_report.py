@@ -36,7 +36,7 @@ def build_report(handoff: dict[str, Any], receipt: dict[str, Any]) -> dict[str, 
                         status == "COMPLETED"
                         and row.get("probability_publishable") is True
                         and row.get("rank_eligible") is True
-                        and row.get("card_admission_eligible", True) is True
+                        and row.get("card_admission_eligible") is True
                     )
                     if governed_admission and publication_gate_open:
                         qualified.append(item)
