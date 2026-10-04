@@ -59,3 +59,9 @@ def test_vercel_challenger_does_not_embed_credentials():
     for marker in forbidden:
         assert marker not in source
         assert marker not in config
+
+
+def test_vercel_challenger_declares_esm_runtime():
+    package = json.loads(PACKAGE.read_text(encoding="utf-8"))
+    assert package["type"] == "module"
+    assert package["engines"]["node"].startswith(">=")
