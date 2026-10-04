@@ -42,8 +42,15 @@ def _timeout_seconds() -> int:
     return max(30, min(value, 1800))
 
 
-def _get_status(origin: str, source_run_id: str, token: str) -> dict[str, Any]:
-    path = f"/v17/scout-handoff-runs/{quote(source_run_id, safe='')}?include_receipts=true"
+def _get_status(
+    origin: str,
+    source_run_id: str,
+    token: str,
+    *,
+    include_receipts: bool = False,
+) -> dict[str, Any]:
+    suffix = "?include_receipts=true" if include_receipts else ""
+    path = f"/v17/scout-handoff-runs/{quote(source_run_id, safe='')}{suffix}"
     request = Request(
         f"{origin.rstrip('/')}{path}",
         headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
@@ -166,7 +173,7 @@ def wait_for_terminal(
     current_token = token
 
     while monotonic_fn() < deadline:
-        receipt = _get_status(origin, source_run_id, current_token)
+        receipt = _get_status(origin, source_run_id, current_token, include_receipts=False)
         if receipt.get("http_status") == 401:
             try:
                 current_token = mint_github_actions_oidc(force=True)
@@ -186,7 +193,23 @@ def wait_for_terminal(
         if isinstance(body, dict) and body.get("can_execute") is False:
             latest = body
             if body.get("status") == "COMPLETE":
-                return validate_terminal_summary(body)
+                detailed = _get_status(
+                    origin,
+                    source_run_id,
+                    current_token,
+                    include_receipts=True,
+                )
+                detailed_body = detailed.get("body") if isinstance(detailed, dict) else None
+                if not isinstance(detailed_body, dict) or detailed_body.get("can_execute") is not False:
+                    return {
+                        "schema_version": "wow.v17.scout-handoff-terminal-acceptance.v1",
+                        "status": "BLOCKED_WITH_EXACT_REASON",
+                        "source_run_id": source_run_id,
+                        "blockers": ["SCOUT_TERMINAL_ACCEPTANCE_DETAILED_RECEIPT_FAILED"],
+                        "terminal_authority": "V17_TERMINAL_REDUCER",
+                        "can_execute": False,
+                    }
+                return validate_terminal_summary(detailed_body)
         sleep_fn(2)
 
     result = validate_terminal_summary(latest or {
