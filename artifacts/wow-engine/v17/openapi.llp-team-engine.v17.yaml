@@ -1,12 +1,13 @@
 openapi: 3.1.0
 info:
   title: LLP Team Betting Engine v17 Action
-  version: 17.0.1-transport-gateway
+  version: 17.0.2-action-basepath
   description: >-
     PRODUCTION SOURCE CONTRACT. LLP Team Betting Engine owns team/game/event
     winner, favorite, underdog, upset and governed point-spread intelligence.
-    Its Custom GPT Action transport enters through the closed Supabase Edge
-    gateway, which forwards only the canonical LLP route set to the unchanged
+    Its Custom GPT Action transport uses the bare Supabase origin and explicit
+    function-prefixed paths to avoid Action server-base-path loss. The closed
+    Supabase Edge gateway forwards only the canonical LLP route set to the unchanged
     governed Render runtime. The gateway is transport-only and has no sporting
     probability, calibration, publication, terminal, or execution authority.
     It has no player-prop scoring operation. Shared market, portfolio and global
@@ -14,21 +15,21 @@ info:
     the live LLP Custom GPT editor when editor access is available.
     can_execute is always false.
 servers:
-  - url: https://iczfhsmjrrafhvcpmqhr.supabase.co/functions/v1/wow-llp-action-gateway
+  - url: https://iczfhsmjrrafhvcpmqhr.supabase.co
 paths:
-  /health:
+  /functions/v1/wow-llp-action-gateway/health:
     get:
       operationId: getLlpV17BackendHealth
       x-openai-isConsequential: false
       responses:
         '200': {description: Backend health state}
-  /governance:
+  /functions/v1/wow-llp-action-gateway/governance:
     get:
       operationId: getLlpV17Governance
       x-openai-isConsequential: false
       responses:
         '200': {description: Governed capability state}
-  /v17/host-contract:
+  /functions/v1/wow-llp-action-gateway/v17/host-contract:
     get:
       operationId: getLlpV17HostContract
       x-openai-isConsequential: false
@@ -36,7 +37,7 @@ paths:
       responses:
         '200': {description: Canonical v17 host/lane alignment contract}
         '401': {description: Authentication failed}
-  /v17/daily-snapshot-run:
+  /functions/v1/wow-llp-action-gateway/v17/daily-snapshot-run:
     post:
       operationId: runLlpV17FullSlate
       x-openai-isConsequential: false
@@ -55,7 +56,7 @@ paths:
         '200': {description: Full governed Daily moneyline receipt including held rows and cross-sport reconciliation}
         '401': {description: Authentication failed}
         '422': {description: Invalid full-slate request}
-  /v17/daily-snapshot-run/{run_id}/rows:
+  /functions/v1/wow-llp-action-gateway/v17/daily-snapshot-run/{run_id}/rows:
     get:
       operationId: readLlpV17FullSlateRows
       x-openai-isConsequential: false
@@ -79,7 +80,7 @@ paths:
       responses:
         '200': {description: One page of full all-sports row evidence}
         '401': {description: Authentication failed}
-  /score-team-event:
+  /functions/v1/wow-llp-action-gateway/score-team-event:
     post:
       operationId: scoreLlpV17TeamEvent
       x-openai-isConsequential: false
@@ -99,7 +100,7 @@ paths:
         '401': {description: Authentication failed}
         '409': {description: Controlling model/capability unavailable}
         '422': {description: Event/evidence/host contract invalid}
-  /internal/v17/spread-forward-shadow:
+  /functions/v1/wow-llp-action-gateway/internal/v17/spread-forward-shadow:
     post:
       operationId: scoreLlpV17SpreadForwardShadow
       x-openai-isConsequential: false
@@ -117,7 +118,7 @@ paths:
         '200': {description: Research-only fitted spread challenger shadow result or typed blocker}
         '401': {description: Authentication failed}
         '422': {description: Invalid NCAAF exact-line shadow request}
-  /internal/v17/nfl-spread-forward-shadow:
+  /functions/v1/wow-llp-action-gateway/internal/v17/nfl-spread-forward-shadow:
     post:
       operationId: scoreLlpV17NFLSpreadForwardShadow
       x-openai-isConsequential: false
@@ -135,7 +136,7 @@ paths:
         '200': {description: Research-only NFL fitted spread shadow result or typed blocker}
         '401': {description: Authentication failed}
         '422': {description: Invalid NFL exact-line shadow request}
-  /internal/v17/wnba-spread-forward-shadow:
+  /functions/v1/wow-llp-action-gateway/internal/v17/wnba-spread-forward-shadow:
     post:
       operationId: scoreLlpV17WNBASpreadForwardShadow
       x-openai-isConsequential: false
@@ -153,7 +154,7 @@ paths:
         '200': {description: Research-only WNBA fitted spread shadow result or typed blocker}
         '401': {description: Authentication failed}
         '422': {description: Invalid WNBA exact-line shadow request}
-  /internal/v17/mlb-run-line-forward-shadow:
+  /functions/v1/wow-llp-action-gateway/internal/v17/mlb-run-line-forward-shadow:
     post:
       operationId: scoreLlpV17MLBRunLineForwardShadow
       x-openai-isConsequential: false
@@ -171,7 +172,7 @@ paths:
         '200': {description: Research-only MLB fitted run-line shadow result or typed blocker}
         '401': {description: Authentication failed}
         '422': {description: Invalid MLB exact run-line shadow request}
-  /record-recommendations:
+  /functions/v1/wow-llp-action-gateway/record-recommendations:
     post:
       operationId: recordLlpV17Recommendations
       x-openai-isConsequential: false
@@ -186,7 +187,7 @@ paths:
         '401': {description: Authentication failed}
         '422': {description: Invalid or non-pregame recommendation contract}
         '503': {description: Write-before-display not proven}
-  /settle-recommendations:
+  /functions/v1/wow-llp-action-gateway/settle-recommendations:
     post:
       operationId: settleLlpV17Recommendations
       x-openai-isConsequential: false
