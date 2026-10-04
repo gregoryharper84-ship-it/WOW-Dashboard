@@ -254,6 +254,7 @@ def espn_event_to_primary_shape(event: dict[str, Any], sport_key: str) -> dict[s
         "home_team": _team_name(home),
         "away_team": _team_name(away),
         "_wow_secondary_event_id": str(event_id),
+        "_wow_secondary_scoreboard_dates": list(event.get("_wow_secondary_scoreboard_dates") or []),
         "_wow_secondary_source": "ESPN_SCOREBOARD_RESEARCH_FALLBACK",
     }
 
