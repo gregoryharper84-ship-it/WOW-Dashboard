@@ -209,6 +209,7 @@ def compact_espn_scoreboard(
     result = secondary._scoreboard(  # intentional server-side reuse of existing cache/transport
         sport_key,
         {"commenceTimeFrom": date_compact, "commenceTimeTo": date_compact},
+        provider_limit=250,
     )
     if not result.ok:
         return {
@@ -221,6 +222,16 @@ def compact_espn_scoreboard(
             "can_execute": False,
         }
     raw_events = result.data.get("events") if isinstance(result.data, dict) else []
+    provider_truncated = (
+        isinstance(result.data, dict)
+        and result.data.get("_wow_provider_truncated") is True
+    )
+    provider_limit = result.data.get("_wow_provider_limit") if isinstance(result.data, dict) else None
+    provider_result_count = (
+        result.data.get("_wow_provider_result_count")
+        if isinstance(result.data, dict)
+        else None
+    )
     compact = [
         _compact_espn_event(raw, sport_key)
         for raw in (raw_events or [])
@@ -229,12 +240,26 @@ def compact_espn_scoreboard(
     page_payload = compact_event_page(compact, page=page, page_size=page_size)
     page_payload.update(
         {
-            "status": "PASS",
+            "status": (
+                "DISCOVERY_INCOMPLETE_PROVIDER_LIMIT"
+                if provider_truncated
+                else "PASS"
+            ),
             "sport_key": sport_key,
             "date": date_iso,
             "provider": "ESPN_SCOREBOARD_RESEARCH_FALLBACK",
+            "provider_code": (
+                "ESPN_SCOREBOARD_PROVIDER_LIMIT_REACHED"
+                if provider_truncated
+                else None
+            ),
+            "provider_limit": provider_limit,
+            "provider_result_count": provider_result_count,
+            "provider_truncated": provider_truncated,
+            "coverage_complete": not provider_truncated,
             "response_contract": "IDENTITY_ONLY_PAGINATED",
             "prediction_authority": False,
+            "exact_line_authority": False,
             "can_execute": False,
         }
     )
