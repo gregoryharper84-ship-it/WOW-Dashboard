@@ -74,16 +74,44 @@ def _model_result():
 class _PredictionInsert:
     def __init__(self):
         self.payload = None
+        self.rows = []
+        self.mode = None
+        self.identity_key = None
+
+    def select(self, *_args):
+        self.mode = "select"
+        return self
+
+    def eq(self, column, value):
+        assert column == "prediction_identity_key"
+        self.identity_key = value
+        return self
+
+    def limit(self, _value):
+        return self
 
     def insert(self, payload):
+        self.mode = "insert"
         self.payload = payload
         return self
 
     def execute(self):
-        return SimpleNamespace(data=[{
-            "score_snapshot_id": "score-1",
-            "event_prediction_id": "prediction-1",
-        }])
+        if self.mode == "select":
+            matches = [
+                row for row in self.rows
+                if row.get("prediction_identity_key") == self.identity_key
+            ]
+            self.mode = None
+            return SimpleNamespace(data=matches[:1])
+        assert self.mode == "insert"
+        row = {
+            **self.payload,
+            "score_snapshot_id": f"score-{len(self.rows) + 1}",
+            "event_prediction_id": f"prediction-{len(self.rows) + 1}",
+        }
+        self.rows.append(row)
+        self.mode = None
+        return SimpleNamespace(data=[row])
 
 
 class _DB:
@@ -99,7 +127,11 @@ def _patch_model(monkeypatch):
     monkeypatch.setattr(
         specialist,
         "load_champion_model",
-        lambda db: SimpleNamespace(model_family="NFL_EVENT_V17_TEST"),
+        lambda db: SimpleNamespace(
+            artifact_id="model-1",
+            model_artifact_version="NFL_EVENT_V17_TEST",
+            model_family="NFL_EVENT_V17_TEST",
+        ),
     )
     monkeypatch.setattr(specialist, "score_feature_row", lambda model, row: _model_result())
     monkeypatch.setattr(specialist, "feature_order_hash", lambda: "feature-order-hash")
@@ -179,6 +211,58 @@ def test_overcount_never_triggers_repair_or_model(monkeypatch):
 
     with pytest.raises(NFLModelInputsInsufficient, match="NFL_CURRENT_SEASON_HISTORY_STALE:HOME=3/2:AWAY=2/2"):
         specialist.score_nfl_team_event(_req(), db=object())
+
+
+def test_same_immutable_prediction_identity_reuses_first_receipt(monkeypatch):
+    monkeypatch.setattr(specialist, "_prediction_feature_row", lambda **kwargs: _feature(2, 2))
+    _patch_model(monkeypatch)
+    calls = {"score": 0}
+
+    def score(model, row):
+        calls["score"] += 1
+        return _model_result()
+
+    monkeypatch.setattr(specialist, "score_feature_row", score)
+    db = _DB()
+
+    first = specialist.score_nfl_team_event(_req(), db=db)
+    second = specialist.score_nfl_team_event(_req(), db=db)
+
+    assert calls["score"] == 1
+    assert len(db.predictions.rows) == 1
+    assert first["event_prediction_id"] == second["event_prediction_id"]
+    assert first["score_snapshot_id"] == second["score_snapshot_id"]
+    assert first["prediction_reused"] is False
+    assert second["prediction_reused"] is True
+    assert len(db.predictions.rows[0]["prediction_identity_key"]) == 64
+    assert second["can_execute"] is False
+
+
+def test_changed_feature_snapshot_creates_new_prediction(monkeypatch):
+    features = [_feature(2, 2), _feature(2, 2)]
+    features[0]["row_inputs_hash"] = "snapshot-a"
+    features[1]["row_inputs_hash"] = "snapshot-b"
+    monkeypatch.setattr(specialist, "_prediction_feature_row", lambda **kwargs: features.pop(0))
+    _patch_model(monkeypatch)
+    calls = {"score": 0}
+
+    def score(model, row):
+        calls["score"] += 1
+        return _model_result()
+
+    monkeypatch.setattr(specialist, "score_feature_row", score)
+    db = _DB()
+
+    first = specialist.score_nfl_team_event(_req(), db=db)
+    second = specialist.score_nfl_team_event(_req(), db=db)
+
+    assert calls["score"] == 2
+    assert len(db.predictions.rows) == 2
+    assert first["event_prediction_id"] != second["event_prediction_id"]
+    assert first["prediction_reused"] is False
+    assert second["prediction_reused"] is False
+    assert db.predictions.rows[0]["prediction_identity_key"] != db.predictions.rows[1]["prediction_identity_key"]
+    assert second["can_execute"] is False
 
 
 def test_summary_refresh_materializes_only_nonzero_pbp_rows(monkeypatch):
