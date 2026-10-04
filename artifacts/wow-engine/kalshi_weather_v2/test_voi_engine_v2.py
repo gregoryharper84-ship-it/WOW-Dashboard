@@ -75,7 +75,7 @@ def test_point_in_time_registry_excludes_future_available_evidence():
     upcoming = event("upcoming", expected_at="2026-10-04T16:00:00Z")
     registry.register_many((realized, future_available, upcoming))
     assert [item.event_id for item in registry.available_as_of("2026-10-04T15:00:00Z")] == ["realized"]
-    assert [item.event_id for item in registry.future_as_of("2026-10-04T15:00:00Z")] == ["upcoming"]
+    assert [item.event_id for item in registry.future_as_of("2026-10-04T15:00:00Z")] == ["future-available", "upcoming"]
 
 
 def test_information_event_rejects_execution_capability():
@@ -110,6 +110,7 @@ def test_sequential_voi_can_prefer_wait():
         ),
     )
     result = VoIEngineV2().evaluate(
+        decision_time="2026-10-04T15:00:00Z",
         current_probability=0.52,
         raw_market_probability=0.50,
         effective_break_even_probability=0.53,
@@ -126,6 +127,7 @@ def test_sequential_voi_can_prefer_wait():
 
 def test_wait_cost_can_make_trade_now_optimal():
     result = VoIEngineV2().evaluate(
+        decision_time="2026-10-04T15:00:00Z",
         current_probability=0.58,
         raw_market_probability=0.50,
         effective_break_even_probability=0.54,
@@ -140,6 +142,7 @@ def test_wait_cost_can_make_trade_now_optimal():
 
 def test_governance_gates_block_trade_and_wait():
     result = VoIEngineV2().evaluate(
+        decision_time="2026-10-04T15:00:00Z",
         current_probability=0.60,
         raw_market_probability=0.50,
         effective_break_even_probability=0.55,
@@ -154,6 +157,7 @@ def test_governance_gates_block_trade_and_wait():
 def test_market_state_changes_decision_edge_not_weather_probability():
     engine = VoIEngineV2()
     kwargs = dict(
+        decision_time="2026-10-04T15:00:00Z",
         current_probability=0.60,
         events=(event(),),
         distributions={"metar-1": distribution()},
@@ -168,6 +172,7 @@ def test_market_state_changes_decision_edge_not_weather_probability():
 
 def test_edge_survival_reports_effective_survival_and_sign_reversal():
     result = VoIEngineV2().evaluate(
+        decision_time="2026-10-04T15:00:00Z",
         current_probability=0.56,
         raw_market_probability=0.50,
         effective_break_even_probability=0.55,
@@ -186,6 +191,7 @@ def test_edge_survival_reports_effective_survival_and_sign_reversal():
 def test_posterior_shift_out_of_bounds_fails_instead_of_clipping():
     with pytest.raises(VoIEngineError, match="POSTERIOR_SHIFT_OUT_OF_BOUNDS"):
         VoIEngineV2().evaluate(
+            decision_time="2026-10-04T15:00:00Z",
             current_probability=0.98,
             raw_market_probability=0.50,
             effective_break_even_probability=0.55,
@@ -199,6 +205,7 @@ def test_posterior_shift_out_of_bounds_fails_instead_of_clipping():
 
 def test_no_implicit_minimum_edge_threshold():
     result = VoIEngineV2().evaluate(
+        decision_time="2026-10-04T15:00:00Z",
         current_probability=0.501,
         raw_market_probability=0.499,
         effective_break_even_probability=0.500,
@@ -219,6 +226,7 @@ def test_explicit_policy_threshold_can_abstain_without_becoming_default():
         minimum_edge=0.02,
     )
     result = VoIEngineV2().evaluate(
+        decision_time="2026-10-04T15:00:00Z",
         current_probability=0.51,
         raw_market_probability=0.49,
         effective_break_even_probability=0.50,
@@ -229,3 +237,197 @@ def test_explicit_policy_threshold_can_abstain_without_becoming_default():
     )
     assert result.action is DecisionAction.ABSTAIN
     assert result.policy_version == "shadow-v2"
+
+
+def test_wait_to_trade_now_fallback_reapplies_minimum_edge_policy():
+    policy = DecisionPolicy(
+        policy_id="KALSHI_WEATHER_DECISION_POLICY",
+        version="fallback-regression",
+        evidence_id="chronological-replay-fallback",
+        effective_from="2026-10-04T00:00:00Z",
+        minimum_edge=0.02,
+        minimum_voi_gain=0.01,
+    )
+    result = VoIEngineV2().evaluate(
+        decision_time="2026-10-04T15:00:00Z",
+        current_probability=0.501,
+        raw_market_probability=0.49,
+        effective_break_even_probability=0.50,
+        events=(event(),),
+        distributions={"metar-1": distribution(scenarios=(
+            PosteriorShiftScenario(delta_probability=0.01, weight=0.5),
+            PosteriorShiftScenario(delta_probability=-0.005, weight=0.5),
+        ))},
+        gates=gates(),
+        policy=policy,
+    )
+    assert result.voi_gain < policy.minimum_voi_gain
+    assert result.action is DecisionAction.ABSTAIN
+
+
+def test_survival_policy_uses_worst_modeled_horizon_not_only_first_event():
+    first = event("metar-1", expected_at="2026-10-04T16:00:00Z")
+    second = event(
+        "hrrr-1",
+        expected_at="2026-10-04T17:00:00Z",
+        event_type=InformationEventType.HRRR_MODEL_CYCLE,
+        source="HRRR",
+        evidence_id="shadow-hrrr-v1",
+        lead_time_bucket="H2",
+    )
+    policy = DecisionPolicy(
+        policy_id="KALSHI_WEATHER_DECISION_POLICY",
+        version="survival-all-horizons",
+        evidence_id="chronological-replay-survival",
+        effective_from="2026-10-04T00:00:00Z",
+        minimum_edge_survival_probability=0.75,
+    )
+    result = VoIEngineV2().evaluate(
+        decision_time="2026-10-04T15:00:00Z",
+        current_probability=0.60,
+        raw_market_probability=0.50,
+        effective_break_even_probability=0.55,
+        events=(first, second),
+        distributions={
+            "metar-1": distribution(scenarios=(PosteriorShiftScenario(delta_probability=0.05, weight=1.0),)),
+            "hrrr-1": distribution(
+                event_type=InformationEventType.HRRR_MODEL_CYCLE,
+                lead_time_bucket="H2",
+                scenarios=(
+                    PosteriorShiftScenario(delta_probability=0.02, weight=0.5),
+                    PosteriorShiftScenario(delta_probability=-0.20, weight=0.5),
+                ),
+            ),
+        },
+        gates=gates(),
+        policy=policy,
+    )
+    assert result.edge_survival[0].probability_effective_edge_positive == pytest.approx(1.0)
+    assert result.edge_survival[1].probability_effective_edge_positive == pytest.approx(0.5)
+    assert result.action is DecisionAction.ABSTAIN
+
+
+def test_engine_rejects_event_not_future_as_of_decision_time():
+    with pytest.raises(VoIEngineError, match="INFORMATION_EVENT_NOT_FUTURE_AS_OF_DECISION"):
+        VoIEngineV2().evaluate(
+            decision_time="2026-10-04T16:30:00Z",
+            current_probability=0.60,
+            raw_market_probability=0.50,
+            effective_break_even_probability=0.55,
+            events=(event(expected_at="2026-10-04T16:00:00Z"),),
+            distributions={"metar-1": distribution()},
+            gates=gates(),
+        )
+
+
+def test_fractional_second_event_order_is_chronological_not_lexicographic():
+    registry = InformationEventRegistry()
+    half = event("half", expected_at="2026-10-04T16:00:00.500000Z")
+    whole = event("whole", expected_at="2026-10-04T16:00:00Z")
+    registry.register_many((half, whole))
+    assert [item.event_id for item in registry.future_as_of("2026-10-04T15:00:00Z")] == ["whole", "half"]
+
+
+@pytest.mark.parametrize(
+    "gate_overrides, blocker",
+    [
+        ({"settlement_ready": False}, "SETTLEMENT_GATE_INCOMPLETE"),
+        ({"execution_quality_ready": False}, "EXECUTION_QUALITY_GATE_INCOMPLETE"),
+    ],
+)
+def test_upstream_gate_blockers_return_abstain_before_bad_voi_inputs(gate_overrides, blocker):
+    result = VoIEngineV2().evaluate(
+        decision_time="2026-10-04T15:00:00Z",
+        current_probability=0.60,
+        raw_market_probability=0.50,
+        effective_break_even_probability=0.55,
+        events=(event(),),
+        distributions={},
+        gates=gates(**gate_overrides),
+    )
+    assert result.action is DecisionAction.ABSTAIN
+    assert blocker in result.blockers
+    assert result.edge_survival == ()
+
+
+def test_scenario_tree_max_paths_fails_closed():
+    second = event(
+        "hrrr-1",
+        expected_at="2026-10-04T17:00:00Z",
+        event_type=InformationEventType.HRRR_MODEL_CYCLE,
+        source="HRRR",
+        evidence_id="shadow-hrrr-v1",
+        lead_time_bucket="H2",
+    )
+    with pytest.raises(VoIEngineError, match="VOI_SCENARIO_TREE_TOO_LARGE"):
+        VoIEngineV2().evaluate(
+            decision_time="2026-10-04T15:00:00Z",
+            current_probability=0.60,
+            raw_market_probability=0.50,
+            effective_break_even_probability=0.55,
+            events=(event(), second),
+            distributions={
+                "metar-1": distribution(),
+                "hrrr-1": distribution(event_type=InformationEventType.HRRR_MODEL_CYCLE, lead_time_bucket="H2"),
+            },
+            gates=gates(),
+            max_paths=3,
+        )
+
+
+def test_wait_cost_on_later_event_reduces_root_wait_value():
+    second = event(
+        "hrrr-1",
+        expected_at="2026-10-04T17:00:00Z",
+        event_type=InformationEventType.HRRR_MODEL_CYCLE,
+        source="HRRR",
+        evidence_id="shadow-hrrr-v1",
+        lead_time_bucket="H2",
+    )
+    kwargs = dict(
+        decision_time="2026-10-04T15:00:00Z",
+        current_probability=0.52,
+        raw_market_probability=0.50,
+        effective_break_even_probability=0.53,
+        events=(event(), second),
+        distributions={
+            "metar-1": distribution(),
+            "hrrr-1": distribution(event_type=InformationEventType.HRRR_MODEL_CYCLE, lead_time_bucket="H2"),
+        },
+        gates=gates(),
+    )
+    no_cost = VoIEngineV2().evaluate(**kwargs)
+    later_cost = VoIEngineV2().evaluate(**kwargs, wait_costs={"hrrr-1": 0.02})
+    assert later_cost.wait_value < no_cost.wait_value
+
+
+def test_multi_event_sign_reversal_accumulates_across_horizons():
+    second = event(
+        "hrrr-1",
+        expected_at="2026-10-04T17:00:00Z",
+        event_type=InformationEventType.HRRR_MODEL_CYCLE,
+        source="HRRR",
+        evidence_id="shadow-hrrr-v1",
+        lead_time_bucket="H2",
+    )
+    result = VoIEngineV2().evaluate(
+        decision_time="2026-10-04T15:00:00Z",
+        current_probability=0.60,
+        raw_market_probability=0.50,
+        effective_break_even_probability=0.55,
+        events=(event(), second),
+        distributions={
+            "metar-1": distribution(scenarios=(PosteriorShiftScenario(delta_probability=0.02, weight=1.0),)),
+            "hrrr-1": distribution(
+                event_type=InformationEventType.HRRR_MODEL_CYCLE,
+                lead_time_bucket="H2",
+                scenarios=(
+                    PosteriorShiftScenario(delta_probability=0.02, weight=0.5),
+                    PosteriorShiftScenario(delta_probability=-0.12, weight=0.5),
+                ),
+            ),
+        },
+        gates=gates(),
+    )
+    assert result.edge_survival[0].probability_sign_reversal == pytest.approx(0.0)
+    assert result.edge_survival[1].probability_sign_reversal == pytest.approx(0.5)
