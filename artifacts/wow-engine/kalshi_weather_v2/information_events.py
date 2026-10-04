@@ -104,7 +104,7 @@ class InformationEventRegistry:
             event for event in self._events.values()
             if event.is_future_as_of(as_of) and (lane is None or event.lane == lane)
         ]
-        return tuple(sorted(items, key=_event_sort_key))
+        return tuple(sorted(items, key=event_sort_key))
 
     def register_many(self, events: Iterable[InformationEvent]) -> tuple[InformationEvent, ...]:
         return tuple(self.register(event) for event in events)
