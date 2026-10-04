@@ -335,17 +335,36 @@ def _find_event(
     event_id: str,
     context: dict[str, Any] | None,
 ) -> SecondaryResult:
-    query_params: dict[str, Any] = {}
-    if context and context.get("commence_time"):
-        date = _date_key(str(context.get("commence_time")))
-        query_params = {"commenceTimeFrom": date, "commenceTimeTo": date}
-    board = _scoreboard(sport_key, query_params)
-    if not board.ok:
-        return board
-    events = board.data.get("events") if isinstance(board.data, dict) else []
-    for event in events or []:
-        if isinstance(event, dict) and _event_matches(event, context, event_id):
-            return SecondaryResult(True, event, 200)
+    lookup_dates: list[str] = []
+    if context:
+        for date in context.get("_wow_secondary_scoreboard_dates") or []:
+            value = str(date or "").strip()
+            if value and value not in lookup_dates:
+                lookup_dates.append(value)
+        if not lookup_dates and context.get("commence_time"):
+            lookup_dates.append(_date_key(str(context.get("commence_time"))))
+
+    if not lookup_dates:
+        board = _scoreboard(sport_key, {})
+        if not board.ok:
+            return board
+        boards = [board]
+    else:
+        boards = []
+        for date in lookup_dates:
+            board = _scoreboard(
+                sport_key,
+                {"commenceTimeFrom": date, "commenceTimeTo": date},
+            )
+            if not board.ok:
+                return board
+            boards.append(board)
+
+    for board in boards:
+        events = board.data.get("events") if isinstance(board.data, dict) else []
+        for event in events or []:
+            if isinstance(event, dict) and _event_matches(event, context, event_id):
+                return SecondaryResult(True, event, 200)
     return SecondaryResult(False, status=404, code="SECONDARY_SOURCE_EVENT_NOT_FOUND")
 
 
