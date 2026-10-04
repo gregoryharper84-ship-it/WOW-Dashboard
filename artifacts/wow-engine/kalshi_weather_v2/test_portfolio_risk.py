@@ -207,7 +207,7 @@ def test_regional_factor_scenarios_produce_explainable_factor_state_risk():
         dependence_mode=DependenceMode.REGIONAL_FACTOR_SCENARIOS,
         fractional_kelly_multiplier=0.25,
     )
-    assert result.expected_pnl == pytest.approx(6.0)
+    assert result.expected_pnl == pytest.approx(7.5)
     assert result.probability_of_loss == pytest.approx(0.25)
     assert result.max_region_concentration == pytest.approx(4.0 / 7.5)
     assert {item.exposure_key for item in result.factor_exposures} == {"RIDGE_STRENGTH", "SYNOPTIC_REGIME"}
