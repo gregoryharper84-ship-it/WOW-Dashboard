@@ -8,6 +8,7 @@ HERE = Path(__file__).resolve().parents[1] / "v17"
 SCHEMA = HERE / "openapi.llp-team-engine.v17.yaml"
 GATEWAY_DIR = HERE / "vercel" / "llp-action-gateway"
 VERCEL = GATEWAY_DIR / "vercel.json"
+PACKAGE = GATEWAY_DIR / "package.json"
 SOURCE = GATEWAY_DIR / "api" / "gateway.js"
 
 
