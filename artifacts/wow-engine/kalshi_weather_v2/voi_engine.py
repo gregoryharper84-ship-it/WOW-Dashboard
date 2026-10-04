@@ -5,7 +5,7 @@ import math
 from typing import Mapping, Sequence
 
 from .decision_policy import DecisionAction, DecisionPolicy
-from .information_events import InformationEvent, InformationEventType
+from .information_events import InformationEvent, InformationEventType, event_sort_key
 
 
 class VoIEngineError(ValueError):
@@ -124,6 +124,7 @@ class VoIEngineV2:
     def evaluate(
         self,
         *,
+        decision_time: str,
         current_probability: float,
         raw_market_probability: float,
         effective_break_even_probability: float,
@@ -144,18 +145,9 @@ class VoIEngineV2:
         current_effective_edge = p0 - effective_break_even
         immediate = max(current_effective_edge, 0.0)
 
-        ordered = tuple(sorted(events, key=lambda item: (item.expected_at, item.event_id, item.version)))
-        costs = {str(k): _nonnegative(v, "WAIT_COST_INVALID") for k, v in dict(wait_costs or {}).items()}
-        prepared = tuple((event, self._distribution_for(event, distributions)) for event in ordered)
-        self._enforce_path_bound(prepared, max_paths)
-
-        edge_survival = self._edge_survival_series(
-            p0=p0,
-            raw_market=raw_market,
-            effective_break_even=effective_break_even,
-            prepared=prepared,
-        )
-
+        # Preserve upstream typed blockers before touching optional future-event
+        # inputs. A row already blocked by settlement/calibration/execution
+        # quality must remain ABSTAIN rather than raising on downstream VoI data.
         if not gates.ready:
             return VoIDecision(
                 action=DecisionAction.ABSTAIN,
@@ -166,11 +158,27 @@ class VoIEngineV2:
                 wait_value=0.0,
                 voi_gain=-immediate,
                 best_wait_event_id=None,
-                edge_survival=edge_survival,
+                edge_survival=(),
                 blockers=gates.blockers,
                 policy_id=policy.policy_id if policy else None,
                 policy_version=policy.version if policy else None,
             )
+
+        ordered = tuple(sorted(events, key=event_sort_key))
+        for event in ordered:
+            if not event.is_future_as_of(decision_time):
+                raise VoIEngineError(f"INFORMATION_EVENT_NOT_FUTURE_AS_OF_DECISION:{event.event_id}")
+
+        costs = {str(k): _nonnegative(v, "WAIT_COST_INVALID") for k, v in dict(wait_costs or {}).items()}
+        prepared = tuple((event, self._distribution_for(event, distributions)) for event in ordered)
+        self._enforce_path_bound(prepared, max_paths)
+
+        edge_survival = self._edge_survival_series(
+            p0=p0,
+            raw_market=raw_market,
+            effective_break_even=effective_break_even,
+            prepared=prepared,
+        )
 
         root = self._optimal_value(
             stage=0,
@@ -321,8 +329,9 @@ class VoIEngineV2:
             )
         return tuple(out)
 
-    @staticmethod
+    @classmethod
     def _apply_policy(
+        cls,
         *,
         action: DecisionAction,
         current_effective_edge: float,
@@ -332,16 +341,63 @@ class VoIEngineV2:
     ) -> DecisionAction:
         if policy is None:
             return action
-        if action is DecisionAction.TRADE_NOW and policy.minimum_edge is not None:
-            if current_effective_edge < float(policy.minimum_edge):
+
+        survival_ok = cls._survival_policy_passes(edge_survival=edge_survival, policy=policy)
+
+        if action is DecisionAction.WAIT:
+            if policy.minimum_voi_gain is not None and voi_gain < float(policy.minimum_voi_gain):
+                return (
+                    DecisionAction.TRADE_NOW
+                    if current_effective_edge > 0.0
+                    and cls._trade_now_policy_passes(
+                        current_effective_edge=current_effective_edge,
+                        survival_ok=survival_ok,
+                        policy=policy,
+                    )
+                    else DecisionAction.ABSTAIN
+                )
+            if not survival_ok:
                 return DecisionAction.ABSTAIN
-        if action is DecisionAction.WAIT and policy.minimum_voi_gain is not None:
-            if voi_gain < float(policy.minimum_voi_gain):
-                return DecisionAction.TRADE_NOW if current_effective_edge > 0.0 else DecisionAction.ABSTAIN
-        if policy.minimum_edge_survival_probability is not None and edge_survival:
-            if edge_survival[0].probability_effective_edge_positive < float(policy.minimum_edge_survival_probability):
-                return DecisionAction.ABSTAIN
-        return action
+            return DecisionAction.WAIT
+
+        if action is DecisionAction.TRADE_NOW:
+            return (
+                DecisionAction.TRADE_NOW
+                if cls._trade_now_policy_passes(
+                    current_effective_edge=current_effective_edge,
+                    survival_ok=survival_ok,
+                    policy=policy,
+                )
+                else DecisionAction.ABSTAIN
+            )
+
+        return DecisionAction.ABSTAIN
+
+    @staticmethod
+    def _trade_now_policy_passes(
+        *,
+        current_effective_edge: float,
+        survival_ok: bool,
+        policy: DecisionPolicy,
+    ) -> bool:
+        if policy.minimum_edge is not None and current_effective_edge < float(policy.minimum_edge):
+            return False
+        return survival_ok
+
+    @staticmethod
+    def _survival_policy_passes(
+        *,
+        edge_survival: Sequence[EdgeSurvivalMetrics],
+        policy: DecisionPolicy,
+    ) -> bool:
+        if policy.minimum_edge_survival_probability is None:
+            return True
+        if not edge_survival:
+            return False
+        threshold = float(policy.minimum_edge_survival_probability)
+        # Policy is horizon-conservative: every modeled future information
+        # horizon must retain at least the configured survival probability.
+        return min(item.probability_effective_edge_positive for item in edge_survival) >= threshold
 
 
 def _probability(value: float, code: str) -> float:
