@@ -176,3 +176,70 @@ def test_reconciliation_tolerance_is_part_of_immutable_identity():
     default = record()
     looser = record(reconciliation_tolerance=1e-8)
     assert default.probability_change_id != looser.probability_change_id
+
+
+@pytest.mark.parametrize(
+    "overrides,error_code",
+    [
+        ({"component_id": ""}, "ATTRIBUTION_COMPONENT_ID_MISSING"),
+        ({"label": ""}, "ATTRIBUTION_LABEL_MISSING"),
+        ({"method": ""}, "ATTRIBUTION_METHOD_MISSING"),
+        ({"evidence_ids": ("dup", "dup")}, "ATTRIBUTION_EVIDENCE_DUPLICATE"),
+        ({"delta_probability": float("nan")}, "ATTRIBUTION_DELTA_INVALID"),
+        ({"delta_probability": True}, "ATTRIBUTION_DELTA_INVALID"),
+        ({"available_at": "not-a-time"}, "ATTRIBUTION_AVAILABLE_AT_INVALID"),
+        ({"available_at": "2026-10-04T16:01:00"}, "ATTRIBUTION_AVAILABLE_AT_TIMEZONE_REQUIRED"),
+        ({"can_execute": True}, "ATTRIBUTION_EXECUTION_PROHIBITED"),
+    ],
+)
+def test_attribution_component_malformed_inputs_fail_closed(overrides, error_code):
+    with pytest.raises(ProbabilityChangeLedgerError, match=error_code):
+        component(**overrides)
+
+
+def test_prediction_identity_conflict_fails_closed():
+    with pytest.raises(ProbabilityChangeLedgerError, match="PROBABILITY_CHANGE_PREDICTION_IDENTITY_CONFLICT"):
+        record(current_prediction_id="prediction-before")
+
+
+def test_probability_change_requires_attribution_components():
+    with pytest.raises(ProbabilityChangeLedgerError, match="PROBABILITY_CHANGE_ATTRIBUTION_MISSING"):
+        record(components=())
+
+
+@pytest.mark.parametrize(
+    "market_ids,error_code",
+    [
+        (("",), "MARKET_CONTEXT_ID_INVALID"),
+        (("same", "same"), "MARKET_CONTEXT_ID_DUPLICATE"),
+    ],
+)
+def test_market_context_identity_validation(market_ids, error_code):
+    with pytest.raises(ProbabilityChangeLedgerError, match=error_code):
+        record(market_context_snapshot_ids=market_ids)
+
+
+def test_negative_reconciliation_tolerance_fails_closed():
+    with pytest.raises(ProbabilityChangeLedgerError, match="PROBABILITY_CHANGE_TOLERANCE_INVALID"):
+        record(reconciliation_tolerance=-1e-9)
+
+
+@pytest.mark.parametrize(
+    "field,value,error_code",
+    [
+        ("before_decision_time", "not-a-time", "PROBABILITY_CHANGE_BEFORE_TIME_INVALID"),
+        ("after_decision_time", "not-a-time", "PROBABILITY_CHANGE_AFTER_TIME_INVALID"),
+        ("before_decision_time", "2026-10-04T15:55:00", "PROBABILITY_CHANGE_BEFORE_TIME_TIMEZONE_REQUIRED"),
+        ("after_decision_time", "2026-10-04T16:05:00", "PROBABILITY_CHANGE_AFTER_TIME_TIMEZONE_REQUIRED"),
+    ],
+)
+def test_probability_change_timestamp_validation(field, value, error_code):
+    with pytest.raises(ProbabilityChangeLedgerError, match=error_code):
+        record(**{field: value})
+
+
+def test_evidence_union_is_sorted_and_deduplicated_across_components():
+    a = component("a", delta_probability=0.020, evidence_ids=("e2", "e1"))
+    b = component("b", delta_probability=0.023, evidence_ids=("e2", "e3"))
+    item = record(components=(a, b))
+    assert item.attribution_evidence_ids == ("e1", "e2", "e3")
