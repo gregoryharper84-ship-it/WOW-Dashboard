@@ -166,6 +166,9 @@ def install_refreshable_oidc_proxy_auth() -> None:
                     "home_team": event.get("home_team"),
                     "away_team": event.get("away_team"),
                     "commence_time": event.get("commence_time"),
+                    "_wow_secondary_scoreboard_dates": list(
+                        event.get("_wow_secondary_scoreboard_dates") or []
+                    ),
                 }
 
     def _bookmaker_rows(payload: Any) -> list[dict[str, Any]]:
