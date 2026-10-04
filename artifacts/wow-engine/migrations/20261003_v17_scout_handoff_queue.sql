@@ -249,6 +249,8 @@ declare
     v_previous_state text;
     v_previous_owner text;
     v_claim_code text;
+    v_retry_safe boolean;
+    v_block_code text;
 begin
     if coalesce(trim(p_worker_id), '') = '' then
         raise exception 'SCOUT_HANDOFF_WORKER_ID_REQUIRED';
@@ -283,6 +285,50 @@ begin
 
     v_previous_state := r.current_state;
     v_previous_owner := r.lease_owner;
+
+    if v_previous_state='SPECIALIST_PROCESSING' then
+        v_retry_safe := (
+            r.target_lane='WOW_PROP_LANE'
+            or (
+                r.target_lane='LLP_TEAM_BETTING_ENGINE'
+                and upper(coalesce(r.request_payload->>'sport',''))='MLB'
+                and upper(coalesce(r.request_payload->>'league',''))='MLB'
+                and coalesce(trim(r.request_payload->>'research_run_id'),'') <> ''
+                and coalesce(trim(r.request_payload->>'event_key'),'') <> ''
+            )
+        );
+        if not v_retry_safe or r.attempt_count >= 2 then
+            v_block_code := case
+                when not v_retry_safe then 'SCOUT_HANDOFF_AMBIGUOUS_RETRY_PROHIBITED'
+                else 'SCOUT_HANDOFF_RETRY_EXHAUSTED'
+            end;
+            update public.wow_scout_handoff_jobs j
+               set current_state='HANDOFF_BLOCKED',
+                   terminal=true,
+                   lease_owner=null,
+                   lease_expires_at=null,
+                   next_attempt_at=null,
+                   last_error_code=v_block_code,
+                   last_error_detail=jsonb_build_object(
+                       'lease_lost',true,
+                       'previous_worker_id',v_previous_owner,
+                       'retry_safe',v_retry_safe,
+                       'attempt_count',r.attempt_count,
+                       'lease_reclaim_budget',2
+                   ),
+                   updated_at=now()
+             where j.job_id=r.job_id
+            returning j.* into r;
+
+            insert into public.wow_scout_handoff_state_events
+                (job_id,source_run_id,research_run_id,candidate_id,target_lane,state,attempt_count,code,detail,can_execute)
+            values
+                (r.job_id,r.source_run_id,r.research_run_id,r.candidate_id,r.target_lane,'HANDOFF_BLOCKED',r.attempt_count,v_block_code,
+                 r.last_error_detail,false);
+            return;
+        end if;
+    end if;
+
     v_claim_code := case
         when v_previous_state='SPECIALIST_PROCESSING' then 'SPECIALIST_LEASE_RECLAIMED'
         else 'SPECIALIST_WORKER_CLAIMED'
@@ -316,8 +362,7 @@ $$;
 create or replace function public.wow_finish_scout_handoff_job(
     p_job_id uuid,
     p_worker_id text,
-    p_specialist_receipt jsonb,
-    p_v17_qualified boolean
+    p_specialist_receipt jsonb
 )
 returns public.wow_scout_handoff_jobs
 language plpgsql
@@ -326,6 +371,9 @@ set search_path = public, pg_temp
 as $$
 declare
     r public.wow_scout_handoff_jobs%rowtype;
+    v_outcome jsonb;
+    v_status text;
+    v_v17_qualified boolean;
 begin
     select * into r from public.wow_scout_handoff_jobs where job_id=p_job_id for update;
     if not found then raise exception 'SCOUT_HANDOFF_JOB_NOT_FOUND'; end if;
@@ -333,8 +381,21 @@ begin
         raise exception 'SCOUT_HANDOFF_LEASE_OWNERSHIP_MISMATCH';
     end if;
 
+    v_outcome := coalesce(
+        p_specialist_receipt->'result'->'outcomes'->0,
+        p_specialist_receipt->'result'->'rows'->0,
+        '{}'::jsonb
+    );
+    v_status := upper(coalesce(v_outcome->>'terminal_status',v_outcome->>'status',''));
+    v_v17_qualified := (
+        v_status='COMPLETED'
+        and coalesce(v_outcome->>'probability_publishable','false')='true'
+        and coalesce(v_outcome->>'rank_eligible','false')='true'
+        and coalesce(v_outcome->>'card_admission_eligible','false')='true'
+    );
+
     update public.wow_scout_handoff_jobs
-       set current_state=case when p_v17_qualified then 'V17_QUALIFIED' else 'MODEL_EVALUATED' end,
+       set current_state=case when v_v17_qualified then 'V17_QUALIFIED' else 'MODEL_EVALUATED' end,
            terminal=true,
            specialist_receipt=coalesce(p_specialist_receipt,'{}'::jsonb),
            lease_owner=null, lease_expires_at=null, next_attempt_at=null,
@@ -347,7 +408,7 @@ begin
     values
         (r.job_id,r.source_run_id,r.research_run_id,r.candidate_id,r.target_lane,'MODEL_EVALUATED',r.attempt_count,'SPECIALIST_MODEL_EVALUATED',p_specialist_receipt,false);
 
-    if p_v17_qualified then
+    if v_v17_qualified then
         insert into public.wow_scout_handoff_state_events
             (job_id,source_run_id,research_run_id,candidate_id,target_lane,state,attempt_count,code,detail,can_execute)
         values
@@ -430,14 +491,14 @@ $$;
 revoke all on function public.wow_enqueue_scout_handoff_job(text,text,text,text,text,text,text,jsonb,text,jsonb) from public, anon, authenticated;
 revoke all on function public.wow_enqueue_scout_handoff_batch(jsonb) from public, anon, authenticated;
 revoke all on function public.wow_claim_scout_handoff_job(text,integer) from public, anon, authenticated;
-revoke all on function public.wow_finish_scout_handoff_job(uuid,text,jsonb,boolean) from public, anon, authenticated;
+revoke all on function public.wow_finish_scout_handoff_job(uuid,text,jsonb) from public, anon, authenticated;
 revoke all on function public.wow_retry_scout_handoff_job(uuid,text,integer,text,jsonb) from public, anon, authenticated;
 revoke all on function public.wow_block_scout_handoff_job(uuid,text,text,jsonb) from public, anon, authenticated;
 
 grant execute on function public.wow_enqueue_scout_handoff_job(text,text,text,text,text,text,text,jsonb,text,jsonb) to service_role;
 grant execute on function public.wow_enqueue_scout_handoff_batch(jsonb) to service_role;
 grant execute on function public.wow_claim_scout_handoff_job(text,integer) to service_role;
-grant execute on function public.wow_finish_scout_handoff_job(uuid,text,jsonb,boolean) to service_role;
+grant execute on function public.wow_finish_scout_handoff_job(uuid,text,jsonb) to service_role;
 grant execute on function public.wow_retry_scout_handoff_job(uuid,text,integer,text,jsonb) to service_role;
 grant execute on function public.wow_block_scout_handoff_job(uuid,text,text,jsonb) to service_role;
 
