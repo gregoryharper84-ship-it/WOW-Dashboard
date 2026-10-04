@@ -126,3 +126,15 @@ def test_durable_ledger_pending_rows_fail_closed_for_publication():
     assert report["publication_gate_open"] is False
     assert report["governed_picks"] == []
     assert any(row.get("publication_blocker") == "SPECIALIST_HANDOFF_PENDING" for row in report["blocked_or_unresolved"])
+
+
+def test_durable_completed_row_missing_card_admission_fails_closed():
+    receipt = _durable_receipt()
+    row = receipt["jobs"][0]["specialist_receipt"]["result"]["rows"][0]
+    row.pop("card_admission_eligible")
+    receipt["jobs"][0]["current_state"] = "MODEL_EVALUATED"
+    report = build_report(_handoff(), receipt)
+    assert report["governed_picks"] == []
+    blocked = next(r for r in report["blocked_or_unresolved"] if r.get("row_key") == "durable-good")
+    assert blocked["publication_blocker"] == "GOVERNED_PICK_ADMISSION_NOT_PROVEN"
+    assert blocked["can_execute"] is False
