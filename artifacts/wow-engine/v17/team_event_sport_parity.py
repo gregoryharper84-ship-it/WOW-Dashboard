@@ -254,6 +254,81 @@ def install_team_event_sport_parity() -> dict[str, Any]:
     }
 
 
+
+def canonicalize_nfl_discovery_identity(
+    event: Any,
+    *,
+    req: Any,
+    event_api: Any,
+    settlement_basis: str,
+) -> Any:
+    """Resolve an NFL provider alias through the canonical nflverse ledger.
+
+    Provider ids are evidence aliases only. The event's official id changes only
+    after the existing NFL specialist proves a unique canonical schedule match.
+    """
+    if str(getattr(event, "sport", "") or "").upper() != "NFL":
+        return event
+
+    raw = dict(getattr(event, "raw", None) or {})
+    provider_event_id = str(
+        getattr(event, "official_event_id", None)
+        or raw.get("provider_event_id")
+        or raw.get("event_id")
+        or raw.get("id")
+        or ""
+    ).strip()
+    get_client = getattr(event_api, "get_client", None)
+    db = get_client() if callable(get_client) else None
+    if not provider_event_id or db is None:
+        raw["canonical_identity_status"] = "ALIAS_ONLY_UNRESOLVED"
+        raw["canonical_identity_blocker"] = (
+            "NFL_PROVIDER_EVENT_ID_MISSING"
+            if not provider_event_id
+            else "NFL_EVENT_LEDGER_CLIENT_UNAVAILABLE"
+        )
+        return replace(event, raw=raw)
+
+    from v17.nfl_team_event_specialist import resolve_nfl_team_event_evidence
+
+    probe = SimpleNamespace(
+        official_event_id=provider_event_id,
+        home_team=event.home_team,
+        away_team=event.away_team,
+        requested_slate_date=req.requested_slate_date,
+        requested_timezone=req.requested_timezone,
+        event_start_time_utc=event.commence_time_utc,
+        settlement_basis=settlement_basis,
+    )
+    try:
+        resolution = resolve_nfl_team_event_evidence(probe, db=db)
+    except Exception as exc:  # noqa: BLE001 - preserve typed identity hold
+        raw["canonical_identity_status"] = "ALIAS_ONLY_UNRESOLVED"
+        raw["canonical_identity_blocker"] = str(
+            getattr(exc, "code", None) or type(exc).__name__
+        )
+        return replace(event, raw=raw)
+
+    if resolution.get("ok") is not True:
+        raw["canonical_identity_status"] = "ALIAS_ONLY_UNRESOLVED"
+        raw["canonical_identity_blocker"] = str(
+            resolution.get("code") or "NFL_CANONICAL_IDENTITY_UNRESOLVED"
+        )
+        return replace(event, raw=raw)
+
+    raw["provider_event_id"] = provider_event_id
+    raw["canonical_identity_status"] = "CANONICAL_RESOLVED"
+    raw["canonical_identity_source"] = "CANONICAL_NFLVERSE_LEDGER"
+    raw["canonical_identity_resolution"] = resolution.get("identity_resolution")
+    raw["canonical_source_snapshot_id"] = resolution.get(
+        "canonical_source_snapshot_id"
+    )
+    return replace(
+        event,
+        official_event_id=str(resolution["canonical_event_id"]),
+        raw=raw,
+    )
+
 def install_cross_sport_discovery_evidence_handoff() -> bool:
     """Give every discovered registered sport the same evidence handoff chance.
 
@@ -287,68 +362,12 @@ def install_cross_sport_discovery_evidence_handoff() -> bool:
                 ),
             )
 
-        get_client = getattr(event_api, "get_client", None)
-        db = get_client() if callable(get_client) else None
-
         def canonicalize_identity(event: Any) -> Any:
-            if str(getattr(event, "sport", "") or "").upper() != "NFL":
-                return event
-
-            raw = dict(getattr(event, "raw", None) or {})
-            provider_event_id = str(
-                getattr(event, "official_event_id", None)
-                or raw.get("provider_event_id")
-                or raw.get("event_id")
-                or raw.get("id")
-                or ""
-            ).strip()
-            if not provider_event_id or db is None:
-                raw["canonical_identity_status"] = "ALIAS_ONLY_UNRESOLVED"
-                raw["canonical_identity_blocker"] = (
-                    "NFL_PROVIDER_EVENT_ID_MISSING"
-                    if not provider_event_id
-                    else "NFL_EVENT_LEDGER_CLIENT_UNAVAILABLE"
-                )
-                return replace(event, raw=raw)
-
-            from v17.nfl_team_event_specialist import resolve_nfl_team_event_evidence
-
-            probe = SimpleNamespace(
-                official_event_id=provider_event_id,
-                home_team=event.home_team,
-                away_team=event.away_team,
-                requested_slate_date=req.requested_slate_date,
-                requested_timezone=req.requested_timezone,
-                event_start_time_utc=event.commence_time_utc,
-                settlement_basis=daily._settlement_basis("NFL"),
-            )
-            try:
-                resolution = resolve_nfl_team_event_evidence(probe, db=db)
-            except Exception as exc:  # noqa: BLE001 - preserve typed identity hold
-                raw["canonical_identity_status"] = "ALIAS_ONLY_UNRESOLVED"
-                raw["canonical_identity_blocker"] = str(
-                    getattr(exc, "code", None) or type(exc).__name__
-                )
-                return replace(event, raw=raw)
-
-            if resolution.get("ok") is not True:
-                raw["canonical_identity_status"] = "ALIAS_ONLY_UNRESOLVED"
-                raw["canonical_identity_blocker"] = str(
-                    resolution.get("code") or "NFL_CANONICAL_IDENTITY_UNRESOLVED"
-                )
-                return replace(event, raw=raw)
-
-            raw["provider_event_id"] = provider_event_id
-            raw["canonical_identity_status"] = "CANONICAL_RESOLVED"
-            raw["canonical_identity_source"] = "CANONICAL_NFLVERSE_LEDGER"
-            raw["canonical_identity_resolution"] = resolution.get("identity_resolution")
-            raw["canonical_source_snapshot_id"] = resolution.get(
-                "canonical_source_snapshot_id"
-            )
-            return replace(
+            return canonicalize_nfl_discovery_identity(
                 event,
-                official_event_id=str(resolution["canonical_event_id"]),
-                raw=raw,
+                req=req,
+                event_api=event_api,
+                settlement_basis=daily._settlement_basis("NFL"),
             )
 
         def resolve_model(event: Any) -> Any:
