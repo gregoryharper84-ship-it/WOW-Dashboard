@@ -15,7 +15,7 @@ import json
 import os
 import re
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
@@ -72,11 +72,25 @@ def _date_key(value: str | None) -> str:
     return (dt or datetime.now(timezone.utc)).strftime("%Y%m%d")
 
 
-def _date_range(params: dict[str, Any] | None) -> str:
+def _date_keys(params: dict[str, Any] | None) -> list[str]:
     params = params or {}
     start = _date_key(str(params.get("commenceTimeFrom") or ""))
     end = _date_key(str(params.get("commenceTimeTo") or ""))
-    return start if start == end else f"{start}-{end}"
+    start_date = datetime.strptime(start, "%Y%m%d").date()
+    end_date = datetime.strptime(end, "%Y%m%d").date()
+    if end_date < start_date:
+        return []
+    return [
+        (start_date + timedelta(days=offset)).strftime("%Y%m%d")
+        for offset in range((end_date - start_date).days + 1)
+    ]
+
+
+def _date_range(params: dict[str, Any] | None) -> str:
+    dates = _date_keys(params)
+    if not dates:
+        return ""
+    return dates[0] if len(dates) == 1 else f"{dates[0]}-{dates[-1]}"
 
 
 def _within_exact_window(event: dict[str, Any], params: dict[str, Any] | None) -> bool:
@@ -125,7 +139,12 @@ def _scoreboard(
     if not mapped:
         return SecondaryResult(False, code="SECONDARY_SOURCE_UNSUPPORTED_SPORT")
     sport, league, _title = mapped
-    dates = _date_range(params)
+    date_keys = _date_keys(params)
+    if not date_keys:
+        return SecondaryResult(False, status=422, code="ESPN_DATE_RANGE_INVALID")
+    if len(date_keys) > 31:
+        return SecondaryResult(False, status=422, code="ESPN_DATE_RANGE_TOO_WIDE")
+    dates = date_keys[0] if len(date_keys) == 1 else f"{date_keys[0]}-{date_keys[-1]}"
     try:
         requested_limit = int(provider_limit)
     except (TypeError, ValueError):
@@ -135,28 +154,61 @@ def _scoreboard(
     cached = _SCOREBOARD_CACHE.get(cache_key)
     if cached is not None:
         return SecondaryResult(True, cached, 200)
-    result = _http_json(
-        f"{ESPN_BASE}/{sport}/{league}/scoreboard",
-        {"dates": dates, "limit": bounded_limit},
-    )
-    if result.ok and isinstance(result.data, dict):
-        data = dict(result.data)
-        events = data.get("events") if isinstance(data.get("events"), list) else []
-        total_hint = data.get("total") if data.get("total") is not None else data.get("count")
+
+    merged_data: dict[str, Any] = {}
+    merged_events: dict[str, dict[str, Any]] = {}
+    provider_truncated = False
+    response_status = 200
+    endpoint = f"{ESPN_BASE}/{sport}/{league}/scoreboard"
+
+    # ESPN's site scoreboard can reject direct multi-day range queries. Keep
+    # each provider request day-scoped, then merge deterministically so Scout's
+    # exact timestamp window is still enforced after acquisition.
+    for date_key in date_keys:
+        result = _http_json(
+            endpoint,
+            {"dates": date_key, "limit": bounded_limit},
+        )
+        if not result.ok:
+            return result
+        if not isinstance(result.data, dict):
+            return SecondaryResult(
+                False,
+                status=result.status,
+                code="ESPN_SCOREBOARD_INVALID_RESPONSE",
+            )
+        response_status = result.status or response_status
+        daily_data = dict(result.data)
+        if not merged_data:
+            merged_data = daily_data
+        daily_events = daily_data.get("events") if isinstance(daily_data.get("events"), list) else []
+        total_hint = daily_data.get("total") if daily_data.get("total") is not None else daily_data.get("count")
         try:
             total_hint_int = int(total_hint) if total_hint is not None else None
         except (TypeError, ValueError):
             total_hint_int = None
-        provider_truncated = (
-            len(events) >= bounded_limit
-            or (total_hint_int is not None and total_hint_int > len(events))
+        provider_truncated = provider_truncated or (
+            len(daily_events) >= bounded_limit
+            or (total_hint_int is not None and total_hint_int > len(daily_events))
         )
-        data["_wow_provider_limit"] = bounded_limit
-        data["_wow_provider_result_count"] = len(events)
-        data["_wow_provider_truncated"] = provider_truncated
-        result = SecondaryResult(True, data, result.status)
-        _SCOREBOARD_CACHE[cache_key] = data
-    return result
+        for index, event in enumerate(daily_events):
+            if not isinstance(event, dict):
+                continue
+            event_key = str(event.get("id") or f"{date_key}:{index}")
+            merged_events[event_key] = event
+
+    events = sorted(
+        merged_events.values(),
+        key=lambda event: (str(event.get("date") or ""), str(event.get("id") or "")),
+    )
+    merged_data["events"] = events
+    merged_data["_wow_provider_limit"] = bounded_limit
+    merged_data["_wow_provider_result_count"] = len(events)
+    merged_data["_wow_provider_truncated"] = provider_truncated
+    merged_data["_wow_provider_request_dates"] = date_keys
+    merged_data["_wow_provider_daily_request_count"] = len(date_keys)
+    _SCOREBOARD_CACHE[cache_key] = merged_data
+    return SecondaryResult(True, merged_data, response_status)
 
 
 def _competitors(event: dict[str, Any]) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
