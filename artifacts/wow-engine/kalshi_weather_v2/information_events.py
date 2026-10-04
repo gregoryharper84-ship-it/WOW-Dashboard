@@ -41,9 +41,9 @@ class InformationEvent:
         for name in ("event_id", "version", "lane", "source", "evidence_id", "expected_at"):
             if not str(getattr(self, name) or "").strip():
                 raise InformationEventError(f"INFORMATION_EVENT_{name.upper()}_MISSING")
-        expected = _parse_utc(self.expected_at)
+        expected = parse_event_time(self.expected_at)
         if self.available_at is not None:
-            _parse_utc(self.available_at)
+            parse_event_time(self.available_at)
         if self.historical_latency_seconds is not None:
             value = float(self.historical_latency_seconds)
             if not math.isfinite(value) or value < 0.0:
@@ -54,20 +54,22 @@ class InformationEvent:
                 raise InformationEventError("INFORMATION_EVENT_RELIABILITY_INVALID")
         if self.can_execute:
             raise InformationEventError("INFORMATION_EVENT_EXECUTION_PROHIBITED")
-        object.__setattr__(self, "expected_at", _format_utc(expected))
+        object.__setattr__(self, "expected_at", format_event_time(expected))
         if self.available_at is not None:
-            object.__setattr__(self, "available_at", _format_utc(_parse_utc(self.available_at)))
+            object.__setattr__(self, "available_at", format_event_time(parse_event_time(self.available_at)))
 
     def is_available_as_of(self, as_of: str) -> bool:
         if self.available_at is None:
             return False
-        return _parse_utc(self.available_at) <= _parse_utc(as_of)
+        return parse_event_time(self.available_at) <= parse_event_time(as_of)
 
     def is_future_as_of(self, as_of: str) -> bool:
-        cutoff = _parse_utc(as_of)
+        cutoff = parse_event_time(as_of)
         if self.is_available_as_of(as_of):
             return False
-        return _parse_utc(self.expected_at) > cutoff
+        if self.available_at is not None:
+            return parse_event_time(self.available_at) > cutoff
+        return parse_event_time(self.expected_at) > cutoff
 
 
 class InformationEventRegistry:
@@ -95,7 +97,7 @@ class InformationEventRegistry:
             event for event in self._events.values()
             if event.is_available_as_of(as_of) and (lane is None or event.lane == lane)
         ]
-        return tuple(sorted(items, key=_event_sort_key))
+        return tuple(sorted(items, key=event_sort_key))
 
     def future_as_of(self, as_of: str, *, lane: str | None = None) -> tuple[InformationEvent, ...]:
         items = [
@@ -108,11 +110,11 @@ class InformationEventRegistry:
         return tuple(self.register(event) for event in events)
 
 
-def _event_sort_key(event: InformationEvent) -> tuple[datetime, str, str]:
-    return (_parse_utc(event.expected_at), event.event_id, event.version)
+def event_sort_key(event: InformationEvent) -> tuple[datetime, str, str]:
+    return (parse_event_time(event.expected_at), event.event_id, event.version)
 
 
-def _parse_utc(value: str) -> datetime:
+def parse_event_time(value: str) -> datetime:
     text = str(value or "").strip()
     if text.endswith("Z"):
         text = text[:-1] + "+00:00"
@@ -125,5 +127,5 @@ def _parse_utc(value: str) -> datetime:
     return parsed.astimezone(timezone.utc)
 
 
-def _format_utc(value: datetime) -> str:
+def format_event_time(value: datetime) -> str:
     return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
