@@ -203,6 +203,7 @@ def test_portfolio_risk_persistence_is_idempotent_and_non_executable():
         side=PositionSide.YES,
         quantity=10,
         entry_cost_per_contract=0.40,
+        cost_basis_verified=True,
         threshold_lower=85,
         model_p_yes=0.60,
     )
@@ -211,6 +212,8 @@ def test_portfolio_risk_persistence_is_idempotent_and_non_executable():
         available_at="2026-10-04T16:02:00Z",
         weight=1,
         event_values={event.event_key: 90},
+        evidence_ids=("weather-scenario-1",),
+        method="GOVERNED_WEATHER_SCENARIO_TEST",
     )
     snapshot = PortfolioScenarioEngine().evaluate(
         as_of_time="2026-10-04T16:05:00Z",
