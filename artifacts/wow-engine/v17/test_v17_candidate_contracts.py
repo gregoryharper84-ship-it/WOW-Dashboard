@@ -42,14 +42,15 @@ def test_candidate_shadow_app_preserves_governed_compatibility_routes():
 
 def test_v17_action_schemas_preserve_backend_and_llp_gateway_transport_contracts():
     render_origin = "https://wow-governed-probability-engine.onrender.com"
-    llp_gateway_origin = (
-        "https://iczfhsmjrrafhvcpmqhr.supabase.co/functions/v1/wow-llp-action-gateway"
-    )
+    llp_gateway_origin = "https://iczfhsmjrrafhvcpmqhr.supabase.co"
+    llp_gateway_prefix = "/functions/v1/wow-llp-action-gateway"
     wow = WOW_SCHEMA.read_text()
     llp = LLP_SCHEMA.read_text()
     assert render_origin in wow
     assert llp_gateway_origin in llp
-    assert "closed Supabase Edge" in llp
+    assert llp_gateway_prefix in llp
+    assert "explicit\n    function-prefixed paths" in llp
+    assert "closed\n    Supabase Edge" in llp
     assert "unchanged\n    governed Render runtime" in llp
     assert "transport-only" in llp
     assert "REPLACE_WITH_RENDER_SERVICE_HOST" not in wow
@@ -59,7 +60,7 @@ def test_v17_action_schemas_preserve_backend_and_llp_gateway_transport_contracts
     assert "CANDIDATE ONLY" not in wow
     assert "CANDIDATE ONLY" not in llp
     assert "version: 17.0.0" in wow
-    assert "version: 17.0.1-transport-gateway" in llp
+    assert "version: 17.0.2-action-basepath" in llp
 
 
 def test_wow_action_has_prop_and_team_event_delegation():
@@ -216,13 +217,13 @@ def test_llp_supabase_gateway_diagnostic_contract_is_narrow():
         (HERE / "openapi.llp-team-engine.v17.supabase-gateway-diagnostic.yaml").read_text()
     )
     assert diagnostic["servers"] == [{
-        "url": "https://iczfhsmjrrafhvcpmqhr.supabase.co/functions/v1/wow-llp-action-gateway"
+        "url": "https://iczfhsmjrrafhvcpmqhr.supabase.co"
     }]
     assert set(diagnostic["paths"]) == {
-        "/health",
-        "/internal/v17/spread-forward-shadow",
+        "/functions/v1/wow-llp-action-gateway/health",
+        "/functions/v1/wow-llp-action-gateway/internal/v17/spread-forward-shadow",
     }
-    spread = diagnostic["paths"]["/internal/v17/spread-forward-shadow"]["post"]
+    spread = diagnostic["paths"]["/functions/v1/wow-llp-action-gateway/internal/v17/spread-forward-shadow"]["post"]
     assert spread["operationId"] == "scoreLlpV17SpreadForwardShadow"
     assert spread["security"] == [{"actionBearer": []}]
     schema = diagnostic["components"]["schemas"]["SpreadForwardShadowRequest"]
@@ -267,3 +268,13 @@ def test_llp_gateway_supabase_platform_jwt_check_is_disabled_for_wow_bearer():
     assert "[functions.wow-llp-action-gateway]" in config
     assert "verify_jwt = false" in config
 
+
+
+def test_llp_action_uses_bare_origin_with_explicit_gateway_paths():
+    document = yaml.safe_load(LLP_SCHEMA.read_text())
+    assert document["servers"] == [{"url": "https://iczfhsmjrrafhvcpmqhr.supabase.co"}]
+    prefix = "/functions/v1/wow-llp-action-gateway"
+    assert all(path.startswith(prefix + "/") for path in document["paths"])
+    assert prefix + "/health" in document["paths"]
+    assert prefix + "/score-team-event" in document["paths"]
+    assert prefix + "/v17/daily-snapshot-run" in document["paths"]
