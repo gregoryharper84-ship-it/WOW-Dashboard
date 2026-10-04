@@ -76,7 +76,7 @@ def test_compact_fixture_bounds_provider_and_never_hides_truncation(monkeypatch,
 
     assert seen == {"sport": sport_key, "limit": 250}
     assert result["status"] == "DISCOVERY_INCOMPLETE_PROVIDER_LIMIT"
-    assert result["provider_code"] == "ESPN_SCOREBOARD_PROVIDER_LIMIT_REAHNED"
+    assert result["provider_code"] == "ESPN_SCOREBOARD_PROVIDER_LIMIT_REACHED"
     assert result["provider_truncated"] is True
     assert result["coverage_complete"] is False
     assert result["prediction_authority"] is False
