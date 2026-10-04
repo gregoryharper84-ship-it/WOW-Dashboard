@@ -15,7 +15,16 @@ def test_failed_proxy_catalog_is_memoized_for_feed_lifetime():
         calls.append((path, dict(params or {})))
         return SimpleNamespace(ok=False, code="HTTP_429", data=None)
 
-    fetch = feed.odds_proxy_feed(proxy_get=proxy_get)
+    # Full-suite overlays can replace the exported factory globally. This
+    # focused circuit test must exercise the raw catalog adapter just like the
+    # independent-union test below, otherwise wrapper fallback semantics can
+    # mask the expected catalog failure.
+    odds_factory = getattr(
+        discovery,
+        "_v17_cross_sport_resilience_original_odds_proxy_feed",
+        feed.odds_proxy_feed,
+    )
+    fetch = odds_factory(proxy_get=proxy_get)
 
     for family in ("MLB", "NFL", "NBA", "WNBA"):
         with pytest.raises(discovery.DiscoveryFeedError) as exc_info:
