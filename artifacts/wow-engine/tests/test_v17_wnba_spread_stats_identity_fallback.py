@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import pytest
 
 import v17.spread_forward_auto_canary as canary
@@ -153,3 +155,87 @@ def test_stats_identity_unmapped_team_fails_closed(monkeypatch):
             fetcher=lambda *_a, **_k: None,
         )
     assert getattr(exc.value, "code", "") == "WNBA_SPREAD_FORWARD_TEAM_IDENTITY_UNMAPPED"
+
+
+def _official_livedata_schedule():
+    return {
+        "leagueSchedule": {
+            "gameDates": [{
+                "gameDate": "2026-10-04",
+                "games": [{
+                    "gameId": "1042600122",
+                    "gameDateTimeUTC": "2026-10-04T20:00:00Z",
+                    "gameStatus": 1,
+                    "homeTeam": {
+                        "teamId": "1611661324",
+                        "teamTricode": "MIN",
+                        "teamCity": "Minnesota",
+                        "teamName": "Lynx",
+                    },
+                    "awayTeam": {
+                        "teamId": "1611661317",
+                        "teamTricode": "WAS",
+                        "teamCity": "Washington",
+                        "teamName": "Mystics",
+                    },
+                }],
+            }],
+        },
+        "wowScheduleProvenance": {
+            "provider": control.LIVEDATA_SCOREBOARD_PROVIDER,
+            "market_features_used": False,
+            "probability_authority": False,
+            "can_execute": False,
+        },
+    }
+
+
+def test_stats_failure_recovers_spread_discovery_from_official_livedata(monkeypatch):
+    def stats_down(*_args, **_kwargs):
+        raise RuntimeError("stats transport unavailable")
+
+    monkeypatch.setattr(control, "_scoreboard_schedule_for_date", stats_down)
+    monkeypatch.setattr(
+        control,
+        "_livedata_schedule_for_date",
+        lambda *_args, **_kwargs: _official_livedata_schedule(),
+    )
+
+    event = canary.discover_future_wnba_stats_event(
+        fetcher=lambda *_args, **_kwargs: None,
+        now=datetime(2026, 10, 4, 18, 0, tzinfo=timezone.utc),
+        horizon_days=1,
+    )
+    assert event is not None
+    assert event["raw_event_id"] == "1042600122"
+    assert event["home_team_id"] == "espn-8"
+    assert event["away_team_id"] == "espn-16"
+    assert event["identity_provider"] == control.LIVEDATA_SCOREBOARD_PROVIDER
+    assert event["can_execute"] is False
+
+
+def test_scoring_reverification_falls_back_to_official_livedata(monkeypatch):
+    def stats_down(*_args, **_kwargs):
+        raise RuntimeError("stats transport unavailable")
+
+    monkeypatch.setattr(control, "_scoreboard_schedule_for_date", stats_down)
+    monkeypatch.setattr(
+        control,
+        "_livedata_schedule_for_date",
+        lambda *_args, **_kwargs: _official_livedata_schedule(),
+    )
+
+    result = resolve_wnba_current_event_identity(
+        event_id="wnba-stats-1042600122",
+        event_start_time="2026-10-04T20:00:00+00:00",
+        home_team_id="espn-8",
+        away_team_id="espn-16",
+        fetcher=lambda *_args, **_kwargs: None,
+    )
+    assert result["event_id"] == "wnba-stats-1042600122"
+    assert result["home_team_id"] == "espn-8"
+    assert result["away_team_id"] == "espn-16"
+    assert result["identity_provider"] == control.LIVEDATA_SCOREBOARD_PROVIDER
+    assert result["identity_source"] == control.LIVEDATA_SCOREBOARD_URL
+    assert result["market_features_used"] is False
+    assert result["can_execute"] is False
