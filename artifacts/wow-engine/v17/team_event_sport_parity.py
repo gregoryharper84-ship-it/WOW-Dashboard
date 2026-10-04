@@ -11,6 +11,8 @@ visible. can_execute is always false.
 """
 from __future__ import annotations
 
+from dataclasses import replace
+from types import SimpleNamespace
 from typing import Any, Mapping
 
 from fastapi import HTTPException
@@ -117,7 +119,12 @@ def build_discovery_evidence(event: Any, registration: Any | None = None) -> dic
     out["discovery_provider"] = getattr(event, "provider", None) or getattr(event, "source", None)
     out["discovery_provider_sport_id"] = getattr(event, "provider_sport_id", None)
     out["discovery_regime"] = getattr(event, "regime", None)
-    out["discovery_provider_event_id"] = getattr(event, "official_event_id", None)
+    out["discovery_provider_event_id"] = (
+        raw.get("provider_event_id")
+        or raw.get("event_id")
+        or raw.get("id")
+        or getattr(event, "official_event_id", None)
+    )
     out["market_probability_used_as_model"] = False
     out["generic_reasoning_used_as_model"] = False
     out["can_execute"] = False
@@ -280,6 +287,70 @@ def install_cross_sport_discovery_evidence_handoff() -> bool:
                 ),
             )
 
+        get_client = getattr(event_api, "get_client", None)
+        db = get_client() if callable(get_client) else None
+
+        def canonicalize_identity(event: Any) -> Any:
+            if str(getattr(event, "sport", "") or "").upper() != "NFL":
+                return event
+
+            raw = dict(getattr(event, "raw", None) or {})
+            provider_event_id = str(
+                getattr(event, "official_event_id", None)
+                or raw.get("provider_event_id")
+                or raw.get("event_id")
+                or raw.get("id")
+                or ""
+            ).strip()
+            if not provider_event_id or db is None:
+                raw["canonical_identity_status"] = "ALIAS_ONLY_UNRESOLVED"
+                raw["canonical_identity_blocker"] = (
+                    "NFL_PROVIDER_EVENT_ID_MISSING"
+                    if not provider_event_id
+                    else "NFL_EVENT_LEDGER_CLIENT_UNAVAILABLE"
+                )
+                return replace(event, raw=raw)
+
+            from v17.nfl_team_event_specialist import resolve_nfl_team_event_evidence
+
+            probe = SimpleNamespace(
+                official_event_id=provider_event_id,
+                home_team=event.home_team,
+                away_team=event.away_team,
+                requested_slate_date=req.requested_slate_date,
+                requested_timezone=req.requested_timezone,
+                event_start_time_utc=event.commence_time_utc,
+                settlement_basis=daily._settlement_basis("NFL"),
+            )
+            try:
+                resolution = resolve_nfl_team_event_evidence(probe, db=db)
+            except Exception as exc:  # noqa: BLE001 - preserve typed identity hold
+                raw["canonical_identity_status"] = "ALIAS_ONLY_UNRESOLVED"
+                raw["canonical_identity_blocker"] = str(
+                    getattr(exc, "code", None) or type(exc).__name__
+                )
+                return replace(event, raw=raw)
+
+            if resolution.get("ok") is not True:
+                raw["canonical_identity_status"] = "ALIAS_ONLY_UNRESOLVED"
+                raw["canonical_identity_blocker"] = str(
+                    resolution.get("code") or "NFL_CANONICAL_IDENTITY_UNRESOLVED"
+                )
+                return replace(event, raw=raw)
+
+            raw["provider_event_id"] = provider_event_id
+            raw["canonical_identity_status"] = "CANONICAL_RESOLVED"
+            raw["canonical_identity_source"] = "CANONICAL_NFLVERSE_LEDGER"
+            raw["canonical_identity_resolution"] = resolution.get("identity_resolution")
+            raw["canonical_source_snapshot_id"] = resolution.get(
+                "canonical_source_snapshot_id"
+            )
+            return replace(
+                event,
+                official_event_id=str(resolution["canonical_event_id"]),
+                raw=raw,
+            )
+
         def resolve_model(event: Any) -> Any:
             return daily.bridge_runtime.TEAM_EVENT_BRIDGES.get(event.sport)
 
@@ -352,6 +423,7 @@ def install_cross_sport_discovery_evidence_handoff() -> bool:
             fetch_sport_events=feed,
             resolve_model=resolve_model,
             score_row=score,
+            canonicalize_identity=canonicalize_identity,
         )
         rows = [
             daily._terminal_row(
