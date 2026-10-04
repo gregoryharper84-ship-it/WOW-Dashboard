@@ -49,7 +49,12 @@ class ProbabilityAttributionComponent:
             raise ProbabilityChangeLedgerError("ATTRIBUTION_LABEL_MISSING")
         if not self.method.strip():
             raise ProbabilityChangeLedgerError("ATTRIBUTION_METHOD_MISSING")
-        if self.domain in _PROHIBITED_DOMAINS:
+        try:
+            normalized_domain = AttributionDomain(self.domain)
+        except (TypeError, ValueError) as exc:
+            raise ProbabilityChangeLedgerError("ATTRIBUTION_DOMAIN_INVALID") from exc
+        object.__setattr__(self, "domain", normalized_domain)
+        if normalized_domain in _PROHIBITED_DOMAINS:
             raise ProbabilityChangeLedgerError(f"ATTRIBUTION_DOMAIN_PROHIBITED:{self.domain.value}")
         if not self.evidence_ids or any(not str(item).strip() for item in self.evidence_ids):
             raise ProbabilityChangeLedgerError("ATTRIBUTION_EVIDENCE_MISSING")
@@ -137,6 +142,7 @@ class ProbabilityChangeRecord:
             p_yes_after=after,
             components=self.components,
             market_context_snapshot_ids=self.market_context_snapshot_ids,
+            reconciliation_tolerance=tolerance,
         )
         if self.probability_change_id != expected:
             raise ProbabilityChangeLedgerError("PROBABILITY_CHANGE_IDENTITY_MISMATCH")
@@ -198,6 +204,7 @@ def build_probability_change_record(
         p_yes_after=p_yes_after,
         components=component_tuple,
         market_context_snapshot_ids=market_ids,
+        reconciliation_tolerance=reconciliation_tolerance,
     )
     return ProbabilityChangeRecord(
         probability_change_id=identity,
@@ -225,6 +232,7 @@ def probability_change_id(
     p_yes_after: float,
     components: Sequence[ProbabilityAttributionComponent],
     market_context_snapshot_ids: Sequence[str] = (),
+    reconciliation_tolerance: float = 1e-9,
 ) -> str:
     payload = {
         "ticker": ticker,
@@ -236,6 +244,10 @@ def probability_change_id(
         "p_yes_after": _strict_probability(p_yes_after, "PROBABILITY_CHANGE_P_AFTER"),
         "components": [item.canonical() for item in sorted(tuple(components), key=lambda item: item.component_id)],
         "market_context_snapshot_ids": sorted(tuple(market_context_snapshot_ids)),
+        "reconciliation_tolerance": _nonnegative(
+            reconciliation_tolerance,
+            "PROBABILITY_CHANGE_TOLERANCE_INVALID",
+        ),
     }
     digest = hashlib.sha256(
         json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
