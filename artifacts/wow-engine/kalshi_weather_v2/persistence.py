@@ -8,6 +8,7 @@ from typing import Any, Mapping, Sequence
 
 from .contract_rule_acquisition import FrozenContractRulePackage
 from .models import MarketSnapshot, ProbabilityPackage, TerminalDecision, WeatherEvidenceSnapshot
+from .portfolio_risk import PortfolioRiskSnapshot
 from .probability_change_ledger import ProbabilityChangeRecord
 from .probability_core import CalibrationProfile
 from .source_adapters import ProviderSnapshot
@@ -182,6 +183,13 @@ class KalshiWeatherPersistence:
             "wow_kalshi_weather_probability_changes",
             "probability_change_id",
             record.persistence_row(),
+        )
+
+    def persist_portfolio_risk(self, snapshot: PortfolioRiskSnapshot) -> Mapping[str, Any]:
+        return self._insert_exact(
+            "wow_kalshi_weather_portfolio_risk_snapshots",
+            "risk_snapshot_id",
+            snapshot.persistence_row(),
         )
 
     def persist_outcome(
