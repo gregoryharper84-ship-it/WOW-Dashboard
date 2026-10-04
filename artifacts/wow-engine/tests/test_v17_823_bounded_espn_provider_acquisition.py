@@ -182,3 +182,63 @@ def test_multiday_fallback_propagates_any_daily_truncation(monkeypatch):
 
     assert result.ok
     assert result.data["_wow_provider_truncated"] is True
+
+
+def test_midnight_utc_event_relookup_uses_original_espn_scoreboard_date(monkeypatch):
+    event = _event(401908014)
+    event["date"] = "2026-10-05T00:00:00Z"
+    event["competitions"][0]["odds"] = [{
+        "homeTeamOdds": {"moneyLine": -110},
+        "awayTeamOdds": {"moneyLine": -105},
+        "provider": {"name": "Example Book"},
+    }]
+    seen = []
+
+    def fake_http_json(url, params=None):
+        day = str(params["dates"])
+        seen.append(day)
+        return secondary.SecondaryResult(
+            True,
+            {"events": [event] if day == "20261004" else []},
+            200,
+        )
+
+    monkeypatch.setattr(secondary, "_http_json", fake_http_json)
+    secondary._SCOREBOARD_CACHE.clear()
+
+    discovery = secondary.secondary_for_request(
+        "/odds-api/v4/sports/baseball_mlb/events",
+        {
+            "commenceTimeFrom": "2026-10-04T13:22:56Z",
+            "commenceTimeTo": "2026-10-05T01:22:56Z",
+        },
+        {},
+    )
+
+    assert discovery.ok is True
+    row = discovery.data[0]
+    assert row["id"] == "espn-401908014"
+    assert row["_wow_secondary_scoreboard_dates"] == ["20261004"]
+
+    context = {
+        row["id"]: {
+            "home_team": row["home_team"],
+            "away_team": row["away_team"],
+            "commence_time": row["commence_time"],
+            "_wow_secondary_scoreboard_dates": row["_wow_secondary_scoreboard_dates"],
+        }
+    }
+    secondary._SCOREBOARD_CACHE.clear()
+    seen.clear()
+
+    market = secondary.secondary_for_request(
+        "/odds-api/v4/sports/baseball_mlb/events/espn-401908014/odds",
+        {"markets": "h2h"},
+        context,
+        primary_failure="ODDS_PROVIDER_NON_JSON:HTTP_429",
+    )
+
+    assert market.ok is True
+    assert seen == ["20261004"]
+    assert market.data["_wow_secondary_source"]["prediction_authority"] is False
+    assert market.data["_wow_secondary_source"]["can_execute"] is False
