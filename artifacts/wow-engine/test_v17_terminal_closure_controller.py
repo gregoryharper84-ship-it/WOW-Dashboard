@@ -47,6 +47,7 @@ def test_ready_for_receipt_requires_release_and_exact_merge_acceptance():
             "name": "wow-v17-nightly-multiscout",
             "path": ".github/workflows/wow-v17-nightly-multiscout.yml",
             "head_sha": MERGE,
+            "event": "workflow_run",
             "status": "completed",
             "conclusion": "success",
             "html_url": "https://example/acceptance",
@@ -269,3 +270,58 @@ def test_pr_receipt_is_also_repeat_safe_and_non_dict_comments_are_ignored():
     result = evaluate(state, now=NOW)
 
     assert result["status"] == "FIXED_AND_VERIFIED"
+
+
+def test_multiscout_push_contract_run_cannot_satisfy_terminal_acceptance():
+    state = _base_state()
+    state["pr_comments"] = [{
+        "body": (
+            "## Release / Production Verification Agent\n"
+            "~~~json\n"
+            '{"status":"PRODUCTION_VERIFIED","production_sha":"prod456"}'
+            "\n~~~"
+        )
+    }]
+    state["runs"] = [{
+        "id": 587,
+        "name": "wow-v17-nightly-multiscout",
+        "path": ".github/workflows/wow-v17-nightly-multiscout.yml",
+        "head_sha": MERGE,
+        "event": "push",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://example/contract-only",
+    }]
+
+    result = evaluate(state, now=NOW)
+
+    assert result["status"] == "WAITING_FOR_TERMINAL_RECEIPT"
+    assert "EXACT_MERGE_ACCEPTANCE_RUN_MISSING" in result["blockers"]
+    assert result["can_execute"] is False
+
+
+def test_multiscout_workflow_run_can_satisfy_terminal_acceptance():
+    state = _base_state()
+    state["pr_comments"] = [{
+        "body": (
+            "## Release / Production Verification Agent\n"
+            "~~~json\n"
+            '{"status":"PRODUCTION_VERIFIED","production_sha":"prod456"}'
+            "\n~~~"
+        )
+    }]
+    state["runs"] = [{
+        "id": 588,
+        "name": "wow-v17-nightly-multiscout",
+        "path": ".github/workflows/wow-v17-nightly-multiscout.yml",
+        "head_sha": MERGE,
+        "event": "workflow_run",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://example/live-acceptance",
+    }]
+
+    result = evaluate(state, now=NOW)
+
+    assert result["status"] == "READY_FOR_RECEIPT"
+    assert "588" in result["receipt_markdown"]
