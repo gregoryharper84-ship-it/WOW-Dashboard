@@ -12,7 +12,7 @@ import os
 import uuid
 from typing import Any, Callable
 
-from fastapi import Query
+from fastapi import HTTPException, Query
 
 from v17 import scout_handoff_queue as queue
 
@@ -83,11 +83,18 @@ def install_scout_handoff_routes(
         # Never trust a caller-supplied RED_TEAM_PASSED plan. Rebuild the compact
         # envelopes from the raw Scout evidence on the server so deterministic
         # research hygiene and forbidden-probability checks are authoritative.
-        if handoff.get("governance", {}).get("can_execute") is not False:
-            raise ValueError("SCOUT_EXECUTION_GOVERNANCE_VIOLATION")
+        governance = handoff.get("governance")
+        if not isinstance(governance, dict) or governance.get("can_execute") is not False:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "SCOUT_EXECUTION_GOVERNANCE_VIOLATION", "can_execute": False},
+            )
         plan = queue.build_handoff_plan(handoff)
         if plan.can_execute is not False:
-            raise ValueError("SCOUT_EXECUTION_GOVERNANCE_VIOLATION")
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "SCOUT_EXECUTION_GOVERNANCE_VIOLATION", "can_execute": False},
+            )
         return queue.enqueue_plan(db_client_fn(), plan)
 
     @app.get(
