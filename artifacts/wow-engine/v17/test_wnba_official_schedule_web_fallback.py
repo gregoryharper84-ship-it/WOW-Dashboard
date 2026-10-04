@@ -36,6 +36,77 @@ HTML = f"""
 """
 
 
+
+PLAYOFF_NEXT_DATA = {
+    "props": {
+        "pageProps": {
+            "playoffsData": {
+                "playoffBracketSeries": [
+                    {
+                        "roundNumber": 2,
+                        "seriesNumber": 0,
+                        "highSeedId": 1611661330,
+                        "highSeedCity": "Atlanta",
+                        "highSeedName": "Dream",
+                        "highSeedTricode": "ATL",
+                        "lowSeedId": 1611661313,
+                        "lowSeedCity": "New York",
+                        "lowSeedName": "Liberty",
+                        "lowSeedTricode": "NYL",
+                        "nextGameId": "1042600201",
+                        "nextGameNumber": "Game 1",
+                        "nextGameDateTimeUTC": "2026-10-04T18:00:00Z",
+                        "nextGameStatus": 1,
+                        "nextGameStatusText": "Sun 2:00 pm ET",
+                        "nextGameNeutralSite": False,
+                    },
+                    {
+                        "roundNumber": 2,
+                        "seriesNumber": 1,
+                        "highSeedId": 1611661331,
+                        "highSeedCity": "Golden State",
+                        "highSeedName": "Valkyries",
+                        "highSeedTricode": "GSV",
+                        "lowSeedId": 1611661319,
+                        "lowSeedCity": "Las Vegas",
+                        "lowSeedName": "Aces",
+                        "lowSeedTricode": "LVA",
+                        "nextGameId": "1042600211",
+                        "nextGameNumber": "Game 1",
+                        "nextGameDateTimeUTC": "2026-10-04T20:00:00Z",
+                        "nextGameStatus": 1,
+                        "nextGameStatusText": "Sun 4:00 pm ET",
+                        "nextGameNeutralSite": False,
+                    },
+                    {
+                        "roundNumber": 3,
+                        "seriesNumber": 0,
+                        "highSeedId": 0,
+                        "highSeedCity": "",
+                        "highSeedName": "",
+                        "highSeedTricode": "",
+                        "lowSeedId": 0,
+                        "lowSeedCity": "",
+                        "lowSeedName": "",
+                        "lowSeedTricode": "",
+                        "nextGameId": "1042600301",
+                        "nextGameNumber": "Game 1",
+                        "nextGameDateTimeUTC": "2026-10-17T19:30:00Z",
+                        "nextGameStatus": 1,
+                        "nextGameStatusText": "Oct 17 3:30 pm ET",
+                        "nextGameNeutralSite": False,
+                    },
+                ]
+            }
+        }
+    }
+}
+PLAYOFF_HTML = (
+    "<html><body><script id=\"__NEXT_DATA__\" type=\"application/json\">"
+    + json.dumps(PLAYOFF_NEXT_DATA)
+    + "</script></body></html>"
+)
+
 class FakeResponse:
     def __init__(self, *, status_code=200, payload=None, content=b""):
         self.status_code = status_code
@@ -46,6 +117,63 @@ class FakeResponse:
         if isinstance(self._payload, BaseException):
             raise self._payload
         return self._payload
+
+
+
+def test_parses_official_playoff_bracket_next_games_with_exact_identity():
+    payload = fallback.parse_official_playoffs_page(PLAYOFF_HTML)
+    games = payload["leagueSchedule"]["gameDates"][0]["games"]
+    assert [game["gameId"] for game in games] == ["1042600201", "1042600211"]
+    first, second = games
+    assert first["gameDateTimeUTC"] == "2026-10-04T18:00:00Z"
+    assert first["homeTeam"]["teamTricode"] == "ATL"
+    assert first["awayTeam"]["teamTricode"] == "NYL"
+    assert second["gameDateTimeUTC"] == "2026-10-04T20:00:00Z"
+    assert second["homeTeam"]["teamTricode"] == "GSV"
+    assert second["awayTeam"]["teamTricode"] == "LVA"
+    provenance = payload["wowScheduleProvenance"]
+    assert provenance["provider"] == fallback.PLAYOFFS_PROVIDER
+    assert provenance["market_features_used"] is False
+    assert provenance["probability_authority"] is False
+    assert provenance["can_execute"] is False
+
+
+def test_playoff_bracket_runs_after_empty_schedule_ssr():
+    calls = []
+
+    def fetcher(url, **kwargs):
+        calls.append(url)
+        if url == wnba.WNBA_SCHEDULE_URL:
+            return FakeResponse(payload=ValueError("bad json"))
+        if url == fallback.SCHEDULE_PAGE_URL:
+            return FakeResponse(content=b"<html><body>No Games Matched Your Search</body></html>")
+        if url == fallback.PLAYOFFS_PAGE_URL:
+            return FakeResponse(content=PLAYOFF_HTML.encode("utf-8"))
+        raise AssertionError(url)
+
+    payload = fallback.request_with_official_web_fallback(
+        wnba.WNBA_SCHEDULE_URL,
+        http_get=fetcher,
+        headers=wnba._cdn_headers(),
+    )
+    games = payload["leagueSchedule"]["gameDates"][0]["games"]
+    assert [game["gameId"] for game in games] == ["1042600201", "1042600211"]
+    assert calls[-1] == fallback.PLAYOFFS_PAGE_URL
+
+
+def test_playoff_bracket_fails_closed_on_neutral_site_ambiguity():
+    altered = json.loads(json.dumps(PLAYOFF_NEXT_DATA))
+    altered["props"]["pageProps"]["playoffsData"]["playoffBracketSeries"][0][
+        "nextGameNeutralSite"
+    ] = True
+    html = (
+        "<script id=\"__NEXT_DATA__\" type=\"application/json\">"
+        + json.dumps(altered)
+        + "</script>"
+    )
+    with pytest.raises(wnba.WNBAPropHydrationError) as excinfo:
+        fallback.parse_official_playoffs_page(html)
+    assert excinfo.value.code == "WNBA_OFFICIAL_PLAYOFF_BRACKET_NEUTRAL_SITE_UNSUPPORTED"
 
 
 def test_parses_server_rendered_official_game_with_exact_team_registry_and_void_img_tags():
