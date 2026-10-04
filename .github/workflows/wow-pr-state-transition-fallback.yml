@@ -18,8 +18,8 @@ jobs:
     name: Governed Ready for Review fallback
     if: >-
       github.event.label.name == 'FORCE_READY_FOR_REVIEW' &&
-      github.event.pul_request.draft == true &&
-      github.event.pul_request.head.repo.full_name == github.repository
+      github.event.pull_request.draft == true &&
+      github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     steps:
       - name: Transition same-repository draft PR to Ready for Review
