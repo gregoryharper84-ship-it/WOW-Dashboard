@@ -110,8 +110,8 @@ def _get_json(origin: str, path: str, token: str, *, timeout: int = 30) -> dict[
 
 
 def _execute_async_handoff(handoff: dict[str, Any], token: str, *, origin: str) -> dict[str, Any]:
-    # The server accepts the RAW handoff and rebuilds its deterministic plan;
-    # callers cannot self-assert RED_TEAM_PASSED.
+    # The server accepts a compact raw-evidence projection and rebuilds its
+    # deterministic plan; callers cannot self-assert RED_TEAM_PASSED.
     post = _refreshing_oidc_post(token)
     enqueue = post(origin, "/v17/scout-handoff-runs", token, handoff, timeout=120)
     body = enqueue.get("body") if isinstance(enqueue, dict) else None
@@ -304,6 +304,124 @@ def _dispatchable_handoff(handoff: dict[str, Any]) -> dict[str, Any]:
 
 
 
+
+_ASYNC_CANDIDATE_KEYS = frozenset({
+    "official_event_id",
+    "sport_key",
+    "commence_time",
+    "home_team",
+    "away_team",
+    "market_evidence_source_blockers",
+    "contradictory_evidence",
+    "red_team_flags",
+    "research_priority",
+    "priority",
+    "research_interest",
+    "can_execute",
+})
+_ASYNC_EVIDENCE_KEYS = frozenset({
+    "source_class",
+    "market_last_update",
+    "bookmaker_last_update",
+    "captured_at",
+    "bookmaker",
+    "source_provider",
+    "bookmaker_title",
+})
+_ASYNC_PROP_EVIDENCE_KEYS = _ASYNC_EVIDENCE_KEYS | frozenset({
+    "description",
+    "outcome_name",
+    "point",
+    "market_key",
+})
+
+
+def _compact_async_evidence(value: Any, *, prop: bool) -> Any:
+    """Project active evidence to fields consumed by mapping/research gates.
+
+    Preserve the original dict/list/scalar shape so malformed evidence follows
+    the same typed mapping/research path on the governed server.
+    """
+    keys = _ASYNC_PROP_EVIDENCE_KEYS if prop else _ASYNC_EVIDENCE_KEYS
+    if isinstance(value, dict):
+        return {key: value[key] for key in keys if key in value}
+    if isinstance(value, list):
+        return [
+            {key: row[key] for key in keys if key in row}
+            if isinstance(row, dict)
+            else row
+            for row in value
+        ]
+    return value
+
+
+def _compact_async_candidate(candidate: Any, *, prop: bool) -> Any:
+    """Keep only source fields the governed server actually consumes."""
+    if not isinstance(candidate, dict):
+        return candidate
+    compact = {
+        key: candidate[key]
+        for key in _ASYNC_CANDIDATE_KEYS
+        if key in candidate
+    }
+    if "market_evidence" in candidate:
+        compact["market_evidence"] = _compact_async_evidence(
+            candidate.get("market_evidence"),
+            prop=prop,
+        )
+    return compact
+
+
+def _compact_async_handoff(handoff: dict[str, Any]) -> dict[str, Any]:
+    """Build a server-rebuildable evidence projection for durable enqueue.
+
+    The server still calls build_handoff_plan(), build_dispatch(), and the
+    deterministic research/red-team gates. This removes transport-only bulk
+    (historical/stale evidence corpora, briefs, game scripts, etc.) that those
+    gates never read; it does not create or assert RED_TEAM_PASSED locally.
+    """
+    model_handoff = (
+        handoff.get("model_handoff")
+        if isinstance(handoff.get("model_handoff"), dict)
+        else {}
+    )
+    raw_props = (
+        model_handoff.get("prop_candidates")
+        if isinstance(model_handoff.get("prop_candidates"), list)
+        else []
+    )
+    raw_teams = (
+        model_handoff.get("team_event_candidates")
+        if isinstance(model_handoff.get("team_event_candidates"), list)
+        else []
+    )
+    governance = (
+        dict(handoff.get("governance"))
+        if isinstance(handoff.get("governance"), dict)
+        else {}
+    )
+    return {
+        "run_id": handoff.get("run_id"),
+        "research_run_id": handoff.get("research_run_id"),
+        "generated_at": handoff.get("generated_at"),
+        "status": handoff.get("status"),
+        "model_handoff_ready": handoff.get("model_handoff_ready"),
+        "source_acquisition_status": handoff.get("source_acquisition_status"),
+        "governance": governance,
+        "model_handoff": {
+            "prop_candidates": [
+                _compact_async_candidate(candidate, prop=True)
+                for candidate in raw_props
+            ],
+            "team_event_candidates": [
+                _compact_async_candidate(candidate, prop=False)
+                for candidate in raw_teams
+            ],
+        },
+        "can_execute": False,
+    }
+
+
 def _progress_writer(output: Path, handoff: dict[str, Any]) -> Callable[..., None]:
     """Persist cancellation-visible batch progress without granting scoring authority."""
     state: dict[str, Any] = {
@@ -368,7 +486,8 @@ def main() -> int:
             return 3
 
     if _async_handoff_enabled():
-        receipt = _execute_async_handoff(handoff, token, origin=ACTION_ORIGIN)
+        compact_handoff = _compact_async_handoff(dispatch_handoff)
+        receipt = _execute_async_handoff(compact_handoff, token, origin=ACTION_ORIGIN)
     elif static_token:
         receipt = execute_auto_advance(dispatch_handoff, token=token, origin=ACTION_ORIGIN, progress_fn=progress_fn)
     else:
