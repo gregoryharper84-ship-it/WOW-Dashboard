@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
+
 import httpx
 
-from prop_live_model_acceptance import _is_model_path_pass, _snapshot_payload
+from prop_live_model_acceptance import _bootstrap_pick_payload, _is_model_path_pass, _snapshot_payload
 
 
 def _response(body: dict, status: int = 200) -> httpx.Response:
@@ -85,3 +87,32 @@ def test_snapshot_payload_is_probability_only_and_server_route_owned():
     }
     assert "stake" not in payload
     assert "order" not in payload
+
+
+def test_bootstrap_request_id_is_stable_per_candidate_and_distinct_across_candidates():
+    base = {
+        "event_id": "2026_04_ARI_NYG",
+        "event_start_time": "2099-10-04T17:00:00Z",
+        "sport": "NFL",
+        "player": "Marvin Harrison Jr.",
+        "stat_type": "RECEIVING_YARDS",
+        "line": 33.5,
+        "direction": "MORE",
+        "league": "NFL",
+        "opponent": "NYG",
+    }
+
+    first = _bootstrap_pick_payload(json.dumps(base))
+    semantic_retry = _bootstrap_pick_payload(json.dumps({
+        **base,
+        "event_start_time": "2099-10-04T17:00:00+00:00",
+    }))
+    different_candidate = _bootstrap_pick_payload(json.dumps({
+        **base,
+        "event_id": "2026_04_ARI_NYG_ALT",
+    }))
+
+    assert first["request_id"].startswith("wow-prop-live-e2e-acceptance-")
+    assert first["request_id"] == semantic_retry["request_id"]
+    assert first["request_id"] != different_candidate["request_id"]
+    assert first["rows"][0]["row_key"] == "prop-live-e2e-acceptance"
