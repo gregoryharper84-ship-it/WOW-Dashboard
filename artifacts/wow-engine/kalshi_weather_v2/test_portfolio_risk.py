@@ -59,6 +59,7 @@ def position(
         side=side,
         quantity=quantity,
         entry_cost_per_contract=cost,
+        cost_basis_verified=True,
         threshold_lower=lower,
         threshold_upper=upper,
         lower_inclusive=lower_inclusive,
@@ -74,6 +75,8 @@ def scenario(scenario_id, value, *, event_obj=None, weight=1.0, factors=None, av
         available_at=available_at,
         weight=weight,
         event_values={evt.event_key: value},
+        evidence_ids=(f"evidence-{scenario_id}",),
+        method="GOVERNED_WEATHER_SCENARIO_TEST",
         factor_states=factors or {},
     )
 
@@ -145,6 +148,8 @@ def test_cross_event_portfolio_requires_explicit_regional_factor_scenarios():
             available_at="2026-10-04T16:02:00Z",
             weight=1,
             event_values={dfw.event_key: 90, hou.event_key: 91},
+            evidence_ids=("regional-evidence-1",),
+            method="GOVERNED_WEATHER_SCENARIO_TEST",
             factor_states={"SYNOPTIC_REGIME": "RIDGE"},
         ),
     )
@@ -170,6 +175,8 @@ def test_regional_factor_mode_requires_region_and_factor_mapping():
                     available_at="2026-10-04T16:02:00Z",
                     weight=1,
                     event_values={dfw.event_key: 90, hou.event_key: 90},
+                    evidence_ids=("regional-evidence-empty-factor",),
+                    method="GOVERNED_WEATHER_SCENARIO_TEST",
                     factor_states={},
                 ),
             ),
@@ -190,6 +197,8 @@ def test_regional_factor_scenarios_produce_explainable_factor_state_risk():
             available_at="2026-10-04T16:02:00Z",
             weight=3,
             event_values={dfw.event_key: 97, hou.event_key: 98},
+            evidence_ids=("regional-evidence-strong",),
+            method="GOVERNED_WEATHER_SCENARIO_TEST",
             factor_states={"SYNOPTIC_REGIME": "RIDGE", "RIDGE_STRENGTH": "STRONG"},
         ),
         WeatherScenario(
@@ -197,6 +206,8 @@ def test_regional_factor_scenarios_produce_explainable_factor_state_risk():
             available_at="2026-10-04T16:02:30Z",
             weight=1,
             event_values={dfw.event_key: 93, hou.event_key: 94},
+            evidence_ids=("regional-evidence-weak",),
+            method="GOVERNED_WEATHER_SCENARIO_TEST",
             factor_states={"SYNOPTIC_REGIME": "RIDGE", "RIDGE_STRENGTH": "WEAK"},
         ),
     )
@@ -294,6 +305,8 @@ def test_scenario_must_cover_exact_portfolio_events():
         available_at="2026-10-04T16:02:00Z",
         weight=1,
         event_values={dfw.event_key: 90},
+        evidence_ids=("coverage-evidence",),
+        method="GOVERNED_WEATHER_SCENARIO_TEST",
         factor_states={"SYNOPTIC_REGIME": "RIDGE"},
     )
     with pytest.raises(PortfolioRiskError, match="WEATHER_SCENARIO_EVENT_COVERAGE_MISMATCH"):
@@ -313,6 +326,8 @@ def test_regional_scenario_requires_all_declared_factor_states():
         available_at="2026-10-04T16:02:00Z",
         weight=1,
         event_values={dfw.event_key: 90, hou.event_key: 91},
+        evidence_ids=("factor-evidence",),
+        method="GOVERNED_WEATHER_SCENARIO_TEST",
         factor_states={"SYNOPTIC_REGIME": "RIDGE"},
     )
     with pytest.raises(PortfolioRiskError, match="REGIONAL_FACTOR_STATE_MISSING"):
@@ -408,6 +423,8 @@ def test_same_event_identity_collision_fails_closed():
                     available_at="2026-10-04T16:02:00Z",
                     weight=1,
                     event_values={base.event_key: 90},
+                    evidence_ids=("identity-evidence",),
+                    method="GOVERNED_WEATHER_SCENARIO_TEST",
                     factor_states={},
                 ),
             ),
@@ -430,6 +447,7 @@ def test_execution_flags_fail_closed():
             side=PositionSide.YES,
             quantity=1,
             entry_cost_per_contract=0.5,
+            cost_basis_verified=True,
             threshold_lower=85,
             can_execute=True,
         )
@@ -439,5 +457,58 @@ def test_execution_flags_fail_closed():
             available_at="2026-10-04T16:02:00Z",
             weight=1,
             event_values={evt.event_key: 90},
+            evidence_ids=("execution-evidence",),
+            method="GOVERNED_WEATHER_SCENARIO_TEST",
             can_execute=True,
         )
+
+
+def test_unverified_cost_basis_fails_closed():
+    evt = event(factor_ids=())
+    with pytest.raises(PortfolioRiskError, match="PORTFOLIO_POSITION_COST_BASIS_UNVERIFIED"):
+        PortfolioPosition(
+            position_id="unverified",
+            ticker="T",
+            rule_snapshot_id="rule",
+            prediction_id="prediction",
+            market_snapshot_id="market",
+            prediction_time="2026-10-04T16:00:00Z",
+            market_time="2026-10-04T16:01:00Z",
+            event=evt,
+            side=PositionSide.YES,
+            quantity=1,
+            entry_cost_per_contract=0.5,
+            cost_basis_verified=False,
+            threshold_lower=85,
+        )
+
+
+def test_contract_quantity_must_be_integral():
+    evt = event(factor_ids=())
+    with pytest.raises(PortfolioRiskError, match="PORTFOLIO_POSITION_QUANTITY_NONINTEGRAL"):
+        position("fractional", event_obj=evt, quantity=1.5)
+
+
+@pytest.mark.parametrize(
+    "kwargs,error_code",
+    [
+        ({"evidence_ids": ()}, "WEATHER_SCENARIO_EVIDENCE_MISSING"),
+        ({"evidence_ids": ("dup", "dup")}, "WEATHER_SCENARIO_EVIDENCE_DUPLICATE"),
+        ({"method": ""}, "WEATHER_SCENARIO_METHOD_MISSING"),
+        ({"market_price_used_as_weather_input": True}, "MARKET_PRICE_WEATHER_INPUT_PROHIBITED"),
+        ({"risk_state_used_as_weather_input": True}, "PORTFOLIO_STATE_WEATHER_INPUT_PROHIBITED"),
+    ],
+)
+def test_weather_scenario_provenance_and_feedback_guards(kwargs, error_code):
+    evt = event(factor_ids=())
+    values = dict(
+        scenario_id="guarded",
+        available_at="2026-10-04T16:02:00Z",
+        weight=1,
+        event_values={evt.event_key: 90},
+        evidence_ids=("weather-evidence",),
+        method="GOVERNED_WEATHER_SCENARIO_TEST",
+    )
+    values.update(kwargs)
+    with pytest.raises(PortfolioRiskError, match=error_code):
+        WeatherScenario(**values)
