@@ -285,3 +285,18 @@ def test_llp_action_uses_bare_origin_with_explicit_gateway_paths():
     assert prefix + "/health" in document["paths"]
     assert prefix + "/score-team-event" in document["paths"]
     assert prefix + "/v17/daily-snapshot-run" in document["paths"]
+
+
+def test_llp_gateway_normalizes_supabase_runtime_and_external_prefixes_fail_closed():
+    source = LLP_GATEWAY.read_text()
+    assert 'const EXTERNAL_PREFIX = "/functions/v1/wow-llp-action-gateway";' in source
+    assert 'const RUNTIME_PREFIX = "/wow-llp-action-gateway";' in source
+    assert 'function normalizeUpstreamPath(pathname: string): string' in source
+    assert 'if (pathname === prefix || pathname === prefix + "/") return "/health";' in source
+    assert 'if (pathname.startsWith(prefix + "/")) return pathname.slice(prefix.length);' in source
+    assert 'return pathname;' in source
+    assert 'const upstreamPath = normalizeUpstreamPath(url.pathname);' in source
+    assert 'runtime_pathname: url.pathname' in source
+    assert 'x-wow-gateway-version": "2.2"' in source
+    assert 'WOW-LLP-Supabase-Gateway/2.2' in source
+    assert 'if (!upstreamPath) upstreamPath = "/health";' not in source
