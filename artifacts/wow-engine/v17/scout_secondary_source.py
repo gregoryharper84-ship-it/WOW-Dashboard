@@ -38,7 +38,7 @@ ESPN_SPORT_MAP: dict[str, tuple[str, str, str]] = {
 _SPORTS_RE = re.compile(r"^/odds-api/v4/sports$")
 _EVENTS_RE = re.compile(r"^/odds-api/v4/sports/([^/]+)/events$")
 _EVENT_DATA_RE = re.compile(r"^/odds-api/v4/sports/([^/]+)/events/([^/]+)/(markets|odds)$")
-_SCOREBOARD_CACHE: dict[tuple[str, str], dict[str, Any]] = {}
+_SCOREBOARD_CACHE: dict[tuple[str, str, int], dict[str, Any]] = {}
 
 
 @dataclass
@@ -115,17 +115,30 @@ def _http_json(url: str, params: dict[str, Any] | None = None) -> SecondaryResul
         return SecondaryResult(False, code=f"ESPN_{type(exc).__name__}")
 
 
-def _scoreboard(sport_key: str, params: dict[str, Any] | None = None) -> SecondaryResult:
+def _scoreboard(
+    sport_key: str,
+    params: dict[str, Any] | None = None,
+    *,
+    provider_limit: int = 1000,
+) -> SecondaryResult:
     mapped = ESPN_SPORT_MAP.get(sport_key)
     if not mapped:
         return SecondaryResult(False, code="SECONDARY_SOURCE_UNSUPPORTED_SPORT")
     sport, league, _title = mapped
     dates = _date_range(params)
-    cache_key = (sport_key, dates)
+    try:
+        requested_limit = int(provider_limit)
+    except (TypeError, ValueError):
+        requested_limit = 1000
+    bounded_limit = max(1, min(requested_limit, 1000))
+    cache_key = (sport_key, dates, bounded_limit)
     cached = _SCOREBOARD_CACHE.get(cache_key)
     if cached is not None:
         return SecondaryResult(True, cached, 200)
-    result = _http_json(f"{ESPN_BASE}/{sport}/{league}/scoreboard", {"dates": dates, "limit": 1000})
+    result = _http_json(
+        f"{ESPN_BASE}/{sport}/{league}/scoreboard",
+        {"dates": dates, "limit": bounded_limit},
+    )
     if result.ok and isinstance(result.data, dict):
         _SCOREBOARD_CACHE[cache_key] = result.data
     return result
