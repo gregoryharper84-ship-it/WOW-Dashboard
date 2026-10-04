@@ -64,19 +64,51 @@ create table public.wow_kalshi_weather_portfolio_risk_snapshots (
     check (can_execute = false),
   constraint chk_kalshi_weather_portfolio_position_guards
     check (
-      not jsonb_path_exists(positions, '$[*] ? (@.market_price_used_as_weather_input == true)')
-      and not jsonb_path_exists(positions, '$[*] ? (@.risk_state_used_as_weather_input == true)')
-      and not jsonb_path_exists(positions, '$[*] ? (@.can_execute == true)')
+      not jsonb_path_exists(
+        positions,
+        '$[*] ? (!exists(@.market_price_used_as_weather_input) || @.market_price_used_as_weather_input != false)'
+      )
+      and not jsonb_path_exists(
+        positions,
+        '$[*] ? (!exists(@.risk_state_used_as_weather_input) || @.risk_state_used_as_weather_input != false)'
+      )
+      and not jsonb_path_exists(
+        positions,
+        '$[*] ? (!exists(@.can_execute) || @.can_execute != false)'
+      )
     ),
   constraint chk_kalshi_weather_portfolio_cost_basis_verified
-    check (not jsonb_path_exists(positions, '$[*] ? (@.cost_basis_verified == false)')),
+    check (
+      not jsonb_path_exists(
+        positions,
+        '$[*] ? (!exists(@.cost_basis_verified) || @.cost_basis_verified != true)'
+      )
+    ),
+  constraint chk_kalshi_weather_portfolio_scenario_provenance
+    check (
+      not jsonb_path_exists(
+        scenarios,
+        '$[*] ? (!exists(@.evidence_ids) || @.evidence_ids.size() == 0 || !exists(@.method) || @.method == "")'
+      )
+    ),
   constraint chk_kalshi_weather_portfolio_scenario_no_market_feedback
     check (
-      not jsonb_path_exists(scenarios, '$[*] ? (@.market_price_used_as_weather_input == true)')
-      and not jsonb_path_exists(scenarios, '$[*] ? (@.risk_state_used_as_weather_input == true)')
+      not jsonb_path_exists(
+        scenarios,
+        '$[*] ? (!exists(@.market_price_used_as_weather_input) || @.market_price_used_as_weather_input != false)'
+      )
+      and not jsonb_path_exists(
+        scenarios,
+        '$[*] ? (!exists(@.risk_state_used_as_weather_input) || @.risk_state_used_as_weather_input != false)'
+      )
     ),
   constraint chk_kalshi_weather_portfolio_scenario_execute_false
-    check (not jsonb_path_exists(scenarios, '$[*] ? (@.can_execute == true)')),
+    check (
+      not jsonb_path_exists(
+        scenarios,
+        '$[*] ? (!exists(@.can_execute) || @.can_execute != false)'
+      )
+    ),
   constraint chk_kalshi_weather_portfolio_kelly_execute_false
     check (not jsonb_path_exists(metrics, '$.kelly_research[*] ? (@.can_execute == true)'))
 );
