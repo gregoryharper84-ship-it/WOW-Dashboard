@@ -425,7 +425,7 @@ jobs:
         if: steps.scout.outputs.runner_exit_code == '0' && steps.advance.outputs.runner_exit_code == '0'
         shell: bash
         run: |
-          python v17/scout_handoff_terminal_acceptance.py \
+          python -m v17.scout_handoff_terminal_acceptance \
             --receipt "$RUNNER_TEMP/wow-multiscout/auto-advance-receipt.json" \
             --output "$RUNNER_TEMP/wow-multiscout/terminal-acceptance-receipt.json"
       - name: Write human-readable Scout summary
