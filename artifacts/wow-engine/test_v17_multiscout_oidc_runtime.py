@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 import subprocess
 import sys
@@ -11,7 +12,9 @@ import pytest
 from v17 import github_actions_oidc_client as client
 from v17 import nightly_multiscout as scout
 from v17 import nightly_multiscout_oidc as scout_oidc
+from v17 import multiscout_auto_advance as auto_advance
 from v17 import multiscout_auto_advance_oidc as advance_oidc
+from v17 import scout_research_promotion as promotion
 
 
 class _Response:
@@ -283,8 +286,9 @@ def test_async_handoff_feature_flag_uses_durable_queue_instead_of_sync_batches(m
     handoff = {
         "run_id": "run-async",
         "research_run_id": "run-async",
-        "status": "DISCOVERY_COMPLETE",
+        "status": "DISCOVERY_COMPLETE_WITH_SOURCE_BLOCKERS",
         "model_handoff_ready": True,
+        "source_blockers": [{"code": "SECONDARY_SOURCE_DEGRADED"}],
         "governance": {"can_execute": False},
         "model_handoff": {"prop_candidates": [], "team_event_candidates": []},
     }
@@ -297,7 +301,7 @@ def test_async_handoff_feature_flag_uses_durable_queue_instead_of_sync_batches(m
     seen = []
 
     def fake_async(payload, token, *, origin):
-        seen.append((payload["run_id"], token, origin))
+        seen.append((payload, token, origin))
         return {
             "schema_version": "wow.v17.scout-handoff-run.v1",
             "status": "IN_PROGRESS",
@@ -320,8 +324,130 @@ def test_async_handoff_feature_flag_uses_durable_queue_instead_of_sync_batches(m
     )
     monkeypatch.setattr("sys.argv", ["prog", "--input", str(source), "--output", str(output)])
     assert advance_oidc.main() == 0
-    assert seen == [("run-async", "fresh-oidc", advance_oidc.ACTION_ORIGIN)]
+    assert len(seen) == 1
+    async_payload, async_token, async_origin = seen[0]
+    assert async_token == "fresh-oidc"
+    assert async_origin == advance_oidc.ACTION_ORIGIN
+    assert async_payload["run_id"] == "run-async"
+    assert async_payload["status"] == "DISCOVERY_COMPLETE"
+    assert async_payload["source_acquisition_status"] == "DISCOVERY_COMPLETE_WITH_SOURCE_BLOCKERS"
     receipt = json.loads(output.read_text())
     assert receipt["status"] == "IN_PROGRESS"
     assert receipt["row_accounting_pass"] is True
+    assert receipt["source_acquisition_status"] == "DISCOVERY_COMPLETE_WITH_SOURCE_BLOCKERS"
+    assert receipt["source_blocker_count"] == 1
     assert receipt["can_execute"] is False
+
+
+
+def _async_compaction_fixture():
+    evidence = {
+        "source_class": "SPORTSBOOK_FEED",
+        "market_last_update": "2026-10-04T01:55:00+00:00",
+        "bookmaker": "ExampleBook",
+        "source_provider": "example",
+        "description": "Player One",
+        "outcome_name": "Over",
+        "point": 4.5,
+        "market_key": "player_assists",
+        "unused_quote_blob": "x" * 20000,
+    }
+    common = {
+        "official_event_id": "evt-1",
+        "sport_key": "basketball_nba",
+        "commence_time": "2026-10-04T03:00:00+00:00",
+        "home_team": "Home",
+        "away_team": "Away",
+        "market_evidence_source_blockers": [],
+        "contradictory_evidence": [],
+        "red_team_flags": [],
+        "research_priority": "HIGH",
+        "market_evidence_stale": [{"blob": "s" * 50000}],
+        "market_evidence_historical": [{"blob": "h" * 50000}],
+        "research_worker_briefs": [{"blob": "b" * 50000}],
+        "can_execute": False,
+    }
+    prop = {**common, "market_evidence": dict(evidence)}
+    team = {
+        **common,
+        "official_event_id": "evt-2",
+        "sport_key": "americanfootball_nfl",
+        "market_evidence": [
+            dict(evidence, bookmaker="BookA"),
+            dict(evidence, bookmaker="BookB"),
+            dict(evidence, bookmaker="BookC"),
+        ],
+    }
+    return {
+        "run_id": "run-compact",
+        "research_run_id": "research-compact",
+        "generated_at": "2026-10-04T02:00:00+00:00",
+        "status": "DISCOVERY_COMPLETE_WITH_SOURCE_BLOCKERS",
+        "model_handoff_ready": True,
+        "source_blockers": [{"code": "SECONDARY_SOURCE_DEGRADED"}],
+        "governance": {
+            "can_execute": False,
+            "upset_alert_requires_governed_llp_probability": True,
+        },
+        "model_handoff": {
+            "prop_candidates": [prop],
+            "team_event_candidates": [team],
+        },
+        "can_execute": False,
+    }
+
+
+def test_async_handoff_compaction_preserves_dispatch_and_research_gate_semantics():
+    raw = _async_compaction_fixture()
+    normalized = advance_oidc._dispatchable_handoff(raw)
+    compact = advance_oidc._compact_async_handoff(normalized)
+
+    assert normalized["status"] == "DISCOVERY_COMPLETE"
+    assert compact["status"] == "DISCOVERY_COMPLETE"
+    assert compact["governance"] == normalized["governance"]
+    assert compact["can_execute"] is False
+
+    raw_dispatch = auto_advance.build_dispatch(normalized)
+    compact_dispatch = auto_advance.build_dispatch(compact)
+    assert compact_dispatch == raw_dispatch
+
+    now = datetime(2026, 10, 4, 2, 0, tzinfo=timezone.utc)
+    for lane in ("prop_candidates", "team_event_candidates"):
+        raw_candidate = normalized["model_handoff"][lane][0]
+        compact_candidate = compact["model_handoff"][lane][0]
+        assert promotion.evaluate_candidate(compact_candidate, now=now) == promotion.evaluate_candidate(
+            raw_candidate, now=now
+        )
+        assert "market_evidence_stale" not in compact_candidate
+        assert "market_evidence_historical" not in compact_candidate
+        assert "research_worker_briefs" not in compact_candidate
+
+    compact_bytes = len(json.dumps(compact, separators=(",", ":")).encode("utf-8"))
+    raw_bytes = len(json.dumps(normalized, separators=(",", ":")).encode("utf-8"))
+    assert compact_bytes * 10 < raw_bytes
+
+
+def test_async_handoff_compaction_preserves_invalid_candidate_shape_for_typed_rejects():
+    handoff = {
+        "run_id": "run-invalid",
+        "research_run_id": "research-invalid",
+        "generated_at": "2026-10-04T02:00:00+00:00",
+        "status": "DISCOVERY_COMPLETE",
+        "model_handoff_ready": True,
+        "governance": {"can_execute": False},
+        "model_handoff": {
+            "prop_candidates": ["not-a-candidate"],
+            "team_event_candidates": [None],
+        },
+    }
+
+    compact = advance_oidc._compact_async_handoff(handoff)
+    assert compact["model_handoff"]["prop_candidates"] == ["not-a-candidate"]
+    assert compact["model_handoff"]["team_event_candidates"] == [None]
+    dispatch = auto_advance.build_dispatch(compact)
+    assert dispatch["mapping"]["rejected_prop_rows"] == [
+        {"source_index": 1, "code": "PROP_CANDIDATE_INVALID"}
+    ]
+    assert dispatch["mapping"]["rejected_team_event_rows"] == [
+        {"source_index": 1, "code": "TEAM_EVENT_CANDIDATE_INVALID"}
+    ]
