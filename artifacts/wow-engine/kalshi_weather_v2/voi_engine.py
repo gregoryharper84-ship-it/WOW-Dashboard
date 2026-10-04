@@ -263,7 +263,7 @@ class VoIEngineV2:
         expected_future = 0.0
         for delta, weight in distribution.normalized():
             posterior = probability + delta
-            if not (0.0 <= posterior <= 1.0):
+            if not (0.0 < posterior < 1.0):
                 raise VoIEngineError(f"POSTERIOR_SHIFT_OUT_OF_BOUNDS:{event.event_id}:{posterior:.12f}")
             child_value, _, _ = self._optimal_value(
                 stage=stage + 1,
@@ -298,7 +298,7 @@ class VoIEngineV2:
             for probability, path_weight in paths:
                 for delta, scenario_weight in distribution.normalized():
                     posterior = probability + delta
-                    if not (0.0 <= posterior <= 1.0):
+                    if not (0.0 < posterior < 1.0):
                         raise VoIEngineError(f"POSTERIOR_SHIFT_OUT_OF_BOUNDS:{event.event_id}:{posterior:.12f}")
                     expanded.append((posterior, path_weight * scenario_weight))
             total = sum(weight for _, weight in expanded)
@@ -404,7 +404,7 @@ def _probability(value: float, code: str) -> float:
     if not isinstance(value, (int, float)) or isinstance(value, bool):
         raise VoIEngineError(f"{code}_INVALID")
     number = float(value)
-    if not math.isfinite(number) or not (0.0 <= number <= 1.0):
+    if not math.isfinite(number) or not (0.0 < number < 1.0):
         raise VoIEngineError(f"{code}_INVALID")
     return number
 
