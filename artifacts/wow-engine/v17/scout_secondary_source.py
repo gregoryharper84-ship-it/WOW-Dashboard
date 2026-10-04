@@ -195,7 +195,16 @@ def _scoreboard(
             if not isinstance(event, dict):
                 continue
             event_key = str(event.get("id") or f"{date_key}:{index}")
-            merged_events[event_key] = event
+            existing = merged_events.get(event_key)
+            if existing is not None:
+                source_dates = list(existing.get("_wow_secondary_scoreboard_dates") or [])
+                if date_key not in source_dates:
+                    source_dates.append(date_key)
+                existing["_wow_secondary_scoreboard_dates"] = source_dates
+                continue
+            copied = dict(event)
+            copied["_wow_secondary_scoreboard_dates"] = [date_key]
+            merged_events[event_key] = copied
 
     events = sorted(
         merged_events.values(),
