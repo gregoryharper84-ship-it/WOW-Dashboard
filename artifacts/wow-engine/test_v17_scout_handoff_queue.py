@@ -99,13 +99,25 @@ class _RPC:
 
     def execute(self):
         self.db.calls.append((self.name, self.params))
-        state = {
-            "wow_finish_scout_handoff_job": "V17_QUALIFIED"
-            if self.params.get("p_v17_qualified")
-            else "MODEL_EVALUATED",
-            "wow_retry_scout_handoff_job": "SPECIALIST_HANDOFF_QUEUED",
-            "wow_block_scout_handoff_job": "HANDOFF_BLOCKED",
-        }[self.name]
+        if self.name == "wow_finish_scout_handoff_job":
+            receipt = self.params.get("p_specialist_receipt") or {}
+            result = receipt.get("result") if isinstance(receipt, dict) else {}
+            rows = (result.get("outcomes") or result.get("rows") or []) if isinstance(result, dict) else []
+            outcome = rows[0] if len(rows) == 1 and isinstance(rows[0], dict) else {}
+            qualified = (
+                str(outcome.get("terminal_status") or outcome.get("status") or "").upper() == "COMPLETED"
+                and outcome.get("probability_publishable") is True
+                and outcome.get("rank_eligible") is True
+                and outcome.get("card_admission_eligible") is True
+                and outcome.get("can_execute") is False
+                and result.get("can_execute") is False
+                and receipt.get("can_execute") is False
+            )
+            state = "V17_QUALIFIED" if qualified else "MODEL_EVALUATED"
+        elif self.name == "wow_retry_scout_handoff_job":
+            state = "SPECIALIST_HANDOFF_QUEUED"
+        else:
+            state = "HANDOFF_BLOCKED"
         return _Response({"current_state": state, "can_execute": False})
 
 
