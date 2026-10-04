@@ -11,7 +11,8 @@ import json
 from pathlib import Path
 from typing import Any
 
-STREAM_ORDER = ("A", "B", "C")
+STREAM_ORDER = ("GOVERNANCE", "A", "B", "C")
+MAX_PARALLEL_WRITERS = 3
 TERMINAL_AUTHORITY = "V17_TERMINAL_REDUCER"
 
 
@@ -46,7 +47,18 @@ def select_parallel(records: list[dict[str, Any]]) -> dict[str, Any]:
     skipped: list[dict[str, Any]] = []
 
     for stream in STREAM_ORDER:
-        for row in _eligible(records, stream):
+        eligible = _eligible(records, stream)
+        if len(selected) >= MAX_PARALLEL_WRITERS:
+            skipped.extend(
+                {
+                    "incident_id": str(row.get("incident_id") or "UNKNOWN"),
+                    "rapid_stream": stream,
+                    "reason": "MAX_PARALLEL_WRITERS_REACHED",
+                }
+                for row in eligible
+            )
+            continue
+        for row in eligible:
             incident = str(row.get("incident_id") or "")
             lease_group = str(row.get("lease_group") or "").upper()
             keys = _keys(row)
@@ -98,7 +110,7 @@ def select_parallel(records: list[dict[str, Any]]) -> dict[str, Any]:
         "selected": selected,
         "selected_count": len(selected),
         "skipped": skipped,
-        "max_parallel_writers": 3,
+        "max_parallel_writers": MAX_PARALLEL_WRITERS,
         "can_execute": False,
         "terminal_authority": TERMINAL_AUTHORITY,
     }
