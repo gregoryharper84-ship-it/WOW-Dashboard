@@ -105,6 +105,115 @@ def test_active_lease_excludes_second_worker_then_expired_lease_is_reclaimed():
             assert event["detail"]["previous_worker_id"] == "worker-1"
             assert event["detail"]["lease_reclaimed"] is True
 
+            cur.execute(
+                "update public.wow_scout_handoff_jobs set lease_expires_at=now()-interval '1 second' where job_id=%s",
+                (first["job_id"],),
+            )
+            cur.execute("select * from public.wow_claim_scout_handoff_job('worker-3',60)")
+            assert cur.fetchone() is None
+            cur.execute(
+                "select current_state,terminal,last_error_code,last_error_detail from public.wow_scout_handoff_jobs where job_id=%s",
+                (first["job_id"],),
+            )
+            blocked = cur.fetchone()
+            assert blocked["current_state"] == "HANDOFF_BLOCKED"
+            assert blocked["terminal"] is True
+            assert blocked["last_error_code"] == "SCOUT_HANDOFF_RETRY_EXHAUSTED"
+            assert blocked["last_error_detail"]["lease_reclaim_budget"] == 2
+
+
+def test_expired_non_repeat_safe_team_lease_blocks_instead_of_reexecuting():
+    payload = {
+        "research_run_id": "rr-nfl",
+        "objective_lane": "OUTRIGHT_WIN_PROBABILITY",
+        "sport": "NFL",
+        "league": "NFL",
+        "event_key": "NFL:evt-1",
+        "event_state": "PREGAME",
+        "event_date": "2026-10-03",
+        "timezone": "America/Chicago",
+        "price_required_for_objective": False,
+        "event_start_time_utc": "2026-10-04T00:00:00Z",
+        "home_team": "Home",
+        "away_team": "Away",
+    }
+    with psycopg.connect(DATABASE_URL, autocommit=True) as conn:
+        with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
+            cur.execute(
+                """
+                select (public.wow_enqueue_scout_handoff_job(
+                  'run-nfl','rr-nfl','cand-nfl','LLP_TEAM_BETTING_ENGINE','HIGH',
+                  '/score-team-event-request','rr-nfl:cand-nfl',%s::jsonb,null,null
+                )).*;
+                """,
+                (Jsonb(payload),),
+            )
+            cur.fetchone()
+            cur.execute("select * from public.wow_claim_scout_handoff_job('worker-1',60)")
+            first = cur.fetchone()
+            assert first["attempt_count"] == 1
+            cur.execute(
+                "update public.wow_scout_handoff_jobs set lease_expires_at=now()-interval '1 second' where job_id=%s",
+                (first["job_id"],),
+            )
+            cur.execute("select * from public.wow_claim_scout_handoff_job('worker-2',60)")
+            assert cur.fetchone() is None
+            cur.execute(
+                "select current_state,terminal,last_error_code from public.wow_scout_handoff_jobs where job_id=%s",
+                (first["job_id"],),
+            )
+            blocked = cur.fetchone()
+            assert blocked["current_state"] == "HANDOFF_BLOCKED"
+            assert blocked["terminal"] is True
+            assert blocked["last_error_code"] == "SCOUT_HANDOFF_AMBIGUOUS_RETRY_PROHIBITED"
+
+
+def test_database_derives_qualification_from_specialist_receipt():
+    complete = {
+        "result": {
+            "rows": [{
+                "terminal_status": "COMPLETED",
+                "probability_publishable": True,
+                "rank_eligible": True,
+                "card_admission_eligible": True,
+                "can_execute": False,
+            }],
+            "can_execute": False,
+        },
+        "can_execute": False,
+    }
+    missing_admission = {
+        "result": {
+            "rows": [{
+                "terminal_status": "COMPLETED",
+                "probability_publishable": True,
+                "rank_eligible": True,
+                "can_execute": False,
+            }],
+            "can_execute": False,
+        },
+        "can_execute": False,
+    }
+    with psycopg.connect(DATABASE_URL, autocommit=True) as conn:
+        with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
+            _enqueue(cur, source="run-pass", candidate="cand-pass")
+            cur.execute("select * from public.wow_claim_scout_handoff_job('worker-pass',60)")
+            claimed = cur.fetchone()
+            cur.execute(
+                "select (public.wow_finish_scout_handoff_job(%s,'worker-pass',%s::jsonb)).*",
+                (claimed["job_id"], Jsonb(complete)),
+            )
+            assert cur.fetchone()["current_state"] == "V17_QUALIFIED"
+
+            _enqueue(cur, source="run-missing", candidate="cand-missing")
+            cur.execute("select * from public.wow_claim_scout_handoff_job('worker-missing',60)")
+            claimed = cur.fetchone()
+            cur.execute(
+                "select (public.wow_finish_scout_handoff_job(%s,'worker-missing',%s::jsonb)).*",
+                (claimed["job_id"], Jsonb(missing_admission)),
+            )
+            assert cur.fetchone()["current_state"] == "MODEL_EVALUATED"
+
 
 def test_database_rejects_probability_authority_payload_even_if_caller_forges_pass():
     with psycopg.connect(DATABASE_URL, autocommit=True) as conn:
