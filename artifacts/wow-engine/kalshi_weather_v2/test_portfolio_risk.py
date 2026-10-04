@@ -1,8 +1,12 @@
+from dataclasses import replace
+import math
+
 import pytest
 
 from kalshi_weather_v2.portfolio_risk import (
     DependenceMode,
     PortfolioPosition,
+    KellyResearchSizing,
     PortfolioRiskError,
     PortfolioScenarioEngine,
     PositionSide,
@@ -513,3 +517,268 @@ def test_weather_scenario_provenance_and_feedback_guards(kwargs, error_code):
     values.update(kwargs)
     with pytest.raises(PortfolioRiskError, match=error_code):
         WeatherScenario(**values)
+
+
+@pytest.mark.parametrize(
+    "kwargs,error_code",
+    [
+        ({"factor_ids": ("",)}, "WEATHER_EVENT_FACTOR_ID_INVALID"),
+        ({"factor_ids": ("SYNOPTIC_REGIME", "SYNOPTIC_REGIME")}, "WEATHER_EVENT_FACTOR_ID_DUPLICATE"),
+    ],
+)
+def test_weather_event_factor_identity_guards(kwargs, error_code):
+    with pytest.raises(PortfolioRiskError, match=error_code):
+        event(**kwargs)
+
+
+def test_weather_event_forged_identity_and_execution_fail_closed():
+    good = event()
+    with pytest.raises(PortfolioRiskError, match="WEATHER_EVENT_IDENTITY_MISMATCH"):
+        WeatherEventDescriptor(
+            event_key="forged",
+            lane=good.lane,
+            settlement_source=good.settlement_source,
+            settlement_location_code=good.settlement_location_code,
+            observation_window=good.observation_window,
+            metric=good.metric,
+            units=good.units,
+            region_id=good.region_id,
+            factor_ids=good.factor_ids,
+        )
+    with pytest.raises(PortfolioRiskError, match="WEATHER_EVENT_EXECUTION_PROHIBITED"):
+        WeatherEventDescriptor(
+            event_key=good.event_key,
+            lane=good.lane,
+            settlement_source=good.settlement_source,
+            settlement_location_code=good.settlement_location_code,
+            observation_window=good.observation_window,
+            metric=good.metric,
+            units=good.units,
+            region_id=good.region_id,
+            factor_ids=good.factor_ids,
+            can_execute=True,
+        )
+
+
+def test_weather_event_key_rejects_missing_identity_input():
+    with pytest.raises(PortfolioRiskError, match="WEATHER_EVENT_IDENTITY_INPUT_MISSING"):
+        weather_event_key(
+            lane="",
+            settlement_source="The Weather Company",
+            settlement_location_code="CLIDFW",
+            observation_window="2026-10-04 local day",
+            metric="daily_max_temperature",
+            units="F",
+        )
+
+
+@pytest.mark.parametrize(
+    "overrides,error_code",
+    [
+        ({"side": "MAYBE"}, "PORTFOLIO_POSITION_SIDE_INVALID"),
+        ({"quantity": 0}, "PORTFOLIO_POSITION_QUANTITY_INVALID"),
+        ({"cost": 0}, "PORTFOLIO_POSITION_ENTRY_COST_INVALID"),
+        ({"cost": 1}, "PORTFOLIO_POSITION_ENTRY_COST_INVALID"),
+        ({"model_p_yes": 0}, "PORTFOLIO_POSITION_MODEL_P_YES_INVALID"),
+        ({"model_p_yes": 1}, "PORTFOLIO_POSITION_MODEL_P_YES_INVALID"),
+        ({"lower": None, "upper": None}, "PORTFOLIO_POSITION_THRESHOLD_MISSING"),
+        ({"lower": float("nan")}, "PORTFOLIO_POSITION_THRESHOLD_INVALID"),
+        ({"lower": 90, "upper": 80}, "PORTFOLIO_POSITION_THRESHOLD_ORDER_INVALID"),
+    ],
+)
+def test_portfolio_position_validation_branches(overrides, error_code):
+    evt = event(factor_ids=())
+    with pytest.raises(PortfolioRiskError, match=error_code):
+        position("invalid", event_obj=evt, **overrides)
+
+
+def test_portfolio_position_requires_nonempty_identity():
+    evt = event(factor_ids=())
+    with pytest.raises(PortfolioRiskError, match="PORTFOLIO_POSITION_POSITION_ID_MISSING"):
+        PortfolioPosition(
+            position_id="",
+            ticker="T",
+            rule_snapshot_id="rule",
+            prediction_id="prediction",
+            market_snapshot_id="market",
+            prediction_time="2026-10-04T16:00:00Z",
+            market_time="2026-10-04T16:01:00Z",
+            event=evt,
+            side=PositionSide.YES,
+            quantity=1,
+            entry_cost_per_contract=0.5,
+            cost_basis_verified=True,
+            threshold_lower=85,
+        )
+
+
+def test_noninclusive_threshold_semantics_match_contract_predicate():
+    evt = event(factor_ids=())
+    greater = position("greater", event_obj=evt, lower=85, lower_inclusive=False)
+    less = position("less", event_obj=evt, lower=None, upper=85, upper_inclusive=False)
+    assert greater.yes_outcome(85) is False
+    assert greater.yes_outcome(85.1) is True
+    assert less.yes_outcome(85) is False
+    assert less.yes_outcome(84.9) is True
+    with pytest.raises(PortfolioRiskError, match="SCENARIO_SETTLED_VALUE_INVALID"):
+        greater.yes_outcome(float("nan"))
+
+
+@pytest.mark.parametrize(
+    "kwargs,error_code",
+    [
+        ({"scenario_id": ""}, "WEATHER_SCENARIO_ID_MISSING"),
+        ({"weight": 0}, "WEATHER_SCENARIO_WEIGHT_INVALID"),
+        ({"event_values": {}}, "WEATHER_SCENARIO_EVENT_VALUES_MISSING"),
+        ({"event_values": {"bad": float("nan")}}, "WEATHER_SCENARIO_EVENT_VALUE_INVALID"),
+        ({"factor_states": {"": "RIDGE"}}, "WEATHER_SCENARIO_FACTOR_STATE_INVALID"),
+        ({"factor_states": {"SYNOPTIC_REGIME": ""}}, "WEATHER_SCENARIO_FACTOR_STATE_INVALID"),
+    ],
+)
+def test_weather_scenario_validation_branches(kwargs, error_code):
+    evt = event(factor_ids=())
+    values = dict(
+        scenario_id="s",
+        available_at="2026-10-04T16:02:00Z",
+        weight=1,
+        event_values={evt.event_key: 90},
+        evidence_ids=("e",),
+        method="TEST",
+        factor_states={},
+    )
+    values.update(kwargs)
+    with pytest.raises(PortfolioRiskError, match=error_code):
+        WeatherScenario(**values)
+
+
+def test_scenario_identity_inputs_are_immutable_after_construction():
+    evt = event(factor_ids=())
+    row = WeatherScenario(
+        scenario_id="sealed",
+        available_at="2026-10-04T16:02:00Z",
+        weight=1,
+        event_values={evt.event_key: 90},
+        evidence_ids=("e",),
+        method="TEST",
+        factor_states={"SYNOPTIC_REGIME": "RIDGE"},
+    )
+    with pytest.raises(TypeError):
+        row.event_values[evt.event_key] = 91
+    with pytest.raises(TypeError):
+        row.factor_states["SYNOPTIC_REGIME"] = "TROUGH"
+
+
+def test_engine_rejects_missing_and_duplicate_inputs():
+    evt = event(factor_ids=())
+    engine = PortfolioScenarioEngine()
+    s = scenario("s", 90, event_obj=evt)
+    p = position("p", event_obj=evt)
+    with pytest.raises(PortfolioRiskError, match="PORTFOLIO_POSITIONS_MISSING"):
+        engine.evaluate(
+            as_of_time="2026-10-04T16:05:00Z",
+            positions=(),
+            scenarios=(s,),
+            dependence_mode=DependenceMode.SAME_EVENT_EXACT,
+        )
+    with pytest.raises(PortfolioRiskError, match="PORTFOLIO_SCENARIOS_MISSING"):
+        engine.evaluate(
+            as_of_time="2026-10-04T16:05:00Z",
+            positions=(p,),
+            scenarios=(),
+            dependence_mode=DependenceMode.SAME_EVENT_EXACT,
+        )
+    with pytest.raises(PortfolioRiskError, match="PORTFOLIO_POSITION_ID_DUPLICATE"):
+        engine.evaluate(
+            as_of_time="2026-10-04T16:05:00Z",
+            positions=(p, p),
+            scenarios=(s,),
+            dependence_mode=DependenceMode.SAME_EVENT_EXACT,
+        )
+    with pytest.raises(PortfolioRiskError, match="WEATHER_SCENARIO_ID_DUPLICATE"):
+        engine.evaluate(
+            as_of_time="2026-10-04T16:05:00Z",
+            positions=(p,),
+            scenarios=(s, s),
+            dependence_mode=DependenceMode.SAME_EVENT_EXACT,
+        )
+
+
+def test_engine_rejects_invalid_dependence_mode_and_future_market_snapshot():
+    evt = event(factor_ids=())
+    with pytest.raises(PortfolioRiskError, match="PORTFOLIO_DEPENDENCE_MODE_INVALID"):
+        PortfolioScenarioEngine().evaluate(
+            as_of_time="2026-10-04T16:05:00Z",
+            positions=(position("p", event_obj=evt),),
+            scenarios=(scenario("s", 90, event_obj=evt),),
+            dependence_mode="COPULA_MAGIC",
+        )
+    with pytest.raises(PortfolioRiskError, match="PORTFOLIO_POSITION_FUTURE_MARKET"):
+        PortfolioScenarioEngine().evaluate(
+            as_of_time="2026-10-04T16:05:00Z",
+            positions=(position("future-market", event_obj=evt, market_time="2026-10-04T16:06:00Z"),),
+            scenarios=(scenario("s2", 90, event_obj=evt),),
+            dependence_mode=DependenceMode.SAME_EVENT_EXACT,
+        )
+
+
+def test_regional_factor_mode_requires_region_id():
+    missing_region = event(region_id=None, factor_ids=("SYNOPTIC_REGIME",))
+    hou = event(location="CLIHOU", region_id="HOU", factor_ids=("SYNOPTIC_REGIME",))
+    with pytest.raises(PortfolioRiskError, match="REGIONAL_EVENT_REGION_ID_MISSING"):
+        PortfolioScenarioEngine().evaluate(
+            as_of_time="2026-10-04T16:05:00Z",
+            positions=(position("dfw", event_obj=missing_region), position("hou", event_obj=hou)),
+            scenarios=(
+                WeatherScenario(
+                    scenario_id="regional",
+                    available_at="2026-10-04T16:02:00Z",
+                    weight=1,
+                    event_values={missing_region.event_key: 90, hou.event_key: 91},
+                    evidence_ids=("regional-e",),
+                    method="TEST",
+                    factor_states={"SYNOPTIC_REGIME": "RIDGE"},
+                ),
+            ),
+            dependence_mode=DependenceMode.REGIONAL_FACTOR_SCENARIOS,
+        )
+
+
+def test_scenario_weight_total_overflow_fails_closed():
+    evt = event(factor_ids=())
+    p = position("p", event_obj=evt)
+    s1 = scenario("huge-1", 90, event_obj=evt, weight=1e308)
+    s2 = scenario("huge-2", 91, event_obj=evt, weight=1e308)
+    with pytest.raises(PortfolioRiskError, match="WEATHER_SCENARIO_WEIGHT_TOTAL_INVALID"):
+        PortfolioScenarioEngine().evaluate(
+            as_of_time="2026-10-04T16:05:00Z",
+            positions=(p,),
+            scenarios=(s1, s2),
+            dependence_mode=DependenceMode.SAME_EVENT_EXACT,
+        )
+
+
+def test_snapshot_identity_and_execution_flags_fail_closed():
+    evt = event(factor_ids=())
+    result = PortfolioScenarioEngine().evaluate(
+        as_of_time="2026-10-04T16:05:00Z",
+        positions=(position("p", event_obj=evt),),
+        scenarios=(scenario("s", 90, event_obj=evt),),
+        dependence_mode=DependenceMode.SAME_EVENT_EXACT,
+    )
+    with pytest.raises(PortfolioRiskError, match="PORTFOLIO_RISK_IDENTITY_MISMATCH"):
+        replace(result, risk_snapshot_id="forged")
+    with pytest.raises(PortfolioRiskError, match="PORTFOLIO_RISK_EXECUTION_PROHIBITED"):
+        replace(result, can_execute=True)
+
+
+def test_kelly_research_object_cannot_be_executable():
+    with pytest.raises(PortfolioRiskError, match="KELLY_RESEARCH_EXECUTION_PROHIBITED"):
+        KellyResearchSizing(
+            position_id="p",
+            side_win_probability=0.6,
+            full_kelly_fraction=0.2,
+            fractional_kelly_multiplier=0.25,
+            research_fraction=0.05,
+            status="RESEARCH_ONLY",
+            can_execute=True,
+        )
