@@ -96,6 +96,7 @@ class PortfolioPosition:
     side: PositionSide
     quantity: float
     entry_cost_per_contract: float
+    cost_basis_verified: bool
     threshold_lower: float | None = None
     threshold_upper: float | None = None
     lower_inclusive: bool = True
@@ -122,8 +123,12 @@ class PortfolioPosition:
         object.__setattr__(self, "side", normalized_side)
         _timestamp(self.prediction_time, "PORTFOLIO_POSITION_PREDICTION_TIME")
         _timestamp(self.market_time, "PORTFOLIO_POSITION_MARKET_TIME")
-        _positive(self.quantity, "PORTFOLIO_POSITION_QUANTITY_INVALID")
         _strict_probability(self.entry_cost_per_contract, "PORTFOLIO_POSITION_ENTRY_COST")
+        if not self.cost_basis_verified:
+            raise PortfolioRiskError("PORTFOLIO_POSITION_COST_BASIS_UNVERIFIED")
+        quantity = _positive(self.quantity, "PORTFOLIO_POSITION_QUANTITY_INVALID")
+        if not float(quantity).is_integer():
+            raise PortfolioRiskError("PORTFOLIO_POSITION_QUANTITY_NONINTEGRAL")
         if self.model_p_yes is not None:
             _strict_probability(self.model_p_yes, "PORTFOLIO_POSITION_MODEL_P_YES")
         if self.threshold_lower is None and self.threshold_upper is None:
@@ -179,6 +184,7 @@ class PortfolioPosition:
             "side": self.side.value,
             "quantity": float(self.quantity),
             "entry_cost_per_contract": float(self.entry_cost_per_contract),
+            "cost_basis_verified": True,
             "threshold_lower": None if self.threshold_lower is None else float(self.threshold_lower),
             "threshold_upper": None if self.threshold_upper is None else float(self.threshold_upper),
             "lower_inclusive": bool(self.lower_inclusive),
@@ -196,7 +202,11 @@ class WeatherScenario:
     available_at: str
     weight: float
     event_values: Mapping[str, float]
+    evidence_ids: tuple[str, ...]
+    method: str
     factor_states: Mapping[str, str] = None
+    market_price_used_as_weather_input: bool = False
+    risk_state_used_as_weather_input: bool = False
     can_execute: bool = False
 
     def __post_init__(self) -> None:
@@ -206,6 +216,12 @@ class WeatherScenario:
         _positive(self.weight, "WEATHER_SCENARIO_WEIGHT_INVALID")
         if not self.event_values:
             raise PortfolioRiskError("WEATHER_SCENARIO_EVENT_VALUES_MISSING")
+        if not self.evidence_ids or any(not str(item).strip() for item in self.evidence_ids):
+            raise PortfolioRiskError("WEATHER_SCENARIO_EVIDENCE_MISSING")
+        if len(set(self.evidence_ids)) != len(self.evidence_ids):
+            raise PortfolioRiskError("WEATHER_SCENARIO_EVIDENCE_DUPLICATE")
+        if not str(self.method or "").strip():
+            raise PortfolioRiskError("WEATHER_SCENARIO_METHOD_MISSING")
         for key, value in self.event_values.items():
             if not str(key).strip() or not _finite_number(value):
                 raise PortfolioRiskError("WEATHER_SCENARIO_EVENT_VALUE_INVALID")
@@ -214,6 +230,10 @@ class WeatherScenario:
             if not str(key).strip() or not str(value).strip():
                 raise PortfolioRiskError("WEATHER_SCENARIO_FACTOR_STATE_INVALID")
         object.__setattr__(self, "factor_states", states)
+        if self.market_price_used_as_weather_input:
+            raise PortfolioRiskError("MARKET_PRICE_WEATHER_INPUT_PROHIBITED")
+        if self.risk_state_used_as_weather_input:
+            raise PortfolioRiskError("PORTFOLIO_STATE_WEATHER_INPUT_PROHIBITED")
         if self.can_execute:
             raise PortfolioRiskError("WEATHER_SCENARIO_EXECUTION_PROHIBITED")
 
@@ -223,7 +243,11 @@ class WeatherScenario:
             "available_at": _format_utc(_timestamp(self.available_at, "WEATHER_SCENARIO_AVAILABLE_AT")),
             "weight": float(self.weight),
             "event_values": {key: float(self.event_values[key]) for key in sorted(self.event_values)},
+            "evidence_ids": sorted(self.evidence_ids),
+            "method": self.method,
             "factor_states": {key: str(self.factor_states[key]) for key in sorted(self.factor_states)},
+            "market_price_used_as_weather_input": False,
+            "risk_state_used_as_weather_input": False,
             "can_execute": False,
         }
 
