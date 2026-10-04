@@ -30,7 +30,8 @@ function correlationId(req: Request): string {
     req.headers.get("x-request-id") ||
     ""
   ).trim();
-  return supplied || crypto.randomUUID();
+  if (/^[A-Za-z0-9._:-]{8,128}$/.test(supplied)) return supplied;
+  return crypto.randomUUID();
 }
 
 function responseHeaders(requestId: string, contentType = "application/json"): Headers {
