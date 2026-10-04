@@ -100,6 +100,7 @@ def test_wait_for_terminal_polls_until_complete(monkeypatch):
     complete = _complete_summary()
     responses = iter([
         {"ok": True, "http_status": 200, "body": pending, "can_execute": False},
+        {"ok": True, "http_status": 200, "body": {"source_run_id": "run-1", "status": "COMPLETE", "can_execute": False}, "can_execute": False},
         {"ok": True, "http_status": 200, "body": complete, "can_execute": False},
     ])
     monkeypatch.setattr(terminal, "_get_status", lambda *args, **kwargs: next(responses))
