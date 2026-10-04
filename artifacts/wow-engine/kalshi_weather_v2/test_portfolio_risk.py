@@ -371,6 +371,7 @@ def test_market_and_portfolio_state_cannot_feed_weather_probability():
         side=PositionSide.YES,
         quantity=1,
         entry_cost_per_contract=0.5,
+        cost_basis_verified=True,
         threshold_lower=85,
     )
     with pytest.raises(PortfolioRiskError, match="MARKET_PRICE_WEATHER_INPUT_PROHIBITED"):
