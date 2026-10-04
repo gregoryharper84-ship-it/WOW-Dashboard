@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 from datetime import date, datetime
 import gzip
 import io
@@ -354,6 +355,77 @@ def _history_counts(feature_row: dict[str, Any]) -> tuple[int, int]:
     )
 
 
+def _prediction_identity_key(
+    *,
+    research_run_id: str,
+    canonical_game_id: str,
+    feature_row_hash: str,
+    model_artifact_id: str,
+    model_version: str,
+) -> str:
+    identity = "\x1f".join(
+        (
+            str(research_run_id),
+            str(canonical_game_id),
+            str(feature_row_hash),
+            str(model_artifact_id),
+            str(model_version),
+        )
+    )
+    return hashlib.sha256(identity.encode("utf-8")).hexdigest()
+
+
+def _load_existing_prediction(db: Any, prediction_identity_key: str) -> dict[str, Any] | None:
+    result = (
+        db.table("wow_nfl_event_predictions")
+        .select("*")
+        .eq("prediction_identity_key", prediction_identity_key)
+        .limit(2)
+        .execute()
+    )
+    rows = result.data if isinstance(result.data, list) else []
+    if len(rows) > 1:
+        raise NFLModelScorerFailed("NFL_IMMUTABLE_PREDICTION_IDENTITY_AMBIGUOUS")
+    return dict(rows[0]) if rows else None
+
+
+def _reused_prediction_result(
+    row: dict[str, Any],
+    *,
+    feature_row: dict[str, Any],
+    evidence: dict[str, Any],
+) -> dict[str, Any]:
+    snapshot = row.get("model_output_snapshot")
+    if not isinstance(snapshot, dict):
+        raise NFLModelScorerFailed("NFL_IMMUTABLE_PREDICTION_REUSE_SNAPSHOT_MISSING")
+    return {
+        "code": "NFL_FITTED_MODEL_PATH_PROVEN",
+        **snapshot,
+        "score_snapshot_id": str(row["score_snapshot_id"]),
+        "base_score_snapshot_id": str(row["score_snapshot_id"]),
+        "event_prediction_id": str(row["event_prediction_id"]),
+        "canonical_event_id": str(row["official_event_id"]),
+        "provider_event_id": evidence.get("provider_event_id"),
+        "identity_resolution": evidence.get("identity_resolution"),
+        "selected_participant": str(row["selected_participant"]),
+        "opponent": str(row["opponent"]),
+        "calibrated_selection_probability": float(row["calibrated_selection_probability"]),
+        "ranked_probability": float(row["ranked_probability"]),
+        "rank_calibrated_lower_bound": float(row["calibrated_selection_lower_bound"]),
+        "ranking_basis": "CALIBRATED_LOWER_BOUND",
+        "source_count": len(feature_row.get("source_content_sha256s") or []),
+        "data_quality_score": 1.0,
+        "provenance_complete": True,
+        "exact_line_supported": True,
+        "failure_code": None,
+        "model_reason": "CERTIFIED_NFL_P2_FITTED_MODEL",
+        "blend_publishable": False,
+        "probability_publishable": True,
+        "prediction_reused": True,
+        "can_execute": False,
+    }
+
+
 def score_nfl_team_event(req: Any, *, db: Any) -> dict[str, Any]:
     evidence = dict(req.sport_specific_evidence or {})
     required = (
@@ -427,6 +499,32 @@ def score_nfl_team_event(req: Any, *, db: Any) -> dict[str, Any]:
 
     try:
         model = load_champion_model(db)
+    except (NFLModelUnavailable, NFLModelInputsInsufficient, NFLModelOutputInvalid):
+        raise
+    except Exception as exc:
+        raise NFLModelScorerFailed("NFL_FITTED_SCORER_FAILED") from exc
+
+    prediction_identity_key = _prediction_identity_key(
+        research_run_id=str(req.research_run_id),
+        canonical_game_id=canonical_game_id,
+        feature_row_hash=str(feature_row["row_inputs_hash"]),
+        model_artifact_id=str(model.artifact_id),
+        model_version=str(model.model_artifact_version),
+    )
+    try:
+        existing_prediction = _load_existing_prediction(db, prediction_identity_key)
+    except NFLModelScorerFailed:
+        raise
+    except Exception as exc:
+        raise NFLModelScorerFailed("NFL_IMMUTABLE_PREDICTION_IDENTITY_LOOKUP_FAILED") from exc
+    if existing_prediction is not None:
+        return _reused_prediction_result(
+            existing_prediction,
+            feature_row=feature_row,
+            evidence=evidence,
+        )
+
+    try:
         model_result = score_feature_row(model, feature_row)
     except (NFLModelUnavailable, NFLModelInputsInsufficient, NFLModelOutputInvalid):
         raise
@@ -459,6 +557,7 @@ def score_nfl_team_event(req: Any, *, db: Any) -> dict[str, Any]:
         "identity_resolution": evidence.get("identity_resolution"),
     }
     payload = {
+        "prediction_identity_key": prediction_identity_key,
         "research_run_id": req.research_run_id,
         "event_key": req.event_key,
         "official_event_id": canonical_game_id,
@@ -508,6 +607,16 @@ def score_nfl_team_event(req: Any, *, db: Any) -> dict[str, Any]:
         inserted = db.table("wow_nfl_event_predictions").insert(payload).execute()
         persisted = inserted.data if isinstance(inserted.data, list) else []
     except Exception as exc:
+        try:
+            existing_prediction = _load_existing_prediction(db, prediction_identity_key)
+        except Exception:
+            existing_prediction = None
+        if existing_prediction is not None:
+            return _reused_prediction_result(
+                existing_prediction,
+                feature_row=feature_row,
+                evidence=evidence,
+            )
         raise NFLModelScorerFailed("NFL_IMMUTABLE_PREDICTION_PERSISTENCE_FAILED") from exc
     if len(persisted) != 1:
         raise NFLModelScorerFailed("NFL_IMMUTABLE_PREDICTION_PERSISTENCE_NO_ROW")
@@ -536,5 +645,6 @@ def score_nfl_team_event(req: Any, *, db: Any) -> dict[str, Any]:
         "model_reason": "CERTIFIED_NFL_P2_FITTED_MODEL",
         "blend_publishable": False,
         "probability_publishable": True,
+        "prediction_reused": False,
         "can_execute": False,
     }
