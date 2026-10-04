@@ -209,6 +209,7 @@ def compact_espn_scoreboard(
     result = secondary._scoreboard(  # intentional server-side reuse of existing cache/transport
         sport_key,
         {"commenceTimeFrom": date_compact, "commenceTimeTo": date_compact},
+        provider_limit=250,
     )
     if not result.ok:
         return {
