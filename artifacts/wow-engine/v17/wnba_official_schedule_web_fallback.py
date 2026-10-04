@@ -460,6 +460,12 @@ def parse_official_playoffs_page(html: str) -> dict[str, Any]:
                 "official WNBA playoff bracket next-game number was missing",
                 detail={"source": PLAYOFFS_PROVIDER, "url": PLAYOFFS_PAGE_URL},
             )
+        high_id = str(series.get("highSeedId") or "").strip()
+        low_id = str(series.get("lowSeedId") or "").strip()
+        if high_id in {"", "0"} and low_id in {"", "0"}:
+            # League-owned future-round placeholder: a canonical game slot is
+            # allocated but the participants are not yet decided.
+            continue
         try:
             round_number = int(series.get("roundNumber") or 0)
             game_number = int(game_match.group(1))
