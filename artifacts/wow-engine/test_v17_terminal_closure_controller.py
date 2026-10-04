@@ -126,3 +126,146 @@ def test_controller_ignores_pr_without_explicit_autonomous_opt_in():
 
     assert result["status"] == "SKIP"
     assert result["reason"] == "TERMINAL_CLOSURE_NOT_OPTED_IN"
+
+
+def test_merge_identity_incomplete_is_exact_blocker():
+    state = _base_state()
+    state["pr"]["merge_commit_sha"] = ""
+    state["pr"]["merged_at"] = "not-a-date"
+
+    result = evaluate(state, now=NOW)
+
+    assert result["status"] == "BLOCKED_WITH_EXACT_REASON"
+    assert result["blockers"] == ["MERGE_IDENTITY_INCOMPLETE"]
+    assert result["can_execute"] is False
+
+
+def test_fallback_issue_and_no_acceptance_workflow_close_from_release_only():
+    state = _base_state()
+    state["pr"]["body"] = (
+        "Terminal-Closure-Autonomous: true\n"
+        "Fixes #1250\n"
+    )
+    state["pr_comments"] = [
+        {"body": "not a release comment"},
+        {
+            "body": (
+                "## Release / Production Verification Agent\n"
+                "~~~json\n{not-json}\n~~~\n"
+                "~~~json\n"
+                '{"status":"PRODUCTION_VERIFIED","production_sha":"","main_sha":"x",'
+                '"acceptance":"PASS","reconciliation":"PASS","blocker":"","next_action":""}'
+                "\n~~~"
+            )
+        },
+    ]
+
+    result = evaluate(state, now=NOW)
+
+    assert result["issue_number"] == 1250
+    assert result["acceptance_workflow"] == "none"
+    assert result["status"] == "READY_FOR_RECEIPT"
+    assert "VERIFIED_BY_RELEASE_AGENT" in result["receipt_markdown"]
+    assert "Canary / Acceptance Run ID:** `N/A`" in result["receipt_markdown"]
+
+
+def test_inflight_release_and_acceptance_are_not_redispatched():
+    state = _base_state()
+    state["runs"] = [
+        {
+            "name": "wow-v17-release-production-verification-agent",
+            "path": ".github/workflows/wow-v17-release-production-verification-agent.yml",
+            "head_sha": MERGE,
+            "status": "in_progress",
+            "conclusion": None,
+            "created_at": "2026-10-04T01:58:00Z",
+        },
+        {
+            "workflow_name": "wow-v17-nightly-multiscout",
+            "path": ".github/workflows/wow-v17-nightly-multiscout.yml",
+            "head_sha": MERGE,
+            "status": "queued",
+            "conclusion": None,
+        },
+    ]
+
+    result = evaluate(state, now=NOW)
+
+    assert result["status"] == "WAITING_FOR_TERMINAL_RECEIPT"
+    assert result["dispatch_release_verification"] is False
+    assert result["dispatch_acceptance"] is False
+
+
+def test_recent_failed_release_observes_cooldown_before_redispatch():
+    state = _base_state()
+    state["runs"] = [{
+        "name": "wow-v17-release-production-verification-agent",
+        "path": ".github/workflows/wow-v17-release-production-verification-agent.yml",
+        "head_sha": MERGE,
+        "status": "completed",
+        "conclusion": "failure",
+        "updated_at": "2026-10-04T01:58:00Z",
+    }]
+
+    result = evaluate(state, now=NOW)
+
+    assert result["dispatch_release_verification"] is False
+    assert result["dispatch_acceptance"] is True
+
+
+def test_stale_release_failure_can_be_redispatched():
+    state = _base_state()
+    state["runs"] = [{
+        "name": "wow-v17-release-production-verification-agent",
+        "path": ".github/workflows/wow-v17-release-production-verification-agent.yml",
+        "head_sha": MERGE,
+        "status": "completed",
+        "conclusion": "failure",
+        "created_at": "2026-10-04T01:40:00",
+    }]
+
+    result = evaluate(state, now=NOW)
+
+    assert result["dispatch_release_verification"] is True
+
+
+def test_acceptance_must_match_exact_merge_sha_and_success():
+    state = _base_state()
+    state["runs"] = [
+        {
+            "name": "wow-v17-nightly-multiscout",
+            "path": ".github/workflows/wow-v17-nightly-multiscout.yml",
+            "head_sha": "different-sha",
+            "status": "completed",
+            "conclusion": "success",
+        },
+        {
+            "name": "wow-v17-nightly-multiscout",
+            "path": ".github/workflows/wow-v17-nightly-multiscout.yml",
+            "head_sha": MERGE,
+            "status": "completed",
+            "conclusion": "failure",
+        },
+    ]
+
+    result = evaluate(state, now=NOW)
+
+    assert "EXACT_MERGE_ACCEPTANCE_RUN_MISSING" in result["blockers"]
+    assert result["dispatch_acceptance"] is True
+
+
+def test_pr_receipt_is_also_repeat_safe_and_non_dict_comments_are_ignored():
+    state = _base_state()
+    state["pr_comments"] = [
+        "not-a-comment-object",
+        {
+            "body": (
+                f"{TERMINAL_RECEIPT_HEADING}\n"
+                "- **Status:** **FIXED_AND_VERIFIED**"
+            )
+        },
+    ]
+
+    result = evaluate(state, now=NOW)
+
+    assert result["status"] == "FIXED_AND_VERIFIED"
