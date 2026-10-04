@@ -431,3 +431,53 @@ def test_multi_event_sign_reversal_accumulates_across_horizons():
     )
     assert result.edge_survival[0].probability_sign_reversal == pytest.approx(0.0)
     assert result.edge_survival[1].probability_sign_reversal == pytest.approx(0.5)
+
+
+@pytest.mark.parametrize(
+    "field,value,error_code",
+    [
+        ("current_probability", 0.0, "CURRENT_PROBABILITY_INVALID"),
+        ("current_probability", 1.0, "CURRENT_PROBABILITY_INVALID"),
+        ("raw_market_probability", 0.0, "RAW_MARKET_PROBABILITY_INVALID"),
+        ("raw_market_probability", 1.0, "RAW_MARKET_PROBABILITY_INVALID"),
+        ("effective_break_even_probability", 0.0, "EFFECTIVE_BREAK_EVEN_PROBABILITY_INVALID"),
+        ("effective_break_even_probability", 1.0, "EFFECTIVE_BREAK_EVEN_PROBABILITY_INVALID"),
+    ],
+)
+def test_probability_inputs_require_strict_open_interval(field, value, error_code):
+    kwargs = dict(
+        decision_time="2026-10-04T15:00:00Z",
+        current_probability=0.60,
+        raw_market_probability=0.50,
+        effective_break_even_probability=0.55,
+        events=(),
+        distributions={},
+        gates=gates(),
+    )
+    kwargs[field] = value
+    with pytest.raises(VoIEngineError, match=error_code):
+        VoIEngineV2().evaluate(**kwargs)
+
+
+@pytest.mark.parametrize(
+    "current_probability,delta_probability",
+    [
+        (0.95, 0.05),
+        (0.05, -0.05),
+    ],
+)
+def test_posterior_shift_exact_boundary_fails_closed(current_probability, delta_probability):
+    with pytest.raises(VoIEngineError, match="POSTERIOR_SHIFT_OUT_OF_BOUNDS"):
+        VoIEngineV2().evaluate(
+            decision_time="2026-10-04T15:00:00Z",
+            current_probability=current_probability,
+            raw_market_probability=0.50,
+            effective_break_even_probability=0.55,
+            events=(event(),),
+            distributions={
+                "metar-1": distribution(
+                    scenarios=(PosteriorShiftScenario(delta_probability=delta_probability, weight=1.0),)
+                )
+            },
+            gates=gates(),
+        )
