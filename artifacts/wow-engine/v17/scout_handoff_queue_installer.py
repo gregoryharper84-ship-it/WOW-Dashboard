@@ -97,11 +97,13 @@ def install_scout_handoff_routes(
         source_run_id: str,
         include_receipts: bool = Query(default=False),
     ) -> dict[str, Any]:
-        return queue.read_run_summary(
-            db_client_fn(),
-            source_run_id,
-            include_receipts=include_receipts,
-        )
+        if include_receipts:
+            return queue.read_run_summary(
+                db_client_fn(),
+                source_run_id,
+                include_receipts=True,
+            )
+        return queue.read_run_status(db_client_fn(), source_run_id)
 
     setattr(app.state, _STATE_KEY, True)
     return True, prop_score_fn, team_score_fn

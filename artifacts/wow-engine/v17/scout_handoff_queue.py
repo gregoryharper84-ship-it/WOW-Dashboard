@@ -525,6 +525,62 @@ def process_claimed_job(
     )
 
 
+
+def read_run_status(db: Any, source_run_id: str) -> dict[str, Any]:
+    """Read a lightweight terminal/progress receipt without large row payloads."""
+    result = (
+        db.table("wow_scout_handoff_jobs")
+        .select(
+            "research_run_id,candidate_id,target_lane,research_priority,"
+            "current_state,terminal,last_error_code,can_execute,created_at"
+        )
+        .eq("source_run_id", source_run_id)
+        .order("created_at")
+        .execute()
+    )
+    rows = [dict(row) for row in (getattr(result, "data", None) or [])]
+    counts: dict[str, int] = {}
+    lane_counts: dict[str, dict[str, int]] = {}
+    priority_counts: dict[str, dict[str, int]] = {}
+    rows_held = 0
+    rows_rejected = 0
+    terminal_evaluated = 0
+    for row in rows:
+        state = str(row.get("current_state") or "UNKNOWN")
+        lane = str(row.get("target_lane") or "UNKNOWN")
+        priority = str(row.get("research_priority") or "UNRANKED")
+        counts[state] = counts.get(state, 0) + 1
+        lane_counts.setdefault(lane, {})
+        lane_counts[lane][state] = lane_counts[lane].get(state, 0) + 1
+        priority_counts.setdefault(priority, {})
+        priority_counts[priority][state] = priority_counts[priority].get(state, 0) + 1
+        if not bool(row.get("terminal")):
+            rows_held += 1
+        elif state == "HANDOFF_BLOCKED":
+            rows_rejected += 1
+        else:
+            terminal_evaluated += 1
+
+    rows_in = len(rows)
+    terminal = bool(rows) and rows_held == 0
+    return {
+        "schema_version": "wow.v17.scout-handoff-run-status.v1",
+        "source_run_id": source_run_id,
+        "research_run_id": rows[0].get("research_run_id") if rows else None,
+        "status": "COMPLETE" if terminal else ("IN_PROGRESS" if rows else "NOT_FOUND"),
+        "candidate_jobs": rows_in,
+        "terminal_evaluated_rows": terminal_evaluated,
+        "rows_held": rows_held,
+        "rows_rejected": rows_rejected,
+        "state_counts": counts,
+        "lane_state_counts": lane_counts,
+        "priority_state_counts": priority_counts,
+        "row_accounting_pass": terminal_evaluated + rows_held + rows_rejected == rows_in,
+        "reconciliation_pass": terminal and rows_held == 0,
+        "can_execute": False,
+    }
+
+
 def read_run_summary(db: Any, source_run_id: str, *, include_receipts: bool = False) -> dict[str, Any]:
     result = (
         db.table("wow_scout_handoff_jobs")
@@ -536,7 +592,7 @@ def read_run_summary(db: Any, source_run_id: str, *, include_receipts: bool = Fa
     rows = [dict(row) for row in (getattr(result, "data", None) or [])]
     event_result = (
         db.table("wow_scout_handoff_state_events")
-        .select("candidate_id,target_lane,state,code,created_at")
+        .select("candidate_id,target_lane,state,code,can_execute,created_at")
         .eq("source_run_id", source_run_id)
         .order("created_at")
         .execute()
@@ -686,6 +742,7 @@ __all__ = [
     "build_handoff_plan",
     "enqueue_plan",
     "process_claimed_job",
+    "read_run_status",
     "read_run_summary",
     "worker_loop",
 ]

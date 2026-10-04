@@ -138,7 +138,7 @@ def _execute_async_handoff(handoff: dict[str, Any], token: str, *, origin: str) 
     while time.monotonic() < deadline and source_run_id:
         status = _get_json(
             origin,
-            f"/v17/scout-handoff-runs/{quote(source_run_id, safe='')}?include_receipts=true",
+            f"/v17/scout-handoff-runs/{quote(source_run_id, safe='')}",
             token,
             timeout=30,
         )
@@ -147,6 +147,16 @@ def _execute_async_handoff(handoff: dict[str, Any], token: str, *, origin: str) 
             latest = dict(status_body)
             latest["enqueue_receipt"] = body
             if latest.get("status") == "COMPLETE":
+                detailed = _get_json(
+                    origin,
+                    f"/v17/scout-handoff-runs/{quote(source_run_id, safe='')}?include_receipts=true",
+                    token,
+                    timeout=30,
+                )
+                detailed_body = detailed.get("body") if isinstance(detailed, dict) else None
+                if isinstance(detailed_body, dict) and detailed_body.get("can_execute") is False:
+                    latest = dict(detailed_body)
+                    latest["enqueue_receipt"] = body
                 break
         time.sleep(2)
 

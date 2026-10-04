@@ -210,3 +210,17 @@ def test_oidc_reuses_process_jwks_client_without_reconstructing(monkeypatch):
     assert oidc.verify_github_actions_oidc("token-1")["repository"] == oidc.REPOSITORY
     assert oidc.verify_github_actions_oidc("token-2")["repository"] == oidc.REPOSITORY
     assert seen_tokens == ["token-1", "token-2"]
+
+
+def test_exact_multiscout_workflow_run_oidc_is_accepted_after_deploy():
+    claims = _claims()
+    claims["event_name"] = "workflow_run"
+    assert oidc.validate_github_actions_claims(claims)["workflow_ref"] == oidc.WORKFLOW_REF
+
+
+def test_workflow_run_is_not_globally_authorized_for_other_internal_workflows():
+    claims = _claims()
+    claims["workflow_ref"] = oidc.DAILY_SNAPSHOT_WORKFLOW_REF
+    claims["event_name"] = "workflow_run"
+    with pytest.raises(oidc.GitHubOIDCValidationError, match="EVENT_NOT_ALLOWED"):
+        oidc.validate_github_actions_claims(claims)
