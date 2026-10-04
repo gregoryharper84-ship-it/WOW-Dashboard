@@ -1,22 +1,22 @@
 openapi: 3.1.0
 info:
   title: LLP Team Betting Engine v17 Supabase Gateway Diagnostic
-  version: 17.0.0-diagnostic
+  version: 17.0.1-basepath-diagnostic
   description: >-
     DIAGNOSTIC ONLY. Alternate-hostname probe for the LLP Custom GPT Action path.
     Exposes only backend health and the NCAAF spread-forward shadow operation.
     No probability math, certification, promotion, ranking, or execution changes.
 servers:
-  - url: https://iczfhsmjrrafhvcpmqhr.supabase.co/functions/v1/wow-llp-action-gateway
+  - url: https://iczfhsmjrrafhvcpmqhr.supabase.co
 paths:
-  /health:
+  /functions/v1/wow-llp-action-gateway/health:
     get:
       operationId: getLlpV17BackendHealth
       x-openai-isConsequential: false
       responses:
         '200':
           description: Backend health state through the Supabase gateway
-  /internal/v17/spread-forward-shadow:
+  /functions/v1/wow-llp-action-gateway/internal/v17/spread-forward-shadow:
     post:
       operationId: scoreLlpV17SpreadForwardShadow
       x-openai-isConsequential: false
