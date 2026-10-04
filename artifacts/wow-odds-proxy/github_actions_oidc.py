@@ -25,7 +25,7 @@ REPOSITORY_ID = "1240256887"
 REPOSITORY_OWNER_ID = "285088163"
 REF = "refs/heads/main"
 WORKFLOW_REF = f"{REPOSITORY}/.github/workflows/wow-v17-nightly-multiscout.yml@{REF}"
-ALLOWED_EVENTS = frozenset({"push", "schedule", "workflow_dispatch"})
+ALLOWED_EVENTS = frozenset({"push", "schedule", "workflow_dispatch", "workflow_run"})
 
 
 class GitHubOIDCValidationError(ValueError):
