@@ -301,6 +301,15 @@ class PortfolioRiskSnapshot:
     def __post_init__(self) -> None:
         if self.can_execute:
             raise PortfolioRiskError("PORTFOLIO_RISK_EXECUTION_PROHIBITED")
+        expected = portfolio_risk_snapshot_id(
+            as_of_time=self.as_of_time,
+            dependence_mode=self.dependence_mode,
+            positions=self.positions,
+            scenarios=self.scenarios,
+            fractional_kelly_multiplier=self.fractional_kelly_multiplier,
+        )
+        if self.risk_snapshot_id != expected:
+            raise PortfolioRiskError("PORTFOLIO_RISK_IDENTITY_MISMATCH")
 
     @property
     def prediction_ids(self) -> tuple[str, ...]:
