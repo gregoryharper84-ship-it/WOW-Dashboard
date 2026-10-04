@@ -98,3 +98,13 @@ def test_nightly_caller_uses_same_async_handoff_feature_gate():
     assert 'WOW_SCOUT_ASYNC_HANDOFF_ENABLED: "true"' in live
     assert 'WOW_CAN_EXECUTE: "false"' in live
     assert 'WOW_DRY_RUN_ONLY: "true"' in live
+
+
+def test_nightly_acceptance_waits_for_terminal_queue_reconciliation():
+    text = WORKFLOW.read_text(encoding="utf-8")
+    live = text.split("  nightly-discovery:\n", 1)[1]
+    assert "Require terminal durable handoff reconciliation" in live
+    assert "v17/scout_handoff_terminal_acceptance.py" in live
+    assert "terminal-acceptance-receipt.json" in live
+    assert '"COMPLETE"' in live
+    assert '"IN_PROGRESS"' in live
