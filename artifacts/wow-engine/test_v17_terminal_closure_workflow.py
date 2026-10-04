@@ -12,7 +12,7 @@ def _text() -> str:
 
 
 def test_terminal_closure_workflow_is_valid_and_hourly():
-    data = yaml.safe_load(_text())
+    data = yaml.load(_text(), Loader=yaml.BaseLoader)
     assert data["name"] == "wow-v17-terminal-closure-controller"
     assert data["on"]["schedule"] == [{"cron": "17 * * * *"}]
     assert "workflow_dispatch" in data["on"]
