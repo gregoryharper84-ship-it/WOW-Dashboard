@@ -195,7 +195,16 @@ def _scoreboard(
             if not isinstance(event, dict):
                 continue
             event_key = str(event.get("id") or f"{date_key}:{index}")
-            merged_events[event_key] = event
+            existing = merged_events.get(event_key)
+            if existing is not None:
+                source_dates = list(existing.get("_wow_secondary_scoreboard_dates") or [])
+                if date_key not in source_dates:
+                    source_dates.append(date_key)
+                existing["_wow_secondary_scoreboard_dates"] = source_dates
+                continue
+            copied = dict(event)
+            copied["_wow_secondary_scoreboard_dates"] = [date_key]
+            merged_events[event_key] = copied
 
     events = sorted(
         merged_events.values(),
@@ -245,6 +254,7 @@ def espn_event_to_primary_shape(event: dict[str, Any], sport_key: str) -> dict[s
         "home_team": _team_name(home),
         "away_team": _team_name(away),
         "_wow_secondary_event_id": str(event_id),
+        "_wow_secondary_scoreboard_dates": list(event.get("_wow_secondary_scoreboard_dates") or []),
         "_wow_secondary_source": "ESPN_SCOREBOARD_RESEARCH_FALLBACK",
     }
 
@@ -325,17 +335,36 @@ def _find_event(
     event_id: str,
     context: dict[str, Any] | None,
 ) -> SecondaryResult:
-    query_params: dict[str, Any] = {}
-    if context and context.get("commence_time"):
-        date = _date_key(str(context.get("commence_time")))
-        query_params = {"commenceTimeFrom": date, "commenceTimeTo": date}
-    board = _scoreboard(sport_key, query_params)
-    if not board.ok:
-        return board
-    events = board.data.get("events") if isinstance(board.data, dict) else []
-    for event in events or []:
-        if isinstance(event, dict) and _event_matches(event, context, event_id):
-            return SecondaryResult(True, event, 200)
+    lookup_dates: list[str] = []
+    if context:
+        for date in context.get("_wow_secondary_scoreboard_dates") or []:
+            value = str(date or "").strip()
+            if value and value not in lookup_dates:
+                lookup_dates.append(value)
+        if not lookup_dates and context.get("commence_time"):
+            lookup_dates.append(_date_key(str(context.get("commence_time"))))
+
+    if not lookup_dates:
+        board = _scoreboard(sport_key, {})
+        if not board.ok:
+            return board
+        boards = [board]
+    else:
+        boards = []
+        for date in lookup_dates:
+            board = _scoreboard(
+                sport_key,
+                {"commenceTimeFrom": date, "commenceTimeTo": date},
+            )
+            if not board.ok:
+                return board
+            boards.append(board)
+
+    for board in boards:
+        events = board.data.get("events") if isinstance(board.data, dict) else []
+        for event in events or []:
+            if isinstance(event, dict) and _event_matches(event, context, event_id):
+                return SecondaryResult(True, event, 200)
     return SecondaryResult(False, status=404, code="SECONDARY_SOURCE_EVENT_NOT_FOUND")
 
 
