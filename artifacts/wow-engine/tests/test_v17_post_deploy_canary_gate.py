@@ -84,7 +84,10 @@ def test_post_deploy_orchestrator_verifies_spread_before_heavy_smoke():
     assert "needs: spread-forward" in cert_section
     assert "needs: spread-certification" in priority_section
     assert "needs: priority-props" in golden_section
-    assert "always() &&" not in text
+    assert "always() &&" not in spread_section
+    assert "always() &&" in cert_section
+    assert "always() &&" in priority_section
+    assert "always() &&" in golden_section
     assert "uses: ./.github/workflows/wow-v17-priority-prop-lifecycle.yml" in text
     assert "post_deploy_smoke: true" in text
     assert "uses: ./.github/workflows/wow-v17-spread-forward-production-canary.yml" in text
@@ -106,12 +109,29 @@ def test_golden_full_slate_runs_only_as_post_deploy_reusable_acceptance():
     assert priority < golden
     section = orchestrator[golden:]
     assert "needs: priority-props" in section
+    assert "always() &&" in section
     assert "uses: ./.github/workflows/wow-v17-daily-snapshot.yml" in section
     assert "post_deploy_acceptance: true" in section
     assert "github.event_name == 'workflow_run'" in section
     assert "github.event.workflow_run.conclusion == 'success'" in section
     assert "github.event.workflow_run.head_branch == 'main'" in section
     assert "github.event_name == 'workflow_dispatch'" not in section
+
+
+def test_post_deploy_failures_do_not_skip_independent_downstream_acceptance():
+    text = ORCHESTRATOR_WORKFLOW.read_text(encoding="utf-8")
+    cert = text[text.index("  spread-certification:"):text.index("  priority-props:")]
+    priority = text[text.index("  priority-props:"):text.index("  golden-full-slate:")]
+    golden = text[text.index("  golden-full-slate:"):]
+
+    for section in (cert, priority, golden):
+        assert "always() &&" in section
+        assert "github.event.workflow_run.conclusion == 'success'" in section
+        assert "github.event.workflow_run.head_branch == 'main'" in section
+
+    assert "needs: spread-forward" in cert
+    assert "needs: spread-certification" in priority
+    assert "needs: priority-props" in golden
 
 
 def test_priority_prop_deploy_smoke_skips_next_day_without_weakening_hourly_default():
