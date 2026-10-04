@@ -364,7 +364,7 @@ def _v17_qualified(row: dict[str, Any]) -> bool:
         str(row.get("terminal_status") or row.get("status") or "").upper() == "COMPLETED"
         and row.get("probability_publishable") is True
         and row.get("rank_eligible") is True
-        and row.get("card_admission_eligible", True) is True
+        and row.get("card_admission_eligible") is True
     )
 
 
@@ -521,7 +521,6 @@ def process_claimed_job(
             "p_job_id": job["job_id"],
             "p_worker_id": worker_id,
             "p_specialist_receipt": specialist_receipt,
-            "p_v17_qualified": _v17_qualified(outcome),
         },
     )
 
@@ -568,9 +567,46 @@ def read_run_summary(db: Any, source_run_id: str, *, include_receipts: bool = Fa
     evaluated = len(reached.get("MODEL_EVALUATED", set()))
     blocked = counts.get("HANDOFF_BLOCKED", 0)
     rows_in = len(rows)
-    rows_completed = evaluated
-    rows_rejected = blocked
-    rows_held = max(0, rows_in - rows_completed - rows_rejected)
+    rows_completed = 0
+    rows_rejected = 0
+    rows_held = 0
+    terminal_code_counts: dict[str, int] = {}
+
+    for row in rows:
+        state = str(row.get("current_state") or "UNKNOWN")
+        if not bool(row.get("terminal")):
+            rows_held += 1
+            continue
+        if state == "HANDOFF_BLOCKED":
+            rows_rejected += 1
+            code = str(row.get("last_error_code") or "HANDOFF_BLOCKED")
+            terminal_code_counts[code] = terminal_code_counts.get(code, 0) + 1
+            continue
+
+        receipt = row.get("specialist_receipt")
+        receipt = receipt if isinstance(receipt, dict) else {}
+        result = receipt.get("result")
+        result = result if isinstance(result, dict) else {}
+        outcome = _receipt_row(result)
+        if outcome is None:
+            rows_rejected += 1
+            code = "SPECIALIST_TERMINAL_RECEIPT_INVALID"
+            terminal_code_counts[code] = terminal_code_counts.get(code, 0) + 1
+            continue
+
+        terminal_status = str(outcome.get("terminal_status") or outcome.get("status") or "").upper()
+        if terminal_status == "COMPLETED":
+            rows_completed += 1
+        else:
+            rows_rejected += 1
+            code = str(
+                outcome.get("code")
+                or outcome.get("terminal_code")
+                or terminal_status
+                or "SPECIALIST_TERMINAL_REJECTED"
+            )
+            terminal_code_counts[code] = terminal_code_counts.get(code, 0) + 1
+
     accounted = rows_completed + rows_held + rows_rejected
     summary = {
         "schema_version": "wow.v17.scout-handoff-run.v1",
@@ -590,6 +626,7 @@ def read_run_summary(db: Any, source_run_id: str, *, include_receipts: bool = Fa
         "rows_completed": rows_completed,
         "rows_held": rows_held,
         "rows_rejected": rows_rejected,
+        "terminal_code_counts": terminal_code_counts,
         "row_accounting_pass": accounted == rows_in,
         "state_counts": counts,
         "lane_state_counts": lane_counts,
