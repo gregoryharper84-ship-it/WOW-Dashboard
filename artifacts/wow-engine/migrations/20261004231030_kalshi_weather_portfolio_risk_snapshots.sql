@@ -68,6 +68,13 @@ create table public.wow_kalshi_weather_portfolio_risk_snapshots (
       and not jsonb_path_exists(positions, '$[*] ? (@.risk_state_used_as_weather_input == true)')
       and not jsonb_path_exists(positions, '$[*] ? (@.can_execute == true)')
     ),
+  constraint chk_kalshi_weather_portfolio_cost_basis_verified
+    check (not jsonb_path_exists(positions, '$[*] ? (@.cost_basis_verified == false)')),
+  constraint chk_kalshi_weather_portfolio_scenario_no_market_feedback
+    check (
+      not jsonb_path_exists(scenarios, '$[*] ? (@.market_price_used_as_weather_input == true)')
+      and not jsonb_path_exists(scenarios, '$[*] ? (@.risk_state_used_as_weather_input == true)')
+    ),
   constraint chk_kalshi_weather_portfolio_scenario_execute_false
     check (not jsonb_path_exists(scenarios, '$[*] ? (@.can_execute == true)')),
   constraint chk_kalshi_weather_portfolio_kelly_execute_false
