@@ -29,9 +29,10 @@ jobs:
     name: Run spread certification replay
     needs: spread-forward
     if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.head_branch == 'main')
+      always() &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.head_branch == 'main'))
     uses: ./.github/workflows/wow-v17-spread-certification-replay.yml
     secrets: inherit
 
@@ -39,9 +40,10 @@ jobs:
     name: Run bounded priority prop smoke
     needs: spread-certification
     if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.head_branch == 'main')
+      always() &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.head_branch == 'main'))
     uses: ./.github/workflows/wow-v17-priority-prop-lifecycle.yml
     with:
       post_deploy_smoke: true
@@ -51,6 +53,7 @@ jobs:
     name: Run post-deploy Golden Path full-slate acceptance
     needs: priority-props
     if: >-
+      always() &&
       github.event_name == 'workflow_run' &&
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.head_branch == 'main'
