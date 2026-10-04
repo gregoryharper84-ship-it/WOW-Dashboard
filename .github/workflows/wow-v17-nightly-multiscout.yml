@@ -23,6 +23,10 @@ on:
       - "artifacts/wow-engine/v17/nightly_multiscout_delivery.py"
       - "artifacts/wow-engine/v17/multiscout_auto_advance.py"
       - "artifacts/wow-engine/v17/multiscout_auto_advance_oidc.py"
+      - "artifacts/wow-engine/v17/scout_handoff_queue.py"
+      - "artifacts/wow-engine/v17/scout_handoff_queue_installer.py"
+      - "artifacts/wow-engine/v17_observability.py"
+      - "artifacts/wow-engine/migrations/20261003_v17_scout_handoff_queue.sql"
       - "artifacts/wow-engine/v17/sep16_evidence_handoff_rank_fix.py"
       - "artifacts/wow-engine/v17/morning_scout_report.py"
       - "artifacts/wow-engine/v17/sport_scout_registry.py"
@@ -52,6 +56,10 @@ on:
       - "artifacts/wow-engine/v17/nightly_multiscout_delivery.py"
       - "artifacts/wow-engine/v17/multiscout_auto_advance.py"
       - "artifacts/wow-engine/v17/multiscout_auto_advance_oidc.py"
+      - "artifacts/wow-engine/v17/scout_handoff_queue.py"
+      - "artifacts/wow-engine/v17/scout_handoff_queue_installer.py"
+      - "artifacts/wow-engine/v17_observability.py"
+      - "artifacts/wow-engine/migrations/20261003_v17_scout_handoff_queue.sql"
       - "artifacts/wow-engine/v17/sep16_evidence_handoff_rank_fix.py"
       - "artifacts/wow-engine/v17/sport_scout_registry.py"
       - "artifacts/wow-engine/v17/sport_scout_enrichment.py"
@@ -66,6 +74,8 @@ on:
       - "artifacts/wow-engine/test_v17_scout_secondary_window.py"
       - "artifacts/wow-engine/test_v17_nightly_multiscout_delivery.py"
       - "artifacts/wow-engine/test_v17_multiscout_auto_advance.py"
+      - "artifacts/wow-engine/test_v17_scout_handoff_queue.py"
+      - "artifacts/wow-engine/test_v17_scout_handoff_queue_migration.py"
       - "artifacts/wow-engine/test_v17_morning_scout_report.py"
       - "artifacts/wow-engine/test_agent_runtime_v17_model_failures.py"
       - "artifacts/wow-engine/test_v17_github_oidc.py"
@@ -108,6 +118,8 @@ jobs:
           test_v17_scout_secondary_window.py
           test_v17_nightly_multiscout_delivery.py
           test_v17_multiscout_auto_advance.py
+          test_v17_scout_handoff_queue.py
+          test_v17_scout_handoff_queue_migration.py
           test_v17_morning_scout_report.py
           test_agent_runtime_v17_model_failures.py
           test_v17_github_oidc.py

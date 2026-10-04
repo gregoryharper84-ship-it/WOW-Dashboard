@@ -277,3 +277,51 @@ def test_multiscout_workflow_triggers_on_p0_evidence_transport_changes():
         "artifacts/wow-engine/v17/scout_brain_transport_sanitizer.py",
     ):
         assert text.count(f'- "{path}"') == 2
+
+
+def test_async_handoff_feature_flag_uses_durable_queue_instead_of_sync_batches(monkeypatch, tmp_path):
+    handoff = {
+        "run_id": "run-async",
+        "research_run_id": "run-async",
+        "status": "DISCOVERY_COMPLETE",
+        "model_handoff_ready": True,
+        "governance": {"can_execute": False},
+        "model_handoff": {"prop_candidates": [], "team_event_candidates": []},
+    }
+    source = tmp_path / "handoff.json"
+    output = tmp_path / "receipt.json"
+    source.write_text(json.dumps(handoff))
+    monkeypatch.setenv("WOW_SCOUT_ASYNC_HANDOFF_ENABLED", "true")
+    monkeypatch.delenv("WOW_ACTION_API_KEY", raising=False)
+    monkeypatch.setattr(advance_oidc, "mint_github_actions_oidc", lambda force=True: "fresh-oidc")
+    seen = []
+
+    def fake_async(payload, token, *, origin):
+        seen.append((payload["run_id"], token, origin))
+        return {
+            "schema_version": "wow.v17.scout-handoff-run.v1",
+            "status": "IN_PROGRESS",
+            "source_run_id": "run-async",
+            "research_run_id": "run-async",
+            "rows_in": 3,
+            "rows_completed": 0,
+            "rows_held": 3,
+            "rows_rejected": 0,
+            "row_accounting_pass": True,
+            "reconciliation_pass": False,
+            "can_execute": False,
+        }
+
+    monkeypatch.setattr(advance_oidc, "_execute_async_handoff", fake_async)
+    monkeypatch.setattr(
+        advance_oidc,
+        "execute_auto_advance",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("sync path must not run")),
+    )
+    monkeypatch.setattr("sys.argv", ["prog", "--input", str(source), "--output", str(output)])
+    assert advance_oidc.main() == 0
+    assert seen == [("run-async", "fresh-oidc", advance_oidc.ACTION_ORIGIN)]
+    receipt = json.loads(output.read_text())
+    assert receipt["status"] == "IN_PROGRESS"
+    assert receipt["row_accounting_pass"] is True
+    assert receipt["can_execute"] is False
