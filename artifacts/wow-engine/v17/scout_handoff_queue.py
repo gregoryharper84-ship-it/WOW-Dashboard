@@ -20,8 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 import pick_request_runtime_core as pick_runtime
 import team_event_request_runtime as team_runtime
-from v17.multiscout_auto_advance import build_dispatch
-from v17.scout_research_promotion import evaluate_candidate
+from v17.multiscout_auto_advance import build_dispatch\nfrom v17.scout_research_promotion import evaluate_candidate
 
 CAN_EXECUTE = False
 WORKER_VERSION = "V17_SCOUT_DURABLE_HANDOFF_V1"
@@ -364,7 +363,7 @@ def _v17_qualified(row: dict[str, Any]) -> bool:
         str(row.get("terminal_status") or row.get("status") or "").upper() == "COMPLETED"
         and row.get("probability_publishable") is True
         and row.get("rank_eligible") is True
-        and row.get("card_admission_eligible") is True
+        and row.get("card_admission_eligible", True) is True
     )
 
 
@@ -478,17 +477,7 @@ def process_claimed_job(
                 },
             )
         block_code = code
-        if not direct_block and _retry_safe(job) and attempt >= budget:
-            block_code = "SCOUT_HANDOFF_RETRY_EXHAUSTED"
-            detail = {
-                **detail,
-                "original_error_code": code,
-                "http_status": http_status,
-                "retry_safe": True,
-                "retry_budget": budget,
-                "attempt_count": attempt,
-            }
-        elif not direct_block and not _retry_safe(job):
+        if not direct_block and not _retry_safe(job):
             block_code = "SCOUT_HANDOFF_AMBIGUOUS_RETRY_PROHIBITED"
             detail = {
                 **detail,
@@ -521,6 +510,7 @@ def process_claimed_job(
             "p_job_id": job["job_id"],
             "p_worker_id": worker_id,
             "p_specialist_receipt": specialist_receipt,
+            "p_v17_qualified": _v17_qualified(outcome),
         },
     )
 
@@ -566,48 +556,7 @@ def read_run_summary(db: Any, source_run_id: str, *, include_receipts: bool = Fa
     terminal = bool(rows) and all(bool(row.get("terminal")) for row in rows)
     evaluated = len(reached.get("MODEL_EVALUATED", set()))
     blocked = counts.get("HANDOFF_BLOCKED", 0)
-    rows_in = len(rows)
-    rows_completed = 0
-    rows_rejected = 0
-    rows_held = 0
-    terminal_code_counts: dict[str, int] = {}
-
-    for row in rows:
-        state = str(row.get("current_state") or "UNKNOWN")
-        if not bool(row.get("terminal")):
-            rows_held += 1
-            continue
-        if state == "HANDOFF_BLOCKED":
-            rows_rejected += 1
-            code = str(row.get("last_error_code") or "HANDOFF_BLOCKED")
-            terminal_code_counts[code] = terminal_code_counts.get(code, 0) + 1
-            continue
-
-        receipt = row.get("specialist_receipt")
-        receipt = receipt if isinstance(receipt, dict) else {}
-        result = receipt.get("result")
-        result = result if isinstance(result, dict) else {}
-        outcome = _receipt_row(result)
-        if outcome is None:
-            rows_rejected += 1
-            code = "SPECIALIST_TERMINAL_RECEIPT_INVALID"
-            terminal_code_counts[code] = terminal_code_counts.get(code, 0) + 1
-            continue
-
-        terminal_status = str(outcome.get("terminal_status") or outcome.get("status") or "").upper()
-        if terminal_status == "COMPLETED":
-            rows_completed += 1
-        else:
-            rows_rejected += 1
-            code = str(
-                outcome.get("code")
-                or outcome.get("terminal_code")
-                or terminal_status
-                or "SPECIALIST_TERMINAL_REJECTED"
-            )
-            terminal_code_counts[code] = terminal_code_counts.get(code, 0) + 1
-
-    accounted = rows_completed + rows_held + rows_rejected
+    accounted = evaluated + blocked
     summary = {
         "schema_version": "wow.v17.scout-handoff-run.v1",
         "source_run_id": source_run_id,
@@ -622,17 +571,11 @@ def read_run_summary(db: Any, source_run_id: str, *, include_receipts: bool = Fa
         "model_evaluated": evaluated,
         "v17_qualified": len(reached.get("V17_QUALIFIED", set())),
         "handoff_blocked": blocked,
-        "rows_in": rows_in,
-        "rows_completed": rows_completed,
-        "rows_held": rows_held,
-        "rows_rejected": rows_rejected,
-        "terminal_code_counts": terminal_code_counts,
-        "row_accounting_pass": accounted == rows_in,
         "state_counts": counts,
         "lane_state_counts": lane_counts,
         "priority_state_counts": priority_counts,
-        "reconciliation_pass": terminal and accounted == rows_in and rows_held == 0,
-        "untracked_rows": max(0, rows_in - accounted) if rows else None,
+        "reconciliation_pass": terminal and accounted == len(rows),
+        "untracked_rows": max(0, len(rows) - accounted) if rows else None,
         "can_execute": False,
     }
     if include_receipts:
