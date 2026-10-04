@@ -6,6 +6,7 @@ from enum import Enum
 import hashlib
 import json
 import math
+from types import MappingProxyType
 from typing import Mapping, Sequence
 
 
@@ -51,10 +52,21 @@ class WeatherEventDescriptor:
         ):
             if not str(getattr(self, name) or "").strip():
                 raise PortfolioRiskError(f"WEATHER_EVENT_{name.upper()}_MISSING")
-        if any(not str(item).strip() for item in self.factor_ids):
+
+        object.__setattr__(self, "lane", str(self.lane).strip().upper())
+        object.__setattr__(self, "settlement_source", str(self.settlement_source).strip())
+        object.__setattr__(self, "settlement_location_code", str(self.settlement_location_code).strip().upper())
+        object.__setattr__(self, "observation_window", str(self.observation_window).strip())
+        object.__setattr__(self, "metric", str(self.metric).strip().lower())
+        object.__setattr__(self, "units", str(self.units).strip().upper())
+        object.__setattr__(self, "region_id", str(self.region_id).strip() if self.region_id is not None else None)
+        normalized_factors = tuple(str(item).strip() for item in self.factor_ids)
+        if any(not item for item in normalized_factors):
             raise PortfolioRiskError("WEATHER_EVENT_FACTOR_ID_INVALID")
-        if len(set(self.factor_ids)) != len(self.factor_ids):
+        if len(set(normalized_factors)) != len(normalized_factors):
             raise PortfolioRiskError("WEATHER_EVENT_FACTOR_ID_DUPLICATE")
+        object.__setattr__(self, "factor_ids", normalized_factors)
+
         expected = weather_event_key(
             lane=self.lane,
             settlement_source=self.settlement_source,
@@ -216,20 +228,34 @@ class WeatherScenario:
         _positive(self.weight, "WEATHER_SCENARIO_WEIGHT_INVALID")
         if not self.event_values:
             raise PortfolioRiskError("WEATHER_SCENARIO_EVENT_VALUES_MISSING")
-        if not self.evidence_ids or any(not str(item).strip() for item in self.evidence_ids):
+        normalized_evidence = tuple(str(item).strip() for item in self.evidence_ids)
+        if not normalized_evidence or any(not item for item in normalized_evidence):
             raise PortfolioRiskError("WEATHER_SCENARIO_EVIDENCE_MISSING")
-        if len(set(self.evidence_ids)) != len(self.evidence_ids):
+        if len(set(normalized_evidence)) != len(normalized_evidence):
             raise PortfolioRiskError("WEATHER_SCENARIO_EVIDENCE_DUPLICATE")
-        if not str(self.method or "").strip():
+        object.__setattr__(self, "evidence_ids", normalized_evidence)
+
+        method = str(self.method or "").strip()
+        if not method:
             raise PortfolioRiskError("WEATHER_SCENARIO_METHOD_MISSING")
+        object.__setattr__(self, "method", method)
+
+        values: dict[str, float] = {}
         for key, value in self.event_values.items():
-            if not str(key).strip() or not _finite_number(value):
+            normalized_key = str(key).strip()
+            if not normalized_key or not _finite_number(value):
                 raise PortfolioRiskError("WEATHER_SCENARIO_EVENT_VALUE_INVALID")
-        states = dict(self.factor_states or {})
-        for key, value in states.items():
-            if not str(key).strip() or not str(value).strip():
+            values[normalized_key] = float(value)
+        object.__setattr__(self, "event_values", MappingProxyType(values))
+
+        states: dict[str, str] = {}
+        for key, value in dict(self.factor_states or {}).items():
+            normalized_key = str(key).strip()
+            normalized_value = str(value).strip()
+            if not normalized_key or not normalized_value:
                 raise PortfolioRiskError("WEATHER_SCENARIO_FACTOR_STATE_INVALID")
-        object.__setattr__(self, "factor_states", states)
+            states[normalized_key] = normalized_value
+        object.__setattr__(self, "factor_states", MappingProxyType(states))
         if self.market_price_used_as_weather_input:
             raise PortfolioRiskError("MARKET_PRICE_WEATHER_INPUT_PROHIBITED")
         if self.risk_state_used_as_weather_input:
@@ -494,8 +520,8 @@ class PortfolioScenarioEngine:
                     normalized_weight=raw_weight / total_weight,
                     pnl=pnl,
                     loss=max(-pnl, 0.0),
-                    position_pnl=position_pnl,
-                    factor_states=dict(scenario.factor_states),
+                    position_pnl=MappingProxyType(dict(position_pnl)),
+                    factor_states=MappingProxyType(dict(scenario.factor_states)),
                 )
             )
 
