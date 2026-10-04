@@ -1,0 +1,100 @@
+name: LLP Action Gateway Production Canary
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/llp-action-gateway-production-canary.yml"
+      - "artifacts/wow-engine/v17/openapi.llp-team-engine.v17.yaml"
+      - "artifacts/wow-engine/v17/supabase/functions/wow-llp-action-gateway/**"
+      - "artifacts/wow-engine/v17/supabase/config.toml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: llp-action-gateway-production-canary
+  cancel-in-progress: true
+
+jobs:
+  gateway-canary:
+    name: Supabase gateway to governed Render ingress
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GATEWAY_ORIGIN: https://iczfhsmjrrafhvcpmqhr.supabase.co/functions/v1/wow-llp-action-gateway
+      WOW_ACTION_API_KEY: ${{ secrets.WOW_ACTION_API_KEY }}
+    steps:
+      - name: Fail closed if Action credential is unavailable
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${WOW_ACTION_API_KEY:-}" || {
+            echo "WOW_ACTION_API_KEY secret is unavailable"
+            exit 1
+          }
+
+      - name: Verify unauthenticated gateway health path
+        shell: bash
+        run: |
+          set -euo pipefail
+          headers="$(mktemp)"
+          body="$(mktemp)"
+          code="$(curl --silent --show-error --output "$body" --dump-header "$headers" --write-out "%{http_code}" \
+            "$GATEWAY_ORIGIN/health")"
+          test "$code" = "200"
+          grep -qi '^x-wow-gateway: supabase-edge' "$headers"
+          python - "$body" <<'PY'
+          import json, sys
+          payload = json.load(open(sys.argv[1]))
+          if payload.get("can_execute") is not False:
+              raise SystemExit("health response did not preserve can_execute=false")
+          print("gateway_health=PASS can_execute=false")
+          PY
+
+      - name: Verify authenticated governed host contract through gateway
+        shell: bash
+        run: |
+          set -euo pipefail
+          headers="$(mktemp)"
+          body="$(mktemp)"
+          code="$(curl --silent --show-error --output "$body" --dump-header "$headers" --write-out "%{http_code}" \
+            --header "Authorization: Bearer $WOW_ACTION_API_KEY" \
+            --header "Accept: application/json" \
+            "$GATEWAY_ORIGIN/v17/host-contract")"
+          test "$code" = "200"
+          grep -qi '^x-wow-gateway: supabase-edge' "$headers"
+          python - "$body" <<'PY'
+          import json, sys
+          payload = json.load(open(sys.argv[1]))
+          if payload.get("can_execute") is not False:
+              raise SystemExit("host contract did not preserve can_execute=false")
+          print("gateway_host_contract=PASS can_execute=false")
+          PY
+
+      - name: Verify score-team-event ingress reaches governed backend
+        shell: bash
+        run: |
+          set -euo pipefail
+          headers="$(mktemp)"
+          body="$(mktemp)"
+          code="$(curl --silent --show-error --output "$body" --dump-header "$headers" --write-out "%{http_code}" \
+            --request POST \
+            --header "Authorization: Bearer $WOW_ACTION_API_KEY" \
+            --header "Content-Type: application/json" \
+            --data '{}' \
+            "$GATEWAY_ORIGIN/score-team-event")"
+          # Deliberately malformed payload: backend validation must answer 422.
+          # A 401/403/404/502 means the transport/auth/gateway boundary regressed.
+          test "$code" = "422"
+          grep -qi '^x-wow-gateway: supabase-edge' "$headers"
+          echo "gateway_score_team_event_ingress=PASS backend_http=422 can_execute=false"
+
+      - name: Terminal receipt
+        shell: bash
+        run: |
+          echo "LLP_ACTION_GATEWAY_PRODUCTION_CANARY=PASS"
+          echo "transport=SUPABASE_EDGE_TO_RENDER"
+          echo "terminal_authority=V17_TERMINAL_REDUCER"
+          echo "can_execute=false"
