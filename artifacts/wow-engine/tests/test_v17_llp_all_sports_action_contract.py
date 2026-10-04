@@ -8,6 +8,7 @@ REPO_ROOT = ROOT.parents[1]
 SCHEMA = ROOT / "v17" / "openapi.llp-team-engine.v17.yaml"
 EDITOR_INSTRUCTIONS = ROOT / "LLP_V17_CUSTOM_GPT_INSTRUCTIONS.txt"
 AUTHORITY_INSTRUCTIONS = REPO_ROOT / "LLP-TEAM-BETTING-GPT-INSTRUCTIONS.md"
+GATEWAY_PREFIX = "/functions/v1/wow-llp-action-gateway"
 
 
 def _schema():
@@ -16,7 +17,7 @@ def _schema():
 
 def test_llp_schema_exposes_governed_moneyline_full_slate_action():
     document = _schema()
-    operation = document["paths"]["/v17/daily-snapshot-run"]["post"]
+    operation = document["paths"][f"{GATEWAY_PREFIX}/v17/daily-snapshot-run"]["post"]
     assert operation["operationId"] == "runLlpV17FullSlate"
     assert operation["security"] == [{"actionBearer": []}]
     assert operation["x-openai-isConsequential"] is False
@@ -38,7 +39,7 @@ def test_llp_schema_exposes_governed_moneyline_full_slate_action():
 
 
 def test_llp_schema_exposes_full_slate_row_detail_readback():
-    operation = _schema()["paths"]["/v17/daily-snapshot-run/{run_id}/rows"]["get"]
+    operation = _schema()["paths"][f"{GATEWAY_PREFIX}/v17/daily-snapshot-run/{{run_id}}/rows"]["get"]
     assert operation["operationId"] == "readLlpV17FullSlateRows"
     assert operation["security"] == [{"actionBearer": []}]
     assert operation["x-openai-isConsequential"] is False
