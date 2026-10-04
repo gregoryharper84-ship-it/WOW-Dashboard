@@ -36,6 +36,7 @@ from v17.core_intelligence_compounding_routes import install_compounding_intelli
 from v17.core_intelligence_event_runtime import install_core_intelligence_event_routes
 from v17.core_intelligence_runtime import install_core_intelligence_routes
 from v17.spread_forward_shadow import warm_ncaaf_forward_context
+from v17.scout_handoff_queue_installer import schedule_scout_handoff_queue
 from v17.core_intelligence_shadow_runtime import install_shadow_lab_routes
 from v17.team_event_probability_preservation import (
     install_team_event_routes as install_v17_team_event_routes,
@@ -253,6 +254,9 @@ if V17_ACTIVE:
         market_api=base.market_api,
         event_api=base.market_api.prod.event_api,
     )
+    # Feature-gated durable Scout -> specialist handoff. The scheduler itself
+    # installs authenticated routes/workers only when the production flag is on.
+    schedule_scout_handoff_queue(app, db_client_fn=_db_client)
 
     @app.get("/v17/host-contract", dependencies=[_auth], operation_id="getWowV17HostContract")
     def get_v17_host_contract():
