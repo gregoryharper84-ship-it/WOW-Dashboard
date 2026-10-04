@@ -1,7 +1,8 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 
 const TARGET = "https://wow-governed-probability-engine.onrender.com";
-const SLUG = "/functions/v1/wow-llp-action-gateway";
+const EXTERNAL_PREFIX = "/functions/v1/wow-llp-action-gateway";
+const RUNTIME_PREFIX = "/wow-llp-action-gateway";
 
 type Route = {
   method: "GET" | "POST";
@@ -40,9 +41,17 @@ function responseHeaders(requestId: string, contentType = "application/json"): H
     "x-request-id": requestId,
     "x-wow-request-id": requestId,
     "x-wow-gateway": "supabase-edge",
-    "x-wow-gateway-version": "2.1",
+    "x-wow-gateway-version": "2.2",
   });
   return headers;
+}
+
+function normalizeUpstreamPath(pathname: string): string {
+  for (const prefix of [EXTERNAL_PREFIX, RUNTIME_PREFIX]) {
+    if (pathname === prefix || pathname === prefix + "/") return "/health";
+    if (pathname.startsWith(prefix + "/")) return pathname.slice(prefix.length);
+  }
+  return pathname;
 }
 
 function gatewayLog(
@@ -78,14 +87,11 @@ function jsonResponse(
 Deno.serve(async (req: Request) => {
   const requestId = correlationId(req);
   const url = new URL(req.url);
-  let upstreamPath = url.pathname.startsWith(SLUG)
-    ? url.pathname.slice(SLUG.length)
-    : "";
+  const upstreamPath = normalizeUpstreamPath(url.pathname);
 
-  // Retain the original root health probe used by the diagnostic contract.
-  if (!upstreamPath) upstreamPath = "/health";
-
-  gatewayLog("INGRESS", requestId, req.method, upstreamPath);
+  gatewayLog("INGRESS", requestId, req.method, upstreamPath, {
+    runtime_pathname: url.pathname,
+  });
 
   const pathMatches = ROUTES.filter((route) => route.pattern.test(upstreamPath));
   if (pathMatches.length === 0) {
@@ -115,7 +121,7 @@ Deno.serve(async (req: Request) => {
   if (authorization) headers.set("authorization", authorization);
   headers.set("x-request-id", requestId);
   headers.set("x-wow-request-id", requestId);
-  headers.set("user-agent", "WOW-LLP-Supabase-Gateway/2.1");
+  headers.set("user-agent", "WOW-LLP-Supabase-Gateway/2.2");
 
   const upstream = new URL(TARGET + upstreamPath);
   upstream.search = url.search;
