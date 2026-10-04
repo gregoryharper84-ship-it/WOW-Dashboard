@@ -199,6 +199,17 @@ def test_database_derives_qualification_from_specialist_receipt():
             _enqueue(cur, source="run-pass", candidate="cand-pass")
             cur.execute("select * from public.wow_claim_scout_handoff_job('worker-pass',60)")
             claimed = cur.fetchone()
+            assert claimed is not None
+            assert claimed["current_state"] == "SPECIALIST_PROCESSING"
+            assert claimed["lease_owner"] == "worker-pass"
+            cur.execute(
+                "select current_state,lease_owner,terminal from public.wow_scout_handoff_jobs where job_id=%s",
+                (claimed["job_id"],),
+            )
+            persisted_claim = cur.fetchone()
+            assert persisted_claim["current_state"] == "SPECIALIST_PROCESSING"
+            assert persisted_claim["lease_owner"] == "worker-pass"
+            assert persisted_claim["terminal"] is False
             cur.execute(
                 "select (public.wow_finish_scout_handoff_job(%s,'worker-pass',%s::jsonb)).*",
                 (claimed["job_id"], Jsonb(complete)),
