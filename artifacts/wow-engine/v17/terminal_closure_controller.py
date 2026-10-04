@@ -28,6 +28,13 @@ _ACCEPTANCE_RE = re.compile(
 )
 _JSON_BLOCK_RE = re.compile(r"~~~json\s*(\{.*?\})\s*~~~", re.DOTALL)
 
+# Some acceptance workflows intentionally run lightweight contract-only jobs on
+# push/PR events and reserve the live acceptance path for a narrower event set.
+# A green contract-only run must never be promoted into a terminal receipt.
+_LIVE_ACCEPTANCE_EVENTS: dict[str, frozenset[str]] = {
+    "wow-v17-nightly-multiscout.yml": frozenset({"workflow_run", "workflow_dispatch", "schedule"}),
+}
+
 
 def _iso(value: str | None) -> datetime | None:
     text = str(value or "").strip()
@@ -122,6 +129,9 @@ def _exact_acceptance_run(
         if not (path_match or name_match):
             continue
         if str(run.get("head_sha") or "") != merge_sha:
+            continue
+        allowed_events = _LIVE_ACCEPTANCE_EVENTS.get(workflow)
+        if allowed_events is not None and str(run.get("event") or "") not in allowed_events:
             continue
         if run.get("status") == "completed" and run.get("conclusion") == "success":
             return run
