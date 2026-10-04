@@ -29,8 +29,10 @@ import wnba_prop_auto_hydration as wnba
 
 CAN_EXECUTE = False
 SCHEDULE_PAGE_URL = "https://www.wnba.com/schedule?month=all"
+PLAYOFFS_PAGE_URL = "https://www.wnba.com/webview/playoffs/2026"
 CDN_PROVIDER = "WNBA_CDN_SCHEDULE_CURRENT"
 WEB_PROVIDER = "WNBA_OFFICIAL_SCHEDULE_WEB_SSR"
+PLAYOFFS_PROVIDER = "WNBA_OFFICIAL_PLAYOFF_BRACKET_SSR"
 OIDC_BRIDGE_PROVIDER = "WNBA_CDN_SCHEDULE_GITHUB_OIDC_BRIDGE"
 
 _ORIGINAL_REQUEST = wnba._request
@@ -368,6 +370,144 @@ def parse_official_schedule_page(html: str) -> dict[str, Any]:
     }
 
 
+
+def _playoff_team(series: Mapping[str, Any], prefix: str) -> dict[str, str]:
+    team_id = str(series.get(f"{prefix}Id") or "").strip()
+    tricode = str(series.get(f"{prefix}Tricode") or "").strip().upper()
+    city = str(series.get(f"{prefix}City") or "").strip()
+    name = str(series.get(f"{prefix}Name") or "").strip()
+    if not team_id or team_id == "0" or not tricode or not name:
+        raise wnba.WNBAPropHydrationError(
+            "WNBA_OFFICIAL_PLAYOFF_BRACKET_TEAM_IDENTITY_INVALID",
+            "official WNBA playoff bracket team identity was incomplete",
+            detail={"source": PLAYOFFS_PROVIDER, "url": PLAYOFFS_PAGE_URL},
+        )
+    return {
+        "teamId": team_id,
+        "teamTricode": tricode,
+        "teamCity": city,
+        "teamName": name,
+    }
+
+
+def _high_seed_hosts(round_number: int, game_number: int) -> bool:
+    # Official 2026 WNBA format: First Round 1-1-1, Semifinals 2-2-1,
+    # Finals 2-2-1-1-1. Only these league-published hosting patterns are used.
+    if round_number == 1:
+        return game_number in {1, 3}
+    if round_number == 2:
+        return game_number in {1, 2, 5}
+    if round_number == 3:
+        return game_number in {1, 2, 5, 7}
+    raise wnba.WNBAPropHydrationError(
+        "WNBA_OFFICIAL_PLAYOFF_BRACKET_ROUND_INVALID",
+        "official WNBA playoff bracket round was unsupported",
+        detail={"source": PLAYOFFS_PROVIDER, "url": PLAYOFFS_PAGE_URL},
+    )
+
+
+def parse_official_playoffs_page(html: str) -> dict[str, Any]:
+    """Normalize exact next-game identities from WNBA's league-owned bracket."""
+    match = _NEXT_DATA.search(html)
+    if not match:
+        raise wnba.WNBAPropHydrationError(
+            "WNBA_OFFICIAL_PLAYOFF_BRACKET_PARSE_EMPTY",
+            "official WNBA playoff page did not expose __NEXT_DATA__",
+            detail={"source": PLAYOFFS_PROVIDER, "url": PLAYOFFS_PAGE_URL},
+        )
+    try:
+        payload = json.loads(unescape(match.group(1)))
+    except Exception as exc:
+        raise wnba.WNBAPropHydrationError(
+            "WNBA_OFFICIAL_PLAYOFF_BRACKET_JSON_INVALID",
+            "official WNBA playoff page __NEXT_DATA__ was invalid",
+            detail={"source": PLAYOFFS_PROVIDER, "url": PLAYOFFS_PAGE_URL},
+        ) from exc
+
+    props = payload.get("props") if isinstance(payload, Mapping) else None
+    page_props = props.get("pageProps") if isinstance(props, Mapping) else None
+    playoff_data = page_props.get("playoffsData") if isinstance(page_props, Mapping) else None
+    series_rows = (
+        playoff_data.get("playoffBracketSeries")
+        if isinstance(playoff_data, Mapping)
+        else None
+    )
+    if not isinstance(series_rows, list):
+        raise wnba.WNBAPropHydrationError(
+            "WNBA_OFFICIAL_PLAYOFF_BRACKET_PARSE_EMPTY",
+            "official WNBA playoff page was missing playoffBracketSeries",
+            detail={"source": PLAYOFFS_PROVIDER, "url": PLAYOFFS_PAGE_URL},
+        )
+
+    games: list[dict[str, Any]] = []
+    for series in series_rows:
+        if not isinstance(series, Mapping):
+            continue
+        game_id = str(series.get("nextGameId") or "").strip()
+        start = str(series.get("nextGameDateTimeUTC") or "").strip()
+        if not game_id or not start:
+            continue
+        if series.get("nextGameNeutralSite") is True:
+            raise wnba.WNBAPropHydrationError(
+                "WNBA_OFFICIAL_PLAYOFF_BRACKET_NEUTRAL_SITE_UNSUPPORTED",
+                "official WNBA playoff bracket reported a neutral-site next game",
+                detail={"source": PLAYOFFS_PROVIDER, "url": PLAYOFFS_PAGE_URL},
+            )
+        game_match = re.search(r"(\d+)", str(series.get("nextGameNumber") or ""))
+        if not game_match:
+            raise wnba.WNBAPropHydrationError(
+                "WNBA_OFFICIAL_PLAYOFF_BRACKET_GAME_NUMBER_INVALID",
+                "official WNBA playoff bracket next-game number was missing",
+                detail={"source": PLAYOFFS_PROVIDER, "url": PLAYOFFS_PAGE_URL},
+            )
+        try:
+            round_number = int(series.get("roundNumber") or 0)
+            game_number = int(game_match.group(1))
+            status = int(series.get("nextGameStatus") or 1)
+        except (TypeError, ValueError) as exc:
+            raise wnba.WNBAPropHydrationError(
+                "WNBA_OFFICIAL_PLAYOFF_BRACKET_GAME_IDENTITY_INVALID",
+                "official WNBA playoff bracket next-game metadata was invalid",
+                detail={"source": PLAYOFFS_PROVIDER, "url": PLAYOFFS_PAGE_URL},
+            ) from exc
+
+        high = _playoff_team(series, "highSeed")
+        low = _playoff_team(series, "lowSeed")
+        if _high_seed_hosts(round_number, game_number):
+            home, away = high, low
+        else:
+            home, away = low, high
+        games.append(
+            {
+                "gameId": game_id,
+                "gameDateTimeUTC": start,
+                "gameDateUTC": start,
+                "gameStatus": status,
+                "gameStatusText": str(series.get("nextGameStatusText") or "").strip(),
+                "homeTeam": home,
+                "awayTeam": away,
+            }
+        )
+
+    if not games:
+        raise wnba.WNBAPropHydrationError(
+            "WNBA_OFFICIAL_PLAYOFF_BRACKET_PARSE_EMPTY",
+            "official WNBA playoff page contained no exact next-game identities",
+            detail={"source": PLAYOFFS_PROVIDER, "url": PLAYOFFS_PAGE_URL},
+        )
+    return {
+        "leagueSchedule": {"gameDates": [{"games": games}]},
+        "wowScheduleProvenance": {
+            "provider": PLAYOFFS_PROVIDER,
+            "url": PLAYOFFS_PAGE_URL,
+            "game_n": len(games),
+            "market_features_used": False,
+            "probability_authority": False,
+            "can_execute": False,
+        },
+    }
+
+
 def request_with_official_web_fallback(
     url: str,
     *,
@@ -415,7 +555,7 @@ def request_with_official_web_fallback(
         _SCHEDULE_SOURCE.set((CDN_PROVIDER, wnba.WNBA_SCHEDULE_URL))
         return payload
 
-    # Stage 3: official wnba.com SSR remains the final league-owned fallback.
+    # Stage 3: official wnba.com schedule SSR.
     html, fallback_errors = _retry(
         lambda: _request_html_once(SCHEDULE_PAGE_URL, http_get=http_get)
     )
@@ -427,15 +567,31 @@ def request_with_official_web_fallback(
         except Exception as exc:
             fallback_errors.append(_error_receipt(exc))
 
+    # Stage 4: during the postseason, WNBA's league-owned playoff bracket is a
+    # separate exact-identity source. Its __NEXT_DATA__ carries canonical game
+    # IDs, UTC start times, seeded team identities and the current next game.
+    playoff_html, playoff_errors = _retry(
+        lambda: _request_html_once(PLAYOFFS_PAGE_URL, http_get=http_get)
+    )
+    if playoff_html is not None:
+        try:
+            payload = parse_official_playoffs_page(str(playoff_html))
+            _SCHEDULE_SOURCE.set((PLAYOFFS_PROVIDER, PLAYOFFS_PAGE_URL))
+            return payload
+        except Exception as exc:
+            playoff_errors.append(_error_receipt(exc))
+
     raise wnba.WNBAPropHydrationError(
         "WNBA_OFFICIAL_SOURCE_UNAVAILABLE",
         "all official WNBA schedule transports were unavailable or invalid",
         detail={
             "primary_source": CDN_PROVIDER,
             "fallback_source": WEB_PROVIDER,
+            "playoffs_source": PLAYOFFS_PROVIDER,
             "primary_errors": primary_errors[-4:],
             "primary_minimal_errors": minimal_errors[-4:],
             "fallback_errors": fallback_errors[-4:],
+            "playoffs_errors": playoff_errors[-4:],
         },
     )
 
@@ -489,11 +645,14 @@ __all__ = [
     "CAN_EXECUTE",
     "CDN_PROVIDER",
     "OIDC_BRIDGE_PROVIDER",
+    "PLAYOFFS_PAGE_URL",
+    "PLAYOFFS_PROVIDER",
     "SCHEDULE_PAGE_URL",
     "WEB_PROVIDER",
     "hydrate_with_official_schedule_fallback",
     "install",
     "official_schedule_override",
+    "parse_official_playoffs_page",
     "parse_official_schedule_page",
     "request_with_official_web_fallback",
 ]
