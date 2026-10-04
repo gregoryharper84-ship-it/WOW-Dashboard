@@ -101,11 +101,37 @@ jobs:
             return 1
           }
 
+          resolve_completed_with_discovery_artifact() {
+            local target_sha="${1:-}" runs_json run_id discovery_count
+            if [ -n "$target_sha" ]; then
+              runs_json=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${target_sha}&per_page=30")
+            else
+              runs_json=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/workflows/wow-v17-nightly-multiscout.yml/runs?branch=main&status=completed&per_page=20")
+            fi
+
+            while IFS= read -r run_id; do
+              [ -n "$run_id" ] || continue
+              discovery_count=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/artifacts" \
+                --jq '[.artifacts[] | select(.expired == false and (.name | test("^wow-v17-multiscout-wow-scout-.*-discovery$")))] | length')
+              if [ "$discovery_count" -gt 0 ]; then
+                printf '%s\n' "$run_id"
+                return 0
+              fi
+            done < <(printf '%s' "$runs_json" | jq -r '
+              .workflow_runs[]
+              | select(.name == "wow-v17-nightly-multiscout")
+              | select(.status == "completed" and .conclusion != "cancelled")
+              | select(.event != "pull_request")
+              | .id
+            ')
+
+            return 1
+          }
+
           if [ -n "$TARGET_SHA" ]; then
             for _ in $(seq 1 4); do
-              source_run_id=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${TARGET_SHA}&per_page=30" \
-                --jq '[.workflow_runs[] | select(.name == "wow-v17-nightly-multiscout" and .status == "completed" and .conclusion != "cancelled")] | first | .id // ""')
-              if [ -n "$source_run_id" ]; then
+              if recoverable_source=$(resolve_completed_with_discovery_artifact "$TARGET_SHA"); then
+                source_run_id="$recoverable_source"
                 break
               fi
               sleep 5
@@ -127,8 +153,11 @@ jobs:
                   echo "Lossless Scout persistence recovery scan could not prove completeness; fail closed." >&2
                   exit 1
                 fi
-                source_run_id=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/workflows/wow-v17-nightly-multiscout.yml/runs?branch=main&status=completed&per_page=20" \
-                  --jq '[.workflow_runs[] | select(.event != "pull_request" and .conclusion != "cancelled")] | first | .id // ""')
+                if recoverable_source=$(resolve_completed_with_discovery_artifact); then
+                  source_run_id="$recoverable_source"
+                else
+                  source_run_id=""
+                fi
               fi
             fi
           else
@@ -141,8 +170,11 @@ jobs:
                 echo "Lossless Scout persistence recovery scan could not prove completeness; fail closed." >&2
                 exit 1
               fi
-              source_run_id=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/workflows/wow-v17-nightly-multiscout.yml/runs?branch=main&status=completed&per_page=20" \
-                --jq '[.workflow_runs[] | select(.event != "pull_request" and .conclusion != "cancelled")] | first | .id // ""')
+              if recoverable_source=$(resolve_completed_with_discovery_artifact); then
+                source_run_id="$recoverable_source"
+              else
+                source_run_id=""
+              fi
             fi
           fi
 
