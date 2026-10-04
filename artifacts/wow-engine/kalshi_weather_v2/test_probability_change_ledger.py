@@ -165,3 +165,14 @@ def test_execution_capability_is_prohibited():
             market_context_snapshot_ids=valid.market_context_snapshot_ids,
             can_execute=True,
         )
+
+
+def test_invalid_attribution_domain_fails_closed():
+    with pytest.raises(ProbabilityChangeLedgerError, match="ATTRIBUTION_DOMAIN_INVALID"):
+        component(domain="UNSUPPORTED_DOMAIN")
+
+
+def test_reconciliation_tolerance_is_part_of_immutable_identity():
+    default = record()
+    looser = record(reconciliation_tolerance=1e-8)
+    assert default.probability_change_id != looser.probability_change_id
