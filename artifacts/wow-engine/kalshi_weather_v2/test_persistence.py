@@ -3,6 +3,11 @@ from types import SimpleNamespace
 import pytest
 
 from kalshi_weather_v2.persistence import KalshiWeatherPersistence, KalshiWeatherPersistenceError, content_id
+from kalshi_weather_v2.probability_change_ledger import (
+    AttributionDomain,
+    ProbabilityAttributionComponent,
+    build_probability_change_record,
+)
 
 
 class FakeQuery:
@@ -66,6 +71,7 @@ class FakeClient:
         self.tables = {
             "wow_kalshi_weather_predictions": FakeTable("prediction_id"),
             "wow_kalshi_weather_outcomes": FakeTable("outcome_id"),
+            "wow_kalshi_weather_probability_changes": FakeTable("probability_change_id"),
             "wow_runtime_capabilities": FakeTable("capability_key"),
         }
 
@@ -130,3 +136,34 @@ def test_outcome_scoring_does_not_require_publication():
     )
     assert abs(row["brier_score"] - 0.0625) < 1e-12
     assert row["log_loss"] > 0
+
+
+def test_probability_change_persistence_is_idempotent_and_append_only_shaped():
+    client = FakeClient()
+    store = KalshiWeatherPersistence(client)
+    component = ProbabilityAttributionComponent(
+        component_id="station",
+        domain=AttributionDomain.STATION_TRAJECTORY,
+        label="Station trajectory",
+        delta_probability=0.04,
+        evidence_ids=("asos-1",),
+        available_at="2026-10-04T16:01:00Z",
+        method="POINT_IN_TIME_RECOMPUTE_V1",
+    )
+    record = build_probability_change_record(
+        ticker="KXHIGHDFW-TEST",
+        previous_prediction_id="p-before",
+        current_prediction_id="p-after",
+        before_decision_time="2026-10-04T15:55:00Z",
+        after_decision_time="2026-10-04T16:05:00Z",
+        p_yes_before=0.70,
+        p_yes_after=0.74,
+        components=(component,),
+        market_context_snapshot_ids=("market-1",),
+    )
+    first = store.persist_probability_change(record)
+    second = store.persist_probability_change(record)
+    assert first == second
+    assert first["can_execute"] is False
+    assert first["attribution_components"][0]["domain"] == "STATION_TRAJECTORY"
+    assert len(client.tables["wow_kalshi_weather_probability_changes"].rows) == 1
