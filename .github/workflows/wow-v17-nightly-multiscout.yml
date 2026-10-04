@@ -25,6 +25,7 @@ on:
       - "artifacts/wow-engine/v17/multiscout_auto_advance_oidc.py"
       - "artifacts/wow-engine/v17/scout_handoff_queue.py"
       - "artifacts/wow-engine/v17/scout_handoff_queue_installer.py"
+      - "artifacts/wow-engine/v17/scout_handoff_terminal_acceptance.py"
       - "artifacts/wow-engine/v17_observability.py"
       - "artifacts/wow-engine/migrations/20261003_v17_scout_handoff_queue.sql"
       - "artifacts/wow-engine/v17/sep16_evidence_handoff_rank_fix.py"
@@ -58,6 +59,7 @@ on:
       - "artifacts/wow-engine/v17/multiscout_auto_advance_oidc.py"
       - "artifacts/wow-engine/v17/scout_handoff_queue.py"
       - "artifacts/wow-engine/v17/scout_handoff_queue_installer.py"
+      - "artifacts/wow-engine/v17/scout_handoff_terminal_acceptance.py"
       - "artifacts/wow-engine/v17_observability.py"
       - "artifacts/wow-engine/migrations/20261003_v17_scout_handoff_queue.sql"
       - "artifacts/wow-engine/v17/sep16_evidence_handoff_rank_fix.py"
@@ -76,6 +78,7 @@ on:
       - "artifacts/wow-engine/test_v17_multiscout_auto_advance.py"
       - "artifacts/wow-engine/test_v17_scout_handoff_queue.py"
       - "artifacts/wow-engine/test_v17_scout_handoff_queue_migration.py"
+      - "artifacts/wow-engine/test_v17_scout_handoff_terminal_acceptance.py"
       - "artifacts/wow-engine/test_v17_morning_scout_report.py"
       - "artifacts/wow-engine/test_agent_runtime_v17_model_failures.py"
       - "artifacts/wow-engine/test_v17_github_oidc.py"
@@ -120,6 +123,7 @@ jobs:
           test_v17_multiscout_auto_advance.py
           test_v17_scout_handoff_queue.py
           test_v17_scout_handoff_queue_migration.py
+          test_v17_scout_handoff_terminal_acceptance.py
           test_v17_morning_scout_report.py
           test_agent_runtime_v17_model_failures.py
           test_v17_github_oidc.py
@@ -378,9 +382,25 @@ jobs:
           assert receipt.get("source_run_id") == handoff.get("run_id")
           assert receipt.get("research_run_id") == handoff.get("research_run_id")
           status = str(receipt.get("status") or "")
-          assert status in {"AUTO_ADVANCE_COMPLETE", "AUTO_ADVANCE_COMPLETE_WITH_BLOCKERS", "BLOCKED_BACKEND_HANDOFF", "BLOCKED_RECONCILIATION", "BLOCKED_INVALID_SCOUT_HANDOFF"}
+          assert status in {
+              "COMPLETE",
+              "IN_PROGRESS",
+              "AUTO_ADVANCE_COMPLETE",
+              "AUTO_ADVANCE_COMPLETE_WITH_BLOCKERS",
+              "BLOCKED_BACKEND_HANDOFF",
+              "BLOCKED_RECONCILIATION",
+              "BLOCKED_INVALID_SCOUT_HANDOFF",
+          }
           print(f"governed auto-advance status={status} code={receipt.get('code')}")
           PY
+      - name: Require terminal durable handoff reconciliation
+        id: terminal_acceptance
+        if: steps.scout.outputs.runner_exit_code == '0' && steps.advance.outputs.runner_exit_code == '0'
+        shell: bash
+        run: |
+          python v17/scout_handoff_terminal_acceptance.py \
+            --receipt "$RUNNER_TEMP/wow-multiscout/auto-advance-receipt.json" \
+            --output "$RUNNER_TEMP/wow-multiscout/terminal-acceptance-receipt.json"
       - name: Write human-readable Scout summary
         if: always()
         shell: bash
@@ -471,6 +491,7 @@ jobs:
             ${{ runner.temp }}/wow-multiscout/run-manifest.json
             ${{ runner.temp }}/wow-multiscout/latest-pointer.json
             ${{ runner.temp }}/wow-multiscout/auto-advance-receipt.json
+            ${{ runner.temp }}/wow-multiscout/terminal-acceptance-receipt.json
             ${{ runner.temp }}/wow-multiscout/market-evidence.json
             ${{ runner.temp }}/wow-multiscout/summary.md
             ${{ runner.temp }}/wow-multiscout/morning-scout-picks.json
