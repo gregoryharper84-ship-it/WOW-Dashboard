@@ -26,25 +26,20 @@ jobs:
       GATEWAY_ORIGIN: https://iczfhsmjrrafhvcpmqhr.supabase.co/functions/v1/wow-llp-action-gateway
       WOW_ACTION_API_KEY: ${{ secrets.WOW_ACTION_API_KEY }}
     steps:
-      - name: Fail closed if Action credential is unavailable
-        shell: bash
-        run: |
-          set -euo pipefail
-          test -n "${WOW_ACTION_API_KEY:-}" || {
-            echo "WOW_ACTION_API_KEY secret is unavailable"
-            exit 1
-          }
-
       - name: Verify unauthenticated gateway health path
         shell: bash
         run: |
           set -euo pipefail
           headers="$(mktemp)"
           body="$(mktemp)"
+          request_id="llp-gateway-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-health"
           code="$(curl --silent --show-error --output "$body" --dump-header "$headers" --write-out "%{http_code}" \
+            --header "X-WOW-Request-ID: $request_id" \
             "$GATEWAY_ORIGIN/health")"
           test "$code" = "200"
           grep -qi '^x-wow-gateway: supabase-edge' "$headers"
+          grep -qi "^x-wow-request-id: $request_id" "$headers"
+          grep -qi "^x-request-id: $request_id" "$headers"
           python - "$body" <<'PY'
           import json, sys
           payload = json.load(open(sys.argv[1]))
@@ -53,18 +48,33 @@ jobs:
           print("gateway_health=PASS can_execute=false")
           PY
 
+      - name: Fail closed if Action credential is unavailable
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${WOW_ACTION_API_KEY:-}" || {
+            echo "LLP_ACTION_GATEWAY_PRODUCTION_CANARY=BLOCKED"
+            echo "blocker=GITHUB_ACTION_CANARY_CREDENTIAL_UNAVAILABLE"
+            echo "unauthenticated_gateway_health=PASS"
+            echo "can_execute=false"
+            exit 1
+          }
+
       - name: Verify authenticated governed host contract through gateway
         shell: bash
         run: |
           set -euo pipefail
           headers="$(mktemp)"
           body="$(mktemp)"
+          request_id="llp-gateway-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-host"
           code="$(curl --silent --show-error --output "$body" --dump-header "$headers" --write-out "%{http_code}" \
             --header "Authorization: Bearer $WOW_ACTION_API_KEY" \
             --header "Accept: application/json" \
+            --header "X-WOW-Request-ID: $request_id" \
             "$GATEWAY_ORIGIN/v17/host-contract")"
           test "$code" = "200"
           grep -qi '^x-wow-gateway: supabase-edge' "$headers"
+          grep -qi "^x-wow-request-id: $request_id" "$headers"
           python - "$body" <<'PY'
           import json, sys
           payload = json.load(open(sys.argv[1]))
@@ -79,16 +89,19 @@ jobs:
           set -euo pipefail
           headers="$(mktemp)"
           body="$(mktemp)"
+          request_id="llp-gateway-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-score"
           code="$(curl --silent --show-error --output "$body" --dump-header "$headers" --write-out "%{http_code}" \
             --request POST \
             --header "Authorization: Bearer $WOW_ACTION_API_KEY" \
             --header "Content-Type: application/json" \
+            --header "X-WOW-Request-ID: $request_id" \
             --data '{}' \
             "$GATEWAY_ORIGIN/score-team-event")"
           # Deliberately malformed payload: backend validation must answer 422.
           # A 401/403/404/502 means the transport/auth/gateway boundary regressed.
           test "$code" = "422"
           grep -qi '^x-wow-gateway: supabase-edge' "$headers"
+          grep -qi "^x-wow-request-id: $request_id" "$headers"
           echo "gateway_score_team_event_ingress=PASS backend_http=422 can_execute=false"
 
       - name: Terminal receipt
