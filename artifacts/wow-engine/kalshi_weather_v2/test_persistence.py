@@ -3,6 +3,14 @@ from types import SimpleNamespace
 import pytest
 
 from kalshi_weather_v2.persistence import KalshiWeatherPersistence, KalshiWeatherPersistenceError, content_id
+from kalshi_weather_v2.portfolio_risk import (
+    DependenceMode,
+    PortfolioPosition,
+    PortfolioScenarioEngine,
+    PositionSide,
+    WeatherScenario,
+    build_weather_event,
+)
 from kalshi_weather_v2.probability_change_ledger import (
     AttributionDomain,
     ProbabilityAttributionComponent,
@@ -72,6 +80,7 @@ class FakeClient:
             "wow_kalshi_weather_predictions": FakeTable("prediction_id"),
             "wow_kalshi_weather_outcomes": FakeTable("outcome_id"),
             "wow_kalshi_weather_probability_changes": FakeTable("probability_change_id"),
+            "wow_kalshi_weather_portfolio_risk_snapshots": FakeTable("risk_snapshot_id"),
             "wow_runtime_capabilities": FakeTable("capability_key"),
         }
 
@@ -167,3 +176,53 @@ def test_probability_change_persistence_is_idempotent_and_append_only_shaped():
     assert first["can_execute"] is False
     assert first["attribution_components"][0]["domain"] == "STATION_TRAJECTORY"
     assert len(client.tables["wow_kalshi_weather_probability_changes"].rows) == 1
+
+
+def test_portfolio_risk_persistence_is_idempotent_and_non_executable():
+    client = FakeClient()
+    store = KalshiWeatherPersistence(client)
+    event = build_weather_event(
+        lane="DAILY_HIGH_TEMPERATURE",
+        settlement_source="The Weather Company",
+        settlement_location_code="CLIDFW",
+        observation_window="2026-10-04 local day",
+        metric="daily_max_temperature",
+        units="F",
+        region_id="DFW",
+        factor_ids=(),
+    )
+    position = PortfolioPosition(
+        position_id="p1",
+        ticker="KXHIGHDFW-TEST",
+        rule_snapshot_id="rule-1",
+        prediction_id="prediction-1",
+        market_snapshot_id="market-1",
+        prediction_time="2026-10-04T16:00:00Z",
+        market_time="2026-10-04T16:01:00Z",
+        event=event,
+        side=PositionSide.YES,
+        quantity=10,
+        entry_cost_per_contract=0.40,
+        threshold_lower=85,
+        model_p_yes=0.60,
+    )
+    scenario = WeatherScenario(
+        scenario_id="scenario-1",
+        available_at="2026-10-04T16:02:00Z",
+        weight=1,
+        event_values={event.event_key: 90},
+    )
+    snapshot = PortfolioScenarioEngine().evaluate(
+        as_of_time="2026-10-04T16:05:00Z",
+        positions=(position,),
+        scenarios=(scenario,),
+        dependence_mode=DependenceMode.SAME_EVENT_EXACT,
+        fractional_kelly_multiplier=0.25,
+    )
+    first = store.persist_portfolio_risk(snapshot)
+    second = store.persist_portfolio_risk(snapshot)
+    assert first == second
+    assert first["can_execute"] is False
+    assert first["market_price_used_as_weather_input"] is False
+    assert first["risk_state_used_as_weather_input"] is False
+    assert len(client.tables["wow_kalshi_weather_portfolio_risk_snapshots"].rows) == 1
