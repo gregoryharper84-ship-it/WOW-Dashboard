@@ -104,7 +104,7 @@ def test_nightly_acceptance_waits_for_terminal_queue_reconciliation():
     text = WORKFLOW.read_text(encoding="utf-8")
     live = text.split("  nightly-discovery:\n", 1)[1]
     assert "Require terminal durable handoff reconciliation" in live
-    assert "v17/scout_handoff_terminal_acceptance.py" in live
+    assert "python -m v17.scout_handoff_terminal_acceptance" in live\n    assert "python v17/scout_handoff_terminal_acceptance.py" not in live
     assert "terminal-acceptance-receipt.json" in live
     assert '"COMPLETE"' in live
     assert '"IN_PROGRESS"' in live
