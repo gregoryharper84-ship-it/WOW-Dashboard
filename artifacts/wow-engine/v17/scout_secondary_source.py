@@ -140,7 +140,22 @@ def _scoreboard(
         {"dates": dates, "limit": bounded_limit},
     )
     if result.ok and isinstance(result.data, dict):
-        _SCOREBOARD_CACHE[cache_key] = result.data
+        data = dict(result.data)
+        events = data.get("events") if isinstance(data.get("events"), list) else []
+        total_hint = data.get("total") if data.get("total") is not None else data.get("count")
+        try:
+            total_hint_int = int(total_hint) if total_hint is not None else None
+        except (TypeError, ValueError):
+            total_hint_int = None
+        provider_truncated = (
+            len(events) >= bounded_limit
+            or (total_hint_int is not None and total_hint_int > len(events))
+        )
+        data["_wow_provider_limit"] = bounded_limit
+        data["_wow_provider_result_count"] = len(events)
+        data["_wow_provider_truncated"] = provider_truncated
+        result = SecondaryResult(True, data, result.status)
+        _SCOREBOARD_CACHE[cache_key] = data
     return result
 
 
