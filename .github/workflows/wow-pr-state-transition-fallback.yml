@@ -7,7 +7,6 @@ on:
 permissions:
   contents: read
   pull-requests: write
-  issues: write
 
 concurrency:
   group: wow-pr-state-transition-fallback-${{ github.event.pull_request.number }}
@@ -22,7 +21,7 @@ jobs:
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     steps:
-      - name: Transition same-repository draft PR to Ready for Review
+      - name: Transition authorized same-repository draft PR to Ready for Review
         uses: actions/github-script@v7
         with:
           script: |
@@ -30,7 +29,7 @@ jobs:
             const label = context.payload.label?.name;
             const repoFullName = `${context.repo.owner}/${context.repo.repo}`;
 
-            if (label !== 'FORCE_READY_FOR_REVIEW'){
+            if (label !== 'FORCE_READY_FOR_REVIEW') {
               core.setFailed('READY_FALLBACK_LABEL_MISMATCH');
               return;
             }
@@ -40,6 +39,27 @@ jobs:
             }
             if (pr?.head?.repo?.full_name !== repoFullName) {
               core.setFailed('READY_FALLBACK_CROSS_REPOSITORY_HEAD_REJECTED');
+              return;
+            }
+
+            let actorPermission = '';
+            try {
+              const permissionResult = await github.rest.repos.getCollaboratorPermissionLevel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                username: context.actor,
+              });
+              actorPermission = String(
+                permissionResult.data?.role_name || permissionResult.data?.permission || ''
+              ).toLowerCase();
+            } catch (error) {
+              core.setFailed('READY_FALLBACK_ACTOR_PERMISSION_LOOKUP_FAILED');
+              return;
+            }
+
+            const allowedPermissions = new Set(['admin', 'maintain', 'write']);
+            if (!allowedPermissions.has(actorPermission)) {
+              core.setFailed('READY_FALLBACK_ACTOR_NOT_AUTHORIZED');
               return;
             }
 
@@ -67,11 +87,12 @@ jobs:
                 '- Transition: `DRAFT -> READY_FOR_REVIEW`',
                 `- Workflow run: ${context.runId}`,
                 `- Actor: ${context.actor}`,
+                `- Actor permission: ${actorPermission}`,
                 '- Code mutation: `false`',
                 '- Merge performed: `false`',
                 '- Branch protection modified: `false`',
                 '- can_execute: `false`',
-              ].join('\\n'),
+              ].join('\n'),
             });
 
             try {
