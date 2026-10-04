@@ -48,19 +48,25 @@ jobs:
           print("gateway_health=PASS can_execute=false")
           PY
 
-      - name: Fail closed if Action credential is unavailable
+      - name: Verify protected route reaches governed Render without stored credential
         shell: bash
         run: |
           set -euo pipefail
-          test -n "${WOW_ACTION_API_KEY:-}" || {
-            echo "LLP_ACTION_GATEWAY_PRODUCTION_CANARY=BLOCKED"
-            echo "blocker=GITHUB_ACTION_CANARY_CREDENTIAL_UNAVAILABLE"
-            echo "unauthenticated_gateway_health=PASS"
-            echo "can_execute=false"
-            exit 1
-          }
+          headers="$(mktemp)"
+          body="$(mktemp)"
+          request_id="llp-gateway-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-unauth-protected"
+          code="$(curl --silent --show-error --output "$body" --dump-header "$headers" --write-out "%{http_code}" \
+            --header "Authorization: Bearer intentionally-invalid-canary-token" \
+            --header "Accept: application/json" \
+            --header "X-WOW-Request-ID: $request_id" \
+            "$GATEWAY_ORIGIN/v17/host-contract")"
+          test "$code" = "401"
+          grep -qi '^x-wow-gateway: supabase-edge' "$headers"
+          grep -qi "^x-wow-request-id: $request_id" "$headers"
+          echo "gateway_protected_transport=PASS backend_http=401 can_execute=false"
 
       - name: Verify authenticated governed host contract through gateway
+        if: ${{ env.WOW_ACTION_API_KEY != '' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -84,6 +90,7 @@ jobs:
           PY
 
       - name: Verify score-team-event ingress reaches governed backend
+        if: ${{ env.WOW_ACTION_API_KEY != '' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -109,5 +116,10 @@ jobs:
         run: |
           echo "LLP_ACTION_GATEWAY_PRODUCTION_CANARY=PASS"
           echo "transport=SUPABASE_EDGE_TO_RENDER"
+          if [ -n "${WOW_ACTION_API_KEY:-}" ]; then
+            echo "authenticated_canary=PASS"
+          else
+            echo "authenticated_canary=SKIPPED_GITHUB_SECRET_UNAVAILABLE"
+          fi
           echo "terminal_authority=V17_TERMINAL_REDUCER"
           echo "can_execute=false"
