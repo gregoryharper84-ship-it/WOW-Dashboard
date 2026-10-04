@@ -52,9 +52,9 @@ def _enqueue(cur, *, source="run-1", candidate="cand-1", payload=None):
     }
     cur.execute(
         """
-        select (public.wow_enqueue_scout_handoff_job(
+        select * from public.wow_enqueue_scout_handoff_job(
           %s,%s,%s,'WOW_PROP_LANE','HIGH','/score-pick-request',%s,%s::jsonb,null,null
-        )).*;
+        );
         """,
         (source, source, candidate, f"{source}:{candidate}", Jsonb(payload)),
     )
@@ -141,10 +141,10 @@ def test_expired_non_repeat_safe_team_lease_blocks_instead_of_reexecuting():
         with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
             cur.execute(
                 """
-                select (public.wow_enqueue_scout_handoff_job(
+                select * from public.wow_enqueue_scout_handoff_job(
                   'run-nfl','rr-nfl','cand-nfl','LLP_TEAM_BETTING_ENGINE','HIGH',
                   '/score-team-event-request','rr-nfl:cand-nfl',%s::jsonb,null,null
-                )).*;
+                );
                 """,
                 (Jsonb(payload),),
             )
@@ -211,7 +211,7 @@ def test_database_derives_qualification_from_specialist_receipt():
             assert persisted_claim["lease_owner"] == "worker-pass"
             assert persisted_claim["terminal"] is False
             cur.execute(
-                "select (public.wow_finish_scout_handoff_job(%s,'worker-pass',%s::jsonb)).*",
+                "select * from public.wow_finish_scout_handoff_job(%s,'worker-pass',%s::jsonb)",
                 (claimed["job_id"], Jsonb(complete)),
             )
             assert cur.fetchone()["current_state"] == "V17_QUALIFIED"
@@ -220,7 +220,7 @@ def test_database_derives_qualification_from_specialist_receipt():
             cur.execute("select * from public.wow_claim_scout_handoff_job('worker-missing',60)")
             claimed = cur.fetchone()
             cur.execute(
-                "select (public.wow_finish_scout_handoff_job(%s,'worker-missing',%s::jsonb)).*",
+                "select * from public.wow_finish_scout_handoff_job(%s,'worker-missing',%s::jsonb)",
                 (claimed["job_id"], Jsonb(missing_admission)),
             )
             assert cur.fetchone()["current_state"] == "MODEL_EVALUATED"
