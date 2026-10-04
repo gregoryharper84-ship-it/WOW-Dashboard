@@ -41,7 +41,7 @@ def test_espn_forbidden_circuits_immediately_to_stats_identity(monkeypatch):
         lambda **_k: {
             "sport": "WNBA",
             "raw_event_id": "1042600122",
-            "event_start_time": "2026-10-04T20:00:00+00:00",
+            "event_start_time": "2099-10-04T20:00:00+00:00",
             "home_team": "Minnesota Lynx",
             "away_team": "Washington Mystics",
             "home_team_id": "espn-8",
@@ -88,7 +88,7 @@ def test_stats_identity_reverification_preserves_espn_keyed_training_ids(monkeyp
                         "games": [
                             {
                                 "gameId": "1042600122",
-                                "gameDateTimeUTC": "2026-10-04T20:00:00Z",
+                                "gameDateTimeUTC": "2099-10-04T20:00:00Z",
                                 "gameStatus": 1,
                                 "homeTeam": {
                                     "teamTricode": "MIN",
@@ -109,7 +109,7 @@ def test_stats_identity_reverification_preserves_espn_keyed_training_ids(monkeyp
     )
     result = resolve_wnba_current_event_identity(
         event_id="wnba-stats-1042600122",
-        event_start_time="2026-10-04T20:00:00+00:00",
+        event_start_time="2099-10-04T20:00:00+00:00",
         home_team_id="espn-8",
         away_team_id="espn-16",
         fetcher=lambda *_a, **_k: None,
@@ -133,7 +133,7 @@ def test_stats_identity_unmapped_team_fails_closed(monkeypatch):
                         "games": [
                             {
                                 "gameId": "1042600122",
-                                "gameDateTimeUTC": "2026-10-04T20:00:00Z",
+                                "gameDateTimeUTC": "2099-10-04T20:00:00Z",
                                 "gameStatus": 1,
                                 "homeTeam": {"teamTricode": "XXX"},
                                 "awayTeam": {"teamTricode": "WAS"},
@@ -147,7 +147,7 @@ def test_stats_identity_unmapped_team_fails_closed(monkeypatch):
     with pytest.raises(Exception) as exc:
         resolve_wnba_current_event_identity(
             event_id="wnba-stats-1042600122",
-            event_start_time="2026-10-04T20:00:00+00:00",
+            event_start_time="2099-10-04T20:00:00+00:00",
             home_team_id="espn-8",
             away_team_id="espn-16",
             fetcher=lambda *_a, **_k: None,
