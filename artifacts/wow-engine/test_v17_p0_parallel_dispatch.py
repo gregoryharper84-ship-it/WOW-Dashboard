@@ -18,6 +18,22 @@ def row(incident, stream, lease, rank, keys):
     }
 
 
+def test_governance_stream_is_prioritized_without_exceeding_global_limit():
+    result = select_parallel([
+        row(1247, "GOVERNANCE", "P0_GOVERNANCE", 1, ["ENGINEERING_GOVERNANCE", "RELEASE_GOVERNANCE"]),
+        row(1237, "A", "P0_STREAM_A", 2, ["SCOUT_PERSISTENCE", "SUPABASE_DATA_PLANE"]),
+        row(1189, "B", "P0_STREAM_B", 4, ["ACTION_TRANSPORT", "CUSTOM_GPT_ACTION"]),
+        row(502, "C", "P0_STREAM_C", 6, ["WOW_HOST_ORCHESTRATION", "INTERACTIVE_RUNTIME"]),
+    ])
+    assert [x["incident_id"] for x in result["selected"]] == ["1247", "1237", "1189"]
+    assert result["selected_count"] == 3
+    assert result["max_parallel_writers"] == 3
+    skipped = {x["incident_id"]: x for x in result["skipped"]}
+    assert skipped["502"]["reason"] == "MAX_PARALLEL_WRITERS_REACHED"
+    assert result["can_execute"] is False
+    assert result["terminal_authority"] == "V17_TERMINAL_REDUCER"
+
+
 def test_selects_three_non_conflicting_streams():
     result = select_parallel([
         row(1237, "A", "P0_STREAM_A", 2, ["SCOUT_PERSISTENCE", "SUPABASE_DATA_PLANE"]),
