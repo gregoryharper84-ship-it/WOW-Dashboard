@@ -170,6 +170,16 @@
         "RAPID_REPAIR"
       ],
       "execution_lane": "STANDARD"
+    },
+    {
+      "issue_number": 1309,
+      "severity": "P1",
+      "priority_rank": 4,
+      "conflict_keys": [
+        "TEAM_MARKET_CERTIFICATION",
+        "MODEL_READINESS"
+      ],
+      "execution_lane": "STANDARD"
     }
   ]
 }
