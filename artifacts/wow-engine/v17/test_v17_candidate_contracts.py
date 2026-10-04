@@ -93,12 +93,19 @@ def test_llp_action_has_team_event_and_line_shadows_but_no_prop_scoring_operatio
     assert "/score-prop" not in text
     assert "LLP_TEAM_BETTING_ENGINE" in text
 
-    full_slate_route = text[text.index("  /v17/daily-snapshot-run:"):text.index("  /score-team-event:")]
+    gateway_prefix = "/functions/v1/wow-llp-action-gateway"
+    full_slate_route = text[
+        text.index(f"  {gateway_prefix}/v17/daily-snapshot-run:"):
+        text.index(f"  {gateway_prefix}/score-team-event:")
+    ]
     assert "operationId: runLlpV17FullSlate" in full_slate_route
     assert "items: {type: string, enum: [MONEYLINE]}" in text
     assert "max_props: {type: integer, enum: [0]}" in text
 
-    route = text[text.index("  /internal/v17/spread-forward-shadow:"):text.index("  /record-recommendations:")]
+    route = text[
+        text.index(f"  {gateway_prefix}/internal/v17/spread-forward-shadow:"):
+        text.index(f"  {gateway_prefix}/record-recommendations:")
+    ]
     assert "operationId: scoreLlpV17SpreadForwardShadow" in route
     assert "operationId: scoreLlpV17NFLSpreadForwardShadow" in route
     assert "operationId: scoreLlpV17WNBASpreadForwardShadow" in route
@@ -166,7 +173,7 @@ def test_host_contract_requires_bearer_auth_in_both_production_schemas():
     wow = WOW_SCHEMA.read_text()
     llp = LLP_SCHEMA.read_text()
     assert "/v17/host-contract:" in wow and "security: [{actionBearer: []}]" in wow
-    assert "/v17/host-contract:" in llp and "security: [{actionBearer: []}]" in llp
+    assert "/functions/v1/wow-llp-action-gateway/v17/host-contract:" in llp and "security: [{actionBearer: []}]" in llp
 
 
 def test_both_action_contracts_preserve_no_execution_language():
