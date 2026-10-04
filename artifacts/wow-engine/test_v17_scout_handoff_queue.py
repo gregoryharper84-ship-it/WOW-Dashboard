@@ -99,13 +99,23 @@ class _RPC:
 
     def execute(self):
         self.db.calls.append((self.name, self.params))
-        state = {
-            "wow_finish_scout_handoff_job": "V17_QUALIFIED"
-            if self.params.get("p_v17_qualified")
-            else "MODEL_EVALUATED",
-            "wow_retry_scout_handoff_job": "SPECIALIST_HANDOFF_QUEUED",
-            "wow_block_scout_handoff_job": "HANDOFF_BLOCKED",
-        }[self.name]
+        if self.name == "wow_finish_scout_handoff_job":
+            receipt = self.params.get("p_specialist_receipt") or {}
+            result = receipt.get("result") if isinstance(receipt, dict) else {}
+            rows = (result or {}).get("outcomes") or (result or {}).get("rows") or []
+            row = rows[0] if len(rows) == 1 and isinstance(rows[0], dict) else {}
+            qualified = (
+                str(row.get("terminal_status") or row.get("status") or "").upper() == "COMPLETED"
+                and row.get("probability_publishable") is True
+                and row.get("rank_eligible") is True
+                and row.get("card_admission_eligible") is True
+            )
+            state = "V17_QUALIFIED" if qualified else "MODEL_EVALUATED"
+        else:
+            state = {
+                "wow_retry_scout_handoff_job": "SPECIALIST_HANDOFF_QUEUED",
+                "wow_block_scout_handoff_job": "HANDOFF_BLOCKED",
+            }[self.name]
         return _Response({"current_state": state, "can_execute": False})
 
 
@@ -186,6 +196,34 @@ def test_prop_worker_finishes_one_row_without_touching_siblings():
     )
     assert result["current_state"] == "V17_QUALIFIED"
     assert [name for name, _ in db.calls] == ["wow_finish_scout_handoff_job"]
+
+
+def test_missing_card_admission_never_qualifies_durable_row():
+    db = _DB()
+
+    def prop_score(batch, x_wow_model_identity=None):
+        return {
+            "rows": [{
+                "row_key": batch.rows[0].row_key,
+                "terminal_status": "COMPLETED",
+                "probability_publishable": True,
+                "rank_eligible": True,
+                "can_execute": False,
+            }],
+            "can_execute": False,
+        }
+
+    result = process_claimed_job(
+        db,
+        _prop_job(),
+        worker_id="worker-1",
+        prop_score_fn=prop_score,
+        team_score_fn=lambda *args, **kwargs: None,
+    )
+    assert result["current_state"] == "MODEL_EVALUATED"
+    name, params = db.calls[-1]
+    assert name == "wow_finish_scout_handoff_job"
+    assert "p_v17_qualified" not in params
 
 
 def test_identity_contract_failure_dead_letters_only_that_team_row():
@@ -319,8 +357,24 @@ class _SummaryDB:
 
 def test_run_summary_has_exact_rows_in_completed_held_rejected_identity():
     jobs = [
-        {"candidate_id": "a", "source_run_id": "r", "research_run_id": "rr", "target_lane": "WOW_PROP_LANE", "research_priority": "HIGH", "current_state": "V17_QUALIFIED", "terminal": True},
-        {"candidate_id": "b", "source_run_id": "r", "research_run_id": "rr", "target_lane": "LLP_TEAM_BETTING_ENGINE", "research_priority": "MEDIUM", "current_state": "HANDOFF_BLOCKED", "terminal": True},
+        {
+            "candidate_id": "a", "source_run_id": "r", "research_run_id": "rr",
+            "target_lane": "WOW_PROP_LANE", "research_priority": "HIGH",
+            "current_state": "V17_QUALIFIED", "terminal": True,
+            "specialist_receipt": {"result": {"rows": [{
+                "terminal_status": "COMPLETED",
+                "probability_publishable": True,
+                "rank_eligible": True,
+                "card_admission_eligible": True,
+                "can_execute": False,
+            }]}, "can_execute": False},
+        },
+        {
+            "candidate_id": "b", "source_run_id": "r", "research_run_id": "rr",
+            "target_lane": "LLP_TEAM_BETTING_ENGINE", "research_priority": "MEDIUM",
+            "current_state": "HANDOFF_BLOCKED", "terminal": True,
+            "last_error_code": "TEAM_EVENT_IDENTITY_INCOMPLETE",
+        },
     ]
     events = [
         {"candidate_id": "a", "source_run_id": "r", "target_lane": "WOW_PROP_LANE", "state": "DISCOVERED", "code": "SCOUT_CANDIDATE_DISCOVERED"},
@@ -334,6 +388,33 @@ def test_run_summary_has_exact_rows_in_completed_held_rejected_identity():
     assert summary["rows_completed"] == 1
     assert summary["rows_held"] == 0
     assert summary["rows_rejected"] == 1
+    assert summary["row_accounting_pass"] is True
+    assert summary["reconciliation_pass"] is True
+    assert summary["terminal_code_counts"] == {"TEAM_EVENT_IDENTITY_INCOMPLETE": 1}
+    assert summary["can_execute"] is False
+
+
+def test_run_summary_counts_specialist_failure_as_rejected_not_completed():
+    jobs = [{
+        "candidate_id": "a", "source_run_id": "r", "research_run_id": "rr",
+        "target_lane": "WOW_PROP_LANE", "research_priority": "HIGH",
+        "current_state": "MODEL_EVALUATED", "terminal": True,
+        "specialist_receipt": {"result": {"rows": [{
+            "terminal_status": "MODEL_SCORER_FAILED",
+            "code": "MODEL_SCORER_FAILED",
+            "can_execute": False,
+        }]}, "can_execute": False},
+    }]
+    events = [
+        {"candidate_id": "a", "source_run_id": "r", "target_lane": "WOW_PROP_LANE",
+         "state": "MODEL_EVALUATED", "code": "SPECIALIST_MODEL_EVALUATED"},
+    ]
+    summary = read_run_summary(_SummaryDB(jobs, events), "r")
+    assert summary["rows_in"] == 1
+    assert summary["rows_completed"] == 0
+    assert summary["rows_held"] == 0
+    assert summary["rows_rejected"] == 1
+    assert summary["terminal_code_counts"] == {"MODEL_SCORER_FAILED": 1}
     assert summary["row_accounting_pass"] is True
     assert summary["reconciliation_pass"] is True
     assert summary["can_execute"] is False
