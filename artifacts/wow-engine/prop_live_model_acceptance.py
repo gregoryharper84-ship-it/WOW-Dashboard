@@ -17,6 +17,7 @@ not create or imply wager execution.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import math
@@ -147,6 +148,22 @@ def _snapshot_payload(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _bootstrap_request_id(row: dict[str, Any]) -> str:
+    """Stable per-candidate acceptance identity; distinct candidates never share a durable run."""
+    identity = {
+        "event_id": str(row["event_id"]),
+        "event_start_time": str(row["event_start_time"]),
+        "sport": str(row["sport"]).upper(),
+        "player": str(row["player"]),
+        "stat_type": str(row["stat_type"]).upper(),
+        "line": float(row["line"]),
+        "direction": str(row.get("direction") or "MORE").upper(),
+    }
+    encoded = json.dumps(identity, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    digest = hashlib.sha256(encoded).hexdigest()[:20]
+    return f"wow-prop-live-e2e-acceptance-{digest}"
+
+
 def _bootstrap_pick_payload(raw: str) -> dict[str, Any]:
     value = json.loads(raw)
     if not isinstance(value, dict):
@@ -174,7 +191,7 @@ def _bootstrap_pick_payload(raw: str) -> dict[str, Any]:
         "money_lane_status": "PAYOUT_UNRESOLVED",
     }
     return {
-        "request_id": "wow-prop-live-e2e-acceptance",
+        "request_id": _bootstrap_request_id(row),
         "rows": [row],
     }
 
