@@ -66,6 +66,9 @@ def test_merge_sha_without_scout_run_reuses_recoverable_source_without_forcing_r
     assert "BASELINE_COUNT" in workflow
     assert 'receipt_count" -gt "$BASELINE_COUNT' in workflow
     assert "current-main replay acceptance remains open" in workflow
+    assert "resolve_completed_with_discovery_artifact" in workflow
+    assert "^wow-v17-multiscout-wow-scout-.*-discovery$" in workflow
+    assert 'discovery_count" -gt 0' in workflow
     assert "No completed recoverable Multi-Scout run found; fail closed." in workflow
 
 
