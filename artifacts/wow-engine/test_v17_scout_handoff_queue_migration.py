@@ -62,3 +62,20 @@ def test_database_revalidates_probability_and_red_team_envelopes():
     assert "SCOUT_HANDOFF_RED_TEAM_RULE_UNVERIFIED" in sql
     assert "SCOUT_HANDOFF_RED_TEAM_ENVELOPE_CONTRADICTORY" in sql
     assert "SCOUT_HANDOFF_BLOCK_CODE_REQUIRED" in sql
+
+
+def test_expired_lease_reclaim_is_bounded_and_retry_safe_only():
+    sql = _sql()
+    assert "SCOUT_HANDOFF_AMBIGUOUS_RETRY_PROHIBITED" in sql
+    assert "SCOUT_HANDOFF_RETRY_EXHAUSTED" in sql
+    assert "lease_reclaim_budget" in sql
+    assert "r.attempt_count >= 2" in sql
+    assert "upper(coalesce(r.request_payload->>'sport',''))='MLB'" in sql
+
+
+def test_database_derives_v17_qualification_from_receipt_not_caller_boolean():
+    sql = _sql()
+    assert "wow_finish_scout_handoff_job(\n    p_job_id uuid,\n    p_worker_id text,\n    p_specialist_receipt jsonb\n)" in sql
+    assert "p_v17_qualified" not in sql
+    assert "v_v17_qualified" in sql
+    assert "card_admission_eligible','false'" in sql
