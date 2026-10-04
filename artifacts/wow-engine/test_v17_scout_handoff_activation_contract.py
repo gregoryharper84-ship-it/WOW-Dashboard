@@ -108,3 +108,26 @@ def test_nightly_acceptance_waits_for_terminal_queue_reconciliation():
     assert "terminal-acceptance-receipt.json" in live
     assert '"COMPLETE"' in live
     assert '"IN_PROGRESS"' in live
+
+
+def test_live_multiscout_waits_for_successful_render_deployment():
+    text = WORKFLOW.read_text(encoding="utf-8")
+    assert 'workflow_run:' in text
+    assert 'workflows: ["wow-v17-render-production-deploy"]' in text
+    assert "github.event.workflow_run.conclusion == 'success'" in text
+    assert "github.event.workflow_run.head_branch == 'main'" in text
+    assert "github.event_name == 'schedule'" in text
+    assert "github.event_name == 'workflow_dispatch'" in text
+
+    # Push/PR still run verification, but production discovery is deploy-triggered.
+    live = text.split("  nightly-discovery:\n", 1)[1]
+    live_header = live.split("    runs-on:", 1)[0]
+    assert "github.event_name == 'push'" not in live_header
+    assert "github.event_name != 'pull_request'" not in live_header
+
+
+def test_deploy_triggered_jobs_checkout_exact_deployed_sha():
+    text = WORKFLOW.read_text(encoding="utf-8")
+    exact_ref = "github.event.workflow_run.head_sha"
+    assert text.count(exact_ref) >= 3
+    assert "github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha" in text
