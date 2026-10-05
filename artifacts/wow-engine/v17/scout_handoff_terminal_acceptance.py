@@ -209,7 +209,12 @@ def wait_for_terminal(
                         "terminal_authority": "V17_TERMINAL_REDUCER",
                         "can_execute": False,
                     }
-                return validate_terminal_summary(detailed_body)
+                validated = validate_terminal_summary(detailed_body)
+                # Preserve the terminal durable ledger that was actually accepted.
+                # The initial async enqueue receipt is only a progress snapshot and
+                # must not drive the morning publication gate after reconciliation.
+                validated["resolved_run_summary"] = detailed_body
+                return validated
         sleep_fn(2)
 
     result = validate_terminal_summary(latest or {
