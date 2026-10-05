@@ -120,12 +120,15 @@ Where required, capture:
 
 Never relabel sportsbook implied probability, no-vig probability, projection, recent hit rate, narrative judgment, or generic reasoning as governed model probability.
 
-## 8. Rank the official pool
+## 8. JS + Model convergence
+For rows annotated by JS Style Intelligence, and for model-qualified non-JS comparison rows when useful, run `WOW_V17_JS_MODEL_CONVERGENCE_SKILL.md` after the governed probability package exists. JS/model convergence is a downstream confirmation/hold classification only. It cannot change model probability, calibrated probability, calibrated lower bound, publication/rank gates, or the exact typed blocker. A JS-style row that the model does not confirm stays out of the verified qualified pool; a stronger non-JS model-qualified row remains eligible.
+
+## 9. Rank the official pool
 Rank official supported candidates by governed calibrated lower bound where the route contract requires it, then calibrated probability as a tie-breaker unless a stricter specialist contract controls.
 
 Do not force a quota. Unsupported/held/rejected rows stay in diagnostics, not in the official verified pool.
 
-## 9. Current PrizePicks board refresh — mandatory
+## 10. Current PrizePicks board refresh — mandatory
 Before a candidate enters the verified pool:
 - refresh the current PrizePicks board;
 - verify the exact player/stat/line still exists;
@@ -135,7 +138,7 @@ Before a candidate enters the verified pool:
 
 A completed sporting probability may survive a market/offer failure when backend rules allow, but the row must not be presented as a current PrizePicks recommendation unless the exact line + chosen direction are verified current.
 
-## 10. Write before display
+## 11. Write before display
 For any governed recommendation displayed as current/qualified, preserve the immutable pregame receipt and use `recordWowRecommendations` when required by the host contract. Show the recommendation only when the exact row is display-authorized.
 
 ## Phase 1 output
