@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 from v17.js_model_convergence import (
     JS_MODEL_CONFIRMED,
     JS_MODEL_CONTRADICTION,
@@ -126,3 +129,26 @@ def test_probability_values_are_copied_not_blended_with_js_priority() -> None:
     assert decision.js_research_priority == 99.9
     assert decision.probability_mutated is False
     assert "OFFICIAL_RANKING_REMAINS_GOVERNED_LOWER_BOUND_FIRST" in decision.reasons
+
+
+def test_convergence_skill_manifest_preserves_probability_authority() -> None:
+    manifest_path = Path(__file__).parent / "v17" / "skills" / "skill_manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    skill = next(
+        item for item in manifest["skills"]
+        if item["skill_id"] == "WOW_V17_JS_MODEL_CONVERGENCE"
+    )
+    assert skill["probability_authority"] is False
+    assert skill["status"] == "ACTIVE_RESEARCH_GOVERNOR"
+    assert manifest["invariants"]["js_model_convergence_not_new_probability_model"] is True
+    assert manifest["invariants"]["js_candidate_cannot_override_governed_model"] is True
+    assert manifest["invariants"]["non_js_model_candidate_remains_eligible"] is True
+    assert manifest["invariants"]["official_prop_ranking_remains_governed_lower_bound_first"] is True
+
+
+def test_convergence_runs_before_pick_core_in_composed_workflows() -> None:
+    manifest_path = Path(__file__).parent / "v17" / "skills" / "skill_manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    for skill_id in ("WOW_V17_DAILY_PICKS", "WOW_V17_PRIZEPICKS_BOARD_TO_SLIPS"):
+        skill = next(item for item in manifest["skills"] if item["skill_id"] == skill_id)
+        assert skill["composes"].index("WOW_V17_JS_MODEL_CONVERGENCE") < skill["composes"].index("WOW_V17_PICK_CORE")
