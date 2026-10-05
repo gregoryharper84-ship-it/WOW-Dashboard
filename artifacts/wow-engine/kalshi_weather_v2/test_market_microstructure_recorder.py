@@ -46,8 +46,10 @@ class FakeClient:
 class FakeHttp:
     def __init__(self):
         self.closed = False
+        self.urls = []
 
     def get_json(self, url, _headers):
+        self.urls.append(url)
         if url.endswith("/orderbook"):
             return {
                 "orderbook_fp": {
@@ -134,3 +136,32 @@ def test_recorder_empty_batch_is_clean_noop_without_http_contract():
     assert result.written == 0
     assert result.failures == ()
     assert result.can_execute is False
+
+
+def test_recorder_reuses_preacquired_market_and_fetches_only_orderbook():
+    client = FakeClient()
+    http = FakeHttp()
+    cached_market = {
+        "ticker": "KXTEMPMIAH-TEST",
+        "event_ticker": "KXTEMPMIAH-EVENT",
+        "status": "active",
+        "updated_time": "2026-10-05T21:00:00Z",
+        "volume_fp": "14.50",
+        "open_interest_fp": "7.00",
+    }
+
+    result = capture_market_microstructure_batch(
+        client=client,
+        tickers=("KXTEMPMIAH-TEST",),
+        retrieved_at="2026-10-05T21:01:00Z",
+        series_by_ticker={"KXTEMPMIAH-TEST": "KXTEMPMIAH"},
+        market_by_ticker={"KXTEMPMIAH-TEST": cached_market},
+        http=http,
+    )
+
+    assert result.written == 1
+    assert http.urls == [
+        "https://external-api.kalshi.com/trade-api/v2/markets/KXTEMPMIAH-TEST/orderbook"
+    ]
+    row = next(iter(client.rows.values()))
+    assert row["raw_market"]["updated_time"] == "2026-10-05T21:00:00Z"
