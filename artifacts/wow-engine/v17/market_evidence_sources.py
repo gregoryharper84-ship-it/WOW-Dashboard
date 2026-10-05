@@ -468,18 +468,34 @@ def coerce_odds_api_v4_event(raw: Any) -> dict[str, Any] | None:
     }
 
 
+def _rundown_team_label(team: dict[str, Any]) -> str | None:
+    """Preserve provider team identity instead of collapsing city-only names.
+
+    TheRundown normalized teams may expose name as the city and mascot as the
+    distinguishing club identity. Build a full label only from fields present
+    in the provider response; never infer or guess a team.
+    """
+    full = team.get("full_name") or team.get("team_name")
+    name = full or team.get("name")
+    mascot = team.get("mascot")
+    if name and mascot and _norm(mascot) not in _norm(name):
+        return f"{name} {mascot}".strip()
+    label = name or mascot or team.get("abbreviation")
+    return str(label) if label else None
+
+
 def _rundown_teams(raw: dict[str, Any]) -> tuple[str | None, str | None]:
     home = away = None
     for team in raw.get("teams_normalized") or raw.get("teams") or []:
         if not isinstance(team, dict):
             continue
-        label = team.get("name") or team.get("full_name") or team.get("abbreviation")
+        label = _rundown_team_label(team)
         if not label:
             continue
         if team.get("is_home"):
-            home = str(label)
+            home = label
         elif team.get("is_away"):
-            away = str(label)
+            away = label
     return home, away
 
 
