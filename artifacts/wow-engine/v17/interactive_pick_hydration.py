@@ -417,7 +417,10 @@ def _hydrate(row: PickRequestRow) -> RawPropEvidence:
 
 def prehydrate_batch(batch: PickRequestBatch, *, market_api: Any) -> PickRequestBatch:
     workers=_worker_count(); eligible=[(index,row) for index,row in enumerate(batch.rows) if _route_is_prehydration_eligible(row,market_api)]
-    if workers<=1 or not eligible: return batch
+    # A single worker is still valuable: group-level prehydration deduplicates
+    # MORE/LESS (and other shared-evidence) rows without adding concurrency or
+    # memory pressure. Only skip when no row is provably eligible.
+    if not eligible: return batch
     groups={}
     for index,row in eligible:
         key=_hydration_key(row)
