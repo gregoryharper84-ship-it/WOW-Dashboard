@@ -105,13 +105,13 @@ def test_market_recorder_captures_all_siblings_even_when_calibration_sample_exis
         SimpleNamespace(
             ticker="KXTEMPMIAH-A",
             parsed=SimpleNamespace(observation_time_utc=target_time),
-            rules=SimpleNamespace(raw_market={"ticker": "KXTEMPMIAH-A"}),
+            rules=SimpleNamespace(market_rules=SimpleNamespace(raw_market={"ticker": "KXTEMPMIAH-A"})),
             series_ticker="KXTEMPMIAH",
         ),
         SimpleNamespace(
             ticker="KXTEMPMIAH-B",
             parsed=SimpleNamespace(observation_time_utc=target_time),
-            rules=SimpleNamespace(raw_market={"ticker": "KXTEMPMIAH-B"}),
+            rules=SimpleNamespace(market_rules=SimpleNamespace(raw_market={"ticker": "KXTEMPMIAH-B"})),
             series_ticker="KXTEMPMIAH",
         ),
     )
