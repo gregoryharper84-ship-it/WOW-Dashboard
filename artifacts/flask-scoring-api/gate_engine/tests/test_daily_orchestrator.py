@@ -488,6 +488,7 @@ class TestRunDailyOrchestration(unittest.TestCase):
             patch("storage.daily_manifest.begin_scoring") as mock_begin_scoring,
             patch("storage.daily_manifest.finalize_run")  as mock_finalize,
             patch("storage.daily_manifest.save_run_row")  as mock_save,
+            patch.object(orch, "_run_scan_isolated", return_value=(scan_result, None)) as mock_scan,
         ):
             run_daily_orchestration(
                 sports=sports, environment="test",
@@ -500,6 +501,7 @@ class TestRunDailyOrchestration(unittest.TestCase):
         mock_begin_scoring.assert_not_called()
         mock_finalize.assert_not_called()
         mock_save.assert_not_called()
+        mock_scan.assert_called_once()
 
     def test_degraded_status_on_failed_modules(self):
         from gate_engine.daily_orchestrator import run_daily_orchestration
