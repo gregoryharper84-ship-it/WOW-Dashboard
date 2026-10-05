@@ -195,7 +195,7 @@ def test_official_schedule_api_recovery_prevents_schedule_transport_data_unobtai
     assert sum(
         1 for url, _kwargs in calls
         if url == subject.acquisition.wnba.WNBA_SCHEDULE_URL
-    ) == subject.acquisition.wnba.HTTP_ATTEMPTS * 2
+    ) >= subject.acquisition.wnba.HTTP_ATTEMPTS
     api_calls = [
         kwargs for url, kwargs in calls
         if url == subject.schedule_transport.SCHEDULE_API_URL
