@@ -4,10 +4,10 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 from typing import Any, Mapping, Sequence
 
-from .contract_rule_acquisition import KalshiContractRuleAcquirer
+from .contract_rule_acquisition import FrozenContractRulePackage, KalshiContractRuleAcquirer
 from .hourly_forecast_fusion import build_hourly_weather_evidence, source_snapshot_id
 from .hourly_index import KalshiWeatherIndexAdapter, WeatherIndexError
-from .hourly_rule_semantics import parse_hourly_temperature_rule
+from .hourly_rule_semantics import ParsedHourlyTemperatureRule, parse_hourly_temperature_rule
 from .http_client import ReadOnlyJsonClient
 from .kalshi_market_data import KalshiPublicMarketAdapter
 from .models import MarketSnapshot, ProbabilityPackage
@@ -47,6 +47,8 @@ def capture_hourly_shadow(
     decision_time: str | None = None,
     open_meteo_models: Sequence[str] = DEFAULT_OPEN_METEO_MODELS,
     http: ReadOnlyJsonClient | None = None,
+    preacquired_rules: FrozenContractRulePackage | None = None,
+    preparsed_rule: ParsedHourlyTemperatureRule | None = None,
 ) -> Mapping[str, Any]:
     """Capture one immutable hourly model shadow snapshot.
 
@@ -68,12 +70,32 @@ def capture_hourly_shadow(
     persistence = KalshiWeatherPersistence(client)
 
     try:
-        rules = KalshiContractRuleAcquirer(get_json).acquire(ticker, acquired_at=now)
-        parsed = parse_hourly_temperature_rule(
-            rules,
-            index_city=index_city,
-            expected_location=expected_location,
-        )
+        if (preacquired_rules is None) != (preparsed_rule is None):
+            raise KalshiWeatherRuntimeError(
+                "PREACQUIRED_RULE_CONTEXT_INVALID",
+                ("RULES_AND_PARSED_RULE_MUST_BE_PAIRED",),
+                status_code=409,
+            )
+        if preacquired_rules is not None and preparsed_rule is not None:
+            rules = preacquired_rules
+            parsed = preparsed_rule
+            expected_ticker = str(ticker or "").strip().upper()
+            if (
+                str(rules.market_rules.ticker or "").strip().upper() != expected_ticker
+                or str(parsed.ticker or "").strip().upper() != expected_ticker
+            ):
+                raise KalshiWeatherRuntimeError(
+                    "PREACQUIRED_RULE_IDENTITY_MISMATCH",
+                    (expected_ticker,),
+                    status_code=409,
+                )
+        else:
+            rules = KalshiContractRuleAcquirer(get_json).acquire(ticker, acquired_at=now)
+            parsed = parse_hourly_temperature_rule(
+                rules,
+                index_city=index_city,
+                expected_location=expected_location,
+            )
         contract = parsed.to_contract_snapshot(rules)
         persistence.persist_rule_package(rules)
 
