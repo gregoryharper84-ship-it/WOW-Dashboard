@@ -35,7 +35,6 @@ class FrozenContractRulePackage:
     contract_url: str | None
     contract_terms_url: str | None
     series_last_updated_at: str | None
-    raw_market: Mapping[str, Any]
     raw_event: Mapping[str, Any]
     raw_series: Mapping[str, Any]
     can_execute: bool = False
@@ -118,7 +117,6 @@ class KalshiContractRuleAcquirer:
             contract_url=contract_url,
             contract_terms_url=contract_terms_url,
             series_last_updated_at=series_last_updated_at,
-            raw_market=dict(market),
             raw_event=dict(event),
             raw_series=dict(series),
             can_execute=False,
