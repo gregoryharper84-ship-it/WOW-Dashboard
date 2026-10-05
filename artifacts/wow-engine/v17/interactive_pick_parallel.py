@@ -218,22 +218,23 @@ def install_interactive_pick_parallel_wrapper(app: Any, *, market_api: Any) -> b
             prepared = prehydrate_batch(batch, market_api=market_api)
         results: dict[int, dict[str, Any]] = {}
         max_workers = min(workers, len(prepared.rows))
-        with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="wow-v17-prop-score") as pool:
-            pending = {
-                pool.submit(
-                    _invoke_captured_endpoint,
-                    captured_endpoint,
-                    _single_row_batch(prepared, row),
-                    x_wow_model_identity,
-                ): (index, row)
-                for index, row in enumerate(prepared.rows)
-            }
-            for future in as_completed(pending):
-                index, row = pending[future]
-                try:
-                    results[index] = _extract_single_outcome(row, index, future.result())
-                except Exception as exc:
-                    results[index] = _unexpected_row_failure(row, index, exc)
+        with stage_timer("fitted_scoring"):
+            with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="wow-v17-prop-score") as pool:
+                pending = {
+                    pool.submit(
+                        _invoke_captured_endpoint,
+                        captured_endpoint,
+                        _single_row_batch(prepared, row),
+                        x_wow_model_identity,
+                    ): (index, row)
+                    for index, row in enumerate(prepared.rows)
+                }
+                for future in as_completed(pending):
+                    index, row = pending[future]
+                    try:
+                        results[index] = _extract_single_outcome(row, index, future.result())
+                    except Exception as exc:
+                        results[index] = _unexpected_row_failure(row, index, exc)
 
         outcomes = [
             results.get(index)
