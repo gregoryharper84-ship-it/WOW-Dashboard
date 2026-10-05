@@ -120,3 +120,42 @@ def test_market_contamination_and_execution_are_forbidden():
             market_data_used_as_weather_probability_input=True,
         )
     assert exc.value.code == "MARKET_DATA_PROBABILITY_CONTAMINATION"
+
+
+def test_range_contract_gets_exact_outside_range_complement_and_upper_cross_lock():
+    contract = _contract(
+        contract_title="82F to 84F",
+        yes_condition="82F to 84F inclusive",
+        no_condition="outside 82F to 84F",
+        threshold_lower=82.0,
+        threshold_upper=84.0,
+        lower_inclusive=True,
+        upper_inclusive=True,
+    )
+    open_twin = build_atomic_temperature_twin(
+        twin_snapshot_id="twin-range-open",
+        contract=contract,
+        built_at="2026-10-05T18:00:00Z",
+        state_as_of="2026-10-05T18:00:00Z",
+        settlement_source_url=None,
+        source_snapshot_ids=("obs-1",),
+        observed_extreme=83.0,
+    )
+    assert open_twin.yes_predicate.kind is PredicateKind.RANGE
+    assert open_twin.no_predicate.kind is PredicateKind.OUTSIDE_RANGE
+    assert open_twin.no_predicate.matches(81.0)
+    assert not open_twin.no_predicate.matches(83.0)
+    assert open_twin.no_predicate.matches(85.0)
+    assert open_twin.settlement_state is SettlementState.OPEN
+
+    locked = build_atomic_temperature_twin(
+        twin_snapshot_id="twin-range-locked",
+        contract=contract,
+        built_at="2026-10-05T18:05:00Z",
+        state_as_of="2026-10-05T18:05:00Z",
+        settlement_source_url=None,
+        source_snapshot_ids=("obs-2",),
+        observed_extreme=85.0,
+    )
+    assert locked.settlement_state is SettlementState.LOCKED_NO
+    assert locked.impossible_outcomes == ("YES",)
