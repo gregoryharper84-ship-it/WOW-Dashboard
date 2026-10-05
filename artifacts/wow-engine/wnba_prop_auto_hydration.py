@@ -524,6 +524,275 @@ def _player_game_log_stats(
     return game_log, box, GAME_LOG_STATS_PROVIDER
 
 
+def _regular_season_games_for_team(
+    *,
+    team_id: str,
+    event_start: datetime,
+    http_get: Callable[..., Any],
+) -> list[dict[str, Any]]:
+    payload = _request(
+        WNBA_SCHEDULE_URL,
+        http_get=http_get,
+        headers=_cdn_headers(),
+    )
+    league = payload.get("leagueSchedule")
+    blocks = league.get("gameDates") if isinstance(league, Mapping) else None
+    if not isinstance(blocks, list):
+        raise WNBAPropHydrationError(
+            "WNBA_SCHEDULE_INVALID",
+            "leagueSchedule.gameDates was missing while reconstructing official player history",
+        )
+    candidates: list[tuple[datetime, dict[str, Any]]] = []
+    for block in blocks:
+        games = block.get("games") if isinstance(block, Mapping) else None
+        if not isinstance(games, list):
+            continue
+        for raw_game in games:
+            if not isinstance(raw_game, Mapping):
+                continue
+            game = dict(raw_game)
+            game_id = str(game.get("gameId") or "").strip()
+            if not game_id.startswith(REGULAR_SEASON_GAME_ID_PREFIX):
+                continue
+            if int(game.get("gameStatus") or 0) != 3:
+                continue
+            home = game.get("homeTeam")
+            away = game.get("awayTeam")
+            ids = {
+                str((home or {}).get("teamId") or "").strip() if isinstance(home, Mapping) else "",
+                str((away or {}).get("teamId") or "").strip() if isinstance(away, Mapping) else "",
+            }
+            if str(team_id) not in ids:
+                continue
+            raw_start = game.get("gameDateTimeUTC") or game.get("gameDateUTC")
+            if not raw_start:
+                continue
+            try:
+                scheduled = _aware(raw_start)
+            except WNBAPropHydrationError:
+                continue
+            if scheduled >= event_start:
+                continue
+            candidates.append((scheduled, game))
+    candidates.sort(key=lambda item: (item[0], str(item[1].get("gameId") or "")), reverse=True)
+    return [game for _scheduled, game in candidates]
+
+
+def _official_game_boxscore(
+    game_id: str,
+    *,
+    http_get: Callable[..., Any],
+) -> dict[str, Any]:
+    url = f"{WNBA_GAME_PAGE_BASE}/{game_id}/box-score"
+    text = _html_text(url, http_get=http_get)
+    decoder = json.JSONDecoder()
+    cursor = 0
+    errors: list[str] = []
+    marker = '"game":'
+    while True:
+        index = text.find(marker, cursor)
+        if index < 0:
+            break
+        try:
+            value, _end = decoder.raw_decode(text[index + len(marker):])
+        except json.JSONDecodeError as exc:
+            errors.append(str(exc))
+            cursor = index + 1
+            continue
+        if isinstance(value, Mapping) and str(value.get("gameId") or "").strip() == str(game_id):
+            return dict(value)
+        cursor = index + 1
+    raise WNBAPropHydrationError(
+        "WNBA_OFFICIAL_WEB_BOX_SCORE_PARSE_FAILED",
+        "official WNBA game page did not contain the requested embedded box score",
+        detail={"url": url, "game_id": str(game_id), "parse_errors": errors[-3:]},
+    )
+
+
+def _minutes_float(value: Any) -> Optional[float]:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if ":" in text:
+        minute_text, second_text = text.split(":", 1)
+        try:
+            minutes = float(minute_text) + float(second_text) / 60.0
+        except ValueError:
+            return None
+    else:
+        try:
+            minutes = float(text)
+        except ValueError:
+            return None
+    if not math.isfinite(minutes) or not 0 < minutes <= 60:
+        return None
+    return minutes
+
+
+def _player_game_log_web(
+    player_id: str,
+    player_name: str,
+    stat_column: str,
+    season: int,
+    event_start: datetime,
+    team_id: str,
+    *,
+    http_get: Callable[..., Any],
+) -> tuple[list[float], list[dict[str, Any]], str]:
+    del player_name, season
+    field = WEB_STAT_FIELDS[stat_column]
+    games = _regular_season_games_for_team(
+        team_id=team_id,
+        event_start=event_start,
+        http_get=http_get,
+    )
+    selected: list[dict[str, Any]] = []
+    transport_errors: list[dict[str, Any]] = []
+    for scheduled_game in games:
+        game_id = str(scheduled_game.get("gameId") or "").strip()
+        if not game_id:
+            continue
+        try:
+            box = _official_game_boxscore(game_id, http_get=http_get)
+        except WNBAPropHydrationError as exc:
+            transport_errors.append({"game_id": game_id, "code": exc.code, "detail": exc.detail})
+            continue
+        home = box.get("homeTeam")
+        away = box.get("awayTeam")
+        if not isinstance(home, Mapping) or not isinstance(away, Mapping):
+            continue
+        team = None
+        for node in (home, away):
+            if str(node.get("teamId") or "").strip() == str(team_id):
+                team = node
+                break
+        if not isinstance(team, Mapping):
+            continue
+        players = team.get("players")
+        if not isinstance(players, list):
+            continue
+        player_row = next(
+            (
+                row
+                for row in players
+                if isinstance(row, Mapping)
+                and str(row.get("personId") or "").strip() == str(player_id)
+            ),
+            None,
+        )
+        if not isinstance(player_row, Mapping):
+            continue
+        statistics = player_row.get("statistics")
+        if not isinstance(statistics, Mapping):
+            continue
+        minutes = _minutes_float(statistics.get("minutes"))
+        try:
+            stat = float(statistics.get(field))
+        except (TypeError, ValueError):
+            continue
+        if minutes is None or not math.isfinite(stat) or stat < 0 or stat != int(stat):
+            continue
+        raw_date = str(box.get("gameTimeUTC") or scheduled_game.get("gameDateTimeUTC") or "")
+        try:
+            game_date = _aware(raw_date).date().isoformat()
+        except WNBAPropHydrationError:
+            continue
+        if game_date >= event_start.date().isoformat():
+            continue
+        away_tri = str(away.get("teamTricode") or "").strip().upper()
+        home_tri = str(home.get("teamTricode") or "").strip().upper()
+        selected.append(
+            {
+                "date": game_date,
+                "game_id": game_id,
+                "team": str(team.get("teamTricode") or "").strip().upper(),
+                "matchup": f"{away_tri}@{home_tri}",
+                "minutes": minutes,
+                "stat": int(stat),
+            }
+        )
+        if len(selected) >= MIN_PRIOR_GAMES:
+            break
+
+    if len(selected) < MIN_PRIOR_GAMES:
+        code = "WNBA_OFFICIAL_SOURCE_UNAVAILABLE" if transport_errors else "WNBA_RECENT_GAMES_INSUFFICIENT"
+        raise WNBAPropHydrationError(
+            code,
+            "fewer than ten official prior WNBA regular-season game rows were recoverable from wnba.com",
+            detail={
+                "games_found": len(selected),
+                "required": MIN_PRIOR_GAMES,
+                "candidate_games": len(games),
+                "transport_errors": transport_errors[-5:],
+            },
+        )
+    recent = selected[:MIN_PRIOR_GAMES]
+    game_log = [float(row["stat"]) for row in recent]
+    box_score_log = [
+        {
+            "date": row["date"],
+            "game_id": row["game_id"],
+            "team": row["team"],
+            "matchup": row["matchup"],
+            "minutes": row["minutes"],
+        }
+        for row in recent
+    ]
+    return game_log, box_score_log, GAME_LOG_WEB_PROVIDER
+
+
+def _player_game_log(
+    player_id: str,
+    player_name: str,
+    stat_column: str,
+    season: int,
+    event_start: datetime,
+    team_id: str,
+    *,
+    http_get: Callable[..., Any],
+) -> tuple[list[float], list[dict[str, Any]], str]:
+    web_error: Optional[WNBAPropHydrationError] = None
+    try:
+        return _player_game_log_web(
+            player_id,
+            player_name,
+            stat_column,
+            season,
+            event_start,
+            team_id,
+            http_get=http_get,
+        )
+    except WNBAPropHydrationError as exc:
+        web_error = exc
+    try:
+        return _player_game_log_stats(
+            player_id,
+            player_name,
+            stat_column,
+            season,
+            event_start,
+            http_get=http_get,
+        )
+    except WNBAPropHydrationError as stats_error:
+        if (
+            web_error is not None
+            and web_error.code == "WNBA_RECENT_GAMES_INSUFFICIENT"
+            and stats_error.code == "WNBA_RECENT_GAMES_INSUFFICIENT"
+        ):
+            raise stats_error
+        raise WNBAPropHydrationError(
+            "WNBA_OFFICIAL_SOURCE_UNAVAILABLE",
+            "official WNBA player-history transports were unavailable",
+            detail={
+                "player_id": str(player_id),
+                "web_code": web_error.code if web_error else None,
+                "web_detail": web_error.detail if web_error else None,
+                "stats_code": stats_error.code,
+                "stats_detail": stats_error.detail,
+            },
+        ) from stats_error
+
+
 def _pdf_report_timestamp(candidate: datetime) -> tuple[str, datetime]:
     local = candidate.astimezone(ET).replace(second=0, microsecond=0)
     minute = (local.minute // 15) * 15
