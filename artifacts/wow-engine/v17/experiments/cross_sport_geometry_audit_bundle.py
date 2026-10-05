@@ -14,6 +14,33 @@ from v17.experiments.cross_sport_geometry_audit import (
 from v17.team_event_capability_manifest import EXPECTED_TEAM_EVENT_SPORTS
 
 
+def _parse_bundle_timestamp(value: object, field: str) -> datetime:
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise RuntimeError(
+                f"CROSS_SPORT_AUDIT_BUNDLE_TIMESTAMP_INVALID:{field}"
+            ) from exc
+    raise RuntimeError(f"CROSS_SPORT_AUDIT_BUNDLE_TIMESTAMP_INVALID:{field}")
+
+
+def _normalize_bundle_rows(rows: list[dict]) -> list[dict]:
+    normalized = []
+    for raw in rows:
+        row = dict(raw)
+        row["event_start_time"] = _parse_bundle_timestamp(
+            row.get("event_start_time"), "event_start_time"
+        )
+        row["feature_as_of"] = _parse_bundle_timestamp(
+            row.get("feature_as_of"), "feature_as_of"
+        )
+        normalized.append(row)
+    return normalized
+
+
 def run_bundle(bundle: dict) -> dict:
     if bundle.get("can_execute") is not False:
         raise RuntimeError("CROSS_SPORT_AUDIT_BUNDLE_GOVERNANCE_INVALID")
@@ -48,7 +75,7 @@ def run_bundle(bundle: dict) -> dict:
         sport_rows = []
         for lane in lanes:
             candidate = dict(lane.get("candidate") or {})
-            rows = list(lane.get("rows") or [])
+            rows = _normalize_bundle_rows(list(lane.get("rows") or []))
             geometry = _feature_geometry(candidate, rows)
             replay = _replay_lane(candidate, rows, geometry)
             sport_rows.append(
