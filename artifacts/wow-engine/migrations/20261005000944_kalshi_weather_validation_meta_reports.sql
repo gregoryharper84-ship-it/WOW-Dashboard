@@ -59,8 +59,11 @@ create table public.wow_kalshi_weather_validation_meta_reports (
       jsonb_typeof(input_manifest->'complexity_policy') = 'object'
       and (input_manifest->'complexity_policy') ? 'promotion_confidence_threshold'
       and (input_manifest->'complexity_policy') ? 'required_meteorological_baseline_kinds'
+      and (input_manifest->'complexity_policy') ? 'required_red_team_categories'
       and jsonb_typeof(input_manifest->'complexity_policy'->'required_meteorological_baseline_kinds') = 'array'
       and jsonb_array_length(input_manifest->'complexity_policy'->'required_meteorological_baseline_kinds') > 0
+      and jsonb_typeof(input_manifest->'complexity_policy'->'required_red_team_categories') = 'array'
+      and jsonb_array_length(input_manifest->'complexity_policy'->'required_red_team_categories') > 0
       and not jsonb_path_exists(
         input_manifest,
         '$.complexity_policy.required_meteorological_baseline_kinds[*] ? (@ == "MARKET")'
