@@ -105,11 +105,13 @@ def test_market_recorder_captures_all_siblings_even_when_calibration_sample_exis
         SimpleNamespace(
             ticker="KXTEMPMIAH-A",
             parsed=SimpleNamespace(observation_time_utc=target_time),
+            rules=SimpleNamespace(raw_market={"ticker": "KXTEMPMIAH-A"}),
             series_ticker="KXTEMPMIAH",
         ),
         SimpleNamespace(
             ticker="KXTEMPMIAH-B",
             parsed=SimpleNamespace(observation_time_utc=target_time),
+            rules=SimpleNamespace(raw_market={"ticker": "KXTEMPMIAH-B"}),
             series_ticker="KXTEMPMIAH",
         ),
     )
@@ -131,6 +133,7 @@ def test_market_recorder_captures_all_siblings_even_when_calibration_sample_exis
     def fake_recorder(**kwargs):
         seen["tickers"] = kwargs["tickers"]
         seen["series_by_ticker"] = kwargs["series_by_ticker"]
+        seen["market_by_ticker"] = kwargs["market_by_ticker"]
         return SimpleNamespace(attempted=2, written=2, failures=())
 
     monkeypatch.setattr(bounded, "capture_market_microstructure_batch", fake_recorder)
@@ -150,6 +153,10 @@ def test_market_recorder_captures_all_siblings_even_when_calibration_sample_exis
     assert seen["series_by_ticker"] == {
         "KXTEMPMIAH-A": "KXTEMPMIAH",
         "KXTEMPMIAH-B": "KXTEMPMIAH",
+    }
+    assert seen["market_by_ticker"] == {
+        "KXTEMPMIAH-A": {"ticker": "KXTEMPMIAH-A"},
+        "KXTEMPMIAH-B": {"ticker": "KXTEMPMIAH-B"},
     }
     assert result.samples_captured == 0
     assert result.samples_skipped_existing == 1
