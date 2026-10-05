@@ -22,6 +22,8 @@ If the user says only `Full model`, `V17`, `best picks today`, or equivalent in 
 ## Automatic research/context stage
 Before final ranking, invoke `WOW_V17_RESEARCH_MARKET_CONTEXT_SKILL.md` for material candidates. Refresh current event identity, starters/lineups/rosters, injuries/status/team changes, role/workload, relevant history and matchup context, rest/travel, venue/weather where applicable, and current exact/adjacent market evidence. Research may hydrate certified model inputs and audit results but never substitutes for the fitted model or invents a probability.
 
+For prop candidates with sufficient pregame role/opportunity/distribution evidence, run `WOW_V17_JS_STYLE_INTELLIGENCE_SKILL.md` as an additive research annotation. JS research priority may change research order only; it cannot remove non-JS rows from discovery, create model probability, modify calibration/lower bounds, or override typed blockers. Preserve same-event thesis clusters as dependency context for downstream construction rather than as a probability bonus.
+
 ## Orchestration
 ### Mode A — DAILY_DISCOVERY
 1. Run broad discovery through `WOW_V17_BEST_PROPS_SKILL.md` and `WOW_V17_ML_WINNERS_SKILL.md`.
