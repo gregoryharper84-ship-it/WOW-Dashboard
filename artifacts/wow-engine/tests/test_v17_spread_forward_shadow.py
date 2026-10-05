@@ -125,7 +125,13 @@ def test_forward_shadow_uses_fixed_challenger_and_line_only_as_threshold(monkeyp
             "p_push": 0.01,
             "p_not_cover": 0.38,
             "p_cover_given_no_push": 0.6161616,
-            "research_lower_bound_cover": 0.55,
+            "research_lower_bound_cover": 0.52,
+            "research_lower_bound_cover_unconditional": 0.52,
+            "research_lower_bound_cover_given_no_push": 0.55,
+            "cover_count": 121,
+            "push_count": 2,
+            "not_cover_count": 77,
+            "non_push_count": 198,
             "distribution_sample_n": 200,
         },
     )
@@ -144,6 +150,9 @@ def test_forward_shadow_uses_fixed_challenger_and_line_only_as_threshold(monkeyp
     assert result["p_cover"] == 0.61
     assert result["p_push"] == 0.01
     assert result["p_not_cover"] == 0.38
+    assert result["research_lower_bound_cover_unconditional"] == 0.52
+    assert result["research_lower_bound_cover_given_no_push"] == 0.55
+    assert result["non_push_count"] == 198
     assert result["training_cutoff_event_time"] < result["event_start_time"]
     assert result["forward_context_cache"]["status"] == "MISS_REBUILT"
     assert result["spread_line_used_as_feature"] is False
