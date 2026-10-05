@@ -309,8 +309,10 @@ def test_validation_meta_persistence_is_idempotent_and_non_executable():
             minimum_brier_advantage=0.0,
             minimum_log_loss_advantage=0.0,
             minimum_red_team_pass_rate=1.0,
+            promotion_confidence_threshold=0.0,
             minimum_selected_coverage=0.5,
             maximum_selected_brier=0.25,
+            required_meteorological_baseline_kinds=(BaselineKind.NBM,),
         ),
     )
     first = store.persist_validation_meta(report)
