@@ -4,6 +4,7 @@ import logging
 from typing import Callable, Sequence
 
 from .http_client import ReadOnlyJsonClient
+from .market_microstructure_recorder import capture_market_microstructure_batch
 from .runtime import capture_hourly_shadow, lead_time_bucket
 from .shadow_cohort import (
     CAPTURE_BUCKETS,
@@ -45,6 +46,8 @@ def run_bounded_capture_only_cohort_once(
     captured = 0
     skipped = 0
     supplemental_captured = 0
+    microstructure_captured = 0
+    microstructure_failures: list[str] = []
 
     http = ReadOnlyJsonClient()
     try:
@@ -67,6 +70,38 @@ def run_bounded_capture_only_cohort_once(
                 continue
 
             contracts_discovered += len(contracts)
+
+            recorder = capture_market_microstructure_batch(
+                client=db,
+                tickers=tuple(item.ticker for item in contracts),
+                retrieved_at=decision_time,
+                series_by_ticker={
+                    item.ticker: item.series_ticker
+                    for item in contracts
+                    if item.series_ticker
+                },
+                http=http,
+            )
+            microstructure_captured += recorder.written
+            microstructure_failures.extend(
+                f"{target.index_city}:{failure}" for failure in recorder.failures
+            )
+            if recorder.failures:
+                _logger.warning(
+                    "WOW_KALSHI_WEATHER_MARKET_RECORDER status=PARTIAL target=%s attempted=%s written=%s failures=%s probability_input=false can_execute=false",
+                    target.index_city,
+                    recorder.attempted,
+                    recorder.written,
+                    len(recorder.failures),
+                )
+            else:
+                _logger.warning(
+                    "WOW_KALSHI_WEATHER_MARKET_RECORDER status=PASS target=%s attempted=%s written=%s probability_input=false can_execute=false",
+                    target.index_city,
+                    recorder.attempted,
+                    recorder.written,
+                )
+
             by_target: dict[str, list] = {}
             for item in contracts:
                 by_target.setdefault(item.parsed.observation_time_utc, []).append(item)
@@ -185,4 +220,6 @@ def run_bounded_capture_only_cohort_once(
         capture_failures=tuple(capture_failures),
         supplemental_failures=tuple(supplemental_failures),
         settlement_failures=(),
+        market_microstructure_snapshots_captured=microstructure_captured,
+        market_microstructure_failures=tuple(microstructure_failures),
     )
