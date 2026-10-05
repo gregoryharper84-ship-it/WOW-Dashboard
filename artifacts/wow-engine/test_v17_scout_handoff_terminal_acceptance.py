@@ -3,6 +3,7 @@ from v17 import scout_handoff_terminal_acceptance as terminal
 
 def _complete_summary():
     return {
+        "schema_version": "wow.v17.scout-handoff-run.v1",
         "source_run_id": "run-1",
         "research_run_id": "research-1",
         "status": "COMPLETE",
@@ -140,10 +141,49 @@ def test_wait_for_terminal_persists_final_durable_ledger(monkeypatch, tmp_path):
 
     assert result["status"] == "PASS"
     ledger = __import__("json").loads(output.read_text())
-    assert ledger.get("schema_version") in {None, "wow.v17.scout-handoff-run.v1"}
+    assert ledger["schema_version"] == "wow.v17.scout-handoff-run.v1"
     assert ledger["status"] == "COMPLETE"
     assert ledger["jobs"] == complete["jobs"]
     assert ledger["can_execute"] is False
+
+
+def test_wait_for_terminal_does_not_publish_rejected_durable_ledger(monkeypatch, tmp_path):
+    rejected = _complete_summary()
+    rejected.update({
+        "rows_completed": 0,
+        "rows_held": 1,
+        "rows_rejected": 1,
+        "reconciliation_pass": False,
+    })
+    responses = iter([
+        {"ok": True, "http_status": 200, "body": {"source_run_id": "run-1", "status": "COMPLETE", "can_execute": False}, "can_execute": False},
+        {"ok": True, "http_status": 200, "body": rejected, "can_execute": False},
+    ])
+    monkeypatch.setattr(terminal, "_get_status", lambda *args, **kwargs: next(responses))
+
+    output = tmp_path / "terminal-run-receipt.json"
+    clock = iter([0, 0, 1])
+    result = terminal.wait_for_terminal(
+        origin="https://engine.example",
+        source_run_id="run-1",
+        token="token",
+        timeout_seconds=10,
+        sleep_fn=lambda _: None,
+        monotonic_fn=lambda: next(clock),
+        ledger_output=output,
+    )
+
+    assert result["status"] == "BLOCKED_WITH_EXACT_REASON"
+    assert "SCOUT_TERMINAL_ACCEPTANCE_RECONCILIATION_NOT_PROVEN" in result["blockers"]
+    assert output.exists() is False
+
+
+def test_terminal_summary_requires_durable_schema_version():
+    summary = _complete_summary()
+    summary.pop("schema_version")
+    result = terminal.validate_terminal_summary(summary)
+    assert result["status"] == "BLOCKED_WITH_EXACT_REASON"
+    assert "SCOUT_TERMINAL_ACCEPTANCE_SCHEMA_INVALID" in result["blockers"]
 
 
 def test_wait_for_terminal_timeout_is_typed(monkeypatch):
