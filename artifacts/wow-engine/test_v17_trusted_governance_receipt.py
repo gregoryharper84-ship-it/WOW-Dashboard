@@ -221,3 +221,15 @@ def test_release_verification_requires_trusted_exact_head_governance_and_exact_m
     assert '--workflow-run-id "$RUN_ID"' in text
     assert '--workflow-name "$WORKFLOW_NAME"' in text
     assert "trusted_handoff_receipt: VERIFIED" in text
+
+def test_trusted_gate_dedupes_by_pr_and_exits_superseded_heads() -> None:
+    gate = GATE.read_text(encoding="utf-8")
+    assert "group: wow-v17-trusted-governance-${{ github.event.pull_request.number }}" in gate
+    concurrency = gate.split("concurrency:", 1)[1].split("jobs:", 1)[0]
+    assert "head.sha" not in concurrency
+    assert "cancel-in-progress: true" in concurrency
+    assert 'PR_NUMBER: ${{ github.event.pull_request.number }}' in gate
+    assert '/pulls/${PR_NUMBER}' in gate
+    assert "GOVERNANCE_SUPERSEDED_HEAD" in gate
+    assert 'current_head" != "$PR_HEAD_SHA' in gate
+
