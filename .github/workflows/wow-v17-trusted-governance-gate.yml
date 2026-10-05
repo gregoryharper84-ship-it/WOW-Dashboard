@@ -11,7 +11,7 @@ permissions:
   pull-requests: read
 
 concurrency:
-  group: wow-v17-trusted-governance-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
+  group: wow-v17-trusted-governance-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
