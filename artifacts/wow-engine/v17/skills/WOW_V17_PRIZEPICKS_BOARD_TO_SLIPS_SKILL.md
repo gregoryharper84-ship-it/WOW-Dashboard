@@ -160,7 +160,9 @@ For each admitted candidate show:
 - current-board verification + as-of;
 - primary supporting evidence;
 - material contradiction/risk;
-- source board/page when relevant.
+- source board/page when relevant;
+- JS archetype/research priority when present;
+- JS + V17 convergence status when evaluated.
 
 ### Full Board Reconciliation
 Account for every extracted base row. For undirected rows, show the MORE and LESS terminal/package disposition or exact Action-layer failure, selected side if one qualified, and the final pool status/blocker.
