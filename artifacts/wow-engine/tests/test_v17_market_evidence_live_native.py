@@ -48,6 +48,61 @@ def test_sharpapi_observed_field_names_translate_without_provider_probability():
     assert "0.574" not in dumped
 
 
+def test_sharpapi_live_retries_canonical_moneyline_when_first_page_is_unsupported(monkeypatch):
+    calls = []
+    first_page = [{
+        "event_id": "future-1",
+        "event_start_time": "2026-11-01T00:00:00Z",
+        "home_team": "World Series",
+        "away_team": "Field",
+        "market_type": "world_series_winner",
+        "selection": "Chicago Cubs",
+        "sportsbook": "draftkings",
+        "odds_american": 500,
+    }]
+    moneyline_page = [{
+        "event_id": "game-1",
+        "event_start_time": "2026-10-05T23:05:00Z",
+        "home_team": "Chicago Cubs",
+        "away_team": "Milwaukee Brewers",
+        "market_type": "moneyline",
+        "selection": "Chicago Cubs",
+        "sportsbook": "draftkings",
+        "odds_american": -135,
+        "timestamp": "2026-10-05T19:00:00Z",
+    }]
+
+    def fake_fetch(provider, capability, *, params=None, opener=None, **kwargs):
+        calls.append(dict(params or {}))
+        payload = {"data": moneyline_page if (params or {}).get("market_type") == "moneyline" else first_page}
+        return live.sources.MarketEvidenceResult(
+            True, "SHARPAPI", "odds", data=payload, status=200,
+            code="MARKET_EVIDENCE_FETCH_OK", observed_at="2026-10-05T19:00:00Z",
+        )
+
+    monkeypatch.setattr(live.sources, "fetch", fake_fetch)
+    result = live.sharpapi_market_evidence("baseball_mlb")
+
+    assert result.ok is True
+    assert len(result.data) == 1
+    assert calls == [
+        {"league": "MLB"},
+        {"league": "MLB", "market_type": "moneyline"},
+    ]
+    assert result.data[0]["bookmakers"][0]["markets"][0]["key"] == "h2h"
+    assert result.can_execute is False
+
+
+def test_rundown_live_team_identity_uses_city_plus_mascot():
+    home, away = live._teams({
+        "teams_normalized": [
+            {"name": "New York", "mascot": "Rangers", "abbreviation": "NYR", "is_home": True},
+            {"name": "New York", "mascot": "Islanders", "abbreviation": "NYI", "is_away": True},
+        ]
+    })
+    assert (home, away) == ("New York Rangers", "New York Islanders")
+
+
 def test_sharpapi_native_prop_preserves_player_identity_and_distinct_same_line_players():
     base = {
         "event_id": "sharp-prop-1",
