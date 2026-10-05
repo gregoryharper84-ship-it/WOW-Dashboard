@@ -120,52 +120,31 @@ def _source_diagnostic(exc: Exception) -> dict[str, Any] | None:
 
     primary_errors = detail.get("primary_errors") if isinstance(detail.get("primary_errors"), list) else []
     fallback_errors = detail.get("fallback_errors") if isinstance(detail.get("fallback_errors"), list) else []
-    playoffs_errors = detail.get("playoffs_errors") if isinstance(detail.get("playoffs_errors"), list) else []
-    if (
-        primary_errors
-        or fallback_errors
-        or playoffs_errors
-        or detail.get("primary_source")
-        or detail.get("fallback_source")
-        or detail.get("playoffs_source")
-    ):
+    if primary_errors or fallback_errors or detail.get("primary_source") or detail.get("fallback_source"):
         attempts = int(getattr(acquisition.wnba, "HTTP_ATTEMPTS", 0) or 0) or None
         primary_kinds, primary_codes = _safe_error_summary(primary_errors)
         fallback_kinds, fallback_codes = _safe_error_summary(fallback_errors)
-        playoffs_kinds, playoffs_codes = _safe_error_summary(playoffs_errors)
-        sources = [
-            {
-                "provider": str(detail.get("primary_source") or "WNBA_CDN_SCHEDULE_CURRENT"),
-                "host": "cdn.wnba.com",
-                "path": "/static/json/staticData/scheduleLeagueV2.json",
-                "attempts": attempts,
-                "error_kinds": primary_kinds,
-                "error_codes": primary_codes,
-            },
-            {
-                "provider": str(detail.get("fallback_source") or "WNBA_OFFICIAL_SCHEDULE_WEB_SSR"),
-                "host": "www.wnba.com",
-                "path": "/schedule",
-                "attempts": attempts,
-                "error_kinds": fallback_kinds,
-                "error_codes": fallback_codes,
-            },
-        ]
-        if detail.get("playoffs_source") or playoffs_errors:
-            sources.append(
+        return {
+            "code": code,
+            "sources": [
                 {
-                    "provider": str(
-                        detail.get("playoffs_source")
-                        or "WNBA_OFFICIAL_PLAYOFF_BRACKET_SSR"
-                    ),
-                    "host": "www.wnba.com",
-                    "path": "/webview/playoffs/2026",
+                    "provider": str(detail.get("primary_source") or "WNBA_CDN_SCHEDULE_CURRENT"),
+                    "host": "cdn.wnba.com",
+                    "path": "/static/json/staticData/scheduleLeagueV2.json",
                     "attempts": attempts,
-                    "error_kinds": playoffs_kinds,
-                    "error_codes": playoffs_codes,
-                }
-            )
-        return {"code": code, "sources": sources}
+                    "error_kinds": primary_kinds,
+                    "error_codes": primary_codes,
+                },
+                {
+                    "provider": str(detail.get("fallback_source") or "WNBA_OFFICIAL_SCHEDULE_WEB_SSR"),
+                    "host": "www.wnba.com",
+                    "path": "/schedule",
+                    "attempts": attempts,
+                    "error_kinds": fallback_kinds,
+                    "error_codes": fallback_codes,
+                },
+            ],
+        }
 
     return {"code": code, "host": None, "path": None, "attempts": None, "error_kinds": []}
 
