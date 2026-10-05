@@ -15,3 +15,7 @@ Deployment root: this directory.
 
 No secrets are stored here. The existing GPT Action Bearer credential is supplied
 by ChatGPT and forwarded only to the governed backend.
+
+## Release posture
+
+This Vercel gateway is a manual transport challenger only. Automatic Git-triggered Vercel deployments are disabled in `vercel.json` so Vercel build quotas or deployment status cannot gate canonical WOW releases. Production transport remains WOW -> Render and LLP -> Supabase Edge -> Render. Manual Vercel deployments may still be created for explicit challenger experiments. The gateway remains transport-only and `can_execute=false`.

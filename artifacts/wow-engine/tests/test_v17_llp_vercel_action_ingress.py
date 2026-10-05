@@ -66,3 +66,8 @@ def test_vercel_challenger_declares_esm_runtime():
     package = json.loads(PACKAGE.read_text(encoding="utf-8"))
     assert package["type"] == "module"
     assert package["engines"]["node"].startswith(">=")
+
+
+def test_vercel_challenger_is_manual_only_and_cannot_gate_git_releases():
+    config = json.loads(VERCEL.read_text(encoding="utf-8"))
+    assert config["git"]["deploymentEnabled"] is False
