@@ -7,6 +7,7 @@ from v17.experiments.cross_sport_geometry_audit import (
     _feature_geometry,
     _transform_binary,
 )
+from v17.experiments.cross_sport_geometry_audit_bundle import run_bundle
 
 
 def _candidate():
@@ -122,3 +123,33 @@ def test_drop_transform_removes_only_named_severe_features():
 
     assert transformed == rows
     assert names == ("home_rest_days",)
+
+
+def test_oidc_bundle_rejects_executable_payload():
+    import pytest
+
+    with pytest.raises(RuntimeError, match="BUNDLE_GOVERNANCE_INVALID"):
+        run_bundle({"lanes": [], "can_execute": True})
+
+
+def test_empty_oidc_bundle_fails_closed_for_every_cataloged_sport():
+    report = run_bundle(
+        {
+            "source": "TEST",
+            "lanes": [],
+            "probability_publishable": False,
+            "automatic_promotion": False,
+            "can_execute": False,
+        }
+    )
+
+    assert report["can_execute"] is False
+    assert report["probability_publishable"] is False
+    assert report["automatic_promotion"] is False
+    assert len(report["sports"]) == 13
+    assert all(
+        row["status"] == "BLOCKED_WITH_EXACT_REASON"
+        and row["blocker"] == "D1_CANDIDATE_ARTIFACT_MISSING"
+        and row["can_execute"] is False
+        for row in report["sports"].values()
+    )
