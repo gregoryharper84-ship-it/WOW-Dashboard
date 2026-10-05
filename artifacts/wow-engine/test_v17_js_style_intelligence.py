@@ -200,3 +200,17 @@ def test_observed_js_fixture_is_selection_biased_and_hindsight_guarded() -> None
     assert all(row["feature_replay_required"] is True for row in data["rows"])
     assert all(row["pregame_feature_snapshot"] is None for row in data["rows"])
     assert all(row["can_execute"] is False for row in data["rows"])
+
+
+def test_js_style_skill_is_registered_as_research_only() -> None:
+    manifest_path = Path(__file__).parent / "v17" / "skills" / "skill_manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    skill = next(
+        item for item in manifest["skills"]
+        if item["skill_id"] == "WOW_V17_JS_STYLE_INTELLIGENCE"
+    )
+    assert skill["probability_authority"] is False
+    assert skill["status"] == "RESEARCH_ONLY"
+    assert manifest["invariants"]["js_style_signal_not_governed_probability"] is True
+    assert manifest["invariants"]["js_style_cannot_narrow_full_model_universe"] is True
+    assert manifest["invariants"]["js_style_postgame_values_cannot_backfill_pregame_features"] is True
