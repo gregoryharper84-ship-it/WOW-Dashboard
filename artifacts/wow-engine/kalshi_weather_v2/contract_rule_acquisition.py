@@ -52,13 +52,19 @@ class KalshiContractRuleAcquirer:
     def __init__(self, get_json):
         self.get_json = get_json
         self.market_adapter = KalshiPublicMarketAdapter(get_json)
+        self._event_cache: dict[str, Mapping[str, Any]] = {}
+        self._series_cache: dict[str, Mapping[str, Any]] = {}
 
     def acquire(self, ticker: str, *, acquired_at: str) -> FrozenContractRulePackage:
         market = self.market_adapter.get_market(ticker)
         market_rules = freeze_market_rules(market, acquired_at=acquired_at)
 
         event_ticker = _required_text(market, "event_ticker", "EVENT_TICKER_MISSING")
-        event_payload = self.get_json(f"{KALSHI_BASE_URL}/events/{event_ticker}", None)
+        event_payload = self._event_cache.get(event_ticker)
+        if event_payload is None:
+            event_payload = self.get_json(f"{KALSHI_BASE_URL}/events/{event_ticker}", None)
+            if isinstance(event_payload, Mapping):
+                self._event_cache[event_ticker] = dict(event_payload)
         event = event_payload.get("event") if isinstance(event_payload, Mapping) else None
         if not isinstance(event, Mapping):
             raise ContractRuleAcquisitionError("NO_PLAY_SETTLEMENT_AMBIGUITY", ("EVENT_PAYLOAD_INVALID",))
@@ -66,7 +72,11 @@ class KalshiContractRuleAcquirer:
             raise ContractRuleAcquisitionError("NO_PLAY_SETTLEMENT_AMBIGUITY", ("EVENT_IDENTITY_MISMATCH",))
 
         series_ticker = _required_text(event, "series_ticker", "SERIES_TICKER_MISSING")
-        series_payload = self.get_json(f"{KALSHI_BASE_URL}/series/{series_ticker}", None)
+        series_payload = self._series_cache.get(series_ticker)
+        if series_payload is None:
+            series_payload = self.get_json(f"{KALSHI_BASE_URL}/series/{series_ticker}", None)
+            if isinstance(series_payload, Mapping):
+                self._series_cache[series_ticker] = dict(series_payload)
         series = series_payload.get("series") if isinstance(series_payload, Mapping) else None
         if not isinstance(series, Mapping):
             raise ContractRuleAcquisitionError("NO_PLAY_SETTLEMENT_AMBIGUITY", ("SERIES_PAYLOAD_INVALID",))

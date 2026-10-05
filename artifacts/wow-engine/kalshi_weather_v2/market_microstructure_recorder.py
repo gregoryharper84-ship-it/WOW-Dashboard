@@ -24,6 +24,7 @@ def capture_market_microstructure_batch(
     tickers: Sequence[str],
     retrieved_at: str,
     series_by_ticker: Mapping[str, str | None] | None = None,
+    market_by_ticker: Mapping[str, Mapping[str, object]] | None = None,
     http: ReadOnlyJsonClient | None = None,
 ) -> MicrostructureCaptureResult:
     """Persist point-in-time market state independently of weather predictions.
@@ -50,13 +51,23 @@ def capture_market_microstructure_batch(
         str(key).strip().upper(): (str(value).strip().upper() if value else None)
         for key, value in (series_by_ticker or {}).items()
     }
+    market_map = {
+        str(key).strip().upper(): value
+        for key, value in (market_by_ticker or {}).items()
+        if isinstance(value, Mapping)
+    }
     failures: list[str] = []
     written = 0
 
     try:
         for ticker in unique_tickers:
             try:
-                evidence = adapter.snapshot(ticker, retrieved_at=retrieved_at)
+                cached_market = market_map.get(ticker)
+                evidence = (
+                    adapter.snapshot_from_market(cached_market, retrieved_at=retrieved_at)
+                    if cached_market is not None
+                    else adapter.snapshot(ticker, retrieved_at=retrieved_at)
+                )
                 market = dict(evidence.source_market)
                 snapshot_id = content_id(
                     "kalshi-weather-microstructure",

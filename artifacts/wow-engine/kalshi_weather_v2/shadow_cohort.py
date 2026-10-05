@@ -8,7 +8,7 @@ from statistics import mean
 from typing import Any, Callable, Mapping, Sequence
 
 from .calibration_fit import ForecastResidual, fit_candidate_calibration_profile
-from .contract_rule_acquisition import KalshiContractRuleAcquirer
+from .contract_rule_acquisition import FrozenContractRulePackage, KalshiContractRuleAcquirer
 from .hourly_rule_semantics import ParsedHourlyTemperatureRule, parse_hourly_temperature_rule
 from .http_client import ReadOnlyJsonClient
 from .market_discovery import KalshiWeatherMarketDiscovery
@@ -48,6 +48,7 @@ class ParsedCohortContract:
     target: HourlyCohortTarget
     ticker: str
     parsed: ParsedHourlyTemperatureRule
+    rules: FrozenContractRulePackage
     series_ticker: str | None = None
 
 
@@ -129,6 +130,8 @@ def run_hourly_shadow_cohort_once(
                         forecast_longitude=target.forecast_longitude,
                         decision_time=decision_time,
                         http=http,
+                        preacquired_rules=chosen.rules,
+                        preparsed_rule=chosen.parsed,
                     )
                 except Exception as exc:
                     capture_failures.append(
@@ -362,6 +365,7 @@ def _discover_target_contracts(
                     target=target,
                     ticker=ticker,
                     parsed=parsed,
+                    rules=rules,
                     series_ticker=series.ticker,
                 )
             )

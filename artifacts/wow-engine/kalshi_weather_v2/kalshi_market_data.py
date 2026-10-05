@@ -130,6 +130,18 @@ class KalshiPublicMarketAdapter:
 
     def snapshot(self, ticker: str, *, retrieved_at: str) -> KalshiOrderbookEvidence:
         market = self.get_market(ticker)
+        return self.snapshot_from_market(market, retrieved_at=retrieved_at)
+
+    def snapshot_from_market(
+        self,
+        market: Mapping[str, Any],
+        *,
+        retrieved_at: str,
+    ) -> KalshiOrderbookEvidence:
+        """Build current orderbook evidence from an exact market payload already read this cycle."""
+        if not isinstance(market, Mapping):
+            raise KalshiMarketDataError("KALSHI_MARKET_PAYLOAD_INVALID", "market object missing")
+        ticker = _clean_ticker(market.get("ticker"))
         orderbook = self.get_orderbook(ticker)
         yes_bid, yes_size = _best_bid(orderbook.get("yes_dollars"))
         no_bid, no_size = _best_bid(orderbook.get("no_dollars"))
@@ -138,7 +150,7 @@ class KalshiPublicMarketAdapter:
         no_ask = None if yes_bid is None else _one_minus(yes_bid)
 
         return KalshiOrderbookEvidence(
-            ticker=_clean_ticker(ticker),
+            ticker=ticker,
             retrieved_at=retrieved_at,
             market_status=str(market.get("status") or ""),
             yes_best_bid=yes_bid,
@@ -147,7 +159,7 @@ class KalshiPublicMarketAdapter:
             no_best_ask=no_ask,
             yes_bid_size=yes_size,
             no_bid_size=no_size,
-            source_market=market,
+            source_market=dict(market),
             source_orderbook=orderbook,
         )
 

@@ -95,3 +95,49 @@ def test_market_event_identity_mismatch_fails_closed():
             "KXHIGHNY-26SEP10-T81", acquired_at="2026-09-10T04:20:00Z"
         )
     assert "EVENT_IDENTITY_MISMATCH" in exc.value.blockers
+
+
+def test_rule_acquirer_reuses_same_event_and_series_metadata_within_cycle():
+    calls = {"event": 0, "series": 0, "market": 0}
+
+    def get_json(url, headers):
+        if "/markets/" in url:
+            calls["market"] += 1
+            ticker = url.rsplit("/", 1)[-1]
+            return {
+                "market": {
+                    "ticker": ticker,
+                    "event_ticker": "KXHIGHNY-26SEP10",
+                    "title": "Highest temperature in New York City today?",
+                    "subtitle": "80° to 81°",
+                    "rules_primary": "The market resolves using the National Weather Service final climate report.",
+                    "rules_secondary": "Central Park is the listed location.",
+                    "strike_type": "between",
+                    "floor_strike": 80,
+                    "cap_strike": 81,
+                    "close_time": "2026-09-11T05:00:00Z",
+                }
+            }
+        if "/events/" in url:
+            calls["event"] += 1
+            return {"event": {"event_ticker": "KXHIGHNY-26SEP10", "series_ticker": "KXHIGHNY"}}
+        if "/series/" in url:
+            calls["series"] += 1
+            return {
+                "series": {
+                    "ticker": "KXHIGHNY",
+                    "settlement_sources": [
+                        {"name": "National Weather Service", "url": "https://www.weather.gov/"}
+                    ],
+                }
+            }
+        raise AssertionError(url)
+
+    acquirer = KalshiContractRuleAcquirer(get_json)
+    first = acquirer.acquire("KXHIGHNY-26SEP10-T81", acquired_at="2026-09-10T04:20:00Z")
+    second = acquirer.acquire("KXHIGHNY-26SEP10-T82", acquired_at="2026-09-10T04:20:00Z")
+
+    assert first.event_ticker == second.event_ticker == "KXHIGHNY-26SEP10"
+    assert first.series_ticker == second.series_ticker == "KXHIGHNY"
+    assert calls == {"event": 1, "series": 1, "market": 2}
+    assert first.market_rules.raw_market["ticker"] == "KXHIGHNY-26SEP10-T81"

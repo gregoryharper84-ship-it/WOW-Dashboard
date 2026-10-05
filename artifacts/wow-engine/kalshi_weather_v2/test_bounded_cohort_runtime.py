@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 import kalshi_weather_v2.bounded_cohort as bounded
 import kalshi_weather_v2.empirical_runtime as runtime
+from kalshi_weather_v2.http_client import HttpAcquisitionError
 from kalshi_weather_v2.shadow_cohort import HourlyCohortTarget
 
 
@@ -105,11 +106,13 @@ def test_market_recorder_captures_all_siblings_even_when_calibration_sample_exis
         SimpleNamespace(
             ticker="KXTEMPMIAH-A",
             parsed=SimpleNamespace(observation_time_utc=target_time),
+            rules=SimpleNamespace(market_rules=SimpleNamespace(raw_market={"ticker": "KXTEMPMIAH-A"})),
             series_ticker="KXTEMPMIAH",
         ),
         SimpleNamespace(
             ticker="KXTEMPMIAH-B",
             parsed=SimpleNamespace(observation_time_utc=target_time),
+            rules=SimpleNamespace(market_rules=SimpleNamespace(raw_market={"ticker": "KXTEMPMIAH-B"})),
             series_ticker="KXTEMPMIAH",
         ),
     )
@@ -131,6 +134,7 @@ def test_market_recorder_captures_all_siblings_even_when_calibration_sample_exis
     def fake_recorder(**kwargs):
         seen["tickers"] = kwargs["tickers"]
         seen["series_by_ticker"] = kwargs["series_by_ticker"]
+        seen["market_by_ticker"] = kwargs["market_by_ticker"]
         return SimpleNamespace(attempted=2, written=2, failures=())
 
     monkeypatch.setattr(bounded, "capture_market_microstructure_batch", fake_recorder)
@@ -151,7 +155,23 @@ def test_market_recorder_captures_all_siblings_even_when_calibration_sample_exis
         "KXTEMPMIAH-A": "KXTEMPMIAH",
         "KXTEMPMIAH-B": "KXTEMPMIAH",
     }
+    assert seen["market_by_ticker"] == {
+        "KXTEMPMIAH-A": {"ticker": "KXTEMPMIAH-A"},
+        "KXTEMPMIAH-B": {"ticker": "KXTEMPMIAH-B"},
+    }
     assert result.samples_captured == 0
     assert result.samples_skipped_existing == 1
     assert result.market_microstructure_snapshots_captured == 2
     assert result.market_microstructure_failures == ()
+
+
+def test_http_failure_context_preserves_provider_and_path_without_query_string():
+    exc = HttpAcquisitionError(
+        "HTTP_RETRY_EXHAUSTED",
+        "https://api.example.test/v1/data?token=secret&city=chi",
+        "http_status=429",
+    )
+    context = bounded._failure_context(exc)
+    assert context == "provider=api.example.test,path=/v1/data,detail=http_status=429"
+    assert "secret" not in context
+    assert "city=" not in context

@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import logging
 from typing import Callable, Sequence
+from urllib.parse import urlsplit
 
-from .http_client import ReadOnlyJsonClient
+from .http_client import HttpAcquisitionError, ReadOnlyJsonClient
 from .market_microstructure_recorder import capture_market_microstructure_batch
 from .runtime import capture_hourly_shadow, lead_time_bucket
 from .shadow_cohort import (
@@ -80,6 +81,10 @@ def run_bounded_capture_only_cohort_once(
                     for item in contracts
                     if item.series_ticker
                 },
+                market_by_ticker={
+                    item.ticker: item.rules.market_rules.raw_market
+                    for item in contracts
+                },
                 http=http,
             )
             microstructure_captured += recorder.written
@@ -138,21 +143,25 @@ def run_bounded_capture_only_cohort_once(
                         forecast_longitude=target.forecast_longitude,
                         decision_time=decision_time,
                         http=http,
+                        preacquired_rules=chosen.rules,
+                        preparsed_rule=chosen.parsed,
                     )
                 except Exception as exc:
+                    context = _failure_context(exc)
                     failure = (
                         f"{target.index_city}:{target_time}:{bucket}:{chosen.ticker}:"
-                        f"{type(exc).__name__}:{getattr(exc, 'code', '')}"
-                    )
+                        f"{type(exc).__name__}:{getattr(exc, 'code', '')}:{context}"
+                    ).rstrip(":")
                     capture_failures.append(failure)
                     _logger.warning(
-                        "WOW_KALSHI_WEATHER_CAPTURE_FAILURE stage=CORE_CAPTURE target=%s target_time=%s bucket=%s ticker=%s error_type=%s error_code=%s probability_publishable=false can_execute=false",
+                        "WOW_KALSHI_WEATHER_CAPTURE_FAILURE stage=CORE_CAPTURE target=%s target_time=%s bucket=%s ticker=%s error_type=%s error_code=%s error_context=%s probability_publishable=false can_execute=false",
                         target.index_city,
                         target_time,
                         bucket,
                         chosen.ticker,
                         type(exc).__name__,
                         getattr(exc, "code", ""),
+                        context or "none",
                     )
                     continue
 
@@ -223,3 +232,13 @@ def run_bounded_capture_only_cohort_once(
         market_microstructure_snapshots_captured=microstructure_captured,
         market_microstructure_failures=tuple(microstructure_failures),
     )
+
+
+def _failure_context(exc: Exception) -> str:
+    if not isinstance(exc, HttpAcquisitionError):
+        return ""
+    parsed = urlsplit(str(exc.url or ""))
+    provider = (parsed.hostname or "unknown").lower()
+    path = parsed.path or "/"
+    detail = str(exc.detail or "").replace(":", "_").replace("|", "_")[:160]
+    return f"provider={provider},path={path},detail={detail}"
