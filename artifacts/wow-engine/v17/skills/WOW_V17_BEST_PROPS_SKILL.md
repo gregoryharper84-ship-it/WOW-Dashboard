@@ -14,6 +14,7 @@ Find the strongest governed player/scalar props available today across all suppo
 1. Discover the current slate and candidate prop markets across supported sports.
 2. Build a broad candidate pool before ranking. Include every supported prop family the available board/data exposes.
 3. Invoke `WOW_V17_RESEARCH_MARKET_CONTEXT_SKILL.md` for material candidates to refresh event/player identity, lineup/role/injury/status, workload/opportunity, relevant recent + longer-run samples, opponent/matchup context, venue/weather/rest/travel where applicable, and current market context with source/as-of provenance.
+4. When sufficient pregame role/opportunity/distribution evidence exists, apply `WOW_V17_JS_STYLE_INTELLIGENCE_SKILL.md` as an additive research annotation across the full candidate pool. JS archetypes/research priority may affect research order only; they may not remove non-JS rows, create probability, or alter specialist/calibration outputs.
 4. Route each candidate to exactly one certified controlling prop specialist through WOW.
 5. Where refreshed evidence is a certified fitted input, ensure it reaches the governed hydration/scoring path. Otherwise keep it evidence-only; never invent a second numeric penalty.
 6. Require the route's valid numeric probability package. Where required, require calibrated probability and calibrated lower bound.
