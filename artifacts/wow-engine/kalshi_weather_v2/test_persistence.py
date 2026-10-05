@@ -313,6 +313,7 @@ def test_validation_meta_persistence_is_idempotent_and_non_executable():
             minimum_selected_coverage=0.5,
             maximum_selected_brier=0.25,
             required_meteorological_baseline_kinds=(BaselineKind.NBM,),
+            required_red_team_categories=(SettlementRedTeamCategory.SETTLEMENT_SOURCE_CONFLICT,),
         ),
     )
     first = store.persist_validation_meta(report)
