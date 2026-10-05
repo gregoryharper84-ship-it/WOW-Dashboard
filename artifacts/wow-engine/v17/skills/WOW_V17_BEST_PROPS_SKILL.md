@@ -20,9 +20,10 @@ Find the strongest governed player/scalar props available today across all suppo
 7. Require the route's valid numeric probability package. Where required, require calibrated probability and calibrated lower bound.
 8. Preserve typed failures exactly. Do not replace an unavailable/failed fitted route with web projections, sportsbook odds, recent hit rate, or narrative probability.
 9. Apply exact-vs-adjacent-line discipline. `EXACT_LINE` may support exact-line no-vig/economics; `ADJACENT_LINE` is context only; `NO_MARKET` means no suitable current comparable market.
-10. Rank official supported candidates by calibrated lower bound, then calibrated probability as a tie-breaker unless a stricter route-specific contract controls.
-11. Deep-review the highest-ranked rows for material contradictions and market disagreement without mutating the fitted probability unless the certified model actually consumes that input.
-12. Return the best plays, not a quota.
+10. After the governed package exists, run `WOW_V17_JS_MODEL_CONVERGENCE_SKILL.md` for JS-annotated rows and eligible non-JS comparison rows. Treat convergence as a selection/diagnostic classification only; it may not mutate or rerank sporting probability.
+11. Rank official supported candidates by calibrated lower bound, then calibrated probability as a tie-breaker unless a stricter route-specific contract controls.
+12. Deep-review the highest-ranked rows for material contradictions and market disagreement without mutating the fitted probability unless the certified model actually consumes that input.
+13. Return the best plays, not a quota.
 
 ## Required output
 For each official pick show:
