@@ -32,6 +32,7 @@ def baseline(kind=BaselineKind.NBM, *, ident="base", version="v1", p=0.60, avail
 
 
 def sample(sample_id, *, champion=0.70, outcome=True, confidence=0.90, baselines=None):
+    resolved_baselines = (baseline(),) if baselines is None else tuple(baselines)
     return ProbabilityValidationSample(
         sample_id=sample_id,
         prediction_id=f"prediction-{sample_id}",
@@ -41,7 +42,7 @@ def sample(sample_id, *, champion=0.70, outcome=True, confidence=0.90, baselines
         yes_outcome=outcome,
         confidence_score=confidence,
         champion_evidence_ids=(f"champion-evidence-{sample_id}",),
-        baselines=tuple(baselines or (baseline(),)),
+        baselines=resolved_baselines,
         lane="HOURLY_TEMPERATURE",
     )
 
