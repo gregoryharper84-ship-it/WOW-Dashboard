@@ -159,6 +159,39 @@ def test_rundown_lines_translate_into_canonical_odds_api_v4_shape():
     assert all(o["point"] == 8.5 for o in totals)
 
 
+def test_rundown_full_name_prevents_same_city_identity_collapse():
+    raw_v1 = _rundown_events_payload()["events"][0]
+    raw_v1["event_id"] = "ny-v1"
+    raw_v1["teams_normalized"] = [
+        {"name": "New York", "full_name": "New York Rangers", "is_home": True},
+        {"name": "New York", "full_name": "New York Islanders", "is_away": True},
+    ]
+    event_v1 = sources.rundown_event_to_odds_api_v4(raw_v1, sport_key="icehockey_nhl")
+    assert event_v1["home_team"] == "New York Rangers"
+    assert event_v1["away_team"] == "New York Islanders"
+
+    participants = [
+        {"id": "home", "name": "New York", "full_name": "New York Rangers", "is_home": True},
+        {"id": "away", "name": "New York", "full_name": "New York Islanders", "is_away": True},
+    ]
+    raw_v2 = {
+        "event_id": "ny-v2",
+        "event_date": "2026-10-06T23:30:00Z",
+        "participants": participants,
+        "markets": [{
+            "name": "moneyline",
+            "lines": [
+                {"participant_id": "home", "prices": {"25": {"american": -135}}},
+                {"participant_id": "away", "prices": {"25": {"american": 115}}},
+            ],
+        }],
+    }
+    event_v2 = sources.rundown_v2_event_to_odds_api_v4(raw_v2, sport_key="icehockey_nhl")
+    assert event_v2["home_team"] == "New York Rangers"
+    assert event_v2["away_team"] == "New York Islanders"
+    assert event_v2["home_team"] != event_v2["away_team"]
+
+
 def test_only_canonical_market_keys_leave_the_module():
     payload = {"bookmakers": [{
         "key": "book_a", "title": "Book A",

@@ -154,3 +154,32 @@ def test_require_capture_cli_uses_bounded_acceptance_contract(monkeypatch, tmp_p
     assert rc == 0
     assert observed == {"sport_key": "baseball_mlb", "date": "2026-09-14"}
     assert out.exists()
+
+
+
+def test_acceptance_fallback_skips_empty_slate_and_stops_on_first_valid_capture(monkeypatch):
+    monkeypatch.setattr(snapshot, "DEFAULT_SPORTS", ("baseball_mlb", "americanfootball_nfl"))
+    monkeypatch.setenv("WOW_MARKET_EVIDENCE_ACCEPTANCE_MAX_SAMPLES", "4")
+    calls = []
+
+    def fake_collect(sport_key, *, date=None, opener=None):
+        calls.append((sport_key, date))
+        captured = ["RUNDOWN"] if sport_key == "americanfootball_nfl" else []
+        return {
+            "status": snapshot.ACCEPTANCE_DEGRADED_READY if captured else snapshot.ACCEPTANCE_BLOCKED,
+            "configured_providers": ["RUNDOWN", "SHARPAPI"],
+            "captured_providers": captured,
+            "auth_blockers": [],
+            "can_execute": False,
+        }
+
+    monkeypatch.setattr(snapshot, "collect_acceptance", fake_collect)
+    report = snapshot.collect_acceptance_with_fallback(date="2026-10-05")
+
+    assert calls == [
+        ("baseball_mlb", "2026-10-05"),
+        ("americanfootball_nfl", "2026-10-05"),
+    ]
+    assert report["captured_providers"] == ["RUNDOWN"]
+    assert snapshot.acceptance_blockers(report) == []
+    assert len(report["acceptance_samples"]) == 2

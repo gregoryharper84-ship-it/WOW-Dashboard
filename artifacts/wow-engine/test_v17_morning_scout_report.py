@@ -138,3 +138,17 @@ def test_durable_completed_row_missing_card_admission_fails_closed():
     blocked = next(r for r in report["blocked_or_unresolved"] if r.get("row_key") == "durable-good")
     assert blocked["publication_blocker"] == "GOVERNED_PICK_ADMISSION_NOT_PROVEN"
     assert blocked["can_execute"] is False
+
+
+
+def test_terminal_acceptance_wrapper_uses_resolved_durable_ledger():
+    wrapped = {
+        "schema_version": "wow.v17.scout-handoff-terminal-acceptance.v1",
+        "status": "PASS",
+        "resolved_run_summary": _durable_receipt(),
+        "can_execute": False,
+    }
+    report = build_report(_handoff(), wrapped)
+    assert report["durable_handoff"]["enabled"] is True
+    assert report["publication_gate_open"] is True
+    assert [row["row_key"] for row in report["governed_picks"]] == ["durable-good"]

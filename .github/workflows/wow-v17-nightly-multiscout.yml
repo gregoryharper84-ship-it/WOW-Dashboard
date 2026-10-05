@@ -141,6 +141,7 @@ jobs:
           test_v17_scout_board_refresh_fail_closed.py
           tests/test_v17_sport_scout_teams.py
           tests/test_v17_market_evidence_sources.py
+          tests/test_v17_market_evidence_acceptance.py
           tests/test_v17_market_evidence_provider_contracts.py
       - name: Verify odds proxy extension
         working-directory: artifacts/wow-odds-proxy
@@ -502,9 +503,13 @@ jobs:
         if: always()
         shell: bash
         run: |
+          receipt="$RUNNER_TEMP/wow-multiscout/terminal-acceptance-receipt.json"
+          if [ ! -f "$receipt" ]; then
+            receipt="$RUNNER_TEMP/wow-multiscout/auto-advance-receipt.json"
+          fi
           python v17/morning_scout_report.py \
             --handoff "$RUNNER_TEMP/wow-multiscout/model-handoff.json" \
-            --receipt "$RUNNER_TEMP/wow-multiscout/auto-advance-receipt.json" \
+            --receipt "$receipt" \
             --output "$RUNNER_TEMP/wow-multiscout/morning-scout-picks.json"
           test -f "$RUNNER_TEMP/wow-multiscout/morning-scout-picks.json"
       - name: Upload governed Scout and downstream receipt artifact

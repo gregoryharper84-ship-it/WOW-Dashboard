@@ -241,6 +241,48 @@ def collect_acceptance(
     }
 
 
+def collect_acceptance_with_fallback(
+    *,
+    date: str | None = None,
+    opener: Any = None,
+) -> dict[str, Any]:
+    """Bounded season-agnostic acceptance across current configured sports.
+
+    A credential can be healthy while one sampled league has no games. Try a
+    small ordered set of sport/date samples and stop as soon as the production
+    acceptance contract is satisfied. Authentication rejection still fails
+    immediately; this never converts provider degradation into model success.
+    """
+    dates = [date] if date else snapshot_dates()
+    max_samples = max(
+        1,
+        min(int(os.environ.get("WOW_MARKET_EVIDENCE_ACCEPTANCE_MAX_SAMPLES", "4")), 8),
+    )
+    attempts: list[dict[str, Any]] = []
+    latest: dict[str, Any] | None = None
+
+    for sport_key in DEFAULT_SPORTS:
+        for sample_date in dates:
+            latest = collect_acceptance(sport_key, date=sample_date, opener=opener)
+            attempts.append({
+                "sport_key": sport_key,
+                "date": sample_date,
+                "captured_providers": list(latest.get("captured_providers") or []),
+                "auth_blockers": list(latest.get("auth_blockers") or []),
+                "status": latest.get("status"),
+            })
+            latest["acceptance_samples"] = list(attempts)
+            if latest.get("auth_blockers") or acceptance_blockers(latest) == []:
+                return latest
+            if len(attempts) >= max_samples:
+                return latest
+
+    if latest is None:
+        latest = collect_acceptance(DEFAULT_SPORTS[0], date=(dates[0] if dates else None), opener=opener)
+        latest["acceptance_samples"] = []
+    return latest
+
+
 def acceptance_blockers(payload: dict[str, Any]) -> list[str]:
     """Return only production blockers for the bounded acceptance sample.
 
@@ -421,9 +463,11 @@ def main(argv: list[str] | None = None) -> int:
         acceptance_sport = (
             args.sport_key
             or os.environ.get("WOW_MARKET_EVIDENCE_ACCEPTANCE_SPORT")
-            or "baseball_mlb"
         )
-        payload = collect_acceptance(acceptance_sport, date=args.date)
+        if acceptance_sport:
+            payload = collect_acceptance(acceptance_sport, date=args.date)
+        else:
+            payload = collect_acceptance_with_fallback(date=args.date)
     else:
         sports = [s.strip() for s in str(args.sports).split(",") if s.strip()]
         payload = collect(sports)
