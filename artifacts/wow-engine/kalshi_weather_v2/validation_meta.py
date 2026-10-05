@@ -378,8 +378,10 @@ class ComplexityGatePolicy:
     minimum_brier_advantage: float
     minimum_log_loss_advantage: float
     minimum_red_team_pass_rate: float
+    promotion_confidence_threshold: float
     minimum_selected_coverage: float
     maximum_selected_brier: float
+    required_meteorological_baseline_kinds: tuple[BaselineKind, ...]
     research_only: bool = True
     can_execute: bool = False
 
@@ -393,8 +395,27 @@ class ComplexityGatePolicy:
             value = getattr(self, name)
             if not _finite(value):
                 raise ValidationMetaError(f"COMPLEXITY_{name.upper()}_INVALID")
-        for name in ("minimum_red_team_pass_rate", "minimum_selected_coverage", "maximum_selected_brier"):
+        for name in (
+            "minimum_red_team_pass_rate",
+            "promotion_confidence_threshold",
+            "minimum_selected_coverage",
+            "maximum_selected_brier",
+        ):
             _bounded(getattr(self, name), f"COMPLEXITY_{name.upper()}")
+        kinds: list[BaselineKind] = []
+        for raw in self.required_meteorological_baseline_kinds:
+            try:
+                kind = BaselineKind(raw)
+            except (TypeError, ValueError) as exc:
+                raise ValidationMetaError("COMPLEXITY_REQUIRED_BASELINE_KIND_INVALID") from exc
+            if kind is BaselineKind.MARKET:
+                raise ValidationMetaError("COMPLEXITY_MARKET_BASELINE_PROMOTION_PROHIBITED")
+            kinds.append(kind)
+        if not kinds:
+            raise ValidationMetaError("COMPLEXITY_REQUIRED_BASELINES_MISSING")
+        if len(set(kinds)) != len(kinds):
+            raise ValidationMetaError("COMPLEXITY_REQUIRED_BASELINE_DUPLICATE")
+        object.__setattr__(self, "required_meteorological_baseline_kinds", tuple(kinds))
         if self.can_execute:
             raise ValidationMetaError("COMPLEXITY_GATE_EXECUTION_PROHIBITED")
 
@@ -408,6 +429,7 @@ class ComplexityGateResult:
     worst_brier_advantage: float | None
     worst_log_loss_advantage: float | None
     red_team_pass_rate: float
+    selected_confidence_threshold: float
     selected_coverage: float | None
     selected_brier: float | None
     can_execute: bool = False
@@ -592,8 +614,12 @@ def _input_manifest(
             "minimum_brier_advantage": complexity_policy.minimum_brier_advantage,
             "minimum_log_loss_advantage": complexity_policy.minimum_log_loss_advantage,
             "minimum_red_team_pass_rate": complexity_policy.minimum_red_team_pass_rate,
+            "promotion_confidence_threshold": complexity_policy.promotion_confidence_threshold,
             "minimum_selected_coverage": complexity_policy.minimum_selected_coverage,
             "maximum_selected_brier": complexity_policy.maximum_selected_brier,
+            "required_meteorological_baseline_kinds": [
+                kind.value for kind in complexity_policy.required_meteorological_baseline_kinds
+            ],
             "research_only": complexity_policy.research_only,
             "can_execute": False,
         },
@@ -768,9 +794,14 @@ def _complexity_gate(
     if holdout_n < policy.minimum_holdout_n:
         blockers.append("HOLDOUT_N_BELOW_POLICY_MINIMUM")
 
+    required_kinds = {kind.value for kind in policy.required_meteorological_baseline_kinds}
+    observed_kinds = {item.baseline_kind for item in baseline_deltas}
+    missing_kinds = sorted(required_kinds - observed_kinds)
+    if missing_kinds:
+        blockers.append("REQUIRED_METEOROLOGICAL_BASELINE_MISSING:" + ",".join(missing_kinds))
     meteorological_deltas = [
         item for item in baseline_deltas
-        if item.baseline_kind in {BaselineKind.NBM.value, BaselineKind.NWS.value, BaselineKind.CLIMATOLOGY.value}
+        if item.baseline_kind in required_kinds
     ]
     worst_brier = min((item.champion_brier_advantage for item in meteorological_deltas), default=None)
     worst_log = min((item.champion_log_loss_advantage for item in meteorological_deltas), default=None)
@@ -791,20 +822,25 @@ def _complexity_gate(
     if red_team_pass_rate < policy.minimum_red_team_pass_rate:
         blockers.append("RED_TEAM_PASS_RATE_BELOW_POLICY_MINIMUM")
 
-    eligible_selective = [
-        item
-        for item in selective_curve
-        if item.coverage >= policy.minimum_selected_coverage and item.brier_score is not None
-    ]
-    if not eligible_selective:
+    selected = next(
+        (
+            item for item in selective_curve
+            if abs(item.minimum_confidence - policy.promotion_confidence_threshold) <= 1e-12
+        ),
+        None,
+    )
+    if selected is None:
         selected_coverage = None
         selected_brier = None
-        blockers.append("SELECTIVE_COVERAGE_POLICY_UNSATISFIED")
+        blockers.append("SELECTIVE_PROMOTION_THRESHOLD_MISSING")
     else:
-        best = min(eligible_selective, key=lambda item: float(item.brier_score))
-        selected_coverage = best.coverage
-        selected_brier = best.brier_score
-        if float(best.brier_score) > policy.maximum_selected_brier:
+        selected_coverage = selected.coverage
+        selected_brier = selected.brier_score
+        if selected.coverage < policy.minimum_selected_coverage:
+            blockers.append("SELECTIVE_COVERAGE_POLICY_UNSATISFIED")
+        if selected.brier_score is None:
+            blockers.append("SELECTIVE_BRIER_UNAVAILABLE")
+        elif float(selected.brier_score) > policy.maximum_selected_brier:
             blockers.append("SELECTIVE_BRIER_ABOVE_POLICY_MAXIMUM")
 
     recommendation = (
@@ -820,6 +856,7 @@ def _complexity_gate(
         worst_brier_advantage=worst_brier,
         worst_log_loss_advantage=worst_log,
         red_team_pass_rate=red_team_pass_rate,
+        selected_confidence_threshold=policy.promotion_confidence_threshold,
         selected_coverage=selected_coverage,
         selected_brier=selected_brier,
     )
