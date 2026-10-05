@@ -80,14 +80,14 @@ jobs:
               echo "<!-- WOW_PRODUCT_RUNTIME_RELIABILITY -->"
               echo "## Product Runtime Reliability incident"
               echo
-              echo "- Surface: `${surface}`"
-              echo "- Status: **${status}**"
-              echo "- Source workflow: `${GITHUB_WORKFLOW}`"
-              echo "- Source run: `${GITHUB_RUN_ID}`"
-              echo "- Repository SHA: `${GITHUB_SHA}`"
-              echo "- terminal_authority: `V17_TERMINAL_REDUCER`"
-              echo "- can_execute: `false`"
-              echo "- fingerprint: `$fingerprint`"
+              printf -- '- Surface: `%s`\n' "$surface"
+              printf -- '- Status: **%s**\n' "$status"
+              printf -- '- Source workflow: `%s`\n' "$GITHUB_WORKFLOW"
+              printf -- '- Source run: `%s`\n' "$GITHUB_RUN_ID"
+              printf -- '- Repository SHA: `%s`\n' "$GITHUB_SHA"
+              printf '%s\n' '- terminal_authority: `V17_TERMINAL_REDUCER`'
+              printf '%s\n' '- can_execute: `false`'
+              printf -- '- fingerprint: `%s`\n' "$fingerprint"
               echo
               echo '~~~json'
               printf '%s\n' "$surface_json" | jq .
@@ -106,7 +106,7 @@ jobs:
               gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body-file "$body_file"
             else
               current_body=$(gh issue view "$open_issue" --repo "$GITHUB_REPOSITORY" --json body --jq '.body // ""')
-              if ! grep -Fq "fingerprint: `$fingerprint`" <<<"$current_body"; then
+              if ! grep -Fq "fingerprint: \`$fingerprint\`" <<<"$current_body"; then
                 gh issue comment "$open_issue" --repo "$GITHUB_REPOSITORY" --body-file "$body_file"
                 gh issue edit "$open_issue" --repo "$GITHUB_REPOSITORY" --body-file "$body_file"
               fi
