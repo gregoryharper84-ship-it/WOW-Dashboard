@@ -25,6 +25,7 @@ from fastapi import Header
 import pick_request_runtime_core as pick_runtime
 from pick_request_runtime_core import PickRequestBatch
 from v17.interactive_pick_hydration import prehydrate_batch
+from v17.interactive_latency_telemetry import annotate_request, stage_timer
 from v17.top10_model_reconciliation import enforce_top10_completion
 
 _LOG = logging.getLogger("wow.v17.interactive.parallel")
@@ -202,39 +203,46 @@ def install_interactive_pick_parallel_wrapper(app: Any, *, market_api: Any) -> b
             alias="X-WOW-Model-Identity",
         ),
     ) -> dict[str, Any]:
+        sports = {str(row.sport or "").strip().upper() for row in batch.rows if str(row.sport or "").strip()}
+        sport_label = next(iter(sports)) if len(sports) == 1 else "mixed" if sports else "unknown"
+        annotate_request(sport=sport_label, row_count=len(batch.rows), batch_size=len(batch.rows))
         workers = _score_worker_count()
         if str(batch.response_mode or "FULL").upper() != "COMPACT" or len(batch.rows) <= 1 or workers <= 1:
-            response = _invoke_captured_endpoint(captured_endpoint, batch, x_wow_model_identity)
+            with stage_timer("fitted_scoring"):
+                response = _invoke_captured_endpoint(captured_endpoint, batch, x_wow_model_identity)
             if isinstance(response, dict):
                 response["can_execute"] = False
             return response
 
-        prepared = prehydrate_batch(batch, market_api=market_api)
+        with stage_timer("hydration"):
+            prepared = prehydrate_batch(batch, market_api=market_api)
         results: dict[int, dict[str, Any]] = {}
         max_workers = min(workers, len(prepared.rows))
-        with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="wow-v17-prop-score") as pool:
-            pending = {
-                pool.submit(
-                    _invoke_captured_endpoint,
-                    captured_endpoint,
-                    _single_row_batch(prepared, row),
-                    x_wow_model_identity,
-                ): (index, row)
-                for index, row in enumerate(prepared.rows)
-            }
-            for future in as_completed(pending):
-                index, row = pending[future]
-                try:
-                    results[index] = _extract_single_outcome(row, index, future.result())
-                except Exception as exc:
-                    results[index] = _unexpected_row_failure(row, index, exc)
+        with stage_timer("fitted_scoring"):
+            with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="wow-v17-prop-score") as pool:
+                pending = {
+                    pool.submit(
+                        _invoke_captured_endpoint,
+                        captured_endpoint,
+                        _single_row_batch(prepared, row),
+                        x_wow_model_identity,
+                    ): (index, row)
+                    for index, row in enumerate(prepared.rows)
+                }
+                for future in as_completed(pending):
+                    index, row = pending[future]
+                    try:
+                        results[index] = _extract_single_outcome(row, index, future.result())
+                    except Exception as exc:
+                        results[index] = _unexpected_row_failure(row, index, exc)
 
         outcomes = [
             results.get(index)
             or _unexpected_row_failure(row, index, RuntimeError("ROW_RESULT_MISSING"))
             for index, row in enumerate(prepared.rows)
         ]
-        merged = _merge_compact_response(prepared, outcomes, workers=max_workers)
+        with stage_timer("reconciliation"):
+            merged = _merge_compact_response(prepared, outcomes, workers=max_workers)
         _LOG.warning(
             "WOW_V17_INTERACTIVE_SCORING status=PARALLEL rows_in=%s workers=%s completed=%s held=%s rejected=%s reconciliation=%s can_execute=false",
             merged.get("rows_in"),
