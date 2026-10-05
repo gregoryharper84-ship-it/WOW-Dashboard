@@ -167,6 +167,7 @@ def wait_for_terminal(
     timeout_seconds: int,
     sleep_fn=time.sleep,
     monotonic_fn=time.monotonic,
+    ledger_output: Path | None = None,
 ) -> dict[str, Any]:
     deadline = monotonic_fn() + timeout_seconds
     latest: dict[str, Any] | None = None
@@ -209,6 +210,12 @@ def wait_for_terminal(
                         "terminal_authority": "V17_TERMINAL_REDUCER",
                         "can_execute": False,
                     }
+                if ledger_output is not None:
+                    ledger_output.parent.mkdir(parents=True, exist_ok=True)
+                    ledger_output.write_text(
+                        json.dumps(detailed_body, indent=2, sort_keys=True) + "\n",
+                        encoding="utf-8",
+                    )
                 return validate_terminal_summary(detailed_body)
         sleep_fn(2)
 
@@ -227,6 +234,10 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--receipt", required=True)
     parser.add_argument("--output", required=True)
+    parser.add_argument(
+        "--ledger-output",
+        help="Optional path for the final detailed durable handoff ledger used by governed reporting.",
+    )
     parser.add_argument("--origin", default=ACTION_ORIGIN)
     args = parser.parse_args()
 
@@ -259,6 +270,7 @@ def main() -> int:
                 source_run_id=source_run_id,
                 token=token,
                 timeout_seconds=_timeout_seconds(),
+                ledger_output=Path(args.ledger_output) if args.ledger_output else None,
             )
 
     Path(args.output).write_text(
