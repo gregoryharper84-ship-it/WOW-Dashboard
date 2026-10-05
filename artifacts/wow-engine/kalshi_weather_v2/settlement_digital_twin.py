@@ -19,6 +19,7 @@ class PredicateKind(str, Enum):
     ABOVE = "ABOVE"
     BELOW = "BELOW"
     RANGE = "RANGE"
+    OUTSIDE_RANGE = "OUTSIDE_RANGE"
 
 
 class SettlementState(str, Enum):
@@ -42,9 +43,9 @@ class SettlementPredicate:
             raise SettlementTwinError("SETTLEMENT_PREDICATE_INVALID", "ABOVE requires lower")
         if self.kind is PredicateKind.BELOW and self.upper is None:
             raise SettlementTwinError("SETTLEMENT_PREDICATE_INVALID", "BELOW requires upper")
-        if self.kind is PredicateKind.RANGE:
+        if self.kind in {PredicateKind.RANGE, PredicateKind.OUTSIDE_RANGE}:
             if self.lower is None or self.upper is None:
-                raise SettlementTwinError("SETTLEMENT_PREDICATE_INVALID", "RANGE requires lower and upper")
+                raise SettlementTwinError("SETTLEMENT_PREDICATE_INVALID", f"{self.kind.value} requires lower and upper")
             if self.lower > self.upper:
                 raise SettlementTwinError("SETTLEMENT_PREDICATE_INVALID", "lower exceeds upper")
 
@@ -58,7 +59,8 @@ class SettlementPredicate:
             return value <= float(self.upper) if self.upper_inclusive else value < float(self.upper)
         lower_ok = value >= float(self.lower) if self.lower_inclusive else value > float(self.lower)
         upper_ok = value <= float(self.upper) if self.upper_inclusive else value < float(self.upper)
-        return lower_ok and upper_ok
+        inside = lower_ok and upper_ok
+        return not inside if self.kind is PredicateKind.OUTSIDE_RANGE else inside
 
     def payload(self) -> Mapping[str, Any]:
         out = asdict(self)
@@ -191,7 +193,23 @@ def complement_predicate(predicate: SettlementPredicate) -> SettlementPredicate:
             lower=predicate.upper,
             lower_inclusive=not predicate.upper_inclusive,
         )
-    raise SettlementTwinError("SETTLEMENT_COMPLEMENT_NON_ATOMIC", "range complement is disjoint and must be represented explicitly")
+    if predicate.kind is PredicateKind.RANGE:
+        return SettlementPredicate(
+            kind=PredicateKind.OUTSIDE_RANGE,
+            lower=predicate.lower,
+            upper=predicate.upper,
+            lower_inclusive=predicate.lower_inclusive,
+            upper_inclusive=predicate.upper_inclusive,
+        )
+    if predicate.kind is PredicateKind.OUTSIDE_RANGE:
+        return SettlementPredicate(
+            kind=PredicateKind.RANGE,
+            lower=predicate.lower,
+            upper=predicate.upper,
+            lower_inclusive=predicate.lower_inclusive,
+            upper_inclusive=predicate.upper_inclusive,
+        )
+    raise SettlementTwinError("SETTLEMENT_COMPLEMENT_UNSUPPORTED", predicate.kind.value)
 
 
 def build_atomic_temperature_twin(
@@ -219,6 +237,14 @@ def build_atomic_temperature_twin(
             state = SettlementState.LOCKED_YES
         elif yes.kind is PredicateKind.BELOW and not yes.matches(observed_extreme):
             state = SettlementState.LOCKED_NO
+        elif yes.kind is PredicateKind.RANGE and yes.upper is not None:
+            upper_crossed = (
+                observed_extreme > float(yes.upper)
+                if yes.upper_inclusive
+                else observed_extreme >= float(yes.upper)
+            )
+            if upper_crossed:
+                state = SettlementState.LOCKED_NO
 
     return SettlementDigitalTwin(
         twin_snapshot_id=twin_snapshot_id,
