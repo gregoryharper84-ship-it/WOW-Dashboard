@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from v17.nfl_ml_challenger_v2 import (
@@ -112,3 +114,21 @@ def test_forward_shadow_rejects_point_mismatch():
             calibration_season=2025,
             source_feature_hash="b" * 64,
         )
+
+
+def test_forward_shadow_migration_is_service_role_only():
+    migration = (
+        Path(__file__).parent
+        / "migrations"
+        / "20261005_nfl_ml_challenger_forward_shadow.sql"
+    ).read_text()
+    normalized = " ".join(migration.lower().split())
+
+    assert (
+        "revoke all privileges on table public.wow_nfl_ml_challenger_forward_shadow "
+        "from public, anon, authenticated;"
+    ) in normalized
+    assert (
+        "grant select, insert, update on table public.wow_nfl_ml_challenger_forward_shadow "
+        "to service_role;"
+    ) in normalized
