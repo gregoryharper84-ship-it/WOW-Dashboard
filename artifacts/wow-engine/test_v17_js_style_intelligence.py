@@ -128,6 +128,17 @@ def test_same_event_shared_driver_is_typed_without_joint_probability() -> None:
     assert clusters[0]["can_execute"] is False
 
 
+def test_same_event_neutral_cluster_still_cannot_use_independence_product() -> None:
+    rows = [
+        {"event_id": "NHL:VGK@VAN", "direction": "LESS"},
+        {"event_id": "NHL:VGK@VAN", "direction": "LESS"},
+    ]
+    clusters = cluster_candidates(rows)
+    assert clusters[0]["dependence_type"] == "THESIS_NEUTRAL"
+    assert clusters[0]["joint_probability"] is None
+    assert clusters[0]["independence_product_allowed"] is False
+
+
 def test_mixed_same_event_drivers_are_unresolved_dependence() -> None:
     rows = [
         {"event_id": "NFL:DET@CAR", "direction": "LESS", "shared_driver": "LOW_PASS_VOLUME"},
