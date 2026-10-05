@@ -11,6 +11,16 @@ from kalshi_weather_v2.portfolio_risk import (
     WeatherScenario,
     build_weather_event,
 )
+from kalshi_weather_v2.validation_meta import (
+    BaselineKind,
+    BaselinePrediction,
+    ComplexityGatePolicy,
+    ProbabilityValidationSample,
+    SettlementRedTeamCategory,
+    SettlementRedTeamFixture,
+    SettlementRedTeamObservation,
+    ValidationMetaLayer,
+)
 from kalshi_weather_v2.probability_change_ledger import (
     AttributionDomain,
     ProbabilityAttributionComponent,
@@ -81,6 +91,7 @@ class FakeClient:
             "wow_kalshi_weather_outcomes": FakeTable("outcome_id"),
             "wow_kalshi_weather_probability_changes": FakeTable("probability_change_id"),
             "wow_kalshi_weather_portfolio_risk_snapshots": FakeTable("risk_snapshot_id"),
+            "wow_kalshi_weather_validation_meta_reports": FakeTable("report_id"),
             "wow_runtime_capabilities": FakeTable("capability_key"),
         }
 
@@ -229,3 +240,82 @@ def test_portfolio_risk_persistence_is_idempotent_and_non_executable():
     assert first["market_price_used_as_weather_input"] is False
     assert first["risk_state_used_as_weather_input"] is False
     assert len(client.tables["wow_kalshi_weather_portfolio_risk_snapshots"].rows) == 1
+
+
+def test_validation_meta_persistence_is_idempotent_and_non_executable():
+    client = FakeClient()
+    store = KalshiWeatherPersistence(client)
+    baseline = BaselinePrediction(
+        baseline_id="nbm",
+        kind=BaselineKind.NBM,
+        version="v1",
+        p_yes=0.60,
+        available_at="2026-10-04T15:00:00Z",
+        evidence_ids=("nbm-evidence",),
+    )
+    samples = (
+        ProbabilityValidationSample(
+            sample_id="a",
+            prediction_id="prediction-a",
+            decision_time="2026-10-04T16:00:00Z",
+            settled_at="2026-10-04T18:00:00Z",
+            champion_p_yes=0.80,
+            yes_outcome=True,
+            confidence_score=0.90,
+            champion_evidence_ids=("champion-a",),
+            baselines=(baseline,),
+            lane="HOURLY_TEMPERATURE",
+        ),
+        ProbabilityValidationSample(
+            sample_id="b",
+            prediction_id="prediction-b",
+            decision_time="2026-10-04T16:00:00Z",
+            settled_at="2026-10-04T18:00:00Z",
+            champion_p_yes=0.20,
+            yes_outcome=False,
+            confidence_score=0.90,
+            champion_evidence_ids=("champion-b",),
+            baselines=(baseline,),
+            lane="HOURLY_TEMPERATURE",
+        ),
+    )
+    fixture = SettlementRedTeamFixture(
+        fixture_id="source-conflict",
+        version="v1",
+        category=SettlementRedTeamCategory.SETTLEMENT_SOURCE_CONFLICT,
+        expected_terminal_code="NO_PLAY_SETTLEMENT_AMBIGUITY",
+        evidence_ids=("fixture-evidence",),
+        description="Conflicting settlement sources fail closed.",
+    )
+    report = ValidationMetaLayer().evaluate(
+        as_of_time="2026-10-04T19:00:00Z",
+        probability_samples=samples,
+        selective_confidence_thresholds=(0.0, 0.8),
+        counterfactual_samples=(),
+        red_team_fixtures=(fixture,),
+        red_team_observations=(
+            SettlementRedTeamObservation(
+                fixture_identity=fixture.identity,
+                observed_terminal_code="NO_PLAY_SETTLEMENT_AMBIGUITY",
+                observed_at="2026-10-04T18:30:00Z",
+                evidence_ids=("observed-evidence",),
+            ),
+        ),
+        complexity_policy=ComplexityGatePolicy(
+            policy_id="VALIDATION_COMPLEXITY_GATE",
+            version="research-v1",
+            evidence_id="holdout-evidence",
+            minimum_holdout_n=2,
+            minimum_brier_advantage=0.0,
+            minimum_log_loss_advantage=0.0,
+            minimum_red_team_pass_rate=1.0,
+            minimum_selected_coverage=0.5,
+            maximum_selected_brier=0.25,
+        ),
+    )
+    first = store.persist_validation_meta(report)
+    second = store.persist_validation_meta(report)
+    assert first == second
+    assert first["can_execute"] is False
+    assert first["market_price_used_as_weather_input"] is False
+    assert len(client.tables["wow_kalshi_weather_validation_meta_reports"].rows) == 1
