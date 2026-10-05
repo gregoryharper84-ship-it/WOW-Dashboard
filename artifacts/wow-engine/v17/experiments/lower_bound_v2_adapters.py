@@ -109,6 +109,7 @@ def adapt_moneyline_shadow(
     settlement: Any,
     ood_state: str,
     support_n: int | None = None,
+    local_support_n: int | None = None,
     support_distance: float | None = None,
     lane_specific_gate_pass: bool = True,
     upstream_hard_blockers: Sequence[str] = (),
@@ -132,7 +133,7 @@ def adapt_moneyline_shadow(
         calibrated_upper_bound=upper,
         settlement=settlement,
         ood_state=ood_state,
-        support_n=support_n,
+        support_n=local_support_n,
         support_distance=support_distance,
         lane_specific_gate_pass=lane_specific_gate_pass,
         upstream_hard_blockers=upstream_hard_blockers,
@@ -177,7 +178,7 @@ def adapt_spread_shadow(
     proper-score evaluation rather than silently counted as losses.
     """
     p_push = _number(record.get("p_push", 0.0), field="SPREAD_PUSH_PROBABILITY")
-    support_n = _optional_int(
+    distribution_sample_n = _optional_int(
         record.get("distribution_sample_n"),
         field="SPREAD_DISTRIBUTION_SAMPLE_N",
     )
@@ -209,6 +210,7 @@ def adapt_spread_shadow(
             "p_cover": record.get("p_cover"),
             "p_push": p_push,
             "p_not_cover": record.get("p_not_cover"),
+            "distribution_sample_n_source_only": distribution_sample_n,
             "model_program": record.get("model_program"),
             "model_family": record.get("model_family"),
         }
