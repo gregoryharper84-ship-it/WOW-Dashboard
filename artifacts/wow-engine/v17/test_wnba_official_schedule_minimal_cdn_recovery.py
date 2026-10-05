@@ -71,7 +71,8 @@ def test_all_official_transports_still_fail_closed_and_preserve_minimal_stage_re
     assert excinfo.value.code == "WNBA_OFFICIAL_SOURCE_UNAVAILABLE"
     detail = excinfo.value.detail
     assert detail["primary_source"] == fallback.CDN_PROVIDER
-    assert detail["fallback_source"] == fallback.WEB_PROVIDER
+    assert detail["fallback_source"] == fallback.API_PROVIDER
+    assert detail["fallback_url"] == fallback.SCHEDULE_API_URL
     assert len(detail["primary_errors"]) == wnba.HTTP_ATTEMPTS
     assert len(detail["primary_minimal_errors"]) == wnba.HTTP_ATTEMPTS
     assert len(detail["fallback_errors"]) == wnba.HTTP_ATTEMPTS
