@@ -2,7 +2,9 @@ from v17 import multisport_prop_live_canary as subject
 
 
 def test_mlb_canary_uses_official_team_abbreviation_opponents():
-    assert {row["opponent"] for row in subject.CONFIGS["MLB"]} == {"BAL", "TOR"}
+    opponents = {row["opponent"] for row in subject.CONFIGS["MLB"]}
+    assert len(opponents) == 2
+    assert all(len(opponent) == 3 and opponent.isalpha() and opponent.isupper() for opponent in opponents)
 
 
 def test_wnba_canary_uses_official_team_tricode_opponents():

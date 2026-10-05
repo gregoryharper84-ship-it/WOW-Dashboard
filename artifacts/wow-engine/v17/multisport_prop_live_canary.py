@@ -14,6 +14,7 @@ import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from copy import deepcopy
+from datetime import datetime, timezone
 from typing import Any
 
 ORIGIN = os.environ.get("WOW_SERVICE_URL", "https://wow-governed-probability-engine.onrender.com").rstrip("/")
@@ -36,22 +37,22 @@ def _row(**kwargs: Any) -> dict[str, Any]:
 
 CONFIGS: dict[str, list[dict[str, Any]]] = {
     "NFL": [
-        _row(row_key="nfl-puka-more", event_id="2026_02_NYG_LA", event_start_time="2026-09-22T00:15:00Z", sport="NFL", league="NFL", player="Puka Nacua", stat_type="RECEIVING_YARDS", line=77.5, direction="MORE", opponent="New York Giants"),
-        _row(row_key="nfl-puka-less", event_id="2026_02_NYG_LA", event_start_time="2026-09-22T00:15:00Z", sport="NFL", league="NFL", player="Puka Nacua", stat_type="RECEIVING_YARDS", line=77.5, direction="LESS", opponent="New York Giants"),
-        _row(row_key="nfl-davante-more", event_id="2026_02_NYG_LA", event_start_time="2026-09-22T00:15:00Z", sport="NFL", league="NFL", player="Davante Adams", stat_type="RECEIVING_YARDS", line=62.5, direction="MORE", opponent="New York Giants"),
-        _row(row_key="nfl-davante-less", event_id="2026_02_NYG_LA", event_start_time="2026-09-22T00:15:00Z", sport="NFL", league="NFL", player="Davante Adams", stat_type="RECEIVING_YARDS", line=62.5, direction="LESS", opponent="New York Giants"),
+        _row(row_key="nfl-bijan-more", event_id="2026_04_ATL_NO", event_start_time="2026-10-06T00:15:00Z", sport="NFL", league="NFL", player="Bijan Robinson", stat_type="RUSHING_YARDS", line=84.5, direction="MORE", opponent="NO"),
+        _row(row_key="nfl-bijan-less", event_id="2026_04_ATL_NO", event_start_time="2026-10-06T00:15:00Z", sport="NFL", league="NFL", player="Bijan Robinson", stat_type="RUSHING_YARDS", line=84.5, direction="LESS", opponent="NO"),
+        _row(row_key="nfl-hooper-more", event_id="2026_04_ATL_NO", event_start_time="2026-10-06T00:15:00Z", sport="NFL", league="NFL", player="Austin Hooper", stat_type="RECEIVING_YARDS", line=11.5, direction="MORE", opponent="NO"),
+        _row(row_key="nfl-hooper-less", event_id="2026_04_ATL_NO", event_start_time="2026-10-06T00:15:00Z", sport="NFL", league="NFL", player="Austin Hooper", stat_type="RECEIVING_YARDS", line=11.5, direction="LESS", opponent="NO"),
     ],
     "MLB": [
-        _row(row_key="mlb-yesavage-more", event_id="MLB:824787", event_start_time="2026-09-21T22:35:00Z", sport="MLB", league="MLB", player="Trey Yesavage", stat_type="PITCHER_STRIKEOUTS", line=4.5, direction="MORE", opponent="BAL"),
-        _row(row_key="mlb-yesavage-less", event_id="MLB:824787", event_start_time="2026-09-21T22:35:00Z", sport="MLB", league="MLB", player="Trey Yesavage", stat_type="PITCHER_STRIKEOUTS", line=4.5, direction="LESS", opponent="BAL"),
-        _row(row_key="mlb-baz-more", event_id="MLB:824787", event_start_time="2026-09-21T22:35:00Z", sport="MLB", league="MLB", player="Shane Baz", stat_type="PITCHER_STRIKEOUTS", line=5.5, direction="MORE", opponent="TOR"),
-        _row(row_key="mlb-baz-less", event_id="MLB:824787", event_start_time="2026-09-21T22:35:00Z", sport="MLB", league="MLB", player="Shane Baz", stat_type="PITCHER_STRIKEOUTS", line=5.5, direction="LESS", opponent="TOR"),
+        _row(row_key="mlb-sale-more", event_id="MLB:849819", event_start_time="2026-10-06T22:00:00Z", sport="MLB", league="MLB", player="Chris Sale", stat_type="PITCHER_STRIKEOUTS", line=8.5, direction="MORE", opponent="LAD"),
+        _row(row_key="mlb-sale-less", event_id="MLB:849819", event_start_time="2026-10-06T22:00:00Z", sport="MLB", league="MLB", player="Chris Sale", stat_type="PITCHER_STRIKEOUTS", line=8.5, direction="LESS", opponent="LAD"),
+        _row(row_key="mlb-yamamoto-more", event_id="MLB:849819", event_start_time="2026-10-06T22:00:00Z", sport="MLB", league="MLB", player="Yoshinobu Yamamoto", stat_type="PITCHER_STRIKEOUTS", line=7.5, direction="MORE", opponent="ATL"),
+        _row(row_key="mlb-yamamoto-less", event_id="MLB:849819", event_start_time="2026-10-06T22:00:00Z", sport="MLB", league="MLB", player="Yoshinobu Yamamoto", stat_type="PITCHER_STRIKEOUTS", line=7.5, direction="LESS", opponent="ATL"),
     ],
     "WNBA": [
-        _row(row_key="wnba-stewart-more", event_id="WOW:WNBA:2026-09-21:ATL@NYL", event_start_time="2026-09-22T00:00:00Z", sport="WNBA", league="WNBA", player="Breanna Stewart", stat_type="POINTS", line=20.5, direction="MORE", opponent="ATL"),
-        _row(row_key="wnba-stewart-less", event_id="WOW:WNBA:2026-09-21:ATL@NYL", event_start_time="2026-09-22T00:00:00Z", sport="WNBA", league="WNBA", player="Breanna Stewart", stat_type="POINTS", line=20.5, direction="LESS", opponent="ATL"),
-        _row(row_key="wnba-gray-more", event_id="WOW:WNBA:2026-09-21:ATL@NYL", event_start_time="2026-09-22T00:00:00Z", sport="WNBA", league="WNBA", player="Allisha Gray", stat_type="POINTS", line=18.5, direction="MORE", opponent="NYL"),
-        _row(row_key="wnba-gray-less", event_id="WOW:WNBA:2026-09-21:ATL@NYL", event_start_time="2026-09-22T00:00:00Z", sport="WNBA", league="WNBA", player="Allisha Gray", stat_type="POINTS", line=18.5, direction="LESS", opponent="NYL"),
+        _row(row_key="wnba-stewart-more", event_id="WNBA:1042600202", event_start_time="2026-10-07T23:30:00Z", sport="WNBA", league="WNBA", player="Breanna Stewart", stat_type="POINTS", line=20.5, direction="MORE", opponent="ATL"),
+        _row(row_key="wnba-stewart-less", event_id="WNBA:1042600202", event_start_time="2026-10-07T23:30:00Z", sport="WNBA", league="WNBA", player="Breanna Stewart", stat_type="POINTS", line=20.5, direction="LESS", opponent="ATL"),
+        _row(row_key="wnba-gray-more", event_id="WNBA:1042600202", event_start_time="2026-10-07T23:30:00Z", sport="WNBA", league="WNBA", player="Allisha Gray", stat_type="POINTS", line=18.5, direction="MORE", opponent="NYL"),
+        _row(row_key="wnba-gray-less", event_id="WNBA:1042600202", event_start_time="2026-10-07T23:30:00Z", sport="WNBA", league="WNBA", player="Allisha Gray", stat_type="POINTS", line=18.5, direction="LESS", opponent="NYL"),
     ],
 }
 
@@ -194,12 +195,19 @@ def run_stress() -> dict[str, Any]:
 
 def self_test() -> None:
     assert set(CONFIGS) == {"NFL", "MLB", "WNBA"}
+    now = datetime.now(timezone.utc)
     for sport, rows in CONFIGS.items():
         assert len(rows) == 4, (sport, len(rows))
         assert len({row["row_key"] for row in rows}) == 4
         assert all(row["sport"] == sport for row in rows)
         assert all(row["direction"] in {"MORE", "LESS"} for row in rows)
         assert all(row["platform"] == "WOW_PRODUCTION_CANARY" for row in rows)
+        for row in rows:
+            start = datetime.fromisoformat(str(row["event_start_time"]).replace("Z", "+00:00"))
+            if start <= now:
+                raise AssertionError(
+                    f"{sport}:STALE_CANARY_EVENT:{row['event_id']}:{row['event_start_time']}"
+                )
     print(json.dumps({"status": "SELF_TEST_PASS", "sports": sorted(CONFIGS), "rows": 12, "can_execute": False}))
 
 
