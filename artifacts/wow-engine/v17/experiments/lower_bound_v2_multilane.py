@@ -19,6 +19,7 @@ PASS before a research eligibility policy can admit a row.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from math import isfinite, log, sqrt
 from typing import Any, Mapping, Sequence
 
@@ -110,6 +111,16 @@ class LocalReliabilityBound:
     max_support_distance_used: float | None
     wilson_z: float
     included_ood_states: tuple[str, ...]
+
+
+def _aware_datetime(value: Any, *, field: str) -> datetime:
+    try:
+        parsed = datetime.fromisoformat(str(value or "").strip().replace("Z", "+00:00"))
+    except (TypeError, ValueError) as exc:
+        raise LowerBoundExperimentError(f"LOWER_BOUND_{field}_TIMESTAMP_INVALID") from exc
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise LowerBoundExperimentError(f"LOWER_BOUND_{field}_TIMESTAMP_INVALID")
+    return parsed
 
 
 def _probability(value: Any, *, field: str) -> float:
@@ -286,6 +297,7 @@ def local_reliability_bound(
     lane_key: str,
     point_probability: float,
     historical_rows: Sequence[Mapping[str, Any]],
+    candidate_as_of: str,
     min_effective_n: int = 30,
     max_neighbors: int = 100,
     max_probability_distance: float = 0.08,
@@ -296,13 +308,17 @@ def local_reliability_bound(
     """Estimate a local empirical bound with both sample and locality constraints.
 
     Locality is never inferred across lanes. Rows must match the exact lane_key.
-    Optional support_distance is computed upstream by the controlling lane and
-    can represent lane-certified feature-space support or leverage.
+    Historical evidence is point-in-time safe: both the historical prediction
+    and its outcome availability timestamp must be strictly earlier than the
+    candidate as-of instant. Optional support_distance is computed upstream by
+    the controlling lane and can represent lane-certified feature-space support
+    or leverage.
     """
     lane_key = str(lane_key or "").strip()
     if not lane_key:
         raise LowerBoundExperimentError("LOWER_BOUND_LANE_KEY_MISSING")
     point = _probability(point_probability, field="CANDIDATE_POINT_PROBABILITY")
+    as_of = _aware_datetime(candidate_as_of, field="CANDIDATE_AS_OF")
     if min_effective_n < 1 or max_neighbors < min_effective_n:
         raise LowerBoundExperimentError("LOWER_BOUND_LOCAL_SAMPLE_POLICY_INVALID")
     if not 0.0 < float(max_probability_distance) <= 1.0:
@@ -318,6 +334,21 @@ def local_reliability_bound(
 
     candidates: list[tuple[float, float, int, float | None, str]] = []
     for raw in historical_rows:
+        prediction_at = _aware_datetime(
+            raw.get("prediction_timestamp"),
+            field="HISTORY_PREDICTION",
+        )
+        outcome_available_at = _aware_datetime(
+            raw.get("outcome_available_at"),
+            field="HISTORY_OUTCOME_AVAILABLE",
+        )
+        if prediction_at >= as_of or outcome_available_at >= as_of:
+            continue
+        if outcome_available_at < prediction_at:
+            raise LowerBoundExperimentError(
+                "LOWER_BOUND_HISTORY_OUTCOME_PRECEDES_PREDICTION"
+            )
+
         parsed = _validate_probability_row(raw, require_settlement=True)
         if parsed["lane_key"] != lane_key:
             continue
