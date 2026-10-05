@@ -57,6 +57,10 @@
         "Run V17 Best Props",
         "best props today",
         "full model props"
+      ],
+      "composes": [
+        "WOW_V17_RESEARCH_MARKET_CONTEXT",
+        "WOW_V17_JS_STYLE_INTELLIGENCE"
       ]
     },
     {
