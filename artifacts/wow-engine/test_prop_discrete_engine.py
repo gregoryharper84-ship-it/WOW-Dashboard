@@ -205,3 +205,32 @@ def test_whole_line_push_is_preserved_and_less_scores_from_same_pmf():
     )
     assert result.row.raw_model_probability == pytest.approx(0.25)
     assert result.row.push_probability == pytest.approx(0.20)
+
+
+def test_model_stage_timer_is_non_secret_and_failure_transparent(caplog):
+    from prop_discrete_engine import _model_stage_timer
+
+    secret = "DO_NOT_LOG_MODEL_PAYLOAD"
+    with pytest.raises(RuntimeError, match=secret):
+        with _model_stage_timer("fitted_inference"):
+            raise RuntimeError(secret)
+
+    log_text = "\n".join(record.getMessage() for record in caplog.records)
+    assert "WOW_V17_PROP_MODEL_STAGE" in log_text
+    assert "stage=fitted_inference" in log_text
+    assert "status=FAILED" in log_text
+    assert "can_execute=false" in log_text
+    assert secret not in log_text
+
+
+def test_model_stage_timer_reports_success_without_result_payload(caplog):
+    from prop_discrete_engine import _model_stage_timer
+
+    with _model_stage_timer("calibration_bounds"):
+        marker = {"calibrated_probability": 0.731234}
+    assert marker["calibrated_probability"] == pytest.approx(0.731234)
+
+    log_text = "\n".join(record.getMessage() for record in caplog.records)
+    assert "stage=calibration_bounds" in log_text
+    assert "status=PASS" in log_text
+    assert "0.731234" not in log_text
