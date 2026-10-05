@@ -207,15 +207,25 @@ def install_interactive_pick_parallel_wrapper(app: Any, *, market_api: Any) -> b
         sport_label = next(iter(sports)) if len(sports) == 1 else "mixed" if sports else "unknown"
         annotate_request(sport=sport_label, row_count=len(batch.rows), batch_size=len(batch.rows))
         workers = _score_worker_count()
-        if str(batch.response_mode or "FULL").upper() != "COMPACT" or len(batch.rows) <= 1 or workers <= 1:
+        if str(batch.response_mode or "FULL").upper() != "COMPACT" or len(batch.rows) <= 1:
             with stage_timer("fitted_scoring"):
                 response = _invoke_captured_endpoint(captured_endpoint, batch, x_wow_model_identity)
             if isinstance(response, dict):
                 response["can_execute"] = False
             return response
 
+        # Prehydrate every multi-row COMPACT batch even when production keeps
+        # fitted scoring serial for the 512 MiB memory budget. Group-level
+        # hydration can still collapse shared MORE/LESS evidence to one fetch.
         with stage_timer("hydration"):
             prepared = prehydrate_batch(batch, market_api=market_api)
+        if workers <= 1:
+            with stage_timer("fitted_scoring"):
+                response = _invoke_captured_endpoint(captured_endpoint, prepared, x_wow_model_identity)
+            if isinstance(response, dict):
+                response["can_execute"] = False
+            return response
+
         results: dict[int, dict[str, Any]] = {}
         max_workers = min(workers, len(prepared.rows))
         with stage_timer("fitted_scoring"):
