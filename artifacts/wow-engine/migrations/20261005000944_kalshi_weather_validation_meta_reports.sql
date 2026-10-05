@@ -66,7 +66,25 @@ create table public.wow_kalshi_weather_validation_meta_reports (
       and jsonb_array_length(input_manifest->'complexity_policy'->'required_red_team_categories') > 0
       and not jsonb_path_exists(
         input_manifest,
-        '$.complexity_policy.required_meteorological_baseline_kinds[*] ? (@ == "MARKET")'
+        '$.complexity_policy.required_meteorological_baseline_kinds[*] ? (@ != "NBM" && @ != "NWS" && @ != "CLIMATOLOGY")'
+      )
+      and not jsonb_path_exists(
+        input_manifest,
+        '$.complexity_policy.required_red_team_categories[*] ? (
+          @ != "SETTLEMENT_SOURCE_CONFLICT"
+          && @ != "STATION_IDENTITY_MISMATCH"
+          && @ != "TIMEZONE_AMBIGUITY"
+          && @ != "ROUNDING_BOUNDARY"
+          && @ != "PRELIMINARY_VS_FINAL"
+          && @ != "HOURLY_VS_DAILY_SEMANTICS"
+        )'
+      )
+    ),
+  constraint chk_kalshi_weather_validation_market_baseline_observational
+    check (
+      not jsonb_path_exists(
+        input_manifest,
+        '$.probability_samples[*].baselines[*] ? (@.kind == "MARKET" && @.market_observational_only != true)'
       )
     ),
   constraint chk_kalshi_weather_validation_no_market_feedback
