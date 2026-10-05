@@ -103,6 +103,9 @@ For material candidates, invoke `WOW_V17_RESEARCH_MARKET_CONTEXT_SKILL.md` as ne
 - For MLB strikeouts, do not double-penalize opponent/contact context already consumed by certified `opponent_context`.
 - Keep `EXACT_LINE`, `ADJACENT_LINE`, and `NO_MARKET` distinct.
 
+### JS Style Intelligence overlay — additive only
+When enough pregame role/opportunity/distribution evidence exists, annotate prop candidates with `WOW_V17_JS_STYLE_INTELLIGENCE_SKILL.md` after research hydration and before final presentation. The overlay may add JS archetypes, threshold/opportunity burden, research priority, and shared-game-thesis metadata. It must never narrow the Full Model row universe, replace canonical MORE/LESS scoring, or alter model probability, calibrated probability, calibrated lower bound, rank eligibility, or terminal status. Missing JS features do not block specialist scoring. Live/postgame values from screenshots are learning evidence only and cannot backfill pregame JS features.
+
 ## 7. Probability qualification
 A row is eligible for the official pool only when the backend returns the route-required governed numeric package and publication/rank gates pass.
 
