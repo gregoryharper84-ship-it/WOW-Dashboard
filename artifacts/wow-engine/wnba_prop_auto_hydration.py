@@ -441,7 +441,7 @@ def _resolve_player_and_team(
     return {**match, "opponent": opponent}
 
 
-def _player_game_log(
+def _player_game_log_stats(
     player_id: str,
     player_name: str,
     stat_column: str,
@@ -449,7 +449,7 @@ def _player_game_log(
     event_start: datetime,
     *,
     http_get: Callable[..., Any],
-) -> tuple[list[float], list[dict[str, Any]]]:
+) -> tuple[list[float], list[dict[str, Any]], str]:
     # Keep LeagueID first: the 2026 WNBA Stats endpoint is query-order-sensitive.
     payload = _request(
         f"{WNBA_STATS_BASE}/leaguegamelog",
@@ -521,7 +521,7 @@ def _player_game_log(
         }
         for row in recent
     ]
-    return game_log, box
+    return game_log, box, GAME_LOG_STATS_PROVIDER
 
 
 def _pdf_report_timestamp(candidate: datetime) -> tuple[str, datetime]:
