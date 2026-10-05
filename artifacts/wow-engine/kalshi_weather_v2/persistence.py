@@ -12,6 +12,7 @@ from .portfolio_risk import PortfolioRiskSnapshot
 from .probability_change_ledger import ProbabilityChangeRecord
 from .probability_core import CalibrationProfile
 from .source_adapters import ProviderSnapshot
+from .validation_meta import ValidationMetaReport
 
 
 class KalshiWeatherPersistenceError(RuntimeError):
@@ -190,6 +191,13 @@ class KalshiWeatherPersistence:
             "wow_kalshi_weather_portfolio_risk_snapshots",
             "risk_snapshot_id",
             snapshot.persistence_row(),
+        )
+
+    def persist_validation_meta(self, report: ValidationMetaReport) -> Mapping[str, Any]:
+        return self._insert_exact(
+            "wow_kalshi_weather_validation_meta_reports",
+            "report_id",
+            report.persistence_row(),
         )
 
     def persist_outcome(
