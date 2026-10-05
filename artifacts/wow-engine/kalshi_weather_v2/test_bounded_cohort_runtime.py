@@ -155,3 +155,59 @@ def test_market_recorder_captures_all_siblings_even_when_calibration_sample_exis
     assert result.samples_skipped_existing == 1
     assert result.market_microstructure_snapshots_captured == 2
     assert result.market_microstructure_failures == ()
+
+
+
+def test_weather_shadow_detects_observed_high_memory_pressure(monkeypatch):
+    values = {
+        "/sys/fs/cgroup/memory.current": "509849600",
+        "/sys/fs/cgroup/memory.max": "536870900",
+    }
+
+    class FakePath:
+        def __init__(self, path):
+            self.path = path
+
+        def read_text(self, encoding="utf-8"):
+            if self.path in values:
+                return values[self.path]
+            raise OSError(self.path)
+
+    monkeypatch.setattr(runtime, "Path", FakePath)
+    monkeypatch.delenv("WOW_KALSHI_WEATHER_EMPIRICAL_MAX_MEMORY_RATIO", raising=False)
+
+    under_pressure, ratio = runtime._weather_memory_pressure()
+
+    assert under_pressure is True
+    assert ratio is not None
+    assert ratio > 0.94
+
+
+def test_weather_shadow_loop_skips_cycle_under_memory_pressure(monkeypatch):
+    cycles = []
+    sleeps = []
+
+    monkeypatch.setattr(runtime, "_weather_memory_pressure", lambda: (True, 0.95))
+
+    def fake_cycle(*, db_client_fn):
+        cycles.append(db_client_fn())
+        raise AssertionError("shadow cycle must shed load under memory pressure")
+
+    async def stop_after_shed(seconds):
+        sleeps.append(seconds)
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(runtime, "_run_bounded_shadow_cycle", fake_cycle)
+    monkeypatch.setattr(runtime.asyncio, "sleep", stop_after_shed)
+
+    async def exercise():
+        with pytest.raises(asyncio.CancelledError):
+            await runtime._run_bounded_shadow_loop(
+                db_client_fn=lambda: "db-client",
+                interval_seconds=900,
+                initial_delay_seconds=0,
+            )
+
+    asyncio.run(exercise())
+    assert cycles == []
+    assert sleeps == [900]
