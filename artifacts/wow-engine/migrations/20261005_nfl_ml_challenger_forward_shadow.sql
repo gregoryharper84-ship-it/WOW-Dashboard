@@ -75,6 +75,14 @@ create table if not exists public.wow_nfl_ml_challenger_forward_shadow (
 
 alter table public.wow_nfl_ml_challenger_forward_shadow enable row level security;
 
+-- Research ledger is service-role only. Do not rely on RLS alone: Supabase
+-- default table grants include table-level privileges that are outside the
+-- intended shadow-write contract.
+revoke all privileges on table public.wow_nfl_ml_challenger_forward_shadow
+  from public, anon, authenticated;
+grant select, insert, update on table public.wow_nfl_ml_challenger_forward_shadow
+  to service_role;
+
 create index if not exists wow_nfl_ml_challenger_forward_event_start
   on public.wow_nfl_ml_challenger_forward_shadow(event_start_time_utc);
 
