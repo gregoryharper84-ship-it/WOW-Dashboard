@@ -15,4 +15,7 @@ def test_multisport_live_canary_contract_is_four_rows_per_supported_sport():
 def test_multisport_live_canary_preserves_nonexecution():
     assert subject.ORIGIN.startswith("https://")
     assert subject.CONFIGS["MLB"][0]["event_id"].startswith("MLB:")
-    assert subject.CONFIGS["WNBA"][0]["event_id"].startswith("WOW:WNBA:")
+    wnba_event_id = subject.CONFIGS["WNBA"][0]["event_id"]
+    league, separator, game_id = wnba_event_id.partition(":")
+    assert (league, separator) == ("WNBA", ":")
+    assert len(game_id) == 10 and game_id.isdigit()
