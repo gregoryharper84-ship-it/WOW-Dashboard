@@ -1,0 +1,131 @@
+name: wow-v17-product-runtime-reliability
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_run:
+    workflows: ["wow-v17-render-production-deploy"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: wow-v17-product-runtime-reliability
+  cancel-in-progress: true
+
+jobs:
+  product-runtime-watch:
+    name: Continuously verify WOW, LLP, Kalshi, and editor surfaces
+    if: >-
+      github.event_name != 'workflow_run' ||
+      github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      WOW_ACTION_API_KEY: ${{ secrets.WOW_ACTION_API_KEY }}
+      WOW_CAN_EXECUTE: "false"
+      WOW_DRY_RUN_ONLY: "true"
+
+    steps:
+      - name: Checkout protected main
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Verify engineering reliability control plane
+        run: python artifacts/wow-engine/v17/engineering_agent_team.py self-check
+
+      - name: Run safe product runtime probes
+        id: probes
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$WOW_CAN_EXECUTE" = "false"
+          test "$WOW_DRY_RUN_ONLY" = "true"
+          mkdir -p "$RUNNER_TEMP/product-runtime"
+          python artifacts/wow-engine/v17/product_runtime_reliability.py             --root "$GITHUB_WORKSPACE"             --output "$RUNNER_TEMP/product-runtime/receipt.json"
+
+          overall=$(jq -r '.status' "$RUNNER_TEMP/product-runtime/receipt.json")
+          echo "overall=$overall" >> "$GITHUB_OUTPUT"
+          jq -r '.surfaces | to_entries[] | "- " + .key + ": " + .value.status + (if (.value.blockers | length) > 0 then " — " + (.value.blockers | join(", ")) else "" end)'             "$RUNNER_TEMP/product-runtime/receipt.json" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Route product runtime incidents
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          receipt="$RUNNER_TEMP/product-runtime/receipt.json"
+
+          for surface in WOW_BETTING_ENGINE LLP_TEAM_BETTING_ENGINE KALSHI_WEATHER_MARKET_EXPERT; do
+            status=$(jq -r --arg surface "$surface" '.surfaces[$surface].status' "$receipt")
+            title="[AUTO] Product Runtime Reliability: ${surface}"
+            open_issue=$(gh issue list               --repo "$GITHUB_REPOSITORY"               --state open               --limit 100               --json number,title,body               --jq --arg title "$title" '[.[] | select(.title == $title) | select((.body // "") | contains("<!-- WOW_PRODUCT_RUNTIME_RELIABILITY -->"))] | first | .number // empty')
+
+            surface_json=$(jq -c --arg surface "$surface" '.surfaces[$surface]' "$receipt")
+            body_file="$RUNNER_TEMP/product-runtime/${surface}.md"
+            {
+              echo "<!-- WOW_PRODUCT_RUNTIME_RELIABILITY -->"
+              echo "## Product Runtime Reliability incident"
+              echo
+              echo "- Surface: `${surface}`"
+              echo "- Status: **${status}**"
+              echo "- Source workflow: `${GITHUB_WORKFLOW}`"
+              echo "- Source run: `${GITHUB_RUN_ID}`"
+              echo "- Repository SHA: `${GITHUB_SHA}`"
+              echo "- terminal_authority: `V17_TERMINAL_REDUCER`"
+              echo "- can_execute: `false`"
+              echo
+              echo '~~~json'
+              printf '%s\n' "$surface_json" | jq .
+              echo '~~~'
+            } > "$body_file"
+
+            if [ "$status" = "PASS" ]; then
+              if [ -n "$open_issue" ]; then
+                gh issue comment "$open_issue" --repo "$GITHUB_REPOSITORY"                   --body "Product Runtime Reliability recovery verified by workflow run ${GITHUB_RUN_ID}. Surface=${surface}; status=PASS; can_execute=false."
+                gh issue close "$open_issue" --repo "$GITHUB_REPOSITORY"
+              fi
+              continue
+            fi
+
+            if [ -z "$open_issue" ]; then
+              gh issue create                 --repo "$GITHUB_REPOSITORY"                 --title "$title"                 --body-file "$body_file"
+            else
+              gh issue comment "$open_issue"                 --repo "$GITHUB_REPOSITORY"                 --body-file "$body_file"
+            fi
+          done
+
+      - name: Upload product runtime receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wow-v17-product-runtime-reliability-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/product-runtime/receipt.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Enforce truthful overall status
+        if: steps.probes.outputs.overall != 'PASS'
+        run: |
+          echo "::error::One or more user-facing expert surfaces are not fully verified. Durable per-surface incident routing completed."
+          exit 1
+
+      - name: Preserve non-execution governance
+        if: always()
+        run: |
+          test "$WOW_CAN_EXECUTE" = "false"
+          test "$WOW_DRY_RUN_ONLY" = "true"
+          echo "terminal_authority=V17_TERMINAL_REDUCER" >> "$GITHUB_STEP_SUMMARY"
+          echo "can_execute=false" >> "$GITHUB_STEP_SUMMARY"
