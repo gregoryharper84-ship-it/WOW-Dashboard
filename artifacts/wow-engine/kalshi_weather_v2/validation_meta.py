@@ -171,6 +171,7 @@ class ModelScore:
 @dataclass(frozen=True)
 class BaselineDelta:
     baseline_identity: str
+    baseline_kind: str
     paired_n: int
     champion_brier_advantage: float
     champion_log_loss_advantage: float
@@ -420,6 +421,7 @@ class ComplexityGateResult:
 class ValidationMetaReport:
     report_id: str
     as_of_time: str
+    input_manifest: Mapping[str, object]
     model_scores: tuple[ModelScore, ...]
     baseline_deltas: tuple[BaselineDelta, ...]
     selective_curve: tuple[SelectiveScorePoint, ...]
@@ -433,6 +435,7 @@ class ValidationMetaReport:
     can_execute: bool = False
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "input_manifest", MappingProxyType(dict(self.input_manifest)))
         if self.market_price_used_as_weather_input:
             raise ValidationMetaError("MARKET_PRICE_WEATHER_INPUT_PROHIBITED")
         if self.can_execute:
@@ -443,6 +446,7 @@ class ValidationMetaReport:
             "report_id": self.report_id,
             "as_of_time": _iso(_parse_utc(self.as_of_time, "VALIDATION_REPORT_AS_OF")),
             "validation_meta_version": self.validation_meta_version,
+            "input_manifest": dict(self.input_manifest),
             "sample_ids": list(self.sample_ids),
             "counterfactual_sample_ids": list(self.counterfactual_sample_ids),
             "model_scores": [_jsonable(item) for item in self.model_scores],
@@ -514,7 +518,7 @@ class ValidationMetaLayer:
             selective_curve=selective_curve,
         )
 
-        report_id = validation_report_id(
+        input_manifest = _input_manifest(
             as_of_time=as_of_time,
             probability_samples=samples,
             selective_confidence_thresholds=thresholds,
@@ -523,9 +527,11 @@ class ValidationMetaLayer:
             red_team_observations=observations,
             complexity_policy=complexity_policy,
         )
+        report_id = validation_report_id_from_manifest(input_manifest)
         return ValidationMetaReport(
             report_id=report_id,
             as_of_time=_iso(as_of),
+            input_manifest=input_manifest,
             model_scores=model_scores,
             baseline_deltas=baseline_deltas,
             selective_curve=selective_curve,
@@ -537,7 +543,7 @@ class ValidationMetaLayer:
         )
 
 
-def validation_report_id(
+def _input_manifest(
     *,
     as_of_time: str,
     probability_samples: Sequence[ProbabilityValidationSample],
@@ -546,8 +552,8 @@ def validation_report_id(
     red_team_fixtures: Sequence[SettlementRedTeamFixture],
     red_team_observations: Sequence[SettlementRedTeamObservation],
     complexity_policy: ComplexityGatePolicy,
-) -> str:
-    payload = {
+) -> dict[str, object]:
+    return {
         "version": VALIDATION_META_VERSION,
         "as_of_time": _iso(_parse_utc(as_of_time, "VALIDATION_REPORT_AS_OF")),
         "probability_samples": [item.canonical() for item in sorted(probability_samples, key=lambda item: item.sample_id)],
@@ -578,8 +584,11 @@ def validation_report_id(
             "can_execute": False,
         },
     }
+
+
+def validation_report_id_from_manifest(manifest: Mapping[str, object]) -> str:
     digest = hashlib.sha256(
-        json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+        json.dumps(dict(manifest), sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
     ).hexdigest()
     return f"kalshi-weather-validation-meta-{digest[:24]}"
 
@@ -615,6 +624,7 @@ def _score_probability_models(
         deltas.append(
             BaselineDelta(
                 baseline_identity=identity,
+                baseline_kind=kind,
                 paired_n=len(rows),
                 champion_brier_advantage=baseline_brier - champion_brier,
                 champion_log_loss_advantage=baseline_log - champion_log,
@@ -746,8 +756,12 @@ def _complexity_gate(
     if holdout_n < policy.minimum_holdout_n:
         blockers.append("HOLDOUT_N_BELOW_POLICY_MINIMUM")
 
-    worst_brier = min((item.champion_brier_advantage for item in baseline_deltas), default=None)
-    worst_log = min((item.champion_log_loss_advantage for item in baseline_deltas), default=None)
+    meteorological_deltas = [
+        item for item in baseline_deltas
+        if item.baseline_kind in {BaselineKind.NBM.value, BaselineKind.NWS.value, BaselineKind.CLIMATOLOGY.value}
+    ]
+    worst_brier = min((item.champion_brier_advantage for item in meteorological_deltas), default=None)
+    worst_log = min((item.champion_log_loss_advantage for item in meteorological_deltas), default=None)
     if worst_brier is None:
         blockers.append("BASELINE_COMPARISON_MISSING")
     elif worst_brier < policy.minimum_brier_advantage:
