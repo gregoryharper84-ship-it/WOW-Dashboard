@@ -50,7 +50,9 @@ def test_spread_adapter_uses_no_push_probability_and_excludes_push_on_binary_sco
         "p_push": 0.10,
         "p_not_cover": 0.36,
         "p_cover_given_no_push": 0.60,
-        "research_lower_bound_cover": 0.53,
+        "research_lower_bound_cover": 0.49,
+        "research_lower_bound_cover_unconditional": 0.49,
+        "research_lower_bound_cover_given_no_push": 0.53,
         "distribution_sample_n": 240,
         "market_probability_substitution_used": False,
     }
@@ -69,6 +71,8 @@ def test_spread_adapter_uses_no_push_probability_and_excludes_push_on_binary_sco
 
     assert win["probability_semantics"] == "CONDITIONAL_ON_NO_PUSH"
     assert win["calibrated_probability"] == pytest.approx(0.60)
+    assert win["calibrated_lower_bound"] == pytest.approx(0.53)
+    assert win["research_lower_bound_cover_unconditional_source_only"] == pytest.approx(0.49)
     assert win["push_probability"] == pytest.approx(0.10)
     assert win["support_n"] is None
     assert win["distribution_sample_n_source_only"] == 240
@@ -88,7 +92,9 @@ def test_spread_distribution_residual_count_cannot_satisfy_local_support_gate():
             "p_push": 0.10,
             "p_not_cover": 0.36,
             "p_cover_given_no_push": 0.60,
-            "research_lower_bound_cover": 0.53,
+            "research_lower_bound_cover": 0.49,
+            "research_lower_bound_cover_unconditional": 0.49,
+            "research_lower_bound_cover_given_no_push": 0.53,
             "distribution_sample_n": 500,
             "market_probability_substitution_used": False,
         },
@@ -118,7 +124,9 @@ def test_spread_distribution_residual_count_cannot_satisfy_local_support_gate():
             "p_push": 0.10,
             "p_not_cover": 0.36,
             "p_cover_given_no_push": 0.60,
-            "research_lower_bound_cover": 0.53,
+            "research_lower_bound_cover": 0.49,
+            "research_lower_bound_cover_unconditional": 0.49,
+            "research_lower_bound_cover_given_no_push": 0.53,
             "distribution_sample_n": 500,
             "market_probability_substitution_used": False,
         },
@@ -129,6 +137,26 @@ def test_spread_distribution_residual_count_cannot_satisfy_local_support_gate():
     )
     assert locally_supported["support_n"] == 40
     assert locally_supported["distribution_sample_n_source_only"] == 500
+
+
+def test_spread_adapter_rejects_legacy_unconditional_bound_for_conditional_probability():
+    with pytest.raises(ValueError, match="CALIBRATED_LOWER_BOUND_INVALID"):
+        adapt_spread_shadow(
+            {
+                "sport": "NFL",
+                "spread_line": -3.0,
+                "p_cover": 0.54,
+                "p_push": 0.10,
+                "p_not_cover": 0.36,
+                "p_cover_given_no_push": 0.60,
+                "research_lower_bound_cover": 0.49,
+                "distribution_sample_n": 240,
+                "market_probability_substitution_used": False,
+            },
+            lane_key="NFL_SPREAD_HOME",
+            settlement="COVER",
+            ood_state="IN_DISTRIBUTION",
+        )
 
 
 def test_prop_adapter_preserves_unconditional_push_mass_and_does_not_fake_local_support():
