@@ -231,14 +231,31 @@ def sharpapi_market_evidence(
     *,
     opener: Any = None,
     primary_failure: str | None = None,
+    params: dict[str, Any] | None = None,
 ) -> sources.MarketEvidenceResult:
     league = sources.sharpapi_league(sport_key)
     if not league:
         return sources._fail("SHARPAPI", "odds", "MARKET_EVIDENCE_UNSUPPORTED_SPORT")
-    fetched = sources.fetch("SHARPAPI", "odds", params={"league": str(league).upper()}, opener=opener)
+    request_params: dict[str, Any] = {"league": str(league).upper()}
+    request_params.update(params or {})
+    fetched = sources.fetch("SHARPAPI", "odds", params=request_params, opener=opener)
     if not fetched.ok:
         return fetched
     events = sharpapi_rows_to_odds_api_v4(_candidate_events(fetched.data), sport_key=sport_key)
+    if not events and "market_type" not in request_params:
+        # SharpAPI's first page can be dominated by futures/alternate markets
+        # outside Scout's canonical team-market vocabulary. Retry once with the
+        # provider-documented moneyline filter instead of misclassifying a
+        # valid current schema as unrecognised.
+        fallback_params = {**request_params, "market_type": "moneyline"}
+        fallback = sources.fetch("SHARPAPI", "odds", params=fallback_params, opener=opener)
+        if fallback.ok:
+            fallback_events = sharpapi_rows_to_odds_api_v4(
+                _candidate_events(fallback.data), sport_key=sport_key
+            )
+            if fallback_events:
+                fetched = fallback
+                events = fallback_events
     if not events:
         return sources._fail(
             "SHARPAPI", "odds", "SHARPAPI_SCHEMA_UNRECOGNISED",
@@ -266,7 +283,7 @@ def _teams(event: dict[str, Any]) -> tuple[str | None, str | None]:
         for team in source:
             if not isinstance(team, dict):
                 continue
-            name = team.get("name") or team.get("team_name") or team.get("full_name")
+            name = sources._rundown_team_label(team)
             if not name:
                 continue
             side = str(team.get("type") or team.get("side") or team.get("participant_type") or "").lower()
@@ -280,9 +297,9 @@ def _teams(event: dict[str, Any]) -> tuple[str | None, str | None]:
 
 
 def _participant_name(participant: dict[str, Any], home: str | None, away: str | None) -> str | None:
-    name = participant.get("name") or participant.get("full_name") or participant.get("team_name")
+    name = sources._rundown_team_label(participant)
     if name:
-        return str(name)
+        return name
     side = str(participant.get("type") or participant.get("side") or participant.get("participant_type") or "").lower()
     if side == "home":
         return home

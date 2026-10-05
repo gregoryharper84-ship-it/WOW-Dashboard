@@ -427,7 +427,8 @@ jobs:
         run: |
           python -m v17.scout_handoff_terminal_acceptance \
             --receipt "$RUNNER_TEMP/wow-multiscout/auto-advance-receipt.json" \
-            --output "$RUNNER_TEMP/wow-multiscout/terminal-acceptance-receipt.json"
+            --output "$RUNNER_TEMP/wow-multiscout/terminal-acceptance-receipt.json" \
+            --ledger-output "$RUNNER_TEMP/wow-multiscout/terminal-run-receipt.json"
       - name: Write human-readable Scout summary
         if: always()
         shell: bash
@@ -439,20 +440,34 @@ jobs:
           from pathlib import Path
           root = Path(os.environ["RUNNER_TEMP"]) / "wow-multiscout"
           source = root / "model-handoff.json"
-          receipt_path = root / "auto-advance-receipt.json"
+          early_receipt_path = root / "auto-advance-receipt.json"
+          terminal_receipt_path = root / "terminal-run-receipt.json"
+          receipt_path = terminal_receipt_path if terminal_receipt_path.exists() else early_receipt_path
           out = root / "summary.md"
           if not source.exists():
               out.write_text("# WOW V17 Nightly Multi-Scout\n\nNo handoff artifact was produced.\n")
               raise SystemExit(0)
           data = json.loads(source.read_text())
           receipt = json.loads(receipt_path.read_text()) if receipt_path.exists() else {}
+          early_receipt = json.loads(early_receipt_path.read_text()) if early_receipt_path.exists() else {}
           h = data.get("model_handoff", {})
           sports = sorted({r.get("sport") for r in data.get("coverage", []) if r.get("scope") == "sport" and r.get("status") == "SCANNED"})
           books = data.get("sportsbook_coverage", {}).get("bookmakers_seen", [])
           delivery = data.get("delivery", {})
           recon = data.get("reconciliation", {})
           advance_recon = receipt.get("reconciliation", {})
-          mapping = receipt.get("mapping", {})
+          mapping = early_receipt.get("mapping", {})
+          durable_terminal = receipt.get("schema_version") == "wow.v17.scout-handoff-run.v1"
+          downstream_completed = receipt.get("rows_completed", advance_recon.get("completed_downstream_rows", 0))
+          downstream_blocked = (
+              int(receipt.get("rows_held", 0) or 0) + int(receipt.get("rows_rejected", 0) or 0)
+              if durable_terminal
+              else advance_recon.get("blocked_downstream_rows", 0)
+          )
+          downstream_reconciled = receipt.get(
+              "reconciliation_pass",
+              advance_recon.get("response_reconciliation_pass", False),
+          )
           scout_team_ids = sorted({r.get("scout_team_id") for lane in ("team_event_candidates", "prop_candidates") for r in h.get(lane, []) if r.get("scout_team_id")})
           lines = [
               "# WOW V17 Nightly Multi-Scout",
@@ -477,9 +492,9 @@ jobs:
               f"- Prop mapping rejects: **{len(mapping.get('rejected_prop_rows', []))}**",
               f"- Team/event objective rows sent to LLP lane: **{mapping.get('downstream_team_objective_rows', 0)}**",
               f"- Team/event mapping rejects: **{len(mapping.get('rejected_team_event_rows', []))}**",
-              f"- Downstream completed rows: **{advance_recon.get('completed_downstream_rows', 0)}**",
-              f"- Downstream governed holds/rejects: **{advance_recon.get('blocked_downstream_rows', 0)}**",
-              f"- Downstream reconciliation pass: **{advance_recon.get('response_reconciliation_pass', False)}**",
+              f"- Downstream completed rows: **{downstream_completed}**",
+              f"- Downstream governed holds/rejects: **{downstream_blocked}**",
+              f"- Downstream reconciliation pass: **{downstream_reconciled}**",
               "- Research ceiling: RESEARCH_INTEREST",
               "- Upset probability authority: LLP only",
               "- Scout/market probability authority: none",
@@ -502,9 +517,13 @@ jobs:
         if: always()
         shell: bash
         run: |
+          receipt="$RUNNER_TEMP/wow-multiscout/auto-advance-receipt.json"
+          if [ -f "$RUNNER_TEMP/wow-multiscout/terminal-run-receipt.json" ]; then
+            receipt="$RUNNER_TEMP/wow-multiscout/terminal-run-receipt.json"
+          fi
           python v17/morning_scout_report.py \
             --handoff "$RUNNER_TEMP/wow-multiscout/model-handoff.json" \
-            --receipt "$RUNNER_TEMP/wow-multiscout/auto-advance-receipt.json" \
+            --receipt "$receipt" \
             --output "$RUNNER_TEMP/wow-multiscout/morning-scout-picks.json"
           test -f "$RUNNER_TEMP/wow-multiscout/morning-scout-picks.json"
       - name: Upload governed Scout and downstream receipt artifact
@@ -519,6 +538,7 @@ jobs:
             ${{ runner.temp }}/wow-multiscout/latest-pointer.json
             ${{ runner.temp }}/wow-multiscout/auto-advance-receipt.json
             ${{ runner.temp }}/wow-multiscout/terminal-acceptance-receipt.json
+            ${{ runner.temp }}/wow-multiscout/terminal-run-receipt.json
             ${{ runner.temp }}/wow-multiscout/market-evidence.json
             ${{ runner.temp }}/wow-multiscout/summary.md
             ${{ runner.temp }}/wow-multiscout/morning-scout-picks.json

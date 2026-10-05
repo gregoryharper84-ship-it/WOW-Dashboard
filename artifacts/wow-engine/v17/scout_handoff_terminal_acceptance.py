@@ -122,6 +122,8 @@ def validate_terminal_summary(summary: dict[str, Any]) -> dict[str, Any]:
     processing_seen = int(summary.get("specialist_processing_seen") or 0)
     blockers = _queue_governance_blockers(summary)
 
+    if str(summary.get("schema_version") or "") != "wow.v17.scout-handoff-run.v1":
+        blockers.append("SCOUT_TERMINAL_ACCEPTANCE_SCHEMA_INVALID")
     if summary.get("can_execute") is not False:
         blockers.append("SCOUT_EXECUTION_GOVERNANCE_VIOLATION")
     if str(summary.get("status") or "") != "COMPLETE":
@@ -167,6 +169,7 @@ def wait_for_terminal(
     timeout_seconds: int,
     sleep_fn=time.sleep,
     monotonic_fn=time.monotonic,
+    ledger_output: Path | None = None,
 ) -> dict[str, Any]:
     deadline = monotonic_fn() + timeout_seconds
     latest: dict[str, Any] | None = None
@@ -209,7 +212,14 @@ def wait_for_terminal(
                         "terminal_authority": "V17_TERMINAL_REDUCER",
                         "can_execute": False,
                     }
-                return validate_terminal_summary(detailed_body)
+                result = validate_terminal_summary(detailed_body)
+                if result.get("status") == "PASS" and ledger_output is not None:
+                    ledger_output.parent.mkdir(parents=True, exist_ok=True)
+                    ledger_output.write_text(
+                        json.dumps(detailed_body, indent=2, sort_keys=True) + "\n",
+                        encoding="utf-8",
+                    )
+                return result
         sleep_fn(2)
 
     result = validate_terminal_summary(latest or {
@@ -227,6 +237,10 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--receipt", required=True)
     parser.add_argument("--output", required=True)
+    parser.add_argument(
+        "--ledger-output",
+        help="Optional path for the final detailed durable handoff ledger used by governed reporting.",
+    )
     parser.add_argument("--origin", default=ACTION_ORIGIN)
     args = parser.parse_args()
 
@@ -259,6 +273,7 @@ def main() -> int:
                 source_run_id=source_run_id,
                 token=token,
                 timeout_seconds=_timeout_seconds(),
+                ledger_output=Path(args.ledger_output) if args.ledger_output else None,
             )
 
     Path(args.output).write_text(

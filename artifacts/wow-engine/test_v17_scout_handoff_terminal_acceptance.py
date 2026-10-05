@@ -3,6 +3,7 @@ from v17 import scout_handoff_terminal_acceptance as terminal
 
 def _complete_summary():
     return {
+        "schema_version": "wow.v17.scout-handoff-run.v1",
         "source_run_id": "run-1",
         "research_run_id": "research-1",
         "status": "COMPLETE",
@@ -118,6 +119,73 @@ def test_wait_for_terminal_polls_until_complete(monkeypatch):
     assert result["status"] == "PASS"
 
 
+def test_wait_for_terminal_persists_final_durable_ledger(monkeypatch, tmp_path):
+    complete = _complete_summary()
+    responses = iter([
+        {"ok": True, "http_status": 200, "body": {"source_run_id": "run-1", "status": "COMPLETE", "can_execute": False}, "can_execute": False},
+        {"ok": True, "http_status": 200, "body": complete, "can_execute": False},
+    ])
+    monkeypatch.setattr(terminal, "_get_status", lambda *args, **kwargs: next(responses))
+
+    output = tmp_path / "terminal-run-receipt.json"
+    clock = iter([0, 0, 1])
+    result = terminal.wait_for_terminal(
+        origin="https://engine.example",
+        source_run_id="run-1",
+        token="token",
+        timeout_seconds=10,
+        sleep_fn=lambda _: None,
+        monotonic_fn=lambda: next(clock),
+        ledger_output=output,
+    )
+
+    assert result["status"] == "PASS"
+    ledger = __import__("json").loads(output.read_text())
+    assert ledger["schema_version"] == "wow.v17.scout-handoff-run.v1"
+    assert ledger["status"] == "COMPLETE"
+    assert ledger["jobs"] == complete["jobs"]
+    assert ledger["can_execute"] is False
+
+
+def test_wait_for_terminal_does_not_publish_rejected_durable_ledger(monkeypatch, tmp_path):
+    rejected = _complete_summary()
+    rejected.update({
+        "rows_completed": 0,
+        "rows_held": 1,
+        "rows_rejected": 1,
+        "reconciliation_pass": False,
+    })
+    responses = iter([
+        {"ok": True, "http_status": 200, "body": {"source_run_id": "run-1", "status": "COMPLETE", "can_execute": False}, "can_execute": False},
+        {"ok": True, "http_status": 200, "body": rejected, "can_execute": False},
+    ])
+    monkeypatch.setattr(terminal, "_get_status", lambda *args, **kwargs: next(responses))
+
+    output = tmp_path / "terminal-run-receipt.json"
+    clock = iter([0, 0, 1])
+    result = terminal.wait_for_terminal(
+        origin="https://engine.example",
+        source_run_id="run-1",
+        token="token",
+        timeout_seconds=10,
+        sleep_fn=lambda _: None,
+        monotonic_fn=lambda: next(clock),
+        ledger_output=output,
+    )
+
+    assert result["status"] == "BLOCKED_WITH_EXACT_REASON"
+    assert "SCOUT_TERMINAL_ACCEPTANCE_RECONCILIATION_NOT_PROVEN" in result["blockers"]
+    assert output.exists() is False
+
+
+def test_terminal_summary_requires_durable_schema_version():
+    summary = _complete_summary()
+    summary.pop("schema_version")
+    result = terminal.validate_terminal_summary(summary)
+    assert result["status"] == "BLOCKED_WITH_EXACT_REASON"
+    assert "SCOUT_TERMINAL_ACCEPTANCE_SCHEMA_INVALID" in result["blockers"]
+
+
 def test_wait_for_terminal_timeout_is_typed(monkeypatch):
     monkeypatch.setattr(
         terminal,
@@ -155,3 +223,14 @@ def test_wait_for_terminal_timeout_is_typed(monkeypatch):
     assert result["status"] == "BLOCKED_WITH_EXACT_REASON"
     assert "SCOUT_TERMINAL_ACCEPTANCE_TIMEOUT" in result["blockers"]
     assert result["can_execute"] is False
+
+
+def test_nightly_workflow_feeds_morning_report_from_terminal_durable_ledger():
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2]
+    workflow = (root / ".github" / "workflows" / "wow-v17-nightly-multiscout.yml").read_text()
+    assert '--ledger-output "$RUNNER_TEMP/wow-multiscout/terminal-run-receipt.json"' in workflow
+    assert 'receipt="$RUNNER_TEMP/wow-multiscout/terminal-run-receipt.json"' in workflow
+    assert '--receipt "$receipt"' in workflow
+    assert '${{ runner.temp }}/wow-multiscout/terminal-run-receipt.json' in workflow

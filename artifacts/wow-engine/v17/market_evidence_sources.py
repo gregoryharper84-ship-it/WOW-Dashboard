@@ -468,18 +468,34 @@ def coerce_odds_api_v4_event(raw: Any) -> dict[str, Any] | None:
     }
 
 
+def _rundown_team_label(team: dict[str, Any]) -> str | None:
+    """Preserve provider team identity instead of collapsing city-only names.
+
+    TheRundown normalized teams may expose name as the city and mascot as the
+    distinguishing club identity. Build a full label only from fields present
+    in the provider response; never infer or guess a team.
+    """
+    full = team.get("full_name") or team.get("team_name")
+    name = full or team.get("name")
+    mascot = team.get("mascot")
+    if name and mascot and _norm(mascot) not in _norm(name):
+        return f"{name} {mascot}".strip()
+    label = name or mascot or team.get("abbreviation")
+    return str(label) if label else None
+
+
 def _rundown_teams(raw: dict[str, Any]) -> tuple[str | None, str | None]:
     home = away = None
     for team in raw.get("teams_normalized") or raw.get("teams") or []:
         if not isinstance(team, dict):
             continue
-        label = team.get("name") or team.get("full_name") or team.get("abbreviation")
+        label = _rundown_team_label(team)
         if not label:
             continue
         if team.get("is_home"):
-            home = str(label)
+            home = label
         elif team.get("is_away"):
-            away = str(label)
+            away = label
     return home, away
 
 
@@ -879,15 +895,15 @@ def _sharpapi_first(row: dict[str, Any], keys: tuple[str, ...]) -> Any:
 def _sharpapi_event_identity(row: dict[str, Any]) -> tuple[str, str | None, str | None, Any] | None:
     event = _sharpapi_first(row, ("event", "game", "match", "fixture"))
     if isinstance(event, dict):
-        event_id = _sharpapi_first(event, ("id", "event_id", "game_id", "key"))
+        event_id = _sharpapi_first(event, ("id", "event_id", "event_uuid", "external_event_id", "game_id", "key"))
         home = _sharpapi_first(event, ("home_team", "home", "home_team_name"))
         away = _sharpapi_first(event, ("away_team", "away", "away_team_name"))
-        start = _sharpapi_first(event, ("commence_time", "start_time", "start_date", "event_date", "scheduled"))
+        start = _sharpapi_first(event, ("event_start_time", "commence_time", "start_time", "start_date", "event_date", "scheduled"))
     else:
-        event_id = _sharpapi_first(row, ("event_id", "game_id", "match_id"))
+        event_id = _sharpapi_first(row, ("event_id", "event_uuid", "external_event_id", "game_id", "match_id"))
         home = _sharpapi_first(row, ("home_team", "home", "home_team_name"))
         away = _sharpapi_first(row, ("away_team", "away", "away_team_name"))
-        start = _sharpapi_first(row, ("commence_time", "start_time", "start_date", "event_date", "scheduled"))
+        start = _sharpapi_first(row, ("event_start_time", "commence_time", "start_time", "start_date", "event_date", "scheduled"))
         if event_id is None and isinstance(event, str):
             event_id = event
     if event_id is None:
@@ -978,7 +994,7 @@ def sharpapi_rows_to_odds_api_v4(rows: Any, *, sport_key: str | None = None) -> 
         record["commence_time"] = record["commence_time"] or start
 
         for book_name, priced in _sharpapi_book_rows(row):
-            price = _number(_sharpapi_first(priced, ("odds", "price", "american_odds", "american", "moneyline")))
+            price = _number(_sharpapi_first(priced, ("odds_american", "american_odds", "odds", "price", "american", "moneyline")))
             if price is None:
                 continue
             point = _number(_sharpapi_first(priced, ("line", "point", "handicap", "spread", "total")))

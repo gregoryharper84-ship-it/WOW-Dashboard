@@ -164,6 +164,41 @@ def sharpapi_rows() -> list[dict]:
     ]
 
 
+def test_sharpapi_current_flat_fields_are_supported_without_implied_probability():
+    rows = [{
+        "event_id": "current-flat-1",
+        "event_uuid": "uuid-current-flat-1",
+        "event_start_time": "2026-10-05T23:05:00Z",
+        "home_team": CUBS,
+        "away_team": BREWERS,
+        "market_type": "moneyline",
+        "selection": CUBS,
+        "selection_type": "side",
+        "sportsbook": "draftkings",
+        "odds_american": -135,
+        "odds_probability": 0.574,
+        "timestamp": "2026-10-05T19:00:00Z",
+    }]
+    events = sources.sharpapi_rows_to_odds_api_v4(rows, sport_key="baseball_mlb")
+    assert len(events) == 1
+    assert events[0]["commence_time"] == "2026-10-05T23:05:00Z"
+    outcome = events[0]["bookmakers"][0]["markets"][0]["outcomes"][0]
+    assert outcome == {"name": CUBS, "price": -135}
+    assert "odds_probability" not in repr(events[0])
+
+
+def test_rundown_city_and_mascot_preserve_distinct_new_york_teams():
+    home, away = sources._rundown_teams({
+        "teams_normalized": [
+            {"name": "New York", "mascot": "Rangers", "abbreviation": "NYR", "is_home": True},
+            {"name": "New York", "mascot": "Islanders", "abbreviation": "NYI", "is_away": True},
+        ]
+    })
+    assert home == "New York Rangers"
+    assert away == "New York Islanders"
+    assert home != away
+
+
 def test_sharpapi_row_major_odds_become_one_multi_book_event():
     events = sources.sharpapi_rows_to_odds_api_v4(sharpapi_rows(), sport_key="baseball_mlb")
     assert len(events) == 1, "rows for one game must collapse into one event, not one event per row"

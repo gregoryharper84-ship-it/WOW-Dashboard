@@ -67,6 +67,12 @@ def _durable_receipt(*, complete=True, reconciled=True):
         "source_run_id": "r1",
         "research_run_id": "rr1",
         "candidate_jobs": 2,
+        "rows_in": 2,
+        "rows_completed": 1 if complete else 0,
+        "rows_held": 0 if complete else 2,
+        "rows_rejected": 1 if complete else 0,
+        "specialist_processing_seen": 2 if complete else 1,
+        "row_accounting_pass": True,
         "model_evaluated": 1,
         "handoff_blocked": 1 if complete else 0,
         "state_counts": {"V17_QUALIFIED": 1, "HANDOFF_BLOCKED": 1} if complete else {"SPECIALIST_PROCESSING": 1},
@@ -76,6 +82,7 @@ def _durable_receipt(*, complete=True, reconciled=True):
             {
                 "candidate_id": "cand-good",
                 "target_lane": "WOW_PROP_LANE",
+                "request_payload": {"row_key": "durable-good"},
                 "current_state": "V17_QUALIFIED",
                 "terminal": True,
                 "specialist_receipt": {
@@ -98,11 +105,16 @@ def _durable_receipt(*, complete=True, reconciled=True):
             {
                 "candidate_id": "cand-blocked",
                 "target_lane": "LLP_TEAM_BETTING_ENGINE",
+                "request_payload": {"event_key": "NHL:nyr-nyi"},
                 "current_state": "HANDOFF_BLOCKED" if complete else "SPECIALIST_PROCESSING",
                 "terminal": complete,
                 "last_error_code": "TEAM_EVENT_IDENTITY_INCOMPLETE" if complete else None,
                 "can_execute": False,
             },
+        ],
+        "state_events": [
+            {"candidate_id": "cand-good", "state": "MODEL_EVALUATED", "can_execute": False},
+            {"candidate_id": "cand-blocked", "state": "HANDOFF_BLOCKED" if complete else "SPECIALIST_PROCESSING", "can_execute": False},
         ],
         "can_execute": False,
     }
@@ -138,3 +150,33 @@ def test_durable_completed_row_missing_card_admission_fails_closed():
     blocked = next(r for r in report["blocked_or_unresolved"] if r.get("row_key") == "durable-good")
     assert blocked["publication_blocker"] == "GOVERNED_PICK_ADMISSION_NOT_PROVEN"
     assert blocked["can_execute"] is False
+
+
+def test_durable_ledger_that_fails_terminal_acceptance_cannot_publish():
+    receipt = _durable_receipt()
+    receipt.update({
+        "rows_completed": 0,
+        "rows_held": 1,
+        "rows_rejected": 1,
+        "reconciliation_pass": True,
+    })
+    report = build_report(_handoff(), receipt)
+    assert report["durable_handoff"]["enabled"] is True
+    assert report["durable_handoff"]["terminal_acceptance_status"] == "BLOCKED_WITH_EXACT_REASON"
+    assert "SCOUT_TERMINAL_ACCEPTANCE_RECONCILIATION_NOT_PROVEN" in report["durable_handoff"]["terminal_acceptance_blockers"]
+    assert report["publication_gate_open"] is False
+    assert report["governed_picks"] == []
+    row = next(r for r in report["blocked_or_unresolved"] if r.get("row_key") == "durable-good")
+    assert row["publication_blocker"] == "SPECIALIST_RECEIPT_NOT_RECONCILED"
+
+
+def test_durable_ledger_with_probability_authority_payload_cannot_publish():
+    receipt = _durable_receipt()
+    receipt["jobs"][0]["request_payload"]["model_probability"] = 0.99
+    report = build_report(_handoff(), receipt)
+    assert report["publication_gate_open"] is False
+    assert report["governed_picks"] == []
+    assert any(
+        blocker.startswith("SCOUT_PROBABILITY_AUTHORITY_VIOLATION:")
+        for blocker in report["durable_handoff"]["terminal_acceptance_blockers"]
+    )

@@ -4,6 +4,8 @@ import argparse, json
 from pathlib import Path
 from typing import Any
 
+from v17.scout_handoff_terminal_acceptance import validate_terminal_summary
+
 _ALLOWED_RECEIPT_STATUSES = {"AUTO_ADVANCE_COMPLETE", "AUTO_ADVANCE_COMPLETE_WITH_BLOCKERS"}
 
 def build_report(handoff: dict[str, Any], receipt: dict[str, Any]) -> dict[str, Any]:
@@ -14,7 +16,8 @@ def build_report(handoff: dict[str, Any], receipt: dict[str, Any]) -> dict[str, 
     if durable:
         specialist_status = str(receipt.get("status") or "NOT_RUN")
         reconciliation_pass = receipt.get("reconciliation_pass") is True
-        publication_gate_open = specialist_status == "COMPLETE" and reconciliation_pass and receipt.get("can_execute") is False
+        terminal_acceptance = validate_terminal_summary(receipt)
+        publication_gate_open = terminal_acceptance.get("status") == "PASS"
 
         for job in receipt.get("jobs") or []:
             if not isinstance(job, dict):
@@ -127,6 +130,8 @@ def build_report(handoff: dict[str, Any], receipt: dict[str, Any]) -> dict[str, 
             "candidate_jobs": receipt.get("candidate_jobs") if durable else None,
             "state_counts": receipt.get("state_counts") if durable else None,
             "untracked_rows": receipt.get("untracked_rows") if durable else None,
+            "terminal_acceptance_status": terminal_acceptance.get("status") if durable else None,
+            "terminal_acceptance_blockers": terminal_acceptance.get("blockers") if durable else None,
         },
         "governance": {
             "scout_discovery_only": True,
