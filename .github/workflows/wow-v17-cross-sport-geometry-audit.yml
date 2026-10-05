@@ -6,11 +6,15 @@ on:
     paths:
       - ".github/workflows/wow-v17-cross-sport-geometry-audit.yml"
       - "artifacts/wow-engine/v17/experiments/cross_sport_geometry_audit.py"
+      - "artifacts/wow-engine/v17/experiments/cross_sport_audit_edge_fetch.py"
+      - "artifacts/wow-engine/v17/experiments/cross_sport_geometry_audit_bundle.py"
       - "artifacts/wow-engine/v17/experiments/test_cross_sport_geometry_audit.py"
+      - "artifacts/wow-engine/v17/supabase/functions/wow-v17-cross-sport-audit-feed/index.ts"
   workflow_dispatch:
 
 permissions:
   contents: read
+  id-token: write
 
 concurrency:
   group: wow-v17-cross-sport-geometry-audit
@@ -26,6 +30,7 @@ jobs:
         working-directory: artifacts/wow-engine
     env:
       WOW_SCOUT_DATABASE_URL: ${{ secrets.WOW_SCOUT_DATABASE_URL }}
+      WOW_CROSS_SPORT_AUDIT_FEED_URL: "https://iczfhsmjrrafhvcpmqhr.supabase.co/functions/v1/wow-v17-cross-sport-audit-feed"
 
     steps:
       - uses: actions/checkout@v4
@@ -41,25 +46,45 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Verify governed read credential
+      - name: Resolve governed read path
+        id: source
         shell: bash
         run: |
           set -euo pipefail
-          if [ -z "${WOW_SCOUT_DATABASE_URL:-}" ]; then
-            echo "BLOCKED_WITH_EXACT_REASON=WOW_SCOUT_DATABASE_URL_NOT_CONFIGURED" >&2
-            exit 1
+          if [ -n "${WOW_SCOUT_DATABASE_URL:-}" ]; then
+            echo "mode=direct" >> "$GITHUB_OUTPUT"
+            echo "Using configured masked direct read path." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "mode=oidc" >> "$GITHUB_OUTPUT"
+            echo "Direct DB credential absent; using short-lived GitHub OIDC to governed Supabase read-only feed." >> "$GITHUB_STEP_SUMMARY"
           fi
-          echo "Cross-sport audit credential is configured; value remains masked." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Run deterministic experiment tests
         run: |
           python -m pytest -q v17/experiments/test_cross_sport_geometry_audit.py
 
-      - name: Run read-only cross-sport audit
+      - name: Fetch immutable D1 evidence through governed OIDC feed
+        if: steps.source.outputs.mode == 'oidc'
+        run: |
+          python v17/experiments/cross_sport_audit_edge_fetch.py \
+            --output "$RUNNER_TEMP/cross-sport-audit-bundle.json"
+
+      - name: Run direct read-only cross-sport audit
+        if: steps.source.outputs.mode == 'direct'
         shell: bash
         run: |
           set -euo pipefail
           python v17/experiments/cross_sport_geometry_audit.py \
+            --output "$RUNNER_TEMP/cross-sport-geometry-audit.json" \
+            | tee "$RUNNER_TEMP/cross-sport-geometry-audit.log"
+
+      - name: Run OIDC-bundle cross-sport audit
+        if: steps.source.outputs.mode == 'oidc'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python v17/experiments/cross_sport_geometry_audit_bundle.py \
+            --input "$RUNNER_TEMP/cross-sport-audit-bundle.json" \
             --output "$RUNNER_TEMP/cross-sport-geometry-audit.json" \
             | tee "$RUNNER_TEMP/cross-sport-geometry-audit.log"
 
@@ -102,6 +127,7 @@ jobs:
             echo "# WOW V17 Cross-Sport Geometry Audit"
             echo
             echo "- issue: #1347"
+            echo "- data_path: ${{ steps.source.outputs.mode }}"
             echo "- mode: READ_ONLY_RESEARCH"
             echo "- probability_publishable: false"
             echo "- automatic_promotion: false"
@@ -118,5 +144,6 @@ jobs:
           path: |
             ${{ runner.temp }}/cross-sport-geometry-audit.json
             ${{ runner.temp }}/cross-sport-geometry-audit.log
-          if-no-files-found: error
+            ${{ runner.temp }}/cross-sport-audit-bundle.json
+          if-no-files-found: warn
           retention-days: 90
