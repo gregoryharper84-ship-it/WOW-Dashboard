@@ -21,6 +21,18 @@ AGENT_ROLES: dict[str, dict[str, Any]] = {
         "may_approve_own_work": False,
         "may_change_probability_behavior": False,
     },
+    "PLATFORM_RELIABILITY_AGENT": {
+        "mission": "Continuously own CI, repository, connector, OIDC, Render, Supabase-platform, and deployment reliability diagnosis across all engineering lanes.",
+        "may_write_code": False,
+        "may_approve_own_work": False,
+        "may_change_probability_behavior": False,
+    },
+    "PRODUCT_RUNTIME_RELIABILITY_AGENT": {
+        "mission": "Continuously verify WOW Betting Engine, LLP Team Betting Engine, Custom GPT editor/action contracts, and synthetic user journeys before owner discovery.",
+        "may_write_code": False,
+        "may_approve_own_work": False,
+        "may_change_probability_behavior": False,
+    },
     "RESEARCH_TRIAGE_AGENT": {
         "mission": "Reproduce defects and prove root cause before implementation.",
         "may_write_code": False,
@@ -78,6 +90,20 @@ AGENT_ROLES: dict[str, dict[str, Any]] = {
 }
 
 SPECIALIST_SUBAGENTS: dict[str, dict[str, Any]] = {
+    "PLATFORM_RELIABILITY_SUBAGENT": {
+        "mission": "Diagnose CI, repository state, connector write transport, OIDC, Render deploy, Supabase platform pressure, and control-plane failures without creating a second implementation stream.",
+        "support_only": True,
+        "may_write_code": False,
+        "may_approve_own_work": False,
+        "may_change_probability_behavior": False,
+    },
+    "PRODUCT_RUNTIME_RELIABILITY_SUBAGENT": {
+        "mission": "Diagnose WOW/LLP Custom GPT host, editor-sync, Action schema, host-contract, invocation, receipt-recovery, and synthetic user-journey failures without substituting model probability.",
+        "support_only": True,
+        "may_write_code": False,
+        "may_approve_own_work": False,
+        "may_change_probability_behavior": False,
+    },
     "CI_REPOSITORY_SUBAGENT": {
         "mission": "Inspect exact-head CI, workflow triggers, branch state, protected checks, and merge readiness.",
         "support_only": True,
@@ -166,6 +192,17 @@ CAPABILITY_DIMENSIONS = (
 )
 
 FAILURE_OWNERS = {
+    "CI_FAILURE": "platform-reliability",
+    "REPOSITORY_FAILURE": "platform-reliability",
+    "CONNECTOR_WRITE_FAILURE": "platform-reliability",
+    "OIDC_FAILURE": "platform-reliability",
+    "RENDER_DEPLOY_FAILURE": "platform-reliability",
+    "SUPABASE_PLATFORM_FAILURE": "platform-reliability",
+    "LIVE_GPT_EDITOR_SYNC_FAILURE": "product-runtime-reliability",
+    "HOST_CONTRACT_FAILURE": "product-runtime-reliability",
+    "ACTION_SCHEMA_DRIFT": "product-runtime-reliability",
+    "ACTION_INVOCATION_FAILURE": "product-runtime-reliability",
+    "USER_JOURNEY_FAILURE": "product-runtime-reliability",
     "DISCOVERY_FAILURE": "acquisition",
     "PROVIDER_FAILURE": "acquisition",
     "CANONICAL_IDENTITY_FAILURE": "identity",
@@ -178,6 +215,8 @@ FAILURE_OWNERS = {
 }
 
 SUBAGENT_BY_FAILURE_OWNER = {
+    "platform-reliability": "PLATFORM_RELIABILITY_SUBAGENT",
+    "product-runtime-reliability": "PRODUCT_RUNTIME_RELIABILITY_SUBAGENT",
     "acquisition": "ACQUISITION_IDENTITY_SUBAGENT",
     "identity": "ACQUISITION_IDENTITY_SUBAGENT",
     "hydration": "ACQUISITION_IDENTITY_SUBAGENT",
@@ -189,6 +228,14 @@ SUBAGENT_BY_FAILURE_OWNER = {
 }
 
 SUBAGENT_BY_SUBSYSTEM = {
+    "CI_REPOSITORY": "PLATFORM_RELIABILITY_SUBAGENT",
+    "CONNECTOR_TRANSPORT": "PLATFORM_RELIABILITY_SUBAGENT",
+    "OIDC_AUTH": "PLATFORM_RELIABILITY_SUBAGENT",
+    "SUPABASE_PLATFORM": "PLATFORM_RELIABILITY_SUBAGENT",
+    "CUSTOM_GPT_HOST": "PRODUCT_RUNTIME_RELIABILITY_SUBAGENT",
+    "LIVE_GPT_EDITOR_SYNC": "PRODUCT_RUNTIME_RELIABILITY_SUBAGENT",
+    "ACTION_GATEWAY": "PRODUCT_RUNTIME_RELIABILITY_SUBAGENT",
+    "USER_JOURNEY_RUNTIME": "PRODUCT_RUNTIME_RELIABILITY_SUBAGENT",
     "DEPLOYMENT_RUNTIME": "RUNTIME_TRANSPORT_SUBAGENT",
     "WOW_HOST_ORCHESTRATION": "RUNTIME_TRANSPORT_SUBAGENT",
     "SLATE_IDENTITY": "ACQUISITION_IDENTITY_SUBAGENT",
