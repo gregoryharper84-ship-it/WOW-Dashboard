@@ -7,10 +7,12 @@ from dataclasses import asdict
 from typing import Any, Mapping, Sequence
 
 from .contract_rule_acquisition import FrozenContractRulePackage
+from .market_microstructure import MarketMicrostructureSnapshot
 from .models import MarketSnapshot, ProbabilityPackage, TerminalDecision, WeatherEvidenceSnapshot
 from .portfolio_risk import PortfolioRiskSnapshot
 from .probability_change_ledger import ProbabilityChangeRecord
 from .probability_core import CalibrationProfile
+from .settlement_digital_twin import SettlementDigitalTwin
 from .source_adapters import ProviderSnapshot
 
 
@@ -22,7 +24,7 @@ class KalshiWeatherPersistenceError(RuntimeError):
 
 
 class KalshiWeatherPersistence:
-    """Append-only persistence bridge for the six governed weather ledgers.
+    """Append-only persistence bridge for governed weather evidence ledgers.
 
     The database migration also blocks UPDATE/DELETE. This adapter adds an
     application-side identity-collision check so retries are idempotent only
@@ -177,6 +179,20 @@ class KalshiWeatherPersistence:
             "raw_orderbook": dict(raw_orderbook),
         }
         return self._insert_exact("wow_kalshi_weather_market_snapshots", "market_snapshot_id", row)
+
+    def persist_settlement_twin(self, twin: SettlementDigitalTwin) -> Mapping[str, Any]:
+        return self._insert_exact(
+            "wow_kalshi_weather_settlement_twins",
+            "twin_snapshot_id",
+            twin.persistence_row(),
+        )
+
+    def persist_market_microstructure(self, snapshot: MarketMicrostructureSnapshot) -> Mapping[str, Any]:
+        return self._insert_exact(
+            "wow_kalshi_weather_market_microstructure_snapshots",
+            "microstructure_snapshot_id",
+            snapshot.persistence_row(),
+        )
 
     def persist_probability_change(self, record: ProbabilityChangeRecord) -> Mapping[str, Any]:
         return self._insert_exact(
