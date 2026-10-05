@@ -121,3 +121,16 @@ def test_recorder_failure_is_row_isolated():
     assert result.written == 1
     assert result.failures == ("BROKEN:RuntimeError",)
     assert len(client.rows) == 1
+
+
+def test_recorder_empty_batch_is_clean_noop_without_http_contract():
+    result = capture_market_microstructure_batch(
+        client=FakeClient(),
+        tickers=(),
+        retrieved_at="2026-10-05T21:01:00Z",
+        http=object(),
+    )
+    assert result.attempted == 0
+    assert result.written == 0
+    assert result.failures == ()
+    assert result.can_execute is False
