@@ -487,14 +487,30 @@ def _apply_schedule_provenance(result: dict[str, Any], provider: str, url: str) 
     result["schedule_source_provider"] = provider
     result["schedule_source_url"] = url
 
+    roster_provider = next(
+        (
+            candidate
+            for candidate in (wnba.ROSTER_WEB_PROVIDER, wnba.ROSTER_STATS_PROVIDER)
+            if candidate in sources
+        ),
+        wnba.ROSTER_STATS_PROVIDER,
+    )
+    history_provider = next(
+        (
+            candidate
+            for candidate in (wnba.GAME_LOG_WEB_PROVIDER, wnba.GAME_LOG_STATS_PROVIDER)
+            if candidate in sources
+        ),
+        wnba.GAME_LOG_STATS_PROVIDER,
+    )
     role = result.get("role_status")
     if isinstance(role, dict):
         role["schedule_source_provider"] = provider
         role["schedule_source_url"] = url
-        role["source"] = f"{provider} + WNBA Stats roster + official WNBA injury report"
+        role["source"] = f"{provider} + {roster_provider} + official WNBA injury report"
     result["rate_provenance"] = (
-        "Official WNBA LeagueGameLog player rows; current event/team from "
-        f"{provider}; roster from CommonTeamRoster; availability from official "
+        f"Official WNBA player history via {history_provider}; current event/team from "
+        f"{provider}; roster via {roster_provider}; availability from official "
         "WNBA injury-report PDF"
     )
     return result
