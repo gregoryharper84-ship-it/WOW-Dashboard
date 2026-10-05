@@ -9,6 +9,14 @@ _ALLOWED_RECEIPT_STATUSES = {"AUTO_ADVANCE_COMPLETE", "AUTO_ADVANCE_COMPLETE_WIT
 def build_report(handoff: dict[str, Any], receipt: dict[str, Any]) -> dict[str, Any]:
     qualified: list[dict[str, Any]] = []
     blocked: list[dict[str, Any]] = []
+
+    # Terminal acceptance wraps the exact durable ledger it accepted. Prefer that
+    # resolved ledger over the earlier async enqueue/progress snapshot so morning
+    # publication reflects the terminal specialist state, not a transient queue view.
+    resolved = receipt.get("resolved_run_summary")
+    if isinstance(resolved, dict):
+        receipt = resolved
+
     durable = str(receipt.get("schema_version") or "") == "wow.v17.scout-handoff-run.v1"
 
     if durable:
