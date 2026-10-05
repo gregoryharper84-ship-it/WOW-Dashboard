@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import time
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
@@ -20,9 +21,16 @@ DEFAULT_URL = (
     "wow-v17-cross-sport-audit-feed"
 )
 PAGE_SIZE = 250
+TOKEN_CACHE_SECONDS = 120.0
+_TOKEN: str | None = None
+_TOKEN_AT = 0.0
 
 
-def _mint() -> str:
+def _mint(*, force: bool = False) -> str:
+    global _TOKEN, _TOKEN_AT
+    now = time.monotonic()
+    if not force and _TOKEN and now - _TOKEN_AT < TOKEN_CACHE_SECONDS:
+        return _TOKEN
     request_url = str(os.environ.get("ACTIONS_ID_TOKEN_REQUEST_URL") or "").strip()
     request_token = str(os.environ.get("ACTIONS_ID_TOKEN_REQUEST_TOKEN") or "").strip()
     if not request_url or not request_token:
@@ -46,10 +54,13 @@ def _mint() -> str:
     token = payload.get("value") if isinstance(payload, dict) else None
     if not isinstance(token, str) or not token.strip():
         raise RuntimeError("GITHUB_OIDC_MINT_RESPONSE_INVALID")
-    return token.strip()
+    _TOKEN = token.strip()
+    _TOKEN_AT = now
+    return _TOKEN
 
 
-def _post(url: str, token: str, payload: dict) -> dict:
+def _post(url: str, payload: dict) -> dict:
+    token = _mint()
     req = Request(
         url,
         data=json.dumps(payload, separators=(",", ":")).encode("utf-8"),
@@ -69,7 +80,38 @@ def _post(url: str, token: str, payload: dict) -> dict:
             code = error.get("code") if isinstance(error, dict) else None
         except Exception:
             code = None
-        raise RuntimeError(code or f"CROSS_SPORT_AUDIT_EDGE_HTTP_{exc.code}") from exc
+        if exc.code == 401:
+            fresh = _mint(force=True)
+            retry = Request(
+                url,
+                data=json.dumps(payload, separators=(",", ":")).encode("utf-8"),
+                headers={
+                    "Authorization": f"Bearer {fresh}",
+                    "Content-Type": "application/json",
+                    "Accept": "application/json",
+                },
+                method="POST",
+            )
+            try:
+                with urlopen(retry, timeout=120) as response:
+                    body = json.loads(response.read().decode("utf-8"))
+            except HTTPError as retry_exc:
+                try:
+                    retry_error = json.loads(retry_exc.read().decode("utf-8"))
+                    retry_code = (
+                        retry_error.get("code")
+                        if isinstance(retry_error, dict)
+                        else None
+                    )
+                except Exception:
+                    retry_code = None
+                raise RuntimeError(
+                    retry_code or f"CROSS_SPORT_AUDIT_EDGE_HTTP_{retry_exc.code}"
+                ) from retry_exc
+            except (URLError, TimeoutError, json.JSONDecodeError) as retry_exc:
+                raise RuntimeError("CROSS_SPORT_AUDIT_EDGE_TRANSPORT_FAILED") from retry_exc
+        else:
+            raise RuntimeError(code or f"CROSS_SPORT_AUDIT_EDGE_HTTP_{exc.code}") from exc
     except (URLError, TimeoutError, json.JSONDecodeError) as exc:
         raise RuntimeError("CROSS_SPORT_AUDIT_EDGE_TRANSPORT_FAILED") from exc
 
@@ -85,8 +127,7 @@ def _post(url: str, token: str, payload: dict) -> dict:
 
 
 def fetch_bundle(url: str) -> dict:
-    token = _mint()
-    candidates = _post(url, token, {"action": "LATEST_CANDIDATES"}).get("rows") or []
+    candidates = _post(url, {"action": "LATEST_CANDIDATES"}).get("rows") or []
     lanes = []
     for candidate in candidates:
         rows = []
@@ -94,7 +135,6 @@ def fetch_bundle(url: str) -> dict:
         while True:
             page = _post(
                 url,
-                token,
                 {
                     "action": "COHORT_PAGE",
                     "sport": candidate["sport"],
