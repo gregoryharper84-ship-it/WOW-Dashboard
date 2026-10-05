@@ -31,6 +31,17 @@ def capture_market_microstructure_batch(
     This recorder is downstream market intelligence only. It must never be used
     as meteorological evidence or as an input to the weather probability model.
     """
+    unique_tickers = tuple(
+        dict.fromkeys(str(ticker).strip().upper() for ticker in tickers if str(ticker).strip())
+    )
+    if not unique_tickers:
+        return MicrostructureCaptureResult(
+            attempted=0,
+            written=0,
+            failures=(),
+            can_execute=False,
+        )
+
     owned_http = http is None
     http_client = http or ReadOnlyJsonClient()
     adapter = KalshiPublicMarketAdapter(http_client.get_json)
@@ -39,9 +50,6 @@ def capture_market_microstructure_batch(
         str(key).strip().upper(): (str(value).strip().upper() if value else None)
         for key, value in (series_by_ticker or {}).items()
     }
-    unique_tickers = tuple(
-        dict.fromkeys(str(ticker).strip().upper() for ticker in tickers if str(ticker).strip())
-    )
     failures: list[str] = []
     written = 0
 
