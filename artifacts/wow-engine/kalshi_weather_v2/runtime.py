@@ -14,6 +14,7 @@ from .models import MarketSnapshot, ProbabilityPackage
 from .orchestrator import evaluate_weather_contract
 from .persistence import KalshiWeatherPersistence, content_id
 from .probability_core import WeatherProbabilityCore
+from .settlement_digital_twin import build_atomic_temperature_twin
 from .source_adapters import NwsAdapter, OpenMeteoAdapter
 
 
@@ -124,6 +125,24 @@ def capture_hourly_shadow(
             settlement_location_verified=True,
         )
 
+        settlement_twin_id = content_id(
+            "kalshi-weather-settlement-twin",
+            {
+                "rule_snapshot_id": contract.rule_snapshot_id,
+                "state_as_of": now,
+                "source_snapshot_ids": list(evidence.source_snapshot_ids),
+            },
+        )
+        settlement_twin = build_atomic_temperature_twin(
+            twin_snapshot_id=settlement_twin_id,
+            contract=contract,
+            built_at=now,
+            state_as_of=now,
+            settlement_source_url=rules.settlement_source.url,
+            source_snapshot_ids=evidence.source_snapshot_ids,
+        )
+        persistence.persist_settlement_twin(settlement_twin)
+
         lead_bucket = lead_time_bucket(now, parsed.observation_time_utc)
         calibration_row = persistence.load_latest_certified_calibration(
             station_id=contract.settlement_location_code or f"KALSHI_WEATHER_INDEX:{index_city}",
@@ -205,6 +224,7 @@ def capture_hourly_shadow(
             "forecast_latitude": float(forecast_latitude),
             "forecast_longitude": float(forecast_longitude),
             "nws_point_snapshot_id": point_id,
+            "settlement_twin_snapshot_id": settlement_twin_id,
             "lead_time_bucket": lead_bucket,
             "probability_source": probability.probability_source,
             "capability": dict(capability),
@@ -260,6 +280,7 @@ def capture_hourly_shadow(
             "prediction_id": prediction_id,
             "rule_snapshot_id": contract.rule_snapshot_id,
             "source_snapshot_ids": list(evidence.source_snapshot_ids),
+            "settlement_twin_snapshot_id": settlement_twin_id,
             "market_snapshot_id": market_snapshot_id,
             "ticker": contract.ticker,
             "index_city": parsed.index_city,
