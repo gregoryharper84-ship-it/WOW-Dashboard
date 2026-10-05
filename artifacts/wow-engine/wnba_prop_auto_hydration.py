@@ -965,12 +965,13 @@ def hydrate_wnba_prop_evidence(
             detail={"requested_opponent": opponent, "official_opponent": opponent_name, "official_tricode": opponent_tricode},
         )
 
-    game_log, box_score_log = _player_game_log(
+    game_log, box_score_log, history_source_provider = _player_game_log(
         player_id,
         official_name,
         stat_column,
         event_start.year,
         event_start,
+        str(team.get("teamId") or ""),
         http_get=http_get,
     )
 
@@ -991,10 +992,11 @@ def hydrate_wnba_prop_evidence(
     )
 
     timestamp = captured.isoformat()
+    roster_source_provider = str(roster.get("_source_provider") or ROSTER_STATS_PROVIDER)
     source_timestamps = {
         "WNBA_CDN_SCHEDULE_CURRENT": timestamp,
-        "WNBA_STATS_COMMON_TEAM_ROSTER": timestamp,
-        "WNBA_STATS_LEAGUE_GAME_LOG": timestamp,
+        roster_source_provider: timestamp,
+        history_source_provider: timestamp,
         "WNBA_OFFICIAL_INJURY_REPORT": injury_ts.astimezone(timezone.utc).isoformat(),
     }
     if source_capture_timestamp:
@@ -1021,7 +1023,7 @@ def hydrate_wnba_prop_evidence(
             "availability": availability["availability"],
             "injury_designation": availability["designation"],
             "injury_report_url": injury_url,
-            "source": "WNBA official CDN schedule + WNBA Stats roster + official WNBA injury report",
+            "source": f"WNBA official schedule + {roster_source_provider} + official WNBA injury report",
         },
         "role_timestamp": timestamp,
         "opportunity_ledger": {
@@ -1038,6 +1040,6 @@ def hydrate_wnba_prop_evidence(
         },
         "source_timestamps": source_timestamps,
         "evidence_version": EVIDENCE_VERSION,
-        "rate_provenance": "Official WNBA LeagueGameLog player rows; current event/team from public WNBA CDN schedule; roster from CommonTeamRoster; availability from official WNBA injury-report PDF",
+        "rate_provenance": f"Official WNBA player history via {history_source_provider}; current event/team from official WNBA schedule; roster via {roster_source_provider}; availability from official WNBA injury-report PDF",
         "hydration_provider": PROVIDER_ID,
     }
