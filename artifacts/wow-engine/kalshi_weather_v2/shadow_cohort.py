@@ -48,6 +48,7 @@ class ParsedCohortContract:
     target: HourlyCohortTarget
     ticker: str
     parsed: ParsedHourlyTemperatureRule
+    series_ticker: str | None = None
 
 
 @dataclass(frozen=True)
@@ -64,6 +65,8 @@ class CohortRunResult:
     settlement_failures: tuple[str, ...]
     probability_publishable: bool = False
     can_execute: bool = False
+    market_microstructure_snapshots_captured: int = 0
+    market_microstructure_failures: tuple[str, ...] = ()
 
 
 def run_hourly_shadow_cohort_once(
@@ -354,7 +357,14 @@ def _discover_target_contracts(
                 continue
             if _parse_utc(parsed.observation_time_utc) <= _parse_utc(decision_time):
                 continue
-            out.append(ParsedCohortContract(target=target, ticker=ticker, parsed=parsed))
+            out.append(
+                ParsedCohortContract(
+                    target=target,
+                    ticker=ticker,
+                    parsed=parsed,
+                    series_ticker=series.ticker,
+                )
+            )
     return tuple(out)
 
 
