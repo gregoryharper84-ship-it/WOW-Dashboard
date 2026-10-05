@@ -160,10 +160,10 @@ def _official_livedata_schedule():
     return {
         "leagueSchedule": {
             "gameDates": [{
-                "gameDate": "2026-10-04",
+                "gameDate": "2099-10-04",
                 "games": [{
                     "gameId": "1042600122",
-                    "gameDateTimeUTC": "2026-10-04T20:00:00Z",
+                    "gameDateTimeUTC": "2099-10-04T20:00:00Z",
                     "gameStatus": 1,
                     "homeTeam": {
                         "teamId": "1611661324",
@@ -202,7 +202,7 @@ def test_stats_failure_recovers_spread_discovery_from_official_livedata(monkeypa
 
     event = canary.discover_future_wnba_stats_event(
         fetcher=lambda *_args, **_kwargs: None,
-        now=datetime(2026, 10, 4, 18, 0, tzinfo=timezone.utc),
+        now=datetime(2099, 10, 4, 18, 0, tzinfo=timezone.utc),
         horizon_days=1,
     )
     assert event is not None
@@ -226,7 +226,7 @@ def test_scoring_reverification_falls_back_to_official_livedata(monkeypatch):
 
     result = resolve_wnba_current_event_identity(
         event_id="wnba-stats-1042600122",
-        event_start_time="2026-10-04T20:00:00+00:00",
+        event_start_time="2099-10-04T20:00:00+00:00",
         home_team_id="espn-8",
         away_team_id="espn-16",
         fetcher=lambda *_args, **_kwargs: None,
