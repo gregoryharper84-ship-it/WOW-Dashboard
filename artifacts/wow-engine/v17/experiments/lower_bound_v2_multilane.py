@@ -33,7 +33,7 @@ MARKET_PROBABILITY_SUBSTITUTION_ALLOWED = False
 
 SUPPORTED_FAMILIES = ("MONEYLINE", "SPREAD", "PLAYER_PROP")
 OOD_STATES = ("IN_DISTRIBUTION", "NEAR_OOD", "OOD_BLOCKED")
-PROBABILITY_SEMANTICS = ("BINARY_OUTCOME", "CONDITIONAL_ON_NO_PUSH")
+PROBABILITY_SEMANTICS = (\n    "BINARY_OUTCOME",\n    "CONDITIONAL_ON_NO_PUSH",\n    "UNCONDITIONAL_WITH_PUSH_MASS",\n)
 
 REQUIRED_LANE_EVIDENCE: dict[str, tuple[str, ...]] = {
     "MONEYLINE": (
@@ -132,21 +132,35 @@ def _ood_state(value: Any) -> str:
     return state
 
 
-def _settlement(value: Any) -> int | None:
+def _settlement(value: Any) -> str:
     if value is None:
         raise LowerBoundExperimentError("LOWER_BOUND_SETTLEMENT_MISSING")
     if value in (1, True):
-        return 1
+        return "WIN"
     if value in (0, False):
-        return 0
+        return "LOSS"
     text = str(value).strip().upper()
     if text in {"WIN", "HIT", "COVER"}:
-        return 1
+        return "WIN"
     if text in {"LOSS", "MISS", "NO_COVER", "NOT_COVER"}:
-        return 0
+        return "LOSS"
     if text == "PUSH":
-        return None
+        return "PUSH"
     raise LowerBoundExperimentError(f"LOWER_BOUND_SETTLEMENT_INVALID:{text}")
+
+
+def _binary_outcome(parsed: Mapping[str, Any]) -> int | None:
+    settlement = parsed.get("settlement")
+    if settlement == "WIN":
+        return 1
+    if settlement == "LOSS":
+        return 0
+    if settlement == "PUSH":
+        if parsed.get("probability_semantics") == "CONDITIONAL_ON_NO_PUSH":
+            return None
+        if parsed.get("probability_semantics") == "UNCONDITIONAL_WITH_PUSH_MASS":
+            return 0
+    raise LowerBoundExperimentError("LOWER_BOUND_BINARY_SCORING_SEMANTICS_INVALID")
 
 
 def _validate_probability_row(row: Mapping[str, Any], *, require_settlement: bool) -> dict[str, Any]:
@@ -174,18 +188,37 @@ def _validate_probability_row(row: Mapping[str, Any], *, require_settlement: boo
         raise LowerBoundExperimentError(f"LOWER_BOUND_PROBABILITY_SEMANTICS_INVALID:{semantics}")
 
     push_possible = bool(row.get("push_possible", False))
-    if push_possible and semantics != "CONDITIONAL_ON_NO_PUSH":
+    if push_possible and semantics == "BINARY_OUTCOME":
         raise LowerBoundExperimentError(
-            "LOWER_BOUND_PUSH_CAPABLE_ROW_REQUIRES_CONDITIONAL_NO_PUSH_SEMANTICS"
+            "LOWER_BOUND_PUSH_CAPABLE_ROW_REQUIRES_PUSH_AWARE_SEMANTICS"
+        )
+
+    push_probability_raw = row.get("push_probability")
+    push_probability = None
+    if semantics == "UNCONDITIONAL_WITH_PUSH_MASS":
+        if push_probability_raw is None:
+            raise LowerBoundExperimentError("LOWER_BOUND_PUSH_PROBABILITY_REQUIRED")
+        push_probability = _probability(
+            push_probability_raw,
+            field="PUSH_PROBABILITY",
+        )
+        if point + push_probability > 1.0 + 1e-12:
+            raise LowerBoundExperimentError(
+                "MODEL_OUTPUT_INVALID:SELECTED_PLUS_PUSH_PROBABILITY_GT_ONE"
+            )
+    elif push_probability_raw is not None:
+        push_probability = _probability(
+            push_probability_raw,
+            field="PUSH_PROBABILITY",
         )
 
     settlement = None
     has_settlement = "outcome" in row or "settlement" in row
     if require_settlement or has_settlement:
         settlement = _settlement(row.get("settlement", row.get("outcome")))
-        if settlement is None and semantics != "CONDITIONAL_ON_NO_PUSH":
+        if settlement == "PUSH" and semantics == "BINARY_OUTCOME":
             raise LowerBoundExperimentError(
-                "LOWER_BOUND_PUSH_REQUIRES_CONDITIONAL_NO_PUSH_SEMANTICS"
+                "LOWER_BOUND_PUSH_REQUIRES_PUSH_AWARE_SEMANTICS"
             )
 
     support_n_raw = row.get("support_n")
@@ -217,6 +250,7 @@ def _validate_probability_row(row: Mapping[str, Any], *, require_settlement: boo
         "ood_state": ood_state,
         "probability_semantics": semantics,
         "push_possible": push_possible,
+        "push_probability": push_probability,
         "settlement": settlement,
         "support_n": support_n,
         "support_distance": support_distance,
@@ -283,7 +317,8 @@ def local_reliability_bound(
         parsed = _validate_probability_row(raw, require_settlement=True)
         if parsed["lane_key"] != lane_key:
             continue
-        if parsed["settlement"] is None:
+        binary_outcome = _binary_outcome(parsed)
+        if binary_outcome is None:
             continue
         if parsed["ood_state"] not in allowed_ood:
             continue
@@ -298,7 +333,7 @@ def local_reliability_bound(
             (
                 probability_distance,
                 parsed["point"],
-                int(parsed["settlement"]),
+                int(binary_outcome),
                 support_distance,
                 parsed["ood_state"],
             )
@@ -409,14 +444,22 @@ def evaluate_bound_reliability(
     only for rows explicitly using CONDITIONAL_ON_NO_PUSH semantics.
     """
     parsed_rows: list[dict[str, Any]] = []
+    unconditional_rows: list[dict[str, Any]] = []
     push_n = 0
+    conditional_pushes_excluded_n = 0
     for raw in rows:
         parsed = _validate_probability_row(raw, require_settlement=True)
         if lane_key is not None and parsed["lane_key"] != str(lane_key):
             continue
-        if parsed["settlement"] is None:
+        if parsed["settlement"] == "PUSH":
             push_n += 1
+        if parsed["probability_semantics"] == "UNCONDITIONAL_WITH_PUSH_MASS":
+            unconditional_rows.append(parsed)
+        binary_outcome = _binary_outcome(parsed)
+        if binary_outcome is None:
+            conditional_pushes_excluded_n += 1
             continue
+        parsed["binary_outcome"] = int(binary_outcome)
         parsed_rows.append(parsed)
 
     if not parsed_rows:
@@ -424,7 +467,7 @@ def evaluate_bound_reliability(
 
     probabilities = [row["point"] for row in parsed_rows]
     lowers = [row["lower"] for row in parsed_rows]
-    outcomes = [int(row["settlement"]) for row in parsed_rows]
+    outcomes = [int(row["binary_outcome"]) for row in parsed_rows]
     hit_rate = sum(outcomes) / len(outcomes)
     mean_lower = sum(lowers) / len(lowers)
 
@@ -469,11 +512,43 @@ def evaluate_bound_reliability(
             "reliability_margin": cohort_hit - cohort_lower,
         }
 
+    multiclass_brier_score = None
+    multiclass_log_loss = None
+    if unconditional_rows:
+        brier_total = 0.0
+        log_total = 0.0
+        eps = 1e-12
+        for row in unconditional_rows:
+            p_win = row["point"]
+            p_push = row["push_probability"]
+            p_loss = max(0.0, 1.0 - p_win - p_push)
+            if row["settlement"] == "WIN":
+                target = (1.0, 0.0, 0.0)
+                observed_probability = p_win
+            elif row["settlement"] == "PUSH":
+                target = (0.0, 1.0, 0.0)
+                observed_probability = p_push
+            else:
+                target = (0.0, 0.0, 1.0)
+                observed_probability = p_loss
+            brier_total += (
+                (p_win - target[0]) ** 2
+                + (p_push - target[1]) ** 2
+                + (p_loss - target[2]) ** 2
+            )
+            log_total += -log(min(max(observed_probability, eps), 1.0))
+        multiclass_brier_score = brier_total / len(unconditional_rows)
+        multiclass_log_loss = log_total / len(unconditional_rows)
+
     return {
         "experiment_version": EXPERIMENT_VERSION,
         "lane_key": lane_key,
         "binary_settled_n": len(outcomes),
         "push_n": push_n,
+        "conditional_pushes_excluded_n": conditional_pushes_excluded_n,
+        "unconditional_three_way_n": len(unconditional_rows),
+        "multiclass_brier_score": multiclass_brier_score,
+        "multiclass_log_loss": multiclass_log_loss,
         "mean_calibrated_probability": sum(probabilities) / len(probabilities),
         "mean_calibrated_lower_bound": mean_lower,
         "observed_hit_rate": hit_rate,
@@ -569,15 +644,22 @@ def run_policy_ablation(
             if decision["eligible"]:
                 admitted.append((decision, _validate_probability_row(raw, require_settlement=True)))
 
-        settled = [item for item in admitted if item[1]["settlement"] is not None]
+        settled: list[tuple[dict[str, Any], dict[str, Any], int]] = []
+        push_n = 0
+        for decision, parsed in admitted:
+            if parsed["settlement"] == "PUSH":
+                push_n += 1
+            binary_outcome = _binary_outcome(parsed)
+            if binary_outcome is not None:
+                settled.append((decision, parsed, int(binary_outcome)))
         probabilities = [item[1]["point"] for item in settled]
         lowers = [item[1]["lower"] for item in settled]
-        outcomes = [int(item[1]["settlement"]) for item in settled]
+        outcomes = [item[2] for item in settled]
         metrics: dict[str, Any] = {
             "policy": policy.name,
             "admitted_n": len(admitted),
             "binary_settled_n": len(settled),
-            "push_n": len(admitted) - len(settled),
+            "push_n": push_n,
             "hit_rate": None,
             "mean_probability": None,
             "mean_lower_bound": None,
