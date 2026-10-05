@@ -49,7 +49,7 @@ jobs:
           classifications=()
           progress_signals=()
 
-          gh api --paginate "/repos/${GITHUB_REPOSITORY}/pulls?state=open&base=main&per_page=100" > "$work/prs.json"
+          gh api --paginate --slurp "/repos/${GITHUB_REPOSITORY}/pulls?state=open&base=main&per_page=100" | jq 'add' > "$work/prs.json"
           while IFS= read -r pr; do
             number=$(jq -r '.number' <<<"$pr")
             title=$(jq -r '.title // ""' <<<"$pr")
@@ -57,7 +57,7 @@ jobs:
             head_repo=$(jq -r '.head.repo.full_name // ""' <<<"$pr")
             [ "$head_repo" = "$GITHUB_REPOSITORY" ] || continue
             case "$title" in
-              "fix(v17):"*) ;;
+              "fix(v17):"*|"fix(ci):"*) ;;
               *) continue ;;
             esac
 

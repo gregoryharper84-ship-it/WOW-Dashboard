@@ -209,7 +209,8 @@ def test_hourly_loop_reserves_capacity_for_repair_ci_and_records_progress() -> N
     assert "ci_closure_pressure" in text
     assert "ci_classifications" in text
     assert "objective_progress" in text
-    assert '"fix(v17):"*' in text
+    assert '"fix(v17):"*|"fix(ci):"*' in text
+    assert "gh api --paginate --slurp" in text
     assert 'classification" = "CI_GREEN"' in text
     assert text.index('action="RECOVER_CI"') < text.index('action="IMPROVE_MODEL"')
     assert "rerun-failed-jobs" not in text
