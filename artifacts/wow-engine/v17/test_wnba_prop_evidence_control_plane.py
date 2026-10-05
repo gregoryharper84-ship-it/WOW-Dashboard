@@ -120,6 +120,94 @@ def _install_common(monkeypatch: pytest.MonkeyPatch):
     )
 
 
+def test_official_schedule_api_recovery_prevents_schedule_transport_data_unobtainable(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    real_request_schedule = subject.acquisition._request_schedule
+    _install_common(monkeypatch)
+    monkeypatch.setattr(subject.acquisition, "_request_schedule", real_request_schedule)
+
+    schedule = {
+        "leagueSchedule": {
+            "gameDates": [
+                {
+                    "games": [
+                        {
+                            "gameId": "1042600202",
+                            "gameDateTimeUTC": "2026-10-07T23:30:00Z",
+                            "gameStatus": 1,
+                            "homeTeam": {
+                                "teamId": 1611661330,
+                                "teamCity": "Atlanta",
+                                "teamName": "Dream",
+                                "teamTricode": "ATL",
+                            },
+                            "awayTeam": {
+                                "teamId": 1611661313,
+                                "teamCity": "New York",
+                                "teamName": "Liberty",
+                                "teamTricode": "NYL",
+                            },
+                        }
+                    ]
+                }
+            ]
+        }
+    }
+    calls: list[tuple[str, dict]] = []
+
+    class Response:
+        status_code = 200
+        content = b""
+
+        def __init__(self, payload):
+            self.payload = payload
+
+        def json(self):
+            if isinstance(self.payload, BaseException):
+                raise self.payload
+            return self.payload
+
+    def fetcher(url, **kwargs):
+        calls.append((str(url), kwargs))
+        if str(url) == subject.acquisition.wnba.WNBA_SCHEDULE_URL:
+            return Response(ValueError("legacy CDN body was not JSON"))
+        if str(url) == subject.schedule_transport.SCHEDULE_API_URL:
+            return Response(schedule)
+        raise AssertionError(f"unexpected source: {url}")
+
+    result = subject.acquire_wnba_forward_evidence_batch(
+        subject.WNBAForwardEvidenceRequest(
+            requested_date="2026-09-28",
+            candidate_offset=0,
+            max_candidates=1,
+        ),
+        db=_DB(),
+        now=NOW,
+        http_get=fetcher,
+    )
+
+    assert result["status"] == "COMPLETED"
+    assert result["persisted"] == 1
+    assert result["blockers"] == []
+    assert result["source_diagnostics"] == []
+    assert result["can_execute"] is False
+    assert sum(
+        1 for url, _kwargs in calls
+        if url == subject.acquisition.wnba.WNBA_SCHEDULE_URL
+    ) >= subject.acquisition.wnba.HTTP_ATTEMPTS
+    api_calls = [
+        kwargs for url, kwargs in calls
+        if url == subject.schedule_transport.SCHEDULE_API_URL
+    ]
+    assert len(api_calls) == 1
+    assert api_calls[0]["params"]["regionId"] == "1"
+    assert all(
+        url != subject.schedule_transport.SCHEDULE_PAGE_URL
+        for url, _kwargs in calls
+    )
+
+
 def test_rotating_window_is_bounded_and_reports_next_offset(monkeypatch: pytest.MonkeyPatch):
     _install_common(monkeypatch)
     req = subject.WNBAForwardEvidenceRequest(

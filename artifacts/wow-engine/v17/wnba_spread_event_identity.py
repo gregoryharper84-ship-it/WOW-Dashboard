@@ -30,13 +30,24 @@ def _resolve_wnba_stats_event_identity(
             "WNBA Stats event identity plus ESPN-keyed team aliases are required",
         )
     local_day = target.astimezone(ZoneInfo("America/New_York")).date().isoformat()
+    identity_provider = "WNBA_STATS_SCOREBOARD_V3"
+    identity_source = str(getattr(control, "STATS_SCOREBOARD_URL", ""))
     try:
         schedule = control._scoreboard_schedule_for_date(local_day, http_get=fetcher)
-    except Exception as exc:  # noqa: BLE001
-        raise SpreadChallengerUnavailable(
-            "WNBA_SPREAD_FORWARD_IDENTITY_SOURCE_UNAVAILABLE",
-            "WNBA Stats scoreboard identity request failed",
-        ) from exc
+    except Exception as stats_exc:  # noqa: BLE001
+        stats_code = str(getattr(stats_exc, "code", "") or type(stats_exc).__name__)
+        try:
+            schedule = control._livedata_schedule_for_date(local_day, http_get=fetcher)
+            identity_provider = str(
+                getattr(control, "LIVEDATA_SCOREBOARD_PROVIDER", "WNBA_LIVEDATA_SCOREBOARD_10_RENDER_RECOVERY")
+            )
+            identity_source = str(getattr(control, "LIVEDATA_SCOREBOARD_URL", ""))
+        except Exception as live_exc:  # noqa: BLE001
+            live_code = str(getattr(live_exc, "code", "") or type(live_exc).__name__)
+            raise SpreadChallengerUnavailable(
+                "WNBA_SPREAD_FORWARD_IDENTITY_SOURCE_UNAVAILABLE",
+                f"official WNBA identity re-verification failed: stats={stats_code}; livedata={live_code}",
+            ) from live_exc
     league = schedule.get("leagueSchedule") if isinstance(schedule, dict) else None
     blocks = league.get("gameDates") if isinstance(league, dict) else None
     games: list[dict[str, Any]] = []
@@ -85,8 +96,8 @@ def _resolve_wnba_stats_event_identity(
         "event_start_time": event_time.isoformat(),
         "home_team_id": actual_home,
         "away_team_id": actual_away,
-        "identity_provider": "WNBA_STATS_SCOREBOARD_V3",
-        "identity_source": str(getattr(control, "STATS_SCOREBOARD_URL", "")),
+        "identity_provider": identity_provider,
+        "identity_source": identity_source,
         "identity_verified_at": datetime.now(timezone.utc).isoformat(),
         "market_features_used": False,
         "can_execute": False,

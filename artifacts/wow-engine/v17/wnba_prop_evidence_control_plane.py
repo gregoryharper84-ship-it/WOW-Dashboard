@@ -124,21 +124,31 @@ def _source_diagnostic(exc: Exception) -> dict[str, Any] | None:
         attempts = int(getattr(acquisition.wnba, "HTTP_ATTEMPTS", 0) or 0) or None
         primary_kinds, primary_codes = _safe_error_summary(primary_errors)
         fallback_kinds, fallback_codes = _safe_error_summary(fallback_errors)
+        primary_url = str(
+            detail.get("primary_url")
+            or getattr(acquisition.wnba, "WNBA_SCHEDULE_URL", "")
+        ).strip()
+        fallback_url = str(
+            detail.get("fallback_url")
+            or getattr(schedule_transport, "SCHEDULE_PAGE_URL", "")
+        ).strip()
+        primary_parsed = urlsplit(primary_url)
+        fallback_parsed = urlsplit(fallback_url)
         return {
             "code": code,
             "sources": [
                 {
                     "provider": str(detail.get("primary_source") or "WNBA_CDN_SCHEDULE_CURRENT"),
-                    "host": "cdn.wnba.com",
-                    "path": "/static/json/staticData/scheduleLeagueV2.json",
+                    "host": primary_parsed.netloc,
+                    "path": primary_parsed.path,
                     "attempts": attempts,
                     "error_kinds": primary_kinds,
                     "error_codes": primary_codes,
                 },
                 {
                     "provider": str(detail.get("fallback_source") or "WNBA_OFFICIAL_SCHEDULE_WEB_SSR"),
-                    "host": "www.wnba.com",
-                    "path": "/schedule",
+                    "host": fallback_parsed.netloc,
+                    "path": fallback_parsed.path,
                     "attempts": attempts,
                     "error_kinds": fallback_kinds,
                     "error_codes": fallback_codes,

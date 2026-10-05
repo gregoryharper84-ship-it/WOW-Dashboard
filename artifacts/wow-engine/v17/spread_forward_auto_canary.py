@@ -245,7 +245,11 @@ def discover_future_wnba_stats_event(
     fails closed immediately so the route returns a governed typed blocker instead
     of repeating a 20-second failed request for every date.
     """
-    from v17.wnba_prop_evidence_control_plane import _scoreboard_schedule_for_date
+    from v17.wnba_prop_evidence_control_plane import (
+        LIVEDATA_SCOREBOARD_PROVIDER,
+        _livedata_schedule_for_date,
+        _scoreboard_schedule_for_date,
+    )
     from v17.wnba_team_identity_aliases import espn_team_id_for_wnba_stats_tricode
 
     current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
@@ -254,14 +258,28 @@ def discover_future_wnba_stats_event(
     candidates: list[tuple[datetime, dict[str, Any]]] = []
     for offset in range(max(horizon, 1)):
         requested_date = (current + timedelta(days=offset)).date().isoformat()
+        identity_provider = "WNBA_STATS_SCOREBOARD_V3"
         try:
             schedule = _scoreboard_schedule_for_date(requested_date, http_get=fetcher)
-        except Exception as exc:  # noqa: BLE001 - retain typed source boundary
-            detail = str(getattr(exc, "code", "") or type(exc).__name__)
-            raise SpreadChallengerUnavailable(
-                "WNBA_SPREAD_CANARY_IDENTITY_SOURCE_UNAVAILABLE",
-                f"backend WNBA Stats schedule acquisition failed: {detail}",
-            ) from exc
+        except Exception as stats_exc:  # noqa: BLE001 - retain typed source boundary
+            stats_code = str(getattr(stats_exc, "code", "") or type(stats_exc).__name__)
+            if offset != 0:
+                raise SpreadChallengerUnavailable(
+                    "WNBA_SPREAD_CANARY_IDENTITY_SOURCE_UNAVAILABLE",
+                    f"backend WNBA Stats schedule acquisition failed: {stats_code}",
+                ) from stats_exc
+            try:
+                schedule = _livedata_schedule_for_date(requested_date, http_get=fetcher)
+                identity_provider = LIVEDATA_SCOREBOARD_PROVIDER
+            except Exception as live_exc:  # noqa: BLE001
+                live_code = str(getattr(live_exc, "code", "") or type(live_exc).__name__)
+                raise SpreadChallengerUnavailable(
+                    "WNBA_SPREAD_CANARY_IDENTITY_SOURCE_UNAVAILABLE",
+                    (
+                        "backend official WNBA identity sources unavailable: "
+                        f"stats={stats_code}; livedata={live_code}"
+                    ),
+                ) from live_exc
         successful_response = True
         league = schedule.get("leagueSchedule") if isinstance(schedule, dict) else None
         blocks = league.get("gameDates") if isinstance(league, dict) else None
@@ -315,7 +333,7 @@ def discover_future_wnba_stats_event(
                             "away_team_id": away_espn_id,
                             "home_team_tricode": home_tricode,
                             "away_team_tricode": away_tricode,
-                            "identity_provider": "WNBA_STATS_SCOREBOARD_V3",
+                            "identity_provider": identity_provider,
                             "identity_acquisition_location": "BACKEND_RUNTIME",
                             "can_execute": False,
                         },
@@ -388,7 +406,10 @@ def run_wnba_spread_auto_canary(
     if event is None:
         return _deferred("WNBA")
     provider = str(event.get("identity_provider") or "ESPN_SCOREBOARD")
-    if provider == "WNBA_STATS_SCOREBOARD_V3":
+    if provider in {
+        "WNBA_STATS_SCOREBOARD_V3",
+        "WNBA_LIVEDATA_SCOREBOARD_10_RENDER_RECOVERY",
+    }:
         scoring_event_id = f"wnba-stats-{event['raw_event_id']}"
         home_team_id = str(event["home_team_id"])
         away_team_id = str(event["away_team_id"])
