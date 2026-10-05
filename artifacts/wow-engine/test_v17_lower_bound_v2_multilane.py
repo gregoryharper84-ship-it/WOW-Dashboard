@@ -33,6 +33,7 @@ def _row(
     support_distance=0.2,
     push_possible=False,
     probability_semantics="BINARY_OUTCOME",
+    push_probability=None,
     lane_specific_gate_pass=True,
 ):
     return {
@@ -47,6 +48,7 @@ def _row(
         "support_distance": support_distance,
         "push_possible": push_possible,
         "probability_semantics": probability_semantics,
+        "push_probability": push_probability,
         "lane_specific_gate_pass": lane_specific_gate_pass,
         "upstream_hard_blockers": [],
         "market_probability_substitution_used": False,
@@ -166,6 +168,45 @@ def test_composite_bound_is_conservative_minimum_and_cannot_publish():
     assert result["probability_publishable"] is False
     assert result["promotion_authorized"] is False
     assert result["can_execute"] is False
+
+
+def test_unconditional_three_way_prop_scores_push_mass_without_dropping_pushes():
+    rows = [
+        _row(
+            p=0.55,
+            lb=0.50,
+            outcome=1,
+            push_possible=True,
+            probability_semantics="UNCONDITIONAL_WITH_PUSH_MASS",
+            push_probability=0.10,
+        ),
+        _row(
+            p=0.55,
+            lb=0.50,
+            outcome="PUSH",
+            push_possible=True,
+            probability_semantics="UNCONDITIONAL_WITH_PUSH_MASS",
+            push_probability=0.10,
+        ),
+        _row(
+            p=0.55,
+            lb=0.50,
+            outcome=0,
+            push_possible=True,
+            probability_semantics="UNCONDITIONAL_WITH_PUSH_MASS",
+            push_probability=0.10,
+        ),
+    ]
+
+    report = evaluate_bound_reliability(rows)
+
+    assert report["binary_settled_n"] == 3
+    assert report["push_n"] == 1
+    assert report["conditional_pushes_excluded_n"] == 0
+    assert report["unconditional_three_way_n"] == 3
+    assert report["observed_hit_rate"] == pytest.approx(1 / 3)
+    assert report["multiclass_brier_score"] is not None
+    assert report["multiclass_log_loss"] is not None
 
 
 def test_reliability_report_handles_pushes_and_reports_threshold_margins():
