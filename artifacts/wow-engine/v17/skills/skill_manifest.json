@@ -20,7 +20,8 @@
         "WOW_V17_PRIZEPICKS_BOARD_TO_SLIPS",
         "WOW_V17_ML_WINNERS",
         "WOW_V17_SCREENSHOT_REVIEW",
-        "WOW_V17_PICK_CORE"
+        "WOW_V17_PICK_CORE",
+        "WOW_V17_JS_MODEL_CONVERGENCE"
       ]
     },
     {
@@ -50,6 +51,22 @@
       ]
     },
     {
+      "skill_id": "WOW_V17_JS_MODEL_CONVERGENCE",
+      "file": "WOW_V17_JS_MODEL_CONVERGENCE_SKILL.md",
+      "owner": "WOW_BETTING_ENGINE",
+      "probability_authority": false,
+      "status": "ACTIVE_RESEARCH_GOVERNOR",
+      "triggers": [
+        "Run JS model convergence",
+        "JS + V17",
+        "superpower JS strategy"
+      ],
+      "composes": [
+        "WOW_V17_JS_STYLE_INTELLIGENCE",
+        "WOW_V17_RESEARCH_MARKET_CONTEXT"
+      ]
+    },
+    {
       "skill_id": "WOW_V17_BEST_PROPS",
       "file": "WOW_V17_BEST_PROPS_SKILL.md",
       "owner": "WOW_BETTING_ENGINE",
@@ -60,7 +77,8 @@
       ],
       "composes": [
         "WOW_V17_RESEARCH_MARKET_CONTEXT",
-        "WOW_V17_JS_STYLE_INTELLIGENCE"
+        "WOW_V17_JS_STYLE_INTELLIGENCE",
+        "WOW_V17_JS_MODEL_CONVERGENCE"
       ]
     },
     {
@@ -77,7 +95,8 @@
         "WOW_V17_SCREENSHOT_REVIEW",
         "WOW_V17_RESEARCH_MARKET_CONTEXT",
         "WOW_V17_JS_STYLE_INTELLIGENCE",
-        "WOW_V17_PICK_CORE"
+        "WOW_V17_PICK_CORE",
+        "WOW_V17_JS_MODEL_CONVERGENCE"
       ]
     },
     {
@@ -131,6 +150,10 @@
     "slip_construction_uses_verified_pool_only": true,
     "js_style_signal_not_governed_probability": true,
     "js_style_cannot_narrow_full_model_universe": true,
-    "js_style_postgame_values_cannot_backfill_pregame_features": true
+    "js_style_postgame_values_cannot_backfill_pregame_features": true,
+    "js_model_convergence_not_new_probability_model": true,
+    "js_candidate_cannot_override_governed_model": true,
+    "non_js_model_candidate_remains_eligible": true,
+    "official_prop_ranking_remains_governed_lower_bound_first": true
   }
 }
