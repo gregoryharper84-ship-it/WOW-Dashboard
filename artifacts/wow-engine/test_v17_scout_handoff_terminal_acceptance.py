@@ -140,7 +140,7 @@ def test_wait_for_terminal_persists_final_durable_ledger(monkeypatch, tmp_path):
 
     assert result["status"] == "PASS"
     ledger = __import__("json").loads(output.read_text())
-    assert ledger["schema_version"] == "wow.v17.scout-handoff-run.v1" or ledger["status"] == "COMPLETE"
+    assert ledger.get("schema_version") in {None, "wow.v17.scout-handoff-run.v1"}
     assert ledger["status"] == "COMPLETE"
     assert ledger["jobs"] == complete["jobs"]
     assert ledger["can_execute"] is False
@@ -183,3 +183,14 @@ def test_wait_for_terminal_timeout_is_typed(monkeypatch):
     assert result["status"] == "BLOCKED_WITH_EXACT_REASON"
     assert "SCOUT_TERMINAL_ACCEPTANCE_TIMEOUT" in result["blockers"]
     assert result["can_execute"] is False
+
+
+def test_nightly_workflow_feeds_morning_report_from_terminal_durable_ledger():
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2]
+    workflow = (root / ".github" / "workflows" / "wow-v17-nightly-multiscout.yml").read_text()
+    assert '--ledger-output "$RUNNER_TEMP/wow-multiscout/terminal-run-receipt.json"' in workflow
+    assert 'receipt="$RUNNER_TEMP/wow-multiscout/terminal-run-receipt.json"' in workflow
+    assert '--receipt "$receipt"' in workflow
+    assert '${{ runner.temp }}/wow-multiscout/terminal-run-receipt.json' in workflow
