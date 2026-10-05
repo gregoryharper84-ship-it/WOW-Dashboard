@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 import time
+from contextlib import contextmanager
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -29,6 +30,16 @@ def test_compact_rows_score_concurrently_preserve_order_and_reapply_portfolio(mo
     monkeypatch.setenv("WOW_INTERACTIVE_PROP_SCORE_WORKERS", "2")
     monkeypatch.setattr(subject, "prehydrate_batch", lambda batch, market_api: batch)
     monkeypatch.setattr(subject, "enforce_top10_completion", lambda response, rows: response)
+    stage_calls = []
+    labels = {}
+
+    @contextmanager
+    def timer(stage):
+        stage_calls.append(stage)
+        yield
+
+    monkeypatch.setattr(subject, "stage_timer", timer)
+    monkeypatch.setattr(subject, "annotate_request", lambda **kwargs: labels.update(kwargs))
     monkeypatch.setattr(subject.pick_runtime, "_canonical_stat", lambda sport, stat: stat)
     monkeypatch.setattr(
         subject.pick_runtime,
@@ -100,6 +111,8 @@ def test_compact_rows_score_concurrently_preserve_order_and_reapply_portfolio(mo
     assert sorted(calls) == ["a", "b", "c"]
     assert portfolio_calls == [("parallel", ["a", "b", "c"])]
     assert body["interactive_parallelism"]["workers"] == 2
+    assert stage_calls == ["hydration", "fitted_scoring", "reconciliation"]
+    assert labels == {"sport": "NFL", "row_count": 3, "batch_size": 3}
 
 
 def test_full_mode_keeps_canonical_serial_boundary(monkeypatch):
