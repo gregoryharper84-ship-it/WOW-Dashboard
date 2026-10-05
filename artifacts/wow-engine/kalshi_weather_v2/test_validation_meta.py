@@ -145,6 +145,7 @@ def test_champion_vs_baseline_scoring_uses_paired_outcomes():
     assert delta.champion_brier_advantage > 0
     assert delta.champion_log_loss_advantage > 0
     assert report.complexity_gate.recommendation is ComplexityRecommendation.ELIGIBLE_FOR_GOVERNED_REVIEW
+    assert report.input_manifest["probability_samples"][0]["market_price_used_as_weather_input"] is False
     assert report.can_execute is False
 
 
@@ -395,3 +396,47 @@ def test_execution_flags_fail_closed_across_meta_layer():
         replace(fixture(), can_execute=True)
     with pytest.raises(ValidationMetaError, match="COMPLEXITY_GATE_EXECUTION_PROHIBITED"):
         replace(gate(), can_execute=True)
+
+
+def test_market_baseline_does_not_control_meteorological_complexity_gate():
+    nbm = baseline(BaselineKind.NBM, ident="nbm", p=0.55)
+    market = baseline(BaselineKind.MARKET, ident="market", p=0.95)
+    fx = fixture()
+    report = ValidationMetaLayer().evaluate(
+        as_of_time="2026-10-04T19:00:00Z",
+        probability_samples=(
+            sample("a", champion=0.80, outcome=True, baselines=(nbm, market)),
+            sample("b", champion=0.20, outcome=False, baselines=(
+                replace(nbm, p_yes=0.45),
+                replace(market, p_yes=0.05),
+            )),
+        ),
+        selective_confidence_thresholds=(0.0,),
+        counterfactual_samples=(),
+        red_team_fixtures=(fx,),
+        red_team_observations=(observation(fx),),
+        complexity_policy=gate(),
+    )
+    market_delta = next(item for item in report.baseline_deltas if item.baseline_kind == "MARKET")
+    nbm_delta = next(item for item in report.baseline_deltas if item.baseline_kind == "NBM")
+    assert market_delta.champion_brier_advantage < 0
+    assert nbm_delta.champion_brier_advantage > 0
+    assert report.complexity_gate.recommendation is ComplexityRecommendation.ELIGIBLE_FOR_GOVERNED_REVIEW
+
+
+def test_validation_report_identity_detects_manifest_tampering():
+    fx = fixture()
+    report = ValidationMetaLayer().evaluate(
+        as_of_time="2026-10-04T19:00:00Z",
+        probability_samples=(sample("a"), sample("b", champion=0.30, outcome=False)),
+        selective_confidence_thresholds=(0.0,),
+        counterfactual_samples=(),
+        red_team_fixtures=(fx,),
+        red_team_observations=(observation(fx),),
+        complexity_policy=gate(),
+    )
+    manifest = report.input_manifest
+    manifest["as_of_time"] = "2026-10-04T19:01:00Z"
+    import json
+    with pytest.raises(ValidationMetaError, match="VALIDATION_REPORT_IDENTITY_MISMATCH"):
+        replace(report, input_manifest_json=json.dumps(manifest))
