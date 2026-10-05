@@ -117,9 +117,7 @@ The combined strategy should outperform naive JS imitation through five filters:
    sufficient calibrated support.
 
 3. **Counterfactual failure-path review**
-   Test the reasons the JS thesis can fail: role spike, minutes extension, pass-volume
-   reversal, overtime, shot-volume reversal, game-script flip, usage redistribution,
-   or other sport-specific regimes.
+   Read the controlling specialist's certified failure-path/scenario outputs and test the reasons the JS thesis can fail: role spike, minutes extension, pass-volume reversal, overtime, shot-volume reversal, game-script flip, usage redistribution, or other sport-specific regimes. When the certified model already consumed a factor, do not manually apply a second numeric penalty; the convergence layer may classify evidence/structure but must preserve the model package exactly.
 
 4. **Current-state reconciliation**
    Re-check role/news/status and exact line/direction. A good historical JS thesis is
