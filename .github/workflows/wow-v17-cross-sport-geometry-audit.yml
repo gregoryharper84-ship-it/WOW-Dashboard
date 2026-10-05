@@ -66,7 +66,7 @@ jobs:
       - name: Fetch immutable D1 evidence through governed OIDC feed
         if: steps.source.outputs.mode == 'oidc'
         run: |
-          python v17/experiments/cross_sport_audit_edge_fetch.py \
+          python -m v17.experiments.cross_sport_audit_edge_fetch \
             --output "$RUNNER_TEMP/cross-sport-audit-bundle.json"
 
       - name: Run direct read-only cross-sport audit
@@ -74,7 +74,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python v17/experiments/cross_sport_geometry_audit.py \
+          python -m v17.experiments.cross_sport_geometry_audit \
             --output "$RUNNER_TEMP/cross-sport-geometry-audit.json" \
             | tee "$RUNNER_TEMP/cross-sport-geometry-audit.log"
 
@@ -83,7 +83,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python v17/experiments/cross_sport_geometry_audit_bundle.py \
+          python -m v17.experiments.cross_sport_geometry_audit_bundle \
             --input "$RUNNER_TEMP/cross-sport-audit-bundle.json" \
             --output "$RUNNER_TEMP/cross-sport-geometry-audit.json" \
             | tee "$RUNNER_TEMP/cross-sport-geometry-audit.log"
