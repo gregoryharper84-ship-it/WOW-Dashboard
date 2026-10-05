@@ -1298,8 +1298,14 @@ def run_cross_sport_winner_scan(
     include_regime_variants: bool = False,
     now: datetime | None = None,
     budget_seconds: float | None = None,
+    canonicalize_identity: Callable[[DiscoveredEvent], DiscoveredEvent] | None = None,
 ) -> dict[str, Any]:
-    """Discovery -> registry routing -> reconciliation, in that order."""
+    """Discovery -> canonical identity -> registry routing -> reconciliation.
+
+    An optional sport-owned identity handoff may replace alias-only discovery
+    with a canonical event before routing. It may not drop rows or create
+    sporting probability.
+    """
     counters_before = observability.counters()
     inventory = discover_winner_slate(
         requested_slate_date=requested_slate_date,
@@ -1311,6 +1317,8 @@ def run_cross_sport_winner_scan(
         now=now,
         budget_seconds=budget_seconds,
     )
+    if callable(canonicalize_identity):
+        inventory.events = [canonicalize_identity(event) for event in inventory.events]
     rows = route_discovered_slate(
         inventory, resolve_model=resolve_model, score_row=score_row, now=now
     )
