@@ -268,7 +268,7 @@ def cluster_candidates(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]
             "shared_drivers": sorted(drivers),
             "dependence_type": dependence,
             "joint_probability": None,
-            "independence_product_allowed": dependence == "THESIS_NEUTRAL",
+            # Same-event rows are never assumed independent by this overlay.\n            "independence_product_allowed": False,
             "probability_authority": PROBABILITY_AUTHORITY,
             "terminal_authority": TERMINAL_AUTHORITY,
             "can_execute": False,
