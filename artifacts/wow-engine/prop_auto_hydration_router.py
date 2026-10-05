@@ -498,6 +498,12 @@ def auto_hydrate_prop_evidence(
             _WNBA_TARGET.reset(token)
         result = dict(result)
         result.pop("hydration_provider", None)
+        # Control-plane acquisition exposes these schedule transport diagnostics
+        # at top level, but canonical RawPropEvidence is intentionally strict.
+        # Preserve the same diagnostics inside role_status/source_timestamps and
+        # remove only the non-evidence envelope fields before model validation.
+        result.pop("schedule_source_provider", None)
+        result.pop("schedule_source_url", None)
         return _bind_event_identity(
             result,
             sport=normalized_sport,
