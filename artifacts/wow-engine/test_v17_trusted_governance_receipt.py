@@ -164,6 +164,9 @@ def test_workflows_use_trusted_exact_head_artifact_not_pr_body_as_authority():
 
     assert "pull_request_target:" in gate
     assert "ref: main" in gate
+    assert 'group: wow-v17-trusted-governance-${{ github.event.pull_request.number }}' in gate
+    assert 'github.event.pull_request.head.sha' not in gate.split("concurrency:", 1)[1].split("jobs:", 1)[0]
+    assert "cancel-in-progress: true" in gate
     assert 'artifact_name="wow-v17-engineering-governance-${PR_HEAD_SHA}"' in gate
     assert "verify_engineering_governance_receipt.py" in gate
     assert "GOVERNANCE_RECEIPT_CHECKSUM_MISMATCH" in gate
