@@ -36,6 +36,55 @@ HTML = f"""
 """
 
 
+CURRENT_API_PAYLOAD = {
+    "leagueSchedule": {
+        "gameDates": [
+            {
+                "gameDate": "10/07/2026 00:00:00",
+                "games": [
+                    {
+                        "gameId": "1042600202",
+                        "gameDateTimeUTC": "2026-10-07T23:30:00Z",
+                        "gameDateUTC": "2026-10-07T04:00:00Z",
+                        "gameStatus": 1,
+                        "homeTeam": {
+                            "teamId": 1611661330,
+                            "teamCity": "Atlanta",
+                            "teamName": "Dream",
+                            "teamTricode": "ATL",
+                        },
+                        "awayTeam": {
+                            "teamId": 1611661313,
+                            "teamCity": "New York",
+                            "teamName": "Liberty",
+                            "teamTricode": "NYL",
+                        },
+                    },
+                    {
+                        "gameId": "1042600212",
+                        "gameDateTimeUTC": "2026-10-08T01:30:00Z",
+                        "gameDateUTC": "2026-10-08T04:00:00Z",
+                        "gameStatus": 1,
+                        "homeTeam": {
+                            "teamId": 1611661331,
+                            "teamCity": "Golden State",
+                            "teamName": "Valkyries",
+                            "teamTricode": "GSV",
+                        },
+                        "awayTeam": {
+                            "teamId": 1611661319,
+                            "teamCity": "Las Vegas",
+                            "teamName": "Aces",
+                            "teamTricode": "LVA",
+                        },
+                    },
+                ],
+            }
+        ]
+    }
+}
+
+
 class FakeResponse:
     def __init__(self, *, status_code=200, payload=None, content=b""):
         self.status_code = status_code
@@ -78,15 +127,32 @@ def test_bare_numeric_game_url_remains_supported():
     assert game["gameId"] == "1042600122"
 
 
-def test_cdn_non_json_exhausts_same_source_recovery_before_official_web_fallback():
+def test_captured_official_schedule_api_shape_preserves_exact_current_game_identity():
+    payload = fallback._validate_official_schedule_payload(CURRENT_API_PAYLOAD)
+    games = payload["leagueSchedule"]["gameDates"][0]["games"]
+    assert [
+        (
+            game["gameId"],
+            game["gameDateTimeUTC"],
+            str(game["awayTeam"]["teamId"]),
+            str(game["homeTeam"]["teamId"]),
+        )
+        for game in games
+    ] == [
+        ("1042600202", "2026-10-07T23:30:00Z", "1611661313", "1611661330"),
+        ("1042600212", "2026-10-08T01:30:00Z", "1611661319", "1611661331"),
+    ]
+
+
+def test_cdn_non_json_exhausts_same_source_recovery_before_official_schedule_api():
     calls = []
 
     def fetcher(url, **kwargs):
         calls.append((url, kwargs))
         if url == wnba.WNBA_SCHEDULE_URL:
             return FakeResponse(payload=ValueError("Expecting value"))
-        if url == fallback.SCHEDULE_PAGE_URL:
-            return FakeResponse(content=HTML.encode("utf-8"))
+        if url == fallback.SCHEDULE_API_URL:
+            return FakeResponse(payload=CURRENT_API_PAYLOAD)
         raise AssertionError(f"unexpected source: {url}")
 
     payload = fallback.request_with_official_web_fallback(
@@ -94,8 +160,8 @@ def test_cdn_non_json_exhausts_same_source_recovery_before_official_web_fallback
         http_get=fetcher,
         headers=wnba._cdn_headers(),
     )
-    game = payload["leagueSchedule"]["gameDates"][0]["games"][0]
-    assert game["gameId"] == "1042600122"
+    games = payload["leagueSchedule"]["gameDates"][0]["games"]
+    assert [game["gameId"] for game in games] == ["1042600202", "1042600212"]
 
     cdn_calls = [kwargs for url, kwargs in calls if url == wnba.WNBA_SCHEDULE_URL]
     assert len(cdn_calls) == wnba.HTTP_ATTEMPTS * 2
@@ -107,15 +173,13 @@ def test_cdn_non_json_exhausts_same_source_recovery_before_official_web_fallback
     assert all("Referer" not in call["headers"] for call in minimal_calls)
     assert all("Accept-Encoding" not in call["headers"] for call in minimal_calls)
 
-    assert [url for url, _kwargs in calls][-1] == fallback.SCHEDULE_PAGE_URL
-    assert all(
-        url in {wnba.WNBA_SCHEDULE_URL, fallback.SCHEDULE_PAGE_URL}
-        for url, _kwargs in calls
-    )
-    web_call = next(kwargs for url, kwargs in calls if url == fallback.SCHEDULE_PAGE_URL)
-    assert web_call["headers"]["Host"] == "www.wnba.com"
-    assert "text/html" in web_call["headers"]["Accept"]
-    assert web_call["follow_redirects"] is True
+    api_calls = [kwargs for url, kwargs in calls if url == fallback.SCHEDULE_API_URL]
+    assert len(api_calls) == 1
+    assert api_calls[0]["params"]["regionId"] == "1"
+    assert api_calls[0]["params"]["season"].isdigit()
+    assert api_calls[0]["headers"]["Accept"].startswith("application/json")
+    assert "Host" not in api_calls[0]["headers"]
+    assert fallback.SCHEDULE_PAGE_URL not in [url for url, _kwargs in calls]
 
 
 def test_both_official_schedule_transports_fail_closed_with_typed_source_error():
@@ -132,18 +196,19 @@ def test_both_official_schedule_transports_fail_closed_with_typed_source_error()
         )
     assert excinfo.value.code == "WNBA_OFFICIAL_SOURCE_UNAVAILABLE"
     assert excinfo.value.detail["primary_source"] == fallback.CDN_PROVIDER
-    assert excinfo.value.detail["fallback_source"] == fallback.WEB_PROVIDER
+    assert excinfo.value.detail["fallback_source"] == fallback.API_PROVIDER
+    assert excinfo.value.detail["fallback_url"] == fallback.SCHEDULE_API_URL
     assert len(excinfo.value.detail["primary_minimal_errors"]) == wnba.HTTP_ATTEMPTS
     assert "RuntimeError:HTTP_502" in excinfo.value.detail["fallback_errors"]
 
 
-def test_parse_failure_preserves_typed_code_without_remote_body_text():
-    malformed_html = "<html><body><a href='/game/lva-vs-ind-1042600122'></a></body></html>"
-
+def test_api_failure_preserves_typed_code_without_remote_body_text():
     def fetcher(url, **kwargs):
         if url == wnba.WNBA_SCHEDULE_URL:
-            return FakeResponse(payload=ValueError("remote body detail must not leak"))
-        return FakeResponse(content=malformed_html.encode("utf-8"))
+            return FakeResponse(payload=ValueError("cdn body detail must not leak"))
+        if url == fallback.SCHEDULE_API_URL:
+            return FakeResponse(payload=ValueError("api body detail must not leak"))
+        raise AssertionError(f"unexpected source: {url}")
 
     with pytest.raises(wnba.WNBAPropHydrationError) as excinfo:
         fallback.request_with_official_web_fallback(
@@ -152,8 +217,21 @@ def test_parse_failure_preserves_typed_code_without_remote_body_text():
             headers=wnba._cdn_headers(),
         )
     errors = excinfo.value.detail["fallback_errors"]
-    assert errors == ["WNBAPropHydrationError:WNBA_OFFICIAL_SCHEDULE_WEB_PARSE_EMPTY"]
-    assert "remote body detail must not leak" not in str(excinfo.value.detail)
+    assert errors == ["ValueError", "ValueError"]
+    assert "cdn body detail must not leak" not in str(excinfo.value.detail)
+    assert "api body detail must not leak" not in str(excinfo.value.detail)
+
+
+def test_plain_schedule_shell_without_game_tiles_preserves_parse_empty_code():
+    shell = (
+        "<html><body>"
+        f'<script id="__NEXT_DATA__" type="application/json">{json.dumps(NEXT_DATA)}</script>'
+        "<div>Loading games</div>"
+        "</body></html>"
+    )
+    with pytest.raises(wnba.WNBAPropHydrationError) as excinfo:
+        fallback.parse_official_schedule_page(shell)
+    assert excinfo.value.code == "WNBA_OFFICIAL_SCHEDULE_WEB_PARSE_EMPTY"
 
 
 def test_fallback_provenance_replaces_legacy_cdn_label_without_changing_governance():
@@ -166,13 +244,13 @@ def test_fallback_provenance_replaces_legacy_cdn_label_without_changing_governan
             },
             "role_status": {"source": "legacy"},
         },
-        fallback.WEB_PROVIDER,
-        fallback.SCHEDULE_PAGE_URL,
+        fallback.API_PROVIDER,
+        fallback.SCHEDULE_API_URL,
     )
     assert fallback.CDN_PROVIDER not in result["source_timestamps"]
-    assert result["source_timestamps"][fallback.WEB_PROVIDER] == result["captured_at"]
-    assert result["schedule_source_provider"] == fallback.WEB_PROVIDER
-    assert result["role_status"]["schedule_source_provider"] == fallback.WEB_PROVIDER
+    assert result["source_timestamps"][fallback.API_PROVIDER] == result["captured_at"]
+    assert result["schedule_source_provider"] == fallback.API_PROVIDER
+    assert result["role_status"]["schedule_source_provider"] == fallback.API_PROVIDER
     assert "official WNBA injury-report PDF" in result["rate_provenance"]
 
 
