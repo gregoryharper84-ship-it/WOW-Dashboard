@@ -115,6 +115,35 @@ def test_compact_rows_score_concurrently_preserve_order_and_reapply_portfolio(mo
     assert labels == {"sport": "NFL", "row_count": 3, "batch_size": 3}
 
 
+def test_compact_multirow_one_worker_prehydrates_before_serial_scoring(monkeypatch):
+    monkeypatch.setenv("WOW_INTERACTIVE_PROP_SCORE_WORKERS", "1")
+    prepared_calls = []
+    app = FastAPI()
+    calls = []
+
+    def prehydrate(batch, market_api):
+        prepared_calls.append([row.row_key for row in batch.rows])
+        return batch
+
+    monkeypatch.setattr(subject, "prehydrate_batch", prehydrate)
+
+    @app.post("/score-pick-request", operation_id="scoreWowPickRequest")
+    def canonical(batch: PickRequestBatch):
+        calls.append([row.row_key for row in batch.rows])
+        return {"rows": [], "can_execute": False}
+
+    assert subject.install_interactive_pick_parallel_wrapper(app, market_api=object()) is True
+    client = TestClient(app)
+    response = client.post(
+        "/score-pick-request",
+        json={"request_id": "serial-compact", "response_mode": "COMPACT", "rows": [_row("a"), _row("b")]},
+    )
+    assert response.status_code == 200
+    assert response.json()["can_execute"] is False
+    assert prepared_calls == [["a", "b"]]
+    assert calls == [["a", "b"]]
+
+
 def test_full_mode_keeps_canonical_serial_boundary(monkeypatch):
     monkeypatch.setenv("WOW_INTERACTIVE_PROP_SCORE_WORKERS", "2")
     monkeypatch.setattr(subject, "prehydrate_batch", lambda batch, market_api: (_ for _ in ()).throw(AssertionError("must not prehydrate here")))

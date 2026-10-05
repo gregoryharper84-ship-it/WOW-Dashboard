@@ -222,7 +222,7 @@ def test_unproven_route_is_never_prehydrated(monkeypatch):
     assert all(row.evidence is None for row in prepared.rows)
 
 
-def test_single_worker_setting_preserves_canonical_serial_path(monkeypatch):
+def test_single_worker_setting_dedupes_shared_evidence_without_parallel_fetches(monkeypatch):
     monkeypatch.setenv("WOW_INTERACTIVE_PROP_HYDRATION_WORKERS", "1")
     called = {"count": 0}
 
@@ -231,10 +231,20 @@ def test_single_worker_setting_preserves_canonical_serial_path(monkeypatch):
         return _evidence()
 
     monkeypatch.setattr(subject, "_hydrate", hydrate)
-    batch = PickRequestBatch(rows=[_row("Pitcher A"), _row("Pitcher B")])
+    batch = PickRequestBatch(
+        rows=[
+            _row("Pitcher A", direction="MORE"),
+            _row("Pitcher A", direction="LESS"),
+            _row("Pitcher B", direction="MORE"),
+            _row("Pitcher B", direction="LESS"),
+        ]
+    )
     prepared = subject.prehydrate_batch(batch, market_api=_Market())
-    assert prepared is batch
-    assert called["count"] == 0
+    assert prepared is not batch
+    assert called["count"] == 2
+    assert all(row.evidence is not None for row in prepared.rows)
+    assert prepared.rows[0].evidence is prepared.rows[1].evidence
+    assert prepared.rows[2].evidence is prepared.rows[3].evidence
 
 
 def test_prehydration_uses_canonical_sport_aware_router():
