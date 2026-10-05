@@ -82,7 +82,7 @@ def run_bounded_capture_only_cohort_once(
                     if item.series_ticker
                 },
                 market_by_ticker={
-                    item.ticker: item.rules.raw_market
+                    item.ticker: item.rules.market_rules.raw_market
                     for item in contracts
                 },
                 http=http,
