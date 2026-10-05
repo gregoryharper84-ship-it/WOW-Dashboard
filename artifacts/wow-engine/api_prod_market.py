@@ -807,47 +807,48 @@ def score_prop(
     scored_at = datetime.now(timezone.utc).isoformat()
     inference_request = _server_owned_inference_request(req, evidence, scored_at)
     effective_snapshot_id = str(evidence.get("source_snapshot_id") or req.source_snapshot_id)
-    raw_market_a = _to_market_quote(req.market_side_a)
-    raw_market_b = _to_market_quote(req.market_side_b)
-    observed_rule = _to_settlement_rule(req.settlement_rule)
+    with _score_stage_timer("market_settlement_resolution", sport=req.sport, stat_type=req.stat_type, direction=req.direction):
+        raw_market_a = _to_market_quote(req.market_side_a)
+        raw_market_b = _to_market_quote(req.market_side_b)
+        observed_rule = _to_settlement_rule(req.settlement_rule)
 
-    provider_candidates = [
-        normalize_provider(req.settlement_provider),
-        normalize_provider(getattr(raw_market_a, "provider", None)),
-        normalize_provider(getattr(raw_market_b, "provider", None)),
-    ]
-    provider_set = {value for value in provider_candidates if value}
-    if len(provider_set) > 1:
-        settlement_resolution = SettlementRuleResolution(
-            status="HOLD", blocker=SETTLEMENT_RULE_CONFLICT, rule=None,
-            authority=None, provider=None, rule_id=None, rule_version=None,
-            source_ref=None, source_hash=None, money_semantics=None,
-            observed_rule_status="NOT_EVALUATED_PROVIDER_CONFLICT", can_execute=False,
-        )
-    else:
-        settlement_resolution = resolve_prop_settlement_rule(
-            client=prod.get_client(),
-            provider=next(iter(provider_set), None),
-            sport=req.sport,
-            stat_type=req.stat_type,
+        provider_candidates = [
+            normalize_provider(req.settlement_provider),
+            normalize_provider(getattr(raw_market_a, "provider", None)),
+            normalize_provider(getattr(raw_market_b, "provider", None)),
+        ]
+        provider_set = {value for value in provider_candidates if value}
+        if len(provider_set) > 1:
+            settlement_resolution = SettlementRuleResolution(
+                status="HOLD", blocker=SETTLEMENT_RULE_CONFLICT, rule=None,
+                authority=None, provider=None, rule_id=None, rule_version=None,
+                source_ref=None, source_hash=None, money_semantics=None,
+                observed_rule_status="NOT_EVALUATED_PROVIDER_CONFLICT", can_execute=False,
+            )
+        else:
+            settlement_resolution = resolve_prop_settlement_rule(
+                client=prod.get_client(),
+                provider=next(iter(provider_set), None),
+                sport=req.sport,
+                stat_type=req.stat_type,
+                period=_prop_period(req.stat_type),
+                direction=req.direction,
+                event_start_time=req.event_start_time,
+                observed_rule=observed_rule,
+            )
+        settlement_rule = settlement_resolution.rule
+        market_audit = audit_candidate_market(
+            event_id=req.event_id,
+            participant=str(evidence.get("player") or req.player),
+            stat=req.stat_type,
             period=_prop_period(req.stat_type),
-            direction=req.direction,
-            event_start_time=req.event_start_time,
-            observed_rule=observed_rule,
+            line=req.line,
+            settlement_rule=settlement_rule,
+            side_a=raw_market_a,
+            side_b=raw_market_b,
+            # Exact line matching is server-owned. No caller may widen tolerance.
+            line_tolerance=0.0,
         )
-    settlement_rule = settlement_resolution.rule
-    market_audit = audit_candidate_market(
-        event_id=req.event_id,
-        participant=str(evidence.get("player") or req.player),
-        stat=req.stat_type,
-        period=_prop_period(req.stat_type),
-        line=req.line,
-        settlement_rule=settlement_rule,
-        side_a=raw_market_a,
-        side_b=raw_market_b,
-        # Exact line matching is server-owned. No caller may widen tolerance.
-        line_tolerance=0.0,
-    )
     try:
         with _score_stage_timer("fitted_model_pipeline", sport=req.sport, stat_type=req.stat_type, direction=req.direction):
             result = score_discrete_prop_end_to_end(
