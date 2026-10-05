@@ -96,7 +96,6 @@ _PROVIDER_MARKET_CANONICAL: dict[str, str] = {
     "handicap": "spreads",
     "total": "totals",
     "totals": "totals",
-    "total_points": "totals",
     "over_under": "totals",
     "ou": "totals",
 }
