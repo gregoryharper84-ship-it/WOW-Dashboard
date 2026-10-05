@@ -180,16 +180,18 @@ async def _run_bounded_shadow_loop(
                 db_client_fn=db_client_fn,
             )
             _logger.warning(
-                "WOW_KALSHI_WEATHER_EMPIRICAL_COHORT status=%s collection_mode=BOUNDED_ROTATING_CAPTURE_ONLY_SHADOW targets=%s discovered=%s captured=%s skipped=%s supplemental=%s settled=%s capture_failures=%s supplemental_failures=%s settlement_failures=%s failure_samples=%s probability_publishable=false can_execute=false",
+                "WOW_KALSHI_WEATHER_EMPIRICAL_COHORT status=%s collection_mode=BOUNDED_ROTATING_CAPTURE_ONLY_SHADOW targets=%s discovered=%s captured=%s skipped=%s supplemental=%s market_microstructure=%s settled=%s capture_failures=%s supplemental_failures=%s market_microstructure_failures=%s settlement_failures=%s failure_samples=%s probability_publishable=false can_execute=false",
                 result.status,
                 result.targets_checked,
                 result.contracts_discovered,
                 result.samples_captured,
                 result.samples_skipped_existing,
                 result.supplemental_snapshots_captured,
+                result.market_microstructure_snapshots_captured,
                 result.predictions_settled,
                 len(result.capture_failures),
                 len(result.supplemental_failures),
+                len(result.market_microstructure_failures),
                 len(result.settlement_failures),
                 list(result.capture_failures[:6]),
             )
