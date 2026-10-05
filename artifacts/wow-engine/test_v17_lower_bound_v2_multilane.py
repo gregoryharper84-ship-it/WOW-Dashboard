@@ -34,6 +34,8 @@ def _row(
     push_possible=False,
     probability_semantics="BINARY_OUTCOME",
     push_probability=None,
+    prediction_timestamp="2026-09-01T12:00:00Z",
+    outcome_available_at="2026-09-02T12:00:00Z",
     lane_specific_gate_pass=True,
 ):
     return {
@@ -49,6 +51,8 @@ def _row(
         "push_possible": push_possible,
         "probability_semantics": probability_semantics,
         "push_probability": push_probability,
+        "prediction_timestamp": prediction_timestamp,
+        "outcome_available_at": outcome_available_at,
         "lane_specific_gate_pass": lane_specific_gate_pass,
         "upstream_hard_blockers": [],
         "market_probability_substitution_used": False,
@@ -125,6 +129,7 @@ def test_local_reliability_bound_uses_exact_lane_locality_and_ood_policy():
         lane_key="NFL_RECEIVING_YARDS_MORE",
         point_probability=0.62,
         historical_rows=rows,
+        candidate_as_of="2026-10-01T12:00:00Z",
         min_effective_n=30,
         max_neighbors=50,
         max_probability_distance=0.08,
@@ -137,6 +142,57 @@ def test_local_reliability_bound_uses_exact_lane_locality_and_ood_policy():
     assert evidence.included_ood_states == ("IN_DISTRIBUTION",)
     assert evidence.max_probability_distance_used <= 0.08
     assert evidence.max_support_distance_used <= 0.20
+
+
+def test_local_reliability_bound_excludes_future_or_not_yet_settled_evidence():
+    rows = [
+        _row(p=0.60, outcome=1)
+        for _ in range(10)
+    ]
+    rows.extend(
+        [
+            _row(
+                p=0.60,
+                outcome=1,
+                prediction_timestamp="2026-10-02T12:00:00Z",
+                outcome_available_at="2026-10-03T12:00:00Z",
+            ),
+            _row(
+                p=0.60,
+                outcome=1,
+                prediction_timestamp="2026-09-20T12:00:00Z",
+                outcome_available_at="2026-10-02T12:00:00Z",
+            ),
+        ]
+    )
+
+    evidence = local_reliability_bound(
+        lane_key="NFL_RECEIVING_YARDS_MORE",
+        point_probability=0.61,
+        historical_rows=rows,
+        candidate_as_of="2026-10-01T12:00:00Z",
+        min_effective_n=10,
+        max_neighbors=20,
+        max_probability_distance=0.05,
+    )
+
+    assert evidence.sample_n == 10
+    assert evidence.successes == 10
+
+
+def test_local_reliability_bound_rejects_malformed_point_in_time_evidence():
+    rows = [_row(prediction_timestamp="not-a-time") for _ in range(10)]
+
+    with pytest.raises(LowerBoundExperimentError, match="HISTORY_PREDICTION_TIMESTAMP_INVALID"):
+        local_reliability_bound(
+            lane_key="NFL_RECEIVING_YARDS_MORE",
+            point_probability=0.61,
+            historical_rows=rows,
+            candidate_as_of="2026-10-01T12:00:00Z",
+            min_effective_n=10,
+            max_neighbors=20,
+            max_probability_distance=0.05,
+        )
 
 
 def test_local_reliability_bound_fails_closed_when_support_is_too_thin():
