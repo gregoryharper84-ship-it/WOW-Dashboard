@@ -141,6 +141,7 @@ jobs:
           test_v17_scout_board_refresh_fail_closed.py
           tests/test_v17_sport_scout_teams.py
           tests/test_v17_market_evidence_sources.py
+          tests/test_v17_market_evidence_acceptance.py
           tests/test_v17_market_evidence_provider_contracts.py
       - name: Verify odds proxy extension
         working-directory: artifacts/wow-odds-proxy
