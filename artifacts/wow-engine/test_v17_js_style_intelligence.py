@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 
 from v17.js_style_intelligence import (
@@ -186,3 +189,14 @@ def test_historical_observation_without_pregame_snapshot_requires_replay() -> No
     )
     assert obs["pregame_snapshot_available"] is False
     assert obs["feature_replay_required"] is True
+
+
+def test_observed_js_fixture_is_selection_biased_and_hindsight_guarded() -> None:
+    fixture = Path(__file__).parent / "v17" / "fixtures" / "js_style_observed_selection_examples_20261004.json"
+    data = json.loads(fixture.read_text())
+    assert data["sample_type"] == "POSITIVE_SELECTION_EXAMPLES_ONLY"
+    assert data["row_count"] == 32
+    assert data["direction_counts"] == {"MORE": 4, "LESS": 28}
+    assert all(row["feature_replay_required"] is True for row in data["rows"])
+    assert all(row["pregame_feature_snapshot"] is None for row in data["rows"])
+    assert all(row["can_execute"] is False for row in data["rows"])
