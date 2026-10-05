@@ -49,5 +49,8 @@
       "source": "/functions/v1/wow-llp-action-gateway/settle-recommendations",
       "destination": "/api/gateway?__route=%2Fsettle-recommendations"
     }
-  ]
+  ],
+  "git": {
+    "deploymentEnabled": false
+  }
 }
