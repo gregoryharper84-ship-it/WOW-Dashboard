@@ -233,6 +233,46 @@ def test_official_source_failure_preserves_typed_blocker_and_safe_source_receipt
     assert result["can_execute"] is False
 
 
+def test_playoff_bracket_failure_is_reported_as_third_official_source(monkeypatch: pytest.MonkeyPatch):
+    exc = subject.acquisition.wnba.WNBAPropHydrationError(
+        "WNBA_OFFICIAL_SOURCE_UNAVAILABLE",
+        "official schedule transports failed",
+        detail={
+            "primary_source": "WNBA_CDN_SCHEDULE_CURRENT",
+            "fallback_source": "WNBA_OFFICIAL_SCHEDULE_WEB_SSR",
+            "playoffs_source": "WNBA_OFFICIAL_PLAYOFF_BRACKET_SSR",
+            "primary_errors": ["ValueError"],
+            "fallback_errors": [
+                "WNBAPropHydrationError:WNBA_OFFICIAL_SCHEDULE_WEB_PARSE_EMPTY"
+            ],
+            "playoffs_errors": [
+                "WNBAPropHydrationError:WNBA_OFFICIAL_PLAYOFF_BRACKET_PARSE_EMPTY"
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        subject.acquisition,
+        "_request_schedule",
+        lambda **_kwargs: (_ for _ in ()).throw(exc),
+    )
+    result = subject.acquire_wnba_forward_evidence_batch(
+        subject.WNBAForwardEvidenceRequest(requested_date="2026-10-04", max_candidates=1),
+        db=_DB(),
+        now=NOW,
+        http_get=lambda *_a, **_k: object(),
+    )
+    sources = result["source_diagnostics"][0]["sources"]
+    assert sources[-1] == {
+        "provider": "WNBA_OFFICIAL_PLAYOFF_BRACKET_SSR",
+        "host": "www.wnba.com",
+        "path": "/webview/playoffs/2026",
+        "attempts": 2,
+        "error_kinds": ["WNBAPropHydrationError"],
+        "error_codes": ["WNBA_OFFICIAL_PLAYOFF_BRACKET_PARSE_EMPTY"],
+    }
+    assert result["can_execute"] is False
+
+
 def test_dual_official_schedule_failure_preserves_each_safe_source_boundary(monkeypatch: pytest.MonkeyPatch):
     exc = subject.acquisition.wnba.WNBAPropHydrationError(
         "WNBA_OFFICIAL_SOURCE_UNAVAILABLE",
