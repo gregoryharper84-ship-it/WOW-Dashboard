@@ -362,7 +362,15 @@ def score_home_spread(artifact: MarginDistributionArtifact, features: Mapping[st
         "p_push": p_push,
         "p_not_cover": p_not_cover,
         "p_cover_given_no_push": p_cover_given_no_push,
+        # Legacy field retains its original unconditional COVER target.
+        # Do not compare it to p_cover_given_no_push on push-capable lines.
         "research_lower_bound_cover": _wilson_lower(wins, total),
+        "research_lower_bound_cover_unconditional": _wilson_lower(wins, total),
+        "research_lower_bound_cover_given_no_push": _wilson_lower(wins, non_push),
+        "cover_count": wins,
+        "push_count": pushes,
+        "not_cover_count": losses,
+        "non_push_count": non_push,
         "distribution_sample_n": total,
         "probability_sum": p_cover + p_push + p_not_cover,
         "market_probability_substitution_used": False,
