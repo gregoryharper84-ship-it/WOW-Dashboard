@@ -100,3 +100,27 @@ def test_objective_progress_signals_do_not_claim_closure() -> None:
         "FOCUSED_REGRESSION_GREEN",
         "REQUIRED_THREE_GREEN",
     ]
+
+def test_cancelled_contract_plus_dependent_aggregate_is_still_infrastructure() -> None:
+    result = subject.classify_required_run(
+        {"status": "completed", "conclusion": "failure", "run_attempt": 1},
+        [
+            {
+                "name": "WOW Render and Action release contracts",
+                "status": "completed",
+                "conclusion": "cancelled",
+                "steps": [],
+            },
+            {
+                "name": "WOW governed probability backend",
+                "status": "completed",
+                "conclusion": "failure",
+                "steps": [{"name": "Aggregate protected governed-backend result", "conclusion": "failure"}],
+            },
+        ],
+        now=NOW,
+    )
+    assert result["classification"] == subject.CI_JOB_CANCELLED_BEFORE_START
+    assert result["recommended_action"] == "RERUN_FAILED_JOBS_ONCE"
+    assert result["dependent_aggregate_jobs"] == ["WOW governed probability backend"]
+

@@ -22,6 +22,7 @@ _RERUN = "RERUN_FAILED_JOBS_ONCE"
 _WAIT = "WAIT_AND_RECHECK"
 _INSPECT = "INSPECT_REQUIRED_GATE_FAILURE"
 _NONE = "NONE"
+_DEPENDENT_AGGREGATE_JOBS = {"WOW governed probability backend"}
 
 
 def _aware(value: Any) -> datetime | None:
@@ -75,8 +76,8 @@ def classify_required_run(
         }
 
     if status == "queued":
-        created = _aware(run.get("created_at"))
-        age = max(0.0, (now - created).total_seconds()) if created else 0.0
+        queued_since = _aware(run.get("updated_at")) or _aware(run.get("created_at"))
+        age = max(0.0, (now - queued_since).total_seconds()) if queued_since else 0.0
         classification = CI_CAPACITY_STARVATION if age >= starvation_seconds else CI_PENDING
         return {
             "classification": classification,
@@ -96,7 +97,19 @@ def classify_required_run(
 
     if status == "completed" and conclusion in {"failure", "cancelled", "timed_out"}:
         bad = _bad_jobs(jobs)
-        if bad and all(_cancelled_before_start(job) for job in bad):
+        direct_bad = [
+            job for job in bad
+            if str(job.get("name") or "") not in _DEPENDENT_AGGREGATE_JOBS
+        ]
+        aggregate_bad = [
+            job for job in bad
+            if str(job.get("name") or "") in _DEPENDENT_AGGREGATE_JOBS
+        ]
+        if (
+            direct_bad
+            and all(_cancelled_before_start(job) for job in direct_bad)
+            and len(direct_bad) + len(aggregate_bad) == len(bad)
+        ):
             retry_allowed = attempt < 2
             return {
                 "classification": CI_JOB_CANCELLED_BEFORE_START,
@@ -104,6 +117,9 @@ def classify_required_run(
                 "retry_allowed": retry_allowed,
                 "run_attempt": attempt,
                 "bad_jobs": [str(job.get("name") or "") for job in bad],
+                "dependent_aggregate_jobs": [
+                    str(job.get("name") or "") for job in aggregate_bad
+                ],
             }
         return {
             "classification": CI_REQUIRED_GATE_FAILED,
