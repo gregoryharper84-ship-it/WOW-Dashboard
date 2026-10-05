@@ -1,0 +1,122 @@
+name: wow-v17-cross-sport-geometry-audit
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/wow-v17-cross-sport-geometry-audit.yml"
+      - "artifacts/wow-engine/v17/experiments/cross_sport_geometry_audit.py"
+      - "artifacts/wow-engine/v17/experiments/test_cross_sport_geometry_audit.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wow-v17-cross-sport-geometry-audit
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    name: Read-only cross-sport model geometry audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    defaults:
+      run:
+        working-directory: artifacts/wow-engine
+    env:
+      WOW_SCOUT_DATABASE_URL: ${{ secrets.WOW_SCOUT_DATABASE_URL }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: artifacts/wow-engine/requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Verify governed read credential
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${WOW_SCOUT_DATABASE_URL:-}" ]; then
+            echo "BLOCKED_WITH_EXACT_REASON=WOW_SCOUT_DATABASE_URL_NOT_CONFIGURED" >&2
+            exit 1
+          fi
+          echo "Cross-sport audit credential is configured; value remains masked." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Run deterministic experiment tests
+        run: |
+          python -m pytest -q v17/experiments/test_cross_sport_geometry_audit.py
+
+      - name: Run read-only cross-sport audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          python v17/experiments/cross_sport_geometry_audit.py \
+            --output "$RUNNER_TEMP/cross-sport-geometry-audit.json" \
+            | tee "$RUNNER_TEMP/cross-sport-geometry-audit.log"
+
+      - name: Assert fail-closed governance
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          result = json.loads(
+              Path(os.environ["RUNNER_TEMP"])
+              .joinpath("cross-sport-geometry-audit.json")
+              .read_text(encoding="utf-8")
+          )
+          assert result["can_execute"] is False
+          assert result["probability_publishable"] is False
+          assert result["automatic_promotion"] is False
+          sports = result.get("sports") or {}
+          expected = {
+              "MLB","NFL","NBA","WNBA","NCAAF","NCAAB","NHL",
+              "SOCCER","TENNIS","PGA","MMA","BOXING","CRICKET",
+          }
+          assert set(sports) == expected
+          for sport, payload in sports.items():
+              assert payload.get("can_execute") is False
+              for lane in payload.get("lanes") or []:
+                  assert lane.get("can_execute") is False
+                  assert lane.get("probability_publishable") is False
+                  assert lane.get("automatic_promotion") is False
+          print("CROSS_SPORT_AUDIT_GOVERNANCE_PASS can_execute=false")
+          PY
+
+      - name: Publish compact audit receipt
+        shell: bash
+        run: |
+          {
+            echo "# WOW V17 Cross-Sport Geometry Audit"
+            echo
+            echo "- issue: #1347"
+            echo "- mode: READ_ONLY_RESEARCH"
+            echo "- probability_publishable: false"
+            echo "- automatic_promotion: false"
+            echo "- can_execute: false"
+            echo
+            echo "Audit output:"
+            cat "$RUNNER_TEMP/cross-sport-geometry-audit.log"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload audit evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: wow-v17-cross-sport-geometry-audit
+          path: |
+            ${{ runner.temp }}/cross-sport-geometry-audit.json
+            ${{ runner.temp }}/cross-sport-geometry-audit.log
+          if-no-files-found: error
+          retention-days: 90
