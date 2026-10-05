@@ -96,3 +96,62 @@ def test_empirical_loop_staggers_first_cycle(monkeypatch):
     asyncio.run(exercise())
     assert sleeps == [45.0]
     assert cycles == []
+
+
+def test_market_recorder_captures_all_siblings_even_when_calibration_sample_exists(monkeypatch):
+    target = _target()
+    target_time = "2026-09-14T15:00:00Z"
+    contracts = (
+        SimpleNamespace(
+            ticker="KXTEMPMIAH-A",
+            parsed=SimpleNamespace(observation_time_utc=target_time),
+            series_ticker="KXTEMPMIAH",
+        ),
+        SimpleNamespace(
+            ticker="KXTEMPMIAH-B",
+            parsed=SimpleNamespace(observation_time_utc=target_time),
+            series_ticker="KXTEMPMIAH",
+        ),
+    )
+    seen = {}
+
+    class FakeHttp:
+        def close(self):
+            pass
+
+    monkeypatch.setattr(bounded, "ReadOnlyJsonClient", FakeHttp)
+    monkeypatch.setattr(
+        bounded,
+        "_discover_target_contracts",
+        lambda _http, _target, _decision_time: contracts,
+    )
+    existing = bounded.cohort_sample_key(target.index_city, target_time, "H1")
+    monkeypatch.setattr(bounded, "_existing_sample_keys", lambda _db: {existing})
+
+    def fake_recorder(**kwargs):
+        seen["tickers"] = kwargs["tickers"]
+        seen["series_by_ticker"] = kwargs["series_by_ticker"]
+        return SimpleNamespace(attempted=2, written=2, failures=())
+
+    monkeypatch.setattr(bounded, "capture_market_microstructure_batch", fake_recorder)
+
+    def should_not_capture_probability(**_kwargs):
+        raise AssertionError("existing calibration sample should skip weather prediction capture")
+
+    monkeypatch.setattr(bounded, "capture_hourly_shadow", should_not_capture_probability)
+
+    result = bounded.run_bounded_capture_only_cohort_once(
+        db_client_fn=lambda: SimpleNamespace(),
+        targets=(target,),
+        now="2026-09-14T14:00:00Z",
+    )
+
+    assert seen["tickers"] == ("KXTEMPMIAH-A", "KXTEMPMIAH-B")
+    assert seen["series_by_ticker"] == {
+        "KXTEMPMIAH-A": "KXTEMPMIAH",
+        "KXTEMPMIAH-B": "KXTEMPMIAH",
+    }
+    assert result.samples_captured == 0
+    assert result.samples_skipped_existing == 1
+    assert result.market_microstructure_snapshots_captured == 2
+    assert result.market_microstructure_failures == ()
