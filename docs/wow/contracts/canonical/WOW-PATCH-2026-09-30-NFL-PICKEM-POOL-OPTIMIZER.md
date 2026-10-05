@@ -5,6 +5,7 @@ Original branch: `feature/nfl-pickem-pool-optimizer`
 Original issue: #1073
 Original pull request: #1077
 Follow-on issue: #1334
+Follow-on pull request: #1335
 Follow-on branch: `patch/nfl-pickem-week4-learning-2026-10-04`
 
 ## Purpose
