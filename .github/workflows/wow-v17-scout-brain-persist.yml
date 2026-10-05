@@ -77,8 +77,8 @@ jobs:
           fi
           echo "present=false" >> "$GITHUB_OUTPUT"
           source_event=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}" --jq '.event // ""')
-          if [ "$source_event" = "pull_request" ]; then
-            echo "Source run ${SOURCE_RUN_ID} is a pull_request run; discovery is skipped by design and persistence is not applicable." >> "$GITHUB_STEP_SUMMARY"
+          if [ "$source_event" = "pull_request" ] || [ "$source_event" = "push" ]; then
+            echo "Source run ${SOURCE_RUN_ID} is a ${source_event} run; discovery is skipped by design and persistence is not applicable." >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
           echo "No recoverable Scout discovery artifact exists for source run ${SOURCE_RUN_ID} (event '${source_event:-unknown}'); persistence failed closed rather than reporting success without fabricating a run." >> "$GITHUB_STEP_SUMMARY"
