@@ -1,0 +1,53 @@
+{
+  "version": 2,
+  "rewrites": [
+    {
+      "source": "/functions/v1/wow-llp-action-gateway/health",
+      "destination": "/api/gateway?__route=%2Fhealth"
+    },
+    {
+      "source": "/functions/v1/wow-llp-action-gateway/governance",
+      "destination": "/api/gateway?__route=%2Fgovernance"
+    },
+    {
+      "source": "/functions/v1/wow-llp-action-gateway/v17/host-contract",
+      "destination": "/api/gateway?__route=%2Fv17%2Fhost-contract"
+    },
+    {
+      "source": "/functions/v1/wow-llp-action-gateway/v17/daily-snapshot-run",
+      "destination": "/api/gateway?__route=%2Fv17%2Fdaily-snapshot-run"
+    },
+    {
+      "source": "/functions/v1/wow-llp-action-gateway/v17/daily-snapshot-run/:run_id/rows",
+      "destination": "/api/gateway?__route=%2Fv17%2Fdaily-snapshot-run%2F__ROWS__&run_id=:run_id"
+    },
+    {
+      "source": "/functions/v1/wow-llp-action-gateway/score-team-event",
+      "destination": "/api/gateway?__route=%2Fscore-team-event"
+    },
+    {
+      "source": "/functions/v1/wow-llp-action-gateway/internal/v17/spread-forward-shadow",
+      "destination": "/api/gateway?__route=%2Finternal%2Fv17%2Fspread-forward-shadow"
+    },
+    {
+      "source": "/functions/v1/wow-llp-action-gateway/internal/v17/nfl-spread-forward-shadow",
+      "destination": "/api/gateway?__route=%2Finternal%2Fv17%2Fnfl-spread-forward-shadow"
+    },
+    {
+      "source": "/functions/v1/wow-llp-action-gateway/internal/v17/wnba-spread-forward-shadow",
+      "destination": "/api/gateway?__route=%2Finternal%2Fv17%2Fwnba-spread-forward-shadow"
+    },
+    {
+      "source": "/functions/v1/wow-llp-action-gateway/internal/v17/mlb-run-line-forward-shadow",
+      "destination": "/api/gateway?__route=%2Finternal%2Fv17%2Fmlb-run-line-forward-shadow"
+    },
+    {
+      "source": "/functions/v1/wow-llp-action-gateway/record-recommendations",
+      "destination": "/api/gateway?__route=%2Frecord-recommendations"
+    },
+    {
+      "source": "/functions/v1/wow-llp-action-gateway/settle-recommendations",
+      "destination": "/api/gateway?__route=%2Fsettle-recommendations"
+    }
+  ]
+}
