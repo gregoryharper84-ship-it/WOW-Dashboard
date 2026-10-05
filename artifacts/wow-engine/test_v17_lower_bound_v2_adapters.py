@@ -36,6 +36,7 @@ def test_moneyline_adapter_preserves_challenger_bound_and_binary_semantics():
     assert row["probability_semantics"] == "BINARY_OUTCOME"
     assert row["calibrated_probability"] == pytest.approx(0.62)
     assert row["calibrated_lower_bound"] == pytest.approx(0.56)
+    assert row["support_n"] == 50
     assert row["probability_publishable"] is False
     assert row["can_execute"] is False
 
@@ -108,6 +109,26 @@ def test_spread_distribution_residual_count_cannot_satisfy_local_support_gate():
     decision = evaluate_research_eligibility(row, policy)
     assert decision["eligible"] is False
     assert "SUPPORT_N_MISSING" in decision["blockers"]
+
+    locally_supported = adapt_spread_shadow(
+        {
+            "sport": "NCAAF",
+            "spread_line": -3.0,
+            "p_cover": 0.54,
+            "p_push": 0.10,
+            "p_not_cover": 0.36,
+            "p_cover_given_no_push": 0.60,
+            "research_lower_bound_cover": 0.53,
+            "distribution_sample_n": 500,
+            "market_probability_substitution_used": False,
+        },
+        lane_key="NCAAF_SPREAD_HOME",
+        settlement="COVER",
+        ood_state="IN_DISTRIBUTION",
+        local_support_n=40,
+    )
+    assert locally_supported["support_n"] == 40
+    assert locally_supported["distribution_sample_n_source_only"] == 500
 
 
 def test_prop_adapter_preserves_unconditional_push_mass_and_does_not_fake_local_support():
