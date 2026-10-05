@@ -80,13 +80,17 @@ def capture_hourly_shadow(
             rules = preacquired_rules
             parsed = preparsed_rule
             expected_ticker = str(ticker or "").strip().upper()
-            if (
+            expected_city = str(index_city or "").strip().lower()
+            identity_mismatch = (
                 str(rules.market_rules.ticker or "").strip().upper() != expected_ticker
                 or str(parsed.ticker or "").strip().upper() != expected_ticker
-            ):
+                or str(parsed.index_city or "").strip().lower() != expected_city
+                or str(parsed.rule_snapshot_id or "") != str(rules.market_rules.rule_snapshot_id or "")
+            )
+            if identity_mismatch:
                 raise KalshiWeatherRuntimeError(
                     "PREACQUIRED_RULE_IDENTITY_MISMATCH",
-                    (expected_ticker,),
+                    (expected_ticker, expected_city),
                     status_code=409,
                 )
         else:
