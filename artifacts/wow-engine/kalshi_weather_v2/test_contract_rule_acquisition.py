@@ -140,4 +140,4 @@ def test_rule_acquirer_reuses_same_event_and_series_metadata_within_cycle():
     assert first.event_ticker == second.event_ticker == "KXHIGHNY-26SEP10"
     assert first.series_ticker == second.series_ticker == "KXHIGHNY"
     assert calls == {"event": 1, "series": 1, "market": 2}
-    assert first.raw_market["ticker"] == "KXHIGHNY-26SEP10-T81"
+    assert first.market_rules.raw_market["ticker"] == "KXHIGHNY-26SEP10-T81"
