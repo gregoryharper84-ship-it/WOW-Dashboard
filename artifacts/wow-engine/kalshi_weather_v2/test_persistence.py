@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from kalshi_weather_v2.market_microstructure import MarketMicrostructureSnapshot
 from kalshi_weather_v2.persistence import KalshiWeatherPersistence, KalshiWeatherPersistenceError, content_id
 from kalshi_weather_v2.portfolio_risk import (
     DependenceMode,
@@ -10,6 +11,12 @@ from kalshi_weather_v2.portfolio_risk import (
     PositionSide,
     WeatherScenario,
     build_weather_event,
+)
+from kalshi_weather_v2.settlement_digital_twin import (
+    PredicateKind,
+    SettlementDigitalTwin,
+    SettlementPredicate,
+    SettlementState,
 )
 from kalshi_weather_v2.probability_change_ledger import (
     AttributionDomain,
@@ -81,6 +88,8 @@ class FakeClient:
             "wow_kalshi_weather_outcomes": FakeTable("outcome_id"),
             "wow_kalshi_weather_probability_changes": FakeTable("probability_change_id"),
             "wow_kalshi_weather_portfolio_risk_snapshots": FakeTable("risk_snapshot_id"),
+            "wow_kalshi_weather_settlement_twins": FakeTable("twin_snapshot_id"),
+            "wow_kalshi_weather_market_microstructure_snapshots": FakeTable("microstructure_snapshot_id"),
             "wow_runtime_capabilities": FakeTable("capability_key"),
         }
 
@@ -229,3 +238,66 @@ def test_portfolio_risk_persistence_is_idempotent_and_non_executable():
     assert first["market_price_used_as_weather_input"] is False
     assert first["risk_state_used_as_weather_input"] is False
     assert len(client.tables["wow_kalshi_weather_portfolio_risk_snapshots"].rows) == 1
+
+
+def test_settlement_twin_persistence_is_idempotent_and_non_executable():
+    client = FakeClient()
+    store = KalshiWeatherPersistence(client)
+    twin = SettlementDigitalTwin(
+        twin_snapshot_id="twin-1",
+        rule_snapshot_id="rule-1",
+        ticker="KXHIGHDFW-TEST",
+        built_at="2026-10-05T18:00:00Z",
+        state_as_of="2026-10-05T18:00:00Z",
+        settlement_source_name="The Weather Company",
+        settlement_source_url=None,
+        settlement_location_code="KDFW",
+        settlement_station_id="KDFW",
+        station_timezone="America/Chicago",
+        observation_window="2026-10-05 local day",
+        metric="daily_max_temperature",
+        units="F",
+        rounding_convention="contract exact",
+        yes_predicate=SettlementPredicate(kind=PredicateKind.ABOVE, lower=82.0),
+        no_predicate=SettlementPredicate(kind=PredicateKind.BELOW, upper=82.0, upper_inclusive=False),
+        possible_outcomes=("YES", "NO"),
+        impossible_outcomes=(),
+        remaining_outcomes=("YES", "NO"),
+        observed_value=None,
+        observed_extreme=79.0,
+        settlement_state=SettlementState.OPEN,
+        source_snapshot_ids=("obs-1",),
+        blockers=(),
+        warnings=(),
+    )
+    first = store.persist_settlement_twin(twin)
+    second = store.persist_settlement_twin(twin)
+    assert first == second
+    assert first["market_data_used_as_weather_probability_input"] is False
+    assert first["can_execute"] is False
+    assert len(client.tables["wow_kalshi_weather_settlement_twins"].rows) == 1
+
+
+def test_market_microstructure_persistence_does_not_require_prediction():
+    client = FakeClient()
+    store = KalshiWeatherPersistence(client)
+    snapshot = MarketMicrostructureSnapshot(
+        microstructure_snapshot_id="micro-1",
+        ticker="KXHIGHDFW-TEST",
+        retrieved_at="2026-10-05T18:00:00Z",
+        market_status="open",
+        raw_market={"ticker": "KXHIGHDFW-TEST"},
+        raw_orderbook={"yes": [[60, 10]]},
+        prediction_id=None,
+        yes_best_bid=0.60,
+        yes_best_ask=0.62,
+        yes_bid_size=10,
+        no_bid_size=5,
+    )
+    first = store.persist_market_microstructure(snapshot)
+    second = store.persist_market_microstructure(snapshot)
+    assert first == second
+    assert first["prediction_id"] is None
+    assert first["weather_probability_input_allowed"] is False
+    assert first["can_execute"] is False
+    assert len(client.tables["wow_kalshi_weather_market_microstructure_snapshots"].rows) == 1
