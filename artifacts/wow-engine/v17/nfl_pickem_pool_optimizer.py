@@ -38,6 +38,11 @@ PICKEM_BOARD_PARTIAL = "PICKEM_BOARD_PARTIAL"
 PICKEM_BOARD_INCOMPLETE = "PICKEM_BOARD_INCOMPLETE"
 PICKEM_BOARD_EMPTY = "PICKEM_BOARD_EMPTY"
 
+PICKEM_REVIEW_HIGH_CONFIDENCE_HOLD = "HIGH_CONFIDENCE_HOLD"
+PICKEM_REVIEW_STANDARD_HOLD = "STANDARD_HOLD"
+PICKEM_REVIEW_MODEL_SIDE_FRAGILITY = "MODEL_SIDE_FRAGILITY_REVIEW"
+PICKEM_REVIEW_TOSS_UP = "TOSS_UP_REVIEW"
+
 _TYPED_MODEL_FAILURES = frozenset({
     MODEL_INPUTS_INSUFFICIENT,
     MODEL_OUTPUT_INVALID,
@@ -172,6 +177,72 @@ def selection_volatility_band(probability_gap: float) -> str:
     if probability_gap <= 0.10 + _EPS:
         return "MODERATE"
     return "LOW"
+
+
+def _model_disagreement(row: Mapping[str, Any]) -> float | None:
+    """Read governed scorer disagreement when exposed; never manufacture it."""
+    value = _number(row.get("model_disagreement"))
+    if value is None or not 0.0 <= value <= 1.0:
+        return None
+    return value
+
+
+def pickem_review_profile(
+    *,
+    selected_probability: float,
+    lower_bound: float,
+    upper_bound: float,
+    probability_gap: float,
+    model_disagreement: float | None,
+) -> dict[str, Any]:
+    """Classify review priority without changing probability or the pool pick.
+
+    This is a downstream learning/triage overlay. Thresholds route analyst/model
+    review only; they are not fitted-model coefficients, calibration thresholds,
+    or an alternate winner model.
+    """
+    interval_width = max(0.0, upper_bound - lower_bound)
+    reasons: list[str] = []
+    if selected_probability < 0.55 - _EPS:
+        reasons.append("TOSS_UP_POINT_PROBABILITY")
+    if probability_gap <= 0.10 + _EPS:
+        reasons.append("NARROW_TWO_SIDED_GAP")
+    if lower_bound < 0.55 - _EPS:
+        reasons.append("LOWER_BOUND_BELOW_55")
+    if interval_width >= 0.10 - _EPS:
+        reasons.append("WIDE_CALIBRATION_INTERVAL")
+    if model_disagreement is not None and model_disagreement >= 0.05 - _EPS:
+        reasons.append("MATERIAL_MODEL_DISAGREEMENT")
+
+    strong_hold = (
+        selected_probability >= 0.68 - _EPS
+        and lower_bound >= 0.60 - _EPS
+        and probability_gap >= 0.16 - _EPS
+        and (model_disagreement is None or model_disagreement < 0.05 - _EPS)
+    )
+    if strong_hold:
+        review_class = PICKEM_REVIEW_HIGH_CONFIDENCE_HOLD
+        postmortem_action = "PRESERVE_UNLESS_COHORT_EVIDENCE"
+    elif selected_probability < 0.55 - _EPS:
+        review_class = PICKEM_REVIEW_TOSS_UP
+        postmortem_action = "DEEP_REVIEW_NO_AUTOMATIC_FLIP"
+    elif reasons:
+        review_class = PICKEM_REVIEW_MODEL_SIDE_FRAGILITY
+        postmortem_action = "DEEP_REVIEW_NO_AUTOMATIC_FLIP"
+    else:
+        review_class = PICKEM_REVIEW_STANDARD_HOLD
+        postmortem_action = "PRESERVE"
+
+    return {
+        "pickem_review_class": review_class,
+        "pickem_review_reasons": sorted(set(reasons)),
+        "calibration_interval_width": round(interval_width, 6),
+        "model_disagreement": model_disagreement,
+        "model_disagreement_available": model_disagreement is not None,
+        "postmortem_learning_action": postmortem_action,
+        "review_overlay_can_change_pool_pick": False,
+        "review_overlay_can_change_probability": False,
+    }
 
 
 def _blocked(
@@ -362,6 +433,13 @@ def select_pickem_game(row: Mapping[str, Any]) -> dict[str, Any]:
         )
 
     gap = abs(home_p - away_p)
+    review_profile = pickem_review_profile(
+        selected_probability=selected_p,
+        lower_bound=lower,
+        upper_bound=upper,
+        probability_gap=gap,
+        model_disagreement=_model_disagreement(row),
+    )
     return {
         "branch_id": BRANCH_ID,
         "decision_objective": DECISION_OBJECTIVE,
@@ -377,6 +455,7 @@ def select_pickem_game(row: Mapping[str, Any]) -> dict[str, Any]:
         "probability_gap": gap,
         "confidence_band": confidence_band(selected_p),
         "selection_volatility_band": selection_volatility_band(gap),
+        **review_profile,
         "source_prediction_id": _text(row.get("prediction_id") or row.get("event_prediction_id")),
         "immutable_model_timestamp": _model_timestamp(row),
         "source_snapshot_id": _source_snapshot_id(row),
@@ -421,6 +500,9 @@ def build_pickem_board(
             "discovered_event_count": 0,
             "ready_pick_count": 0,
             "blocked_event_count": 0,
+            "high_confidence_hold_count": 0,
+            "model_side_fragility_review_count": 0,
+            "toss_up_review_count": 0,
             "picks": [],
             "blocked": [],
             "can_execute": False,
@@ -479,6 +561,18 @@ def build_pickem_board(
         "discovered_event_count": discovered_event_count,
         "ready_pick_count": len(picks),
         "blocked_event_count": len(blocked),
+        "high_confidence_hold_count": sum(
+            1 for pick in picks
+            if pick.get("pickem_review_class") == PICKEM_REVIEW_HIGH_CONFIDENCE_HOLD
+        ),
+        "model_side_fragility_review_count": sum(
+            1 for pick in picks
+            if pick.get("pickem_review_class") == PICKEM_REVIEW_MODEL_SIDE_FRAGILITY
+        ),
+        "toss_up_review_count": sum(
+            1 for pick in picks
+            if pick.get("pickem_review_class") == PICKEM_REVIEW_TOSS_UP
+        ),
         "picks": picks,
         "blocked": blocked,
         "market_probability_used": False,
@@ -510,8 +604,13 @@ __all__ = [
     "PICKEM_BOARD_PARTIAL",
     "PICKEM_BOARD_READY",
     "PICKEM_READY",
+    "PICKEM_REVIEW_HIGH_CONFIDENCE_HOLD",
+    "PICKEM_REVIEW_MODEL_SIDE_FRAGILITY",
+    "PICKEM_REVIEW_STANDARD_HOLD",
+    "PICKEM_REVIEW_TOSS_UP",
     "build_pickem_board",
     "confidence_band",
+    "pickem_review_profile",
     "select_pickem_game",
     "selection_volatility_band",
     "tiebreaker_capability",
