@@ -78,6 +78,38 @@ def test_spread_adapter_uses_no_push_probability_and_excludes_push_on_binary_sco
     assert report["conditional_pushes_excluded_n"] == 1
 
 
+def test_spread_distribution_residual_count_cannot_satisfy_local_support_gate():
+    row = adapt_spread_shadow(
+        {
+            "sport": "NCAAF",
+            "spread_line": -3.0,
+            "p_cover": 0.54,
+            "p_push": 0.10,
+            "p_not_cover": 0.36,
+            "p_cover_given_no_push": 0.60,
+            "research_lower_bound_cover": 0.53,
+            "distribution_sample_n": 500,
+            "market_probability_substitution_used": False,
+        },
+        lane_key="NCAAF_SPREAD_HOME",
+        settlement="COVER",
+        ood_state="IN_DISTRIBUTION",
+        local_support_n=None,
+    )
+
+    assert row["support_n"] is None
+    assert row["distribution_sample_n_source_only"] == 500
+
+    policy = ResearchEligibilityPolicy(
+        name="REQUIRES_LOCAL_SUPPORT",
+        min_lower_bound=0.50,
+        min_support_n=30,
+    )
+    decision = evaluate_research_eligibility(row, policy)
+    assert decision["eligible"] is False
+    assert "SUPPORT_N_MISSING" in decision["blockers"]
+
+
 def test_prop_adapter_preserves_unconditional_push_mass_and_does_not_fake_local_support():
     record = {
         "prediction_id": "pred-1",
