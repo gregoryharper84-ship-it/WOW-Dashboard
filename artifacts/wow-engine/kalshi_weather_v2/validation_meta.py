@@ -117,6 +117,7 @@ class ProbabilityValidationSample:
         for name in ("sample_id", "prediction_id", "lane"):
             if not str(getattr(self, name) or "").strip():
                 raise ValidationMetaError(f"{name.upper()}_MISSING")
+        object.__setattr__(self, "lane", str(self.lane).strip().upper())
         decision = _parse_utc(self.decision_time, "VALIDATION_DECISION_TIME")
         settled = _parse_utc(self.settled_at, "VALIDATION_SETTLED_AT")
         if settled <= decision:
@@ -382,6 +383,7 @@ class ComplexityGatePolicy:
     minimum_selected_coverage: float
     maximum_selected_brier: float
     required_meteorological_baseline_kinds: tuple[BaselineKind, ...]
+    required_red_team_categories: tuple[SettlementRedTeamCategory, ...]
     research_only: bool = True
     can_execute: bool = False
 
@@ -416,6 +418,19 @@ class ComplexityGatePolicy:
         if len(set(kinds)) != len(kinds):
             raise ValidationMetaError("COMPLEXITY_REQUIRED_BASELINE_DUPLICATE")
         object.__setattr__(self, "required_meteorological_baseline_kinds", tuple(kinds))
+
+        categories: list[SettlementRedTeamCategory] = []
+        for raw in self.required_red_team_categories:
+            try:
+                category = SettlementRedTeamCategory(raw)
+            except (TypeError, ValueError) as exc:
+                raise ValidationMetaError("COMPLEXITY_REQUIRED_RED_TEAM_CATEGORY_INVALID") from exc
+            categories.append(category)
+        if not categories:
+            raise ValidationMetaError("COMPLEXITY_REQUIRED_RED_TEAM_CATEGORIES_MISSING")
+        if len(set(categories)) != len(categories):
+            raise ValidationMetaError("COMPLEXITY_REQUIRED_RED_TEAM_CATEGORY_DUPLICATE")
+        object.__setattr__(self, "required_red_team_categories", tuple(categories))
         if self.can_execute:
             raise ValidationMetaError("COMPLEXITY_GATE_EXECUTION_PROHIBITED")
 
@@ -517,6 +532,11 @@ class ValidationMetaLayer:
         if not samples:
             raise ValidationMetaError("VALIDATION_PROBABILITY_SAMPLES_MISSING")
         _unique((item.sample_id for item in samples), "VALIDATION_SAMPLE_ID_DUPLICATE")
+        cohort_lanes = {item.lane for item in samples}
+        if len(cohort_lanes) != 1:
+            raise ValidationMetaError(
+                "VALIDATION_MIXED_LANE_COHORT:" + ",".join(sorted(cohort_lanes))
+            )
         for item in samples:
             if _parse_utc(item.settled_at, "VALIDATION_SETTLED_AT") > as_of:
                 raise ValidationMetaError(f"VALIDATION_FUTURE_OUTCOME:{item.sample_id}")
@@ -619,6 +639,9 @@ def _input_manifest(
             "maximum_selected_brier": complexity_policy.maximum_selected_brier,
             "required_meteorological_baseline_kinds": [
                 kind.value for kind in complexity_policy.required_meteorological_baseline_kinds
+            ],
+            "required_red_team_categories": [
+                category.value for category in complexity_policy.required_red_team_categories
             ],
             "research_only": complexity_policy.research_only,
             "can_execute": False,
@@ -799,12 +822,19 @@ def _complexity_gate(
     missing_kinds = sorted(required_kinds - observed_kinds)
     if missing_kinds:
         blockers.append("REQUIRED_METEOROLOGICAL_BASELINE_MISSING:" + ",".join(missing_kinds))
-    meteorological_deltas = [
-        item for item in baseline_deltas
-        if item.baseline_kind in required_kinds
-    ]
-    worst_brier = min((item.champion_brier_advantage for item in meteorological_deltas), default=None)
-    worst_log = min((item.champion_log_loss_advantage for item in meteorological_deltas), default=None)
+
+    full_paired_deltas: list[BaselineDelta] = []
+    for kind in sorted(required_kinds):
+        candidates = [
+            item for item in baseline_deltas
+            if item.baseline_kind == kind and item.paired_n == holdout_n
+        ]
+        if not candidates:
+            blockers.append("REQUIRED_BASELINE_FULL_PAIRED_COVERAGE_MISSING:" + kind)
+        full_paired_deltas.extend(candidates)
+
+    worst_brier = min((item.champion_brier_advantage for item in full_paired_deltas), default=None)
+    worst_log = min((item.champion_log_loss_advantage for item in full_paired_deltas), default=None)
     if worst_brier is None:
         blockers.append("BASELINE_COMPARISON_MISSING")
     elif worst_brier < policy.minimum_brier_advantage:
@@ -814,9 +844,17 @@ def _complexity_gate(
     elif worst_log < policy.minimum_log_loss_advantage:
         blockers.append("LOG_LOSS_ADVANTAGE_BELOW_POLICY_MINIMUM")
 
+    required_categories = {category.value for category in policy.required_red_team_categories}
+    observed_categories = {item.category for item in red_team_results}
+    missing_categories = sorted(required_categories - observed_categories)
+    if missing_categories:
+        blockers.append("REQUIRED_RED_TEAM_CATEGORY_MISSING:" + ",".join(missing_categories))
+    required_red_team_results = [
+        item for item in red_team_results if item.category in required_categories
+    ]
     red_team_pass_rate = (
-        mean(1.0 if item.passed else 0.0 for item in red_team_results)
-        if red_team_results
+        mean(1.0 if item.passed else 0.0 for item in required_red_team_results)
+        if required_red_team_results
         else 0.0
     )
     if red_team_pass_rate < policy.minimum_red_team_pass_rate:
