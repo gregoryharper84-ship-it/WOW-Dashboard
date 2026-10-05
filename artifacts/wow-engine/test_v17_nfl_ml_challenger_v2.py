@@ -132,3 +132,21 @@ def test_forward_shadow_migration_is_service_role_only():
         "grant select, insert, update on table public.wow_nfl_ml_challenger_forward_shadow "
         "to service_role;"
     ) in normalized
+
+def test_forward_shadow_service_role_is_least_privilege():
+    migration = (
+        Path(__file__).parent
+        / "migrations"
+        / "20261005_nfl_ml_challenger_forward_shadow_service_role_least_privilege.sql"
+    ).read_text()
+    normalized = " ".join(migration.lower().split())
+
+    assert (
+        "revoke all privileges on table public.wow_nfl_ml_challenger_forward_shadow "
+        "from service_role;"
+    ) in normalized
+    assert (
+        "grant select, insert, update on table public.wow_nfl_ml_challenger_forward_shadow "
+        "to service_role;"
+    ) in normalized
+
