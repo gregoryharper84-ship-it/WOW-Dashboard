@@ -473,7 +473,7 @@ def _rundown_teams(raw: dict[str, Any]) -> tuple[str | None, str | None]:
     for team in raw.get("teams_normalized") or raw.get("teams") or []:
         if not isinstance(team, dict):
             continue
-        label = team.get("name") or team.get("full_name") or team.get("abbreviation")
+        label = team.get("full_name") or team.get("name") or team.get("abbreviation")
         if not label:
             continue
         if team.get("is_home"):
@@ -631,10 +631,10 @@ def _rundown_v2_participants(event: dict[str, Any], market: dict[str, Any]) -> d
                 continue
             nested = participant.get("participant") if isinstance(participant.get("participant"), dict) else {}
             name = (
-                participant.get("name")
-                or participant.get("full_name")
-                or nested.get("name")
+                participant.get("full_name")
                 or nested.get("full_name")
+                or participant.get("name")
+                or nested.get("name")
                 or participant.get("abbreviation")
                 or nested.get("abbreviation")
             )
