@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from io import BytesIO
+import json
 import logging
 import math
 import re
@@ -28,8 +29,15 @@ from pypdf import PdfReader
 
 WNBA_SCHEDULE_URL = "https://cdn.wnba.com/static/json/staticData/scheduleLeagueV2.json"
 WNBA_STATS_BASE = "https://stats.wnba.com/stats"
+WNBA_TEAM_PAGE_BASE = "https://www.wnba.com/team"
+WNBA_GAME_PAGE_BASE = "https://www.wnba.com/game"
 WNBA_INJURY_BASE = "https://ak-static.cms.nba.com/referee/wnba_injury"
 PROVIDER_ID = "WNBA_OFFICIAL_STATS_CDN_INJURY_V1"
+ROSTER_WEB_PROVIDER = "WNBA_OFFICIAL_WEB_TEAM_ROSTER"
+ROSTER_STATS_PROVIDER = "WNBA_STATS_COMMON_TEAM_ROSTER"
+GAME_LOG_WEB_PROVIDER = "WNBA_OFFICIAL_WEB_GAME_BOX_SCORE"
+GAME_LOG_STATS_PROVIDER = "WNBA_STATS_LEAGUE_GAME_LOG"
+REGULAR_SEASON_GAME_ID_PREFIX = "102"
 EVIDENCE_VERSION = "PROP_EVIDENCE_V1"
 HTTP_TIMEOUT_SECONDS = 10.0
 HTTP_ATTEMPTS = 2
@@ -55,6 +63,12 @@ CANONICAL_STATS = {
     "REB": "REBOUNDS",
     "AST": "ASSISTS",
     "FG3M": "THREE_POINTERS_MADE",
+}
+WEB_STAT_FIELDS = {
+    "PTS": "points",
+    "REB": "reboundsTotal",
+    "AST": "assists",
+    "FG3M": "threePointersMade",
 }
 
 
@@ -103,6 +117,20 @@ def _stats_headers() -> dict[str, str]:
         "Cache-Control": "no-cache",
         "x-nba-stats-origin": "stats",
         "x-nba-stats-token": "true",
+    }
+
+
+def _web_headers() -> dict[str, str]:
+    return {
+        "Host": "www.wnba.com",
+        "User-Agent": _stats_headers()["User-Agent"],
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Connection": "keep-alive",
+        "Referer": "https://www.wnba.com/",
+        "Pragma": "no-cache",
+        "Cache-Control": "no-cache",
     }
 
 
@@ -174,6 +202,52 @@ def _request(
         "WNBA_OFFICIAL_SOURCE_UNAVAILABLE",
         "a required official WNBA evidence source could not be retrieved",
         detail={"url": url, "attempts": HTTP_ATTEMPTS, "errors": errors[-4:]},
+    )
+
+
+def _html_text(url: str, *, http_get: Callable[..., Any]) -> str:
+    content = _request(
+        url,
+        http_get=http_get,
+        headers=_web_headers(),
+        expect_json=False,
+    )
+    try:
+        text = bytes(content).decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise WNBAPropHydrationError(
+            "WNBA_OFFICIAL_WEB_INVALID_ENCODING",
+            "official WNBA web response was not UTF-8",
+            detail={"url": url},
+        ) from exc
+    if not text.strip():
+        raise WNBAPropHydrationError(
+            "WNBA_OFFICIAL_WEB_EMPTY",
+            "official WNBA web response was empty",
+            detail={"url": url},
+        )
+    return text
+
+
+def _embedded_json_value(text: str, marker: str) -> Any:
+    decoder = json.JSONDecoder()
+    cursor = 0
+    parse_errors: list[str] = []
+    while True:
+        index = text.find(marker, cursor)
+        if index < 0:
+            break
+        start = index + len(marker)
+        try:
+            value, _end = decoder.raw_decode(text[start:])
+            return value
+        except json.JSONDecodeError as exc:
+            parse_errors.append(str(exc))
+            cursor = index + 1
+    raise WNBAPropHydrationError(
+        "WNBA_OFFICIAL_WEB_PARSE_FAILED",
+        "official WNBA page did not contain the required embedded JSON value",
+        detail={"marker": marker, "parse_errors": parse_errors[-3:]},
     )
 
 
