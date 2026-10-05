@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from pathlib import Path
 
 from v17.binary_candidate_lifecycle import BinaryTrainingRow
 from v17.experiments.cross_sport_geometry_audit import (
@@ -173,3 +174,19 @@ def test_oidc_bundle_normalizes_json_timestamp_strings_for_replay():
     assert isinstance(rows[0]["feature_as_of"], datetime)
     assert rows[0]["event_start_time"].tzinfo is not None
     assert rows[0]["feature_as_of"].tzinfo is not None
+
+
+def test_cross_sport_workflow_uses_package_aware_module_invocation():
+    workflow = (
+        Path(__file__).resolve().parents[4]
+        / ".github"
+        / "workflows"
+        / "wow-v17-cross-sport-geometry-audit.yml"
+    ).read_text(encoding="utf-8")
+
+    assert "python -m v17.experiments.cross_sport_audit_edge_fetch" in workflow
+    assert "python -m v17.experiments.cross_sport_geometry_audit" in workflow
+    assert "python -m v17.experiments.cross_sport_geometry_audit_bundle" in workflow
+
+    assert "python v17/experiments/cross_sport_geometry_audit.py" not in workflow
+    assert "python v17/experiments/cross_sport_geometry_audit_bundle.py" not in workflow
