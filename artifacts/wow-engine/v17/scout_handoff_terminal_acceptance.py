@@ -122,6 +122,8 @@ def validate_terminal_summary(summary: dict[str, Any]) -> dict[str, Any]:
     processing_seen = int(summary.get("specialist_processing_seen") or 0)
     blockers = _queue_governance_blockers(summary)
 
+    if str(summary.get("schema_version") or "") != "wow.v17.scout-handoff-run.v1":
+        blockers.append("SCOUT_TERMINAL_ACCEPTANCE_SCHEMA_INVALID")
     if summary.get("can_execute") is not False:
         blockers.append("SCOUT_EXECUTION_GOVERNANCE_VIOLATION")
     if str(summary.get("status") or "") != "COMPLETE":
@@ -210,13 +212,14 @@ def wait_for_terminal(
                         "terminal_authority": "V17_TERMINAL_REDUCER",
                         "can_execute": False,
                     }
-                if ledger_output is not None:
+                result = validate_terminal_summary(detailed_body)
+                if result.get("status") == "PASS" and ledger_output is not None:
                     ledger_output.parent.mkdir(parents=True, exist_ok=True)
                     ledger_output.write_text(
                         json.dumps(detailed_body, indent=2, sort_keys=True) + "\n",
                         encoding="utf-8",
                     )
-                return validate_terminal_summary(detailed_body)
+                return result
         sleep_fn(2)
 
     result = validate_terminal_summary(latest or {
