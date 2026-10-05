@@ -116,6 +116,7 @@ def test_wait_for_terminal_polls_until_complete(monkeypatch):
     )
 
     assert result["status"] == "PASS"
+    assert result["resolved_run_summary"] == complete
 
 
 def test_wait_for_terminal_timeout_is_typed(monkeypatch):
