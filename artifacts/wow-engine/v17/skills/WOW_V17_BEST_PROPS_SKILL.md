@@ -43,6 +43,8 @@ For each official pick show:
 - strongest supporting evidence
 - material contradiction/risk
 - evidence as-of/provenance summary when material
+- JS archetype/research priority when present
+- JS + V17 convergence status when evaluated
 
 ## Publication rules
 - Official leaderboard: only governed fitted-model-supported rows with the numeric package required by that route.
