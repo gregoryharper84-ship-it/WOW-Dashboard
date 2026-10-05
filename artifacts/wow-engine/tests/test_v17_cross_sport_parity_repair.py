@@ -6,7 +6,12 @@ from v17.sep16_evidence_handoff_rank_fix import (
     _annotate_schema_mismatch,
 )
 from v17.team_event_capability_manifest import EXPECTED_TEAM_EVENT_SPORTS
-from v17.team_event_sport_parity import build_discovery_evidence, parity_health
+from v17.cross_sport_winner_discovery import DiscoveredEvent
+from v17.team_event_sport_parity import (
+    build_discovery_evidence,
+    canonicalize_nfl_discovery_identity,
+    parity_health,
+)
 
 
 def test_every_cataloged_sport_has_same_parity_contract_shape():
@@ -139,3 +144,115 @@ def test_present_upstream_missing_downstream_is_run_invalid_not_no_pick():
     assert out["rank_eligible"] is False
     assert out["probability_publishable"] is False
     assert out["can_execute"] is False
+
+
+class _EventApi:
+    def __init__(self):
+        self.db = object()
+
+    def get_client(self):
+        return self.db
+
+
+def _nfl_alias_event():
+    return DiscoveredEvent(
+        sport="NFL",
+        league="NFL",
+        sport_key="2",
+        official_event_id=None,
+        home_team="Chicago Bears",
+        away_team="New York Jets",
+        commence_time_utc="2026-10-04T17:00:00Z",
+        event_status="PREGAME",
+        source="DISCOVERY_FEED",
+        provider="ESPN_SCOREBOARD",
+        raw={
+            "provider_event_id": "401872972",
+            "official_event_id": None,
+            "prediction_authority": False,
+        },
+    )
+
+
+def test_nfl_daily_discovery_alias_rewrites_only_after_canonical_ledger_match(monkeypatch):
+    import v17.nfl_team_event_specialist as specialist
+
+    captured = {}
+
+    def resolve(req, *, db):
+        captured["provider_event_id"] = req.official_event_id
+        captured["db"] = db
+        return {
+            "ok": True,
+            "canonical_event_id": "2026_04_NYJ_CHI",
+            "identity_resolution": "PROVIDER_ID_TO_CANONICAL_SCHEDULE_MATCH",
+            "canonical_source_snapshot_id": "snapshot-nfl",
+        }
+
+    monkeypatch.setattr(specialist, "resolve_nfl_team_event_evidence", resolve)
+    api = _EventApi()
+    req = SimpleNamespace(
+        requested_slate_date="2026-10-04",
+        requested_timezone="America/Chicago",
+    )
+
+    out = canonicalize_nfl_discovery_identity(
+        _nfl_alias_event(),
+        req=req,
+        event_api=api,
+        settlement_basis="FULL_GAME_INCLUDING_OVERTIME",
+    )
+
+    assert captured["provider_event_id"] == "401872972"
+    assert captured["db"] is api.db
+    assert out.official_event_id == "2026_04_NYJ_CHI"
+    assert out.raw["provider_event_id"] == "401872972"
+    assert out.raw["canonical_identity_status"] == "CANONICAL_RESOLVED"
+    assert out.raw["canonical_identity_source"] == "CANONICAL_NFLVERSE_LEDGER"
+    assert out.raw["prediction_authority"] is False
+
+
+def test_nfl_daily_discovery_alias_stays_unresolved_when_canonical_match_fails(monkeypatch):
+    import v17.nfl_team_event_specialist as specialist
+
+    monkeypatch.setattr(
+        specialist,
+        "resolve_nfl_team_event_evidence",
+        lambda req, *, db: {
+            "ok": False,
+            "code": "NFL_PROVIDER_EVENT_ID_CANONICAL_MATCH_AMBIGUOUS",
+        },
+    )
+    req = SimpleNamespace(
+        requested_slate_date="2026-10-04",
+        requested_timezone="America/Chicago",
+    )
+
+    out = canonicalize_nfl_discovery_identity(
+        _nfl_alias_event(),
+        req=req,
+        event_api=_EventApi(),
+        settlement_basis="FULL_GAME_INCLUDING_OVERTIME",
+    )
+
+    assert out.official_event_id is None
+    assert out.raw["provider_event_id"] == "401872972"
+    assert out.raw["canonical_identity_status"] == "ALIAS_ONLY_UNRESOLVED"
+    assert (
+        out.raw["canonical_identity_blocker"]
+        == "NFL_PROVIDER_EVENT_ID_CANONICAL_MATCH_AMBIGUOUS"
+    )
+
+
+def test_discovery_evidence_preserves_provider_alias_after_nfl_canonicalization():
+    event = _nfl_alias_event()
+    event = DiscoveredEvent(
+        **{
+            **event.__dict__,
+            "official_event_id": "2026_04_NYJ_CHI",
+        }
+    )
+    evidence = build_discovery_evidence(event)
+    assert evidence["discovery_provider_event_id"] == "401872972"
+    assert evidence["market_probability_used_as_model"] is False
+    assert evidence["can_execute"] is False
