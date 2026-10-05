@@ -93,8 +93,10 @@ def gate(**overrides):
         minimum_brier_advantage=0.0,
         minimum_log_loss_advantage=0.0,
         minimum_red_team_pass_rate=1.0,
+        promotion_confidence_threshold=0.0,
         minimum_selected_coverage=0.5,
         maximum_selected_brier=0.25,
+        required_meteorological_baseline_kinds=(BaselineKind.NBM,),
     )
     values.update(overrides)
     return ComplexityGatePolicy(**values)
@@ -294,6 +296,7 @@ def test_complexity_gate_has_no_implicit_thresholds_and_holds_when_policy_not_me
             minimum_holdout_n=10,
             minimum_brier_advantage=0.01,
             minimum_log_loss_advantage=0.01,
+            promotion_confidence_threshold=0.95,
             minimum_selected_coverage=0.75,
         ),
     )
@@ -440,3 +443,52 @@ def test_validation_report_identity_detects_manifest_tampering():
     import json
     with pytest.raises(ValidationMetaError, match="VALIDATION_REPORT_IDENTITY_MISMATCH"):
         replace(report, input_manifest_json=json.dumps(manifest))
+
+
+def test_complexity_policy_cannot_use_market_as_promotion_baseline():
+    with pytest.raises(ValidationMetaError, match="COMPLEXITY_MARKET_BASELINE_PROMOTION_PROHIBITED"):
+        gate(required_meteorological_baseline_kinds=(BaselineKind.MARKET,))
+
+
+def test_complexity_gate_requires_predeclared_baseline_kind():
+    fx = fixture()
+    report = ValidationMetaLayer().evaluate(
+        as_of_time="2026-10-04T19:00:00Z",
+        probability_samples=(
+            sample("a", baselines=(baseline(BaselineKind.NBM, ident="nbm"),)),
+            sample("b", champion=0.30, outcome=False, baselines=(baseline(BaselineKind.NBM, ident="nbm", p=0.40),)),
+        ),
+        selective_confidence_thresholds=(0.0,),
+        counterfactual_samples=(),
+        red_team_fixtures=(fx,),
+        red_team_observations=(observation(fx),),
+        complexity_policy=gate(required_meteorological_baseline_kinds=(BaselineKind.NBM, BaselineKind.NWS)),
+    )
+    assert any(
+        blocker.startswith("REQUIRED_METEOROLOGICAL_BASELINE_MISSING:NWS")
+        for blocker in report.complexity_gate.blockers
+    )
+    assert report.complexity_gate.recommendation is ComplexityRecommendation.HOLD
+
+
+def test_complexity_gate_does_not_cherry_pick_selective_threshold():
+    fx = fixture()
+    report = ValidationMetaLayer().evaluate(
+        as_of_time="2026-10-04T19:00:00Z",
+        probability_samples=(
+            sample("high", champion=0.80, outcome=True, confidence=0.90),
+            sample("low", champion=0.55, outcome=False, confidence=0.40),
+        ),
+        selective_confidence_thresholds=(0.0, 0.8),
+        counterfactual_samples=(),
+        red_team_fixtures=(fx,),
+        red_team_observations=(observation(fx),),
+        complexity_policy=gate(
+            promotion_confidence_threshold=0.8,
+            minimum_selected_coverage=0.75,
+            maximum_selected_brier=1.0,
+        ),
+    )
+    assert report.complexity_gate.selected_confidence_threshold == pytest.approx(0.8)
+    assert report.complexity_gate.selected_coverage == pytest.approx(0.5)
+    assert "SELECTIVE_COVERAGE_POLICY_UNSATISFIED" in report.complexity_gate.blockers
