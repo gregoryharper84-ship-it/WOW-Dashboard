@@ -96,6 +96,7 @@ _PROVIDER_MARKET_CANONICAL: dict[str, str] = {
     "handicap": "spreads",
     "total": "totals",
     "totals": "totals",
+    "total_points": "totals",
     "over_under": "totals",
     "ou": "totals",
 }
@@ -895,15 +896,15 @@ def _sharpapi_first(row: dict[str, Any], keys: tuple[str, ...]) -> Any:
 def _sharpapi_event_identity(row: dict[str, Any]) -> tuple[str, str | None, str | None, Any] | None:
     event = _sharpapi_first(row, ("event", "game", "match", "fixture"))
     if isinstance(event, dict):
-        event_id = _sharpapi_first(event, ("id", "event_id", "game_id", "key"))
+        event_id = _sharpapi_first(event, ("id", "event_id", "event_uuid", "external_event_id", "game_id", "key"))
         home = _sharpapi_first(event, ("home_team", "home", "home_team_name"))
         away = _sharpapi_first(event, ("away_team", "away", "away_team_name"))
-        start = _sharpapi_first(event, ("commence_time", "start_time", "start_date", "event_date", "scheduled"))
+        start = _sharpapi_first(event, ("event_start_time", "commence_time", "start_time", "start_date", "event_date", "scheduled"))
     else:
-        event_id = _sharpapi_first(row, ("event_id", "game_id", "match_id"))
+        event_id = _sharpapi_first(row, ("event_id", "event_uuid", "external_event_id", "game_id", "match_id"))
         home = _sharpapi_first(row, ("home_team", "home", "home_team_name"))
         away = _sharpapi_first(row, ("away_team", "away", "away_team_name"))
-        start = _sharpapi_first(row, ("commence_time", "start_time", "start_date", "event_date", "scheduled"))
+        start = _sharpapi_first(row, ("event_start_time", "commence_time", "start_time", "start_date", "event_date", "scheduled"))
         if event_id is None and isinstance(event, str):
             event_id = event
     if event_id is None:
@@ -994,7 +995,7 @@ def sharpapi_rows_to_odds_api_v4(rows: Any, *, sport_key: str | None = None) -> 
         record["commence_time"] = record["commence_time"] or start
 
         for book_name, priced in _sharpapi_book_rows(row):
-            price = _number(_sharpapi_first(priced, ("odds", "price", "american_odds", "american", "moneyline")))
+            price = _number(_sharpapi_first(priced, ("odds_american", "american_odds", "odds", "price", "american", "moneyline")))
             if price is None:
                 continue
             point = _number(_sharpapi_first(priced, ("line", "point", "handicap", "spread", "total")))
