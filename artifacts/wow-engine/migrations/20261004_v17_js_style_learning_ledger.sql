@@ -7,6 +7,10 @@ create table if not exists wow_js_style.learning_examples (
     example_id text primary key,
     source_type text not null default 'USER_SUPPLIED_SCREENSHOT',
     source_ref text,
+    slip_id text,
+    capture_state text,
+    displayed_value_at_capture numeric,
+    source_observed_at timestamptz,
     sport text,
     league text,
     event_id text,
@@ -35,6 +39,13 @@ create table if not exists wow_js_style.learning_examples (
         check (can_execute = false)
 );
 
+revoke all on schema wow_js_style from public;
+grant usage on schema wow_js_style to service_role;
+
+alter table wow_js_style.learning_examples enable row level security;
+revoke all on table wow_js_style.learning_examples from public, anon, authenticated;
+grant select, insert on table wow_js_style.learning_examples to service_role;
+
 create index if not exists idx_js_style_learning_sport_created
     on wow_js_style.learning_examples (sport, created_at desc);
 
@@ -53,3 +64,6 @@ comment on column wow_js_style.learning_examples.pregame_feature_snapshot is
 
 comment on column wow_js_style.learning_examples.outcome is
 'Post-settlement observation stored separately from pregame selection features.';
+
+comment on column wow_js_style.learning_examples.displayed_value_at_capture is
+'Live/final screenshot display context only. Never a pregame selection feature.';
