@@ -1,13 +1,13 @@
 """Official WNBA schedule transports for V17 prop hydration.
 
 The public WNBA CDN schedule endpoint intermittently returns an HTTP-success
-non-JSON body on the production Render path, while the server-rendered official
-schedule page can arrive there without parseable game tiles. This adapter keeps
-the evidence boundary league-owned: a governed GitHub OIDC lifecycle may supply
-the same official CDN payload as a request-scoped transport bridge; otherwise
-callers try the official CDN with the caller/browser contract, retry that same
-CDN with a minimal public request contract, and only then parse the official
-wnba.com schedule page.
+non-JSON body on the production Render path. The public schedule page is
+client-hydrated, so a plain server-rendered fetch can legitimately contain no
+parseable game tiles. This adapter keeps the evidence boundary league-owned: a
+governed GitHub OIDC lifecycle may supply the same official CDN payload as a
+request-scoped transport bridge; otherwise callers try the official CDN with
+the caller/browser contract, retry that same CDN with a minimal public request
+contract, and then use the official JSON schedule API consumed by wnba.com.
 
 No third-party schedule, market data, probability, calibration, certification,
 publication, ranking, promotion, or execution authority is introduced.
@@ -18,6 +18,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from contextvars import ContextVar
 from copy import deepcopy
+from datetime import datetime, timezone
 from html import unescape
 from html.parser import HTMLParser
 import json
@@ -29,7 +30,9 @@ import wnba_prop_auto_hydration as wnba
 
 CAN_EXECUTE = False
 SCHEDULE_PAGE_URL = "https://www.wnba.com/schedule?month=all"
+SCHEDULE_API_URL = "https://www.wnba.com/api/schedule"
 CDN_PROVIDER = "WNBA_CDN_SCHEDULE_CURRENT"
+API_PROVIDER = "WNBA_OFFICIAL_SCHEDULE_API"
 WEB_PROVIDER = "WNBA_OFFICIAL_SCHEDULE_WEB_SSR"
 OIDC_BRIDGE_PROVIDER = "WNBA_CDN_SCHEDULE_GITHUB_OIDC_BRIDGE"
 
@@ -86,10 +89,34 @@ def _minimal_cdn_headers() -> dict[str, str]:
     }
 
 
-def _request_json_once(url: str, *, http_get: Callable[..., Any], headers: Mapping[str, str]) -> dict[str, Any]:
+def _api_headers() -> dict[str, str]:
+    """Public request contract used by the JSON API backing wnba.com/schedule."""
+    return {
+        "User-Agent": wnba._stats_headers()["User-Agent"],
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://www.wnba.com/schedule",
+    }
+
+
+def _schedule_api_params() -> dict[str, str]:
+    """Request the same current-season schedule surface used by wnba.com."""
+    return {
+        "season": str(datetime.now(timezone.utc).year),
+        "regionId": "1",
+    }
+
+
+def _request_json_once(
+    url: str,
+    *,
+    http_get: Callable[..., Any],
+    headers: Mapping[str, str],
+    params: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     response = http_get(
         url,
-        params={},
+        params=dict(params or {}),
         headers=dict(headers),
         timeout=wnba.HTTP_TIMEOUT_SECONDS,
         follow_redirects=True,
@@ -415,24 +442,34 @@ def request_with_official_web_fallback(
         _SCHEDULE_SOURCE.set((CDN_PROVIDER, wnba.WNBA_SCHEDULE_URL))
         return payload
 
-    # Stage 3: official wnba.com SSR remains the final league-owned fallback.
-    html, fallback_errors = _retry(
-        lambda: _request_html_once(SCHEDULE_PAGE_URL, http_get=http_get)
+    # Stage 3: use the official JSON API that powers wnba.com/schedule.
+    # The page itself is client-hydrated and is therefore not a reliable
+    # plain-HTTP identity transport for backend acquisition.
+    payload, fallback_errors = _retry(
+        lambda: _request_json_once(
+            SCHEDULE_API_URL,
+            http_get=http_get,
+            headers=_api_headers(),
+            params=_schedule_api_params(),
+        )
     )
-    if html is not None:
+    if payload is not None:
         try:
-            payload = parse_official_schedule_page(str(html))
-            _SCHEDULE_SOURCE.set((WEB_PROVIDER, SCHEDULE_PAGE_URL))
-            return payload
+            payload = _validate_official_schedule_payload(payload)
         except Exception as exc:
             fallback_errors.append(_error_receipt(exc))
+        else:
+            _SCHEDULE_SOURCE.set((API_PROVIDER, SCHEDULE_API_URL))
+            return payload
 
     raise wnba.WNBAPropHydrationError(
         "WNBA_OFFICIAL_SOURCE_UNAVAILABLE",
         "all official WNBA schedule transports were unavailable or invalid",
         detail={
             "primary_source": CDN_PROVIDER,
-            "fallback_source": WEB_PROVIDER,
+            "primary_url": wnba.WNBA_SCHEDULE_URL,
+            "fallback_source": API_PROVIDER,
+            "fallback_url": SCHEDULE_API_URL,
             "primary_errors": primary_errors[-4:],
             "primary_minimal_errors": minimal_errors[-4:],
             "fallback_errors": fallback_errors[-4:],
@@ -486,9 +523,11 @@ install()
 
 
 __all__ = [
+    "API_PROVIDER",
     "CAN_EXECUTE",
     "CDN_PROVIDER",
     "OIDC_BRIDGE_PROVIDER",
+    "SCHEDULE_API_URL",
     "SCHEDULE_PAGE_URL",
     "WEB_PROVIDER",
     "hydrate_with_official_schedule_fallback",
