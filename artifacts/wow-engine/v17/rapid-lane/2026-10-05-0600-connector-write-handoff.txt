@@ -1,0 +1,13 @@
+WOW V17 RAPID LANE — 2026-10-05 05:57 CT
+Canonical incident: CONNECTOR WRITE RELIABILITY
+Classification: CONNECTOR/TOOLING
+Fresh reconciliation:
+- #502 OPEN, RESTORATION_SURGE + RAPID_LANE_ACTIVE; single overlapping runtime owner.
+- #823 OPEN; acquisition/auth gates parked.
+- #1127 OPEN; executable isolated acquisition evidence lane.
+- #1028 OPEN; prior #1192 closed-unmerged, do not retry obsolete merge.
+- #960 CLOSED.
+- #1155 CLOSED.
+Changed mutation experiment: low-level Git object persistence after prior high-level issue/merge/Actions/control-issue mutations were rejected.
+Governance: custom_gpt_identity=WOW_BETTING_ENGINE; runtime_generation=V17_ACTIVE; terminal_authority=V17_TERMINAL_REDUCER; can_execute=false; DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS=true.
+Next executable action: if Git-object write succeeds, use low-level tree/commit/ref route for a reachable Rapid-Lane regression/checkpoint artifact; otherwise classify current global mutation stall and preserve percentages.
