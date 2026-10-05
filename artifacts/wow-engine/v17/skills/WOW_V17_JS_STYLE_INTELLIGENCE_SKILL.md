@@ -199,3 +199,10 @@ Keep these fields visually and semantically separate from governed model probabi
 9. Full-board scoring still processes non-JS rows.
 10. V17_TERMINAL_REDUCER remains sole terminal authority.
 11. can_execute=false remains invariant.
+
+
+## Governed model confirmation
+
+JS Style Intelligence is candidate discovery/annotation only. After the exact controlling specialist returns its governed package, route the row through `WOW_V17_JS_MODEL_CONVERGENCE_SKILL.md`.
+
+The model is allowed to reject a JS-style thesis. A stronger non-JS model-qualified row remains eligible and may outrank it. Never blend `js_research_priority` into calibrated probability or calibrated lower bound.
