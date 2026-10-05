@@ -97,6 +97,7 @@ def gate(**overrides):
         minimum_selected_coverage=0.5,
         maximum_selected_brier=0.25,
         required_meteorological_baseline_kinds=(BaselineKind.NBM,),
+        required_red_team_categories=(SettlementRedTeamCategory.SETTLEMENT_SOURCE_CONFLICT,),
     )
     values.update(overrides)
     return ComplexityGatePolicy(**values)
@@ -492,3 +493,68 @@ def test_complexity_gate_does_not_cherry_pick_selective_threshold():
     assert report.complexity_gate.selected_confidence_threshold == pytest.approx(0.8)
     assert report.complexity_gate.selected_coverage == pytest.approx(0.5)
     assert "SELECTIVE_COVERAGE_POLICY_UNSATISFIED" in report.complexity_gate.blockers
+
+
+def test_mixed_weather_lanes_cannot_share_one_validation_cohort():
+    fx = fixture()
+    mixed = replace(sample("hourly"), lane="DAILY_HIGH_TEMPERATURE")
+    with pytest.raises(ValidationMetaError, match="VALIDATION_MIXED_LANE_COHORT"):
+        ValidationMetaLayer().evaluate(
+            as_of_time="2026-10-04T19:00:00Z",
+            probability_samples=(sample("base"), mixed),
+            selective_confidence_thresholds=(0.0,),
+            counterfactual_samples=(),
+            red_team_fixtures=(fx,),
+            red_team_observations=(observation(fx),),
+            complexity_policy=gate(),
+        )
+
+
+def test_required_baseline_must_cover_entire_holdout_with_one_versioned_identity():
+    fx = fixture()
+    report = ValidationMetaLayer().evaluate(
+        as_of_time="2026-10-04T19:00:00Z",
+        probability_samples=(
+            sample("with-nbm", baselines=(baseline(BaselineKind.NBM, ident="nbm"),)),
+            sample("without-nbm", champion=0.30, outcome=False, baselines=()),
+        ),
+        selective_confidence_thresholds=(0.0,),
+        counterfactual_samples=(),
+        red_team_fixtures=(fx,),
+        red_team_observations=(observation(fx),),
+        complexity_policy=gate(),
+    )
+    assert "REQUIRED_BASELINE_FULL_PAIRED_COVERAGE_MISSING:NBM" in report.complexity_gate.blockers
+    assert report.complexity_gate.recommendation is ComplexityRecommendation.HOLD
+
+
+def test_required_red_team_categories_are_predeclared_and_must_be_present():
+    fx = fixture()
+    report = ValidationMetaLayer().evaluate(
+        as_of_time="2026-10-04T19:00:00Z",
+        probability_samples=(sample("a"), sample("b", champion=0.30, outcome=False)),
+        selective_confidence_thresholds=(0.0,),
+        counterfactual_samples=(),
+        red_team_fixtures=(fx,),
+        red_team_observations=(observation(fx),),
+        complexity_policy=gate(
+            required_red_team_categories=(
+                SettlementRedTeamCategory.SETTLEMENT_SOURCE_CONFLICT,
+                SettlementRedTeamCategory.TIMEZONE_AMBIGUITY,
+            ),
+        ),
+    )
+    assert "REQUIRED_RED_TEAM_CATEGORY_MISSING:TIMEZONE_AMBIGUITY" in report.complexity_gate.blockers
+    assert report.complexity_gate.recommendation is ComplexityRecommendation.HOLD
+
+
+def test_complexity_policy_requires_nonempty_unique_red_team_categories():
+    with pytest.raises(ValidationMetaError, match="COMPLEXITY_REQUIRED_RED_TEAM_CATEGORIES_MISSING"):
+        gate(required_red_team_categories=())
+    with pytest.raises(ValidationMetaError, match="COMPLEXITY_REQUIRED_RED_TEAM_CATEGORY_DUPLICATE"):
+        gate(
+            required_red_team_categories=(
+                SettlementRedTeamCategory.SETTLEMENT_SOURCE_CONFLICT,
+                SettlementRedTeamCategory.SETTLEMENT_SOURCE_CONFLICT,
+            )
+        )
