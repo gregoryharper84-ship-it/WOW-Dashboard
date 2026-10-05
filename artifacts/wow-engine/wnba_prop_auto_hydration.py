@@ -342,14 +342,74 @@ def _team_node(game: Mapping[str, Any], side: str) -> dict[str, Any]:
     return dict(node)
 
 
-def _roster(team_id: str, season: int, *, http_get: Callable[..., Any]) -> list[dict[str, Any]]:
+def _web_roster(team_id: str, season: int, *, http_get: Callable[..., Any]) -> list[dict[str, Any]]:
+    url = f"{WNBA_TEAM_PAGE_BASE}/{team_id}"
+    text = _html_text(url, http_get=http_get)
+    value = _embedded_json_value(text, '"teamRoster":')
+    if not isinstance(value, list):
+        raise WNBAPropHydrationError(
+            "WNBA_OFFICIAL_WEB_ROSTER_INVALID",
+            "official WNBA team page teamRoster was not a list",
+            detail={"url": url},
+        )
+    rows: list[dict[str, Any]] = []
+    for raw in value:
+        if not isinstance(raw, Mapping):
+            continue
+        row = dict(raw)
+        if str(row.get("TeamID") or "").strip() != str(team_id):
+            continue
+        if str(row.get("SEASON") or "").strip() != str(season):
+            continue
+        if str(row.get("LeagueID") or "10").strip() != "10":
+            continue
+        if not str(row.get("PLAYER") or "").strip() or not str(row.get("PLAYER_ID") or "").strip():
+            continue
+        row["_source_provider"] = ROSTER_WEB_PROVIDER
+        rows.append(row)
+    if not rows:
+        raise WNBAPropHydrationError(
+            "WNBA_OFFICIAL_WEB_ROSTER_EMPTY",
+            "official WNBA team page did not contain a validated current-season roster",
+            detail={"url": url, "team_id": str(team_id), "season": season},
+        )
+    return rows
+
+
+def _stats_roster(team_id: str, season: int, *, http_get: Callable[..., Any]) -> list[dict[str, Any]]:
     payload = _request(
         f"{WNBA_STATS_BASE}/commonteamroster",
         params={"LeagueID": "10", "Season": str(season), "TeamID": str(team_id)},
         headers=_stats_headers(),
         http_get=http_get,
     )
-    return _result_rows(payload, "CommonTeamRoster")
+    rows = _result_rows(payload, "CommonTeamRoster")
+    for row in rows:
+        row["_source_provider"] = ROSTER_STATS_PROVIDER
+    return rows
+
+
+def _roster(team_id: str, season: int, *, http_get: Callable[..., Any]) -> list[dict[str, Any]]:
+    web_error: Optional[WNBAPropHydrationError] = None
+    try:
+        return _web_roster(team_id, season, http_get=http_get)
+    except WNBAPropHydrationError as exc:
+        web_error = exc
+    try:
+        return _stats_roster(team_id, season, http_get=http_get)
+    except WNBAPropHydrationError as stats_error:
+        raise WNBAPropHydrationError(
+            "WNBA_OFFICIAL_SOURCE_UNAVAILABLE",
+            "official WNBA current roster transports were unavailable",
+            detail={
+                "team_id": str(team_id),
+                "season": season,
+                "web_code": web_error.code if web_error else None,
+                "web_detail": web_error.detail if web_error else None,
+                "stats_code": stats_error.code,
+                "stats_detail": stats_error.detail,
+            },
+        ) from stats_error
 
 
 def _resolve_player_and_team(
