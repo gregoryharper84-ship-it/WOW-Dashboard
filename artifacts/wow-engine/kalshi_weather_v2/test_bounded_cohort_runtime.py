@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 import kalshi_weather_v2.bounded_cohort as bounded
 import kalshi_weather_v2.empirical_runtime as runtime
+from kalshi_weather_v2.http_client import HttpAcquisitionError
 from kalshi_weather_v2.shadow_cohort import HourlyCohortTarget
 
 
@@ -162,3 +163,15 @@ def test_market_recorder_captures_all_siblings_even_when_calibration_sample_exis
     assert result.samples_skipped_existing == 1
     assert result.market_microstructure_snapshots_captured == 2
     assert result.market_microstructure_failures == ()
+
+
+def test_http_failure_context_preserves_provider_and_path_without_query_string():
+    exc = HttpAcquisitionError(
+        "HTTP_RETRY_EXHAUSTED",
+        "https://api.example.test/v1/data?token=secret&city=chi",
+        "http_status=429",
+    )
+    context = bounded._failure_context(exc)
+    assert context == "provider=api.example.test,path=/v1/data,detail=http_status=429"
+    assert "secret" not in context
+    assert "city=" not in context
