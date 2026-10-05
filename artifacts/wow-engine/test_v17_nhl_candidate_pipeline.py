@@ -172,5 +172,12 @@ def test_nhl_fit_is_candidate_only_and_requires_later_source_review():
     assert record["probability_publishable"] is False
     assert record["can_execute"] is False
     assert record["validation_metrics"]["market_features_used"] is False
+    assert record["training_rows"] == candidate.metrics.train_n
+    assert record["calibration_rows"] == candidate.metrics.calibration_n
+    assert record["test_rows"] == candidate.metrics.test_n
+    assert (
+        record["training_rows"] + record["calibration_rows"] + record["test_rows"]
+        == candidate.metrics.train_n + candidate.metrics.calibration_n + candidate.metrics.test_n
+    )
     assert candidate.automatic_certification is False
     assert candidate.automatic_promotion is False
