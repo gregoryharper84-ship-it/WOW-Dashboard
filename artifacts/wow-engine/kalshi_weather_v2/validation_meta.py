@@ -421,7 +421,7 @@ class ComplexityGateResult:
 class ValidationMetaReport:
     report_id: str
     as_of_time: str
-    input_manifest: Mapping[str, object]
+    input_manifest_json: str
     model_scores: tuple[ModelScore, ...]
     baseline_deltas: tuple[BaselineDelta, ...]
     selective_curve: tuple[SelectiveScorePoint, ...]
@@ -435,18 +435,32 @@ class ValidationMetaReport:
     can_execute: bool = False
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "input_manifest", MappingProxyType(dict(self.input_manifest)))
+        try:
+            manifest = json.loads(self.input_manifest_json)
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise ValidationMetaError("VALIDATION_INPUT_MANIFEST_INVALID") from exc
+        if not isinstance(manifest, dict):
+            raise ValidationMetaError("VALIDATION_INPUT_MANIFEST_INVALID")
+        canonical = _canonical_json(manifest)
+        object.__setattr__(self, "input_manifest_json", canonical)
+        expected = validation_report_id_from_manifest(manifest)
+        if self.report_id != expected:
+            raise ValidationMetaError("VALIDATION_REPORT_IDENTITY_MISMATCH")
         if self.market_price_used_as_weather_input:
             raise ValidationMetaError("MARKET_PRICE_WEATHER_INPUT_PROHIBITED")
         if self.can_execute:
             raise ValidationMetaError("VALIDATION_REPORT_EXECUTION_PROHIBITED")
+
+    @property
+    def input_manifest(self) -> dict[str, object]:
+        return json.loads(self.input_manifest_json)
 
     def persistence_row(self) -> dict[str, object]:
         return {
             "report_id": self.report_id,
             "as_of_time": _iso(_parse_utc(self.as_of_time, "VALIDATION_REPORT_AS_OF")),
             "validation_meta_version": self.validation_meta_version,
-            "input_manifest": dict(self.input_manifest),
+            "input_manifest": self.input_manifest,
             "sample_ids": list(self.sample_ids),
             "counterfactual_sample_ids": list(self.counterfactual_sample_ids),
             "model_scores": [_jsonable(item) for item in self.model_scores],
@@ -531,7 +545,7 @@ class ValidationMetaLayer:
         return ValidationMetaReport(
             report_id=report_id,
             as_of_time=_iso(as_of),
-            input_manifest=input_manifest,
+            input_manifest_json=_canonical_json(input_manifest),
             model_scores=model_scores,
             baseline_deltas=baseline_deltas,
             selective_curve=selective_curve,
@@ -587,9 +601,7 @@ def _input_manifest(
 
 
 def validation_report_id_from_manifest(manifest: Mapping[str, object]) -> str:
-    digest = hashlib.sha256(
-        json.dumps(dict(manifest), sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
-    ).hexdigest()
+    digest = hashlib.sha256(_canonical_json(dict(manifest)).encode("utf-8")).hexdigest()
     return f"kalshi-weather-validation-meta-{digest[:24]}"
 
 
@@ -862,6 +874,10 @@ def _parse_utc(value: str, code: str) -> datetime:
 
 def _iso(value: datetime) -> str:
     return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _canonical_json(value: object) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
 
 
 def _jsonable(value) -> dict[str, object]:
