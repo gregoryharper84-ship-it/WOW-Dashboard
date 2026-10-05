@@ -69,7 +69,8 @@ def test_spread_adapter_uses_no_push_probability_and_excludes_push_on_binary_sco
     assert win["probability_semantics"] == "CONDITIONAL_ON_NO_PUSH"
     assert win["calibrated_probability"] == pytest.approx(0.60)
     assert win["push_probability"] == pytest.approx(0.10)
-    assert win["support_n"] == 240
+    assert win["support_n"] is None
+    assert win["distribution_sample_n_source_only"] == 240
 
     report = evaluate_bound_reliability([win, push])
     assert report["binary_settled_n"] == 1
