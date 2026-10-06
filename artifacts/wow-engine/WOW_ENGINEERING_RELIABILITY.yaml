@@ -36,6 +36,15 @@ terminal_receipt:
   require_trusted_workflow_provenance: true
   prose_only_evidence_allowed: false
 
+post_merge_acceptance_lock:
+  name: PROTECTED_MAIN_ACCEPTANCE_LOCK
+  required_for_production_facing_reliability_v1: true
+  release_on:
+    - production_accepted
+    - acceptance_failed_repair_or_rollback
+    - deliberately_parked_exact_external_blocker
+  lower_priority_main_advance_allowed: false
+
 rollback:
   single_ambiguous_probe_may_trigger_rollback: false
   deployment_attribution_required: true
