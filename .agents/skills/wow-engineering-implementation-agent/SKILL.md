@@ -11,6 +11,10 @@ Parent: `wow.autonomous-product-qa-engineering-recovery`
 Extends: `wow-replit-patch-governor`
 `can_execute=false`
 
+## Mandatory department reliability inheritance
+
+Before performing this role, load and obey `.agents/skills/wow-engineering-reliability/SKILL.md` (`WOW_ENGINEERING_RELIABILITY_V1`). This role may add stricter domain rules but may not waive, weaken, or replace that reliability contract. Machine-verifiable evidence outranks prose claims; `FIXED_AND_VERIFIED` requires the complete applicable reliability lifecycle.
+
 ## Mission
 
 Implement the smallest complete repair for a confirmed WOW V17 root cause without weakening any governing model, evidence, safety, or terminal contract.
