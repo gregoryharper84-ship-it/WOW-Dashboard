@@ -98,3 +98,44 @@ def test_signature_tampering_is_blocked():
 def test_prose_only_evidence_cannot_parse_as_receipt():
     with pytest.raises((ValidationError, json.JSONDecodeError)):
         VerificationReceipt.model_validate_json("I ran the test and it passed")
+
+
+def test_reliability_cli_physically_emits_bound_execution_trace(tmp_path, monkeypatch):
+    import sys
+    from v17 import reliability_verify_issue
+
+    headers = tmp_path / "headers.txt"
+    response = tmp_path / "response.json"
+    receipt_out = tmp_path / "receipt.json"
+    trace_out = tmp_path / "trace.json"
+    headers.write_text("HTTP/2 200\nX-WOW-Dry-Run-Only: true\nX-WOW-Can-Execute: false\n")
+    response.write_text('{"status":"ok","can_execute":false}\n')
+    monkeypatch.setenv("GITHUB_WORKFLOW", "wow-v17-release-production-verification-agent")
+    monkeypatch.setenv("GITHUB_RUN_ID", "321")
+    monkeypatch.setenv("GITHUB_SHA", MERGE)
+    monkeypatch.setenv("RUNNER_OS", "Linux")
+    monkeypatch.setattr(sys, "argv", [
+        "reliability_verify_issue",
+        "--issue", "1127",
+        "--pr", "1437",
+        "--pr-head-sha", PR_HEAD,
+        "--merge-sha", MERGE,
+        "--deployed-sha", MERGE,
+        "--method", "GET",
+        "--route", "/health/live",
+        "--http-status", "200",
+        "--headers", str(headers),
+        "--response", str(response),
+        "--workflow", "wow-v17-release-production-verification-agent",
+        "--workflow-run-id", "321",
+        "--artifact-name", "receipt-artifact",
+        "--receipt-out", str(receipt_out),
+        "--trace-out", str(trace_out),
+    ])
+
+    assert reliability_verify_issue.main() == 0
+    receipt = VerificationReceipt.model_validate_json(receipt_out.read_text())
+    assert receipt.execution_trace_digest == hashlib.sha256(trace_out.read_bytes()).hexdigest()
+    assert receipt.raw_response_digest == hashlib.sha256(response.read_bytes()).hexdigest()
+    assert receipt.dry_run_header_present is True
+    assert receipt.can_execute_header_false is True
