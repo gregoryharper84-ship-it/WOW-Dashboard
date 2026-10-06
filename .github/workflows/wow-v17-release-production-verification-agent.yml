@@ -421,6 +421,23 @@ jobs:
           receipt_sig=$(jq -r '.sentinel_signature' artifacts/wow-engine/v17/.release-evidence/verification-receipt.json)
           persisted_sig=$(jq -r '.sentinel_signature // ""' artifacts/wow-engine/v17/.release-evidence/audit-persistence.json)
           [ "$receipt_sig" = "$persisted_sig" ] || { echo "RELIABILITY_RECEIPT_PERSISTENCE_SIGNATURE_MISMATCH" >&2; exit 1; }
+
+          encoded_sig=$(python - "$receipt_sig" <<'PY'
+          import sys, urllib.parse
+          print(urllib.parse.quote(sys.argv[1], safe=""))
+          PY
+          )
+          curl --fail --show-error --silent --max-time 30             -H "Authorization: Bearer $token"             "https://wow-governed-probability-engine.onrender.com/internal/v17/reliability-receipts?sentinel_signature=$encoded_sig"             > artifacts/wow-engine/v17/.release-evidence/audit-readback.json
+          readback_status=$(jq -r '.status // ""' artifacts/wow-engine/v17/.release-evidence/audit-readback.json)
+          readback_sig=$(jq -r '.receipt.sentinel_signature // ""' artifacts/wow-engine/v17/.release-evidence/audit-readback.json)
+          readback_merge=$(jq -r '.receipt.merge_sha // ""' artifacts/wow-engine/v17/.release-evidence/audit-readback.json)
+          readback_deployed=$(jq -r '.receipt.deployed_render_sha // ""' artifacts/wow-engine/v17/.release-evidence/audit-readback.json)
+          readback_route=$(jq -r '.receipt.route_tested // ""' artifacts/wow-engine/v17/.release-evidence/audit-readback.json)
+          [ "$readback_status" = "FOUND" ] || { echo "RELIABILITY_RECEIPT_READBACK_NOT_FOUND:$readback_status" >&2; exit 1; }
+          [ "$readback_sig" = "$receipt_sig" ] || { echo "RELIABILITY_RECEIPT_READBACK_SIGNATURE_MISMATCH" >&2; exit 1; }
+          [ "$readback_merge" = "$MERGE_SHA" ] || { echo "RELIABILITY_RECEIPT_READBACK_MERGE_MISMATCH" >&2; exit 1; }
+          [ "$readback_deployed" = "$MERGE_SHA" ] || { echo "RELIABILITY_RECEIPT_READBACK_DEPLOYED_MISMATCH" >&2; exit 1; }
+          [ "$readback_route" = "/health/live" ] || { echo "RELIABILITY_RECEIPT_READBACK_ROUTE_MISMATCH:$readback_route" >&2; exit 1; }
           echo "persisted=true" >> "$GITHUB_OUTPUT"
 
       - name: Upload immutable Reliability V1 evidence artifact
@@ -433,6 +450,7 @@ jobs:
             artifacts/wow-engine/v17/.release-evidence/reliability-envelope.json
             artifacts/wow-engine/v17/.release-evidence/execution-trace.json
             artifacts/wow-engine/v17/.release-evidence/audit-persistence.json
+            artifacts/wow-engine/v17/.release-evidence/audit-readback.json
             artifacts/wow-engine/v17/.release-evidence/health-live.headers
             artifacts/wow-engine/v17/.release-evidence/health-live.json
             artifacts/wow-engine/v17/.release-evidence/render-live-deploy.json
