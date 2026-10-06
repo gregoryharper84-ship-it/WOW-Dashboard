@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 import os
+import threading
 from pathlib import Path
 from typing import Optional
 
@@ -58,6 +59,7 @@ _kalshi_weather_logger = logging.getLogger("wow.kalshi_weather_v2.activation")
 _mlb_1ip_refresh_logger = logging.getLogger("wow.mlb.1ip.final_refresh")
 _spread_forward_logger = logging.getLogger("wow.v17.spread.forward")
 _background_tasks: set[asyncio.Task] = set()
+_DB_CLIENT_LOCAL = threading.local()
 _NCAAF_STARTUP_READINESS_TIMEOUT_SECONDS = 12.0
 
 
@@ -180,7 +182,20 @@ if os.getenv("WOW_CALIBRATION_PUBLICATION_LANE_SEPARATION", "0") == "1":
 
 
 def _db_client():
-    return base.market_api.prod.get_client()
+    """Reuse one Supabase client per worker thread.
+
+    FastAPI executes synchronous route handlers in a worker thread pool. Some
+    governed maintenance callers can issue many short sequential requests; a
+    fresh supabase/http client per request retains enough transport state to
+    push the small Render instance toward its RSS ceiling. Thread-local reuse
+    bounds client allocation without sharing one client across worker threads
+    or changing database/query semantics.
+    """
+    client = getattr(_DB_CLIENT_LOCAL, "client", None)
+    if client is None:
+        client = base.market_api.prod.get_client()
+        _DB_CLIENT_LOCAL.client = client
+    return client
 
 
 install_raw_availability_routes(app, auth_dependency=_auth, db_client_fn=_db_client)
