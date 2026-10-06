@@ -1,0 +1,53 @@
+contract_version: WOW_ENGINEERING_RELIABILITY_V1
+status: ACTIVE
+runtime_generation: V17_ACTIVE
+terminal_authority: V17_TERMINAL_REDUCER
+can_execute: false
+dry_run_only_no_live_trading_no_market_orders: true
+
+mandatory_skill: .agents/skills/wow-engineering-reliability/SKILL.md
+
+lifecycle:
+  - REPRODUCE
+  - ROOT_CAUSE_CONFIRMED
+  - CLASSIFY
+  - MINIMAL_FIX
+  - CONNECTOR_WRITE_READBACK
+  - FOCUSED_REGRESSION
+  - ADJACENT_REGRESSION
+  - INDEPENDENT_REVIEW
+  - QA_VERIFICATION
+  - EXACT_HEAD_CI
+  - PROTECTED_MERGE
+  - EXACT_DEPLOY
+  - PRODUCTION_ACCEPTANCE
+  - FIXED_AND_VERIFIED
+
+terminal_receipt:
+  schema_module: artifacts/wow-engine/v17/receipt_schema.py
+  acceptance_registry: artifacts/wow-engine/v17/production_acceptance_routes.json
+  invalid_receipt_blocker: INVALID_RECEIPT_SCHEMA
+  require_exact_pr_head: true
+  require_merge_sha_equals_deployed_sha: true
+  require_allowlisted_route: true
+  require_safety_headers: true
+  require_response_sha256: true
+  require_execution_trace_sha256: true
+  require_trusted_workflow_provenance: true
+  prose_only_evidence_allowed: false
+
+rollback:
+  single_ambiguous_probe_may_trigger_rollback: false
+  deployment_attribution_required: true
+  prior_known_good_required: true
+  schema_compatibility_required: true
+  persistence_compatibility_required: true
+  post_rollback_verification_required: true
+
+immutable_evidence:
+  github_artifact_required: true
+  append_only_ledger_target: wow_v17_reliability_receipts
+  github_comments_are_authoritative: false
+
+class_c:
+  production_promotion_allowed: false
