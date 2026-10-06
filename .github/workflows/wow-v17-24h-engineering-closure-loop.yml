@@ -44,16 +44,35 @@ jobs:
         run: |
           set -euo pipefail
 
-          repair_pr=$(gh api --paginate "/repos/${GITHUB_REPOSITORY}/pulls?state=open&base=main&per_page=100" \
-            --jq '[.[] | select(.draft == false) | select(.head.repo.full_name == env.GITHUB_REPOSITORY) | select((.body // "") | contains("Morning-Green-Autonomous: true"))] | sort_by(.created_at) | first | .number // empty')
-          experiment_pr=$(gh api --paginate "/repos/${GITHUB_REPOSITORY}/pulls?state=open&base=main&per_page=100" \
-            --jq '[.[] | select(.draft == false) | select(.head.repo.full_name == env.GITHUB_REPOSITORY) | select((.body // "") | contains("Model-Experiment-Autonomous: true"))] | sort_by(.created_at) | first | .number // empty')
+          mkdir -p "$RUNNER_TEMP/wow-capacity"
+          gh api --paginate --slurp "/repos/${GITHUB_REPOSITORY}/issues?state=open&per_page=100" \
+            --jq 'add | map(select(.pull_request == null)) | map({number,title,body,state,updatedAt:.updated_at})' \
+            > "$RUNNER_TEMP/wow-capacity/open-issues.json"
+          python artifacts/wow-engine/v17/engineering_dispatch_queue.py build \
+            --manifest artifacts/wow-engine/v17/engineering_dispatch_manifest.json \
+            --issues "$RUNNER_TEMP/wow-capacity/open-issues.json" \
+            --output "$RUNNER_TEMP/wow-capacity/dispatch.json" >/dev/null
 
-          priority=$(python artifacts/wow-engine/v17/engineering_agent_team.py priority)
-          incident=$(jq -r '.incident_id // ""' <<<"$priority")
-          state=$(jq -r '.state // "NONE"' <<<"$priority")
-          severity=$(jq -r '.severity // "NONE"' <<<"$priority")
-          frontier_allowed=$(jq -r '.frontier_allowed // false' <<<"$priority")
+          capacity=$(python artifacts/wow-engine/v17/engineering_agent_team.py capacity-plan \
+            --ledger "$RUNNER_TEMP/wow-capacity/dispatch.json" --support-limit 6)
+          incident=$(jq -r '.mutation_owner.incident_id // ""' <<<"$capacity")
+          state=$(jq -r '.mutation_owner.state // "NONE"' <<<"$capacity")
+          severity=$(jq -r '.mutation_owner.severity // "NONE"' <<<"$capacity")
+          frontier_allowed=$(jq -r '.mutation_owner.frontier_allowed // false' <<<"$capacity")
+          support_ids=$(jq -r '.support_incident_ids | join(",")' <<<"$capacity")
+          support_count=$(jq -r '.parallel_support_lanes // 0' <<<"$capacity")
+
+          repair_pr=""
+          if [ -n "$incident" ]; then
+            needle="#${incident}"
+            repair_pr=$(gh api --paginate --slurp "/repos/${GITHUB_REPOSITORY}/pulls?state=open&base=main&per_page=100" \
+              --jq 'add' | jq -r --arg needle "$needle" \
+              '[.[] | select(.draft == false) | select(.head.repo.full_name == env.GITHUB_REPOSITORY) | select((((.title // "") + "\n" + (.body // "")) | contains($needle)))] | sort_by(.created_at) | first | .number // empty')
+          fi
+
+          experiment_pr=$(gh api --paginate --slurp "/repos/${GITHUB_REPOSITORY}/pulls?state=open&base=main&per_page=100" \
+            --jq 'add | [.[] | select(.draft == false) | select(.head.repo.full_name == env.GITHUB_REPOSITORY) | select((.body // "") | contains("Model-Experiment-Autonomous: true"))] | sort_by(.created_at) | first | .number // empty')
+
           product=$(python artifacts/wow-engine/v17/engineering_effectiveness.py health artifacts/wow-engine/V17_USER_JOURNEY_HEALTH.md)
           product_health=$(jq -r '.user_journey_status // "UNKNOWN"' <<<"$product")
           utc_hour=$((10#$(date -u +%H)))
@@ -65,22 +84,22 @@ jobs:
           if [ -n "$repair_pr" ]; then
             action="RESUME_REPAIR_PR"
             target="$repair_pr"
-            reason="An autonomous repair PR is open; finish its CI/merge lifecycle before starting new work."
+            reason="The global mutation owner already has a repair PR; finish its exact-head lifecycle first."
           elif [ "$state" = "DEPLOYED_PENDING_VERIFY" ] || [ "$state" = "MERGED_PENDING_DEPLOY" ] || [ "$state" = "PR_CREATED" ]; then
             action="VERIFY_RELEASE"
             target="$incident"
-            reason="Highest-priority incident is in release/production verification."
+            reason="The global mutation owner is in release/production verification."
           elif [ -n "$incident" ]; then
             action="REPAIR"
             target="$incident"
-            reason="Highest-priority durable incident still requires engineering closure."
+            reason="The deterministic global mutation owner still requires engineering closure."
           elif [ "$product_health" != "PASS" ]; then
             action="VERIFY_PRODUCT"
             reason="Golden user journey is not PASS; run independent product acceptance before discretionary model research."
           elif [ -n "$experiment_pr" ]; then
             action="RESUME_EXPERIMENT_PR"
             target="$experiment_pr"
-            reason="Product health is PASS and a governed model-improvement experiment PR is open; finish or repair it before starting another experiment."
+            reason="Reliability mutation queue is empty; this governed experiment may own promotion now."
           elif [ "$frontier_allowed" = "true" ] && [ $((utc_hour % 6)) -eq 0 ]; then
             action="IMPROVE_MODEL"
             reason="Reliability queue and golden user journey are green; execute one governed non-serving model-improvement experiment."
@@ -93,6 +112,8 @@ jobs:
             echo "state=$state"
             echo "severity=$severity"
             echo "product_health=$product_health"
+            echo "support_ids=$support_ids"
+            echo "support_count=$support_count"
             echo "reason<<EOF"
             echo "$reason"
             echo "EOF"
@@ -105,8 +126,10 @@ jobs:
             --arg state "$state" \
             --arg severity "$severity" \
             --arg product_health "$product_health" \
+            --arg support_ids "$support_ids" \
+            --argjson support_count "$support_count" \
             --arg reason "$reason" \
-            '{action:$action,target:$target,incident:$incident,state:$state,severity:$severity,product_health:$product_health,reason:$reason,can_execute:false}' \
+            '{action:$action,target:$target,incident:$incident,state:$state,severity:$severity,product_health:$product_health,support_ids:$support_ids,support_count:$support_count,reason:$reason,can_execute:false}' \
             | tee "$RUNNER_TEMP/wow-24h-decision.json"
 
       - name: Resume autonomous repair PR
@@ -150,6 +173,25 @@ jobs:
           fi
           gh workflow run wow-v17-chatgpt-engineering-worker.yml --repo "$GITHUB_REPOSITORY" --ref main
 
+      - name: Saturate safe parallel support capacity
+        if: steps.decision.outputs.support_count != '0'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SUPPORT_IDS: ${{ steps.decision.outputs.support_ids }}
+        run: |
+          set -euo pipefail
+          IFS=',' read -ra ids <<<"$SUPPORT_IDS"
+          for incident_id in "${ids[@]}"; do
+            [ -n "$incident_id" ] || continue
+            runs=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow wow-v17-engineering-specialist-support.yml --limit 100 --json status,displayTitle)
+            active=$(jq --arg needle "incident=${incident_id}" '[.[] | select((.status == "queued" or .status == "in_progress") and ((.displayTitle // "") | contains($needle)))] | length' <<<"$runs")
+            if [ "$active" -eq 0 ]; then
+              gh workflow run wow-v17-engineering-specialist-support.yml --repo "$GITHUB_REPOSITORY" --ref main \
+                -f incident_id="$incident_id" -f wait_state="PARALLEL_SUPPORT"
+            fi
+          done
+
       - name: Verify golden product acceptance
         if: steps.decision.outputs.action == 'VERIFY_PRODUCT'
         shell: bash
@@ -189,7 +231,6 @@ jobs:
             esac
           done
 
-          gh pr merge "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --auto --merge || true
           checks=$(gh api --paginate "/repos/${GITHUB_REPOSITORY}/commits/${head_sha}/check-runs?per_page=100" -H 'Accept: application/vnd.github+json' --jq '.check_runs')
           failed=$(jq '[.[] | select(.status == "completed") | select(.conclusion != "success" and .conclusion != "neutral" and .conclusion != "skipped")] | length' <<<"$checks")
           if [ "$failed" -gt 0 ]; then
@@ -200,7 +241,13 @@ jobs:
               echo "Failed experiment CI routed to bounded ChatGPT experiment repair." >> "$GITHUB_STEP_SUMMARY"
             fi
           else
-            echo "Experiment PR remains on protected auto-merge; no failed checks detected." >> "$GITHUB_STEP_SUMMARY"
+            pending=$(jq '[.[] | select(.status != "completed")] | length' <<<"$checks")
+            if [ "$pending" -gt 0 ]; then
+              echo "Experiment PR is still running protected checks; global promotion remains deferred." >> "$GITHUB_STEP_SUMMARY"
+            else
+              gh pr merge "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --merge
+              echo "Experiment PR merged only after it became the global mutation/promotion owner." >> "$GITHUB_STEP_SUMMARY"
+            fi
           fi
 
       - name: Execute governed model-improvement experiment
@@ -241,6 +288,8 @@ jobs:
             echo "- incident: ${{ steps.decision.outputs.incident || 'NONE' }}"
             echo "- incident_state: ${{ steps.decision.outputs.state || 'NONE' }}"
             echo "- product_health: ${{ steps.decision.outputs.product_health || 'UNKNOWN' }}"
+            echo "- parallel_support_lanes: ${{ steps.decision.outputs.support_count || '0' }}"
+            echo "- support_incidents: ${{ steps.decision.outputs.support_ids || 'NONE' }}"
             echo "- reason: ${{ steps.decision.outputs.reason || 'NONE' }}"
             echo "- policy: finish existing work before starting new work"
             echo "- product policy: no discretionary model research while golden user journey is not PASS"
