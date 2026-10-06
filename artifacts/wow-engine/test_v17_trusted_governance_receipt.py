@@ -233,7 +233,7 @@ def test_release_verifier_uses_deterministic_render_pointer_and_agent_is_advisor
     assert "EXACT_SHA_ALREADY_LIVE" in text
     assert "EXACT_RENDER_DEPLOYMENT_POINTER_MISSING" in text
     assert "EXACT_RENDER_DEPLOYMENT_STATUS_MISSING" in text
-    assert '"status":"PRODUCTION_VERIFIED"' in text
+    assert 'status:"PRODUCTION_VERIFIED"' in text
     assert 'production_sha:$merge_sha' in text
     assert "steps.deterministic.outputs.result" in text
     agent = text.split("- name: Release / Production Verification agent", 1)[1].split(
