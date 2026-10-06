@@ -211,7 +211,7 @@ install_team_event_request_routes(
 )
 install_live_state_acquisition_routes(app, auth_dependency=_auth, db_client_fn=_db_client)
 install_live_probability_routes(app, auth_dependency=_auth, db_client_fn=_db_client)
-install_reliability_receipt_routes(app, auth_dependency=_auth, db_client_fn=_db_client)
+install_reliability_receipt_routes(app, db_client_fn=_db_client)
 if KALSHI_WEATHER_V2_ACTIVE:
     install_kalshi_weather_v2_routes(
         app,
