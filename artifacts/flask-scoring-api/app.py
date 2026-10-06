@@ -22166,23 +22166,26 @@ def _run_startup_warmup():
     # MLB pitcher startup prewarm — fetch today's ESPN probable pitchers and
     # submit identity + Statcast prefetch jobs to the bounded ThreadPoolExecutor.
     # Fire-and-forget: returns immediately, jobs run in background workers.
-    # Fail-closed: any error is logged but never raised (non-fatal).
-    try:
-        from gate_engine.mlb.startup_prewarm import (
-            prewarm_today_pitchers as _sp_prewarm_today,
-        )
-        _sp_queued, _sp_errors = _sp_prewarm_today(
-            _pb_lookup_mlbam_id, _get_pitcher_savant
-        )
-        if _sp_errors:
-            import logging as _startup_log_mod
-            _startup_log_mod.getLogger("startup-prewarm").warning(
-                "[startup-prewarm] partial errors (%d): %s",
-                len(_sp_errors),
-                "; ".join(_sp_errors),
+    # Deterministic CI must not launch production background DB/network work:
+    # pytest owns the local Postgres lifecycle and a daemon prewarm thread can
+    # otherwise race teardown / schema-reset boundaries.
+    if os.environ.get("WOW_CI", "").strip().lower() not in {"1", "true", "yes"}:
+        try:
+            from gate_engine.mlb.startup_prewarm import (
+                prewarm_today_pitchers as _sp_prewarm_today,
             )
-    except Exception:
-        pass
+            _sp_queued, _sp_errors = _sp_prewarm_today(
+                _pb_lookup_mlbam_id, _get_pitcher_savant
+            )
+            if _sp_errors:
+                import logging as _startup_log_mod
+                _startup_log_mod.getLogger("startup-prewarm").warning(
+                    "[startup-prewarm] partial errors (%d): %s",
+                    len(_sp_errors),
+                    "; ".join(_sp_errors),
+                )
+        except Exception:
+            pass
 
 # WOW-PATCH-2026-08-16: Ensure the Odds API quota table exists SYNCHRONOUSLY
 # before any request can arrive.  The background warmup thread races with the
