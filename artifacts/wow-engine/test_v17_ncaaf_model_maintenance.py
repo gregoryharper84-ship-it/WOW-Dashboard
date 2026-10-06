@@ -261,6 +261,7 @@ def test_ncaaf_live_maintenance_never_runs_on_push():
         encoding="utf-8"
     )
     assert "if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'" in workflow
+    assert "if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.event_name == 'push'" not in workflow
     assert "(github.event_name == 'push' && github.ref == 'refs/heads/main')" not in workflow
     assert 'WOW_CAN_EXECUTE: "false"' in workflow
     assert 'WOW_DRY_RUN_ONLY: "true"' in workflow
