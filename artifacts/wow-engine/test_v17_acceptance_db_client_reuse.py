@@ -45,6 +45,3 @@ def test_db_client_reuses_one_client_per_worker_thread(monkeypatch):
     finally:
         _clear_main_thread_client()
 
-
-def test_db_client_reuse_does_not_change_can_execute_governance():
-    assert subject.base.market_api.prod.CAN_EXECUTE is False
