@@ -989,6 +989,7 @@ jobs:
             if [ "$gates" = "PASS" ] && { [ "$RISK" = "R0" ] || [ "$RISK" = "R1" ] || [ "$RISK" = "R2-restorative" ]; }; then
               echo
               echo "Morning-Green-Autonomous: true"
+              echo "Reliability-Receipt-Version: WOW_ENGINEERING_RELIABILITY_V1"
               echo "Morning-Green-Risk: $RISK"
               echo "Morning-Green-Acceptance-Workflow: wow-v17-nightly-engineering-scan.yml"
               echo
