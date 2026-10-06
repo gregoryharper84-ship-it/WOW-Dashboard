@@ -125,6 +125,17 @@ def _common_result(
         "p_not_cover": scored["p_not_cover"],
         "p_cover_given_no_push": scored["p_cover_given_no_push"],
         "research_lower_bound_cover": scored["research_lower_bound_cover"],
+        "research_lower_bound_cover_unconditional": scored.get(
+            "research_lower_bound_cover_unconditional",
+            scored["research_lower_bound_cover"],
+        ),
+        "research_lower_bound_cover_given_no_push": scored.get(
+            "research_lower_bound_cover_given_no_push"
+        ),
+        "cover_count": scored.get("cover_count"),
+        "push_count": scored.get("push_count"),
+        "not_cover_count": scored.get("not_cover_count"),
+        "non_push_count": scored.get("non_push_count"),
         "distribution_sample_n": scored["distribution_sample_n"],
         "feature_audit": dict(feature_audit),
         "historical_replay_diagnostic": {
