@@ -17,6 +17,7 @@ def _claims():
         "workflow_ref": oidc.WORKFLOW_REF,
         "runner_environment": "github-hosted",
         "event_name": "push",
+        "run_id": "123",
     }
 
 
@@ -237,3 +238,35 @@ def test_release_verification_oidc_is_workflow_dispatch_only():
     claims["event_name"] = "pull_request"
     with pytest.raises(oidc.GitHubOIDCValidationError, match="EVENT_NOT_ALLOWED"):
         oidc.validate_github_actions_claims(claims)
+
+
+def test_release_receipt_authorizer_accepts_only_exact_release_workflow(monkeypatch):
+    claims = _claims()
+    claims["workflow_ref"] = oidc.RELEASE_VERIFICATION_WORKFLOW_REF
+    claims["event_name"] = "workflow_dispatch"
+    monkeypatch.setattr(oidc, "verify_github_actions_oidc", lambda _token: claims)
+
+    result = oidc.authorize_release_receipt_oidc("Bearer oidc-token")
+    assert result["workflow_ref"] == oidc.RELEASE_VERIFICATION_WORKFLOW_REF
+    assert result["run_id"] == "123"
+
+
+def test_release_receipt_authorizer_rejects_other_approved_workflow(monkeypatch):
+    claims = _claims()
+    claims["workflow_ref"] = oidc.WORKFLOW_REF
+    claims["event_name"] = "workflow_dispatch"
+    monkeypatch.setattr(oidc, "verify_github_actions_oidc", lambda _token: claims)
+
+    with pytest.raises(oidc.GitHubOIDCValidationError, match="WORKFLOW_MISMATCH"):
+        oidc.authorize_release_receipt_oidc("Bearer oidc-token")
+
+
+def test_release_receipt_authorizer_rejects_action_api_key(monkeypatch):
+    monkeypatch.setenv("WOW_ACTION_API_KEY", "action-secret")
+    monkeypatch.setattr(
+        oidc,
+        "verify_github_actions_oidc",
+        lambda _token: (_ for _ in ()).throw(oidc.GitHubOIDCValidationError("not-oidc")),
+    )
+    with pytest.raises(oidc.GitHubOIDCValidationError):
+        oidc.authorize_release_receipt_oidc("Bearer action-secret")
