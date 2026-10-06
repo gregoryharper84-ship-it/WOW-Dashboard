@@ -18,6 +18,11 @@ CAN_EXECUTE = False
 TERMINAL_RECEIPT_HEADING = "### Terminal Verification Receipt"
 BLOCKER_MARKER = "<!-- WOW_TERMINAL_CLOSURE_BLOCKER -->"
 AUTONOMOUS_MARKER = "Terminal-Closure-Autonomous: true"
+LEGACY_AUTONOMOUS_MARKER = "Morning-Green-Autonomous: true"
+
+_WORKER_INCIDENT_RE = re.compile(
+    r"(?im)^Incident:\s*`?#?(?P<number>\d+)`?\s*$"
+)
 
 _ISSUE_RE = re.compile(r"(?im)^Terminal-Issue:\s*#(?P<number>\d+)\s*$")
 _FALLBACK_ISSUE_RE = re.compile(
