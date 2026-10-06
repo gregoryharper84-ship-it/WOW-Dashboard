@@ -16,6 +16,7 @@ from v17.basketball_model_maintenance import install_basketball_model_maintenanc
 from v17.ncaaf_model_maintenance import install_ncaaf_model_maintenance_route
 from v17.nfl_forward_shadow import run_forward_shadow
 from v17.nfl_team_event_publication import install_nfl_team_event_publication
+from v17.interactive_latency_telemetry import annotate_request, stage_timer
 from v17.team_event_probability_preservation import score_team_event_request as score_v17_team_event_request
 
 ObjectiveLane = Literal["OUTRIGHT_WIN_PROBABILITY", "UPSET_PROBABILITY", "MARKET_EDGE"]
@@ -489,6 +490,12 @@ def install_team_event_request_routes(app: Any, *, auth_dependency: Any, db_clie
     def score_team_event_request(batch: TeamEventRequestBatch, x_wow_model_identity: Optional[str] = Header(default=None, alias="X-WOW-Model-Identity")):
         outcomes: list[dict[str, Any]] = []
         completed_cache: dict[tuple[str, str], dict[str, Any]] = {}
+        batch_sports = {str(row.sport or "").strip().upper() for row in batch.rows if str(row.sport or "").strip()}
+        annotate_request(
+            sport=next(iter(batch_sports)) if len(batch_sports) == 1 else ("MIXED" if batch_sports else "UNKNOWN"),
+            row_count=len(batch.rows),
+            batch_size=len(batch.rows),
+        )
         for row in batch.rows:
             try:
                 date.fromisoformat(row.event_date)
@@ -500,7 +507,8 @@ def install_team_event_request_routes(app: Any, *, auth_dependency: Any, db_clie
                     outcomes.append(_held(row, "MODEL_INPUTS_INSUFFICIENT", "NFL_SCOUT_EVENT_IDENTITY_INCOMPLETE")); continue
                 try:
                     req = _nfl_score_request(row)
-                    scored = score_v17_team_event_request(req, event_api=event_api, canonical_hydration_required=True)
+                    with stage_timer("fitted_scoring"):
+                        scored = score_v17_team_event_request(req, event_api=event_api, canonical_hydration_required=True)
                 except HTTPException as exc:
                     detail = exc.detail if isinstance(exc.detail, dict) else {"message": str(exc.detail)}
                     raw_code = str(detail.get("code") or "PROVIDER_UNAVAILABLE")
@@ -515,7 +523,8 @@ def install_team_event_request_routes(app: Any, *, auth_dependency: Any, db_clie
                     outcomes.append(_held(row, "MODEL_INPUTS_INSUFFICIENT", "TEAM_EVENT_IDENTITY_INCOMPLETE")); continue
                 try:
                     req = _registered_score_request(row)
-                    scored = score_v17_team_event_request(req, event_api=event_api, canonical_hydration_required=True)
+                    with stage_timer("fitted_scoring"):
+                        scored = score_v17_team_event_request(req, event_api=event_api, canonical_hydration_required=True)
                 except HTTPException as exc:
                     detail = exc.detail if isinstance(exc.detail, dict) else {"message": str(exc.detail)}
                     raw_code = str(detail.get("code") or "PROVIDER_UNAVAILABLE")
@@ -528,7 +537,8 @@ def install_team_event_request_routes(app: Any, *, auth_dependency: Any, db_clie
                     outcomes.append(_held(row, "MODEL_OUTPUT_INVALID", "TEAM_EVENT_BACKEND_INVALID_RESPONSE")); continue
                 outcomes.append(_completed_registered(row, scored)); continue
             try:
-                event = _hydrate(db_client_fn(), row)
+                with stage_timer("hydration"):
+                    event = _hydrate(db_client_fn(), row)
             except Exception as exc:
                 outcomes.append(_held(row, "PROVIDER_UNAVAILABLE", "EVENT_EVIDENCE_PROVIDER_UNAVAILABLE", {"error_type": type(exc).__name__})); continue
             if not event or event.get("feature_hydration_status") != "PASS":
@@ -538,11 +548,12 @@ def install_team_event_request_routes(app: Any, *, auth_dependency: Any, db_clie
             if prior is not None and str(prior.get("event_key") or "") != row.event_key:
                 outcomes.append(_reuse_completed(row, event, prior)); continue
             try:
-                if os.getenv("WOW_V17_ACTIVE", "0") == "1":
-                    req = _mlb_v17_score_request(row, event)
-                    scored = score_v17_team_event_request(req, event_api=event_api, canonical_hydration_required=False)
-                else:
-                    req = event_api.ScoreEventRequest(**_score_request(row, event)); scored = event_api.score_event(req)
+                with stage_timer("fitted_scoring"):
+                    if os.getenv("WOW_V17_ACTIVE", "0") == "1":
+                        req = _mlb_v17_score_request(row, event)
+                        scored = score_v17_team_event_request(req, event_api=event_api, canonical_hydration_required=False)
+                    else:
+                        req = event_api.ScoreEventRequest(**_score_request(row, event)); scored = event_api.score_event(req)
             except HTTPException as exc:
                 detail = exc.detail if isinstance(exc.detail, dict) else {"message": str(exc.detail)}
                 code, blocker = _typed_mlb_failure(detail)
@@ -558,7 +569,8 @@ def install_team_event_request_routes(app: Any, *, auth_dependency: Any, db_clie
         count = len(batch.rows); completed = sum(x["terminal_status"] == "COMPLETED" for x in outcomes)
         if len(outcomes) != count:
             raise HTTPException(status_code=500, detail={"code": "RECONCILIATION_FAILURE", "can_execute": False})
-        for source_row, outcome in zip(batch.rows, outcomes):
-            _apply_card_admission(source_row, outcome)
+        with stage_timer("reconciliation"):
+            for source_row, outcome in zip(batch.rows, outcomes):
+                _apply_card_admission(source_row, outcome)
         rows_card_admissible = sum(item.get("card_admission_eligible") is True for item in outcomes)
         return {"ok": completed > 0, "run_status": "COMPLETE" if completed == count else ("RUN_PARTIAL" if completed else "BLOCKED"), "rows_in": count, "rows_completed": completed, "rows_held": count - completed, "rows_card_admissible": rows_card_admissible, "card_pool_status": "QUALIFIED" if rows_card_admissible else "NONE_QUALIFIED", "reconciliation_pass": True, "rows": outcomes, "can_execute": False}

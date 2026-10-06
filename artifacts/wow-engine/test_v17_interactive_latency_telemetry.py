@@ -178,3 +178,18 @@ def test_interactive_latency_diagnostics_route_exposes_only_bounded_aggregates()
     }
     assert "probability" not in row
     assert "request" not in row
+
+
+def test_team_event_request_runtime_wires_current_latency_stage_contract():
+    from pathlib import Path
+
+    runtime = (
+        Path(__file__).resolve().parent / "team_event_request_runtime.py"
+    ).read_text(encoding="utf-8")
+    assert "from v17.interactive_latency_telemetry import annotate_request, stage_timer" in runtime
+    assert 'with stage_timer("hydration"):' in runtime
+    assert runtime.count('with stage_timer("fitted_scoring"):') >= 3
+    assert 'with stage_timer("reconciliation"):' in runtime
+    assert "row_count=len(batch.rows)" in runtime
+    assert "batch_size=len(batch.rows)" in runtime
+    assert '"MIXED" if batch_sports else "UNKNOWN"' in runtime
