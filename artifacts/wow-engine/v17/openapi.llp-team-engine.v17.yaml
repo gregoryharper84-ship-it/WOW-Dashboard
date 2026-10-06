@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: LLP Team Betting Engine v17 Action
-  version: 17.0.2-action-basepath
+  version: 17.0.3-live-action
   description: >-
     PRODUCTION SOURCE CONTRACT. LLP Team Betting Engine owns team/game/event
     winner, favorite, underdog, upset and governed point-spread intelligence.
@@ -29,6 +29,47 @@ paths:
       x-openai-isConsequential: false
       responses:
         '200': {description: Governed capability state}
+  /functions/v1/wow-llp-action-gateway/live-probability/health:
+    get:
+      operationId: getLlpV17LiveProbabilityHealth
+      x-openai-isConsequential: false
+      description: Read governed in-play model capability; route presence alone never implies a certified live sport model.
+      security: [{actionBearer: []}]
+      responses:
+        '200': {description: Per-sport governed live probability capability}
+        '401': {description: Authentication failed}
+  /functions/v1/wow-llp-action-gateway/capture-live-event-state:
+    post:
+      operationId: captureLlpV17LiveEventState
+      x-openai-isConsequential: false
+      description: Capture immutable server-owned raw state for an IN_PROGRESS MLB/NFL event; this operation never produces probability.
+      security: [{actionBearer: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/LlpLiveStateCaptureRequest'}
+      responses:
+        '200': {description: Raw live state persisted; model_ready indicates whether scoring may proceed}
+        '401': {description: Authentication failed}
+        '409': {description: Event not in progress or sport capture unsupported}
+        '422': {description: Event identity invalid}
+        '503': {description: Provider or immutable snapshot persistence unavailable}
+  /functions/v1/wow-llp-action-gateway/score-live-event:
+    post:
+      operationId: scoreLlpV17LiveEvent
+      x-openai-isConsequential: false
+      description: Score an IN_PROGRESS event only from an exact immutable server-owned live snapshot; never reuse pregame probability.
+      security: [{actionBearer: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/LlpLiveEventRequest'}
+      responses:
+        '200': {description: Governed live event result or exact held blocker}
+        '401': {description: Authentication failed}
+        '422': {description: Live state, identity, settlement or request invalid}
   /functions/v1/wow-llp-action-gateway/v17/host-contract:
     get:
       operationId: getLlpV17HostContract
@@ -208,6 +249,49 @@ components:
       type: http
       scheme: bearer
   schemas:
+    LlpLiveStateCaptureRequest:
+      type: object
+      additionalProperties: false
+      required: [sport, league, official_event_id, home_team, away_team]
+      properties:
+        sport: {type: string, enum: [MLB, NFL, NBA, WNBA, NCAAF, NCAAB, NHL, SOCCER, TENNIS, PGA, MMA, BOXING, CRICKET]}
+        league: {type: string, minLength: 2, maxLength: 64}
+        official_event_id: {type: string, minLength: 1, maxLength: 128}
+        home_team: {type: string, minLength: 1, maxLength: 160}
+        away_team: {type: string, minLength: 1, maxLength: 160}
+    LlpLiveEventRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - research_run_id
+        - official_event_id
+        - sport
+        - league
+        - exact_selection
+        - event_status
+        - settlement_rule
+        - source_snapshot_id
+        - live_snapshot_timestamp
+        - latest_material_update_at
+        - market_role
+        - market_role_source
+        - market_role_timestamp
+        - market_role_confidence
+      properties:
+        research_run_id: {type: string, minLength: 1}
+        official_event_id: {type: string, minLength: 1}
+        sport: {type: string}
+        league: {type: string}
+        exact_selection: {type: string, minLength: 1}
+        event_status: {type: string, enum: [IN_PROGRESS]}
+        settlement_rule: {type: string, minLength: 1, maxLength: 512}
+        source_snapshot_id: {type: string, format: uuid}
+        live_snapshot_timestamp: {type: string, format: date-time}
+        latest_material_update_at: {type: string, format: date-time}
+        market_role: {type: string, enum: [UNDERDOG, FAVORITE, EVEN, CONFLICT]}
+        market_role_source: {type: string, minLength: 1}
+        market_role_timestamp: {type: string, format: date-time}
+        market_role_confidence: {type: number, minimum: 0, maximum: 1}
     LlpFullSlateRequest:
       type: object
       additionalProperties: false

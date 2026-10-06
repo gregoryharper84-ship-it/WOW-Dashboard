@@ -17,6 +17,7 @@ from uuid import UUID, uuid4
 import numpy as np
 from fastapi import FastAPI
 from pydantic import BaseModel, Field, field_validator
+from v17.team_event_capability_manifest import EXPECTED_TEAM_EVENT_SPORTS
 
 CAN_EXECUTE = False
 LANE = "LIVE_EVENT_PROBABILITY"
@@ -133,15 +134,19 @@ def _request_blockers(req: LiveScoreRequest, now: datetime) -> list[str]:
     if req.event_status != "IN_PROGRESS":
         blockers.append("LIVE_EVENT_NOT_IN_PROGRESS")
     if req.sport != "MLB":
-        blockers.append("LIVE_SPORT_MODEL_UNAVAILABLE")
-    if req.settlement_rule != MLB_SETTLEMENT_BASIS:
-        blockers.append("LIVE_SETTLEMENT_RULE_MISMATCH")
-    if req.market_role == "CONFLICT":
-        blockers.append("FAVORITE_STATUS_CONFLICT")
-    elif req.market_role != "UNDERDOG":
-        blockers.append("NOT_CURRENT_LIVE_UNDERDOG")
-    if req.market_role_confidence < 0.65:
-        blockers.append("LIVE_MARKET_ROLE_CONFIDENCE_LOW")
+        blockers.append(f"LIVE_SPORT_MODEL_NOT_CERTIFIED:{req.sport}")
+    else:
+        # Legacy MLB LIVE_UPSET remains underdog-only until the general MLB
+        # LIVE_MONEYLINE Class-C challenger earns promotion. Do not project
+        # these MLB-specific rules onto another sport's outcome contract.
+        if req.settlement_rule != MLB_SETTLEMENT_BASIS:
+            blockers.append("LIVE_SETTLEMENT_RULE_MISMATCH")
+        if req.market_role == "CONFLICT":
+            blockers.append("FAVORITE_STATUS_CONFLICT")
+        elif req.market_role != "UNDERDOG":
+            blockers.append("NOT_CURRENT_LIVE_UNDERDOG")
+        if req.market_role_confidence < 0.65:
+            blockers.append("LIVE_MARKET_ROLE_CONFIDENCE_LOW")
     state_age = (now - live_ts).total_seconds()
     if state_age < -5:
         blockers.append("LIVE_SNAPSHOT_FROM_FUTURE")
@@ -665,10 +670,12 @@ def live_probability_health(db: Any) -> dict[str, Any]:
             "model_family": MLB_MODEL_FAMILY,
             "blockers": ["LIVE_STAGE_0_5_UNAVAILABLE"],
         }
-    for sport in ("NBA", "WNBA", "NCAAB", "NHL", "SOCCER", "TENNIS", "NFL", "NCAAF", "GOLF", "MMA", "BOXING"):
+    for sport in EXPECTED_TEAM_EVENT_SPORTS:
+        if sport == "MLB":
+            continue
         capabilities[sport] = {
             "status": "MODEL_UNAVAILABLE",
-            "blockers": ["CERTIFIED_LIVE_SPORT_MODEL_NOT_YET_WIRED"],
+            "blockers": [f"LIVE_SPORT_MODEL_NOT_CERTIFIED:{sport}"],
         }
     return {
         "status": "OK",

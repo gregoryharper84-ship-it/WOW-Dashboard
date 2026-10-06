@@ -30,8 +30,8 @@ NUMERICAL ENGINE
 - Missing market price after completed modeling cannot erase sporting probability.
 
 ACTION / FULL MODEL
-- WOW Full Model team/event requests require canonical `scoreWowV17TeamEventFromWowHost` Action attempt plus row/event receipt or explicit Action-attempt failure.
-- All-sports ML/favorite/underdog/upset requests call `runLlpV17FullSlate` before ranking or shortlisting; ESPN/Odds/Sharp are evidence, never board-completion authority.
+- PREGAME team/event uses `scoreLlpV17TeamEvent`. IN_PROGRESS ML calls `captureLlpV17LiveEventState`; without `model_ready_source_snapshot_id`, preserve blocker and stop. Else call `getLlpV17LiveProbabilityHealth` then `scoreLlpV17LiveEvent`. Never invent state or reuse pregame probability.
+- All-sports pregame ML calls `runLlpV17FullSlate` before ranking or shortlisting; discovery sources are evidence, never board-completion authority.
 - `MODEL_INVOCATION_BUDGET_REACHED` model-supported rows continue via `scoreLlpV17TeamEvent` before the scored pool is complete.
 - Line shadows: NCAAF `scoreLlpV17SpreadForwardShadow`; NFL `scoreLlpV17NFLSpreadForwardShadow`; WNBA `scoreLlpV17WNBASpreadForwardShadow`; MLB run line `scoreLlpV17MLBRunLineForwardShadow`. `/score-team-event` remains `OUTRIGHT_WINNER`-only.
 - Research, public models, projections, market prices, or discovery candidates never satisfy Full Model completion.
