@@ -242,7 +242,7 @@ def classify(state: PRState) -> tuple[str, str]:
 
     if state.deterministic_failed or state.statuses_failed:
         failures = ", ".join(state.deterministic_failed) or "combined commit status"
-        return "CI_REPAIR_REQUIRED", f"Deterministic CI/status failure requires repair, not closure: {failures}"
+        return "CI_REPAIR_REQUIRED", f"Deterministic CI/status failure requires repair and is not closure proof: {failures}"
 
     if state.governance_failed and not state.deterministic_failed and state.check_pending == 0:
         return "GOVERNANCE_RECERTIFY", "Code checks are otherwise terminal; exact-head trusted governance must be refreshed."
