@@ -1,6 +1,7 @@
 import base64
 from datetime import datetime, timezone
 import hashlib
+import json
 
 import pytest
 from fastapi import HTTPException
@@ -55,14 +56,30 @@ class DB:
         return Query(self, table)
 
 
-def _envelope():
+def _envelope(trace_overrides=None):
     response = b'{"status":"ok","can_execute":false}\n'
     headers = (
         b"HTTP/2 200\r\n"
         b"X-WOW-Dry-Run-Only: true\r\n"
         b"X-WOW-Can-Execute: false\r\n"
     )
-    trace = b'{"executed":true,"can_execute":false}\n'
+    trace_payload = {
+        "contract_version": "WOW_ENGINEERING_RELIABILITY_V1",
+        "issue_id": 1388,
+        "pr_number": 1437,
+        "exact_head_sha": "a" * 40,
+        "merge_sha": "b" * 40,
+        "deployed_render_sha": "b" * 40,
+        "method": "GET",
+        "route_tested": "/health/live",
+        "workflow": "wow-v17-release-production-verification-agent",
+        "workflow_run_id": 123,
+        "runtime_environment_signature": "e" * 64,
+        "executed_utc": datetime.now(timezone.utc).isoformat(),
+        "can_execute": False,
+    }
+    trace_payload.update(trace_overrides or {})
+    trace = (json.dumps(trace_payload, sort_keys=True, separators=(",", ":")) + "\n").encode()
     payload = {
         "contract_version": "WOW_ENGINEERING_RELIABILITY_V1",
         "issue_id": 1388,
@@ -100,7 +117,7 @@ def test_receipt_persistence_is_insert_once_and_repeat_safe():
     envelope = _envelope()
 
     first = runtime._persist(db, envelope, auth_claims=AUTH_CLAIMS)
-    second = runtime._persist(db, envelope)
+    second = runtime._persist(db, envelope, auth_claims=AUTH_CLAIMS)
 
     assert first["status"] == "PERSISTED"
     assert second["status"] == "ALREADY_PERSISTED"
@@ -120,7 +137,9 @@ def test_receipt_persistence_is_insert_once_and_repeat_safe():
         ("execution_trace_base64", base64.b64encode(b"tampered-trace").decode("ascii"), "EXECUTION_TRACE_DIGEST_MISMATCH"),
         (
             "raw_response_headers_base64",
-            base64.b64encode(b"HTTP/2 200\r\nX-WOW-Dry-Run-Only: false\r\nX-WOW-Can-Execute: false\r\n").decode("ascii"),
+            base64.b64encode(
+                b"HTTP/2 200\r\nX-WOW-Dry-Run-Only: false\r\nX-WOW-Can-Execute: false\r\n"
+            ).decode("ascii"),
             "RAW_DRY_RUN_HEADER_INVALID",
         ),
     ],
@@ -131,11 +150,24 @@ def test_receipt_persistence_recomputes_exact_evidence_before_insert(field, repl
     envelope[field] = replacement
 
     with pytest.raises(HTTPException) as exc:
-        runtime._persist(db, envelope)
+        runtime._persist(db, envelope, auth_claims=AUTH_CLAIMS)
 
     detail = exc.value.detail
     assert detail["code"] == "INVALID_RECEIPT_EVIDENCE"
     assert expected_error in detail["errors"]
+    assert db.rows == []
+
+
+def test_receipt_persistence_rejects_semantically_unbound_trace_even_when_digest_matches():
+    db = DB()
+    envelope = _envelope({"issue_id": 999})
+
+    with pytest.raises(HTTPException) as exc:
+        runtime._persist(db, envelope, auth_claims=AUTH_CLAIMS)
+
+    assert exc.value.detail["code"] == "INVALID_RECEIPT_EVIDENCE"
+    assert "TRACE_BINDING_MISMATCH:issue_id" in exc.value.detail["errors"]
+    assert "EXECUTION_TRACE_DIGEST_MISMATCH" not in exc.value.detail["errors"]
     assert db.rows == []
 
 
@@ -147,7 +179,7 @@ def test_receipt_persistence_rejects_oversized_evidence():
     ).decode("ascii")
 
     with pytest.raises(HTTPException) as exc:
-        runtime._persist(db, envelope)
+        runtime._persist(db, envelope, auth_claims=AUTH_CLAIMS)
 
     assert exc.value.status_code == 413
     assert exc.value.detail["code"] == "RECEIPT_EVIDENCE_TOO_LARGE"
