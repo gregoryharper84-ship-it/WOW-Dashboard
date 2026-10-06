@@ -25,7 +25,11 @@ def test_worker_uses_openai_writer_with_bounded_claude_read_only_peers():
     assert "CROSS_PROVIDER_PEER_DIAGNOSIS_AGENT" in text
     assert "CROSS_PROVIDER_ADVERSARIAL_REVIEW_AGENT" in text
     assert text.count('permission_profile: ":workspace"') == 1
-    assert text.count("uses: ./.github/actions/wow-claude-agent") == 2
+    assert text.count("uses: ./.github/actions/wow-claude-agent") == 3
+    assert "CROSS_PROVIDER_QA_COUNTEREXAMPLE_AGENT" in text
+    assert "wow-claude-utilization-receipt.json" in text
+    assert 'authority: "READ_ONLY_CROSS_PROVIDER"' in text
+    assert 'implementation_writer: false' in text
     assert "steps.claude_review.outputs.decision != 'REJECT'" in text
     assert "OpenAI/ChatGPT retains the single implementation lease" in text
     assert "can_execute=false" in text
