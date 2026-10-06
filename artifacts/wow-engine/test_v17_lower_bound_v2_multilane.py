@@ -121,7 +121,7 @@ def test_local_reliability_bound_uses_exact_lane_locality_and_ood_policy():
             _row(lane_key="NFL_RUSHING_YARDS_MORE", p=0.62, outcome=1),
             _row(p=0.62, outcome=1, ood_state="OOD_BLOCKED"),
             _row(p=0.62, outcome=1, ood_state="NEAR_OOD"),
-            _row(p=0.90, outcome=1),
+            _row(p=0.90, lb=0.60, ub=0.95, outcome=1),
         ]
     )
 
@@ -203,6 +203,7 @@ def test_local_reliability_bound_fails_closed_when_support_is_too_thin():
             lane_key="NFL_RECEIVING_YARDS_MORE",
             point_probability=0.61,
             historical_rows=rows,
+            candidate_as_of="2026-10-01T12:00:00Z",
             min_effective_n=10,
             max_neighbors=20,
             max_probability_distance=0.05,
