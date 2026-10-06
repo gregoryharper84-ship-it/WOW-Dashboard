@@ -108,8 +108,15 @@ jobs:
                 --jq '[.artifacts[] | select(.expired == false)] | sort_by(.created_at) | reverse | first | .id // empty')
               if [ -n "$artifact_id" ]; then
                 gh api "/repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}/zip" > "$work/reliability.zip"
-                if unzip -p "$work/reliability.zip" verification-receipt.json > "$work/verification-receipt.json" 2>/dev/null; then
-                  jq -s '.' "$work/verification-receipt.json" > "$work/verification-receipts.json"
+                if unzip -p "$work/reliability.zip" verification-receipt.json > "$work/verification-receipt.json" 2>/dev/null && \
+                   unzip -p "$work/reliability.zip" audit-persistence.json > "$work/audit-persistence.json" 2>/dev/null; then
+                  receipt_sig=$(jq -r '.sentinel_signature // ""' "$work/verification-receipt.json")
+                  persisted_sig=$(jq -r '.sentinel_signature // ""' "$work/audit-persistence.json")
+                  persisted_status=$(jq -r '.status // ""' "$work/audit-persistence.json")
+                  if [ "$receipt_sig" = "$persisted_sig" ] && \
+                     { [ "$persisted_status" = "PERSISTED" ] || [ "$persisted_status" = "ALREADY_PERSISTED" ]; }; then
+                    jq -s '.' "$work/verification-receipt.json" > "$work/verification-receipts.json"
+                  fi
                 fi
               fi
             fi
