@@ -76,6 +76,7 @@ def test_workflow_allowlist_contains_only_known_internal_workflows():
         oidc.FIRST_SIX_TRANSPORT_RESCUE_WORKFLOW_REF,
         oidc.MLB_1IP_LINE_EXPANSION_MAINTENANCE_WORKFLOW_REF,
         oidc.SPREAD_MARGIN_REPLAY_WORKFLOW_REF,
+        oidc.RELEASE_VERIFICATION_WORKFLOW_REF,
     })
 
 
@@ -116,6 +117,7 @@ def test_oidc_claim_identity_mismatch_fails_closed(field, bad):
         oidc.FIRST_SIX_TRANSPORT_RESCUE_WORKFLOW_REF,
         oidc.MLB_1IP_LINE_EXPANSION_MAINTENANCE_WORKFLOW_REF,
         oidc.SPREAD_MARGIN_REPLAY_WORKFLOW_REF,
+        oidc.RELEASE_VERIFICATION_WORKFLOW_REF,
     ],
 )
 def test_pull_request_oidc_is_never_authorized_for_internal_workflows(workflow_ref):
@@ -222,5 +224,16 @@ def test_workflow_run_is_not_globally_authorized_for_other_internal_workflows():
     claims = _claims()
     claims["workflow_ref"] = oidc.DAILY_SNAPSHOT_WORKFLOW_REF
     claims["event_name"] = "workflow_run"
+    with pytest.raises(oidc.GitHubOIDCValidationError, match="EVENT_NOT_ALLOWED"):
+        oidc.validate_github_actions_claims(claims)
+
+
+def test_release_verification_oidc_is_workflow_dispatch_only():
+    claims = _claims()
+    claims["workflow_ref"] = oidc.RELEASE_VERIFICATION_WORKFLOW_REF
+    claims["event_name"] = "workflow_dispatch"
+    assert oidc.validate_github_actions_claims(claims)["workflow_ref"] == oidc.RELEASE_VERIFICATION_WORKFLOW_REF
+
+    claims["event_name"] = "pull_request"
     with pytest.raises(oidc.GitHubOIDCValidationError, match="EVENT_NOT_ALLOWED"):
         oidc.validate_github_actions_claims(claims)
