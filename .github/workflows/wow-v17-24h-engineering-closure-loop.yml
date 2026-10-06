@@ -36,6 +36,54 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Audit open PR WIP
+        id: wip
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          receipt="$RUNNER_TEMP/wow-pr-liquidation.json"
+          python artifacts/wow-engine/v17/audit_pr_liquidation.py \
+            --repo "$GITHUB_REPOSITORY" --base main --wip-limit 12 --output "$receipt" >/dev/null
+
+          total=$(jq -r '.total_open_prs_targeting_main' "$receipt")
+          exceeded=$(jq -r '.wip_exceeded' "$receipt")
+          excess=$(jq -r '.excess_pr_reduction_target' "$receipt")
+          liquidation_pr=$(jq -r '
+            [
+              (.buckets.MERGE_CANDIDATE // []),
+              (.buckets.GOVERNANCE_RECERTIFY // []),
+              (.buckets.PROMOTION_GATED // []),
+              (.buckets.REBASE_REQUIRED // []),
+              (.buckets.CI_REPAIR_REQUIRED // [])
+            ] | add | first | .pr_number // ""
+          ' "$receipt")
+          liquidation_bucket=$(jq -r --argjson pr "${liquidation_pr:-0}" '
+            .buckets
+            | to_entries
+            | map(select(any(.value[]?; .pr_number == $pr)))
+            | first
+            | .key // ""
+          ' "$receipt")
+
+          {
+            echo "total=$total"
+            echo "exceeded=$exceeded"
+            echo "excess=$excess"
+            echo "liquidation_pr=$liquidation_pr"
+            echo "liquidation_bucket=$liquidation_bucket"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "### PR WIP liquidation audit"
+            echo "- open PRs targeting main: $total"
+            echo "- WIP limit: 12"
+            echo "- excess reduction target: $excess"
+            echo "- selected existing-PR support target: ${liquidation_pr:-NONE}"
+            echo "- target bucket: ${liquidation_bucket:-NONE}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Resolve next concrete action
         id: decision
         shell: bash
@@ -80,6 +128,9 @@ jobs:
           action="DETECT"
           target=""
           reason="No unfinished reliability item; run deterministic detector."
+          wip_total="${{ steps.wip.outputs.total }}"
+          wip_exceeded="${{ steps.wip.outputs.exceeded }}"
+          liquidation_pr="${{ steps.wip.outputs.liquidation_pr }}"
 
           if [ -n "$repair_pr" ]; then
             action="RESUME_REPAIR_PR"
@@ -89,10 +140,18 @@ jobs:
             action="VERIFY_RELEASE"
             target="$incident"
             reason="The global mutation owner is in release/production verification."
+          elif [ -n "$incident" ] && { [ "$severity" = "P0" ] || [ "$severity" = "P1" ]; }; then
+            action="REPAIR"
+            target="$incident"
+            reason="The P0/P1 global mutation owner may use the explicit WIP-cap exception for production reliability."
+          elif [ "$wip_exceeded" = "true" ] && [ -n "$liquidation_pr" ]; then
+            action="LIQUIDATE_WIP"
+            target="$liquidation_pr"
+            reason="Open PR WIP exceeds 12; advance an existing PR instead of creating another."
           elif [ -n "$incident" ]; then
             action="REPAIR"
             target="$incident"
-            reason="The deterministic global mutation owner still requires engineering closure."
+            reason="The deterministic global mutation owner still requires engineering closure and WIP is within policy."
           elif [ "$product_health" != "PASS" ]; then
             action="VERIFY_PRODUCT"
             reason="Golden user journey is not PASS; run independent product acceptance before discretionary model research."
@@ -112,6 +171,8 @@ jobs:
             echo "state=$state"
             echo "severity=$severity"
             echo "product_health=$product_health"
+            echo "wip_total=$wip_total"
+            echo "wip_exceeded=$wip_exceeded"
             echo "support_ids=$support_ids"
             echo "support_count=$support_count"
             echo "reason<<EOF"
@@ -126,11 +187,25 @@ jobs:
             --arg state "$state" \
             --arg severity "$severity" \
             --arg product_health "$product_health" \
+            --arg wip_total "$wip_total" \
+            --arg wip_exceeded "$wip_exceeded" \
             --arg support_ids "$support_ids" \
             --argjson support_count "$support_count" \
             --arg reason "$reason" \
-            '{action:$action,target:$target,incident:$incident,state:$state,severity:$severity,product_health:$product_health,support_ids:$support_ids,support_count:$support_count,reason:$reason,can_execute:false}' \
+            '{action:$action,target:$target,incident:$incident,state:$state,severity:$severity,product_health:$product_health,wip_total:$wip_total,wip_exceeded:($wip_exceeded=="true"),support_ids:$support_ids,support_count:$support_count,reason:$reason,can_execute:false}' \
             | tee "$RUNNER_TEMP/wow-24h-decision.json"
+
+      - name: Advance existing PR under WIP liquidation
+        if: steps.decision.outputs.action == 'LIQUIDATE_WIP'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.decision.outputs.target }}
+        run: |
+          set -euo pipefail
+          gh workflow run wow-v17-engineering-specialist-support.yml \
+            --repo "$GITHUB_REPOSITORY" --ref main \
+            -f pr_number="$PR_NUMBER" -f wait_state="PARALLEL_SUPPORT"
 
       - name: Resume autonomous repair PR
         if: steps.decision.outputs.action == 'RESUME_REPAIR_PR'
