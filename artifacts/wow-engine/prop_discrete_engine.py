@@ -12,8 +12,11 @@ execution. ``can_execute`` remains false at every boundary.
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
+import logging
 from math import isfinite
+from time import perf_counter
 from typing import Any, Callable, Mapping, Optional
 
 from ledger import PredictionRow, determine_publishability
@@ -25,6 +28,29 @@ from prop_fitted_provider import CertifiedInference, ResolvedArtifact, infer_cer
 PROP_PROVIDER_IDENTITY = "WOW_PROP_FITTED_MODEL_V1"
 PROP_MARKET_TYPE = "PROP_DISCRETE_PMF"
 PROP_CALIBRATION_COHORT_VERSION = "PROP_V1"
+
+_LOG = logging.getLogger("wow.v17.prop_model.stage")
+
+
+@contextmanager
+def _model_stage_timer(stage: str):
+    """Emit non-secret timing without changing scorer failure semantics."""
+    started = perf_counter()
+    try:
+        yield
+    except Exception:
+        _LOG.warning(
+            "WOW_V17_PROP_MODEL_STAGE stage=%s status=FAILED stage_ms=%.3f can_execute=false",
+            stage,
+            (perf_counter() - started) * 1000.0,
+        )
+        raise
+    else:
+        _LOG.warning(
+            "WOW_V17_PROP_MODEL_STAGE stage=%s status=PASS stage_ms=%.3f can_execute=false",
+            stage,
+            (perf_counter() - started) * 1000.0,
+        )
 
 
 def prop_calibration_parent_cohort(request: PropInferenceRequest, artifact: ResolvedArtifact) -> str:
@@ -195,12 +221,13 @@ def score_discrete_prop_end_to_end(
     certified bundle's immutable ``calibrator_version``. Market data is
     retained only as comparison evidence with zero sporting-probability weight.
     """
-    inference = infer_fn(
-        client,
-        request=request,
-        line=line,
-        features=features,
-    )
+    with _model_stage_timer("fitted_inference"):
+        inference = infer_fn(
+            client,
+            request=request,
+            line=line,
+            features=features,
+        )
     if not isinstance(inference, CertifiedInference):
         raise PropCalibrationUnavailable(
             "PROP_CERTIFIED_INFERENCE_INVALID",
@@ -214,9 +241,11 @@ def score_discrete_prop_end_to_end(
             f"Certified provider abstained for this candidate: {reasons}",
         )
 
-    line_probs = derive_line_probabilities(distribution, line)
-    raw_probability = _directional_probability(line_probs, direction)
-    calibration = _calibrate(inference, raw_probability, line_probs, features, seed)
+    with _model_stage_timer("line_probability"):
+        line_probs = derive_line_probabilities(distribution, line)
+        raw_probability = _directional_probability(line_probs, direction)
+    with _model_stage_timer("calibration_bounds"):
+        calibration = _calibrate(inference, raw_probability, line_probs, features, seed)
 
     market_prior = resolve_market_prior(direction, market_side_a, market_side_b, as_of=request.as_of_timestamp)
     artifact = inference.artifact

@@ -9,8 +9,11 @@ false unconditionally.
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from hashlib import sha256
+import logging
+from time import perf_counter
 from typing import Any, Optional
 import uuid
 
@@ -63,6 +66,29 @@ prop_calibration_adapters.register()
 
 
 PROP_FEATURE_SCHEMA_VERSION = "PROP_FEATURES_V1"
+
+_SCORE_STAGE_LOG = logging.getLogger("wow.v17.prop_score.stage")
+
+
+@contextmanager
+def _score_stage_timer(stage: str, *, sport: str, stat_type: str, direction: str):
+    """Time one scorer stage without logging player/market payloads or changing errors."""
+    started = perf_counter()
+    try:
+        yield
+    except Exception:
+        _SCORE_STAGE_LOG.warning(
+            "WOW_V17_PROP_SCORE_STAGE sport=%s stat_type=%s direction=%s stage=%s status=FAILED stage_ms=%.3f can_execute=false",
+            str(sport).upper(), str(stat_type).upper(), str(direction).upper(), stage,
+            (perf_counter() - started) * 1000.0,
+        )
+        raise
+    else:
+        _SCORE_STAGE_LOG.warning(
+            "WOW_V17_PROP_SCORE_STAGE sport=%s stat_type=%s direction=%s stage=%s status=PASS stage_ms=%.3f can_execute=false",
+            str(sport).upper(), str(stat_type).upper(), str(direction).upper(), stage,
+            (perf_counter() - started) * 1000.0,
+        )
 
 
 class MarketQuoteInput(BaseModel):
@@ -751,19 +777,21 @@ def score_prop(
     x_wow_model_identity: Optional[str] = Header(default=None, alias="X-WOW-Model-Identity"),
 ):
     """Governed player-prop scoring with explicit objective separation."""
-    model_identity = prod._reject_llp_prop_identity(x_wow_model_identity)
-    lane = prod._runtime_capability(prod.PROP_CAPABILITY_KEY)
-    specialist, route_artifact = _preflight_prop_route(
-        req,
-        model_identity=model_identity,
-        lane=lane,
-    )
+    with _score_stage_timer("route_preflight", sport=req.sport, stat_type=req.stat_type, direction=req.direction):
+        model_identity = prod._reject_llp_prop_identity(x_wow_model_identity)
+        lane = prod._runtime_capability(prod.PROP_CAPABILITY_KEY)
+        specialist, route_artifact = _preflight_prop_route(
+            req,
+            model_identity=model_identity,
+            lane=lane,
+        )
 
-    evidence = repair_prop_evidence(
-        req,
-        primary_fetch=prod._prop_evidence,
-        client=prod.get_client(),
-    )
+    with _score_stage_timer("evidence_revalidation", sport=req.sport, stat_type=req.stat_type, direction=req.direction):
+        evidence = repair_prop_evidence(
+            req,
+            primary_fetch=prod._prop_evidence,
+            client=prod.get_client(),
+        )
     if evidence.get("ok") is not True or evidence.get("code") != "PROP_EVIDENCE_READY":
         detail = dict(evidence)
         detail.setdefault("code", "RUN_INVALID_ACQUISITION_INCOMPLETE")
@@ -779,62 +807,64 @@ def score_prop(
     scored_at = datetime.now(timezone.utc).isoformat()
     inference_request = _server_owned_inference_request(req, evidence, scored_at)
     effective_snapshot_id = str(evidence.get("source_snapshot_id") or req.source_snapshot_id)
-    raw_market_a = _to_market_quote(req.market_side_a)
-    raw_market_b = _to_market_quote(req.market_side_b)
-    observed_rule = _to_settlement_rule(req.settlement_rule)
+    with _score_stage_timer("market_settlement_resolution", sport=req.sport, stat_type=req.stat_type, direction=req.direction):
+        raw_market_a = _to_market_quote(req.market_side_a)
+        raw_market_b = _to_market_quote(req.market_side_b)
+        observed_rule = _to_settlement_rule(req.settlement_rule)
 
-    provider_candidates = [
-        normalize_provider(req.settlement_provider),
-        normalize_provider(getattr(raw_market_a, "provider", None)),
-        normalize_provider(getattr(raw_market_b, "provider", None)),
-    ]
-    provider_set = {value for value in provider_candidates if value}
-    if len(provider_set) > 1:
-        settlement_resolution = SettlementRuleResolution(
-            status="HOLD", blocker=SETTLEMENT_RULE_CONFLICT, rule=None,
-            authority=None, provider=None, rule_id=None, rule_version=None,
-            source_ref=None, source_hash=None, money_semantics=None,
-            observed_rule_status="NOT_EVALUATED_PROVIDER_CONFLICT", can_execute=False,
-        )
-    else:
-        settlement_resolution = resolve_prop_settlement_rule(
-            client=prod.get_client(),
-            provider=next(iter(provider_set), None),
-            sport=req.sport,
-            stat_type=req.stat_type,
+        provider_candidates = [
+            normalize_provider(req.settlement_provider),
+            normalize_provider(getattr(raw_market_a, "provider", None)),
+            normalize_provider(getattr(raw_market_b, "provider", None)),
+        ]
+        provider_set = {value for value in provider_candidates if value}
+        if len(provider_set) > 1:
+            settlement_resolution = SettlementRuleResolution(
+                status="HOLD", blocker=SETTLEMENT_RULE_CONFLICT, rule=None,
+                authority=None, provider=None, rule_id=None, rule_version=None,
+                source_ref=None, source_hash=None, money_semantics=None,
+                observed_rule_status="NOT_EVALUATED_PROVIDER_CONFLICT", can_execute=False,
+            )
+        else:
+            settlement_resolution = resolve_prop_settlement_rule(
+                client=prod.get_client(),
+                provider=next(iter(provider_set), None),
+                sport=req.sport,
+                stat_type=req.stat_type,
+                period=_prop_period(req.stat_type),
+                direction=req.direction,
+                event_start_time=req.event_start_time,
+                observed_rule=observed_rule,
+            )
+        settlement_rule = settlement_resolution.rule
+        market_audit = audit_candidate_market(
+            event_id=req.event_id,
+            participant=str(evidence.get("player") or req.player),
+            stat=req.stat_type,
             period=_prop_period(req.stat_type),
-            direction=req.direction,
-            event_start_time=req.event_start_time,
-            observed_rule=observed_rule,
-        )
-    settlement_rule = settlement_resolution.rule
-    market_audit = audit_candidate_market(
-        event_id=req.event_id,
-        participant=str(evidence.get("player") or req.player),
-        stat=req.stat_type,
-        period=_prop_period(req.stat_type),
-        line=req.line,
-        settlement_rule=settlement_rule,
-        side_a=raw_market_a,
-        side_b=raw_market_b,
-        # Exact line matching is server-owned. No caller may widen tolerance.
-        line_tolerance=0.0,
-    )
-    try:
-        result = score_discrete_prop_end_to_end(
-            client=prod.get_client(),
-            request=inference_request,
-            event_start_time=req.event_start_time,
-            player=str(evidence.get("player") or req.player),
             line=req.line,
-            direction=req.direction,
-            source_snapshot_id=effective_snapshot_id,
-            features=_model_features(evidence),
-            seed=req.seed,
-            money_lane_status=req.money_lane_status,
-            market_side_a=market_audit.side_a,
-            market_side_b=market_audit.side_b,
+            settlement_rule=settlement_rule,
+            side_a=raw_market_a,
+            side_b=raw_market_b,
+            # Exact line matching is server-owned. No caller may widen tolerance.
+            line_tolerance=0.0,
         )
+    try:
+        with _score_stage_timer("fitted_model_pipeline", sport=req.sport, stat_type=req.stat_type, direction=req.direction):
+            result = score_discrete_prop_end_to_end(
+                client=prod.get_client(),
+                request=inference_request,
+                event_start_time=req.event_start_time,
+                player=str(evidence.get("player") or req.player),
+                line=req.line,
+                direction=req.direction,
+                source_snapshot_id=effective_snapshot_id,
+                features=_model_features(evidence),
+                seed=req.seed,
+                money_lane_status=req.money_lane_status,
+                market_side_a=market_audit.side_a,
+                market_side_b=market_audit.side_b,
+            )
     except (PropFittedProviderUnavailable, PropDistributionContractError, PropCalibrationUnavailable) as exc:
         _raise_model_path_error(exc)
 
@@ -850,7 +880,8 @@ def score_prop(
             },
         )
 
-    persisted = prod.base_api._persist_fn(result.row)
+    with _score_stage_timer("prediction_persistence", sport=req.sport, stat_type=req.stat_type, direction=req.direction):
+        persisted = prod.base_api._persist_fn(result.row)
     if not isinstance(persisted, dict) or not persisted.get("prediction_id"):
         raise HTTPException(
             status_code=500,
@@ -861,19 +892,22 @@ def score_prop(
             },
         )
 
-    market_lane = _market_lane_with_audit(result.row, market_audit)
-    settlement_lane = _settlement_lane(result.row, req, settlement_rule, settlement_resolution, market_audit.side_a, market_audit.side_b)
-    money_lane = _effective_money_lane(result.row, settlement_lane)
-    market_lane, settlement_lane, money_lane, arithmetic_audit = _apply_wolfram_arithmetic_gate(
-        row=result.row,
-        direction=req.direction,
-        market_audit=market_audit,
-        market_lane=market_lane,
-        settlement_lane=settlement_lane,
-        money_lane=money_lane,
-        prediction_id=str(persisted["prediction_id"]),
-    )
-    probability_qualification = _probability_qualification(result.row, market_lane, money_lane, settlement_lane)
+    with _score_stage_timer("settlement_market_lanes", sport=req.sport, stat_type=req.stat_type, direction=req.direction):
+        market_lane = _market_lane_with_audit(result.row, market_audit)
+        settlement_lane = _settlement_lane(result.row, req, settlement_rule, settlement_resolution, market_audit.side_a, market_audit.side_b)
+        money_lane = _effective_money_lane(result.row, settlement_lane)
+    with _score_stage_timer("arithmetic_audit", sport=req.sport, stat_type=req.stat_type, direction=req.direction):
+        market_lane, settlement_lane, money_lane, arithmetic_audit = _apply_wolfram_arithmetic_gate(
+            row=result.row,
+            direction=req.direction,
+            market_audit=market_audit,
+            market_lane=market_lane,
+            settlement_lane=settlement_lane,
+            money_lane=money_lane,
+            prediction_id=str(persisted["prediction_id"]),
+        )
+    with _score_stage_timer("probability_qualification", sport=req.sport, stat_type=req.stat_type, direction=req.direction):
+        probability_qualification = _probability_qualification(result.row, market_lane, money_lane, settlement_lane)
     return {
         "ok": True,
         "prediction": persisted,

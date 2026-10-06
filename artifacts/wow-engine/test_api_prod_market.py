@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import os
 import uuid
 
+import pytest
 from fastapi.testclient import TestClient
 
 import api_prod_market
@@ -463,3 +464,41 @@ def test_discrete_model_evidence_defaults_failure_path_evidence_to_empty():
     )
     evidence = api_prod_market._discrete_model_evidence(result)
     assert evidence["failure_path_evidence"] == {}
+
+
+def test_score_stage_timer_preserves_exception_and_redacts_payload(caplog):
+    secret = "DO_NOT_LOG_PLAYER_OR_MARKET_PAYLOAD"
+    with pytest.raises(RuntimeError, match=secret):
+        with api_prod_market._score_stage_timer(
+            "evidence_revalidation",
+            sport="NFL",
+            stat_type="RUSHING_YARDS",
+            direction="MORE",
+        ):
+            raise RuntimeError(secret)
+
+    log_text = "\n".join(record.getMessage() for record in caplog.records)
+    assert "WOW_V17_PROP_SCORE_STAGE" in log_text
+    assert "sport=NFL" in log_text
+    assert "stat_type=RUSHING_YARDS" in log_text
+    assert "direction=MORE" in log_text
+    assert "stage=evidence_revalidation" in log_text
+    assert "status=FAILED" in log_text
+    assert "can_execute=false" in log_text
+    assert secret not in log_text
+
+
+def test_score_stage_timer_success_is_timing_only(caplog):
+    with api_prod_market._score_stage_timer(
+        "prediction_persistence",
+        sport="NFL",
+        stat_type="RUSHING_YARDS",
+        direction="LESS",
+    ):
+        prediction_id = "private-prediction-id"
+    assert prediction_id
+
+    log_text = "\n".join(record.getMessage() for record in caplog.records)
+    assert "stage=prediction_persistence" in log_text
+    assert "status=PASS" in log_text
+    assert "private-prediction-id" not in log_text
