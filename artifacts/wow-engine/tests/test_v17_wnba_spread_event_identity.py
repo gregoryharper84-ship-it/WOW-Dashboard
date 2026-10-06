@@ -104,3 +104,52 @@ def test_resolver_fails_closed_when_espn_alias_has_no_official_wnba_match():
             ),
         )
     assert exc.value.code == "WNBA_SPREAD_FORWARD_CANONICAL_EVENT_NOT_FOUND"
+
+
+def test_resolver_fails_closed_when_official_schedule_source_is_unavailable():
+    target = (datetime.now(timezone.utc) + timedelta(days=3)).replace(microsecond=0)
+    event = _event(target.isoformat().replace("+00:00", "Z"))
+
+    def official_down(*_args, **_kwargs):
+        raise RuntimeError("official source unavailable")
+
+    with pytest.raises(SpreadChallengerUnavailable) as exc:
+        resolve_wnba_current_event_identity(
+            event_id="espn-401999999",
+            event_start_time=target.isoformat(),
+            home_team_id="espn-11",
+            away_team_id="espn-17",
+            fetcher=lambda *_a, **_k: _Resp(event),
+            official_fetcher=official_down,
+        )
+    assert exc.value.code == "WNBA_SPREAD_FORWARD_CANONICAL_SOURCE_UNAVAILABLE"
+
+
+def test_resolver_fails_closed_when_official_identity_is_ambiguous():
+    target = (datetime.now(timezone.utc) + timedelta(days=3)).replace(microsecond=0)
+    event = _event(target.isoformat().replace("+00:00", "Z"))
+    official_time = target.isoformat().replace("+00:00", "Z")
+
+    class _AmbiguousOfficialResp:
+        status_code = 200
+        def json(self):
+            game = {
+                "gameId": "1042600999",
+                "gameDateTimeUTC": official_time,
+                "gameStatus": 1,
+                "homeTeam": {"teamId": "1611661317", "teamTricode": "PHX"},
+                "awayTeam": {"teamId": "1611661319", "teamTricode": "LVA"},
+            }
+            duplicate = {**game, "gameId": "1042601000"}
+            return {"leagueSchedule": {"gameDates": [{"games": [game, duplicate]}]}}
+
+    with pytest.raises(SpreadChallengerUnavailable) as exc:
+        resolve_wnba_current_event_identity(
+            event_id="espn-401999999",
+            event_start_time=target.isoformat(),
+            home_team_id="espn-11",
+            away_team_id="espn-17",
+            fetcher=lambda *_a, **_k: _Resp(event),
+            official_fetcher=lambda *_a, **_k: _AmbiguousOfficialResp(),
+        )
+    assert exc.value.code == "WNBA_SPREAD_FORWARD_CANONICAL_IDENTITY_AMBIGUOUS"

@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
-import requests
+import httpx
 
 from basketball_event_hydration_runtime import ESPN_BASE_URLS, _espn_competitors
 from v17.spread_margin_challenger import SpreadChallengerUnavailable, _dt
@@ -174,7 +174,7 @@ def _canonical_official_event_for_espn_alias(
 
 def resolve_wnba_current_event_identity(*, event_id: str, event_start_time: str,
                                         home_team_id: str, away_team_id: str,
-                                        fetcher: Callable[..., Any] = requests.get,
+                                        fetcher: Callable[..., Any] = httpx.get,
                                         official_fetcher: Callable[..., Any] | None = None) -> dict[str, Any]:
     if str(event_id).startswith("wnba-stats-"):
         return _resolve_wnba_stats_event_identity(
