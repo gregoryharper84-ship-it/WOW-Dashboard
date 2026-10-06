@@ -104,16 +104,38 @@ jobs:
             printf '[]\n' > "$work/verification-receipts.json"
             if [ "$reliability_version" = "WOW_ENGINEERING_RELIABILITY_V1" ]; then
               artifact_name="wow-v17-verification-receipt-$merge_sha"
-              artifact_id=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/artifacts?name=${artifact_name}&per_page=100" \
-                --jq '[.artifacts[] | select(.expired == false)] | sort_by(.created_at) | reverse | first | .id // empty')
-              if [ -n "$artifact_id" ]; then
+              artifacts=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/artifacts?name=${artifact_name}&per_page=100")
+              artifact_id=$(jq -r '[.artifacts[] | select(.expired == false)] | sort_by(.created_at) | reverse | first | .id // empty' <<<"$artifacts")
+              artifact_run_id=$(jq -r '[.artifacts[] | select(.expired == false)] | sort_by(.created_at) | reverse | first | .workflow_run.id // empty' <<<"$artifacts")
+              if [ -n "$artifact_id" ] && [ -n "$artifact_run_id" ]; then
                 gh api "/repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}/zip" > "$work/reliability.zip"
                 if unzip -p "$work/reliability.zip" verification-receipt.json > "$work/verification-receipt.json" 2>/dev/null && \
                    unzip -p "$work/reliability.zip" audit-persistence.json > "$work/audit-persistence.json" 2>/dev/null; then
+                  receipt_run_id=$(jq -r '.sentinel_workflow_run_id // ""' "$work/verification-receipt.json")
+                  receipt_workflow=$(jq -r '.sentinel_workflow // ""' "$work/verification-receipt.json")
+                  run_json=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/runs/${artifact_run_id}")
+                  run_name=$(jq -r '.name // ""' <<<"$run_json")
+                  run_path=$(jq -r '.path // ""' <<<"$run_json")
+                  run_event=$(jq -r '.event // ""' <<<"$run_json")
+                  run_branch=$(jq -r '.head_branch // ""' <<<"$run_json")
+                  run_status=$(jq -r '.status // ""' <<<"$run_json")
+                  run_conclusion=$(jq -r '.conclusion // ""' <<<"$run_json")
+                  trusted_artifact=false
+                  if [ "$receipt_run_id" = "$artifact_run_id" ] && \
+                     [ "$receipt_workflow" = "wow-v17-release-production-verification-agent" ] && \
+                     [ "$run_name" = "wow-v17-release-production-verification-agent" ] && \
+                     [ "$run_path" = ".github/workflows/wow-v17-release-production-verification-agent.yml" ] && \
+                     [ "$run_event" = "workflow_dispatch" ] && \
+                     [ "$run_branch" = "main" ] && \
+                     [ "$run_status" = "completed" ] && \
+                     [ "$run_conclusion" = "success" ]; then
+                    trusted_artifact=true
+                  fi
                   receipt_sig=$(jq -r '.sentinel_signature // ""' "$work/verification-receipt.json")
                   persisted_sig=$(jq -r '.sentinel_signature // ""' "$work/audit-persistence.json")
                   persisted_status=$(jq -r '.status // ""' "$work/audit-persistence.json")
-                  if [ "$receipt_sig" = "$persisted_sig" ] && \
+                  if [ "$trusted_artifact" = "true" ] && \
+                     [ "$receipt_sig" = "$persisted_sig" ] && \
                      { [ "$persisted_status" = "PERSISTED" ] || [ "$persisted_status" = "ALREADY_PERSISTED" ]; }; then
                     jq -s '.' "$work/verification-receipt.json" > "$work/verification-receipts.json"
                   fi
