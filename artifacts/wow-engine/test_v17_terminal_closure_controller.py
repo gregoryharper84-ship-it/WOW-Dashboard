@@ -322,14 +322,7 @@ def test_multiscout_push_contract_run_cannot_satisfy_terminal_acceptance():
 
 def test_multiscout_workflow_run_can_satisfy_terminal_acceptance():
     state = _base_state()
-    state["pr_comments"] = [{
-        "body": (
-            "## Release / Production Verification Agent\n"
-            "~~~json\n"
-            '{"status":"PRODUCTION_VERIFIED","production_sha":"prod456"}'
-            "\n~~~"
-        )
-    }]
+    state["pr_comments"] = [_release_comment()]
     state["runs"] = [{
         "id": 588,
         "name": "wow-v17-nightly-multiscout",
