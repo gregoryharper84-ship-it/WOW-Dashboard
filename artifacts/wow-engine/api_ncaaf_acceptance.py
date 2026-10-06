@@ -39,6 +39,7 @@ from v17.core_intelligence_event_runtime import install_core_intelligence_event_
 from v17.core_intelligence_runtime import install_core_intelligence_routes
 from v17.spread_forward_shadow import warm_ncaaf_forward_context
 from v17.scout_handoff_queue_installer import schedule_scout_handoff_queue
+from v17.reliability_http import install_reliability_headers
 from v17.core_intelligence_shadow_runtime import install_shadow_lab_routes
 from v17.team_event_probability_preservation import (
     install_team_event_routes as install_v17_team_event_routes,
@@ -50,6 +51,7 @@ from v17_observability import initialize_observability
 
 OBSERVABILITY = initialize_observability()
 app = base.app
+install_reliability_headers(app)
 _auth = Depends(base.market_api.prod._require_action_api_key)
 _spread_forward_auth = scout_route_auth_dependency(_auth)
 _logger = logging.getLogger("wow.ncaaf.readiness")
