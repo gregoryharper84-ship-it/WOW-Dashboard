@@ -7,7 +7,7 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException
 
-from github_actions_oidc import scout_route_auth_dependency
+from github_actions_oidc import release_receipt_route_auth_dependency
 from v17.receipt_schema import VerificationReceipt, validate_terminal_receipt
 
 TABLE = "wow_v17_reliability_receipts"
@@ -48,7 +48,7 @@ def _header_value(raw_headers: bytes, name: str) -> str:
     return ""
 
 
-def _persist(db: Any, payload: dict[str, Any]) -> dict[str, Any]:
+def _persist(db: Any, payload: dict[str, Any], *, auth_claims: dict[str, Any]) -> dict[str, Any]:
     receipt_payload = payload.get("receipt")
     if not isinstance(receipt_payload, dict):
         raise HTTPException(
@@ -74,6 +74,18 @@ def _persist(db: Any, payload: dict[str, Any]) -> dict[str, Any]:
         raise HTTPException(
             status_code=400,
             detail={"code": "INVALID_RECEIPT_SCHEMA", "errors": errors, "can_execute": False},
+        )
+
+    auth_errors: list[str] = []
+    if receipt.sentinel_workflow != "wow-v17-release-production-verification-agent":
+        auth_errors.append("SENTINEL_WORKFLOW_IDENTITY_MISMATCH")
+    claim_run_id = str(auth_claims.get("run_id") or "").strip()
+    if not claim_run_id.isdigit() or int(claim_run_id) != receipt.sentinel_workflow_run_id:
+        auth_errors.append("SENTINEL_WORKFLOW_RUN_ID_MISMATCH")
+    if auth_errors:
+        raise HTTPException(
+            status_code=401,
+            detail={"code": "RECEIPT_OIDC_BINDING_MISMATCH", "errors": auth_errors, "can_execute": False},
         )
 
     response_bytes = _decode_evidence(payload, "raw_response_body_base64")
@@ -146,21 +158,21 @@ def _persist(db: Any, payload: dict[str, Any]) -> dict[str, Any]:
 def install_reliability_receipt_routes(
     app: FastAPI,
     *,
-    auth_dependency: Any,
     db_client_fn: Any,
 ) -> None:
-    dependency = scout_route_auth_dependency(auth_dependency)
     routes = {getattr(route, "path", None) for route in app.router.routes}
     if "/internal/v17/reliability-receipts" in routes:
         return
 
     @app.post(
         "/internal/v17/reliability-receipts",
-        dependencies=[dependency],
         operation_id="persistWowV17ReliabilityReceipt",
     )
-    def persist_reliability_receipt(payload: dict[str, Any]) -> dict[str, Any]:
-        return _persist(db_client_fn(), payload)
+    def persist_reliability_receipt(
+        payload: dict[str, Any],
+        auth_claims: dict[str, Any] = release_receipt_route_auth_dependency(),
+    ) -> dict[str, Any]:
+        return _persist(db_client_fn(), payload, auth_claims=auth_claims)
 
 
 __all__ = ["CAN_EXECUTE", "MAX_EVIDENCE_BYTES", "TABLE", "install_reliability_receipt_routes"]
