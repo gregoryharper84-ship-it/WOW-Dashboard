@@ -56,6 +56,7 @@ def _req(sport):
 
 def _mlb_payload():
     return {
+        "gamePk": 777,
         "gameData": {
             "status": {"abstractGameState": "Live", "detailedState": "In Progress"},
             "teams": {
@@ -81,6 +82,7 @@ def _nfl_payload():
     return {
         "header": {
             "competitions": [{
+                "id": "777",
                 "status": {
                     "period": 3,
                     "displayClock": "08:41",
@@ -181,6 +183,44 @@ def test_capture_rejects_non_live_event():
         assert exc.http_status == 409
     else:
         raise AssertionError("final event should fail closed")
+
+
+def test_capture_rejects_mlb_provider_event_identity_mismatch():
+    payload = _mlb_payload()
+    payload["gamePk"] = 778
+    try:
+        capture_live_event_state(_req("MLB"), _DB(), http_get=lambda *_a, **_k: _Response(payload))
+    except LiveStateCaptureError as exc:
+        assert exc.code == "LIVE_EVENT_IDENTITY_CONFLICT"
+        assert exc.detail["requested_official_event_id"] == "777"
+        assert exc.detail["provider_official_event_id"] == "778"
+    else:
+        raise AssertionError("MLB event-id mismatch should fail closed")
+
+
+def test_capture_rejects_espn_provider_event_identity_mismatch():
+    payload = _nfl_payload()
+    payload["header"]["competitions"][0]["id"] = "778"
+    try:
+        capture_live_event_state(_req("NFL"), _DB(), http_get=lambda *_a, **_k: _Response(payload))
+    except LiveStateCaptureError as exc:
+        assert exc.code == "LIVE_EVENT_IDENTITY_CONFLICT"
+        assert exc.detail["requested_official_event_id"] == "777"
+        assert exc.detail["provider_official_event_id"] == "778"
+    else:
+        raise AssertionError("ESPN event-id mismatch should fail closed")
+
+
+def test_capture_rejects_missing_provider_event_identity():
+    payload = _nfl_payload()
+    payload["header"]["competitions"][0].pop("id")
+    try:
+        capture_live_event_state(_req("NFL"), _DB(), http_get=lambda *_a, **_k: _Response(payload))
+    except LiveStateCaptureError as exc:
+        assert exc.code == "LIVE_STATE_PROVIDER_PAYLOAD_INVALID"
+        assert exc.http_status == 502
+    else:
+        raise AssertionError("missing provider event identity should fail closed")
 
 
 def test_capture_rejects_provider_team_identity_mismatch():
