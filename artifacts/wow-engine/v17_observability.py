@@ -15,7 +15,10 @@ from typing import Any
 from fastapi import Depends
 
 from v17.action_invocation_telemetry import install_action_invocation_middleware
-from v17.interactive_latency_telemetry import install_interactive_latency_middleware
+from v17.interactive_latency_telemetry import (
+    install_interactive_latency_diagnostics_route,
+    install_interactive_latency_middleware,
+)
 from v17.interactive_pick_hydration import schedule_interactive_pick_hydration_install
 from v17.interactive_pick_parallel import schedule_interactive_pick_parallel_install
 from v17.interactive_team_event_io import install_interactive_team_event_io
@@ -137,6 +140,10 @@ def initialize_observability() -> dict[str, Any]:
             event_api=_accepted_base.market_api.prod.event_api,
         )
         install_interactive_latency_middleware(_accepted_base.app)
+        install_interactive_latency_diagnostics_route(
+            _accepted_base.app,
+            existing_auth_dependency=_accepted_base.market_api.prod._require_action_api_key,
+        )
         install_action_invocation_middleware(
             _accepted_base.app,
             db_client_fn=_accepted_base.market_api.prod.get_client,
