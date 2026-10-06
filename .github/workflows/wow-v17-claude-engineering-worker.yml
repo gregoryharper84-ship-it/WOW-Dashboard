@@ -30,7 +30,7 @@ permissions:
   issues: write
 
 concurrency:
-  group: wow-v17-engineering-domain-${{ inputs.lease_group || 'GLOBAL' }}
+  group: wow-v17-engineering-mutation
   cancel-in-progress: false
 
 jobs:
@@ -73,18 +73,22 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p artifacts/wow-engine/v17/.agent-handoff
-          gh issue list \
-            --repo "$GITHUB_REPOSITORY" \
-            --state open \
-            --limit 200 \
-            --json number,title,body,state,updatedAt \
+          gh api --paginate --slurp "/repos/${GITHUB_REPOSITORY}/issues?state=open&per_page=100" \
+            --jq 'add | map(select(.pull_request == null)) | map({number,title,body,state,updatedAt:.updated_at})' \
             > "$RUNNER_TEMP/wow-open-issues.json"
           python artifacts/wow-engine/v17/engineering_dispatch_queue.py build \
             --manifest artifacts/wow-engine/v17/engineering_dispatch_manifest.json \
             --issues "$RUNNER_TEMP/wow-open-issues.json" \
             --output "$RUNNER_TEMP/wow-dispatch-queue.json" \
             > /dev/null
+          capacity=$(python artifacts/wow-engine/v17/engineering_agent_team.py capacity-plan \
+            --ledger "$RUNNER_TEMP/wow-dispatch-queue.json" --support-limit 6)
+          global_owner=$(jq -r '.mutation_owner.incident_id // ""' <<<"$capacity")
           if [ -n "${TARGET_INCIDENT:-}" ]; then
+            [ "$TARGET_INCIDENT" = "$global_owner" ] || {
+              echo "TARGET_INCIDENT_NOT_GLOBAL_OWNER:$TARGET_INCIDENT:$global_owner" >&2
+              exit 1
+            }
             record=$(jq -c --arg id "$TARGET_INCIDENT" '[.records[] | select(.incident_id == $id)] | first // empty' "$RUNNER_TEMP/wow-dispatch-queue.json")
             [ -n "$record" ] || { echo "TARGET_INCIDENT_NOT_ACTIONABLE:$TARGET_INCIDENT" >&2; exit 1; }
             severity=$(jq -r '.severity' <<<"$record")
@@ -103,10 +107,8 @@ jobs:
               terminal_authority:"V17_TERMINAL_REDUCER"
             }')
           else
-            jq '.records |= map(select(.severity != "P0" or .execution_lane != "RAPID"))' \
-              "$RUNNER_TEMP/wow-dispatch-queue.json" > "$RUNNER_TEMP/wow-standard-dispatch-queue.json"
             decision=$(python artifacts/wow-engine/v17/engineering_agent_team.py dual-priority \
-              --ledger "$RUNNER_TEMP/wow-standard-dispatch-queue.json")
+              --ledger "$RUNNER_TEMP/wow-dispatch-queue.json")
           fi
           cp "$RUNNER_TEMP/wow-dispatch-queue.json" artifacts/wow-engine/v17/.agent-handoff/dispatch-queue.json
           printf '%s\n' "$decision" > artifacts/wow-engine/v17/.agent-handoff/dispatch.json
