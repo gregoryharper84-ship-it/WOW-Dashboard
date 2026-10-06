@@ -37,7 +37,7 @@ _ACCEPTANCE_RE = re.compile(
     r"(?im)^Morning-Green-Acceptance-Workflow:\s*(?P<workflow>[^\s]+)\s*$"
 )
 _RELIABILITY_RE = re.compile(
-    r"(?im)^Reliability-Receipt-Version:\\s*(?P<version>[^\\s]+)\\s*$"
+    r"(?im)^Reliability-Receipt-Version:\s*(?P<version>[^\s]+)\s*$"
 )
 _JSON_BLOCK_RE = re.compile(r"~~~json\s*(\{.*?\})\s*~~~", re.DOTALL)
 
