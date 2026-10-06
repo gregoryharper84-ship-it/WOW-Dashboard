@@ -17,8 +17,8 @@ def _release_comment(*, production_sha: str = MERGE, author: str = "github-actio
         "user": {"login": author},
         "body": (
             "## Release / Production Verification Agent\n\n"
-            f"- governed_pr_head_sha: \`head123\`\n"
-            f"- protected_main_merge_sha: \`{MERGE}\`\n\n"
+            f"- governed_pr_head_sha: `head123`\n"
+            f"- protected_main_merge_sha: `{MERGE}`\n\n"
             "~~~json\n"
             f'{{"status":"PRODUCTION_VERIFIED","production_sha":"{production_sha}",'
             f'"main_sha":"{MERGE}","acceptance":"PASS","reconciliation":"PASS",'
@@ -380,7 +380,7 @@ def test_untrusted_terminal_receipt_cannot_short_circuit_closure():
         "user": {"login": "untrusted-user"},
         "body": (
             f"{TERMINAL_RECEIPT_HEADING}\n"
-            f"- **Commit SHA:** \`{MERGE}\`\n"
+            f"- **Commit SHA:** `{MERGE}`\n"
             "- **Status:** **FIXED_AND_VERIFIED**"
         ),
     }]

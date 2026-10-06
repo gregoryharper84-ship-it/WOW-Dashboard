@@ -89,7 +89,7 @@ def _has_terminal_receipt(
     comments: list[dict[str, Any]],
     merge_sha: str,
 ) -> bool:
-    exact_commit = f"- **Commit SHA:** \`{merge_sha}\`"
+    exact_commit = f"- **Commit SHA:** `{merge_sha}`"
     for item in comments:
         if not isinstance(item, dict) or not _trusted_comment(item):
             continue
@@ -109,7 +109,7 @@ def _release_payloads(
     merge_sha: str,
 ) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
-    exact_merge_marker = f"- protected_main_merge_sha: \`{merge_sha}\`"
+    exact_merge_marker = f"- protected_main_merge_sha: `{merge_sha}`"
     for item in comments:
         if not isinstance(item, dict) or not _trusted_comment(item):
             continue
