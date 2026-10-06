@@ -205,3 +205,44 @@ def install_interactive_latency_middleware(app: Any) -> None:
             )
 
     app.state.wow_interactive_latency_installed = True
+
+
+def latency_diagnostics_snapshot() -> dict[str, Any]:
+    """Return bounded aggregate latency diagnostics with no request payload data."""
+    rows = latency_percentiles()
+    return {
+        "status": "INTERACTIVE_LATENCY_SNAPSHOT",
+        "route_sport_buckets": rows,
+        "bucket_count": len(rows),
+        "sample_count": sum(int(row.get("samples") or 0) for row in rows),
+        "max_samples_per_bucket": _MAX_SAMPLES_PER_KEY,
+        "max_buckets": _MAX_KEYS + 1,
+        "probability_publishable": False,
+        "terminal_authority": "V17_TERMINAL_REDUCER",
+        "can_execute": False,
+    }
+
+
+def install_interactive_latency_diagnostics_route(
+    app: Any,
+    *,
+    existing_auth_dependency: Any,
+) -> bool:
+    """Install an authenticated read-only percentile snapshot route."""
+    if getattr(app.state, "wow_interactive_latency_diagnostics_installed", False):
+        return True
+
+    from github_actions_oidc import scout_route_auth_dependency
+
+    combined_auth = scout_route_auth_dependency(existing_auth_dependency)
+
+    @app.get(
+        "/internal/v17/interactive-latency",
+        operation_id="getWowV17InteractiveLatencyInternal",
+        dependencies=[combined_auth],
+    )
+    def interactive_latency_diagnostics():
+        return latency_diagnostics_snapshot()
+
+    app.state.wow_interactive_latency_diagnostics_installed = True
+    return True

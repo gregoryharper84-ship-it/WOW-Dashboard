@@ -125,3 +125,71 @@ def test_sample_key_cardinality_is_bounded():
         t._record("/score-prop", {**ctx, "sport": f"s{i}"}, 1.0)
     assert len(t._SAMPLES) <= t._MAX_KEYS + 1
     t.reset_latency_samples()
+
+
+def test_interactive_latency_diagnostics_route_exposes_only_bounded_aggregates():
+    from v17 import interactive_latency_telemetry as t
+
+    t.reset_latency_samples()
+    t._record(
+        "/score-pick-request",
+        {"sport": "mlb", "row_count": "le4", "batch_size": "le4"},
+        125.0,
+    )
+    t._record(
+        "/score-pick-request",
+        {"sport": "mlb", "row_count": "le4", "batch_size": "le4"},
+        225.0,
+    )
+
+    app = FastAPI()
+
+    def allow_test_auth(authorization=None):
+        return None
+
+    assert t.install_interactive_latency_diagnostics_route(
+        app,
+        existing_auth_dependency=allow_test_auth,
+    ) is True
+    assert t.install_interactive_latency_diagnostics_route(
+        app,
+        existing_auth_dependency=allow_test_auth,
+    ) is True
+
+    response = TestClient(app).get("/internal/v17/interactive-latency")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "INTERACTIVE_LATENCY_SNAPSHOT"
+    assert body["sample_count"] == 2
+    assert body["bucket_count"] == 1
+    assert body["probability_publishable"] is False
+    assert body["terminal_authority"] == "V17_TERMINAL_REDUCER"
+    assert body["can_execute"] is False
+    row = body["route_sport_buckets"][0]
+    assert row == {
+        "route": "/score-pick-request",
+        "sport": "mlb",
+        "row_count": "le4",
+        "batch_size": "le4",
+        "samples": 2,
+        "p50_ms": 125.0,
+        "p95_ms": 225.0,
+        "can_execute": False,
+    }
+    assert "probability" not in row
+    assert "request" not in row
+
+
+def test_team_event_request_runtime_wires_current_latency_stage_contract():
+    from pathlib import Path
+
+    runtime = (
+        Path(__file__).resolve().parent / "team_event_request_runtime.py"
+    ).read_text(encoding="utf-8")
+    assert "from v17.interactive_latency_telemetry import annotate_request, stage_timer" in runtime
+    assert 'with stage_timer("hydration"):' in runtime
+    assert runtime.count('with stage_timer("fitted_scoring"):') >= 3
+    assert 'with stage_timer("reconciliation"):' in runtime
+    assert "row_count=len(batch.rows)" in runtime
+    assert "batch_size=len(batch.rows)" in runtime
+    assert '"MIXED" if batch_sports else "UNKNOWN"' in runtime
