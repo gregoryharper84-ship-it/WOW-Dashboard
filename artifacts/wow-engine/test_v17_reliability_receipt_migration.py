@@ -13,3 +13,7 @@ def test_reliability_receipt_ledger_is_append_only_and_fail_closed():
     assert "dry_run_header_present boolean not null check (dry_run_header_present is true)" in text
     assert "can_execute_header_false boolean not null check (can_execute_header_false is true)" in text
     assert "can_execute boolean not null default false check (can_execute is false)" in text
+    assert "raw_response_body_base64 text not null" in text
+    assert "raw_response_headers_base64 text not null" in text
+    assert "execution_trace_base64 text not null" in text
+    assert "sentinel_signature text primary key check" in text
