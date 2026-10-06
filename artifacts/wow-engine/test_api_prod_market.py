@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import os
 import uuid
 
+import pytest
 from fastapi.testclient import TestClient
 
 import api_prod_market
