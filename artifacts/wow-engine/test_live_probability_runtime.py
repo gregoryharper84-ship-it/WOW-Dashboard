@@ -9,6 +9,7 @@ from live_probability_runtime import (
     _apply_calibrator,
     _apply_live_bounds,
     _request_blockers,
+    live_probability_health,
     _score_mlb,
     _server_role_blockers,
     _snapshot_binding_blockers,
@@ -68,6 +69,37 @@ def test_scheduled_event_cannot_enter_live_lane():
     assert "LIVE_EVENT_NOT_IN_PROGRESS" in _request_blockers(
         request(event_status="SCHEDULED"), datetime.now(timezone.utc)
     )
+
+
+
+def test_all_canonical_sports_appear_in_live_health():
+    class FailingDB:
+        def rpc(self, *_a, **_k):
+            raise RuntimeError("no serving state")
+
+    health = live_probability_health(FailingDB())
+    assert set(health["capabilities"]) == {
+        "MLB", "NFL", "NBA", "WNBA", "NCAAF", "NCAAB", "NHL",
+        "SOCCER", "TENNIS", "PGA", "MMA", "BOXING", "CRICKET",
+    }
+    assert health["capabilities"]["PGA"]["blockers"] == ["LIVE_SPORT_MODEL_NOT_CERTIFIED:PGA"]
+    assert health["capabilities"]["CRICKET"]["blockers"] == ["LIVE_SPORT_MODEL_NOT_CERTIFIED:CRICKET"]
+    assert health["can_execute"] is False
+
+
+def test_non_mlb_live_sport_gets_sport_specific_model_blocker_not_mlb_rules():
+    blockers = _request_blockers(
+        request(
+            sport="NBA",
+            league="NBA",
+            settlement_rule="NBA_FULL_GAME_WINNER",
+            market_role="FAVORITE",
+        ),
+        datetime.now(timezone.utc),
+    )
+    assert "LIVE_SPORT_MODEL_NOT_CERTIFIED:NBA" in blockers
+    assert "LIVE_SETTLEMENT_RULE_MISMATCH" not in blockers
+    assert "NOT_CURRENT_LIVE_UNDERDOG" not in blockers
 
 
 def test_settlement_must_be_exact():
