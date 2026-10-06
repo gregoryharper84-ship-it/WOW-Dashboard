@@ -140,6 +140,14 @@ jobs:
         run: |
           python -m pip install -r requirements.txt
           python -m pip install PyJWT
+      - name: Validate production acceptance route registry
+        env:
+          WOW_V17_ACTIVE: "1"
+          WOW_CAN_EXECUTE: "false"
+          WOW_DRY_RUN_ONLY: "true"
+        run: |
+          python v17/generate_acceptance_routes.py --check
+
       - name: Run real Postgres + Redis + PostgREST + Celery integration
         env:
           WOW_AGENT_RUNTIME_INTEGRATION: "1"
