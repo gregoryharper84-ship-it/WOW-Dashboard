@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from v17.nfl_pickem_pool_win_equity_shadow import (
     SHADOW_ELIGIBLE,
     SHADOW_PRESERVE,
@@ -190,8 +192,8 @@ def test_fragile_overowned_near_tossup_can_become_shadow_differentiation_candida
     assert out["status"] == SHADOW_ELIGIBLE
     assert out["production_pool_pick"] == "ARI"
     assert out["shadow_pool_pick"] == "NYG"
-    assert out["expected_correct_sacrifice_if_switched"] == 0.06
-    assert out["ownership_gap"] == 0.50
+    assert out["expected_correct_sacrifice_if_switched"] == pytest.approx(0.06)
+    assert out["ownership_gap"] == pytest.approx(0.50)
     assert out["production_pool_pick_unchanged"] is True
     assert out["automatic_promotion"] is False
     assert out["can_execute"] is False
