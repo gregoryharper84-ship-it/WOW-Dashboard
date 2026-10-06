@@ -59,7 +59,7 @@ jobs:
             printf '%s\n' "${{ github.event.pull_request.number }}" > "$out"
           else
             gh api "/repos/${GITHUB_REPOSITORY}/pulls?state=closed&sort=updated&direction=desc&per_page=50" \
-              --jq '.[] | select(.merged_at != null) | select((((.body // "") | contains("Terminal-Closure-Autonomous: true")) or (((.body // "") | contains("Morning-Green-Autonomous: true")))) | .number' \
+              --jq '.[] | select(.merged_at != null) | select(((.body // "") | contains("Terminal-Closure-Autonomous: true")) or ((.body // "") | contains("Morning-Green-Autonomous: true"))) | .number' \
               > "$out"
           fi
           sort -u "$out" -o "$out"
