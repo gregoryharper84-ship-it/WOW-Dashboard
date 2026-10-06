@@ -104,7 +104,15 @@ GitHub comments are human-readable mirrors, not the only source of truth.
 
 Reliability receipts and raw evidence must be retained as workflow artifacts and, when the governed append-only reliability ledger is available, persisted there. Terminal closure must bind the receipt digest to durable evidence rather than trusting prose.
 
-### 11. Production acceptance and rollback
+### 11. Post-merge acceptance lock
+A production-facing Reliability V1 repair owns the `PROTECTED_MAIN_ACCEPTANCE_LOCK` after merge until one of these occurs:
+- the exact protected-main merge SHA is deployed and the required machine receipt + changed-path acceptance complete;
+- production acceptance fails and the incident enters repair/rollback;
+- the repair is deliberately parked with an exact external blocker.
+
+While this lock is active, lower-priority work may continue on branches, tests, evidence, review, and hygiene, but it may not advance protected main in a way that would prevent exact-SHA production verification. The lock is short-lived and exists only to preserve verifiability, not to serialize unrelated engineering indefinitely.
+
+### 12. Production acceptance and rollback
 A live deployment is necessary but not sufficient.
 
 The Release/Observability lane must:
@@ -115,7 +123,7 @@ The Release/Observability lane must:
 
 Rollback must be deterministic and evidence-gated. A single ambiguous failed probe may not automatically roll back healthy production. Automatic rollback is allowed only when the acceptance failure is attributable to the new deployment under the repository's rollback policy and the prior known-good deployment is proven safe and compatible.
 
-### 12. Terminal reducer
+### 13. Terminal reducer
 For Reliability V1 incidents, `V17_TERMINAL_REDUCER` must reject closure when the machine receipt is absent or invalid. The canonical blocker is:
 `INVALID_RECEIPT_SCHEMA`
 with a more specific subreason retained in evidence.
