@@ -1,5 +1,8 @@
 from pathlib import Path
+import shutil
+import subprocess
 
+import pytest
 import yaml
 
 
@@ -50,3 +53,28 @@ def test_terminal_closure_workflow_supports_legacy_worker_metadata():
     assert "Morning-Green-Autonomous: true" in text
     assert "Incident:" in text
     assert "sed -nE 's/^Incident:" in text
+
+
+def test_terminal_candidate_selector_jq_compiles_and_supports_both_markers():
+    jq = shutil.which("jq")
+    if jq is None:
+        pytest.skip("jq is required by the GitHub Actions runner contract")
+
+    selector = '.[] | select(.merged_at != null) | select(((.body // "") | contains("Terminal-Closure-Autonomous: true")) or ((.body // "") | contains("Morning-Green-Autonomous: true"))) | .number'
+    assert f"--jq '{selector}'" in _text()
+
+    payload = (
+        '[{"number":1,"merged_at":"2026-10-06T00:00:00Z","body":"Terminal-Closure-Autonomous: true"},'
+        '{"number":2,"merged_at":"2026-10-06T00:00:00Z","body":"Morning-Green-Autonomous: true"},'
+        '{"number":3,"merged_at":"2026-10-06T00:00:00Z","body":"no marker"},'
+        '{"number":4,"merged_at":null,"body":"Terminal-Closure-Autonomous: true"}]'
+    )
+    proc = subprocess.run(
+        [jq, "-r", selector],
+        input=payload,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.splitlines() == ["1", "2"]
