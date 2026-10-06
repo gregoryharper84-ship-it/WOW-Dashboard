@@ -57,7 +57,8 @@ def test_24h_loop_prioritizes_product_reliability_before_model_improvement() -> 
 def test_continuation_selector_never_hands_off_draft_prs() -> None:
     text = _text(LOOP)
     assert text.count("select(.draft == false)") >= 2
-    assert 'contains("Morning-Green-Autonomous: true")' in text
+    assert "capacity-plan" in text
+    assert "mutation_owner.incident_id" in text
     assert 'contains("Model-Experiment-Autonomous: true")' in text
 
 
