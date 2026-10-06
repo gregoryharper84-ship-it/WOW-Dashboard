@@ -536,7 +536,7 @@ def score_live_event(req: LiveScoreRequest, db: Any, now: datetime | None = None
     now = _aware_utc(now or datetime.now(timezone.utc))
     blockers = _request_blockers(req, now)
     if blockers:
-        return _held(req, now, blockers, model_unavailable="LIVE_SPORT_MODEL_UNAVAILABLE" in blockers)
+        return _held(\n            req,\n            now,\n            blockers,\n            model_unavailable=any(b.startswith("LIVE_SPORT_MODEL_NOT_CERTIFIED:") for b in blockers),\n        )
 
     snapshot, snapshot_blockers = _load_snapshot(db, req)
     if snapshot is None or snapshot_blockers:
