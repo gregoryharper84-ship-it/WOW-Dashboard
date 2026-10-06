@@ -22,6 +22,7 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 ESPN_BASE = os.environ.get("WOW_SCOUT_ESPN_BASE_URL", "https://site.api.espn.com/apis/site/v2/sports").rstrip("/")
+ESPN_CORE_BASE = os.environ.get("WOW_SCOUT_ESPN_CORE_BASE_URL", "https://sports.core.api.espn.com/v2/sports").rstrip("/")
 SECONDARY_ENABLED = os.environ.get("WOW_SCOUT_SECONDARY_SOURCE_ENABLED", "true").strip().lower() == "true"
 SECONDARY_TIMEOUT_SECONDS = float(os.environ.get("WOW_SCOUT_SECONDARY_SOURCE_TIMEOUT_SECONDS", "10"))
 
@@ -280,54 +281,124 @@ def _moneyline(value: Any) -> int | float | None:
         return None
 
 
-def espn_h2h_payload(event: dict[str, Any], *, primary_failure: str | None = None) -> dict[str, Any] | None:
-    competitions = event.get("competitions") or []
-    competition = competitions[0] if competitions and isinstance(competitions[0], dict) else {}
-    odds_rows = competition.get("odds") or []
-    odds = next((row for row in odds_rows if isinstance(row, dict)), None)
-    if not odds:
-        return None
-
+def _h2h_payload_from_odds(
+    event: dict[str, Any],
+    odds_rows: list[Any],
+    *,
+    source_provider: str,
+    provider_default: str,
+    primary_failure: str | None = None,
+) -> dict[str, Any] | None:
     home, away = _competitors(event)
     home_name = _team_name(home)
     away_name = _team_name(away)
-    home_ml = _moneyline((odds.get("homeTeamOdds") or {}).get("moneyLine"))
-    away_ml = _moneyline((odds.get("awayTeamOdds") or {}).get("moneyLine"))
-    if not home_name or not away_name or home_ml is None or away_ml is None:
+    if not home_name or not away_name:
         return None
 
-    provider = odds.get("provider") if isinstance(odds.get("provider"), dict) else {}
-    provider_name = str(provider.get("name") or provider.get("title") or "ESPN_SCOREBOARD")
-    marker = {
-        "provider": "ESPN_SCOREBOARD_RESEARCH_FALLBACK",
-        "provider_detail": provider_name,
-        "source_tier": "SECONDARY_LIVE_RESEARCH",
-        "prediction_authority": False,
-        "exact_line_authority": False,
-        "research_only": True,
-        "primary_source_failure": primary_failure,
-        "can_execute": False,
-    }
-    return {
-        "id": f"espn-{event.get('id')}",
-        "commence_time": event.get("date"),
-        "home_team": home_name,
-        "away_team": away_name,
-        "_wow_secondary_source": marker,
-        "bookmakers": [{
-            "key": f"espn_backup_{_norm(provider_name) or 'scoreboard'}",
-            "title": f"{provider_name} via ESPN backup",
-            "last_update": odds.get("lastUpdated") or event.get("date"),
-            "markets": [{
-                "key": "h2h",
-                "last_update": odds.get("lastUpdated") or event.get("date"),
-                "outcomes": [
-                    {"name": home_name, "price": home_ml},
-                    {"name": away_name, "price": away_ml},
-                ],
+    for odds in odds_rows:
+        if not isinstance(odds, dict):
+            continue
+        home_ml = _moneyline((odds.get("homeTeamOdds") or {}).get("moneyLine"))
+        away_ml = _moneyline((odds.get("awayTeamOdds") or {}).get("moneyLine"))
+        if home_ml is None or away_ml is None:
+            continue
+
+        provider = odds.get("provider") if isinstance(odds.get("provider"), dict) else {}
+        provider_name = str(
+            provider.get("name")
+            or provider.get("title")
+            or provider.get("id")
+            or provider_default
+        )
+        marker = {
+            "provider": source_provider,
+            "provider_detail": provider_name,
+            "source_tier": "SECONDARY_LIVE_RESEARCH",
+            "prediction_authority": False,
+            "exact_line_authority": False,
+            "research_only": True,
+            "primary_source_failure": primary_failure,
+            "can_execute": False,
+        }
+        return {
+            "id": f"espn-{event.get('id')}",
+            "commence_time": event.get("date"),
+            "home_team": home_name,
+            "away_team": away_name,
+            "_wow_secondary_source": marker,
+            "bookmakers": [{
+                "key": f"espn_backup_{_norm(provider_name) or 'odds'}",
+                "title": f"{provider_name} via ESPN backup",
+                "last_update": odds.get("lastUpdated") or odds.get("lastUpdatedDate") or event.get("date"),
+                "markets": [{
+                    "key": "h2h",
+                    "last_update": odds.get("lastUpdated") or odds.get("lastUpdatedDate") or event.get("date"),
+                    "outcomes": [
+                        {"name": home_name, "price": home_ml},
+                        {"name": away_name, "price": away_ml},
+                    ],
+                }],
             }],
-        }],
-    }
+        }
+    return None
+
+
+def espn_h2h_payload(event: dict[str, Any], *, primary_failure: str | None = None) -> dict[str, Any] | None:
+    competitions = event.get("competitions") or []
+    competition = competitions[0] if competitions and isinstance(competitions[0], dict) else {}
+    odds_rows = competition.get("odds") if isinstance(competition.get("odds"), list) else []
+    return _h2h_payload_from_odds(
+        event,
+        odds_rows,
+        source_provider="ESPN_SCOREBOARD_RESEARCH_FALLBACK",
+        provider_default="ESPN_SCOREBOARD",
+        primary_failure=primary_failure,
+    )
+
+
+def _core_h2h_payload(
+    sport_key: str,
+    event: dict[str, Any],
+    *,
+    primary_failure: str | None = None,
+) -> SecondaryResult:
+    mapped = ESPN_SPORT_MAP.get(sport_key)
+    if not mapped:
+        return SecondaryResult(False, code="SECONDARY_SOURCE_UNSUPPORTED_SPORT")
+    sport, league, _title = mapped
+    event_id = str(event.get("id") or "").strip()
+    competitions = event.get("competitions") or []
+    competition = competitions[0] if competitions and isinstance(competitions[0], dict) else {}
+    competition_id = str(competition.get("id") or event_id).strip()
+    if not event_id or not competition_id:
+        return SecondaryResult(False, status=404, code="SECONDARY_SOURCE_EVENT_IDENTITY_INCOMPLETE")
+
+    result = _http_json(
+        f"{ESPN_CORE_BASE}/{sport}/leagues/{league}/events/{event_id}/competitions/{competition_id}/odds",
+        {"limit": 25},
+    )
+    if not result.ok:
+        if result.status == 404:
+            return SecondaryResult(False, status=404, code="SECONDARY_SOURCE_H2H_UNAVAILABLE")
+        return SecondaryResult(
+            False,
+            status=result.status,
+            code="SECONDARY_SOURCE_CORE_ODDS_FETCH_FAILED",
+        )
+    if not isinstance(result.data, dict):
+        return SecondaryResult(False, status=result.status, code="SECONDARY_SOURCE_CORE_ODDS_INVALID_RESPONSE")
+
+    items = result.data.get("items") if isinstance(result.data.get("items"), list) else []
+    payload = _h2h_payload_from_odds(
+        event,
+        items,
+        source_provider="ESPN_CORE_ODDS_RESEARCH_FALLBACK",
+        provider_default="ESPN_CORE_ODDS",
+        primary_failure=primary_failure,
+    )
+    if payload is None:
+        return SecondaryResult(False, status=404, code="SECONDARY_SOURCE_H2H_UNAVAILABLE")
+    return SecondaryResult(True, payload, result.status or 200, code="SECONDARY_SOURCE_CORE_ODDS_USED")
 
 
 def _find_event(
@@ -403,7 +474,14 @@ def secondary_for_request(
             return found
         payload = espn_h2h_payload(found.data, primary_failure=primary_failure)
         if payload is None:
-            return SecondaryResult(False, status=404, code="SECONDARY_SOURCE_H2H_UNAVAILABLE")
+            core = _core_h2h_payload(
+                sport_key,
+                found.data,
+                primary_failure=primary_failure,
+            )
+            if not core.ok:
+                return core
+            payload = core.data
         requested_markets = {
             item.strip() for item in str((params or {}).get("markets") or "h2h").split(",") if item.strip()
         }
