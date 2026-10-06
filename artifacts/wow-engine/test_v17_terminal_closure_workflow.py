@@ -43,3 +43,10 @@ def test_terminal_closure_requires_explicit_autonomous_opt_in():
     text = _text()
     assert "Terminal-Closure-Autonomous: true" in text
     assert "Terminal-Issue:" in text
+
+
+def test_terminal_closure_workflow_supports_legacy_worker_metadata():
+    text = _text()
+    assert "Morning-Green-Autonomous: true" in text
+    assert "Incident:" in text
+    assert "sed -nE 's/^Incident:" in text

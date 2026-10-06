@@ -1,5 +1,9 @@
 from pathlib import Path
 
+import os
+import subprocess
+
+import pytest
 import yaml
 
 
@@ -46,3 +50,46 @@ def test_unrelated_lane_failure_cannot_suppress_later_acceptance():
     jobs = _load()["jobs"]
     assert "always()" in jobs["priority-props"]["if"]
     assert "always()" in jobs["golden-full-slate"]["if"]
+
+
+def _receipt_script() -> str:
+    jobs = _load()["jobs"]
+    return jobs["acceptance-receipts"]["steps"][0]["run"]
+
+
+@pytest.mark.parametrize(
+    ("event_name", "spread", "cert", "props", "golden", "expected"),
+    [
+        ("workflow_run", "success", "success", "success", "success", 0),
+        ("workflow_run", "success", "success", "success", "skipped", 1),
+        ("workflow_run", "success", "skipped", "success", "success", 1),
+        ("workflow_run", "failure", "skipped", "success", "success", 1),
+        ("workflow_dispatch", "success", "success", "success", "skipped", 0),
+        ("workflow_dispatch", "success", "success", "skipped", "skipped", 1),
+        ("workflow_dispatch", "success", "success", "success", "failure", 1),
+    ],
+)
+def test_receipt_aggregator_fail_closed_behavior(
+    tmp_path, event_name, spread, cert, props, golden, expected
+):
+    summary = tmp_path / "summary.md"
+    env = {
+        **os.environ,
+        "WOW_CAN_EXECUTE": "false",
+        "WOW_DRY_RUN_ONLY": "true",
+        "SPREAD_FORWARD": spread,
+        "SPREAD_CERTIFICATION": cert,
+        "PRIORITY_PROPS": props,
+        "GOLDEN_FULL_SLATE": golden,
+        "ORCHESTRATOR_EVENT_NAME": event_name,
+        "GITHUB_STEP_SUMMARY": str(summary),
+    }
+    completed = subprocess.run(
+        ["bash", "-c", _receipt_script()],
+        cwd=ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert completed.returncode == expected

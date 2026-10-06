@@ -79,6 +79,7 @@ jobs:
           SPREAD_CERTIFICATION: ${{ needs.spread-certification.result }}
           PRIORITY_PROPS: ${{ needs.priority-props.result }}
           GOLDEN_FULL_SLATE: ${{ needs.golden-full-slate.result }}
+          ORCHESTRATOR_EVENT_NAME: ${{ github.event_name }}
         run: |
           set -euo pipefail
           test "$WOW_CAN_EXECUTE" = "false"
@@ -97,13 +98,21 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
           failed=0
-          for result in "$SPREAD_FORWARD" "$PRIORITY_PROPS" "$GOLDEN_FULL_SLATE"; do
-            if [ "$result" = "failure" ] || [ "$result" = "cancelled" ]; then
-              failed=1
-            fi
-          done
-          if [ "$SPREAD_FORWARD" = "success" ] &&
-             { [ "$SPREAD_CERTIFICATION" = "failure" ] || [ "$SPREAD_CERTIFICATION" = "cancelled" ]; }; then
-            failed=1
+
+          # workflow_run is the production acceptance path: every required lane
+          # must have actually succeeded. A skipped lane is missing evidence and
+          # therefore fails closed.
+          if [ "$ORCHESTRATOR_EVENT_NAME" = "workflow_run" ]; then
+            for result in "$SPREAD_FORWARD" "$SPREAD_CERTIFICATION" "$PRIORITY_PROPS" "$GOLDEN_FULL_SLATE"; do
+              [ "$result" = "success" ] || failed=1
+            done
+          else
+            # Manual dispatch intentionally does not run Golden Path. The three
+            # requested verification lanes must still succeed.
+            for result in "$SPREAD_FORWARD" "$SPREAD_CERTIFICATION" "$PRIORITY_PROPS"; do
+              [ "$result" = "success" ] || failed=1
+            done
+            [ "$GOLDEN_FULL_SLATE" = "skipped" ] || failed=1
           fi
+
           exit "$failed"

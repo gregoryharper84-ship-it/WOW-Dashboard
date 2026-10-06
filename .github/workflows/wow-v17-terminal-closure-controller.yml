@@ -59,7 +59,7 @@ jobs:
             printf '%s\n' "${{ github.event.pull_request.number }}" > "$out"
           else
             gh api "/repos/${GITHUB_REPOSITORY}/pulls?state=closed&sort=updated&direction=desc&per_page=50" \
-              --jq '.[] | select(.merged_at != null) | select((.body // "") | contains("Terminal-Closure-Autonomous: true")) | .number' \
+              --jq '.[] | select(.merged_at != null) | select((((.body // "") | contains("Terminal-Closure-Autonomous: true")) or (((.body // "") | contains("Morning-Green-Autonomous: true")))) | .number' \
               > "$out"
           fi
           sort -u "$out" -o "$out"
@@ -83,13 +83,17 @@ jobs:
 
             gh api "/repos/${GITHUB_REPOSITORY}/pulls/$pr_number" > "$work/pr.json"
             body=$(jq -r '.body // ""' "$work/pr.json")
-            if ! grep -Fq 'Terminal-Closure-Autonomous: true' <<<"$body"; then
+            if ! grep -Fq 'Terminal-Closure-Autonomous: true' <<<"$body" &&
+               ! grep -Fq 'Morning-Green-Autonomous: true' <<<"$body"; then
               continue
             fi
 
             merge_sha=$(jq -r '.merge_commit_sha // ""' "$work/pr.json")
             [ -n "$merge_sha" ] || continue
             issue_number=$(sed -n 's/^Terminal-Issue:[[:space:]]*#\([0-9][0-9]*\)[[:space:]]*$/\1/p' <<<"$body" | head -n1)
+            if [ -z "${issue_number:-}" ]; then
+              issue_number=$(sed -nE 's/^Incident:[[:space:]]*`?#?([0-9]+)`?[[:space:]]*$/\1/p' <<<"$body" | head -n1)
+            fi
             acceptance=$(sed -n 's/^Morning-Green-Acceptance-Workflow:[[:space:]]*\([^[:space:]]\+\)[[:space:]]*$/\1/p' <<<"$body" | head -n1)
             acceptance=${acceptance:-none}
 
