@@ -167,6 +167,18 @@ def test_max_safe_capacity_uses_one_writer_and_parallel_read_only_support() -> N
     assert "TARGET_INCIDENT_NOT_GLOBAL_OWNER" in worker
 
 
+def test_hourly_loop_enforces_pr_wip_liquidation_before_new_noncritical_work() -> None:
+    text = _text(LOOP)
+    assert "Audit open PR WIP" in text
+    assert "audit_pr_liquidation.py" in text
+    assert "--wip-limit 12" in text
+    assert "LIQUIDATE_WIP" in text
+    assert "Advance existing PR under WIP liquidation" in text
+    assert "Open PR WIP exceeds 12; advance an existing PR instead of creating another." in text
+    assert 'severity" = "P0"' in text
+    assert 'severity" = "P1"' in text
+
+
 def test_engineering_worker_invokes_specialist_before_implementation() -> None:
     text = _text(WORKER)
     route = text.index("Route specialist subagent")
