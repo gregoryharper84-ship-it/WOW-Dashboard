@@ -6,6 +6,7 @@ from fastapi import Depends, FastAPI
 
 from live_probability_runtime import (
     LiveScoreRequest,
+    MLB_MAX_STATE_AGE_SECONDS,
     _apply_calibrator,
     _apply_live_bounds,
     _request_blockers,
@@ -119,6 +120,28 @@ def test_non_mlb_uncertified_model_preserves_model_unavailable_terminal():
     )
     assert result.terminal_label == "MODEL_UNAVAILABLE"
     assert result.blockers == ["LIVE_SPORT_MODEL_NOT_CERTIFIED:NBA"]
+    assert result.probability_publishable is False
+    assert result.rank_eligible is False
+    assert result.can_execute is False
+
+
+def test_non_model_request_failure_is_not_collapsed_into_model_unavailable():
+    now = datetime.now(timezone.utc)
+    result = score_live_event(
+        request(
+            sport="NBA",
+            league="NBA",
+            settlement_rule="NBA_FULL_GAME_WINNER",
+            market_role="FAVORITE",
+            live_snapshot_timestamp=now - timedelta(seconds=MLB_MAX_STATE_AGE_SECONDS + 1),
+            market_role_timestamp=now,
+        ),
+        object(),
+        now=now,
+    )
+    assert "LIVE_SPORT_MODEL_NOT_CERTIFIED:NBA" in result.blockers
+    assert "LIVE_STATE_STALE" in result.blockers
+    assert result.terminal_label == "RESEARCH_INTEREST"
     assert result.probability_publishable is False
     assert result.rank_eligible is False
     assert result.can_execute is False
