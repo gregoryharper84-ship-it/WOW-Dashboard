@@ -285,10 +285,12 @@ def test_pr_receipt_is_also_repeat_safe_and_non_dict_comments_are_ignored():
     state["pr_comments"] = [
         "not-a-comment-object",
         {
+            "user": TRUSTED_USER,
             "body": (
                 f"{TERMINAL_RECEIPT_HEADING}\n"
+                f"- **Commit SHA:** `{MERGE}`\n"
                 "- **Status:** **FIXED_AND_VERIFIED**"
-            )
+            ),
         },
     ]
 
@@ -299,14 +301,7 @@ def test_pr_receipt_is_also_repeat_safe_and_non_dict_comments_are_ignored():
 
 def test_multiscout_push_contract_run_cannot_satisfy_terminal_acceptance():
     state = _base_state()
-    state["pr_comments"] = [{
-        "body": (
-            "## Release / Production Verification Agent\n"
-            "~~~json\n"
-            '{"status":"PRODUCTION_VERIFIED","production_sha":"prod456"}'
-            "\n~~~"
-        )
-    }]
+    state["pr_comments"] = [_release_comment()]
     state["runs"] = [{
         "id": 587,
         "name": "wow-v17-nightly-multiscout",
