@@ -248,9 +248,12 @@ def _mlb_game_states(game_pk: int) -> tuple[list[dict[str, Any]], dict[str, Any]
         home_score = int(result.get("homeScore") or 0)
         away_score = int(result.get("awayScore") or 0)
         outs = int(count.get("outs") or 0)
+        # A third-out plate appearance is timestamped in the half that just
+        # ended; the next wagerable state belongs to the next half. Skip that
+        # ambiguous transition rather than relabeling it as zero outs.
         if outs >= 3:
             occupied.clear()
-            outs = 0
+            continue
         bottom = int(half == "BOTTOM")
         score_diff = home_score - away_score
         runners_on = int("1B" in occupied) + int("2B" in occupied) + int("3B" in occupied)
