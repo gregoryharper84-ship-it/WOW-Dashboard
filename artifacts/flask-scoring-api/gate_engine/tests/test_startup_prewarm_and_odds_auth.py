@@ -267,6 +267,20 @@ class TestStartupWiringStructural(unittest.TestCase):
         self.assertGreater(idx_prewarm, idx_warmup,
                            "prewarm_today_pitchers must appear after _run_startup_warmup def")
 
+    def test_production_pitcher_prewarm_is_disabled_in_ci(self):
+        """CI must not spawn fire-and-forget pitcher DB/network workers."""
+        idx_warmup = self.app_text.find("def _run_startup_warmup")
+        idx_prewarm = self.app_text.find("# MLB pitcher startup prewarm", idx_warmup)
+        self.assertGreater(idx_prewarm, idx_warmup)
+        block = self.app_text[idx_prewarm: idx_prewarm + 2200]
+        self.assertIn('os.environ.get("WOW_CI", "")', block)
+        self.assertIn('not in {"1", "true", "yes"}', block)
+        self.assertLess(
+            block.find('os.environ.get("WOW_CI", "")'),
+            block.find("prewarm_today_pitchers"),
+            "WOW_CI guard must execute before production prewarm is imported/called",
+        )
+
 
 # ---------------------------------------------------------------------------
 # REQ-2: Odds Gateway auth-contract migration tests
