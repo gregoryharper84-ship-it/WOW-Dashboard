@@ -224,6 +224,37 @@ def verify_github_actions_oidc(token: str, *, jwk_client: PyJWKClient | None = N
     return validate_github_actions_claims(claims)
 
 
+def authorize_release_receipt_oidc(authorization: str | None) -> dict[str, Any]:
+    """Authorize only the protected-main release workflow for receipt writes."""
+    if not authorization or not authorization.startswith("Bearer "):
+        raise GitHubOIDCValidationError("RELIABILITY_RECEIPT_OIDC_REQUIRED")
+    token = authorization[len("Bearer ") :]
+    claims = verify_github_actions_oidc(token)
+    if str(claims.get("workflow_ref") or "") != RELEASE_VERIFICATION_WORKFLOW_REF:
+        raise GitHubOIDCValidationError("RELIABILITY_RECEIPT_WORKFLOW_MISMATCH")
+    if str(claims.get("event_name") or "") != "workflow_dispatch":
+        raise GitHubOIDCValidationError("RELIABILITY_RECEIPT_EVENT_NOT_ALLOWED")
+    run_id = str(claims.get("run_id") or "").strip()
+    if not run_id.isdigit() or int(run_id) <= 0:
+        raise GitHubOIDCValidationError("RELIABILITY_RECEIPT_RUN_ID_INVALID")
+    return dict(claims)
+
+
+def release_receipt_route_auth_dependency() -> Any:
+    async def _require_release_receipt_oidc(
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        try:
+            return authorize_release_receipt_oidc(authorization)
+        except GitHubOIDCValidationError as exc:
+            raise HTTPException(
+                status_code=401,
+                detail={"code": str(exc), "can_execute": False},
+            ) from exc
+
+    return Depends(_require_release_receipt_oidc)
+
+
 def authorize_action_key_or_multiscout_oidc(authorization: str | None) -> str:
     """Authorize an existing WOW Action bearer or an approved workflow OIDC token."""
     if not authorization or not authorization.startswith("Bearer "):
@@ -316,6 +347,8 @@ __all__ = [
     "WNBA_PROP_FORWARD_EVIDENCE_WORKFLOW_REF",
     "WORKFLOW_REF",
     "authorize_action_key_or_multiscout_oidc",
+    "authorize_release_receipt_oidc",
+    "release_receipt_route_auth_dependency",
     "scout_route_auth_dependency",
     "validate_github_actions_claims",
     "verify_github_actions_oidc",
