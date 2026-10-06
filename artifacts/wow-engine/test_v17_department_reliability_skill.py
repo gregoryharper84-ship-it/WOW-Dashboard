@@ -6,6 +6,8 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 RELIABILITY_SKILL = ROOT / ".agents/skills/wow-engineering-reliability/SKILL.md"
 CONTRACT = ROOT / "artifacts/wow-engine/WOW_ENGINEERING_RELIABILITY.yaml"
+RELEASE_WORKFLOW = ROOT / ".github/workflows/wow-v17-release-production-verification-agent.yml"
+TERMINAL_WORKFLOW = ROOT / ".github/workflows/wow-v17-terminal-closure-controller.yml"
 
 DEPARTMENT_SKILLS = (
     ".agents/skills/wow-autonomous-product-qa-engineering-recovery/SKILL.md",
@@ -52,3 +54,18 @@ def test_machine_contract_requires_typed_receipt_and_evidence_gated_rollback():
     assert data["terminal_receipt"]["require_merge_sha_equals_deployed_sha"] is True
     assert data["rollback"]["single_ambiguous_probe_may_trigger_rollback"] is False
     assert data["class_c"]["production_promotion_allowed"] is False
+
+
+def test_reliability_workflows_parse_and_preserve_machine_evidence_chain():
+    release = RELEASE_WORKFLOW.read_text()
+    terminal = TERMINAL_WORKFLOW.read_text()
+    assert yaml.safe_load(release)["name"] == "wow-v17-release-production-verification-agent"
+    assert yaml.safe_load(terminal)["name"] == "wow-v17-terminal-closure-controller"
+    assert "id-token: write" in release
+    assert "Generate Reliability V1 machine receipt" in release
+    assert "Persist Reliability V1 receipt to append-only ledger" in release
+    assert "audit-persistence.json" in release
+    assert "Upload immutable Reliability V1 evidence artifact" in release
+    assert "verification-receipts.json" in terminal
+    assert "audit-persistence.json" in terminal
+    assert "INVALID_RECEIPT_SCHEMA" in (ROOT / "artifacts/wow-engine/v17/terminal_closure_controller.py").read_text()
