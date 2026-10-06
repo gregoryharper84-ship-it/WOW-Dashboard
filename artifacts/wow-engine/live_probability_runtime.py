@@ -540,7 +540,7 @@ def score_live_event(req: LiveScoreRequest, db: Any, now: datetime | None = None
             req,
             now,
             blockers,
-            model_unavailable=any(b.startswith("LIVE_SPORT_MODEL_NOT_CERTIFIED:") for b in blockers),
+            model_unavailable=all(b.startswith("LIVE_SPORT_MODEL_NOT_CERTIFIED:") for b in blockers),
         )
 
     snapshot, snapshot_blockers = _load_snapshot(db, req)
