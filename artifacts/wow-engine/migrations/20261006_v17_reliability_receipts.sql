@@ -33,7 +33,7 @@ create table if not exists public.wow_v17_reliability_receipts (
     can_execute boolean not null default false
         check (can_execute is false),
     created_at timestamptz not null default now(),
-    unique (issue_id, pr_number, merge_sha, raw_response_digest)
+    unique (issue_id, pr_number, merge_sha, method, route_tested, raw_response_digest)
 );
 
 create or replace function public.wow_reject_reliability_receipt_mutation()
