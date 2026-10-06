@@ -14,7 +14,7 @@ from live_probability_runtime import (
     _server_role_blockers,
     _snapshot_binding_blockers,
     _state_hash,
-    install_live_probability_routes,
+    install_live_probability_routes,\n    score_live_event,
 )
 
 
@@ -100,6 +100,27 @@ def test_non_mlb_live_sport_gets_sport_specific_model_blocker_not_mlb_rules():
     assert "LIVE_SPORT_MODEL_NOT_CERTIFIED:NBA" in blockers
     assert "LIVE_SETTLEMENT_RULE_MISMATCH" not in blockers
     assert "NOT_CURRENT_LIVE_UNDERDOG" not in blockers
+
+
+def test_non_mlb_uncertified_model_preserves_model_unavailable_terminal():
+    class NoDB:
+        def __getattr__(self, name):
+            raise AssertionError(f"unsupported sport must fail before DB access: {name}")
+
+    result = score_live_event(
+        request(
+            sport="NBA",
+            league="NBA",
+            settlement_rule="NBA_FULL_GAME_WINNER",
+            market_role="FAVORITE",
+        ),
+        NoDB(),
+    )
+    assert result.terminal_label == "MODEL_UNAVAILABLE"
+    assert result.blockers == ["LIVE_SPORT_MODEL_NOT_CERTIFIED:NBA"]
+    assert result.probability_publishable is False
+    assert result.rank_eligible is False
+    assert result.can_execute is False
 
 
 def test_settlement_must_be_exact():
