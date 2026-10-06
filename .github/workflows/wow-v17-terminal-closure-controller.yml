@@ -110,7 +110,8 @@ jobs:
               if [ -n "$artifact_id" ] && [ -n "$artifact_run_id" ]; then
                 gh api "/repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}/zip" > "$work/reliability.zip"
                 if unzip -p "$work/reliability.zip" verification-receipt.json > "$work/verification-receipt.json" 2>/dev/null && \
-                   unzip -p "$work/reliability.zip" audit-persistence.json > "$work/audit-persistence.json" 2>/dev/null; then
+                   unzip -p "$work/reliability.zip" audit-persistence.json > "$work/audit-persistence.json" 2>/dev/null && \
+                   unzip -p "$work/reliability.zip" audit-readback.json > "$work/audit-readback.json" 2>/dev/null; then
                   receipt_run_id=$(jq -r '.sentinel_workflow_run_id // ""' "$work/verification-receipt.json")
                   receipt_workflow=$(jq -r '.sentinel_workflow // ""' "$work/verification-receipt.json")
                   run_json=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/runs/${artifact_run_id}")
@@ -134,8 +135,16 @@ jobs:
                   receipt_sig=$(jq -r '.sentinel_signature // ""' "$work/verification-receipt.json")
                   persisted_sig=$(jq -r '.sentinel_signature // ""' "$work/audit-persistence.json")
                   persisted_status=$(jq -r '.status // ""' "$work/audit-persistence.json")
+                  readback_status=$(jq -r '.status // ""' "$work/audit-readback.json")
+                  readback_sig=$(jq -r '.receipt.sentinel_signature // ""' "$work/audit-readback.json")
+                  readback_merge=$(jq -r '.receipt.merge_sha // ""' "$work/audit-readback.json")
+                  readback_deployed=$(jq -r '.receipt.deployed_render_sha // ""' "$work/audit-readback.json")
                   if [ "$trusted_artifact" = "true" ] && \
                      [ "$receipt_sig" = "$persisted_sig" ] && \
+                     [ "$receipt_sig" = "$readback_sig" ] && \
+                     [ "$readback_merge" = "$merge_sha" ] && \
+                     [ "$readback_deployed" = "$merge_sha" ] && \
+                     [ "$readback_status" = "FOUND" ] && \
                      { [ "$persisted_status" = "PERSISTED" ] || [ "$persisted_status" = "ALREADY_PERSISTED" ]; }; then
                     jq -s '.' "$work/verification-receipt.json" > "$work/verification-receipts.json"
                   fi
