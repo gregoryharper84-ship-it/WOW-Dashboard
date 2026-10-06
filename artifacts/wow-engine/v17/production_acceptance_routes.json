@@ -24,7 +24,8 @@
         "automatic_certification": false,
         "automatic_promotion": false
       },
-      "can_execute_required": false
+      "can_execute_required": false,
+      "acceptance_contract_hash": "f8350a1dde0b7345"
     },
     {
       "path": "/internal/v17/wnba-spread-forward-auto-canary",
@@ -48,7 +49,8 @@
         "global_terminal_reducer": "V17_TERMINAL_REDUCER",
         "identity_acquisition_location": "BACKEND_RUNTIME"
       },
-      "can_execute_required": false
+      "can_execute_required": false,
+      "acceptance_contract_hash": "969dd07fd7eb6334"
     }
   ],
   "terminal_authority": "V17_TERMINAL_REDUCER",
