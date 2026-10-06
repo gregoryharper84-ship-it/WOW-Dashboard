@@ -387,7 +387,11 @@ jobs:
         run: |
           set -euo pipefail
           oidc_url="$ACTIONS_ID_TOKEN_REQUEST_URL"
-          oidc_url+="&audience=wow-v17-multiscout"
+          if [[ "$oidc_url" == *"?"* ]]; then
+            oidc_url+="&audience=wow-v17-multiscout"
+          else
+            oidc_url+="?audience=wow-v17-multiscout"
+          fi
           token=$(curl --fail --show-error --silent \
             -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
             "$oidc_url" | jq -r '.value')
