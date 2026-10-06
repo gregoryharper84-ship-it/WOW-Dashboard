@@ -9,6 +9,9 @@ from v17 import reliability_receipt_runtime as runtime
 from v17.receipt_schema import VerificationReceipt, expected_sentinel_signature, schema_hash
 
 
+AUTH_CLAIMS = {"run_id": "123"}
+
+
 class Result:
     def __init__(self, data):
         self.data = data
@@ -96,7 +99,7 @@ def test_receipt_persistence_is_insert_once_and_repeat_safe():
     db = DB()
     envelope = _envelope()
 
-    first = runtime._persist(db, envelope)
+    first = runtime._persist(db, envelope, auth_claims=AUTH_CLAIMS)
     second = runtime._persist(db, envelope)
 
     assert first["status"] == "PERSISTED"
@@ -148,4 +151,17 @@ def test_receipt_persistence_rejects_oversized_evidence():
 
     assert exc.value.status_code == 413
     assert exc.value.detail["code"] == "RECEIPT_EVIDENCE_TOO_LARGE"
+    assert db.rows == []
+
+
+def test_receipt_persistence_binds_workflow_run_id_to_oidc_claim():
+    db = DB()
+    envelope = _envelope()
+
+    with pytest.raises(HTTPException) as exc:
+        runtime._persist(db, envelope, auth_claims={"run_id": "999"})
+
+    assert exc.value.status_code == 401
+    assert exc.value.detail["code"] == "RECEIPT_OIDC_BINDING_MISMATCH"
+    assert "SENTINEL_WORKFLOW_RUN_ID_MISMATCH" in exc.value.detail["errors"]
     assert db.rows == []
