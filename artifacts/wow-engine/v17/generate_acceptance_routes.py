@@ -190,6 +190,17 @@ def build_registry(app: Any) -> dict[str, Any]:
                 f"{operation_id}:{contract['operation_id']}"
             )
 
+        request_hash = _canonical_hash(request_schema)
+        response_hash = _canonical_hash(response_schema)
+        acceptance_contract_hash = _canonical_hash(
+            {
+                "request_schema_hash": request_hash,
+                "response_schema_hash": response_hash,
+                "required_headers": policy["required_headers"],
+                "required_response_invariants": policy["required_response_invariants"],
+            }
+        )
+
         entries.append(
             {
                 "path": path,
@@ -198,8 +209,9 @@ def build_registry(app: Any) -> dict[str, Any]:
                 "acceptance_role": policy["acceptance_role"],
                 "contract_scope": contract_scope,
                 "contract_source": (contract or {}).get("contract_source", "RUNTIME_MOUNT"),
-                "request_schema_hash": _canonical_hash(request_schema),
-                "response_schema_hash": _canonical_hash(response_schema),
+                "request_schema_hash": request_hash,
+                "response_schema_hash": response_hash,
+                "acceptance_contract_hash": acceptance_contract_hash,
                 "required_headers": policy["required_headers"],
                 "required_response_invariants": policy["required_response_invariants"],
                 "can_execute_required": False,
