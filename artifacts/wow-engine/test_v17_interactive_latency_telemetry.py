@@ -193,3 +193,14 @@ def test_team_event_request_runtime_wires_current_latency_stage_contract():
     assert "row_count=len(batch.rows)" in runtime
     assert "batch_size=len(batch.rows)" in runtime
     assert '"MIXED" if batch_sports else "UNKNOWN"' in runtime
+
+
+def test_stage_percentiles_in_snapshot_and_no_request_data():
+    import v17.interactive_latency_telemetry as t
+    t.reset_latency_samples()
+    t._record_stages("/score-team-event-request", {"hydration": 5.0, "fitted_scoring": 9.0, "calibration_bounds": 2.0, "bogus": 1.0})
+    snap = t.latency_diagnostics_snapshot()
+    assert {r["stage"] for r in snap["route_stage_percentiles"]} == {"hydration", "fitted_scoring", "calibration_bounds"}
+    assert set(snap["stages"]) == set(t.STAGES)
+    assert snap["can_execute"] is False and snap["terminal_authority"] == "V17_TERMINAL_REDUCER"
+    t.reset_latency_samples()

@@ -46,6 +46,7 @@ _CTX: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar(
 )
 _LOCK = threading.Lock()
 _SAMPLES: dict[tuple[str, str, str, str], deque[float]] = {}
+_STAGE_SAMPLES: dict[tuple[str, str], deque[float]] = {}
 
 
 def _label(value: Any) -> str:
@@ -110,6 +111,30 @@ def _record(route: str, ctx: dict[str, Any], total_ms: float) -> None:
         _SAMPLES.setdefault(key, deque(maxlen=_MAX_SAMPLES_PER_KEY)).append(total_ms)
 
 
+def _record_stages(route: str, stages: dict[str, float]) -> None:
+    with _LOCK:
+        for stage, ms in stages.items():
+            if stage in STAGES:
+                _STAGE_SAMPLES.setdefault((route, stage), deque(maxlen=_MAX_SAMPLES_PER_KEY)).append(ms)
+
+
+def stage_percentiles() -> list[dict[str, Any]]:
+    """p50/p95 wall time by route and stage; labels only, no request data."""
+    with _LOCK:
+        snapshot = {key: sorted(values) for key, values in _STAGE_SAMPLES.items()}
+    return [
+        {
+            "route": route,
+            "stage": stage,
+            "samples": len(values),
+            "p50_ms": _percentile(values, 0.50),
+            "p95_ms": _percentile(values, 0.95),
+            "can_execute": False,
+        }
+        for (route, stage), values in sorted(snapshot.items())
+    ]
+
+
 def _percentile(sorted_values: list[float], q: float) -> float:
     if not sorted_values:
         return 0.0
@@ -139,6 +164,7 @@ def latency_percentiles() -> list[dict[str, Any]]:
 def reset_latency_samples() -> None:
     with _LOCK:
         _SAMPLES.clear()
+        _STAGE_SAMPLES.clear()
 
 
 def _outcome(status_code: int, error: BaseException | None) -> str:
@@ -187,6 +213,7 @@ def install_interactive_latency_middleware(app: Any) -> None:
             with _LOCK:
                 stages = dict(ctx["stages"])
             _record(path, ctx, total_ms)
+            _record_stages(path, stages)
             stage_text = ",".join(
                 f"{name}={ms:.3f}" for name, ms in sorted(stages.items())
             ) or "none"
@@ -213,6 +240,8 @@ def latency_diagnostics_snapshot() -> dict[str, Any]:
     return {
         "status": "INTERACTIVE_LATENCY_SNAPSHOT",
         "route_sport_buckets": rows,
+        "route_stage_percentiles": stage_percentiles(),
+        "stages": sorted(STAGES),
         "bucket_count": len(rows),
         "sample_count": sum(int(row.get("samples") or 0) for row in rows),
         "max_samples_per_bucket": _MAX_SAMPLES_PER_KEY,

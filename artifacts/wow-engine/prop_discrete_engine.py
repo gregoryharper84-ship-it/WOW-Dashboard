@@ -22,6 +22,7 @@ from typing import Any, Callable, Mapping, Optional
 from ledger import PredictionRow, determine_publishability
 from market import MarketQuote, resolve_market_prior
 from prop_distribution_contract import LineProbabilities, PropInferenceRequest, derive_line_probabilities
+from v17.interactive_latency_telemetry import stage_timer
 from prop_fitted_provider import CertifiedInference, ResolvedArtifact, infer_certified_distribution
 
 
@@ -244,7 +245,7 @@ def score_discrete_prop_end_to_end(
     with _model_stage_timer("line_probability"):
         line_probs = derive_line_probabilities(distribution, line)
         raw_probability = _directional_probability(line_probs, direction)
-    with _model_stage_timer("calibration_bounds"):
+    with _model_stage_timer("calibration_bounds"), stage_timer("calibration_bounds"):
         calibration = _calibrate(inference, raw_probability, line_probs, features, seed)
 
     market_prior = resolve_market_prior(direction, market_side_a, market_side_b, as_of=request.as_of_timestamp)

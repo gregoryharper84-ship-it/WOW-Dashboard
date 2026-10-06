@@ -48,6 +48,17 @@ class TeamEventRequestBatch(BaseModel):
     rows: list[TeamEventRequestRow] = Field(min_length=1, max_length=100)
 
 
+_DEFAULT_INTERACTIVE_MAX_ROWS = 32
+
+
+def _interactive_batch_cap() -> int:
+    try:
+        value = int(os.getenv("WOW_INTERACTIVE_TEAM_EVENT_MAX_ROWS", ""))
+    except ValueError:
+        return _DEFAULT_INTERACTIVE_MAX_ROWS
+    return value if 1 <= value <= 100 else _DEFAULT_INTERACTIVE_MAX_ROWS
+
+
 def _held(row: TeamEventRequestRow, code: str, blocker: str, detail: Any = None) -> dict[str, Any]:
     return {
         "research_run_id": row.research_run_id, "event_key": row.event_key,
@@ -496,7 +507,12 @@ def install_team_event_request_routes(app: Any, *, auth_dependency: Any, db_clie
             row_count=len(batch.rows),
             batch_size=len(batch.rows),
         )
-        for row in batch.rows:
+        batch_cap = _interactive_batch_cap()
+        for row_index, row in enumerate(batch.rows):
+            if row_index >= batch_cap:
+                # Transport/overload state, not a model failure; the row is held
+                # (never dropped or scored) and must be resubmitted in a smaller batch.
+                outcomes.append(_held(row, "BATCH_LIMIT_EXCEEDED", "INTERACTIVE_BATCH_LIMIT_EXCEEDED", {"max_rows": batch_cap, "retryable_in_smaller_batch": True})); continue
             try:
                 date.fromisoformat(row.event_date)
             except ValueError:
@@ -573,4 +589,4 @@ def install_team_event_request_routes(app: Any, *, auth_dependency: Any, db_clie
             for source_row, outcome in zip(batch.rows, outcomes):
                 _apply_card_admission(source_row, outcome)
         rows_card_admissible = sum(item.get("card_admission_eligible") is True for item in outcomes)
-        return {"ok": completed > 0, "run_status": "COMPLETE" if completed == count else ("RUN_PARTIAL" if completed else "BLOCKED"), "rows_in": count, "rows_completed": completed, "rows_held": count - completed, "rows_card_admissible": rows_card_admissible, "card_pool_status": "QUALIFIED" if rows_card_admissible else "NONE_QUALIFIED", "reconciliation_pass": True, "rows": outcomes, "can_execute": False}
+        return {"ok": completed > 0, "run_status": "COMPLETE" if completed == count else ("RUN_PARTIAL" if completed else "BLOCKED"), "rows_in": count, "rows_completed": completed, "rows_held": count - completed, "rows_card_admissible": rows_card_admissible, "rows_batch_limited": sum(x.get("code") == "BATCH_LIMIT_EXCEEDED" for x in outcomes), "batch_limit": {"max_rows": batch_cap}, "card_pool_status": "QUALIFIED" if rows_card_admissible else "NONE_QUALIFIED", "reconciliation_pass": True, "rows": outcomes, "can_execute": False}

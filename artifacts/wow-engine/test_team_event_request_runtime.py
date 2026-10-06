@@ -68,3 +68,33 @@ def test_genuinely_unsupported_sport_is_model_unavailable():
     assert b["rows"][0]["code"]=="MODEL_UNAVAILABLE"
     assert b["rows"][0]["probability_publishable"] is False
     assert b["rows"][0]["can_execute"] is False
+
+MODEL_CODES = {"MODEL_UNAVAILABLE", "MODEL_SCORER_FAILED", "MODEL_INPUTS_INSUFFICIENT", "MODEL_OUTPUT_INVALID"}
+
+def test_interactive_batch_cap_holds_overflow_rows_with_non_model_code(monkeypatch):
+    monkeypatch.setenv("WOW_INTERACTIVE_TEAM_EVENT_MAX_ROWS", "2")
+    rows = [row(research_run_id=f"r{i}") for i in range(5)]
+    b = client(DB([EVENT])).post("/score-team-event-request", json={"rows": rows}).json()
+    assert b["rows_in"] == 5 and len(b["rows"]) == 5
+    assert b["rows_in"] == b["rows_completed"] + b["rows_held"]
+    assert [r["research_run_id"] for r in b["rows"]] == [f"r{i}" for i in range(5)]
+    limited = [r for r in b["rows"] if r["code"] == "BATCH_LIMIT_EXCEEDED"]
+    assert len(limited) == b["rows_batch_limited"] == 3
+    assert all(r["terminal_status"] == "HELD" and r["calibrated_probability"] is None for r in limited)
+    assert all(r["code"] not in MODEL_CODES for r in limited)
+    assert all(r["code"] == "SPORTING_PROBABILITY_COMPLETED" for r in b["rows"][:2])
+    assert b["can_execute"] is False
+
+def test_interactive_batch_cap_default_limits_64_rows_to_32_scored(monkeypatch):
+    monkeypatch.delenv("WOW_INTERACTIVE_TEAM_EVENT_MAX_ROWS", raising=False)
+    calls = []
+    class Counting(API):
+        @staticmethod
+        def score_event(req):
+            calls.append(1); return API.score_event(req)
+    rows = [row(research_run_id=f"r{i}", event_key=f"MLB:{i}") for i in range(64)]
+    b = client(DB([EVENT]), Counting).post("/score-team-event-request", json={"rows": rows}).json()
+    assert b["rows_in"] == 64 and len(b["rows"]) == 64
+    assert b["rows_in"] == b["rows_completed"] + b["rows_held"]
+    assert b["batch_limit"]["max_rows"] == 32 and b["rows_batch_limited"] == 32
+    assert len(calls) <= 32

@@ -14,6 +14,7 @@ path. ``can_execute=false`` is asserted at every merge boundary.
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import contextvars
 from copy import deepcopy
 import inspect
 import logging
@@ -232,6 +233,7 @@ def install_interactive_pick_parallel_wrapper(app: Any, *, market_api: Any) -> b
             with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="wow-v17-prop-score") as pool:
                 pending = {
                     pool.submit(
+                        contextvars.copy_context().run,
                         _invoke_captured_endpoint,
                         captured_endpoint,
                         _single_row_batch(prepared, row),
