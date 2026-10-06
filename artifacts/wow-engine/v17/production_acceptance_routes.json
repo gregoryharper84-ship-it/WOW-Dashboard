@@ -1,0 +1,14 @@
+{
+  "registry_version": "WOW_PRODUCTION_ACCEPTANCE_ROUTES_V1",
+  "routes": [
+    {"method": "GET", "path": "/health/live", "purpose": "production liveness", "mutation": false},
+    {"method": "GET", "path": "/governance", "purpose": "governance state", "mutation": false},
+    {"method": "GET", "path": "/live-probability/health", "purpose": "live-model capability health", "mutation": false},
+    {"method": "POST", "path": "/capture-live-event-state", "purpose": "governed raw live-state capture", "mutation": true},
+    {"method": "POST", "path": "/score-live-event", "purpose": "governed live-event scoring", "mutation": true},
+    {"method": "POST", "path": "/score-pick-request", "purpose": "governed prop request", "mutation": true},
+    {"method": "POST", "path": "/score-team-event-request", "purpose": "governed team-event request", "mutation": true},
+    {"method": "POST", "path": "/score-team-event", "purpose": "governed team-event scorer", "mutation": true},
+    {"method": "POST", "path": "/score-prop", "purpose": "governed prop scorer", "mutation": true}
+  ]
+}
