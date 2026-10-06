@@ -43,6 +43,11 @@ def test_noncritical_startup_db_consumers_run_after_spread_warm_window():
     assert 'WOW_V17_SYNTHETIC_ACCEPTANCE_DELAY_SECONDS", "240"' in ncaaf
     assert 'WOW_V17_RUNTIME_ACCEPTANCE_INITIAL_DELAY_SECONDS", "180"' in runtime
     assert 'WOW_V17_MLB_BRIDGE_SELF_ACCEPTANCE_DELAY_SECONDS", "210"' in init
+    assert '"WOW_V17_MLB_BRIDGE_SELF_ACCEPTANCE_MAX_MEMORY_RATIO",' in init
+    assert '0.80,' in init
+    assert '"WOW_V17_MLB_BRIDGE_SELF_ACCEPTANCE_MEMORY_RETRY_SECONDS",' in init
+    assert '"WOW_V17_MLB_BRIDGE_SELF_ACCEPTANCE_MEMORY_RETRY_COUNT",' in init
+    assert 'status=SKIPPED code=MEMORY_PRESSURE' in init
     assert 'WOW_RUNDOWN_MARKET_BOOTSTRAP_INITIAL_DELAY_SECONDS", "240"' in rundown
 
     assert 'global_terminal_authority=V17_TERMINAL_REDUCER' in ncaaf

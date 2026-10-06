@@ -11,9 +11,65 @@ import asyncio
 import logging
 import os
 import sys
+from pathlib import Path
 
 _RUNTIME_TASKS: set[asyncio.Task] = set()
 _MLB_BRIDGE_ACCEPTANCE_LOGGER = logging.getLogger("wow.v17.mlb.event_bridge.acceptance")
+
+
+def _int_env(name: str, default: int, *, minimum: int, maximum: int) -> int:
+    try:
+        value = int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        value = default
+    return max(minimum, min(maximum, value))
+
+
+def _float_env(name: str, default: float, *, minimum: float, maximum: float) -> float:
+    try:
+        value = float(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        value = default
+    return max(minimum, min(maximum, value))
+
+
+def _read_cgroup_memory_bytes() -> tuple[int, int] | None:
+    """Return current/limit memory for the Render container when readable."""
+    candidates = (
+        (Path("/sys/fs/cgroup/memory.current"), Path("/sys/fs/cgroup/memory.max")),
+        (
+            Path("/sys/fs/cgroup/memory/memory.usage_in_bytes"),
+            Path("/sys/fs/cgroup/memory/memory.limit_in_bytes"),
+        ),
+    )
+    for current_path, limit_path in candidates:
+        try:
+            current_text = current_path.read_text(encoding="utf-8").strip()
+            limit_text = limit_path.read_text(encoding="utf-8").strip()
+            if not current_text or not limit_text or limit_text.lower() == "max":
+                continue
+            current = int(current_text)
+            limit = int(limit_text)
+        except (OSError, ValueError):
+            continue
+        if current >= 0 and limit > 0:
+            return current, limit
+    return None
+
+
+def _mlb_bridge_acceptance_under_memory_pressure() -> tuple[bool, float | None]:
+    sample = _read_cgroup_memory_bytes()
+    if sample is None:
+        return False, None
+    current, limit = sample
+    ratio = current / limit
+    max_ratio = _float_env(
+        "WOW_V17_MLB_BRIDGE_SELF_ACCEPTANCE_MAX_MEMORY_RATIO",
+        0.80,
+        minimum=0.50,
+        maximum=0.95,
+    )
+    return ratio >= max_ratio, ratio
 
 
 def get_certified_numerical_registry():
@@ -128,6 +184,38 @@ def _defer_mlb_event_bridge_install(*, market_api, team_runtime) -> bool:
                         delay_seconds,
                     )
                     await asyncio.sleep(float(delay_seconds))
+
+                memory_retry_seconds = _int_env(
+                    "WOW_V17_MLB_BRIDGE_SELF_ACCEPTANCE_MEMORY_RETRY_SECONDS",
+                    60,
+                    minimum=15,
+                    maximum=300,
+                )
+                memory_retry_count = _int_env(
+                    "WOW_V17_MLB_BRIDGE_SELF_ACCEPTANCE_MEMORY_RETRY_COUNT",
+                    3,
+                    minimum=0,
+                    maximum=10,
+                )
+                for memory_attempt in range(memory_retry_count + 1):
+                    under_pressure, memory_ratio = _mlb_bridge_acceptance_under_memory_pressure()
+                    if not under_pressure:
+                        break
+                    if memory_attempt >= memory_retry_count:
+                        _MLB_BRIDGE_ACCEPTANCE_LOGGER.warning(
+                            "WOW_V17_MLB_EVENT_BRIDGE_SELF_ACCEPTANCE status=SKIPPED code=MEMORY_PRESSURE memory_ratio=%.4f retries=%s probability_publishable=false can_execute=false",
+                            memory_ratio or 0.0,
+                            memory_retry_count,
+                        )
+                        return
+                    _MLB_BRIDGE_ACCEPTANCE_LOGGER.warning(
+                        "WOW_V17_MLB_EVENT_BRIDGE_SELF_ACCEPTANCE status=DEFERRED code=MEMORY_PRESSURE memory_ratio=%.4f retry_in_seconds=%s attempt=%s can_execute=false",
+                        memory_ratio or 0.0,
+                        memory_retry_seconds,
+                        memory_attempt + 1,
+                    )
+                    await asyncio.sleep(float(memory_retry_seconds))
+
                 from v17_mlb_bridge_self_acceptance import run_mlb_event_bridge_self_acceptance
                 await run_mlb_event_bridge_self_acceptance(
                     _MLB_BRIDGE_ACCEPTANCE_LOGGER,

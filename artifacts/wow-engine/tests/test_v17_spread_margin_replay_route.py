@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from fastapi import Depends, FastAPI
 from pydantic import ValidationError
 import pytest
@@ -269,3 +270,17 @@ def test_governance_constants_are_fail_closed():
     assert route.DATABASE_MUTATED is False
     assert route.PRODUCTION_REGISTRY_MUTATED is False
     assert route.GLOBAL_TERMINAL_REDUCER == "V17_TERMINAL_REDUCER"
+
+
+
+def test_live_spread_historical_replay_never_runs_on_push():
+    repo_root = Path(__file__).resolve().parents[3]
+    workflow = (
+        repo_root / ".github" / "workflows" / "wow-v17-spread-margin-replay.yml"
+    ).read_text(encoding="utf-8")
+
+    assert "push:" in workflow
+    assert "if: github.event_name == 'workflow_dispatch'" in workflow
+    assert "if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'" not in workflow
+    assert 'WOW_CAN_EXECUTE: "false"' in workflow
+    assert 'WOW_DRY_RUN_ONLY: "true"' in workflow

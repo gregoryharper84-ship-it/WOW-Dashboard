@@ -6,6 +6,7 @@ import logging
 import os
 from dataclasses import asdict
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Callable
 
 from fastapi import FastAPI, Header, HTTPException
@@ -17,6 +18,42 @@ from .shadow_cohort import HourlyCohortTarget
 
 _logger = logging.getLogger("wow.kalshi_weather_v2.empirical_cohort")
 _tasks: set[asyncio.Task] = set()
+
+
+def _weather_memory_pressure() -> tuple[bool, float | None]:
+    """Shed noncritical shadow collection when the shared web process is near OOM."""
+    candidates = (
+        (Path("/sys/fs/cgroup/memory.current"), Path("/sys/fs/cgroup/memory.max")),
+        (
+            Path("/sys/fs/cgroup/memory/memory.usage_in_bytes"),
+            Path("/sys/fs/cgroup/memory/memory.limit_in_bytes"),
+        ),
+    )
+    sample: tuple[int, int] | None = None
+    for current_path, limit_path in candidates:
+        try:
+            current_text = current_path.read_text(encoding="utf-8").strip()
+            limit_text = limit_path.read_text(encoding="utf-8").strip()
+            if not current_text or not limit_text or limit_text.lower() == "max":
+                continue
+            current = int(current_text)
+            limit = int(limit_text)
+        except (OSError, ValueError):
+            continue
+        if current >= 0 and limit > 0:
+            sample = (current, limit)
+            break
+
+    if sample is None:
+        return False, None
+
+    try:
+        max_ratio = float(os.getenv("WOW_KALSHI_WEATHER_EMPIRICAL_MAX_MEMORY_RATIO", "0.85"))
+    except ValueError:
+        max_ratio = 0.85
+    max_ratio = max(0.50, min(max_ratio, 0.95))
+    ratio = sample[0] / sample[1]
+    return ratio >= max_ratio, ratio
 
 
 def _automated_shadow_targets() -> tuple[HourlyCohortTarget, ...]:
@@ -117,6 +154,21 @@ def install_empirical_cohort_scheduler(
                     "can_execute": False,
                 },
             )
+        under_pressure, memory_ratio = _weather_memory_pressure()
+        if under_pressure:
+            _logger.warning(
+                "WOW_KALSHI_WEATHER_EMPIRICAL_COHORT status=SKIPPED_MEMORY_PRESSURE trigger=EXTERNAL_LEAST_PRIVILEGE_SCHEDULER memory_ratio=%.4f probability_publishable=false can_execute=false",
+                memory_ratio or 0.0,
+            )
+            return {
+                "status": "SKIPPED_MEMORY_PRESSURE",
+                "trigger": "EXTERNAL_LEAST_PRIVILEGE_SCHEDULER",
+                "collection_mode": "BOUNDED_ROTATING_CAPTURE_ONLY_SHADOW",
+                "memory_ratio": memory_ratio,
+                "probability_publishable": False,
+                "can_execute": False,
+            }
+
         result = _run_bounded_shadow_cycle(db_client_fn=db_client_fn)
         return {
             **asdict(result),
@@ -175,6 +227,15 @@ async def _run_bounded_shadow_loop(
         await asyncio.sleep(float(initial_delay))
     while True:
         try:
+            under_pressure, memory_ratio = _weather_memory_pressure()
+            if under_pressure:
+                _logger.warning(
+                    "WOW_KALSHI_WEATHER_EMPIRICAL_COHORT status=SKIPPED_MEMORY_PRESSURE collection_mode=BOUNDED_ROTATING_CAPTURE_ONLY_SHADOW memory_ratio=%.4f probability_publishable=false can_execute=false",
+                    memory_ratio or 0.0,
+                )
+                await asyncio.sleep(interval_seconds)
+                continue
+
             result = await asyncio.to_thread(
                 _run_bounded_shadow_cycle,
                 db_client_fn=db_client_fn,
