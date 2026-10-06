@@ -377,6 +377,19 @@ jobs:
             --artifact-name "$artifact" \
             --receipt-out artifacts/wow-engine/v17/.release-evidence/verification-receipt.json \
             --trace-out artifacts/wow-engine/v17/.release-evidence/execution-trace.json
+          python - <<'PY'
+          import base64, json
+          from pathlib import Path
+          root = Path("artifacts/wow-engine/v17/.release-evidence")
+          receipt = json.loads((root / "verification-receipt.json").read_text())
+          envelope = {
+              "receipt": receipt,
+              "raw_response_body_base64": base64.b64encode((root / "health-live.json").read_bytes()).decode("ascii"),
+              "raw_response_headers_base64": base64.b64encode((root / "health-live.headers").read_bytes()).decode("ascii"),
+              "execution_trace_base64": base64.b64encode((root / "execution-trace.json").read_bytes()).decode("ascii"),
+          }
+          (root / "reliability-envelope.json").write_text(json.dumps(envelope, sort_keys=True) + "\n")
+          PY
           echo "artifact=$artifact" >> "$GITHUB_OUTPUT"
           echo "generated=true" >> "$GITHUB_OUTPUT"
 
@@ -400,7 +413,7 @@ jobs:
             -X POST \
             -H "Authorization: Bearer $token" \
             -H "Content-Type: application/json" \
-            --data-binary @artifacts/wow-engine/v17/.release-evidence/verification-receipt.json \
+            --data-binary @artifacts/wow-engine/v17/.release-evidence/reliability-envelope.json \
             https://wow-governed-probability-engine.onrender.com/internal/v17/reliability-receipts \
             > artifacts/wow-engine/v17/.release-evidence/audit-persistence.json
           status=$(jq -r '.status // ""' artifacts/wow-engine/v17/.release-evidence/audit-persistence.json)
@@ -417,6 +430,7 @@ jobs:
           name: ${{ steps.reliability_receipt.outputs.artifact }}
           path: |
             artifacts/wow-engine/v17/.release-evidence/verification-receipt.json
+            artifacts/wow-engine/v17/.release-evidence/reliability-envelope.json
             artifacts/wow-engine/v17/.release-evidence/execution-trace.json
             artifacts/wow-engine/v17/.release-evidence/audit-persistence.json
             artifacts/wow-engine/v17/.release-evidence/health-live.headers
