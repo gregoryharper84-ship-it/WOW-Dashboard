@@ -65,6 +65,10 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: Install Reliability V1 receipt dependency
+        if: steps.pr.outputs.number != ''
+        run: python -m pip install 'pydantic>=2.6,<3'
+
       - name: Resolve exact merged identity
         if: steps.pr.outputs.number != ''
         id: merged
@@ -258,6 +262,8 @@ jobs:
           PR_NUMBER: ${{ steps.pr.outputs.number }}
           HEAD_SHA: ${{ steps.merged.outputs.head_sha }}
           MERGE_SHA: ${{ steps.merged.outputs.merge_sha }}
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          WOW_RENDER_SERVICE_ID: "srv-da7sa9gu01pc73brt80g"
         run: |
           set -euo pipefail
           mkdir -p artifacts/wow-engine/v17/.release-evidence
@@ -269,12 +275,41 @@ jobs:
           gh run list --repo "$GITHUB_REPOSITORY" --branch main --limit 30 \
             --json databaseId,name,headSha,status,conclusion,url \
             > artifacts/wow-engine/v17/.release-evidence/runs.json
+          health_status=$(curl --fail --show-error --silent --retry 3 --retry-all-errors --max-time 30 \
+            -D artifacts/wow-engine/v17/.release-evidence/health-live.headers \
+            -o artifacts/wow-engine/v17/.release-evidence/health-live.json \
+            -w '%{http_code}' \
+            https://wow-governed-probability-engine.onrender.com/health/live)
+          printf '%s\n' "$health_status" > artifacts/wow-engine/v17/.release-evidence/health-live.status
           curl --fail --show-error --silent --retry 3 --retry-all-errors --max-time 30 \
-            https://wow-governed-probability-engine.onrender.com/health/live \
-            > artifacts/wow-engine/v17/.release-evidence/health-live.json
-          curl --fail --show-error --silent --retry 3 --retry-all-errors --max-time 30 \
-            https://wow-governed-probability-engine.onrender.com/governance \
-            > artifacts/wow-engine/v17/.release-evidence/governance.json
+            -D artifacts/wow-engine/v17/.release-evidence/governance.headers \
+            -o artifacts/wow-engine/v17/.release-evidence/governance.json \
+            https://wow-governed-probability-engine.onrender.com/governance
+
+          python - <<'PY'
+          import json, os, urllib.parse, urllib.request
+          out = "artifacts/wow-engine/v17/.release-evidence"
+          api_key = os.environ.get("RENDER_API_KEY", "").strip()
+          service_id = os.environ.get("WOW_RENDER_SERVICE_ID", "").strip()
+          if not api_key or not service_id:
+              open(f"{out}/render-live-sha.txt", "w").write("\n")
+              open(f"{out}/render-live-deploy-id.txt", "w").write("\n")
+              raise SystemExit(0)
+          req = urllib.request.Request(
+              "https://api.render.com/v1/services/" + urllib.parse.quote(service_id, safe="") + "/deploys?limit=20",
+              headers={"Authorization": f"Bearer {api_key}", "Accept": "application/json"},
+          )
+          with urllib.request.urlopen(req, timeout=30) as response:
+              payload = json.load(response)
+          items = payload if isinstance(payload, list) else payload.get("deploys", [])
+          deploys = [item.get("deploy", item) for item in items if isinstance(item, dict)]
+          live = next((d for d in deploys if isinstance(d, dict) and str(d.get("status") or "") == "live"), None)
+          commit = (live or {}).get("commit") if isinstance((live or {}).get("commit"), dict) else {}
+          open(f"{out}/render-live-sha.txt", "w").write(str(commit.get("id") or "") + "\n")
+          open(f"{out}/render-live-deploy-id.txt", "w").write(str((live or {}).get("id") or "") + "\n")
+          with open(f"{out}/render-live-deploy.json", "w") as fh:
+              json.dump(live or {}, fh, indent=2, sort_keys=True)
+          PY
 
       - name: Release / Production Verification agent
         if: steps.pr.outputs.number != ''
@@ -294,6 +329,66 @@ jobs:
             or change sporting probability behavior. If exact production SHA cannot
             be independently proven, return PENDING. Preserve can_execute=false.
           output_schema: '{"type":"object","properties":{"status":{"type":"string","enum":["PRODUCTION_VERIFIED","PENDING","BLOCKED_WITH_EXACT_REASON"]},"main_sha":{"type":"string"},"production_sha":{"type":"string"},"acceptance":{"type":"string"},"reconciliation":{"type":"string"},"blocker":{"type":"string"},"next_action":{"type":"string"}},"required":["status","main_sha","production_sha","acceptance","reconciliation","blocker","next_action"],"additionalProperties":false}'
+
+      - name: Generate Reliability V1 machine receipt
+        if: steps.pr.outputs.number != ''
+        id: reliability_receipt
+        env:
+          RESULT: ${{ steps.release_agent.outputs.structured_output }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+          HEAD_SHA: ${{ steps.merged.outputs.head_sha }}
+          MERGE_SHA: ${{ steps.merged.outputs.merge_sha }}
+          PYTHONPATH: artifacts/wow-engine
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "generated=false" >> "$GITHUB_OUTPUT"
+          status=$(jq -r '.status // ""' <<<"$RESULT")
+          [ "$status" = "PRODUCTION_VERIFIED" ] || exit 0
+          pr_body=$(jq -r '.body // ""' artifacts/wow-engine/v17/.release-evidence/pr.json)
+          version=$(sed -n 's/^Reliability-Receipt-Version:[[:space:]]*\([^[:space:]]\+\)[[:space:]]*$/\1/p' <<<"$pr_body" | head -n1)
+          [ "$version" = "WOW_ENGINEERING_RELIABILITY_V1" ] || exit 0
+          issue=$(sed -n 's/^Terminal-Issue:[[:space:]]*#\([0-9][0-9]*\)[[:space:]]*$/\1/p' <<<"$pr_body" | head -n1)
+          if [ -z "$issue" ]; then
+            issue=$(sed -nE 's/^Incident:[[:space:]]*`?#?([0-9]+)`?[[:space:]]*$/\1/p' <<<"$pr_body" | head -n1)
+          fi
+          [ -n "$issue" ] || { echo "RELIABILITY_RECEIPT_ISSUE_ID_MISSING" >&2; exit 1; }
+          deployed_sha=$(tr -d '\r\n ' < artifacts/wow-engine/v17/.release-evidence/render-live-sha.txt)
+          [ "$deployed_sha" = "$MERGE_SHA" ] || { echo "RELIABILITY_RECEIPT_DEPLOYED_SHA_MISMATCH:$deployed_sha:$MERGE_SHA" >&2; exit 1; }
+          http_status=$(tr -d '\r\n ' < artifacts/wow-engine/v17/.release-evidence/health-live.status)
+          artifact="wow-v17-verification-receipt-$MERGE_SHA"
+          python -m v17.reliability_verify_issue \
+            --issue "$issue" \
+            --pr "$PR_NUMBER" \
+            --pr-head-sha "$HEAD_SHA" \
+            --merge-sha "$MERGE_SHA" \
+            --deployed-sha "$deployed_sha" \
+            --method GET \
+            --route /health/live \
+            --http-status "$http_status" \
+            --headers artifacts/wow-engine/v17/.release-evidence/health-live.headers \
+            --response artifacts/wow-engine/v17/.release-evidence/health-live.json \
+            --workflow "$GITHUB_WORKFLOW" \
+            --workflow-run-id "$GITHUB_RUN_ID" \
+            --artifact-name "$artifact" \
+            --receipt-out artifacts/wow-engine/v17/.release-evidence/verification-receipt.json \
+            --trace-out artifacts/wow-engine/v17/.release-evidence/execution-trace.json
+          echo "artifact=$artifact" >> "$GITHUB_OUTPUT"
+          echo "generated=true" >> "$GITHUB_OUTPUT"
+
+      - name: Upload immutable Reliability V1 evidence artifact
+        if: steps.reliability_receipt.outputs.generated == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.reliability_receipt.outputs.artifact }}
+          path: |
+            artifacts/wow-engine/v17/.release-evidence/verification-receipt.json
+            artifacts/wow-engine/v17/.release-evidence/execution-trace.json
+            artifacts/wow-engine/v17/.release-evidence/health-live.headers
+            artifacts/wow-engine/v17/.release-evidence/health-live.json
+            artifacts/wow-engine/v17/.release-evidence/render-live-deploy.json
+          if-no-files-found: error
+          retention-days: 90
 
       - name: Publish release verification receipt
         if: steps.pr.outputs.number != ''
@@ -318,6 +413,13 @@ jobs:
             echo '~~~json'
             echo "$RESULT"
             echo '~~~'
+            if [ -f artifacts/wow-engine/v17/.release-evidence/verification-receipt.json ]; then
+              echo
+              echo "### Machine VerificationReceipt"
+              echo '~~~json'
+              cat artifacts/wow-engine/v17/.release-evidence/verification-receipt.json
+              echo '~~~'
+            fi
             echo
             echo "`can_execute=false`"
           } > "$body"
