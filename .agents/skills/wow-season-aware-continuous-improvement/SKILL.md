@@ -11,6 +11,11 @@ Runtime generation: `V17_ACTIVE`
 Terminal authority: `V17_TERMINAL_REDUCER`
 `can_execute=false`
 
+## Mandatory department reliability inheritance
+
+Before performing this role, load and obey `.agents/skills/wow-engineering-reliability/SKILL.md` (`WOW_ENGINEERING_RELIABILITY_V1`). This role may add stricter domain rules but may not waive, weaken, or replace that reliability contract. Machine-verifiable evidence outranks prose claims; `FIXED_AND_VERIFIED` requires the complete applicable reliability lifecycle.
+
+
 ## Purpose
 
 Make engineering and Model Factory continuous improvement aware of the actual sports calendar so WOW and LLP prepare before opening day/Week 1 and before postseason transitions instead of reacting after the slate is live.
