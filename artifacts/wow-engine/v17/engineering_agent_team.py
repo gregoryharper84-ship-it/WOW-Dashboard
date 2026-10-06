@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-TEAM_VERSION = "4.0"
+TEAM_VERSION = "4.1"
 
 AGENT_ROLES: dict[str, dict[str, Any]] = {
     "ENGINEERING_LEAD_AGENT": {
@@ -148,6 +148,8 @@ PARKED_WAIT_STATES = {
 USER_CRITICAL_JOURNEYS = ("ALL_SPORTS_PROPS", "ALL_SPORTS_ML_WINNERS", "ALL_SPORTS_UPSETS")
 MAX_ACTIVE_PRODUCT_RECOVERY = 3
 MAX_ACTIVE_SUPPORTING_INVESTIGATION = 1
+MAX_GLOBAL_MUTATION_OWNERS = 1
+MAX_PARALLEL_SUPPORT_LANES = 6
 
 REQUIRED_CLOSURE_FIELDS = {
     "expected_behavior", "observed_behavior", "reproduction", "evidence",
@@ -224,6 +226,10 @@ WAIT_STATE_SUPPORT = {
         "REGRESSION_SAFETY_SUBAGENT",
         "Advance non-conflicting regression, rollback, and acceptance preparation on the same incident.",
     ),
+    "PARALLEL_SUPPORT": (
+        "REGRESSION_SAFETY_SUBAGENT",
+        "Advance non-conflicting reproduction, tests, review, or acceptance evidence while another incident owns mutation/promotion.",
+    ),
 }
 
 FRONTIER_RADAR = {"ADOPT", "TRIAL", "ASSESS", "WATCH", "REJECT", "DUPLICATE"}
@@ -258,6 +264,28 @@ class DualStreamDecision:
             "restoration": self.restoration.as_dict(),
             "acceleration": self.acceleration.as_dict(),
             "acceleration_blocked_reason": self.acceleration_blocked_reason,
+            "can_execute": False,
+            "terminal_authority": "V17_TERMINAL_REDUCER",
+        }
+
+
+@dataclass(frozen=True)
+class CapacityPlan:
+    mutation_owner: PriorityDecision
+    support_incident_ids: tuple[str, ...]
+    queued_incident_ids: tuple[str, ...]
+    support_limit: int
+    eligible_support_count: int
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "mutation_owner": self.mutation_owner.as_dict(),
+            "support_incident_ids": list(self.support_incident_ids),
+            "queued_incident_ids": list(self.queued_incident_ids),
+            "support_limit": self.support_limit,
+            "eligible_support_count": self.eligible_support_count,
+            "parallel_support_lanes": len(self.support_incident_ids),
+            "global_mutation_owner_limit": MAX_GLOBAL_MUTATION_OWNERS,
             "can_execute": False,
             "terminal_authority": "V17_TERMINAL_REDUCER",
         }
@@ -305,6 +333,15 @@ def reliability_blocks_frontier(records: list[dict[str, Any]]) -> bool:
     return False
 
 
+def _priority_sort_key(record: dict[str, Any]) -> tuple[Any, ...]:
+    severity = str(record.get("severity") or "P4").upper()
+    state = str(record.get("state") or "OPEN").upper()
+    release_first = 0 if state in ACTIVE_RELEASE_STATES else 1
+    priority_rank = int(record.get("priority_rank") or 9999)
+    updated = str(record.get("updated_utc") or record.get("created_utc") or "")
+    return (SEVERITY_WEIGHT.get(severity, 99), release_first, priority_rank, updated, _record_id(record))
+
+
 def select_priority_incident(records: list[dict[str, Any]]) -> PriorityDecision:
     actionable = [r for r in records if is_actionable(r)]
     if not actionable:
@@ -316,15 +353,7 @@ def select_priority_incident(records: list[dict[str, Any]]) -> PriorityDecision:
             frontier_allowed=True,
         )
 
-    def sort_key(record: dict[str, Any]) -> tuple[Any, ...]:
-        severity = str(record.get("severity") or "P4").upper()
-        state = str(record.get("state") or "OPEN").upper()
-        release_first = 0 if state in ACTIVE_RELEASE_STATES else 1
-        priority_rank = int(record.get("priority_rank") or 9999)
-        updated = str(record.get("updated_utc") or record.get("created_utc") or "")
-        return (SEVERITY_WEIGHT.get(severity, 99), release_first, priority_rank, updated, _record_id(record))
-
-    chosen = sorted(actionable, key=sort_key)[0]
+    chosen = sorted(actionable, key=_priority_sort_key)[0]
     severity = str(chosen.get("severity") or "P4").upper()
     state = str(chosen.get("state") or "OPEN").upper()
     return PriorityDecision(
@@ -395,16 +424,7 @@ def select_dual_stream_work(records: list[dict[str, Any]]) -> DualStreamDecision
     restoration_record = next(
         record for record in restoration_records if _record_id(record) == restoration.incident_id
     )
-    ordered_acceleration = sorted(
-        acceleration_records,
-        key=lambda record: (
-            SEVERITY_WEIGHT.get(str(record.get("severity") or "P4").upper(), 99),
-            0 if str(record.get("state") or "OPEN").upper() in ACTIVE_RELEASE_STATES else 1,
-            int(record.get("priority_rank") or 9999),
-            str(record.get("updated_utc") or record.get("created_utc") or ""),
-            _record_id(record),
-        ),
-    )
+    ordered_acceleration = sorted(acceleration_records, key=_priority_sort_key)
 
     blocked_reasons: list[str] = []
     for candidate in ordered_acceleration:
@@ -422,6 +442,63 @@ def select_dual_stream_work(records: list[dict[str, Any]]) -> DualStreamDecision
         restoration=restoration,
         acceleration=select_priority_incident([]),
         acceleration_blocked_reason="; ".join(blocked_reasons) or "No non-conflicting acceleration item.",
+    )
+
+
+def select_capacity_plan(
+    records: list[dict[str, Any]],
+    support_limit: int = MAX_PARALLEL_SUPPORT_LANES,
+) -> CapacityPlan:
+    """Select one mutation owner and saturate safe read-only support lanes."""
+    if support_limit < 0 or support_limit > MAX_PARALLEL_SUPPORT_LANES:
+        raise ValueError(
+            f"support_limit must be between 0 and {MAX_PARALLEL_SUPPORT_LANES}"
+        )
+
+    actionable = sorted(
+        (record for record in records if is_actionable(record)),
+        key=_priority_sort_key,
+    )
+    owner = select_priority_incident(actionable)
+    if owner.incident_id is None:
+        return CapacityPlan(
+            mutation_owner=owner,
+            support_incident_ids=(),
+            queued_incident_ids=(),
+            support_limit=support_limit,
+            eligible_support_count=0,
+        )
+
+    owner_record = next(
+        record for record in actionable if _record_id(record) == owner.incident_id
+    )
+    owner_keys = _conflict_keys(owner_record)
+    selected: list[str] = []
+    queued: list[str] = []
+    selected_keys: set[str] = set()
+    eligible_support_count = 0
+
+    for candidate in actionable:
+        candidate_id = _record_id(candidate)
+        if not candidate_id or candidate_id == owner.incident_id:
+            continue
+        keys = _conflict_keys(candidate)
+        if not keys or keys & owner_keys or keys & selected_keys:
+            queued.append(candidate_id)
+            continue
+        eligible_support_count += 1
+        if len(selected) < support_limit:
+            selected.append(candidate_id)
+            selected_keys.update(keys)
+        else:
+            queued.append(candidate_id)
+
+    return CapacityPlan(
+        mutation_owner=owner,
+        support_incident_ids=tuple(selected),
+        queued_incident_ids=tuple(queued),
+        support_limit=support_limit,
+        eligible_support_count=eligible_support_count,
     )
 
 
@@ -588,6 +665,14 @@ def self_check() -> dict[str, Any]:
     assert dual.acceleration.incident_id == "1135"
     assert dual.as_dict()["can_execute"] is False
     assert dual.as_dict()["terminal_authority"] == "V17_TERMINAL_REDUCER"
+    capacity = select_capacity_plan([
+        {"incident_id": "502", "severity": "P0", "state": "OPEN", "priority_rank": 1, "conflict_keys": ["interactive-runtime"]},
+        {"incident_id": "823", "severity": "P1", "state": "OPEN", "priority_rank": 2, "conflict_keys": ["acquisition"]},
+        {"incident_id": "1087", "severity": "P1", "state": "OPEN", "priority_rank": 3, "conflict_keys": ["deploy-verify"]},
+    ])
+    assert capacity.mutation_owner.incident_id == "502"
+    assert capacity.support_incident_ids == ("823", "1087")
+    assert capacity.as_dict()["global_mutation_owner_limit"] == 1
     assert route_failure("ACTION_TRANSPORT_FAILURE") == "transport"
     assert route_failure("MODEL_UNAVAILABLE") == "model-capability"
     assert select_support_subagent({"typed_failure": "ACTION_TRANSPORT_FAILURE"}).subagent == "RUNTIME_TRANSPORT_SUBAGENT"
@@ -612,11 +697,12 @@ def self_check() -> dict[str, Any]:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=["self-check", "priority", "dual-priority", "frontier-gate", "support-route"])
+    parser.add_argument("command", choices=["self-check", "priority", "dual-priority", "capacity-plan", "frontier-gate", "support-route"])
     parser.add_argument("--ledger", default=str(Path(__file__).with_name("incident-ledger.json")))
     parser.add_argument("--typed-failure", default="")
     parser.add_argument("--subsystem", default="")
     parser.add_argument("--wait-state", default="")
+    parser.add_argument("--support-limit", type=int, default=MAX_PARALLEL_SUPPORT_LANES)
     args = parser.parse_args()
 
     if args.command == "self-check":
@@ -640,6 +726,9 @@ def main() -> None:
         return
     if args.command == "dual-priority":
         print(json.dumps(select_dual_stream_work(records).as_dict(), indent=2, sort_keys=True))
+        return
+    if args.command == "capacity-plan":
+        print(json.dumps(select_capacity_plan(records, support_limit=args.support_limit).as_dict(), indent=2, sort_keys=True))
         return
     print(json.dumps({"frontier_allowed": not reliability_blocks_frontier(records)}, sort_keys=True))
 
