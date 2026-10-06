@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
@@ -96,6 +97,34 @@ def _persist(db: Any, payload: dict[str, Any], *, auth_claims: dict[str, Any]) -
         evidence_errors.append("RAW_RESPONSE_DIGEST_MISMATCH")
     if hashlib.sha256(trace_bytes).hexdigest() != receipt.execution_trace_digest:
         evidence_errors.append("EXECUTION_TRACE_DIGEST_MISMATCH")
+    try:
+        trace = json.loads(trace_bytes.decode("utf-8"))
+    except Exception:
+        trace = None
+        evidence_errors.append("EXECUTION_TRACE_JSON_INVALID")
+    if isinstance(trace, dict):
+        trace_bindings = {
+            "contract_version": receipt.contract_version,
+            "issue_id": receipt.issue_id,
+            "pr_number": receipt.pr_number,
+            "exact_head_sha": receipt.exact_head_sha,
+            "merge_sha": receipt.merge_sha,
+            "deployed_render_sha": receipt.deployed_render_sha,
+            "method": receipt.method,
+            "route_tested": receipt.route_tested,
+            "workflow": receipt.sentinel_workflow,
+            "workflow_run_id": receipt.sentinel_workflow_run_id,
+            "can_execute": False,
+        }
+        for field, expected in trace_bindings.items():
+            if trace.get(field) != expected:
+                evidence_errors.append(f"TRACE_BINDING_MISMATCH:{field}")
+        environment_signature = str(trace.get("runtime_environment_signature") or "")
+        if len(environment_signature) != 64 or any(ch not in "0123456789abcdef" for ch in environment_signature):
+            evidence_errors.append("TRACE_ENVIRONMENT_SIGNATURE_INVALID")
+        executed_utc = str(trace.get("executed_utc") or "")
+        if not executed_utc or ("+" not in executed_utc and not executed_utc.endswith("Z")):
+            evidence_errors.append("TRACE_EXECUTED_UTC_INVALID")
     if _header_value(header_bytes, "x-wow-dry-run-only") != "true":
         evidence_errors.append("RAW_DRY_RUN_HEADER_INVALID")
     if _header_value(header_bytes, "x-wow-can-execute") != "false":
