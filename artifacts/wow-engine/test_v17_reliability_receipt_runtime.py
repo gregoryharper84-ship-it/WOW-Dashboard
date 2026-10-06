@@ -197,3 +197,55 @@ def test_receipt_persistence_binds_workflow_run_id_to_oidc_claim():
     assert exc.value.detail["code"] == "RECEIPT_OIDC_BINDING_MISMATCH"
     assert "SENTINEL_WORKFLOW_RUN_ID_MISMATCH" in exc.value.detail["errors"]
     assert db.rows == []
+
+
+def test_receipt_readback_returns_exact_persisted_binding():
+    db = DB()
+    envelope = _envelope()
+    persisted = runtime._persist(db, envelope, auth_claims=AUTH_CLAIMS)
+    result = runtime._readback(
+        db,
+        persisted["sentinel_signature"],
+        auth_claims=AUTH_CLAIMS,
+    )
+
+    assert result["status"] == "FOUND"
+    assert result["receipt"]["sentinel_signature"] == persisted["sentinel_signature"]
+    assert result["receipt"]["merge_sha"] == "b" * 40
+    assert result["receipt"]["deployed_render_sha"] == "b" * 40
+    assert result["receipt"]["route_tested"] == "/health/live"
+    assert result["receipt"]["can_execute"] is False
+
+
+def test_receipt_readback_rejects_wrong_workflow_run_binding():
+    db = DB()
+    envelope = _envelope()
+    persisted = runtime._persist(db, envelope, auth_claims=AUTH_CLAIMS)
+
+    with pytest.raises(HTTPException) as exc:
+        runtime._readback(
+            db,
+            persisted["sentinel_signature"],
+            auth_claims={"run_id": "999"},
+        )
+
+    assert exc.value.status_code == 401
+    assert exc.value.detail["code"] == "RECEIPT_OIDC_BINDING_MISMATCH"
+
+
+def test_receipt_readback_rejects_missing_or_malformed_signature():
+    db = DB()
+
+    with pytest.raises(HTTPException) as malformed:
+        runtime._readback(db, "not-a-signature", auth_claims=AUTH_CLAIMS)
+    assert malformed.value.status_code == 400
+    assert malformed.value.detail["code"] == "INVALID_RECEIPT_SIGNATURE"
+
+    with pytest.raises(HTTPException) as missing:
+        runtime._readback(
+            db,
+            "sha256:" + ("f" * 64),
+            auth_claims=AUTH_CLAIMS,
+        )
+    assert missing.value.status_code == 404
+    assert missing.value.detail["code"] == "RELIABILITY_RECEIPT_NOT_FOUND"
