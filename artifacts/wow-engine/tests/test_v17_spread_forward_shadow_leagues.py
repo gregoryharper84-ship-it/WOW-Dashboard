@@ -124,7 +124,11 @@ def test_nfl_forward_shadow_uses_canonical_live_features_and_exact_line(monkeypa
         return {
             "predicted_home_margin_center": 2.2, "p_cover": 0.55, "p_push": 0.0,
             "p_not_cover": 0.45, "p_cover_given_no_push": 0.55,
-            "research_lower_bound_cover": 0.50, "distribution_sample_n": 200,
+            "research_lower_bound_cover": 0.50,
+            "research_lower_bound_cover_unconditional": 0.50,
+            "research_lower_bound_cover_given_no_push": 0.51,
+            "cover_count": 110, "push_count": 0, "not_cover_count": 90,
+            "non_push_count": 200, "distribution_sample_n": 200,
         }
 
     monkeypatch.setattr(shadow, "score_home_spread", fake_score)
@@ -148,6 +152,9 @@ def test_nfl_forward_shadow_uses_canonical_live_features_and_exact_line(monkeypa
     assert result["moneyline_probability_used"] is False
     assert result["spread_line_used_as_feature"] is False
     assert result["probability_publishable"] is False
+    assert result["research_lower_bound_cover_unconditional"] == 0.50
+    assert result["research_lower_bound_cover_given_no_push"] == 0.51
+    assert result["non_push_count"] == 200
     assert result["rank_eligible"] is False
     assert result["can_execute"] is False
     assert abs(result["p_cover"] + result["p_push"] + result["p_not_cover"] - 1.0) < 1e-12
