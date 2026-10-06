@@ -6,6 +6,7 @@ from v17.engineering_agent_team import (
     SPECIALIST_SUBAGENTS,
     is_actionable,
     reliability_blocks_frontier,
+    select_capacity_plan,
     select_dual_stream_work,
     select_priority_incident,
     select_support_subagent,
@@ -211,6 +212,47 @@ def test_dual_stream_skips_conflicting_acceleration_for_next_safe_candidate() ->
         ]
     )
     assert decision.acceleration.incident_id == "PM-1136"
+
+
+def test_capacity_plan_saturates_non_conflicting_support_lanes_behind_one_owner() -> None:
+    plan = select_capacity_plan(
+        [
+            {"postmortem_id": "P0", "severity": "P0", "state": "OPEN", "priority_rank": 1, "conflict_keys": ["runtime"]},
+            {"postmortem_id": "P1-A", "severity": "P1", "state": "OPEN", "priority_rank": 2, "conflict_keys": ["acquisition"]},
+            {"postmortem_id": "P1-B", "severity": "P1", "state": "OPEN", "priority_rank": 3, "conflict_keys": ["persistence"]},
+            {"postmortem_id": "P2-C", "severity": "P2", "state": "OPEN", "priority_rank": 4, "conflict_keys": ["ci"]},
+        ],
+        support_limit=6,
+    )
+    assert plan.mutation_owner.incident_id == "P0"
+    assert plan.support_incident_ids == ("P1-A", "P1-B", "P2-C")
+    assert plan.queued_incident_ids == ()
+    assert plan.as_dict()["parallel_support_lanes"] == 3
+    assert plan.as_dict()["global_mutation_owner_limit"] == 1
+    assert plan.as_dict()["can_execute"] is False
+
+
+def test_capacity_plan_queues_conflicts_and_honors_support_limit() -> None:
+    plan = select_capacity_plan(
+        [
+            {"postmortem_id": "OWNER", "severity": "P0", "state": "OPEN", "priority_rank": 1, "conflict_keys": ["runtime"]},
+            {"postmortem_id": "CONFLICT", "severity": "P1", "state": "OPEN", "priority_rank": 2, "conflict_keys": ["runtime"]},
+            {"postmortem_id": "SAFE-1", "severity": "P1", "state": "OPEN", "priority_rank": 3, "conflict_keys": ["acquisition"]},
+            {"postmortem_id": "SAFE-2", "severity": "P1", "state": "OPEN", "priority_rank": 4, "conflict_keys": ["persistence"]},
+        ],
+        support_limit=1,
+    )
+    assert plan.mutation_owner.incident_id == "OWNER"
+    assert plan.support_incident_ids == ("SAFE-1",)
+    assert set(plan.queued_incident_ids) == {"CONFLICT", "SAFE-2"}
+    assert plan.eligible_support_count == 2
+
+
+def test_capacity_plan_rejects_unsafe_unbounded_support_limit() -> None:
+    import pytest
+
+    with pytest.raises(ValueError, match="support_limit"):
+        select_capacity_plan([], support_limit=999)
 
 
 def test_specialist_routing_preserves_exact_failure_ownership() -> None:
