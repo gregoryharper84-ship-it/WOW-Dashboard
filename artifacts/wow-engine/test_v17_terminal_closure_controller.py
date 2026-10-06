@@ -376,3 +376,108 @@ def test_untrusted_terminal_receipt_cannot_short_circuit_closure():
     result = evaluate(state, now=NOW)
 
     assert result["status"] == "WAITING_FOR_TERMINAL_RECEIPT"
+
+
+# Reliability V1 adversarial closure gates.
+from v17.receipt_schema import (
+    CONTRACT_VERSION,
+    VerificationReceipt,
+    expected_sentinel_signature,
+    schema_hash,
+)
+
+STRICT_HEAD = "a" * 40
+STRICT_MERGE = "b" * 40
+STRICT_DIGEST = "c" * 64
+STRICT_TRACE = "d" * 64
+
+
+def _strict_receipt(**overrides):
+    payload = {
+        "contract_version": CONTRACT_VERSION,
+        "issue_id": 1127,
+        "pr_number": 1437,
+        "exact_head_sha": STRICT_HEAD,
+        "merge_sha": STRICT_MERGE,
+        "deployed_render_sha": STRICT_MERGE,
+        "method": "GET",
+        "route_tested": "/health/live",
+        "schema_hash": schema_hash(),
+        "http_status": 200,
+        "dry_run_header_present": True,
+        "can_execute_header_false": True,
+        "raw_response_digest": STRICT_DIGEST,
+        "execution_trace_digest": STRICT_TRACE,
+        "timestamp_utc": NOW,
+        "sentinel_workflow": "wow-v17-release-production-verification-agent",
+        "sentinel_workflow_run_id": 999,
+        "sentinel_signature": "sha256:" + ("0" * 64),
+        "audit_artifact_name": "wow-v17-verification-receipt-" + STRICT_MERGE,
+    }
+    payload.update(overrides)
+    unsigned = VerificationReceipt.model_validate(payload)
+    if "sentinel_signature" not in overrides:
+        payload["sentinel_signature"] = expected_sentinel_signature(unsigned)
+    return VerificationReceipt.model_validate(payload).model_dump(mode="json")
+
+
+def _strict_state():
+    return {
+        "pr": {
+            "number": 1437,
+            "head": {"sha": STRICT_HEAD},
+            "body": (
+                "Terminal-Closure-Autonomous: true\n"
+                "Terminal-Issue: #1127\n"
+                "Reliability-Receipt-Version: WOW_ENGINEERING_RELIABILITY_V1\n"
+            ),
+            "merge_commit_sha": STRICT_MERGE,
+            "merged_at": "2026-10-04T01:30:00Z",
+        },
+        "pr_comments": [{
+            "user": TRUSTED_USER,
+            "body": (
+                "## Release / Production Verification Agent\n\n"
+                f"- protected_main_merge_sha: \u0060{STRICT_MERGE}\u0060\n\n"
+                "~~~json\n"
+                + '{"status":"PRODUCTION_VERIFIED","production_sha":"' + STRICT_MERGE + '"}'
+                + "\n~~~"
+            ),
+        }],
+        "issue_comments": [],
+        "runs": [],
+        "verification_receipts": [_strict_receipt()],
+        "current_main_sha": STRICT_MERGE,
+    }
+
+
+def test_reliability_v1_valid_machine_receipt_allows_ready_transition():
+    result = evaluate(_strict_state(), now=NOW)
+    assert result["status"] == "READY_FOR_RECEIPT"
+    assert result["machine_receipt"]["merge_sha"] == STRICT_MERGE
+    assert result["can_execute"] is False
+
+
+def test_reliability_v1_prose_only_terminal_claim_is_rejected():
+    state = _strict_state()
+    state["verification_receipts"] = []
+    state["issue_comments"] = [{
+        "user": TRUSTED_USER,
+        "body": (
+            f"{TERMINAL_RECEIPT_HEADING}\n"
+            f"- **Commit SHA:** \u0060{STRICT_MERGE}\u0060\n"
+            "- **Status:** **FIXED_AND_VERIFIED**"
+        ),
+    }]
+    result = evaluate(state, now=NOW)
+    assert result["status"] != "FIXED_AND_VERIFIED"
+    assert "INVALID_RECEIPT_SCHEMA" in result["blockers"]
+    assert "RECEIPT_MISSING" in result["receipt_errors"]
+
+
+def test_reliability_v1_wrong_deployed_sha_is_rejected():
+    state = _strict_state()
+    state["verification_receipts"] = [_strict_receipt(deployed_render_sha="e" * 40)]
+    result = evaluate(state, now=NOW)
+    assert "INVALID_RECEIPT_SCHEMA" in result["blockers"]
+    assert "DEPLOYED_SHA_NOT_EXACT_MERGE" in result["receipt_errors"]
