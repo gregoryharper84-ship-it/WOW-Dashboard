@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from types import SimpleNamespace
-
 import pytest
 from fastapi import FastAPI
 
@@ -56,8 +54,10 @@ def test_registry_generation_hashes_request_and_response_contracts(monkeypatch) 
 
     assert prop["request_schema_hash"] == "b27c0e4cbcc7a682"
     assert prop["response_schema_hash"] == "82ef96cebaf5fbe1"
+    assert prop["acceptance_contract_hash"] == "f8350a1dde0b7345"
     assert spread["request_schema_hash"] == "44136fa355b3678a"
     assert spread["response_schema_hash"] == "82ef96cebaf5fbe1"
+    assert spread["acceptance_contract_hash"] == "969dd07fd7eb6334"
     assert all(row["can_execute_required"] is False for row in registry["routes"])
     assert registry["terminal_authority"] == "V17_TERMINAL_REDUCER"
 
