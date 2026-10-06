@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from pathlib import Path
 from types import SimpleNamespace
 
 from fastapi import Depends, FastAPI
@@ -131,3 +132,16 @@ def test_maintenance_route_is_internal_and_auth_wrapped(monkeypatch):
         db_client_fn=lambda: SimpleNamespace(),
     )
     assert sum(route.path == "/internal/v17/basketball-model-maintenance" for route in app.routes) == 1
+
+
+
+def test_live_basketball_maintenance_never_runs_on_push():
+    repo_root = Path(__file__).resolve().parents[2]
+    workflow = (
+        repo_root / ".github" / "workflows" / "wow-v17-basketball-model-maintenance.yml"
+    ).read_text(encoding="utf-8")
+
+    assert "if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'" in workflow
+    assert "(github.event_name == 'push' && github.ref == 'refs/heads/main')" not in workflow
+    assert 'WOW_CAN_EXECUTE: "false"' in workflow
+    assert 'WOW_DRY_RUN_ONLY: "true"' in workflow
