@@ -57,7 +57,7 @@ jobs:
             head_repo=$(jq -r '.head.repo.full_name // ""' <<<"$pr")
             [ "$head_repo" = "$GITHUB_REPOSITORY" ] || continue
             case "$title" in
-              "fix(v17):"*|"fix(ci):"*) ;;
+              "fix("*) ;;
               *) continue ;;
             esac
 
