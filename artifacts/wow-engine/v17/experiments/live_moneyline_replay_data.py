@@ -82,13 +82,14 @@ def _cached_csv(season: int, cache_dir: Path) -> tuple[pd.DataFrame, dict[str, A
     wanted = {
         "play_id", "game_id", "season", "qtr", "home_team", "away_team", "posteam",
         "game_seconds_remaining", "total_home_score", "total_away_score",
-        "down", "ydstogo", "yardline_100", "home_timeouts_remaining",
-        "away_timeouts_remaining",
+        "posteam_score", "defteam_score", "down", "ydstogo", "yardline_100",
+        "posteam_timeouts_remaining", "defteam_timeouts_remaining",
     }
     frame = pd.read_csv(path, low_memory=False, usecols=lambda c: c in wanted)
     required = {
         "play_id", "game_id", "season", "qtr", "home_team", "away_team", "posteam",
         "game_seconds_remaining", "total_home_score", "total_away_score",
+        "posteam_score", "defteam_score",
     }
     missing = sorted(required - set(frame.columns))
     if missing:
@@ -113,8 +114,8 @@ def build_nfl_replay(seasons: Iterable[int], cache_dir: str | Path) -> tuple[pd.
 
     numeric = [
         "play_id", "season", "qtr", "game_seconds_remaining", "total_home_score",
-        "total_away_score", "down", "ydstogo", "yardline_100",
-        "home_timeouts_remaining", "away_timeouts_remaining",
+        "total_away_score", "posteam_score", "defteam_score", "down", "ydstogo",
+        "yardline_100", "posteam_timeouts_remaining", "defteam_timeouts_remaining",
     ]
     for col in numeric:
         if col not in raw.columns:
@@ -137,25 +138,37 @@ def build_nfl_replay(seasons: Iterable[int], cache_dir: str | Path) -> tuple[pd.
         & raw["down"].notna()
         & raw["ydstogo"].notna()
         & raw["yardline_100"].notna()
-        & raw["total_home_score"].notna()
-        & raw["total_away_score"].notna()
+        & raw["posteam_score"].notna()
+        & raw["defteam_score"].notna()
     ].copy()
     states["minute_bucket"] = np.floor(states["game_seconds_remaining"] / 60.0).astype(int)
     states = states.sort_values(["game_id", "minute_bucket", "play_id"]).groupby(
         ["game_id", "minute_bucket"], as_index=False, sort=False
     ).tail(1)
 
-    states["score_diff"] = states["total_home_score"] - states["total_away_score"]
+    # Keep the entire NFL feature vector at the start-of-play timestamp.
+    # nflfastR documents posteam_score/defteam_score and the play clock/state
+    # variables as start-of-play fields; end-of-play totals are used only to
+    # establish the final game label.
+    states["possession_home"] = (states["posteam"] == states["home_team"]).astype(float)
+    states["home_score_start"] = np.where(
+        states["possession_home"] == 1.0, states["posteam_score"], states["defteam_score"]
+    )
+    states["away_score_start"] = np.where(
+        states["possession_home"] == 1.0, states["defteam_score"], states["posteam_score"]
+    )
+    states["score_diff"] = states["home_score_start"] - states["away_score_start"]
     states["seconds_remaining"] = states["game_seconds_remaining"]
     states["remaining_fraction"] = states["seconds_remaining"] / 3600.0
     states["score_time_pressure"] = states["score_diff"] / np.sqrt((states["seconds_remaining"] / 60.0) + 1.0)
-    states["possession_home"] = (states["posteam"] == states["home_team"]).astype(float)
     states["down"] = states["down"].astype(float)
     states["ydstogo"] = states["ydstogo"].clip(lower=0, upper=99).astype(float)
     offense_advantage = 50.0 - states["yardline_100"].astype(float)
     states["field_position_home"] = np.where(states["possession_home"] == 1.0, offense_advantage, -offense_advantage)
-    states["home_timeouts"] = states["home_timeouts_remaining"].fillna(3).clip(0, 3)
-    states["away_timeouts"] = states["away_timeouts_remaining"].fillna(3).clip(0, 3)
+    posteam_tos = states["posteam_timeouts_remaining"].fillna(3).clip(0, 3)
+    defteam_tos = states["defteam_timeouts_remaining"].fillna(3).clip(0, 3)
+    states["home_timeouts"] = np.where(states["possession_home"] == 1.0, posteam_tos, defteam_tos)
+    states["away_timeouts"] = np.where(states["possession_home"] == 1.0, defteam_tos, posteam_tos)
     states["timeout_diff"] = states["home_timeouts"] - states["away_timeouts"]
     states["late_possession_home"] = states["possession_home"] * (1.0 - states["remaining_fraction"])
     states["home_win"] = states["game_id"].astype(str).map(final_home_win)
