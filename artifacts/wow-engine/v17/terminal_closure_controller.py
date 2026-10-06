@@ -347,10 +347,11 @@ def evaluate(state: dict[str, Any], *, now: datetime | None = None) -> dict[str,
     if release_candidates:
         release_run = release_candidates[-1]
 
-    if release_ok and acceptance is not None and release_payload is not None:
+    if release_ok and acceptance is not None and release_payload is not None and machine_receipt_ok:
         return {
             **base,
             "status": "READY_FOR_RECEIPT",
+            "machine_receipt": machine_receipt,
             "receipt_markdown": _receipt(
                 issue_number=meta["issue_number"],
                 merge_sha=merge_sha,
