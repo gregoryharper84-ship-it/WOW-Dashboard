@@ -211,8 +211,6 @@ def build_registry(app: Any) -> dict[str, Any]:
         "schema_version": SCHEMA_VERSION,
         "policy_version": POLICY_VERSION,
         "production_entrypoint": PRODUCTION_ENTRYPOINT,
-        "wow_openapi_sha256": _file_hash(WOW_OPENAPI),
-        "llp_openapi_sha256": _file_hash(LLP_OPENAPI),
         "total_acceptance_routes": len(entries),
         "routes": entries,
         "terminal_authority": "V17_TERMINAL_REDUCER",
