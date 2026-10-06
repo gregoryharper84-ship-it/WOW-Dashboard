@@ -14,6 +14,11 @@ import re
 from pathlib import Path
 from typing import Any
 
+try:
+    from v17.receipt_schema import CONTRACT_VERSION, VerificationReceipt, validate_terminal_receipt
+except ImportError:  # pragma: no cover - direct script execution
+    from receipt_schema import CONTRACT_VERSION, VerificationReceipt, validate_terminal_receipt
+
 CAN_EXECUTE = False
 TERMINAL_RECEIPT_HEADING = "### Terminal Verification Receipt"
 BLOCKER_MARKER = "<!-- WOW_TERMINAL_CLOSURE_BLOCKER -->"
@@ -63,6 +68,7 @@ def _metadata(body: str) -> dict[str, Any]:
         or _FALLBACK_ISSUE_RE.search(body)
     )
     acceptance_match = _ACCEPTANCE_RE.search(body)
+    reliability_match = _RELIABILITY_RE.search(body)
     return {
         "autonomous": (
             AUTONOMOUS_MARKER in body
@@ -73,6 +79,11 @@ def _metadata(body: str) -> dict[str, Any]:
             acceptance_match.group("workflow").strip()
             if acceptance_match
             else "none"
+        ),
+        "reliability_receipt_version": (
+            reliability_match.group("version").strip()
+            if reliability_match
+            else None
         ),
     }
 
@@ -139,6 +150,47 @@ def _release_verified(
             continue
         return True, payload
     return False, None
+
+
+def _machine_receipt_status(
+    state: dict[str, Any],
+    *,
+    issue_number: int | None,
+    pr_number: int | None,
+    pr_head_sha: str,
+    merge_sha: str,
+    reliability_version: str | None,
+) -> tuple[bool, list[str], dict[str, Any] | None]:
+    if reliability_version is None:
+        return True, [], None
+    if reliability_version != CONTRACT_VERSION:
+        return False, [f"UNSUPPORTED_RELIABILITY_RECEIPT_VERSION:{reliability_version}"], None
+    if issue_number is None or pr_number is None or not pr_head_sha or not merge_sha:
+        return False, ["RECEIPT_IDENTITY_INCOMPLETE"], None
+    raw_receipts = state.get("verification_receipts")
+    if not isinstance(raw_receipts, list) or not raw_receipts:
+        return False, ["RECEIPT_MISSING"], None
+    observed_errors: list[str] = []
+    for raw in reversed(raw_receipts):
+        if not isinstance(raw, dict):
+            observed_errors.append("RECEIPT_NOT_OBJECT")
+            continue
+        try:
+            receipt = VerificationReceipt.model_validate(raw)
+        except Exception as exc:
+            observed_errors.append(f"SCHEMA_PARSE_FAILED:{type(exc).__name__}")
+            continue
+        errors = validate_terminal_receipt(
+            receipt,
+            expected_issue_id=issue_number,
+            expected_pr_number=pr_number,
+            expected_pr_head_sha=pr_head_sha,
+            expected_merge_sha=merge_sha,
+        )
+        if not errors:
+            return True, [], receipt.model_dump(mode="json")
+        observed_errors.extend(errors)
+    return False, observed_errors or ["RECEIPT_INVALID"], None
 
 
 def _run_name(run: dict[str, Any]) -> str:
