@@ -98,6 +98,9 @@ MLB_1IP_LINE_EXPANSION_MAINTENANCE_WORKFLOW_REF = (
 SPREAD_MARGIN_REPLAY_WORKFLOW_REF = (
     f"{REPOSITORY}/.github/workflows/wow-v17-spread-margin-replay.yml@{REF}"
 )
+RELEASE_VERIFICATION_WORKFLOW_REF = (
+    f"{REPOSITORY}/.github/workflows/wow-v17-release-production-verification-agent.yml@{REF}"
+)
 ALLOWED_WORKFLOW_REFS = frozenset({
     WORKFLOW_REF,
     DAILY_SNAPSHOT_WORKFLOW_REF,
@@ -115,6 +118,7 @@ ALLOWED_WORKFLOW_REFS = frozenset({
     FIRST_SIX_TRANSPORT_RESCUE_WORKFLOW_REF,
     MLB_1IP_LINE_EXPANSION_MAINTENANCE_WORKFLOW_REF,
     SPREAD_MARGIN_REPLAY_WORKFLOW_REF,
+    RELEASE_VERIFICATION_WORKFLOW_REF,
 })
 # Forward-evidence producers and the bounded priority lifecycle are isolated from
 # the older automation set so their protected-main trust surface is explicit.
