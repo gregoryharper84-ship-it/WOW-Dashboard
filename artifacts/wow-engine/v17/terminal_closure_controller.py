@@ -290,6 +290,9 @@ def evaluate(state: dict[str, Any], *, now: datetime | None = None) -> dict[str,
     body = str(pr.get("body") or "")
     meta = _metadata(body)
     merge_sha = str(pr.get("merge_commit_sha") or "").strip()
+    pr_number = int(pr.get("number")) if str(pr.get("number") or "").isdigit() else None
+    pr_head = pr.get("head") if isinstance(pr.get("head"), dict) else {}
+    pr_head_sha = str(pr_head.get("sha") or pr.get("head_sha") or "").strip().lower()
     merged_at = _iso(pr.get("merged_at"))
     pr_comments = state.get("pr_comments") if isinstance(state.get("pr_comments"), list) else []
     issue_comments = state.get("issue_comments") if isinstance(state.get("issue_comments"), list) else []
@@ -300,6 +303,9 @@ def evaluate(state: dict[str, Any], *, now: datetime | None = None) -> dict[str,
         "autonomous": meta["autonomous"],
         "issue_number": meta["issue_number"],
         "acceptance_workflow": meta["acceptance_workflow"],
+        "reliability_receipt_version": meta["reliability_receipt_version"],
+        "pr_number": pr_number,
+        "pr_head_sha": pr_head_sha,
         "merge_sha": merge_sha,
         "can_execute": False,
     }
@@ -307,8 +313,25 @@ def evaluate(state: dict[str, Any], *, now: datetime | None = None) -> dict[str,
         return {**base, "status": "SKIP", "reason": "TERMINAL_CLOSURE_NOT_OPTED_IN"}
     if not merge_sha or merged_at is None:
         return {**base, "status": "BLOCKED_WITH_EXACT_REASON", "blockers": ["MERGE_IDENTITY_INCOMPLETE"]}
-    if _has_terminal_receipt(issue_comments, merge_sha) or _has_terminal_receipt(pr_comments, merge_sha):
-        return {**base, "status": "FIXED_AND_VERIFIED", "reason": "TERMINAL_RECEIPT_ALREADY_PRESENT"}
+    machine_receipt_ok, machine_receipt_errors, machine_receipt = _machine_receipt_status(
+        state,
+        issue_number=meta["issue_number"],
+        pr_number=pr_number,
+        pr_head_sha=pr_head_sha,
+        merge_sha=merge_sha,
+        reliability_version=meta["reliability_receipt_version"],
+    )
+    existing_terminal_receipt = (
+        _has_terminal_receipt(issue_comments, merge_sha)
+        or _has_terminal_receipt(pr_comments, merge_sha)
+    )
+    if existing_terminal_receipt and machine_receipt_ok:
+        return {
+            **base,
+            "status": "FIXED_AND_VERIFIED",
+            "reason": "TERMINAL_RECEIPT_ALREADY_PRESENT",
+            "machine_receipt": machine_receipt,
+        }
 
     release_ok, release_payload = _release_verified(pr_comments, merge_sha)
     acceptance = _exact_acceptance_run(runs, meta["acceptance_workflow"], merge_sha)
@@ -336,6 +359,8 @@ def evaluate(state: dict[str, Any], *, now: datetime | None = None) -> dict[str,
         }
 
     blockers: list[str] = []
+    if not machine_receipt_ok:
+        blockers.append("INVALID_RECEIPT_SCHEMA")
     if not release_ok:
         blockers.append("PRODUCTION_VERIFICATION_RECEIPT_MISSING")
     if acceptance is None:
@@ -373,6 +398,7 @@ def evaluate(state: dict[str, Any], *, now: datetime | None = None) -> dict[str,
         **base,
         "status": status,
         "blockers": blockers,
+        "receipt_errors": machine_receipt_errors,
         "age_minutes": age_minutes,
         "dispatch_release_verification": dispatch_release,
         "dispatch_acceptance": dispatch_acceptance,
