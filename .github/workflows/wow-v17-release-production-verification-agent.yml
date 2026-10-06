@@ -383,9 +383,6 @@ jobs:
       - name: Persist Reliability V1 receipt to append-only ledger
         if: steps.reliability_receipt.outputs.generated == 'true'
         id: persist_reliability_receipt
-        env:
-          ACTIONS_ID_TOKEN_REQUEST_URL: ${{ env.ACTIONS_ID_TOKEN_REQUEST_URL }}
-          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ${{ env.ACTIONS_ID_TOKEN_REQUEST_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail
