@@ -82,9 +82,11 @@ def test_post_deploy_orchestrator_verifies_spread_before_heavy_smoke():
 
     assert "needs:" not in spread_section
     assert "needs: spread-forward" in cert_section
-    assert "needs: spread-certification" in priority_section
+    assert "needs: [spread-forward, spread-certification]" in priority_section
     assert "needs: priority-props" in golden_section
-    assert "always() &&" not in text
+    assert "always() &&" in cert_section
+    assert "always() &&" in priority_section
+    assert "always() &&" in golden_section
     assert "uses: ./.github/workflows/wow-v17-priority-prop-lifecycle.yml" in text
     assert "post_deploy_smoke: true" in text
     assert "uses: ./.github/workflows/wow-v17-spread-forward-production-canary.yml" in text

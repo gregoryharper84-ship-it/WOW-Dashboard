@@ -1,0 +1,196 @@
+name: wow-v17-terminal-closure-controller
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+  workflow_run:
+    workflows:
+      - "wow-v17-release-production-verification-agent"
+      - "wow-v17-nightly-multiscout"
+      - "wow-v17-nightly-engineering-scan"
+      - "wow-v17-render-production-deploy"
+    types: [completed]
+    branches: [main]
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  checks: read
+  contents: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: wow-v17-terminal-closure-controller
+  cancel-in-progress: false
+
+jobs:
+  terminal-closure:
+    name: Drive merged autonomous PRs to terminal receipt
+    if: github.event_name != 'pull_request' || github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ github.token }}
+      WOW_CAN_EXECUTE: "false"
+      WOW_DRY_RUN_ONLY: "true"
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: main
+          persist-credentials: false
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Resolve autonomous merged PRs
+        id: candidates
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/terminal-prs.txt"
+          : > "$out"
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+            printf '%s\n' "${{ github.event.pull_request.number }}" > "$out"
+          else
+            gh api "/repos/${GITHUB_REPOSITORY}/pulls?state=closed&sort=updated&direction=desc&per_page=50" \
+              --jq '.[] | select(.merged_at != null) | select((((.body // "") | contains("Terminal-Closure-Autonomous: true")) or (((.body // "") | contains("Morning-Green-Autonomous: true")))) | .number' \
+              > "$out"
+          fi
+          sort -u "$out" -o "$out"
+          echo "count=$(grep -c . "$out" || true)" >> "$GITHUB_OUTPUT"
+          cat "$out" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Evaluate, unblock, and close terminal receipts
+        if: steps.candidates.outputs.count != '0'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$WOW_CAN_EXECUTE" = "false"
+          test "$WOW_DRY_RUN_ONLY" = "true"
+          controller="artifacts/wow-engine/v17/terminal_closure_controller.py"
+          failed_dispatch=0
+
+          while read -r pr_number; do
+            [ -n "$pr_number" ] || continue
+            work="$RUNNER_TEMP/terminal-$pr_number"
+            mkdir -p "$work"
+
+            gh api "/repos/${GITHUB_REPOSITORY}/pulls/$pr_number" > "$work/pr.json"
+            body=$(jq -r '.body // ""' "$work/pr.json")
+            if ! grep -Fq 'Terminal-Closure-Autonomous: true' <<<"$body" &&
+               ! grep -Fq 'Morning-Green-Autonomous: true' <<<"$body"; then
+              continue
+            fi
+
+            merge_sha=$(jq -r '.merge_commit_sha // ""' "$work/pr.json")
+            [ -n "$merge_sha" ] || continue
+            issue_number=$(sed -n 's/^Terminal-Issue:[[:space:]]*#\([0-9][0-9]*\)[[:space:]]*$/\1/p' <<<"$body" | head -n1)
+            if [ -z "${issue_number:-}" ]; then
+              issue_number=$(sed -nE 's/^Incident:[[:space:]]*`?#?([0-9]+)`?[[:space:]]*$/\1/p' <<<"$body" | head -n1)
+            fi
+            acceptance=$(sed -n 's/^Morning-Green-Acceptance-Workflow:[[:space:]]*\([^[:space:]]\+\)[[:space:]]*$/\1/p' <<<"$body" | head -n1)
+            acceptance=${acceptance:-none}
+
+            gh api "/repos/${GITHUB_REPOSITORY}/issues/$pr_number/comments?per_page=100" > "$work/pr-comments.json"
+            printf '[]\n' > "$work/issue-comments.json"
+            if [ -n "${issue_number:-}" ]; then
+              gh api "/repos/${GITHUB_REPOSITORY}/issues/$issue_number/comments?per_page=100" > "$work/issue-comments.json"
+            fi
+            gh api "/repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=$merge_sha&per_page=100" \
+              --jq '.workflow_runs' > "$work/runs.json"
+            current_main_sha=$(gh api "/repos/${GITHUB_REPOSITORY}/commits/main" --jq '.sha')
+
+            jq -n \
+              --slurpfile pr "$work/pr.json" \
+              --slurpfile pr_comments "$work/pr-comments.json" \
+              --slurpfile issue_comments "$work/issue-comments.json" \
+              --slurpfile runs "$work/runs.json" \
+              --arg current_main_sha "$current_main_sha" \
+              '{
+                pr: $pr[0],
+                pr_comments: $pr_comments[0],
+                issue_comments: $issue_comments[0],
+                runs: $runs[0],
+                current_main_sha: $current_main_sha
+              }' > "$work/state.json"
+
+            python "$controller" --state "$work/state.json" --output "$work/decision.json"
+            status=$(jq -r '.status' "$work/decision.json")
+            echo "PR #$pr_number -> $status" >> "$GITHUB_STEP_SUMMARY"
+
+            if [ "$status" = "READY_FOR_RECEIPT" ]; then
+              jq -r '.receipt_markdown' "$work/decision.json" > "$work/receipt.md"
+              gh pr comment "$pr_number" --repo "$GITHUB_REPOSITORY" --body-file "$work/receipt.md"
+              if [ -n "${issue_number:-}" ]; then
+                gh issue comment "$issue_number" --repo "$GITHUB_REPOSITORY" --body-file "$work/receipt.md"
+                issue_state=$(gh api "/repos/${GITHUB_REPOSITORY}/issues/$issue_number" --jq '.state')
+                if [ "$issue_state" = "open" ]; then
+                  gh issue close "$issue_number" --repo "$GITHUB_REPOSITORY"
+                fi
+              fi
+              continue
+            fi
+
+            if [ "$(jq -r '.dispatch_release_verification // false' "$work/decision.json")" = "true" ]; then
+              if ! gh workflow run wow-v17-release-production-verification-agent.yml \
+                --repo "$GITHUB_REPOSITORY" --ref main -f pr_number="$pr_number"; then
+                failed_dispatch=1
+                printf '%s\n' '<!-- WOW_TERMINAL_CLOSURE_BLOCKER -->' \
+                  '### Terminal closure blocker' \
+                  '- **Blocker:** `TERMINAL_CONTROLLER_RELEASE_DISPATCH_FAILED`' \
+                  '- **Status:** **BLOCKED_WITH_EXACT_REASON**' \
+                  '- **can_execute:** `false`' > "$work/dispatch-blocker.md"
+                gh pr comment "$pr_number" --repo "$GITHUB_REPOSITORY" --body-file "$work/dispatch-blocker.md"
+              fi
+            fi
+
+            if [ "$(jq -r '.dispatch_acceptance // false' "$work/decision.json")" = "true" ]; then
+              case "$acceptance" in
+                wow-v17-nightly-multiscout.yml|wow-v17-nightly-engineering-scan.yml)
+                  if ! gh workflow run "$acceptance" --repo "$GITHUB_REPOSITORY" --ref main; then
+                    failed_dispatch=1
+                    printf '%s\n' '<!-- WOW_TERMINAL_CLOSURE_BLOCKER -->' \
+                      '### Terminal closure blocker' \
+                      "- **Blocker:** `TERMINAL_CONTROLLER_ACCEPTANCE_DISPATCH_FAILED:$acceptance`" \
+                      '- **Status:** **BLOCKED_WITH_EXACT_REASON**' \
+                      '- **can_execute:** `false`' > "$work/dispatch-blocker.md"
+                    gh pr comment "$pr_number" --repo "$GITHUB_REPOSITORY" --body-file "$work/dispatch-blocker.md"
+                  fi
+                  ;;
+                none) ;;
+                *)
+                  failed_dispatch=1
+                  echo "TERMINAL_CONTROLLER_ACCEPTANCE_NOT_WHITELISTED:$acceptance" >&2
+                  ;;
+              esac
+            fi
+
+            if [ "$status" = "BLOCKED_WITH_EXACT_REASON" ]; then
+              if ! jq -e --arg marker '<!-- WOW_TERMINAL_CLOSURE_BLOCKER -->' \
+                'any(.[]; (.body // "") | contains($marker))' "$work/pr-comments.json" >/dev/null; then
+                jq -r '.blocker_markdown' "$work/decision.json" > "$work/blocker.md"
+                gh pr comment "$pr_number" --repo "$GITHUB_REPOSITORY" --body-file "$work/blocker.md"
+                if [ -n "${issue_number:-}" ]; then
+                  gh issue comment "$issue_number" --repo "$GITHUB_REPOSITORY" --body-file "$work/blocker.md"
+                fi
+              fi
+            fi
+          done < "$RUNNER_TEMP/terminal-prs.txt"
+
+          if [ "$failed_dispatch" -ne 0 ]; then
+            exit 1
+          fi
+
+      - name: Preserve non-execution governance
+        if: always()
+        run: |
+          test "$WOW_CAN_EXECUTE" = "false"
+          test "$WOW_DRY_RUN_ONLY" = "true"
+          echo "terminal_authority=V17_TERMINAL_REDUCER" >> "$GITHUB_STEP_SUMMARY"
+          echo "can_execute=false" >> "$GITHUB_STEP_SUMMARY"

@@ -29,19 +29,22 @@ jobs:
     name: Run spread certification replay
     needs: spread-forward
     if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.head_branch == 'main')
+      always() &&
+      needs.spread-forward.result == 'success' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.head_branch == 'main'))
     uses: ./.github/workflows/wow-v17-spread-certification-replay.yml
     secrets: inherit
 
   priority-props:
     name: Run bounded priority prop smoke
-    needs: spread-certification
+    needs: [spread-forward, spread-certification]
     if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.head_branch == 'main')
+      always() &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.head_branch == 'main'))
     uses: ./.github/workflows/wow-v17-priority-prop-lifecycle.yml
     with:
       post_deploy_smoke: true
@@ -51,6 +54,7 @@ jobs:
     name: Run post-deploy Golden Path full-slate acceptance
     needs: priority-props
     if: >-
+      always() &&
       github.event_name == 'workflow_run' &&
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.head_branch == 'main'
@@ -58,3 +62,57 @@ jobs:
     with:
       post_deploy_acceptance: true
     secrets: inherit
+
+  acceptance-receipts:
+    name: Reconcile serialized domain-isolated post-deploy receipts
+    needs: [spread-forward, spread-certification, priority-props, golden-full-slate]
+    if: always()
+    runs-on: ubuntu-latest
+    env:
+      WOW_CAN_EXECUTE: "false"
+      WOW_DRY_RUN_ONLY: "true"
+    steps:
+      - name: Publish domain receipt matrix
+        shell: bash
+        env:
+          SPREAD_FORWARD: ${{ needs.spread-forward.result }}
+          SPREAD_CERTIFICATION: ${{ needs.spread-certification.result }}
+          PRIORITY_PROPS: ${{ needs.priority-props.result }}
+          GOLDEN_FULL_SLATE: ${{ needs.golden-full-slate.result }}
+          ORCHESTRATOR_EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          test "$WOW_CAN_EXECUTE" = "false"
+          test "$WOW_DRY_RUN_ONLY" = "true"
+          {
+            echo "### Serialized domain-isolated post-deploy acceptance"
+            echo "| Lane | Result |"
+            echo "| --- | --- |"
+            echo "| spread-forward | ${SPREAD_FORWARD} |"
+            echo "| spread-certification | ${SPREAD_CERTIFICATION} |"
+            echo "| priority-props | ${PRIORITY_PROPS} |"
+            echo "| golden-full-slate | ${GOLDEN_FULL_SLATE} |"
+            echo
+            echo "terminal_authority=V17_TERMINAL_REDUCER"
+            echo "can_execute=false"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          failed=0
+
+          # workflow_run is the production acceptance path: every required lane
+          # must have actually succeeded. A skipped lane is missing evidence and
+          # therefore fails closed.
+          if [ "$ORCHESTRATOR_EVENT_NAME" = "workflow_run" ]; then
+            for result in "$SPREAD_FORWARD" "$SPREAD_CERTIFICATION" "$PRIORITY_PROPS" "$GOLDEN_FULL_SLATE"; do
+              [ "$result" = "success" ] || failed=1
+            done
+          else
+            # Manual dispatch intentionally does not run Golden Path. The three
+            # requested verification lanes must still succeed.
+            for result in "$SPREAD_FORWARD" "$SPREAD_CERTIFICATION" "$PRIORITY_PROPS"; do
+              [ "$result" = "success" ] || failed=1
+            done
+            [ "$GOLDEN_FULL_SLATE" = "skipped" ] || failed=1
+          fi
+
+          exit "$failed"

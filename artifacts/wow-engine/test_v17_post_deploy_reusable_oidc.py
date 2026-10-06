@@ -26,6 +26,7 @@ def _claims(*, job_workflow_ref: str, event_name: str = "workflow_run", **overri
         oidc.SPREAD_CERTIFICATION_REPLAY_WORKFLOW_REF,
         oidc.PRIORITY_PROP_LIFECYCLE_WORKFLOW_REF,
         oidc.SPREAD_FORWARD_PRODUCTION_CANARY_WORKFLOW_REF,
+        oidc.DAILY_SNAPSHOT_WORKFLOW_REF,
     ],
 )
 def test_exact_post_deploy_reusable_pairs_are_authorized(callee: str):
