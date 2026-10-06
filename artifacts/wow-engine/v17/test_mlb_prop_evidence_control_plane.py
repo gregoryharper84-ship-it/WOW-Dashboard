@@ -198,3 +198,79 @@ def test_flatten_covers_only_certified_pitcher_workload_routes():
         "STRIKES_THROWN",
         "BALLS_THROWN",
     }
+
+class _WriteFailQuery(_Query):
+    def execute(self):
+        if self.pending is not None:
+            raise RuntimeError("synthetic write failure")
+        return super().execute()
+
+
+class _WriteFailDB(_DB):
+    def table(self, name):
+        assert name == "wow_prop_evidence_snapshots"
+        return _WriteFailQuery(self)
+
+
+def test_empty_strikeout_history_is_prewrite_hold_not_snapshot_write_failure(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _install_common(monkeypatch)
+
+    def hydrate(**kwargs):
+        raw = _raw(kwargs["stat_type"])
+        if kwargs["stat_type"] == "PITCHER_STRIKEOUTS":
+            raw["game_log"] = []
+        return raw
+
+    monkeypatch.setattr(subject, "auto_hydrate_prop_evidence", hydrate)
+    db = _DB()
+    result = subject.acquire_mlb_forward_evidence_batch(
+        subject.MLBForwardEvidenceRequest(
+            requested_date="2026-09-28",
+            candidate_offset=0,
+            max_candidates=1,
+        ),
+        db=db,
+        now=NOW,
+        http_get=lambda *_a, **_k: object(),
+    )
+
+    assert result["attempted"] == 1
+    assert result["held"] == 1
+    assert result["persisted"] == 0
+    assert result["snapshot_write_failed"] == 0
+    assert result["status"] == "COMPLETED_WITH_ROW_BLOCKERS"
+    assert result["blockers"] == [
+        "Starter One:PITCHER_STRIKEOUTS:MLB_FORWARD_EVIDENCE_PREWRITE_ERROR:ValueError"
+    ]
+    assert db.upserts == []
+    assert result["can_execute"] is False
+
+
+def test_actual_snapshot_upsert_failure_owns_run_invalid_write_status(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _install_common(monkeypatch)
+    db = _WriteFailDB()
+    result = subject.acquire_mlb_forward_evidence_batch(
+        subject.MLBForwardEvidenceRequest(
+            requested_date="2026-09-28",
+            candidate_offset=0,
+            max_candidates=1,
+        ),
+        db=db,
+        now=NOW,
+        http_get=lambda *_a, **_k: object(),
+    )
+
+    assert result["attempted"] == 1
+    assert result["held"] == 1
+    assert result["persisted"] == 0
+    assert result["snapshot_write_failed"] == 1
+    assert result["status"] == "RUN_INVALID_PROP_SNAPSHOT_WRITE_FAILURE"
+    assert result["blockers"] == [
+        "Starter One:PITCHER_STRIKEOUTS:MLB_FORWARD_SNAPSHOT_WRITE_FAILED:RuntimeError"
+    ]
+    assert result["can_execute"] is False
+
