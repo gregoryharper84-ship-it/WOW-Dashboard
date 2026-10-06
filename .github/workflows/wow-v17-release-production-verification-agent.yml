@@ -13,6 +13,7 @@ on:
 
 permissions:
   actions: read
+  id-token: write
   checks: read
   contents: read
   pull-requests: write
@@ -343,6 +344,9 @@ jobs:
         run: |
           set -euo pipefail
           echo "generated=false" >> "$GITHUB_OUTPUT"
+          if [ "$GITHUB_EVENT_NAME" != "workflow_dispatch" ]; then
+            exit 0
+          fi
           status=$(jq -r '.status // ""' <<<"$RESULT")
           [ "$status" = "PRODUCTION_VERIFIED" ] || exit 0
           pr_body=$(jq -r '.body // ""' artifacts/wow-engine/v17/.release-evidence/pr.json)
@@ -376,14 +380,44 @@ jobs:
           echo "artifact=$artifact" >> "$GITHUB_OUTPUT"
           echo "generated=true" >> "$GITHUB_OUTPUT"
 
-      - name: Upload immutable Reliability V1 evidence artifact
+      - name: Persist Reliability V1 receipt to append-only ledger
         if: steps.reliability_receipt.outputs.generated == 'true'
+        id: persist_reliability_receipt
+        env:
+          ACTIONS_ID_TOKEN_REQUEST_URL: ${{ env.ACTIONS_ID_TOKEN_REQUEST_URL }}
+          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ${{ env.ACTIONS_ID_TOKEN_REQUEST_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          oidc_url="$ACTIONS_ID_TOKEN_REQUEST_URL"
+          oidc_url+="&audience=wow-v17-multiscout"
+          token=$(curl --fail --show-error --silent \
+            -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$oidc_url" | jq -r '.value')
+          test -n "$token"
+          curl --fail --show-error --silent --max-time 30 \
+            -X POST \
+            -H "Authorization: Bearer $token" \
+            -H "Content-Type: application/json" \
+            --data-binary @artifacts/wow-engine/v17/.release-evidence/verification-receipt.json \
+            https://wow-governed-probability-engine.onrender.com/internal/v17/reliability-receipts \
+            > artifacts/wow-engine/v17/.release-evidence/audit-persistence.json
+          status=$(jq -r '.status // ""' artifacts/wow-engine/v17/.release-evidence/audit-persistence.json)
+          case "$status" in PERSISTED|ALREADY_PERSISTED) ;; *) echo "RELIABILITY_RECEIPT_PERSISTENCE_FAILED:$status" >&2; exit 1 ;; esac
+          receipt_sig=$(jq -r '.sentinel_signature' artifacts/wow-engine/v17/.release-evidence/verification-receipt.json)
+          persisted_sig=$(jq -r '.sentinel_signature // ""' artifacts/wow-engine/v17/.release-evidence/audit-persistence.json)
+          [ "$receipt_sig" = "$persisted_sig" ] || { echo "RELIABILITY_RECEIPT_PERSISTENCE_SIGNATURE_MISMATCH" >&2; exit 1; }
+          echo "persisted=true" >> "$GITHUB_OUTPUT"
+
+      - name: Upload immutable Reliability V1 evidence artifact
+        if: steps.persist_reliability_receipt.outputs.persisted == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.reliability_receipt.outputs.artifact }}
           path: |
             artifacts/wow-engine/v17/.release-evidence/verification-receipt.json
             artifacts/wow-engine/v17/.release-evidence/execution-trace.json
+            artifacts/wow-engine/v17/.release-evidence/audit-persistence.json
             artifacts/wow-engine/v17/.release-evidence/health-live.headers
             artifacts/wow-engine/v17/.release-evidence/health-live.json
             artifacts/wow-engine/v17/.release-evidence/render-live-deploy.json
