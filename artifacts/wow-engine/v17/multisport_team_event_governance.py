@@ -178,6 +178,9 @@ def _certification_gate(
         blockers.append("TEAM_EVENT_CERTIFICATION_ARTIFACT_MISMATCH")
     if str(package.get("calibration_method") or "") != receipt.calibration_method:
         blockers.append("TEAM_EVENT_CERTIFICATION_CALIBRATION_MISMATCH")
+    calibration_fingerprint = str(package.get("calibration_artifact_fingerprint") or "").lower()
+    if calibration_fingerprint != receipt.calibration_sha256:
+        blockers.append("TEAM_EVENT_CERTIFICATION_CALIBRATION_SHA256_MISMATCH")
     if receipt.independent_verification_status != "PASS":
         blockers.append("TEAM_EVENT_INDEPENDENT_VERIFICATION_NOT_PASS")
     if receipt.certification_status != "CERTIFIED":

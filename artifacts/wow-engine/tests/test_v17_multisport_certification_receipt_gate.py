@@ -145,3 +145,20 @@ def test_receipt_specialist_mismatch_holds():
     )
     assert result["status"] == "HOLD"
     assert "TEAM_EVENT_CERTIFICATION_SPECIALIST_MISMATCH" in result["blockers"]
+
+
+def test_calibration_fingerprint_must_match_certified_receipt_sha():
+    package = _package()
+    package["calibration_artifact_fingerprint"] = "c" * 64
+
+    result = reduce_multisport_team_event(
+        _req(),
+        package,
+        certification_receipt=_certification(calibration_sha256="b" * 64),
+    )
+
+    assert result["status"] == "HOLD"
+    assert result["terminal_label"] == MODEL_QUALIFIED_HOLD
+    assert "TEAM_EVENT_CERTIFICATION_CALIBRATION_SHA256_MISMATCH" in result["blockers"]
+    assert result["probability_publishable"] is False
+    assert result["rank_eligible"] is False
