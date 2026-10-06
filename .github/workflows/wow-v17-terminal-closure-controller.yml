@@ -48,6 +48,9 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Install Reliability V1 receipt dependency
+        run: python -m pip install 'pydantic>=2.6,<3'
+
       - name: Resolve autonomous merged PRs
         id: candidates
         shell: bash
@@ -96,6 +99,20 @@ jobs:
             fi
             acceptance=$(sed -n 's/^Morning-Green-Acceptance-Workflow:[[:space:]]*\([^[:space:]]\+\)[[:space:]]*$/\1/p' <<<"$body" | head -n1)
             acceptance=${acceptance:-none}
+            reliability_version=$(sed -n 's/^Reliability-Receipt-Version:[[:space:]]*\([^[:space:]]\+\)[[:space:]]*$/\1/p' <<<"$body" | head -n1)
+
+            printf '[]\n' > "$work/verification-receipts.json"
+            if [ "$reliability_version" = "WOW_ENGINEERING_RELIABILITY_V1" ]; then
+              artifact_name="wow-v17-verification-receipt-$merge_sha"
+              artifact_id=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/artifacts?name=${artifact_name}&per_page=100" \
+                --jq '[.artifacts[] | select(.expired == false)] | sort_by(.created_at) | reverse | first | .id // empty')
+              if [ -n "$artifact_id" ]; then
+                gh api "/repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}/zip" > "$work/reliability.zip"
+                if unzip -p "$work/reliability.zip" verification-receipt.json > "$work/verification-receipt.json" 2>/dev/null; then
+                  jq -s '.' "$work/verification-receipt.json" > "$work/verification-receipts.json"
+                fi
+              fi
+            fi
 
             gh api "/repos/${GITHUB_REPOSITORY}/issues/$pr_number/comments?per_page=100" > "$work/pr-comments.json"
             printf '[]\n' > "$work/issue-comments.json"
@@ -111,12 +128,14 @@ jobs:
               --slurpfile pr_comments "$work/pr-comments.json" \
               --slurpfile issue_comments "$work/issue-comments.json" \
               --slurpfile runs "$work/runs.json" \
+              --slurpfile verification_receipts "$work/verification-receipts.json" \
               --arg current_main_sha "$current_main_sha" \
               '{
                 pr: $pr[0],
                 pr_comments: $pr_comments[0],
                 issue_comments: $issue_comments[0],
                 runs: $runs[0],
+                verification_receipts: $verification_receipts[0],
                 current_main_sha: $current_main_sha
               }' > "$work/state.json"
 
