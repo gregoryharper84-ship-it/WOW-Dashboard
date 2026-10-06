@@ -371,7 +371,7 @@ def evaluate(state: dict[str, Any], *, now: datetime | None = None) -> dict[str,
 
     release_age = _latest_release_age_minutes(runs, now)
     dispatch_release = (
-        not release_ok
+        (not release_ok or not machine_receipt_ok)
         and not _has_inflight_run(runs, "wow-v17-release-production-verification-agent")
         and (release_age is None or release_age >= 5.0)
     )
