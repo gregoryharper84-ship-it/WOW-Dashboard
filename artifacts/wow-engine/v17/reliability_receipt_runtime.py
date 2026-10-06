@@ -184,6 +184,46 @@ def _persist(db: Any, payload: dict[str, Any], *, auth_claims: dict[str, Any]) -
     }
 
 
+def _readback(db: Any, sentinel_signature: str, *, auth_claims: dict[str, Any]) -> dict[str, Any]:
+    signature = str(sentinel_signature or "").strip().lower()
+    if not signature.startswith("sha256:") or len(signature) != 71:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "INVALID_RECEIPT_SIGNATURE", "can_execute": False},
+        )
+    if any(ch not in "0123456789abcdef" for ch in signature.split(":", 1)[1]):
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "INVALID_RECEIPT_SIGNATURE", "can_execute": False},
+        )
+    result = (
+        db.table(TABLE)
+        .select("sentinel_signature,contract_version,issue_id,pr_number,exact_head_sha,merge_sha,deployed_render_sha,method,route_tested,schema_hash,http_status,dry_run_header_present,can_execute_header_false,raw_response_digest,execution_trace_digest,sentinel_workflow,sentinel_workflow_run_id,audit_artifact_name,verified_at,can_execute")
+        .eq("sentinel_signature", signature)
+        .limit(1)
+        .execute()
+    )
+    rows = getattr(result, "data", None) or []
+    if not rows:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "RELIABILITY_RECEIPT_NOT_FOUND", "can_execute": False},
+        )
+    row = dict(rows[0])
+    if row.get("can_execute") is not False:
+        raise HTTPException(
+            status_code=500,
+            detail={"code": "RELIABILITY_LEDGER_GOVERNANCE_DRIFT", "can_execute": False},
+        )
+    claim_run_id = str(auth_claims.get("run_id") or "").strip()
+    if not claim_run_id.isdigit() or int(claim_run_id) != int(row.get("sentinel_workflow_run_id") or 0):
+        raise HTTPException(
+            status_code=401,
+            detail={"code": "RECEIPT_OIDC_BINDING_MISMATCH", "can_execute": False},
+        )
+    return {"status": "FOUND", "receipt": row, "can_execute": False}
+
+
 def install_reliability_receipt_routes(
     app: FastAPI,
     *,
@@ -203,5 +243,15 @@ def install_reliability_receipt_routes(
     ) -> dict[str, Any]:
         return _persist(db_client_fn(), payload, auth_claims=auth_claims)
 
+    @app.get(
+        "/internal/v17/reliability-receipts",
+        operation_id="readWowV17ReliabilityReceipt",
+    )
+    def read_reliability_receipt(
+        sentinel_signature: str,
+        auth_claims: dict[str, Any] = release_receipt_route_auth_dependency(),
+    ) -> dict[str, Any]:
+        return _readback(db_client_fn(), sentinel_signature, auth_claims=auth_claims)
 
-__all__ = ["CAN_EXECUTE", "MAX_EVIDENCE_BYTES", "TABLE", "install_reliability_receipt_routes"]
+
+__all__ = ["CAN_EXECUTE", "MAX_EVIDENCE_BYTES", "TABLE", "install_reliability_receipt_routes", "_persist", "_readback"]
