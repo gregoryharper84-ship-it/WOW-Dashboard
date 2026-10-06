@@ -1,0 +1,56 @@
+{
+  "runtime_generation": "V17_ACTIVE",
+  "schema_version": "1.0.0",
+  "policy_version": "WOW_V17_PRODUCTION_ACCEPTANCE_ALLOWLIST_V1",
+  "production_entrypoint": "api_ncaaf_acceptance:app",
+  "total_acceptance_routes": 2,
+  "routes": [
+    {
+      "path": "/internal/v17/wnba-prop-forward-evidence/acquire",
+      "method": "POST",
+      "operation_id": "acquireWowV17WnbaPropForwardEvidence",
+      "acceptance_role": "WNBA_PROP_EVIDENCE",
+      "contract_scope": "RUNTIME_INTERNAL_ACCEPTANCE",
+      "contract_source": "RUNTIME_MOUNT",
+      "request_schema_hash": "b27c0e4cbcc7a682",
+      "response_schema_hash": "82ef96cebaf5fbe1",
+      "required_headers": {
+        "X-WOW-Acceptance-Mode": "true",
+        "X-WOW-Runtime-Generation": "V17_ACTIVE"
+      },
+      "required_response_invariants": {
+        "can_execute": false,
+        "probability_publishable": false,
+        "automatic_certification": false,
+        "automatic_promotion": false
+      },
+      "can_execute_required": false
+    },
+    {
+      "path": "/internal/v17/wnba-spread-forward-auto-canary",
+      "method": "POST",
+      "operation_id": "runWowV17WNBASpreadForwardAutoCanary",
+      "acceptance_role": "WNBA_SPREAD",
+      "contract_scope": "RUNTIME_INTERNAL_ACCEPTANCE",
+      "contract_source": "RUNTIME_MOUNT",
+      "request_schema_hash": "44136fa355b3678a",
+      "response_schema_hash": "82ef96cebaf5fbe1",
+      "required_headers": {
+        "X-WOW-Acceptance-Mode": "true",
+        "X-WOW-Runtime-Generation": "V17_ACTIVE"
+      },
+      "required_response_invariants": {
+        "can_execute": false,
+        "probability_publishable": false,
+        "automatic_certification": false,
+        "automatic_promotion": false,
+        "dry_run_only_no_live_trading_no_market_orders": true,
+        "global_terminal_reducer": "V17_TERMINAL_REDUCER",
+        "identity_acquisition_location": "BACKEND_RUNTIME"
+      },
+      "can_execute_required": false
+    }
+  ],
+  "terminal_authority": "V17_TERMINAL_REDUCER",
+  "can_execute": false
+}
