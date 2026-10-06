@@ -1,0 +1,137 @@
+name: wow-v17-live-moneyline-challenger
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/wow-v17-live-moneyline-challenger.yml"
+      - "artifacts/wow-engine/v17/experiments/live_moneyline_challenger.py"
+      - "artifacts/wow-engine/v17/experiments/live_moneyline_replay_data.py"
+      - "artifacts/wow-engine/v17/experiments/run_live_moneyline_challenger.py"
+      - "artifacts/wow-engine/v17/experiments/test_live_moneyline_challenger.py"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wow-v17-live-moneyline-challenger-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  WOW_CAN_EXECUTE: "false"
+  WOW_DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS: "true"
+
+jobs:
+  verify:
+    name: Verify live-moneyline challenger governance
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: artifacts/wow-engine
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: artifacts/wow-engine/requirements.txt
+      - name: Install engine dependencies
+        run: pip install -r requirements.txt
+      - name: Assert dry-run-only governance
+        run: |
+          test "$WOW_CAN_EXECUTE" = "false"
+          test "$WOW_DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS" = "true"
+      - name: Run focused challenger regressions
+        env:
+          PYTHONPATH: .
+        run: python -m pytest -q v17/experiments/test_live_moneyline_challenger.py
+
+  nfl-replay:
+    name: NFL chronological live-moneyline replay
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    defaults:
+      run:
+        working-directory: artifacts/wow-engine
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: artifacts/wow-engine/requirements.txt
+      - name: Install engine dependencies
+        run: pip install -r requirements.txt
+      - name: Execute research-only NFL replay
+        env:
+          PYTHONPATH: .
+        run: |
+          mkdir -p artifacts/live-moneyline
+          python -m v17.experiments.run_live_moneyline_challenger \
+            --sport NFL \
+            --output artifacts/live-moneyline/NFL.json \
+            --cache-dir .cache/wow-live-replay
+          python - <<'PY'
+          import json
+          p=json.load(open("artifacts/live-moneyline/NFL.json"))
+          assert p["status"] == "EXPERIMENT_CREATED"
+          assert p["probability_publishable"] is False
+          assert p["promotion_authorized"] is False
+          assert p["can_execute"] is False
+          assert p["source_manifest"]["market_features_used"] is False
+          assert p["source_manifest"]["external_win_probability_used"] is False
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: wow-v17-nfl-live-moneyline-replay-${{ github.run_id }}
+          path: artifacts/wow-engine/artifacts/live-moneyline/NFL.json
+          if-no-files-found: warn
+          retention-days: 30
+
+  mlb-replay:
+    name: MLB chronological live-moneyline replay
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: artifacts/wow-engine
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: artifacts/wow-engine/requirements.txt
+      - name: Install engine dependencies
+        run: pip install -r requirements.txt
+      - name: Execute research-only MLB replay
+        env:
+          PYTHONPATH: .
+        run: |
+          mkdir -p artifacts/live-moneyline
+          python -m v17.experiments.run_live_moneyline_challenger \
+            --sport MLB \
+            --mlb-games-per-season 300 \
+            --workers 8 \
+            --output artifacts/live-moneyline/MLB.json
+          python - <<'PY'
+          import json
+          p=json.load(open("artifacts/live-moneyline/MLB.json"))
+          assert p["status"] == "EXPERIMENT_CREATED"
+          assert p["probability_publishable"] is False
+          assert p["promotion_authorized"] is False
+          assert p["can_execute"] is False
+          assert p["source_manifest"]["market_features_used"] is False
+          assert p["source_manifest"]["external_win_probability_used"] is False
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: wow-v17-mlb-live-moneyline-replay-${{ github.run_id }}
+          path: artifacts/wow-engine/artifacts/live-moneyline/MLB.json
+          if-no-files-found: warn
+          retention-days: 30
