@@ -15,6 +15,7 @@ FRONTIER = ROOT / ".github/workflows/wow-v17-frontier-intelligence-agent.yml"
 CHATGPT_ACTION = ROOT / ".github/actions/wow-chatgpt-agent/action.yml"
 CLAUDE_ACTION = ROOT / ".github/actions/wow-claude-agent/action.yml"
 CODEX_ENGINEERING_SKILLS = (
+    ROOT / ".agents/skills/wow-engineering-reliability/SKILL.md",
     ROOT / ".agents/skills/wow-engineering-reporter-agent/SKILL.md",
     ROOT / ".agents/skills/wow-engineering-lead-agent/SKILL.md",
     ROOT / ".agents/skills/wow-engineering-research-triage-agent/SKILL.md",
@@ -326,3 +327,10 @@ def test_workflows_parse_as_yaml() -> None:
     assert _load(FRONTIER)["name"] == "wow-v17-frontier-intelligence-agent"
     assert _load(CHATGPT_ACTION)["name"] == "WOW ChatGPT Agent Runner"
     assert _load(CLAUDE_ACTION)["name"] == "WOW Claude Agent Runner"
+
+
+def test_new_engineering_prs_opt_into_reliability_v1() -> None:
+    for path in (WORKER, CLAUDE_WORKER):
+        text = path.read_text()
+        assert "Reliability-Receipt-Version: WOW_ENGINEERING_RELIABILITY_V1" in text
+        assert "Morning-Green-Autonomous: true" in text
