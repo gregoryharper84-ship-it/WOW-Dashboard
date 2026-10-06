@@ -13,6 +13,9 @@ type Route = {
 const ROUTES: Route[] = [
   { method: "GET", pattern: /^\/health$/, auth: false },
   { method: "GET", pattern: /^\/governance$/, auth: false },
+  { method: "GET", pattern: /^\/live-probability\/health$/, auth: true },
+  { method: "POST", pattern: /^\/capture-live-event-state$/, auth: true },
+  { method: "POST", pattern: /^\/score-live-event$/, auth: true },
   { method: "GET", pattern: /^\/v17\/host-contract$/, auth: true },
   { method: "POST", pattern: /^\/v17\/daily-snapshot-run$/, auth: true },
   { method: "GET", pattern: /^\/v17\/daily-snapshot-run\/[^/]+\/rows$/, auth: true },
