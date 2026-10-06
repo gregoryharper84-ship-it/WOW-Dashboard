@@ -74,6 +74,13 @@ def test_exact_integer_line_has_explicit_push_probability():
     assert scored["p_cover"] == pytest.approx(1 / 3)
     assert scored["p_push"] == pytest.approx(1 / 3)
     assert scored["p_not_cover"] == pytest.approx(1 / 3)
+    assert scored["p_cover_given_no_push"] == pytest.approx(0.5)
+    assert scored["cover_count"] == 1
+    assert scored["push_count"] == 1
+    assert scored["not_cover_count"] == 1
+    assert scored["non_push_count"] == 2
+    assert scored["research_lower_bound_cover_unconditional"] == scored["research_lower_bound_cover"]
+    assert scored["research_lower_bound_cover_given_no_push"] != scored["research_lower_bound_cover"]
     assert scored["probability_sum"] == pytest.approx(1.0)
     assert scored["probability_publishable"] is False
     assert scored["can_execute"] is False
