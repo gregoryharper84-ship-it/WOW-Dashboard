@@ -104,9 +104,78 @@ def _resolve_wnba_stats_event_identity(
     }
 
 
+def _canonical_official_event_for_espn_alias(
+    *,
+    target: datetime,
+    home_team_id: str,
+    away_team_id: str,
+    fetcher: Callable[..., Any],
+) -> dict[str, Any]:
+    """Resolve an ESPN discovery alias to exactly one league-owned WNBA game."""
+    from v17 import wnba_official_schedule_web_fallback as official
+
+    try:
+        payload = official._request_json_once(
+            official.SCHEDULE_API_URL,
+            http_get=fetcher,
+            headers=official._api_headers(),
+            params=official._schedule_api_params(),
+        )
+        schedule = official._validate_official_schedule_payload(payload)
+    except Exception as exc:  # noqa: BLE001 - preserve typed canonical-source boundary
+        code = str(getattr(exc, "code", "") or type(exc).__name__)
+        raise SpreadChallengerUnavailable(
+            "WNBA_SPREAD_FORWARD_CANONICAL_SOURCE_UNAVAILABLE",
+            f"official WNBA schedule reconciliation failed: {code}",
+        ) from exc
+
+    league = schedule.get("leagueSchedule") if isinstance(schedule, dict) else None
+    blocks = league.get("gameDates") if isinstance(league, dict) else None
+    matches: list[dict[str, Any]] = []
+    if isinstance(blocks, list):
+        for block in blocks:
+            games = block.get("games") if isinstance(block, dict) else None
+            if not isinstance(games, list):
+                continue
+            for game in games:
+                if not isinstance(game, dict):
+                    continue
+                home = game.get("homeTeam") if isinstance(game.get("homeTeam"), dict) else {}
+                away = game.get("awayTeam") if isinstance(game.get("awayTeam"), dict) else {}
+                try:
+                    official_home = espn_team_id_for_wnba_stats_tricode(home.get("teamTricode"))
+                    official_away = espn_team_id_for_wnba_stats_tricode(away.get("teamTricode"))
+                    official_start = _dt(game.get("gameDateTimeUTC") or game.get("gameDateUTC"))
+                except (ValueError, TypeError):
+                    continue
+                if official_home != str(home_team_id) or official_away != str(away_team_id):
+                    continue
+                if abs((official_start - target).total_seconds()) > 300:
+                    continue
+                game_id = str(game.get("gameId") or "").strip()
+                if game_id:
+                    matches.append({
+                        "game_id": game_id,
+                        "event_start_time": official_start.isoformat(),
+                    })
+
+    if len(matches) != 1:
+        code = (
+            "WNBA_SPREAD_FORWARD_CANONICAL_IDENTITY_AMBIGUOUS"
+            if len(matches) > 1
+            else "WNBA_SPREAD_FORWARD_CANONICAL_EVENT_NOT_FOUND"
+        )
+        raise SpreadChallengerUnavailable(
+            code,
+            "ESPN WNBA alias did not reconcile to exactly one official WNBA schedule event",
+        )
+    return matches[0]
+
+
 def resolve_wnba_current_event_identity(*, event_id: str, event_start_time: str,
                                         home_team_id: str, away_team_id: str,
-                                        fetcher: Callable[..., Any] = requests.get) -> dict[str, Any]:
+                                        fetcher: Callable[..., Any] = requests.get,
+                                        official_fetcher: Callable[..., Any] | None = None) -> dict[str, Any]:
     if str(event_id).startswith("wnba-stats-"):
         return _resolve_wnba_stats_event_identity(
             event_id=event_id,
@@ -164,13 +233,22 @@ def resolve_wnba_current_event_identity(*, event_id: str, event_start_time: str,
         raise SpreadChallengerUnavailable("WNBA_SPREAD_FORWARD_EVENT_NOT_PREGAME", "ESPN event is not pregame")
     if target <= datetime.now(timezone.utc):
         raise SpreadChallengerUnavailable("WNBA_SPREAD_FORWARD_EVENT_NOT_PREGAME", "requested WNBA event start is not in the future")
+
+    canonical = _canonical_official_event_for_espn_alias(
+        target=event_time,
+        home_team_id=actual_home,
+        away_team_id=actual_away,
+        fetcher=official_fetcher or fetcher,
+    )
     return {
-        "event_id": f"espn-{raw_event_id}",
-        "event_start_time": event_time.isoformat(),
+        "event_id": f"wnba-stats-{canonical['game_id']}",
+        "provider_event_alias": f"espn-{raw_event_id}",
+        "event_start_time": canonical["event_start_time"],
         "home_team_id": actual_home,
         "away_team_id": actual_away,
-        "identity_provider": "ESPN_SCOREBOARD",
-        "identity_source": ESPN_BASE_URLS["WNBA"],
+        "identity_provider": "WNBA_OFFICIAL_SCHEDULE_API",
+        "identity_source": "https://www.wnba.com/api/schedule",
+        "identity_alias_provider": "ESPN_SCOREBOARD",
         "identity_verified_at": datetime.now(timezone.utc).isoformat(),
         "market_features_used": False,
         "can_execute": False,
