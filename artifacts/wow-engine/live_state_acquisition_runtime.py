@@ -131,7 +131,29 @@ def _require_identity(
         )
 
 
+def _require_event_id(req: LiveStateCaptureRequest, provider_event_id: Any, *, provider: str) -> None:
+    provider_id = str(provider_event_id or "").strip()
+    requested_id = str(req.official_event_id).strip()
+    if not provider_id:
+        raise LiveStateCaptureError(
+            "LIVE_STATE_PROVIDER_PAYLOAD_INVALID",
+            f"{provider} response lacked an official event identifier",
+            http_status=502,
+        )
+    if provider_id != requested_id:
+        raise LiveStateCaptureError(
+            "LIVE_EVENT_IDENTITY_CONFLICT",
+            "provider event identifier did not match the requested official event",
+            detail={
+                "requested_official_event_id": requested_id,
+                "provider_official_event_id": provider_id,
+                "provider": provider,
+            },
+        )
+
+
 def _mlb_state(req: LiveStateCaptureRequest, payload: Mapping[str, Any]) -> tuple[dict[str, Any], str, str]:
+    _require_event_id(req, payload.get("gamePk"), provider="MLB_STATS_API_OFFICIAL_GAME_FEED")
     game_data = payload.get("gameData") if isinstance(payload.get("gameData"), Mapping) else {}
     status = game_data.get("status") if isinstance(game_data.get("status"), Mapping) else {}
     abstract = str(status.get("abstractGameState") or "")
@@ -220,6 +242,7 @@ def _espn_team_state(req: LiveStateCaptureRequest, payload: Mapping[str, Any], *
     header = payload.get("header") if isinstance(payload.get("header"), Mapping) else {}
     competitions = header.get("competitions")
     competition = competitions[0] if isinstance(competitions, list) and competitions and isinstance(competitions[0], Mapping) else {}
+    _require_event_id(req, competition.get("id"), provider=f"ESPN_{sport}_OFFICIAL_EVENT_SUMMARY")
     status = competition.get("status") if isinstance(competition.get("status"), Mapping) else {}
     status_type = status.get("type") if isinstance(status.get("type"), Mapping) else {}
     state = str(status_type.get("state") or "").casefold()
