@@ -60,7 +60,7 @@ def test_v17_action_schemas_preserve_backend_and_llp_gateway_transport_contracts
     assert "CANDIDATE ONLY" not in wow
     assert "CANDIDATE ONLY" not in llp
     assert "version: 17.0.0" in wow
-    assert "version: 17.0.2-action-basepath" in llp
+    assert "version: 17.0.3-live-action" in llp
 
 
 def test_wow_action_has_prop_and_team_event_delegation():
@@ -79,10 +79,13 @@ def test_wow_action_has_prop_and_team_event_delegation():
 def test_llp_action_has_team_event_and_line_shadows_but_no_prop_scoring_operation():
     text = LLP_SCHEMA.read_text()
     ops = _operations(text)
-    assert len(ops) == 12
+    assert len(ops) == 15
     assert "runLlpV17FullSlate" in ops
     assert "readLlpV17FullSlateRows" in ops
     assert "scoreLlpV17TeamEvent" in ops
+    assert "getLlpV17LiveProbabilityHealth" in ops
+    assert "captureLlpV17LiveEventState" in ops
+    assert "scoreLlpV17LiveEvent" in ops
     assert "scoreLlpV17SpreadForwardShadow" in ops
     assert "scoreLlpV17NFLSpreadForwardShadow" in ops
     assert "scoreLlpV17WNBASpreadForwardShadow" in ops
@@ -138,6 +141,29 @@ def test_llp_action_has_team_event_and_line_shadows_but_no_prop_scoring_operatio
 
     team_request = text[text.index("    LlpTeamEventRequest:"):]
     assert "market_family: {type: string, enum: [OUTRIGHT_WINNER]}" in team_request
+
+
+
+def test_llp_live_action_is_in_progress_only_and_never_reuses_pregame_contract():
+    document = yaml.safe_load(LLP_SCHEMA.read_text())
+    prefix = "/functions/v1/wow-llp-action-gateway"
+    live_health = document["paths"][prefix + "/live-probability/health"]["get"]
+    live_capture = document["paths"][prefix + "/capture-live-event-state"]["post"]
+    live_score = document["paths"][prefix + "/score-live-event"]["post"]
+    assert live_health["operationId"] == "getLlpV17LiveProbabilityHealth"
+    assert live_capture["operationId"] == "captureLlpV17LiveEventState"
+    assert live_score["operationId"] == "scoreLlpV17LiveEvent"
+    assert live_health["security"] == [{"actionBearer": []}]
+    assert live_capture["security"] == [{"actionBearer": []}]
+    assert live_score["security"] == [{"actionBearer": []}]
+    capture_req = document["components"]["schemas"]["LlpLiveStateCaptureRequest"]
+    assert capture_req["properties"]["sport"]["enum"] == ["MLB", "NFL", "NBA", "WNBA", "NCAAF", "NCAAB", "NHL", "SOCCER", "TENNIS", "PGA", "MMA", "BOXING", "CRICKET"]
+    req = document["components"]["schemas"]["LlpLiveEventRequest"]
+    assert req["additionalProperties"] is False
+    assert req["properties"]["event_status"]["enum"] == ["IN_PROGRESS"]
+    assert req["properties"]["settlement_rule"]["type"] == "string"
+    assert req["properties"]["settlement_rule"]["minLength"] == 1
+    assert "source_snapshot_id" in req["required"]
 
 
 def test_llp_instructions_fit_editor_limit_and_preserve_spread_governance():
@@ -248,6 +274,9 @@ def test_llp_supabase_gateway_covers_only_canonical_action_routes():
         "/v17/host-contract",
         "/v17/daily-snapshot-run",
         "/score-team-event",
+        "/live-probability/health",
+        "/capture-live-event-state",
+        "/score-live-event",
         "/internal/v17/spread-forward-shadow",
         "/internal/v17/nfl-spread-forward-shadow",
         "/internal/v17/wnba-spread-forward-shadow",
@@ -284,6 +313,9 @@ def test_llp_action_uses_bare_origin_with_explicit_gateway_paths():
     assert all(path.startswith(prefix + "/") for path in document["paths"])
     assert prefix + "/health" in document["paths"]
     assert prefix + "/score-team-event" in document["paths"]
+    assert prefix + "/live-probability/health" in document["paths"]
+    assert prefix + "/capture-live-event-state" in document["paths"]
+    assert prefix + "/score-live-event" in document["paths"]
     assert prefix + "/v17/daily-snapshot-run" in document["paths"]
 
 
