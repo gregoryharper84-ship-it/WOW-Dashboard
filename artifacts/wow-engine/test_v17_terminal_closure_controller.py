@@ -9,6 +9,23 @@ from v17.terminal_closure_controller import (
 
 NOW = datetime(2026, 10, 4, 2, 0, tzinfo=timezone.utc)
 MERGE = "abc123merge"
+TRUSTED_USER = {"login": "github-actions[bot]"}
+
+
+def _release_comment(*, production_sha: str = MERGE, author: str = "github-actions[bot]"):
+    return {
+        "user": {"login": author},
+        "body": (
+            "## Release / Production Verification Agent\n\n"
+            f"- governed_pr_head_sha: \`head123\`\n"
+            f"- protected_main_merge_sha: \`{MERGE}\`\n\n"
+            "~~~json\n"
+            f'{{"status":"PRODUCTION_VERIFIED","production_sha":"{production_sha}",'
+            f'"main_sha":"{MERGE}","acceptance":"PASS","reconciliation":"PASS",'
+            '"blocker":"","next_action":""}'
+            "\n~~~"
+        ),
+    }
 
 
 def _base_state():
@@ -32,15 +49,7 @@ def _base_state():
 
 def test_ready_for_receipt_requires_release_and_exact_merge_acceptance():
     state = _base_state()
-    state["pr_comments"] = [{
-        "body": (
-            "## Release / Production Verification Agent\n\n"
-            "~~~json\n"
-            '{"status":"PRODUCTION_VERIFIED","production_sha":"prod456","main_sha":"main456",'
-            '"acceptance":"PASS","reconciliation":"PASS","blocker":"","next_action":""}'
-            "\n~~~"
-        )
-    }]
+    state["pr_comments"] = [_release_comment()]
     state["runs"] = [
         {
             "id": 42,
@@ -68,7 +77,7 @@ def test_ready_for_receipt_requires_release_and_exact_merge_acceptance():
 
     assert result["status"] == "READY_FOR_RECEIPT"
     assert TERMINAL_RECEIPT_HEADING in result["receipt_markdown"]
-    assert "prod456" in result["receipt_markdown"]
+    assert MERGE in result["receipt_markdown"]
     assert "42" in result["receipt_markdown"]
     assert "FIXED_AND_VERIFIED" in result["receipt_markdown"]
     assert result["can_execute"] is False
@@ -105,6 +114,7 @@ def test_two_hour_debt_escalates_and_does_not_fake_exact_acceptance_after_main_m
 def test_existing_issue_receipt_is_terminal_and_repeat_safe():
     state = _base_state()
     state["issue_comments"] = [{
+        "user": TRUSTED_USER,
         "body": (
             f"{TERMINAL_RECEIPT_HEADING}\n"
             "- **Commit SHA:** `abc123merge`\n"
@@ -174,26 +184,14 @@ def test_fallback_issue_and_no_acceptance_workflow_close_from_release_only():
         "Terminal-Closure-Autonomous: true\n"
         "Fixes #1250\n"
     )
-    state["pr_comments"] = [
-        {"body": "not a release comment"},
-        {
-            "body": (
-                "## Release / Production Verification Agent\n"
-                "~~~json\n{not-json}\n~~~\n"
-                "~~~json\n"
-                '{"status":"PRODUCTION_VERIFIED","production_sha":"","main_sha":"x",'
-                '"acceptance":"PASS","reconciliation":"PASS","blocker":"","next_action":""}'
-                "\n~~~"
-            )
-        },
-    ]
+    state["pr_comments"] = [{"body": "not a release comment"}, _release_comment()]
 
     result = evaluate(state, now=NOW)
 
     assert result["issue_number"] == 1250
     assert result["acceptance_workflow"] == "none"
     assert result["status"] == "READY_FOR_RECEIPT"
-    assert "VERIFIED_BY_RELEASE_AGENT" in result["receipt_markdown"]
+    assert MERGE in result["receipt_markdown"]
     assert "Canary / Acceptance Run ID:** `N/A`" in result["receipt_markdown"]
 
 
@@ -352,3 +350,41 @@ def test_multiscout_workflow_run_can_satisfy_terminal_acceptance():
 
     assert result["status"] == "READY_FOR_RECEIPT"
     assert "588" in result["receipt_markdown"]
+
+
+def test_release_verification_for_different_production_sha_is_rejected():
+    state = _base_state()
+    state["pr"]["body"] = "Terminal-Closure-Autonomous: true\nFixes #1250\n"
+    state["pr_comments"] = [_release_comment(production_sha="stale-merge")]
+
+    result = evaluate(state, now=NOW)
+
+    assert result["status"] == "WAITING_FOR_TERMINAL_RECEIPT"
+    assert "PRODUCTION_VERIFICATION_RECEIPT_MISSING" in result["blockers"]
+
+
+def test_release_verification_from_untrusted_comment_author_is_rejected():
+    state = _base_state()
+    state["pr"]["body"] = "Terminal-Closure-Autonomous: true\nFixes #1250\n"
+    state["pr_comments"] = [_release_comment(author="untrusted-user")]
+
+    result = evaluate(state, now=NOW)
+
+    assert result["status"] == "WAITING_FOR_TERMINAL_RECEIPT"
+    assert "PRODUCTION_VERIFICATION_RECEIPT_MISSING" in result["blockers"]
+
+
+def test_untrusted_terminal_receipt_cannot_short_circuit_closure():
+    state = _base_state()
+    state["issue_comments"] = [{
+        "user": {"login": "untrusted-user"},
+        "body": (
+            f"{TERMINAL_RECEIPT_HEADING}\n"
+            f"- **Commit SHA:** \`{MERGE}\`\n"
+            "- **Status:** **FIXED_AND_VERIFIED**"
+        ),
+    }]
+
+    result = evaluate(state, now=NOW)
+
+    assert result["status"] == "WAITING_FOR_TERMINAL_RECEIPT"

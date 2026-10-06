@@ -77,25 +77,46 @@ def _metadata(body: str) -> dict[str, Any]:
     }
 
 
-def _comment_bodies(items: list[dict[str, Any]]) -> list[str]:
-    return [str(item.get("body") or "") for item in items if isinstance(item, dict)]
+TRUSTED_COMMENT_AUTHORS = frozenset({"github-actions[bot]"})
 
 
-def _has_terminal_receipt(comments: list[dict[str, Any]]) -> bool:
-    for body in _comment_bodies(comments):
+def _trusted_comment(item: dict[str, Any]) -> bool:
+    user = item.get("user") if isinstance(item.get("user"), dict) else {}
+    return str(user.get("login") or "").strip().lower() in TRUSTED_COMMENT_AUTHORS
+
+
+def _has_terminal_receipt(
+    comments: list[dict[str, Any]],
+    merge_sha: str,
+) -> bool:
+    exact_commit = f"- **Commit SHA:** \`{merge_sha}\`"
+    for item in comments:
+        if not isinstance(item, dict) or not _trusted_comment(item):
+            continue
+        body = str(item.get("body") or "")
         if (
             TERMINAL_RECEIPT_HEADING in body
             and "Status:" in body
             and "FIXED_AND_VERIFIED" in body
+            and exact_commit in body
         ):
             return True
     return False
 
 
-def _release_payloads(comments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _release_payloads(
+    comments: list[dict[str, Any]],
+    merge_sha: str,
+) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
-    for body in _comment_bodies(comments):
+    exact_merge_marker = f"- protected_main_merge_sha: \`{merge_sha}\`"
+    for item in comments:
+        if not isinstance(item, dict) or not _trusted_comment(item):
+            continue
+        body = str(item.get("body") or "")
         if "## Release / Production Verification Agent" not in body:
+            continue
+        if exact_merge_marker not in body:
             continue
         for match in _JSON_BLOCK_RE.finditer(body):
             try:
@@ -107,10 +128,16 @@ def _release_payloads(comments: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
-def _release_verified(comments: list[dict[str, Any]]) -> tuple[bool, dict[str, Any] | None]:
-    for payload in reversed(_release_payloads(comments)):
-        if str(payload.get("status") or "") == "PRODUCTION_VERIFIED":
-            return True, payload
+def _release_verified(
+    comments: list[dict[str, Any]],
+    merge_sha: str,
+) -> tuple[bool, dict[str, Any] | None]:
+    for payload in reversed(_release_payloads(comments, merge_sha)):
+        if str(payload.get("status") or "") != "PRODUCTION_VERIFIED":
+            continue
+        if str(payload.get("production_sha") or "").strip() != merge_sha:
+            continue
+        return True, payload
     return False, None
 
 
@@ -228,10 +255,10 @@ def evaluate(state: dict[str, Any], *, now: datetime | None = None) -> dict[str,
         return {**base, "status": "SKIP", "reason": "TERMINAL_CLOSURE_NOT_OPTED_IN"}
     if not merge_sha or merged_at is None:
         return {**base, "status": "BLOCKED_WITH_EXACT_REASON", "blockers": ["MERGE_IDENTITY_INCOMPLETE"]}
-    if _has_terminal_receipt(issue_comments) or _has_terminal_receipt(pr_comments):
+    if _has_terminal_receipt(issue_comments, merge_sha) or _has_terminal_receipt(pr_comments, merge_sha):
         return {**base, "status": "FIXED_AND_VERIFIED", "reason": "TERMINAL_RECEIPT_ALREADY_PRESENT"}
 
-    release_ok, release_payload = _release_verified(pr_comments)
+    release_ok, release_payload = _release_verified(pr_comments, merge_sha)
     acceptance = _exact_acceptance_run(runs, meta["acceptance_workflow"], merge_sha)
 
     release_run = None
