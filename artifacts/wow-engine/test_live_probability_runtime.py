@@ -14,7 +14,8 @@ from live_probability_runtime import (
     _server_role_blockers,
     _snapshot_binding_blockers,
     _state_hash,
-    install_live_probability_routes,\n    score_live_event,
+    install_live_probability_routes,
+    score_live_event,
 )
 
 
