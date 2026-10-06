@@ -67,7 +67,14 @@ def test_reliability_workflows_parse_and_preserve_machine_evidence_chain():
     assert "Generate Reliability V1 machine receipt" in release
     assert "Persist Reliability V1 receipt to append-only ledger" in release
     assert "audit-persistence.json" in release
+    assert "audit-readback.json" in release
+    assert "RELIABILITY_RECEIPT_READBACK_SIGNATURE_MISMATCH" in release
     assert "Upload immutable Reliability V1 evidence artifact" in release
     assert "verification-receipts.json" in terminal
     assert "audit-persistence.json" in terminal
+    assert "audit-readback.json" in terminal
+    assert "artifact_run_id" in terminal
+    assert 'run_event" = "workflow_dispatch"' in terminal
+    assert 'run_branch" = "main"' in terminal
+    assert 'run_conclusion" = "success"' in terminal
     assert "INVALID_RECEIPT_SCHEMA" in (ROOT / "artifacts/wow-engine/v17/terminal_closure_controller.py").read_text()
