@@ -370,10 +370,14 @@ def evaluate(state: dict[str, Any], *, now: datetime | None = None) -> dict[str,
         blockers.append("EXACT_MERGE_ACCEPTANCE_RUN_MISSING")
 
     release_age = _latest_release_age_minutes(runs, now)
+    strict_receipt_missing = (
+        meta["reliability_receipt_version"] == CONTRACT_VERSION
+        and not machine_receipt_ok
+    )
     dispatch_release = (
         (not release_ok or not machine_receipt_ok)
         and not _has_inflight_run(runs, "wow-v17-release-production-verification-agent")
-        and (release_age is None or release_age >= 5.0)
+        and (strict_receipt_missing or release_age is None or release_age >= 5.0)
     )
     dispatch_acceptance = (
         acceptance is None
