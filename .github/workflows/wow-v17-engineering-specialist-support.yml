@@ -1,4 +1,6 @@
 name: wow-v17-engineering-specialist-support
+run-name: >-
+  wow-v17-engineering-specialist-support incident=${{ inputs.incident_id || inputs.pr_number || 'AUTO' }}
 
 on:
   schedule:
@@ -26,7 +28,7 @@ permissions:
   pull-requests: read
 
 concurrency:
-  group: wow-v17-engineering-specialist-support
+  group: wow-v17-engineering-specialist-support-${{ inputs.incident_id || inputs.pr_number || 'AUTO' }}
   cancel-in-progress: false
 
 jobs:
@@ -82,7 +84,7 @@ jobs:
           check_state="NOT_APPLICABLE"
           action="NO_ACTION"
 
-          if [ -z "$pr_number" ]; then
+          if [ -z "$pr_number" ] && [ -z "$incident" ]; then
             pr_number=$(gh api --paginate "/repos/${GITHUB_REPOSITORY}/pulls?state=open&base=main&per_page=100" \
               --jq '[.[] | select(.draft == false) | select(.head.repo.full_name == env.GITHUB_REPOSITORY) | select((.body // "") | contains("Morning-Green-Autonomous: true"))] | sort_by(.created_at) | first | .number // empty')
           fi
@@ -112,6 +114,12 @@ jobs:
               fi
             fi
             check_state=$(jq -c '[.[] | {name,status,conclusion}]' <<<"$checks")
+          elif [ -n "$incident" ]; then
+            action="SUPPORT_INCIDENT"
+            if [ -z "$wait_state" ]; then
+              wait_state="PARALLEL_SUPPORT"
+            fi
+            gh issue view "$incident" --repo "$GITHUB_REPOSITORY" --json number,title,state >/dev/null
           else
             priority=$(python artifacts/wow-engine/v17/engineering_agent_team.py priority)
             incident=$(jq -r '.incident_id // ""' <<<"$priority")
