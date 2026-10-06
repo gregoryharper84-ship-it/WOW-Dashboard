@@ -15,6 +15,7 @@ permissions:
   actions: read
   checks: read
   contents: read
+  deployments: read
   pull-requests: write
 
 concurrency:
@@ -276,9 +277,116 @@ jobs:
             https://wow-governed-probability-engine.onrender.com/governance \
             > artifacts/wow-engine/v17/.release-evidence/governance.json
 
+      - name: Verify deterministic exact production state
+        if: steps.pr.outputs.number != ''
+        id: deterministic
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MERGE_SHA: ${{ steps.merged.outputs.merge_sha }}
+        run: |
+          set -euo pipefail
+          evidence="artifacts/wow-engine/v17/.release-evidence"
+          result="$RUNNER_TEMP/deterministic-release-result.json"
+
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          evidence = Path("artifacts/wow-engine/v17/.release-evidence")
+          health = json.loads((evidence / "health-live.json").read_text(encoding="utf-8"))
+          governance = json.loads((evidence / "governance.json").read_text(encoding="utf-8"))
+          if not isinstance(health, dict) or health.get("status") != "ok":
+              raise SystemExit("RELEASE_HEALTH_LIVE_NOT_OK")
+          if health.get("can_execute") is not False:
+              raise SystemExit("RELEASE_HEALTH_CAN_EXECUTE_MUST_BE_FALSE")
+          if not isinstance(governance, dict):
+              raise SystemExit("RELEASE_GOVERNANCE_NOT_OBJECT")
+          if governance.get("can_execute") is not False:
+              raise SystemExit("RELEASE_GOVERNANCE_CAN_EXECUTE_MUST_BE_FALSE")
+          if governance.get("probability_publishable") is not False:
+              raise SystemExit("RELEASE_GOVERNANCE_PROBABILITY_PUBLISHABLE_MUST_BE_FALSE")
+          PY
+
+          deployments=$(gh api "/repos/${GITHUB_REPOSITORY}/deployments?environment=wow-v17-render-production-attestation&ref=${MERGE_SHA}&per_page=100")
+          pointer=$(jq -c --arg sha "$MERGE_SHA" '
+            [
+              .[] |
+              (.payload // {}) as $raw |
+              (if ($raw|type) == "string" then (try ($raw|fromjson) catch {})
+               elif ($raw|type) == "object" then $raw
+               else {} end) as $p |
+              select(
+                $p.source == "WOW_V17_EXACT_RENDER_RECEIPT" and
+                $p.commit_sha == $sha and
+                ($p.render_deploy_id | type == "string") and
+                ($p.render_deploy_id | startswith("dep-")) and
+                ($p.source_receipt_status == "EXACT_SHA_RENDER_DEPLOY_LIVE" or
+                 $p.source_receipt_status == "EXACT_SHA_ALREADY_LIVE") and
+                $p.can_execute == false
+              ) |
+              {id, payload: $p}
+            ] | sort_by(.id) | reverse | first // empty
+          ' <<<"$deployments")
+
+          if [ -z "$pointer" ]; then
+            jq -cn --arg main_sha "$(cat "$evidence/main-sha.txt" | tr -d '[:space:]')" --arg merge_sha "$MERGE_SHA" '{
+              status:"PENDING",
+              main_sha:$main_sha,
+              production_sha:"",
+              acceptance:"HEALTH_AND_GOVERNANCE_PASS",
+              reconciliation:"EXACT_RENDER_DEPLOYMENT_POINTER_MISSING",
+              blocker:"EXACT_RENDER_DEPLOYMENT_POINTER_MISSING",
+              next_action:"Wait for governed exact-SHA Render deployment pointer and rerun release verification",
+              can_execute:false
+            }' > "$result"
+          else
+            deployment_id=$(jq -r '.id' <<<"$pointer")
+            source_status=$(jq -r '.payload.source_receipt_status' <<<"$pointer")
+            render_deploy_id=$(jq -r '.payload.render_deploy_id' <<<"$pointer")
+            statuses=$(gh api "/repos/${GITHUB_REPOSITORY}/deployments/${deployment_id}/statuses?per_page=100")
+            success=$(jq -c --arg status "$source_status" --arg render "$render_deploy_id" '
+              [
+                .[] |
+                select(
+                  .state == "success" and
+                  ((.description // "") == ($status + " | render=" + $render + " | can_execute=false"))
+                )
+              ] | sort_by(.id) | reverse | first // empty
+            ' <<<"$statuses")
+            if [ -z "$success" ]; then
+              jq -cn --arg main_sha "$(cat "$evidence/main-sha.txt" | tr -d '[:space:]')" --arg merge_sha "$MERGE_SHA" '{
+                status:"PENDING",
+                main_sha:$main_sha,
+                production_sha:"",
+                acceptance:"HEALTH_AND_GOVERNANCE_PASS",
+                reconciliation:"EXACT_RENDER_DEPLOYMENT_STATUS_MISSING",
+                blocker:"EXACT_RENDER_DEPLOYMENT_STATUS_MISSING",
+                next_action:"Wait for governed Render deployment success status and rerun release verification",
+                can_execute:false
+              }' > "$result"
+            else
+              jq -cn                 --arg main_sha "$(cat "$evidence/main-sha.txt" | tr -d '[:space:]')"                 --arg merge_sha "$MERGE_SHA"                 --arg deploy_id "$render_deploy_id"                 --arg source_status "$source_status" '{
+                  status:"PRODUCTION_VERIFIED",
+                  main_sha:$main_sha,
+                  production_sha:$merge_sha,
+                  acceptance:"HEALTH_AND_GOVERNANCE_PASS",
+                  reconciliation:("EXACT_RENDER_DEPLOYMENT_POINTER_VERIFIED:" + $source_status + ":" + $deploy_id),
+                  blocker:"",
+                  next_action:"",
+                  can_execute:false
+                }' > "$result"
+            fi
+          fi
+
+          compact=$(jq -c . "$result")
+          echo "result=$compact" >> "$GITHUB_OUTPUT"
+          cat "$result" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Release / Production Verification agent
         if: steps.pr.outputs.number != ''
         id: release_agent
+        continue-on-error: true
         uses: ./.github/actions/wow-chatgpt-agent
         with:
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
@@ -300,7 +408,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ steps.pr.outputs.number }}
-          RESULT: ${{ steps.release_agent.outputs.structured_output }}
+          RESULT: ${{ steps.deterministic.outputs.result }}
+          AGENT_RESULT: ${{ steps.release_agent.outputs.structured_output }}
           HEAD_SHA: ${{ steps.merged.outputs.head_sha }}
           MERGE_SHA: ${{ steps.merged.outputs.merge_sha }}
         run: |
@@ -309,7 +418,7 @@ jobs:
           {
             echo "## Release / Production Verification Agent"
             echo
-            echo "Provider: OpenAI/ChatGPT"
+            echo "Provider: Deterministic GitHub/Render exact-SHA receipt"
             echo
             echo "- governed_pr_head_sha: `$HEAD_SHA`"
             echo "- protected_main_merge_sha: `$MERGE_SHA`"

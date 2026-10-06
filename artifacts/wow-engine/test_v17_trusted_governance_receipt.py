@@ -221,3 +221,25 @@ def test_release_verification_requires_trusted_exact_head_governance_and_exact_m
     assert '--workflow-run-id "$RUN_ID"' in text
     assert '--workflow-name "$WORKFLOW_NAME"' in text
     assert "trusted_handoff_receipt: VERIFIED" in text
+
+
+def test_release_verifier_uses_deterministic_render_pointer_and_agent_is_advisory():
+    text = RELEASE.read_text(encoding="utf-8")
+    assert "deployments: read" in text
+    assert "Verify deterministic exact production state" in text
+    assert "wow-v17-render-production-attestation" in text
+    assert "WOW_V17_EXACT_RENDER_RECEIPT" in text
+    assert "EXACT_SHA_RENDER_DEPLOY_LIVE" in text
+    assert "EXACT_SHA_ALREADY_LIVE" in text
+    assert "EXACT_RENDER_DEPLOYMENT_POINTER_MISSING" in text
+    assert "EXACT_RENDER_DEPLOYMENT_STATUS_MISSING" in text
+    assert '"status":"PRODUCTION_VERIFIED"' in text
+    assert 'production_sha:$merge_sha' in text
+    assert "steps.deterministic.outputs.result" in text
+    agent = text.split("- name: Release / Production Verification agent", 1)[1].split(
+        "- name: Publish release verification receipt", 1
+    )[0]
+    assert "continue-on-error: true" in agent
+    publish = text.split("- name: Publish release verification receipt", 1)[1]
+    assert "Provider: Deterministic GitHub/Render exact-SHA receipt" in publish
+    assert "Advisory release-observability result; not terminal authority" in publish
