@@ -18,13 +18,9 @@ def _text(path: Path) -> str:
     return path.read_text()
 
 
-def _assert_experiment_auto_merge_contract(text: str) -> None:
-    pattern = re.compile(
-        r'gh\s+pr\s+merge\s+"\$PR_NUMBER"\s+'
-        r'--repo\s+"\$GITHUB_REPOSITORY"\s+'
-        r'--auto\s+--merge(?:\s+\|\|\s+true)?'
-    )
-    assert pattern.search(text), "experiment PR must remain on protected GitHub auto-merge"
+def _assert_experiment_global_promotion_contract(text: str) -> None:
+    assert "--auto --merge" not in text
+    assert "global mutation/promotion owner" in text
 
 
 def test_24h_loop_runs_hourly_and_advances_real_work() -> None:
@@ -70,7 +66,7 @@ def test_open_experiment_pr_is_actively_advanced_only_after_product_health_pass(
     assert "Resume governed model-experiment PR" in text
     assert 'elif [ -n "$experiment_pr" ]; then' in text
     assert text.index('product_health" != "PASS"') < text.index('elif [ -n "$experiment_pr" ]; then')
-    _assert_experiment_auto_merge_contract(text)
+    _assert_experiment_global_promotion_contract(text)
     assert 'repair_pr="$PR_NUMBER"' in text
     assert "Failed experiment CI routed to bounded ChatGPT experiment repair." in text
     assert "Experiment PR escaped non-serving boundary" in text
@@ -119,8 +115,9 @@ def test_model_experiment_requires_tests_regression_and_repair_mode() -> None:
     assert "Experiment repair run produced no corrective change." in text
     assert "python -m pytest -q artifacts/wow-engine/v17/experiments" in text
     assert "python -m pytest -q artifacts/wow-engine" in text
-    assert 'gh pr merge "$pr_number" --repo "$GITHUB_REPOSITORY" --auto --merge' in text
-    _assert_experiment_auto_merge_contract(_text(LOOP))
+    assert 'gh pr merge "$pr_number" --repo "$GITHUB_REPOSITORY" --auto --merge' not in text
+    assert "promotion is deferred to the repository-wide global mutation/promotion owner" in text
+    _assert_experiment_global_promotion_contract(_text(LOOP))
 
 
 def test_new_workflows_parse_as_yaml() -> None:
@@ -134,9 +131,12 @@ def test_new_workflows_parse_as_yaml() -> None:
 
 def test_closure_controller_has_hard_wip_and_golden_journeys() -> None:
     team = _text(ROOT / "artifacts/wow-engine/v17/engineering_agent_team.py")
-    assert 'TEAM_VERSION = "4.0"' in team
+    assert 'TEAM_VERSION = "4.1"' in team
     assert "MAX_ACTIVE_PRODUCT_RECOVERY = 3" in team
     assert "MAX_ACTIVE_SUPPORTING_INVESTIGATION = 1" in team
+    assert "MAX_GLOBAL_MUTATION_OWNERS = 1" in team
+    assert "MAX_PARALLEL_SUPPORT_LANES = 6" in team
+    assert "select_capacity_plan" in team
     assert "ALL_SPORTS_PROPS" in team
     assert "ALL_SPORTS_ML_WINNERS" in team
     assert "ALL_SPORTS_UPSETS" in team
@@ -144,6 +144,26 @@ def test_closure_controller_has_hard_wip_and_golden_journeys() -> None:
     assert "closure_wip" in team
     assert "SPECIALIST_SUBAGENTS" in team
     assert "select_support_subagent" in team
+
+
+def test_max_safe_capacity_uses_one_writer_and_parallel_read_only_support() -> None:
+    loop = _text(LOOP)
+    worker = _text(WORKER)
+    support = _text(SUPPORT)
+    claude = _text(ROOT / ".github/workflows/wow-v17-claude-engineering-worker.yml")
+    assert "capacity-plan" in loop
+    assert "--support-limit 6" in loop
+    assert "Saturate safe parallel support capacity" in loop
+    assert "PARALLEL_SUPPORT" in loop
+    assert "wow-v17-engineering-mutation" in worker
+    assert "wow-v17-engineering-mutation" in claude
+    assert "wow-v17-engineering-domain-" not in worker
+    assert "wow-v17-engineering-domain-" not in claude
+    assert "wow-v17-engineering-specialist-support-${{ inputs.incident_id" in support
+    assert "support_only:true" in support.replace(" ", "")
+    assert "implementation_lease:false" in support.replace(" ", "")
+    assert "gh api --paginate --slurp" in worker
+    assert "TARGET_INCIDENT_NOT_GLOBAL_OWNER" in worker
 
 
 def test_engineering_worker_invokes_specialist_before_implementation() -> None:
