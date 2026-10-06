@@ -40,6 +40,7 @@ from v17.core_intelligence_runtime import install_core_intelligence_routes
 from v17.spread_forward_shadow import warm_ncaaf_forward_context
 from v17.scout_handoff_queue_installer import schedule_scout_handoff_queue
 from v17.reliability_http import install_reliability_headers
+from v17.reliability_receipt_runtime import install_reliability_receipt_routes
 from v17.core_intelligence_shadow_runtime import install_shadow_lab_routes
 from v17.team_event_probability_preservation import (
     install_team_event_routes as install_v17_team_event_routes,
@@ -210,6 +211,7 @@ install_team_event_request_routes(
 )
 install_live_state_acquisition_routes(app, auth_dependency=_auth, db_client_fn=_db_client)
 install_live_probability_routes(app, auth_dependency=_auth, db_client_fn=_db_client)
+install_reliability_receipt_routes(app, auth_dependency=_auth, db_client_fn=_db_client)
 if KALSHI_WEATHER_V2_ACTIVE:
     install_kalshi_weather_v2_routes(
         app,
