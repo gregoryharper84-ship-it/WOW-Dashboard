@@ -26,6 +26,18 @@
       "destination": "/api/gateway?__route=%2Fscore-team-event"
     },
     {
+      "source": "/functions/v1/wow-llp-action-gateway/live-probability/health",
+      "destination": "/api/gateway?__route=%2Flive-probability%2Fhealth"
+    },
+    {
+      "source": "/functions/v1/wow-llp-action-gateway/capture-live-event-state",
+      "destination": "/api/gateway?__route=%2Fcapture-live-event-state"
+    },
+    {
+      "source": "/functions/v1/wow-llp-action-gateway/score-live-event",
+      "destination": "/api/gateway?__route=%2Fscore-live-event"
+    },
+    {
       "source": "/functions/v1/wow-llp-action-gateway/internal/v17/spread-forward-shadow",
       "destination": "/api/gateway?__route=%2Finternal%2Fv17%2Fspread-forward-shadow"
     },

@@ -6,14 +6,17 @@ from fastapi import Depends, FastAPI
 
 from live_probability_runtime import (
     LiveScoreRequest,
+    MLB_MAX_STATE_AGE_SECONDS,
     _apply_calibrator,
     _apply_live_bounds,
     _request_blockers,
+    live_probability_health,
     _score_mlb,
     _server_role_blockers,
     _snapshot_binding_blockers,
     _state_hash,
     install_live_probability_routes,
+    score_live_event,
 )
 
 
@@ -68,6 +71,80 @@ def test_scheduled_event_cannot_enter_live_lane():
     assert "LIVE_EVENT_NOT_IN_PROGRESS" in _request_blockers(
         request(event_status="SCHEDULED"), datetime.now(timezone.utc)
     )
+
+
+
+def test_all_canonical_sports_appear_in_live_health():
+    class FailingDB:
+        def rpc(self, *_a, **_k):
+            raise RuntimeError("no serving state")
+
+    health = live_probability_health(FailingDB())
+    assert set(health["capabilities"]) == {
+        "MLB", "NFL", "NBA", "WNBA", "NCAAF", "NCAAB", "NHL",
+        "SOCCER", "TENNIS", "PGA", "MMA", "BOXING", "CRICKET",
+    }
+    assert health["capabilities"]["PGA"]["blockers"] == ["LIVE_SPORT_MODEL_NOT_CERTIFIED:PGA"]
+    assert health["capabilities"]["CRICKET"]["blockers"] == ["LIVE_SPORT_MODEL_NOT_CERTIFIED:CRICKET"]
+    assert health["can_execute"] is False
+
+
+def test_non_mlb_live_sport_gets_sport_specific_model_blocker_not_mlb_rules():
+    blockers = _request_blockers(
+        request(
+            sport="NBA",
+            league="NBA",
+            settlement_rule="NBA_FULL_GAME_WINNER",
+            market_role="FAVORITE",
+        ),
+        datetime.now(timezone.utc),
+    )
+    assert "LIVE_SPORT_MODEL_NOT_CERTIFIED:NBA" in blockers
+    assert "LIVE_SETTLEMENT_RULE_MISMATCH" not in blockers
+    assert "NOT_CURRENT_LIVE_UNDERDOG" not in blockers
+
+
+def test_non_mlb_uncertified_model_preserves_model_unavailable_terminal():
+    class NoDB:
+        def __getattr__(self, name):
+            raise AssertionError(f"unsupported sport must fail before DB access: {name}")
+
+    result = score_live_event(
+        request(
+            sport="NBA",
+            league="NBA",
+            settlement_rule="NBA_FULL_GAME_WINNER",
+            market_role="FAVORITE",
+        ),
+        NoDB(),
+    )
+    assert result.terminal_label == "MODEL_UNAVAILABLE"
+    assert result.blockers == ["LIVE_SPORT_MODEL_NOT_CERTIFIED:NBA"]
+    assert result.probability_publishable is False
+    assert result.rank_eligible is False
+    assert result.can_execute is False
+
+
+def test_non_model_request_failure_is_not_collapsed_into_model_unavailable():
+    now = datetime.now(timezone.utc)
+    result = score_live_event(
+        request(
+            sport="NBA",
+            league="NBA",
+            settlement_rule="NBA_FULL_GAME_WINNER",
+            market_role="FAVORITE",
+            live_snapshot_timestamp=now - timedelta(seconds=MLB_MAX_STATE_AGE_SECONDS + 1),
+            market_role_timestamp=now,
+        ),
+        object(),
+        now=now,
+    )
+    assert "LIVE_SPORT_MODEL_NOT_CERTIFIED:NBA" in result.blockers
+    assert "LIVE_STATE_STALE" in result.blockers
+    assert result.terminal_label == "RESEARCH_INTEREST"
+    assert result.probability_publishable is False
+    assert result.rank_eligible is False
+    assert result.can_execute is False
 
 
 def test_settlement_must_be_exact():

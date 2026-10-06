@@ -21,6 +21,7 @@ import api_prod_market_acceptance as base
 import calibration_publication_api as lane_patch
 from kalshi_weather_v2.routes import install_kalshi_weather_v2_routes
 from live_probability_runtime import install_live_probability_routes
+from live_state_acquisition_runtime import install_live_state_acquisition_routes
 from mlb_1ip_refresh_scheduler import run_refresh_loop as run_mlb_1ip_refresh_loop
 from ncaaf_cfbd_client import CFBDClient, CFBDUnavailable
 from ncaaf_cfbd_hydrator import hydrate_cfbd_season, persist_source_snapshots
@@ -190,6 +191,7 @@ install_team_event_request_routes(
     db_client_fn=_db_client,
     event_api=base.market_api.prod.event_api,
 )
+install_live_state_acquisition_routes(app, auth_dependency=_auth, db_client_fn=_db_client)
 install_live_probability_routes(app, auth_dependency=_auth, db_client_fn=_db_client)
 if KALSHI_WEATHER_V2_ACTIVE:
     install_kalshi_weather_v2_routes(
