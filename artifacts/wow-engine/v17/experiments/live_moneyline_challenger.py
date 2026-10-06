@@ -124,14 +124,19 @@ def _clean_frame(frame: pd.DataFrame, feature_names: Sequence[str]) -> pd.DataFr
 def _calibration_bins(y: np.ndarray, p: np.ndarray, *, bins: int = 12) -> tuple[dict[str, float], ...]:
     if len(y) < bins:
         raise LiveChallengerError("LIVE_CHALLENGER_CALIBRATION_SAMPLE_TOO_THIN")
-    order = np.argsort(p)
+    # Calibrate a side-neutral selected-side probability. Mirroring HOME into
+    # AWAY preserves the binary outcome identity without importing a market
+    # favorite label or a pregame probability.
+    side_p = np.concatenate([p, 1.0 - p])
+    side_y = np.concatenate([y, 1 - y])
+    order = np.argsort(side_p)
     chunks = np.array_split(order, bins)
     result: list[dict[str, float]] = []
     for idx, chunk in enumerate(chunks):
         if len(chunk) == 0:
             continue
-        yy = y[chunk]
-        pp = p[chunk]
+        yy = side_y[chunk]
+        pp = side_p[chunk]
         successes = int(yy.sum())
         result.append({
             "bin": float(idx),
