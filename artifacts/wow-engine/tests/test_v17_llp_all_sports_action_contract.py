@@ -45,6 +45,32 @@ def test_llp_schema_exposes_full_slate_row_detail_readback():
     assert operation["x-openai-isConsequential"] is False
 
 
+
+def test_llp_schema_exposes_governed_in_play_moneyline_actions():
+    document = _schema()
+    health = document["paths"][f"{GATEWAY_PREFIX}/live-probability/health"]["get"]
+    capture = document["paths"][f"{GATEWAY_PREFIX}/capture-live-event-state"]["post"]
+    score = document["paths"][f"{GATEWAY_PREFIX}/score-live-event"]["post"]
+    assert health["operationId"] == "getLlpV17LiveProbabilityHealth"
+    assert capture["operationId"] == "captureLlpV17LiveEventState"
+    assert score["operationId"] == "scoreLlpV17LiveEvent"
+    capture_request = document["components"]["schemas"]["LlpLiveStateCaptureRequest"]
+    assert capture_request["properties"]["sport"]["enum"] == ["MLB", "NFL", "NBA", "WNBA", "NCAAF", "NCAAB", "NHL", "SOCCER", "TENNIS", "PGA", "MMA", "BOXING", "CRICKET"]
+    request = document["components"]["schemas"]["LlpLiveEventRequest"]
+    assert request["properties"]["event_status"]["enum"] == ["IN_PROGRESS"]
+    assert request["properties"]["settlement_rule"]["type"] == "string"
+    assert request["properties"]["settlement_rule"]["minLength"] == 1
+
+
+def test_llp_editor_requires_live_action_and_forbids_pregame_probability_reuse():
+    for path in (AUTHORITY_INSTRUCTIONS, EDITOR_INSTRUCTIONS):
+        text = path.read_text()
+        assert "captureLlpV17LiveEventState" in text
+        assert "scoreLlpV17LiveEvent" in text
+        assert "IN_PROGRESS" in text
+        assert "pregame probability" in text
+
+
 def test_llp_operation_descriptions_fit_custom_gpt_editor_limit():
     for path_item in _schema()["paths"].values():
         for method, operation in path_item.items():
