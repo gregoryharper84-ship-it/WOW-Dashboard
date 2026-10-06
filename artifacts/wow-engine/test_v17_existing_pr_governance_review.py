@@ -253,3 +253,12 @@ def test_trusted_consumers_use_dedicated_existing_pr_verifier():
     assert '"wow-v17-engineering-auditor-code-health|.github/workflows/wow-v17-engineering-auditor-code-health.yml"' in release
     assert '"wow-v17-spread-forward-shadow|.github/workflows/wow-v17-spread-forward-shadow.yml"' in release
     assert "Trusted exact-head engineering governance" in release
+
+def test_trusted_governance_cancels_superseded_heads_per_pr():
+    text = GATE.read_text(encoding="utf-8")
+    concurrency = text.split("concurrency:", 1)[1].split("\njobs:", 1)[0]
+
+    assert 'group: wow-v17-trusted-governance-${{ github.event.pull_request.number }}' in concurrency
+    assert "github.event.pull_request.head.sha" not in concurrency
+    assert "cancel-in-progress: true" in concurrency
+
