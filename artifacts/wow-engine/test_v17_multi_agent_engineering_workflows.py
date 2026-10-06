@@ -95,7 +95,7 @@ def test_worker_denies_policy_changing_implementation_lease() -> None:
 
 def test_qa_agent_requires_actual_implementation_change() -> None:
     guarded_condition = "steps.impl.outputs.changed == 'true' && steps.regression.outputs.status == '0'"
-    assert WORKER.read_text().count(guarded_condition) == 2
+    assert WORKER.read_text().count(guarded_condition) == 3
     assert CLAUDE_WORKER.read_text().count(guarded_condition) == 2
 
 
@@ -190,8 +190,9 @@ def test_non_peer_primary_openai_agent_workflows_remain_openai_only() -> None:
     assert "wow-claude-agent" in worker
     assert "CROSS_PROVIDER_PEER_DIAGNOSIS_AGENT" in worker
     assert "CROSS_PROVIDER_ADVERSARIAL_REVIEW_AGENT" in worker
+    assert "CROSS_PROVIDER_QA_COUNTEREXAMPLE_AGENT" in worker
     assert worker.count('permission_profile: ":workspace"') == 1
-    assert worker.count("uses: ./.github/actions/wow-claude-agent") == 2
+    assert worker.count("uses: ./.github/actions/wow-claude-agent") == 3
 
     action = CHATGPT_ACTION.read_text()
     assert "openai/codex-action@v1" in action
@@ -214,7 +215,8 @@ def test_claude_agent_is_bounded_to_fallback_or_read_only_primary_peer_roles() -
     assert "wow-claude-agent" in primary_worker
     assert "CROSS_PROVIDER_PEER_DIAGNOSIS_AGENT" in primary_worker
     assert "CROSS_PROVIDER_ADVERSARIAL_REVIEW_AGENT" in primary_worker
-    assert primary_worker.count("uses: ./.github/actions/wow-claude-agent") == 2
+    assert "CROSS_PROVIDER_QA_COUNTEREXAMPLE_AGENT" in primary_worker
+    assert primary_worker.count("uses: ./.github/actions/wow-claude-agent") == 3
     assert "steps.claude_review.outputs.decision != 'REJECT'" in primary_worker
     assert "Claude peer analysis unavailable; primary OpenAI engineering path remains active." in primary_worker
 

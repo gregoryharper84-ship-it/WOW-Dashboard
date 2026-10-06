@@ -729,6 +729,84 @@ jobs:
           echo "status=$status" >> "$GITHUB_OUTPUT"
           exit 0
 
+      - name: Claude post-regression counterexample review
+        id: claude_qa_agent
+        if: steps.impl.outputs.changed == 'true' && steps.regression.outputs.status == '0' && steps.claude_peer_provider.outputs.available == 'true'
+        continue-on-error: true
+        uses: ./.github/actions/wow-claude-agent
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          permission_profile: ":read-only"
+          prompt: |
+            You are the independent WOW V17 CROSS_PROVIDER_QA_COUNTEREXAMPLE_AGENT running on Anthropic/Claude.
+            OpenAI authored the patch; you did not. Review the current diff, incident handoff evidence, and
+            deterministic regression result. Search specifically for missing counterexamples, adjacent-lane
+            regressions, false-positive acceptance, typed-failure drift, exact-once/immutable persistence risks,
+            and gaps between the proven root cause and the tests that passed. Do not edit files, approve a merge,
+            deploy, or produce sporting probabilities. Return advisory QA evidence only. Preserve
+            V17_TERMINAL_REDUCER, DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS=true, and can_execute=false.
+          output_schema: '{"type":"object","properties":{"verdict":{"type":"string","enum":["CONCUR","NARROW","CHALLENGE","INCONCLUSIVE"]},"counterexamples":{"type":"array","items":{"type":"string"}},"regression_gaps":{"type":"array","items":{"type":"string"}},"recommended_tests":{"type":"array","items":{"type":"string"}}},"required":["verdict","counterexamples","regression_gaps","recommended_tests"],"additionalProperties":false}'
+
+      - name: Normalize Claude QA counterexample review
+        id: claude_qa
+        if: steps.claude_qa_agent.outcome == 'success'
+        shell: bash
+        env:
+          RESULT: ${{ steps.claude_qa_agent.outputs.structured_output }}
+        run: |
+          set -euo pipefail
+          echo "verdict=$(jq -r '.verdict' <<<"$RESULT")" >> "$GITHUB_OUTPUT"
+          printf '%s\n' "$RESULT" > artifacts/wow-engine/v17/.agent-handoff/claude-qa-counterexamples.json
+
+      - name: Persist Claude cross-provider utilization receipt
+        if: always()
+        shell: bash
+        env:
+          INCIDENT: ${{ steps.triage.outputs.incident }}
+          LEASE_GROUP: ${{ steps.dispatch.outputs.lease_group }}
+          PEER_AVAILABLE: ${{ steps.claude_peer_provider.outputs.available }}
+          DIAGNOSIS_VERDICT: ${{ steps.claude_peer.outputs.verdict }}
+          REVIEW_DECISION: ${{ steps.claude_review.outputs.decision }}
+          QA_VERDICT: ${{ steps.claude_qa.outputs.verdict }}
+        run: |
+          set -euo pipefail
+          receipt="$RUNNER_TEMP/wow-claude-utilization-receipt.json"
+          jq -n \
+            --arg utc "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg run_id "$GITHUB_RUN_ID" \
+            --arg incident "${INCIDENT:-}" \
+            --arg lease_group "${LEASE_GROUP:-GLOBAL}" \
+            --arg peer_available "${PEER_AVAILABLE:-false}" \
+            --arg diagnosis "${DIAGNOSIS_VERDICT:-NOT_RUN}" \
+            --arg review "${REVIEW_DECISION:-NOT_RUN}" \
+            --arg qa "${QA_VERDICT:-NOT_RUN}" \
+            '{
+              schema_version: 1,
+              created_at_utc: $utc,
+              workflow_run_id: $run_id,
+              incident_id: (if ($incident | length) > 0 then $incident else null end),
+              lease_group: $lease_group,
+              provider: "anthropic",
+              authority: "READ_ONLY_CROSS_PROVIDER",
+              available: ($peer_available == "true"),
+              diagnosis_verdict: $diagnosis,
+              adversarial_review_decision: $review,
+              qa_counterexample_verdict: $qa,
+              implementation_writer: false,
+              can_execute: false,
+              terminal_authority: "V17_TERMINAL_REDUCER"
+            }' > "$receipt"
+
+      - name: Upload Claude cross-provider utilization receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wow-v17-claude-utilization-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: error
+          retention-days: 30
+          path: ${{ runner.temp }}/wow-claude-utilization-receipt.json
+
       - name: QA Verification agent
         id: qa_agent
         if: steps.impl.outputs.changed == 'true' && steps.regression.outputs.status == '0'
@@ -1043,6 +1121,7 @@ jobs:
             echo "- Implementation changed: ${{ steps.impl.outputs.changed || 'false' }}"
             echo "- OpenAI review: ${{ steps.review.outputs.decision || 'NOT_RUN' }}"
             echo "- Claude cross-provider review: ${{ steps.claude_review.outputs.decision || 'NOT_RUN' }}"
+            echo "- Claude QA counterexample review: ${{ steps.claude_qa.outputs.verdict || 'NOT_RUN' }}"
             echo "- Architect: ${{ steps.architect.outputs.decision || 'NOT_RUN' }}"
             echo "- Regression: ${{ steps.regression.outputs.status || 'NOT_RUN' }}"
             echo "- QA: ${{ steps.qa.outputs.decision || 'NOT_RUN' }}"
