@@ -36,6 +36,65 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Classify exact-head CI closure pressure
+        id: ci_watchdog
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/wow-ci-closure-watchdog"
+          mkdir -p "$work"
+          closure_pressure=false
+          classifications=()
+          progress_signals=()
+
+          gh api --paginate --slurp "/repos/${GITHUB_REPOSITORY}/pulls?state=open&base=main&per_page=100" | jq 'add' > "$work/prs.json"
+          while IFS= read -r pr; do
+            number=$(jq -r '.number' <<<"$pr")
+            title=$(jq -r '.title // ""' <<<"$pr")
+            head_sha=$(jq -r '.head.sha // ""' <<<"$pr")
+            head_repo=$(jq -r '.head.repo.full_name // ""' <<<"$pr")
+            [ "$head_repo" = "$GITHUB_REPOSITORY" ] || continue
+            case "$title" in
+              "fix(v17):"*|"fix(ci):"*) ;;
+              *) continue ;;
+            esac
+
+            printf '%s\n' "$pr" > "$work/pr-${number}.json"
+            gh api "/repos/${GITHUB_REPOSITORY}/commits/${head_sha}/check-runs?per_page=100"               -H 'Accept: application/vnd.github+json' > "$work/checks-${number}.json"
+            progress=$(python artifacts/wow-engine/v17/ci_closure_watchdog.py progress               --pr-json "$work/pr-${number}.json"               --checks-json "$work/checks-${number}.json")
+            while IFS= read -r signal; do
+              [ -n "$signal" ] && progress_signals+=("#${number}:${signal}")
+            done < <(jq -r '.signals[]?' <<<"$progress")
+
+            gh api "/repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${head_sha}&per_page=100" > "$work/runs-${number}.json"
+            run=$(jq -c '[.workflow_runs[] | select(.name == "wow-engine-verify") | select(.path == ".github/workflows/wow-engine-verify.yml")] | sort_by(.created_at) | reverse | first // empty' "$work/runs-${number}.json")
+            if [ -z "$run" ]; then
+              classifications+=("#${number}:CI_PENDING")
+              closure_pressure=true
+              continue
+            fi
+
+            run_id=$(jq -r '.id' <<<"$run")
+            printf '%s\n' "$run" > "$work/run-${number}.json"
+            gh api "/repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/jobs?filter=latest&per_page=100" > "$work/jobs-${number}.json"
+            verdict=$(python artifacts/wow-engine/v17/ci_closure_watchdog.py classify               --run-json "$work/run-${number}.json"               --jobs-json "$work/jobs-${number}.json")
+            classification=$(jq -r '.classification' <<<"$verdict")
+            classifications+=("#${number}:${classification}")
+            [ "$classification" = "CI_GREEN" ] || closure_pressure=true
+          done < <(jq -c '.[] | select(.draft == false)' "$work/prs.json")
+
+          {
+            echo "closure_pressure=$closure_pressure"
+            echo "classifications<<EOF"
+            printf '%s\n' "${classifications[@]:-NONE}"
+            echo "EOF"
+            echo "objective_progress<<EOF"
+            printf '%s\n' "${progress_signals[@]:-NONE}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Resolve next concrete action
         id: decision
         shell: bash
@@ -61,8 +120,12 @@ jobs:
           action="DETECT"
           target=""
           reason="No unfinished reliability item; run deterministic detector."
+          closure_pressure="${{ steps.ci_watchdog.outputs.closure_pressure || 'false' }}"
 
-          if [ -n "$repair_pr" ]; then
+          if [ "$closure_pressure" = "true" ]; then
+            action="RECOVER_CI"
+            reason="Repair CI closure pressure is active; reserve verification capacity and do not start discretionary work."
+          elif [ -n "$repair_pr" ]; then
             action="RESUME_REPAIR_PR"
             target="$repair_pr"
             reason="An autonomous repair PR is open; finish its CI/merge lifecycle before starting new work."
@@ -242,6 +305,9 @@ jobs:
             echo "- incident_state: ${{ steps.decision.outputs.state || 'NONE' }}"
             echo "- product_health: ${{ steps.decision.outputs.product_health || 'UNKNOWN' }}"
             echo "- reason: ${{ steps.decision.outputs.reason || 'NONE' }}"
+            echo "- ci_closure_pressure: ${{ steps.ci_watchdog.outputs.closure_pressure || 'false' }}"
+            echo "- ci_classifications: ${{ steps.ci_watchdog.outputs.classifications || 'NONE' }}"
+            echo "- objective_progress: ${{ steps.ci_watchdog.outputs.objective_progress || 'NONE' }}"
             echo "- policy: finish existing work before starting new work"
             echo "- product policy: no discretionary model research while golden user journey is not PASS"
             echo "- model improvement: challenger/experiment only until governed evidence earns promotion"

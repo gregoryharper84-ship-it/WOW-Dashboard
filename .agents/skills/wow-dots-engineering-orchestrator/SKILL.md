@@ -120,6 +120,28 @@ Rules:
 - Supabase mutations must be narrow, schema-aware, reviewed, and never expose service-role credentials.
 - Communication actions may report or request decisions but cannot manufacture technical closure.
 
+### Repository mutation anti-stall
+
+Repository persistence is a multi-transport capability, not a single Contents API call.
+
+- After an authorized Contents API mutation is rejected, attempt the independent Git Data sequence `create_blob -> create_tree -> create_commit -> update_ref` in the same cycle when available.
+- Use exact-head/expected-SHA leasing and verify the resulting branch diff before proceeding.
+- Do not report `REPOSITORY_WRITE_UNAVAILABLE` until both independent persistence families fail or the alternative is explicitly unavailable.
+- Repeating the same payload through the same API family/method is a duplicate retry; using a materially different persistence family is not.
+- Never use the alternate path to bypass protected `main`, review, CI, or merge governance.
+
+### CI closure anti-stall
+
+CI is classified independently from code correctness:
+
+- `CI_JOB_CANCELLED_BEFORE_START` -> use the GitHub connector's targeted failed-job/job rerun capability once when the exact head is still current and no test step executed.
+- `CI_CAPACITY_STARVATION` -> reserve capacity for restoration, suppress discretionary model-improvement dispatch, and cancel only proven superseded governance waiters when an approved connector action is available.
+- `CI_REQUIRED_GATE_FAILED` -> inspect the executing job's exact logs and route back to Engineering; no blind retry.
+- `CI_PENDING` -> recheck in the same cycle when possible.
+- `CI_GREEN` -> advance to the next governed lifecycle stage.
+
+A cancelled-before-start CI job is infrastructure evidence, not proof of a product-code regression. A one-shot retry never weakens required checks or branch protection.
+
 ## Hard-boundary behavior
 
 Legitimate examples include:
