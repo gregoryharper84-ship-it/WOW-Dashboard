@@ -178,3 +178,19 @@ def test_release_gate_preserves_non_execution_governance():
     assert 'WOW_CAN_EXECUTE: "false"' in text
     assert 'WOW_DRY_RUN_ONLY: "true"' in text
     assert '"can_execute":False' in text or '"can_execute": False' in text
+
+
+def test_post_deploy_and_render_deploy_share_exact_sha_serialization_fence():
+    post = (ROOT / ".github/workflows/wow-v17-post-deploy-verification-orchestrator.yml").read_text(encoding="utf-8")
+    deploy = (ROOT / ".github/workflows/wow-v17-render-production-deploy.yml").read_text(encoding="utf-8")
+
+    shared = "group: wow-v17-production-deploy-verification"
+    assert shared in post
+    assert shared in deploy
+    assert "cancel-in-progress: false" in post
+    assert "cancel-in-progress: false" in deploy
+
+    # Every workflow_run production lane must refuse to test deployment A using
+    # workflow definitions from a newer protected-main SHA B.
+    assert post.count("github.event.workflow_run.head_sha == github.sha") >= 4
+    assert "github.event.workflow_run.head_branch == 'main'" in post
