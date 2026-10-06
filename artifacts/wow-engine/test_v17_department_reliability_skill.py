@@ -53,6 +53,8 @@ def test_machine_contract_requires_typed_receipt_and_evidence_gated_rollback():
     assert data["terminal_receipt"]["prose_only_evidence_allowed"] is False
     assert data["terminal_receipt"]["require_merge_sha_equals_deployed_sha"] is True
     assert data["rollback"]["single_ambiguous_probe_may_trigger_rollback"] is False
+    assert data["post_merge_acceptance_lock"]["name"] == "PROTECTED_MAIN_ACCEPTANCE_LOCK"
+    assert data["post_merge_acceptance_lock"]["lower_priority_main_advance_allowed"] is False
     assert data["class_c"]["production_promotion_allowed"] is False
 
 
