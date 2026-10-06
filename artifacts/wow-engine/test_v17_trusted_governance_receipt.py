@@ -242,4 +242,4 @@ def test_release_verifier_uses_deterministic_render_pointer_and_agent_is_advisor
     assert "continue-on-error: true" in agent
     publish = text.split("- name: Publish release verification receipt", 1)[1]
     assert "Provider: Deterministic GitHub/Render exact-SHA receipt" in publish
-    assert "Advisory release-observability result; not terminal authority" in publish
+

@@ -409,7 +409,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ steps.pr.outputs.number }}
           RESULT: ${{ steps.deterministic.outputs.result }}
-          AGENT_RESULT: ${{ steps.release_agent.outputs.structured_output }}
           HEAD_SHA: ${{ steps.merged.outputs.head_sha }}
           MERGE_SHA: ${{ steps.merged.outputs.merge_sha }}
         run: |
