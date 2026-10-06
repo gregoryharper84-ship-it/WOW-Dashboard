@@ -261,15 +261,21 @@ def test_domain_scoped_p0_target_propagates_across_provider_and_workers() -> Non
     assert "incident=([0-9]+)" in dispatcher
     assert "lease=([A-Za-z0-9_-]+)" in dispatcher
 
-    shared_group = "group: wow-v17-engineering-domain-${{ inputs.lease_group || 'GLOBAL' }}"
+    shared_group = "group: wow-v17-engineering-mutation"
     assert shared_group in openai
     assert shared_group in claude
+    assert "wow-v17-engineering-domain-" not in openai
+    assert "wow-v17-engineering-domain-" not in claude
     assert "TARGET_INCIDENT_NOT_ACTIONABLE" in openai
     assert "TARGET_INCIDENT_NOT_ACTIONABLE" in claude
     assert "TARGET_INCIDENT_LEASE_MISMATCH" in openai
     assert "TARGET_INCIDENT_LEASE_MISMATCH" in claude
-    assert 'select(.severity != "P0" or .execution_lane != "RAPID")' in openai
-    assert 'select(.severity != "P0" or .execution_lane != "RAPID")' in claude
+    assert "TARGET_INCIDENT_NOT_GLOBAL_OWNER" in openai
+    assert "TARGET_INCIDENT_NOT_GLOBAL_OWNER" in claude
+    assert 'select(.severity != "P0" or .execution_lane != "RAPID")' not in openai
+    assert 'select(.severity != "P0" or .execution_lane != "RAPID")' not in claude
+    assert "gh api --paginate --slurp" in openai
+    assert "gh api --paginate --slurp" in claude
     assert "WOW_DUAL_STREAM_HEARTBEAT:${LEASE_GROUP:-GLOBAL}" in openai
     assert "WOW_DUAL_STREAM_HEARTBEAT:${LEASE_GROUP:-GLOBAL}" in claude
     assert "marker='<!-- WOW_DUAL_STREAM_HEARTBEAT -->'" not in openai
