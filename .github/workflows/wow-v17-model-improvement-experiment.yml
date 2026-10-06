@@ -219,7 +219,7 @@ jobs:
           echo "branch=$branch" >> "$GITHUB_OUTPUT"
           echo "experiment_id=$experiment_id" >> "$GITHUB_OUTPUT"
 
-      - name: Open governed experiment PR and enable auto-merge
+      - name: Open governed experiment PR for global promotion queue
         if: steps.scope.outputs.changed == 'true' && steps.mode.outputs.mode == 'new'
         shell: bash
         env:
@@ -250,10 +250,9 @@ jobs:
           pr_url=$(gh pr create --repo "$GITHUB_REPOSITORY" --base main --head "$BRANCH" \
             --title "Model experiment: $EXPERIMENT_ID" --body-file "$body")
           pr_number=${pr_url##*/}
-          gh pr merge "$pr_number" --repo "$GITHUB_REPOSITORY" --auto --merge
-          echo "Experiment PR #$pr_number created with auto-merge after protected checks." >> "$GITHUB_STEP_SUMMARY"
+          echo "Experiment PR #$pr_number created; promotion is deferred to the repository-wide global mutation/promotion owner." >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Restore auto-merge after experiment repair
+      - name: Return repaired experiment PR to global promotion queue
         if: steps.scope.outputs.changed == 'true' && steps.mode.outputs.mode == 'repair'
         shell: bash
         env:
@@ -261,8 +260,7 @@ jobs:
           PR_NUMBER: ${{ steps.mode.outputs.pr_number }}
         run: |
           set -euo pipefail
-          gh pr merge "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --auto --merge
-          echo "Repaired experiment PR #$PR_NUMBER pushed and returned to protected CI/auto-merge." >> "$GITHUB_STEP_SUMMARY"
+          echo "Repaired experiment PR #$PR_NUMBER pushed; protected CI may run, but promotion remains deferred to the global mutation/promotion owner." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Record experiment receipt
         if: always()
