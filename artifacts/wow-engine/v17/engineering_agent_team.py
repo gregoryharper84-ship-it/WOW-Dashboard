@@ -403,6 +403,42 @@ def decide_base_drift(
     )
 
 
+def validate_merge_candidate_receipt(
+    receipt: dict[str, Any],
+    *,
+    expected_pr_number: int,
+    expected_head_sha: str,
+    expected_base_sha: str,
+    expected_candidate_sha: str,
+) -> list[str]:
+    """Validate immutable identity for the prospective merge artifact."""
+    errors: list[str] = []
+    identity = receipt.get("merge_candidate")
+    if not isinstance(identity, dict):
+        return ["merge candidate receipt requires merge_candidate identity"]
+
+    expected = {
+        "pr_number": expected_pr_number,
+        "pr_head_sha": expected_head_sha,
+        "base_sha": expected_base_sha,
+        "candidate_sha": expected_candidate_sha,
+    }
+    for field, expected_value in expected.items():
+        if identity.get(field) != expected_value:
+            errors.append(
+                f"merge candidate {field} mismatch: "
+                f"{identity.get(field)!r} != {expected_value!r}"
+            )
+
+    if receipt.get("certification_status") != "PASS":
+        errors.append("merge candidate certification_status must be PASS")
+    if receipt.get("terminal_authority") != "V17_TERMINAL_REDUCER":
+        errors.append("merge candidate receipt must preserve V17_TERMINAL_REDUCER")
+    if receipt.get("can_execute") is not False:
+        errors.append("merge candidate receipt must set can_execute=false")
+    return errors
+
+
 def _record_id(record: dict[str, Any]) -> str:
     return str(record.get("postmortem_id") or record.get("incident_id") or "")
 
@@ -753,6 +789,24 @@ def self_check() -> dict[str, Any]:
     assert conflict.restack_same_pr is True
     assert conflict.close_pr is False
     assert {drift.action, conflict.action, "NO_BASE_DRIFT"} <= BASE_DRIFT_ACTIONS
+    candidate_receipt = {
+        "merge_candidate": {
+            "pr_number": 1457,
+            "pr_head_sha": "head",
+            "base_sha": "base",
+            "candidate_sha": "candidate",
+        },
+        "certification_status": "PASS",
+        "terminal_authority": "V17_TERMINAL_REDUCER",
+        "can_execute": False,
+    }
+    assert validate_merge_candidate_receipt(
+        candidate_receipt,
+        expected_pr_number=1457,
+        expected_head_sha="head",
+        expected_base_sha="base",
+        expected_candidate_sha="candidate",
+    ) == []
     lifecycle_a = {
         "lifecycle_control_plane": True,
         "change_class": "A",

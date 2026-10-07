@@ -197,3 +197,62 @@ def test_lifecycle_skill_forbids_supersession_for_base_drift():
     assert "REVALIDATE_IN_PLACE" in skill
     assert "RESTACK_SAME_PR" not in skill or "Restack the same PR branch only" in skill
 
+def _candidate_receipt():
+    return {
+        "merge_candidate": {
+            "pr_number": 1457,
+            "pr_head_sha": "head-sha",
+            "base_sha": "base-sha",
+            "candidate_sha": "candidate-sha",
+        },
+        "certification_status": "PASS",
+        "terminal_authority": "V17_TERMINAL_REDUCER",
+        "can_execute": False,
+    }
+
+
+def test_merge_candidate_receipt_binds_pr_head_base_and_candidate_sha():
+    module = _module()
+    assert module.validate_merge_candidate_receipt(
+        _candidate_receipt(),
+        expected_pr_number=1457,
+        expected_head_sha="head-sha",
+        expected_base_sha="base-sha",
+        expected_candidate_sha="candidate-sha",
+    ) == []
+
+
+def test_merge_candidate_receipt_rejects_stale_base_without_superseding_pr():
+    module = _module()
+    receipt = _candidate_receipt()
+    errors = module.validate_merge_candidate_receipt(
+        receipt,
+        expected_pr_number=1457,
+        expected_head_sha="head-sha",
+        expected_base_sha="new-base-sha",
+        expected_candidate_sha="new-candidate-sha",
+    )
+    assert any("base_sha mismatch" in error for error in errors)
+    assert any("candidate_sha mismatch" in error for error in errors)
+    decision = module.decide_base_drift(base_advanced=True, mergeable=True)
+    assert decision.action == "REVALIDATE_IN_PLACE"
+    assert decision.close_pr is False
+
+
+def test_merge_candidate_receipt_fails_closed_on_governance_or_execution_drift():
+    module = _module()
+    receipt = _candidate_receipt()
+    receipt["certification_status"] = "FAIL"
+    receipt["terminal_authority"] = "OTHER"
+    receipt["can_execute"] = True
+    errors = module.validate_merge_candidate_receipt(
+        receipt,
+        expected_pr_number=1457,
+        expected_head_sha="head-sha",
+        expected_base_sha="base-sha",
+        expected_candidate_sha="candidate-sha",
+    )
+    assert "merge candidate certification_status must be PASS" in errors
+    assert "merge candidate receipt must preserve V17_TERMINAL_REDUCER" in errors
+    assert "merge candidate receipt must set can_execute=false" in errors
+
