@@ -129,6 +129,36 @@ jobs:
           PR_NUMBER: ${{ steps.decision.outputs.target }}
         run: |
           set -euo pipefail
+
+          pr_json=$(gh api "/repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}")
+          head_sha=$(jq -r '.head.sha // ""' <<<"$pr_json")
+          head_repo=$(jq -r '.head.repo.full_name // ""' <<<"$pr_json")
+          mergeable_state=$(jq -r '.mergeable_state // "unknown"' <<<"$pr_json")
+
+          [ "$head_repo" = "$GITHUB_REPOSITORY" ] || {
+            echo "::error::Repair PR must be same-repository."
+            exit 1
+          }
+          [ -n "$head_sha" ] || {
+            echo "::error::Repair PR head SHA is missing."
+            exit 1
+          }
+
+          if [ "$mergeable_state" = "behind" ]; then
+            echo "REVALIDATE_IN_PLACE: PR #${PR_NUMBER} is behind protected main; updating the same branch with expected head ${head_sha}." >> "$GITHUB_STEP_SUMMARY"
+            gh api \
+              --method PUT \
+              "/repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/update-branch" \
+              -f expected_head_sha="$head_sha" >/dev/null
+            echo "Same PR preserved. The synchronize event will rerun exact-head CI and trusted governance; stale certification is not dispatched." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          if [ "$mergeable_state" = "dirty" ]; then
+            echo "BLOCKED_WITH_EXACT_REASON: PR #${PR_NUMBER} has a real merge conflict. Preserve the same PR; do not close, supersede, or recreate it. RESTACK_SAME_PR is required." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
           gh workflow run wow-v17-morning-green-continuation.yml \
             --repo "$GITHUB_REPOSITORY" --ref main -f pr_number="$PR_NUMBER"
 

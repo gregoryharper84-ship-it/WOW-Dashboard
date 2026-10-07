@@ -65,6 +65,34 @@ def test_continuation_selector_never_hands_off_draft_prs() -> None:
     assert 'contains("Model-Experiment-Autonomous: true")' in text
 
 
+def test_repair_pr_base_drift_is_revalidated_in_place_without_pr_recreation() -> None:
+    text = _text(LOOP)
+    resume = text.split("- name: Resume autonomous repair PR", 1)[1].split(
+        "- name: Resume release verification", 1
+    )[0]
+    assert "mergeable_state=$(jq -r" in resume
+    assert '.mergeable_state // "unknown"' in resume
+    assert '[ "$mergeable_state" = "behind" ]' in resume
+    assert "REVALIDATE_IN_PLACE" in resume
+    assert '"/repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/update-branch"' in resume
+    assert '-f expected_head_sha="$head_sha"' in resume
+    assert "Same PR preserved" in resume
+    assert "stale certification is not dispatched" in resume
+    assert "gh pr close" not in resume
+    assert "create_pull_request" not in resume
+
+
+def test_real_merge_conflict_preserves_same_pr_and_fails_closed() -> None:
+    text = _text(LOOP)
+    resume = text.split("- name: Resume autonomous repair PR", 1)[1].split(
+        "- name: Resume release verification", 1
+    )[0]
+    assert '[ "$mergeable_state" = "dirty" ]' in resume
+    assert "BLOCKED_WITH_EXACT_REASON" in resume
+    assert "RESTACK_SAME_PR is required" in resume
+    assert "do not close, supersede, or recreate it" in resume
+
+
 def test_open_experiment_pr_is_actively_advanced_only_after_product_health_pass() -> None:
     text = _text(LOOP)
     assert "Resume governed model-experiment PR" in text
