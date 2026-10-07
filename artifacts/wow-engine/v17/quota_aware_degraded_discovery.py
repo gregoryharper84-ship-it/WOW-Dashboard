@@ -418,7 +418,11 @@ def install_quota_aware_degraded_discovery() -> dict[str, Any]:
     def scan(*args: Any, **kwargs: Any) -> dict[str, Any]:
         from v17 import rundown_snapshot_cache as snapshot_cache
 
-        budget_token = source_policy.begin_paid_budget_scope()
+        shared_budget = source_policy.current_paid_budget()
+        budget_token = None
+        if shared_budget is None:
+            shared_budget = source_policy.PaidCallBudget.from_env()
+            budget_token = source_policy.begin_paid_budget_scope(shared_budget)
         context = _new_context()
         cache_before = snapshot_cache.stats()
         scan_token = _SCAN_CONTEXT.set(context)
@@ -426,7 +430,8 @@ def install_quota_aware_degraded_discovery() -> dict[str, Any]:
             result = dict(original_scan(*args, **kwargs))
         finally:
             _SCAN_CONTEXT.reset(scan_token)
-            source_policy.end_paid_budget_scope(budget_token)
+            if budget_token is not None:
+                source_policy.end_paid_budget_scope(budget_token)
         cache_after = snapshot_cache.stats()
         cache_hits_saved = max(
             0,
