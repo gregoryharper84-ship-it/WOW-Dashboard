@@ -11,11 +11,13 @@ import json
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from agent_runtime.scout_research import scrub_authority, validate_non_predictive_output
+from agent_runtime.scout_research import evidence_summary, scrub_authority, validate_non_predictive_output
 
 try:
+    from v17.sport_research_brief import SUPPORTED_RESEARCH_WORKERS, WORKER_ROLE
     from v17.scout_source_policy import evidence_quality, source_requirements, source_rule
 except ModuleNotFoundError:
+    from sport_research_brief import SUPPORTED_RESEARCH_WORKERS, WORKER_ROLE
     from scout_source_policy import evidence_quality, source_requirements, source_rule
 
 SCHEMA_VERSION = "wow.v17.scout-intelligence-dossier.v1"
@@ -358,6 +360,43 @@ def _refresh_plan(candidate: dict[str, Any], *, now: datetime) -> dict[str, Any]
     }
 
 
+def _research_worker_reports(
+    *,
+    ledger: list[dict[str, Any]],
+    participant_timeline: list[dict[str, Any]],
+    event_context: dict[str, Any],
+    market_state: dict[str, Any],
+) -> tuple[dict[str, dict[str, Any]], str]:
+    structured_stats = [
+        row for row in ledger
+        if row.get("source_family") == "STRUCTURED_STATS" and row.get("research_usable")
+    ]
+    matchup_rows = [
+        row for row in ledger
+        if row.get("domain") in {"matchup", "context", "rotation", "bullpen"}
+        and row.get("research_usable")
+    ]
+    source_records = [row for row in ledger if row.get("research_usable")]
+    evidence = {
+        "source_records": source_records,
+        "participant_status": participant_timeline,
+        "historical_evidence": structured_stats,
+        "matchup_context": matchup_rows,
+        "event_context": event_context,
+        "market_identity": market_state if market_state.get("observation_count", 0) > 0 else {},
+    }
+    reports: dict[str, dict[str, Any]] = {}
+    for worker_id in SUPPORTED_RESEARCH_WORKERS:
+        role = WORKER_ROLE.get(worker_id, "GENERIC_RESEARCH")
+        reports[worker_id] = evidence_summary(evidence, role)
+    status = (
+        "READY"
+        if reports and all(report.get("research_status") == "READY" for report in reports.values())
+        else "PARTIAL"
+    )
+    return reports, status
+
+
 def _change_detection(current: dict[str, Any], previous: dict[str, Any] | None) -> dict[str, Any]:
     if not isinstance(previous, dict):
         return {"status": "INITIAL_SNAPSHOT", "changed_sections": []}
@@ -450,6 +489,13 @@ def build_scout_dossier(
     }
 
     context = _event_context(candidate)
+    market_state = _market_state(market_entries, market_rows)
+    worker_reports, worker_barrier_status = _research_worker_reports(
+        ledger=ledger,
+        participant_timeline=participant_timeline,
+        event_context=context,
+        market_state=market_state,
+    )
     conflicts = _material_conflicts(ledger)
     uncertainties = [
         {"code": "MISSING_REQUIRED_DOMAIN", "domain": domain}
@@ -478,7 +524,9 @@ def build_scout_dossier(
         "domain_completeness": round(
             100.0 * (len(requirements) - len(missing)) / len(requirements), 2
         ) if requirements else 0.0,
-        "market_state": _market_state(market_entries, market_rows),
+        "market_state": market_state,
+        "research_worker_reports": worker_reports,
+        "research_worker_barrier_status": worker_barrier_status,
         "contradictions": conflicts,
         "red_team_results": {
             "status": "QUARANTINED" if conflicts else ("WATCH" if missing else "PASSED"),
