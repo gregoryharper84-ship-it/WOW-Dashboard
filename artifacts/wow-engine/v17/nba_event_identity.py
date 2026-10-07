@@ -48,6 +48,11 @@ def _strip_espn(value: Any) -> str:
     return token.removeprefix("espn-").strip()
 
 
+def schedule_season_year(event_time: datetime) -> int:
+    """SportsDataverse NBA schedule assets use the season-ending year."""
+    return event_time.year + 1 if event_time.month >= 7 else event_time.year
+
+
 def _schedule_rows(
     year: int,
     *,
@@ -94,7 +99,7 @@ def resolve_nba_current_event_identity(
         (event_time.date() + timedelta(days=offset)).isoformat()
         for offset in (-1, 0, 1)
     }
-    rows = _schedule_rows(event_time.year, fetcher=fetcher)
+    rows = _schedule_rows(schedule_season_year(event_time), fetcher=fetcher)
     matches = [
         row for row in rows
         if isinstance(row, Mapping)
@@ -142,4 +147,5 @@ __all__ = [
     "SOURCE_PROVIDER",
     "resolve_nba_current_event_identity",
     "reset_cache",
+    "schedule_season_year",
 ]
