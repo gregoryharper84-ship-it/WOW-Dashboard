@@ -424,3 +424,14 @@ def test_product_truth_snapshot_rejects_execution_authority() -> None:
             run_id="run-1",
             snapshot={"can_execute": True},
         )
+
+
+
+def test_product_truth_snapshot_rejects_run_identity_mismatch() -> None:
+    client = _client()
+    with pytest.raises(ValueError, match="run_id mismatch"):
+        repository.record_product_truth_snapshot(
+            client,
+            run_id="run-1",
+            snapshot={"run_id": "run-2", "can_execute": False},
+        )
