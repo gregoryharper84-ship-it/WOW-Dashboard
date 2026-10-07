@@ -7,6 +7,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1] / "v17"
 LLP_SCHEMA = ROOT / "openapi.llp-team-engine.v17.yaml"
 WOW_SCHEMA = ROOT / "openapi.wow-betting-engine.v17.yaml"
+LLP_GATEWAY = ROOT / "supabase" / "functions" / "wow-llp-action-gateway" / "index.ts"
 
 
 def _documents() -> tuple[dict, dict]:
@@ -61,3 +62,13 @@ def test_action_schema_versions_advance_for_market_input():
     llp, wow = _documents()
     assert llp["info"]["version"] == "17.0.5-free-core-market-input"
     assert wow["info"]["version"] == "17.0.1-free-core-market-input"
+
+
+
+def test_llp_gateway_forwards_score_team_event_body_without_field_projection():
+    text = LLP_GATEWAY.read_text()
+    assert '{ method: "POST", pattern: /^\\/score-team-event$/, auth: true }' in text
+    assert 'upstreamPath === "/score-team-event"' not in text
+    assert "await req.arrayBuffer()" in text
+    assert "body," in text
+    assert "market_input" not in text
