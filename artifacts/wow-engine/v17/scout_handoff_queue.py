@@ -10,6 +10,8 @@ here. V17 terminal authority and can_execute=false are preserved.
 from __future__ import annotations
 
 import asyncio
+import ctypes
+import gc
 import hashlib
 import json
 from datetime import datetime, timezone
@@ -27,6 +29,26 @@ CAN_EXECUTE = False
 WORKER_VERSION = "V17_SCOUT_DURABLE_HANDOFF_V1"
 LEASE_SECONDS = 900
 POLL_SECONDS = 2.0
+
+def _release_process_memory() -> None:
+    """Best-effort RSS reclamation after an in-process specialist job.
+
+    The durable Scout handoff calls canonical specialist scorers inside the
+    long-lived Render web process. GC releases unreachable scorer state and,
+    on glibc, malloc_trim returns freed allocator arenas to the OS so serial
+    candidate processing cannot retain allocator high-water indefinitely.
+    Reclamation failure is intentionally non-fatal and never changes scoring,
+    queue state, typed failures, or governance.
+    """
+    gc.collect()
+    try:
+        malloc_trim = getattr(ctypes.CDLL(None), "malloc_trim", None)
+        if malloc_trim is not None:
+            malloc_trim.argtypes = [ctypes.c_size_t]
+            malloc_trim.restype = ctypes.c_int
+            malloc_trim(0)
+    except Exception:
+        pass
 
 TargetLane = Literal["WOW_PROP_LANE", "LLP_TEAM_BETTING_ENGINE"]
 RedTeamStatus = Literal["RED_TEAM_PASSED", "HANDOFF_BLOCKED"]
@@ -715,14 +737,20 @@ async def worker_loop(
                 except asyncio.TimeoutError:
                     pass
                 continue
-            await asyncio.to_thread(
-                process_claimed_job,
-                db,
-                job,
-                worker_id=worker_id,
-                prop_score_fn=prop_score_fn,
-                team_score_fn=team_score_fn,
-            )
+            try:
+                await asyncio.to_thread(
+                    process_claimed_job,
+                    db,
+                    job,
+                    worker_id=worker_id,
+                    prop_score_fn=prop_score_fn,
+                    team_score_fn=team_score_fn,
+                )
+            finally:
+                # The queue is serial, but specialist scorers can allocate
+                # large temporary feature/evidence objects. Reclaim them before
+                # the next candidate on the 512 MiB production runtime.
+                await asyncio.to_thread(_release_process_memory)
         except asyncio.CancelledError:
             raise
         except Exception:
