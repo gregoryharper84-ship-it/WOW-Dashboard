@@ -1,0 +1,192 @@
+{
+  "version": "1.0",
+  "name": "WOW Ecosystem Conductor",
+  "purpose": "Coordinate product intent, governed specialist routing, reliability intelligence, engineering closure, independent verification, and truthful user-facing readiness without acquiring probability authority.",
+  "runtime_generation": "V17_ACTIVE",
+  "terminal_authority": "V17_TERMINAL_REDUCER",
+  "can_execute": false,
+  "invariants": {
+    "conductor_probability_authority": false,
+    "systems_intelligence_probability_authority": false,
+    "engineering_probability_authority": false,
+    "independent_verification_probability_authority": false,
+    "typed_failures_must_be_preserved": true,
+    "specialist_ownership_must_be_preserved": true,
+    "market_evidence_cannot_substitute_for_governed_probability": true,
+    "scout_research_cannot_substitute_for_governed_probability": true,
+    "kalshi_market_price_cannot_mutate_weather_probability": true,
+    "self_verification_forbidden": true
+  },
+  "components": {
+    "WOW_BETTING_INTELLIGENCE": {
+      "category": "INTELLIGENCE_PRODUCT_ORCHESTRATION",
+      "mission": "Compile user intent, define product outcomes, maintain candidate-universe completeness, coordinate handoffs, prioritize roadmap work, and package truthful user-facing decisions.",
+      "probability_authority": false,
+      "terminal_authority": false,
+      "safe_hold_authority": false
+    },
+    "SCOUT": {
+      "category": "DISCOVERY_RESEARCH",
+      "mission": "Discover candidates and gather evidence. Discovery is additive and never controlling probability authority.",
+      "probability_authority": false,
+      "terminal_authority": false,
+      "safe_hold_authority": false
+    },
+    "WOW_BETTING_ENGINE": {
+      "category": "GOVERNED_BETTING_HOST",
+      "mission": "Host and route supported WOW prop and betting workflows to exact governed specialists while preserving terminal semantics.",
+      "probability_authority": false,
+      "terminal_authority": false,
+      "safe_hold_authority": false
+    },
+    "LLP_TEAM_BETTING_ENGINE": {
+      "category": "TEAM_EVENT_PROBABILITY_CAPABILITY",
+      "mission": "Route team/event outcomes to exactly one certified controlling specialist and return governed probability packages or typed blockers.",
+      "probability_authority": "DELEGATED_TO_CONTROLLING_SPECIALIST",
+      "terminal_authority": false,
+      "safe_hold_authority": false
+    },
+    "KALSHI_WEATHER_EXPERT": {
+      "category": "WEATHER_PROBABILITY_CAPABILITY",
+      "mission": "Produce independent governed meteorological probability for certified weather lanes while keeping weather truth, settlement truth, and market truth separate.",
+      "probability_authority": "CERTIFIED_WEATHER_LANES_ONLY",
+      "terminal_authority": false,
+      "safe_hold_authority": false
+    },
+    "SYSTEMS_INTELLIGENCE_RELIABILITY": {
+      "category": "SYSTEMS_INTELLIGENCE_RELIABILITY",
+      "mission": "Continuously detect broken connections, contract drift, degraded readiness, repeated failure patterns, and systemic engineering friction.",
+      "probability_authority": false,
+      "terminal_authority": false,
+      "safe_hold_authority": true
+    },
+    "ENGINEERING_CLOSURE": {
+      "category": "IMPLEMENTATION_CLOSURE",
+      "mission": "Build, repair, test, merge, deploy, and close proven engineering work.",
+      "probability_authority": false,
+      "terminal_authority": false,
+      "safe_hold_authority": false
+    },
+    "INDEPENDENT_VERIFICATION": {
+      "category": "INDEPENDENT_VERIFICATION",
+      "mission": "Independently prove that acceptance criteria are satisfied and closure is real.",
+      "probability_authority": false,
+      "terminal_authority": false,
+      "safe_hold_authority": false
+    },
+    "V17_TERMINAL_REDUCER": {
+      "category": "GLOBAL_TERMINAL_AUTHORITY",
+      "mission": "Remain the sole global terminal authority for governed V17 result state.",
+      "probability_authority": false,
+      "terminal_authority": true,
+      "safe_hold_authority": false
+    },
+    "PERSISTENCE_PUBLICATION": {
+      "category": "DURABLE_STATE_PUBLICATION",
+      "mission": "Persist immutable governed receipts and expose only publication-authorized results.",
+      "probability_authority": false,
+      "terminal_authority": false,
+      "safe_hold_authority": false
+    }
+  },
+  "handoffs": {
+    "USER_TO_PRODUCT_ORCHESTRATION": {
+      "source": "USER",
+      "target": "WOW_BETTING_INTELLIGENCE",
+      "critical": true,
+      "hold_on": ["FAIL", "BLOCKED", "UNKNOWN"]
+    },
+    "PRODUCT_TO_SCOUT": {
+      "source": "WOW_BETTING_INTELLIGENCE",
+      "target": "SCOUT",
+      "critical": false,
+      "hold_on": []
+    },
+    "PRODUCT_TO_WOW_BETTING_ENGINE": {
+      "source": "WOW_BETTING_INTELLIGENCE",
+      "target": "WOW_BETTING_ENGINE",
+      "critical": true,
+      "hold_on": ["FAIL", "BLOCKED", "UNKNOWN"]
+    },
+    "PRODUCT_TO_LLP": {
+      "source": "WOW_BETTING_INTELLIGENCE",
+      "target": "LLP_TEAM_BETTING_ENGINE",
+      "critical": true,
+      "hold_on": ["FAIL", "BLOCKED", "UNKNOWN"]
+    },
+    "PRODUCT_TO_KALSHI_WEATHER": {
+      "source": "WOW_BETTING_INTELLIGENCE",
+      "target": "KALSHI_WEATHER_EXPERT",
+      "critical": true,
+      "hold_on": ["FAIL", "BLOCKED", "UNKNOWN"]
+    },
+    "WOW_ENGINE_TO_TERMINAL_REDUCER": {
+      "source": "WOW_BETTING_ENGINE",
+      "target": "V17_TERMINAL_REDUCER",
+      "critical": true,
+      "hold_on": ["FAIL", "BLOCKED", "UNKNOWN"]
+    },
+    "LLP_TO_TERMINAL_REDUCER": {
+      "source": "LLP_TEAM_BETTING_ENGINE",
+      "target": "V17_TERMINAL_REDUCER",
+      "critical": true,
+      "hold_on": ["FAIL", "BLOCKED", "UNKNOWN"]
+    },
+    "KALSHI_TO_PRODUCT_ORCHESTRATION": {
+      "source": "KALSHI_WEATHER_EXPERT",
+      "target": "WOW_BETTING_INTELLIGENCE",
+      "critical": true,
+      "hold_on": ["FAIL", "BLOCKED", "UNKNOWN"]
+    },
+    "TERMINAL_REDUCER_TO_PERSISTENCE": {
+      "source": "V17_TERMINAL_REDUCER",
+      "target": "PERSISTENCE_PUBLICATION",
+      "critical": true,
+      "hold_on": ["FAIL", "BLOCKED", "UNKNOWN"]
+    },
+    "PERSISTENCE_TO_PRODUCT_ORCHESTRATION": {
+      "source": "PERSISTENCE_PUBLICATION",
+      "target": "WOW_BETTING_INTELLIGENCE",
+      "critical": true,
+      "hold_on": ["FAIL", "BLOCKED", "UNKNOWN"]
+    },
+    "PRODUCT_ORCHESTRATION_TO_USER": {
+      "source": "WOW_BETTING_INTELLIGENCE",
+      "target": "USER",
+      "critical": true,
+      "hold_on": ["FAIL", "BLOCKED", "UNKNOWN"]
+    },
+    "ALL_RUNTIME_TO_SYSTEMS_INTELLIGENCE": {
+      "source": "RUNTIME_ECOSYSTEM",
+      "target": "SYSTEMS_INTELLIGENCE_RELIABILITY",
+      "critical": true,
+      "hold_on": ["FAIL", "BLOCKED", "UNKNOWN"]
+    },
+    "SYSTEMS_INTELLIGENCE_TO_ENGINEERING": {
+      "source": "SYSTEMS_INTELLIGENCE_RELIABILITY",
+      "target": "ENGINEERING_CLOSURE",
+      "critical": true,
+      "hold_on": ["FAIL", "BLOCKED", "UNKNOWN"]
+    },
+    "ENGINEERING_TO_INDEPENDENT_VERIFICATION": {
+      "source": "ENGINEERING_CLOSURE",
+      "target": "INDEPENDENT_VERIFICATION",
+      "critical": true,
+      "hold_on": ["FAIL", "BLOCKED", "UNKNOWN"]
+    },
+    "INDEPENDENT_VERIFICATION_TO_PRODUCT_ORCHESTRATION": {
+      "source": "INDEPENDENT_VERIFICATION",
+      "target": "WOW_BETTING_INTELLIGENCE",
+      "critical": true,
+      "hold_on": ["FAIL", "BLOCKED", "UNKNOWN"]
+    }
+  },
+  "golden_user_path": [
+    "USER_TO_PRODUCT_ORCHESTRATION",
+    "PRODUCT_TO_WOW_BETTING_ENGINE",
+    "WOW_ENGINE_TO_TERMINAL_REDUCER",
+    "TERMINAL_REDUCER_TO_PERSISTENCE",
+    "PERSISTENCE_TO_PRODUCT_ORCHESTRATION",
+    "PRODUCT_ORCHESTRATION_TO_USER"
+  ]
+}
