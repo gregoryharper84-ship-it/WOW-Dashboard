@@ -94,7 +94,9 @@ services:
       - key: WOW_KALSHI_WEATHER_V2_ACTIVE
         value: "1"
       - key: WOW_KALSHI_WEATHER_EMPIRICAL_COHORT_ENABLED
-        value: "1"
+        # Keep Kalshi empirical capture off the shared 512-MiB LLP/WOW web process.
+        # Re-enable only on an isolated governed weather runtime.
+        value: "0"
       - key: WOW_KALSHI_WEATHER_EMPIRICAL_COHORT_INTERVAL_SECONDS
         value: "900"
       - key: WOW_KALSHI_WEATHER_COHORT_KEY
