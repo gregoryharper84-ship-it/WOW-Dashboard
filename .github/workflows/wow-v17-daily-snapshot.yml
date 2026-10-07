@@ -197,7 +197,7 @@ jobs:
     env:
       WOW_ACTION_ORIGIN: https://wow-governed-probability-engine.onrender.com
       WOW_USER_TIMEZONE: America/Chicago
-      WOW_NFL_ACCEPTANCE_SLATE_DATE: "2026-10-04"
+      WOW_NFL_ACCEPTANCE_LOOKAHEAD_DAYS: "42"
       WOW_CAN_EXECUTE: "false"
       WOW_DRY_RUN_ONLY: "true"
     steps:
@@ -217,6 +217,8 @@ jobs:
           import os
           import urllib.parse
           import urllib.request
+          from datetime import datetime, timedelta
+          from zoneinfo import ZoneInfo
 
           def fresh_oidc_token():
               base = os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"]
@@ -229,8 +231,77 @@ jobs:
               with urllib.request.urlopen(req, timeout=20) as response:
                   return json.load(response)["value"]
 
+          def select_future_nfl_acceptance_slate():
+              """Choose a non-aging future NFL slate using schedule identity only.
+
+              ESPN is used only to locate a future date with >12 scheduled events.
+              It contributes no sporting probability, market prior, ranking, or
+              model input. The actual acceptance still runs through the governed
+              production Daily snapshot endpoint.
+              """
+              zone = ZoneInfo(os.environ["WOW_USER_TIMEZONE"])
+              today = datetime.now(zone).date()
+              lookahead_days = int(os.environ.get("WOW_NFL_ACCEPTANCE_LOOKAHEAD_DAYS") or "42")
+              for offset in range(1, lookahead_days + 1):
+                  candidate = today + timedelta(days=offset)
+                  # A >12-event NFL slate will normally be Sunday. Restricting the
+                  # selector to Sundays keeps this identity-only probe bounded.
+                  if candidate.weekday() != 6:
+                      continue
+                  params = urllib.parse.urlencode({
+                      "dates": candidate.strftime("%Y%m%d"),
+                      "limit": 100,
+                  })
+                  url = (
+                      "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard?"
+                      + params
+                  )
+                  req = urllib.request.Request(
+                      url,
+                      headers={
+                          "Accept": "application/json",
+                          "User-Agent": "WOW-V17-NFL-Acceptance-Identity/1.0",
+                      },
+                  )
+                  try:
+                      with urllib.request.urlopen(req, timeout=20) as response:
+                          body = json.load(response)
+                  except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+                      continue
+                  events = body.get("events") if isinstance(body, dict) else None
+                  if not isinstance(events, list):
+                      continue
+                  scheduled = []
+                  for event in events:
+                      if not isinstance(event, dict):
+                          continue
+                      status = event.get("status") if isinstance(event.get("status"), dict) else {}
+                      status_type = (
+                          status.get("type") if isinstance(status.get("type"), dict) else {}
+                      )
+                      if status_type.get("completed") is True:
+                          continue
+                      scheduled.append(event)
+                  if len(scheduled) > 12:
+                      return candidate.isoformat(), len(scheduled)
+
+              return None, 0
+
+          acceptance_slate_date, selector_event_count = select_future_nfl_acceptance_slate()
+          if acceptance_slate_date is None:
+              print(json.dumps({
+                  "status": "DEFERRED_WITH_JUSTIFICATION",
+                  "code": "NFL_FULL_SLATE_ACCEPTANCE_DEFERRED_NO_GT12_FUTURE_SLATE",
+                  "lookahead_days": int(os.environ.get("WOW_NFL_ACCEPTANCE_LOOKAHEAD_DAYS") or "42"),
+                  "schedule_selector": "ESPN_SCOREBOARD_IDENTITY_ONLY",
+                  "probability_values_logged": False,
+                  "global_terminal_authority": "V17_TERMINAL_REDUCER",
+                  "can_execute": False,
+              }, sort_keys=True))
+              raise SystemExit(0)
+
           payload = {
-              "requested_slate_date": os.environ["WOW_NFL_ACCEPTANCE_SLATE_DATE"],
+              "requested_slate_date": acceptance_slate_date,
               "requested_timezone": os.environ["WOW_USER_TIMEZONE"],
               "lanes": ["MONEYLINE"],
               "max_props": 0,
@@ -266,7 +337,11 @@ jobs:
           rows = [row for row in (result.get("rows") or []) if row.get("lane") == "MONEYLINE"]
           nfl_rows = [row for row in rows if str((row.get("identity") or {}).get("sport") or "").upper() == "NFL"]
           if len(nfl_rows) <= 12:
-              raise AssertionError(f"NFL_FULL_SLATE_ACCEPTANCE_REQUIRES_GT12_ROWS:{len(nfl_rows)}")
+              raise AssertionError(
+                  "NFL_FULL_SLATE_DISCOVERY_COVERAGE_MISMATCH:"
+                  f"selector={selector_event_count}:backend={len(nfl_rows)}:"
+                  f"slate={acceptance_slate_date}"
+              )
 
           identities = []
           budget_rows = []
@@ -288,6 +363,8 @@ jobs:
               "code": "NFL_FULL_SLATE_EXACT_ONCE_PRODUCTION_ACCEPTANCE_PASS",
               "run_id": result.get("run_id"),
               "requested_slate_date": result.get("requested_slate_date"),
+              "schedule_selector": "ESPN_SCOREBOARD_IDENTITY_ONLY",
+              "selector_event_count": selector_event_count,
               "nfl_rows": len(nfl_rows),
               "unique_nfl_event_ids": len(set(identities)),
               "model_invocation_budget_terminal_rows": 0,
