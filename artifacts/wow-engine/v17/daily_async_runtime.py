@@ -21,6 +21,8 @@ from uuid import uuid4
 from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
+from v17 import memory_admission
+
 
 LOGGER = logging.getLogger("wow.v17.daily_async")
 TABLE = "wow_v17_daily_async_runs"
@@ -178,6 +180,7 @@ def _run_existing_daily(
     db_client_fn: Any,
     market_api: Any,
     event_api: Any,
+    heavy_permit: memory_admission.HeavyJobPermit,
 ) -> dict[str, Any]:
     # Imported only when a worker actually claims a row. This avoids circular
     # import side effects while v17 package composition is still mounting routes.
@@ -189,6 +192,7 @@ def _run_existing_daily(
         db=db_client_fn(),
         market_api=market_api,
         event_api=event_api,
+        _heavy_permit=heavy_permit,
     )
 
 
@@ -217,92 +221,132 @@ async def _worker_loop(
 
     failure_streak = 0
     while True:
-        claim: dict[str, Any] | None = None
+        permit: memory_admission.HeavyJobPermit | None = None
         try:
-            claim = await asyncio.to_thread(_claim_from_factory, db_client_fn, lease_seconds)
-            failure_streak = 0
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            failure_streak += 1
-            wait_seconds = _idle_wait_seconds(poll_seconds, failure_streak, max_backoff_seconds)
-            LOGGER.warning(
-                "WOW_V17_DAILY_ASYNC_CLAIM_FAILED error=%s failure_streak=%s backoff_seconds=%s can_execute=false",
-                type(exc).__name__,
-                failure_streak,
-                int(wait_seconds),
-            )
-
-        if claim is None:
-            wait_seconds = _idle_wait_seconds(poll_seconds, failure_streak, max_backoff_seconds)
+            # Admission occurs before the durable claim. This preserves the
+            # queued row and attempt budget when memory is pressured or Scout
+            # currently owns the heavyweight slot.
             try:
-                await asyncio.wait_for(wake.wait(), timeout=wait_seconds)
-                wake.clear()
-            except TimeoutError:
-                pass
-            continue
+                permit = memory_admission.try_acquire_heavy_job("DAILY_SNAPSHOT")
+            except memory_admission.HeavyJobDeferred as exc:
+                receipt = exc.receipt()
+                LOGGER.warning(
+                    "WOW_V17_DAILY_ASYNC_DEFERRED code=%s memory_ratio=%s retry_after_seconds=%s can_execute=false",
+                    receipt.get("code"),
+                    receipt.get("memory_ratio"),
+                    receipt.get("retry_after_seconds"),
+                )
+                try:
+                    await asyncio.wait_for(
+                        wake.wait(),
+                        timeout=memory_admission.pressure_retry_seconds(),
+                    )
+                    wake.clear()
+                except TimeoutError:
+                    pass
+                continue
 
-        run_id = str(claim.get("run_id") or "")
-        lease_token = str(claim.get("lease_token") or "")
-        request_payload = claim.get("request_payload")
-        if not run_id or not lease_token or not isinstance(request_payload, dict):
-            LOGGER.error(
-                "WOW_V17_DAILY_ASYNC_CLAIM_INVALID run_id=%s can_execute=false",
-                run_id or "MISSING",
-            )
-            continue
+            if permit is None:
+                try:
+                    await asyncio.wait_for(wake.wait(), timeout=1.0)
+                    wake.clear()
+                except TimeoutError:
+                    pass
+                continue
 
-        started = datetime.now(timezone.utc)
-        LOGGER.warning(
-            "WOW_V17_DAILY_ASYNC_RUN_STARTED run_id=%s attempt=%s can_execute=false",
-            run_id,
-            claim.get("attempt_count"),
-        )
-        try:
-            result = await asyncio.to_thread(
-                _run_existing_daily,
-                dict(request_payload),
-                db_client_fn=db_client_fn,
-                market_api=market_api,
-                event_api=event_api,
-            )
-            completion = await asyncio.to_thread(
-                _complete_from_factory,
-                db_client_fn,
-                run_id=run_id,
-                lease_token=lease_token,
-                result=result,
-            )
+            claim: dict[str, Any] | None = None
+            try:
+                claim = await asyncio.to_thread(_claim_from_factory, db_client_fn, lease_seconds)
+                failure_streak = 0
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                failure_streak += 1
+                wait_seconds = _idle_wait_seconds(poll_seconds, failure_streak, max_backoff_seconds)
+                LOGGER.warning(
+                    "WOW_V17_DAILY_ASYNC_CLAIM_FAILED error=%s failure_streak=%s backoff_seconds=%s can_execute=false",
+                    type(exc).__name__,
+                    failure_streak,
+                    int(wait_seconds),
+                )
+
+            if claim is None:
+                permit.release()
+                permit = None
+                wait_seconds = _idle_wait_seconds(poll_seconds, failure_streak, max_backoff_seconds)
+                try:
+                    await asyncio.wait_for(wake.wait(), timeout=wait_seconds)
+                    wake.clear()
+                except TimeoutError:
+                    pass
+                continue
+
+            run_id = str(claim.get("run_id") or "")
+            lease_token = str(claim.get("lease_token") or "")
+            request_payload = claim.get("request_payload")
+            if not run_id or not lease_token or not isinstance(request_payload, dict):
+                LOGGER.error(
+                    "WOW_V17_DAILY_ASYNC_CLAIM_INVALID run_id=%s can_execute=false",
+                    run_id or "MISSING",
+                )
+                continue
+
+            started = datetime.now(timezone.utc)
             LOGGER.warning(
-                "WOW_V17_DAILY_ASYNC_RUN_FINISHED run_id=%s status=%s result_run_id=%s elapsed_seconds=%.3f can_execute=false",
+                "WOW_V17_DAILY_ASYNC_RUN_STARTED run_id=%s attempt=%s can_execute=false",
                 run_id,
-                completion.get("status"),
-                result.get("run_id"),
-                (datetime.now(timezone.utc) - started).total_seconds(),
+                claim.get("attempt_count"),
             )
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            error_code = f"ASYNC_DAILY_WORKER_EXCEPTION:{type(exc).__name__}"
             try:
-                failure = await asyncio.to_thread(
-                    _fail_from_factory,
+                result = await asyncio.to_thread(
+                    _run_existing_daily,
+                    dict(request_payload),
+                    db_client_fn=db_client_fn,
+                    market_api=market_api,
+                    event_api=event_api,
+                    heavy_permit=permit,
+                )
+                completion = await asyncio.to_thread(
+                    _complete_from_factory,
                     db_client_fn,
                     run_id=run_id,
                     lease_token=lease_token,
-                    error_code=error_code,
-                    max_attempts=max_attempts,
+                    result=result,
                 )
-                failure_status = failure.get("status")
-            except Exception as persist_exc:
-                failure_status = f"FAILURE_RECEIPT_ERROR:{type(persist_exc).__name__}"
-            LOGGER.exception(
-                "WOW_V17_DAILY_ASYNC_RUN_FAILED run_id=%s error=%s disposition=%s can_execute=false",
-                run_id,
-                type(exc).__name__,
-                failure_status,
-            )
-
+                LOGGER.warning(
+                    "WOW_V17_DAILY_ASYNC_RUN_FINISHED run_id=%s status=%s result_run_id=%s elapsed_seconds=%.3f can_execute=false",
+                    run_id,
+                    completion.get("status"),
+                    result.get("run_id"),
+                    (datetime.now(timezone.utc) - started).total_seconds(),
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                error_code = f"ASYNC_DAILY_WORKER_EXCEPTION:{type(exc).__name__}"
+                try:
+                    failure = await asyncio.to_thread(
+                        _fail_from_factory,
+                        db_client_fn,
+                        run_id=run_id,
+                        lease_token=lease_token,
+                        error_code=error_code,
+                        max_attempts=max_attempts,
+                    )
+                    failure_status = failure.get("status")
+                except Exception as persist_exc:
+                    failure_status = f"FAILURE_RECEIPT_ERROR:{type(persist_exc).__name__}"
+                LOGGER.exception(
+                    "WOW_V17_DAILY_ASYNC_RUN_FAILED run_id=%s error=%s disposition=%s can_execute=false",
+                    run_id,
+                    type(exc).__name__,
+                    failure_status,
+                )
+        except asyncio.CancelledError:
+            raise
+        finally:
+            if permit is not None:
+                permit.release()
 
 def install_daily_async_routes(
     app: FastAPI,
