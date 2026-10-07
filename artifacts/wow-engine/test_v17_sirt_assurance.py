@@ -110,3 +110,30 @@ def test_recurrence_requires_confirmed_shared_root_cause():
     assert result["families"][0]["occurrences"] == 2
     assert result["families"][0]["opportunity"] == "PREVENTIVE_ARCHITECTURE_REVIEW"
     assert result["unclassified_incident_ids"] == ["PM-3"]
+
+
+def test_live_critical_audit_findings_are_not_false_green():
+    result = assess_sentinel(runtime=runtime(), now=NOW, findings=[
+        {"finding_type": "STALE_WORK", "status": "OPEN", "severity": "P0",
+         "component": "llp-slate"},
+        {"finding_type": "STALE_WORK", "status": "RESOLVED", "severity": "P0",
+         "component": "old-resolved"},
+    ])
+    assert result["status"] == "BLOCKED"
+    assert len(result["signals"]) == 1
+    assert result["signals"][0]["reason"] == "CRITICAL_FINDING_UNRESOLVED"
+
+
+def test_symptom_cohorts_are_explicitly_not_root_cause():
+    result = failure_families([], [
+        {"finding_type": "STALE_WORK", "severity": "P0", "status": "OPEN"},
+        {"finding_type": "STALE_WORK", "severity": "P0", "status": "OPEN"},
+        {"finding_type": "STALE_WORK", "severity": "P1", "status": "RESOLVED"},
+    ])
+    assert result["families"] == []
+    assert result["open_symptom_cohorts"] == [{
+        "finding_type": "STALE_WORK",
+        "severity": "P0",
+        "open_count": 2,
+        "classification": "SYMPTOM_CLUSTER_ROOT_CAUSE_UNPROVEN",
+    }]
