@@ -112,6 +112,29 @@ class _Permit:
         self.release_count += 1
 
 
+def test_release_process_memory_runs_gc_and_best_effort_trim(monkeypatch):
+    calls = []
+
+    class _Trim:
+        argtypes = None
+        restype = None
+
+        def __call__(self, value):
+            calls.append(("trim", value))
+            return 1
+
+    class _Lib:
+        malloc_trim = _Trim()
+
+    monkeypatch.setattr(memory_admission.gc, "collect", lambda: calls.append(("gc", None)))
+    monkeypatch.setattr(memory_admission.ctypes, "CDLL", lambda _name: _Lib())
+
+    memory_admission.release_process_memory()
+
+    assert calls[0] == ("gc", None)
+    assert calls[1] == ("trim", 0)
+
+
 def test_daily_snapshot_owned_permit_is_released(monkeypatch):
     permit = _Permit()
     monkeypatch.setattr(memory_admission, "acquire_heavy_job", lambda operation: permit)

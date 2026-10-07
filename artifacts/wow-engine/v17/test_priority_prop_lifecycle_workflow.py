@@ -78,3 +78,18 @@ def test_priority_workflow_consumes_durable_rows_after_ambiguous_seed_or_settlem
     assert 'routes":[]' in universal
     assert 'name: wow-v17-prop-lifecycle-autopilot' in universal
     assert 'name: wow-v17-priority-prop-lifecycle' in priority
+
+def test_source_heavy_prop_workflows_share_one_production_concurrency_group():
+    repo_root = Path(__file__).resolve().parents[3]
+    expected = "group: wow-v17-production-source-heavy-prop-evidence"
+    paths = (
+        ".github/workflows/wow-v17-priority-prop-lifecycle.yml",
+        ".github/workflows/wow-v17-nfl-prop-forward-evidence.yml",
+        ".github/workflows/wow-v17-mlb-prop-forward-evidence.yml",
+        ".github/workflows/wow-v17-prop-lifecycle-autopilot.yml",
+    )
+    for path in paths:
+        text = (repo_root / path).read_text()
+        assert expected in text, path
+        assert "cancel-in-progress: false" in text, path
+

@@ -28,6 +28,7 @@ from fastapi import FastAPI
 from pydantic import BaseModel, ConfigDict, Field
 
 from github_actions_oidc import scout_route_auth_dependency
+from v17 import memory_admission
 from prop_auto_hydration import PropAutoHydrationError
 import v17.wnba_official_schedule_web_fallback  # noqa: F401 - preserve install-order contract
 from v17 import wnba_official_schedule_web_fallback as schedule_transport
@@ -748,7 +749,10 @@ def install_wnba_prop_forward_evidence_route(
         operation_id="acquireWowV17WnbaPropForwardEvidence",
     )
     def acquire(req: WNBAForwardEvidenceRequest) -> dict[str, Any]:
-        return acquire_wnba_forward_evidence_batch(req, db=db_client_fn())
+        try:
+            return acquire_wnba_forward_evidence_batch(req, db=db_client_fn())
+        finally:
+            memory_admission.release_process_memory()
 
 
 __all__ = [

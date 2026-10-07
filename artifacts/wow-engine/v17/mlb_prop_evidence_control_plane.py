@@ -20,6 +20,7 @@ from fastapi import FastAPI
 from pydantic import BaseModel, ConfigDict, Field
 
 from github_actions_oidc import scout_route_auth_dependency
+from v17 import memory_admission
 from pick_request_runtime_core import PickRequestRow, RawPropEvidence, _snapshot_payload, _validate_evidence
 from prop_auto_hydration import MLB_STATS_API_BASE, PropAutoHydrationError
 from prop_auto_hydration_router import auto_hydrate_prop_evidence
@@ -324,7 +325,10 @@ def install_mlb_prop_forward_evidence_route(
         operation_id="acquireWowV17MlbPropForwardEvidence",
     )
     def acquire(req: MLBForwardEvidenceRequest) -> dict[str, Any]:
-        return acquire_mlb_forward_evidence_batch(req, db=db_client_fn())
+        try:
+            return acquire_mlb_forward_evidence_batch(req, db=db_client_fn())
+        finally:
+            memory_admission.release_process_memory()
 
 
 __all__ = [

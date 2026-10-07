@@ -11,6 +11,8 @@ hysteresis band prevents rapid admit/defer oscillation near the threshold.
 
 from __future__ import annotations
 
+import ctypes
+import gc
 import logging
 import os
 import threading
@@ -268,6 +270,24 @@ def acquire_heavy_job(operation: str, *, wait_seconds: float | None = None) -> H
     return HeavyJobPermit(operation=operation, admission=snapshot)
 
 
+def release_process_memory() -> None:
+    """Best-effort reclamation after bounded in-process heavyweight work.
+
+    GC drops unreachable request/corpus objects and malloc_trim returns free
+    glibc arenas to the OS when available. Reclamation is runtime-only and
+    never changes probability, calibration, routing, ranking, or execution.
+    """
+    gc.collect()
+    try:
+        malloc_trim = getattr(ctypes.CDLL(None), "malloc_trim", None)
+        if malloc_trim is not None:
+            malloc_trim.argtypes = [ctypes.c_size_t]
+            malloc_trim.restype = ctypes.c_int
+            malloc_trim(0)
+    except Exception:
+        pass
+
+
 def pressure_retry_seconds() -> float:
     return _float_env(
         "WOW_V17_MEMORY_PRESSURE_RETRY_SECONDS",
@@ -300,5 +320,6 @@ __all__ = [
     "admission_snapshot",
     "memory_sample",
     "pressure_retry_seconds",
+    "release_process_memory",
     "try_acquire_heavy_job",
 ]
