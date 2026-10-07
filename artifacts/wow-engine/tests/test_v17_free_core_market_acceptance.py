@@ -50,3 +50,15 @@ def test_free_core_scout_market_bridge_does_not_reuse_paid_snapshot(monkeypatch)
     rows, codes = scout_bridge._collect("baseball_mlb")
     assert rows == []
     assert codes == ["SOURCE_POLICY:PAID_PROVIDER_DISABLED_FREE_CORE"]
+
+
+
+def test_free_core_default_snapshot_cli_exits_success(monkeypatch, tmp_path):
+    monkeypatch.setenv("WOW_V17_SOURCE_MODE", "FREE_CORE")
+    output = tmp_path / "market-evidence.json"
+    code = snapshot.main([
+        "--output", str(output),
+        "--sports", "baseball_mlb,basketball_nba",
+    ])
+    assert code == 0
+    assert "FREE_CORE_MARKET_OPTIONAL_READY" in output.read_text()
