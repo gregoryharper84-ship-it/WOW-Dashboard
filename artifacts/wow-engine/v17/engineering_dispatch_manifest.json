@@ -6,9 +6,23 @@
   "terminal_authority": "V17_TERMINAL_REDUCER",
   "restoration": [
     {
-      "issue_number": 1247,
+      "issue_number": 1438,
       "severity": "P0",
       "priority_rank": 1,
+      "execution_lane": "RAPID",
+      "conflict_keys": [
+        "ENGINEERING_GOVERNANCE",
+        "RELIABILITY_GOVERNANCE",
+        "TERMINAL_CLOSURE",
+        "MERGE_THROUGHPUT"
+      ],
+      "rapid_stream": "GOVERNANCE",
+      "lease_group": "P0_GOVERNANCE"
+    },
+    {
+      "issue_number": 1247,
+      "severity": "P0",
+      "priority_rank": 2,
       "execution_lane": "RAPID",
       "conflict_keys": [
         "ENGINEERING_GOVERNANCE",
@@ -20,7 +34,7 @@
     {
       "issue_number": 1237,
       "severity": "P0",
-      "priority_rank": 2,
+      "priority_rank": 3,
       "execution_lane": "RAPID",
       "conflict_keys": [
         "SCOUT_PERSISTENCE",
@@ -32,7 +46,7 @@
     {
       "issue_number": 1250,
       "severity": "P0",
-      "priority_rank": 3,
+      "priority_rank": 4,
       "execution_lane": "RAPID",
       "conflict_keys": [
         "SCOUT_HANDOFF",
@@ -44,7 +58,7 @@
     {
       "issue_number": 1189,
       "severity": "P0",
-      "priority_rank": 4,
+      "priority_rank": 5,
       "execution_lane": "RAPID",
       "conflict_keys": [
         "ACTION_TRANSPORT",
@@ -56,7 +70,7 @@
     {
       "issue_number": 960,
       "severity": "P0",
-      "priority_rank": 5,
+      "priority_rank": 6,
       "execution_lane": "RAPID",
       "conflict_keys": [
         "WOW_HOST_ORCHESTRATION",
@@ -68,7 +82,7 @@
     {
       "issue_number": 502,
       "severity": "P0",
-      "priority_rank": 6,
+      "priority_rank": 7,
       "execution_lane": "RAPID",
       "conflict_keys": [
         "WOW_HOST_ORCHESTRATION",
@@ -80,7 +94,7 @@
     {
       "issue_number": 1127,
       "severity": "P0",
-      "priority_rank": 7,
+      "priority_rank": 8,
       "execution_lane": "RAPID",
       "conflict_keys": [
         "SPORT_DISCOVERY",
@@ -90,20 +104,9 @@
       "lease_group": "P0_STREAM_C"
     },
     {
-      "issue_number": 1438,
-      "severity": "P1",
-      "priority_rank": 8,
-      "execution_lane": "STANDARD",
-      "conflict_keys": [
-        "ENGINEERING_GOVERNANCE",
-        "RELIABILITY_GOVERNANCE",
-        "TERMINAL_CLOSURE"
-      ]
-    },
-    {
       "issue_number": 823,
       "severity": "P1",
-      "priority_rank": 9,
+      "priority_rank": 10,
       "conflict_keys": [
         "SPORT_DISCOVERY",
         "ACQUISITION"
@@ -113,7 +116,7 @@
     {
       "issue_number": 1028,
       "severity": "P1",
-      "priority_rank": 10,
+      "priority_rank": 11,
       "conflict_keys": [
         "MLB_PROP_FORWARD",
         "PROP_HYDRATION"
@@ -123,7 +126,7 @@
     {
       "issue_number": 1087,
       "severity": "P1",
-      "priority_rank": 11,
+      "priority_rank": 12,
       "conflict_keys": [
         "PRODUCTION_RUNTIME",
         "DEPLOY_VERIFY"
@@ -133,7 +136,7 @@
     {
       "issue_number": 1152,
       "severity": "P1",
-      "priority_rank": 12,
+      "priority_rank": 13,
       "conflict_keys": [
         "NCAAF_TEAM_STATE",
         "SPREAD_FORWARD"
@@ -143,7 +146,7 @@
     {
       "issue_number": 1150,
       "severity": "P1",
-      "priority_rank": 13,
+      "priority_rank": 14,
       "conflict_keys": [
         "ACTION_SCHEMA",
         "TEAM_MARKET_ACTIONS"
