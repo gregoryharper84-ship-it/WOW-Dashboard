@@ -1,0 +1,276 @@
+{
+  "version": "1.0",
+  "can_execute": false,
+  "terminal_authority": "V17_TERMINAL_REDUCER",
+  "invariants": {
+    "specialist_ownership_preserved": true,
+    "typed_failures_preserved": true,
+    "self_verification_detected": false
+  },
+  "probes": {
+    "GITHUB_EXACT_HEAD": {
+      "type": "github_exact_head",
+      "repo_env": "GITHUB_REPOSITORY",
+      "sha_env": "GITHUB_SHA",
+      "bearer_env": "GITHUB_TOKEN",
+      "required_workflows": [
+        "wow-v17-change-impact-gate",
+        "wow-v17-engineering-auditor-code-health",
+        "wow-v17-release-production-verification-agent",
+        "wow-v17-spread-forward-shadow",
+        "wow-v17-rapid-repair",
+        "wow-engine-verify",
+        "wow-verify"
+      ]
+    },
+    "RENDER_RUNTIME": {
+      "type": "render_runtime",
+      "origin_env": "WOW_BACKEND_ORIGIN",
+      "bearer_env": "WOW_ACTION_API_KEY",
+      "deployed_sha_env": "RENDER_GIT_COMMIT",
+      "require_deployed_sha": true,
+      "paths": {
+        "health": "/health",
+        "governance": "/governance",
+        "host_contract": "/v17/host-contract"
+      }
+    },
+    "ACTION_HOST_CONTRACT": {
+      "type": "http_json",
+      "origin_env": "WOW_BACKEND_ORIGIN",
+      "path": "/v17/host-contract",
+      "bearer_env": "WOW_ACTION_API_KEY",
+      "predicates": {}
+    },
+    "SUPABASE_ACTION_TELEMETRY": {
+      "type": "supabase_receipt",
+      "url_env": "SUPABASE_URL",
+      "api_key_env": "SUPABASE_SERVICE_KEY",
+      "table": "wow_action_invocation_receipts",
+      "select": "invocation_id,route,operation_id,http_status,caller_class,occurred_at,can_execute",
+      "order": "occurred_at.desc",
+      "limit": 1,
+      "predicates": {
+        "can_execute": false
+      }
+    },
+    "SUPABASE_PROP_CANARY": {
+      "type": "supabase_receipt",
+      "url_env": "SUPABASE_URL",
+      "api_key_env": "SUPABASE_SERVICE_KEY",
+      "table": "wow_prop_action_canary_receipts",
+      "select": "receipt_id,prediction_id,sport,stat_type,reconciliation_status,created_at,can_execute",
+      "order": "created_at.desc",
+      "limit": 1,
+      "predicates": {
+        "reconciliation_status": "PASS",
+        "can_execute": false
+      }
+    },
+    "USER_REQUEST_RECEIPT": {
+      "type": "receipt_file",
+      "path_env": "WOW_USER_REQUEST_RECEIPT",
+      "predicates": {
+        "accepted": true
+      }
+    },
+    "CONDUCTOR_RECEIPT": {
+      "type": "receipt_file",
+      "path_env": "WOW_CONDUCTOR_RECEIPT",
+      "predicates": {
+        "can_execute": false,
+        "terminal_authority": "V17_TERMINAL_REDUCER"
+      }
+    },
+    "PRODUCT_ORCHESTRATION_RECEIPT": {
+      "type": "receipt_file",
+      "path_env": "WOW_PRODUCT_ORCHESTRATION_RECEIPT",
+      "predicates": {
+        "reconciliation_pass": true
+      }
+    },
+    "SCOUT_RECEIPT": {
+      "type": "receipt_file",
+      "path_env": "WOW_SCOUT_RECEIPT",
+      "predicates": {
+        "completion_status": {
+          "in": [
+            "COMPLETE",
+            "COMPLETED",
+            "TERMINAL_ACCEPTED",
+            "PASS"
+          ]
+        },
+        "can_execute": false
+      }
+    },
+    "LLP_ROUTE_RECEIPT": {
+      "type": "receipt_file",
+      "path_env": "WOW_LLP_ROUTE_RECEIPT",
+      "predicates": {
+        "reconciliation_pass": true,
+        "can_execute": false
+      }
+    },
+    "KALSHI_WEATHER_RECEIPT": {
+      "type": "receipt_file",
+      "path_env": "WOW_KALSHI_WEATHER_RECEIPT",
+      "predicates": {
+        "can_execute": false
+      }
+    },
+    "PERSISTENCE_RECEIPT": {
+      "type": "receipt_file",
+      "path_env": "WOW_PERSISTENCE_RECEIPT",
+      "predicates": {
+        "durable_state_present": true,
+        "can_execute": false
+      }
+    },
+    "SYSTEMS_INTELLIGENCE_RECEIPT": {
+      "type": "receipt_file",
+      "path_env": "WOW_SYSTEMS_INTELLIGENCE_RECEIPT",
+      "predicates": {
+        "connection_reconciliation_complete": true,
+        "can_execute": false
+      }
+    },
+    "ENGINEERING_HANDOFF_RECEIPT": {
+      "type": "receipt_file",
+      "path_env": "WOW_ENGINEERING_HANDOFF_RECEIPT",
+      "predicates": {
+        "implementation_receipt_present": true,
+        "can_execute": false
+      }
+    },
+    "INDEPENDENT_VERIFICATION_RECEIPT": {
+      "type": "receipt_file",
+      "path_env": "WOW_INDEPENDENT_VERIFICATION_RECEIPT",
+      "predicates": {
+        "verification_state": "VERIFIED",
+        "can_execute": false
+      }
+    },
+    "USER_RESPONSE_RECEIPT": {
+      "type": "receipt_file",
+      "path_env": "WOW_USER_RESPONSE_RECEIPT",
+      "predicates": {
+        "product_reconciliation_pass": true,
+        "can_execute": false
+      }
+    }
+  },
+  "component_bindings": {
+    "WOW_ECOSYSTEM_CONDUCTOR": [
+      "CONDUCTOR_RECEIPT"
+    ],
+    "WOW_BETTING_INTELLIGENCE": [
+      "PRODUCT_ORCHESTRATION_RECEIPT"
+    ],
+    "SCOUT": [
+      "SCOUT_RECEIPT"
+    ],
+    "WOW_BETTING_ENGINE": [
+      "ACTION_HOST_CONTRACT",
+      "SUPABASE_ACTION_TELEMETRY"
+    ],
+    "LLP_TEAM_BETTING_ENGINE": [
+      "RENDER_RUNTIME",
+      "LLP_ROUTE_RECEIPT"
+    ],
+    "KALSHI_WEATHER_EXPERT": [
+      "RENDER_RUNTIME",
+      "KALSHI_WEATHER_RECEIPT"
+    ],
+    "SYSTEMS_INTELLIGENCE_RELIABILITY": [
+      "SYSTEMS_INTELLIGENCE_RECEIPT"
+    ],
+    "ENGINEERING_CLOSURE": [
+      "GITHUB_EXACT_HEAD",
+      "ENGINEERING_HANDOFF_RECEIPT"
+    ],
+    "INDEPENDENT_VERIFICATION": [
+      "INDEPENDENT_VERIFICATION_RECEIPT"
+    ],
+    "V17_TERMINAL_REDUCER": [
+      "RENDER_RUNTIME"
+    ],
+    "PERSISTENCE_PUBLICATION": [
+      "SUPABASE_ACTION_TELEMETRY",
+      "PERSISTENCE_RECEIPT"
+    ]
+  },
+  "handoff_bindings": {
+    "PRODUCT_TO_SCOUT": [
+      "PRODUCT_ORCHESTRATION_RECEIPT",
+      "SCOUT_RECEIPT"
+    ],
+    "PRODUCT_TO_WOW_BETTING_ENGINE": [
+      "PRODUCT_ORCHESTRATION_RECEIPT",
+      "ACTION_HOST_CONTRACT"
+    ],
+    "PRODUCT_TO_LLP": [
+      "PRODUCT_ORCHESTRATION_RECEIPT",
+      "LLP_ROUTE_RECEIPT"
+    ],
+    "PRODUCT_TO_KALSHI_WEATHER": [
+      "PRODUCT_ORCHESTRATION_RECEIPT",
+      "KALSHI_WEATHER_RECEIPT"
+    ],
+    "WOW_ENGINE_TO_TERMINAL_REDUCER": [
+      "ACTION_HOST_CONTRACT",
+      "RENDER_RUNTIME"
+    ],
+    "LLP_TO_TERMINAL_REDUCER": [
+      "LLP_ROUTE_RECEIPT",
+      "RENDER_RUNTIME"
+    ],
+    "KALSHI_TO_PRODUCT_ORCHESTRATION": [
+      "KALSHI_WEATHER_RECEIPT",
+      "PRODUCT_ORCHESTRATION_RECEIPT"
+    ],
+    "TERMINAL_REDUCER_TO_PERSISTENCE": [
+      "RENDER_RUNTIME",
+      "PERSISTENCE_RECEIPT"
+    ],
+    "PERSISTENCE_TO_PRODUCT_ORCHESTRATION": [
+      "PERSISTENCE_RECEIPT",
+      "PRODUCT_ORCHESTRATION_RECEIPT"
+    ],
+    "ALL_RUNTIME_TO_SYSTEMS_INTELLIGENCE": [
+      "RENDER_RUNTIME",
+      "SUPABASE_ACTION_TELEMETRY",
+      "SYSTEMS_INTELLIGENCE_RECEIPT"
+    ],
+    "SYSTEMS_INTELLIGENCE_TO_ENGINEERING": [
+      "SYSTEMS_INTELLIGENCE_RECEIPT",
+      "ENGINEERING_HANDOFF_RECEIPT"
+    ],
+    "ENGINEERING_TO_INDEPENDENT_VERIFICATION": [
+      "GITHUB_EXACT_HEAD",
+      "ENGINEERING_HANDOFF_RECEIPT",
+      "INDEPENDENT_VERIFICATION_RECEIPT"
+    ],
+    "USER_TO_CONDUCTOR": [
+      "USER_REQUEST_RECEIPT",
+      "CONDUCTOR_RECEIPT"
+    ],
+    "CONDUCTOR_TO_PRODUCT_ORCHESTRATION": [
+      "CONDUCTOR_RECEIPT",
+      "PRODUCT_ORCHESTRATION_RECEIPT"
+    ],
+    "PRODUCT_ORCHESTRATION_TO_CONDUCTOR": [
+      "PRODUCT_ORCHESTRATION_RECEIPT",
+      "CONDUCTOR_RECEIPT"
+    ],
+    "CONDUCTOR_TO_USER": [
+      "CONDUCTOR_RECEIPT",
+      "USER_RESPONSE_RECEIPT"
+    ],
+    "INDEPENDENT_VERIFICATION_TO_CONDUCTOR": [
+      "INDEPENDENT_VERIFICATION_RECEIPT",
+      "CONDUCTOR_RECEIPT"
+    ]
+  },
+  "work_item_probe": "SYSTEMS_INTELLIGENCE_RECEIPT"
+}
