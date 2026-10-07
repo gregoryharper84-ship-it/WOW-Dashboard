@@ -1098,23 +1098,25 @@ class RoutedRow:
 
 
 def _purge_bucket(event: DiscoveredEvent, *, slate_date: str, tz_name: str) -> str | None:
-    # A parseable event that is provably outside the requested local slate is
-    # wrong-date before canonical-identity routing. Public/free discovery ids are
-    # intentionally retained as aliases, so checking identity first incorrectly
-    # turns next-day ESPN rows into EVENT_IDENTITY_UNRESOLVED.
-    #
-    # An absent or malformed start time does not earn WRONG_DATE: it remains
-    # fail-closed under the existing identity/status checks below.
+    # Preserve the existing event-state precedence: an event already started,
+    # completed, cancelled, or postponed keeps that stronger terminal reason even
+    # when it is also outside the requested slate date.
+    if event.event_status == "CANCELLED_OR_POSTPONED":
+        return CANCELLED_OR_POSTPONED
+    if event.event_status in {"LIVE", "STARTED", "FINAL"}:
+        return STARTED_OR_FINAL
+
+    # For still-pregame rows, a parseable start that is provably outside the
+    # requested local slate is wrong-date before canonical-identity routing.
+    # Public/free discovery ids are intentionally aliases, so identity-first
+    # ordering incorrectly labels next-day ESPN rows EVENT_IDENTITY_UNRESOLVED.
+    # Missing/malformed start times do not earn WRONG_DATE and remain fail-closed.
     if _parse_instant(event.commence_time_utc) is not None and not _slate_date_matches(
         event.commence_time_utc, slate_date, tz_name
     ):
         return WRONG_DATE
     if not event.official_event_id or not event.home_team or not event.away_team:
         return IDENTITY_UNRESOLVED
-    if event.event_status == "CANCELLED_OR_POSTPONED":
-        return CANCELLED_OR_POSTPONED
-    if event.event_status in {"LIVE", "STARTED", "FINAL"}:
-        return STARTED_OR_FINAL
     if event.event_status != REQUIRED_EVENT_STATE:
         return IDENTITY_UNRESOLVED
     return None
