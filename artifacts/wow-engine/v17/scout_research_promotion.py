@@ -363,6 +363,12 @@ def evaluate_candidate(candidate: dict[str, Any], *, now: datetime | None = None
     )
     source_family_count = len(source_families)
     independent_source_count = len(independent_sources)
+    dossier = candidate.get("scout_dossier") if isinstance(candidate.get("scout_dossier"), dict) else None
+    research_worker_barrier_status = (
+        str(dossier.get("research_worker_barrier_status") or "PARTIAL")
+        if isinstance(dossier, dict)
+        else "NOT_PRESENT"
+    )
 
     if contradictions or red_flags:
         status = "QUARANTINED"
@@ -379,7 +385,12 @@ def evaluate_candidate(candidate: dict[str, Any], *, now: datetime | None = None
     elif blockers:
         status = "RESEARCH_INTEREST_LOW"
         reason = "PARTIAL_SOURCE_BLOCKED"
-    elif required_total and not missing_required_domains and source_family_count >= 2:
+    elif (
+        required_total
+        and not missing_required_domains
+        and source_family_count >= 2
+        and research_worker_barrier_status in {"READY", "NOT_PRESENT"}
+    ):
         status = "RESEARCH_INTEREST_HIGH"
         reason = "REQUIRED_DOMAINS_COMPLETE_INDEPENDENT_EVIDENCE"
     elif required_total and domain_completeness >= 60.0 and source_family_count >= 2:
@@ -409,6 +420,7 @@ def evaluate_candidate(candidate: dict[str, Any], *, now: datetime | None = None
         "research_source_family_count": source_family_count,
         "research_independent_source_count": independent_source_count,
         "market_observations_are_one_source_family": True,
+        "research_worker_barrier_status": research_worker_barrier_status,
         "red_team": {
             "status": "QUARANTINED" if status == "QUARANTINED" else "PASSED",
             "flags": red_flags,
