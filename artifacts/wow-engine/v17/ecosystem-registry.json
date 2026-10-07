@@ -340,7 +340,7 @@
       "CONDUCTOR_TO_USER"
     ]
   },
-  "work_item_contract": {
+  "ecosystem_work_item_envelope_contract": {
     "required_fields": [
       "work_item_id",
       "request_id",
@@ -370,6 +370,8 @@
     "terminal_states_must_be_attributable": true,
     "silent_drop_forbidden": true,
     "self_verification_forbidden": true,
-    "class_c_requires_independent_verification_before_promotion": true
+    "class_c_requires_independent_verification_before_promotion": true,
+    "scope": "Cross-system ownership envelope only; WOW_BETTING_INTELLIGENCE retains product objective, candidate lifecycle, product acceptance, and product metric semantics.",
+    "product_semantics_owner": "WOW_BETTING_INTELLIGENCE"
   }
 }
