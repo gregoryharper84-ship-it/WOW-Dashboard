@@ -20,6 +20,7 @@ import time
 from dataclasses import replace
 from typing import Any
 
+from v17 import durable_provider_cache
 from v17 import market_evidence_observability as observability
 from v17 import market_evidence_sources as sources
 from v17 import rundown_payload_contract as payload_contract
@@ -656,8 +657,31 @@ def get_sport_date_odds_snapshot(
             request_audit=dict(audit),
         )
 
+    provider_produce = _produce
+
+    def _produce_with_durable_cache() -> sources.MarketEvidenceResult:
+        cached = durable_provider_cache.load_market_evidence(key)
+        if cached is not None:
+            observability.increment("rundown_durable_cache_hits")
+            return cached
+        value = provider_produce()
+        if value.ok:
+            stored = durable_provider_cache.store_market_evidence(
+                key,
+                value,
+                provider="RUNDOWN",
+                capability=capability,
+                sport_key=sport_key,
+                slate_date=date,
+            )
+            if stored:
+                observability.increment("rundown_durable_cache_writes")
+        return value
+
     result, origin = snapshot_cache.get_or_fetch(
-        key, _produce, cacheable=lambda value: bool(getattr(value, "ok", False))
+        key,
+        _produce_with_durable_cache,
+        cacheable=lambda value: bool(getattr(value, "ok", False)),
     )
     if origin == "CACHE":
         observability.increment("rundown_cache_hits")
