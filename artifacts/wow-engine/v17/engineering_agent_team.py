@@ -8,15 +8,34 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-TEAM_VERSION = "5.0"
+TEAM_VERSION = "5.1"
 
 AGENT_ROLES: dict[str, dict[str, Any]] = {
     "ENGINEERING_LEAD_AGENT": {
         "mission": "Own priority, single-incident focus, dedupe, and handoff discipline.",
+        "may_write_code": False,
+        "may_approve_own_work": False,
+        "may_change_probability_behavior": False,
+    },
+    "LIFECYCLE_CONTROLLER_AGENT": {
+        "mission": "Own one closure journey from detection through terminal disposition and prevent lifecycle handoff loss.",
+        "may_write_code": False,
+        "may_approve_own_work": False,
+        "may_change_probability_behavior": False,
+    },
+    "QUEUE_STEWARD_AGENT": {
+        "mission": "Enforce closure-first WIP, dedupe stale work, and keep active engineering focused on the highest-priority parent incident.",
+        "may_write_code": False,
+        "may_approve_own_work": False,
+        "may_change_probability_behavior": False,
+    },
+    "RELEASE_VERIFICATION_OWNER_AGENT": {
+        "mission": "Own exact-head governance follow-through, merge-to-deploy continuity, production acceptance, and terminal verification evidence.",
         "may_write_code": False,
         "may_approve_own_work": False,
         "may_change_probability_behavior": False,
@@ -148,6 +167,38 @@ PARKED_WAIT_STATES = {
 USER_CRITICAL_JOURNEYS = ("ALL_SPORTS_PROPS", "ALL_SPORTS_ML_WINNERS", "ALL_SPORTS_SPREADS", "ALL_SPORTS_TEAM_MARKETS", "ALL_SPORTS_UPSETS")
 MAX_ACTIVE_PRODUCT_RECOVERY = 1
 MAX_ACTIVE_SUPPORTING_INVESTIGATION = 1
+
+LIFECYCLE_CELL = {
+    "controller": "LIFECYCLE_CONTROLLER_AGENT",
+    "queue_steward": "QUEUE_STEWARD_AGENT",
+    "release_verification_owner": "RELEASE_VERIFICATION_OWNER_AGENT",
+}
+CHANGE_CLASS_WEIGHT = {"A": 0, "B": 1, "C": 2}
+CLASS_B_SCOPE_FLAGS = (
+    "changes_model_registration",
+    "changes_routing_or_hydration",
+    "changes_reconciliation_behavior",
+    "changes_prediction_persistence_contract",
+)
+CLASS_C_SCOPE_FLAGS = (
+    "changes_sporting_probability_math",
+    "changes_fitted_artifacts_or_coefficients",
+    "changes_calibration_or_lower_bounds",
+    "changes_qualification_thresholds",
+    "changes_failure_path_weighting",
+)
+LIFECYCLE_SCOPE_FLAGS = CLASS_B_SCOPE_FLAGS + CLASS_C_SCOPE_FLAGS
+
+LIFECYCLE_CONTROL_PATHS = frozenset({
+    ".github/workflows/wow-v17-24h-engineering-closure-loop.yml",
+    ".github/workflows/wow-v17-engineering-auditor-code-health.yml",
+    ".github/workflows/wow-v17-terminal-closure-controller.yml",
+    "artifacts/wow-engine/v17/engineering_agent_team.py",
+    "artifacts/wow-engine/v17/terminal_closure_controller.py",
+})
+LIFECYCLE_CONTROL_PREFIXES = (
+    ".agents/skills/wow-engineering-lifecycle-closure-cell/",
+)
 
 REQUIRED_CLOSURE_FIELDS = {
     "expected_behavior", "observed_behavior", "reproduction", "evidence",
@@ -393,9 +444,103 @@ def select_dual_stream_work(records: list[dict[str, Any]]) -> DualStreamDecision
         ),
     )
 
+def is_lifecycle_control_path(path: str) -> bool:
+    normalized = str(path or "").strip().replace("\\", "/")
+    return (
+        normalized in LIFECYCLE_CONTROL_PATHS
+        or any(normalized.startswith(prefix) for prefix in LIFECYCLE_CONTROL_PREFIXES)
+    )
+
+
+def lifecycle_record_from_pr_body(
+    body: str,
+    *,
+    changed_paths: tuple[str, ...] = (),
+) -> dict[str, Any]:
+    """Parse machine-readable lifecycle attestation from a PR body.
+
+    Touching a known lifecycle control path activates the boundary even if the
+    PR author omitted the marker, so omission cannot silently bypass Class A
+    validation.
+    """
+    text = str(body or "")
+    marker = re.search(
+        r"(?im)^\s*Lifecycle-Control-Plane\s*:\s*true\s*$",
+        text,
+    )
+    lifecycle_touched = any(is_lifecycle_control_path(path) for path in changed_paths)
+    if marker is None and not lifecycle_touched:
+        return {"lifecycle_control_plane": False}
+
+    record: dict[str, Any] = {"lifecycle_control_plane": True}
+    change_class = re.search(r"(?im)^\s*Change-Class\s*:\s*([ABC])\s*$", text)
+    if change_class:
+        record["change_class"] = change_class.group(1).upper()
+    for flag in LIFECYCLE_SCOPE_FLAGS:
+        match = re.search(
+            rf"(?im)^\s*-\s*{re.escape(flag)}\s*:\s*(true|false)\s*$",
+            text,
+        )
+        if match:
+            record[flag] = match.group(1).lower() == "true"
+    return record
+
+
+def validate_lifecycle_pr_body(
+    body: str,
+    *,
+    changed_paths: tuple[str, ...] = (),
+) -> list[str]:
+    return validate_lifecycle_classification(
+        lifecycle_record_from_pr_body(body, changed_paths=changed_paths)
+    )
+
+
+def required_lifecycle_change_class(record: dict[str, Any]) -> tuple[str, tuple[str, ...]]:
+    """Derive the minimum governed change class from explicit lifecycle scope flags."""
+    class_c = tuple(flag for flag in CLASS_C_SCOPE_FLAGS if record.get(flag) is True)
+    if class_c:
+        return "C", class_c
+    class_b = tuple(flag for flag in CLASS_B_SCOPE_FLAGS if record.get(flag) is True)
+    if class_b:
+        return "B", class_b
+    return "A", ()
+
+
+def validate_lifecycle_classification(record: dict[str, Any]) -> list[str]:
+    """Fail closed when lifecycle work claims a lower class than its declared scope.
+
+    This validator applies only to lifecycle-control-plane changes. It does not
+    classify sporting output and cannot authorize Class B/C promotion.
+    """
+    if record.get("lifecycle_control_plane") is not True:
+        return []
+
+    errors: list[str] = []
+    declared = str(record.get("change_class") or "").strip().upper()
+    if declared not in CHANGE_CLASS_WEIGHT:
+        errors.append(f"invalid lifecycle change_class: {declared or 'MISSING'}")
+
+    missing_flags = tuple(flag for flag in LIFECYCLE_SCOPE_FLAGS if flag not in record)
+    if missing_flags:
+        errors.append(
+            "lifecycle classification requires explicit scope flags: "
+            + ", ".join(missing_flags)
+        )
+
+    required, triggers = required_lifecycle_change_class(record)
+    if declared in CHANGE_CLASS_WEIGHT and CHANGE_CLASS_WEIGHT[declared] < CHANGE_CLASS_WEIGHT[required]:
+        trigger_text = ", ".join(triggers) if triggers else "governance scope"
+        errors.append(
+            f"CLASSIFICATION_ESCALATION_REQUIRED: declared {declared}, required {required}: {trigger_text}"
+        )
+    return errors
+
+
 def validate_closure_record(record: dict[str, Any]) -> list[str]:
     """Enforce one durable closure unit instead of disconnected progress markers."""
     errors: list[str] = []
+    errors.extend(validate_lifecycle_classification(record))
     missing = sorted(k for k in REQUIRED_CLOSURE_FIELDS if not record.get(k))
     if missing:
         errors.append("missing closure fields: " + ", ".join(missing))
@@ -525,6 +670,21 @@ def load_ledger(path: str | Path) -> list[dict[str, Any]]:
 def self_check() -> dict[str, Any]:
     assert AGENT_ROLES["ENGINEERING_AGENT"]["may_write_code"] is True
     assert "PRODUCT_ACCEPTANCE_AGENT" in AGENT_ROLES
+    assert set(LIFECYCLE_CELL.values()) <= set(AGENT_ROLES)
+    lifecycle_a = {
+        "lifecycle_control_plane": True,
+        "change_class": "A",
+        **{flag: False for flag in LIFECYCLE_SCOPE_FLAGS},
+    }
+    assert validate_lifecycle_classification(lifecycle_a) == []
+    lifecycle_b = dict(lifecycle_a)
+    lifecycle_b["changes_model_registration"] = True
+    assert required_lifecycle_change_class(lifecycle_b)[0] == "B"
+    assert any("CLASSIFICATION_ESCALATION_REQUIRED" in error for error in validate_lifecycle_classification(lifecycle_b))
+    lifecycle_c = dict(lifecycle_a)
+    lifecycle_c["changes_calibration_or_lower_bounds"] = True
+    assert required_lifecycle_change_class(lifecycle_c)[0] == "C"
+    assert any("CLASSIFICATION_ESCALATION_REQUIRED" in error for error in validate_lifecycle_classification(lifecycle_c))
     for name, role in AGENT_ROLES.items():
         if name != "ENGINEERING_AGENT":
             assert role["may_write_code"] is False
@@ -581,12 +741,36 @@ def self_check() -> dict[str, Any]:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=["self-check", "priority", "dual-priority", "frontier-gate", "support-route"])
+    parser.add_argument("command", choices=["self-check", "priority", "dual-priority", "frontier-gate", "support-route", "lifecycle-classify"])
     parser.add_argument("--ledger", default=str(Path(__file__).with_name("incident-ledger.json")))
+    parser.add_argument("--pr-body-file", default="")
+    parser.add_argument("--changed-paths-file", default="")
     parser.add_argument("--typed-failure", default="")
     parser.add_argument("--subsystem", default="")
     parser.add_argument("--wait-state", default="")
     args = parser.parse_args()
+
+    if args.command == "lifecycle-classify":
+        body = Path(args.pr_body_file).read_text(encoding="utf-8") if args.pr_body_file else ""
+        changed_paths: tuple[str, ...] = ()
+        if args.changed_paths_file:
+            changed_paths = tuple(
+                line.strip()
+                for line in Path(args.changed_paths_file).read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            )
+        record = lifecycle_record_from_pr_body(body, changed_paths=changed_paths)
+        errors = validate_lifecycle_classification(record)
+        print(json.dumps({
+            "lifecycle_control_plane": record.get("lifecycle_control_plane") is True,
+            "declared_change_class": record.get("change_class"),
+            "required_change_class": required_lifecycle_change_class(record)[0] if record.get("lifecycle_control_plane") is True else "N/A",
+            "errors": errors,
+            "can_execute": False,
+        }, indent=2, sort_keys=True))
+        if errors:
+            raise SystemExit(1)
+        return
 
     if args.command == "self-check":
         print(json.dumps(self_check(), indent=2, sort_keys=True))
