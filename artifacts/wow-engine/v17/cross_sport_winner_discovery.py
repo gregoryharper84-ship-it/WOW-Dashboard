@@ -1098,6 +1098,17 @@ class RoutedRow:
 
 
 def _purge_bucket(event: DiscoveredEvent, *, slate_date: str, tz_name: str) -> str | None:
+    # A parseable event that is provably outside the requested local slate is
+    # wrong-date before canonical-identity routing. Public/free discovery ids are
+    # intentionally retained as aliases, so checking identity first incorrectly
+    # turns next-day ESPN rows into EVENT_IDENTITY_UNRESOLVED.
+    #
+    # An absent or malformed start time does not earn WRONG_DATE: it remains
+    # fail-closed under the existing identity/status checks below.
+    if _parse_instant(event.commence_time_utc) is not None and not _slate_date_matches(
+        event.commence_time_utc, slate_date, tz_name
+    ):
+        return WRONG_DATE
     if not event.official_event_id or not event.home_team or not event.away_team:
         return IDENTITY_UNRESOLVED
     if event.event_status == "CANCELLED_OR_POSTPONED":
@@ -1106,8 +1117,6 @@ def _purge_bucket(event: DiscoveredEvent, *, slate_date: str, tz_name: str) -> s
         return STARTED_OR_FINAL
     if event.event_status != REQUIRED_EVENT_STATE:
         return IDENTITY_UNRESOLVED
-    if not _slate_date_matches(event.commence_time_utc, slate_date, tz_name):
-        return WRONG_DATE
     return None
 
 
