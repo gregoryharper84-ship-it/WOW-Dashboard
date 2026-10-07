@@ -444,6 +444,49 @@ def record_audit_event(client: Any, *, event_type: str, actor: str, run_id: Opti
     }).execute()
 
 
+BETTING_INTELLIGENCE_PRODUCT_TRUTH_EVENT = "BETTING_INTELLIGENCE_PRODUCT_TRUTH"
+BETTING_INTELLIGENCE_ACTOR = "wow.betting-intelligence-control-plane"
+
+
+def record_product_truth_snapshot(
+    client: Any,
+    *,
+    run_id: str,
+    snapshot: dict[str, Any],
+) -> None:
+    """Append one immutable Betting Intelligence product-truth snapshot."""
+    if snapshot.get("can_execute") is not False:
+        raise ValueError("product truth snapshot must preserve can_execute=false")
+    record_audit_event(
+        client,
+        event_type=BETTING_INTELLIGENCE_PRODUCT_TRUTH_EVENT,
+        actor=BETTING_INTELLIGENCE_ACTOR,
+        run_id=run_id,
+        detail_redacted=snapshot,
+    )
+
+
+def get_latest_product_truth_snapshot(
+    client: Any,
+    run_id: str,
+) -> Optional[dict[str, Any]]:
+    """Read the newest persisted product-truth snapshot for one durable run."""
+    result = (
+        client.table("wow_agent_audit_events")
+        .select("*")
+        .eq("run_id", run_id)
+        .eq("event_type", BETTING_INTELLIGENCE_PRODUCT_TRUTH_EVENT)
+        .order("created_at", desc=True)
+        .limit(1)
+        .execute()
+    )
+    rows = result.data or []
+    if not rows:
+        return None
+    detail = rows[0].get("detail_redacted")
+    return dict(detail) if isinstance(detail, dict) else None
+
+
 def record_terminal_decision(
     client: Any, *, run_id: str, candidate_id: str, final_terminal_ceiling: str, terminal_label: str,
     controlling_worker_id: Optional[str], probability_publishable: bool, blockers: list[str],
