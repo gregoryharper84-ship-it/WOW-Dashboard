@@ -21,6 +21,7 @@ from dataclasses import replace
 from typing import Any
 
 from v17 import durable_provider_cache
+from v17 import free_core_source_policy as source_policy
 from v17 import market_evidence_observability as observability
 from v17 import market_evidence_sources as sources
 from v17 import rundown_payload_contract as payload_contract
@@ -516,6 +517,8 @@ def get_sport_date_odds_snapshot(
     main_line: bool | None = None,
     hide_closed: bool | None = None,
     sport_id: Any = None,
+    paid_call_stage: str | None = None,
+    model_preflight_passed: bool = False,
 ) -> sources.MarketEvidenceResult:
     """One narrow sport/date **current odds snapshot**, normalised once and shared.
 
@@ -664,6 +667,33 @@ def get_sport_date_odds_snapshot(
         if cached is not None:
             observability.increment("rundown_durable_cache_hits")
             return cached
+        if paid_call_stage is not None:
+            budget, allowed, blocker = source_policy.check_paid_call(
+                paid_call_stage,
+                model_preflight_passed=model_preflight_passed,
+            )
+            if not allowed:
+                return sources.MarketEvidenceResult(
+                    False,
+                    "RUNDOWN",
+                    capability,
+                    status=None,
+                    code=blocker,
+                    request_audit={
+                        **audit,
+                        "cache_origin": "MISS",
+                        "source_policy_blocked": True,
+                        "source_policy_stage": str(paid_call_stage),
+                        "paid_call_budget": budget.receipt(),
+                        "can_execute": False,
+                    },
+                    prediction_authority=False,
+                    exact_line_authority=False,
+                    research_only=True,
+                    can_execute=False,
+                )
+            source_policy.record_paid_call(paid_call_stage, budget)
+
         value = provider_produce()
         if value.ok:
             stored = durable_provider_cache.store_market_evidence(
@@ -705,6 +735,8 @@ def rundown_market_evidence(
     main_line: bool | None = None,
     hide_closed: bool | None = None,
     sport_id: Any = None,
+    paid_call_stage: str | None = None,
+    model_preflight_passed: bool = False,
 ) -> sources.MarketEvidenceResult:
     """Established entry point. Delegates to the explicitly named snapshot call."""
     return get_sport_date_odds_snapshot(
@@ -717,6 +749,8 @@ def rundown_market_evidence(
         main_line=main_line,
         hide_closed=hide_closed,
         sport_id=sport_id,
+        paid_call_stage=paid_call_stage,
+        model_preflight_passed=model_preflight_passed,
     )
 
 
