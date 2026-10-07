@@ -121,3 +121,21 @@ def test_p0_requires_stream_and_lease_metadata():
     manifest["restoration"][0].pop("rapid_stream")
     with pytest.raises(ValueError, match="requires rapid_stream and lease_group"):
         build_queue(manifest, [])
+
+
+def test_repo_manifest_prioritizes_reliability_v1_as_top_standard_p1():
+    path = Path(__file__).parents[1] / "v17" / "engineering_dispatch_manifest.json"
+    manifest = json.loads(path.read_text())
+    issues = [
+        {"number": 1438, "title": "Reliability V1", "state": "OPEN", "updatedAt": "2026-10-06T23:00:00Z"},
+        {"number": 823, "title": "Acquisition", "state": "OPEN", "updatedAt": "2026-10-06T23:00:00Z"},
+        {"number": 1028, "title": "MLB prop", "state": "OPEN", "updatedAt": "2026-10-06T23:00:00Z"},
+    ]
+    queue = build_queue(manifest, issues)
+    standard = [row for row in queue["records"] if row["execution_lane"] == "STANDARD"]
+    assert standard
+    assert standard[0]["incident_id"] == "1438"
+    assert standard[0]["severity"] == "P1"
+    assert standard[0]["priority_rank"] == 8
+    assert "RELIABILITY_GOVERNANCE" in standard[0]["conflict_keys"]
+    assert queue["can_execute"] is False
