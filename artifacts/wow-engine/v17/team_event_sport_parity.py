@@ -329,6 +329,134 @@ def canonicalize_nfl_discovery_identity(
         raw=raw,
     )
 
+def canonicalize_mlb_discovery_identity(
+    event: Any,
+    *,
+    req: Any,
+    event_api: Any,
+) -> Any:
+    """Resolve an MLB provider alias through the canonical MLB event ledger.
+
+    ESPN/Rundown ids remain aliases. The discovery row receives a canonical
+    official_event_id only after the existing MLB resolver proves one exact
+    participants/start/slate match.
+    """
+    if str(getattr(event, "sport", "") or "").upper() != "MLB":
+        return event
+
+    raw = dict(getattr(event, "raw", None) or {})
+    provider_event_id = str(
+        getattr(event, "official_event_id", None)
+        or raw.get("provider_event_id")
+        or raw.get("event_id")
+        or raw.get("id")
+        or ""
+    ).strip()
+    if not provider_event_id:
+        raw["canonical_identity_status"] = "ALIAS_ONLY_UNRESOLVED"
+        raw["canonical_identity_blocker"] = "MLB_PROVIDER_EVENT_ID_MISSING"
+        return replace(event, raw=raw)
+
+    from v17.mlb_team_event_hydration import resolve_mlb_team_event_evidence
+
+    probe = SimpleNamespace(
+        official_event_id=provider_event_id,
+        requested_slate_date=req.requested_slate_date,
+        requested_timezone=req.requested_timezone,
+        event_start_time_utc=event.commence_time_utc,
+        home_team=event.home_team,
+        away_team=event.away_team,
+        source_snapshot_id=f"discovery:{event.provider or event.sport_key}:{provider_event_id}",
+        latest_material_update_timestamp=None,
+        sport_specific_evidence={},
+    )
+    try:
+        resolution = resolve_mlb_team_event_evidence(probe, event_api=event_api)
+    except Exception as exc:  # noqa: BLE001 - preserve typed identity hold
+        raw["canonical_identity_status"] = "ALIAS_ONLY_UNRESOLVED"
+        raw["canonical_identity_blocker"] = str(
+            getattr(exc, "code", None) or type(exc).__name__
+        )
+        return replace(event, raw=raw)
+
+    if resolution.get("ok") is not True:
+        raw["canonical_identity_status"] = "ALIAS_ONLY_UNRESOLVED"
+        raw["canonical_identity_blocker"] = str(
+            resolution.get("code") or "MLB_CANONICAL_IDENTITY_UNRESOLVED"
+        )
+        return replace(event, raw=raw)
+
+    canonical_event_id = str(
+        resolution.get("canonical_official_event_id") or ""
+    ).strip()
+    if not canonical_event_id:
+        raw["canonical_identity_status"] = "ALIAS_ONLY_UNRESOLVED"
+        raw["canonical_identity_blocker"] = "MLB_CANONICAL_EVENT_ID_MISSING"
+        return replace(event, raw=raw)
+
+    raw["provider_event_id"] = provider_event_id
+    raw["canonical_identity_status"] = "CANONICAL_RESOLVED"
+    raw["canonical_identity_source"] = "CANONICAL_MLB_LEDGER"
+    raw["canonical_identity_resolution"] = resolution.get(
+        "canonical_identity_resolution"
+    )
+    raw["canonical_source_snapshot_id"] = resolution.get(
+        "canonical_source_snapshot_id"
+    )
+    raw["canonical_snapshot_timestamp"] = resolution.get(
+        "canonical_snapshot_timestamp"
+    )
+    return replace(event, official_event_id=canonical_event_id, raw=raw)
+
+
+def cross_sport_model_coverage(rows: Any, *, requested_model_budget: int | None = None) -> dict[str, Any]:
+    """Separate discovery accounting from identity/model-routing coverage."""
+    from v17 import cross_sport_winner_discovery as discovery
+
+    discovered = [row for row in (rows or []) if isinstance(row, Mapping)]
+    non_candidates = {
+        discovery.WRONG_DATE,
+        discovery.STARTED_OR_FINAL,
+        discovery.CANCELLED_OR_POSTPONED,
+    }
+    candidates = [row for row in discovered if row.get("bucket") not in non_candidates]
+    identity_unresolved = sum(
+        1 for row in candidates if row.get("bucket") == discovery.IDENTITY_UNRESOLVED
+    )
+    model_routed = sum(
+        1 for row in candidates if row.get("bucket") in discovery.MODEL_BUCKETS
+    )
+    model_invoked = 0
+    for row in candidates:
+        detail = row.get("detail") if isinstance(row.get("detail"), Mapping) else {}
+        if row.get("model_invoked") is True or detail.get("model_invoked") is True:
+            model_invoked += 1
+
+    candidate_count = len(candidates)
+    if candidate_count == 0:
+        routing_status = "NO_ELIGIBLE_PREGAME_ROWS"
+    elif model_routed == candidate_count:
+        routing_status = "FULL_MODEL_ROUTING"
+    elif model_routed == 0:
+        routing_status = "NO_MODEL_ROUTING"
+    else:
+        routing_status = "PARTIAL_MODEL_ROUTING"
+
+    return {
+        "discovered_rows": len(discovered),
+        "pregame_candidate_rows": candidate_count,
+        "identity_resolved_pregame_rows": max(candidate_count - identity_unresolved, 0),
+        "identity_unresolved_rows": identity_unresolved,
+        "model_routed_rows": model_routed,
+        "model_invoked_rows": model_invoked,
+        "model_routing_coverage_status": routing_status,
+        "requested_model_invocation_budget": requested_model_budget,
+        "max_team_events_semantics": "MODEL_INVOCATION_BUDGET_NOT_DISCOVERY_ROW_CAP",
+        "discovery_rows_retained_for_reconciliation": True,
+        "can_execute": False,
+    }
+
+
 def install_cross_sport_discovery_evidence_handoff() -> bool:
     """Give every discovered registered sport the same evidence handoff chance.
 
@@ -363,12 +491,21 @@ def install_cross_sport_discovery_evidence_handoff() -> bool:
             )
 
         def canonicalize_identity(event: Any) -> Any:
-            return canonicalize_nfl_discovery_identity(
-                event,
-                req=req,
-                event_api=event_api,
-                settlement_basis=daily._settlement_basis("NFL"),
-            )
+            sport = str(getattr(event, "sport", "") or "").upper()
+            if sport == "MLB":
+                return canonicalize_mlb_discovery_identity(
+                    event,
+                    req=req,
+                    event_api=event_api,
+                )
+            if sport == "NFL":
+                return canonicalize_nfl_discovery_identity(
+                    event,
+                    req=req,
+                    event_api=event_api,
+                    settlement_basis=daily._settlement_basis("NFL"),
+                )
+            return event
 
         def resolve_model(event: Any) -> Any:
             return daily.bridge_runtime.TEAM_EVENT_BRIDGES.get(event.sport)
@@ -436,13 +573,17 @@ def install_cross_sport_discovery_evidence_handoff() -> bool:
                     "can_execute": False,
                 }
 
-        scan = daily.discovery.run_cross_sport_winner_scan(
+        scan = dict(daily.discovery.run_cross_sport_winner_scan(
             requested_slate_date=req.requested_slate_date,
             requested_timezone=req.requested_timezone,
             fetch_sport_events=feed,
             resolve_model=resolve_model,
             score_row=score,
             canonicalize_identity=canonicalize_identity,
+        ))
+        scan["model_coverage"] = cross_sport_model_coverage(
+            scan.get("rows"),
+            requested_model_budget=int(getattr(req, "max_team_events", 0) or 0),
         )
         rows = [
             daily._terminal_row(
@@ -482,6 +623,9 @@ __all__ = [
     "CAN_EXECUTE",
     "PARITY_CONTRACT_VERSION",
     "build_discovery_evidence",
+    "canonicalize_mlb_discovery_identity",
+    "canonicalize_nfl_discovery_identity",
+    "cross_sport_model_coverage",
     "install_cross_sport_discovery_evidence_handoff",
     "install_team_event_sport_parity",
     "parity_health",
