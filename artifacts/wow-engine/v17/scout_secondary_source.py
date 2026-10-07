@@ -242,6 +242,14 @@ def _team_name(comp: dict[str, Any] | None) -> str | None:
     return team.get("displayName") or team.get("shortDisplayName") or team.get("name")
 
 
+def _team_id(comp: dict[str, Any] | None) -> str | None:
+    if not isinstance(comp, dict):
+        return None
+    team = comp.get("team") if isinstance(comp.get("team"), dict) else {}
+    value = str(team.get("id") or "").strip()
+    return value or None
+
+
 def espn_event_to_primary_shape(event: dict[str, Any], sport_key: str) -> dict[str, Any] | None:
     event_id = event.get("id")
     if not event_id:
@@ -254,6 +262,8 @@ def espn_event_to_primary_shape(event: dict[str, Any], sport_key: str) -> dict[s
         "home_team": _team_name(home),
         "away_team": _team_name(away),
         "_wow_secondary_event_id": str(event_id),
+        "_wow_secondary_home_team_id": _team_id(home),
+        "_wow_secondary_away_team_id": _team_id(away),
         "_wow_secondary_scoreboard_dates": list(event.get("_wow_secondary_scoreboard_dates") or []),
         "_wow_secondary_source": "ESPN_SCOREBOARD_RESEARCH_FALLBACK",
     }
