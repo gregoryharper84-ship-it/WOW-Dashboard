@@ -785,7 +785,7 @@ Deno.serve(async (req: Request) => {
       can_execute: false,
     });
   } catch (err) {
-    return response({ ok: false, code: "SCOUT_BRAIN_PERSIST_FAILED", error_type: err instanceof Error ? err.name : "Error", can_execute: false }, 500);
+    return response({ ok: false, code: phase === "READ_PREVIOUS" ? "SCOUT_BRAIN_PRIOR_READ_FAILED" : "SCOUT_BRAIN_PERSIST_FAILED", error_type: err instanceof Error ? err.name : "Error", can_execute: false }, 500);
   } finally {
     await sql.end({ timeout: 2 });
   }
