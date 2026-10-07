@@ -186,6 +186,15 @@ def _team_rows(candidate: dict[str, Any], *, research_run_id: str) -> tuple[list
             "season_slug",
             "season_phase",
             "season_phase_source",
+            "venue",
+            "venue_id",
+            "neutral_site",
+            "event_status",
+            "event_type",
+            "competition_round",
+            "series_state",
+            "competition_importance",
+            "event_context_source",
         )
         if candidate.get(field) is not None
     }
