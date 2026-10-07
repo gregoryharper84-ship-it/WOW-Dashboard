@@ -409,6 +409,79 @@ def canonicalize_mlb_discovery_identity(
     return replace(event, official_event_id=canonical_event_id, raw=raw)
 
 
+
+def canonicalize_wnba_discovery_identity(event: Any) -> Any:
+    """Resolve an ESPN WNBA discovery alias through the official WNBA schedule.
+
+    ESPN event/team ids remain aliases. The event receives a canonical WNBA
+    event id only after the existing reconciler proves one exact league-owned
+    schedule match by event alias, teams and start time.
+    """
+    if str(getattr(event, "sport", "") or "").upper() != "WNBA":
+        return event
+
+    raw = dict(getattr(event, "raw", None) or {})
+    provider_event_id = str(
+        raw.get("provider_event_id")
+        or raw.get("_wow_secondary_event_id")
+        or getattr(event, "official_event_id", None)
+        or ""
+    ).strip()
+    home_alias = str(raw.get("_wow_secondary_home_team_id") or "").strip()
+    away_alias = str(raw.get("_wow_secondary_away_team_id") or "").strip()
+
+    if not provider_event_id:
+        raw["canonical_identity_status"] = "ALIAS_ONLY_UNRESOLVED"
+        raw["canonical_identity_blocker"] = "WNBA_PROVIDER_EVENT_ID_MISSING"
+        return replace(event, raw=raw)
+    if not home_alias or not away_alias:
+        raw["canonical_identity_status"] = "ALIAS_ONLY_UNRESOLVED"
+        raw["canonical_identity_blocker"] = "WNBA_PROVIDER_TEAM_ALIAS_MISSING"
+        return replace(event, raw=raw)
+
+    event_alias = (
+        provider_event_id
+        if provider_event_id.startswith("espn-")
+        else f"espn-{provider_event_id}"
+    )
+    home_team_id = home_alias if home_alias.startswith("espn-") else f"espn-{home_alias}"
+    away_team_id = away_alias if away_alias.startswith("espn-") else f"espn-{away_alias}"
+
+    from v17.wnba_spread_event_identity import resolve_wnba_current_event_identity
+
+    try:
+        resolution = resolve_wnba_current_event_identity(
+            event_id=event_alias,
+            event_start_time=str(event.commence_time_utc),
+            home_team_id=home_team_id,
+            away_team_id=away_team_id,
+        )
+    except Exception as exc:  # noqa: BLE001 - preserve typed identity hold
+        raw["canonical_identity_status"] = "ALIAS_ONLY_UNRESOLVED"
+        raw["canonical_identity_blocker"] = str(
+            getattr(exc, "code", None) or type(exc).__name__
+        )
+        return replace(event, raw=raw)
+
+    canonical_event_id = str(resolution.get("event_id") or "").strip()
+    if not canonical_event_id:
+        raw["canonical_identity_status"] = "ALIAS_ONLY_UNRESOLVED"
+        raw["canonical_identity_blocker"] = "WNBA_CANONICAL_EVENT_ID_MISSING"
+        return replace(event, raw=raw)
+
+    raw["provider_event_id"] = provider_event_id
+    raw["canonical_identity_status"] = "CANONICAL_RESOLVED"
+    raw["canonical_identity_source"] = str(
+        resolution.get("identity_provider") or "WNBA_OFFICIAL_SCHEDULE_API"
+    )
+    raw["canonical_identity_alias_provider"] = str(
+        resolution.get("identity_alias_provider") or "ESPN_SCOREBOARD"
+    )
+    raw["canonical_identity_resolution"] = "OFFICIAL_WNBA_SCHEDULE_EXACT_MATCH"
+    raw["canonical_identity_verified_at"] = resolution.get("identity_verified_at")
+    return replace(event, official_event_id=canonical_event_id, raw=raw)
+
+
 def cross_sport_model_coverage(rows: Any, *, requested_model_budget: int | None = None) -> dict[str, Any]:
     """Separate discovery accounting from identity/model-routing coverage."""
     from v17 import cross_sport_winner_discovery as discovery
@@ -505,6 +578,8 @@ def install_cross_sport_discovery_evidence_handoff() -> bool:
                     event_api=event_api,
                     settlement_basis=daily._settlement_basis("NFL"),
                 )
+            if sport == "WNBA":
+                return canonicalize_wnba_discovery_identity(event)
             return event
 
         def resolve_model(event: Any) -> Any:
@@ -625,6 +700,7 @@ __all__ = [
     "build_discovery_evidence",
     "canonicalize_mlb_discovery_identity",
     "canonicalize_nfl_discovery_identity",
+    "canonicalize_wnba_discovery_identity",
     "cross_sport_model_coverage",
     "install_cross_sport_discovery_evidence_handoff",
     "install_team_event_sport_parity",
