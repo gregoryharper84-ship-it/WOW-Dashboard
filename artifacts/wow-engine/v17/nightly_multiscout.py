@@ -386,6 +386,15 @@ def run() -> dict[str, Any]:
                     "season_slug",
                     "season_phase",
                     "season_phase_source",
+                    "venue",
+                    "venue_id",
+                    "neutral_site",
+                    "event_status",
+                    "event_type",
+                    "competition_round",
+                    "series_state",
+                    "competition_importance",
+                    "event_context_source",
                 )
                 if event.get(field) is not None
             })
