@@ -5,6 +5,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[2]
 MODULE_PATH = ROOT / "artifacts/wow-engine/v17/engineering_agent_team.py"
+LOOP_PATH = ROOT / ".github/workflows/wow-v17-24h-engineering-closure-loop.yml"
 
 
 def _module():
@@ -80,3 +81,14 @@ def test_lifecycle_classification_requires_explicit_scope_attestation():
 def test_non_lifecycle_closure_records_are_not_reclassified():
     module = _module()
     assert module.validate_lifecycle_classification({"change_class": "A"}) == []
+
+
+
+def test_24h_loop_emits_explicit_lifecycle_owner():
+    text = LOOP_PATH.read_text(encoding="utf-8")
+    assert 'lifecycle_owner="LIFECYCLE_CONTROLLER_AGENT"' in text
+    assert 'lifecycle_owner="RELEASE_VERIFICATION_OWNER_AGENT"' in text
+    assert 'lifecycle_owner="QUEUE_STEWARD_AGENT"' in text
+    assert 'echo "lifecycle_owner=$lifecycle_owner"' in text
+    assert '--arg lifecycle_owner "$lifecycle_owner"' in text
+    assert 'lifecycle_owner:$lifecycle_owner' in text
