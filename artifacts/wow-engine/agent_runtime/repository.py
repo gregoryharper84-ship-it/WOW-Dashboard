@@ -459,6 +459,9 @@ def record_product_truth_snapshot(
     """Append one immutable Betting Intelligence product-truth snapshot."""
     if snapshot.get("can_execute") is not False:
         raise ValueError("product truth snapshot must preserve can_execute=false")
+    snapshot_run_id = str(snapshot.get("run_id") or "")
+    if snapshot_run_id and snapshot_run_id != str(run_id):
+        raise ValueError("product truth snapshot run_id mismatch")
     record_audit_event(
         client,
         event_type=BETTING_INTELLIGENCE_PRODUCT_TRUTH_EVENT,
