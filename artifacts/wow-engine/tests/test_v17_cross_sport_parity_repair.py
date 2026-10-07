@@ -9,7 +9,9 @@ from v17.team_event_capability_manifest import EXPECTED_TEAM_EVENT_SPORTS
 from v17.cross_sport_winner_discovery import DiscoveredEvent
 from v17.team_event_sport_parity import (
     build_discovery_evidence,
+    canonicalize_mlb_discovery_identity,
     canonicalize_nfl_discovery_identity,
+    cross_sport_model_coverage,
     parity_health,
 )
 
@@ -256,3 +258,124 @@ def test_discovery_evidence_preserves_provider_alias_after_nfl_canonicalization(
     assert evidence["discovery_provider_event_id"] == "401872972"
     assert evidence["market_probability_used_as_model"] is False
     assert evidence["can_execute"] is False
+
+
+def _mlb_alias_event():
+    return DiscoveredEvent(
+        sport="MLB",
+        league="MLB",
+        sport_key="3",
+        official_event_id=None,
+        home_team="San Diego Padres",
+        away_team="Milwaukee Brewers",
+        commence_time_utc="2026-10-08T02:00:00Z",
+        event_status="PREGAME",
+        source="DISCOVERY_FEED",
+        provider="ESPN_SCOREBOARD",
+        raw={
+            "provider_event_id": "espn-849826",
+            "official_event_id": None,
+            "prediction_authority": False,
+        },
+    )
+
+
+def test_mlb_daily_discovery_alias_rewrites_only_after_canonical_ledger_match(monkeypatch):
+    import v17.mlb_team_event_hydration as hydration
+
+    captured = {}
+
+    def resolve(req, *, event_api):
+        captured["provider_event_id"] = req.official_event_id
+        captured["event_api"] = event_api
+        return {
+            "ok": True,
+            "canonical_official_event_id": "849826",
+            "canonical_identity_resolution": "PARTICIPANTS_START_SLATE",
+            "canonical_source_snapshot_id": "snapshot-849826",
+            "canonical_snapshot_timestamp": "2026-10-07T20:00:00+00:00",
+        }
+
+    monkeypatch.setattr(hydration, "resolve_mlb_team_event_evidence", resolve)
+    api = _EventApi()
+    req = SimpleNamespace(
+        requested_slate_date="2026-10-06",
+        requested_timezone="America/Chicago",
+    )
+
+    out = canonicalize_mlb_discovery_identity(
+        _mlb_alias_event(),
+        req=req,
+        event_api=api,
+    )
+
+    assert captured["provider_event_id"] == "espn-849826"
+    assert captured["event_api"] is api
+    assert out.official_event_id == "849826"
+    assert out.raw["provider_event_id"] == "espn-849826"
+    assert out.raw["canonical_identity_status"] == "CANONICAL_RESOLVED"
+    assert out.raw["canonical_identity_source"] == "CANONICAL_MLB_LEDGER"
+    assert out.raw["canonical_source_snapshot_id"] == "snapshot-849826"
+
+
+def test_mlb_daily_discovery_alias_stays_unresolved_without_canonical_proof(monkeypatch):
+    import v17.mlb_team_event_hydration as hydration
+
+    monkeypatch.setattr(
+        hydration,
+        "resolve_mlb_team_event_evidence",
+        lambda req, *, event_api: {
+            "ok": False,
+            "code": "MLB_TEAM_EVENT_CANONICAL_IDENTITY_AMBIGUOUS",
+        },
+    )
+    out = canonicalize_mlb_discovery_identity(
+        _mlb_alias_event(),
+        req=SimpleNamespace(
+            requested_slate_date="2026-10-06",
+            requested_timezone="America/Chicago",
+        ),
+        event_api=_EventApi(),
+    )
+
+    assert out.official_event_id is None
+    assert out.raw["canonical_identity_status"] == "ALIAS_ONLY_UNRESOLVED"
+    assert (
+        out.raw["canonical_identity_blocker"]
+        == "MLB_TEAM_EVENT_CANONICAL_IDENTITY_AMBIGUOUS"
+    )
+
+
+def test_model_coverage_separates_accounted_rows_from_identity_and_model_routing():
+    coverage = cross_sport_model_coverage(
+        [
+            {
+                "bucket": "EVENT_IDENTITY_UNRESOLVED",
+                "detail": {"model_invoked": False},
+            },
+            {
+                "bucket": "MODEL_UNAVAILABLE",
+                "detail": {"model_invoked": False},
+            },
+            {
+                "bucket": "MODEL_COMPLETED",
+                "detail": {"model_invoked": True},
+            },
+        ],
+        requested_model_budget=12,
+    )
+
+    assert coverage["discovered_rows"] == 3
+    assert coverage["pregame_candidate_rows"] == 3
+    assert coverage["identity_unresolved_rows"] == 1
+    assert coverage["identity_resolved_pregame_rows"] == 2
+    assert coverage["model_routed_rows"] == 2
+    assert coverage["model_invoked_rows"] == 1
+    assert coverage["model_routing_coverage_status"] == "PARTIAL_MODEL_ROUTING"
+    assert coverage["requested_model_invocation_budget"] == 12
+    assert (
+        coverage["max_team_events_semantics"]
+        == "MODEL_INVOCATION_BUDGET_NOT_DISCOVERY_ROW_CAP"
+    )
+    assert coverage["discovery_rows_retained_for_reconciliation"] is True
+    assert coverage["can_execute"] is False
