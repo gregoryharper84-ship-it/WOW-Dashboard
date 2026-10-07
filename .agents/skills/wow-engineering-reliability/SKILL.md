@@ -60,6 +60,11 @@ Negative paths must be exercised where applicable:
 ### 5. Exact-head gate
 Any new commit invalidates prior CI evidence. Required checks must be green on the exact final PR head. A prior SHA cannot authorize merge of a newer SHA.
 
+Prefer this order for agent-generated repairs:
+`implement -> connector readback -> focused local tests -> freeze candidate head -> open PR -> protected exact-head matrix`.
+
+Do not open a PR merely to start CI while implementation is still changing. After PR creation, only defect-driven commits are allowed; cosmetic churn, speculative edits, and unrelated cleanup must wait. This minimizes repeated exact-head invalidation without weakening any gate.
+
 ### 6. Independent review gate
 The implementer cannot approve the repair. Independent Review and QA must challenge root cause, scope, regressions, typed failures, identity, rollback, and adjacent-lane behavior. System Architect review remains mandatory for protected contracts.
 
