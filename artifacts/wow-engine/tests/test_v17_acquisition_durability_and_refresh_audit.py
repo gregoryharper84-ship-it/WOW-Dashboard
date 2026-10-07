@@ -676,3 +676,45 @@ def test_ordered_attempt_migration_is_additive_bounded_and_retains_old_rows():
     assert "revert the application commit and retain this" in lowered
     assert "drop column" not in lowered
     assert "create policy" not in lowered
+
+
+def test_compact_cross_sport_audit_preserves_model_coverage_separately_from_board_completeness():
+    audit = {
+        "rows": [{"bucket": "EVENT_IDENTITY_UNRESOLVED"} for _ in range(16)],
+        "reconciliation": {
+            "row_reconciliation": "PASS",
+            "board_completeness": "PASS",
+        },
+        "model_coverage": {
+            "discovered_rows": 16,
+            "pregame_candidate_rows": 16,
+            "identity_unresolved_rows": 16,
+            "identity_resolved_pregame_rows": 0,
+            "model_routed_rows": 0,
+            "model_invoked_rows": 0,
+            "model_routing_coverage_status": "NO_MODEL_ROUTING",
+            "requested_model_invocation_budget": 12,
+            "max_team_events_semantics": "MODEL_INVOCATION_BUDGET_NOT_DISCOVERY_ROW_CAP",
+            "discovery_rows_retained_for_reconciliation": True,
+            "can_execute": False,
+        },
+        "cross_sport_resilience": {
+            "model_invocation_limit": 12,
+            "rows_held_by_model_invocation_budget": 0,
+            "can_execute": False,
+        },
+        "BOARD_COVERAGE_STATUS": "PROVEN_FOR_CONFIGURED_DISCOVERY_SOURCES",
+        "can_execute": False,
+    }
+
+    compact = compact_cross_sport_discovery_audit(audit)
+
+    assert compact["rows_count"] == 16
+    assert compact["rows_inlined"] is False
+    assert compact["reconciliation"]["board_completeness"] == "PASS"
+    assert compact["model_coverage"]["model_routing_coverage_status"] == "NO_MODEL_ROUTING"
+    assert compact["model_coverage"]["identity_unresolved_rows"] == 16
+    assert compact["model_coverage"]["requested_model_invocation_budget"] == 12
+    assert compact["cross_sport_resilience"]["model_invocation_limit"] == 12
+    assert compact["BOARD_COVERAGE_STATUS"] == "PROVEN_FOR_CONFIGURED_DISCOVERY_SOURCES"
+    assert compact["can_execute"] is False
