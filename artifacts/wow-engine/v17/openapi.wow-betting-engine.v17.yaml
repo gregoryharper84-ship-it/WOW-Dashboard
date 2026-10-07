@@ -299,6 +299,44 @@ paths:
         '200': {description: Research-only fitted spread challenger shadow result or typed blocker}
         '401': {description: Authentication failed}
         '422': {description: Invalid NCAAF exact-line shadow request}
+  /internal/v17/nfl-spread-forward-shadow:
+    post:
+      operationId: scoreWowV17NFLSpreadForwardShadow
+      x-openai-isConsequential: false
+      description: >-
+        Research-only NFL exact-line spread forward shadow using the existing
+        fitted margin distribution. Does not certify, promote, publish, rank,
+        or execute. Exact spread is a post-fit threshold and no market-implied
+        probability may substitute for the controlling fitted specialist.
+      security: [{actionBearer: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/NFLSpreadForwardShadowRequest'}
+      responses:
+        '200': {description: Research-only NFL fitted spread shadow result or typed blocker}
+        '401': {description: Authentication failed}
+        '422': {description: Invalid NFL exact-line shadow request}
+  /internal/v17/mlb-run-line-forward-shadow:
+    post:
+      operationId: scoreWowV17MLBRunLineForwardShadow
+      x-openai-isConsequential: false
+      description: >-
+        Research-only MLB exact run-line forward shadow using an immutable
+        pregame score snapshot and existing fitted margin distribution. Does
+        not certify, promote, publish, rank, or execute; no market-probability
+        substitution is permitted.
+      security: [{actionBearer: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/MLBRunLineForwardShadowRequest'}
+      responses:
+        '200': {description: Research-only MLB fitted run-line shadow result or typed blocker}
+        '401': {description: Authentication failed}
+        '422': {description: Invalid MLB exact run-line shadow request}
   /v17/prediction-receipts/lookup:
     post:
       operationId: lookupWowV17PredictionReceipts
@@ -761,6 +799,25 @@ components:
         away_team: {type: string, minLength: 1, maxLength: 160}
         home_spread: {type: number, exclusiveMinimum: -100, exclusiveMaximum: 100}
         season: {type: integer, minimum: 2000, maximum: 2100}
+    NFLSpreadForwardShadowRequest:
+      type: object
+      additionalProperties: false
+      required: [sport, event_id, event_start_time, home_team, away_team, home_spread]
+      properties:
+        sport: {type: string, enum: [NFL]}
+        event_id: {type: string, minLength: 1, maxLength: 128}
+        event_start_time: {type: string, format: date-time}
+        home_team: {type: string, minLength: 1, maxLength: 160}
+        away_team: {type: string, minLength: 1, maxLength: 160}
+        home_spread: {type: number, exclusiveMinimum: -30, exclusiveMaximum: 30}
+    MLBRunLineForwardShadowRequest:
+      type: object
+      additionalProperties: false
+      required: [sport, score_snapshot_id, home_run_line]
+      properties:
+        sport: {type: string, enum: [MLB]}
+        score_snapshot_id: {type: string, minLength: 1, maxLength: 128}
+        home_run_line: {type: number, exclusiveMinimum: -10, exclusiveMaximum: 10}
     RecommendationBatch:
       type: object
       additionalProperties: true

@@ -66,12 +66,12 @@ def test_packet_contains_single_domain_action_contract_without_secrets():
 
     # Keep this dedicated sync workflow dependency-free. Full YAML/OpenAPI
     # validation runs in the protected backend regression suite.
-    assert schema_text.count("operationId:") == module.REQUIRED_OPERATION_COUNT == 24
-    assert manifest["action_operation_count"] == 24
+    assert schema_text.count("operationId:") == module.REQUIRED_OPERATION_COUNT == 26
+    assert manifest["action_operation_count"] == 26
     assert manifest["action_schema_installation_surface"] == "SINGLE_CUSTOM_ACTION_DOMAIN"
     assert manifest["action_schema_domain"] == "wow-governed-probability-engine.onrender.com"
     assert manifest["run_control_installation_surface"] == "MERGED_INTO_CANONICAL_ACTION_SCHEMA"
-    assert "IMPORT_SINGLE_CANONICAL_ACTION_SCHEMA_WITH_24_OPERATIONS" in manifest["acceptance_required"]
+    assert "IMPORT_SINGLE_CANONICAL_ACTION_SCHEMA_WITH_26_OPERATIONS" in manifest["acceptance_required"]
     assert "FRESH_CHAT_SUBMIT_AND_POLL_DURABLE_WOW_V17_DAILY_SNAPSHOT" in manifest["acceptance_required"]
     assert "FRESH_CHAT_SCORE_WOW_V17_SPREAD_FORWARD_SHADOW" in manifest["acceptance_required"]
     assert "FRESH_CHAT_SUBMIT_AND_POLL_DURABLE_WOW_V17_NFL_PICKEM_BOARD" in manifest["acceptance_required"]
@@ -107,6 +107,45 @@ def test_spread_forward_shadow_action_is_closed_ncaaf_only_and_research_only():
     assert "event_start_time: {type: string, format: date-time}" in request
     assert "home_spread: {type: number, exclusiveMinimum: -100, exclusiveMaximum: 100}" in request
     assert "season: {type: integer, minimum: 2000, maximum: 2100}" in request
+
+
+def test_nfl_spread_and_mlb_run_line_actions_are_exposed_research_only():
+    schema_text = SCHEMA.read_text(encoding="utf-8")
+
+    nfl_start = schema_text.index("  /internal/v17/nfl-spread-forward-shadow:\n")
+    mlb_start = schema_text.index("  /internal/v17/mlb-run-line-forward-shadow:\n", nfl_start)
+    lookup_start = schema_text.index("  /v17/prediction-receipts/lookup:\n", mlb_start)
+    nfl_route = schema_text[nfl_start:mlb_start]
+    mlb_route = schema_text[mlb_start:lookup_start]
+
+    assert "operationId: scoreWowV17NFLSpreadForwardShadow" in nfl_route
+    assert "x-openai-isConsequential: false" in nfl_route
+    assert "schema: {$ref: '#/components/schemas/NFLSpreadForwardShadowRequest'}" in nfl_route
+    assert "Does not certify, promote, publish, rank" in nfl_route
+
+    assert "operationId: scoreWowV17MLBRunLineForwardShadow" in mlb_route
+    assert "x-openai-isConsequential: false" in mlb_route
+    assert "schema: {$ref: '#/components/schemas/MLBRunLineForwardShadowRequest'}" in mlb_route
+    assert "no market-probability" in mlb_route
+
+    nfl_request_start = schema_text.index("    NFLSpreadForwardShadowRequest:\n")
+    mlb_request_start = schema_text.index("    MLBRunLineForwardShadowRequest:\n", nfl_request_start)
+    rec_start = schema_text.index("    RecommendationBatch:\n", mlb_request_start)
+    nfl_request = schema_text[nfl_request_start:mlb_request_start]
+    mlb_request = schema_text[mlb_request_start:rec_start]
+
+    assert "additionalProperties: false" in nfl_request
+    assert "required: [sport, event_id, event_start_time, home_team, away_team, home_spread]" in nfl_request
+    assert "sport: {type: string, enum: [NFL]}" in nfl_request
+    assert "home_spread: {type: number, exclusiveMinimum: -30, exclusiveMaximum: 30}" in nfl_request
+
+    assert "additionalProperties: false" in mlb_request
+    assert "required: [sport, score_snapshot_id, home_run_line]" in mlb_request
+    assert "sport: {type: string, enum: [MLB]}" in mlb_request
+    assert "home_run_line: {type: number, exclusiveMinimum: -10, exclusiveMaximum: 10}" in mlb_request
+
+    assert "FRESH_CHAT_SCORE_WOW_V17_NFL_SPREAD_FORWARD_SHADOW" in module.build_packet()[1]["acceptance_required"]
+    assert "FRESH_CHAT_SCORE_WOW_V17_MLB_RUN_LINE_FORWARD_SHADOW" in module.build_packet()[1]["acceptance_required"]
 
 
 def test_nfl_pickem_action_uses_durable_submit_poll_in_single_canonical_domain():
