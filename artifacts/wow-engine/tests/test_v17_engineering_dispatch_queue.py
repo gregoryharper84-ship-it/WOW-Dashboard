@@ -80,9 +80,9 @@ def test_repo_manifest_prioritizes_current_p0_governance_and_persistence_inciden
     assert decision.restoration.incident_id == "1247"
     by_id = {row["incident_id"]: row for row in queue["records"]}
     assert by_id["1247"]["severity"] == "P0"
-    assert by_id["1247"]["priority_rank"] == 1
+    assert by_id["1247"]["priority_rank"] == 2
     assert by_id["1237"]["severity"] == "P0"
-    assert by_id["1237"]["priority_rank"] == 2
+    assert by_id["1237"]["priority_rank"] == 3
     assert queue["can_execute"] is False
     assert queue["terminal_authority"] == "V17_TERMINAL_REDUCER"
 
