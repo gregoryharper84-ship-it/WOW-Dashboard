@@ -1,5 +1,6 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
+from v17.scout_intelligence_dossier import build_scout_dossier
 from v17.scout_research_promotion import evaluate_candidate, promote_handoff
 
 NOW = datetime(2026, 9, 14, 14, 0, tzinfo=timezone.utc)
@@ -141,6 +142,28 @@ def test_high_impact_confirmation_requirement_is_enforced():
     assert out["required_domain_coverage"]["starter"] is False
     assert "starter" in out["missing_required_domains"]
     assert out["research_status"] != "RESEARCH_INTEREST_HIGH"
+
+
+def test_dossier_dynamic_freshness_is_authoritative_for_promotion():
+    domains = complete_mlb_domains()
+    domains["starter"] = [
+        domain(
+            "LEAGUE_OFFICIAL",
+            "mlb-official",
+            captured=(NOW - timedelta(minutes=40)).isoformat(),
+        )
+    ]
+    row = candidate(evidence=[market()], domains=domains)
+    row["commence_time"] = (NOW + timedelta(minutes=20)).isoformat()
+    row["scout_dossier"] = build_scout_dossier(row, now=NOW)
+
+    out = evaluate_candidate(row, now=NOW)
+
+    assert out["required_domain_coverage"]["starter"] is False
+    assert "starter" in out["missing_required_domains"]
+    assert out["research_status"] != "RESEARCH_INTEREST_HIGH"
+    assert out["probability"] is None
+    assert out["can_execute"] is False
 
 
 def test_material_conflict_quarantines_even_with_complete_evidence():
