@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException
 
-from mlb_event_specialist_v16 import ProspectiveModelUnavailable, _required_numeric_inputs
+from mlb_event_specialist_v16 import ProspectiveModelUnavailable, _feature_map, _required_numeric_inputs
 from mlb_event_prospective_runtime import _typed_prospective_failure
 from v17 import mlb_event_bridge_repair as bridge
 from v17.mlb_prospective_failure_taxonomy import (
@@ -81,6 +81,38 @@ def test_null_required_numeric_input_is_typed_before_float_conversion():
     assert failure.status_code == 422
     assert failure.blocker_code == "SPORT_SPECIFIC_MODEL_INPUTS_INSUFFICIENT"
     assert failure.can_execute is False
+
+
+
+@pytest.mark.parametrize("bad_value", [float("nan"), float("inf"), -float("inf"), True, False])
+def test_nonfinite_or_boolean_mlb_numeric_evidence_is_input_blocked(bad_value):
+    with pytest.raises(ProspectiveModelUnavailable) as caught:
+        _required_numeric_inputs(
+            {"home_mu": bad_value, "away_mu": 4.2},
+            ("home_mu", "away_mu"),
+            source="score",
+        )
+    assert str(caught.value) == "prospective_required_numeric_input_invalid:score.home_mu"
+    failure = classify_mlb_prospective_failure(caught.value)
+    assert failure.code == MODEL_INPUTS_INSUFFICIENT
+    assert failure.status_code == 422
+    assert failure.can_execute is False
+
+
+@pytest.mark.parametrize("bad_value", [float("nan"), float("inf"), -float("inf")])
+def test_nonfinite_feature_vector_fails_closed_as_input(bad_value):
+    with pytest.raises(ProspectiveModelUnavailable, match="feature_vector_invalid") as caught:
+        _feature_map({"feature_names": ["opp_starter_era"], "feature_vector": [bad_value]})
+    failure = classify_mlb_prospective_failure(caught.value)
+    assert failure.code == MODEL_INPUTS_INSUFFICIENT
+    assert failure.can_execute is False
+
+
+def test_calibration_training_count_has_required_numeric_preflight():
+    source = (Path(__file__).resolve().parents[1] / "mlb_event_specialist_v16.py").read_text()
+    assert '("intercept_shift", "prior_games"), source="calibration"' in source
+    assert 'cal_numeric["prior_games"].is_integer()' in source
+    assert '"calibration_training_n": int(cal_numeric["prior_games"])' in source
 
 
 def test_unknown_invoked_scorer_exception_fails_as_scorer_not_unavailable():
