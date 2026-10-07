@@ -28,6 +28,7 @@ from typing import Any
 
 from v17 import free_core_source_policy as source_policy
 from v17 import market_evidence_native_live as live
+from v17 import market_optional_qualification as market_optional
 from v17 import market_evidence_sources as sources
 
 CAN_EXECUTE = False
@@ -193,12 +194,92 @@ def _market_from_event(
     }
 
 
+
+def _norm_participant(value: Any) -> str:
+    return "".join(ch for ch in str(value or "").casefold() if ch.isalnum())
+
+
+def resolve_user_market_context(req: Any) -> dict[str, Any] | None:
+    """Return non-model user market identity without deriving probability.
+
+    A supplied line/price is sufficient to avoid vendor discovery, but it is
+    never converted into no-vig/model probability and cannot alter the fitted
+    sporting score. Invalid explicit input fails closed instead of spending paid
+    quota to silently replace what the caller supplied.
+    """
+    payload = getattr(req, "market_input", None)
+    if not payload:
+        return None
+    try:
+        market = market_optional.normalize_user_market_input(dict(payload))
+    except Exception as exc:  # typed validation boundary
+        return {
+            "status": "USER_MARKET_INPUT_INVALID",
+            "provider": "USER_SUPPLIED",
+            "reason_code": str(getattr(exc, "args", [type(exc).__name__])[0]),
+            "market_probability_derived": False,
+            "prediction_authority": False,
+            "sporting_probability_authority": False,
+            "market_role_evidence_only": True,
+            "global_slate_failure": False,
+            "can_execute": False,
+        }
+
+    if market.market_family != "MONEYLINE":
+        return {
+            "status": "USER_MARKET_INPUT_INVALID",
+            "provider": "USER_SUPPLIED",
+            "reason_code": "TEAM_EVENT_MARKET_INPUT_MUST_BE_MONEYLINE",
+            "market_probability_derived": False,
+            "prediction_authority": False,
+            "sporting_probability_authority": False,
+            "market_role_evidence_only": True,
+            "global_slate_failure": False,
+            "can_execute": False,
+        }
+
+    home = str(getattr(req, "home_team", "") or "")
+    away = str(getattr(req, "away_team", "") or "")
+    selection_norm = _norm_participant(market.selection)
+    if selection_norm not in {_norm_participant(home), _norm_participant(away)}:
+        return {
+            "status": "USER_MARKET_INPUT_INVALID",
+            "provider": "USER_SUPPLIED",
+            "reason_code": "USER_MARKET_SELECTION_IDENTITY_MISMATCH",
+            "market_probability_derived": False,
+            "prediction_authority": False,
+            "sporting_probability_authority": False,
+            "market_role_evidence_only": True,
+            "global_slate_failure": False,
+            "can_execute": False,
+        }
+
+    return {
+        "status": "USER_SUPPLIED_MARKET_INPUT",
+        "provider": "USER_SUPPLIED",
+        "market_input": market.as_dict(),
+        "selection": market.selection,
+        "american_odds": market.american_odds,
+        "timestamp": market.captured_at,
+        "market_probability_derived": False,
+        "prediction_authority": False,
+        "sporting_probability_authority": False,
+        "market_role_evidence_only": True,
+        "paid_provider_calls_required": False,
+        "global_slate_failure": False,
+        "can_execute": False,
+    }
+
+
 def resolve_rundown_market_context(req: Any, *, opener: Any = None) -> dict[str, Any]:
     """Resolve optional post-score market evidence through an ordered hierarchy.
 
     Sporting probability has already completed before this function is invoked.
     Provider failures are evidence-only and may not rewrite the model terminal.
     """
+    user_context = resolve_user_market_context(req)
+    if user_context is not None:
+        return user_context
     if not enabled():
         return {"status": "DISABLED", "provider": BRIDGE_SOURCE, "can_execute": False}
     sport_key = _sport_key(req)
@@ -476,4 +557,5 @@ __all__ = [
     "enabled",
     "install_llp_rundown_market_bridge",
     "resolve_rundown_market_context",
+    "resolve_user_market_context",
 ]
