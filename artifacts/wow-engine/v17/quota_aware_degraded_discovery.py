@@ -115,7 +115,7 @@ def _before_paid_call(
     if not allowed:
         context["paid_provider_calls_blocked_by_source_policy"] += 1
         state["calls_blocked"] += 1
-        state["status"] = source_policy.source_mode()
+        state["status"] = DISABLED_BY_POLICY
         state["reason_code"] = policy_blocker
         return context, state, (
             f"{str(provider).upper()}_SOURCE_POLICY_BLOCK:{policy_blocker}"
