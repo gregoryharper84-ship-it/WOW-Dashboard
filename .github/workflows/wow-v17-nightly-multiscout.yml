@@ -141,6 +141,7 @@ jobs:
           test_v17_scout_board_refresh_fail_closed.py
           tests/test_v17_sport_scout_teams.py
           tests/test_v17_market_evidence_sources.py
+          tests/test_v17_market_evidence_live_native.py
           tests/test_v17_market_evidence_acceptance.py
           tests/test_v17_market_evidence_provider_contracts.py
       - name: Verify odds proxy extension
@@ -440,20 +441,39 @@ jobs:
           from pathlib import Path
           root = Path(os.environ["RUNNER_TEMP"]) / "wow-multiscout"
           source = root / "model-handoff.json"
-          receipt_path = root / "auto-advance-receipt.json"
+          auto_path = root / "auto-advance-receipt.json"
+          terminal_path = root / "terminal-acceptance-receipt.json"
           out = root / "summary.md"
           if not source.exists():
               out.write_text("# WOW V17 Nightly Multi-Scout\n\nNo handoff artifact was produced.\n")
               raise SystemExit(0)
           data = json.loads(source.read_text())
-          receipt = json.loads(receipt_path.read_text()) if receipt_path.exists() else {}
+          auto_receipt = json.loads(auto_path.read_text()) if auto_path.exists() else {}
+          terminal_receipt = json.loads(terminal_path.read_text()) if terminal_path.exists() else {}
+          resolved = terminal_receipt.get("resolved_run_summary")
+          receipt = resolved if isinstance(resolved, dict) else auto_receipt
+          enqueue_receipt = auto_receipt.get("enqueue_receipt")
+          enqueue_receipt = enqueue_receipt if isinstance(enqueue_receipt, dict) else {}
+          mapping = enqueue_receipt.get("mapping")
+          mapping = mapping if isinstance(mapping, dict) else auto_receipt.get("mapping", {})
           h = data.get("model_handoff", {})
           sports = sorted({r.get("sport") for r in data.get("coverage", []) if r.get("scope") == "sport" and r.get("status") == "SCANNED"})
           books = data.get("sportsbook_coverage", {}).get("bookmakers_seen", [])
           delivery = data.get("delivery", {})
           recon = data.get("reconciliation", {})
-          advance_recon = receipt.get("reconciliation", {})
-          mapping = receipt.get("mapping", {})
+          if isinstance(resolved, dict):
+              downstream_completed = int(receipt.get("rows_completed") or 0)
+              downstream_blocked = int(receipt.get("rows_rejected") or 0) + int(receipt.get("rows_held") or 0)
+              downstream_reconciled = receipt.get("reconciliation_pass") is True
+              receipt_code = "DURABLE_HANDOFF_LEDGER"
+          else:
+              advance_recon = auto_receipt.get("reconciliation", {})
+              advance_recon = advance_recon if isinstance(advance_recon, dict) else {}
+              downstream_completed = int(advance_recon.get("completed_downstream_rows") or 0)
+              downstream_blocked = int(advance_recon.get("blocked_downstream_rows") or 0)
+              downstream_reconciled = advance_recon.get("response_reconciliation_pass") is True
+              receipt_code = auto_receipt.get("code") or "NOT_RUN"
+          terminal_status = terminal_receipt.get("status") or "NOT_RUN"
           scout_team_ids = sorted({r.get("scout_team_id") for lane in ("team_event_candidates", "prop_candidates") for r in h.get(lane, []) if r.get("scout_team_id")})
           lines = [
               "# WOW V17 Nightly Multi-Scout",
@@ -462,7 +482,8 @@ jobs:
               f"- Research run ID: `{data.get('research_run_id')}`",
               f"- Scout status: `{data.get('status')}`",
               f"- Governed auto-advance status: `{receipt.get('status') or 'NOT_RUN'}`",
-              f"- Governed auto-advance code: `{receipt.get('code') or 'NOT_RUN'}`",
+              f"- Governed auto-advance code: `{receipt_code}`",
+              f"- Terminal acceptance status: `{terminal_status}`",
               f"- Generated: `{data.get('generated_at')}`",
               f"- GitHub run: {delivery.get('github_run_url') or 'unavailable'}",
               f"- Recoverable artifact: `{delivery.get('artifact_name')}`",
@@ -478,9 +499,9 @@ jobs:
               f"- Prop mapping rejects: **{len(mapping.get('rejected_prop_rows', []))}**",
               f"- Team/event objective rows sent to LLP lane: **{mapping.get('downstream_team_objective_rows', 0)}**",
               f"- Team/event mapping rejects: **{len(mapping.get('rejected_team_event_rows', []))}**",
-              f"- Downstream completed rows: **{advance_recon.get('completed_downstream_rows', 0)}**",
-              f"- Downstream governed holds/rejects: **{advance_recon.get('blocked_downstream_rows', 0)}**",
-              f"- Downstream reconciliation pass: **{advance_recon.get('response_reconciliation_pass', False)}**",
+              f"- Downstream completed rows: **{downstream_completed}**",
+              f"- Downstream governed holds/rejects: **{downstream_blocked}**",
+              f"- Downstream reconciliation pass: **{downstream_reconciled}**",
               "- Research ceiling: RESEARCH_INTEREST",
               "- Upset probability authority: LLP only",
               "- Scout/market probability authority: none",

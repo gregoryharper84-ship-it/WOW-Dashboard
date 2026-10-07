@@ -1,5 +1,6 @@
 import io
 import json
+from pathlib import Path
 from types import SimpleNamespace
 from urllib.error import HTTPError
 
@@ -201,3 +202,19 @@ def test_scout_governance_never_promotes_sportsbook_probability():
     assert '"route": "WOW_PROP_LANE"' in source
     assert '"sportsbook_implied_probability_is_model_probability": False' in source
     assert '"can_execute": False' in source
+
+
+def test_human_summary_uses_terminal_durable_ledger_not_async_progress_snapshot():
+    workflow = (
+        Path(__file__).resolve().parents[2]
+        / ".github"
+        / "workflows"
+        / "wow-v17-nightly-multiscout.yml"
+    ).read_text(encoding="utf-8")
+    assert 'terminal_path = root / "terminal-acceptance-receipt.json"' in workflow
+    assert 'resolved = terminal_receipt.get("resolved_run_summary")' in workflow
+    assert 'receipt = resolved if isinstance(resolved, dict) else auto_receipt' in workflow
+    assert 'enqueue_receipt = auto_receipt.get("enqueue_receipt")' in workflow
+    assert 'downstream_completed = int(receipt.get("rows_completed") or 0)' in workflow
+    assert 'downstream_reconciled = receipt.get("reconciliation_pass") is True' in workflow
+    assert 'f"- Terminal acceptance status: `{terminal_status}`"' in workflow

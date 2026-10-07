@@ -266,7 +266,7 @@ def _teams(event: dict[str, Any]) -> tuple[str | None, str | None]:
         for team in source:
             if not isinstance(team, dict):
                 continue
-            name = team.get("name") or team.get("team_name") or team.get("full_name")
+            name = team.get("full_name") or team.get("team_name") or team.get("name")
             if not name:
                 continue
             side = str(team.get("type") or team.get("side") or team.get("participant_type") or "").lower()
@@ -280,7 +280,7 @@ def _teams(event: dict[str, Any]) -> tuple[str | None, str | None]:
 
 
 def _participant_name(participant: dict[str, Any], home: str | None, away: str | None) -> str | None:
-    name = participant.get("name") or participant.get("full_name") or participant.get("team_name")
+    name = participant.get("full_name") or participant.get("team_name") or participant.get("name")
     if name:
         return str(name)
     side = str(participant.get("type") or participant.get("side") or participant.get("participant_type") or "").lower()
