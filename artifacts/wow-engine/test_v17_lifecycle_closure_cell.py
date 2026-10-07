@@ -1,5 +1,6 @@
 import importlib.util
 from pathlib import Path
+import sys
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -10,6 +11,7 @@ def _module():
     spec = importlib.util.spec_from_file_location("engineering_agent_team", MODULE_PATH)
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
+    sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
 
