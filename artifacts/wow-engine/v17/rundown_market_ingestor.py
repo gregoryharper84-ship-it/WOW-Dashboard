@@ -25,6 +25,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
+from v17 import free_core_source_policy as source_policy
 from v17 import market_evidence_sources as sources
 from v17 import rundown_market_ledger as ledger
 
@@ -86,6 +87,12 @@ def _request_json(
     opener: Callable[..., Any] | None = None,
 ) -> TransportResult:
     """Fetch one V2 resource while preserving only non-secret entitlement headers."""
+    if source_policy.free_core_enabled():
+        return TransportResult(
+            False,
+            code=source_policy.BLOCK_FREE_CORE,
+            observed_at=_now_iso(),
+        )
     provider = sources.PROVIDERS[PROVIDER]
     api_key = sources._api_key(provider)
     if not api_key:
