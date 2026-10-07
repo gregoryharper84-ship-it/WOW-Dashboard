@@ -1,9 +1,13 @@
 """Fail-closed automatic evidence hydration for certified WNBA prop routes.
 
-Official/current sources only:
+Primary sporting evidence:
 * public WNBA CDN schedule (current-season ScheduleLeagueV2 payload),
 * stats.wnba.com CommonTeamRoster + LeagueGameLog (LeagueID=10),
 * WNBA official timestamped injury-report PDFs hosted by NBA CMS.
+
+When CommonTeamRoster transport is unavailable, ESPN current roster data may
+supply event-team/player identity only. That identity must be reconciled back to
+one unique WNBA LeagueGameLog PLAYER_ID before the snapshot is model evidence.
 
 The hydrator owns acquisition only. It does not calculate probability, certify a
 model, calibrate, persist, approve, price, or execute. Any ambiguous event,
@@ -25,11 +29,17 @@ from zoneinfo import ZoneInfo
 import httpx
 from pypdf import PdfReader
 
+from v17.wnba_roster_identity_fallback import (
+    PROVIDER_ID as ESPN_ROSTER_IDENTITY_PROVIDER,
+    WNBARosterIdentityFallbackError,
+    fetch_espn_wnba_team_roster,
+)
+
 
 WNBA_SCHEDULE_URL = "https://cdn.wnba.com/static/json/staticData/scheduleLeagueV2.json"
 WNBA_STATS_BASE = "https://stats.wnba.com/stats"
 WNBA_INJURY_BASE = "https://ak-static.cms.nba.com/referee/wnba_injury"
-PROVIDER_ID = "WNBA_OFFICIAL_STATS_CDN_INJURY_V1"
+PROVIDER_ID = "WNBA_OFFICIAL_STATS_CDN_INJURY_V2"
 EVIDENCE_VERSION = "PROP_EVIDENCE_V1"
 HTTP_TIMEOUT_SECONDS = 10.0
 HTTP_ATTEMPTS = 2
@@ -268,14 +278,56 @@ def _team_node(game: Mapping[str, Any], side: str) -> dict[str, Any]:
     return dict(node)
 
 
-def _roster(team_id: str, season: int, *, http_get: Callable[..., Any]) -> list[dict[str, Any]]:
-    payload = _request(
-        f"{WNBA_STATS_BASE}/commonteamroster",
-        params={"LeagueID": "10", "Season": str(season), "TeamID": str(team_id)},
-        headers=_stats_headers(),
-        http_get=http_get,
-    )
-    return _result_rows(payload, "CommonTeamRoster")
+def _roster(
+    team_id: str,
+    season: int,
+    *,
+    team: Mapping[str, Any] | None = None,
+    http_get: Callable[..., Any],
+) -> list[dict[str, Any]]:
+    """Resolve current roster with official primary and typed identity-only fallback."""
+    primary_error: WNBAPropHydrationError | None = None
+    try:
+        payload = _request(
+            f"{WNBA_STATS_BASE}/commonteamroster",
+            params={"LeagueID": "10", "Season": str(season), "TeamID": str(team_id)},
+            headers=_stats_headers(),
+            http_get=http_get,
+        )
+        rows = _result_rows(payload, "CommonTeamRoster")
+        if rows:
+            return [
+                {**row, "_WOW_ROSTER_SOURCE": "WNBA_STATS_COMMON_TEAM_ROSTER"}
+                for row in rows
+            ]
+        primary_error = WNBAPropHydrationError(
+            "WNBA_COMMON_TEAM_ROSTER_EMPTY",
+            "official CommonTeamRoster returned no rows",
+            detail={"team_id": str(team_id), "season": int(season)},
+        )
+    except WNBAPropHydrationError as exc:
+        primary_error = exc
+
+    if not isinstance(team, Mapping):
+        raise primary_error
+
+    try:
+        return fetch_espn_wnba_team_roster(
+            team,
+            http_get=http_get,
+            timeout_seconds=HTTP_TIMEOUT_SECONDS,
+        )
+    except WNBARosterIdentityFallbackError as exc:
+        raise WNBAPropHydrationError(
+            "WNBA_ROSTER_IDENTITY_SOURCES_UNAVAILABLE",
+            "neither CommonTeamRoster nor the typed ESPN roster identity fallback was usable",
+            detail={
+                "team_id": str(team_id),
+                "season": int(season),
+                "primary_code": getattr(primary_error, "code", type(primary_error).__name__),
+                "fallback_code": exc.code,
+            },
+        ) from exc
 
 
 def _resolve_player_and_team(
@@ -291,14 +343,14 @@ def _resolve_player_and_team(
         team_id = str(team.get("teamId") or "").strip()
         if not team_id:
             raise WNBAPropHydrationError("WNBA_SCHEDULE_TEAM_INVALID", "teamId missing")
-        rows = _roster(team_id, season, http_get=http_get)
+        rows = _roster(team_id, season, team=team, http_get=http_get)
         exact = [row for row in rows if _name_key(row.get("PLAYER")) == _name_key(player)]
         for row in exact:
             matches.append({"side": side, "team": team, "roster": row})
     if len(matches) != 1:
         raise WNBAPropHydrationError(
             "PROP_PLAYER_IDENTITY_UNRESOLVED",
-            "current official WNBA rosters did not produce exactly one event-team player match",
+            "current WNBA roster identity sources did not produce exactly one event-team player match",
             detail={"player": player, "match_n": len(matches)},
         )
     match = matches[0]
@@ -315,7 +367,7 @@ def _player_game_log(
     event_start: datetime,
     *,
     http_get: Callable[..., Any],
-) -> tuple[list[float], list[dict[str, Any]]]:
+) -> tuple[list[float], list[dict[str, Any]], str]:
     # Keep LeagueID first: the 2026 WNBA Stats endpoint is query-order-sensitive.
     payload = _request(
         f"{WNBA_STATS_BASE}/leaguegamelog",
@@ -334,13 +386,31 @@ def _player_game_log(
         http_get=http_get,
     )
     rows = _result_rows(payload, "LeagueGameLog")
+    requested_player_id = str(player_id or "").strip()
+    effective_player_id = requested_player_id
+    if not effective_player_id:
+        candidate_ids = {
+            str(row.get("PLAYER_ID") or row.get("PERSON_ID") or "").strip()
+            for row in rows
+            if _name_key(row.get("PLAYER_NAME") or row.get("PLAYER")) == _name_key(player_name)
+            and str(row.get("PLAYER_ID") or row.get("PERSON_ID") or "").strip()
+        }
+        if len(candidate_ids) != 1:
+            raise WNBAPropHydrationError(
+                "PROP_PLAYER_IDENTITY_UNRESOLVED",
+                "identity-only roster fallback did not reconcile to exactly one WNBA Stats player ID",
+                detail={"player": player_name, "wnba_stats_player_id_n": len(candidate_ids)},
+            )
+        effective_player_id = next(iter(candidate_ids))
+
     selected: list[dict[str, Any]] = []
     for row in rows:
         row_pid = str(row.get("PLAYER_ID") or row.get("PERSON_ID") or "").strip()
         row_name = row.get("PLAYER_NAME") or row.get("PLAYER")
-        if row_pid and row_pid != str(player_id):
-            continue
-        if not row_pid and _name_key(row_name) != _name_key(player_name):
+        if row_pid:
+            if row_pid != effective_player_id:
+                continue
+        elif _name_key(row_name) != _name_key(player_name):
             continue
         raw_date = str(row.get("GAME_DATE") or "")[:10]
         try:
@@ -387,7 +457,7 @@ def _player_game_log(
         }
         for row in recent
     ]
-    return game_log, box
+    return game_log, box, effective_player_id
 
 
 def _pdf_report_timestamp(candidate: datetime) -> tuple[str, datetime]:
@@ -547,9 +617,10 @@ def hydrate_wnba_prop_evidence(
     team = resolved["team"]
     opp = resolved["opponent"]
     official_name = str(roster.get("PLAYER") or normalized_player)
-    player_id = str(roster.get("PLAYER_ID") or "").strip()
-    if not player_id:
-        raise WNBAPropHydrationError("PROP_PLAYER_IDENTITY_UNRESOLVED", "official WNBA roster player ID missing")
+    roster_source = str(
+        roster.get("_WOW_ROSTER_SOURCE") or "WNBA_STATS_COMMON_TEAM_ROSTER"
+    ).strip()
+    roster_player_id = str(roster.get("PLAYER_ID") or "").strip()
 
     opponent_name = " ".join(
         str(opp.get("teamCity") or "").split() + str(opp.get("teamName") or "").split()
@@ -562,14 +633,20 @@ def hydrate_wnba_prop_evidence(
             detail={"requested_opponent": opponent, "official_opponent": opponent_name, "official_tricode": opponent_tricode},
         )
 
-    game_log, box_score_log = _player_game_log(
-        player_id,
+    game_log, box_score_log, player_id = _player_game_log(
+        roster_player_id,
         official_name,
         stat_column,
         event_start.year,
         event_start,
         http_get=http_get,
     )
+    if roster_player_id and roster_player_id != player_id:
+        raise WNBAPropHydrationError(
+            "PROP_PLAYER_IDENTITY_CONFLICT",
+            "roster and WNBA LeagueGameLog player IDs disagreed",
+            detail={"player": official_name},
+        )
 
     away = _team_node(game, "awayTeam")
     home = _team_node(game, "homeTeam")
@@ -590,10 +667,20 @@ def hydrate_wnba_prop_evidence(
     timestamp = captured.isoformat()
     source_timestamps = {
         "WNBA_CDN_SCHEDULE_CURRENT": timestamp,
-        "WNBA_STATS_COMMON_TEAM_ROSTER": timestamp,
+        roster_source: timestamp,
         "WNBA_STATS_LEAGUE_GAME_LOG": timestamp,
         "WNBA_OFFICIAL_INJURY_REPORT": injury_ts.astimezone(timezone.utc).isoformat(),
     }
+    roster_identity_quality = (
+        "PRIMARY_OFFICIAL"
+        if roster_source == "WNBA_STATS_COMMON_TEAM_ROSTER"
+        else "RECONCILED_IDENTITY_ONLY_FALLBACK"
+    )
+    roster_source_description = (
+        "WNBA Stats CommonTeamRoster"
+        if roster_source == "WNBA_STATS_COMMON_TEAM_ROSTER"
+        else "ESPN current WNBA roster identity reconciled to WNBA Stats LeagueGameLog"
+    )
     if source_capture_timestamp:
         source_timestamps[f"INPUT_CAPTURE_{str(source_label).strip().upper()}"] = source_capture_timestamp
 
@@ -605,8 +692,14 @@ def hydrate_wnba_prop_evidence(
         "role_status": {
             "status": "CURRENT_ROSTER_CONFIRMED_NO_BLOCKING_INJURY_DESIGNATION",
             "role": str(roster.get("POSITION") or "WNBA_ROTATION_PLAYER"),
-            "confirmation_strength": "OFFICIAL_ROSTER_PLUS_FRESH_OFFICIAL_INJURY_REPORT",
+            "confirmation_strength": (
+                "OFFICIAL_ROSTER_PLUS_FRESH_OFFICIAL_INJURY_REPORT"
+                if roster_identity_quality == "PRIMARY_OFFICIAL"
+                else "RECONCILED_ROSTER_IDENTITY_PLUS_OFFICIAL_HISTORY_AND_INJURY_REPORT"
+            ),
             "player_id": player_id,
+            "roster_source_provider": roster_source,
+            "roster_identity_quality": roster_identity_quality,
             "team_id": str(team.get("teamId") or ""),
             "team": team_name,
             "team_tricode": str(team.get("teamTricode") or ""),
@@ -618,7 +711,11 @@ def hydrate_wnba_prop_evidence(
             "availability": availability["availability"],
             "injury_designation": availability["designation"],
             "injury_report_url": injury_url,
-            "source": "WNBA official CDN schedule + WNBA Stats roster + official WNBA injury report",
+            "source": (
+                "WNBA official CDN schedule + "
+                + roster_source_description
+                + " + WNBA Stats LeagueGameLog + official WNBA injury report"
+            ),
         },
         "role_timestamp": timestamp,
         "opportunity_ledger": {
@@ -630,11 +727,18 @@ def hydrate_wnba_prop_evidence(
             "l10_minutes_mean": sum(l10_minutes) / len(l10_minutes),
             "l5_minutes_mean": sum(l10_minutes[:5]) / 5.0,
             "current_roster_confirmation": "PASS",
+            "roster_identity_quality": roster_identity_quality,
+            "roster_source_provider": roster_source,
             "availability_gate": "PASS",
             "availability_policy": "BLOCK_ANY_EXPLICIT_INJURY_REPORT_DESIGNATION_UNLESS_AVAILABLE",
         },
         "source_timestamps": source_timestamps,
         "evidence_version": EVIDENCE_VERSION,
-        "rate_provenance": "Official WNBA LeagueGameLog player rows; current event/team from public WNBA CDN schedule; roster from CommonTeamRoster; availability from official WNBA injury-report PDF",
+        "rate_provenance": (
+            "Official WNBA LeagueGameLog player rows; current event/team from public WNBA CDN schedule; "
+            + "roster identity from "
+            + roster_source_description
+            + "; availability from official WNBA injury-report PDF"
+        ),
         "hydration_provider": PROVIDER_ID,
     }
