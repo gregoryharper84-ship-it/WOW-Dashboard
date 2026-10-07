@@ -32,7 +32,7 @@ def all_green_observed(registry):
             "typed_failures_preserved": True,
             "self_verification_detected": False,
         },
-        "work_items": [],
+        "ecosystem_work_items": [],
     }
 
 
@@ -206,7 +206,7 @@ class EcosystemConductorTests(unittest.TestCase):
     def test_valid_active_work_item_is_conserved(self):
         registry = load_registry()
         observed = all_green_observed(registry)
-        observed["work_items"] = [work_item(registry)]
+        observed["ecosystem_work_items"] = [work_item(registry)]
 
         result = conductor.evaluate_ecosystem(registry, observed)
 
@@ -224,7 +224,7 @@ class EcosystemConductorTests(unittest.TestCase):
             next_owner=None,
             terminal_state=None,
         )
-        observed["work_items"] = [item]
+        observed["ecosystem_work_items"] = [item]
 
         result = conductor.evaluate_ecosystem(registry, observed)
 
@@ -235,7 +235,7 @@ class EcosystemConductorTests(unittest.TestCase):
     def test_blocked_work_item_requires_exact_blocking_reason(self):
         registry = load_registry()
         observed = all_green_observed(registry)
-        observed["work_items"] = [
+        observed["ecosystem_work_items"] = [
             work_item(
                 registry,
                 state="BLOCKED",
@@ -253,7 +253,7 @@ class EcosystemConductorTests(unittest.TestCase):
     def test_duplicate_work_item_ids_fail_conservation(self):
         registry = load_registry()
         observed = all_green_observed(registry)
-        observed["work_items"] = [
+        observed["ecosystem_work_items"] = [
             work_item(registry, work_item_id="same"),
             work_item(registry, work_item_id="same"),
         ]
@@ -270,7 +270,7 @@ class EcosystemConductorTests(unittest.TestCase):
         observed = all_green_observed(registry)
         item = work_item(registry)
         item["authority_domain"] = "ENGINEERING_IMPLEMENTATION"
-        observed["work_items"] = [item]
+        observed["ecosystem_work_items"] = [item]
 
         result = conductor.evaluate_ecosystem(registry, observed)
 
@@ -281,7 +281,7 @@ class EcosystemConductorTests(unittest.TestCase):
     def test_engineering_cannot_self_verify(self):
         registry = load_registry()
         observed = all_green_observed(registry)
-        observed["work_items"] = [
+        observed["ecosystem_work_items"] = [
             work_item(
                 registry,
                 current_owner="ENGINEERING_CLOSURE",
@@ -302,7 +302,7 @@ class EcosystemConductorTests(unittest.TestCase):
     def test_class_c_cannot_promote_without_independent_verification(self):
         registry = load_registry()
         observed = all_green_observed(registry)
-        observed["work_items"] = [
+        observed["ecosystem_work_items"] = [
             work_item(
                 registry,
                 current_owner="ENGINEERING_CLOSURE",
@@ -325,7 +325,7 @@ class EcosystemConductorTests(unittest.TestCase):
     def test_fixed_and_verified_requires_independent_verification(self):
         registry = load_registry()
         observed = all_green_observed(registry)
-        observed["work_items"] = [
+        observed["ecosystem_work_items"] = [
             work_item(
                 registry,
                 current_owner="ENGINEERING_CLOSURE",
