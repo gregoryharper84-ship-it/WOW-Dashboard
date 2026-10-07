@@ -33,6 +33,7 @@ def all_green_observed(registry):
             "self_verification_detected": False,
         },
         "ecosystem_work_items": [],
+        "evaluated_at": "2026-10-07T18:00:00+00:00",
     }
 
 
@@ -49,6 +50,8 @@ def work_item(
     verification_state="NOT_REQUIRED",
     required_verifier="NONE",
     promotion_state="NOT_APPLICABLE",
+    updated_at="2026-10-07T17:55:00+00:00",
+    lease_expires_at="2026-10-07T18:30:00+00:00",
 ):
     return {
         "work_item_id": work_item_id,
@@ -69,6 +72,10 @@ def work_item(
         "decision_right": "ROUTE_CANDIDATE",
         "required_verifier": required_verifier,
         "promotion_state": promotion_state,
+        "updated_at": updated_at,
+        "lease_expires_at": (
+            None if state == "TERMINATED" else lease_expires_at
+        ),
     }
 
 
@@ -320,6 +327,48 @@ class EcosystemConductorTests(unittest.TestCase):
         errors = result["work_conservation"]["invalid_items"][0]["errors"]
         self.assertTrue(
             any("Class C promotion requires VERIFIED" in error for error in errors)
+        )
+
+    def test_expired_active_ownership_lease_fails_closed(self):
+        registry = load_registry()
+        observed = all_green_observed(registry)
+        observed["ecosystem_work_items"] = [
+            work_item(
+                registry,
+                state="IN_PROGRESS",
+                next_owner="WOW_BETTING_ENGINE",
+                lease_expires_at="2026-10-07T17:59:59+00:00",
+            )
+        ]
+
+        result = conductor.evaluate_ecosystem(registry, observed)
+
+        self.assertEqual("SAFE_HOLD", result["ecosystem_status"])
+        errors = result["work_conservation"]["invalid_items"][0]["errors"]
+        self.assertTrue(any("ownership lease is expired" in error for error in errors))
+
+    def test_engineering_terminal_state_must_use_governed_closure_disposition(self):
+        registry = load_registry()
+        observed = all_green_observed(registry)
+        observed["ecosystem_work_items"] = [
+            work_item(
+                registry,
+                current_owner="ENGINEERING_CLOSURE",
+                next_owner=None,
+                state="TERMINATED",
+                terminal_state="DONE",
+                change_class="A",
+                verification_state="NOT_REQUIRED",
+                required_verifier="NONE",
+            )
+        ]
+
+        result = conductor.evaluate_ecosystem(registry, observed)
+
+        self.assertEqual("SAFE_HOLD", result["ecosystem_status"])
+        errors = result["work_conservation"]["invalid_items"][0]["errors"]
+        self.assertTrue(
+            any("not an allowed Engineering closure state" in error for error in errors)
         )
 
     def test_fixed_and_verified_requires_independent_verification(self):
