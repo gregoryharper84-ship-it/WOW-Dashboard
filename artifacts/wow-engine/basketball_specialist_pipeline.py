@@ -30,6 +30,7 @@ from basketball_team_event_specialist import (
     _sigmoid,
 )
 from calibration import phase_b_platt
+from v17.basketball_team_event_calibration_artifact import build_shadow_binary_calibration_artifact
 
 can_execute: bool = False
 
@@ -177,6 +178,17 @@ def fit_and_persist(
         provenance_complete=bool(provenance_complete),
     )
     calibrator_version = f"{sport}_TEAM_EVENT_PLATT_V1_{version_stamp}"
+    calibration_artifact, calibration_artifact_sha256 = build_shadow_binary_calibration_artifact(
+        sport=sport,
+        model_family=MODEL_FAMILY,
+        model_version=model_version,
+        calibration_version=calibrator_version,
+        raw_probabilities=raw,
+        outcomes=outcomes,
+        fold_assignments=folds,
+        timestamps=timestamps,
+        fit=calibration,
+    )
 
     artifact_payload = asdict(artifact)
     client.table("wow_basketball_team_event_model_artifacts").insert({
@@ -206,6 +218,8 @@ def fit_and_persist(
         "log_loss": calibration.metrics.log_loss,
         "ece": calibration.metrics.ece,
         "calibration_bias": calibration.metrics.calibration_bias,
+        "calibration_artifact_payload": calibration_artifact,
+        "calibration_artifact_sha256": calibration_artifact_sha256,
         "promoted": False, "active": False,
     }).execute()
 
@@ -232,6 +246,8 @@ def fit_and_persist(
         "holdout_brier": artifact.holdout_brier, "holdout_log_loss": artifact.holdout_log_loss,
         "holdout_accuracy": artifact.holdout_accuracy, "calibration_rows": len(raw),
         "calibration_status": calibration_status, "fit_decision": asdict(decision),
+        "calibration_artifact_sha256": calibration_artifact_sha256,
+        "calibration_artifact_certification_status": calibration_artifact["certification_status"],
         "persisted_status": persisted_status,
         "provenance_complete": bool(provenance_complete),
         "promotion_attempted": False,
