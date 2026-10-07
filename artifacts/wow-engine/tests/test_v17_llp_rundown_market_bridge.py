@@ -311,3 +311,24 @@ def test_installer_is_idempotent(monkeypatch):
     wrapped = module.score_team_event_request
     assert bridge.install_llp_rundown_market_bridge(module) is True
     assert module.score_team_event_request is wrapped
+
+
+
+def test_post_score_market_bridge_marks_paid_call_as_initial_enrichment(monkeypatch):
+    seen = {}
+
+    def snapshot(*args, **kwargs):
+        seen.update(kwargs)
+        return sources.MarketEvidenceResult(
+            False,
+            "RUNDOWN",
+            "events",
+            code="MARKET_DATA_UNOBTAINABLE",
+        )
+
+    monkeypatch.setattr(live, "get_sport_date_odds_snapshot", snapshot)
+    context = bridge.resolve_rundown_market_context(Request())
+
+    assert context["status"] == "MARKET_DATA_UNOBTAINABLE"
+    assert seen["paid_call_stage"] == bridge.source_policy.STAGE_INITIAL_ENRICHMENT
+    assert seen["model_preflight_passed"] is True
