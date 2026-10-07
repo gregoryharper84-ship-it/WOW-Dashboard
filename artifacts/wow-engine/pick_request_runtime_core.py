@@ -120,6 +120,9 @@ class PickRequestRow(BaseModel):
     league: Optional[str] = None
     opponent: Optional[str] = None
     source_capture_timestamp: Optional[str] = None
+    # Scout Intelligence V2 evidence/uncertainty dossier. This is contextual
+    # research metadata only and is never a fitted-model probability input.
+    scout_context: Optional[dict[str, Any]] = None
     seed: int = 0
     money_lane_status: str = "PAYOUT_UNRESOLVED"
     market_side_a: Optional[dict[str, Any]] = None
