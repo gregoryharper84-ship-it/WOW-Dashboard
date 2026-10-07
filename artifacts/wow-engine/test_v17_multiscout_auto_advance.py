@@ -7,6 +7,12 @@ from v17.multiscout_auto_advance import build_dispatch, execute_auto_advance
 
 
 def _handoff():
+    dossier = {
+        "schema_version": "wow.v17.scout-intelligence-dossier.v1",
+        "dossier_hash": "dossier-test-hash",
+        "prediction_authority": False,
+        "can_execute": False,
+    }
     prop = {
         "official_event_id": "mlb-event-1",
         "sport_key": "baseball_mlb",
@@ -16,6 +22,7 @@ def _handoff():
         "route": "WOW_PROP_LANE",
         "discovery_status": "DISCOVERY_ONLY",
         "research_ceiling": "RESEARCH_INTEREST",
+        "scout_dossier": dossier,
         "market_evidence": {
             "bookmaker": "book-a",
             "market_key": "pitcher_strikeouts",
@@ -48,6 +55,7 @@ def _handoff():
         "route": "LLP_TEAM_BETTING_ENGINE",
         "discovery_status": "DISCOVERY_ONLY",
         "research_ceiling": "RESEARCH_INTEREST",
+        "scout_dossier": dossier,
         "market_evidence": [],
     }
     return {
@@ -89,6 +97,9 @@ def test_build_dispatch_uses_canonical_governed_routes_and_dedupes_books():
     assert row["direction"] == "MORE"
     assert row["source_type"] == "AUTONOMOUS_DISCOVERY"
     assert row["money_lane_status"] == "PAYOUT_UNRESOLVED"
+    assert row["scout_context"]["dossier_hash"] == "dossier-test-hash"
+    assert row["scout_context"]["prediction_authority"] is False
+    assert row["scout_context"]["can_execute"] is False
     assert "model_probability" not in row
     assert "calibrated_probability" not in row
     assert "price" not in row
@@ -109,6 +120,8 @@ def test_build_dispatch_uses_canonical_governed_routes_and_dedupes_books():
     assert all(row["sport_specific_evidence"]["season_phase"] == "PRESEASON" for row in team_rows)
     assert all(row["sport_specific_evidence"]["season_year"] == 2026 for row in team_rows)
     assert all(row["sport_specific_evidence"]["season_phase_source"] == "ESPN_SCOREBOARD" for row in team_rows)
+    assert all(row["sport_specific_evidence"]["scout_dossier"]["dossier_hash"] == "dossier-test-hash" for row in team_rows)
+    assert all(row["sport_specific_evidence"]["scout_dossier"]["can_execute"] is False for row in team_rows)
     assert dispatch["mapping"]["source_team_reconciliation_pass"] is True
 
 
