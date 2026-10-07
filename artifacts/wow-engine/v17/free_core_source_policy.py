@@ -12,6 +12,7 @@ WOW_V17_SOURCE_MODE=FREE_CORE.
 from __future__ import annotations
 
 import os
+from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from typing import Any
 
@@ -27,6 +28,10 @@ STAGE_INITIAL_ENRICHMENT = "INITIAL_ENRICHMENT"
 STAGE_FINAL_REFRESH = "FINAL_REFRESH"
 VALID_STAGES = frozenset(
     {STAGE_DISCOVERY, STAGE_INITIAL_ENRICHMENT, STAGE_FINAL_REFRESH}
+)
+
+_BUDGET_CONTEXT: ContextVar["PaidCallBudget | None"] = ContextVar(
+    "wow_v17_paid_call_budget", default=None
 )
 
 BLOCK_FREE_CORE = "PAID_PROVIDER_DISABLED_FREE_CORE"
@@ -158,6 +163,51 @@ class PaidCallBudget:
         }
 
 
+
+def begin_paid_budget_scope(
+    budget: "PaidCallBudget | None" = None,
+) -> Token:
+    """Bind one paid-call budget to an entire governed run/slate."""
+    return _BUDGET_CONTEXT.set(budget or PaidCallBudget.from_env())
+
+
+def end_paid_budget_scope(token: Token) -> None:
+    _BUDGET_CONTEXT.reset(token)
+
+
+def current_paid_budget(*, create_if_missing: bool = False) -> "PaidCallBudget | None":
+    budget = _BUDGET_CONTEXT.get()
+    if budget is None and create_if_missing:
+        budget = PaidCallBudget.from_env()
+        _BUDGET_CONTEXT.set(budget)
+    return budget
+
+
+def check_paid_call(
+    stage: str,
+    *,
+    model_preflight_passed: bool = False,
+) -> tuple["PaidCallBudget", bool, str | None]:
+    """Check one optional paid call against the shared run budget.
+
+    A standalone caller gets its own bounded budget. A full slate should bind a
+    scope first so all rows share the same reserve.
+    """
+    budget = current_paid_budget(create_if_missing=True)
+    assert budget is not None
+    allowed, blocker = budget.check(
+        stage,
+        model_preflight_passed=model_preflight_passed,
+    )
+    return budget, allowed, blocker
+
+
+def record_paid_call(stage: str, budget: "PaidCallBudget | None" = None) -> None:
+    target = budget or current_paid_budget(create_if_missing=True)
+    assert target is not None
+    target.record_attempt(stage)
+
+
 def typed_row_degradation(
     *,
     provider: str,
@@ -183,6 +233,10 @@ __all__ = [
     "BLOCK_PREFLIGHT",
     "BLOCK_RESERVED",
     "CAN_EXECUTE",
+    "begin_paid_budget_scope",
+    "check_paid_call",
+    "current_paid_budget",
+    "end_paid_budget_scope",
     "MODE_FREE_CORE",
     "MODE_HYBRID",
     "PaidCallBudget",
@@ -192,6 +246,7 @@ __all__ = [
     "free_core_enabled",
     "paid_discovery_fallback_enabled",
     "provider_hierarchy",
+    "record_paid_call",
     "source_mode",
     "typed_row_degradation",
 ]
