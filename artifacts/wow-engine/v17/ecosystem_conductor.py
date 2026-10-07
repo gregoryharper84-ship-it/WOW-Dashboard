@@ -9,6 +9,7 @@ probability, or grants wagering/trading execution authority.
 from __future__ import annotations
 
 import argparse
+from datetime import datetime
 import json
 from pathlib import Path
 from typing import Any
@@ -72,6 +73,8 @@ REQUIRED_ECOSYSTEM_WORK_ITEM_FIELDS = {
     "decision_right",
     "required_verifier",
     "promotion_state",
+    "updated_at",
+    "lease_expires_at",
 }
 
 WORK_ITEM_STATES = {"ADMITTED", "ROUTED", "IN_PROGRESS", "BLOCKED", "TERMINATED"}
@@ -87,6 +90,16 @@ ALLOWED_PROMOTION_STATES = {
     "PROMOTED",
 }
 PROMOTED_STATES = {"APPROVED", "PROMOTED"}
+
+ENGINEERING_TERMINAL_STATES = {
+    "FIXED_AND_VERIFIED",
+    "PR_CREATED",
+    "EXPERIMENT_CREATED",
+    "DUPLICATE",
+    "NOT_REPRODUCIBLE",
+    "BLOCKED_WITH_EXACT_REASON",
+    "DEFERRED_WITH_JUSTIFICATION",
+}
 
 
 def load_json(path: str | Path) -> dict[str, Any]:
@@ -271,6 +284,14 @@ def validate_registry(registry: dict[str, Any]) -> list[str]:
             errors.append(
                 "ecosystem_work_item_envelope_contract.class_c_requires_independent_verification_before_promotion must be true"
             )
+        if contract.get("active_ownership_must_be_time_bounded") is not True:
+            errors.append(
+                "ecosystem_work_item_envelope_contract.active_ownership_must_be_time_bounded must be true"
+            )
+        if set(contract.get("engineering_terminal_states") or []) != ENGINEERING_TERMINAL_STATES:
+            errors.append(
+                "ecosystem_work_item_envelope_contract.engineering_terminal_states must match governed closure states"
+            )
 
     return errors
 
@@ -312,11 +333,27 @@ def _nonempty(value: Any) -> bool:
     return isinstance(value, str) and bool(value.strip())
 
 
+def _parse_instant(value: Any) -> datetime | None:
+    if not _nonempty(value):
+        return None
+    text = str(value).strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed
+
+
 def validate_ecosystem_work_item_envelope(
     item: Any,
     registry: dict[str, Any],
     *,
     index: int | None = None,
+    evaluated_at: datetime | None = None,
 ) -> list[str]:
     label = f"ecosystem_work_items[{index}]" if index is not None else "ecosystem_work_item"
     if not isinstance(item, dict):
@@ -339,6 +376,9 @@ def validate_ecosystem_work_item_envelope(
     components = registry["components"]
     current_owner = item.get("current_owner")
     next_owner = item.get("next_owner")
+    source = item.get("source")
+    if source not in components and source not in EXTERNAL_ENDPOINTS:
+        errors.append(f"{label}.source is not a registered endpoint")
     if current_owner not in components:
         errors.append(f"{label}.current_owner is not a registered component")
     if next_owner is not None and next_owner not in components and next_owner not in EXTERNAL_ENDPOINTS:
@@ -353,6 +393,9 @@ def validate_ecosystem_work_item_envelope(
         errors.append(f"{label}.evidence_refs must be a list")
     elif any(not _nonempty(ref) for ref in evidence_refs):
         errors.append(f"{label}.evidence_refs must contain non-empty strings")
+
+    if not _nonempty(item.get("specialist_route")):
+        errors.append(f"{label}.specialist_route must be a non-empty string")
 
     change_class = str(item.get("change_class") or "").upper()
     if change_class not in ALLOWED_CHANGE_CLASSES:
@@ -402,6 +445,43 @@ def validate_ecosystem_work_item_envelope(
 
     if state in {"ADMITTED", "ROUTED"} and next_owner is None:
         errors.append(f"{label}.next_owner is required while work is awaiting transfer")
+
+    updated_at = _parse_instant(item.get("updated_at"))
+    if updated_at is None:
+        errors.append(f"{label}.updated_at must be an offset-aware ISO-8601 timestamp")
+
+    lease_raw = item.get("lease_expires_at")
+    lease_expires_at = _parse_instant(lease_raw)
+    if state == "TERMINATED":
+        if lease_raw not in (None, ""):
+            errors.append(f"{label}.lease_expires_at must be empty when state=TERMINATED")
+    else:
+        if lease_expires_at is None:
+            errors.append(
+                f"{label}.lease_expires_at must be an offset-aware ISO-8601 timestamp for active work"
+            )
+        if evaluated_at is None:
+            errors.append(f"{label} active work requires observed.evaluated_at")
+        elif lease_expires_at is not None and lease_expires_at <= evaluated_at:
+            errors.append(f"{label} ownership lease is expired")
+        if (
+            updated_at is not None
+            and lease_expires_at is not None
+            and lease_expires_at <= updated_at
+        ):
+            errors.append(f"{label}.lease_expires_at must be after updated_at")
+        if updated_at is not None and evaluated_at is not None and updated_at > evaluated_at:
+            errors.append(f"{label}.updated_at may not be in the future")
+
+    if (
+        current_owner == "ENGINEERING_CLOSURE"
+        and state == "TERMINATED"
+        and _nonempty(terminal_state)
+        and str(terminal_state).upper() not in ENGINEERING_TERMINAL_STATES
+    ):
+        errors.append(
+            f"{label}.terminal_state is not an allowed Engineering closure state"
+        )
 
     if (
         current_owner == "ENGINEERING_CLOSURE"
@@ -463,9 +543,24 @@ def evaluate_ecosystem_work_conservation(
     duplicate_ids: set[str] = set()
     terminal = 0
     blocked = 0
+    evaluated_at = _parse_instant(observed.get("evaluated_at"))
+    if items and evaluated_at is None:
+        invalid_items.append(
+            {
+                "work_item_id": None,
+                "errors": [
+                    "observed.evaluated_at must be an offset-aware ISO-8601 timestamp when active or terminal ecosystem work is supplied"
+                ],
+            }
+        )
 
     for index, item in enumerate(items):
-        errors = validate_ecosystem_work_item_envelope(item, registry, index=index)
+        errors = validate_ecosystem_work_item_envelope(
+            item,
+            registry,
+            index=index,
+            evaluated_at=evaluated_at,
+        )
         work_item_id = item.get("work_item_id") if isinstance(item, dict) else None
         if _nonempty(work_item_id):
             if work_item_id in seen_ids:
