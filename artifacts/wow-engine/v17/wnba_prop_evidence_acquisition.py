@@ -78,7 +78,12 @@ def _schedule_players(
     now: datetime,
     http_get: Callable[..., Any] = httpx.get,
 ) -> list[dict[str, Any]]:
-    """Return deterministic future player/event identities from official WNBA data."""
+    """Return deterministic future player/event identities.
+
+    Event identity remains official WNBA schedule data. Player/team roster
+    identity uses CommonTeamRoster first and the typed ESPN identity-only
+    fallback only when the primary transport is unavailable.
+    """
     try:
         zone = ZoneInfo(requested_timezone)
         date.fromisoformat(requested_date)
@@ -119,7 +124,7 @@ def _schedule_players(
                 team_id = str(team.get("teamId") or "").strip()
                 if not team_id:
                     continue
-                roster = wnba._roster(team_id, season, http_get=http_get)
+                roster = wnba._roster(team_id, season, team=team, http_get=http_get)
                 for row in roster:
                     player = " ".join(str(row.get("PLAYER") or "").split())
                     player_id = str(row.get("PLAYER_ID") or row.get("PERSON_ID") or "").strip()
@@ -203,7 +208,7 @@ def acquire_wnba_prop_snapshots(
         "explicit_prewrite_exclusions": 0,
         "receipts": [],
         "blockers": [],
-        "candidate_source": "WNBA_OFFICIAL_SCHEDULE_CURRENT_ROSTERS",
+        "candidate_source": "WNBA_OFFICIAL_SCHEDULE_PLUS_GOVERNED_ROSTER_IDENTITY",
         "line_source": "PRIOR10_MEDIAN_HALF_POINT_DISCOVERY_ONLY",
         "stat_types": list(CORE_STATS),
         "probability_publishable": False,
