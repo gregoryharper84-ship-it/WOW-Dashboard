@@ -271,7 +271,7 @@ def resolve_user_market_context(req: Any) -> dict[str, Any] | None:
     }
 
 
-def resolve_rundown_market_context(req: Any, *, opener: Any = None) -> dict[str, Any]:
+def _resolve_rundown_market_context_impl(req: Any, *, opener: Any = None) -> dict[str, Any]:
     """Resolve optional post-score market evidence through an ordered hierarchy.
 
     Sporting probability has already completed before this function is invoked.
@@ -381,6 +381,22 @@ def resolve_rundown_market_context(req: Any, *, opener: Any = None) -> dict[str,
         "global_slate_failure": False,
         "can_execute": False,
     }
+
+
+def resolve_rundown_market_context(req: Any, *, opener: Any = None) -> dict[str, Any]:
+    """Resolve one post-score market context under the caller's run budget.
+
+    Daily runs bind the scope at the slate boundary. Standalone team-event
+    calls receive a local scope that is always reset before returning.
+    """
+    if source_policy.current_paid_budget() is not None:
+        return _resolve_rundown_market_context_impl(req, opener=opener)
+    token = source_policy.begin_paid_budget_scope()
+    try:
+        return _resolve_rundown_market_context_impl(req, opener=opener)
+    finally:
+        source_policy.end_paid_budget_scope(token)
+
 
 def _favorite_from_prior(req: Any, prior: dict[str, Any] | None) -> str | None:
     prior = dict(prior or {})
