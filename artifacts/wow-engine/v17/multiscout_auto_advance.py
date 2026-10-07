@@ -142,6 +142,7 @@ def _prop_row(candidate: dict[str, Any], *, generated_at: str, index: int) -> tu
         "source_type": "AUTONOMOUS_DISCOVERY",
         "league": league or None,
         "source_capture_timestamp": captured_at,
+        "scout_context": candidate.get("scout_dossier") if isinstance(candidate.get("scout_dossier"), dict) else None,
         "money_lane_status": "PAYOUT_UNRESOLVED",
     }, None
 
@@ -188,6 +189,10 @@ def _team_rows(candidate: dict[str, Any], *, research_run_id: str) -> tuple[list
         )
         if candidate.get(field) is not None
     }
+    sport_specific_evidence = dict(season_context)
+    if isinstance(candidate.get("scout_dossier"), dict):
+        sport_specific_evidence["scout_dossier"] = candidate["scout_dossier"]
+
     common = {
         "research_run_id": research_run_id,
         "sport": sport,
@@ -199,7 +204,7 @@ def _team_rows(candidate: dict[str, Any], *, research_run_id: str) -> tuple[list
         "event_start_time_utc": event_start,
         "home_team": home_team,
         "away_team": away_team,
-        "sport_specific_evidence": season_context,
+        "sport_specific_evidence": sport_specific_evidence,
     }
     return [
         {
