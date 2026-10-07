@@ -47,7 +47,7 @@
       "url_env": "SUPABASE_URL",
       "api_key_env": "SUPABASE_SERVICE_KEY",
       "table": "wow_action_invocation_receipts",
-      "select": "invocation_id,route,operation_id,http_status,caller_class,occurred_at,can_execute",
+      "select": "invocation_id,route,action_operation_id,http_status,caller_class,occurred_at,can_execute",
       "order": "occurred_at.desc",
       "limit": 1,
       "predicates": {
