@@ -13,12 +13,14 @@ from typing import Any
 try:  # package import under pytest/backend runtime
     from v17.market_evidence_snapshot_bridge import attach_snapshot_evidence
     from v17.scout_intelligence_dossier import build_scout_dossier
+    from v17.scout_prior_dossier import hydrate_prior_dossiers
     from v17.scout_research_promotion import promote_handoff
     from v17.sport_scout_registry import registry_payload, scout_team_for
     from v17.sport_research_brief import SUPPORTED_RESEARCH_WORKERS, build_research_brief
 except ModuleNotFoundError:  # direct `python v17/sport_scout_enrichment.py`
     from market_evidence_snapshot_bridge import attach_snapshot_evidence
     from scout_intelligence_dossier import build_scout_dossier
+    from scout_prior_dossier import hydrate_prior_dossiers
     from scout_research_promotion import promote_handoff
     from sport_scout_registry import registry_payload, scout_team_for
     from sport_research_brief import SUPPORTED_RESEARCH_WORKERS, build_research_brief
@@ -41,7 +43,12 @@ def enrich_candidate(row: dict[str, Any], lane: str) -> dict[str, Any]:
         worker_id: build_research_brief(enriched, worker_id)
         for worker_id in SUPPORTED_RESEARCH_WORKERS
     }
-    prior_dossier = row.get("scout_dossier") if isinstance(row.get("scout_dossier"), dict) else None
+    prior_dossier = (
+        row.get("_prior_scout_dossier")
+        if isinstance(row.get("_prior_scout_dossier"), dict)
+        else (row.get("scout_dossier") if isinstance(row.get("scout_dossier"), dict) else None)
+    )
+    enriched.pop("_prior_scout_dossier", None)
     dossier = build_scout_dossier(enriched, previous=prior_dossier)
     enriched["scout_dossier"] = dossier
     material_conflicts = [
@@ -108,6 +115,7 @@ def main() -> int:
     target = Path(args.output)
     payload = json.loads(source.read_text(encoding="utf-8"))
     payload = _attach_sibling_snapshot(payload, source)
+    payload = hydrate_prior_dossiers(payload)
     enriched = enrich_handoff(payload)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(enriched, indent=2, sort_keys=True) + "\n", encoding="utf-8")
