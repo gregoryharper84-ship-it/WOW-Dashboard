@@ -38,7 +38,10 @@ _SCAN_CONTEXT: ContextVar[dict[str, Any] | None] = ContextVar(
 def _new_context() -> dict[str, Any]:
     return {
         "providers": {},
-        "_paid_call_budget": source_policy.PaidCallBudget.from_env(),
+        "_paid_call_budget": (
+            source_policy.current_paid_budget()
+            or source_policy.PaidCallBudget.from_env()
+        ),
         "paid_provider_calls_attempted": 0,
         "paid_provider_calls_succeeded": 0,
         "paid_provider_calls_blocked_by_quota_policy": 0,
@@ -415,13 +418,15 @@ def install_quota_aware_degraded_discovery() -> dict[str, Any]:
     def scan(*args: Any, **kwargs: Any) -> dict[str, Any]:
         from v17 import rundown_snapshot_cache as snapshot_cache
 
+        budget_token = source_policy.begin_paid_budget_scope()
         context = _new_context()
         cache_before = snapshot_cache.stats()
-        token = _SCAN_CONTEXT.set(context)
+        scan_token = _SCAN_CONTEXT.set(context)
         try:
             result = dict(original_scan(*args, **kwargs))
         finally:
-            _SCAN_CONTEXT.reset(token)
+            _SCAN_CONTEXT.reset(scan_token)
+            source_policy.end_paid_budget_scope(budget_token)
         cache_after = snapshot_cache.stats()
         cache_hits_saved = max(
             0,
