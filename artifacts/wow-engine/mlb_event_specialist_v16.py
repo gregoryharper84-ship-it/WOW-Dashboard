@@ -236,12 +236,20 @@ def _lineup_adjustment(batting_order: list[int], starter_hand: str, players: dic
 
 
 def _weather_context(feed: dict[str, Any]) -> WeatherContext:
-    gd = feed.get("gameData", {}) or {}; weather = gd.get("weather") or {}; venue = gd.get("venue") or {}; field = venue.get("fieldInfo") or {}
-    roof = str(field.get("roofType") or "UNKNOWN"); condition = str(weather.get("condition") or "UNKNOWN")
-    try: temp = float(weather.get("temp")) if weather.get("temp") is not None else None
-    except (TypeError, ValueError): temp = None
-    wind_text = str(weather.get("wind") or ""); match = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*mph(?:,\s*(.*))?", wind_text, re.I)
-    wind_mph = float(match.group(1)) if match else None; wind_dir = match.group(2).strip() if match and match.group(2) else None
+    gd = feed.get("gameData", {}) or {}
+    weather = gd.get("weather") or {}
+    venue = gd.get("venue") or {}
+    field = venue.get("fieldInfo") or {}
+    roof = str(field.get("roofType") or "UNKNOWN")
+    condition = str(weather.get("condition") or "UNKNOWN")
+    try:
+        temp = float(weather.get("temp")) if weather.get("temp") is not None else None
+    except (TypeError, ValueError):
+        temp = None
+    wind_text = str(weather.get("wind") or "")
+    match = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*mph(?:,\s*(.*))?", wind_text, re.I)
+    wind_mph = float(match.group(1)) if match else None
+    wind_dir = match.group(2).strip() if match and match.group(2) else None
     if "closed" in roof.lower():
         factor, disruption = 1.0, 0.01
     else:
