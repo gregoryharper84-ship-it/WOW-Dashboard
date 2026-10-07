@@ -1,7 +1,7 @@
 {
-  "schema_version": "2.0",
+  "schema_version": "2.1",
   "source": "WOW_V17_ACTIVE_EXECUTION_BOARD",
-  "description": "Closure-focus routing metadata. GitHub issue open/closed state remains authoritative. All engineering capacity targets the highest-priority existing closure journey; no independent acceleration lane is active while backlog remains.",
+  "description": "Closure-focus routing metadata. GitHub issue open/closed state remains authoritative. All engineering capacity targets the highest-priority existing closure journey. Product focus is LLP all-sports moneyline/spread usability and WOW governed all-sports player/scalar props.",
   "can_execute": false,
   "terminal_authority": "V17_TERMINAL_REDUCER",
   "restoration": [
@@ -67,9 +67,32 @@
       ]
     },
     {
-      "issue_number": 1087,
+      "issue_number": 487,
       "severity": "P1",
       "priority_rank": 6,
+      "execution_lane": "STANDARD",
+      "conflict_keys": [
+        "PROP_LIFECYCLE",
+        "ALL_SPORTS_PROPS",
+        "MODEL_CERTIFICATION",
+        "PRODUCTION_REGISTRATION"
+      ]
+    },
+    {
+      "issue_number": 491,
+      "severity": "P1",
+      "priority_rank": 7,
+      "execution_lane": "STANDARD",
+      "conflict_keys": [
+        "PROP_FORWARD_EVIDENCE",
+        "PROP_SETTLEMENT",
+        "ALL_SPORTS_PROPS"
+      ]
+    },
+    {
+      "issue_number": 1087,
+      "severity": "P1",
+      "priority_rank": 8,
       "execution_lane": "STANDARD",
       "conflict_keys": [
         "PRODUCTION_RUNTIME",
@@ -79,7 +102,7 @@
     {
       "issue_number": 1150,
       "severity": "P1",
-      "priority_rank": 7,
+      "priority_rank": 9,
       "execution_lane": "STANDARD",
       "conflict_keys": [
         "ACTION_SCHEMA",
@@ -90,7 +113,7 @@
     {
       "issue_number": 1152,
       "severity": "P1",
-      "priority_rank": 8,
+      "priority_rank": 10,
       "execution_lane": "STANDARD",
       "conflict_keys": [
         "NCAAF_TEAM_STATE",
