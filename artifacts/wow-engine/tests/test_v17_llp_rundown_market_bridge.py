@@ -10,7 +10,15 @@ from v17 import market_evidence_sources as sources
 
 
 class Request:
-    def __init__(self, *, intent="WINNER", prior=None, sport="MLB", league="MLB"):
+    def __init__(
+        self,
+        *,
+        intent="WINNER",
+        prior=None,
+        market_input=None,
+        sport="MLB",
+        league="MLB",
+    ):
         self.requested_slate_date = "2026-09-14"
         self.sport = sport
         self.league = league
@@ -19,6 +27,7 @@ class Request:
         self.official_event_id = "evt-1"
         self.decision_intent = intent
         self.market_prior = prior
+        self.market_input = market_input
 
 
 class TypedModelRequest:
@@ -399,3 +408,70 @@ def test_free_core_never_calls_secondary_paid_market_provider(monkeypatch):
     assert context["global_slate_failure"] is False
     assert context["provider_attempts"][-1]["blocked_by_source_policy"] is True
     assert context["provider_attempts"][-1]["code"] == bridge.source_policy.BLOCK_FREE_CORE
+
+
+
+def test_user_supplied_moneyline_skips_all_paid_market_providers(monkeypatch):
+    req = Request(
+        market_input={
+            "market_family": "MONEYLINE",
+            "selection": "Chicago Cubs",
+            "american_odds": -135,
+            "captured_at": "2026-10-07T13:00:00+00:00",
+        }
+    )
+
+    def forbidden(*_a, **_k):
+        raise AssertionError("paid market provider must not run for user-supplied line")
+
+    monkeypatch.setattr(live, "get_sport_date_odds_snapshot", forbidden)
+    monkeypatch.setattr(live, "sharpapi_market_evidence", forbidden)
+
+    context = bridge.resolve_rundown_market_context(req)
+
+    assert context["status"] == "USER_SUPPLIED_MARKET_INPUT"
+    assert context["provider"] == "USER_SUPPLIED"
+    assert context["american_odds"] == -135.0
+    assert context["market_probability_derived"] is False
+    assert context["sporting_probability_authority"] is False
+    assert context["paid_provider_calls_required"] is False
+    assert context["can_execute"] is False
+
+
+def test_user_supplied_moneyline_identity_mismatch_fails_closed_without_paid_fallback(monkeypatch):
+    req = Request(
+        market_input={
+            "market_family": "MONEYLINE",
+            "selection": "New York Yankees",
+            "american_odds": -110,
+        }
+    )
+
+    def forbidden(*_a, **_k):
+        raise AssertionError("invalid explicit user market must not trigger paid fallback")
+
+    monkeypatch.setattr(live, "get_sport_date_odds_snapshot", forbidden)
+    monkeypatch.setattr(live, "sharpapi_market_evidence", forbidden)
+
+    context = bridge.resolve_rundown_market_context(req)
+
+    assert context["status"] == "USER_MARKET_INPUT_INVALID"
+    assert context["reason_code"] == "USER_MARKET_SELECTION_IDENTITY_MISMATCH"
+    assert context["global_slate_failure"] is False
+    assert context["prediction_authority"] is False
+    assert context["can_execute"] is False
+
+
+def test_user_supplied_moneyline_never_becomes_model_market_prior(monkeypatch):
+    req = Request(
+        market_input={
+            "market_family": "MONEYLINE",
+            "selection": "Milwaukee Brewers",
+            "american_odds": 115,
+        }
+    )
+    context = bridge.resolve_rundown_market_context(req)
+    assert bridge._as_market_prior(context) is None
+    assert bridge._envelope_market_data(context) is None
+    assert "home_probability" not in context
+    assert "away_probability" not in context
