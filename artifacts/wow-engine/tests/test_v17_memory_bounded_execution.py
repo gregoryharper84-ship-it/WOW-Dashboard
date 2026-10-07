@@ -60,3 +60,72 @@ def test_missing_cgroup_sample_is_visible_not_silent(monkeypatch):
     assert snapshot["under_pressure"] is False
     assert snapshot["memory_ratio"] is None
     assert snapshot["can_execute"] is False
+
+
+class _Permit:
+    def __init__(self):
+        self.release_count = 0
+
+    def release(self):
+        self.release_count += 1
+
+
+def test_daily_snapshot_owned_permit_is_released(monkeypatch):
+    permit = _Permit()
+    monkeypatch.setattr(memory_admission, "acquire_heavy_job", lambda operation: permit)
+    monkeypatch.setattr(
+        daily_runtime,
+        "_run_daily_snapshot_impl",
+        lambda *args, **kwargs: {"run_id": "r", "can_execute": False},
+    )
+    monkeypatch.setattr(daily_runtime.source_policy, "begin_paid_budget_scope", lambda: "token")
+    monkeypatch.setattr(daily_runtime.source_policy, "end_paid_budget_scope", lambda token: None)
+
+    result = daily_runtime.run_daily_snapshot(
+        daily_runtime.DailySnapshotRequest(
+            requested_slate_date="2026-10-07",
+            requested_timezone="America/Chicago",
+            lanes=["MONEYLINE"],
+            max_props=0,
+            max_team_events=1,
+        ),
+        db=object(),
+        market_api=object(),
+        event_api=object(),
+    )
+
+    assert result["run_id"] == "r"
+    assert permit.release_count == 1
+
+
+def test_daily_snapshot_preacquired_permit_does_not_reacquire_or_release(monkeypatch):
+    permit = _Permit()
+
+    def unexpected_acquire(_operation):
+        raise AssertionError("Daily attempted to acquire the heavy slot twice")
+
+    monkeypatch.setattr(memory_admission, "acquire_heavy_job", unexpected_acquire)
+    monkeypatch.setattr(
+        daily_runtime,
+        "_run_daily_snapshot_impl",
+        lambda *args, **kwargs: {"run_id": "r", "can_execute": False},
+    )
+    monkeypatch.setattr(daily_runtime.source_policy, "begin_paid_budget_scope", lambda: "token")
+    monkeypatch.setattr(daily_runtime.source_policy, "end_paid_budget_scope", lambda token: None)
+
+    result = daily_runtime.run_daily_snapshot(
+        daily_runtime.DailySnapshotRequest(
+            requested_slate_date="2026-10-07",
+            requested_timezone="America/Chicago",
+            lanes=["MONEYLINE"],
+            max_props=0,
+            max_team_events=1,
+        ),
+        db=object(),
+        market_api=object(),
+        event_api=object(),
+        _heavy_permit=permit,
+    )
+
+    assert result["run_id"] == "r"
+    assert permit.release_count == 0
