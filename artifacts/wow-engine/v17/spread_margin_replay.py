@@ -433,6 +433,61 @@ def _load_ncaaf_persisted_feature_rows(client: Any) -> list[dict[str, Any]]:
     )
 
 
+
+
+def _latest_ncaaf_feature_eligible_event(
+    game_rows: Sequence[Mapping[str, Any]],
+    *,
+    min_prior_games: int = 5,
+) -> tuple[str, datetime] | None:
+    """Return the latest settled event that should have a dynamic feature row.
+
+    Dynamic team-state rows are intentionally not created until both teams have
+    enough strictly prior games. Freshness must therefore compare the persisted
+    feature ledger with the latest *eligible* settled event, not blindly with
+    the newest settled game on the schedule.
+    """
+    events = sorted(
+        _ncaaf_events_from_games(game_rows),
+        key=lambda row: (_dt(row["event_start_time"]), str(row["event_id"])),
+    )
+    prior_counts: dict[str, int] = {}
+    latest: tuple[str, datetime] | None = None
+    threshold = max(0, int(min_prior_games))
+    for event in events:
+        home = str(event.get("home_team") or "")
+        away = str(event.get("away_team") or "")
+        if prior_counts.get(home, 0) >= threshold and prior_counts.get(away, 0) >= threshold:
+            latest = (str(event["event_id"]), _dt(event["event_start_time"]))
+        prior_counts[home] = prior_counts.get(home, 0) + 1
+        prior_counts[away] = prior_counts.get(away, 0) + 1
+    return latest
+
+
+def _assert_ncaaf_persisted_feature_freshness(
+    replay_rows: Sequence[MarginTrainingRow],
+    game_rows: Sequence[Mapping[str, Any]],
+    *,
+    min_prior_games: int = 5,
+) -> None:
+    expected = _latest_ncaaf_feature_eligible_event(
+        game_rows,
+        min_prior_games=min_prior_games,
+    )
+    if expected is None:
+        return
+    latest = max(
+        replay_rows,
+        key=lambda row: (_dt(row.event_start_time), str(row.event_id)),
+    )
+    expected_event_id, expected_start = expected
+    if str(latest.event_id) != expected_event_id or _dt(latest.event_start_time) != expected_start:
+        raise SpreadChallengerUnavailable(
+            "SPREAD_REPLAY_PERSISTED_NCAAF_FEATURES_STALE",
+            "immutable NCAAF dynamic team-state rows lag the latest feature-eligible settled training game",
+        )
+
+
 def load_ncaaf_persisted_replay_rows(client: Any) -> list[MarginTrainingRow]:
     """Load the immutable NCAAF team-state corpus for interactive spread scoring.
 
@@ -445,14 +500,7 @@ def load_ncaaf_persisted_replay_rows(client: Any) -> list[MarginTrainingRow]:
     games = _load_ncaaf_persisted_game_rows(client)
     rows = adapt_ncaaf_persisted_rows(features, games)
 
-    latest_feature = max(_dt(row.event_start_time) for row in rows)
-    settled_events = _ncaaf_events_from_games(games)
-    latest_settled = max(_dt(row["event_start_time"]) for row in settled_events)
-    if latest_feature != latest_settled:
-        raise SpreadChallengerUnavailable(
-            "SPREAD_REPLAY_PERSISTED_NCAAF_FEATURES_STALE",
-            "immutable NCAAF dynamic team-state rows lag the latest settled training game",
-        )
+    _assert_ncaaf_persisted_feature_freshness(rows, games)
     return rows
 
 
