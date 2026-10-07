@@ -35,7 +35,18 @@ def test_llp_schema_exposes_governed_moneyline_full_slate_action():
     assert request["properties"]["lanes"]["items"]["enum"] == ["MONEYLINE"]
     assert request["properties"]["max_props"]["enum"] == [0]
     assert request["properties"]["max_team_events"]["maximum"] == 12
-    assert request["properties"]["response_mode"]["enum"] == ["FULL"]
+    assert request["properties"]["response_mode"]["enum"] == ["COMPACT"]
+
+
+def test_llp_gateway_enforces_moneyline_only_full_slate_bounds_before_dispatch():
+    source = (ROOT / "v17" / "supabase" / "functions" / "wow-llp-action-gateway" / "index.ts").read_text()
+    assert "validateLlpFullSlateRequest" in source
+    assert 'body.max_props !== 0' in source
+    assert 'lanes[0] !== "MONEYLINE"' in source
+    assert "maxTeamEvents < 1" in source
+    assert "maxTeamEvents > 12" in source
+    assert "LLP_GATEWAY_FULL_SLATE_CONTRACT_INVALID" in source
+    assert 'gatewayLog("CONTRACT_REJECTED"' in source
 
 
 def test_llp_schema_exposes_full_slate_row_detail_readback():
