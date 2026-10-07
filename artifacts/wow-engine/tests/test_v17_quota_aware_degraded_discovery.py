@@ -314,3 +314,33 @@ def test_hybrid_can_disable_paid_discovery_fallback_explicitly(monkeypatch):
     assert "PAID_PROVIDER_DISCOVERY_DISABLED" in blocker
     assert context["paid_provider_calls_attempted"] == 0
     assert context["paid_provider_calls_blocked_by_source_policy"] == 1
+
+
+
+def test_scan_budget_reuses_enclosing_daily_scope():
+    outer = quota.source_policy.PaidCallBudget(total=9, final_refresh_reserve=3)
+    token = quota.source_policy.begin_paid_budget_scope(outer)
+    try:
+        budget, owned_token = quota._scan_budget_scope()
+        assert budget is outer
+        assert owned_token is None
+        context = quota._new_context()
+        assert context["_paid_call_budget"] is outer
+    finally:
+        quota.source_policy.end_paid_budget_scope(token)
+
+    assert quota.source_policy.current_paid_budget() is None
+
+
+def test_scan_budget_owns_and_resets_standalone_scope():
+    assert quota.source_policy.current_paid_budget() is None
+    budget, owned_token = quota._scan_budget_scope()
+    try:
+        assert owned_token is not None
+        assert quota.source_policy.current_paid_budget() is budget
+        context = quota._new_context()
+        assert context["_paid_call_budget"] is budget
+    finally:
+        quota.source_policy.end_paid_budget_scope(owned_token)
+
+    assert quota.source_policy.current_paid_budget() is None
