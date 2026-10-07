@@ -60,7 +60,7 @@ def test_v17_action_schemas_preserve_backend_and_llp_gateway_transport_contracts
     assert "CANDIDATE ONLY" not in wow
     assert "CANDIDATE ONLY" not in llp
     assert "version: 17.0.0" in wow
-    assert "version: 17.0.3-live-action" in llp
+    assert "version: 17.0.4-compact-action" in llp
 
 
 def test_wow_action_has_prop_and_team_event_delegation():
@@ -104,6 +104,7 @@ def test_llp_action_has_team_event_and_line_shadows_but_no_prop_scoring_operatio
     assert "operationId: runLlpV17FullSlate" in full_slate_route
     assert "items: {type: string, enum: [MONEYLINE]}" in text
     assert "max_props: {type: integer, enum: [0]}" in text
+    assert "response_mode: {type: string, enum: [COMPACT]}" in text
 
     route = text[
         text.index(f"  {gateway_prefix}/internal/v17/spread-forward-shadow:"):
@@ -290,6 +291,8 @@ def test_llp_supabase_gateway_covers_only_canonical_action_routes():
     assert "LLP_GATEWAY_PATH_NOT_ALLOWED" in source
     assert "LLP_GATEWAY_METHOD_NOT_ALLOWED" in source
     assert "LLP_GATEWAY_AUTH_REQUIRED" in source
+    assert "LLP_GATEWAY_FULL_SLATE_CONTRACT_INVALID" in source
+    assert "validateLlpFullSlateRequest" in source
     assert 'authorization.startsWith("Bearer ")' in source
     assert 'headers.set("authorization", authorization)' in source
     assert "upstream.search = url.search" in source
