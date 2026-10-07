@@ -303,7 +303,14 @@ def _attach_rows(candidate: dict[str, Any], rows: list[dict[str, Any]], *, lane:
 
 
 
-def _seed_prop_candidates(model: dict[str, Any], events: list[dict[str, Any]], *, generated_at: Any, now: datetime) -> dict[str, int]:
+def _seed_prop_candidates(
+    model: dict[str, Any],
+    events: list[dict[str, Any]],
+    *,
+    generated_at: Any,
+    now: datetime,
+    seed_window: dict[str, Any] | None = None,
+) -> dict[str, int]:
     """Seed research-only prop identities from fresh, unambiguous provider rows.
 
     This creates discovery candidates only. It never creates probability authority.
@@ -336,8 +343,18 @@ def _seed_prop_candidates(model: dict[str, Any], events: list[dict[str, Any]], *
             str(row.get("outcome_name") or "").upper(),
         ))
 
-    seeded = rejected = stale = 0
+    seeded = rejected = stale = out_of_window_events = 0
+    window_from = _aware((seed_window or {}).get("from"))
+    window_to = _aware((seed_window or {}).get("to"))
+    enforce_seed_window = window_from is not None and window_to is not None and window_from <= window_to
+
     for event in events:
+        event_start = _aware(event.get("commence_time"))
+        if enforce_seed_window and (
+            event_start is None or event_start < window_from or event_start > window_to
+        ):
+            out_of_window_events += 1
+            continue
         event_rows = _event_rows(event, generated_at=generated_at, now=now)
         for row in event_rows:
             market_key = str(row.get("market_key") or "")
@@ -407,7 +424,12 @@ def _seed_prop_candidates(model: dict[str, Any], events: list[dict[str, Any]], *
             })
             seeded += 1
     model["prop_candidates"] = props
-    return {"seeded": seeded, "rejected": rejected, "stale": stale}
+    return {
+        "seeded": seeded,
+        "rejected": rejected,
+        "stale": stale,
+        "out_of_window_events": out_of_window_events,
+    }
 
 
 def attach_snapshot_evidence(
@@ -437,7 +459,13 @@ def attach_snapshot_evidence(
 
     events = [event for event in snapshot.get("events", []) or [] if isinstance(event, dict)]
     generated_at = snapshot.get("generated_at")
-    seed_result = _seed_prop_candidates(model, events, generated_at=generated_at, now=now)
+    seed_result = _seed_prop_candidates(
+        model,
+        events,
+        generated_at=generated_at,
+        now=now,
+        seed_window=out.get("window") if isinstance(out.get("window"), dict) else None,
+    )
     # Rebuild candidate refs after seeding so sibling providers can enrich the
     # newly-created prop identities during this same bridge pass.
     lanes["prop_candidates"] = [dict(row) for row in model.get("prop_candidates", []) or [] if isinstance(row, dict)]
@@ -499,6 +527,7 @@ def attach_snapshot_evidence(
         "prop_candidates_seeded": seed_result["seeded"],
         "prop_seed_rows_rejected": seed_result["rejected"],
         "prop_seed_rows_stale_quarantined": seed_result["stale"],
+        "prop_seed_events_outside_window": seed_result["out_of_window_events"],
         "matched_events": matched_events,
         "ambiguous_events": ambiguous_events,
         "unmatched_events": unmatched_events,
