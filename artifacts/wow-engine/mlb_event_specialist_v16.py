@@ -118,6 +118,26 @@ def _load_evidence(client: Any, bridge_payload: dict[str, Any]) -> dict[str, Any
     return {"score": score, "event": event, "lineup": lineup, "features": features, "health": health, "calibration": cal, "distribution": dist, "artifact": artifact}
 
 
+
+
+def _required_numeric_inputs(row: dict[str, Any], fields: tuple[str, ...], *, source: str) -> dict[str, float]:
+    values: dict[str, float] = {}
+    invalid: list[str] = []
+    for field in fields:
+        value = row.get(field)
+        if value in (None, ""):
+            invalid.append(field)
+            continue
+        try:
+            values[field] = float(value)
+        except (TypeError, ValueError):
+            invalid.append(field)
+    if invalid:
+        qualified = ",".join(f"{source}.{field}" for field in sorted(set(invalid)))
+        raise ProspectiveModelUnavailable(f"prospective_required_numeric_input_invalid:{qualified}")
+    return values
+
+
 def _parse_feed(raw_body: str) -> dict[str, Any]:
     try:
         body = json.loads(raw_body)
@@ -216,12 +236,20 @@ def _lineup_adjustment(batting_order: list[int], starter_hand: str, players: dic
 
 
 def _weather_context(feed: dict[str, Any]) -> WeatherContext:
-    gd = feed.get("gameData", {}) or {}; weather = gd.get("weather") or {}; venue = gd.get("venue") or {}; field = venue.get("fieldInfo") or {}
-    roof = str(field.get("roofType") or "UNKNOWN"); condition = str(weather.get("condition") or "UNKNOWN")
-    try: temp = float(weather.get("temp")) if weather.get("temp") is not None else None
-    except (TypeError, ValueError): temp = None
-    wind_text = str(weather.get("wind") or ""); match = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*mph(?:,\s*(.*))?", wind_text, re.I)
-    wind_mph = float(match.group(1)) if match else None; wind_dir = match.group(2).strip() if match and match.group(2) else None
+    gd = feed.get("gameData", {}) or {}
+    weather = gd.get("weather") or {}
+    venue = gd.get("venue") or {}
+    field = venue.get("fieldInfo") or {}
+    roof = str(field.get("roofType") or "UNKNOWN")
+    condition = str(weather.get("condition") or "UNKNOWN")
+    try:
+        temp = float(weather.get("temp")) if weather.get("temp") is not None else None
+    except (TypeError, ValueError):
+        temp = None
+    wind_text = str(weather.get("wind") or "")
+    match = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*mph(?:,\s*(.*))?", wind_text, re.I)
+    wind_mph = float(match.group(1)) if match else None
+    wind_dir = match.group(2).strip() if match and match.group(2) else None
     if "closed" in roof.lower():
         factor, disruption = 1.0, 0.01
     else:
@@ -239,7 +267,10 @@ def _weather_context(feed: dict[str, Any]) -> WeatherContext:
 def _feature_map(row: dict[str, Any]) -> dict[str, float]:
     names = row.get("feature_names") or []; vals = row.get("feature_vector") or []
     if len(names) != len(vals): raise ProspectiveModelUnavailable("feature_vector_mismatch")
-    return {str(n): float(v) for n, v in zip(names, vals)}
+    try:
+        return {str(n): float(v) for n, v in zip(names, vals)}
+    except (TypeError, ValueError) as exc:
+        raise ProspectiveModelUnavailable("feature_vector_invalid") from exc
 
 
 def _starter_failure_probability(f: dict[str, float]) -> float:
@@ -297,7 +328,12 @@ def _seed_for_event(event_key: str, snapshot_id: str) -> int:
 
 
 def _bounds(score: dict[str, Any], calibrated_home: float, context_haircut: float) -> tuple[float, float, float, float]:
-    base_cal = float(score["calibrated_home_probability"]); lower_w = max(0.04, base_cal - float(score["home_lower_bound"])); upper_w = max(0.04, float(score["home_upper_bound"]) - base_cal)
+    numeric = _required_numeric_inputs(
+        score,
+        ("calibrated_home_probability", "home_lower_bound", "home_upper_bound"),
+        source="score",
+    )
+    base_cal = numeric["calibrated_home_probability"]; lower_w = max(0.04, base_cal - numeric["home_lower_bound"]); upper_w = max(0.04, numeric["home_upper_bound"] - base_cal)
     h_lo = _clip(calibrated_home - lower_w - context_haircut, 0.001, 0.999); h_hi = _clip(calibrated_home + upper_w + context_haircut, 0.001, 0.999)
     if not h_lo < calibrated_home < h_hi: raise ProspectiveModelUnavailable("prospective_bounds_invalid")
     return h_lo, h_hi, 1.0 - h_hi, 1.0 - h_lo
@@ -306,15 +342,26 @@ def _bounds(score: dict[str, Any], calibrated_home: float, context_haircut: floa
 def score_prospective_event(req: Any, bridge_payload: dict[str, Any], client: Any, *, stats_fetcher: Callable[[list[int], int], dict[int, dict[str, Any]]] = _fetch_player_stats, simulation_count: int = MIN_SIMULATIONS) -> dict[str, Any]:
     if bridge_payload.get("code") != "REAL_FITTED_MODEL_PATH_PROVEN": raise ProspectiveModelUnavailable("prospective_path_requires_held_fitted_baseline")
     evidence = _load_evidence(client, bridge_payload); score = evidence["score"]; event = evidence["event"]; lineup = evidence["lineup"]; health = evidence["health"]; cal = evidence["calibration"]; dist = evidence["distribution"]; artifact = evidence["artifact"]; feed = _parse_feed(lineup["raw_body"])
+    score_numeric = _required_numeric_inputs(
+        score,
+        ("calibrated_home_probability", "home_lower_bound", "home_upper_bound", "home_mu", "away_mu"),
+        source="score",
+    )
+    dist_numeric = _required_numeric_inputs(
+        dist,
+        ("home_alpha_total", "away_alpha_total", "extra_inning_home_win_probability"),
+        source="distribution",
+    )
+    cal_numeric = _required_numeric_inputs(cal, ("intercept_shift",), source="calibration")
     home_order = [int(x) for x in lineup.get("home_batting_order") or []]; away_order = [int(x) for x in lineup.get("away_batting_order") or []]; season = int(str(event["official_date"])[:4]); player_stats = stats_fetcher(home_order + away_order, season)
     home_starter_hand = _starter_hand(feed, event.get("home_probable_pitcher_id")); away_starter_hand = _starter_hand(feed, event.get("away_probable_pitcher_id")); home_lineup = _lineup_adjustment(home_order, away_starter_hand, player_stats); away_lineup = _lineup_adjustment(away_order, home_starter_hand, player_stats); weather = _weather_context(feed)
     home_features = _feature_map(evidence["features"]["HOME"]); away_features = _feature_map(evidence["features"]["AWAY"])
     if getattr(req, "market_prior", None) is not None:
         favorite = "HOME" if float(req.market_prior.home_probability) >= float(req.market_prior.away_probability) else "AWAY"; market_prior_available = True
     else:
-        favorite = "HOME" if float(score["calibrated_home_probability"]) >= 0.5 else "AWAY"; market_prior_available = False
-    seed = _seed_for_event(str(req.event_key), str(req.source_snapshot_id)); sim = _simulate(home_mu=float(score["home_mu"]), away_mu=float(score["away_mu"]), home_alpha=float(dist["home_alpha_total"]), away_alpha=float(dist["away_alpha_total"]), extra_home_win=float(dist["extra_inning_home_win_probability"]), lineup_home=home_lineup, lineup_away=away_lineup, weather=weather, home_features=home_features, away_features=away_features, seed=seed, simulation_count=simulation_count, favorite=favorite)
-    raw_home = sim["raw_home_probability"]; raw_away = sim["raw_away_probability"]; cal_home = _sigmoid(_logit(raw_home) + float(cal["intercept_shift"])); cal_away = 1.0 - cal_home
+        favorite = "HOME" if score_numeric["calibrated_home_probability"] >= 0.5 else "AWAY"; market_prior_available = False
+    seed = _seed_for_event(str(req.event_key), str(req.source_snapshot_id)); sim = _simulate(home_mu=score_numeric["home_mu"], away_mu=score_numeric["away_mu"], home_alpha=dist_numeric["home_alpha_total"], away_alpha=dist_numeric["away_alpha_total"], extra_home_win=dist_numeric["extra_inning_home_win_probability"], lineup_home=home_lineup, lineup_away=away_lineup, weather=weather, home_features=home_features, away_features=away_features, seed=seed, simulation_count=simulation_count, favorite=favorite)
+    raw_home = sim["raw_home_probability"]; raw_away = sim["raw_away_probability"]; cal_home = _sigmoid(_logit(raw_home) + cal_numeric["intercept_shift"]); cal_away = 1.0 - cal_home
     missing_hitters = len(home_lineup.missing_ids) + len(away_lineup.missing_ids); context_haircut = _clip(0.010 + 0.20 * abs(home_lineup.ratio - 1.0) + 0.20 * abs(away_lineup.ratio - 1.0) + 0.08 * weather.disruption_probability + 0.005 * missing_hitters, 0.010, 0.045); h_lo, h_hi, a_lo, a_hi = _bounds(score, cal_home, context_haircut)
     model_ts = datetime.now(timezone.utc).isoformat(); latest_material = max(str(event.get("snapshot_timestamp") or ""), str(event.get("lineup_confirmed_at") or ""), str(lineup.get("captured_at") or "")); inputs_hash = hashlib.sha256(json.dumps({"score_snapshot_id": score["score_snapshot_id"], "lineup_identity_sha256": lineup.get("lineup_identity_sha256"), "lineup_home_ratio": home_lineup.ratio, "lineup_away_ratio": away_lineup.ratio, "weather": weather.__dict__, "artifact_id": artifact.get("artifact_id"), "simulation_seed": seed, "simulation_count": simulation_count}, sort_keys=True, default=str).encode()).hexdigest()
     result = {"status": "MODEL_SCORED_PROSPECTIVE", "code": "GOVERNED_MODEL_PROBABILITY_PROSPECTIVE", "controlling_specialist": "wow.mlb-game-win-probability-expert", "model_version": MODEL_VERSION, "feature_schema_version": FEATURE_SCHEMA_VERSION, "artifact_id": artifact.get("artifact_id"), "artifact_lifecycle_state": artifact.get("lifecycle_state"), "research_run_id": req.research_run_id, "event_key": req.event_key, "official_event_id": req.official_event_id, "source_snapshot_id": req.source_snapshot_id, "base_score_snapshot_id": score["score_snapshot_id"], "model_inputs_hash": inputs_hash, "model_timestamp": model_ts, "latest_material_update_timestamp": latest_material, "model_valid_after_latest_update": True, "simulation_seed": seed, "simulation_count": int(simulation_count), "projected_runs_home": sim["projected_runs_home"], "projected_runs_away": sim["projected_runs_away"], "tie_after_9_probability": sim["tie_after_9_probability"], "home_wins_extras_given_tie": sim["home_wins_extras_given_tie"], "away_wins_extras_given_tie": sim["away_wins_extras_given_tie"], "raw_home_probability": raw_home, "raw_away_probability": raw_away, "independent_home_probability": raw_home, "independent_away_probability": raw_away, "market_prior_available": market_prior_available, "market_prior_weight": 0.0, "calibrated_home_probability": cal_home, "calibrated_away_probability": cal_away, "calibrated_home_lower_bound": h_lo, "calibrated_home_upper_bound": h_hi, "calibrated_away_lower_bound": a_lo, "calibrated_away_upper_bound": a_hi, "calibration_method": str(cal["method"]), "calibration_version": str(cal["calibration_id"]), "calibration_training_n": int(cal["prior_games"]), "calibration_health_status": health["calibration_health_status"], "graded_forward_shadow_n": int(health.get("graded_shadow_n") or 0), "bounds_method_version": BOUNDS_VERSION, "context_uncertainty_haircut": context_haircut, "lineup_context": {"status": "CONFIRMED", "model_version": LINEUP_MODEL_VERSION, "home_starter_hand": home_starter_hand, "away_starter_hand": away_starter_hand, "home_lineup_ratio": home_lineup.ratio, "away_lineup_ratio": away_lineup.ratio, "home_valid_hitters": home_lineup.valid_hitters, "away_valid_hitters": away_lineup.valid_hitters, "home_missing_hitters": list(home_lineup.missing_ids), "away_missing_hitters": list(away_lineup.missing_ids), "lineup_identity_sha256": lineup.get("lineup_identity_sha256")}, "weather_context": {"model_version": WEATHER_MODEL_VERSION, "factor": weather.factor, "disruption_probability": weather.disruption_probability, "temperature_f": weather.temperature_f, "wind_mph": weather.wind_mph, "wind_direction": weather.wind_direction, "condition": weather.condition, "roof_type": weather.roof_type, "source": lineup.get("source_url"), "timestamp": lineup.get("captured_at")}, "regime_model_version": FAILURE_MODEL_VERSION, "regime_probabilities": sim["regime_probabilities"], "favorite_failure_paths_json": sim["favorite_failure_paths"], "largest_favorite_loss_path": sim["favorite_failure_paths"]["largest_favorite_loss_path"], "favorite_failure_path_probability": sim["favorite_failure_paths"]["favorite_failure_path_probability"], "underdog_upset_path_json": sim["underdog_upset_path"], "probability_audit_required": True, "final_event_governor_required": True, "model_probability_publishable": True, "probability_publishable": False, "rank_eligible": False, "terminal_ceiling": TERMINAL_CEILING, "terminal_label": TERMINAL_CEILING, "blockers": ["PROSPECTIVE_CERTIFICATION_CEILING"], "can_execute": False}
