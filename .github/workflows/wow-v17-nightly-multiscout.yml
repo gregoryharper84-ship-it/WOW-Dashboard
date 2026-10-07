@@ -37,6 +37,7 @@ on:
       - "artifacts/wow-engine/v17/sport_scout_registry.py"
       - "artifacts/wow-engine/v17/sport_scout_enrichment.py"
       - "artifacts/wow-engine/v17/scout_intelligence_dossier.py"
+      - "artifacts/wow-engine/v17/scout_prior_dossier.py"
       - "artifacts/wow-engine/v17/scout_research_promotion.py"
       - "artifacts/wow-engine/v17/scout_source_policy.py"
       - "artifacts/wow-engine/v17/scout_research_ledger.py"
@@ -75,6 +76,7 @@ on:
       - "artifacts/wow-engine/v17/sport_scout_registry.py"
       - "artifacts/wow-engine/v17/sport_scout_enrichment.py"
       - "artifacts/wow-engine/v17/scout_intelligence_dossier.py"
+      - "artifacts/wow-engine/v17/scout_prior_dossier.py"
       - "artifacts/wow-engine/v17/scout_research_promotion.py"
       - "artifacts/wow-engine/v17/scout_source_policy.py"
       - "artifacts/wow-engine/v17/scout_research_ledger.py"
@@ -99,6 +101,8 @@ on:
       - "artifacts/wow-engine/test_v17_scout_brain_edge_chunking.py"
       - "artifacts/wow-engine/test_v17_scout_source_degradation.py"
       - "artifacts/wow-engine/test_v17_scout_intelligence_dossier.py"
+      - "artifacts/wow-engine/test_v17_scout_prior_dossier.py"
+      - "artifacts/wow-engine/test_v17_scout_prior_dossier_edge_contract.py"
       - "artifacts/wow-engine/test_v17_scout_research_promotion.py"
       - "artifacts/wow-engine/test_v17_scout_board_refresh_fail_closed.py"
       - "artifacts/wow-engine/tests/test_v17_market_evidence_sources.py"
@@ -149,6 +153,8 @@ jobs:
           test_v17_scout_brain_edge_chunking.py
           test_v17_scout_source_degradation.py
           test_v17_scout_intelligence_dossier.py
+          test_v17_scout_prior_dossier.py
+          test_v17_scout_prior_dossier_edge_contract.py
           test_v17_scout_research_promotion.py
           test_v17_scout_board_refresh_fail_closed.py
           tests/test_v17_sport_scout_teams.py
