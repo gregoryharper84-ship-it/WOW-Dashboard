@@ -365,3 +365,31 @@ def test_product_truth_not_found_is_404(monkeypatch):
     )
     assert response.status_code == 404
     assert response.json()["detail"]["code"] == "RUN_NOT_FOUND"
+
+
+
+def test_product_truth_persistence_failure_does_not_rewrite_terminal_run(monkeypatch):
+    fake = FakeSupabaseClient()
+    monkeypatch.setattr(agent_runtime_api, "get_client", lambda: fake)
+    monkeypatch.setattr("ledger.get_client", lambda: fake)
+
+    def _fail_snapshot(*_args, **_kwargs):
+        raise RuntimeError("simulated product-truth persistence outage")
+
+    monkeypatch.setattr(repository, "record_product_truth_snapshot", _fail_snapshot)
+
+    created = client.post(
+        "/wow/runs",
+        json=_RUN_PAYLOAD,
+        headers={"Idempotency-Key": "product-truth-fallback-1"},
+    )
+    assert created.status_code == 202
+    run_id = created.json()["run_id"]
+    assert created.json()["status"] == "COMPLETED"
+
+    response = client.get(f"/wow/runs/{run_id}/product-truth")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["persisted"] is False
+    assert body["runtime_projection"]["run_outcome_complete"] is True
+    assert body["can_execute"] is False
