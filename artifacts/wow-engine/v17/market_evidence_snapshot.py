@@ -537,7 +537,10 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.require_capture:
         return 0 if acceptance_blockers(payload) == [] else 1
-    return 0 if payload["status"] == "MARKET_EVIDENCE_CAPTURED" else 1
+    return 0 if payload["status"] in {
+        "MARKET_EVIDENCE_CAPTURED",
+        "FREE_CORE_MARKET_OPTIONAL_READY",
+    } else 1
 
 
 if __name__ == "__main__":
