@@ -134,11 +134,13 @@ def test_new_workflows_parse_as_yaml() -> None:
 
 def test_closure_controller_has_hard_wip_and_golden_journeys() -> None:
     team = _text(ROOT / "artifacts/wow-engine/v17/engineering_agent_team.py")
-    assert 'TEAM_VERSION = "4.0"' in team
-    assert "MAX_ACTIVE_PRODUCT_RECOVERY = 3" in team
+    assert 'TEAM_VERSION = "5.0"' in team
+    assert "MAX_ACTIVE_PRODUCT_RECOVERY = 1" in team
     assert "MAX_ACTIVE_SUPPORTING_INVESTIGATION = 1" in team
     assert "ALL_SPORTS_PROPS" in team
     assert "ALL_SPORTS_ML_WINNERS" in team
+    assert "ALL_SPORTS_SPREADS" in team
+    assert "ALL_SPORTS_TEAM_MARKETS" in team
     assert "ALL_SPORTS_UPSETS" in team
     assert "validate_closure_record" in team
     assert "closure_wip" in team

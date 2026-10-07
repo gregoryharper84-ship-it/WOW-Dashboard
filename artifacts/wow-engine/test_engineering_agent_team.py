@@ -27,9 +27,9 @@ def test_specialist_subagents_are_support_only_and_read_only() -> None:
     assert all(role["may_change_probability_behavior"] is False for role in SPECIALIST_SUBAGENTS.values())
 
 
-def test_p0_p1_reliability_blocks_frontier_work() -> None:
+def test_any_actionable_backlog_blocks_frontier_work() -> None:
     assert reliability_blocks_frontier([{"severity": "P1", "state": "OPEN"}]) is True
-    assert reliability_blocks_frontier([{"severity": "P2", "state": "OPEN"}]) is False
+    assert reliability_blocks_frontier([{"severity": "P2", "state": "OPEN"}]) is True
     assert reliability_blocks_frontier([{"severity": "P0", "state": "VERIFIED_CLOSED"}]) is False
 
 
@@ -109,108 +109,55 @@ def test_parked_p0_does_not_starve_next_executable_incident() -> None:
     assert decision.incident_id == "PM-502"
 
 
-def test_dual_stream_selects_restoration_plus_non_conflicting_acceleration() -> None:
+def test_closure_focus_selects_one_parent_across_all_work_streams() -> None:
     decision = select_dual_stream_work(
         [
             {
-                "postmortem_id": "PM-960",
-                "severity": "P0",
-                "state": "PR_CREATED",
-                "wait_state": "REVIEW_PENDING",
-                "conflict_keys": ["nfl-full-slate"],
+                "postmortem_id": "PM-823",
+                "severity": "P1",
+                "state": "OPEN",
+                "priority_rank": 2,
+                "conflict_keys": ["full-slate"],
             },
             {
-                "postmortem_id": "PM-502",
-                "severity": "P0",
+                "postmortem_id": "PM-1309",
+                "severity": "P1",
                 "state": "OPEN",
-                "conflict_keys": ["interactive-runtime"],
-            },
-            {
-                "postmortem_id": "PM-1135",
-                "severity": "P2",
-                "state": "OPEN",
+                "priority_rank": 1,
                 "work_stream": "ACCELERATION",
-                "conflict_keys": ["engineering-test-harness"],
+                "conflict_keys": ["team-market-certification"],
             },
         ]
     )
-    assert decision.restoration.incident_id == "PM-502"
-    assert decision.acceleration.incident_id == "PM-1135"
-    assert decision.acceleration_blocked_reason is None
+    assert decision.restoration.incident_id == "PM-1309"
+    assert decision.acceleration.incident_id is None
+    assert "CLOSURE_FOCUS_MODE" in (decision.acceleration_blocked_reason or "")
     assert decision.as_dict()["can_execute"] is False
     assert decision.as_dict()["terminal_authority"] == "V17_TERMINAL_REDUCER"
 
 
-def test_dual_stream_rejects_overlapping_acceleration_owner() -> None:
+def test_closure_focus_still_prefers_p0_over_p1() -> None:
     decision = select_dual_stream_work(
         [
             {
-                "postmortem_id": "PM-502",
-                "severity": "P0",
-                "state": "OPEN",
-                "production_code_owners": ["wow-host"],
-            },
-            {
-                "postmortem_id": "PM-1136",
-                "severity": "P2",
-                "state": "OPEN",
-                "work_stream": "ACCELERATION",
-                "production_code_owners": ["wow-host"],
-            },
-        ]
-    )
-    assert decision.restoration.incident_id == "PM-502"
-    assert decision.acceleration.incident_id is None
-    assert "WOW-HOST" in (decision.acceleration_blocked_reason or "")
-
-
-def test_dual_stream_fails_closed_when_conflict_metadata_is_missing() -> None:
-    decision = select_dual_stream_work(
-        [
-            {
-                "postmortem_id": "PM-502",
-                "severity": "P0",
-                "state": "OPEN",
-                "conflict_keys": ["interactive-runtime"],
-            },
-            {
-                "postmortem_id": "PM-1137",
-                "severity": "P2",
-                "state": "OPEN",
-                "work_stream": "ACCELERATION",
-            },
-        ]
-    )
-    assert decision.acceleration.incident_id is None
-    assert "fails closed" in (decision.acceleration_blocked_reason or "")
-
-
-def test_dual_stream_skips_conflicting_acceleration_for_next_safe_candidate() -> None:
-    decision = select_dual_stream_work(
-        [
-            {
-                "postmortem_id": "PM-502",
-                "severity": "P0",
-                "state": "OPEN",
-                "conflict_keys": ["interactive-runtime"],
-            },
-            {
-                "postmortem_id": "PM-1135",
+                "postmortem_id": "PM-1309",
                 "severity": "P1",
                 "state": "OPEN",
-                "work_stream": "ACCELERATION",
-                "conflict_keys": ["interactive-runtime"],
+                "priority_rank": 1,
+                "conflict_keys": ["team-markets"],
             },
             {
-                "postmortem_id": "PM-1136",
-                "severity": "P2",
+                "postmortem_id": "PM-1388",
+                "severity": "P0",
                 "state": "OPEN",
+                "priority_rank": 99,
                 "work_stream": "ACCELERATION",
-                "conflict_keys": ["test-harness"],
+                "conflict_keys": ["runtime-memory"],
             },
         ]
     )
-    assert decision.acceleration.incident_id == "PM-1136"
+    assert decision.restoration.incident_id == "PM-1388"
+    assert decision.acceleration.incident_id is None
 
 
 def test_specialist_routing_preserves_exact_failure_ownership() -> None:
