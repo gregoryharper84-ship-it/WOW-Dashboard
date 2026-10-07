@@ -12,11 +12,13 @@ from typing import Any
 
 try:  # package import under pytest/backend runtime
     from v17.market_evidence_snapshot_bridge import attach_snapshot_evidence
+    from v17.scout_intelligence_dossier import build_scout_dossier
     from v17.scout_research_promotion import promote_handoff
     from v17.sport_scout_registry import registry_payload, scout_team_for
     from v17.sport_research_brief import SUPPORTED_RESEARCH_WORKERS, build_research_brief
 except ModuleNotFoundError:  # direct `python v17/sport_scout_enrichment.py`
     from market_evidence_snapshot_bridge import attach_snapshot_evidence
+    from scout_intelligence_dossier import build_scout_dossier
     from scout_research_promotion import promote_handoff
     from sport_scout_registry import registry_payload, scout_team_for
     from sport_research_brief import SUPPORTED_RESEARCH_WORKERS, build_research_brief
@@ -39,6 +41,19 @@ def enrich_candidate(row: dict[str, Any], lane: str) -> dict[str, Any]:
         worker_id: build_research_brief(enriched, worker_id)
         for worker_id in SUPPORTED_RESEARCH_WORKERS
     }
+    prior_dossier = row.get("scout_dossier") if isinstance(row.get("scout_dossier"), dict) else None
+    dossier = build_scout_dossier(enriched, previous=prior_dossier)
+    enriched["scout_dossier"] = dossier
+    material_conflicts = [
+        f"{item.get('code')}:{item.get('domain')}:{item.get('claim_key')}"
+        for item in dossier.get("contradictions", [])
+        if isinstance(item, dict)
+    ]
+    if material_conflicts:
+        enriched["contradictory_evidence"] = sorted(set(
+            [str(value) for value in (enriched.get("contradictory_evidence") or [])]
+            + material_conflicts
+        ))
     enriched["research_workers_may_create_probability"] = False
     enriched["can_execute"] = False
     return enriched
@@ -56,6 +71,7 @@ def enrich_handoff(payload: dict[str, Any]) -> dict[str, Any]:
     out["research_worker_registry"] = {
         "worker_ids": list(SUPPORTED_RESEARCH_WORKERS),
         "sport_aware_briefs_attached": True,
+        "structured_scout_dossier_attached": True,
         "research_ceiling": "RESEARCH_INTEREST",
         "prediction_authority": False,
         "can_execute": False,
