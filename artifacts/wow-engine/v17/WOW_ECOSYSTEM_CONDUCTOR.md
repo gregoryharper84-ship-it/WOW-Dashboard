@@ -162,9 +162,25 @@ change_class
 decision_right
 required_verifier
 promotion_state
+updated_at
+lease_expires_at
 ```
 
 The invariant is: **everything admitted must either remain validly owned and advancing, be explicitly blocked with an exact reason, or terminate with an attributable terminal state.**
+
+Active ownership is time-bounded. A nonterminal envelope must carry an offset-aware `updated_at` and a future `lease_expires_at`; an expired lease fails closed instead of allowing indefinite `IN_PROGRESS`.
+
+When `current_owner=ENGINEERING_CLOSURE`, terminal dispositions are restricted to:
+
+```text
+FIXED_AND_VERIFIED
+PR_CREATED
+EXPERIMENT_CREATED
+DUPLICATE
+NOT_REPRODUCIBLE
+BLOCKED_WITH_EXACT_REASON
+DEFERRED_WITH_JUSTIFICATION
+```
 
 The Conductor fails closed on missing ownership, invalid authority domains, unregistered next owners, silent terminal loss, duplicate ecosystem work IDs, blockers without reasons, Engineering self-verification, `FIXED_AND_VERIFIED` without Independent Verification, or Class C promotion without verified independent review.
 
