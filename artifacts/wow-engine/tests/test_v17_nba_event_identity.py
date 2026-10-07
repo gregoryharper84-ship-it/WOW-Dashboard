@@ -65,3 +65,38 @@ def test_multiple_schedule_ids_fail_ambiguous():
             fetcher=duplicate,
         )
     assert exc.value.code == "NBA_CANONICAL_EVENT_AMBIGUOUS"
+
+
+
+def test_nba_schedule_asset_uses_season_ending_year():
+    from datetime import datetime, timezone
+
+    assert identity.schedule_season_year(
+        datetime(2026, 10, 7, tzinfo=timezone.utc)
+    ) == 2027
+    assert identity.schedule_season_year(
+        datetime(2026, 6, 13, tzinfo=timezone.utc)
+    ) == 2026
+
+
+def test_october_2026_identity_fetches_2027_schedule_asset():
+    seen = {}
+
+    def fetch(sport, year):
+        seen["sport"] = sport
+        seen["year"] = year
+        return [{
+            "game_id": "401950001",
+            "game_date": "2026-10-07",
+            "home_id": "13",
+            "away_id": "24",
+        }]
+
+    out = identity.resolve_nba_current_event_identity(
+        event_start_time="2026-10-08T00:30:00Z",
+        home_team_alias="espn-13",
+        away_team_alias="espn-24",
+        fetcher=fetch,
+    )
+    assert out["event_id"] == "espn-401950001"
+    assert seen == {"sport": "NBA", "year": 2027}
