@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import threading
+import time
+
 import pytest
 
 from v17 import daily_snapshot_runtime as daily_runtime
@@ -51,6 +54,45 @@ def test_shared_heavy_slot_serializes_jobs(monkeypatch):
     second = memory_admission.try_acquire_heavy_job("DAILY_SNAPSHOT")
     assert second is not None
     second.release()
+
+
+
+def test_waiting_interactive_daily_prevents_scout_reacquisition(monkeypatch):
+    monkeypatch.setattr(memory_admission, "_read_cgroup_memory_bytes", lambda: (50, 100))
+    scout = memory_admission.try_acquire_heavy_job("SCOUT_HANDOFF")
+    assert scout is not None
+
+    daily_acquired = threading.Event()
+    release_daily = threading.Event()
+    result = {}
+
+    def acquire_daily():
+        try:
+            permit = memory_admission.acquire_heavy_job("DAILY_SNAPSHOT", wait_seconds=1.0)
+            result["permit"] = permit
+            daily_acquired.set()
+            release_daily.wait(timeout=1.0)
+            permit.release()
+        except Exception as exc:
+            result["error"] = exc
+            daily_acquired.set()
+
+    thread = threading.Thread(target=acquire_daily)
+    thread.start()
+    deadline = time.monotonic() + 0.5
+    while memory_admission.admission_snapshot("TEST")["interactive_waiters"] < 1:
+        assert time.monotonic() < deadline
+        time.sleep(0.005)
+
+    scout.release()
+    assert memory_admission.try_acquire_heavy_job("SCOUT_HANDOFF") is None
+    assert daily_acquired.wait(timeout=0.5)
+    assert "error" not in result
+    assert result.get("permit") is not None
+
+    release_daily.set()
+    thread.join(timeout=1.0)
+    assert not thread.is_alive()
 
 
 def test_missing_cgroup_sample_is_visible_not_silent(monkeypatch):
