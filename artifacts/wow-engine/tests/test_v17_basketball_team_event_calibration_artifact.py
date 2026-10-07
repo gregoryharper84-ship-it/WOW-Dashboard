@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -33,7 +34,8 @@ def test_shadow_artifact_is_hash_bound_and_not_self_certified():
     raw = [0.35 + (i % 20) * 0.015 for i in range(240)]
     outcomes = [int((i % 3) != 0) for i in range(240)]
     folds = [min(i // 40, 5) for i in range(240)]
-    timestamps = [f"2025-01-{1 + (i % 28):02d}T00:00:00+00:00:{i:03d}" for i in range(240)]
+    start = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    timestamps = [(start + timedelta(hours=i)).isoformat() for i in range(240)]
 
     artifact, fingerprint = build_shadow_binary_calibration_artifact(
         sport="WNBA",
@@ -72,5 +74,25 @@ def test_shadow_artifact_rejects_short_history():
             outcomes=[1] * 20,
             fold_assignments=[0] * 20,
             timestamps=["2025-01-01T00:00:00+00:00"] * 20,
+            fit=_fit(),
+        )
+
+
+
+def test_shadow_artifact_rejects_naive_or_malformed_timestamp_provenance():
+    raw = [0.5] * 240
+    outcomes = [i % 2 for i in range(240)]
+    folds = [min(i // 40, 5) for i in range(240)]
+    timestamps = ["2025-01-01T00:00:00"] * 240
+    with pytest.raises(BasketballCalibrationArtifactError, match="BASKETBALL_CALIBRATION_TIMESTAMP_INVALID"):
+        build_shadow_binary_calibration_artifact(
+            sport="NBA",
+            model_family="BASKETBALL_TEAM_EVENT_LOGISTIC_V1",
+            model_version="NBA_TEST_MODEL",
+            calibration_version="NBA_TEST_PLATT",
+            raw_probabilities=raw,
+            outcomes=outcomes,
+            fold_assignments=folds,
+            timestamps=timestamps,
             fit=_fit(),
         )
