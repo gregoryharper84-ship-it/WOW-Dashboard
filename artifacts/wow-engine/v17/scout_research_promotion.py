@@ -177,6 +177,53 @@ def _required_domain_state(
     usable_rows = 0
     fresh_rows = 0
 
+    dossier = candidate.get("scout_dossier") if isinstance(candidate.get("scout_dossier"), dict) else None
+    dossier_coverage = (
+        dossier.get("required_domain_coverage")
+        if isinstance(dossier, dict) and isinstance(dossier.get("required_domain_coverage"), dict)
+        else None
+    )
+    dossier_ledger = (
+        [row for row in dossier.get("evidence_ledger", []) if isinstance(row, dict)]
+        if isinstance(dossier, dict)
+        else []
+    )
+    if dossier_coverage is not None:
+        complete = {
+            domain: bool(dossier_coverage.get(str(domain).lower(), False))
+            for domain in required
+        }
+        for entry in dossier_ledger:
+            if str(entry.get("domain") or "").lower() == "market":
+                continue
+            if entry.get("research_usable") is not True:
+                continue
+            family = str(entry.get("source_family") or "UNVERIFIED")
+            source_id = str(entry.get("source_id") or family)
+            families.add(family)
+            independent_sources.add((family, source_id))
+            usable_rows += 1
+            if entry.get("dynamic_stale") is not True:
+                fresh_rows += 1
+            age = entry.get("age_minutes")
+            max_age = entry.get("dynamic_max_age_minutes")
+            if isinstance(age, (int, float)) and isinstance(max_age, (int, float)) and max_age > 0:
+                freshness_scores.append(max(0.0, min(100.0, 100.0 * (1.0 - float(age) / float(max_age)))))
+        if complete.get("market") and market_usable:
+            families.add(MARKET_SOURCE_FAMILY)
+            independent_sources.add((MARKET_SOURCE_FAMILY, "SPORTSBOOK_MARKET_COMPLEX"))
+        missing = [domain for domain in required if not complete.get(str(domain).lower(), False)]
+        return (
+            required,
+            missing,
+            complete,
+            families,
+            independent_sources,
+            freshness_scores,
+            usable_rows,
+            fresh_rows,
+        )
+
     for domain in required:
         key = str(domain).lower()
         allowed_classes = {str(value).upper() for value in requirements.get(domain, [])}
