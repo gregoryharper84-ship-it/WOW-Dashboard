@@ -1,7 +1,7 @@
 """Deterministic WOW ecosystem conductor and work-conservation control plane.
 
-Class A only: this module coordinates metadata, readiness, handoffs, lifecycle
-accounting, and truthful status reporting. It never scores sporting events,
+Class A only: this module coordinates metadata, readiness, handoffs, cross-system
+ownership envelopes, and truthful status reporting. It never scores sporting events,
 changes model math/calibration, overrides specialist ownership, publishes a
 probability, or grants wagering/trading execution authority.
 """
@@ -53,7 +53,7 @@ REQUIRED_RUNTIME_INVARIANTS = {
     "self_verification_detected": False,
 }
 
-REQUIRED_WORK_ITEM_FIELDS = {
+REQUIRED_ECOSYSTEM_WORK_ITEM_FIELDS = {
     "work_item_id",
     "request_id",
     "objective_id",
@@ -250,26 +250,26 @@ def validate_registry(registry: dict[str, Any]) -> list[str]:
         ):
             errors.append(f"golden path {path_name} must traverse {CONDUCTOR}")
 
-    contract = registry.get("work_item_contract")
+    contract = registry.get("ecosystem_work_item_envelope_contract")
     if not isinstance(contract, dict):
-        errors.append("work_item_contract must be an object")
+        errors.append("ecosystem_work_item_envelope_contract must be an object")
     else:
         required = set(map(str, contract.get("required_fields") or []))
-        missing_fields = REQUIRED_WORK_ITEM_FIELDS - required
+        missing_fields = REQUIRED_ECOSYSTEM_WORK_ITEM_FIELDS - required
         if missing_fields:
             errors.append(
-                f"work_item_contract missing required fields: {sorted(missing_fields)}"
+                f"ecosystem_work_item_envelope_contract missing required fields: {sorted(missing_fields)}"
             )
         if contract.get("silent_drop_forbidden") is not True:
-            errors.append("work_item_contract.silent_drop_forbidden must be true")
+            errors.append("ecosystem_work_item_envelope_contract.silent_drop_forbidden must be true")
         if contract.get("self_verification_forbidden") is not True:
-            errors.append("work_item_contract.self_verification_forbidden must be true")
+            errors.append("ecosystem_work_item_envelope_contract.self_verification_forbidden must be true")
         if (
             contract.get("class_c_requires_independent_verification_before_promotion")
             is not True
         ):
             errors.append(
-                "work_item_contract.class_c_requires_independent_verification_before_promotion must be true"
+                "ecosystem_work_item_envelope_contract.class_c_requires_independent_verification_before_promotion must be true"
             )
 
     return errors
@@ -312,18 +312,18 @@ def _nonempty(value: Any) -> bool:
     return isinstance(value, str) and bool(value.strip())
 
 
-def validate_work_item(
+def validate_ecosystem_work_item_envelope(
     item: Any,
     registry: dict[str, Any],
     *,
     index: int | None = None,
 ) -> list[str]:
-    label = f"work_items[{index}]" if index is not None else "work_item"
+    label = f"ecosystem_work_items[{index}]" if index is not None else "ecosystem_work_item"
     if not isinstance(item, dict):
         return [f"{label} must be an object"]
 
     errors: list[str] = []
-    missing = sorted(REQUIRED_WORK_ITEM_FIELDS - set(item))
+    missing = sorted(REQUIRED_ECOSYSTEM_WORK_ITEM_FIELDS - set(item))
     if missing:
         errors.append(f"{label} missing required fields: {missing}")
         return errors
@@ -435,11 +435,11 @@ def validate_work_item(
     return errors
 
 
-def evaluate_work_conservation(
+def evaluate_ecosystem_work_conservation(
     registry: dict[str, Any],
     observed: dict[str, Any],
 ) -> dict[str, Any]:
-    items = observed.get("work_items")
+    items = observed.get("ecosystem_work_items")
     if not isinstance(items, list):
         return {
             "status": "FAIL",
@@ -451,7 +451,7 @@ def evaluate_work_conservation(
             "invalid_items": [
                 {
                     "work_item_id": None,
-                    "errors": ["work_items must be supplied as a list"],
+                    "errors": ["ecosystem_work_items must be supplied as a list"],
                 }
             ],
             "duplicate_work_item_ids": [],
@@ -465,7 +465,7 @@ def evaluate_work_conservation(
     blocked = 0
 
     for index, item in enumerate(items):
-        errors = validate_work_item(item, registry, index=index)
+        errors = validate_ecosystem_work_item_envelope(item, registry, index=index)
         work_item_id = item.get("work_item_id") if isinstance(item, dict) else None
         if _nonempty(work_item_id):
             if work_item_id in seen_ids:
@@ -552,7 +552,7 @@ def evaluate_ecosystem(
             degraded_handoffs.append(item)
 
     invariant_violations, invariant_state = _evaluate_runtime_invariants(observed)
-    work_conservation = evaluate_work_conservation(registry, observed)
+    work_conservation = evaluate_ecosystem_work_conservation(registry, observed)
 
     path_results: dict[str, dict[str, Any]] = {}
     any_false_green = False
