@@ -586,7 +586,29 @@ class ReliabilityControlPlaneTests(unittest.TestCase):
             registry=REGISTRY,
             live_result={"evaluation": green_evaluation()},
             handoff_receipts=handoffs,
-            capability_items=self.matrix(),
+            capability_items=[
+                ready_capability(
+                    "WOW_PROP",
+                    "MLB",
+                    "PITCHER_STRIKEOUTS",
+                    "WOW_MLB_K_SPECIALIST",
+                    "mlb-k",
+                ),
+                ready_capability(
+                    "LLP_TEAM_EVENT",
+                    "NFL",
+                    "MONEYLINE",
+                    "NFL_TEAM_EVENT_SPECIALIST",
+                    "nfl-ml",
+                ),
+                ready_capability(
+                    "KALSHI_WEATHER",
+                    "KDAL",
+                    "DAILY_HIGH",
+                    "KALSHI_WEATHER_EXPERT",
+                    "kdal-high",
+                ),
+            ],
             metric_counts=counts,
         )
         self.assertEqual("DEGRADED", snapshot["control_plane_status"])
