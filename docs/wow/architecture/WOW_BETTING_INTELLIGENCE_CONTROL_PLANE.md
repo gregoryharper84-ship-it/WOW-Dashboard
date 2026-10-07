@@ -1,10 +1,10 @@
-# WOW V17 Betting Intelligence — Class A Ecosystem Control Plane
+# WOW V17 Betting Intelligence — Class A Product Intelligence & Orchestration Control Plane
 
 ## Status
 
 Repository contract for the **WOW Betting Intelligence / Product Intelligence & Orchestration** layer.
 
-This document defines the role of Betting Intelligence as the ecosystem control plane. It does **not** create sporting probability authority, model certification authority, execution authority, or a second terminal reducer.
+This document defines Betting Intelligence as the **Product Intelligence & Orchestration Control Plane** inside the wider neutral `WOW_ECOSYSTEM_CONDUCTOR`. It does **not** create sporting probability authority, model certification authority, execution authority, or a second terminal reducer.
 
 Global invariants:
 
@@ -23,7 +23,7 @@ It owns:
 
 1. intent and objective compilation,
 2. product scope and acceptance criteria,
-3. ecosystem routing and handoff integrity,
+3. product routing and candidate/work handoff integrity,
 4. candidate-universe completeness,
 5. product-level reconciliation,
 6. capability/readiness truth,
@@ -38,6 +38,10 @@ It does not own probability math, specialist certification, system self-verifica
 
 ```text
 USER OBJECTIVE
+      |
+      v
+WOW ECOSYSTEM CONDUCTOR
+neutral ecosystem coordination + authority-boundary conservation
       |
       v
 WOW BETTING INTELLIGENCE
@@ -64,6 +68,10 @@ every admitted item receives one attributable disposition
       |
       v
 INDEPENDENT VERIFICATION / GOVERNANCE
+      |
+      v
+WOW ECOSYSTEM CONDUCTOR
+cross-domain reconciliation
       |
       v
 USER-FACING PRODUCT RESULT
@@ -221,6 +229,10 @@ This prevents backend health or registered models from being misreported as actu
 
 ## Separation of authority
 
+### WOW Ecosystem Conductor
+
+Owns neutral ecosystem-wide coordination: cross-domain routing integrity, authority-boundary validation, ecosystem work envelopes, connection readiness, and proof that handoffs occurred. It does not own product semantics, probability, Engineering, verification, SAFE_HOLD authority, or terminal publication.
+
 ### Betting Intelligence
 
 May:
@@ -271,3 +283,9 @@ Regression coverage is:
 `artifacts/wow-engine/test_betting_intelligence_control_plane.py`
 
 The control-plane module is intentionally pure and side-effect free. Durable storage/API integration should persist its typed snapshots and receipts through an existing governed persistence surface rather than adding a second ad-hoc source of truth.
+
+The repository-level neutral ecosystem coordinator is defined separately in:
+
+`artifacts/wow-engine/v17/ecosystem_conductor.py`
+
+Its role is complementary rather than competing: Betting Intelligence owns product semantics; the Conductor owns ecosystem-wide coordination and authority-boundary conservation.
