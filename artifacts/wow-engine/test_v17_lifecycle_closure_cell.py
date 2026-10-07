@@ -92,3 +92,44 @@ def test_24h_loop_emits_explicit_lifecycle_owner():
     assert 'echo "lifecycle_owner=$lifecycle_owner"' in text
     assert '--arg lifecycle_owner "$lifecycle_owner"' in text
     assert 'lifecycle_owner:$lifecycle_owner' in text
+
+
+
+def test_lifecycle_control_path_cannot_bypass_marker():
+    module = _module()
+    record = module.lifecycle_record_from_pr_body(
+        "",
+        changed_paths=("artifacts/wow-engine/v17/engineering_agent_team.py",),
+    )
+    assert record["lifecycle_control_plane"] is True
+    errors = module.validate_lifecycle_classification(record)
+    assert any("invalid lifecycle change_class: MISSING" in error for error in errors)
+    assert any("explicit scope flags" in error for error in errors)
+
+
+def test_lifecycle_pr_body_parses_explicit_class_a_attestation():
+    module = _module()
+    lines = [
+        "Lifecycle-Control-Plane: true",
+        "Change-Class: A",
+        "",
+        "### Explicit Class A scope attestation",
+        *[f"- {flag}: false" for flag in module.LIFECYCLE_SCOPE_FLAGS],
+    ]
+    record = module.lifecycle_record_from_pr_body(
+        "\n".join(lines),
+        changed_paths=(".github/workflows/wow-v17-24h-engineering-closure-loop.yml",),
+    )
+    assert record["lifecycle_control_plane"] is True
+    assert record["change_class"] == "A"
+    assert module.validate_lifecycle_classification(record) == []
+
+
+def test_non_lifecycle_path_does_not_force_lifecycle_classification():
+    module = _module()
+    record = module.lifecycle_record_from_pr_body(
+        "",
+        changed_paths=("README.md",),
+    )
+    assert record == {"lifecycle_control_plane": False}
+    assert module.validate_lifecycle_classification(record) == []
