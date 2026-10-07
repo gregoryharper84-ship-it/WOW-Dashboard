@@ -310,6 +310,7 @@ def test_hybrid_can_disable_paid_discovery_fallback_explicitly(monkeypatch):
 
     assert state["calls_attempted"] == 0
     assert state["calls_blocked"] == 1
+    assert state["status"] == quota.DISABLED_BY_POLICY
     assert "PAID_PROVIDER_DISCOVERY_DISABLED" in blocker
     assert context["paid_provider_calls_attempted"] == 0
     assert context["paid_provider_calls_blocked_by_source_policy"] == 1
