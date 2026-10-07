@@ -719,7 +719,14 @@ def get_sport_date_odds_snapshot(
         observability.increment("rundown_singleflight_hits")
     if isinstance(result.request_audit, dict):
         # Never mutate a shared cached result: callers read their own origin.
-        result = replace(result, request_audit={**result.request_audit, "cache_origin": origin})
+        # Preserve a durable-cache hit across the outer in-process cache seam;
+        # from snapshot_cache's perspective the durable lookup is its fetcher,
+        # but it is still not a paid provider call.
+        prior_origin = str(result.request_audit.get("cache_origin") or "")
+        request_audit = {**result.request_audit, "memory_cache_origin": origin}
+        if prior_origin != "DURABLE_CACHE":
+            request_audit["cache_origin"] = origin
+        result = replace(result, request_audit=request_audit)
     return result
 
 
