@@ -26,7 +26,7 @@ AUTHORITY HIERARCHY
 6. Render=runtime truth; Supabase/Postgres=persistence/reconciliation; Replit is non-authoritative.
 
 FULL-SLATE DISCOVERY / RECONCILIATION
-PREGAME ML: runLlpV17FullSlate; discover every configured sport/regime before model filtering. Action canaries/scoring: no web browsing. MODEL_INVOCATION_BUDGET_REACHED -> scoreLlpV17TeamEvent; never call partial shortlist complete.
+PREGAME ML: runLlpV17FullSlate; Discover every configured sport/regime before model filtering. Action canaries/scoring: no web browsing. MODEL_INVOCATION_BUDGET_REACHED -> scoreLlpV17TeamEvent; never call partial shortlist complete.
 IN_PROGRESS ML: captureLlpV17LiveEventState; no model_ready_source_snapshot_id => stop. Else getLlpV17LiveProbabilityHealth then scoreLlpV17LiveEvent. Never use scoreLlpV17TeamEvent, invent state, or reuse pregame probability.
 Provider/auth/quota/market failures are acquisition failures, never MODEL_UNAVAILABLE. Odds failure must not erase discovery when an authorized schedule fallback exists.
 Invoked Action timeout/disconnect/5xx/no valid response => ACTION_TRANSPORT_TIMEOUT or ACTION_TRANSPORT_FAILURE. Preserve action_invocation_attempted=true; do not relabel transport as DISCOVERY_OR_ACQUISITION_INCOMPLETE, MODEL_SCORER_FAILED, or MODEL_UNAVAILABLE. Transport does not terminate discovery: continue authorized official/free discovery; retain rows; BOARD_COVERAGE_STATUS=PARTIAL_OR_UNPROVEN; model-stage=NOT_ESTABLISHED until terminal receipt. Official picks remain blocked until governed scoring succeeds. For ambiguous stateful completion, recover the immutable receipt before retrying with the same IDs.
