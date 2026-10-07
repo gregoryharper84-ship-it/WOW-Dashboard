@@ -5,22 +5,36 @@ from pathlib import Path
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1] / "v17"
-SCHEMAS = (
-    ROOT / "openapi.llp-team-engine.v17.yaml",
-    ROOT / "openapi.wow-betting-engine.v17.yaml",
-)
+LLP_SCHEMA = ROOT / "openapi.llp-team-engine.v17.yaml"
+WOW_SCHEMA = ROOT / "openapi.wow-betting-engine.v17.yaml"
 
 
-def _team_request(path: Path) -> dict:
-    document = yaml.safe_load(path.read_text())
-    return document["components"]["schemas"]["TeamEventRequest"]
+def _documents() -> tuple[dict, dict]:
+    return yaml.safe_load(LLP_SCHEMA.read_text()), yaml.safe_load(WOW_SCHEMA.read_text())
 
 
-def test_both_action_contracts_expose_optional_moneyline_market_input():
-    for path in SCHEMAS:
-        request = _team_request(path)
-        assert "market_input" not in request["required"]
-        market = request["properties"]["market_input"]
+def _market_component(request: dict) -> dict:
+    assert "market_input" not in request["required"]
+    return request["properties"]["market_input"]
+
+
+def test_both_live_team_event_routes_reference_market_input_capable_schema():
+    llp, wow = _documents()
+    llp_path = "/functions/v1/wow-llp-action-gateway/score-team-event"
+    wow_path = "/score-team-event"
+
+    assert (
+        llp["paths"][llp_path]["post"]["requestBody"]["content"]["application/json"]["schema"]["$ref"]
+        == "#/components/schemas/LlpTeamEventRequest"
+    )
+    assert (
+        wow["paths"][wow_path]["post"]["requestBody"]["content"]["application/json"]["schema"]["$ref"]
+        == "#/components/schemas/TeamEventRequest"
+    )
+
+    llp_market = _market_component(llp["components"]["schemas"]["LlpTeamEventRequest"])
+    wow_market = _market_component(wow["components"]["schemas"]["TeamEventRequest"])
+    for market in (llp_market, wow_market):
         assert market["additionalProperties"] is False
         assert market["required"] == ["market_family", "selection"]
         assert market["properties"]["market_family"]["enum"] == ["MONEYLINE"]
@@ -30,8 +44,12 @@ def test_both_action_contracts_expose_optional_moneyline_market_input():
 
 
 def test_market_input_contract_explicitly_denies_probability_authority():
-    for path in SCHEMAS:
-        market = _team_request(path)["properties"]["market_input"]
+    llp, wow = _documents()
+    markets = (
+        llp["components"]["schemas"]["LlpTeamEventRequest"]["properties"]["market_input"],
+        wow["components"]["schemas"]["TeamEventRequest"]["properties"]["market_input"],
+    )
+    for market in markets:
         description = " ".join(str(market["description"]).split()).lower()
         assert "never" in description
         assert "governed sporting probability" in description
@@ -40,7 +58,6 @@ def test_market_input_contract_explicitly_denies_probability_authority():
 
 
 def test_action_schema_versions_advance_for_market_input():
-    llp = yaml.safe_load(SCHEMAS[0].read_text())
-    wow = yaml.safe_load(SCHEMAS[1].read_text())
+    llp, wow = _documents()
     assert llp["info"]["version"] == "17.0.5-free-core-market-input"
     assert wow["info"]["version"] == "17.0.1-free-core-market-input"
