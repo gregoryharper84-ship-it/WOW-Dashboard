@@ -24,12 +24,30 @@ def _event(index: int):
     )
 
 
-def test_full_moneyline_is_the_only_auto_continuation_surface():
+def test_full_moneyline_and_compact_action_contract_auto_continue():
     assert _is_full_moneyline_request(
         SimpleNamespace(response_mode="FULL", lanes=["MONEYLINE"])
     )
+    assert _is_full_moneyline_request(
+        SimpleNamespace(
+            response_mode="COMPACT",
+            lanes=["MONEYLINE"],
+            max_props=0,
+        )
+    )
     assert not _is_full_moneyline_request(
-        SimpleNamespace(response_mode="COMPACT", lanes=["MONEYLINE"])
+        SimpleNamespace(
+            response_mode="COMPACT",
+            lanes=["PROPS", "MONEYLINE"],
+            max_props=0,
+        )
+    )
+    assert not _is_full_moneyline_request(
+        SimpleNamespace(
+            response_mode="COMPACT",
+            lanes=["MONEYLINE"],
+            max_props=1,
+        )
     )
     assert not _is_full_moneyline_request(
         SimpleNamespace(response_mode="FULL", lanes=["PROPS"])
@@ -72,7 +90,7 @@ def test_more_than_one_model_budget_is_routed_exactly_once(monkeypatch):
     assert inventory.events == events
 
 
-def test_compact_or_canary_path_keeps_single_bounded_route_call():
+def test_non_continuation_canary_path_keeps_single_bounded_route_call():
     events = [_event(index) for index in range(16)]
     inventory = SimpleNamespace(events=list(events))
     calls = 0
