@@ -11,6 +11,7 @@ from v17.team_event_sport_parity import (
     build_discovery_evidence,
     canonicalize_mlb_discovery_identity,
     canonicalize_nfl_discovery_identity,
+    canonicalize_nhl_discovery_identity,
     canonicalize_wnba_discovery_identity,
     cross_sport_model_coverage,
     parity_health,
@@ -468,3 +469,70 @@ def test_wnba_daily_discovery_requires_team_aliases_before_official_lookup():
     assert out.official_event_id is None
     assert out.raw["canonical_identity_status"] == "ALIAS_ONLY_UNRESOLVED"
     assert out.raw["canonical_identity_blocker"] == "WNBA_PROVIDER_TEAM_ALIAS_MISSING"
+
+
+
+def _nhl_alias_event():
+    return DiscoveredEvent(
+        sport="NHL",
+        league="NHL",
+        sport_key="icehockey_nhl",
+        official_event_id=None,
+        home_team="Dallas Stars",
+        away_team="Pittsburgh Penguins",
+        commence_time_utc="2026-10-08T00:00:00Z",
+        event_status="PREGAME",
+        source="DISCOVERY_FEED",
+        provider="ESPN_SCOREBOARD",
+        raw={
+            "provider_event_id": "401900777",
+            "official_event_id": None,
+            "prediction_authority": False,
+        },
+    )
+
+
+def test_nhl_daily_discovery_alias_rewrites_only_after_first_party_match(monkeypatch):
+    import v17.nhl_event_identity as identity
+
+    captured = {}
+
+    def resolve(**kwargs):
+        captured.update(kwargs)
+        return {
+            "event_id": "2026020041",
+            "identity_provider": "NHL_PUBLIC_WEB_API",
+            "identity_verified_at": "2026-10-07T13:00:00+00:00",
+            "market_features_used": False,
+            "can_execute": False,
+        }
+
+    monkeypatch.setattr(identity, "resolve_nhl_current_event_identity", resolve)
+    out = canonicalize_nhl_discovery_identity(_nhl_alias_event())
+
+    assert captured["home_team"] == "Dallas Stars"
+    assert captured["away_team"] == "Pittsburgh Penguins"
+    assert out.official_event_id == "2026020041"
+    assert out.raw["provider_event_id"] == "401900777"
+    assert out.raw["canonical_identity_status"] == "CANONICAL_RESOLVED"
+    assert out.raw["canonical_identity_source"] == "NHL_PUBLIC_WEB_API"
+    assert out.raw["canonical_identity_market_features_used"] is False
+    assert out.raw["prediction_authority"] is False
+
+
+def test_nhl_daily_discovery_alias_stays_unresolved_on_official_failure(monkeypatch):
+    import v17.nhl_event_identity as identity
+
+    class IdentityFailure(RuntimeError):
+        code = "NHL_CANONICAL_EVENT_NOT_FOUND"
+
+    monkeypatch.setattr(
+        identity,
+        "resolve_nhl_current_event_identity",
+        lambda **_kwargs: (_ for _ in ()).throw(IdentityFailure()),
+    )
+    out = canonicalize_nhl_discovery_identity(_nhl_alias_event())
+
+    assert out.official_event_id is None
+    assert out.raw["canonical_identity_status"] == "ALIAS_ONLY_UNRESOLVED"
+    assert out.raw["canonical_identity_blocker"] == "NHL_CANONICAL_EVENT_NOT_FOUND"
