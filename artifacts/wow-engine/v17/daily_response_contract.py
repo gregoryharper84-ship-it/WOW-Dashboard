@@ -344,6 +344,15 @@ def compact_cross_sport_discovery_audit(audit: dict[str, Any]) -> dict[str, Any]
     if isinstance(reconciliation, dict):
         compact["reconciliation"] = _compact_cross_sport_reconciliation(reconciliation)
 
+    model_coverage = audit.get("model_coverage")
+    if isinstance(model_coverage, dict):
+        compact["model_coverage"] = dict(model_coverage)
+    resilience = audit.get("cross_sport_resilience")
+    if isinstance(resilience, dict):
+        compact["cross_sport_resilience"] = dict(resilience)
+    if audit.get("BOARD_COVERAGE_STATUS") is not None:
+        compact["BOARD_COVERAGE_STATUS"] = audit.get("BOARD_COVERAGE_STATUS")
+
     counters = audit.get("market_evidence_counters")
     if isinstance(counters, dict):
         compact["market_evidence_counters"] = dict(counters)
