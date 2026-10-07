@@ -332,3 +332,70 @@ def test_post_score_market_bridge_marks_paid_call_as_initial_enrichment(monkeypa
     assert context["status"] == "MARKET_DATA_UNOBTAINABLE"
     assert seen["paid_call_stage"] == bridge.source_policy.STAGE_INITIAL_ENRICHMENT
     assert seen["model_preflight_passed"] is True
+
+
+
+def test_secondary_provider_is_used_only_after_primary_market_failure(monkeypatch):
+    monkeypatch.setenv("WOW_V17_SOURCE_MODE", "HYBRID")
+    token = bridge.source_policy.begin_paid_budget_scope(
+        bridge.source_policy.PaidCallBudget(total=4, final_refresh_reserve=1)
+    )
+    try:
+        monkeypatch.setattr(
+            live,
+            "get_sport_date_odds_snapshot",
+            lambda *a, **k: sources.MarketEvidenceResult(
+                False,
+                "RUNDOWN",
+                "events",
+                code="RUNDOWN_QUOTA_EXHAUSTED",
+            ),
+        )
+        calls = []
+        monkeypatch.setattr(
+            live,
+            "sharpapi_market_evidence",
+            lambda *a, **k: calls.append(1) or sources.MarketEvidenceResult(
+                True,
+                "SHARPAPI",
+                "odds",
+                data=[_event()],
+                code="MARKET_EVIDENCE_NORMALISED",
+            ),
+        )
+
+        context = bridge.resolve_rundown_market_context(Request())
+    finally:
+        bridge.source_policy.end_paid_budget_scope(token)
+
+    assert calls == [1]
+    assert context["status"] == "EXACT_LINE"
+    assert context["provider"] == bridge.SECONDARY_BRIDGE_SOURCE
+    assert context["prediction_authority"] is False
+    assert context["provider_attempts"][0]["provider"] == bridge.BRIDGE_SOURCE
+    assert context["provider_attempts"][1]["provider"] == bridge.SECONDARY_BRIDGE_SOURCE
+
+
+def test_free_core_never_calls_secondary_paid_market_provider(monkeypatch):
+    monkeypatch.setenv("WOW_V17_SOURCE_MODE", "FREE_CORE")
+    monkeypatch.setattr(
+        live,
+        "get_sport_date_odds_snapshot",
+        lambda *a, **k: sources.MarketEvidenceResult(
+            False,
+            "RUNDOWN",
+            "events",
+            code=bridge.source_policy.BLOCK_FREE_CORE,
+        ),
+    )
+
+    def forbidden(*_a, **_k):
+        raise AssertionError("secondary paid provider must not run in FREE_CORE")
+
+    monkeypatch.setattr(live, "sharpapi_market_evidence", forbidden)
+    context = bridge.resolve_rundown_market_context(Request())
+
+    assert context["status"] == "MARKET_DATA_UNOBTAINABLE"
+    assert context["global_slate_failure"] is False
+    assert context["provider_attempts"][-1]["blocked_by_source_policy"] is True
+    assert context["provider_attempts"][-1]["code"] == bridge.source_policy.BLOCK_FREE_CORE
