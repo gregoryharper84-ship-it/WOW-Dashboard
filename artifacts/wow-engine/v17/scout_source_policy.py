@@ -70,9 +70,23 @@ SPORT_REQUIREMENTS: dict[str, dict[str, tuple[str, ...]]] = {
         "matchup": ("ESTABLISHED_STATS_PROVIDER",),
         "market": ("SPORTSBOOK_FEED",),
     },
+    "basketball_ncaab": {
+        "availability": ("TEAM_OFFICIAL", "PRIMARY_BEAT_REPORTER", "SECONDARY_MEDIA"),
+        "rotation": ("ESTABLISHED_STATS_PROVIDER", "PRIMARY_BEAT_REPORTER"),
+        "matchup": ("ESTABLISHED_STATS_PROVIDER",),
+        "context": ("LEAGUE_OFFICIAL", "TEAM_OFFICIAL", "ESTABLISHED_STATS_PROVIDER"),
+        "market": ("SPORTSBOOK_FEED",),
+    },
+    "icehockey_nhl": {
+        "availability": ("LEAGUE_OFFICIAL", "TEAM_OFFICIAL", "PRIMARY_BEAT_REPORTER"),
+        "goalie": ("LEAGUE_OFFICIAL", "TEAM_OFFICIAL", "PRIMARY_BEAT_REPORTER"),
+        "lines": ("TEAM_OFFICIAL", "PRIMARY_BEAT_REPORTER", "ESTABLISHED_STATS_PROVIDER"),
+        "matchup": ("ESTABLISHED_STATS_PROVIDER",),
+        "market": ("SPORTSBOOK_FEED",),
+    },
 }
 
-HIGH_IMPACT_EVIDENCE = frozenset({"QB_STATUS", "STARTER_STATUS", "INACTIVE_STATUS", "LINEUP_STATUS", "MINUTES_LIMIT", "PITCH_COUNT_LIMIT", "ROOF_STATUS"})
+HIGH_IMPACT_EVIDENCE = frozenset({"QB_STATUS", "STARTER_STATUS", "STARTING_GOALIE_STATUS", "INACTIVE_STATUS", "LINEUP_STATUS", "ROTATION_STATUS", "MINUTES_LIMIT", "PITCH_COUNT_LIMIT", "ROOF_STATUS"})
 
 
 def source_rule(source_class: str) -> SourceRule:
