@@ -200,6 +200,12 @@ LIFECYCLE_CONTROL_PREFIXES = (
     ".agents/skills/wow-engineering-lifecycle-closure-cell/",
 )
 
+BASE_DRIFT_ACTIONS = frozenset({
+    "NO_BASE_DRIFT",
+    "REVALIDATE_IN_PLACE",
+    "RESTACK_SAME_PR",
+})
+
 REQUIRED_CLOSURE_FIELDS = {
     "expected_behavior", "observed_behavior", "reproduction", "evidence",
     "affected_component", "environment", "severity", "change_class",
@@ -329,6 +335,72 @@ class SupportDecision:
             "support_only": self.support_only,
             "can_execute": False,
         }
+
+
+@dataclass(frozen=True)
+class BaseDriftDecision:
+    action: str
+    rerun_candidate_gates: bool
+    restack_same_pr: bool
+    close_pr: bool
+    reason: str
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "action": self.action,
+            "rerun_candidate_gates": self.rerun_candidate_gates,
+            "restack_same_pr": self.restack_same_pr,
+            "close_pr": self.close_pr,
+            "reason": self.reason,
+            "can_execute": False,
+        }
+
+
+def decide_base_drift(
+    *,
+    base_advanced: bool,
+    mergeable: bool,
+    semantic_conflict: bool = False,
+    protected_path_overlap: bool = False,
+) -> BaseDriftDecision:
+    """Keep a valid PR in place when main advances.
+
+    Base movement invalidates only candidate certification. It does not make the
+    implementation a duplicate. Restacking is reserved for an actual merge
+    conflict or a proven semantic incompatibility with the new base.
+    """
+    if not base_advanced:
+        return BaseDriftDecision(
+            action="NO_BASE_DRIFT",
+            rerun_candidate_gates=False,
+            restack_same_pr=False,
+            close_pr=False,
+            reason="Base has not advanced; preserve current certification state.",
+        )
+
+    if not mergeable or semantic_conflict:
+        return BaseDriftDecision(
+            action="RESTACK_SAME_PR",
+            rerun_candidate_gates=True,
+            restack_same_pr=True,
+            close_pr=False,
+            reason=(
+                "Current base introduces a real merge or semantic conflict; "
+                "restack the existing PR branch and recertify it without PR recreation."
+            ),
+        )
+
+    scope = "protected-path overlap" if protected_path_overlap else "unrelated or compatible base drift"
+    return BaseDriftDecision(
+        action="REVALIDATE_IN_PLACE",
+        rerun_candidate_gates=True,
+        restack_same_pr=False,
+        close_pr=False,
+        reason=(
+            f"{scope}; preserve PR/head identity and certify a new prospective "
+            "merge candidate against current main."
+        ),
+    )
 
 
 def _record_id(record: dict[str, Any]) -> str:
@@ -671,6 +743,16 @@ def self_check() -> dict[str, Any]:
     assert AGENT_ROLES["ENGINEERING_AGENT"]["may_write_code"] is True
     assert "PRODUCT_ACCEPTANCE_AGENT" in AGENT_ROLES
     assert set(LIFECYCLE_CELL.values()) <= set(AGENT_ROLES)
+    drift = decide_base_drift(base_advanced=True, mergeable=True)
+    assert drift.action == "REVALIDATE_IN_PLACE"
+    assert drift.rerun_candidate_gates is True
+    assert drift.restack_same_pr is False
+    assert drift.close_pr is False
+    conflict = decide_base_drift(base_advanced=True, mergeable=False)
+    assert conflict.action == "RESTACK_SAME_PR"
+    assert conflict.restack_same_pr is True
+    assert conflict.close_pr is False
+    assert {drift.action, conflict.action, "NO_BASE_DRIFT"} <= BASE_DRIFT_ACTIONS
     lifecycle_a = {
         "lifecycle_control_plane": True,
         "change_class": "A",

@@ -133,3 +133,67 @@ def test_non_lifecycle_path_does_not_force_lifecycle_classification():
     )
     assert record == {"lifecycle_control_plane": False}
     assert module.validate_lifecycle_classification(record) == []
+
+def test_unrelated_main_movement_revalidates_same_pr_in_place():
+    module = _module()
+    decision = module.decide_base_drift(
+        base_advanced=True,
+        mergeable=True,
+        semantic_conflict=False,
+        protected_path_overlap=False,
+    )
+    assert decision.action == "REVALIDATE_IN_PLACE"
+    assert decision.rerun_candidate_gates is True
+    assert decision.restack_same_pr is False
+    assert decision.close_pr is False
+    assert decision.as_dict()["can_execute"] is False
+
+
+def test_protected_overlap_requires_revalidation_not_pr_recreation():
+    module = _module()
+    decision = module.decide_base_drift(
+        base_advanced=True,
+        mergeable=True,
+        semantic_conflict=False,
+        protected_path_overlap=True,
+    )
+    assert decision.action == "REVALIDATE_IN_PLACE"
+    assert decision.rerun_candidate_gates is True
+    assert decision.restack_same_pr is False
+    assert decision.close_pr is False
+    assert "protected-path overlap" in decision.reason
+
+
+def test_real_conflict_restacks_same_pr_without_superseding_it():
+    module = _module()
+    decision = module.decide_base_drift(
+        base_advanced=True,
+        mergeable=False,
+    )
+    assert decision.action == "RESTACK_SAME_PR"
+    assert decision.rerun_candidate_gates is True
+    assert decision.restack_same_pr is True
+    assert decision.close_pr is False
+
+
+def test_no_base_drift_preserves_current_certification():
+    module = _module()
+    decision = module.decide_base_drift(
+        base_advanced=False,
+        mergeable=True,
+    )
+    assert decision.action == "NO_BASE_DRIFT"
+    assert decision.rerun_candidate_gates is False
+    assert decision.restack_same_pr is False
+    assert decision.close_pr is False
+
+
+def test_lifecycle_skill_forbids_supersession_for_base_drift():
+    skill = (ROOT / ".agents/skills/wow-engineering-lifecycle-closure-cell/SKILL.md").read_text(
+        encoding="utf-8"
+    )
+    assert "base drift alone is never supersession" in skill
+    assert "Movement of `main` alone never closes, supersedes, or recreates" in skill
+    assert "REVALIDATE_IN_PLACE" in skill
+    assert "RESTACK_SAME_PR" not in skill or "Restack the same PR branch only" in skill
+

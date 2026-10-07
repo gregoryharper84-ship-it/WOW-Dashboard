@@ -67,7 +67,17 @@ The deterministic classifier in `artifacts/wow-engine/v17/engineering_agent_team
 
 ## WIP
 
-Use the existing deterministic WIP controller. The Lifecycle Closure Cell does not create a second queue. Stale or superseded repair PRs should be closed/restacked rather than allowed to accumulate as active WIP.
+Use the existing deterministic WIP controller. The Lifecycle Closure Cell does not create a second queue. Truly superseded implementations should be closed, but base drift alone is never supersession and must not cause PR recreation.
+
+## Base-drift and merge-candidate policy
+
+1. Movement of `main` alone never closes, supersedes, or recreates an otherwise valid repair PR.
+2. When `main` advances, preserve the PR number and head branch. Invalidate only the stale base/candidate certification and revalidate the same PR against current `main`.
+3. A mergeable candidate uses `REVALIDATE_IN_PLACE`, including when protected lifecycle paths overlap; protected overlap requires the full relevant candidate gates, not a replacement PR.
+4. Restack the same PR branch only when Git reports a real merge conflict or review proves semantic incompatibility with the new base.
+5. Closing as `DUPLICATE/SUPERSEDED` is reserved for an implementation that has actually been replaced or made obsolete, never for a PR that is merely commits behind `main`.
+6. Candidate evidence must bind the PR identity, PR head SHA, current base SHA, and prospective merge-candidate SHA. If the base moves again, discard only that candidate receipt and generate a new one.
+7. Serialize overlapping lifecycle-control mutations at the merge/certification boundary; unrelated repository work may continue.
 
 ## Completion evidence
 
