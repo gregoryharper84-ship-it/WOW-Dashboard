@@ -66,6 +66,11 @@ def test_complete_nba_dossier_separates_market_breadth_from_independent_research
     assert dossier["market_state"]["source_family_count"] == 1
     assert dossier["source_independence_graph"]["MARKET"]["independent_family"] is False
     assert dossier["red_team_results"]["status"] == "PASSED"
+    assert dossier["research_worker_barrier_status"] == "READY"
+    assert all(
+        report["research_status"] == "READY"
+        for report in dossier["research_worker_reports"].values()
+    )
     assert dossier["prediction_authority"] is False
     assert dossier["can_execute"] is False
     assert len(dossier["dossier_hash"]) == 64
@@ -224,6 +229,7 @@ def test_missing_data_is_explicit_and_never_inferred():
     assert ("MISSING_REQUIRED_DOMAIN", "rotation") in codes
     assert ("MISSING_REQUIRED_DOMAIN", "matchup") in codes
     assert dossier["red_team_results"]["status"] == "WATCH"
+    assert dossier["research_worker_barrier_status"] == "PARTIAL"
 
 
 def test_change_detection_records_material_dossier_section_changes():
