@@ -250,6 +250,40 @@ def _team_id(comp: dict[str, Any] | None) -> str | None:
     return value or None
 
 
+def _season_context(event: dict[str, Any]) -> dict[str, Any]:
+    """Normalize ESPN season metadata without granting predictive authority."""
+    season = event.get("season") if isinstance(event.get("season"), dict) else {}
+    raw_type = season.get("type")
+    raw_slug = season.get("slug")
+    labels = " ".join(
+        str(season.get(key) or "")
+        for key in ("slug", "name", "displayName", "abbreviation")
+    ).casefold()
+
+    if "preseason" in labels or ("pre" in labels and "season" in labels):
+        phase = "PRESEASON"
+    elif "regular" in labels:
+        phase = "REGULAR_SEASON"
+    elif "postseason" in labels or "playoff" in labels or ("post" in labels and "season" in labels):
+        phase = "POSTSEASON"
+    elif raw_type == 1:
+        phase = "PRESEASON"
+    elif raw_type == 2:
+        phase = "REGULAR_SEASON"
+    elif raw_type == 3:
+        phase = "POSTSEASON"
+    else:
+        phase = "UNKNOWN"
+
+    return {
+        "season_year": season.get("year"),
+        "season_type": raw_type,
+        "season_slug": raw_slug,
+        "season_phase": phase,
+        "season_phase_source": "ESPN_SCOREBOARD",
+    }
+
+
 def espn_event_to_primary_shape(event: dict[str, Any], sport_key: str) -> dict[str, Any] | None:
     event_id = event.get("id")
     if not event_id:
@@ -261,6 +295,7 @@ def espn_event_to_primary_shape(event: dict[str, Any], sport_key: str) -> dict[s
         "commence_time": event.get("date"),
         "home_team": _team_name(home),
         "away_team": _team_name(away),
+        **_season_context(event),
         "_wow_secondary_event_id": str(event_id),
         "_wow_secondary_home_team_id": _team_id(home),
         "_wow_secondary_away_team_id": _team_id(away),
