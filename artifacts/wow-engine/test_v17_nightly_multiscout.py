@@ -114,6 +114,15 @@ def test_market_inventory_failure_preserves_team_event_candidate(monkeypatch):
                 "season_slug": "preseason",
                 "season_phase": "PRESEASON",
                 "season_phase_source": "ESPN_SCOREBOARD",
+                "venue": "Test Park",
+                "venue_id": "venue-1",
+                "neutral_site": False,
+                "event_status": "STATUS_SCHEDULED",
+                "event_type": "Preseason",
+                "competition_round": "Round 1",
+                "series_state": "Exhibition",
+                "competition_importance": "EXHIBITION",
+                "event_context_source": "ESPN_SCOREBOARD",
             }], 200)
         if path.endswith("/markets"):
             return scout.FetchResult(
@@ -148,6 +157,15 @@ def test_market_inventory_failure_preserves_team_event_candidate(monkeypatch):
     assert candidate["season_slug"] == "preseason"
     assert candidate["season_phase"] == "PRESEASON"
     assert candidate["season_phase_source"] == "ESPN_SCOREBOARD"
+    assert candidate["venue"] == "Test Park"
+    assert candidate["venue_id"] == "venue-1"
+    assert candidate["neutral_site"] is False
+    assert candidate["event_status"] == "STATUS_SCHEDULED"
+    assert candidate["event_type"] == "Preseason"
+    assert candidate["competition_round"] == "Round 1"
+    assert candidate["series_state"] == "Exhibition"
+    assert candidate["competition_importance"] == "EXHIBITION"
+    assert candidate["event_context_source"] == "ESPN_SCOREBOARD"
     blocker = candidate["market_evidence_source_blockers"][0]
     assert blocker["reason_code"] == "ODDS_API_FEATURED_ODDS_FALLBACK_ERROR"
     assert blocker["secondary_attempted"] is True
