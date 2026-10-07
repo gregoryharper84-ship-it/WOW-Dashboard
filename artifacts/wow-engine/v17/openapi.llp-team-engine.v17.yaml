@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: LLP Team Betting Engine v17 Action
-  version: 17.0.4-compact-action
+  version: 17.0.5-free-core-market-input
   description: >-
     PRODUCTION SOURCE CONTRACT. LLP Team Betting Engine owns team/game/event
     winner, favorite, underdog, upset and governed point-spread intelligence.
@@ -467,4 +467,18 @@ components:
         source_snapshot_id: {type: string}
         latest_material_update_timestamp: {type: [string, 'null'], format: date-time}
         market_prior: {type: [object, 'null'], additionalProperties: true}
+        market_input:
+          type: [object, 'null']
+          additionalProperties: false
+          description: >-
+            Optional user-supplied moneyline market identity/value context.
+            This input never supplies, implies, calibrates, or substitutes the
+            governed sporting probability. If omitted, a fitted probability may
+            still be returned while market/value qualification remains separate.
+          required: [market_family, selection]
+          properties:
+            market_family: {type: string, enum: [MONEYLINE]}
+            selection: {type: string}
+            american_odds: {type: [number, 'null']}
+            captured_at: {type: [string, 'null'], format: date-time}
         sport_specific_evidence: {type: object, additionalProperties: true}
