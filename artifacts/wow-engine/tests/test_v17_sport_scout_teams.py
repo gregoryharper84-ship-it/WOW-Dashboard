@@ -7,6 +7,7 @@ sys.path.insert(0, str(ROOT))
 
 from sport_scout_registry import REGISTRY, scout_team_for, registry_payload
 from sport_scout_enrichment import enrich_handoff
+from scout_source_policy import source_requirements
 from scout_research_ledger import empty_ledger, merge_handoff, apply_research_update, priority_board
 
 
@@ -57,9 +58,13 @@ def test_required_sport_teams_exist():
         "baseball_mlb",
         "basketball_nba",
         "basketball_wnba",
+        "basketball_ncaab",
+        "icehockey_nhl",
     }
     assert scout_team_for("americanfootball_ncaaf").team_id == "CFB_SCOUT_TEAM"
     assert scout_team_for("americanfootball_nfl").team_id == "NFL_SCOUT_TEAM"
+    assert scout_team_for("basketball_ncaab").team_id == "NCAAB_SCOUT_TEAM"
+    assert scout_team_for("icehockey_nhl").team_id == "NHL_SCOUT_TEAM"
 
 
 def test_registry_is_discovery_only_and_non_executable():
@@ -90,6 +95,29 @@ def test_mlb_and_basketball_have_domain_specific_agents():
     nba = {a.name for a in scout_team_for("basketball_nba").agents}
     assert {"STARTING_PITCHER_SCOUT", "BULLPEN_SCOUT", "LINEUP_HITTING_SCOUT", "PARK_WEATHER_SCOUT"} <= mlb
     assert {"ROTATION_USAGE_SCOUT", "MATCHUP_PACE_SCOUT", "SCHEDULE_FATIGUE_SCOUT"} <= nba
+
+
+
+
+def test_nhl_and_ncaab_have_dedicated_agents_and_source_domains():
+    nhl = {a.name for a in scout_team_for("icehockey_nhl").agents}
+    ncaab = {a.name for a in scout_team_for("basketball_ncaab").agents}
+    assert {"GOALIE_SCOUT", "LINE_COMBINATION_SCOUT", "SHOT_QUALITY_SCOUT", "HOCKEY_FATIGUE_SCOUT"} <= nhl
+    assert {"ROTATION_USAGE_SCOUT", "MATCHUP_PACE_SCOUT", "COLLEGE_CONTEXT_SCOUT"} <= ncaab
+
+    nhl_requirements = source_requirements("icehockey_nhl")
+    ncaab_requirements = source_requirements("basketball_ncaab")
+    assert set(nhl_requirements) == {"availability", "goalie", "lines", "matchup", "market"}
+    assert "STARTING_GOALIE_CONFIRMATION" in scout_team_for("icehockey_nhl").research_cycle
+    assert set(ncaab_requirements) == {"availability", "rotation", "matchup", "context", "market"}
+    assert "CONTEXT_REVALIDATION" in scout_team_for("basketball_ncaab").research_cycle
+
+
+def test_unknown_sport_still_falls_back_to_generic_research_only_team():
+    team = scout_team_for("unregistered_sport")
+    assert team.team_id == "GENERIC_MULTI_SPORT_SCOUT_TEAM"
+    assert team.controlling_team_event_route == "LLP_TEAM_BETTING_ENGINE"
+    assert team.controlling_prop_route == "WOW_PROP_LANE"
 
 
 def test_enrichment_routes_candidates_to_controlling_specialists():
