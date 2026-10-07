@@ -1,9 +1,12 @@
 # WOW V17 NFL Pick'em Pool Optimizer
 
-Status: CLASS_B_REVIEW_IN_PROGRESS
-Branch: `feature/nfl-pickem-pool-optimizer`
-Issue: #1073
-Pull request: #1077
+Status: CLASS_B_ACTIVE_WITH_FOLLOW_ON_REVIEW_PATCH
+Original branch: `feature/nfl-pickem-pool-optimizer`
+Original issue: #1073
+Original pull request: #1077
+Follow-on issue: #1334
+Follow-on pull request: #1335
+Follow-on branch: `patch/nfl-pickem-week4-learning-2026-10-04`
 
 ## Purpose
 
@@ -113,6 +116,49 @@ TOSS_UP  <  0.55
 
 The separate `selection_volatility_band` is derived only from the governed home/away probability gap.
 
+## Week 4 Learning Overlay — Review, Not Probability Mutation
+
+The 2026 Week 4 postmortem justified a downstream review-routing patch but **not** a fitted-model or calibration change from one slate of outcomes.
+
+The pick'em output now classifies each valid governed pick into one review state:
+
+```text
+HIGH_CONFIDENCE_HOLD
+STANDARD_HOLD
+MODEL_SIDE_FRAGILITY_REVIEW
+TOSS_UP_REVIEW
+```
+
+This overlay may consume only values already present in the governed sporting-probability package:
+
+- selected calibrated probability;
+- selected calibrated lower/upper bounds;
+- two-sided calibrated probability gap;
+- `model_disagreement` when the controlling scorer exposes it.
+
+It never manufactures disagreement and never uses a sportsbook price, market consensus, external projection, recent result, or pool popularity to alter the pick.
+
+Review-routing signals include a toss-up point probability, narrow two-sided gap, lower bound below 55%, wide calibration interval, or material governed model disagreement. These thresholds are **diagnostic routing thresholds only**. They are not fitted coefficients, calibration rules, publication qualification thresholds, or automatic upset triggers.
+
+A strong model side with point probability at least 68%, lower bound at least 60%, a two-sided gap of at least 16 percentage points, and no material exposed model disagreement is tagged `HIGH_CONFIDENCE_HOLD` with:
+
+```text
+postmortem_learning_action=PRESERVE_UNLESS_COHORT_EVIDENCE
+```
+
+This explicitly prevents an isolated upset from teaching the system to downgrade otherwise strong pregame process. Fragile/toss-up cases are tagged for deeper review with `DEEP_REVIEW_NO_AUTOMATIC_FLIP`.
+
+Hard invariants:
+
+```text
+review_overlay_can_change_pool_pick=false
+review_overlay_can_change_probability=false
+POOL_WIN_EQUITY remains unsupported
+can_execute=false
+```
+
+Board output also reports counts for high-confidence holds, model-side fragility reviews, and toss-up reviews so Week 5 analysis can focus attention on the uncertain games without changing the governed NFL forecast.
+
 ## Monday Tiebreaker
 
 The pick'em sheet requests total points for the Monday night game. Repository audit on 2026-09-30 found sportsbook total-market routing, but no registered certified NFL full-game total-points fitted specialist.
@@ -145,6 +191,10 @@ A new fitted total-points model would be Class C and requires challenger develop
 - selected-participant / probability consistency
 - duplicate-event blocking
 - unsupported strategy rejection
+- material model-disagreement fragility review without pick mutation
+- strong-model-side preserve guardrail after an isolated-loss pattern
+- toss-up deep-review routing while preserving the controlling scorer choice
+- board-level review-count reconciliation
 - tiebreaker fail-closed behavior
 
 `artifacts/wow-engine/tests/test_v17_nfl_pickem_runtime.py` covers:
