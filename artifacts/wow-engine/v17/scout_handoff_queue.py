@@ -22,6 +22,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 import pick_request_runtime_core as pick_runtime
 import team_event_request_runtime as team_runtime
+from v17 import memory_admission
 from v17.multiscout_auto_advance import build_dispatch
 from v17.scout_research_promotion import evaluate_candidate
 
@@ -728,15 +729,30 @@ async def worker_loop(
     stop_event: asyncio.Event,
 ) -> None:
     while not stop_event.is_set():
+        permit = None
         try:
+            # Own the one process-wide heavyweight slot before claiming durable
+            # work. Memory pressure therefore defers the claim itself instead
+            # of consuming a lease/attempt and later failing the candidate.
+            permit = memory_admission.try_acquire_heavy_job("SCOUT_HANDOFF")
+            if permit is None:
+                try:
+                    await asyncio.wait_for(stop_event.wait(), timeout=1.0)
+                except asyncio.TimeoutError:
+                    pass
+                continue
+
             db = await asyncio.to_thread(db_client_fn)
             job = await asyncio.to_thread(_claim, db, worker_id)
             if job is None:
+                permit.release()
+                permit = None
                 try:
                     await asyncio.wait_for(stop_event.wait(), timeout=POLL_SECONDS)
                 except asyncio.TimeoutError:
                     pass
                 continue
+
             try:
                 await asyncio.to_thread(
                     process_claimed_job,
@@ -747,10 +763,20 @@ async def worker_loop(
                     team_score_fn=team_score_fn,
                 )
             finally:
-                # The queue is serial, but specialist scorers can allocate
-                # large temporary feature/evidence objects. Reclaim them before
-                # the next candidate on the 512 MiB production runtime.
+                # Specialist scorers can allocate large temporary
+                # feature/evidence objects. Reclaim them before releasing the
+                # shared heavy slot to Daily Snapshot or the next Scout job.
                 await asyncio.to_thread(_release_process_memory)
+        except memory_admission.HeavyJobDeferred:
+            # No durable row has been claimed yet. Pressure is a non-terminal
+            # runtime deferral, not a scorer/model failure.
+            try:
+                await asyncio.wait_for(
+                    stop_event.wait(),
+                    timeout=memory_admission.pressure_retry_seconds(),
+                )
+            except asyncio.TimeoutError:
+                pass
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -760,6 +786,9 @@ async def worker_loop(
                 await asyncio.wait_for(stop_event.wait(), timeout=5.0)
             except asyncio.TimeoutError:
                 pass
+        finally:
+            if permit is not None:
+                permit.release()
 
 
 __all__ = [

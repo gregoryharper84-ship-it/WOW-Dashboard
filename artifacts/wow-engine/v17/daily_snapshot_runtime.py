@@ -22,6 +22,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from v17 import cross_sport_discovery_feed as discovery_feed
 from v17 import free_core_source_policy as source_policy
+from v17 import memory_admission
 from v17 import cross_sport_winner_discovery as discovery
 from v17 import team_event_bridge_runtime as bridge_runtime
 from v17.daily_prop_acquisition import acquire_daily_prop_snapshots
@@ -665,8 +666,19 @@ def _run_daily_snapshot_impl(req: DailySnapshotRequest, *, db: Any, market_api: 
     return compact_response(response, detail_available=bool(detail_persistence.get("detail_available")))
 
 
-def run_daily_snapshot(req: DailySnapshotRequest, *, db: Any, market_api: Any, event_api: Any) -> dict[str, Any]:
-    """Run one Daily slate under one explicit optional-paid-call budget scope."""
+def run_daily_snapshot(
+    req: DailySnapshotRequest,
+    *,
+    db: Any,
+    market_api: Any,
+    event_api: Any,
+    _heavy_permit: memory_admission.HeavyJobPermit | None = None,
+) -> dict[str, Any]:
+    """Run one Daily slate inside the shared bounded heavyweight slot."""
+    owned_permit: memory_admission.HeavyJobPermit | None = None
+    if _heavy_permit is None:
+        owned_permit = memory_admission.acquire_heavy_job("DAILY_SNAPSHOT")
+
     token = source_policy.begin_paid_budget_scope()
     try:
         return _run_daily_snapshot_impl(
@@ -677,6 +689,8 @@ def run_daily_snapshot(req: DailySnapshotRequest, *, db: Any, market_api: Any, e
         )
     finally:
         source_policy.end_paid_budget_scope(token)
+        if owned_permit is not None:
+            owned_permit.release()
 
 
 _ACQUISITION_LOGGER = logging.getLogger("wow.v17.prop_evidence_acquisition")
@@ -747,7 +761,15 @@ def install_daily_snapshot_route(app: FastAPI, *, auth_dependency: Any, db_clien
 
     @app.post("/v17/daily-snapshot-run", dependencies=[auth_dependency], operation_id="runWowV17DailySnapshot")
     def daily_snapshot_run(req: DailySnapshotRequest):
-        return run_daily_snapshot(req, db=db_client_fn(), market_api=market_api, event_api=event_api)
+        try:
+            return run_daily_snapshot(
+                req,
+                db=db_client_fn(),
+                market_api=market_api,
+                event_api=event_api,
+            )
+        except memory_admission.HeavyJobDeferred as exc:
+            raise HTTPException(status_code=503, detail=exc.receipt()) from exc
 
     @app.get(
         "/v17/daily-snapshot-run/{run_id}/rows",

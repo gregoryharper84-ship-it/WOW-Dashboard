@@ -325,3 +325,35 @@ def test_worker_reclaims_process_memory_when_specialist_job_raises(monkeypatch):
     ))
 
     assert calls == [("process", "job-err"), ("trim", "job-err")]
+
+
+def test_worker_memory_pressure_defers_before_durable_claim(monkeypatch):
+    stop = asyncio.Event()
+
+    def pressure(_operation):
+        stop.set()
+        raise queue.memory_admission.HeavyJobDeferred(
+            code="MEMORY_PRESSURE",
+            operation="SCOUT_HANDOFF",
+            detail={"reason": "MEMORY_PRESSURE", "retry_after_seconds": 1},
+        )
+
+    monkeypatch.setattr(queue.memory_admission, "try_acquire_heavy_job", pressure)
+    monkeypatch.setattr(queue.memory_admission, "pressure_retry_seconds", lambda: 1.0)
+    monkeypatch.setattr(
+        queue,
+        "_claim",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("memory-pressured Scout worker claimed durable work")
+        ),
+    )
+
+    asyncio.run(queue.worker_loop(
+        db_client_fn=lambda: object(),
+        prop_score_fn=lambda *args, **kwargs: {},
+        team_score_fn=lambda *args, **kwargs: {},
+        worker_id="worker-pressure-test",
+        stop_event=stop,
+    ))
+
+    assert stop.is_set()

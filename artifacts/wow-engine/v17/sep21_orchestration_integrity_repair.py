@@ -65,11 +65,24 @@ def install_daily_current_acquisition_repair() -> bool:
                 return "INVALID"
         return original_classify(payload)
 
-    def repaired_run(req: Any, *, db: Any, market_api: Any, event_api: Any) -> dict[str, Any]:
+    def repaired_run(
+        req: Any,
+        *,
+        db: Any,
+        market_api: Any,
+        event_api: Any,
+        _heavy_permit: Any = None,
+    ) -> dict[str, Any]:
         lanes = set(getattr(req, "lanes", []) or [])
         force = "PROPS" in lanes and int(getattr(req, "max_props", 0) or 0) > 0
         if not force:
-            response = original_run(req, db=db, market_api=market_api, event_api=event_api)
+            response = original_run(
+                req,
+                db=db,
+                market_api=market_api,
+                event_api=event_api,
+                _heavy_permit=_heavy_permit,
+            )
             if "PROPS" in lanes and isinstance(response, dict):
                 response["prop_sport_parity"] = prop_sport_parity_summary()
                 response["can_execute"] = False
@@ -84,7 +97,13 @@ def install_daily_current_acquisition_repair() -> bool:
         }
         token = _DAILY_CONTEXT.set(context)
         try:
-            response = original_run(full_req, db=db, market_api=market_api, event_api=event_api)
+            response = original_run(
+                full_req,
+                db=db,
+                market_api=market_api,
+                event_api=event_api,
+                _heavy_permit=_heavy_permit,
+            )
         finally:
             _DAILY_CONTEXT.reset(token)
 
