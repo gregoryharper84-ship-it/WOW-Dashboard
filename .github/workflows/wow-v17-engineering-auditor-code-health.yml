@@ -50,7 +50,10 @@ jobs:
           artifacts/wow-engine/test_v17_engineering_auditor_backlog_constraints.py
 
       - name: Run adjacent engineering closure regressions
-        run: python -m pytest -q artifacts/wow-engine/test_v17_24h_completion_loop.py
+        run: >-
+          python -m pytest -q
+          artifacts/wow-engine/test_v17_24h_completion_loop.py
+          artifacts/wow-engine/test_v17_lifecycle_closure_cell.py
 
       - name: Preserve non-execution governance receipt
         if: always()
