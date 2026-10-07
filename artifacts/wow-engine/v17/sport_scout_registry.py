@@ -137,7 +137,40 @@ WNBA_TEAM = ScoutTeam(
     research_cycle=NBA_TEAM.research_cycle,
 )
 
-REGISTRY = {team.sport_key: team for team in (CFB_TEAM, NFL_TEAM, MLB_TEAM, NBA_TEAM, WNBA_TEAM)}
+NCAAB_TEAM = ScoutTeam(
+    team_id="NCAAB_SCOUT_TEAM",
+    sport_key="basketball_ncaab",
+    sport_label="NCAAB",
+    controlling_team_event_route="LLP_TEAM_BETTING_ENGINE",
+    controlling_prop_route="WOW_PROP_LANE",
+    agents=BASKETBALL_COMMON + (
+        ScoutAgent("COLLEGE_CONTEXT_SCOUT", "Track neutral sites, tournament rounds, roster churn and travel context unique to college basketball.", ("neutral_site", "tournament_round", "roster_churn", "travel", "rest"), ("MORNING", "PRE_GAME")),
+    ),
+    edge_classes=("USAGE_EDGE", "ROTATION_EDGE", "PERSONNEL_EDGE", "PACE_EDGE", "MATCHUP_EDGE", "REBOUNDING_EDGE", "TURNOVER_EDGE", "REST_EDGE", "VENUE_EDGE", "MARKET_DISAGREEMENT_EDGE", "INFORMATION_EDGE", "REGRESSION_EDGE"),
+    red_team_checks=("LATE_SCRATCH", "ROTATION_INSTABILITY", "SMALL_SAMPLE", "OPPONENT_ADJUSTMENT", "NEUTRAL_SITE", "TOURNAMENT_CONTEXT", "STALE_LINE", "IDENTITY_AMBIGUITY"),
+    research_cycle=("MORNING_SLATE", "AVAILABILITY_AND_ROTATION_WATCH", "CONTEXT_REVALIDATION", "PRE_GAME_FINAL_BOARD"),
+)
+
+HOCKEY_COMMON = COMMON_AGENTS + (
+    ScoutAgent("GOALIE_SCOUT", "Track projected and confirmed starting goalies, recent workload and save-quality context.", ("starting_goalie", "goalie_status", "recent_workload", "save_quality", "rebound_control"), ("MORNING", "STARTER_CONFIRMATION", "PRE_GAME")),
+    ScoutAgent("LINE_COMBINATION_SCOUT", "Track forward lines, defensive pairs, power-play units, penalty-kill units and role changes.", ("forward_lines", "defense_pairs", "power_play_units", "penalty_kill_units", "role_changes"), ("MORNING", "PRE_GAME")),
+    ScoutAgent("SHOT_QUALITY_SCOUT", "Study shot volume and quality interaction rather than relying on recent goals alone.", ("shot_attempts", "expected_goals", "high_danger_chances", "rush_chances", "rebound_chances"), ("MORNING", "PRE_GAME")),
+    ScoutAgent("HOCKEY_FATIGUE_SCOUT", "Track back-to-backs, travel, altitude and goalie/team workload.", ("back_to_back", "travel", "altitude", "goalie_workload", "team_workload"), ("MORNING", "PRE_GAME")),
+)
+
+NHL_TEAM = ScoutTeam(
+    team_id="NHL_SCOUT_TEAM",
+    sport_key="icehockey_nhl",
+    sport_label="NHL",
+    controlling_team_event_route="LLP_TEAM_BETTING_ENGINE",
+    controlling_prop_route="WOW_PROP_LANE",
+    agents=HOCKEY_COMMON,
+    edge_classes=("GOALIE_EDGE", "LINE_MATCHUP_EDGE", "SPECIAL_TEAMS_EDGE", "SHOT_QUALITY_EDGE", "PERSONNEL_EDGE", "REST_EDGE", "MARKET_DISAGREEMENT_EDGE", "INFORMATION_EDGE", "REGRESSION_EDGE"),
+    red_team_checks=("STARTING_GOALIE_UNCONFIRMED", "LINE_COMBINATION_UNSTABLE", "BACK_TO_BACK", "GOALIE_WORKLOAD", "SPECIAL_TEAMS_SMALL_SAMPLE", "STALE_LINE", "IDENTITY_AMBIGUITY"),
+    research_cycle=("MORNING_GOALIE_AND_LINES", "LINE_COMBINATION_WATCH", "STARTING_GOALIE_CONFIRMATION", "PRE_GAME_FINAL_BOARD"),
+)
+
+REGISTRY = {team.sport_key: team for team in (CFB_TEAM, NFL_TEAM, MLB_TEAM, NBA_TEAM, WNBA_TEAM, NCAAB_TEAM, NHL_TEAM)}
 
 GENERIC_TEAM = ScoutTeam(
     team_id="GENERIC_MULTI_SPORT_SCOUT_TEAM",
