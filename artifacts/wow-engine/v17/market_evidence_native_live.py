@@ -74,6 +74,32 @@ def _canonical_market(raw: Any, market_id: Any = None) -> str | None:
     return _RUNDOWN_STANDARD_MARKET_IDS.get(str(market_id)) if market_id is not None else None
 
 
+def _free_core_paid_provider_block(
+    provider: str,
+    capability: str,
+) -> sources.MarketEvidenceResult | None:
+    """Fail closed before any paid-provider lookup/network call in FREE_CORE."""
+    if not source_policy.free_core_enabled():
+        return None
+    return sources.MarketEvidenceResult(
+        False,
+        str(provider).upper(),
+        str(capability),
+        code=source_policy.BLOCK_FREE_CORE,
+        request_audit={
+            "source_mode": source_policy.source_mode(),
+            "source_policy_blocked": True,
+            "paid_provider_network_attempted": False,
+            "probability_substitution_allowed": False,
+            "can_execute": False,
+        },
+        prediction_authority=False,
+        exact_line_authority=False,
+        research_only=True,
+        can_execute=False,
+    )
+
+
 # ---------------------------------------------------------------------------
 # SharpAPI
 # ---------------------------------------------------------------------------
@@ -234,6 +260,9 @@ def sharpapi_market_evidence(
     opener: Any = None,
     primary_failure: str | None = None,
 ) -> sources.MarketEvidenceResult:
+    blocked = _free_core_paid_provider_block("SHARPAPI", "odds")
+    if blocked is not None:
+        return blocked
     league = sources.sharpapi_league(sport_key)
     if not league:
         return sources._fail("SHARPAPI", "odds", "MARKET_EVIDENCE_UNSUPPORTED_SPORT")
@@ -532,6 +561,11 @@ def get_sport_date_odds_snapshot(
     """
     if capability not in {"events", "openers"}:
         return sources._fail("RUNDOWN", capability, "MARKET_EVIDENCE_CAPABILITY_UNSUPPORTED")
+
+    blocked = _free_core_paid_provider_block("RUNDOWN", capability)
+    if blocked is not None:
+        observability.increment("rundown_source_policy_blocks")
+        return blocked
 
     observability.increment("rundown_snapshot_requests")
     if sport_id is not None:
