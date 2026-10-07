@@ -3,6 +3,8 @@ from __future__ import annotations
 import pytest
 
 from v17.betting_intelligence_control_plane import (
+    CONTROL_PLANE_SCOPE,
+    ECOSYSTEM_COORDINATOR,
     CapabilityRecord,
     HandoffReceipt,
     HandoffStatus,
@@ -18,6 +20,11 @@ from v17.betting_intelligence_control_plane import (
     reconcile_work_items,
     stagnation_action,
 )
+
+
+def test_betting_intelligence_scope_is_product_not_ecosystem_authority() -> None:
+    assert CONTROL_PLANE_SCOPE == "PRODUCT_INTELLIGENCE_ORCHESTRATION"
+    assert ECOSYSTEM_COORDINATOR == "WOW_ECOSYSTEM_CONDUCTOR"
 
 
 def _objective() -> ObjectiveContract:

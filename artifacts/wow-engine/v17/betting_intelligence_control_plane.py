@@ -1,6 +1,6 @@
-"""WOW V17 Betting Intelligence ecosystem control-plane contracts.
+"""WOW V17 Betting Intelligence product-intelligence control-plane contracts.
 
-This module is the product/orchestration control plane. It does not originate,
+This module is the Product Intelligence & Orchestration control plane inside the wider neutral WOW Ecosystem Conductor. It does not originate,
 alter, blend, calibrate, certify, publish, or execute sporting probabilities.
 
 It gives WOW one typed place to answer:
@@ -23,6 +23,8 @@ from typing import Any, Iterable, Mapping, Sequence
 CAN_EXECUTE = False
 TERMINAL_AUTHORITY = "V17_TERMINAL_REDUCER"
 CONTRACT_VERSION = "WOW_BETTING_INTELLIGENCE_CONTROL_PLANE_V1"
+CONTROL_PLANE_SCOPE = "PRODUCT_INTELLIGENCE_ORCHESTRATION"
+ECOSYSTEM_COORDINATOR = "WOW_ECOSYSTEM_CONDUCTOR"
 
 
 class WorkState(str, Enum):
@@ -390,6 +392,8 @@ def build_control_plane_snapshot(
 __all__ = [
     "CAN_EXECUTE",
     "CONTRACT_VERSION",
+    "CONTROL_PLANE_SCOPE",
+    "ECOSYSTEM_COORDINATOR",
     "TERMINAL_AUTHORITY",
     "CapabilityRecord",
     "HandoffReceipt",
