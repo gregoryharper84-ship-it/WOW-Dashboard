@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import HTTPException
 
+from v17 import scout_handoff_queue as queue
 from v17.scout_handoff_queue import build_handoff_plan, process_claimed_job
 
 
@@ -272,3 +275,53 @@ def test_existing_research_red_team_quarantine_blocks_before_specialist_queue():
     assert prop.blocked_code == "SCOUT_RED_TEAM_QUARANTINED"
     assert prop.blocked_detail["research_status"] == "QUARANTINED"
     assert prop.can_execute is False
+
+
+def test_worker_reclaims_process_memory_after_each_claimed_job(monkeypatch):
+    stop = asyncio.Event()
+    calls = []
+
+    monkeypatch.setattr(queue, "_claim", lambda db, worker_id: {"job_id": "job-1"})
+
+    def fake_process(db, job, **kwargs):
+        calls.append(("process", job["job_id"]))
+        stop.set()
+        return {"current_state": "MODEL_EVALUATED", "can_execute": False}
+
+    monkeypatch.setattr(queue, "process_claimed_job", fake_process)
+    monkeypatch.setattr(queue, "_release_process_memory", lambda: calls.append(("trim", "job-1")))
+
+    asyncio.run(queue.worker_loop(
+        db_client_fn=lambda: object(),
+        prop_score_fn=lambda *args, **kwargs: {},
+        team_score_fn=lambda *args, **kwargs: {},
+        worker_id="worker-memory-test",
+        stop_event=stop,
+    ))
+
+    assert calls == [("process", "job-1"), ("trim", "job-1")]
+
+
+def test_worker_reclaims_process_memory_when_specialist_job_raises(monkeypatch):
+    stop = asyncio.Event()
+    calls = []
+
+    monkeypatch.setattr(queue, "_claim", lambda db, worker_id: {"job_id": "job-err"})
+
+    def fake_process(db, job, **kwargs):
+        calls.append(("process", job["job_id"]))
+        stop.set()
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(queue, "process_claimed_job", fake_process)
+    monkeypatch.setattr(queue, "_release_process_memory", lambda: calls.append(("trim", "job-err")))
+
+    asyncio.run(queue.worker_loop(
+        db_client_fn=lambda: object(),
+        prop_score_fn=lambda *args, **kwargs: {},
+        team_score_fn=lambda *args, **kwargs: {},
+        worker_id="worker-memory-test",
+        stop_event=stop,
+    ))
+
+    assert calls == [("process", "job-err"), ("trim", "job-err")]
