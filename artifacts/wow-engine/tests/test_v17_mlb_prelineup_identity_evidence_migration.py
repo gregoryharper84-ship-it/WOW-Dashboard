@@ -42,10 +42,12 @@ def test_probability_only_bridge_runs_identity_handoff_before_full_hydration():
     sql = _sql()
     early = "perform public.wow_v17_hydrate_mlb_prelineup_identity_evidence(event_id,p_score_snapshot_id);"
     full = "perform public.wow_v17_hydrate_mlb_event_governance_evidence(event_id,p_score_snapshot_id,''{}''::jsonb,p_decision_intent);"
-    replacement = sql.split("replacement text :=", 1)[1].split(";", 1)[0]
+    replacement_line = next(
+        line for line in sql.splitlines() if line.strip().startswith("replacement text :=")
+    )
     assert early in sql
     assert full in sql
-    assert replacement.index("wow_v17_hydrate_mlb_prelineup_identity_evidence") < replacement.index(
+    assert replacement_line.index("wow_v17_hydrate_mlb_prelineup_identity_evidence") < replacement_line.index(
         "wow_v17_hydrate_mlb_event_governance_evidence"
     )
 
