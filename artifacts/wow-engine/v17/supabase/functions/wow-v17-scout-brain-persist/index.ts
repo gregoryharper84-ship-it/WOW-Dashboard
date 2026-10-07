@@ -11,13 +11,14 @@ const REF = "refs/heads/main";
 const ALLOWED_WORKFLOW_REFS = new Set([
   `${REPOSITORY}/.github/workflows/wow-v17-scout-brain-persist.yml@${REF}`,
   `${REPOSITORY}/.github/workflows/wow-v17-scout-board-refresh.yml@${REF}`,
+  `${REPOSITORY}/.github/workflows/wow-v17-nightly-multiscout.yml@${REF}`,
 ]);
 const ALLOWED_EVENTS = new Set(["workflow_run", "workflow_dispatch", "schedule"]);
 const ALLOWED_STATUSES = new Set([
   "WATCH", "RESEARCH_INTEREST_LOW", "RESEARCH_INTEREST_MEDIUM",
   "RESEARCH_INTEREST_HIGH", "QUARANTINED", "NO_INTEREST",
 ]);
-const ALLOWED_PHASES = new Set(["BEGIN", "APPEND", "FINALIZE", "MATERIALIZE"]);
+const ALLOWED_PHASES = new Set(["BEGIN", "APPEND", "FINALIZE", "MATERIALIZE", "READ_PREVIOUS"]);
 const TEAM_EVENT_ROUTE = "LLP_TEAM_BETTING_ENGINE";
 
 type Row = Record<string, unknown>;
@@ -420,6 +421,60 @@ async function persistCandidates(tx: any, runId: string, candidates: Row[]): Pro
   return counts;
 }
 
+function previousCandidateRows(body: Row): Row[] {
+  return asList(body.previous_candidates).map(asObj);
+}
+
+function snapshotObject(value: unknown): Row {
+  if (value && typeof value === "object" && !Array.isArray(value)) return value as Row;
+  if (typeof value !== "string" || !value.trim()) return {};
+  try {
+    return asObj(JSON.parse(value));
+  } catch {
+    return {};
+  }
+}
+
+// deno-lint-ignore no-explicit-any
+async function readPreviousDossiers(tx: any, runId: string, body: Row): Promise<Row[]> {
+  const requested = previousCandidateRows(body);
+  if (requested.length > 500) throw new Error("PRIOR_DOSSIER_REQUEST_TOO_LARGE");
+  const identities: Array<{ row: Row; candidateId: string }> = [];
+  for (const row of requested) {
+    identities.push({ row, candidateId: await stableCandidateId(row) });
+  }
+  const ids = Array.from(new Set(identities.map((item) => item.candidateId)));
+  if (!ids.length) return [];
+
+  const history = await tx`
+    select distinct on (candidate_id)
+      candidate_id, research_run_id, recorded_at, snapshot
+    from wow_scout.candidate_history
+    where candidate_id = any(${ids}::text[])
+      and research_run_id is distinct from ${runId}
+    order by candidate_id, recorded_at desc, history_id desc
+  `;
+  const byId = new Map<string, Row>();
+  for (const item of history) byId.set(str(item.candidate_id), asObj(item));
+
+  return identities.map(({ row, candidateId }) => {
+    const prior = byId.get(candidateId);
+    const snapshot = prior ? snapshotObject(prior.snapshot) : {};
+    const dossier = asObj(snapshot.scout_dossier);
+    return {
+      lane: str(row.lane),
+      source_index: Number(row.source_index || 0),
+      candidate_id: candidateId,
+      lookup_status: Object.keys(dossier).length ? "FOUND" : (prior ? "PRIOR_DOSSIER_MISSING" : "NOT_FOUND"),
+      previous_research_run_id: prior ? nullableStr(prior.research_run_id) : null,
+      previous_recorded_at: prior?.recorded_at ? new Date(String(prior.recorded_at)).toISOString() : null,
+      prior_dossier: Object.keys(dossier).length ? dossier : null,
+      prediction_authority: false,
+      can_execute: false,
+    };
+  });
+}
+
 // deno-lint-ignore no-explicit-any
 async function openRun(tx: any, runId: string, body: Row): Promise<void> {
   const firstBlocker = asObj(asList(body.source_blockers)[0]);
@@ -645,6 +700,21 @@ Deno.serve(async (req: Request) => {
 
   const sql = postgres(dbUrl, { max: 1, prepare: false });
   try {
+    if (phase === "READ_PREVIOUS") {
+      let previous: Row[] = [];
+      await sql.begin(async (tx) => {
+        previous = await readPreviousDossiers(tx, runId, body);
+      });
+      return response({
+        ok: true,
+        persist_phase: "READ_PREVIOUS",
+        research_run_id: runId,
+        candidates: previous,
+        prediction_authority: false,
+        can_execute: false,
+      });
+    }
+
     if (phase === "MATERIALIZE") {
       const slateDate = str(body.slate_date);
       if (!/^\d{4}-\d{2}-\d{2}$/.test(slateDate)) return response({ ok:false, code:"SLATE_DATE_INVALID", can_execute:false }, 422);
