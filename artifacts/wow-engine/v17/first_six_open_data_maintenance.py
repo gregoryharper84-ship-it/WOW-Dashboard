@@ -263,6 +263,24 @@ def _persist_team_state_batch(db: Any, payload: dict[str, Any]) -> dict[str, Any
     }
 
 
+def _persist_team_state_batch_reclaiming(db: Any, payload: dict[str, Any]) -> dict[str, Any]:
+    """Persist one bounded runner batch, then reclaim request allocation arenas.
+
+    Source-heavy fitting already runs off-process. The remaining backend work is
+    repeated JSON validation + Supabase upsert. Under a long sequence of
+    100-row batches those short-lived dict/list arenas can remain resident even
+    after each request returns, exhausting the 512 MiB Render instance despite
+    Daily/Scout admission working correctly.
+    """
+    try:
+        return _persist_team_state_batch(db, payload)
+    finally:
+        # Drop the large request-body reference before GC/trim so successful
+        # batch payloads are eligible for reclamation immediately.
+        payload = {}
+        _release_process_memory()
+
+
 def install_first_six_open_data_maintenance_routes(app: FastAPI, *, auth_dependency: Any, db_client_fn: Any) -> None:
     dependency = scout_route_auth_dependency(auth_dependency)
     routes = {getattr(route,"path",None) for route in app.router.routes}
@@ -298,7 +316,7 @@ def install_first_six_open_data_maintenance_routes(app: FastAPI, *, auth_depende
     if "/internal/v17/team-state-challenger-persist-batch" not in routes:
         @app.post("/internal/v17/team-state-challenger-persist-batch",dependencies=[dependency],operation_id="persistWowV17TeamStateChallengerBatch")
         def persist_team_state_challenger_batch(payload: dict[str, Any]) -> dict[str, Any]:
-            return _persist_team_state_batch(db_client_fn(), payload)
+            return _persist_team_state_batch_reclaiming(db_client_fn(), payload)
 
 
 __all__ = ["CAN_EXECUTE","install_first_six_open_data_maintenance_routes"]

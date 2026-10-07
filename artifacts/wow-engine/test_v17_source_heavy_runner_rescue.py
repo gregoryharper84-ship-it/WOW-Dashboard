@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 from fastapi import HTTPException
 
+import v17.first_six_open_data_maintenance as maintenance
 from v17.first_six_open_data_maintenance import _persist_team_state_batch
 import v17.team_state_runner_rescue as rescue
 
@@ -191,3 +192,40 @@ def test_runner_does_not_persist_blocked_scope(monkeypatch):
     package = rescue.prepare_source_heavy_scope(scope="NCAAB", training_code_sha="2" * 40)
     assert package["batch_count"] == 0
     assert package["result"]["candidate_rows_updated"] == 0
+
+
+def test_persist_batch_reclaims_process_memory_after_success(monkeypatch):
+    calls = []
+    monkeypatch.setattr(maintenance, "_release_process_memory", lambda: calls.append("reclaim"))
+
+    result = maintenance._persist_team_state_batch_reclaiming(
+        _FakeDB(),
+        {
+            "table": "wow_d1_training_rows",
+            "rows": [_training_row()],
+            "on_conflict": "sport,official_event_id,feature_schema_version,source_manifest_sha256",
+            "ignore_duplicates": True,
+        },
+    )
+
+    assert result["status"] == "PERSISTED"
+    assert result["can_execute"] is False
+    assert calls == ["reclaim"]
+
+
+def test_persist_batch_reclaims_process_memory_after_rejection(monkeypatch):
+    calls = []
+    monkeypatch.setattr(maintenance, "_release_process_memory", lambda: calls.append("reclaim"))
+
+    with pytest.raises(HTTPException):
+        maintenance._persist_team_state_batch_reclaiming(
+            _FakeDB(),
+            {
+                "table": "wow_predictions",
+                "rows": [_training_row()],
+                "on_conflict": "sport,official_event_id,feature_schema_version,source_manifest_sha256",
+                "ignore_duplicates": True,
+            },
+        )
+
+    assert calls == ["reclaim"]
