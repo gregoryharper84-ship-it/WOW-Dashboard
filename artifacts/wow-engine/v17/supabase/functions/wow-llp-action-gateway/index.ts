@@ -87,6 +87,31 @@ function jsonResponse(
   });
 }
 
+function validateLlpFullSlateRequest(payload: unknown): string[] {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return ["body:OBJECT_REQUIRED"];
+  }
+  const body = payload as Record<string, unknown>;
+  const violations: string[] = [];
+  const lanes = body.lanes;
+  if (!Array.isArray(lanes) || lanes.length !== 1 || lanes[0] !== "MONEYLINE") {
+    violations.push("lanes:MONEYLINE_ONLY");
+  }
+  if (body.max_props !== 0) {
+    violations.push("max_props:ZERO_REQUIRED");
+  }
+  const maxTeamEvents = body.max_team_events;
+  if (
+    typeof maxTeamEvents !== "number" ||
+    !Number.isInteger(maxTeamEvents) ||
+    maxTeamEvents < 1 ||
+    maxTeamEvents > 12
+  ) {
+    violations.push("max_team_events:OUT_OF_RANGE");
+  }
+  return violations;
+}
+
 Deno.serve(async (req: Request) => {
   const requestId = correlationId(req);
   const url = new URL(req.url);
@@ -114,6 +139,29 @@ Deno.serve(async (req: Request) => {
   if (route.auth && (!authorization || !authorization.startsWith("Bearer "))) {
     gatewayLog("AUTH_REQUIRED", requestId, req.method, upstreamPath);
     return jsonResponse(401, "LLP_GATEWAY_AUTH_REQUIRED", requestId);
+  }
+
+  if (req.method === "POST" && upstreamPath === "/v17/daily-snapshot-run") {
+    let payload: unknown;
+    try {
+      payload = await req.clone().json();
+    } catch {
+      gatewayLog("CONTRACT_REJECTED", requestId, req.method, upstreamPath, {
+        violations: ["body:INVALID_JSON"],
+      });
+      return jsonResponse(422, "LLP_GATEWAY_FULL_SLATE_CONTRACT_INVALID", requestId, {
+        violations: ["body:INVALID_JSON"],
+      });
+    }
+    const violations = validateLlpFullSlateRequest(payload);
+    if (violations.length > 0) {
+      gatewayLog("CONTRACT_REJECTED", requestId, req.method, upstreamPath, {
+        violations,
+      });
+      return jsonResponse(422, "LLP_GATEWAY_FULL_SLATE_CONTRACT_INVALID", requestId, {
+        violations,
+      });
+    }
   }
 
   const headers = new Headers();
