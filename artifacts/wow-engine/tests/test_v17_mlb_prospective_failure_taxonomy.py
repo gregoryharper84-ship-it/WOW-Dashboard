@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException
 
-from mlb_event_specialist_v16 import ProspectiveModelUnavailable
+from mlb_event_specialist_v16 import ProspectiveModelUnavailable, _required_numeric_inputs
 from mlb_event_prospective_runtime import _typed_prospective_failure
 from v17 import mlb_event_bridge_repair as bridge
 from v17.mlb_prospective_failure_taxonomy import (
@@ -65,6 +65,22 @@ def test_calibration_rejection_preserves_established_blocker_contract():
         assert failure.status_code == 422
         assert failure.blocker_code == "CALIBRATION_ARTIFACT_INVALID_OR_UNAVAILABLE"
         assert failure.can_execute is False
+
+
+
+def test_null_required_numeric_input_is_typed_before_float_conversion():
+    with pytest.raises(ProspectiveModelUnavailable) as caught:
+        _required_numeric_inputs(
+            {"home_mu": None, "away_mu": 4.2},
+            ("home_mu", "away_mu"),
+            source="score",
+        )
+    assert str(caught.value) == "prospective_required_numeric_input_invalid:score.home_mu"
+    failure = classify_mlb_prospective_failure(caught.value)
+    assert failure.code == MODEL_INPUTS_INSUFFICIENT
+    assert failure.status_code == 422
+    assert failure.blocker_code == "SPORT_SPECIFIC_MODEL_INPUTS_INSUFFICIENT"
+    assert failure.can_execute is False
 
 
 def test_unknown_invoked_scorer_exception_fails_as_scorer_not_unavailable():
