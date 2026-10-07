@@ -390,3 +390,41 @@ def test_stale_prop_identity_can_receive_fresh_replacement_after_quarantine():
     assert candidate["probability"] is None
     assert all(row["prediction_authority"] is False for row in candidate["market_evidence"])
     assert all(row["can_execute"] is False for row in candidate["market_evidence"])
+
+def test_snapshot_prop_seed_respects_explicit_scout_window():
+    handoff = _handoff()
+    handoff["window"] = {
+        "from": "2026-10-05T15:49:57Z",
+        "to": "2026-10-07T03:49:57Z",
+    }
+    event = _event(
+        "SHARPAPI",
+        "book-a",
+        -120,
+        sport_key="basketball_nba",
+        home="Detroit Pistons",
+        away="Boston Celtics",
+        start="2026-10-20T19:00:00Z",
+        updated="2026-10-05T19:59:00Z",
+    )
+    event["bookmakers"][0]["markets"].append({
+        "key": "player_points",
+        "last_update": "2026-10-05T19:59:00Z",
+        "outcomes": [
+            {"name": "Over", "description": "Example Player", "price": -115, "point": 20.5},
+            {"name": "Under", "description": "Example Player", "price": -105, "point": 20.5},
+        ],
+    })
+
+    result = attach_snapshot_evidence(
+        handoff,
+        _snapshot([event], generated_at="2026-10-05T20:00:00Z"),
+        now=datetime(2026, 10, 5, 20, 1, tzinfo=timezone.utc),
+    )
+
+    assert result["model_handoff"]["prop_candidates"] == []
+    bridge = result["market_evidence_snapshot_bridge"]
+    assert bridge["prop_candidates_seeded"] == 0
+    assert bridge["prop_seed_events_outside_window"] == 1
+    assert result["can_execute"] is False
+
