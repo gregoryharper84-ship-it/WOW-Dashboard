@@ -76,6 +76,25 @@ caller.
   self-heal on their next run instead of corrupting the receipt. Historical
   normalization is deliberately left to a separate cleanup.
 
+
+## Prior-dossier read phase
+
+`READ_PREVIOUS` is a bounded, read-only phase used by the protected-main
+Nightly Multi-Scout workflow before sport-team enrichment. The caller sends at
+most 500 compact candidate identity rows; it does not send the slate's market
+evidence payload back through the read path. The function derives the same
+stable candidate ids used by persistence, reads the latest earlier
+`candidate_history.snapshot`, and returns only the embedded
+`scout_dossier` plus history metadata.
+
+The read phase never writes Scout Brain state, never returns a model
+probability, and always returns `prediction_authority=false` and
+`can_execute=false`. The Nightly workflow is OIDC-allowlisted only for this
+governed function; the function still validates repository, repository/owner
+IDs, protected `main` ref, GitHub-hosted runner, workflow ref, event type, and
+fixed audience. Legacy history rows whose JSON snapshot was stored as a string
+are parsed defensively.
+
 ## Deployment
 
 Not deployed by CI. Deploy deliberately after review, then confirm the deployed
