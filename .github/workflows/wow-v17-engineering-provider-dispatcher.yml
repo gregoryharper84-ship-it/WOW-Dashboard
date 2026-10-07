@@ -93,6 +93,9 @@ jobs:
             echo "TARGET_INCIDENT_REQUIRES_DOMAIN_LEASE:$target_incident" >&2
             exit 1
           fi
+          # workflow_run.name can carry the run-name metadata suffix.
+          # Compare the exact worker token, preserving raw identity in receipts.
+          source_workflow_id="${SOURCE_WORKFLOW%% *}"
           receipt="$RUNNER_TEMP/provider-route.json"
 
           classify_run() {
@@ -108,7 +111,7 @@ jobs:
           if [ "$EVENT_NAME" = "workflow_run" ]; then
             if [ "$SOURCE_CONCLUSION" = "success" ]; then
               reason="${SOURCE_WORKFLOW}_SUCCESS"
-            elif [ "$SOURCE_WORKFLOW" = "wow-v17-chatgpt-engineering-worker" ]; then
+            elif [ "$source_workflow_id" = "wow-v17-chatgpt-engineering-worker" ]; then
               classification=$(classify_run "$SOURCE_RUN_ID" openai)
               code=$(jq -r '.code' <<<"$classification")
               eligible=$(jq -r '.failover_eligible' <<<"$classification")
@@ -124,7 +127,7 @@ jobs:
                   reason="${code}:ANTHROPIC_AUTH_MISSING"
                 fi
               fi
-            elif [ "$SOURCE_WORKFLOW" = "wow-v17-claude-engineering-worker" ]; then
+            elif [ "$source_workflow_id" = "wow-v17-claude-engineering-worker" ]; then
               classification=$(classify_run "$SOURCE_RUN_ID" anthropic)
               code=$(jq -r '.code' <<<"$classification")
               reason="$code"
