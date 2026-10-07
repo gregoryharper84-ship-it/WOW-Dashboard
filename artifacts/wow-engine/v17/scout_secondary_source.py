@@ -284,6 +284,37 @@ def _season_context(event: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _display_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        for key in ("displayName", "shortDisplayName", "name", "summary", "title", "number"):
+            if value.get(key) not in (None, ""):
+                return value.get(key)
+        return None
+    return value if value not in (None, "") else None
+
+
+def _event_context(event: dict[str, Any]) -> dict[str, Any]:
+    """Preserve source-observed event context without inference."""
+    competitions = event.get("competitions") or []
+    competition = competitions[0] if competitions and isinstance(competitions[0], dict) else {}
+    venue = competition.get("venue") if isinstance(competition.get("venue"), dict) else {}
+    status = event.get("status") if isinstance(event.get("status"), dict) else {}
+    status_type = status.get("type") if isinstance(status.get("type"), dict) else {}
+
+    context = {
+        "venue": venue.get("fullName") or venue.get("displayName") or venue.get("name"),
+        "venue_id": venue.get("id"),
+        "neutral_site": competition.get("neutralSite"),
+        "event_status": status_type.get("name") or status_type.get("state") or status_type.get("description"),
+        "event_type": _display_value(event.get("type")),
+        "competition_round": _display_value(competition.get("round") or event.get("round")),
+        "series_state": _display_value(competition.get("series") or event.get("series")),
+        "competition_importance": _display_value(competition.get("importance") or event.get("importance")),
+        "event_context_source": "ESPN_SCOREBOARD",
+    }
+    return {key: value for key, value in context.items() if value is not None}
+
+
 def espn_event_to_primary_shape(event: dict[str, Any], sport_key: str) -> dict[str, Any] | None:
     event_id = event.get("id")
     if not event_id:
@@ -296,6 +327,7 @@ def espn_event_to_primary_shape(event: dict[str, Any], sport_key: str) -> dict[s
         "home_team": _team_name(home),
         "away_team": _team_name(away),
         **_season_context(event),
+        **_event_context(event),
         "_wow_secondary_event_id": str(event_id),
         "_wow_secondary_home_team_id": _team_id(home),
         "_wow_secondary_away_team_id": _team_id(away),
