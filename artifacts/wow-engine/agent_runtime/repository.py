@@ -53,6 +53,7 @@ def create_run(
     requested_as_of: str,
     user_timezone: str,
     governance_version: str,
+    request_payload: Optional[dict[str, Any]] = None,
 ) -> tuple[dict[str, Any], bool]:
     """Returns (run_row, reused). Idempotent: a repeated call with the same
     (idempotency_key, request_hash) returns the existing run rather than
@@ -74,6 +75,7 @@ def create_run(
                 "status": "CREATED",
                 "stage": "INTAKE",
                 "governance_version": governance_version,
+                "request_payload": request_payload or {},
             })
             .execute()
         )
