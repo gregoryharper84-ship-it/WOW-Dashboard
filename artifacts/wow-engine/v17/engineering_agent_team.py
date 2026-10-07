@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -187,6 +188,17 @@ CLASS_C_SCOPE_FLAGS = (
     "changes_failure_path_weighting",
 )
 LIFECYCLE_SCOPE_FLAGS = CLASS_B_SCOPE_FLAGS + CLASS_C_SCOPE_FLAGS
+
+LIFECYCLE_CONTROL_PATHS = frozenset({
+    ".github/workflows/wow-v17-24h-engineering-closure-loop.yml",
+    ".github/workflows/wow-v17-engineering-auditor-code-health.yml",
+    ".github/workflows/wow-v17-terminal-closure-controller.yml",
+    "artifacts/wow-engine/v17/engineering_agent_team.py",
+    "artifacts/wow-engine/v17/terminal_closure_controller.py",
+})
+LIFECYCLE_CONTROL_PREFIXES = (
+    ".agents/skills/wow-engineering-lifecycle-closure-cell/",
+)
 
 REQUIRED_CLOSURE_FIELDS = {
     "expected_behavior", "observed_behavior", "reproduction", "evidence",
@@ -431,6 +443,58 @@ def select_dual_stream_work(records: list[dict[str, Any]]) -> DualStreamDecision
             "highest-priority existing closure journey; no parallel acceleration incident."
         ),
     )
+
+def is_lifecycle_control_path(path: str) -> bool:
+    normalized = str(path or "").strip().replace("\\", "/")
+    return (
+        normalized in LIFECYCLE_CONTROL_PATHS
+        or any(normalized.startswith(prefix) for prefix in LIFECYCLE_CONTROL_PREFIXES)
+    )
+
+
+def lifecycle_record_from_pr_body(
+    body: str,
+    *,
+    changed_paths: tuple[str, ...] = (),
+) -> dict[str, Any]:
+    """Parse machine-readable lifecycle attestation from a PR body.
+
+    Touching a known lifecycle control path activates the boundary even if the
+    PR author omitted the marker, so omission cannot silently bypass Class A
+    validation.
+    """
+    text = str(body or "")
+    marker = re.search(
+        r"(?im)^\s*Lifecycle-Control-Plane\s*:\s*true\s*$",
+        text,
+    )
+    lifecycle_touched = any(is_lifecycle_control_path(path) for path in changed_paths)
+    if marker is None and not lifecycle_touched:
+        return {"lifecycle_control_plane": False}
+
+    record: dict[str, Any] = {"lifecycle_control_plane": True}
+    change_class = re.search(r"(?im)^\s*Change-Class\s*:\s*([ABC])\s*$", text)
+    if change_class:
+        record["change_class"] = change_class.group(1).upper()
+    for flag in LIFECYCLE_SCOPE_FLAGS:
+        match = re.search(
+            rf"(?im)^\s*-\s*{re.escape(flag)}\s*:\s*(true|false)\s*$",
+            text,
+        )
+        if match:
+            record[flag] = match.group(1).lower() == "true"
+    return record
+
+
+def validate_lifecycle_pr_body(
+    body: str,
+    *,
+    changed_paths: tuple[str, ...] = (),
+) -> list[str]:
+    return validate_lifecycle_classification(
+        lifecycle_record_from_pr_body(body, changed_paths=changed_paths)
+    )
+
 
 def required_lifecycle_change_class(record: dict[str, Any]) -> tuple[str, tuple[str, ...]]:
     """Derive the minimum governed change class from explicit lifecycle scope flags."""
@@ -677,12 +741,36 @@ def self_check() -> dict[str, Any]:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=["self-check", "priority", "dual-priority", "frontier-gate", "support-route"])
+    parser.add_argument("command", choices=["self-check", "priority", "dual-priority", "frontier-gate", "support-route", "lifecycle-classify"])
     parser.add_argument("--ledger", default=str(Path(__file__).with_name("incident-ledger.json")))
+    parser.add_argument("--pr-body-file", default="")
+    parser.add_argument("--changed-paths-file", default="")
     parser.add_argument("--typed-failure", default="")
     parser.add_argument("--subsystem", default="")
     parser.add_argument("--wait-state", default="")
     args = parser.parse_args()
+
+    if args.command == "lifecycle-classify":
+        body = Path(args.pr_body_file).read_text(encoding="utf-8") if args.pr_body_file else ""
+        changed_paths: tuple[str, ...] = ()
+        if args.changed_paths_file:
+            changed_paths = tuple(
+                line.strip()
+                for line in Path(args.changed_paths_file).read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            )
+        record = lifecycle_record_from_pr_body(body, changed_paths=changed_paths)
+        errors = validate_lifecycle_classification(record)
+        print(json.dumps({
+            "lifecycle_control_plane": record.get("lifecycle_control_plane") is True,
+            "declared_change_class": record.get("change_class"),
+            "required_change_class": required_lifecycle_change_class(record)[0] if record.get("lifecycle_control_plane") is True else "N/A",
+            "errors": errors,
+            "can_execute": False,
+        }, indent=2, sort_keys=True))
+        if errors:
+            raise SystemExit(1)
+        return
 
     if args.command == "self-check":
         print(json.dumps(self_check(), indent=2, sort_keys=True))
