@@ -55,6 +55,17 @@ def _new_context() -> dict[str, Any]:
     }
 
 
+
+def _scan_budget_scope() -> tuple[source_policy.PaidCallBudget, Any | None]:
+    """Reuse an enclosing Daily budget; own a local scope only when standalone."""
+    current = source_policy.current_paid_budget()
+    if current is not None:
+        return current, None
+    budget = source_policy.PaidCallBudget.from_env()
+    token = source_policy.begin_paid_budget_scope(budget)
+    return budget, token
+
+
 def _provider_state(context: dict[str, Any], provider: str) -> dict[str, Any]:
     key = str(provider).upper()
     return context.setdefault("providers", {}).setdefault(
@@ -418,11 +429,7 @@ def install_quota_aware_degraded_discovery() -> dict[str, Any]:
     def scan(*args: Any, **kwargs: Any) -> dict[str, Any]:
         from v17 import rundown_snapshot_cache as snapshot_cache
 
-        shared_budget = source_policy.current_paid_budget()
-        budget_token = None
-        if shared_budget is None:
-            shared_budget = source_policy.PaidCallBudget.from_env()
-            budget_token = source_policy.begin_paid_budget_scope(shared_budget)
+        shared_budget, budget_token = _scan_budget_scope()
         context = _new_context()
         cache_before = snapshot_cache.stats()
         scan_token = _SCAN_CONTEXT.set(context)
