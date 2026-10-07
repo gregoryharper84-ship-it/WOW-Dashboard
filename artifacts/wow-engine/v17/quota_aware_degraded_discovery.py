@@ -14,6 +14,8 @@ from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Iterable, Mapping
 
+from v17 import free_core_source_policy as source_policy
+
 CAN_EXECUTE = False
 CONTRACT_VERSION = "V17_QUOTA_AWARE_DEGRADED_DISCOVERY_V1"
 
@@ -36,9 +38,11 @@ _SCAN_CONTEXT: ContextVar[dict[str, Any] | None] = ContextVar(
 def _new_context() -> dict[str, Any]:
     return {
         "providers": {},
+        "_paid_call_budget": source_policy.PaidCallBudget.from_env(),
         "paid_provider_calls_attempted": 0,
         "paid_provider_calls_succeeded": 0,
         "paid_provider_calls_blocked_by_quota_policy": 0,
+        "paid_provider_calls_blocked_by_source_policy": 0,
         "paid_provider_calls_saved_by_cache": 0,
         "paid_provider_calls_saved_by_model_prefilter": 0,
         "paid_provider_calls_saved_by_free_discovery": 0,
@@ -84,7 +88,12 @@ def classify_provider_failure(code: Any) -> str:
     return TEMPORARILY_UNAVAILABLE
 
 
-def _before_paid_call(provider: str) -> tuple[dict[str, Any] | None, dict[str, Any] | None, str | None]:
+def _before_paid_call(
+    provider: str,
+    *,
+    stage: str = source_policy.STAGE_DISCOVERY,
+    model_preflight_passed: bool = False,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None, str | None]:
     context = _SCAN_CONTEXT.get()
     if context is None:
         return None, None, None
@@ -94,6 +103,25 @@ def _before_paid_call(provider: str) -> tuple[dict[str, Any] | None, dict[str, A
         state["calls_blocked"] += 1
         reason = str(state.get("reason_code") or state.get("status") or "PROVIDER_BLOCKED")
         return context, state, f"{str(provider).upper()}_CIRCUIT_OPEN:{reason}"
+
+    budget = context.get("_paid_call_budget")
+    if not isinstance(budget, source_policy.PaidCallBudget):
+        budget = source_policy.PaidCallBudget.from_env()
+        context["_paid_call_budget"] = budget
+    allowed, policy_blocker = budget.check(
+        stage,
+        model_preflight_passed=model_preflight_passed,
+    )
+    if not allowed:
+        context["paid_provider_calls_blocked_by_source_policy"] += 1
+        state["calls_blocked"] += 1
+        state["status"] = source_policy.source_mode()
+        state["reason_code"] = policy_blocker
+        return context, state, (
+            f"{str(provider).upper()}_SOURCE_POLICY_BLOCK:{policy_blocker}"
+        )
+
+    budget.record_attempt(stage)
     context["paid_provider_calls_attempted"] += 1
     state["calls_attempted"] += 1
     return context, state, None
@@ -185,7 +213,10 @@ def _quota_aware_odds_proxy_factory(*args: Any, **kwargs: Any):
     underlying_proxy_get = kwargs.pop("proxy_get", None) or default_proxy_get
 
     def metered_proxy_get(path: str, params: Any = None):
-        context, state, blocked = _before_paid_call("ODDS_PROXY")
+        context, state, blocked = _before_paid_call(
+            "ODDS_PROXY",
+            stage=source_policy.STAGE_DISCOVERY,
+        )
         if blocked:
             class BlockedResult:
                 ok = False
@@ -280,7 +311,10 @@ def _quota_aware_rundown_factory(*args: Any, **kwargs: Any):
     base_fetch = original_factory(*args, **kwargs)
 
     def fetch(family: str, target: Any = None):
-        context, state, blocked = _before_paid_call("RUNDOWN")
+        context, state, blocked = _before_paid_call(
+            "RUNDOWN",
+            stage=source_policy.STAGE_DISCOVERY,
+        )
         if blocked:
             origin = str(state.get("reason_code") or "")
             acquisition = discovery.AcquisitionFeedResult(
@@ -385,13 +419,16 @@ def install_quota_aware_degraded_discovery() -> dict[str, Any]:
             result = dict(original_scan(*args, **kwargs))
         finally:
             _SCAN_CONTEXT.reset(token)
+        policy_receipt = context["_paid_call_budget"].receipt()
         result["quota_aware_acquisition"] = {
             "contract_version": CONTRACT_VERSION,
+            "source_policy": policy_receipt,
             "mode": "QUOTA_AWARE_DEGRADED_DISCOVERY_MODE",
             "provider_states": context["providers"],
             "paid_provider_calls_attempted": context["paid_provider_calls_attempted"],
             "paid_provider_calls_succeeded": context["paid_provider_calls_succeeded"],
             "paid_provider_calls_blocked_by_quota_policy": context["paid_provider_calls_blocked_by_quota_policy"],
+            "paid_provider_calls_blocked_by_source_policy": context["paid_provider_calls_blocked_by_source_policy"],
             "paid_provider_calls_saved_by_cache": context["paid_provider_calls_saved_by_cache"],
             "paid_provider_calls_saved_by_model_prefilter": context["paid_provider_calls_saved_by_model_prefilter"],
             "paid_provider_calls_saved_by_free_discovery": context["paid_provider_calls_saved_by_free_discovery"],
