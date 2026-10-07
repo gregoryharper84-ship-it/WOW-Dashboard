@@ -40,3 +40,22 @@ def test_free_core_blocks_sharpapi_before_provider_lookup_or_network(monkeypatch
     assert out.request_audit["paid_provider_network_attempted"] is False
     assert out.research_only is True
     assert out.can_execute is False
+
+
+
+def test_free_core_low_level_provider_fetch_is_network_closed(monkeypatch):
+    monkeypatch.setenv("WOW_V17_SOURCE_MODE", "FREE_CORE")
+    monkeypatch.setattr(sources, "ENABLED", True)
+    monkeypatch.setenv("THERUNDOWN_API_KEY", "test-only")
+    result = sources.fetch(
+        "RUNDOWN",
+        "sports",
+        opener=lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError("low-level provider fetch must not reach network")
+        ),
+    )
+    assert result.ok is False
+    assert result.code == "PAID_PROVIDER_DISABLED_FREE_CORE"
+    assert result.request_audit["paid_provider_network_attempted"] is False
+    assert result.prediction_authority is False
+    assert result.can_execute is False
