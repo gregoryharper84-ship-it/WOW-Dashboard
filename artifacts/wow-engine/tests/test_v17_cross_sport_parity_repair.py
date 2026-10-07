@@ -11,6 +11,7 @@ from v17.team_event_sport_parity import (
     build_discovery_evidence,
     canonicalize_mlb_discovery_identity,
     canonicalize_nfl_discovery_identity,
+    canonicalize_ncaaf_discovery_identity,
     canonicalize_nhl_discovery_identity,
     canonicalize_wnba_discovery_identity,
     cross_sport_model_coverage,
@@ -536,3 +537,63 @@ def test_nhl_daily_discovery_alias_stays_unresolved_on_official_failure(monkeypa
     assert out.official_event_id is None
     assert out.raw["canonical_identity_status"] == "ALIAS_ONLY_UNRESOLVED"
     assert out.raw["canonical_identity_blocker"] == "NHL_CANONICAL_EVENT_NOT_FOUND"
+
+
+
+def _ncaaf_alias_event():
+    return DiscoveredEvent(
+        sport="NCAAF",
+        league="NCAAF",
+        sport_key="americanfootball_ncaaf",
+        official_event_id=None,
+        home_team="Arizona State Sun Devils",
+        away_team="Baylor Bears",
+        commence_time_utc="2026-10-04T02:30:00Z",
+        event_status="PREGAME",
+        source="DISCOVERY_FEED",
+        provider="ESPN_SCOREBOARD",
+        raw={
+            "provider_event_id": "401900999",
+            "_wow_secondary_event_id": "401900999",
+            "official_event_id": None,
+            "prediction_authority": False,
+        },
+    )
+
+
+def test_ncaaf_daily_discovery_rewrites_only_after_cfbd_match(monkeypatch):
+    import v17.ncaaf_event_identity as identity
+
+    monkeypatch.setattr(
+        identity,
+        "resolve_ncaaf_current_event_identity",
+        lambda **_kwargs: {
+            "event_id": "401856817",
+            "identity_provider": "CFBD:/games",
+            "identity_resolution": "CFBD_EXACT_PARTICIPANTS_START_MATCH",
+            "prediction_authority": False,
+            "can_execute": False,
+        },
+    )
+    out = canonicalize_ncaaf_discovery_identity(_ncaaf_alias_event())
+    assert out.official_event_id == "401856817"
+    assert out.raw["provider_event_id"] == "401900999"
+    assert out.raw["canonical_identity_status"] == "CANONICAL_RESOLVED"
+    assert out.raw["canonical_identity_source"] == "CFBD:/games"
+    assert out.raw["canonical_identity_market_features_used"] is False
+
+
+def test_ncaaf_daily_discovery_alias_stays_unresolved_on_cfbd_failure(monkeypatch):
+    import v17.ncaaf_event_identity as identity
+
+    class IdentityFailure(RuntimeError):
+        code = "NCAAF_CANONICAL_EVENT_NOT_FOUND"
+
+    def fail(**_kwargs):
+        raise IdentityFailure("no exact CFBD event")
+
+    monkeypatch.setattr(identity, "resolve_ncaaf_current_event_identity", fail)
+    out = canonicalize_ncaaf_discovery_identity(_ncaaf_alias_event())
+    assert out.official_event_id is None
+    assert out.raw["canonical_identity_status"] == "ALIAS_ONLY_UNRESOLVED"
+    assert out.raw["canonical_identity_blocker"] == "NCAAF_CANONICAL_EVENT_NOT_FOUND"
