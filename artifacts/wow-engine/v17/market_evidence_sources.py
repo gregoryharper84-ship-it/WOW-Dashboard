@@ -43,6 +43,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
+from v17 import free_core_source_policy as source_policy
 from v17.rundown_rate_limit import classify_rate_limit
 
 CAN_EXECUTE = False
@@ -314,6 +315,19 @@ def fetch(
     provider = PROVIDERS.get(str(provider_name).upper())
     if provider is None:
         return _fail(str(provider_name).upper(), capability, "MARKET_EVIDENCE_PROVIDER_UNKNOWN")
+    if source_policy.free_core_enabled():
+        return _fail(
+            provider.name,
+            capability,
+            source_policy.BLOCK_FREE_CORE,
+            request_audit={
+                "source_mode": source_policy.source_mode(),
+                "source_policy_blocked": True,
+                "paid_provider_network_attempted": False,
+                "probability_substitution_allowed": False,
+                "can_execute": False,
+            },
+        )
     if not ENABLED:
         return _fail(provider.name, capability, "MARKET_EVIDENCE_DISABLED")
 
