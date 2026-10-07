@@ -43,6 +43,7 @@ from v17.spread_margin_replay import (
     _execute_read_with_retry,
     _load_ncaaf_persisted_feature_rows,
     _load_ncaaf_persisted_game_rows,
+    _assert_ncaaf_persisted_feature_freshness,
     NCAAF_PERSISTED_READ_TIMEOUT_RETRIES,
     _ncaaf_events_from_games,
     adapt_ncaaf_persisted_rows,
@@ -180,13 +181,7 @@ def load_ncaaf_forward_context(client: Any) -> tuple[list[MarginTrainingRow], li
             "NCAAF settled sporting history is unavailable for forward shadow scoring",
         )
 
-    latest_feature = max(_dt(row.event_start_time) for row in replay_rows)
-    latest_settled = max(_dt(row["event_start_time"]) for row in settled_events)
-    if latest_feature != latest_settled:
-        raise SpreadChallengerUnavailable(
-            "SPREAD_REPLAY_PERSISTED_NCAAF_FEATURES_STALE",
-            "immutable NCAAF dynamic team-state rows lag the latest settled training game",
-        )
+    _assert_ncaaf_persisted_feature_freshness(replay_rows, game_rows, min_prior_games=MIN_PRIOR_GAMES)
     return replay_rows, settled_events
 
 
