@@ -90,9 +90,20 @@
       "lease_group": "P0_STREAM_C"
     },
     {
-      "issue_number": 823,
+      "issue_number": 1438,
       "severity": "P1",
       "priority_rank": 8,
+      "execution_lane": "STANDARD",
+      "conflict_keys": [
+        "ENGINEERING_GOVERNANCE",
+        "RELIABILITY_GOVERNANCE",
+        "TERMINAL_CLOSURE"
+      ]
+    },
+    {
+      "issue_number": 823,
+      "severity": "P1",
+      "priority_rank": 9,
       "conflict_keys": [
         "SPORT_DISCOVERY",
         "ACQUISITION"
@@ -102,7 +113,7 @@
     {
       "issue_number": 1028,
       "severity": "P1",
-      "priority_rank": 9,
+      "priority_rank": 10,
       "conflict_keys": [
         "MLB_PROP_FORWARD",
         "PROP_HYDRATION"
@@ -112,7 +123,7 @@
     {
       "issue_number": 1087,
       "severity": "P1",
-      "priority_rank": 10,
+      "priority_rank": 11,
       "conflict_keys": [
         "PRODUCTION_RUNTIME",
         "DEPLOY_VERIFY"
@@ -122,7 +133,7 @@
     {
       "issue_number": 1152,
       "severity": "P1",
-      "priority_rank": 11,
+      "priority_rank": 12,
       "conflict_keys": [
         "NCAAF_TEAM_STATE",
         "SPREAD_FORWARD"
@@ -132,7 +143,7 @@
     {
       "issue_number": 1150,
       "severity": "P1",
-      "priority_rank": 12,
+      "priority_rank": 13,
       "conflict_keys": [
         "ACTION_SCHEMA",
         "TEAM_MARKET_ACTIONS"
