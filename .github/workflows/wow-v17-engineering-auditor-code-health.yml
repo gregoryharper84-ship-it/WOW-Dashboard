@@ -22,6 +22,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -41,6 +43,19 @@ jobs:
 
       - name: Run engineering-team self-check
         run: python artifacts/wow-engine/v17/engineering_agent_team.py self-check
+
+      - name: Enforce lifecycle change-class boundary
+        if: github.event_name == 'pull_request'
+        shell: bash
+        env:
+          PR_BODY: ${{ github.event.pull_request.body || '' }}
+        run: |
+          set -euo pipefail
+          printf '%s\n' "$PR_BODY" > "$RUNNER_TEMP/lifecycle-pr-body.md"
+          git diff --name-only HEAD^1 HEAD^2 > "$RUNNER_TEMP/lifecycle-changed-paths.txt"
+          python artifacts/wow-engine/v17/engineering_agent_team.py lifecycle-classify \
+            --pr-body-file "$RUNNER_TEMP/lifecycle-pr-body.md" \
+            --changed-paths-file "$RUNNER_TEMP/lifecycle-changed-paths.txt"
 
       - name: Run continuous-auditor focused tests
         run: >-
