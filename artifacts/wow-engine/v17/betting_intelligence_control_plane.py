@@ -16,7 +16,7 @@ V17_TERMINAL_REDUCER remains the sole sporting terminal authority.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from enum import Enum
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -387,6 +387,161 @@ def build_control_plane_snapshot(
     }
 
 
+def _runtime_work_state(candidate: Mapping[str, Any]) -> WorkState:
+    """Project an Agent Runtime candidate into product-orchestration state."""
+    terminal = str(
+        candidate.get("terminal_label")
+        or candidate.get("terminal_ceiling")
+        or ""
+    ).upper()
+    blockers = tuple(str(code) for code in (candidate.get("blockers") or []))
+    if not terminal:
+        return WorkState.IN_PROGRESS
+    if terminal == "FINAL_APPROVED":
+        return WorkState.SCORED
+    if "PURGE" in terminal:
+        return WorkState.PURGED
+    if terminal in {"MODEL_UNAVAILABLE", "NO_SPECIALIST_COVERAGE"}:
+        return WorkState.UNSUPPORTED
+    if blockers or terminal:
+        return WorkState.BLOCKED
+    return WorkState.BLOCKED
+
+
+def build_agent_runtime_product_truth(
+    run: Mapping[str, Any],
+    candidates: Sequence[Mapping[str, Any]],
+    *,
+    independent_verification: bool = False,
+) -> dict[str, Any]:
+    """Project the durable Agent Runtime ledger into Betting Intelligence truth.
+
+    This is intentionally a projection, not a second state machine. The Agent
+    Runtime remains the source of run/candidate truth; this function makes that
+    truth legible at the product layer without changing any sporting result.
+    """
+    run_id = str(run.get("run_id") or "")
+    if not run_id:
+        raise ValueError("run_id is required")
+
+    request_payload = run.get("request_payload")
+    request_payload = dict(request_payload) if isinstance(request_payload, Mapping) else {}
+    run_status = str(run.get("status") or "")
+    run_stage = str(run.get("stage") or "")
+    run_terminal = run_status in {"COMPLETED", "COMPLETED_WITH_BLOCKERS", "FAILED", "CANCELED"}
+
+    objective = ObjectiveContract(
+        objective_id=f"run:{run_id}",
+        request_id=str(request_payload.get("request_id") or run_id),
+        requested_outcome=str(
+            request_payload.get("requested_outcome")
+            or request_payload.get("run_type")
+            or run.get("run_type")
+            or "GOVERNED_BETTING_INTELLIGENCE_RUN"
+        ),
+        scope={
+            "run_type": run.get("run_type"),
+            "as_of": run.get("requested_as_of"),
+            "user_timezone": run.get("user_timezone"),
+            "lanes": list(request_payload.get("lanes") or []),
+            "sports": list(request_payload.get("sports") or []),
+        },
+        required_systems=(
+            "WOW_BETTING_INTELLIGENCE",
+            "GOVERNED_SPECIALIST",
+            "V17_TERMINAL_REDUCER",
+        ),
+        acceptance_criteria=(
+            "run_terminal",
+            "all_candidates_terminal",
+            "candidate_reconciliation_balanced",
+            "independent_verification",
+        ),
+        current_owner="WOW_BETTING_INTELLIGENCE",
+    )
+
+    work_items: list[WorkItem] = []
+    aggregate_blockers: list[str] = []
+    for candidate in candidates:
+        candidate_id = str(
+            candidate.get("candidate_id")
+            or candidate.get("canonical_key")
+            or ""
+        )
+        if not candidate_id:
+            raise ValueError("candidate identity is required")
+        blockers = tuple(str(code) for code in (candidate.get("blockers") or []))
+        aggregate_blockers.extend(blockers)
+        work_items.append(
+            WorkItem(
+                work_item_id=candidate_id,
+                owner=str(
+                    candidate.get("controlling_worker_id")
+                    or "GOVERNED_SPECIALIST"
+                ),
+                state=_runtime_work_state(candidate),
+                blocker_codes=blockers,
+            )
+        )
+
+    reconciliation = reconcile_work_items(work_items)
+    ledger_balanced = str(run.get("reconciliation_status") or "").upper() == "BALANCED"
+    # For an empty, terminal run the runtime reconciliation has already proven
+    # a zero-row universe. For non-empty runs both ledgers must agree.
+    candidate_reconciliation_balanced = bool(
+        run_terminal
+        and reconciliation.balanced
+        and (ledger_balanced or not candidates)
+    )
+    all_candidates_terminal = reconciliation.rows_nonterminal == 0
+    run_outcome_complete = bool(
+        run_status in {"COMPLETED", "COMPLETED_WITH_BLOCKERS"}
+        and all_candidates_terminal
+        and candidate_reconciliation_balanced
+    )
+
+    acceptance = ProductAcceptance(
+        objective_id=objective.objective_id,
+        criteria={
+            "run_terminal": run_terminal,
+            "all_candidates_terminal": all_candidates_terminal,
+            "candidate_reconciliation_balanced": candidate_reconciliation_balanced,
+            "independent_verification": independent_verification,
+        },
+        blockers=tuple(sorted(set(aggregate_blockers))),
+        failed=run_status == "FAILED",
+        unsupported=bool(
+            candidates
+            and all(item.state == WorkState.UNSUPPORTED for item in work_items)
+        ),
+        independent_verification=independent_verification,
+        reconciliation_balanced=candidate_reconciliation_balanced,
+    )
+    acceptance_result = evaluate_product_acceptance(acceptance)
+
+    return {
+        "contract_version": CONTRACT_VERSION,
+        "run_id": run_id,
+        "runtime_projection": {
+            "run_status": run_status,
+            "run_stage": run_stage,
+            "run_terminal": run_terminal,
+            "run_outcome_complete": run_outcome_complete,
+            "rows_in": len(candidates),
+            "rows_terminal": reconciliation.rows_terminal,
+            "rows_pending": reconciliation.rows_nonterminal,
+            "candidate_conservation_rate": reconciliation.candidate_conservation_rate,
+            "agent_runtime_reconciliation_status": run.get("reconciliation_status"),
+        },
+        "objective": asdict(objective),
+        "work_items": [asdict(item) for item in work_items],
+        "reconciliation": asdict(reconciliation),
+        "acceptance": acceptance_result,
+        "can_execute": False,
+        "terminal_authority": TERMINAL_AUTHORITY,
+    }
+
+
 __all__ = [
     "CAN_EXECUTE",
     "CONTRACT_VERSION",
@@ -403,6 +558,7 @@ __all__ = [
     "TERMINAL_WORK_STATES",
     "WorkItem",
     "WorkState",
+    "build_agent_runtime_product_truth",
     "build_control_plane_snapshot",
     "evaluate_product_acceptance",
     "reconcile_work_items",
