@@ -40,7 +40,24 @@ Instead:
 - **Independent Verification** proves closure independently.
 - **Exact governed specialists** retain their probability authority.
 - **V17_TERMINAL_REDUCER** remains the sole global V17 terminal authority.
-- **WOW Ecosystem Conductor** coordinates the flow and proves that the handoffs occurred.
+- **WOW Ecosystem Conductor** is the neutral ecosystem control plane for routing, handoff integrity, lifecycle state, and work conservation. It coordinates the flow but does not acquire product, probability, verification, safety, engineering, or terminal authority.
+
+Engineering is an execution function, not part of the independent assurance function. Independent Verification remains separate from the implementation team whose work it verifies.
+
+The canonical user path is:
+
+```text
+USER
+  -> WOW_ECOSYSTEM_CONDUCTOR
+  -> WOW_BETTING_INTELLIGENCE
+  -> discovery/evidence as needed
+  -> exact controlling specialist
+  -> V17 terminal governance where applicable
+  -> persistence/publication where applicable
+  -> WOW_BETTING_INTELLIGENCE reconciliation
+  -> WOW_ECOSYSTEM_CONDUCTOR
+  -> USER
+```
 
 ## Core invariants
 
@@ -118,11 +135,38 @@ Keep these states separate:
 - independent verification state
 - user-workflow readiness
 
-### 6. End-to-end reconciliation
+### 6. End-to-end reconciliation and work conservation
 
-Every routed unit of work must remain attributable until terminal disposition.
+Every admitted unit of work must remain attributable until terminal disposition.
 
-No candidate, incident, engineering handoff, verification request, or governed result should silently disappear between layers.
+The typed work-item contract carries:
+
+```text
+work_item_id
+request_id
+objective_id
+candidate_id
+source
+current_owner
+next_owner
+state
+blocking_reason
+evidence_refs
+specialist_route
+verification_state
+terminal_state
+authority_domain
+change_class
+decision_right
+required_verifier
+promotion_state
+```
+
+The invariant is: **everything admitted must either remain validly owned and advancing, be explicitly blocked with an exact reason, or terminate with an attributable terminal state.**
+
+The Conductor fails closed on missing ownership, invalid authority domains, unregistered next owners, silent terminal loss, duplicate work IDs, blockers without reasons, Engineering self-verification, `FIXED_AND_VERIFIED` without Independent Verification, or Class C promotion without verified independent review.
+
+No candidate, incident, engineering handoff, verification request, or governed result may silently disappear between layers.
 
 ## V1 implementation
 
@@ -146,6 +190,10 @@ The deterministic Conductor evaluates:
 - degraded connections;
 - route-specific golden-path readiness;
 - false-green conditions;
+- typed work-conservation state;
+- authority-domain consistency;
+- self-verification violations;
+- Class C promotion safety;
 - SAFE_HOLD state.
 
 ## Next build phases
@@ -164,9 +212,9 @@ Attach authoritative probes for:
 - Kalshi Weather paths
 - independent verification receipts
 
-### Phase 3 — Durable connection ledger
+### Phase 3 — Durable work and connection ledger
 
-Persist time-stamped handoff and readiness receipts so current state can be compared with prior state and recurrent breaks can be identified.
+Persist time-stamped work-item, handoff, ownership, verification, and readiness receipts so current state can be compared with prior state, stale ownership can be detected, and recurrent breaks can be attributed.
 
 ### Phase 4 — Product capability matrix
 
@@ -201,9 +249,11 @@ The Conductor is successful when the ecosystem can answer, from durable evidence
 4. Which exact specialist owned each governed probability?
 5. Which connections were traversed?
 6. Which typed blockers occurred?
-7. Was the result persisted and publication-authorized?
-8. Was the user workflow genuinely complete?
-9. If not, where is the first proven failing boundary?
-10. Which team owns the next action?
+7. Who owns every still-active work item, under which authority domain and change class?
+8. Did any work item disappear, duplicate, self-verify, or cross an authority boundary incorrectly?
+9. Was the result persisted and publication-authorized where required?
+10. Was the user workflow genuinely complete?
+11. If not, where is the first proven failing boundary?
+12. Which team owns the next action?
 
 The answer must not depend on inference from prose or on one component claiming another component succeeded.
