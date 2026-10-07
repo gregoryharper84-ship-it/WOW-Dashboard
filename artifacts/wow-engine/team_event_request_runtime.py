@@ -40,6 +40,7 @@ class TeamEventRequestRow(BaseModel):
     source_snapshot_id: str | None = None
     latest_material_update_timestamp: str | None = None
     settlement_basis: str | None = None
+    market_input: dict[str, Any] | None = None
     sport_specific_evidence: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -202,6 +203,7 @@ def _mlb_v17_score_request(row: TeamEventRequestRow, event: dict[str, Any]) -> A
         source_snapshot_id=str(event["snapshot_id"]),
         latest_material_update_timestamp=str(event.get("snapshot_timestamp") or "") or None,
         market_prior=None,
+        market_input=dict(row.market_input or {}) or None,
         sport_specific_evidence={
             "venue": event["venue_name"],
             "official_event_status": event.get("event_status"),
@@ -243,6 +245,7 @@ def _registered_score_request(row: TeamEventRequestRow) -> Any:
         source_snapshot_id=row.source_snapshot_id or "SCOUT_CANONICALIZATION_PENDING",
         latest_material_update_timestamp=row.latest_material_update_timestamp,
         market_prior=None,
+        market_input=dict(row.market_input or {}) or None,
         sport_specific_evidence=dict(row.sport_specific_evidence or {}),
     )
 
