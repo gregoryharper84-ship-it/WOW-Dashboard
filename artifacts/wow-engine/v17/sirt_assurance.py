@@ -65,6 +65,7 @@ def assess_sentinel(
     work_items: list[dict[str, Any]] | None = None,
     handoffs: list[dict[str, Any]] | None = None,
     probes: list[dict[str, Any]] | None = None,
+    findings: list[dict[str, Any]] | None = None,
     now: datetime | None = None,
     heartbeat_max_age_seconds: int = 300,
 ) -> dict[str, Any]:
@@ -101,6 +102,16 @@ def assess_sentinel(
                 age = _age_seconds(observed, row.get("created_at"))
                 if age is None or age > 900:
                     signals.append(_signal("HANDOFF", identity, "P1", "HANDOFF_UNACKNOWLEDGED"))
+    if findings is not None:
+        for row in findings:
+            if str(row.get("status") or "").upper() != "OPEN":
+                continue
+            severity = str(row.get("severity") or "P3").upper()
+            if severity in {"P0", "P1"}:
+                signals.append(_signal(
+                    "ACTIVE_AUDIT_FINDING", str(row.get("component") or "UNKNOWN"),
+                    severity, "CRITICAL_FINDING_UNRESOLVED",
+                ))
     if probes is not None:
         for row in probes:
             identity = str(row.get("probe_id") or "UNKNOWN")
@@ -167,7 +178,7 @@ def assess_class_a_closure(receipt: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def failure_families(records: list[dict[str, Any]]) -> dict[str, Any]:
+def failure_families(records: list[dict[str, Any]], audit_findings: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     """Cluster only *confirmed* shared root cause IDs, never inferred titles."""
     grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
     unclassified: list[str] = []
@@ -196,8 +207,21 @@ def failure_families(records: list[dict[str, Any]]) -> dict[str, Any]:
             "opportunity": "PREVENTIVE_ARCHITECTURE_REVIEW" if repeat else "CONTINUE_OBSERVATION",
             "classification": "EVIDENCE_BACKED_NO_AUTOMATIC_CLOSURE",
         })
+    # Symptom cohorts are NOT confirmed root cause; do not merge their identities.
+    cohorts: dict[tuple[str, str], int] = defaultdict(int)
+    for finding in audit_findings or []:
+        if str(finding.get("status") or "").upper() == "OPEN":
+            key = (str(finding.get("finding_type") or "UNKNOWN"),
+                   str(finding.get("severity") or "UNKNOWN"))
+            cohorts[key] += 1
+    symptoms = [
+        {"finding_type": typ, "severity": sev, "open_count": count,
+         "classification": "SYMPTOM_CLUSTER_ROOT_CAUSE_UNPROVEN"}
+        for (typ, sev), count in sorted(cohorts.items())
+    ]
     return {
         "families": families,
+        "open_symptom_cohorts": symptoms,
         "unclassified_incident_ids": sorted(unclassified),
         "can_execute": False,
         "terminal_authority": TERMINAL_AUTHORITY,
@@ -224,6 +248,29 @@ def read_auditor_runtime(url: str, key: str, *, timeout_seconds: int = 8) -> dic
     return rows[0]
 
 
+def read_audit_rows(url: str, key: str, *, kind: str, timeout_seconds: int = 8) -> list[dict[str, Any]]:
+    """Bounded, service-role-only read of existing auditor tables; no mutations."""
+    queries = {
+        "work_items": ("wow_engineering_audit_work_items",
+                       "fingerprint,state,severity,next_audit_at", "state=eq.OPEN"),
+        "findings": ("wow_engineering_audit_findings",
+                     "finding_type,status,severity,component", "status=eq.OPEN"),
+    }
+    if kind not in queries or not url.startswith("https://") or not key:
+        raise ValueError("SIRT_MONITOR_CONFIGURATION_MISSING")
+    table, columns, filter_expr = queries[kind]
+    endpoint = url.rstrip("/") + "/rest/v1/" + table + "?select=" + columns + "&" + filter_expr + "&limit=1000"
+    request = Request(endpoint, headers={
+        "apikey": key, "Authorization": "Bearer " + key,
+        "Accept": "application/json", "User-Agent": "wow-sirt-class-a-monitor",
+    })
+    with urlopen(request, timeout=timeout_seconds) as response:
+        rows = json.load(response)
+    if not isinstance(rows, list) or len(rows) >= 1000 or any(not isinstance(row, dict) for row in rows):
+        raise RuntimeError("SIRT_MONITOR_AUDIT_ROWS_INCOMPLETE")
+    return rows
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="WOW SIRT evidence-only assurance")
     parser.add_argument("mode", choices=("sentinel", "failures"))
@@ -232,7 +279,17 @@ def main() -> int:
     if args.mode == "failures":
         try:
             data = json.loads(Path(args.incident_ledger).read_text(encoding="utf-8"))
-            result = failure_families(data["records"])
+            url = os.getenv("SUPABASE_URL", "")
+            key = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_SERVICE_KEY", "")
+            findings = None
+            if url and key:
+                try:
+                    findings = read_audit_rows(url, key, kind="findings")
+                except (ValueError, RuntimeError, HTTPError, URLError, TimeoutError, OSError):
+                    # Do not infer an empty cohort from unreachable persistent evidence.
+                    findings = None
+            result = failure_families(data["records"], findings)
+            result["live_symptom_cohort_source"] = "OBSERVED" if findings is not None else "UNVERIFIED"
         except (OSError, ValueError, KeyError, TypeError):
             print(json.dumps({"status": "SIRT_FAILURE_LEDGER_UNAVAILABLE", "can_execute": False}))
             return 2
@@ -243,7 +300,13 @@ def main() -> int:
             os.getenv("SUPABASE_URL", ""),
             os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_SERVICE_KEY", ""),
         )
-        result = assess_sentinel(runtime=runtime)
+        work_items = read_audit_rows(os.getenv("SUPABASE_URL", ""),
+                                     os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_SERVICE_KEY", ""),
+                                     kind="work_items")
+        findings = read_audit_rows(os.getenv("SUPABASE_URL", ""),
+                                   os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_SERVICE_KEY", ""),
+                                   kind="findings")
+        result = assess_sentinel(runtime=runtime, work_items=work_items, findings=findings)
     except (ValueError, RuntimeError, HTTPError, URLError, TimeoutError, OSError) as exc:
         # No URLs, credentials, or request bodies in diagnostic output.
         result = {"status": "BLOCKED", "reason": (
