@@ -398,8 +398,19 @@ def _research_worker_reports(
     return reports, status
 
 
-def _change_detection(current: dict[str, Any], previous: dict[str, Any] | None) -> dict[str, Any]:
+def _change_detection(
+    current: dict[str, Any],
+    previous: dict[str, Any] | None,
+    prior_lookup_status: str | None,
+) -> dict[str, Any]:
+    lookup = str(prior_lookup_status or "").upper()
     if not isinstance(previous, dict):
+        if lookup == "UNAVAILABLE":
+            return {"status": "PRIOR_STATE_UNAVAILABLE", "changed_sections": []}
+        if lookup == "PRIOR_DOSSIER_MISSING":
+            return {"status": "PRIOR_DOSSIER_MISSING", "changed_sections": []}
+        if lookup == "NOT_FOUND":
+            return {"status": "NO_PRIOR_SNAPSHOT", "changed_sections": []}
         return {"status": "INITIAL_SNAPSHOT", "changed_sections": []}
     changed = []
     for section in ("event_context", "participant_state_timeline", "required_domain_coverage", "market_state"):
@@ -540,7 +551,12 @@ def build_scout_dossier(
         "final_probability_requires_controlling_specialist": True,
         "can_execute": False,
     }
-    dossier["change_detection"] = _change_detection(dossier, previous)
+    dossier["prior_dossier_lookup_status"] = candidate.get("prior_dossier_lookup_status")
+    dossier["change_detection"] = _change_detection(
+        dossier,
+        previous,
+        str(candidate.get("prior_dossier_lookup_status") or ""),
+    )
     violations = validate_non_predictive_output(dossier)
     if violations:
         raise ValueError("SCOUT_DOSSIER_AUTHORITY_VIOLATION:" + ",".join(violations))
