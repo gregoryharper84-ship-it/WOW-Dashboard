@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import datetime, timezone
 from typing import Any, Sequence
 
 import numpy as np
@@ -53,6 +54,19 @@ def build_shadow_binary_calibration_artifact(
     if fit.result is None or fit.result.calibration_status != CalibrationStatus.PLATT_TIME_SPLIT_V1:
         raise BasketballCalibrationArtifactError("BASKETBALL_PLATT_CALIBRATION_NOT_PROMOTABLE")
 
+    normalized_timestamps: list[str] = []
+    parsed_timestamps: list[datetime] = []
+    for raw_ts in timestamps:
+        try:
+            parsed = datetime.fromisoformat(str(raw_ts).replace("Z", "+00:00"))
+        except (TypeError, ValueError) as exc:
+            raise BasketballCalibrationArtifactError("BASKETBALL_CALIBRATION_TIMESTAMP_INVALID") from exc
+        if parsed.utcoffset() is None:
+            raise BasketballCalibrationArtifactError("BASKETBALL_CALIBRATION_TIMESTAMP_INVALID")
+        parsed = parsed.astimezone(timezone.utc)
+        parsed_timestamps.append(parsed)
+        normalized_timestamps.append(parsed.isoformat())
+
     raw = np.asarray(raw_probabilities, dtype=float)
     y = np.asarray(outcomes, dtype=float)
     calibrated = np.asarray([fit.coefficients.apply(float(p)) for p in raw], dtype=float)
@@ -69,13 +83,13 @@ def build_shadow_binary_calibration_artifact(
             "outcome": int(o),
             "timestamp": str(ts),
         }
-        for p, o, ts in zip(raw_probabilities, outcomes, timestamps)
+        for p, o, ts in zip(raw_probabilities, outcomes, normalized_timestamps)
     ]
     split_rows = [
         {"timestamp": str(ts), "fold": int(fold)}
-        for ts, fold in zip(timestamps, fold_assignments)
+        for ts, fold in zip(normalized_timestamps, fold_assignments)
     ]
-    fit_end = max(str(ts) for ts in timestamps)
+    fit_end = max(parsed_timestamps).isoformat()
 
     # calibration.PlattCoefficients applies sigmoid(intercept + slope*logit(p)).
     # multisport_team_event_calibration expects platt_a=slope, platt_b=intercept.
