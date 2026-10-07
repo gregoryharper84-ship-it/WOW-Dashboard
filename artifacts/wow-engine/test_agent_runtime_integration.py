@@ -141,6 +141,7 @@ def test_create_run_happy_path_returns_202_and_pollable_run_id(monkeypatch):
     assert body["reused"] is False
     assert body["can_execute"] is False
     assert body["poll_url"] == f"/wow/runs/{body['run_id']}/manifest"
+    assert body["product_truth_url"] == f"/wow/runs/{body['run_id']}/product-truth"
 
 
 def test_repeated_create_run_same_key_and_body_is_idempotent(monkeypatch):
@@ -312,3 +313,55 @@ def test_synchronous_fake_worker_fixture_completes_with_balanced_reconciliation(
     }
     assert len(body["candidates"]) == 3
     assert body["can_execute"] is False
+
+
+
+def test_terminal_run_exposes_persisted_betting_intelligence_product_truth(monkeypatch):
+    fake = FakeSupabaseClient()
+    monkeypatch.setattr(agent_runtime_api, "get_client", lambda: fake)
+    monkeypatch.setattr("ledger.get_client", lambda: fake)
+
+    created = client.post(
+        "/wow/runs",
+        json=_RUN_PAYLOAD,
+        headers={"Idempotency-Key": "product-truth-terminal-1"},
+    )
+    assert created.status_code == 202
+    run_id = created.json()["run_id"]
+
+    response = client.get(f"/wow/runs/{run_id}/product-truth")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["persisted"] is True
+    assert body["runtime_projection"]["run_terminal"] is True
+    assert body["runtime_projection"]["run_outcome_complete"] is True
+    assert body["runtime_projection"]["candidate_conservation_rate"] == 1.0
+    assert body["acceptance"]["product_state"] == "WORKING_NOT_COMPLETE"
+    assert body["acceptance"]["independent_verification"] is False
+    assert body["can_execute"] is False
+    assert body["terminal_authority"] == "V17_TERMINAL_REDUCER"
+
+
+def test_inflight_run_exposes_live_product_truth_without_fabricated_persistence(monkeypatch):
+    fake = FakeSupabaseClient()
+    monkeypatch.setattr(agent_runtime_api, "get_client", lambda: fake)
+    created = _created_run(fake, "product-truth-inflight-1")
+
+    response = client.get(f"/wow/runs/{created['run_id']}/product-truth")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["persisted"] is False
+    assert body["runtime_projection"]["run_status"] == "CREATED"
+    assert body["runtime_projection"]["run_terminal"] is False
+    assert body["runtime_projection"]["run_outcome_complete"] is False
+    assert body["acceptance"]["product_ready"] is False
+    assert body["can_execute"] is False
+
+
+def test_product_truth_not_found_is_404(monkeypatch):
+    monkeypatch.setattr(agent_runtime_api, "get_client", lambda: FakeSupabaseClient())
+    response = client.get(
+        "/wow/runs/00000000-0000-0000-0000-000000000000/product-truth"
+    )
+    assert response.status_code == 404
+    assert response.json()["detail"]["code"] == "RUN_NOT_FOUND"
