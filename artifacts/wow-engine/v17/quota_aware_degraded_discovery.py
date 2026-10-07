@@ -413,12 +413,28 @@ def install_quota_aware_degraded_discovery() -> dict[str, Any]:
         return _normalize_public_alias(raw, original_normalize(raw, *args, **kwargs))
 
     def scan(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        from v17 import rundown_snapshot_cache as snapshot_cache
+
         context = _new_context()
+        cache_before = snapshot_cache.stats()
         token = _SCAN_CONTEXT.set(context)
         try:
             result = dict(original_scan(*args, **kwargs))
         finally:
             _SCAN_CONTEXT.reset(token)
+        cache_after = snapshot_cache.stats()
+        cache_hits_saved = max(
+            0,
+            int(cache_after.get("cache_hits", 0)) - int(cache_before.get("cache_hits", 0)),
+        )
+        singleflight_saved = max(
+            0,
+            int(cache_after.get("singleflight_hits", 0))
+            - int(cache_before.get("singleflight_hits", 0)),
+        )
+        context["paid_provider_calls_saved_by_cache"] += (
+            cache_hits_saved + singleflight_saved
+        )
         policy_receipt = context["_paid_call_budget"].receipt()
         result["quota_aware_acquisition"] = {
             "contract_version": CONTRACT_VERSION,
