@@ -177,6 +177,17 @@ def _team_rows(candidate: dict[str, Any], *, research_run_id: str) -> tuple[list
         return [], "TEAM_EVENT_IDENTITY_INCOMPLETE"
 
     event_key = f"{sport}:{event_id}"
+    season_context = {
+        field: candidate.get(field)
+        for field in (
+            "season_year",
+            "season_type",
+            "season_slug",
+            "season_phase",
+            "season_phase_source",
+        )
+        if candidate.get(field) is not None
+    }
     common = {
         "research_run_id": research_run_id,
         "sport": sport,
@@ -188,6 +199,7 @@ def _team_rows(candidate: dict[str, Any], *, research_run_id: str) -> tuple[list
         "event_start_time_utc": event_start,
         "home_team": home_team,
         "away_team": away_team,
+        "sport_specific_evidence": season_context,
     }
     return [
         {
