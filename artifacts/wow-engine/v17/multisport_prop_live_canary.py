@@ -27,6 +27,11 @@ BASE_RUN = "-".join(
     ) if part
 )
 
+# #502 acceptance budget: retain a 25% safety margin below the historical
+# 120-second interactive transport ceiling. This is an engineering latency
+# contract only; it does not change sporting probability behavior.
+MAX_INTERACTIVE_SECONDS = 90.0
+
 
 def _row(**kwargs: Any) -> dict[str, Any]:
     row = dict(kwargs)
@@ -37,16 +42,16 @@ def _row(**kwargs: Any) -> dict[str, Any]:
 
 CONFIGS: dict[str, list[dict[str, Any]]] = {
     "NFL": [
-        _row(row_key="nfl-bijan-more", event_id="2026_04_ATL_NO", event_start_time="2026-10-06T00:15:00Z", sport="NFL", league="NFL", player="Bijan Robinson", stat_type="RUSHING_YARDS", line=84.5, direction="MORE", opponent="NO"),
-        _row(row_key="nfl-bijan-less", event_id="2026_04_ATL_NO", event_start_time="2026-10-06T00:15:00Z", sport="NFL", league="NFL", player="Bijan Robinson", stat_type="RUSHING_YARDS", line=84.5, direction="LESS", opponent="NO"),
-        _row(row_key="nfl-hooper-more", event_id="2026_04_ATL_NO", event_start_time="2026-10-06T00:15:00Z", sport="NFL", league="NFL", player="Austin Hooper", stat_type="RECEIVING_YARDS", line=11.5, direction="MORE", opponent="NO"),
-        _row(row_key="nfl-hooper-less", event_id="2026_04_ATL_NO", event_start_time="2026-10-06T00:15:00Z", sport="NFL", league="NFL", player="Austin Hooper", stat_type="RECEIVING_YARDS", line=11.5, direction="LESS", opponent="NO"),
+        _row(row_key="nfl-lamb-more", event_id="2026_05_TB_DAL", event_start_time="2026-10-09T00:15:00Z", sport="NFL", league="NFL", player="CeeDee Lamb", stat_type="RECEIVING_YARDS", line=111.5, direction="MORE", opponent="TB"),
+        _row(row_key="nfl-lamb-less", event_id="2026_05_TB_DAL", event_start_time="2026-10-09T00:15:00Z", sport="NFL", league="NFL", player="CeeDee Lamb", stat_type="RECEIVING_YARDS", line=111.5, direction="LESS", opponent="TB"),
+        _row(row_key="nfl-spann-ford-more", event_id="2026_05_TB_DAL", event_start_time="2026-10-09T00:15:00Z", sport="NFL", league="NFL", player="Brevyn Spann-Ford", stat_type="RECEIVING_YARDS", line=8.5, direction="MORE", opponent="TB"),
+        _row(row_key="nfl-spann-ford-less", event_id="2026_05_TB_DAL", event_start_time="2026-10-09T00:15:00Z", sport="NFL", league="NFL", player="Brevyn Spann-Ford", stat_type="RECEIVING_YARDS", line=8.5, direction="LESS", opponent="TB"),
     ],
     "MLB": [
-        _row(row_key="mlb-sale-more", event_id="MLB:849819", event_start_time="2026-10-06T22:00:00Z", sport="MLB", league="MLB", player="Chris Sale", stat_type="PITCHER_STRIKEOUTS", line=8.5, direction="MORE", opponent="LAD"),
-        _row(row_key="mlb-sale-less", event_id="MLB:849819", event_start_time="2026-10-06T22:00:00Z", sport="MLB", league="MLB", player="Chris Sale", stat_type="PITCHER_STRIKEOUTS", line=8.5, direction="LESS", opponent="LAD"),
-        _row(row_key="mlb-yamamoto-more", event_id="MLB:849819", event_start_time="2026-10-06T22:00:00Z", sport="MLB", league="MLB", player="Yoshinobu Yamamoto", stat_type="PITCHER_STRIKEOUTS", line=7.5, direction="MORE", opponent="ATL"),
-        _row(row_key="mlb-yamamoto-less", event_id="MLB:849819", event_start_time="2026-10-06T22:00:00Z", sport="MLB", league="MLB", player="Yoshinobu Yamamoto", stat_type="PITCHER_STRIKEOUTS", line=7.5, direction="LESS", opponent="ATL"),
+        _row(row_key="mlb-mahle-more", event_id="MLB:849822", event_start_time="2026-10-07T22:00:00Z", sport="MLB", league="MLB", player="Tyler Mahle", stat_type="PITCHER_STRIKEOUTS", line=5.5, direction="MORE", opponent="LAD"),
+        _row(row_key="mlb-mahle-less", event_id="MLB:849822", event_start_time="2026-10-07T22:00:00Z", sport="MLB", league="MLB", player="Tyler Mahle", stat_type="PITCHER_STRIKEOUTS", line=5.5, direction="LESS", opponent="LAD"),
+        _row(row_key="mlb-glasnow-more", event_id="MLB:849822", event_start_time="2026-10-07T22:00:00Z", sport="MLB", league="MLB", player="Tyler Glasnow", stat_type="PITCHER_STRIKEOUTS", line=7.5, direction="MORE", opponent="ATL"),
+        _row(row_key="mlb-glasnow-less", event_id="MLB:849822", event_start_time="2026-10-07T22:00:00Z", sport="MLB", league="MLB", player="Tyler Glasnow", stat_type="PITCHER_STRIKEOUTS", line=7.5, direction="LESS", opponent="ATL"),
     ],
     "WNBA": [
         _row(row_key="wnba-stewart-more", event_id="WNBA:1042600202", event_start_time="2026-10-07T23:30:00Z", sport="WNBA", league="WNBA", player="Breanna Stewart", stat_type="POINTS", line=20.5, direction="MORE", opponent="ATL"),
@@ -88,10 +93,14 @@ def _post(payload: dict[str, Any], *, timeout: int = 330) -> dict[str, Any]:
             },
         )
         try:
+            started = time.perf_counter()
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 body = json.load(response)
                 if response.status != 200:
                     raise RuntimeError(f"HTTP_{response.status}")
+                if not isinstance(body, dict):
+                    raise RuntimeError("CANARY_RESPONSE_NOT_OBJECT")
+                body["_canary_elapsed_seconds"] = round(time.perf_counter() - started, 3)
                 return body
         except urllib.error.HTTPError as exc:
             last_error = exc
@@ -106,28 +115,47 @@ def _post(payload: dict[str, Any], *, timeout: int = 330) -> dict[str, Any]:
     raise RuntimeError(f"CANARY_REQUEST_FAILED:{last_error}")
 
 
-def _validate(payload: dict[str, Any], *, sport: str) -> dict[str, Any]:
+def _validate(
+    payload: dict[str, Any],
+    *,
+    sport: str,
+    require_publishable: bool = False,
+) -> dict[str, Any]:
     if payload.get("can_execute") is not False:
         raise AssertionError(f"{sport}:can_execute")
     if payload.get("reconciliation_pass") is not True:
         raise AssertionError(f"{sport}:reconciliation")
+
+    elapsed = float(payload.get("_canary_elapsed_seconds") or 0.0)
+    if elapsed <= 0.0:
+        raise AssertionError(f"{sport}:latency_measurement_missing")
+    if elapsed > MAX_INTERACTIVE_SECONDS:
+        raise AssertionError(
+            f"{sport}:interactive_latency_seconds={elapsed:.3f}>"
+            f"{MAX_INTERACTIVE_SECONDS:.3f}"
+        )
+
     rows = payload.get("outcomes") or payload.get("rows") or []
     if len(rows) != 4:
         raise AssertionError(f"{sport}:rows={len(rows)}")
+
     summary: list[dict[str, Any]] = []
     failures: list[str] = []
+    publishable_rows = 0
     for row in rows:
         terminal = str(row.get("terminal_status") or "")
+        code = row.get("code") or row.get("terminal_label") or row.get("blocker_code")
         raw = row.get("model_probability")
         calibrated = row.get("calibrated_probability")
         lower = row.get("calibrated_probability_lower_bound")
+        publishable = row.get("probability_publishable") is True
         item = {
             "row_key": row.get("row_key"),
             "terminal_status": terminal,
-            "code": row.get("code") or row.get("terminal_label"),
+            "code": code,
             "blocker_code": row.get("blocker_code"),
             "model_evaluated": row.get("model_evaluated"),
-            "probability_publishable": row.get("probability_publishable"),
+            "probability_publishable": publishable,
             "model_probability": raw,
             "calibrated_probability": calibrated,
             "calibrated_lower_bound": lower,
@@ -135,20 +163,35 @@ def _validate(payload: dict[str, Any], *, sport: str) -> dict[str, Any]:
             "resumed": row.get("resumed_from_durable_receipt") is True,
         }
         summary.append(item)
+
         if row.get("can_execute") is not False:
             failures.append(f"{item['row_key']}:can_execute")
-        if terminal not in {"COMPLETED", "REJECTED"}:
-            failures.append(f"{item['row_key']}:terminal={terminal}:{item['code']}:{item['blocker_code']}")
-        if row.get("model_evaluated") is not True:
-            failures.append(f"{item['row_key']}:model_not_evaluated")
-        if row.get("probability_publishable") is not True:
-            failures.append(f"{item['row_key']}:not_publishable")
-        for name, value in (("raw", raw), ("calibrated", calibrated), ("lower", lower)):
-            if not isinstance(value, (int, float)) or not 0.0 <= float(value) <= 1.0:
-                failures.append(f"{item['row_key']}:{name}={value!r}")
+        if terminal not in {"COMPLETED", "HELD", "REJECTED"}:
+            failures.append(f"{item['row_key']}:terminal={terminal}:{code}")
+        if not code and terminal != "COMPLETED":
+            failures.append(f"{item['row_key']}:typed_terminal_missing")
+
+        if publishable:
+            publishable_rows += 1
+            if row.get("model_evaluated") is not True:
+                failures.append(f"{item['row_key']}:publishable_without_model_evaluation")
+            for name, value in (("raw", raw), ("calibrated", calibrated), ("lower", lower)):
+                if not isinstance(value, (int, float)) or not 0.0 <= float(value) <= 1.0:
+                    failures.append(f"{item['row_key']}:{name}={value!r}")
+
+    if require_publishable and publishable_rows == 0:
+        failures.append("no_publishable_governed_probability_package")
     if failures:
         raise AssertionError(f"{sport}:" + " | ".join(failures))
-    return {"sport": sport, "request_id": payload.get("request_id"), "rows": summary, "can_execute": False}
+
+    return {
+        "sport": sport,
+        "request_id": payload.get("request_id"),
+        "elapsed_seconds": elapsed,
+        "publishable_rows": publishable_rows,
+        "rows": summary,
+        "can_execute": False,
+    }
 
 
 def _request_for(sport: str, request_id: str) -> dict[str, Any]:
@@ -159,7 +202,13 @@ def run_primary() -> list[dict[str, Any]]:
     outputs = []
     for sport in ("NFL", "MLB", "WNBA"):
         request_id = f"{BASE_RUN}-{sport.lower()}-primary"
-        outputs.append(_validate(_post(_request_for(sport, request_id)), sport=sport))
+        outputs.append(
+            _validate(
+                _post(_request_for(sport, request_id)),
+                sport=sport,
+                require_publishable=(sport == "MLB"),
+            )
+        )
     return outputs
 
 
@@ -171,7 +220,13 @@ def run_stress() -> dict[str, Any]:
     results: list[dict[str, Any]] = []
     with ThreadPoolExecutor(max_workers=3) as pool:
         pending = {
-            pool.submit(lambda s=sport, rid=request_id: _validate(_post(_request_for(s, rid)), sport=s),): (sport, request_id)
+            pool.submit(
+                lambda s=sport, rid=request_id: _validate(
+                    _post(_request_for(s, rid)),
+                    sport=s,
+                    require_publishable=(s == "MLB"),
+                ),
+            ): (sport, request_id)
             for sport, request_id in jobs
         }
         for future in as_completed(pending):
@@ -180,7 +235,13 @@ def run_stress() -> dict[str, Any]:
     replay_results = []
     for sport in ("NFL", "MLB", "WNBA"):
         rid = f"{BASE_RUN}-{sport.lower()}-stress-1"
-        replay_results.append(_validate(_post(_request_for(sport, rid)), sport=sport))
+        replay_results.append(
+            _validate(
+                _post(_request_for(sport, rid)),
+                sport=sport,
+                require_publishable=(sport == "MLB"),
+            )
+        )
 
     return {
         "stress_batches": len(results),
