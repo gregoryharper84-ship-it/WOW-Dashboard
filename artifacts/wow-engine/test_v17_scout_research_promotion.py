@@ -144,6 +144,19 @@ def test_high_impact_confirmation_requirement_is_enforced():
     assert out["research_status"] != "RESEARCH_INTEREST_HIGH"
 
 
+def test_complete_dossier_requires_ready_research_worker_barrier_for_high():
+    row = candidate(evidence=[market("a"), market("b")], domains=complete_mlb_domains())
+    row["scout_dossier"] = build_scout_dossier(row, now=NOW)
+
+    out = evaluate_candidate(row, now=NOW)
+
+    assert row["scout_dossier"]["research_worker_barrier_status"] == "READY"
+    assert out["research_worker_barrier_status"] == "READY"
+    assert out["research_status"] == "RESEARCH_INTEREST_HIGH"
+    assert out["probability"] is None
+    assert out["can_execute"] is False
+
+
 def test_dossier_dynamic_freshness_is_authoritative_for_promotion():
     domains = complete_mlb_domains()
     domains["starter"] = [
