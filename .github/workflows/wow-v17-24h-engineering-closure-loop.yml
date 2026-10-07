@@ -86,8 +86,19 @@ jobs:
             reason="Reliability queue and golden user journey are green; execute one governed non-serving model-improvement experiment."
           fi
 
+          lifecycle_owner="LIFECYCLE_CONTROLLER_AGENT"
+          case "$action" in
+            RESUME_REPAIR_PR|VERIFY_RELEASE)
+              lifecycle_owner="RELEASE_VERIFICATION_OWNER_AGENT"
+              ;;
+            DETECT|VERIFY_PRODUCT)
+              lifecycle_owner="QUEUE_STEWARD_AGENT"
+              ;;
+          esac
+
           {
             echo "action=$action"
+            echo "lifecycle_owner=$lifecycle_owner"
             echo "target=$target"
             echo "incident=$incident"
             echo "state=$state"
@@ -100,13 +111,14 @@ jobs:
 
           jq -n \
             --arg action "$action" \
+            --arg lifecycle_owner "$lifecycle_owner" \
             --arg target "$target" \
             --arg incident "$incident" \
             --arg state "$state" \
             --arg severity "$severity" \
             --arg product_health "$product_health" \
             --arg reason "$reason" \
-            '{action:$action,target:$target,incident:$incident,state:$state,severity:$severity,product_health:$product_health,reason:$reason,can_execute:false}' \
+            '{action:$action,lifecycle_owner:$lifecycle_owner,target:$target,incident:$incident,state:$state,severity:$severity,product_health:$product_health,reason:$reason,can_execute:false}' \
             | tee "$RUNNER_TEMP/wow-24h-decision.json"
 
       - name: Resume autonomous repair PR
@@ -237,6 +249,7 @@ jobs:
           {
             echo "# WOW V17 24-Hour Completion Loop"
             echo "- action: ${{ steps.decision.outputs.action || 'UNRESOLVED' }}"
+            echo "- lifecycle_owner: ${{ steps.decision.outputs.lifecycle_owner || 'UNRESOLVED' }}"
             echo "- target: ${{ steps.decision.outputs.target || 'NONE' }}"
             echo "- incident: ${{ steps.decision.outputs.incident || 'NONE' }}"
             echo "- incident_state: ${{ steps.decision.outputs.state || 'NONE' }}"
