@@ -109,6 +109,11 @@ def test_market_inventory_failure_preserves_team_event_candidate(monkeypatch):
                 "commence_time": "2026-09-13T20:00:00Z",
                 "home_team": "Home",
                 "away_team": "Away",
+                "season_year": 2026,
+                "season_type": 1,
+                "season_slug": "preseason",
+                "season_phase": "PRESEASON",
+                "season_phase_source": "ESPN_SCOREBOARD",
             }], 200)
         if path.endswith("/markets"):
             return scout.FetchResult(
@@ -138,6 +143,11 @@ def test_market_inventory_failure_preserves_team_event_candidate(monkeypatch):
     assert candidate["market_evidence"] == []
     assert candidate["market_evidence_status"] == "SOURCE_BLOCKED"
     assert candidate["sporting_identity_preserved_without_market_evidence"] is True
+    assert candidate["season_year"] == 2026
+    assert candidate["season_type"] == 1
+    assert candidate["season_slug"] == "preseason"
+    assert candidate["season_phase"] == "PRESEASON"
+    assert candidate["season_phase_source"] == "ESPN_SCOREBOARD"
     blocker = candidate["market_evidence_source_blockers"][0]
     assert blocker["reason_code"] == "ODDS_API_FEATURED_ODDS_FALLBACK_ERROR"
     assert blocker["secondary_attempted"] is True

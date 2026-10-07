@@ -378,6 +378,17 @@ def run() -> dict[str, Any]:
                 "home_team": event.get("home_team"),
                 "away_team": event.get("away_team"),
             }
+            event_identity.update({
+                field: event.get(field)
+                for field in (
+                    "season_year",
+                    "season_type",
+                    "season_slug",
+                    "season_phase",
+                    "season_phase_source",
+                )
+                if event.get(field) is not None
+            })
             scripts = game_scripts(key)
             event_blockers: list[dict[str, Any]] = []
             event_rows: list[dict[str, Any]] = []

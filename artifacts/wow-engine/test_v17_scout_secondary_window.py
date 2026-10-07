@@ -42,3 +42,17 @@ def test_secondary_events_enforce_exact_timestamp_window(monkeypatch):
     assert result.ok is True
     assert [row["id"] for row in result.data] == ["espn-in-window"]
     assert result.data[0]["commence_time"] == "2026-09-16T18:00:00Z"
+
+def test_secondary_event_preserves_espn_preseason_context():
+    event = _event("nba-preseason-1", "2026-10-07T02:00:00Z", "Golden State Warriors", "Los Angeles Lakers")
+    event["season"] = {"year": 2026, "type": 1, "slug": "preseason"}
+
+    row = secondary.espn_event_to_primary_shape(event, "basketball_nba")
+
+    assert row is not None
+    assert row["season_year"] == 2026
+    assert row["season_type"] == 1
+    assert row["season_slug"] == "preseason"
+    assert row["season_phase"] == "PRESEASON"
+    assert row["season_phase_source"] == "ESPN_SCOREBOARD"
+

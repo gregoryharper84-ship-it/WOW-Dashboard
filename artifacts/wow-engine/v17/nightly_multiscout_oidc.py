@@ -166,6 +166,11 @@ def install_refreshable_oidc_proxy_auth() -> None:
                     "home_team": event.get("home_team"),
                     "away_team": event.get("away_team"),
                     "commence_time": event.get("commence_time"),
+                    "season_year": event.get("season_year"),
+                    "season_type": event.get("season_type"),
+                    "season_slug": event.get("season_slug"),
+                    "season_phase": event.get("season_phase"),
+                    "season_phase_source": event.get("season_phase_source"),
                     "_wow_secondary_scoreboard_dates": list(
                         event.get("_wow_secondary_scoreboard_dates") or []
                     ),
