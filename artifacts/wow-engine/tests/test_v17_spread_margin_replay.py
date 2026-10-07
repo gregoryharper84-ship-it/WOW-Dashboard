@@ -12,6 +12,7 @@ from v17.spread_margin_replay import (
     adapt_ncaaf_persisted_rows,
     adapt_ncaaf_rows,
     adapt_nfl_rows,
+    _assert_ncaaf_persisted_feature_freshness,
     load_replay_rows,
 )
 from v17.team_state_intelligence import FEATURE_FAMILY_VERSION
@@ -147,6 +148,40 @@ def test_ncaaf_persisted_adapter_fails_closed_on_market_feature_violation():
     with pytest.raises(SpreadChallengerUnavailable) as exc:
         adapt_ncaaf_persisted_rows(persisted, games)
     assert exc.value.code == "SPREAD_REPLAY_PERSISTED_NCAAF_MARKET_FEATURE_VIOLATION"
+    assert exc.value.code != "MODEL_UNAVAILABLE"
+
+
+
+def test_ncaaf_freshness_ignores_newest_settled_game_when_not_feature_eligible():
+    games = _ncaaf_games()
+    rows = adapt_ncaaf_rows(games, min_prior_games=2)
+    latest = max(datetime.fromisoformat(row.event_start_time) for row in rows)
+    games.append({
+        "training_game_id": "tg-ineligible-new",
+        "official_event_id": "ncaaf-ineligible-new",
+        "season": 2024,
+        "event_start_time": (latest + timedelta(days=7)).isoformat(),
+        "home_team": "NEW_A",
+        "away_team": "NEW_B",
+        "home_points": 21,
+        "away_points": 17,
+        "result_source": "fixture",
+        "result_source_timestamp": (latest + timedelta(days=7, hours=4)).isoformat(),
+        "can_execute": False,
+    })
+
+    _assert_ncaaf_persisted_feature_freshness(rows, games, min_prior_games=2)
+
+
+def test_ncaaf_freshness_blocks_when_latest_feature_eligible_row_is_missing():
+    games = _ncaaf_games()
+    rows = adapt_ncaaf_rows(games, min_prior_games=2)
+    assert len(rows) > 1
+
+    with pytest.raises(SpreadChallengerUnavailable) as exc:
+        _assert_ncaaf_persisted_feature_freshness(rows[:-1], games, min_prior_games=2)
+
+    assert exc.value.code == "SPREAD_REPLAY_PERSISTED_NCAAF_FEATURES_STALE"
     assert exc.value.code != "MODEL_UNAVAILABLE"
 
 
