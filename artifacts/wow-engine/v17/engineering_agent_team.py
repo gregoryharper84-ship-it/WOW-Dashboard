@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-TEAM_VERSION = "4.0"
+TEAM_VERSION = "5.0"
 
 AGENT_ROLES: dict[str, dict[str, Any]] = {
     "ENGINEERING_LEAD_AGENT": {
@@ -146,7 +146,7 @@ PARKED_WAIT_STATES = {
     "PLATFORM_LIMITATION",
 }
 USER_CRITICAL_JOURNEYS = ("ALL_SPORTS_PROPS", "ALL_SPORTS_ML_WINNERS", "ALL_SPORTS_UPSETS")
-MAX_ACTIVE_PRODUCT_RECOVERY = 3
+MAX_ACTIVE_PRODUCT_RECOVERY = 1
 MAX_ACTIVE_SUPPORTING_INVESTIGATION = 1
 
 REQUIRED_CLOSURE_FIELDS = {
@@ -296,13 +296,13 @@ def is_actionable(record: dict[str, Any]) -> bool:
 
 
 def reliability_blocks_frontier(records: list[dict[str, Any]]) -> bool:
-    """P0/P1 reliability work always preempts discretionary frontier work."""
-    for record in records:
-        if not is_actionable(record):
-            continue
-        if str(record.get("severity") or "").upper() in {"P0", "P1"}:
-            return True
-    return False
+    """Any actionable engineering backlog preempts discretionary frontier work.
+
+    In closure-focus mode, model/frontier exploration resumes only after the
+    approved engineering queue has no actionable item. Severity changes order,
+    not whether closure work deserves capacity.
+    """
+    return any(is_actionable(record) for record in records)
 
 
 def select_priority_incident(records: list[dict[str, Any]]) -> PriorityDecision:
@@ -367,63 +367,31 @@ def _records_conflict(restoration: dict[str, Any], acceleration: dict[str, Any])
 
 
 def select_dual_stream_work(records: list[dict[str, Any]]) -> DualStreamDecision:
-    """Select restoration first, then at most one provably non-conflicting acceleration item."""
-    restoration_records = [
-        record for record in records
-        if is_actionable(record) and _work_stream(record) != "ACCELERATION"
-    ]
-    acceleration_records = [
-        record for record in records
-        if is_actionable(record) and _work_stream(record) == "ACCELERATION"
-    ]
+    """Run the whole engineering team in 24/7 closure-focus mode.
 
-    restoration = select_priority_incident(restoration_records)
-    if not acceleration_records:
+    Existing restoration and acceleration entries are one closure queue. Exactly
+    one highest-priority actionable incident owns engineering attention at a
+    time; no second acceleration incident is dispatched in parallel. Read-only
+    specialists, review, QA, release, and observability may still work in
+    parallel, but only on that same parent closure journey.
+    """
+    actionable = [record for record in records if is_actionable(record)]
+    primary = select_priority_incident(actionable)
+    none = select_priority_incident([])
+    if primary.incident_id is None:
         return DualStreamDecision(
-            restoration=restoration,
-            acceleration=select_priority_incident([]),
+            restoration=primary,
+            acceleration=none,
             acceleration_blocked_reason=None,
         )
-
-    if restoration.incident_id is None:
-        return DualStreamDecision(
-            restoration=restoration,
-            acceleration=select_priority_incident(acceleration_records),
-            acceleration_blocked_reason=None,
-        )
-
-    restoration_record = next(
-        record for record in restoration_records if _record_id(record) == restoration.incident_id
-    )
-    ordered_acceleration = sorted(
-        acceleration_records,
-        key=lambda record: (
-            SEVERITY_WEIGHT.get(str(record.get("severity") or "P4").upper(), 99),
-            0 if str(record.get("state") or "OPEN").upper() in ACTIVE_RELEASE_STATES else 1,
-            int(record.get("priority_rank") or 9999),
-            str(record.get("updated_utc") or record.get("created_utc") or ""),
-            _record_id(record),
+    return DualStreamDecision(
+        restoration=primary,
+        acceleration=none,
+        acceleration_blocked_reason=(
+            "CLOSURE_FOCUS_MODE: all engineering capacity is attached to the "
+            "highest-priority existing closure journey; no parallel acceleration incident."
         ),
     )
-
-    blocked_reasons: list[str] = []
-    for candidate in ordered_acceleration:
-        conflicts, reason = _records_conflict(restoration_record, candidate)
-        if conflicts:
-            blocked_reasons.append(f"{_record_id(candidate)}: {reason}")
-            continue
-        return DualStreamDecision(
-            restoration=restoration,
-            acceleration=select_priority_incident([candidate]),
-            acceleration_blocked_reason=None,
-        )
-
-    return DualStreamDecision(
-        restoration=restoration,
-        acceleration=select_priority_incident([]),
-        acceleration_blocked_reason="; ".join(blocked_reasons) or "No non-conflicting acceleration item.",
-    )
-
 
 def validate_closure_record(record: dict[str, Any]) -> list[str]:
     """Enforce one durable closure unit instead of disconnected progress markers."""
