@@ -114,7 +114,12 @@ def test_exact_event_match_attaches_cross_book_evidence_without_probability_auth
     assert result["can_execute"] is False
 
     evaluation = evaluate_candidate(candidate, now=NOW)
-    assert evaluation["research_status"] in {"RESEARCH_INTEREST_MEDIUM", "RESEARCH_INTEREST_HIGH"}
+    # Cross-book observations remain one MARKET evidence family. They improve
+    # market breadth but cannot impersonate independent sporting research.
+    assert evaluation["research_status"] == "RESEARCH_INTEREST_LOW"
+    assert evaluation["research_source_family_count"] == 1
+    assert evaluation["research_independent_source_count"] == 1
+    assert evaluation["market_observations_are_one_source_family"] is True
     assert evaluation["probability"] is None
     assert evaluation["prediction_authority"] is False
 
