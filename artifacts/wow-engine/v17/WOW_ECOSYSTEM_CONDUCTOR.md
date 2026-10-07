@@ -135,11 +135,13 @@ Keep these states separate:
 - independent verification state
 - user-workflow readiness
 
-### 6. End-to-end reconciliation and work conservation
+### 6. End-to-end reconciliation and ecosystem work conservation
 
-Every admitted unit of work must remain attributable until terminal disposition.
+Betting Intelligence retains its product-level objective, candidate lifecycle, reconciliation, acceptance, and metric contracts. The Conductor does not redefine those semantics.
 
-The typed work-item contract carries:
+For cross-system coordination, every admitted unit of work is additionally carried in a typed **ecosystem ownership envelope** so Reliability, Engineering, Verification, model hosts, terminal governance, and persistence can be reconciled without taking over the product work model.
+
+The ecosystem envelope carries:
 
 ```text
 work_item_id
@@ -164,9 +166,25 @@ promotion_state
 
 The invariant is: **everything admitted must either remain validly owned and advancing, be explicitly blocked with an exact reason, or terminate with an attributable terminal state.**
 
-The Conductor fails closed on missing ownership, invalid authority domains, unregistered next owners, silent terminal loss, duplicate work IDs, blockers without reasons, Engineering self-verification, `FIXED_AND_VERIFIED` without Independent Verification, or Class C promotion without verified independent review.
+The Conductor fails closed on missing ownership, invalid authority domains, unregistered next owners, silent terminal loss, duplicate ecosystem work IDs, blockers without reasons, Engineering self-verification, `FIXED_AND_VERIFIED` without Independent Verification, or Class C promotion without verified independent review.
 
 No candidate, incident, engineering handoff, verification request, or governed result may silently disappear between layers.
+
+## Relationship to Betting Intelligence
+
+WOW Betting Intelligence remains the **Product Intelligence & Orchestration Control Plane**. It owns objective contracts, candidate/work semantics within the product workflow, product acceptance, stagnation policy, and the metric family.
+
+WOW Ecosystem Conductor is the **neutral ecosystem-wide control plane**. It owns cross-domain routing integrity, authority-boundary validation, ecosystem ownership envelopes, connection readiness, and proof that handoffs across independent domains occurred.
+
+This separation is intentional:
+
+- product semantics stay in Betting Intelligence;
+- cross-system coordination stays in the Conductor;
+- probability stays in exact specialists;
+- implementation stays in Engineering;
+- SAFE_HOLD authority stays in Systems Intelligence & Reliability;
+- proof stays in Independent Verification;
+- terminal authority stays in V17_TERMINAL_REDUCER.
 
 ## V1 implementation
 
@@ -190,7 +208,7 @@ The deterministic Conductor evaluates:
 - degraded connections;
 - route-specific golden-path readiness;
 - false-green conditions;
-- typed work-conservation state;
+- typed ecosystem-envelope conservation state;
 - authority-domain consistency;
 - self-verification violations;
 - Class C promotion safety;
@@ -214,7 +232,7 @@ Attach authoritative probes for:
 
 ### Phase 3 — Durable work and connection ledger
 
-Persist time-stamped work-item, handoff, ownership, verification, and readiness receipts so current state can be compared with prior state, stale ownership can be detected, and recurrent breaks can be attributed.
+Persist time-stamped ecosystem-envelope, product work-item, handoff, ownership, verification, and readiness receipts so current state can be compared with prior state, stale ownership can be detected, and recurrent breaks can be attributed.
 
 ### Phase 4 — Product capability matrix
 
