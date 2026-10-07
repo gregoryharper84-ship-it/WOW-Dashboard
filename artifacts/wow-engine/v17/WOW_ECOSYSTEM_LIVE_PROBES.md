@@ -98,3 +98,5 @@ Phase 2 is complete when:
 10. no sporting or weather probability behavior changes.
 
 Dynamic-import regression note: test loaders register the module in sys.modules before dataclass evaluation so CI collection matches normal import semantics.
+
+Governance certification linkage: issue #1474.
