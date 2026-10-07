@@ -26,6 +26,7 @@ from datetime import datetime, timezone
 from threading import RLock
 from typing import Any
 
+from v17 import free_core_source_policy as source_policy
 from v17 import market_evidence_native_live as live
 from v17 import market_evidence_sources as sources
 
@@ -205,6 +206,8 @@ def resolve_rundown_market_context(req: Any, *, opener: Any = None) -> dict[str,
         market_ids=sources.rundown_winner_market_ids() or None,
         main_line=True,
         hide_closed=True,
+        paid_call_stage=source_policy.STAGE_INITIAL_ENRICHMENT,
+        model_preflight_passed=True,
     )
     if not result.ok:
         return {
