@@ -69,6 +69,10 @@ _SCORER_REASONS = {
 }
 
 # Event/score identity rows are inputs for an otherwise selected specialist.
+_INPUT_REASON_PREFIXES = (
+    "prospective_required_numeric_input_invalid:",
+)
+
 _INPUT_ROW_PREFIXES = (
     "wow_mlb_forward_score_snapshots:required_row_missing",
     "wow_mlb_forward_shadow_events:required_row_missing",
@@ -98,7 +102,7 @@ def classify_mlb_prospective_failure(exc: BaseException) -> MLBProspectiveFailur
             reason=reason,
         )
 
-    if reason in _INPUT_REASONS or reason.startswith(_INPUT_ROW_PREFIXES):
+    if reason in _INPUT_REASONS or reason.startswith(_INPUT_REASON_PREFIXES) or reason.startswith(_INPUT_ROW_PREFIXES):
         return MLBProspectiveFailure(
             code=MODEL_INPUTS_INSUFFICIENT,
             status_code=422,
