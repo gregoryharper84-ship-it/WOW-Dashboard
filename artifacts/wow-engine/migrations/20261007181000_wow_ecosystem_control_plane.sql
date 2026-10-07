@@ -20,6 +20,10 @@ create table if not exists public.wow_ecosystem_probe_receipts (
         unique (probe_id, observed_at, status, coalesce(source_version,''), coalesce(deployed_sha,''))
 );
 
+create unique index if not exists wow_ecosystem_probe_receipts_identity_uq
+    on public.wow_ecosystem_probe_receipts (
+        probe_id, observed_at, status, coalesce(source_version,''), coalesce(deployed_sha,'')
+    );
 create index if not exists wow_ecosystem_probe_receipts_recent_idx
     on public.wow_ecosystem_probe_receipts (observed_at desc, probe_id);
 create index if not exists wow_ecosystem_probe_receipts_failure_idx
