@@ -1,175 +1,103 @@
 {
-  "schema_version": "1.0",
+  "schema_version": "2.0",
   "source": "WOW_V17_ACTIVE_EXECUTION_BOARD",
-  "description": "Routing metadata only. GitHub issue open/closed state remains authoritative; this is not an incident ledger.",
+  "description": "Closure-focus routing metadata. GitHub issue open/closed state remains authoritative. All engineering capacity targets the highest-priority existing closure journey; no independent acceleration lane is active while backlog remains.",
   "can_execute": false,
   "terminal_authority": "V17_TERMINAL_REDUCER",
   "restoration": [
     {
-      "issue_number": 1247,
+      "issue_number": 1388,
       "severity": "P0",
       "priority_rank": 1,
       "execution_lane": "RAPID",
       "conflict_keys": [
-        "ENGINEERING_GOVERNANCE",
-        "RELEASE_GOVERNANCE"
+        "PRODUCTION_RUNTIME",
+        "MEMORY_STABILITY",
+        "LLP_USER_PATH"
       ],
-      "rapid_stream": "GOVERNANCE",
-      "lease_group": "P0_GOVERNANCE"
+      "rapid_stream": "LLP_RESTORE",
+      "lease_group": "P0_LLP_RESTORE"
     },
     {
-      "issue_number": 1237,
+      "issue_number": 1313,
       "severity": "P0",
       "priority_rank": 2,
       "execution_lane": "RAPID",
       "conflict_keys": [
-        "SCOUT_PERSISTENCE",
-        "SUPABASE_DATA_PLANE"
-      ],
-      "rapid_stream": "A",
-      "lease_group": "P0_STREAM_A"
-    },
-    {
-      "issue_number": 1250,
-      "severity": "P0",
-      "priority_rank": 3,
-      "execution_lane": "RAPID",
-      "conflict_keys": [
-        "SCOUT_HANDOFF",
-        "SCOUT_RECONCILIATION"
-      ],
-      "rapid_stream": "A",
-      "lease_group": "P0_STREAM_A"
-    },
-    {
-      "issue_number": 1189,
-      "severity": "P0",
-      "priority_rank": 4,
-      "execution_lane": "RAPID",
-      "conflict_keys": [
         "ACTION_TRANSPORT",
-        "CUSTOM_GPT_ACTION"
+        "FULL_SLATE_ACCEPTANCE",
+        "LLP_USER_PATH"
       ],
-      "rapid_stream": "B",
-      "lease_group": "P0_STREAM_B"
-    },
-    {
-      "issue_number": 960,
-      "severity": "P0",
-      "priority_rank": 5,
-      "execution_lane": "RAPID",
-      "conflict_keys": [
-        "WOW_HOST_ORCHESTRATION",
-        "NFL_FULL_SLATE"
-      ],
-      "rapid_stream": "B",
-      "lease_group": "P0_STREAM_B"
+      "rapid_stream": "LLP_RESTORE",
+      "lease_group": "P0_LLP_RESTORE"
     },
     {
       "issue_number": 502,
       "severity": "P0",
-      "priority_rank": 6,
+      "priority_rank": 3,
       "execution_lane": "RAPID",
       "conflict_keys": [
         "WOW_HOST_ORCHESTRATION",
-        "INTERACTIVE_RUNTIME"
+        "INTERACTIVE_RUNTIME",
+        "LLP_USER_PATH"
       ],
-      "rapid_stream": "C",
-      "lease_group": "P0_STREAM_C"
-    },
-    {
-      "issue_number": 1127,
-      "severity": "P0",
-      "priority_rank": 7,
-      "execution_lane": "RAPID",
-      "conflict_keys": [
-        "SPORT_DISCOVERY",
-        "WNBA_ACQUISITION"
-      ],
-      "rapid_stream": "C",
-      "lease_group": "P0_STREAM_C"
+      "rapid_stream": "LLP_RESTORE",
+      "lease_group": "P0_LLP_RESTORE"
     },
     {
       "issue_number": 823,
       "severity": "P1",
-      "priority_rank": 8,
+      "priority_rank": 4,
+      "execution_lane": "STANDARD",
       "conflict_keys": [
         "SPORT_DISCOVERY",
-        "ACQUISITION"
-      ],
-      "execution_lane": "STANDARD"
+        "ACQUISITION",
+        "ALL_SPORTS_MONEYLINE"
+      ]
     },
     {
-      "issue_number": 1028,
+      "issue_number": 1309,
       "severity": "P1",
-      "priority_rank": 9,
+      "priority_rank": 5,
+      "execution_lane": "STANDARD",
       "conflict_keys": [
-        "MLB_PROP_FORWARD",
-        "PROP_HYDRATION"
-      ],
-      "execution_lane": "STANDARD"
+        "TEAM_MARKET_CERTIFICATION",
+        "ALL_SPORTS_MONEYLINE",
+        "ALL_SPORTS_SPREADS"
+      ]
     },
     {
       "issue_number": 1087,
       "severity": "P1",
-      "priority_rank": 10,
+      "priority_rank": 6,
+      "execution_lane": "STANDARD",
       "conflict_keys": [
         "PRODUCTION_RUNTIME",
         "DEPLOY_VERIFY"
-      ],
-      "execution_lane": "STANDARD"
-    },
-    {
-      "issue_number": 1152,
-      "severity": "P1",
-      "priority_rank": 11,
-      "conflict_keys": [
-        "NCAAF_TEAM_STATE",
-        "SPREAD_FORWARD"
-      ],
-      "execution_lane": "STANDARD"
+      ]
     },
     {
       "issue_number": 1150,
       "severity": "P1",
-      "priority_rank": 12,
+      "priority_rank": 7,
+      "execution_lane": "STANDARD",
       "conflict_keys": [
         "ACTION_SCHEMA",
-        "TEAM_MARKET_ACTIONS"
-      ],
-      "execution_lane": "STANDARD"
+        "TEAM_MARKET_ACTIONS",
+        "ALL_SPORTS_SPREADS"
+      ]
+    },
+    {
+      "issue_number": 1152,
+      "severity": "P1",
+      "priority_rank": 8,
+      "execution_lane": "STANDARD",
+      "conflict_keys": [
+        "NCAAF_TEAM_STATE",
+        "SPREAD_FORWARD",
+        "ALL_SPORTS_SPREADS"
+      ]
     }
   ],
-  "acceleration": [
-    {
-      "issue_number": 1135,
-      "severity": "P1",
-      "priority_rank": 1,
-      "conflict_keys": [
-        "ENGINEERING_OBSERVABILITY",
-        "FAILURE_CAPSULE"
-      ],
-      "execution_lane": "STANDARD"
-    },
-    {
-      "issue_number": 1136,
-      "severity": "P2",
-      "priority_rank": 2,
-      "conflict_keys": [
-        "ENGINEERING_OBSERVABILITY",
-        "SPORT_SENTINELS"
-      ],
-      "execution_lane": "STANDARD"
-    },
-    {
-      "issue_number": 1137,
-      "severity": "P2",
-      "priority_rank": 3,
-      "conflict_keys": [
-        "CI_TEST_TOOLING",
-        "RAPID_REPAIR"
-      ],
-      "execution_lane": "STANDARD"
-    }
-  ]
+  "acceleration": []
 }
