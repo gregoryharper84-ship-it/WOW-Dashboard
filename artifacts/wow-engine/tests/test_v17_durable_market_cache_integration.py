@@ -58,7 +58,8 @@ def test_durable_cache_hit_skips_paid_provider_fetch(monkeypatch):
 
     assert out.ok is True
     assert out.data[0]["id"] == "cached-event"
-    assert out.request_audit["cache_origin"] == "PROVIDER"
+    assert out.request_audit["cache_origin"] == "DURABLE_CACHE"
+    assert out.request_audit["memory_cache_origin"] == "PROVIDER"
     counters = observability.counters()
     assert counters["rundown_durable_cache_hits"] == 1
     assert counters["rundown_provider_calls"] == 0
