@@ -27,6 +27,8 @@ DEFAULT_PRESSURE_RETRY_SECONDS = 15.0
 LOGGER = logging.getLogger("wow.v17.memory_admission")
 _HEAVY_JOB_LOCK = threading.Lock()
 _PRESSURE_STATE_LOCK = threading.Lock()
+_PRIORITY_STATE_LOCK = threading.Lock()
+_INTERACTIVE_WAITERS = 0
 _PRESSURE_ACTIVE = False
 _MISSING_SAMPLE_WARNED = False
 
@@ -160,6 +162,11 @@ def _pressure_for_sample(sample: MemorySample | None) -> bool:
         return _PRESSURE_ACTIVE
 
 
+def _interactive_waiter_count() -> int:
+    with _PRIORITY_STATE_LOCK:
+        return _INTERACTIVE_WAITERS
+
+
 def admission_snapshot(operation: str) -> dict[str, Any]:
     sample = memory_sample()
     under_pressure = _pressure_for_sample(sample)
@@ -174,6 +181,7 @@ def admission_snapshot(operation: str) -> dict[str, Any]:
         "resume_ratio": resume,
         "under_pressure": under_pressure,
         "heavy_slot_busy": _HEAVY_JOB_LOCK.locked(),
+        "interactive_waiters": _interactive_waiter_count(),
         "can_execute": False,
     }
 
@@ -200,7 +208,13 @@ def try_acquire_heavy_job(operation: str) -> HeavyJobPermit | None:
     Returns None when another heavy job owns the slot. Memory pressure is a
     typed non-terminal deferral and never claims downstream durable work.
     """
-    acquired = _HEAVY_JOB_LOCK.acquire(blocking=False)
+    # Give a bounded synchronous user-facing request priority once it is
+    # waiting so background Scout/async work cannot repeatedly reacquire this
+    # non-fair lock and starve the interactive run.
+    with _PRIORITY_STATE_LOCK:
+        if _INTERACTIVE_WAITERS > 0:
+            return None
+        acquired = _HEAVY_JOB_LOCK.acquire(blocking=False)
     if not acquired:
         return None
 
@@ -227,7 +241,14 @@ def acquire_heavy_job(operation: str, *, wait_seconds: float | None = None) -> H
             minimum=0.0,
             maximum=60.0,
         )
-    acquired = _HEAVY_JOB_LOCK.acquire(timeout=max(0.0, float(wait_seconds)))
+    global _INTERACTIVE_WAITERS
+    with _PRIORITY_STATE_LOCK:
+        _INTERACTIVE_WAITERS += 1
+    try:
+        acquired = _HEAVY_JOB_LOCK.acquire(timeout=max(0.0, float(wait_seconds)))
+    finally:
+        with _PRIORITY_STATE_LOCK:
+            _INTERACTIVE_WAITERS = max(0, _INTERACTIVE_WAITERS - 1)
     if not acquired:
         raise HeavyJobDeferred(
             code="HEAVY_JOB_BUSY",
@@ -257,9 +278,11 @@ def pressure_retry_seconds() -> float:
 
 
 def _reset_for_tests() -> None:
-    global _PRESSURE_ACTIVE, _MISSING_SAMPLE_WARNED
+    global _PRESSURE_ACTIVE, _MISSING_SAMPLE_WARNED, _INTERACTIVE_WAITERS
     with _PRESSURE_STATE_LOCK:
         _PRESSURE_ACTIVE = False
+    with _PRIORITY_STATE_LOCK:
+        _INTERACTIVE_WAITERS = 0
     _MISSING_SAMPLE_WARNED = False
     if _HEAVY_JOB_LOCK.locked():
         _HEAVY_JOB_LOCK.release()
