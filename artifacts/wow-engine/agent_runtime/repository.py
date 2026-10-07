@@ -478,14 +478,13 @@ def get_latest_product_truth_snapshot(
         .select("*")
         .eq("run_id", run_id)
         .eq("event_type", BETTING_INTELLIGENCE_PRODUCT_TRUTH_EVENT)
-        .order("created_at", desc=True)
-        .limit(1)
         .execute()
     )
     rows = result.data or []
     if not rows:
         return None
-    detail = rows[0].get("detail_redacted")
+    latest = max(rows, key=lambda row: str(row.get("created_at") or ""))
+    detail = latest.get("detail_redacted")
     return dict(detail) if isinstance(detail, dict) else None
 
 
