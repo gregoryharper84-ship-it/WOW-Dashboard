@@ -536,7 +536,7 @@ def self_check() -> dict[str, Any]:
         assert subagent["may_change_probability_behavior"] is False
         assert subagent["may_approve_own_work"] is False
     assert reliability_blocks_frontier([{"severity": "P1", "state": "OPEN"}])
-    assert not reliability_blocks_frontier([{"severity": "P2", "state": "OPEN"}])
+    assert reliability_blocks_frontier([{"severity": "P2", "state": "OPEN"}])
     assert not is_actionable({"severity": "P0", "state": "PR_CREATED", "wait_state": "REVIEW_PENDING"})
     parked_then_executable = [
         {"incident_id": "960", "severity": "P0", "state": "PR_CREATED", "wait_state": "REVIEW_PENDING"},
@@ -553,7 +553,8 @@ def self_check() -> dict[str, Any]:
         {"incident_id": "1135", "severity": "P2", "state": "OPEN", "work_stream": "ACCELERATION", "conflict_keys": ["test-harness"]},
     ])
     assert dual.restoration.incident_id == "502"
-    assert dual.acceleration.incident_id == "1135"
+    assert dual.acceleration.incident_id is None
+    assert dual.acceleration_blocked_reason and "CLOSURE_FOCUS_MODE" in dual.acceleration_blocked_reason
     assert dual.as_dict()["can_execute"] is False
     assert dual.as_dict()["terminal_authority"] == "V17_TERMINAL_REDUCER"
     assert route_failure("ACTION_TRANSPORT_FAILURE") == "transport"
@@ -561,7 +562,7 @@ def self_check() -> dict[str, Any]:
     assert select_support_subagent({"typed_failure": "ACTION_TRANSPORT_FAILURE"}).subagent == "RUNTIME_TRANSPORT_SUBAGENT"
     assert select_support_subagent({"typed_failure": "PERSISTENCE_FAILURE"}).subagent == "DATA_PERSISTENCE_SUBAGENT"
     assert select_support_subagent({"wait_state": "CI_PENDING"}).subagent == "CI_REPOSITORY_SUBAGENT"
-    assert USER_CRITICAL_JOURNEYS == ("ALL_SPORTS_PROPS", "ALL_SPORTS_ML_WINNERS", "ALL_SPORTS_UPSETS")
+    assert USER_CRITICAL_JOURNEYS == ("ALL_SPORTS_PROPS", "ALL_SPORTS_ML_WINNERS", "ALL_SPORTS_SPREADS", "ALL_SPORTS_TEAM_MARKETS", "ALL_SPORTS_UPSETS")
     assert validate_capability_matrix({"NFL:ML": {d: True for d in CAPABILITY_DIMENSIONS}}) == []
     assert closure_wip([
         {"severity": "P0", "state": "OPEN"},
