@@ -23,9 +23,25 @@ _FULL_SLATE_CONTINUATION_ACTIVE: ContextVar[bool] = ContextVar(
 
 
 def _is_full_moneyline_request(req: Any) -> bool:
+    """Identify requests whose discovery inventory must be exhausted exactly once.
+
+    FULL remains the explicit internal full-slate mode. The Custom GPT Action uses
+    COMPACT purely as a transport/serialization contract while persisting full row
+    detail; its MONEYLINE-only + max_props=0 shape must therefore retain the same
+    exact-once model continuation semantics. Mixed-lane compact requests remain
+    bounded canary/interactive surfaces.
+    """
     response_mode = str(getattr(req, "response_mode", "") or "").upper()
     lanes = {str(value).upper() for value in (getattr(req, "lanes", None) or ())}
-    return response_mode == "FULL" and "MONEYLINE" in lanes
+    if response_mode == "FULL":
+        return "MONEYLINE" in lanes
+    if response_mode != "COMPACT" or lanes != {"MONEYLINE"}:
+        return False
+    try:
+        max_props = int(getattr(req, "max_props", -1))
+    except (TypeError, ValueError):
+        return False
+    return max_props == 0
 
 
 def _route_full_slate_in_batches(
