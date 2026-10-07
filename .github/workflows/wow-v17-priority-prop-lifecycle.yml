@@ -17,7 +17,7 @@ permissions:
   id-token: write
 
 concurrency:
-  group: wow-v17-priority-prop-lifecycle
+  group: wow-v17-production-source-heavy-prop-evidence
   cancel-in-progress: false
 
 jobs:
