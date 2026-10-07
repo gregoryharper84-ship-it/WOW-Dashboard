@@ -359,7 +359,9 @@
       "change_class",
       "decision_right",
       "required_verifier",
-      "promotion_state"
+      "promotion_state",
+      "updated_at",
+      "lease_expires_at"
     ],
     "allowed_change_classes": [
       "A",
@@ -372,6 +374,16 @@
     "self_verification_forbidden": true,
     "class_c_requires_independent_verification_before_promotion": true,
     "scope": "Cross-system ownership envelope only; WOW_BETTING_INTELLIGENCE retains product objective, candidate lifecycle, product acceptance, and product metric semantics.",
-    "product_semantics_owner": "WOW_BETTING_INTELLIGENCE"
+    "product_semantics_owner": "WOW_BETTING_INTELLIGENCE",
+    "active_ownership_must_be_time_bounded": true,
+    "engineering_terminal_states": [
+      "FIXED_AND_VERIFIED",
+      "PR_CREATED",
+      "EXPERIMENT_CREATED",
+      "DUPLICATE",
+      "NOT_REPRODUCIBLE",
+      "BLOCKED_WITH_EXACT_REASON",
+      "DEFERRED_WITH_JUSTIFICATION"
+    ]
   }
 }
