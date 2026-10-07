@@ -11,6 +11,7 @@ from v17.team_event_sport_parity import (
     build_discovery_evidence,
     canonicalize_mlb_discovery_identity,
     canonicalize_nfl_discovery_identity,
+    canonicalize_wnba_discovery_identity,
     cross_sport_model_coverage,
     parity_health,
 )
@@ -379,3 +380,91 @@ def test_model_coverage_separates_accounted_rows_from_identity_and_model_routing
     )
     assert coverage["discovery_rows_retained_for_reconciliation"] is True
     assert coverage["can_execute"] is False
+
+
+
+def _wnba_alias_event():
+    return DiscoveredEvent(
+        sport="WNBA",
+        league="WNBA",
+        sport_key="basketball_wnba",
+        official_event_id=None,
+        home_team="Minnesota Lynx",
+        away_team="Phoenix Mercury",
+        commence_time_utc="2026-10-08T00:00:00Z",
+        event_status="PREGAME",
+        source="DISCOVERY_FEED",
+        provider="ESPN_SCOREBOARD",
+        raw={
+            "provider_event_id": "401900001",
+            "_wow_secondary_home_team_id": "8",
+            "_wow_secondary_away_team_id": "11",
+            "official_event_id": None,
+            "prediction_authority": False,
+        },
+    )
+
+
+def test_wnba_daily_discovery_alias_rewrites_only_after_official_schedule_match(monkeypatch):
+    import v17.wnba_spread_event_identity as identity
+
+    captured = {}
+
+    def resolve(**kwargs):
+        captured.update(kwargs)
+        return {
+            "event_id": "wnba-stats-1022600201",
+            "identity_provider": "WNBA_OFFICIAL_SCHEDULE_API",
+            "identity_alias_provider": "ESPN_SCOREBOARD",
+            "identity_verified_at": "2026-10-07T12:00:00+00:00",
+            "can_execute": False,
+        }
+
+    monkeypatch.setattr(identity, "resolve_wnba_current_event_identity", resolve)
+    out = canonicalize_wnba_discovery_identity(_wnba_alias_event())
+
+    assert captured["event_id"] == "espn-401900001"
+    assert captured["home_team_id"] == "espn-8"
+    assert captured["away_team_id"] == "espn-11"
+    assert out.official_event_id == "wnba-stats-1022600201"
+    assert out.raw["provider_event_id"] == "401900001"
+    assert out.raw["canonical_identity_status"] == "CANONICAL_RESOLVED"
+    assert out.raw["canonical_identity_source"] == "WNBA_OFFICIAL_SCHEDULE_API"
+    assert out.raw["prediction_authority"] is False
+
+
+def test_wnba_daily_discovery_alias_stays_unresolved_when_official_match_fails(monkeypatch):
+    import v17.wnba_spread_event_identity as identity
+
+    class IdentityFailure(RuntimeError):
+        code = "WNBA_SPREAD_FORWARD_CANONICAL_EVENT_NOT_FOUND"
+
+    def fail(**_kwargs):
+        raise IdentityFailure("no exact official event")
+
+    monkeypatch.setattr(identity, "resolve_wnba_current_event_identity", fail)
+    out = canonicalize_wnba_discovery_identity(_wnba_alias_event())
+
+    assert out.official_event_id is None
+    assert out.raw["canonical_identity_status"] == "ALIAS_ONLY_UNRESOLVED"
+    assert (
+        out.raw["canonical_identity_blocker"]
+        == "WNBA_SPREAD_FORWARD_CANONICAL_EVENT_NOT_FOUND"
+    )
+
+
+def test_wnba_daily_discovery_requires_team_aliases_before_official_lookup():
+    event = _wnba_alias_event()
+    event = DiscoveredEvent(
+        **{
+            **event.__dict__,
+            "raw": {
+                "provider_event_id": "401900001",
+                "official_event_id": None,
+            },
+        }
+    )
+    out = canonicalize_wnba_discovery_identity(event)
+    assert out.official_event_id is None
+    assert out.raw["canonical_identity_status"] == "ALIAS_ONLY_UNRESOLVED"
+    assert out.raw["canonical_identity_blocker"] == "WNBA_PROVIDER_TEAM_ALIAS_MISSING"
