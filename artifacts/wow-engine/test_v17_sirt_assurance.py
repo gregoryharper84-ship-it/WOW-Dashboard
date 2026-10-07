@@ -137,3 +137,17 @@ def test_symptom_cohorts_are_explicitly_not_root_cause():
         "open_count": 2,
         "classification": "SYMPTOM_CLUSTER_ROOT_CAUSE_UNPROVEN",
     }]
+
+
+def test_independent_watchdog_is_separate_from_resident_auditor():
+    from pathlib import Path
+
+    workflow = (Path(__file__).resolve().parents[2]
+                / ".github/workflows/wow-sirt-independent-reliability-sentinel.yml").read_text()
+    assert "schedule:" in workflow
+    assert 'cron: "7,22,37,52 * * * *"' in workflow
+    assert "sirt_assurance.py sentinel" in workflow
+    assert "secrets.SUPABASE_SERVICE_ROLE_KEY" in workflow
+    assert "if: always()" in workflow
+    assert "actions/upload-artifact@v4" in workflow
+    assert "can_execute=true" not in workflow
