@@ -52,6 +52,15 @@ def _handoff():
         "season_slug": "preseason",
         "season_phase": "PRESEASON",
         "season_phase_source": "ESPN_SCOREBOARD",
+        "venue": "Test Park",
+        "venue_id": "venue-1",
+        "neutral_site": False,
+        "event_status": "STATUS_SCHEDULED",
+        "event_type": "Preseason",
+        "competition_round": "Round 1",
+        "series_state": "Exhibition",
+        "competition_importance": "EXHIBITION",
+        "event_context_source": "ESPN_SCOREBOARD",
         "route": "LLP_TEAM_BETTING_ENGINE",
         "discovery_status": "DISCOVERY_ONLY",
         "research_ceiling": "RESEARCH_INTEREST",
@@ -120,6 +129,11 @@ def test_build_dispatch_uses_canonical_governed_routes_and_dedupes_books():
     assert all(row["sport_specific_evidence"]["season_phase"] == "PRESEASON" for row in team_rows)
     assert all(row["sport_specific_evidence"]["season_year"] == 2026 for row in team_rows)
     assert all(row["sport_specific_evidence"]["season_phase_source"] == "ESPN_SCOREBOARD" for row in team_rows)
+    assert all(row["sport_specific_evidence"]["venue"] == "Test Park" for row in team_rows)
+    assert all(row["sport_specific_evidence"]["venue_id"] == "venue-1" for row in team_rows)
+    assert all(row["sport_specific_evidence"]["neutral_site"] is False for row in team_rows)
+    assert all(row["sport_specific_evidence"]["event_status"] == "STATUS_SCHEDULED" for row in team_rows)
+    assert all(row["sport_specific_evidence"]["event_context_source"] == "ESPN_SCOREBOARD" for row in team_rows)
     assert all(row["sport_specific_evidence"]["scout_dossier"]["dossier_hash"] == "dossier-test-hash" for row in team_rows)
     assert all(row["sport_specific_evidence"]["scout_dossier"]["can_execute"] is False for row in team_rows)
     assert dispatch["mapping"]["source_team_reconciliation_pass"] is True
