@@ -29,6 +29,7 @@ probe_spec = importlib.util.spec_from_file_location(
 )
 assert probe_spec and probe_spec.loader
 probes = importlib.util.module_from_spec(probe_spec)
+sys.modules["ecosystem_live_probes"] = probes
 probe_spec.loader.exec_module(probes)
 
 
