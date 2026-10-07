@@ -8,15 +8,34 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-TEAM_VERSION = "5.0"
+TEAM_VERSION = "5.1"
 
 AGENT_ROLES: dict[str, dict[str, Any]] = {
     "ENGINEERING_LEAD_AGENT": {
         "mission": "Own priority, single-incident focus, dedupe, and handoff discipline.",
+        "may_write_code": False,
+        "may_approve_own_work": False,
+        "may_change_probability_behavior": False,
+    },
+    "LIFECYCLE_CONTROLLER_AGENT": {
+        "mission": "Own one closure journey from detection through terminal disposition and prevent lifecycle handoff loss.",
+        "may_write_code": False,
+        "may_approve_own_work": False,
+        "may_change_probability_behavior": False,
+    },
+    "QUEUE_STEWARD_AGENT": {
+        "mission": "Enforce closure-first WIP, dedupe stale work, and keep active engineering focused on the highest-priority parent incident.",
+        "may_write_code": False,
+        "may_approve_own_work": False,
+        "may_change_probability_behavior": False,
+    },
+    "RELEASE_VERIFICATION_OWNER_AGENT": {
+        "mission": "Own exact-head governance follow-through, merge-to-deploy continuity, production acceptance, and terminal verification evidence.",
         "may_write_code": False,
         "may_approve_own_work": False,
         "may_change_probability_behavior": False,
@@ -149,6 +168,44 @@ USER_CRITICAL_JOURNEYS = ("ALL_SPORTS_PROPS", "ALL_SPORTS_ML_WINNERS", "ALL_SPOR
 MAX_ACTIVE_PRODUCT_RECOVERY = 1
 MAX_ACTIVE_SUPPORTING_INVESTIGATION = 1
 
+LIFECYCLE_CELL = {
+    "controller": "LIFECYCLE_CONTROLLER_AGENT",
+    "queue_steward": "QUEUE_STEWARD_AGENT",
+    "release_verification_owner": "RELEASE_VERIFICATION_OWNER_AGENT",
+}
+CHANGE_CLASS_WEIGHT = {"A": 0, "B": 1, "C": 2}
+CLASS_B_SCOPE_FLAGS = (
+    "changes_model_registration",
+    "changes_routing_or_hydration",
+    "changes_reconciliation_behavior",
+    "changes_prediction_persistence_contract",
+)
+CLASS_C_SCOPE_FLAGS = (
+    "changes_sporting_probability_math",
+    "changes_fitted_artifacts_or_coefficients",
+    "changes_calibration_or_lower_bounds",
+    "changes_qualification_thresholds",
+    "changes_failure_path_weighting",
+)
+LIFECYCLE_SCOPE_FLAGS = CLASS_B_SCOPE_FLAGS + CLASS_C_SCOPE_FLAGS
+
+LIFECYCLE_CONTROL_PATHS = frozenset({
+    ".github/workflows/wow-v17-24h-engineering-closure-loop.yml",
+    ".github/workflows/wow-v17-engineering-auditor-code-health.yml",
+    ".github/workflows/wow-v17-terminal-closure-controller.yml",
+    "artifacts/wow-engine/v17/engineering_agent_team.py",
+    "artifacts/wow-engine/v17/terminal_closure_controller.py",
+})
+LIFECYCLE_CONTROL_PREFIXES = (
+    ".agents/skills/wow-engineering-lifecycle-closure-cell/",
+)
+
+BASE_DRIFT_ACTIONS = frozenset({
+    "NO_BASE_DRIFT",
+    "REVALIDATE_IN_PLACE",
+    "RESTACK_SAME_PR",
+})
+
 REQUIRED_CLOSURE_FIELDS = {
     "expected_behavior", "observed_behavior", "reproduction", "evidence",
     "affected_component", "environment", "severity", "change_class",
@@ -280,6 +337,108 @@ class SupportDecision:
         }
 
 
+@dataclass(frozen=True)
+class BaseDriftDecision:
+    action: str
+    rerun_candidate_gates: bool
+    restack_same_pr: bool
+    close_pr: bool
+    reason: str
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "action": self.action,
+            "rerun_candidate_gates": self.rerun_candidate_gates,
+            "restack_same_pr": self.restack_same_pr,
+            "close_pr": self.close_pr,
+            "reason": self.reason,
+            "can_execute": False,
+        }
+
+
+def decide_base_drift(
+    *,
+    base_advanced: bool,
+    mergeable: bool,
+    semantic_conflict: bool = False,
+    protected_path_overlap: bool = False,
+) -> BaseDriftDecision:
+    """Keep a valid PR in place when main advances.
+
+    Base movement invalidates only candidate certification. It does not make the
+    implementation a duplicate. Restacking is reserved for an actual merge
+    conflict or a proven semantic incompatibility with the new base.
+    """
+    if not base_advanced:
+        return BaseDriftDecision(
+            action="NO_BASE_DRIFT",
+            rerun_candidate_gates=False,
+            restack_same_pr=False,
+            close_pr=False,
+            reason="Base has not advanced; preserve current certification state.",
+        )
+
+    if not mergeable or semantic_conflict:
+        return BaseDriftDecision(
+            action="RESTACK_SAME_PR",
+            rerun_candidate_gates=True,
+            restack_same_pr=True,
+            close_pr=False,
+            reason=(
+                "Current base introduces a real merge or semantic conflict; "
+                "restack the existing PR branch and recertify it without PR recreation."
+            ),
+        )
+
+    scope = "protected-path overlap" if protected_path_overlap else "unrelated or compatible base drift"
+    return BaseDriftDecision(
+        action="REVALIDATE_IN_PLACE",
+        rerun_candidate_gates=True,
+        restack_same_pr=False,
+        close_pr=False,
+        reason=(
+            f"{scope}; preserve PR/head identity and certify a new prospective "
+            "merge candidate against current main."
+        ),
+    )
+
+
+def validate_merge_candidate_receipt(
+    receipt: dict[str, Any],
+    *,
+    expected_pr_number: int,
+    expected_head_sha: str,
+    expected_base_sha: str,
+    expected_candidate_sha: str,
+) -> list[str]:
+    """Validate immutable identity for the prospective merge artifact."""
+    errors: list[str] = []
+    identity = receipt.get("merge_candidate")
+    if not isinstance(identity, dict):
+        return ["merge candidate receipt requires merge_candidate identity"]
+
+    expected = {
+        "pr_number": expected_pr_number,
+        "pr_head_sha": expected_head_sha,
+        "base_sha": expected_base_sha,
+        "candidate_sha": expected_candidate_sha,
+    }
+    for field, expected_value in expected.items():
+        if identity.get(field) != expected_value:
+            errors.append(
+                f"merge candidate {field} mismatch: "
+                f"{identity.get(field)!r} != {expected_value!r}"
+            )
+
+    if receipt.get("certification_status") != "PASS":
+        errors.append("merge candidate certification_status must be PASS")
+    if receipt.get("terminal_authority") != "V17_TERMINAL_REDUCER":
+        errors.append("merge candidate receipt must preserve V17_TERMINAL_REDUCER")
+    if receipt.get("can_execute") is not False:
+        errors.append("merge candidate receipt must set can_execute=false")
+    return errors
+
+
 def _record_id(record: dict[str, Any]) -> str:
     return str(record.get("postmortem_id") or record.get("incident_id") or "")
 
@@ -393,9 +552,103 @@ def select_dual_stream_work(records: list[dict[str, Any]]) -> DualStreamDecision
         ),
     )
 
+def is_lifecycle_control_path(path: str) -> bool:
+    normalized = str(path or "").strip().replace("\\", "/")
+    return (
+        normalized in LIFECYCLE_CONTROL_PATHS
+        or any(normalized.startswith(prefix) for prefix in LIFECYCLE_CONTROL_PREFIXES)
+    )
+
+
+def lifecycle_record_from_pr_body(
+    body: str,
+    *,
+    changed_paths: tuple[str, ...] = (),
+) -> dict[str, Any]:
+    """Parse machine-readable lifecycle attestation from a PR body.
+
+    Touching a known lifecycle control path activates the boundary even if the
+    PR author omitted the marker, so omission cannot silently bypass Class A
+    validation.
+    """
+    text = str(body or "")
+    marker = re.search(
+        r"(?im)^\s*Lifecycle-Control-Plane\s*:\s*true\s*$",
+        text,
+    )
+    lifecycle_touched = any(is_lifecycle_control_path(path) for path in changed_paths)
+    if marker is None and not lifecycle_touched:
+        return {"lifecycle_control_plane": False}
+
+    record: dict[str, Any] = {"lifecycle_control_plane": True}
+    change_class = re.search(r"(?im)^\s*Change-Class\s*:\s*([ABC])\s*$", text)
+    if change_class:
+        record["change_class"] = change_class.group(1).upper()
+    for flag in LIFECYCLE_SCOPE_FLAGS:
+        match = re.search(
+            rf"(?im)^\s*-\s*{re.escape(flag)}\s*:\s*(true|false)\s*$",
+            text,
+        )
+        if match:
+            record[flag] = match.group(1).lower() == "true"
+    return record
+
+
+def validate_lifecycle_pr_body(
+    body: str,
+    *,
+    changed_paths: tuple[str, ...] = (),
+) -> list[str]:
+    return validate_lifecycle_classification(
+        lifecycle_record_from_pr_body(body, changed_paths=changed_paths)
+    )
+
+
+def required_lifecycle_change_class(record: dict[str, Any]) -> tuple[str, tuple[str, ...]]:
+    """Derive the minimum governed change class from explicit lifecycle scope flags."""
+    class_c = tuple(flag for flag in CLASS_C_SCOPE_FLAGS if record.get(flag) is True)
+    if class_c:
+        return "C", class_c
+    class_b = tuple(flag for flag in CLASS_B_SCOPE_FLAGS if record.get(flag) is True)
+    if class_b:
+        return "B", class_b
+    return "A", ()
+
+
+def validate_lifecycle_classification(record: dict[str, Any]) -> list[str]:
+    """Fail closed when lifecycle work claims a lower class than its declared scope.
+
+    This validator applies only to lifecycle-control-plane changes. It does not
+    classify sporting output and cannot authorize Class B/C promotion.
+    """
+    if record.get("lifecycle_control_plane") is not True:
+        return []
+
+    errors: list[str] = []
+    declared = str(record.get("change_class") or "").strip().upper()
+    if declared not in CHANGE_CLASS_WEIGHT:
+        errors.append(f"invalid lifecycle change_class: {declared or 'MISSING'}")
+
+    missing_flags = tuple(flag for flag in LIFECYCLE_SCOPE_FLAGS if flag not in record)
+    if missing_flags:
+        errors.append(
+            "lifecycle classification requires explicit scope flags: "
+            + ", ".join(missing_flags)
+        )
+
+    required, triggers = required_lifecycle_change_class(record)
+    if declared in CHANGE_CLASS_WEIGHT and CHANGE_CLASS_WEIGHT[declared] < CHANGE_CLASS_WEIGHT[required]:
+        trigger_text = ", ".join(triggers) if triggers else "governance scope"
+        errors.append(
+            f"CLASSIFICATION_ESCALATION_REQUIRED: declared {declared}, required {required}: {trigger_text}"
+        )
+    return errors
+
+
 def validate_closure_record(record: dict[str, Any]) -> list[str]:
     """Enforce one durable closure unit instead of disconnected progress markers."""
     errors: list[str] = []
+    errors.extend(validate_lifecycle_classification(record))
     missing = sorted(k for k in REQUIRED_CLOSURE_FIELDS if not record.get(k))
     if missing:
         errors.append("missing closure fields: " + ", ".join(missing))
@@ -525,6 +778,49 @@ def load_ledger(path: str | Path) -> list[dict[str, Any]]:
 def self_check() -> dict[str, Any]:
     assert AGENT_ROLES["ENGINEERING_AGENT"]["may_write_code"] is True
     assert "PRODUCT_ACCEPTANCE_AGENT" in AGENT_ROLES
+    assert set(LIFECYCLE_CELL.values()) <= set(AGENT_ROLES)
+    drift = decide_base_drift(base_advanced=True, mergeable=True)
+    assert drift.action == "REVALIDATE_IN_PLACE"
+    assert drift.rerun_candidate_gates is True
+    assert drift.restack_same_pr is False
+    assert drift.close_pr is False
+    conflict = decide_base_drift(base_advanced=True, mergeable=False)
+    assert conflict.action == "RESTACK_SAME_PR"
+    assert conflict.restack_same_pr is True
+    assert conflict.close_pr is False
+    assert {drift.action, conflict.action, "NO_BASE_DRIFT"} <= BASE_DRIFT_ACTIONS
+    candidate_receipt = {
+        "merge_candidate": {
+            "pr_number": 1457,
+            "pr_head_sha": "head",
+            "base_sha": "base",
+            "candidate_sha": "candidate",
+        },
+        "certification_status": "PASS",
+        "terminal_authority": "V17_TERMINAL_REDUCER",
+        "can_execute": False,
+    }
+    assert validate_merge_candidate_receipt(
+        candidate_receipt,
+        expected_pr_number=1457,
+        expected_head_sha="head",
+        expected_base_sha="base",
+        expected_candidate_sha="candidate",
+    ) == []
+    lifecycle_a = {
+        "lifecycle_control_plane": True,
+        "change_class": "A",
+        **{flag: False for flag in LIFECYCLE_SCOPE_FLAGS},
+    }
+    assert validate_lifecycle_classification(lifecycle_a) == []
+    lifecycle_b = dict(lifecycle_a)
+    lifecycle_b["changes_model_registration"] = True
+    assert required_lifecycle_change_class(lifecycle_b)[0] == "B"
+    assert any("CLASSIFICATION_ESCALATION_REQUIRED" in error for error in validate_lifecycle_classification(lifecycle_b))
+    lifecycle_c = dict(lifecycle_a)
+    lifecycle_c["changes_calibration_or_lower_bounds"] = True
+    assert required_lifecycle_change_class(lifecycle_c)[0] == "C"
+    assert any("CLASSIFICATION_ESCALATION_REQUIRED" in error for error in validate_lifecycle_classification(lifecycle_c))
     for name, role in AGENT_ROLES.items():
         if name != "ENGINEERING_AGENT":
             assert role["may_write_code"] is False
@@ -581,12 +877,36 @@ def self_check() -> dict[str, Any]:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=["self-check", "priority", "dual-priority", "frontier-gate", "support-route"])
+    parser.add_argument("command", choices=["self-check", "priority", "dual-priority", "frontier-gate", "support-route", "lifecycle-classify"])
     parser.add_argument("--ledger", default=str(Path(__file__).with_name("incident-ledger.json")))
+    parser.add_argument("--pr-body-file", default="")
+    parser.add_argument("--changed-paths-file", default="")
     parser.add_argument("--typed-failure", default="")
     parser.add_argument("--subsystem", default="")
     parser.add_argument("--wait-state", default="")
     args = parser.parse_args()
+
+    if args.command == "lifecycle-classify":
+        body = Path(args.pr_body_file).read_text(encoding="utf-8") if args.pr_body_file else ""
+        changed_paths: tuple[str, ...] = ()
+        if args.changed_paths_file:
+            changed_paths = tuple(
+                line.strip()
+                for line in Path(args.changed_paths_file).read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            )
+        record = lifecycle_record_from_pr_body(body, changed_paths=changed_paths)
+        errors = validate_lifecycle_classification(record)
+        print(json.dumps({
+            "lifecycle_control_plane": record.get("lifecycle_control_plane") is True,
+            "declared_change_class": record.get("change_class"),
+            "required_change_class": required_lifecycle_change_class(record)[0] if record.get("lifecycle_control_plane") is True else "N/A",
+            "errors": errors,
+            "can_execute": False,
+        }, indent=2, sort_keys=True))
+        if errors:
+            raise SystemExit(1)
+        return
 
     if args.command == "self-check":
         print(json.dumps(self_check(), indent=2, sort_keys=True))
