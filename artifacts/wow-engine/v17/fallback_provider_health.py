@@ -13,6 +13,8 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
+from v17 import free_core_source_policy as source_policy
+
 CAN_EXECUTE = False
 ODDS_API_BASE = os.environ.get("WOW_ODDS_API_BASE_URL", "https://api.the-odds-api.com/v4").rstrip("/")
 # Match services.odds_api.resolve_odds_api_key_with_source exactly so a health
@@ -65,6 +67,16 @@ def probe_odds_api_health(*, opener: Any = None) -> dict[str, Any]:
     configured. Transport/schema detail remains subordinate to the canonical
     V17 provider taxonomy rather than minting one-off terminal codes.
     """
+    if source_policy.free_core_enabled():
+        result = _status(
+            "DISABLED_BY_POLICY",
+            key_source=None,
+            provider_detail=source_policy.BLOCK_FREE_CORE,
+        )
+        result["source_mode"] = source_policy.source_mode()
+        result["paid_provider_network_attempted"] = False
+        return result
+
     api_key, key_source = resolve_odds_api_credential()
     if not api_key:
         return _status("CREDENTIAL_UNCONFIGURED", key_source=None)
