@@ -40,6 +40,11 @@ def _handoff():
         "commence_time": "2026-09-08T00:10:00Z",
         "home_team": "Home",
         "away_team": "Away",
+        "season_year": 2026,
+        "season_type": 1,
+        "season_slug": "preseason",
+        "season_phase": "PRESEASON",
+        "season_phase_source": "ESPN_SCOREBOARD",
         "route": "LLP_TEAM_BETTING_ENGINE",
         "discovery_status": "DISCOVERY_ONLY",
         "research_ceiling": "RESEARCH_INTEREST",
@@ -101,6 +106,9 @@ def test_build_dispatch_uses_canonical_governed_routes_and_dedupes_books():
     }
     assert all(row["research_run_id"] == "wow-scout-test-1" for row in team_rows)
     assert all(row["event_key"] == "MLB:12345" for row in team_rows)
+    assert all(row["sport_specific_evidence"]["season_phase"] == "PRESEASON" for row in team_rows)
+    assert all(row["sport_specific_evidence"]["season_year"] == 2026 for row in team_rows)
+    assert all(row["sport_specific_evidence"]["season_phase_source"] == "ESPN_SCOREBOARD" for row in team_rows)
     assert dispatch["mapping"]["source_team_reconciliation_pass"] is True
 
 
