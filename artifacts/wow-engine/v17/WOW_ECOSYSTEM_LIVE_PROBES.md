@@ -96,3 +96,5 @@ Phase 2 is complete when:
 8. all-green authoritative fixtures prove WOW Prop, LLP Team/Event, and Kalshi Weather golden paths READY;
 9. can_execute remains false;
 10. no sporting or weather probability behavior changes.
+
+Dynamic-import regression note: test loaders register the module in sys.modules before dataclass evaluation so CI collection matches normal import semantics.
