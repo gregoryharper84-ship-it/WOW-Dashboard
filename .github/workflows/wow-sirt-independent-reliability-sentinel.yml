@@ -1,0 +1,61 @@
+name: wow-sirt-independent-reliability-sentinel
+
+# Independent watchdog of the existing resident auditor. This is NOT a
+# replacement Engineering auditor or an alternate production control plane.
+on:
+  schedule:
+    - cron: "7,22,37,52 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wow-sirt-independent-reliability-sentinel
+  cancel-in-progress: false
+
+jobs:
+  watchdog:
+    name: Independently verify auditor heartbeat
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Evaluate independent heartbeat and governance
+        shell: bash
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: |
+          set -uo pipefail
+          python artifacts/wow-engine/v17/sirt_assurance.py sentinel > "$RUNNER_TEMP/sirt-heartbeat.json"
+          result=$?
+          cat "$RUNNER_TEMP/sirt-heartbeat.json"
+          if [ "$result" -ne 0 ]; then
+            echo "SIRT watchdog blocked: auditor stale, unhealthy, or authoritative evidence unavailable." >> "$GITHUB_STEP_SUMMARY"
+            echo "This is not a betting-model verdict." >> "$GITHUB_STEP_SUMMARY"
+            exit "$result"
+          fi
+          echo "Fresh resident-auditor heartbeat observed. No product-readiness claim." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Analyze canonical incident history
+        if: always()
+        shell: bash
+        run: |
+          python artifacts/wow-engine/v17/sirt_assurance.py failures > "$RUNNER_TEMP/sirt-failure-families.json"
+
+      - name: Retain independent evidence receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sirt-assurance-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/sirt-heartbeat.json
+            ${{ runner.temp }}/sirt-failure-families.json
+          if-no-files-found: error
+          retention-days: 30
