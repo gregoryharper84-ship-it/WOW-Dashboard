@@ -404,6 +404,43 @@ def test_rt_a18_every_discovered_row_is_accounted_for_exactly_once():
     assert buckets[discovery.WRONG_DATE] == 1
 
 
+def test_wrong_date_precedes_alias_only_identity_hold():
+    wrong_date = "2027-01-01T18:00:00Z"
+    inventory, rows, audit = _scan(
+        {"MLB": [_discovered("MLB", None, commence=wrong_date)]},
+        score_row=lambda event, model: pytest.fail(
+            "off-slate alias-only row must not reach a model"
+        ),
+        sports=("MLB",),
+    )
+
+    assert len(inventory.events) == 1
+    assert rows[0].bucket == discovery.WRONG_DATE
+    assert rows[0].model_status is None
+    assert rows[0].probability_publishable is False
+    assert rows[0].rank_eligible is False
+    assert audit["buckets"][discovery.WRONG_DATE] == 1
+    assert audit["buckets"][discovery.IDENTITY_UNRESOLVED] == 0
+
+
+def test_unparseable_alias_start_does_not_get_promoted_to_wrong_date():
+    inventory = _inventory(
+        {"MLB": [_discovered("MLB", None, commence="not-a-time")]},
+        sports=("MLB",),
+    )
+    rows = discovery.route_discovered_slate(
+        inventory,
+        resolve_model=_registry_resolver,
+        score_row=lambda event, model: pytest.fail(
+            "unresolved alias with invalid time must not reach a model"
+        ),
+    )
+
+    assert rows[0].bucket == discovery.IDENTITY_UNRESOLVED
+    assert rows[0].probability_publishable is False
+    assert rows[0].rank_eligible is False
+
+
 def test_rt_a19_an_event_that_has_started_is_removed_and_never_ranked():
     _register("MLB", lambda *a, **k: _valid_package("mlb"))
     _, rows, _ = _scan(
