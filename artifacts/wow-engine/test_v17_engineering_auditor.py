@@ -176,6 +176,7 @@ def test_code_health_workflow_is_event_driven_and_never_scheduled():
     assert "engineering_agent_team.py self-check" in text
     assert "test_v17_engineering_auditor.py" in text
     assert "test_v17_24h_completion_loop.py" in text
+    assert "test_v17_lifecycle_closure_cell.py" in text
     assert "V17_TERMINAL_REDUCER" in text
     assert "can_execute: false" in text
     assert yaml.safe_load(text)["name"] == "wow-v17-engineering-auditor-code-health"
