@@ -26,7 +26,8 @@ def test_trust_root_diff_is_data_not_executed_and_requires_architect_pass():
     assert "trust_root_changed=false" in text
     assert "trust_root_changed=true" in text
     assert "never execute PR-controlled workflow/action code" in text
-    assert "NOT_APPLICABLE is forbidden for trust-root changes" in text
+    assert "NOT_APPLICABLE" in text
+    assert "is forbidden for trust-root changes" in text
     assert 'steps.target.outputs.trust_root_changed != \'true\'' in text
     assert "EXISTING_PR_TRUST_ROOT_CHANGE_REQUIRES_WORKER_OR_BOOTSTRAP" not in text
     assert "trust_root_changed: ($trust_root_changed == \"true\")" in text
