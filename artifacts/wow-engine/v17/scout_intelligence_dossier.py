@@ -228,7 +228,8 @@ def _event_context(candidate: dict[str, Any]) -> dict[str, Any]:
         "home_team", "away_team", "season_year", "season_type", "season_slug",
         "season_phase", "season_phase_source", "game_type", "event_type",
         "competition_round", "tournament_round", "series_state",
-        "neutral_site", "venue", "surface", "competition_importance",
+        "neutral_site", "venue", "venue_id", "surface", "event_status",
+        "competition_importance", "event_context_source",
     )
     context = {field: candidate.get(field) for field in fields if candidate.get(field) is not None}
     phase = str(context.get("season_phase") or "").upper()
