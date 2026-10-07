@@ -132,6 +132,11 @@ def test_enrichment_routes_candidates_to_controlling_specialists():
     assert prop["route"] == "WOW_PROP_LANE"
     assert team["probability_authority"] is False
     assert prop["probability_authority"] is False
+    assert team["scout_dossier"]["schema_version"] == "wow.v17.scout-intelligence-dossier.v1"
+    assert prop["scout_dossier"]["schema_version"] == "wow.v17.scout-intelligence-dossier.v1"
+    assert team["scout_dossier"]["prediction_authority"] is False
+    assert prop["scout_dossier"]["can_execute"] is False
+    assert enriched["research_worker_registry"]["structured_scout_dossier_attached"] is True
     assert enriched["can_execute"] is False
 
 
