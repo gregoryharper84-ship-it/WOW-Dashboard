@@ -257,3 +257,59 @@ def test_coverage_truth_never_calls_partial_board_complete():
 
     assert quota._coverage_status(complete, context) == "PROVEN_FOR_CONFIGURED_DISCOVERY_SOURCES"
     assert quota._coverage_status(partial, context) == "PARTIAL_OR_UNPROVEN"
+
+
+
+def test_free_core_mode_blocks_paid_discovery_without_calling_provider(monkeypatch):
+    monkeypatch.setenv("WOW_V17_SOURCE_MODE", "FREE_CORE")
+    calls = []
+
+    def original_factory(*_args, **_kwargs):
+        def fetch(_family, _target=None):
+            calls.append(1)
+            return []
+        return fetch
+
+    monkeypatch.setattr(
+        feed,
+        "_v17_quota_aware_original_rundown_board_feed",
+        original_factory,
+        raising=False,
+    )
+    context = quota._new_context()
+    token = quota._SCAN_CONTEXT.set(context)
+    try:
+        fetch = quota._quota_aware_rundown_factory(slate_date="2026-10-07")
+        with pytest.raises(discovery.DiscoveryFeedError) as blocked:
+            fetch("NFL")
+    finally:
+        quota._SCAN_CONTEXT.reset(token)
+
+    assert calls == []
+    assert "PAID_PROVIDER_DISABLED_FREE_CORE" in blocked.value.code
+    assert context["paid_provider_calls_attempted"] == 0
+    assert context["paid_provider_calls_blocked_by_source_policy"] == 1
+    receipt = context["_paid_call_budget"].receipt()
+    assert receipt["source_mode"] == "FREE_CORE"
+    assert receipt["paid_provider_dependency"] == "OPTIONAL"
+    assert receipt["probability_only_paid_market_calls_required"] is False
+
+
+def test_hybrid_can_disable_paid_discovery_fallback_explicitly(monkeypatch):
+    monkeypatch.setenv("WOW_V17_SOURCE_MODE", "HYBRID")
+    monkeypatch.setenv("WOW_V17_PAID_DISCOVERY_FALLBACK_ENABLED", "false")
+    context = quota._new_context()
+    token = quota._SCAN_CONTEXT.set(context)
+    try:
+        _ctx, state, blocker = quota._before_paid_call(
+            "ODDS_PROXY",
+            stage=quota.source_policy.STAGE_DISCOVERY,
+        )
+    finally:
+        quota._SCAN_CONTEXT.reset(token)
+
+    assert state["calls_attempted"] == 0
+    assert state["calls_blocked"] == 1
+    assert "PAID_PROVIDER_DISCOVERY_DISABLED" in blocker
+    assert context["paid_provider_calls_attempted"] == 0
+    assert context["paid_provider_calls_blocked_by_source_policy"] == 1
