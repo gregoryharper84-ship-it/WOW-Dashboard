@@ -72,3 +72,18 @@ def test_llp_gateway_forwards_score_team_event_body_without_field_projection():
     assert "await req.arrayBuffer()" in text
     assert "body," in text
     assert "market_input" not in text
+
+
+
+def test_combined_schema_preserves_merged_spread_routes_and_market_input():
+    llp, wow = _documents()
+    wow_ops = {
+        operation["operationId"]
+        for methods in wow["paths"].values()
+        for operation in methods.values()
+        if isinstance(operation, dict) and "operationId" in operation
+    }
+    assert "scoreWowV17NFLSpreadForwardShadow" in wow_ops
+    assert "scoreWowV17MLBRunLineForwardShadow" in wow_ops
+    assert "market_input" in wow["components"]["schemas"]["TeamEventRequest"]["properties"]
+    assert "market_input" in llp["components"]["schemas"]["LlpTeamEventRequest"]["properties"]
