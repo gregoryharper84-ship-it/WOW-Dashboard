@@ -364,4 +364,27 @@ class Coordinator:
             current = "RECONCILING"
         if current == "RECONCILING":
             target = "COMPLETED" if reconciliation["rows_in"] == reconciliation["rows_completed"] else "COMPLETED_WITH_BLOCKERS"
-            repository.transition_run(self.client, run_id, expected_status="RECONCILING", next_status=target, stage=target)
+            finalized = repository.transition_run(
+                self.client,
+                run_id,
+                expected_status="RECONCILING",
+                next_status=target,
+                stage=target,
+            )
+            if finalized.applied:
+                from v17.betting_intelligence_control_plane import (
+                    build_agent_runtime_product_truth,
+                )
+
+                final_run = finalized.row or repository.get_run(self.client, run_id) or {}
+                candidates = repository.list_run_candidates(self.client, run_id)
+                snapshot = build_agent_runtime_product_truth(
+                    final_run,
+                    candidates,
+                    independent_verification=False,
+                )
+                repository.record_product_truth_snapshot(
+                    self.client,
+                    run_id=run_id,
+                    snapshot=snapshot,
+                )
