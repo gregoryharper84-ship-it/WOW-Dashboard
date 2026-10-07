@@ -26,11 +26,14 @@ from datetime import datetime, timezone
 from threading import RLock
 from typing import Any
 
+from v17 import free_core_source_policy as source_policy
 from v17 import market_evidence_native_live as live
+from v17 import market_optional_qualification as market_optional
 from v17 import market_evidence_sources as sources
 
 CAN_EXECUTE = False
 BRIDGE_SOURCE = "RUNDOWN_MARKET_EVIDENCE"
+SECONDARY_BRIDGE_SOURCE = "SHARPAPI_MARKET_EVIDENCE"
 POST_SCORE_TIMING = "POST_SPORTING_SCORE_PRE_DOWNSTREAM_MARKET_GOVERNANCE"
 _BRIDGE_LOCK = RLock()
 
@@ -101,7 +104,12 @@ def _latest_timestamp(values: list[str]) -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
-def _market_from_event(req: Any, event: dict[str, Any]) -> dict[str, Any]:
+def _market_from_event(
+    req: Any,
+    event: dict[str, Any],
+    *,
+    source: str = BRIDGE_SOURCE,
+) -> dict[str, Any]:
     home_name = str(getattr(req, "home_team", ""))
     away_name = str(getattr(req, "away_team", ""))
     home_norm = _norm(home_name)
@@ -149,7 +157,7 @@ def _market_from_event(req: Any, event: dict[str, Any]) -> dict[str, Any]:
     if three_way:
         return {
             "status": "THREE_WAY_MARKET_UNSUPPORTED_FOR_BINARY_PRIOR",
-            "provider": BRIDGE_SOURCE,
+            "provider": source,
             "prediction_authority": False,
             "market_role_evidence_only": True,
             "can_execute": False,
@@ -157,7 +165,7 @@ def _market_from_event(req: Any, event: dict[str, Any]) -> dict[str, Any]:
     if not pairs:
         return {
             "status": "NO_EXACT_H2H_PRICES",
-            "provider": BRIDGE_SOURCE,
+            "provider": source,
             "prediction_authority": False,
             "market_role_evidence_only": True,
             "can_execute": False,
@@ -170,13 +178,13 @@ def _market_from_event(req: Any, event: dict[str, Any]) -> dict[str, Any]:
     favorite = home_name if home > away else away_name if away > home else None
     return {
         "status": "EXACT_LINE",
-        "provider": BRIDGE_SOURCE,
-        "snapshot_id": f"rundown:{event_id}:{timestamp}",
+        "provider": source,
+        "snapshot_id": f"{source.lower()}:{event_id}:{timestamp}",
         "timestamp": timestamp,
         "home_probability": home,
         "away_probability": away,
         "quality": "CROSS_BOOK_NO_VIG",
-        "source": BRIDGE_SOURCE,
+        "source": source,
         "book_count": len(pairs),
         "books_used": books_used,
         "favorite": favorite,
@@ -186,7 +194,92 @@ def _market_from_event(req: Any, event: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def resolve_rundown_market_context(req: Any, *, opener: Any = None) -> dict[str, Any]:
+
+def _norm_participant(value: Any) -> str:
+    return "".join(ch for ch in str(value or "").casefold() if ch.isalnum())
+
+
+def resolve_user_market_context(req: Any) -> dict[str, Any] | None:
+    """Return non-model user market identity without deriving probability.
+
+    A supplied line/price is sufficient to avoid vendor discovery, but it is
+    never converted into no-vig/model probability and cannot alter the fitted
+    sporting score. Invalid explicit input fails closed instead of spending paid
+    quota to silently replace what the caller supplied.
+    """
+    payload = getattr(req, "market_input", None)
+    if not payload:
+        return None
+    try:
+        market = market_optional.normalize_user_market_input(dict(payload))
+    except Exception as exc:  # typed validation boundary
+        return {
+            "status": "USER_MARKET_INPUT_INVALID",
+            "provider": "USER_SUPPLIED",
+            "reason_code": str(getattr(exc, "args", [type(exc).__name__])[0]),
+            "market_probability_derived": False,
+            "prediction_authority": False,
+            "sporting_probability_authority": False,
+            "market_role_evidence_only": True,
+            "global_slate_failure": False,
+            "can_execute": False,
+        }
+
+    if market.market_family != "MONEYLINE":
+        return {
+            "status": "USER_MARKET_INPUT_INVALID",
+            "provider": "USER_SUPPLIED",
+            "reason_code": "TEAM_EVENT_MARKET_INPUT_MUST_BE_MONEYLINE",
+            "market_probability_derived": False,
+            "prediction_authority": False,
+            "sporting_probability_authority": False,
+            "market_role_evidence_only": True,
+            "global_slate_failure": False,
+            "can_execute": False,
+        }
+
+    home = str(getattr(req, "home_team", "") or "")
+    away = str(getattr(req, "away_team", "") or "")
+    selection_norm = _norm_participant(market.selection)
+    if selection_norm not in {_norm_participant(home), _norm_participant(away)}:
+        return {
+            "status": "USER_MARKET_INPUT_INVALID",
+            "provider": "USER_SUPPLIED",
+            "reason_code": "USER_MARKET_SELECTION_IDENTITY_MISMATCH",
+            "market_probability_derived": False,
+            "prediction_authority": False,
+            "sporting_probability_authority": False,
+            "market_role_evidence_only": True,
+            "global_slate_failure": False,
+            "can_execute": False,
+        }
+
+    return {
+        "status": "USER_SUPPLIED_MARKET_INPUT",
+        "provider": "USER_SUPPLIED",
+        "market_input": market.as_dict(),
+        "selection": market.selection,
+        "american_odds": market.american_odds,
+        "timestamp": market.captured_at,
+        "market_probability_derived": False,
+        "prediction_authority": False,
+        "sporting_probability_authority": False,
+        "market_role_evidence_only": True,
+        "paid_provider_calls_required": False,
+        "global_slate_failure": False,
+        "can_execute": False,
+    }
+
+
+def _resolve_rundown_market_context_impl(req: Any, *, opener: Any = None) -> dict[str, Any]:
+    """Resolve optional post-score market evidence through an ordered hierarchy.
+
+    Sporting probability has already completed before this function is invoked.
+    Provider failures are evidence-only and may not rewrite the model terminal.
+    """
+    user_context = resolve_user_market_context(req)
+    if user_context is not None:
+        return user_context
     if not enabled():
         return {"status": "DISABLED", "provider": BRIDGE_SOURCE, "can_execute": False}
     sport_key = _sport_key(req)
@@ -197,7 +290,9 @@ def resolve_rundown_market_context(req: Any, *, opener: Any = None) -> dict[str,
             "prediction_authority": False,
             "can_execute": False,
         }
-    result = live.get_sport_date_odds_snapshot(
+
+    attempts: list[dict[str, Any]] = []
+    rundown = live.get_sport_date_odds_snapshot(
         sport_key,
         str(getattr(req, "requested_slate_date", "")),
         capability="events",
@@ -205,27 +300,102 @@ def resolve_rundown_market_context(req: Any, *, opener: Any = None) -> dict[str,
         market_ids=sources.rundown_winner_market_ids() or None,
         main_line=True,
         hide_closed=True,
+        paid_call_stage=source_policy.STAGE_INITIAL_ENRICHMENT,
+        model_preflight_passed=True,
     )
-    if not result.ok:
-        return {
-            "status": "MARKET_DATA_UNOBTAINABLE",
-            "provider": BRIDGE_SOURCE,
-            "reason_code": result.code,
-            "rate_limit": result.rate_limit,
-            "request_audit": result.request_audit,
-            "prediction_authority": False,
-            "can_execute": False,
-        }
-    matches = [event for event in (result.data or []) if isinstance(event, dict) and _event_match(req, event)]
-    if len(matches) != 1:
-        return {
-            "status": "EVENT_NOT_FOUND" if not matches else "EVENT_IDENTITY_AMBIGUOUS",
-            "provider": BRIDGE_SOURCE,
-            "match_count": len(matches),
-            "prediction_authority": False,
-            "can_execute": False,
-        }
-    return _market_from_event(req, matches[0])
+    attempts.append({
+        "provider": BRIDGE_SOURCE,
+        "ok": bool(rundown.ok),
+        "code": rundown.code,
+        "cache_origin": (
+            rundown.request_audit.get("cache_origin")
+            if isinstance(rundown.request_audit, dict)
+            else None
+        ),
+    })
+    if rundown.ok:
+        matches = [
+            event for event in (rundown.data or [])
+            if isinstance(event, dict) and _event_match(req, event)
+        ]
+        if len(matches) == 1:
+            context = _market_from_event(req, matches[0], source=BRIDGE_SOURCE)
+            context["provider_attempts"] = attempts
+            return context
+        attempts[-1]["code"] = (
+            "EVENT_NOT_FOUND" if not matches else "EVENT_IDENTITY_AMBIGUOUS"
+        )
+        attempts[-1]["match_count"] = len(matches)
+
+    # Secondary paid evidence is optional capacity/redundancy only. The shared
+    # run budget protects final-refresh reserve and FREE_CORE blocks this call.
+    budget, allowed, blocker = source_policy.check_paid_call(
+        source_policy.STAGE_INITIAL_ENRICHMENT,
+        model_preflight_passed=True,
+    )
+    if allowed:
+        source_policy.record_paid_call(source_policy.STAGE_INITIAL_ENRICHMENT, budget)
+        sharp = live.sharpapi_market_evidence(
+            sport_key,
+            opener=opener,
+            primary_failure=str(attempts[-1].get("code") or "RUNDOWN_UNAVAILABLE"),
+        )
+        attempts.append({
+            "provider": SECONDARY_BRIDGE_SOURCE,
+            "ok": bool(sharp.ok),
+            "code": sharp.code,
+            "cache_origin": None,
+        })
+        if sharp.ok:
+            matches = [
+                event for event in (sharp.data or [])
+                if isinstance(event, dict) and _event_match(req, event)
+            ]
+            if len(matches) == 1:
+                context = _market_from_event(
+                    req,
+                    matches[0],
+                    source=SECONDARY_BRIDGE_SOURCE,
+                )
+                context["provider_attempts"] = attempts
+                return context
+            attempts[-1]["code"] = (
+                "EVENT_NOT_FOUND" if not matches else "EVENT_IDENTITY_AMBIGUOUS"
+            )
+            attempts[-1]["match_count"] = len(matches)
+    else:
+        attempts.append({
+            "provider": SECONDARY_BRIDGE_SOURCE,
+            "ok": False,
+            "code": blocker,
+            "blocked_by_source_policy": True,
+        })
+
+    return {
+        "status": "MARKET_DATA_UNOBTAINABLE",
+        "provider": "OPTIONAL_MARKET_EVIDENCE_HIERARCHY",
+        "reason_code": str(attempts[-1].get("code") or "MARKET_DATA_UNOBTAINABLE"),
+        "provider_attempts": attempts,
+        "prediction_authority": False,
+        "market_role_evidence_only": True,
+        "global_slate_failure": False,
+        "can_execute": False,
+    }
+
+
+def resolve_rundown_market_context(req: Any, *, opener: Any = None) -> dict[str, Any]:
+    """Resolve one post-score market context under the caller's run budget.
+
+    Daily runs bind the scope at the slate boundary. Standalone team-event
+    calls receive a local scope that is always reset before returning.
+    """
+    if source_policy.current_paid_budget() is not None:
+        return _resolve_rundown_market_context_impl(req, opener=opener)
+    token = source_policy.begin_paid_budget_scope()
+    try:
+        return _resolve_rundown_market_context_impl(req, opener=opener)
+    finally:
+        source_policy.end_paid_budget_scope(token)
 
 
 def _favorite_from_prior(req: Any, prior: dict[str, Any] | None) -> str | None:
@@ -399,7 +569,9 @@ __all__ = [
     "BRIDGE_SOURCE",
     "CAN_EXECUTE",
     "POST_SCORE_TIMING",
+    "SECONDARY_BRIDGE_SOURCE",
     "enabled",
     "install_llp_rundown_market_bridge",
     "resolve_rundown_market_context",
+    "resolve_user_market_context",
 ]

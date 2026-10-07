@@ -21,6 +21,8 @@ COUNTER_NAMES = (
     "rundown_provider_calls",
     "rundown_cache_hits",
     "rundown_singleflight_hits",
+    "rundown_durable_cache_hits",
+    "rundown_durable_cache_writes",
     "rundown_429_burst",
     "rundown_429_quota_exhausted",
     "rundown_429_unknown",

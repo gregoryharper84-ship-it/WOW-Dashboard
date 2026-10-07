@@ -7,8 +7,8 @@ def _event():
         "date": "2026-09-12T19:00:00Z",
         "competitions": [{
             "competitors": [
-                {"homeAway": "home", "team": {"displayName": "Texas Tech Red Raiders"}},
-                {"homeAway": "away", "team": {"displayName": "Oregon State Beavers"}},
+                {"homeAway": "home", "team": {"id": "2641", "displayName": "Texas Tech Red Raiders"}},
+                {"homeAway": "away", "team": {"id": "204", "displayName": "Oregon State Beavers"}},
             ],
             "odds": [{
                 "provider": {"name": "ESPN BET"},
@@ -25,6 +25,8 @@ def test_event_translation_preserves_identity_without_probability():
     assert row["id"] == "espn-401234567"
     assert row["home_team"] == "Texas Tech Red Raiders"
     assert row["away_team"] == "Oregon State Beavers"
+    assert row["_wow_secondary_home_team_id"] == "2641"
+    assert row["_wow_secondary_away_team_id"] == "204"
     assert "probability" not in row
 
 

@@ -89,11 +89,24 @@ def _safe_provider_health_fields(health: Any) -> dict[str, Any]:
 
 
 def _rundown_acceptance() -> dict[str, Any]:
-    """Exercise the authenticated moneyline path and localize auth/entitlement failures."""
+    """Exercise optional paid market evidence only when source policy requires it."""
+    from v17 import free_core_source_policy as source_policy
     from v17 import market_evidence_native_live as live
     from v17 import market_evidence_sources as sources
     from v17.rundown_credential_diagnostic import rundown_credential_status
     from v17.rundown_provider_health import probe_rundown_provider_health
+
+    if source_policy.free_core_enabled():
+        return {
+            **_base_result("PASS", "FREE_CORE_PAID_MARKET_OPTIONAL_VERIFIED"),
+            "source_mode": source_policy.source_mode(),
+            "paid_provider_required": False,
+            "paid_provider_network_attempted": False,
+            "snapshot_retrieved": False,
+            "events_returned": 0,
+            "moneyline_events_returned": 0,
+            "affects_model_capability": False,
+        }
 
     credential = rundown_credential_status()
     slate_date = datetime.now(timezone.utc).date().isoformat()

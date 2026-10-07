@@ -10,7 +10,11 @@ from v17.cross_sport_winner_discovery import DiscoveredEvent
 from v17.team_event_sport_parity import (
     build_discovery_evidence,
     canonicalize_mlb_discovery_identity,
+    canonicalize_nba_discovery_identity,
     canonicalize_nfl_discovery_identity,
+    canonicalize_ncaaf_discovery_identity,
+    canonicalize_nhl_discovery_identity,
+    canonicalize_wnba_discovery_identity,
     cross_sport_model_coverage,
     parity_health,
 )
@@ -379,3 +383,280 @@ def test_model_coverage_separates_accounted_rows_from_identity_and_model_routing
     )
     assert coverage["discovery_rows_retained_for_reconciliation"] is True
     assert coverage["can_execute"] is False
+
+
+
+def _wnba_alias_event():
+    return DiscoveredEvent(
+        sport="WNBA",
+        league="WNBA",
+        sport_key="basketball_wnba",
+        official_event_id=None,
+        home_team="Minnesota Lynx",
+        away_team="Phoenix Mercury",
+        commence_time_utc="2026-10-08T00:00:00Z",
+        event_status="PREGAME",
+        source="DISCOVERY_FEED",
+        provider="ESPN_SCOREBOARD",
+        raw={
+            "provider_event_id": "401900001",
+            "_wow_secondary_home_team_id": "8",
+            "_wow_secondary_away_team_id": "11",
+            "official_event_id": None,
+            "prediction_authority": False,
+        },
+    )
+
+
+def test_wnba_daily_discovery_alias_rewrites_only_after_official_schedule_match(monkeypatch):
+    import v17.wnba_spread_event_identity as identity
+
+    captured = {}
+
+    def resolve(**kwargs):
+        captured.update(kwargs)
+        return {
+            "event_id": "wnba-stats-1022600201",
+            "identity_provider": "WNBA_OFFICIAL_SCHEDULE_API",
+            "identity_alias_provider": "ESPN_SCOREBOARD",
+            "identity_verified_at": "2026-10-07T12:00:00+00:00",
+            "can_execute": False,
+        }
+
+    monkeypatch.setattr(identity, "resolve_wnba_current_event_identity", resolve)
+    out = canonicalize_wnba_discovery_identity(_wnba_alias_event())
+
+    assert captured["event_id"] == "espn-401900001"
+    assert captured["home_team_id"] == "espn-8"
+    assert captured["away_team_id"] == "espn-11"
+    assert out.official_event_id == "wnba-stats-1022600201"
+    assert out.raw["provider_event_id"] == "401900001"
+    assert out.raw["canonical_identity_status"] == "CANONICAL_RESOLVED"
+    assert out.raw["canonical_identity_source"] == "WNBA_OFFICIAL_SCHEDULE_API"
+    assert out.raw["prediction_authority"] is False
+
+
+def test_wnba_daily_discovery_alias_stays_unresolved_when_official_match_fails(monkeypatch):
+    import v17.wnba_spread_event_identity as identity
+
+    class IdentityFailure(RuntimeError):
+        code = "WNBA_SPREAD_FORWARD_CANONICAL_EVENT_NOT_FOUND"
+
+    def fail(**_kwargs):
+        raise IdentityFailure("no exact official event")
+
+    monkeypatch.setattr(identity, "resolve_wnba_current_event_identity", fail)
+    out = canonicalize_wnba_discovery_identity(_wnba_alias_event())
+
+    assert out.official_event_id is None
+    assert out.raw["canonical_identity_status"] == "ALIAS_ONLY_UNRESOLVED"
+    assert (
+        out.raw["canonical_identity_blocker"]
+        == "WNBA_SPREAD_FORWARD_CANONICAL_EVENT_NOT_FOUND"
+    )
+
+
+def test_wnba_daily_discovery_requires_team_aliases_before_official_lookup():
+    event = _wnba_alias_event()
+    event = DiscoveredEvent(
+        **{
+            **event.__dict__,
+            "raw": {
+                "provider_event_id": "401900001",
+                "official_event_id": None,
+            },
+        }
+    )
+    out = canonicalize_wnba_discovery_identity(event)
+    assert out.official_event_id is None
+    assert out.raw["canonical_identity_status"] == "ALIAS_ONLY_UNRESOLVED"
+    assert out.raw["canonical_identity_blocker"] == "WNBA_PROVIDER_TEAM_ALIAS_MISSING"
+
+
+
+def _nhl_alias_event():
+    return DiscoveredEvent(
+        sport="NHL",
+        league="NHL",
+        sport_key="icehockey_nhl",
+        official_event_id=None,
+        home_team="Dallas Stars",
+        away_team="Pittsburgh Penguins",
+        commence_time_utc="2026-10-08T00:00:00Z",
+        event_status="PREGAME",
+        source="DISCOVERY_FEED",
+        provider="ESPN_SCOREBOARD",
+        raw={
+            "provider_event_id": "401900777",
+            "official_event_id": None,
+            "prediction_authority": False,
+        },
+    )
+
+
+def test_nhl_daily_discovery_alias_rewrites_only_after_first_party_match(monkeypatch):
+    import v17.nhl_event_identity as identity
+
+    captured = {}
+
+    def resolve(**kwargs):
+        captured.update(kwargs)
+        return {
+            "event_id": "2026020041",
+            "identity_provider": "NHL_PUBLIC_WEB_API",
+            "identity_verified_at": "2026-10-07T13:00:00+00:00",
+            "market_features_used": False,
+            "can_execute": False,
+        }
+
+    monkeypatch.setattr(identity, "resolve_nhl_current_event_identity", resolve)
+    out = canonicalize_nhl_discovery_identity(_nhl_alias_event())
+
+    assert captured["home_team"] == "Dallas Stars"
+    assert captured["away_team"] == "Pittsburgh Penguins"
+    assert out.official_event_id == "2026020041"
+    assert out.raw["provider_event_id"] == "401900777"
+    assert out.raw["canonical_identity_status"] == "CANONICAL_RESOLVED"
+    assert out.raw["canonical_identity_source"] == "NHL_PUBLIC_WEB_API"
+    assert out.raw["canonical_identity_market_features_used"] is False
+    assert out.raw["prediction_authority"] is False
+
+
+def test_nhl_daily_discovery_alias_stays_unresolved_on_official_failure(monkeypatch):
+    import v17.nhl_event_identity as identity
+
+    class IdentityFailure(RuntimeError):
+        code = "NHL_CANONICAL_EVENT_NOT_FOUND"
+
+    monkeypatch.setattr(
+        identity,
+        "resolve_nhl_current_event_identity",
+        lambda **_kwargs: (_ for _ in ()).throw(IdentityFailure()),
+    )
+    out = canonicalize_nhl_discovery_identity(_nhl_alias_event())
+
+    assert out.official_event_id is None
+    assert out.raw["canonical_identity_status"] == "ALIAS_ONLY_UNRESOLVED"
+    assert out.raw["canonical_identity_blocker"] == "NHL_CANONICAL_EVENT_NOT_FOUND"
+
+
+
+def _ncaaf_alias_event():
+    return DiscoveredEvent(
+        sport="NCAAF",
+        league="NCAAF",
+        sport_key="americanfootball_ncaaf",
+        official_event_id=None,
+        home_team="Arizona State Sun Devils",
+        away_team="Baylor Bears",
+        commence_time_utc="2026-10-04T02:30:00Z",
+        event_status="PREGAME",
+        source="DISCOVERY_FEED",
+        provider="ESPN_SCOREBOARD",
+        raw={
+            "provider_event_id": "401900999",
+            "_wow_secondary_event_id": "401900999",
+            "official_event_id": None,
+            "prediction_authority": False,
+        },
+    )
+
+
+def test_ncaaf_daily_discovery_rewrites_only_after_cfbd_match(monkeypatch):
+    import v17.ncaaf_event_identity as identity
+
+    monkeypatch.setattr(
+        identity,
+        "resolve_ncaaf_current_event_identity",
+        lambda **_kwargs: {
+            "event_id": "401856817",
+            "identity_provider": "CFBD:/games",
+            "identity_resolution": "CFBD_EXACT_PARTICIPANTS_START_MATCH",
+            "prediction_authority": False,
+            "can_execute": False,
+        },
+    )
+    out = canonicalize_ncaaf_discovery_identity(_ncaaf_alias_event())
+    assert out.official_event_id == "401856817"
+    assert out.raw["provider_event_id"] == "401900999"
+    assert out.raw["canonical_identity_status"] == "CANONICAL_RESOLVED"
+    assert out.raw["canonical_identity_source"] == "CFBD:/games"
+    assert out.raw["canonical_identity_market_features_used"] is False
+
+
+def test_ncaaf_daily_discovery_alias_stays_unresolved_on_cfbd_failure(monkeypatch):
+    import v17.ncaaf_event_identity as identity
+
+    class IdentityFailure(RuntimeError):
+        code = "NCAAF_CANONICAL_EVENT_NOT_FOUND"
+
+    def fail(**_kwargs):
+        raise IdentityFailure("no exact CFBD event")
+
+    monkeypatch.setattr(identity, "resolve_ncaaf_current_event_identity", fail)
+    out = canonicalize_ncaaf_discovery_identity(_ncaaf_alias_event())
+    assert out.official_event_id is None
+    assert out.raw["canonical_identity_status"] == "ALIAS_ONLY_UNRESOLVED"
+    assert out.raw["canonical_identity_blocker"] == "NCAAF_CANONICAL_EVENT_NOT_FOUND"
+
+
+
+def _nba_alias_event():
+    return DiscoveredEvent(
+        sport="NBA",
+        league="NBA",
+        sport_key="basketball_nba",
+        official_event_id=None,
+        home_team="Los Angeles Lakers",
+        away_team="Oklahoma City Thunder",
+        commence_time_utc="2026-10-08T00:30:00Z",
+        event_status="PREGAME",
+        source="DISCOVERY_FEED",
+        provider="ESPN_SCOREBOARD",
+        raw={
+            "provider_event_id": "401999999",
+            "_wow_secondary_event_id": "401999999",
+            "_wow_secondary_home_team_id": "13",
+            "_wow_secondary_away_team_id": "24",
+            "official_event_id": None,
+            "prediction_authority": False,
+        },
+    )
+
+
+def test_nba_daily_discovery_rewrites_only_after_schedule_match(monkeypatch):
+    import v17.nba_event_identity as identity
+
+    monkeypatch.setattr(
+        identity,
+        "resolve_nba_current_event_identity",
+        lambda **_kwargs: {
+            "event_id": "espn-401950001",
+            "identity_provider": "SPORTSDATAVERSE_ESPN",
+            "identity_resolution": "SPORTSDATAVERSE_SCHEDULE_EXACT_TEAM_DATE_MATCH",
+            "prediction_authority": False,
+            "can_execute": False,
+        },
+    )
+    out = canonicalize_nba_discovery_identity(_nba_alias_event())
+    assert out.official_event_id == "espn-401950001"
+    assert out.raw["provider_event_id"] == "401999999"
+    assert out.raw["canonical_identity_status"] == "CANONICAL_RESOLVED"
+    assert out.raw["canonical_identity_source"] == "SPORTSDATAVERSE_ESPN"
+    assert out.raw["canonical_identity_market_features_used"] is False
+
+
+def test_nba_daily_discovery_alias_stays_unresolved_without_schedule_match(monkeypatch):
+    import v17.nba_event_identity as identity
+
+    class IdentityFailure(RuntimeError):
+        code = "NBA_CANONICAL_EVENT_NOT_FOUND"
+
+    def fail(**_kwargs):
+        raise IdentityFailure("no exact schedule event")
+
+    monkeypatch.setattr(identity, "resolve_nba_current_event_identity", fail)
+    out = canonicalize_nba_discovery_identity(_nba_alias_event())
+    assert out.official_event_id is None
+    assert out.raw["canonical_identity_status"] == "ALIAS_ONLY_UNRESOLVED"
+    assert out.raw["canonical_identity_blocker"] == "NBA_CANONICAL_EVENT_NOT_FOUND"

@@ -27,6 +27,7 @@ from pathlib import Path
 import re
 from typing import Any
 
+from v17 import free_core_source_policy as source_policy
 from v17 import market_evidence_sources as sources
 from v17 import market_evidence_native_live as live
 from v17.market_evidence_snapshot import snapshot_dates
@@ -147,7 +148,10 @@ def _dedupe_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _collect(sport_key: str, *, opener: Any = None, primary_failure: str | None = None) -> tuple[list[dict[str, Any]], list[str]]:
-    """Gather every research-only event this tier can see for one sport."""
+    """Gather optional paid research evidence only when source policy permits it."""
+    if source_policy.free_core_enabled():
+        return [], [f"SOURCE_POLICY:{source_policy.BLOCK_FREE_CORE}"]
+
     events: list[dict[str, Any]] = []
     codes: list[str] = []
 

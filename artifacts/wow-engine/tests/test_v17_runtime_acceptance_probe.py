@@ -266,3 +266,30 @@ def test_overall_probe_preserves_terminal_and_execution_invariants(monkeypatch):
     assert result["probability_values_exposed"] is False
     assert result["secret_value_exposed"] is False
     assert result["can_execute"] is False
+
+
+
+def test_free_core_runtime_acceptance_does_not_require_rundown(monkeypatch):
+    monkeypatch.setenv("WOW_V17_SOURCE_MODE", "FREE_CORE")
+    monkeypatch.setattr(
+        live,
+        "get_sport_date_odds_snapshot",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError("paid market adapter must not run in FREE_CORE")
+        ),
+    )
+    monkeypatch.setattr(
+        credential,
+        "rundown_credential_status",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("Rundown credential should not be inspected for acceptance")
+        ),
+    )
+
+    out = probe._rundown_acceptance()
+    assert out["status"] == "PASS"
+    assert out["code"] == "FREE_CORE_PAID_MARKET_OPTIONAL_VERIFIED"
+    assert out["paid_provider_required"] is False
+    assert out["paid_provider_network_attempted"] is False
+    assert out["affects_model_capability"] is False
+    assert out["can_execute"] is False

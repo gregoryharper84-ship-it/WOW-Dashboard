@@ -48,6 +48,21 @@ services:
         value: "1"
       - key: WOW_V17_ACTIVE
         value: "1"
+      - key: WOW_V17_SOURCE_MODE
+        # Class-B Free-Core rollout is explicit. Merge keeps current HYBRID
+        # behavior; FREE_CORE is enabled only after governed production acceptance.
+        value: HYBRID
+      - key: WOW_V17_PAID_DISCOVERY_FALLBACK_ENABLED
+        # Preserve current fallback behavior until FREE_CORE acceptance proves
+        # canonical free-source discovery/model routing across the active slate.
+        value: "true"
+      - key: WOW_V17_DURABLE_PROVIDER_CACHE_ENABLED
+        # Best-effort short-TTL cache for normalized research market evidence.
+        # It is never probability or execution authority.
+        value: "true"
+      - key: WOW_V17_DURABLE_PROVIDER_CACHE_TTL_SECONDS
+        # Stays well inside the existing 15-minute market freshness ceiling.
+        value: "120"
       - key: WOW_SCOUT_ASYNC_HANDOFF_ENABLED
         value: "true"
       - key: WOW_SCOUT_HANDOFF_WORKERS

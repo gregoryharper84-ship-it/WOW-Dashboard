@@ -18,6 +18,8 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from v17 import free_core_source_policy as source_policy
+
 CAN_EXECUTE = False
 
 
@@ -203,6 +205,20 @@ def probe_rundown_provider_health(
     opener: Any = None,
 ) -> dict[str, Any]:
     """Prove Product V2 catalog + event access independently of lane enablement."""
+    if source_policy.free_core_enabled():
+        return {
+            "provider": "RUNDOWN",
+            "sport_key": sport_key,
+            "date": date,
+            "status": "DISABLED_BY_POLICY",
+            "provider_code": source_policy.BLOCK_FREE_CORE,
+            "source_mode": source_policy.source_mode(),
+            "paid_provider_network_attempted": False,
+            "affects_model_capability": False,
+            "prediction_authority": False,
+            "checked_at": _now_iso(),
+            "can_execute": False,
+        }
     from v17 import market_evidence_sources as sources
     from v17.sep15_runtime_contract_repairs import install_rundown_v2_auth_repair
 

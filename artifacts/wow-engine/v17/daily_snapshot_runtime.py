@@ -21,6 +21,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
 from v17 import cross_sport_discovery_feed as discovery_feed
+from v17 import free_core_source_policy as source_policy
 from v17 import cross_sport_winner_discovery as discovery
 from v17 import team_event_bridge_runtime as bridge_runtime
 from v17.daily_prop_acquisition import acquire_daily_prop_snapshots
@@ -461,7 +462,7 @@ def _guard_moneyline_result(result: dict[str, Any]) -> tuple[dict[str, Any], str
     return guarded, "COMPLETED"
 
 
-def run_daily_snapshot(req: DailySnapshotRequest, *, db: Any, market_api: Any, event_api: Any) -> dict[str, Any]:
+def _run_daily_snapshot_impl(req: DailySnapshotRequest, *, db: Any, market_api: Any, event_api: Any) -> dict[str, Any]:
     try:
         date.fromisoformat(req.requested_slate_date)
     except ValueError:
@@ -662,6 +663,20 @@ def run_daily_snapshot(req: DailySnapshotRequest, *, db: Any, market_api: Any, e
         response["response_mode"] = "FULL"
         return response
     return compact_response(response, detail_available=bool(detail_persistence.get("detail_available")))
+
+
+def run_daily_snapshot(req: DailySnapshotRequest, *, db: Any, market_api: Any, event_api: Any) -> dict[str, Any]:
+    """Run one Daily slate under one explicit optional-paid-call budget scope."""
+    token = source_policy.begin_paid_budget_scope()
+    try:
+        return _run_daily_snapshot_impl(
+            req,
+            db=db,
+            market_api=market_api,
+            event_api=event_api,
+        )
+    finally:
+        source_policy.end_paid_budget_scope(token)
 
 
 _ACQUISITION_LOGGER = logging.getLogger("wow.v17.prop_evidence_acquisition")

@@ -59,8 +59,8 @@ def test_v17_action_schemas_preserve_backend_and_llp_gateway_transport_contracts
     assert "PRODUCTION SOURCE CONTRACT" in llp
     assert "CANDIDATE ONLY" not in wow
     assert "CANDIDATE ONLY" not in llp
-    assert "version: 17.0.0" in wow
-    assert "version: 17.0.4-compact-action" in llp
+    assert "version: 17.0.1-free-core-market-input" in wow
+    assert "version: 17.0.5-free-core-market-input" in llp
 
 
 def test_wow_action_has_prop_and_team_event_delegation():

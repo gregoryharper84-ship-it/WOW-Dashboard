@@ -79,6 +79,7 @@ class TeamEventRequest(BaseModel):
     source_snapshot_id: str = Field(min_length=1, max_length=128)
     latest_material_update_timestamp: str | None = None
     market_prior: dict[str, Any] | None = None
+    market_input: dict[str, Any] | None = None
     sport_specific_evidence: dict[str, Any] = Field(default_factory=dict)
 
 

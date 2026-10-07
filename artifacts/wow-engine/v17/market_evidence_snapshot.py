@@ -46,6 +46,7 @@ from typing import Any, Callable
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from v17 import free_core_source_policy as source_policy
 from v17 import market_evidence_hardening as hardening
 from v17 import market_evidence_sources as sources
 from v17 import market_evidence_native_live as live
@@ -148,6 +149,31 @@ def collect_acceptance(
     old acceptance harness becoming its own rate-limit incident.
     """
     date = date or snapshot_dates()[0]
+    if source_policy.free_core_enabled():
+        return {
+            "schema_version": "wow.v17.market_evidence_acceptance.v1",
+            "generated_at": _now().replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+            "status": "FREE_CORE_MARKET_OPTIONAL_READY",
+            "sport_key": sport_key,
+            "date": date,
+            "configured_providers": [],
+            "captured_providers": [],
+            "provider_capture": {},
+            "provider_degradation": {},
+            "capture_failures": [],
+            "auth_blockers": [],
+            "ready_for_market_evidence": False,
+            "market_evidence_required_for_model": False,
+            "paid_provider_network_attempted": False,
+            "lanes": [],
+            "captured_rows": 0,
+            "affects_fitted_model_availability": False,
+            "prediction_authority": False,
+            "exact_line_authority": False,
+            "research_only": True,
+            "can_execute": False,
+            "secret_values_exposed": False,
+        }
     health = _provider_health_map()
     lanes: list[dict[str, Any]] = []
     events: list[dict[str, Any]] = []
@@ -299,6 +325,35 @@ def acceptance_blockers(payload: dict[str, Any]) -> list[str]:
 
 def collect(sports: list[str], *, dates: list[str] | None = None, opener: Any = None) -> dict[str, Any]:
     dates = dates or snapshot_dates()
+    if source_policy.free_core_enabled():
+        return {
+            "schema_version": "wow.v17.market_evidence_snapshot.v2",
+            "generated_at": _now().replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+            "dates": dates,
+            "sports_requested": list(sports),
+            "status": "FREE_CORE_MARKET_OPTIONAL_READY",
+            "lanes": [],
+            "events": [],
+            "bookmakers_seen": [],
+            "reconciliation": {
+                "lanes_requested": 0,
+                "lanes_captured": 0,
+                "lanes_blocked": 0,
+                "captured_rows": 0,
+                "balanced": True,
+            },
+            "provider_capture": {},
+            "provider_degradation": {},
+            "market_evidence_required_for_model": False,
+            "paid_provider_network_attempted": False,
+            "affects_fitted_model_availability": False,
+            "research_ceiling": "RESEARCH_INTEREST",
+            "source_class": sources.SOURCE_CLASS,
+            "prediction_authority": False,
+            "exact_line_authority": False,
+            "research_only": True,
+            "can_execute": False,
+        }
     lanes: list[dict[str, Any]] = []
     events: list[dict[str, Any]] = []
 
@@ -482,7 +537,10 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.require_capture:
         return 0 if acceptance_blockers(payload) == [] else 1
-    return 0 if payload["status"] == "MARKET_EVIDENCE_CAPTURED" else 1
+    return 0 if payload["status"] in {
+        "MARKET_EVIDENCE_CAPTURED",
+        "FREE_CORE_MARKET_OPTIONAL_READY",
+    } else 1
 
 
 if __name__ == "__main__":
