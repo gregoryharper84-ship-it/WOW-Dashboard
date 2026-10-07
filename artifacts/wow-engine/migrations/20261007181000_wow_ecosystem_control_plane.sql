@@ -15,9 +15,7 @@ create table if not exists public.wow_ecosystem_probe_receipts (
     deployed_sha text,
     details jsonb not null default '{}'::jsonb,
     can_execute boolean not null default false check (can_execute = false),
-    created_at timestamptz not null default now(),
-    constraint wow_ecosystem_probe_receipts_identity_uq
-        unique (probe_id, observed_at, status, coalesce(source_version,''), coalesce(deployed_sha,''))
+    created_at timestamptz not null default now()
 );
 
 create unique index if not exists wow_ecosystem_probe_receipts_identity_uq
