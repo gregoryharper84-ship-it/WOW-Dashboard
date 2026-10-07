@@ -20,6 +20,7 @@ from github_actions_oidc import (
     authorize_action_key_or_multiscout_oidc,
 )
 from v17 import daily_snapshot_runtime as daily_runtime
+from v17 import memory_admission
 
 
 INTERNAL_DAILY_SNAPSHOT_ROUTE = "/internal/v17/daily-snapshot"
@@ -80,12 +81,15 @@ def install_daily_snapshot_oidc_bridge(*, app: FastAPI, market_api: Any) -> bool
         authorization: str | None = Header(default=None),
     ) -> dict[str, Any]:
         auth_mode = _authorize(authorization)
-        result = daily_runtime.run_daily_snapshot(
-            req,
-            db=prod.get_client(),
-            market_api=market_api,
-            event_api=event_api,
-        )
+        try:
+            result = daily_runtime.run_daily_snapshot(
+                req,
+                db=prod.get_client(),
+                market_api=market_api,
+                event_api=event_api,
+            )
+        except memory_admission.HeavyJobDeferred as exc:
+            raise HTTPException(status_code=503, detail=exc.receipt()) from exc
         if not isinstance(result, dict):
             raise HTTPException(
                 status_code=500,
