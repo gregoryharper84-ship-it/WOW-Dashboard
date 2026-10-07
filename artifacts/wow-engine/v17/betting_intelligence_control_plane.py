@@ -470,7 +470,10 @@ def build_agent_runtime_product_truth(
         )
         if not candidate_id:
             raise ValueError("candidate identity is required")
+        state = _runtime_work_state(candidate)
         blockers = tuple(str(code) for code in (candidate.get("blockers") or []))
+        if state == WorkState.BLOCKED and not blockers:
+            blockers = ("TERMINAL_DISPOSITION_WITHOUT_TYPED_BLOCKER",)
         aggregate_blockers.extend(blockers)
         work_items.append(
             WorkItem(
@@ -479,7 +482,7 @@ def build_agent_runtime_product_truth(
                     candidate.get("controlling_worker_id")
                     or "GOVERNED_SPECIALIST"
                 ),
-                state=_runtime_work_state(candidate),
+                state=state,
                 blocker_codes=blockers,
             )
         )
