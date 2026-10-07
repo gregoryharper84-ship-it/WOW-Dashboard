@@ -19,7 +19,7 @@ def test_live_host_uses_single_domain_canonical_action_with_run_control_merged()
         for operation in methods.values()
         if isinstance(operation, dict) and "operationId" in operation
     }
-    assert len(primary_ops) == 24
+    assert len(primary_ops) == 26
     assert "runWowV17NFLPickemBoard" not in primary_ops
     assert "submitWowV17NFLPickemBoard" in primary_ops
     assert "getWowV17NFLPickemRun" in primary_ops
@@ -36,6 +36,8 @@ def test_live_host_uses_single_domain_canonical_action_with_run_control_merged()
         assert operation in str(companion)
 
     assert "scoreWowV17SpreadForwardShadow" in primary_ops
+    assert "scoreWowV17NFLSpreadForwardShadow" in primary_ops
+    assert "scoreWowV17MLBRunLineForwardShadow" in primary_ops
     spread = primary["paths"]["/internal/v17/spread-forward-shadow"]["post"]
     assert spread["operationId"] == "scoreWowV17SpreadForwardShadow"
     assert spread["security"] == [{"actionBearer": []}]
