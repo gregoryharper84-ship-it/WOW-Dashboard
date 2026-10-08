@@ -32,3 +32,4 @@ artifacts/wow-engine/**/migrations/**
 .github/workflows/wow-v17-approval-readiness-audit.yml
 .github/scripts/v17_approval_readiness.py
 .github/scripts/tests/test_v17_approval_readiness.py
+.github/workflows/wow-v17-approval-policy-tests.yml
