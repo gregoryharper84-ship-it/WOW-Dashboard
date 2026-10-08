@@ -10,11 +10,13 @@ import os
 import socket
 import threading
 import time
+from dataclasses import dataclass
 from datetime import timedelta
 
 from v17.engineering_auditor import EngineeringAuditStore, parse_timestamp, utcnow
 from v17.engineering_auditor_github import (
-    bootstrap_open_github_work, reconcile_github_updates, reconcile_sirt_watchdog,
+    GitHubAuditUnavailable, bootstrap_open_github_work, reconcile_github_updates,
+    reconcile_sirt_watchdog,
 )
 
 _logger = logging.getLogger("wow.v17.engineering_auditor")
@@ -63,14 +65,55 @@ def _github_interval_seconds() -> int:
         value = 300
     # Three unauthenticated public GitHub requests per pass (issues, runs,
     # independent SIRT runs); five minutes stays within 60/hour/IP.
-    return min(max(value, 180), 1800)
+    return min(max(value, 300), 1800)
 
+
+
+
+
+@dataclass
+class IndependentPollHealth:
+    """Sticky, separately proved liveness across non-GitHub worker ticks."""
+
+    github_error: str | None = "GITHUB_AUDIT_UNVERIFIED"
+    watchdog_outcome: str = "SIRT_WATCHDOG_UNVERIFIED"
+
+    @staticmethod
+    def github_failure(exc: Exception) -> str:
+        if isinstance(exc, GitHubAuditUnavailable):
+            return str(exc)
+        return f"GITHUB_AUDIT_{type(exc).__name__.upper()}"
+
+    def report_github(self, error: str | None) -> None:
+        self.github_error = error
+
+    def report_watchdog(self, outcome: str) -> None:
+        if outcome not in {"WATCHDOG_RUN_OBSERVED", "WATCHDOG_HEARTBEAT_MISSING"}:
+            raise ValueError("SIRT_WATCHDOG_OUTCOME_INVALID")
+        self.watchdog_outcome = outcome
+
+    def watchdog_unavailable(self) -> None:
+        self.watchdog_outcome = "SIRT_WATCHDOG_SOURCE_UNAVAILABLE"
+
+    def runtime_state(self) -> tuple[str, str]:
+        # A healthy generic GitHub API call does not clear a missing or
+        # unverified SIRT watchdog. Only a fresh watchdog run does.
+        if self.watchdog_outcome != "WATCHDOG_RUN_OBSERVED":
+            return "DEGRADED", (
+                "SIRT_WATCHDOG_HEARTBEAT_MISSING"
+                if self.watchdog_outcome == "WATCHDOG_HEARTBEAT_MISSING"
+                else self.watchdog_outcome
+            )
+        if self.github_error:
+            return "DEGRADED", self.github_error
+        return "RUNNING", "CLEAR"
 
 def run_engineering_auditor_loop(stop_event: threading.Event = _STOP) -> None:
     """Reconcile on startup, then remain alive and enforce persisted deadlines."""
     instance_id = f"{socket.gethostname()}:{os.getpid()}"
     seen_workflow_runs: set[str] = set()
     last_github_sync = utcnow() - timedelta(minutes=10)
+    poll_health = IndependentPollHealth()
     try:
         store = EngineeringAuditStore(_db_client())
         prior_health = store.health()
@@ -93,7 +136,6 @@ def run_engineering_auditor_loop(stop_event: threading.Event = _STOP) -> None:
         github_open_n = 0
         github_update_n = 0
         github_health_n = 0
-        github_error: str | None = None
         try:
             github_open_n = bootstrap_open_github_work(store)
             github_receipt = reconcile_github_updates(
@@ -103,27 +145,36 @@ def run_engineering_auditor_loop(stop_event: threading.Event = _STOP) -> None:
             )
             github_update_n = github_receipt["github_work_events"]
             github_health_n = github_receipt["code_health_events"]
-            watchdog_outcome = reconcile_sirt_watchdog(store)
-            if watchdog_outcome == "WATCHDOG_HEARTBEAT_MISSING":
-                github_error = "SIRT_WATCHDOG_HEARTBEAT_MISSING"
+            poll_health.report_github(None)
             last_github_sync = utcnow()
         except Exception as exc:
-            github_error = f"GITHUB_AUDIT_{type(exc).__name__.upper()}"
+            poll_health.report_github(IndependentPollHealth.github_failure(exc))
             _logger.warning(
                 "WOW_ENGINEERING_AUDITOR github_startup_reconcile=DEGRADED error_type=%s can_execute=false",
                 type(exc).__name__,
             )
+        # Independent from general issue/run reconciliation: one failing
+        # GitHub endpoint cannot suppress the SIRT dead-man poll.
+        try:
+            poll_health.report_watchdog(reconcile_sirt_watchdog(store))
+        except Exception as exc:
+            poll_health.watchdog_unavailable()
+            _logger.warning(
+                "WOW_ENGINEERING_AUDITOR sirt_watchdog_startup=DEGRADED error_type=%s can_execute=false",
+                type(exc).__name__,
+            )
+        runtime_status, runtime_error = poll_health.runtime_state()
         store.refresh_runtime_counts(now=utcnow())
         store.touch_runtime(
             instance_id=instance_id,
-            status="DEGRADED" if github_error else "RUNNING",
+            status=runtime_status,
             last_heartbeat_at=utcnow(),
             last_reconcile_at=utcnow(),
-            last_error_code=github_error or "CLEAR",
+            last_error_code=runtime_error,
         )
         _logger.warning(
             "WOW_ENGINEERING_AUDITOR status=%s startup_backlog=%s startup_findings=%s github_open=%s github_updates=%s code_health=%s terminal_authority=V17_TERMINAL_REDUCER can_execute=false",
-            "DEGRADED" if github_error else "RUNNING",
+            runtime_status,
             backlog_n,
             len(opened),
             github_open_n,
@@ -140,8 +191,9 @@ def run_engineering_auditor_loop(stop_event: threading.Event = _STOP) -> None:
     next_github_poll = time.monotonic() + _github_interval_seconds()
     while not stop_event.wait(_interval_seconds()):
         now = utcnow()
-        error_code = "CLEAR"
-        status = "RUNNING"
+        # Use latched independent evidence on every 30-second iteration.
+        # A missing sentinel never reverts to CLEAR between 5-minute polls.
+        status, error_code = poll_health.runtime_state()
         try:
             # The process is continuously resident. This maximum sleep merely
             # bounds detection latency for persisted deadlines; no external
@@ -155,20 +207,27 @@ def run_engineering_auditor_loop(stop_event: threading.Event = _STOP) -> None:
                         since=last_github_sync,
                         seen_workflow_runs=seen_workflow_runs,
                     )
-                    watchdog_outcome = reconcile_sirt_watchdog(store, now=now)
-                    if watchdog_outcome == "WATCHDOG_HEARTBEAT_MISSING":
-                        status = "DEGRADED"
-                        error_code = "SIRT_WATCHDOG_HEARTBEAT_MISSING"
+                    poll_health.report_github(None)
                     last_github_sync = now
                 except Exception as exc:
-                    status = "DEGRADED"
-                    error_code = f"GITHUB_AUDIT_{type(exc).__name__.upper()}"
+                    poll_health.report_github(IndependentPollHealth.github_failure(exc))
                     _logger.warning(
                         "WOW_ENGINEERING_AUDITOR github_reconcile=DEGRADED error_type=%s can_execute=false",
                         type(exc).__name__,
                     )
+                # Poll the watchdog separately even when ordinary GitHub
+                # issue/CI reconciliation failed.
+                try:
+                    poll_health.report_watchdog(reconcile_sirt_watchdog(store, now=now))
+                except Exception as exc:
+                    poll_health.watchdog_unavailable()
+                    _logger.warning(
+                        "WOW_ENGINEERING_AUDITOR sirt_watchdog_reconcile=DEGRADED error_type=%s can_execute=false",
+                        type(exc).__name__,
+                    )
                 finally:
                     next_github_poll = time.monotonic() + _github_interval_seconds()
+                status, error_code = poll_health.runtime_state()
             store.refresh_runtime_counts(now=now)
             store.touch_runtime(
                 instance_id=instance_id,

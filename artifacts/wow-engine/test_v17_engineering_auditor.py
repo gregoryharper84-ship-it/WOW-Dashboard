@@ -341,6 +341,44 @@ def test_render_worker_wires_independent_watchdog_with_typed_degraded_status():
     source = WORKER.read_text()
     assert "reconcile_sirt_watchdog(store)" in source
     assert "reconcile_sirt_watchdog(store, now=now)" in source
-    assert 'error_code = "SIRT_WATCHDOG_HEARTBEAT_MISSING"' in source
-    assert 'status = "DEGRADED"' in source
+    assert "poll_health.runtime_state()" in source
+    assert "poll_health.watchdog_unavailable()" in source
     assert "WOW_ENGINEERING_RESIDENT_DISPATCH_ENABLED" not in GITHUB_RECONCILER.read_text()
+
+
+def test_watchdog_failure_sticks_across_fast_worker_ticks_until_new_observation():
+    from v17.engineering_auditor_worker import IndependentPollHealth
+    state = IndependentPollHealth()
+    assert state.runtime_state() == ("DEGRADED", "SIRT_WATCHDOG_UNVERIFIED")
+    state.report_github(None)
+    state.report_watchdog("WATCHDOG_HEARTBEAT_MISSING")
+    for _ in range(12):  # 12 ordinary 30-second ticks without another GitHub poll
+        assert state.runtime_state() == ("DEGRADED", "SIRT_WATCHDOG_HEARTBEAT_MISSING")
+    state.report_github("GITHUB_AUDIT_HTTP_403")
+    assert state.runtime_state()[0] == "DEGRADED"
+    state.report_github(None)
+    assert state.runtime_state() == ("DEGRADED", "SIRT_WATCHDOG_HEARTBEAT_MISSING")
+    state.report_watchdog("WATCHDOG_RUN_OBSERVED")
+    assert state.runtime_state() == ("RUNNING", "CLEAR")
+
+
+def test_watchdog_source_failure_is_independent_of_issue_reconciliation():
+    from v17.engineering_auditor_worker import IndependentPollHealth, _github_interval_seconds
+    state = IndependentPollHealth()
+    state.report_github("GITHUB_AUDIT_HTTP_403")
+    state.report_watchdog("WATCHDOG_RUN_OBSERVED")
+    assert state.runtime_state() == ("DEGRADED", "GITHUB_AUDIT_HTTP_403")
+    state.watchdog_unavailable()
+    assert state.runtime_state() == ("DEGRADED", "SIRT_WATCHDOG_SOURCE_UNAVAILABLE")
+    state.report_github(None)
+    assert state.runtime_state() == ("DEGRADED", "SIRT_WATCHDOG_SOURCE_UNAVAILABLE")
+    state.report_watchdog("WATCHDOG_RUN_OBSERVED")
+    assert state.runtime_state() == ("RUNNING", "CLEAR")
+    assert _github_interval_seconds() >= 300
+
+
+def test_watchdog_and_github_polls_have_distinct_failure_boundaries():
+    source = WORKER.read_text()
+    assert '# Poll the watchdog separately even when ordinary GitHub' in source
+    assert 'poll_health.report_watchdog(reconcile_sirt_watchdog(store, now=now))' in source
+    assert 'poll_health.report_github(IndependentPollHealth.github_failure(exc))' in source
