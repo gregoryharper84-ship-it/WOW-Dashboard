@@ -28,6 +28,7 @@ ACTIVE_WORKFLOWS = frozenset({
 MANIFEST = Path(__file__).with_name("engineering_dispatch_manifest.json")
 LOCK_KEY = "wow:v17:engineering:resident-dispatch-lock:v1"
 COOLDOWN_KEY = "wow:v17:engineering:resident-dispatch-cooldown:v1"
+ATTEMPT_KEY_PREFIX = "wow:v17:engineering:resident-dispatch-attempts:v1:"
 _STOP = threading.Event()
 _THREAD: threading.Thread | None = None
 
@@ -136,7 +137,14 @@ def dispatch_once(client: GitHubTransport, redis_client: Any, manifest: dict[str
         return "NO_APPROVED_OPEN_ENGINEERING_TASK"
     if pending_pr_for_issue(client, int(issue["issue_number"])):
         return "AWAITING_EXISTING_PR_REVIEW_OR_REPAIR"
+    # Prevent repeated failed agent invocations from burning quota all day.
+    # The existing worker owns the bounded test/repair attempts inside a run.
+    attempts_key = ATTEMPT_KEY_PREFIX + str(issue["issue_number"])
+    if int(redis_client.get(attempts_key) or 0) >= 3:
+        return "DISPATCH_ATTEMPT_CAP_REQUIRES_TRIAGE"
     client.dispatch(issue)
+    redis_client.incr(attempts_key)
+    redis_client.expire(attempts_key, 86400)
     redis_client.set(COOLDOWN_KEY, str(issue["issue_number"]), ex=900)
     return "DISPATCHED_TO_PROTECTED_ENGINEERING_WORKFLOW"
 
