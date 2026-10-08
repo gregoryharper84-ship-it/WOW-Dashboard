@@ -48,9 +48,12 @@ def test_actual_result_gate_fails_closed(api, oauth, expected, typed_error):
                API_OUTCOME="success", OAUTH_OUTCOME="success")
     result = subprocess.run(["bash", "-c", step["run"]], env=env,
                             capture_output=True, text=True, timeout=10, check=False)
-    assert (result.returncode == 0) is expected, result.stderr
+    output = result.stdout + result.stderr
+    assert (result.returncode == 0) is expected, output
     if typed_error:
-        assert typed_error in result.stderr
+        # GitHub Actions annotations (::error::) are written to stdout;
+        # jq diagnostics, when present, are written to stderr.
+        assert f"::error::{typed_error}" in output
 
 
 def test_output_does_not_emit_secrets_or_relax_permission_profile():
