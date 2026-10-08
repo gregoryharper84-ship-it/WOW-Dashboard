@@ -87,6 +87,15 @@ class GitHubTransport:
         )
 
 
+def _trusted_workflow_name(run_name: Any) -> str:
+    """Strip only the known GitHub display suffix, never a lookalike prefix."""
+    if not isinstance(run_name, str):
+        return ""
+    # GitHub Actions run-name: "<workflow> lease=<group> incident=<id>".
+    # Exact workflow identity is still required after removing this metadata.
+    return run_name.split(" lease=", 1)[0].split(" incident=", 1)[0]
+
+
 def active_engineering_workflow(client: GitHubTransport) -> bool:
     """Fail closed when GitHub could not enumerate the complete active run set."""
     for state in ("queued", "in_progress", "waiting", "requested"):
@@ -94,7 +103,7 @@ def active_engineering_workflow(client: GitHubTransport) -> bool:
         runs = result.get("workflow_runs")
         if not isinstance(runs, list) or int(result.get("total_count", -1)) > len(runs):
             raise RuntimeError("ACTIVE_WORKFLOW_INVENTORY_INCOMPLETE")
-        if any(run.get("name") in ACTIVE_WORKFLOWS for run in runs):
+        if any(_trusted_workflow_name(run.get("name")) in ACTIVE_WORKFLOWS for run in runs):
             return True
     return False
 
