@@ -17,7 +17,7 @@ PROBABILITY_PUBLISHABLE = False
 TERMINAL_AUTHORITY = "V17_TERMINAL_REDUCER"
 CHALLENGER_ID = "NFL_ML_STATIONARY_DECAY_PLATT_COMPOSITE_LB_V1"
 GRADER_VERSION = "NFL_ML_CHALLENGER_SETTLEMENT_GRADE_V1"
-_EVENT_RE = re.compile(r"^(\\d{4})_(\\d{2})_([A-Z]{2,3})_([A-Z]{2,3})$")
+_EVENT_RE = re.compile(r"^(\d{4})_(\d{2})_([A-Z]{2,3})_([A-Z]{2,3})$")
 
 
 class ChallengerGradeError(ValueError):
