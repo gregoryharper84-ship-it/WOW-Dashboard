@@ -208,6 +208,65 @@ def test_active_workflow_missing_or_conflicting_identity_fails_closed(run):
     assert client.sent == []
 
 
+@pytest.mark.parametrize("name,path", [
+    ("WOW V17 provider source=wow-v17-chatgpt-engineering-worker lease=GLOBAL incident=AUTO",
+     ".github/workflows/wow-v17-engineering-provider-dispatcher.yml@refs/heads/main"),
+    ("wow-v17-chatgpt-engineering-worker lease=GLOBAL incident=1021",
+     ".github/workflows/wow-v17-chatgpt-engineering-worker.yml@refs/heads/main"),
+    ("wow-v17-claude-engineering-worker lease=GLOBAL incident=1021",
+     ".github/workflows/wow-v17-claude-engineering-worker.yml@refs/pull/1545/merge"),
+])
+def test_trusted_active_run_path_ref_suffix_blocks_duplicate_dispatch(name, path):
+    class TrustedRef(FakeClient):
+        def get(self, suffix):
+            if suffix.startswith("actions/runs?"):
+                if "status=in_progress" in suffix:
+                    return {"total_count": 1, "workflow_runs": [{"name": name, "path": path}]}
+                return {"total_count": 0, "workflow_runs": []}
+            return super().get(suffix)
+    client = TrustedRef()
+    assert active_engineering_workflow(client)
+    assert dispatch_once(client, FakeRedis(), MANIFEST) == "EXISTING_ENGINEERING_WORKFLOW_ACTIVE"
+    assert client.sent == []
+
+
+@pytest.mark.parametrize("path", [
+    ".github/workflows/wow-v17-engineering-provider-dispatcher.yml@",
+    ".github/workflows/wow-v17-engineering-provider-dispatcher.yml@main",
+    ".github/workflows/wow-v17-engineering-provider-dispatcher.yml@refs/",
+    ".github/workflows/wow-v17-engineering-provider-dispatcher.yml@refs/heads/main@bad",
+    ".github/workflows/wow-v17-engineering-provider-dispatcher.yml@refs/heads/main bad",
+])
+def test_malformed_workflow_ref_suffix_fails_closed(path):
+    class InvalidRef(FakeClient):
+        def get(self, suffix):
+            if suffix.startswith("actions/runs?"):
+                return {"total_count": 1, "workflow_runs": [{
+                    "name": "WOW V17 provider source=automatic", "path": path,
+                }]}
+            return super().get(suffix)
+    client = InvalidRef()
+    with pytest.raises(RuntimeError, match="ACTIVE_WORKFLOW_REF_INVALID"):
+        dispatch_once(client, FakeRedis(), MANIFEST)
+    assert client.sent == []
+
+
+def test_lookalike_workflow_file_with_ref_is_not_trusted():
+    class Lookalike(FakeClient):
+        def get(self, suffix):
+            if suffix.startswith("actions/runs?"):
+                if "status=in_progress" in suffix:
+                    return {"total_count": 1, "workflow_runs": [{
+                        "name": "other",
+                        "path": ".github/workflows/wow-v17-engineering-provider-dispatcher.yml-lookalike@refs/heads/main",
+                    }]}
+                return {"total_count": 0, "workflow_runs": []}
+            return super().get(suffix)
+    client = Lookalike()
+    assert not active_engineering_workflow(client)
+    assert dispatch_once(client, FakeRedis(), MANIFEST) == "DISPATCHED_TO_PROTECTED_ENGINEERING_WORKFLOW"
+
+
 def test_github_inventory_incomplete_fails_closed():
     class Incomplete(FakeClient):
         def get(self, suffix):
