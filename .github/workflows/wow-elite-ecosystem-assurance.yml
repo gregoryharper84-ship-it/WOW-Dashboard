@@ -1,0 +1,28 @@
+name: WOW Elite Ecosystem Assurance
+on:
+  pull_request:
+    paths:
+      - 'artifacts/wow-engine/v17/independent_closure_contract.py'
+      - 'artifacts/wow-engine/v17/ecosystem_conductor.py'
+      - 'artifacts/wow-engine/v17/ecosystem-registry.json'
+      - 'artifacts/wow-engine/tests/test_independent_closure_contract.py'
+      - 'artifacts/wow-engine/tests/test_v17_ecosystem_conductor.py'
+      - '.github/workflows/wow-elite-ecosystem-assurance.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  independent-contract-regressions:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Run independent QA negative-path contract tests
+        run: python -m unittest discover -s artifacts/wow-engine/tests -p 'test_independent_closure_contract.py' -v
+      - name: Run adjacent conductor governance regression
+        run: python -m unittest discover -s artifacts/wow-engine/tests -p 'test_v17_ecosystem_conductor.py' -v
