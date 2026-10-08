@@ -146,6 +146,9 @@ def audit_governed_pickem_week(
         )
         if prediction_time >= kickoff:
             raise AccuracyAuditError("PICKEM_ACCURACY_PREDICTION_NOT_PREGAME")
+        material_at = pick.get("latest_material_update_at")
+        if material_at and _utc(material_at, "PICKEM_ACCURACY_MATERIAL_TIME_INVALID") > prediction_time:
+            raise AccuracyAuditError("PICKEM_ACCURACY_PREDICTION_STALE")
         home_p = _prob(pick.get("home_probability"))
         away_p = _prob(pick.get("away_probability"))
         selected_p = _prob(pick.get("selected_probability"))
@@ -175,6 +178,8 @@ def audit_governed_pickem_week(
             raise AccuracyAuditError("PICKEM_ACCURACY_WINNER_INVALID_OR_TIE_NEEDS_RULE")
         hit = selection == winner
         correct += int(hit)
+        expected_correct += selected_p
+        selected_probabilities.append(selected_p)
         y_home = float(winner == home)
         brier_sum += (home_p - y_home) ** 2
         logloss_sum += -(log(max(home_p, 1e-15)) if y_home else log(max(away_p, 1e-15)))
