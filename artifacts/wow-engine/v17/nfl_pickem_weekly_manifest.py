@@ -69,8 +69,11 @@ def freeze_nflverse_week_candidate(
         raise WeeklyEvidenceError("PICKEM_FROZEN_SOURCE_CAPTURED_AFTER_FREEZE")
     if not isinstance(compressed_raw_csv, bytes) or len(compressed_raw_csv) > 12_000_000:
         raise WeeklyEvidenceError("PICKEM_FROZEN_SOURCE_BYTES_INVALID")
+    # Bound gzip expansion *during* decompression. A post-hoc size check
+    # permits a hostile small compressed object to exhaust the 512-MiB worker.
     try:
-        raw = gzip.decompress(compressed_raw_csv)
+        with gzip.GzipFile(fileobj=io.BytesIO(compressed_raw_csv)) as stream:
+            raw = stream.read(50_000_001)
     except (OSError, EOFError) as exc:
         raise WeeklyEvidenceError("PICKEM_FROZEN_SOURCE_DECOMPRESSION_FAILED") from exc
     if len(raw) > 50_000_000:
