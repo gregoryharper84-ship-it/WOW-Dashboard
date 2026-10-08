@@ -90,15 +90,31 @@ jobs:
             severity=$(jq -r '.severity' <<<"$record")
             lane=$(jq -r '.execution_lane' <<<"$record")
             lease_group=$(jq -r '.lease_group' <<<"$record")
-            [ "$severity" = "P0" ] && [ "$lane" = "RAPID" ] || { echo "TARGET_INCIDENT_NOT_RAPID_P0:$TARGET_INCIDENT" >&2; exit 1; }
+            if [ "$severity" = "P0" ] && [ "$lane" = "RAPID" ]; then
+              [ -n "$lease_group" ] && [ "$lease_group" != "GLOBAL" ] || {
+                echo "P0_DOMAIN_LEASE_MISSING:$TARGET_INCIDENT" >&2; exit 1;
+              }
+              target_reason="Domain-scoped exact P0 target."
+              target_hold="DOMAIN_SCOPED_P0_LEASE"
+            elif [ "$severity" = "P1" ] && [ "$lane" = "STANDARD" ]; then
+              [ -z "$lease_group" ] || [ "$lease_group" = "GLOBAL" ] || {
+                echo "STANDARD_TARGET_MUST_USE_GLOBAL_LEASE:$TARGET_INCIDENT" >&2; exit 1;
+              }
+              lease_group=GLOBAL
+              target_reason="Exact approved P1 target; GLOBAL writer lease."
+              target_hold="EXACT_P1_GLOBAL_LEASE"
+            else
+              echo "TARGET_INCIDENT_NOT_SUPPORTED:$TARGET_INCIDENT:$severity:$lane" >&2
+              exit 1
+            fi
             [ "$lease_group" = "${REQUESTED_LEASE_GROUP:-GLOBAL}" ] || {
               echo "TARGET_INCIDENT_LEASE_MISMATCH:$TARGET_INCIDENT:$lease_group:${REQUESTED_LEASE_GROUP:-GLOBAL}" >&2
               exit 1
             }
-            decision=$(jq -n --arg id "$TARGET_INCIDENT" --arg severity "$severity" '{
-              restoration:{incident_id:$id,severity:$severity,state:"OPEN",reason:"Domain-scoped exact P0 target.",frontier_allowed:false},
-              acceleration:{incident_id:null,severity:"NONE",state:"NONE",reason:"Disabled for domain-scoped P0 writer.",frontier_allowed:false},
-              acceleration_blocked_reason:"DOMAIN_SCOPED_P0_LEASE",
+            decision=$(jq -n --arg id "$TARGET_INCIDENT" --arg severity "$severity" --arg reason "$target_reason" --arg target_hold "$target_hold" '{
+              restoration:{incident_id:$id,severity:$severity,state:"OPEN",reason:$reason,frontier_allowed:false},
+              acceleration:{incident_id:null,severity:"NONE",state:"NONE",reason:"Disabled for exact-target single writer.",frontier_allowed:false},
+              acceleration_blocked_reason:$target_hold,
               can_execute:false,
               terminal_authority:"V17_TERMINAL_REDUCER"
             }')
