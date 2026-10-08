@@ -23,6 +23,12 @@ REPLAY_EVIDENCE_INSUFFICIENT = "REPLAY_EVIDENCE_INSUFFICIENT"
 REPLAY_RESEARCH_COMPLETE = "REPLAY_RESEARCH_COMPLETE"
 POLICY_VERSION = "POOL_WIN_EQUITY_SHADOW_V1"
 CAN_EXECUTE = False
+# These approved-to-carry-probability states are inherited from the Pick'em
+# source contract. A held row stays held; this research replay never upgrades it.
+_PROBABILITY_BEARING_SOURCE_TERMINALS = frozenset({
+    "MODEL_QUALIFIED_HOLD", "MARKET_VERIFIED_HOLD",
+    "MONEY_QUALIFIED", "FINAL_APPROVED",
+})
 
 
 class ReplayInputError(ValueError):
@@ -118,6 +124,7 @@ def replay_one_week(week: Mapping[str, Any]) -> dict[str, Any]:
     predictions: set[str] = set()
     allowed_sides: dict[str, set[str]] = {}
     baseline: dict[str, str] = {}
+    source_terminals: dict[str, str] = {}
     expected_baseline_correct = 0.0
     for pick in raw_picks:
         if not isinstance(pick, Mapping):
@@ -134,8 +141,8 @@ def replay_one_week(week: Mapping[str, Any]) -> dict[str, Any]:
             raise ReplayInputError("PICKEM_REPLAY_PARTICIPANT_IDENTITY_INVALID")
         if pick.get("status") != "PICKEM_READY" or pick.get("can_execute") is not False:
             raise ReplayInputError("PICKEM_REPLAY_UNAPPROVED_SOURCE_ROW")
-        if pick.get("source_terminal_label") != "FINAL_APPROVED":
-            raise ReplayInputError("PICKEM_REPLAY_SOURCE_TERMINAL_NOT_APPROVED")
+        if pick.get("source_terminal_label") not in _PROBABILITY_BEARING_SOURCE_TERMINALS:
+            raise ReplayInputError("PICKEM_REPLAY_SOURCE_TERMINAL_NOT_PROBABILITY_BEARING")
         if pick.get("controlling_specialist") != CONTROLLING_SPECIALIST:
             raise ReplayInputError("PICKEM_REPLAY_SPECIALIST_OWNERSHIP_MISMATCH")
         prediction = _required_text(
@@ -158,6 +165,7 @@ def replay_one_week(week: Mapping[str, Any]) -> dict[str, Any]:
         if not isclose(selected_p, source_p, abs_tol=1e-9) or selected_p + 1e-9 < max(home_p, away_p):
             raise ReplayInputError("PICKEM_REPLAY_BASELINE_NOT_GOVERNED_MAX")
         baseline[event] = selected
+        source_terminals[event] = str(pick["source_terminal_label"])
         allowed_sides[event] = {home, away}
         expected_baseline_correct += selected_p
         rows.append(pick)
@@ -246,6 +254,7 @@ def replay_one_week(week: Mapping[str, Any]) -> dict[str, Any]:
         "pool_size": size,
         "settlement_source": settlement_source,
         "ownership_snapshot_ids": ownership_receipts,
+        "source_terminal_labels_preserved": source_terminals,
         "baseline": baseline_score,
         "shadow": shadow_score,
         "expected_correct_baseline": expected_baseline_correct,
