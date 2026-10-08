@@ -151,3 +151,12 @@ def test_manifest_can_flow_into_unpublished_weekly_reconciliation():
     assert result["blocker_count"] == 6
     assert result["report"] is None
     assert result["publication_allowed"] is False
+
+
+def test_missing_score_columns_are_not_evidence_of_unplayed_game():
+    def omit_column(rows):
+        for row in rows:
+            row.pop("home_score")
+
+    with pytest.raises(WeeklyEvidenceError, match="PICKEM_FROZEN_SCHEDULE_COLUMNS_MISSING"):
+        freeze_nflverse_week_candidate(**_fixture(modified=omit_column))
