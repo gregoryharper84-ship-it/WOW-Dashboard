@@ -31,7 +31,8 @@ def good():
                       "terminal_authority":"V17_TERMINAL_REDUCER",
                       "can_execute":False,
                       "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS":True},
-        "unresolved_p0_p1_regressions":0, "independent_qa_decision":"PASS"
+        "unresolved_p0_p1_regressions":0, "independent_qa_decision":"PASS",
+        "release_identity_authenticated":True
     }
 
 class ClosureContractTests(unittest.TestCase):
@@ -48,7 +49,17 @@ class ClosureContractTests(unittest.TestCase):
         self.assertTrue(any("separate principals" in e for e in mod.validate_closure(r)))
     def test_sha_drift_rejected(self):
         r=good();r["deployed_sha"]="b"*40
-        self.assertTrue(any("SHAs must match" in e for e in mod.validate_closure(r)))
+        self.assertTrue(any("release SHAs must match" in e for e in mod.validate_closure(r)))
+    def test_squash_merge_identity_allowed_when_authenticated(self):
+        r=good()
+        r["merged_sha"]=r["deployed_sha"]=r["qa_verified_sha"]="b"*40
+        self.assertEqual([], mod.validate_closure(r))
+    def test_release_mapping_must_be_authenticated(self):
+        r=good();r["release_identity_authenticated"]=False
+        self.assertTrue(any("release_identity_authenticated" in e for e in mod.validate_closure(r)))
+    def test_reviewed_head_must_match_tested_head(self):
+        r=good();r["tested_sha"]="b"*40
+        self.assertTrue(any("reviewed and tested" in e for e in mod.validate_closure(r)))
     def test_missing_deployed_sha_rejected(self):
         r=good();r["deployed_sha"]=None
         self.assertTrue(any("deployed_sha" in e for e in mod.validate_closure(r)))
