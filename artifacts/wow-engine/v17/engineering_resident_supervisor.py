@@ -11,6 +11,7 @@ import logging
 import os
 import socket
 import threading
+from datetime import datetime, timezone
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -29,6 +30,7 @@ MANIFEST = Path(__file__).with_name("engineering_dispatch_manifest.json")
 LOCK_KEY = "wow:v17:engineering:resident-dispatch-lock:v1"
 COOLDOWN_KEY = "wow:v17:engineering:resident-dispatch-cooldown:v1"
 ATTEMPT_KEY_PREFIX = "wow:v17:engineering:resident-dispatch-attempts:v1:"
+DISPATCHER_HEARTBEAT_ID = "WOW_ENGINEERING_RESIDENT_DISPATCHER"
 _STOP = threading.Event()
 _THREAD: threading.Thread | None = None
 
@@ -184,16 +186,23 @@ def supervisor_runtime_status() -> dict[str, Any]:
     enabled = _enabled()
     token_present = bool(os.getenv("WOW_ENGINEERING_GITHUB_TOKEN", "").strip())
     redis_present = bool(os.getenv("REDIS_URL", "").strip())
+    supabase_present = bool(os.getenv("SUPABASE_URL", "").strip()) and bool(
+        os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
+        or os.getenv("SUPABASE_SERVICE_KEY", "").strip()
+    )
     safe = (
         os.getenv("WOW_CAN_EXECUTE", "false").strip().lower() == "false"
         and os.getenv("WOW_DRY_RUN_ONLY", "true").strip().lower() == "true"
     )
-    status = "DISABLED" if not enabled else ("CONFIGURED_UNVERIFIED" if token_present and redis_present and safe else "BLOCKED")
+    status = "DISABLED" if not enabled else (
+        "CONFIGURED_UNVERIFIED" if token_present and redis_present and supabase_present and safe else "BLOCKED"
+    )
     return {
         "status": status,
         "enabled": enabled,
         "token_configured": token_present,
         "redis_configured": redis_present,
+        "durable_heartbeat_configured": supabase_present,
         "governance_pass": safe,
         "can_execute": False,
         "terminal_authority": "V17_TERMINAL_REDUCER",
@@ -202,28 +211,101 @@ def supervisor_runtime_status() -> dict[str, Any]:
     }
 
 
+
+def persist_resident_heartbeat(
+    db_client: Any, *, status: str, outcome: str, instance_id: str,
+) -> None:
+    """Persist independent, source-attributed liveness; never a repair PASS.
+
+    This creates a distinct row in the existing protected runtime table and
+    cannot overwrite the engineering auditor's own heartbeat. Failure to
+    persist the PRE-DISPATCH receipt blocks that dispatch cycle.
+    """
+    if status not in {"STARTING", "RUNNING", "DEGRADED", "STOPPED"}:
+        raise ValueError("RESIDENT_HEARTBEAT_STATUS_INVALID")
+    now = datetime.now(timezone.utc).isoformat()
+    safe_outcome = str(outcome).upper()
+    if len(safe_outcome) > 120 or not all(
+        ch.isalnum() or ch == "_" for ch in safe_outcome
+    ):
+        raise ValueError("RESIDENT_HEARTBEAT_OUTCOME_INVALID")
+    db_client.table("wow_engineering_auditor_runtime").upsert({
+        "auditor_id": DISPATCHER_HEARTBEAT_ID,
+        "instance_id": instance_id,
+        "status": status,
+        "last_heartbeat_at": now,
+        "last_error_code": safe_outcome,
+        "can_execute": False,
+        "terminal_authority": "V17_TERMINAL_REDUCER",
+        "updated_at": now,
+    }, on_conflict="auditor_id").execute()
+
+
 def run_resident_supervisor(stop: threading.Event = _STOP) -> None:
     status = supervisor_runtime_status()
     if status["status"] != "CONFIGURED_UNVERIFIED":
         LOG.warning("WOW_RESIDENT_SUPERVISOR status=%s can_execute=false", status["status"])
         return
     from redis import Redis
+    from v17.engineering_auditor_worker import _db_client
 
-    client = GitHubTransport(os.getenv("WOW_ENGINEERING_GITHUB_TOKEN", ""))
+    instance_id = f"{socket.gethostname()}:{os.getpid()}"
+    try:
+        db_client = _db_client()
+        persist_resident_heartbeat(
+            db_client, status="STARTING", outcome="INITIALIZING", instance_id=instance_id,
+        )
+    except Exception as exc:
+        LOG.warning(
+            "WOW_RESIDENT_SUPERVISOR status=BLOCKED reason=HEARTBEAT_STORAGE_UNAVAILABLE "
+            "error_type=%s can_execute=false", type(exc).__name__,
+        )
+        return
+
     interval = 300
     while not stop.is_set():
         try:
+            # Pre-admission persistence: failed durable evidence cannot dispatch.
+            persist_resident_heartbeat(
+                db_client, status="RUNNING", outcome="CYCLE_STARTED", instance_id=instance_id,
+            )
             manifest = json.loads(MANIFEST.read_text())
             with Redis.from_url(os.environ["REDIS_URL"]) as redis_client:
-                outcome = dispatch_once(client, redis_client, manifest)
+                outcome = dispatch_once(client=GitHubTransport(
+                    os.environ["WOW_ENGINEERING_GITHUB_TOKEN"],
+                ), redis_client=redis_client, manifest=manifest)
+            is_hold = outcome in {
+                "DISPATCH_ATTEMPT_CAP_REQUIRES_TRIAGE",
+                "AWAITING_EXISTING_PR_REVIEW_OR_REPAIR",
+            }
+            persist_resident_heartbeat(
+                db_client, status="DEGRADED" if is_hold else "RUNNING",
+                outcome=outcome, instance_id=instance_id,
+            )
             LOG.warning("WOW_RESIDENT_SUPERVISOR outcome=%s can_execute=false", outcome)
         except Exception as exc:
             LOG.warning(
                 "WOW_RESIDENT_SUPERVISOR outcome=BLOCKED error_type=%s can_execute=false",
                 type(exc).__name__,
             )
+            try:
+                persist_resident_heartbeat(
+                    db_client, status="DEGRADED",
+                    outcome="CYCLE_" + type(exc).__name__.upper(),
+                    instance_id=instance_id,
+                )
+            except Exception:
+                LOG.warning(
+                    "WOW_RESIDENT_SUPERVISOR outcome=HEARTBEAT_WRITE_FAILED can_execute=false",
+                )
         if stop.wait(interval):
             break
+    try:
+        persist_resident_heartbeat(
+            db_client, status="STOPPED", outcome="WORKER_SHUTDOWN", instance_id=instance_id,
+        )
+    except Exception:
+        LOG.warning("WOW_RESIDENT_SUPERVISOR outcome=STOP_HEARTBEAT_FAILED can_execute=false")
 
 
 def install_celery_worker_hooks() -> None:
