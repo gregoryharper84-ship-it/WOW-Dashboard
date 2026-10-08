@@ -11,7 +11,6 @@ import logging
 import os
 import socket
 import threading
-import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -41,7 +40,7 @@ class GitHubTransport:
             raise ValueError("GITHUB_DISPATCH_TOKEN_MISSING")
         self.token, self.repo = token, repo
 
-    def call(self, path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    def call(self, path: str, payload: dict[str, Any] | None = None) -> Any:
         if not path.startswith("/") or "//" in path or not path.startswith(f"/repos/{self.repo}/"):
             raise ValueError("UNAPPROVED_GITHUB_API_PATH")
         data = json.dumps(payload).encode() if payload is not None else None
@@ -62,7 +61,7 @@ class GitHubTransport:
             raw = response.read()
         return json.loads(raw) if raw else {}
 
-    def get(self, suffix: str) -> dict[str, Any]:
+    def get(self, suffix: str) -> Any:
         return self.call(f"/repos/{self.repo}/{suffix}")
 
     def dispatch(self, issue: dict[str, Any]) -> None:
@@ -150,15 +149,17 @@ def supervisor_runtime_status() -> dict[str, Any]:
     """Expose activation truth without exposing a token or credential."""
     enabled = _enabled()
     token_present = bool(os.getenv("WOW_ENGINEERING_GITHUB_TOKEN", "").strip())
+    redis_present = bool(os.getenv("REDIS_URL", "").strip())
     safe = (
         os.getenv("WOW_CAN_EXECUTE", "false").strip().lower() == "false"
         and os.getenv("WOW_DRY_RUN_ONLY", "true").strip().lower() == "true"
     )
-    status = "DISABLED" if not enabled else ("READY" if token_present and safe else "BLOCKED")
+    status = "DISABLED" if not enabled else ("READY" if token_present and redis_present and safe else "BLOCKED")
     return {
         "status": status,
         "enabled": enabled,
         "token_configured": token_present,
+        "redis_configured": redis_present,
         "governance_pass": safe,
         "can_execute": False,
         "terminal_authority": "V17_TERMINAL_REDUCER",
@@ -178,9 +179,9 @@ def run_resident_supervisor(stop: threading.Event = _STOP) -> None:
     interval = 300
     while not stop.is_set():
         try:
-            redis_client = Redis.from_url(os.environ["REDIS_URL"])
             manifest = json.loads(MANIFEST.read_text())
-            outcome = dispatch_once(client, redis_client, manifest)
+            with Redis.from_url(os.environ["REDIS_URL"]) as redis_client:
+                outcome = dispatch_once(client, redis_client, manifest)
             LOG.warning("WOW_RESIDENT_SUPERVISOR outcome=%s can_execute=false", outcome)
         except Exception as exc:
             LOG.warning(
