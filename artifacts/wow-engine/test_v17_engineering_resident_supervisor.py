@@ -105,7 +105,7 @@ def test_enabled_missing_token_or_bad_governance_blocks(monkeypatch):
     assert supervisor_runtime_status()["status"] == "BLOCKED"
     monkeypatch.setenv("WOW_DRY_RUN_ONLY", "true")
     monkeypatch.setenv("REDIS_URL", "redis://example.invalid:6379/0")
-    assert supervisor_runtime_status()["status"] == "READY"
+    assert supervisor_runtime_status()["status"] == "CONFIGURED_UNVERIFIED"
     monkeypatch.delenv("REDIS_URL")
     assert supervisor_runtime_status()["status"] == "BLOCKED"
 
