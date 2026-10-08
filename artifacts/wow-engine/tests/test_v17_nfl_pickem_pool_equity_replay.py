@@ -119,7 +119,7 @@ def test_discovery_only_is_evidence_insufficient_and_holdout_is_separate():
     ("untrusted_audience", "ALL_ENTRIES", "PICKEM_REPLAY_OWNERSHIP_AUDIENCE_INVALID"),
     ("ungoverned_selected", .47, "PICKEM_REPLAY_BASELINE_NOT_GOVERNED_MAX"),
     ("post_lock_fold", "2026-10-03T00:00:00Z", "PICKEM_REPLAY_POST_LOCK_FOLD_ASSIGNMENT"),
-    ("missing_terminal", "MODEL_QUALIFIED_HOLD", "PICKEM_REPLAY_SOURCE_TERMINAL_NOT_APPROVED"),
+    ("missing_terminal", "FINAL_REJECTED", "PICKEM_REPLAY_SOURCE_TERMINAL_NOT_PROBABILITY_BEARING"),
 ])
 def test_leakage_identity_and_normalization_fail_closed(field, replacement, expected_code):
     week = _week()
@@ -187,3 +187,12 @@ def test_duplicate_week_ids_are_rejected():
 def test_missing_inputs_have_no_promoted_or_fabricated_results():
     assert replay_pool_weeks([])["status"] == REPLAY_BLOCKED
     assert replay_pool_weeks([])["can_execute"] is False
+
+def test_legitimate_probability_bearing_hold_is_preserved_without_upgrade():
+    week = _week()
+    week["governed_picks"][0]["source_terminal_label"] = "MODEL_QUALIFIED_HOLD"
+    out = replay_one_week(week)
+    event = next(iter(week["settled_winners"]))
+    assert out["source_terminal_labels_preserved"][event] == "MODEL_QUALIFIED_HOLD"
+    assert out["shadow"]["correct"] == 1
+    assert out["automatic_promotion"] is False
