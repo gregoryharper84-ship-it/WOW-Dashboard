@@ -67,3 +67,80 @@ def test_bootstrap_does_not_authorize_execution_or_merge():
         assert "terminal_authority=V17_TERMINAL_REDUCER" not in text or "V17_TERMINAL_REDUCER" in text
     gate = (WORKFLOW_DIR / "wow-v17-trusted-governance-gate.yml").read_text()
     assert "GOVERNANCE_WORKFLOW_IDENTITY_MISMATCH" in gate
+
+
+@pytest.mark.parametrize("workflow", [PRIMARY, FALLBACK])
+@pytest.mark.parametrize(
+    "incident,requested_lease,records,expected_reason,expected_target",
+    [
+        ("1388", "P0_LLP_RESTORE",
+         [{"incident_id": "1388", "severity": "P0", "execution_lane": "RAPID",
+           "lease_group": "P0_LLP_RESTORE"}], None, "1388"),
+        ("823", "GLOBAL",
+         [{"incident_id": "1388", "severity": "P0", "execution_lane": "RAPID",
+           "lease_group": "P0_LLP_RESTORE"},
+          {"incident_id": "823", "severity": "P1", "execution_lane": "STANDARD",
+           "lease_group": "GLOBAL"}], None, "823"),
+        ("1388", "GLOBAL",
+         [{"incident_id": "1388", "severity": "P0", "execution_lane": "RAPID",
+           "lease_group": "P0_LLP_RESTORE"}], "TARGET_INCIDENT_LEASE_MISMATCH", None),
+        ("823", "P1_UNTRUSTED",
+         [{"incident_id": "823", "severity": "P1", "execution_lane": "STANDARD",
+           "lease_group": "GLOBAL"}], "TARGET_INCIDENT_LEASE_MISMATCH", None),
+        ("823", "GLOBAL",
+         [{"incident_id": "823", "severity": "P1", "execution_lane": "STANDARD",
+           "lease_group": "P1_UNTRUSTED"}], "STANDARD_TARGET_MUST_USE_GLOBAL_LEASE", None),
+        ("823", "GLOBAL",
+         [{"incident_id": "823", "severity": "P2", "execution_lane": "STANDARD",
+           "lease_group": "GLOBAL"}], "TARGET_INCIDENT_NOT_SUPPORTED", None),
+        ("823", "GLOBAL", [], "TARGET_INCIDENT_NOT_ACTIONABLE", None),
+    ],
+)
+def test_worker_route_shell_execution_is_fail_closed(
+    workflow, incident, requested_lease, records, expected_reason, expected_target,
+    tmp_path,
+):
+    """Execute exact protected-worker Bash/JQ target-selection, not rewritten rules."""
+    import json
+    import os
+    import re
+    import shutil
+    import subprocess
+
+    if shutil.which("bash") is None or shutil.which("jq") is None:
+        pytest.skip("Bash and JQ are required by protected GitHub runner")
+    doc = yaml.safe_load((WORKFLOW_DIR / workflow).read_text())
+    job = doc["jobs"]["multi-agent-engineering"]
+    step = next(s for s in job["steps"] if s.get("name") == "Build live dual-stream dispatch plan")
+    source = step["run"]
+    begin = source.index('if [ -n "$${TARGET_INCIDENT:-}" ]; then')
+    rest = source[begin:]
+    branch = re.search(r"\n\s*else\n\s+jq '\.records \|=", rest)
+    assert branch is not None, "Exact target branch must remain structurally identifiable"
+    actual_shell = rest[:branch.start()] + '\nfi\nprintf "%s\\n" "$decision"\n'
+    queue = tmp_path / "wow-dispatch-queue.json"
+    queue.write_text(json.dumps({"records": records}))
+    output = tmp_path / "github-output"
+    output.write_text("")
+    environment = {
+        **os.environ,
+        "TARGET_INCIDENT": incident,
+        "REQUESTED_LEASE_GROUP": requested_lease,
+        "RUNNER_TEMP": str(tmp_path),
+        "GITHUB_OUTPUT": str(output),
+    }
+    result = subprocess.run(
+        ["bash", "-euo", "pipefail", "-c", actual_shell],
+        text=True, capture_output=True, env=environment, check=False,
+        timeout=10,
+    )
+    if expected_reason:
+        assert result.returncode != 0
+        assert expected_reason in result.stderr
+    else:
+        assert result.returncode == 0, result.stderr
+        decision = json.loads(result.stdout)
+        assert decision["restoration"]["incident_id"] == expected_target
+        assert decision["acceleration"]["incident_id"] is None
+        assert decision["can_execute"] is False
+        assert decision["terminal_authority"] == "V17_TERMINAL_REDUCER"
