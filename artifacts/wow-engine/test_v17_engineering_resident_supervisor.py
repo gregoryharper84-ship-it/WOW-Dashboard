@@ -267,6 +267,38 @@ def test_full_pr_inventory_fails_closed_instead_of_missing_incident():
     assert not client.sent
 
 
+@pytest.mark.parametrize("inventory", [
+    {"workflow_runs": []},
+    {"workflow_runs": [], "total_count": -1},
+    {"workflow_runs": [], "total_count": "0"},
+    {"workflow_runs": [], "total_count": True},
+    {"workflow_runs": [], "total_count": 1},
+    {"workflow_runs": [{"name": "other", "path": "other"}], "total_count": 0},
+])
+def test_missing_or_inconsistent_active_inventory_fails_closed(inventory):
+    class BadInventory(FakeClient):
+        def get(self, suffix):
+            if suffix.startswith("actions/runs?"):
+                return inventory
+            return super().get(suffix)
+    client = BadInventory()
+    with pytest.raises(RuntimeError, match="ACTIVE_WORKFLOW_INVENTORY_INCOMPLETE"):
+        dispatch_once(client, FakeRedis(), MANIFEST)
+    assert not client.sent
+
+
+def test_malformed_active_inventory_fails_closed():
+    class WrongType(FakeClient):
+        def get(self, suffix):
+            if suffix.startswith("actions/runs?"):
+                return []
+            return super().get(suffix)
+    client = WrongType()
+    with pytest.raises(RuntimeError, match="ACTIVE_WORKFLOW_INVENTORY_INVALID"):
+        dispatch_once(client, FakeRedis(), MANIFEST)
+    assert not client.sent
+
+
 def test_open_pr_identity_is_not_silent_and_blocks_duplicate():
     assert pending_pr_for_issue(FakeClient(open_pr=True), 1388)
     assert not pending_pr_for_issue(FakeClient(open_pr=False), 1388)
