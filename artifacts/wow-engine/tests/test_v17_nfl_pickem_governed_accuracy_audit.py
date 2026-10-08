@@ -109,3 +109,36 @@ def test_short_bye_week_is_allowed_only_with_exact_schedule_count():
     assert result["event_count"] == 13
     assert result["correct"] == 12
     assert result["operator_target_met"] is True
+
+
+def test_expected_correct_and_independent_week_distribution():
+    data = _week(15)
+    result = audit_governed_pickem_week(**data)
+    assert result["objective"] == "MAX_EXPECTED_CORRECT"
+    assert result["expected_correct"] == pytest.approx(16 * .65)
+    assert result["expected_accuracy"] == pytest.approx(.65)
+    assert len(result["correct_count_distribution"]) == 17
+    assert sum(result["correct_count_distribution"]) == pytest.approx(1.0)
+    assert result["probability_at_least_15_correct"] == pytest.approx(
+        result["correct_count_distribution"][15] + result["correct_count_distribution"][16]
+    )
+    assert result["correct_count_distribution_assumption"] == "INDEPENDENT_GAMES_DESCRIPTIVE_ONLY"
+    assert result["production_probability_changed"] is False
+    assert result["production_pick_changed"] is False
+
+
+def test_poisson_binomial_toss_up_matches_exact_distribution():
+    data = _week(1, 2)
+    for row in data["picks"]:
+        row["home_probability"] = .5
+        row["away_probability"] = .5
+        row["selected_probability"] = .5
+    result = audit_governed_pickem_week(**data)
+    assert result["correct_count_distribution"] == pytest.approx([.25, .5, .25])
+
+
+def test_material_update_after_model_time_cannot_be_counted():
+    data = _week()
+    data["picks"][0]["latest_material_update_at"] = "2026-10-11T08:00:00Z"
+    with pytest.raises(AccuracyAuditError, match="PICKEM_ACCURACY_PREDICTION_STALE"):
+        audit_governed_pickem_week(**data)
