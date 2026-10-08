@@ -231,6 +231,33 @@ def reconcile_weekly_evidence(
             season, week, expected_count, len(manifest), len(picks), len(settlements), blockers
         )
 
+    # The core audit in the latest protected main predates the Class A
+    # material-input freshness guard in PR #1522. Class B weekly transport must
+    # independently fail closed until #1522 is independently approved/merged;
+    # it must never depend on an unmerged security contract to block stale rows.
+    for event_id in sorted(picks):
+        row = picks[event_id]
+        material_at = row.get("latest_material_update_at")
+        if material_at is None:  # Optional absence/null, never falsey coercion.
+            continue
+        try:
+            material_timestamp = _time(
+                material_at, "PICKEM_ACCURACY_MATERIAL_TIME_INVALID"
+            )
+            model_timestamp = _time(
+                row.get("immutable_model_timestamp"),
+                "PICKEM_ACCURACY_PREDICTION_TIME_INVALID",
+            )
+        except WeeklyEvidenceError as exc:
+            blockers.append(_blocker(exc.code, event_id=event_id))
+            continue
+        if material_timestamp > model_timestamp:
+            blockers.append(_blocker("PICKEM_ACCURACY_PREDICTION_STALE", event_id=event_id))
+    if blockers:
+        return _base(
+            season, week, expected_count, len(manifest), len(picks), len(settlements), blockers
+        )
+
     try:
         audited = audit_governed_pickem_week(
             season=season,
