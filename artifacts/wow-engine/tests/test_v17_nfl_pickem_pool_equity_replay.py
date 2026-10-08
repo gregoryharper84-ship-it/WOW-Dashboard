@@ -20,6 +20,8 @@ def _week(week_id: str = "2026-W4", fold: str = "DISCOVERY") -> dict:
         "week_id": week_id,
         "fold": fold,
         "manifest_id": f"manifest-{week_id}",
+        "fold_assignment_receipt_id": f"assigned-{week_id}",
+        "fold_assigned_at": "2026-09-29T00:00:00Z",
         "lock_at": "2026-10-01T00:00:00Z",
         "settled_at": "2026-10-07T00:00:00Z",
         "settlement_source": "fixture-certified-final-score",
@@ -27,6 +29,7 @@ def _week(week_id: str = "2026-W4", fold: str = "DISCOVERY") -> dict:
         "governed_picks": [
             {
                 "status": "PICKEM_READY",
+                "source_terminal_label": "FINAL_APPROVED",
                 "official_event_id": event,
                 "home_team": "H",
                 "away_team": "A",
@@ -115,6 +118,8 @@ def test_discovery_only_is_evidence_insufficient_and_holdout_is_separate():
     ("late_settlement", "2026-09-29T00:00:00Z", "PICKEM_REPLAY_SETTLEMENT_PRECEDES_LOCK"),
     ("untrusted_audience", "ALL_ENTRIES", "PICKEM_REPLAY_OWNERSHIP_AUDIENCE_INVALID"),
     ("ungoverned_selected", .47, "PICKEM_REPLAY_BASELINE_NOT_GOVERNED_MAX"),
+    ("post_lock_fold", "2026-10-03T00:00:00Z", "PICKEM_REPLAY_POST_LOCK_FOLD_ASSIGNMENT"),
+    ("missing_terminal", "MODEL_QUALIFIED_HOLD", "PICKEM_REPLAY_SOURCE_TERMINAL_NOT_APPROVED"),
 ])
 def test_leakage_identity_and_normalization_fail_closed(field, replacement, expected_code):
     week = _week()
@@ -137,6 +142,10 @@ def test_leakage_identity_and_normalization_fail_closed(field, replacement, expe
         week["ownership_snapshots"][event]["audience"] = replacement
     elif field == "ungoverned_selected":
         week["governed_picks"][0]["selected_probability"] = replacement
+    elif field == "post_lock_fold":
+        week["fold_assigned_at"] = replacement
+    elif field == "missing_terminal":
+        week["governed_picks"][0]["source_terminal_label"] = replacement
     with pytest.raises(ReplayInputError, match=expected_code):
         replay_one_week(week)
 
