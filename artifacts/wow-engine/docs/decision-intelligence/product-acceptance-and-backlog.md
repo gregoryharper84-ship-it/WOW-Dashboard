@@ -25,7 +25,7 @@ If any layer is unavailable, show the valid outputs from independent layers and 
 - A request for N legs/slips may result in fewer or none; never force fillers.
 - PrizePicks offers must preserve direction, Power/Flex/promo terms, payout ladders and dependence. No pseudo per-leg odds.
 - Do not state a bankroll size, Kelly stake, allocation amount or expected daily profit from these research-only services.
-- can_execute=false; reducer publication authority unchanged.
+- can_execute=false; V17_TERMINAL_REDUCER remains sole global terminal/publication authority.
 
 ## Given / when / then acceptance scenarios
 
