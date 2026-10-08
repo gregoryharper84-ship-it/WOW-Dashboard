@@ -96,7 +96,12 @@ def active_engineering_workflow(client: GitHubTransport) -> bool:
     return False
 
 
-def next_approved_issue(client: GitHubTransport, manifest: dict[str, Any]) -> dict[str, Any] | None:
+def next_approved_issue(
+    client: GitHubTransport,
+    manifest: dict[str, Any],
+    *,
+    exclude_issue_numbers: frozenset[int] = frozenset(),
+) -> dict[str, Any] | None:
     _validate_manifest(manifest)
     entries = sorted(
         manifest["restoration"] + manifest["acceleration"],
@@ -106,7 +111,10 @@ def next_approved_issue(client: GitHubTransport, manifest: dict[str, Any]) -> di
         ),
     )
     for item in entries:
-        result = client.get(f"issues/{int(item['issue_number'])}")
+        issue_number = int(item["issue_number"])
+        if issue_number in exclude_issue_numbers:
+            continue
+        result = client.get(f"issues/{issue_number}")
         if result.get("state") == "open" and "pull_request" not in result:
             return item
     return None
@@ -132,21 +140,38 @@ def dispatch_once(client: GitHubTransport, redis_client: Any, manifest: dict[str
         return "RECENT_DISPATCH_COOLDOWN"
     if active_engineering_workflow(client):
         return "EXISTING_ENGINEERING_WORKFLOW_ACTIVE"
-    issue = next_approved_issue(client, manifest)
-    if issue is None:
-        return "NO_APPROVED_OPEN_ENGINEERING_TASK"
-    if pending_pr_for_issue(client, int(issue["issue_number"])):
-        return "AWAITING_EXISTING_PR_REVIEW_OR_REPAIR"
-    # Prevent repeated failed agent invocations from burning quota all day.
-    # The existing worker owns the bounded test/repair attempts inside a run.
-    attempts_key = ATTEMPT_KEY_PREFIX + str(issue["issue_number"])
-    if int(redis_client.get(attempts_key) or 0) >= 3:
-        return "DISPATCH_ATTEMPT_CAP_REQUIRES_TRIAGE"
-    client.dispatch(issue)
-    redis_client.incr(attempts_key)
-    redis_client.expire(attempts_key, 86400)
-    redis_client.set(COOLDOWN_KEY, str(issue["issue_number"]), ex=900)
-    return "DISPATCHED_TO_PROTECTED_ENGINEERING_WORKFLOW"
+    # An incident already at PR/review or retry cap must not starve every
+    # other approved incident. Keep one shared writer and do not duplicate PRs.
+    skipped: set[int] = set()
+    has_pending_pr = False
+    has_attempt_cap = False
+    while True:
+        issue = next_approved_issue(
+            client, manifest, exclude_issue_numbers=frozenset(skipped),
+        )
+        if issue is None:
+            if has_attempt_cap:
+                return "DISPATCH_ATTEMPT_CAP_REQUIRES_TRIAGE"
+            if has_pending_pr:
+                return "AWAITING_EXISTING_PR_REVIEW_OR_REPAIR"
+            return "NO_APPROVED_OPEN_ENGINEERING_TASK"
+        issue_number = int(issue["issue_number"])
+        if pending_pr_for_issue(client, issue_number):
+            has_pending_pr = True
+            skipped.add(issue_number)
+            continue
+        # Prevent repeated failed agent invocations from burning quota all day.
+        # The existing worker owns bounded repair attempts inside each run.
+        attempts_key = ATTEMPT_KEY_PREFIX + str(issue_number)
+        if int(redis_client.get(attempts_key) or 0) >= 3:
+            has_attempt_cap = True
+            skipped.add(issue_number)
+            continue
+        client.dispatch(issue)
+        redis_client.incr(attempts_key)
+        redis_client.expire(attempts_key, 86400)
+        redis_client.set(COOLDOWN_KEY, str(issue_number), ex=900)
+        return "DISPATCHED_TO_PROTECTED_ENGINEERING_WORKFLOW"
 
 
 def _enabled() -> bool:
