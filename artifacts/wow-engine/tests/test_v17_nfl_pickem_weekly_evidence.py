@@ -290,3 +290,29 @@ def test_canonical_audit_rejects_unsafe_or_hindsight_receipts(modify, code):
     assert got["publication_allowed"] is False
     assert got["report"] is None
     assert code in {b["code"] for b in got["blockers"]}
+
+
+@pytest.mark.parametrize("invalid", ["", "   ", False, 0, [], {}, "not-a-date",
+                                    "2026-10-10T13:00:00"])
+def test_supplied_falsey_material_timestamp_cannot_bypass_pre_merge_safety(invalid):
+    data = _evidence()
+    data["immutable_predictions"][0]["latest_material_update_at"] = invalid
+    got = _run(data)
+    assert got["status"] == BLOCKED
+    assert got["report"] is None
+    assert got["publication_allowed"] is False
+    assert "PICKEM_ACCURACY_MATERIAL_TIME_INVALID" in {
+        b["code"] for b in got["blockers"]
+    }
+
+
+@pytest.mark.parametrize("optional", [None, "ABSENT"])
+def test_optional_absent_or_null_material_update_is_explicitly_allowed(optional):
+    data = _evidence()
+    if optional == "ABSENT":
+        data["immutable_predictions"][0].pop("latest_material_update_at")
+    else:
+        data["immutable_predictions"][0]["latest_material_update_at"] = None
+    got = _run(data)
+    assert got["status"] == RECONCILED
+    assert got["publication_allowed"] is False
