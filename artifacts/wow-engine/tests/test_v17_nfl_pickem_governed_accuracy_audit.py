@@ -142,3 +142,34 @@ def test_material_update_after_model_time_cannot_be_counted():
     data["picks"][0]["latest_material_update_at"] = "2026-10-11T08:00:00Z"
     with pytest.raises(AccuracyAuditError, match="PICKEM_ACCURACY_PREDICTION_STALE"):
         audit_governed_pickem_week(**data)
+
+
+
+@pytest.mark.parametrize("invalid_timestamp", [
+    "", "   ", False, 0, [], {}, "not-a-date",
+    "2026-10-10T18:00:00",
+])
+def test_supplied_malformed_material_update_fails_closed(invalid_timestamp):
+    data = _week()
+    data["picks"][0]["latest_material_update_at"] = invalid_timestamp
+    with pytest.raises(AccuracyAuditError, match="PICKEM_ACCURACY_MATERIAL_TIME_INVALID"):
+        audit_governed_pickem_week(**data)
+
+
+@pytest.mark.parametrize("optional_value", ["ABSENT", None])
+def test_absent_or_null_material_update_keeps_original_audit_behavior(optional_value):
+    data = _week()
+    if optional_value == "ABSENT":
+        data["picks"][0].pop("latest_material_update_at", None)
+    else:
+        data["picks"][0]["latest_material_update_at"] = None
+    result = audit_governed_pickem_week(**data)
+    assert result["scored_count"] == 16
+    assert result["expected_correct"] == pytest.approx(10.4)
+
+
+def test_valid_material_update_at_prediction_time_is_not_stale():
+    data = _week()
+    data["picks"][0]["latest_material_update_at"] = data["picks"][0]["immutable_model_timestamp"]
+    result = audit_governed_pickem_week(**data)
+    assert result["status"] == AUDIT_STATUS
