@@ -280,6 +280,12 @@ def test_github_inventory_incomplete_fails_closed():
 @pytest.mark.parametrize("body,matched", [
     ("Incident: 1388", True),
     ("Incident: #1388", True),
+    ("Incident: `1388`", True),
+    ("Incident: `#1388`", True),
+    ("Incident: `13880`", False),
+    ("Incident: 1388abc", False),
+    ("Incident: 1388 unrelated text", False),
+    ("Incident: `1388", False),
     ("Refs #1388", True),
     ("Refs #1021 and #1388", True),
     ("Refs: #1388", True),
