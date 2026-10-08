@@ -140,8 +140,21 @@ def pending_pr_for_issue(client: GitHubTransport, issue_number: int) -> bool:
     if len(result) == 100:
         raise RuntimeError("OPEN_PR_INVENTORY_NOT_EXHAUSTIVE")
     import re
-    pattern = re.compile(r"(?im)^Incident:\s*(?:\x60)?#?" + re.escape(str(issue_number)) + r"(?:\x60)?\s*$")
-    return any(pattern.search(str(pr.get("body") or "")) for pr in result)
+    number = re.escape(str(issue_number))
+    # Accept the incident header and GitHub issue-reference conventions used
+    # by existing repair PRs. Never treat incidental "#123" mentions as claims.
+    incident = re.compile(
+        rf"(?im)^\s*Incident\s*:\s*#?{number}(?!\d)"
+    )
+    references = re.compile(
+        rf"(?im)^\s*(?:Refs?|Fixes|Closes|Resolves)\b[^\n]*?(?<!\w)"
+        rf"(?:{re.escape(REPO)})?#{number}(?!\d)"
+    )
+    return any(
+        bool(incident.search(str(pr.get("body") or "")) or
+             references.search(str(pr.get("body") or "")))
+        for pr in result
+    )
 
 
 def dispatch_once(client: GitHubTransport, redis_client: Any, manifest: dict[str, Any]) -> str:
