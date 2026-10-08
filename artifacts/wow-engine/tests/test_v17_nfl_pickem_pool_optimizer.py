@@ -123,6 +123,58 @@ def test_pick_is_downstream_of_model_and_ignores_market_price_fields():
     assert b["market_probability_used"] is False
     assert b["sportsbook_price_used"] is False
     assert b["pool_popularity_used"] is False
+    assert b["review_overlay_can_change_pool_pick"] is False
+    assert b["review_overlay_can_change_probability"] is False
+
+
+def test_week4_learning_overlay_flags_material_disagreement_without_flipping_pick():
+    row = _row("evt-fragility", "JAX", "CIN", 0.61)
+    row["model_disagreement"] = 0.08
+    out = select_pickem_game(row)
+    assert out["status"] == PICKEM_READY
+    assert out["pool_pick"] == "CIN"
+    assert out["selected_probability"] == 0.61
+    assert out["pickem_review_class"] == "MODEL_SIDE_FRAGILITY_REVIEW"
+    assert "MATERIAL_MODEL_DISAGREEMENT" in out["pickem_review_reasons"]
+    assert out["postmortem_learning_action"] == "DEEP_REVIEW_NO_AUTOMATIC_FLIP"
+    assert out["review_overlay_can_change_pool_pick"] is False
+    assert out["review_overlay_can_change_probability"] is False
+
+
+def test_strong_model_side_gets_preserve_guardrail_after_isolated_loss_pattern():
+    row = _row("evt-strong", "NE", "BUF", 0.72)
+    row["model_disagreement"] = 0.02
+    out = select_pickem_game(row)
+    assert out["status"] == PICKEM_READY
+    assert out["pool_pick"] == "BUF"
+    assert out["pickem_review_class"] == "HIGH_CONFIDENCE_HOLD"
+    assert out["postmortem_learning_action"] == "PRESERVE_UNLESS_COHORT_EVIDENCE"
+    assert "MATERIAL_MODEL_DISAGREEMENT" not in out["pickem_review_reasons"]
+
+
+def test_toss_up_is_routed_to_review_but_controlling_scorer_choice_is_preserved():
+    row = _row("evt-toss-review", "DAL", "HOU", 0.53)
+    out = select_pickem_game(row)
+    assert out["status"] == PICKEM_READY
+    assert out["pool_pick"] == "HOU"
+    assert out["pickem_review_class"] == "TOSS_UP_REVIEW"
+    assert "TOSS_UP_POINT_PROBABILITY" in out["pickem_review_reasons"]
+    assert "NARROW_TWO_SIDED_GAP" in out["pickem_review_reasons"]
+    assert out["review_overlay_can_change_pool_pick"] is False
+
+
+def test_board_summarizes_review_routing_without_affecting_submission_readiness():
+    strong = _row("evt-strong-board", "NE", "BUF", 0.72)
+    strong["model_disagreement"] = 0.02
+    fragile = _row("evt-fragile-board", "JAX", "CIN", 0.61)
+    fragile["model_disagreement"] = 0.08
+    toss = _row("evt-toss-board", "DAL", "HOU", 0.53)
+    board = build_pickem_board([strong, fragile, toss], expected_game_count=3)
+    assert board["status"] == PICKEM_BOARD_READY
+    assert board["submission_ready"] is True
+    assert board["high_confidence_hold_count"] == 1
+    assert board["model_side_fragility_review_count"] == 1
+    assert board["toss_up_review_count"] == 1
 
 
 def test_toss_up_preserves_the_controlling_scorer_tie_choice():
