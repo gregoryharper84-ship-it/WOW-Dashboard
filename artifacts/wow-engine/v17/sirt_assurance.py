@@ -24,6 +24,8 @@ CAN_EXECUTE = False
 ALLOWED_HEALTH = {"RUNNING"}
 ALLOWED_PROBE = {"PASS", "HEALTHY"}
 AUDITOR_ID = "WOW_ENGINEERING_AUDITOR"
+DISPATCHER_ID = "WOW_ENGINEERING_RESIDENT_DISPATCHER"
+DISPATCHER_HEARTBEAT_MAX_AGE_SECONDS = 900
 WORKER_WORKFLOWS = (
     "wow-v17-chatgpt-engineering-worker.yml",
     "wow-v17-claude-engineering-worker.yml",
@@ -67,6 +69,7 @@ def _signal(kind: str, identity: str, severity: str, reason: str) -> dict[str, s
 def assess_sentinel(
     *,
     runtime: dict[str, Any] | None,
+    dispatcher_runtime: dict[str, Any] | None = None,
     work_items: list[dict[str, Any]] | None = None,
     handoffs: list[dict[str, Any]] | None = None,
     probes: list[dict[str, Any]] | None = None,
@@ -89,6 +92,19 @@ def assess_sentinel(
         signals.append(_signal("AUDITOR_HEALTH", identity, "P1", "AUDITOR_NOT_RUNNING"))
     if runtime.get("can_execute") is not False or runtime.get("terminal_authority") != TERMINAL_AUTHORITY:
         signals.append(_signal("GOVERNANCE_DRIFT", identity, "P0", "AUTHORITY_UNVERIFIED"))
+    if dispatcher_runtime is not None:
+        dispatcher = dispatcher_runtime
+        age = _age_seconds(observed, dispatcher.get("last_heartbeat_at"))
+        if dispatcher.get("auditor_id") != DISPATCHER_ID:
+            signals.append(_signal("RESIDENT_DISPATCHER", DISPATCHER_ID, "P0", "DISPATCHER_IDENTITY_UNVERIFIED"))
+        if age is None:
+            signals.append(_signal("RESIDENT_DISPATCHER", DISPATCHER_ID, "P0", "DISPATCHER_HEARTBEAT_UNVERIFIABLE"))
+        elif age > DISPATCHER_HEARTBEAT_MAX_AGE_SECONDS:
+            signals.append(_signal("RESIDENT_DISPATCHER", DISPATCHER_ID, "P0", "DISPATCHER_HEARTBEAT_STALE"))
+        if dispatcher.get("status") != "RUNNING":
+            signals.append(_signal("RESIDENT_DISPATCHER", DISPATCHER_ID, "P1", "DISPATCHER_NOT_RUNNING"))
+        if dispatcher.get("can_execute") is not False or dispatcher.get("terminal_authority") != TERMINAL_AUTHORITY:
+            signals.append(_signal("RESIDENT_DISPATCHER", DISPATCHER_ID, "P0", "DISPATCHER_AUTHORITY_UNVERIFIED"))
     if work_items is not None:
         for row in work_items:
             if str(row.get("state") or "").upper() != "OPEN":
@@ -259,12 +275,14 @@ def failure_families(records: list[dict[str, Any]], audit_findings: list[dict[st
     }
 
 
-def read_auditor_runtime(url: str, key: str, *, timeout_seconds: int = 8) -> dict[str, Any]:
+def read_auditor_runtime(
+    url: str, key: str, *, timeout_seconds: int = 8, auditor_id: str = AUDITOR_ID,
+) -> dict[str, Any]:
     """Independent external health probe; credentials are never printed."""
     base = url.rstrip("/")
-    if not base.startswith("https://") or not key:
+    if not base.startswith("https://") or not key or auditor_id not in {AUDITOR_ID, DISPATCHER_ID}:
         raise ValueError("SIRT_MONITOR_CONFIGURATION_MISSING")
-    query = quote(AUDITOR_ID, safe="")
+    query = quote(auditor_id, safe="")
     endpoint = base + "/rest/v1/wow_engineering_auditor_runtime?auditor_id=eq." + query + "&select=auditor_id,status,last_heartbeat_at,last_error_code,can_execute,terminal_authority"
     request = Request(endpoint, headers={
         "apikey": key,
@@ -375,7 +393,18 @@ def main() -> int:
                                    os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_SERVICE_KEY", ""),
                                    kind="findings")
         worker_runs = read_github_worker_runs(os.getenv("GITHUB_TOKEN", ""))
-        result = assess_sentinel(runtime=runtime, work_items=work_items, findings=findings, worker_runs=worker_runs)
+        required_dispatcher = os.getenv("WOW_SIRT_REQUIRE_ENGINEERING_RESIDENT_HEARTBEAT", "").strip()
+        if required_dispatcher not in {"", "0", "1"}:
+            raise ValueError("SIRT_DISPATCHER_MONITOR_MODE_INVALID")
+        dispatcher_runtime = None
+        if required_dispatcher == "1":
+            dispatcher_runtime = read_auditor_runtime(
+                os.getenv("SUPABASE_URL", ""),
+                os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_SERVICE_KEY", ""),
+                auditor_id=DISPATCHER_ID,
+            )
+        result = assess_sentinel(runtime=runtime, work_items=work_items, findings=findings,
+                                 worker_runs=worker_runs, dispatcher_runtime=dispatcher_runtime)
     except (ValueError, RuntimeError, HTTPError, URLError, TimeoutError, OSError) as exc:
         # No URLs, credentials, or request bodies in diagnostic output.
         result = {"status": "BLOCKED", "reason": (
