@@ -15,9 +15,10 @@ Use any of these phrases:
 - `Review these screenshots with V17`
 - `Run PrizePicks Board to Slips`
 - `Run V17 ML Winners`
+- `Run Pick Em Skill`
 - `Build the V17 Core`
 
-If the user says only `Full model`, `V17`, `best picks today`, or equivalent in a betting context, prefer the Daily Picks orchestration unless the request clearly narrows to one lane. If the user supplies a PrizePicks board and asks for `Full Model`, `best picks`, `highest hit probability`, or equivalent, invoke `WOW_V17_PRIZEPICKS_BOARD_TO_SLIPS_SKILL.md` in `POOL_ONLY` mode unless slip/card construction is explicitly requested.
+If the user says only `Full model`, `V17`, `best picks today`, or equivalent in a betting context, prefer the Daily Picks orchestration unless the request clearly narrows to one lane. If the user supplies a PrizePicks board and asks for `Full Model`, `best picks`, `highest hit probability`, or equivalent, invoke `WOW_V17_PRIZEPICKS_BOARD_TO_SLIPS_SKILL.md` in `POOL_ONLY` mode unless slip/card construction is explicitly requested. If the user supplies an NFL Pick'em/pick-sheet form or asks to fill/highlight a weekly Pick'em sheet, invoke `WOW_V17_PICK_EM_SKILL.md` instead of generic screenshot or ML-winner routing.
 
 ## Automatic research/context stage
 Before final ranking, invoke `WOW_V17_RESEARCH_MARKET_CONTEXT_SKILL.md` for material candidates. Refresh current event identity, starters/lineups/rosters, injuries/status/team changes, role/workload, relevant history and matchup context, rest/travel, venue/weather where applicable, and current exact/adjacent market evidence. Research may hydrate certified model inputs and audit results but never substitutes for the fitted model or invents a probability.
@@ -67,6 +68,20 @@ Use when a PrizePicks board/PDF/screenshots/pasted board is supplied and the use
 5. Preserve individual sporting probabilities exactly. Card-level independence estimates are portfolio math only and must never be relabeled governed sporting probability.
 6. Shrink the card rather than add filler or unresolved dependent legs.
 
+### Mode F — NFL_PICK_EM
+Use when an NFL Pick'em/pick-sheet image is supplied or the user asks for a weekly straight-up Pick'em card, a model-qualified Pick'em sheet, or a filled/highlighted form.
+
+1. Invoke `WOW_V17_PICK_EM_SKILL.md`.
+2. Extract every displayed game and derive the exact expected game count from the supplied form; do not assume 16.
+3. Reconcile all rows to canonical NFL schedule identity and preserve the sheet's displayed order.
+4. Use only the durable `submitWowV17NFLPickemBoard` -> `getWowV17NFLPickemRun` path.
+5. Require `PICKEM_BOARD_READY`, `full_sheet_submission_ready=true`, exact game-count reconciliation, and zero blocked rows before calling the sheet submission-ready.
+6. Use only the current production-authorized Pick'em objective. Shadow pool strategy cannot mutate production picks.
+7. Source the Monday tiebreaker only from the governed NFL total-points tiebreaker specialist.
+8. When the user supplied a form, preserve that exact form's layout and annotate only the selected teams/check boxes in green plus Name (default `GH`) and the governed integer tiebreaker. Leave Total Correct blank.
+9. Verify the completed image 1:1 against the terminal card before returning it.
+10. Preserve `can_execute=false`.
+
 ## Universal V17 rules
 - WOW_BETTING_ENGINE owns player/scalar/prop rows.
 - LLP_TEAM_BETTING_ENGINE owns team/event winner, favorite, underdog, upset, match-winner, and fight-winner rows.
@@ -105,6 +120,9 @@ Keep separate from favorites/winners. Do not call a market underdog an upset pic
 
 ### Cash-Qualified Game Winners
 Show this section only in `CASH_PROFITABILITY` mode. For each row include exact PrizePicks multiplier, platform break-even probability, exact market no-vig probability, calibrated lower bound, lower-bound platform edge, active safety buffer, lower-bound edge after buffer, freshness, cash gate status, and terminal ceiling. Do not include rows with `cash_single_eligible=false` as cash opportunities.
+
+### NFL Pick'em Card
+Show when `NFL_PICK_EM` is active. Preserve the supplied sheet order and show each matchup, selected team, calibrated probability, lower bound, review class, full-sheet reconciliation state, and governed integer tiebreaker. If a form image was supplied, return the format-preserving annotated form only after image-to-card reconciliation passes.
 
 ### V17 Core
 Return the strongest 3–5 independent plays, or fewer when fewer genuinely qualify. Never add filler to hit a quota.
