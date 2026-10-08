@@ -69,6 +69,12 @@ class ClosureContractTests(unittest.TestCase):
         self.assertTrue(any("historical_and_forward_validation" in e for e in mod.validate_closure(r)))
     def test_invalid_receipt_rejected(self):
         self.assertTrue(mod.validate_closure(None))
+    def test_boolean_regression_count_rejected(self):
+        r=good();r["unresolved_p0_p1_regressions"]=False
+        self.assertTrue(any("unresolved_p0_p1" in e for e in mod.validate_closure(r)))
+    def test_string_regression_count_rejected(self):
+        r=good();r["unresolved_p0_p1_regressions"]="0"
+        self.assertTrue(any("unresolved_p0_p1" in e for e in mod.validate_closure(r)))
     def test_open_regression_rejected(self):
         r=good();r["unresolved_p0_p1_regressions"]=1
         self.assertTrue(any("unresolved_p0_p1" in e for e in mod.validate_closure(r)))
