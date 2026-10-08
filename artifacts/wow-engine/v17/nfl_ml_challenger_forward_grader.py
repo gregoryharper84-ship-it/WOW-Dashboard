@@ -11,6 +11,10 @@ from math import isfinite, log
 import re
 from typing import Any, Mapping
 
+from v17.nfl_team_event_specialist import (
+    NFL_CANONICAL_TEAM_CODES, NFL_TEAM_NAME_TO_ABBREVIATION,
+)
+
 CAN_EXECUTE = False
 PROMOTION_AUTHORIZED = False
 PROBABILITY_PUBLISHABLE = False
@@ -52,6 +56,13 @@ def _strict_number(value: Any, code: str) -> float:
     if not isfinite(num):
         raise ChallengerGradeError(code)
     return num
+
+
+def _team_code(name: str) -> str | None:
+    upper = name.upper()
+    if upper in NFL_CANONICAL_TEAM_CODES:
+        return upper
+    return NFL_TEAM_NAME_TO_ABBREVIATION.get(name.casefold())
 
 
 def grade_settled_challenger(
@@ -118,6 +129,8 @@ def grade_settled_challenger(
     selected = _str(shadow.get("selected_participant"), "NFL_CHALLENGER_GRADE_SELECTION_MISSING")
     if home == away or selected not in {home, away}:
         raise ChallengerGradeError("NFL_CHALLENGER_GRADE_SELECTED_SIDE_INVALID")
+    if _team_code(home) != home_abbrev or _team_code(away) != away_abbrev:
+        raise ChallengerGradeError("NFL_CHALLENGER_GRADE_PREDICTION_PARTICIPANTS_MISMATCH")
     _str(shadow.get("source_feature_hash"), "NFL_CHALLENGER_GRADE_FEATURE_HASH_REQUIRED")
     p = _strict_number(shadow.get("calibrated_probability"),
                        "NFL_CHALLENGER_GRADE_PROBABILITY_INVALID")
