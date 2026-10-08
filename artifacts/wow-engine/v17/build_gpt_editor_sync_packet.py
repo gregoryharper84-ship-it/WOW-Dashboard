@@ -13,7 +13,7 @@ canonical Action schema for the Render domain. The standalone run-control schema
 remains a repository reference contract only.
 
 The repository remains authoritative for canonical host instructions, the
-PrizePicks addendum, and Action schema. This utility never reads or emits
+PrizePicks and Pick Em addenda, and Action schema. This utility never reads or emits
 WOW_ACTION_API_KEY or any other credential. It cannot update the live GPT editor
 by itself and therefore never marks live editor parity VERIFIED. can_execute is
 always false.
