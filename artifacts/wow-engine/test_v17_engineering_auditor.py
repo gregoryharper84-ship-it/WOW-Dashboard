@@ -332,7 +332,7 @@ def test_render_side_watchdog_deadman_malformed_or_http_error_fails_closed():
     with pytest.raises(GitHubAuditUnavailable, match="SIRT_WATCHDOG_RUN_IDENTITY_INVALID"):
         reconcile_sirt_watchdog(
             _WatchdogStore(),
-            session=_WatchdogSession([{"head_branch": "main", "status": "completed"}]),
+            session=_WatchdogSession([{"head_branch": "main", "event": "schedule", "status": "completed", "conclusion": "failure"}]),
             now=now,
         )
     with pytest.raises(GitHubAuditUnavailable, match="GITHUB_AUDIT_HTTP_403"):
