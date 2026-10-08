@@ -101,6 +101,23 @@ def _trusted_workflow_name(run_name: Any) -> str:
     return run_name.split(" lease=", 1)[0].split(" incident=", 1)[0]
 
 
+def _canonical_workflow_path(path: str) -> str:
+    """Normalize only GitHub's optional @refs/... provenance suffix.
+
+    A trusted-looking path with unknown ref syntax is not admission evidence.
+    Active runs from any recognized ref must still block dispatch; no ref grants
+    merge, deploy or implementation authority.
+    """
+    if "@" not in path:
+        return path
+    workflow, sep, ref = path.partition("@")
+    if (not workflow or not sep or not ref.startswith("refs/")
+            or len(ref) <= len("refs/") or "@" in ref
+            or any(c.isspace() for c in ref)):
+        raise RuntimeError("ACTIVE_WORKFLOW_REF_INVALID")
+    return workflow
+
+
 def active_engineering_workflow(client: GitHubTransport) -> bool:
     """Fail closed when GitHub could not enumerate the complete active run set."""
     for state in ("queued", "in_progress", "waiting", "requested"):
@@ -115,7 +132,8 @@ def active_engineering_workflow(client: GitHubTransport) -> bool:
         for run in runs:
             if not isinstance(run, dict) or not isinstance(run.get("path"), str):
                 raise RuntimeError("ACTIVE_WORKFLOW_IDENTITY_INCOMPLETE")
-            if run["path"] in ACTIVE_WORKFLOW_PATHS:
+            workflow_path = _canonical_workflow_path(run["path"])
+            if workflow_path in ACTIVE_WORKFLOW_PATHS:
                 return True
             # A trusted-looking name with a different path is not a worker;
             # fail closed rather than trusting an unverified alias.
