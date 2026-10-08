@@ -930,6 +930,29 @@ jobs:
           retention-days: 14
           path: ${{ runner.temp }}/wow-dual-stream-receipt.json
 
+      # Do not let an actionable REPAIR run appear green if it produced no governed PR.
+      # NO_ACTION and VERIFY_RELEASE are distinct legitimate no-PR outcomes.
+      - name: Enforce actionable repair delivery
+        if: always() && steps.lead.outputs.action == 'REPAIR'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INCIDENT: ${{ steps.lead.outputs.incident }}
+          CHANGED: ${{ steps.impl.outputs.changed }}
+          BRANCH: ${{ steps.impl.outputs.branch }}
+        run: |
+          set -euo pipefail
+          if [ "$CHANGED" != "true" ] || [ -z "$BRANCH" ]; then
+            echo "::error::ACTIONABLE_REPAIR_NO_DELIVERABLE: incident=${INCIDENT:-UNKNOWN}; no committed implementation branch."
+            exit 1
+          fi
+          pr=$(gh pr list --repo "$GITHUB_REPOSITORY" --state open --base main --head "$BRANCH" --json number --jq '.[0].number // empty')
+          if [ -z "$pr" ]; then
+            echo "::error::ACTIONABLE_REPAIR_PR_MISSING: incident=${INCIDENT:-UNKNOWN}; branch=$BRANCH."
+            exit 1
+          fi
+          echo "Repair artifact: PR #$pr for ${INCIDENT:-UNKNOWN}." >> "$GITHUB_STEP_SUMMARY"
+
       - name: Record team receipt
         if: always()
         run: |
