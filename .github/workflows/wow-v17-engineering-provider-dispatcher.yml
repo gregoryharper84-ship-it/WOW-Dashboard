@@ -89,10 +89,8 @@ jobs:
               lease_group="${BASH_REMATCH[1]}"
             fi
           fi
-          # P0 targets require a manifest domain lease; standard P1 targets
-          # carry the exact incident under GLOBAL, validated by the worker.
-          if [ -n "$target_incident" ] && ! [[ "$target_incident" =~ ^[0-9]+$ ]]; then
-            echo "TARGET_INCIDENT_INVALID" >&2
+          if [ -n "$target_incident" ] && [ "$lease_group" = "GLOBAL" ]; then
+            echo "TARGET_INCIDENT_REQUIRES_DOMAIN_LEASE:$target_incident" >&2
             exit 1
           fi
           receipt="$RUNNER_TEMP/provider-route.json"
