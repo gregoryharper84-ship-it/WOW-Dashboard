@@ -45,6 +45,27 @@ minutes it:
    records never prove successful repair.
 9. Logs a compact typed supervisor outcome, never a credential value.
 
+## Protected exact-P1 dependency and safe rollout
+
+Protected workflow modifications were separated into **bootstrap PR #1531**.
+This PR #1525 deliberately restores the ChatGPT, Claude and provider
+dispatcher workflow sources to canonical main. Their current protected-main
+versions accept exact **P0 RAPID** targets only; they do **not** independently
+support exact **P1 STANDARD** GLOBAL targets. The resident therefore refuses
+to dispatch a P1 candidate by default, emitting
+`P1_EXACT_WORKER_BOOTSTRAP_REQUIRED` and persisting a DEGRADED heartbeat.
+It still attempts independently eligible P0 work rather than silently
+reselecting the blocked P1 incident.
+
+Only **after** trusted independent worker/bootstrap certification and
+the protected merge of #1531 may Release explicitly enable
+`WOW_ENGINEERING_EXACT_P1_BOOTSTRAP_CERTIFIED=1` on the Render worker.
+This is a deployment-controlled authorization flag, not proof that the
+bootstrap exists. Release/QA must verify exact deployed main workflow
+revision, source integrity and two unattended P1 runs. Other values
+(including an unset or `yes` flag) remain fail-closed. Do not enable the
+flag based on this PR or untrusted claims.
+
 The current GitHub Actions schedule and workflow-run continuations remain
 present as secondary triggers. GitHub writer concurrency and existing worker
 lease gates still apply. Redis is an admission-control lease, not review
@@ -71,6 +92,8 @@ incident and PR for bounded repair rather than opening duplicate implementations
 - [ ] Review exact PR head; required CI and adjacent lifecycle tests green.
 - [ ] SIRT checks worker/lease race, reviewer independence, non-execution.
 - [ ] Independent Verification confirms current ruleset/check requirements.
+- [ ] Verify trust-root bootstrap PR #1531 was separately and independently
+      approved and protected-merged before enabling exact P1 dispatch.
 - [ ] Configure WOW_ENGINEERING_GITHUB_TOKEN securely on the worker; scoped
       only to this repo (Actions read/write for workflow dispatch; Issues and
       Pull Requests read; metadata read). Never print or commit the token.
