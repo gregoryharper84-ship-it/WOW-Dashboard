@@ -239,7 +239,9 @@ def test_claude_runner_prefers_api_key_then_fails_over_to_oauth() -> None:
     assert "id: claude_api" in action
     assert "if: inputs.anthropic_api_key != ''" in action
     assert "id: claude_oauth" in action
-    assert "if: inputs.claude_code_oauth_token != '' && (inputs.anthropic_api_key == '' || steps.claude_api.outcome == 'failure')" in action
+    assert "inputs.claude_code_oauth_token != ''" in action
+    assert "inputs.anthropic_api_key == '' || steps.claude_api.outcome == 'failure' ||" in action
+    assert "steps.claude_api.outputs.structured_output == ''" in action
     assert action.count("continue-on-error: true") >= 2
     assert "steps.claude_api.outputs.structured_output || steps.claude_oauth.outputs.structured_output" in action
     assert "api_outcome=${API_OUTCOME:-not-run}, oauth_outcome=${OAUTH_OUTCOME:-not-run}" in action
