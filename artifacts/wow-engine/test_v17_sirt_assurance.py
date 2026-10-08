@@ -262,3 +262,23 @@ def test_independent_sirt_schedule_can_enforce_resident_dispatcher_after_activat
     assert "  contents: read" in wf
     assert "  actions: read" in wf
     assert "  issues: write" not in wf
+
+
+
+def test_sirt_watchdog_has_independent_event_trigger_for_existing_hourly_loop():
+    """A missing cron run must not silently prevent the first watchdog canary.
+
+    Event redundancy is same-domain only; it does NOT certify 24/7 resilience.
+    """
+    from pathlib import Path
+    wf = (Path(__file__).resolve().parents[2] /
+          ".github/workflows/wow-sirt-independent-reliability-sentinel.yml").read_text()
+    assert 'cron: "7,22,37,52 * * * *"' in wf
+    assert "  workflow_run:\n    workflows:\n      - wow-v17-24h-engineering-closure-loop\n    types: [completed]" in wf
+    assert '  push:\n    branches: [main]\n    paths:\n      - ".github/workflows/wow-sirt-independent-reliability-sentinel.yml"' in wf
+    assert "  contents: read" in wf and "  actions: read" in wf
+    for forbidden in ("  contents: write", "  actions: write", "  pull-requests: write",
+                      "  issues: write", "  deployments: write", "  id-token: write"):
+        assert forbidden not in wf
+    assert "workflow_dispatch:" in wf
+    assert 'vars.WOW_SIRT_REQUIRE_ENGINEERING_RESIDENT_HEARTBEAT' in wf
