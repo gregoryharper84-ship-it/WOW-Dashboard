@@ -150,8 +150,8 @@ def test_transport_rejects_unapproved_paths_and_empty_auth():
 
 
 def test_sirt_intake_requires_trusted_source_and_is_never_verification():
-    root = Path(__file__).resolve().parents[1]
-    data = (root.parent.parent / ".github/workflows/wow-v17-engineering-sirt-intake.yml").read_text()
+    root = Path(__file__).resolve().parents[2]
+    data = (root / ".github/workflows/wow-v17-engineering-sirt-intake.yml").read_text()
     workflow = yaml.safe_load(data)
     job = workflow["jobs"]["independent-intake"]
     assert "head_branch == 'main'" in job["if"]
