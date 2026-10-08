@@ -152,6 +152,33 @@ def test_empty_queue_never_dispatches():
     assert not client.sent
 
 
+@pytest.mark.parametrize("run_name,expected", [
+    ("wow-v17-chatgpt-engineering-worker lease=GLOBAL incident=AUTO", True),
+    ("wow-v17-claude-engineering-worker lease=P0_LLP_RESTORE incident=1021", True),
+    ("wow-v17-engineering-provider-dispatcher lease=GLOBAL incident=1021", True),
+    ("wow-v17-chatgpt-engineering-worker-lookalike lease=GLOBAL incident=AUTO", False),
+    ("wow-v17-chatgpt-engineering-worker-fake", False),
+    ("unrelated-workflow lease=GLOBAL incident=1021", False),
+])
+def test_active_worker_run_name_lease_suffix_admission(run_name, expected):
+    class Running(FakeClient):
+        def get(self, suffix):
+            if suffix.startswith("actions/runs?"):
+                if "status=in_progress" in suffix:
+                    return {"total_count": 1, "workflow_runs": [{"name": run_name}]}
+                return {"total_count": 0, "workflow_runs": []}
+            return super().get(suffix)
+    client = Running()
+    assert active_engineering_workflow(client) is expected
+    store = FakeRedis()
+    status = dispatch_once(client, store, MANIFEST)
+    if expected:
+        assert status == "EXISTING_ENGINEERING_WORKFLOW_ACTIVE"
+        assert client.sent == []
+    else:
+        assert status == "DISPATCHED_TO_PROTECTED_ENGINEERING_WORKFLOW"
+
+
 def test_github_inventory_incomplete_fails_closed():
     class Incomplete(FakeClient):
         def get(self, suffix):
