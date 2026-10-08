@@ -63,8 +63,7 @@ def _run_delivery(tmp_path, *, changed, branch, returned_pr, expected_head="a" *
         }
     )
     # Replace only the gh CLI with a deterministic local stub.
-    stub = ('gh() { if [ "$2" = "view" ]; then printf "%s\\n" "$STUB_HEAD"; '
-            'else printf "%s\\n" "$STUB_PR"; fi; }\\n')
+    stub = 'gh() { if [ "$2" = "view" ]; then echo "$STUB_HEAD"; else echo "$STUB_PR"; fi; }' + chr(10)
     env["STUB_PR"] = returned_pr
     env["STUB_HEAD"] = remote_head
     return subprocess.run(
