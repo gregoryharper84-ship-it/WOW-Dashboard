@@ -12,8 +12,8 @@ Implementation:
 
 ## Required evidence per independent settled week
 
-- Unique `week_id`, a predeclared `fold` (DISCOVERY/HOLDOUT), immutable `manifest_id`, and a precise pool `lock_at`.
-- Exactly one already governed `PICKEM_READY` row per official NFL event, with canonical fitted-specialist identity, both normalized calibrated probabilities, source prediction ID, source snapshot ID, and a model timestamp no later than lock.
+- Unique `week_id`, a predeclared `fold` (DISCOVERY/HOLDOUT), immutable `manifest_id`, `fold_assignment_receipt_id`, `fold_assigned_at <= lock_at`, and a precise pool `lock_at`.
+- Exactly one already governed `PICKEM_READY` row with `source_terminal_label=FINAL_APPROVED` per official NFL event, with canonical fitted-specialist identity, both normalized calibrated probabilities, source prediction ID, source snapshot ID, and a model timestamp no later than lock.
 - Opponent-only pool ownership per event: normalized two-sided shares, independently identifiable `source`, `snapshot_id`, time `observed_at <= lock_at`, and `audience=OPPONENT_ENTRIES`. The user's own pick must not be mixed into the opponent distribution.
 - Actual opponent cards as recorded by `submitted_at <= lock_at`, stable receipt IDs, full event-set matching, and exact pool-size reconciliation.
 - Final event winner identities plus authoritative settlement source/time. Settled outcomes may be read **only for replay scoring**, not for pregame strategy selection.
