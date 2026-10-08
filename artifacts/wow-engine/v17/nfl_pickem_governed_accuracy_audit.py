@@ -195,6 +195,15 @@ def audit_governed_pickem_week(
             "controlling_specialist": CONTROLLING_SPECIALIST,
         })
     accuracy = correct / expected_game_count
+    # Descriptive Poisson-binomial distribution, assuming independent games.
+    # Not a certified correlated joint-outcome model.
+    count_distribution = [1.0]
+    for p in selected_probabilities:
+        next_distribution = [0.0] * (len(count_distribution) + 1)
+        for k, mass in enumerate(count_distribution):
+            next_distribution[k] += mass * (1.0 - p)
+            next_distribution[k + 1] += mass * p
+        count_distribution = next_distribution
     return {
         "status": AUDIT_STATUS,
         "serving_mode": SERVING_MODE,
@@ -206,6 +215,13 @@ def audit_governed_pickem_week(
         "correct": correct,
         "incorrect": expected_game_count - correct,
         "accuracy": accuracy,
+        "objective": "MAX_EXPECTED_CORRECT",
+        "expected_correct": expected_correct,
+        "expected_accuracy": expected_correct / expected_game_count,
+        "correct_count_distribution": count_distribution,
+        "correct_count_distribution_assumption": "INDEPENDENT_GAMES_DESCRIPTIVE_ONLY",
+        "probability_at_least_15_correct": sum(count_distribution[15:]),
+        "probability_at_least_14_correct": sum(count_distribution[14:]),
         "target_accuracy": TARGET_ACCURACY,
         "operator_target_met": accuracy >= TARGET_ACCURACY,
         "brier_home": brier_sum / expected_game_count,
