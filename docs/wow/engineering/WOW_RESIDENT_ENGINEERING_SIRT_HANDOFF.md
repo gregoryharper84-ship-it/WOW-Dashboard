@@ -37,7 +37,13 @@ minutes it:
    manifest domain lease; P1 is pinned to its exact issue under the existing
    GLOBAL single-writer lease. A generic P1 invocation is prohibited because
    it could reselect a pending-PR or retry-capped incident.
-8. Logs a compact typed supervisor outcome, never a credential value.
+8. Before each cycle, writes a separate fail-closed resident-dispatcher heartbeat to
+   the protected Supabase `wow_engineering_auditor_runtime` table under
+   `WOW_ENGINEERING_RESIDENT_DISPATCHER` (not the auditor's row). If the
+   PRE-DISPATCH heartbeat fails to persist, no workflow is dispatched.
+   Each completion/typed hold updates status and outcome; missing or stale
+   records never prove successful repair.
+9. Logs a compact typed supervisor outcome, never a credential value.
 
 The current GitHub Actions schedule and workflow-run continuations remain
 present as secondary triggers. GitHub writer concurrency and existing worker
@@ -70,9 +76,20 @@ incident and PR for bounded repair rather than opening duplicate implementations
       Pull Requests read; metadata read). Never print or commit the token.
 - [ ] Confirm REDIS_URL is connected and only one GLOBAL mutation owner is
       permitted by the protected work controller.
+- [ ] Confirm SUPABASE_URL and one service-role credential exist only as
+      worker secrets and the separate resident heartbeat can persist without
+      modifying the WOW_ENGINEERING_AUDITOR row. A missing credential blocks
+      supervisor activation.
 - [ ] Merge only through protected review, then deploy exact approved SHA.
 - [ ] Set WOW_ENGINEERING_RESIDENT_DISPATCH_ENABLED=1 through approved
       Render configuration **after** the readiness checks above.
+- [ ] After exact approved worker deployment and resident flag enablement,
+      set the independent GitHub Actions repository variable
+      `WOW_SIRT_REQUIRE_ENGINEERING_RESIDENT_HEARTBEAT=1`. Independently
+      verify SIRT fails on missing, stale (>15 min), DEGRADED/STOPPED or
+      governance-invalid dispatcher records. Setting this variable while the
+      dispatcher is not activated intentionally makes SIRT fail closed.
+      The repository variable is not itself a production-deploy receipt.
 - [ ] Verify two unattended cycles on real GitHub/Render/Supabase: initial
       dispatch and subsequent follow-up, non-duplicated issue/PR handoff,
       durable SIRT intake, worker heartbeat, and exact negative cases.
