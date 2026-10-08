@@ -55,8 +55,9 @@ class FakeClient:
 
 
 class FakeRedis:
-    def __init__(self, *, locked=False, cooling=False):
+    def __init__(self, *, locked=False, cooling=False, attempts=0):
         self.locked, self.cooling = locked, cooling
+        self.attempts = attempts
         self.values = []
 
     def set(self, key, value, *, nx=False, ex=0):
@@ -67,6 +68,17 @@ class FakeRedis:
 
     def exists(self, key):
         return self.cooling
+
+    def get(self, key):
+        return str(self.attempts)
+
+    def incr(self, key):
+        self.attempts += 1
+        return self.attempts
+
+    def expire(self, key, seconds):
+        assert seconds == 86400
+        return True
 
 
 def test_default_disabled_and_does_not_grant_merge_or_execution(monkeypatch):
@@ -103,6 +115,7 @@ def test_atomic_single_supervisor_dispatch_once():
     status = dispatch_once(client, store, MANIFEST)
     assert status == "DISPATCHED_TO_PROTECTED_ENGINEERING_WORKFLOW"
     assert client.sent == [ISSUE]
+    assert store.attempts == 1
     assert any(value == "1388" and ex == 900 for _, value, _, ex in store.values)
 
 
@@ -168,3 +181,10 @@ def test_sirt_intake_requires_trusted_source_and_is_never_verification():
     assert "gh issue create" in script
     assert "gh pr merge" not in script
     assert "gh workflow run" not in script
+
+
+def test_repeated_failed_dispatch_is_bounded():
+    client = FakeClient()
+    store = FakeRedis(attempts=3)
+    assert dispatch_once(client, store, MANIFEST) == "DISPATCH_ATTEMPT_CAP_REQUIRES_TRIAGE"
+    assert client.sent == []
