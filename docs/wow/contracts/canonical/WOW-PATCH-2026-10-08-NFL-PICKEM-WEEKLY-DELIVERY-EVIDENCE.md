@@ -123,3 +123,27 @@ present, independently of still-unmerged Class A PR #1522.
 
 This is why a complete-looking 16/16 board, a successful backend workflow or
 synthetic regression tests are **not** a real published weekly accuracy report.
+
+
+## Stage 2 built in draft — source-byte-verified candidate manifest
+
+Source: artifacts/wow-engine/v17/nfl_pickem_weekly_manifest.py
+
+freeze_nflverse_week_candidate accepts a previously preserved NFLVerse
+SCHEDULES snapshot and the original compressed CSV bytes, without fetching
+new network data or writing any database state. It verifies permitted dataset
+identity, original SHA-256 of decompressed bytes, bounded 50-MB expansion
+**during** decompression, snapshot capture clock before freeze, freeze clock
+strictly before the earliest weekly kickoff, exact REG season/week membership,
+canonical game IDs, distinct home/away teams, and exactly the expected number
+of games. Even a scored zero must stop a purported pregame freeze. The resulting
+deterministic FROZEN manifest is compatible with the stage-1 reconciler.
+
+This is a **candidate** from a source the existing engine already archives,
+not a league-authoritative final settlement, not independent NFL.com proof,
+and not evidence that the manifest was durably frozen in a database. The
+output explicitly says source_authenticity_verified=false and
+publication_allowed=false. The official-data cross-check, immutable
+write/verification, monitoring of reschedules/cancellations, and secure
+service-only evidence adapter remain mandatory before activation. No
+NCAAF/MLB/prop serving code or fitted sporting model changed.
