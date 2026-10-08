@@ -26,6 +26,11 @@ ACTIVE_WORKFLOWS = frozenset({
     "wow-v17-claude-engineering-worker",
     "wow-v17-engineering-provider-dispatcher",
 })
+# GitHub workflow_run.path is the trusted workflow identity. Run names are
+# presentation strings and may be prefixed or nested by Actions run-name.
+ACTIVE_WORKFLOW_PATHS = frozenset(
+    f".github/workflows/{name}.yml" for name in ACTIVE_WORKFLOWS
+)
 MANIFEST = Path(__file__).with_name("engineering_dispatch_manifest.json")
 LOCK_KEY = "wow:v17:engineering:resident-dispatch-lock:v1"
 COOLDOWN_KEY = "wow:v17:engineering:resident-dispatch-cooldown:v1"
@@ -103,8 +108,15 @@ def active_engineering_workflow(client: GitHubTransport) -> bool:
         runs = result.get("workflow_runs")
         if not isinstance(runs, list) or int(result.get("total_count", -1)) > len(runs):
             raise RuntimeError("ACTIVE_WORKFLOW_INVENTORY_INCOMPLETE")
-        if any(_trusted_workflow_name(run.get("name")) in ACTIVE_WORKFLOWS for run in runs):
-            return True
+        for run in runs:
+            if not isinstance(run, dict) or not isinstance(run.get("path"), str):
+                raise RuntimeError("ACTIVE_WORKFLOW_IDENTITY_INCOMPLETE")
+            if run["path"] in ACTIVE_WORKFLOW_PATHS:
+                return True
+            # A trusted-looking name with a different path is not a worker;
+            # fail closed rather than trusting an unverified alias.
+            if _trusted_workflow_name(run.get("name")) in ACTIVE_WORKFLOWS:
+                raise RuntimeError("ACTIVE_WORKFLOW_IDENTITY_CONFLICT")
     return False
 
 
