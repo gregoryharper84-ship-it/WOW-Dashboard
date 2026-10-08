@@ -33,6 +33,7 @@ jobs:
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
           GITHUB_TOKEN: ${{ github.token }}
+          WOW_SIRT_REQUIRE_ENGINEERING_RESIDENT_HEARTBEAT: ${{ vars.WOW_SIRT_REQUIRE_ENGINEERING_RESIDENT_HEARTBEAT }}
         run: |
           set -uo pipefail
           python artifacts/wow-engine/v17/sirt_assurance.py sentinel > "$RUNNER_TEMP/sirt-heartbeat.json"
@@ -43,7 +44,12 @@ jobs:
             echo "This is not a betting-model verdict." >> "$GITHUB_STEP_SUMMARY"
             exit "$result"
           fi
-          echo "Fresh auditor heartbeat and eligible-worker activity assessed. Resident dispatcher and product readiness NOT proven." >> "$GITHUB_STEP_SUMMARY"
+          if [ "${WOW_SIRT_REQUIRE_ENGINEERING_RESIDENT_HEARTBEAT:-}" = "1" ]; then
+            echo "Resident engineering dispatcher heartbeat and authority were independently checked." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Resident engineering dispatcher enforcement is OFF; no dispatcher production-readiness claim." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "Product readiness remains separately governed." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Analyze canonical incident history
         if: always()

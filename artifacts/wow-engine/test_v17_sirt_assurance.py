@@ -227,3 +227,38 @@ def test_skipped_worker_does_not_override_newer_successful_activity():
     )
     assert verdict["status"] == "OBSERVED_HEALTHY"
     assert verdict["scope"] == "SIRT_ASSURANCE_ONLY_NOT_PRODUCT_READINESS"
+
+
+def test_independent_resident_dispatcher_heartbeat_passes_only_when_fresh():
+    healthy = runtime(auditor_id="WOW_ENGINEERING_RESIDENT_DISPATCHER")
+    result = assess_sentinel(runtime=runtime(), dispatcher_runtime=healthy, now=NOW)
+    assert result["status"] == "OBSERVED_HEALTHY"
+    assert result["scope"] == "SIRT_ASSURANCE_ONLY_NOT_PRODUCT_READINESS"
+
+
+@pytest.mark.parametrize("bad,code", [
+    ({"auditor_id": "WOW_ENGINEERING_AUDITOR"}, "DISPATCHER_IDENTITY_UNVERIFIED"),
+    ({"last_heartbeat_at": None}, "DISPATCHER_HEARTBEAT_UNVERIFIABLE"),
+    ({"last_heartbeat_at": (NOW - timedelta(minutes=20)).isoformat()}, "DISPATCHER_HEARTBEAT_STALE"),
+    ({"status": "DEGRADED"}, "DISPATCHER_NOT_RUNNING"),
+    ({"status": "STOPPED"}, "DISPATCHER_NOT_RUNNING"),
+    ({"can_execute": True}, "DISPATCHER_AUTHORITY_UNVERIFIED"),
+    ({"terminal_authority": "WRONG"}, "DISPATCHER_AUTHORITY_UNVERIFIED"),
+])
+def test_resident_dispatcher_unhealthy_receipts_fail_closed(bad, code):
+    dispatcher = runtime(auditor_id="WOW_ENGINEERING_RESIDENT_DISPATCHER")
+    dispatcher.update(bad)
+    verdict = assess_sentinel(runtime=runtime(), dispatcher_runtime=dispatcher, now=NOW)
+    assert verdict["status"] == "BLOCKED"
+    assert code in {signal["reason"] for signal in verdict["signals"]}
+
+
+def test_independent_sirt_schedule_can_enforce_resident_dispatcher_after_activation():
+    from pathlib import Path
+    wf = (Path(__file__).resolve().parents[2] /
+          ".github/workflows/wow-sirt-independent-reliability-sentinel.yml").read_text()
+    assert "vars.WOW_SIRT_REQUIRE_ENGINEERING_RESIDENT_HEARTBEAT" in wf
+    assert "secrets.SUPABASE_SERVICE_ROLE_KEY" in wf
+    assert "  contents: read" in wf
+    assert "  actions: read" in wf
+    assert "  issues: write" not in wf
