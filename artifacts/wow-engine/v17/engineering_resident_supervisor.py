@@ -162,7 +162,7 @@ def supervisor_runtime_status() -> dict[str, Any]:
         os.getenv("WOW_CAN_EXECUTE", "false").strip().lower() == "false"
         and os.getenv("WOW_DRY_RUN_ONLY", "true").strip().lower() == "true"
     )
-    status = "DISABLED" if not enabled else ("READY" if token_present and redis_present and safe else "BLOCKED")
+    status = "DISABLED" if not enabled else ("CONFIGURED_UNVERIFIED" if token_present and redis_present and safe else "BLOCKED")
     return {
         "status": status,
         "enabled": enabled,
@@ -178,7 +178,7 @@ def supervisor_runtime_status() -> dict[str, Any]:
 
 def run_resident_supervisor(stop: threading.Event = _STOP) -> None:
     status = supervisor_runtime_status()
-    if status["status"] != "READY":
+    if status["status"] != "CONFIGURED_UNVERIFIED":
         LOG.warning("WOW_RESIDENT_SUPERVISOR status=%s can_execute=false", status["status"])
         return
     from redis import Redis
