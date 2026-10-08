@@ -189,6 +189,55 @@ def test_github_inventory_incomplete_fails_closed():
         active_engineering_workflow(Incomplete())
 
 
+@pytest.mark.parametrize("body,matched", [
+    ("Incident: 1388", True),
+    ("Incident: #1388", True),
+    ("Refs #1388", True),
+    ("Refs #1021 and #1388", True),
+    ("Refs: #1388", True),
+    ("Fixes gregoryharper84-ship-it/WOW-Dashboard#1388", True),
+    ("Closes #1388", True),
+    ("Resolves #1388", True),
+    ("Incident: #13880", False),
+    ("Refs #13880", False),
+    ("Refs #11388", False),
+    ("Refs other/repo#1388", False),
+    ("Unrelated mention #1388", False),
+    ("Refs #1021", False),
+])
+def test_issue_reference_forms_hold_existing_repairs(body, matched):
+    class ReferencingPR(FakeClient):
+        def get(self, suffix):
+            if suffix.startswith("pulls?"):
+                return [{"body": body}]
+            return super().get(suffix)
+
+    client = ReferencingPR()
+    assert pending_pr_for_issue(client, 1388) is matched
+    outcome = dispatch_once(client, FakeRedis(), MANIFEST)
+    if matched:
+        assert outcome == "AWAITING_EXISTING_PR_REVIEW_OR_REPAIR"
+        assert not client.sent
+    else:
+        assert outcome == "DISPATCHED_TO_PROTECTED_ENGINEERING_WORKFLOW"
+        assert client.sent == [ISSUE]
+
+
+def test_full_pr_inventory_fails_closed_instead_of_missing_incident():
+    class FullInventory(FakeClient):
+        def get(self, suffix):
+            if suffix.startswith("pulls?"):
+                return [{"body": ""}] * 100
+            return super().get(suffix)
+
+    client = FullInventory()
+    with pytest.raises(RuntimeError, match="OPEN_PR_INVENTORY_NOT_EXHAUSTIVE"):
+        pending_pr_for_issue(client, 1388)
+    with pytest.raises(RuntimeError, match="OPEN_PR_INVENTORY_NOT_EXHAUSTIVE"):
+        dispatch_once(client, FakeRedis(), MANIFEST)
+    assert not client.sent
+
+
 def test_open_pr_identity_is_not_silent_and_blocks_duplicate():
     assert pending_pr_for_issue(FakeClient(open_pr=True), 1388)
     assert not pending_pr_for_issue(FakeClient(open_pr=False), 1388)
