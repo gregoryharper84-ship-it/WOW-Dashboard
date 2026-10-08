@@ -148,6 +148,7 @@ def dispatch_once(client: GitHubTransport, redis_client: Any, manifest: dict[str
     skipped: set[int] = set()
     has_pending_pr = False
     has_attempt_cap = False
+    needs_p1_bootstrap = False
     while True:
         issue = next_approved_issue(
             client, manifest, exclude_issue_numbers=frozenset(skipped),
@@ -157,8 +158,19 @@ def dispatch_once(client: GitHubTransport, redis_client: Any, manifest: dict[str
                 return "DISPATCH_ATTEMPT_CAP_REQUIRES_TRIAGE"
             if has_pending_pr:
                 return "AWAITING_EXISTING_PR_REVIEW_OR_REPAIR"
+            if needs_p1_bootstrap:
+                return "P1_EXACT_WORKER_BOOTSTRAP_REQUIRED"
             return "NO_APPROVED_OPEN_ENGINEERING_TASK"
         issue_number = int(issue["issue_number"])
+        if str(issue.get("severity")).upper() == "P1" and os.getenv(
+            "WOW_ENGINEERING_EXACT_P1_BOOTSTRAP_CERTIFIED", "0"
+        ) != "1":
+            # Protected main currently rejects exact P1 targets. Without a
+            # separately approved worker bootstrap, admitting P1 would loop
+            # back to the generic top-of-queue candidate.
+            needs_p1_bootstrap = True
+            skipped.add(issue_number)
+            continue
         if pending_pr_for_issue(client, issue_number):
             has_pending_pr = True
             skipped.add(issue_number)
