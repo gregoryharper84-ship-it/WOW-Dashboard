@@ -85,6 +85,7 @@ def test_packet_contains_single_domain_action_contract_without_secrets():
     assert "FRESH_CHAT_SUBMIT_AND_POLL_DURABLE_WOW_V17_DAILY_SNAPSHOT" in manifest["acceptance_required"]
     assert "FRESH_CHAT_SCORE_WOW_V17_SPREAD_FORWARD_SHADOW" in manifest["acceptance_required"]
     assert "FRESH_CHAT_SUBMIT_AND_POLL_DURABLE_WOW_V17_NFL_PICKEM_BOARD" in manifest["acceptance_required"]
+    assert "FRESH_CHAT_PICKEM_SKILL_FORM_CANARY" in manifest["acceptance_required"]
 
     assert "WOW_ACTION_API_KEY=" not in text
     assert "Bearer sk-" not in text
