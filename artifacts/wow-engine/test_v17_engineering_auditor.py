@@ -279,10 +279,11 @@ class _WatchdogStore:
         return True
 
 
-def _watchdog_run(at, *, conclusion="failure", branch="main", status="completed"):
+def _watchdog_run(at, *, conclusion="failure", branch="main", status="completed", event="schedule"):
     return {
         "id": 12345, "created_at": at.isoformat(),
         "head_branch": branch, "status": status, "conclusion": conclusion,
+        "event": event,
     }
 
 
@@ -292,11 +293,14 @@ def test_render_side_watchdog_deadman_creates_durable_p0_on_missing_runs():
     assert reconcile_sirt_watchdog(store, session=session, now=now) == "WATCHDOG_HEARTBEAT_MISSING"
     assert len(store.opened) == 1
     kind, fields = store.opened[0]
-    assert kind == "WATCHDOG_HEARTBEAT_MISSING"
+    assert kind == "AUDITOR_HEALTH"
     assert fields["severity"] == "P0"
+    assert fields["evidence"]["finding_code"] == "WATCHDOG_HEARTBEAT_MISSING"
+    assert fields["evidence"]["event"] == "schedule"
     assert fields["evidence"]["can_execute"] is False
     assert fields["evidence"]["last_completed_run_id"] is None
     assert session.calls[0][1]["params"]["branch"] == "main"
+    assert session.calls[0][1]["params"]["event"] == "schedule"
     assert not store.resolved
 
 
@@ -320,7 +324,7 @@ def test_render_side_watchdog_deadman_accepts_failed_watchdog_as_live_not_health
         store, session=_WatchdogSession([run]), now=now
     ) == "WATCHDOG_RUN_OBSERVED"
     assert not store.opened
-    assert store.resolved[0][0] == "WATCHDOG_HEARTBEAT_MISSING"
+    assert store.resolved[0][0] == "AUDITOR_HEALTH"
 
 
 def test_render_side_watchdog_deadman_malformed_or_http_error_fails_closed():
@@ -382,3 +386,41 @@ def test_watchdog_and_github_polls_have_distinct_failure_boundaries():
     assert '# Poll the watchdog separately even when ordinary GitHub' in source
     assert 'poll_health.report_watchdog(reconcile_sirt_watchdog(store, now=now))' in source
     assert 'poll_health.report_github(IndependentPollHealth.github_failure(exc))' in source
+
+
+def test_scheduler_watchdog_cannot_be_masked_by_push_or_workflow_run():
+    now = datetime(2026, 10, 8, 18, 0, tzinfo=timezone.utc)
+    store = _WatchdogStore()
+    runs = [
+        _watchdog_run(now - timedelta(minutes=1), event="push"),
+        _watchdog_run(now - timedelta(minutes=2), event="workflow_run"),
+        _watchdog_run(now - timedelta(minutes=3), event="workflow_dispatch"),
+    ]
+    assert reconcile_sirt_watchdog(
+        store, session=_WatchdogSession(runs), now=now
+    ) == "WATCHDOG_HEARTBEAT_MISSING"
+    assert store.opened[0][0] == "AUDITOR_HEALTH"
+
+
+@pytest.mark.parametrize("conclusion", ["cancelled", "timed_out", "skipped"])
+def test_scheduler_watchdog_does_not_count_incomplete_conclusions(conclusion):
+    now = datetime(2026, 10, 8, 18, 0, tzinfo=timezone.utc)
+    store = _WatchdogStore()
+    assert reconcile_sirt_watchdog(
+        store,
+        session=_WatchdogSession([_watchdog_run(now - timedelta(minutes=1), conclusion=conclusion)]),
+        now=now,
+    ) == "WATCHDOG_HEARTBEAT_MISSING"
+
+
+def test_watchdog_finding_type_respects_real_postgres_schema_constraint():
+    """Avoid fake-store false greens when DB rejects a newly invented type."""
+    migration = MIGRATION.read_text()
+    assert "constraint wow_engineering_audit_findings_type" in migration
+    assert "'AUDITOR_HEALTH'" in migration
+    assert "'WATCHDOG_HEARTBEAT_MISSING'" not in migration
+    store = _WatchdogStore()
+    now = datetime(2026, 10, 8, 18, 0, tzinfo=timezone.utc)
+    reconcile_sirt_watchdog(store, session=_WatchdogSession([]), now=now)
+    assert store.opened[0][0] == "AUDITOR_HEALTH"
+    assert store.opened[0][1]["evidence"]["finding_code"] == "WATCHDOG_HEARTBEAT_MISSING"

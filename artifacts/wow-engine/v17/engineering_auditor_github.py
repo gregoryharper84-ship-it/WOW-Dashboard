@@ -167,15 +167,16 @@ def reconcile_sirt_watchdog(
 ) -> str:
     """Independent Render-side dead-man check of GitHub's SIRT watchdog.
 
-    A completed failure is valid liveness: SIRT must report a broken engineering
-    system as BLOCKED, not green. Skipped, malformed, wrong-branch and stale
-    runs cannot silently satisfy the heartbeat. No GitHub mutation or credential.
+    A completed scheduled failure is valid scheduler liveness: SIRT must report
+    broken engineering as BLOCKED, not green. Push/dispatch/workflow_run triggers
+    never prove the 15-minute cron is alive. Skipped, cancelled, malformed,
+    wrong-branch and stale runs cannot satisfy the heartbeat. No GitHub writer.
     """
     observed = now or utcnow()
     result = _get(
         session,
         f"/actions/workflows/{SIRT_WATCHDOG_WORKFLOW}/runs",
-        params={"branch": "main", "per_page": 3},
+        params={"branch": "main", "event": "schedule", "per_page": 3},
     )
     if not isinstance(result, dict) or not isinstance(result.get("workflow_runs"), list):
         raise GitHubAuditUnavailable("SIRT_WATCHDOG_RUN_INVENTORY_INVALID")
@@ -184,9 +185,11 @@ def reconcile_sirt_watchdog(
     for run in result["workflow_runs"]:
         if not isinstance(run, dict):
             raise GitHubAuditUnavailable("SIRT_WATCHDOG_RUN_INVALID")
-        if run.get("head_branch") != "main":
+        # Verify the event independently of GitHub's query filtering: a
+        # manually-triggered watchdog must never mask absent scheduled runs.
+        if run.get("head_branch") != "main" or run.get("event") != "schedule":
             continue
-        if run.get("status") != "completed" or run.get("conclusion") == "skipped":
+        if run.get("status") != "completed" or run.get("conclusion") not in {"success", "failure"}:
             continue
         if not run.get("id") or not run.get("created_at"):
             raise GitHubAuditUnavailable("SIRT_WATCHDOG_RUN_IDENTITY_INVALID")
@@ -202,17 +205,19 @@ def reconcile_sirt_watchdog(
     age = observed - newest[0] if newest else None
     if age is None or age > SIRT_WATCHDOG_MAX_AGE:
         store.open_finding(
-            "WATCHDOG_HEARTBEAT_MISSING",
+            "AUDITOR_HEALTH",
             component=SIRT_WATCHDOG_COMPONENT,
             severity="P0",
             source_ref=str(newest[1]["id"]) if newest else None,
             evidence={
                 "source_system": "GITHUB_ACTIONS",
                 "watchdog_workflow": SIRT_WATCHDOG_WORKFLOW,
+                "event": "schedule",
+                "finding_code": "WATCHDOG_HEARTBEAT_MISSING",
                 "last_completed_run_id": str(newest[1]["id"]) if newest else None,
                 "last_completed_at": iso(newest[0]) if newest else None,
                 "max_age_minutes": 90,
-                "reason": "NO_COMPLETED_NON_SKIPPED_MAIN_RUN_WITHIN_WINDOW",
+                "reason": "NO_COMPLETED_SCHEDULED_MAIN_RUN_WITHIN_WINDOW",
                 "can_execute": False,
             },
             now=observed,
@@ -220,9 +225,9 @@ def reconcile_sirt_watchdog(
         return "WATCHDOG_HEARTBEAT_MISSING"
 
     store.resolve_finding(
-        "WATCHDOG_HEARTBEAT_MISSING",
+        "AUDITOR_HEALTH",
         SIRT_WATCHDOG_COMPONENT,
-        resolution="FRESH_INDEPENDENT_WATCHDOG_RUN_OBSERVED",
+        resolution="FRESH_SCHEDULED_WATCHDOG_RUN_OBSERVED",
         now=observed,
     )
     return "WATCHDOG_RUN_OBSERVED"
