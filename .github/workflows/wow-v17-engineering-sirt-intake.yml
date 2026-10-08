@@ -1,0 +1,123 @@
+name: wow-v17-engineering-sirt-intake
+
+on:
+  workflow_run:
+    workflows:
+      - wow-v17-chatgpt-engineering-worker
+      - wow-v17-claude-engineering-worker
+    types: [completed]
+
+permissions:
+  contents: read
+  actions: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: sirt-intake-${{ github.event.workflow_run.id }}-${{ github.event.workflow_run.run_attempt }}
+  cancel-in-progress: false
+
+jobs:
+  independent-intake:
+    # Only trusted main worker events; never check out or execute PR code.
+    if: >-
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Resolve trusted engineering PR
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_WORKFLOW: ${{ github.event.workflow_run.name }}
+          SOURCE_ID: ${{ github.event.workflow_run.id }}
+          SOURCE_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$SOURCE_WORKFLOW" in
+            wow-v17-chatgpt-engineering-worker) prefix=chatgpt ;;
+            wow-v17-claude-engineering-worker) prefix=claude ;;
+            *) echo "::error::UNRECOGNIZED_WORKER"; exit 1 ;;
+          esac
+          branch="$prefix/engineering/$SOURCE_ID-$SOURCE_ATTEMPT"
+          prs=$(gh pr list --repo "$GITHUB_REPOSITORY" --state all \
+            --head "$branch" --json number,title,body,headRefOid,isDraft,state)
+          count=$(jq 'length' <<<"$prs")
+          if [ "$count" -eq 0 ]; then
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            echo "No engineering PR produced by this worker run." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          [ "$count" -eq 1 ] || { echo "::error::AMBIGUOUS_WORKER_PR"; exit 1; }
+          pr=$(jq -r '.[0].number' <<<"$prs")
+          sha=$(jq -r '.[0].headRefOid' <<<"$prs")
+          body=$(jq -r '.[0].body // ""' <<<"$prs")
+          if ! grep -Eq '^Pre-PR agent gates: .?PASS.?\s*$' <<<"$body"; then
+            echo "::error::SIRT_HANDOFF_BLOCKED_PRE_PR_GATES_NOT_PASS for PR $pr"; exit 1
+          fi
+          [[ "$sha" =~ ^[a-f0-9]{40}$ ]] || { echo "::error::INVALID_PR_HEAD_SHA"; exit 1; }
+          incident=$(sed -nE 's/^Incident: .?#?([0-9]+).?$/\1/p' <<<"$body" | head -1)
+          [[ "$incident" =~ ^[0-9]+$ ]] || { echo "::error::INCIDENT_ID_MISSING"; exit 1; }
+          echo "found=true" >> "$GITHUB_OUTPUT"
+          echo "pr=$pr" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "incident=$incident" >> "$GITHUB_OUTPUT"
+
+      - name: Write SIRT independent-intake issue and cross-link
+        if: steps.resolve.outputs.found == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ steps.resolve.outputs.pr }}
+          SHA: ${{ steps.resolve.outputs.sha }}
+          INCIDENT: ${{ steps.resolve.outputs.incident }}
+          SOURCE_ID: ${{ github.event.workflow_run.id }}
+          SOURCE_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          SOURCE_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          short="${SHA:0:12}"
+          marker="WOW_SIRT_INTAKE_PR_${PR}_HEAD_${SHA}"
+          existing=$(gh issue list --repo "$GITHUB_REPOSITORY" --state all \
+            --search "$marker in:body" --limit 100 \
+            --json number,body | jq -r --arg m "$marker" '[.[] | select(.body | contains($m))][0].number // empty')
+          if [ -n "$existing" ]; then
+            echo "Existing SIRT intake #$existing for PR #$PR at $short." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          cat > "$RUNNER_TEMP/sirt-intake.md" <<EOF
+          <!-- $marker -->
+          ## Independent SIRT intake — NOT verification approval
+
+          - Engineering incident: #$INCIDENT
+          - Engineering PR: #$PR
+          - Exact PR head: $SHA
+          - Trusted source workflow run: $SOURCE_ID (attempt $SOURCE_ATTEMPT)
+          - Worker conclusion: $SOURCE_CONCLUSION
+          - Intake status: SIRT_REVIEW_REQUIRED
+          - Independent verification: NOT_YET_PERFORMED
+          - Merge authorization: NONE
+          - Production deployment authorization: NONE
+
+          SIRT independently audits risk, root cause, affected lanes, security,
+          regression/counterexample coverage, failure recurrence, and head drift.
+          Pre-PR agent PASS is only an engineering assertion.
+
+          ### Required handoffs
+          - [ ] SIRT publishes an independent PASS/FAIL/HOLD receipt bound to $SHA.
+          - [ ] Independent Verification evaluates exact-head test/review evidence.
+          - [ ] Release verifies protected merge SHA and actual production acceptance.
+          - [ ] Final closure requires terminal receipts, not this intake.
+
+          No self-approval, protected merge override, or deployment authorization.
+          can_execute=false; terminal_authority=V17_TERMINAL_REDUCER.
+          EOF
+          url=$(gh issue create --repo "$GITHUB_REPOSITORY" \
+            --title "[SIRT Intake] PR #$PR head $short (incident #$INCIDENT)" \
+            --body-file "$RUNNER_TEMP/sirt-intake.md")
+          gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" \
+            --body "Independent SIRT intake created: $url. Exact head: $SHA. SIRT and Independent Verification still pending; not a merge or deployment approval."
+          echo "SIRT intake: $url" >> "$GITHUB_STEP_SUMMARY"
+          echo "can_execute=false; terminal_authority=V17_TERMINAL_REDUCER" >> "$GITHUB_STEP_SUMMARY"
