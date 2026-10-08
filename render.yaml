@@ -181,6 +181,12 @@ services:
         value: "30"
       - key: WOW_ENGINEERING_AUDITOR_GITHUB_INTERVAL_SECONDS
         value: "300"
+      - key: WOW_ENGINEERING_RESIDENT_DISPATCH_ENABLED
+        # Class B worker-promotion gate: off until trusted token and exact-head review.
+        value: "0"
+      - key: WOW_ENGINEERING_GITHUB_TOKEN
+        # Actions:write, Issues:read, Pull requests:read, metadata:read only.
+        sync: false
       - key: WOW_ENGINEERING_LANGGRAPH_ENABLED
         # LangGraph remains fail-closed until a governed checkpoint backend and
         # production worker adapters have been explicitly reviewed and promoted.
