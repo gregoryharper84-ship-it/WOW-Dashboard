@@ -73,13 +73,13 @@ def _run_delivery(tmp_path, *, changed, branch, returned_pr):
 def test_repair_without_changes_fails_closed(tmp_path):
     result = _run_delivery(tmp_path, changed="false", branch="", returned_pr="")
     assert result.returncode != 0
-    assert "ACTIONABLE_REPAIR_NO_DELIVERABLE" in result.stderr
+    assert "ACTIONABLE_REPAIR_NO_DELIVERABLE" in result.stdout
 
 
 def test_repair_branch_without_pr_fails_closed(tmp_path):
     result = _run_delivery(tmp_path, changed="true", branch="claude/repair-1021", returned_pr="")
     assert result.returncode != 0
-    assert "ACTIONABLE_REPAIR_PR_MISSING" in result.stderr
+    assert "ACTIONABLE_REPAIR_PR_MISSING" in result.stdout
 
 
 def test_repair_with_open_pr_passes(tmp_path):
