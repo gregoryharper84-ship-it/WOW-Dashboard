@@ -260,13 +260,6 @@ def reconcile_weekly_evidence(
                            "PICKEM_WEEKLY_PREDICTION_RECEIPT_MISSING")
             for row in picks.values()
         ),
-        "settlement_revision_receipts": sorted(
-            (event, version, _required_text(row.get("settlement_receipt_id"),
-                                          "PICKEM_WEEKLY_SETTLEMENT_RECEIPT_MISSING"))
-            for event, versions in (
-                (event, {j: y for j, y in enumerate(())}) for event in ()
-            ) for version, row in versions.items()
-        ),
         "latest_settlement_receipts": sorted(
             _required_text(row.get("settlement_receipt_id"),
                            "PICKEM_WEEKLY_SETTLEMENT_RECEIPT_MISSING")
@@ -276,6 +269,26 @@ def reconcile_weekly_evidence(
     }
     # Include every immutable revision payload in the key: a changed winner with
     # an accidentally reused latest ID must not silently dedupe a regrade.
+    # A reused receipt ID with changed event/prediction contents must also
+    # produce a different candidate identity (never silent overwrite).
+    for label, rows in (
+        ("manifest_events", manifest.values()),
+        ("immutable_predictions", picks.values()),
+    ):
+        try:
+            serialized = json.dumps(
+                sorted((dict(row) for row in rows),
+                       key=lambda row: str(row["official_event_id"])),
+                sort_keys=True, separators=(",", ":"), allow_nan=False,
+            )
+        except (TypeError, ValueError, KeyError) as exc:
+            raise WeeklyEvidenceError(
+                f"PICKEM_WEEKLY_{label.upper()}_NOT_CANONICAL_JSON"
+            ) from exc
+        canonical[f"{label}_sha256"] = hashlib.sha256(
+            serialized.encode("utf-8")
+        ).hexdigest()
+
     canonical["settlement_history_sha256"] = hashlib.sha256(
         json.dumps(
             sorted(
