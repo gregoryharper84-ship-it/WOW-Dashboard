@@ -204,7 +204,8 @@ def test_repeated_failed_dispatch_is_bounded():
     assert client.sent == []
 
 
-def test_existing_pr_cannot_starve_next_approved_p0_incident():
+def test_existing_pr_cannot_starve_next_approved_p0_incident(monkeypatch):
+    monkeypatch.setenv("WOW_ENGINEERING_EXACT_P1_BOOTSTRAP_CERTIFIED", "1")
     manifest = {**MANIFEST, "restoration": [ISSUE, SECOND_ISSUE]}
     client, store = FakeClient(open_pr=True), FakeRedis()
     assert dispatch_once(client, store, manifest) == "DISPATCHED_TO_PROTECTED_ENGINEERING_WORKFLOW"
@@ -212,7 +213,8 @@ def test_existing_pr_cannot_starve_next_approved_p0_incident():
     assert store.attempts == 1
 
 
-def test_retry_cap_cannot_starve_next_approved_p0_incident():
+def test_retry_cap_cannot_starve_next_approved_p0_incident(monkeypatch):
+    monkeypatch.setenv("WOW_ENGINEERING_EXACT_P1_BOOTSTRAP_CERTIFIED", "1")
     manifest = {**MANIFEST, "restoration": [ISSUE, SECOND_ISSUE]}
     client, store = FakeClient(), FakeRedis()
     store.attempts_by_key[ATTEMPT_KEY_PREFIX + "1388"] = 3
@@ -244,20 +246,28 @@ def test_p1_cannot_request_separate_mutation_domain(monkeypatch):
         client.dispatch({**SECOND_ISSUE, "lease_group": "P1_UNREVIEWED"})
 
 
-def test_both_workers_validate_exact_p1_route_instead_of_generic_queue():
-    root = Path(__file__).resolve().parents[2]
-    for workflow_name in (
-        "wow-v17-chatgpt-engineering-worker.yml",
-        "wow-v17-claude-engineering-worker.yml",
-    ):
-        content = (root / ".github/workflows" / workflow_name).read_text()
-        assert 'TARGET_INCIDENT_NOT_SUPPORTED:' in content
-        assert '[ "$severity" = "P1" ] && [ "$lane" = "STANDARD" ]' in content
-        assert "lease_group=GLOBAL" in content
-        assert 'TARGET_INCIDENT_LEASE_MISMATCH:' in content
-    provider = (root / ".github/workflows/wow-v17-engineering-provider-dispatcher.yml").read_text()
-    assert 'TARGET_INCIDENT_INVALID' in provider
-    assert 'TARGET_INCIDENT_REQUIRES_DOMAIN_LEASE' not in provider
+def test_p1_remains_held_until_trusted_bootstrap_is_certified(monkeypatch):
+    monkeypatch.delenv("WOW_ENGINEERING_EXACT_P1_BOOTSTRAP_CERTIFIED", raising=False)
+    manifest = {**MANIFEST, "restoration": [SECOND_ISSUE]}
+    client = FakeClient()
+    assert dispatch_once(client, FakeRedis(), manifest) == "P1_EXACT_WORKER_BOOTSTRAP_REQUIRED"
+    assert not client.sent
+
+
+def test_untrusted_bootstrap_flag_value_fails_closed(monkeypatch):
+    monkeypatch.setenv("WOW_ENGINEERING_EXACT_P1_BOOTSTRAP_CERTIFIED", "yes")
+    manifest = {**MANIFEST, "restoration": [SECOND_ISSUE]}
+    client = FakeClient()
+    assert dispatch_once(client, FakeRedis(), manifest) == "P1_EXACT_WORKER_BOOTSTRAP_REQUIRED"
+    assert not client.sent
+
+
+def test_p0_still_dispatches_without_p1_bootstrap(monkeypatch):
+    monkeypatch.delenv("WOW_ENGINEERING_EXACT_P1_BOOTSTRAP_CERTIFIED", raising=False)
+    client = FakeClient()
+    assert dispatch_once(client, FakeRedis(), MANIFEST) == "DISPATCHED_TO_PROTECTED_ENGINEERING_WORKFLOW"
+    assert client.sent == [ISSUE]
+
 
 
 def test_distinct_resident_heartbeat_is_durable_and_not_self_approval():
