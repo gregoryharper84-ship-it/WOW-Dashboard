@@ -26,7 +26,7 @@ ISSUE = {
     "conflict_keys": ["LLP_USER_PATH"],
 }
 SECOND_ISSUE = {
-    **ISSUE, "issue_number": 823, "priority_rank": 2, "lease_group": "P0_LLP_RESTORE",
+    **ISSUE, "issue_number": 823, "priority_rank": 2, "lease_group": "GLOBAL",
 }
 MANIFEST = {
     "restoration": [ISSUE], "acceleration": [],
