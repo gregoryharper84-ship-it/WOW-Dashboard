@@ -3,8 +3,8 @@
 The Custom GPT Instructions field is documented as an 8,000-character surface,
 but the live editor can reject text at the boundary after UTF-8/normalization.
 The canonical host instructions are therefore required to stay below a 7,500-byte
-safety ceiling, leaving margin under the product limit. The PrizePicks live-host
-addendum is packaged separately as a Knowledge file.
+safety ceiling, leaving margin under the product limit. The PrizePicks and Pick Em
+live-host addenda are packaged separately as Knowledge files.
 
 The Custom GPT editor permits only one custom Action set per domain. Therefore
 all production WOW operations, including durable run-control orchestration and
@@ -31,11 +31,13 @@ ROOT = Path(__file__).resolve().parents[3]
 ENGINE = ROOT / "artifacts" / "wow-engine"
 INSTRUCTIONS = ENGINE / "WOW_V17_CUSTOM_GPT_INSTRUCTIONS.txt"
 PRIZEPICKS_ADDENDUM = ENGINE / "WOW_V17_CUSTOM_GPT_PRIZEPICKS_SKILL_ADDENDUM.txt"
+PICKEM_ADDENDUM = ENGINE / "WOW_V17_CUSTOM_GPT_PICK_EM_SKILL_ADDENDUM.txt"
 ACTION_SCHEMA = ENGINE / "v17" / "openapi.wow-betting-engine.v17.yaml"
 
 EDITOR_INSTRUCTION_CHAR_LIMIT = 8000
 EDITOR_INSTRUCTION_BYTE_SAFETY_LIMIT = 7500
 PRIZEPICKS_KNOWLEDGE_FILENAME = "WOW_V17_PRIZEPICKS_HOST_CONTRACT_KNOWLEDGE.txt"
+PICKEM_KNOWLEDGE_FILENAME = "WOW_V17_PICK_EM_HOST_CONTRACT_KNOWLEDGE.txt"
 REQUIRED_OPERATION_COUNT = 26
 
 REQUIRED_OPERATIONS = (
@@ -64,6 +66,19 @@ REQUIRED_PRIZEPICKS_TOKENS = (
     "Offer",
     "Available side(s)",
     "Current/live note",
+)
+REQUIRED_PICKEM_TOKENS = (
+    "Run Pick Em Skill",
+    "submitWowV17NFLPickemBoard",
+    "getWowV17NFLPickemRun",
+    "PICKEM_BOARD_READY",
+    "full_sheet_submission_ready=true",
+    "blocked_event_count == 0",
+    "wow.nfl-game-win-probability-expert",
+    "wow.nfl-total-points-tiebreaker-specialist",
+    "GH",
+    "Total Correct",
+    "can_execute=false",
 )
 REQUIRED_EDITOR_TOKENS = (
     "custom_gpt_identity=WOW_BETTING_ENGINE",
@@ -94,10 +109,12 @@ def _repository_sha() -> str:
 def build_packet() -> tuple[bytes, dict]:
     instructions = INSTRUCTIONS.read_bytes()
     addendum = PRIZEPICKS_ADDENDUM.read_bytes()
+    pickem_addendum = PICKEM_ADDENDUM.read_bytes()
     schema = ACTION_SCHEMA.read_bytes()
 
     instructions_text = instructions.decode("utf-8")
     addendum_text = addendum.decode("utf-8")
+    pickem_addendum_text = pickem_addendum.decode("utf-8")
     schema_text = schema.decode("utf-8")
 
     if len(instructions_text) > EDITOR_INSTRUCTION_CHAR_LIMIT:
@@ -112,6 +129,7 @@ def build_packet() -> tuple[bytes, dict]:
     missing_editor_tokens = [token for token in REQUIRED_EDITOR_TOKENS if token not in instructions_text]
     missing_operations = [name for name in REQUIRED_OPERATIONS if name not in schema_text]
     missing_addendum_tokens = [token for token in REQUIRED_PRIZEPICKS_TOKENS if token not in addendum_text]
+    missing_pickem_tokens = [token for token in REQUIRED_PICKEM_TOKENS if token not in pickem_addendum_text]
     operation_count = schema_text.count("operationId:")
     if missing_editor_tokens:
         raise RuntimeError("GPT_EDITOR_SYNC_INSTRUCTION_CONTRACT_MISSING:" + ",".join(missing_editor_tokens))
@@ -123,6 +141,8 @@ def build_packet() -> tuple[bytes, dict]:
         )
     if missing_addendum_tokens:
         raise RuntimeError("GPT_EDITOR_SYNC_ADDENDUM_CONTRACT_MISSING:" + ",".join(missing_addendum_tokens))
+    if missing_pickem_tokens:
+        raise RuntimeError("GPT_EDITOR_SYNC_PICKEM_ADDENDUM_CONTRACT_MISSING:" + ",".join(missing_pickem_tokens))
 
     packet = instructions.rstrip() + b"\n"
     manifest = {
@@ -141,6 +161,10 @@ def build_packet() -> tuple[bytes, dict]:
         "prizepicks_addendum_sha256": _sha256(addendum),
         "prizepicks_addendum_installation_surface": "KNOWLEDGE_FILE",
         "prizepicks_knowledge_output_file": PRIZEPICKS_KNOWLEDGE_FILENAME,
+        "pickem_addendum_path": str(PICKEM_ADDENDUM.relative_to(ROOT)),
+        "pickem_addendum_sha256": _sha256(pickem_addendum),
+        "pickem_addendum_installation_surface": "KNOWLEDGE_FILE",
+        "pickem_knowledge_output_file": PICKEM_KNOWLEDGE_FILENAME,
         "action_schema_path": str(ACTION_SCHEMA.relative_to(ROOT)),
         "action_schema_sha256": _sha256(schema),
         "action_schema_installation_surface": "SINGLE_CUSTOM_ACTION_DOMAIN",
@@ -151,12 +175,14 @@ def build_packet() -> tuple[bytes, dict]:
         "combined_editor_packet_sha256": _sha256(packet),
         "required_operations": list(REQUIRED_OPERATIONS),
         "required_prizepicks_tokens": list(REQUIRED_PRIZEPICKS_TOKENS),
+        "required_pickem_tokens": list(REQUIRED_PICKEM_TOKENS),
         "authentication_contract": "API_KEY_TO_BEARER_EXISTING_WOW_ACTION_API_KEY__SECRET_NOT_INCLUDED",
         "editor_update_required": True,
         "live_editor_verified": False,
         "acceptance_required": [
             "PASTE_CANONICAL_INSTRUCTIONS_INTO_INSTRUCTIONS_FIELD",
             "ATTACH_PRIZEPICKS_ADDENDUM_AS_KNOWLEDGE_FILE",
+            "ATTACH_PICKEM_ADDENDUM_AS_KNOWLEDGE_FILE",
             "IMPORT_SINGLE_CANONICAL_ACTION_SCHEMA_WITH_26_OPERATIONS",
             "PRESERVE_EXISTING_WOW_ACTION_API_KEY_BEARER_AUTH",
             "SAVE_AND_RELOAD_PRODUCTION_WOW_BETTING_ENGINE_EDITOR",
@@ -185,9 +211,11 @@ def main() -> None:
     packet, manifest = build_packet()
     packet_path = args.output_dir / "WOW_V17_GPT_EDITOR_SYNC_PACKET.txt"
     knowledge_path = args.output_dir / PRIZEPICKS_KNOWLEDGE_FILENAME
+    pickem_knowledge_path = args.output_dir / PICKEM_KNOWLEDGE_FILENAME
     manifest_path = args.output_dir / "WOW_V17_GPT_EDITOR_SYNC_MANIFEST.json"
     packet_path.write_bytes(packet)
     knowledge_path.write_bytes(PRIZEPICKS_ADDENDUM.read_bytes())
+    pickem_knowledge_path.write_bytes(PICKEM_ADDENDUM.read_bytes())
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(json.dumps(manifest, sort_keys=True))
 
