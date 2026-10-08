@@ -113,7 +113,7 @@ def test_worker_route_shell_execution_is_fail_closed(
     job = doc["jobs"]["multi-agent-engineering"]
     step = next(s for s in job["steps"] if s.get("name") == "Build live dual-stream dispatch plan")
     source = step["run"]
-    begin = source.index('if [ -n "$${TARGET_INCIDENT:-}" ]; then')
+    begin = source.index('if [ -n "${TARGET_INCIDENT:-}" ]; then')
     rest = source[begin:]
     branch = re.search(r"\n\s*else\n\s+jq '\.records \|=", rest)
     assert branch is not None, "Exact target branch must remain structurally identifiable"
