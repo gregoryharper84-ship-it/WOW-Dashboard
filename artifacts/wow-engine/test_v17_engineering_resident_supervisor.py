@@ -13,6 +13,7 @@ from v17.engineering_resident_supervisor import (
     dispatch_once,
     next_approved_issue,
     pending_pr_for_issue,
+    persist_resident_heartbeat,
     supervisor_runtime_status,
 )
 
@@ -112,7 +113,13 @@ def test_enabled_missing_token_or_bad_governance_blocks(monkeypatch):
     assert supervisor_runtime_status()["status"] == "BLOCKED"
     monkeypatch.setenv("WOW_DRY_RUN_ONLY", "true")
     monkeypatch.setenv("REDIS_URL", "redis://example.invalid:6379/0")
+    assert supervisor_runtime_status()["status"] == "BLOCKED"  # No durable receipt = no dispatch.
+    monkeypatch.setenv("SUPABASE_URL", "https://example.invalid")
+    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "test-fixture-not-a-secret")
     assert supervisor_runtime_status()["status"] == "CONFIGURED_UNVERIFIED"
+    monkeypatch.delenv("SUPABASE_SERVICE_ROLE_KEY")
+    monkeypatch.delenv("SUPABASE_SERVICE_KEY", raising=False)
+    assert supervisor_runtime_status()["status"] == "BLOCKED"
     monkeypatch.delenv("REDIS_URL")
     assert supervisor_runtime_status()["status"] == "BLOCKED"
 
@@ -251,3 +258,56 @@ def test_both_workers_validate_exact_p1_route_instead_of_generic_queue():
     provider = (root / ".github/workflows/wow-v17-engineering-provider-dispatcher.yml").read_text()
     assert 'TARGET_INCIDENT_INVALID' in provider
     assert 'TARGET_INCIDENT_REQUIRES_DOMAIN_LEASE' not in provider
+
+
+def test_distinct_resident_heartbeat_is_durable_and_not_self_approval():
+    class Store:
+        def __init__(self):
+            self.rows = []
+        def table(self, name):
+            assert name == "wow_engineering_auditor_runtime"
+            return self
+        def upsert(self, payload, *, on_conflict):
+            assert on_conflict == "auditor_id"
+            self.rows.append(payload)
+            return self
+        def execute(self):
+            return {"error": None}
+
+    store = Store()
+    persist_resident_heartbeat(
+        store, status="RUNNING", outcome="NO_APPROVED_OPEN_ENGINEERING_TASK",
+        instance_id="test-instance:1",
+    )
+    row = store.rows[0]
+    assert row["auditor_id"] == "WOW_ENGINEERING_RESIDENT_DISPATCHER"
+    assert row["auditor_id"] != "WOW_ENGINEERING_AUDITOR"
+    assert row["status"] == "RUNNING"
+    assert row["last_error_code"] == "NO_APPROVED_OPEN_ENGINEERING_TASK"
+    assert row["can_execute"] is False
+    assert row["terminal_authority"] == "V17_TERMINAL_REDUCER"
+    assert row["last_heartbeat_at"].endswith("+00:00")
+    assert "token" not in repr(row).lower()
+
+
+@pytest.mark.parametrize("status,outcome", [
+    ("PASSED", "CYCLE_STARTED"),
+    ("RUNNING", "BAD:UNTRUSTED"),
+    ("RUNNING", "X" * 121),
+])
+def test_heartbeat_receipt_rejects_invalid_status_and_untrusted_outcome(status, outcome):
+    class NoWrite:
+        def table(self, name):
+            raise AssertionError("Should reject before writing")
+    with pytest.raises(ValueError, match="RESIDENT_HEARTBEAT"):
+        persist_resident_heartbeat(
+            NoWrite(), status=status, outcome=outcome, instance_id="test-instance:1",
+        )
+
+
+def test_sirt_resident_monitor_configuration_remains_explicit():
+    root = Path(__file__).resolve().parents[2]
+    script = (root / "artifacts/wow-engine/v17/sirt_assurance.py").read_text()
+    assert "WOW_SIRT_REQUIRE_ENGINEERING_RESIDENT_HEARTBEAT" in script
+    assert "dispatcher_runtime = read_auditor_runtime" in script
+    assert 'auditor_id=DISPATCHER_ID' in script
