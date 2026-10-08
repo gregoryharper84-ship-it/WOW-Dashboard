@@ -246,7 +246,8 @@ def test_independent_resident_dispatcher_heartbeat_passes_only_when_fresh():
     ({"terminal_authority": "WRONG"}, "DISPATCHER_AUTHORITY_UNVERIFIED"),
 ])
 def test_resident_dispatcher_unhealthy_receipts_fail_closed(bad, code):
-    dispatcher = runtime(auditor_id="WOW_ENGINEERING_RESIDENT_DISPATCHER", **bad)
+    dispatcher = runtime(auditor_id="WOW_ENGINEERING_RESIDENT_DISPATCHER")
+    dispatcher.update(bad)
     verdict = assess_sentinel(runtime=runtime(), dispatcher_runtime=dispatcher, now=NOW)
     assert verdict["status"] == "BLOCKED"
     assert code in {signal["reason"] for signal in verdict["signals"]}
