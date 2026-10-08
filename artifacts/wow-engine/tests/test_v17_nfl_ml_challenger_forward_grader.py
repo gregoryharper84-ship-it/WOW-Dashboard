@@ -100,6 +100,7 @@ def test_correctly_grades_a_selected_home_side_loss():
     ("composite_lower_bound","s",.99,"NFL_CHALLENGER_GRADE_LOWER_BOUND_INVALID"),
     ("game_id","o","2026_04_ATL_TB","NFL_CHALLENGER_GRADE_SETTLEMENT_EVENT_MISMATCH"),
     ("home_team","o","ATL","NFL_CHALLENGER_GRADE_SETTLEMENT_PARTICIPANTS_MISMATCH"),
+    ("home_team","s","Dallas Cowboys","NFL_CHALLENGER_GRADE_PREDICTION_PARTICIPANTS_MISMATCH"),
     ("home_win","o",True,"NFL_CHALLENGER_GRADE_SCORE_WINNER_CONFLICT"),
     ("home_score","o",46,"NFL_CHALLENGER_GRADE_SCORE_WINNER_CONFLICT"),
     ("tie","o",True,"NFL_CHALLENGER_GRADE_NONBINARY_TIE"),
