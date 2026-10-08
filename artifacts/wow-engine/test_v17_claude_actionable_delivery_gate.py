@@ -29,3 +29,60 @@ def test_delivery_check_runs_after_pr_attempt():
     assert source.index("      - name: Open governed engineering PR") < source.index(
         "      - name: Enforce actionable repair delivery"
     )
+
+
+def _delivery_shell():
+    """Extract the actual workflow Bash instead of reimplementing the condition."""
+    from textwrap import dedent
+
+    workflow = WORKFLOW.read_text()
+    step = workflow.split("      - name: Enforce actionable repair delivery\n", 1)[1].split(
+        "      - name: Record team receipt\n", 1
+    )[0]
+    script = step.split("        run: |\n", 1)[1]
+    return dedent(script)
+
+
+def _run_delivery(tmp_path, *, changed, branch, returned_pr):
+    import os
+    import subprocess
+
+    summary = tmp_path / "summary.txt"
+    env = dict(os.environ)
+    env.update(
+        {
+            "CHANGED": changed,
+            "BRANCH": branch,
+            "INCIDENT": "1021",
+            "GITHUB_REPOSITORY": "owner/repo",
+            "GITHUB_STEP_SUMMARY": str(summary),
+        }
+    )
+    # Replace only the gh CLI with a deterministic local stub.
+    stub = 'gh() { printf "%s\n" "$STUB_PR"; }\n'
+    env["STUB_PR"] = returned_pr
+    return subprocess.run(
+        ["bash", "-c", stub + _delivery_shell()],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
+def test_repair_without_changes_fails_closed(tmp_path):
+    result = _run_delivery(tmp_path, changed="false", branch="", returned_pr="")
+    assert result.returncode != 0
+    assert "ACTIONABLE_REPAIR_NO_DELIVERABLE" in result.stderr
+
+
+def test_repair_branch_without_pr_fails_closed(tmp_path):
+    result = _run_delivery(tmp_path, changed="true", branch="claude/repair-1021", returned_pr="")
+    assert result.returncode != 0
+    assert "ACTIONABLE_REPAIR_PR_MISSING" in result.stderr
+
+
+def test_repair_with_open_pr_passes(tmp_path):
+    result = _run_delivery(tmp_path, changed="true", branch="claude/repair-1021", returned_pr="1544")
+    assert result.returncode == 0, result.stderr
+    assert "PR #1544" in (tmp_path / "summary.txt").read_text()
