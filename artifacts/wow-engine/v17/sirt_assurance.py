@@ -145,7 +145,7 @@ def assess_sentinel(
             age, latest = min(recent, key=lambda entry: entry[0])
             if age > WORKER_ACTIVITY_MAX_AGE_SECONDS:
                 signals.append(_signal("ENGINEERING_WORKER", "GITHUB_ACTIONS", "P0", "ENGINEERING_WORKER_ACTIVITY_STALE"))
-            elif str(latest.get("status") or "") == "completed" and str(latest.get("conclusion") or "") not in {"success", "skipped"}:
+            elif str(latest.get("status") or "") == "completed" and str(latest.get("conclusion") or "") != "success":
                 signals.append(_signal("ENGINEERING_WORKER", "GITHUB_ACTIONS", "P1", "LATEST_ENGINEERING_WORKER_FAILED"))
             elif str(latest.get("status") or "") not in {"completed", "queued", "in_progress", "waiting", "requested"}:
                 signals.append(_signal("ENGINEERING_WORKER", "GITHUB_ACTIONS", "P1", "ENGINEERING_WORKER_STATE_UNVERIFIABLE"))
