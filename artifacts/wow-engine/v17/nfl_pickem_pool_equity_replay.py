@@ -15,7 +15,7 @@ from v17.nfl_pickem_pool_win_equity_shadow import (
     SHADOW_BLOCKED,
     build_pool_win_equity_shadow,
 )
-from v17.nfl_event_model_contract import CONTROLLING_SPECIALIST
+from nfl_event_model_contract import CONTROLLING_SPECIALIST
 
 SERVING_MODE = "RESEARCH_REPLAY_ONLY"
 REPLAY_BLOCKED = "REPLAY_BLOCKED"
