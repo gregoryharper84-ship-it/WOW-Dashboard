@@ -13,7 +13,9 @@ import time
 from datetime import timedelta
 
 from v17.engineering_auditor import EngineeringAuditStore, parse_timestamp, utcnow
-from v17.engineering_auditor_github import bootstrap_open_github_work, reconcile_github_updates
+from v17.engineering_auditor_github import (
+    bootstrap_open_github_work, reconcile_github_updates, reconcile_sirt_watchdog,
+)
 
 _logger = logging.getLogger("wow.v17.engineering_auditor")
 _STOP = threading.Event()
@@ -59,8 +61,8 @@ def _github_interval_seconds() -> int:
         value = int(os.getenv("WOW_ENGINEERING_AUDITOR_GITHUB_INTERVAL_SECONDS", "300"))
     except ValueError:
         value = 300
-    # Two unauthenticated public GitHub requests per pass. Five minutes keeps
-    # normal use well below the public 60-request/hour/IP budget.
+    # Three unauthenticated public GitHub requests per pass (issues, runs,
+    # independent SIRT runs); five minutes stays within 60/hour/IP.
     return min(max(value, 180), 1800)
 
 
@@ -101,6 +103,9 @@ def run_engineering_auditor_loop(stop_event: threading.Event = _STOP) -> None:
             )
             github_update_n = github_receipt["github_work_events"]
             github_health_n = github_receipt["code_health_events"]
+            watchdog_outcome = reconcile_sirt_watchdog(store)
+            if watchdog_outcome == "WATCHDOG_HEARTBEAT_MISSING":
+                github_error = "SIRT_WATCHDOG_HEARTBEAT_MISSING"
             last_github_sync = utcnow()
         except Exception as exc:
             github_error = f"GITHUB_AUDIT_{type(exc).__name__.upper()}"
@@ -150,6 +155,10 @@ def run_engineering_auditor_loop(stop_event: threading.Event = _STOP) -> None:
                         since=last_github_sync,
                         seen_workflow_runs=seen_workflow_runs,
                     )
+                    watchdog_outcome = reconcile_sirt_watchdog(store, now=now)
+                    if watchdog_outcome == "WATCHDOG_HEARTBEAT_MISSING":
+                        status = "DEGRADED"
+                        error_code = "SIRT_WATCHDOG_HEARTBEAT_MISSING"
                     last_github_sync = now
                 except Exception as exc:
                     status = "DEGRADED"

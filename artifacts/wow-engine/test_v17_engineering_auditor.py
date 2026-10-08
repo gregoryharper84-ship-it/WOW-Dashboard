@@ -19,6 +19,8 @@ from v17.engineering_auditor_github import (
     bootstrap_open_github_work,
     issue_to_event,
     reconcile_github_updates,
+    reconcile_sirt_watchdog,
+    GitHubAuditUnavailable,
 )
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -250,3 +252,95 @@ def test_auditor_skill_is_independent_and_read_only():
     assert "edit production code" in text
     assert "set `can_execute=true`" in text
     assert "AUDIT_FINDING -> REPORTER/INTAKE" in text
+
+
+class _WatchdogSession:
+    def __init__(self, runs, code=200):
+        self.runs, self.code = runs, code
+        self.calls = []
+
+    def get(self, url, **kwargs):
+        self.calls.append((url, kwargs))
+        assert url.endswith("/actions/workflows/wow-sirt-independent-reliability-sentinel.yml/runs")
+        return _Response({"workflow_runs": self.runs}, status_code=self.code)
+
+
+class _WatchdogStore:
+    def __init__(self):
+        self.opened = []
+        self.resolved = []
+
+    def open_finding(self, kind, **kwargs):
+        self.opened.append((kind, kwargs))
+        return {"status": "OPEN"}
+
+    def resolve_finding(self, kind, component, **kwargs):
+        self.resolved.append((kind, component, kwargs))
+        return True
+
+
+def _watchdog_run(at, *, conclusion="failure", branch="main", status="completed"):
+    return {
+        "id": 12345, "created_at": at.isoformat(),
+        "head_branch": branch, "status": status, "conclusion": conclusion,
+    }
+
+
+def test_render_side_watchdog_deadman_creates_durable_p0_on_missing_runs():
+    now = datetime(2026, 10, 8, 18, 0, tzinfo=timezone.utc)
+    store, session = _WatchdogStore(), _WatchdogSession([])
+    assert reconcile_sirt_watchdog(store, session=session, now=now) == "WATCHDOG_HEARTBEAT_MISSING"
+    assert len(store.opened) == 1
+    kind, fields = store.opened[0]
+    assert kind == "WATCHDOG_HEARTBEAT_MISSING"
+    assert fields["severity"] == "P0"
+    assert fields["evidence"]["can_execute"] is False
+    assert fields["evidence"]["last_completed_run_id"] is None
+    assert session.calls[0][1]["params"]["branch"] == "main"
+    assert not store.resolved
+
+
+def test_render_side_watchdog_deadman_rejects_stale_and_skipped_runs():
+    now = datetime(2026, 10, 8, 18, 0, tzinfo=timezone.utc)
+    stale = _watchdog_run(now - timedelta(hours=2))
+    skipped = _watchdog_run(now - timedelta(minutes=1), conclusion="skipped")
+    wrong = _watchdog_run(now - timedelta(minutes=1), branch="untrusted")
+    store = _WatchdogStore()
+    assert reconcile_sirt_watchdog(
+        store, session=_WatchdogSession([wrong, skipped, stale]), now=now
+    ) == "WATCHDOG_HEARTBEAT_MISSING"
+    assert store.opened[0][1]["evidence"]["last_completed_run_id"] == "12345"
+
+
+def test_render_side_watchdog_deadman_accepts_failed_watchdog_as_live_not_healthy():
+    now = datetime(2026, 10, 8, 18, 0, tzinfo=timezone.utc)
+    store = _WatchdogStore()
+    run = _watchdog_run(now - timedelta(minutes=10), conclusion="failure")
+    assert reconcile_sirt_watchdog(
+        store, session=_WatchdogSession([run]), now=now
+    ) == "WATCHDOG_RUN_OBSERVED"
+    assert not store.opened
+    assert store.resolved[0][0] == "WATCHDOG_HEARTBEAT_MISSING"
+
+
+def test_render_side_watchdog_deadman_malformed_or_http_error_fails_closed():
+    now = datetime(2026, 10, 8, 18, 0, tzinfo=timezone.utc)
+    with pytest.raises(GitHubAuditUnavailable, match="SIRT_WATCHDOG_RUN_IDENTITY_INVALID"):
+        reconcile_sirt_watchdog(
+            _WatchdogStore(),
+            session=_WatchdogSession([{"head_branch": "main", "status": "completed"}]),
+            now=now,
+        )
+    with pytest.raises(GitHubAuditUnavailable, match="GITHUB_AUDIT_HTTP_403"):
+        reconcile_sirt_watchdog(
+            _WatchdogStore(), session=_WatchdogSession([], code=403), now=now
+        )
+
+
+def test_render_worker_wires_independent_watchdog_with_typed_degraded_status():
+    source = WORKER.read_text()
+    assert "reconcile_sirt_watchdog(store)" in source
+    assert "reconcile_sirt_watchdog(store, now=now)" in source
+    assert 'error_code = "SIRT_WATCHDOG_HEARTBEAT_MISSING"' in source
+    assert 'status = "DEGRADED"' in source
+    assert "WOW_ENGINEERING_RESIDENT_DISPATCH_ENABLED" not in GITHUB_RECONCILER.read_text()
