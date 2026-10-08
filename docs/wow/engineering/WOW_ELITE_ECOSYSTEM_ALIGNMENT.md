@@ -10,7 +10,7 @@
 
 ## Closure evidence
 Use `python artifacts/wow-engine/v17/independent_closure_contract.py path/to/receipt.json` as one *necessary* gate for FIXED_AND_VERIFIED.
-The validator rejects self-review, self-QA, missing evidence, mismatched review/test/merge/deploy/QA SHAs, unapproved B/C changes, failed checks and protected-invariant drift. Acceptance from this local tool is not proof of real-world deployment or independent human/agent identity: GitHub/Render/Supabase evidence must be independently authenticated by separate release controls. Do not wire test fixtures as production receipts.
+The validator rejects self-review, self-QA, missing evidence, mismatched reviewed/tested head SHAs or merged/deployed/QA release SHAs, unapproved B/C changes, failed checks and protected-invariant drift. Acceptance from this local tool is not proof of real-world deployment or independent human/agent identity: GitHub/Render/Supabase evidence must be independently authenticated by separate release controls. Do not wire test fixtures as production receipts.
 
 ## Operational alignment
 1. Product creates acceptance criteria and severity.
@@ -22,3 +22,6 @@ The validator rejects self-review, self-QA, missing evidence, mismatched review/
 
 ## Integration requirements for follow-up PR
 Connect the checker to existing protected closeout workflow only after verifying the active receipt schema and authorization roots. Avoid parallel queues and databases. Enforce authentication of reviewer identity and production SHA at source, not from arbitrary JSON assertions. This PR does not claim runtime deployment or completed protected CI integration.
+
+## Merge-strategy identity binding
+The reviewed/tested PR head may legitimately differ from the deployed merge/squash commit. The validator therefore compares reviewed=tested and merged=deployed=QA_verified independently. `release_identity_authenticated=true` is only an assertion within a receipt, **not** proof by itself. The protected integration must derive this claim from GitHub's authenticated PR merge identity, verify the exact release SHA deployed by Render, and bind independent QA acceptance to that release SHA. Until these independent sources are checked, **HOLD** remains the only permitted production-closure decision.
