@@ -7,6 +7,7 @@ import pytest
 import yaml
 
 from v17.engineering_resident_supervisor import (
+    ATTEMPT_KEY_PREFIX,
     GitHubTransport,
     active_engineering_workflow,
     dispatch_once,
@@ -23,6 +24,9 @@ ISSUE = {
     "rapid_stream": "LLP_RESTORE",
     "lease_group": "P0_LLP_RESTORE",
     "conflict_keys": ["LLP_USER_PATH"],
+}
+SECOND_ISSUE = {
+    **ISSUE, "issue_number": 823, "priority_rank": 2, "lease_group": "P0_LLP_RESTORE",
 }
 MANIFEST = {
     "restoration": [ISSUE], "acceleration": [],
@@ -44,7 +48,7 @@ class FakeClient:
                     {"name": "wow-v17-chatgpt-engineering-worker"}
                 ]}
             return {"total_count": 0, "workflow_runs": []}
-        if suffix == "issues/1388":
+        if suffix in ("issues/1388", "issues/823"):
             return {"state": "open" if self.issue_open else "closed"}
         if suffix.startswith("pulls?"):
             return [{"body": "Incident: 1388"}] if self.open_pr else []
@@ -58,6 +62,7 @@ class FakeRedis:
     def __init__(self, *, locked=False, cooling=False, attempts=0):
         self.locked, self.cooling = locked, cooling
         self.attempts = attempts
+        self.attempts_by_key = {}
         self.values = []
 
     def set(self, key, value, *, nx=False, ex=0):
@@ -70,11 +75,13 @@ class FakeRedis:
         return self.cooling
 
     def get(self, key):
-        return str(self.attempts)
+        return str(self.attempts_by_key.get(key, self.attempts))
 
     def incr(self, key):
-        self.attempts += 1
-        return self.attempts
+        value = int(self.get(key)) + 1
+        self.attempts_by_key[key] = value
+        self.attempts = value
+        return value
 
     def expire(self, key, seconds):
         assert seconds == 86400
@@ -187,4 +194,28 @@ def test_repeated_failed_dispatch_is_bounded():
     client = FakeClient()
     store = FakeRedis(attempts=3)
     assert dispatch_once(client, store, MANIFEST) == "DISPATCH_ATTEMPT_CAP_REQUIRES_TRIAGE"
+    assert client.sent == []
+
+
+def test_existing_pr_cannot_starve_next_approved_p0_incident():
+    manifest = {**MANIFEST, "restoration": [ISSUE, SECOND_ISSUE]}
+    client, store = FakeClient(open_pr=True), FakeRedis()
+    assert dispatch_once(client, store, manifest) == "DISPATCHED_TO_PROTECTED_ENGINEERING_WORKFLOW"
+    assert client.sent == [SECOND_ISSUE]
+    assert store.attempts == 1
+
+
+def test_retry_cap_cannot_starve_next_approved_p0_incident():
+    manifest = {**MANIFEST, "restoration": [ISSUE, SECOND_ISSUE]}
+    client, store = FakeClient(), FakeRedis()
+    store.attempts_by_key[ATTEMPT_KEY_PREFIX + "1388"] = 3
+    assert dispatch_once(client, store, manifest) == "DISPATCHED_TO_PROTECTED_ENGINEERING_WORKFLOW"
+    assert client.sent == [SECOND_ISSUE]
+    assert store.attempts_by_key[ATTEMPT_KEY_PREFIX + "1388"] == 3
+
+
+def test_all_pending_prs_hold_without_duplicate_worker():
+    manifest = {**MANIFEST, "restoration": [ISSUE]}
+    client = FakeClient(open_pr=True)
+    assert dispatch_once(client, FakeRedis(), manifest) == "AWAITING_EXISTING_PR_REVIEW_OR_REPAIR"
     assert client.sent == []
