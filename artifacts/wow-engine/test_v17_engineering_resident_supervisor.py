@@ -46,7 +46,8 @@ class FakeClient:
         if suffix.startswith("actions/runs?"):
             if self.active and "status=in_progress" in suffix:
                 return {"total_count": 1, "workflow_runs": [
-                    {"name": "wow-v17-chatgpt-engineering-worker"}
+                    {"name": "wow-v17-chatgpt-engineering-worker",
+                     "path": ".github/workflows/wow-v17-chatgpt-engineering-worker.yml"}
                 ]}
             return {"total_count": 0, "workflow_runs": []}
         if suffix in ("issues/1388", "issues/823"):
@@ -152,20 +153,29 @@ def test_empty_queue_never_dispatches():
     assert not client.sent
 
 
-@pytest.mark.parametrize("run_name,expected", [
-    ("wow-v17-chatgpt-engineering-worker lease=GLOBAL incident=AUTO", True),
-    ("wow-v17-claude-engineering-worker lease=P0_LLP_RESTORE incident=1021", True),
-    ("wow-v17-engineering-provider-dispatcher lease=GLOBAL incident=1021", True),
-    ("wow-v17-chatgpt-engineering-worker-lookalike lease=GLOBAL incident=AUTO", False),
-    ("wow-v17-chatgpt-engineering-worker-fake", False),
-    ("unrelated-workflow lease=GLOBAL incident=1021", False),
+@pytest.mark.parametrize("run_name,run_path,expected", [
+    ("wow-v17-chatgpt-engineering-worker lease=GLOBAL incident=AUTO",
+     ".github/workflows/wow-v17-chatgpt-engineering-worker.yml", True),
+    ("wow-v17-claude-engineering-worker lease=P0_LLP_RESTORE incident=1021",
+     ".github/workflows/wow-v17-claude-engineering-worker.yml", True),
+    # Observed GitHub Actions shape: the provider run name is NOT its workflow name.
+    ("WOW V17 provider source=wow-v17-chatgpt-engineering-worker lease=GLOBAL incident=AUTO lease=GLOBAL incident=AUTO",
+     ".github/workflows/wow-v17-engineering-provider-dispatcher.yml", True),
+    ("wow-v17-chatgpt-engineering-worker-lookalike lease=GLOBAL incident=AUTO",
+     ".github/workflows/wow-v17-chatgpt-engineering-worker-lookalike.yml", False),
+    ("wow-v17-chatgpt-engineering-worker-fake",
+     ".github/workflows/wow-v17-chatgpt-engineering-worker-fake.yml", False),
+    ("unrelated-workflow lease=GLOBAL incident=1021",
+     ".github/workflows/unrelated-workflow.yml", False),
 ])
-def test_active_worker_run_name_lease_suffix_admission(run_name, expected):
+def test_active_worker_run_path_admission(run_name, run_path, expected):
     class Running(FakeClient):
         def get(self, suffix):
             if suffix.startswith("actions/runs?"):
                 if "status=in_progress" in suffix:
-                    return {"total_count": 1, "workflow_runs": [{"name": run_name}]}
+                    return {"total_count": 1, "workflow_runs": [
+                        {"name": run_name, "path": run_path}
+                    ]}
                 return {"total_count": 0, "workflow_runs": []}
             return super().get(suffix)
     client = Running()
@@ -177,6 +187,25 @@ def test_active_worker_run_name_lease_suffix_admission(run_name, expected):
         assert client.sent == []
     else:
         assert status == "DISPATCHED_TO_PROTECTED_ENGINEERING_WORKFLOW"
+
+
+@pytest.mark.parametrize("run", [
+    {"name": "wow-v17-chatgpt-engineering-worker"},
+    {"name": "wow-v17-chatgpt-engineering-worker",
+     "path": ".github/workflows/untrusted-lookalike.yml"},
+    {"name": "wow-v17-chatgpt-engineering-worker", "path": None},
+    "malformed-run",
+])
+def test_active_workflow_missing_or_conflicting_identity_fails_closed(run):
+    class BadIdentity(FakeClient):
+        def get(self, suffix):
+            if suffix.startswith("actions/runs?"):
+                return {"total_count": 1, "workflow_runs": [run]}
+            return super().get(suffix)
+    client = BadIdentity()
+    with pytest.raises(RuntimeError, match="ACTIVE_WORKFLOW_IDENTITY"):
+        dispatch_once(client, FakeRedis(), MANIFEST)
+    assert client.sent == []
 
 
 def test_github_inventory_incomplete_fails_closed():
