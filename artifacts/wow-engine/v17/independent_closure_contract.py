@@ -48,8 +48,15 @@ def validate_closure(receipt: Any) -> list[str]:
     for key, value in zip(sha_keys, shas):
         if not isinstance(value, str) or not SHA.fullmatch(value):
             errors.append(f"{key} must be a full lowercase commit SHA")
-    if len(set(shas)) != 1:
-        errors.append("reviewed, tested, merged, deployed and QA-verified SHAs must match")
+    # Squash/merge commits legitimately differ from the reviewed PR head.
+    # The release provenance service must authenticate the mapping between
+    # reviewed head and merged commit; a JSON claim alone never proves it.
+    if receipt.get("reviewed_sha") != receipt.get("tested_sha"):
+        errors.append("reviewed and tested PR head SHAs must match")
+    if not (receipt.get("merged_sha") == receipt.get("deployed_sha") == receipt.get("qa_verified_sha")):
+        errors.append("merged, deployed and QA-verified release SHAs must match")
+    if receipt.get("release_identity_authenticated") is not True:
+        errors.append("release_identity_authenticated must be true (trusted source required)")
     actors = receipt.get("actors")
     if not isinstance(actors, dict):
         errors.append("actors must be an object")
