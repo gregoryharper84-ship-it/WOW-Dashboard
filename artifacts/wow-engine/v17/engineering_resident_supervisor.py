@@ -105,8 +105,12 @@ def active_engineering_workflow(client: GitHubTransport) -> bool:
     """Fail closed when GitHub could not enumerate the complete active run set."""
     for state in ("queued", "in_progress", "waiting", "requested"):
         result = client.get(f"actions/runs?status={state}&per_page=100")
+        if not isinstance(result, dict):
+            raise RuntimeError("ACTIVE_WORKFLOW_INVENTORY_INVALID")
         runs = result.get("workflow_runs")
-        if not isinstance(runs, list) or int(result.get("total_count", -1)) > len(runs):
+        total = result.get("total_count")
+        if (not isinstance(runs, list) or isinstance(total, bool)
+                or not isinstance(total, int) or total != len(runs)):
             raise RuntimeError("ACTIVE_WORKFLOW_INVENTORY_INCOMPLETE")
         for run in runs:
             if not isinstance(run, dict) or not isinstance(run.get("path"), str):
