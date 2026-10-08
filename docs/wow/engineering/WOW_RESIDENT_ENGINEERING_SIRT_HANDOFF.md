@@ -30,9 +30,11 @@ minutes it:
    It does not invent or prioritize a new task from an LLM summary.
 5. Holds rather than duplicating work if a matching open engineering PR already
    exists. That PR must go through review, fix/retry and SIRT/IV handoff.
-6. Dispatches the **existing** protected-main provider-dispatcher workflow,
+6. Stops after three resident dispatches of the same still-open incident in
+   a 24-hour window, surfacing a typed triage-needed hold instead of looping.
+7. Dispatches the **existing** protected-main provider-dispatcher workflow,
    passing exact P0 incident/domain lease when required.
-7. Logs a compact typed supervisor outcome, never a credential value.
+8. Logs a compact typed supervisor outcome, never a credential value.
 
 The current GitHub Actions schedule and workflow-run continuations remain
 present as secondary triggers. GitHub writer concurrency and existing worker
