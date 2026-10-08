@@ -85,7 +85,7 @@ def freeze_nflverse_week_candidate(
         reader = csv.DictReader(io.StringIO(raw.decode("utf-8-sig", errors="strict")))
         if not reader.fieldnames or not {
             "game_id", "season", "week", "game_type", "gameday", "gametime",
-            "home_team", "away_team",
+            "home_team", "away_team", "home_score", "away_score",
         }.issubset(reader.fieldnames):
             raise WeeklyEvidenceError("PICKEM_FROZEN_SCHEDULE_COLUMNS_MISSING")
         rows = [dict(row) for row in reader]
