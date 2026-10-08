@@ -191,3 +191,39 @@ def test_read_only_worker_watchdog_permissions_and_provenance():
     assert "  actions: read" in workflow
     assert "GITHUB_TOKEN: ${{ github.token }}" in workflow
     assert "github.event_name" not in workflow
+
+
+def test_skipped_worker_is_not_evidence_of_engineering_activity():
+    """A skipped worker cannot be a healthy 24/7 engineering cycle."""
+    work = [{"state": "OPEN", "severity": "P0", "fingerprint": "incident-1021",
+             "next_audit_at": (NOW + timedelta(minutes=15)).isoformat()}]
+    verdict = assess_sentinel(
+        runtime=runtime(),
+        work_items=work,
+        worker_runs=[{
+            "created_at": (NOW - timedelta(minutes=5)).isoformat(),
+            "status": "completed",
+            "conclusion": "skipped",
+        }],
+        now=NOW,
+    )
+    assert verdict["status"] == "BLOCKED"
+    assert "LATEST_ENGINEERING_WORKER_SKIPPED" in {signal["reason"] for signal in verdict["signals"]}
+
+
+def test_skipped_worker_does_not_override_newer_successful_activity():
+    work = [{"state": "OPEN", "severity": "P1", "fingerprint": "incident-823",
+             "next_audit_at": (NOW + timedelta(minutes=15)).isoformat()}]
+    verdict = assess_sentinel(
+        runtime=runtime(),
+        work_items=work,
+        worker_runs=[
+            {"created_at": (NOW - timedelta(minutes=30)).isoformat(),
+             "status": "completed", "conclusion": "skipped"},
+            {"created_at": (NOW - timedelta(minutes=3)).isoformat(),
+             "status": "completed", "conclusion": "success"},
+        ],
+        now=NOW,
+    )
+    assert verdict["status"] == "OBSERVED_HEALTHY"
+    assert verdict["scope"] == "SIRT_ASSURANCE_ONLY_NOT_PRODUCT_READINESS"
