@@ -289,6 +289,7 @@ def run_resident_supervisor(stop: threading.Event = _STOP) -> None:
             is_hold = outcome in {
                 "DISPATCH_ATTEMPT_CAP_REQUIRES_TRIAGE",
                 "AWAITING_EXISTING_PR_REVIEW_OR_REPAIR",
+                "P1_EXACT_WORKER_BOOTSTRAP_REQUIRED",
             }
             persist_resident_heartbeat(
                 db_client, status="DEGRADED" if is_hold else "RUNNING",
