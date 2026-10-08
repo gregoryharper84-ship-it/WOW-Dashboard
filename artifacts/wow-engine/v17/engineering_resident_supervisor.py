@@ -178,7 +178,9 @@ def pending_pr_for_issue(client: GitHubTransport, issue_number: int) -> bool:
     # Accept the incident header and GitHub issue-reference conventions used
     # by existing repair PRs. Never treat incidental "#123" mentions as claims.
     incident = re.compile(
-        rf"(?im)^\s*Incident\s*:\s*#?{number}(?!\d)"
+        # Preserve the repository's canonical backticked Incident header
+        # while rejecting partial IDs, trailing text and malformed wrappers.
+        rf"(?im)^\s*Incident\s*:\s*(?:`#?{number}`|#?{number})\s*$"
     )
     references = re.compile(
         rf"(?im)^\s*(?:Refs?|Fixes|Closes|Resolves)\b[^\n]*?(?<!\w)"
