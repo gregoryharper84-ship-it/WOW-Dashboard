@@ -9,6 +9,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: wow-sirt-independent-reliability-sentinel
@@ -31,17 +32,18 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -uo pipefail
           python artifacts/wow-engine/v17/sirt_assurance.py sentinel > "$RUNNER_TEMP/sirt-heartbeat.json"
           result=$?
           cat "$RUNNER_TEMP/sirt-heartbeat.json"
           if [ "$result" -ne 0 ]; then
-            echo "SIRT watchdog blocked: auditor stale, unhealthy, or authoritative evidence unavailable." >> "$GITHUB_STEP_SUMMARY"
+            echo "SIRT watchdog blocked: auditor/worker activity stale, unhealthy, or authoritative evidence unavailable." >> "$GITHUB_STEP_SUMMARY"
             echo "This is not a betting-model verdict." >> "$GITHUB_STEP_SUMMARY"
             exit "$result"
           fi
-          echo "Fresh resident-auditor heartbeat observed. No product-readiness claim." >> "$GITHUB_STEP_SUMMARY"
+          echo "Fresh auditor heartbeat and eligible-worker activity assessed. Resident dispatcher and product readiness NOT proven." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Analyze canonical incident history
         if: always()

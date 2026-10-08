@@ -151,3 +151,43 @@ def test_independent_watchdog_is_separate_from_resident_auditor():
     assert "if: always()" in workflow
     assert "actions/upload-artifact@v4" in workflow
     assert "can_execute=true" not in workflow
+
+
+def test_engineering_worker_activity_missing_with_p0_backlog_is_not_healthy():
+    work = [{"state": "OPEN", "severity": "P0", "fingerprint": "incident-1021",
+             "next_audit_at": (NOW + timedelta(minutes=15)).isoformat()}]
+    verdict = assess_sentinel(runtime=runtime(), work_items=work, worker_runs=[], now=NOW)
+    assert verdict["status"] == "BLOCKED"
+    assert "ENGINEERING_WORKER_ACTIVITY_UNVERIFIABLE" in {r["reason"] for r in verdict["signals"]}
+
+
+def test_stale_worker_run_and_failed_latest_run_are_typed():
+    work = [{"state": "OPEN", "severity": "P1", "fingerprint": "incident-823",
+             "next_audit_at": (NOW + timedelta(minutes=15)).isoformat()}]
+    stale = assess_sentinel(runtime=runtime(), work_items=work, now=NOW,
+        worker_runs=[{"created_at": (NOW - timedelta(hours=3)).isoformat(),
+                      "status": "completed", "conclusion": "success"}])
+    assert "ENGINEERING_WORKER_ACTIVITY_STALE" in {r["reason"] for r in stale["signals"]}
+    failed = assess_sentinel(runtime=runtime(), work_items=work, now=NOW,
+        worker_runs=[{"created_at": (NOW - timedelta(minutes=20)).isoformat(),
+                      "status": "completed", "conclusion": "failure"}])
+    assert "LATEST_ENGINEERING_WORKER_FAILED" in {r["reason"] for r in failed["signals"]}
+
+
+def test_recent_worker_activity_does_not_establish_product_or_dispatcher_health():
+    work = [{"state": "OPEN", "severity": "P1", "fingerprint": "incident-823",
+             "next_audit_at": (NOW + timedelta(minutes=15)).isoformat()}]
+    verdict = assess_sentinel(runtime=runtime(), work_items=work, now=NOW,
+        worker_runs=[{"created_at": (NOW - timedelta(minutes=15)).isoformat(),
+                      "status": "completed", "conclusion": "success"}])
+    assert verdict["status"] == "OBSERVED_HEALTHY"
+    assert verdict["scope"] == "SIRT_ASSURANCE_ONLY_NOT_PRODUCT_READINESS"
+
+
+def test_read_only_worker_watchdog_permissions_and_provenance():
+    from pathlib import Path
+    workflow = (Path(__file__).resolve().parents[2]
+                / ".github/workflows/wow-sirt-independent-reliability-sentinel.yml").read_text()
+    assert "  actions: read" in workflow
+    assert "GITHUB_TOKEN: ${{ github.token }}" in workflow
+    assert "github.event_name" not in workflow

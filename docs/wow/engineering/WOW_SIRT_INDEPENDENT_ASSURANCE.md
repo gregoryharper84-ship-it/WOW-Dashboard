@@ -8,6 +8,14 @@ The Conductor coordinates ecosystem handoffs; Engineering implements fixes; Inde
 
 **Deployment requirement:** GitHub Actions secrets `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` (or `SUPABASE_SERVICE_KEY`) must be present in the repository environment for live polling. Never copy credential values into source or logs. A failed scheduled run is not a verified production success. Review Actions status and its retained JSON receipt.
 
+The sentinel also independently checks GitHub Actions worker activity whenever
+Supabase has unresolved P0/P1 engineering work. Missing, stale (>2 hours), or
+latest failed worker activity yields a typed finding. It uses only the
+read-only GitHub Actions permission and the job-scoped GITHUB_TOKEN. This
+**does not establish that the Render resident dispatcher is enabled**:
+resident-dispatch heartbeat, queue progress, and two-cycle failure/restart
+acceptance remain separate Class B release requirements on #1525.
+
 The resident engineering auditor continues checking lifecycle deadlines and GitHub code health. The independent sentinel provides **watchdog-of-watchdog** coverage, not an additional duplicate resident daemon. Neither a healthy heartbeat nor a passing code-health job proves that LLP, props, or Kalshi models are operational.
 
 `assess_sentinel` also supports typed P0/P1 overdue-work findings, unacknowledged handoffs, and stale or false-green production probes. These optional inputs must be fed from authoritative persisted sources before claiming live coverage for them. Missing evidence cannot become PASS.
@@ -29,7 +37,7 @@ To make a recurring family actionable, engineering triage should record a stable
 2. Verify the existing engineering code-health workflow passes on the exact PR head.
 3. Review independent SIRT authority/no probability or execution change.
 4. Merge only after required reviews and governance.
-5. Confirm the scheduled watchdog runs successfully with configured secrets **and** fails closed on a missing/stale heartbeat.
+5. Confirm the scheduled watchdog runs successfully with configured secrets **and** fails closed on a missing/stale heartbeat or critical-backlog worker inactivity.
 6. Confirm artifact retention and incident-family output.
 7. Verify any claimed product recovery separately using actual end-to-end LLP/prop user journeys.
 

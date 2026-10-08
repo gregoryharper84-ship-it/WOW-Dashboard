@@ -24,6 +24,11 @@ CAN_EXECUTE = False
 ALLOWED_HEALTH = {"RUNNING"}
 ALLOWED_PROBE = {"PASS", "HEALTHY"}
 AUDITOR_ID = "WOW_ENGINEERING_AUDITOR"
+WORKER_WORKFLOWS = (
+    "wow-v17-chatgpt-engineering-worker.yml",
+    "wow-v17-claude-engineering-worker.yml",
+)
+WORKER_ACTIVITY_MAX_AGE_SECONDS = 7200
 
 
 def _time(value: Any) -> datetime | None:
@@ -66,6 +71,7 @@ def assess_sentinel(
     handoffs: list[dict[str, Any]] | None = None,
     probes: list[dict[str, Any]] | None = None,
     findings: list[dict[str, Any]] | None = None,
+    worker_runs: list[dict[str, Any]] | None = None,
     now: datetime | None = None,
     heartbeat_max_age_seconds: int = 300,
 ) -> dict[str, Any]:
@@ -120,6 +126,29 @@ def assess_sentinel(
                 signals.append(_signal("PRODUCTION_EVIDENCE", identity, "P1", "PROBE_UNVERIFIABLE"))
             elif str(row.get("status") or "").upper() not in ALLOWED_PROBE:
                 signals.append(_signal("PRODUCTION_EVIDENCE", identity, "P1", "PROBE_NOT_PASSING"))
+    # Independent worker-activity evidence is only a liveness gate: a passing
+    # GitHub run is never proof of a code fix or resident Render dispatch.
+    critical = [
+        row for row in (work_items or [])
+        if str(row.get("state") or "").upper() == "OPEN"
+        and str(row.get("severity") or "").upper() in {"P0", "P1"}
+    ]
+    if worker_runs is not None and critical:
+        recent = []
+        for run in worker_runs:
+            age = _age_seconds(observed, run.get("created_at"))
+            if age is not None:
+                recent.append((age, run))
+        if not recent:
+            signals.append(_signal("ENGINEERING_WORKER", "GITHUB_ACTIONS", "P0", "ENGINEERING_WORKER_ACTIVITY_UNVERIFIABLE"))
+        else:
+            age, latest = min(recent, key=lambda entry: entry[0])
+            if age > WORKER_ACTIVITY_MAX_AGE_SECONDS:
+                signals.append(_signal("ENGINEERING_WORKER", "GITHUB_ACTIONS", "P0", "ENGINEERING_WORKER_ACTIVITY_STALE"))
+            elif str(latest.get("status") or "") == "completed" and str(latest.get("conclusion") or "") not in {"success", "skipped"}:
+                signals.append(_signal("ENGINEERING_WORKER", "GITHUB_ACTIONS", "P1", "LATEST_ENGINEERING_WORKER_FAILED"))
+            elif str(latest.get("status") or "") not in {"completed", "queued", "in_progress", "waiting", "requested"}:
+                signals.append(_signal("ENGINEERING_WORKER", "GITHUB_ACTIONS", "P1", "ENGINEERING_WORKER_STATE_UNVERIFIABLE"))
     signals.sort(key=lambda x: (x["type"], x["identity"], x["reason"]))
     return {
         "status": "BLOCKED" if signals else "OBSERVED_HEALTHY",
@@ -271,6 +300,43 @@ def read_audit_rows(url: str, key: str, *, kind: str, timeout_seconds: int = 8) 
     return rows
 
 
+def read_github_worker_runs(token: str, *, timeout_seconds: int = 8) -> list[dict[str, Any]]:
+    """Read-only worker activity, independent of the resident Render process.
+
+    This is not a resident dispatcher heartbeat or proof of completed repairs.
+    """
+    if not token:
+        raise ValueError("SIRT_GITHUB_ACTIONS_TOKEN_MISSING")
+    out: list[dict[str, Any]] = []
+    for workflow in WORKER_WORKFLOWS:
+        endpoint = (
+            "https://api.github.com/repos/gregoryharper84-ship-it/WOW-Dashboard"
+            "/actions/workflows/" + workflow + "/runs?per_page=3"
+        )
+        request = Request(endpoint, headers={
+            "Authorization": "Bearer " + token,
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "User-Agent": "wow-sirt-independent-worker-activity",
+        })
+        with urlopen(request, timeout=timeout_seconds) as response:
+            data = json.load(response)
+        runs = data.get("workflow_runs") if isinstance(data, dict) else None
+        if not isinstance(runs, list):
+            raise RuntimeError("SIRT_GITHUB_WORKER_RUN_INVENTORY_UNAVAILABLE")
+        for row in runs:
+            if not isinstance(row, dict) or not row.get("id"):
+                raise RuntimeError("SIRT_GITHUB_WORKER_RUN_INVALID")
+            out.append({
+                "run_id": str(row["id"]),
+                "workflow": workflow,
+                "created_at": row.get("created_at"),
+                "status": row.get("status"),
+                "conclusion": row.get("conclusion"),
+            })
+    return out
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="WOW SIRT evidence-only assurance")
     parser.add_argument("mode", choices=("sentinel", "failures"))
@@ -306,7 +372,8 @@ def main() -> int:
         findings = read_audit_rows(os.getenv("SUPABASE_URL", ""),
                                    os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_SERVICE_KEY", ""),
                                    kind="findings")
-        result = assess_sentinel(runtime=runtime, work_items=work_items, findings=findings)
+        worker_runs = read_github_worker_runs(os.getenv("GITHUB_TOKEN", ""))
+        result = assess_sentinel(runtime=runtime, work_items=work_items, findings=findings, worker_runs=worker_runs)
     except (ValueError, RuntimeError, HTTPError, URLError, TimeoutError, OSError) as exc:
         # No URLs, credentials, or request bodies in diagnostic output.
         result = {"status": "BLOCKED", "reason": (
