@@ -107,6 +107,8 @@ def audit_governed_pickem_week(
         raise AccuracyAuditError("PICKEM_ACCURACY_SETTLEMENT_EVENT_SET_MISMATCH")
 
     correct = 0
+    expected_correct = 0.0
+    selected_probabilities: list[float] = []
     brier_sum = 0.0
     logloss_sum = 0.0
     per_game: list[dict[str, Any]] = []
