@@ -254,6 +254,8 @@ def reconcile_weekly_evidence(
         "season": season,
         "week": week,
         "manifest_receipt_id": manifest_id,
+        "manifest_frozen_at": frozen_at_text,
+        "schedule_snapshot_id": official_manifest["schedule_snapshot_id"],
         "schedule_source_receipt_id": official_manifest["schedule_source_receipt_id"],
         "selected_model_receipt_ids": sorted(
             _required_text(row.get("source_prediction_id"),
@@ -289,14 +291,20 @@ def reconcile_weekly_evidence(
             serialized.encode("utf-8")
         ).hexdigest()
 
-    canonical["settlement_history_sha256"] = hashlib.sha256(
-        json.dumps(
+    try:
+        revision_history = json.dumps(
             sorted(
                 (dict(row) for row in official_settlement_history),
                 key=lambda r: (str(r.get("official_event_id")), int(r["settlement_revision"])),
             ),
             sort_keys=True, separators=(",", ":"), allow_nan=False,
-        ).encode("utf-8")
+        )
+    except (TypeError, ValueError, KeyError) as exc:
+        raise WeeklyEvidenceError(
+            "PICKEM_WEEKLY_SETTLEMENT_HISTORY_NOT_CANONICAL_JSON"
+        ) from exc
+    canonical["settlement_history_sha256"] = hashlib.sha256(
+        revision_history.encode("utf-8")
     ).hexdigest()
     key = hashlib.sha256(
         json.dumps(canonical, sort_keys=True, separators=(",", ":"), allow_nan=False)
