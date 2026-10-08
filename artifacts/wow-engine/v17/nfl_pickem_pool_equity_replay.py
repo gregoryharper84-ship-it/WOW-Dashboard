@@ -104,6 +104,12 @@ def replay_one_week(week: Mapping[str, Any]) -> dict[str, Any]:
     manifest = _required_text(
         week.get("manifest_id"), "PICKEM_REPLAY_MANIFEST_REQUIRED"
     )
+    fold_receipt = _required_text(
+        week.get("fold_assignment_receipt_id"), "PICKEM_REPLAY_FOLD_ASSIGNMENT_RECEIPT_REQUIRED"
+    )
+    if _timestamp(week.get("fold_assigned_at"),
+                  "PICKEM_REPLAY_FOLD_ASSIGNMENT_TIMESTAMP_INVALID") > lock:
+        raise ReplayInputError("PICKEM_REPLAY_POST_LOCK_FOLD_ASSIGNMENT")
     raw_picks = week.get("governed_picks")
     if not isinstance(raw_picks, list) or not raw_picks:
         raise ReplayInputError("PICKEM_REPLAY_GOVERNED_PICKS_REQUIRED")
@@ -128,6 +134,8 @@ def replay_one_week(week: Mapping[str, Any]) -> dict[str, Any]:
             raise ReplayInputError("PICKEM_REPLAY_PARTICIPANT_IDENTITY_INVALID")
         if pick.get("status") != "PICKEM_READY" or pick.get("can_execute") is not False:
             raise ReplayInputError("PICKEM_REPLAY_UNAPPROVED_SOURCE_ROW")
+        if pick.get("source_terminal_label") != "FINAL_APPROVED":
+            raise ReplayInputError("PICKEM_REPLAY_SOURCE_TERMINAL_NOT_APPROVED")
         if pick.get("controlling_specialist") != CONTROLLING_SPECIALIST:
             raise ReplayInputError("PICKEM_REPLAY_SPECIALIST_OWNERSHIP_MISMATCH")
         prediction = _required_text(
@@ -233,6 +241,7 @@ def replay_one_week(week: Mapping[str, Any]) -> dict[str, Any]:
         "week_id": week_id,
         "fold": fold,
         "manifest_id": manifest,
+        "fold_assignment_receipt_id": fold_receipt,
         "event_count": len(events),
         "pool_size": size,
         "settlement_source": settlement_source,
