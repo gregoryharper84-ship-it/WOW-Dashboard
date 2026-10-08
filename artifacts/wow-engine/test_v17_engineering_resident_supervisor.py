@@ -91,6 +91,11 @@ def test_enabled_missing_token_or_bad_governance_blocks(monkeypatch):
     monkeypatch.setenv("WOW_CAN_EXECUTE", "false")
     monkeypatch.setenv("WOW_DRY_RUN_ONLY", "false")
     assert supervisor_runtime_status()["status"] == "BLOCKED"
+    monkeypatch.setenv("WOW_DRY_RUN_ONLY", "true")
+    monkeypatch.setenv("REDIS_URL", "redis://example.invalid:6379/0")
+    assert supervisor_runtime_status()["status"] == "READY"
+    monkeypatch.delenv("REDIS_URL")
+    assert supervisor_runtime_status()["status"] == "BLOCKED"
 
 
 def test_atomic_single_supervisor_dispatch_once():
