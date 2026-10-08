@@ -99,3 +99,27 @@ weekly final ledger, or unattended delivered weekly report has been certified.
 
 Stage 1 does not constitute user-visible automatic weekly reporting. No model
 promotion, market substitution, protected-branch override or terminal closure.
+
+
+## Precise existing persistence mapping (read-only preflight)
+
+The existing production Pick'em board async runs store a completed result_payload
+containing the board's picks, blocked rows, expected_game_count, schedule
+snapshot ID and source_receipt_persistence. Three 2026-10-01 completed
+16-event boards had exactly 16 distinct prediction IDs and no late
+model timestamps compared with the earliest kickoff. There were also partial
+boards and additional complete versions. **None alone identifies the user's
+irrevocably frozen submitted card.** A new adapter must require an original
+trusted selection-lock receipt rather than cherry-pick among hindsight runs.
+
+Board pick rows expose immutable_model_timestamp, source_prediction_id and
+source_snapshot_id, but the inspected pick payload keys did **not** include
+latest_material_update_at. The official weekly adapter must hydrate verified
+material-change timestamps from the original model/source evidence ledger or
+explicitly classify freshness UNKNOWN. It must not silently assume that an
+omitted timestamp proves no late news. The new non-serving evidence reconciler
+now performs its own strict material-update guard where that timestamp is
+present, independently of still-unmerged Class A PR #1522.
+
+This is why a complete-looking 16/16 board, a successful backend workflow or
+synthetic regression tests are **not** a real published weekly accuracy report.
