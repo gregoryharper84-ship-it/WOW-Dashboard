@@ -33,7 +33,10 @@ minutes it:
 6. Stops after three resident dispatches of the same still-open incident in
    a 24-hour window, surfacing a typed triage-needed hold instead of looping.
 7. Dispatches the **existing** protected-main provider-dispatcher workflow,
-   passing exact P0 incident/domain lease when required.
+   passing the exact approved incident for both P0 and P1. P0 requires a
+   manifest domain lease; P1 is pinned to its exact issue under the existing
+   GLOBAL single-writer lease. A generic P1 invocation is prohibited because
+   it could reselect a pending-PR or retry-capped incident.
 8. Logs a compact typed supervisor outcome, never a credential value.
 
 The current GitHub Actions schedule and workflow-run continuations remain
@@ -73,6 +76,8 @@ incident and PR for bounded repair rather than opening duplicate implementations
 - [ ] Verify two unattended cycles on real GitHub/Render/Supabase: initial
       dispatch and subsequent follow-up, non-duplicated issue/PR handoff,
       durable SIRT intake, worker heartbeat, and exact negative cases.
+- [ ] Verify P0 domain target and P1 exact GLOBAL target on both OpenAI and
+      Anthropic workers, including wrong-lease and unsupported-severity rejection.
 - [ ] Verify failure/timeout/restart, queue empty, duplicate PR, missing token,
       missing Redis, and in-flight workflow all fail closed.
 - [ ] Preserve explicit independent production acceptance; not even

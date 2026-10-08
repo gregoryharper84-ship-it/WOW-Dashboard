@@ -66,13 +66,14 @@ class GitHubTransport:
         return self.call(f"/repos/{self.repo}/{suffix}")
 
     def dispatch(self, issue: dict[str, Any]) -> None:
+        group = str(issue.get("lease_group") or "GLOBAL")
+        incident = str(issue["issue_number"])
         if issue.get("severity") == "P0":
-            group = str(issue.get("lease_group") or "")
-            if not group or group == "GLOBAL":
+            if group == "GLOBAL":
                 raise ValueError("P0_DOMAIN_LEASE_MISSING")
-            incident = str(issue["issue_number"])
-        else:
-            group, incident = "GLOBAL", ""
+        elif group != "GLOBAL":
+            raise ValueError("STANDARD_TARGET_MUST_USE_GLOBAL_LEASE")
+        # An exact P1 target must not silently degrade to generic queue selection.
         self.call(
             f"/repos/{self.repo}/actions/workflows/{PROVIDER_WORKFLOW}/dispatches",
             {"ref": "main", "inputs": {

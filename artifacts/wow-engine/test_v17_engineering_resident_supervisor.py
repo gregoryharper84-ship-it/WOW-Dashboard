@@ -219,3 +219,35 @@ def test_all_pending_prs_hold_without_duplicate_worker():
     client = FakeClient(open_pr=True)
     assert dispatch_once(client, FakeRedis(), manifest) == "AWAITING_EXISTING_PR_REVIEW_OR_REPAIR"
     assert client.sent == []
+
+
+def test_p1_dispatch_carries_exact_selected_issue_not_generic_worker(monkeypatch):
+    client = GitHubTransport("placeholder")
+    calls = []
+    monkeypatch.setattr(client, "call", lambda path, payload: calls.append((path, payload)))
+    client.dispatch(SECOND_ISSUE)
+    assert calls[0][1]["inputs"]["target_incident"] == "823"
+    assert calls[0][1]["inputs"]["lease_group"] == "GLOBAL"
+
+
+def test_p1_cannot_request_separate_mutation_domain(monkeypatch):
+    client = GitHubTransport("placeholder")
+    monkeypatch.setattr(client, "call", lambda *_: pytest.fail("unsafe API call"))
+    with pytest.raises(ValueError, match="STANDARD_TARGET_MUST_USE_GLOBAL_LEASE"):
+        client.dispatch({**SECOND_ISSUE, "lease_group": "P1_UNREVIEWED"})
+
+
+def test_both_workers_validate_exact_p1_route_instead_of_generic_queue():
+    root = Path(__file__).resolve().parents[2]
+    for workflow_name in (
+        "wow-v17-chatgpt-engineering-worker.yml",
+        "wow-v17-claude-engineering-worker.yml",
+    ):
+        content = (root / ".github/workflows" / workflow_name).read_text()
+        assert 'TARGET_INCIDENT_NOT_SUPPORTED:' in content
+        assert '[ "$severity" = "P1" ] && [ "$lane" = "STANDARD" ]' in content
+        assert "lease_group=GLOBAL" in content
+        assert 'TARGET_INCIDENT_LEASE_MISMATCH:' in content
+    provider = (root / ".github/workflows/wow-v17-engineering-provider-dispatcher.yml").read_text()
+    assert 'TARGET_INCIDENT_INVALID' in provider
+    assert 'TARGET_INCIDENT_REQUIRES_DOMAIN_LEASE' not in provider
