@@ -247,10 +247,18 @@ def train_binary_challenger(client: Any, *, sport: str, league: str, events: Seq
 
     rows,metadata,names=build_dynamic_binary_rows(events,expected_season_games=expected_season_games)
     family=f"{sport}_DYNAMIC_TEAM_STATE_LOGIT_V2"; schema=f"{sport}_DYNAMIC_TEAM_STATE_FEATURES_V2"
+    # NCAAF spread serving consumes these prior-only rows independently of the
+    # moneyline candidate fit. A failed candidate fit must not strand the
+    # persisted spread feature ledger behind newly settled eligible games.
+    # Preserve idempotent, immutable upserts and all research-only flags.
+    ncaaf_spread_features = sport.upper() == "NCAAF"
+    if ncaaf_spread_features:
+        _persist_rows(client,sport=sport,league=league,schema=schema,model_family=family,rows=rows,metadata=metadata,multiclass=False)
     try: candidate=train_binary_candidate(rows,model_family=family,feature_names=names,min_rows=min_rows)
     except BinaryCandidateError as exc: raise TeamStateChallengerUnavailable(exc.code,str(exc)) from exc
     screen=evaluate_binary_research_screen(candidate.metrics)
-    _persist_rows(client,sport=sport,league=league,schema=schema,model_family=family,rows=rows,metadata=metadata,multiclass=False)
+    if not ncaaf_spread_features:
+        _persist_rows(client,sport=sport,league=league,schema=schema,model_family=family,rows=rows,metadata=metadata,multiclass=False)
     metrics=asdict(candidate.metrics)|{"research_screen_pass":screen["passed"],
              "generic_lifecycle_research_screen_pass":candidate.research_screen_pass,
              "team_state_research_screen":screen,"research_screen_version":TEAM_STATE_RESEARCH_SCREEN_VERSION,
