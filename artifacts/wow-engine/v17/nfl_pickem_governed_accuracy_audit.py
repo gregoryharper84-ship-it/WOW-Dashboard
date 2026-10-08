@@ -146,9 +146,12 @@ def audit_governed_pickem_week(
         )
         if prediction_time >= kickoff:
             raise AccuracyAuditError("PICKEM_ACCURACY_PREDICTION_NOT_PREGAME")
+        # Missing/None is explicitly optional; malformed supplied evidence is not.
         material_at = pick.get("latest_material_update_at")
-        if material_at and _utc(material_at, "PICKEM_ACCURACY_MATERIAL_TIME_INVALID") > prediction_time:
-            raise AccuracyAuditError("PICKEM_ACCURACY_PREDICTION_STALE")
+        if material_at is not None:
+            material_time = _utc(material_at, "PICKEM_ACCURACY_MATERIAL_TIME_INVALID")
+            if material_time > prediction_time:
+                raise AccuracyAuditError("PICKEM_ACCURACY_PREDICTION_STALE")
         home_p = _prob(pick.get("home_probability"))
         away_p = _prob(pick.get("away_probability"))
         selected_p = _prob(pick.get("selected_probability"))
