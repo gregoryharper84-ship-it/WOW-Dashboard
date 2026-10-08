@@ -88,7 +88,7 @@ def validate_closure(receipt: Any) -> list[str]:
         for key in PROTECTED:
             if type(invariants.get(key)) is not type(EXPECTED[key]) or invariants.get(key) != EXPECTED[key]:
                 errors.append(f"invariants.{key} must remain {EXPECTED[key]!r}")
-    if receipt.get("unresolved_p0_p1_regressions") != 0:
+    if type(receipt.get("unresolved_p0_p1_regressions")) is not int or receipt["unresolved_p0_p1_regressions"] != 0:
         errors.append("unresolved_p0_p1_regressions must be zero")
     if receipt.get("independent_qa_decision") != "PASS":
         errors.append("independent_qa_decision must be PASS")
