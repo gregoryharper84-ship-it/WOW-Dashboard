@@ -10,7 +10,10 @@ from v17.engineering_langgraph_runtime import (
     install_celery_worker_hooks as install_engineering_langgraph_hooks,
 )
 
+from v17.engineering_resident_supervisor import (install_celery_worker_hooks as install_resident_engineering_hooks)
+
 install_celery_worker_hooks()
 install_engineering_langgraph_hooks()
+install_resident_engineering_hooks()
 
 __all__ = ["celery_app"]
