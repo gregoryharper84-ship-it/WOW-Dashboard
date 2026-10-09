@@ -383,6 +383,7 @@ def run_forward_shadow(
     *,
     min_forward: int = MIN_FORWARD_GRADED,
     settlement_refresh_fn: Any = refresh_recent_settled_outcomes,
+    feature_refresh_fn: Any = None,
 ) -> dict[str, Any]:
     # Forward grading is only meaningful when its settled-outcome producer is
     # at least as fresh as the prediction cohort.  Refresh the narrow schedules
@@ -395,9 +396,11 @@ def run_forward_shadow(
     inserted = persist_new_grades(db, grades)
     health = calibration_health(grades, min_forward=min_forward)
     persist_health(db, health)
+    feature_refresh = _refresh_feature_table(db, settlement_refresh, feature_refresh_fn)
     return {
         "status": "COMPLETED",
         "settlement_refresh": settlement_refresh,
+        "feature_table_refresh": feature_refresh,
         "prediction_rows_seen": len(prediction_rows),
         "canonical_events": len(canonical),
         "graded_events": len(grades),
@@ -407,6 +410,30 @@ def run_forward_shadow(
         "automatic_promotion": False,
         "can_execute": False,
     }
+
+
+def active_nfl_season(now: Any = None) -> int:
+    """NFL season label: January/February belong to the prior year's season."""
+    from datetime import datetime, timezone
+
+    current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    return current.year - 1 if current.month <= 2 else current.year
+
+
+def _refresh_feature_table(db: Any, settlement_refresh: Mapping[str, Any], fn: Any) -> dict[str, Any]:
+    """Keep the training/replay feature table current. Never fails grading."""
+    if fn is None:
+        from v17.nfl_feature_table_refresh import refresh_feature_rows as fn
+    refreshed = {int(s) for s in (settlement_refresh or {}).get("seasons") or []}
+    active = active_nfl_season()
+    if active not in refreshed:
+        return {"status": "SKIPPED", "reason_code": "ACTIVE_SEASON_NOT_REFRESHED", "can_execute": False}
+    try:
+        # Active season only: re-downloading a finished season's PBP daily
+        # would add cost without changing any row.
+        return fn(db, seasons=[active])
+    except Exception as exc:  # noqa: BLE001 - typed, isolated from grading
+        return {"status": "FAILED", "reason_code": f"NFL_FEATURE_TABLE_REFRESH_{type(exc).__name__.upper()}", "can_execute": False}
 
 
 def _client() -> Any:
