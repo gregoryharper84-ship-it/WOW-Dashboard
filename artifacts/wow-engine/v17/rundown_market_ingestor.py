@@ -100,10 +100,6 @@ def _request_json(
 
     from v17 import rundown_datapoint_budget as dp_budget
 
-    allowed, budget_code = dp_budget.check()
-    if not allowed:
-        return TransportResult(False, code=budget_code, observed_at=_now_iso())
-
     base = sources._base_url(provider)
     query = {key: value for key, value in (params or {}).items() if value is not None}
     endpoint = base + (path if path.startswith("/") else "/" + path)
@@ -116,6 +112,9 @@ def _request_json(
             "X-TheRundown-Key": api_key,
         },
     )
+    allowed, budget_code, reservation_id = dp_budget.reserve_call()
+    if not allowed:
+        return TransportResult(False, code=budget_code, observed_at=_now_iso())
     try:
         with (opener or urlopen)(request, timeout=sources.TIMEOUT_SECONDS) as response:
             body = response.read().decode("utf-8")
@@ -123,9 +122,15 @@ def _request_json(
             headers = getattr(response, "headers", None)
             delay = _nonnegative_int(_header(headers, "X-Data-Delay-Seconds"))
             datapoints = _nonnegative_int(_header(headers, "X-Datapoints"))
-            dp_budget.record(datapoints)
+            settled, settlement_code = dp_budget.finish_call(reservation_id, datapoints)
+            if not settled:
+                return TransportResult(False, code=settlement_code, observed_at=_now_iso())
     except HTTPError as exc:
-        dp_budget.record(_nonnegative_int(_header(getattr(exc, "headers", None), "X-Datapoints")) or 0)
+        settled, settlement_code = dp_budget.finish_call(
+            reservation_id, _nonnegative_int(_header(getattr(exc, "headers", None), "X-Datapoints"))
+        )
+        if not settled:
+            return TransportResult(False, code=settlement_code, observed_at=_now_iso())
         return TransportResult(
             False,
             status=exc.code,
@@ -134,6 +139,9 @@ def _request_json(
             observed_at=_now_iso(),
         )
     except (URLError, TimeoutError, OSError) as exc:
+        settled, settlement_code = dp_budget.finish_call(reservation_id, None)
+        if not settled:
+            return TransportResult(False, code=settlement_code, observed_at=_now_iso())
         return TransportResult(
             False,
             code=f"RUNDOWN_{type(exc).__name__.upper()}",
