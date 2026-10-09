@@ -35,17 +35,9 @@ jobs:
     # used by Engineering, so an issue comment is not a human approval factor.
     # Never run the old one-job reviewer/merge bridge until protected, separate
     # QA/Release principals and owner bootstrap are independently verified.
+    # Emergency containment: deny every invocation until an authorized
+    # independent reviewer and separately privileged release App are live.
     if: ${{ false }}
-    # Previous actor predicate intentionally left inert for audit:
-    # github.actor == 'gregoryharper84-ship-it' &&
-      (
-        github.event_name == 'workflow_dispatch' ||
-        (
-          github.event_name == 'issue_comment' &&
-          github.event.issue.pull_request &&
-          startsWith(github.event.comment.body, '/wow-owner-bridge ')
-        )
-      )
     runs-on: ubuntu-latest
     timeout-minutes: 45
     environment: wow-release
