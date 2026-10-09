@@ -17,7 +17,9 @@ requires all of:
    the explicit owner-bootstrap path;
 6. owner-held environment secret `WOW_OWNER_RELEASE_APPROVAL` exactly equal to
    `<PR_NUMBER>:<HEAD_SHA>`;
-7. an unchanged PR head immediately before merge.
+7. the PR head must contain the current protected `main` revision;
+8. both the PR head and protected-main SHA must remain unchanged through QA and
+   immediately before merge.
 
 The secret is intentionally not readable by Engineering and is scoped to the
 existing `wow-release` GitHub environment. A stale approval cannot authorize a
@@ -38,8 +40,9 @@ Alternative manual-dispatch path: set the `wow-release` environment secret
 **wow-v17-temporary-owner-release-bridge** with the matching inputs.
 
 Trust-root changes are never eligible for either bridge path; they remain
-explicit owner-bootstrap candidates. A stale command or secret cannot authorize
-a different SHA.
+explicit owner-bootstrap candidates. A stale command or secret cannot authorize a different SHA. If `main` moves,
+the bridge fails closed so the PR can be updated/revalidated against the new
+base rather than merging stale certification.
 
 ## Boundaries
 
