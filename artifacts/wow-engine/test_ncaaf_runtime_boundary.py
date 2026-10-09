@@ -390,3 +390,18 @@ def test_spread_warm_exception_releases_heavy_slot(monkeypatch):
     with pytest.raises(ValueError, match="corpus stale"):
         api._warm_ncaaf_spread_under_heavy_slot()
     assert permit.releases == 1
+
+
+def test_spread_warm_cannot_overlap_scout_heavy_slot(monkeypatch):
+    mutex = api.memory_admission._HEAVY_JOB_LOCK
+    assert mutex.acquire(blocking=False)
+    try:
+        monkeypatch.setattr(
+            api, "_db_client",
+            lambda: (_ for _ in ()).throw(AssertionError("corpus must not load")),
+        )
+        with pytest.raises(api.memory_admission.HeavyJobDeferred) as exc:
+            api._warm_ncaaf_spread_under_heavy_slot()
+        assert exc.value.code == "HEAVY_JOB_BUSY"
+    finally:
+        mutex.release()
