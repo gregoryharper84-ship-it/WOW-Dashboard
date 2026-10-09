@@ -52,10 +52,10 @@ def _incidents_with_open_prs(open_prs: list[dict[str, Any]]) -> set[str]:
             raise ValueError("OPEN_PR_INVENTORY_INVALID")
         content = str(pr.get("title") or "") + "\n" + str(pr.get("body") or "")
         for line in content.splitlines():
-            incident = re.match(r"(?i)^\\s*Incident\\s*:\\s*`?#?([0-9]+)`?(?=\\b|$)", line)
+            incident = re.match(r"(?i)^\s*Incident\s*:\s*`?#?([0-9]+)`?(?=\b|$)", line)
             if incident:
                 pending.add(incident.group(1))
-            for claim in re.finditer(r"(?i)\\b(?:fixes|closes|resolves)\\s+#([0-9]+)\\b", line):
+            for claim in re.finditer(r"(?i)\b(?:fixes|closes|resolves)\s+#([0-9]+)\b", line):
                 pending.add(claim.group(1))
     return pending
 
