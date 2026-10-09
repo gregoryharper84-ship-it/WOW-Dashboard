@@ -31,8 +31,13 @@ concurrency:
 jobs:
   owner-bridge:
     name: Temporary owner exact-SHA release bridge
-    if: >-
-      github.actor == 'gregoryharper84-ship-it' &&
+    # Emergency fail-closed containment: one shared GitHub owner identity is
+    # used by Engineering, so an issue comment is not a human approval factor.
+    # Never run the old one-job reviewer/merge bridge until protected, separate
+    # QA/Release principals and owner bootstrap are independently verified.
+    if: ${{ false }}
+    # Previous actor predicate intentionally left inert for audit:
+    # github.actor == 'gregoryharper84-ship-it' &&
       (
         github.event_name == 'workflow_dispatch' ||
         (
