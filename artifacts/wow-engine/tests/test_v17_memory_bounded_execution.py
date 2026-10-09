@@ -115,6 +115,51 @@ def test_snapshot_exposes_process_rss_without_affecting_gate(monkeypatch):
     assert snapshot["under_pressure"] is False
 
 
+@pytest.mark.parametrize("interactive", [False, True])
+def test_admission_measurement_exception_is_typed_and_does_not_strand_slot(
+    monkeypatch, interactive
+):
+    # Any unexpected measurement exception must not leave the single
+    # process-wide heavyweight lock held indefinitely.
+    def broken_sample():
+        raise RuntimeError("unreadable sensor")
+
+    monkeypatch.setattr(memory_admission, "_read_cgroup_memory_bytes", broken_sample)
+    acquire = (
+        lambda: memory_admission.acquire_heavy_job("DAILY_SNAPSHOT", wait_seconds=0.0)
+        if interactive
+        else memory_admission.try_acquire_heavy_job("DAILY_SNAPSHOT")
+    )
+    with pytest.raises(memory_admission.HeavyJobDeferred) as caught:
+        acquire()
+    assert caught.value.code == "MEMORY_ADMISSION_MEASUREMENT_FAILED"
+    receipt = caught.value.receipt()
+    assert receipt["terminal"] is False
+    assert receipt["probability_publishable"] is False
+    assert receipt["can_execute"] is False
+    assert receipt["error_type"] == "RuntimeError"
+    assert memory_admission._HEAVY_JOB_LOCK.locked() is False
+
+    monkeypatch.setattr(memory_admission, "_read_cgroup_memory_bytes", lambda: (50, 100))
+    permit = acquire()
+    assert permit is not None
+    permit.release()
+
+
+def test_failed_reclaim_does_not_suppress_original_pressure_receipt(monkeypatch):
+    monkeypatch.setattr(memory_admission, "_read_cgroup_memory_bytes", lambda: (90, 100))
+
+    def broken_reclaim():
+        raise OSError("arena unavailable")
+
+    monkeypatch.setattr(memory_admission, "release_process_memory", broken_reclaim)
+    with pytest.raises(memory_admission.HeavyJobDeferred) as exc:
+        memory_admission.try_acquire_heavy_job("DAILY_SNAPSHOT")
+    assert exc.value.code == "MEMORY_PRESSURE"
+    assert exc.value.receipt()["memory_ratio"] == pytest.approx(0.9)
+    assert memory_admission._HEAVY_JOB_LOCK.locked() is False
+
+
 def test_shared_heavy_slot_serializes_jobs(monkeypatch):
     monkeypatch.setattr(memory_admission, "_read_cgroup_memory_bytes", lambda: (50, 100))
     first = memory_admission.try_acquire_heavy_job("SCOUT_HANDOFF")
