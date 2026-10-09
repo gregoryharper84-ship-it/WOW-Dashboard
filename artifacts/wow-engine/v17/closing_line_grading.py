@@ -198,9 +198,14 @@ def pick_time_price(
             continue
         if str(row.get("market_id") or "") != MONEYLINE_MARKET_ID or row.get("is_live") is True or row.get("is_main_line") is False:
             continue
-        quoted = _parse_dt(row.get("price_updated_at")) or _parse_dt(row.get("fetched_at"))
-        if quoted is None or quoted > at:
+        # A provider timestamp is not proof that WOW observed that price
+        # before this immutable prediction. Using a later-fetched quote with
+        # an earlier provider update time would introduce hindsight into CLV.
+        fetched = _parse_dt(row.get("fetched_at"))
+        provider_quoted = _parse_dt(row.get("price_updated_at"))
+        if fetched is None or fetched > at or (provider_quoted is not None and provider_quoted > at):
             continue
+        quoted = fetched
         book = str(row.get("affiliate_id") or row.get("sportsbook") or "")
         name = _norm(row.get("participant_name"))
         current = latest.setdefault(book, {}).get(name)
