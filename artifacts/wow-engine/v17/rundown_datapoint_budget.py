@@ -1,4 +1,4 @@
-"""Hard daily data-point and call budget for every TheRundown request.
+"""Rundown consumption bookkeeping and transactional paid-call reservations.
 
 Rundown bills per returned price ("data point"). Before this guard, WOW had a
 per-scan call cap but nothing bounding daily data points across all callers,
@@ -25,6 +25,7 @@ import os
 import threading
 from datetime import datetime, timezone
 from typing import Any, Callable
+from uuid import uuid4
 
 CAN_EXECUTE = False
 BLOCK_CODE = "PAID_PROVIDER_BUDGET_EXHAUSTED"
@@ -183,9 +184,82 @@ def _reset_for_tests() -> None:
         _state.update(day=None, datapoints=0, calls=0, loaded=False)
         _client_fn = None
 
+# Every production metered HTTP attempt MUST use these two RPC-backed methods
+# instead of legacy check()/record(): the old counters are informative only.
+# Cross-worker correctness comes solely from SQL FOR UPDATE in migration
+# 20261009_v17_rundown_atomic_budget.sql. Without that migration, fail closed.
+STATE_UNAVAILABLE = "PAID_PROVIDER_BUDGET_STATE_UNAVAILABLE"
+FINISH_FAILED = "PAID_PROVIDER_BUDGET_RECONCILIATION_FAILED"
+
+
+def _rpc_payload(result: Any) -> dict[str, Any]:
+    payload = getattr(result, "data", None)
+    if isinstance(payload, list) and len(payload) == 1:
+        payload = payload[0]
+    if not isinstance(payload, dict):
+        raise ValueError("RUNDOWN_BUDGET_RPC_RESPONSE_INVALID")
+    return payload
+
+
+def reserve_call(now: datetime | None = None) -> tuple[bool, str, str | None]:
+    """Atomically count a single future paid request, globally across workers.
+
+    One in-flight request at a time; an unknown charge or lost finish record
+    requires reconciliation before ANY further paid request. This is a hard
+    *call* budget but an observed, post-response data-point ceiling; per-call
+    data points are not known upfront, so never claim a hard DP ceiling.
+    """
+    if _client_fn is None:
+        return False, STATE_UNAVAILABLE, None
+    request_id = uuid4().hex
+    day = _today(now)
+    try:
+        payload = _rpc_payload(_client_fn().rpc("wow_rundown_reserve_call", {
+            "p_request_id": request_id,
+            "p_utc_day": day,
+            "p_call_limit": call_limit() if call_limit() is not None else -1,
+            "p_point_limit": datapoint_limit() if datapoint_limit() is not None else -1,
+        }).execute())
+    except Exception:  # No DB, no migration, wrong role, malformed result: no paid call.
+        LOGGER.exception("RUNDOWN_BUDGET_RESERVE_FAILED can_execute=false")
+        return False, STATE_UNAVAILABLE, None
+    if payload.get("allowed") is True and payload.get("code") == "PAID_PROVIDER_CALL_RESERVED":
+        return True, "PAID_PROVIDER_CALL_RESERVED", request_id
+    return False, str(payload.get("code") or STATE_UNAVAILABLE), None
+
+
+def finish_call(request_id: str | None, datapoints: Any) -> tuple[bool, str]:
+    """Settle a reserved request exactly once. Missing usage never becomes zero."""
+    if not request_id or _client_fn is None:
+        return False, FINISH_FAILED
+    points = None
+    if datapoints is not None:
+        try:
+            parsed = int(datapoints)
+            if not isinstance(datapoints, bool) and parsed >= 0:
+                points = parsed
+        except (TypeError, ValueError, OverflowError):
+            pass
+    try:
+        payload = _rpc_payload(_client_fn().rpc("wow_rundown_finish_call", {
+            "p_request_id": request_id, "p_datapoints": points,
+        }).execute())
+    except Exception:
+        LOGGER.exception("RUNDOWN_BUDGET_FINISH_FAILED can_execute=false")
+        return False, FINISH_FAILED
+    if payload.get("ok") is not True:
+        return False, str(payload.get("code") or FINISH_FAILED)
+    # Successful settlement with unknown charge still blocks the next
+    # reservation, by the DB's unknown_usage fail-closed gate.
+    return True, str(payload.get("code") or "PAID_PROVIDER_CALL_SETTLED")
+
 
 __all__ = [
     "BLOCK_CODE",
+    "STATE_UNAVAILABLE",
+    "FINISH_FAILED",
+    "reserve_call",
+    "finish_call",
     "CAN_EXECUTE",
     "call_limit",
     "check",
