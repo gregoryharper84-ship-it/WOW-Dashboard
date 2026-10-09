@@ -347,6 +347,17 @@ def fetch(
     base_query = {k: v for k, v in (params or {}).items() if v is not None}
     url = _base_url(provider) + (path if path.startswith("/") else "/" + path)
 
+    metered = provider.name == "RUNDOWN"
+    if metered:
+        from v17 import rundown_datapoint_budget as dp_budget
+
+        allowed, budget_code = dp_budget.check()
+        if not allowed:
+            return _fail(
+                provider.name, capability, budget_code,
+                request_audit={"paid_provider_network_attempted": False, "budget": dp_budget.status(), "can_execute": False},
+            )
+
     allow_auth_failover = provider.name == "RUNDOWN" and provider.auth_style == "header"
     attempt_keys = api_keys if allow_auth_failover else api_keys[:1]
 
@@ -366,7 +377,11 @@ def fetch(
             with (opener or urlopen)(request, timeout=TIMEOUT_SECONDS) as response:
                 body = response.read().decode("utf-8")
                 status = getattr(response, "status", None) or getattr(response, "code", None)
+                if metered:
+                    dp_budget.record(dp_budget.header_datapoints(getattr(response, "headers", None)))
         except HTTPError as exc:
+            if metered:
+                dp_budget.record(dp_budget.header_datapoints(getattr(exc, "headers", None)) or 0)
             has_next_alias = attempt_index + 1 < len(attempt_keys)
             if allow_auth_failover and exc.code in (401, 403) and has_next_alias:
                 continue
@@ -613,6 +628,29 @@ def _rundown_market_id_map() -> dict[str, str]:
         if canonical:
             out[str(key)] = canonical
     return out
+
+
+# Provider-catalog-verified affiliates (wow_market_provider_catalog, refreshed
+# 2026-09-25): 3=Pinnacle, 19=DraftKings, 23=FanDuel. Same default the
+# discovery feed and market-history collector already use.
+_DEFAULT_RUNDOWN_EVIDENCE_AFFILIATE_IDS = ("3", "19", "23")
+
+
+def rundown_evidence_affiliate_ids() -> tuple[str, ...] | None:
+    """Books requested by Rundown evidence/snapshot calls (data-point cost control).
+
+    Rundown bills per returned price, so an unfiltered request pays for every
+    book. Default is the three-book set above. ``WOW_RUNDOWN_EVIDENCE_AFFILIATE_IDS``
+    overrides it; the value ``ALL`` restores the unfiltered request. Narrowing
+    is a quota measure only and never changes parsing or model authority.
+    """
+    raw = os.environ.get("WOW_RUNDOWN_EVIDENCE_AFFILIATE_IDS")
+    if raw is None or not raw.strip():
+        return _DEFAULT_RUNDOWN_EVIDENCE_AFFILIATE_IDS
+    if raw.strip().upper() == "ALL":
+        return None
+    ids = tuple(token.strip() for token in raw.split(",") if token.strip())
+    return ids or _DEFAULT_RUNDOWN_EVIDENCE_AFFILIATE_IDS
 
 
 def rundown_winner_market_ids() -> tuple[str, ...]:

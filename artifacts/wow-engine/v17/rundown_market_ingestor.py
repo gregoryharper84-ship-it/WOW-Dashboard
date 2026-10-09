@@ -98,6 +98,12 @@ def _request_json(
     if not api_key:
         return TransportResult(False, code="MARKET_EVIDENCE_CREDENTIAL_UNCONFIGURED", observed_at=_now_iso())
 
+    from v17 import rundown_datapoint_budget as dp_budget
+
+    allowed, budget_code = dp_budget.check()
+    if not allowed:
+        return TransportResult(False, code=budget_code, observed_at=_now_iso())
+
     base = sources._base_url(provider)
     query = {key: value for key, value in (params or {}).items() if value is not None}
     endpoint = base + (path if path.startswith("/") else "/" + path)
@@ -117,7 +123,9 @@ def _request_json(
             headers = getattr(response, "headers", None)
             delay = _nonnegative_int(_header(headers, "X-Data-Delay-Seconds"))
             datapoints = _nonnegative_int(_header(headers, "X-Datapoints"))
+            dp_budget.record(datapoints)
     except HTTPError as exc:
+        dp_budget.record(_nonnegative_int(_header(getattr(exc, "headers", None), "X-Datapoints")) or 0)
         return TransportResult(
             False,
             status=exc.code,
