@@ -155,7 +155,7 @@ Emitted by `artifacts/wow-engine/v17/independent_release_checks.py` and the `wow
 | `QA_TARGETS_UNRESOLVED` | independent QA | QA could not resolve any valid (PR, exact head) target; details in the annotation. | N/A |
 | `QA_DECISION_INVARIANT_VIOLATED` | independent QA | A QA decision file claimed merge/release or execution authority; nothing published. | N/A |
 | `QA_CHECK_PUBLISH_FAILED` | independent QA | Creating the QA check run with the QA App token failed. | N/A |
-| `QA_EVIDENCE_INCOMPLETE` | independent QA | An evidence input was unreadable or truncated (repo, PR, files, check runs, reviews); suffixed with the input. | N/A |
+| `QA_EVIDENCE_INCOMPLETE` | independent QA | An evidence input was unreadable, truncated, or malformed (repo, PR, files, check runs, reviews); suffixed with the input. For changed files, both rename destination and `previous_filename` (source) are evaluated; a missing/invalid rename origin emits `QA_EVIDENCE_INCOMPLETE:FILES_RENAME_ORIGIN_MISSING`, invalid names emit `...:FILES_PATH_INVALID`, and rename origins cannot mask `...:FILES_TRUNCATED`. | N/A |
 | `QA_HEAD_INVALID` | independent QA | Expected or current head is not a 40-hex SHA. | N/A |
 | `QA_HEAD_STALE` | independent QA | The PR head moved after the trigger; the check is published only on the superseded SHA. | N/A |
 | `QA_PR_NOT_OPEN` | independent QA | PR is closed or merged. | N/A |
