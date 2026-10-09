@@ -76,7 +76,18 @@ def _active_ownership(
         if path not in _ACTIVE_ENGINEERING_PATHS:
             continue
         title = str(run.get("display_title") or run.get("name") or "")
-        identity = re.search(r"(?:^| )lease=([A-Za-z0-9_-]+) incident=([0-9]+|AUTO)(?: |$)", title)
+        if path.endswith("wow-v17-engineering-provider-dispatcher.yml"):
+            identity = re.fullmatch(
+                r"WOW V17 provider source=.+ lease=([A-Za-z0-9_-]+) incident=([0-9]+|AUTO)",
+                title,
+            )
+        else:
+            workflow_name = path.rsplit("/", 1)[-1].removesuffix(".yml")
+            identity = re.fullmatch(
+                re.escape(workflow_name)
+                + r" lease=([A-Za-z0-9_-]+) incident=([0-9]+|AUTO)",
+                title,
+            )
         if not identity or run.get("head_branch") != "main":
             raise ValueError("ACTIVE_WORKER_IDENTITY_UNRESOLVED")
         lease, incident = identity.groups()
