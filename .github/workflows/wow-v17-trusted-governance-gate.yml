@@ -11,7 +11,7 @@ permissions:
   pull-requests: read
 
 concurrency:
-  group: wow-v17-trusted-governance-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
+  group: wow-v17-trusted-governance-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
@@ -23,6 +23,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
       PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
     steps:
       - name: Checkout verifier from protected main
         uses: actions/checkout@v6
@@ -40,6 +41,11 @@ jobs:
           run_id=""
 
           for _ in $(seq 1 180); do
+            current_head=$(gh api "/repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq '.head.sha // ""')
+            if [ "$current_head" != "$PR_HEAD_SHA" ]; then
+              echo "GOVERNANCE_SUPERSEDED_HEAD: expected ${PR_HEAD_SHA}, current ${current_head}" >&2
+              exit 1
+            fi
             artifacts=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/artifacts?name=${artifact_name}&per_page=20")
             artifact_id=$(jq -r '[.artifacts[] | select(.expired == false)] | sort_by(.created_at) | reverse | first | .id // ""' <<<"$artifacts")
             run_id=$(jq -r '[.artifacts[] | select(.expired == false)] | sort_by(.created_at) | reverse | first | .workflow_run.id // ""' <<<"$artifacts")
