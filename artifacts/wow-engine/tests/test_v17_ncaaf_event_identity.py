@@ -88,3 +88,91 @@ def test_multiple_matches_fail_ambiguous():
             client=_Client(rows),
         )
     assert exc.value.code == "NCAAF_CANONICAL_EVENT_AMBIGUOUS"
+
+
+def test_oct_9_iowa_hawkeyes_matches_only_cfbd_iowa_not_iowa_state():
+    # The 2026-10-09 held Iowa @ Washington event had no canonical ID
+    # because the old five-character prefix floor excluded "Iowa".
+    event_at = "2026-10-10T01:00:00Z"
+    source = _Client([{
+        "id": 401900001,
+        "startDate": event_at,
+        "homeTeam": "Washington",
+        "awayTeam": "Iowa",
+    }, {
+        "id": 401900002,
+        "startDate": event_at,
+        "homeTeam": "Washington",
+        "awayTeam": "Iowa State",
+    }])
+    result = identity.resolve_ncaaf_current_event_identity(
+        event_start_time=event_at,
+        home_team="Washington Huskies",
+        away_team="Iowa Hawkeyes",
+        client=source,
+    )
+    assert result["event_id"] == "401900001"
+    assert result["market_features_used"] is False
+    assert result["can_execute"] is False
+
+
+def test_oct_9_byu_cougars_short_school_alias_is_exact():
+    # The 2026-10-09 Iowa State @ BYU hold likewise failed at length 3.
+    event_at = "2026-10-10T02:15:00Z"
+    result = identity.resolve_ncaaf_current_event_identity(
+        event_start_time=event_at,
+        home_team="BYU Cougars",
+        away_team="Iowa State Cyclones",
+        client=_Client([{
+            "id": 401900003,
+            "startDate": event_at,
+            "homeTeam": "BYU",
+            "awayTeam": "Iowa State",
+        }]),
+    )
+    assert result["event_id"] == "401900003"
+    assert result["prediction_authority"] is False
+
+
+@pytest.mark.parametrize(("alias", "canonical"), [
+    ("Iowa State Cyclones", "Iowa"),
+    ("Iowa Hawkeyes", "Iowa State"),
+    ("BYU Bobcats", "BYU"),
+    ("UCF Knights", "UCF"),
+    ("", "Iowa"),
+])
+def test_short_school_alias_does_not_accept_unsafe_prefixes(alias, canonical):
+    assert identity._name_match(alias, canonical) is False
+
+
+def test_known_short_aliases_do_not_bypass_unique_event_gate():
+    event_at = "2026-10-10T01:00:00Z"
+    games = [
+        {"id": i, "startDate": event_at,
+         "homeTeam": "Washington", "awayTeam": "Iowa"}
+        for i in (401900004, 401900005)
+    ]
+    with pytest.raises(identity.NCAAFEventIdentityError) as exc:
+        identity.resolve_ncaaf_current_event_identity(
+            event_start_time=event_at,
+            home_team="Washington Huskies",
+            away_team="Iowa Hawkeyes",
+            client=_Client(games),
+        )
+    assert exc.value.code == "NCAAF_CANONICAL_EVENT_AMBIGUOUS"
+
+
+def test_short_school_mascot_identity_does_not_bypass_start_tolerance():
+    with pytest.raises(identity.NCAAFEventIdentityError) as exc:
+        identity.resolve_ncaaf_current_event_identity(
+            event_start_time="2026-10-10T01:00:00Z",
+            home_team="Washington Huskies",
+            away_team="Iowa Hawkeyes",
+            client=_Client([{
+                "id": 401900006,
+                "startDate": "2026-10-10T04:00:00Z",
+                "homeTeam": "Washington",
+                "awayTeam": "Iowa",
+            }]),
+        )
+    assert exc.value.code == "NCAAF_CANONICAL_EVENT_NOT_FOUND"
