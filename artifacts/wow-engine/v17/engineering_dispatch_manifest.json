@@ -1,7 +1,7 @@
 {
   "schema_version": "2.1",
   "source": "WOW_V17_ACTIVE_EXECUTION_BOARD",
-  "description": "Closure-focus routing metadata. GitHub issue open/closed state remains authoritative. All engineering capacity targets the highest-priority existing closure journey. Product focus is LLP all-sports moneyline/spread usability and WOW governed all-sports player/scalar props.",
+  "description": "Closure-focus routing metadata. GitHub issue open/closed state remains authoritative. P0 restoration and shared-code reliability remain ahead of Class B NFL Pick'em weekly authentic reporting. #1530 stays attached to existing draft PR #1542 and separate independent SIRT #1521; no duplicate implementation or engineering self-approval.",
   "can_execute": false,
   "terminal_authority": "V17_TERMINAL_REDUCER",
   "restoration": [
@@ -122,5 +122,21 @@
       ]
     }
   ],
-  "acceleration": []
+  "acceleration": [
+    {
+      "issue_number": 1530,
+      "severity": "P2",
+      "priority_rank": 11,
+      "execution_lane": "STANDARD",
+      "conflict_keys": [
+        "NFL_PICKEM_WEEKLY_REPORT",
+        "PREGAME_PREDICTION_RECEIPTS",
+        "OFFICIAL_SETTLEMENT_REVISIONS",
+        "PRODUCTION_RUNTIME",
+        "PERSISTENCE_SCHEMA",
+        "DELIVERY_RECEIPTS"
+      ],
+      "lease_group": "PICKEM_WEEKLY_CLASS_B"
+    }
+  ]
 }
