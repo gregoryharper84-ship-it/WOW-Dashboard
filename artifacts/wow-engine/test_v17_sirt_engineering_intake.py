@@ -148,3 +148,24 @@ def test_workflow_separates_intake_writes_from_sirt_and_release_authority():
                        "  pull-requests: write", "  deployments: write",
                        "  id-token: write"):
         assert prohibited not in trusted
+
+
+def test_partial_escalation_failure_retries_parent_without_duplicate_origin():
+    class ParentFailsOnce(FakeTransport):
+        failed = False
+
+        def post_comment(self, number, message):
+            if number == 1021 and not self.failed:
+                self.failed = True
+                raise RuntimeError("SIMULATED_GITHUB_PERMISSION_FAILURE")
+            super().post_comment(number, message)
+
+    fake = ParentFailsOnce(origin=1388)
+    with pytest.raises(RuntimeError, match="SIMULATED_GITHUB"):
+        bridge.act(fake, finding(), NOW)
+    assert not any(n == 1021 for n, _ in fake.posts)
+    result = bridge.act(fake, finding(), NOW + timedelta(minutes=1))
+    assert result["status"] == "P0_ESCALATED_UNACKNOWLEDGED_ACK_PENDING"
+    assert sum(n == 1021 for n, _ in fake.posts) == 1
+    assert sum(bridge.ESCALATION_PREFIX in body
+               for n, body in fake.posts if n == 1388) == 1
