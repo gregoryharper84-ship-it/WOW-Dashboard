@@ -34,6 +34,7 @@ concurrency:
 jobs:
   release:
     if: github.repository == 'gregoryharper84-ship-it/WOW-Dashboard'
+    environment: wow-release
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
