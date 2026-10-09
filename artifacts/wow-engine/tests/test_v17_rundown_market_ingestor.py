@@ -32,7 +32,9 @@ class FakeClient:
 class FakeResponse:
     def __init__(self, payload, *, headers=None):
         self.payload = payload
-        self.headers = headers or {}
+        # All successful fixture calls report provider usage; a separate
+        # negative-path test exercises missing X-Datapoints explicitly.
+        self.headers = {"X-Datapoints": "0", **(headers or {})}
         self.status = 200
         self.code = 200
 
