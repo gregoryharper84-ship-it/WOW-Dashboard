@@ -351,13 +351,6 @@ def fetch(
     if metered:
         from v17 import rundown_datapoint_budget as dp_budget
 
-        allowed, budget_code = dp_budget.check()
-        if not allowed:
-            return _fail(
-                provider.name, capability, budget_code,
-                request_audit={"paid_provider_network_attempted": False, "budget": dp_budget.status(), "can_execute": False},
-            )
-
     allow_auth_failover = provider.name == "RUNDOWN" and provider.auth_style == "header"
     attempt_keys = api_keys if allow_auth_failover else api_keys[:1]
 
@@ -372,16 +365,32 @@ def fetch(
         full = url + (f"?{urlencode(query)}" if query else "")
         safe_endpoint = _redact(url, api_key)
         request = Request(full, headers=headers)
+        reservation_id = None
+        if metered:
+            allowed, budget_code, reservation_id = dp_budget.reserve_call()
+            if not allowed:
+                return _fail(
+                    provider.name, capability, budget_code,
+                    request_audit={"paid_provider_network_attempted": False, "can_execute": False},
+                )
 
         try:
             with (opener or urlopen)(request, timeout=TIMEOUT_SECONDS) as response:
                 body = response.read().decode("utf-8")
                 status = getattr(response, "status", None) or getattr(response, "code", None)
                 if metered:
-                    dp_budget.record(dp_budget.header_datapoints(getattr(response, "headers", None)))
+                    settled, settlement_code = dp_budget.finish_call(
+                        reservation_id, dp_budget.header_datapoints(getattr(response, "headers", None))
+                    )
+                    if not settled:
+                        return _fail(provider.name, capability, settlement_code, status=status, endpoint=safe_endpoint)
         except HTTPError as exc:
             if metered:
-                dp_budget.record(dp_budget.header_datapoints(getattr(exc, "headers", None)) or 0)
+                settled, settlement_code = dp_budget.finish_call(
+                    reservation_id, dp_budget.header_datapoints(getattr(exc, "headers", None))
+                )
+                if not settled:
+                    return _fail(provider.name, capability, settlement_code, status=exc.code, endpoint=safe_endpoint)
             has_next_alias = attempt_index + 1 < len(attempt_keys)
             if allow_auth_failover and exc.code in (401, 403) and has_next_alias:
                 continue
@@ -401,6 +410,12 @@ def fetch(
                 status=exc.code, endpoint=safe_endpoint, rate_limit=rate_limit,
             )
         except (URLError, TimeoutError, OSError) as exc:
+            if metered:
+                # A transport failure can still have reached the paid provider.
+                # Unknown consumption freezes further paid calls until reviewed.
+                settled, settlement_code = dp_budget.finish_call(reservation_id, None)
+                if not settled:
+                    return _fail(provider.name, capability, settlement_code, endpoint=safe_endpoint)
             return _fail(provider.name, capability, f"{provider.name}_{type(exc).__name__}", endpoint=safe_endpoint)
 
         try:
