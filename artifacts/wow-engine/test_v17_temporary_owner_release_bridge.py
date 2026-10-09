@@ -1,0 +1,44 @@
+from pathlib import Path
+import yaml
+
+ROOT = Path(__file__).resolve().parents[2]
+WORKFLOW = ROOT / ".github/workflows/wow-v17-temporary-owner-release-bridge.yml"
+
+
+def test_temporary_owner_bridge_is_manual_exact_sha_merge_only():
+    text = WORKFLOW.read_text(encoding="utf-8")
+    doc = yaml.safe_load(text)
+    assert "workflow_dispatch" in doc[True]
+    assert "WOW_OWNER_RELEASE_APPROVAL" in text
+    assert 'expected_approval="${PR_NUMBER}:${EXPECTED_HEAD_SHA}"' in text
+    assert "OWNER_BRIDGE_EXACT_SHA_NOT_AUTHORIZED" in text
+    assert "OWNER_BRIDGE_HEAD_CHANGED_AFTER_REVIEW" in text
+    assert "-f sha=\"$EXPECTED_HEAD_SHA\"" in text
+    assert "production_acceptance=false" in text
+
+
+def test_temporary_owner_bridge_preserves_independent_review_and_class_c_hold():
+    text = WORKFLOW.read_text(encoding="utf-8")
+    assert "wow-claude-agent" in text
+    assert 'permission_profile: ":read-only"' in text
+    assert '"enum":["A","B","C"]' in text
+    assert "OWNER_BRIDGE_CLASS_C_DENIED" in text
+    assert "OWNER_BRIDGE_INDEPENDENT_QA_HOLD" in text
+    assert "OWNER_BRIDGE_TRUST_ROOT_EXPLICIT_INTENT_REQUIRED" in text
+
+
+def test_temporary_owner_bridge_requires_all_exact_head_ci_and_v17_invariants():
+    text = WORKFLOW.read_text(encoding="utf-8")
+    for name in (
+        "wow-verify",
+        "wow-engine-verify",
+        "wow-v17-rapid-repair",
+        "wow-v17-change-impact-gate",
+        "wow-v17-engineering-auditor-code-health",
+        "wow-v17-spread-forward-shadow",
+        "wow-v17-release-production-verification-agent",
+    ):
+        assert name in text
+    assert "V17_TERMINAL_REDUCER" in text
+    assert "can_execute=false" in text
+    assert "DRY_RUN_ONLY" in text
