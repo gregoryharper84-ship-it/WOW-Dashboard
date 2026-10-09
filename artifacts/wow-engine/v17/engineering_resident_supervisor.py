@@ -180,11 +180,17 @@ def dispatch_once(client: GitHubTransport, redis_client: Any, manifest: dict[str
     has_pending_pr = False
     has_attempt_cap = False
     needs_p1_bootstrap = False
+    has_active_conflict = False
+    has_cooldown = False
     while True:
         issue = next_approved_issue(
             client, manifest, exclude_issue_numbers=frozenset(skipped),
         )
         if issue is None:
+            if has_active_conflict:
+                return "EXISTING_ENGINEERING_WORKFLOW_ACTIVE"
+            if has_cooldown:
+                return "RECENT_DISPATCH_COOLDOWN"
             if has_attempt_cap:
                 return "DISPATCH_ATTEMPT_CAP_REQUIRES_TRIAGE"
             if has_pending_pr:
@@ -203,9 +209,11 @@ def dispatch_once(client: GitHubTransport, redis_client: Any, manifest: dict[str
             skipped.add(issue_number)
             continue
         if redis_client.exists(COOLDOWN_KEY + ":" + str(issue_number)):
+            has_cooldown = True
             skipped.add(issue_number)
             continue
         if active_engineering_workflow(client, issue, manifest):
+            has_active_conflict = True
             skipped.add(issue_number)
             continue
         if pending_pr_for_issue(client, issue_number):
