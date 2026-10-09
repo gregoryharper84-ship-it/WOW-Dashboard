@@ -41,6 +41,7 @@ CAN_EXECUTE = False
 PAGE_SIZE = 1000
 OUTCOME_CHUNK_SIZE = 150
 MIN_HOLDOUT_ROWS = 30
+MIN_LINE_DIAGNOSTIC_N = 10
 MIN_TIME_FOLDS = 6
 DEFAULT_HOLDOUT_FRACTION = 0.20
 CANDIDATE_EVIDENCE_VERSION = "V17_PROP_CALIBRATOR_CANDIDATE_EVIDENCE_V1"
@@ -105,6 +106,7 @@ class CalibratorCandidatePacket:
     holdout_reference_metrics: Mapping[str, Any] | None = None
     holdout_skill_scores: Mapping[str, float | None] | None = None
     holdout_sharpness_flags: tuple[str, ...] = ()
+    holdout_line_diagnostics: tuple[Mapping[str, Any], ...] = ()
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -469,6 +471,31 @@ def build_calibrator_candidate_packet(
                     sharpness_flags.append(
                         f"CALIBRATED_WORSE_THAN_{baseline_name.upper()}_{metric_name.upper()}"
                     )
+        # Preserve every exact-line cohort count. Show diagnostic scores only
+        # for a minimally sized group; none can certify line-specific skill.
+        line_diagnostics: list[dict[str, Any]] = []
+        for exact_line in sorted({row.line for row in holdout}):
+            positions = [i for i, row in enumerate(holdout) if row.line == exact_line]
+            line_n = len(positions)
+            diagnostic: dict[str, Any] = {
+                "exact_line": exact_line,
+                "n": line_n,
+                "diagnostic_only": True,
+                "status": "DESCRIPTIVE_REVIEW_ONLY" if line_n >= MIN_LINE_DIAGNOSTIC_N else "SMALL_SAMPLE_NO_METRICS",
+            }
+            if line_n >= MIN_LINE_DIAGNOSTIC_N:
+                line_raw = [raw_holdout[i] for i in positions]
+                line_calibrated = [calibrated_holdout[i] for i in positions]
+                line_outcomes = [y_holdout[i] for i in positions]
+                diagnostic.update({
+                    "raw_mean_probability": float(np.mean(line_raw)),
+                    "calibrated_mean_probability": float(np.mean(line_calibrated)),
+                    "observed_hit_rate": float(np.mean(line_outcomes)),
+                    "raw_brier": _metrics(line_raw, line_outcomes)["brier"],
+                    "calibrated_brier": _metrics(line_calibrated, line_outcomes)["brier"],
+                })
+            line_diagnostics.append(diagnostic)
+
         evidence_rows = [
             {
                 "prediction_id": row.prediction_id,
@@ -490,6 +517,7 @@ def build_calibrator_candidate_packet(
             "holdout_reference_metrics": benchmark_metrics,
             "holdout_skill_scores": skill_scores,
             "holdout_sharpness_flags": sorted(set(sharpness_flags)),
+            "holdout_line_diagnostics": line_diagnostics,
             "training_prediction_ids": [row.prediction_id for row in training],
             "holdout_prediction_ids": [row.prediction_id for row in holdout],
             "evidence_rows": evidence_rows,
@@ -519,6 +547,7 @@ def build_calibrator_candidate_packet(
             holdout_reference_metrics=benchmark_metrics,
             holdout_skill_scores=skill_scores,
             holdout_sharpness_flags=tuple(sorted(set(sharpness_flags))),
+            holdout_line_diagnostics=tuple(line_diagnostics),
             evidence_hash=_canonical_hash(candidate_payload),
             status="CALIBRATOR_CANDIDATE_REVIEW_PACKET_READY" if candidate_improves else "CALIBRATOR_CANDIDATE_HOLDOUT_BLOCKED",
             blockers=tuple(candidate_blockers),
