@@ -250,8 +250,10 @@ jobs:
           pr_url=$(gh pr create --repo "$GITHUB_REPOSITORY" --base main --head "$BRANCH" \
             --title "Model experiment: $EXPERIMENT_ID" --body-file "$body")
           pr_number=${pr_url##*/}
-          gh pr merge "$pr_number" --repo "$GITHUB_REPOSITORY" --auto --merge
-          echo "Experiment PR #$pr_number created with auto-merge after protected checks." >> "$GITHUB_STEP_SUMMARY"
+          head_sha=$(gh api "/repos/${GITHUB_REPOSITORY}/pulls/${pr_number}" --jq '.head.sha')
+          [[ "$head_sha" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::EXPERIMENT_PR_HEAD_UNRESOLVED:#${pr_number}"; exit 1; }
+          gh pr merge "$pr_number" --repo "$GITHUB_REPOSITORY" --auto --merge --match-head-commit "$head_sha"
+          echo "Experiment PR #$pr_number created with auto-merge pinned to ${head_sha} after protected checks." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Restore auto-merge after experiment repair
         if: steps.scope.outputs.changed == 'true' && steps.mode.outputs.mode == 'repair'
@@ -261,8 +263,15 @@ jobs:
           PR_NUMBER: ${{ steps.mode.outputs.pr_number }}
         run: |
           set -euo pipefail
-          gh pr merge "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --auto --merge
-          echo "Repaired experiment PR #$PR_NUMBER pushed and returned to protected CI/auto-merge." >> "$GITHUB_STEP_SUMMARY"
+          pr=$(gh api "/repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}")
+          head_sha=$(jq -r '.head.sha' <<<"$pr")
+          [[ "$head_sha" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::EXPERIMENT_PR_HEAD_UNRESOLVED:#${PR_NUMBER}"; exit 1; }
+          # Re-pin: an auto-merge enabled for an older head must not carry over to the repaired head.
+          if [ "$(jq -r '.auto_merge != null' <<<"$pr")" = "true" ]; then
+            gh pr merge "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --disable-auto
+          fi
+          gh pr merge "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --auto --merge --match-head-commit "$head_sha"
+          echo "Repaired experiment PR #$PR_NUMBER pushed and returned to protected CI/auto-merge pinned to ${head_sha}." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Record experiment receipt
         if: always()
