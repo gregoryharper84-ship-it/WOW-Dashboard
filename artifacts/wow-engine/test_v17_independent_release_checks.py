@@ -132,6 +132,25 @@ def test_non_owner_approval_does_not_count_for_trust_roots():
     assert "QA_TRUST_ROOT_OWNER_APPROVAL_MISSING" in m.qa_findings(ev)
 
 
+@pytest.mark.parametrize("path", [
+    "artifacts/wow-engine/v17/independent_release_checks.py",   # QA cannot be weakened by an ordinary PR
+    "artifacts/wow-engine/v17/agent_identity_policy.py",
+    "artifacts/wow-engine/v17/engineering_provider_failover.py",
+    "artifacts/wow-engine/v17/persistent_worker_safety.py",      # loaded via inline `from v17.` import
+    ".agents/skills/wow-engineering-independent-review-agent/SKILL.md",
+    ".agents/skills/brand-new-skill/SKILL.md",
+    "artifacts/wow-engine/requirements.txt",
+])
+def test_governance_files_outside_github_are_trust_roots(path):
+    ev = evidence(files=(path,))
+    assert "QA_TRUST_ROOT_OWNER_APPROVAL_MISSING" in m.qa_findings(ev)
+
+
+def test_ordinary_engine_code_stays_autonomous():
+    ev = evidence(files=("artifacts/wow-engine/v17/nfl_ml_challenger_v2.py", "docs/wow/engineering/notes.md"))
+    assert m.qa_findings(ev) == []
+
+
 def test_owner_authored_trust_root_pr_can_never_pass():
     ev = evidence(files=TRUST_ROOT_FILES, author=OWNER, reviews=[
         {"user": OWNER, "state": "APPROVED", "commit_id": HEAD, "submitted_at": "2026-10-09T02:00:00Z"}])

@@ -17,7 +17,8 @@ and has no rulesets and no CODEOWNERS.
 
 - Ordinary PRs: no human review. Merge only when the 3 regression checks **and** two source-pinned App checks pass:
   `WOW Independent QA exact-head` (QA App only) and `WOW Release Authority exact-head` (Release App only).
-- Everything under `/.github/` (including new workflows and CODEOWNERS) also needs the owner's code-owner approval.
+- Trust roots also need the owner's code-owner approval: everything under `/.github/` and `/.agents/` (including new
+  workflows, actions and agent skills) plus the governance files listed in `CODEOWNERS.proposed`.
   An App-authored PR can be approved by the owner; an owner-authored PR cannot (GitHub forbids self-approval).
 - No bypass actors. While any AI session acts as the owner user, an admin bypass is an AI bypass.
 - No AI runtime acts as the owner user or can merge; only the Release App merges.
@@ -101,8 +102,10 @@ separation comes from pinning each required check to its App's `integration_id` 
    workflow references only its own. Until then they fail with `QA_APP_CREDENTIAL_MISSING` /
    `RELEASE_APP_CREDENTIAL_MISSING` and publish nothing.
    - **QA passes only if**, at the exact head and from `github-actions` only: the 3 regression checks and the change
-     impact gate pass, and the trusted governance gate passes. For `.github/` changes, the owner's latest review must
-     instead be APPROVED on this exact head, and an owner-authored trust-root PR can never pass.
+     impact gate pass, and the trusted governance gate passes. For **trust-root** changes, the owner's latest review
+     must instead be APPROVED on this exact head, and an owner-authored trust-root PR can never pass. Trust roots are
+     `.github/`, `.agents/`, and every file a governance workflow executes or reads, including its local imports and
+     this QA module itself (`agent_identity_policy.governance_trust_roots()`). So no ordinary PR can weaken the gates.
    - **Release passes only if** it independently re-derives every QA condition and finds a successful QA check from
      the QA App, with QA and Release bound to different Apps.
    - Triggers: upstream workflow completion, an hourly sweep (bounded to 20 open PRs) and manual dispatch per PR.

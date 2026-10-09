@@ -20,14 +20,14 @@ from typing import Any, Callable
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from agent_identity_policy import (  # noqa: E402
-    QA_CHECK, RELEASE_CHECK, REQUIRED_REGRESSION_CHECKS, gh_fetch,
+    QA_CHECK, RELEASE_CHECK, REQUIRED_REGRESSION_CHECKS, gh_fetch, governance_trust_roots, is_trust_root,
 )
 
 GITHUB_ACTIONS_APP_ID = 15368  # only source trusted for workflow evidence checks
 CHANGE_IMPACT_CHECK = "WOW V17 change impact gate"
 TRUSTED_GOVERNANCE_CHECK = "Trusted exact-head engineering governance"
 QA_EVIDENCE_CHECKS = (*REQUIRED_REGRESSION_CHECKS, CHANGE_IMPACT_CHECK)
-TRUST_ROOT_PREFIX = ".github/"   # matches CODEOWNERS `/.github/ @owner`
+REPO_ROOT = Path(__file__).resolve().parents[3]   # protected main checkout in the workflows
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 MAX_PAGES = 10
 PER_PAGE = 100
@@ -155,7 +155,7 @@ def _owner_approved_at_head(ev: dict, head: str) -> bool:
     return last.get("state") == "APPROVED" and last.get("commit_id") == head
 
 
-def qa_findings(ev: dict) -> list[str]:
+def qa_findings(ev: dict, *, governance_files: frozenset[str] | None = None) -> list[str]:
     findings = [f"QA_EVIDENCE_INCOMPLETE:{e}" for e in ev.get("evidence_errors") or []]
     pr = ev.get("pr") or {}
     head = str(pr.get("head_sha") or "")
@@ -182,10 +182,13 @@ def qa_findings(ev: dict) -> list[str]:
             findings.append(f"QA_EVIDENCE_MISSING:{name}")
         elif run.get("conclusion") != "success":
             findings.append(f"QA_EVIDENCE_FAILED:{name}")
-    if any(str(f).startswith(TRUST_ROOT_PREFIX) for f in files):
-        # Trust roots: the trusted gate rejects these by design; the sole owner's
-        # approval of this exact head is required instead, and an owner-authored PR
-        # can never be self-approved.
+    if governance_files is None:
+        governance_files = frozenset(governance_trust_roots(REPO_ROOT))
+    if any(is_trust_root(str(f), governance_files) for f in files):
+        # Trust roots: .github/, .agents/ and every file a governance workflow executes
+        # or reads (including this module). Never autonomous: the sole owner's approval
+        # of this exact head is required, and an owner-authored PR can never be
+        # self-approved. The trusted gate rejects .github/ changes by design.
         if pr.get("author") == ev.get("owner_login"):
             findings.append("QA_TRUST_ROOT_OWNER_AUTHORED")
         elif not _owner_approved_at_head(ev, head):
@@ -199,14 +202,15 @@ def qa_findings(ev: dict) -> list[str]:
     return sorted(set(findings))
 
 
-def release_findings(ev: dict, *, qa_app_id: str, release_app_id: str) -> list[str]:
+def release_findings(ev: dict, *, qa_app_id: str, release_app_id: str,
+                     governance_files: frozenset[str] | None = None) -> list[str]:
     findings: list[str] = []
     if not str(qa_app_id).isdigit() or not str(release_app_id).isdigit():
         findings.append("RELEASE_APP_IDENTITY_UNBOUND")
     elif str(qa_app_id) == str(release_app_id):
         findings.append("RELEASE_IDENTITY_NOT_DISTINCT")
     # Defence in depth: Release independently re-derives every QA condition.
-    findings += [f"RELEASE_{f}" for f in qa_findings(ev)]
+    findings += [f"RELEASE_{f}" for f in qa_findings(ev, governance_files=governance_files)]
     head = str((ev.get("pr") or {}).get("head_sha") or "")
     runs = ev.get("check_runs") or []
     qa = _latest(runs, QA_CHECK, head, qa_app_id) if str(qa_app_id).isdigit() else None
