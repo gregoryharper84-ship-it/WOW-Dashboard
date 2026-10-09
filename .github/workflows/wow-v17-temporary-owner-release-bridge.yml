@@ -15,11 +15,6 @@ on:
         description: Canonical incident number
         required: true
         type: string
-      allow_trust_root:
-        description: Explicit owner intent for .github trust-root changes
-        required: true
-        default: false
-        type: boolean
 
 permissions:
   actions: read
@@ -42,7 +37,6 @@ jobs:
       PR_NUMBER: ${{ inputs.pr_number }}
       EXPECTED_HEAD_SHA: ${{ inputs.expected_head_sha }}
       INCIDENT_ID: ${{ inputs.incident_id }}
-      ALLOW_TRUST_ROOT: ${{ inputs.allow_trust_root }}
 
     steps:
       - name: Checkout protected main only
@@ -88,19 +82,15 @@ jobs:
           gh pr diff "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" > .owner-bridge-evidence/candidate.diff
           gh api --paginate "/repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/files?per_page=100"             --jq '.[].filename' > .owner-bridge-evidence/files.txt
 
-          trust_root=false
           while IFS= read -r changed_path; do
             case "$changed_path" in
-              .github/*)
-                trust_root=true
+              .github/*|.agents/*)
+                echo "OWNER_BRIDGE_TRUST_ROOT_CHANGE_DENIED:$changed_path" >&2
+                exit 1
                 ;;
             esac
           done < .owner-bridge-evidence/files.txt
-          if [ "$trust_root" = "true" ] && [ "$ALLOW_TRUST_ROOT" != "true" ]; then
-            echo "OWNER_BRIDGE_TRUST_ROOT_EXPLICIT_INTENT_REQUIRED" >&2
-            exit 1
-          fi
-          echo "trust_root=$trust_root" >> "$GITHUB_OUTPUT"
+          echo "trust_root=false" >> "$GITHUB_OUTPUT"
 
       - name: Verify exact-head deterministic CI
         shell: bash
