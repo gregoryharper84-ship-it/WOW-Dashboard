@@ -189,7 +189,7 @@ jobs:
           WORKER_PID=$!
           trap 'kill "$WORKER_PID" "$PROXY_PID" 2>/dev/null || true; cat "$RUNNER_TEMP/wow-agent-worker.log" || true; cat "$RUNNER_TEMP/rest-v1-proxy.log" || true' EXIT
           sleep 3
-          python -m pytest -q test_agent_runtime_postgres_integration.py
+          python -m pytest -q test_agent_runtime_postgres_integration.py test_engineering_attempt_receipts_postgres.py
           kill "$WORKER_PID" "$PROXY_PID" 2>/dev/null || true
           wait "$WORKER_PID" 2>/dev/null || true
           wait "$PROXY_PID" 2>/dev/null || true
