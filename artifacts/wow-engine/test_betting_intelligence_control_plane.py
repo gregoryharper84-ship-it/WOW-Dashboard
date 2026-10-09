@@ -15,6 +15,7 @@ from v17.betting_intelligence_control_plane import (
     StagnationAction,
     WorkItem,
     WorkState,
+    build_agent_runtime_product_truth,
     build_control_plane_snapshot,
     evaluate_product_acceptance,
     reconcile_work_items,
@@ -290,3 +291,82 @@ def test_full_snapshot_cannot_self_certify_when_verification_missing() -> None:
     )
     assert snapshot["acceptance"]["product_state"] == ProductState.WORKING_NOT_COMPLETE.value
     assert snapshot["acceptance"]["product_ready"] is False
+
+
+
+def test_agent_runtime_projection_separates_run_completion_from_independent_acceptance() -> None:
+    snapshot = build_agent_runtime_product_truth(
+        {
+            "run_id": "run-1",
+            "run_type": "FULL_MODEL",
+            "requested_as_of": "2026-10-07T12:00:00Z",
+            "user_timezone": "America/Chicago",
+            "status": "COMPLETED",
+            "stage": "COMPLETED",
+            "reconciliation_status": "BALANCED",
+            "request_payload": {"sports": ["NFL"], "lanes": ["MONEYLINE"]},
+        },
+        [
+            {
+                "candidate_id": "c1",
+                "terminal_label": "FINAL_APPROVED",
+                "terminal_ceiling": "FINAL_APPROVED",
+                "blockers": [],
+                "controlling_worker_id": "wow.controlling-model",
+            }
+        ],
+        independent_verification=False,
+    )
+    assert snapshot["runtime_projection"]["run_outcome_complete"] is True
+    assert snapshot["runtime_projection"]["candidate_conservation_rate"] == 1.0
+    assert snapshot["acceptance"]["product_state"] == ProductState.WORKING_NOT_COMPLETE.value
+    assert snapshot["acceptance"]["product_ready"] is False
+    assert snapshot["can_execute"] is False
+
+
+def test_agent_runtime_projection_preserves_terminal_blocker_as_product_blocked() -> None:
+    snapshot = build_agent_runtime_product_truth(
+        {
+            "run_id": "run-2",
+            "run_type": "FULL_MODEL",
+            "status": "COMPLETED_WITH_BLOCKERS",
+            "stage": "COMPLETED_WITH_BLOCKERS",
+            "reconciliation_status": "BALANCED",
+        },
+        [
+            {
+                "candidate_id": "c1",
+                "terminal_label": "MODEL_QUALIFIED_HOLD",
+                "terminal_ceiling": "MODEL_QUALIFIED_HOLD",
+                "blockers": ["RESEARCH_EVIDENCE_MISSING"],
+            }
+        ],
+        independent_verification=True,
+    )
+    assert snapshot["runtime_projection"]["run_outcome_complete"] is True
+    assert snapshot["acceptance"]["product_state"] == ProductState.BLOCKED.value
+    assert snapshot["acceptance"]["blockers"] == ["RESEARCH_EVIDENCE_MISSING"]
+
+
+def test_agent_runtime_projection_fails_closed_when_terminal_hold_lacks_typed_blocker() -> None:
+    snapshot = build_agent_runtime_product_truth(
+        {
+            "run_id": "run-3",
+            "run_type": "FULL_MODEL",
+            "status": "COMPLETED_WITH_BLOCKERS",
+            "stage": "COMPLETED_WITH_BLOCKERS",
+            "reconciliation_status": "BALANCED",
+        },
+        [
+            {
+                "candidate_id": "c1",
+                "terminal_label": "MODEL_QUALIFIED_HOLD",
+                "terminal_ceiling": "MODEL_QUALIFIED_HOLD",
+                "blockers": [],
+            }
+        ],
+    )
+    assert snapshot["acceptance"]["product_state"] == ProductState.BLOCKED.value
+    assert snapshot["acceptance"]["blockers"] == [
+        "TERMINAL_DISPOSITION_WITHOUT_TYPED_BLOCKER"
+    ]
