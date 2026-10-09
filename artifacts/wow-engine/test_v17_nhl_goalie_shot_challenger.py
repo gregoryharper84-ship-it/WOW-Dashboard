@@ -1,5 +1,6 @@
 """Negative-path and chronology checks for the isolated NHL challenger."""
 from datetime import datetime, timedelta, timezone
+from dataclasses import replace
 from hashlib import sha256
 
 import numpy as np
@@ -126,6 +127,23 @@ def test_prior_game_invariance_same_start_and_aligned_replay():
     match = next(r for r in changed_rows if r.event_id == modified.game_id)
     assert dict(match.features) == dict(original.features)  # no same-event result use
     assert match.source_manifest_sha256 == original.source_manifest_sha256
+    # Even changes to THIS game's final scores or fetched official schedule
+    # bytes (embedded in V1's source manifest) may not change the PRE-game
+    # challenger features or manifest. Outcome labels stay separately graded.
+    variant_games = list(games)
+    variant_games[14] = replace(
+        variant_games[14],
+        home_score=9, away_score=0,
+        source_payload_sha256="b" * 64,
+    )
+    variant_v1, _ = reconstruct_training_rows(variant_games)
+    original_v1 = next(r for r in v1 if r.event_id == modified.game_id)
+    altered_v1 = next(r for r in variant_v1 if r.event_id == modified.game_id)
+    assert original_v1.source_manifest_sha256 != altered_v1.source_manifest_sha256
+    _, variant_rows = augment_rows(variant_games, boxes, variant_v1)
+    variant_row = next(r for r in variant_rows if r.event_id == modified.game_id)
+    assert dict(variant_row.features) == dict(original.features)
+    assert variant_row.source_manifest_sha256 == original.source_manifest_sha256
     # Current game's final boxscore must not influence any pregame feature
     # value OR source manifest. Its label remains postgame-only evidence.
     # Adjacent later row may change after the final boxscore enters prior history.
