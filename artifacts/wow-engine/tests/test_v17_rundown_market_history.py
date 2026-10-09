@@ -136,11 +136,8 @@ def test_history_default_scope_is_three_books_and_slow_cadence(monkeypatch):
     ):
         monkeypatch.delenv(name, raising=False)
     assert history.configured_books() == ("Pinnacle", "Draftkings", "Fanduel")
-    # 4 sports x up to 2 provider ids = 6 calls/cycle (MLB/NFL + playoffs,
-    # WNBA, NCAAF); 8 cycles/day at 3h fits 48 calls. Datapoints stay the
-    # quota backstop.
-    assert history.interval_seconds() == 10800
-    assert history.max_calls_per_day() == 48
+    assert history.interval_seconds() == 7200
+    assert history.max_calls_per_day() == 12
     assert history.max_datapoints_per_day() == 2500
 
 
@@ -192,11 +189,9 @@ def test_history_budget_counts_every_regime_variant_provider_call(monkeypatch):
     assert result["can_execute"] is False
 
 
-def test_default_history_sports_cover_graded_and_future_team_markets(monkeypatch):
+def test_paid_provider_history_default_footprint_stays_mlb_only(monkeypatch):
     monkeypatch.delenv("WOW_RUNDOWN_MARKET_HISTORY_SPORT_KEYS", raising=False)
-    assert history.configured_sports() == (
-        "baseball_mlb", "americanfootball_nfl", "basketball_wnba", "americanfootball_ncaaf",
-    )
+    assert history.configured_sports() == ("baseball_mlb",)
 
 
 def test_close_references_materialize_even_when_call_budget_is_exhausted(monkeypatch):

@@ -45,11 +45,11 @@ def _int_env(name: str, default: int, *, low: int, high: int) -> int:
 def interval_seconds() -> int:
     # Deliberately slow by default. This is a history collector, not a live-price
     # execution feed, and it must not compete with Scout for provider allowance.
-    return _int_env("WOW_RUNDOWN_MARKET_HISTORY_INTERVAL_SECONDS", 10800, low=1800, high=21600)
+    return _int_env("WOW_RUNDOWN_MARKET_HISTORY_INTERVAL_SECONDS", 7200, low=1800, high=21600)
 
 
 def max_calls_per_day() -> int:
-    return _int_env("WOW_RUNDOWN_MARKET_HISTORY_MAX_CALLS_PER_DAY", 48, low=1, high=48)
+    return _int_env("WOW_RUNDOWN_MARKET_HISTORY_MAX_CALLS_PER_DAY", 12, low=1, high=48)
 
 
 def max_datapoints_per_day() -> int:
@@ -61,11 +61,10 @@ def _csv(name: str, default: str) -> tuple[str, ...]:
     return tuple(part.strip() for part in raw.split(",") if part.strip())
 
 
-# Sports whose captured closing prices are needed to grade WOW predictions
-# against the market (MLB/NFL today; WNBA/NCAAF history for future models).
-DEFAULT_HISTORY_SPORT_KEYS = (
-    "baseball_mlb,americanfootball_nfl,basketball_wnba,americanfootball_ncaaf"
-)
+# Owner direction 2026-10-09: minimize paid-provider usage. Rundown history
+# keeps its original MLB-only footprint; free ESPN capture is the primary
+# closing-line source.
+DEFAULT_HISTORY_SPORT_KEYS = "baseball_mlb"
 
 
 def configured_sports() -> tuple[str, ...]:
