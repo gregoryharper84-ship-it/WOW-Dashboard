@@ -227,3 +227,38 @@ def test_reference_backlog_failure_for_one_sport_does_not_block_others(monkeypat
 
     monkeypatch.setattr(history, "materialize_captured_references", flaky)
     assert history.materialize_reference_backlog(object(), now=datetime(2026, 10, 9, 15, tzinfo=timezone.utc)) == 2
+
+
+def test_no_open_or_close_from_quote_first_seen_after_event_start():
+    """Even an old provider-updated timestamp is not a historical observation."""
+    late = _row(key="late", odds=-170, updated="2026-09-24T17:00:00Z")
+    late["fetched_at"] = "2026-09-24T18:05:00Z"
+    refs = history.derive_captured_reference_rows(
+        [late], now=datetime(2026, 9, 24, 19, 0, tzinfo=timezone.utc)
+    )
+    assert refs == []
+
+
+def test_close_uses_last_prestart_observed_not_backdated_late_snapshot():
+    early = _row(key="early", odds=-110, updated="2026-09-24T17:30:00Z")
+    middle = _row(key="middle", odds=-125, updated="2026-09-24T17:55:00Z")
+    late = _row(key="late", odds=-200, updated="2026-09-24T17:40:00Z")
+    late["fetched_at"] = "2026-09-24T18:12:00Z"
+    refs = history.derive_captured_reference_rows(
+        [early, late, middle], now=datetime(2026, 9, 24, 19, 0, tzinfo=timezone.utc)
+    )
+    assert [r["snapshot_kind"] for r in refs] == ["OPEN", "CLOSE"]
+    assert refs[0]["american_odds"] == -110
+    assert refs[1]["american_odds"] == -125
+    assert refs[1]["fetched_at"] == "2026-09-24T17:55:00Z"
+
+
+def test_unobserved_quote_and_future_provider_update_are_held():
+    unknown = _row(key="unknown", odds=-100, updated="2026-09-24T17:00:00Z")
+    unknown["fetched_at"] = None
+    future_update = _row(key="future", odds=-150, updated="2026-09-24T18:15:00Z")
+    future_update["fetched_at"] = "2026-09-24T17:55:00Z"
+    refs = history.derive_captured_reference_rows(
+        [unknown, future_update], now=datetime(2026, 9, 24, 19, 0, tzinfo=timezone.utc)
+    )
+    assert refs == []
