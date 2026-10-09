@@ -63,6 +63,25 @@ jobs:
           python artifacts/wow-engine/v17/engineering_dispatch_queue.py validate \
             --manifest artifacts/wow-engine/v17/engineering_dispatch_manifest.json
 
+      # Charter §8: pin the durable-receipt writer from protected main BEFORE any agent runs.
+      # The working tree becomes agent-authored after "Checkout implementation branch", so the
+      # later Supabase receipt step only runs this pinned copy, verified against the hash
+      # recorded here as an immutable step output.
+      - name: Pin trusted receipt writer from protected main
+        id: receipt_writer
+        shell: bash
+        run: |
+          set -euo pipefail
+          pinned="$RUNNER_TEMP/wow-trusted-receipt-writer/engineering_receipts.py"
+          mkdir -p "$(dirname "$pinned")"
+          install -m 0444 artifacts/wow-engine/v17/engineering_receipts.py "$pinned"
+          {
+            echo "path=$pinned"
+            echo "sha256=$(sha256sum "$pinned" | awk '{print $1}')"
+            echo "python=$(python -I -c 'import sys; print(sys.executable)')"
+            echo "base_sha=$(git rev-parse HEAD)"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Build live dual-stream dispatch plan
         id: dispatch
         shell: bash
@@ -1144,6 +1163,114 @@ jobs:
             exit 1
           fi
           echo "Incident #$INCIDENT receipt appended: ${DISPOSITION:-UNRESOLVED_TYPED_FAILURE} / ${CODE}." >> "$GITHUB_STEP_SUMMARY"
+
+      # Charter §8 durable record: one append-only row in public.wow_engineering_attempt_receipts
+      # per REPAIR attempt, proven by read-back. The row is built from step outputs with jq and
+      # written only by the writer pinned from protected main (hash-verified); nothing from the
+      # agent-authored working tree is executed or read. The in-run QA agent is not independent
+      # QA, so qa_decision is never set here. Not a QA, merge, release or execution authority.
+      - name: Persist durable attempt receipt to Supabase
+        if: always() && steps.lead.outputs.action == 'REPAIR'
+        shell: bash
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          WRITER_PATH: ${{ steps.receipt_writer.outputs.path }}
+          WRITER_SHA256: ${{ steps.receipt_writer.outputs.sha256 }}
+          WRITER_PYTHON: ${{ steps.receipt_writer.outputs.python }}
+          BASE_SHA: ${{ steps.receipt_writer.outputs.base_sha }}
+          INCIDENT: ${{ steps.lead.outputs.incident }}
+          CODE: ${{ steps.delivery.outputs.code }}
+          DISPOSITION: ${{ steps.delivery.outputs.disposition }}
+          NEXT_ACTION: ${{ steps.delivery.outputs.next_action }}
+          REVISIT: ${{ steps.delivery.outputs.revisit_trigger }}
+          DELIVERY_OUTCOME: ${{ steps.delivery.outcome }}
+          PR: ${{ steps.delivery.outputs.pr }}
+          HEAD: ${{ steps.impl.outputs.head_sha }}
+          REGRESSION_STATUS: ${{ steps.regression.outputs.status }}
+          LEASE_GROUP: ${{ steps.dispatch.outputs.lease_group }}
+          LEASE_EPOCH: ${{ steps.safety.outputs.lease_epoch }}
+          WORKER_ID: ${{ steps.safety.outputs.worker_id }}
+        run: |
+          set -euo pipefail
+          fail() {
+            echo "::error::$1: incident=${INCIDENT:-UNKNOWN}; $2"
+            echo "Durable attempt receipt: \`$1\` for ${INCIDENT:-UNKNOWN} ($2)." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          }
+          if [ -z "${CODE:-}" ]; then
+            CODE="ACTIONABLE_REPAIR_DELIVERY_UNVERIFIED:${DELIVERY_OUTCOME:-NOT_RUN}"
+            DISPOSITION=UNRESOLVED_TYPED_FAILURE
+            NEXT_ACTION="Operator inspects why the delivery gate did not report."
+            REVISIT="Operator review."
+          fi
+          if ! [[ "${INCIDENT:-}" =~ ^[0-9]+$ ]]; then
+            fail ACTIONABLE_REPAIR_RECEIPT_INCIDENT_INVALID "incident is not an issue number."
+          fi
+          # Only the writer pinned from protected main may run, and only if unchanged since pinning.
+          if [ -z "${WRITER_PATH:-}" ] || [ -z "${WRITER_SHA256:-}" ] || [ -z "${WRITER_PYTHON:-}" ] \
+              || [ ! -f "$WRITER_PATH" ] \
+              || [ "$(sha256sum "$WRITER_PATH" | awk '{print $1}')" != "$WRITER_SHA256" ]; then
+            fail ACTIONABLE_REPAIR_DB_RECEIPT_WRITER_UNTRUSTED "pinned writer missing or hash mismatch."
+          fi
+          # Map the delivery outcome onto the governed receipt dispositions. An unresolved typed
+          # failure is an open incident (IN_PROGRESS) that carries its typed code as the blocker.
+          case "${DISPOSITION:-}" in
+            PR_CREATED) receipt_disposition=PR_CREATED; blocker="" ;;
+            BLOCKED_WITH_EXACT_REASON) receipt_disposition=BLOCKED_WITH_EXACT_REASON; blocker="$CODE" ;;
+            *) receipt_disposition=IN_PROGRESS; blocker="$CODE" ;;
+          esac
+          sha_or_empty() { if [[ "${1:-}" =~ ^[0-9a-f]{40}$ ]]; then printf '%s' "$1"; fi; }
+          payload="$(mktemp -d)/receipt.json"
+          jq -n \
+            --arg incident "$INCIDENT" \
+            --arg worker "${WORKER_ID:-github-actions:${GITHUB_RUN_ID}:${GITHUB_RUN_ATTEMPT}:anthropic}" \
+            --arg lease_group "${LEASE_GROUP:-GLOBAL}" \
+            --arg lease_epoch "${LEASE_EPOCH:-}" \
+            --arg pr "${PR:-}" \
+            --arg base_sha "$(sha_or_empty "${BASE_SHA:-}")" \
+            --arg head_sha "$(sha_or_empty "${HEAD:-}")" \
+            --arg regression "${REGRESSION_STATUS:-}" \
+            --arg disposition "$receipt_disposition" \
+            --arg blocker "$blocker" \
+            --arg owner "$GITHUB_REPOSITORY_OWNER" \
+            --arg next_action "${NEXT_ACTION:-Operator review.}" \
+            --arg revisit "${REVISIT:-Operator review.}" \
+            --arg attempt "${GITHUB_RUN_ATTEMPT:-1}" \
+            'def opt($v): if ($v | length) > 0 then $v else null end;
+             {
+              incident_id: $incident,
+              provider: "claude",
+              role: "implementer",
+              worker_run_id: $worker,
+              lease_id: $lease_group,
+              lease_epoch: ($lease_epoch | tonumber? // null),
+              pr_number: ($pr | tonumber? // null),
+              base_sha: opt($base_sha),
+              head_sha: opt($head_sha),
+              tests: (if ($regression | length) > 0
+                      then [{name: "deterministic_qa_regression", exit_status: ($regression | tonumber? // $regression)}]
+                      else [] end),
+              disposition: $disposition,
+              typed_blocker: opt($blocker),
+              blocker_owner: (if ($blocker | length) > 0 then $owner else null end),
+              next_action: $next_action,
+              revisit_trigger: $revisit,
+              retry_count: ((($attempt | tonumber? // 1) - 1) | if . < 0 then 0 else . end)
+             } | with_entries(select(.value != null))' > "$payload"
+          # -I: isolated mode (no cwd/script dir/user site on sys.path, no PYTHON* env).
+          set +e
+          result=$(cd "$(dirname "$payload")" && "$WRITER_PYTHON" -I "$WRITER_PATH" --receipt-json "$payload")
+          rc=$?
+          set -e
+          status=$(jq -r '.status // empty' <<<"$result" 2>/dev/null || true)
+          if [ "$rc" != "0" ] || [ "$status" != "RECEIPT_PERSISTED_AND_VERIFIED" ]; then
+            reason=$(jq -r '.reason // empty' <<<"$result" 2>/dev/null || true)
+            fail ACTIONABLE_REPAIR_DB_RECEIPT_PERSIST_FAILED "reason=${reason:-WRITER_EXIT_$rc}; durable receipt not verified."
+          fi
+          receipt_id=$(jq -r '.receipt_id' <<<"$result")
+          echo "Durable attempt receipt $receipt_id persisted and read back for #$INCIDENT ($receipt_disposition / $CODE)." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload dual-stream dispatch receipt
         if: always()
