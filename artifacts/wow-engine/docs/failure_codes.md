@@ -103,6 +103,8 @@ Emitted by the protected Claude engineering worker (`wow-v17-claude-engineering-
 | `ACTIONABLE_REPAIR_RECEIPT_PERSIST_FAILED` | engineering persistence | Incident issue lookup or append-only receipt write failed. | `UNRESOLVED_TYPED_FAILURE` |
 
 Delivery statuses (not failures): `PR_READY` (exact-head open PR, disposition `PR_CREATED`) and `DRAFT_PR_GATES_FAILED` (exact-head draft PR; pre-PR gates failed; disposition `PR_CREATED`, does not authorize merge or deploy).
+
+Heartbeat lease states (not failures): `HELD` (run succeeded; claimed `lease_expires_at` kept) and `RELEASED_ON_FAILURE` (run ended with job status other than `success`; heartbeat reports `worker_mode: SAFE_HOLD`, `lease_expires_at` is set to the time the run ended, and the original claim is kept as `lease_claimed_expires_at` in the receipt).
 ## Agent identity and protection policy codes (incident #1550, parent #1540)
 
 Emitted by `artifacts/wow-engine/v17/agent_identity_policy.py evaluate`, which joins an owner inventory, per-runtime AI principal evidence and owner-observed live allow/deny probes. Any finding makes the verdict `HOLD` with disposition `BLOCKED_WITH_EXACT_REASON`. `PASS` is configuration evidence only: no work-item closure, merge, release or probability authority. None affects sporting probability, rank or `can_execute=false`.
