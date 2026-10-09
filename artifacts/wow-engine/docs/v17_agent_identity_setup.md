@@ -98,8 +98,7 @@ separation comes from pinning each required check to its App's `integration_id` 
 4. **Phase C (built; activates when the Apps exist):** `wow-v17-independent-qa-check` and
    `wow-v17-release-authority-check` run from protected `main`, never execute PR code, read evidence with the
    read-only workflow token, and publish their check with their own App token downscoped to `checks: write`.
-   Store each private key as a repository secret, `WOW_QA_APP_PRIVATE_KEY` and `WOW_RELEASE_APP_PRIVATE_KEY`; each
-   workflow references only its own. Until then they fail with `QA_APP_CREDENTIAL_MISSING` /
+   Store the private keys as **environment secrets only**, never repository secrets: `WOW_QA_APP_PRIVATE_KEY` under environment `wow-qa`, and `WOW_RELEASE_APP_PRIVATE_KEY` under environment `wow-release`. Restrict each environment's deployment branches to **only protected `main`** before adding secrets. Each workflow job declares only its role's environment. Do not grant Engineering Workflows: write until environment restrictions and trust-root protection are independently proven. Until then they fail with `QA_APP_CREDENTIAL_MISSING` /
    `RELEASE_APP_CREDENTIAL_MISSING` and publish nothing.
    - **QA passes only if**, at the exact head and from `github-actions` only: the 3 regression checks and the change
      impact gate pass, and the trusted governance gate passes. For **trust-root** changes, the owner's latest review
