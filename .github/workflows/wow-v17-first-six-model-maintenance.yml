@@ -323,5 +323,8 @@ jobs:
               "ancillary": ancillary_results,
           }, sort_keys=True))
           if blocked_ancillary:
+              # Surface the typed blocker as a check-run annotation so it is
+              # readable through the Checks API without downloading job logs.
+              print("::error title=FIRST_SIX_ANCILLARY_MAINTENANCE_BLOCKED::" + json.dumps(blocked_ancillary, sort_keys=True)[:3500])
               raise RuntimeError("FIRST_SIX_ANCILLARY_MAINTENANCE_BLOCKED:" + json.dumps(blocked_ancillary, sort_keys=True))
           PY

@@ -89,9 +89,12 @@ def test_scheduled_run_still_posts_every_lane_exactly_once(monkeypatch):
     )
 
 
-def test_blocked_ncaaf_hydrate_still_fails_the_run_after_team_state(monkeypatch):
+def test_blocked_ncaaf_hydrate_still_fails_the_run_after_team_state(monkeypatch, capsys):
     with pytest.raises(RuntimeError, match="FIRST_SIX_ANCILLARY_MAINTENANCE_BLOCKED"):
         _run(monkeypatch, "push", ncaaf_status="BLOCKED")
+    out = capsys.readouterr().out
+    assert "::error title=FIRST_SIX_ANCILLARY_MAINTENANCE_BLOCKED::" in out
+    assert '"NCAAF"' in out.split("::error title=FIRST_SIX_ANCILLARY_MAINTENANCE_BLOCKED::", 1)[1]
 
 
 def test_pull_request_runs_cannot_cancel_live_maintenance():
