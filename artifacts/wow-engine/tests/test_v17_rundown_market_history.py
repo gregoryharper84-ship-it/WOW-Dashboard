@@ -166,3 +166,24 @@ def test_market_history_is_never_probability_authority():
     assert history.CAN_EXECUTE is False
     assert "NOT_PROVIDER_OFFICIAL_OPEN" in history.OPEN_SEMANTICS
     assert "NOT_PROVIDER_OFFICIAL_CLOSE" in history.CLOSE_SEMANTICS
+
+
+def test_history_budget_counts_every_regime_variant_provider_call(monkeypatch):
+    monkeypatch.setattr(history, "_read_budget", lambda *_a, **_k: {"calls": 0, "datapoints": 0})
+    monkeypatch.setattr(
+        history,
+        "resolve_collection_scope",
+        lambda *_a, **_k: {"status": "READY", "market_ids": ("1",), "affiliate_ids": ("19",), "book_names": ["Pinnacle"]},
+    )
+    monkeypatch.setattr(history, "configured_sports", lambda: ("baseball_mlb",))
+    monkeypatch.setattr(
+        history.ingestor,
+        "collect_snapshot",
+        lambda *_a, **_k: {"status": "COMPLETE", "provider_calls": 3, "datapoints": 12, "rows_written": 0},
+    )
+    monkeypatch.setattr(history, "materialize_captured_references", lambda *_a, **_k: 0)
+    written = []
+    monkeypatch.setattr(history, "_write_budget", lambda *_a, **kwargs: written.append(kwargs))
+    result = history.collect_history_once(object(), now=datetime(2026, 10, 9, 15, 0, tzinfo=timezone.utc))
+    assert result["provider_calls"] == 3
+    assert result["can_execute"] is False

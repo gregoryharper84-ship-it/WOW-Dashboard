@@ -417,7 +417,9 @@ def collect_history_once(
             allow_delta=False,
             include_all_periods=False,
         )
-        calls += 1
+        # Regime variants (e.g. MLB Playoffs) add provider calls; budget the
+        # real count, never fewer than one attempted call.
+        calls += max(1, int(result.get("provider_calls") or 1))
         datapoints += int(result.get("datapoints") or 0)
         total_rows += int(result.get("rows_written") or 0)
         result = dict(result)
@@ -458,7 +460,7 @@ def collect_history_once(
         "status": status,
         "reason_code": reason_code,
         "slate_date": local_date,
-        "provider_calls": len(results),
+        "provider_calls": sum(max(1, int(item.get("provider_calls") or 1)) for item in results),
         "calls_today": calls,
         "datapoints_today": datapoints,
         "rows_written": total_rows,
