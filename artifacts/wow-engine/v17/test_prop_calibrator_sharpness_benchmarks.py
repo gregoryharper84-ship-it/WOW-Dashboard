@@ -87,6 +87,7 @@ def test_benchmarks_use_frozen_training_base_rate_and_flag_weak_sharpness(monkey
     assert len(packet.holdout_line_diagnostics) == 1
     line = packet.holdout_line_diagnostics[0]
     assert line["exact_line"] == 5.5
+    assert line["direction"] == "MORE"
     assert line["n"] == 60
     assert line["status"] == "DESCRIPTIVE_REVIEW_ONLY"
     assert line["raw_brier"] == pytest.approx(0.41)
@@ -132,18 +133,54 @@ def test_line_diagnostics_include_small_exact_line_with_no_spurious_skill_claim(
     # of those lie on a rarer exact line. Its count must remain visible.
     from dataclasses import replace
 
-    observations[-6:] = [replace(row, line=7.5) for row in observations[-6:]]
+    observations[-6:] = [replace(row, line=7.5, direction="LESS") for row in observations[-6:]]
     packet = subject.build_calibrator_candidate_packet(_artifact(), observations)
     assert packet.certification_review_packet_ready is True
     assert [d["exact_line"] for d in packet.holdout_line_diagnostics] == [5.5, 7.5]
     main, rare = packet.holdout_line_diagnostics
     assert main["n"] == 54
+    assert main["direction"] == "MORE"
     assert main["raw_brier"] is not None
     assert rare == {
         "exact_line": 7.5,
+        "direction": "LESS",
         "n": 6,
         "diagnostic_only": True,
         "status": "SMALL_SAMPLE_NO_METRICS",
     }
     assert packet.probability_publishable is False
     assert packet.can_execute is False
+
+
+def test_same_exact_line_opposite_direction_is_not_silently_pooled(monkeypatch):
+    class Coeff:
+        a = 1.0
+        b = 0.0
+
+        @staticmethod
+        def apply(probability):
+            return 0.8
+
+    monkeypatch.setattr(
+        subject,
+        "phase_b_platt",
+        lambda *args: SimpleNamespace(
+            coefficients=Coeff(),
+            metrics=SimpleNamespace(brier=0.30, log_loss=0.85, ece=0.30, calibration_bias=0.20),
+        ),
+    )
+    monkeypatch.setattr(subject, "PHASE_C_MIN_N", 10_000)
+    from dataclasses import replace
+
+    observations = _observations()
+    # 12 of 60 chronological holdout records have opposite LESS semantics
+    # at the SAME numeric threshold. They must be separately visible.
+    observations[-12:] = [replace(row, direction="LESS") for row in observations[-12:]]
+    packet = subject.build_calibrator_candidate_packet(_artifact(), observations)
+    groups = {(d["exact_line"], d["direction"]): d for d in packet.holdout_line_diagnostics}
+    assert set(groups) == {(5.5, "MORE"), (5.5, "LESS")}
+    assert groups[(5.5, "MORE")]["n"] == 48
+    assert groups[(5.5, "LESS")]["n"] == 12
+    assert groups[(5.5, "LESS")]["diagnostic_only"] is True
+    assert packet.probability_publishable is False
+    assert packet.rank_eligible is False
