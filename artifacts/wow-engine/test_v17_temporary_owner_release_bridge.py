@@ -42,3 +42,14 @@ def test_temporary_owner_bridge_requires_all_exact_head_ci_and_v17_invariants():
     assert "V17_TERMINAL_REDUCER" in text
     assert "can_execute=false" in text
     assert "DRY_RUN_ONLY" in text
+
+
+WOW_VERIFY = ROOT / ".github/workflows/wow-verify.yml"
+
+
+def test_wow_verify_disables_import_time_production_daemons_in_ci():
+    text = WOW_VERIFY.read_text(encoding="utf-8")
+    assert 'WOW_CI: "1"' in text
+    assert 'WNBA_DISABLE_CRON: "1"' in text
+    assert 'LLP_DISABLE_SNAPSHOT_CRON: "1"' in text
+    assert 'SETTLEMENT_WORKER_DISABLED: "1"' in text
