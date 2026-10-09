@@ -9,7 +9,7 @@ import pytest
 from nhl_candidate_pipeline import NHLGame, NHLCandidateError, reconstruct_training_rows
 from v17.nhl_goalie_shot_challenger import (
     ADDED_FEATURES, Box, _goalie_save_pct, _projected_goalie, augment_rows,
-    parse_box, replay,
+    parse_box, replay, research_gate_reasons,
 )
 
 HASH = "a" * 64
@@ -198,3 +198,21 @@ def test_missing_source_is_explicitly_intersected_and_extra_id_fails():
     with pytest.raises(NHLCandidateError) as exc:
         augment_rows(games, boxes, v1)
     assert exc.value.code == "NHL_BOX_GAME_RECONCILIATION_FAILED"
+
+
+@pytest.mark.parametrize("brier_ci,log_ci,ece_v1,ece_v2,expected", [
+    ((-0.002, 0.004), (0.001, 0.009), 0.03, 0.02, ["BRIER_IMPROVEMENT_NOT_PROVEN"]),
+    ((0.001, 0.004), (-0.001, 0.009), 0.03, 0.02, ["LOG_LOSS_IMPROVEMENT_NOT_PROVEN"]),
+    ((0.001, 0.004), (0.001, 0.009), 0.03, 0.04, ["CALIBRATION_ERROR_WORSENED"]),
+    ((-0.002, 0.004), (-0.001, 0.009), 0.03, 0.04, [
+        "BRIER_IMPROVEMENT_NOT_PROVEN", "LOG_LOSS_IMPROVEMENT_NOT_PROVEN",
+        "CALIBRATION_ERROR_WORSENED",
+    ]),
+    ((0.001, 0.004), (0.001, 0.009), 0.03, 0.02, []),
+    ((float("nan"), 0.004), (0.001, 0.009), 0.03, 0.02, ["RESEARCH_VALIDATION_EVIDENCE_INVALID"]),
+    ((0.005, 0.004), (0.001, 0.009), 0.03, 0.02, ["RESEARCH_VALIDATION_EVIDENCE_INVALID"]),
+])
+def test_research_gate_never_accepts_unproven_or_malformed_metrics(
+    brier_ci, log_ci, ece_v1, ece_v2, expected,
+):
+    assert research_gate_reasons(brier_ci, log_ci, ece_v1, ece_v2) == expected
