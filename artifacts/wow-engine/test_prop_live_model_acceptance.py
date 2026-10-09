@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 
 import httpx
+import pytest
 
 from prop_live_model_acceptance import (
     _bootstrap_pick_payload,
@@ -137,3 +138,50 @@ def test_live_bootstrap_expected_nfl_model_family_matches_scout_player_yardage_a
     assert _expected_bootstrap_model_family(
         {"rows": [{"sport": "NFL", "stat_type": "PLAYER_RECEPTIONS"}]}
     ) != "NFL_PROP_ROLLING_FITTED_V1"
+
+
+@pytest.mark.parametrize("missing_direction", [None, "", " ", "YES", "OVER"])
+def test_live_bootstrap_does_not_invent_or_accept_unsupported_direction(missing_direction):
+    candidate = {
+        "event_id": "2026_04_ARI_NYG",
+        "event_start_time": "2099-10-04T17:00:00Z",
+        "sport": "NFL",
+        "player": "Marvin Harrison Jr.",
+        "stat_type": "PLAYER_RECEIVING_YARDS",
+        "line": 33.5,
+    }
+    if missing_direction is not None:
+        candidate["direction"] = missing_direction
+    with pytest.raises(ValueError, match="direction"):
+        _bootstrap_pick_payload(json.dumps(candidate))
+
+
+@pytest.mark.parametrize("invalid_line", [float("nan"), float("inf"), "-Infinity", "not-a-number"])
+def test_live_bootstrap_rejects_nonfinite_exact_line(invalid_line):
+    candidate = {
+        "event_id": "2026_04_ARI_NYG",
+        "event_start_time": "2099-10-04T17:00:00Z",
+        "sport": "NFL",
+        "player": "Marvin Harrison Jr.",
+        "stat_type": "PLAYER_RECEIVING_YARDS",
+        "line": invalid_line,
+        "direction": "LESS",
+    }
+    with pytest.raises(ValueError, match="line"):
+        _bootstrap_pick_payload(json.dumps(candidate))
+
+
+def test_live_bootstrap_preserves_explicit_less_without_rewriting_line():
+    candidate = {
+        "event_id": "2026_04_ARI_NYG",
+        "event_start_time": "2099-10-04T17:00:00Z",
+        "sport": "NFL",
+        "player": "Marvin Harrison Jr.",
+        "stat_type": "PLAYER_RECEIVING_YARDS",
+        "line": 33.5,
+        "direction": "LESS",
+    }
+    row = _bootstrap_pick_payload(json.dumps(candidate))["rows"][0]
+    assert row["direction"] == "LESS"
+    assert row["line"] == 33.5
+    assert row["stat_type"] == "PLAYER_RECEIVING_YARDS"
