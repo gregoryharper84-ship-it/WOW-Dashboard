@@ -18,11 +18,13 @@ def test_packet_matches_canonical_repository_bytes_and_stays_fail_closed():
     packet, manifest = module.build_packet()
     instructions = module.INSTRUCTIONS.read_bytes()
     addendum = module.PRIZEPICKS_ADDENDUM.read_bytes()
+    pickem_addendum = module.PICKEM_ADDENDUM.read_bytes()
     schema = module.ACTION_SCHEMA.read_bytes()
 
     assert packet == instructions.rstrip() + b"\n"
     assert manifest["canonical_instructions_sha256"] == hashlib.sha256(instructions).hexdigest()
     assert manifest["prizepicks_addendum_sha256"] == hashlib.sha256(addendum).hexdigest()
+    assert manifest["pickem_addendum_sha256"] == hashlib.sha256(pickem_addendum).hexdigest()
     assert manifest["action_schema_sha256"] == hashlib.sha256(schema).hexdigest()
     assert manifest["editor_instruction_packet_sha256"] == hashlib.sha256(packet).hexdigest()
     assert manifest["combined_editor_packet_sha256"] == hashlib.sha256(packet).hexdigest()
@@ -37,6 +39,7 @@ def test_editor_packet_has_safe_utf8_margin_and_addendum_moves_to_knowledge():
     packet, manifest = module.build_packet()
     text = packet.decode("utf-8")
     addendum_text = module.PRIZEPICKS_ADDENDUM.read_text(encoding="utf-8")
+    pickem_addendum_text = module.PICKEM_ADDENDUM.read_text(encoding="utf-8")
 
     assert len(text) <= module.EDITOR_INSTRUCTION_CHAR_LIMIT == 8000
     assert len(packet) <= module.EDITOR_INSTRUCTION_BYTE_SAFETY_LIMIT == 7500
@@ -44,15 +47,22 @@ def test_editor_packet_has_safe_utf8_margin_and_addendum_moves_to_knowledge():
     assert manifest["editor_instruction_byte_count"] <= manifest["editor_instruction_byte_safety_limit"] == 7500
     assert manifest["prizepicks_addendum_installation_surface"] == "KNOWLEDGE_FILE"
     assert manifest["prizepicks_knowledge_output_file"] == module.PRIZEPICKS_KNOWLEDGE_FILENAME
+    assert manifest["pickem_addendum_installation_surface"] == "KNOWLEDGE_FILE"
+    assert manifest["pickem_knowledge_output_file"] == module.PICKEM_KNOWLEDGE_FILENAME
     assert "ATTACH_PRIZEPICKS_ADDENDUM_AS_KNOWLEDGE_FILE" in manifest["acceptance_required"]
+    assert "ATTACH_PICKEM_ADDENDUM_AS_KNOWLEDGE_FILE" in manifest["acceptance_required"]
 
     for token in module.REQUIRED_EDITOR_TOKENS:
         assert token in text
     for token in module.REQUIRED_PRIZEPICKS_TOKENS:
         assert token in addendum_text
         assert token in manifest["required_prizepicks_tokens"]
+    for token in module.REQUIRED_PICKEM_TOKENS:
+        assert token in pickem_addendum_text
+        assert token in manifest["required_pickem_tokens"]
 
     assert "PRIZEPICKS BOARD-TO-SLIPS — V17 LIVE HOST ADDENDUM" not in text
+    assert "NFL PICK EM — V17 LIVE HOST ADDENDUM" not in text
 
 
 def test_packet_contains_single_domain_action_contract_without_secrets():
@@ -75,6 +85,7 @@ def test_packet_contains_single_domain_action_contract_without_secrets():
     assert "FRESH_CHAT_SUBMIT_AND_POLL_DURABLE_WOW_V17_DAILY_SNAPSHOT" in manifest["acceptance_required"]
     assert "FRESH_CHAT_SCORE_WOW_V17_SPREAD_FORWARD_SHADOW" in manifest["acceptance_required"]
     assert "FRESH_CHAT_SUBMIT_AND_POLL_DURABLE_WOW_V17_NFL_PICKEM_BOARD" in manifest["acceptance_required"]
+    assert "FRESH_CHAT_PICKEM_SKILL_FORM_CANARY" in manifest["acceptance_required"]
 
     assert "WOW_ACTION_API_KEY=" not in text
     assert "Bearer sk-" not in text

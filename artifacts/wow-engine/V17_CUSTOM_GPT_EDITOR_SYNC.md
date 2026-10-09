@@ -11,12 +11,13 @@ The production `WOW_BETTING_ENGINE` editor was historically saved/reloaded and A
 - Canonical live Action schema: `artifacts/wow-engine/v17/openapi.wow-betting-engine.v17.yaml`.
 - Canonical host instructions: `artifacts/wow-engine/WOW_V17_CUSTOM_GPT_INSTRUCTIONS.txt`.
 - PrizePicks live-host addendum: `artifacts/wow-engine/WOW_V17_CUSTOM_GPT_PRIZEPICKS_SKILL_ADDENDUM.txt`.
+- Pick Em live-host addendum: `artifacts/wow-engine/WOW_V17_CUSTOM_GPT_PICK_EM_SKILL_ADDENDUM.txt`.
 - Custom GPT Instructions field hard limit: **8,000 characters**; repository safety ceiling: **7,500 UTF-8 bytes**.
 - The canonical host-instructions file must satisfy both limits and is pasted into the Instructions field verbatim.
-- The PrizePicks addendum is installed as a **Knowledge file**, not appended to the Instructions field.
-- The deterministic editor-sync builder must fail if the canonical Instructions field exceeds either limit, if the canonical Action operation count is not exactly **24**, or if a required Action operation is missing.
+- The PrizePicks and Pick Em addenda are installed as separate **Knowledge files**, not appended to the Instructions field.
+- The deterministic editor-sync builder must fail if the canonical Instructions field exceeds either limit, if the canonical Action operation count is not exactly **26**, or if a required Action operation is missing.
 - ChatGPT Custom GPT editor constraint observed 2026-09-24: **Action sets cannot have duplicate domains**. Therefore the production WOW Render domain may appear in only one Action group.
-- The canonical live Action schema exposes all **24** WOW operations under `https://wow-governed-probability-engine.onrender.com`, including the three run-control operations:
+- The canonical live Action schema exposes all **26** WOW operations under `https://wow-governed-probability-engine.onrender.com`, including the three run-control operations:
   - `getWowV17PickRequestRunState`
   - `runWowV17ResumablePickRequest`
   - `closeWowV17PickRequestRun`
@@ -29,7 +30,7 @@ The production `WOW_BETTING_ENGINE` editor was historically saved/reloaded and A
 - The same single Action group exposes durable governed NFL Pick'em transport:
   - `/v17/nfl-pickem-submit` -> `submitWowV17NFLPickemBoard`
   - `/v17/nfl-pickem-run/{run_id}` -> `getWowV17NFLPickemRun`
-- The long-running synchronous `/v17/nfl-pickem-board` backend route is intentionally **not exposed to the live Custom GPT Action surface**. Full 16-game Pick'em work must use submit/poll so Action transport never waits for the complete scoring run.
+- The long-running synchronous `/v17/nfl-pickem-board` backend route is intentionally **not exposed to the live Custom GPT Action surface**. Full-sheet Pick'em work must use submit/poll so Action transport never waits for the complete scoring run. Expected game count comes from the supplied weekly sheet; bye weeks may contain fewer than 16 games.
 - Durable Pick'em delegates to the existing governed NFL outright-win specialist, preserves source terminals, never substitutes sportsbook/pool popularity for sporting probability, and keeps `can_execute=false`.
 - `scoreWowV17SpreadForwardShadow` accepts only the closed `NCAAF` request contract with event identity/time, home/away teams, exact home spread, and season. It is research-only and does not certify, promote, publish, or execute a spread probability.
 - `artifacts/wow-engine/v17/openapi.wow-betting-engine.v17.run-control.yaml` remains a repository/reference contract only. It is **not** installed as a second Custom GPT Action because the editor rejects two Action sets for the same domain.
@@ -50,7 +51,21 @@ The PrizePicks Knowledge contract requires the live host to:
 - treat unreadable source pages as source-ingestion blockers, not `MODEL_UNAVAILABLE`; and
 - render distinct `Player`, `Matchup`, `PrizePicks line`, `Offer`, `Available side(s)`, and `Current/live note` columns.
 
-Repository merge/CI does not itself update the OpenAI Custom GPT editor. Current live editor parity therefore remains fail closed until the canonical instructions are saved, the PrizePicks addendum is attached as Knowledge, the single canonical 24-operation Action schema is imported with Bearer authentication, the editor is saved/reloaded, and acceptance succeeds from a fresh production WOW chat.
+## Pick Em live-host behavior
+
+The Pick Em Knowledge contract requires the live host to:
+
+- route an attached NFL Pick'em form or `Run Pick Em Skill` request to the durable governed Pick'em workflow;
+- derive expected game count from the supplied sheet and reconcile every row to canonical NFL identity;
+- use `submitWowV17NFLPickemBoard` -> `getWowV17NFLPickemRun`, never the obsolete synchronous full-board Action;
+- require `PICKEM_BOARD_READY`, `full_sheet_submission_ready=true`, exact game-count reconciliation, and zero blockers before declaring a form submission-ready;
+- use the NFL fitted game-win specialist for sporting probabilities and the dedicated NFL total specialist for the tiebreaker;
+- preserve current production strategy authority; shadow pool-equity logic cannot silently mutate a production pick;
+- preserve typed transport/scorer/input/model failures;
+- when a form image is supplied, preserve the original form format and annotate only green selected teams/checkboxes, Name (default `GH`), and the governed tiebreaker while leaving Total Correct blank; and
+- verify the completed image 1:1 against the terminal card.
+
+Repository merge/CI does not itself update the OpenAI Custom GPT editor. Current live editor parity therefore remains fail closed until the canonical instructions are saved, both the PrizePicks and Pick Em addenda are attached as Knowledge, the single canonical 26-operation Action schema is imported with Bearer authentication, the editor is saved/reloaded, and acceptance succeeds from a fresh production WOW chat.
 
 ## Acceptance required to re-attest VERIFIED
 
@@ -58,7 +73,8 @@ The production WOW editor must be saved/reloaded with:
 
 1. `WOW_V17_CUSTOM_GPT_INSTRUCTIONS.txt` in the Instructions field;
 2. the PrizePicks addendum attached as Knowledge (`WOW_V17_PRIZEPICKS_HOST_CONTRACT_KNOWLEDGE.txt` from the sync artifact, or the byte-identical canonical addendum source);
-3. exactly one WOW Action group for `wow-governed-probability-engine.onrender.com`, imported from `openapi.wow-betting-engine.v17.yaml`, exposing all 24 operations with existing Bearer authentication preserved.
+3. the Pick Em addendum attached as Knowledge (`WOW_V17_PICK_EM_HOST_CONTRACT_KNOWLEDGE.txt` from the sync artifact, or the byte-identical canonical addendum source);
+4. exactly one WOW Action group for `wow-governed-probability-engine.onrender.com`, imported from `openapi.wow-betting-engine.v17.yaml`, exposing all 26 operations with existing Bearer authentication preserved.
 
 Then a fresh production WOW chat must prove:
 
@@ -73,7 +89,9 @@ Then a fresh production WOW chat must prove:
 9. the obsolete synchronous `runWowV17NFLPickemBoard` Action operation is absent from the live surface;
 10. a multi-page PrizePicks attachment follows the page-completeness contract, including typed unreadable-page behavior if applicable;
 11. required V17 diagnostics remain callable; and
-12. `can_execute=false` remains true.
+12. `Run Pick Em Skill` retrieves the Pick Em Knowledge contract in a fresh production chat and a supplied weekly sheet follows the complete-form/reconciliation rules without inventing rows or probabilities;
+13. when a Pick'em form image is supplied, the completed image preserves the original format, highlights/checks exactly one governed selection per game, writes the requested/default `GH` name and governed tiebreaker, leaves Total Correct blank, and reconciles 1:1 to the terminal card; and
+14. `can_execute=false` remains true.
 
 Until those checks are observed, report:
 

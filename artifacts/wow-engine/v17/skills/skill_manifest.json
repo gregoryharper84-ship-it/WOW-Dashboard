@@ -20,7 +20,8 @@
         "WOW_V17_PRIZEPICKS_BOARD_TO_SLIPS",
         "WOW_V17_ML_WINNERS",
         "WOW_V17_SCREENSHOT_REVIEW",
-        "WOW_V17_PICK_CORE"
+        "WOW_V17_PICK_CORE",
+        "WOW_V17_PICK_EM"
       ]
     },
     {
@@ -81,6 +82,20 @@
       ]
     },
     {
+      "skill_id": "WOW_V17_PICK_EM",
+      "file": "WOW_V17_PICK_EM_SKILL.md",
+      "owner": "WOW_BETTING_ENGINE",
+      "sporting_probability_owner": "wow.nfl-game-win-probability-expert",
+      "tiebreaker_owner": "wow.nfl-total-points-tiebreaker-specialist",
+      "triggers": [
+        "Run Pick Em Skill",
+        "fill out my Pick'em sheet",
+        "weekly Pick'em picks",
+        "highlight my picks on this form",
+        "I need to submit my picks today"
+      ]
+    },
+    {
       "skill_id": "WOW_V17_SCREENSHOT_REVIEW",
       "file": "WOW_V17_SCREENSHOT_REVIEW_SKILL.md",
       "owners": [
@@ -131,6 +146,12 @@
     "slip_construction_uses_verified_pool_only": true,
     "js_style_signal_not_governed_probability": true,
     "js_style_cannot_narrow_full_model_universe": true,
-    "js_style_postgame_values_cannot_backfill_pregame_features": true
+    "js_style_postgame_values_cannot_backfill_pregame_features": true,
+    "pickem_full_sheet_requires_zero_blocked_rows": true,
+    "pickem_expected_game_count_comes_from_supplied_sheet": true,
+    "pickem_transport_uses_durable_submit_poll": true,
+    "pickem_form_edit_preserves_original_format": true,
+    "pickem_image_annotation_must_reconcile_to_final_card": true,
+    "pickem_shadow_strategy_cannot_mutate_production_pick": true
   }
 }
