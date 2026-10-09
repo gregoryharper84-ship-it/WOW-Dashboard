@@ -33,7 +33,7 @@ STAGES = frozenset({
 })
 _MAX_SAMPLES_PER_KEY = 512
 _MAX_KEYS = 256
-_OVERFLOW_KEY = ("other", "other", "other", "other")
+_OVERFLOW_KEY = ("other", "other", "other", "other", "other")
 _MAX_LABEL_LEN = 32
 
 # Transport/overload outcomes are labelled for observability only. They are
@@ -45,7 +45,7 @@ _CTX: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar(
     "wow_interactive_latency_ctx", default=None
 )
 _LOCK = threading.Lock()
-_SAMPLES: dict[tuple[str, str, str, str], deque[float]] = {}
+_SAMPLES: dict[tuple[str, str, str, str, str], deque[float]] = {}
 
 
 def _label(value: Any) -> str:
@@ -102,8 +102,13 @@ def stage_timer(stage: str) -> Iterator[None]:
             stages[stage] = stages.get(stage, 0.0) + elapsed
 
 
-def _record(route: str, ctx: dict[str, Any], total_ms: float) -> None:
-    key = (route, ctx["sport"], ctx["row_count"], ctx["batch_size"])
+def _record(
+    route: str,
+    ctx: dict[str, Any],
+    total_ms: float,
+    outcome: str = "ok",
+) -> None:
+    key = (route, ctx["sport"], ctx["row_count"], ctx["batch_size"], _label(outcome))
     with _LOCK:
         if key not in _SAMPLES and len(_SAMPLES) >= _MAX_KEYS:
             key = _OVERFLOW_KEY
@@ -118,7 +123,7 @@ def _percentile(sorted_values: list[float], q: float) -> float:
 
 
 def latency_percentiles() -> list[dict[str, Any]]:
-    """p50/p95 total wall time by route, sport, row-count bucket and batch bucket."""
+    """p50/p95 wall time by route/sport/size/outcome without mixing failures into success."""
     with _LOCK:
         snapshot = {key: sorted(values) for key, values in _SAMPLES.items()}
     return [
@@ -127,12 +132,13 @@ def latency_percentiles() -> list[dict[str, Any]]:
             "sport": sport,
             "row_count": rows,
             "batch_size": batch,
+            "outcome": outcome,
             "samples": len(values),
             "p50_ms": _percentile(values, 0.50),
             "p95_ms": _percentile(values, 0.95),
             "can_execute": False,
         }
-        for (route, sport, rows, batch), values in sorted(snapshot.items())
+        for (route, sport, rows, batch, outcome), values in sorted(snapshot.items())
     ]
 
 
@@ -150,6 +156,8 @@ def _outcome(status_code: int, error: BaseException | None) -> str:
         return "overload"
     if error is not None or status_code >= 500:
         return "error"
+    if status_code >= 400:
+        return "client_error"
     return "ok"
 
 
@@ -186,7 +194,8 @@ def install_interactive_latency_middleware(app: Any) -> None:
             total_ms = (perf_counter() - started) * 1000.0
             with _LOCK:
                 stages = dict(ctx["stages"])
-            _record(path, ctx, total_ms)
+            outcome = _outcome(status_code, error)
+            _record(path, ctx, total_ms, outcome)
             stage_text = ",".join(
                 f"{name}={ms:.3f}" for name, ms in sorted(stages.items())
             ) or "none"
@@ -197,7 +206,7 @@ def install_interactive_latency_middleware(app: Any) -> None:
                 str(getattr(request, "method", "UNKNOWN")),
                 status_code,
                 total_ms,
-                _outcome(status_code, error),
+                outcome,
                 ctx["sport"],
                 ctx["row_count"],
                 ctx["batch_size"],
