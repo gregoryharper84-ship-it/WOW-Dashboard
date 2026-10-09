@@ -204,6 +204,7 @@ def _expected_bootstrap_model_family(payload: dict[str, Any]) -> str:
     nfl_aliases = {
         "PASS_YARDS", "PASSING_YARDS", "RUSH_YARDS", "RUSHING_YARDS",
         "REC_YARDS", "RECEIVING_YARDS", "ANYTIME_TD", "ANYTIME_TDS",
+        "PLAYER_PASSING_YARDS", "PLAYER_RUSHING_YARDS", "PLAYER_RECEIVING_YARDS",
         "ANYTIME_TOUCHDOWN", "ANYTIME_TOUCHDOWNS",
     }
     if sport == "NFL" and stat in nfl_aliases:
