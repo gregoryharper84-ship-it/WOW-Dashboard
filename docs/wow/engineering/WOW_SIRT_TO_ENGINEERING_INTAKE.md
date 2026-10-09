@@ -13,7 +13,7 @@
 
 1. Every fifteen minutes (plus after a trusted main sentinel completion), read the bounded complete OPEN findings inventory; invalid governance, missing source/credentials, malformed fingerprint, evidence, SHA, timestamp, or incomplete inventory is a typed failure.
 2. Link to the original GitHub issue only when a Supabase work item proves repository and source_kind=GITHUB_ISSUE. Otherwise search for a unique fingerprinted intake issue, or create it. Use read-back verification; never claim delivery from a successful API POST alone.
-3. Route P0 to RAPID and other severities to STANDARD Engineering triage. The issue states accountable lane, exact finding fingerprint, source reference, SHA when actually known, next action and mandatory independent acceptance. No LLM-generated root cause is accepted as evidence.
+3. Route P0 to RAPID and other severities to STANDARD Engineering triage. The bridge creates/reuses and read-back verifies the GitHub priority label plus wow-sirt-engineering-rapid or wow-sirt-engineering-standard label; any denied/missing label fails closed. The issue states accountable lane, exact finding fingerprint, source reference, SHA when actually known, next action and mandatory independent acceptance. No LLM-generated root cause is accepted as evidence.
 4. Engineering acknowledges on that same issue by posting one comment with exact fields:
 
     Engineering-ACK: <64-character finding fingerprint>
