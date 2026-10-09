@@ -43,6 +43,7 @@ def migrated():
                 "do $$ begin if not exists (select from pg_roles where rolname = '" +
                 role + "') then create role " + role + "; end if; end $$"
             )
+        conn.execute("alter role service_role bypassrls")
         conn.execute(sql)
     yield
 
@@ -88,3 +89,36 @@ def test_request_identity_validation_and_role_permissions():
         assert conn.execute(
             "select has_function_privilege('service_role', 'public.wow_rundown_reserve_call(text,date,integer,bigint)', 'EXECUTE')"
         ).fetchone()[0] is True
+
+
+def test_true_service_role_can_call_invoker_rpc_and_read_ledger():
+    """Security invoker requires real service-role grants + RLS bypass."""
+    rid = uuid4().hex
+    with _pg() as conn:
+        conn.execute("set role service_role")
+        result = conn.execute(
+            "select public.wow_rundown_reserve_call(%s, (now() at time zone 'UTC')::date, %s, %s)",
+            (rid, 500, 20000),
+        ).fetchone()[0]
+        assert result["allowed"] is True
+        assert conn.execute(
+            "select count(*) from public.wow_rundown_budget_requests where request_id = %s", (rid,)
+        ).fetchone()[0] == 1
+        done = conn.execute(
+            "select public.wow_rundown_finish_call(%s,%s)", (rid, 0)
+        ).fetchone()[0]
+        assert done["ok"] is True
+        conn.execute("reset role")
+
+
+def test_public_role_cannot_read_ledger_or_invoke_reservation():
+    with _pg() as conn:
+        assert conn.execute(
+            "select has_table_privilege('anon', 'public.wow_rundown_budget_days', 'SELECT')"
+        ).fetchone()[0] is False
+        assert conn.execute(
+            "select has_table_privilege('authenticated', 'public.wow_rundown_budget_requests', 'SELECT')"
+        ).fetchone()[0] is False
+        assert conn.execute(
+            "select pg_get_functiondef('public.wow_rundown_reserve_call(text,date,integer,bigint)'::regprocedure)"
+        ).fetchone()[0].lower().find("security definer") < 0
