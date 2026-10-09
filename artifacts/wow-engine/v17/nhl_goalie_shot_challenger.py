@@ -303,6 +303,14 @@ def replay(games: Sequence[NHLGame], boxes: Mapping[str, Box], *, bootstrap: int
                        "ece": float(_ece(p, y))}
     s1, s2 = score(p1), score(p2)
     delta_ll = s1["log_loss"] - s2["log_loss"]
+    hold_reasons = []
+    if ci[0] <= 0:
+        hold_reasons.append("BRIER_IMPROVEMENT_NOT_PROVEN")
+    if ll_ci[0] <= 0:
+        hold_reasons.append("LOG_LOSS_IMPROVEMENT_NOT_PROVEN")
+    if s2["ece"] > s1["ece"]:
+        hold_reasons.append("CALIBRATION_ERROR_WORSENED")
+    gate_pass = not hold_reasons
     return {
         "status": "ADVISORY_RESEARCH_ONLY", "spec_version": SPEC_VERSION,
         "source": "NHL_PUBLIC_WEB_API", "goalie_status": "PROJECTED", "boxscores": len(boxes),
@@ -315,10 +323,12 @@ def replay(games: Sequence[NHLGame], boxes: Mapping[str, Box], *, bootstrap: int
         "delta_log_loss_v1_minus_v2": float(delta_ll),
         "delta_brier_bootstrap_95_ci": [float(ci[0]), float(ci[1])],
         "delta_log_loss_bootstrap_95_ci": [float(ll_ci[0]), float(ll_ci[1])],
-        "research_gate_pass": bool(
-            ci[0] > 0 and ll_ci[0] > 0 and s2["ece"] <= s1["ece"]
+        "research_gate_pass": gate_pass,
+        "hold_reasons": hold_reasons,
+        "decision": (
+            "FORWARD_SHADOW_AND_GOVERNED_REVIEW_REQUIRED"
+            if gate_pass else "HOLD_CHALLENGER_INSUFFICIENT_VALIDATION"
         ),
-        "decision": "FORWARD_SHADOW_AND_GOVERNED_REVIEW_REQUIRED",
         "automatic_promotion_allowed": False,
         "probability_publishable": False, "can_execute": False,
     }
