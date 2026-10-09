@@ -118,7 +118,7 @@ def active_engineering_workflow(
     candidate_lease = str(candidate.get("lease_group") or "GLOBAL")
     for run in active:
         title = str(run.get("display_title") or run.get("name") or "")
-        identity = re.search(r"(?:^|\\s)lease=([A-Za-z0-9_-]+)\\s+incident=([0-9]+)(?:\\s|$)", title)
+        identity = re.search(r"(?:^|\s)lease=([A-Za-z0-9_-]+)\s+incident=([0-9]+)(?:\s|$)", title)
         if not identity:
             return True  # Unknown identity is never treated as safe.
         lease, incident = identity.group(1), int(identity.group(2))
