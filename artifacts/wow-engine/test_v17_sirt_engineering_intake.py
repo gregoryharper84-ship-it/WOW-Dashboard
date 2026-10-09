@@ -44,6 +44,12 @@ class FakeTransport:
     def issue(self, number):
         return self.issues[number]
 
+    def route_issue(self, number, item):
+        self.issues[number]["labels"] = [
+            {"name": item["priority"]},
+            {"name": "wow-sirt-engineering-" + item["lane"].lower()},
+        ]
+
     def comments(self, number):
         return self.comments_by_issue.get(number, [])[:]
 
