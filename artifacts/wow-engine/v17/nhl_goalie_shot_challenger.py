@@ -225,7 +225,10 @@ def augment_rows(
                               "home_starts": goalie_starts[home], "away_starts": goalie_starts[away],
                               "goalie_status": "PROJECTED", "goalie_projection_policy": "LAST_START_OR_B2B_ALTERNATE_V1",
                               "home_goalie_counts": goalie_stats[home], "away_goalie_counts": goalie_stats[away],
-                              "box_hash": b.source_hash, "reconstruction": "prior_settled_only"})
+                              # Never include the CURRENT game's settled boxscore
+                              # in any pregame feature-row manifest. Target/source
+                              # grade evidence remains separate from model inputs.
+                              "reconstruction": "prior_settled_only"})
             created[game.game_id] = BinaryTrainingRow(
                 event_id=prior.event_id, event_start_time=prior.event_start_time,
                 feature_as_of=prior.feature_as_of, positive_outcome=prior.positive_outcome,
@@ -282,12 +285,19 @@ def replay(games: Sequence[NHLGame], boxes: Mapping[str, Box], *, bootstrap: int
     p1, p2 = artifact_predict(v1, common[start:]), artifact_predict(v2, enriched[start:])
     err1, err2 = (p1 - y) ** 2, (p2 - y) ** 2
     diff = err1 - err2
+    # Pair both metrics on identical untouched historical outcomes.
+    # No fitting, test labels, or market prices influence bootstrap sampling.
+    clipped1, clipped2 = np.clip(p1, 1e-6, 1.0 - 1e-6), np.clip(p2, 1e-6, 1.0 - 1e-6)
+    log1 = -(y * np.log(clipped1) + (1 - y) * np.log1p(-clipped1))
+    log2 = -(y * np.log(clipped2) + (1 - y) * np.log1p(-clipped2))
+    ll_diff = log1 - log2
     if bootstrap < 100:
         raise ValueError("bootstrap must be at least 100")
     rng = np.random.default_rng(20261009)
     indices = rng.integers(0, len(y), size=(bootstrap, len(y)))
     means = np.mean(diff[indices], axis=1)
     ci = np.quantile(means, [0.025, 0.975])
+    ll_ci = np.quantile(np.mean(ll_diff[indices], axis=1), [0.025, 0.975])
     score = lambda p: {"brier": float(brier_score_loss(y, p)),
                        "log_loss": float(log_loss(y, p, labels=[0, 1])),
                        "ece": float(_ece(p, y))}
@@ -304,7 +314,10 @@ def replay(games: Sequence[NHLGame], boxes: Mapping[str, Box], *, bootstrap: int
         "delta_brier_v1_minus_v2": float(np.mean(diff)),
         "delta_log_loss_v1_minus_v2": float(delta_ll),
         "delta_brier_bootstrap_95_ci": [float(ci[0]), float(ci[1])],
-        "research_gate_pass": bool(ci[0] > 0 and delta_ll > 0 and s2["ece"] <= s1["ece"]),
+        "delta_log_loss_bootstrap_95_ci": [float(ll_ci[0]), float(ll_ci[1])],
+        "research_gate_pass": bool(
+            ci[0] > 0 and ll_ci[0] > 0 and s2["ece"] <= s1["ece"]
+        ),
         "decision": "FORWARD_SHADOW_AND_GOVERNED_REVIEW_REQUIRED",
         "automatic_promotion_allowed": False,
         "probability_publishable": False, "can_execute": False,
