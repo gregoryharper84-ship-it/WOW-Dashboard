@@ -25,16 +25,21 @@ different PR or SHA.
 
 ## Owner operation
 
-For each temporary authorization, set the `wow-release` environment secret:
+Preferred chat/UI path: on the target PR, the owner posts exactly:
 
-`WOW_OWNER_RELEASE_APPROVAL=<PR_NUMBER>:<EXACT_HEAD_SHA>`
+`/wow-owner-bridge <EXACT_HEAD_SHA> incident=<ISSUE_NUMBER>`
 
-Then manually run **wow-v17-temporary-owner-release-bridge** from protected
-`main` with the matching PR, SHA and incident. Trust-root changes are never
-eligible for this bridge; they remain explicit owner-bootstrap candidates.
+The protected-main workflow accepts that command only from
+`gregoryharper84-ship-it`, re-resolves the live PR head, then applies every CI
+and independent-QA gate before merging.
 
-After a merge, leave the prior value in place or replace it for the next exact
-candidate; it cannot authorize a different SHA.
+Alternative manual-dispatch path: set the `wow-release` environment secret
+`WOW_OWNER_RELEASE_APPROVAL=<PR_NUMBER>:<EXACT_HEAD_SHA>` and run
+**wow-v17-temporary-owner-release-bridge** with the matching inputs.
+
+Trust-root changes are never eligible for either bridge path; they remain
+explicit owner-bootstrap candidates. A stale command or secret cannot authorize
+a different SHA.
 
 ## Boundaries
 
