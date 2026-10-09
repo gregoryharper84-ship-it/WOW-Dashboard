@@ -156,3 +156,18 @@ def test_owner_bridge_dispatch_path_still_requires_same_secret(tmp_path):
     assert "authorization_mode=OWNER_ENVIRONMENT_SECRET" in (
         tmp_path / "github_output"
     ).read_text()
+
+
+def test_owner_bridge_denial_has_durable_run_summary_when_incident_unset():
+    """An auth failure must never die in the always() reporting step."""
+    doc = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    receipt = next(step["run"] for step in doc["jobs"]["owner-bridge"]["steps"]
+                   if step.get("name") == "Publish bounded receipt")
+    assert "if: always()" not in receipt  # Workflow owns the if, not bash
+    assert "${INCIDENT_ID:-unresolved}" in receipt
+    assert "${PR_NUMBER:-unresolved}" in receipt
+    assert "${EXPECTED_HEAD_SHA:-unresolved}" in receipt
+    assert '>> "$GITHUB_STEP_SUMMARY"' in receipt
+    assert "OWNER_BRIDGE_RECEIPT_NO_VALIDATED_INCIDENT" in receipt
+    assert 'if [[ "${safe_incident}" =~ ^[0-9]+$ ]]' in receipt
+    assert "production_acceptance=false" in receipt
