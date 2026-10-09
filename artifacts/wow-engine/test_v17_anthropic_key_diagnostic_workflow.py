@@ -10,14 +10,16 @@ import yaml
 
 WF = Path(__file__).resolve().parents[2] / ".github/workflows/wow-v17-anthropic-key-diagnostic.yml"
 FAKE_KEY = "sk-ant-api03-fake-key-for-offline-tests"
+FAKE_WORKSPACE = "wrkspc_OfflineTest123"
 
 
 def workflow():
     return yaml.safe_load(WF.read_text())
 
 
-def exercise(monkeypatch, capsys, results, key=FAKE_KEY):
+def exercise(monkeypatch, capsys, results, key=FAKE_KEY, workspace=FAKE_WORKSPACE):
     monkeypatch.setenv("K", key)
+    monkeypatch.setenv("WORKSPACE_ID", workspace)
     calls = []
     responses = iter(results)
 
@@ -26,6 +28,7 @@ def exercise(monkeypatch, capsys, results, key=FAKE_KEY):
         assert timeout == 30
         assert request.full_url == "https://api.anthropic.com/v1/messages"
         assert request.get_header("X-api-key") == key
+        assert request.get_header("Anthropic-workspace-id") == workspace
         payload = json.loads(request.data)
         assert payload["max_tokens"] == 1
         assert payload["messages"] == [{"role": "user", "content": "hi"}]
@@ -55,7 +58,10 @@ def test_manual_only_and_no_token_permissions():
     job = doc["jobs"]["api-key-diagnostic"]
     assert job["timeout-minutes"] == 5
     assert len(job["steps"]) == 1
-    assert job["steps"][0]["env"] == {"K": "${{ secrets.ANTHROPIC_API_KEY }}"}
+    assert job["steps"][0]["env"] == {
+        "K": "${{ secrets.ANTHROPIC_API_KEY }}",
+        "WORKSPACE_ID": "${{ inputs.workspace_id }}",
+    }
 
 
 def test_success_prints_status_only(monkeypatch, capsys):
@@ -120,3 +126,11 @@ def test_empty_or_whitespace_key_fails_without_requests(monkeypatch, capsys, key
     assert result == 1
     assert calls == []
     assert FAKE_KEY not in output
+
+
+@pytest.mark.parametrize("workspace", ["", "wrong-prefix", "wrkspc_", "wrkspc_bad\nheader", "wrkspc_bad header", "wrkspc_bad\\id"])
+def test_invalid_workspace_fails_without_requests(monkeypatch, capsys, workspace):
+    result, output, calls = exercise(monkeypatch, capsys, [], workspace=workspace)
+    assert result == 1
+    assert calls == []
+    assert "workspace_id must be a wrkspc_ ID" in output

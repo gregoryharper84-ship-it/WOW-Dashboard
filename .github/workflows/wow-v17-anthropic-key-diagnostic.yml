@@ -5,6 +5,12 @@ name: wow-v17-anthropic-key-diagnostic
 # Never logs credentials, successful response content or whole response bodies.
 on:
   workflow_dispatch:
+    inputs:
+      workspace_id:
+        description: Anthropic workspace to use for both diagnostic requests
+        type: string
+        required: true
+        default: wrkspc_01L3gWim3FDtWzGUXWeDamtm
 
 permissions: {}
 
@@ -21,6 +27,7 @@ jobs:
         shell: bash
         env:
           K: ${{ secrets.ANTHROPIC_API_KEY }}
+          WORKSPACE_ID: ${{ inputs.workspace_id }}
         run: |
           python3 <<'PY'
           import json
@@ -32,6 +39,7 @@ jobs:
 
 
           KEY = os.environ.get("K", "")
+          WORKSPACE_ID = os.environ.get("WORKSPACE_ID", "")
           MODELS = ("claude-opus-5-5", "claude-sonnet-5-5")
           ERROR_TYPES = {
               "invalid_request_error", "authentication_error", "billing_error",
@@ -69,13 +77,16 @@ jobs:
               if any(c.isspace() for c in KEY):
                   note("ERROR: key contains whitespace/newline; requests skipped")
                   return 1
+              if not re.fullmatch(r"wrkspc_[A-Za-z0-9]+", WORKSPACE_ID):
+                  note("ERROR: workspace_id must be a wrkspc_ ID; requests skipped")
+                  return 1
 
               failed = False
               for model in MODELS:
                   request = urllib.request.Request(
                       "https://api.anthropic.com/v1/messages",
                       data=json.dumps({"model": model, "max_tokens": 1, "messages": [{"role": "user", "content": "hi"}]}).encode(),
-                      headers={"x-api-key": KEY, "anthropic-version": "2023-06-01", "content-type": "application/json"},
+                      headers={"x-api-key": KEY, "anthropic-version": "2023-06-01", "content-type": "application/json", "anthropic-workspace-id": WORKSPACE_ID},
                       method="POST",
                   )
                   try:
