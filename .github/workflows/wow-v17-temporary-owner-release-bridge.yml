@@ -128,6 +128,7 @@ jobs:
           head_sha=$(jq -r '.head.sha // ""' <<<"$pr_json")
           base_ref=$(jq -r '.base.ref // ""' <<<"$pr_json")
           head_repo=$(jq -r '.head.repo.full_name // ""' <<<"$pr_json")
+          body=$(jq -r '.body // ""' <<<"$pr_json")
 
           [ "$state" = "open" ] || { echo "OWNER_BRIDGE_PR_NOT_OPEN" >&2; exit 1; }
           [ "$draft" = "false" ] || { echo "OWNER_BRIDGE_DRAFT_DENIED" >&2; exit 1; }
@@ -153,6 +154,15 @@ jobs:
           mkdir -p .owner-bridge-evidence
           printf '%s\n' "$pr_json" > .owner-bridge-evidence/pr.json
           gh issue view "$INCIDENT_ID" --repo "$GITHUB_REPOSITORY" --json number,title,body,state,url             > .owner-bridge-evidence/incident.json
+          incident_state=$(jq -r '.state // ""' .owner-bridge-evidence/incident.json)
+          [ "$incident_state" = "OPEN" ] || {
+            echo "OWNER_BRIDGE_INCIDENT_NOT_OPEN:$INCIDENT_ID:$incident_state" >&2
+            exit 1
+          }
+          if ! grep -Eq "(^|[^0-9])#${INCIDENT_ID}([^0-9]|$)" <<<"$body"; then
+            echo "OWNER_BRIDGE_PR_INCIDENT_LINK_MISSING:$INCIDENT_ID" >&2
+            exit 1
+          fi
           gh pr diff "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" > .owner-bridge-evidence/candidate.diff
           gh api --paginate "/repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/files?per_page=100"             --jq '.[].filename' > .owner-bridge-evidence/files.txt
 
