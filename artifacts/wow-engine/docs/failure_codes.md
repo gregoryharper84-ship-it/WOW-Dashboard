@@ -101,6 +101,8 @@ Emitted by the protected Claude engineering worker (`wow-v17-claude-engineering-
 | `ACTIONABLE_REPAIR_DELIVERY_UNVERIFIED` | engineering persistence | `REPAIR` run whose delivery gate produced no code (cancelled/skipped); suffixed with the gate outcome. | `UNRESOLVED_TYPED_FAILURE` |
 | `ACTIONABLE_REPAIR_RECEIPT_INCIDENT_INVALID` | engineering persistence | Incident identity is not a numeric issue number; receipt not written. | `UNRESOLVED_TYPED_FAILURE` |
 | `ACTIONABLE_REPAIR_RECEIPT_PERSIST_FAILED` | engineering persistence | Incident issue lookup or append-only receipt write failed. | `UNRESOLVED_TYPED_FAILURE` |
+| `ACTIONABLE_REPAIR_DB_RECEIPT_WRITER_UNTRUSTED` | engineering persistence | The receipt writer pinned from protected `main` is missing or its SHA-256 differs from the pinned hash; nothing executed. | `UNRESOLVED_TYPED_FAILURE` |
+| `ACTIONABLE_REPAIR_DB_RECEIPT_PERSIST_FAILED` | engineering persistence | Durable Supabase attempt receipt (`wow_engineering_attempt_receipts`) was not persisted and verified by read-back; carries the writer's `RECEIPT_*` reason. | `UNRESOLVED_TYPED_FAILURE` |
 
 Delivery statuses (not failures): `PR_READY` (exact-head open PR, disposition `PR_CREATED`) and `DRAFT_PR_GATES_FAILED` (exact-head draft PR; pre-PR gates failed; disposition `PR_CREATED`, does not authorize merge or deploy).
 
