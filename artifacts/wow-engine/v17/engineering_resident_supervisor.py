@@ -87,14 +87,49 @@ class GitHubTransport:
         )
 
 
-def active_engineering_workflow(client: GitHubTransport) -> bool:
-    """Fail closed when GitHub could not enumerate the complete active run set."""
+def active_engineering_workflow(
+    client: GitHubTransport,
+    candidate: dict[str, Any] | None = None,
+    manifest: dict[str, Any] | None = None,
+) -> bool:
+    """Block only overlapping trusted runs; fail closed on unknown run identity.
+
+    Without a candidate, retain the legacy any-active predicate for callers.
+    Distinct leases alone are insufficient: explicit conflict keys must also
+    be disjoint. The authoritative GitHub run identity is checked every cycle.
+    """
+    import re
+
+    active = []
     for state in ("queued", "in_progress", "waiting", "requested"):
         result = client.get(f"actions/runs?status={state}&per_page=100")
         runs = result.get("workflow_runs")
         if not isinstance(runs, list) or int(result.get("total_count", -1)) > len(runs):
             raise RuntimeError("ACTIVE_WORKFLOW_INVENTORY_INCOMPLETE")
-        if any(run.get("name") in ACTIVE_WORKFLOWS for run in runs):
+        active.extend(run for run in runs if str(run.get("name") or "").split(" lease=", 1)[0] in ACTIVE_WORKFLOWS)
+    if candidate is None:
+        return bool(active)
+    if not active:
+        return False
+    if manifest is None:
+        raise ValueError("ACTIVE_RUN_MANIFEST_REQUIRED")
+    entries = {int(e["issue_number"]): e for e in manifest["restoration"] + manifest["acceleration"]}
+    candidate_keys = set(candidate["conflict_keys"])
+    candidate_lease = str(candidate.get("lease_group") or "GLOBAL")
+    for run in active:
+        title = str(run.get("display_title") or run.get("name") or "")
+        identity = re.search(r"(?:^|\\s)lease=([A-Za-z0-9_-]+)\\s+incident=([0-9]+)(?:\\s|$)", title)
+        if not identity:
+            return True  # Unknown identity is never treated as safe.
+        lease, incident = identity.group(1), int(identity.group(2))
+        if incident not in entries:
+            return True  # Cannot establish conflict isolation.
+        occupied = entries[incident]
+        if lease != str(occupied.get("lease_group") or "GLOBAL"):
+            return True  # Forged/stale identity or wrong lease.
+        if incident == int(candidate["issue_number"]) or lease == candidate_lease:
+            return True
+        if candidate_keys & set(occupied["conflict_keys"]):
             return True
     return False
 
@@ -139,10 +174,6 @@ def dispatch_once(client: GitHubTransport, redis_client: Any, manifest: dict[str
     """Atomic admission across resident replicas; GitHub worker remains the writer."""
     if not redis_client.set(LOCK_KEY, socket.gethostname(), nx=True, ex=180):
         return "ANOTHER_RESIDENT_SUPERVISOR_OWNS_LEASE"
-    if redis_client.exists(COOLDOWN_KEY):
-        return "RECENT_DISPATCH_COOLDOWN"
-    if active_engineering_workflow(client):
-        return "EXISTING_ENGINEERING_WORKFLOW_ACTIVE"
     # An incident already at PR/review or retry cap must not starve every
     # other approved incident. Keep one shared writer and do not duplicate PRs.
     skipped: set[int] = set()
@@ -171,6 +202,12 @@ def dispatch_once(client: GitHubTransport, redis_client: Any, manifest: dict[str
             needs_p1_bootstrap = True
             skipped.add(issue_number)
             continue
+        if redis_client.exists(COOLDOWN_KEY + ":" + str(issue_number)):
+            skipped.add(issue_number)
+            continue
+        if active_engineering_workflow(client, issue, manifest):
+            skipped.add(issue_number)
+            continue
         if pending_pr_for_issue(client, issue_number):
             has_pending_pr = True
             skipped.add(issue_number)
@@ -185,7 +222,7 @@ def dispatch_once(client: GitHubTransport, redis_client: Any, manifest: dict[str
         client.dispatch(issue)
         redis_client.incr(attempts_key)
         redis_client.expire(attempts_key, 86400)
-        redis_client.set(COOLDOWN_KEY, str(issue_number), ex=900)
+        redis_client.set(COOLDOWN_KEY + ":" + str(issue_number), str(issue_number), ex=900)
         return "DISPATCHED_TO_PROTECTED_ENGINEERING_WORKFLOW"
 
 
