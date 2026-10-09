@@ -1,0 +1,77 @@
+name: wow-v17-nhl-goalie-shot-research
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/wow-v17-nhl-goalie-shot-research.yml"
+      - "artifacts/wow-engine/v17/nhl_goalie_shot_challenger.py"
+      - "artifacts/wow-engine/v17/nhl_goalie_shot_runner.py"
+      - "artifacts/wow-engine/test_v17_nhl_goalie_shot_challenger.py"
+      - "artifacts/wow-engine/nhl_candidate_pipeline.py"
+      - "artifacts/wow-engine/v17/binary_candidate_lifecycle.py"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nhl-goalie-shot-research-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: NHL V1/V2 research unit and lifecycle checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: artifacts/wow-engine
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: artifacts/wow-engine/requirements.txt
+      - run: pip install -r requirements.txt
+      - name: NHL chronology, schema, replay and V1 regressions
+        run: >-
+          python -m pytest -q
+          test_v17_nhl_goalie_shot_challenger.py
+          test_v17_nhl_candidate_pipeline.py
+          test_v17_binary_candidate_lifecycle.py
+  historical-replay:
+    name: Official NHL historical paired replay (advisory only)
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    defaults:
+      run:
+        working-directory: artifacts/wow-engine
+    env:
+      WOW_CAN_EXECUTE: "false"
+      WOW_DRY_RUN_ONLY: "true"
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: artifacts/wow-engine/requirements.txt
+      - run: pip install -r requirements.txt
+      - name: Restore immutable settled-game official data cache
+        uses: actions/cache@v4
+        with:
+          path: artifacts/wow-engine/.cache/nhl-challenger-boxscores-v1
+          key: nhl-official-boxscores-2021-2025-v1-${{ hashFiles('artifacts/wow-engine/v17/nhl_goalie_shot_runner.py') }}
+      - name: Fit both models only on same NHL historical intersection
+        run: python -m v17.nhl_goalie_shot_runner
+      - name: Upload research report or typed failure receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nhl-goalie-shot-advisory-replay
+          path: artifacts/wow-engine/nhl_goalie_shot_report.json
+          if-no-files-found: warn
+          retention-days: 30
