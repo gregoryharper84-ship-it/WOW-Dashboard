@@ -45,6 +45,76 @@ def test_memory_pressure_is_typed_nonterminal_and_does_not_strand_slot(monkeypat
     permit.release()
 
 
+def test_bounded_idle_reclaim_can_reopen_slot_only_after_measured_resume(monkeypatch):
+    measured = {"current": 90}
+    calls = []
+    monkeypatch.setattr(
+        memory_admission,
+        "_read_cgroup_memory_bytes",
+        lambda: (measured["current"], 100),
+    )
+    monkeypatch.setattr(memory_admission.time, "monotonic", lambda: 1_000.0)
+    monkeypatch.setattr(
+        memory_admission,
+        "release_process_memory",
+        lambda: (calls.append("gc_and_trim"), measured.update(current=67)),
+    )
+    permit = memory_admission.try_acquire_heavy_job("DAILY_SNAPSHOT")
+    assert permit is not None
+    assert permit.admission["memory_ratio"] == pytest.approx(0.67)
+    assert permit.admission["under_pressure"] is False
+    assert calls == ["gc_and_trim"]
+    permit.release()
+
+
+def test_failed_reclaim_preserves_pressure_and_is_rate_limited(monkeypatch):
+    clock = {"now": 500.0}
+    calls = []
+    monkeypatch.setattr(memory_admission.time, "monotonic", lambda: clock["now"])
+    monkeypatch.setattr(memory_admission, "_read_cgroup_memory_bytes", lambda: (94, 100))
+    monkeypatch.setattr(memory_admission, "release_process_memory", lambda: calls.append("reclaim"))
+    for _ in range(2):
+        with pytest.raises(memory_admission.HeavyJobDeferred) as exc:
+            memory_admission.try_acquire_heavy_job("DAILY_SNAPSHOT")
+        assert exc.value.code == "MEMORY_PRESSURE"
+        assert exc.value.receipt()["memory_ratio"] == pytest.approx(0.94)
+        assert exc.value.receipt()["can_execute"] is False
+    assert calls == ["reclaim"]
+    clock["now"] = 561.0
+    with pytest.raises(memory_admission.HeavyJobDeferred):
+        memory_admission.acquire_heavy_job("DAILY_SNAPSHOT", wait_seconds=0.0)
+    assert calls == ["reclaim", "reclaim"]
+
+
+def test_reclaim_cannot_claim_recovery_when_followup_cgroup_sample_vanishes(monkeypatch):
+    measured = {"valid": True}
+    monkeypatch.setattr(
+        memory_admission,
+        "_read_cgroup_memory_bytes",
+        lambda: (93, 100) if measured["valid"] else None,
+    )
+    monkeypatch.setattr(
+        memory_admission,
+        "release_process_memory",
+        lambda: measured.update(valid=False),
+    )
+    with pytest.raises(memory_admission.HeavyJobDeferred) as exc:
+        memory_admission.try_acquire_heavy_job("DAILY_SNAPSHOT")
+    assert exc.value.receipt()["code"] == "MEMORY_PRESSURE"
+    assert exc.value.receipt()["memory_ratio"] == pytest.approx(0.93)
+    assert exc.value.receipt()["probability_publishable"] is False
+
+
+def test_snapshot_exposes_process_rss_without_affecting_gate(monkeypatch):
+    monkeypatch.setattr(memory_admission, "_read_cgroup_memory_bytes", lambda: (50, 100))
+    monkeypatch.setattr(memory_admission, "_read_process_rss_bytes", lambda: 12_345_678)
+    snapshot = memory_admission.admission_snapshot("TEST")
+    assert snapshot["process_rss_bytes"] == 12_345_678
+    assert snapshot["memory_current_bytes"] == 50
+    assert snapshot["memory_limit_bytes"] == 100
+    assert snapshot["under_pressure"] is False
+
+
 def test_shared_heavy_slot_serializes_jobs(monkeypatch):
     monkeypatch.setattr(memory_admission, "_read_cgroup_memory_bytes", lambda: (50, 100))
     first = memory_admission.try_acquire_heavy_job("SCOUT_HANDOFF")
