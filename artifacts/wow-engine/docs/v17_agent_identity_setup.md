@@ -94,7 +94,7 @@ separation comes from pinning each required check to its App's `integration_id` 
    `wow-engineering`, `wow-independent-qa`, `wow-release-authority`, permissions exactly as above, *Only on this account*,
    webhook inactive. Install each on WOW-Dashboard only. Keep each private key **only** in that role's runtime.
 3. **Bind roles:** *Settings → Secrets and variables → Actions → Variables*: `WOW_ENGINEERING_APP_ID`,
-   `WOW_QA_APP_ID`, `WOW_RELEASE_APP_ID` (numeric App IDs; identifiers, not secrets).
+   `WOW_QA_APP_ID`, `WOW_RELEASE_APP_ID` (numeric App IDs; identifiers, not secrets). **Keep these in repository Actions Variables, not environment variables:** job-level `if: vars.WOW_*_APP_ID != ''` is evaluated before environment variables are available.
 4. **Phase C (built; activates when the Apps exist):** `wow-v17-independent-qa-check` and
    `wow-v17-release-authority-check` run from protected `main`, never execute PR code, read evidence with the
    read-only workflow token, and publish their check with their own App token downscoped to `checks: write`.
