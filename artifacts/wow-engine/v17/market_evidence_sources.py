@@ -351,12 +351,6 @@ def fetch(
     if metered:
         from v17 import rundown_datapoint_budget as dp_budget
 
-        allowed, budget_code = dp_budget.check()
-        if not allowed:
-            return _fail(
-                provider.name, capability, budget_code,
-                request_audit={"paid_provider_network_attempted": False, "budget": dp_budget.status(), "can_execute": False},
-            )
 
     allow_auth_failover = provider.name == "RUNDOWN" and provider.auth_style == "header"
     attempt_keys = api_keys if allow_auth_failover else api_keys[:1]
@@ -373,15 +367,24 @@ def fetch(
         safe_endpoint = _redact(url, api_key)
         request = Request(full, headers=headers)
 
+        # Every network attempt (including auth-alias failover) reserves one
+        # call atomically before I/O and settles exactly once afterwards.
+        reservation = dp_budget.reserve() if metered else None
+        if reservation is not None and not reservation.allowed:
+            return _fail(
+                provider.name, capability, reservation.code,
+                request_audit={"budget": reservation.audit(), "can_execute": False},
+            )
+
         try:
             with (opener or urlopen)(request, timeout=TIMEOUT_SECONDS) as response:
+                if reservation is not None:
+                    reservation.observe(getattr(response, "headers", None))
                 body = response.read().decode("utf-8")
                 status = getattr(response, "status", None) or getattr(response, "code", None)
-                if metered:
-                    dp_budget.record(dp_budget.header_datapoints(getattr(response, "headers", None)))
         except HTTPError as exc:
-            if metered:
-                dp_budget.record(dp_budget.header_datapoints(getattr(exc, "headers", None)) or 0)
+            if reservation is not None:
+                reservation.observe(getattr(exc, "headers", None), failed=True)
             has_next_alias = attempt_index + 1 < len(attempt_keys)
             if allow_auth_failover and exc.code in (401, 403) and has_next_alias:
                 continue
@@ -401,7 +404,12 @@ def fetch(
                 status=exc.code, endpoint=safe_endpoint, rate_limit=rate_limit,
             )
         except (URLError, TimeoutError, OSError) as exc:
+            if reservation is not None:
+                reservation.observe(None, failed=True)
             return _fail(provider.name, capability, f"{provider.name}_{type(exc).__name__}", endpoint=safe_endpoint)
+        finally:
+            if reservation is not None:
+                reservation.settle()
 
         try:
             payload = json.loads(body)

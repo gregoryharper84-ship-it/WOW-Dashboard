@@ -100,9 +100,9 @@ def _request_json(
 
     from v17 import rundown_datapoint_budget as dp_budget
 
-    allowed, budget_code = dp_budget.check()
-    if not allowed:
-        return TransportResult(False, code=budget_code, observed_at=_now_iso())
+    reservation = dp_budget.reserve()
+    if not reservation.allowed:
+        return TransportResult(False, code=reservation.code, observed_at=_now_iso())
 
     base = sources._base_url(provider)
     query = {key: value for key, value in (params or {}).items() if value is not None}
@@ -121,11 +121,11 @@ def _request_json(
             body = response.read().decode("utf-8")
             status = getattr(response, "status", None) or getattr(response, "code", None)
             headers = getattr(response, "headers", None)
+            reservation.observe(headers)
             delay = _nonnegative_int(_header(headers, "X-Data-Delay-Seconds"))
             datapoints = _nonnegative_int(_header(headers, "X-Datapoints"))
-            dp_budget.record(datapoints)
     except HTTPError as exc:
-        dp_budget.record(_nonnegative_int(_header(getattr(exc, "headers", None), "X-Datapoints")) or 0)
+        reservation.observe(getattr(exc, "headers", None), failed=True)
         return TransportResult(
             False,
             status=exc.code,
@@ -134,12 +134,16 @@ def _request_json(
             observed_at=_now_iso(),
         )
     except (URLError, TimeoutError, OSError) as exc:
+        reservation.observe(None, failed=True)
         return TransportResult(
             False,
             code=f"RUNDOWN_{type(exc).__name__.upper()}",
             endpoint=endpoint,
             observed_at=_now_iso(),
         )
+    finally:
+        # Exactly one settlement per reservation, on every exit path.
+        reservation.settle()
 
     try:
         payload = json.loads(body)
