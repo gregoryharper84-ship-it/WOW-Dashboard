@@ -184,7 +184,7 @@ def test_production_cross_sport_handoff_assigns_verified_short_school_id(monkeyp
     from v17.team_event_sport_parity import canonicalize_ncaaf_discovery_identity
 
     utc_start = "2026-10-10T01:00:00Z"
-    monkeypatch.setattr(identity, "_season_rows", lambda year: [{
+    monkeypatch.setattr(identity, "_season_rows", lambda year, **_kwargs: [{
         "id": 401900007, "startDate": utc_start,
         "homeTeam": "Washington", "awayTeam": "Iowa",
     }])
@@ -213,7 +213,7 @@ def test_production_cross_sport_handoff_keeps_unsafe_short_alias_held(monkeypatc
     from v17.team_event_sport_parity import canonicalize_ncaaf_discovery_identity
 
     utc_start = "2026-10-10T01:00:00Z"
-    monkeypatch.setattr(identity, "_season_rows", lambda year: [{
+    monkeypatch.setattr(identity, "_season_rows", lambda year, **_kwargs: [{
         "id": 401900008, "startDate": utc_start,
         "homeTeam": "Washington", "awayTeam": "Iowa State",
     }])
