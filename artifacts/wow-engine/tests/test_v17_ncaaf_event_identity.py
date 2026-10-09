@@ -176,3 +176,59 @@ def test_short_school_mascot_identity_does_not_bypass_start_tolerance():
             }]),
         )
     assert exc.value.code == "NCAAF_CANONICAL_EVENT_NOT_FOUND"
+
+
+def test_production_cross_sport_handoff_assigns_verified_short_school_id(monkeypatch):
+    from datetime import datetime, timezone
+    from v17.cross_sport_winner_discovery import normalize_discovered_event
+    from v17.team_event_sport_parity import canonicalize_ncaaf_discovery_identity
+
+    utc_start = "2026-10-10T01:00:00Z"
+    monkeypatch.setattr(identity, "_season_rows", lambda year: [{
+        "id": 401900007, "startDate": utc_start,
+        "homeTeam": "Washington", "awayTeam": "Iowa",
+    }])
+    provider = normalize_discovered_event(
+        {
+            "provider_event_id": "espn-synthetic-alias",
+            "start_time": utc_start,
+            "home_team": "Washington Huskies",
+            "away_team": "Iowa Hawkeyes",
+            "status": "scheduled",
+        },
+        sport="NCAAF", sport_key="football_ncaaf", source="DISCOVERY_FEED",
+        now=datetime(2026, 10, 9, 12, 0, tzinfo=timezone.utc),
+    )
+    assert provider.official_event_id is None
+    resolved = canonicalize_ncaaf_discovery_identity(provider)
+    assert resolved.official_event_id == "401900007"
+    assert resolved.raw["provider_event_id"] == "espn-synthetic-alias"
+    assert resolved.raw["canonical_identity_status"] == "CANONICAL_RESOLVED"
+    assert resolved.raw["canonical_identity_market_features_used"] is False
+
+
+def test_production_cross_sport_handoff_keeps_unsafe_short_alias_held(monkeypatch):
+    from datetime import datetime, timezone
+    from v17.cross_sport_winner_discovery import normalize_discovered_event
+    from v17.team_event_sport_parity import canonicalize_ncaaf_discovery_identity
+
+    utc_start = "2026-10-10T01:00:00Z"
+    monkeypatch.setattr(identity, "_season_rows", lambda year: [{
+        "id": 401900008, "startDate": utc_start,
+        "homeTeam": "Washington", "awayTeam": "Iowa State",
+    }])
+    provider = normalize_discovered_event(
+        {
+            "provider_event_id": "espn-another-synthetic-alias",
+            "start_time": utc_start,
+            "home_team": "Washington Huskies",
+            "away_team": "Iowa Hawkeyes",
+            "status": "scheduled",
+        },
+        sport="NCAAF", sport_key="football_ncaaf", source="DISCOVERY_FEED",
+        now=datetime(2026, 10, 9, 12, 0, tzinfo=timezone.utc),
+    )
+    resolved = canonicalize_ncaaf_discovery_identity(provider)
+    assert resolved.official_event_id is None
+    assert resolved.raw["canonical_identity_status"] == "ALIAS_ONLY_UNRESOLVED"
+    assert resolved.raw["canonical_identity_blocker"] == "NCAAF_CANONICAL_EVENT_NOT_FOUND"
