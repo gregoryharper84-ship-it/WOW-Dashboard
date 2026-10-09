@@ -94,7 +94,10 @@ def _cached_compact_nflverse_rows(
     http_get: Callable[..., Any],
     now_ts: float,
 ) -> tuple[tuple[_CompactNFLRow, ...], str]:
-    use_cache = http_get is nfl.httpx.get
+    use_cache = bool(
+        http_get is nfl.httpx.get
+        or getattr(http_get, "_wow_nflverse_compact_cache_eligible", False)
+    )
     url = nfl.NFLVERSE_URL.format(season=season)
 
     if use_cache:

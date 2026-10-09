@@ -34,6 +34,7 @@ PLATFORM = "ESPN_NFL_IDENTITY_NFLVERSE_STATS_FORWARD_V1"
 SCOREBOARD_URL = nfl.ESPN_SCOREBOARD_URL
 ROSTER_URL = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams/{team_id}/roster"
 STAT_TYPES = ("PASSING_YARDS", "RUSHING_YARDS", "RECEIVING_YARDS", "ANYTIME_TD")
+_NFLVERSE_URL_PREFIX = nfl.NFLVERSE_URL.partition("{season}")[0]
 POSITION_STATS: dict[str, tuple[str, ...]] = {
     "QB": ("PASSING_YARDS", "RUSHING_YARDS", "ANYTIME_TD"),
     "RB": ("RUSHING_YARDS", "RECEIVING_YARDS", "ANYTIME_TD"),
@@ -67,6 +68,11 @@ def _cached_http_get(http_get: Callable[..., Any]) -> Callable[..., Any]:
     cache: dict[tuple[Any, ...], Any] = {}
 
     def get(url: str, params=None, headers=None, **kwargs: Any) -> Any:
+        # nflverse season CSVs are already single-flighted by the compact
+        # process cache. Retaining the raw HTTP response here duplicates that
+        # payload for the full request and defeats the 512 MiB memory overlay.
+        if str(url).startswith(_NFLVERSE_URL_PREFIX):
+            return http_get(url, params=params, headers=headers, **kwargs)
         params_key = tuple(sorted((str(k), str(v)) for k, v in dict(params or {}).items()))
         headers_key = tuple(sorted((str(k).lower(), str(v)) for k, v in dict(headers or {}).items()))
         key = (str(url), params_key, headers_key)
@@ -74,6 +80,17 @@ def _cached_http_get(http_get: Callable[..., Any]) -> Callable[..., Any]:
             cache[key] = http_get(url, params=params, headers=headers, **kwargs)
         return cache[key]
 
+    # Preserve the live/default getter identity through this request-local
+    # decorator so v17.nfl_prop_memory_safety can keep using its compact
+    # season cache. Test/custom getters stay isolated and uncached by default.
+    setattr(
+        get,
+        "_wow_nflverse_compact_cache_eligible",
+        bool(
+            http_get is httpx.get
+            or getattr(http_get, "_wow_nflverse_compact_cache_eligible", False)
+        ),
+    )
     return get
 
 
