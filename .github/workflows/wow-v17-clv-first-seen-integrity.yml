@@ -1,0 +1,45 @@
+name: wow-v17-clv-first-seen-integrity
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/wow-v17-clv-first-seen-integrity.yml"
+      - "artifacts/wow-engine/v17/closing_line_grading.py"
+      - "artifacts/wow-engine/tests/test_v17_closing_line_grading.py"
+      - "artifacts/wow-engine/v17/espn_market_history.py"
+      - "artifacts/wow-engine/v17/rundown_market_history.py"
+      - "artifacts/wow-engine/tests/test_v17_rundown_market_history.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: clv-first-seen-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  focused:
+    name: CLV chronology and no-lookahead regression
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: artifacts/wow-engine
+    env:
+      WOW_CAN_EXECUTE: "false"
+      WOW_DRY_RUN_ONLY: "true"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: artifacts/wow-engine/requirements.txt
+      - run: pip install -r requirements.txt
+      - name: Check close and first-seen price metrics
+        run: >-
+          python -m pytest -q
+          tests/test_v17_closing_line_grading.py
+          tests/test_v17_espn_market_history.py
+          tests/test_v17_rundown_market_history.py

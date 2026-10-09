@@ -290,3 +290,41 @@ def test_one_sided_book_at_pick_time_is_skipped():
 @pytest.mark.parametrize("raw, full", [("PIT", "Pittsburgh Steelers"), ("SF", "San Francisco 49ers"), ("Buffalo Bills", "Buffalo Bills"), ("", "")])
 def test_nfl_abbreviated_historic_grades_expand_for_matching(raw, full):
     assert g._nfl_full_name(raw) == full
+
+
+def test_clv_fails_closed_on_backdated_quote_observed_after_pick():
+    """First observed in WOW after pick is never a valid price-at-pick quote."""
+    from v17.closing_line_grading import pick_time_price
+    from datetime import datetime, timezone
+
+    at = datetime(2026, 10, 5, 15, 30, tzinfo=timezone.utc)
+    backdated = [
+        {**_cur("Team A", -130, "2026-10-05T16:00:00Z"),
+         "price_updated_at": "2026-10-05T15:00:00Z"},
+        {**_cur("Team B", +110, "2026-10-05T16:00:00Z"),
+         "price_updated_at": "2026-10-05T15:00:00Z"},
+    ]
+    assert pick_time_price(
+        selected="Team A", provider_event_id="e1", rows=backdated, at=at
+    ) is None
+    valid_early = [
+        _cur("Team A", -115, "2026-10-05T14:00:00Z"),
+        _cur("Team B", -105, "2026-10-05T14:00:00Z"),
+    ]
+    result = pick_time_price(
+        selected="Team A", provider_event_id="e1", rows=valid_early + backdated, at=at
+    )
+    assert result is not None
+    assert result["quote_at"] == "2026-10-05T14:00:00Z"
+
+
+def test_clv_requires_fetched_at_provenance_even_if_provider_timestamp_old():
+    from v17.closing_line_grading import pick_time_price
+    from datetime import datetime, timezone
+
+    at = datetime(2026, 10, 5, 15, 30, tzinfo=timezone.utc)
+    rows = [
+        {**_cur("Team A", -120, "2026-10-05T14:00:00Z"), "fetched_at": None},
+        {**_cur("Team B", +110, "2026-10-05T14:00:00Z"), "fetched_at": None},
+    ]
+    assert pick_time_price(selected="Team A", provider_event_id="e1", rows=rows, at=at) is None
