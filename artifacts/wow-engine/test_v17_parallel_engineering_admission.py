@@ -24,8 +24,10 @@ MANIFEST = {
 
 
 class Client:
-    def __init__(self, title):
+    def __init__(self, title, *, path=".github/workflows/wow-v17-chatgpt-engineering-worker.yml", head_branch="main"):
         self.title = title
+        self.path = path
+        self.head_branch = head_branch
         self.sent = []
 
     def get(self, suffix):
@@ -34,6 +36,8 @@ class Client:
                 return {"total_count": 1, "workflow_runs": [{
                     "name": "wow-v17-chatgpt-engineering-worker",
                     "display_title": self.title,
+                    "path": self.path,
+                    "head_branch": self.head_branch,
                 }]}
             return {"total_count": 0, "workflow_runs": []}
         if suffix.startswith("issues/"):
@@ -85,6 +89,19 @@ def test_dispatch_selects_disjoint_p0_while_first_is_active():
     client = Client("wow-v17-chatgpt-engineering-worker lease=P0_LLP incident=101")
     assert dispatch_once(client, Redis(), MANIFEST) == "DISPATCHED_TO_PROTECTED_ENGINEERING_WORKFLOW"
     assert client.sent == [102]
+
+
+@pytest.mark.parametrize("path,branch", [
+    (".github/workflows/lookalike.yml", "main"),
+    (".github/workflows/wow-v17-chatgpt-engineering-worker.yml", "feature-branch"),
+    ("", "main"),
+])
+def test_forged_display_name_does_not_prove_disjoint_worker_identity(path, branch):
+    title = "wow-v17-chatgpt-engineering-worker lease=P0_LLP incident=101"
+    client = Client(title, path=path, head_branch=branch)
+    assert active_engineering_workflow(client, B, MANIFEST)
+    assert dispatch_once(client, Redis(), {**MANIFEST, "restoration": [B]}) == "EXISTING_ENGINEERING_WORKFLOW_ACTIVE"
+    assert not client.sent
 
 
 def test_same_incident_or_conflicting_domain_not_dispatched():
