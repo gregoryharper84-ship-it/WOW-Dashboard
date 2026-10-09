@@ -290,7 +290,9 @@ async def _worker_loop(
             # queued row and attempt budget when memory is pressured or Scout
             # currently owns the heavyweight slot.
             try:
-                permit = memory_admission.try_acquire_heavy_job("DAILY_SNAPSHOT")
+                # Reclaim off the event loop; admission re-measures the gate.
+                await memory_admission.reclaim_under_pressure_async("DAILY_SNAPSHOT")
+                permit = memory_admission.try_acquire_heavy_job("DAILY_SNAPSHOT", reclaim=False)
             except memory_admission.HeavyJobDeferred as exc:
                 receipt = exc.receipt()
                 LOGGER.warning(
