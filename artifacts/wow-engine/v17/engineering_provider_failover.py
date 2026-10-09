@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -92,6 +93,11 @@ OPENAI_FAILOVER_ELIGIBLE = {
     "OPENAI_API_UPSTREAM_UNAVAILABLE",
 }
 
+# Typed worker delivery outcomes (incidents #1021/#1527). Matched only on the emitted
+# workflow error command, never on the step's own script text echoed into the log.
+DELIVERY_ERROR_RE = re.compile(r"(?:::error::|##\[error\])(ACTIONABLE_REPAIR_[A-Z_]+):")
+GOVERNANCE_BLOCKED_CODES = frozenset({"ACTIONABLE_REPAIR_POLICY_BOUNDARY"})
+
 NON_PROVIDER_MARKERS = (
     "eacces:",
     "permission denied",
@@ -110,6 +116,8 @@ class ProviderFailure:
     failover_eligible: bool
     circuit_breaker_minutes: int
     can_execute: bool = False
+    disposition: str | None = None
+    provider_signal: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -117,6 +125,8 @@ class ProviderFailure:
             "code": self.code,
             "failover_eligible": self.failover_eligible,
             "circuit_breaker_minutes": self.circuit_breaker_minutes,
+            "disposition": self.disposition,
+            "provider_signal": self.provider_signal,
             "can_execute": False,
             "terminal_authority": "V17_TERMINAL_REDUCER",
         }
@@ -133,6 +143,26 @@ def classify_provider_failure(provider: str, log_text: str) -> ProviderFailure:
         if provider_key in {"anthropic", "claude"}
         else ()
     )
+    provider_code = next(
+        (code for code, needles in patterns if any(needle in text for needle in needles)),
+        None,
+    )
+    delivery = DELIVERY_ERROR_RE.search(str(log_text or ""))
+    if delivery:
+        # A typed delivery outcome is never relabelled as a provider failure. A governance
+        # policy boundary never fails over or retries, whatever else the log contains.
+        delivery_code = delivery.group(1)
+        blocked = delivery_code in GOVERNANCE_BLOCKED_CODES
+        eligible = not blocked and provider_code in OPENAI_FAILOVER_ELIGIBLE
+        return ProviderFailure(
+            provider=provider_key or "unknown",
+            code=delivery_code,
+            failover_eligible=eligible,
+            circuit_breaker_minutes=120 if eligible else 0,
+            disposition="BLOCKED_WITH_EXACT_REASON" if blocked else "UNRESOLVED_TYPED_FAILURE",
+            provider_signal=provider_code,
+        )
+
     for code, needles in patterns:
         if any(needle in text for needle in needles):
             eligible = code in OPENAI_FAILOVER_ELIGIBLE
