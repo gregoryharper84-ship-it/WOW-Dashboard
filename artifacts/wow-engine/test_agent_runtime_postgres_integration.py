@@ -217,6 +217,7 @@ def test_durable_api_to_worker_to_terminal_reconciliation(monkeypatch):
 # the same real Postgres 16 service. Lives in this file so it runs in the
 # existing integration job without modifying the protected CI trust root.
 # ---------------------------------------------------------------------------
+import json  # noqa: E402
 import uuid  # noqa: E402
 
 RECEIPTS_MIGRATION = Path(__file__).parent / "migrations" / "20261009_v17_engineering_attempt_receipts.sql"
@@ -343,3 +344,48 @@ def test_receipts_backlog_client_grants_revoked(receipts_schema):
             "where table_name='wow_engineering_backlog' and grantee in ('anon','authenticated')"
         )
         assert cur.fetchone() == (0,)
+
+
+def test_receipts_writer_round_trip_through_real_postgrest(receipts_schema):
+    """v17/engineering_receipts.py writes and read-back-verifies through the real
+    service-role PostgREST path, and the append-only triggers still hold there."""
+    import time as _time
+    from urllib.request import Request as _Request, urlopen as _urlopen
+    from urllib.error import HTTPError as _HTTPError
+
+    from v17 import engineering_receipts as er
+
+    url, key = os.environ["SUPABASE_URL"], os.environ["SUPABASE_SERVICE_KEY"]
+    with _receipts_conn() as conn, conn.cursor() as cur:
+        cur.execute("grant usage on schema public to service_role")
+        cur.execute("notify pgrst, 'reload schema'")
+    receipt = dict(incident_id="1554", provider="claude", role="implementer",
+                   worker_run_id="ci-postgrest", disposition="PR_CREATED",
+                   pr_number=1552, head_sha=SHA_B, change_class="B", priority="P2",
+                   tests=[{"suite": "receipts", "result": "pass"}])
+    stored = None
+    for _ in range(20):  # wait for the schema-cache reload
+        try:
+            stored = er.record_receipt(url, key, receipt)
+            break
+        except er.ReceiptError as exc:
+            if exc.code != "RECEIPT_PERSISTENCE_REJECTED":
+                raise
+            _time.sleep(0.5)
+    assert stored is not None and stored["can_execute"] is False
+
+    # Constraint violations surface as a typed rejection, not "unavailable".
+    with pytest.raises(er.ReceiptError, match="RECEIPT_PERSISTENCE_REJECTED"):
+        er._call(er._request(er._endpoint(url), key, method="POST",
+                             body=json.dumps({**receipt, "disposition": "MODEL_UNAVAILABLE"}).encode()), 10)
+
+    # PATCH through the same service-role path is refused.
+    patch = _Request(er._endpoint(url) + "?receipt_id=eq." + stored["receipt_id"],
+                     data=b'{"next_action":"mutated"}', method="PATCH",
+                     headers={"apikey": key, "Authorization": "Bearer " + key,
+                              "Content-Type": "application/json"})
+    with pytest.raises(_HTTPError):
+        _urlopen(patch, timeout=10)
+    with _receipts_conn() as conn, conn.cursor() as cur:
+        cur.execute(f"select next_action from {RECEIPTS_TABLE} where receipt_id=%s", (stored["receipt_id"],))
+        assert cur.fetchone() == (None,)
