@@ -143,6 +143,44 @@ def _fail(db: Any, *, run_id: str, lease_token: str, error_code: str, max_attemp
     return dict(receipt) if isinstance(receipt, dict) else {"status": "INVALID_FAILURE_RECEIPT"}
 
 
+def _has_claimable_work(db: Any) -> bool:
+    """Read-only queue probe, including expired RUNNING leases for recovery.
+
+    The preflight must not consume a lease or burn an attempt while the
+    heavyweight-memory admission guard is active.
+    """
+    cutoff = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    predicate = (
+        "run_status.eq.QUEUED,"
+        f"and(run_status.eq.RUNNING,lease_expires_at.lte.{cutoff})"
+    )
+    rows = (
+        db.table(TABLE)
+        .select("run_id")
+        .or_(predicate)
+        .limit(1)
+        .execute().data
+        or []
+    )
+    return bool(rows)
+
+
+def _has_claimable_from_factory(db_client_fn: Any) -> bool:
+    return _has_claimable_work(db_client_fn())
+
+
+def _submit_from_factory(db_client_fn: Any, request: AsyncDailySubmitRequest) -> str:
+    return _submit(db_client_fn(), request)
+
+
+async def _wait_for_worker_wake(wake: asyncio.Event, wait_seconds: float) -> None:
+    try:
+        await asyncio.wait_for(wake.wait(), timeout=wait_seconds)
+        wake.clear()
+    except TimeoutError:
+        pass
+
+
 def _claim_from_factory(db_client_fn: Any, lease_seconds: int) -> dict[str, Any] | None:
     return _claim(db_client_fn(), lease_seconds)
 
@@ -223,6 +261,31 @@ async def _worker_loop(
     while True:
         permit: memory_admission.HeavyJobPermit | None = None
         try:
+            # The worker can be completely idle: do not emit "memory blocked"
+            # or run CPU-heavy reclamation unless a queued or expired-lease
+            # scoring request actually exists. This remains read-only and
+            # preserves exact-once claim semantics under the DB RPC.
+            try:
+                has_work = await asyncio.to_thread(_has_claimable_from_factory, db_client_fn)
+                failure_streak = 0
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                failure_streak += 1
+                wait_seconds = _idle_wait_seconds(
+                    poll_seconds, failure_streak, max_backoff_seconds
+                )
+                LOGGER.warning(
+                    "WOW_V17_DAILY_ASYNC_QUEUE_PROBE_FAILED error=%s failure_streak=%s "
+                    "backoff_seconds=%s can_execute=false",
+                    type(exc).__name__, failure_streak, int(wait_seconds),
+                )
+                await _wait_for_worker_wake(wake, wait_seconds)
+                continue
+            if not has_work:
+                await _wait_for_worker_wake(wake, float(poll_seconds))
+                continue
+
             # Admission occurs before the durable claim. This preserves the
             # queued row and attempt budget when memory is pressured or Scout
             # currently owns the heavyweight slot.
@@ -371,9 +434,12 @@ def install_daily_async_routes(
         operation_id="submitWowV17DailySnapshot",
         status_code=202,
     )
-    def submit_daily_snapshot(req: AsyncDailySubmitRequest):
+    async def submit_daily_snapshot(req: AsyncDailySubmitRequest):
         try:
-            run_id = _submit(db_client_fn(), req)
+            # Keep the persistence I/O off the event loop, then set the wake
+            # event from the actual event-loop thread. A sync FastAPI handler
+            # runs in a threadpool, where get_running_loop() cannot signal it.
+            run_id = await asyncio.to_thread(_submit_from_factory, db_client_fn, req)
         except Exception as exc:
             raise HTTPException(
                 status_code=503,
@@ -385,11 +451,7 @@ def install_daily_async_routes(
             ) from exc
         wake = getattr(app.state, "wow_v17_daily_async_wake", None)
         if isinstance(wake, asyncio.Event):
-            try:
-                loop = asyncio.get_running_loop()
-                loop.call_soon(wake.set)
-            except RuntimeError:
-                pass
+            wake.set()
         return {
             "run_id": run_id,
             "run_status": "QUEUED",
