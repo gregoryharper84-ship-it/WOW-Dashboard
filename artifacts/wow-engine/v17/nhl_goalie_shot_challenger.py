@@ -221,6 +221,7 @@ def augment_rows(
             manifest = _hash({"v1_manifest": prior.source_manifest_sha256, "version": SPEC_VERSION,
                               "home_prior": list(histories[home]), "away_prior": list(histories[away]),
                               "home_starts": goalie_starts[home], "away_starts": goalie_starts[away],
+                              "goalie_status": "PROJECTED", "goalie_projection_policy": "LAST_START_OR_B2B_ALTERNATE_V1",
                               "home_goalie_counts": goalie_stats[home], "away_goalie_counts": goalie_stats[away],
                               "box_hash": b.source_hash, "reconstruction": "prior_settled_only"})
             created[game.game_id] = BinaryTrainingRow(
@@ -290,7 +291,7 @@ def replay(games: Sequence[NHLGame], boxes: Mapping[str, Box], *, bootstrap: int
     delta_ll = s1["log_loss"] - s2["log_loss"]
     return {
         "status": "ADVISORY_RESEARCH_ONLY", "spec_version": SPEC_VERSION,
-        "source": "NHL_PUBLIC_WEB_API", "boxscores": len(boxes),
+        "source": "NHL_PUBLIC_WEB_API", "goalie_status": "PROJECTED", "boxscores": len(boxes),
         "common_rows": len(common), "test_n": len(y),
         "v1_dataset_hash": v1.dataset_hash, "v2_dataset_hash": v2.dataset_hash,
         "v1": s1, "v2": s2,
