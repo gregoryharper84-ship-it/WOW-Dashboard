@@ -461,6 +461,8 @@ class EcosystemLiveProbeTests(unittest.TestCase):
                 "decision_right": "ROUTE_CANDIDATE",
                 "required_verifier": "NONE",
                 "promotion_state": "NOT_APPLICABLE",
+                "updated_at": "2099-01-01T00:00:00Z",
+                "lease_expires_at": "2099-01-01T01:00:00Z",
             }
         ]
         required = config["probes"]["GITHUB_EXACT_HEAD"]["required_workflows"]
