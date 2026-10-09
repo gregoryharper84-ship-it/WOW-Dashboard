@@ -73,7 +73,9 @@ permissions:
   contents: read
 
 concurrency:
-  group: wow-v17-first-six-model-maintenance
+  # PR verification runs never reach the live maintain job, so they must not
+  # share (and cancel) the live schedule/dispatch/push maintenance group.
+  group: wow-v17-first-six-model-maintenance-${{ github.event_name == 'pull_request' && github.ref || 'live' }}
   cancel-in-progress: true
 
 jobs:

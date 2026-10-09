@@ -92,3 +92,11 @@ def test_scheduled_run_still_posts_every_lane_exactly_once(monkeypatch):
 def test_blocked_ncaaf_hydrate_still_fails_the_run_after_team_state(monkeypatch):
     with pytest.raises(RuntimeError, match="FIRST_SIX_ANCILLARY_MAINTENANCE_BLOCKED"):
         _run(monkeypatch, "push", ncaaf_status="BLOCKED")
+
+
+def test_pull_request_runs_cannot_cancel_live_maintenance():
+    repo_root = Path(__file__).resolve().parents[2]
+    text = (repo_root / ".github/workflows/wow-v17-first-six-model-maintenance.yml").read_text()
+    group_line = next(line for line in text.splitlines() if line.strip().startswith("group:"))
+    assert "github.event_name == 'pull_request' && github.ref || 'live'" in group_line
+    assert "cancel-in-progress: true" in text
