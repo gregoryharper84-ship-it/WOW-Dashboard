@@ -28,7 +28,10 @@ def test_oauth_retries_missing_structured_output_even_after_success():
     assert "steps.claude_api.outcome == 'failure'" in condition
     assert "steps.claude_api.outputs.structured_output == ''" in condition
     # Both providers must still use the same governed tool configuration.
-    assert oauth["with"]["claude_args"] == api["with"]["claude_args"]
+    # Both paths take their args from the governed config step; only the API-key path
+    # carries the per-step model (see test_v17_claude_agent_model_and_turns.py).
+    assert api["with"]["claude_args"] == "${{ steps.config.outputs.claude_args }}"
+    assert oauth["with"]["claude_args"] == "${{ steps.config.outputs.oauth_claude_args }}"
 
 
 @pytest.mark.skipif(shutil.which("jq") is None, reason="jq required by Ubuntu Actions runners")
