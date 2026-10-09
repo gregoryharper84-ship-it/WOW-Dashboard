@@ -28,6 +28,7 @@ from urllib.request import Request, urlopen
 from v17 import free_core_source_policy as source_policy
 from v17 import market_evidence_sources as sources
 from v17 import rundown_market_ledger as ledger
+from v17 import rundown_sport_registry as registry
 
 CAN_EXECUTE = False
 PROVIDER = "RUNDOWN"
@@ -235,12 +236,50 @@ def _resolve_sport_id(sport_key: str, *, opener: Callable[..., Any] | None = Non
             code="MARKET_EVIDENCE_UNSUPPORTED_SPORT" if not matches else "MARKET_EVIDENCE_SPORT_ID_AMBIGUOUS",
             observed_at=response.observed_at,
         )
+    # data = (primary regular-season id, provider-listed registry regime variants)
     return TransportResult(
         True,
-        data=matches[0],
+        data=(
+            matches[0],
+            _regime_variant_sport_ids(matches[0], _provider_sport_ids(response.data)),
+        ),
         status=response.status,
         code="MARKET_EVIDENCE_SPORT_ID_RESOLVED",
         observed_at=response.observed_at,
+    )
+
+
+def _provider_sport_ids(payload: Any) -> tuple[str, ...]:
+    ids: set[str] = set()
+    for item in _catalog_items(payload, "SPORT"):
+        provider_id = item.get("sport_id") or item.get("id")
+        if provider_id is not None:
+            ids.add(str(provider_id))
+    return tuple(sorted(ids))
+
+
+def _regime_variant_sport_ids(primary_id: str, provider_ids: tuple[str, ...]) -> tuple[str, ...]:
+    """Registry-verified postseason variants of the
+    primary sport that the provider's own live sport index also lists.
+
+    The plain alias match resolves only the regular-season id, so postseason
+    games (for example MLB Playoffs) were never collected. Both independent
+    verifications are required: an id the registry does not know is never
+    guessed, and a registry id the provider no longer lists is not called.
+    """
+    primary = registry.provider_sport(primary_id)
+    if primary is None or primary.regime != registry.REGULAR_SEASON:
+        return ()
+    offered = set(provider_ids)
+    # Only postseason variants are collected: WOW never models preseason,
+    # spring training or summer league, so their prices would spend provider
+    # budget without grading anything.
+    return tuple(
+        str(sport_id)
+        for sport_id in registry.FAMILY_REGIME_SPORT_IDS.get(primary.family, ())
+        if str(sport_id) in offered
+        and str(sport_id) != str(primary_id)
+        and registry.regime_for_sport_id(sport_id) == registry.PLAYOFFS
     )
 
 
@@ -329,7 +368,8 @@ def collect_snapshot(
             "prediction_authority": False,
             "can_execute": False,
         }
-    sport_id = str(resolved.data)
+    primary_id, variant_ids = resolved.data
+    sport_ids = (str(primary_id), *(str(value) for value in variant_ids))
     params = {
         "market_ids": ",".join(markets),
         "affiliate_ids": ",".join(affiliates),
@@ -338,51 +378,80 @@ def collect_snapshot(
         "include": "all_periods" if include_all_periods else None,
         "offset": str(sources.rundown_date_offset_minutes()),
     }
-    response = _request_json(
-        f"/api/v2/sports/{sport_id}/events/{slate_date}",
-        params=params,
-        opener=opener,
-    )
     feed_key = _feed_key(str(sport_key), str(slate_date), markets, affiliates)
-    if not response.ok:
-        ledger.persist_sync_state(
-            client,
-            {
-                "feed_key": feed_key,
-                "sport_key": sport_key,
-                "slate_date": slate_date,
-                "market_ids": list(markets),
-                "affiliate_ids": list(affiliates),
-                "acquisition_mode": "SNAPSHOT",
-                "last_failure_at": _now_iso(),
-                "last_error_code": response.code,
-                "last_rows_written": 0,
-                "metadata": {"endpoint": response.endpoint, "status": response.status},
-            },
-        )
-        return {
-            "status": "FAILED",
-            "reason_code": response.code,
-            "http_status": response.status,
-            "prediction_authority": False,
-            "can_execute": False,
-        }
 
-    fetched_at = response.observed_at or _now_iso()
-    observations: list[dict[str, Any]] = []
-    for event in _events(response.data):
-        observations.extend(
-            ledger.price_observations_from_rundown_event(
-                event,
-                sport_key=sport_key,
-                snapshot_kind="CURRENT",
-                fetched_at=fetched_at,
-                is_live=False,
-            )
+    responses: list[tuple[str, TransportResult]] = []
+    for sport_id in sport_ids:
+        response = _request_json(
+            f"/api/v2/sports/{sport_id}/events/{slate_date}",
+            params=params,
+            opener=opener,
         )
+        responses.append((sport_id, response))
+        if not response.ok:
+            # A failed regime request is a typed failure for the whole feed: a
+            # partial board must never be recorded as a complete snapshot.
+            ledger.persist_sync_state(
+                client,
+                {
+                    "feed_key": feed_key,
+                    "sport_key": sport_key,
+                    "slate_date": slate_date,
+                    "market_ids": list(markets),
+                    "affiliate_ids": list(affiliates),
+                    "acquisition_mode": "SNAPSHOT",
+                    "last_failure_at": _now_iso(),
+                    "last_error_code": response.code,
+                    "last_rows_written": 0,
+                    "metadata": {
+                        "endpoint": response.endpoint,
+                        "status": response.status,
+                        "failed_provider_sport_id": sport_id,
+                        "provider_sport_ids": list(sport_ids),
+                    },
+                },
+            )
+            return {
+                "status": "FAILED",
+                "reason_code": response.code,
+                "http_status": response.status,
+                "failed_provider_sport_id": sport_id,
+                "provider_calls": len(responses),
+                "prediction_authority": False,
+                "can_execute": False,
+            }
+
+    fetched_at = responses[0][1].observed_at or _now_iso()
+    observations: list[dict[str, Any]] = []
+    events_by_sport_id: dict[str, int] = {}
+    datapoints_total: int | None = None
+    for sport_id, response in responses:
+        events = _events(response.data)
+        events_by_sport_id[sport_id] = len(events)
+        if response.datapoints is not None:
+            datapoints_total = (datapoints_total or 0) + response.datapoints
+        for event in events:
+            observations.extend(
+                ledger.price_observations_from_rundown_event(
+                    event,
+                    sport_key=sport_key,
+                    snapshot_kind="CURRENT",
+                    fetched_at=response.observed_at or fetched_at,
+                    is_live=False,
+                )
+            )
     rows_written = ledger.persist_observations(client, observations)
-    cursor = _delta_cursor(response.data)
-    delta_eligible = bool(allow_delta and response.data_delay_seconds == 0 and cursor is not None)
+    event_count = sum(events_by_sport_id.values())
+    primary_response = responses[0][1]
+    cursor = _delta_cursor(primary_response.data)
+    # A delta cursor belongs to one provider sport id; with regime variants in
+    # the same feed it cannot represent the whole board, so fail closed.
+    delta_eligible = bool(
+        allow_delta
+        and len(responses) == 1
+        and primary_response.data_delay_seconds == 0
+        and cursor is not None
+    )
     next_mode = "DELTA" if delta_eligible else "SNAPSHOT"
     ledger.persist_sync_state(
         client,
@@ -393,34 +462,38 @@ def collect_snapshot(
             "market_ids": list(markets),
             "affiliate_ids": list(affiliates),
             "acquisition_mode": next_mode,
-            "data_delay_seconds": response.data_delay_seconds,
+            "data_delay_seconds": primary_response.data_delay_seconds,
             "delta_cursor": cursor if delta_eligible else None,
             "last_success_at": fetched_at,
             "last_error_code": None,
             "last_rows_written": rows_written,
             "metadata": {
-                "endpoint": response.endpoint,
-                "datapoints": response.datapoints,
-                "events": len(_events(response.data)),
+                "endpoint": primary_response.endpoint,
+                "datapoints": datapoints_total,
+                "events": event_count,
+                "events_by_provider_sport_id": events_by_sport_id,
+                "provider_sport_ids": list(sport_ids),
                 "delta_eligible": delta_eligible,
-                "delta_gate": "EXPLICIT_ZERO_DELAY_AND_POSITIVE_CURSOR",
+                "delta_gate": "EXPLICIT_ZERO_DELAY_AND_POSITIVE_CURSOR_SINGLE_SPORT_ID",
             },
         },
     )
     return {
         "status": "COMPLETE",
-        "sport_id": sport_id,
-        "events": len(_events(response.data)),
+        "sport_id": str(primary_id),
+        "provider_sport_ids": list(sport_ids),
+        "events": event_count,
+        "events_by_provider_sport_id": events_by_sport_id,
         "rows_written": rows_written,
-        "datapoints": response.datapoints,
-        "data_delay_seconds": response.data_delay_seconds,
+        "datapoints": datapoints_total,
+        "provider_calls": len(responses),
+        "data_delay_seconds": primary_response.data_delay_seconds,
         "delta_cursor": cursor if delta_eligible else None,
         "next_acquisition_mode": next_mode,
         "delta_eligible": delta_eligible,
         "prediction_authority": False,
         "can_execute": False,
     }
-
 
 __all__ = [
     "CAN_EXECUTE",
