@@ -481,8 +481,9 @@ def test_each_app_secret_is_isolated_by_main_only_environment():
         (REL_WF, "wow-release", "WOW_RELEASE_APP_ID", "WOW_RELEASE_APP_PRIVATE_KEY"),
     ):
         source = workflow.read_text()
-        assert "    environment: " + environment + "\\n" in source
+        assert ("    environment: " + environment) in source
         assert "ref: main" in source
         assert "vars." + app_id in source
         assert "secrets." + secret in source
-        assert "secrets.WOW_QA_APP_PRIVATE_KEY" not in source if environment == "wow-release" else "secrets.WOW_RELEASE_APP_PRIVATE_KEY" not in source
+        other_secret = "WOW_RELEASE_APP_PRIVATE_KEY" if environment == "wow-qa" else "WOW_QA_APP_PRIVATE_KEY"
+        assert "secrets." + other_secret not in source
