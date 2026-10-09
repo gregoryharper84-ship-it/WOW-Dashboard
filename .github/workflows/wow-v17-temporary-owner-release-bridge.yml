@@ -287,9 +287,28 @@ jobs:
           result="${{ job.status }}"
           trust_root="${{ steps.preflight.outputs.trust_root || 'unknown' }}"
           authorization_mode="${{ steps.preflight.outputs.authorization_mode || 'unknown' }}"
-          gh issue comment "$INCIDENT_ID" --repo "$GITHUB_REPOSITORY" --body "TEMPORARY_OWNER_RELEASE_BRIDGE
-          pr=#${PR_NUMBER}
-          exact_head=${EXPECTED_HEAD_SHA}
+          # On a denied authorization, preflight never wrote GITHUB_ENV.
+          # Do not let unset fields break the always() receipt step or turn
+          # a rejection into an apparent missing engineering attempt.
+          safe_pr="${PR_NUMBER:-unresolved}"
+          safe_sha="${EXPECTED_HEAD_SHA:-unresolved}"
+          safe_incident="${INCIDENT_ID:-unresolved}"
+          {
+            echo "## Temporary Owner Release Bridge — exact-head receipt"
+            echo "- result: ${result}"
+            echo "- workflow_run: ${GITHUB_RUN_ID}"
+            echo "- incident: ${safe_incident}"
+            echo "- pr: ${safe_pr}"
+            echo "- exact_head: ${safe_sha}"
+            echo "- approval_mode: ${authorization_mode}"
+            echo "- production_acceptance: false"
+            echo "- can_execute: false"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [[ "${safe_incident}" =~ ^[0-9]+$ ]]; then
+            gh issue comment "$safe_incident" --repo "$GITHUB_REPOSITORY" --body "TEMPORARY_OWNER_RELEASE_BRIDGE
+          pr=#${safe_pr}
+          exact_head=${safe_sha}
           workflow_run=${GITHUB_RUN_ID}
           result=${result}
           authorization_mode=${authorization_mode}
@@ -297,3 +316,9 @@ jobs:
           production_acceptance=false
           terminal_authority=V17_TERMINAL_REDUCER
           can_execute=false"
+          else
+            # A rejected or malformed request has no validated issue target.
+            # Its immutable Actions run and job summary are the durable
+            # failure receipt; never post to a guessed issue.
+            echo "::warning::OWNER_BRIDGE_RECEIPT_NO_VALIDATED_INCIDENT"
+          fi
