@@ -756,7 +756,8 @@ def build_observed_state(
                 invariant_config.get("self_verification_detected", False)
             ),
         },
-        "work_items": work_items,
+        "ecosystem_work_items": work_items,
+        "evaluated_at": _utc_now(),
     }
 
 
