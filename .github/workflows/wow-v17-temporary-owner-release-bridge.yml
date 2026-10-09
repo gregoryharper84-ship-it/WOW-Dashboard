@@ -1,8 +1,6 @@
 name: wow-v17-temporary-owner-release-bridge
 
 on:
-  issue_comment:
-    types: [created]
   workflow_dispatch:
     inputs:
       pr_number:
@@ -42,7 +40,7 @@ jobs:
     timeout-minutes: 45
     environment: wow-release
     env:
-      OWNER_APPROVAL: ${{ secrets.WOW_OWNER_RELEASE_APPROVAL }}
+      # No owner release secret may reach QA/Claude through job-level env.
       EVENT_NAME: ${{ github.event_name }}
       EVENT_ACTOR: ${{ github.actor }}
       EVENT_PR_NUMBER: ${{ github.event.issue.number || '' }}
