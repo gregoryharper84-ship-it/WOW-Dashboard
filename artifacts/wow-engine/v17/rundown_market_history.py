@@ -288,13 +288,14 @@ def materialize_captured_references(
     sport_key: str,
     slate_date: str,
     now: datetime | None = None,
+    provider: str = ledger.PROVIDER,
 ) -> int:
     """Materialize first/last captured pregame references without provider calls."""
     start_utc, end_utc = _slate_window(slate_date, _timezone())
     response = (
         client.table(ledger.TABLE)
         .select("*")
-        .eq("provider", ledger.PROVIDER)
+        .eq("provider", provider)
         .eq("sport_key", sport_key)
         .gte("event_start_utc", start_utc)
         .lt("event_start_utc", end_utc)
@@ -528,7 +529,6 @@ async def run_history_loop(
                 "RUNDOWN_MARKET_HISTORY=FAIL error_type=%s can_execute=false",
                 type(exc).__name__,
             )
-        await asyncio.to_thread(run_closing_line_grading_cycle, db_client_fn, log)
         await asyncio.sleep(interval_seconds())
 
 

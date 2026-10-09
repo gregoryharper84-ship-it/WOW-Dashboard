@@ -305,6 +305,18 @@ def compose_active_runtime() -> bool:
                 app,
                 db_client_fn=db_client_fn,
             )
+            # Free pregame closing-line capture + closing-line grading (no
+            # paid provider). Isolated: a failure must never block startup.
+            try:
+                from v17.espn_market_history import install_espn_market_history
+
+                install_espn_market_history(app, db_client_fn=db_client_fn)
+            except Exception:  # noqa: BLE001 - evidence lane must not break startup
+                import logging as _logging
+
+                _logging.getLogger("v17.espn_market_history").exception(
+                    "ESPN_MARKET_HISTORY=INSTALL_FAIL can_execute=false"
+                )
             if callable(auth_dependency) and callable(db_client_fn) and event_api is not None:
                 from v17.daily_async_runtime import install_daily_async_routes
                 from v17.nfl_pickem_async_runtime import install_nfl_pickem_async_routes

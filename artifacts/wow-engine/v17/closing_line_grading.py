@@ -6,10 +6,10 @@ eligibility, or terminal labels. It answers one question for each settled
 prediction: on the side the model selected, was the model's probability more
 or less accurate than the no-vig closing market probability?
 
-Close source: the CLOSE reference rows materialized by
-``rundown_market_history`` (last captured pre-start quote per book). These
-are captured references, not provider-official closes; the semantics label is
-carried into every grade row.
+Close source: CLOSE reference rows (last captured pre-start quote per book)
+from one configured provider, by default the free ESPN capture
+(``espn_market_history``). These are captured references, not
+provider-official closes; the semantics label is carried into every grade row.
 
 Matching is exact and fail-closed: same sport, start time within a tight
 window, and normalized full team names. Unmatched or ambiguous predictions are
@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Mapping
@@ -342,6 +343,14 @@ def nfl_settled_selections(client: Any, *, since: datetime) -> list[dict[str, An
     return selections
 
 
+def close_provider() -> str:
+    """Single close source per run, so one game never matches two providers.
+
+    Default is the free ESPN capture (owner direction 2026-10-09).
+    """
+    return os.getenv("WOW_CLOSING_LINE_PROVIDER", "ESPN").strip().upper() or "ESPN"
+
+
 def _close_rows(client: Any, sport_key: str, start: datetime, end: datetime) -> list[dict[str, Any]]:
     return _rows(
         client.table(ledger.TABLE)
@@ -349,7 +358,7 @@ def _close_rows(client: Any, sport_key: str, start: datetime, end: datetime) -> 
             "provider_event_id,event_start_utc,market_id,participant_name,affiliate_id,sportsbook,"
             "american_odds,snapshot_kind,is_live,is_main_line,price_updated_at,fetched_at"
         )
-        .eq("provider", ledger.PROVIDER)
+        .eq("provider", close_provider())
         .eq("sport_key", sport_key)
         .eq("snapshot_kind", "CLOSE")
         .gte("event_start_utc", _iso(start))
