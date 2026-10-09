@@ -418,3 +418,21 @@ def test_genuine_provider_outage_behind_implementation_failure_keeps_failover():
 def test_script_text_alone_is_not_a_typed_outcome():
     result = _classifier()("anthropic", _delivery_shell())
     assert not result.code.startswith("ACTIONABLE_REPAIR_")
+
+
+# --- Addendum section 4: every emitted code is registered ---------------------
+
+
+def test_every_emitted_repair_code_is_registered_and_vice_versa():
+    import re
+
+    root = WORKFLOW.parents[2]
+    emitted = set(re.findall(r"ACTIONABLE_REPAIR_[A-Z_]+", WORKFLOW.read_text()))
+    emitted |= set(re.findall(
+        r"ACTIONABLE_REPAIR_[A-Z_]+",
+        (root / "artifacts/wow-engine/v17/engineering_provider_failover.py").read_text(),
+    ))
+    registry = (root / "artifacts/wow-engine/docs/failure_codes.md").read_text()
+    registered = set(re.findall(r"^\| `(ACTIONABLE_REPAIR_[A-Z_]+)` \|", registry, re.M))
+    assert emitted == registered
+    assert "| `ACTIONABLE_REPAIR_POLICY_BOUNDARY` | engineering governance |" in registry
