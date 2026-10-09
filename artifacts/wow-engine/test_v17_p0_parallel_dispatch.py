@@ -129,7 +129,6 @@ def test_active_cross_stream_conflict_key_blocks_second_writer():
 
 
 @pytest.mark.parametrize("title,branch", [
-    ("wow-v17-claude-engineering-worker lease=GLOBAL incident=AUTO", "main"),
     ("wow-v17-claude-engineering-worker-lookalike lease=P0_RUNTIME incident=1388", "main"),
     ("wow-v17-claude-engineering-worker lease=P0_RUNTIME incident=1388", "other-branch"),
 ])
@@ -148,3 +147,76 @@ def test_invalid_existing_pr_inventory_fails_closed():
     with pytest.raises(ValueError, match="OPEN_PR_INVENTORY_INVALID"):
         select_parallel([row(823, "A", "P0_ACQUISITION", 1, ["ACQUISITION"])],
                         open_prs=[{"title": "orphan without PR number", "body": "#823"}])
+
+
+def test_pr_references_are_not_mistaken_for_direct_incident_ownership():
+    rows = [
+        row(823, "A", "P0_ACQUISITION", 1, ["ACQUISITION"]),
+        row(1496, "B", "P0_MLB_SCORING", 2, ["SCORER"]),
+        row(1388, "C", "P0_RUNTIME", 3, ["MEMORY"]),
+    ]
+    unrelated = [
+        {"number": 900, "title": "context #823", "body": "Related #1496, see #1388"},
+        {"number": 901, "title": "P0 #1388", "body": "Incident: #1021; primary LLP critical path #823; diagnosis #1496"},
+    ]
+    result = select_parallel(rows, open_prs=unrelated)
+    assert [x["incident_id"] for x in result["selected"]] == ["823", "1496", "1388"]
+
+
+def test_only_explicit_claims_hold_existing_repair_incidents():
+    rows = [
+        row(823, "A", "P0_ACQUISITION", 1, ["ACQUISITION"]),
+        row(1496, "B", "P0_MLB_SCORING", 2, ["SCORER"]),
+        row(1388, "C", "P0_RUNTIME", 3, ["MEMORY"]),
+    ]
+    claimed = [
+        {"number": 1559, "title": "Claude Engineering: 823", "body": "Incident: `823`\nQA agent: NOT_RUN"},
+        {"number": 1507, "title": "input validation", "body": "Fixes #1496"},
+        {"number": 1420, "title": "runtime repair", "body": "Closes #1388"},
+    ]
+    result = select_parallel(rows, open_prs=claimed)
+    assert result["selected_count"] == 0
+    assert {entry["reason"] for entry in result["skipped"]} == {"EXISTING_OPEN_PR_REQUIRES_REVIEW"}
+
+
+@pytest.mark.parametrize("path,title", [
+    (".github/workflows/wow-v17-chatgpt-engineering-worker.yml",
+     "wow-v17-chatgpt-engineering-worker lease=GLOBAL incident=AUTO"),
+    (".github/workflows/wow-v17-claude-engineering-worker.yml",
+     "wow-v17-claude-engineering-worker lease=GLOBAL incident=AUTO"),
+    (".github/workflows/wow-v17-engineering-provider-dispatcher.yml",
+     "WOW V17 provider source=manual lease=GLOBAL incident=AUTO"),
+])
+def test_valid_global_auto_worker_typed_hold_not_dispatch_crash(path, title):
+    runs = [{"id": 100, "path": path, "display_title": title, "head_branch": "main"}]
+    rows = [
+        row(823, "A", "P0_ACQUISITION", 1, ["ACQUISITION"]),
+        row(1496, "B", "P0_MLB_SCORING", 2, ["SCORER"]),
+        row(1388, "C", "P0_RUNTIME", 3, ["MEMORY"]),
+    ]
+    result = select_parallel(rows, active_runs=runs)
+    assert result["selected"] == []
+    assert len(result["skipped"]) == 3
+    assert {entry["reason"] for entry in result["skipped"]} == {"ACTIVE_GLOBAL_WORKER_TARGET_UNRESOLVED"}
+    assert result["can_execute"] is False
+
+
+def test_global_exact_p1_worker_is_typed_hold_without_duplicate_domain_writer():
+    runs = [{
+        "id": 100, "path": ".github/workflows/wow-v17-chatgpt-engineering-worker.yml",
+        "display_title": "wow-v17-chatgpt-engineering-worker lease=GLOBAL incident=1021",
+        "head_branch": "main",
+    }]
+    result = select_parallel([row(1388, "C", "P0_RUNTIME", 1, ["MEMORY"])], active_runs=runs)
+    assert result["selected_count"] == 0
+    assert result["skipped"][0]["reason"] == "ACTIVE_GLOBAL_WORKER_TARGET_UNRESOLVED"
+
+
+def test_auto_with_non_global_lease_is_invalid():
+    runs = [{
+        "id": 100, "path": ".github/workflows/wow-v17-claude-engineering-worker.yml",
+        "display_title": "wow-v17-claude-engineering-worker lease=P0_RUNTIME incident=AUTO",
+        "head_branch": "main",
+    }]
+    with pytest.raises(ValueError, match="ACTIVE_WORKER_DOMAIN_IDENTITY_UNRESOLVED"):
+        select_parallel([row(1388, "C", "P0_RUNTIME", 1, ["MEMORY"])], active_runs=runs)
