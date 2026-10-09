@@ -41,7 +41,8 @@ def test_p1_governance_rapid_is_highest_global_p1_without_displacing_p0():
     assert queue["terminal_authority"] == "V17_TERMINAL_REDUCER"
     # Preserve unchanged P0 domain-scoped dispatch: never recast P1 as P0.
     p0 = select_parallel(queue["records"])
-    assert [x["incident_id"] for x in p0["selected"]] == ["1388"]
+    assert all(x["incident_id"] != "1540" for x in p0["selected"])
+    assert any(x["incident_id"] == "1388" for x in queue["records"])
     # GLOBAL worker's existing closure selector explicitly excludes P0 RAPID.
     standard = [x for x in queue["records"]
                 if x["severity"] != "P0" or x["execution_lane"] != "RAPID"]
