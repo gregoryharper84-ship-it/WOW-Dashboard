@@ -223,12 +223,17 @@ def _raise_memory_pressure(operation: str, snapshot: dict[str, Any]) -> None:
     )
 
 
+def _monotonic_clock() -> float:
+    """Small indirection keeps rate-limit tests from replacing the global clock."""
+    return time.monotonic()
+
+
 def _reclaim_and_resample_under_pressure(operation: str, snapshot: dict[str, Any]) -> dict[str, Any]:
     """Bounded reclamation never bypasses the existing cgroup hysteresis gate."""
     global _LAST_RECLAIM_MONOTONIC
     if not snapshot["under_pressure"]:
         return snapshot
-    now = time.monotonic()
+    now = _monotonic_clock()
     with _RECLAIM_STATE_LOCK:
         if (
             _LAST_RECLAIM_MONOTONIC is not None
