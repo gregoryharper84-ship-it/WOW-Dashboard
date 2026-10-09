@@ -53,7 +53,7 @@ def test_bounded_idle_reclaim_can_reopen_slot_only_after_measured_resume(monkeyp
         "_read_cgroup_memory_bytes",
         lambda: (measured["current"], 100),
     )
-    monkeypatch.setattr(memory_admission.time, "monotonic", lambda: 1_000.0)
+    monkeypatch.setattr(memory_admission, "_monotonic_clock", lambda: 1_000.0)
     monkeypatch.setattr(
         memory_admission,
         "release_process_memory",
@@ -70,7 +70,7 @@ def test_bounded_idle_reclaim_can_reopen_slot_only_after_measured_resume(monkeyp
 def test_failed_reclaim_preserves_pressure_and_is_rate_limited(monkeypatch):
     clock = {"now": 500.0}
     calls = []
-    monkeypatch.setattr(memory_admission.time, "monotonic", lambda: clock["now"])
+    monkeypatch.setattr(memory_admission, "_monotonic_clock", lambda: clock["now"])
     monkeypatch.setattr(memory_admission, "_read_cgroup_memory_bytes", lambda: (94, 100))
     monkeypatch.setattr(memory_admission, "release_process_memory", lambda: calls.append("reclaim"))
     for _ in range(2):
