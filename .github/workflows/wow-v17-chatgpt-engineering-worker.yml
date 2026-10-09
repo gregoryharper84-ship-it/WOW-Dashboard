@@ -623,7 +623,8 @@ jobs:
             artifacts/wow-engine/v17/.agent-handoff/specialist-route.json \
             artifacts/wow-engine/v17/.agent-handoff/claude-peer-diagnosis.json
           if [ "$changed" = "true" ]; then
-            git diff --quiet --exit-code && { echo "::error::ChatGPT reported changes but returned no working-tree diff."; exit 1; }
+            # git diff ignores untracked files; a repair that only adds files is a real change (#1021).
+            [ -z "$(git status --porcelain)" ] && { echo "::error::ChatGPT reported changes but returned no working-tree diff."; exit 1; }
             branch="chatgpt/engineering/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
