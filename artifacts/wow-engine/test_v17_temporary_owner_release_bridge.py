@@ -53,3 +53,13 @@ def test_wow_verify_disables_import_time_production_daemons_in_ci():
     assert 'WNBA_DISABLE_CRON: "1"' in text
     assert 'LLP_DISABLE_SNAPSHOT_CRON: "1"' in text
     assert 'SETTLEMENT_WORKER_DISABLED: "1"' in text
+
+
+def test_temporary_owner_bridge_accepts_only_owner_exact_sha_comment_trigger():
+    text = WORKFLOW.read_text(encoding="utf-8")
+    assert "issue_comment:" in text
+    assert "github.actor == 'gregoryharper84-ship-it'" in text
+    assert "startsWith(github.event.comment.body, '/wow-owner-bridge ')" in text
+    assert 'authorization_mode="OWNER_EXACT_SHA_COMMENT"' in text
+    assert "OWNER_BRIDGE_COMMENT_FORMAT_INVALID" in text
+    assert "OWNER_BRIDGE_ACTOR_NOT_OWNER" in text
