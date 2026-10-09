@@ -11,6 +11,7 @@ hysteresis band prevents rapid admit/defer oscillation near the threshold.
 
 from __future__ import annotations
 
+import asyncio
 import ctypes
 import gc
 import logging
@@ -270,7 +271,28 @@ def _reclaim_and_resample_under_pressure(operation: str, snapshot: dict[str, Any
     return updated
 
 
-def try_acquire_heavy_job(operation: str) -> HeavyJobPermit | None:
+async def reclaim_under_pressure_async(operation: str) -> None:
+    """Event-loop-safe reclamation for async worker loops.
+
+    gc.collect() and malloc_trim() are CPU-bound and can run for hundreds of
+    milliseconds on a large heap. Async callers must not run them on the event
+    loop thread, so the rate-limited reclaim runs in a worker thread *before*
+    the heavyweight lock is taken. No lock is held while awaiting, so a
+    cancelled awaiter cannot strand the slot. Callers then invoke
+    try_acquire_heavy_job(..., reclaim=False), which re-measures the cgroup
+    gate itself; this helper never relaxes or bypasses admission.
+    """
+    try:
+        snapshot = admission_snapshot(operation)
+    except Exception:
+        # try_acquire_heavy_job performs its own typed measurement failure.
+        return
+    if not snapshot["under_pressure"]:
+        return
+    await asyncio.to_thread(_reclaim_and_resample_under_pressure, operation, snapshot)
+
+
+def try_acquire_heavy_job(operation: str, *, reclaim: bool = True) -> HeavyJobPermit | None:
     """Acquire the one heavyweight slot without blocking.
 
     Returns None when another heavy job owns the slot. Memory pressure is a
@@ -287,9 +309,9 @@ def try_acquire_heavy_job(operation: str) -> HeavyJobPermit | None:
         return None
 
     try:
-        snapshot = _reclaim_and_resample_under_pressure(
-            operation, admission_snapshot(operation)
-        )
+        snapshot = admission_snapshot(operation)
+        if reclaim:
+            snapshot = _reclaim_and_resample_under_pressure(operation, snapshot)
     except Exception as exc:
         # A failed cgroup/RSS/reclamation measurement must never strand the
         # heavyweight lock or accidentally allow unmeasured scoring.

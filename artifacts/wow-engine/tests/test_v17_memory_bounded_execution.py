@@ -309,3 +309,55 @@ def test_daily_snapshot_preacquired_permit_does_not_reacquire_or_release(monkeyp
 
     assert result["run_id"] == "r"
     assert permit.release_count == 0
+
+
+def test_async_reclaim_runs_off_event_loop_and_then_admits(monkeypatch):
+    """gc.collect()/malloc_trim must never block the FastAPI event loop."""
+    import asyncio
+
+    measured = {"current": 90}
+    reclaim_threads = []
+    monkeypatch.setattr(
+        memory_admission, "_read_cgroup_memory_bytes", lambda: (measured["current"], 100)
+    )
+    monkeypatch.setattr(memory_admission, "_monotonic_clock", lambda: 1_000.0)
+
+    def _fake_release():
+        reclaim_threads.append(threading.get_ident())
+        measured.update(current=67)
+
+    monkeypatch.setattr(memory_admission, "release_process_memory", _fake_release)
+
+    async def _worker_step():
+        loop_thread = threading.get_ident()
+        await memory_admission.reclaim_under_pressure_async("DAILY_SNAPSHOT")
+        permit = memory_admission.try_acquire_heavy_job("DAILY_SNAPSHOT", reclaim=False)
+        return loop_thread, permit
+
+    loop_thread, permit = asyncio.run(_worker_step())
+    assert len(reclaim_threads) == 1
+    assert reclaim_threads[0] != loop_thread
+    assert permit is not None
+    assert permit.admission["under_pressure"] is False
+    permit.release()
+
+
+def test_reclaim_false_never_reclaims_inline_and_still_enforces_gate(monkeypatch):
+    calls = []
+    monkeypatch.setattr(memory_admission, "_read_cgroup_memory_bytes", lambda: (90, 100))
+    monkeypatch.setattr(memory_admission, "release_process_memory", lambda: calls.append(1))
+    with pytest.raises(memory_admission.HeavyJobDeferred) as caught:
+        memory_admission.try_acquire_heavy_job("SCOUT_HANDOFF", reclaim=False)
+    assert caught.value.receipt()["code"] == "MEMORY_PRESSURE"
+    assert calls == []
+    assert memory_admission._HEAVY_JOB_LOCK.locked() is False
+
+
+def test_async_reclaim_is_noop_without_pressure(monkeypatch):
+    import asyncio
+
+    calls = []
+    monkeypatch.setattr(memory_admission, "_read_cgroup_memory_bytes", lambda: (40, 100))
+    monkeypatch.setattr(memory_admission, "release_process_memory", lambda: calls.append(1))
+    asyncio.run(memory_admission.reclaim_under_pressure_async("DAILY_SNAPSHOT"))
+    assert calls == []
