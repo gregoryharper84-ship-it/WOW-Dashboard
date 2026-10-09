@@ -49,7 +49,7 @@ def classify(finding):
     if not FINGERPRINT.fullmatch(fp):
         raise ValueError("SIRT_FINGERPRINT_INVALID")
     priority = str(finding.get("severity") or "")
-    if priority not in {"P0", "P1", "P2", "P3"}:
+    if priority not in {"P0", "P1", "P2", "P3", "P4"}:
         raise ValueError("SIRT_SEVERITY_INVALID")
     first = parsed_time(finding.get("first_detected_at"))
     category = str(finding.get("finding_type") or "")
