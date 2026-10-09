@@ -144,10 +144,20 @@ def test_prior_game_invariance_same_start_and_aligned_replay():
     assert result["can_execute"] is False
 
 
-def test_reconciliation_holds_missing_box():
+def test_missing_source_is_explicitly_intersected_and_extra_id_fails():
     games = _dataset()
     v1, _ = reconstruct_training_rows(games)
-    boxes = {g.game_id: box(g) for g in games[1:]}
+    missing = games[16]  # included in V1 cohort
+    boxes = {g.game_id: box(g) for g in games if g.game_id != missing.game_id}
+    common, augmented = augment_rows(games, boxes, v1)
+    assert len(common) == len(v1) - 1
+    assert len(augmented) == len(common)
+    assert missing.game_id not in {r.event_id for r in common}
+    assert [r.event_id for r in common] == [r.event_id for r in augmented]
+    result = replay(games, boxes, bootstrap=120)
+    assert result["excluded_v1_rows_missing_box"] == 1
+    assert result["covered_intersection_rows"] == len(common)
+    boxes["9999999999"] = box(games[0])
     with pytest.raises(NHLCandidateError) as exc:
         augment_rows(games, boxes, v1)
     assert exc.value.code == "NHL_BOX_GAME_RECONCILIATION_FAILED"
