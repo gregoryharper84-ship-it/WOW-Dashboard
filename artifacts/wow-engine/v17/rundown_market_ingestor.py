@@ -247,7 +247,7 @@ def _provider_sport_ids(payload: Any) -> tuple[str, ...]:
 
 
 def _regime_variant_sport_ids(primary_id: str, provider_ids: tuple[str, ...]) -> tuple[str, ...]:
-    """Registry-verified regime variants (playoffs, preseason, ...) of the
+    """Registry-verified postseason variants of the
     primary sport that the provider's own live sport index also lists.
 
     The plain alias match resolves only the regular-season id, so postseason
@@ -259,10 +259,15 @@ def _regime_variant_sport_ids(primary_id: str, provider_ids: tuple[str, ...]) ->
     if primary is None or primary.regime != registry.REGULAR_SEASON:
         return ()
     offered = set(provider_ids)
+    # Only postseason variants are collected: WOW never models preseason,
+    # spring training or summer league, so their prices would spend provider
+    # budget without grading anything.
     return tuple(
         str(sport_id)
         for sport_id in registry.FAMILY_REGIME_SPORT_IDS.get(primary.family, ())
-        if str(sport_id) in offered and str(sport_id) != str(primary_id)
+        if str(sport_id) in offered
+        and str(sport_id) != str(primary_id)
+        and registry.regime_for_sport_id(sport_id) == registry.PLAYOFFS
     )
 
 

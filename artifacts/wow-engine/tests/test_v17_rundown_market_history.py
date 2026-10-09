@@ -136,8 +136,11 @@ def test_history_default_scope_is_three_books_and_slow_cadence(monkeypatch):
     ):
         monkeypatch.delenv(name, raising=False)
     assert history.configured_books() == ("Pinnacle", "Draftkings", "Fanduel")
-    assert history.interval_seconds() == 7200
-    assert history.max_calls_per_day() == 12
+    # 4 sports x up to 2 provider ids = 6 calls/cycle (MLB/NFL + playoffs,
+    # WNBA, NCAAF); 8 cycles/day at 3h fits 48 calls. Datapoints stay the
+    # quota backstop.
+    assert history.interval_seconds() == 10800
+    assert history.max_calls_per_day() == 48
     assert history.max_datapoints_per_day() == 2500
 
 
@@ -187,3 +190,45 @@ def test_history_budget_counts_every_regime_variant_provider_call(monkeypatch):
     result = history.collect_history_once(object(), now=datetime(2026, 10, 9, 15, 0, tzinfo=timezone.utc))
     assert result["provider_calls"] == 3
     assert result["can_execute"] is False
+
+
+def test_default_history_sports_cover_graded_and_future_team_markets(monkeypatch):
+    monkeypatch.delenv("WOW_RUNDOWN_MARKET_HISTORY_SPORT_KEYS", raising=False)
+    assert history.configured_sports() == (
+        "baseball_mlb", "americanfootball_nfl", "basketball_wnba", "americanfootball_ncaaf",
+    )
+
+
+def test_close_references_materialize_even_when_call_budget_is_exhausted(monkeypatch):
+    monkeypatch.setattr(history, "_read_budget", lambda *_a, **_k: {"calls": 48, "datapoints": 0})
+    monkeypatch.setattr(history, "max_calls_per_day", lambda: 48)
+    monkeypatch.setattr(history, "configured_sports", lambda: ("baseball_mlb", "americanfootball_nfl"))
+    monkeypatch.setattr(
+        history.ingestor, "collect_snapshot",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("provider called")),
+    )
+    seen = []
+    monkeypatch.setattr(
+        history, "materialize_captured_references",
+        lambda _c, *, sport_key, slate_date, now: seen.append((sport_key, slate_date)) or 2,
+    )
+    result = history.collect_history_once(object(), now=datetime(2026, 10, 10, 4, 30, tzinfo=timezone.utc))
+    assert result["status"] == "BUDGET_EXHAUSTED"
+    assert result["reference_rows_written"] == 8
+    # 23:30 CDT on 10-09 local: yesterday (10-08) and today (10-09) for each sport.
+    assert seen == [
+        ("baseball_mlb", "2026-10-08"), ("baseball_mlb", "2026-10-09"),
+        ("americanfootball_nfl", "2026-10-08"), ("americanfootball_nfl", "2026-10-09"),
+    ]
+
+
+def test_reference_backlog_failure_for_one_sport_does_not_block_others(monkeypatch):
+    monkeypatch.setattr(history, "configured_sports", lambda: ("baseball_mlb", "americanfootball_nfl"))
+
+    def flaky(_c, *, sport_key, slate_date, now):
+        if sport_key == "baseball_mlb":
+            raise RuntimeError("db down")
+        return 1
+
+    monkeypatch.setattr(history, "materialize_captured_references", flaky)
+    assert history.materialize_reference_backlog(object(), now=datetime(2026, 10, 9, 15, tzinfo=timezone.utc)) == 2

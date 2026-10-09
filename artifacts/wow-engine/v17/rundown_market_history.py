@@ -45,11 +45,11 @@ def _int_env(name: str, default: int, *, low: int, high: int) -> int:
 def interval_seconds() -> int:
     # Deliberately slow by default. This is a history collector, not a live-price
     # execution feed, and it must not compete with Scout for provider allowance.
-    return _int_env("WOW_RUNDOWN_MARKET_HISTORY_INTERVAL_SECONDS", 7200, low=1800, high=21600)
+    return _int_env("WOW_RUNDOWN_MARKET_HISTORY_INTERVAL_SECONDS", 10800, low=1800, high=21600)
 
 
 def max_calls_per_day() -> int:
-    return _int_env("WOW_RUNDOWN_MARKET_HISTORY_MAX_CALLS_PER_DAY", 12, low=1, high=48)
+    return _int_env("WOW_RUNDOWN_MARKET_HISTORY_MAX_CALLS_PER_DAY", 48, low=1, high=48)
 
 
 def max_datapoints_per_day() -> int:
@@ -61,8 +61,15 @@ def _csv(name: str, default: str) -> tuple[str, ...]:
     return tuple(part.strip() for part in raw.split(",") if part.strip())
 
 
+# Sports whose captured closing prices are needed to grade WOW predictions
+# against the market (MLB/NFL today; WNBA/NCAAF history for future models).
+DEFAULT_HISTORY_SPORT_KEYS = (
+    "baseball_mlb,americanfootball_nfl,basketball_wnba,americanfootball_ncaaf"
+)
+
+
 def configured_sports() -> tuple[str, ...]:
-    return _csv("WOW_RUNDOWN_MARKET_HISTORY_SPORT_KEYS", "baseball_mlb")
+    return _csv("WOW_RUNDOWN_MARKET_HISTORY_SPORT_KEYS", DEFAULT_HISTORY_SPORT_KEYS)
 
 
 def configured_books() -> tuple[str, ...]:
@@ -300,6 +307,28 @@ def materialize_captured_references(
     return ledger.persist_observations(client, references)
 
 
+def materialize_reference_backlog(client: Any, *, now: datetime | None = None) -> int:
+    """Materialize captured OPEN/CLOSE references for yesterday and today.
+
+    Makes no provider calls, so it runs even when the call budget is exhausted
+    or the lane is suspended. Covering yesterday closes games that started
+    after the last same-day cycle (late West Coast starts). Derivation is
+    repeat-safe; a failure for one sport/date never blocks the others.
+    """
+    current_now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    today = current_now.astimezone(_timezone()).date()
+    written = 0
+    for sport_key in configured_sports():
+        for slate in (today - timedelta(days=1), today):
+            try:
+                written += materialize_captured_references(
+                    client, sport_key=sport_key, slate_date=slate.isoformat(), now=current_now
+                )
+            except Exception:  # noqa: BLE001 - reference backfill is best effort
+                continue
+    return written
+
+
 def _budget_key(local_date: str) -> str:
     return f"{BUDGET_PREFIX}{local_date}"
 
@@ -373,8 +402,10 @@ def collect_history_once(
     budget = _read_budget(client, local_date)
     suspended_until = _parse_dt(budget.get("suspended_until"))
     if suspended_until is not None and current_now < suspended_until:
+        references = materialize_reference_backlog(client, now=current_now)
         return {
             "status": "SUSPENDED",
+            "reference_rows_written": references,
             "reason_code": budget.get("last_error_code") or "RUNDOWN_HISTORY_SUSPENDED",
             "suspended_until": _iso(suspended_until),
             "provider_calls": 0,
@@ -382,8 +413,10 @@ def collect_history_once(
             "can_execute": False,
         }
     if budget["calls"] >= max_calls_per_day() or budget["datapoints"] >= max_datapoints_per_day():
+        references = materialize_reference_backlog(client, now=current_now)
         return {
             "status": "BUDGET_EXHAUSTED",
+            "reference_rows_written": references,
             "reason_code": "RUNDOWN_HISTORY_DAILY_BUDGET_REACHED",
             "calls": budget["calls"],
             "datapoints": budget["datapoints"],
@@ -427,12 +460,6 @@ def collect_history_once(
         results.append(result)
 
         if result.get("status") == "COMPLETE":
-            total_references += materialize_captured_references(
-                client,
-                sport_key=sport_key,
-                slate_date=local_date,
-                now=current_now,
-            )
             continue
 
         reason_code = str(result.get("reason_code") or result.get("status") or "RUNDOWN_HISTORY_COLLECTION_FAILED")
@@ -443,6 +470,7 @@ def collect_history_once(
             next_suspend = _iso(current_now + timedelta(hours=24))
         break
 
+    total_references += materialize_reference_backlog(client, now=current_now)
     status = "COMPLETE" if results and all(row.get("status") == "COMPLETE" for row in results) else "PARTIAL"
     if not results:
         status = "BUDGET_EXHAUSTED"

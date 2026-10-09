@@ -203,14 +203,14 @@ def test_postseason_only_slate_is_captured_through_registry_regime_variant():
         market_ids=("1",), affiliate_ids=("19",), opener=_regime_opener(calls=calls),
     )
     assert result["status"] == "COMPLETE"
-    assert calls == [3, 30, 31]
-    assert result["provider_calls"] == 3
-    assert result["events_by_provider_sport_id"] == {"3": 0, "30": 0, "31": 1}
+    assert calls == [3, 31]  # spring training (30) listed but never modeled
+    assert result["provider_calls"] == 2
+    assert result["events_by_provider_sport_id"] == {"3": 0, "31": 1}
     assert result["rows_written"] >= 1
-    assert result["datapoints"] == 12
+    assert result["datapoints"] == 8
     assert all(row["can_execute"] is False for row in client.writes["wow_market_price_observations"])
     state = client.writes["wow_market_feed_sync_state"][-1]
-    assert state["metadata"]["provider_sport_ids"] == ["3", "30", "31"]
+    assert state["metadata"]["provider_sport_ids"] == ["3", "31"]
     assert state["last_rows_written"] == result["rows_written"]
 
 
@@ -219,10 +219,10 @@ def test_registry_variant_not_listed_by_provider_is_never_called():
     result = collect_snapshot(
         FakeClient(), sport_key="baseball_mlb", slate_date="2026-10-09",
         market_ids=("1",), affiliate_ids=("19",),
-        opener=_regime_opener(listed=(3, 31), calls=calls),
+        opener=_regime_opener(listed=(3, 30), calls=calls),
     )
-    assert calls == [3, 31]
-    assert result["provider_sport_ids"] == ["3", "31"]
+    assert calls == [3]  # playoffs (31) not listed by provider; 30 is not postseason
+    assert result["provider_sport_ids"] == ["3"]
 
 
 def test_unrelated_provider_sport_is_not_collected_as_a_variant():
@@ -243,7 +243,7 @@ def test_failed_regime_variant_fails_whole_feed_typed_without_partial_success():
     )
     assert result["status"] == "FAILED"
     assert result["failed_provider_sport_id"] == "31"
-    assert result["provider_calls"] == 3
+    assert result["provider_calls"] == 2
     state = client.writes["wow_market_feed_sync_state"][-1]
     assert state["last_rows_written"] == 0
     assert "last_success_at" not in state
