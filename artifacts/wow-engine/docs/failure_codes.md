@@ -103,6 +103,47 @@ Emitted by the protected Claude engineering worker (`wow-v17-claude-engineering-
 | `ACTIONABLE_REPAIR_RECEIPT_PERSIST_FAILED` | engineering persistence | Incident issue lookup or append-only receipt write failed. | `UNRESOLVED_TYPED_FAILURE` |
 
 Delivery statuses (not failures): `PR_READY` (exact-head open PR, disposition `PR_CREATED`) and `DRAFT_PR_GATES_FAILED` (exact-head draft PR; pre-PR gates failed; disposition `PR_CREATED`, does not authorize merge or deploy).
+## Agent identity and protection policy codes (incident #1550, parent #1540)
+
+Emitted by `artifacts/wow-engine/v17/agent_identity_policy.py evaluate`, which joins an owner inventory, per-runtime AI principal evidence and owner-observed live allow/deny probes. Any finding makes the verdict `HOLD` with disposition `BLOCKED_WITH_EXACT_REASON`. `PASS` is configuration evidence only: no work-item closure, merge, release or probability authority. None affects sporting probability, rank or `can_execute=false`.
+
+| Code | Owning lane/stage | Exact condition | Rank eligible? |
+|---|---|---|---:|
+| `IDENTITY_SNAPSHOT_INCOMPLETE` | engineering governance | An owner-inventory input could not be read or was malformed/truncated (e.g. `RULESETS_UNREADABLE:403`, `CODEOWNERS_UNREADABLE:<loc>:<status>`, `INSTALLATION_REPOSITORIES_TRUNCATED:<app>`, `CODEOWNERS_UNCONFIRMED`); suffixed with the input. Never treated as absent; the dependent finding is suppressed. | N/A |
+| `IDENTITY_SNAPSHOT_NOT_OWNER_COLLECTED` | engineering governance | Owner inventory was collected by a login other than the repository owner. | N/A |
+| `IDENTITY_APP_UNBOUND` | engineering governance | No App ID bound to the role (`WOW_<ROLE>_APP_ID` variable unset, variables readable); suffixed `:<role>`. | N/A |
+| `IDENTITY_APP_NOT_INSTALLED` | engineering governance | Bound App ID has no installation visible to the owner (installations readable); suffixed `:<role>`. | N/A |
+| `IDENTITY_APPS_NOT_DISTINCT` | engineering governance | Two roles are bound to the same App; QA/Release independence is impossible. | N/A |
+| `IDENTITY_PERMISSION_FORBIDDEN` | engineering governance | An agent App holds a never-grantable permission (administration, secrets, environments, …); suffixed `:<role>:<perm>:<level>`. | N/A |
+| `IDENTITY_PERMISSION_EXCESS` | engineering governance | An agent App holds a permission or level beyond its exact policy set; suffixed `:<role>:<perm>:<level>`. | N/A |
+| `IDENTITY_PERMISSION_MISSING` | engineering governance | An agent App lacks a permission its role requires; suffixed `:<role>:<perm>:<level>`. | N/A |
+| `IDENTITY_INSTALLATION_NOT_REPO_SCOPED` | engineering governance | App installed on all repositories instead of only selected ones; suffixed `:<role>`. | N/A |
+| `IDENTITY_INSTALLATION_REPO_NOT_INCLUDED` | engineering governance | The App's selected-repository list does not contain this repository's ID; suffixed `:<role>`. | N/A |
+| `IDENTITY_AI_PRINCIPAL_UNMEASURED` | engineering governance | No principal evidence collected from inside a required AI runtime; suffixed `:<runtime>`. | N/A |
+| `IDENTITY_AI_PRINCIPAL_EVIDENCE_AMBIGUOUS` | engineering governance | More than one principal record for the same AI runtime; suffixed `:<runtime>`. | N/A |
+| `IDENTITY_AI_PRINCIPAL_EVIDENCE_INVALID` | engineering governance | Principal record malformed (wrong kind, missing login or timestamps); suffixed `:<runtime>`. | N/A |
+| `IDENTITY_AI_PRINCIPAL_NONCE_MISMATCH` | engineering governance | Principal record not bound to this owner inventory's nonce; suffixed `:<runtime>`. | N/A |
+| `IDENTITY_AI_PRINCIPAL_REPO_MISMATCH` | engineering governance | Principal record measured a different repository ID; suffixed `:<runtime>`. | N/A |
+| `IDENTITY_AI_PRINCIPAL_EVIDENCE_STALE` | engineering governance | Principal record expired, TTL above 24h, or collected in the future; suffixed `:<runtime>`. | N/A |
+| `IDENTITY_AI_CREDENTIAL_IS_OWNER_USER` | engineering governance | The AI runtime, measured from inside it, still acts as the owner's user account; suffixed `:<runtime>`. | N/A |
+| `IDENTITY_AI_CREDENTIAL_CAN_MERGE` | engineering governance | The AI runtime's bounded all-zero-SHA merge attempt reached GitHub's SHA guard (409 *Head branch was modified*), i.e. authorization was not denied; suffixed `:<runtime>`. | N/A |
+| `IDENTITY_AI_MERGE_PROBE_INCONCLUSIVE` | engineering governance | The AI runtime's merge probe neither proved denial (403/404) nor reached the SHA guard (conflict, 405, 422, 5xx, skipped, absent); suffixed `:<runtime>`. | N/A |
+| `PROTECTION_CODEOWNERS_MISSING` | engineering governance | CODEOWNERS confirmed absent: all three GitHub locations returned 404. | N/A |
+| `PROTECTION_CODEOWNERS_UNCOVERED` | engineering governance | A trust-root path, or a NEW workflow/action/script probe, is not owned by the owner under last-match-wins semantics; suffixed `:<path>`. | N/A |
+| `PROTECTION_RULESET_MISSING` | engineering governance | Rulesets readable, but none is an active branch ruleset targeting the default branch. | N/A |
+| `PROTECTION_PULL_REQUEST_RULE_MISSING` | engineering governance | Active ruleset lacks a pull-request rule. | N/A |
+| `PROTECTION_CODE_OWNER_REVIEW_NOT_REQUIRED` | engineering governance | Code-owner review not required, so trust-root changes need no owner approval. | N/A |
+| `PROTECTION_LAST_PUSH_APPROVAL_NOT_REQUIRED` | engineering governance | Approval of the most recent push not required; a post-approval push could slip through. | N/A |
+| `PROTECTION_STALE_REVIEWS_NOT_DISMISSED` | engineering governance | Approvals survive new pushes. | N/A |
+| `PROTECTION_FORCE_PUSH_ALLOWED` | engineering governance | No non-fast-forward rule on the default branch. | N/A |
+| `PROTECTION_DELETION_ALLOWED` | engineering governance | No deletion rule on the default branch. | N/A |
+| `PROTECTION_CHECKS_NOT_STRICT` | engineering governance | Required checks are not strict (head need not be up to date with base). | N/A |
+| `PROTECTION_CHECK_MISSING` | engineering governance | A required regression, QA or Release check is absent; suffixed `:<check>`. | N/A |
+| `PROTECTION_CHECK_NOT_SOURCE_PINNED` | engineering governance | QA/Release check is not pinned to its own App's integration_id, so another principal could satisfy it; suffixed `:<check>`. | N/A |
+| `PROTECTION_BYPASS_PRESENT` | engineering governance | Ruleset has any bypass actor; while AI acts as the owner user, a bypass is an AI bypass; suffixed `:<type>:<id>`. | N/A |
+| `PROTECTION_LIVE_PROBE_MISSING` | engineering governance | A required owner-observed allow/deny probe against the enforced ruleset has no record; suffixed `:<probe>`. | N/A |
+| `PROTECTION_LIVE_PROBE_FAILED` | engineering governance | A live probe observed the opposite of the required outcome (e.g. ordinary PR blocked, trust-root PR allowed); suffixed `:<probe>`. | N/A |
+| `PROTECTION_LIVE_PROBE_INVALID` | engineering governance | A live probe record is malformed or unbound (expected outcome, PR number, 40-hex head SHA, timestamp, nonce); suffixed `:<probe>`. | N/A |
 
 ## Exact-target bootstrap and Claude structured-output codes (PR #1531)
 
