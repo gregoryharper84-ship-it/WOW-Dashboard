@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -39,7 +40,28 @@ def _eligible(records: list[dict[str, Any]], stream: str) -> list[dict[str, Any]
     )
 
 
-def select_parallel(records: list[dict[str, Any]]) -> dict[str, Any]:
+def _incidents_with_open_prs(open_prs: list[dict[str, Any]]) -> set[str]:
+    """Conservatively defer a P0 if an existing open PR references its issue.
+
+    Holding on related references is safer than dispatching a duplicate writer.
+    PR review, CI, merge, deployment and QA are separate closure stages.
+    """
+    pending: set[str] = set()
+    for pr in open_prs:
+        if not isinstance(pr, dict) or not isinstance(pr.get("number"), int):
+            raise ValueError("OPEN_PR_INVENTORY_INVALID")
+        content = str(pr.get("title") or "") + "\n" + str(pr.get("body") or "")
+        pending.update(re.findall(r"(?<![a-zA-Z0-9])#([0-9]+)\\b", content))
+    return pending
+
+
+def select_parallel(
+    records: list[dict[str, Any]],
+    *,
+    open_prs: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    pending_pr_incidents = _incidents_with_open_prs(open_prs or [])
+
     selected: list[dict[str, Any]] = []
     claimed_keys: set[str] = set()
     claimed_incidents: set[str] = set()
@@ -70,6 +92,13 @@ def select_parallel(records: list[dict[str, Any]]) -> dict[str, Any]:
                         "reason": "MISSING_EXPLICIT_LEASE_OR_CONFLICT_METADATA",
                     }
                 )
+                continue
+            if incident in pending_pr_incidents:
+                skipped.append({
+                    "incident_id": incident,
+                    "rapid_stream": stream,
+                    "reason": "EXISTING_OPEN_PR_REQUIRES_REVIEW",
+                })
                 continue
             if incident in claimed_incidents:
                 skipped.append({"incident_id": incident, "rapid_stream": stream, "reason": "DUPLICATE_INCIDENT"})
@@ -119,6 +148,7 @@ def select_parallel(records: list[dict[str, Any]]) -> dict[str, Any]:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--queue", required=True)
+    parser.add_argument("--open-prs", required=True)
     parser.add_argument("--output")
     args = parser.parse_args()
 
@@ -127,7 +157,10 @@ def main() -> int:
         raise SystemExit("queue must preserve can_execute=false")
     if queue.get("terminal_authority") != TERMINAL_AUTHORITY:
         raise SystemExit("queue must preserve V17_TERMINAL_REDUCER")
-    result = select_parallel(list(queue.get("records") or []))
+    open_prs = json.loads(Path(args.open_prs).read_text())
+    if not isinstance(open_prs, list) or len(open_prs) >= 200:
+        raise SystemExit("OPEN_PR_INVENTORY_INCOMPLETE")
+    result = select_parallel(list(queue.get("records") or []), open_prs=open_prs)
     payload = json.dumps(result, indent=2, sort_keys=True)
     if args.output:
         Path(args.output).write_text(payload + "\n")
