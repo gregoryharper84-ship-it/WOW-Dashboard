@@ -26,6 +26,9 @@ ACTIVE_WORKFLOWS = frozenset({
     "wow-v17-claude-engineering-worker",
     "wow-v17-engineering-provider-dispatcher",
 })
+TRUSTED_WORKFLOW_PATHS = frozenset(
+    f".github/workflows/{name}.yml" for name in ACTIVE_WORKFLOWS
+)
 MANIFEST = Path(__file__).with_name("engineering_dispatch_manifest.json")
 LOCK_KEY = "wow:v17:engineering:resident-dispatch-lock:v1"
 COOLDOWN_KEY = "wow:v17:engineering:resident-dispatch-cooldown:v1"
@@ -106,7 +109,15 @@ def active_engineering_workflow(
         runs = result.get("workflow_runs")
         if not isinstance(runs, list) or int(result.get("total_count", -1)) > len(runs):
             raise RuntimeError("ACTIVE_WORKFLOW_INVENTORY_INCOMPLETE")
-        active.extend(run for run in runs if str(run.get("name") or "").split(" lease=", 1)[0] in ACTIVE_WORKFLOWS)
+        for run in runs:
+            if not isinstance(run, dict):
+                raise RuntimeError("ACTIVE_WORKFLOW_INVENTORY_INVALID")
+            run_name = str(run.get("name") or "").split(" lease=", 1)[0]
+            run_path = str(run.get("path") or "").split("@", 1)[0]
+            # A forged workflow may reuse a trusted display name. Include it in
+            # the busy set, then fail closed on its untrusted path/branch.
+            if run_name in ACTIVE_WORKFLOWS or run_path in TRUSTED_WORKFLOW_PATHS:
+                active.append(run)
     if candidate is None:
         return bool(active)
     if not active:
@@ -117,6 +128,9 @@ def active_engineering_workflow(
     candidate_keys = set(candidate["conflict_keys"])
     candidate_lease = str(candidate.get("lease_group") or "GLOBAL")
     for run in active:
+        path = str(run.get("path") or "").split("@", 1)[0]
+        if path not in TRUSTED_WORKFLOW_PATHS or run.get("head_branch") != "main":
+            return True  # Workflow name alone cannot establish trusted writer provenance.
         title = str(run.get("display_title") or run.get("name") or "")
         identity = re.search(r"(?:^|\s)lease=([A-Za-z0-9_-]+)\s+incident=([0-9]+)(?:\s|$)", title)
         if not identity:
