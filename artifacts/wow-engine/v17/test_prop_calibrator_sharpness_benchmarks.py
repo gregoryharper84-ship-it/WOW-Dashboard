@@ -84,6 +84,14 @@ def test_benchmarks_use_frozen_training_base_rate_and_flag_weak_sharpness(monkey
     assert packet.holdout_skill_scores["brier_skill_vs_neutral_50_percent"] < 0
     assert "CALIBRATED_WORSE_THAN_NEUTRAL_50_PERCENT_BRIER" in packet.holdout_sharpness_flags
     assert "CALIBRATED_WORSE_THAN_TRAINING_ONLY_EVENT_RATE_LOG_LOSS" in packet.holdout_sharpness_flags
+    assert len(packet.holdout_line_diagnostics) == 1
+    line = packet.holdout_line_diagnostics[0]
+    assert line["exact_line"] == 5.5
+    assert line["n"] == 60
+    assert line["status"] == "DESCRIPTIVE_REVIEW_ONLY"
+    assert line["raw_brier"] == pytest.approx(0.16)
+    assert line["calibrated_brier"] == pytest.approx(0.34)
+    assert line["diagnostic_only"] is True
 
     # Additional review diagnostics are hashed, preventing stale packet reuse.
     assert len(packet.evidence_hash) == 64
@@ -95,4 +103,47 @@ def test_unready_candidates_have_no_invented_benchmark_metrics():
     assert packet.holdout_reference_metrics is None
     assert packet.holdout_skill_scores is None
     assert packet.holdout_sharpness_flags == ()
+    assert packet.holdout_line_diagnostics == ()
+    assert packet.can_execute is False
+
+
+def test_line_diagnostics_include_small_exact_line_with_no_spurious_skill_claim(monkeypatch):
+    class Coeff:
+        a = 1.0
+        b = -0.1
+
+        @staticmethod
+        def apply(probability):
+            return 0.8
+
+    monkeypatch.setattr(
+        subject,
+        "phase_b_platt",
+        lambda *args: SimpleNamespace(
+            coefficients=Coeff(),
+            metrics=SimpleNamespace(
+                brier=0.32, log_loss=0.90, ece=0.30, calibration_bias=0.30
+            ),
+        ),
+    )
+    monkeypatch.setattr(subject, "PHASE_C_MIN_N", 10_000)
+    observations = _observations()
+    # The last 60 event timestamps form the chronological holdout; six
+    # of those lie on a rarer exact line. Its count must remain visible.
+    from dataclasses import replace
+
+    observations[-6:] = [replace(row, line=7.5) for row in observations[-6:]]
+    packet = subject.build_calibrator_candidate_packet(_artifact(), observations)
+    assert packet.certification_review_packet_ready is True
+    assert [d["exact_line"] for d in packet.holdout_line_diagnostics] == [5.5, 7.5]
+    main, rare = packet.holdout_line_diagnostics
+    assert main["n"] == 54
+    assert main["raw_brier"] is not None
+    assert rare == {
+        "exact_line": 7.5,
+        "n": 6,
+        "diagnostic_only": True,
+        "status": "SMALL_SAMPLE_NO_METRICS",
+    }
+    assert packet.probability_publishable is False
     assert packet.can_execute is False
