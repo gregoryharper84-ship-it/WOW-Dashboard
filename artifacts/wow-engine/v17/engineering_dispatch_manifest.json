@@ -1,7 +1,7 @@
 {
   "schema_version": "2.1",
   "source": "WOW_V17_ACTIVE_EXECUTION_BOARD",
-  "description": "Closure-focus routing metadata. GitHub issue open/closed state remains authoritative. All engineering capacity targets the highest-priority existing closure journey. Product focus is LLP all-sports moneyline/spread usability and WOW governed all-sports player/scalar props.",
+  "description": "Production-first closure routing: preserve P0 rapid restoration; prioritize P1 governed agentic QA/release bootstrap #1540 in the existing GLOBAL writer queue. RAPID is delivery urgency, never automatic approval/merge/deploy.",
   "can_execute": false,
   "terminal_authority": "V17_TERMINAL_REDUCER",
   "restoration": [
@@ -43,6 +43,20 @@
       ],
       "rapid_stream": "LLP_RESTORE",
       "lease_group": "P0_LLP_RESTORE"
+    },
+    {
+      "issue_number": 1540,
+      "severity": "P1",
+      "priority_rank": 1,
+      "execution_lane": "RAPID",
+      "rapid_stream": "GOVERNANCE",
+      "lease_group": "GLOBAL",
+      "conflict_keys": [
+        "INDEPENDENT_QA",
+        "RELEASE_AUTHORITY",
+        "PROTECTED_WORKFLOW_TRUST",
+        "ENGINEERING_AUTONOMY"
+      ]
     },
     {
       "issue_number": 823,
