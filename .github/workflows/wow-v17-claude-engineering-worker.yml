@@ -109,15 +109,31 @@ jobs:
             severity=$(jq -r '.severity' <<<"$record")
             lane=$(jq -r '.execution_lane' <<<"$record")
             lease_group=$(jq -r '.lease_group' <<<"$record")
-            [ "$severity" = "P0" ] && [ "$lane" = "RAPID" ] || { echo "TARGET_INCIDENT_NOT_RAPID_P0:$TARGET_INCIDENT" >&2; exit 1; }
+            if [ "$severity" = "P0" ] && [ "$lane" = "RAPID" ]; then
+              [ -n "$lease_group" ] && [ "$lease_group" != "GLOBAL" ] || {
+                echo "P0_DOMAIN_LEASE_MISSING:$TARGET_INCIDENT" >&2; exit 1;
+              }
+              target_reason="Domain-scoped exact P0 target."
+              target_hold="DOMAIN_SCOPED_P0_LEASE"
+            elif [ "$severity" = "P1" ] && [ "$lane" = "STANDARD" ]; then
+              [ -z "$lease_group" ] || [ "$lease_group" = "GLOBAL" ] || {
+                echo "STANDARD_TARGET_MUST_USE_GLOBAL_LEASE:$TARGET_INCIDENT" >&2; exit 1;
+              }
+              lease_group=GLOBAL
+              target_reason="Exact approved P1 target; GLOBAL writer lease."
+              target_hold="EXACT_P1_GLOBAL_LEASE"
+            else
+              echo "TARGET_INCIDENT_NOT_SUPPORTED:$TARGET_INCIDENT:$severity:$lane" >&2
+              exit 1
+            fi
             [ "$lease_group" = "${REQUESTED_LEASE_GROUP:-GLOBAL}" ] || {
               echo "TARGET_INCIDENT_LEASE_MISMATCH:$TARGET_INCIDENT:$lease_group:${REQUESTED_LEASE_GROUP:-GLOBAL}" >&2
               exit 1
             }
-            decision=$(jq -n --arg id "$TARGET_INCIDENT" --arg severity "$severity" '{
-              restoration:{incident_id:$id,severity:$severity,state:"OPEN",reason:"Domain-scoped exact P0 target.",frontier_allowed:false},
-              acceleration:{incident_id:null,severity:"NONE",state:"NONE",reason:"Disabled for domain-scoped P0 writer.",frontier_allowed:false},
-              acceleration_blocked_reason:"DOMAIN_SCOPED_P0_LEASE",
+            decision=$(jq -n --arg id "$TARGET_INCIDENT" --arg severity "$severity" --arg reason "$target_reason" --arg target_hold "$target_hold" '{
+              restoration:{incident_id:$id,severity:$severity,state:"OPEN",reason:$reason,frontier_allowed:false},
+              acceleration:{incident_id:null,severity:"NONE",state:"NONE",reason:"Disabled for exact-target single writer.",frontier_allowed:false},
+              acceleration_blocked_reason:$target_hold,
               can_execute:false,
               terminal_authority:"V17_TERMINAL_REDUCER"
             }')
@@ -560,7 +576,8 @@ jobs:
             artifacts/wow-engine/v17/.agent-handoff/specialist.json \
             artifacts/wow-engine/v17/.agent-handoff/specialist-route.json
           if [ "$changed" = "true" ]; then
-            git diff --quiet --exit-code && { echo "::error::Claude reported changes but returned no working-tree diff."; exit 1; }
+            # git diff ignores untracked files; a repair that only adds files is a real change (#1021).
+            [ -z "$(git status --porcelain)" ] && { echo "::error::Claude reported changes but returned no working-tree diff."; exit 1; }
             branch="claude/engineering/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -1006,9 +1023,21 @@ jobs:
           WORKER_ID: ${{ steps.safety.outputs.worker_id }}
           LEASE_EXPIRES_AT: ${{ steps.safety.outputs.expires_at }}
           WORKER_MODE: ${{ steps.safety.outputs.worker_mode }}
+          JOB_STATUS: ${{ job.status }}
           LEASE_GROUP: ${{ steps.dispatch.outputs.lease_group }}
         run: |
           set -euo pipefail
+          # A run that did not succeed must not leave a RUNNING heartbeat or hold
+          # its lease until expiry (#1021). Report SAFE_HOLD and release the lease
+          # at the moment the run ended; the original claim stays in the receipt.
+          JOB_STATUS="${JOB_STATUS:-unknown}"
+          LEASE_CLAIMED_EXPIRES_AT="${LEASE_EXPIRES_AT:-UNKNOWN}"
+          LEASE_STATE=HELD
+          if [ "$JOB_STATUS" != "success" ]; then
+            WORKER_MODE=SAFE_HOLD
+            LEASE_EXPIRES_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            LEASE_STATE=RELEASED_ON_FAILURE
+          fi
           # A REPAIR whose delivery step did not report is itself a typed failure, never blank.
           if [ "${LEAD_ACTION:-}" = "REPAIR" ] && [ -z "${DELIVERY_CODE:-}" ]; then
             DELIVERY=FAILED
@@ -1033,6 +1062,9 @@ jobs:
             --arg worker_id "${WORKER_ID:-UNKNOWN}" \
             --arg lease_expires_at "${LEASE_EXPIRES_AT:-UNKNOWN}" \
             --arg worker_mode "${WORKER_MODE:-SAFE_HOLD}" \
+            --arg job_status "$JOB_STATUS" \
+            --arg lease_state "$LEASE_STATE" \
+            --arg lease_claimed_expires_at "$LEASE_CLAIMED_EXPIRES_AT" \
             --arg lease_group "${LEASE_GROUP:-GLOBAL}" \
             '{
               utc: $utc,
@@ -1051,6 +1083,9 @@ jobs:
               worker_id: $worker_id,
               lease_expires_at: $lease_expires_at,
               worker_mode: $worker_mode,
+              job_status: $job_status,
+              lease_state: $lease_state,
+              lease_claimed_expires_at: $lease_claimed_expires_at,
               lease_group: $lease_group,
               retry_dlq_state: "NONE",
               safe_hold_state: $worker_mode,
@@ -1073,6 +1108,8 @@ jobs:
           - worker_id: ${WORKER_ID:-UNKNOWN}
           - lease_expires_at: ${LEASE_EXPIRES_AT:-UNKNOWN}
           - worker_mode: ${WORKER_MODE:-SAFE_HOLD}
+          - job_status: $JOB_STATUS
+          - lease_state: $LEASE_STATE
           - restoration_action: ${LEAD_ACTION:-NOT_RUN}
           - restoration_delivery: ${DELIVERY:-NOT_APPLICABLE}
           - restoration_delivery_code: ${DELIVERY_CODE:-NONE}
