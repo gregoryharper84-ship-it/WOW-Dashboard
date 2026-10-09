@@ -10,6 +10,20 @@ from fastapi import HTTPException
 import api_ncaaf_acceptance as api
 
 
+class _WarmPermit:
+    def __init__(self):
+        self.releases = 0
+
+    def release(self):
+        self.releases += 1
+
+
+def _stub_warm_admission(monkeypatch):
+    permit = _WarmPermit()
+    monkeypatch.setattr(api.memory_admission, "try_acquire_heavy_job", lambda _: permit)
+    return permit
+
+
 def test_readiness_reports_external_and_model_blockers(monkeypatch):
     monkeypatch.delenv("CFBD_API_KEY", raising=False)
     monkeypatch.setattr(api, "_safe_count", lambda table: 0)
@@ -142,6 +156,7 @@ def test_background_readiness_preserves_responsive_payload_semantics(monkeypatch
 
 
 def test_spread_warm_staggers_then_recovers_from_transient_failures(monkeypatch):
+    _stub_warm_admission(monkeypatch)
     sleeps = []
     attempts = []
     monkeypatch.setenv("WOW_NCAAF_SPREAD_WARM_STARTUP_DELAY_SECONDS", "1")
@@ -182,6 +197,7 @@ def test_spread_warm_staggers_then_recovers_from_transient_failures(monkeypatch)
 
 
 def test_spread_warm_stops_after_first_success(monkeypatch):
+    _stub_warm_admission(monkeypatch)
     sleeps = []
     monkeypatch.setenv("WOW_NCAAF_SPREAD_WARM_STARTUP_DELAY_SECONDS", "0")
 
@@ -212,6 +228,7 @@ def test_spread_warm_stops_after_first_success(monkeypatch):
 
 
 def test_spread_warm_does_not_retry_deterministic_failure(monkeypatch):
+    _stub_warm_admission(monkeypatch)
     attempts = []
     monkeypatch.setenv("WOW_NCAAF_SPREAD_WARM_STARTUP_DELAY_SECONDS", "0")
 
@@ -235,6 +252,7 @@ def test_spread_warm_does_not_retry_deterministic_failure(monkeypatch):
 
 
 def test_spread_warm_retries_exact_postgrest_schema_cache_failure(monkeypatch):
+    _stub_warm_admission(monkeypatch)
     attempts = []
     sleeps = []
     monkeypatch.setenv("WOW_NCAAF_SPREAD_WARM_STARTUP_DELAY_SECONDS", "0")
@@ -299,3 +317,12 @@ def test_spread_warm_status_read_is_process_local_and_db_free(monkeypatch):
         "attempt": 1,
         "max_attempts": 3,
     }
+
+
+def test_spread_warm_busy_never_opens_db(monkeypatch):
+    monkeypatch.setattr(api.memory_admission, "try_acquire_heavy_job", lambda _: None)
+    monkeypatch.setattr(api, "_db_client", lambda: (_ for _ in ()).throw(AssertionError("DB not permitted")))
+    with pytest.raises(api.memory_admission.HeavyJobDeferred) as exc:
+        api._warm_ncaaf_spread_under_heavy_slot()
+    assert exc.value.code == "HEAVY_JOB_BUSY"
+    assert exc.value.receipt()["can_execute"] is False
