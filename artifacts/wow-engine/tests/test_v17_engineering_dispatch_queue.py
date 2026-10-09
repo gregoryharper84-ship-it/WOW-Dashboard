@@ -164,3 +164,72 @@ def test_active_llp_p0_cases_are_rapid_with_isolated_implementation_leases():
     assert len(keys) == len(set(keys))
     assert selection["can_execute"] is False
     assert selection["terminal_authority"] == "V17_TERMINAL_REDUCER"
+
+
+def test_llp_wow_restoration_surge_all_p0_issues_route_to_rapid_domains():
+    path = Path(__file__).parents[1] / "v17" / "engineering_dispatch_manifest.json"
+    manifest = json.loads(path.read_text())
+    by_id = {r["issue_number"]: r for r in manifest["restoration"]}
+    expected = {
+        823: "A", 50: "A", 1407: "A",
+        1496: "B", 487: "B", 491: "B", 664: "B", 665: "B",
+        1388: "C", 1501: "C", 502: "C", 1313: "C",
+    }
+    for number, stream in expected.items():
+        row = by_id[number]
+        assert row["severity"] == "P0"
+        assert row["execution_lane"] == "RAPID"
+        assert row["rapid_stream"] == stream
+        assert row["lease_group"]
+        assert row["conflict_keys"]
+        assert row["can_execute"] is False if "can_execute" in row else manifest["can_execute"] is False
+        assert {
+            "A": "ACQUISITION_WRITE_SCOPE",
+            "B": "FITTED_SCORING_WRITE_SCOPE",
+            "C": "RUNTIME_WRITE_SCOPE",
+        }[stream] in row["conflict_keys"]
+    assert manifest["terminal_authority"] == "V17_TERMINAL_REDUCER"
+
+
+def test_llp_wow_rapid_surge_reuses_existing_prs_and_selects_three_real_domains():
+    from v17.p0_parallel_dispatch import select_parallel
+
+    path = Path(__file__).parents[1] / "v17" / "engineering_dispatch_manifest.json"
+    manifest = json.loads(path.read_text())
+    available = {823, 50, 1496, 487, 664, 1388, 1501, 502}
+    issues = [
+        {"number": n, "state": "OPEN", "title": "P0 product repair"}
+        for n in available
+    ]
+    queue = build_queue(manifest, issues)
+    open_prs = [
+        {"number": 1559, "title": "Claude #823", "body": "Incident: 823"},
+        {"number": 1507, "title": "MLB numeric", "body": "Incident: #1496"},
+        {"number": 1565, "title": "Prop retry", "body": "Incident: #487"},
+        {"number": 1575, "title": "Memory", "body": "Incident: #1388"},
+        {"number": 1584, "title": "Latency", "body": "Incident: #1501"},
+    ]
+    decision = select_parallel(queue["records"], open_prs=open_prs)
+    assert [r["incident_id"] for r in decision["selected"]] == ["50", "664", "502"]
+    assert [r["rapid_stream"] for r in decision["selected"]] == ["A", "B", "C"]
+    assert len({r["lease_group"] for r in decision["selected"]}) == 3
+    assert decision["can_execute"] is False
+    reasons = {r["incident_id"]: r["reason"] for r in decision["skipped"]}
+    for number in (823, 1496, 487, 1388, 1501):
+        assert reasons[str(number)] == "EXISTING_OPEN_PR_REQUIRES_REVIEW"
+
+
+def test_llp_ncaaf_training_and_calibration_cannot_mutate_concurrently():
+    from v17.p0_parallel_dispatch import select_parallel
+
+    path = Path(__file__).parents[1] / "v17" / "engineering_dispatch_manifest.json"
+    manifest = json.loads(path.read_text())
+    issues = [
+        {"number": n, "state": "OPEN", "title": "P0 NCAAF repair"}
+        for n in (50, 665, 502)
+    ]
+    decision = select_parallel(build_queue(manifest, issues)["records"])
+    assert [r["incident_id"] for r in decision["selected"]] == ["50", "502"]
+    block = next(r for r in decision["skipped"] if r["incident_id"] == "665")
+    assert block["reason"] == "CONFLICT_KEYS_OVERLAP"
+    assert "NCAAF_MODEL_INPUTS" in block["overlap"]
