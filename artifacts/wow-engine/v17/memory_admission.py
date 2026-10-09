@@ -16,6 +16,7 @@ import gc
 import logging
 import os
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -25,14 +26,17 @@ DEFAULT_STOP_RATIO = 0.80
 DEFAULT_RESUME_RATIO = 0.68
 DEFAULT_SYNC_WAIT_SECONDS = 5.0
 DEFAULT_PRESSURE_RETRY_SECONDS = 15.0
+DEFAULT_PRESSURE_RECLAIM_INTERVAL_SECONDS = 60.0
 
 LOGGER = logging.getLogger("wow.v17.memory_admission")
 _HEAVY_JOB_LOCK = threading.Lock()
 _PRESSURE_STATE_LOCK = threading.Lock()
 _PRIORITY_STATE_LOCK = threading.Lock()
+_RECLAIM_STATE_LOCK = threading.Lock()
 _INTERACTIVE_WAITERS = 0
 _PRESSURE_ACTIVE = False
 _MISSING_SAMPLE_WARNED = False
+_LAST_RECLAIM_MONOTONIC: float | None = None
 
 
 @dataclass(frozen=True)
@@ -136,6 +140,19 @@ def _read_cgroup_memory_bytes() -> tuple[int, int] | None:
     return None
 
 
+def _read_process_rss_bytes() -> int | None:
+    """Process RSS diagnostic, distinct from cgroup usage including cache."""
+    try:
+        for line in Path("/proc/self/status").read_text(encoding="utf-8").splitlines():
+            if line.startswith("VmRSS:"):
+                parts = line.split()
+                if len(parts) == 3 and parts[2] == "kB":
+                    return int(parts[1]) * 1024
+    except (OSError, ValueError, IndexError):
+        pass
+    return None
+
+
 def memory_sample() -> MemorySample | None:
     raw = _read_cgroup_memory_bytes()
     if raw is None:
@@ -177,6 +194,7 @@ def admission_snapshot(operation: str) -> dict[str, Any]:
         "operation": operation,
         "measurement_available": sample is not None,
         "memory_current_bytes": sample.current_bytes if sample else None,
+        "process_rss_bytes": _read_process_rss_bytes(),
         "memory_limit_bytes": sample.limit_bytes if sample else None,
         "memory_ratio": sample.ratio if sample else None,
         "stop_ratio": stop,
@@ -195,6 +213,7 @@ def _raise_memory_pressure(operation: str, snapshot: dict[str, Any]) -> None:
         detail={
             "reason": "MEMORY_PRESSURE",
             "memory_current_bytes": snapshot.get("memory_current_bytes"),
+            "process_rss_bytes": snapshot.get("process_rss_bytes"),
             "memory_limit_bytes": snapshot.get("memory_limit_bytes"),
             "memory_ratio": snapshot.get("memory_ratio"),
             "stop_ratio": snapshot.get("stop_ratio"),
@@ -202,6 +221,48 @@ def _raise_memory_pressure(operation: str, snapshot: dict[str, Any]) -> None:
             "retry_after_seconds": DEFAULT_PRESSURE_RETRY_SECONDS,
         },
     )
+
+
+def _reclaim_and_resample_under_pressure(operation: str, snapshot: dict[str, Any]) -> dict[str, Any]:
+    """Bounded reclamation never bypasses the existing cgroup hysteresis gate."""
+    global _LAST_RECLAIM_MONOTONIC
+    if not snapshot["under_pressure"]:
+        return snapshot
+    now = time.monotonic()
+    with _RECLAIM_STATE_LOCK:
+        if (
+            _LAST_RECLAIM_MONOTONIC is not None
+            and 0 <= now - _LAST_RECLAIM_MONOTONIC < DEFAULT_PRESSURE_RECLAIM_INTERVAL_SECONDS
+        ):
+            return snapshot
+        _LAST_RECLAIM_MONOTONIC = now
+    try:
+        release_process_memory()
+    except Exception as exc:
+        LOGGER.warning(
+            "WOW_V17_MEMORY_RECLAIM_FAILED operation=%s error_type=%s can_execute=false",
+            operation,
+            type(exc).__name__,
+        )
+        return snapshot
+    updated = admission_snapshot(operation)
+    if not updated["measurement_available"]:
+        # A vanished cgroup sample must not relax a measured prior hold.
+        updated = snapshot
+    LOGGER.warning(
+        "WOW_V17_MEMORY_RECLAIM operation=%s before_cgroup_bytes=%s after_cgroup_bytes=%s "
+        "before_process_rss_bytes=%s after_process_rss_bytes=%s before_ratio=%s "
+        "after_ratio=%s admission_recovered=%s can_execute=false",
+        operation,
+        snapshot.get("memory_current_bytes"),
+        updated.get("memory_current_bytes"),
+        snapshot.get("process_rss_bytes"),
+        updated.get("process_rss_bytes"),
+        snapshot.get("memory_ratio"),
+        updated.get("memory_ratio"),
+        not updated["under_pressure"],
+    )
+    return updated
 
 
 def try_acquire_heavy_job(operation: str) -> HeavyJobPermit | None:
@@ -220,7 +281,9 @@ def try_acquire_heavy_job(operation: str) -> HeavyJobPermit | None:
     if not acquired:
         return None
 
-    snapshot = admission_snapshot(operation)
+    snapshot = _reclaim_and_resample_under_pressure(
+        operation, admission_snapshot(operation)
+    )
     if snapshot["under_pressure"]:
         _HEAVY_JOB_LOCK.release()
         _raise_memory_pressure(operation, snapshot)
@@ -261,7 +324,9 @@ def acquire_heavy_job(operation: str, *, wait_seconds: float | None = None) -> H
             },
         )
 
-    snapshot = admission_snapshot(operation)
+    snapshot = _reclaim_and_resample_under_pressure(
+        operation, admission_snapshot(operation)
+    )
     if snapshot["under_pressure"]:
         _HEAVY_JOB_LOCK.release()
         _raise_memory_pressure(operation, snapshot)
@@ -298,12 +363,14 @@ def pressure_retry_seconds() -> float:
 
 
 def _reset_for_tests() -> None:
-    global _PRESSURE_ACTIVE, _MISSING_SAMPLE_WARNED, _INTERACTIVE_WAITERS
+    global _PRESSURE_ACTIVE, _MISSING_SAMPLE_WARNED, _INTERACTIVE_WAITERS, _LAST_RECLAIM_MONOTONIC
     with _PRESSURE_STATE_LOCK:
         _PRESSURE_ACTIVE = False
     with _PRIORITY_STATE_LOCK:
         _INTERACTIVE_WAITERS = 0
     _MISSING_SAMPLE_WARNED = False
+    with _RECLAIM_STATE_LOCK:
+        _LAST_RECLAIM_MONOTONIC = None
     if _HEAVY_JOB_LOCK.locked():
         _HEAVY_JOB_LOCK.release()
 
