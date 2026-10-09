@@ -24,6 +24,7 @@ def run(*, output: Path, cache_dir: Path) -> dict:
     cache_dir.mkdir(parents=True, exist_ok=True)
     boxes: dict[str, Box] = {}
     hits = 0
+    excluded: list[dict[str, str]] = []
     for index, game in enumerate(games, 1):
         path = cache_dir / (game.game_id + ".json")
         cached = None
@@ -40,16 +41,33 @@ def run(*, output: Path, cache_dir: Path) -> dict:
             except (TypeError, ValueError, KeyError, NHLCandidateError) as exc:
                 # Never silently use untrusted or malformed cached rows.
                 raise NHLCandidateError("NHL_CACHE_INVALID", game.game_id) from exc
-        boxes[game.game_id] = cached or fetch_box(game)
+        if cached is None:
+            try:
+                value = fetch_box(game)
+            except NHLCandidateError as exc:
+                # Only documented boxscore-coverage failures may be excluded;
+                # transport, rate-limit, schema-identity drift remain blocking.
+                if exc.code not in {"NHL_BOX_HTTP_404", "NHL_BOX_STARTER_AMBIGUOUS", "NHL_BOX_SCHEMA_DRIFT"}:
+                    raise
+                excluded.append({"event_id": game.game_id, "code": exc.code})
+                continue
+        else:
+            value = cached
+        boxes[game.game_id] = value
         if cached is None:
             temp = path.with_suffix(".tmp")
-            temp.write_text(json.dumps(asdict(boxes[game.game_id]), sort_keys=True))
+            temp.write_text(json.dumps(asdict(value), sort_keys=True))
             os.replace(temp, path)
         if index % 250 == 0:
             print(f"NHL research acquisition {index}/{len(games)}; cache_hits={hits}", flush=True)
+    missing_share = len(excluded) / max(1, len(games))
+    if missing_share > 0.02:
+        raise NHLCandidateError("NHL_BOX_COVERAGE_BELOW_98_PERCENT", str(len(excluded)))
     report = replay(games, boxes)
     report.update({"years": list(YEARS), "cache_hits": hits,
-                   "official_games": len(games), "boxscores_acquired": len(boxes)})
+                   "official_games": len(games), "boxscores_acquired": len(boxes),
+                   "excluded_boxscore_games": len(excluded),
+                   "excluded_boxscore_reasons": excluded})
     output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
     return report
 
