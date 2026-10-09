@@ -33,7 +33,9 @@ concurrency:
 
 jobs:
   qa:
-    if: github.repository == 'gregoryharper84-ship-it/WOW-Dashboard'
+    # Not activated until the owner binds this role's App ID: the job is skipped (neutral),
+    # not red. Once bound, a missing key fails closed in the identity step below.
+    if: github.repository == 'gregoryharper84-ship-it/WOW-Dashboard' && vars.WOW_QA_APP_ID != ''
     environment: wow-qa
     runs-on: ubuntu-latest
     timeout-minutes: 15

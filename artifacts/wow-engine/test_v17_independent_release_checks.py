@@ -487,3 +487,9 @@ def test_each_app_secret_is_isolated_by_main_only_environment():
         assert "secrets." + secret in source
         other_secret = "WOW_RELEASE_APP_PRIVATE_KEY" if environment == "wow-qa" else "WOW_QA_APP_PRIVATE_KEY"
         assert "secrets." + other_secret not in source
+
+
+@pytest.mark.parametrize("wf, var", [(QA_WF, "WOW_QA_APP_ID"), (REL_WF, "WOW_RELEASE_APP_ID")])
+def test_unactivated_role_is_skipped_not_red(wf, var):
+    job_if = re.search(r"^    if: (.+)$", wf.read_text(), re.M).group(1)
+    assert f"vars.{var} != ''" in job_if and "github.repository ==" in job_if
