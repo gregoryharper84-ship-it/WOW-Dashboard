@@ -7,6 +7,8 @@ on:
       - "artifacts/wow-engine/v17/closing_line_grading.py"
       - "artifacts/wow-engine/tests/test_v17_closing_line_grading.py"
       - "artifacts/wow-engine/v17/espn_market_history.py"
+      - "artifacts/wow-engine/v17/rundown_market_history.py"
+      - "artifacts/wow-engine/tests/test_v17_rundown_market_history.py"
   workflow_dispatch:
 
 permissions:
@@ -40,3 +42,4 @@ jobs:
           python -m pytest -q
           tests/test_v17_closing_line_grading.py
           tests/test_v17_espn_market_history.py
+          tests/test_v17_rundown_market_history.py
