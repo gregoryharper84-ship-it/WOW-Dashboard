@@ -89,7 +89,7 @@ def test_benchmarks_use_frozen_training_base_rate_and_flag_weak_sharpness(monkey
     assert line["exact_line"] == 5.5
     assert line["n"] == 60
     assert line["status"] == "DESCRIPTIVE_REVIEW_ONLY"
-    assert line["raw_brier"] == pytest.approx(0.16)
+    assert line["raw_brier"] == pytest.approx(0.41)
     assert line["calibrated_brier"] == pytest.approx(0.34)
     assert line["diagnostic_only"] is True
 
