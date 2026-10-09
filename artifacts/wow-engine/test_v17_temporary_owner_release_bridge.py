@@ -17,14 +17,14 @@ def test_temporary_owner_bridge_is_manual_exact_sha_merge_only():
     assert "production_acceptance=false" in text
 
 
-def test_temporary_owner_bridge_preserves_independent_review_and_class_c_hold():
+def test_temporary_owner_bridge_preserves_independent_review_class_c_hold_and_trust_root_denial():
     text = WORKFLOW.read_text(encoding="utf-8")
     assert "wow-claude-agent" in text
     assert 'permission_profile: ":read-only"' in text
     assert '"enum":["A","B","C"]' in text
     assert "OWNER_BRIDGE_CLASS_C_DENIED" in text
     assert "OWNER_BRIDGE_INDEPENDENT_QA_HOLD" in text
-    assert "OWNER_BRIDGE_TRUST_ROOT_EXPLICIT_INTENT_REQUIRED" in text
+    assert "OWNER_BRIDGE_TRUST_ROOT_CHANGE_DENIED" in text
 
 
 def test_temporary_owner_bridge_requires_all_exact_head_ci_and_v17_invariants():
