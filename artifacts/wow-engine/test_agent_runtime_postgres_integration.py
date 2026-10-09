@@ -209,3 +209,137 @@ def test_durable_api_to_worker_to_terminal_reconciliation(monkeypatch):
     with psycopg.connect(_pg_dsn()) as conn, conn.cursor() as cur:
         cur.execute("select count(*) from public.wow_agent_terminal_decisions where run_id = %s", (run_id,))
         assert cur.fetchone()[0] == 1
+
+
+# ---------------------------------------------------------------------------
+# Append-only engineering attempt receipts (Charter §8)
+# migrations/20261009_v17_engineering_attempt_receipts.sql, executed against
+# the same real Postgres 16 service. Lives in this file so it runs in the
+# existing integration job without modifying the protected CI trust root.
+# ---------------------------------------------------------------------------
+import uuid  # noqa: E402
+
+RECEIPTS_MIGRATION = Path(__file__).parent / "migrations" / "20261009_v17_engineering_attempt_receipts.sql"
+RECEIPTS_TABLE = "public.wow_engineering_attempt_receipts"
+SHA_A = "a" * 40
+SHA_B = "b" * 40
+
+
+def _receipts_conn():
+    return psycopg.connect(_pg_dsn(), autocommit=True)
+
+
+@pytest.fixture(scope="module")
+def receipts_schema():
+    with _receipts_conn() as conn, conn.cursor() as cur:
+        for role in ("anon", "authenticated", "service_role"):
+            cur.execute(
+                f"do $$ begin if not exists (select 1 from pg_roles where rolname='{role}') "
+                f"then create role {role} nologin; end if; end $$;"
+            )
+        cur.execute("alter role service_role bypassrls")
+        # Pre-existing table whose excess client grants this migration revokes.
+        cur.execute("create table if not exists public.wow_engineering_backlog (ticket_id text)")
+        cur.execute("grant all on public.wow_engineering_backlog to anon, authenticated, service_role")
+        sql = RECEIPTS_MIGRATION.read_text()
+        cur.execute(sql)
+        cur.execute(sql)  # idempotent re-apply
+
+
+def _receipt_insert(cur, **overrides):
+    row = {
+        "incident_id": f"INC-{uuid.uuid4().hex[:8]}",
+        "provider": "claude",
+        "role": "implementer",
+        "worker_run_id": "run-1",
+        "disposition": "IN_PROGRESS",
+    }
+    row.update(overrides)
+    cols = ", ".join(row)
+    params = ", ".join(["%s"] * len(row))
+    cur.execute(f"insert into {RECEIPTS_TABLE} ({cols}) values ({params}) returning receipt_id", list(row.values()))
+    return cur.fetchone()[0]
+
+
+def _receipt_seed_row() -> uuid.UUID:
+    with _receipts_conn() as conn, conn.cursor() as cur:
+        cur.execute("set role service_role")
+        return _receipt_insert(cur)
+
+
+def test_receipts_service_role_can_insert_and_read(receipts_schema):
+    rid = _receipt_seed_row()
+    with _receipts_conn() as conn, conn.cursor() as cur:
+        cur.execute("set role service_role")
+        cur.execute(f"select can_execute from {RECEIPTS_TABLE} where receipt_id=%s", (rid,))
+        assert cur.fetchone() == (False,)
+
+
+@pytest.mark.parametrize("role", [None, "service_role"])
+@pytest.mark.parametrize("stmt", ["update {t} set next_action='mutated' where receipt_id=%s",
+                                  "delete from {t} where receipt_id=%s"])
+def test_receipts_existing_rows_are_immutable_for_every_role(receipts_schema, role, stmt):
+    rid = _receipt_seed_row()
+    with _receipts_conn() as conn, conn.cursor() as cur:
+        if role:
+            cur.execute(f"set role {role}")
+        with pytest.raises(psycopg.Error) as exc:
+            cur.execute(stmt.format(t=RECEIPTS_TABLE), (rid,))
+        # service_role lacks the grant; owner/superuser hits the trigger.
+        assert ("WOW_ENGINEERING_ATTEMPT_RECEIPT_APPEND_ONLY" in str(exc.value)
+                or "permission denied" in str(exc.value))
+    with _receipts_conn() as conn, conn.cursor() as cur:
+        cur.execute(f"select next_action from {RECEIPTS_TABLE} where receipt_id=%s", (rid,))
+        assert cur.fetchone() == (None,)
+
+
+def test_receipts_truncate_fails_closed_even_for_owner(receipts_schema):
+    _receipt_seed_row()
+    with _receipts_conn() as conn, conn.cursor() as cur:
+        with pytest.raises(psycopg.Error, match="WOW_ENGINEERING_ATTEMPT_RECEIPT_APPEND_ONLY"):
+            cur.execute(f"truncate {RECEIPTS_TABLE}")
+
+
+@pytest.mark.parametrize("role", ["anon", "authenticated"])
+def test_receipts_client_roles_have_no_access(receipts_schema, role):
+    with _receipts_conn() as conn, conn.cursor() as cur:
+        cur.execute(f"set role {role}")
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            cur.execute(f"select 1 from {RECEIPTS_TABLE}")
+
+
+@pytest.mark.parametrize("overrides,constraint", [
+    ({"can_execute": True}, "can_execute"),
+    ({"disposition": "MODEL_UNAVAILABLE"}, "disposition"),
+    ({"head_sha": "abc"}, "head_sha"),
+    ({"disposition": "BLOCKED_WITH_EXACT_REASON", "typed_blocker": "POLICY_DENIAL"}, "blocked_is_typed"),
+    # Regression: a NULL qa_decision must not satisfy the verified-evidence check.
+    ({"disposition": "FIXED_AND_VERIFIED", "deployed_sha": SHA_A}, "verified_has_evidence"),
+    ({"disposition": "FIXED_AND_VERIFIED", "deployed_sha": SHA_A, "qa_decision": "HOLD"}, "verified_has_evidence"),
+    ({"disposition": "FIXED_AND_VERIFIED", "qa_decision": "PASS"}, "verified_has_evidence"),
+    ({"disposition": "PR_CREATED", "pr_number": 5}, "pr_has_identity"),
+])
+def test_receipts_invalid_receipts_rejected(receipts_schema, overrides, constraint):
+    with _receipts_conn() as conn, conn.cursor() as cur:
+        cur.execute("set role service_role")
+        with pytest.raises(psycopg.errors.CheckViolation, match=constraint):
+            _receipt_insert(cur, **overrides)
+
+
+def test_receipts_valid_terminal_receipts_and_supersession(receipts_schema):
+    prior = _receipt_seed_row()
+    with _receipts_conn() as conn, conn.cursor() as cur:
+        cur.execute("set role service_role")
+        _receipt_insert(cur, disposition="PR_CREATED", pr_number=7, head_sha=SHA_B, supersedes_receipt_id=prior)
+        _receipt_insert(cur, disposition="FIXED_AND_VERIFIED", deployed_sha=SHA_A, qa_decision="PASS")
+        _receipt_insert(cur, disposition="BLOCKED_WITH_EXACT_REASON", typed_blocker="POLICY_DENIAL",
+                blocker_owner="repository_owner", revisit_trigger="owner grants release identity")
+
+
+def test_receipts_backlog_client_grants_revoked(receipts_schema):
+    with _receipts_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "select count(*) from information_schema.role_table_grants "
+            "where table_name='wow_engineering_backlog' and grantee in ('anon','authenticated')"
+        )
+        assert cur.fetchone() == (0,)
