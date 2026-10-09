@@ -155,10 +155,12 @@ def _actual_rows_in(request: Any, headers: Any) -> int | None:
     """Read only request-local metadata set by the validated scoring handler."""
     state = getattr(request, "state", None)
     ctx = getattr(state, "wow_interactive_latency_context", None)
-    if isinstance(ctx, dict):
+    if isinstance(ctx, dict) and ctx.get("row_count_annotated") is True:
         actual = ctx.get("row_count_exact")
         if isinstance(actual, int) and not isinstance(actual, bool) and 0 <= actual <= 10_000:
             return actual
+        # Malformed handler metadata is unknown, not caller-header truth.
+        return None
     # Legacy calls without handler annotations may carry this optional count.
     return _rows_in(headers)
 
