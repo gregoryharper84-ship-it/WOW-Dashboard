@@ -286,9 +286,23 @@ def try_acquire_heavy_job(operation: str) -> HeavyJobPermit | None:
     if not acquired:
         return None
 
-    snapshot = _reclaim_and_resample_under_pressure(
-        operation, admission_snapshot(operation)
-    )
+    try:
+        snapshot = _reclaim_and_resample_under_pressure(
+            operation, admission_snapshot(operation)
+        )
+    except Exception as exc:
+        # A failed cgroup/RSS/reclamation measurement must never strand the
+        # heavyweight lock or accidentally allow unmeasured scoring.
+        _HEAVY_JOB_LOCK.release()
+        raise HeavyJobDeferred(
+            code="MEMORY_ADMISSION_MEASUREMENT_FAILED",
+            operation=operation,
+            detail={
+                "reason": "MEMORY_ADMISSION_MEASUREMENT_FAILED",
+                "error_type": type(exc).__name__,
+                "retry_after_seconds": DEFAULT_PRESSURE_RETRY_SECONDS,
+            },
+        ) from exc
     if snapshot["under_pressure"]:
         _HEAVY_JOB_LOCK.release()
         _raise_memory_pressure(operation, snapshot)
@@ -329,9 +343,23 @@ def acquire_heavy_job(operation: str, *, wait_seconds: float | None = None) -> H
             },
         )
 
-    snapshot = _reclaim_and_resample_under_pressure(
-        operation, admission_snapshot(operation)
-    )
+    try:
+        snapshot = _reclaim_and_resample_under_pressure(
+            operation, admission_snapshot(operation)
+        )
+    except Exception as exc:
+        # A failed cgroup/RSS/reclamation measurement must never strand the
+        # heavyweight lock or accidentally allow unmeasured scoring.
+        _HEAVY_JOB_LOCK.release()
+        raise HeavyJobDeferred(
+            code="MEMORY_ADMISSION_MEASUREMENT_FAILED",
+            operation=operation,
+            detail={
+                "reason": "MEMORY_ADMISSION_MEASUREMENT_FAILED",
+                "error_type": type(exc).__name__,
+                "retry_after_seconds": DEFAULT_PRESSURE_RETRY_SECONDS,
+            },
+        ) from exc
     if snapshot["under_pressure"]:
         _HEAVY_JOB_LOCK.release()
         _raise_memory_pressure(operation, snapshot)
