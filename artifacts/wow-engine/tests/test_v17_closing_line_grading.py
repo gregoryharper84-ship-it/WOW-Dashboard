@@ -285,3 +285,8 @@ def test_one_sided_book_at_pick_time_is_skipped():
     rows = [_cur("A Team", -120, "2026-10-05T14:00:00Z")] + _pair("e1", "A Team", -150, "B Team", 130)
     row = _grade(close_rows=rows, predicted_at="2026-10-05T15:00:00Z")
     assert row["pick_market_probability"] is None
+
+
+@pytest.mark.parametrize("raw, full", [("PIT", "Pittsburgh Steelers"), ("SF", "San Francisco 49ers"), ("Buffalo Bills", "Buffalo Bills"), ("", "")])
+def test_nfl_abbreviated_historic_grades_expand_for_matching(raw, full):
+    assert g._nfl_full_name(raw) == full

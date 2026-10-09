@@ -388,6 +388,17 @@ def mlb_settled_selections(client: Any, *, since: datetime) -> list[dict[str, An
     return selections
 
 
+def _nfl_full_name(value: Any) -> str:
+    raw = " ".join(str(value or "").strip().split())
+    try:
+        from v17.nfl_team_event_specialist import NFL_TEAM_NAME_TO_ABBREVIATION
+    except Exception:  # noqa: BLE001 - fall back to the stored value
+        return raw
+    inverse = {code: name for name, code in NFL_TEAM_NAME_TO_ABBREVIATION.items()}
+    name = inverse.get(raw.upper())
+    return " ".join(w[:1].upper() + w[1:] for w in name.split()) if name else raw
+
+
 def nfl_settled_selections(client: Any, *, since: datetime) -> list[dict[str, Any]]:
     rows = _rows(
         client.table("wow_nfl_forward_shadow_grades")
@@ -410,7 +421,9 @@ def nfl_settled_selections(client: Any, *, since: datetime) -> list[dict[str, An
             "prediction_id": str(row.get("grade_id")),
             "sport": "NFL",
             "official_event_id": row.get("official_event_id"),
-            "selected": row.get("selected_participant") or "",
+            # Historic grades may carry abbreviations ("PIT"); grades are
+            # immutable, so expand at read time for name matching.
+            "selected": _nfl_full_name(row.get("selected_participant")),
             "opponent": None,
             "event_start": row.get("event_start_time_utc"),
             "predicted_at": row.get("prediction_created_at"),
