@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from v17.p0_parallel_dispatch import select_parallel
 
 
@@ -74,3 +76,75 @@ def test_missing_explicit_conflict_metadata_fails_closed():
     ])
     assert result["selected"] == []
     assert result["skipped"][0]["reason"] == "MISSING_EXPLICIT_LEASE_OR_CONFLICT_METADATA"
+
+
+def test_related_existing_open_pr_is_reviewed_instead_of_dispatched_twice():
+    records = [
+        row(823, "A", "P0_ACQUISITION", 1, ["ACQUISITION"]),
+        row(1407, "A", "P0_ACQUISITION", 2, ["INPLAY_ACTION"]),
+        row(1496, "B", "P0_MLB_SCORING", 3, ["MLB_SCORER"]),
+        row(1388, "C", "P0_RUNTIME", 4, ["MEMORY_STABILITY"]),
+    ]
+    result = select_parallel(records, open_prs=[
+        {"number": 1301, "title": "ESPN fallback", "body": "Incident: #823"},
+        {"number": 1507, "title": "numeric evidence", "body": "Fixes #1496"},
+    ])
+    assert [x["incident_id"] for x in result["selected"]] == ["1407", "1388"]
+    skipped = {x["incident_id"]: x["reason"] for x in result["skipped"]}
+    assert skipped["823"] == "EXISTING_OPEN_PR_REQUIRES_REVIEW"
+    assert skipped["1496"] == "EXISTING_OPEN_PR_REQUIRES_REVIEW"
+
+
+def test_active_verified_runtime_worker_allows_disjoint_acquisition_and_scoring():
+    records = [
+        row(823, "A", "P0_ACQUISITION", 1, ["CANONICAL_EVENT_IDENTITY"]),
+        row(1496, "B", "P0_MLB_SCORING", 2, ["MLB_SCORER_INPUTS"]),
+        row(1388, "C", "P0_RUNTIME", 3, ["MEMORY_STABILITY"]),
+    ]
+    active = [{
+        "id": 99,
+        "path": ".github/workflows/wow-v17-claude-engineering-worker.yml@refs/heads/main",
+        "display_title": "wow-v17-claude-engineering-worker lease=P0_RUNTIME incident=1388",
+        "head_branch": "main",
+    }]
+    result = select_parallel(records, active_runs=active)
+    assert [x["incident_id"] for x in result["selected"]] == ["823", "1496"]
+    assert result["skipped"][0]["reason"] == "ACTIVE_WORKER_LEASE_CONFLICT"
+
+
+def test_active_cross_stream_conflict_key_blocks_second_writer():
+    records = [
+        row(823, "A", "P0_ACQUISITION", 1, ["CANONICAL_EVENT_IDENTITY"]),
+        row(1496, "B", "P0_MLB_SCORING", 2, ["CANONICAL_EVENT_IDENTITY"]),
+    ]
+    active = [{
+        "id": 101,
+        "path": ".github/workflows/wow-v17-chatgpt-engineering-worker.yml",
+        "display_title": "wow-v17-chatgpt-engineering-worker lease=P0_ACQUISITION incident=823",
+        "head_branch": "main",
+    }]
+    result = select_parallel(records, active_runs=active)
+    assert result["selected"] == []
+    assert result["skipped"][1]["reason"] == "ACTIVE_WORKER_CONFLICT_KEYS_OVERLAP"
+
+
+@pytest.mark.parametrize("title,branch", [
+    ("wow-v17-claude-engineering-worker lease=GLOBAL incident=AUTO", "main"),
+    ("wow-v17-claude-engineering-worker-lookalike lease=P0_RUNTIME incident=1388", "main"),
+    ("wow-v17-claude-engineering-worker lease=P0_RUNTIME incident=1388", "other-branch"),
+])
+def test_unknown_active_worker_identity_fails_closed(title, branch):
+    runs = [{
+        "id": 100,
+        "path": ".github/workflows/wow-v17-claude-engineering-worker.yml",
+        "display_title": title,
+        "head_branch": branch,
+    }]
+    with pytest.raises(ValueError, match="ACTIVE_WORKER_"):
+        select_parallel([row(1388, "C", "P0_RUNTIME", 1, ["MEMORY"])], active_runs=runs)
+
+
+def test_invalid_existing_pr_inventory_fails_closed():
+    with pytest.raises(ValueError, match="OPEN_PR_INVENTORY_INVALID"):
+        select_parallel([row(823, "A", "P0_ACQUISITION", 1, ["ACQUISITION"])],
+                        open_prs=[{"title": "orphan without PR number", "body": "#823"}])
