@@ -987,9 +987,21 @@ jobs:
           WORKER_ID: ${{ steps.safety.outputs.worker_id }}
           LEASE_EXPIRES_AT: ${{ steps.safety.outputs.expires_at }}
           WORKER_MODE: ${{ steps.safety.outputs.worker_mode }}
+          JOB_STATUS: ${{ job.status }}
           LEASE_GROUP: ${{ steps.dispatch.outputs.lease_group }}
         run: |
           set -euo pipefail
+          # A run that did not succeed must not leave a RUNNING heartbeat or hold
+          # its lease until expiry (#1021). Report SAFE_HOLD and release the lease
+          # at the moment the run ended; the original claim stays in the receipt.
+          JOB_STATUS="${JOB_STATUS:-unknown}"
+          LEASE_CLAIMED_EXPIRES_AT="${LEASE_EXPIRES_AT:-UNKNOWN}"
+          LEASE_STATE=HELD
+          if [ "$JOB_STATUS" != "success" ]; then
+            WORKER_MODE=SAFE_HOLD
+            LEASE_EXPIRES_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            LEASE_STATE=RELEASED_ON_FAILURE
+          fi
           # A REPAIR whose delivery step did not report is itself a typed failure, never blank.
           if [ "${LEAD_ACTION:-}" = "REPAIR" ] && [ -z "${DELIVERY_CODE:-}" ]; then
             DELIVERY=FAILED
@@ -1014,6 +1026,9 @@ jobs:
             --arg worker_id "${WORKER_ID:-UNKNOWN}" \
             --arg lease_expires_at "${LEASE_EXPIRES_AT:-UNKNOWN}" \
             --arg worker_mode "${WORKER_MODE:-SAFE_HOLD}" \
+            --arg job_status "$JOB_STATUS" \
+            --arg lease_state "$LEASE_STATE" \
+            --arg lease_claimed_expires_at "$LEASE_CLAIMED_EXPIRES_AT" \
             --arg lease_group "${LEASE_GROUP:-GLOBAL}" \
             '{
               utc: $utc,
@@ -1032,6 +1047,9 @@ jobs:
               worker_id: $worker_id,
               lease_expires_at: $lease_expires_at,
               worker_mode: $worker_mode,
+              job_status: $job_status,
+              lease_state: $lease_state,
+              lease_claimed_expires_at: $lease_claimed_expires_at,
               lease_group: $lease_group,
               retry_dlq_state: "NONE",
               safe_hold_state: $worker_mode,
@@ -1054,6 +1072,8 @@ jobs:
           - worker_id: ${WORKER_ID:-UNKNOWN}
           - lease_expires_at: ${LEASE_EXPIRES_AT:-UNKNOWN}
           - worker_mode: ${WORKER_MODE:-SAFE_HOLD}
+          - job_status: $JOB_STATUS
+          - lease_state: $LEASE_STATE
           - restoration_action: ${LEAD_ACTION:-NOT_RUN}
           - restoration_delivery: ${DELIVERY:-NOT_APPLICABLE}
           - restoration_delivery_code: ${DELIVERY_CODE:-NONE}
