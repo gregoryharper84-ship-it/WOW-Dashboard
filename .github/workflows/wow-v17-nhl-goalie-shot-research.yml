@@ -42,6 +42,9 @@ jobs:
           test_v17_binary_candidate_lifecycle.py
   historical-replay:
     name: Official NHL historical paired replay (advisory only)
+    # Avoid expensive duplicate multi-season retrieval on child/fix PRs.
+    # Primary research PR (base main) owns the historical acquisition receipt.
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.base.ref == 'main'
     needs: test
     runs-on: ubuntu-latest
     timeout-minutes: 180

@@ -220,12 +220,22 @@ def augment_rows(
                 "pp_goals_for_l10_delta": _pp_rate(histories[home], 2) - _pp_rate(histories[away], 2),
                 "pp_goals_against_l10_delta": _pp_rate(histories[home], 3) - _pp_rate(histories[away], 3),
             }
-            manifest = _hash({"v1_manifest": prior.source_manifest_sha256, "version": SPEC_VERSION,
+            # V1's research manifest includes the current completed schedule
+            # payload SHA (postgame outcome provenance), so it MUST NOT enter
+            # this pregame feature manifest. Hash only the chronological V1
+            # feature vector and its pre-start as-of identity instead.
+            manifest = _hash({"v1_features": _hash(prior.features),
+                              "v1_feature_as_of": prior.feature_as_of,
+                              "v1_event_id": prior.event_id,
+                              "version": SPEC_VERSION,
                               "home_prior": list(histories[home]), "away_prior": list(histories[away]),
                               "home_starts": goalie_starts[home], "away_starts": goalie_starts[away],
                               "goalie_status": "PROJECTED", "goalie_projection_policy": "LAST_START_OR_B2B_ALTERNATE_V1",
                               "home_goalie_counts": goalie_stats[home], "away_goalie_counts": goalie_stats[away],
-                              "box_hash": b.source_hash, "reconstruction": "prior_settled_only"})
+                              # Never include the CURRENT game's settled boxscore
+                              # in any pregame feature-row manifest. Target/source
+                              # grade evidence remains separate from model inputs.
+                              "reconstruction": "prior_settled_only"})
             created[game.game_id] = BinaryTrainingRow(
                 event_id=prior.event_id, event_start_time=prior.event_start_time,
                 feature_as_of=prior.feature_as_of, positive_outcome=prior.positive_outcome,
@@ -269,6 +279,28 @@ def artifact_predict(candidate: BinaryCandidate, rows: Sequence[BinaryTrainingRo
     return _map_calibrator(raw, candidate.calibrator_payload)
 
 
+def research_gate_reasons(
+    brier_ci: Sequence[float], log_loss_ci: Sequence[float],
+    v1_ece: float, v2_ece: float,
+) -> list[str]:
+    """Fail-closed, advisory-only research gate. NEVER authorizes model release."""
+    metrics = [*brier_ci, *log_loss_ci, v1_ece, v2_ece]
+    if len(brier_ci) != 2 or len(log_loss_ci) != 2:
+        return ["RESEARCH_VALIDATION_EVIDENCE_INVALID"]
+    if any(not math.isfinite(float(value)) for value in metrics):
+        return ["RESEARCH_VALIDATION_EVIDENCE_INVALID"]
+    if brier_ci[0] > brier_ci[1] or log_loss_ci[0] > log_loss_ci[1]:
+        return ["RESEARCH_VALIDATION_EVIDENCE_INVALID"]
+    hold_reasons = []
+    if brier_ci[0] <= 0:
+        hold_reasons.append("BRIER_IMPROVEMENT_NOT_PROVEN")
+    if log_loss_ci[0] <= 0:
+        hold_reasons.append("LOG_LOSS_IMPROVEMENT_NOT_PROVEN")
+    if v2_ece > v1_ece:
+        hold_reasons.append("CALIBRATION_ERROR_WORSENED")
+    return hold_reasons
+
+
 def replay(games: Sequence[NHLGame], boxes: Mapping[str, Box], *, bootstrap: int = BOOTSTRAPS) -> dict[str, Any]:
     v1_rows, _ = reconstruct_training_rows(games)
     common, enriched = augment_rows(games, boxes, v1_rows)
@@ -282,17 +314,26 @@ def replay(games: Sequence[NHLGame], boxes: Mapping[str, Box], *, bootstrap: int
     p1, p2 = artifact_predict(v1, common[start:]), artifact_predict(v2, enriched[start:])
     err1, err2 = (p1 - y) ** 2, (p2 - y) ** 2
     diff = err1 - err2
+    # Pair both metrics on identical untouched historical outcomes.
+    # No fitting, test labels, or market prices influence bootstrap sampling.
+    clipped1, clipped2 = np.clip(p1, 1e-6, 1.0 - 1e-6), np.clip(p2, 1e-6, 1.0 - 1e-6)
+    log1 = -(y * np.log(clipped1) + (1 - y) * np.log1p(-clipped1))
+    log2 = -(y * np.log(clipped2) + (1 - y) * np.log1p(-clipped2))
+    ll_diff = log1 - log2
     if bootstrap < 100:
         raise ValueError("bootstrap must be at least 100")
     rng = np.random.default_rng(20261009)
     indices = rng.integers(0, len(y), size=(bootstrap, len(y)))
     means = np.mean(diff[indices], axis=1)
     ci = np.quantile(means, [0.025, 0.975])
+    ll_ci = np.quantile(np.mean(ll_diff[indices], axis=1), [0.025, 0.975])
     score = lambda p: {"brier": float(brier_score_loss(y, p)),
                        "log_loss": float(log_loss(y, p, labels=[0, 1])),
                        "ece": float(_ece(p, y))}
     s1, s2 = score(p1), score(p2)
     delta_ll = s1["log_loss"] - s2["log_loss"]
+    hold_reasons = research_gate_reasons(ci, ll_ci, s1["ece"], s2["ece"])
+    gate_pass = not hold_reasons
     return {
         "status": "ADVISORY_RESEARCH_ONLY", "spec_version": SPEC_VERSION,
         "source": "NHL_PUBLIC_WEB_API", "goalie_status": "PROJECTED", "boxscores": len(boxes),
@@ -304,8 +345,13 @@ def replay(games: Sequence[NHLGame], boxes: Mapping[str, Box], *, bootstrap: int
         "delta_brier_v1_minus_v2": float(np.mean(diff)),
         "delta_log_loss_v1_minus_v2": float(delta_ll),
         "delta_brier_bootstrap_95_ci": [float(ci[0]), float(ci[1])],
-        "research_gate_pass": bool(ci[0] > 0 and delta_ll > 0 and s2["ece"] <= s1["ece"]),
-        "decision": "FORWARD_SHADOW_AND_GOVERNED_REVIEW_REQUIRED",
+        "delta_log_loss_bootstrap_95_ci": [float(ll_ci[0]), float(ll_ci[1])],
+        "research_gate_pass": gate_pass,
+        "hold_reasons": hold_reasons,
+        "decision": (
+            "FORWARD_SHADOW_AND_GOVERNED_REVIEW_REQUIRED"
+            if gate_pass else "HOLD_CHALLENGER_INSUFFICIENT_VALIDATION"
+        ),
         "automatic_promotion_allowed": False,
         "probability_publishable": False, "can_execute": False,
     }

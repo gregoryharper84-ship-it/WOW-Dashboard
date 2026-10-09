@@ -1,5 +1,6 @@
 """Negative-path and chronology checks for the isolated NHL challenger."""
 from datetime import datetime, timedelta, timezone
+from dataclasses import replace
 from hashlib import sha256
 
 import numpy as np
@@ -8,7 +9,7 @@ import pytest
 from nhl_candidate_pipeline import NHLGame, NHLCandidateError, reconstruct_training_rows
 from v17.nhl_goalie_shot_challenger import (
     ADDED_FEATURES, Box, _goalie_save_pct, _projected_goalie, augment_rows,
-    parse_box, replay,
+    parse_box, replay, research_gate_reasons,
 )
 
 HASH = "a" * 64
@@ -125,7 +126,26 @@ def test_prior_game_invariance_same_start_and_aligned_replay():
     _, changed_rows = augment_rows(games, changed, v1)
     match = next(r for r in changed_rows if r.event_id == modified.game_id)
     assert dict(match.features) == dict(original.features)  # no same-event result use
-    assert match.source_manifest_sha256 != original.source_manifest_sha256
+    assert match.source_manifest_sha256 == original.source_manifest_sha256
+    # Even changes to THIS game's final scores or fetched official schedule
+    # bytes (embedded in V1's source manifest) may not change the PRE-game
+    # challenger features or manifest. Outcome labels stay separately graded.
+    variant_games = list(games)
+    variant_games[14] = replace(
+        variant_games[14],
+        home_score=9, away_score=0,
+        source_payload_sha256="b" * 64,
+    )
+    variant_v1, _ = reconstruct_training_rows(variant_games)
+    original_v1 = next(r for r in v1 if r.event_id == modified.game_id)
+    altered_v1 = next(r for r in variant_v1 if r.event_id == modified.game_id)
+    assert original_v1.source_manifest_sha256 != altered_v1.source_manifest_sha256
+    _, variant_rows = augment_rows(variant_games, boxes, variant_v1)
+    variant_row = next(r for r in variant_rows if r.event_id == modified.game_id)
+    assert dict(variant_row.features) == dict(original.features)
+    assert variant_row.source_manifest_sha256 == original.source_manifest_sha256
+    # Current game's final boxscore must not influence any pregame feature
+    # value OR source manifest. Its label remains postgame-only evidence.
     # Adjacent later row may change after the final boxscore enters prior history.
     later = next(r for r in augmented if r.event_id == games[16].game_id)
     after = next(r for r in changed_rows if r.event_id == games[16].game_id)
@@ -139,6 +159,23 @@ def test_prior_game_invariance_same_start_and_aligned_replay():
     assert result["status"] == "ADVISORY_RESEARCH_ONLY"
     assert result["test_n"] >= 50
     assert len(result["delta_brier_bootstrap_95_ci"]) == 2
+    assert len(result["delta_log_loss_bootstrap_95_ci"]) == 2
+    assert result["delta_log_loss_bootstrap_95_ci"][0] <= result["delta_log_loss_bootstrap_95_ci"][1]
+    if result["research_gate_pass"]:
+        assert result["decision"] == "FORWARD_SHADOW_AND_GOVERNED_REVIEW_REQUIRED"
+        assert result["hold_reasons"] == []
+        assert result["delta_brier_bootstrap_95_ci"][0] > 0
+        assert result["delta_log_loss_bootstrap_95_ci"][0] > 0
+        assert result["v2"]["ece"] <= result["v1"]["ece"]
+    else:
+        assert result["decision"] == "HOLD_CHALLENGER_INSUFFICIENT_VALIDATION"
+        assert result["hold_reasons"]
+        for reason in result["hold_reasons"]:
+            assert reason in {
+                "BRIER_IMPROVEMENT_NOT_PROVEN",
+                "LOG_LOSS_IMPROVEMENT_NOT_PROVEN",
+                "CALIBRATION_ERROR_WORSENED",
+            }
     assert result["automatic_promotion_allowed"] is False
     assert result["probability_publishable"] is False
     assert result["can_execute"] is False
@@ -161,3 +198,21 @@ def test_missing_source_is_explicitly_intersected_and_extra_id_fails():
     with pytest.raises(NHLCandidateError) as exc:
         augment_rows(games, boxes, v1)
     assert exc.value.code == "NHL_BOX_GAME_RECONCILIATION_FAILED"
+
+
+@pytest.mark.parametrize("brier_ci,log_ci,ece_v1,ece_v2,expected", [
+    ((-0.002, 0.004), (0.001, 0.009), 0.03, 0.02, ["BRIER_IMPROVEMENT_NOT_PROVEN"]),
+    ((0.001, 0.004), (-0.001, 0.009), 0.03, 0.02, ["LOG_LOSS_IMPROVEMENT_NOT_PROVEN"]),
+    ((0.001, 0.004), (0.001, 0.009), 0.03, 0.04, ["CALIBRATION_ERROR_WORSENED"]),
+    ((-0.002, 0.004), (-0.001, 0.009), 0.03, 0.04, [
+        "BRIER_IMPROVEMENT_NOT_PROVEN", "LOG_LOSS_IMPROVEMENT_NOT_PROVEN",
+        "CALIBRATION_ERROR_WORSENED",
+    ]),
+    ((0.001, 0.004), (0.001, 0.009), 0.03, 0.02, []),
+    ((float("nan"), 0.004), (0.001, 0.009), 0.03, 0.02, ["RESEARCH_VALIDATION_EVIDENCE_INVALID"]),
+    ((0.005, 0.004), (0.001, 0.009), 0.03, 0.02, ["RESEARCH_VALIDATION_EVIDENCE_INVALID"]),
+])
+def test_research_gate_never_accepts_unproven_or_malformed_metrics(
+    brier_ci, log_ci, ece_v1, ece_v2, expected,
+):
+    assert research_gate_reasons(brier_ci, log_ci, ece_v1, ece_v2) == expected
