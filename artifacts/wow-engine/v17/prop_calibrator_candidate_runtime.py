@@ -471,14 +471,20 @@ def build_calibrator_candidate_packet(
                     sharpness_flags.append(
                         f"CALIBRATED_WORSE_THAN_{baseline_name.upper()}_{metric_name.upper()}"
                     )
-        # Preserve every exact-line cohort count. Show diagnostic scores only
-        # for a minimally sized group; none can certify line-specific skill.
+        # Preserve exact line AND direction: selected-direction prediction
+        # receipts include rare LESS-only theses, which must not be pooled
+        # with MORE hit rates. Diagnostic scores require a minimum group n;
+        # these groups never certify line- or direction-specific skill.
         line_diagnostics: list[dict[str, Any]] = []
-        for exact_line in sorted({row.line for row in holdout}):
-            positions = [i for i, row in enumerate(holdout) if row.line == exact_line]
+        for exact_line, direction in sorted({(row.line, row.direction) for row in holdout}):
+            positions = [
+                i for i, row in enumerate(holdout)
+                if row.line == exact_line and row.direction == direction
+            ]
             line_n = len(positions)
             diagnostic: dict[str, Any] = {
                 "exact_line": exact_line,
+                "direction": direction,
                 "n": line_n,
                 "diagnostic_only": True,
                 "status": "DESCRIPTIVE_REVIEW_ONLY" if line_n >= MIN_LINE_DIAGNOSTIC_N else "SMALL_SAMPLE_NO_METRICS",
