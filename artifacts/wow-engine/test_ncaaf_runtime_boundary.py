@@ -326,3 +326,33 @@ def test_spread_warm_busy_never_opens_db(monkeypatch):
         api._warm_ncaaf_spread_under_heavy_slot()
     assert exc.value.code == "HEAVY_JOB_BUSY"
     assert exc.value.receipt()["can_execute"] is False
+
+
+def test_spread_warm_pressure_is_typed_and_never_builds(monkeypatch):
+    monkeypatch.setenv("WOW_NCAAF_SPREAD_WARM_STARTUP_DELAY_SECONDS", "0")
+    intervals = []
+    attempts = []
+
+    async def fake_sleep(seconds):
+        intervals.append(float(seconds))
+
+    def defer(operation):
+        attempts.append(operation)
+        raise api.memory_admission.HeavyJobDeferred(
+            code="MEMORY_PRESSURE",
+            operation=operation,
+            detail={"retry_after_seconds": 15.0},
+        )
+
+    monkeypatch.setattr(api.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(api.memory_admission, "try_acquire_heavy_job", defer)
+    monkeypatch.setattr(api, "_db_client", lambda: (_ for _ in ()).throw(AssertionError("DB never accessed")))
+    asyncio.run(api._warm_ncaaf_spread_forward_context_after_startup())
+    assert attempts == ["NCAAF_SPREAD_FORWARD_WARM"] * 3
+    assert intervals == [15.0, 30.0]
+    receipt = api.get_ncaaf_spread_forward_warm_status()
+    assert receipt["status"] == "DEFERRED"
+    assert receipt["error_code"] == "MEMORY_PRESSURE"
+    assert receipt["attempt"] == 3
+    assert receipt["probability_publishable"] is False
+    assert receipt["can_execute"] is False
