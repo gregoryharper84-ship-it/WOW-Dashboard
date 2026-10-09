@@ -10,15 +10,16 @@ letting Engineering self-approve. The bridge executes from protected main and
 requires all of:
 
 1. exact PR number and 40-character head SHA;
-2. all required exact-head deterministic CI green;
-3. independent read-only Claude QA PASS from protected-main code;
-4. QA class A or B (Class C is always denied);
-5. candidate changes under `.github/**` or `.agents/**` are denied and stay on
+2. the named canonical incident is open and referenced by the PR;
+3. all required exact-head deterministic CI green;
+4. independent read-only Claude QA PASS from protected-main code;
+5. QA class A or B (Class C is always denied);
+6. candidate changes under `.github/**` or `.agents/**` are denied and stay on
    the explicit owner-bootstrap path;
-6. owner-held environment secret `WOW_OWNER_RELEASE_APPROVAL` exactly equal to
+7. owner-held environment secret `WOW_OWNER_RELEASE_APPROVAL` exactly equal to
    `<PR_NUMBER>:<HEAD_SHA>`;
-7. the PR head must contain the current protected `main` revision;
-8. both the PR head and protected-main SHA must remain unchanged through QA and
+8. the PR head must contain the current protected `main` revision;
+9. both the PR head and protected-main SHA must remain unchanged through QA and
    immediately before merge.
 
 The secret is intentionally not readable by Engineering and is scoped to the
