@@ -231,9 +231,12 @@ async def _worker_loop(
             except memory_admission.HeavyJobDeferred as exc:
                 receipt = exc.receipt()
                 LOGGER.warning(
-                    "WOW_V17_DAILY_ASYNC_DEFERRED code=%s memory_ratio=%s retry_after_seconds=%s can_execute=false",
+                    "WOW_V17_DAILY_ASYNC_DEFERRED code=%s memory_ratio=%s cgroup_bytes=%s "
+                    "process_rss_bytes=%s retry_after_seconds=%s can_execute=false",
                     receipt.get("code"),
                     receipt.get("memory_ratio"),
+                    receipt.get("memory_current_bytes"),
+                    receipt.get("process_rss_bytes"),
                     receipt.get("retry_after_seconds"),
                 )
                 try:
