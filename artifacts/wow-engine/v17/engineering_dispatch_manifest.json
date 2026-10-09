@@ -1,7 +1,7 @@
 {
   "schema_version": "2.1",
   "source": "WOW_V17_ACTIVE_EXECUTION_BOARD",
-  "description": "Closure-focus routing metadata. GitHub issue open/closed state remains authoritative. All engineering capacity targets the highest-priority existing closure journey. Product focus is LLP all-sports moneyline/spread usability and WOW governed all-sports player/scalar props.",
+  "description": "Governed P0 RAPID closure inventory. Select at most one actionable issue per A acquisition, B scoring, C runtime domain with explicit non-overlap; existing PRs advance through review/release instead of spawning duplicates. All engineering capacity prioritizes production-usable LLP full-slate moneyline/spread and governed props. GitHub issue state remains authoritative.",
   "can_execute": false,
   "terminal_authority": "V17_TERMINAL_REDUCER",
   "restoration": [
@@ -15,21 +15,21 @@
         "MEMORY_STABILITY",
         "LLP_USER_PATH"
       ],
-      "rapid_stream": "LLP_RESTORE",
-      "lease_group": "P0_LLP_RESTORE"
+      "rapid_stream": "C",
+      "lease_group": "P0_RUNTIME"
     },
     {
-      "issue_number": 1313,
+      "issue_number": 1501,
       "severity": "P0",
       "priority_rank": 2,
       "execution_lane": "RAPID",
       "conflict_keys": [
-        "ACTION_TRANSPORT",
-        "FULL_SLATE_ACCEPTANCE",
-        "LLP_USER_PATH"
+        "INTERACTIVE_RUNTIME",
+        "LATENCY_PROFILE",
+        "MEMORY_STABILITY"
       ],
-      "rapid_stream": "LLP_RESTORE",
-      "lease_group": "P0_LLP_RESTORE"
+      "rapid_stream": "C",
+      "lease_group": "P0_RUNTIME"
     },
     {
       "issue_number": 502,
@@ -41,19 +41,60 @@
         "INTERACTIVE_RUNTIME",
         "LLP_USER_PATH"
       ],
-      "rapid_stream": "LLP_RESTORE",
-      "lease_group": "P0_LLP_RESTORE"
+      "rapid_stream": "C",
+      "lease_group": "P0_RUNTIME"
     },
     {
       "issue_number": 823,
-      "severity": "P1",
+      "severity": "P0",
       "priority_rank": 4,
-      "execution_lane": "STANDARD",
+      "execution_lane": "RAPID",
       "conflict_keys": [
         "SPORT_DISCOVERY",
-        "ACQUISITION",
-        "ALL_SPORTS_MONEYLINE"
-      ]
+        "PROVIDER_ACQUISITION",
+        "CANONICAL_EVENT_IDENTITY"
+      ],
+      "rapid_stream": "A",
+      "lease_group": "P0_ACQUISITION"
+    },
+    {
+      "issue_number": 1496,
+      "severity": "P0",
+      "priority_rank": 5,
+      "execution_lane": "RAPID",
+      "conflict_keys": [
+        "MLB_SCORER_INPUTS",
+        "NUMERIC_EVIDENCE_CONTRACT",
+        "SPORT_SPECIFIC_SCORING"
+      ],
+      "rapid_stream": "B",
+      "lease_group": "P0_MLB_SCORING"
+    },
+    {
+      "issue_number": 1407,
+      "severity": "P0",
+      "priority_rank": 6,
+      "execution_lane": "RAPID",
+      "conflict_keys": [
+        "CANONICAL_EVENT_IDENTITY",
+        "INPLAY_MONEYLINE_ACTION",
+        "ACTION_TRANSPORT"
+      ],
+      "rapid_stream": "A",
+      "lease_group": "P0_ACQUISITION"
+    },
+    {
+      "issue_number": 1313,
+      "severity": "P0",
+      "priority_rank": 7,
+      "execution_lane": "RAPID",
+      "conflict_keys": [
+        "ACTION_TRANSPORT",
+        "FULL_SLATE_ACCEPTANCE",
+        "LLP_USER_PATH"
+      ],
+      "rapid_stream": "C",
+      "lease_group": "P0_RUNTIME"
     },
     {
       "issue_number": 1309,
