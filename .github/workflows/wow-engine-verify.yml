@@ -50,7 +50,7 @@ jobs:
           --health-timeout=5s
           --health-retries=10
       postgrest:
-        image: postgrest/postgrest:v12.2.3
+        image: ghcr.io/supabase/postgrest:v12.2.3@sha256:729bf65c733b73f5b52777f0e4b853f22ed73aa67a22d38269d289779b0a8401
         env:
           PGRST_DB_URI: postgres://wow_agent_ci:wow_agent_ci@postgres:5432/wow_agent_ci
           PGRST_DB_SCHEMAS: public
@@ -121,7 +121,7 @@ jobs:
           --health-timeout=5s
           --health-retries=10
       postgrest:
-        image: postgrest/postgrest:v12.2.3
+        image: ghcr.io/supabase/postgrest:v12.2.3@sha256:729bf65c733b73f5b52777f0e4b853f22ed73aa67a22d38269d289779b0a8401
         env:
           PGRST_DB_URI: postgres://wow_agent_ci:wow_agent_ci@postgres:5432/wow_agent_ci
           PGRST_DB_SCHEMAS: public
