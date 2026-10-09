@@ -90,6 +90,7 @@ def annotate_request(
         ctx["sport"] = _label(sport)
     if row_count is not None:
         ctx["row_count"] = _bucket(row_count)
+        ctx["row_count_annotated"] = True
         # Authoritative validated handler metadata; never trust client-supplied
         # X-WOW-Rows-In as actual row count when this fact is present.
         count = _validated_count(row_count)
