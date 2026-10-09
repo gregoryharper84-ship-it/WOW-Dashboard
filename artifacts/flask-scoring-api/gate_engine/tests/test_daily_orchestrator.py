@@ -40,6 +40,7 @@ import sys
 import os
 import types
 import unittest
+import threading
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
@@ -479,27 +480,48 @@ class TestRunDailyOrchestration(unittest.TestCase):
              "terminal_bucket": "Watch", "wow_score": 40.0,
              "final_approval_blocker": None, "audit_valid": False},
         ]})
+
+        # The Flask test process can have a background startup daemon that also
+        # touches storage.daily_manifest. This regression is specifically about
+        # run_daily_orchestration(..., persist=False), so record persistence
+        # calls from the invoking test thread and ignore unrelated daemon calls.
+        persistence_calls_from_invoking_thread = []
+        invoking_thread = threading.current_thread()
+
+        def record_persistence_call(name):
+            def _record(*_args, **_kwargs):
+                if threading.current_thread() is invoking_thread:
+                    persistence_calls_from_invoking_thread.append(name)
+                return True
+            return _record
+
         with (
             patch.object(orch, "_union_props_for_sport", side_effect=self._mock_union),
             patch("jobs.wow_daily_scan.run_scan", return_value=scan_result),
-            patch("storage.daily_manifest.ensure_tables") as mock_ensure,
-            patch("storage.daily_manifest.create_run")    as mock_create,
-            patch("storage.daily_manifest.persist_discovery_checkpoint") as mock_checkpoint,
-            patch("storage.daily_manifest.begin_scoring") as mock_begin_scoring,
-            patch("storage.daily_manifest.finalize_run")  as mock_finalize,
-            patch("storage.daily_manifest.save_run_row")  as mock_save,
+            patch("storage.daily_manifest.ensure_tables",
+                  side_effect=record_persistence_call("ensure_tables")),
+            patch("storage.daily_manifest.create_run",
+                  side_effect=record_persistence_call("create_run")),
+            patch("storage.daily_manifest.persist_discovery_checkpoint",
+                  side_effect=record_persistence_call("persist_discovery_checkpoint")),
+            patch("storage.daily_manifest.begin_scoring",
+                  side_effect=record_persistence_call("begin_scoring")),
+            patch("storage.daily_manifest.finalize_run",
+                  side_effect=record_persistence_call("finalize_run")),
+            patch("storage.daily_manifest.save_run_row",
+                  side_effect=record_persistence_call("save_run_row")),
         ):
             run_daily_orchestration(
                 sports=sports, environment="test",
                 runtime_provenance=None, session_id=None,
                 persist=False,
             )
-        mock_ensure.assert_not_called()
-        mock_create.assert_not_called()
-        mock_checkpoint.assert_not_called()
-        mock_begin_scoring.assert_not_called()
-        mock_finalize.assert_not_called()
-        mock_save.assert_not_called()
+
+        self.assertEqual(
+            persistence_calls_from_invoking_thread,
+            [],
+            "persist=False must not perform manifest writes from the orchestration call",
+        )
 
     def test_degraded_status_on_failed_modules(self):
         from gate_engine.daily_orchestrator import run_daily_orchestration
