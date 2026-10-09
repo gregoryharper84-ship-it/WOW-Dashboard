@@ -528,7 +528,26 @@ async def run_history_loop(
                 "RUNDOWN_MARKET_HISTORY=FAIL error_type=%s can_execute=false",
                 type(exc).__name__,
             )
+        await asyncio.to_thread(run_closing_line_grading_cycle, db_client_fn, log)
         await asyncio.sleep(interval_seconds())
+
+
+def run_closing_line_grading_cycle(db_client_fn: Callable[[], Any], log: logging.Logger) -> dict[str, Any] | None:
+    """Grade settled predictions vs captured closes. DB-only, never fatal."""
+    from v17 import closing_line_grading as grading
+
+    try:
+        result = grading.run_closing_line_grading(db_client_fn())
+    except Exception as exc:  # noqa: BLE001 - measurement must not affect the loop
+        log.exception("CLOSING_LINE_GRADING=FAIL error_type=%s can_execute=false", type(exc).__name__)
+        return None
+    log.info(
+        "CLOSING_LINE_GRADING=%s written=%s by_sport=%s can_execute=false",
+        result.get("status"),
+        result.get("grades_written"),
+        result.get("by_sport"),
+    )
+    return result
 
 
 __all__ = [
