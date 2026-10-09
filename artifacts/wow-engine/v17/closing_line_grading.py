@@ -177,6 +177,56 @@ def match_close(
     }
 
 
+def pick_time_price(
+    *,
+    selected: str,
+    provider_event_id: str,
+    rows: Iterable[Mapping[str, Any]],
+    at: datetime,
+) -> dict[str, Any] | None:
+    """Selected side's no-vig consensus from the latest captures at/before ``at``.
+
+    Uses CURRENT captures of the same provider event (moneyline, main line,
+    pregame). Each book needs both sides quoted at/before the pick time.
+    """
+    want = _norm(selected)
+    latest: dict[str, dict[str, tuple[datetime, Mapping[str, Any]]]] = {}
+    for row in rows:
+        if str(row.get("provider_event_id") or "") != provider_event_id:
+            continue
+        if str(row.get("snapshot_kind") or "").upper() != "CURRENT":
+            continue
+        if str(row.get("market_id") or "") != MONEYLINE_MARKET_ID or row.get("is_live") is True or row.get("is_main_line") is False:
+            continue
+        quoted = _parse_dt(row.get("price_updated_at")) or _parse_dt(row.get("fetched_at"))
+        if quoted is None or quoted > at:
+            continue
+        book = str(row.get("affiliate_id") or row.get("sportsbook") or "")
+        name = _norm(row.get("participant_name"))
+        current = latest.setdefault(book, {}).get(name)
+        if current is None or quoted > current[0]:
+            latest[book][name] = (quoted, row)
+    probabilities: list[float] = []
+    newest: datetime | None = None
+    for sides in latest.values():
+        if want not in sides or len(sides) != 2:
+            continue
+        opponent = next(value for key, value in sides.items() if key != want)
+        probability = no_vig_pair(sides[want][1].get("american_odds"), opponent[1].get("american_odds"))
+        if probability is None:
+            continue
+        probabilities.append(probability)
+        for quoted, _row in (sides[want], opponent):
+            newest = quoted if newest is None or quoted > newest else newest
+    if not probabilities:
+        return None
+    return {
+        "probability": sum(probabilities) / len(probabilities),
+        "book_count": len(probabilities),
+        "quote_at": _iso(newest) if newest else None,
+    }
+
+
 def _brier(probability: float, outcome: int) -> float:
     return (probability - outcome) ** 2
 
@@ -198,8 +248,15 @@ def grade_row(
     model_probability: Any,
     outcome: Any,
     close_rows: Iterable[Mapping[str, Any]],
+    predicted_at: Any = None,
 ) -> dict[str, Any]:
-    """Build one grade (or typed non-link) for a settled prediction."""
+    """Build one grade (or typed non-link) for a settled prediction.
+
+    ``close_rows`` may also carry CURRENT captures; they supply the price at
+    pick time (``predicted_at``) for closing-line value. Only CLOSE rows are
+    used for the close itself.
+    """
+    close_rows = list(close_rows)
     start = _parse_dt(event_start)
     p_model = _probability(model_probability)
     hit = outcome if outcome in (0, 1) and not isinstance(outcome, bool) else None
@@ -223,6 +280,16 @@ def grade_row(
         return {**base, "link_status": match["status"]}
 
     p_close = match["close_probability"]
+    picked_at = _parse_dt(predicted_at)
+    pick = (
+        pick_time_price(selected=selected, provider_event_id=match["provider_event_id"], rows=close_rows, at=picked_at)
+        if picked_at is not None and picked_at <= start
+        else None
+    )
+    # CLV on the side the model favoured: positive = the market moved toward
+    # the model between the pick and the close.
+    side_sign = 1.0 if p_model >= 0.5 else -1.0
+    clv = side_sign * (p_close - pick["probability"]) if pick else None
     model_brier = _brier(p_model, hit)
     close_brier = _brier(p_close, hit)
     model_ll = _log_loss(p_model, hit)
@@ -244,6 +311,11 @@ def grade_row(
         "close_log_loss": close_ll,
         "log_loss_advantage_vs_close": close_ll - model_ll,
         "model_minus_close": p_model - p_close,
+        "predicted_at": _iso(picked_at) if picked_at else None,
+        "pick_market_probability": pick["probability"] if pick else None,
+        "pick_quote_at": pick["quote_at"] if pick else None,
+        "pick_book_count": pick["book_count"] if pick else None,
+        "clv_model_side": clv,
     }
 
 
@@ -309,6 +381,7 @@ def mlb_settled_selections(client: Any, *, since: datetime) -> list[dict[str, An
             "selected": row.get("home_team") or "",
             "opponent": row.get("away_team"),
             "event_start": row.get("event_start_time"),
+            "predicted_at": row.get("created_at"),
             "model_probability": row.get("calibrated_home_probability"),
             "outcome": 1 if _norm(outcome.get("official_winner")) == _norm(row.get("home_team")) else 0,
         })
@@ -318,7 +391,10 @@ def mlb_settled_selections(client: Any, *, since: datetime) -> list[dict[str, An
 def nfl_settled_selections(client: Any, *, since: datetime) -> list[dict[str, Any]]:
     rows = _rows(
         client.table("wow_nfl_forward_shadow_grades")
-        .select("grade_id,official_event_id,event_start_time_utc,selected_participant,calibrated_probability,outcome")
+        .select(
+            "grade_id,official_event_id,event_start_time_utc,prediction_created_at,"
+            "selected_participant,calibrated_probability,outcome"
+        )
         .gte("created_at", _iso(since))
         .limit(5000)
         .execute()
@@ -337,6 +413,7 @@ def nfl_settled_selections(client: Any, *, since: datetime) -> list[dict[str, An
             "selected": row.get("selected_participant") or "",
             "opponent": None,
             "event_start": row.get("event_start_time_utc"),
+            "predicted_at": row.get("prediction_created_at"),
             "model_probability": row.get("calibrated_probability"),
             "outcome": outcome,
         })
@@ -360,7 +437,7 @@ def _close_rows(client: Any, sport_key: str, start: datetime, end: datetime) -> 
         )
         .eq("provider", close_provider())
         .eq("sport_key", sport_key)
-        .eq("snapshot_kind", "CLOSE")
+        .in_("snapshot_kind", ["CURRENT", "CLOSE"])
         .gte("event_start_utc", _iso(start))
         .lt("event_start_utc", _iso(end))
         .limit(20000)
@@ -410,6 +487,7 @@ def run_closing_line_grading(
                 model_probability=selection["model_probability"],
                 outcome=selection["outcome"],
                 close_rows=close_rows,
+                predicted_at=selection.get("predicted_at"),
             )
             counts[grade["link_status"]] = counts.get(grade["link_status"], 0) + 1
             if grade["link_status"] == LINKED:

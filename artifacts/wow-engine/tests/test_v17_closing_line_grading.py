@@ -237,3 +237,51 @@ def test_history_loop_grading_failure_is_isolated(caplog):
     with caplog.at_level(logging.ERROR):
         assert history.run_closing_line_grading_cycle(broken_client, logging.getLogger("t")) is None
     assert "CLOSING_LINE_GRADING=FAIL" in caplog.text
+
+
+# --- pick-time price and closing-line value ------------------------------------
+
+def _cur(team, odds, at, *, event="e1", book="19"):
+    return {**_close(event, team, odds, book=book, kind="CURRENT"), "price_updated_at": at, "fetched_at": at}
+
+
+def _clv_rows():
+    return (
+        [_cur("A Team", -120, "2026-10-05T14:00:00Z"), _cur("B Team", 100, "2026-10-05T14:00:00Z")]
+        + [_cur("A Team", -135, "2026-10-05T20:00:00Z"), _cur("B Team", 115, "2026-10-05T20:00:00Z")]
+        + _pair("e1", "A Team", -150, "B Team", 130)
+    )
+
+
+def test_pick_price_uses_latest_capture_at_or_before_pick_and_clv_sign():
+    row = _grade(close_rows=_clv_rows(), predicted_at="2026-10-05T15:30:00Z", model_probability=0.62)
+    pick = g.no_vig_pair(-120, 100)
+    close = g.no_vig_pair(-150, 130)
+    assert row["pick_market_probability"] == pytest.approx(pick)
+    assert row["pick_quote_at"] == "2026-10-05T14:00:00Z"
+    assert row["clv_model_side"] == pytest.approx(close - pick)  # model favoured A; line moved toward A
+    assert row["clv_model_side"] > 0
+
+
+def test_clv_is_measured_on_the_side_the_model_favoured():
+    row = _grade(close_rows=_clv_rows(), predicted_at="2026-10-05T15:30:00Z", model_probability=0.40)
+    assert row["clv_model_side"] == pytest.approx(-(g.no_vig_pair(-150, 130) - g.no_vig_pair(-120, 100)))
+    assert row["clv_model_side"] < 0
+
+
+def test_later_capture_is_used_for_a_later_pick():
+    row = _grade(close_rows=_clv_rows(), predicted_at="2026-10-05T21:00:00Z")
+    assert row["pick_market_probability"] == pytest.approx(g.no_vig_pair(-135, 115))
+
+
+@pytest.mark.parametrize("predicted_at", [None, "2026-10-05T10:00:00Z", "2026-10-05T23:30:00Z"])
+def test_no_pick_price_before_any_capture_or_after_start_or_unknown(predicted_at):
+    row = _grade(close_rows=_clv_rows(), predicted_at=predicted_at)
+    assert row["link_status"] == g.LINKED
+    assert row["pick_market_probability"] is None and row["clv_model_side"] is None
+
+
+def test_one_sided_book_at_pick_time_is_skipped():
+    rows = [_cur("A Team", -120, "2026-10-05T14:00:00Z")] + _pair("e1", "A Team", -150, "B Team", 130)
+    row = _grade(close_rows=rows, predicted_at="2026-10-05T15:00:00Z")
+    assert row["pick_market_probability"] is None
