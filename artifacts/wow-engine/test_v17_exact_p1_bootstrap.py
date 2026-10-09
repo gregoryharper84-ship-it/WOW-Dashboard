@@ -144,3 +144,24 @@ def test_worker_route_shell_execution_is_fail_closed(
         assert decision["acceleration"]["incident_id"] is None
         assert decision["can_execute"] is False
         assert decision["terminal_authority"] == "V17_TERMINAL_REDUCER"
+
+
+def test_bootstrap_typed_codes_are_registered():
+    """Process Addendum section 4: every code this change emits is registered."""
+    import re
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2]
+    sources = [
+        root / ".github/actions/wow-claude-agent/action.yml",
+        root / ".github/workflows/wow-v17-engineering-provider-dispatcher.yml",
+        root / ".github/workflows/wow-v17-claude-engineering-worker.yml",
+        root / ".github/workflows/wow-v17-chatgpt-engineering-worker.yml",
+    ]
+    registry = (root / "artifacts/wow-engine/docs/failure_codes.md").read_text()
+    codes = ("CLAUDE_STRUCTURED_OUTPUT_MISSING", "CLAUDE_STRUCTURED_OUTPUT_INVALID_JSON", "TARGET_INCIDENT_INVALID",
+             "P0_DOMAIN_LEASE_MISSING", "STANDARD_TARGET_MUST_USE_GLOBAL_LEASE", "TARGET_INCIDENT_NOT_SUPPORTED")
+    emitted = "\n".join(p.read_text() for p in sources)
+    for code in codes:
+        assert code in emitted, code
+        assert re.search(rf"^\| `{code}` \|", registry, re.M), code
