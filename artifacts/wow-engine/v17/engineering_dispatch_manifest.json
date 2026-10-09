@@ -1,7 +1,7 @@
 {
   "schema_version": "2.1",
   "source": "WOW_V17_ACTIVE_EXECUTION_BOARD",
-  "description": "Governed P0 RAPID closure inventory. Select at most one actionable issue per A acquisition, B scoring, C runtime domain with explicit non-overlap; existing PRs advance through review/release instead of spawning duplicates. All engineering capacity prioritizes production-usable LLP full-slate moneyline/spread and governed props. GitHub issue state remains authoritative.",
+  "description": "P0 LLP/WOW dependable fitted output restoration: at most one implementation lease per A discovery/point-in-time evidence, B fitted scoring/props, C production memory/Action domain. Advisory Class C research must remain non-publishable and independent review is required. Existing PRs advance in protected review/release rather than duplicate implementation. can_execute=false.",
   "can_execute": false,
   "terminal_authority": "V17_TERMINAL_REDUCER",
   "restoration": [
@@ -73,7 +73,7 @@
     {
       "issue_number": 1407,
       "severity": "P0",
-      "priority_rank": 6,
+      "priority_rank": 10,
       "execution_lane": "RAPID",
       "conflict_keys": [
         "CANONICAL_EVENT_IDENTITY",
@@ -109,26 +109,30 @@
     },
     {
       "issue_number": 487,
-      "severity": "P1",
+      "severity": "P0",
       "priority_rank": 6,
-      "execution_lane": "STANDARD",
+      "execution_lane": "RAPID",
       "conflict_keys": [
-        "PROP_LIFECYCLE",
-        "ALL_SPORTS_PROPS",
-        "MODEL_CERTIFICATION",
+        "PROP_FITTED_ROUTE_IDENTITY",
+        "PROP_SCORING_HYDRATION",
+        "PROP_CALIBRATION_CERTIFICATION",
         "PRODUCTION_REGISTRATION"
-      ]
+      ],
+      "rapid_stream": "B",
+      "lease_group": "P0_FITTED_SCORING"
     },
     {
       "issue_number": 491,
-      "severity": "P1",
-      "priority_rank": 7,
-      "execution_lane": "STANDARD",
+      "severity": "P0",
+      "priority_rank": 9,
+      "execution_lane": "RAPID",
       "conflict_keys": [
         "PROP_FORWARD_EVIDENCE",
         "PROP_SETTLEMENT",
-        "ALL_SPORTS_PROPS"
-      ]
+        "PROP_FITTED_ROUTE_IDENTITY"
+      ],
+      "rapid_stream": "B",
+      "lease_group": "P0_FITTED_SCORING"
     },
     {
       "issue_number": 1087,
@@ -161,6 +165,45 @@
         "SPREAD_FORWARD",
         "ALL_SPORTS_SPREADS"
       ]
+    },
+    {
+      "issue_number": 50,
+      "severity": "P0",
+      "priority_rank": 5,
+      "execution_lane": "RAPID",
+      "conflict_keys": [
+        "NCAAF_POINT_IN_TIME_MATERIALIZATION",
+        "NCAAF_MODEL_INPUTS",
+        "PREGAME_SOURCE_PROVENANCE"
+      ],
+      "rapid_stream": "A",
+      "lease_group": "P0_ACQUISITION"
+    },
+    {
+      "issue_number": 664,
+      "severity": "P0",
+      "priority_rank": 7,
+      "execution_lane": "RAPID",
+      "conflict_keys": [
+        "NBA_WNBA_FITTED_ADAPTER",
+        "BASKETBALL_CALIBRATION_CERTIFICATION",
+        "TEAM_EVENT_MODEL_REVIEW"
+      ],
+      "rapid_stream": "B",
+      "lease_group": "P0_FITTED_SCORING"
+    },
+    {
+      "issue_number": 665,
+      "severity": "P0",
+      "priority_rank": 8,
+      "execution_lane": "RAPID",
+      "conflict_keys": [
+        "NCAAF_MODEL_INPUTS",
+        "NCAAF_FITTED_ADAPTER",
+        "NCAAF_CALIBRATION_CERTIFICATION"
+      ],
+      "rapid_stream": "B",
+      "lease_group": "P0_FITTED_SCORING"
     }
   ],
   "acceleration": []
