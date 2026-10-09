@@ -4,7 +4,12 @@ import json
 
 import httpx
 
-from prop_live_model_acceptance import _bootstrap_pick_payload, _is_model_path_pass, _snapshot_payload
+from prop_live_model_acceptance import (
+    _bootstrap_pick_payload,
+    _expected_bootstrap_model_family,
+    _is_model_path_pass,
+    _snapshot_payload,
+)
 
 
 def _response(body: dict, status: int = 200) -> httpx.Response:
@@ -116,3 +121,19 @@ def test_bootstrap_request_id_is_stable_per_candidate_and_distinct_across_candid
     assert first["request_id"] == semantic_retry["request_id"]
     assert first["request_id"] != different_candidate["request_id"]
     assert first["rows"][0]["row_key"] == "prop-live-e2e-acceptance"
+
+
+def test_live_bootstrap_expected_nfl_model_family_matches_scout_player_yardage_aliases():
+    for stat in ("PLAYER_PASSING_YARDS", "PLAYER_RUSHING_YARDS", "PLAYER_RECEIVING_YARDS"):
+        payload = {"rows": [{"sport": "NFL", "stat_type": stat}]}
+        assert _expected_bootstrap_model_family(payload) == "NFL_PROP_ROLLING_FITTED_V1"
+        spaced = {"rows": [{"sport": "nfl", "stat_type": stat.lower().replace("_", " ")}]}
+        assert _expected_bootstrap_model_family(spaced) == "NFL_PROP_ROLLING_FITTED_V1"
+
+    # Do not grant model identity to another sport or unsupported stat.
+    assert _expected_bootstrap_model_family(
+        {"rows": [{"sport": "NCAAF", "stat_type": "PLAYER_RECEIVING_YARDS"}]}
+    ) != "NFL_PROP_ROLLING_FITTED_V1"
+    assert _expected_bootstrap_model_family(
+        {"rows": [{"sport": "NFL", "stat_type": "PLAYER_RECEPTIONS"}]}
+    ) != "NFL_PROP_ROLLING_FITTED_V1"
