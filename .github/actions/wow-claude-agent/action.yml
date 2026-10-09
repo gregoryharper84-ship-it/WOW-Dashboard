@@ -66,7 +66,12 @@ runs:
 
     - name: Run governed Claude agent with OAuth
       id: claude_oauth
-      if: inputs.claude_code_oauth_token != '' && (inputs.anthropic_api_key == '' || steps.claude_api.outcome == 'failure')
+      # A provider step may exit successfully without required structured_output.
+      # In that case OAuth is eligible, rather than leaving the certification red.
+      if: >-
+        inputs.claude_code_oauth_token != '' &&
+        (inputs.anthropic_api_key == '' || steps.claude_api.outcome == 'failure' ||
+         steps.claude_api.outputs.structured_output == '')
       continue-on-error: true
       uses: anthropics/claude-code-base-action@16bc61eeac6dfaad1e3617aee9aefa59fce7c9be
       with:
@@ -86,6 +91,13 @@ runs:
       run: |
         set -euo pipefail
         if [ -z "${API_RESULT:-}" ] && [ -z "${OAUTH_RESULT:-}" ]; then
-          echo "::error::Claude fallback produced no structured result (api_outcome=${API_OUTCOME:-not-run}, oauth_outcome=${OAUTH_OUTCOME:-not-run})."
+          echo "::error::CLAUDE_STRUCTURED_OUTPUT_MISSING (api_outcome=${API_OUTCOME:-not-run}, oauth_outcome=${OAUTH_OUTCOME:-not-run})."
+          exit 1
+        fi
+        # A nonempty provider string is not sufficient evidence of a typed agent
+        # decision. JSON is required; downstream role gates still enforce fields.
+        RESULT="${API_RESULT:-${OAUTH_RESULT:-}}"
+        if ! printf '%s' "$RESULT" | jq -e 'type == "object"' >/dev/null; then
+          echo "::error::CLAUDE_STRUCTURED_OUTPUT_INVALID_JSON"
           exit 1
         fi

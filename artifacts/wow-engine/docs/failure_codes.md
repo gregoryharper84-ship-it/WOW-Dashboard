@@ -145,6 +145,19 @@ Emitted by `artifacts/wow-engine/v17/agent_identity_policy.py evaluate`, which j
 | `PROTECTION_LIVE_PROBE_FAILED` | engineering governance | A live probe observed the opposite of the required outcome (e.g. ordinary PR blocked, trust-root PR allowed); suffixed `:<probe>`. | N/A |
 | `PROTECTION_LIVE_PROBE_INVALID` | engineering governance | A live probe record is malformed or unbound (expected outcome, PR number, 40-hex head SHA, timestamp, nonce); suffixed `:<probe>`. | N/A |
 
+## Exact-target bootstrap and Claude structured-output codes (PR #1531)
+
+Engineering control plane only. None affects sporting probability, rank or `can_execute=false`, and none is a provider outage eligible for failover except where the provider classifier independently says so.
+
+| Code | Owning lane/stage | Exact condition | Rank eligible? |
+|---|---|---|---:|
+| `CLAUDE_STRUCTURED_OUTPUT_MISSING` | Claude agent action (`.github/actions/wow-claude-agent`) | Neither the API-key nor the OAuth attempt returned structured output (a provider exit 0 without structured output is not success). The agent step fails; in the Claude worker this surfaces as the cause-specific `ACTIONABLE_REPAIR_*` code of the step that needed it. | N/A |
+| `CLAUDE_STRUCTURED_OUTPUT_INVALID_JSON` | Claude agent action | Structured output was present but not a JSON object. The agent step fails; downstream role gates never read it. | N/A |
+| `TARGET_INCIDENT_INVALID` | provider dispatcher | A targeted dispatch's incident identity is not a numeric issue number. Dispatch refused. | N/A |
+| `P0_DOMAIN_LEASE_MISSING` | engineering worker target selection | An exact P0 RAPID target was dispatched without a non-GLOBAL domain lease group in the dispatch manifest. Suffixed `:<incident>`. | N/A |
+| `STANDARD_TARGET_MUST_USE_GLOBAL_LEASE` | engineering worker target selection | An exact P1 STANDARD target was dispatched with a domain lease group instead of the GLOBAL writer lease. Suffixed `:<incident>`. | N/A |
+| `TARGET_INCIDENT_NOT_SUPPORTED` | engineering worker target selection | Exact target is neither P0 RAPID nor P1 STANDARD. Suffixed `:<incident>:<severity>:<lane>`. | N/A |
+
 ## Registry rule
 
 A new code requires, in the same change: code name, owning lane/stage, exact condition, whether it affects sporting probability/rank, and a regression test. Provider-specific detail codes may be preserved underneath a registered class; they must never be rewritten into `MODEL_UNAVAILABLE` unless the fitted model capability itself is truly absent.
