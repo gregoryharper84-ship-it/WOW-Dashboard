@@ -1,5 +1,6 @@
 """Negative-path and chronology checks for the isolated NHL challenger."""
 from datetime import datetime, timedelta, timezone
+from hashlib import sha256
 
 import numpy as np
 import pytest
@@ -29,7 +30,7 @@ def box(g, h_goalie="101", a_goalie="201", home_sog=31, away_sog=22,
         home_pp=1, away_pp=0):
     return Box(g.game_id, g.season_id, g.home_team, g.away_team,
                home_sog, away_sog, home_pp, away_pp, h_goalie, a_goalie,
-               19, 28, 22, 31, HASH)
+               19, 28, 22, 31, sha256(f"{home_sog}:{away_sog}:{home_pp}:{away_pp}".encode()).hexdigest())
 
 
 def official_payload(g, *, starter=True):
