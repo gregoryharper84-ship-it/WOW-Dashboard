@@ -30,6 +30,21 @@ def test_engine_workflow_uses_official_redis_registry_mirror():
     assert "6379:6379" in text
 
 
+def test_postgrest_same_version_same_digest_from_ghcr():
+    path = ROOT / ".github/workflows/wow-engine-verify.yml"
+    text = path.read_text(encoding="utf-8")
+    # GitHub Container Registry publishes the exact PostgREST v12.2.3 index
+    # digest used by the existing Docker Hub image. No version promotion.
+    image = (
+        "ghcr.io/supabase/postgrest:v12.2.3@"
+        "sha256:729bf65c733b73f5b52777f0e4b853f22ed73aa67a22d38269d289779b0a8401"
+    )
+    assert text.count("image: " + image) == 2
+    assert "image: postgrest/postgrest:v12.2.3" not in text
+    assert "PGRST_DB_URI:" in text
+    assert "PGRST_DB_SCHEMAS:" in text
+
+
 def test_service_postgres_identity_and_port_remain_unchanged():
     for relative_path in (
         ".github/workflows/wow-verify.yml",
