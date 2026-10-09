@@ -41,17 +41,22 @@ def _eligible(records: list[dict[str, Any]], stream: str) -> list[dict[str, Any]
 
 
 def _incidents_with_open_prs(open_prs: list[dict[str, Any]]) -> set[str]:
-    """Conservatively defer a P0 if an existing open PR references its issue.
+    """Only direct repair ownership prevents dispatch, not arbitrary references.
 
-    Holding on related references is safer than dispatching a duplicate writer.
-    PR review, CI, merge, deployment and QA are separate closure stages.
+    Explicit Incident: N or closing keywords identify implementation ownership.
+    Mere issue mentions, dependency links and review discussions do not.
     """
     pending: set[str] = set()
     for pr in open_prs:
         if not isinstance(pr, dict) or not isinstance(pr.get("number"), int):
             raise ValueError("OPEN_PR_INVENTORY_INVALID")
         content = str(pr.get("title") or "") + "\n" + str(pr.get("body") or "")
-        pending.update(re.findall(r"(?<![a-zA-Z0-9])#([0-9]+)\b", content))
+        for line in content.splitlines():
+            incident = re.match(r"(?i)^\\s*Incident\\s*:\\s*`?#?([0-9]+)`?(?=\\b|$)", line)
+            if incident:
+                pending.add(incident.group(1))
+            for claim in re.finditer(r"(?i)\\b(?:fixes|closes|resolves)\\s+#([0-9]+)\\b", line):
+                pending.add(claim.group(1))
     return pending
 
 
@@ -64,8 +69,14 @@ _ACTIVE_ENGINEERING_PATHS = frozenset({
 
 def _active_ownership(
     records: list[dict[str, Any]], active_runs: list[dict[str, Any]],
-) -> tuple[set[str], set[str]]:
-    """Trust GitHub workflow path + exact open manifest incident/lease, never a title alone."""
+) -> tuple[set[str], set[str], bool]:
+    """Bind provenance to workflow path and main; hold all lanes for GLOBAL writers.
+
+    AUTO/GLOBAL writers may mutate any incident, and without a trusted target
+    receipt their conflict set is unknown. A typed all-lane hold is safer than
+    racing another implementation writer or crashing the dispatcher.
+    """
+    global_writer_unresolved = False
     indexed = {str(row["incident_id"]): row for row in records}
     active_leases: set[str] = set()
     active_keys: set[str] = set()
@@ -91,12 +102,18 @@ def _active_ownership(
         if not identity or run.get("head_branch") != "main":
             raise ValueError("ACTIVE_WORKER_IDENTITY_UNRESOLVED")
         lease, incident = identity.groups()
+        if lease.upper() == "GLOBAL":
+            # GLOBAL has no safe domain boundary, including exact P1 workers.
+            global_writer_unresolved = True
+            continue
+        if incident == "AUTO":
+            raise ValueError("ACTIVE_WORKER_DOMAIN_IDENTITY_UNRESOLVED")
         row = indexed.get(incident)
         if row is None or str(row.get("lease_group") or "").upper() != lease.upper():
             raise ValueError("ACTIVE_WORKER_MANIFEST_IDENTITY_UNRESOLVED")
         active_leases.add(lease.upper())
         active_keys.update(_keys(row))
-    return active_leases, active_keys
+    return active_leases, active_keys, global_writer_unresolved
 
 
 def select_parallel(
@@ -106,7 +123,7 @@ def select_parallel(
     active_runs: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     pending_pr_incidents = _incidents_with_open_prs(open_prs or [])
-    active_leases, active_keys = _active_ownership(records, active_runs or [])
+    active_leases, active_keys, global_writer_unresolved = _active_ownership(records, active_runs or [])
 
     selected: list[dict[str, Any]] = []
     claimed_keys: set[str] = set()
@@ -127,6 +144,13 @@ def select_parallel(
             )
             continue
         for row in eligible:
+            if global_writer_unresolved:
+                skipped.append({
+                    "incident_id": str(row.get("incident_id") or "UNKNOWN"),
+                    "rapid_stream": stream,
+                    "reason": "ACTIVE_GLOBAL_WORKER_TARGET_UNRESOLVED",
+                })
+                continue
             incident = str(row.get("incident_id") or "")
             lease_group = str(row.get("lease_group") or "").upper()
             keys = _keys(row)
