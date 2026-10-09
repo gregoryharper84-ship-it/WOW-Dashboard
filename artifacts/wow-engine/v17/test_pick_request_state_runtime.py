@@ -166,6 +166,142 @@ def test_completed_prediction_receipt_is_resumable_without_new_model_work():
     assert second.rows["board-row-1"]["can_execute"] is False
 
 
+
+def test_retry_of_held_row_uses_fresh_inner_scoring_result_not_prior_blocker():
+    db = _DB()
+    store = subject.PickRequestStateStore(db)
+    batch = _batch("retry-held-then-model-recovers", [_row(3)])
+    first = store.begin(batch)
+    old = _held("board-row-3", "MODEL_INPUTS_INSUFFICIENT")
+    store.finalize(first, [old])
+
+    second = store.begin(batch)
+    assert second.reusable_outcome("board-row-3") is None
+    fresh = _completed("board-row-3", "pred-recovered-3")
+    # Some canonical scoring branches return the fresh result without calling
+    # the intermediate durable-state hook. An old held outcome is still loaded.
+    assert second.rows["board-row-3"]["outcome"]["code"] == "MODEL_INPUTS_INSUFFICIENT"
+    picked = subject._current_full_outcomes(second, {"rows": [fresh]})
+    assert picked == [fresh]
+    manifest = store.finalize(second, picked)
+    assert manifest["completed_rows"] == 1
+    assert manifest["held_rows"] == 0
+
+    third = store.begin(batch)
+    cached = third.reusable_outcome("board-row-3")
+    assert cached is not None
+    assert cached["result"]["prediction"]["prediction_id"] == "pred-recovered-3"
+
+
+def test_resumed_receipt_backed_completed_row_cannot_be_overridden_by_inner_result():
+    db = _DB()
+    store = subject.PickRequestStateStore(db)
+    batch = _batch("resume-immutable-completed", [_row(4)])
+    first = store.begin(batch)
+    scored = _completed("board-row-4", "pred-immutable-4")
+    store.finalize(first, [scored])
+
+    second = store.begin(batch)
+    cached = second.reusable_outcome("board-row-4")
+    assert cached is not None
+    # The canonical path should not score a resumed immutable row at all.
+    # Reject unexpected results rather than quietly ignoring a second scorer
+    # invocation; the existing receipt remains unchanged in durable state.
+    with pytest.raises(HTTPException) as error:
+        subject._current_full_outcomes(
+            second, {"rows": [_held("board-row-4", "MODEL_UNAVAILABLE")]}
+        )
+    assert error.value.status_code == 502
+    assert error.value.detail["unexpected_resumed_row_keys"] == ["board-row-4"]
+    assert second.rows["board-row-4"]["outcome"] == scored
+    assert second.reusable_outcome("board-row-4")["result"]["prediction"]["prediction_id"] == "pred-immutable-4"
+    assert cached["can_execute"] is False
+
+
+@pytest.mark.parametrize(
+    "returned,expected_duplicates,expected_unknown,expected_malformed",
+    [
+        (
+            [_held("board-row-8", "MODEL_UNAVAILABLE"), _completed("board-row-8", "p-8")],
+            ["board-row-8"], [], 0,
+        ),
+        (
+            [_held("board-row-8", "MODEL_UNAVAILABLE"), _completed("foreign-row", "p-9")],
+            [], ["foreign-row"], 0,
+        ),
+        (
+            [_held("board-row-8", "MODEL_UNAVAILABLE"), "INVALID_OUTCOME"],
+            [], [], 1,
+        ),
+    ],
+)
+def test_scorer_response_cannot_hide_duplicate_unknown_or_malformed_rows(
+    returned, expected_duplicates, expected_unknown, expected_malformed
+):
+    db = _DB()
+    ctx = subject.PickRequestStateStore(db).begin(
+        _batch("reject-corrupt-scorer-outcomes", [_row(8)])
+    )
+    with pytest.raises(HTTPException) as error:
+        subject._current_full_outcomes(ctx, {"rows": returned})
+    detail = error.value.detail
+    assert error.value.status_code == 502
+    assert detail["code"] == "PICK_REQUEST_SCORER_ROW_RECONCILIATION_FAILED"
+    assert detail["duplicate_row_keys"] == expected_duplicates
+    assert detail["unknown_row_keys"] == expected_unknown
+    assert detail["malformed_outcomes"] == expected_malformed
+    assert detail["probability_publishable"] is False
+    assert detail["rank_eligible"] is False
+    assert detail["can_execute"] is False
+
+
+def test_missing_fresh_row_on_retry_does_not_reuse_stale_held_diagnostic():
+    db = _DB()
+    store = subject.PickRequestStateStore(db)
+    batch = _batch("missed-rescore-row", [_row(21)])
+    first = store.begin(batch)
+    store.finalize(first, [_held("board-row-21", "MODEL_INPUTS_INSUFFICIENT")])
+    second = store.begin(batch)
+    assert second.reusable_outcome("board-row-21") is None
+    with pytest.raises(HTTPException) as excinfo:
+        subject._current_full_outcomes(second, {"rows": []})
+    assert excinfo.value.status_code == 502
+    assert excinfo.value.detail["missing_row_keys"] == ["board-row-21"]
+    assert excinfo.value.detail["probability_publishable"] is False
+    assert excinfo.value.detail["can_execute"] is False
+
+
+def test_explicit_resumed_immutable_receipt_needs_no_fresh_scorer_row():
+    db = _DB()
+    store = subject.PickRequestStateStore(db)
+    batch = _batch("resumed-no-fresh", [_row(22)])
+    first = store.begin(batch)
+    completed = _completed("board-row-22", "p-22")
+    store.finalize(first, [completed])
+    second = store.begin(batch)
+    assert second.reusable_outcome("board-row-22") is not None
+    resumed = subject._current_full_outcomes(second, None)
+    assert resumed[0]["result"]["prediction"]["prediction_id"] == "p-22"
+    assert resumed[0]["resumed_from_durable_receipt"] is True
+
+    with pytest.raises(HTTPException) as excinfo:
+        subject._current_full_outcomes(second, {"rows": [_held("board-row-22")]})
+    assert excinfo.value.detail["unexpected_resumed_row_keys"] == ["board-row-22"]
+
+
+def test_unique_matching_inner_scorer_rows_preserve_source_board_order():
+    db = _DB()
+    ctx = subject.PickRequestStateStore(db).begin(
+        _batch("unique-scorer-results", [_row(15), _row(16)])
+    )
+    result = subject._current_full_outcomes(
+        ctx,
+        {"rows": [_held("board-row-16", "MODEL_UNAVAILABLE"), _held("board-row-15", "MODEL_INPUTS_INSUFFICIENT")]},
+    )
+    assert [item["row_key"] for item in result] == ["board-row-15", "board-row-16"]
+    assert [item["code"] for item in result] == ["MODEL_INPUTS_INSUFFICIENT", "MODEL_UNAVAILABLE"]
+
+
 def test_same_request_and_row_key_cannot_mutate_exact_identity():
     db = _DB()
     store = subject.PickRequestStateStore(db)
