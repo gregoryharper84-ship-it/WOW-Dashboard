@@ -144,9 +144,20 @@ def test_prior_game_invariance_same_start_and_aligned_replay():
     assert len(result["delta_log_loss_bootstrap_95_ci"]) == 2
     assert result["delta_log_loss_bootstrap_95_ci"][0] <= result["delta_log_loss_bootstrap_95_ci"][1]
     if result["research_gate_pass"]:
+        assert result["decision"] == "FORWARD_SHADOW_AND_GOVERNED_REVIEW_REQUIRED"
+        assert result["hold_reasons"] == []
         assert result["delta_brier_bootstrap_95_ci"][0] > 0
         assert result["delta_log_loss_bootstrap_95_ci"][0] > 0
         assert result["v2"]["ece"] <= result["v1"]["ece"]
+    else:
+        assert result["decision"] == "HOLD_CHALLENGER_INSUFFICIENT_VALIDATION"
+        assert result["hold_reasons"]
+        for reason in result["hold_reasons"]:
+            assert reason in {
+                "BRIER_IMPROVEMENT_NOT_PROVEN",
+                "LOG_LOSS_IMPROVEMENT_NOT_PROVEN",
+                "CALIBRATION_ERROR_WORSENED",
+            }
     assert result["automatic_promotion_allowed"] is False
     assert result["probability_publishable"] is False
     assert result["can_execute"] is False
