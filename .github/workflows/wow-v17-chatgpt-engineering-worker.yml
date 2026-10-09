@@ -847,6 +847,42 @@ jobs:
           RESULT: ${{ steps.qa_agent.outputs.structured_output }}
         run: echo "decision=$(jq -r '.decision' <<<"$RESULT")" >> "$GITHUB_OUTPUT"
 
+      - name: Dispatch targeted Claude fallback on OpenAI agent failure
+        if: >-
+          always() &&
+          github.event_name == 'workflow_dispatch' &&
+          inputs.target_incident != '' &&
+          steps.claude_peer_provider.outputs.available == 'true' &&
+          (
+            steps.lead_agent.outcome == 'failure' ||
+            steps.triage_agent.outcome == 'failure' ||
+            steps.specialist_agent.outcome == 'failure' ||
+            steps.implementation_agent.outcome == 'failure' ||
+            steps.review_agent.outcome == 'failure' ||
+            steps.architect_agent.outcome == 'failure' ||
+            steps.qa_agent.outcome == 'failure'
+          )
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_INCIDENT: ${{ inputs.target_incident }}
+          LEASE_GROUP: ${{ inputs.lease_group }}
+        run: |
+          set -euo pipefail
+          [ -n "$TARGET_INCIDENT" ] || { echo "DIRECT_FALLBACK_TARGET_MISSING" >&2; exit 1; }
+          [ -n "$LEASE_GROUP" ] && [ "$LEASE_GROUP" != "GLOBAL" ] || {
+            echo "DIRECT_FALLBACK_DOMAIN_LEASE_MISSING:$TARGET_INCIDENT" >&2
+            exit 1
+          }
+          gh workflow run wow-v17-claude-engineering-worker.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref main \
+            -f fallback_reason="OPENAI_AGENT_STEP_FAILURE_DIRECT_HANDOFF" \
+            -f parent_run_id="$GITHUB_RUN_ID" \
+            -f target_incident="$TARGET_INCIDENT" \
+            -f lease_group="$LEASE_GROUP"
+          echo "::notice::Dispatched Claude fallback for incident $TARGET_INCIDENT under lease $LEASE_GROUP."
+
       - name: Write exact-head governance receipt
         if: steps.impl.outputs.changed == 'true'
         shell: bash
