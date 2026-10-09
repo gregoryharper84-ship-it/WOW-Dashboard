@@ -191,7 +191,9 @@ def _group_key(row: dict[str, Any]) -> tuple[str, ...]:
 
 
 def _quote_time(row: dict[str, Any]) -> datetime | None:
-    return _parse_dt(row.get("price_updated_at")) or _parse_dt(row.get("fetched_at"))
+    # Provider-updated timestamps can predate when WOW first observed a quote.
+    # OPEN/CLOSE evidence must use the acquisition time, not retroactive data.
+    return _parse_dt(row.get("fetched_at"))
 
 
 def _clone_reference(
@@ -246,6 +248,12 @@ def derive_captured_reference_rows(
             if str(row.get("snapshot_kind") or "").upper() == "CURRENT"
             and row.get("is_live") is not True
             and _quote_time(row) is not None
+            and _parse_dt(row.get("event_start_utc")) is not None
+            and _quote_time(row) <= _parse_dt(row.get("event_start_utc"))
+            and (
+                _parse_dt(row.get("price_updated_at")) is None
+                or _parse_dt(row.get("price_updated_at")) <= _quote_time(row)
+            )
         ]
         if not current_rows:
             continue
