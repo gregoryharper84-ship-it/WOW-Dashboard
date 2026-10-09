@@ -252,11 +252,18 @@ def act(transport, finding, now):
                    "this issue under the governed manifest/conflict lease. "
                    "No dispatch or release authority was granted.\n")
             transport.post_comment(number, msg)
-            if number != 1021:
+            outcome = "P0_ESCALATED_UNACKNOWLEDGED"
+        # Separate read-back and retry budget for the parent Engineering alert:
+        # partial success on the source issue must never suppress central delivery.
+        if number != 1021:
+            central_comments = transport.comments(1021)
+            central_prior = [parsed_time(c["created_at"]) for c in central_comments
+                             if marker in str(c.get("body") or "")]
+            if not central_prior or now - max(central_prior) >= timedelta(hours=1):
                 transport.post_comment(1021, f"<!-- {marker} -->\nP0 unacknowledged: "
                                        f"#{number}, fingerprint {item['fingerprint']}; "
                                        "Engineering must assign owner and next action.")
-            outcome = "P0_ESCALATED_UNACKNOWLEDGED"
+                outcome = "P0_ESCALATED_UNACKNOWLEDGED"
     return {"fingerprint": item["fingerprint"], "issue": number,
             "status": outcome + "_ACK_PENDING"}
 
