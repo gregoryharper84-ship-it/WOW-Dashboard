@@ -84,7 +84,7 @@ def test_repo_manifest_prioritizes_current_llp_restoration_incidents():
     assert by_id["1388"]["severity"] == "P0"
     assert by_id["1388"]["priority_rank"] == 1
     assert by_id["1313"]["severity"] == "P0"
-    assert by_id["1313"]["priority_rank"] == 2
+    assert by_id["1313"]["priority_rank"] == 7
     assert "1247" not in by_id
     assert queue["can_execute"] is False
     assert queue["terminal_authority"] == "V17_TERMINAL_REDUCER"
@@ -106,8 +106,8 @@ def test_all_manifested_active_p0_incidents_are_in_rapid_lane():
     for issue_id in active:
         assert by_id[issue_id]["severity"] == "P0"
         assert by_id[issue_id]["execution_lane"] == "RAPID"
-        assert by_id[issue_id]["rapid_stream"] == "LLP_RESTORE"
-        assert by_id[issue_id]["lease_group"] == "P0_LLP_RESTORE"
+        assert by_id[issue_id]["rapid_stream"] == "C"
+        assert by_id[issue_id]["lease_group"] == "P0_RUNTIME"
 
     issues = [
         {"number": issue_id, "title": f"P0 {issue_id}", "state": "OPEN", "updatedAt": "2026-10-07T02:00:00Z"}
@@ -126,3 +126,41 @@ def test_p0_requires_stream_and_lease_metadata():
     manifest["restoration"][0].pop("rapid_stream")
     with pytest.raises(ValueError, match="requires rapid_stream and lease_group"):
         build_queue(manifest, [])
+
+
+def test_active_llp_p0_cases_are_rapid_with_isolated_implementation_leases():
+    from v17.p0_parallel_dispatch import select_parallel
+
+    path = Path(__file__).parents[1] / "v17" / "engineering_dispatch_manifest.json"
+    manifest = json.loads(path.read_text())
+    by_id = {int(row["issue_number"]): row for row in manifest["restoration"]}
+    expected = {
+        823: ("A", "P0_ACQUISITION"),
+        1496: ("B", "P0_MLB_SCORING"),
+        1388: ("C", "P0_RUNTIME"),
+        1501: ("C", "P0_RUNTIME"),
+        1407: ("A", "P0_ACQUISITION"),
+    }
+    for issue_id, (stream, lease) in expected.items():
+        row = by_id[issue_id]
+        assert row["severity"] == "P0"
+        assert row["execution_lane"] == "RAPID"
+        assert (row["rapid_stream"], row["lease_group"]) == (stream, lease)
+        assert row["conflict_keys"]
+
+    # A closed historical issue must not consume a writer; one writer per
+    # active domain, no repeated incident or overlapping conflict key.
+    issues = [
+        {"number": issue_id, "title": str(issue_id), "state": "OPEN"}
+        for issue_id in expected
+    ] + [{"number": 1313, "title": "closed", "state": "CLOSED"}]
+    queue = build_queue(manifest, issues)
+    selection = select_parallel(queue["records"])
+    assert selection["selected_count"] == 3
+    assert [row["incident_id"] for row in selection["selected"]] == ["823", "1496", "1388"]
+    assert len({row["lease_group"] for row in selection["selected"]}) == 3
+    assert len({row["incident_id"] for row in selection["selected"]}) == 3
+    keys = [key for row in selection["selected"] for key in row["conflict_keys"]]
+    assert len(keys) == len(set(keys))
+    assert selection["can_execute"] is False
+    assert selection["terminal_authority"] == "V17_TERMINAL_REDUCER"
