@@ -279,6 +279,28 @@ def artifact_predict(candidate: BinaryCandidate, rows: Sequence[BinaryTrainingRo
     return _map_calibrator(raw, candidate.calibrator_payload)
 
 
+def research_gate_reasons(
+    brier_ci: Sequence[float], log_loss_ci: Sequence[float],
+    v1_ece: float, v2_ece: float,
+) -> list[str]:
+    """Fail-closed, advisory-only research gate. NEVER authorizes model release."""
+    metrics = [*brier_ci, *log_loss_ci, v1_ece, v2_ece]
+    if len(brier_ci) != 2 or len(log_loss_ci) != 2:
+        return ["RESEARCH_VALIDATION_EVIDENCE_INVALID"]
+    if any(not math.isfinite(float(value)) for value in metrics):
+        return ["RESEARCH_VALIDATION_EVIDENCE_INVALID"]
+    if brier_ci[0] > brier_ci[1] or log_loss_ci[0] > log_loss_ci[1]:
+        return ["RESEARCH_VALIDATION_EVIDENCE_INVALID"]
+    hold_reasons = []
+    if brier_ci[0] <= 0:
+        hold_reasons.append("BRIER_IMPROVEMENT_NOT_PROVEN")
+    if log_loss_ci[0] <= 0:
+        hold_reasons.append("LOG_LOSS_IMPROVEMENT_NOT_PROVEN")
+    if v2_ece > v1_ece:
+        hold_reasons.append("CALIBRATION_ERROR_WORSENED")
+    return hold_reasons
+
+
 def replay(games: Sequence[NHLGame], boxes: Mapping[str, Box], *, bootstrap: int = BOOTSTRAPS) -> dict[str, Any]:
     v1_rows, _ = reconstruct_training_rows(games)
     common, enriched = augment_rows(games, boxes, v1_rows)
@@ -310,13 +332,7 @@ def replay(games: Sequence[NHLGame], boxes: Mapping[str, Box], *, bootstrap: int
                        "ece": float(_ece(p, y))}
     s1, s2 = score(p1), score(p2)
     delta_ll = s1["log_loss"] - s2["log_loss"]
-    hold_reasons = []
-    if ci[0] <= 0:
-        hold_reasons.append("BRIER_IMPROVEMENT_NOT_PROVEN")
-    if ll_ci[0] <= 0:
-        hold_reasons.append("LOG_LOSS_IMPROVEMENT_NOT_PROVEN")
-    if s2["ece"] > s1["ece"]:
-        hold_reasons.append("CALIBRATION_ERROR_WORSENED")
+    hold_reasons = research_gate_reasons(ci, ll_ci, s1["ece"], s2["ece"])
     gate_pass = not hold_reasons
     return {
         "status": "ADVISORY_RESEARCH_ONLY", "spec_version": SPEC_VERSION,
