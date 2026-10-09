@@ -220,7 +220,14 @@ def augment_rows(
                 "pp_goals_for_l10_delta": _pp_rate(histories[home], 2) - _pp_rate(histories[away], 2),
                 "pp_goals_against_l10_delta": _pp_rate(histories[home], 3) - _pp_rate(histories[away], 3),
             }
-            manifest = _hash({"v1_manifest": prior.source_manifest_sha256, "version": SPEC_VERSION,
+            # V1's research manifest includes the current completed schedule
+            # payload SHA (postgame outcome provenance), so it MUST NOT enter
+            # this pregame feature manifest. Hash only the chronological V1
+            # feature vector and its pre-start as-of identity instead.
+            manifest = _hash({"v1_features": _hash(prior.features),
+                              "v1_feature_as_of": prior.feature_as_of,
+                              "v1_event_id": prior.event_id,
+                              "version": SPEC_VERSION,
                               "home_prior": list(histories[home]), "away_prior": list(histories[away]),
                               "home_starts": goalie_starts[home], "away_starts": goalie_starts[away],
                               "goalie_status": "PROJECTED", "goalie_projection_policy": "LAST_START_OR_B2B_ALTERNATE_V1",
