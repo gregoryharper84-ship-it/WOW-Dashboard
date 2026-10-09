@@ -78,6 +78,32 @@ The following proof-validation details remain underneath `TEAM_EVENT_SPECIALIST_
 
 The following existing statuses remain authoritative in their owning modules and are intentionally not collapsed into the generic codes above: `NO_CONFIGURED_DISCOVERY_FEED`, `PROVIDER_REQUEST_FAILED`, `PROVIDER_RATE_LIMITED`, `PROVIDER_SCHEMA_FAILURE`, `DISCOVERY_BUDGET_EXHAUSTED`, `EVENT_WRONG_DATE`, `EVENT_STARTED_OR_FINAL`, `EVENT_CANCELLED_OR_POSTPONED`, and `EVENT_IDENTITY_UNRESOLVED`.
 
+## Engineering worker repair delivery codes (incidents #1021, #1527)
+
+Emitted by the protected Claude engineering worker (`wow-v17-claude-engineering-worker.yml`, step *Enforce actionable repair delivery* and *Append incident delivery receipt*) only when the Lead chose `REPAIR`. Legitimate `NO_ACTION` and `VERIFY_RELEASE` never emit them. Every code fails the run (non-success), is persisted to the #1138 heartbeat, the dispatch receipt JSON and an append-only receipt comment on the incident issue, and is classified by `v17/engineering_provider_failover.py` from the emitted `##[error]` line. None affects sporting probability, rank or `can_execute=false`; none grants QA, merge or deploy authority.
+
+| Code | Owning lane/stage | Exact condition | Disposition |
+|---|---|---|---|
+| `ACTIONABLE_REPAIR_POLICY_BOUNDARY` | engineering governance | Triage risk is `R2-repair-policy` or `R3`; implementation lease denied. Never a provider/implementation failure; never retried or failed over. Re-entry only by protected reviewer/owner authorization change. | `BLOCKED_WITH_EXACT_REASON` |
+| `ACTIONABLE_REPAIR_TRIAGE_FAILED` | engineering triage | Triage normalization did not succeed. | `UNRESOLVED_TYPED_FAILURE` |
+| `ACTIONABLE_REPAIR_TRIAGE_NOT_REPAIRABLE` | engineering triage | Triage returned `repairable` other than `true`. | `UNRESOLVED_TYPED_FAILURE` |
+| `ACTIONABLE_REPAIR_HYPOTHESIS_UNCONFIRMED` | engineering specialist | Specialist hypothesis is neither `CONFIRMED` nor `NARROWED`. | `UNRESOLVED_TYPED_FAILURE` |
+| `ACTIONABLE_REPAIR_RISK_UNRECOGNIZED` | engineering triage | Risk class is not `R0`, `R1` or `R2-restorative` and not a policy boundary. | `UNRESOLVED_TYPED_FAILURE` |
+| `ACTIONABLE_REPAIR_MUTATION_DENIED` | engineering lease | Mutation safety gate (lease fence, epoch, SAFE_HOLD) did not succeed. | `UNRESOLVED_TYPED_FAILURE` |
+| `ACTIONABLE_REPAIR_IMPLEMENTATION_FAILED` | engineering implementation | Implementation agent or its normalization did not succeed. A provider outage is preserved as `provider_signal`. | `UNRESOLVED_TYPED_FAILURE` |
+| `ACTIONABLE_REPAIR_NO_DELIVERABLE` | engineering implementation | Implementation ran cleanly but reported no change or no committed branch. | `UNRESOLVED_TYPED_FAILURE` |
+| `ACTIONABLE_REPAIR_HEAD_INVALID` | engineering delivery | Implementation head SHA missing or not 40 lowercase hex characters. | `UNRESOLVED_TYPED_FAILURE` |
+| `ACTIONABLE_REPAIR_BRANCH_INVALID` | engineering delivery | Implementation branch does not match `claude/engineering/<run>-<attempt>`. | `UNRESOLVED_TYPED_FAILURE` |
+| `ACTIONABLE_REPAIR_PR_LOOKUP_FAILED` | engineering delivery | GitHub PR lookup failed (API/outage); delivery could not be verified. | `UNRESOLVED_TYPED_FAILURE` |
+| `ACTIONABLE_REPAIR_PR_MISSING` | engineering delivery | No open PR to `main` exists for the implementation branch. | `UNRESOLVED_TYPED_FAILURE` |
+| `ACTIONABLE_REPAIR_PR_AMBIGUOUS` | engineering delivery | More than one open PR matches the implementation branch. | `UNRESOLVED_TYPED_FAILURE` |
+| `ACTIONABLE_REPAIR_PR_HEAD_MISMATCH` | engineering delivery | The PR head differs from the implementation head SHA. | `UNRESOLVED_TYPED_FAILURE` |
+| `ACTIONABLE_REPAIR_DELIVERY_UNVERIFIED` | engineering persistence | `REPAIR` run whose delivery gate produced no code (cancelled/skipped); suffixed with the gate outcome. | `UNRESOLVED_TYPED_FAILURE` |
+| `ACTIONABLE_REPAIR_RECEIPT_INCIDENT_INVALID` | engineering persistence | Incident identity is not a numeric issue number; receipt not written. | `UNRESOLVED_TYPED_FAILURE` |
+| `ACTIONABLE_REPAIR_RECEIPT_PERSIST_FAILED` | engineering persistence | Incident issue lookup or append-only receipt write failed. | `UNRESOLVED_TYPED_FAILURE` |
+
+Delivery statuses (not failures): `PR_READY` (exact-head open PR, disposition `PR_CREATED`) and `DRAFT_PR_GATES_FAILED` (exact-head draft PR; pre-PR gates failed; disposition `PR_CREATED`, does not authorize merge or deploy).
+
 ## Registry rule
 
 A new code requires, in the same change: code name, owning lane/stage, exact condition, whether it affects sporting probability/rank, and a regression test. Provider-specific detail codes may be preserved underneath a registered class; they must never be rewritten into `MODEL_UNAVAILABLE` unless the fitted model capability itself is truly absent.

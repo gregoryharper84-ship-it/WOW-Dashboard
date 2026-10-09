@@ -849,6 +849,141 @@ jobs:
             gh pr create --repo "$GITHUB_REPOSITORY" --base main --head "$BRANCH" --title "$title" --body-file "$body" --draft
           fi
 
+      # Do not let an actionable REPAIR run appear green if it produced no governed PR.
+      # NO_ACTION and VERIFY_RELEASE are distinct legitimate no-PR outcomes and never enter this step.
+      # Every REPAIR that ends without an exact-head PR fails closed with a cause-specific typed code;
+      # governed denials are never collapsed into ACTIONABLE_REPAIR_NO_DELIVERABLE.
+      # Runs before heartbeat persistence so the typed outcome reaches the durable record.
+      - name: Enforce actionable repair delivery
+        id: delivery
+        if: always() && steps.lead.outputs.action == 'REPAIR'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INCIDENT: ${{ steps.lead.outputs.incident }}
+          TRIAGE_OUTCOME: ${{ steps.triage.outcome }}
+          TRIAGE_REPAIRABLE: ${{ steps.triage.outputs.repairable }}
+          TRIAGE_RISK: ${{ steps.triage.outputs.risk }}
+          SPECIALIST_HYPOTHESIS: ${{ steps.specialist.outputs.hypothesis }}
+          MUTATION_GATE_OUTCOME: ${{ steps.mutation_gate.outcome }}
+          IMPLEMENTATION_OUTCOME: ${{ steps.implementation_agent.outcome }}
+          IMPL_OUTCOME: ${{ steps.impl.outcome }}
+          CHANGED: ${{ steps.impl.outputs.changed }}
+          BRANCH: ${{ steps.impl.outputs.branch }}
+          EXPECTED_HEAD: ${{ steps.impl.outputs.head_sha }}
+        run: |
+          set -euo pipefail
+          # Disposition per sole-owner ruling (2026-10-08): a governance policy boundary is
+          # BLOCKED_WITH_EXACT_REASON, re-entered only by protected authorization change; every
+          # other non-delivery stays a distinct typed failure on an unresolved incident.
+          plan() {
+            case "$1" in
+              ACTIONABLE_REPAIR_POLICY_BOUNDARY)
+                disposition=BLOCKED_WITH_EXACT_REASON
+                next_action="Protected reviewer/owner authorization change for risk ${TRIAGE_RISK:-UNKNOWN}; no automatic retry or provider failover."
+                revisit="Protected reviewer/owner authorization change only." ;;
+              ACTIONABLE_REPAIR_TRIAGE_FAILED|ACTIONABLE_REPAIR_TRIAGE_NOT_REPAIRABLE|ACTIONABLE_REPAIR_HYPOTHESIS_UNCONFIRMED|ACTIONABLE_REPAIR_RISK_UNRECOGNIZED)
+                disposition=UNRESOLVED_TYPED_FAILURE
+                next_action="Re-triage with new reproducible evidence."
+                revisit="New evidence or next dispatcher cycle." ;;
+              ACTIONABLE_REPAIR_MUTATION_DENIED)
+                disposition=UNRESOLVED_TYPED_FAILURE
+                next_action="Re-acquire a valid implementation lease (fence, epoch, SAFE_HOLD cleared)."
+                revisit="Lease release or expiry." ;;
+              ACTIONABLE_REPAIR_IMPLEMENTATION_FAILED|ACTIONABLE_REPAIR_NO_DELIVERABLE)
+                disposition=UNRESOLVED_TYPED_FAILURE
+                next_action="Re-dispatch implementation under a fresh lease."
+                revisit="Next dispatcher cycle." ;;
+              *)
+                disposition=UNRESOLVED_TYPED_FAILURE
+                next_action="Operator inspects implementation branch and PR state for this run."
+                revisit="Operator review." ;;
+            esac
+            {
+              echo "disposition=$disposition"
+              echo "next_action=$next_action"
+              echo "revisit_trigger=$revisit"
+            } >> "$GITHUB_OUTPUT"
+          }
+          fail() {
+            plan "$1"
+            echo "code=$1" >> "$GITHUB_OUTPUT"
+            echo "delivery=FAILED" >> "$GITHUB_OUTPUT"
+            echo "::error::$1: incident=${INCIDENT:-UNKNOWN}; $2"
+            echo "Repair delivery: \`$1\` for ${INCIDENT:-UNKNOWN} ($2)." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          }
+          # Upstream causes, most specific first. Each is a distinct typed outcome.
+          if [ "${TRIAGE_OUTCOME:-}" != "success" ]; then
+            fail ACTIONABLE_REPAIR_TRIAGE_FAILED "triage outcome=${TRIAGE_OUTCOME:-NOT_RUN}."
+          fi
+          case "${TRIAGE_RISK:-}" in
+            R2-repair-policy|R3) fail ACTIONABLE_REPAIR_POLICY_BOUNDARY "risk=$TRIAGE_RISK; governed implementation lease denied." ;;
+          esac
+          if [ "${TRIAGE_REPAIRABLE:-}" != "true" ]; then
+            fail ACTIONABLE_REPAIR_TRIAGE_NOT_REPAIRABLE "triage repairable=${TRIAGE_REPAIRABLE:-MISSING}."
+          fi
+          case "${SPECIALIST_HYPOTHESIS:-}" in
+            CONFIRMED|NARROWED) ;;
+            *) fail ACTIONABLE_REPAIR_HYPOTHESIS_UNCONFIRMED "specialist hypothesis=${SPECIALIST_HYPOTHESIS:-MISSING}." ;;
+          esac
+          case "${TRIAGE_RISK:-}" in
+            R0|R1|R2-restorative) ;;
+            *) fail ACTIONABLE_REPAIR_RISK_UNRECOGNIZED "risk=${TRIAGE_RISK:-MISSING}." ;;
+          esac
+          if [ "${MUTATION_GATE_OUTCOME:-}" != "success" ]; then
+            fail ACTIONABLE_REPAIR_MUTATION_DENIED "mutation gate outcome=${MUTATION_GATE_OUTCOME:-NOT_RUN}."
+          fi
+          if [ "${IMPLEMENTATION_OUTCOME:-}" != "success" ] || [ "${IMPL_OUTCOME:-}" != "success" ]; then
+            fail ACTIONABLE_REPAIR_IMPLEMENTATION_FAILED "agent=${IMPLEMENTATION_OUTCOME:-NOT_RUN}; normalize=${IMPL_OUTCOME:-NOT_RUN}."
+          fi
+          # Implementation ran cleanly; from here a missing artifact is a delivery failure.
+          if [ "${CHANGED:-}" != "true" ] || [ -z "${BRANCH:-}" ]; then
+            fail ACTIONABLE_REPAIR_NO_DELIVERABLE "implementation reported no committed branch."
+          fi
+          if ! [[ "${EXPECTED_HEAD:-}" =~ ^[0-9a-f]{40}$ ]]; then
+            fail ACTIONABLE_REPAIR_HEAD_INVALID "implementation head SHA missing or malformed."
+          fi
+          if ! [[ "$BRANCH" =~ ^claude/engineering/[0-9]+-[0-9]+$ ]]; then
+            fail ACTIONABLE_REPAIR_BRANCH_INVALID "unexpected implementation branch name."
+          fi
+          if ! prs=$(gh pr list --repo "$GITHUB_REPOSITORY" --state open --base main --head "$BRANCH" --json number,isDraft,headRefOid); then
+            fail ACTIONABLE_REPAIR_PR_LOOKUP_FAILED "GitHub PR lookup failed for branch=$BRANCH."
+          fi
+          count=$(jq 'length' <<<"$prs")
+          if [ "$count" = "0" ]; then
+            fail ACTIONABLE_REPAIR_PR_MISSING "branch=$BRANCH."
+          fi
+          if [ "$count" != "1" ]; then
+            fail ACTIONABLE_REPAIR_PR_AMBIGUOUS "branch=$BRANCH matched $count open PRs."
+          fi
+          pr=$(jq -r '.[0].number' <<<"$prs")
+          is_draft=$(jq -r '.[0].isDraft' <<<"$prs")
+          pr_head=$(jq -r '.[0].headRefOid' <<<"$prs")
+          if [ "$pr_head" != "$EXPECTED_HEAD" ]; then
+            fail ACTIONABLE_REPAIR_PR_HEAD_MISMATCH "branch=$BRANCH; PR #$pr head does not match implementation head."
+          fi
+          # A draft PR is a governed deliverable whose pre-PR agent gates did not all pass.
+          if [ "$is_draft" = "true" ]; then
+            delivery=DRAFT_PR_GATES_FAILED
+          else
+            delivery=PR_READY
+          fi
+          if [ "$delivery" = "PR_READY" ]; then
+            next_action="Independent trust-root/QA review of PR #$pr at exact head; no merge or deploy without authorization."
+          else
+            next_action="Resolve failed pre-PR gates on draft PR #$pr; a draft does not authorize merge or deploy."
+          fi
+          {
+            echo "code=NONE"
+            echo "delivery=$delivery"
+            echo "pr=$pr"
+            echo "disposition=PR_CREATED"
+            echo "next_action=$next_action"
+            echo "revisit_trigger=PR review outcome or new exact-head CI result."
+          } >> "$GITHUB_OUTPUT"
+          echo "Repair artifact: PR #$pr at $EXPECTED_HEAD for ${INCIDENT:-UNKNOWN} (delivery=$delivery)." >> "$GITHUB_STEP_SUMMARY"
+
       - name: Persist dual-stream heartbeat and receipt
         if: always()
         shell: bash
@@ -858,6 +993,10 @@ jobs:
           ACCELERATION: ${{ steps.dispatch.outputs.acceleration }}
           QUEUE_DEPTH: ${{ steps.dispatch.outputs.queue_depth }}
           LEAD_ACTION: ${{ steps.lead.outputs.action }}
+          DELIVERY: ${{ steps.delivery.outputs.delivery }}
+          DELIVERY_CODE: ${{ steps.delivery.outputs.code }}
+          DELIVERY_DISPOSITION: ${{ steps.delivery.outputs.disposition }}
+          DELIVERY_OUTCOME: ${{ steps.delivery.outcome }}
           ACCEL_ADVANCEMENT: ${{ steps.acceleration.outputs.advancement }}
           ACCEL_NEXT: ${{ steps.acceleration.outputs.next_action }}
           LEASE_EPOCH: ${{ steps.safety.outputs.lease_epoch }}
@@ -867,6 +1006,12 @@ jobs:
           LEASE_GROUP: ${{ steps.dispatch.outputs.lease_group }}
         run: |
           set -euo pipefail
+          # A REPAIR whose delivery step did not report is itself a typed failure, never blank.
+          if [ "${LEAD_ACTION:-}" = "REPAIR" ] && [ -z "${DELIVERY_CODE:-}" ]; then
+            DELIVERY=FAILED
+            DELIVERY_CODE="ACTIONABLE_REPAIR_DELIVERY_UNVERIFIED:${DELIVERY_OUTCOME:-NOT_RUN}"
+            DELIVERY_DISPOSITION=UNRESOLVED_TYPED_FAILURE
+          fi
           receipt="$RUNNER_TEMP/wow-dual-stream-receipt.json"
           jq -n \
             --arg utc "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
@@ -876,6 +1021,9 @@ jobs:
             --arg acceleration "${ACCELERATION:-}" \
             --arg queue_depth "${QUEUE_DEPTH:-0}" \
             --arg lead_action "${LEAD_ACTION:-NOT_RUN}" \
+            --arg delivery "${DELIVERY:-NOT_APPLICABLE}" \
+            --arg delivery_code "${DELIVERY_CODE:-NONE}" \
+            --arg delivery_disposition "${DELIVERY_DISPOSITION:-NOT_APPLICABLE}" \
             --arg acceleration_advancement "${ACCEL_ADVANCEMENT:-NOT_RUN}" \
             --arg acceleration_next "${ACCEL_NEXT:-NOT_RUN}" \
             --arg lease_epoch "${LEASE_EPOCH:-0}" \
@@ -891,6 +1039,9 @@ jobs:
               current_restoration_target: (if ($restoration | length) > 0 then $restoration else null end),
               current_acceleration_target: (if ($acceleration | length) > 0 then $acceleration else null end),
               restoration_action: $lead_action,
+              restoration_delivery: $delivery,
+              restoration_delivery_code: $delivery_code,
+              restoration_disposition: $delivery_disposition,
               last_acceleration_advancement: $acceleration_advancement,
               acceleration_next_action: $acceleration_next,
               lease_epoch: ($lease_epoch | tonumber? // 0),
@@ -920,6 +1071,9 @@ jobs:
           - lease_expires_at: ${LEASE_EXPIRES_AT:-UNKNOWN}
           - worker_mode: ${WORKER_MODE:-SAFE_HOLD}
           - restoration_action: ${LEAD_ACTION:-NOT_RUN}
+          - restoration_delivery: ${DELIVERY:-NOT_APPLICABLE}
+          - restoration_delivery_code: ${DELIVERY_CODE:-NONE}
+          - restoration_disposition: ${DELIVERY_DISPOSITION:-NOT_APPLICABLE}
           - last_acceleration_advancement: ${ACCEL_ADVANCEMENT:-NOT_RUN}
           - acceleration_next_action: ${ACCEL_NEXT:-NOT_RUN}
           - retry_dlq_state: NONE
@@ -936,6 +1090,76 @@ jobs:
           else
             gh api --method POST "/repos/${GITHUB_REPOSITORY}/issues/1138/comments" -f body="$body" >/dev/null
           fi
+
+      # Append-only per-incident delivery receipt (never PATCHed). Built inline from step outputs:
+      # the working tree is agent-authored after "Checkout implementation branch", so no repository
+      # script may construct or influence this record. It is not QA or trust-root approval.
+      - name: Append incident delivery receipt
+        if: always() && steps.lead.outputs.action == 'REPAIR'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INCIDENT: ${{ steps.lead.outputs.incident }}
+          DELIVERY: ${{ steps.delivery.outputs.delivery }}
+          CODE: ${{ steps.delivery.outputs.code }}
+          DISPOSITION: ${{ steps.delivery.outputs.disposition }}
+          NEXT_ACTION: ${{ steps.delivery.outputs.next_action }}
+          REVISIT: ${{ steps.delivery.outputs.revisit_trigger }}
+          DELIVERY_OUTCOME: ${{ steps.delivery.outcome }}
+          PR: ${{ steps.delivery.outputs.pr }}
+          HEAD: ${{ steps.impl.outputs.head_sha }}
+          TRIAGE_RISK: ${{ steps.triage.outputs.risk }}
+          LEASE_GROUP: ${{ steps.dispatch.outputs.lease_group }}
+          LEASE_EPOCH: ${{ steps.safety.outputs.lease_epoch }}
+          WORKER_ID: ${{ steps.safety.outputs.worker_id }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CODE:-}" ]; then
+            DELIVERY=FAILED
+            CODE="ACTIONABLE_REPAIR_DELIVERY_UNVERIFIED:${DELIVERY_OUTCOME:-NOT_RUN}"
+            DISPOSITION=UNRESOLVED_TYPED_FAILURE
+            NEXT_ACTION="Operator inspects why the delivery gate did not report."
+            REVISIT="Operator review."
+          fi
+          if ! [[ "${INCIDENT:-}" =~ ^[0-9]+$ ]]; then
+            echo "::error::ACTIONABLE_REPAIR_RECEIPT_INCIDENT_INVALID: incident is not an issue number."
+            exit 1
+          fi
+          if ! owner=$(gh api "/repos/${GITHUB_REPOSITORY}/issues/${INCIDENT}" --jq '[.assignees[].login] | join(",")'); then
+            echo "::error::ACTIONABLE_REPAIR_RECEIPT_PERSIST_FAILED: incident=$INCIDENT; issue lookup failed."
+            exit 1
+          fi
+          owner="${owner:-$GITHUB_REPOSITORY_OWNER}"
+          body=$(cat <<EOF
+          <!-- WOW_REPAIR_DELIVERY_RECEIPT:run=${GITHUB_RUN_ID}:attempt=${GITHUB_RUN_ATTEMPT} -->
+          ### WOW V17 repair delivery receipt (append-only)
+          - incident: #${INCIDENT}
+          - disposition: ${DISPOSITION:-UNRESOLVED_TYPED_FAILURE}
+          - delivery: ${DELIVERY:-FAILED}
+          - delivery_code: ${CODE}
+          - accountable_owner: ${owner}
+          - next_authorized_action: ${NEXT_ACTION:-Operator review.}
+          - revisit_trigger: ${REVISIT:-Operator review.}
+          - workflow_run_id: ${GITHUB_RUN_ID}
+          - run_attempt: ${GITHUB_RUN_ATTEMPT}
+          - provider: Anthropic fallback
+          - risk_class: ${TRIAGE_RISK:-UNKNOWN}
+          - lease_group: ${LEASE_GROUP:-GLOBAL}
+          - lease_epoch: ${LEASE_EPOCH:-0}
+          - worker_id: ${WORKER_ID:-UNKNOWN}
+          - implementation_head_sha: ${HEAD:-NONE}
+          - pull_request: ${PR:-NONE}
+          - independent_qa_approval: false
+          - merge_or_deploy_authorized: false
+          - can_execute: false
+          - terminal_authority: V17_TERMINAL_REDUCER
+          EOF
+          )
+          if ! gh api --method POST "/repos/${GITHUB_REPOSITORY}/issues/${INCIDENT}/comments" -f body="$body" >/dev/null; then
+            echo "::error::ACTIONABLE_REPAIR_RECEIPT_PERSIST_FAILED: incident=$INCIDENT; receipt comment not written."
+            exit 1
+          fi
+          echo "Incident #$INCIDENT receipt appended: ${DISPOSITION:-UNRESOLVED_TYPED_FAILURE} / ${CODE}." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload dual-stream dispatch receipt
         if: always()
@@ -968,6 +1192,9 @@ jobs:
             echo "- Architect: ${{ steps.architect.outputs.decision || 'NOT_RUN' }}"
             echo "- Regression: ${{ steps.regression.outputs.status || 'NOT_RUN' }}"
             echo "- QA: ${{ steps.qa.outputs.decision || 'NOT_RUN' }}"
+            echo "- Repair delivery: ${{ steps.delivery.outputs.delivery || 'NOT_APPLICABLE' }}"
+            echo "- Repair delivery code: ${{ steps.delivery.outputs.code || 'NONE' }}"
+            echo "- Repair disposition: ${{ steps.delivery.outputs.disposition || 'NOT_APPLICABLE' }}"
             echo "- provider: Anthropic/Claude"
             echo "- duplicate incident created: false"
             echo "- can_execute: false"
