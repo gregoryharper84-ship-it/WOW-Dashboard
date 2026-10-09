@@ -356,3 +356,37 @@ def test_spread_warm_pressure_is_typed_and_never_builds(monkeypatch):
     assert receipt["attempt"] == 3
     assert receipt["probability_publishable"] is False
     assert receipt["can_execute"] is False
+
+
+def test_spread_warm_slot_spans_db_and_research_then_releases(monkeypatch):
+    permit = _WarmPermit()
+    events = []
+    monkeypatch.setattr(
+        api.memory_admission,
+        "try_acquire_heavy_job",
+        lambda op: (events.append(("admitted", op)), permit)[1],
+    )
+    monkeypatch.setattr(api, "_db_client", lambda: (events.append(("db", None)), "client")[1])
+    monkeypatch.setattr(
+        api, "warm_ncaaf_forward_context",
+        lambda client: (events.append(("warm", client)), {"status": "READY"})[1],
+    )
+    assert api._warm_ncaaf_spread_under_heavy_slot()["status"] == "READY"
+    assert events == [
+        ("admitted", "NCAAF_SPREAD_FORWARD_WARM"),
+        ("db", None),
+        ("warm", "client"),
+    ]
+    assert permit.releases == 1
+
+
+def test_spread_warm_exception_releases_heavy_slot(monkeypatch):
+    permit = _stub_warm_admission(monkeypatch)
+    monkeypatch.setattr(api, "_db_client", lambda: object())
+    monkeypatch.setattr(
+        api, "warm_ncaaf_forward_context",
+        lambda _: (_ for _ in ()).throw(ValueError("corpus stale")),
+    )
+    with pytest.raises(ValueError, match="corpus stale"):
+        api._warm_ncaaf_spread_under_heavy_slot()
+    assert permit.releases == 1
