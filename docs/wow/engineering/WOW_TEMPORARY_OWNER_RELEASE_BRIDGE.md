@@ -1,0 +1,49 @@
+# Temporary Owner Exact-SHA Release Bridge
+
+Interim control for #1540/#1550 only. This is not a replacement for the planned
+Engineering / Independent QA / Release GitHub Apps.
+
+## Purpose
+
+Allow Class A/B PRs to advance while App identity setup is incomplete without
+letting Engineering self-approve. The bridge executes from protected main and
+requires all of:
+
+1. exact PR number and 40-character head SHA;
+2. all required exact-head deterministic CI green;
+3. independent read-only Claude QA PASS from protected-main code;
+4. QA class A or B (Class C is always denied);
+5. for any `.github/**` change, explicit `allow_trust_root=true`;
+6. owner-held environment secret `WOW_OWNER_RELEASE_APPROVAL` exactly equal to
+   `<PR_NUMBER>:<HEAD_SHA>`;
+7. an unchanged PR head immediately before merge.
+
+The secret is intentionally not readable by Engineering and is scoped to the
+existing `wow-release` GitHub environment. A stale approval cannot authorize a
+different PR or SHA.
+
+## Owner operation
+
+For each temporary authorization, set the `wow-release` environment secret:
+
+`WOW_OWNER_RELEASE_APPROVAL=<PR_NUMBER>:<EXACT_HEAD_SHA>`
+
+Then manually run **wow-v17-temporary-owner-release-bridge** from protected
+`main` with the matching PR, SHA and incident. Set `allow_trust_root=true`
+only for a deliberately reviewed trust-root/bootstrap change.
+
+After a merge, leave the prior value in place or replace it for the next exact
+candidate; it cannot authorize a different SHA.
+
+## Boundaries
+
+- merge only; never deploys;
+- never authorizes Class C;
+- never changes sporting probability, calibration, thresholds or model ownership;
+- never grants wagering/order execution;
+- production acceptance and independent SIRT verification remain separate;
+- `V17_TERMINAL_REDUCER` remains authoritative;
+- `can_execute=false`.
+
+Remove this bridge after #1540/#1550 App identities and source-pinned QA/Release
+checks are verified in production.
