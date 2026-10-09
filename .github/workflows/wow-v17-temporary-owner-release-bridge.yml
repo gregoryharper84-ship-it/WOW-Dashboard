@@ -135,6 +135,21 @@ jobs:
           [ "$head_repo" = "$GITHUB_REPOSITORY" ] || { echo "OWNER_BRIDGE_FORK_DENIED" >&2; exit 1; }
           [ "$head_sha" = "$EXPECTED_HEAD_SHA" ] || { echo "OWNER_BRIDGE_STALE_OR_WRONG_HEAD" >&2; exit 1; }
 
+          MAIN_SHA=$(gh api "/repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')
+          [[ "$MAIN_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "OWNER_BRIDGE_MAIN_SHA_INVALID" >&2; exit 1; }
+          comparison=$(gh api "/repos/${GITHUB_REPOSITORY}/compare/${MAIN_SHA}...${EXPECTED_HEAD_SHA}")
+          behind_by=$(jq -r '.behind_by // -1' <<<"$comparison")
+          [ "$behind_by" = "0" ] || {
+            echo "OWNER_BRIDGE_HEAD_BEHIND_MAIN:$behind_by" >&2
+            exit 1
+          }
+          {
+            echo "BASE_MAIN_SHA=$MAIN_SHA"
+          } >> "$GITHUB_ENV"
+          {
+            echo "base_main_sha=$MAIN_SHA"
+          } >> "$GITHUB_OUTPUT"
+
           mkdir -p .owner-bridge-evidence
           printf '%s\n' "$pr_json" > .owner-bridge-evidence/pr.json
           gh issue view "$INCIDENT_ID" --repo "$GITHUB_REPOSITORY" --json number,title,body,state,url             > .owner-bridge-evidence/incident.json
@@ -227,6 +242,11 @@ jobs:
           current=$(gh api "/repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq '.head.sha')
           [ "$current" = "$EXPECTED_HEAD_SHA" ] || {
             echo "OWNER_BRIDGE_HEAD_CHANGED_AFTER_REVIEW" >&2
+            exit 1
+          }
+          current_main=$(gh api "/repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')
+          [ "$current_main" = "$BASE_MAIN_SHA" ] || {
+            echo "OWNER_BRIDGE_MAIN_MOVED_DURING_REVIEW:$BASE_MAIN_SHA:$current_main" >&2
             exit 1
           }
 
