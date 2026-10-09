@@ -51,16 +51,51 @@ def _incidents_with_open_prs(open_prs: list[dict[str, Any]]) -> set[str]:
         if not isinstance(pr, dict) or not isinstance(pr.get("number"), int):
             raise ValueError("OPEN_PR_INVENTORY_INVALID")
         content = str(pr.get("title") or "") + "\n" + str(pr.get("body") or "")
-        pending.update(re.findall(r"(?<![a-zA-Z0-9])#([0-9]+)\\b", content))
+        pending.update(re.findall(r"(?<![a-zA-Z0-9])#([0-9]+)\b", content))
     return pending
+
+
+_ACTIVE_ENGINEERING_PATHS = frozenset({
+    ".github/workflows/wow-v17-chatgpt-engineering-worker.yml",
+    ".github/workflows/wow-v17-claude-engineering-worker.yml",
+    ".github/workflows/wow-v17-engineering-provider-dispatcher.yml",
+})
+
+
+def _active_ownership(
+    records: list[dict[str, Any]], active_runs: list[dict[str, Any]],
+) -> tuple[set[str], set[str]]:
+    """Trust GitHub workflow path + exact open manifest incident/lease, never a title alone."""
+    indexed = {str(row["incident_id"]): row for row in records}
+    active_leases: set[str] = set()
+    active_keys: set[str] = set()
+    for run in active_runs:
+        if not isinstance(run, dict):
+            raise ValueError("ACTIVE_WORKFLOW_INVENTORY_INVALID")
+        path = str(run.get("path") or "").split("@", 1)[0]
+        if path not in _ACTIVE_ENGINEERING_PATHS:
+            continue
+        title = str(run.get("display_title") or run.get("name") or "")
+        identity = re.search(r"(?:^| )lease=([A-Za-z0-9_-]+) incident=([0-9]+|AUTO)(?: |$)", title)
+        if not identity or run.get("head_branch") != "main":
+            raise ValueError("ACTIVE_WORKER_IDENTITY_UNRESOLVED")
+        lease, incident = identity.groups()
+        row = indexed.get(incident)
+        if row is None or str(row.get("lease_group") or "").upper() != lease.upper():
+            raise ValueError("ACTIVE_WORKER_MANIFEST_IDENTITY_UNRESOLVED")
+        active_leases.add(lease.upper())
+        active_keys.update(_keys(row))
+    return active_leases, active_keys
 
 
 def select_parallel(
     records: list[dict[str, Any]],
     *,
     open_prs: list[dict[str, Any]] | None = None,
+    active_runs: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     pending_pr_incidents = _incidents_with_open_prs(open_prs or [])
+    active_leases, active_keys = _active_ownership(records, active_runs or [])
 
     selected: list[dict[str, Any]] = []
     claimed_keys: set[str] = set()
@@ -102,6 +137,20 @@ def select_parallel(
                 continue
             if incident in claimed_incidents:
                 skipped.append({"incident_id": incident, "rapid_stream": stream, "reason": "DUPLICATE_INCIDENT"})
+                continue
+            if lease_group in active_leases:
+                skipped.append({
+                    "incident_id": incident, "rapid_stream": stream,
+                    "reason": "ACTIVE_WORKER_LEASE_CONFLICT",
+                })
+                continue
+            active_overlap = sorted(keys & active_keys)
+            if active_overlap:
+                skipped.append({
+                    "incident_id": incident, "rapid_stream": stream,
+                    "reason": "ACTIVE_WORKER_CONFLICT_KEYS_OVERLAP",
+                    "overlap": active_overlap,
+                })
                 continue
             if lease_group in claimed_leases:
                 skipped.append({"incident_id": incident, "rapid_stream": stream, "reason": "LEASE_GROUP_ALREADY_CLAIMED"})
@@ -149,6 +198,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--queue", required=True)
     parser.add_argument("--open-prs", required=True)
+    parser.add_argument("--active-runs", required=True)
     parser.add_argument("--output")
     args = parser.parse_args()
 
@@ -160,7 +210,13 @@ def main() -> int:
     open_prs = json.loads(Path(args.open_prs).read_text())
     if not isinstance(open_prs, list) or len(open_prs) >= 200:
         raise SystemExit("OPEN_PR_INVENTORY_INCOMPLETE")
-    result = select_parallel(list(queue.get("records") or []), open_prs=open_prs)
+    active_runs = json.loads(Path(args.active_runs).read_text())
+    if not isinstance(active_runs, list):
+        raise SystemExit("ACTIVE_WORKFLOW_INVENTORY_INCOMPLETE")
+    try:
+        result = select_parallel(list(queue.get("records") or []), open_prs=open_prs, active_runs=active_runs)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
     payload = json.dumps(result, indent=2, sort_keys=True)
     if args.output:
         Path(args.output).write_text(payload + "\n")
