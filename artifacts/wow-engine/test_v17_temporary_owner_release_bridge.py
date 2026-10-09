@@ -63,3 +63,11 @@ def test_temporary_owner_bridge_accepts_only_owner_exact_sha_comment_trigger():
     assert 'authorization_mode="OWNER_EXACT_SHA_COMMENT"' in text
     assert "OWNER_BRIDGE_COMMENT_FORMAT_INVALID" in text
     assert "OWNER_BRIDGE_ACTOR_NOT_OWNER" in text
+
+
+def test_temporary_owner_bridge_fences_current_main_and_review_drift():
+    text = WORKFLOW.read_text(encoding="utf-8")
+    assert "OWNER_BRIDGE_HEAD_BEHIND_MAIN" in text
+    assert "BASE_MAIN_SHA=$MAIN_SHA" in text
+    assert "OWNER_BRIDGE_MAIN_MOVED_DURING_REVIEW" in text
+    assert "/compare/${MAIN_SHA}...${EXPECTED_HEAD_SHA}" in text
