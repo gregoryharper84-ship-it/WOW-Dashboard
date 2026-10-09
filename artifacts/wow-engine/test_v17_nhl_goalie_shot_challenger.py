@@ -125,7 +125,9 @@ def test_prior_game_invariance_same_start_and_aligned_replay():
     _, changed_rows = augment_rows(games, changed, v1)
     match = next(r for r in changed_rows if r.event_id == modified.game_id)
     assert dict(match.features) == dict(original.features)  # no same-event result use
-    assert match.source_manifest_sha256 != original.source_manifest_sha256
+    assert match.source_manifest_sha256 == original.source_manifest_sha256
+    # Current game's final boxscore must not influence any pregame feature
+    # value OR source manifest. Its label remains postgame-only evidence.
     # Adjacent later row may change after the final boxscore enters prior history.
     later = next(r for r in augmented if r.event_id == games[16].game_id)
     after = next(r for r in changed_rows if r.event_id == games[16].game_id)
@@ -139,6 +141,12 @@ def test_prior_game_invariance_same_start_and_aligned_replay():
     assert result["status"] == "ADVISORY_RESEARCH_ONLY"
     assert result["test_n"] >= 50
     assert len(result["delta_brier_bootstrap_95_ci"]) == 2
+    assert len(result["delta_log_loss_bootstrap_95_ci"]) == 2
+    assert result["delta_log_loss_bootstrap_95_ci"][0] <= result["delta_log_loss_bootstrap_95_ci"][1]
+    if result["research_gate_pass"]:
+        assert result["delta_brier_bootstrap_95_ci"][0] > 0
+        assert result["delta_log_loss_bootstrap_95_ci"][0] > 0
+        assert result["v2"]["ece"] <= result["v1"]["ece"]
     assert result["automatic_promotion_allowed"] is False
     assert result["probability_publishable"] is False
     assert result["can_execute"] is False
